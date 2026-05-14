@@ -10,12 +10,13 @@ Usage:
   lucairn doctor --env customer.env --compose docker-compose.customer.yml [--offline] [--check-images] [--skip-image-check]
   lucairn support-bundle --env customer.env --compose docker-compose.customer.yml [--output bundles] [--offline]
   lucairn bundle create --customer-slug acme --models-dir ./models --model-manifest model-manifest.yaml --env customer.env --image-tar images.tar
+  lucairn bundle prepare --customer-slug acme --staging-dir /secure/staging/acme [--output dist/customer-bundles]
   lucairn bundle verify --bundle dist/customer-bundles/lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ.tar.gz
 
 Commands:
   doctor          Validate customer deployment prerequisites.
   support-bundle  Generate a redacted support archive for customer review.
-  bundle          Create or verify per-customer delivery bundles.
+  bundle          Create, prepare, or verify per-customer delivery bundles.
 USAGE
 }
 
@@ -545,10 +546,113 @@ bundle_verify() {
   echo "bundle verify: ok"
 }
 
+write_bundle_prepare_report() {
+  local report="$1" slug="$2" staging_dir="$3" archive="$4" manifest="$5" env_file="$6"
+  local image_delivery="$7" base_compose="$8" self_compose="$9"
+  local ts
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  {
+    echo "agent_contract=lucairn-customer-package-v1"
+    echo "customer_slug=$slug"
+    echo "prepared_utc=$ts"
+    echo "kit_version=$VERSION"
+    echo "bundle_path=$archive"
+    echo "bundle_sha256=$(sha256_file "$archive")"
+    echo "bundle_verify=ok"
+    echo "customer_env=present"
+    echo "model_name=$(manifest_value "$manifest" name)"
+    echo "model_format=$(manifest_value "$manifest" format)"
+    echo "model_runtime=$(manifest_value "$manifest" runtime)"
+    echo "image_delivery=$image_delivery"
+    echo "base_compose=$base_compose"
+    echo "self_hosted_compose=$self_compose"
+    echo "staging_dir=$staging_dir"
+    echo "human_review_required=true"
+    echo "customer_files_committed_to_git=false"
+  } > "$report"
+}
+
+bundle_prepare() {
+  local slug="" staging_dir="" output_dir="$ROOT/dist/customer-bundles" report_file=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --customer-slug) slug="$2"; shift 2 ;;
+      --staging-dir) staging_dir="$2"; shift 2 ;;
+      --output) output_dir="$2"; shift 2 ;;
+      --report) report_file="$2"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) fail "unknown bundle prepare argument: $1" ;;
+    esac
+  done
+
+  [ -n "$slug" ] || fail "--customer-slug is required"
+  [ -n "$staging_dir" ] || fail "--staging-dir is required"
+  [ -d "$staging_dir" ] || fail "staging dir not found: $staging_dir"
+
+  local env_file models_dir manifest image_tar images_dir image_delivery base_compose self_compose
+  env_file="$staging_dir/customer.env"
+  models_dir="$staging_dir/models"
+  manifest="$models_dir/model-manifest.yaml"
+  image_tar=""
+  images_dir=""
+  image_delivery="registry"
+  base_compose="$ROOT/docker-compose.customer.yml"
+  self_compose="$ROOT/docker-compose.self-hosted.yml"
+
+  [ -f "$staging_dir/install/docker-compose.customer.yml" ] && base_compose="$staging_dir/install/docker-compose.customer.yml"
+  [ -f "$staging_dir/install/docker-compose.self-hosted.yml" ] && self_compose="$staging_dir/install/docker-compose.self-hosted.yml"
+
+  if [ -f "$staging_dir/images/lucairn-images.tar" ]; then
+    image_tar="$staging_dir/images/lucairn-images.tar"
+    image_delivery="archive"
+  elif [ -d "$staging_dir/images" ] && find "$staging_dir/images" -mindepth 1 -type f | grep -q .; then
+    images_dir="$staging_dir/images"
+    image_delivery="directory"
+  fi
+
+  require_file "$env_file" "staged customer env"
+  require_file "$manifest" "staged model manifest"
+  validate_model_manifest "$manifest" "$models_dir"
+
+  mkdir -p "$output_dir"
+  report_file="${report_file:-$output_dir/lucairn-customer-bundle-${slug}-report.txt}"
+
+  local create_args create_output archive verify_output
+  create_args=(
+    --customer-slug "$slug"
+    --models-dir "$models_dir"
+    --model-manifest "$manifest"
+    --env "$env_file"
+    --output "$output_dir"
+    --base-compose "$base_compose"
+    --self-hosted-compose "$self_compose"
+  )
+  if [ -n "$image_tar" ]; then
+    create_args+=(--image-tar "$image_tar")
+  elif [ -n "$images_dir" ]; then
+    create_args+=(--images-dir "$images_dir")
+  fi
+
+  create_output="$(bundle_create "${create_args[@]}")"
+  echo "$create_output"
+  archive="$(printf '%s\n' "$create_output" | awk '/^bundle: / {print $2; exit}')"
+  [ -n "$archive" ] || fail "bundle prepare could not resolve archive path"
+
+  if ! verify_output="$(bundle_verify --bundle "$archive" 2>&1)"; then
+    echo "$verify_output" >&2
+    fail "bundle prepare verification failed"
+  fi
+  echo "$verify_output"
+
+  write_bundle_prepare_report "$report_file" "$slug" "$staging_dir" "$archive" "$manifest" "$env_file" "$image_delivery" "$base_compose" "$self_compose"
+  echo "agent report: $report_file"
+}
+
 bundle_command() {
   local subcmd="${1:-}"
   case "$subcmd" in
     create) shift; bundle_create "$@" ;;
+    prepare) shift; bundle_prepare "$@" ;;
     verify) shift; bundle_verify "$@" ;;
     -h|--help|"") usage ;;
     *) fail "unknown bundle subcommand: $subcmd" ;;

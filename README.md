@@ -1,6 +1,6 @@
 # Lucairn Enterprise Deployment Kit
 
-Target release: `v1.1.0-enterprise-customer-bundle`
+Target release: `v1.2.0-agent-package-factory`
 
 This repository contains the customer-installable Lucairn deployment kit for first enterprise self-hosted installs. The operating rule is simple: customer IT installs and operates the stack; Lucairn support never needs shell access to the customer box.
 
@@ -13,7 +13,8 @@ This repository contains the customer-installable Lucairn deployment kit for fir
 - `customer.env.example` - annotated Compose env file.
 - `model-manifest.example.yaml` - runtime-neutral model manifest template.
 - `bin/lucairn` - customer CLI with `doctor` and `support-bundle`.
-- `bin/lucairn bundle create/verify` - per-customer bundle builder and verifier.
+- `bin/lucairn bundle create/prepare/verify` - per-customer bundle builder, agent package factory, and verifier.
+- `AGENTS.md`, `CLAUDE.md` - operating contract for Codex, Claude Code, and similar agents.
 - `migrations/`, `config/`, `starter-templates/` - runtime assets needed by the Compose path.
 - `INSTALL.md`, `OPS.md`, `TROUBLESHOOTING.md` - day-1 and day-2 runbooks.
 - `docs/` - enterprise support, SDK, DPA, mirror, and internal hygiene notes.
@@ -47,6 +48,17 @@ bin/lucairn bundle verify --bundle dist/customer-bundles/lucairn-customer-bundle
 ```
 
 The bundle includes model files, checksums, customer env, Compose files, runtime assets, and customer install notes. Supported runtime profiles include `llama-cpp`, `vllm`, `tgi`, `ollama`, `onnxruntime`, `triton`, and `custom-runtime`.
+
+Codex or Claude Code can create the same package from a standard staging directory:
+
+```bash
+bin/lucairn bundle prepare \
+  --customer-slug acme \
+  --staging-dir /secure/staging/acme \
+  --output /secure/outbound/acme
+```
+
+That command creates the bundle, verifies it, and writes a non-secret agent report. See `docs/AGENT_CUSTOMER_PACKAGING.md`.
 
 For Kubernetes:
 

@@ -1,8 +1,13 @@
 customer.env
+*.env
 support-bundles/
 dist/
+customer-staging/
+customer-packages/
+customer-bundles/
+*.tar
+*.tar.gz
 *.tgz
 .certs/
 keys/
 .DS_Store
-

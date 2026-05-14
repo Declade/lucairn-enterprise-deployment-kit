@@ -45,6 +45,28 @@ Verification checks:
 - Model file presence.
 - SHA256 checksums for every bundled file.
 
+## Agent Package Factory
+
+Codex, Claude Code, or another approved agent can create and verify the bundle from a standard staging directory:
+
+```bash
+bin/lucairn bundle prepare \
+  --customer-slug acme \
+  --staging-dir /secure/staging/acme \
+  --output /secure/outbound/acme
+```
+
+The staging directory must contain:
+
+```text
+customer.env
+models/model-manifest.yaml
+models/[model files]
+images/lucairn-images.tar
+```
+
+The image archive is optional when the customer will pull images from a registry. `bundle prepare` writes a non-secret report named `lucairn-customer-bundle-[slug]-report.txt` with the bundle checksum, model metadata, image delivery mode, and `bundle_verify=ok`.
+
 ## Customer Install
 
 Customer receives one tarball and runs:
@@ -66,4 +88,3 @@ docker compose \
 ## Important
 
 The bundle may contain customer secrets and customer-owned model files. Store it under the customer engagement directory, encrypt it at rest, and do not upload it to generic issue trackers or shared drives.
-

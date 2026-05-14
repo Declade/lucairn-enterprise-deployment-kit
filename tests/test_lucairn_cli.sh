@@ -169,3 +169,40 @@ fi
 grep -q "checksum verification failed" "$TMPDIR/bundle-tamper.out"
 
 echo "lucairn bundle tests: ok"
+
+AGENT_STAGE="$TMPDIR/agent-staging/acme"
+mkdir -p "$AGENT_STAGE/models" "$AGENT_STAGE/images"
+cp "$ENV_FILE" "$AGENT_STAGE/customer.env"
+cp "$MODEL_MANIFEST" "$AGENT_STAGE/models/model-manifest.yaml"
+cp "$MODEL_DIR/acme-support-q4.gguf" "$AGENT_STAGE/models/acme-support-q4.gguf"
+cp "$IMAGE_TAR" "$AGENT_STAGE/images/lucairn-images.tar"
+
+AGENT_OUT="$TMPDIR/agent-output"
+"$ROOT/bin/lucairn" bundle prepare \
+  --customer-slug acme \
+  --staging-dir "$AGENT_STAGE" \
+  --output "$AGENT_OUT" > "$TMPDIR/agent-prepare.out"
+
+AGENT_BUNDLE="$(find "$AGENT_OUT" -name 'lucairn-customer-bundle-acme-*.tar.gz' -print -quit)"
+test -n "$AGENT_BUNDLE"
+test -f "$AGENT_OUT/lucairn-customer-bundle-acme-report.txt"
+grep -q "bundle_verify=ok" "$AGENT_OUT/lucairn-customer-bundle-acme-report.txt"
+grep -q "model_runtime=llama-cpp" "$AGENT_OUT/lucairn-customer-bundle-acme-report.txt"
+grep -q "image_delivery=archive" "$AGENT_OUT/lucairn-customer-bundle-acme-report.txt"
+grep -q "customer_env=present" "$AGENT_OUT/lucairn-customer-bundle-acme-report.txt"
+if grep -q "lcr_enterprise_test_secret\\|sk-test-sandbox-b-secret" "$AGENT_OUT/lucairn-customer-bundle-acme-report.txt"; then
+  echo "agent packaging report leaked a secret" >&2
+  exit 1
+fi
+
+MAKE_AGENT_OUT="$TMPDIR/make-agent-output"
+make -C "$ROOT" customer-bundle \
+  CUSTOMER_SLUG=acme \
+  STAGING_DIR="$AGENT_STAGE" \
+  OUTPUT_DIR="$MAKE_AGENT_OUT" > "$TMPDIR/make-agent-prepare.out"
+
+MAKE_AGENT_BUNDLE="$(find "$MAKE_AGENT_OUT" -name 'lucairn-customer-bundle-acme-*.tar.gz' -print -quit)"
+test -n "$MAKE_AGENT_BUNDLE"
+grep -q "bundle_verify=ok" "$MAKE_AGENT_OUT/lucairn-customer-bundle-acme-report.txt"
+
+echo "lucairn agent prepare tests: ok"
