@@ -24,7 +24,7 @@ For Kubernetes:
 1. Unpack the release bundle.
 
 ```bash
-tar -xzf lucairn-enterprise-deployment-kit-1.0.0-enterprise-deployment-kit.tar.gz
+tar -xzf lucairn-enterprise-deployment-kit-1.1.0-enterprise-customer-bundle.tar.gz
 cd lucairn-enterprise-deployment-kit
 ```
 
@@ -138,3 +138,50 @@ bin/lucairn support-bundle --env customer.env --compose docker-compose.customer.
 ```
 
 Review the archive before emailing it to Lucairn support.
+
+## Customer Bundle Install
+
+Use this path when Lucairn has prepared a customer-specific bundle with model files and image archives.
+
+1. Unpack the bundle.
+
+```bash
+tar -xzf lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ.tar.gz
+cd lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ
+```
+
+2. Verify checksums.
+
+```bash
+bin/lucairn bundle verify --bundle .
+```
+
+3. Load images.
+
+```bash
+docker load -i images/lucairn-images.tar
+```
+
+4. Run pre-flight checks.
+
+```bash
+bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --skip-image-check
+```
+
+5. Start the selected model runtime profile.
+
+```bash
+docker compose \
+  -f install/docker-compose.customer.yml \
+  -f install/docker-compose.self-hosted.yml \
+  --env-file install/customer.env \
+  --profile "$MODEL_RUNTIME_PROFILE" \
+  up -d
+```
+
+6. Confirm health.
+
+```bash
+curl -fsS http://127.0.0.1:8085/healthz
+curl -fsS http://127.0.0.1:8085/readyz
+```

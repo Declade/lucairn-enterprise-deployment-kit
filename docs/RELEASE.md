@@ -1,6 +1,6 @@
 # Release Process
 
-Target tag: `v1.0-enterprise-deployment-kit`
+Current customer-bundle tag line: `v1.1.0-enterprise-customer-bundle`
 
 ## Local Verification
 
@@ -12,7 +12,7 @@ make package
 ## Tag
 
 ```bash
-git tag -a v1.0-enterprise-deployment-kit -m "Lucairn enterprise deployment kit v1.0"
+git tag -a v1.1.0-enterprise-customer-bundle -m "Lucairn enterprise customer bundle v1.1.0"
 git push origin main --tags
 ```
 
@@ -20,7 +20,7 @@ git push origin main --tags
 
 Attach:
 
-- `dist/lucairn-enterprise-deployment-kit-1.0.0-enterprise-deployment-kit.tar.gz`
+- `dist/lucairn-enterprise-deployment-kit-1.1.0-enterprise-customer-bundle.tar.gz`
 - Helm chart package from `dist/` when Helm is installed.
 
 Release notes must include:
@@ -29,4 +29,4 @@ Release notes must include:
 - Required customer-provided secrets.
 - Known limitations.
 - Support-bundle workflow.
-
+- Customer-bundle workflow when model files or offline image delivery are included.

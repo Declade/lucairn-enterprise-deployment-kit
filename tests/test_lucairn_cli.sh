@@ -107,3 +107,65 @@ grep -q "container images: failed" "$TMPDIR/image-check.out"
 grep -q "dsa-gateway:1.0.0" "$TMPDIR/image-check.out"
 
 echo "lucairn image-check test: ok"
+
+MODEL_DIR="$TMPDIR/models"
+mkdir -p "$MODEL_DIR"
+printf 'fake gguf model bytes\n' > "$MODEL_DIR/acme-support-q4.gguf"
+
+MODEL_MANIFEST="$TMPDIR/model-manifest.yaml"
+cat > "$MODEL_MANIFEST" <<'YAML'
+model:
+  name: acme-support-llm
+  format: gguf
+  runtime: llama-cpp
+  files:
+    - acme-support-q4.gguf
+  context_window: 8192
+  gpu_required: false
+  min_vram_gb: 0
+  license: customer-owned
+  checksum_policy: sha256-required
+YAML
+
+IMAGE_TAR="$TMPDIR/lucairn-images.tar"
+printf 'fake image archive\n' > "$IMAGE_TAR"
+
+BUNDLE_OUT="$TMPDIR/customer-bundles"
+"$ROOT/bin/lucairn" bundle create \
+  --customer-slug acme \
+  --models-dir "$MODEL_DIR" \
+  --model-manifest "$MODEL_MANIFEST" \
+  --env "$ENV_FILE" \
+  --image-tar "$IMAGE_TAR" \
+  --output "$BUNDLE_OUT" > "$TMPDIR/bundle-create.out"
+
+CUSTOMER_BUNDLE="$(find "$BUNDLE_OUT" -name 'lucairn-customer-bundle-acme-*.tar.gz' -print -quit)"
+test -n "$CUSTOMER_BUNDLE"
+
+"$ROOT/bin/lucairn" bundle verify --bundle "$CUSTOMER_BUNDLE" > "$TMPDIR/bundle-verify.out"
+grep -q "bundle verify: ok" "$TMPDIR/bundle-verify.out"
+
+BUNDLE_EXTRACT="$TMPDIR/customer-bundle-extract"
+mkdir -p "$BUNDLE_EXTRACT"
+tar -xzf "$CUSTOMER_BUNDLE" -C "$BUNDLE_EXTRACT"
+BASE_DIR="$(find "$BUNDLE_EXTRACT" -maxdepth 1 -type d -name 'lucairn-customer-bundle-acme-*' -print -quit)"
+test -f "$BASE_DIR/install/docker-compose.customer.yml"
+test -f "$BASE_DIR/install/docker-compose.self-hosted.yml"
+test -f "$BASE_DIR/install/customer.env"
+test -f "$BASE_DIR/models/acme-support-q4.gguf"
+test -f "$BASE_DIR/models/model-manifest.yaml"
+test -f "$BASE_DIR/images/lucairn-images.tar"
+test -f "$BASE_DIR/checksums/SHA256SUMS"
+
+printf 'tamper\n' >> "$BASE_DIR/models/acme-support-q4.gguf"
+set +e
+"$ROOT/bin/lucairn" bundle verify --bundle "$BASE_DIR" > "$TMPDIR/bundle-tamper.out" 2>&1
+TAMPER_STATUS=$?
+set -e
+if [ "$TAMPER_STATUS" -eq 0 ]; then
+  echo "bundle verify should fail after model tampering" >&2
+  exit 1
+fi
+grep -q "checksum verification failed" "$TMPDIR/bundle-tamper.out"
+
+echo "lucairn bundle tests: ok"

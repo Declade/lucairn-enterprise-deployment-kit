@@ -9,8 +9,10 @@ bash -n "$ROOT/tests/test_lucairn_cli.sh"
 
 ruby -e 'require "yaml"; ARGV.each { |f| YAML.load_file(f); puts "yaml ok: #{f}" }' \
   "$ROOT/docker-compose.customer.yml" \
+  "$ROOT/docker-compose.self-hosted.yml" \
   "$ROOT/customer.env.example" \
   "$ROOT/customer-values.yaml.example" \
+  "$ROOT/model-manifest.example.yaml" \
   "$ROOT/charts/lucairn/values.yaml"
 
 if command -v helm >/dev/null 2>&1; then
@@ -19,5 +21,14 @@ else
   echo "helm lint: skipped (helm not installed)"
 fi
 
-echo "static checks: ok"
+if docker compose version >/dev/null 2>&1; then
+  docker compose \
+    -f "$ROOT/docker-compose.customer.yml" \
+    -f "$ROOT/docker-compose.self-hosted.yml" \
+    --env-file "$ROOT/customer.env.example" \
+    config --quiet
+else
+  echo "compose config: skipped (docker compose not installed)"
+fi
 
+echo "static checks: ok"

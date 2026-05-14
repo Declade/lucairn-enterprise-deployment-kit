@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.0.0-enterprise-deployment-kit"
-
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || printf 'unknown')"
 
 usage() {
   cat <<'USAGE'
 Usage:
   lucairn doctor --env customer.env --compose docker-compose.customer.yml [--offline] [--check-images] [--skip-image-check]
   lucairn support-bundle --env customer.env --compose docker-compose.customer.yml [--output bundles] [--offline]
+  lucairn bundle create --customer-slug acme --models-dir ./models --model-manifest model-manifest.yaml --env customer.env --image-tar images.tar
+  lucairn bundle verify --bundle dist/customer-bundles/lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ.tar.gz
 
 Commands:
   doctor          Validate customer deployment prerequisites.
   support-bundle  Generate a redacted support archive for customer review.
+  bundle          Create or verify per-customer delivery bundles.
 USAGE
 }
 
@@ -263,6 +265,296 @@ check_container_images() {
   [ "$failed" -eq 0 ]
 }
 
+sha256_file() {
+  local file="$1"
+  if have sha256sum; then
+    sha256sum "$file" | awk '{print $1}'
+  else
+    shasum -a 256 "$file" | awk '{print $1}'
+  fi
+}
+
+manifest_value() {
+  local manifest="$1" key="$2"
+  awk -v key="$key" '
+    /^[[:space:]]*model:[[:space:]]*$/ { in_model=1; next }
+    in_model && /^[^[:space:]]/ { in_model=0 }
+    in_model {
+      pattern = "^[[:space:]]*" key ":[[:space:]]*"
+      if ($0 ~ pattern) {
+        sub(pattern, "")
+        gsub(/^["'\''"]|["'\''"]$/, "")
+        print
+        exit
+      }
+    }
+  ' "$manifest"
+}
+
+manifest_files() {
+  local manifest="$1"
+  awk '
+    /^[[:space:]]*model:[[:space:]]*$/ { in_model=1; next }
+    in_model && /^[^[:space:]]/ { in_model=0 }
+    in_model && /^[[:space:]]*files:[[:space:]]*$/ { in_files=1; next }
+    in_files && /^[[:space:]]*-[[:space:]]*/ {
+      sub(/^[[:space:]]*-[[:space:]]*/, "")
+      gsub(/^["'\''"]|["'\''"]$/, "")
+      print
+      next
+    }
+    in_files && /^[[:space:]]*[A-Za-z0-9_-]+:[[:space:]]*/ { exit }
+  ' "$manifest"
+}
+
+validate_model_manifest() {
+  local manifest="$1" models_dir="$2" name format runtime file missing=0
+  require_file "$manifest" "model manifest"
+  [ -d "$models_dir" ] || fail "models dir not found: $models_dir"
+
+  name="$(manifest_value "$manifest" name)"
+  format="$(manifest_value "$manifest" format)"
+  runtime="$(manifest_value "$manifest" runtime)"
+
+  [ -n "$name" ] || { echo "model manifest: missing model.name"; return 1; }
+  [ -n "$format" ] || { echo "model manifest: missing model.format"; return 1; }
+  [ -n "$runtime" ] || { echo "model manifest: missing model.runtime"; return 1; }
+
+  case "$format" in
+    gguf|safetensors|pytorch|onnx|tensorrt-llm|ollama|openai-compatible|custom) ;;
+    *) echo "model manifest: unsupported format '$format'"; return 1 ;;
+  esac
+
+  case "$runtime" in
+    llama-cpp|vllm|tgi|ollama|onnxruntime|triton|external-openai-compatible|custom) ;;
+    *) echo "model manifest: unsupported runtime '$runtime'"; return 1 ;;
+  esac
+
+  if [ "$runtime" = "external-openai-compatible" ] || [ "$format" = "openai-compatible" ]; then
+    return 0
+  fi
+
+  if ! manifest_files "$manifest" | grep -q .; then
+    echo "model manifest: model.files is required for local runtimes"
+    return 1
+  fi
+
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    if [ ! -f "$models_dir/$file" ]; then
+      echo "model manifest: missing model file $file"
+      missing=1
+    fi
+  done < <(manifest_files "$manifest")
+
+  [ "$missing" -eq 0 ]
+}
+
+write_bundle_install_note() {
+  local file="$1" slug="$2"
+  cat > "$file" <<EOF
+# Lucairn Customer Install: $slug
+
+This bundle is prepared for one customer environment. Do not reuse it across customers.
+
+## Offline Install
+
+\`\`\`bash
+docker load -i images/lucairn-images.tar
+bin/lucairn bundle verify --bundle .
+bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --skip-image-check
+docker compose \\
+  -f install/docker-compose.customer.yml \\
+  -f install/docker-compose.self-hosted.yml \\
+  --env-file install/customer.env \\
+  --profile "\${MODEL_RUNTIME_PROFILE:-custom-runtime}" \\
+  up -d
+\`\`\`
+
+## Model Runtime
+
+The selected runtime is declared in \`models/model-manifest.yaml\`. Supported profiles are:
+
+- \`llama-cpp\` for GGUF.
+- \`vllm\` for Hugging Face safetensors / PyTorch model directories.
+- \`tgi\` for Hugging Face Text Generation Inference.
+- \`ollama\` for Ollama model stores or Modelfile-based packaging.
+- \`onnxruntime\` for ONNX-serving containers.
+- \`triton\` for TensorRT-LLM / Triton deployments.
+- \`custom-runtime\` for any runtime image that exposes an OpenAI-compatible HTTP API inside the compose network.
+
+## Support
+
+If install fails, run:
+
+\`\`\`bash
+bin/lucairn support-bundle --env install/customer.env --compose install/docker-compose.customer.yml
+\`\`\`
+
+Review the generated archive before sending it to Lucairn support.
+EOF
+}
+
+write_checksums() {
+  local dir="$1"
+  mkdir -p "$dir/checksums"
+  : > "$dir/checksums/SHA256SUMS"
+  (
+    cd "$dir"
+    find . -type f ! -path './checksums/SHA256SUMS' | sort | while IFS= read -r file; do
+      printf '%s  %s\n' "$(sha256_file "$file")" "${file#./}"
+    done > checksums/SHA256SUMS
+  )
+}
+
+verify_checksums() {
+  local dir="$1" sums expected path actual failed=0
+  sums="$dir/checksums/SHA256SUMS"
+  require_file "$sums" "checksum file"
+  while read -r expected path; do
+    [ -z "${expected:-}" ] && continue
+    if [ ! -f "$dir/$path" ]; then
+      echo "checksum verification failed: missing $path"
+      failed=1
+      continue
+    fi
+    actual="$(sha256_file "$dir/$path")"
+    if [ "$actual" != "$expected" ]; then
+      echo "checksum verification failed: $path"
+      failed=1
+    fi
+  done < "$sums"
+  [ "$failed" -eq 0 ]
+}
+
+bundle_create() {
+  local slug="" models_dir="" manifest="" env_file="" output_dir="$ROOT/dist/customer-bundles"
+  local image_tar="" images_dir="" base_compose="$ROOT/docker-compose.customer.yml" self_compose="$ROOT/docker-compose.self-hosted.yml"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --customer-slug) slug="$2"; shift 2 ;;
+      --models-dir) models_dir="$2"; shift 2 ;;
+      --model-manifest) manifest="$2"; shift 2 ;;
+      --env) env_file="$2"; shift 2 ;;
+      --output) output_dir="$2"; shift 2 ;;
+      --image-tar) image_tar="$2"; shift 2 ;;
+      --images-dir) images_dir="$2"; shift 2 ;;
+      --base-compose) base_compose="$2"; shift 2 ;;
+      --self-hosted-compose|--compose) self_compose="$2"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) fail "unknown bundle create argument: $1" ;;
+    esac
+  done
+
+  [ -n "$slug" ] || fail "--customer-slug is required"
+  printf '%s' "$slug" | grep -Eq '^[a-z0-9][a-z0-9-]{1,62}$' || fail "--customer-slug must be lowercase letters, numbers, and hyphens"
+  [ -n "$models_dir" ] || fail "--models-dir is required"
+  [ -n "$manifest" ] || fail "--model-manifest is required"
+  [ -n "$env_file" ] || fail "--env is required"
+  validate_model_manifest "$manifest" "$models_dir"
+  require_file "$env_file" "env file"
+  require_file "$base_compose" "base compose"
+  require_file "$self_compose" "self-hosted compose"
+  [ -z "$image_tar" ] || require_file "$image_tar" "image tar"
+  [ -z "$images_dir" ] || [ -d "$images_dir" ] || fail "images dir not found: $images_dir"
+
+  local ts bundle_name staging archive
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  bundle_name="lucairn-customer-bundle-${slug}-${ts}"
+  mkdir -p "$output_dir"
+  staging="$output_dir/$bundle_name"
+  archive="$output_dir/$bundle_name.tar.gz"
+  rm -rf "$staging" "$archive"
+  mkdir -p "$staging"/{bin,install,models,images,checksums,docs,config,migrations,starter-templates}
+
+  cp "$ROOT/bin/lucairn" "$staging/bin/lucairn"
+  cp "$base_compose" "$staging/install/docker-compose.customer.yml"
+  cp "$self_compose" "$staging/install/docker-compose.self-hosted.yml"
+  cp "$env_file" "$staging/install/customer.env"
+  cp "$manifest" "$staging/models/model-manifest.yaml"
+  cp -R "$models_dir"/. "$staging/models/"
+  cp "$manifest" "$staging/models/model-manifest.yaml"
+  cp -R "$ROOT/config"/. "$staging/config/"
+  cp -R "$ROOT/migrations"/. "$staging/migrations/"
+  cp -R "$ROOT/starter-templates"/. "$staging/starter-templates/"
+  cp "$ROOT/OPS.md" "$ROOT/TROUBLESHOOTING.md" "$ROOT/README.md" "$staging/docs/"
+  [ -f "$ROOT/docs/CUSTOMER_BUNDLE.md" ] && cp "$ROOT/docs/CUSTOMER_BUNDLE.md" "$staging/docs/"
+  write_bundle_install_note "$staging/INSTALL-CUSTOMER.md" "$slug"
+
+  if [ -n "$image_tar" ]; then
+    cp "$image_tar" "$staging/images/lucairn-images.tar"
+  elif [ -n "$images_dir" ]; then
+    cp -R "$images_dir"/. "$staging/images/"
+  else
+    echo "No image archive included. Customer install must use registry access." > "$staging/images/README.txt"
+  fi
+
+  {
+    echo "customer_slug=$slug"
+    echo "created_utc=$ts"
+    echo "kit_version=$VERSION"
+    echo "model_name=$(manifest_value "$manifest" name)"
+    echo "model_format=$(manifest_value "$manifest" format)"
+    echo "model_runtime=$(manifest_value "$manifest" runtime)"
+  } > "$staging/bundle-manifest.txt"
+
+  write_checksums "$staging"
+  tar -czf "$archive" -C "$output_dir" "$bundle_name"
+  echo "bundle: $archive"
+}
+
+bundle_root_from_path() {
+  local bundle="$1" tmp="$2"
+  if [ -d "$bundle" ]; then
+    printf '%s' "$bundle"
+    return 0
+  fi
+  require_file "$bundle" "bundle"
+  mkdir -p "$tmp"
+  tar -xzf "$bundle" -C "$tmp"
+  find "$tmp" -maxdepth 1 -type d -name 'lucairn-customer-bundle-*' -print -quit
+}
+
+bundle_verify() {
+  local bundle=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --bundle) bundle="$2"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) fail "unknown bundle verify argument: $1" ;;
+    esac
+  done
+  [ -n "$bundle" ] || fail "--bundle is required"
+
+  local tmp root
+  tmp="$(mktemp -d)"
+  root="$(bundle_root_from_path "$bundle" "$tmp")"
+  if [ -z "$root" ]; then
+    rm -rf "$tmp"
+    fail "bundle root not found"
+  fi
+
+  require_file "$root/install/docker-compose.customer.yml" "bundle base compose"
+  require_file "$root/install/docker-compose.self-hosted.yml" "bundle self-hosted compose"
+  require_file "$root/install/customer.env" "bundle customer env"
+  require_file "$root/models/model-manifest.yaml" "bundle model manifest"
+  require_file "$root/bin/lucairn" "bundle CLI"
+  validate_model_manifest "$root/models/model-manifest.yaml" "$root/models"
+  verify_checksums "$root"
+  rm -rf "$tmp"
+  echo "bundle verify: ok"
+}
+
+bundle_command() {
+  local subcmd="${1:-}"
+  case "$subcmd" in
+    create) shift; bundle_create "$@" ;;
+    verify) shift; bundle_verify "$@" ;;
+    -h|--help|"") usage ;;
+    *) fail "unknown bundle subcommand: $subcmd" ;;
+  esac
+}
+
 doctor() {
   local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-system" check_images=1
   while [ "$#" -gt 0 ]; do
@@ -479,6 +771,7 @@ main() {
   case "$cmd" in
     doctor) shift; doctor "$@" ;;
     support-bundle) shift; support_bundle "$@" ;;
+    bundle) shift; bundle_command "$@" ;;
     -h|--help|"") usage ;;
     *) fail "unknown command: $cmd" ;;
   esac

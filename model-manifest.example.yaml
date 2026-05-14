@@ -1,0 +1,12 @@
+model:
+  name: customer-model
+  format: gguf
+  runtime: llama-cpp
+  files:
+    - customer-model-q4.gguf
+  context_window: 8192
+  gpu_required: false
+  min_vram_gb: 0
+  license: customer-owned
+  checksum_policy: sha256-required
+

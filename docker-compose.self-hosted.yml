@@ -1,0 +1,230 @@
+# Lucairn self-hosted inference overlay.
+#
+# Use with the base customer compose:
+#   docker compose \
+#     -f install/docker-compose.customer.yml \
+#     -f install/docker-compose.self-hosted.yml \
+#     --env-file install/customer.env \
+#     --profile "$MODEL_RUNTIME_PROFILE" \
+#     up -d
+#
+# This overlay replaces the remote Sandbox B dependency with a local Sandbox B
+# plus a selectable model runtime. Runtimes should expose an OpenAI-compatible
+# HTTP API at MODEL_RUNTIME_URL unless using the ollama profile.
+
+networks:
+  dsa-ai:
+    driver: bridge
+    internal: true
+  dsa-bridge-ai:
+    driver: bridge
+    internal: true
+  dsa-audit-ai:
+    driver: bridge
+    internal: true
+  dsa-witness-ai:
+    driver: bridge
+    internal: true
+  dsa-model-runtime:
+    driver: bridge
+    internal: true
+
+volumes:
+  redis-ai-data:
+  ollama-model-store:
+
+services:
+  gateway:
+    depends_on:
+      sandbox-b:
+        condition: service_healthy
+    environment:
+      INFERENCE_SERVICE_ADDR: "sandbox-b:50054"
+      SANDBOX_B_PROXY_URL: "http://sandbox-b:8084"
+      SANDBOX_B_INVARIANT_URL: "http://sandbox-b:8084/invariant"
+      SANDBOX_B_REMOTE_ENDPOINT: ""
+      SANDBOX_B_API_KEY: "${LOCAL_SANDBOX_B_API_KEY:-local-sandbox-b-key}"
+    networks:
+      - dsa-ai
+
+  audit:
+    networks:
+      - dsa-audit-ai
+
+  id-bridge:
+    networks:
+      - dsa-bridge-ai
+
+  veil-witness:
+    environment:
+      VEIL_SANDBOX_B_PUBLIC_KEY: "${VEIL_SANDBOX_B_PUBLIC_KEY}"
+    networks:
+      - dsa-witness-ai
+
+  redis-ai:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory ${SANDBOX_B_REDIS_MAXMEMORY:-256mb} --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-ai-data:/data
+    networks:
+      - dsa-ai
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: on-failure
+
+  sandbox-b:
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sandbox-b:${LUCAIRN_IMAGE_TAG:-1.0.0}"
+    depends_on:
+      redis-ai:
+        condition: service_healthy
+      id-bridge:
+        condition: service_healthy
+      audit:
+        condition: service_healthy
+      veil-witness:
+        condition: service_healthy
+    environment:
+      DSA_ENV: "production"
+      DSA_SERVICE_TOKEN: "${DSA_SERVICE_TOKEN:?DSA_SERVICE_TOKEN is required}"
+      SANDBOX_B_GRPC_ADDR: "0.0.0.0:50054"
+      SANDBOX_B_HEALTH_ADDR: "0.0.0.0:8084"
+      SANDBOX_B_REDIS_URL: "redis://redis-ai:6379"
+      SANDBOX_B_VERTICALS_DIR: "/app/verticals"
+      SANDBOX_B_WORKERS: "${SANDBOX_B_WORKERS:-4}"
+      BRIDGE_ADDR: "id-bridge:50052"
+      AUDIT_SERVICE_ADDR: "audit:50051"
+      GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
+      DSA_ADMIN_KEY: "${DSA_ADMIN_KEY:?DSA_ADMIN_KEY is required}"
+      SANDBOX_B_API_KEYS: "${LOCAL_SANDBOX_B_API_KEY:-local-sandbox-b-key}"
+      VEIL_ENABLED: "${VEIL_ENABLED:-true}"
+      VEIL_SIGNING_KEY: "${VEIL_SANDBOX_B_SIGNING_KEY:?VEIL_SANDBOX_B_SIGNING_KEY is required for self-hosted Sandbox B}"
+      VEIL_WITNESS_ADDR: "veil-witness:50057"
+      OLLAMA_URL: "${OLLAMA_URL:-http://ollama:11434}"
+      OPENAI_API_KEY: "${MODEL_RUNTIME_API_KEY:-local-model-runtime}"
+      OPENAI_BASE_URL: "${MODEL_RUNTIME_URL:-http://model-runtime:8000/v1}"
+      PROOFLOG_ENABLED: "${PROOFLOG_ENABLED:-false}"
+      PROOFLOG_SIGNING_KEY: "${PROOFLOG_SIGNING_KEY:-}"
+      PROOFLOG_POLICIES: "${PROOFLOG_POLICIES:-model-allowlist}"
+    volumes:
+      - ../starter-templates:/app/verticals:ro
+    networks:
+      - dsa-ai
+      - dsa-bridge-ai
+      - dsa-audit-ai
+      - dsa-witness-ai
+      - dsa-model-runtime
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8084/healthz')\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    restart: on-failure
+
+  model-runtime:
+    profiles: ["llama-cpp"]
+    image: "${LLAMA_CPP_IMAGE:-ghcr.io/ggerganov/llama.cpp:server}"
+    command:
+      - "-m"
+      - "/models/${MODEL_FILE:-model.gguf}"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8000"
+      - "--ctx-size"
+      - "${MODEL_CONTEXT_WINDOW:-8192}"
+    volumes:
+      - ${LUCAIRN_MODEL_DIR:-../models}:/models:ro
+    networks:
+      - dsa-model-runtime
+    restart: on-failure
+
+  model-runtime-vllm:
+    profiles: ["vllm"]
+    image: "${VLLM_IMAGE:-vllm/vllm-openai:latest}"
+    command:
+      - "--model"
+      - "/models/${MODEL_PATH:-.}"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8000"
+    volumes:
+      - ${LUCAIRN_MODEL_DIR:-../models}:/models:ro
+    networks:
+      dsa-model-runtime:
+        aliases:
+          - model-runtime
+    restart: on-failure
+
+  model-runtime-tgi:
+    profiles: ["tgi"]
+    image: "${TGI_IMAGE:-ghcr.io/huggingface/text-generation-inference:latest}"
+    command:
+      - "--model-id"
+      - "/models/${MODEL_PATH:-.}"
+      - "--port"
+      - "8000"
+    volumes:
+      - ${LUCAIRN_MODEL_DIR:-../models}:/models:ro
+    networks:
+      dsa-model-runtime:
+        aliases:
+          - model-runtime
+    restart: on-failure
+
+  ollama:
+    profiles: ["ollama"]
+    image: "${OLLAMA_IMAGE:-ollama/ollama:latest}"
+    environment:
+      OLLAMA_HOST: "0.0.0.0:11434"
+    volumes:
+      - ollama-model-store:/root/.ollama
+      - ${LUCAIRN_MODEL_DIR:-../models}:/models:ro
+    networks:
+      - dsa-model-runtime
+    restart: on-failure
+
+  model-runtime-onnxruntime:
+    profiles: ["onnxruntime"]
+    image: "${ONNXRUNTIME_OPENAI_IMAGE:-ghcr.io/declade/openai-compatible-onnxruntime:latest}"
+    volumes:
+      - ${LUCAIRN_MODEL_DIR:-../models}:/models:ro
+    networks:
+      dsa-model-runtime:
+        aliases:
+          - model-runtime
+    restart: on-failure
+
+  model-runtime-triton:
+    profiles: ["triton"]
+    image: "${TRITON_OPENAI_IMAGE:-ghcr.io/declade/openai-compatible-triton:latest}"
+    volumes:
+      - ${LUCAIRN_MODEL_DIR:-../models}:/models:ro
+    networks:
+      dsa-model-runtime:
+        aliases:
+          - model-runtime
+    restart: on-failure
+
+  model-runtime-custom:
+    profiles: ["custom-runtime"]
+    image: "${MODEL_RUNTIME_IMAGE:-ghcr.io/declade/openai-compatible-runtime:latest}"
+    command: ${MODEL_RUNTIME_COMMAND:-}
+    environment:
+      MODEL_DIR: "/models"
+      MODEL_NAME: "${MODEL_NAME:-customer-model}"
+      MODEL_FILE: "${MODEL_FILE:-}"
+      MODEL_PATH: "${MODEL_PATH:-}"
+      MODEL_CONTEXT_WINDOW: "${MODEL_CONTEXT_WINDOW:-8192}"
+    volumes:
+      - ${LUCAIRN_MODEL_DIR:-../models}:/models:ro
+    networks:
+      dsa-model-runtime:
+        aliases:
+          - model-runtime
+    restart: on-failure
+
