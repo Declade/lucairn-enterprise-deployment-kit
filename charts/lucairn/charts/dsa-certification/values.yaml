@@ -21,17 +21,17 @@ portal:
     host: ""
     className: nginx
 
-# Image tags. Operators set these to a specific DSA_VERSION value (e.g. "0.1.0").
+# Image tags. Operators set these to the enterprise kit image tag.
 # Empty string defaults to the chart's appVersion (Chart.yaml). This mirrors the
 # compose-side ${DSA_VERSION:-latest} pattern from docker-compose.customer.yml.
 # Override per-deploy with --set images.certBuilder.tag=<version> /
 # --set images.certPortal.tag=<version>.
 images:
   certBuilder:
-    repository: ghcr.io/marcschuelke/dsa-cert-builder
+    repository: ghcr.io/declade/dsa-cert-builder
     tag: ""
   certPortal:
-    repository: ghcr.io/marcschuelke/dsa-cert-portal
+    repository: ghcr.io/declade/dsa-cert-portal
     tag: ""
 
 postgresql:

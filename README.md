@@ -20,9 +20,12 @@ This repository contains the customer-installable Lucairn deployment kit for fir
 ```bash
 cp customer.env.example customer.env
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
+docker login ghcr.io
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 ```
+
+Lucairn must provide image registry access and onboarding values before a customer can install from the kit.
 
 For Kubernetes:
 
@@ -39,4 +42,3 @@ bin/lucairn support-bundle --env customer.env --compose docker-compose.customer.
 ```
 
 The bundle is redacted, but the customer must review it before emailing it to Lucairn support.
-

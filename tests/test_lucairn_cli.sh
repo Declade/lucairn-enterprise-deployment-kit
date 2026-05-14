@@ -73,3 +73,37 @@ fi
 
 echo "lucairn cli tests: ok"
 
+FAKEBIN="$TMPDIR/fakebin"
+mkdir -p "$FAKEBIN"
+cat > "$FAKEBIN/docker" <<'DOCKER'
+#!/usr/bin/env bash
+if [ "$1" = "manifest" ] && [ "$2" = "inspect" ]; then
+  echo 'unauthorized: authentication required' >&2
+  exit 1
+fi
+if [ "$1" = "--version" ]; then
+  echo "Docker version test"
+  exit 0
+fi
+exit 0
+DOCKER
+chmod +x "$FAKEBIN/docker"
+
+set +e
+PATH="$FAKEBIN:$PATH" "$ROOT/bin/lucairn" doctor \
+  --env "$ENV_FILE" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --offline \
+  --check-images > "$TMPDIR/image-check.out" 2>&1
+IMAGE_CHECK_STATUS=$?
+set -e
+
+if [ "$IMAGE_CHECK_STATUS" -eq 0 ]; then
+  echo "image check should fail when registry auth is missing" >&2
+  exit 1
+fi
+
+grep -q "container images: failed" "$TMPDIR/image-check.out"
+grep -q "dsa-gateway:1.0.0" "$TMPDIR/image-check.out"
+
+echo "lucairn image-check test: ok"

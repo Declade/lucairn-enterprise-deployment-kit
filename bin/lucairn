@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 usage() {
   cat <<'USAGE'
 Usage:
-  lucairn doctor --env customer.env --compose docker-compose.customer.yml [--offline]
+  lucairn doctor --env customer.env --compose docker-compose.customer.yml [--offline] [--check-images] [--skip-image-check]
   lucairn support-bundle --env customer.env --compose docker-compose.customer.yml [--output bundles] [--offline]
 
 Commands:
@@ -237,13 +237,41 @@ check_certs() {
   [ "$failed" -eq 0 ]
 }
 
+check_container_images() {
+  local env_file="$1" failed=0 registry tag image
+  registry="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)"
+  tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)"
+  registry="${registry:-ghcr.io/declade}"
+  tag="${tag:-1.0.0}"
+
+  if ! have docker; then
+    echo "container images: skipped (docker unavailable)"
+    return 0
+  fi
+
+  for image in dsa-audit dsa-id-bridge dsa-sandbox-a dsa-sanitizer dsa-veil-witness dsa-gateway; do
+    local ref="${registry}/${image}:${tag}"
+    if ! docker manifest inspect "$ref" >/dev/null 2>&1; then
+      echo "container images: failed ($ref not pullable; check registry credentials or image tag)"
+      failed=1
+    fi
+  done
+
+  if [ "$failed" -eq 0 ]; then
+    echo "container images: ok"
+  fi
+  [ "$failed" -eq 0 ]
+}
+
 doctor() {
-  local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-system"
+  local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-system" check_images=1
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --env) env_file="$2"; shift 2 ;;
       --compose) compose_file="$2"; shift 2 ;;
-      --offline) offline=1; shift ;;
+      --offline) offline=1; check_images=0; shift ;;
+      --check-images) check_images=1; shift ;;
+      --skip-image-check) check_images=0; shift ;;
       --postgres-url) postgres_url="$2"; shift 2 ;;
       --kube-namespace) kube_namespace="$2"; shift 2 ;;
       -h|--help) usage; exit 0 ;;
@@ -283,6 +311,10 @@ doctor() {
   echo "secret formats: ok"
 
   check_certs "$env_file"
+
+  if [ "$check_images" -eq 1 ]; then
+    check_container_images "$env_file" || return 1
+  fi
 
   if [ "$offline" -eq 1 ]; then
     echo "network checks: skipped (--offline)"
@@ -453,4 +485,3 @@ main() {
 }
 
 main "$@"
-

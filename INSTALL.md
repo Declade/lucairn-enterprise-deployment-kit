@@ -35,7 +35,17 @@ cp customer.env.example customer.env
 chmod 600 customer.env
 ```
 
-3. Replace every `REPLACE_*` value in `customer.env`.
+3. Log in to the private image registry.
+
+Lucairn provides a GHCR username/token or mirrors the images into the customer's registry.
+
+```bash
+docker login ghcr.io
+```
+
+If the customer uses an internal registry mirror, set `LUCAIRN_IMAGE_REGISTRY` in `customer.env`.
+
+4. Replace every `REPLACE_*` value in `customer.env`.
 
 Generate random values:
 
@@ -44,32 +54,34 @@ openssl rand -hex 32
 openssl rand -base64 32
 ```
 
-4. Run offline validation before network checks.
+5. Run offline validation before network checks.
 
 ```bash
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
 ```
 
-5. Run live validation.
+6. Run live validation.
 
 ```bash
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 ```
 
-6. Start the stack.
+The live validation checks whether the configured Lucairn images are pullable. If it fails with `container images: failed`, fix registry access before continuing.
+
+7. Start the stack.
 
 ```bash
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 ```
 
-7. Confirm health.
+8. Confirm health.
 
 ```bash
 curl -fsS http://127.0.0.1:8085/healthz
 curl -fsS http://127.0.0.1:8085/readyz
 ```
 
-8. Put the gateway behind TLS.
+9. Put the gateway behind TLS.
 
 Terminate HTTPS at the customer reverse proxy and forward to `127.0.0.1:8080`. If the proxy is local or containerized, set `GATEWAY_TRUSTED_PROXY_CIDRS` to the proxy source CIDRs and rerun `bin/lucairn doctor`.
 
@@ -126,4 +138,3 @@ bin/lucairn support-bundle --env customer.env --compose docker-compose.customer.
 ```
 
 Review the archive before emailing it to Lucairn support.
-

@@ -15,6 +15,7 @@ Common causes:
 - `GATEWAY_KEYSTORE_KEY` is not base64 32 bytes.
 - A required Veil key is blank.
 - Host port 8080 or 8085 is already in use.
+- Private GHCR images are not pullable. Run `docker login ghcr.io` or use the customer registry mirror in `LUCAIRN_IMAGE_REGISTRY`.
 
 ## Gateway Unhealthy
 
@@ -76,4 +77,3 @@ The generated archive includes:
 - Schema-version placeholder or available schema notes.
 
 Review the archive before sending it to Lucairn support.
-
