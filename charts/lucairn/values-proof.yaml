@@ -1,0 +1,41 @@
+# deploy/helm/values-proof.yaml
+# Minimal overlay for proof-grade local Kind clusters.
+# Goal: prove isolation and full Veil flow with the smallest moving surface.
+
+global:
+  vertical: test
+  dnsRestriction: false
+  dsaEnv: development
+
+observability:
+  enabled: false
+
+demo:
+  enabled: false
+
+ingest:
+  enabled: false
+
+admin:
+  enabled: false
+
+sandbox-a:
+  sanitizer:
+    llmAuditEnabled: false
+    llmScanEnabled: false
+
+gateway:
+  replicaCount: 1
+  enableTestProvider: "true"
+  hpa:
+    enabled: false
+
+veil-witness:
+  replicaCount: 1
+  hpa:
+    enabled: false
+  pdb:
+    enabled: false
+
+sandbox-b:
+  enableTestProvider: "true"

@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Chart.Name }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+data:
+  VEIL_CLAIM_TIMEOUT: {{ .Values.config.claimTimeout | quote }}
+  VEIL_TSA_URL: {{ .Values.config.tsaUrl | quote }}
+  VEIL_REKOR_URL: {{ .Values.config.rekorUrl | quote }}
+  VEIL_BRIDGE_PUBLIC_KEY: {{ .Values.config.bridgePublicKey | quote }}
+  VEIL_SANITIZER_PUBLIC_KEY: {{ .Values.config.sanitizerPublicKey | quote }}
+  VEIL_SANDBOX_B_PUBLIC_KEY: {{ .Values.config.sandboxBPublicKey | quote }}
+  VEIL_AUDIT_PUBLIC_KEY: {{ .Values.config.auditPublicKey | quote }}
+  VEIL_PROOF_SPEC_PATH: {{ .Values.config.proofSpecPath | quote }}
+  VEIL_PROOF_OUTPUT_PATH: {{ .Values.config.proofOutputPath | quote }}
+  VEIL_PROOF_MODEL_VERSION: {{ .Values.config.proofModelVersion | quote }}
+  INSECURE_DEV_MODE: {{ .Values.config.insecureDevMode | quote }}

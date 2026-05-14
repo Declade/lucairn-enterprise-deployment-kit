@@ -1,0 +1,103 @@
+global:
+  # Deployment environment. Controls fail-closed behavior across the pipeline:
+  # - "development": empty service tokens and plaintext gRPC are allowed.
+  # - "production": all services refuse to start without DSA_SERVICE_TOKEN
+  #   and GRPC_TLS_ENABLED=true (enforced in each service's main() via
+  #   pkg/serviceauth + pkg/tlsutil). values-prod.yaml sets this to
+  #   "production"; values-dev.yaml keeps it "development".
+  dsaEnv: production
+  vertical: finance
+  imageRegistry: "ghcr.io/declade"
+  imagePullSecrets: []
+  imageTag: "1.0.0"
+  secrets:
+    backend: k8s-native
+    vault:
+      endpoint: ""
+      role: dsa
+      mountPath: dsa
+    aws:
+      region: eu-central-1
+      serviceAccountAnnotation: ""
+    azure:
+      keyVaultName: ""
+      tenantId: ""
+  llmEgressEnabled: false
+  ingestEgressEnabled: false
+  ollamaEnabled: true
+  demoEnabled: false
+  # Node pool isolation: when true, Sandbox A and Sandbox B are scheduled
+  # on separate node pools (dsa.io/zone=identity vs dsa.io/zone=ai) with
+  # hard anti-affinity. Requires labeled + tainted nodes. Disable for dev.
+  nodeIsolation: false
+  # DNS restriction: deploy CoreDNS/Cilium policies to prevent cross-namespace
+  # DNS resolution (dsa-ai cannot discover dsa-identity service names).
+  # Requires Cilium CNI or CoreDNS firewall plugin. Disable for dev.
+  dnsRestriction: true
+  # PostgreSQL sslmode: "disable" for local dev, "require" for production.
+  postgresqlSslmode: require
+  # Cilium WireGuard transparent encryption for all pod-to-pod traffic.
+  # Requires Cilium CNI with WireGuard support. Provides mTLS-equivalent
+  # encryption without application changes or certificate management.
+  wireguardEncryption: false
+  # DSA environment: "development" | "production". Controls fail-closed guards in pipeline services.
+  # Override to "production" in values-prod.yaml.
+  dsaEnv: production
+
+infrastructure:
+  enabled: true
+
+audit:
+  enabled: true
+
+id-bridge:
+  enabled: true
+
+sandbox-a:
+  enabled: true
+
+sandbox-b:
+  enabled: true
+
+gateway:
+  enabled: true
+
+observability:
+  enabled: true
+
+demo:
+  enabled: false
+
+ingest:
+  enabled: false
+
+# Parent-level feature flag: controls whether the dsa-certification subchart is deployed.
+# Used by Chart.yaml condition: certification.enabled
+certification:
+  enabled: false          # true for Pro/Enterprise; toggled by license tier
+
+# Subchart values: passed to dsa-certification subchart using its chart name as the key.
+# Key names MUST match dsa-certification/values.yaml exactly.
+dsa-certification:
+  witness:
+    address: "veil-witness.dsa-witness.svc.cluster.local:50058"
+
+  prober:
+    url: ""               # empty = prober-less mode (verdict: REVIEW_REQUIRED)
+    apiKey: ""
+
+  signing:
+    mode: local
+    local:
+      keyFile: /keys/customer-key.pem
+      keyId: ""           # e.g. "customer-v1" — set per customer
+
+  images:
+    certBuilder:
+      tag: ""             # empty = chart default (latest)
+    certPortal:
+      tag: ""
+
+  # cert-prober is NOT deployed via Helm.
+  # It runs on customer infrastructure, separate from DSA.
+  # Deploy using: cert-prober.yaml from GitHub Release assets.

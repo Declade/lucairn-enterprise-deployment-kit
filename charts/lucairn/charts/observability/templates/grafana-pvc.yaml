@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-storage
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: dsa
+    app.kubernetes.io/component: observability
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.grafana.storageClass }}
+  storageClassName: {{ .Values.grafana.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.grafana.storageSize }}

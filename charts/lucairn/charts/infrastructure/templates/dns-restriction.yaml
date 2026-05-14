@@ -1,0 +1,157 @@
+{{- if .Values.global.dnsRestriction }}
+# ==========================================================================
+# DNS Side-Channel Mitigation — Cilium CiliumNetworkPolicy
+#
+# These policies restrict which internal DNS names each namespace can resolve.
+# This prevents dsa-ai from discovering dsa-identity service names (and vice
+# versa), closing the DNS side-channel identified in red team finding #1.
+#
+# REQUIREMENT: Cilium CNI must be installed. These resources are no-ops if
+# the CiliumNetworkPolicy CRD is not registered. Set global.dnsRestriction=false
+# for non-Cilium clusters (Kind, vanilla Calico, etc.).
+# ==========================================================================
+
+# --- dsa-ai: can only resolve own namespace + audit + external DNS ---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: dns-restrict-ai
+  namespace: dsa-ai
+  labels:
+    app.kubernetes.io/part-of: dsa
+    dsa.io/purpose: dns-restriction
+spec:
+  endpointSelector: {}
+  egress:
+    # Allow DNS to kube-dns, but restrict which names can be resolved
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              # Own namespace
+              - matchPattern: "*.dsa-ai.svc.cluster.local"
+              # Audit (all services need this)
+              - matchPattern: "*.dsa-audit.svc.cluster.local"
+              # Bridge (rotation consumer needs to reach Bridge)
+              - matchPattern: "*.dsa-bridge.svc.cluster.local"
+{{- if .Values.global.llmEgressEnabled }}
+              # External LLM provider DNS (when hosted LLMs are enabled)
+              - matchPattern: "api.anthropic.com"
+              - matchPattern: "api.openai.com"
+              - matchPattern: "api.mistral.ai"
+{{- end }}
+---
+# --- dsa-identity: can only resolve own namespace + bridge + audit ---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: dns-restrict-identity
+  namespace: dsa-identity
+  labels:
+    app.kubernetes.io/part-of: dsa
+    dsa.io/purpose: dns-restriction
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              # Own namespace
+              - matchPattern: "*.dsa-identity.svc.cluster.local"
+              # Bridge (token revocation)
+              - matchPattern: "*.dsa-bridge.svc.cluster.local"
+              # Audit
+              - matchPattern: "*.dsa-audit.svc.cluster.local"
+---
+# --- dsa-bridge: can resolve own namespace + identity + ai + audit ---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: dns-restrict-bridge
+  namespace: dsa-bridge
+  labels:
+    app.kubernetes.io/part-of: dsa
+    dsa.io/purpose: dns-restriction
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*.dsa-bridge.svc.cluster.local"
+              - matchPattern: "*.dsa-identity.svc.cluster.local"
+              - matchPattern: "*.dsa-ai.svc.cluster.local"
+              - matchPattern: "*.dsa-audit.svc.cluster.local"
+---
+# --- dsa-edge (Gateway): can resolve all DSA namespaces ---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: dns-restrict-edge
+  namespace: dsa-edge
+  labels:
+    app.kubernetes.io/part-of: dsa
+    dsa.io/purpose: dns-restriction
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*.dsa-edge.svc.cluster.local"
+              - matchPattern: "*.dsa-identity.svc.cluster.local"
+              - matchPattern: "*.dsa-bridge.svc.cluster.local"
+              - matchPattern: "*.dsa-ai.svc.cluster.local"
+              - matchPattern: "*.dsa-audit.svc.cluster.local"
+---
+# --- dsa-audit: can only resolve own namespace (no egress) ---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: dns-restrict-audit
+  namespace: dsa-audit
+  labels:
+    app.kubernetes.io/part-of: dsa
+    dsa.io/purpose: dns-restriction
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*.dsa-audit.svc.cluster.local"
+{{- end }}

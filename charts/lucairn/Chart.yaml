@@ -1,0 +1,47 @@
+apiVersion: v2
+name: lucairn
+description: Lucairn enterprise self-hosted deployment kit
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+
+dependencies:
+  - name: infrastructure
+    version: 0.1.0
+    condition: infrastructure.enabled
+  - name: audit
+    version: 0.1.0
+    condition: audit.enabled
+  - name: id-bridge
+    version: 0.1.0
+    condition: id-bridge.enabled
+  - name: sandbox-a
+    version: 0.1.0
+    condition: sandbox-a.enabled
+  - name: sandbox-b
+    version: 0.1.0
+    condition: sandbox-b.enabled
+  - name: gateway
+    version: 0.1.0
+    condition: gateway.enabled
+  - name: observability
+    version: 0.1.0
+    condition: observability.enabled
+  - name: demo
+    version: 0.1.0
+    condition: demo.enabled
+  - name: ingest
+    version: 0.1.0
+    condition: ingest.enabled
+  - name: admin
+    version: 0.1.0
+    condition: admin.enabled
+  - name: veil-witness
+    version: 0.1.0
+    condition: veil-witness.enabled
+  - name: dsa-certification
+    version: "0.1.0"
+    # Vendored as a local placeholder subchart at charts/dsa-certification/.
+    # The enterprise kit keeps this dependency local so customer installs do
+    # not need a second chart repository during first deployment.
+    condition: certification.enabled

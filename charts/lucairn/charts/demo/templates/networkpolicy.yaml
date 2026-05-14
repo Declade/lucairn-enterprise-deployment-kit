@@ -1,0 +1,53 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: demo-egress
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # → dsa-edge Gateway HTTP (all requests route through Gateway like a normal client)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: edge
+      ports:
+        - port: 8080
+          protocol: TCP
+    # → dsa-ingest HTTP (for ingest demo)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: ingest
+      ports:
+        - port: 8095
+          protocol: TCP
+    # → DNS
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: demo-ingress
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+        - port: {{ .Values.service.healthPort }}
+          protocol: TCP

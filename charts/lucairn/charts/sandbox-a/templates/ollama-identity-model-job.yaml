@@ -1,0 +1,144 @@
+{{- if .Values.sanitizer.llmScanEnabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ollama-identity-modelfile
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: ollama-identity-model-pull
+    app.kubernetes.io/part-of: dsa
+data:
+  Modelfile: |
+    FROM /tmp/model.gguf
+
+    # CRITICAL: Qwen models need explicit chat template tokens.
+    # Without this TEMPLATE block, the SYSTEM prompt is ignored and
+    # the model reverts to base Qwen behavior (conversational, not JSON).
+    TEMPLATE """<|im_start|>system
+    {{`{{ .System }}`}}<|im_end|>
+    <|im_start|>user
+    {{`{{ .Prompt }}`}}<|im_end|>
+    <|im_start|>assistant
+    """
+
+    SYSTEM """You are a PII detection system for German and English text.
+    Analyze the following text and identify ALL personally identifiable information.
+
+    For each PII item found, return:
+    - "text": the exact substring
+    - "type": one of PERSON, EMAIL, PHONE, ADDRESS, LOCATION, ID, SSN, CC, IBAN, DOB, URL, DEVICE
+    - "confidence": 0.0-1.0 how certain this is PII
+
+    For items that look like PII but are NOT (e.g., currency amounts, percentages, product codes), return them with:
+    - "not_pii": true
+    - "reason": brief explanation (e.g., "currency amount in EUR context")
+    - "confidence": 0.0-1.0 how certain this is NOT PII
+
+    Return a JSON array. If no PII found, return exactly: []"""
+
+    PARAMETER temperature 0.1
+    PARAMETER top_p 0.9
+    PARAMETER num_predict 512
+    PARAMETER stop "<|im_end|>"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ollama-identity-model-pull
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: ollama-identity-model-pull
+    app.kubernetes.io/part-of: dsa
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ollama-identity-model-pull
+        dsa.io/model-pull: "true"
+        dsa.io/sandbox: identity
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: load-model
+          image: "curlimages/curl:latest"
+          env:
+            - name: MODEL_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Chart.Name }}-credentials
+                  key: MODEL_AUTH_SECRET
+          command:
+            - sh
+            - -c
+            - >-
+              if [ -f /dsa-models/pii-scanner-v2.gguf ]; then
+                echo "Using cached model from local mount (~10s)..." &&
+                cp /dsa-models/pii-scanner-v2.gguf /models/model.gguf &&
+                echo "Local copy complete.";
+              else
+                echo "No local cache. Downloading pii-scanner-v2.gguf (~4.7GB)..." &&
+                curl -f -u "dsa:$MODEL_AUTH"
+                http://157.90.171.30:8443/pii-scanner-v2.gguf
+                -o /models/model.gguf &&
+                echo "Download complete.";
+              fi
+          volumeMounts:
+            - name: model-data
+              mountPath: /models
+            - name: local-models
+              mountPath: /dsa-models
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+      containers:
+        - name: model-create
+          image: "ollama/ollama:latest"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: false
+          env:
+            - name: OLLAMA_HOST
+              value: "ollama-identity:11434"
+          command:
+            - sh
+            - -c
+            - >-
+              echo "Creating Ollama model pii-scanner-v2..." &&
+              cp /models/model.gguf /tmp/model.gguf &&
+              ollama create pii-scanner-v2 -f /tmp/Modelfile &&
+              echo "Model creation complete."
+          volumeMounts:
+            - name: modelfile
+              mountPath: /tmp/Modelfile
+              subPath: Modelfile
+            - name: model-data
+              mountPath: /models
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+      volumes:
+        - name: modelfile
+          configMap:
+            name: ollama-identity-modelfile
+        - name: model-data
+          emptyDir:
+            sizeLimit: 6Gi
+        - name: local-models
+          hostPath:
+            path: /dsa-models
+            type: DirectoryOrCreate
+{{- end }}

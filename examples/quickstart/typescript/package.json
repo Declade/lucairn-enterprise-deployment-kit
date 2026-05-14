@@ -1,0 +1,19 @@
+{
+  "name": "lucairn-quickstart-typescript",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lucairn quickstart — single-file TypeScript example.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/quickstart.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0"
+  }
+}

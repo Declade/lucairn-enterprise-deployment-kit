@@ -1,0 +1,19 @@
+{{- if .Values.ollama.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Chart.Name }}-ollama-data
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-ollama
+    app.kubernetes.io/part-of: dsa
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.ollama.storageClass }}
+  storageClassName: {{ .Values.ollama.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.ollama.storageSize }}
+{{- end }}

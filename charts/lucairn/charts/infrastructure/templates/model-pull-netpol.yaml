@@ -1,0 +1,39 @@
+{{- if .Values.global.ollamaEnabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: model-pull-egress
+  namespace: dsa-ai
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector:
+    matchLabels:
+      dsa.io/model-pull: "true"
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution (required for hostname lookups)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # HTTPS to public model registries only (no private/cluster networks)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16  # Block cloud metadata endpoint
+      ports:
+        - port: 443
+          protocol: TCP
+{{- end }}

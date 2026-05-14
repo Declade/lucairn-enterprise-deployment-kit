@@ -1,0 +1,123 @@
+namespace: dsa-edge
+
+replicaCount: 2
+
+image:
+  repository: dsa-gateway
+  tag: ""
+  pullPolicy: IfNotPresent
+
+service:
+  apiPort: 8080
+  healthPort: 8085
+
+sessionTtl: "1h"
+waitTimeout: "30"
+
+identityServiceAddr: "sandbox-a.dsa-identity.svc:50053"
+bridgeServiceAddr: "id-bridge.dsa-bridge.svc:50052"
+inferenceServiceAddr: "sandbox-b.dsa-ai.svc:50054"
+auditServiceAddr: "audit.dsa-audit.svc:50051"
+verticalsDir: "/etc/dsa/verticals"
+sanitizerUrl: "http://sandbox-a.dsa-identity.svc:8086"
+sandboxBProxyUrl: "http://sandbox-b.dsa-ai.svc.cluster.local:8084"
+keystorePath: "/etc/dsa/keystore"
+grpcTlsEnabled: "false"
+veilEnabled: "true"
+enableTestProvider: "false"
+veilWitnessCertAddr: "veil-witness.dsa-witness.svc.cluster.local:50058"
+gatewayBaseUrl: ""
+readiness:
+  required: false
+  useCase: ""
+  maxAge: ""
+  existingBundleSecret: ""
+  bundleSecretKey: readiness-bundle.json
+  bundleMountPath: /etc/dsa/readiness
+  bundleFileName: readiness-bundle.json
+
+ingress:
+  enabled: true
+  className: nginx
+  host: dsa.local
+  tlsSecret: tls-gateway
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilization: 70
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+streaming:
+  enabled: false
+  timeoutSeconds: 300
+
+# PR-C1 fix-up round 1 (FIX-6): gateway-side sanitize cache. Default OFF —
+# operators flip enabled=true per environment after the cert-chain integration
+# follow-up PR ships (see docs/architecture/sanitize-cache.md). Override
+# maxEntries / ttlSeconds per-environment if needed.
+sanitizeCache:
+  enabled: false
+  maxEntries: 10000
+  ttlSeconds: 3600
+
+secrets:
+  backend: k8s-native  # k8s-native | vault | aws | azure
+  values:
+    licenseKey: ""
+    licenseSigningKey: ""
+    adminKey: ""
+    sandboxBApiKey: ""
+    veilManifestSigningKey: ""
+    veilWitnessPublicKey: ""
+    veilBridgePublicKey: ""
+    veilSanitizerPublicKey: ""
+    veilSandboxBPublicKey: ""
+    veilAuditPublicKey: ""
+    # LSM-001 / DRIFT-001: gateway-side dsa-ai signing key for the Sensitive
+    # Mode seal-cert flow. 64-char hex Ed25519 seed. In hybrid deploys
+    # (Sensitive Mode + sandbox B), set this to the SAME value as the
+    # sandbox-b chart's secrets.values.veilSigningKey. In Sensitive-Mode-only
+    # deploys, this is the standalone dsa-ai signing key. Empty value
+    # disables the dsa-ai emitter; Sensitive Mode certs then render
+    # overall_verdict: failed on /verify (operator warning logged at boot).
+    veilAISigningKey: ""
+    dsaServiceToken: ""  # PRODUCTION: set via existingSecret or --set; dev: inline value
+    # Required when secrets.backend == "k8s-native". Base64 32 bytes (AES-256)
+    # for keystore-at-rest encryption (#17). Generate with: openssl rand -base64 32.
+    # Set per-environment via --set or a values overlay; never commit a real value.
+    # Gateway fails-closed at boot if missing/malformed/wrong-length.
+    gatewayKeystoreKey: ""
+  vault:
+    path: "dsa/data/gateway"
+  aws:
+    name: "dsa/gateway"
+  azure:
+    name: "dsa-gateway"

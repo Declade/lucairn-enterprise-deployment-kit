@@ -1,0 +1,168 @@
+sandbox_b:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  temperature: 0.1
+  max_tokens: 1024
+  retention_days: 3650
+
+gateway:
+  allowed_context_keys:
+    benefit_eligibility:
+      - household_size
+      - income_bracket
+      - employment_status
+      - region
+    document_classification:
+      - document_type
+      - document_text
+      - submission_date
+    tax_risk:
+      - filing_type
+      - income_bracket
+      - deduction_categories
+      - prior_audit_flag
+  field_routing:
+    benefit_eligibility:
+      identity:
+        - applicant_name
+        - applicant_id
+        - national_id
+        - contact_email
+      freetext:
+        - case_description
+        - correspondence
+      passthrough:
+        - case_number
+        - household_size
+        - income_bracket
+        - employment_status
+        - region
+        - status
+        - priority
+        - department
+    document_classification:
+      identity:
+        - applicant_name
+        - applicant_id
+        - national_id
+        - contact_email
+      freetext:
+        - document_text
+        - correspondence
+      passthrough:
+        - case_number
+        - document_type
+        - submission_date
+        - status
+        - priority
+        - department
+    tax_risk:
+      identity:
+        - applicant_name
+        - applicant_id
+        - national_id
+        - contact_email
+      freetext:
+        - case_description
+        - decision_rationale
+      passthrough:
+        - case_number
+        - filing_type
+        - income_bracket
+        - deduction_categories
+        - prior_audit_flag
+        - status
+        - priority
+        - department
+  max_context_value_length: 2000
+  max_context_keys: 20
+
+ingest:
+  quasi_identifiers:
+    - field: age
+      rule: bracket
+      params:
+        size: 10
+    - field: zip_code
+      rule: truncate
+      params:
+        keep_digits: 2
+    - field: date_of_birth
+      rule: suppress
+    - field: nationality
+      rule: suppress
+    - field: occupation
+      rule: suppress
+    - field: timestamp
+      rule: round
+      params:
+        resolution: day
+
+relinkage:
+  require_approval: true
+  approval_roles: ["dpo", "supervisor"]
+  allowed_attributes: ["name", "citizen_id"]
+  break_glass_enabled: false
+  jurisdiction: "EU"
+  require_post_access_review: true
+  review_period_days: 14
+
+sanitizer:
+  freetext_fields:
+    - case_worker_notes
+    - citizen_request_text
+    - decision_narrative
+  known_entity_matching:
+    enabled: true
+    strategies:
+      - exact
+      - cologne_phonetics
+      - levenshtein
+    levenshtein_max_distance: 2
+    location_context_window: 50
+  presidio:
+    language_detection: auto
+    default_language: de
+    supported_languages: [de, en]
+    confidence_threshold: 0.25
+    custom_recognizers:
+      - personalausweisnummer
+      - sozialversicherungsnummer
+      - steuer_id
+    safe_patterns: []
+  llm_audit:
+    enabled: false
+
+policies:
+  - id: gov-purpose-001
+    type: purpose
+    vertical: government
+    condition:
+      field: purpose
+      operator: in
+      value: ["benefit_eligibility", "document_classification", "tax_risk"]
+    action: allow
+  - id: gov-retention-001
+    type: retention
+    vertical: government
+    condition:
+      field: retention_days
+      operator: gt
+      value: 3650
+    action: deny
+  - id: gov-region-001
+    type: region
+    vertical: government
+    condition:
+      field: region
+      operator: not_in
+      value: ["EU", "EEA"]
+    action: deny
+  - id: gov-relinkage-001
+    type: approval
+    vertical: government
+    condition:
+      field: action
+      operator: eq
+      value: "relinkage"
+    action: require_approval

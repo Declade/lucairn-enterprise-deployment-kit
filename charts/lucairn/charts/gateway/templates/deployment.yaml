@@ -1,0 +1,119 @@
+{{- if and .Values.readiness.required (not .Values.readiness.existingBundleSecret) -}}
+{{- fail "gateway.readiness.required=true requires gateway.readiness.existingBundleSecret" -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+spec:
+  {{- if not .Values.hpa.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/part-of: dsa
+    spec:
+      serviceAccountName: {{ .Chart.Name }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.image.repository }}:{{ .Values.image.tag | default .Values.global.imageTag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "-addr=:{{ .Values.service.apiPort }}"
+            - "-health-addr=:{{ .Values.service.healthPort }}"
+            - "-session-ttl={{ .Values.sessionTtl }}"
+            - "-wait-timeout={{ .Values.waitTimeout }}"
+          envFrom:
+            - configMapRef:
+                name: {{ .Chart.Name }}-config
+            - secretRef:
+                name: {{ .Chart.Name }}-credentials
+          env:
+            - name: SANDBOX_A_INVARIANT_URL
+              value: "http://sandbox-a.dsa-identity.svc.cluster.local:8083/invariant"
+            - name: SANDBOX_B_INVARIANT_URL
+              value: "http://sandbox-b.dsa-ai.svc.cluster.local:8084/invariant"
+            - name: ENABLE_TEST_PROVIDER
+              value: {{ .Values.enableTestProvider | quote }}
+            - name: STREAMING_ENABLED
+              value: {{ .Values.streaming.enabled | quote }}
+            - name: STREAM_TIMEOUT
+              value: {{ .Values.streaming.timeoutSeconds | quote }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.apiPort }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ .Values.service.healthPort }}
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: verticals
+              mountPath: {{ .Values.verticalsDir }}
+              readOnly: true
+            {{- if .Values.readiness.existingBundleSecret }}
+            - name: readiness-bundle
+              mountPath: {{ .Values.readiness.bundleMountPath }}
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+      volumes:
+        - name: verticals
+          projected:
+            sources:
+              {{- range $name, $vertical := .Values.verticals }}
+              - configMap:
+                  name: {{ $.Chart.Name }}-verticals-{{ $name }}
+                  items:
+                    - key: config.yaml
+                      path: {{ $name }}/config.yaml
+              {{- end }}
+        {{- if .Values.readiness.existingBundleSecret }}
+        - name: readiness-bundle
+          secret:
+            secretName: {{ .Values.readiness.existingBundleSecret }}
+            items:
+              - key: {{ .Values.readiness.bundleSecretKey }}
+                path: {{ .Values.readiness.bundleFileName }}
+        {{- end }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

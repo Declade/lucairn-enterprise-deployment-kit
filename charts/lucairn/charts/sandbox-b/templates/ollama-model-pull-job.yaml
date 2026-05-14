@@ -1,0 +1,57 @@
+{{- if and .Values.ollama.enabled .Values.ollama.model }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Chart.Name }}-ollama-pull
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-ollama-pull
+    app.kubernetes.io/part-of: dsa
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}-ollama-pull
+        dsa.io/model-pull: "true"
+    spec:
+      containers:
+        - name: pull
+          image: "{{ .Values.ollama.image.repository }}:{{ .Values.ollama.image.tag }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          command:
+            - sh
+            - -c
+            - |
+              echo "Starting Ollama server for model pull..."
+              ollama serve &
+              SERVE_PID=$!
+              # Wait for server to be ready
+              until ollama list >/dev/null 2>&1; do
+                sleep 2
+              done
+              echo "Pulling model {{ .Values.ollama.model }}..."
+              ollama pull {{ .Values.ollama.model }}
+              echo "Model pull complete. Stopping server..."
+              kill $SERVE_PID
+              wait $SERVE_PID 2>/dev/null || true
+          volumeMounts:
+            - name: data
+              mountPath: /root/.ollama
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+      restartPolicy: Never
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Chart.Name }}-ollama-data
+{{- end }}

@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Chart.Name }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+data:
+  SANDBOX_B_GRPC_ADDR: "0.0.0.0:{{ .Values.service.grpcPort }}"
+  # Push-based rotation (port 50055) is not implemented. Sandbox B uses
+  # pull-based rotation via BRIDGE_ADDR (port 50052). SANDBOX_B_ROTATION_GRPC_ADDR removed.
+  SANDBOX_B_HEALTH_ADDR: "0.0.0.0:{{ .Values.service.healthPort }}"
+  SANDBOX_B_WORKERS: {{ .Values.workers | quote }}
+  SANDBOX_B_VERTICALS_DIR: "/app/verticals"
+  PYTHONDONTWRITEBYTECODE: "1"
+  BRIDGE_ADDR: {{ .Values.bridgeAddr | quote }}
+  AUDIT_SERVICE_ADDR: {{ .Values.auditServiceAddr | quote }}
+  VEIL_ENABLED: {{ .Values.veilEnabled | quote }}
+  VEIL_WITNESS_ADDR: {{ .Values.veilWitnessAddr | quote }}
+  GRPC_TLS_ENABLED: {{ .Values.grpcTlsEnabled | quote }}
+  DSA_ENV: {{ required "global.dsaEnv must be set to \"development\" or \"production\" in the umbrella values" .Values.global.dsaEnv | quote }}
+  {{- if .Values.ollama.enabled }}
+  OLLAMA_URL: "http://{{ .Chart.Name }}-ollama:11434"
+  {{- end }}

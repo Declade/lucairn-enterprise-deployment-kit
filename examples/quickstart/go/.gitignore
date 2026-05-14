@@ -1,0 +1,4 @@
+# Build artefacts produced by `go build` in this directory.
+# Use `go run quickstart.go` instead to avoid creating these.
+/go
+/quickstart

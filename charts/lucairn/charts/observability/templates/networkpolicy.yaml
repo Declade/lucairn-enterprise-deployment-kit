@@ -1,0 +1,51 @@
+# Intra-namespace communication (Grafana → Loki/Tempo)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: observability-internal
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow intra-namespace traffic (Grafana → Loki, Grafana → Tempo)
+    - from:
+        - podSelector: {}
+    # Allow Promtail from all namespaces → Loki
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: dsa
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: promtail
+      ports:
+        - port: 3100
+          protocol: TCP
+---
+# Restrict Grafana external access to admin VPN CIDR
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana-admin-access
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  policyTypes:
+    - Ingress
+  ingress:
+    # Intra-namespace (datasource config)
+    - from:
+        - podSelector: {}
+    {{- if .Values.grafana.adminCIDR }}
+    # External access restricted to admin VPN CIDR
+    - from:
+        - ipBlock:
+            cidr: {{ .Values.grafana.adminCIDR }}
+      ports:
+        - port: 3000
+          protocol: TCP
+    {{- end }}

@@ -1,0 +1,18 @@
+{{- if .Values.sanitizer.llmScanEnabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-identity
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: ollama-identity
+    app.kubernetes.io/part-of: dsa
+spec:
+  type: ClusterIP
+  ports:
+    - port: 11434
+      targetPort: http
+      name: http
+  selector:
+    app.kubernetes.io/name: ollama-identity
+{{- end }}

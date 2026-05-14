@@ -1,0 +1,81 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: admin-egress
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # Audit service (event stream)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: audit
+      ports:
+        - port: 50051
+          protocol: TCP
+    # Health endpoints on all DSA services
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: dsa
+      ports:
+        - port: 8081
+          protocol: TCP
+        - port: 8082
+          protocol: TCP
+        - port: 8083
+          protocol: TCP
+        - port: 8084
+          protocol: TCP
+        - port: 8085
+          protocol: TCP
+        - port: 8096
+          protocol: TCP
+    # Gateway HTTP API (admin operations)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: edge
+      ports:
+        - port: 8080
+          protocol: TCP
+    # Sanitizer HTTP API (admin config/status)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: identity
+      ports:
+        - port: 8086
+          protocol: TCP
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Intra-namespace
+    - to:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: admin-ingress
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Web UI access
+    - ports:
+        - port: {{ .Values.service.webPort }}
+          protocol: TCP
+        - port: {{ .Values.service.healthPort }}
+          protocol: TCP
+    # Intra-namespace
+    - from:
+        - podSelector: {}

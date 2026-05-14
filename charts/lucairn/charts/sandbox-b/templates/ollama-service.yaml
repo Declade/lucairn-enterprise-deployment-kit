@@ -1,0 +1,18 @@
+{{- if .Values.ollama.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Chart.Name }}-ollama
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-ollama
+    app.kubernetes.io/part-of: dsa
+spec:
+  type: ClusterIP
+  ports:
+    - port: 11434
+      targetPort: http
+      name: http
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}-ollama
+{{- end }}

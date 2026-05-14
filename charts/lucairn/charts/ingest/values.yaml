@@ -1,0 +1,61 @@
+namespace: dsa-ingest
+
+replicaCount: 1
+
+image:
+  repository: dsa-ingest
+  tag: ""
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8095
+  healthPort: 8096
+
+identityAddr: "sandbox-a.dsa-identity.svc:50053"
+bridgeAddr: "id-bridge.dsa-bridge.svc:50052"
+inferenceAddr: "sandbox-b.dsa-ai.svc:50054"
+auditAddr: "audit.dsa-audit.svc:50051"
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+hpa:
+  enabled: false
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+secrets:
+  # Backend selection: "k8s-native" (default, inline Secret) or "vault" /
+  # "aws" / "azure" (ESO-backed ExternalSecret). For production, prefer ESO
+  # or pre-provisioned existingSecret over inline values.
+  backend: k8s-native
+  # existingSecret: <secret-name>  # optional: reference a Secret managed
+  #                                  # outside this chart (production pattern)
+  vault:
+    path: ""
+  aws:
+    name: ""
+  azure:
+    name: ""
+  values:
+    # Dev-only inline value. In production, use secrets.backend (vault/aws/
+    # azure) or secrets.existingSecret — never commit production secrets or
+    # pass them via `--set` on the CLI (shell history / CI logs leak).
+    dsaServiceToken: ""

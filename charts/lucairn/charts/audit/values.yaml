@@ -1,0 +1,75 @@
+namespace: dsa-audit
+
+replicaCount: 2
+
+image:
+  repository: dsa-audit
+  tag: ""  # defaults to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+service:
+  grpcPort: 50051
+  healthPort: 8081
+
+veilEnabled: "true"
+veilWitnessAddr: "veil-witness.dsa-witness.svc.cluster.local:50057"
+grpcTlsEnabled: "false"
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilization: 70
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+postgresql:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+  storageSize: 10Gi
+  storageClass: ""
+  user: dsa
+  database: audit
+
+external:
+  databaseUrl: ""  # used when postgresql.enabled: false
+
+secrets:
+  backend: k8s-native  # k8s-native | vault | aws | azure
+  values:
+    # PRODUCTION: MUST override with a strong, unique password.
+    postgresPassword: "CHANGE-ME-IN-PRODUCTION"
+    veilSigningKey: ""
+    dsaServiceToken: ""  # PRODUCTION: set via existingSecret or --set; dev: inline value
+  vault:
+    path: "dsa/data/postgres-audit"
+  aws:
+    name: "dsa/postgres-audit"
+  azure:
+    name: "dsa-postgres-audit"

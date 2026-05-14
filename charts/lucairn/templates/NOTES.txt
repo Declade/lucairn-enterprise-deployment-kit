@@ -1,0 +1,66 @@
+=======================================================
+  Dual-Sandbox Architecture (DSA) Platform
+=======================================================
+
+Namespaces created:
+  - dsa-edge          (Gateway)
+  - dsa-identity      (Sandbox A — Identity Vault)
+  - dsa-bridge        (ID Bridge — Pseudonymisation)
+  - dsa-ai            (Sandbox B — AI Processing)
+  - dsa-audit         (Audit — Immutable Trail)
+  - dsa-observability (Grafana, Loki, Tempo)
+  - dsa-ingest        (Reserved — Future)
+
+{{- if .Values.gateway.ingress.enabled }}
+
+Gateway API:
+  https://{{ .Values.gateway.ingress.host }}
+{{- end }}
+
+{{- if .Values.observability.enabled }}
+
+Grafana Dashboard:
+  kubectl port-forward -n dsa-observability svc/grafana 3000:3000
+  URL: http://localhost:3000
+  User: admin
+{{- end }}
+
+Verify network isolation invariant:
+  # This MUST fail (identity cannot reach AI):
+  kubectl exec -n dsa-ai deploy/sandbox-b -- \
+    wget -qO- --timeout=3 http://sandbox-a.dsa-identity.svc:8083/healthz
+
+  # This MUST also fail (AI cannot reach identity):
+  kubectl exec -n dsa-identity deploy/sandbox-a -- \
+    wget -qO- --timeout=3 http://sandbox-b.dsa-ai.svc:8084/healthz
+
+Gateway keystore encryption (#17):
+  GATEWAY_KEYSTORE_KEY is REQUIRED for gateway boot. The chart wires it via
+  the gateway-credentials Secret. Provision per backend:
+    k8s-native       — pass via: --set gateway.secrets.values.gatewayKeystoreKey="$(openssl rand -base64 32)"
+    vault/aws/azure  — populate property `gatewayKeystoreKey` in the remote store
+  Gateway will refuse to boot without it (fail-closed). Format: base64 of 32
+  raw bytes (AES-256). Rotation requires re-keying the on-disk keystore;
+  re-running install with a different value invalidates every encrypted record.
+
+Prerequisites:
+{{- if ne .Values.global.secrets.backend "k8s-native" }}
+  ⚠ External Secrets Operator must be installed
+{{- end }}
+  ⚠ Ingress controller ({{ .Values.gateway.ingress.className }}) must be installed
+{{- if (index .Values "sandbox-b").ollama.gpu.enabled }}
+  ⚠ NVIDIA GPU driver and device plugin must be installed
+{{- end }}
+{{- if .Values.certification.enabled }}
+
+Certification (PrivacyCertificate):
+  cert-portal: http://cert-portal.dsa-certification.svc:3000
+  {{- with (index .Values "dsa-certification") }}
+  {{- if .prober.url }}
+  Prober connected — certificates include IsolationProbe (verdict: ISOLATED)
+  {{- else }}
+  Prober not configured — prober-less mode (verdict: REVIEW_REQUIRED)
+  To enable: set dsa-certification.prober.url and run helm upgrade
+  {{- end }}
+  {{- end }}
+{{- end }}

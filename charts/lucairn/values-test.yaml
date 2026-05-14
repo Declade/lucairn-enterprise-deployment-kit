@@ -1,0 +1,137 @@
+# deploy/helm/values-test.yaml
+# Overlay for ephemeral Kind test clusters.
+# Usage: helm install dsa deploy/helm/ -f deploy/helm/values-dev.yaml -f deploy/helm/values-test.yaml
+#
+# ⚠ DEV-ONLY: every secret in this file is a publicly-known dev placeholder.
+# Production deploys MUST inject real values via --set / ESO / Vault and
+# never copy this overlay verbatim. The two BSI-flagged hardcoded literals
+# previously in this file (the Sandbox B Ed25519 signing key + the gateway
+# admin key) were scrubbed in the config-hardening sweep that closes the
+# cross-repo M3 / H1+H2 residue left over from PR #101's docker-compose
+# pass.
+
+global:
+  imageTag: "0.1.0"
+  imagePullPolicy: IfNotPresent
+  dnsRestriction: false  # Kind uses Calico, not Cilium
+  llmShieldEnabled: true  # enable LLM PII Shield (Layer 3) for test
+  dsaEnv: development
+
+gateway:
+  replicaCount: 1
+  resources:
+    limits:
+      memory: 256Mi
+      cpu: 500m
+
+sandbox-a:
+  replicaCount: 1
+  resources:
+    limits:
+      memory: 256Mi
+      cpu: 500m
+  sanitizer:
+    resources:
+      limits:
+        memory: 1Gi
+        cpu: "1"
+
+sandbox-b:
+  replicaCount: 1
+  resources:
+    limits:
+      memory: 512Mi
+      cpu: "1"
+
+id-bridge:
+  replicaCount: 1
+
+audit:
+  replicaCount: 1
+
+# Dev secrets for ephemeral test clusters.
+# These are NOT production values — they exist so make test-k8s works without
+# manual --set flags. Production uses ESO/Vault.
+id-bridge:
+  replicaCount: 1
+  secrets:
+    values:
+      masterKey: "dev-master-key-minimum-32-characters"
+      veilSigningKey: "2ebd9a2b02e85d5f16020c3efb82e7c5cd9e58281459c9dc7913459880687afc"
+      dsaServiceToken: "dev-service-token-do-not-use-in-prod"
+
+audit:
+  replicaCount: 1
+  secrets:
+    values:
+      veilSigningKey: "6adcac1e70e779eda681b975453a8b839ccc893438b5695027428944058aa1ce"
+      dsaServiceToken: "dev-service-token-do-not-use-in-prod"
+
+sandbox-a:
+  replicaCount: 1
+  resources:
+    limits:
+      memory: 256Mi
+      cpu: 500m
+  sanitizer:
+    resources:
+      limits:
+        memory: 1Gi
+        cpu: "1"
+    llmScanEnabled: true
+    llmScanMode: "ensemble"
+    modelAuthSecret: "e6nOIYTX01uk7oq6"  # password for model download (user hardcoded as dsa in job)
+  secrets:
+    values:
+      encryptionKey: "dev-encryption-key-min-32-chars00"
+      veilSigningKey: "158d78594fc6575fafd1e5c8b1b3c2acde177c4b3c3c961aae1b38cf34e00748"
+      dsaServiceToken: "dev-service-token-do-not-use-in-prod"
+
+sandbox-b:
+  replicaCount: 1
+  resources:
+    limits:
+      memory: 512Mi
+      cpu: "1"
+  secrets:
+    values:
+      # Dev-only Ed25519 signing key — 64 hex chars, deterministic dev
+      # marker. NEVER use in production. Override with --set or ESO.
+      veilSigningKey: "deadbeef00000000000000000000000000000000000000000000000000000000"
+      sandboxBApiKeys: "dev-api-key-do-not-use-in-prod"
+      # anthropicApiKey injected via --set at install time
+
+gateway:
+  replicaCount: 1
+  resources:
+    limits:
+      memory: 256Mi
+      cpu: 500m
+  secrets:
+    values:
+      veilBridgePublicKey: "cbd899cb22bf4058a2ec57a178b577f3c78be790d03e33befb321d1ed826416d"
+      # Dev-only admin key. Production deploys MUST override via --set or ESO.
+      adminKey: "dev-admin-key-do-not-use-in-prod"
+      licenseSigningKey: "dev-signing-key-change-in-production"
+      dsaServiceToken: "dev-service-token-do-not-use-in-prod"
+      # LSM-001 / DRIFT-001: gateway-side dsa-ai signing key. Reuses the
+      # sandbox-b dev seed below so the witness verifier accepts the
+      # gateway-minted dsa-ai claims under the same trust root in test.
+      veilAISigningKey: "deadbeef00000000000000000000000000000000000000000000000000000000"
+
+veil-witness:
+  enabled: true
+  secrets:
+    values:
+      signingKey: "3fa8b1c2e7d94f6a8b2c1d3e5f7a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a"
+  config:
+    bridgePublicKey: "cbd899cb22bf4058a2ec57a178b577f3c78be790d03e33befb321d1ed826416d"
+    sanitizerPublicKey: "ee1d0fea9f675783812a6e01c31d117f00437336a539b144eee2bdfc0487c98d"
+    sandboxBPublicKey: "993b4a248fd6c7b2d0f5c880a29d7a0e68263e8120a8dd06727e4ce66e18e274"
+    auditPublicKey: "49689453eb3d376027ce06d299f271f8158d024a3ddc17a1827608b598977e9a"
+
+demo:
+  enabled: false
+
+observability:
+  enabled: false

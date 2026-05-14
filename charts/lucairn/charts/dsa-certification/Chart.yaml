@@ -1,0 +1,6 @@
+apiVersion: v2
+name: dsa-certification
+description: DSA Certification — placeholder chart (OCI dep; overwritten by helm dep update after first release)
+version: 0.1.0
+appVersion: "0.1.0"
+type: application

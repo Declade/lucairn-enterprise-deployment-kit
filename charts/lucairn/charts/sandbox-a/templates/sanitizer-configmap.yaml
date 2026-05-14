@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sanitizer-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+data:
+  config.yaml: |
+    sanitizer:
+      freetext_fields: []
+      known_entity_matching:
+        enabled: true
+        strategies: [exact, cologne_phonetics, levenshtein]
+        levenshtein_max_distance: 2
+        location_context_window: 50
+      presidio:
+        language_detection: auto
+        default_language: de
+        supported_languages: [de, en]
+        confidence_threshold: {{ .Values.sanitizer.confidenceThreshold | default 0.25 }}
+        custom_recognizers:
+          - sozialversicherungsnummer
+          - steuer_id
+          - personalausweisnummer
+        safe_patterns: {{ .Values.sanitizer.safePatterns | default (list) | toJson }}
+      llm_audit:
+        enabled: {{ .Values.sanitizer.llmAuditEnabled | default false }}
+      llm_scan:
+        enabled: {{ .Values.sanitizer.llmScanEnabled | default false }}
+        ollama_url: "http://ollama-identity:11434"
+        model: "pii-scanner-v2"
+        timeout_seconds: {{ .Values.sanitizer.llmScanTimeout | default 30 }}
+        fallback_on_error: "continue"
+        mode: {{ .Values.sanitizer.llmScanMode | default "ensemble" | quote }}
+        restore_threshold: {{ .Values.sanitizer.llmScanRestoreThreshold | default 0.9 }}

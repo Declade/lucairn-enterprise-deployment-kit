@@ -1,0 +1,93 @@
+# deploy/helm/values-trainer.yaml
+# Overlay for Deployment Trainer practice servers (cx43, 16GB RAM)
+# Production-identical: TLS, Ingress, Observability enabled
+# Usage: helm install dsa deploy/helm/ -f deploy/helm/values-trainer.yaml \
+#   --set gateway.ingress.host=gateway.<IP>.nip.io
+
+global:
+  imageRegistry: ghcr.io/declade
+  imagePullSecrets:
+    - name: ghcr-creds
+  secrets:
+    backend: k8s-native
+  dnsRestriction: false
+  ollamaEnabled: false
+  dsaEnv: development
+
+audit:
+  replicaCount: 1
+  hpa: { enabled: false }
+  pdb: { enabled: false }
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+
+id-bridge:
+  replicaCount: 1
+  hpa: { enabled: false }
+  pdb: { enabled: false }
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+
+sandbox-a:
+  replicaCount: 1
+  hpa: { enabled: false }
+  pdb: { enabled: false }
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+  sanitizer:
+    image:
+      repository: ghcr.io/declade/dsa-sanitizer
+      tag: "0.1.0"
+
+sandbox-b:
+  replicaCount: 1
+  workers: 1
+  hpa: { enabled: false }
+  pdb: { enabled: false }
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  ollama:
+    enabled: false
+    gpu: { enabled: false }
+
+gateway:
+  hpa: { enabled: false }
+  pdb: { enabled: false }
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+  ingress:
+    enabled: true
+    className: traefik  # k3s default ingress controller
+    host: gateway.PLACEHOLDER.nip.io  # Overridden at deploy time with practice server IP
+    tlsSecret: tls-gateway
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+
+observability:
+  enabled: true  # Production-identical: Grafana dashboards, Loki, Tempo
+  grafana:
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 200m, memory: 256Mi }
+  loki:
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 200m, memory: 256Mi }
+  tempo:
+    resources:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits: { cpu: 200m, memory: 128Mi }
+
+demo:
+  enabled: false
+
+ingest:
+  enabled: false
+
+admin:
+  enabled: false

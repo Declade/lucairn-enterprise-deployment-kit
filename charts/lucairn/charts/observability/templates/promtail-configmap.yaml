@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/part-of: dsa
+    app.kubernetes.io/component: observability
+data:
+  promtail.yaml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+    positions:
+      filename: /run/promtail/positions.yaml
+    clients:
+      - url: http://loki.{{ .Values.namespace }}.svc.cluster.local:3100/loki/api/v1/push
+    scrape_configs:
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - dsa-audit
+                - dsa-bridge
+                - dsa-identity
+                - dsa-ai
+                - dsa-edge
+                - dsa-observability
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: container
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            target_label: app
+          - action: replace
+            replacement: /var/log/pods/*$1/*.log
+            separator: /
+            source_labels:
+              - __meta_kubernetes_pod_uid
+              - __meta_kubernetes_pod_container_name
+            target_label: __path__
+        # PII scrubbing pipeline: strip identity-related data from logs
+        # before shipping to Loki. Prevents observability from becoming
+        # a re-linkage side-channel (red team finding #4).
+        pipeline_stages:
+          # Scrub email addresses from all log lines
+          - replace:
+              expression: '[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}'
+              replace: '[SCRUBBED-EMAIL]'
+          # Scrub identity IDs (usr_xxx patterns) from log lines
+          - replace:
+              expression: 'usr_[a-zA-Z0-9]+'
+              replace: '[SCRUBBED-IDENTITY]'
+          # Scrub token values from log lines (prevent correlation)
+          - replace:
+              expression: 'tok_[A-Za-z0-9_\-]+'
+              replace: '[SCRUBBED-TOKEN]'
+          # Add security zone label for RBAC-based access control
+          - labels:
+              security_zone:
+          - match:
+              selector: '{namespace=~"dsa-identity|dsa-bridge"}'
+              stages:
+                - labels:
+                    security_zone: identity-zone
+          - match:
+              selector: '{namespace=~"dsa-ai"}'
+              stages:
+                - labels:
+                    security_zone: ai-zone

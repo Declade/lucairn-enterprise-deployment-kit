@@ -1,0 +1,6 @@
+apiVersion: v2
+name: sandbox-a
+description: DSA Sandbox A — Identity vault, OIDC provider, DSAR handler
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

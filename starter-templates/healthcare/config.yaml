@@ -1,0 +1,218 @@
+sandbox_b:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  temperature: 0.2
+  max_tokens: 1024
+  retention_days: 365
+
+gateway:
+  allowed_context_keys:
+    diagnostic_support:
+      - symptoms
+      - vital_signs
+      - lab_results
+      - medical_history_summary
+    drug_interaction:
+      - current_medications
+      - proposed_medication
+      - known_allergies
+    clinical_trial_match:
+      - diagnosis_code
+      - treatment_history
+      - biomarkers
+  field_routing:
+    diagnostic_support:
+      identity:
+        - patient_name
+        - patient_id
+        - date_of_birth
+        - insurance_id
+      freetext:
+        - symptoms
+        - medical_history
+        - clinical_notes
+        - doctor_notes
+        - diagnosis_text
+        - treatment_notes
+      passthrough:
+        - vital_signs
+        - lab_results
+        - medical_history_summary
+        - department
+        - ward
+        - admission_date
+        - priority
+    drug_interaction:
+      identity:
+        - patient_name
+        - patient_id
+        - date_of_birth
+        - insurance_id
+      freetext:
+        - clinical_notes
+        - known_allergies
+        - treatment_notes
+      passthrough:
+        - current_medications
+        - proposed_medication
+        - department
+        - ward
+        - priority
+    clinical_trial_match:
+      identity:
+        - patient_name
+        - patient_id
+        - date_of_birth
+        - insurance_id
+      freetext:
+        - clinical_notes
+        - diagnosis_text
+        - treatment_notes
+        - referral_notes
+      passthrough:
+        - diagnosis_code
+        - treatment_history
+        - biomarkers
+        - icd_code
+        - department
+        - ward
+        - admission_date
+        - priority
+  max_context_value_length: 2000
+  max_context_keys: 20
+
+ingest:
+  quasi_identifiers:
+    - field: age
+      rule: bracket
+      params:
+        size: 5
+    - field: zip_code
+      rule: truncate
+      params:
+        keep_digits: 3
+    - field: date_of_birth
+      rule: suppress
+    - field: admission_date
+      rule: round
+      params:
+        resolution: day
+    - field: discharge_date
+      rule: round
+      params:
+        resolution: day
+    - field: ethnicity
+      rule: suppress
+    - field: occupation
+      rule: suppress
+
+relinkage:
+  require_approval: true
+  approval_roles: ["dpo", "chief_medical_officer"]
+  allowed_attributes: ["name", "patient_id", "date_of_birth"]
+  break_glass_enabled: true
+  jurisdiction: "EU"
+  require_post_access_review: true
+  review_period_days: 3
+
+sanitizer:
+  freetext_fields:
+    - doctor_notes
+    - discharge_summary
+    - referral_text
+  known_entity_matching:
+    enabled: true
+    strategies:
+      - exact
+      - cologne_phonetics
+      - levenshtein
+    levenshtein_max_distance: 2
+    location_context_window: 50
+    # Operator-scoped PERSON name supplement. Add staff or patient surnames
+    # that are deliberately excluded from the global german-names.txt list
+    # because they collide with common words (e.g. Vogel="bird", Frank, Wolf).
+    # Word-boundary matched — compound words like "Vogelgrippe" are NOT matched.
+    extra_person_names: []
+  presidio:
+    language_detection: auto
+    default_language: de
+    supported_languages: [de, en]
+    confidence_threshold: 0.25
+    custom_recognizers:
+      - medical_record_number
+      - fallnummer
+    safe_patterns:
+      - "ICD-[A-Z]\\d+"
+      - "ATC-[A-Z]\\d+"
+    safe_terms_file: /config/medical-terms.txt
+  llm_audit:
+    enabled: false
+
+connectors:
+  dicom:
+    enabled: true
+    identity_tags:
+      - "0010,0010"  # PatientName
+      - "0010,0020"  # PatientID
+      - "0010,0030"  # PatientBirthDate
+      - "0010,0040"  # PatientSex
+      - "0010,1010"  # PatientAge
+      - "0010,1040"  # PatientAddress
+      - "0010,2154"  # PatientTelephoneNumbers
+      - "0010,0021"  # IssuerOfPatientID
+      - "0010,1000"  # OtherPatientIDs
+      - "0010,1001"  # OtherPatientNames
+      - "0010,1060"  # PatientMotherBirthName
+    replace_with_token:
+      - "0010,0010"  # PatientName
+      - "0010,0020"  # PatientID
+      - "0008,0050"  # AccessionNumber
+      - "0020,0010"  # StudyID
+    freetext_tags:
+      - "0010,21B0"  # AdditionalPatientHistory
+      - "0010,4000"  # PatientComments
+      - "0032,1030"  # ReasonForStudy
+    pseudonymize:
+      - "0008,0080"  # InstitutionName
+      - "0008,0081"  # InstitutionAddress
+      - "0008,0090"  # ReferringPhysicianName
+      - "0008,1050"  # PerformingPhysicianName
+      - "0008,1070"  # OperatorsName
+    retain_private_tags: false
+    output_namespace: "dicom"
+    max_file_size_mb: 1024
+    max_study_files: 2000
+
+policies:
+  - id: hc-purpose-001
+    type: purpose
+    vertical: healthcare
+    condition:
+      field: purpose
+      operator: in
+      value: ["diagnostic_support", "drug_interaction", "clinical_trial_match"]
+    action: allow
+  - id: hc-retention-001
+    type: retention
+    vertical: healthcare
+    condition:
+      field: retention_days
+      operator: gt
+      value: 10950
+    action: deny
+  - id: hc-region-001
+    type: region
+    vertical: healthcare
+    condition:
+      field: region
+      operator: not_in
+      value: ["EU", "EEA", "CH", "UK"]
+    action: deny
+  - id: hc-relinkage-001
+    type: approval
+    vertical: healthcare
+    condition:
+      field: action
+      operator: eq
+      value: "relinkage"
+    action: require_approval

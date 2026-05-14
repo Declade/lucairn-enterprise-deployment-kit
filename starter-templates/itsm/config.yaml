@@ -1,0 +1,349 @@
+sandbox_b:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  temperature: 0.3
+  max_tokens: 2048
+  retention_days: 365
+
+sanitizer:
+  freetext_fields:
+    - description_redacted
+    - resolution_notes_redacted
+    - root_cause_redacted
+    - implementation_plan_redacted
+    - workaround_redacted
+    - similar_incidents_redacted
+  known_entity_matching:
+    enabled: true
+    strategies:
+      - exact
+      - cologne_phonetics
+      - levenshtein
+    levenshtein_max_distance: 2
+    location_context_window: 50
+  presidio:
+    language_detection: auto
+    default_language: de
+    supported_languages: [de, en]
+    confidence_threshold: 0.3
+    safe_patterns:
+      - "INC\\d+"
+      - "CHG\\d+"
+      - "REQ\\d+"
+      - "PRB\\d+"
+      - "RITM\\d+"
+      - "KB\\d+"
+    safe_terms_file: /config/itsm-safe-terms.txt
+  llm_audit:
+    enabled: false
+
+gateway:
+  allowed_context_keys:
+    ticket_summarization:
+      - ticket_number
+      - short_description
+      - description_redacted
+      - category
+      - subcategory
+      - priority
+      - state
+      - assignment_group
+      - opened_date
+      - resolution_notes_redacted
+    incident_classification:
+      - short_description
+      - description_redacted
+      - category
+      - subcategory
+      - priority
+      - affected_ci
+      - business_service
+    resolution_suggestion:
+      - short_description
+      - description_redacted
+      - category
+      - subcategory
+      - priority
+      - similar_incidents_redacted
+      - knowledge_articles
+    knowledge_generation:
+      - ticket_number
+      - short_description
+      - description_redacted
+      - resolution_notes_redacted
+      - category
+      - subcategory
+      - root_cause_redacted
+    change_risk_assessment:
+      - change_number
+      - short_description
+      - description_redacted
+      - change_type
+      - risk_level
+      - affected_cis
+      - business_services
+      - implementation_plan_redacted
+    problem_analysis:
+      - problem_number
+      - short_description
+      - description_redacted
+      - related_incidents_count
+      - affected_cis
+      - business_impact
+      - workaround_redacted
+    platform_analysis:
+      - platform_summary
+      - incident_stats
+      - change_stats
+      - problem_stats
+      - cmdb_stats
+      - knowledge_stats
+      - sla_stats
+      - user_stats
+      - concerns
+      - analysis_scope
+    hr_case_analysis:
+      - case_number
+      - short_description
+      - description_redacted
+      - category
+      - subcategory
+      - priority
+      - state
+      - opened_date
+      - department_generalized
+      - location_generalized
+  field_routing:
+    ticket_summarization:
+      identity:
+        - caller_name
+        - caller_email
+        - assigned_to
+        - opened_by
+      freetext:
+        - short_description
+        - description
+        - work_notes
+        - close_notes
+        - resolution_notes
+        - comments
+      passthrough:
+        - ticket_number
+        - priority
+        - category
+        - subcategory
+        - state
+        - assignment_group
+        - kb_article_id
+    incident_classification:
+      identity:
+        - caller_name
+        - caller_email
+        - assigned_to
+        - opened_by
+      freetext:
+        - short_description
+        - description
+        - work_notes
+        - comments
+      passthrough:
+        - category
+        - subcategory
+        - priority
+        - affected_ci
+        - business_service
+        - ticket_number
+        - assignment_group
+        - state
+    resolution_suggestion:
+      identity:
+        - caller_name
+        - caller_email
+        - assigned_to
+        - opened_by
+      freetext:
+        - short_description
+        - description
+        - work_notes
+        - close_notes
+        - resolution_notes
+        - similar_incidents
+        - comments
+      passthrough:
+        - ticket_number
+        - category
+        - subcategory
+        - priority
+        - knowledge_articles
+        - assignment_group
+        - state
+    knowledge_generation:
+      identity:
+        - caller_name
+        - caller_email
+        - assigned_to
+        - opened_by
+      freetext:
+        - short_description
+        - description
+        - work_notes
+        - close_notes
+        - resolution_notes
+        - root_cause
+        - comments
+      passthrough:
+        - ticket_number
+        - category
+        - subcategory
+        - state
+        - kb_article_id
+    change_risk_assessment:
+      identity:
+        - caller_name
+        - caller_email
+        - assigned_to
+        - opened_by
+      freetext:
+        - short_description
+        - description
+        - implementation_plan
+        - work_notes
+        - comments
+      passthrough:
+        - change_number
+        - change_type
+        - risk_level
+        - affected_cis
+        - business_services
+        - priority
+        - state
+    problem_analysis:
+      identity:
+        - caller_name
+        - caller_email
+        - assigned_to
+        - opened_by
+      freetext:
+        - short_description
+        - description
+        - workaround
+        - resolution_notes
+        - root_cause
+        - similar_incidents
+      passthrough:
+        - problem_number
+        - related_incidents_count
+        - affected_cis
+        - business_impact
+        - category
+        - priority
+        - state
+    platform_analysis:
+      identity: []
+      freetext:
+        - platform_summary
+        - concerns
+        - analysis_scope
+      passthrough:
+        - incident_stats
+        - change_stats
+        - problem_stats
+        - cmdb_stats
+        - knowledge_stats
+        - sla_stats
+        - user_stats
+    hr_case_analysis:
+      identity:
+        - caller_name
+        - caller_email
+        - assigned_to
+        - opened_by
+      freetext:
+        - short_description
+        - description
+        - work_notes
+        - close_notes
+        - comments
+      passthrough:
+        - case_number
+        - category
+        - subcategory
+        - priority
+        - state
+        - opened_date
+        - department_generalized
+        - location_generalized
+    knowledge_search:
+      identity: []
+      freetext:
+        - query
+        - description
+      passthrough:
+        - category
+        - kb_category
+  max_context_value_length: 2000
+  max_context_keys: 20
+
+ingest:
+  quasi_identifiers:
+    - field: opened_at
+      rule: round
+      params:
+        resolution: day
+    - field: resolved_at
+      rule: round
+      params:
+        resolution: day
+    - field: location
+      rule: truncate
+      params:
+        keep_digits: 3
+    - field: department
+      rule: suppress
+    - field: vip_flag
+      rule: suppress
+    - field: job_title
+      rule: suppress
+
+relinkage:
+  require_approval: true
+  approval_roles: ["dpo", "service_delivery_manager", "customer_security_officer"]
+  allowed_attributes: ["name", "email", "employee_id"]
+  break_glass_enabled: true
+  jurisdiction: "EU"
+  require_post_access_review: true
+  review_period_days: 7
+
+policies:
+  - id: itsm-purpose-001
+    type: purpose
+    vertical: itsm
+    condition:
+      field: purpose
+      operator: in
+      value: ["ticket_summarization", "incident_classification", "resolution_suggestion", "knowledge_generation", "change_risk_assessment", "problem_analysis", "hr_case_analysis", "platform_analysis"]
+    action: allow
+  - id: itsm-retention-001
+    type: retention
+    vertical: itsm
+    condition:
+      field: retention_days
+      operator: gt
+      value: 365
+    action: deny
+  - id: itsm-region-001
+    type: region
+    vertical: itsm
+    condition:
+      field: region
+      operator: not_in
+      value: ["EU", "EEA", "CH", "UK"]
+    action: deny
+  - id: itsm-relinkage-001
+    type: approval
+    vertical: itsm
+    condition:
+      field: action
+      operator: eq
+      value: "relinkage"
+    action: require_approval

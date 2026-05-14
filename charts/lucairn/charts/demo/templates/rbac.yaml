@@ -1,0 +1,14 @@
+# Demo RBAC: minimal permissions only.
+# The demo service routes all requests through the Gateway (dsa-edge)
+# like a normal client. No pods/exec access to sandbox namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dsa-demo-readonly
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]

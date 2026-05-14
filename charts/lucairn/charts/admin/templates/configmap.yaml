@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Chart.Name }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+data:
+  ADMIN_LISTEN_ADDR: "0.0.0.0:{{ .Values.service.webPort }}"
+  ADMIN_HEALTH_ADDR: "0.0.0.0:{{ .Values.service.healthPort }}"
+  AUDIT_SERVICE_ADDR: {{ .Values.auditServiceAddr | quote }}
+  GATEWAY_HEALTH_URL: {{ .Values.gatewayHealthURL | quote }}
+  GATEWAY_READY_URL: {{ .Values.gatewayReadyURL | quote }}
+  SANDBOX_A_HEALTH_URL: {{ .Values.sandboxAHealthURL | quote }}
+  SANDBOX_A_READY_URL: {{ .Values.sandboxAReadyURL | quote }}
+  ID_BRIDGE_HEALTH_URL: {{ .Values.idBridgeHealthURL | quote }}
+  ID_BRIDGE_READY_URL: {{ .Values.idBridgeReadyURL | quote }}
+  SANDBOX_B_HEALTH_URL: {{ .Values.sandboxBHealthURL | quote }}
+  SANDBOX_B_READY_URL: {{ .Values.sandboxBReadyURL | quote }}
+  AUDIT_HEALTH_URL: {{ .Values.auditHealthURL | quote }}
+  AUDIT_READY_URL: {{ .Values.auditReadyURL | quote }}
+  INGEST_HEALTH_URL: {{ .Values.ingestHealthURL | quote }}
+  INGEST_READY_URL: {{ .Values.ingestReadyURL | quote }}
+  DSA_ENV: {{ required "global.dsaEnv must be set to \"development\" or \"production\" in the umbrella values" .Values.global.dsaEnv | quote }}

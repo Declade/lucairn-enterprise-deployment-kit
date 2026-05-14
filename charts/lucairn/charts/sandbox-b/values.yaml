@@ -1,0 +1,198 @@
+namespace: dsa-ai
+
+replicaCount: 2
+
+image:
+  repository: dsa-sandbox-b
+  tag: ""
+  pullPolicy: IfNotPresent
+
+service:
+  grpcPort: 50054
+  healthPort: 8084
+
+workers: 4
+bridgeAddr: "id-bridge.dsa-bridge.svc:50052"
+auditServiceAddr: "audit.dsa-audit.svc:50051"
+veilEnabled: "true"
+veilWitnessAddr: "veil-witness.dsa-witness.svc.cluster.local:50057"
+grpcTlsEnabled: "false"
+
+enableTestProvider: "false"
+externalInvariantUrl: ""
+externalInvariantTlsInsecure: "false"
+
+prooflog:
+  enabled: "false"
+  policies: ""
+
+llm:
+  provider: ollama  # ollama | anthropic | openai | mistral | gemini
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilization: 70
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: "7-alpine"
+  storageSize: 5Gi
+  storageClass: ""
+  maxmemory: "256mb"
+  maxmemoryPolicy: "allkeys-lru"
+  # SECURITY: Non-empty default for dev. MUST override via values-prod.yaml or --set for production.
+  password: "dev-only-redis-password"
+
+external:
+  redisUrl: ""  # used when redis.enabled: false
+
+ollama:
+  enabled: true
+  image:
+    repository: ollama/ollama
+    tag: "0.6.2"
+  model: "tinyllama"
+  storageSize: 20Gi
+  storageClass: ""
+  gpu:
+    enabled: false
+    count: 1
+
+verticals:
+  finance:
+    config:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+      temperature: 0.3
+      max_tokens: 2048
+      retention_days: 90
+    prompts:
+      risk_assessment: |
+        You are a financial risk analyst. Analyse the following transaction data
+        and provide a risk assessment.
+
+        Transaction data:
+        {input_data}
+
+        Previous assessments for this entity:
+        {feature_context}
+
+        Provide your assessment as JSON with the following fields:
+        - risk_score (0.0 to 1.0)
+        - risk_factors (list of identified risk factors)
+        - recommendation (approve / review / reject)
+  healthcare:
+    config:
+      provider: ollama
+      model: tinyllama
+      temperature: 0.2
+      max_tokens: 1024
+      retention_days: 365
+    prompts:
+      diagnostic_support: |
+        You are a clinical decision support system. Analyse the following patient
+        data and provide diagnostic suggestions.
+
+        Patient data:
+        {input_data}
+
+        Previous clinical context for this patient:
+        {feature_context}
+
+        Provide your assessment as JSON with the following fields:
+        - primary_suspicion (most likely diagnosis)
+        - differential (list of alternative diagnoses to consider)
+        - recommended_tests (list of tests to confirm/rule out)
+        - urgency (routine / soon / urgent / emergency)
+        - confidence (0.0 to 1.0)
+
+        IMPORTANT: This is decision SUPPORT only. All suggestions require
+        clinician review before any action is taken.
+  government:
+    config:
+      provider: ollama
+      model: tinyllama
+      temperature: 0.1
+      max_tokens: 1024
+      retention_days: 3650
+    prompts:
+      benefit_eligibility: |
+        You are a benefit eligibility assessment system. Analyse the following
+        citizen data and determine eligibility for the requested benefit programme.
+
+        Citizen data:
+        {input_data}
+
+        Previous assessments and service history:
+        {feature_context}
+
+        Provide your assessment as JSON with the following fields:
+        - eligible (true / false)
+        - programme (name of the benefit programme assessed)
+        - basis (legal basis for the decision, referencing relevant regulation)
+        - factors (list of factors that influenced the decision)
+        - amount_estimate (estimated monthly amount if eligible, null if not)
+        - review_required (true if a human case worker should review before finalising)
+  test:
+    config:
+      provider: ollama
+      model: tinyllama
+      temperature: 0.1
+      max_tokens: 256
+      retention_days: 1
+    prompts:
+      echo: |
+        Repeat the following input back exactly as provided:
+        {input_data}
+
+        Previous context:
+        {feature_context}
+
+secrets:
+  backend: k8s-native
+  values:
+    redisPassword: ""
+    anthropicApiKey: ""
+    openaiApiKey: ""
+    mistralApiKey: ""
+    geminiApiKey: ""
+    veilSigningKey: ""
+    sandboxBApiKeys: ""
+    adminKey: ""
+    dsaManagedAiKey: ""
+  vault:
+    path: "dsa/data/sandbox-b"
+  aws:
+    name: "dsa/sandbox-b"
+  azure:
+    name: "dsa-sandbox-b"

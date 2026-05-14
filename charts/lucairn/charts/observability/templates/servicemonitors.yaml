@@ -1,0 +1,33 @@
+{{- if .Values.serviceMonitors.enabled }}
+{{- range list "audit" "id-bridge" "sandbox-a" "sandbox-b" "gateway" }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dsa-{{ . }}
+  namespace: dsa-observability
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  namespaceSelector:
+    matchNames:
+      {{- if eq . "audit" }}
+      - dsa-audit
+      {{- else if eq . "id-bridge" }}
+      - dsa-bridge
+      {{- else if eq . "sandbox-a" }}
+      - dsa-identity
+      {{- else if eq . "sandbox-b" }}
+      - dsa-ai
+      {{- else if eq . "gateway" }}
+      - dsa-edge
+      {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ . }}
+  endpoints:
+    - port: health
+      interval: 30s
+      path: /metrics
+{{- end }}
+{{- end }}

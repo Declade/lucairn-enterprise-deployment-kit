@@ -1,0 +1,90 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-b-egress
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # Redis (intra-namespace)
+    - to:
+        - podSelector: {}
+      ports:
+        - port: 6379
+          protocol: TCP
+    # Ollama (intra-namespace)
+    - to:
+        - podSelector: {}
+      ports:
+        - port: 11434
+          protocol: TCP
+    # Audit service (event stream)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: audit
+      ports:
+        - port: 50051
+          protocol: TCP
+    # Bridge service (token validation)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: bridge
+      ports:
+        - port: 50052
+          protocol: TCP
+    # Veil Witness (claim submission)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: witness
+      ports:
+        - port: 50057
+          protocol: TCP
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # External LLM providers (HTTPS) — block private IP ranges
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-b-ingress
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # gRPC from Gateway (dsa-edge namespace)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: edge
+      ports:
+        - port: {{ .Values.service.grpcPort }}
+          protocol: TCP
+    # Health checks
+    - ports:
+        - port: {{ .Values.service.healthPort }}
+          protocol: TCP
+    # Intra-namespace (Redis, Ollama)
+    - from:
+        - podSelector: {}

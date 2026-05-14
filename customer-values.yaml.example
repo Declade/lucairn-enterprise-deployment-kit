@@ -1,0 +1,122 @@
+# Lucairn Helm customer values.
+# Copy to customer-values.yaml, replace every REPLACE_* value, then run:
+#   helm upgrade --install lucairn charts/lucairn -f customer-values.yaml
+
+global:
+  dsaEnv: production
+  imageRegistry: ghcr.io/declade
+  imageTag: "1.0.0"
+  imagePullSecrets:
+    - name: lucairn-registry
+  postgresqlSslmode: require
+  nodeIsolation: true
+  dnsRestriction: true
+  wireguardEncryption: false
+  llmEgressEnabled: true
+  ingestEgressEnabled: false
+  ollamaEnabled: true
+  demoEnabled: false
+
+gateway:
+  ingress:
+    enabled: true
+    className: nginx
+    host: lucairn.customer.example
+    tlsSecret: lucairn-gateway-tls
+  gatewayBaseUrl: https://lucairn.customer.example
+  grpcTlsEnabled: "true"
+  streaming:
+    enabled: true
+    timeoutSeconds: 300
+  secrets:
+    values:
+      licenseKey: "REPLACE_WITH_LICENSE_KEY"
+      licenseSigningKey: "REPLACE_WITH_LICENSE_SIGNING_KEY"
+      adminKey: "REPLACE_WITH_64_HEX_ADMIN_KEY"
+      sandboxBApiKey: "REPLACE_WITH_SANDBOX_B_API_KEY"
+      veilManifestSigningKey: "REPLACE_WITH_64_HEX_MANIFEST_SIGNING_KEY"
+      veilWitnessPublicKey: "REPLACE_WITH_64_HEX_WITNESS_PUBLIC_KEY"
+      veilBridgePublicKey: "REPLACE_WITH_64_HEX_BRIDGE_PUBLIC_KEY"
+      veilSanitizerPublicKey: "REPLACE_WITH_64_HEX_SANITIZER_PUBLIC_KEY"
+      veilSandboxBPublicKey: "REPLACE_WITH_64_HEX_SANDBOX_B_PUBLIC_KEY"
+      veilAuditPublicKey: "REPLACE_WITH_64_HEX_AUDIT_PUBLIC_KEY"
+      veilAISigningKey: ""
+      dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
+      gatewayKeystoreKey: "REPLACE_WITH_BASE64_32_BYTES"
+
+audit:
+  postgresql:
+    storageSize: 50Gi
+  secrets:
+    values:
+      postgresPassword: "REPLACE_WITH_AUDIT_POSTGRES_PASSWORD"
+      veilSigningKey: "REPLACE_WITH_64_HEX_AUDIT_SIGNING_KEY"
+      dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
+
+id-bridge:
+  postgresql:
+    storageSize: 50Gi
+  secrets:
+    values:
+      postgresPassword: "REPLACE_WITH_BRIDGE_POSTGRES_PASSWORD"
+      masterKey: "REPLACE_WITH_64_HEX_BRIDGE_MASTER_KEY"
+      veilSigningKey: "REPLACE_WITH_64_HEX_BRIDGE_SIGNING_KEY"
+      bridgeEncryptionKey: "REPLACE_WITH_64_HEX_BRIDGE_ENCRYPTION_KEY"
+      dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
+
+sandbox-a:
+  postgresql:
+    storageSize: 50Gi
+  sanitizer:
+    llmScanEnabled: false
+  secrets:
+    values:
+      postgresPassword: "REPLACE_WITH_SANDBOX_A_POSTGRES_PASSWORD"
+      encryptionKey: "REPLACE_WITH_64_HEX_SANDBOX_A_ENCRYPTION_KEY"
+      adminKey: "REPLACE_WITH_64_HEX_ADMIN_KEY"
+      veilSigningKey: "REPLACE_WITH_64_HEX_SANITIZER_OR_SANDBOX_A_SIGNING_KEY"
+      dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
+
+sandbox-b:
+  llm:
+    provider: anthropic
+  redis:
+    password: "REPLACE_WITH_REDIS_PASSWORD"
+  secrets:
+    values:
+      anthropicApiKey: ""
+      openaiApiKey: ""
+      mistralApiKey: ""
+      geminiApiKey: ""
+      veilSigningKey: "REPLACE_WITH_64_HEX_SANDBOX_B_SIGNING_KEY"
+      sandboxBApiKeys: "REPLACE_WITH_SANDBOX_B_API_KEYS"
+      adminKey: "REPLACE_WITH_64_HEX_ADMIN_KEY"
+      dsaManagedAiKey: ""
+
+veil-witness:
+  postgresql:
+    storageSize: 50Gi
+  secrets:
+    values:
+      postgresPassword: "REPLACE_WITH_VEIL_POSTGRES_PASSWORD"
+      signingKey: "REPLACE_WITH_64_HEX_WITNESS_SIGNING_KEY"
+      keyId: "witness_v1"
+
+observability:
+  enabled: true
+
+demo:
+  enabled: false
+
+ingest:
+  enabled: false
+
+certification:
+  enabled: false
+
+dsa-certification:
+  signing:
+    local:
+      keyId: "REPLACE_WITH_CUSTOMER_KEY_ID_WHEN_CERTIFICATION_ENABLED"
+      keyFile: /keys/customer-key.pem
+

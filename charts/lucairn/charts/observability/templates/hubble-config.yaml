@@ -1,0 +1,113 @@
+{{- if .Values.global.dnsRestriction }}
+# ==========================================================================
+# Hubble Network Flow Monitoring
+#
+# When Cilium is the CNI, Hubble provides eBPF-based network flow logging.
+# These resources configure flow export to the observability stack so that
+# network isolation can be independently verified.
+#
+# Hubble is installed as part of Cilium — these configs export flow data
+# to Grafana/Loki for visualization and long-term audit storage.
+# ==========================================================================
+
+# --- Hubble flow export to Loki for audit retention ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hubble-audit-config
+  namespace: dsa-observability
+  labels:
+    app.kubernetes.io/part-of: dsa
+    dsa.io/purpose: audit-observability
+data:
+  # Promtail scrape config for Hubble flow logs
+  hubble-promtail.yaml: |
+    - job_name: hubble-flows
+      static_configs:
+        - targets:
+            - localhost
+          labels:
+            job: hubble-flows
+            __path__: /var/run/cilium/hubble/events.log
+      pipeline_stages:
+        - json:
+            expressions:
+              source_namespace: flow.source.namespace
+              dest_namespace: flow.destination.namespace
+              verdict: verdict
+              traffic_direction: traffic_direction
+        - labels:
+            source_namespace:
+            dest_namespace:
+            verdict:
+
+  # Grafana dashboard for DSA network isolation audit
+  dsa-network-audit.json: |
+    {
+      "dashboard": {
+        "title": "DSA Network Isolation Audit",
+        "uid": "dsa-network-audit",
+        "tags": ["dsa", "audit", "network", "cilium"],
+        "panels": [
+          {
+            "title": "Cross-Sandbox Connection Attempts",
+            "type": "stat",
+            "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+            "targets": [{
+              "expr": "sum(hubble_flows_processed_total{source_namespace=\"dsa-ai\", destination_namespace=\"dsa-identity\"})",
+              "legendFormat": "AI → Identity"
+            }],
+            "fieldConfig": {
+              "defaults": {
+                "thresholds": {
+                  "steps": [
+                    {"value": 0, "color": "green"},
+                    {"value": 1, "color": "red"}
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "title": "Allowed Flows by Namespace Pair",
+            "type": "table",
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+            "targets": [{
+              "expr": "sum by (source_namespace, destination_namespace, verdict) (hubble_flows_processed_total)",
+              "legendFormat": "{{ "{{" }}source_namespace{{ "}}" }} → {{ "{{" }}destination_namespace{{ "}}" }} ({{ "{{" }}verdict{{ "}}" }})"
+            }]
+          },
+          {
+            "title": "Sandbox B Egress Destinations",
+            "type": "timeseries",
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+            "targets": [{
+              "expr": "sum by (destination_namespace) (rate(hubble_flows_processed_total{source_namespace=\"dsa-ai\", verdict=\"FORWARDED\"}[5m]))",
+              "legendFormat": "→ {{ "{{" }}destination_namespace{{ "}}" }}"
+            }]
+          },
+          {
+            "title": "Dropped Flows (Policy Violations)",
+            "type": "timeseries",
+            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 12},
+            "targets": [{
+              "expr": "sum by (source_namespace, destination_namespace) (rate(hubble_flows_processed_total{verdict=\"DROPPED\"}[5m]))",
+              "legendFormat": "DROPPED: {{ "{{" }}source_namespace{{ "}}" }} → {{ "{{" }}destination_namespace{{ "}}" }}"
+            }],
+            "fieldConfig": {
+              "defaults": {"color": {"mode": "fixed", "fixedColor": "red"}}
+            }
+          },
+          {
+            "title": "DNS Queries by Namespace",
+            "type": "table",
+            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 20},
+            "targets": [{
+              "expr": "sum by (source_namespace, dns_query) (hubble_dns_queries_total)",
+              "legendFormat": "{{ "{{" }}source_namespace{{ "}}" }}: {{ "{{" }}dns_query{{ "}}" }}"
+            }]
+          }
+        ]
+      }
+    }
+{{- end }}

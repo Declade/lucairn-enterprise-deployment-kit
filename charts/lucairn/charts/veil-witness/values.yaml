@@ -1,0 +1,86 @@
+namespace: dsa-witness
+
+replicaCount: 2
+
+image:
+  repository: dsa-veil-witness
+  tag: ""  # defaults to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+service:
+  claimPort: 50057
+  certPort: 50058
+  healthPort: 50059
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilization: 70
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+postgresql:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+  storageSize: 10Gi
+  storageClass: ""
+  user: veil
+  database: veil
+
+external:
+  databaseUrl: ""  # used when postgresql.enabled: false
+
+config:
+  claimTimeout: "30s"
+  tsaUrl: ""
+  rekorUrl: ""
+  bridgePublicKey: ""
+  sanitizerPublicKey: ""
+  sandboxBPublicKey: ""
+  auditPublicKey: ""
+  proofSpecPath: "/app/formal-verification/isolation-invariant.tla"
+  proofOutputPath: "/app/formal-verification/isolation-invariant.out"
+  proofModelVersion: "1.0.0"
+  insecureDevMode: "false"
+
+secrets:
+  backend: k8s-native  # k8s-native | vault | aws | azure
+  values:
+    # PRODUCTION: MUST override with a strong, unique password.
+    postgresPassword: "CHANGE-ME-IN-PRODUCTION"
+    # PRODUCTION: MUST override — all-zeroes key makes certificates forgeable.
+    signingKey: "0000000000000000000000000000000000000000000000000000000000000000"
+    keyId: "witness_dev_v1"
+  vault:
+    path: "dsa/data/veil-witness"
+  aws:
+    name: "dsa/veil-witness"
+  azure:
+    name: "dsa-veil-witness"

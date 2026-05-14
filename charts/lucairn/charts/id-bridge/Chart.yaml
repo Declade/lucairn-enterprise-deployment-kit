@@ -1,0 +1,6 @@
+apiVersion: v2
+name: id-bridge
+description: DSA ID Bridge — token management, pseudonymisation, re-linkage
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

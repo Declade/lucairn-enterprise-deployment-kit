@@ -1,0 +1,73 @@
+namespace: dsa-observability
+
+grafana:
+  image:
+    repository: grafana/grafana
+    tag: "11.4.0"
+  # PRODUCTION: Override this value — deployment will use a known-weak default otherwise.
+  adminPassword: "CHANGE-ME-IN-PRODUCTION"
+  # PRODUCTION: Set to your VPN/admin CIDR (e.g., "10.10.0.0/24") to restrict
+  # Grafana UI access. When empty, the NetworkPolicy restricts access to the
+  # dsa-edge namespace only. Setting this overrides namespace-based restriction.
+  adminCIDR: ""
+  storageSize: 5Gi
+  storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+loki:
+  image:
+    repository: grafana/loki
+    tag: "3.3.0"
+  authEnabled: true  # Secure by default; override to false in values-dev.yaml if needed
+  retention: "720h"  # 30 days
+  storageSize: 20Gi
+  storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+promtail:
+  image:
+    repository: grafana/promtail
+    tag: "3.3.0"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+tempo:
+  image:
+    repository: grafana/tempo
+    tag: "2.6.0"
+  retention: "168h"  # 7 days
+  storageSize: 10Gi
+  storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+serviceMonitors:
+  enabled: false  # Requires Prometheus Operator CRDs
+
+secrets:
+  backend: k8s-native
+  values:
+    # PRODUCTION: MUST override — will fail authentication if left as default.
+    grafanaAdminPassword: "CHANGE-ME-IN-PRODUCTION"

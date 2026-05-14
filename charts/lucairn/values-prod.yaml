@@ -1,0 +1,134 @@
+# deploy/helm/values-prod.yaml
+# Production overlay: HA, resource requests, ESO
+global:
+  secrets:
+    backend: vault
+    vault:
+      endpoint: ""
+      role: dsa
+      mountPath: dsa
+  # Production: enable Cilium DNS restriction and Hubble audit.
+  # Requires Cilium CNI installed on the cluster.
+  dnsRestriction: true
+  nodeIsolation: true
+  postgresqlSslmode: require
+  wireguardEncryption: true
+  # Production: enforce gRPC TLS between all services
+  grpcTlsEnabled: true
+  # Production environment flag — enables dev-secret rejection guards
+  dsaEnv: production
+
+audit:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 200m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+  secrets:
+    values:
+      # PRODUCTION: Set dsaServiceToken via --set or Vault; do not commit here.
+      dsaServiceToken: ""
+
+id-bridge:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 200m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+  secrets:
+    values:
+      # PRODUCTION: Set dsaServiceToken via --set or Vault; do not commit here.
+      dsaServiceToken: ""
+
+sandbox-a:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 200m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+  secrets:
+    values:
+      # PRODUCTION: Set dsaServiceToken via --set or Vault; do not commit here.
+      dsaServiceToken: ""
+
+sandbox-b:
+  replicaCount: 2
+  workers: 4
+  redis:
+    # Password MUST be provided at install time via --set or external secret.
+    # Helm will fail if left empty/placeholder when global.dsaEnv=production.
+    password: ""
+  resources:
+    requests:
+      cpu: 500m
+      memory: 256Mi
+    limits:
+      cpu: 2000m
+      memory: 1Gi
+  secrets:
+    values:
+      # PRODUCTION: Set sandboxBApiKeys via --set or Vault; do not commit here.
+      sandboxBApiKeys: ""
+  verticals:
+    finance:
+      config:
+        provider: anthropic
+        model: claude-sonnet-4-20250514
+
+veil-witness:
+  enabled: true
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 200m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+observability:
+  grafana:
+    adminCIDR: "10.0.0.0/8"  # Restrict to VPN CIDR — customize per deployment
+  loki:
+    authEnabled: true
+  secrets:
+    values:
+      grafanaAdminPassword: "CHANGE-ME-generate-random-at-install"
+
+demo:
+  enabled: false
+
+gateway:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 200m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+  secrets:
+    values:
+      # PRODUCTION: Set dsaServiceToken via --set or Vault; do not commit here.
+      dsaServiceToken: ""
+
+admin:
+  secrets:
+    values:
+      # PRODUCTION: Set dsaServiceToken via --set or Vault; do not commit here.
+      dsaServiceToken: ""
+
+ingest:
+  secrets:
+    values:
+      # PRODUCTION: Set dsaServiceToken via --set or Vault; do not commit here.
+      dsaServiceToken: ""

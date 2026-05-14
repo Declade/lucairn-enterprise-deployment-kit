@@ -1,0 +1,24 @@
+{{- range $name, $vertical := .Values.verticals }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $.Chart.Name }}-verticals-{{ $name }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $.Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+    dsa.io/vertical: {{ $name }}
+data:
+  config.yaml: |
+    sandbox_b:
+      provider: {{ $vertical.config.provider }}
+      model: {{ $vertical.config.model }}
+      temperature: {{ $vertical.config.temperature }}
+      max_tokens: {{ $vertical.config.max_tokens }}
+      retention_days: {{ $vertical.config.retention_days }}
+  {{- range $promptName, $promptText := $vertical.prompts }}
+  prompts--{{ $promptName }}.txt: |
+{{ $promptText | indent 4 }}
+  {{- end }}
+{{- end }}

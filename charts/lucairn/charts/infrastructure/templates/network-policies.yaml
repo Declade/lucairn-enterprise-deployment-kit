@@ -1,0 +1,631 @@
+# deploy/helm/charts/infrastructure/templates/network-policies.yaml
+
+# ============================================================
+# dsa-edge (Gateway) — can reach identity, bridge, ai, audit
+# ============================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: edge-egress
+  namespace: dsa-edge
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # → dsa-identity (Sandbox A gRPC + Sanitizer HTTP + health)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: identity
+      ports:
+        - port: 50053
+          protocol: TCP
+        - port: 8086
+          protocol: TCP
+        - port: 8083
+          protocol: TCP
+    # → dsa-bridge (ID Bridge gRPC)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: bridge
+      ports:
+        - port: 50052
+          protocol: TCP
+    # → dsa-ai (Sandbox B gRPC + HTTP proxy)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: ai
+      ports:
+        - port: 50054
+          protocol: TCP
+        - port: 8084
+          protocol: TCP
+    # → dsa-audit (Audit gRPC)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: audit
+      ports:
+        - port: 50051
+          protocol: TCP
+    # → dsa-witness (Veil Witness certificate retrieval)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: witness
+      ports:
+        - port: 50058
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: edge-ingress
+  namespace: dsa-edge
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # From ingress controller (external traffic)
+    - ports:
+        - port: 8080
+          protocol: TCP
+        - port: 8085
+          protocol: TCP
+
+# ============================================================
+# dsa-identity (Sandbox A) — can reach bridge, audit
+# CANNOT reach dsa-ai — THIS IS THE CORE INVARIANT
+# ============================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-egress
+  namespace: dsa-identity
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # → dsa-bridge (token revocation)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: bridge
+      ports:
+        - port: 50052
+          protocol: TCP
+    # → dsa-audit
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: audit
+      ports:
+        - port: 50051
+          protocol: TCP
+    # → dsa-witness (Veil Witness claim submission)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: witness
+      ports:
+        - port: 50057
+          protocol: TCP
+    # Intra-namespace (app → PostgreSQL, sanitizer → ollama-identity)
+    - to:
+        - podSelector: {}
+      ports:
+        - port: 5432
+          protocol: TCP
+        - port: 11434
+          protocol: TCP
+    # DNS resolution (required for hostname lookups)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+{{- if .Values.global.llmShieldEnabled }}
+    # Model pull job: download GGUF from DSA model server (port 8443)
+    # Scoped to model-pull pods only via podSelector in model-pull-netpol-identity.
+    # The rule here allows the namespace-level egress; the per-pod NetworkPolicy
+    # in ollama-identity-model-job further restricts it to labeled pods.
+    - to:
+        - ipBlock:
+            cidr: 157.90.171.30/32
+      ports:
+        - port: 8443
+          protocol: TCP
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-ingress
+  namespace: dsa-identity
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # From dsa-edge (Gateway — gRPC, Sanitizer HTTP, health/invariant poller)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: edge
+      ports:
+        - port: 50053
+          protocol: TCP
+        - port: 8086
+          protocol: TCP
+        - port: 8083
+          protocol: TCP
+    # From dsa-bridge (token revocation callbacks)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: bridge
+      ports:
+        - port: 50053
+          protocol: TCP
+    # From dsa-ingest (future)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: ingest
+      ports:
+        - port: 50053
+          protocol: TCP
+{{- if .Values.global.demoEnabled }}
+    # From dsa-demo (demo webapp — read-only DB access)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: demo
+      ports:
+        - port: 5432
+          protocol: TCP
+{{- end }}
+    # Intra-namespace (PostgreSQL ← app, migrations)
+    - from:
+        - podSelector: {}
+
+# ============================================================
+# dsa-bridge (ID Bridge) — can reach identity, audit, ai (event-only)
+# ============================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bridge-egress
+  namespace: dsa-bridge
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # → dsa-identity (token revocation callbacks to Sandbox A)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: identity
+      ports:
+        - port: 50053
+          protocol: TCP
+    # → dsa-audit
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: audit
+      ports:
+        - port: 50051
+          protocol: TCP
+    # → dsa-ai (token validation — Sandbox B pulls from Bridge on port 50052)
+    # Push-based rotation (port 50055) was never implemented; the runtime uses
+    # pull-based rotation where Sandbox B connects to Bridge on port 50052.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: ai
+      ports:
+        - port: 50052
+          protocol: TCP
+    # → dsa-witness (Veil Witness claim submission)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: witness
+      ports:
+        - port: 50057
+          protocol: TCP
+    # Intra-namespace (app → PostgreSQL)
+    - to:
+        - podSelector: {}
+      ports:
+        - port: 5432
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bridge-ingress
+  namespace: dsa-bridge
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # From dsa-edge (Gateway)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: edge
+      ports:
+        - port: 50052
+          protocol: TCP
+    # From dsa-identity (token revocation)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: identity
+      ports:
+        - port: 50052
+          protocol: TCP
+    # From dsa-ingest (future: token generation, redaction maps)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: ingest
+      ports:
+        - port: 50052
+          protocol: TCP
+{{- if .Values.global.demoEnabled }}
+    # From dsa-demo (demo webapp — read-only DB + gRPC access)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: demo
+      ports:
+        - port: 5432
+          protocol: TCP
+        - port: 50052
+          protocol: TCP
+{{- end }}
+    # Intra-namespace
+    - from:
+        - podSelector: {}
+
+# ============================================================
+# dsa-ai (Sandbox B) — can reach audit ONLY
+# CANNOT reach dsa-identity — THIS IS THE CORE INVARIANT
+# ============================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ai-egress
+  namespace: dsa-ai
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # → dsa-audit
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: audit
+      ports:
+        - port: 50051
+          protocol: TCP
+    # → dsa-bridge (token rotation consumer — subscribes to rotation stream)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: bridge
+      ports:
+        - port: 50052
+          protocol: TCP
+    # → dsa-witness (Veil Witness claim submission)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: witness
+      ports:
+        - port: 50057
+          protocol: TCP
+    # Intra-namespace (app → Redis, app → Ollama)
+    - to:
+        - podSelector: {}
+{{- if .Values.global.llmEgressEnabled }}
+    # → External LLM providers (hosted only)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16  # Block cloud metadata endpoint
+      ports:
+        - port: 443
+          protocol: TCP
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ai-ingress
+  namespace: dsa-ai
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # From dsa-edge (Gateway — gRPC + health/invariant poller)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: edge
+      ports:
+        - port: 50054
+          protocol: TCP
+        - port: 8084
+          protocol: TCP
+    # From dsa-bridge (token validation — pull-based on port 50052)
+    # Push-based rotation (port 50055) was never implemented. Sandbox B pulls
+    # from Bridge on port 50052. Bridge cannot reach port 50054 (inference).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: bridge
+      ports:
+        - port: 50052
+          protocol: TCP
+    # From dsa-ingest (future)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: ingest
+      ports:
+        - port: 50054
+          protocol: TCP
+{{- if .Values.global.demoEnabled }}
+    # From dsa-demo (demo webapp — inference gRPC)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: demo
+      ports:
+        - port: 50054
+          protocol: TCP
+{{- end }}
+    # Intra-namespace
+    - from:
+        - podSelector: {}
+
+# ============================================================
+# dsa-audit — accepts from all DSA namespaces, no egress
+# ============================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: audit-ingress
+  namespace: dsa-audit
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # From all DSA namespaces
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: dsa
+      ports:
+        - port: 50051
+          protocol: TCP
+{{- if .Values.global.demoEnabled }}
+    # From dsa-demo (demo webapp — read-only DB access)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: demo
+      ports:
+        - port: 5432
+          protocol: TCP
+{{- end }}
+    # Intra-namespace (PostgreSQL ← app, migrations)
+    - from:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: audit-egress
+  namespace: dsa-audit
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # → dsa-witness (Veil Witness claim submission)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: witness
+      ports:
+        - port: 50057
+          protocol: TCP
+    # Intra-namespace only (app → PostgreSQL)
+    - to:
+        - podSelector: {}
+      ports:
+        - port: 5432
+          protocol: TCP
+
+# ============================================================
+# dsa-observability — read-only metrics scraping
+# ============================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: observability-egress
+  namespace: dsa-observability
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # Scrape health/metrics ports from all DSA namespaces
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: dsa
+      ports:
+        - port: 8081
+          protocol: TCP
+        - port: 8082
+          protocol: TCP
+        - port: 8083
+          protocol: TCP
+        - port: 8084
+          protocol: TCP
+        - port: 8085
+          protocol: TCP
+        # Veil Witness health/metrics port
+        - port: 50059
+          protocol: TCP
+    # Intra-namespace (Grafana → Loki, Grafana → Tempo)
+    - to:
+        - podSelector: {}
+    # → Kubernetes API (Promtail pod discovery + label enrichment)
+    # Broad destination because K8s API and service ClusterIPs are virtual
+    # IPs that ipBlock/podSelector can't reliably match before DNAT.
+    - ports:
+        - port: 443
+          protocol: TCP
+        - port: 6443
+          protocol: TCP
+    # → Loki + Tempo via ClusterIP (podSelector doesn't match pre-DNAT)
+    - ports:
+        - port: 3100
+          protocol: TCP
+        - port: 3200
+          protocol: TCP
+    # → DNS (CoreDNS for service resolution)
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: observability-ingress
+  namespace: dsa-observability
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Grafana UI access — restricted to dsa-edge namespace by default.
+    # In production, set grafana.adminCIDR in observability values to restrict
+    # to a VPN CIDR (e.g., "10.10.0.0/24") instead.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: edge
+      ports:
+        - port: 3000
+          protocol: TCP
+    # Intra-namespace
+    - from:
+        - podSelector: {}
+    # OTLP trace ingestion from all DSA namespaces
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: dsa
+      ports:
+        - port: 4317
+          protocol: TCP
+
+# ============================================================
+# dsa-ingest (reserved — policies in place for future service)
+# AUTHORITATIVE egress policy for ingest namespace.
+# The ingest subchart only defines ingress; egress lives here
+# to keep DNS and conditional external egress in one place.
+# ============================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingest-egress
+  namespace: dsa-ingest
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # → dsa-identity
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: identity
+      ports:
+        - port: 50053
+          protocol: TCP
+    # → dsa-bridge
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: bridge
+      ports:
+        - port: 50052
+          protocol: TCP
+    # → dsa-ai
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: ai
+      ports:
+        - port: 50054
+          protocol: TCP
+    # → dsa-audit
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: audit
+      ports:
+        - port: 50051
+          protocol: TCP
+{{- if .Values.global.ingestEgressEnabled }}
+    # → External data sources (customer systems)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16  # Block cloud metadata endpoint
+      ports:
+        - port: 5432
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+{{- end }}

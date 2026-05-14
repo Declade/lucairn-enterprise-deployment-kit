@@ -1,0 +1,19 @@
+{{- if .Values.postgresql.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Chart.Name }}-postgresql-data
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-postgresql
+    app.kubernetes.io/part-of: dsa
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.postgresql.storageClass }}
+  storageClassName: {{ .Values.postgresql.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.postgresql.storageSize }}
+{{- end }}

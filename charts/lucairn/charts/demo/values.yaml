@@ -1,0 +1,67 @@
+namespace: dsa-demo
+
+replicaCount: 1
+
+image:
+  repository: dsa-demo
+  tag: ""
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8090
+  healthPort: 8091
+
+bridgeAddr: "id-bridge.dsa-bridge.svc:50052"
+inferenceAddr: "sandbox-b.dsa-ai.svc:50054"
+auditAddr: "audit.dsa-audit.svc:50051"
+
+proofTimeout: 5
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+hpa:
+  enabled: false
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+secrets:
+  backend: k8s-native
+  values:
+    identityDbPassword: ""
+    bridgeDbPassword: ""
+    auditDbPassword: ""
+
+databases:
+  identity:
+    host: "sandbox-a-postgresql.dsa-identity.svc"
+    port: 5432
+    user: dsa
+    database: sandbox_a
+  bridge:
+    host: "id-bridge-postgresql.dsa-bridge.svc"
+    port: 5432
+    user: dsa
+    database: bridge
+  audit:
+    host: "audit-postgresql.dsa-audit.svc"
+    port: 5432
+    user: dsa
+    database: audit

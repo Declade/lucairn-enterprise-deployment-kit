@@ -1,0 +1,15 @@
+{{- range $name, $vertical := .Values.verticals }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $.Chart.Name }}-verticals-{{ $name }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $.Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+    dsa.io/vertical: {{ $name }}
+data:
+  config.yaml: |
+{{ $vertical.configYaml | indent 4 }}
+{{- end }}

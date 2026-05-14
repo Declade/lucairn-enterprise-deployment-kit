@@ -1,0 +1,456 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="1.0.0-enterprise-deployment-kit"
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  lucairn doctor --env customer.env --compose docker-compose.customer.yml [--offline]
+  lucairn support-bundle --env customer.env --compose docker-compose.customer.yml [--output bundles] [--offline]
+
+Commands:
+  doctor          Validate customer deployment prerequisites.
+  support-bundle  Generate a redacted support archive for customer review.
+USAGE
+}
+
+fail() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+warn() {
+  echo "warn: $*" >&2
+}
+
+info() {
+  echo "$*"
+}
+
+have() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+compose_cmd() {
+  if docker compose version >/dev/null 2>&1; then
+    echo "docker compose"
+  elif have docker-compose; then
+    echo "docker-compose"
+  else
+    echo ""
+  fi
+}
+
+env_value() {
+  local file="$1" key="$2" line
+  line="$(grep -E "^${key}=" "$file" 2>/dev/null | tail -1 || true)"
+  if [ -z "$line" ]; then
+    printf ''
+  else
+    printf '%s' "${line#*=}" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+  fi
+}
+
+is_secret_key() {
+  local key="$1"
+  case "$key" in
+    *KEY*|*TOKEN*|*SECRET*|*PASSWORD*|*PRIVATE*|*SIGNING*|*CERT*|*CREDENTIAL*|*API_KEY*|*LICENSE*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+redact_stream() {
+  awk -F= '
+    function trim(s) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      return s
+    }
+    function secret_key(k) {
+      return k ~ /(KEY|TOKEN|SECRET|PASSWORD|PRIVATE|SIGNING|CERT|CREDENTIAL|API_KEY|LICENSE)/
+    }
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { print; next }
+    index($0, "=") > 0 {
+      k = trim($1)
+      if (secret_key(k)) {
+        print k "=<redacted>"
+      } else {
+        print
+      }
+      next
+    }
+    {
+      line = $0
+      if (line ~ /(KEY|TOKEN|SECRET|PASSWORD|PRIVATE|SIGNING|CERT|CREDENTIAL|API_KEY|LICENSE):/) {
+        sub(/:.*/, ": <redacted>", line)
+      }
+      gsub(/(sk-[A-Za-z0-9._-]+)/, "<redacted>", line)
+      gsub(/(lcr_[A-Za-z0-9._-]+)/, "<redacted>", line)
+      print line
+    }
+  '
+}
+
+require_file() {
+  local file="$1" label="$2"
+  [ -f "$file" ] || fail "$label not found: $file"
+}
+
+require_env_values() {
+  local env_file="$1" missing=0 key val
+  local required=(
+    DSA_ENV
+    DSA_LICENSE_KEY
+    DSA_LICENSE_SIGNING_KEY
+    DSA_SERVICE_TOKEN
+    DSA_BRIDGE_ENCRYPTION_KEY
+    SANDBOX_A_ENCRYPTION_KEY
+    BRIDGE_MASTER_KEY
+    DSA_ADMIN_KEY
+    GATEWAY_KEYSTORE_KEY
+    GATEWAY_BASE_URL
+    VEIL_AUDIT_SIGNING_KEY
+    VEIL_BRIDGE_SIGNING_KEY
+    VEIL_SANITIZER_SIGNING_KEY
+    VEIL_WITNESS_SIGNING_KEY
+    VEIL_GATEWAY_SIGNING_KEY
+    VEIL_MANIFEST_SIGNING_KEY
+    VEIL_WITNESS_PUBLIC_KEY
+    VEIL_BRIDGE_PUBLIC_KEY
+    VEIL_SANITIZER_PUBLIC_KEY
+    VEIL_AUDIT_PUBLIC_KEY
+    VEIL_SANDBOX_B_PUBLIC_KEY
+  )
+
+  for key in "${required[@]}"; do
+    val="$(env_value "$env_file" "$key")"
+    if [ -z "$val" ]; then
+      echo "required secrets: missing $key"
+      missing=1
+    fi
+  done
+
+  [ "$missing" -eq 0 ]
+}
+
+validate_hex64() {
+  local env_file="$1" key="$2" val
+  val="$(env_value "$env_file" "$key")"
+  [ -z "$val" ] && return 0
+  if ! printf '%s' "$val" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+    echo "secret format: $key must be 64 hex chars"
+    return 1
+  fi
+}
+
+validate_keystore_key() {
+  local env_file="$1" val
+  val="$(env_value "$env_file" GATEWAY_KEYSTORE_KEY)"
+  [ -z "$val" ] && return 0
+  if ! printf '%s' "$val" | openssl enc -A -d -base64 >/tmp/lucairn-keystore-key.$$ 2>/dev/null; then
+    rm -f /tmp/lucairn-keystore-key.$$
+    echo "secret format: GATEWAY_KEYSTORE_KEY must be base64"
+    return 1
+  fi
+  local bytes
+  bytes="$(wc -c < /tmp/lucairn-keystore-key.$$ | tr -d ' ')"
+  rm -f /tmp/lucairn-keystore-key.$$
+  if [ "$bytes" != "32" ]; then
+    echo "secret format: GATEWAY_KEYSTORE_KEY must decode to 32 bytes"
+    return 1
+  fi
+}
+
+url_host() {
+  python3 - "$1" <<'PY' 2>/dev/null || true
+import sys
+from urllib.parse import urlparse
+u = urlparse(sys.argv[1])
+print(u.hostname or "")
+PY
+}
+
+url_port() {
+  python3 - "$1" <<'PY' 2>/dev/null || true
+import sys
+from urllib.parse import urlparse
+u = urlparse(sys.argv[1])
+if u.port:
+    print(u.port)
+elif u.scheme == "https":
+    print(443)
+elif u.scheme == "http":
+    print(80)
+else:
+    print("")
+PY
+}
+
+check_dns() {
+  local host="$1"
+  [ -z "$host" ] && return 0
+  python3 - "$host" <<'PY' >/dev/null
+import socket, sys
+socket.getaddrinfo(sys.argv[1], None)
+PY
+}
+
+check_local_port_available() {
+  local port="$1"
+  [ -z "$port" ] && return 0
+  if have lsof && lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
+}
+
+check_certs() {
+  local env_file="$1" checked=0 failed=0 key path
+  local cert_keys=(SANDBOX_B_CLIENT_CERT SANDBOX_B_CA_CERT GRPC_TLS_CERT_FILE WITNESS_MTLS_CA_BUNDLE_PATH WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH)
+  for key in "${cert_keys[@]}"; do
+    path="$(env_value "$env_file" "$key")"
+    [ -z "$path" ] && continue
+    checked=1
+    if [ ! -f "$path" ]; then
+      echo "certs: missing $key at $path"
+      failed=1
+      continue
+    fi
+    if ! openssl x509 -checkend 2592000 -noout -in "$path" >/dev/null 2>&1; then
+      echo "certs: $key expires within 30 days or is invalid"
+      failed=1
+    fi
+  done
+  if [ "$failed" -eq 0 ]; then
+    if [ "$checked" -eq 1 ]; then
+      echo "certs: ok"
+    else
+      echo "certs: no external cert paths configured"
+    fi
+  fi
+  [ "$failed" -eq 0 ]
+}
+
+doctor() {
+  local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-system"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --env) env_file="$2"; shift 2 ;;
+      --compose) compose_file="$2"; shift 2 ;;
+      --offline) offline=1; shift ;;
+      --postgres-url) postgres_url="$2"; shift 2 ;;
+      --kube-namespace) kube_namespace="$2"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) fail "unknown doctor argument: $1" ;;
+    esac
+  done
+
+  env_file="${env_file:-$ROOT/customer.env}"
+  compose_file="${compose_file:-$ROOT/docker-compose.customer.yml}"
+
+  require_file "$env_file" "env file"
+  require_file "$compose_file" "compose file"
+
+  echo "lucairn doctor $VERSION"
+  echo "env file: ok ($env_file)"
+  echo "compose file: ok ($compose_file)"
+
+  if require_env_values "$env_file"; then
+    echo "required secrets: ok"
+  else
+    return 1
+  fi
+
+  local format_failed=0 key
+  for key in \
+    DSA_SERVICE_TOKEN DSA_BRIDGE_ENCRYPTION_KEY SANDBOX_A_ENCRYPTION_KEY \
+    BRIDGE_MASTER_KEY DSA_ADMIN_KEY VEIL_AUDIT_SIGNING_KEY \
+    VEIL_BRIDGE_SIGNING_KEY VEIL_SANITIZER_SIGNING_KEY VEIL_WITNESS_SIGNING_KEY \
+    VEIL_GATEWAY_SIGNING_KEY VEIL_MANIFEST_SIGNING_KEY VEIL_WITNESS_PUBLIC_KEY \
+    VEIL_BRIDGE_PUBLIC_KEY VEIL_SANITIZER_PUBLIC_KEY VEIL_AUDIT_PUBLIC_KEY \
+    VEIL_SANDBOX_B_PUBLIC_KEY
+  do
+    validate_hex64 "$env_file" "$key" || format_failed=1
+  done
+  validate_keystore_key "$env_file" || format_failed=1
+  [ "$format_failed" -eq 0 ] || return 1
+  echo "secret formats: ok"
+
+  check_certs "$env_file"
+
+  if [ "$offline" -eq 1 ]; then
+    echo "network checks: skipped (--offline)"
+    echo "docker compose: skipped (--offline)"
+    echo "postgres: skipped (--offline)"
+    echo "network policies: skipped (--offline)"
+    echo "doctor: ok"
+    return 0
+  fi
+
+  local gateway_url host port
+  gateway_url="$(env_value "$env_file" GATEWAY_BASE_URL)"
+  host="$(url_host "$gateway_url")"
+  port="$(url_port "$gateway_url")"
+  if check_dns "$host"; then
+    echo "dns: ok ($host)"
+  else
+    echo "dns: failed ($host)"
+    return 1
+  fi
+
+  local gateway_port
+  gateway_port="$(env_value "$env_file" GATEWAY_PORT)"
+  gateway_port="${gateway_port:-8080}"
+  if check_local_port_available "$gateway_port"; then
+    echo "ports: ok (host port $gateway_port available)"
+  else
+    echo "ports: failed (host port $gateway_port already has a listener)"
+    return 1
+  fi
+
+  local compose
+  compose="$(compose_cmd)"
+  if [ -n "$compose" ]; then
+    if $compose -f "$compose_file" --env-file "$env_file" config --quiet; then
+      echo "docker compose: ok"
+    else
+      echo "docker compose: config failed"
+      return 1
+    fi
+  else
+    warn "docker compose not available; skipping compose config validation"
+  fi
+
+  postgres_url="${postgres_url:-$(env_value "$env_file" POSTGRES_URL)}"
+  if [ -n "$postgres_url" ] && have pg_isready; then
+    if pg_isready -d "$postgres_url" >/dev/null 2>&1; then
+      echo "postgres: ok"
+    else
+      echo "postgres: failed"
+      return 1
+    fi
+  else
+    echo "postgres: skipped (no --postgres-url or pg_isready unavailable)"
+  fi
+
+  if have kubectl; then
+    if kubectl get networkpolicy -n "$kube_namespace" >/dev/null 2>&1; then
+      echo "network policies: ok ($kube_namespace)"
+    else
+      echo "network policies: not found or cluster unavailable ($kube_namespace)"
+    fi
+  else
+    echo "network policies: skipped (kubectl unavailable)"
+  fi
+
+  echo "doctor: ok"
+}
+
+write_cert_report() {
+  local env_file="$1" out="$2" key path
+  : > "$out"
+  for key in SANDBOX_B_CLIENT_CERT SANDBOX_B_CA_CERT GRPC_TLS_CERT_FILE WITNESS_MTLS_CA_BUNDLE_PATH WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH; do
+    path="$(env_value "$env_file" "$key")"
+    [ -z "$path" ] && continue
+    if [ -f "$path" ]; then
+      {
+        echo "$key=$path"
+        openssl x509 -noout -subject -issuer -dates -in "$path" 2>/dev/null || true
+        echo
+      } >> "$out"
+    else
+      echo "$key=$path (missing)" >> "$out"
+    fi
+  done
+  if [ ! -s "$out" ]; then
+    echo "No external certificate paths were configured in the env file." > "$out"
+  fi
+}
+
+support_bundle() {
+  local env_file="" compose_file="" output_dir="" offline=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --env) env_file="$2"; shift 2 ;;
+      --compose) compose_file="$2"; shift 2 ;;
+      --output) output_dir="$2"; shift 2 ;;
+      --offline) offline=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) fail "unknown support-bundle argument: $1" ;;
+    esac
+  done
+
+  env_file="${env_file:-$ROOT/customer.env}"
+  compose_file="${compose_file:-$ROOT/docker-compose.customer.yml}"
+  output_dir="${output_dir:-$ROOT/support-bundles}"
+
+  require_file "$env_file" "env file"
+  require_file "$compose_file" "compose file"
+  mkdir -p "$output_dir"
+
+  local ts bundle_dir archive compose
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  bundle_dir="$output_dir/lucairn-support-bundle-$ts"
+  archive="$bundle_dir.tar.gz"
+  mkdir -p "$bundle_dir"/{redacted,docker,logs,certs,postgres}
+
+  {
+    echo "Lucairn support bundle"
+    echo "Generated: $ts"
+    echo "Kit version: $VERSION"
+    echo "Host: $(hostname 2>/dev/null || echo unknown)"
+    echo "Kernel: $(uname -a 2>/dev/null || echo unknown)"
+    echo
+    echo "Customer review required before sending this bundle to Lucairn support."
+  } > "$bundle_dir/README.txt"
+
+  {
+    echo "version=$VERSION"
+    echo "generated_utc=$ts"
+  } > "$bundle_dir/version.txt"
+
+  redact_stream < "$env_file" > "$bundle_dir/redacted/customer.env"
+  redact_stream < "$compose_file" > "$bundle_dir/redacted/docker-compose.customer.yml"
+  write_cert_report "$env_file" "$bundle_dir/certs/cert-validity.txt"
+
+  if [ "$offline" -eq 1 ]; then
+    echo "offline mode: docker status not collected" > "$bundle_dir/docker/status.txt"
+    echo "offline mode: logs not collected" > "$bundle_dir/logs/compose.log"
+    echo "offline mode: postgres schema version not collected" > "$bundle_dir/postgres/schema-version.txt"
+  else
+    compose="$(compose_cmd)"
+    if [ -n "$compose" ]; then
+      ($compose -f "$compose_file" --env-file "$env_file" ps 2>&1 || true) | redact_stream > "$bundle_dir/docker/compose-ps.txt"
+      (docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>&1 || true) | redact_stream > "$bundle_dir/docker/status.txt"
+      ($compose -f "$compose_file" --env-file "$env_file" logs --tail 300 --no-color 2>&1 || true) | redact_stream > "$bundle_dir/logs/compose.log"
+      ($compose -f "$compose_file" --env-file "$env_file" config 2>&1 || true) | redact_stream > "$bundle_dir/redacted/compose-resolved.yml"
+    else
+      echo "docker compose unavailable" > "$bundle_dir/docker/status.txt"
+      echo "docker compose unavailable" > "$bundle_dir/logs/compose.log"
+    fi
+    echo "Collect schema version manually if Postgres is external: SELECT version FROM schema_migrations ORDER BY version;" > "$bundle_dir/postgres/schema-version.txt"
+  fi
+
+  tar -czf "$archive" -C "$output_dir" "$(basename "$bundle_dir")"
+  rm -rf "$bundle_dir"
+  echo "support bundle: $archive"
+}
+
+main() {
+  local cmd="${1:-}"
+  case "$cmd" in
+    doctor) shift; doctor "$@" ;;
+    support-bundle) shift; support_bundle "$@" ;;
+    -h|--help|"") usage ;;
+    *) fail "unknown command: $cmd" ;;
+  esac
+}
+
+main "$@"
+

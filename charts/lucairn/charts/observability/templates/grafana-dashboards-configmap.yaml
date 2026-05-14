@@ -1,0 +1,425 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: dsa
+    app.kubernetes.io/component: observability
+data:
+  dsa-overview.json: |
+    {
+      "uid": "dsa-overview",
+      "title": "DSA Overview",
+      "tags": ["dsa"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Service Health",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "count_over_time({namespace=~\"dsa-.*\"} |= \"level=error\" [5m])",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 10 },
+                  { "color": "red", "value": 50 }
+                ]
+              }
+            }
+          },
+          "options": { "colorMode": "background", "graphMode": "area" }
+        },
+        {
+          "id": 2,
+          "title": "Request Rate by Service",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "sum by (app) (count_over_time({namespace=~\"dsa-.*\"} |= \"request\" [1m]))",
+              "legendFormat": "{{ "{{" }}app{{ "}}" }}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Error Rate by Namespace",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "sum by (namespace) (count_over_time({namespace=~\"dsa-.*\"} |= \"error\" [1m]))",
+              "legendFormat": "{{ "{{" }}namespace{{ "}}" }}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Log Volume",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "sum by (namespace) (count_over_time({namespace=~\"dsa-.*\"}[5m]))",
+              "legendFormat": "{{ "{{" }}namespace{{ "}}" }}",
+              "refId": "A"
+            }
+          ]
+        }
+      ]
+    }
+  audit-trail.json: |
+    {
+      "uid": "dsa-audit-trail",
+      "title": "Audit Trail",
+      "tags": ["dsa", "audit"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Audit Event Volume",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "sum(count_over_time({namespace=\"dsa-audit\"} |= \"audit_event\" [1m]))",
+              "legendFormat": "events/min",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Hash Chain Status",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "count_over_time({namespace=\"dsa-audit\"} |= \"hash_chain\" |= \"error\" [5m])",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              },
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "Healthy", "color": "green" } } }
+              ]
+            }
+          }
+        },
+        {
+          "id": 3,
+          "title": "Audit Events by Type",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "sum by (level) (count_over_time({namespace=\"dsa-audit\"}[5m]))",
+              "legendFormat": "{{ "{{" }}level{{ "}}" }}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Audit Logs",
+          "type": "logs",
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 12 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "{namespace=\"dsa-audit\"}",
+              "refId": "A"
+            }
+          ],
+          "options": { "showTime": true, "sortOrder": "Descending", "enableLogDetails": true }
+        }
+      ]
+    }
+  token-operations.json: |
+    {
+      "uid": "dsa-token-operations",
+      "title": "Token Operations",
+      "tags": ["dsa", "tokens"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Token Generation Rate",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "sum(count_over_time({namespace=\"dsa-bridge\"} |= \"token_generated\" [1m]))",
+              "legendFormat": "tokens/min",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Token Validation Latency",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "{namespace=\"dsa-bridge\"} |= \"token_validated\" | json | unwrap duration_ms [1m]",
+              "legendFormat": "latency_ms",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Token Validation Errors",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 12, "x": 0, "y": 8 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "count_over_time({namespace=\"dsa-bridge\"} |= \"token_validation_failed\" [5m])",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 5 }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 4,
+          "title": "Bridge Logs",
+          "type": "logs",
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 12 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "{namespace=\"dsa-bridge\"}",
+              "refId": "A"
+            }
+          ],
+          "options": { "showTime": true, "sortOrder": "Descending", "enableLogDetails": true }
+        }
+      ]
+    }
+  ai-inference.json: |
+    {
+      "uid": "dsa-ai-inference",
+      "title": "AI Inference",
+      "tags": ["dsa", "ai"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Queue Depth",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "{namespace=\"dsa-ai\"} |= \"queue_depth\" | json | unwrap queue_depth",
+              "legendFormat": "queue depth",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Inference Latency by Provider",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "{namespace=\"dsa-ai\"} |= \"inference_complete\" | json | unwrap duration_ms | line_format \"{{ "{{" }}.provider{{ "}}" }}\"",
+              "legendFormat": "{{ "{{" }}provider{{ "}}" }}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Inference Requests/min",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 8, "x": 0, "y": 8 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "sum(count_over_time({namespace=\"dsa-ai\"} |= \"inference_request\" [1m]))",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Inference Errors",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 8, "x": 8, "y": 8 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "count_over_time({namespace=\"dsa-ai\"} |= \"error\" [5m])",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 5 }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 5,
+          "title": "AI Service Logs",
+          "type": "logs",
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 12 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "{namespace=\"dsa-ai\"}",
+              "refId": "A"
+            }
+          ],
+          "options": { "showTime": true, "sortOrder": "Descending", "enableLogDetails": true }
+        }
+      ]
+    }
+  network-isolation.json: |
+    {
+      "uid": "dsa-network-isolation",
+      "title": "Network Isolation",
+      "tags": ["dsa", "network"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Dropped Packets on Blocked Paths",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "sum by (namespace) (count_over_time({namespace=~\"dsa-.*\"} |= \"NetworkPolicy\" |= \"DENY\" [5m]))",
+              "legendFormat": "{{ "{{" }}namespace{{ "}}" }}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Cross-Sandbox Traffic Attempts",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 12, "x": 0, "y": 8 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "count_over_time({namespace=~\"dsa-identity|dsa-ai\"} |= \"connection refused\" [5m])",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 1 },
+                  { "color": "red", "value": 10 }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 3,
+          "title": "Allowed vs Denied Traffic",
+          "type": "piechart",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "count_over_time({namespace=~\"dsa-.*\"} |= \"ALLOW\" [1h])",
+              "legendFormat": "Allowed",
+              "refId": "A"
+            },
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "count_over_time({namespace=~\"dsa-.*\"} |= \"DENY\" [1h])",
+              "legendFormat": "Denied",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Network Policy Logs",
+          "type": "logs",
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 16 },
+          "targets": [
+            {
+              "datasource": { "type": "loki", "uid": "" },
+              "expr": "{namespace=~\"dsa-.*\"} |= \"NetworkPolicy\"",
+              "refId": "A"
+            }
+          ],
+          "options": { "showTime": true, "sortOrder": "Descending", "enableLogDetails": true }
+        }
+      ]
+    }

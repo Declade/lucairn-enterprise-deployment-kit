@@ -1,0 +1,219 @@
+sandbox_b:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  temperature: 0.3
+  max_tokens: 2048
+  retention_days: 90
+
+gateway:
+  allowed_context_keys:
+    risk_assessment:
+      - transaction_amount
+      - transaction_type
+      - merchant_category
+      - device_fingerprint
+      - ip_country
+      - transaction_date
+      - transaction_currency
+    credit_scoring:
+      - income_bracket
+      - employment_status
+      - account_age_days
+      - existing_products
+      - credit_utilization
+    fraud_detection:
+      - transaction_amount
+      - transaction_type
+      - merchant_category
+      - device_fingerprint
+      - ip_country
+      - is_international
+    product_recommendation:
+      - account_type
+      - account_age_days
+      - existing_products
+      - monthly_volume
+    aml_screening:
+      - transaction_amount
+      - transaction_type
+      - merchant_category
+      - transaction_date
+      - jurisdiction
+      - counterparty_risk
+  field_routing:
+    risk_assessment:
+      identity:
+        - account_holder
+        - account_number
+        - customer_name
+        - customer_email
+      freetext:
+        - transaction_description
+        - notes
+        - alert_details
+      passthrough:
+        - transaction_amount
+        - transaction_type
+        - merchant_category
+        - risk_score
+        - currency
+    credit_scoring:
+      identity:
+        - account_holder
+        - customer_name
+        - customer_email
+        - customer_id
+      freetext:
+        - analyst_comments
+        - application_notes
+      passthrough:
+        - income_bracket
+        - employment_status
+        - account_age_days
+        - existing_products
+        - credit_utilization
+    fraud_detection:
+      identity:
+        - account_holder
+        - account_number
+        - customer_name
+        - customer_email
+      freetext:
+        - transaction_description
+        - notes
+        - alert_details
+      passthrough:
+        - transaction_amount
+        - transaction_type
+        - merchant_category
+        - device_fingerprint
+        - ip_country
+        - is_international
+    product_recommendation:
+      identity:
+        - account_holder
+        - customer_name
+        - customer_email
+      freetext:
+        - analyst_comments
+      passthrough:
+        - account_type
+        - account_age_days
+        - existing_products
+        - monthly_volume
+    aml_screening:
+      identity:
+        - account_holder
+        - account_number
+        - customer_name
+        - customer_email
+      freetext:
+        - transaction_description
+        - notes
+        - alert_details
+      passthrough:
+        - transaction_amount
+        - transaction_type
+        - merchant_category
+        - transaction_date
+        - jurisdiction
+        - counterparty_risk
+  max_context_value_length: 1000
+  max_context_keys: 20
+
+ingest:
+  quasi_identifiers:
+    - field: age
+      rule: bracket
+      params:
+        size: 10
+    - field: zip_code
+      rule: truncate
+      params:
+        keep_digits: 3
+    - field: date_of_birth
+      rule: bracket
+      params:
+        size: 10
+    - field: occupation
+      rule: suppress
+    - field: timestamp
+      rule: round
+      params:
+        resolution: day
+
+relinkage:
+  require_approval: true
+  approval_roles: ["dpo", "compliance_officer"]
+  allowed_attributes: ["name", "email", "account_id"]
+  break_glass_enabled: false
+  jurisdiction: "EU"
+  require_post_access_review: true
+  review_period_days: 7
+
+sanitizer:
+  freetext_fields:
+    - analyst_comments
+    - transaction_notes
+    - case_narrative
+  known_entity_matching:
+    enabled: true
+    strategies:
+      - exact
+      - cologne_phonetics
+      - levenshtein
+    levenshtein_max_distance: 2
+    location_context_window: 50
+  presidio:
+    language_detection: auto
+    default_language: de
+    supported_languages: [de, en]
+    confidence_threshold: 0.3
+    custom_recognizers:
+      - sozialversicherungsnummer
+      - steuer_id
+    safe_patterns: []
+  llm_audit:
+    enabled: false
+
+policies:
+  - id: fin-purpose-001
+    type: purpose
+    vertical: finance
+    condition:
+      field: purpose
+      operator: in
+      value: ["fraud_detection", "credit_scoring", "aml_screening", "product_recommendation"]
+    action: allow
+  - id: fin-retention-001
+    type: retention
+    vertical: finance
+    condition:
+      field: retention_days
+      operator: gt
+      value: 2555
+    action: deny
+  - id: fin-region-001
+    type: region
+    vertical: finance
+    condition:
+      field: region
+      operator: not_in
+      value: ["EU", "EEA", "CH", "UK"]
+    action: deny
+  - id: fin-field-001
+    type: field_release
+    vertical: finance
+    condition:
+      field: purpose
+      operator: eq
+      value: "aml_screening"
+    action: require_approval
+  - id: fin-relinkage-001
+    type: approval
+    vertical: finance
+    condition:
+      field: action
+      operator: eq
+      value: "relinkage"
+    action: require_approval

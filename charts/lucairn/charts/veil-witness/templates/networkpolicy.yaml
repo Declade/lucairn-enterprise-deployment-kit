@@ -1,0 +1,103 @@
+# ============================================================
+# dsa-witness (Veil Witness) — cryptographic attestation service
+#
+# Accepts claims from pipeline services on port 50057.
+# Serves certificates to Gateway on port 50058.
+# CANNOT reach any data port (50051-50055) — attestation only.
+# ============================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: witness-ingress
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Claim submission from pipeline services (port 50057)
+    # From dsa-bridge (ID Bridge)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: bridge
+      ports:
+        - port: 50057
+          protocol: TCP
+    # From dsa-identity (Sanitizer)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: identity
+      ports:
+        - port: 50057
+          protocol: TCP
+    # From dsa-ai (Sandbox B)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: ai
+      ports:
+        - port: 50057
+          protocol: TCP
+    # From dsa-audit (Audit Service)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: audit
+      ports:
+        - port: 50057
+          protocol: TCP
+    # Certificate retrieval from Gateway (port 50058)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: edge
+      ports:
+        - port: 50058
+          protocol: TCP
+    # Intra-namespace (PostgreSQL ← app, migrations)
+    - from:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: witness-egress
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # External HTTPS only (TSA + Rekor transparency log)
+    # Private IPs excluded — Witness cannot reach internal services
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16  # Block cloud metadata endpoint
+      ports:
+        - port: 443
+          protocol: TCP
+    # Intra-namespace (app → PostgreSQL)
+    - to:
+        - podSelector: {}
+      ports:
+        - port: 5432
+          protocol: TCP

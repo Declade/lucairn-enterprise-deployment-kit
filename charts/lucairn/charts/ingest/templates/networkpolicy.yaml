@@ -1,0 +1,21 @@
+# NOTE: The authoritative ingest egress policy (with DNS egress and conditional
+# external egress) is defined in deploy/helm/charts/infrastructure/templates/network-policies.yaml.
+# This subchart only defines the ingress policy for the ingest service itself.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingest-ingress
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+        - port: {{ .Values.service.healthPort }}
+          protocol: TCP

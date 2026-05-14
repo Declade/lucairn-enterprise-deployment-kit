@@ -1,0 +1,39 @@
+dependencies:
+- name: infrastructure
+  repository: ""
+  version: 0.1.0
+- name: audit
+  repository: ""
+  version: 0.1.0
+- name: id-bridge
+  repository: ""
+  version: 0.1.0
+- name: sandbox-a
+  repository: ""
+  version: 0.1.0
+- name: sandbox-b
+  repository: ""
+  version: 0.1.0
+- name: gateway
+  repository: ""
+  version: 0.1.0
+- name: observability
+  repository: ""
+  version: 0.1.0
+- name: demo
+  repository: ""
+  version: 0.1.0
+- name: ingest
+  repository: ""
+  version: 0.1.0
+- name: admin
+  repository: ""
+  version: 0.1.0
+- name: veil-witness
+  repository: ""
+  version: 0.1.0
+- name: dsa-certification
+  repository: ""
+  version: 0.1.0
+digest: sha256:63937bc7a63eea500493413a52af0d5bf4e1da1373b174773d12e64b2bbcdd13
+generated: "2026-04-01T21:58:01.545771+02:00"

@@ -1,0 +1,500 @@
+# DSA Customer-Side Deployment (Split Deployment Mode)
+#
+# Runs only customer-side components: Gateway, Sandbox A, ID Bridge, Sanitizer,
+# Audit, and Veil Witness with their Postgres instances.
+#
+# Sandbox B (AI inference) runs on DSA's hosted infrastructure.
+# The Gateway connects to it over HTTPS with mTLS via SANDBOX_B_REMOTE_ENDPOINT.
+#
+# PII never leaves the customer's network. Only sanitized payloads + opaque tokens
+# are sent to the remote Sandbox B.
+#
+# Usage:
+#   cp config.env.template config.env
+#   # Edit config.env with your settings
+#   docker compose -f docker-compose.customer.yml --env-file config.env up -d
+#
+# Network Isolation Design:
+#   Same split-knowledge invariant as the full stack — Sandbox A (dsa-identity)
+#   is isolated from AI processing. The difference: AI processing happens remotely
+#   instead of in a local dsa-ai network.
+
+# Customer split-deployment auth anchor.
+# Customers deploy in production mode; DSA_SERVICE_TOKEN must come from
+# config.env (copy config.env.template → config.env and fill in).
+# The :? suffix makes docker compose refuse to start if the customer
+# forgets to set DSA_SERVICE_TOKEN, matching the fail-closed invariant.
+x-dsa-prod-auth: &dsa-prod-auth
+  DSA_ENV: "production"
+  DSA_SERVICE_TOKEN: "${DSA_SERVICE_TOKEN:?DSA_SERVICE_TOKEN is required for customer deployment}"
+
+networks:
+  dsa-identity:
+    driver: bridge
+  dsa-bridge:
+    driver: bridge
+  dsa-audit:
+    driver: bridge
+  dsa-audit-identity:
+    driver: bridge
+  dsa-witness:
+    driver: bridge
+  dsa-witness-bridge:
+    driver: bridge
+  dsa-witness-identity:
+    driver: bridge
+  dsa-witness-audit:
+    driver: bridge
+  dsa-witness-edge:
+    driver: bridge
+  dsa-certification:
+    driver: bridge
+    internal: true
+  dsa-witness-certification:
+    driver: bridge
+    # Dedicated bridge: cert-builder ↔ Veil Witness only
+    # Follows naming convention: dsa-witness-bridge, dsa-witness-audit, dsa-witness-identity
+
+volumes:
+  pg-audit-data:
+  pg-bridge-data:
+  pg-sandbox-a-data:
+  gateway-data:
+  postgres-veil-data:
+  cert-store:
+
+services:
+  # ── Infrastructure ──────────────────────────────────────────────
+
+  postgres-audit:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dsa
+      POSTGRES_PASSWORD: ${POSTGRES_AUDIT_PASSWORD:-dsa}
+      POSTGRES_DB: audit
+    volumes:
+      - pg-audit-data:/var/lib/postgresql/data
+    networks:
+      - dsa-audit
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dsa -d audit"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres-bridge:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dsa
+      POSTGRES_PASSWORD: ${POSTGRES_BRIDGE_PASSWORD:-dsa}
+      POSTGRES_DB: bridge
+    volumes:
+      - pg-bridge-data:/var/lib/postgresql/data
+    networks:
+      - dsa-bridge
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dsa -d bridge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres-sandbox-a:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dsa
+      POSTGRES_PASSWORD: ${POSTGRES_SANDBOX_A_PASSWORD:-dsa}
+      POSTGRES_DB: sandbox_a
+    volumes:
+      - pg-sandbox-a-data:/var/lib/postgresql/data
+    networks:
+      - dsa-identity
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dsa -d sandbox_a"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres-veil:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: veil
+      POSTGRES_USER: veil
+      POSTGRES_PASSWORD: ${POSTGRES_VEIL_PASSWORD:-veil}
+    networks:
+      - dsa-witness
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U veil"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - postgres-veil-data:/var/lib/postgresql/data
+
+  # ── Migrations ──────────────────────────────────────────────────
+
+  migrate-audit:
+    image: migrate/migrate:v4.17.0
+    depends_on:
+      postgres-audit:
+        condition: service_healthy
+    volumes:
+      - ./migrations/audit:/migrations:ro
+    networks:
+      - dsa-audit
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://dsa:${POSTGRES_AUDIT_PASSWORD:-dsa}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
+      - "up"
+    restart: "no"
+
+  migrate-bridge:
+    image: migrate/migrate:v4.17.0
+    depends_on:
+      postgres-bridge:
+        condition: service_healthy
+    volumes:
+      - ./migrations/id-bridge:/migrations:ro
+    networks:
+      - dsa-bridge
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://dsa:${POSTGRES_BRIDGE_PASSWORD:-dsa}@postgres-bridge:5432/bridge?sslmode=${POSTGRES_SSLMODE:-disable}"
+      - "up"
+    restart: "no"
+
+  migrate-sandbox-a:
+    image: migrate/migrate:v4.17.0
+    depends_on:
+      postgres-sandbox-a:
+        condition: service_healthy
+    volumes:
+      - ./migrations/sandbox-a:/migrations:ro
+    networks:
+      - dsa-identity
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://dsa:${POSTGRES_SANDBOX_A_PASSWORD:-dsa}@postgres-sandbox-a:5432/sandbox_a?sslmode=${POSTGRES_SSLMODE:-disable}"
+      - "up"
+    restart: "no"
+
+  migrate-veil:
+    image: migrate/migrate:v4.17.0
+    depends_on:
+      postgres-veil:
+        condition: service_healthy
+    volumes:
+      - ./migrations/veil-witness:/migrations:ro
+    networks:
+      - dsa-witness
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://veil:${POSTGRES_VEIL_PASSWORD:-veil}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}"
+      - "up"
+    restart: "no"
+
+  # ── Application Services ────────────────────────────────────────
+
+  audit:
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-audit:${LUCAIRN_IMAGE_TAG:-1.0.0}"
+    depends_on:
+      migrate-audit:
+        condition: service_completed_successfully
+    environment:
+      <<: *dsa-prod-auth
+      AUDIT_DATABASE_URL: "postgres://audit_app:${AUDIT_APP_PASSWORD:-audit_app_password}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
+      GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
+      VEIL_ENABLED: "${VEIL_ENABLED:-true}"
+      VEIL_SIGNING_KEY: "${VEIL_AUDIT_SIGNING_KEY}"
+      VEIL_WITNESS_ADDR: "veil-witness:50057"
+    networks:
+      - dsa-audit
+      - dsa-audit-identity
+      - dsa-witness-audit
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: on-failure
+
+  id-bridge:
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-id-bridge:${LUCAIRN_IMAGE_TAG:-1.0.0}"
+    depends_on:
+      migrate-bridge:
+        condition: service_completed_successfully
+      audit:
+        condition: service_healthy
+    environment:
+      <<: *dsa-prod-auth
+      BRIDGE_DATABASE_URL: "postgres://dsa:${POSTGRES_BRIDGE_PASSWORD:-dsa}@postgres-bridge:5432/bridge?sslmode=${POSTGRES_SSLMODE:-disable}"
+      BRIDGE_MASTER_KEY: "${BRIDGE_MASTER_KEY}"
+      BRIDGE_EPHEMERAL: "${SANDBOX_A_EPHEMERAL:-true}"
+      DSA_BRIDGE_ENCRYPTION_KEY: "${DSA_BRIDGE_ENCRYPTION_KEY:?DSA_BRIDGE_ENCRYPTION_KEY is required}"
+      GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
+      VEIL_ENABLED: "${VEIL_ENABLED:-true}"
+      VEIL_SIGNING_KEY: "${VEIL_BRIDGE_SIGNING_KEY}"
+      VEIL_WITNESS_ADDR: "veil-witness:50057"
+    networks:
+      - dsa-bridge
+      - dsa-witness-bridge
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: on-failure
+
+  sandbox-a:
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sandbox-a:${LUCAIRN_IMAGE_TAG:-1.0.0}"
+    depends_on:
+      migrate-sandbox-a:
+        condition: service_completed_successfully
+      audit:
+        condition: service_healthy
+    environment:
+      <<: *dsa-prod-auth
+      SANDBOX_A_DATABASE_URL: "postgres://dsa:${POSTGRES_SANDBOX_A_PASSWORD:-dsa}@postgres-sandbox-a:5432/sandbox_a?sslmode=${POSTGRES_SSLMODE:-disable}"
+      SANDBOX_A_ENCRYPTION_KEY: "${SANDBOX_A_ENCRYPTION_KEY}"
+      SANDBOX_A_EPHEMERAL: "${SANDBOX_A_EPHEMERAL:-true}"
+      AUDIT_SERVICE_ADDR: "audit:50051"
+      SANITIZER_ADDR: "http://sanitizer:8086"
+      GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
+      DSA_ADMIN_KEY: "${DSA_ADMIN_KEY}"
+    networks:
+      - dsa-identity
+      - dsa-audit-identity
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: on-failure
+
+  redis-sanitizer:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
+    networks:
+      - dsa-identity
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: on-failure
+
+  sanitizer:
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer:${LUCAIRN_IMAGE_TAG:-1.0.0}"
+    depends_on:
+      sandbox-a:
+        condition: service_healthy
+    environment:
+      SANITIZER_CONFIG_PATH: "${SANITIZER_CONFIG_PATH:-/config/config.yaml}"
+      SANITIZER_PORT: "8086"
+      GUNICORN_TIMEOUT: "120"
+      VEIL_ENABLED: "${VEIL_ENABLED:-true}"
+      VEIL_SIGNING_KEY: "${VEIL_SANITIZER_SIGNING_KEY}"
+      # All emitters use the witness's plain gRPC port (50057).
+      VEIL_WITNESS_ADDR: "veil-witness:50057"
+      QI_ENGINE_ENABLED: "${QI_ENGINE_ENABLED:-true}"
+      DP_BUDGET_REDIS_URL: "redis://redis-sanitizer:6379/0"
+    volumes:
+      - ${SANITIZER_CONFIG_FILE:-./config/default-sanitizer.yaml}:/config/config.yaml:ro
+    networks:
+      - dsa-identity
+      - dsa-witness-identity
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8086/healthz')\" || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+    restart: on-failure
+
+  veil-witness:
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-veil-witness:${LUCAIRN_IMAGE_TAG:-1.0.0}"
+    depends_on:
+      migrate-veil:
+        condition: service_completed_successfully
+    environment:
+      VEIL_DB_URL: "postgres://veil_app:${VEIL_APP_PASSWORD:-veil_app_password}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}"
+      VEIL_WITNESS_SIGNING_KEY: "${VEIL_WITNESS_SIGNING_KEY}"
+      VEIL_WITNESS_KEY_ID: "${VEIL_WITNESS_KEY_ID:-witness_v1}"
+      VEIL_CLAIM_TIMEOUT: "30s"
+      GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
+      VEIL_TSA_URL: "${VEIL_TSA_URL:-}"
+      VEIL_REKOR_URL: "${VEIL_REKOR_URL:-}"
+      VEIL_BRIDGE_PUBLIC_KEY: "${VEIL_BRIDGE_PUBLIC_KEY}"
+      VEIL_SANITIZER_PUBLIC_KEY: "${VEIL_SANITIZER_PUBLIC_KEY}"
+      VEIL_AUDIT_PUBLIC_KEY: "${VEIL_AUDIT_PUBLIC_KEY}"
+      # Sandbox B public key still needed — Witness verifies claims from the remote Sandbox B
+      VEIL_SANDBOX_B_PUBLIC_KEY: "${VEIL_SANDBOX_B_PUBLIC_KEY}"
+      # TOB-S009: opt-in mTLS for the cert RPCs (:50058). See base
+      # docker-compose.yml veil-witness service for the full operator
+      # runbook + the graceful-degradation rationale.
+      WITNESS_MTLS_CA_BUNDLE_PATH: "${WITNESS_MTLS_CA_BUNDLE_PATH:-}"
+      WITNESS_MTLS_SERVER_CERT_PATH: "${WITNESS_MTLS_SERVER_CERT_PATH:-}"
+      WITNESS_MTLS_SERVER_KEY_PATH: "${WITNESS_MTLS_SERVER_KEY_PATH:-}"
+    volumes:
+      # TOB-S009 mTLS cert dir (read-only). Default empty-string mount
+      # is intentionally an explicit `${VEIL_WITNESS_MTLS_HOST_DIR:-}`
+      # — operators set this to /opt/dsa/certs/witness-mtls in
+      # config.env once the bootstrap script has run on the box.
+      - ${VEIL_WITNESS_MTLS_HOST_DIR:-./.certs/witness-mtls}:/etc/witness-mtls:ro
+    networks:
+      - dsa-witness
+      - dsa-witness-bridge
+      - dsa-witness-identity
+      - dsa-witness-audit
+      - dsa-witness-edge
+      - dsa-witness-certification
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:50059/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: on-failure
+
+  gateway:
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-gateway:${LUCAIRN_IMAGE_TAG:-1.0.0}"
+    depends_on:
+      sandbox-a:
+        condition: service_healthy
+      id-bridge:
+        condition: service_healthy
+    environment:
+      VEIL_ISSUER: "${VEIL_ISSUER:-DSA Veil Witness}"
+      VEIL_MANIFEST_SIGNING_KEY_ID: "${VEIL_MANIFEST_SIGNING_KEY_ID:-gateway_manifest_v1}"
+      # Public counterparts of the gateway/witness manifest-signing private
+      # keys; published in /.well-known/veil-keys.json keys[] so the W2B
+      # Runtime Invariant Harness #3 can verify signatures.*.key_id
+      # linkage. Default-empty so dev environments without manifest pubkey
+      # wiring keep the prior 5-key keys[] shape (no boot regression).
+      VEIL_GATEWAY_MANIFEST_PUBLIC_KEY: "${VEIL_GATEWAY_MANIFEST_PUBLIC_KEY:-}"
+      VEIL_WITNESS_MANIFEST_PUBLIC_KEY: "${VEIL_WITNESS_MANIFEST_PUBLIC_KEY:-}"
+      VEIL_WITNESS_SIGNED_MANIFEST_PATH: "${VEIL_WITNESS_SIGNED_MANIFEST_PATH:-/certs/witness-signed-manifest.json}"
+      <<: *dsa-prod-auth
+      IDENTITY_SERVICE_ADDR: "sandbox-a:50053"
+      BRIDGE_SERVICE_ADDR: "id-bridge:50052"
+      # HTTP health endpoint the gateway polls for real token-generation
+      # readiness (exercises the key manager + store writability via
+      # Server.Selfcheck). Must match the bridge's -health-addr flag (8082).
+      BRIDGE_HEALTH_ADDR: "id-bridge:8082"
+      # No local INFERENCE_SERVICE_ADDR — Sandbox B is remote
+      SANDBOX_B_REMOTE_ENDPOINT: "${SANDBOX_B_REMOTE_ENDPOINT}"
+      SANDBOX_B_CLIENT_CERT: "${SANDBOX_B_CLIENT_CERT:-}"
+      SANDBOX_B_CLIENT_KEY: "${SANDBOX_B_CLIENT_KEY:-}"
+      SANDBOX_B_CA_CERT: "${SANDBOX_B_CA_CERT:-}"
+      SANDBOX_B_API_KEY: "${SANDBOX_B_API_KEY:-}"
+      AUDIT_SERVICE_ADDR: "audit:50051"
+      GATEWAY_VERTICALS_DIR: "/etc/dsa/starter-templates"
+      GATEWAY_WAIT_TIMEOUT: "120"
+      DSA_LICENSE_KEY: "${DSA_LICENSE_KEY}"
+      DSA_LICENSE_SIGNING_KEY: "${DSA_LICENSE_SIGNING_KEY}"
+      SANITIZER_URL: "http://sanitizer:8086"
+      DSA_ADMIN_KEY: "${DSA_ADMIN_KEY}"
+      GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
+      # Invariant poller: only Sandbox A (local). Sandbox B is remote — no probe.
+      SANDBOX_A_INVARIANT_URL: "http://sandbox-a:8083/invariant"
+      GATEWAY_KEYSTORE_PATH: "/data/keystore.json"
+      # AES-256 key (base64 32 bytes) for keystore-at-rest encryption (#17).
+      # REQUIRED — gateway fails-closed at startup if missing, malformed,
+      # or wrong length. Generate with: openssl rand -base64 32
+      # The customer bootstrap (scripts/generate-customer-bootstrap.sh)
+      # auto-generates this on first run; re-runs are idempotent so the
+      # encrypted keystore stays decryptable across reruns.
+      GATEWAY_KEYSTORE_KEY: "${GATEWAY_KEYSTORE_KEY:?required — run scripts/generate-customer-bootstrap.sh or set in config.env}"
+      VEIL_ENABLED: "${VEIL_ENABLED:-true}"
+      VEIL_WITNESS_CERT_ADDR: "veil-witness:50058"
+      VEIL_WITNESS_ADDR: "veil-witness:50057"
+      VEIL_GATEWAY_SIGNING_KEY: "${VEIL_GATEWAY_SIGNING_KEY:?required}"
+      VEIL_MANIFEST_SIGNING_KEY: "${VEIL_MANIFEST_SIGNING_KEY:-}"
+      GATEWAY_BASE_URL: ${GATEWAY_BASE_URL:-http://localhost:8080}
+      SUPABASE_URL: "${SUPABASE_URL:-}"
+      LUCAIRN_RESOURCE_BASE_URL: "${LUCAIRN_RESOURCE_BASE_URL:-}"
+      # TOB-G005 trusted-proxy CIDR for X-Real-IP plumbing. Empty → no
+      # trusted proxies (default — RemoteAddr only). Behind Caddy on
+      # loopback set to "127.0.0.1/32".
+      GATEWAY_TRUSTED_PROXY_CIDRS: "${GATEWAY_TRUSTED_PROXY_CIDRS:-}"
+      # TOB-S009: gateway-side mTLS for the witness :50058 dial. See
+      # base docker-compose.yml gateway service for the full operator
+      # runbook.
+      WITNESS_MTLS_CA_BUNDLE_PATH: "${WITNESS_MTLS_CA_BUNDLE_PATH:-}"
+      WITNESS_MTLS_CLIENT_CERT_PATH: "${WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH:-}"
+      WITNESS_MTLS_CLIENT_KEY_PATH: "${WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH:-}"
+      WITNESS_MTLS_SERVER_NAME: "${WITNESS_MTLS_SERVER_NAME:-witness}"
+    volumes:
+      - ./starter-templates:/etc/dsa/starter-templates:ro
+      - gateway-data:/data
+      # Mount mTLS certificates if provided (set SANDBOX_B_CERT_DIR in config.env)
+      - ${SANDBOX_B_CERT_DIR:-./.certs}:/certs:ro
+      # TOB-S009: deploy-local CA + gateway client cert for mTLS to the
+      # witness. Same default as the witness service above.
+      - ${VEIL_WITNESS_MTLS_HOST_DIR:-./.certs/witness-mtls}:/etc/witness-mtls:ro
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
+      - "127.0.0.1:${GATEWAY_HEALTH_PORT:-8085}:8085"
+    networks:
+      - dsa-identity
+      - dsa-bridge
+      - dsa-audit-identity
+      - dsa-witness-edge
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8085/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: on-failure
+
+  # ── Certification ───────────────────────────────────────────────────────────
+
+  cert-builder:
+    # Certification is outside the critical request path and GHCR access for
+    # these images is not reliable enough yet for default customer E2E. Keep
+    # the services opt-in until registry access is fixed.
+    profiles: ["certification"]
+    image: ${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-cert-builder:${LUCAIRN_IMAGE_TAG:-1.0.0}
+    restart: unless-stopped
+    environment:
+      BUILD_AUTH_TOKEN: ${BUILD_AUTH_TOKEN:?BUILD_AUTH_TOKEN required}
+      WITNESS_ADDR: veil-witness:50058
+      PROBER_URL: ${PROBER_URL:-}          # empty = prober-less mode
+      CUSTOMER_KEY_FILE: /keys/customer.pem
+      CUSTOMER_KEY_ID: ${CUSTOMER_KEY_ID:?CUSTOMER_KEY_ID required}
+      CERT_STORE_DIR: /data/certs
+    volumes:
+      - ./keys:/keys:ro
+      - cert-store:/data/certs
+    networks:
+      - dsa-certification
+      - dsa-witness-certification
+    depends_on:
+      veil-witness:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  cert-portal:
+    profiles: ["certification"]
+    image: ${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-cert-portal:${LUCAIRN_IMAGE_TAG:-1.0.0}
+    restart: unless-stopped
+    environment:
+      PORTAL_API_KEY: ${PORTAL_API_KEY:?PORTAL_API_KEY required}
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - dsa-certification
+    depends_on:
+      cert-builder:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3

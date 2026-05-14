@@ -1,0 +1,25 @@
+{{- if .Values.global.wireguardEncryption }}
+# Cilium WireGuard transparent encryption.
+# All pod-to-pod traffic across DSA namespaces is encrypted at L3
+# without requiring application-level TLS or certificate management.
+#
+# Prerequisites:
+#   - Cilium CNI installed with: --set encryption.enabled=true --set encryption.type=wireguard
+#   - Linux kernel >= 5.6 (WireGuard built-in) on all nodes
+#
+# This annotation on DSA namespaces signals to Cilium that traffic
+# originating from or destined to these namespaces must be encrypted.
+{{- range .Values.namespaces }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .name }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+    dsa.io/namespace: {{ .label }}
+  annotations:
+    # Cilium WireGuard: encrypt all traffic in/out of this namespace
+    io.cilium.network.wg-encryption: "true"
+{{- end }}
+{{- end }}

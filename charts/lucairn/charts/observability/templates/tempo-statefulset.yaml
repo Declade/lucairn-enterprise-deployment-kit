@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tempo
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/part-of: dsa
+    app.kubernetes.io/component: observability
+spec:
+  serviceName: tempo
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tempo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tempo
+        app.kubernetes.io/part-of: dsa
+        app.kubernetes.io/component: observability
+    spec:
+      securityContext:
+        fsGroup: 10001
+        runAsUser: 10001
+        runAsNonRoot: true
+      containers:
+        - name: tempo
+          image: "{{ .Values.tempo.image.repository }}:{{ .Values.tempo.image.tag }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: false
+          args:
+            - -config.file=/etc/tempo/tempo.yaml
+          ports:
+            - name: http
+              containerPort: 3200
+              protocol: TCP
+            - name: otlp-grpc
+              containerPort: 4317
+              protocol: TCP
+          resources:
+            requests:
+              cpu: {{ .Values.tempo.resources.requests.cpu }}
+              memory: {{ .Values.tempo.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.tempo.resources.limits.cpu }}
+              memory: {{ .Values.tempo.resources.limits.memory }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/tempo
+            - name: tempo-storage
+              mountPath: /var/tempo
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: tempo-config
+        - name: tempo-storage
+          persistentVolumeClaim:
+            claimName: tempo-storage

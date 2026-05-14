@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Chart.Name }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+data:
+  GRPC_ADDR: ":{{ .Values.service.grpcPort }}"
+  HEALTH_ADDR: ":{{ .Values.service.healthPort }}"
+  VEIL_ENABLED: {{ .Values.veilEnabled | quote }}
+  VEIL_WITNESS_ADDR: {{ .Values.veilWitnessAddr | quote }}
+  GRPC_TLS_ENABLED: {{ .Values.grpcTlsEnabled | quote }}
+  DSA_ENV: {{ required "global.dsaEnv must be set to \"development\" or \"production\" in the umbrella values" .Values.global.dsaEnv | quote }}

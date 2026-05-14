@@ -1,0 +1,6 @@
+apiVersion: v2
+name: veil-witness
+description: DSA Veil Witness — cryptographic attestation service for pipeline claims
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

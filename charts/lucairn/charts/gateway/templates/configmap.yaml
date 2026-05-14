@@ -1,0 +1,36 @@
+{{- $readinessBundlePath := "" -}}
+{{- if .Values.readiness.existingBundleSecret -}}
+{{- $readinessBundlePath = printf "%s/%s" (trimSuffix "/" .Values.readiness.bundleMountPath) .Values.readiness.bundleFileName -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Chart.Name }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+data:
+  IDENTITY_SERVICE_ADDR: {{ .Values.identityServiceAddr | quote }}
+  BRIDGE_SERVICE_ADDR: {{ .Values.bridgeServiceAddr | quote }}
+  INFERENCE_SERVICE_ADDR: {{ .Values.inferenceServiceAddr | quote }}
+  # Forward-looking: Gateway does not yet consume AUDIT_SERVICE_ADDR
+  # but the network policy allows the connection for future audit emission
+  AUDIT_SERVICE_ADDR: {{ .Values.auditServiceAddr | quote }}
+  GATEWAY_VERTICALS_DIR: {{ .Values.verticalsDir | quote }}
+  SANITIZER_URL: {{ .Values.sanitizerUrl | quote }}
+  SANDBOX_B_PROXY_URL: {{ .Values.sandboxBProxyUrl | quote }}
+  GATEWAY_KEYSTORE_PATH: {{ .Values.keystorePath | quote }}
+  GRPC_TLS_ENABLED: {{ .Values.grpcTlsEnabled | quote }}
+  VEIL_ENABLED: {{ .Values.veilEnabled | quote }}
+  VEIL_WITNESS_CERT_ADDR: {{ .Values.veilWitnessCertAddr | quote }}
+  GATEWAY_REQUIRE_READINESS: {{ ternary "true" "false" .Values.readiness.required | quote }}
+  GATEWAY_READINESS_USE_CASE: {{ .Values.readiness.useCase | quote }}
+  GATEWAY_READINESS_MAX_AGE: {{ .Values.readiness.maxAge | quote }}
+  GATEWAY_READINESS_BUNDLE: {{ $readinessBundlePath | quote }}
+  GATEWAY_BASE_URL: {{ .Values.gatewayBaseUrl | quote }}
+  DSA_ENV: {{ required "global.dsaEnv must be set to \"development\" or \"production\" in the umbrella values" .Values.global.dsaEnv | quote }}
+  # PR-C1 fix-up round 1 (FIX-6): sanitize cache knobs.
+  SANITIZE_CACHE_ENABLED: {{ ternary "true" "false" (default false .Values.sanitizeCache.enabled) | quote }}
+  SANITIZE_CACHE_MAX_ENTRIES: {{ default 10000 .Values.sanitizeCache.maxEntries | quote }}
+  SANITIZE_CACHE_TTL_SECONDS: {{ default 3600 .Values.sanitizeCache.ttlSeconds | quote }}

@@ -1,0 +1,57 @@
+witness:
+  address: ""
+
+prober:
+  url: ""
+  auth: apiKey
+  apiKey: ""
+  publicKeyPEM: ""
+
+signing:
+  mode: local
+  local:
+    keyFile: /keys/customer-key.pem
+    keyId: ""
+
+portal:
+  apiKey: ""
+  replicas: 1
+  ingress:
+    enabled: false
+    host: ""
+    className: nginx
+
+# Image tags. Operators set these to a specific DSA_VERSION value (e.g. "0.1.0").
+# Empty string defaults to the chart's appVersion (Chart.yaml). This mirrors the
+# compose-side ${DSA_VERSION:-latest} pattern from docker-compose.customer.yml.
+# Override per-deploy with --set images.certBuilder.tag=<version> /
+# --set images.certPortal.tag=<version>.
+images:
+  certBuilder:
+    repository: ghcr.io/marcschuelke/dsa-cert-builder
+    tag: ""
+  certPortal:
+    repository: ghcr.io/marcschuelke/dsa-cert-portal
+    tag: ""
+
+postgresql:
+  image: postgres:16
+  storage: 10Gi
+  database: dsa_certs
+  user: certuser
+  password: ""
+
+certBuilder:
+  replicas: 2
+  pollInterval: 30s
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+resourceQuota:
+  cpu: "2"
+  memory: 1Gi

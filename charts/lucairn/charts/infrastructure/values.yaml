@@ -1,0 +1,21 @@
+namespaces:
+  - name: dsa-edge
+    label: edge
+  - name: dsa-identity
+    label: identity
+  - name: dsa-bridge
+    label: bridge
+  - name: dsa-ai
+    label: ai
+  - name: dsa-audit
+    label: audit
+  - name: dsa-observability
+    label: observability
+  - name: dsa-ingest
+    label: ingest
+  - name: dsa-admin
+    label: admin
+  - name: dsa-witness
+    label: witness
+  - name: dsa-demo
+    label: demo

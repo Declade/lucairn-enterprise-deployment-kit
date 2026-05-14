@@ -1,0 +1,61 @@
+namespace: dsa-admin
+
+replicaCount: 1
+
+image:
+  repository: dsa-admin
+  tag: ""
+  pullPolicy: IfNotPresent
+
+service:
+  webPort: 8090
+  healthPort: 8091
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+hpa:
+  enabled: false
+
+pdb:
+  enabled: false
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+auditServiceAddr: "audit.dsa-audit.svc:50051"
+gatewayHealthURL: "http://gateway.dsa-edge.svc:8085/healthz"
+gatewayReadyURL: "http://gateway.dsa-edge.svc:8085/readyz"
+sandboxAHealthURL: "http://sandbox-a.dsa-identity.svc:8083/healthz"
+sandboxAReadyURL: "http://sandbox-a.dsa-identity.svc:8083/readyz"
+idBridgeHealthURL: "http://id-bridge.dsa-bridge.svc:8082/healthz"
+idBridgeReadyURL: "http://id-bridge.dsa-bridge.svc:8082/readyz"
+sandboxBHealthURL: "http://sandbox-b.dsa-ai.svc:8084/healthz"
+sandboxBReadyURL: "http://sandbox-b.dsa-ai.svc:8084/readyz"
+auditHealthURL: "http://audit.dsa-audit.svc:8081/healthz"
+auditReadyURL: "http://audit.dsa-audit.svc:8081/readyz"
+ingestHealthURL: "http://ingest.dsa-ingest.svc:8096/healthz"
+ingestReadyURL: "http://ingest.dsa-ingest.svc:8096/readyz"
+
+secrets:
+  backend: k8s-native
+  values:
+    # PRODUCTION: MUST override — will fail authentication if left as default.
+    adminPassword: "CHANGE-ME-IN-PRODUCTION"
+    dsaServiceToken: ""  # PRODUCTION: set via existingSecret or --set; dev: inline value

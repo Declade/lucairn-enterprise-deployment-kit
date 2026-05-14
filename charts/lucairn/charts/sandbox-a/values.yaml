@@ -1,0 +1,95 @@
+namespace: dsa-identity
+
+replicaCount: 2
+
+image:
+  repository: dsa-sandbox-a
+  tag: ""
+  pullPolicy: IfNotPresent
+
+service:
+  grpcPort: 50053
+  healthPort: 8083
+
+auditServiceAddr: "audit.dsa-audit.svc:50051"
+grpcTlsEnabled: "false"
+veilEnabled: "true"
+veilWitnessAddr: "veil-witness.dsa-witness.svc.cluster.local:50057"
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilization: 70
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+postgresql:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+  storageSize: 10Gi
+  storageClass: ""
+  user: dsa
+  database: sandbox_a
+
+external:
+  databaseUrl: ""
+
+sanitizer:
+  image:
+    repository: dsa/sanitizer
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  confidenceThreshold: 0.25
+  safePatterns: []
+  llmAuditEnabled: false
+  qiEngineEnabled: "true"
+  qiEngineThreshold: "0.25"
+  qiEngineAction: "generalize"
+  llmScanEnabled: false
+  llmScanTimeout: 30
+  llmScanMode: "ensemble"
+  llmScanRestoreThreshold: 0.9
+
+secrets:
+  backend: k8s-native
+  values:
+    # PRODUCTION: MUST override with a strong, unique password.
+    postgresPassword: "CHANGE-ME-IN-PRODUCTION"
+    encryptionKey: ""
+    adminKey: ""
+    veilSigningKey: ""
+    dsaServiceToken: ""  # PRODUCTION: set via existingSecret or --set; dev: inline value
+    modelAuthSecret: ""  # set when sanitizer.llmScanEnabled=true
+  vault:
+    path: "dsa/data/sandbox-a"
+  aws:
+    name: "dsa/sandbox-a"
+  azure:
+    name: "dsa-sandbox-a"

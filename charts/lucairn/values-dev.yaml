@@ -1,0 +1,678 @@
+# deploy/helm/values-dev.yaml
+# Development overlay: single replicas, minimal resources, bundled infra
+global:
+  secrets:
+    backend: k8s-native
+  dsaEnv: development
+  demoEnabled: false  # demo image not built yet
+  ingestEgressEnabled: true
+  llmEgressEnabled: true  # allow Sandbox B to reach Anthropic API
+  llmShieldEnabled: false  # enable LLM PII Shield (Layer 3) in dsa-identity
+  # Enable Cilium DNS restriction policies and Hubble audit dashboard.
+  # Requires Cilium CNI. See deploy/cilium-setup.md.
+  dnsRestriction: true
+
+audit:
+  replicaCount: 1
+  hpa:
+    enabled: false
+  pdb:
+    enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  secrets:
+    values:
+      dsaServiceToken: "dev-service-token-do-not-use-in-prod"
+
+id-bridge:
+  replicaCount: 1
+  hpa:
+    enabled: false
+  pdb:
+    enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  secrets:
+    values:
+      dsaServiceToken: "dev-service-token-do-not-use-in-prod"
+
+sandbox-a:
+  replicaCount: 1
+  hpa:
+    enabled: false
+  pdb:
+    enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  secrets:
+    values:
+      dsaServiceToken: "dev-service-token-do-not-use-in-prod"
+
+sandbox-b:
+  replicaCount: 1
+  workers: 2
+  hpa:
+    enabled: false
+  pdb:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  ollama:
+    gpu:
+      enabled: false
+  secrets:
+    values:
+      anthropicApiKey: "${ANTHROPIC_API_KEY}"
+      sandboxBApiKeys: "dev-api-key-do-not-use-in-prod"
+  verticals:
+    itsm:
+      config:
+        provider: anthropic
+        model: claude-sonnet-4-20250514
+        temperature: 0.3
+        max_tokens: 2048
+        retention_days: 365
+      prompts:
+        ticket_summarization: |
+          You are a senior IT service management analyst specialising in ITIL-aligned
+          incident and service request management. You produce concise, actionable ticket
+          summaries for handoff, escalation, or management reporting.
+
+          <context>
+          You are analysing pseudonymised ITSM ticket data. All personally identifiable
+          information (names, email addresses, employee IDs, device serial numbers) has
+          been replaced with anonymised placeholders such as [PERSON_1], [EMAIL_1], or
+          [DEVICE_1] as part of a privacy-preserving AI architecture. You only receive
+          operational ticket data linked to a pseudonymous token.
+
+          Your summaries must be useful for the next support tier or a service delivery
+          manager reviewing the ticket without needing to read the full history.
+          </context>
+
+          <instructions>
+          1. Read all ticket fields carefully, including the redacted description and any
+             resolution notes.
+          2. Identify the core issue reported, distinguishing symptoms from root cause
+             where possible.
+          3. Note the current ticket state, priority, and assignment group.
+          4. Summarise what has been done so far (if resolution notes are present).
+          5. Identify what remains open or what the next action should be.
+          6. Keep the summary concise — aim for 3-5 sentences for the executive summary
+             and structured details below.
+          7. Preserve all anonymised placeholders exactly as they appear (e.g., [PERSON_1]).
+             Never attempt to guess or reconstruct real identities.
+          </instructions>
+
+          <ticket_data>
+          {input_data}
+          </ticket_data>
+
+          <previous_context>
+          {feature_context}
+          </previous_context>
+
+          <output_format>
+          Respond with a JSON object containing these fields:
+          - "reasoning": string
+          - "executive_summary": string
+          - "core_issue": string
+          - "current_state": object with "status", "priority", "assignment_group", "age_assessment"
+          - "actions_taken": array of strings
+          - "next_steps": array of strings
+          - "escalation_needed": boolean
+          - "escalation_reason": string or null
+          - "tags": array of strings
+          </output_format>
+        incident_classification: |
+          You are an ITIL-certified incident management specialist. You classify
+          incidents accurately to ensure correct routing and priority assignment.
+
+          <context>
+          You are analysing pseudonymised incident data. All PII has been replaced
+          with anonymised placeholders as part of a privacy-preserving architecture.
+          </context>
+
+          <instructions>
+          1. Analyse the short description and redacted description.
+          2. Determine the primary ITSM category and subcategory.
+          3. Assess priority using ITIL priority matrix (Impact x Urgency).
+          4. Suggest the appropriate assignment group.
+          5. Identify if this could be a major incident.
+          6. Preserve all anonymised placeholders exactly as they appear.
+          </instructions>
+
+          <incident_data>
+          {input_data}
+          </incident_data>
+
+          <previous_context>
+          {feature_context}
+          </previous_context>
+
+          <output_format>
+          Respond with a JSON object containing:
+          - "reasoning": string
+          - "category": string
+          - "subcategory": string
+          - "impact": object with "level" (1-3), "description"
+          - "urgency": object with "level" (1-3), "description"
+          - "priority": object with "level" (1-4), "label"
+          - "suggested_assignment_group": string
+          - "major_incident_candidate": boolean
+          - "confidence": number (0.0-1.0)
+          </output_format>
+        resolution_suggestion: |
+          You are a senior IT support engineer. You suggest resolution steps based
+          on incident details and patterns from similar resolved incidents.
+
+          <context>
+          You are analysing pseudonymised incident data. All PII has been replaced
+          with anonymised placeholders as part of a privacy-preserving architecture.
+          </context>
+
+          <instructions>
+          1. Analyse the incident to understand the reported issue.
+          2. Review similar resolved incidents for patterns.
+          3. Develop a structured resolution plan.
+          4. Identify when escalation is warranted.
+          5. Preserve all anonymised placeholders exactly as they appear.
+          </instructions>
+
+          <incident_data>
+          {input_data}
+          </incident_data>
+
+          <similar_incidents>
+          {feature_context}
+          </similar_incidents>
+
+          <output_format>
+          Respond with a JSON object containing:
+          - "reasoning": string
+          - "likely_root_cause": string
+          - "diagnostic_steps": array of strings
+          - "resolution_steps": array of objects with "step", "detail", "risk_level"
+          - "verification_steps": array of strings
+          - "escalation_criteria": array of strings
+          - "confidence": number (0.0-1.0)
+          </output_format>
+        knowledge_generation: |
+          You are a knowledge management specialist creating reusable KB articles
+          from resolved incidents following KCS methodology.
+
+          <context>
+          You are generating a knowledge article from pseudonymised resolved ticket
+          data. The article must be fully generic — strip all placeholder references
+          and generalise them.
+          </context>
+
+          <instructions>
+          1. Extract reusable knowledge from the resolved ticket.
+          2. Write a knowledge article with: Title, Symptoms, Cause, Resolution,
+             Prevention sections.
+          3. Replace ALL anonymised placeholders with generic terms.
+          4. Include ServiceNow-compatible metadata.
+          </instructions>
+
+          <resolved_ticket_data>
+          {input_data}
+          </resolved_ticket_data>
+
+          <additional_context>
+          {feature_context}
+          </additional_context>
+
+          <output_format>
+          Respond with a JSON object containing:
+          - "reasoning": string
+          - "article": object with "title", "symptoms", "cause", "resolution", "prevention"
+          - "metadata": object with "category", "article_type", "keywords"
+          </output_format>
+        change_risk_assessment: |
+          You are an ITIL-certified change manager specialising in risk assessment.
+
+          <context>
+          You are assessing pseudonymised change request data. All PII has been
+          replaced with anonymised placeholders as part of a privacy-preserving
+          architecture.
+          </context>
+
+          <instructions>
+          1. Analyse the change request: type, description, affected CIs.
+          2. Evaluate risk across: service impact, rollback complexity,
+             implementation complexity, testing adequacy, timing risk, security.
+          3. Assign overall risk level using ITIL risk matrix.
+          4. Recommend approval path.
+          5. Preserve all anonymised placeholders exactly as they appear.
+          </instructions>
+
+          <change_request_data>
+          {input_data}
+          </change_request_data>
+
+          <environment_context>
+          {feature_context}
+          </environment_context>
+
+          <output_format>
+          Respond with a JSON object containing:
+          - "reasoning": string
+          - "risk_dimensions": array of objects
+          - "overall_risk": object with "likelihood", "impact", "score", "level"
+          - "approval_recommendation": string
+          - "conditions_for_approval": array of strings
+          - "confidence": number (0.0-1.0)
+          </output_format>
+        problem_analysis: |
+          You are a senior problem manager with expertise in root cause analysis
+          and ITIL problem management processes.
+
+          <context>
+          You are analysing pseudonymised incident pattern data. All PII has been
+          replaced with anonymised placeholders as part of a privacy-preserving
+          architecture.
+          </context>
+
+          <instructions>
+          1. Analyse the problem record and related incidents.
+          2. Apply 5 Whys and fault tree analysis.
+          3. Assess business impact.
+          4. Recommend a permanent fix with effort and risk assessment.
+          5. Preserve all anonymised placeholders exactly as they appear.
+          </instructions>
+
+          <problem_data>
+          {input_data}
+          </problem_data>
+
+          <incident_pattern_context>
+          {feature_context}
+          </incident_pattern_context>
+
+          <output_format>
+          Respond with a JSON object containing:
+          - "reasoning": string
+          - "root_cause_analysis": object with "five_whys", "root_cause", "confidence"
+          - "pattern_summary": object with "incident_count", "common_category"
+          - "business_impact": object with "severity", "affected_users_estimate"
+          - "permanent_fix": object with "description", "implementation_steps", "effort_estimate"
+          </output_format>
+        platform_analysis: |
+          You are a senior ServiceNow platform consultant and ITIL expert. You
+          produce strategic platform health assessments for CIOs and IT leadership.
+
+          <context>
+          You are analysing aggregated, anonymised ServiceNow platform statistics.
+          No PII is included — all data is statistical. This analysis is conducted
+          through a privacy-preserving architecture.
+          </context>
+
+          <instructions>
+          1. Analyse all provided platform statistics holistically.
+          2. Identify operational health indicators.
+          3. Assess ITIL process maturity.
+          4. Identify risks and provide actionable recommendations.
+          5. Be direct and honest about problems.
+          </instructions>
+
+          <platform_data>
+          {input_data}
+          </platform_data>
+
+          <previous_context>
+          {feature_context}
+          </previous_context>
+
+          <output_format>
+          Respond with a JSON object containing:
+          - "reasoning": string
+          - "executive_summary": string
+          - "platform_health_score": integer 1-100
+          - "health_breakdown": object with per-process scores
+          - "critical_findings": array of objects
+          - "recommendations": array of objects with "action", "priority", "effort"
+          - "itil_maturity": object with process maturity levels
+          </output_format>
+        hr_case_analysis: |
+          You are a senior HR operations analyst specialising in workplace case
+          management. You produce structured, legally-aware case assessments.
+
+          <context>
+          You are analysing pseudonymised HR case data. All PII has been replaced
+          with anonymised placeholders as part of a privacy-preserving architecture.
+          Department and location have been generalised to prevent re-identification.
+          </context>
+
+          <instructions>
+          1. Identify the core issue: complaint type, severity, parties involved.
+          2. Assess urgency and legal implications (AGG, BetrVG, GDPR, HinSchG).
+          3. Identify what actions have been taken and what remains open.
+          4. Recommend next steps with sensitivity to all parties.
+          5. Flag mandatory reporting obligations.
+          6. Preserve all anonymised placeholders exactly as they appear.
+          </instructions>
+
+          <case_data>
+          {input_data}
+          </case_data>
+
+          <previous_context>
+          {feature_context}
+          </previous_context>
+
+          <output_format>
+          Respond with a JSON object containing:
+          - "reasoning": string
+          - "executive_summary": string
+          - "case_type": string
+          - "severity": string (low/medium/high/critical)
+          - "parties_involved": array of objects with "placeholder" and "role"
+          - "legal_implications": array of strings
+          - "recommended_next_steps": array of strings
+          - "mandatory_deadlines": array of objects
+          - "escalation_needed": boolean
+          - "confidentiality_level": string
+          </output_format>
+    finance:
+      config:
+        provider: ollama
+        model: tinyllama
+    healthcare:
+      config:
+        provider: ollama
+        model: tinyllama
+    government:
+      config:
+        provider: ollama
+        model: tinyllama
+    test:
+      config:
+        provider: ollama
+        model: tinyllama
+
+demo:
+  enabled: false  # demo image not built yet for k3s
+  secrets:
+    values:
+      identityDbPassword: "dsa"
+      bridgeDbPassword: "dsa"
+      auditDbPassword: "dsa"
+
+infrastructure:
+  namespaces:
+    - name: dsa-edge
+      label: edge
+    - name: dsa-identity
+      label: identity
+    - name: dsa-bridge
+      label: bridge
+    - name: dsa-ai
+      label: ai
+    - name: dsa-audit
+      label: audit
+    - name: dsa-observability
+      label: observability
+    - name: dsa-ingest
+      label: ingest
+    - name: dsa-demo
+      label: demo
+    - name: dsa-admin
+      label: admin
+    - name: dsa-witness
+      label: witness
+
+ingest:
+  enabled: true
+  secrets:
+    values:
+      dsaServiceToken: "dev-service-token-do-not-use-in-prod"
+
+gateway:
+  replicaCount: 1
+  hpa:
+    enabled: false
+  pdb:
+    enabled: false
+  ingress:
+    enabled: true
+    host: dsa.local
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  secrets:
+    values:
+      dsaServiceToken: "dev-service-token-do-not-use-in-prod"
+  verticals:
+    itsm:
+      configYaml: |
+        gateway:
+          allowed_context_keys:
+            ticket_summarization:
+              - ticket_number
+              - short_description
+              - description_redacted
+              - category
+              - subcategory
+              - priority
+              - state
+              - assignment_group
+              - opened_date
+              - resolution_notes_redacted
+            incident_classification:
+              - short_description
+              - description_redacted
+              - category
+              - subcategory
+              - priority
+              - affected_ci
+              - business_service
+            resolution_suggestion:
+              - short_description
+              - description_redacted
+              - category
+              - subcategory
+              - priority
+              - similar_incidents_redacted
+              - knowledge_articles
+            knowledge_generation:
+              - ticket_number
+              - short_description
+              - description_redacted
+              - resolution_notes_redacted
+              - category
+              - subcategory
+              - root_cause_redacted
+            change_risk_assessment:
+              - change_number
+              - short_description
+              - description_redacted
+              - change_type
+              - risk_level
+              - affected_cis
+              - business_services
+              - implementation_plan_redacted
+            problem_analysis:
+              - problem_number
+              - short_description
+              - description_redacted
+              - related_incidents_count
+              - affected_cis
+              - business_impact
+              - workaround_redacted
+            platform_analysis:
+              - platform_summary
+              - incident_stats
+              - change_stats
+              - problem_stats
+              - cmdb_stats
+              - knowledge_stats
+              - sla_stats
+              - user_stats
+              - concerns
+              - analysis_scope
+            hr_case_analysis:
+              - case_number
+              - short_description
+              - description_redacted
+              - category
+              - subcategory
+              - priority
+              - state
+              - opened_date
+              - department_generalized
+              - location_generalized
+          max_context_value_length: 2000
+          max_context_keys: 20
+    finance:
+      configYaml: |
+        gateway:
+          allowed_context_keys:
+            risk_assessment:
+              - transaction_amount
+              - transaction_type
+              - merchant_category
+              - device_fingerprint
+              - ip_country
+              - transaction_date
+              - transaction_currency
+            credit_scoring:
+              - income_bracket
+              - employment_status
+              - account_age_days
+              - existing_products
+              - credit_utilization
+            fraud_detection:
+              - transaction_amount
+              - transaction_type
+              - merchant_category
+              - device_fingerprint
+              - ip_country
+              - is_international
+            product_recommendation:
+              - account_type
+              - account_age_days
+              - existing_products
+              - monthly_volume
+          max_context_value_length: 1000
+          max_context_keys: 20
+    healthcare:
+      configYaml: |
+        gateway:
+          allowed_context_keys:
+            diagnostic_support:
+              - symptoms
+              - vital_signs
+              - lab_results
+              - medical_history_summary
+            drug_interaction:
+              - current_medications
+              - proposed_medication
+              - known_allergies
+            clinical_trial_match:
+              - diagnosis_code
+              - treatment_history
+              - biomarkers
+          max_context_value_length: 2000
+          max_context_keys: 20
+    government:
+      configYaml: |
+        gateway:
+          allowed_context_keys:
+            benefit_eligibility:
+              - household_size
+              - income_bracket
+              - employment_status
+              - region
+            document_classification:
+              - document_type
+              - document_text
+              - submission_date
+            tax_risk:
+              - filing_type
+              - income_bracket
+              - deduction_categories
+              - prior_audit_flag
+          max_context_value_length: 2000
+          max_context_keys: 20
+    test:
+      configYaml: |
+        gateway:
+          allowed_context_keys:
+            risk_assessment:
+              - transaction_amount
+              - transaction_type
+              - merchant_category
+              - device_fingerprint
+              - ip_country
+              - transaction_date
+              - transaction_currency
+            credit_scoring:
+              - income_bracket
+              - employment_status
+              - account_age_days
+              - existing_products
+              - credit_utilization
+            fraud_detection:
+              - transaction_amount
+              - transaction_type
+              - merchant_category
+              - device_fingerprint
+              - ip_country
+              - is_international
+            product_recommendation:
+              - account_type
+              - account_age_days
+              - existing_products
+              - monthly_volume
+          max_context_value_length: 1000
+          max_context_keys: 20
+
+veil-witness:
+  enabled: true
+  replicaCount: 1
+  hpa:
+    enabled: false
+  pdb:
+    enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+admin:
+  enabled: true
+  replicaCount: 1
+  hpa:
+    enabled: false
+  pdb:
+    enabled: false
+  secrets:
+    values:
+      dsaServiceToken: "dev-service-token-do-not-use-in-prod"
