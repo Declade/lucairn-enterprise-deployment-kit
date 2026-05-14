@@ -9,7 +9,7 @@ usage() {
 Usage:
   lucairn doctor --env customer.env --compose docker-compose.customer.yml [--offline] [--check-images] [--skip-image-check]
   lucairn support-bundle --env customer.env --compose docker-compose.customer.yml [--output bundles] [--offline]
-  lucairn bundle create --customer-slug acme --models-dir ./models --model-manifest model-manifest.yaml --env customer.env --image-tar images.tar
+  lucairn bundle create --customer-slug acme --models-dir ./models --model-manifest model-manifest.yaml --env customer.env --image-tar images.tar [--customer-data-dir ./customer-data]
   lucairn bundle prepare --customer-slug acme --staging-dir /secure/staging/acme [--output dist/customer-bundles]
   lucairn bundle verify --bundle dist/customer-bundles/lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ.tar.gz
 
@@ -35,6 +35,12 @@ info() {
 
 have() {
   command -v "$1" >/dev/null 2>&1
+}
+
+dir_has_payload_files() {
+  local dir="$1"
+  [ -d "$dir" ] || return 1
+  find "$dir" -mindepth 1 -type f ! -iname 'README' ! -iname 'README.*' | grep -q .
 }
 
 compose_cmd() {
@@ -430,7 +436,7 @@ verify_checksums() {
 
 bundle_create() {
   local slug="" models_dir="" manifest="" env_file="" output_dir="$ROOT/dist/customer-bundles"
-  local image_tar="" images_dir="" base_compose="$ROOT/docker-compose.customer.yml" self_compose="$ROOT/docker-compose.self-hosted.yml"
+  local image_tar="" images_dir="" data_dir="" base_compose="$ROOT/docker-compose.customer.yml" self_compose="$ROOT/docker-compose.self-hosted.yml"
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --customer-slug) slug="$2"; shift 2 ;;
@@ -440,6 +446,7 @@ bundle_create() {
       --output) output_dir="$2"; shift 2 ;;
       --image-tar) image_tar="$2"; shift 2 ;;
       --images-dir) images_dir="$2"; shift 2 ;;
+      --customer-data-dir|--demo-data-dir|--data-dir) data_dir="$2"; shift 2 ;;
       --base-compose) base_compose="$2"; shift 2 ;;
       --self-hosted-compose|--compose) self_compose="$2"; shift 2 ;;
       -h|--help) usage; exit 0 ;;
@@ -458,6 +465,7 @@ bundle_create() {
   require_file "$self_compose" "self-hosted compose"
   [ -z "$image_tar" ] || require_file "$image_tar" "image tar"
   [ -z "$images_dir" ] || [ -d "$images_dir" ] || fail "images dir not found: $images_dir"
+  [ -z "$data_dir" ] || [ -d "$data_dir" ] || fail "customer data dir not found: $data_dir"
 
   local ts bundle_name staging archive
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -466,7 +474,7 @@ bundle_create() {
   staging="$output_dir/$bundle_name"
   archive="$output_dir/$bundle_name.tar.gz"
   rm -rf "$staging" "$archive"
-  mkdir -p "$staging"/{bin,install,models,images,checksums,docs,config,migrations,starter-templates}
+  mkdir -p "$staging"/{bin,install,models,images,customer-data,checksums,docs,config,migrations,starter-templates}
 
   cp "$ROOT/bin/lucairn" "$staging/bin/lucairn"
   cp "$base_compose" "$staging/install/docker-compose.customer.yml"
@@ -490,6 +498,12 @@ bundle_create() {
     echo "No image archive included. Customer install must use registry access." > "$staging/images/README.txt"
   fi
 
+  if [ -n "$data_dir" ]; then
+    cp -R "$data_dir"/. "$staging/customer-data/"
+  else
+    echo "No customer demo data included." > "$staging/customer-data/README.txt"
+  fi
+
   {
     echo "customer_slug=$slug"
     echo "created_utc=$ts"
@@ -497,6 +511,11 @@ bundle_create() {
     echo "model_name=$(manifest_value "$manifest" name)"
     echo "model_format=$(manifest_value "$manifest" format)"
     echo "model_runtime=$(manifest_value "$manifest" runtime)"
+    if [ -n "$data_dir" ]; then
+      echo "customer_data=present"
+    else
+      echo "customer_data=absent"
+    fi
   } > "$staging/bundle-manifest.txt"
 
   write_checksums "$staging"
@@ -549,6 +568,7 @@ bundle_verify() {
 write_bundle_prepare_report() {
   local report="$1" slug="$2" staging_dir="$3" archive="$4" manifest="$5" env_file="$6"
   local image_delivery="$7" base_compose="$8" self_compose="$9"
+  local customer_data="${10}"
   local ts
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   {
@@ -564,6 +584,7 @@ write_bundle_prepare_report() {
     echo "model_format=$(manifest_value "$manifest" format)"
     echo "model_runtime=$(manifest_value "$manifest" runtime)"
     echo "image_delivery=$image_delivery"
+    echo "customer_data=$customer_data"
     echo "base_compose=$base_compose"
     echo "self_hosted_compose=$self_compose"
     echo "staging_dir=$staging_dir"
@@ -589,13 +610,15 @@ bundle_prepare() {
   [ -n "$staging_dir" ] || fail "--staging-dir is required"
   [ -d "$staging_dir" ] || fail "staging dir not found: $staging_dir"
 
-  local env_file models_dir manifest image_tar images_dir image_delivery base_compose self_compose
+  local env_file models_dir manifest image_tar images_dir data_dir image_delivery customer_data base_compose self_compose
   env_file="$staging_dir/customer.env"
   models_dir="$staging_dir/models"
   manifest="$models_dir/model-manifest.yaml"
   image_tar=""
   images_dir=""
+  data_dir=""
   image_delivery="registry"
+  customer_data="absent"
   base_compose="$ROOT/docker-compose.customer.yml"
   self_compose="$ROOT/docker-compose.self-hosted.yml"
 
@@ -605,9 +628,20 @@ bundle_prepare() {
   if [ -f "$staging_dir/images/lucairn-images.tar" ]; then
     image_tar="$staging_dir/images/lucairn-images.tar"
     image_delivery="archive"
-  elif [ -d "$staging_dir/images" ] && find "$staging_dir/images" -mindepth 1 -type f | grep -q .; then
+  elif dir_has_payload_files "$staging_dir/images"; then
     images_dir="$staging_dir/images"
     image_delivery="directory"
+  fi
+
+  if [ -d "$staging_dir/customer-data" ] && find "$staging_dir/customer-data" -mindepth 1 -type f | grep -q .; then
+    data_dir="$staging_dir/customer-data"
+    customer_data="present"
+  elif [ -d "$staging_dir/demo-data" ] && find "$staging_dir/demo-data" -mindepth 1 -type f | grep -q .; then
+    data_dir="$staging_dir/demo-data"
+    customer_data="present"
+  elif [ -d "$staging_dir/data" ] && find "$staging_dir/data" -mindepth 1 -type f | grep -q .; then
+    data_dir="$staging_dir/data"
+    customer_data="present"
   fi
 
   require_file "$env_file" "staged customer env"
@@ -627,6 +661,9 @@ bundle_prepare() {
     --base-compose "$base_compose"
     --self-hosted-compose "$self_compose"
   )
+  if [ -n "$data_dir" ]; then
+    create_args+=(--customer-data-dir "$data_dir")
+  fi
   if [ -n "$image_tar" ]; then
     create_args+=(--image-tar "$image_tar")
   elif [ -n "$images_dir" ]; then
@@ -644,7 +681,7 @@ bundle_prepare() {
   fi
   echo "$verify_output"
 
-  write_bundle_prepare_report "$report_file" "$slug" "$staging_dir" "$archive" "$manifest" "$env_file" "$image_delivery" "$base_compose" "$self_compose"
+  write_bundle_prepare_report "$report_file" "$slug" "$staging_dir" "$archive" "$manifest" "$env_file" "$image_delivery" "$base_compose" "$self_compose" "$customer_data"
   echo "agent report: $report_file"
 }
 

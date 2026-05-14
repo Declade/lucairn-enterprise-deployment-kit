@@ -65,7 +65,7 @@ models/[model files]
 images/lucairn-images.tar
 ```
 
-The image archive is optional when the customer will pull images from a registry. `bundle prepare` writes a non-secret report named `lucairn-customer-bundle-[slug]-report.txt` with the bundle checksum, model metadata, image delivery mode, and `bundle_verify=ok`.
+The image archive is optional when the customer will pull images from a registry. Optional staged `customer-data/`, `demo-data/`, or `data/` is copied into `customer-data/` inside the bundle. `bundle prepare` writes a non-secret report named `lucairn-customer-bundle-[slug]-report.txt` with the bundle checksum, model metadata, image delivery mode, customer data presence, and `bundle_verify=ok`.
 
 ## Customer Install
 

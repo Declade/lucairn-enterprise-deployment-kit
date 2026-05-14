@@ -1,6 +1,6 @@
 # Release Process
 
-Current customer-bundle tag line: `v1.2.0-agent-package-factory`
+Current customer-bundle tag line: `v1.3.0-customer-demo-data`
 
 ## Local Verification
 
@@ -12,7 +12,7 @@ make package
 ## Tag
 
 ```bash
-git tag -a v1.2.0-agent-package-factory -m "Lucairn enterprise agent package factory v1.2.0"
+git tag -a v1.3.0-customer-demo-data -m "Lucairn enterprise customer demo data v1.3.0"
 git push origin main --tags
 ```
 
@@ -20,7 +20,7 @@ git push origin main --tags
 
 Attach:
 
-- `dist/lucairn-enterprise-deployment-kit-1.2.0-agent-package-factory.tar.gz`
+- `dist/lucairn-enterprise-deployment-kit-1.3.0-customer-demo-data.tar.gz`
 - Helm chart package from `dist/` when Helm is installed.
 
 Release notes must include:
@@ -31,3 +31,4 @@ Release notes must include:
 - Support-bundle workflow.
 - Customer-bundle workflow when model files or offline image delivery are included.
 - Agent package factory workflow for Codex and Claude Code.
+- Optional staged customer demo data included in verified bundles.

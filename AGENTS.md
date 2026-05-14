@@ -22,6 +22,8 @@ Use a per-customer staging directory outside the repo:
     [customer model files]
   images/
     lucairn-images.tar
+  customer-data/
+    [optional synthetic or approved customer demo data]
 ```
 
 Optional staging overrides:
@@ -63,6 +65,7 @@ The sendable customer artifact is the generated `lucairn-customer-bundle-*.tar.g
 - `lucairn-customer-bundle-[slug]-report.txt`
 - the staged `model-manifest.yaml`
 - the staged `customer.env`
+- any staged `customer-data/`
 - the bundle recipient and delivery channel
 
 The agent report must never contain secret values. It records metadata, bundle checksum, image delivery mode, and verification status.

@@ -171,11 +171,12 @@ grep -q "checksum verification failed" "$TMPDIR/bundle-tamper.out"
 echo "lucairn bundle tests: ok"
 
 AGENT_STAGE="$TMPDIR/agent-staging/acme"
-mkdir -p "$AGENT_STAGE/models" "$AGENT_STAGE/images"
+mkdir -p "$AGENT_STAGE/models" "$AGENT_STAGE/images" "$AGENT_STAGE/demo-data"
 cp "$ENV_FILE" "$AGENT_STAGE/customer.env"
 cp "$MODEL_MANIFEST" "$AGENT_STAGE/models/model-manifest.yaml"
 cp "$MODEL_DIR/acme-support-q4.gguf" "$AGENT_STAGE/models/acme-support-q4.gguf"
 cp "$IMAGE_TAR" "$AGENT_STAGE/images/lucairn-images.tar"
+printf 'study_id,endpoint\nACME-001,spirometry\n' > "$AGENT_STAGE/demo-data/endpoint-demo.csv"
 
 AGENT_OUT="$TMPDIR/agent-output"
 "$ROOT/bin/lucairn" bundle prepare \
@@ -190,10 +191,17 @@ grep -q "bundle_verify=ok" "$AGENT_OUT/lucairn-customer-bundle-acme-report.txt"
 grep -q "model_runtime=llama-cpp" "$AGENT_OUT/lucairn-customer-bundle-acme-report.txt"
 grep -q "image_delivery=archive" "$AGENT_OUT/lucairn-customer-bundle-acme-report.txt"
 grep -q "customer_env=present" "$AGENT_OUT/lucairn-customer-bundle-acme-report.txt"
+grep -q "customer_data=present" "$AGENT_OUT/lucairn-customer-bundle-acme-report.txt"
 if grep -q "lcr_enterprise_test_secret\\|sk-test-sandbox-b-secret" "$AGENT_OUT/lucairn-customer-bundle-acme-report.txt"; then
   echo "agent packaging report leaked a secret" >&2
   exit 1
 fi
+
+AGENT_EXTRACT="$TMPDIR/agent-extract"
+mkdir -p "$AGENT_EXTRACT"
+tar -xzf "$AGENT_BUNDLE" -C "$AGENT_EXTRACT"
+AGENT_BASE_DIR="$(find "$AGENT_EXTRACT" -maxdepth 1 -type d -name 'lucairn-customer-bundle-acme-*' -print -quit)"
+test -f "$AGENT_BASE_DIR/customer-data/endpoint-demo.csv"
 
 MAKE_AGENT_OUT="$TMPDIR/make-agent-output"
 make -C "$ROOT" customer-bundle \
@@ -204,5 +212,30 @@ make -C "$ROOT" customer-bundle \
 MAKE_AGENT_BUNDLE="$(find "$MAKE_AGENT_OUT" -name 'lucairn-customer-bundle-acme-*.tar.gz' -print -quit)"
 test -n "$MAKE_AGENT_BUNDLE"
 grep -q "bundle_verify=ok" "$MAKE_AGENT_OUT/lucairn-customer-bundle-acme-report.txt"
+
+REGISTRY_STAGE="$TMPDIR/agent-staging/registry-only"
+mkdir -p "$REGISTRY_STAGE/models" "$REGISTRY_STAGE/images"
+cp "$ENV_FILE" "$REGISTRY_STAGE/customer.env"
+cat > "$REGISTRY_STAGE/models/model-manifest.yaml" <<'YAML'
+model:
+  name: qwen2.5:7b
+  format: openai-compatible
+  runtime: external-openai-compatible
+  endpoint: http://model-runtime.example/v1
+  context_window: 8192
+  gpu_required: false
+  min_vram_gb: 0
+  license: local-test-model
+  checksum_policy: external-runtime-no-model-file
+YAML
+printf 'No image archive included. Use registry access.\n' > "$REGISTRY_STAGE/images/README.txt"
+
+REGISTRY_OUT="$TMPDIR/registry-only-output"
+"$ROOT/bin/lucairn" bundle prepare \
+  --customer-slug registry-only \
+  --staging-dir "$REGISTRY_STAGE" \
+  --output "$REGISTRY_OUT" > "$TMPDIR/registry-only-prepare.out"
+
+grep -q "image_delivery=registry" "$REGISTRY_OUT/lucairn-customer-bundle-registry-only-report.txt"
 
 echo "lucairn agent prepare tests: ok"

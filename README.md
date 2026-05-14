@@ -1,6 +1,6 @@
 # Lucairn Enterprise Deployment Kit
 
-Target release: `v1.2.0-agent-package-factory`
+Target release: `v1.3.0-customer-demo-data`
 
 This repository contains the customer-installable Lucairn deployment kit for first enterprise self-hosted installs. The operating rule is simple: customer IT installs and operates the stack; Lucairn support never needs shell access to the customer box.
 
@@ -58,7 +58,7 @@ bin/lucairn bundle prepare \
   --output /secure/outbound/acme
 ```
 
-That command creates the bundle, verifies it, and writes a non-secret agent report. See `docs/AGENT_CUSTOMER_PACKAGING.md`.
+That command creates the bundle, verifies it, includes optional staged `customer-data/`, and writes a non-secret agent report. See `docs/AGENT_CUSTOMER_PACKAGING.md`.
 
 For Kubernetes:
 

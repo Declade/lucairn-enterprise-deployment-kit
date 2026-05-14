@@ -27,6 +27,8 @@ Stage customer inputs outside this repository:
     [model files referenced by model-manifest.yaml]
   images/
     lucairn-images.tar
+  customer-data/
+    [optional synthetic or approved customer demo data]
 ```
 
 If the customer will pull images from a registry, omit `images/lucairn-images.tar`; the report will mark `image_delivery=registry`.
@@ -73,6 +75,7 @@ model_name=...
 model_format=...
 model_runtime=...
 image_delivery=archive|directory|registry
+customer_data=present|absent
 human_review_required=true
 customer_files_committed_to_git=false
 ```
@@ -88,6 +91,7 @@ Before the bundle goes to the customer, a human must confirm:
 - `bundle_sha256` has been recorded,
 - the model manifest matches the customer-approved model,
 - the image delivery mode matches the customer install plan,
+- `customer_data=present` is expected when demo data should travel with the package,
 - the delivery channel is approved for confidential customer files.
 
 ## Customer Install Summary
