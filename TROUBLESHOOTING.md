@@ -46,6 +46,17 @@ If the prune doesn't free enough subnets (rare — only on Linux with very small
 
 Restart the daemon (`sudo systemctl restart docker` on Linux; OrbStack handles this automatically on relaunch). Re-run `docker compose up -d`.
 
+## Gateway Restart-Loops On Invalid License Key
+
+If the gateway log shows `invalid license key: malformed license key` and the container is restart-looping, `DSA_LICENSE_KEY` in `customer.env` is set to a non-empty value that does not validate against `DSA_LICENSE_SIGNING_KEY`.
+
+Two valid states:
+
+- **Empty (`DSA_LICENSE_KEY=`):** the gateway enters dev mode (no license enforcement; a `WARNING: no license key configured — running in unregistered/dev mode` line is logged on boot). Intended for local sandbox / development. Pair with `DSA_ENV=development` in `customer.env` so the production-only env gates (mTLS, readiness bundle) also relax.
+- **Lucairn-provisioned signed token:** the production path. Get this from Lucairn at customer-onboarding time; pair with `DSA_LICENSE_SIGNING_KEY` (also provided by Lucairn). The gateway validates the token and enforces tier limits, expiry, and feature flags.
+
+Placeholder strings like `REPLACE_WITH_LICENSE_KEY` or `DEMO_LICENSE_NEEDS_LUCAIRN_PROVISIONED` are the **worst case** — non-empty enough to skip the dev-mode bypass, but not a real signed token, so HMAC validation rejects them. Either leave the field empty (dev mode) or set a real Lucairn-provisioned value (prod mode).
+
 ## Gateway Unhealthy
 
 Check:
