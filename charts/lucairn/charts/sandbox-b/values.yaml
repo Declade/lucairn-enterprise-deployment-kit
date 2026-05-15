@@ -92,7 +92,7 @@ verticals:
   finance:
     config:
       provider: anthropic
-      model: claude-sonnet-4-20250514
+      model: claude-sonnet-4-6
       temperature: 0.3
       max_tokens: 2048
       retention_days: 90

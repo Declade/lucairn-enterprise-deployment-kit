@@ -14,10 +14,11 @@ This repository contains the customer-installable Lucairn deployment kit for fir
 - `model-manifest.example.yaml` - runtime-neutral model manifest template.
 - `bin/lucairn` - customer CLI with `doctor` and `support-bundle`.
 - `bin/lucairn bundle create/prepare/verify` - per-customer bundle builder, agent package factory, and verifier.
-- `AGENTS.md`, `CLAUDE.md` - operating contract for Codex, Claude Code, and similar agents.
+- `bin/lucairn-init` - one-command env file generator with Ed25519 pair derivation and `--dev` / `--production` modes.
+- `bin/lucairn-mint-customer` - mints first customer + `lcr_live_*` API key against a running gateway.
 - `migrations/`, `config/`, `starter-templates/` - runtime assets needed by the Compose path.
 - `INSTALL.md`, `OPS.md`, `TROUBLESHOOTING.md` - day-1 and day-2 runbooks.
-- `docs/` - enterprise support, SDK, mirror, clean-host rehearsal, handoff gates, and internal hygiene notes.
+- `docs/` - enterprise support, SDK, mirror, clean-host rehearsal, customer bundle, handoff gates, DPA, and vendor-assisted install notes.
 
 ## Fast Path
 
@@ -38,15 +39,12 @@ bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 ```
 
-Self-hosted-inference fast path:
-
 **Self-hosted with BYOK to a managed cloud LLM** (recommended for first install — no local GPU required, customer keeps their existing Anthropic/OpenAI/etc. account):
 
 ```bash
-bin/lucairn-init --production --license "$DSA_LICENSE_KEY" --license-signing-key "$DSA_LICENSE_SIGNING_KEY" --byok --output customer.env
+# license-bundle.json contains {"license_key":"…","signing_key":"…"} from Lucairn sales
+bin/lucairn-init --production --license license-bundle.json --byok --output customer.env
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
-docker login ghcr.io
-bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 docker compose \
   -f docker-compose.customer.yml \
   -f docker-compose.self-hosted.yml \
@@ -60,7 +58,6 @@ docker compose \
 ```bash
 bin/lucairn-init --dev --output customer.env
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
-docker login ghcr.io
 docker compose \
   -f docker-compose.customer.yml \
   -f docker-compose.self-hosted.yml \
@@ -68,7 +65,7 @@ docker compose \
   up -d
 ```
 
-**Fully self-hosted inference** (local GPU, customer supplies model files): add `-f docker-compose.self-hosted.yml --profile "$MODEL_RUNTIME_PROFILE"` to the `docker compose up` command, where `MODEL_RUNTIME_PROFILE` is one of `llama-cpp` / `vllm` / `tgi` / `ollama` / `onnxruntime` / `triton` / `custom-runtime`. See `docker-compose.self-hosted.yml` for required env vars.
+**Fully self-hosted inference** (local GPU, customer supplies model files): add `--profile "$MODEL_RUNTIME_PROFILE"` to the `docker compose up` command, where `MODEL_RUNTIME_PROFILE` is one of `llama-cpp` / `vllm` / `tgi` / `ollama` / `onnxruntime` / `triton` / `custom-runtime`. See `docker-compose.self-hosted.yml` for required model env vars.
 
 After the stack is healthy, mint your first customer API key:
 
@@ -76,7 +73,7 @@ After the stack is healthy, mint your first customer API key:
 ./bin/lucairn-mint-customer --name "Acme GmbH" --email "ops@acme.de" --tier enterprise
 ```
 
-Lucairn images on GHCR are public; `docker login ghcr.io` is needed only for image registries that authenticate. License keys are optional (kit runs in unregistered/dev mode without them).
+GHCR images are public; `docker login ghcr.io` is only needed if you mirror images into a private registry. License keys are optional (kit runs in unregistered/dev mode without them — see `bin/lucairn-init --dev`).
 Before a real customer handoff, run the gates in `docs/CUSTOMER_HANDOFF_GATES.md`.
 
 ## Per-Customer Bundle
