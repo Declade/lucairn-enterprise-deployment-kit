@@ -29,14 +29,26 @@ x-dsa-prod-auth: &dsa-prod-auth
   DSA_SERVICE_TOKEN: "${DSA_SERVICE_TOKEN:?DSA_SERVICE_TOKEN is required for customer deployment}"
 
 networks:
+  # Identity-plane bridges. `internal: true` is defence-in-depth on top of
+  # the code-level air-gap: Sandbox A holds the raw-PII-to-pseudonym mapping
+  # and never originates outbound HTTP (grep confirms zero non-test net/http
+  # clients in services/sandbox-a/ + services/id-bridge/). If Sandbox A or
+  # its sidecars were ever compromised, the network layer still blocks
+  # exfil. Locked to internal-only so "no raw identity data leaves your
+  # environment" is enforced at two layers (code + network) rather than one.
   dsa-identity:
     driver: bridge
+    internal: true
   dsa-bridge:
     driver: bridge
   dsa-audit:
     driver: bridge
+  # ID-Bridge ↔ Sandbox-A ↔ Audit identity-tap bridge. Same rationale as
+  # dsa-identity: no service on this bridge needs outbound; locking down
+  # is defence-in-depth.
   dsa-audit-identity:
     driver: bridge
+    internal: true
   dsa-witness:
     driver: bridge
   dsa-witness-bridge:
