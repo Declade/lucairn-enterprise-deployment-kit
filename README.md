@@ -21,12 +21,36 @@ This repository contains the customer-installable Lucairn deployment kit for fir
 
 ## Fast Path
 
+The kit supports two deployment modes — **self-hosted inference** (Sandbox B
+runs as a local container alongside a model runtime) and **split deployment**
+(Sandbox B runs on Lucairn-hosted infrastructure, gateway dials it per
+request). Pick the right mode before running `docker compose up`; see
+`INSTALL.md` § "Choose A Deployment Mode" for the decision table and the
+required env vars per mode.
+
+Split-deployment fast path:
+
 ```bash
 cp customer.env.example customer.env
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
 docker login ghcr.io
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
+```
+
+Self-hosted-inference fast path:
+
+```bash
+cp customer.env.example customer.env
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
+docker login ghcr.io
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
+docker compose \
+  -f docker-compose.customer.yml \
+  -f docker-compose.self-hosted.yml \
+  --env-file customer.env \
+  --profile "$MODEL_RUNTIME_PROFILE" \
+  up -d
 ```
 
 Lucairn must provide image registry access and onboarding values before a customer can install from the kit.

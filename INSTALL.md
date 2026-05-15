@@ -19,6 +19,45 @@ For Kubernetes:
 - NetworkPolicy-capable CNI. Cilium is preferred for DNS controls and WireGuard encryption.
 - Secret manager integration, or permission to create Kubernetes native secrets.
 
+## Choose A Deployment Mode
+
+Before running `docker compose up`, decide which inference-side topology the
+deployment uses. The two modes differ in whether Sandbox B (the
+inference-isolation boundary that calls the LLM upstream) runs on the
+customer's own host or on Lucairn-hosted infrastructure.
+
+| Mode | Sandbox B runs on | Compose overlays | Required Lucairn-provisioned values | Outbound network from customer host |
+|---|---|---|---|---|
+| **Self-hosted inference** | Customer's host (local container plus model runtime) | `docker-compose.customer.yml` plus `docker-compose.self-hosted.yml` | `DSA_LICENSE_KEY`, `DSA_LICENSE_SIGNING_KEY` only | None to Lucairn at request time. Model runtime fetched once at install. |
+| **Split deployment** | Lucairn-hosted | `docker-compose.customer.yml` only | All of the self-hosted list **plus** `SANDBOX_B_REMOTE_ENDPOINT`, `SANDBOX_B_API_KEY`, `VEIL_SANDBOX_B_PUBLIC_KEY`, optional mTLS material (`SANDBOX_B_CLIENT_CERT` etc.) | HTTPS to Lucairn-provided endpoint per request. |
+
+Pick **self-hosted inference** when:
+
+- Compliance forbids per-request egress to a Lucairn-operated endpoint.
+- The customer wants a fully on-premise deploy (sandbox / proof-of-value /
+  air-gapped or DMZ-only network).
+- Development, simulation, or acceptance-test environments. The
+  `docker-compose.self-hosted.yml` overlay is always the right starting point
+  on a laptop or single-host VM.
+
+Pick **split deployment** when:
+
+- Production traffic and the customer has signed the standard Lucairn
+  inference-tenancy contract that provides the remote Sandbox B endpoint.
+- The customer does not want to own model runtime operations (GPU
+  procurement, model updates, weight licensing).
+
+If neither column matches the customer's profile, contact Lucairn before
+proceeding. Mixing modes is not supported.
+
+The bare `customer.env.example` ships **split-deployment defaults**: the
+license / signing / remote-endpoint slots are placeholder strings that the
+operator must replace with Lucairn-provisioned values before the gateway will
+start outside dev mode. For a self-hosted-inference install, replace
+`SANDBOX_B_REMOTE_ENDPOINT` with an empty string (the self-hosted overlay
+ignores it) and follow the model runtime steps in the `docker-compose.self-hosted.yml`
+overlay (`MODEL_RUNTIME_PROFILE`, `MODEL_NAME`, `MODEL_PATH`, etc.).
+
 ## Docker Compose Install
 
 1. Unpack the release bundle.
@@ -70,9 +109,29 @@ The live validation checks whether the configured Lucairn images are pullable. I
 
 7. Start the stack.
 
+For **split deployment**:
+
 ```bash
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 ```
+
+For **self-hosted inference**, load the self-hosted overlay so the local
+Sandbox B container + model runtime profile come up alongside the customer
+stack:
+
+```bash
+docker compose \
+  -f docker-compose.customer.yml \
+  -f docker-compose.self-hosted.yml \
+  --env-file customer.env \
+  --profile "$MODEL_RUNTIME_PROFILE" \
+  up -d
+```
+
+If you omit the self-hosted overlay on a self-hosted-inference install, the
+gateway will start but `/readyz` will return 503 because the placeholder
+`SANDBOX_B_REMOTE_ENDPOINT=https://inference.lucairn.example` is unreachable.
+See `TROUBLESHOOTING.md` § "`/healthz` Returns 200 But `/readyz` Returns 503".
 
 8. Confirm health.
 
