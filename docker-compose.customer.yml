@@ -223,7 +223,7 @@ services:
   # ── Application Services ────────────────────────────────────────
 
   audit:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-audit:${LUCAIRN_IMAGE_TAG:-0.3.1}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-audit:${LUCAIRN_IMAGE_TAG:-0.4.0}"
     depends_on:
       migrate-audit:
         condition: service_completed_successfully
@@ -246,7 +246,7 @@ services:
     restart: on-failure
 
   id-bridge:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-id-bridge:${LUCAIRN_IMAGE_TAG:-0.3.1}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-id-bridge:${LUCAIRN_IMAGE_TAG:-0.4.0}"
     depends_on:
       migrate-bridge:
         condition: service_completed_successfully
@@ -273,7 +273,7 @@ services:
     restart: on-failure
 
   sandbox-a:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sandbox-a:${LUCAIRN_IMAGE_TAG:-0.3.1}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sandbox-a:${LUCAIRN_IMAGE_TAG:-0.4.0}"
     depends_on:
       migrate-sandbox-a:
         condition: service_completed_successfully
@@ -311,7 +311,7 @@ services:
     restart: on-failure
 
   sanitizer:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer:${LUCAIRN_IMAGE_TAG:-0.3.1}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer:${LUCAIRN_IMAGE_TAG:-0.4.0}"
     depends_on:
       sandbox-a:
         condition: service_healthy
@@ -343,7 +343,7 @@ services:
     restart: on-failure
 
   veil-witness:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-veil-witness:${LUCAIRN_IMAGE_TAG:-0.3.1}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-veil-witness:${LUCAIRN_IMAGE_TAG:-0.4.0}"
     depends_on:
       migrate-veil:
         condition: service_completed_successfully
@@ -387,7 +387,7 @@ services:
     restart: on-failure
 
   gateway:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-gateway:${LUCAIRN_IMAGE_TAG:-0.3.1}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-gateway:${LUCAIRN_IMAGE_TAG:-0.4.0}"
     depends_on:
       sandbox-a:
         condition: service_healthy
@@ -484,7 +484,7 @@ services:
     # these images is not reliable enough yet for default customer E2E. Keep
     # the services opt-in until registry access is fixed.
     profiles: ["certification"]
-    image: ${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-cert-builder:${LUCAIRN_IMAGE_TAG:-0.3.1}
+    image: ${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-cert-builder:${LUCAIRN_IMAGE_TAG:-0.4.0}
     restart: unless-stopped
     environment:
       BUILD_AUTH_TOKEN: ${BUILD_AUTH_TOKEN:?BUILD_AUTH_TOKEN required}
@@ -510,7 +510,7 @@ services:
 
   cert-portal:
     profiles: ["certification"]
-    image: ${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-cert-portal:${LUCAIRN_IMAGE_TAG:-0.3.1}
+    image: ${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-cert-portal:${LUCAIRN_IMAGE_TAG:-0.4.0}
     restart: unless-stopped
     environment:
       PORTAL_API_KEY: ${PORTAL_API_KEY:?PORTAL_API_KEY required}
