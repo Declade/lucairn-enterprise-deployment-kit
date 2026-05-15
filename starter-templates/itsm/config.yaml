@@ -33,7 +33,10 @@ sanitizer:
       - "PRB\\d+"
       - "RITM\\d+"
       - "KB\\d+"
-    safe_terms_file: /config/itsm-safe-terms.txt
+    # safe_terms_file: optional. Customers running ITSM workloads with
+    # vendor-specific vocabulary that collides with Lucairn's PII
+    # recognizers should add a `safe_terms_file:` line pointing at a
+    # newline-separated list mounted into the sanitizer container.
   llm_audit:
     enabled: false
 
