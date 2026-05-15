@@ -57,6 +57,28 @@ Two valid states:
 
 Placeholder strings like `REPLACE_WITH_LICENSE_KEY` or `DEMO_LICENSE_NEEDS_LUCAIRN_PROVISIONED` are the **worst case** — non-empty enough to skip the dev-mode bypass, but not a real signed token, so HMAC validation rejects them. Either leave the field empty (dev mode) or set a real Lucairn-provisioned value (prod mode).
 
+## App-Role Password Authentication Fails (`audit_app`, `veil_app`)
+
+If `audit` or `veil-witness` containers crash-loop with `pq: password authentication failed for user "audit_app" (28P01)` (or the equivalent for `veil_app`), the database role's password is out of sync with the application connection string.
+
+This is usually a customer.env vs migration mismatch. The kit's compose connection strings read from `AUDIT_APP_PASSWORD` / `VEIL_APP_PASSWORD` (customer.env). The role passwords are set at migration-prep time by `scripts/render-migrations.sh` (invoked by the `prep-migrations` compose service), which materializes `migrations/<tree>/000NNN_*.up.sql.tmpl` into the `rendered-migrations` named volume with the runtime password substituted.
+
+Confirm the prep service ran:
+
+```bash
+docker compose -f docker-compose.customer.yml --env-file customer.env logs prep-migrations
+```
+
+Expected: `render-migrations: audit rendered to /migrations-rendered/audit` ... `render-migrations: done`. If the volume is stale (left over from a pre-fix deploy), force a clean re-run:
+
+```bash
+docker compose -f docker-compose.customer.yml --env-file customer.env down
+docker volume rm "$(docker compose -f docker-compose.customer.yml --env-file customer.env config --volumes | grep -E '^rendered-migrations$' || echo rendered-migrations)" || true
+docker compose -f docker-compose.customer.yml --env-file customer.env up -d
+```
+
+If `prep-migrations` itself failed (look for `AUDIT_APP_PASSWORD is empty` or `contains a single quote`), fix the corresponding env var in `customer.env` (alphanumeric + URL-safe special chars only; no `'` and no `\`) and re-run.
+
 ## Gateway Unhealthy
 
 Check:

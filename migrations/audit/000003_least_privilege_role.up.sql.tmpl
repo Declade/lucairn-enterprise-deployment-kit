@@ -8,11 +8,17 @@
 -- should be configured to connect as 'audit_app' instead of 'dsa'
 -- via the AUDIT_DB_USER environment variable.
 
--- Create the application role if it doesn't exist
+-- Create the application role if it doesn't exist.
+-- Password is templated from $AUDIT_APP_PASSWORD at migration-prep time;
+-- see scripts/render-migrations.sh + the prep-migrations compose service.
+-- If the role already exists (re-run), ALTER ROLE updates the password so
+-- the SQL stays in sync with the application connection string.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'audit_app') THEN
-        CREATE ROLE audit_app WITH LOGIN PASSWORD 'audit_app_password' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+        CREATE ROLE audit_app WITH LOGIN PASSWORD '${AUDIT_APP_PASSWORD}' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+    ELSE
+        ALTER ROLE audit_app WITH LOGIN PASSWORD '${AUDIT_APP_PASSWORD}';
     END IF;
 END $$;
 
