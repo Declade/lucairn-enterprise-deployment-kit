@@ -46,6 +46,31 @@ If the prune doesn't free enough subnets (rare — only on Linux with very small
 
 Restart the daemon (`sudo systemctl restart docker` on Linux; OrbStack handles this automatically on relaunch). Re-run `docker compose up -d`.
 
+## Sandbox B Refuses Insecure Port / Gateway Sandbox B Health-Check TLS Handshake Failure
+
+If sandbox-b crash-loops with `CRITICAL sandbox-b GRPC_TLS_ENABLED=true (with cert/key) is required when DSA_ENV=production; refusing insecure port`, or the gateway's `/healthz` shows `sandbox_b: status=fail` with `tls: first record does not look like a TLS handshake`, the stack is running in production-env defaults without real TLS certs.
+
+This is the dev-mode boot sequence — the kit's `customer.env.example` ships with `DSA_ENV=production` and `GRPC_TLS_ENABLED=true` so production installs are safe by default, but local-laptop / sandbox / acceptance-test installs need three env flips to start cleanly without provisioning certificates:
+
+```
+DSA_ENV=development
+GRPC_TLS_ENABLED=false
+DSA_LICENSE_KEY=
+DSA_LICENSE_SIGNING_KEY=
+```
+
+The first two relax the production-only gRPC mTLS gate (sandbox-b's `inference_server.py` refuses an insecure port when `DSA_ENV=production`). The last two engage the gateway's dev-mode license bypass (see next section). After flipping all four, recreate the affected services:
+
+```bash
+docker compose \
+  -f docker-compose.customer.yml \
+  -f docker-compose.self-hosted.yml \
+  --env-file customer.env \
+  up -d --force-recreate sandbox-a sandbox-b id-bridge audit veil-witness sanitizer gateway
+```
+
+For a production install, leave the four defaults alone and provision real Lucairn-signed license + gRPC mTLS material instead.
+
 ## Gateway Restart-Loops On Invalid License Key
 
 If the gateway log shows `invalid license key: malformed license key` and the container is restart-looping, `DSA_LICENSE_KEY` in `customer.env` is set to a non-empty value that does not validate against `DSA_LICENSE_SIGNING_KEY`.

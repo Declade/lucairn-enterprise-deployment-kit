@@ -119,9 +119,7 @@ certificates will validate.
 
 ### 4a. Generate Ed25519 signing keypairs
 
-For each of the following five service pairs, generate the signing-key
-seed with `openssl rand -hex 32`, then derive the matching public key
-using the bundled helper at `scripts/derive-veil-pubkey.sh`:
+Operator-generated keypairs (always required):
 
 | Signing-key slot              | Public-key slot              |
 |-------------------------------|------------------------------|
@@ -131,8 +129,25 @@ using the bundled helper at `scripts/derive-veil-pubkey.sh`:
 | `VEIL_WITNESS_SIGNING_KEY`    | `VEIL_WITNESS_PUBLIC_KEY`    |
 | `VEIL_GATEWAY_SIGNING_KEY`    | `VEIL_GATEWAY_PUBLIC_KEY`    |
 
-Bash one-liner — fills both slots for one service in two lines of
-output you can paste into `customer.env`:
+For self-hosted-inference modes (`docker-compose.self-hosted.yml` or
+the BYOK overlay), also generate the Sandbox B pair locally — sandbox-b
+runs on the customer host in those modes, signs `CLAIM_TYPE_INFERENCE_GENERATED`
+with `VEIL_SANDBOX_B_SIGNING_KEY` at boot, and the witness verifies
+those claims against `VEIL_SANDBOX_B_PUBLIC_KEY`:
+
+| Signing-key slot              | Public-key slot              | Modes        |
+|-------------------------------|------------------------------|--------------|
+| `VEIL_SANDBOX_B_SIGNING_KEY`  | `VEIL_SANDBOX_B_PUBLIC_KEY`  | self-hosted (local model or BYOK) |
+
+In **split deployment** the Sandbox B signing key lives on the
+Lucairn-hosted Sandbox B fleet; Lucairn issues the matching public key
+during onboarding. Do not regenerate `VEIL_SANDBOX_B_PUBLIC_KEY` in
+split-deployment mode — use whatever value Lucairn provides.
+
+For each pair generate the signing-key seed with `openssl rand -hex 32`,
+then derive the matching public key using the bundled helper at
+`scripts/derive-veil-pubkey.sh`. Bash one-liner — fills both slots for
+one service in two lines of output you can paste into `customer.env`:
 
 ```bash
 SEED=$(openssl rand -hex 32)
@@ -140,15 +155,12 @@ echo "VEIL_AUDIT_SIGNING_KEY=$SEED"
 echo "VEIL_AUDIT_PUBLIC_KEY=$(scripts/derive-veil-pubkey.sh "$SEED")"
 ```
 
-Repeat for `BRIDGE`, `SANITIZER`, `WITNESS`, and `GATEWAY`.
+Repeat for `BRIDGE`, `SANITIZER`, `WITNESS`, `GATEWAY`, and (for
+self-hosted modes) `SANDBOX_B`.
 
 `VEIL_MANIFEST_SIGNING_KEY` (no matching `_PUBLIC_KEY` slot) is the
 manifest-only signing key and only needs the `openssl rand -hex 32`
 step.
-
-`VEIL_SANDBOX_B_PUBLIC_KEY` is **Lucairn-provided** (not customer-derived) —
-the matching signing key lives on the Lucairn-hosted Sandbox B fleet.
-Use whatever value Lucairn issues during onboarding; do not regenerate.
 
 The helper requires Python 3 with the `cryptography` package (preferred)
 or `pynacl`. Both are pure-Python wheels; install with
