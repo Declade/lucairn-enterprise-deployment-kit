@@ -168,15 +168,21 @@ require_env_values() {
 }
 
 validate_no_placeholder() {
-  # Reject values still left at a placeholder form. Catches the two
-  # placeholder conventions shipped in customer.env.example:
+  # Reject values still left at a placeholder form. Catches three
+  # placeholder conventions:
   #   - REPLACE_ME_*  — hex/base64 slots padded to the correct length
   #                     (so the operator sees the slot's expected width,
   #                      but the prefix flags it as not-yet-customised).
   #   - REPLACE_WITH_*— named-value slots (license keys, postgres
-  #                     passwords). The kit ships these unfilled and
-  #                     the doctor refuses to proceed until they're
-  #                     replaced. Catches copy-and-forget regressions.
+  #                     passwords, GATEWAY_BASE_URL). The kit ships these
+  #                     unfilled and the doctor refuses to proceed until
+  #                     they're replaced. Catches copy-and-forget
+  #                     regressions.
+  #   - Single-character-repeat hex strings (e.g. cccc…64 chars,
+  #                     7777…, aaaa…). Sim 3 dead-reference sweep found
+  #                     customer.env.example shipped 4 such sentinel
+  #                     pubkeys and doctor passed them silently — the
+  #                     resulting install ships non-functional crypto.
   local env_file="$1" key="$2" val
   val="$(env_value "$env_file" "$key")"
   [ -z "$val" ] && return 0
@@ -186,6 +192,13 @@ validate_no_placeholder() {
       return 1
       ;;
   esac
+  # Sentinel-hex check: 64 hex chars consisting of a single repeating
+  # character (case-insensitive). Real openssl-generated keys have ~ uniform
+  # distribution; a string of 64 identical chars is always a placeholder.
+  if printf '%s' "$val" | grep -Eq '^([0-9a-fA-F])\1{63}$'; then
+    echo "secret format: $key looks like a repeating-character sentinel ($(printf '%s' "$val" | cut -c1-8)…); replace with a real openssl-generated value"
+    return 1
+  fi
 }
 
 validate_hex64() {
@@ -242,9 +255,16 @@ PY
 }
 
 check_dns() {
+  # Resolve host without leaking the Python traceback on gaierror.
+  # Caller checks the return code; stderr is suppressed so doctor's
+  # output stays clean even when the host doesn't resolve. Sim 3
+  # rehearser hit this when GATEWAY_BASE_URL was the placeholder
+  # `lucairn.customer.example` — doctor printed a 7-line traceback
+  # ending in `socket.gaierror: [Errno 8]` instead of a one-line
+  # `dns: failed`.
   local host="$1"
   [ -z "$host" ] && return 0
-  python3 - "$host" <<'PY' >/dev/null
+  python3 - "$host" <<'PY' >/dev/null 2>&1
 import socket, sys
 socket.getaddrinfo(sys.argv[1], None)
 PY
@@ -469,6 +489,174 @@ check_image_manifest() {
 
   echo "image manifest: read from image-manifest.yaml (kit_version=$manifest_kit_version, pinned_tag=$manifest_tag)"
   return 0
+}
+
+# -----------------------------------------------------------------------------
+# Sim 3 doctor-coverage gaps G1–G10. Each fn below closes one gap surfaced by
+# the 2026-05-15 audit; all are --offline-honest (no network required).
+# -----------------------------------------------------------------------------
+
+check_render_migrations_safe() {
+  # G1: prep-migrations rejects empty / single-quote / backslash values.
+  # Catch the same conditions at pre-flight time instead of letting the
+  # render-migrations.sh service error halfway through compose-up.
+  local env_file="$1" key val ok=0
+  for key in AUDIT_APP_PASSWORD VEIL_APP_PASSWORD; do
+    val="$(env_value "$env_file" "$key")"
+    if [ -z "$val" ]; then
+      echo "migration prep: $key is empty; render-migrations.sh will refuse"
+      ok=1
+    elif printf '%s' "$val" | grep -q "'"; then
+      echo "migration prep: $key contains a single quote; render-migrations.sh refuses to substitute"
+      ok=1
+    elif printf '%s' "$val" | grep -q '\\'; then
+      echo "migration prep: $key contains a backslash; render-migrations.sh refuses to substitute"
+      ok=1
+    fi
+  done
+  if [ ! -f "$ROOT/scripts/render-migrations.sh" ]; then
+    echo "migration prep: scripts/render-migrations.sh missing — prep-migrations service will fail"
+    ok=1
+  fi
+  return "$ok"
+}
+
+check_image_tag_set() {
+  # G3: empty LUCAIRN_IMAGE_TAG silently falls back to the compose
+  # default. Mixed defaults across env / compose / manifest are an
+  # uncontrolled-change pattern; require the operator to pin explicitly.
+  local env_file="$1" val
+  val="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)"
+  if [ -z "$val" ]; then
+    echo "image tag: LUCAIRN_IMAGE_TAG empty in env (falls back to compose default; pin explicitly to whatever your kit version pins)"
+    return 1
+  fi
+}
+
+check_byok_egress_open() {
+  # G4: BYOK overlay is meaningless if dsa-egress is internal:true.
+  # Only check when the operator has actually opted into the overlay
+  # (LUCAIRN_LLM_EGRESS_ALLOWLIST non-empty).
+  local env_file="$1" allowlist
+  allowlist="$(env_value "$env_file" LUCAIRN_LLM_EGRESS_ALLOWLIST)"
+  [ -z "$allowlist" ] && return 0
+  local overlay="$ROOT/docker-compose.self-hosted-byok.yml"
+  [ -f "$overlay" ] || return 0
+  if awk '/^  dsa-egress:/,/^  [a-z]|^[^ ]/ { if (/^    internal:[[:space:]]+true/) print; }' "$overlay" | grep -q internal; then
+    echo "byok overlay: dsa-egress is internal:true — sandbox-b cannot reach the upstream LLM"
+    return 1
+  fi
+}
+
+check_no_dev_default_keys() {
+  # G6: three well-known dev-default literals are baked into the dual-
+  # sandbox source as boot-time reject conditions when DSA_ENV=production
+  # (services/id-bridge/cmd/server/main.go:71-73, sandbox-a:90-92,
+  # gateway:538-540). Doctor's hex64 + placeholder gates don't catch
+  # them. Reject explicitly when production mode.
+  local env_file="$1"
+  [ "$(env_value "$env_file" DSA_ENV)" = "production" ] || return 0
+  local failed=0
+  if [ "$(env_value "$env_file" BRIDGE_MASTER_KEY)" = "dev-master-key-minimum-32-characters!!" ]; then
+    echo "dev defaults: BRIDGE_MASTER_KEY is the dual-sandbox dev literal — id-bridge will refuse to boot in production"
+    failed=1
+  fi
+  if [ "$(env_value "$env_file" SANDBOX_A_ENCRYPTION_KEY)" = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" ]; then
+    echo "dev defaults: SANDBOX_A_ENCRYPTION_KEY is the dual-sandbox dev literal — sandbox-a will refuse to boot in production"
+    failed=1
+  fi
+  if [ "$(env_value "$env_file" DSA_ADMIN_KEY)" = "dsa-admin-secret" ]; then
+    echo "dev defaults: DSA_ADMIN_KEY is the dual-sandbox dev literal — gateway will refuse to boot in production"
+    failed=1
+  fi
+  return "$failed"
+}
+
+check_local_sandbox_b_api_key() {
+  # G7: self-hosted Sandbox-B + production must reject the well-known
+  # `local-sandbox-b-key` fallback (compose default in the self-hosted
+  # overlay). That value gives anyone with the host port unauthenticated
+  # access to the local Sandbox-B.
+  local env_file="$1" remote
+  remote="$(env_value "$env_file" SANDBOX_B_REMOTE_ENDPOINT)"
+  [ -n "$remote" ] && return 0   # split-deployment, not local SB
+  [ "$(env_value "$env_file" DSA_ENV)" = "production" ] || return 0
+  local k
+  k="$(env_value "$env_file" LOCAL_SANDBOX_B_API_KEY)"
+  if [ -z "$k" ]; then
+    echo "local SB: LOCAL_SANDBOX_B_API_KEY unset in self-hosted production (falls back to weak default 'local-sandbox-b-key')"
+    return 1
+  fi
+  if [ "$k" = "local-sandbox-b-key" ]; then
+    echo "local SB: LOCAL_SANDBOX_B_API_KEY is the kit's well-known fallback — replace with a real secret"
+    return 1
+  fi
+  if [ "${#k}" -lt 32 ]; then
+    echo "local SB: LOCAL_SANDBOX_B_API_KEY too short (need ≥ 32 chars)"
+    return 1
+  fi
+}
+
+check_gateway_base_url_https() {
+  # G9: production GATEWAY_BASE_URL must be https — http URLs end up
+  # in DSA-stamped cert URLs surfaced to customers' callers; external
+  # verifiers reject http on the cert chain.
+  local env_file="$1"
+  [ "$(env_value "$env_file" DSA_ENV)" = "production" ] || return 0
+  local url
+  url="$(env_value "$env_file" GATEWAY_BASE_URL)"
+  case "$url" in
+    https://*) ;;
+    *) echo "gateway base URL: GATEWAY_BASE_URL must use https:// in production (got: ${url:-empty})"; return 1 ;;
+  esac
+}
+
+check_canary_hmac_key_length() {
+  # G5 (length): CANARY_HMAC_KEY required-non-empty enforced via the
+  # required + placeholder lists already. Add a length floor: sanitizer
+  # canary signing wants ≥ 16 bytes (hex32+ or base64-22+).
+  local env_file="$1" val
+  val="$(env_value "$env_file" CANARY_HMAC_KEY)"
+  [ -z "$val" ] && return 0   # required check fires elsewhere
+  if [ "${#val}" -lt 32 ]; then
+    echo "canary key: CANARY_HMAC_KEY too short (need ≥ 16 bytes; hex32+ or base64-22+)"
+    return 1
+  fi
+}
+
+validate_ed25519_pair() {
+  # G10: derive the public key from a signing key seed and compare.
+  # Catches the case where the operator pasted a public key from one
+  # ceremony and a signing key from another — runtime would silently
+  # produce certs that fail external verification.
+  local env_file="$1" slot="$2" signing_key claimed_pub derived
+  signing_key="$(env_value "$env_file" "VEIL_${slot}_SIGNING_KEY")"
+  claimed_pub="$(env_value "$env_file" "VEIL_${slot}_PUBLIC_KEY")"
+  [ -z "$signing_key" ] && return 0
+  [ -z "$claimed_pub" ] && return 0
+  # Skip placeholders so the dedicated placeholder check owns that error.
+  case "$signing_key" in REPLACE_ME_*|REPLACE_WITH_*) return 0 ;; esac
+  case "$claimed_pub"  in REPLACE_ME_*|REPLACE_WITH_*) return 0 ;; esac
+  [ -x "$ROOT/scripts/derive-veil-pubkey.sh" ] || return 0
+  derived="$("$ROOT/scripts/derive-veil-pubkey.sh" "$signing_key" 2>/dev/null)"
+  if [ -z "$derived" ]; then
+    return 0   # derive script unavailable / Python env wrong; non-fatal
+  fi
+  if [ "$derived" != "$claimed_pub" ]; then
+    echo "veil keypair: VEIL_${slot}_PUBLIC_KEY does not match the derived public key of VEIL_${slot}_SIGNING_KEY"
+    return 1
+  fi
+}
+
+check_veil_keypairs() {
+  # Wrap validate_ed25519_pair over all paired slots. Sandbox-B is
+  # included because the operator generates the pair locally (per
+  # INSTALL.md step 4a self-hosted instructions).
+  local env_file="$1" slot failed=0
+  for slot in AUDIT BRIDGE SANITIZER WITNESS GATEWAY SANDBOX_B; do
+    validate_ed25519_pair "$env_file" "$slot" || failed=1
+  done
+  return "$failed"
 }
 
 sha256_file() {
@@ -1281,8 +1469,50 @@ doctor() {
     validate_hex64 "$env_file" "$key" || format_failed=1
   done
   validate_keystore_key "$env_file" || format_failed=1
+  check_canary_hmac_key_length "$env_file" || format_failed=1
   [ "$format_failed" -eq 0 ] || return 1
   echo "secret formats: ok"
+
+  # Sim 3 G10: ed25519 pair coherence. Operators who paste a pubkey
+  # from one ceremony + a signing key from another get a doctor-PASS
+  # install with broken cert verification; runs the derive script.
+  local pair_failed=0
+  check_veil_keypairs "$env_file" || pair_failed=1
+  if [ "$pair_failed" -eq 0 ]; then
+    echo "veil keypairs: ok (derived pubkeys match claimed)"
+  else
+    return 1
+  fi
+
+  # Sim 3 G6: reject known dual-sandbox dev-default literals in prod.
+  local dev_default_failed=0
+  check_no_dev_default_keys "$env_file" || dev_default_failed=1
+  [ "$dev_default_failed" -eq 0 ] || return 1
+
+  # Sim 3 G1: pre-flight render-migrations.sh input contract.
+  local migration_failed=0
+  check_render_migrations_safe "$env_file" || migration_failed=1
+  [ "$migration_failed" -eq 0 ] || return 1
+
+  # Sim 3 G3: LUCAIRN_IMAGE_TAG must be set explicitly.
+  local tag_failed=0
+  check_image_tag_set "$env_file" || tag_failed=1
+  [ "$tag_failed" -eq 0 ] || return 1
+
+  # Sim 3 G7: self-hosted SB API key not the well-known fallback.
+  local sb_key_failed=0
+  check_local_sandbox_b_api_key "$env_file" || sb_key_failed=1
+  [ "$sb_key_failed" -eq 0 ] || return 1
+
+  # Sim 3 G9: production GATEWAY_BASE_URL must be https.
+  local url_failed=0
+  check_gateway_base_url_https "$env_file" || url_failed=1
+  [ "$url_failed" -eq 0 ] || return 1
+
+  # Sim 3 G4: BYOK overlay's dsa-egress network must not be internal:true.
+  local egress_failed=0
+  check_byok_egress_open "$env_file" || egress_failed=1
+  [ "$egress_failed" -eq 0 ] || return 1
 
   check_certs "$env_file"
 
