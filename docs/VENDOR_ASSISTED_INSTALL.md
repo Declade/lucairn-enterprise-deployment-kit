@@ -11,3 +11,4 @@ Rules:
 
 After three assisted installs, the runbook should be self-sufficient enough that a normal customer platform engineer can install without a call.
 
+Before the first assisted install for a new bundle shape, run the clean-host rehearsal in `docs/CLEAN_HOST_REHEARSAL.md`. Treat the rehearsal transcript as the baseline; the screen-share session should only explain or unblock customer-environment issues, not discover missing product instructions for the first time.
