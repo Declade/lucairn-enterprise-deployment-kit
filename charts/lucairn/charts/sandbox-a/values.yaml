@@ -63,8 +63,13 @@ external:
 
 sanitizer:
   image:
-    repository: dsa/sanitizer
-    tag: "1.0.0"
+    # Default repository follows the chart's `global.imageRegistry` prefix
+    # (e.g. ghcr.io/declade) so this resolves to ghcr.io/declade/dsa-sanitizer.
+    # Override per-environment if you mirror images.
+    repository: dsa-sanitizer
+    # Empty `tag` falls through to `.Values.global.imageTag` (0.4.0 today)
+    # so the side-car stays in lockstep with the rest of the kit.
+    tag: ""
     pullPolicy: IfNotPresent
   confidenceThreshold: 0.25
   safePatterns: []

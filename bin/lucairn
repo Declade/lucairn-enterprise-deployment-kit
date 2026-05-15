@@ -271,12 +271,20 @@ PY
 }
 
 check_local_port_available() {
+  # Returns 0 if the port is free for compose to bind to.
+  # Returns 0 if the port is occupied by one of the kit's own compose-managed
+  # containers (so re-running doctor after `docker compose up -d` doesn't
+  # false-positive). Returns 1 only on a true foreign-process conflict.
   local port="$1"
   [ -z "$port" ] && return 0
-  if have lsof && lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
-    return 1
+  have lsof || return 0   # no lsof available → defer to compose's own bind error
+  lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 || return 0   # free
+  # Port has a listener. Check whether it's our own compose stack.
+  if have docker && docker compose ps --status running --format '{{.Name}}' 2>/dev/null \
+       | grep -q '^[^[:space:]]\+-gateway-1$'; then
+    return 0
   fi
-  return 0
+  return 1
 }
 
 check_dev_mode_consistency() {
@@ -426,7 +434,7 @@ check_container_images() {
   registry="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)"
   tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)"
   registry="${registry:-ghcr.io/declade}"
-  tag="${tag:-1.0.0}"
+  tag="${tag:-0.4.0}"
 
   if ! have docker; then
     echo "container images: skipped (docker unavailable)"
@@ -474,7 +482,7 @@ check_image_manifest() {
   # Env-resolved tag vs manifest pinned tag.
   local env_tag env_registry
   env_tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)"
-  env_tag="${env_tag:-1.0.0}"
+  env_tag="${env_tag:-0.4.0}"
   env_registry="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)"
   env_registry="${env_registry:-ghcr.io/declade}"
 
@@ -653,10 +661,89 @@ check_veil_keypairs() {
   # included because the operator generates the pair locally (per
   # INSTALL.md step 4a self-hosted instructions).
   local env_file="$1" slot failed=0
+  if [ ! -x "$ROOT/scripts/derive-veil-pubkey.sh" ]; then
+    warn "veil keypair: scripts/derive-veil-pubkey.sh missing or non-executable; pair coherence not verified"
+    return 0
+  fi
   for slot in AUDIT BRIDGE SANITIZER WITNESS GATEWAY SANDBOX_B; do
     validate_ed25519_pair "$env_file" "$slot" || failed=1
   done
   return "$failed"
+}
+
+# Sim 3 round-2 follow-up — close 4 remaining gaps surfaced by the doctor
+# coverage auditor against the A++ branch (the on-main version of doctor
+# left these open).
+
+check_sanitizer_config_image_compat() {
+  # G2-CLOSE: cross-check image-manifest.yaml's sanitizer_config_compat
+  # against the operator's LUCAIRN_IMAGE_TAG. A customer who pins a tag
+  # outside the compat window (e.g. 0.5.0 against compat 0.4.x) would
+  # get a sanitizer crash-loop on `Unknown recognizer 'X'` at boot.
+  local env_file="$1" manifest="$ROOT/image-manifest.yaml"
+  [ -f "$manifest" ] || return 0
+  local compat tag major_minor
+  # Extract sanitizer_config_compat value: strip key+colon prefix, strip
+  # inline-YAML-comment suffix (` # …`), strip surrounding whitespace, then
+  # strip wrapping quotes. Comment-strip is load-bearing — the manifest
+  # ships an inline comment after the value.
+  compat="$(awk -F: '/^[[:space:]]*sanitizer_config_compat:/ {
+                       sub(/^[^:]+:[[:space:]]*/,"");
+                       sub(/[[:space:]]+#.*$/,"");
+                       gsub(/^[[:space:]]+|[[:space:]]+$/,"");
+                       gsub(/^"|"$/,"");
+                       print; exit
+                     }' "$manifest")"
+  tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)"
+  [ -z "$compat" ] && return 0
+  [ -z "$tag" ] && return 0
+  major_minor="$(printf '%s' "$compat" | sed -E 's/\.[x*]$//')"
+  case "$tag" in
+    "${major_minor}."*) return 0 ;;
+    *) echo "sanitizer drift: LUCAIRN_IMAGE_TAG=$tag is outside sanitizer_config_compat=$compat — sanitizer will crash on Unknown recognizer at boot"; return 1 ;;
+  esac
+}
+
+check_insecure_dev_mode_off_in_prod() {
+  # NEW-1: veil-witness loud-fails when INSECURE_DEV_MODE=true is set
+  # alongside DSA_ENV=production. Catch at pre-flight time.
+  local env_file="$1"
+  [ "$(env_value "$env_file" DSA_ENV)" = "production" ] || return 0
+  [ "$(env_value "$env_file" INSECURE_DEV_MODE)" = "true" ] \
+    && { echo "dev mode: INSECURE_DEV_MODE=true is incompatible with DSA_ENV=production (veil-witness will refuse to start)"; return 1; }
+  return 0
+}
+
+check_veil_rekor_url_in_prod() {
+  # NEW-2: veil-witness loud-fails when DSA_ENV=production without
+  # VEIL_REKOR_URL set (unless VEIL_DEV_MODE=true overrides).
+  local env_file="$1"
+  [ "$(env_value "$env_file" DSA_ENV)" = "production" ] || return 0
+  [ "$(env_value "$env_file" VEIL_DEV_MODE)" = "true" ] && return 0
+  [ -z "$(env_value "$env_file" VEIL_REKOR_URL)" ] \
+    && { echo "veil rekor: VEIL_REKOR_URL required in production (set VEIL_DEV_MODE=true to bypass for non-production)"; return 1; }
+  return 0
+}
+
+check_sandbox_b_remote_coherent() {
+  # NEW-3: if SANDBOX_B_REMOTE_ENDPOINT is set, scheme must be https,
+  # and in production the mTLS cert triple must all be set together.
+  local env_file="$1" ep cert key ca
+  ep="$(env_value "$env_file" SANDBOX_B_REMOTE_ENDPOINT)"
+  [ -z "$ep" ] && return 0
+  case "$ep" in
+    https://*) ;;
+    *) echo "sandbox-b remote: SANDBOX_B_REMOTE_ENDPOINT must use https:// (got: $ep)"; return 1 ;;
+  esac
+  [ "$(env_value "$env_file" DSA_ENV)" = "production" ] || return 0
+  cert="$(env_value "$env_file" SANDBOX_B_CLIENT_CERT)"
+  key="$(env_value "$env_file"  SANDBOX_B_CLIENT_KEY)"
+  ca="$(env_value "$env_file"   SANDBOX_B_CA_CERT)"
+  if [ -z "$cert" ] || [ -z "$key" ] || [ -z "$ca" ]; then
+    echo "sandbox-b remote: production requires SANDBOX_B_CLIENT_CERT + SANDBOX_B_CLIENT_KEY + SANDBOX_B_CA_CERT (one or more missing)"
+    return 1
+  fi
+  return 0
 }
 
 sha256_file() {
@@ -1513,6 +1600,26 @@ doctor() {
   local egress_failed=0
   check_byok_egress_open "$env_file" || egress_failed=1
   [ "$egress_failed" -eq 0 ] || return 1
+
+  # Sim 3 round-2 G2-CLOSE: image-tag vs sanitizer_config_compat.
+  local compat_failed=0
+  check_sanitizer_config_image_compat "$env_file" || compat_failed=1
+  [ "$compat_failed" -eq 0 ] || return 1
+
+  # Sim 3 round-2 NEW-1: INSECURE_DEV_MODE incompatible with prod.
+  local insecure_failed=0
+  check_insecure_dev_mode_off_in_prod "$env_file" || insecure_failed=1
+  [ "$insecure_failed" -eq 0 ] || return 1
+
+  # Sim 3 round-2 NEW-2: VEIL_REKOR_URL required in prod (unless dev-mode).
+  local rekor_failed=0
+  check_veil_rekor_url_in_prod "$env_file" || rekor_failed=1
+  [ "$rekor_failed" -eq 0 ] || return 1
+
+  # Sim 3 round-2 NEW-3: Sandbox-B remote scheme + cert-triple coherence.
+  local sb_remote_failed=0
+  check_sandbox_b_remote_coherent "$env_file" || sb_remote_failed=1
+  [ "$sb_remote_failed" -eq 0 ] || return 1
 
   check_certs "$env_file"
 

@@ -394,7 +394,14 @@ Minted Lucairn customer + API key.
 
 Next steps:
   1. Persist the raw_key to a 0600 .env file (NEVER commit).
-  2. Smoke: curl -H "x-api-key: ${RAW_KEY}" ${GATEWAY_URL}/health (expect 200)
-  3. (Optional) Confirm customer listed:
+  2. Smoke (unauthenticated health, no key needed):
+       curl -fsS ${GATEWAY_URL%:*}:8085/healthz | jq   (expect status: healthy)
+  3. Smoke (real inference; replace sk-ant-… with your Anthropic key):
+       curl -fsS -X POST ${GATEWAY_URL}/v1/messages \\
+         -H "x-api-key: ${RAW_KEY}" \\
+         -H "X-Upstream-Key: sk-ant-…" \\
+         -H "anthropic-version: 2023-06-01" -H "Content-Type: application/json" \\
+         -d '{"model":"claude-haiku-4-5-20251001","max_tokens":80,"messages":[{"role":"user","content":"Reply with the single word OK."}]}' | jq
+  4. (Optional) Confirm customer listed:
        curl -H "x-admin-key: \$LUCAIRN_ADMIN_KEY" ${GATEWAY_URL}/api/v1/admin/customers | jq
 BANNER
