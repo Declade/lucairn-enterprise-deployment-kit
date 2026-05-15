@@ -67,11 +67,19 @@ docker compose \
 
 **Fully self-hosted inference** (local GPU, customer supplies model files): add `--profile "$MODEL_RUNTIME_PROFILE"` to the `docker compose up` command, where `MODEL_RUNTIME_PROFILE` is one of `llama-cpp` / `vllm` / `tgi` / `ollama` / `onnxruntime` / `triton` / `custom-runtime`. See `docker-compose.self-hosted.yml` for required model env vars.
 
-After the stack is healthy, mint your first customer API key:
+After the stack is healthy, mint your first customer API key. The mint
+binary needs the admin key from `customer.env` — export it first:
 
 ```bash
+export LUCAIRN_ADMIN_KEY="$(grep '^DSA_ADMIN_KEY=' customer.env | cut -d= -f2-)"
 ./bin/lucairn-mint-customer --name "Acme GmbH" --email "ops@acme.de" --tier enterprise
 ```
+
+If you intend to use `X-Upstream-Key` (BYOK to managed cloud LLM) for
+inference, also load `-f docker-compose.self-hosted-byok.yml` on the
+compose `up -d` line above and populate `ANTHROPIC_API_KEY` (or
+`OPENAI_API_KEY`) in `customer.env` first. See `INSTALL.md` § "Self-hosted
+with managed LLM (BYOK)".
 
 GHCR images are private — `docker login ghcr.io` is required with the GHCR PAT Lucairn provides at customer-handoff (or mirror the images into your own registry and override `LUCAIRN_IMAGE_REGISTRY`). See `INSTALL.md` step 3. License keys are optional (kit runs in unregistered/dev mode without them — see `bin/lucairn-init --dev`).
 Before a real customer handoff, run the gates in `docs/CUSTOMER_HANDOFF_GATES.md`.
