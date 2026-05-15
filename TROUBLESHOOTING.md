@@ -115,6 +115,43 @@ Common causes:
 - Cert expires within 30 days.
 - Witness mTLS files are mounted into the wrong directory.
 
+## Image / Config Version Drift
+
+The kit ships a single pinned set of container image versions plus matching
+config files (sanitizer recognizers, witness manifest paths, signing-key
+formats). `image-manifest.yaml` records the known-good combination this kit
+release was tested against.
+
+Symptoms of drift:
+
+- Sanitizer container crash-loops on `ValueError: Unknown recognizer '...'`
+  during boot. The kit's `config/default-sanitizer.yaml` references a
+  recognizer the deployed sanitizer image does not ship. Either roll the
+  sanitizer image forward to a tag that supports the recognizer, or remove
+  the unsupported recognizer from `config/default-sanitizer.yaml`.
+- Gateway returns 401 from upstream LLM despite a known-good API key. The
+  gateway image's BYOK forwarding adapter changed shape between releases.
+  Roll the gateway image to a tag the kit was tested against.
+- Witness rejects every claim with `canonical_payload mismatch`. Signing
+  keys are correct but the canonical-payload byte order changed between
+  image versions (rare, only after a major-version bump).
+
+Diagnose:
+
+```bash
+# Read what the kit expects
+cat image-manifest.yaml
+
+# Compare with what is actually deployed
+docker inspect deploy-gateway-1 --format '{{.Config.Image}}'
+docker inspect deploy-sanitizer-1 --format '{{.Config.Image}}'
+```
+
+`bin/lucairn doctor` warns when `LUCAIRN_IMAGE_TAG` in `customer.env` differs
+from the manifest's `default_lucairn_image_tag`. The warning is non-blocking:
+operators can intentionally roll images forward or back, but the warning
+ensures they know they are off the tested combination.
+
 ## Generating a Support Bundle
 
 ```bash

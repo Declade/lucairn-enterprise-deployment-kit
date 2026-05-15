@@ -272,6 +272,50 @@ check_container_images() {
   [ "$failed" -eq 0 ]
 }
 
+# check_image_manifest — warn (do not fail) when the deployer's resolved
+# image-tag / registry differs from the kit's pinned-known-good values in
+# image-manifest.yaml. Sim 2 surfaced three coupling bugs (kit tag 1.0.0 vs
+# real images 0.3.1; sanitizer config 0.4.x recognizers in 0.3.1 image;
+# gateway BYOK adapter shape change between releases). The kit needs a
+# single artifact that records which combination was actually tested.
+check_image_manifest() {
+  local env_file="$1" manifest_file="${ROOT}/image-manifest.yaml"
+
+  if [ ! -f "$manifest_file" ]; then
+    # Manifest is optional. Older kit versions may not ship one.
+    return 0
+  fi
+
+  local manifest_kit_version manifest_tag manifest_registry
+  manifest_kit_version="$(awk -F: '/^kit_version:/ { sub(/^[^:]+:[[:space:]]*/,""); gsub(/^"|"$/,""); print; exit }' "$manifest_file")"
+  manifest_tag="$(awk -F: '/^default_lucairn_image_tag:/ { sub(/^[^:]+:[[:space:]]*/,""); gsub(/^"|"$/,""); print; exit }' "$manifest_file")"
+  manifest_registry="$(awk -F: '/^default_lucairn_image_registry:/ { sub(/^[^:]+:[[:space:]]*/,""); gsub(/^"|"$/,""); print; exit }' "$manifest_file")"
+
+  # Sanity: manifest kit_version should match VERSION file.
+  if [ -n "$manifest_kit_version" ] && [ "$manifest_kit_version" != "$VERSION" ]; then
+    warn "image-manifest.yaml kit_version ($manifest_kit_version) does not match repo VERSION ($VERSION); the kit may be in a half-updated state"
+  fi
+
+  # Env-resolved tag vs manifest pinned tag.
+  local env_tag env_registry
+  env_tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)"
+  env_tag="${env_tag:-1.0.0}"
+  env_registry="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)"
+  env_registry="${env_registry:-ghcr.io/declade}"
+
+  if [ -n "$manifest_tag" ] && [ "$manifest_tag" != "$env_tag" ]; then
+    warn "LUCAIRN_IMAGE_TAG=$env_tag in env, but image-manifest.yaml pins $manifest_tag for this kit release"
+    warn "  bumping LUCAIRN_IMAGE_TAG without updating the kit's config tree can crash-loop services (see TROUBLESHOOTING.md § Image / Config Version Drift)"
+  fi
+
+  if [ -n "$manifest_registry" ] && [ "$manifest_registry" != "$env_registry" ]; then
+    info "LUCAIRN_IMAGE_REGISTRY=$env_registry differs from manifest default $manifest_registry (expected if using a customer mirror)"
+  fi
+
+  echo "image manifest: read from image-manifest.yaml (kit_version=$manifest_kit_version, pinned_tag=$manifest_tag)"
+  return 0
+}
+
 sha256_file() {
   local file="$1"
   if have sha256sum; then
@@ -1007,6 +1051,10 @@ doctor() {
   echo "secret formats: ok"
 
   check_certs "$env_file"
+
+  # Image-manifest drift warning. Runs in --offline mode as well so customers
+  # without network egress still get the warning.
+  check_image_manifest "$env_file"
 
   if [ "$check_images" -eq 1 ]; then
     check_container_images "$env_file" || return 1
