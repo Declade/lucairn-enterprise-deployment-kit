@@ -1154,16 +1154,34 @@ doctor() {
   if [ -n "$lic_key_val" ]; then
     placeholder_keys+=(DSA_LICENSE_KEY DSA_LICENSE_SIGNING_KEY)
   fi
-  # Split-deployment-only slots: only check when SANDBOX_B_REMOTE_ENDPOINT
-  # is set. When empty (self-hosted overlay path), local sandbox-b owns
-  # these; leaving them as placeholders is correct.
+  # Sandbox B keypair placement (mode-dependent):
+  #
+  # - Split deployment (SANDBOX_B_REMOTE_ENDPOINT set):
+  #   * SANDBOX_B_API_KEY:           Lucairn-provided
+  #   * VEIL_SANDBOX_B_PUBLIC_KEY:   Lucairn-provided (matches Lucairn-hosted SB signing key)
+  #   * VEIL_SANDBOX_B_SIGNING_KEY:  not used on customer side (lives on Lucairn SB fleet)
+  #
+  # - Self-hosted (SANDBOX_B_REMOTE_ENDPOINT empty):
+  #   * SANDBOX_B_API_KEY:           not used; sandbox-b reads LOCAL_SANDBOX_B_API_KEY
+  #                                  from the self-hosted overlay (which has its own
+  #                                  default), so the example placeholder is harmless.
+  #   * VEIL_SANDBOX_B_PUBLIC_KEY:   operator-generated (witness reads this; MUST be
+  #                                  the derived public key for the SIGNING key below)
+  #   * VEIL_SANDBOX_B_SIGNING_KEY:  operator-generated (sandbox-b uses this to sign
+  #                                  CLAIM_TYPE_INFERENCE_GENERATED; required at boot
+  #                                  via :? enforcement in docker-compose.self-hosted.yml)
+  #
+  # Therefore SANDBOX_B_API_KEY may stay at its example placeholder in self-hosted
+  # mode (and is only validated when split-deployment makes it load-bearing), but
+  # the SB keypair MUST be operator-generated and pass placeholder + hex64 checks
+  # in BOTH modes.
   if [ -n "$remote_endpoint" ]; then
-    placeholder_keys+=(
-      SANDBOX_B_API_KEY
-      VEIL_SANDBOX_B_PUBLIC_KEY
-      VEIL_SANDBOX_B_SIGNING_KEY
-    )
+    placeholder_keys+=(SANDBOX_B_API_KEY)
   fi
+  placeholder_keys+=(
+    VEIL_SANDBOX_B_PUBLIC_KEY
+    VEIL_SANDBOX_B_SIGNING_KEY
+  )
   for key in "${placeholder_keys[@]}"; do
     validate_no_placeholder "$env_file" "$key" || placeholder_failed=1
   done
@@ -1182,12 +1200,11 @@ doctor() {
     VEIL_GATEWAY_SIGNING_KEY VEIL_MANIFEST_SIGNING_KEY VEIL_WITNESS_PUBLIC_KEY
     VEIL_BRIDGE_PUBLIC_KEY VEIL_SANITIZER_PUBLIC_KEY VEIL_AUDIT_PUBLIC_KEY
   )
-  # Self-hosted carve-out: VEIL_SANDBOX_B_PUBLIC_KEY is only used in split
-  # deployment (where Lucairn provisions the matching key); in self-hosted
-  # mode the local container generates its own keypair at boot.
-  if [ -n "$remote_endpoint" ]; then
-    hex64_keys+=(VEIL_SANDBOX_B_PUBLIC_KEY)
-  fi
+  # VEIL_SANDBOX_B_PUBLIC_KEY: hex64 in BOTH modes. Split deployment gets
+  # the value from Lucairn; self-hosted gets it from the operator's
+  # `scripts/derive-veil-pubkey.sh "$VEIL_SANDBOX_B_SIGNING_KEY"` output
+  # (per the corrected step 4a table in INSTALL.md).
+  hex64_keys+=(VEIL_SANDBOX_B_PUBLIC_KEY)
   for key in "${hex64_keys[@]}"; do
     validate_hex64 "$env_file" "$key" || format_failed=1
   done
