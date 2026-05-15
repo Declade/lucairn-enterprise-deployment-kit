@@ -257,6 +257,30 @@ check_local_port_available() {
   return 0
 }
 
+check_dev_mode_consistency() {
+  local env_file="$1"
+  local dsa_env grpc_tls grpc_cert lic_key
+  dsa_env="$(env_value "$env_file" DSA_ENV)"
+  grpc_tls="$(env_value "$env_file" GRPC_TLS_ENABLED)"
+  grpc_cert="$(env_value "$env_file" GRPC_TLS_CERT_FILE)"
+  lic_key="$(env_value "$env_file" DSA_LICENSE_KEY)"
+
+  # Heuristic: if the operator is in dev mode (empty license -> gateway
+  # bypass logged at boot) but still on production-default env values
+  # (DSA_ENV=production + GRPC_TLS_ENABLED=true) without TLS cert paths
+  # set, sandbox-b will refuse to start. Warn before compose-up.
+  if [ -z "$lic_key" ] \
+     && { [ "$dsa_env" = "production" ] || [ -z "$dsa_env" ]; } \
+     && { [ "$grpc_tls" = "true" ] || [ -z "$grpc_tls" ]; } \
+     && [ -z "$grpc_cert" ]; then
+    echo "warn: dev-mode license (empty DSA_LICENSE_KEY) with DSA_ENV=production + GRPC_TLS_ENABLED=true but no GRPC_TLS_CERT_FILE"
+    echo "warn:   sandbox-b will refuse to start: 'GRPC_TLS_ENABLED=true (with cert/key) is required when DSA_ENV=production'"
+    echo "warn:   for a local sandbox install set DSA_ENV=development + GRPC_TLS_ENABLED=false; for production install GRPC_TLS_CERT_FILE etc."
+    echo "warn:   see TROUBLESHOOTING.md § 'Sandbox B Refuses Insecure Port / Gateway Sandbox B Health-Check TLS Handshake Failure'"
+  fi
+  return 0
+}
+
 check_certs() {
   local env_file="$1" checked=0 failed=0 key path
   local cert_keys=(SANDBOX_B_CLIENT_CERT SANDBOX_B_CA_CERT GRPC_TLS_CERT_FILE WITNESS_MTLS_CA_BUNDLE_PATH WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH)
@@ -1213,6 +1237,18 @@ doctor() {
   echo "secret formats: ok"
 
   check_certs "$env_file"
+
+  # Dev-mode-env consistency check. Catches the "production-defaults
+  # vs dev install" foot-gun Sim 3 final-smoothing hit three times:
+  # `customer.env.example` ships DSA_ENV=production + GRPC_TLS_ENABLED=true
+  # so production installs are safe by default, but local-laptop / sandbox
+  # installs that leave those defaults intact without provisioning real
+  # mTLS material crash sandbox-b at boot (`CRITICAL ... refusing insecure
+  # port`) or surface as gateway sandbox_b health-check TLS-handshake
+  # errors. This check warns operators of the inconsistency before
+  # compose-up so they hit the actionable troubleshooting entry rather
+  # than the cryptic runtime log.
+  check_dev_mode_consistency "$env_file"
 
   # BYOK overlay check (self-hosted + managed-LLM mode). Informational +
   # enforces that at least one provider key is present when the allowlist
