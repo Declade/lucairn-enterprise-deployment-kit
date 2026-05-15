@@ -267,6 +267,53 @@ check_certs() {
   [ "$failed" -eq 0 ]
 }
 
+# check_byok_overlay — when LUCAIRN_LLM_EGRESS_ALLOWLIST is set in
+# customer.env, surface that the BYOK overlay is in effect so the operator
+# (and any compliance reviewer running `doctor`) can audit the declared
+# FQDN list at deploy time. This is intentionally informational: the
+# Docker bridge driver does not enforce FQDN policy, so the actual
+# enforcement layer (host firewall, Cilium NetworkPolicy, transparent
+# forward proxy) lives outside the kit. The doctor's role is to confirm
+# (a) the allowlist is non-empty, (b) at least one provider key is set,
+# and (c) the BYOK compose overlay sits beside the env file.
+check_byok_overlay() {
+  local env_file="$1"
+  local allowlist anthropic openai mistral gemini
+  allowlist="$(env_value "$env_file" LUCAIRN_LLM_EGRESS_ALLOWLIST)"
+  if [ -z "$allowlist" ]; then
+    echo "byok overlay: not in use (LUCAIRN_LLM_EGRESS_ALLOWLIST empty)"
+    return 0
+  fi
+
+  anthropic="$(env_value "$env_file" ANTHROPIC_API_KEY)"
+  openai="$(env_value "$env_file" OPENAI_API_KEY)"
+  mistral="$(env_value "$env_file" MISTRAL_API_KEY)"
+  gemini="$(env_value "$env_file" GEMINI_API_KEY)"
+  local providers=()
+  [ -n "$anthropic" ] && providers+=("anthropic")
+  [ -n "$openai" ] && providers+=("openai")
+  [ -n "$mistral" ] && providers+=("mistral")
+  [ -n "$gemini" ] && providers+=("gemini")
+
+  if [ "${#providers[@]}" -eq 0 ]; then
+    echo "byok overlay: failed (LUCAIRN_LLM_EGRESS_ALLOWLIST set but no provider key configured — set at least one of ANTHROPIC_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY, GEMINI_API_KEY)"
+    return 1
+  fi
+
+  local byok_compose="$ROOT/docker-compose.self-hosted-byok.yml"
+  if [ ! -f "$byok_compose" ]; then
+    echo "byok overlay: failed (LUCAIRN_LLM_EGRESS_ALLOWLIST is set but docker-compose.self-hosted-byok.yml is missing from $ROOT)"
+    return 1
+  fi
+
+  echo "byok overlay: ok (allowlist=$allowlist; providers=${providers[*]})"
+  echo "  NOTE: FQDN enforcement is the operator's responsibility. The kit"
+  echo "  declares the topology + intent; enforcement belongs in your host"
+  echo "  firewall, Cilium NetworkPolicy, or transparent forward proxy."
+  echo "  See INSTALL.md § \"Self-hosted with managed LLM (BYOK)\"."
+  return 0
+}
+
 check_container_images() {
   local env_file="$1" failed=0 registry tag image
   registry="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)"
@@ -1100,6 +1147,11 @@ doctor() {
   echo "secret formats: ok"
 
   check_certs "$env_file"
+
+  # BYOK overlay check (self-hosted + managed-LLM mode). Informational +
+  # enforces that at least one provider key is present when the allowlist
+  # is set. Skipped silently when the operator is not using the overlay.
+  check_byok_overlay "$env_file" || return 1
 
   # Image-manifest drift warning. Runs in --offline mode as well so customers
   # without network egress still get the warning.

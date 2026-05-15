@@ -197,6 +197,52 @@ Three working paths:
 
 The script prints the same three options inline whenever it sees this error. Upgrading to a gateway image at or after `0.4.0` removes the workaround.
 
+## Sandbox B Cannot Reach `api.anthropic.com` (Or Other Managed-LLM Endpoint)
+
+Symptom: Sandbox B logs `Connection refused` / `name resolution failed` /
+`connect: network is unreachable` when calling Anthropic / OpenAI /
+Mistral / Gemini / Azure OpenAI / etc.
+
+Cause: the base `docker-compose.self-hosted.yml` overlay attaches Sandbox B
+only to `internal: true` bridges. That is correct for a local-model
+runtime but blocks all outbound egress, including managed-LLM calls.
+
+Fix: load the BYOK overlay on top of the customer + self-hosted overlays.
+
+```bash
+docker compose \
+  -f docker-compose.customer.yml \
+  -f docker-compose.self-hosted.yml \
+  -f docker-compose.self-hosted-byok.yml \
+  --env-file customer.env \
+  --profile "$MODEL_RUNTIME_PROFILE" \
+  up -d
+```
+
+Populate the managed-LLM block in `customer.env` first (see
+`customer.env.example`). Required: `LUCAIRN_LLM_EGRESS_ALLOWLIST` plus at
+least one provider key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …).
+
+Verify outbound reach from inside the container. A 401 is the expected
+pass — name resolution + TCP both worked, only the dummy key was rejected:
+
+```bash
+docker exec lucairn-sandbox-b-1 \
+  curl -sS -o /dev/null -w "%{http_code}\n" \
+  https://api.anthropic.com/v1/messages
+# Expect: 401  (NOT 0 / NXDOMAIN / connection refused)
+```
+
+If you still see 0 / NXDOMAIN after loading the BYOK overlay, your host
+firewall or DNS layer (Cilium / forward proxy / iptables) is dropping the
+traffic — that is the operator-side enforcement working as designed.
+Adjust the operator's network policy allowlist to match
+`LUCAIRN_LLM_EGRESS_ALLOWLIST` in `customer.env`.
+
+The BYOK overlay opens the topology; the operator enforces which FQDNs
+are reachable. See INSTALL.md § "Self-hosted with managed LLM (BYOK)" for
+the responsibility split.
+
 ## Generating a Support Bundle
 
 ```bash

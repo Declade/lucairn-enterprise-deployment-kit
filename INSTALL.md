@@ -28,24 +28,40 @@ customer's own host or on Lucairn-hosted infrastructure.
 
 | Mode | Sandbox B runs on | Compose overlays | Required Lucairn-provisioned values | Outbound network from customer host |
 |---|---|---|---|---|
-| **Self-hosted inference** | Customer's host (local container plus model runtime) | `docker-compose.customer.yml` plus `docker-compose.self-hosted.yml` | `DSA_LICENSE_KEY`, `DSA_LICENSE_SIGNING_KEY` only | None to Lucairn at request time. Model runtime fetched once at install. |
+| **Self-hosted inference (local model)** | Customer's host (local container plus model runtime) | `docker-compose.customer.yml` plus `docker-compose.self-hosted.yml` | `DSA_LICENSE_KEY`, `DSA_LICENSE_SIGNING_KEY` only | None to Lucairn at request time. Model runtime fetched once at install. |
+| **Self-hosted inference (managed LLM / BYOK)** | Customer's host (local container; LLM call goes out to operator-declared FQDNs) | `docker-compose.customer.yml` plus `docker-compose.self-hosted.yml` plus `docker-compose.self-hosted-byok.yml` | Same as self-hosted local-model **plus** `LUCAIRN_LLM_EGRESS_ALLOWLIST` and provider key(s) (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) | HTTPS to operator-declared LLM FQDNs only. Sandbox A / ID Bridge / Sanitizer / Audit / Witness stay on internal-only networks. |
 | **Split deployment** | Lucairn-hosted | `docker-compose.customer.yml` only | All of the self-hosted list **plus** `SANDBOX_B_REMOTE_ENDPOINT`, `SANDBOX_B_API_KEY`, `VEIL_SANDBOX_B_PUBLIC_KEY`, optional mTLS material (`SANDBOX_B_CLIENT_CERT` etc.) | HTTPS to Lucairn-provided endpoint per request. |
 
-Pick **self-hosted inference** when:
+Pick **self-hosted inference (local model)** when:
 
-- Compliance forbids per-request egress to a Lucairn-operated endpoint.
+- Compliance forbids per-request egress to *any* external endpoint.
 - The customer wants a fully on-premise deploy (sandbox / proof-of-value /
-  air-gapped or DMZ-only network).
+  air-gapped or DMZ-only network) and owns GPU/CPU model runtime
+  operations.
 - Development, simulation, or acceptance-test environments. The
   `docker-compose.self-hosted.yml` overlay is always the right starting point
   on a laptop or single-host VM.
+
+Pick **self-hosted inference (managed LLM / BYOK)** when:
+
+- The customer wants Sandbox A / Sanitizer / ID Bridge / Audit / Witness to
+  run on-premise (so identity data never leaves their network), but is OK
+  with the LLM call itself going to a managed cloud provider (Anthropic,
+  OpenAI, Mistral, Gemini, Azure OpenAI, AWS Bedrock, internal LLM
+  gateway).
+- The compliance team will enforce the FQDN allowlist at their existing
+  network policy layer (host firewall + DNS allowlist, Cilium
+  NetworkPolicy with `toFQDNs:`, or a transparent forward proxy). See the
+  "Self-hosted with managed LLM (BYOK)" section below for the
+  responsibility split between the kit and the operator.
 
 Pick **split deployment** when:
 
 - Production traffic and the customer has signed the standard Lucairn
   inference-tenancy contract that provides the remote Sandbox B endpoint.
 - The customer does not want to own model runtime operations (GPU
-  procurement, model updates, weight licensing).
+  procurement, model updates, weight licensing) or manage their own
+  upstream-LLM contracts.
 
 If neither column matches the customer's profile, contact Lucairn before
 proceeding. Mixing modes is not supported.
@@ -177,6 +193,74 @@ If you omit the self-hosted overlay on a self-hosted-inference install, the
 gateway will start but `/readyz` will return 503 because the placeholder
 `SANDBOX_B_REMOTE_ENDPOINT=https://inference.lucairn.example` is unreachable.
 See `TROUBLESHOOTING.md` § "`/healthz` Returns 200 But `/readyz` Returns 503".
+
+### Self-hosted with managed LLM (BYOK Anthropic, OpenAI, etc.)
+
+When the customer wants the Lucairn control + identity plane on-premise but
+is OK with the LLM call itself going to a managed cloud provider (Anthropic,
+OpenAI, Mistral, Gemini, Azure OpenAI, AWS Bedrock, internal LLM gateway),
+load the BYOK overlay on top of the customer + self-hosted overlays:
+
+```bash
+docker compose \
+  -f docker-compose.customer.yml \
+  -f docker-compose.self-hosted.yml \
+  -f docker-compose.self-hosted-byok.yml \
+  --env-file customer.env \
+  --profile "$MODEL_RUNTIME_PROFILE" \
+  up -d
+```
+
+In `customer.env`, uncomment and populate the managed-LLM block:
+
+```
+LUCAIRN_LLM_EGRESS_ALLOWLIST=api.anthropic.com,api.openai.com
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+```
+
+What the overlay does:
+
+- Adds a new non-internal bridge network `dsa-egress` and joins **only
+  Sandbox B** to it. Sandbox A, ID Bridge, Sanitizer, Audit, Witness, and
+  all Postgres instances stay on their internal-only networks.
+- Wires the provider API keys into Sandbox B so it can register the
+  matching adapters (Anthropic, OpenAI, Mistral, Gemini). Unset providers
+  are simply not wired; only adapters with a key present register.
+- Fails fast at `docker compose config` time if
+  `LUCAIRN_LLM_EGRESS_ALLOWLIST` is empty.
+
+What the overlay does **NOT** do (operator responsibility):
+
+- It does **not** enforce FQDN-level egress restrictions on the
+  `dsa-egress` network. The Docker bridge driver does not support FQDN
+  policy. Enforcing the allowlist is the operator's responsibility and
+  belongs in the operator's existing network policy layer. Pick whichever
+  matches the customer's stack:
+  - Host firewall (iptables / nftables) + a DNS allowlist (dnsmasq /
+    Pi-hole / Unbound forwarding only the declared FQDNs).
+  - Cilium NetworkPolicy with FQDN selector (`toFQDNs:`) — the
+    production-grade option for Kubernetes / k3s deployments.
+  - Transparent forward proxy (squid, mitmproxy in transparent mode,
+    tinyproxy) with an FQDN allowlist; route Sandbox B's egress through
+    the proxy via `HTTPS_PROXY` env.
+
+The compliance team should sign off on the chosen enforcement layer **and**
+the contents of `LUCAIRN_LLM_EGRESS_ALLOWLIST` before this overlay is
+loaded in production. Declaring the intended allowlist keeps the operator
+intent close to the running compose state; `bin/lucairn doctor` surfaces
+that the BYOK overlay is in effect so the compliance team can audit it.
+
+Smoke-verify outbound reach from inside Sandbox B (a 401 from the LLM
+provider is the expected pass — name resolution + TCP both worked, only
+the dummy API key was rejected):
+
+```bash
+docker exec lucairn-sandbox-b-1 \
+  curl -sS -o /dev/null -w "%{http_code}\n" \
+  https://api.anthropic.com/v1/messages
+# Expect: 401  (NOT 0 / NXDOMAIN / connection refused)
+```
 
 8. Confirm health.
 
