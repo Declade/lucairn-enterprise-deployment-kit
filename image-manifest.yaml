@@ -44,7 +44,7 @@ kit_version: "1.3.0-customer-demo-data"
 # Default tag applied to every dsa-* image unless a per-service override
 # exists in `services:` below. Operators set LUCAIRN_IMAGE_TAG in customer.env
 # to use a different default; doctor warns when env != this manifest value.
-default_lucairn_image_tag: "0.3.1"
+default_lucairn_image_tag: "0.4.0"
 
 # Registry the kit was validated against. doctor warns when env's
 # LUCAIRN_IMAGE_REGISTRY differs.
@@ -73,7 +73,7 @@ services:
     # config/default-sanitizer.yaml. Bumping the sanitizer tag without
     # syncing config/default-sanitizer.yaml is the Sim 2 F3 failure mode.
     sanitizer_config_path: "config/default-sanitizer.yaml"
-    sanitizer_config_compat: "0.3.x"   # version line the config is targeting
+    sanitizer_config_compat: "0.4.x"   # version line the config is targeting
   dsa-veil-witness:
     image_tag: ""
   dsa-gateway:

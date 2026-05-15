@@ -331,6 +331,12 @@ services:
       SANITIZER_CONFIG_PATH: "${SANITIZER_CONFIG_PATH:-/config/config.yaml}"
       SANITIZER_PORT: "8086"
       GUNICORN_TIMEOUT: "120"
+      DSA_ENV: "${DSA_ENV:-production}"
+      # Canary HMAC key — both sanitizer (issues canaries) and gateway
+      # (verifies them on outbound to LLM) MUST share this. Required when
+      # DSA_ENV=production: sanitizer refuses to start without it
+      # (services/sanitizer/canary.py:317).
+      CANARY_HMAC_KEY: "${CANARY_HMAC_KEY:?CANARY_HMAC_KEY required for sanitizer canary issuance}"
       VEIL_ENABLED: "${VEIL_ENABLED:-true}"
       VEIL_SIGNING_KEY: "${VEIL_SANITIZER_SIGNING_KEY}"
       # All emitters use the witness's plain gRPC port (50057).
@@ -339,6 +345,12 @@ services:
       DP_BUDGET_REDIS_URL: "redis://redis-sanitizer:6379/0"
     volumes:
       - ${SANITIZER_CONFIG_FILE:-./config/default-sanitizer.yaml}:/config/config.yaml:ro
+      # Safe-terms file referenced by default-sanitizer.yaml's
+      # `safe_terms_file: /config/medical-terms.txt`. Without this mount the
+      # sanitizer silently swallows the FileNotFoundError and runs with an
+      # empty safe-terms set, causing false-positive PII redactions on
+      # clinical content. Caught by Sim 3 config-vs-image drift sweep 2026-05-15.
+      - ${SANITIZER_SAFE_TERMS_FILE:-./config/medical-terms.txt}:/config/medical-terms.txt:ro
     networks:
       - dsa-identity
       - dsa-witness-identity
@@ -417,6 +429,20 @@ services:
       VEIL_GATEWAY_MANIFEST_PUBLIC_KEY: "${VEIL_GATEWAY_MANIFEST_PUBLIC_KEY:-}"
       VEIL_WITNESS_MANIFEST_PUBLIC_KEY: "${VEIL_WITNESS_MANIFEST_PUBLIC_KEY:-}"
       VEIL_WITNESS_SIGNED_MANIFEST_PATH: "${VEIL_WITNESS_SIGNED_MANIFEST_PATH:-/certs/witness-signed-manifest.json}"
+      # Per-service Ed25519 public keys — gateway needs these to publish the
+      # discovery surface at /.well-known/veil-keys.json (external SDK
+      # verifiers fetch this to validate certs). Missing wirings here made
+      # the well-known endpoint return keys[]: [] even when the witness had
+      # the keys — caught by Sim 3 dead-reference sweep 2026-05-15.
+      VEIL_WITNESS_PUBLIC_KEY: "${VEIL_WITNESS_PUBLIC_KEY}"
+      VEIL_BRIDGE_PUBLIC_KEY: "${VEIL_BRIDGE_PUBLIC_KEY}"
+      VEIL_SANITIZER_PUBLIC_KEY: "${VEIL_SANITIZER_PUBLIC_KEY}"
+      VEIL_AUDIT_PUBLIC_KEY: "${VEIL_AUDIT_PUBLIC_KEY}"
+      VEIL_GATEWAY_PUBLIC_KEY: "${VEIL_GATEWAY_PUBLIC_KEY}"
+      VEIL_SANDBOX_B_PUBLIC_KEY: "${VEIL_SANDBOX_B_PUBLIC_KEY}"
+      # Canary HMAC key — gateway's outbound canary-detector matches inbound
+      # canary tokens against the same key the sanitizer issues them with.
+      CANARY_HMAC_KEY: "${CANARY_HMAC_KEY:?CANARY_HMAC_KEY required for canary detection}"
       <<: *dsa-prod-auth
       IDENTITY_SERVICE_ADDR: "sandbox-a:50053"
       BRIDGE_SERVICE_ADDR: "id-bridge:50052"
