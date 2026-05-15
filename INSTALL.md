@@ -2,6 +2,26 @@
 
 Goal: a competent platform engineer should complete a standard install in about 3 hours without a vendor call.
 
+## Quickstart (30 seconds, dev mode)
+
+```
+git clone https://github.com/Declade/lucairn-enterprise-deployment-kit && cd lucairn-enterprise-deployment-kit
+./bin/lucairn-init --dev
+docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env up -d
+```
+
+That's it. `bin/lucairn-init --dev` writes a fully-populated, doctor-passing
+`customer.env` (5 Ed25519 keypairs, hex32 service secrets, postgres
+passwords, sensible dev-mode defaults) and runs `bin/lucairn doctor` against
+it before exiting. Use `bin/lucairn-mint-customer` once the stack is healthy
+to provision your first customer.
+
+For production deployment with a Lucairn-issued license, see "Choose A
+Deployment Mode" below and use `./bin/lucairn-init --production --license
+<path>`. For managed-LLM mode (BYOK Anthropic, OpenAI, etc.) add `--byok` and
+populate the provider key before `docker compose up`. The
+`bin/lucairn-init --help` lists every flag.
+
 ## Pre-Requisites
 
 For Docker Compose:

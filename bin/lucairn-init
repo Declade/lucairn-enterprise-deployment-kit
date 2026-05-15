@@ -1,0 +1,636 @@
+#!/usr/bin/env bash
+#
+# lucairn-init — one-command customer.env writer.
+#
+# Replaces the ~5 minutes of manual placeholder-filling in
+# customer.env.example with ~30 seconds of './bin/lucairn-init --dev'.
+#
+# Generates:
+#   - 5 Ed25519 keypairs (one private + matching public for each VEIL_*
+#     signing slot the gateway/sanitizer/witness/bridge/audit services expect)
+#   - hex32 values via `openssl rand -hex 32` for service-token / bridge-encryption /
+#     sandbox-a-encryption / bridge-master / admin / and all VEIL_*_SIGNING_KEY slots
+#   - alphanumeric-only postgres passwords (no SQL-special characters because
+#     scripts/render-migrations.sh's envsubst breaks on '\'',' \', '$', etc.)
+#   - GATEWAY_KEYSTORE_KEY as 32-byte base64
+#
+# Modes:
+#   --dev           empty DSA_LICENSE_KEY (gateway enters dev-mode bypass) +
+#                   DSA_ENV=development + GRPC_TLS_ENABLED=false +
+#                   GATEWAY_BASE_URL=http://localhost:8080
+#   --production    requires --license <path> (file with license_key + signing_key,
+#                   either as JSON {"license_key":"...","signing_key":"..."} or as
+#                   two newline-separated values starting with key=)
+#   --byok          modifier on either mode; sets LUCAIRN_LLM_EGRESS_ALLOWLIST and
+#                   prints the FQDN-enforcement-is-your-responsibility warning
+#
+# After writing the file, runs `bin/lucairn doctor --env <output> --offline`
+# (--offline skips DNS + image-pull checks that aren't relevant pre-deploy).
+#
+# Exit codes:
+#   0 success
+#   2 usage error
+#   3 prerequisites missing (openssl)
+#   4 doctor failed on the generated env (file is left in place for inspection)
+#   5 license validation failed
+
+set -euo pipefail
+
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly KIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+readonly DEFAULT_IMAGE_TAG="0.4.0"
+readonly DEFAULT_OUTPUT="${KIT_ROOT}/customer.env"
+
+# Temp files that hold plaintext keypair material during derivation. The
+# trap below removes them on every exit path (success, failure, signal).
+TMP_FILES=()
+
+cleanup() {
+  local f
+  for f in "${TMP_FILES[@]:-}"; do
+    [ -n "$f" ] && [ -e "$f" ] && rm -f "$f" 2>/dev/null || true
+  done
+}
+trap cleanup EXIT INT TERM
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  bin/lucairn-init --dev [options]
+  bin/lucairn-init --production --license <path> [options]
+
+Writes a fully-populated, doctor-passing customer.env in one command.
+
+Modes (exactly one required):
+  --dev                    Dev-mode customer.env. Empty DSA_LICENSE_KEY (the gateway
+                           enters its dev-mode bypass and logs "no license key
+                           configured"). DSA_ENV=development, GRPC_TLS_ENABLED=false,
+                           GATEWAY_BASE_URL=http://localhost:8080.
+  --production             Production-mode customer.env. Requires --license <path>.
+                           DSA_ENV=production, GRPC_TLS_ENABLED=true.
+
+Options:
+  --license <path>         License bundle. Required for --production. Two formats
+                           accepted:
+                             1) JSON: {"license_key":"...","signing_key":"..."}
+                             2) Two lines: license_key=... / signing_key=...
+  --byok                   BYOK / managed-LLM mode. Sets LUCAIRN_LLM_EGRESS_ALLOWLIST=
+                           api.anthropic.com,api.openai.com and prints a banner about
+                           FQDN-enforcement responsibility.
+  --byok-allowlist <list>  Override the BYOK FQDN allowlist (comma-separated, no scheme).
+                           Implies --byok.
+  --output <path>          Where to write the file (default: ./customer.env).
+  --image-tag <tag>        LUCAIRN_IMAGE_TAG value (default: 0.4.0, the highest
+                           published image tag with all recognizers referenced by
+                           config/default-sanitizer.yaml). image-manifest.yaml
+                           pins 0.3.1, but that image lacks the W5+ Phase 1/3
+                           recognizer additions — doctor will warn about the
+                           drift; the warning is benign at 0.4.0.
+  --gateway-base-url <url> Override GATEWAY_BASE_URL (default: dev=http://localhost:8080,
+                           prod=https://lucairn.customer.example — must be replaced before
+                           production deploy).
+  --skip-doctor            Skip the post-write `bin/lucairn doctor` invocation. Useful in
+                           scripted pipelines that run doctor separately.
+  --dry-run                Print what would be written to stdout. Skips backup + doctor.
+                           Secrets ARE printed because the user explicitly asked.
+  --help, -h               Show this usage and exit.
+
+Examples:
+  # Dev-mode laptop install (~30 sec from clone to ready)
+  ./bin/lucairn-init --dev
+  docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml \
+    --env-file customer.env up -d
+
+  # Dev-mode + BYOK Anthropic
+  ./bin/lucairn-init --dev --byok
+
+  # Production install with a Lucairn-issued license
+  ./bin/lucairn-init --production --license ~/lucairn-license.json
+
+Exit codes:
+  0  success
+  2  usage error (missing/conflicting flags, missing prerequisites)
+  3  openssl not found
+  4  bin/lucairn doctor failed against the generated file
+  5  license validation failed
+USAGE
+}
+
+fail() {
+  echo "error: $*" >&2
+  exit "${2:-2}"
+}
+
+have() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+# Arg parse ----------------------------------------------------------------
+
+MODE=""
+LICENSE_PATH=""
+BYOK="false"
+BYOK_ALLOWLIST="api.anthropic.com,api.openai.com"
+OUTPUT="$DEFAULT_OUTPUT"
+IMAGE_TAG="$DEFAULT_IMAGE_TAG"
+GATEWAY_BASE_URL_OVERRIDE=""
+SKIP_DOCTOR="false"
+DRY_RUN="false"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dev)             [ -z "$MODE" ] || fail "--dev and --production are mutually exclusive"; MODE="dev"; shift ;;
+    --production)      [ -z "$MODE" ] || fail "--dev and --production are mutually exclusive"; MODE="production"; shift ;;
+    --license)         LICENSE_PATH="${2:?--license requires a path}"; shift 2 ;;
+    --byok)            BYOK="true"; shift ;;
+    --byok-allowlist)  BYOK="true"; BYOK_ALLOWLIST="${2:?--byok-allowlist requires a value}"; shift 2 ;;
+    --output)          OUTPUT="${2:?--output requires a path}"; shift 2 ;;
+    --image-tag)       IMAGE_TAG="${2:?--image-tag requires a value}"; shift 2 ;;
+    --gateway-base-url) GATEWAY_BASE_URL_OVERRIDE="${2:?--gateway-base-url requires a value}"; shift 2 ;;
+    --skip-doctor)     SKIP_DOCTOR="true"; shift ;;
+    --dry-run)         DRY_RUN="true"; shift ;;
+    --help|-h)         usage; exit 0 ;;
+    --)                shift; break ;;
+    *)                 fail "unknown argument: $1 (try --help)" ;;
+  esac
+done
+
+# Validate ------------------------------------------------------------------
+
+if [ -z "$MODE" ]; then
+  fail "exactly one of --dev or --production is required (try --help)"
+fi
+
+if [ "$MODE" = "production" ] && [ -z "$LICENSE_PATH" ]; then
+  fail "--production requires --license <path> (see INSTALL.md § \"Choose A Deployment Mode\" for license provisioning)"
+fi
+
+if [ "$MODE" = "dev" ] && [ -n "$LICENSE_PATH" ]; then
+  fail "--license is only valid with --production (use --dev for the no-license bypass)"
+fi
+
+if ! have openssl; then
+  fail "openssl not found. Install: brew install openssl (macOS) or apt-get install openssl (Linux)" 3
+fi
+
+if [ ! -f "$KIT_ROOT/docker-compose.customer.yml" ]; then
+  fail "not a Lucairn kit checkout (no docker-compose.customer.yml found at $KIT_ROOT)"
+fi
+
+# License parsing ------------------------------------------------------------
+
+LICENSE_KEY=""
+LICENSE_SIGNING_KEY=""
+
+if [ "$MODE" = "production" ]; then
+  [ -f "$LICENSE_PATH" ] || fail "license file not found: $LICENSE_PATH" 5
+  [ -r "$LICENSE_PATH" ] || fail "license file not readable: $LICENSE_PATH" 5
+
+  # Try JSON first (preferred, what the production license-issuance flow emits).
+  if head -c1 "$LICENSE_PATH" | grep -q '{'; then
+    if have jq; then
+      LICENSE_KEY="$(jq -r '.license_key // empty' "$LICENSE_PATH" 2>/dev/null || true)"
+      LICENSE_SIGNING_KEY="$(jq -r '.signing_key // empty' "$LICENSE_PATH" 2>/dev/null || true)"
+    else
+      LICENSE_KEY="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("license_key",""))' "$LICENSE_PATH" 2>/dev/null || true)"
+      LICENSE_SIGNING_KEY="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("signing_key",""))' "$LICENSE_PATH" 2>/dev/null || true)"
+    fi
+  else
+    # Fallback: two-line key=value text format.
+    LICENSE_KEY="$(grep -E '^license_key=' "$LICENSE_PATH" | head -1 | sed 's/^license_key=//' || true)"
+    LICENSE_SIGNING_KEY="$(grep -E '^signing_key=' "$LICENSE_PATH" | head -1 | sed 's/^signing_key=//' || true)"
+  fi
+
+  if [ -z "$LICENSE_KEY" ] || [ -z "$LICENSE_SIGNING_KEY" ]; then
+    fail "license file must contain non-empty license_key + signing_key (JSON or two-line key=value format): $LICENSE_PATH" 5
+  fi
+fi
+
+# Secret generation ---------------------------------------------------------
+#
+# All openssl invocations write to stdout only; nothing lands on disk until
+# the final assembly step (see write_env_file). The Ed25519 keypair
+# derivation needs a temp file because openssl-pkey is the only portable
+# way to materialise an Ed25519 seed; we trap-clean it before any other
+# path runs.
+
+gen_hex32() {
+  openssl rand -hex 32
+}
+
+# Alphanumeric-only — scripts/render-migrations.sh's envsubst rejects values
+# containing ' or \ or $ (see TROUBLESHOOTING.md "kit's compose connection
+# strings ... [require] alphanumeric + URL-safe special chars only"). The
+# strict-alphanumeric form is safest for the migration templating and for
+# the postgres connection-string URI assembly.
+gen_pg_password() {
+  openssl rand -base64 48 | tr -dc 'a-zA-Z0-9' | head -c 32
+  printf '\n'
+}
+
+# GATEWAY_KEYSTORE_KEY: base64-encoded 32 bytes (the doctor's validate_keystore_key
+# decodes and checks byte-count = 32).
+gen_keystore_key() {
+  openssl rand -base64 32
+}
+
+# Derive Ed25519 keypair: stdout emits "<seed_hex>:<pub_hex>".
+# The OpenSSL Ed25519 PEM doesn't expose a direct "give me hex public" flag;
+# the kit's scripts/derive-veil-pubkey.sh uses Python's cryptography library
+# to handle that. We use the same approach for consistency.
+gen_ed25519_pair() {
+  local seed pub
+  seed="$(openssl rand -hex 32)"
+  pub="$(python3 - "$seed" <<'PY' 2>/dev/null || true
+import binascii, sys
+seed = binascii.unhexlify(sys.argv[1])
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    pub = Ed25519PrivateKey.from_private_bytes(seed).public_key().public_bytes_raw()
+except Exception:
+    try:
+        from nacl.signing import SigningKey
+        pub = bytes(SigningKey(seed).verify_key)
+    except Exception:
+        sys.exit(1)
+print(binascii.hexlify(pub).decode())
+PY
+)"
+  if [ -z "$pub" ]; then
+    echo ""
+    return 1
+  fi
+  printf '%s:%s\n' "$seed" "$pub"
+}
+
+# Per-slot generation -------------------------------------------------------
+
+# Veil signing slots that need a real Ed25519 keypair (private seed + matching
+# derived public key). The names match customer.env.example exactly; the
+# doctor enforces hex64 + non-placeholder on each.
+#
+# Why these specific 5 slots: BRIDGE / WITNESS / AUDIT / SANITIZER are the
+# four claim-emitting service identities that the witness verifier checks
+# against per-claim signatures. SANDBOX_B is the inference-side identity.
+# GATEWAY / MANIFEST stay as standalone signing-only keys (no derived-pubkey
+# slot in customer.env) — they sign things the witness reads via different
+# verification paths and don't need a public-key env var on the customer side.
+declare -a VEIL_PAIRED_SLOTS=(BRIDGE WITNESS AUDIT SANITIZER SANDBOX_B)
+
+# Standalone hex32 signing slots (no paired public key on customer side).
+declare -a VEIL_SIGNING_ONLY=(GATEWAY MANIFEST)
+
+# Hex32 service secrets (not Veil signing keys, just opaque shared secrets).
+declare -a HEX32_SLOTS=(
+  DSA_SERVICE_TOKEN
+  DSA_BRIDGE_ENCRYPTION_KEY
+  SANDBOX_A_ENCRYPTION_KEY
+  BRIDGE_MASTER_KEY
+  DSA_ADMIN_KEY
+)
+
+# Postgres slots (4 superuser + 2 app-role).
+declare -a PG_SUPERUSER_SLOTS=(
+  POSTGRES_AUDIT_PASSWORD
+  POSTGRES_BRIDGE_PASSWORD
+  POSTGRES_SANDBOX_A_PASSWORD
+  POSTGRES_VEIL_PASSWORD
+)
+declare -a PG_APP_SLOTS=(
+  AUDIT_APP_PASSWORD
+  VEIL_APP_PASSWORD
+)
+
+echo "Generating Lucairn customer.env ($MODE mode, image-tag $IMAGE_TAG)..." >&2
+
+# Declare the result map. Bash 3.2 (macOS default) doesn't have associative
+# arrays, so we use parallel name + value arrays and a lookup function.
+declare -a KEYS=()
+declare -a VALS=()
+
+set_kv() {
+  KEYS+=("$1")
+  VALS+=("$2")
+}
+
+# Pair generation
+for slot in "${VEIL_PAIRED_SLOTS[@]}"; do
+  pair="$(gen_ed25519_pair)" || fail "Ed25519 derivation failed for $slot — install python3 cryptography or pynacl" 3
+  seed="${pair%%:*}"
+  pub="${pair##*:}"
+  set_kv "VEIL_${slot}_SIGNING_KEY" "$seed"
+  set_kv "VEIL_${slot}_PUBLIC_KEY" "$pub"
+done
+
+# Signing-only slots
+for slot in "${VEIL_SIGNING_ONLY[@]}"; do
+  set_kv "VEIL_${slot}_SIGNING_KEY" "$(gen_hex32)"
+done
+
+# Hex32 service secrets
+for slot in "${HEX32_SLOTS[@]}"; do
+  set_kv "$slot" "$(gen_hex32)"
+done
+
+# Postgres passwords
+for slot in "${PG_SUPERUSER_SLOTS[@]}" "${PG_APP_SLOTS[@]}"; do
+  set_kv "$slot" "$(gen_pg_password)"
+done
+
+# GATEWAY_KEYSTORE_KEY (base64-32-bytes)
+set_kv GATEWAY_KEYSTORE_KEY "$(gen_keystore_key)"
+
+# Mode-dependent fields
+case "$MODE" in
+  dev)
+    set_kv DSA_ENV development
+    set_kv GRPC_TLS_ENABLED false
+    set_kv DSA_LICENSE_KEY ""
+    set_kv DSA_LICENSE_SIGNING_KEY ""
+    : "${GATEWAY_BASE_URL_OVERRIDE:=http://localhost:8080}"
+    ;;
+  production)
+    set_kv DSA_ENV production
+    set_kv GRPC_TLS_ENABLED true
+    set_kv DSA_LICENSE_KEY "$LICENSE_KEY"
+    set_kv DSA_LICENSE_SIGNING_KEY "$LICENSE_SIGNING_KEY"
+    : "${GATEWAY_BASE_URL_OVERRIDE:=https://lucairn.customer.example}"
+    ;;
+esac
+
+# Lookup helper
+get_val() {
+  local target="$1" i
+  for i in "${!KEYS[@]}"; do
+    if [ "${KEYS[$i]}" = "$target" ]; then
+      printf '%s' "${VALS[$i]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Render --------------------------------------------------------------------
+#
+# Output structure mirrors customer.env.example so a side-by-side diff makes
+# clear what came from the template and what was generated. The header
+# records mode + timestamp + the regeneration command.
+
+render_env() {
+  local ts now byok_block
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  ts="$now"
+  local regen_cmd="./bin/lucairn-init --$MODE"
+  if [ "$MODE" = "production" ]; then
+    regen_cmd="$regen_cmd --license $LICENSE_PATH"
+  fi
+  if [ "$BYOK" = "true" ]; then
+    regen_cmd="$regen_cmd --byok"
+  fi
+  if [ "$IMAGE_TAG" != "$DEFAULT_IMAGE_TAG" ]; then
+    regen_cmd="$regen_cmd --image-tag $IMAGE_TAG"
+  fi
+
+  cat <<HEADER
+# Lucairn customer environment — generated by bin/lucairn-init
+# Generated:      $ts
+# Mode:          $MODE
+# BYOK:          $BYOK
+# Image tag:     $IMAGE_TAG
+# Regenerate:    $regen_cmd
+#
+# This file contains generated secrets. Do not commit. Backups of previous
+# generations are stored as customer.env.bak-<ISO timestamp> beside this file.
+
+LUCAIRN_IMAGE_REGISTRY=ghcr.io/declade
+LUCAIRN_IMAGE_TAG=$IMAGE_TAG
+LUCAIRN_MODEL_DIR=../models
+
+DSA_ENV=$(get_val DSA_ENV)
+GRPC_TLS_ENABLED=$(get_val GRPC_TLS_ENABLED)
+POSTGRES_SSLMODE=disable
+
+# License (empty in dev mode triggers the gateway's dev-mode bypass)
+DSA_LICENSE_KEY=$(get_val DSA_LICENSE_KEY)
+DSA_LICENSE_SIGNING_KEY=$(get_val DSA_LICENSE_SIGNING_KEY)
+
+# Sandbox B (self-hosted mode — local container generates its own keypair;
+# split deployments override SANDBOX_B_REMOTE_ENDPOINT + SANDBOX_B_API_KEY
+# with Lucairn-provisioned values).
+SANDBOX_B_REMOTE_ENDPOINT=
+SANDBOX_B_API_KEY=
+VEIL_SANDBOX_B_PUBLIC_KEY=$(get_val VEIL_SANDBOX_B_PUBLIC_KEY)
+VEIL_SANDBOX_B_SIGNING_KEY=$(get_val VEIL_SANDBOX_B_SIGNING_KEY)
+LOCAL_SANDBOX_B_API_KEY=local-sandbox-b-key
+
+# Gateway URL + local bind ports
+GATEWAY_BASE_URL=$GATEWAY_BASE_URL_OVERRIDE
+GATEWAY_PORT=8080
+GATEWAY_HEALTH_PORT=8085
+GATEWAY_TRUSTED_PROXY_CIDRS=
+
+# Service shared secrets (hex32)
+DSA_SERVICE_TOKEN=$(get_val DSA_SERVICE_TOKEN)
+DSA_BRIDGE_ENCRYPTION_KEY=$(get_val DSA_BRIDGE_ENCRYPTION_KEY)
+SANDBOX_A_ENCRYPTION_KEY=$(get_val SANDBOX_A_ENCRYPTION_KEY)
+BRIDGE_MASTER_KEY=$(get_val BRIDGE_MASTER_KEY)
+DSA_ADMIN_KEY=$(get_val DSA_ADMIN_KEY)
+GATEWAY_KEYSTORE_KEY=$(get_val GATEWAY_KEYSTORE_KEY)
+
+# Veil signing keys (Ed25519 seed; hex32). Paired with VEIL_*_PUBLIC_KEY below.
+VEIL_AUDIT_SIGNING_KEY=$(get_val VEIL_AUDIT_SIGNING_KEY)
+VEIL_BRIDGE_SIGNING_KEY=$(get_val VEIL_BRIDGE_SIGNING_KEY)
+VEIL_SANITIZER_SIGNING_KEY=$(get_val VEIL_SANITIZER_SIGNING_KEY)
+VEIL_WITNESS_SIGNING_KEY=$(get_val VEIL_WITNESS_SIGNING_KEY)
+VEIL_GATEWAY_SIGNING_KEY=$(get_val VEIL_GATEWAY_SIGNING_KEY)
+VEIL_MANIFEST_SIGNING_KEY=$(get_val VEIL_MANIFEST_SIGNING_KEY)
+
+# Veil public keys — derived from the matching SIGNING_KEY above via
+# Ed25519. Do NOT regenerate independently; pair must match.
+VEIL_WITNESS_PUBLIC_KEY=$(get_val VEIL_WITNESS_PUBLIC_KEY)
+VEIL_BRIDGE_PUBLIC_KEY=$(get_val VEIL_BRIDGE_PUBLIC_KEY)
+VEIL_SANITIZER_PUBLIC_KEY=$(get_val VEIL_SANITIZER_PUBLIC_KEY)
+VEIL_AUDIT_PUBLIC_KEY=$(get_val VEIL_AUDIT_PUBLIC_KEY)
+VEIL_GATEWAY_PUBLIC_KEY=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+VEIL_AI_SIGNING_KEY=
+
+VEIL_ENABLED=true
+VEIL_WITNESS_KEY_ID=witness_v1
+VEIL_ISSUER=Lucairn Veil Witness
+VEIL_MANIFEST_SIGNING_KEY_ID=gateway_manifest_v1
+VEIL_WITNESS_SIGNED_MANIFEST_PATH=/opt/lucairn/witness-signed-manifest.json
+WELLKNOWN_CACHE_TTL=300
+WELLKNOWN_HISTORICAL_KEY_TTL=7776000
+
+# mTLS material (optional — leave empty for self-hosted local-mode)
+SANDBOX_B_CLIENT_CERT=
+SANDBOX_B_CLIENT_KEY=
+SANDBOX_B_CA_CERT=
+SANDBOX_B_CERT_DIR=
+VEIL_WITNESS_MTLS_HOST_DIR=
+WITNESS_MTLS_CA_BUNDLE_PATH=
+WITNESS_MTLS_SERVER_CERT_PATH=
+WITNESS_MTLS_SERVER_KEY_PATH=
+WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH=
+WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH=
+WITNESS_MTLS_SERVER_NAME=witness
+
+# Database passwords (alphanumeric — avoids breaking the envsubst migration
+# templating; see TROUBLESHOOTING.md "kit's compose connection strings").
+POSTGRES_AUDIT_PASSWORD=$(get_val POSTGRES_AUDIT_PASSWORD)
+POSTGRES_BRIDGE_PASSWORD=$(get_val POSTGRES_BRIDGE_PASSWORD)
+POSTGRES_SANDBOX_A_PASSWORD=$(get_val POSTGRES_SANDBOX_A_PASSWORD)
+POSTGRES_VEIL_PASSWORD=$(get_val POSTGRES_VEIL_PASSWORD)
+AUDIT_APP_PASSWORD=$(get_val AUDIT_APP_PASSWORD)
+VEIL_APP_PASSWORD=$(get_val VEIL_APP_PASSWORD)
+
+# Runtime tuning
+SANDBOX_A_EPHEMERAL=true
+QI_ENGINE_ENABLED=true
+SANITIZER_CONFIG_FILE=./config/default-sanitizer.yaml
+STREAMING_ENABLED=true
+TRACEVAULT_RUNTIME_ENABLED=false
+TRACEVAULT_API_URL=
+TRACEVAULT_AGENT_ID=
+TRACEVAULT_SIGNER_TYPE=
+TRACEVAULT_SIGNER_KEY_ID=
+TRACEVAULT_SIGNER_PRIVATE_KEY=
+TRACEVAULT_SIGNER_PUBLIC_KEY=
+
+# Certification profile (opt-in; only used with --profile certification).
+# Non-empty placeholders so docker compose's :? interpolation succeeds even
+# when the certification profile is NOT active. Replace before enabling the
+# profile.
+BUILD_AUTH_TOKEN=cert-profile-placeholder-not-active
+CUSTOMER_KEY_ID=cert-profile-placeholder-not-active
+PORTAL_API_KEY=cert-profile-placeholder-not-active
+PROBER_URL=
+
+# Self-hosted model runtime
+MODEL_RUNTIME_PROFILE=llama-cpp
+MODEL_NAME=customer-model
+MODEL_FORMAT=gguf
+MODEL_FILE=customer-model-q4.gguf
+MODEL_PATH=.
+MODEL_CONTEXT_WINDOW=8192
+MODEL_RUNTIME_URL=http://model-runtime:8000/v1
+MODEL_RUNTIME_API_KEY=local-model-runtime
+MODEL_RUNTIME_IMAGE=
+MODEL_RUNTIME_COMMAND=
+LLAMA_CPP_IMAGE=ghcr.io/ggerganov/llama.cpp:server
+VLLM_IMAGE=vllm/vllm-openai:latest
+TGI_IMAGE=ghcr.io/huggingface/text-generation-inference:latest
+OLLAMA_IMAGE=ollama/ollama:latest
+ONNXRUNTIME_OPENAI_IMAGE=ghcr.io/declade/openai-compatible-onnxruntime:latest
+TRITON_OPENAI_IMAGE=ghcr.io/declade/openai-compatible-triton:latest
+
+HEADER
+
+  if [ "$BYOK" = "true" ]; then
+    cat <<BYOK_BLOCK
+# Managed-LLM mode (BYOK). Enforcement of these FQDNs at the network layer
+# is the operator's responsibility — see INSTALL.md \xc2\xa7 BYOK section.
+LUCAIRN_LLM_EGRESS_ALLOWLIST=$BYOK_ALLOWLIST
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+MISTRAL_API_KEY=
+GEMINI_API_KEY=
+OPENAI_BASE_URL=https://api.openai.com/v1
+BYOK_BLOCK
+  fi
+}
+
+# Final assembly ------------------------------------------------------------
+
+if [ "$DRY_RUN" = "true" ]; then
+  echo "# DRY RUN — would write the following to $OUTPUT" >&2
+  render_env
+  exit 0
+fi
+
+# Backup existing file before overwriting
+if [ -e "$OUTPUT" ]; then
+  backup_ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  backup_path="${OUTPUT}.bak-${backup_ts}"
+  cp -p "$OUTPUT" "$backup_path"
+  chmod 0600 "$backup_path" 2>/dev/null || true
+  echo "backup: existing customer.env -> $backup_path" >&2
+fi
+
+# Write atomically: render to temp file in same dir, set mode 0600, then mv.
+OUTPUT_DIR="$(dirname "$OUTPUT")"
+mkdir -p "$OUTPUT_DIR"
+TMP_OUT="$(mktemp "${OUTPUT_DIR}/.lucairn-init.XXXXXX")"
+TMP_FILES+=("$TMP_OUT")
+chmod 0600 "$TMP_OUT"
+render_env > "$TMP_OUT"
+mv "$TMP_OUT" "$OUTPUT"
+chmod 0600 "$OUTPUT"
+# Remove tmp tracking — file has been moved into place.
+TMP_FILES=()
+
+echo "wrote: $OUTPUT (mode 0600)" >&2
+
+# BYOK banner
+if [ "$BYOK" = "true" ]; then
+  cat >&2 <<'BANNER'
+
+  BYOK mode enabled. The kit does NOT enforce FQDN egress at the network
+  layer. You MUST add host-firewall rules, Cilium NetworkPolicy, or
+  forward-proxy rules to restrict outbound traffic to the declared FQDNs.
+  See INSTALL.md "Self-hosted with managed LLM (BYOK)" for the
+  compliance-team-friendly enforcement recipes.
+
+  At compose-up time, additionally load:
+    -f docker-compose.self-hosted-byok.yml
+
+BANNER
+fi
+
+# Run doctor against the generated file.
+#
+# BYOK carve-out: doctor enforces that at least one provider key is set when
+# LUCAIRN_LLM_EGRESS_ALLOWLIST is non-empty. init does not generate provider
+# keys (they're the operator's BYOK secrets). When --byok is supplied, skip
+# the doctor invocation and remind the operator to set the provider key
+# + re-run doctor before compose-up.
+if [ "$SKIP_DOCTOR" = "true" ] || [ "$BYOK" = "true" ]; then
+  if [ "$BYOK" = "true" ]; then
+    echo "skipped doctor (BYOK mode — set ANTHROPIC_API_KEY / OPENAI_API_KEY / MISTRAL_API_KEY / GEMINI_API_KEY in $OUTPUT then run: bin/lucairn doctor --env $OUTPUT --offline --skip-image-check)" >&2
+  else
+    echo "skipped doctor (--skip-doctor)" >&2
+  fi
+else
+  echo "running: bin/lucairn doctor --env $OUTPUT --offline --skip-image-check" >&2
+  if "$KIT_ROOT/bin/lucairn" doctor \
+      --env "$OUTPUT" \
+      --compose "$KIT_ROOT/docker-compose.customer.yml" \
+      --offline \
+      --skip-image-check >&2; then
+    echo "doctor: ok" >&2
+  else
+    echo "" >&2
+    echo "doctor FAILED. The customer.env was written to $OUTPUT but did not pass validation." >&2
+    echo "Inspect the file, fix the issue, and re-run:" >&2
+    echo "  bin/lucairn doctor --env $OUTPUT --compose $KIT_ROOT/docker-compose.customer.yml" >&2
+    exit 4
+  fi
+fi
+
+# Next-step block
+echo >&2
+echo "Next: bring up the stack" >&2
+echo >&2
+echo "  docker compose \\" >&2
+echo "    -f docker-compose.customer.yml \\" >&2
+echo "    -f docker-compose.self-hosted.yml \\" >&2
+if [ "$BYOK" = "true" ]; then
+  echo "    -f docker-compose.self-hosted-byok.yml \\" >&2
+fi
+echo "    --env-file $OUTPUT \\" >&2
+echo "    up -d" >&2
+echo >&2
+echo "Mint your first customer + API key (after stack is healthy):" >&2
+echo >&2
+echo "  ./bin/lucairn-mint-customer --name \"Acme GmbH\" --email \"ops@acme.de\" --tier enterprise" >&2
+echo >&2
