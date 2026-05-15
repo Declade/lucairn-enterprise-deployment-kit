@@ -34,6 +34,32 @@ Likely causes:
 - License values are missing.
 - Witness manifest path is configured but the file is not mounted.
 
+## `/healthz` Returns 200 But `/readyz` Returns 503
+
+This is the most common "deployed but unusable" failure mode on a fresh install.
+`/healthz` returns 200 as soon as the gateway process is listening on its port —
+even if upstream service-link circuit breakers (sanitizer, witness, audit,
+sandbox-b, bridge, identity) are open. Only `/readyz` reflects the full readiness
+state. A `docker compose ps` row showing `(healthy)` therefore is not sufficient
+evidence the gateway can actually serve traffic.
+
+`bin/lucairn doctor` now probes both endpoints after the pre-deploy checks and
+surfaces a 503 readyz with the specific recovery commands. To make doctor exit
+non-zero on a 503 (e.g. in CI), pass `--strict-runtime`.
+
+Common root causes on a fresh deploy:
+
+- `SANDBOX_B_REMOTE_ENDPOINT` defaults to `https://inference.lucairn.example`,
+  which is DNS-resolvable but never reachable. Split-deployment customers must
+  set this to a Lucairn-provisioned endpoint. Self-hosted-inference customers
+  must load `docker-compose.self-hosted.yml` so `SANDBOX_B_REMOTE_ENDPOINT` is
+  blanked and the local `sandbox-b` container is added to the stack.
+- Sanitizer config references recognizers not present in the deployed image
+  (image-version drift). The sanitizer container crash-loops and the gateway's
+  sanitizer circuit breaker opens.
+- Bridge or witness signing keys are mismatched, so claim verification fails
+  during the first request that hits each path.
+
 ## Sanitizer Slow to Become Ready
 
 The sanitizer can take longer on first boot while models load.

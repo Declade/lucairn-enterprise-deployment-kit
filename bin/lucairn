@@ -7,7 +7,7 @@ VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || printf 'unknown')"
 usage() {
   cat <<'USAGE'
 Usage:
-  lucairn doctor --env customer.env --compose docker-compose.customer.yml [--offline] [--check-images] [--skip-image-check]
+  lucairn doctor --env customer.env --compose docker-compose.customer.yml [--offline] [--check-images] [--skip-image-check] [--strict-runtime]
   lucairn support-bundle --env customer.env --compose docker-compose.customer.yml [--output bundles] [--offline]
   lucairn bundle create --customer-slug acme --models-dir ./models --model-manifest model-manifest.yaml --env customer.env --image-tar images.tar [--customer-data-dir ./customer-data]
   lucairn bundle prepare --customer-slug acme --staging-dir /secure/staging/acme [--output dist/customer-bundles]
@@ -959,7 +959,7 @@ bundle_command() {
 }
 
 doctor() {
-  local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-system" check_images=1
+  local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-system" check_images=1 strict_runtime=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --env) env_file="$2"; shift 2 ;;
@@ -969,6 +969,7 @@ doctor() {
       --skip-image-check) check_images=0; shift ;;
       --postgres-url) postgres_url="$2"; shift 2 ;;
       --kube-namespace) kube_namespace="$2"; shift 2 ;;
+      --strict-runtime) strict_runtime=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) fail "unknown doctor argument: $1" ;;
     esac
@@ -1074,6 +1075,66 @@ doctor() {
     fi
   else
     echo "network policies: skipped (kubectl unavailable)"
+  fi
+
+  # Post-deploy liveness + readiness probe. Sim 2 M4 surfaced that a doctor PASS
+  # is not sufficient evidence the gateway can actually serve traffic: the gateway
+  # can be `(healthy)` per its Docker healthcheck (curl /healthz returns 200) while
+  # /readyz returns 503 because an upstream service-link breaker is open. Operators
+  # who relied on `doctor` + `docker compose ps` reported the stack as "deployed"
+  # and only discovered the missing inference path at first real request.
+  #
+  # This block is non-fatal by default: if the gateway is not running yet (which
+  # is the normal state during initial install — doctor is supposed to run BEFORE
+  # `docker compose up -d`), the probes time out and we report `not started`
+  # without failing the doctor exit. Use --strict-runtime to fail-closed.
+  local gateway_health_port gateway_health_base runtime_failed=0
+  gateway_health_port="$(env_value "$env_file" GATEWAY_HEALTH_PORT)"
+  gateway_health_port="${gateway_health_port:-8085}"
+  gateway_health_base="http://127.0.0.1:${gateway_health_port}"
+
+  if have curl; then
+    local healthz_code readyz_code curl_args
+    curl_args="-sS -o /dev/null -w %{http_code} --max-time 3"
+    healthz_code="$(curl $curl_args "${gateway_health_base}/healthz" 2>/dev/null || true)"
+    readyz_code="$(curl $curl_args "${gateway_health_base}/readyz" 2>/dev/null || true)"
+
+    if [ -z "$healthz_code" ] || [ "$healthz_code" = "000" ]; then
+      echo "gateway healthz: not started (no listener on :${gateway_health_port})"
+      echo "gateway readyz: not started (no listener on :${gateway_health_port})"
+      [ "$strict_runtime" -eq 1 ] && runtime_failed=1
+    else
+      if [ "$healthz_code" = "200" ]; then
+        echo "gateway healthz: ok (200)"
+      else
+        echo "gateway healthz: failed ($healthz_code)"
+        runtime_failed=1
+      fi
+
+      if [ "$readyz_code" = "200" ]; then
+        echo "gateway readyz: ok (200)"
+      elif [ "$readyz_code" = "503" ]; then
+        # 503 from /readyz typically means at least one service-link circuit
+        # breaker is open. Inference is the common culprit on a fresh deploy
+        # because SANDBOX_B_REMOTE_ENDPOINT defaults to a placeholder and split
+        # deployments require a Lucairn-provisioned remote endpoint. Surface
+        # this distinctly so the operator does not mistake a 503 readyz for a
+        # generic doctor failure.
+        echo "gateway readyz: failed (503 — at least one service-link unavailable; inference path commonly missing on a fresh deploy)"
+        echo "  Run: $compose -f $compose_file --env-file $env_file logs --tail 50 gateway"
+        echo "  Then: curl -fsS ${gateway_health_base}/healthz to inspect circuit_breakers map"
+        runtime_failed=1
+      else
+        echo "gateway readyz: failed ($readyz_code)"
+        runtime_failed=1
+      fi
+    fi
+  else
+    echo "gateway runtime probes: skipped (curl unavailable)"
+  fi
+
+  if [ "$strict_runtime" -eq 1 ] && [ "$runtime_failed" -eq 1 ]; then
+    fail "runtime probes failed and --strict-runtime is set"
   fi
 
   echo "doctor: ok"
