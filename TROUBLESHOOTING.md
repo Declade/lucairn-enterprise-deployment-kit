@@ -163,6 +163,18 @@ from the manifest's `default_lucairn_image_tag`. The warning is non-blocking:
 operators can intentionally roll images forward or back, but the warning
 ensures they know they are off the tested combination.
 
+## Mint Rejects `byok_per_request` On Pre-0.4.x Gateway Images
+
+If `bin/lucairn-mint-customer --byok-per-request` returns `HTTP 400 invalid_field: Field 'provider_key' has an invalid value: required when managed_ai is false`, the gateway image in use is pre-Stage-3 (image tag `<0.4.0`) and does not yet honor the BYOK-per-request short-circuit. The mint payload requires a non-empty `provider_key` whenever `managed_ai` is false on those images.
+
+Three working paths:
+
+- Re-run with `--provider-key "<placeholder-or-real-upstream-key>"`. The placeholder is a non-secret marker — the gateway treats it as the stored upstream-key slot, and per-request BYOK still works at the SDK layer when the customer supplies their real key in the request.
+- Re-run with `--tier enterprise --managed-ai` for the Lucairn-managed-LLM Enterprise path (Pro-tier rejects `--managed-ai`).
+- Re-run with `--provider ollama` for a local-Ollama runtime (no upstream key required).
+
+The script prints the same three options inline whenever it sees this error. Upgrading to a gateway image at or after `0.4.0` removes the workaround.
+
 ## Generating a Support Bundle
 
 ```bash

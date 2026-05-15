@@ -189,6 +189,21 @@ curl -fsS http://127.0.0.1:8085/readyz
 
 Terminate HTTPS at the customer reverse proxy and forward to `127.0.0.1:8080`. If the proxy is local or containerized, set `GATEWAY_TRUSTED_PROXY_CIDRS` to the proxy source CIDRs and rerun `bin/lucairn doctor`.
 
+10. Mint your first customer.
+
+Once `bin/lucairn doctor` reports `ok`, mint your first Lucairn customer + API key:
+
+```bash
+export LUCAIRN_ADMIN_KEY="$(grep '^DSA_ADMIN_KEY=' customer.env | cut -d= -f2-)"
+
+./bin/lucairn-mint-customer \
+  --name "Acme GmbH" \
+  --email "ops@acme.de" \
+  --tier enterprise
+```
+
+The script prints the raw API key **once** — capture it to a 0600 file. Smoke with `curl -H "x-api-key: <raw_key>" $GATEWAY_BASE_URL/api/v1/usage`. See `./bin/lucairn-mint-customer --help` for all flags including `--byok-per-request`, `--managed-ai`, `--provider-key`, `--dry-run`, and `--verbose`.
+
 ## Kubernetes Install
 
 1. Create the image pull secret.

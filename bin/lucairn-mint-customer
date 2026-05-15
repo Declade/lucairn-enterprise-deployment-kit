@@ -1,0 +1,400 @@
+#!/usr/bin/env bash
+#
+# lucairn-mint-customer — mint an Enterprise (or Pro / Free) customer + first API key
+# against a self-hosted Lucairn gateway.
+#
+# This is the operator-side mirror of the production `mint-lucairn-key` skill
+# (which targets gateway.lucairn.eu over SSH). Self-hosted customers do NOT
+# have SSH to Marc's production box; they run their own gateway with their
+# own DSA_ADMIN_KEY. This script hits THEIR gateway's admin endpoint locally.
+#
+# Two-step flow:
+#   1) POST /api/v1/admin/keys             — create customer + mint first key
+#                                            (gateway's createKeyRequest path; emits the raw key)
+#   2) (optional) follow-up GET /admin/customers/{id}/keys — confirm key listed
+#
+# The gateway's POST /admin/keys is itself a single-shot create-customer-plus-mint:
+# it generates `lcr_live_<32-hex>`, runs ApplyTierDefaults (tier="enterprise" →
+# audit_export_enabled=true, monthly_request_limit=0 unlimited unless overridden),
+# and inserts the profile under the supplied customer_id. There is no separate
+# "create customer without a key" endpoint — the gateway treats first-key-mint
+# as the customer-creation event.
+#
+# Output: writes the raw key (shown ONCE per gateway contract) to stdout. The
+# caller is responsible for capturing it and writing to a 0600 file or env var.
+#
+# Auth: admin key via X-Admin-Key header. The admin key may be supplied as
+# --admin-key <value>, --admin-key-file <path> (read first line), or the
+# LUCAIRN_ADMIN_KEY env var (preferred — avoids the key landing in shell history).
+#
+# Gateway URL: defaults to $GATEWAY_BASE_URL (compatible with the kit's
+# customer.env convention), then falls back to http://localhost:8080 if unset.
+#
+# Locked decisions:
+#   - The gateway is the source of truth for raw key material. This script
+#     NEVER invents a key locally.
+#   - The admin key is never echoed to stdout. --dry-run prints the URL +
+#     payload but NOT the admin key.
+#   - Tier defaults align with services/gateway/internal/auth/apikey.go:
+#         free       → monthly 500, rpm 60, max-keys 1, managed_ai default=true
+#         pro        → monthly 50000, rpm 60, max-keys 5, BYOK-only (managed_ai=false)
+#         enterprise → monthly 0 (unlimited), rpm 600, max-keys 5, BYOK or managed
+#     The script's --monthly-limit / --rate-limit-rpm flags override; otherwise
+#     the gateway's ApplyTierDefaults applies tier defaults server-side.
+
+set -euo pipefail
+
+readonly DEFAULT_GATEWAY_URL="http://localhost:8080"
+readonly DEFAULT_TIER="enterprise"
+# Enterprise sensible defaults — picked to match the audit-shipped enterprise
+# profile in services/gateway/internal/auth/apikey.go:
+#   MonthlyRequestLimit = 0 (unlimited; gateway interprets 0 as no cap)
+#   RateLimitRPM        = 600 (defensive — Pro=60, Enterprise warrants higher)
+# The gateway does NOT default rate_limit_rpm on the enterprise switch arm
+# (it relies on the createKeyRequest body), so we set a Pro+-class default
+# here to avoid a 60rpm Enterprise key shipping by accident.
+readonly DEFAULT_ENT_MONTHLY=0
+readonly DEFAULT_ENT_RPM=600
+readonly DEFAULT_ENT_MAX_KEYS=5
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  lucairn-mint-customer --name <NAME> --email <EMAIL> [options]
+
+Mints a new customer and first API key on a self-hosted Lucairn gateway.
+
+Required:
+  --name <STRING>            Customer display name (e.g. "Example Insurance EE").
+  --email <STRING>           Operator/billing contact email (consultant_email field).
+
+Optional:
+  --tier {free,pro,enterprise}   Default: enterprise.
+  --customer-id <SLUG>           Stable customer identifier. Auto-derived from
+                                 --name if omitted (lowercased, non-[a-z0-9]→'_',
+                                 trimmed to 48 chars).
+  --monthly-limit <N>            Monthly request cap. 0 = unlimited (Enterprise default).
+  --rate-limit-rpm <N>           Per-minute rate limit. Default: 600 for Enterprise.
+  --vertical <SLUG>              Vertical slug (default: "default").
+  --byok-per-request             Customer supplies LLM key per-request (no stored key).
+                                 Default for Enterprise (recommended).
+  --managed-ai                   Lucairn-managed LLM. ENTERPRISE ONLY; rejected on Pro.
+  --provider <NAME>              LLM provider (default: anthropic).
+                                 Valid: anthropic|openai|mistral|gemini|ollama|echo.
+  --provider-key <VALUE>         Stored upstream LLM key. Required for non-Ollama
+                                 BYOK on gateway image <0.4.0 (the older image does
+                                 not honor byok_per_request and requires a non-empty
+                                 provider_key whenever managed_ai=false). On newer
+                                 images, supplying both --byok-per-request and
+                                 --provider-key is rejected as contradictory.
+                                 If --byok-per-request is set and the gateway
+                                 rejects with "required when managed_ai is false",
+                                 re-run with --provider-key supplied.
+
+Auth (one required):
+  --admin-key <KEY>              Admin key inline. Avoid — leaves the key in shell history.
+  --admin-key-file <PATH>        Read admin key from first line of file (mode 0600 expected).
+  LUCAIRN_ADMIN_KEY=<KEY>        Env var. Preferred.
+  DSA_ADMIN_KEY=<KEY>            Compatibility env var (kit-style).
+
+Gateway:
+  --gateway-url <URL>            Gateway base URL. Default: $GATEWAY_BASE_URL,
+                                 then http://localhost:8080.
+
+Modes:
+  --dry-run                      Print the planned request (URL + JSON body) and exit.
+                                 Admin key is NOT printed.
+  --verbose                      Print HTTP status + raw response body.
+  --help                         Show this usage and exit.
+
+Examples:
+  # Mint Jonas at Example Insurance, Enterprise BYOK-per-request
+  LUCAIRN_ADMIN_KEY=... \\
+    lucairn-mint-customer \\
+      --name "Jonas Köhler / Example Insurance EE" \\
+      --email "jonas.koehler@example-insurance.de" \\
+      --tier enterprise
+
+  # Dry-run to inspect the payload before firing
+  lucairn-mint-customer --dry-run \\
+      --name "Acme Corp" --email "ops@acme.example" --tier pro \\
+      --monthly-limit 100000 --rate-limit-rpm 120
+
+Exit codes:
+  0   success — raw key printed
+  2   usage error (missing flag, conflicting flags)
+  3   admin-key not supplied
+  4   gateway HTTP non-2xx; response body on stderr
+  5   network error / gateway unreachable
+USAGE
+}
+
+fail() {
+  echo "error: $*" >&2
+  exit "${2:-2}"
+}
+
+# --- arg parse ---------------------------------------------------------------
+
+NAME=""
+EMAIL=""
+TIER="${DEFAULT_TIER}"
+CUSTOMER_ID=""
+MONTHLY_LIMIT=""
+RATE_LIMIT_RPM=""
+VERTICAL="default"
+BYOK_PER_REQUEST="auto" # auto: true for Enterprise default, false otherwise
+MANAGED_AI="false"
+PROVIDER="anthropic"
+PROVIDER_KEY=""
+ADMIN_KEY=""
+ADMIN_KEY_FILE=""
+GATEWAY_URL=""
+DRY_RUN="false"
+VERBOSE="false"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --name)              NAME="${2:?--name requires a value}"; shift 2 ;;
+    --email)             EMAIL="${2:?--email requires a value}"; shift 2 ;;
+    --tier)              TIER="${2:?--tier requires a value}"; shift 2 ;;
+    --customer-id)       CUSTOMER_ID="${2:?--customer-id requires a value}"; shift 2 ;;
+    --monthly-limit)     MONTHLY_LIMIT="${2:?--monthly-limit requires a value}"; shift 2 ;;
+    --rate-limit-rpm)    RATE_LIMIT_RPM="${2:?--rate-limit-rpm requires a value}"; shift 2 ;;
+    --vertical)          VERTICAL="${2:?--vertical requires a value}"; shift 2 ;;
+    --byok-per-request)  BYOK_PER_REQUEST="true"; shift ;;
+    --no-byok-per-request) BYOK_PER_REQUEST="false"; shift ;;
+    --managed-ai)        MANAGED_AI="true"; shift ;;
+    --provider)          PROVIDER="${2:?--provider requires a value}"; shift 2 ;;
+    --provider-key)      PROVIDER_KEY="${2:?--provider-key requires a value}"; shift 2 ;;
+    --admin-key)         ADMIN_KEY="${2:?--admin-key requires a value}"; shift 2 ;;
+    --admin-key-file)    ADMIN_KEY_FILE="${2:?--admin-key-file requires a path}"; shift 2 ;;
+    --gateway-url)       GATEWAY_URL="${2:?--gateway-url requires a value}"; shift 2 ;;
+    --dry-run)           DRY_RUN="true"; shift ;;
+    --verbose|-v)        VERBOSE="true"; shift ;;
+    --help|-h)           usage; exit 0 ;;
+    --) shift; break ;;
+    *) fail "unknown argument: $1 (try --help)" 2 ;;
+  esac
+done
+
+# --- validate ----------------------------------------------------------------
+
+if [ -z "${NAME}" ]; then fail "--name is required" 2; fi
+if [ -z "${EMAIL}" ]; then fail "--email is required" 2; fi
+
+case "${TIER}" in
+  free|pro|enterprise) : ;;
+  *) fail "--tier must be one of free|pro|enterprise (got: ${TIER})" 2 ;;
+esac
+
+if [ "${MANAGED_AI}" = "true" ] && [ "${TIER}" = "pro" ]; then
+  fail "--managed-ai is rejected on Pro tier (gateway enforces ErrManagedAIOnPro). Use --tier enterprise." 2
+fi
+
+case "${PROVIDER}" in
+  anthropic|openai|mistral|gemini|ollama|echo) : ;;
+  *) fail "--provider must be one of anthropic|openai|mistral|gemini|ollama|echo (got: ${PROVIDER})" 2 ;;
+esac
+
+# Resolve BYOK-per-request default: Enterprise defaults to true (recommended);
+# others default to false (stored-key path).
+if [ "${BYOK_PER_REQUEST}" = "auto" ]; then
+  if [ "${TIER}" = "enterprise" ]; then
+    BYOK_PER_REQUEST="true"
+  else
+    BYOK_PER_REQUEST="false"
+  fi
+fi
+
+if [ "${MANAGED_AI}" = "true" ] && [ "${BYOK_PER_REQUEST}" = "true" ]; then
+  fail "--managed-ai and --byok-per-request are mutually exclusive (gateway enforces invariant)." 2
+fi
+
+# Auto-derive customer_id from name if not supplied.
+if [ -z "${CUSTOMER_ID}" ]; then
+  CUSTOMER_ID="$(printf '%s' "${NAME}" \
+    | tr '[:upper:]' '[:lower:]' \
+    | LC_ALL=C sed -E 's/[^a-z0-9]+/_/g; s/^_+|_+$//g' \
+    | cut -c1-48)"
+  if [ -z "${CUSTOMER_ID}" ]; then
+    fail "could not auto-derive --customer-id from --name (try --customer-id explicitly)" 2
+  fi
+fi
+
+# Apply tier-specific defaults when caller did not override.
+if [ -z "${MONTHLY_LIMIT}" ]; then
+  case "${TIER}" in
+    free)        MONTHLY_LIMIT="500"   ;; # gateway FreeMonthlyRequestCap
+    pro)         MONTHLY_LIMIT="50000" ;; # gateway ProMonthlyRequestCap
+    enterprise)  MONTHLY_LIMIT="${DEFAULT_ENT_MONTHLY}" ;; # 0 = unlimited
+  esac
+fi
+if [ -z "${RATE_LIMIT_RPM}" ]; then
+  case "${TIER}" in
+    free|pro)    RATE_LIMIT_RPM="60"  ;; # gateway default in handleCreateKey
+    enterprise)  RATE_LIMIT_RPM="${DEFAULT_ENT_RPM}" ;;
+  esac
+fi
+
+# Admin key resolution.
+if [ -z "${ADMIN_KEY}" ] && [ -n "${ADMIN_KEY_FILE}" ]; then
+  if [ ! -r "${ADMIN_KEY_FILE}" ]; then
+    fail "--admin-key-file not readable: ${ADMIN_KEY_FILE}" 3
+  fi
+  ADMIN_KEY="$(head -n1 "${ADMIN_KEY_FILE}" | tr -d '\r\n')"
+fi
+if [ -z "${ADMIN_KEY}" ]; then
+  ADMIN_KEY="${LUCAIRN_ADMIN_KEY:-${DSA_ADMIN_KEY:-}}"
+fi
+if [ -z "${ADMIN_KEY}" ] && [ "${DRY_RUN}" != "true" ]; then
+  fail "admin key not supplied (use --admin-key, --admin-key-file, or LUCAIRN_ADMIN_KEY env)" 3
+fi
+
+# Gateway URL resolution.
+if [ -z "${GATEWAY_URL}" ]; then
+  GATEWAY_URL="${GATEWAY_BASE_URL:-${DEFAULT_GATEWAY_URL}}"
+fi
+GATEWAY_URL="${GATEWAY_URL%/}" # strip trailing slash
+
+# --- build payload -----------------------------------------------------------
+
+# We hit POST /api/v1/admin/keys (NOT the customer-scoped mint endpoint) because:
+#  - /admin/keys creates the CustomerProfile (tier, byok_per_request, provider,
+#    rate_limit_rpm, label, consultant_email) AND mints the first key.
+#  - /admin/customers/{id}/keys auto-provisions only on Free tier (see
+#    handleMintCustomerKey:434-461) and offers no way to set tier=enterprise
+#    on a brand-new customer.
+# This matches what the production-side mint-lucairn-key skill targets when
+# building a fresh customer record (the skill uses /customers/{id}/keys because
+# the customer record already exists from website signup).
+
+PROVIDER_KEY_JSON=""
+if [ -n "${PROVIDER_KEY}" ]; then
+  # JSON-escape the provider key (basic: quotes + backslashes). Refuse newlines.
+  case "${PROVIDER_KEY}" in
+    *$'\n'*) fail "--provider-key may not contain newlines" 2 ;;
+  esac
+  PK_ESC="$(printf '%s' "${PROVIDER_KEY}" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+  PROVIDER_KEY_JSON=", \"provider_key\": \"${PK_ESC}\""
+fi
+
+PAYLOAD=$(cat <<JSON
+{
+  "customer_id": "${CUSTOMER_ID}",
+  "vertical": "${VERTICAL}",
+  "label": "${NAME}",
+  "consultant_email": "${EMAIL}",
+  "provider": "${PROVIDER}",
+  "rate_limit_rpm": ${RATE_LIMIT_RPM},
+  "tier": "${TIER}",
+  "managed_ai": ${MANAGED_AI},
+  "byok_per_request": ${BYOK_PER_REQUEST}${PROVIDER_KEY_JSON}
+}
+JSON
+)
+
+MINT_URL="${GATEWAY_URL}/api/v1/admin/keys"
+
+if [ "${DRY_RUN}" = "true" ]; then
+  printf 'DRY-RUN — no HTTP request will be sent.\n'
+  printf 'URL:    POST %s\n' "${MINT_URL}"
+  printf 'Header: X-Admin-Key: <redacted; len=%d>\n' "${#ADMIN_KEY}"
+  printf 'Header: Content-Type: application/json\n'
+  printf 'Body:\n%s\n' "${PAYLOAD}"
+  printf '\nResolved tier-defaults:\n'
+  printf '  customer_id     = %s\n' "${CUSTOMER_ID}"
+  printf '  tier            = %s\n' "${TIER}"
+  printf '  monthly_limit   = %s (note: gateway-side ApplyTierDefaults overrides if profile-default)\n' "${MONTHLY_LIMIT}"
+  printf '  rate_limit_rpm  = %s\n' "${RATE_LIMIT_RPM}"
+  printf '  managed_ai      = %s\n' "${MANAGED_AI}"
+  printf '  byok_per_request= %s\n' "${BYOK_PER_REQUEST}"
+  printf '  provider        = %s\n' "${PROVIDER}"
+  exit 0
+fi
+
+# --- fire --------------------------------------------------------------------
+
+# Use a tmpfile so we can capture body AND status without spawning two requests.
+RESP_BODY="$(mktemp -t lucairn-mint-XXXXXX)"
+trap 'rm -f "${RESP_BODY}"' EXIT
+
+HTTP_STATUS="$(curl -sS -o "${RESP_BODY}" -w '%{http_code}' \
+  -X POST "${MINT_URL}" \
+  -H "x-admin-key: ${ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  --data-binary "${PAYLOAD}" \
+  --max-time 30 || true)"
+
+if [ -z "${HTTP_STATUS}" ] || [ "${HTTP_STATUS}" = "000" ]; then
+  echo "error: gateway unreachable at ${MINT_URL}" >&2
+  cat "${RESP_BODY}" >&2 || true
+  exit 5
+fi
+
+case "${HTTP_STATUS}" in
+  2*)
+    : # success — fall through
+    ;;
+  *)
+    echo "error: gateway returned HTTP ${HTTP_STATUS}" >&2
+    cat "${RESP_BODY}" >&2
+    echo >&2
+    # Common-case hints for image-version drift.
+    if grep -q 'required when managed_ai is false' "${RESP_BODY}" 2>/dev/null; then
+      cat >&2 <<'HINT'
+
+hint: the gateway image you are running does not honor byok_per_request
+(pre-Stage-3 image, <0.4.0). Retry with one of:
+  --provider-key "<placeholder-or-real-upstream-key>"
+or
+  --tier enterprise --managed-ai      # Lucairn-managed-LLM Enterprise path
+or
+  --provider ollama                   # local-Ollama path (no key required)
+HINT
+    fi
+    exit 4
+    ;;
+esac
+
+# Gateway createKeyRequest path returns {"dsa_api_key": "lcr_live_..."} only.
+# Parse defensively — fall back to grep if jq is unavailable.
+RAW_KEY=""
+if command -v jq >/dev/null 2>&1; then
+  RAW_KEY="$(jq -r '.dsa_api_key // empty' < "${RESP_BODY}")"
+fi
+if [ -z "${RAW_KEY}" ]; then
+  RAW_KEY="$(grep -oE '"dsa_api_key"[[:space:]]*:[[:space:]]*"[^"]+"' "${RESP_BODY}" | sed -E 's/.*"([^"]+)"$/\1/')"
+fi
+
+if [ -z "${RAW_KEY}" ]; then
+  echo "error: gateway response did not contain dsa_api_key field" >&2
+  cat "${RESP_BODY}" >&2
+  exit 4
+fi
+
+if [ "${VERBOSE}" = "true" ]; then
+  echo "# HTTP ${HTTP_STATUS}" >&2
+  echo "# response:" >&2
+  cat "${RESP_BODY}" >&2
+  echo >&2
+fi
+
+# Derive prefix for the "shown once" banner (mirrors mint-lucairn-key skill output).
+KEY_PREFIX="${RAW_KEY:0:9}"  # "lcr_live_" prefix anchor
+KEY_PREFIX_FULL="$(printf '%s' "${RAW_KEY}" | cut -c1-17)"  # first 8 random chars after underscore
+
+cat <<BANNER
+Minted Lucairn customer + API key.
+  customer_id: ${CUSTOMER_ID}
+  tier:        ${TIER}
+  key_prefix:  ${KEY_PREFIX_FULL}...
+  raw_key:     ${RAW_KEY}     <- capture this; will not be shown again
+  gateway:     ${GATEWAY_URL}
+
+Next steps:
+  1. Persist the raw_key to a 0600 .env file (NEVER commit).
+  2. Smoke: curl -H "x-api-key: ${RAW_KEY}" ${GATEWAY_URL}/health (expect 200)
+  3. (Optional) Confirm customer listed:
+       curl -H "x-admin-key: \$LUCAIRN_ADMIN_KEY" ${GATEWAY_URL}/api/v1/admin/customers | jq
+BANNER
