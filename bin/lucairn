@@ -624,13 +624,27 @@ check_lucairn_resource_base_url_https() {
   # gateway returns to callers + surfaced in /.well-known. If it leaks http
   # into production, external verifiers reject the cert chain and the
   # failure presents silently (compose-up healthy, /readyz green, /summary
-  # 200 — only downstream SDK verification fails). Empty value is allowed:
-  # the gateway derives from GATEWAY_BASE_URL when unset.
+  # 200 — only downstream SDK verification fails).
+  #
+  # Empty value is allowed: the gateway falls back to the hardcoded constant
+  # `https://gateway.lucairn.eu` for `/.well-known/oauth-protected-resource`
+  # and MCP OAuth discovery. If GATEWAY_BASE_URL points at a customer-owned
+  # gateway host (not gateway.lucairn.eu), leaving LUCAIRN_RESOURCE_BASE_URL
+  # empty means OAuth discovery advertises the wrong resource identifier and
+  # MCP clients (Smithery, Claude Desktop) fail to complete the OAuth handshake.
+  # Warn in that case.
   local env_file="$1"
   [ "$(env_value "$env_file" DSA_ENV)" = "production" ] || return 0
-  local url
+  local url gw
   url="$(env_value "$env_file" LUCAIRN_RESOURCE_BASE_URL)"
-  [ -z "$url" ] && return 0
+  if [ -z "$url" ]; then
+    gw="$(env_value "$env_file" GATEWAY_BASE_URL)"
+    case "$gw" in
+      ""|*gateway.lucairn.eu*) ;;
+      *) echo "warn: LUCAIRN_RESOURCE_BASE_URL empty while GATEWAY_BASE_URL=$gw — /.well-known/oauth-protected-resource will advertise the hardcoded https://gateway.lucairn.eu resource identifier (NOT $gw). Set LUCAIRN_RESOURCE_BASE_URL explicitly if MCP OAuth clients (Smithery, Claude Desktop) talk to this gateway." ;;
+    esac
+    return 0
+  fi
   case "$url" in
     https://*) ;;
     *) echo "resource base URL: LUCAIRN_RESOURCE_BASE_URL must use https:// in production (got: $url)"; return 1 ;;
