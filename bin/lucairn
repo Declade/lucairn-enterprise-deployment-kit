@@ -355,6 +355,50 @@ check_byok_overlay() {
   return 0
 }
 
+# Verify the identity-plane bridges declared in docker-compose.customer.yml
+# are `internal: true`. Sandbox A holds the raw-PII-to-pseudonym mapping;
+# locking these networks down is defence-in-depth so a compromised
+# identity-plane service cannot exfiltrate the mapping over the public
+# internet. If the operator has removed `internal: true`, this is the
+# strongest single signal that the "no raw identity data leaves your
+# environment" architectural claim has been weakened — warn loudly.
+check_identity_networks_internal() {
+  local compose_file="$1" failed=0 missing=()
+  # Networks that MUST be internal:true. Listed networks have no service on
+  # them that needs outbound — confirmed via:
+  #   grep -RIn -E "(http|requests|httpx|urllib|fetch|aiohttp)" \
+  #     --include="*.py" --include="*.go" services/sandbox-a/ services/id-bridge/
+  # which finds zero outbound HTTP clients in the air-tight services.
+  local required_internal=(dsa-identity dsa-audit-identity dsa-certification)
+  local net
+  for net in "${required_internal[@]}"; do
+    # Match a 2-space-indented network header `  <name>:` followed within
+    # the next few lines (before the next 2-space-indented sibling key) by
+    # an `internal: true` line. Use awk to scope per-network.
+    if ! awk -v target="  $net:" '
+      $0 == target { in_target = 1; next }
+      in_target && /^  [a-z]/ { in_target = 0 }
+      in_target && /^    internal: true/ { found = 1; exit }
+      END { exit (found ? 0 : 1) }
+    ' "$compose_file"; then
+      missing+=("$net")
+      failed=1
+    fi
+  done
+  if [ "$failed" -eq 1 ]; then
+    echo "identity networks: failed (${missing[*]} not internal:true)"
+    echo "  Sandbox A holds the raw-PII-to-pseudonym mapping. Without"
+    echo "  internal: true on these bridges the air-tight services have"
+    echo "  outbound reach, contradicting the architectural claim that no"
+    echo "  raw identity data leaves your environment. Restore"
+    echo "  'internal: true' on the named networks or document the"
+    echo "  operator-side firewall enforcement that compensates."
+    return 1
+  fi
+  echo "identity networks: ok (${required_internal[*]} internal:true)"
+  return 0
+}
+
 check_container_images() {
   local env_file="$1" failed=0 registry tag image
   registry="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)"
@@ -1254,6 +1298,13 @@ doctor() {
   # enforces that at least one provider key is present when the allowlist
   # is set. Skipped silently when the operator is not using the overlay.
   check_byok_overlay "$env_file" || return 1
+
+  # Identity-plane network lockdown check. Sandbox A holds the raw-PII-to-
+  # pseudonym mapping; the identity-plane bridges (dsa-identity,
+  # dsa-audit-identity, dsa-certification) MUST be internal:true so the
+  # network layer enforces "no raw identity data leaves your environment"
+  # as defence-in-depth on top of code-level air-tightness.
+  check_identity_networks_internal "$compose_file" || return 1
 
   # Image-manifest drift warning. Runs in --offline mode as well so customers
   # without network egress still get the warning.

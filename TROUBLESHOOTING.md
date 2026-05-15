@@ -268,6 +268,48 @@ The BYOK overlay opens the topology; the operator enforces which FQDNs
 are reachable. See INSTALL.md § "Self-hosted with managed LLM (BYOK)" for
 the responsibility split.
 
+## `lucairn doctor` Reports `identity networks: failed`
+
+Symptom: `doctor` exits non-zero with a line like
+`identity networks: failed (dsa-identity, dsa-audit-identity not internal:true)`.
+
+Cause: an operator (or merge conflict) removed `internal: true` from one
+or more identity-plane bridge networks in `docker-compose.customer.yml`.
+
+Threat model: Sandbox A holds the raw-PII-to-pseudonym mapping. The
+architectural claim "no raw identity data leaves your environment" is
+enforced at two layers:
+
+1. **Code-level air-tightness.** `services/sandbox-a/` and
+   `services/id-bridge/` originate zero outbound HTTP calls — verified by
+   `grep -RIn -E "(http|requests|httpx|urllib|fetch|aiohttp)"` against
+   the upstream source. The only outbound HTTP client in Sandbox A
+   dials `sanitizer:8086` (intra-network, reachable via internal-only
+   `dsa-identity`).
+2. **Network-level lockdown.** The bridges those services join are
+   declared `internal: true` so the Docker bridge driver refuses to
+   route packets between the bridge and the host network namespace.
+   This is defence-in-depth: a future code regression that introduced
+   an outbound dialer would still be blocked by the network layer.
+
+Restoring `internal: true` on the named networks closes the gap. The
+required-internal list lives in `bin/lucairn` (`check_identity_networks_internal`)
+and currently covers `dsa-identity`, `dsa-audit-identity`, and
+`dsa-certification`. The other bridges (`dsa-bridge`, `dsa-witness-edge`)
+intentionally stay non-internal because the gateway needs outbound to
+the remote Sandbox B endpoint (split deployment), TSA (FreeTSA), Rekor
+(Sigstore), and the optional Supabase / Lucairn control-plane endpoints.
+
+If you have a legitimate reason to allow outbound from an identity-plane
+bridge — e.g. a sidecar that needs to call an external KMS — DO NOT
+remove `internal: true` from the named bridge. Instead:
+
+- Move that sidecar onto its own non-internal bridge with documented
+  FQDN allowlist enforcement (mirror the `dsa-egress` pattern from the
+  BYOK overlay).
+- Document the operator-side enforcement responsibility in the deploy
+  runbook so the compliance team can sign off.
+
 ## Generating a Support Bundle
 
 ```bash
