@@ -1,0 +1,90 @@
+# Lucairn image manifest — the tested set of container image versions
+# this kit release was validated against.
+#
+# Why this file exists:
+#   Sim 2 surfaced three coupling bugs between the kit and the container
+#   images it pulls:
+#
+#   1. The kit's customer.env.example shipped `LUCAIRN_IMAGE_TAG=1.0.0` long
+#      after the highest published image was `0.3.1`. Pulls failed with
+#      `manifest unknown` on every service. (Closed by PR #4.)
+#   2. The kit's `config/default-sanitizer.yaml` listed 14 recognizers that
+#      the 0.3.1 sanitizer image does not ship; sanitizer crash-looped on
+#      `ValueError: Unknown recognizer`. The kit's config tree had drifted
+#      ahead of the image-side recognizer registry.
+#   3. The gateway image's BYOK forwarding adapter changed shape between
+#      0.3.1 and main; older images return 401 from Anthropic native
+#      messages despite a byte-identical upstream key.
+#
+# In each case the root cause is "no artifact pins the kit-version-to-image-
+# version contract, so they can drift independently and the operator has
+# no way to tell which combination was tested." This manifest is that
+# artifact.
+#
+# What this file does NOT do:
+#   - It does not OVERRIDE the env var `LUCAIRN_IMAGE_TAG`. Operators can
+#     still pin to whatever tag they want via customer.env or via
+#     per-service tag overrides in a compose override file.
+#   - It does not pull or verify images directly. `bin/lucairn doctor`
+#     reads this manifest and warns when env-resolved tags differ from
+#     the pinned set, but never blocks the install.
+#
+# To update for a new kit release:
+#   1. Bump `kit_version` to match `VERSION`.
+#   2. Bump `default_lucairn_image_tag` to the new known-good tag.
+#   3. Add or update entries in `services:` for any service whose tag is
+#      pinned independently (override of the default tag).
+#   4. Run `bin/lucairn doctor` against a fresh deploy with the new tag
+#      to confirm the manifest is internally consistent.
+
+# Kit release this manifest was tested for. Must match VERSION at the
+# repo root. doctor warns when the values diverge.
+kit_version: "1.3.0-customer-demo-data"
+
+# Default tag applied to every dsa-* image unless a per-service override
+# exists in `services:` below. Operators set LUCAIRN_IMAGE_TAG in customer.env
+# to use a different default; doctor warns when env != this manifest value.
+default_lucairn_image_tag: "0.3.1"
+
+# Registry the kit was validated against. doctor warns when env's
+# LUCAIRN_IMAGE_REGISTRY differs.
+default_lucairn_image_registry: "ghcr.io/declade"
+
+# Per-service tag pins. Each entry overrides default_lucairn_image_tag for
+# that specific service. Leave empty (or omit the service entirely) to
+# inherit the default.
+#
+# When proto / signable / canonical-payload contracts change in a way that
+# requires a coordinated upgrade across multiple services, those services
+# should be pinned together here so an operator pulling the kit cannot
+# accidentally mix incompatible versions.
+services:
+  dsa-audit:
+    image_tag: ""    # inherits default
+  dsa-id-bridge:
+    image_tag: ""
+  dsa-sandbox-a:
+    image_tag: ""
+  dsa-sandbox-b:
+    image_tag: ""
+  dsa-sanitizer:
+    image_tag: ""
+    # The sanitizer's recognizer registry must match the kit's
+    # config/default-sanitizer.yaml. Bumping the sanitizer tag without
+    # syncing config/default-sanitizer.yaml is the Sim 2 F3 failure mode.
+    sanitizer_config_path: "config/default-sanitizer.yaml"
+    sanitizer_config_compat: "0.3.x"   # version line the config is targeting
+  dsa-veil-witness:
+    image_tag: ""
+  dsa-gateway:
+    image_tag: ""
+
+# Optional images used only when `--profile certification` is activated.
+# These pull from the same registry but their tag publication cadence
+# may differ. doctor does not warn on these unless certification profile
+# is selected.
+optional_services:
+  dsa-cert-builder:
+    image_tag: ""
+  dsa-cert-portal:
+    image_tag: ""
