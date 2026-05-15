@@ -51,8 +51,8 @@ readonly DEFAULT_TIER="enterprise"
 #   MonthlyRequestLimit = 0 (unlimited; gateway interprets 0 as no cap)
 #   RateLimitRPM        = 600 (defensive — Pro=60, Enterprise warrants higher)
 # The gateway does NOT default rate_limit_rpm on the enterprise switch arm
-# (it relies on the createKeyRequest body), so we set a Pro+-class default
-# here to avoid a 60rpm Enterprise key shipping by accident.
+# (it relies on the createKeyRequest body), so we set an Enterprise-class
+# default here to avoid a 60rpm Enterprise key shipping by accident.
 readonly DEFAULT_ENT_MONTHLY=0
 readonly DEFAULT_ENT_RPM=600
 readonly DEFAULT_ENT_MAX_KEYS=5
