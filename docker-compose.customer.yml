@@ -62,6 +62,9 @@ volumes:
   gateway-data:
   postgres-veil-data:
   cert-store:
+  # Holds the migration SQL after the prep-migrations service has rendered
+  # any *.up.sql.tmpl through envsubst. Migrate runners mount this read-only.
+  rendered-migrations:
 
 services:
   # ── Infrastructure ──────────────────────────────────────────────
@@ -132,17 +135,36 @@ services:
 
   # ── Migrations ──────────────────────────────────────────────────
 
+  # Renders any *.up.sql.tmpl through targeted sed substitution with
+  # AUDIT_APP_PASSWORD / VEIL_APP_PASSWORD so the CREATE ROLE statements
+  # ship the runtime password (not the historical hardcoded literal).
+  # Non-templated migrations are copied through unchanged. Uses busybox
+  # sed; no apk install required. See scripts/render-migrations.sh.
+  prep-migrations:
+    image: alpine:3.20
+    command: ["/bin/sh", "/scripts/render-migrations.sh"]
+    environment:
+      AUDIT_APP_PASSWORD: "${AUDIT_APP_PASSWORD:-audit_app_password}"
+      VEIL_APP_PASSWORD: "${VEIL_APP_PASSWORD:-veil_app_password}"
+    volumes:
+      - ./migrations:/migrations-src:ro
+      - ./scripts/render-migrations.sh:/scripts/render-migrations.sh:ro
+      - rendered-migrations:/migrations-rendered
+    restart: "no"
+
   migrate-audit:
     image: migrate/migrate:v4.17.0
     depends_on:
       postgres-audit:
         condition: service_healthy
+      prep-migrations:
+        condition: service_completed_successfully
     volumes:
-      - ./migrations/audit:/migrations:ro
+      - rendered-migrations:/migrations:ro
     networks:
       - dsa-audit
     command:
-      - "-path=/migrations"
+      - "-path=/migrations/audit"
       - "-database=postgres://dsa:${POSTGRES_AUDIT_PASSWORD:-dsa}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
       - "up"
     restart: "no"
@@ -152,12 +174,14 @@ services:
     depends_on:
       postgres-bridge:
         condition: service_healthy
+      prep-migrations:
+        condition: service_completed_successfully
     volumes:
-      - ./migrations/id-bridge:/migrations:ro
+      - rendered-migrations:/migrations:ro
     networks:
       - dsa-bridge
     command:
-      - "-path=/migrations"
+      - "-path=/migrations/id-bridge"
       - "-database=postgres://dsa:${POSTGRES_BRIDGE_PASSWORD:-dsa}@postgres-bridge:5432/bridge?sslmode=${POSTGRES_SSLMODE:-disable}"
       - "up"
     restart: "no"
@@ -167,12 +191,14 @@ services:
     depends_on:
       postgres-sandbox-a:
         condition: service_healthy
+      prep-migrations:
+        condition: service_completed_successfully
     volumes:
-      - ./migrations/sandbox-a:/migrations:ro
+      - rendered-migrations:/migrations:ro
     networks:
       - dsa-identity
     command:
-      - "-path=/migrations"
+      - "-path=/migrations/sandbox-a"
       - "-database=postgres://dsa:${POSTGRES_SANDBOX_A_PASSWORD:-dsa}@postgres-sandbox-a:5432/sandbox_a?sslmode=${POSTGRES_SSLMODE:-disable}"
       - "up"
     restart: "no"
@@ -182,12 +208,14 @@ services:
     depends_on:
       postgres-veil:
         condition: service_healthy
+      prep-migrations:
+        condition: service_completed_successfully
     volumes:
-      - ./migrations/veil-witness:/migrations:ro
+      - rendered-migrations:/migrations:ro
     networks:
       - dsa-witness
     command:
-      - "-path=/migrations"
+      - "-path=/migrations/veil-witness"
       - "-database=postgres://veil:${POSTGRES_VEIL_PASSWORD:-veil}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}"
       - "up"
     restart: "no"
