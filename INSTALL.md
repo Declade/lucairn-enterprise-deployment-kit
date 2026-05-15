@@ -24,7 +24,7 @@ For Kubernetes:
 1. Unpack the release bundle.
 
 ```bash
-tar -xzf lucairn-enterprise-deployment-kit-1.1.0-enterprise-customer-bundle.tar.gz
+tar -xzf lucairn-enterprise-deployment-kit-1.3.0-customer-demo-data.tar.gz
 cd lucairn-enterprise-deployment-kit
 ```
 
@@ -156,11 +156,13 @@ cd lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ
 bin/lucairn bundle verify --bundle .
 ```
 
-3. Load images.
+3. Load images when the bundle contains an archive.
 
 ```bash
 docker load -i images/lucairn-images.tar
 ```
+
+If `images/lucairn-images.tar` is absent, this handoff uses registry or customer-mirror delivery. Log in to the configured registry, keep `LUCAIRN_IMAGE_REGISTRY` and `LUCAIRN_IMAGE_TAG` aligned with the handoff note, and skip `docker load`.
 
 4. Run pre-flight checks.
 
@@ -185,3 +187,7 @@ docker compose \
 curl -fsS http://127.0.0.1:8085/healthz
 curl -fsS http://127.0.0.1:8085/readyz
 ```
+
+## Clean-Host Rehearsal
+
+Before sending a first customer bundle, repeat the customer-bundle path on a clean Linux host or VM that has no repo checkout, no local Docker images, and no copied secrets except the exact handoff bundle and registry credentials. Record the transcript against `docs/CLEAN_HOST_REHEARSAL.md`.

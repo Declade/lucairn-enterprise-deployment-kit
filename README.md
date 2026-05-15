@@ -17,7 +17,7 @@ This repository contains the customer-installable Lucairn deployment kit for fir
 - `AGENTS.md`, `CLAUDE.md` - operating contract for Codex, Claude Code, and similar agents.
 - `migrations/`, `config/`, `starter-templates/` - runtime assets needed by the Compose path.
 - `INSTALL.md`, `OPS.md`, `TROUBLESHOOTING.md` - day-1 and day-2 runbooks.
-- `docs/` - enterprise support, SDK, DPA, mirror, and internal hygiene notes.
+- `docs/` - enterprise support, SDK, mirror, clean-host rehearsal, handoff gates, and internal hygiene notes.
 
 ## Fast Path
 
@@ -30,6 +30,7 @@ docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 ```
 
 Lucairn must provide image registry access and onboarding values before a customer can install from the kit.
+Before a real customer handoff, run the gates in `docs/CUSTOMER_HANDOFF_GATES.md`.
 
 ## Per-Customer Bundle
 
@@ -75,3 +76,15 @@ bin/lucairn support-bundle --env customer.env --compose docker-compose.customer.
 ```
 
 The bundle is redacted, but the customer must review it before emailing it to Lucairn support.
+
+## Customer Handoff Gates
+
+No customer should receive an install package until:
+
+- `bin/lucairn bundle verify` passes for the exact tarball being sent.
+- `bin/lucairn doctor --offline` passes on the extracted bundle.
+- image delivery is decided and tested as either registry, tar archive, or customer mirror.
+- the model runtime mode is explicit: external OpenAI-compatible endpoint or bundled self-hosted runtime.
+- the recipient, channel, checksum, and install owner are recorded in the engagement handoff note.
+
+See `docs/CUSTOMER_HANDOFF_GATES.md` and `docs/CLEAN_HOST_REHEARSAL.md`.
