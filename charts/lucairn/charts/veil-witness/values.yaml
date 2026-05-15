@@ -73,8 +73,14 @@ config:
 secrets:
   backend: k8s-native  # k8s-native | vault | aws | azure
   values:
-    # PRODUCTION: MUST override with a strong, unique password.
+    # PRODUCTION: MUST override with a strong, unique password (veil superuser).
     postgresPassword: "CHANGE-ME-IN-PRODUCTION"
+    # PRODUCTION: MUST override. Password for the least-privilege `veil_app`
+    # role that veil-witness connects as at runtime. Baked into the
+    # 000002_restrict_veil_role migration via the render init container.
+    # Compose-path equivalent: VEIL_APP_PASSWORD in customer.env. Refuses to
+    # render with empty value, single-quote, or backslash (SQL-injection guard).
+    veilAppPassword: "CHANGE-ME-IN-PRODUCTION"
     # PRODUCTION: MUST override — all-zeroes key makes certificates forgeable.
     signingKey: "0000000000000000000000000000000000000000000000000000000000000000"
     keyId: "witness_dev_v1"

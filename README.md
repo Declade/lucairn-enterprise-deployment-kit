@@ -73,7 +73,7 @@ After the stack is healthy, mint your first customer API key:
 ./bin/lucairn-mint-customer --name "Acme GmbH" --email "ops@acme.de" --tier enterprise
 ```
 
-GHCR images are public; `docker login ghcr.io` is only needed if you mirror images into a private registry. License keys are optional (kit runs in unregistered/dev mode without them — see `bin/lucairn-init --dev`).
+GHCR images are private — `docker login ghcr.io` is required with the GHCR PAT Lucairn provides at customer-handoff (or mirror the images into your own registry and override `LUCAIRN_IMAGE_REGISTRY`). See `INSTALL.md` step 3. License keys are optional (kit runs in unregistered/dev mode without them — see `bin/lucairn-init --dev`).
 Before a real customer handoff, run the gates in `docs/CUSTOMER_HANDOFF_GATES.md`.
 
 ## Per-Customer Bundle

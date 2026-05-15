@@ -288,7 +288,11 @@ provider is the expected pass — name resolution + TCP both worked, only
 the dummy API key was rejected):
 
 ```bash
-docker exec lucairn-sandbox-b-1 \
+docker compose \
+  -f docker-compose.customer.yml \
+  -f docker-compose.self-hosted-byok.yml \
+  --env-file customer.env \
+  exec sandbox-b \
   curl -sS -o /dev/null -w "%{http_code}\n" \
   https://api.anthropic.com/v1/messages
 # Expect: 401  (NOT 0 / NXDOMAIN / connection refused)
