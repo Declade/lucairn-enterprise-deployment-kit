@@ -298,30 +298,78 @@ manifest_value() {
   ' "$manifest"
 }
 
-manifest_files() {
+manifest_files_entries() {
+  # Emits "path<TAB>sha256" lines, one per declared file.
+  # Supports BOTH shapes:
+  #   1) Legacy:  files: [ "foo.gguf", "bar.gguf" ]  (block form: "- foo.gguf")
+  #      -> "foo.gguf\t"        (empty second column)
+  #   2) New:     files:
+  #                 - path: foo.gguf
+  #                   sha256: <64-hex>
+  #      -> "foo.gguf\tabc..."
   local manifest="$1"
-  awk '
+  awk -v OFS='\t' '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); gsub(/^["'\''"]|["'\''"]$/, "", s); return s }
+    function flush_cur() {
+      if (cur_path != "") { print cur_path, cur_sha }
+      cur_path=""; cur_sha=""
+    }
     /^[[:space:]]*model:[[:space:]]*$/ { in_model=1; next }
     in_model && /^[^[:space:]]/ { in_model=0 }
     in_model && /^[[:space:]]*files:[[:space:]]*$/ { in_files=1; next }
-    in_files && /^[[:space:]]*-[[:space:]]*/ {
-      sub(/^[[:space:]]*-[[:space:]]*/, "")
-      gsub(/^["'\''"]|["'\''"]$/, "")
-      print
-      next
+    in_files {
+      # End of files list: a sibling key under model: (no list marker, no "path:"/"sha256:")
+      if ($0 ~ /^[[:space:]]*[A-Za-z0-9_-]+:[[:space:]]*/ && $0 !~ /^[[:space:]]*-[[:space:]]/ && $0 !~ /^[[:space:]]+path:/ && $0 !~ /^[[:space:]]+sha256:/) {
+        flush_cur()
+        exit
+      }
+      # New shape: list item starting with "- path: <value>"
+      if ($0 ~ /^[[:space:]]*-[[:space:]]+path:[[:space:]]*/) {
+        flush_cur()
+        line=$0
+        sub(/^[[:space:]]*-[[:space:]]+path:[[:space:]]*/, "", line)
+        cur_path=trim(line); cur_sha=""
+        next
+      }
+      # New shape: continuation "  sha256: <hex>"
+      if ($0 ~ /^[[:space:]]+sha256:[[:space:]]*/) {
+        line=$0
+        sub(/^[[:space:]]+sha256:[[:space:]]*/, "", line)
+        cur_sha=trim(line)
+        next
+      }
+      # Legacy shape: bare scalar item "- foo.gguf" (NOT a key:value pair)
+      if ($0 ~ /^[[:space:]]*-[[:space:]]+[^[:space:]]/ && $0 !~ /^[[:space:]]*-[[:space:]]+[A-Za-z0-9_-]+:[[:space:]]/) {
+        flush_cur()
+        line=$0
+        sub(/^[[:space:]]*-[[:space:]]+/, "", line)
+        cur_path=trim(line); cur_sha=""
+        next
+      }
     }
-    in_files && /^[[:space:]]*[A-Za-z0-9_-]+:[[:space:]]*/ { exit }
+    END { flush_cur() }
   ' "$manifest"
 }
 
+manifest_checksum_policy() {
+  local manifest="$1" val
+  val="$(manifest_value "$manifest" checksum_policy)"
+  if [ -z "$val" ]; then
+    printf 'sha256-required'
+  else
+    printf '%s' "$val"
+  fi
+}
+
 validate_model_manifest() {
-  local manifest="$1" models_dir="$2" name format runtime file missing=0
+  local manifest="$1" models_dir="$2" name format runtime policy file sha actual missing=0
   require_file "$manifest" "model manifest"
   [ -d "$models_dir" ] || fail "models dir not found: $models_dir"
 
   name="$(manifest_value "$manifest" name)"
   format="$(manifest_value "$manifest" format)"
   runtime="$(manifest_value "$manifest" runtime)"
+  policy="$(manifest_checksum_policy "$manifest")"
 
   [ -n "$name" ] || { echo "model manifest: missing model.name"; return 1; }
   [ -n "$format" ] || { echo "model manifest: missing model.format"; return 1; }
@@ -337,22 +385,67 @@ validate_model_manifest() {
     *) echo "model manifest: unsupported runtime '$runtime'"; return 1 ;;
   esac
 
+  case "$policy" in
+    sha256-required|sha256-optional|none|external-runtime-no-model-file) ;;
+    *) echo "model manifest: unsupported checksum_policy '$policy' (allowed: sha256-required, sha256-optional, none, external-runtime-no-model-file)"; return 1 ;;
+  esac
+
   if [ "$runtime" = "external-openai-compatible" ] || [ "$format" = "openai-compatible" ]; then
     return 0
   fi
 
-  if ! manifest_files "$manifest" | grep -q .; then
+  if ! manifest_files_entries "$manifest" | grep -q .; then
     echo "model manifest: model.files is required for local runtimes"
     return 1
   fi
 
-  while IFS= read -r file; do
+  while IFS=$'\t' read -r file sha; do
     [ -z "$file" ] && continue
     if [ ! -f "$models_dir/$file" ]; then
       echo "model manifest: missing model file $file"
       missing=1
+      continue
     fi
-  done < <(manifest_files "$manifest")
+    case "$policy" in
+      sha256-required)
+        if [ -z "$sha" ]; then
+          echo "model manifest: checksum_policy=sha256-required but no sha256 declared for $file"
+          missing=1
+          continue
+        fi
+        if ! printf '%s' "$sha" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+          echo "model manifest: invalid sha256 for $file (must be 64 hex chars)"
+          missing=1
+          continue
+        fi
+        actual="$(sha256_file "$models_dir/$file")"
+        if [ "$actual" != "$sha" ]; then
+          echo "model manifest: sha256 mismatch for $file"
+          echo "  declared: $sha"
+          echo "  actual:   $actual"
+          missing=1
+        fi
+        ;;
+      sha256-optional)
+        if [ -n "$sha" ]; then
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+            echo "model manifest: invalid sha256 for $file (must be 64 hex chars)"
+            missing=1
+            continue
+          fi
+          actual="$(sha256_file "$models_dir/$file")"
+          if [ "$actual" != "$sha" ]; then
+            echo "model manifest: sha256 mismatch for $file"
+            echo "  declared: $sha"
+            echo "  actual:   $actual"
+            missing=1
+          fi
+        fi
+        ;;
+      none|external-runtime-no-model-file)
+        ;;
+    esac
+  done < <(manifest_files_entries "$manifest")
 
   [ "$missing" -eq 0 ]
 }
@@ -536,15 +629,21 @@ bundle_root_from_path() {
 }
 
 bundle_verify() {
-  local bundle=""
+  local bundle="" expect_slug="" max_age_days=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --bundle) bundle="$2"; shift 2 ;;
+      --customer-slug) expect_slug="$2"; shift 2 ;;
+      --max-age-days) max_age_days="$2"; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       *) fail "unknown bundle verify argument: $1" ;;
     esac
   done
   [ -n "$bundle" ] || fail "--bundle is required"
+  if [ -n "$max_age_days" ]; then
+    printf '%s' "$max_age_days" | grep -Eq '^[0-9]+$' \
+      || fail "--max-age-days must be a non-negative integer"
+  fi
 
   local tmp root
   tmp="$(mktemp -d)"
@@ -561,6 +660,44 @@ bundle_verify() {
   require_file "$root/bin/lucairn" "bundle CLI"
   validate_model_manifest "$root/models/model-manifest.yaml" "$root/models"
   verify_checksums "$root"
+
+  if [ -n "$expect_slug" ] || [ -n "$max_age_days" ]; then
+    require_file "$root/bundle-manifest.txt" "bundle manifest"
+  fi
+
+  if [ -n "$expect_slug" ]; then
+    local actual_slug
+    actual_slug="$(grep -E '^customer_slug=' "$root/bundle-manifest.txt" | tail -1 | cut -d= -f2-)"
+    if [ "$actual_slug" != "$expect_slug" ]; then
+      rm -rf "$tmp"
+      fail "bundle customer_slug mismatch: expected '$expect_slug', got '$actual_slug'"
+    fi
+  fi
+
+  if [ -n "$max_age_days" ]; then
+    local created_utc created_epoch now_epoch age_seconds max_age_seconds
+    created_utc="$(grep -E '^created_utc=' "$root/bundle-manifest.txt" | tail -1 | cut -d= -f2-)"
+    [ -n "$created_utc" ] || { rm -rf "$tmp"; fail "bundle-manifest.txt missing created_utc"; }
+    created_epoch="$(python3 - "$created_utc" <<'PY' 2>/dev/null || true
+import sys, datetime
+ts = sys.argv[1]
+try:
+    dt = datetime.datetime.strptime(ts, "%Y%m%dT%H%M%SZ").replace(tzinfo=datetime.timezone.utc)
+    print(int(dt.timestamp()))
+except Exception:
+    pass
+PY
+)"
+    [ -n "$created_epoch" ] || { rm -rf "$tmp"; fail "bundle created_utc '$created_utc' is not a recognised timestamp"; }
+    now_epoch="$(date -u +%s)"
+    age_seconds=$(( now_epoch - created_epoch ))
+    max_age_seconds=$(( max_age_days * 86400 ))
+    if [ "$age_seconds" -gt "$max_age_seconds" ]; then
+      rm -rf "$tmp"
+      fail "bundle is $((age_seconds / 86400)) days old (max allowed: $max_age_days)"
+    fi
+  fi
+
   rm -rf "$tmp"
   echo "bundle verify: ok"
 }
@@ -633,15 +770,23 @@ bundle_prepare() {
     image_delivery="directory"
   fi
 
-  if [ -d "$staging_dir/customer-data" ] && find "$staging_dir/customer-data" -mindepth 1 -type f | grep -q .; then
-    data_dir="$staging_dir/customer-data"
+  local data_candidates=() candidate
+  for candidate in customer-data demo-data data; do
+    if [ -d "$staging_dir/$candidate" ] && find "$staging_dir/$candidate" -mindepth 1 -type f | grep -q .; then
+      data_candidates+=("$staging_dir/$candidate")
+    fi
+  done
+  if [ "${#data_candidates[@]}" -gt 1 ]; then
+    echo "bundle prepare: ambiguous data staging — multiple non-empty data dirs found:" >&2
+    for candidate in "${data_candidates[@]}"; do
+      echo "  - $candidate" >&2
+    done
+    fail "remove the unwanted directories so only one of customer-data/, demo-data/, or data/ contains files"
+  fi
+  if [ "${#data_candidates[@]}" -eq 1 ]; then
+    data_dir="${data_candidates[0]}"
     customer_data="present"
-  elif [ -d "$staging_dir/demo-data" ] && find "$staging_dir/demo-data" -mindepth 1 -type f | grep -q .; then
-    data_dir="$staging_dir/demo-data"
-    customer_data="present"
-  elif [ -d "$staging_dir/data" ] && find "$staging_dir/data" -mindepth 1 -type f | grep -q .; then
-    data_dir="$staging_dir/data"
-    customer_data="present"
+    echo "selected staging dir: $data_dir"
   fi
 
   require_file "$env_file" "staged customer env"
