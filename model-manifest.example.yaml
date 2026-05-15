@@ -2,11 +2,20 @@ model:
   name: customer-model
   format: gguf
   runtime: llama-cpp
+  # checksum_policy values:
+  #   sha256-required (default): each entry under files: MUST be a map with
+  #     `path:` and `sha256:` (64 hex chars). The CLI re-hashes each file and
+  #     fails if it does not match.
+  #   sha256-optional: legacy plain-string entries are allowed; entries with
+  #     explicit sha256 are still verified.
+  #   none: file existence is checked, sha256 is not.
+  #   external-runtime-no-model-file: used when the model lives behind an
+  #     OpenAI-compatible endpoint and no local file is expected.
+  checksum_policy: sha256-required
   files:
-    - customer-model-q4.gguf
+    - path: customer-model-q4.gguf
+      sha256: 0000000000000000000000000000000000000000000000000000000000000000
   context_window: 8192
   gpu_required: false
   min_vram_gb: 0
   license: customer-owned
-  checksum_policy: sha256-required
-

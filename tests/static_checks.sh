@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bash -n "$ROOT/bin/lucairn"
 bash -n "$ROOT/scripts/package-release.sh"
 bash -n "$ROOT/tests/test_lucairn_cli.sh"
+bash -n "$ROOT/tests/test_model_manifest_sha256.sh"
+bash -n "$ROOT/tests/test_bundle_verify_replay_guard.sh"
 
 test -f "$ROOT/OPS.md"
 test -f "$ROOT/TROUBLESHOOTING.md"

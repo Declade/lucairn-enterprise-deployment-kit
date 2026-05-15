@@ -112,14 +112,21 @@ MODEL_DIR="$TMPDIR/models"
 mkdir -p "$MODEL_DIR"
 printf 'fake gguf model bytes\n' > "$MODEL_DIR/acme-support-q4.gguf"
 
+if command -v sha256sum >/dev/null 2>&1; then
+  MODEL_SHA="$(sha256sum "$MODEL_DIR/acme-support-q4.gguf" | awk '{print $1}')"
+else
+  MODEL_SHA="$(shasum -a 256 "$MODEL_DIR/acme-support-q4.gguf" | awk '{print $1}')"
+fi
+
 MODEL_MANIFEST="$TMPDIR/model-manifest.yaml"
-cat > "$MODEL_MANIFEST" <<'YAML'
+cat > "$MODEL_MANIFEST" <<YAML
 model:
   name: acme-support-llm
   format: gguf
   runtime: llama-cpp
   files:
-    - acme-support-q4.gguf
+    - path: acme-support-q4.gguf
+      sha256: $MODEL_SHA
   context_window: 8192
   gpu_required: false
   min_vram_gb: 0
@@ -166,7 +173,7 @@ if [ "$TAMPER_STATUS" -eq 0 ]; then
   echo "bundle verify should fail after model tampering" >&2
   exit 1
 fi
-grep -q "checksum verification failed" "$TMPDIR/bundle-tamper.out"
+grep -Eq "(checksum verification failed|sha256 mismatch for)" "$TMPDIR/bundle-tamper.out"
 
 echo "lucairn bundle tests: ok"
 
@@ -239,3 +246,46 @@ REGISTRY_OUT="$TMPDIR/registry-only-output"
 grep -q "image_delivery=registry" "$REGISTRY_OUT/lucairn-customer-bundle-registry-only-report.txt"
 
 echo "lucairn agent prepare tests: ok"
+
+# Multi-source ambiguity guard (audit 2026-05-15 F4): bundle prepare must fail
+# loudly if more than one of customer-data/, demo-data/, data/ is non-empty.
+AMBIG_STAGE="$TMPDIR/agent-staging/ambig"
+mkdir -p "$AMBIG_STAGE/models" "$AMBIG_STAGE/customer-data" "$AMBIG_STAGE/demo-data"
+cp "$ENV_FILE" "$AMBIG_STAGE/customer.env"
+cp "$MODEL_MANIFEST" "$AMBIG_STAGE/models/model-manifest.yaml"
+cp "$MODEL_DIR/acme-support-q4.gguf" "$AMBIG_STAGE/models/acme-support-q4.gguf"
+printf 'real\n' > "$AMBIG_STAGE/customer-data/real.csv"
+printf 'demo\n' > "$AMBIG_STAGE/demo-data/demo.csv"
+
+set +e
+"$ROOT/bin/lucairn" bundle prepare \
+  --customer-slug ambig \
+  --staging-dir "$AMBIG_STAGE" \
+  --output "$TMPDIR/ambig-out" > "$TMPDIR/ambig.out" 2>&1
+AMBIG_STATUS=$?
+set -e
+if [ "$AMBIG_STATUS" -eq 0 ]; then
+  echo "expected bundle prepare to fail on ambiguous data dirs" >&2
+  cat "$TMPDIR/ambig.out" >&2
+  exit 1
+fi
+grep -q "ambiguous data staging" "$TMPDIR/ambig.out"
+grep -q "customer-data" "$TMPDIR/ambig.out"
+grep -q "demo-data" "$TMPDIR/ambig.out"
+
+# Sanity: a clean single-source staging still announces the selection.
+SINGLE_STAGE="$TMPDIR/agent-staging/single"
+mkdir -p "$SINGLE_STAGE/models" "$SINGLE_STAGE/customer-data"
+cp "$ENV_FILE" "$SINGLE_STAGE/customer.env"
+cp "$MODEL_MANIFEST" "$SINGLE_STAGE/models/model-manifest.yaml"
+cp "$MODEL_DIR/acme-support-q4.gguf" "$SINGLE_STAGE/models/acme-support-q4.gguf"
+printf 'real\n' > "$SINGLE_STAGE/customer-data/real.csv"
+
+"$ROOT/bin/lucairn" bundle prepare \
+  --customer-slug single \
+  --staging-dir "$SINGLE_STAGE" \
+  --output "$TMPDIR/single-out" > "$TMPDIR/single.out"
+grep -q "selected staging dir:" "$TMPDIR/single.out"
+grep -q "/customer-data" "$TMPDIR/single.out"
+
+echo "lucairn data-staging ambiguity tests: ok"
