@@ -36,11 +36,25 @@ If `customer_data=present`, confirm the staged data is synthetic or explicitly a
 
 ## Verification Gate
 
-Run these against the exact artifact that will be sent:
+Run these against the exact artifact that will be sent. Use `--require-sha256`,
+`--customer-slug`, and `--max-age-days` so the receiver gate matches the
+operator gate even if the manifest has been tampered to declare a weaker
+policy or replay a stale bundle:
 
 ```bash
-bin/lucairn bundle verify --bundle /secure/outbound/acme/lucairn-customer-bundle-acme-*.tar.gz
+bin/lucairn bundle verify \
+  --bundle /secure/outbound/acme/lucairn-customer-bundle-acme-*.tar.gz \
+  --require-sha256 \
+  --customer-slug acme \
+  --max-age-days 30
 ```
+
+- `--require-sha256` forces `checksum_policy: sha256-required` regardless of
+  the manifest, so a downgraded `checksum_policy: none` cannot bypass the
+  re-hash.
+- `--customer-slug` rejects bundles whose `bundle-manifest.txt` was built for
+  a different customer (cross-customer replay).
+- `--max-age-days` rejects bundles older than N days (stale-bundle replay).
 
 Then extract the bundle into a temporary directory and run:
 

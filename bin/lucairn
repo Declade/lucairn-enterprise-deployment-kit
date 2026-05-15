@@ -307,6 +307,11 @@ manifest_files_entries() {
   #                 - path: foo.gguf
   #                   sha256: <64-hex>
   #      -> "foo.gguf\tabc..."
+  #
+  # B4 hardening: the new-shape parser is keyed off the field NAME, not on
+  # positional ordering. Authors may interleave sibling keys (size:, source:,
+  # license:, notes:) between path: and sha256: — the parser ignores those
+  # rather than dropping sha256 silently.
   local manifest="$1"
   awk -v OFS='\t' '
     function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); gsub(/^["'\''"]|["'\''"]$/, "", s); return s }
@@ -316,10 +321,23 @@ manifest_files_entries() {
     }
     /^[[:space:]]*model:[[:space:]]*$/ { in_model=1; next }
     in_model && /^[^[:space:]]/ { in_model=0 }
-    in_model && /^[[:space:]]*files:[[:space:]]*$/ { in_files=1; next }
+    in_model && /^[[:space:]]*files:[[:space:]]*$/ {
+      in_files=1
+      # Capture the indentation depth of the "files:" key so we can detect a
+      # sibling key (same or shallower indent that is NOT a list item) as the
+      # end of the files block.
+      match($0, /^[[:space:]]*/)
+      files_indent = RLENGTH
+      next
+    }
     in_files {
-      # End of files list: a sibling key under model: (no list marker, no "path:"/"sha256:")
-      if ($0 ~ /^[[:space:]]*[A-Za-z0-9_-]+:[[:space:]]*/ && $0 !~ /^[[:space:]]*-[[:space:]]/ && $0 !~ /^[[:space:]]+path:/ && $0 !~ /^[[:space:]]+sha256:/) {
+      # End of files list: a sibling key at <= files_indent that is not a list
+      # marker and not a deeper continuation. We compute the indent of $0 and
+      # compare; deeper-indented continuation lines (size:, source:, etc.) stay
+      # inside the current entry and are ignored by the allowlist below.
+      match($0, /^[[:space:]]*/)
+      cur_indent = RLENGTH
+      if (cur_indent <= files_indent && $0 ~ /^[[:space:]]*[A-Za-z0-9_-]+:[[:space:]]*/ && $0 !~ /^[[:space:]]*-[[:space:]]/) {
         flush_cur()
         exit
       }
@@ -331,11 +349,19 @@ manifest_files_entries() {
         cur_path=trim(line); cur_sha=""
         next
       }
-      # New shape: continuation "  sha256: <hex>"
-      if ($0 ~ /^[[:space:]]+sha256:[[:space:]]*/) {
+      # New shape: any deeper-indented continuation line for the current entry.
+      # We key off the field name ("sha256:"), so size:, source:, license:,
+      # notes: are tolerated in any order between path: and sha256: without
+      # dropping the sha256.
+      if (cur_path != "" && $0 ~ /^[[:space:]]+sha256:[[:space:]]*/) {
         line=$0
         sub(/^[[:space:]]+sha256:[[:space:]]*/, "", line)
         cur_sha=trim(line)
+        next
+      }
+      # Other allowlisted sibling keys inside an entry — explicitly ignored so
+      # interleaving them between path: and sha256: cannot drop the sha256.
+      if (cur_path != "" && $0 ~ /^[[:space:]]+(size|source|license|notes):[[:space:]]*/) {
         next
       }
       # Legacy shape: bare scalar item "- foo.gguf" (NOT a key:value pair)
@@ -362,7 +388,15 @@ manifest_checksum_policy() {
 }
 
 validate_model_manifest() {
-  local manifest="$1" models_dir="$2" name format runtime policy file sha actual missing=0
+  # Args:
+  #   $1 manifest path
+  #   $2 models dir
+  #   $3 (optional) "require-sha256" — when set, force checksum_policy to
+  #      "sha256-required" regardless of what the manifest declares. Used by
+  #      `bundle verify --require-sha256` (B2) to defend against a manifest
+  #      that has been tampered to declare a weaker policy.
+  local manifest="$1" models_dir="$2" force_mode="${3:-}"
+  local name format runtime policy file sha actual missing=0
   require_file "$manifest" "model manifest"
   [ -d "$models_dir" ] || fail "models dir not found: $models_dir"
 
@@ -389,6 +423,27 @@ validate_model_manifest() {
     sha256-required|sha256-optional|none|external-runtime-no-model-file) ;;
     *) echo "model manifest: unsupported checksum_policy '$policy' (allowed: sha256-required, sha256-optional, none, external-runtime-no-model-file)"; return 1 ;;
   esac
+
+  # B1: `external-runtime-no-model-file` is meaningful ONLY when the runtime
+  # also delegates to an external endpoint. Without this guard, a tampered
+  # manifest could pair `runtime: llama-cpp` with this policy and skip the
+  # re-hash entirely (the loop terminal `;;` does nothing).
+  if [ "$policy" = "external-runtime-no-model-file" ]; then
+    case "$runtime" in
+      external-openai-compatible) ;;
+      *)
+        echo "model manifest: checksum_policy=external-runtime-no-model-file requires runtime=external-openai-compatible (got '$runtime')"
+        return 1
+        ;;
+    esac
+  fi
+
+  # B2: receiver-side override. If the caller demands strong verification, we
+  # ignore a weaker declared policy. This DOES NOT relax existing rules — a
+  # manifest declaring sha256-required already enforces sha256-required.
+  if [ "$force_mode" = "require-sha256" ]; then
+    policy="sha256-required"
+  fi
 
   if [ "$runtime" = "external-openai-compatible" ] || [ "$format" = "openai-compatible" ]; then
     return 0
@@ -629,12 +684,13 @@ bundle_root_from_path() {
 }
 
 bundle_verify() {
-  local bundle="" expect_slug="" max_age_days=""
+  local bundle="" expect_slug="" max_age_days="" require_sha256=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --bundle) bundle="$2"; shift 2 ;;
       --customer-slug) expect_slug="$2"; shift 2 ;;
       --max-age-days) max_age_days="$2"; shift 2 ;;
+      --require-sha256) require_sha256=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) fail "unknown bundle verify argument: $1" ;;
     esac
@@ -643,6 +699,12 @@ bundle_verify() {
   if [ -n "$max_age_days" ]; then
     printf '%s' "$max_age_days" | grep -Eq '^[0-9]+$' \
       || fail "--max-age-days must be a non-negative integer"
+  fi
+  if [ -n "$expect_slug" ]; then
+    # B7: apply the same slug regex bundle_create uses when minting bundles, so
+    # an attacker cannot smuggle a bogus expected-slug string past this gate.
+    printf '%s' "$expect_slug" | grep -Eq '^[a-z0-9][a-z0-9-]{1,62}$' \
+      || fail "--customer-slug must be lowercase letters, numbers, and hyphens"
   fi
 
   local tmp root
@@ -658,16 +720,31 @@ bundle_verify() {
   require_file "$root/install/customer.env" "bundle customer env"
   require_file "$root/models/model-manifest.yaml" "bundle model manifest"
   require_file "$root/bin/lucairn" "bundle CLI"
-  validate_model_manifest "$root/models/model-manifest.yaml" "$root/models"
+  if [ "$require_sha256" -eq 1 ]; then
+    validate_model_manifest "$root/models/model-manifest.yaml" "$root/models" "require-sha256"
+  else
+    validate_model_manifest "$root/models/model-manifest.yaml" "$root/models"
+  fi
   verify_checksums "$root"
 
   if [ -n "$expect_slug" ] || [ -n "$max_age_days" ]; then
     require_file "$root/bundle-manifest.txt" "bundle manifest"
   fi
 
+  # B3: replay-guard hardening. The manifest must declare exactly one
+  # customer_slug= and one created_utc= line. Without this, an attacker could
+  # append a duplicated line targeting a different victim and re-hash
+  # SHA256SUMS — `tail -1` then silently selects the doctored line and the
+  # cross-customer replay check passes.
   if [ -n "$expect_slug" ]; then
+    local slug_count
+    slug_count="$(grep -cE '^customer_slug=' "$root/bundle-manifest.txt" || true)"
+    if [ "$slug_count" != "1" ]; then
+      rm -rf "$tmp"
+      fail "bundle-manifest.txt has $slug_count customer_slug= lines (expected exactly 1)"
+    fi
     local actual_slug
-    actual_slug="$(grep -E '^customer_slug=' "$root/bundle-manifest.txt" | tail -1 | cut -d= -f2-)"
+    actual_slug="$(grep -E '^customer_slug=' "$root/bundle-manifest.txt" | cut -d= -f2-)"
     if [ "$actual_slug" != "$expect_slug" ]; then
       rm -rf "$tmp"
       fail "bundle customer_slug mismatch: expected '$expect_slug', got '$actual_slug'"
@@ -675,12 +752,22 @@ bundle_verify() {
   fi
 
   if [ -n "$max_age_days" ]; then
-    local created_utc created_epoch now_epoch age_seconds max_age_seconds
-    created_utc="$(grep -E '^created_utc=' "$root/bundle-manifest.txt" | tail -1 | cut -d= -f2-)"
+    local ts_count created_utc created_epoch now_epoch age_seconds max_age_seconds
+    ts_count="$(grep -cE '^created_utc=' "$root/bundle-manifest.txt" || true)"
+    if [ "$ts_count" != "1" ]; then
+      rm -rf "$tmp"
+      fail "bundle-manifest.txt has $ts_count created_utc= lines (expected exactly 1)"
+    fi
+    created_utc="$(grep -E '^created_utc=' "$root/bundle-manifest.txt" | cut -d= -f2-)"
     [ -n "$created_utc" ] || { rm -rf "$tmp"; fail "bundle-manifest.txt missing created_utc"; }
+    # B5: strip whitespace + pre-check the format with a regex so ambiguous or
+    # space-padded values fail with a clear error rather than tripping
+    # strptime's "is not a recognised timestamp" later.
     created_epoch="$(python3 - "$created_utc" <<'PY' 2>/dev/null || true
-import sys, datetime
-ts = sys.argv[1]
+import sys, datetime, re
+ts = sys.argv[1].strip()
+if not re.fullmatch(r"\d{8}T\d{6}Z", ts):
+    sys.exit(0)
 try:
     dt = datetime.datetime.strptime(ts, "%Y%m%dT%H%M%SZ").replace(tzinfo=datetime.timezone.utc)
     print(int(dt.timestamp()))
@@ -691,6 +778,12 @@ PY
     [ -n "$created_epoch" ] || { rm -rf "$tmp"; fail "bundle created_utc '$created_utc' is not a recognised timestamp"; }
     now_epoch="$(date -u +%s)"
     age_seconds=$(( now_epoch - created_epoch ))
+    # B8: a future-dated bundle is either clock skew or tamper. Either way it
+    # is not a state the gate should silently allow under `--max-age-days`.
+    if [ "$age_seconds" -lt 0 ]; then
+      rm -rf "$tmp"
+      fail "bundle created_utc '$created_utc' is in the future ($(( -age_seconds )) seconds): clock skew or tamper"
+    fi
     max_age_seconds=$(( max_age_days * 86400 ))
     if [ "$age_seconds" -gt "$max_age_seconds" ]; then
       rm -rf "$tmp"
@@ -770,18 +863,40 @@ bundle_prepare() {
     image_delivery="directory"
   fi
 
-  local data_candidates=() candidate
+  # B6: "non-empty" means "contains at least one real candidate file" —
+  # exclude the product sentinel `README.txt` (bundle_create writes this when
+  # no data dir was supplied) and any hidden dotfile (.gitkeep, .DS_Store, …).
+  # Otherwise extracting a previous bundle next to a separately-staged
+  # demo-data/ produces a false-positive "ambiguous" failure.
+  local data_candidates=() data_real_files=() candidate file
   for candidate in customer-data demo-data data; do
-    if [ -d "$staging_dir/$candidate" ] && find "$staging_dir/$candidate" -mindepth 1 -type f | grep -q .; then
+    if [ ! -d "$staging_dir/$candidate" ]; then
+      continue
+    fi
+    # Collect non-sentinel non-dotfile entries. Dotfiles match files whose
+    # basename starts with a dot at any depth (find's -name acts on basename).
+    local found_files
+    found_files="$(find "$staging_dir/$candidate" -mindepth 1 -type f \
+        ! -name 'README.txt' ! -name '.*' \
+        -print 2>/dev/null || true)"
+    if [ -n "$found_files" ]; then
       data_candidates+=("$staging_dir/$candidate")
+      data_real_files+=("$found_files")
     fi
   done
   if [ "${#data_candidates[@]}" -gt 1 ]; then
     echo "bundle prepare: ambiguous data staging — multiple non-empty data dirs found:" >&2
+    local i=0
     for candidate in "${data_candidates[@]}"; do
       echo "  - $candidate" >&2
+      # List ONLY real candidate files (sentinel + dotfiles already filtered).
+      while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        echo "      $file" >&2
+      done <<< "${data_real_files[$i]}"
+      i=$(( i + 1 ))
     done
-    fail "remove the unwanted directories so only one of customer-data/, demo-data/, or data/ contains files"
+    fail "remove the unwanted directories so only one of customer-data/, demo-data/, or data/ contains real files"
   fi
   if [ "${#data_candidates[@]}" -eq 1 ]; then
     data_dir="${data_candidates[0]}"
@@ -820,7 +935,9 @@ bundle_prepare() {
   archive="$(printf '%s\n' "$create_output" | awk '/^bundle: / {print $2; exit}')"
   [ -n "$archive" ] || fail "bundle prepare could not resolve archive path"
 
-  if ! verify_output="$(bundle_verify --bundle "$archive" 2>&1)"; then
+  # B2: prepare's internal verify defaults to the strongest mode so the
+  # operator gate matches the receiver gate (CUSTOMER_HANDOFF_GATES.md).
+  if ! verify_output="$(bundle_verify --bundle "$archive" --require-sha256 2>&1)"; then
     echo "$verify_output" >&2
     fail "bundle prepare verification failed"
   fi

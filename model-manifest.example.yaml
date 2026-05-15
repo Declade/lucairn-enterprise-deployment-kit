@@ -9,10 +9,13 @@ model:
   #   sha256-optional: legacy plain-string entries are allowed; entries with
   #     explicit sha256 are still verified.
   #   none: file existence is checked, sha256 is not.
-  #   external-runtime-no-model-file: used when the model lives behind an
-  #     OpenAI-compatible endpoint and no local file is expected.
+  #   external-runtime-no-model-file: REQUIRES runtime: external-openai-compatible.
+  #     Used when the model lives behind an OpenAI-compatible endpoint and no
+  #     local file is expected. Rejected on any local runtime to prevent
+  #     accidentally (or maliciously) skipping sha256 re-hashing.
   checksum_policy: sha256-required
   files:
+    # REPLACE: run `sha256sum customer-model-q4.gguf` and paste output here.
     - path: customer-model-q4.gguf
       sha256: 0000000000000000000000000000000000000000000000000000000000000000
   context_window: 8192
