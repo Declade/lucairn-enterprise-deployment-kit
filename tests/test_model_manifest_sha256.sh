@@ -184,4 +184,68 @@ model:
 YAML
 assert_create_fails_matching h "$TMPDIR/h.yaml" "unsupported checksum_policy"
 
+# --- audit 2026-05-15 fix-up cases ---
+
+# (b-redo) Extra fields interleaved between path: and sha256: must NOT drop
+# the sha256 (B4 parser-positional-fragility fix). With a real declared
+# sha256 in play, sha256-required must still verify the file.
+cat > "$TMPDIR/b-redo.yaml" <<YAML
+model:
+  name: m
+  format: gguf
+  runtime: llama-cpp
+  checksum_policy: sha256-required
+  files:
+    - path: foo.gguf
+      size: 23
+      source: customer
+      license: customer-owned
+      sha256: $GOOD_SHA
+      notes: regression coverage for interleaved fields
+YAML
+assert_create_passes b-redo "$TMPDIR/b-redo.yaml"
+
+# Sanity: same shape but with a BAD sha256 must still be caught — proves the
+# parser is picking the sha256 up rather than treating it as missing.
+cat > "$TMPDIR/b-redo-bad.yaml" <<YAML
+model:
+  name: m
+  format: gguf
+  runtime: llama-cpp
+  checksum_policy: sha256-required
+  files:
+    - path: foo.gguf
+      size: 23
+      source: customer
+      license: customer-owned
+      sha256: $BAD_SHA
+      notes: regression coverage for interleaved fields
+YAML
+assert_create_fails_matching b-redo-bad "$TMPDIR/b-redo-bad.yaml" "sha256 mismatch for foo\.gguf"
+
+# (i) external-runtime-no-model-file paired with a LOCAL runtime must be
+# rejected (B1 policy-name-bypass fix). Without this guard an attacker could
+# pair runtime: llama-cpp with this policy and skip the re-hash entirely.
+cat > "$TMPDIR/i.yaml" <<'YAML'
+model:
+  name: m
+  format: gguf
+  runtime: llama-cpp
+  checksum_policy: external-runtime-no-model-file
+  files:
+    - foo.gguf
+YAML
+assert_create_fails_matching i "$TMPDIR/i.yaml" "requires runtime=external-openai-compatible"
+
+# (j) external-runtime-no-model-file paired with the external runtime is
+# accepted (no model file is required in that case — early return covers it).
+cat > "$TMPDIR/j.yaml" <<'YAML'
+model:
+  name: m
+  format: openai-compatible
+  runtime: external-openai-compatible
+  checksum_policy: external-runtime-no-model-file
+YAML
+assert_create_passes j "$TMPDIR/j.yaml"
+
 echo "model manifest sha256 tests: ok"

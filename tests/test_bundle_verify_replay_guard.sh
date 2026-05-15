@@ -149,4 +149,193 @@ grep -q "non-negative integer" "$TMPDIR/verify-age-arg.out"
   --max-age-days 365 > "$TMPDIR/verify-combined.out"
 grep -q "bundle verify: ok" "$TMPDIR/verify-combined.out"
 
+# --- audit 2026-05-15 fix-up cases ---
+
+# Helper: refresh SHA256SUMS for a tampered extracted bundle root, mirroring
+# what `write_checksums` does inside bin/lucairn. Without this, verify_checksums
+# catches the tampered manifest line BEFORE the higher-level guards have a
+# chance to fire — which would mask the bug we are testing for.
+refresh_sums() {
+  local root="$1"
+  (
+    cd "$root"
+    : > checksums/SHA256SUMS
+    find . -type f ! -path './checksums/SHA256SUMS' | sort | while IFS= read -r file; do
+      if command -v sha256sum >/dev/null 2>&1; then
+        h="$(sha256sum "$file" | awk '{print $1}')"
+      else
+        h="$(shasum -a 256 "$file" | awk '{print $1}')"
+      fi
+      printf '%s  %s\n' "$h" "${file#./}"
+    done > checksums/SHA256SUMS
+  )
+}
+
+# (a) Policy-downgrade tamper. Swap checksum_policy: sha256-required →
+# checksum_policy: none, swap one model file's bytes, refresh SHA256SUMS.
+# bundle verify with no flags would have accepted this (B2). With
+# --require-sha256, it must fail with the sha256 mismatch.
+DOWN="$TMPDIR/downgrade"
+mkdir -p "$DOWN"
+tar -xzf "$BUNDLE" -C "$DOWN"
+DOWN_ROOT="$(find "$DOWN" -maxdepth 1 -type d -name 'lucairn-customer-bundle-acme-*' -print -quit)"
+test -n "$DOWN_ROOT"
+sed -i.bak 's/checksum_policy: sha256-required/checksum_policy: none/' "$DOWN_ROOT/models/model-manifest.yaml"
+rm -f "$DOWN_ROOT/models/model-manifest.yaml.bak"
+printf 'tampered bytes\n' > "$DOWN_ROOT/models/foo.gguf"
+refresh_sums "$DOWN_ROOT"
+
+# Sanity: WITHOUT --require-sha256 the tampered bundle now passes (the
+# downgrade succeeds, this is exactly the attack we are blocking).
+"$LUCAIRN" bundle verify --bundle "$DOWN_ROOT" > "$TMPDIR/downgrade-no-flag.out" 2>&1 \
+  || { echo "expected downgrade WITHOUT --require-sha256 to pass" >&2; cat "$TMPDIR/downgrade-no-flag.out" >&2; exit 1; }
+grep -q "bundle verify: ok" "$TMPDIR/downgrade-no-flag.out"
+
+# With --require-sha256, the tampered bundle MUST be rejected on sha256
+# mismatch — the receiver-side flag is what closes the downgrade.
+set +e
+"$LUCAIRN" bundle verify --bundle "$DOWN_ROOT" --require-sha256 > "$TMPDIR/downgrade-flag.out" 2>&1
+DOWN_STATUS=$?
+set -e
+if [ "$DOWN_STATUS" -eq 0 ]; then
+  echo "expected --require-sha256 to reject a downgraded tampered bundle" >&2
+  cat "$TMPDIR/downgrade-flag.out" >&2
+  exit 1
+fi
+grep -q "sha256 mismatch for foo.gguf" "$TMPDIR/downgrade-flag.out"
+
+# (d) Duplicate customer_slug= lines must be rejected (B3 replay-guard fix).
+DUP_SLUG="$TMPDIR/dup-slug"
+mkdir -p "$DUP_SLUG"
+tar -xzf "$BUNDLE" -C "$DUP_SLUG"
+DUP_SLUG_ROOT="$(find "$DUP_SLUG" -maxdepth 1 -type d -name 'lucairn-customer-bundle-acme-*' -print -quit)"
+test -n "$DUP_SLUG_ROOT"
+# Append a doctored second slug line. `tail -1` would have picked this victim.
+printf 'customer_slug=victim\n' >> "$DUP_SLUG_ROOT/bundle-manifest.txt"
+refresh_sums "$DUP_SLUG_ROOT"
+
+set +e
+"$LUCAIRN" bundle verify --bundle "$DUP_SLUG_ROOT" --customer-slug victim > "$TMPDIR/dup-slug.out" 2>&1
+DUP_SLUG_STATUS=$?
+set -e
+if [ "$DUP_SLUG_STATUS" -eq 0 ]; then
+  echo "expected duplicate customer_slug= to be rejected" >&2
+  cat "$TMPDIR/dup-slug.out" >&2
+  exit 1
+fi
+grep -q "customer_slug= lines (expected exactly 1)" "$TMPDIR/dup-slug.out"
+
+# (e) Duplicate created_utc= lines must be rejected (B3).
+DUP_TS="$TMPDIR/dup-ts"
+mkdir -p "$DUP_TS"
+tar -xzf "$BUNDLE" -C "$DUP_TS"
+DUP_TS_ROOT="$(find "$DUP_TS" -maxdepth 1 -type d -name 'lucairn-customer-bundle-acme-*' -print -quit)"
+test -n "$DUP_TS_ROOT"
+printf 'created_utc=20200101T000000Z\n' >> "$DUP_TS_ROOT/bundle-manifest.txt"
+refresh_sums "$DUP_TS_ROOT"
+
+set +e
+"$LUCAIRN" bundle verify --bundle "$DUP_TS_ROOT" --max-age-days 365 > "$TMPDIR/dup-ts.out" 2>&1
+DUP_TS_STATUS=$?
+set -e
+if [ "$DUP_TS_STATUS" -eq 0 ]; then
+  echo "expected duplicate created_utc= to be rejected" >&2
+  cat "$TMPDIR/dup-ts.out" >&2
+  exit 1
+fi
+grep -q "created_utc= lines (expected exactly 1)" "$TMPDIR/dup-ts.out"
+
+# (f) Future-dated bundle must be rejected (B8 clock-skew/tamper).
+FUT="$TMPDIR/future"
+mkdir -p "$FUT"
+tar -xzf "$BUNDLE" -C "$FUT"
+FUT_ROOT="$(find "$FUT" -maxdepth 1 -type d -name 'lucairn-customer-bundle-acme-*' -print -quit)"
+test -n "$FUT_ROOT"
+FUTURE_TS="$(python3 - <<'PY'
+import datetime
+now = datetime.datetime.now(datetime.timezone.utc)
+print((now + datetime.timedelta(days=30)).strftime("%Y%m%dT%H%M%SZ"))
+PY
+)"
+python3 - "$FUT_ROOT/bundle-manifest.txt" "$FUTURE_TS" <<'PY'
+import sys, pathlib
+path = pathlib.Path(sys.argv[1])
+new_ts = sys.argv[2]
+lines = path.read_text().splitlines()
+out = []
+for line in lines:
+    if line.startswith("created_utc="):
+        out.append(f"created_utc={new_ts}")
+    else:
+        out.append(line)
+path.write_text("\n".join(out) + "\n")
+PY
+refresh_sums "$FUT_ROOT"
+
+set +e
+"$LUCAIRN" bundle verify --bundle "$FUT_ROOT" --max-age-days 30 > "$TMPDIR/future.out" 2>&1
+FUT_STATUS=$?
+set -e
+if [ "$FUT_STATUS" -eq 0 ]; then
+  echo "expected future-dated bundle to be rejected" >&2
+  cat "$TMPDIR/future.out" >&2
+  exit 1
+fi
+grep -q "in the future" "$TMPDIR/future.out"
+
+# (g) Leading/trailing whitespace on created_utc= still parses cleanly (B5).
+WS="$TMPDIR/whitespace"
+mkdir -p "$WS"
+tar -xzf "$BUNDLE" -C "$WS"
+WS_ROOT="$(find "$WS" -maxdepth 1 -type d -name 'lucairn-customer-bundle-acme-*' -print -quit)"
+test -n "$WS_ROOT"
+python3 - "$WS_ROOT/bundle-manifest.txt" <<'PY'
+import sys, pathlib
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text().splitlines()
+out = []
+for line in lines:
+    if line.startswith("created_utc="):
+        ts = line.split("=", 1)[1]
+        out.append(f"created_utc=  {ts}  ")
+    else:
+        out.append(line)
+path.write_text("\n".join(out) + "\n")
+PY
+refresh_sums "$WS_ROOT"
+
+"$LUCAIRN" bundle verify --bundle "$WS_ROOT" --max-age-days 365 > "$TMPDIR/ws.out"
+grep -q "bundle verify: ok" "$TMPDIR/ws.out"
+
+# (h) Staging dir with customer-data/README.txt sentinel + demo-data/d.csv
+# must NOT trip the ambiguity check (B6). bundle prepare should succeed and
+# select demo-data as the data dir.
+STAGE="$TMPDIR/stage-h"
+mkdir -p "$STAGE/install" "$STAGE/models" "$STAGE/customer-data" "$STAGE/demo-data"
+echo "No customer demo data included." > "$STAGE/customer-data/README.txt"
+touch "$STAGE/customer-data/.DS_Store"
+printf 'a,b\n1,2\n' > "$STAGE/demo-data/d.csv"
+cp "$ROOT/docker-compose.customer.yml" "$STAGE/install/docker-compose.customer.yml"
+cp "$ROOT/docker-compose.self-hosted.yml" "$STAGE/install/docker-compose.self-hosted.yml"
+cp "$ENV_FILE" "$STAGE/customer.env"
+cat > "$STAGE/models/model-manifest.yaml" <<YAML
+model:
+  name: m
+  format: gguf
+  runtime: llama-cpp
+  checksum_policy: sha256-required
+  files:
+    - path: foo.gguf
+      sha256: $GOOD_SHA
+YAML
+cp "$MODEL_DIR/foo.gguf" "$STAGE/models/foo.gguf"
+
+OUT_H="$TMPDIR/bundles-h"
+"$LUCAIRN" bundle prepare \
+  --customer-slug acme \
+  --staging-dir "$STAGE" \
+  --output "$OUT_H" > "$TMPDIR/stage-h.out" 2>&1 \
+  || { echo "expected bundle prepare to ignore sentinel + dotfile and pick demo-data" >&2; cat "$TMPDIR/stage-h.out" >&2; exit 1; }
+grep -q "selected staging dir: $STAGE/demo-data" "$TMPDIR/stage-h.out"
+
 echo "bundle verify replay-guard tests: ok"
