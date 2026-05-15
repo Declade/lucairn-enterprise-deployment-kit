@@ -1,0 +1,73 @@
+# Medical safe terms — prevents false-positive PII detection on clinical content.
+# One term per line. Case-insensitive matching. Lines starting with # are comments.
+#
+# This is a starter list of German psychiatric and clinical vocabulary that
+# overlaps with Lucairn's German recognizers. Customers running other clinical
+# domains (oncology, radiology, etc.) should extend with their own vocabulary;
+# customers running non-DE workloads can replace this file entirely.
+
+# Psychiatric diagnoses (ICD-10 text descriptions)
+Panikstörung
+depressive Episode
+Angststörung
+Schizophrenie
+Zwangsstörung
+Persönlichkeitsstörung
+Anpassungsstörung
+Schlafstörung
+Essstörung
+Suchterkrankung
+
+# Common psychiatric medications (SSRIs, SNRIs, atypical antipsychotics, anxiolytics)
+Sertralin
+Citalopram
+Escitalopram
+Fluoxetin
+Paroxetin
+Mirtazapin
+Venlafaxin
+Duloxetin
+Quetiapin
+Olanzapin
+Risperidon
+Aripiprazol
+Lorazepam
+Diazepam
+Clonazepam
+Pregabalin
+Lithium
+Valproat
+Carbamazepin
+Lamotrigin
+Bupropion
+
+# Common general medications
+Ibuprofen
+Paracetamol
+Metformin
+Ramipril
+Amlodipin
+Simvastatin
+Omeprazol
+Pantoprazol
+Bisoprolol
+Metoprolol
+Levothyroxin
+
+# Clinical terms that trigger false positives
+Diagnose
+Befund
+Medikation
+Dosierung
+Therapie
+Behandlung
+Anamnese
+Aufnahme
+Entlassung
+Visite
+Konsil
+stationär
+ambulant
+Blutdruck
+Laborwerte
+Blutbild

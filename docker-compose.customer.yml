@@ -382,7 +382,8 @@ services:
       # TOB-S009 mTLS cert dir (read-only). Default empty-string mount
       # is intentionally an explicit `${VEIL_WITNESS_MTLS_HOST_DIR:-}`
       # — operators set this to /opt/dsa/certs/witness-mtls in
-      # config.env once the bootstrap script has run on the box.
+      # customer.env after their TLS bootstrap (e.g. `bin/lucairn-init`
+      # + their own cert authority) has run on the box.
       - ${VEIL_WITNESS_MTLS_HOST_DIR:-./.certs/witness-mtls}:/etc/witness-mtls:ro
     networks:
       - dsa-witness
@@ -443,10 +444,10 @@ services:
       # AES-256 key (base64 32 bytes) for keystore-at-rest encryption (#17).
       # REQUIRED — gateway fails-closed at startup if missing, malformed,
       # or wrong length. Generate with: openssl rand -base64 32
-      # The customer bootstrap (scripts/generate-customer-bootstrap.sh)
-      # auto-generates this on first run; re-runs are idempotent so the
-      # encrypted keystore stays decryptable across reruns.
-      GATEWAY_KEYSTORE_KEY: "${GATEWAY_KEYSTORE_KEY:?required — run scripts/generate-customer-bootstrap.sh or set in config.env}"
+      # `bin/lucairn-init` (introduced in commit aee5262) auto-generates
+      # this on first run alongside the rest of the secrets; re-runs are
+      # idempotent so the encrypted keystore stays decryptable across reruns.
+      GATEWAY_KEYSTORE_KEY: "${GATEWAY_KEYSTORE_KEY:?required — run bin/lucairn-init --dev (or --production) or set in customer.env}"
       VEIL_ENABLED: "${VEIL_ENABLED:-true}"
       VEIL_WITNESS_CERT_ADDR: "veil-witness:50058"
       VEIL_WITNESS_ADDR: "veil-witness:50057"
