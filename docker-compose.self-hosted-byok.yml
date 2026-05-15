@@ -1,0 +1,84 @@
+# Lucairn self-hosted Sandbox B with managed-LLM egress (BYOK).
+#
+# Use with the base customer compose AND the self-hosted overlay:
+#   docker compose \
+#     -f docker-compose.customer.yml \
+#     -f docker-compose.self-hosted.yml \
+#     -f docker-compose.self-hosted-byok.yml \
+#     --env-file customer.env \
+#     up -d
+#
+# Purpose
+# -------
+# The base self-hosted overlay (`docker-compose.self-hosted.yml`) attaches
+# Sandbox B to five `internal: true` bridges so it has zero outbound network
+# reach. That topology is correct when the operator runs a fully local model
+# runtime (llama.cpp, vLLM, Ollama, etc.).
+#
+# When the customer wants Sandbox B to call a managed cloud LLM (Anthropic,
+# OpenAI, Mistral, Gemini, Azure OpenAI, AWS Bedrock, custom HTTPS endpoint),
+# Sandbox B needs *opt-in* egress to those endpoints. This overlay adds a
+# non-internal bridge network `dsa-egress` and joins Sandbox B to it in
+# addition to its existing internal-only networks. Everything else in the
+# stack (Sandbox A, ID Bridge, Sanitizer, Audit, Witness, Postgres) remains
+# on its internal-only networks — only Sandbox B gains outbound reach.
+#
+# Enforcement responsibility (read this before deploying)
+# -------------------------------------------------------
+# This overlay opens the *topology*. It does NOT enforce which FQDNs the
+# Sandbox B container is allowed to reach. The Docker bridge driver does
+# not support FQDN-level egress filtering. Enforcing the LLM-endpoint
+# allowlist is the operator's responsibility and belongs in the operator's
+# existing network policy layer:
+#
+#   • Host firewall (iptables/nftables) + a DNS allowlist (dnsmasq / Pi-hole
+#     / Unbound forwarding only the declared FQDNs).
+#   • Cilium NetworkPolicy with FQDN selector (`toFQDNs:`) — the
+#     production-grade option for Kubernetes/k3s deployments.
+#   • Transparent forward proxy (squid, mitmproxy in transparent mode,
+#     tinyproxy) with an FQDN allowlist; route Sandbox B's egress through
+#     the proxy via `HTTPS_PROXY` env.
+#
+# The compliance team should review the operator's chosen enforcement layer
+# and the egress allowlist before this overlay is loaded in production.
+# Declaring the intended allowlist in `LUCAIRN_LLM_EGRESS_ALLOWLIST` keeps
+# the operator-documented intent close to the running compose state, and
+# `bin/lucairn doctor` will surface that the overlay is in effect.
+
+networks:
+  # New non-internal bridge. Only Sandbox B joins this network. Sandbox A,
+  # ID Bridge, Sanitizer, Audit, and Witness remain on their internal-only
+  # bridges — they cannot reach `dsa-egress` and therefore cannot leak
+  # identity data outbound even if compromised.
+  dsa-egress:
+    driver: bridge
+    # NOTE: deliberately NOT `internal: true`. The whole point of this
+    # overlay is to give Sandbox B outbound reach to managed-LLM endpoints.
+
+services:
+  sandbox-b:
+    networks:
+      # Existing internal-only networks from self-hosted.yml stay attached
+      # (compose merges this list with the one in self-hosted.yml).
+      - dsa-egress
+    environment:
+      # Operator-declared FQDN allowlist (comma-separated, no scheme, no
+      # path). Documentation-only inside the kit — the operator's network
+      # policy layer is what actually enforces this. Setting this env var
+      # signals intent and lets `lucairn doctor` verify the overlay is
+      # wired correctly. Leave empty to refuse to start in BYOK mode.
+      LUCAIRN_LLM_EGRESS_ALLOWLIST: "${LUCAIRN_LLM_EGRESS_ALLOWLIST:?LUCAIRN_LLM_EGRESS_ALLOWLIST is required when loading docker-compose.self-hosted-byok.yml — list the FQDNs Sandbox B is permitted to reach, e.g. api.anthropic.com,api.openai.com}"
+
+      # Provider credentials. Sandbox B reads these via config.py and only
+      # registers the corresponding adapter when a key is present. Unset
+      # keys are fine — only the adapters for declared providers are wired.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      MISTRAL_API_KEY: "${MISTRAL_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+
+      # Optional custom base URL override for OpenAI-compatible endpoints
+      # (Azure OpenAI, AWS Bedrock proxy, internal LLM gateway, etc.). The
+      # OpenAI adapter honors OPENAI_BASE_URL; default empty keeps the SDK
+      # dialing api.openai.com.
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-https://api.openai.com/v1}"
