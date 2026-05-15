@@ -40,20 +40,43 @@ docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 
 Self-hosted-inference fast path:
 
+**Self-hosted with BYOK to a managed cloud LLM** (recommended for first install — no local GPU required, customer keeps their existing Anthropic/OpenAI/etc. account):
+
 ```bash
-cp customer.env.example customer.env
+bin/lucairn-init --production --license "$DSA_LICENSE_KEY" --license-signing-key "$DSA_LICENSE_SIGNING_KEY" --byok --output customer.env
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
 docker login ghcr.io
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 docker compose \
   -f docker-compose.customer.yml \
   -f docker-compose.self-hosted.yml \
+  -f docker-compose.self-hosted-byok.yml \
   --env-file customer.env \
-  --profile "$MODEL_RUNTIME_PROFILE" \
   up -d
 ```
 
-Lucairn must provide image registry access and onboarding values before a customer can install from the kit.
+**Dev / evaluation install** (no license required; runs in unregistered mode):
+
+```bash
+bin/lucairn-init --dev --output customer.env
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
+docker login ghcr.io
+docker compose \
+  -f docker-compose.customer.yml \
+  -f docker-compose.self-hosted.yml \
+  --env-file customer.env \
+  up -d
+```
+
+**Fully self-hosted inference** (local GPU, customer supplies model files): add `-f docker-compose.self-hosted.yml --profile "$MODEL_RUNTIME_PROFILE"` to the `docker compose up` command, where `MODEL_RUNTIME_PROFILE` is one of `llama-cpp` / `vllm` / `tgi` / `ollama` / `onnxruntime` / `triton` / `custom-runtime`. See `docker-compose.self-hosted.yml` for required env vars.
+
+After the stack is healthy, mint your first customer API key:
+
+```bash
+./bin/lucairn-mint-customer --name "Acme GmbH" --email "ops@acme.de" --tier enterprise
+```
+
+Lucairn images on GHCR are public; `docker login ghcr.io` is needed only for image registries that authenticate. License keys are optional (kit runs in unregistered/dev mode without them).
 Before a real customer handoff, run the gates in `docs/CUSTOMER_HANDOFF_GATES.md`.
 
 ## Per-Customer Bundle

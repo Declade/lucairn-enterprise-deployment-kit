@@ -454,7 +454,6 @@ VEIL_BRIDGE_PUBLIC_KEY=$(get_val VEIL_BRIDGE_PUBLIC_KEY)
 VEIL_SANITIZER_PUBLIC_KEY=$(get_val VEIL_SANITIZER_PUBLIC_KEY)
 VEIL_AUDIT_PUBLIC_KEY=$(get_val VEIL_AUDIT_PUBLIC_KEY)
 VEIL_GATEWAY_PUBLIC_KEY=$(get_val VEIL_GATEWAY_PUBLIC_KEY)
-VEIL_AI_SIGNING_KEY=
 
 VEIL_ENABLED=true
 VEIL_WITNESS_KEY_ID=witness_v1
@@ -462,7 +461,6 @@ VEIL_ISSUER=Lucairn Veil Witness
 VEIL_MANIFEST_SIGNING_KEY_ID=gateway_manifest_v1
 VEIL_WITNESS_SIGNED_MANIFEST_PATH=/certs/witness-signed-manifest.json
 WELLKNOWN_CACHE_TTL=300
-WELLKNOWN_HISTORICAL_KEY_TTL=7776000
 
 # mTLS material (optional — leave empty for self-hosted local-mode)
 SANDBOX_B_CLIENT_CERT=
@@ -490,14 +488,7 @@ VEIL_APP_PASSWORD=$(get_val VEIL_APP_PASSWORD)
 SANDBOX_A_EPHEMERAL=true
 QI_ENGINE_ENABLED=true
 SANITIZER_CONFIG_FILE=./config/default-sanitizer.yaml
-STREAMING_ENABLED=true
-TRACEVAULT_RUNTIME_ENABLED=false
-TRACEVAULT_API_URL=
-TRACEVAULT_AGENT_ID=
-TRACEVAULT_SIGNER_TYPE=
-TRACEVAULT_SIGNER_KEY_ID=
-TRACEVAULT_SIGNER_PRIVATE_KEY=
-TRACEVAULT_SIGNER_PUBLIC_KEY=
+SANITIZER_SAFE_TERMS_FILE=./config/medical-terms.txt
 
 # Certification profile (opt-in; only used with --profile certification).
 # Non-empty placeholders so docker compose's :? interpolation succeeds even
@@ -509,9 +500,12 @@ PORTAL_API_KEY=cert-profile-placeholder-not-active
 PROBER_URL=
 
 # Self-hosted model runtime
-MODEL_RUNTIME_PROFILE=llama-cpp
+# Default: empty profile so the Fast Path `docker compose --profile
+# "$MODEL_RUNTIME_PROFILE"` doesn't try to pull a model-runtime image.
+# Set to llama-cpp / vllm / tgi / ollama / onnxruntime / triton / custom-runtime
+# only when you intend to spin up a local model runtime alongside Sandbox B.
+MODEL_RUNTIME_PROFILE=
 MODEL_NAME=customer-model
-MODEL_FORMAT=gguf
 MODEL_FILE=customer-model-q4.gguf
 MODEL_PATH=.
 MODEL_CONTEXT_WINDOW=8192

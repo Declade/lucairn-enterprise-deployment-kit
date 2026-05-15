@@ -10,9 +10,9 @@
 # are sent to the remote Sandbox B.
 #
 # Usage:
-#   cp config.env.template config.env
-#   # Edit config.env with your settings
-#   docker compose -f docker-compose.customer.yml --env-file config.env up -d
+#   cp customer.env.example customer.env   # or run bin/lucairn-init --production
+#   # Edit customer.env (fill REPLACE_ME_* + REPLACE_WITH_* values)
+#   docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 #
 # Network Isolation Design:
 #   Same split-knowledge invariant as the full stack — Sandbox A (dsa-identity)
@@ -21,7 +21,8 @@
 
 # Customer split-deployment auth anchor.
 # Customers deploy in production mode; DSA_SERVICE_TOKEN must come from
-# config.env (copy config.env.template → config.env and fill in).
+# customer.env (copy customer.env.example → customer.env and fill in,
+# or run bin/lucairn-init).
 # The :? suffix makes docker compose refuse to start if the customer
 # forgets to set DSA_SERVICE_TOKEN, matching the fail-closed invariant.
 x-dsa-prod-auth: &dsa-prod-auth

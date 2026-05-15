@@ -5,7 +5,8 @@
 # Unclassified fields default to freetext (fail-closed).
 
 # Field routing — customers edit this section to match their data sources.
-# See docs/starter-templates/ for vertical-specific examples.
+# See ./starter-templates/ for vertical-specific examples (finance, government,
+# healthcare, itsm).
 gateway:
   field_routing:
     default:
@@ -31,8 +32,7 @@ sanitizer:
     # Customer-scoped PERSON name supplement. Empty by default — operators add
     # names here that are deliberately excluded from the global german-names.txt
     # list (e.g. surnames that collide with common German words). Word-boundary
-    # matched, so compound words like "Vogelgrippe" are NOT matched. See
-    # docs/configuration.md for guidance.
+    # matched, so compound words like "Vogelgrippe" are NOT matched.
     extra_person_names: []
   presidio:
     language_detection: auto
