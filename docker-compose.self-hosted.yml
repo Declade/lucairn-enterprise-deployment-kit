@@ -87,7 +87,7 @@ services:
       veil-witness:
         condition: service_healthy
     environment:
-      DSA_ENV: "production"
+      DSA_ENV: "${DSA_ENV:-production}"
       DSA_SERVICE_TOKEN: "${DSA_SERVICE_TOKEN:?DSA_SERVICE_TOKEN is required}"
       SANDBOX_B_GRPC_ADDR: "0.0.0.0:50054"
       SANDBOX_B_HEALTH_ADDR: "0.0.0.0:8084"
