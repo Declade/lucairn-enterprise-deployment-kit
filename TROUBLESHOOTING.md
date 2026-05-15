@@ -17,6 +17,35 @@ Common causes:
 - Host port 8080 or 8085 is already in use.
 - Private GHCR images are not pullable. Run `docker login ghcr.io` or use the customer registry mirror in `LUCAIRN_IMAGE_REGISTRY`.
 
+## Docker / OrbStack: "All Predefined Address Pools Have Been Fully Subnetted"
+
+If `docker compose up -d` fails with `Error response from daemon: all predefined address pools have been fully subnetted` (or hangs creating networks), Docker has exhausted its bridge-network subnet pool. This is most common on macOS / OrbStack where many transient compose stacks accumulate during development, but it can also bite Linux hosts running Docker Engine with the default address pool (defaults to 30 networks).
+
+Diagnose:
+
+```bash
+docker network ls | wc -l   # >> 20 strongly suggests pool pressure
+docker network ls | grep -E '_default$'   # list compose-project leftovers
+```
+
+Recover (prunes networks with no active containers; safe):
+
+```bash
+docker network prune -f
+```
+
+If the prune doesn't free enough subnets (rare — only on Linux with very small `default-address-pools` config), expand the pool in `/etc/docker/daemon.json`:
+
+```json
+{
+  "default-address-pools": [
+    {"base": "172.17.0.0/12", "size": 24}
+  ]
+}
+```
+
+Restart the daemon (`sudo systemctl restart docker` on Linux; OrbStack handles this automatically on relaunch). Re-run `docker compose up -d`.
+
 ## Gateway Unhealthy
 
 Check:
