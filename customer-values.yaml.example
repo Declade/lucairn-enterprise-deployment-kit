@@ -5,7 +5,7 @@
 global:
   dsaEnv: production
   imageRegistry: ghcr.io/declade
-  imageTag: "1.0.0"
+  imageTag: "0.4.0"
   imagePullSecrets:
     - name: lucairn-registry
   postgresqlSslmode: require

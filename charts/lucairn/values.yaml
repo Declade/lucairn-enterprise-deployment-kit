@@ -9,7 +9,7 @@ global:
   vertical: finance
   imageRegistry: "ghcr.io/declade"
   imagePullSecrets: []
-  imageTag: "1.0.0"
+  imageTag: "0.4.0"
   secrets:
     backend: k8s-native
     vault:

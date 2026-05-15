@@ -275,10 +275,10 @@ PY
 # GATEWAY / MANIFEST stay as standalone signing-only keys (no derived-pubkey
 # slot in customer.env) — they sign things the witness reads via different
 # verification paths and don't need a public-key env var on the customer side.
-declare -a VEIL_PAIRED_SLOTS=(BRIDGE WITNESS AUDIT SANITIZER SANDBOX_B)
+declare -a VEIL_PAIRED_SLOTS=(BRIDGE WITNESS AUDIT SANITIZER SANDBOX_B GATEWAY)
 
 # Standalone hex32 signing slots (no paired public key on customer side).
-declare -a VEIL_SIGNING_ONLY=(GATEWAY MANIFEST)
+declare -a VEIL_SIGNING_ONLY=(MANIFEST)
 
 # Hex32 service secrets (not Veil signing keys, just opaque shared secrets).
 declare -a HEX32_SLOTS=(
@@ -287,6 +287,7 @@ declare -a HEX32_SLOTS=(
   SANDBOX_A_ENCRYPTION_KEY
   BRIDGE_MASTER_KEY
   DSA_ADMIN_KEY
+  CANARY_HMAC_KEY
 )
 
 # Postgres slots (4 superuser + 2 app-role).
@@ -435,6 +436,7 @@ DSA_BRIDGE_ENCRYPTION_KEY=$(get_val DSA_BRIDGE_ENCRYPTION_KEY)
 SANDBOX_A_ENCRYPTION_KEY=$(get_val SANDBOX_A_ENCRYPTION_KEY)
 BRIDGE_MASTER_KEY=$(get_val BRIDGE_MASTER_KEY)
 DSA_ADMIN_KEY=$(get_val DSA_ADMIN_KEY)
+CANARY_HMAC_KEY=$(get_val CANARY_HMAC_KEY)
 GATEWAY_KEYSTORE_KEY=$(get_val GATEWAY_KEYSTORE_KEY)
 
 # Veil signing keys (Ed25519 seed; hex32). Paired with VEIL_*_PUBLIC_KEY below.
@@ -451,14 +453,14 @@ VEIL_WITNESS_PUBLIC_KEY=$(get_val VEIL_WITNESS_PUBLIC_KEY)
 VEIL_BRIDGE_PUBLIC_KEY=$(get_val VEIL_BRIDGE_PUBLIC_KEY)
 VEIL_SANITIZER_PUBLIC_KEY=$(get_val VEIL_SANITIZER_PUBLIC_KEY)
 VEIL_AUDIT_PUBLIC_KEY=$(get_val VEIL_AUDIT_PUBLIC_KEY)
-VEIL_GATEWAY_PUBLIC_KEY=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+VEIL_GATEWAY_PUBLIC_KEY=$(get_val VEIL_GATEWAY_PUBLIC_KEY)
 VEIL_AI_SIGNING_KEY=
 
 VEIL_ENABLED=true
 VEIL_WITNESS_KEY_ID=witness_v1
 VEIL_ISSUER=Lucairn Veil Witness
 VEIL_MANIFEST_SIGNING_KEY_ID=gateway_manifest_v1
-VEIL_WITNESS_SIGNED_MANIFEST_PATH=/opt/lucairn/witness-signed-manifest.json
+VEIL_WITNESS_SIGNED_MANIFEST_PATH=/certs/witness-signed-manifest.json
 WELLKNOWN_CACHE_TTL=300
 WELLKNOWN_HISTORICAL_KEY_TTL=7776000
 
