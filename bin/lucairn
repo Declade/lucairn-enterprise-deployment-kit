@@ -148,6 +148,27 @@ require_env_values() {
   [ "$missing" -eq 0 ]
 }
 
+validate_no_placeholder() {
+  # Reject values still left at a placeholder form. Catches the two
+  # placeholder conventions shipped in customer.env.example:
+  #   - REPLACE_ME_*  — hex/base64 slots padded to the correct length
+  #                     (so the operator sees the slot's expected width,
+  #                      but the prefix flags it as not-yet-customised).
+  #   - REPLACE_WITH_*— named-value slots (license keys, postgres
+  #                     passwords). The kit ships these unfilled and
+  #                     the doctor refuses to proceed until they're
+  #                     replaced. Catches copy-and-forget regressions.
+  local env_file="$1" key="$2" val
+  val="$(env_value "$env_file" "$key")"
+  [ -z "$val" ] && return 0
+  case "$val" in
+    REPLACE_ME_*|REPLACE_WITH_*)
+      echo "secret format: $key still set to a placeholder value (starts with REPLACE_); replace it before doctor"
+      return 1
+      ;;
+  esac
+}
+
 validate_hex64() {
   local env_file="$1" key="$2" val
   val="$(env_value "$env_file" "$key")"
@@ -1035,7 +1056,35 @@ doctor() {
     return 1
   fi
 
-  local format_failed=0 key
+  # Reject any required secret still set to a placeholder. Runs before the
+  # hex/base64 format checks so the operator sees the actionable
+  # "still set to a placeholder" error instead of the misleading
+  # "must be 64 hex chars" error.
+  local placeholder_failed=0
+  for key in \
+    DSA_LICENSE_KEY DSA_LICENSE_SIGNING_KEY \
+    SANDBOX_B_API_KEY \
+    DSA_SERVICE_TOKEN DSA_BRIDGE_ENCRYPTION_KEY SANDBOX_A_ENCRYPTION_KEY \
+    BRIDGE_MASTER_KEY DSA_ADMIN_KEY GATEWAY_KEYSTORE_KEY \
+    VEIL_AUDIT_SIGNING_KEY VEIL_BRIDGE_SIGNING_KEY VEIL_SANITIZER_SIGNING_KEY \
+    VEIL_WITNESS_SIGNING_KEY VEIL_GATEWAY_SIGNING_KEY VEIL_MANIFEST_SIGNING_KEY \
+    VEIL_WITNESS_PUBLIC_KEY VEIL_BRIDGE_PUBLIC_KEY VEIL_SANITIZER_PUBLIC_KEY \
+    VEIL_AUDIT_PUBLIC_KEY VEIL_GATEWAY_PUBLIC_KEY VEIL_SANDBOX_B_PUBLIC_KEY \
+    VEIL_SANDBOX_B_SIGNING_KEY \
+    POSTGRES_AUDIT_PASSWORD POSTGRES_BRIDGE_PASSWORD \
+    POSTGRES_SANDBOX_A_PASSWORD POSTGRES_VEIL_PASSWORD \
+    AUDIT_APP_PASSWORD VEIL_APP_PASSWORD
+  do
+    validate_no_placeholder "$env_file" "$key" || placeholder_failed=1
+  done
+  # Certification-profile placeholders (BUILD_AUTH_TOKEN, CUSTOMER_KEY_ID,
+  # PORTAL_API_KEY) are NOT checked here because the certification profile
+  # is opt-in (`--profile certification`); leaving them as REPLACE_WITH_*
+  # is the documented default for non-certification installs.
+  [ "$placeholder_failed" -eq 0 ] || return 1
+  echo "placeholder values: ok"
+
+  local format_failed=0
   for key in \
     DSA_SERVICE_TOKEN DSA_BRIDGE_ENCRYPTION_KEY SANDBOX_A_ENCRYPTION_KEY \
     BRIDGE_MASTER_KEY DSA_ADMIN_KEY VEIL_AUDIT_SIGNING_KEY \
