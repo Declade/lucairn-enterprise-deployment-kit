@@ -50,9 +50,54 @@ If the customer uses an internal registry mirror, set `LUCAIRN_IMAGE_REGISTRY` i
 Generate random values:
 
 ```bash
-openssl rand -hex 32
-openssl rand -base64 32
+openssl rand -hex 32       # 32-byte random as 64 hex chars (signing keys, tokens)
+openssl rand -base64 32    # 32-byte random as base64           (GATEWAY_KEYSTORE_KEY)
 ```
+
+**WARNING — DO NOT use `openssl rand -hex 32` for `VEIL_*_PUBLIC_KEY` slots.**
+The public key MUST be derived from the corresponding private key (the
+`VEIL_*_SIGNING_KEY` of the same service). Filling the public-key slots
+with independently-generated random hex yields a key that does NOT match
+the signing key, and every Veil claim the service signs will be silently
+rejected by the witness verifier — the stack will look healthy but no
+certificates will validate.
+
+### 4a. Generate Ed25519 signing keypairs
+
+For each of the following five service pairs, generate the signing-key
+seed with `openssl rand -hex 32`, then derive the matching public key
+using the bundled helper at `scripts/derive-veil-pubkey.sh`:
+
+| Signing-key slot              | Public-key slot              |
+|-------------------------------|------------------------------|
+| `VEIL_AUDIT_SIGNING_KEY`      | `VEIL_AUDIT_PUBLIC_KEY`      |
+| `VEIL_BRIDGE_SIGNING_KEY`     | `VEIL_BRIDGE_PUBLIC_KEY`     |
+| `VEIL_SANITIZER_SIGNING_KEY`  | `VEIL_SANITIZER_PUBLIC_KEY`  |
+| `VEIL_WITNESS_SIGNING_KEY`    | `VEIL_WITNESS_PUBLIC_KEY`    |
+| `VEIL_GATEWAY_SIGNING_KEY`    | `VEIL_GATEWAY_PUBLIC_KEY`    |
+
+Bash one-liner — fills both slots for one service in two lines of
+output you can paste into `customer.env`:
+
+```bash
+SEED=$(openssl rand -hex 32)
+echo "VEIL_AUDIT_SIGNING_KEY=$SEED"
+echo "VEIL_AUDIT_PUBLIC_KEY=$(scripts/derive-veil-pubkey.sh "$SEED")"
+```
+
+Repeat for `BRIDGE`, `SANITIZER`, `WITNESS`, and `GATEWAY`.
+
+`VEIL_MANIFEST_SIGNING_KEY` (no matching `_PUBLIC_KEY` slot) is the
+manifest-only signing key and only needs the `openssl rand -hex 32`
+step.
+
+`VEIL_SANDBOX_B_PUBLIC_KEY` is **Lucairn-provided** (not customer-derived) —
+the matching signing key lives on the Lucairn-hosted Sandbox B fleet.
+Use whatever value Lucairn issues during onboarding; do not regenerate.
+
+The helper requires Python 3 with the `cryptography` package (preferred)
+or `pynacl`. Both are pure-Python wheels; install with
+`pip install cryptography` if either is missing.
 
 5. Run offline validation before network checks.
 
