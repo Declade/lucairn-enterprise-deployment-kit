@@ -10,28 +10,101 @@ data:
   config.yaml: |
     sanitizer:
       freetext_fields: []
+      # W5+ Phase 1 (2026-05-09) toggles — credential-class + adversarial-input
+      # hardening. Both default ON. Yaml loader ignores any unrecognised key,
+      # so legacy `documented_placeholder_suppression_enabled` (removed in
+      # TOB-160-001 to close a real-credential-leak path) is silently ignored.
+      detect_secrets_enabled: true
+      adversarial_normalization_enabled: true
       known_entity_matching:
         enabled: true
         strategies: [exact, cologne_phonetics, levenshtein]
         levenshtein_max_distance: 2
         location_context_window: 50
+        # Customer-scoped PERSON name supplement. Override per-environment via
+        # additional ConfigMap if surnames in the global german-names.txt
+        # collide with common German words in your corpus.
+        extra_person_names: []
       presidio:
         language_detection: auto
         default_language: de
         supported_languages: [de, en]
-        confidence_threshold: {{ .Values.sanitizer.confidenceThreshold | default 0.25 }}
+        confidence_threshold: {{ .Values.sanitizer.confidenceThreshold | default 0.35 }}
         custom_recognizers:
           - sozialversicherungsnummer
+          - us_ssn
           - steuer_id
           - personalausweisnummer
-        safe_patterns: {{ .Values.sanitizer.safePatterns | default (list) | toJson }}
+          - german_zip_code
+          - credit_card_extended
+          - phone_extended
+          - german_names
+          - german_street
+          - date_of_birth
+          - account_number
+          - fallnummer
+          - vin
+          - license_plate
+          - swift_bic
+          - passport_number
+          - drivers_license
+          - street_address
+          - password
+          - krankenversichertennummer
+          # W5+ Phase 1 (2026-05-09) — high-value SaaS secret prefixes + partial
+          # credit-card-suffix idiom. Yelp detect-secrets is wired separately
+          # in app.py via sanitizer.detect_secrets_enabled.
+          - openai_api_key
+          - anthropic_api_key
+          - stripe_webhook_secret
+          - jwt_token
+          - github_pat
+          - credit_card_suffix_idiom
+          # Phase 3 (2026-05-09) — domain coverage expansion. German court
+          # Aktenzeichen recognizer closes the gov/legal recall gap (was
+          # 67.5%); 5 international PII recognizers (ES DNI/NIE, FR INSEE,
+          # IT Codice Fiscale, BE RNN, NL BSN) close the international recall
+          # gap (was 66.7%); generic order-number recognizer closes the
+          # customer-service recall gap (was 74%).
+          - german_aktenzeichen
+          - spanish_dni
+          - french_insee
+          - italian_codice_fiscale
+          - belgian_rnn
+          - dutch_bsn
+          - order_number
+        # safe_terms_file: operators wanting safe-terms suppression must
+        # supply their own ConfigMap (e.g. medical-terms.txt) and mount it at
+        # /config/medical-terms.txt, then uncomment the line below. The
+        # default kit ConfigMap intentionally omits this to avoid a
+        # missing-file warning on a clean install.
+        # safe_terms_file: /config/medical-terms.txt
+        safe_patterns:
+          # GPS / decimal coordinates: digits with 4+ decimal places.
+          - '-?\d{1,3}\.\d{4,}'
+          {{- range .Values.sanitizer.safePatterns | default (list) }}
+          - {{ . | quote }}
+          {{- end }}
       llm_audit:
         enabled: {{ .Values.sanitizer.llmAuditEnabled | default false }}
       llm_scan:
         enabled: {{ .Values.sanitizer.llmScanEnabled | default false }}
         ollama_url: "http://ollama-identity:11434"
-        model: "pii-scanner-v2"
+        model: "qwen2.5:7b"
         timeout_seconds: {{ .Values.sanitizer.llmScanTimeout | default 30 }}
         fallback_on_error: "continue"
-        mode: {{ .Values.sanitizer.llmScanMode | default "ensemble" | quote }}
-        restore_threshold: {{ .Values.sanitizer.llmScanRestoreThreshold | default 0.9 }}
+        # Default sequential (TOB-003 fix, 2026-05-09): "ensemble" silently
+        # changes cert payload shape across ALL customers regardless of the
+        # per-request enable_l3_reversals flag. Pro/Enterprise overlays opt in
+        # explicitly via .Values.sanitizer.llmScanMode = "ensemble".
+        mode: {{ .Values.sanitizer.llmScanMode | default "sequential" | quote }}
+        # Calibrated against the 12-corpus domain bench to hit news-journalism
+        # FP < 9% without leaking patient names.
+        restore_threshold: {{ .Values.sanitizer.llmScanRestoreThreshold | default 0.85 }}
+
+    qi_engine:
+      # Controlled at runtime via QI_ENGINE_ENABLED, QI_ENGINE_THRESHOLD,
+      # QI_ENGINE_ACTION env vars. Defaults shown here for reference:
+      enabled: false
+      threshold: 0.25
+      action: generalize

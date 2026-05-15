@@ -71,7 +71,9 @@ sanitizer:
     # so the side-car stays in lockstep with the rest of the kit.
     tag: ""
     pullPolicy: IfNotPresent
-  confidenceThreshold: 0.25
+  # Parity with Compose default-sanitizer.yaml (calibrated against the
+  # 12-corpus domain bench). Override per environment if needed.
+  confidenceThreshold: 0.35
   safePatterns: []
   llmAuditEnabled: false
   qiEngineEnabled: "true"
@@ -79,8 +81,10 @@ sanitizer:
   qiEngineAction: "generalize"
   llmScanEnabled: false
   llmScanTimeout: 30
-  llmScanMode: "ensemble"
-  llmScanRestoreThreshold: 0.9
+  # TOB-003 fix (2026-05-09): default "sequential" — Pro/Enterprise overlays
+  # MUST explicitly set "ensemble" to opt into L3 reversal path.
+  llmScanMode: "sequential"
+  llmScanRestoreThreshold: 0.85
 
 secrets:
   backend: k8s-native
@@ -92,6 +96,11 @@ secrets:
     veilSigningKey: ""
     dsaServiceToken: ""  # PRODUCTION: set via existingSecret or --set; dev: inline value
     modelAuthSecret: ""  # set when sanitizer.llmScanEnabled=true
+    # PRODUCTION: must be set to a ≥32-char unique random secret. Sanitizer
+    # canary-token detector uses it to sign canary tokens; without it, leaked
+    # canary tokens cannot be authenticated as ours and silently disable the
+    # detector (mirrors Compose-path CANARY_HMAC_KEY :? enforcement).
+    canaryHmacKey: ""
   vault:
     path: "dsa/data/sandbox-a"
   aws:

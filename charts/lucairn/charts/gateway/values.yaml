@@ -81,8 +81,7 @@ streaming:
 
 # PR-C1 fix-up round 1 (FIX-6): gateway-side sanitize cache. Default OFF —
 # operators flip enabled=true per environment after the cert-chain integration
-# follow-up PR ships (see docs/architecture/sanitize-cache.md). Override
-# maxEntries / ttlSeconds per-environment if needed.
+# follow-up PR ships. Override maxEntries / ttlSeconds per-environment if needed.
 sanitizeCache:
   enabled: false
   maxEntries: 10000

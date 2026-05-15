@@ -3,4 +3,4 @@ name: demo
 description: DSA CIO Demo Webapp — interactive platform walkthrough
 type: application
 version: 0.1.0
-appVersion: "0.1.0"
+appVersion: "0.4.0"

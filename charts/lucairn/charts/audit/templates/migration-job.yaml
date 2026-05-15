@@ -19,9 +19,40 @@ spec:
         runAsUser: 65534
         runAsGroup: 65534
       initContainers:
-        - name: copy-migrations
+        - name: render-migrations
+          # Run from the audit image so the baked-in /migrations source tree
+          # is available. cp into the shared volume, then sed-substitute the
+          # historical literal 'audit_app_password' with the operator-supplied
+          # value. Mirrors scripts/render-migrations.sh in the Compose path.
           image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.image.repository }}:{{ .Values.image.tag | default .Values.global.imageTag | default .Chart.AppVersion }}"
-          command: ["cp", "-r", "/migrations", "/shared/migrations"]
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              if [ -z "${AUDIT_APP_PASSWORD:-}" ]; then
+                echo "render-migrations: AUDIT_APP_PASSWORD is empty — refusing to render" >&2
+                exit 2
+              fi
+              case "${AUDIT_APP_PASSWORD}" in
+                *\'*) echo "render-migrations: AUDIT_APP_PASSWORD contains a single quote — refusing (would break SQL string / open SQL injection)" >&2; exit 3 ;;
+              esac
+              case "${AUDIT_APP_PASSWORD}" in
+                *\\*) echo "render-migrations: AUDIT_APP_PASSWORD contains a backslash — refusing (would break SQL string-escape)" >&2; exit 3 ;;
+              esac
+              cp -r /migrations /shared/migrations
+              # `|` delimiter avoids the `/` collision; trailing-g unnecessary
+              # because the literal appears at most twice (one CREATE + one
+              # ALTER) and both should be substituted.
+              sed -i "s|'audit_app_password'|'${AUDIT_APP_PASSWORD}'|g" \
+                /shared/migrations/000003_least_privilege_role.up.sql
+              echo "render-migrations: audit rendered" >&2
+          env:
+            - name: AUDIT_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Chart.Name }}-credentials
+                  key: AUDIT_APP_PASSWORD
           volumeMounts:
             - name: migrations
               mountPath: /shared

@@ -3,4 +3,4 @@ name: sandbox-b
 description: DSA Sandbox B — AI inference with LLM adapters, feature store
 type: application
 version: 0.1.0
-appVersion: "0.1.0"
+appVersion: "0.4.0"

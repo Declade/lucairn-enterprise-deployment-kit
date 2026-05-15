@@ -132,7 +132,7 @@ spec:
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
         - name: sanitizer
-          image: "{{ .Values.sanitizer.image.repository }}:{{ .Values.sanitizer.image.tag }}"
+          image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.sanitizer.image.repository }}:{{ .Values.sanitizer.image.tag | default .Values.global.imageTag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.sanitizer.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -161,6 +161,11 @@ spec:
                 secretKeyRef:
                   name: {{ .Chart.Name }}-credentials
                   key: VEIL_SIGNING_KEY
+            - name: CANARY_HMAC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Chart.Name }}-credentials
+                  key: CANARY_HMAC_KEY
             - name: VEIL_WITNESS_ADDR
               valueFrom:
                 configMapKeyRef:

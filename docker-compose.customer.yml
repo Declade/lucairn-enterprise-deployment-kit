@@ -420,7 +420,7 @@ services:
       id-bridge:
         condition: service_healthy
     environment:
-      VEIL_ISSUER: "${VEIL_ISSUER:-DSA Veil Witness}"
+      VEIL_ISSUER: "${VEIL_ISSUER:-Lucairn Veil Witness}"
       VEIL_MANIFEST_SIGNING_KEY_ID: "${VEIL_MANIFEST_SIGNING_KEY_ID:-gateway_manifest_v1}"
       # Public counterparts of the gateway/witness manifest-signing private
       # keys; published in /.well-known/veil-keys.json keys[] so the W2B

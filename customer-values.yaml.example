@@ -50,6 +50,9 @@ audit:
   secrets:
     values:
       postgresPassword: "REPLACE_WITH_AUDIT_POSTGRES_PASSWORD"
+      # audit_app role password — baked into 000003 migration by the render
+      # init container. Must not contain ' or \ (rendered into SQL string).
+      auditAppPassword: "REPLACE_WITH_AUDIT_APP_PASSWORD"
       veilSigningKey: "REPLACE_WITH_64_HEX_AUDIT_SIGNING_KEY"
       dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
 
@@ -76,6 +79,10 @@ sandbox-a:
       adminKey: "REPLACE_WITH_64_HEX_ADMIN_KEY"
       veilSigningKey: "REPLACE_WITH_64_HEX_SANITIZER_OR_SANDBOX_A_SIGNING_KEY"
       dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
+      # Sanitizer sidecar canary-token signing key (≥32 chars). Without it,
+      # canary-token leak detection silently disables. Compose-path parity:
+      # CANARY_HMAC_KEY :? enforced in docker-compose.customer.yml.
+      canaryHmacKey: "REPLACE_WITH_CANARY_HMAC_KEY"
 
 sandbox-b:
   llm:
@@ -99,6 +106,9 @@ veil-witness:
   secrets:
     values:
       postgresPassword: "REPLACE_WITH_VEIL_POSTGRES_PASSWORD"
+      # veil_app role password — baked into 000002 migration by the render
+      # init container. Must not contain ' or \ (rendered into SQL string).
+      veilAppPassword: "REPLACE_WITH_VEIL_APP_PASSWORD"
       signingKey: "REPLACE_WITH_64_HEX_WITNESS_SIGNING_KEY"
       keyId: "witness_v1"
 
