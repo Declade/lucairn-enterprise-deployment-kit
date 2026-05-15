@@ -113,10 +113,14 @@ require_file() {
 
 require_env_values() {
   local env_file="$1" missing=0 key val
+  # Always-required secrets. DSA_LICENSE_KEY / DSA_LICENSE_SIGNING_KEY are
+  # NOT in this list: the gateway treats an empty DSA_LICENSE_KEY as
+  # dev-mode (services/gateway/cmd/server/main.go:226-241 "no license key
+  # configured — running in unregistered/dev mode"), so doctor must allow
+  # the same. We check the license pair separately below: if either is set,
+  # BOTH must be set; if both empty, dev mode is acknowledged with a warn.
   local required=(
     DSA_ENV
-    DSA_LICENSE_KEY
-    DSA_LICENSE_SIGNING_KEY
     DSA_SERVICE_TOKEN
     DSA_BRIDGE_ENCRYPTION_KEY
     SANDBOX_A_ENCRYPTION_KEY
@@ -144,6 +148,19 @@ require_env_values() {
       missing=1
     fi
   done
+
+  # License pair: empty=dev mode (with explicit warning so the operator
+  # never thinks they're production-licensed when they aren't); set=
+  # production mode and BOTH must be present + non-placeholder.
+  local lic_key lic_sig
+  lic_key="$(env_value "$env_file" DSA_LICENSE_KEY)"
+  lic_sig="$(env_value "$env_file" DSA_LICENSE_SIGNING_KEY)"
+  if [ -z "$lic_key" ] && [ -z "$lic_sig" ]; then
+    echo "license: empty DSA_LICENSE_KEY / DSA_LICENSE_SIGNING_KEY -> dev mode (gateway logs 'no license key configured'; tier caps still apply)"
+  elif [ -z "$lic_key" ] || [ -z "$lic_sig" ]; then
+    echo "license: DSA_LICENSE_KEY and DSA_LICENSE_SIGNING_KEY must be both set or both empty (one is empty, the other is not)"
+    missing=1
+  fi
 
   [ "$missing" -eq 0 ]
 }
@@ -1107,21 +1124,47 @@ doctor() {
   # hex/base64 format checks so the operator sees the actionable
   # "still set to a placeholder" error instead of the misleading
   # "must be 64 hex chars" error.
+  #
+  # Self-hosted-mode carve-out: when SANDBOX_B_REMOTE_ENDPOINT is empty, the
+  # operator is on the local-sandbox-b overlay (per INSTALL.md "Choose A
+  # Deployment Mode" table). In that mode the SANDBOX_B_* + VEIL_SANDBOX_B_*
+  # slots are unused (the local container generates its own keypair at
+  # startup); leaving them as REPLACE_WITH_* / REPLACE_ME_* is the
+  # documented default for self-hosted installs. Mirrors the certification-
+  # profile carve-out below.
+  local remote_endpoint
+  remote_endpoint="$(env_value "$env_file" SANDBOX_B_REMOTE_ENDPOINT)"
   local placeholder_failed=0
-  for key in \
-    DSA_LICENSE_KEY DSA_LICENSE_SIGNING_KEY \
-    SANDBOX_B_API_KEY \
-    DSA_SERVICE_TOKEN DSA_BRIDGE_ENCRYPTION_KEY SANDBOX_A_ENCRYPTION_KEY \
-    BRIDGE_MASTER_KEY DSA_ADMIN_KEY GATEWAY_KEYSTORE_KEY \
-    VEIL_AUDIT_SIGNING_KEY VEIL_BRIDGE_SIGNING_KEY VEIL_SANITIZER_SIGNING_KEY \
-    VEIL_WITNESS_SIGNING_KEY VEIL_GATEWAY_SIGNING_KEY VEIL_MANIFEST_SIGNING_KEY \
-    VEIL_WITNESS_PUBLIC_KEY VEIL_BRIDGE_PUBLIC_KEY VEIL_SANITIZER_PUBLIC_KEY \
-    VEIL_AUDIT_PUBLIC_KEY VEIL_GATEWAY_PUBLIC_KEY VEIL_SANDBOX_B_PUBLIC_KEY \
-    VEIL_SANDBOX_B_SIGNING_KEY \
-    POSTGRES_AUDIT_PASSWORD POSTGRES_BRIDGE_PASSWORD \
-    POSTGRES_SANDBOX_A_PASSWORD POSTGRES_VEIL_PASSWORD \
+  local placeholder_keys=(
+    DSA_SERVICE_TOKEN DSA_BRIDGE_ENCRYPTION_KEY SANDBOX_A_ENCRYPTION_KEY
+    BRIDGE_MASTER_KEY DSA_ADMIN_KEY GATEWAY_KEYSTORE_KEY
+    VEIL_AUDIT_SIGNING_KEY VEIL_BRIDGE_SIGNING_KEY VEIL_SANITIZER_SIGNING_KEY
+    VEIL_WITNESS_SIGNING_KEY VEIL_GATEWAY_SIGNING_KEY VEIL_MANIFEST_SIGNING_KEY
+    VEIL_WITNESS_PUBLIC_KEY VEIL_BRIDGE_PUBLIC_KEY VEIL_SANITIZER_PUBLIC_KEY
+    VEIL_AUDIT_PUBLIC_KEY VEIL_GATEWAY_PUBLIC_KEY
+    POSTGRES_AUDIT_PASSWORD POSTGRES_BRIDGE_PASSWORD
+    POSTGRES_SANDBOX_A_PASSWORD POSTGRES_VEIL_PASSWORD
     AUDIT_APP_PASSWORD VEIL_APP_PASSWORD
-  do
+  )
+  # License keys: only check placeholder when the operator left them set
+  # (both must be non-empty in production; both empty = dev mode handled in
+  # require_env_values above).
+  local lic_key_val
+  lic_key_val="$(env_value "$env_file" DSA_LICENSE_KEY)"
+  if [ -n "$lic_key_val" ]; then
+    placeholder_keys+=(DSA_LICENSE_KEY DSA_LICENSE_SIGNING_KEY)
+  fi
+  # Split-deployment-only slots: only check when SANDBOX_B_REMOTE_ENDPOINT
+  # is set. When empty (self-hosted overlay path), local sandbox-b owns
+  # these; leaving them as placeholders is correct.
+  if [ -n "$remote_endpoint" ]; then
+    placeholder_keys+=(
+      SANDBOX_B_API_KEY
+      VEIL_SANDBOX_B_PUBLIC_KEY
+      VEIL_SANDBOX_B_SIGNING_KEY
+    )
+  fi
+  for key in "${placeholder_keys[@]}"; do
     validate_no_placeholder "$env_file" "$key" || placeholder_failed=1
   done
   # Certification-profile placeholders (BUILD_AUTH_TOKEN, CUSTOMER_KEY_ID,
@@ -1132,14 +1175,20 @@ doctor() {
   echo "placeholder values: ok"
 
   local format_failed=0
-  for key in \
-    DSA_SERVICE_TOKEN DSA_BRIDGE_ENCRYPTION_KEY SANDBOX_A_ENCRYPTION_KEY \
-    BRIDGE_MASTER_KEY DSA_ADMIN_KEY VEIL_AUDIT_SIGNING_KEY \
-    VEIL_BRIDGE_SIGNING_KEY VEIL_SANITIZER_SIGNING_KEY VEIL_WITNESS_SIGNING_KEY \
-    VEIL_GATEWAY_SIGNING_KEY VEIL_MANIFEST_SIGNING_KEY VEIL_WITNESS_PUBLIC_KEY \
-    VEIL_BRIDGE_PUBLIC_KEY VEIL_SANITIZER_PUBLIC_KEY VEIL_AUDIT_PUBLIC_KEY \
-    VEIL_SANDBOX_B_PUBLIC_KEY
-  do
+  local hex64_keys=(
+    DSA_SERVICE_TOKEN DSA_BRIDGE_ENCRYPTION_KEY SANDBOX_A_ENCRYPTION_KEY
+    BRIDGE_MASTER_KEY DSA_ADMIN_KEY VEIL_AUDIT_SIGNING_KEY
+    VEIL_BRIDGE_SIGNING_KEY VEIL_SANITIZER_SIGNING_KEY VEIL_WITNESS_SIGNING_KEY
+    VEIL_GATEWAY_SIGNING_KEY VEIL_MANIFEST_SIGNING_KEY VEIL_WITNESS_PUBLIC_KEY
+    VEIL_BRIDGE_PUBLIC_KEY VEIL_SANITIZER_PUBLIC_KEY VEIL_AUDIT_PUBLIC_KEY
+  )
+  # Self-hosted carve-out: VEIL_SANDBOX_B_PUBLIC_KEY is only used in split
+  # deployment (where Lucairn provisions the matching key); in self-hosted
+  # mode the local container generates its own keypair at boot.
+  if [ -n "$remote_endpoint" ]; then
+    hex64_keys+=(VEIL_SANDBOX_B_PUBLIC_KEY)
+  fi
+  for key in "${hex64_keys[@]}"; do
     validate_hex64 "$env_file" "$key" || format_failed=1
   done
   validate_keystore_key "$env_file" || format_failed=1
