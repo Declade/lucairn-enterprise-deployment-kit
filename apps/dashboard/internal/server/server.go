@@ -53,6 +53,14 @@ func New(opts Options) (*Server, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler(opts.Version))
+	// Slash-variant redirects. The auth-middleware allowlist (FX-17) accepts
+	// /healthz/ and /login/ so liveness probes and hand-typed URLs survive the
+	// gate, but the mux only registered the canonical paths — meaning the
+	// allowed requests fell through to the catch-all 404. 308 preserves method
+	// + body for probe POSTs (some k8s liveness configs POST) and the same
+	// redirect serves operators who type the URL by hand.
+	mux.Handle("/healthz/", http.RedirectHandler("/healthz", http.StatusPermanentRedirect))
+	mux.Handle("/login/", http.RedirectHandler("/login", http.StatusPermanentRedirect))
 	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:

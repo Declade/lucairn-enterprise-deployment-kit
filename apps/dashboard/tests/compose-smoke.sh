@@ -82,4 +82,35 @@ if ! echo "$LOGIN_BODY" | grep -qE 'name="csrf"'; then
 fi
 echo "compose-smoke: /login ok"
 
+# Slash-variant routes (Codex r1 #9). The auth-middleware allowlist (FX-17)
+# accepts /healthz/ and /login/ trailing-slash forms, and the mux now registers
+# 308 redirects to the canonical paths. Verify both behave as expected so a
+# regression that drops either the allowlist entry OR the mux handler is
+# caught by the smoke run.
+echo "compose-smoke: hitting /healthz/ (expect 308 -> /healthz)"
+HEALTHZ_SLASH_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8443/healthz/)
+if [ "$HEALTHZ_SLASH_CODE" != "308" ]; then
+  echo "compose-smoke: /healthz/ expected 308, got $HEALTHZ_SLASH_CODE" >&2
+  exit 1
+fi
+HEALTHZ_SLASH_FINAL=$(curl -s -o /dev/null -w "%{http_code}" -L http://127.0.0.1:8443/healthz/)
+if [ "$HEALTHZ_SLASH_FINAL" != "200" ]; then
+  echo "compose-smoke: /healthz/ after redirect expected 200, got $HEALTHZ_SLASH_FINAL" >&2
+  exit 1
+fi
+echo "compose-smoke: /healthz/ ok (308 -> 200)"
+
+echo "compose-smoke: hitting /login/ (expect 308 -> /login)"
+LOGIN_SLASH_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8443/login/)
+if [ "$LOGIN_SLASH_CODE" != "308" ]; then
+  echo "compose-smoke: /login/ expected 308, got $LOGIN_SLASH_CODE" >&2
+  exit 1
+fi
+LOGIN_SLASH_FINAL=$(curl -s -o /dev/null -w "%{http_code}" -L http://127.0.0.1:8443/login/)
+if [ "$LOGIN_SLASH_FINAL" != "200" ]; then
+  echo "compose-smoke: /login/ after redirect expected 200, got $LOGIN_SLASH_FINAL" >&2
+  exit 1
+fi
+echo "compose-smoke: /login/ ok (308 -> 200)"
+
 echo "compose-smoke: ok"
