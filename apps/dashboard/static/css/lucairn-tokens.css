@@ -1,0 +1,48 @@
+/*
+ * Lucairn design tokens (Enterprise Dashboard).
+ *
+ * Mirrors theveil-website/src/app/[lang]/globals.css:14-50. Architecture
+ * accent colors and shadow tokens are intentionally OMITTED because the
+ * dashboard PRD bans drop shadows and the diagram-only accents (identity /
+ * ai / bridge / pii / danger) have no surface here. Semantic status colors
+ * are added per PRD § Slice 1.
+ *
+ * DO NOT add new accent colors. The interactive highlight color is
+ * #8EC0F0 (--color-accent-highlight). Semantic status (#10B981 / #F59E0B /
+ * #EF4444) is the only documented exception.
+ */
+:root {
+  /* Typography */
+  --font-sans: "Geist", system-ui, -apple-system, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", monospace;
+  --font-display: "Bricolage Grotesque", "Geist", system-ui, sans-serif;
+
+  /* Background surfaces (4 steps, dark, neutral) */
+  --color-bg-base: #090a0c;
+  --color-bg-panel: #0e0f12;
+  --color-bg-inset: #0b0c0e;
+  --color-bg-elevated: #18191e;
+
+  /* Foreground text (3 steps) */
+  --color-text-primary: #e5e5e7;
+  --color-text-secondary: #b0b2b7;
+  --color-text-muted: #6d6f78;
+
+  /* Single accent — every interactive / highlight surface */
+  --color-accent-highlight: #8ec0f0;
+  --color-accent-mid: #5a8cc8;
+
+  /* Borders */
+  --color-border-default: #1c1d21;
+  --color-border-hover: #2a2c32;
+
+  /* Radii — tighter = more enterprise */
+  --radius-panel: 6px;
+  --radius-button: 4px;
+  --radius-badge: 3px;
+
+  /* Semantic statuses (NOT accents — reserved for status indicators only) */
+  --color-status-ok: #10B981;
+  --color-status-warn: #F59E0B;
+  --color-status-fail: #EF4444;
+}

@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "dashboard.fullname" . }}-test-connection"
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "dashboard.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  restartPolicy: Never
+  containers:
+    - name: curl
+      image: curlimages/curl:8.10.1
+      command: ["sh", "-c"]
+      args:
+        - >
+          curl -fsS
+          http://{{ include "dashboard.fullname" . }}:{{ .Values.service.port }}/healthz

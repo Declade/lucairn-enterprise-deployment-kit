@@ -1,0 +1,41 @@
+{{ define "sidebar" }}
+<aside class="lc-sidebar" aria-label="Primary">
+  <div class="lc-sidebar-brand">
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+      <path d="M4 12 L12 4 L20 12 L12 20 Z"></path>
+    </svg>
+    <span>Lucairn</span>
+  </div>
+  <nav class="lc-sidebar-nav">
+    <a class="lc-sidebar-link is-active" href="/dashboard">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 12 L12 4 L21 12 V20 H14 V14 H10 V20 H3 Z"/></svg>
+      <span>Home</span>
+    </a>
+    <a class="lc-sidebar-link" href="/certs">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M6 4 H18 V20 H6 Z"/><path d="M9 9 H15"/><path d="M9 13 H15"/><path d="M9 17 H13"/></svg>
+      <span>Certs</span>
+    </a>
+    <a class="lc-sidebar-link" href="/health">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 6 H20 V18 H4 Z"/><path d="M4 9 H20"/><circle cx="7" cy="13" r="1"/></svg>
+      <span>Health</span>
+    </a>
+    <a class="lc-sidebar-link" href="/audit">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 4 H20 V20 H4 Z"/><path d="M4 9 H20"/><path d="M9 4 V20"/></svg>
+      <span>Audit log</span>
+    </a>
+    <a class="lc-sidebar-link" href="/compliance">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 4 L20 8 V14 C20 17.5 16 20 12 21 C8 20 4 17.5 4 14 V8 Z"/><path d="M9 12 L11 14 L15 10"/></svg>
+      <span>Compliance</span>
+    </a>
+    {{ if hasRole .User "admin" }}
+    <a class="lc-sidebar-link" href="/keys">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="12" r="4"/><path d="M12 12 L20 12"/><path d="M17 12 V15"/><path d="M19 12 V14"/></svg>
+      <span>API keys</span>
+    </a>
+    {{ end }}
+  </nav>
+  <footer class="lc-sidebar-footer">
+    <small class="lc-text-muted">Slice 1 — auth + shell foundation</small>
+  </footer>
+</aside>
+{{ end }}

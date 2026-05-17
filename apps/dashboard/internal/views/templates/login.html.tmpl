@@ -1,0 +1,35 @@
+{{ define "main" }}
+<div class="lc-login-frame">
+  <section class="lc-login-card">
+    <header class="lc-login-header">
+      <div class="lc-login-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M4 12 L12 4 L20 12 L12 20 Z"></path>
+          <path d="M9 12 L12 9 L15 12 L12 15 Z"></path>
+        </svg>
+      </div>
+      <h1 class="lc-login-title">Lucairn Dashboard</h1>
+      <p class="lc-login-subtitle">Sign in to manage certificates, audit logs, and operator workflows.</p>
+    </header>
+    {{ if .Flash }}
+    <div class="lc-login-flash" role="alert">{{ .Flash }}</div>
+    {{ end }}
+    <form method="post" action="/login" class="lc-login-form" autocomplete="off">
+      <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+      {{ if .NextPath }}<input type="hidden" name="next" value="{{ .NextPath }}">{{ end }}
+      <label class="lc-login-field">
+        <span class="lc-login-label">Email</span>
+        <input type="email" name="email" required autofocus class="lc-login-input">
+      </label>
+      <label class="lc-login-field">
+        <span class="lc-login-label">Password</span>
+        <input type="password" name="password" required class="lc-login-input">
+      </label>
+      <button type="submit" class="lc-login-button">Sign in</button>
+    </form>
+    <footer class="lc-login-footer">
+      <p>Need help? Ask your operator for the bootstrap credentials, then rotate them via <code>OPS.md</code>.</p>
+    </footer>
+  </section>
+</div>
+{{ end }}

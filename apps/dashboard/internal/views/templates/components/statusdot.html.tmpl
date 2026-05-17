@@ -1,0 +1,7 @@
+{{ define "statusdot" }}
+<span class="lc-statusdot lc-statusdot--{{ .Status }}" role="status">
+  <span class="lc-statusdot-dot" aria-hidden="true"></span>
+  <span class="lc-statusdot-label">{{ .Label }}</span>
+  {{ if .Timestamp }}<time class="lc-statusdot-time font-tabular">{{ .Timestamp }}</time>{{ end }}
+</span>
+{{ end }}

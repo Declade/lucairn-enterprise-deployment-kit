@@ -35,5 +35,8 @@ dependencies:
 - name: dsa-certification
   repository: ""
   version: 0.1.0
-digest: sha256:63937bc7a63eea500493413a52af0d5bf4e1da1373b174773d12e64b2bbcdd13
-generated: "2026-04-01T21:58:01.545771+02:00"
+- name: dashboard
+  repository: ""
+  version: 0.1.0
+digest: sha256:38c9029a65402b92ea0326968a6b2b07c0b2819fca950ea724ec67e6334e89b3
+generated: "2026-05-17T10:19:16.359556+02:00"

@@ -1,0 +1,16 @@
+{{ define "topbar" }}
+<header class="lc-topbar" role="banner">
+  <div class="lc-topbar-title">
+    <span class="lc-topbar-kicker">Enterprise dashboard</span>
+    <span class="lc-topbar-divider" aria-hidden="true">/</span>
+    <span>{{ .Title }}</span>
+  </div>
+  <div class="lc-topbar-actions">
+    <span class="lc-topbar-user">{{ .User.Email }}</span>
+    <form method="post" action="/logout" class="lc-topbar-logout">
+      <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+      <button type="submit" class="lc-topbar-button">Sign out</button>
+    </form>
+  </div>
+</header>
+{{ end }}
