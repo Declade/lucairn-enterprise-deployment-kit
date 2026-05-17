@@ -59,11 +59,14 @@ grafana:
       # a coordinated dashboard + grafana redeploy.
       issuer: "lucairn-dashboard"
       audience: "grafana"
-      # Cross-chart secret reference: the operator pre-creates the
-      # Secret in this NAMESPACE OR sets crossNamespaceSecretSource
-      # to mirror the dashboard sub-chart's namespace. The init
-      # container below mounts the Secret as a file; the Grafana
-      # process reads /etc/grafana/jwt/shared-secret via key_file.
+      # Cross-chart secret reference: the dashboard sub-chart's
+      # secret-grafana-jwt.yaml auto-renders the SAME Secret in this
+      # namespace (in addition to the dashboard namespace) when
+      # `dashboard.grafana.endpoint` is set + `dashboard.grafana.jwt.secretName`
+      # is empty. The Secret is volume-mounted directly to
+      # /etc/grafana/jwt/shared-secret on the Grafana pod (see
+      # templates/grafana-deployment.yaml) and read via
+      # GF_AUTH_JWT_KEY_FILE. No init container is involved.
 
 loki:
   image:

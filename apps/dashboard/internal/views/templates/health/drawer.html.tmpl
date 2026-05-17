@@ -1,7 +1,7 @@
 {{ define "health-drawer" }}
-<aside class="lc-drawer" role="dialog" aria-labelledby="health-drawer-title" x-show="active" x-cloak x-transition x-on:keydown.escape.window="close()">
+<aside class="lc-drawer" role="dialog" aria-modal="true" aria-labelledby="health-drawer-title" x-show="active" x-cloak x-transition x-on:keydown.escape.window="close()">
   <div class="lc-drawer-backdrop" x-on:click="close()" aria-hidden="true"></div>
-  <div class="lc-drawer-panel">
+  <div class="lc-drawer-panel" x-trap.inert.noscroll="active">
     <header class="lc-drawer-header">
       <h2 id="health-drawer-title" class="lc-drawer-title" x-text="active ? active + ' — observability' : 'Observability'"></h2>
       <button type="button" class="lc-secondary-button" x-on:click="close()" aria-label="Close drawer">Close</button>
