@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -276,6 +277,112 @@ func TestPoller_DetailTruncated_UTF8(t *testing.T) {
 	}
 	if len(out) > 180 {
 		t.Errorf("truncateDetail returned %d bytes; want <=180", len(out))
+	}
+}
+
+// TestPoller_OneGoroutinePerService asserts the Decision-8 architectural
+// invariant: Start() launches exactly one goroutine per configured service,
+// not a single global goroutine sweeping all services. Without this, a slow
+// /healthz on service A would pile up against service B in the same loop.
+//
+// Closes Codex r1 C31: prior tests only asserted clean shutdown + idempotent
+// Start. Neither asserted the actual per-service goroutine count, so a
+// regression to single-loop architecture would have shipped silently.
+//
+// Note: this test does NOT call t.Parallel() because runtime.NumGoroutine()
+// is process-global and parallel sibling tests would race the baseline.
+func TestPoller_OneGoroutinePerService(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	services := []Service{
+		{Name: "s1", URL: srv.URL, Scheme: SchemeHTTP},
+		{Name: "s2", URL: srv.URL, Scheme: SchemeHTTP},
+		{Name: "s3", URL: srv.URL, Scheme: SchemeHTTP},
+		{Name: "s4", URL: srv.URL, Scheme: SchemeHTTP},
+	}
+	// Long interval so we count idle workers waiting on the ticker, not
+	// transient probe goroutines.
+	p := NewPoller(services, PollerOpts{Interval: 2 * time.Second})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Take the baseline AFTER constructing the poller but BEFORE calling
+	// Start(). Any goroutine count delta after Start() is then attributable
+	// to Start() itself (modulo background runtime goroutines, which we
+	// allow for by checking >=N rather than ==N).
+	runtime.GC()
+	time.Sleep(20 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	p.Start(ctx)
+	// Give Start() time to launch the worker goroutines.
+	time.Sleep(50 * time.Millisecond)
+	delta := runtime.NumGoroutine() - baseline
+	if delta < len(services) {
+		t.Fatalf("expected at least %d new goroutines (one per service), got delta=%d", len(services), delta)
+	}
+	// Defense-in-depth: not 1 single global goroutine.
+	if delta == 1 {
+		t.Fatalf("got delta=1 which would indicate a single global poller goroutine — architectural decision #8 violated")
+	}
+}
+
+// TestPoller_SlowServiceDoesNotBlockOthers asserts that a service whose
+// /healthz hangs does NOT prevent other services from being polled. This
+// locks the per-goroutine architecture: each service has its own poll
+// loop with its own HTTP client + ctx, so a stuck request on service A
+// has zero coupling to service B's poll cadence.
+//
+// Closes Codex r1 C31: a regression to single-loop architecture would
+// have made the fast service starve behind the slow service's hang.
+func TestPoller_SlowServiceDoesNotBlockOthers(t *testing.T) {
+	t.Parallel()
+	var slowHits, fastHits int64
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&slowHits, 1)
+		// Hang until ctx cancel or the probe timeout fires; doesn't matter
+		// either way — what we want is fastHits to keep growing in parallel.
+		<-r.Context().Done()
+	}))
+	defer slow.Close()
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt64(&fastHits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer fast.Close()
+
+	services := []Service{
+		{Name: "slow", URL: slow.URL, Scheme: SchemeHTTP},
+		{Name: "fast", URL: fast.URL, Scheme: SchemeHTTP},
+	}
+	p := NewPoller(services, PollerOpts{
+		Interval:     25 * time.Millisecond,
+		ProbeTimeout: 2 * time.Second, // give slow time to "hang" then cancel
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	p.Start(ctx)
+	defer cancel()
+
+	// Wait for the fast service to have at least 5 polls — proves its
+	// goroutine ran 5+ times despite slow being stuck.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt64(&fastHits) >= 5 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := atomic.LoadInt64(&fastHits)
+	if got < 5 {
+		t.Fatalf("fast service polled only %d times in 500ms — slow service is blocking; per-goroutine architecture broken", got)
+	}
+	// Sanity-check: slow service also ATTEMPTED polls (we don't care how
+	// many; just that >0 — its goroutine fired at least once).
+	if atomic.LoadInt64(&slowHits) == 0 {
+		t.Fatalf("slow service was never even attempted")
 	}
 }
 
