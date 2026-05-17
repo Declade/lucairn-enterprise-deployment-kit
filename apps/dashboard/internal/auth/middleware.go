@@ -17,10 +17,14 @@ import (
 // hand both occur in production; without the trailing-slash entry, a
 // /healthz/ probe redirects to /login and the readiness signal silently fails.
 var publicPaths = map[string]struct{}{
-	"/login":    {},
-	"/login/":   {},
-	"/healthz":  {},
-	"/healthz/": {},
+	"/login":                  {},
+	"/login/":                 {},
+	"/healthz":                {},
+	"/healthz/":               {},
+	"/auth/oidc/login":        {},
+	"/auth/oidc/login/":       {},
+	"/auth/oidc/callback":     {},
+	"/auth/oidc/callback/":    {},
 }
 
 // publicPrefixes covers static asset trees.
@@ -100,10 +104,26 @@ func isPublicPath(path string) bool {
 
 func redirectToLogin(w http.ResponseWriter, r *http.Request) {
 	target := "/login"
-	if r.URL.Path != "" && r.URL.Path != "/login" && r.URL.Path != "/login/" {
+	// Suppress the next= parameter for paths that should never appear as a
+	// post-login destination: the login surface itself + the OIDC kickoff
+	// + the OIDC callback. Otherwise a loop or an "open redirect on
+	// next=" footgun becomes reachable from the gate.
+	if r.URL.Path != "" && !isAuthRoute(r.URL.Path) {
 		q := url.Values{}
 		q.Set("next", r.URL.RequestURI())
 		target += "?" + q.Encode()
 	}
 	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// isAuthRoute reports whether path is one of the auth-surface endpoints
+// that should never be set as a next= destination on a login redirect.
+func isAuthRoute(path string) bool {
+	switch path {
+	case "/login", "/login/",
+		"/auth/oidc/login", "/auth/oidc/login/",
+		"/auth/oidc/callback", "/auth/oidc/callback/":
+		return true
+	}
+	return false
 }

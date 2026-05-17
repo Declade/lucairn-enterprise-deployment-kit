@@ -150,6 +150,49 @@ func TestRenderer_TokenLinkPresent(t *testing.T) {
 	}
 }
 
+// TestRenderer_LoginSSOButtonGatedOnOIDCEnabled asserts that the SSO
+// block on /login is gated on PageData.OIDCEnabled. When false the
+// template must not render any /auth/oidc/login form; when true it
+// must. This is the visible-symptom contract for the Slice 2 opt-in.
+func TestRenderer_LoginSSOButtonGatedOnOIDCEnabled(t *testing.T) {
+	r := loadOrFail(t)
+
+	offOut, err := r.RenderString("login.html.tmpl", PageData{
+		Title:       "Sign in",
+		CSRFToken:   "x",
+		OIDCEnabled: false,
+	})
+	if err != nil {
+		t.Fatalf("render off: %v", err)
+	}
+	if strings.Contains(offOut, "/auth/oidc/login") {
+		t.Errorf("OIDCEnabled=false should NOT render the SSO form, but /auth/oidc/login appears in the output")
+	}
+	if strings.Contains(offOut, "Sign in with SSO") {
+		t.Errorf("OIDCEnabled=false should NOT render the SSO button label")
+	}
+
+	onOut, err := r.RenderString("login.html.tmpl", PageData{
+		Title:       "Sign in",
+		CSRFToken:   "x",
+		OIDCEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("render on: %v", err)
+	}
+	if !strings.Contains(onOut, "/auth/oidc/login") {
+		t.Errorf("OIDCEnabled=true must render the SSO form action /auth/oidc/login")
+	}
+	if !strings.Contains(onOut, "Sign in with SSO") {
+		t.Errorf("OIDCEnabled=true must render the SSO button label")
+	}
+	// Local form MUST still render alongside the SSO block — local-admin
+	// fallback is mandatory.
+	if !strings.Contains(onOut, `action="/login"`) {
+		t.Errorf("OIDCEnabled=true must STILL render the local /login form")
+	}
+}
+
 // TestRenderer_ViewerHidesAdminLinks asserts the sidebar role gate works
 // inside the template (no client-side state involved).
 func TestRenderer_ViewerHidesAdminLinks(t *testing.T) {

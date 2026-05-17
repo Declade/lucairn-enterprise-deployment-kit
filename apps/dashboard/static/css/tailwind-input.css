@@ -285,6 +285,50 @@
   background: var(--color-accent-mid);
 }
 
+/* Slice 2: SSO sign-in button + divider.
+ *
+ * Secondary-button styling uses the bg-panel + border-default tokens so
+ * the SSO action reads as the lower-emphasis alternative to the
+ * accent-colored primary "Sign in" button. Single-accent discipline
+ * preserved — no new colors invented.
+ */
+.lc-login-button-secondary {
+  background: var(--color-bg-panel);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-default);
+}
+
+.lc-login-button-secondary:hover {
+  background: var(--color-bg-elev-1);
+}
+
+.lc-login-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.lc-login-divider::before,
+.lc-login-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--color-border-default);
+}
+
+.lc-login-divider-label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.lc-login-sso-form {
+  display: flex;
+  flex-direction: column;
+}
+
 .lc-login-footer {
   margin-top: 24px;
   color: var(--color-text-muted);

@@ -153,3 +153,48 @@ random-password Secret on subsequent installs.
 - On the same schedule as the rest of the kit's secrets (per the
   "Key Rotation" section above).
 
+### Dashboard: rotating the OIDC client secret
+
+When OIDC SSO is enabled (`dashboard.oidc.enabled: true`), the client
+secret is the credential the dashboard uses to authenticate to the IdP's
+token endpoint. Rotate on the same cadence as any other shared credential
+between the dashboard and the IdP — typically quarterly or on operator
+departure.
+
+The rotation flow is "rotate at the IdP first, then push to the kit":
+
+1. Generate a new client secret at the IdP (Keycloak / Azure AD / Okta /
+   Auth0 / Google Workspace — each surfaces "regenerate secret" in its
+   client/app admin page).
+2. Update the kit:
+
+#### Compose path
+
+```bash
+NEW_SECRET="<value from the IdP>"
+sed -i.bak \
+  "s|^LUCAIRN_DASHBOARD_OIDC_CLIENT_SECRET=.*|LUCAIRN_DASHBOARD_OIDC_CLIENT_SECRET=${NEW_SECRET}|" \
+  customer.env
+docker compose \
+  -f docker-compose.customer.yml \
+  --env-file customer.env \
+  --profile dashboard \
+  up -d --force-recreate lucairn-dashboard
+curl -fsS http://127.0.0.1:8443/healthz
+```
+
+#### Kubernetes path
+
+```bash
+NEW_SECRET="<value from the IdP>"
+kubectl -n lucairn create secret generic lucairn-dashboard-oidc \
+  --from-literal=client-secret="${NEW_SECRET}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n lucairn rollout restart deploy/lucairn-dashboard
+kubectl -n lucairn rollout status deploy/lucairn-dashboard
+```
+
+Active sessions are unaffected by client_secret rotation (sessions are
+local to the dashboard). Users do NOT have to re-authenticate. The next
+OIDC sign-in attempt picks up the new secret transparently.
+

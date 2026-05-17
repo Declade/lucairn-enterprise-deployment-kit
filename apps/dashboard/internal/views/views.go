@@ -128,11 +128,19 @@ func componentTemplateNames() ([]string, error) {
 // (currently only "home"; later slices add "certs", "health", "audit",
 // "compliance", "keys"). An empty value leaves the sidebar with no
 // active item — appropriate for the login surface.
+//
+// OIDCEnabled tells the login template whether to render the "Sign in
+// with SSO" block + the divider. The local form ALWAYS renders — even
+// with OIDC turned on, operators retain the local fallback for bootstrap
+// + IdP-outage cases. Slice 2 explicitly does NOT add a way to disable
+// local login; that decision is deferred to a future slice if customer
+// signals demand it.
 type PageData struct {
-	Title      string
-	User       auth.User
-	CSRFToken  string
-	Flash      string
-	NextPath   string
-	ActivePage string
+	Title       string
+	User        auth.User
+	CSRFToken   string
+	Flash       string
+	NextPath    string
+	ActivePage  string
+	OIDCEnabled bool
 }

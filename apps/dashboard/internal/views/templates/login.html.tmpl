@@ -27,6 +27,16 @@
       </label>
       <button type="submit" class="lc-login-button">Sign in</button>
     </form>
+    {{ if .OIDCEnabled }}
+    <div class="lc-login-divider" role="separator" aria-orientation="horizontal">
+      <span class="lc-login-divider-label">or</span>
+    </div>
+    <form method="post" action="/auth/oidc/login" class="lc-login-sso-form" autocomplete="off">
+      <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+      {{ if .NextPath }}<input type="hidden" name="next" value="{{ .NextPath }}">{{ end }}
+      <button type="submit" class="lc-login-button lc-login-button-secondary">Sign in with SSO</button>
+    </form>
+    {{ end }}
     <footer class="lc-login-footer">
       <p>Need help? Ask your operator for the bootstrap credentials, then rotate them via <code>OPS.md</code>.</p>
     </footer>
