@@ -88,3 +88,68 @@ Scale databases vertically before sharding. For Compose installs, move to Kubern
 6. Confirm `/healthz`, `/readyz`, and one synthetic inference request.
 7. Generate a support bundle and archive it internally as upgrade evidence.
 
+## Dashboard: bootstrap admin + rotate credentials
+
+The Lucairn Enterprise Dashboard (opt-in; see `INSTALL.md` §
+"Enable the Lucairn dashboard") ships with a single bootstrap admin
+account so the operator can sign in the first time. Rotate this
+credential as a day-1 task and again on a defined schedule.
+
+### Compose path
+
+Rotation is a single env edit + container restart:
+
+```bash
+# 1) Generate a fresh password.
+NEW_PASS="$(openssl rand -base64 24)"
+
+# 2) Patch customer.env in place. Keep the file at mode 0600.
+sed -i.bak \
+  "s|^LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD=.*|LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD=${NEW_PASS}|" \
+  customer.env
+
+# 3) Recreate the dashboard container so it reads the new env.
+docker compose \
+  -f docker-compose.customer.yml \
+  --env-file customer.env \
+  --profile dashboard \
+  up -d --force-recreate lucairn-dashboard
+
+# 4) Confirm the new password works.
+curl -fsS http://127.0.0.1:8443/healthz
+```
+
+Active sessions are revoked on restart (in-memory session store).
+
+### Kubernetes path
+
+The Helm chart provisions a Secret named `lucairn-dashboard-bootstrap-admin`
+at install time (random 32-char password). Rotation replaces the Secret
+and bounces the dashboard Deployment:
+
+```bash
+NEW_PASS="$(openssl rand -base64 24)"
+NEW_SESSION="$(openssl rand -hex 24)"
+
+kubectl -n lucairn create secret generic lucairn-dashboard-bootstrap-admin \
+  --from-literal=password="${NEW_PASS}" \
+  --from-literal=session-secret="${NEW_SESSION}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n lucairn rollout restart deploy/lucairn-dashboard
+kubectl -n lucairn rollout status deploy/lucairn-dashboard
+```
+
+Customers who pre-create their own Secret can keep using their existing
+rotation tooling — set `dashboard.bootstrapAdmin.passwordSecretName` to
+the Secret name in `customer-values.yaml` and the chart skips its own
+random-password Secret on subsequent installs.
+
+### When to rotate
+
+- Day-1, after the first successful login from each operator.
+- Whenever an operator with the bootstrap credential leaves the team.
+- After incident response involving the dashboard host.
+- On the same schedule as the rest of the kit's secrets (per the
+  "Key Rotation" section above).
+

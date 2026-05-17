@@ -101,3 +101,42 @@ dsa-certification:
   # cert-prober is NOT deployed via Helm.
   # It runs on customer infrastructure, separate from DSA.
   # Deploy using: cert-prober.yaml from GitHub Release assets.
+
+# Enterprise Dashboard sub-chart. OFF by default — customer opts in via
+# `--set dashboard.enabled=true` or by setting `dashboard.enabled: true` in
+# their customer-values.yaml. See INSTALL.md § "Enable the Lucairn dashboard".
+dashboard:
+  enabled: false
+
+  # Sub-chart values: passed through to charts/lucairn/charts/dashboard/.
+  # Defaults below mirror the sub-chart's values.yaml; override here per-customer.
+  namespace: lucairn
+
+  image:
+    repository: lucairn-dashboard
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 8443
+    containerPort: 8443
+
+  bootstrapAdmin:
+    email: "admin@lucairn.local"
+    passwordSecretName: ""
+
+  oidc:
+    enabled: false
+    issuer: ""
+    clientId: ""
+    clientSecret: ""
+    adminGroup: "lucairn-admins"
+    viewerGroup: "lucairn-viewers"
+
+  ingress:
+    enabled: false
+    className: nginx
+    host: dashboard.lucairn.local
+    tlsSecret: tls-lucairn-dashboard
+    annotations: {}

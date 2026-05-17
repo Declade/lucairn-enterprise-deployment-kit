@@ -1,0 +1,29 @@
+{{ define "layout" }}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <title>{{ .Title }} — Lucairn Dashboard</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+  <link rel="stylesheet" href="/static/css/lucairn-tokens.css">
+  <link rel="stylesheet" href="/static/fonts/fonts.css">
+  <link rel="icon" type="image/svg+xml" href="/static/icons/sprite.svg#icon-mark">
+</head>
+<body class="font-sans bg-bg-base text-text-primary">
+  {{ if .User.Email }}
+    {{ template "topbar" . }}
+    <div class="lc-shell">
+      {{ template "sidebar" . }}
+      <main class="lc-main">
+        {{ template "main" . }}
+      </main>
+    </div>
+  {{ else }}
+    <main class="lc-fullscreen">
+      {{ template "main" . }}
+    </main>
+  {{ end }}
+</body>
+</html>
+{{ end }}

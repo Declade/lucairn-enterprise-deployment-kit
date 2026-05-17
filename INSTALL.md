@@ -430,3 +430,80 @@ curl -fsS http://127.0.0.1:8085/readyz
 ## Clean-Host Rehearsal
 
 Before sending a first customer bundle, repeat the customer-bundle path on a clean Linux host or VM that has no repo checkout, no local Docker images, and no copied secrets except the exact handoff bundle and registry credentials. Record the transcript against `docs/CLEAN_HOST_REHEARSAL.md`.
+
+## Enable the Lucairn dashboard (optional)
+
+The Lucairn Enterprise Dashboard is an opt-in operator UI that ships
+alongside the core stack. It is **not required to operate the kit** — every
+day-2 task can still be driven from `bin/lucairn` and Grafana. Operators
+who want a first-party UI for cert workflows, server health, audit log
+inspection, compliance PDF export, and API key management can enable it.
+
+Slice 1 (this kit version) ships the dashboard's auth + shell foundation.
+Cert browser, server health, audit log browser, compliance PDF, and API
+key management arrive in subsequent kit releases.
+
+### Compose path
+
+1. Set the dashboard env vars in `customer.env` (uncomment the
+   `LUCAIRN_DASHBOARD_*` block at the end of `customer.env.example` and
+   populate `LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD` with a 12+ character
+   secret you generated locally via `openssl rand -base64 24`).
+2. Run `bin/lucairn doctor` — the dashboard pre-flight check exits with a
+   clear error if the bootstrap password is missing or too short.
+3. Start the dashboard container alongside the core stack:
+
+   ```bash
+   docker compose \
+     -f docker-compose.customer.yml \
+     -f docker-compose.self-hosted.yml \
+     --env-file customer.env \
+     --profile dashboard \
+     up -d lucairn-dashboard
+   ```
+
+   (Add `-f docker-compose.self-hosted-byok.yml` when running with the
+   BYOK overlay.)
+
+4. Confirm health: `curl -fsS http://127.0.0.1:8443/healthz` returns
+   `{"status":"ok","version":"..."}`. The container binds only to
+   loopback; front it with your TLS-terminating reverse proxy (Caddy /
+   Nginx / Traefik) before exposing it externally.
+
+5. First login: open `https://<your-front-proxy>/login`, enter the
+   bootstrap email + the password you set in step 1.
+
+### Kubernetes path
+
+1. Set `dashboard.enabled: true` in your `customer-values.yaml` (or
+   `--set dashboard.enabled=true` on the install command).
+2. Apply: `helm upgrade --install lucairn charts/lucairn -f
+   customer-values.yaml --namespace lucairn --create-namespace`.
+3. Retrieve the bootstrap password (Helm-generated random 32-char):
+
+   ```bash
+   kubectl -n lucairn get secret lucairn-dashboard-bootstrap-admin \
+     -o jsonpath='{.data.password}' | base64 -d
+   ```
+
+4. Port-forward + login:
+
+   ```bash
+   kubectl -n lucairn port-forward svc/lucairn-dashboard 8443:8443
+   ```
+
+   Open `https://localhost:8443/login`. The default email is
+   `admin@lucairn.local` (override with
+   `dashboard.bootstrapAdmin.email`).
+
+5. Run the dashboard-specific doctor check via the kit CLI:
+
+   ```bash
+   DOCTOR_INCLUDE_DASHBOARD=1 bin/lucairn doctor \
+     --env customer.env \
+     --compose docker-compose.customer.yml --offline
+   ```
+
+### Rotating the bootstrap password
+
+See `OPS.md` § "Dashboard: bootstrap admin + rotate credentials".

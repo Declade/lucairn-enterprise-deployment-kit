@@ -1,0 +1,32 @@
+Lucairn Enterprise Dashboard — Slice 1 (auth + shell foundation)
+
+1) The dashboard is reachable via the Service:
+   {{ include "dashboard.fullname" . }}.{{ .Values.namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+   For local access:
+     kubectl -n {{ .Values.namespace }} port-forward svc/{{ include "dashboard.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+
+   Then open: https://localhost:{{ .Values.service.port }}/login
+
+   The dashboard expects a TLS-terminating reverse proxy in front. Slice 1
+   does NOT terminate TLS in the pod itself; your Ingress or front-proxy
+   must do so before traffic reaches the Service.
+
+2) Retrieve the bootstrap admin credentials:
+   - Email (operator-overridable via Helm value bootstrapAdmin.email):
+       {{ .Values.bootstrapAdmin.email }}
+   - Password (random per install; retrieve once and rotate per OPS.md):
+       kubectl -n {{ .Values.namespace }} get secret \
+         {{ include "dashboard.bootstrapAdminSecretName" . }} \
+         -o jsonpath='{.data.password}' | base64 -d
+
+3) Rotate the password (OPS.md procedure):
+   kubectl -n {{ .Values.namespace }} create secret generic {{ include "dashboard.bootstrapAdminSecretName" . }} \
+     --from-literal=password='<new-password>' \
+     --from-literal=session-secret='<new-session-secret>' \
+     --dry-run=client -o yaml | kubectl apply -f -
+   kubectl -n {{ .Values.namespace }} rollout restart deploy/{{ include "dashboard.fullname" . }}
+
+4) Slices 2-7 will add: OIDC SSO, cert browser / inspector / validator,
+   server health + Grafana embedding, API key management, audit log
+   browser, and compliance PDF export.

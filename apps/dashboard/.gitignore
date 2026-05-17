@@ -1,0 +1,11 @@
+# Local build artifacts.
+/dashboard
+/tmp/
+
+# Editor scratch.
+*.swp
+*.swo
+
+# Tailwind's standalone binary if downloaded next to the source.
+tailwindcss
+tailwindcss-*

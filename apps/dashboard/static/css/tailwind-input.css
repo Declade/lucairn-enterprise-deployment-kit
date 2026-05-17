@@ -1,0 +1,374 @@
+/* Tailwind v4 entrypoint. Pulls all Tailwind utilities + bridges into our
+ * Lucairn token system via @theme inline.
+ */
+@import "tailwindcss";
+
+/* Source globs: scan the dashboard's view templates for utility usage. */
+@source "../../internal/views/templates/**/*.html.tmpl";
+
+/* Token mirror — kept verbatim from lucairn-tokens.css so the standalone
+ * compiler can read them at build time. The runtime layer.css below also
+ * imports lucairn-tokens.css to keep tokens available even on a cold cache.
+ */
+@theme {
+  --font-sans: "Geist", system-ui, -apple-system, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", monospace;
+  --font-display: "Bricolage Grotesque", "Geist", system-ui, sans-serif;
+
+  --color-bg-base: #090a0c;
+  --color-bg-panel: #0e0f12;
+  --color-bg-inset: #0b0c0e;
+  --color-bg-elevated: #18191e;
+
+  --color-text-primary: #e5e5e7;
+  --color-text-secondary: #b0b2b7;
+  --color-text-muted: #6d6f78;
+
+  --color-accent-highlight: #8ec0f0;
+  --color-accent-mid: #5a8cc8;
+
+  --color-border-default: #1c1d21;
+  --color-border-hover: #2a2c32;
+
+  --radius-panel: 6px;
+  --radius-button: 4px;
+  --radius-badge: 3px;
+
+  --color-status-ok: #10B981;
+  --color-status-warn: #F59E0B;
+  --color-status-fail: #EF4444;
+}
+
+@layer base {
+  html, body {
+    background: var(--color-bg-base);
+    color: var(--color-text-primary);
+    font-family: var(--font-sans);
+    margin: 0;
+    min-height: 100%;
+  }
+}
+
+/* Tabular-numeric utility — kept hand-rolled to guarantee the literal
+ * "tabular-nums" appears in compiled output (Slice 1 token-grep gate 5c).
+ */
+.font-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Shell scaffolding. All values come from CSS vars so theming downstream
+ * stays single-source. */
+.lc-shell {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  min-height: calc(100vh - 56px);
+}
+
+.lc-fullscreen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.lc-main {
+  padding: 24px;
+}
+
+.lc-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  height: 56px;
+  border-bottom: 1px solid var(--color-border-default);
+  background: var(--color-bg-panel);
+}
+
+.lc-topbar-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.lc-topbar-kicker {
+  color: var(--color-text-secondary);
+}
+
+.lc-topbar-divider {
+  color: var(--color-text-muted);
+}
+
+.lc-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.lc-topbar-user {
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.lc-topbar-button {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-button);
+  padding: 6px 12px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 200ms ease-out, background 200ms ease-out;
+}
+
+.lc-topbar-button:hover {
+  border-color: var(--color-border-hover);
+}
+
+.lc-sidebar {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--color-border-default);
+  background: var(--color-bg-panel);
+  padding: 16px 12px;
+  gap: 12px;
+}
+
+.lc-sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-display);
+  font-size: 18px;
+  padding: 4px 8px 8px;
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.lc-sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lc-sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  border-radius: var(--radius-button);
+  font-size: 13px;
+  transition: background 200ms ease-out, color 200ms ease-out;
+}
+
+.lc-sidebar-link:hover {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+
+.lc-sidebar-link.is-active {
+  background: var(--color-bg-elevated);
+  color: var(--color-accent-highlight);
+}
+
+.lc-sidebar-footer {
+  margin-top: auto;
+  padding: 8px;
+}
+
+.lc-text-muted {
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.lc-login-frame {
+  width: 100%;
+  max-width: 420px;
+}
+
+.lc-login-card {
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-panel);
+  border-radius: var(--radius-panel);
+  padding: 32px;
+}
+
+.lc-login-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.lc-login-mark {
+  color: var(--color-accent-highlight);
+}
+
+.lc-login-title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  margin: 0;
+}
+
+.lc-login-subtitle {
+  color: var(--color-text-secondary);
+  margin: 0;
+  font-size: 13px;
+}
+
+.lc-login-flash {
+  border: 1px solid var(--color-status-fail);
+  border-radius: var(--radius-button);
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  color: var(--color-text-primary);
+  font-size: 13px;
+}
+
+.lc-login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lc-login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.lc-login-label {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.lc-login-input {
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-button);
+  color: var(--color-text-primary);
+  padding: 10px 12px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  transition: border-color 200ms ease-out;
+}
+
+.lc-login-input:focus {
+  outline: none;
+  border-color: var(--color-accent-highlight);
+}
+
+.lc-login-button {
+  margin-top: 8px;
+  background: var(--color-accent-highlight);
+  color: var(--color-bg-base);
+  border: 0;
+  border-radius: var(--radius-button);
+  padding: 10px 16px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 200ms ease-out;
+}
+
+.lc-login-button:hover {
+  background: var(--color-accent-mid);
+}
+
+.lc-login-footer {
+  margin-top: 24px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.lc-page-header {
+  margin-bottom: 24px;
+}
+
+.lc-page-title {
+  font-family: var(--font-display);
+  font-size: 24px;
+  margin: 0 0 8px;
+}
+
+.lc-page-lede {
+  color: var(--color-text-secondary);
+  margin: 0;
+  font-size: 14px;
+  max-width: 720px;
+}
+
+.lc-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 24px;
+}
+
+.lc-card {
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-panel);
+  border-radius: var(--radius-panel);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lc-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.lc-card-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  margin: 0;
+}
+
+.lc-card-body {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.lc-statusdot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.lc-statusdot-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+}
+
+.lc-statusdot--ok .lc-statusdot-dot {
+  background: var(--color-status-ok);
+}
+
+.lc-statusdot--warn .lc-statusdot-dot {
+  background: var(--color-status-warn);
+}
+
+.lc-statusdot--fail .lc-statusdot-dot {
+  background: var(--color-status-fail);
+}
+
+.lc-statusdot-time {
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}

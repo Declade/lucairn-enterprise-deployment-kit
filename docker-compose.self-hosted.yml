@@ -228,3 +228,25 @@ services:
           - model-runtime
     restart: on-failure
 
+  # ── Lucairn Enterprise Dashboard (self-hosted) ──────────────────
+  # Mirror of the dashboard block in docker-compose.customer.yml. Same
+  # OPT-IN model: `--profile dashboard`. Self-hosted installs share the
+  # identical dashboard binary + env var contract; the only difference is
+  # which compose file the operator started from.
+  lucairn-dashboard:
+    profiles: ["dashboard"]
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.1.0}"
+    restart: unless-stopped
+    environment:
+      LUCAIRN_DASHBOARD_LISTEN_ADDR: "${LUCAIRN_DASHBOARD_LISTEN_ADDR:-0.0.0.0:8443}"
+      LUCAIRN_DASHBOARD_BOOTSTRAP_EMAIL: "${LUCAIRN_DASHBOARD_BOOTSTRAP_EMAIL:-admin@lucairn.local}"
+      LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD: "${LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD:?LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD is required when the dashboard profile is active}"
+      LUCAIRN_DASHBOARD_SESSION_SECRET: "${LUCAIRN_DASHBOARD_SESSION_SECRET:-}"
+    ports:
+      - "127.0.0.1:8443:8443"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8443/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+

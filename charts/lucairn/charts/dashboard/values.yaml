@@ -1,0 +1,76 @@
+# Lucairn Enterprise Dashboard sub-chart values.
+#
+# The dashboard is OPT-IN at the top-level (dashboard.enabled=false by
+# default in charts/lucairn/values.yaml). Customer opts in explicitly via
+# `--set dashboard.enabled=true` or by setting dashboard.enabled in their
+# customer-values.yaml.
+
+namespace: lucairn
+
+replicaCount: 1
+
+image:
+  repository: lucairn-dashboard
+  tag: ""              # empty → defaults to chart appVersion via deployment template
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8443
+  containerPort: 8443
+
+# Bootstrap admin account. Helm generates a random password into a Secret on
+# initial install. Operators can either:
+#   1) Leave bootstrapAdmin.passwordSecretName empty → Helm generates +
+#      stores the secret as ${chartName}-bootstrap-admin.
+#   2) Pre-create their own Secret and set bootstrapAdmin.passwordSecretName
+#      to its name. The Secret must hold key "password".
+#
+# Same pattern as charts/lucairn/charts/observability/templates/grafana-deployment.yaml
+# (line 40) uses for GF_SECURITY_ADMIN_PASSWORD.
+bootstrapAdmin:
+  email: "admin@lucairn.local"
+  passwordSecretName: ""
+
+# Reserved for future signed-cookie code paths (Slice 1 uses opaque
+# in-memory session IDs and does not consume the value). Required so deploys
+# do not silently degrade when later slices flip to signed sessions.
+sessionSecret: ""
+
+# OIDC stub (wired in Slice 2). Default OFF; operators opt in.
+oidc:
+  enabled: false
+  issuer: ""
+  clientId: ""
+  clientSecret: ""
+  adminGroup: "lucairn-admins"
+  viewerGroup: "lucairn-viewers"
+
+ingress:
+  enabled: false
+  className: nginx
+  host: dashboard.lucairn.local
+  tlsSecret: tls-lucairn-dashboard
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
