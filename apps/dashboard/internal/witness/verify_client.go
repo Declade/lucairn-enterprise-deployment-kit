@@ -2,14 +2,21 @@
 // VeilCertificateService.
 //
 // Slice 3 surface:
-//   - Verify(certID) does TWO upstream RPCs:
-//       1. GetCertificate(certID)        → VeilCertificate envelope
+//   - Verify(requestID) does TWO upstream RPCs:
+//       1. GetCertificate(request_id)    → VeilCertificate envelope
 //       2. VerifyCertificate(envelope)   → VerificationResult
 //     This is the canonical 2-RPC shape the witness has always served
 //     (per `dual-sandbox-architecture/proto/veil/v1/veil.proto`). The
 //     previous (pre-fix-up) dashboard called a fictional
 //     CertVerifier.VerifyCertificate(cert_id) RPC which empirically
 //     returned codes.Unimplemented against a real witness.
+//
+//     The lookup key is the WITNESS request_id, NOT the operator-facing
+//     certificate_id. Upstream cert_server.go:44-53 and store.go:88-93
+//     both index by request_id. Callers MUST resolve the request_id from
+//     the audit-DB CertSummary (or via store.GetRequestIDsByCertIDs for
+//     the bulk path) before invoking Verify; passing a certificate_id
+//     here yields codes.NotFound from the witness.
 //   - 30min in-memory cache (certs are immutable post-creation; the
 //     previous 5min TTL was overly conservative for a write-once corpus).
 //     The bulk re-verify path bypasses the cache via Invalidate; the
@@ -19,11 +26,12 @@
 //     instead of stampeding the witness with N round-trips.
 //
 // Connection model (v1): plaintext gRPC over the in-cluster service DNS
-// (witness.lucairn.svc.cluster.local:50051 by default). Production-grade
-// mTLS lands in a future slice; the upgrade path is gated on every
-// customer being able to mint a fresh keypair on the kit's CA. Until
-// then, in-cluster plaintext + Kubernetes NetworkPolicy isolation is the
-// stance. The TODO at the end of NewClient is the authoritative reminder.
+// (veil-witness.dsa-witness.svc.cluster.local:50058 by default — the
+// chart's cert RPC port). Production-grade mTLS lands in a future slice;
+// the upgrade path is gated on every customer being able to mint a fresh
+// keypair on the kit's CA. Until then, in-cluster plaintext + Kubernetes
+// NetworkPolicy isolation is the stance. The TODO at the end of NewClient
+// is the authoritative reminder.
 package witness
 
 //go:generate protoc --proto_path=. --go_out=pb --go_opt=paths=source_relative --go-grpc_out=pb --go-grpc_opt=paths=source_relative witness.proto
@@ -45,9 +53,11 @@ import (
 
 // DefaultEndpoint is the in-cluster gRPC address the dashboard dials when
 // LUCAIRN_DASHBOARD_WITNESS_ENDPOINT is unset. This matches the kit's
-// default witness Service DNS — operators who run with a different
-// namespace or Service name MUST override the env var.
-const DefaultEndpoint = "witness.lucairn.svc.cluster.local:50051"
+// default witness Service DNS — chart service name `veil-witness` in the
+// `dsa-witness` namespace, cert RPC port 50058 (per charts/lucairn/charts/
+// veil-witness/templates/service.yaml + values.yaml). Operators who run
+// with a different namespace or Service name MUST override the env var.
+const DefaultEndpoint = "veil-witness.dsa-witness.svc.cluster.local:50058"
 
 // DefaultCacheTTL is the per-cert verify-response cache window. Bumped
 // from the historic 5min default to 30min in fix-up r1: certs are
@@ -103,9 +113,16 @@ type ClaimVerdict struct {
 // CertVerifier is the verify-side contract the rest of the dashboard
 // consumes. Concrete impls: the gRPC-backed Client (production) plus a
 // fake/in-memory implementation for unit tests.
+//
+// The `requestID` parameter is the WITNESS lookup key, NOT the
+// operator-facing certificate_id. Callers MUST resolve it from
+// CertSummary.RequestID (single-cert path) or store.GetRequestIDsByCertIDs
+// (bulk path) before invoking Verify. The cache + singleflight keys are
+// also the request_id; cache-eviction is therefore correct as long as the
+// caller invalidates via the same request_id.
 type CertVerifier interface {
-	Verify(ctx context.Context, certID string) (VerifyResult, error)
-	Invalidate(certID string)
+	Verify(ctx context.Context, requestID string) (VerifyResult, error)
+	Invalidate(requestID string)
 }
 
 // VeilCertificateClient is the gRPC client interface the package uses
@@ -215,11 +232,17 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
-// Verify returns a VerifyResult for certID. Cache hits avoid the
-// round-trip; cache misses sequence GetCertificate + VerifyCertificate
-// against the witness with a bounded deadline on each call.
+// Verify returns a VerifyResult for the witness's request_id. Cache hits
+// avoid the round-trip; cache misses sequence GetCertificate +
+// VerifyCertificate against the witness with a bounded deadline on each
+// call.
 //
-// Concurrent calls for the same certID coalesce via singleflight: only
+// IMPORTANT: requestID is the witness's lookup key (per upstream
+// cert_server.go:44-53), NOT the operator-facing certificate_id. The
+// caller (handlers/certs.go, handlers/bulk_reverify.go) resolves the
+// request_id from the audit-DB CertSummary before invoking this method.
+//
+// Concurrent calls for the same requestID coalesce via singleflight: only
 // one upstream pair fires; the rest of the callers receive the same
 // result. This closes a real stampede vector when the cache cold-starts
 // during a traffic spike (e.g. N bulk-progress tabs polling /certs/{id}
@@ -227,35 +250,39 @@ func (c *Client) Close() error {
 //
 // On gRPC error we return the error; callers render a "Witness
 // unreachable" degraded badge rather than crash.
-func (c *Client) Verify(ctx context.Context, certID string) (VerifyResult, error) {
-	if certID == "" {
-		return VerifyResult{}, errors.New("witness: cert_id required")
+func (c *Client) Verify(ctx context.Context, requestID string) (VerifyResult, error) {
+	if requestID == "" {
+		return VerifyResult{}, errors.New("witness: request_id required")
 	}
-	if hit, ok := c.cache.get(certID); ok {
+	if hit, ok := c.cache.get(requestID); ok {
 		return hit, nil
 	}
-	v, err, _ := c.sf.Do(certID, func() (any, error) {
+	v, err, _ := c.sf.Do(requestID, func() (any, error) {
 		// Re-check under singleflight so the second waiter (post-first-
 		// fire) doesn't re-dial.
-		if hit, ok := c.cache.get(certID); ok {
+		if hit, ok := c.cache.get(requestID); ok {
 			return hit, nil
 		}
-		// 1. GetCertificate(certID) → VeilCertificate envelope.
+		// 1. GetCertificate(request_id) → VeilCertificate envelope.
 		certCtx, certCancel := context.WithTimeout(ctx, c.timeout)
 		defer certCancel()
-		cert, err := c.rpc.GetCertificate(certCtx, &witnesspb.GetCertificateRequest{RequestId: certID})
+		cert, err := c.rpc.GetCertificate(certCtx, &witnesspb.GetCertificateRequest{RequestId: requestID})
 		if err != nil {
-			return VerifyResult{}, fmt.Errorf("witness: GetCertificate(%s): %w", certID, err)
+			return VerifyResult{}, fmt.Errorf("witness: GetCertificate(%s): %w", requestID, err)
 		}
 		// 2. VerifyCertificate(envelope) → VerificationResult.
 		verCtx, verCancel := context.WithTimeout(ctx, c.timeout)
 		defer verCancel()
 		result, err := c.rpc.VerifyCertificate(verCtx, cert)
 		if err != nil {
-			return VerifyResult{}, fmt.Errorf("witness: VerifyCertificate(%s): %w", certID, err)
+			return VerifyResult{}, fmt.Errorf("witness: VerifyCertificate(%s): %w", requestID, err)
 		}
-		out := mapVerifyResult(certID, cert, result, c.now())
-		c.cache.put(certID, out)
+		// VerifyResult.CertID surfaces the operator-facing certificate_id
+		// from the envelope (assembler stamps both fields on the same
+		// row); this keeps the UI's "cert_id" badge honest while the RPC
+		// key remains request_id.
+		out := mapVerifyResult(cert.GetCertificateId(), cert, result, c.now())
+		c.cache.put(requestID, out)
 		return out, nil
 	})
 	if err != nil {
@@ -264,13 +291,16 @@ func (c *Client) Verify(ctx context.Context, certID string) (VerifyResult, error
 	return v.(VerifyResult), nil
 }
 
-// Invalidate evicts certID from the cache. The "Re-verify now" button
+// Invalidate evicts requestID from the cache. The "Re-verify now" button
 // MUST call Invalidate before Verify so the next call dials the witness
 // even within the 30min window. Forget the singleflight key too so a
 // stuck/long-running first call doesn't pin the cache entry indefinitely.
-func (c *Client) Invalidate(certID string) {
-	c.cache.delete(certID)
-	c.sf.Forget(certID)
+//
+// requestID is the witness-side lookup key (matches the Verify cache
+// key); callers MUST pass the same identifier they would pass to Verify.
+func (c *Client) Invalidate(requestID string) {
+	c.cache.delete(requestID)
+	c.sf.Forget(requestID)
 }
 
 // mapVerifyResult assembles the dashboard-facing VerifyResult from the

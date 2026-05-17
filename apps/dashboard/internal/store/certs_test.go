@@ -30,10 +30,27 @@ type fakeDB struct {
 	countErr error
 	getRow   *CertSummary
 	getErr   error
+
+	// batchPairs drives GetRequestIDsByCertIDs's 2-column SELECT path.
+	batchPairs []certIDRequestIDPair
+	batchErr   error
+}
+
+// certIDRequestIDPair holds one row of the batch cert_id → request_id
+// resolver result.
+type certIDRequestIDPair struct {
+	CertID    string
+	RequestID string
 }
 
 func (f *fakeDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	f.calls = append(f.calls, queryCall{sql: sql, args: args})
+	if strings.Contains(sql, "ANY($1::text[])") {
+		if f.batchErr != nil {
+			return nil, f.batchErr
+		}
+		return &fakeBatchRows{data: f.batchPairs}, nil
+	}
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -69,23 +86,32 @@ func (r *fakeRows) Scan(dest ...any) error {
 	}
 	row := r.data[r.idx]
 	r.idx++
-	// CertSummary scan order matches the SELECT projection in store.go
+	// CertSummary scan order matches the SELECT projection in store.go's
+	// List: id, request_id, customer_id, created_at, verdict,
+	// redaction_count, claim_count (7 columns). The Stream SELECT keeps
+	// the historical 6-column shape (no request_id); tests that exercise
+	// Stream don't hit this fake's Scan via fakeRows because they don't
+	// drain the row iterator (Stream callers in handlers iterate the real
+	// pgx.Rows via the CSV writer).
 	if id, ok := dest[0].(*string); ok {
 		*id = row.ID
 	}
-	if cid, ok := dest[1].(*string); ok {
+	if rid, ok := dest[1].(*string); ok {
+		*rid = row.RequestID
+	}
+	if cid, ok := dest[2].(*string); ok {
 		*cid = row.CustomerID
 	}
-	if ts, ok := dest[2].(*time.Time); ok {
+	if ts, ok := dest[3].(*time.Time); ok {
 		*ts = row.CreatedAt
 	}
-	if v, ok := dest[3].(*string); ok {
+	if v, ok := dest[4].(*string); ok {
 		*v = row.Verdict
 	}
-	if rc, ok := dest[4].(*int); ok {
+	if rc, ok := dest[5].(*int); ok {
 		*rc = row.RedactionCount
 	}
-	if cc, ok := dest[5].(*int); ok {
+	if cc, ok := dest[6].(*int); ok {
 		*cc = row.ClaimCount
 	}
 	return nil
@@ -98,6 +124,39 @@ func (r *fakeRows) Values() ([]any, error)                      { return nil, ni
 func (r *fakeRows) RawValues() [][]byte                         { return nil }
 func (r *fakeRows) Conn() *pgx.Conn                             { return nil }
 
+// fakeBatchRows implements pgx.Rows for the 2-column cert_id → request_id
+// batch SELECT. The shape is distinct from fakeRows because the columns
+// + types differ; the batch path never returns full CertSummary rows.
+type fakeBatchRows struct {
+	data []certIDRequestIDPair
+	idx  int
+}
+
+func (r *fakeBatchRows) Next() bool {
+	return r.idx < len(r.data)
+}
+func (r *fakeBatchRows) Scan(dest ...any) error {
+	if r.idx >= len(r.data) {
+		return errors.New("scan past end")
+	}
+	row := r.data[r.idx]
+	r.idx++
+	if cid, ok := dest[0].(*string); ok {
+		*cid = row.CertID
+	}
+	if rid, ok := dest[1].(*string); ok {
+		*rid = row.RequestID
+	}
+	return nil
+}
+func (r *fakeBatchRows) Err() error                                  { return nil }
+func (r *fakeBatchRows) Close()                                      {}
+func (r *fakeBatchRows) CommandTag() pgconn.CommandTag               { return pgconn.CommandTag{} }
+func (r *fakeBatchRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
+func (r *fakeBatchRows) Values() ([]any, error)                      { return nil, nil }
+func (r *fakeBatchRows) RawValues() [][]byte                         { return nil }
+func (r *fakeBatchRows) Conn() *pgx.Conn                             { return nil }
+
 type fakeRow struct {
 	countVal int
 	getVal   *CertSummary
@@ -109,23 +168,27 @@ func (r *fakeRow) Scan(dest ...any) error {
 		return r.err
 	}
 	if r.getVal != nil {
-		// Get-row variant: scan all 6 columns.
+		// Get-row variant: scan all 7 columns (id, request_id, customer_id,
+		// created_at, verdict, redaction_count, claim_count).
 		if id, ok := dest[0].(*string); ok {
 			*id = r.getVal.ID
 		}
-		if cid, ok := dest[1].(*string); ok {
+		if rid, ok := dest[1].(*string); ok {
+			*rid = r.getVal.RequestID
+		}
+		if cid, ok := dest[2].(*string); ok {
 			*cid = r.getVal.CustomerID
 		}
-		if ts, ok := dest[2].(*time.Time); ok {
+		if ts, ok := dest[3].(*time.Time); ok {
 			*ts = r.getVal.CreatedAt
 		}
-		if v, ok := dest[3].(*string); ok {
+		if v, ok := dest[4].(*string); ok {
 			*v = r.getVal.Verdict
 		}
-		if rc, ok := dest[4].(*int); ok {
+		if rc, ok := dest[5].(*int); ok {
 			*rc = r.getVal.RedactionCount
 		}
-		if cc, ok := dest[5].(*int); ok {
+		if cc, ok := dest[6].(*int); ok {
 			*cc = r.getVal.ClaimCount
 		}
 		return nil
@@ -254,7 +317,8 @@ func TestGet_NotFoundReturnsPgxErrNoRows(t *testing.T) {
 func TestGet_ReturnsRow(t *testing.T) {
 	t.Parallel()
 	want := CertSummary{
-		ID:             "abc",
+		ID:             "veil_0190d3a1-aaaa-bbbb-cccc-ddddeeeeffff",
+		RequestID:      "req_aaaaaaaa-bbbb-cccc-dddd-eeeeffff0000",
 		CustomerID:     "cust-1",
 		CreatedAt:      time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC),
 		Verdict:        "verified",
@@ -263,12 +327,17 @@ func TestGet_ReturnsRow(t *testing.T) {
 	}
 	db := &fakeDB{getRow: &want}
 	s := NewCertStoreWithDB(db)
-	got, err := s.Get(context.Background(), "abc")
+	got, err := s.Get(context.Background(), want.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	if got != want {
 		t.Errorf("get: got %#v want %#v", got, want)
+	}
+	// Verify the SELECT pulls request_id so callers can drive the witness
+	// RPC (whose lookup key is request_id, not certificate_id).
+	if !strings.Contains(db.calls[0].sql, "request_id") {
+		t.Errorf("Get SQL must SELECT request_id (witness lookup key): %s", db.calls[0].sql)
 	}
 }
 
@@ -286,6 +355,64 @@ func TestStream_BuildsSelectWithoutLimit(t *testing.T) {
 	}
 	if !strings.Contains(db.calls[0].sql, "AND verdict IN ($1)") {
 		t.Errorf("Stream missing verdict filter binding: %s", db.calls[0].sql)
+	}
+}
+
+// TestGetRequestIDsByCertIDs_ReturnsMap locks the batch cert_id →
+// request_id resolver used by the bulk re-verify worker. The witness
+// RPC keys off request_id (upstream cert_server.go:44-53), not the
+// operator-facing certificate_id, so the bulk worker MUST resolve the
+// IDs server-side before driving Verify.
+func TestGetRequestIDsByCertIDs_ReturnsMap(t *testing.T) {
+	t.Parallel()
+	db := &fakeDB{batchPairs: []certIDRequestIDPair{
+		{CertID: "veil_aaaaaaaa-1111-2222-3333-444444444444", RequestID: "req_aaaa-1111"},
+		{CertID: "veil_bbbbbbbb-1111-2222-3333-444444444444", RequestID: "req_bbbb-2222"},
+	}}
+	s := NewCertStoreWithDB(db)
+	got, err := s.GetRequestIDsByCertIDs(context.Background(), []string{
+		"veil_aaaaaaaa-1111-2222-3333-444444444444",
+		"veil_bbbbbbbb-1111-2222-3333-444444444444",
+		"veil_cccccccc-missing-row-9999-444444444444",
+	})
+	if err != nil {
+		t.Fatalf("batch lookup: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("map size: got %d want 2 (missing row should be omitted, not error)", len(got))
+	}
+	if got["veil_aaaaaaaa-1111-2222-3333-444444444444"] != "req_aaaa-1111" {
+		t.Errorf("aaa pair: got %q want req_aaaa-1111", got["veil_aaaaaaaa-1111-2222-3333-444444444444"])
+	}
+	if got["veil_bbbbbbbb-1111-2222-3333-444444444444"] != "req_bbbb-2222" {
+		t.Errorf("bbb pair: got %q want req_bbbb-2222", got["veil_bbbbbbbb-1111-2222-3333-444444444444"])
+	}
+	// SQL surface lock: the batch path MUST bind through ANY($1::text[]),
+	// the postgres-safe array form. A regression that string-joins the
+	// IDs into the SQL would open a SQL-injection vector even with the
+	// validCertID gate (the customer's DB role is read-only but the SQL
+	// shape is still load-bearing for review hygiene).
+	if !strings.Contains(db.calls[0].sql, "ANY($1::text[])") {
+		t.Errorf("batch SQL must use ANY($1::text[]); got: %s", db.calls[0].sql)
+	}
+}
+
+// TestGetRequestIDsByCertIDs_EmptyInputSkipsQuery is the defensive
+// guard that prevents an unbounded ANY(empty array) call from hitting
+// the DB.
+func TestGetRequestIDsByCertIDs_EmptyInputSkipsQuery(t *testing.T) {
+	t.Parallel()
+	db := &fakeDB{}
+	s := NewCertStoreWithDB(db)
+	got, err := s.GetRequestIDsByCertIDs(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("empty: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("empty result: got %d want 0", len(got))
+	}
+	if len(db.calls) != 0 {
+		t.Errorf("DB must not be queried with no input; got %d call(s)", len(db.calls))
 	}
 }
 

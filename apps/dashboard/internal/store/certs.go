@@ -29,8 +29,19 @@ import (
 // minimum the list page renders; the cert inspector reads the full
 // witness verify response via the witness gRPC client and combines
 // CertSummary + VerifyResult for the per-cert page.
+//
+// ID is the operator-facing certificate_id (e.g. "veil_<uuid>"). It is
+// the canonical display ID + URL slug. RequestID is the witness's
+// lookup key — the dashboard uses it to drive the GetCertificate RPC
+// because the upstream witness CertServer at
+// dual-sandbox-architecture/services/veil-witness/internal/server/
+// cert_server.go:44-53 looks up by request_id (the upstream DB index is
+// on request_id, per store.go:88-93). The two columns hold distinct
+// values: the assembler at assembler.go:89-92 mints certificate_id
+// independently from each claim's request_id.
 type CertSummary struct {
 	ID             string
+	RequestID      string
 	CustomerID     string
 	CreatedAt      time.Time
 	Verdict        string
@@ -120,6 +131,7 @@ func (s *CertStore) List(ctx context.Context, filter CertFilter, page Page) ([]C
 	listSQL.WriteString(`
 		SELECT
 			cert_id::text,
+			COALESCE(request_id::text, '') AS request_id,
 			customer_id::text,
 			created_at,
 			COALESCE(verdict, '') AS verdict,
@@ -143,6 +155,7 @@ func (s *CertStore) List(ctx context.Context, filter CertFilter, page Page) ([]C
 		var cs CertSummary
 		if err := rows.Scan(
 			&cs.ID,
+			&cs.RequestID,
 			&cs.CustomerID,
 			&cs.CreatedAt,
 			&cs.Verdict,
@@ -177,6 +190,12 @@ func (s *CertStore) List(ctx context.Context, filter CertFilter, page Page) ([]C
 func (s *CertStore) Stream(ctx context.Context, filter CertFilter) (pgx.Rows, error) {
 	where, args, _ := buildWhere(filter, 1)
 	sql := strings.Builder{}
+	// NOTE: column order intentionally omits request_id — the CSV export
+	// surface is operator-facing only (the certificate_id is what auditors
+	// quote in tickets). The Stream caller in handlers/certs.go scans 6
+	// fields in the same order as the historical SELECT projection; adding
+	// request_id to Stream would force a scan-order change in the CSV
+	// writer for a column nobody consumes off the export.
 	sql.WriteString(`
 		SELECT
 			cert_id::text,
@@ -199,11 +218,14 @@ func (s *CertStore) Stream(ctx context.Context, filter CertFilter) (pgx.Rows, er
 
 // Get returns the single CertSummary for id, or pgx.ErrNoRows when the id
 // is not present. The cert inspector calls this before invoking the
-// witness — when the row is absent the inspector renders a 404.
+// witness — when the row is absent the inspector renders a 404. The
+// returned CertSummary.RequestID is the witness's lookup key the
+// inspector / validator / reverify handlers pass to Verifier.Verify.
 func (s *CertStore) Get(ctx context.Context, id string) (CertSummary, error) {
 	const sql = `
 		SELECT
 			cert_id::text,
+			COALESCE(request_id::text, '') AS request_id,
 			customer_id::text,
 			created_at,
 			COALESCE(verdict, '') AS verdict,
@@ -215,6 +237,7 @@ func (s *CertStore) Get(ctx context.Context, id string) (CertSummary, error) {
 	row := s.db.QueryRow(ctx, sql, id)
 	if err := row.Scan(
 		&cs.ID,
+		&cs.RequestID,
 		&cs.CustomerID,
 		&cs.CreatedAt,
 		&cs.Verdict,
@@ -224,6 +247,52 @@ func (s *CertStore) Get(ctx context.Context, id string) (CertSummary, error) {
 		return CertSummary{}, err
 	}
 	return cs, nil
+}
+
+// GetRequestIDsByCertIDs returns a cert_id → request_id map for the given
+// cert IDs. Used by the bulk re-verify worker so a 100-cert batch resolves
+// every operator-facing cert_id to its witness-lookup request_id in ONE
+// query (vs N+1 round trips).
+//
+// IDs not present in the audit DB are simply omitted from the result map;
+// callers handle the missing key by recording a per-cert "not found"
+// outcome rather than blowing up the whole job.
+//
+// The pgx ANY($1::text[]) form is the postgres-friendly batch primitive;
+// the value goes in as a Go []string and pgx encodes the array literal
+// safely.
+func (s *CertStore) GetRequestIDsByCertIDs(ctx context.Context, certIDs []string) (map[string]string, error) {
+	out := make(map[string]string, len(certIDs))
+	if len(certIDs) == 0 {
+		return out, nil
+	}
+	// Defensive cap. The bulk handler already caps at 100; this stops a
+	// crafted call deeper in the stack from issuing an unbounded array.
+	if len(certIDs) > 1000 {
+		certIDs = certIDs[:1000]
+	}
+	const sql = `
+		SELECT
+			cert_id::text,
+			COALESCE(request_id::text, '') AS request_id
+		FROM veil_certificates
+		WHERE cert_id = ANY($1::text[])`
+	rows, err := s.db.Query(ctx, sql, certIDs)
+	if err != nil {
+		return nil, fmt.Errorf("store: batch request_id lookup: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var certID, requestID string
+		if err := rows.Scan(&certID, &requestID); err != nil {
+			return nil, fmt.Errorf("store: scan request_id row: %w", err)
+		}
+		out[certID] = requestID
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate request_id rows: %w", err)
+	}
+	return out, nil
 }
 
 // buildWhere produces a parameterized WHERE-suffix + the slice of args

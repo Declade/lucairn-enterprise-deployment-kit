@@ -114,9 +114,12 @@ auditDB:
 
 witness:
   # gRPC endpoint of the dsa-veil-witness service inside the customer
-  # cluster. The default points at the kit's bundled witness Service
-  # DNS in the lucairn namespace.
-  endpoint: "witness.lucairn.svc.cluster.local:50051"
+  # cluster. The default points at the kit's bundled witness Service DNS:
+  # chart name `veil-witness` in namespace `dsa-witness` (per
+  # charts/lucairn/charts/veil-witness/templates/service.yaml + values.yaml),
+  # cert RPC port 50058 (the upstream cert server listens on :50058 per
+  # dual-sandbox-architecture/services/veil-witness/cmd/server/main.go:454).
+  endpoint: "veil-witness.dsa-witness.svc.cluster.local:50058"
   # mTLS is reserved for a future slice. v1 speaks plaintext gRPC
   # constrained at the NetworkPolicy / Service mesh layer. Setting
   # tls.enabled=true today is a no-op; the dashboard binary ignores it

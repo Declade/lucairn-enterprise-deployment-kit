@@ -119,7 +119,11 @@ func New(opts Options) (*Server, error) {
 			Verifier:   opts.WitnessClient,
 			Configured: true,
 		}
-		bulkDeps = handlers.NewBulkReverifyDeps(opts.WitnessClient, renderer)
+		// Bulk worker needs the audit-DB resolver so cert_id values from
+		// the browser checkboxes get translated to the witness's
+		// request_id keys before driving Verify (witness lookup key is
+		// request_id, per upstream cert_server.go:44-53).
+		bulkDeps = handlers.NewBulkReverifyDeps(opts.WitnessClient, renderer, opts.CertStore)
 	} else {
 		// Unconfigured mode: deps still get rendered but every handler
 		// short-circuits to the not-configured page.
@@ -127,7 +131,7 @@ func New(opts Options) (*Server, error) {
 			Renderer:   renderer,
 			Configured: false,
 		}
-		bulkDeps = handlers.NewBulkReverifyDeps(nil, renderer)
+		bulkDeps = handlers.NewBulkReverifyDeps(nil, renderer, nil)
 	}
 
 	mux := http.NewServeMux()
