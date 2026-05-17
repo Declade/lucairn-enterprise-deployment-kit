@@ -63,6 +63,48 @@ env_value() {
   fi
 }
 
+# dashboard_opted_in returns 0 if the operator has opted in to the dashboard
+# via any of the three supported channels, 1 otherwise. Used by check_dashboard
+# AND check_container_images so both functions detect the COMPOSE_PROFILES
+# heuristic (FX-2 + FX-5 parity — without this, `--profile dashboard` alone
+# bypassed the image pre-flight check while still triggering the bootstrap
+# check; result was silent ImagePullBackOff for the dashboard image).
+#
+# Channels:
+#   1. LUCAIRN_DASHBOARD_ENABLED=true in the compose env file (dedicated flag).
+#   2. DOCTOR_INCLUDE_DASHBOARD=1 in the live shell env (Helm/kubectl path).
+#   3. COMPOSE_PROFILES contains "dashboard" (env file OR live shell) AND the
+#      compose file declares a dashboard profile (so we don't trip on stray
+#      values where the file doesn't actually wire it).
+#
+# Args: $1=env_file, $2=compose_file (optional; defaults to
+#       ${ROOT:-$(pwd)}/docker-compose.customer.yml).
+dashboard_opted_in() {
+  local env_file="$1"
+  local compose_file="${2:-${ROOT:-$(pwd)}/docker-compose.customer.yml}"
+
+  local enabled
+  enabled="$(env_value "$env_file" LUCAIRN_DASHBOARD_ENABLED)"
+  if [ "$enabled" = "true" ]; then
+    return 0
+  fi
+
+  if [ "${DOCTOR_INCLUDE_DASHBOARD:-0}" = "1" ]; then
+    return 0
+  fi
+
+  if [ -n "$compose_file" ] && [ -f "$compose_file" ] && grep -q 'profiles:.*dashboard' "$compose_file" 2>/dev/null; then
+    local compose_profiles_env compose_profiles_live
+    compose_profiles_env="$(env_value "$env_file" COMPOSE_PROFILES)"
+    compose_profiles_live="${COMPOSE_PROFILES:-}"
+    case ",${compose_profiles_env},${compose_profiles_live}," in
+      *,dashboard,*) return 0 ;;
+    esac
+  fi
+
+  return 1
+}
+
 is_secret_key() {
   local key="$1"
   case "$key" in
@@ -452,11 +494,11 @@ check_container_images() {
   # The dashboard ships under its own opt-in flag with an INDEPENDENT image
   # tag (LUCAIRN_DASHBOARD_IMAGE_TAG, defaults 0.1.0). Only verify when
   # opted-in so non-dashboard operators do not see a spurious failure for a
-  # registry path they never pull.
-  local dash_enabled dash_include dash_tag dash_ref
-  dash_enabled="$(env_value "$env_file" LUCAIRN_DASHBOARD_ENABLED)"
-  dash_include="${DOCTOR_INCLUDE_DASHBOARD:-0}"
-  if [ "$dash_enabled" = "true" ] || [ "$dash_include" = "1" ]; then
+  # registry path they never pull. dashboard_opted_in() recognises all three
+  # opt-in channels (env-flag, DOCTOR_INCLUDE_DASHBOARD=1, COMPOSE_PROFILES
+  # heuristic) so `--profile dashboard` alone no longer bypasses the check.
+  local dash_tag dash_ref
+  if dashboard_opted_in "$env_file"; then
     dash_tag="$(env_value "$env_file" LUCAIRN_DASHBOARD_IMAGE_TAG)"
     dash_tag="${dash_tag:-0.1.0}"
     dash_ref="${registry}/lucairn-dashboard:${dash_tag}"
@@ -836,30 +878,19 @@ check_sandbox_b_remote_coherent() {
 #     not running yet — doctor is supposed to run BEFORE compose up). The
 #     port is read from LUCAIRN_DASHBOARD_LISTEN_ADDR (defaults 8443).
 check_dashboard() {
-  local env_file="$1" enabled include
-  enabled="$(env_value "$env_file" LUCAIRN_DASHBOARD_ENABLED)"
-  include="${DOCTOR_INCLUDE_DASHBOARD:-0}"
+  local env_file="$1"
 
-  # If LUCAIRN_DASHBOARD_ENABLED is unset, fall back to detecting whether the
-  # operator opted in via COMPOSE_PROFILES=dashboard. This closes the silent-
-  # skip case where the dashboard ships behind a docker-compose profile but
-  # the operator never set the dedicated env var.
-  if [ -z "$enabled" ]; then
-    local compose_file="${ROOT:-$(pwd)}/docker-compose.customer.yml"
-    if [ -f "$compose_file" ] && grep -q 'profiles:.*dashboard' "$compose_file" 2>/dev/null; then
-      local compose_profiles_env compose_profiles_live
-      compose_profiles_env="$(env_value "$env_file" COMPOSE_PROFILES)"
-      compose_profiles_live="${COMPOSE_PROFILES:-}"
-      case ",${compose_profiles_env},${compose_profiles_live}," in
-        *,dashboard,*) enabled="true" ;;
-      esac
-    fi
-  fi
-
-  if [ "$enabled" != "true" ] && [ "$include" != "1" ]; then
+  # dashboard_opted_in() unifies the three opt-in channels (env-flag,
+  # DOCTOR_INCLUDE_DASHBOARD=1, COMPOSE_PROFILES heuristic) so this function
+  # and check_container_images stay in lockstep. See helper docstring near
+  # env_value() for the full channel list.
+  if ! dashboard_opted_in "$env_file"; then
     echo "dashboard: skipped (set LUCAIRN_DASHBOARD_ENABLED=true, add dashboard to COMPOSE_PROFILES, or DOCTOR_INCLUDE_DASHBOARD=1)"
     return 0
   fi
+
+  local include
+  include="${DOCTOR_INCLUDE_DASHBOARD:-0}"
 
   local pw
   pw="$(env_value "$env_file" LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD)"
