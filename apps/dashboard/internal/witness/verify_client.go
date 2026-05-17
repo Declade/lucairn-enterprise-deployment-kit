@@ -2,9 +2,10 @@
 // VeilCertificateService.
 //
 // Slice 3 surface:
+//
 //   - Verify(requestID) does TWO upstream RPCs:
-//       1. GetCertificate(request_id)    → VeilCertificate envelope
-//       2. VerifyCertificate(envelope)   → VerificationResult
+//     1. GetCertificate(request_id)    → VeilCertificate envelope
+//     2. VerifyCertificate(envelope)   → VerificationResult
 //     This is the canonical 2-RPC shape the witness has always served
 //     (per `dual-sandbox-architecture/proto/veil/v1/veil.proto`). The
 //     previous (pre-fix-up) dashboard called a fictional
@@ -17,10 +18,12 @@
 //     the audit-DB CertSummary (or via store.GetRequestIDsByCertIDs for
 //     the bulk path) before invoking Verify; passing a certificate_id
 //     here yields codes.NotFound from the witness.
+//
 //   - 30min in-memory cache (certs are immutable post-creation; the
 //     previous 5min TTL was overly conservative for a write-once corpus).
 //     The bulk re-verify path bypasses the cache via Invalidate; the
 //     per-cert "Re-verify now" button also bypasses via Invalidate.
+//
 //   - singleflight on the cache-miss path: N concurrent inspector
 //     requests for the same cert ID coalesce to one witness call pair
 //     instead of stampeding the witness with N round-trips.

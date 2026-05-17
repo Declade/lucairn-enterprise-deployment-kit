@@ -116,13 +116,13 @@ func (r *fakeRows) Scan(dest ...any) error {
 	}
 	return nil
 }
-func (r *fakeRows) Err() error                                  { return r.err }
-func (r *fakeRows) Close()                                      {}
-func (r *fakeRows) CommandTag() pgconn.CommandTag               { return pgconn.CommandTag{} }
+func (r *fakeRows) Err() error                                   { return r.err }
+func (r *fakeRows) Close()                                       {}
+func (r *fakeRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
 func (r *fakeRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
-func (r *fakeRows) Values() ([]any, error)                      { return nil, nil }
-func (r *fakeRows) RawValues() [][]byte                         { return nil }
-func (r *fakeRows) Conn() *pgx.Conn                             { return nil }
+func (r *fakeRows) Values() ([]any, error)                       { return nil, nil }
+func (r *fakeRows) RawValues() [][]byte                          { return nil }
+func (r *fakeRows) Conn() *pgx.Conn                              { return nil }
 
 // fakeBatchRows implements pgx.Rows for the 2-column cert_id → request_id
 // batch SELECT. The shape is distinct from fakeRows because the columns
@@ -149,13 +149,13 @@ func (r *fakeBatchRows) Scan(dest ...any) error {
 	}
 	return nil
 }
-func (r *fakeBatchRows) Err() error                                  { return nil }
-func (r *fakeBatchRows) Close()                                      {}
-func (r *fakeBatchRows) CommandTag() pgconn.CommandTag               { return pgconn.CommandTag{} }
+func (r *fakeBatchRows) Err() error                                   { return nil }
+func (r *fakeBatchRows) Close()                                       {}
+func (r *fakeBatchRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
 func (r *fakeBatchRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
-func (r *fakeBatchRows) Values() ([]any, error)                      { return nil, nil }
-func (r *fakeBatchRows) RawValues() [][]byte                         { return nil }
-func (r *fakeBatchRows) Conn() *pgx.Conn                             { return nil }
+func (r *fakeBatchRows) Values() ([]any, error)                       { return nil, nil }
+func (r *fakeBatchRows) RawValues() [][]byte                          { return nil }
+func (r *fakeBatchRows) Conn() *pgx.Conn                              { return nil }
 
 type fakeRow struct {
 	countVal int
