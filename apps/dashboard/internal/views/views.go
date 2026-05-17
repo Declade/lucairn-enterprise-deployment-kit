@@ -121,10 +121,18 @@ func componentTemplateNames() ([]string, error) {
 }
 
 // PageData is the common base struct templates receive.
+//
+// ActivePage tells the sidebar component which nav item should render as
+// active (visual `is-active` class + `aria-current="page"`). Handlers MUST
+// set it to the matching slug for the page they are about to render
+// (currently only "home"; later slices add "certs", "health", "audit",
+// "compliance", "keys"). An empty value leaves the sidebar with no
+// active item — appropriate for the login surface.
 type PageData struct {
-	Title     string
-	User      auth.User
-	CSRFToken string
-	Flash     string
-	NextPath  string
+	Title      string
+	User       auth.User
+	CSRFToken  string
+	Flash      string
+	NextPath   string
+	ActivePage string
 }

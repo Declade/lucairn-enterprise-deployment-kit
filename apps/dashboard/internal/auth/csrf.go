@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
-	"time"
 )
 
 // CSRFCookieName carries the double-submit token. It is NOT HttpOnly because
@@ -33,6 +32,13 @@ func IssueToken(w http.ResponseWriter, r *http.Request) (string, error) {
 		return "", err
 	}
 	tok := base64.RawURLEncoding.EncodeToString(buf)
+	// CSRF cookie lifetime is intentionally aligned with the SESSION
+	// lifetime, not pinned to a wall-clock 8h expiry. Setting MaxAge: 0
+	// (and omitting Expires) makes this a session cookie — it lives as
+	// long as the browser session, matching the sliding-expiry session
+	// cookie. Previously the CSRF cookie's absolute 8h Expires could
+	// outlive the (sliding) session cookie, leaving a window where a
+	// stale CSRF token was accepted against a freshly-rotated session.
 	http.SetCookie(w, &http.Cookie{
 		Name:     CSRFCookieName,
 		Value:    tok,
@@ -40,7 +46,7 @@ func IssueToken(w http.ResponseWriter, r *http.Request) (string, error) {
 		HttpOnly: false,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
-		Expires:  time.Now().Add(8 * time.Hour),
+		MaxAge:   0,
 	})
 	return tok, nil
 }

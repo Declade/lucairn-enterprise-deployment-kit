@@ -7,35 +7,35 @@
     <span>Lucairn</span>
   </div>
   <nav class="lc-sidebar-nav">
-    <a class="lc-sidebar-link is-active" href="/dashboard">
+    <a class="lc-sidebar-link{{ if eq .ActivePage "home" }} is-active{{ end }}" href="/dashboard"{{ if eq .ActivePage "home" }} aria-current="page"{{ end }}>
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 12 L12 4 L21 12 V20 H14 V14 H10 V20 H3 Z"/></svg>
       <span>Home</span>
     </a>
-    <a class="lc-sidebar-link" href="/certs">
+    <a class="lc-sidebar-link{{ if eq .ActivePage "certs" }} is-active{{ end }}" href="/certs"{{ if eq .ActivePage "certs" }} aria-current="page"{{ end }}>
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M6 4 H18 V20 H6 Z"/><path d="M9 9 H15"/><path d="M9 13 H15"/><path d="M9 17 H13"/></svg>
       <span>Certs</span>
     </a>
-    <a class="lc-sidebar-link" href="/health">
+    <a class="lc-sidebar-link{{ if eq .ActivePage "health" }} is-active{{ end }}" href="/health"{{ if eq .ActivePage "health" }} aria-current="page"{{ end }}>
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 6 H20 V18 H4 Z"/><path d="M4 9 H20"/><circle cx="7" cy="13" r="1"/></svg>
       <span>Health</span>
     </a>
-    <a class="lc-sidebar-link" href="/audit">
+    <a class="lc-sidebar-link{{ if eq .ActivePage "audit" }} is-active{{ end }}" href="/audit"{{ if eq .ActivePage "audit" }} aria-current="page"{{ end }}>
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 4 H20 V20 H4 Z"/><path d="M4 9 H20"/><path d="M9 4 V20"/></svg>
       <span>Audit log</span>
     </a>
-    <a class="lc-sidebar-link" href="/compliance">
+    <a class="lc-sidebar-link{{ if eq .ActivePage "compliance" }} is-active{{ end }}" href="/compliance"{{ if eq .ActivePage "compliance" }} aria-current="page"{{ end }}>
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 4 L20 8 V14 C20 17.5 16 20 12 21 C8 20 4 17.5 4 14 V8 Z"/><path d="M9 12 L11 14 L15 10"/></svg>
       <span>Compliance</span>
     </a>
     {{ if hasRole .User "admin" }}
-    <a class="lc-sidebar-link" href="/keys">
+    <a class="lc-sidebar-link{{ if eq .ActivePage "keys" }} is-active{{ end }}" href="/keys"{{ if eq .ActivePage "keys" }} aria-current="page"{{ end }}>
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="12" r="4"/><path d="M12 12 L20 12"/><path d="M17 12 V15"/><path d="M19 12 V14"/></svg>
       <span>API keys</span>
     </a>
     {{ end }}
   </nav>
   <footer class="lc-sidebar-footer">
-    <small class="lc-text-muted">Slice 1 — auth + shell foundation</small>
+    <small class="lc-text-muted">Lucairn Dashboard v0.1.0</small>
   </footer>
 </aside>
 {{ end }}

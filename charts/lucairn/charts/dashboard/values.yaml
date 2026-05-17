@@ -11,7 +11,11 @@ replicaCount: 1
 
 image:
   repository: lucairn-dashboard
-  tag: ""              # empty → defaults to chart appVersion via deployment template
+  # Empty → defaults to chart appVersion via the deployment template. NOTE:
+  # this is INDEPENDENT from charts/lucairn/values.yaml global.imageTag —
+  # bumping --set global.imageTag=X will NOT bump the dashboard tag. The
+  # dashboard ships on its own release cadence.
+  tag: ""
   pullPolicy: IfNotPresent
 
 service:
@@ -72,5 +76,14 @@ securityContext:
 containerSecurityContext:
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true
+  # Pod Security Standards "restricted" requires runAsNonRoot to be set at
+  # the CONTAINER level, not only the pod level — the pod-level value is
+  # advisory and a container can override it. Pin runAsUser to the same
+  # non-root UID (65532, nobody) as the pod-level context to keep the two
+  # in lockstep on every render.
+  runAsNonRoot: true
+  runAsUser: 65532
+  seccompProfile:
+    type: RuntimeDefault
   capabilities:
     drop: ["ALL"]

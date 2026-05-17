@@ -3,11 +3,15 @@
 # Slice 1 compose smoke test for the Lucairn Enterprise Dashboard.
 #
 # Brings the dashboard container up under docker-compose.customer.yml +
-# --profile dashboard, hits /healthz and /login, then tears down.
+# --profile dashboard, then exercises:
+#   - GET /healthz (must return 200; readiness signal for liveness probe)
+#   - GET /login   (must return 200, render the Sign-in form, AND emit
+#                   the hidden CSRF input that LoginPost requires).
+# Tears the container down on exit.
 #
 # Exits 0 on success. Designed to be runnable by CI runners that already
 # have docker compose. Locally this script is what you run to confirm a
-# fresh customer.env wiring will Just Work.
+# fresh customer.env wiring will Just Work end-to-end.
 
 set -euo pipefail
 
@@ -61,10 +65,18 @@ if ! curl -fsS http://127.0.0.1:8443/healthz; then
 fi
 echo ""
 
-echo "compose-smoke: hitting /login (expect 200 + HTML form)"
+echo "compose-smoke: hitting /login (expect 200 + HTML form + CSRF hidden input)"
 LOGIN_BODY=$(curl -fsS -L http://127.0.0.1:8443/login)
 if ! echo "$LOGIN_BODY" | grep -q "Sign in"; then
   echo "compose-smoke: /login did not contain 'Sign in'" >&2
+  echo "$LOGIN_BODY" >&2
+  exit 1
+fi
+# The login form renders a hidden `<input ... name="csrf" ...>` field that
+# LoginPost requires; without it the form would 401 on every submit. Assert
+# the field is present so a regression that drops it would fail the smoke.
+if ! echo "$LOGIN_BODY" | grep -qE 'name="csrf"'; then
+  echo "compose-smoke: /login form did not render the hidden CSRF input" >&2
   echo "$LOGIN_BODY" >&2
   exit 1
 fi

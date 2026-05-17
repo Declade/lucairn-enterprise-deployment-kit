@@ -79,12 +79,19 @@ services:
   dsa-gateway:
     image_tag: ""
 
-# Optional images used only when `--profile certification` is activated.
-# These pull from the same registry but their tag publication cadence
-# may differ. doctor does not warn on these unless certification profile
-# is selected.
+# Optional images used only when `--profile certification` or
+# `--profile dashboard` is activated. These pull from the same registry but
+# their tag publication cadence may differ. doctor does not warn on these
+# unless the matching profile is selected.
+#
+# The dashboard ships on an INDEPENDENT release cadence from the dsa-*
+# services. Operators MAY override the bundled default by exporting
+# LUCAIRN_DASHBOARD_IMAGE_TAG in customer.env; doctor surfaces a warning if
+# the env-resolved tag differs from the value pinned here.
 optional_services:
   dsa-cert-builder:
     image_tag: ""
   dsa-cert-portal:
     image_tag: ""
+  lucairn-dashboard:
+    image_tag: "0.1.0"

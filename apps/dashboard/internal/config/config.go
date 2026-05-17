@@ -1,10 +1,15 @@
 // Package config loads dashboard configuration from environment variables.
 //
 // Slice 1 surface: listen address + bootstrap admin email/password + session
-// signing secret (reserved for future signed-cookie use; in-memory sessions
-// today do not consume it but it is required so deploys that flip to signed
-// cookies in a later slice fail-fast on missing config rather than silently
-// degrading).
+// signing secret.
+//
+// LUCAIRN_DASHBOARD_SESSION_SECRET is intentionally OPTIONAL in Slice 1.
+// The in-memory session store uses opaque random IDs and does NOT consume
+// the secret. The value is reserved for Slice 2's flip to signed-cookie
+// sessions; once Slice 2 lands, the default in compose/values.yaml and the
+// enforcement in this loader will both flip together. Keeping the field
+// surface-shaped today lets operators stage rotation tooling early without
+// dragging an enforcement gate into a release that does not need it.
 package config
 
 import (
@@ -28,7 +33,9 @@ type Config struct {
 	ListenAddr        string
 	BootstrapEmail    string
 	BootstrapPassword string
-	SessionSecret     string
+	// SessionSecret is read into the Config but NOT enforced in Slice 1.
+	// Slice 2 will flip the enforcement when signed-cookie sessions land.
+	SessionSecret string
 }
 
 // Load reads configuration from the environment and applies safe defaults.
