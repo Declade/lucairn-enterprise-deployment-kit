@@ -4,6 +4,7 @@
 package auth
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"strings"
@@ -66,32 +67,36 @@ func NewLocalAuthenticator(email, password string) (*LocalAuthenticator, error) 
 	return &LocalAuthenticator{email: email, hashedPass: hashed}, nil
 }
 
-// Authenticate verifies an email + password pair in constant time. The match
-// boolean is funnelled through subtle.ConstantTimeCompare AFTER bcrypt has
-// returned its own constant-time verdict so any subsequent boolean equality
-// check is non-leaking. Documented per PRD § Slice 1 brief: bcrypt itself is
-// constant-time but the wrapping logic still uses subtle for the 1==1 path.
+// Authenticate verifies an email + password pair without leaking which half
+// failed and without leaking input lengths.
+//
+// Timing-side-channel hygiene:
+//   - bcrypt.CompareHashAndPassword is itself constant-time over the configured
+//     cost — it always hashes the supplied password before comparing, so it
+//     runs unconditionally on every call (including unknown-email paths) to
+//     prevent username enumeration via response-time correlation.
+//   - subtle.ConstantTimeCompare short-circuits on a length mismatch, which
+//     would otherwise leak the configured email's length. We defeat that by
+//     compressing both sides through SHA-256 to fixed-length 32-byte digests
+//     before the compare. Any difference in input length is absorbed by the
+//     hash, so the equality compare always operates on equal-length inputs.
+//
+// The previous implementation wrapped the boolean outcome in another
+// subtle.ConstantTimeCompare — this provided no defense against a
+// realistic attacker (the `if x != 1` branch leaks the same one bit), so it
+// has been removed in favor of an honest, documented, fail-shut path.
 func (a *LocalAuthenticator) Authenticate(email, password string) (User, error) {
-	emailMatch := subtle.ConstantTimeCompare(
-		[]byte(strings.TrimSpace(strings.ToLower(email))),
-		[]byte(a.email),
-	) == 1
+	suppliedEmailHash := sha256.Sum256([]byte(strings.TrimSpace(strings.ToLower(email))))
+	configuredEmailHash := sha256.Sum256([]byte(a.email))
+	emailMatch := subtle.ConstantTimeCompare(suppliedEmailHash[:], configuredEmailHash[:]) == 1
 
+	// Run bcrypt unconditionally so unknown-email and wrong-password paths
+	// have identical wall-clock cost.
 	bcryptErr := bcrypt.CompareHashAndPassword(a.hashedPass, []byte(password))
 	passwordMatch := bcryptErr == nil
 
-	matched := emailMatch && passwordMatch
-	// Constant-time wrap on the boolean outcome. Reduces side-channel surface
-	// in callers that subsequently use `match == true`.
-	if subtle.ConstantTimeCompare([]byte{boolByte(matched)}, []byte{1}) != 1 {
+	if !emailMatch || !passwordMatch {
 		return User{}, ErrInvalidCredentials
 	}
 	return User{Email: a.email, Role: RoleAdmin}, nil
-}
-
-func boolByte(b bool) byte {
-	if b {
-		return 1
-	}
-	return 0
 }

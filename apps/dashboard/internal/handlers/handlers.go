@@ -66,6 +66,15 @@ func (d *Deps) LoginPost(w http.ResponseWriter, r *http.Request) {
 		d.renderLoginError(w, r, "Invalid email or password.")
 		return
 	}
+	// Invalidate any pre-existing session ID before minting a new one.
+	// Without this, an attacker who pinned a known session cookie on the
+	// victim's browser (e.g. via a subdomain XSS or network injection prior
+	// to first login) could "ride" the post-login session under the
+	// attacker-known ID — the classic session-fixation pattern. Cookie
+	// rotation closes that window on every successful authentication.
+	if existing, err := r.Cookie(auth.SessionCookieName); err == nil && existing.Value != "" {
+		d.Sessions.Delete(existing.Value)
+	}
 	sess, err := d.Sessions.Create(user)
 	if err != nil {
 		log.Printf("login_post: session create: %v", err)
@@ -111,9 +120,10 @@ func (d *Deps) DashboardHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := views.PageData{
-		Title:     "Home",
-		User:      user,
-		CSRFToken: tok,
+		Title:      "Home",
+		User:       user,
+		CSRFToken:  tok,
+		ActivePage: "home",
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := d.Renderer.Render(w, "dashboard_home.html.tmpl", data); err != nil {

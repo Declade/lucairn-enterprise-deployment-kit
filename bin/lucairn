@@ -449,6 +449,23 @@ check_container_images() {
     fi
   done
 
+  # The dashboard ships under its own opt-in flag with an INDEPENDENT image
+  # tag (LUCAIRN_DASHBOARD_IMAGE_TAG, defaults 0.1.0). Only verify when
+  # opted-in so non-dashboard operators do not see a spurious failure for a
+  # registry path they never pull.
+  local dash_enabled dash_include dash_tag dash_ref
+  dash_enabled="$(env_value "$env_file" LUCAIRN_DASHBOARD_ENABLED)"
+  dash_include="${DOCTOR_INCLUDE_DASHBOARD:-0}"
+  if [ "$dash_enabled" = "true" ] || [ "$dash_include" = "1" ]; then
+    dash_tag="$(env_value "$env_file" LUCAIRN_DASHBOARD_IMAGE_TAG)"
+    dash_tag="${dash_tag:-0.1.0}"
+    dash_ref="${registry}/lucairn-dashboard:${dash_tag}"
+    if ! docker manifest inspect "$dash_ref" >/dev/null 2>&1; then
+      echo "container images: failed ($dash_ref not pullable; check registry credentials or image tag)"
+      failed=1
+    fi
+  fi
+
   if [ "$failed" -eq 0 ]; then
     echo "container images: ok"
   fi
@@ -804,22 +821,43 @@ check_sandbox_b_remote_coherent() {
 # Triggered when:
 #   - $LUCAIRN_DASHBOARD_ENABLED is truthy in the compose env (Compose path
 #     opt-in convention), OR
+#   - the compose env's COMPOSE_PROFILES (or live env) contains "dashboard"
+#     AND the compose file declares the dashboard profile (operator opted in
+#     via `--profile dashboard` without setting the dedicated env var), OR
 #   - --include-dashboard was passed (Helm path opt-in; doctor's caller can
 #     export DOCTOR_INCLUDE_DASHBOARD=1 to flip it for kubectl-based runs).
 #
 # What it checks:
-#   - LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD is present (or a Helm-managed
-#     secret named lucairn-dashboard-bootstrap-admin exists in the cluster
-#     when kubectl is available + DOCTOR_INCLUDE_DASHBOARD=1).
+#   - LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD is present AND ≥12 chars (or a
+#     Helm-managed secret named lucairn-dashboard-bootstrap-admin exists in
+#     the cluster when kubectl is available + DOCTOR_INCLUDE_DASHBOARD=1).
 #   - The dashboard container's /healthz returns 200 within 30s when the
 #     compose profile is active (best-effort; non-fatal if container is
-#     not running yet — doctor is supposed to run BEFORE compose up).
+#     not running yet — doctor is supposed to run BEFORE compose up). The
+#     port is read from LUCAIRN_DASHBOARD_LISTEN_ADDR (defaults 8443).
 check_dashboard() {
   local env_file="$1" enabled include
   enabled="$(env_value "$env_file" LUCAIRN_DASHBOARD_ENABLED)"
   include="${DOCTOR_INCLUDE_DASHBOARD:-0}"
+
+  # If LUCAIRN_DASHBOARD_ENABLED is unset, fall back to detecting whether the
+  # operator opted in via COMPOSE_PROFILES=dashboard. This closes the silent-
+  # skip case where the dashboard ships behind a docker-compose profile but
+  # the operator never set the dedicated env var.
+  if [ -z "$enabled" ]; then
+    local compose_file="${ROOT:-$(pwd)}/docker-compose.customer.yml"
+    if [ -f "$compose_file" ] && grep -q 'profiles:.*dashboard' "$compose_file" 2>/dev/null; then
+      local compose_profiles_env compose_profiles_live
+      compose_profiles_env="$(env_value "$env_file" COMPOSE_PROFILES)"
+      compose_profiles_live="${COMPOSE_PROFILES:-}"
+      case ",${compose_profiles_env},${compose_profiles_live}," in
+        *,dashboard,*) enabled="true" ;;
+      esac
+    fi
+  fi
+
   if [ "$enabled" != "true" ] && [ "$include" != "1" ]; then
-    echo "dashboard: skipped (set LUCAIRN_DASHBOARD_ENABLED=true or DOCTOR_INCLUDE_DASHBOARD=1)"
+    echo "dashboard: skipped (set LUCAIRN_DASHBOARD_ENABLED=true, add dashboard to COMPOSE_PROFILES, or DOCTOR_INCLUDE_DASHBOARD=1)"
     return 0
   fi
 
@@ -846,12 +884,20 @@ check_dashboard() {
   fi
 
   if have curl; then
-    local code
-    code="$(curl -sS -o /dev/null -w %{http_code} --max-time 3 http://127.0.0.1:8443/healthz 2>/dev/null || true)"
+    local dash_addr dash_port code
+    dash_addr="$(env_value "$env_file" LUCAIRN_DASHBOARD_LISTEN_ADDR)"
+    dash_port="${dash_addr##*:}"
+    # Strip trailing whitespace; fall back if value did not contain a colon
+    # or was empty.
+    dash_port="${dash_port//[[:space:]]/}"
+    case "$dash_port" in
+      ''|*[!0-9]*) dash_port="8443" ;;
+    esac
+    code="$(curl -sS -o /dev/null -w %{http_code} --max-time 3 "http://127.0.0.1:${dash_port}/healthz" 2>/dev/null || true)"
     case "$code" in
-      200) echo "dashboard healthz: ok (200)" ;;
-      ""|000) echo "dashboard healthz: not started (no listener on :8443 — expected when doctor runs pre-up)" ;;
-      *) echo "dashboard healthz: failed ($code)"; return 1 ;;
+      200) echo "dashboard healthz: ok (200 on :${dash_port})" ;;
+      ""|000) echo "dashboard healthz: not started (no listener on :${dash_port} — expected when doctor runs pre-up)" ;;
+      *) echo "dashboard healthz: failed ($code on :${dash_port})"; return 1 ;;
     esac
   else
     echo "dashboard healthz: skipped (curl unavailable)"

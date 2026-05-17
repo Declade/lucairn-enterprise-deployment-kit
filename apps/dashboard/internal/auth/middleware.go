@@ -9,9 +9,18 @@ import (
 // PublicPaths is the closed allowlist of paths that do NOT require an
 // authenticated session. Everything else is default-deny. New unauthenticated
 // surfaces must be added here explicitly — there is no wildcard escape hatch.
+//
+// Contract: matching is EXACT string equality on the request path. Both the
+// no-trailing-slash and trailing-slash forms MUST be listed here if both are
+// expected. The /healthz and /login surfaces register both forms because
+// liveness probes (cluster + reverse-proxy) and operators typing the URL by
+// hand both occur in production; without the trailing-slash entry, a
+// /healthz/ probe redirects to /login and the readiness signal silently fails.
 var publicPaths = map[string]struct{}{
-	"/login":   {},
-	"/healthz": {},
+	"/login":    {},
+	"/login/":   {},
+	"/healthz":  {},
+	"/healthz/": {},
 }
 
 // publicPrefixes covers static asset trees.
@@ -22,13 +31,17 @@ var publicPrefixes = []string{
 // LoadSession is a non-blocking middleware that resolves the session cookie
 // and stores the matching session on the request context. It does NOT reject
 // missing/invalid sessions — RequireSession does.
+//
+// The read-and-refresh uses store.GetAndTouch so the lookup and the LastSeen
+// update happen atomically; a separate Get + Touch sequence opened a small
+// TOCTOU window where a concurrent Delete (logout, GC) left the middleware
+// holding a stale snapshot.
 func LoadSession(store SessionStore) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			c, err := r.Cookie(SessionCookieName)
 			if err == nil && c.Value != "" {
-				if sess, ok := store.Get(c.Value); ok {
-					store.Touch(c.Value)
+				if sess, ok := store.GetAndTouch(c.Value); ok {
 					r = withSession(r, sess)
 				}
 			}
@@ -87,7 +100,7 @@ func isPublicPath(path string) bool {
 
 func redirectToLogin(w http.ResponseWriter, r *http.Request) {
 	target := "/login"
-	if r.URL.Path != "" && r.URL.Path != "/login" {
+	if r.URL.Path != "" && r.URL.Path != "/login" && r.URL.Path != "/login/" {
 		q := url.Values{}
 		q.Set("next", r.URL.RequestURI())
 		target += "?" + q.Encode()

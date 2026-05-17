@@ -18,6 +18,11 @@ func healthzHandler(version string) http.HandlerFunc {
 		Version string `json:"version"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		// /healthz is hit by liveness probes every few seconds; intermediate
+		// caches MUST NOT serve stale 200 bodies or the readiness signal lies
+		// silently. Cache-Control: no-store also keeps it out of access-log
+		// CDN aggregations on operators who front the dashboard with a CDN.
+		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(healthzBody{Status: "ok", Version: version})

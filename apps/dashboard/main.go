@@ -4,7 +4,8 @@
 // lucairn-enterprise-deployment-kit. Customer's cluster operates this; no
 // telemetry or operational state crosses the customer-vendor boundary.
 //
-// See PRD: /Users/marcschuelke/Opus Advisor/specs/prd-2026-05-17-enterprise-dashboard.md
+// Design: specs/prd-2026-05-17-enterprise-dashboard.md (internal Lucairn
+// planning repo).
 package main
 
 import (

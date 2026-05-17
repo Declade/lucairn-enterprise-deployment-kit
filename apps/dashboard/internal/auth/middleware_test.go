@@ -42,7 +42,10 @@ func TestRequireSession_AllowsPublic(t *testing.T) {
 	})
 	chain := LoadSession(store)(RequireSession()(final))
 
-	for _, path := range []string{"/login", "/healthz", "/static/css/x.css"} {
+	// Trailing-slash variants of /login and /healthz MUST also pass through;
+	// liveness probes typed with /healthz/ otherwise redirect to /login and
+	// the readiness signal silently fails (FX-17 hardening).
+	for _, path := range []string{"/login", "/login/", "/healthz", "/healthz/", "/static/css/x.css"} {
 		r := httptest.NewRequest("GET", path, nil)
 		w := httptest.NewRecorder()
 		chain.ServeHTTP(w, r)

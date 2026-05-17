@@ -16,10 +16,16 @@ const SessionCookieName = "lucairn_dash_sess"
 
 // SessionStore persists session records. Slice 1 ships an in-memory
 // implementation; later slices may swap to SQLite without changing callers.
+//
+// GetAndTouch is the canonical read-and-refresh path used by the session
+// middleware: it MUST be atomic (one critical section in the in-memory
+// implementation) to avoid a Get/Touch TOCTOU window where a concurrent
+// Delete (e.g. logout, GC) leaves the middleware with a stale snapshot.
 type SessionStore interface {
 	Create(user User) (*Session, error)
 	Get(id string) (*Session, bool)
 	Touch(id string) bool
+	GetAndTouch(id string) (*Session, bool)
 	Delete(id string)
 }
 
@@ -34,8 +40,13 @@ type Session struct {
 // MemorySessionStore keeps sessions in a process-local map. Cleared on
 // restart; that is acceptable because Slice 1 has no persistence path and
 // later slices replace this with a DB-backed implementation.
+//
+// Locking model: a single sync.Mutex (NOT RWMutex). Get + Touch + Delete
+// are all short operations on a Go map; the read-heavy workload that
+// motivates an RWMutex does not exist here, and the single-lock model
+// lets us guarantee atomicity for GetAndTouch without lock-promotion games.
 type MemorySessionStore struct {
-	mu          sync.RWMutex
+	mu          sync.Mutex
 	entries     map[string]*Session
 	idleTimeout time.Duration
 	gcInterval  time.Duration
@@ -85,10 +96,12 @@ func (s *MemorySessionStore) Create(user User) (*Session, error) {
 	return sess, nil
 }
 
-// Get returns the session if it exists AND has not expired.
+// Get returns the session if it exists AND has not expired. It does NOT
+// refresh the LastSeen timestamp — callers that want sliding-expiry
+// semantics should use GetAndTouch.
 func (s *MemorySessionStore) Get(id string) (*Session, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	sess, ok := s.entries[id]
 	if !ok {
 		return nil, false
@@ -100,10 +113,37 @@ func (s *MemorySessionStore) Get(id string) (*Session, bool) {
 }
 
 // Touch refreshes the LastSeen timestamp. Returns true if the session existed
-// and was refreshed.
+// and was refreshed. Retained for callers that need an explicit "extend"
+// operation distinct from "read".
 func (s *MemorySessionStore) Touch(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.touchLocked(id)
+}
+
+// GetAndTouch returns the session AND refreshes the LastSeen timestamp in a
+// single critical section. This is the read-and-refresh path the session
+// middleware uses on every authenticated request — bundling the two
+// operations closes a small TOCTOU window where a concurrent Delete could
+// slip between an unlocked Get and a follow-up Touch.
+func (s *MemorySessionStore) GetAndTouch(id string) (*Session, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.entries[id]
+	if !ok {
+		return nil, false
+	}
+	if s.now().Sub(sess.LastSeen) > s.idleTimeout {
+		delete(s.entries, id)
+		return nil, false
+	}
+	sess.LastSeen = s.now()
+	return sess, true
+}
+
+// touchLocked is the inner refresh used by Touch (and previously by an
+// older split LoadSession path). Caller must hold s.mu.
+func (s *MemorySessionStore) touchLocked(id string) bool {
 	sess, ok := s.entries[id]
 	if !ok {
 		return false

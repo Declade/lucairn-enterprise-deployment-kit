@@ -83,7 +83,9 @@
   padding: 0 24px;
   height: 56px;
   border-bottom: 1px solid var(--color-border-default);
-  background: var(--color-bg-panel);
+  background: rgba(7, 7, 8, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .lc-topbar-title {
@@ -224,6 +226,7 @@
 
 .lc-login-flash {
   border: 1px solid var(--color-status-fail);
+  background: rgba(239, 68, 68, 0.08);
   border-radius: var(--radius-button);
   padding: 10px 12px;
   margin-bottom: 16px;
@@ -371,4 +374,18 @@
 .lc-statusdot-time {
   color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* FX-7: keyboard accessibility — Sign In button, sidebar nav items, and
+ * topbar buttons must show a visible focus ring when navigated via
+ * keyboard. :focus-visible scopes the ring to keyboard interactions only
+ * so mouse-click users do not see the ring. The ring uses the accent
+ * token + an outline-offset so it sits proud of the control rather than
+ * inside it.
+ */
+.lc-login-button:focus-visible,
+.lc-sidebar-link:focus-visible,
+.lc-topbar-button:focus-visible {
+  outline: 2px solid var(--color-accent-highlight);
+  outline-offset: 2px;
 }

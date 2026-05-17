@@ -2,34 +2,34 @@
 <section class="lc-page-section">
   <header class="lc-page-header">
     <h1 class="lc-page-title">Operator overview</h1>
-    <p class="lc-page-lede">Hello, <strong>{{ .User.Email }}</strong>. The dashboard foundation is online. Cert browser, server health, audit log, compliance export, and API key management are coming online in subsequent slices.</p>
+    <p class="lc-page-lede">Hello, <strong>{{ .User.Email }}</strong>. The dashboard foundation is online. Additional views &mdash; certificate browser, server health, audit log, compliance export, and API key management &mdash; will be added in upcoming kit releases.</p>
   </header>
   <div class="lc-card-grid">
     <article class="lc-card">
       <header class="lc-card-header">
         <h2 class="lc-card-title">Cert browser</h2>
-        {{ template "statusdot" dict "Status" "warn" "Label" "Coming in Slice 3" "Timestamp" "" }}
+        {{ template "statusdot" dict "Status" "warn" "Label" "Available in a later kit release" "Timestamp" "" }}
       </header>
-      <p class="lc-card-body">Filter, sort, and inspect Veil certificates. Includes audit-defensibility-grade per-claim signature breakdown.</p>
+      <p class="lc-card-body">Filter, sort, and inspect Lucairn certificates. Includes audit-defensibility-grade per-claim signature breakdown.</p>
     </article>
     <article class="lc-card">
       <header class="lc-card-header">
         <h2 class="lc-card-title">Server health</h2>
-        {{ template "statusdot" dict "Status" "warn" "Label" "Coming in Slice 4" "Timestamp" "" }}
+        {{ template "statusdot" dict "Status" "warn" "Label" "Available in a later kit release" "Timestamp" "" }}
       </header>
       <p class="lc-card-body">One screen per kit service; rolling readiness polled from each service's health endpoint.</p>
     </article>
     <article class="lc-card">
       <header class="lc-card-header">
         <h2 class="lc-card-title">Audit log</h2>
-        {{ template "statusdot" dict "Status" "warn" "Label" "Coming in Slice 6" "Timestamp" "" }}
+        {{ template "statusdot" dict "Status" "warn" "Label" "Available in a later kit release" "Timestamp" "" }}
       </header>
       <p class="lc-card-body">Filter audit events with render-time PII guard; reveal raw is admin-only and logged.</p>
     </article>
     <article class="lc-card">
       <header class="lc-card-header">
         <h2 class="lc-card-title">Compliance export</h2>
-        {{ template "statusdot" dict "Status" "warn" "Label" "Coming in Slice 7" "Timestamp" "" }}
+        {{ template "statusdot" dict "Status" "warn" "Label" "Available in a later kit release" "Timestamp" "" }}
       </header>
       <p class="lc-card-body">PDF aggregation broken down by the three-category AI Act scheme. Cover page cites kit version + image digests.</p>
     </article>
@@ -37,7 +37,7 @@
     <article class="lc-card">
       <header class="lc-card-header">
         <h2 class="lc-card-title">API keys</h2>
-        {{ template "statusdot" dict "Status" "warn" "Label" "Coming in Slice 5" "Timestamp" "" }}
+        {{ template "statusdot" dict "Status" "warn" "Label" "Available in a later kit release" "Timestamp" "" }}
       </header>
       <p class="lc-card-body">Mint, rotate, revoke, and inspect lcr_live_* keys via the gateway admin surface.</p>
     </article>

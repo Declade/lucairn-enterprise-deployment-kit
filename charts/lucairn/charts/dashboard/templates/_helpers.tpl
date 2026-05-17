@@ -14,6 +14,21 @@ Helper templates for the dashboard sub-chart.
 {{- end -}}
 {{- end -}}
 
+{{- /*
+  dashboard.image
+  ────────────────
+  The dashboard image tag is INDEPENDENT from global.imageTag — bumping
+  the umbrella chart's --set global.imageTag=X does NOT bump this image's
+  tag. The dashboard ships on its own release cadence (bound to the kit's
+  appVersion via .Chart.AppVersion). Operators override the dashboard tag
+  via .Values.image.tag (or LUCAIRN_DASHBOARD_IMAGE_TAG on the compose
+  path). TODO(slice-2 design review): decide whether to passthrough
+  global.imageTag here when dashboard releases are aligned with kit
+  releases, or keep the independent cadence forever.
+  TODO(bug-hunter F-14): add a chart test asserting that
+  .Values.bootstrapAdmin.passwordSecretName override path renders the
+  Secret-less code path correctly.
+*/ -}}
 {{- define "dashboard.image" -}}
 {{- $registry := default "" .Values.global.imageRegistry -}}
 {{- $repo := .Values.image.repository -}}
