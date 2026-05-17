@@ -62,7 +62,7 @@ func (d *OIDCDeps) LoginRedirect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	target := d.Authenticator.LoginURL(rec.State, rec.CodeVerifier)
+	target := d.Authenticator.LoginURL(rec.State, rec.Nonce, rec.CodeVerifier)
 	http.Redirect(w, r, target, http.StatusFound)
 }
 
@@ -97,8 +97,12 @@ func (d *OIDCDeps) Callback(w http.ResponseWriter, r *http.Request) {
 		// IdP-side denial: user clicked "Cancel" on the consent screen,
 		// or the IdP rejected the client. Audit-log the IdP error code so
 		// operators can debug; surface a generic flash to the browser.
+		//
+		// error_description is operator-untrusted (the IdP supplies it).
+		// Truncate before log to defend against a hostile IdP attempting
+		// to flood the dashboard log with multi-MB description payloads.
 		descr := q.Get("error_description")
-		log.Printf("oidc_callback: idp error %q description=%q", idpErr, descr)
+		log.Printf("oidc_callback: idp error %q description=%q", idpErr, truncateOIDCErrorDescription(descr, 200))
 		d.renderCallbackError(w, r, "Sign-in could not be completed. Please try again.")
 		return
 	}
@@ -118,7 +122,7 @@ func (d *OIDCDeps) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := d.Authenticator.Exchange(r.Context(), code, rec.CodeVerifier)
+	user, err := d.Authenticator.Exchange(r.Context(), code, rec.CodeVerifier, rec.Nonce)
 	if err != nil {
 		// Audit-log the underlying error class without surfacing it to
 		// the browser. Operators can grep dashboard logs for
@@ -177,5 +181,17 @@ func (d *OIDCDeps) renderCallbackError(w http.ResponseWriter, r *http.Request, m
 	if err := d.Renderer.Render(w, "login.html.tmpl", data); err != nil {
 		log.Printf("oidc_callback_render: %v", err)
 	}
+}
+
+// truncateOIDCErrorDescription clips an IdP-supplied error_description to
+// `n` bytes (200 in production callsites) before it reaches log.Printf.
+// The IdP supplies the field verbatim from the authorize redirect query,
+// so a hostile or misbehaving IdP could otherwise push a multi-MB string
+// straight into the dashboard log stream.
+func truncateOIDCErrorDescription(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "...[truncated]"
 }
 

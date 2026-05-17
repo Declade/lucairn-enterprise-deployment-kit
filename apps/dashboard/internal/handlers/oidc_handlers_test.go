@@ -238,7 +238,14 @@ func TestOIDCCallback_RotatesSessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Seed an ID token + state record for the callback.
+	// Seed an ID token + state record for the callback. The state-store
+	// mints the nonce at flow-start; the ID-token claims MUST embed the
+	// same value or Exchange's nonce assertion rejects the token (added
+	// in slice 2 r1 fix-up for OpenID Core §3.1.3.7 item 11).
+	stateRec, err := d.State.(*auth.MemoryOIDCStateStore).Create("/dashboard")
+	if err != nil {
+		t.Fatal(err)
+	}
 	idTok := idp.issueIDToken(map[string]any{
 		"iss":    idp.server.URL,
 		"sub":    "user-1",
@@ -247,12 +254,9 @@ func TestOIDCCallback_RotatesSessionID(t *testing.T) {
 		"iat":    time.Now().Unix(),
 		"exp":    time.Now().Add(time.Hour).Unix(),
 		"groups": []any{"admins"},
+		"nonce":  stateRec.Nonce,
 	})
 	idp.seedIDToken(idTok)
-	stateRec, err := d.State.(*auth.MemoryOIDCStateStore).Create("/dashboard")
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	r := httptest.NewRequest("GET", "/auth/oidc/callback?code=abc&state="+stateRec.State, nil)
 	r.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: preExisting.ID})
@@ -319,6 +323,10 @@ func TestOIDCCallback_ReplayedState_Rejects(t *testing.T) {
 	idp := newStubIdP(t)
 	d, _ := buildOIDCDeps(t, idp)
 
+	stateRec, err := d.State.(*auth.MemoryOIDCStateStore).Create("/dashboard")
+	if err != nil {
+		t.Fatal(err)
+	}
 	idTok := idp.issueIDToken(map[string]any{
 		"iss":    idp.server.URL,
 		"sub":    "user-1",
@@ -327,12 +335,9 @@ func TestOIDCCallback_ReplayedState_Rejects(t *testing.T) {
 		"iat":    time.Now().Unix(),
 		"exp":    time.Now().Add(time.Hour).Unix(),
 		"groups": []any{"admins"},
+		"nonce":  stateRec.Nonce,
 	})
 	idp.seedIDToken(idTok)
-	stateRec, err := d.State.(*auth.MemoryOIDCStateStore).Create("/dashboard")
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	// First call: success.
 	r1 := httptest.NewRequest("GET", "/auth/oidc/callback?code=abc&state="+stateRec.State, nil)

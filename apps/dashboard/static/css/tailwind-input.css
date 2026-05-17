@@ -299,7 +299,7 @@
 }
 
 .lc-login-button-secondary:hover {
-  background: var(--color-bg-elev-1);
+  background: var(--color-bg-elevated);
 }
 
 .lc-login-divider {
