@@ -25,6 +25,13 @@ type fakeRPC struct {
 	getCalls    int
 	verifyCalls int
 
+	// lastRequestID captures the request_id value the most recent
+	// GetCertificate call carried on the wire. Used by
+	// TestVerify_UsesRequestIDNotCertID to lock the rule that the
+	// dashboard's RPC carries the witness's request_id (NOT the
+	// operator-facing certificate_id).
+	lastRequestID string
+
 	getResp    *witnesspb.VeilCertificate
 	verifyResp *witnesspb.VerificationResult
 
@@ -39,6 +46,7 @@ type fakeRPC struct {
 func (f *fakeRPC) GetCertificate(_ context.Context, in *witnesspb.GetCertificateRequest, _ ...grpc.CallOption) (*witnesspb.VeilCertificate, error) {
 	f.mu.Lock()
 	f.getCalls++
+	f.lastRequestID = in.GetRequestId()
 	f.mu.Unlock()
 	if f.delay > 0 {
 		time.Sleep(f.delay)
@@ -168,15 +176,15 @@ func TestClient_Invalidate_BypassesCache(t *testing.T) {
 	}
 }
 
-func TestClient_Verify_EmptyCertIDRejected(t *testing.T) {
+func TestClient_Verify_EmptyRequestIDRejected(t *testing.T) {
 	t.Parallel()
 	rpc := &fakeRPC{getResp: newFakeCert(), verifyResp: newFakeResult()}
 	c := NewClientWithRPC(rpc)
 	if _, err := c.Verify(context.Background(), ""); err == nil {
-		t.Errorf("expected error on empty cert_id")
+		t.Errorf("expected error on empty request_id")
 	}
 	if rpc.getCalls != 0 || rpc.verifyCalls != 0 {
-		t.Errorf("rpc.calls: got get=%d verify=%d want 0+0 (no round-trip should fire on empty cert_id)", rpc.getCalls, rpc.verifyCalls)
+		t.Errorf("rpc.calls: got get=%d verify=%d want 0+0 (no round-trip should fire on empty request_id)", rpc.getCalls, rpc.verifyCalls)
 	}
 }
 
@@ -206,6 +214,45 @@ func TestClient_Verify_VerifyCertificateErrorPropagates(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "VerifyCertificate") {
 		t.Errorf("err must name VerifyCertificate path: %v", err)
+	}
+}
+
+// TestVerify_UsesRequestIDNotCertID is the load-bearing regression that
+// locks the rule: the witness's GetCertificate RPC carries the WITNESS
+// request_id, NOT the operator-facing certificate_id.
+//
+// Why this matters: upstream's CertServer.GetCertificate at
+// dual-sandbox-architecture/services/veil-witness/internal/server/
+// cert_server.go:44-53 looks up by request_id; the DB index is on
+// request_id (store.go:88-93). The assembler at assembler.go:89-92 mints
+// certificate_id and request_id as DIFFERENT values per row. If the
+// dashboard's Verify call ever falls back to passing the cert_id, every
+// production lookup returns codes.NotFound and the inspector + validator
+// pages quietly degrade to the "Witness unreachable" badge.
+func TestVerify_UsesRequestIDNotCertID(t *testing.T) {
+	t.Parallel()
+	rpc := &fakeRPC{getResp: newFakeCert(), verifyResp: newFakeResult()}
+	c := NewClientWithRPC(rpc)
+
+	const requestID = "req_aaaa-1111-bbbb-2222-cccccccccccc"
+	// IMPORTANT: this value would be "veil_<uuid>" in production; the
+	// caller MUST resolve it from CertSummary.RequestID before invoking
+	// Verify. We pass the request_id directly here to assert the wire
+	// payload carries the same string verbatim.
+	if _, err := c.Verify(context.Background(), requestID); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	rpc.mu.Lock()
+	got := rpc.lastRequestID
+	rpc.mu.Unlock()
+	if got != requestID {
+		t.Fatalf("GetCertificate.request_id: got %q want %q (witness RPC must carry request_id, NOT certificate_id)", got, requestID)
+	}
+	// Defensive: ensure the captured value is NOT "veil_…" shape, which
+	// would mean a caller leaked the operator-facing cert_id into the
+	// RPC. The fixture above uses "req_…" so a substring check is enough.
+	if strings.HasPrefix(got, "veil_") {
+		t.Errorf("RPC request_id must not be a 'veil_<uuid>' certificate_id; got %q", got)
 	}
 }
 

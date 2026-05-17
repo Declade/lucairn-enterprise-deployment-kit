@@ -161,7 +161,13 @@ dashboard:
       key: connection-string
 
   witness:
-    endpoint: "witness.lucairn.svc.cluster.local:50051"
+    # Default points at the kit's bundled witness Service DNS:
+    # chart name `veil-witness` in namespace `dsa-witness` (per
+    # charts/lucairn/charts/veil-witness/templates/service.yaml), cert RPC
+    # port 50058 (per veil-witness/values.yaml :: service.certPort).
+    # Sibling subchart precedent: dsa-certification/values.yaml line 83
+    # uses the same DNS.
+    endpoint: "veil-witness.dsa-witness.svc.cluster.local:50058"
     tls:
       enabled: false
       caRef:

@@ -178,7 +178,10 @@ func (d *CertsDeps) InspectorHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, vErr := d.Verifier.Verify(r.Context(), id)
+	// The witness's GetCertificate RPC looks up by request_id (upstream
+	// cert_server.go:44-53), not certificate_id. cert.RequestID comes
+	// from the audit-DB Get() above (Get's SELECT includes request_id).
+	result, vErr := d.Verifier.Verify(r.Context(), cert.RequestID)
 	data := inspectorPageData{
 		PageData: views.PageData{
 			Title:      "Cert",
@@ -243,7 +246,8 @@ func (d *CertsDeps) ValidatorHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cert store unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	result, vErr := d.Verifier.Verify(r.Context(), id)
+	// Witness lookup key = request_id (cf. InspectorHandler comment).
+	result, vErr := d.Verifier.Verify(r.Context(), cert.RequestID)
 	data := inspectorPageData{
 		PageData: views.PageData{
 			Title:      "Cert validator",
@@ -296,8 +300,22 @@ func (d *CertsDeps) ReverifyHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	log.Printf("cert.verify_requested user_id=%s cert_id=%s", user.Email, id)
-	d.Verifier.Invalidate(id)
+	// Resolve request_id (witness lookup + cache key) before invalidating.
+	// Without this step the Invalidate call would target the wrong cache
+	// key and the next InspectorHandler render would still serve a stale
+	// cached entry — the "Re-verify now" button would visibly do nothing.
+	cert, err := d.Store.Get(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		log.Printf("certs_reverify: get: %v", err)
+		http.Error(w, "cert store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	log.Printf("cert.verify_requested user_id=%s cert_id=%s request_id=%s", user.Email, id, cert.RequestID)
+	d.Verifier.Invalidate(cert.RequestID)
 	http.Redirect(w, r, "/certs/"+id, http.StatusSeeOther)
 }
 
@@ -505,12 +523,21 @@ func extractCertID(path, prefix string) string {
 	return s
 }
 
-// validCertID enforces a conservative shape: 8-64 chars, hex / dash /
-// alphanumeric only. Defends against URL-injection that pierces the
+// validCertID enforces a conservative shape: 8-128 chars, alphanumeric +
+// dash + underscore only. Defends against URL-injection that pierces the
 // audit DB read path; the SQL layer also binds positionally but
 // defense-in-depth pays here.
+//
+// Underscore is required because upstream witness assembler at
+// dual-sandbox-architecture/services/veil-witness/internal/assembler/
+// assembler.go:71 mints IDs as "veil_" + uuid.NewV7() (e.g.
+// "veil_0190d3a1-2b4c-7000-9abc-def012345678"). Before this widening
+// every production cert URL returned 404 from validCertID's pre-flight
+// shape check. Max length lifted to 128 to comfortably cover veil_<uuid>
+// (41 chars) plus any future ID-format growth without re-touching this
+// gate.
 func validCertID(id string) bool {
-	if len(id) < 8 || len(id) > 64 {
+	if len(id) < 8 || len(id) > 128 {
 		return false
 	}
 	for _, c := range id {
@@ -518,7 +545,8 @@ func validCertID(id string) bool {
 		case c >= 'a' && c <= 'z',
 			c >= 'A' && c <= 'Z',
 			c >= '0' && c <= '9',
-			c == '-':
+			c == '-',
+			c == '_':
 			// ok
 		default:
 			return false

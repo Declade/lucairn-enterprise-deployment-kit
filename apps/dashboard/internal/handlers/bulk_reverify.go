@@ -16,6 +16,16 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// BulkCertResolver narrows the *store.CertStore API to the single method
+// the bulk worker needs: a batch cert_id → request_id resolver. The
+// witness's GetCertificate RPC looks up by request_id (per upstream
+// dual-sandbox-architecture/services/veil-witness/internal/server/
+// cert_server.go:44-53); the bulk POST form only carries cert_id values
+// (the browser checkboxes). The interface keeps the deps thin for tests.
+type BulkCertResolver interface {
+	GetRequestIDsByCertIDs(ctx context.Context, certIDs []string) (map[string]string, error)
+}
+
 // Process-wide bulk-job concurrency + rate budget.
 //
 // bug-hunter F-4: the previous per-job pool + per-job tick meant N
@@ -64,19 +74,27 @@ const (
 // ledger is bounded by jobTTL and the per-handler cap; this is NOT a
 // queue — the dashboard's single-pod model means we just run the job
 // inline and stream progress to the originating browser tab.
+//
+// Resolver is the audit-DB lookup the runJob loop uses to translate the
+// operator-facing cert_id values (from the browser checkboxes) into the
+// witness's request_id keys (which the Verifier RPC + cache hangs off).
+// Resolver MAY be nil — when the cert surface is not configured the
+// handler short-circuits before this field is read.
 type BulkReverifyDeps struct {
 	Verifier witness.CertVerifier
 	Renderer *views.Renderer
+	Resolver BulkCertResolver
 
 	mu   sync.Mutex
 	jobs map[string]*bulkJob
 }
 
 // NewBulkReverifyDeps builds an empty ledger.
-func NewBulkReverifyDeps(v witness.CertVerifier, r *views.Renderer) *BulkReverifyDeps {
+func NewBulkReverifyDeps(v witness.CertVerifier, r *views.Renderer, resolver BulkCertResolver) *BulkReverifyDeps {
 	return &BulkReverifyDeps{
 		Verifier: v,
 		Renderer: r,
+		Resolver: resolver,
 		jobs:     make(map[string]*bulkJob),
 	}
 }
@@ -164,7 +182,44 @@ func (b *BulkReverifyDeps) BulkReverifyHandler(w http.ResponseWriter, r *http.Re
 // snapshot is bypassed. Per-cert audit log lines emit `cert.verify_requested`
 // so a post-hoc forensic grep matches both single-cert and bulk paths
 // against the same event name (bug-hunter F-5).
+//
+// Identifier handling: the bulk POST carries cert_id values (the browser
+// checkboxes). The witness RPC keys off request_id (upstream
+// cert_server.go:44-53). Before fanning out work, the loop calls
+// Resolver.GetRequestIDsByCertIDs once to resolve every cert_id in the
+// batch in a single round-trip. cert_ids absent from the audit DB are
+// recorded as "error: cert_id not found in audit DB" and never reach the
+// witness.
 func (b *BulkReverifyDeps) runJob(job *bulkJob, ids []string) {
+	// One DB round-trip to resolve every cert_id → request_id. Bounded
+	// budget keeps a stuck DB from holding up the per-cert workers.
+	resolveCtx, resolveCancel := context.WithTimeout(context.Background(), bulkPerCertTimeout)
+	defer resolveCancel()
+	requestIDByCertID := map[string]string{}
+	if b.Resolver != nil {
+		var err error
+		requestIDByCertID, err = b.Resolver.GetRequestIDsByCertIDs(resolveCtx, ids)
+		if err != nil {
+			// Resolver failure means we can't drive Verify for any cert;
+			// record a failure for the whole batch + mark finished.
+			job.mu.Lock()
+			for _, id := range ids {
+				job.done++
+				job.failed++
+				job.results[id] = "error: audit-DB resolve: " + truncErr(err.Error())
+			}
+			job.finished = true
+			job.finishedAt = time.Now().UTC()
+			job.mu.Unlock()
+			time.AfterFunc(bulkJobTTL, func() {
+				b.mu.Lock()
+				defer b.mu.Unlock()
+				delete(b.jobs, job.id)
+			})
+			return
+		}
+	}
+
 	var wg sync.WaitGroup
 
 	for _, id := range ids {
@@ -176,6 +231,16 @@ func (b *BulkReverifyDeps) runJob(job *bulkJob, ids []string) {
 		go func(certID string) {
 			defer wg.Done()
 			defer func() { <-globalWitnessSem }()
+
+			requestID, ok := requestIDByCertID[certID]
+			if !ok || requestID == "" {
+				job.mu.Lock()
+				job.done++
+				job.failed++
+				job.results[certID] = "error: cert_id not found in audit DB"
+				job.mu.Unlock()
+				return
+			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), bulkPerCertTimeout)
 			defer cancel()
@@ -197,10 +262,10 @@ func (b *BulkReverifyDeps) runJob(job *bulkJob, ids []string) {
 			// Per-cert audit log: matches the single-cert event name at
 			// certs.go ReverifyHandler so post-hoc forensic grep parity
 			// holds (bug-hunter F-5).
-			log.Printf("cert.verify_requested user_id=%s cert_id=%s bulk_job_id=%s", job.user, certID, job.id)
+			log.Printf("cert.verify_requested user_id=%s cert_id=%s request_id=%s bulk_job_id=%s", job.user, certID, requestID, job.id)
 
-			b.Verifier.Invalidate(certID)
-			res, err := b.Verifier.Verify(ctx, certID)
+			b.Verifier.Invalidate(requestID)
+			res, err := b.Verifier.Verify(ctx, requestID)
 			job.mu.Lock()
 			job.done++
 			if err != nil {

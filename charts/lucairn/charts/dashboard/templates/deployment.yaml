@@ -80,7 +80,7 @@ spec:
                   key: {{ .Values.auditDB.connectionStringRef.key | default "connection-string" | quote }}
             {{- end }}
             - name: LUCAIRN_DASHBOARD_WITNESS_ENDPOINT
-              value: {{ .Values.witness.endpoint | default "witness.lucairn.svc.cluster.local:50051" | quote }}
+              value: {{ .Values.witness.endpoint | default "veil-witness.dsa-witness.svc.cluster.local:50058" | quote }}
             - name: LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED
               value: {{ .Values.witness.tls.enabled | default false | quote }}
           ports:

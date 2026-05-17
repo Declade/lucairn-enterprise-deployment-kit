@@ -8,7 +8,7 @@
     <h2 class="lc-card-title">Compose path</h2>
     <p class="lc-card-body">Populate the audit DB + witness env block in <code class="lc-mono">customer.env</code> and recreate the dashboard container:</p>
     <pre class="lc-codeblock"><code>LUCAIRN_DASHBOARD_AUDIT_DB_URL=postgres://lucairn_dashboard_ro:...@postgres-bridge:5432/dsa?sslmode=require
-LUCAIRN_DASHBOARD_WITNESS_ENDPOINT=witness:50051
+LUCAIRN_DASHBOARD_WITNESS_ENDPOINT=veil-witness:50058
 docker compose -f docker-compose.customer.yml --env-file customer.env --profile dashboard up -d --force-recreate lucairn-dashboard</code></pre>
   </article>
   <article class="lc-card">
@@ -24,7 +24,7 @@ docker compose -f docker-compose.customer.yml --env-file customer.env --profile 
 #       name: lucairn-dashboard-audit-db
 #       key: connection-string
 #   witness:
-#     endpoint: witness.lucairn.svc.cluster.local:50051</code></pre>
+#     endpoint: veil-witness.dsa-witness.svc.cluster.local:50058</code></pre>
   </article>
   {{ if .Flash }}<p class="lc-text-muted">{{ .Flash }}</p>{{ end }}
 </section>

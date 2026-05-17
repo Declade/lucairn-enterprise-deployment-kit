@@ -37,19 +37,28 @@ func (s *stubStore) Get(ctx context.Context, _ string) (store.CertSummary, error
 }
 
 // stubVerifier is a deterministic CertVerifier for handler tests.
+//
+// lastVerifyID records the most recent ID the handler passed into
+// Verify; the regression test
+// TestInspectorHandler_RendersAllSixClaimsAndBYOKBadge asserts the
+// handler drives Verify with the witness's request_id (NOT the
+// operator-facing certificate_id), so a future regression that reverts
+// to certs_id-passing would fail here.
 type stubVerifier struct {
-	result witness.VerifyResult
-	err    error
-	invalidated []string
+	result       witness.VerifyResult
+	err          error
+	invalidated  []string
+	lastVerifyID string
 }
 
-func (v *stubVerifier) Verify(_ context.Context, certID string) (witness.VerifyResult, error) {
+func (v *stubVerifier) Verify(_ context.Context, requestID string) (witness.VerifyResult, error) {
+	v.lastVerifyID = requestID
 	out := v.result
-	out.CertID = certID
+	out.CertID = requestID
 	return out, v.err
 }
-func (v *stubVerifier) Invalidate(certID string) {
-	v.invalidated = append(v.invalidated, certID)
+func (v *stubVerifier) Invalidate(requestID string) {
+	v.invalidated = append(v.invalidated, requestID)
 }
 
 func newDeps(t *testing.T, s CertStorer, v witness.CertVerifier) *CertsDeps {
@@ -91,8 +100,8 @@ func TestBrowserHandler_RendersList(t *testing.T) {
 	t.Parallel()
 	store := &stubStore{
 		listRows: []store.CertSummary{
-			{ID: "cert-aaaaaaaa-1111", CustomerID: "cust-1", CreatedAt: time.Now(), Verdict: "verified"},
-			{ID: "cert-bbbbbbbb-2222", CustomerID: "cust-1", CreatedAt: time.Now(), Verdict: "partial"},
+			{ID: "veil_aaaaaaaa-1111-2222-3333-444444444444", RequestID: "req_aaaa-1111", CustomerID: "cust-1", CreatedAt: time.Now(), Verdict: "verified"},
+			{ID: "veil_bbbbbbbb-1111-2222-3333-444444444444", RequestID: "req_bbbb-2222", CustomerID: "cust-1", CreatedAt: time.Now(), Verdict: "partial"},
 		},
 		listTotal: 2,
 	}
@@ -106,10 +115,10 @@ func TestBrowserHandler_RendersList(t *testing.T) {
 		t.Fatalf("status: got %d want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "cert-aaaaaaaa-1111") {
+	if !strings.Contains(body, "veil_aaaaaaaa-1111-2222-3333-444444444444") {
 		t.Errorf("expected first cert id in HTML; body=%s", body[:min(800, len(body))])
 	}
-	if !strings.Contains(body, "cert-bbbbbbbb-2222") {
+	if !strings.Contains(body, "veil_bbbbbbbb-1111-2222-3333-444444444444") {
 		t.Errorf("expected second cert id in HTML")
 	}
 	if !strings.Contains(body, "verified") {
@@ -135,7 +144,8 @@ func TestBrowserHandler_NotConfiguredFlash(t *testing.T) {
 func TestInspectorHandler_RendersAllSixClaimsAndBYOKBadge(t *testing.T) {
 	t.Parallel()
 	store := &stubStore{getRow: store.CertSummary{
-		ID:         "cert-abcdef12",
+		ID:         "veil_abcdef12-1234-5678-9abc-def012345678",
+		RequestID:  "req_abcd-1234",
 		CustomerID: "cust-1",
 		CreatedAt:  time.Now(),
 		Verdict:    "verified",
@@ -159,7 +169,7 @@ func TestInspectorHandler_RendersAllSixClaimsAndBYOKBadge(t *testing.T) {
 	}}
 	d := newDeps(t, store, v)
 	rec := httptest.NewRecorder()
-	d.InspectorHandler(rec, fakeSessionRequest("GET", "/certs/cert-abcdef12", ""))
+	d.InspectorHandler(rec, fakeSessionRequest("GET", "/certs/veil_abcdef12-1234-5678-9abc-def012345678", ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200; body=%s", rec.Code, rec.Body.String()[:min(400, len(rec.Body.String()))])
 	}
@@ -181,13 +191,19 @@ func TestInspectorHandler_RendersAllSixClaimsAndBYOKBadge(t *testing.T) {
 	if !strings.Contains(body, "https://rekor.sigstore.dev/api/v1/log/entries/rekor-uuid-xyz") {
 		t.Errorf("expected Rekor deep-link")
 	}
+	// Inspector handler MUST drive Verify with request_id (the witness
+	// lookup key) — NOT certificate_id. The stubVerifier records the ID
+	// it observed; assert it matches the audit-DB row's RequestID.
+	if got := v.lastVerifyID; got != "req_abcd-1234" {
+		t.Errorf("Verifier.Verify called with %q want %q (must use request_id, NOT cert_id)", got, "req_abcd-1234")
+	}
 }
 
 func TestInspectorHandler_404OnMissingCert(t *testing.T) {
 	t.Parallel()
 	d := newDeps(t, &stubStore{getErr: pgx.ErrNoRows}, &stubVerifier{})
 	rec := httptest.NewRecorder()
-	d.InspectorHandler(rec, fakeSessionRequest("GET", "/certs/cert-deadbeef", ""))
+	d.InspectorHandler(rec, fakeSessionRequest("GET", "/certs/veil_deadbeef-1111-2222-3333-444444444444", ""))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status: got %d want 404", rec.Code)
 	}
@@ -198,7 +214,7 @@ func TestInspectorHandler_RejectsBadID(t *testing.T) {
 	d := newDeps(t, &stubStore{}, &stubVerifier{})
 	for _, bad := range []string{
 		"/certs/abc",                         // too short
-		"/certs/" + strings.Repeat("a", 100), // too long
+		"/certs/" + strings.Repeat("a", 200), // too long (>128)
 		"/certs/has.dot",                     // disallowed char
 		"/certs/has/slash",                   // path traversal
 	} {
@@ -213,14 +229,15 @@ func TestInspectorHandler_RejectsBadID(t *testing.T) {
 func TestInspectorHandler_WitnessUnreachableDoesNotCrash(t *testing.T) {
 	t.Parallel()
 	store := &stubStore{getRow: store.CertSummary{
-		ID:         "cert-abcdef12",
+		ID:         "veil_abcdef12-1234-5678-9abc-def012345678",
+		RequestID:  "req_abcd-1234",
 		CustomerID: "cust-1",
 		CreatedAt:  time.Now(),
 	}}
 	v := &stubVerifier{err: errors.New("witness gRPC connection refused")}
 	d := newDeps(t, store, v)
 	rec := httptest.NewRecorder()
-	d.InspectorHandler(rec, fakeSessionRequest("GET", "/certs/cert-abcdef12", ""))
+	d.InspectorHandler(rec, fakeSessionRequest("GET", "/certs/veil_abcdef12-1234-5678-9abc-def012345678", ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200 (degraded badge, not crash)", rec.Code)
 	}
@@ -233,7 +250,8 @@ func TestInspectorHandler_WitnessUnreachableDoesNotCrash(t *testing.T) {
 func TestValidatorHandler_RendersClaimChain(t *testing.T) {
 	t.Parallel()
 	store := &stubStore{getRow: store.CertSummary{
-		ID:         "cert-abcdef12",
+		ID:         "veil_abcdef12-1234-5678-9abc-def012345678",
+		RequestID:  "req_abcd-1234",
 		CustomerID: "cust-1",
 		CreatedAt:  time.Now(),
 		Verdict:    "verified",
@@ -249,7 +267,7 @@ func TestValidatorHandler_RendersClaimChain(t *testing.T) {
 	}}
 	d := newDeps(t, store, v)
 	rec := httptest.NewRecorder()
-	d.ValidatorHandler(rec, fakeSessionRequest("GET", "/certs/cert-abcdef12/validator", ""))
+	d.ValidatorHandler(rec, fakeSessionRequest("GET", "/certs/veil_abcdef12-1234-5678-9abc-def012345678/validator", ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200; body=%s", rec.Code, rec.Body.String()[:min(400, len(rec.Body.String()))])
 	}
@@ -274,7 +292,7 @@ func TestValidatorHandler_404OnMissingCert(t *testing.T) {
 	t.Parallel()
 	d := newDeps(t, &stubStore{getErr: pgx.ErrNoRows}, &stubVerifier{})
 	rec := httptest.NewRecorder()
-	d.ValidatorHandler(rec, fakeSessionRequest("GET", "/certs/cert-deadbeef/validator", ""))
+	d.ValidatorHandler(rec, fakeSessionRequest("GET", "/certs/veil_deadbeef-1111-2222-3333-444444444444/validator", ""))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status: got %d want 404", rec.Code)
 	}
@@ -284,9 +302,9 @@ func TestValidatorHandler_RejectsBadID(t *testing.T) {
 	t.Parallel()
 	d := newDeps(t, &stubStore{}, &stubVerifier{})
 	for _, bad := range []string{
-		"/certs/abc/validator",                       // too short
-		"/certs/" + strings.Repeat("a", 100) + "/validator", // too long
-		"/certs/has.dot/validator",                   // disallowed char
+		"/certs/abc/validator",                              // too short
+		"/certs/" + strings.Repeat("a", 200) + "/validator", // too long (>128)
+		"/certs/has.dot/validator",                          // disallowed char
 	} {
 		rec := httptest.NewRecorder()
 		d.ValidatorHandler(rec, fakeSessionRequest("GET", bad, ""))
@@ -299,14 +317,15 @@ func TestValidatorHandler_RejectsBadID(t *testing.T) {
 func TestValidatorHandler_WitnessUnreachableDoesNotCrash(t *testing.T) {
 	t.Parallel()
 	store := &stubStore{getRow: store.CertSummary{
-		ID:         "cert-abcdef12",
+		ID:         "veil_abcdef12-1234-5678-9abc-def012345678",
+		RequestID:  "req_abcd-1234",
 		CustomerID: "cust-1",
 		CreatedAt:  time.Now(),
 	}}
 	v := &stubVerifier{err: errors.New("witness gRPC connection refused")}
 	d := newDeps(t, store, v)
 	rec := httptest.NewRecorder()
-	d.ValidatorHandler(rec, fakeSessionRequest("GET", "/certs/cert-abcdef12/validator", ""))
+	d.ValidatorHandler(rec, fakeSessionRequest("GET", "/certs/veil_abcdef12-1234-5678-9abc-def012345678/validator", ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200 (degraded badge, not crash)", rec.Code)
 	}
@@ -319,21 +338,27 @@ func TestValidatorHandler_WitnessUnreachableDoesNotCrash(t *testing.T) {
 func TestReverifyHandler_InvalidatesCacheAndRedirects(t *testing.T) {
 	t.Parallel()
 	v := &stubVerifier{}
-	d := newDeps(t, &stubStore{}, v)
+	// Stub the cert row so ReverifyHandler's Get() can resolve the
+	// request_id (the cache key) before invalidating.
+	s := &stubStore{getRow: store.CertSummary{
+		ID:        "veil_abcdef12-1234-5678-9abc-def012345678",
+		RequestID: "req_abcd-1234",
+	}}
+	d := newDeps(t, s, v)
 	form := url.Values{}
 	form.Set("csrf", "x") // CSRF token only — VerifyToken is permissive in the unit env
 
 	// Issue token + replay so VerifyToken passes; the simplest path is
 	// to issue via auth.IssueToken on the recorder before posting.
 	preRec := httptest.NewRecorder()
-	preReq := fakeSessionRequest("GET", "/certs/cert-abcdef12", "")
+	preReq := fakeSessionRequest("GET", "/certs/veil_abcdef12-1234-5678-9abc-def012345678", "")
 	tok, err := auth.IssueToken(preRec, preReq)
 	if err != nil {
 		t.Fatalf("issue token: %v", err)
 	}
 	form.Set("csrf", tok)
 
-	r := fakeSessionRequest("POST", "/certs/cert-abcdef12/reverify", form.Encode())
+	r := fakeSessionRequest("POST", "/certs/veil_abcdef12-1234-5678-9abc-def012345678/reverify", form.Encode())
 	// Carry the CSRF cookie from the preRec onto the POST request so
 	// VerifyToken sees the matching pair.
 	for _, c := range preRec.Result().Cookies() {
@@ -345,11 +370,13 @@ func TestReverifyHandler_InvalidatesCacheAndRedirects(t *testing.T) {
 		t.Fatalf("status: got %d want 303; body=%s", rec.Code, rec.Body.String())
 	}
 	loc := rec.Header().Get("Location")
-	if loc != "/certs/cert-abcdef12" {
-		t.Errorf("redirect: got %q want /certs/cert-abcdef12", loc)
+	if loc != "/certs/veil_abcdef12-1234-5678-9abc-def012345678" {
+		t.Errorf("redirect: got %q want /certs/veil_abcdef12-...", loc)
 	}
-	if len(v.invalidated) != 1 || v.invalidated[0] != "cert-abcdef12" {
-		t.Errorf("Invalidate calls: got %v want [cert-abcdef12]", v.invalidated)
+	// Invalidate MUST be called with request_id (the cache key the
+	// witness Verify uses), NOT certificate_id.
+	if len(v.invalidated) != 1 || v.invalidated[0] != "req_abcd-1234" {
+		t.Errorf("Invalidate calls: got %v want [req_abcd-1234]", v.invalidated)
 	}
 }
 
@@ -419,29 +446,51 @@ func TestRekorDeepLink(t *testing.T) {
 
 func TestNormalizeCertIDs_DedupesAndDrops(t *testing.T) {
 	t.Parallel()
-	got := normalizeCertIDs([]string{"cert-abcdefgh", "cert-abcdefgh", "bad space", "cert-zzzzzzzz"})
+	got := normalizeCertIDs([]string{
+		"veil_aaaaaaaa-1111-2222-3333-444444444444",
+		"veil_aaaaaaaa-1111-2222-3333-444444444444",
+		"bad space",
+		"veil_zzzzzzzz-1111-2222-3333-444444444444",
+	})
 	if len(got) != 2 {
 		t.Fatalf("dedup + drop: got %d want 2", len(got))
 	}
-	if got[0] != "cert-abcdefgh" || got[1] != "cert-zzzzzzzz" {
+	if got[0] != "veil_aaaaaaaa-1111-2222-3333-444444444444" || got[1] != "veil_zzzzzzzz-1111-2222-3333-444444444444" {
 		t.Errorf("normalize order: got %v", got)
 	}
 }
 
+// TestValidCertID covers BOTH the legacy alnum-+dash shape and the
+// production "veil_<uuid>" shape. The underscore + 128-char ceiling were
+// added in fix-up r2 because the upstream witness assembler at
+// dual-sandbox-architecture/services/veil-witness/internal/assembler/
+// assembler.go:71 mints IDs as "veil_" + uuid.NewV7(); the previous
+// 8-64 alnum-+dash regex returned 404 on every production cert URL.
 func TestValidCertID(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		id string
 		ok bool
 	}{
+		// Production shape: veil_ prefix + uuid (5 + 36 = 41 chars).
+		{"veil_0190d3a1-2b4c-7000-9abc-def012345678", true},
+		// Underscore + dash mixed.
+		{"veil_abcdefgh-12345678_extra", true},
+		// Legacy alnum + dash (still accepted; backwards-compat with
+		// tests + ad-hoc tooling).
 		{"abcdefgh", true},
 		{"abcdefgh-12345678", true},
-		{strings.Repeat("a", 64), true},
-		{strings.Repeat("a", 65), false},
+		// Length boundaries.
+		{strings.Repeat("a", 8), true},
+		{strings.Repeat("a", 128), true},
+		{strings.Repeat("a", 129), false}, // 1 over ceiling
+		{strings.Repeat("a", 7), false},   // 1 under floor
 		{"abc", false},
+		// Disallowed chars.
 		{"has space", false},
 		{"has/slash", false},
 		{"has.dot", false},
+		{"", false},
 	}
 	for _, c := range cases {
 		if got := validCertID(c.id); got != c.ok {
