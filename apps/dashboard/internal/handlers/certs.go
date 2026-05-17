@@ -29,9 +29,9 @@ import (
 // this lets the Slice 3 dashboard image boot on a kit that has not yet
 // opted into the cert surface.
 type CertsDeps struct {
-	Renderer  *views.Renderer
-	Store     CertStorer
-	Verifier  witness.CertVerifier
+	Renderer   *views.Renderer
+	Store      CertStorer
+	Verifier   witness.CertVerifier
 	Configured bool
 }
 
@@ -45,17 +45,17 @@ type CertStorer interface {
 // browserPageData carries the data the browser template renders.
 type browserPageData struct {
 	views.PageData
-	Filter            certFilterView
-	Rows              []store.CertSummary
-	Total             int
-	Page              int
-	TotalPages        int
-	PageSize          int
-	HasPrevPage       bool
-	HasNextPage       bool
-	PrevPageQuery     string
-	NextPageQuery     string
-	CSVExportQuery    string
+	Filter         certFilterView
+	Rows           []store.CertSummary
+	Total          int
+	Page           int
+	TotalPages     int
+	PageSize       int
+	HasPrevPage    bool
+	HasNextPage    bool
+	PrevPageQuery  string
+	NextPageQuery  string
+	CSVExportQuery string
 }
 
 // certFilterView is the user-facing surface for the browser filter

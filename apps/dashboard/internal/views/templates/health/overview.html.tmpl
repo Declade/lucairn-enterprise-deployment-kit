@@ -1,0 +1,130 @@
+{{ define "main" }}
+<section class="lc-page-section" x-data="healthDrawer()" x-init="initFromQuery()">
+  <header class="lc-page-header">
+    <h1 class="lc-page-title">Server health</h1>
+    <p class="lc-page-lede">
+      Per-service liveness for the kit's pipeline. Cards refresh every 10 seconds. Selecting a card opens a side drawer with embedded Grafana panels{{ if not .GrafanaWired }} (Grafana embedding is not configured on this install — see the guidance banner below){{ end }}.
+    </p>
+  </header>
+
+  {{ if .GuidanceBanner }}
+  <div class="lc-callout lc-callout--info" role="status">
+    <p>{{ .GuidanceBanner }}</p>
+  </div>
+  {{ end }}
+
+  {{ if not .GrafanaWired }}
+  <div class="lc-callout lc-callout--info" role="status">
+    <p>Embedded Grafana panels are inactive. Set <code>LUCAIRN_DASHBOARD_GRAFANA_URL</code> + <code>LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET</code> (compose) or <code>dashboard.grafana.endpoint</code> + <code>dashboard.grafana.jwt.secretName</code> (Helm) to enable.</p>
+  </div>
+  {{ end }}
+
+  <div class="lc-card-grid">
+    {{ range .Cards }}
+    <button type="button"
+            class="lc-card lc-card--clickable"
+            x-on:click="open('{{ .Name }}')"
+            aria-label="Open Grafana drawer for {{ .Name }}">
+      <header class="lc-card-header">
+        <h2 class="lc-card-title">{{ .Name }}</h2>
+        <span class="lc-statusdot lc-statusdot--{{ .Status }}" role="status">
+          <span class="lc-statusdot-dot" aria-hidden="true"></span>
+          <span class="lc-statusdot-label">{{ .Label }}</span>
+        </span>
+      </header>
+      <p class="lc-card-body">
+        {{- if .Detail -}}
+        {{ .Detail }}
+        {{- else -}}
+        Probe target healthy.
+        {{- end -}}
+      </p>
+      {{ if .LastPoll }}
+      <p class="lc-text-muted font-tabular" style="font-size:12px;">Last polled {{ .LastPoll }}</p>
+      {{ end }}
+    </button>
+    {{ end }}
+  </div>
+
+  {{ if .GrafanaWired }}
+  {{ template "health-drawer" . }}
+  {{ end }}
+
+  <script>
+    /* Alpine.js component powering the side drawer + Grafana panel render.
+     *
+     * Lifecycle:
+     *   1. Card click → open(name)
+     *   2. open() POSTs to /health/grafana-jwt with the panel slug
+     *   3. Response { token, url, ttl_seconds } populates the iframe src
+     *   4. Close button or Esc resets src so the JWT is dropped from the DOM
+     *
+     * The JWT NEVER appears in the initial HTML response — it's fetched on
+     * demand so a "View Source" sweep returns zero auth_token hits.
+     * Referrer-Policy on the JSON response keeps the panel URL out of
+     * downstream-target Referer headers.
+     */
+    function healthDrawer() {
+      return {
+        active: '',
+        iframeSrc: '',
+        loading: false,
+        error: '',
+        panels: [
+          {{- range $i, $p := .Panels -}}
+          {{- if $i }},{{ end }}{ slug: '{{ $p.Slug }}', title: '{{ $p.Title }}', uid: '{{ $p.PanelUID }}', height: {{ $p.Height }} }
+          {{- end -}}
+        ],
+        initFromQuery() {
+          // Reserved for deep-link `?service=gateway` flows; left as a no-op
+          // for now so the slice 4 surface ships without the URL state hook.
+        },
+        async open(service) {
+          this.active = service;
+          this.loading = true;
+          this.error = '';
+          this.iframeSrc = '';
+          const csrfInput = document.querySelector('input[name="csrf"]');
+          const csrf = csrfInput ? csrfInput.value : '';
+          // Default to the first panel; the customer-overridable UID list
+          // is rendered into the drawer body and the operator picks the
+          // panel they want.
+          const slug = this.panels.length ? this.panels[0].slug : '';
+          try {
+            const body = new URLSearchParams();
+            body.set('csrf', csrf);
+            body.set('panel', slug);
+            const resp = await fetch('/health/grafana-jwt', {
+              method: 'POST',
+              body: body.toString(),
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              credentials: 'same-origin'
+            });
+            if (!resp.ok) {
+              this.error = 'Could not mint Grafana session (HTTP ' + resp.status + '). Check /health logs.';
+              this.loading = false;
+              return;
+            }
+            const json = await resp.json();
+            if (!json.url) {
+              this.error = 'Grafana embed is not fully configured (panel UID missing).';
+              this.loading = false;
+              return;
+            }
+            this.iframeSrc = json.url;
+            this.loading = false;
+          } catch (e) {
+            this.error = 'Network error: ' + (e && e.message ? e.message : 'unknown');
+            this.loading = false;
+          }
+        },
+        close() {
+          this.active = '';
+          this.iframeSrc = '';
+          this.error = '';
+        }
+      };
+    }
+  </script>
+</section>
+{{ end }}

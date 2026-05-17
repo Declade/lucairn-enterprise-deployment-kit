@@ -27,7 +27,7 @@ fi
 # something to pull from. The compose config references the GHCR-tagged
 # image; we tag the local build to that exact name so docker compose finds
 # it without going to the network.
-LOCAL_TAG="${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.3.0}"
+LOCAL_TAG="${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.4.0}"
 echo "compose-smoke: building image as ${LOCAL_TAG}"
 docker build -t "${LOCAL_TAG}" -f apps/dashboard/Dockerfile apps/dashboard >/dev/null
 
@@ -131,5 +131,33 @@ case "$CERTS_LOC" in
   *) echo "compose-smoke: /certs redirect target should be /login, got $CERTS_LOC" >&2 ; exit 1 ;;
 esac
 echo "compose-smoke: /certs ok (302 -> /login)"
+
+# Slice 4: server-health route. /health is auth-gated like /certs; an
+# unauthenticated GET should 302 to /login. The route registration
+# itself (vs falling through to the catch-all 404) is what the smoke
+# is checking — the rendered overview content is exercised by the
+# Kind verify script when a session cookie is available.
+echo "compose-smoke: hitting /health (expect 302 -> /login; route registered + auth-gated)"
+HEALTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8443/health)
+if [ "$HEALTH_CODE" != "302" ]; then
+  echo "compose-smoke: /health expected 302, got $HEALTH_CODE" >&2
+  exit 1
+fi
+HEALTH_LOC=$(curl -s -o /dev/null -w "%{redirect_url}" http://127.0.0.1:8443/health)
+case "$HEALTH_LOC" in
+  */login*) ;;
+  *) echo "compose-smoke: /health redirect target should be /login, got $HEALTH_LOC" >&2 ; exit 1 ;;
+esac
+echo "compose-smoke: /health ok (302 -> /login)"
+
+# Slice 4: server-health Grafana JWT endpoint. POST /health/grafana-jwt
+# requires auth + CSRF; unauthenticated POST returns 401.
+echo "compose-smoke: hitting POST /health/grafana-jwt (expect 401; auth-gated)"
+JWT_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8443/health/grafana-jwt)
+if [ "$JWT_CODE" != "401" ]; then
+  echo "compose-smoke: POST /health/grafana-jwt expected 401, got $JWT_CODE" >&2
+  exit 1
+fi
+echo "compose-smoke: POST /health/grafana-jwt ok (401)"
 
 echo "compose-smoke: ok"

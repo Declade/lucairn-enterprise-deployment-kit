@@ -45,3 +45,20 @@ app.kubernetes.io/name: {{ include "dashboard.fullname" . }}
 app.kubernetes.io/part-of: lucairn
 app.kubernetes.io/component: dashboard
 {{- end -}}
+
+{{- /*
+  dashboard.grafanaJWTSecretName
+  ───────────────────────────────
+  Slice 4 — Helm-managed shared-secret name. Mirrors the
+  dashboard.bootstrapAdminSecretName helper: when the operator pre-creates
+  their own Secret + sets dashboard.grafana.jwt.secretName, we honour that
+  name; otherwise we generate a default name + render the Secret via
+  secret-grafana-jwt.yaml.
+*/ -}}
+{{- define "dashboard.grafanaJWTSecretName" -}}
+{{- if .Values.grafana.jwt.secretName -}}
+{{ .Values.grafana.jwt.secretName }}
+{{- else -}}
+{{ include "dashboard.fullname" . }}-grafana-jwt
+{{- end -}}
+{{- end -}}

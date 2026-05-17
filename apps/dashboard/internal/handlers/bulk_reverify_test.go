@@ -104,8 +104,8 @@ func adminReq(method, target, body string) *http.Request {
 		r = httptest.NewRequest(method, target, nil)
 	}
 	sess := &auth.Session{
-		ID:       "s-bulk",
-		User:     auth.User{Email: "admin@example.com", Role: auth.RoleAdmin},
+		ID:        "s-bulk",
+		User:      auth.User{Email: "admin@example.com", Role: auth.RoleAdmin},
 		CreatedAt: time.Now(),
 		LastSeen:  time.Now(),
 	}
@@ -354,8 +354,8 @@ func TestBulkReverify_ProgressJSONIncludesAllCounters(t *testing.T) {
 // caught by Codex r1: the witness RPC keys off request_id (upstream
 // cert_server.go:44-53) but the bulk POST carries cert_ids.
 type idCaptureVerifier struct {
-	mu      sync.Mutex
-	verifyIDs    []string
+	mu            sync.Mutex
+	verifyIDs     []string
 	invalidateIDs []string
 }
 

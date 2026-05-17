@@ -11,11 +11,14 @@ replicaCount: 1
 
 image:
   repository: lucairn-dashboard
-  # Empty → defaults to chart appVersion via the deployment template. NOTE:
-  # this is INDEPENDENT from charts/lucairn/values.yaml global.imageTag —
-  # bumping --set global.imageTag=X will NOT bump the dashboard tag. The
-  # dashboard ships on its own release cadence.
-  tag: ""
+  # Pinned to the current slice's release tag. Slice 1 = 0.1.0, Slice 2 =
+  # 0.2.0, Slice 3 = 0.3.0, Slice 4 = 0.4.0. Empty fallback maps to
+  # Chart.AppVersion in the deployment template — kept that way as the
+  # last-resort default. NOTE: this is INDEPENDENT from
+  # charts/lucairn/values.yaml global.imageTag — bumping --set
+  # global.imageTag=X will NOT bump the dashboard tag. The dashboard ships
+  # on its own release cadence.
+  tag: "0.4.0"
   pullPolicy: IfNotPresent
 
 service:
@@ -137,6 +140,71 @@ witness:
     keyRef:
       name: ""
       key: tls.key
+
+# ─────────────────────────────────────────────────────────────────
+# Slice 4: server health overview + Grafana embedding plumbing.
+# ─────────────────────────────────────────────────────────────────
+#
+# Health probing is ALWAYS-ON by default — the 12 standard kit
+# services get polled every 10 seconds, results render on /health.
+# Set `healthServices: "disabled"` to turn polling off entirely.
+#
+# Grafana embedding is OPT-IN. When `grafana.endpoint` is empty the
+# /health cards still render their per-service status pills but the
+# side drawer renders a "not configured" placeholder. When set, the
+# dashboard signs short-lived (60s) HS256 JWTs against a shared
+# secret + the embedded iframe authenticates via the documented
+# `auth_token` URL-login mechanism (Grafana [auth.jwt]).
+#
+# The shared secret has two possible sources:
+#   1) Operator sets `grafana.jwt.secretName` to a Secret they
+#      pre-created (key: `shared-secret`). Helm leaves it alone.
+#   2) `grafana.jwt.secretName` empty → Helm template generates a
+#      48-char alphanumeric secret + stores it as
+#      ${chartName}-grafana-jwt. The `lookup` pattern in the
+#      template preserves it across `helm upgrade`.
+#
+# The SAME Secret MUST be wired into the observability sub-chart's
+# Grafana pod (auth.jwt key_file). See INSTALL.md § "Enable server
+# health + Grafana embedding (Slice 4)" for the values you need to
+# set on the observability sub-chart side.
+grafana:
+  # Base URL the iframe loads. The browser hits this URL with the
+  # JWT in the auth_token query param + Grafana validates against
+  # the shared secret. Leave empty to disable embedding.
+  #
+  # Common values:
+  #   - "https://grafana.lucairn.local" (customer-internal DNS)
+  #   - "/grafana"                     (path-prefix mode behind a
+  #                                     shared ingress; not v1)
+  endpoint: ""
+
+  jwt:
+    # When empty, Helm renders ${chartName}-grafana-jwt Secret with a
+    # generated 48-char shared secret and `lookup`-preservation across
+    # upgrade. When set, the operator pre-creates the Secret + Helm
+    # references it as-is.
+    secretName: ""
+    # Key within the Secret holding the shared secret. Both the
+    # dashboard and Grafana pods must read the same key.
+    secretKey: shared-secret
+
+  # Per-panel UIDs. The dashboard binds the four canonical kit
+  # observability panels into a side drawer; the operator supplies
+  # the Grafana panel UIDs out-of-band (Grafana → Edit Dashboard →
+  # Share → ID/UID). Empty UID = panel renders "not configured".
+  panels:
+    gatewayThroughputUID: ""
+    sanitizerHitRatesUID: ""
+    witnessVerifyRateUID: ""
+    auditLogVolumeUID: ""
+
+# Server-health poller knobs.
+healthPollIntervalSeconds: 10
+# Comma-separated `name=url` overrides. Empty = bundled default
+# (12 services covering the kit's standard service mesh). Set to
+# the literal "disabled" to turn polling off entirely.
+healthServices: ""
 
 resources:
   requests:

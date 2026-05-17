@@ -1,0 +1,22 @@
+{{ define "grafana_panel" }}
+<div class="lc-grafana-panel">
+  <template x-if="iframeSrc">
+    {{- /*
+      The iframe loads the Grafana panel via the auth_token query param.
+      `referrerpolicy="no-referrer"` is the leak-defense: the Grafana origin
+      never sees the dashboard's URL in its Referer header, so the
+      JWT-bearing URL stays out of Grafana's downstream access logs.
+      `sandbox` is intentionally NOT set — Grafana embeds need scripts +
+      same-origin cookies inside the iframe to function.
+    */ -}}
+    <iframe class="lc-grafana-iframe"
+            x-bind:src="iframeSrc"
+            referrerpolicy="no-referrer"
+            loading="lazy"
+            title="Grafana panel"></iframe>
+  </template>
+  <template x-if="!iframeSrc && !error && !loading">
+    <p class="lc-text-muted">Select a service card to render the embedded Grafana panel.</p>
+  </template>
+</div>
+{{ end }}

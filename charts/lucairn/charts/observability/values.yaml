@@ -20,6 +20,51 @@ grafana:
       cpu: 500m
       memory: 512Mi
 
+  # ─────────────────────────────────────────────────────────────────
+  # Slice 4 — Lucairn Enterprise Dashboard JWT embed handoff.
+  # ─────────────────────────────────────────────────────────────────
+  #
+  # When enabled, Grafana is configured with [auth.jwt] so the Lucairn
+  # dashboard can embed Grafana panels with a short-lived (60s) HS256
+  # JWT carried in the `auth_token` URL query parameter (the documented
+  # Grafana url_login mechanism).
+  #
+  # The shared secret is mounted as a single-line file at
+  # /etc/grafana/jwt/shared-secret and referenced via Grafana's
+  # [auth.jwt].key_file env var (Grafana parses single-line files as
+  # the HMAC key).
+  #
+  # The SAME Secret MUST be referenced by BOTH:
+  #   - this sub-chart's grafana.auth.jwt.secretRef (read by Grafana)
+  #   - the dashboard sub-chart's dashboard.grafana.jwt.secretName
+  #     (read by the dashboard pod's grafana.Signer)
+  # The dashboard sub-chart auto-generates a Secret named
+  # `lucairn-dashboard-grafana-jwt` when its
+  # `dashboard.grafana.jwt.secretName` is left empty. To use that
+  # default, set this sub-chart's auth.jwt.secretRef.name to the same
+  # value. See INSTALL.md § "Enable server health + Grafana embedding".
+  auth:
+    jwt:
+      # Master switch. Off by default — Grafana stays in classic
+      # username/password mode until the operator wires the shared
+      # Secret on both sides.
+      enabled: false
+      secretRef:
+        # Secret name (typically `lucairn-dashboard-grafana-jwt`).
+        name: ""
+        # Key within the Secret holding the HMAC shared secret.
+        key: shared-secret
+      # The dashboard's issuer + audience constants (see
+      # apps/dashboard/internal/grafana/jwt.go). DO NOT change without
+      # a coordinated dashboard + grafana redeploy.
+      issuer: "lucairn-dashboard"
+      audience: "grafana"
+      # Cross-chart secret reference: the operator pre-creates the
+      # Secret in this NAMESPACE OR sets crossNamespaceSecretSource
+      # to mirror the dashboard sub-chart's namespace. The init
+      # container below mounts the Secret as a file; the Grafana
+      # process reads /etc/grafana/jwt/shared-secret via key_file.
+
 loki:
   image:
     repository: grafana/loki

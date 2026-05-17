@@ -17,14 +17,14 @@ import (
 // hand both occur in production; without the trailing-slash entry, a
 // /healthz/ probe redirects to /login and the readiness signal silently fails.
 var publicPaths = map[string]struct{}{
-	"/login":                  {},
-	"/login/":                 {},
-	"/healthz":                {},
-	"/healthz/":               {},
-	"/auth/oidc/login":        {},
-	"/auth/oidc/login/":       {},
-	"/auth/oidc/callback":     {},
-	"/auth/oidc/callback/":    {},
+	"/login":               {},
+	"/login/":              {},
+	"/healthz":             {},
+	"/healthz/":            {},
+	"/auth/oidc/login":     {},
+	"/auth/oidc/login/":    {},
+	"/auth/oidc/callback":  {},
+	"/auth/oidc/callback/": {},
 }
 
 // publicPrefixes covers static asset trees.

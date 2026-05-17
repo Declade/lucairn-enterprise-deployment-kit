@@ -83,6 +83,40 @@ spec:
               value: {{ .Values.witness.endpoint | default "veil-witness.dsa-witness.svc.cluster.local:50058" | quote }}
             - name: LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED
               value: {{ .Values.witness.tls.enabled | default false | quote }}
+            # Slice 4: server-health overview + Grafana embedding. Health
+            # probing is always-on (set healthServices to the literal
+            # "disabled" to turn off). Grafana embedding is opt-in via
+            # grafana.endpoint; when empty the JWT secret env var is not
+            # rendered.
+            - name: LUCAIRN_DASHBOARD_HEALTH_SERVICES
+              value: {{ .Values.healthServices | default "" | quote }}
+            - name: LUCAIRN_DASHBOARD_HEALTH_POLL_INTERVAL_SECONDS
+              value: {{ .Values.healthPollIntervalSeconds | default 10 | quote }}
+            {{- if .Values.grafana.endpoint }}
+            - name: LUCAIRN_DASHBOARD_GRAFANA_URL
+              value: {{ .Values.grafana.endpoint | quote }}
+            - name: LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dashboard.grafanaJWTSecretName" . | quote }}
+                  key: {{ .Values.grafana.jwt.secretKey | default "shared-secret" | quote }}
+            {{- if .Values.grafana.panels.gatewayThroughputUID }}
+            - name: LUCAIRN_DASHBOARD_GRAFANA_PANEL_GATEWAY_THROUGHPUT_UID
+              value: {{ .Values.grafana.panels.gatewayThroughputUID | quote }}
+            {{- end }}
+            {{- if .Values.grafana.panels.sanitizerHitRatesUID }}
+            - name: LUCAIRN_DASHBOARD_GRAFANA_PANEL_SANITIZER_HIT_RATES_UID
+              value: {{ .Values.grafana.panels.sanitizerHitRatesUID | quote }}
+            {{- end }}
+            {{- if .Values.grafana.panels.witnessVerifyRateUID }}
+            - name: LUCAIRN_DASHBOARD_GRAFANA_PANEL_WITNESS_VERIFY_RATE_UID
+              value: {{ .Values.grafana.panels.witnessVerifyRateUID | quote }}
+            {{- end }}
+            {{- if .Values.grafana.panels.auditLogVolumeUID }}
+            - name: LUCAIRN_DASHBOARD_GRAFANA_PANEL_AUDIT_LOG_VOLUME_UID
+              value: {{ .Values.grafana.panels.auditLogVolumeUID | quote }}
+            {{- end }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.containerPort }}
