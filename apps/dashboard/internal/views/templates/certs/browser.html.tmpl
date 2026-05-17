@@ -1,0 +1,103 @@
+{{ define "main" }}
+<section class="lc-page-section">
+  <header class="lc-page-header">
+    <h1 class="lc-page-title">Certs</h1>
+    <p class="lc-page-lede">Browse, filter, and inspect Lucairn certificates from the audit DB. Selecting rows enables bulk re-verify against the witness.</p>
+  </header>
+
+  <form class="lc-filter-form" method="get" action="/certs">
+    <fieldset class="lc-filter-fieldset">
+      <legend class="lc-text-muted">Date range</legend>
+      <label class="lc-filter-field">
+        <span class="lc-filter-label">From</span>
+        <input class="lc-filter-input font-tabular" type="date" name="from" value="{{ .Filter.From }}">
+      </label>
+      <label class="lc-filter-field">
+        <span class="lc-filter-label">To</span>
+        <input class="lc-filter-input font-tabular" type="date" name="to" value="{{ .Filter.To }}">
+      </label>
+    </fieldset>
+    <fieldset class="lc-filter-fieldset">
+      <legend class="lc-text-muted">Verdict</legend>
+      <label class="lc-filter-check"><input type="checkbox" name="verdict" value="verified"{{ if index .Filter.Verdicts "verified" }} checked{{ end }}> Verified</label>
+      <label class="lc-filter-check"><input type="checkbox" name="verdict" value="partial"{{ if index .Filter.Verdicts "partial" }} checked{{ end }}> Partial</label>
+      <label class="lc-filter-check"><input type="checkbox" name="verdict" value="failed"{{ if index .Filter.Verdicts "failed" }} checked{{ end }}> Failed</label>
+    </fieldset>
+    <fieldset class="lc-filter-fieldset">
+      <legend class="lc-text-muted">Tenant</legend>
+      <label class="lc-filter-field">
+        <span class="lc-filter-label">Customer ID</span>
+        <input class="lc-filter-input font-tabular" type="text" name="customer_id" value="{{ .Filter.CustomerID }}" placeholder="(any)">
+      </label>
+      <label class="lc-filter-field">
+        <span class="lc-filter-label">Min redactions</span>
+        <input class="lc-filter-input font-tabular" type="number" name="redaction_min" value="{{ .Filter.RedactionMin }}" min="0" max="99999" placeholder="0">
+      </label>
+    </fieldset>
+    <div class="lc-filter-actions">
+      <button type="submit" class="lc-login-button">Apply</button>
+      <a href="/certs" class="lc-link">Reset</a>
+      <a class="lc-link" href="{{ .CSVExportQuery }}" download="lucairn-certs.csv">Export CSV</a>
+    </div>
+  </form>
+
+  <form method="post" action="/certs/bulk-reverify">
+    <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+    <div class="lc-table-toolbar">
+      <span class="lc-text-muted font-tabular">{{ .Total }} cert{{ if ne .Total 1 }}s{{ end }} — page {{ .Page }} of {{ .TotalPages }}</span>
+      <button type="submit" class="lc-secondary-button" formaction="/certs/bulk-reverify">Re-verify selected</button>
+    </div>
+    <div class="lc-table-frame">
+      <table class="lc-table">
+        <thead>
+          <tr>
+            <th scope="col" class="lc-table-th lc-table-th--check"><span class="lc-sr-only">Select</span></th>
+            <th scope="col" class="lc-table-th">Cert ID</th>
+            <th scope="col" class="lc-table-th">Customer</th>
+            <th scope="col" class="lc-table-th">Created (UTC)</th>
+            <th scope="col" class="lc-table-th">Verdict</th>
+            <th scope="col" class="lc-table-th lc-table-th--num">Redactions</th>
+            <th scope="col" class="lc-table-th lc-table-th--num">Claims</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{ if .Rows }}
+            {{ range .Rows }}
+            <tr class="lc-table-row">
+              <td class="lc-table-td"><input type="checkbox" name="cert_id" value="{{ .ID }}" aria-label="Select cert {{ .ID }}"></td>
+              <td class="lc-table-td font-tabular"><a class="lc-link" href="/certs/{{ .ID }}"><code class="lc-mono">{{ .ID }}</code></a></td>
+              <td class="lc-table-td font-tabular">{{ .CustomerID }}</td>
+              <td class="lc-table-td font-tabular">{{ formatDate .CreatedAt }}</td>
+              <td class="lc-table-td">
+                {{ if eq .Verdict "verified" }}<span class="lc-pill lc-pill--ok">verified</span>
+                {{ else if eq .Verdict "partial" }}<span class="lc-pill lc-pill--warn">partial</span>
+                {{ else if eq .Verdict "failed" }}<span class="lc-pill lc-pill--fail">failed</span>
+                {{ else }}<span class="lc-text-muted">{{ .Verdict }}</span>{{ end }}
+              </td>
+              <td class="lc-table-td lc-table-td--num font-tabular">{{ .RedactionCount }}</td>
+              <td class="lc-table-td lc-table-td--num font-tabular">{{ .ClaimCount }}</td>
+            </tr>
+            {{ end }}
+          {{ else }}
+            <tr class="lc-table-row lc-table-empty"><td class="lc-table-td" colspan="7">No certs match this filter.</td></tr>
+          {{ end }}
+        </tbody>
+      </table>
+    </div>
+  </form>
+
+  <nav class="lc-pagination" aria-label="Cert browser pagination">
+    {{ if .HasPrevPage }}
+      <a class="lc-pagination-link" href="{{ .PrevPageQuery }}">Previous</a>
+    {{ else }}
+      <span class="lc-pagination-link is-disabled" aria-disabled="true">Previous</span>
+    {{ end }}
+    <span class="lc-pagination-info font-tabular">Page {{ .Page }} of {{ .TotalPages }}</span>
+    {{ if .HasNextPage }}
+      <a class="lc-pagination-link" href="{{ .NextPageQuery }}">Next</a>
+    {{ else }}
+      <span class="lc-pagination-link is-disabled" aria-disabled="true">Next</span>
+    {{ end }}
+  </nav>
+</section>
+{{ end }}

@@ -439,9 +439,10 @@ day-2 task can still be driven from `bin/lucairn` and Grafana. Operators
 who want a first-party UI for cert workflows, server health, audit log
 inspection, compliance PDF export, and API key management can enable it.
 
-Slice 1 (this kit version) ships the dashboard's auth + shell foundation.
-Cert browser, server health, audit log browser, compliance PDF, and API
-key management arrive in subsequent kit releases.
+Bundled in this kit version: dashboard auth + shell foundation +
+optional OIDC SSO + cert browser, cert inspector, and audit-defensibility-grade
+live validator. Server health, audit log browser, compliance PDF, and
+API key management arrive in subsequent kit releases.
 
 ### Compose path
 
@@ -588,4 +589,95 @@ SSO).
 #### Rotating the OIDC client secret
 
 See `OPS.md` § "Dashboard: rotating the OIDC client secret".
+
+### Audit DB + Witness wiring (cert browser + inspector)
+
+The cert browser, cert inspector, and audit-defensibility-grade live
+validator are OPT-IN. When the audit DB and witness gRPC endpoint are
+unset, the cert pages render a "not configured" explainer and the rest
+of the dashboard (auth + shell + OIDC) keeps working. To enable the
+cert surface, pre-create a read-only Postgres role + (Kubernetes only)
+a Secret holding the libpq URL, then point the dashboard at it.
+
+Locked posture:
+
+- Dashboard never writes to the audit DB.
+- The DB user holds SELECT on `veil_certificates` ONLY. No INSERT,
+  UPDATE, DELETE, DDL.
+- Both admin and viewer roles can browse + re-verify certs. (Per the
+  PRD, admin-only gates land with API key management in a future kit
+  release.)
+- Bulk re-verify caps each job at 100 certs and rate-limits the
+  witness gRPC channel to 10 calls per second.
+
+#### Pre-create the read-only Postgres role
+
+Run as the audit DB owner (the kit's `dsa` superuser via Compose, or
+your DBA via Kubernetes):
+
+```sql
+CREATE ROLE lucairn_dashboard_ro WITH LOGIN PASSWORD '<generate>';
+GRANT CONNECT ON DATABASE dsa TO lucairn_dashboard_ro;
+GRANT USAGE ON SCHEMA public TO lucairn_dashboard_ro;
+GRANT SELECT ON veil_certificates TO lucairn_dashboard_ro;
+```
+
+#### Compose path
+
+1. Add the cert browser env block to `customer.env` (the
+   `LUCAIRN_DASHBOARD_AUDIT_DB_URL` + `LUCAIRN_DASHBOARD_WITNESS_ENDPOINT`
+   block at the end of `customer.env.example`):
+
+   ```bash
+   LUCAIRN_DASHBOARD_AUDIT_DB_URL=postgres://lucairn_dashboard_ro:<password>@postgres-bridge:5432/dsa?sslmode=require
+   LUCAIRN_DASHBOARD_WITNESS_ENDPOINT=witness:50051
+   ```
+
+2. Run `bin/lucairn doctor` — the new `dashboard certs:` pre-flight
+   check exits with a clear error if the DB URL scheme is wrong, the
+   witness endpoint is missing a port, or only one of the pair is set.
+
+3. Recreate the dashboard container:
+
+   ```bash
+   docker compose \
+     -f docker-compose.customer.yml \
+     --env-file customer.env \
+     --profile dashboard \
+     up -d --force-recreate lucairn-dashboard
+   ```
+
+4. Verify: open `https://<your-front-proxy>/certs`. The browser lists
+   the certs that match the empty filter (most recent first).
+
+#### Kubernetes path
+
+1. Pre-create the audit DB Secret:
+
+   ```bash
+   kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
+     --from-literal=connection-string='postgres://lucairn_dashboard_ro:<password>@postgres-bridge:5432/dsa?sslmode=verify-full'
+   ```
+
+2. Wire the cert surface in `customer-values.yaml`:
+
+   ```yaml
+   dashboard:
+     enabled: true
+     auditDB:
+       connectionStringRef:
+         name: lucairn-dashboard-audit-db
+         key: connection-string
+     witness:
+       endpoint: "witness.lucairn.svc.cluster.local:50051"
+   ```
+
+3. Apply: `helm upgrade --install lucairn charts/lucairn -f customer-values.yaml --namespace lucairn`.
+
+4. Confirm the rollout: `kubectl -n lucairn rollout status deploy/lucairn-dashboard`.
+   Cert browser is live as soon as the pod is Ready.
+
+#### Rotating the audit DB credentials
+
+See `OPS.md` § "Dashboard: rotating audit DB credentials".
 

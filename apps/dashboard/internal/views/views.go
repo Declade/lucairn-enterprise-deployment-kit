@@ -10,11 +10,12 @@ import (
 	"html/template"
 	"io"
 	"io/fs"
+	"time"
 
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
 )
 
-//go:embed templates/*.html.tmpl templates/components/*.html.tmpl
+//go:embed templates/*.html.tmpl templates/components/*.html.tmpl templates/certs/*.html.tmpl
 var templateFS embed.FS
 
 // FuncMap exposes helper functions to all templates.
@@ -39,6 +40,29 @@ func FuncMap() template.FuncMap {
 			}
 			return m, nil
 		},
+		// min returns the smaller of two ints. Used by signature_pill to
+		// clip the visible signature prefix to ≤16 hex chars without
+		// over-running short fingerprints in test fixtures.
+		"min": func(a, b int) int {
+			if a < b {
+				return a
+			}
+			return b
+		},
+		// sub subtracts b from a. Used by the pagination renderer to
+		// compute "page-1" without escaping into JS.
+		"sub": func(a, b int) int { return a - b },
+		// add adds b to a. Used by pagination.
+		"add": func(a, b int) int { return a + b },
+		// formatDate renders a time.Time in a tabular-friendly format.
+		// We render in UTC ISO-8601-without-seconds so the audit
+		// surface stays jurisdiction-neutral (no local TZ tells).
+		"formatDate": func(t time.Time) string {
+			if t.IsZero() {
+				return ""
+			}
+			return t.UTC().Format("2006-01-02 15:04 UTC")
+		},
 	}
 }
 
@@ -49,29 +73,47 @@ type Renderer struct {
 
 // New parses every page template. Each page template is parsed alongside the
 // layout + all components so {{ template "..." }} resolves at runtime.
+//
+// Slice 3 adds cert pages under templates/certs/. The shared
+// claim_chain partial lives under templates/components/ so it joins
+// every page's component set automatically.
 func New() (*Renderer, error) {
 	componentTemplates, err := componentTemplateNames()
 	if err != nil {
 		return nil, err
 	}
-	pages := []string{
-		"login.html.tmpl",
-		"dashboard_home.html.tmpl",
+	pages := []pageDef{
+		{name: "login.html.tmpl", path: "templates/login.html.tmpl"},
+		{name: "dashboard_home.html.tmpl", path: "templates/dashboard_home.html.tmpl"},
+		{name: "certs/browser.html.tmpl", path: "templates/certs/browser.html.tmpl"},
+		{name: "certs/inspector.html.tmpl", path: "templates/certs/inspector.html.tmpl"},
+		{name: "certs/validator.html.tmpl", path: "templates/certs/validator.html.tmpl"},
+		{name: "certs/bulk.html.tmpl", path: "templates/certs/bulk.html.tmpl"},
+		{name: "certs/progress.html.tmpl", path: "templates/certs/progress.html.tmpl"},
+		{name: "certs/notconfigured.html.tmpl", path: "templates/certs/notconfigured.html.tmpl"},
 	}
 	r := &Renderer{templates: make(map[string]*template.Template)}
 	for _, page := range pages {
-		t := template.New(page).Funcs(FuncMap())
+		t := template.New(page.name).Funcs(FuncMap())
 		files := []string{
 			"templates/layout.html.tmpl",
-			"templates/" + page,
+			page.path,
 		}
 		files = append(files, componentTemplates...)
 		if _, err := t.ParseFS(templateFS, files...); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", page, err)
+			return nil, fmt.Errorf("parse %s: %w", page.name, err)
 		}
-		r.templates[page] = t
+		r.templates[page.name] = t
 	}
 	return r, nil
+}
+
+// pageDef is one named template the renderer parses at startup. Slice 3
+// added the certs/ subdirectory; this struct keeps the lookup name +
+// the disk path separate so the cert pages live under a folder.
+type pageDef struct {
+	name string
+	path string
 }
 
 // Render writes the named page template using "layout" as the entrypoint.

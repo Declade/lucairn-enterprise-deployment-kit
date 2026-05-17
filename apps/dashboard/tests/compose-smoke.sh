@@ -27,7 +27,7 @@ fi
 # something to pull from. The compose config references the GHCR-tagged
 # image; we tag the local build to that exact name so docker compose finds
 # it without going to the network.
-LOCAL_TAG="${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.2.0}"
+LOCAL_TAG="${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.3.0}"
 echo "compose-smoke: building image as ${LOCAL_TAG}"
 docker build -t "${LOCAL_TAG}" -f apps/dashboard/Dockerfile apps/dashboard >/dev/null
 
@@ -112,5 +112,24 @@ if [ "$LOGIN_SLASH_FINAL" != "200" ]; then
   exit 1
 fi
 echo "compose-smoke: /login/ ok (308 -> 200)"
+
+# Slice 3: cert browser route. Compose smoke does not wire an audit DB
+# secret (the smoke env intentionally leaves LUCAIRN_DASHBOARD_AUDIT_DB_URL
+# empty so the binary boots without a Postgres dial), so /certs returns
+# 302 to /login (auth gate) — the route is registered. After login the
+# binary renders the "not configured" explainer, which the kind verify
+# script exercises separately.
+echo "compose-smoke: hitting /certs (expect 302 -> /login; route registered + auth-gated)"
+CERTS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8443/certs)
+if [ "$CERTS_CODE" != "302" ]; then
+  echo "compose-smoke: /certs expected 302, got $CERTS_CODE" >&2
+  exit 1
+fi
+CERTS_LOC=$(curl -s -o /dev/null -w "%{redirect_url}" http://127.0.0.1:8443/certs)
+case "$CERTS_LOC" in
+  */login*) ;;
+  *) echo "compose-smoke: /certs redirect target should be /login, got $CERTS_LOC" >&2 ; exit 1 ;;
+esac
+echo "compose-smoke: /certs ok (302 -> /login)"
 
 echo "compose-smoke: ok"

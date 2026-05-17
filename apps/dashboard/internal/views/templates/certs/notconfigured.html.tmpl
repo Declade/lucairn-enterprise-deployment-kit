@@ -1,0 +1,31 @@
+{{ define "main" }}
+<section class="lc-page-section">
+  <header class="lc-page-header">
+    <h1 class="lc-page-title">Cert browser is not configured</h1>
+    <p class="lc-page-lede">This dashboard build supports the cert browser, but the audit DB connection string + witness gRPC endpoint have not been set on this install.</p>
+  </header>
+  <article class="lc-card">
+    <h2 class="lc-card-title">Compose path</h2>
+    <p class="lc-card-body">Populate the audit DB + witness env block in <code class="lc-mono">customer.env</code> and recreate the dashboard container:</p>
+    <pre class="lc-codeblock"><code>LUCAIRN_DASHBOARD_AUDIT_DB_URL=postgres://lucairn_dashboard_ro:...@postgres-bridge:5432/dsa?sslmode=require
+LUCAIRN_DASHBOARD_WITNESS_ENDPOINT=witness:50051
+docker compose -f docker-compose.customer.yml --env-file customer.env --profile dashboard up -d --force-recreate lucairn-dashboard</code></pre>
+  </article>
+  <article class="lc-card">
+    <h2 class="lc-card-title">Kubernetes path</h2>
+    <p class="lc-card-body">Pre-create the read-only DB Secret in the lucairn namespace, then set the matching Helm values:</p>
+    <pre class="lc-codeblock"><code>kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
+  --from-literal=connection-string='postgres://lucairn_dashboard_ro:...@postgres-bridge:5432/dsa?sslmode=verify-full'
+
+# In customer-values.yaml:
+# dashboard:
+#   auditDB:
+#     connectionStringRef:
+#       name: lucairn-dashboard-audit-db
+#       key: connection-string
+#   witness:
+#     endpoint: witness.lucairn.svc.cluster.local:50051</code></pre>
+  </article>
+  {{ if .Flash }}<p class="lc-text-muted">{{ .Flash }}</p>{{ end }}
+</section>
+{{ end }}

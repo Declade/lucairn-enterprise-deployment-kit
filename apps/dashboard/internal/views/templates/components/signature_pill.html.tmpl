@@ -1,0 +1,53 @@
+{{ define "signature_pill" }}
+{{- /*
+  signature_pill renders one row of the cert validator's per-claim
+  signature table. Inputs:
+    .ClaimType            "gateway" | "bridge" | "sanitizer" | "sandbox_a" | "sandbox_b" | "witness"
+    .Verdict              "ok" | "fail"
+    .PubKeyFingerprint    full SHA-256 hex of the claim's signing key (≥16 hex chars)
+    .SignatureHex         full Ed25519 signature hex
+    .CanonicalPayloadHash full SHA-256 hex of the claim's canonical signed bytes
+    .Error                optional verifier error string
+
+  Verdict pill uses semantic-status tokens only — no new accents. The
+  click-to-reveal full-bytes flow is wired through Alpine.js (x-data on
+  the row); the data attributes are stable for the empirical-vs-spec
+  bug-hunter check.
+*/ -}}
+<tr class="lc-sigrow" x-data="{ open: false }"
+    data-claim="{{ .ClaimType }}"
+    data-verdict="{{ .Verdict }}">
+  <td class="lc-sigrow-cell lc-sigrow-claim">{{ .ClaimType }}</td>
+  <td class="lc-sigrow-cell">
+    <span class="lc-pill lc-pill--{{ if eq .Verdict "ok" }}ok{{ else }}fail{{ end }}" data-verdict="{{ .Verdict }}">
+      {{ if eq .Verdict "ok" }}OK{{ else }}FAIL{{ end }}
+    </span>
+  </td>
+  <td class="lc-sigrow-cell font-tabular lc-sig-cell">
+    {{ if .PubKeyFingerprint }}
+      <code class="lc-mono">{{ slice .PubKeyFingerprint 0 (min 16 (len .PubKeyFingerprint)) }}{{ if gt (len .PubKeyFingerprint) 16 }}…{{ end }}</code>
+      <span x-show="open" class="lc-sig-full"><code class="lc-mono">{{ .PubKeyFingerprint }}</code></span>
+    {{ else }}
+      <span class="lc-text-muted">—</span>
+    {{ end }}
+  </td>
+  <td class="lc-sigrow-cell font-tabular lc-sig-cell">
+    {{ if .SignatureHex }}
+      <code class="lc-mono">{{ slice .SignatureHex 0 (min 16 (len .SignatureHex)) }}{{ if gt (len .SignatureHex) 16 }}…{{ end }}</code>
+      <span x-show="open" class="lc-sig-full"><code class="lc-mono">{{ .SignatureHex }}</code></span>
+    {{ else }}
+      <span class="lc-text-muted">—</span>
+    {{ end }}
+  </td>
+  <td class="lc-sigrow-cell">
+    {{ if or .PubKeyFingerprint .SignatureHex }}
+      <button type="button" class="lc-link-button" x-on:click="open = !open" x-text="open ? 'Hide bytes' : 'Show bytes'" aria-expanded="false"></button>
+    {{ end }}
+  </td>
+</tr>
+{{ if .Error }}
+<tr class="lc-sigrow-error">
+  <td colspan="5" class="lc-sigrow-cell lc-sigrow-cell-error">{{ .Error }}</td>
+</tr>
+{{ end }}
+{{ end }}

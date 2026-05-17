@@ -246,6 +246,17 @@ func withSession(r *http.Request, sess *Session) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), sessionContextKey{}, sess))
 }
 
+// WithSessionForTest exposes the session-injection helper so packages
+// outside auth can drive handlers under test without spinning up the
+// full LoadSession middleware. Production code MUST NOT call this — the
+// session lifecycle goes through the store + middleware. Naming the
+// helper ForTest is a deliberate friction so it does not accidentally
+// surface in a real handler. The function lives in non-test files
+// because cross-package _test.go bindings cannot import each other.
+func WithSessionForTest(r *http.Request, sess *Session) *http.Request {
+	return withSession(r, sess)
+}
+
 type sessionContextKey struct{}
 
 // ErrNoSessionCookie is returned by helpers that probe the cookie path.

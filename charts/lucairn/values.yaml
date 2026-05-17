@@ -150,3 +150,26 @@ dashboard:
     host: dashboard.lucairn.local
     tlsSecret: tls-lucairn-dashboard
     annotations: {}
+
+  # Slice 3 cert browser. Field names mirror
+  # charts/lucairn/charts/dashboard/values.yaml so customer overrides
+  # at the parent path pass through verbatim. Leave connectionStringRef.name
+  # empty to ship the dashboard with cert pages rendering "not configured".
+  auditDB:
+    connectionStringRef:
+      name: ""
+      key: connection-string
+
+  witness:
+    endpoint: "witness.lucairn.svc.cluster.local:50051"
+    tls:
+      enabled: false
+      caRef:
+        name: ""
+        key: ca.crt
+      certRef:
+        name: ""
+        key: tls.crt
+      keyRef:
+        name: ""
+        key: tls.key
