@@ -262,7 +262,19 @@ func TestHealthGrafanaJWT_Viewer_MintsViewerRole(t *testing.T) {
 	}
 }
 
-func TestHealthGrafanaJWT_Unauthenticated_401(t *testing.T) {
+// TestHealthGrafanaJWT_Unauthenticated_RedirectsToLogin closes Codex r1
+// C33: the prior test invoked HealthGrafanaJWTHandler directly without the
+// auth middleware chain, so it observed the handler's defense-in-depth 401
+// path. In production the auth.RequireSession middleware intercepts FIRST
+// and 302s to /login?next=%2Fhealth%2Fgrafana-jwt — a request never reaches
+// the handler. Drive the request through RequireSession() so the test
+// reflects production semantics.
+//
+// The handler's 401 path remains in place as defense-in-depth (if the
+// middleware allowlist ever expands by mistake, the handler still
+// fail-closes), but the externally-observable contract for unauthenticated
+// callers is "redirect to login", not "401".
+func TestHealthGrafanaJWT_Unauthenticated_RedirectsToLogin(t *testing.T) {
 	t.Parallel()
 	signer, _ := grafana.NewSigner(strings.Repeat("k", grafana.MinSecretBytes), 0, nil)
 	deps := &HealthDeps{
@@ -270,12 +282,27 @@ func TestHealthGrafanaJWT_Unauthenticated_401(t *testing.T) {
 		GrafanaSigner:     signer,
 		GrafanaConfigured: true,
 	}
+	// Build the production middleware chain: RequireSession() in front of
+	// the handler. No LoadSession is necessary because the request carries
+	// no session cookie — RequireSession alone sees an empty context and
+	// fires the redirect.
+	chain := auth.RequireSession()(http.HandlerFunc(deps.HealthGrafanaJWTHandler))
+
 	req := httptest.NewRequest(http.MethodPost, "/health/grafana-jwt", strings.NewReader(""))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
-	deps.HealthGrafanaJWTHandler(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("status: %d want 401", rr.Code)
+	chain.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status: %d want 302 (middleware redirects unauthenticated requests to /login)", rr.Code)
+	}
+	loc := rr.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/login?next=") {
+		t.Fatalf("Location header: %q — want /login?next=... (RequireSession should preserve the post-login destination)", loc)
+	}
+	// URL-encoded form of "/health/grafana-jwt".
+	if !strings.Contains(loc, "%2Fhealth%2Fgrafana-jwt") {
+		t.Errorf("Location %q missing URL-encoded next= target %%2Fhealth%%2Fgrafana-jwt", loc)
 	}
 }
 

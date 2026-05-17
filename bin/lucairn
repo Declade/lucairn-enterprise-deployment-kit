@@ -1105,6 +1105,23 @@ check_dashboard_grafana() {
     else
       echo "dashboard grafana: jwt Secret present in both $dash_ns + $obs_ns"
     fi
+
+    # C14 (Slice 4 fix-up r2): for each namespace where the Secret EXISTS,
+    # verify the `shared-secret` data key carries a non-empty value. A
+    # customer who pre-created the Secret with the wrong key name (or with
+    # an empty string for the value) passes the existence check above but
+    # the dashboard later fails to mint JWTs silently. Decode the base64
+    # payload and reject empty.
+    local _check_ns _val
+    for _check_ns in "$dash_ns" "$obs_ns"; do
+      if kubectl get secret "$secret_name" -n "$_check_ns" >/dev/null 2>&1; then
+        _val=$(kubectl get secret "$secret_name" -n "$_check_ns" -o jsonpath='{.data.shared-secret}' 2>/dev/null | base64 -d 2>/dev/null || true)
+        if [ -z "$_val" ]; then
+          echo "dashboard grafana: failed (Secret $secret_name in namespace $_check_ns has missing/empty 'shared-secret' key — verify the key name is exactly 'shared-secret' and the value is the 48-char random secret)"
+          fail=1
+        fi
+      fi
+    done
   fi
 
   # Optional reachability probe. Best-effort; non-fatal if it fails so
