@@ -681,3 +681,122 @@ GRANT SELECT ON veil_certificates TO lucairn_dashboard_ro;
 
 See `OPS.md` § "Dashboard: rotating audit DB credentials".
 
+### Enable server health + Grafana embedding (Slice 4)
+
+The dashboard's `/health` surface is ALWAYS-ON by default — it polls
+the 12 standard kit services every 10 seconds and renders a card
+grid with per-service status pills (Healthy / Degraded / Down /
+Polling…). Operators who want a custom service list set
+`LUCAIRN_DASHBOARD_HEALTH_SERVICES` (or the matching Helm value)
+to a comma-separated `name=url` spec; see
+`apps/dashboard/internal/health/services.go` for the bundled
+default + URL syntax (`http://`, `https://`, `tcp://`).
+
+Embedded Grafana panels are OPT-IN. When enabled, the dashboard
+signs a fresh HS256 JWT (60-second TTL) per panel-render request
+and the iframe authenticates via the documented Grafana
+[`auth.jwt`] mechanism (`auth_token` URL-login query parameter).
+The SAME shared secret is consumed by both the dashboard pod
+(via `LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET`) and the Grafana pod
+(mounted as `/etc/grafana/jwt/shared-secret` + read via
+`GF_AUTH_JWT_KEY_FILE`).
+
+#### Compose path
+
+1. Add the Slice 4 block to `customer.env`:
+
+   ```bash
+   LUCAIRN_DASHBOARD_GRAFANA_URL=https://grafana.lucairn.local
+   LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET=$(openssl rand -hex 24)  # 48-char hex
+   LUCAIRN_DASHBOARD_GRAFANA_PANEL_GATEWAY_THROUGHPUT_UID=<uid>
+   LUCAIRN_DASHBOARD_GRAFANA_PANEL_SANITIZER_HIT_RATES_UID=<uid>
+   LUCAIRN_DASHBOARD_GRAFANA_PANEL_WITNESS_VERIFY_RATE_UID=<uid>
+   LUCAIRN_DASHBOARD_GRAFANA_PANEL_AUDIT_LOG_VOLUME_UID=<uid>
+   ```
+
+   Panel UIDs come from Grafana → Edit Dashboard → Share → UID.
+   Empty UIDs render a "panel not configured" placeholder in the
+   side drawer without breaking the rest of `/health`.
+
+2. Configure Grafana with `[auth.jwt]`. A minimal `grafana.ini`
+   block (mount as a ConfigMap or set via env vars):
+
+   ```ini
+   [security]
+   allow_embedding = true
+
+   [auth.jwt]
+   enabled = true
+   url_login = true
+   key_file = /etc/grafana/jwt/shared-secret
+   username_claim = email
+   email_claim = email
+   auto_sign_up = true
+   expect_claims = {"iss": "lucairn-dashboard", "aud": "grafana"}
+   ```
+
+   Mount the same shared secret as a single-line file at
+   `/etc/grafana/jwt/shared-secret`.
+
+3. Run `bin/lucairn doctor` — the new `dashboard grafana:` pre-flight
+   surfaces invalid URL schemes, sub-32-character secrets, and
+   reachability problems.
+
+4. Recreate the dashboard container:
+
+   ```bash
+   docker compose -f docker-compose.customer.yml \
+     --env-file customer.env --profile dashboard \
+     up -d --force-recreate lucairn-dashboard
+   ```
+
+5. Verify: open `/health` while logged in. Click any service card →
+   side drawer opens → embedded Grafana panel renders without a
+   Grafana login screen.
+
+#### Kubernetes path
+
+1. (Optional — recommended) Set `dashboard.grafana.jwt.secretName`
+   empty so Helm generates a 48-char shared secret in a Secret
+   named `lucairn-dashboard-grafana-jwt`. The `lookup` pattern in
+   the template preserves the value across `helm upgrade`.
+
+2. Wire Grafana embedding + the observability sub-chart's JWT mode
+   in `customer-values.yaml`:
+
+   ```yaml
+   dashboard:
+     enabled: true
+     grafana:
+       endpoint: "https://grafana.lucairn.local"
+       panels:
+         gatewayThroughputUID: "<uid>"
+         sanitizerHitRatesUID: "<uid>"
+         witnessVerifyRateUID: "<uid>"
+         auditLogVolumeUID: "<uid>"
+
+   observability:
+     enabled: true
+     grafana:
+       auth:
+         jwt:
+           enabled: true
+           secretRef:
+             # Match the dashboard sub-chart's auto-generated Secret name.
+             name: lucairn-dashboard-grafana-jwt
+             key: shared-secret
+   ```
+
+3. Apply: `helm upgrade --install lucairn charts/lucairn \
+   -f customer-values.yaml --namespace lucairn`.
+
+4. Confirm both rollouts: `kubectl -n lucairn rollout status
+   deploy/lucairn-dashboard` + `kubectl -n dsa-observability
+   rollout status deploy/grafana`.
+
+5. Verify same as Compose step 5 above.
+
+#### Rotating the Grafana JWT shared secret
+
+See `OPS.md` § "Rotating the Grafana JWT shared secret".
+

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/grafana"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/handlers"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/store"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/views"
@@ -48,6 +49,17 @@ type Options struct {
 	CertStore      *store.CertStore
 	WitnessClient  *witness.Client
 	CertConfigured bool
+
+	// Slice 4 server-health + Grafana embed surface. When HealthConfigured
+	// is true, HealthPoller MUST be non-nil. When GrafanaConfigured is
+	// true, GrafanaSigner + GrafanaConfig MUST be populated. Half-wired
+	// states are caught at New() so a "missing signer mid-request" path
+	// is not reachable in production.
+	HealthPoller      handlers.HealthPoller
+	HealthConfigured  bool
+	GrafanaSigner     *grafana.Signer
+	GrafanaConfig     handlers.GrafanaPanelConfig
+	GrafanaConfigured bool
 }
 
 // Server bundles the HTTP server and its lifecycle.
@@ -109,6 +121,27 @@ func New(opts Options) (*Server, error) {
 		if opts.WitnessClient == nil {
 			return nil, errors.New("server: CertConfigured requires WitnessClient")
 		}
+	}
+	// Slice 4 health + Grafana surface validation. Mirrors the OIDC /
+	// cert-surface pattern: half-wired states fail-closed at boot.
+	if opts.HealthConfigured && opts.HealthPoller == nil {
+		return nil, errors.New("server: HealthConfigured requires HealthPoller")
+	}
+	if opts.GrafanaConfigured {
+		if opts.GrafanaSigner == nil {
+			return nil, errors.New("server: GrafanaConfigured requires GrafanaSigner")
+		}
+		if strings.TrimSpace(opts.GrafanaConfig.BaseURL) == "" {
+			return nil, errors.New("server: GrafanaConfigured requires GrafanaConfig.BaseURL")
+		}
+	}
+	healthDeps := &handlers.HealthDeps{
+		Renderer:          renderer,
+		Poller:            opts.HealthPoller,
+		GrafanaSigner:     opts.GrafanaSigner,
+		GrafanaConfig:     opts.GrafanaConfig,
+		HealthConfigured:  opts.HealthConfigured,
+		GrafanaConfigured: opts.GrafanaConfigured,
 	}
 	var certDeps *handlers.CertsDeps
 	var bulkDeps *handlers.BulkReverifyDeps
@@ -245,6 +278,34 @@ func New(opts Options) (*Server, error) {
 		}
 		certDeps.CSVExportHandler(w, r)
 	})
+
+	// Slice 4 server-health + Grafana embed routes. Both auth-gated (the
+	// middleware allowlist is unchanged — only /healthz, /login, /static
+	// and /auth/oidc/* are public). Operator opens /health, sees the
+	// service-card grid, optionally clicks into the drawer which POSTs to
+	// /health/grafana-jwt for a freshly-minted token.
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		healthDeps.HealthOverviewHandler(w, r)
+	})
+	mux.Handle("/health/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch path {
+		case "/health/":
+			http.Redirect(w, r, "/health", http.StatusPermanentRedirect)
+			return
+		case "/health/grafana-jwt":
+			healthDeps.HealthGrafanaJWTHandler(w, r)
+			return
+		case "/health/grafana-jwt/":
+			http.Redirect(w, r, "/health/grafana-jwt", http.StatusPermanentRedirect)
+			return
+		}
+		http.NotFound(w, r)
+	}))
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {

@@ -44,6 +44,42 @@ spec:
                   key: admin-password
             - name: GF_PATHS_PROVISIONING
               value: /etc/grafana/provisioning
+            {{- if .Values.grafana.auth.jwt.enabled }}
+            # Slice 4 — Lucairn Enterprise Dashboard JWT embed handoff.
+            #
+            # Grafana's [auth.jwt] reads a single-line file at key_file
+            # and uses its contents as the HMAC shared secret. The
+            # SAME secret is consumed by the dashboard's grafana.Signer
+            # at boot; rotation = bump the Secret + restart both pods.
+            #
+            # url_login=true lets Grafana accept the JWT via the
+            # `auth_token` query param (the documented iframe-embed
+            # mechanism — see Grafana docs § Configure JWT auth).
+            #
+            # allow_embedding=true is required for the iframe to load
+            # inside the Lucairn dashboard origin; the dashboard side
+            # locks the origin via CSP frame-ancestors 'self' on the
+            # /health surfaces so the relax is scoped.
+            - name: GF_SECURITY_ALLOW_EMBEDDING
+              value: "true"
+            - name: GF_AUTH_JWT_ENABLED
+              value: "true"
+            - name: GF_AUTH_JWT_URL_LOGIN
+              value: "true"
+            - name: GF_AUTH_JWT_KEY_FILE
+              value: /etc/grafana/jwt/shared-secret
+            - name: GF_AUTH_JWT_USERNAME_CLAIM
+              value: email
+            - name: GF_AUTH_JWT_EMAIL_CLAIM
+              value: email
+            - name: GF_AUTH_JWT_AUTO_SIGN_UP
+              value: "true"
+            # Pin expect_claims so a token signed by ANY other source
+            # (or with the wrong issuer / audience) is rejected even
+            # though it would otherwise validate against the secret.
+            - name: GF_AUTH_JWT_EXPECT_CLAIMS
+              value: {{ printf "{\"iss\": %q, \"aud\": %q}" .Values.grafana.auth.jwt.issuer .Values.grafana.auth.jwt.audience | quote }}
+            {{- end }}
           resources:
             requests:
               cpu: {{ .Values.grafana.resources.requests.cpu }}
@@ -60,6 +96,11 @@ spec:
               mountPath: /etc/grafana/provisioning/dashboards
             - name: dashboards
               mountPath: /var/lib/grafana/dashboards
+            {{- if .Values.grafana.auth.jwt.enabled }}
+            - name: jwt-shared-secret
+              mountPath: /etc/grafana/jwt
+              readOnly: true
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /api/health
@@ -88,3 +129,11 @@ spec:
         - name: dashboards
           configMap:
             name: grafana-dashboards
+        {{- if .Values.grafana.auth.jwt.enabled }}
+        - name: jwt-shared-secret
+          secret:
+            secretName: {{ required "observability.grafana.auth.jwt.secretRef.name is required when grafana.auth.jwt.enabled=true" .Values.grafana.auth.jwt.secretRef.name | quote }}
+            items:
+              - key: {{ .Values.grafana.auth.jwt.secretRef.key | default "shared-secret" | quote }}
+                path: shared-secret
+        {{- end }}

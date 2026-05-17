@@ -54,11 +54,11 @@ type CertSummary struct {
 // To. RedactionMin is the minimum redaction_count (>=). Verdicts is the
 // allowlist; an empty slice = no verdict filter.
 type CertFilter struct {
-	From          time.Time
-	To            time.Time
-	Verdicts      []string
-	CustomerID    string
-	RedactionMin  int
+	From         time.Time
+	To           time.Time
+	Verdicts     []string
+	CustomerID   string
+	RedactionMin int
 }
 
 // Page constrains pagination. Limit defaults to 50; Offset is the row

@@ -938,7 +938,104 @@ check_dashboard() {
 
   check_dashboard_cert_browser "$env_file" || return 1
 
+  check_dashboard_grafana "$env_file" || return 1
+
   return 0
+}
+
+# Pre-flight Slice 4 server-health + Grafana embedding configuration.
+#
+# Skipped silently when LUCAIRN_DASHBOARD_GRAFANA_URL is unset (Grafana
+# embedding is off; the /health surface still polls + renders status
+# cards but the side drawer shows the "not configured" placeholder).
+#
+# Validates:
+#   - GRAFANA_URL has http:// or https:// scheme
+#   - GRAFANA_JWT_SECRET is set + ≥32 chars (HMAC floor)
+#   - GRAFANA_URL is reachable when DOCTOR_OFFLINE != 1 (best-effort HEAD)
+#   - HEALTH_POLL_INTERVAL_SECONDS, when set, is a positive integer ≤3600
+#
+# Bash 3.2 compatible per Slice 2 lesson #7.
+check_dashboard_grafana() {
+  local env_file="$1"
+  local grafana_url grafana_secret poll_interval u
+  grafana_url="$(env_value "$env_file" LUCAIRN_DASHBOARD_GRAFANA_URL)"
+  grafana_secret="$(env_value "$env_file" LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET)"
+  poll_interval="$(env_value "$env_file" LUCAIRN_DASHBOARD_HEALTH_POLL_INTERVAL_SECONDS)"
+
+  local fail=0
+
+  # Poll interval shape check (always evaluated; the field is opt-in but
+  # malformed values are caught here rather than at pod boot).
+  if [ -n "$poll_interval" ]; then
+    case "$poll_interval" in
+      ''|*[!0-9]*)
+        echo "dashboard grafana: failed (LUCAIRN_DASHBOARD_HEALTH_POLL_INTERVAL_SECONDS must be a positive integer, got: $poll_interval)"
+        fail=1
+        ;;
+      *)
+        if [ "$poll_interval" -le 0 ] || [ "$poll_interval" -gt 3600 ]; then
+          echo "dashboard grafana: failed (LUCAIRN_DASHBOARD_HEALTH_POLL_INTERVAL_SECONDS must be 1..3600, got: $poll_interval)"
+          fail=1
+        fi
+        ;;
+    esac
+  fi
+
+  # Grafana embed is OPT-IN. Empty URL = embed off + we don't probe.
+  if [ -z "$grafana_url" ]; then
+    if [ -n "$grafana_secret" ]; then
+      echo "dashboard grafana: warn (LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET set but LUCAIRN_DASHBOARD_GRAFANA_URL is empty — embed will stay OFF)"
+    else
+      echo "dashboard grafana: skipped (embed disabled — set LUCAIRN_DASHBOARD_GRAFANA_URL to enable)"
+    fi
+    return "$fail"
+  fi
+
+  # URL scheme check.
+  u="$grafana_url"
+  case "$u" in
+    https://*)
+      echo "dashboard grafana: url scheme ok (https)"
+      ;;
+    http://*)
+      echo "dashboard grafana: warn (LUCAIRN_DASHBOARD_GRAFANA_URL uses http://, expected https://)"
+      ;;
+    *)
+      echo "dashboard grafana: failed (LUCAIRN_DASHBOARD_GRAFANA_URL must include scheme, got: $u)"
+      fail=1
+      ;;
+  esac
+
+  # Shared secret length floor (must match apps/dashboard/internal/grafana/jwt.go::MinSecretBytes).
+  if [ -z "$grafana_secret" ]; then
+    echo "dashboard grafana: failed (LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET is required when LUCAIRN_DASHBOARD_GRAFANA_URL is set)"
+    fail=1
+  else
+    if [ "${#grafana_secret}" -lt 32 ]; then
+      echo "dashboard grafana: failed (LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET must be ≥32 chars, got ${#grafana_secret})"
+      fail=1
+    else
+      echo "dashboard grafana: shared secret ok (${#grafana_secret} chars)"
+    fi
+  fi
+
+  # Optional reachability probe. Best-effort; non-fatal if it fails so
+  # operators can run doctor BEFORE the Grafana pod is up and still get
+  # the rest of the gates.
+  if [ "$fail" -eq 0 ] && [ "${DOCTOR_OFFLINE:-0}" != "1" ] && have curl; then
+    local probe_url health_code
+    probe_url="${grafana_url%/}/api/health"
+    health_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
+        "$probe_url" 2>/dev/null || echo 000)"
+    case "$health_code" in
+      200) echo "dashboard grafana: grafana reachable (200 on $probe_url)" ;;
+      000) echo "dashboard grafana: warn (grafana unreachable at $probe_url — expected when doctor runs pre-up)" ;;
+      *)   echo "dashboard grafana: warn (grafana $probe_url returned $health_code; verify URL + auth)" ;;
+    esac
+  fi
+
+  return "$fail"
 }
 
 # Pre-flight OIDC SSO configuration when LUCAIRN_DASHBOARD_OIDC_ENABLED=true.

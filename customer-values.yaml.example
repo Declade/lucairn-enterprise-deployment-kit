@@ -147,3 +147,32 @@ dashboard:
   #     key: connection-string
   # witness:
   #   endpoint: "witness.lucairn.svc.cluster.local:50051"
+
+  # Slice 4 — server health overview + Grafana embedding plumbing.
+  # /health probing is ALWAYS-ON at the binary level (cards render
+  # status pills for the 12 standard kit services every 10s). To
+  # add embedded Grafana panels, set grafana.endpoint + the panel
+  # UIDs, then flip observability.grafana.auth.jwt.enabled to true
+  # so the in-cluster Grafana accepts the dashboard's HS256 JWT.
+  # See INSTALL.md § "Enable server health + Grafana embedding".
+  #
+  # grafana:
+  #   endpoint: "https://grafana.lucairn.local"
+  #   panels:
+  #     gatewayThroughputUID: ""
+  #     sanitizerHitRatesUID: ""
+  #     witnessVerifyRateUID: ""
+  #     auditLogVolumeUID: ""
+
+# Observability sub-chart — Slice 4 fold-in. Set jwt.enabled=true to
+# wire Grafana into the dashboard's embed handoff. The Secret name
+# below must match the dashboard's auto-generated Secret (default
+# "lucairn-dashboard-grafana-jwt") OR the operator-pre-created Secret.
+# observability:
+#   grafana:
+#     auth:
+#       jwt:
+#         enabled: false
+#         secretRef:
+#           name: lucairn-dashboard-grafana-jwt
+#           key: shared-secret

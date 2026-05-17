@@ -78,7 +78,7 @@ func (d *OIDCDeps) LoginRedirect(w http.ResponseWriter, r *http.Request) {
 //   - IdP returned ?error= or ?error_description=: same generic flash;
 //     the underlying error is audit-logged.
 //   - Group mapping rejection (neither admin nor viewer): generic flash
-//     + audit-log the rejected email + groups list. Future slice may
+//   - audit-log the rejected email + groups list. Future slice may
 //     surface "your administrator has not enabled access for your
 //     account" as a more helpful copy; v1 stays generic for surface
 //     hygiene.
@@ -194,4 +194,3 @@ func truncateOIDCErrorDescription(s string, n int) string {
 	}
 	return s[:n] + "...[truncated]"
 }
-

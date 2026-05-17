@@ -7,9 +7,10 @@
 // Slice 1 shipped: auth + shell foundation.
 // Slice 2 added: OIDC SSO (opt-in; default OFF).
 // Slice 3 adds: cert browser + inspector + audit-grade live validator
-//               (gates on LUCAIRN_DASHBOARD_AUDIT_DB_URL +
-//                LUCAIRN_DASHBOARD_WITNESS_ENDPOINT; cert pages render
-//                a "not configured" explainer when those are unset).
+//
+//	(gates on LUCAIRN_DASHBOARD_AUDIT_DB_URL +
+//	 LUCAIRN_DASHBOARD_WITNESS_ENDPOINT; cert pages render
+//	 a "not configured" explainer when those are unset).
 //
 // Design: specs/prd-2026-05-17-enterprise-dashboard.md.
 package main
@@ -28,6 +29,9 @@ import (
 
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/config"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/grafana"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/handlers"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/health"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/server"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/store"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/witness"
@@ -127,11 +131,80 @@ func main() {
 		log.Printf("cert browser disabled (set LUCAIRN_DASHBOARD_AUDIT_DB_URL and LUCAIRN_DASHBOARD_WITNESS_ENDPOINT to enable)")
 	}
 
+	// Slice 4 wiring: server-health poller + Grafana JWT signer.
+	//
+	// Both surfaces are independently opt-in:
+	//   - Empty HealthServices  → health poller does NOT start; the
+	//                              /health surface still renders with
+	//                              "unknown" placeholders + guidance.
+	//   - Empty GrafanaURL      → JWT signer is nil + the drawer
+	//                              surface stays in the "not configured"
+	//                              state. /health/grafana-jwt returns 503.
+	//
+	// The poller's ctx is the same SIGTERM/SIGINT-cancelled ctx the
+	// server uses, so a clean shutdown stops all per-service goroutines.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	var (
+		healthPoller      *health.Poller
+		healthConfigured  bool
+		grafanaSigner     *grafana.Signer
+		grafanaCfg        handlers.GrafanaPanelConfig
+		grafanaConfigured bool
+	)
+	{
+		// Health surface boot.
+		spec := cfg.HealthServices
+		// Empty spec → use bundled default; only DISABLE polling when
+		// the operator explicitly sets a single literal "disabled" token.
+		if spec == "disabled" {
+			log.Printf("health poller disabled via LUCAIRN_DASHBOARD_HEALTH_SERVICES=disabled")
+		} else {
+			services, err := health.ParseServicesSpec(spec)
+			if err != nil {
+				log.Fatalf("health: %v", err)
+			}
+			healthPoller = health.NewPoller(services, health.PollerOpts{
+				Interval: time.Duration(cfg.HealthPollIntervalSeconds) * time.Second,
+			})
+			healthPoller.Start(ctx)
+			healthConfigured = true
+			log.Printf("health poller started (%d services, interval %ds)", len(services), cfg.HealthPollIntervalSeconds)
+		}
+	}
+	if cfg.GrafanaURL != "" {
+		s, err := grafana.NewSigner(cfg.GrafanaJWTSecret, 0, nil)
+		if err != nil {
+			log.Fatalf("grafana signer: %v", err)
+		}
+		grafanaSigner = s
+		grafanaCfg = handlers.GrafanaPanelConfig{
+			BaseURL:              cfg.GrafanaURL,
+			GatewayThroughputUID: cfg.GrafanaPanelGatewayUID,
+			SanitizerHitRatesUID: cfg.GrafanaPanelSanitizerUID,
+			WitnessVerifyRateUID: cfg.GrafanaPanelWitnessUID,
+			AuditLogVolumeUID:    cfg.GrafanaPanelAuditUID,
+		}
+		grafanaConfigured = true
+		log.Printf("grafana embed enabled (base=%s)", cfg.GrafanaURL)
+	} else {
+		log.Printf("grafana embed disabled (set LUCAIRN_DASHBOARD_GRAFANA_URL + LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET to enable)")
+	}
+
 	staticFS, err := fs.Sub(embeddedStatic, "static")
 	if err != nil {
 		log.Fatalf("static fs: %v", err)
 	}
 	server.SetEmbeddedStatic(staticFS)
+
+	// Bridge *health.Poller into the handlers.HealthPoller interface;
+	// when the poller is nil (disabled) pass nil through so server.New's
+	// half-wired guard fires only when HealthConfigured is true.
+	var healthPollerIface handlers.HealthPoller
+	if healthPoller != nil {
+		healthPollerIface = healthPoller
+	}
 
 	srv, err := server.New(server.Options{
 		ListenAddr:        cfg.ListenAddr,
@@ -144,13 +217,15 @@ func main() {
 		CertStore:         certs.store,
 		WitnessClient:     certs.witness,
 		CertConfigured:    certs.configured,
+		HealthPoller:      healthPollerIface,
+		HealthConfigured:  healthConfigured,
+		GrafanaSigner:     grafanaSigner,
+		GrafanaConfig:     grafanaCfg,
+		GrafanaConfigured: grafanaConfigured,
 	})
 	if err != nil {
 		log.Fatalf("server: %v", err)
 	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 
 	log.Printf("lucairn-dashboard %s listening on %s", version, cfg.ListenAddr)
 	if err := srv.Run(ctx); err != nil {

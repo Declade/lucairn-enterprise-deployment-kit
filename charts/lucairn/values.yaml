@@ -114,7 +114,11 @@ dashboard:
 
   image:
     repository: lucairn-dashboard
-    tag: ""
+    # Pinned to the current slice's release tag. Bumped per slice
+    # (Slice 1=0.1.0 → Slice 4=0.4.0). Empty fallback to Chart.AppVersion
+    # remains the last-resort default in the sub-chart's
+    # `dashboard.image` helper.
+    tag: "0.4.0"
     pullPolicy: IfNotPresent
 
   service:
@@ -179,3 +183,45 @@ dashboard:
       keyRef:
         name: ""
         key: tls.key
+
+  # Slice 4: server health overview + Grafana embedding plumbing.
+  # Field names mirror charts/lucairn/charts/dashboard/values.yaml so
+  # customer overrides at the parent path are passed through verbatim.
+  grafana:
+    # Empty endpoint = Grafana embedding off. Cards still render but
+    # the side drawer shows the "not configured" placeholder.
+    endpoint: ""
+    jwt:
+      # Empty secretName = Helm generates lucairn-dashboard-grafana-jwt
+      # via the lookup pattern (preserves across helm upgrade).
+      secretName: ""
+      secretKey: shared-secret
+    panels:
+      gatewayThroughputUID: ""
+      sanitizerHitRatesUID: ""
+      witnessVerifyRateUID: ""
+      auditLogVolumeUID: ""
+
+  healthPollIntervalSeconds: 10
+  healthServices: ""
+
+# Observability sub-chart override block (Slice 4 fold-in). When
+# enabling the dashboard's Grafana embedding, also flip
+# `observability.grafana.auth.jwt.enabled` so the Grafana pod accepts
+# the HS256 JWT. Both sub-charts MUST reference the SAME Secret name.
+observability:
+  enabled: true
+  grafana:
+    auth:
+      jwt:
+        enabled: false
+        secretRef:
+          # Cross-chart bind: typically set to
+          # `lucairn-dashboard-grafana-jwt` (the auto-generated name from
+          # the dashboard sub-chart). The Secret must exist in the
+          # observability namespace; for cross-namespace deployments,
+          # operators pre-create + copy the Secret out-of-band.
+          name: ""
+          key: shared-secret
+        issuer: "lucairn-dashboard"
+        audience: "grafana"

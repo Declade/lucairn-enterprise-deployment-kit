@@ -15,7 +15,7 @@ import (
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
 )
 
-//go:embed templates/*.html.tmpl templates/components/*.html.tmpl templates/certs/*.html.tmpl
+//go:embed templates/*.html.tmpl templates/components/*.html.tmpl templates/certs/*.html.tmpl templates/health/*.html.tmpl
 var templateFS embed.FS
 
 // FuncMap exposes helper functions to all templates.
@@ -90,6 +90,19 @@ func New() (*Renderer, error) {
 		{name: "certs/validator.html.tmpl", path: "templates/certs/validator.html.tmpl"},
 		{name: "certs/progress.html.tmpl", path: "templates/certs/progress.html.tmpl"},
 		{name: "certs/notconfigured.html.tmpl", path: "templates/certs/notconfigured.html.tmpl"},
+		// Slice 4 adds the health/overview surface; the drawer + grafana_panel
+		// partials are picked up via componentTemplates (templates/components/)
+		// + the explicit template files listed here when present in
+		// templates/health/.
+		{name: "health/overview.html.tmpl", path: "templates/health/overview.html.tmpl"},
+	}
+	// Slice 4: health pages reference a sibling partial (drawer.html.tmpl)
+	// alongside the overview page. Collect them once + thread into every
+	// page's parse list so the partial's `{{ define "health-drawer" }}`
+	// block is available regardless of which page is being rendered.
+	healthPartials, err := healthPartialTemplateNames()
+	if err != nil {
+		return nil, err
 	}
 	r := &Renderer{templates: make(map[string]*template.Template)}
 	for _, page := range pages {
@@ -99,12 +112,38 @@ func New() (*Renderer, error) {
 			page.path,
 		}
 		files = append(files, componentTemplates...)
+		files = append(files, healthPartials...)
 		if _, err := t.ParseFS(templateFS, files...); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", page.name, err)
 		}
 		r.templates[page.name] = t
 	}
 	return r, nil
+}
+
+// healthPartialTemplateNames returns every file under templates/health/
+// EXCEPT the named page templates (overview.html.tmpl). The drawer +
+// any future health sub-partials are picked up via this helper so the
+// pages list above doesn't have to enumerate them.
+func healthPartialTemplateNames() ([]string, error) {
+	entries, err := fs.ReadDir(templateFS, "templates/health")
+	if err != nil {
+		return nil, err
+	}
+	skip := map[string]struct{}{
+		"overview.html.tmpl": {},
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if _, ok := skip[e.Name()]; ok {
+			continue
+		}
+		names = append(names, "templates/health/"+e.Name())
+	}
+	return names, nil
 }
 
 // pageDef is one named template the renderer parses at startup. Slice 3

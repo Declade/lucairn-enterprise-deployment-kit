@@ -256,3 +256,64 @@ When to rotate:
 - On the same schedule as the rest of the kit's secrets (per the
   "Key Rotation" section above).
 
+## Rotating the Grafana JWT shared secret
+
+The Grafana embed handoff uses an HS256 shared secret (≥32 chars).
+The dashboard pod reads it via `LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET`;
+the Grafana pod reads the same value via `GF_AUTH_JWT_KEY_FILE`
+(mounted from the same Secret as `/etc/grafana/jwt/shared-secret`).
+
+Tokens have a 60-second TTL — any token in flight at rotation time
+expires within one minute, so the rotation order is non-critical
+provided both pods restart within ~60s of the Secret edit.
+
+### Compose path
+
+```bash
+NEW_SECRET="$(openssl rand -hex 24)"  # 48-char hex
+
+# 1) Update customer.env atomically.
+sed -i.bak "s|^LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET=.*|LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET=${NEW_SECRET}|" customer.env
+
+# 2) Update the Grafana container's mounted secret-file (if your
+#    Grafana config reads the shared secret from a file, update the
+#    file in lockstep). For the bundled compose stack with Grafana
+#    as a side-deployment, the simplest pattern is a Docker Compose
+#    `secrets:` mount that points at a host file; update + recreate.
+
+# 3) Recreate both containers.
+docker compose -f docker-compose.customer.yml \
+  --env-file customer.env --profile dashboard \
+  up -d --force-recreate lucairn-dashboard
+docker compose -f docker-compose.customer.yml \
+  up -d --force-recreate grafana    # or whichever compose path runs Grafana
+```
+
+### Kubernetes path
+
+```bash
+NEW_SECRET="$(openssl rand -hex 24)"
+
+# 1) Update the Helm-managed Secret in place.
+kubectl -n lucairn create secret generic lucairn-dashboard-grafana-jwt \
+  --from-literal=shared-secret="${NEW_SECRET}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# 2) If the observability sub-chart pulls from a different namespace,
+#    mirror the same Secret there too (operator-side decision; the
+#    chart references the Secret by namespace+name).
+kubectl -n dsa-observability create secret generic lucairn-dashboard-grafana-jwt \
+  --from-literal=shared-secret="${NEW_SECRET}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# 3) Bounce both Deployments so they re-read the Secret.
+kubectl -n lucairn rollout restart deploy/lucairn-dashboard
+kubectl -n dsa-observability rollout restart deploy/grafana
+```
+
+When to rotate:
+
+- On a customer-defined cadence (90 days is typical for HMAC secrets).
+- Whenever an operator with cluster Secret read access leaves the team.
+- After any Grafana-side incident response that suspects key compromise.
+

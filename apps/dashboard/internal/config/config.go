@@ -41,14 +41,26 @@ const (
 	envOIDCPublicURL    = "LUCAIRN_DASHBOARD_OIDC_PUBLIC_URL"
 
 	// Slice 3: cert browser + inspector + audit-grade validator.
-	envAuditDBURL          = "LUCAIRN_DASHBOARD_AUDIT_DB_URL"
-	envWitnessEndpoint     = "LUCAIRN_DASHBOARD_WITNESS_ENDPOINT"
-	envWitnessTLSEnabled   = "LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED"
+	envAuditDBURL        = "LUCAIRN_DASHBOARD_AUDIT_DB_URL"
+	envWitnessEndpoint   = "LUCAIRN_DASHBOARD_WITNESS_ENDPOINT"
+	envWitnessTLSEnabled = "LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED"
+
+	// Slice 4: server health overview + Grafana embedding plumbing.
+	envHealthServices            = "LUCAIRN_DASHBOARD_HEALTH_SERVICES"
+	envHealthPollIntervalSeconds = "LUCAIRN_DASHBOARD_HEALTH_POLL_INTERVAL_SECONDS"
+	envGrafanaURL                = "LUCAIRN_DASHBOARD_GRAFANA_URL"
+	envGrafanaJWTSecret          = "LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET"
+	envGrafanaPanelGatewayUID    = "LUCAIRN_DASHBOARD_GRAFANA_PANEL_GATEWAY_THROUGHPUT_UID"
+	envGrafanaPanelSanitizerUID  = "LUCAIRN_DASHBOARD_GRAFANA_PANEL_SANITIZER_HIT_RATES_UID"
+	envGrafanaPanelWitnessUID    = "LUCAIRN_DASHBOARD_GRAFANA_PANEL_WITNESS_VERIFY_RATE_UID"
+	envGrafanaPanelAuditUID      = "LUCAIRN_DASHBOARD_GRAFANA_PANEL_AUDIT_LOG_VOLUME_UID"
 
 	defaultListenAddr       = "0.0.0.0:8443"
 	defaultBootstrapEmail   = "admin@lucairn.local"
 	defaultOIDCGroupsClaim  = "groups"
 	defaultOIDCCallbackPath = "/auth/oidc/callback"
+
+	defaultHealthPollInterval = 10
 )
 
 // Config holds runtime configuration for the dashboard.
@@ -76,9 +88,29 @@ type Config struct {
 	// Slice 3 cert surface configuration. Both fields are optional —
 	// when AuditDBURL OR WitnessEndpoint is empty, cert pages render
 	// the "not configured" explainer and never dial either backend.
-	AuditDBURL          string
-	WitnessEndpoint     string
-	WitnessTLSEnabled   bool
+	AuditDBURL        string
+	WitnessEndpoint   string
+	WitnessTLSEnabled bool
+
+	// Slice 4 server-health overview + Grafana embedding plumbing.
+	//
+	// HealthServices is the comma-separated `name=url` spec. Empty →
+	// the bundled default 12-service kit list is used. The Go side
+	// holds the raw string + lets health.ParseServicesSpec do the
+	// parsing (separation of concerns: config validates SHAPE here,
+	// the health package validates SEMANTICS).
+	HealthServices            string
+	HealthPollIntervalSeconds int
+	// Grafana embedding is opt-in. Both URL + JWTSecret MUST be set
+	// together when GrafanaURL is non-empty; the loader fails-closed if
+	// only one half is populated (the Slice 3 pattern #25 — don't mask
+	// half-wired config with Go defaults).
+	GrafanaURL               string
+	GrafanaJWTSecret         string
+	GrafanaPanelGatewayUID   string
+	GrafanaPanelSanitizerUID string
+	GrafanaPanelWitnessUID   string
+	GrafanaPanelAuditUID     string
 }
 
 // Load reads configuration from the environment and applies safe defaults.
@@ -102,7 +134,71 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	if err := applyHealthSurfaceConfig(cfg); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// applyHealthSurfaceConfig reads + validates the Slice 4 server-health +
+// Grafana embedding env vars.
+//
+// The HEALTH side is always-on at the Go binary level — the poller starts
+// regardless. Operators who want to disable it set HealthServices to an
+// empty value and the binary skips poller boot.
+//
+// The GRAFANA side is opt-in and follows the W2A-pattern-#25 fail-closed
+// rule: when GrafanaURL is non-empty, GrafanaJWTSecret MUST also be set
+// (and at the minimum-length floor enforced by grafana.NewSigner).
+//
+// Panel UIDs are individually optional — when a UID is empty, the side
+// drawer for that panel renders the "panel not configured" placeholder
+// and the handler does NOT mint a JWT (panelURL returns "").
+func applyHealthSurfaceConfig(cfg *Config) error {
+	cfg.HealthServices = strings.TrimSpace(os.Getenv(envHealthServices))
+	cfg.HealthPollIntervalSeconds = defaultHealthPollInterval
+	if v := strings.TrimSpace(os.Getenv(envHealthPollIntervalSeconds)); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err != nil || n <= 0 {
+			return fmt.Errorf("%s must be a positive integer (seconds), got %q", envHealthPollIntervalSeconds, v)
+		}
+		if n > 3600 {
+			return fmt.Errorf("%s must be <= 3600 (one hour), got %d", envHealthPollIntervalSeconds, n)
+		}
+		cfg.HealthPollIntervalSeconds = n
+	}
+
+	cfg.GrafanaURL = strings.TrimSpace(os.Getenv(envGrafanaURL))
+	cfg.GrafanaJWTSecret = strings.TrimSpace(os.Getenv(envGrafanaJWTSecret))
+	cfg.GrafanaPanelGatewayUID = strings.TrimSpace(os.Getenv(envGrafanaPanelGatewayUID))
+	cfg.GrafanaPanelSanitizerUID = strings.TrimSpace(os.Getenv(envGrafanaPanelSanitizerUID))
+	cfg.GrafanaPanelWitnessUID = strings.TrimSpace(os.Getenv(envGrafanaPanelWitnessUID))
+	cfg.GrafanaPanelAuditUID = strings.TrimSpace(os.Getenv(envGrafanaPanelAuditUID))
+
+	if cfg.GrafanaURL != "" {
+		// URL must parse + use http/https scheme.
+		u, err := url.Parse(cfg.GrafanaURL)
+		if err != nil {
+			return fmt.Errorf("%s: parse %q: %w", envGrafanaURL, cfg.GrafanaURL, err)
+		}
+		switch u.Scheme {
+		case "http", "https":
+			// ok
+		default:
+			return fmt.Errorf("%s scheme must be http:// or https://, got %q", envGrafanaURL, u.Scheme)
+		}
+		if cfg.GrafanaJWTSecret == "" {
+			return fmt.Errorf("%s must be set when %s is set", envGrafanaJWTSecret, envGrafanaURL)
+		}
+		// Length validation is delegated to grafana.NewSigner so the
+		// floor (MinSecretBytes) lives next to the JWT signer code.
+	} else if cfg.GrafanaJWTSecret != "" {
+		// Half-wired case: secret without URL. Fail-closed.
+		return fmt.Errorf("%s must be set when %s is set", envGrafanaURL, envGrafanaJWTSecret)
+	}
+
+	return nil
 }
 
 // applyCertSurfaceConfig reads the cert browser / inspector config and
@@ -117,7 +213,7 @@ func Load() (*Config, error) {
 //
 // Optional:
 //   - LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED  reserved for the future
-//                                            mTLS slice (defaults false).
+//     mTLS slice (defaults false).
 func applyCertSurfaceConfig(cfg *Config) error {
 	cfg.AuditDBURL = strings.TrimSpace(os.Getenv(envAuditDBURL))
 	cfg.WitnessEndpoint = strings.TrimSpace(os.Getenv(envWitnessEndpoint))

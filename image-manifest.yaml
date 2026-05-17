@@ -94,4 +94,4 @@ optional_services:
   dsa-cert-portal:
     image_tag: ""
   lucairn-dashboard:
-    image_tag: "0.3.0"
+    image_tag: "0.4.0"
