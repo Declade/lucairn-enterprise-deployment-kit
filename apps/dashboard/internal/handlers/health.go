@@ -172,25 +172,39 @@ func (d *HealthDeps) HealthGrafanaJWTHandler(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "grafana embed not configured", http.StatusServiceUnavailable)
 		return
 	}
+
+	// Slice 4 fix-up r1 (bug-hunter L5): resolve the panel slug BEFORE
+	// minting the JWT. An unknown / unconfigured panel returns 200 with
+	// an empty URL so the drawer can render the "panel not configured"
+	// placeholder — but minting a 60s harvestable JWT for an unknown
+	// slug is pointless work and a tiny scope-expansion surface.
+	panelSlug := strings.TrimSpace(r.PostFormValue("panel"))
+	panelUID := d.panelUIDFor(panelSlug)
+
 	role := "Viewer"
 	if user.Role == auth.RoleAdmin {
 		role = "Admin"
 	}
-	signed, err := d.GrafanaSigner.SignFor(user.Email, user.Email, role)
-	if err != nil {
-		log.Printf("health_grafana_jwt: sign: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	var signed string
+	if panelUID != "" {
+		var err error
+		signed, err = d.GrafanaSigner.SignFor(user.Email, user.Email, role)
+		if err != nil {
+			log.Printf("health_grafana_jwt: sign: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// Unknown / unconfigured panel slug — log + return 200 with empty
+		// url so the drawer can surface a "panel not configured" message.
+		log.Printf("health_grafana_jwt: unknown or unconfigured panel slug %q", panelSlug)
 	}
-
-	panelSlug := strings.TrimSpace(r.PostFormValue("panel"))
 	urlOut := d.panelURL(panelSlug, signed)
-	if urlOut == "" {
-		// Unknown panel slug; return the JWT alone so the drawer can
-		// surface a "panel not configured" message without 500'ing.
-		log.Printf("health_grafana_jwt: unknown panel slug %q", panelSlug)
-	}
 	w.Header().Set("Cache-Control", "no-store")
+	// Bug-hunter L4: Pragma is the HTTP/1.0-era no-cache directive that
+	// some intermediaries still honor. Pair it with Cache-Control:no-store
+	// for defense-in-depth against caching the bearer token.
+	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	resp := struct {

@@ -2,7 +2,7 @@
 <section class="lc-page-section">
   <header class="lc-page-header">
     <h1 class="lc-page-title">Operator overview</h1>
-    <p class="lc-page-lede">Hello, <strong>{{ .User.Email }}</strong>. The dashboard foundation is online. Additional views &mdash; certificate browser, server health, audit log, compliance export, and API key management &mdash; will be added in upcoming kit releases.</p>
+    <p class="lc-page-lede">Hello, <strong>{{ .User.Email }}</strong>. The dashboard foundation is online. Additional views &mdash; audit log, compliance export, and API key management &mdash; will be added in upcoming kit releases.</p>
   </header>
   <div class="lc-card-grid">
     <article class="lc-card">
@@ -14,10 +14,10 @@
     </article>
     <article class="lc-card">
       <header class="lc-card-header">
-        <h2 class="lc-card-title">Server health</h2>
-        {{ template "statusdot" dict "Status" "warn" "Label" "Available in a later kit release" "Timestamp" "" }}
+        <h2 class="lc-card-title"><a class="lc-link" href="/health">Server health</a></h2>
+        {{ template "statusdot" dict "Status" "ok" "Label" "Live" "Timestamp" "" }}
       </header>
-      <p class="lc-card-body">One screen per kit service; rolling readiness polled from each service's health endpoint.</p>
+      <p class="lc-card-body">One screen per kit service; rolling readiness polled from each service's health endpoint. Click a card to open the embedded Grafana panel (when configured).</p>
     </article>
     <article class="lc-card">
       <header class="lc-card-header">
