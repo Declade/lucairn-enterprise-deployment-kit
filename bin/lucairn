@@ -958,18 +958,22 @@ check_dashboard() {
 # Bash 3.2 compatible per Slice 2 lesson #7.
 check_dashboard_grafana() {
   local env_file="$1"
-  local grafana_url grafana_secret poll_interval u
+  local grafana_url grafana_secret poll_interval health_services u
   grafana_url="$(env_value "$env_file" LUCAIRN_DASHBOARD_GRAFANA_URL)"
   grafana_secret="$(env_value "$env_file" LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET)"
   poll_interval="$(env_value "$env_file" LUCAIRN_DASHBOARD_HEALTH_POLL_INTERVAL_SECONDS)"
+  health_services="$(env_value "$env_file" LUCAIRN_DASHBOARD_HEALTH_SERVICES)"
 
   local fail=0
 
   # Poll interval shape check (always evaluated; the field is opt-in but
   # malformed values are caught here rather than at pod boot).
+  # GAP-6 (Slice 4 fix-up r1): the unreachable empty-string case inside
+  # this `case` block was removed — the outer `if [ -n "$poll_interval" ]`
+  # already excludes empty values.
   if [ -n "$poll_interval" ]; then
     case "$poll_interval" in
-      ''|*[!0-9]*)
+      *[!0-9]*)
         echo "dashboard grafana: failed (LUCAIRN_DASHBOARD_HEALTH_POLL_INTERVAL_SECONDS must be a positive integer, got: $poll_interval)"
         fail=1
         ;;
@@ -980,6 +984,47 @@ check_dashboard_grafana() {
         fi
         ;;
     esac
+  fi
+
+  # GAP-2 (Slice 4 fix-up r1): LUCAIRN_DASHBOARD_HEALTH_SERVICES is a
+  # comma-separated `name=url` spec. The Go-side parser
+  # (apps/dashboard/internal/health/services.go::ParseServicesSpec)
+  # CRASHLOOPS on malformed entries (semicolon separator, missing `=`,
+  # empty name, etc.). Catching the obvious shape errors here lets the
+  # operator fix `customer.env` before the pod boots. The literal
+  # "disabled" turns the poller off and is allowed verbatim.
+  if [ -n "$health_services" ] && [ "$health_services" != "disabled" ]; then
+    case "$health_services" in
+      *\;*)
+        echo "dashboard grafana: failed (LUCAIRN_DASHBOARD_HEALTH_SERVICES separator must be ',' not ';', got: $health_services)"
+        fail=1
+        ;;
+    esac
+    if [ "$fail" -eq 0 ]; then
+      local old_ifs entry
+      old_ifs="$IFS"
+      IFS=','
+      # Bash 3.2: manually iterate over the comma-split list. set -- via
+      # `read -a` would break with empty trailing tokens, and ${array[@]}
+      # requires bash ≥4 syntax discipline that this script avoids.
+      for entry in $health_services; do
+        # Strip surrounding whitespace (BSD-compatible).
+        entry="${entry# }"
+        entry="${entry% }"
+        if [ -z "$entry" ]; then continue; fi
+        case "$entry" in
+          *=*) ;;
+          *)
+            echo "dashboard grafana: failed (LUCAIRN_DASHBOARD_HEALTH_SERVICES entry must be name=url, got: $entry)"
+            fail=1
+            ;;
+        esac
+      done
+      IFS="$old_ifs"
+    fi
+    if [ "$fail" -eq 0 ]; then
+      echo "dashboard grafana: health services spec ok"
+    fi
   fi
 
   # Grafana embed is OPT-IN. Empty URL = embed off + we don't probe.
@@ -1012,11 +1057,53 @@ check_dashboard_grafana() {
     echo "dashboard grafana: failed (LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET is required when LUCAIRN_DASHBOARD_GRAFANA_URL is set)"
     fail=1
   else
-    if [ "${#grafana_secret}" -lt 32 ]; then
-      echo "dashboard grafana: failed (LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET must be ≥32 chars, got ${#grafana_secret})"
+    # GAP-1 (Slice 4 fix-up r1): reject obvious placeholder strings even
+    # when they pass the length floor (CHANGE_ME_, TODO_, etc.). Catches
+    # the customer who literally copy-pastes the example placeholder into
+    # customer.env without rotating it.
+    case "$grafana_secret" in
+      CHANGE_ME*|CHANGEME*|changeme*|change_me*|TODO*|todo*|REPLACE*|replace*)
+        echo "dashboard grafana: failed (LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET still set to a placeholder — replace with 32+ random chars, e.g. \`openssl rand -hex 24\`)"
+        fail=1
+        ;;
+      *)
+        if [ "${#grafana_secret}" -lt 32 ]; then
+          echo "dashboard grafana: failed (LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET must be ≥32 chars, got ${#grafana_secret})"
+          fail=1
+        else
+          echo "dashboard grafana: shared secret ok (${#grafana_secret} chars)"
+        fi
+        ;;
+    esac
+  fi
+
+  # GAP-3 (Slice 4 fix-up r1): verify that the K8s Secret exists in BOTH
+  # the dashboard namespace AND the observability namespace. The dashboard
+  # sub-chart's secret-grafana-jwt.yaml auto-renders the mirror; this
+  # check catches operators who supply their own secretName + forgot to
+  # duplicate it across namespaces, or who use a different Helm chart
+  # ordering that left the observability copy stale.
+  if [ "$fail" -eq 0 ] && [ "${DOCTOR_INCLUDE_DASHBOARD:-0}" = "1" ] && have kubectl; then
+    local dash_ns obs_ns secret_name
+    dash_ns="${LUCAIRN_DASHBOARD_NAMESPACE:-lucairn}"
+    obs_ns="${LUCAIRN_OBSERVABILITY_NAMESPACE:-dsa-observability}"
+    secret_name="${LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET_NAME:-lucairn-dashboard-grafana-jwt}"
+    local missing=""
+    if ! kubectl get secret "$secret_name" -n "$dash_ns" >/dev/null 2>&1; then
+      missing="$dash_ns"
+    fi
+    if ! kubectl get secret "$secret_name" -n "$obs_ns" >/dev/null 2>&1; then
+      if [ -n "$missing" ]; then
+        missing="$missing + $obs_ns"
+      else
+        missing="$obs_ns"
+      fi
+    fi
+    if [ -n "$missing" ]; then
+      echo "dashboard grafana: failed (Secret $secret_name missing in: $missing — Grafana pod will CrashLoopBackOff with CreateContainerConfigError. Either run \`helm upgrade\` to re-render the Secret mirror, or copy it across namespaces manually.)"
       fail=1
     else
-      echo "dashboard grafana: shared secret ok (${#grafana_secret} chars)"
+      echo "dashboard grafana: jwt Secret present in both $dash_ns + $obs_ns"
     fi
   fi
 
@@ -1028,11 +1115,42 @@ check_dashboard_grafana() {
     probe_url="${grafana_url%/}/api/health"
     health_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
         "$probe_url" 2>/dev/null || echo 000)"
+    # GAP-4 (Slice 4 fix-up r1): non-200 / non-000 codes from the
+    # Grafana health endpoint indicate a misconfigured Grafana — fail
+    # rather than warn. The 000 (unreachable) case stays as warn-only
+    # so operators can run `doctor` BEFORE the Grafana pod is up.
     case "$health_code" in
       200) echo "dashboard grafana: grafana reachable (200 on $probe_url)" ;;
       000) echo "dashboard grafana: warn (grafana unreachable at $probe_url — expected when doctor runs pre-up)" ;;
-      *)   echo "dashboard grafana: warn (grafana $probe_url returned $health_code; verify URL + auth)" ;;
+      *)
+        echo "dashboard grafana: failed (grafana $probe_url returned $health_code; verify URL + auth)"
+        fail=1
+        ;;
     esac
+
+    # GAP-5 (Slice 4 fix-up r1): soft-warn probe of the datasource-proxy
+    # path. A 404 here while /api/health is 200 strongly suggests the
+    # Grafana side has NOT been configured with [auth.jwt] / our shared
+    # secret, so the embed will silently fall back to the login screen.
+    # Non-fatal so we surface it as a warn.
+    if [ "$health_code" = "200" ]; then
+      local probe_proxy proxy_code
+      probe_proxy="${grafana_url%/}/api/datasources/proxy/health"
+      proxy_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
+          "$probe_proxy" 2>/dev/null || echo 000)"
+      case "$proxy_code" in
+        200|401|403)
+          # 200 means proxy reachable; 401/403 means Grafana is auth-gating
+          # the path — both are evidence Grafana itself routes the URL.
+          ;;
+        404)
+          echo "dashboard grafana: warn (datasource-proxy returned 404 at $probe_proxy — Grafana side may be missing [auth.jwt] config; embedded iframe will land on the login screen)"
+          ;;
+        *)
+          # Non-fatal: best-effort signal only.
+          ;;
+      esac
+    fi
   fi
 
   return "$fail"

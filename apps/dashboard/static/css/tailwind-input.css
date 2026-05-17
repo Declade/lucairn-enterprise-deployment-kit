@@ -189,6 +189,10 @@
   font-size: 11px;
 }
 
+.lc-text-xs {
+  font-size: 12px;
+}
+
 .lc-login-frame {
   width: 100%;
   max-width: 420px;

@@ -24,6 +24,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -133,13 +134,15 @@ func main() {
 
 	// Slice 4 wiring: server-health poller + Grafana JWT signer.
 	//
-	// Both surfaces are independently opt-in:
-	//   - Empty HealthServices  → health poller does NOT start; the
-	//                              /health surface still renders with
-	//                              "unknown" placeholders + guidance.
-	//   - Empty GrafanaURL      → JWT signer is nil + the drawer
-	//                              surface stays in the "not configured"
-	//                              state. /health/grafana-jwt returns 503.
+	// Two distinct opt-in semantics:
+	//   - HealthServices: ALWAYS-ON BY DEFAULT. Empty string falls back
+	//     to the bundled DefaultServicesSpec (12 standard kit services
+	//     polled every 10s). The poller is DISABLED only when the value
+	//     is the literal string "disabled" — any other value (including
+	//     the empty string) starts the poller against the parsed spec.
+	//   - GrafanaURL: OFF BY DEFAULT. Empty URL → JWT signer is nil +
+	//     the drawer surface stays in the "not configured" state.
+	//     /health/grafana-jwt returns 503.
 	//
 	// The poller's ctx is the same SIGTERM/SIGINT-cancelled ctx the
 	// server uses, so a clean shutdown stops all per-service goroutines.
@@ -157,8 +160,9 @@ func main() {
 		// Health surface boot.
 		spec := cfg.HealthServices
 		// Empty spec → use bundled default; only DISABLE polling when
-		// the operator explicitly sets a single literal "disabled" token.
-		if spec == "disabled" {
+		// the operator explicitly sets a single literal "disabled" token
+		// (case-insensitive — DISABLED, Disabled, disabled all work).
+		if strings.EqualFold(strings.TrimSpace(spec), "disabled") {
 			log.Printf("health poller disabled via LUCAIRN_DASHBOARD_HEALTH_SERVICES=disabled")
 		} else {
 			services, err := health.ParseServicesSpec(spec)

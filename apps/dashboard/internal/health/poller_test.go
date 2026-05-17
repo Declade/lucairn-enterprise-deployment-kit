@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestParseServicesSpec_Defaults(t *testing.T) {
@@ -257,6 +258,24 @@ func TestPoller_DetailTruncated(t *testing.T) {
 	got := truncateDetail("transport: " + long)
 	if len(got) > 180 {
 		t.Errorf("truncateDetail returned %d bytes; want <=180", len(got))
+	}
+}
+
+// TestPoller_DetailTruncated_UTF8 regression-locks bug-hunter M2 fix:
+// a 2-byte UTF-8 rune (ü = 0xC3 0xBC) must NOT be sliced in the middle,
+// or the returned string will be invalid UTF-8 and render as "U+FFFD" in
+// the browser. The walk-back to a rune boundary keeps the output valid.
+func TestPoller_DetailTruncated_UTF8(t *testing.T) {
+	t.Parallel()
+	// "ü" is 2 bytes; 250 copies = 500 bytes. The cap at 180 bytes will
+	// almost certainly fall mid-rune without the rune-boundary walk-back.
+	in := strings.Repeat("ü", 250)
+	out := truncateDetail(in)
+	if !utf8.ValidString(out) {
+		t.Errorf("truncateDetail produced invalid UTF-8 (bytes: %x)", []byte(out))
+	}
+	if len(out) > 180 {
+		t.Errorf("truncateDetail returned %d bytes; want <=180", len(out))
 	}
 }
 
