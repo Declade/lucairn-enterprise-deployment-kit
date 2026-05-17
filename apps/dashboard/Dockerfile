@@ -51,7 +51,7 @@ LABEL org.opencontainers.image.source="https://github.com/Declade/lucairn-enterp
 LABEL org.opencontainers.image.description="Lucairn Enterprise Dashboard — operator UI for cert browser, server health, audit log, compliance PDF, API key management"
 LABEL org.opencontainers.image.licenses="BSL-1.1"
 LABEL org.opencontainers.image.url="https://lucairn.eu"
-LABEL org.opencontainers.image.vendor="Lucairn UG (i.Gr.)"
+LABEL org.opencontainers.image.vendor="Lucairn UG (in Gründung)"
 
 # Distroless runs as uid 65532 (nonroot) by default; ports >1024 are fine.
 EXPOSE 8443

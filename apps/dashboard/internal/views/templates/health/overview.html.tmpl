@@ -23,8 +23,9 @@
     {{ range .Cards }}
     <button type="button"
             class="lc-card lc-card--clickable"
-            x-on:click="open('{{ .Name }}')"
-            aria-label="Open Grafana drawer for {{ .Name }}">
+            {{ if $.GrafanaWired }}x-on:click="open('{{ .Name }}')"{{ end }}
+            {{ if not $.GrafanaWired }}disabled aria-disabled="true"{{ end }}
+            aria-label="{{ if $.GrafanaWired }}Open Grafana drawer for {{ .Name }}{{ else }}{{ .Name }} (Grafana embedding not configured){{ end }}">
       <header class="lc-card-header">
         <h2 class="lc-card-title">{{ .Name }}</h2>
         <span class="lc-statusdot lc-statusdot--{{ .Status }}" role="status">
@@ -40,9 +41,13 @@
         {{- end -}}
       </p>
       {{ if .LastPoll }}
-      <p class="lc-text-muted font-tabular" style="font-size:12px;">Last polled {{ .LastPoll }}</p>
+      <p class="lc-text-muted lc-text-xs font-tabular">Last polled {{ .LastPoll }}</p>
       {{ end }}
     </button>
+    {{ else }}
+    <div class="lc-callout lc-callout--info" role="status">
+      <p>No services are configured for health probing. Set <code>LUCAIRN_DASHBOARD_HEALTH_SERVICES</code> (compose) or <code>dashboard.health.services</code> (Helm) to a comma-separated <code>name=url</code> spec to populate the grid. Setting the literal value <code>disabled</code> turns polling off entirely.</p>
+    </div>
     {{ end }}
   </div>
 
@@ -84,7 +89,11 @@
           this.loading = true;
           this.error = '';
           this.iframeSrc = '';
-          const csrfInput = document.querySelector('input[name="csrf"]');
+          // Scoped DOM lookup: the CSRF token lives inside the drawer
+          // (aside.lc-drawer). A bare document.querySelector could be
+          // fooled by an unrelated <input name="csrf"> elsewhere in
+          // the page after future surface expansion.
+          const csrfInput = document.querySelector('aside.lc-drawer input[name="csrf"]');
           const csrf = csrfInput ? csrfInput.value : '';
           // Default to the first panel; the customer-overridable UID list
           // is rendered into the drawer body and the operator picks the

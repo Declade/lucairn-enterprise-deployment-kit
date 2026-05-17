@@ -21,8 +21,20 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 )
+
+// grafanaPanelUIDPattern locks the legal shape of operator-supplied
+// Grafana panel UIDs (Slice 4 fix-up r1, closes bug-hunter M4).
+//
+// Grafana's own UID alphabet is alphanumeric plus `-` / `_`, capped at
+// 40 characters. We allow up to 64 to leave headroom and reject
+// anything else at config-load time so the URL builder in
+// handlers/health.go never accepts characters that would let an
+// operator inject a path segment or query parameter (e.g. `?evil=1` or
+// `/../admin`). Fail-closed-at-boot per Slice 3 pattern #25.
+var grafanaPanelUIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 const (
 	envListenAddr        = "LUCAIRN_DASHBOARD_LISTEN_ADDR"
@@ -175,6 +187,23 @@ func applyHealthSurfaceConfig(cfg *Config) error {
 	cfg.GrafanaPanelSanitizerUID = strings.TrimSpace(os.Getenv(envGrafanaPanelSanitizerUID))
 	cfg.GrafanaPanelWitnessUID = strings.TrimSpace(os.Getenv(envGrafanaPanelWitnessUID))
 	cfg.GrafanaPanelAuditUID = strings.TrimSpace(os.Getenv(envGrafanaPanelAuditUID))
+
+	// Slice 4 fix-up r1: allowlist the panel UID shape at boot so
+	// path/query injection via the env var cannot reach the URL builder
+	// in handlers/health.go. Empty string is fine (= "panel not configured").
+	for envName, val := range map[string]string{
+		envGrafanaPanelGatewayUID:   cfg.GrafanaPanelGatewayUID,
+		envGrafanaPanelSanitizerUID: cfg.GrafanaPanelSanitizerUID,
+		envGrafanaPanelWitnessUID:   cfg.GrafanaPanelWitnessUID,
+		envGrafanaPanelAuditUID:     cfg.GrafanaPanelAuditUID,
+	} {
+		if val == "" {
+			continue
+		}
+		if !grafanaPanelUIDPattern.MatchString(val) {
+			return fmt.Errorf("%s must match [A-Za-z0-9_-]{1,64}, got %q", envName, val)
+		}
+	}
 
 	if cfg.GrafanaURL != "" {
 		// URL must parse + use http/https scheme.

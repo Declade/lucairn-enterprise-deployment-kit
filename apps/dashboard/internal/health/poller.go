@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Status enumerates the four rendered states. Unknown is the pre-poll
@@ -254,11 +255,21 @@ func (p *Poller) probeTCP(ctx context.Context, svc Service) (Status, string) {
 //
 // "…" is a 3-byte UTF-8 sequence; account for that in the slice bound so
 // the returned string never exceeds the documented cap.
+//
+// UTF-8 safety (Slice 4 fix-up r1, closes bug-hunter M2): a naive byte
+// slice can chop a multi-byte rune in half (e.g. inside a German "ü" or
+// any non-ASCII PII echoed from a probe target). Walk back from the
+// initial cut point until we land on a rune boundary so the returned
+// string is always valid UTF-8.
 func truncateDetail(s string) string {
 	const max = 180
 	if len(s) <= max {
 		return s
 	}
 	const ellipsis = "…" // 3 bytes UTF-8
-	return s[:max-len(ellipsis)] + ellipsis
+	cut := max - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + ellipsis
 }
