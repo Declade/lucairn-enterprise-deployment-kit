@@ -37,15 +37,18 @@
     <div class="lc-filter-actions">
       <button type="submit" class="lc-login-button">Apply</button>
       <a href="/certs" class="lc-link">Reset</a>
-      <a class="lc-link" href="{{ .CSVExportQuery }}" download="lucairn-certs.csv">Export CSV</a>
+      <a class="lc-secondary-button" href="{{ .CSVExportQuery }}" download="lucairn-certs.csv">Export CSV</a>
     </div>
   </form>
 
-  <form method="post" action="/certs/bulk-reverify">
+  <form method="post" action="/certs/bulk-reverify" x-data="{ selected: 0 }">
     <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
     <div class="lc-table-toolbar">
       <span class="lc-text-muted font-tabular">{{ .Total }} cert{{ if ne .Total 1 }}s{{ end }} — page {{ .Page }} of {{ .TotalPages }}</span>
-      <button type="submit" class="lc-secondary-button" formaction="/certs/bulk-reverify">Re-verify selected</button>
+      <button type="submit" class="lc-secondary-button" formaction="/certs/bulk-reverify" :disabled="selected === 0">
+        <span x-show="selected === 0">Re-verify selected</span>
+        <span x-show="selected > 0" x-text="'Re-verify ' + selected + ' selected'"></span>
+      </button>
     </div>
     <div class="lc-table-frame">
       <table class="lc-table">
@@ -64,7 +67,7 @@
           {{ if .Rows }}
             {{ range .Rows }}
             <tr class="lc-table-row">
-              <td class="lc-table-td"><input type="checkbox" name="cert_id" value="{{ .ID }}" aria-label="Select cert {{ .ID }}"></td>
+              <td class="lc-table-td"><input type="checkbox" name="cert_id" value="{{ .ID }}" aria-label="Select cert {{ .ID }}" x-on:change="selected += $el.checked ? 1 : -1"></td>
               <td class="lc-table-td font-tabular"><a class="lc-link" href="/certs/{{ .ID }}"><code class="lc-mono">{{ .ID }}</code></a></td>
               <td class="lc-table-td font-tabular">{{ .CustomerID }}</td>
               <td class="lc-table-td font-tabular">{{ formatDate .CreatedAt }}</td>

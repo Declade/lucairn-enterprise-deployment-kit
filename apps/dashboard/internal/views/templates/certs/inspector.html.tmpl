@@ -6,6 +6,7 @@
       <p class="lc-page-lede">Recorded {{ formatDate .Cert.CreatedAt }} for customer <code class="lc-mono">{{ .Cert.CustomerID }}</code>. The chain below is re-verified live against the Lucairn witness.</p>
     </div>
     <aside class="lc-header-aside">
+      <a class="lc-link" href="/certs/{{ .Cert.ID }}/validator">Signatures</a>
       <a class="lc-link" href="/certs">Back to browser</a>
     </aside>
   </header>
@@ -42,7 +43,22 @@
     {{ if .Result.TSATimestamp }}
     <div class="lc-cert-summary-row">
       <span class="lc-text-muted">TSA timestamp</span>
-      <a class="lc-link font-tabular" href="{{ .Result.TSATimestamp }}" target="_blank" rel="noopener noreferrer">Open in new tab</a>
+      {{- /*
+        TSA timestamp tokens are opaque RFC 3161 envelope bytes (hex-
+        encoded on the way out of the witness), NOT a URL. Render as
+        <code> truncated to 32 hex chars with an ellipsis; the full
+        value lives in the per-claim canonical payload anyone with
+        offline-verify tooling can reconstruct from the cert envelope.
+      */ -}}
+      <span class="font-tabular">
+        <code class="lc-mono">
+          {{ if gt (len .Result.TSATimestamp) 32 -}}
+            {{ slice .Result.TSATimestamp 0 32 }}…
+          {{- else -}}
+            {{ .Result.TSATimestamp }}
+          {{- end }}
+        </code>
+      </span>
     </div>
     {{ end }}
     {{ if .RekorURL }}

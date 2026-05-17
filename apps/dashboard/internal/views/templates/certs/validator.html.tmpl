@@ -1,16 +1,35 @@
 {{ define "main" }}
 {{- /*
-  Standalone validator page. The handler does not register a /certs/{id}/
-  validator route in Slice 3 (the inspector embeds the same chain inline),
-  but this page is parsed so a future slice can route to it without a
-  template add. Same body as inspector minus the summary card. Inputs
-  match inspectorPageData (Cert + Result).
+  Audit-grade signature validator deep-link. Routed at GET
+  /certs/{id}/validator. Renders ONLY the per-claim signature chain
+  (no summary card, no verdict pills) so an auditor can hand off a URL
+  whose body is purely cryptographic evidence. Inputs match
+  inspectorPageData (Cert + Result + WitnessErr).
 */ -}}
 <section class="lc-page-section">
-  <header class="lc-page-header">
-    <h1 class="lc-page-title">Cert validator</h1>
-    <p class="lc-page-lede">Per-claim signature breakdown for <code class="lc-mono">{{ .Cert.ID }}</code>. Re-verified live against the Lucairn witness.</p>
+  <header class="lc-page-header lc-page-header--with-aside">
+    <div>
+      <h1 class="lc-page-title">Cert validator</h1>
+      <p class="lc-page-lede">Per-claim signature breakdown for <code class="lc-mono">{{ .Cert.ID }}</code>. Re-verified live against the Lucairn witness.</p>
+    </div>
+    <aside class="lc-header-aside">
+      <a class="lc-link" href="/certs/{{ .Cert.ID }}">Back to inspector</a>
+      <a class="lc-link" href="/certs">Back to browser</a>
+    </aside>
   </header>
+
+  {{ if .WitnessErr }}
+    <div class="lc-banner lc-banner--warn" role="alert">
+      <strong>Witness unreachable.</strong> {{ .WitnessErr }}
+    </div>
+  {{ end }}
+
   {{ template "claim_chain" . }}
+
+  {{ if .Result.Error }}
+    <div class="lc-banner lc-banner--fail" role="alert">
+      <strong>Verifier error.</strong> <code class="lc-mono">{{ .Result.Error }}</code>
+    </div>
+  {{ end }}
 </section>
 {{ end }}

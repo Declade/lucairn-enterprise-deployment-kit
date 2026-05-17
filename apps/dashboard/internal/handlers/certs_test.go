@@ -230,6 +230,92 @@ func TestInspectorHandler_WitnessUnreachableDoesNotCrash(t *testing.T) {
 	}
 }
 
+func TestValidatorHandler_RendersClaimChain(t *testing.T) {
+	t.Parallel()
+	store := &stubStore{getRow: store.CertSummary{
+		ID:         "cert-abcdef12",
+		CustomerID: "cust-1",
+		CreatedAt:  time.Now(),
+		Verdict:    "verified",
+	}}
+	v := &stubVerifier{result: witness.VerifyResult{
+		OverallVerdict:  "verified",
+		Completeness:    "full",
+		SignaturesValid: true,
+		PerClaim: []witness.ClaimVerdict{
+			{ClaimType: "bridge", Verdict: "ok", PubKeyFingerprint: "b-fp-aaaaaaaa", SignatureHex: "b-sig-aaaaaaaa"},
+			{ClaimType: "sanitizer", Verdict: "ok", PubKeyFingerprint: "s-fp-aaaaaaaa", SignatureHex: "s-sig-aaaaaaaa"},
+		},
+	}}
+	d := newDeps(t, store, v)
+	rec := httptest.NewRecorder()
+	d.ValidatorHandler(rec, fakeSessionRequest("GET", "/certs/cert-abcdef12/validator", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200; body=%s", rec.Code, rec.Body.String()[:min(400, len(rec.Body.String()))])
+	}
+	body := rec.Body.String()
+	// Validator page MUST render the per-claim chain.
+	if !strings.Contains(body, "bridge") || !strings.Contains(body, "sanitizer") {
+		t.Errorf("validator must render per-claim chain; body=%s", body[:min(800, len(body))])
+	}
+	// Validator page MUST NOT render the inspector's summary card
+	// (Overall verdict pill / Re-verify form). Distinguishing copy:
+	// "Re-verify now" lives only on the inspector. The validator's
+	// header lede is "Per-claim signature breakdown".
+	if strings.Contains(body, "Re-verify now") {
+		t.Errorf("validator must not render the inspector's Re-verify button")
+	}
+	if !strings.Contains(body, "Per-claim signature breakdown") {
+		t.Errorf("validator must render its own header lede")
+	}
+}
+
+func TestValidatorHandler_404OnMissingCert(t *testing.T) {
+	t.Parallel()
+	d := newDeps(t, &stubStore{getErr: pgx.ErrNoRows}, &stubVerifier{})
+	rec := httptest.NewRecorder()
+	d.ValidatorHandler(rec, fakeSessionRequest("GET", "/certs/cert-deadbeef/validator", ""))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status: got %d want 404", rec.Code)
+	}
+}
+
+func TestValidatorHandler_RejectsBadID(t *testing.T) {
+	t.Parallel()
+	d := newDeps(t, &stubStore{}, &stubVerifier{})
+	for _, bad := range []string{
+		"/certs/abc/validator",                       // too short
+		"/certs/" + strings.Repeat("a", 100) + "/validator", // too long
+		"/certs/has.dot/validator",                   // disallowed char
+	} {
+		rec := httptest.NewRecorder()
+		d.ValidatorHandler(rec, fakeSessionRequest("GET", bad, ""))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%q: got %d want 404", bad, rec.Code)
+		}
+	}
+}
+
+func TestValidatorHandler_WitnessUnreachableDoesNotCrash(t *testing.T) {
+	t.Parallel()
+	store := &stubStore{getRow: store.CertSummary{
+		ID:         "cert-abcdef12",
+		CustomerID: "cust-1",
+		CreatedAt:  time.Now(),
+	}}
+	v := &stubVerifier{err: errors.New("witness gRPC connection refused")}
+	d := newDeps(t, store, v)
+	rec := httptest.NewRecorder()
+	d.ValidatorHandler(rec, fakeSessionRequest("GET", "/certs/cert-abcdef12/validator", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200 (degraded badge, not crash)", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Witness unreachable") {
+		t.Errorf("expected degraded-mode badge; body=%s", body[:min(800, len(body))])
+	}
+}
+
 func TestReverifyHandler_InvalidatesCacheAndRedirects(t *testing.T) {
 	t.Parallel()
 	v := &stubVerifier{}

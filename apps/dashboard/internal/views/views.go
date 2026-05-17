@@ -88,7 +88,6 @@ func New() (*Renderer, error) {
 		{name: "certs/browser.html.tmpl", path: "templates/certs/browser.html.tmpl"},
 		{name: "certs/inspector.html.tmpl", path: "templates/certs/inspector.html.tmpl"},
 		{name: "certs/validator.html.tmpl", path: "templates/certs/validator.html.tmpl"},
-		{name: "certs/bulk.html.tmpl", path: "templates/certs/bulk.html.tmpl"},
 		{name: "certs/progress.html.tmpl", path: "templates/certs/progress.html.tmpl"},
 		{name: "certs/notconfigured.html.tmpl", path: "templates/certs/notconfigured.html.tmpl"},
 	}

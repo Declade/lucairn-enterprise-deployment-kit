@@ -207,13 +207,25 @@ func New(opts Options) (*Server, error) {
 			bulkDeps.BulkReverifyProgressHandler(w, r)
 			return
 		}
-		// Inspector + reverify routing: /certs/{id} and /certs/{id}/reverify.
+		// Inspector + validator + reverify routing.
+		//  /certs/{id}            → InspectorHandler (GET)
+		//  /certs/{id}/validator  → ValidatorHandler (GET; audit-grade
+		//                           deep-link, claim chain only)
+		//  /certs/{id}/reverify   → ReverifyHandler  (POST)
 		if strings.HasSuffix(path, "/reverify") {
 			if r.Method != http.MethodPost {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
 			certDeps.ReverifyHandler(w, r)
+			return
+		}
+		if strings.HasSuffix(path, "/validator") {
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			certDeps.ValidatorHandler(w, r)
 			return
 		}
 		if r.Method != http.MethodGet {

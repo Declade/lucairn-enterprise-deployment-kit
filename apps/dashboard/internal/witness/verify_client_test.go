@@ -3,48 +3,98 @@ package witness
 import (
 	"context"
 	"errors"
+	"net"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	witnesspb "github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/witness/pb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/test/bufconn"
 )
 
-// fakeRPC is an in-memory implementation of witnesspb.CertVerifierClient.
-// It tracks how many times VerifyCertificate is invoked so the cache
-// behavior can be asserted.
+// fakeRPC is an in-memory implementation of the upstream
+// VeilCertificateServiceClient. It tracks how many times each RPC is
+// invoked so cache + singleflight behavior can be asserted.
 type fakeRPC struct {
-	calls    int
-	response *witnesspb.VerifyCertificateResponse
-	err      error
+	mu sync.Mutex
+
+	getCalls    int
+	verifyCalls int
+
+	getResp    *witnesspb.VeilCertificate
+	verifyResp *witnesspb.VerificationResult
+
+	getErr    error
+	verifyErr error
+
+	// optional delay each RPC sleeps for before returning; used to widen
+	// the singleflight race window in concurrency tests.
+	delay time.Duration
 }
 
-func (f *fakeRPC) VerifyCertificate(_ context.Context, _ *witnesspb.VerifyCertificateRequest, _ ...grpc.CallOption) (*witnesspb.VerifyCertificateResponse, error) {
-	f.calls++
-	if f.err != nil {
-		return nil, f.err
+func (f *fakeRPC) GetCertificate(_ context.Context, in *witnesspb.GetCertificateRequest, _ ...grpc.CallOption) (*witnesspb.VeilCertificate, error) {
+	f.mu.Lock()
+	f.getCalls++
+	f.mu.Unlock()
+	if f.delay > 0 {
+		time.Sleep(f.delay)
 	}
-	return f.response, nil
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	if f.getResp == nil {
+		return &witnesspb.VeilCertificate{CertificateId: in.GetRequestId()}, nil
+	}
+	return f.getResp, nil
 }
 
-func newFakeResponse() *witnesspb.VerifyCertificateResponse {
-	return &witnesspb.VerifyCertificateResponse{
-		OverallVerdict:    "verified",
-		Completeness:      "full",
+func (f *fakeRPC) ExportCertificates(_ context.Context, _ *witnesspb.ExportRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[witnesspb.VeilCertificate], error) {
+	return nil, errors.New("export not used in dashboard")
+}
+
+func (f *fakeRPC) VerifyCertificate(_ context.Context, _ *witnesspb.VeilCertificate, _ ...grpc.CallOption) (*witnesspb.VerificationResult, error) {
+	f.mu.Lock()
+	f.verifyCalls++
+	f.mu.Unlock()
+	if f.delay > 0 {
+		time.Sleep(f.delay)
+	}
+	if f.verifyErr != nil {
+		return nil, f.verifyErr
+	}
+	if f.verifyResp == nil {
+		return &witnesspb.VerificationResult{}, nil
+	}
+	return f.verifyResp, nil
+}
+
+func newFakeCert() *witnesspb.VeilCertificate {
+	return &witnesspb.VeilCertificate{
+		CertificateId: "cert-1",
+		Claims: []*witnesspb.VeilClaim{
+			{ClaimType: witnesspb.ClaimType_CLAIM_TYPE_TOKEN_GENERATED, ServiceId: "dsa-bridge", Signature: []byte{0xaa, 0xbb}, CanonicalPayload: []byte{0xcc}},
+			{ClaimType: witnesspb.ClaimType_CLAIM_TYPE_PII_SANITIZED, ServiceId: "dsa-sanitizer", Signature: []byte{0xdd, 0xee}, CanonicalPayload: []byte{0xff}},
+			{ClaimType: witnesspb.ClaimType_CLAIM_TYPE_INFERENCE_COMPLETED, ServiceId: "dsa-ai", Signature: []byte{0x11, 0x22}, CanonicalPayload: []byte{0x33}},
+			{ClaimType: witnesspb.ClaimType_CLAIM_TYPE_EVENTS_RECORDED, ServiceId: "dsa-audit", Signature: []byte{0x44, 0x55}, CanonicalPayload: []byte{0x66}},
+		},
+		Attestation: &witnesspb.ExternalAttestation{
+			Timestamp:       &witnesspb.TimestampAttestation{TimestampToken: []byte{0xaa, 0xbb, 0xcc, 0xdd}},
+			TransparencyLog: &witnesspb.TransparencyLogEntry{LogIndex: 99},
+		},
+	}
+}
+
+func newFakeResult() *witnesspb.VerificationResult {
+	return &witnesspb.VerificationResult{
+		OverallVerdict:    witnesspb.Verdict_VERDICT_VERIFIED,
+		Completeness:      witnesspb.Completeness_COMPLETENESS_FULL,
 		SignaturesValid:   true,
 		ByokExempt:        false,
 		IsolationVerified: true,
-		TsaTimestamp:      "https://freetsa.org/tsr/123",
-		RekorUuid:         "abc-123",
-		CertUrl:           "https://example.com/verify/c1",
-		PerClaim: []*witnesspb.PerClaimVerdict{
-			{ClaimType: "gateway", Verdict: "ok", PubKeyFingerprint: "g-fp-aaaaaaaaaaaaaaaaaa", SignatureHex: "g-sig-aaaaaaaaaaaaaaaaaa"},
-			{ClaimType: "bridge", Verdict: "ok", PubKeyFingerprint: "b-fp-aaaaaaaaaaaaaaaaaa", SignatureHex: "b-sig-aaaaaaaaaaaaaaaaaa"},
-			{ClaimType: "sanitizer", Verdict: "ok", PubKeyFingerprint: "s-fp-aaaaaaaaaaaaaaaaaa", SignatureHex: "s-sig-aaaaaaaaaaaaaaaaaa"},
-			{ClaimType: "sandbox_a", Verdict: "ok", PubKeyFingerprint: "sa-fp", SignatureHex: "sa-sig"},
-			{ClaimType: "sandbox_b", Verdict: "ok", PubKeyFingerprint: "sb-fp", SignatureHex: "sb-sig"},
-			{ClaimType: "witness", Verdict: "ok", PubKeyFingerprint: "w-fp", SignatureHex: "w-sig"},
-		},
 	}
 }
 
@@ -52,7 +102,7 @@ func TestClient_Verify_CacheMissThenHit(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
-	rpc := &fakeRPC{response: newFakeResponse()}
+	rpc := &fakeRPC{getResp: newFakeCert(), verifyResp: newFakeResult()}
 	c := NewClientWithRPC(rpc, WithClock(clock), WithCacheTTL(5*time.Minute))
 
 	first, err := c.Verify(context.Background(), "cert-1")
@@ -62,23 +112,20 @@ func TestClient_Verify_CacheMissThenHit(t *testing.T) {
 	if first.OverallVerdict != "verified" {
 		t.Errorf("verdict: got %q want %q", first.OverallVerdict, "verified")
 	}
-	if len(first.PerClaim) != 6 {
-		t.Fatalf("per-claim: got %d want 6", len(first.PerClaim))
+	if len(first.PerClaim) != 4 {
+		t.Fatalf("per-claim: got %d want 4 (matches newFakeCert claims)", len(first.PerClaim))
 	}
-	if first.PerClaim[0].ClaimType != "gateway" {
-		t.Errorf("per-claim order: first must be gateway, got %s", first.PerClaim[0].ClaimType)
-	}
-	if rpc.calls != 1 {
-		t.Errorf("rpc calls after miss: got %d want 1", rpc.calls)
+	if rpc.getCalls != 1 || rpc.verifyCalls != 1 {
+		t.Errorf("rpc calls after miss: got get=%d verify=%d want 1+1", rpc.getCalls, rpc.verifyCalls)
 	}
 
-	// Second call within TTL: cache hit, rpc.calls stays at 1.
+	// Second call within TTL: cache hit, calls stay at 1+1.
 	second, err := c.Verify(context.Background(), "cert-1")
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	if rpc.calls != 1 {
-		t.Errorf("rpc calls after hit: got %d want 1 (cache should serve)", rpc.calls)
+	if rpc.getCalls != 1 || rpc.verifyCalls != 1 {
+		t.Errorf("rpc calls after hit: got get=%d verify=%d want 1+1 (cache should serve)", rpc.getCalls, rpc.verifyCalls)
 	}
 	if second.OverallVerdict != first.OverallVerdict {
 		t.Errorf("cache returned different value than first")
@@ -89,7 +136,7 @@ func TestClient_Verify_CacheExpires(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
-	rpc := &fakeRPC{response: newFakeResponse()}
+	rpc := &fakeRPC{getResp: newFakeCert(), verifyResp: newFakeResult()}
 	c := NewClientWithRPC(rpc, WithClock(clock), WithCacheTTL(5*time.Minute))
 
 	if _, err := c.Verify(context.Background(), "cert-1"); err != nil {
@@ -100,14 +147,14 @@ func TestClient_Verify_CacheExpires(t *testing.T) {
 	if _, err := c.Verify(context.Background(), "cert-1"); err != nil {
 		t.Fatalf("verify 2: %v", err)
 	}
-	if rpc.calls != 2 {
-		t.Errorf("rpc calls after TTL expiry: got %d want 2 (cache should miss)", rpc.calls)
+	if rpc.getCalls != 2 || rpc.verifyCalls != 2 {
+		t.Errorf("rpc calls after TTL expiry: got get=%d verify=%d want 2+2", rpc.getCalls, rpc.verifyCalls)
 	}
 }
 
 func TestClient_Invalidate_BypassesCache(t *testing.T) {
 	t.Parallel()
-	rpc := &fakeRPC{response: newFakeResponse()}
+	rpc := &fakeRPC{getResp: newFakeCert(), verifyResp: newFakeResult()}
 	c := NewClientWithRPC(rpc)
 	if _, err := c.Verify(context.Background(), "cert-1"); err != nil {
 		t.Fatalf("verify 1: %v", err)
@@ -116,45 +163,64 @@ func TestClient_Invalidate_BypassesCache(t *testing.T) {
 	if _, err := c.Verify(context.Background(), "cert-1"); err != nil {
 		t.Fatalf("verify 2: %v", err)
 	}
-	if rpc.calls != 2 {
-		t.Errorf("rpc calls after Invalidate: got %d want 2", rpc.calls)
+	if rpc.getCalls != 2 || rpc.verifyCalls != 2 {
+		t.Errorf("rpc calls after Invalidate: got get=%d verify=%d want 2+2", rpc.getCalls, rpc.verifyCalls)
 	}
 }
 
 func TestClient_Verify_EmptyCertIDRejected(t *testing.T) {
 	t.Parallel()
-	rpc := &fakeRPC{response: newFakeResponse()}
+	rpc := &fakeRPC{getResp: newFakeCert(), verifyResp: newFakeResult()}
 	c := NewClientWithRPC(rpc)
 	if _, err := c.Verify(context.Background(), ""); err == nil {
 		t.Errorf("expected error on empty cert_id")
 	}
-	if rpc.calls != 0 {
-		t.Errorf("rpc.calls: got %d want 0 (no round-trip should fire on empty cert_id)", rpc.calls)
+	if rpc.getCalls != 0 || rpc.verifyCalls != 0 {
+		t.Errorf("rpc.calls: got get=%d verify=%d want 0+0 (no round-trip should fire on empty cert_id)", rpc.getCalls, rpc.verifyCalls)
 	}
 }
 
-func TestClient_Verify_RPCErrorPropagates(t *testing.T) {
+func TestClient_Verify_GetCertificateErrorPropagates(t *testing.T) {
 	t.Parallel()
-	rpc := &fakeRPC{err: errors.New("connection refused")}
+	rpc := &fakeRPC{getErr: errors.New("connection refused")}
 	c := NewClientWithRPC(rpc)
 	_, err := c.Verify(context.Background(), "cert-1")
 	if err == nil {
 		t.Fatalf("expected propagated error")
 	}
+	if !strings.Contains(err.Error(), "GetCertificate") {
+		t.Errorf("err must name GetCertificate path: %v", err)
+	}
+	if rpc.verifyCalls != 0 {
+		t.Errorf("verifyCalls must be 0 when GetCertificate fails first: got %d", rpc.verifyCalls)
+	}
+}
+
+func TestClient_Verify_VerifyCertificateErrorPropagates(t *testing.T) {
+	t.Parallel()
+	rpc := &fakeRPC{getResp: newFakeCert(), verifyErr: errors.New("witness rejected envelope")}
+	c := NewClientWithRPC(rpc)
+	_, err := c.Verify(context.Background(), "cert-1")
+	if err == nil {
+		t.Fatalf("expected propagated error")
+	}
+	if !strings.Contains(err.Error(), "VerifyCertificate") {
+		t.Errorf("err must name VerifyCertificate path: %v", err)
+	}
 }
 
 func TestClient_Verify_PreservesByokExemptAndIsolationVerified(t *testing.T) {
 	t.Parallel()
-	rpc := &fakeRPC{response: &witnesspb.VerifyCertificateResponse{
-		OverallVerdict:    "verified",
-		Completeness:      "partial",
-		SignaturesValid:   true,
-		ByokExempt:        true,
-		IsolationVerified: true,
-		PerClaim: []*witnesspb.PerClaimVerdict{
-			{ClaimType: "bridge", Verdict: "ok"},
+	rpc := &fakeRPC{
+		getResp: newFakeCert(),
+		verifyResp: &witnesspb.VerificationResult{
+			OverallVerdict:    witnesspb.Verdict_VERDICT_VERIFIED,
+			Completeness:      witnesspb.Completeness_COMPLETENESS_PARTIAL,
+			SignaturesValid:   true,
+			ByokExempt:        true,
+			IsolationVerified: true,
 		},
-	}}
+	}
 	c := NewClientWithRPC(rpc)
 	out, err := c.Verify(context.Background(), "cert-byok")
 	if err != nil {
@@ -183,18 +249,191 @@ func TestClient_Verify_TimeoutPropagatesToContext(t *testing.T) {
 	if !ok {
 		t.Errorf("rpc ctx should carry a deadline")
 	}
-	// Allow a generous fuzz: the deadline must be roughly within RPC
-	// timeout of "now" — we tolerate ±200ms scheduler noise.
 	if d := time.Until(deadline); d > 500*time.Millisecond {
 		t.Errorf("rpc deadline too far in future: %v", d)
 	}
 }
 
-type captureCtxRPC struct {
-	lastCtx context.Context
+func TestClient_Verify_SingleflightCoalescesConcurrentMisses(t *testing.T) {
+	t.Parallel()
+	// Use a small delay so the goroutines all enqueue before the first
+	// flight completes. Without singleflight, getCalls would be 8.
+	rpc := &fakeRPC{getResp: newFakeCert(), verifyResp: newFakeResult(), delay: 30 * time.Millisecond}
+	c := NewClientWithRPC(rpc)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = c.Verify(context.Background(), "cert-stampede")
+		}()
+	}
+	wg.Wait()
+	if rpc.getCalls != 1 {
+		t.Errorf("singleflight: getCalls got %d want 1 (concurrent misses for same key must coalesce)", rpc.getCalls)
+	}
+	if rpc.verifyCalls != 1 {
+		t.Errorf("singleflight: verifyCalls got %d want 1", rpc.verifyCalls)
+	}
 }
 
-func (c *captureCtxRPC) VerifyCertificate(ctx context.Context, _ *witnesspb.VerifyCertificateRequest, _ ...grpc.CallOption) (*witnesspb.VerifyCertificateResponse, error) {
+// methodCaptureInterceptor records the fully-qualified gRPC method name
+// for every unary call routed through it.
+type methodCaptureInterceptor struct {
+	methods []string
+	mu      sync.Mutex
+}
+
+func (m *methodCaptureInterceptor) Intercept(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+	m.mu.Lock()
+	m.methods = append(m.methods, method)
+	m.mu.Unlock()
+	return invoker(ctx, method, req, reply, cc, opts...)
+}
+
+// upstreamShapeServer implements the upstream VeilCertificateServiceServer
+// so the bufconn-backed Client can complete a real round-trip. We don't
+// care about the response content here — only that the right method
+// names get dialed.
+type upstreamShapeServer struct {
+	witnesspb.UnimplementedVeilCertificateServiceServer
+}
+
+func (s *upstreamShapeServer) GetCertificate(_ context.Context, _ *witnesspb.GetCertificateRequest) (*witnesspb.VeilCertificate, error) {
+	return newFakeCert(), nil
+}
+
+func (s *upstreamShapeServer) VerifyCertificate(_ context.Context, _ *witnesspb.VeilCertificate) (*witnesspb.VerificationResult, error) {
+	return newFakeResult(), nil
+}
+
+// TestVerify_RealUpstreamServiceShape locks the contract that the
+// dashboard dials the upstream `dsa.veil.v1.VeilCertificateService`
+// service with its TWO real RPCs (GetCertificate + VerifyCertificate),
+// NOT the previous (invented) `lucairn.witness.v1.CertVerifier` shape.
+//
+// This is the regression test the contract-drift-detector PR review
+// would have caught earlier. If a future hand-edit reverts the proto to
+// a renamed service, or someone re-collapses to a single RPC, this test
+// fails loudly at unit-test time.
+func TestVerify_RealUpstreamServiceShape(t *testing.T) {
+	t.Parallel()
+	const bufSize = 1 << 20
+	lis := bufconn.Listen(bufSize)
+	srv := grpc.NewServer()
+	witnesspb.RegisterVeilCertificateServiceServer(srv, &upstreamShapeServer{})
+	go func() {
+		if err := srv.Serve(lis); err != nil {
+			t.Logf("bufconn serve: %v", err)
+		}
+	}()
+	t.Cleanup(srv.Stop)
+
+	interceptor := &methodCaptureInterceptor{}
+	dialer := func(_ context.Context, _ string) (net.Conn, error) {
+		return lis.Dial()
+	}
+	conn, err := grpc.NewClient(
+		"passthrough://bufnet",
+		grpc.WithContextDialer(dialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(interceptor.Intercept),
+	)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	rpc := witnesspb.NewVeilCertificateServiceClient(conn)
+	c := NewClientWithRPC(rpc)
+	if _, err := c.Verify(context.Background(), "cert-shape"); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+
+	interceptor.mu.Lock()
+	defer interceptor.mu.Unlock()
+	if len(interceptor.methods) != 2 {
+		t.Fatalf("expected 2 unary calls (GetCertificate + VerifyCertificate); got %v", interceptor.methods)
+	}
+	want := []string{
+		"/dsa.veil.v1.VeilCertificateService/GetCertificate",
+		"/dsa.veil.v1.VeilCertificateService/VerifyCertificate",
+	}
+	for i, w := range want {
+		if interceptor.methods[i] != w {
+			t.Errorf("call %d: got %q want %q", i, interceptor.methods[i], w)
+		}
+	}
+}
+
+// TestVerify_NoLegacyCertVerifierShape is a belt-and-braces guard: even
+// if the regenerated stubs accidentally register a deprecated service
+// name alongside the new one, this test fails. Forbidden substrings
+// cover the previous invented `lucairn.witness.v1.CertVerifier` shape.
+func TestVerify_NoLegacyCertVerifierShape(t *testing.T) {
+	t.Parallel()
+	const bufSize = 1 << 20
+	lis := bufconn.Listen(bufSize)
+	srv := grpc.NewServer()
+	witnesspb.RegisterVeilCertificateServiceServer(srv, &upstreamShapeServer{})
+	go func() {
+		_ = srv.Serve(lis)
+	}()
+	t.Cleanup(srv.Stop)
+	interceptor := &methodCaptureInterceptor{}
+	dialer := func(_ context.Context, _ string) (net.Conn, error) {
+		return lis.Dial()
+	}
+	conn, err := grpc.NewClient(
+		"passthrough://bufnet",
+		grpc.WithContextDialer(dialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(interceptor.Intercept),
+	)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	c := NewClientWithRPC(witnesspb.NewVeilCertificateServiceClient(conn))
+	if _, err := c.Verify(context.Background(), "cert-shape"); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	interceptor.mu.Lock()
+	defer interceptor.mu.Unlock()
+	for _, m := range interceptor.methods {
+		for _, banned := range []string{"CertVerifier", "lucairn.witness.v1"} {
+			if strings.Contains(m, banned) {
+				t.Errorf("dialed method %q must not contain legacy fragment %q", m, banned)
+			}
+		}
+	}
+}
+
+type captureCtxRPC struct {
+	lastCtxMu sync.Mutex
+	lastCtx   context.Context
+
+	atomicCalls atomic.Int32
+}
+
+func (c *captureCtxRPC) GetCertificate(ctx context.Context, _ *witnesspb.GetCertificateRequest, _ ...grpc.CallOption) (*witnesspb.VeilCertificate, error) {
+	c.lastCtxMu.Lock()
 	c.lastCtx = ctx
-	return &witnesspb.VerifyCertificateResponse{}, nil
+	c.lastCtxMu.Unlock()
+	c.atomicCalls.Add(1)
+	return newFakeCert(), nil
+}
+
+func (c *captureCtxRPC) ExportCertificates(_ context.Context, _ *witnesspb.ExportRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[witnesspb.VeilCertificate], error) {
+	return nil, errors.New("export not used")
+}
+
+func (c *captureCtxRPC) VerifyCertificate(ctx context.Context, _ *witnesspb.VeilCertificate, _ ...grpc.CallOption) (*witnesspb.VerificationResult, error) {
+	c.lastCtxMu.Lock()
+	c.lastCtx = ctx
+	c.lastCtxMu.Unlock()
+	c.atomicCalls.Add(1)
+	return newFakeResult(), nil
 }
