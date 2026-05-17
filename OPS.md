@@ -281,12 +281,16 @@ sed -i.bak "s|^LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET=.*|LUCAIRN_DASHBOARD_GRAFANA
 #    as a side-deployment, the simplest pattern is a Docker Compose
 #    `secrets:` mount that points at a host file; update + recreate.
 
-# 3) Recreate both containers.
+# 3) Recreate the dashboard container.
 docker compose -f docker-compose.customer.yml \
   --env-file customer.env --profile dashboard \
   up -d --force-recreate lucairn-dashboard
-docker compose -f docker-compose.customer.yml \
-  up -d --force-recreate grafana    # or whichever compose path runs Grafana
+# 4) Restart your Grafana container so it re-reads the shared-secret
+#    file (the customer brings their own Grafana — the bundled compose
+#    does NOT ship a `grafana` service). Run the equivalent of:
+#    `docker compose -f <your-grafana-compose>.yml up -d --force-recreate <your-grafana-service>`
+#    or `docker restart <your-grafana-container>` depending on how the
+#    customer fronts Grafana.
 ```
 
 ### Kubernetes path
@@ -294,19 +298,21 @@ docker compose -f docker-compose.customer.yml \
 ```bash
 NEW_SECRET="$(openssl rand -hex 24)"
 
-# 1) Update the Helm-managed Secret in place.
+# 1) Update the Secret in BOTH namespaces. The dashboard sub-chart's
+#    secret-grafana-jwt.yaml auto-renders the Secret into both
+#    `lucairn` AND `dsa-observability` on `helm upgrade`, with a
+#    lookup-precedence that re-reads existing values. Rotation is
+#    therefore a two-step:
 kubectl -n lucairn create secret generic lucairn-dashboard-grafana-jwt \
   --from-literal=shared-secret="${NEW_SECRET}" \
   --dry-run=client -o yaml | kubectl apply -f -
-
-# 2) If the observability sub-chart pulls from a different namespace,
-#    mirror the same Secret there too (operator-side decision; the
-#    chart references the Secret by namespace+name).
 kubectl -n dsa-observability create secret generic lucairn-dashboard-grafana-jwt \
   --from-literal=shared-secret="${NEW_SECRET}" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# 3) Bounce both Deployments so they re-read the Secret.
+# 2) Bounce both Deployments so they re-read the Secret. Order does
+#    not matter — the 60s JWT TTL bounds any in-flight token's
+#    lifetime so even a brief mismatch window heals automatically.
 kubectl -n lucairn rollout restart deploy/lucairn-dashboard
 kubectl -n dsa-observability rollout restart deploy/grafana
 ```

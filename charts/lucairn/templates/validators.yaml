@@ -1,0 +1,10 @@
+{{- /*
+  Render-time validators. This file produces no manifest output — it
+  exists to invoke fail-fast guards defined in _validators.tpl so the
+  operator gets an actionable error during `helm template` /
+  `helm install` rather than a silent runtime degradation.
+
+  Each include below MUST NOT emit any non-comment YAML; the file is
+  fronted by a comment block to keep `helm template` output clean.
+*/ -}}
+{{- include "validators.grafanaEmbedCrossChart" $ -}}

@@ -133,7 +133,7 @@ openssl rand -base64 32    # 32-byte random as base64           (GATEWAY_KEYSTOR
 The public key MUST be derived from the corresponding private key (the
 `VEIL_*_SIGNING_KEY` of the same service). Filling the public-key slots
 with independently-generated random hex yields a key that does NOT match
-the signing key, and every Veil claim the service signs will be silently
+the signing key, and every certificate claim the service signs will be silently
 rejected by the witness verifier — the stack will look healthy but no
 certificates will validate.
 
@@ -701,6 +701,17 @@ The SAME shared secret is consumed by both the dashboard pod
 (mounted as `/etc/grafana/jwt/shared-secret` + read via
 `GF_AUTH_JWT_KEY_FILE`).
 
+> **Both sides must be flipped together.** Setting
+> `dashboard.grafana.endpoint` (or `LUCAIRN_DASHBOARD_GRAFANA_URL`)
+> WITHOUT also enabling `observability.grafana.auth.jwt.enabled` on
+> the Helm path (or configuring `[auth.jwt]` in Grafana on the
+> Compose path) causes the embedded iframe to land on Grafana's
+> login screen instead of authenticating via the signed JWT. The
+> Helm path catches this at render time with a `fail` template
+> guard (added in Slice 4 fix-up r1). The Compose path is
+> validated by `bin/lucairn doctor`'s `dashboard grafana:` probe
+> + the soft `/api/datasources/proxy/*` reachability check.
+
 #### Compose path
 
 1. Add the Slice 4 block to `customer.env`:
@@ -760,6 +771,18 @@ The SAME shared secret is consumed by both the dashboard pod
    empty so Helm generates a 48-char shared secret in a Secret
    named `lucairn-dashboard-grafana-jwt`. The `lookup` pattern in
    the template preserves the value across `helm upgrade`.
+
+   The dashboard sub-chart auto-renders the SAME Secret in BOTH the
+   dashboard namespace (`dashboard.namespace`, default `lucairn`)
+   AND the observability namespace (`global.observabilityNamespace`,
+   default `dsa-observability`). K8s Secrets are namespace-scoped,
+   so without the cross-namespace mirror the Grafana pod would
+   crashloop with `CreateContainerConfigError: secret
+   "lucairn-dashboard-grafana-jwt" not found`. Customers running a
+   non-default observability namespace MUST set
+   `global.observabilityNamespace` to match. Operators who supply
+   their own Secret (set `dashboard.grafana.jwt.secretName`) take
+   over the cross-namespace duplication themselves.
 
 2. Wire Grafana embedding + the observability sub-chart's JWT mode
    in `customer-values.yaml`:

@@ -21,9 +21,32 @@
 //     documented mechanism is `[auth.jwt].url_login = true` + the
 //     `auth_token` query param (see Grafana docs:
 //     https://grafana.com/docs/grafana/latest/setup-grafana/configure-security/configure-authentication/jwt/).
-//     The iframe's referrer-policy is locked to `no-referrer` in the
-//     template + the dashboard never appends the token to outbound
-//     links / logs; together these eliminate the common JWT-leak vectors.
+//
+//   - Leak surface (documented design choices, not security gaps):
+//     1) The iframe element carries `referrerpolicy="no-referrer"` so
+//     the dashboard → Grafana first-request URL (which contains the
+//     token in the query string) does NOT leak to Grafana via the
+//     `Referer` header. This closes the FIRST request's leak vector.
+//     2) Subresources loaded INSIDE the Grafana iframe (panel data
+//     fetches, dashboards, plugins) use Grafana's own
+//     Referrer-Policy header — typically `strict-origin-when-cross-origin`.
+//     Customer Grafana installs that override this header to a more
+//     permissive value can leak the token to third-party origins
+//     referenced inside the panel. Audit your Grafana's
+//     Referrer-Policy if your panels embed third-party content.
+//     3) Browser DevTools (Network tab) WILL show the JWT in the iframe
+//     `src=`. This is unavoidable for any URL-bearing auth scheme.
+//     Users with the DevTools open already have role-based access to
+//     the same panel via the dashboard's own auth; we are not
+//     creating a new exposure beyond what they could already see.
+//     4) The 60-second TTL is the DOMINANT defense. Any token captured
+//     from the query string or DevTools expires before it can be
+//     replayed in a meaningful attack window. Rotation cadence on
+//     the shared HMAC secret (see OPS.md) closes the long-tail
+//     window for compromised secrets.
+//     5) The dashboard itself never logs the token, never appends it
+//     to outbound links, and clears it from the DOM when the drawer
+//     closes (Alpine.js `iframeSrc = ”` reset).
 //
 //   - Claims: standard registered claims (iss, sub, aud, exp, iat, jti) +
 //     `email` + `name` + `role`. Grafana is configured with

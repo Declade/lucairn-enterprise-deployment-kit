@@ -151,13 +151,23 @@ esac
 echo "compose-smoke: /health ok (302 -> /login)"
 
 # Slice 4: server-health Grafana JWT endpoint. POST /health/grafana-jwt
-# requires auth + CSRF; unauthenticated POST returns 401.
-echo "compose-smoke: hitting POST /health/grafana-jwt (expect 401; auth-gated)"
+# is mounted UNDER the same auth-middleware chain as /health: the
+# RequireSession middleware emits a 302 redirect with
+# Location: /login?next=... for any unauthenticated request (regardless
+# of method). The 401 inside the handler body is reachable only AFTER
+# session loading — which never happens here because RequireSession
+# short-circuits the chain before the handler runs.
+echo "compose-smoke: hitting POST /health/grafana-jwt (expect 302 -> /login; auth-gated)"
 JWT_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8443/health/grafana-jwt)
-if [ "$JWT_CODE" != "401" ]; then
-  echo "compose-smoke: POST /health/grafana-jwt expected 401, got $JWT_CODE" >&2
+if [ "$JWT_CODE" != "302" ]; then
+  echo "compose-smoke: POST /health/grafana-jwt expected 302, got $JWT_CODE" >&2
   exit 1
 fi
-echo "compose-smoke: POST /health/grafana-jwt ok (401)"
+JWT_LOC=$(curl -s -o /dev/null -w "%{redirect_url}" -X POST http://127.0.0.1:8443/health/grafana-jwt)
+case "$JWT_LOC" in
+  */login*) ;;
+  *) echo "compose-smoke: POST /health/grafana-jwt redirect target should be /login, got $JWT_LOC" >&2 ; exit 1 ;;
+esac
+echo "compose-smoke: POST /health/grafana-jwt ok (302 -> /login)"
 
 echo "compose-smoke: ok"

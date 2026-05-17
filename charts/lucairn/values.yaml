@@ -1,15 +1,15 @@
 global:
-  # Deployment environment. Controls fail-closed behavior across the pipeline:
-  # - "development": empty service tokens and plaintext gRPC are allowed.
-  # - "production": all services refuse to start without DSA_SERVICE_TOKEN
-  #   and GRPC_TLS_ENABLED=true (enforced in each service's main() via
-  #   pkg/serviceauth + pkg/tlsutil). values-prod.yaml sets this to
-  #   "production"; values-dev.yaml keeps it "development".
-  dsaEnv: production
   vertical: finance
   imageRegistry: "ghcr.io/declade"
   imagePullSecrets: []
   imageTag: "0.4.0"
+  # Slice 4 — namespace of the bundled observability sub-chart (Grafana
+  # + Loki + Tempo). The dashboard sub-chart's secret-grafana-jwt.yaml
+  # mirrors the Helm-generated shared secret into this namespace so the
+  # Grafana pod can mount it (Secrets are namespace-scoped). Override
+  # only if the observability sub-chart is deployed to a non-default
+  # namespace (it ships as `dsa-observability`).
+  observabilityNamespace: "dsa-observability"
   secrets:
     backend: k8s-native
     vault:
