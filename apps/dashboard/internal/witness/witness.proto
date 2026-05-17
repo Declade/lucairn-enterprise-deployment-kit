@@ -1,0 +1,140 @@
+// Minimal Lucairn Witness gRPC contract used by the dashboard's cert
+// inspector + validator. Vendored intentionally as a SUBSET of the
+// upstream `services/veil-witness/api/witness.proto` schema; only the
+// fields the dashboard's cert browser + inspector + audit-grade validator
+// surfaces are kept here.
+//
+// Upstream source the wire format MUST stay byte-compatible with:
+//   Declade/dual-sandbox-architecture/services/veil-witness/api/witness.proto
+//   (CertServer.VerifyCertificate at internal/server/cert_server.go:201 ―
+//   per PRD prd-2026-05-17-enterprise-dashboard.md § D7).
+//
+// Cross-language byte equality with the witness service is REQUIRED — the
+// dashboard reconstructs the cert envelope from the same per-claim signed
+// canonical bytes. Field numbers, enum values, and oneof tags must remain
+// IDENTICAL to upstream. If a field is unknown to this proto, the gRPC
+// payload still decodes (unknown fields are preserved by protobuf
+// semantics) — but expanding our view of any new field MUST be a
+// coordinated edit on both repos.
+//
+// Out of scope here: AssembleCertificate, ListCertificates, mintEvidence
+// — those RPCs run server-side only. The dashboard never calls them.
+//
+// Update protocol: bump major + regenerate pb stubs via
+//   cd apps/dashboard
+//   protoc --go_out=. --go_opt=paths=source_relative \
+//          --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+//          internal/witness/witness.proto
+
+syntax = "proto3";
+
+package lucairn.witness.v1;
+
+option go_package = "github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/witness/pb;witnesspb";
+
+// CertVerifier is the SUBSET of the upstream witness gRPC surface the
+// dashboard consumes. Backend service exposed on tcp/50051 by default.
+service CertVerifier {
+  // VerifyCertificate validates a single cert by its UUID. The witness
+  // performs:
+  //   - reconstruction of the canonical bytes per claim
+  //   - Ed25519 signature verification per claim
+  //   - chain integrity check (claim hashes link)
+  //   - TSA timestamp envelope check (RFC 3161)
+  //   - Sigstore Rekor inclusion-proof check
+  // Returns a structured per-claim verdict. Network / DB / decode errors
+  // come back as gRPC status; the dashboard surfaces those as a
+  // degraded-state badge ("Witness unreachable") rather than crashing.
+  rpc VerifyCertificate(VerifyCertificateRequest) returns (VerifyCertificateResponse);
+}
+
+message VerifyCertificateRequest {
+  // cert_id is the UUID under which the cert was stored in the audit /
+  // bridge Postgres. Required.
+  string cert_id = 1;
+}
+
+// VerifyCertificateResponse is the dashboard-facing subset of the witness
+// proto. Unknown fields beyond these are preserved on the wire but not
+// surfaced in the UI until a coordinated proto bump lands.
+message VerifyCertificateResponse {
+  // overall_verdict is the verifier's headline conclusion. Values:
+  //   "verified" / "partial" / "failed" / "byok_exempt"
+  // BYOK_EXEMPT runs (per dual-sandbox-architecture PR #152) MUST be
+  // surfaced as "verified" with byok_exempt = true so the audit reader
+  // sees the right semantic verdict.
+  string overall_verdict = 1;
+
+  // completeness reports which claims are present. "full" = all 6 claim
+  // types present; "partial" = bridge + sanitizer present, sandbox-* may
+  // be absent on BYOK_EXEMPT runs.
+  string completeness = 2;
+
+  // signatures_valid is true iff every per-claim Ed25519 signature
+  // verified against the witness-anchored public key set.
+  bool signatures_valid = 3;
+
+  // byok_exempt is set when this cert was produced by a BYOK run (the
+  // customer's own upstream LLM key was forwarded by the gateway; the
+  // managed sandbox-b never ran for the inference claim). isolation_verified
+  // remains true in this case — see CLAUDE.md § BYOK_EXEMPT.
+  bool byok_exempt = 4;
+
+  // isolation_verified mirrors the dual-sandbox-architecture invariant:
+  // raw identity data was never exposed to the AI service on this run.
+  bool isolation_verified = 5;
+
+  // tsa_timestamp is the RFC 3161 timestamp envelope URL or value the
+  // dashboard deep-links to (FreeTSA per CLAUDE.md sub-processors).
+  string tsa_timestamp = 6;
+
+  // rekor_uuid is the Sigstore Rekor entry UUID the dashboard deep-links
+  // to. May be empty during the transition window after audit-trail wave.
+  string rekor_uuid = 7;
+
+  // per_claim is one entry per claim type. UI renders these in the locked
+  // order: gateway, bridge, sanitizer, sandbox-a, sandbox-b, witness.
+  repeated PerClaimVerdict per_claim = 8;
+
+  // cert_url is the canonical browser-visible URL for this cert (used by
+  // the UI as a copy-and-share anchor). Optional; the UI synthesizes one
+  // from the cert id when this is empty.
+  string cert_url = 9;
+
+  // error is set when the witness can answer the verify request but
+  // recovered a fail-to-verify path (e.g. signature mismatch on a claim).
+  // The dashboard renders this verbatim in the inspector's failure panel.
+  string error = 10;
+}
+
+// PerClaimVerdict captures one slot in the 6-row claim chain.
+message PerClaimVerdict {
+  // claim_type is one of: "gateway", "bridge", "sanitizer",
+  // "sandbox_a", "sandbox_b", "witness".
+  string claim_type = 1;
+
+  // verdict is "ok" or "fail". The UI renders an "ok"-pill or "fail"-pill
+  // accordingly; semantic-status colors only.
+  string verdict = 2;
+
+  // pub_key_fingerprint is the SHA-256 of the claim's Ed25519 public
+  // key, hex-encoded. The UI surfaces the first 16 hex chars in the pill;
+  // the click-to-reveal flow shows the full fingerprint.
+  string pub_key_fingerprint = 3;
+
+  // signature_hex is the full per-claim signature, hex-encoded. UI
+  // surfaces the first 16 hex chars in the pill + ellipsis; click-to-reveal
+  // shows the full bytes. NEVER store / log this string outside of the
+  // verify-response cache.
+  string signature_hex = 4;
+
+  // canonical_payload_hash is the SHA-256 of the canonical signed bytes
+  // for this claim, hex-encoded. Used by audit-grade investigators who
+  // want to reconstruct the canonical bytes offline.
+  string canonical_payload_hash = 5;
+
+  // error is set when this claim failed verification. The UI renders this
+  // verbatim under the pill so the operator can immediately see why a
+  // single claim flipped to red.
+  string error = 6;
+}

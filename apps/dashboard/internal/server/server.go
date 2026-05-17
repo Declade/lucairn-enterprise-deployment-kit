@@ -9,11 +9,14 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/handlers"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/store"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/views"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/witness"
 )
 
 // Options configures a Server.
@@ -36,6 +39,15 @@ type Options struct {
 	OIDCAuthenticator *auth.OIDCAuthenticator
 	OIDCState         auth.OIDCStateStore
 	OIDCEnabled       bool
+
+	// Slice 3 cert surface. When CertConfigured is true, CertStore and
+	// WitnessClient MUST both be non-nil; the server.New constructor
+	// validates this so a half-wired surface is caught at boot rather
+	// than at first request. When CertConfigured is false, the cert
+	// routes still register and render a "not configured" explainer.
+	CertStore      *store.CertStore
+	WitnessClient  *witness.Client
+	CertConfigured bool
 }
 
 // Server bundles the HTTP server and its lifecycle.
@@ -87,6 +99,37 @@ func New(opts Options) (*Server, error) {
 			Renderer:      renderer,
 		}
 	}
+
+	// Slice 3 cert surface validation: half-wired CertConfigured is a
+	// config error caught at New(), not a runtime surprise mid-request.
+	if opts.CertConfigured {
+		if opts.CertStore == nil {
+			return nil, errors.New("server: CertConfigured requires CertStore")
+		}
+		if opts.WitnessClient == nil {
+			return nil, errors.New("server: CertConfigured requires WitnessClient")
+		}
+	}
+	var certDeps *handlers.CertsDeps
+	var bulkDeps *handlers.BulkReverifyDeps
+	if opts.CertConfigured {
+		certDeps = &handlers.CertsDeps{
+			Renderer:   renderer,
+			Store:      opts.CertStore,
+			Verifier:   opts.WitnessClient,
+			Configured: true,
+		}
+		bulkDeps = handlers.NewBulkReverifyDeps(opts.WitnessClient, renderer)
+	} else {
+		// Unconfigured mode: deps still get rendered but every handler
+		// short-circuits to the not-configured page.
+		certDeps = &handlers.CertsDeps{
+			Renderer:   renderer,
+			Configured: false,
+		}
+		bulkDeps = handlers.NewBulkReverifyDeps(nil, renderer)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler(opts.Version))
 	// Slash-variant redirects. The auth-middleware allowlist (FX-17) accepts
@@ -131,6 +174,62 @@ func New(opts Options) (*Server, error) {
 		}
 		deps.DashboardHome(w, r)
 	})
+
+	// Slice 3 cert routes. All gated through the auth chain below.
+	mux.HandleFunc("/certs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		certDeps.BrowserHandler(w, r)
+	})
+	// Trailing-slash form: redirect to canonical path so probes /
+	// hand-typed URLs survive (FX-17 pattern from Slice 1).
+	mux.Handle("/certs/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// /certs/.csv → CSV export; /certs/bulk-reverify → bulk POST.
+		// All other paths dispatch to the inspector + reverify routing
+		// below; the trailing-slash-only path redirects to /certs.
+		path := r.URL.Path
+		if path == "/certs/" {
+			http.Redirect(w, r, "/certs", http.StatusPermanentRedirect)
+			return
+		}
+		// Bulk-reverify subtree.
+		if path == "/certs/bulk-reverify" {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			bulkDeps.BulkReverifyHandler(w, r)
+			return
+		}
+		if strings.HasPrefix(path, "/certs/bulk-reverify/") {
+			bulkDeps.BulkReverifyProgressHandler(w, r)
+			return
+		}
+		// Inspector + reverify routing: /certs/{id} and /certs/{id}/reverify.
+		if strings.HasSuffix(path, "/reverify") {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			certDeps.ReverifyHandler(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		certDeps.InspectorHandler(w, r)
+	}))
+	mux.HandleFunc("/certs.csv", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		certDeps.CSVExportHandler(w, r)
+	})
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)

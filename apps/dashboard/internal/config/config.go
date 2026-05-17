@@ -40,9 +40,14 @@ const (
 	envOIDCCallbackURL  = "LUCAIRN_DASHBOARD_OIDC_CALLBACK_URL"
 	envOIDCPublicURL    = "LUCAIRN_DASHBOARD_OIDC_PUBLIC_URL"
 
-	defaultListenAddr      = "0.0.0.0:8443"
-	defaultBootstrapEmail  = "admin@lucairn.local"
-	defaultOIDCGroupsClaim = "groups"
+	// Slice 3: cert browser + inspector + audit-grade validator.
+	envAuditDBURL          = "LUCAIRN_DASHBOARD_AUDIT_DB_URL"
+	envWitnessEndpoint     = "LUCAIRN_DASHBOARD_WITNESS_ENDPOINT"
+	envWitnessTLSEnabled   = "LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED"
+
+	defaultListenAddr       = "0.0.0.0:8443"
+	defaultBootstrapEmail   = "admin@lucairn.local"
+	defaultOIDCGroupsClaim  = "groups"
 	defaultOIDCCallbackPath = "/auth/oidc/callback"
 )
 
@@ -67,6 +72,13 @@ type Config struct {
 	OIDCViewerGroup  string
 	OIDCGroupsClaim  string
 	OIDCCallbackURL  string
+
+	// Slice 3 cert surface configuration. Both fields are optional —
+	// when AuditDBURL OR WitnessEndpoint is empty, cert pages render
+	// the "not configured" explainer and never dial either backend.
+	AuditDBURL          string
+	WitnessEndpoint     string
+	WitnessTLSEnabled   bool
 }
 
 // Load reads configuration from the environment and applies safe defaults.
@@ -86,7 +98,64 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	if err := applyCertSurfaceConfig(cfg); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// applyCertSurfaceConfig reads the cert browser / inspector config and
+// validates the shape when populated. The fields are OPTIONAL — leaving
+// both unset is the supported "cert surface off" mode. When at least
+// one is set we validate the pair so the operator never ends up with
+// a half-configured surface that crashes on the first cert click.
+//
+// Required (jointly) when either is set:
+//   - LUCAIRN_DASHBOARD_AUDIT_DB_URL    libpq URL (postgres://...)
+//   - LUCAIRN_DASHBOARD_WITNESS_ENDPOINT host:port
+//
+// Optional:
+//   - LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED  reserved for the future
+//                                            mTLS slice (defaults false).
+func applyCertSurfaceConfig(cfg *Config) error {
+	cfg.AuditDBURL = strings.TrimSpace(os.Getenv(envAuditDBURL))
+	cfg.WitnessEndpoint = strings.TrimSpace(os.Getenv(envWitnessEndpoint))
+	cfg.WitnessTLSEnabled = parseBoolOIDC(strings.ToLower(strings.TrimSpace(os.Getenv(envWitnessTLSEnabled))))
+
+	// The cert surface is OPT-IN. The driver is LUCAIRN_DASHBOARD_AUDIT_DB_URL:
+	//   - empty AUDIT_DB_URL = cert surface OFF (regardless of WITNESS_ENDPOINT).
+	//     Operators who set a compose-level WITNESS_ENDPOINT default but never
+	//     opt into the cert surface get the friendly "not configured" pages
+	//     instead of a fail-closed boot.
+	//   - non-empty AUDIT_DB_URL = cert surface ON; WITNESS_ENDPOINT MUST also
+	//     be populated (the cert inspector cannot validate anything without
+	//     the witness). This is the "half-wired" guard.
+	if cfg.AuditDBURL == "" {
+		// Surface deliberately disabled. Discard the witness endpoint so
+		// main.go's cert wiring also short-circuits cleanly.
+		cfg.WitnessEndpoint = ""
+		return nil
+	}
+	if cfg.WitnessEndpoint == "" {
+		return fmt.Errorf("%s must be set when %s is set", envWitnessEndpoint, envAuditDBURL)
+	}
+	// Validate the DB URL parses + uses postgres scheme.
+	u, err := url.Parse(cfg.AuditDBURL)
+	if err != nil {
+		return fmt.Errorf("%s: parse: %w", envAuditDBURL, err)
+	}
+	switch u.Scheme {
+	case "postgres", "postgresql":
+		// ok
+	default:
+		return fmt.Errorf("%s scheme must be postgres:// or postgresql://, got %q", envAuditDBURL, u.Scheme)
+	}
+	// Validate the witness endpoint has a colon (host:port).
+	if !strings.Contains(cfg.WitnessEndpoint, ":") {
+		return fmt.Errorf("%s must be host:port, got %q", envWitnessEndpoint, cfg.WitnessEndpoint)
+	}
+	return nil
 }
 
 // applyOIDCConfig reads + validates the OIDC env vars in one pass. Kept

@@ -1,0 +1,16 @@
+{{ define "main" }}
+{{- /*
+  Standalone validator page. The handler does not register a /certs/{id}/
+  validator route in Slice 3 (the inspector embeds the same chain inline),
+  but this page is parsed so a future slice can route to it without a
+  template add. Same body as inspector minus the summary card. Inputs
+  match inspectorPageData (Cert + Result).
+*/ -}}
+<section class="lc-page-section">
+  <header class="lc-page-header">
+    <h1 class="lc-page-title">Cert validator</h1>
+    <p class="lc-page-lede">Per-claim signature breakdown for <code class="lc-mono">{{ .Cert.ID }}</code>. Re-verified live against the Lucairn witness.</p>
+  </header>
+  {{ template "claim_chain" . }}
+</section>
+{{ end }}

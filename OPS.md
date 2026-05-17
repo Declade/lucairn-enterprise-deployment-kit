@@ -197,3 +197,62 @@ Active sessions are unaffected by client_secret rotation (sessions are
 local to the dashboard). Users do NOT have to re-authenticate. The next
 OIDC sign-in attempt picks up the new secret transparently.
 
+## Dashboard: rotating audit DB credentials
+
+The cert browser + inspector + audit-defensibility-grade validator
+reach the customer's audit Postgres through a dedicated read-only role
+(see `INSTALL.md` § "Audit DB + Witness wiring"). Rotate the role's
+password on the same cadence as the rest of the kit's secrets.
+
+Compose path:
+
+```bash
+# 1) Rotate at Postgres first. Connect as the audit DB owner (the kit's
+#    `dsa` superuser by default) and ALTER the role:
+psql -h postgres-bridge -U dsa -d dsa -c \
+  "ALTER ROLE lucairn_dashboard_ro WITH PASSWORD '<new-password>';"
+
+# 2) Patch customer.env in place. Keep the file at mode 0600.
+NEW_DB_URL="postgres://lucairn_dashboard_ro:<new-password>@postgres-bridge:5432/dsa?sslmode=require"
+sed -i.bak \
+  "s|^LUCAIRN_DASHBOARD_AUDIT_DB_URL=.*|LUCAIRN_DASHBOARD_AUDIT_DB_URL=${NEW_DB_URL}|" \
+  customer.env
+
+# 3) Recreate the dashboard container so it reads the new env.
+docker compose \
+  -f docker-compose.customer.yml \
+  --env-file customer.env \
+  --profile dashboard \
+  up -d --force-recreate lucairn-dashboard
+
+# 4) Confirm health.
+curl -fsS http://127.0.0.1:8443/healthz
+```
+
+Kubernetes path:
+
+```bash
+# 1) Rotate at Postgres first (same ALTER ROLE as above).
+
+# 2) Replace the Secret with the new connection string.
+kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
+  --from-literal=connection-string='postgres://lucairn_dashboard_ro:<new-password>@postgres-bridge:5432/dsa?sslmode=verify-full' \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# 3) Bounce the Deployment so the pod picks up the new Secret value.
+kubectl -n lucairn rollout restart deploy/lucairn-dashboard
+kubectl -n lucairn rollout status deploy/lucairn-dashboard
+```
+
+Active dashboard sessions are NOT invalidated by this rotation — sessions
+are local to the dashboard process and the audit DB has no view of them.
+The next cert-browser page request after the bounce dials the DB with
+the new credentials transparently.
+
+When to rotate:
+
+- Day-1, after the first successful cert-browser page load.
+- Whenever an operator with the audit DB password leaves the team.
+- On the same schedule as the rest of the kit's secrets (per the
+  "Key Rotation" section above).
+

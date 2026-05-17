@@ -1,0 +1,33 @@
+{{ define "main" }}
+<section class="lc-page-section"
+         x-data="bulkProgress({{ .JobTotal }}, '{{ .ProgressURL }}')"
+         x-init="start()">
+  <header class="lc-page-header">
+    <h1 class="lc-page-title">Bulk re-verify in progress</h1>
+    <p class="lc-page-lede">Job <code class="lc-mono">{{ .JobID }}</code> — {{ .JobTotal }} cert{{ if ne .JobTotal 1 }}s{{ end }}. Updates poll every second; this page is safe to refresh.</p>
+  </header>
+
+  <div class="lc-card">
+    <div class="lc-progress" role="progressbar" aria-valuemin="0" aria-valuemax="{{ .JobTotal }}" :aria-valuenow="done" :aria-label="'Verified ' + done + ' of ' + total">
+      <div class="lc-progress-bar" :style="'width: ' + (total ? (done * 100 / total) : 0) + '%'"></div>
+    </div>
+    <dl class="lc-progress-stats font-tabular">
+      <div><dt>Total</dt><dd x-text="total"></dd></div>
+      <div><dt>Done</dt><dd x-text="done"></dd></div>
+      <div><dt>Verified</dt><dd x-text="verified"></dd></div>
+      <div><dt>Partial</dt><dd x-text="partial"></dd></div>
+      <div><dt>Failed</dt><dd x-text="failed"></dd></div>
+    </dl>
+    <p class="lc-text-muted" x-show="finished">Job finished. <a class="lc-link" href="/certs">Back to browser</a></p>
+  </div>
+
+  <noscript>
+    <div class="lc-banner lc-banner--warn" role="alert">
+      JavaScript is required to live-update progress. Refresh this page periodically to see updates.
+    </div>
+  </noscript>
+</section>
+
+<script src="/static/js/alpine.min.js" defer></script>
+<script src="/static/js/cert-inspector.js" defer></script>
+{{ end }}

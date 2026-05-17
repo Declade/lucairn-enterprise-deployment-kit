@@ -574,7 +574,7 @@ services:
   # INSTALL.md § "Enable the Lucairn dashboard (optional)".
   lucairn-dashboard:
     profiles: ["dashboard"]
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.2.0}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.3.0}"
     restart: unless-stopped
     environment:
       LUCAIRN_DASHBOARD_LISTEN_ADDR: "${LUCAIRN_DASHBOARD_LISTEN_ADDR:-0.0.0.0:8443}"
@@ -594,6 +594,13 @@ services:
       LUCAIRN_DASHBOARD_OIDC_GROUPS_CLAIM: "${LUCAIRN_DASHBOARD_OIDC_GROUPS_CLAIM:-groups}"
       LUCAIRN_DASHBOARD_OIDC_PUBLIC_URL: "${LUCAIRN_DASHBOARD_OIDC_PUBLIC_URL:-}"
       LUCAIRN_DASHBOARD_OIDC_CALLBACK_URL: "${LUCAIRN_DASHBOARD_OIDC_CALLBACK_URL:-}"
+      # Slice 3 cert surface: cert browser + inspector + validator.
+      # Both AUDIT_DB_URL and WITNESS_ENDPOINT must be set together for
+      # the cert pages to dial backends; leaving them empty ships the
+      # dashboard with cert pages rendering "not configured".
+      LUCAIRN_DASHBOARD_AUDIT_DB_URL: "${LUCAIRN_DASHBOARD_AUDIT_DB_URL:-}"
+      LUCAIRN_DASHBOARD_WITNESS_ENDPOINT: "${LUCAIRN_DASHBOARD_WITNESS_ENDPOINT:-witness:50051}"
+      LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED: "${LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED:-false}"
     ports:
       - "127.0.0.1:8443:8443"
     healthcheck:

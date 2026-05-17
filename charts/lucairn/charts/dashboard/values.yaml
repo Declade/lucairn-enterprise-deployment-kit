@@ -87,6 +87,54 @@ ingress:
   tlsSecret: tls-lucairn-dashboard
   annotations: {}
 
+# ─────────────────────────────────────────────────────────────────
+# Slice 3: cert browser + inspector + audit-grade validator.
+# ─────────────────────────────────────────────────────────────────
+#
+# The cert surface is OPTIONAL. Leave the connection-string ref empty
+# to ship the dashboard without the cert pages — they render a "not
+# configured" explainer instead of attempting to reach the audit DB.
+#
+# When enabling the cert surface, the operator pre-creates:
+#   1. A read-only Postgres role with SELECT on veil_certificates only.
+#      (See INSTALL.md § "Audit DB + Witness wiring".)
+#   2. A K8s Secret holding the libpq connection string. Recommended
+#      shape:
+#        kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
+#          --from-literal=connection-string='postgres://lucairn_dashboard_ro:...@postgres-bridge:5432/dsa?sslmode=verify-full'
+#
+# Group mapping rules already in effect from Slice 2 are unchanged:
+# both admin and viewer roles can browse + re-verify certs. API-key
+# management (Slice 5) is the first admin-only cert-adjacent surface.
+auditDB:
+  # K8s Secret with key `connection-string` (libpq URL).
+  connectionStringRef:
+    name: ""        # required when cert surface is enabled
+    key: connection-string
+
+witness:
+  # gRPC endpoint of the dsa-veil-witness service inside the customer
+  # cluster. The default points at the kit's bundled witness Service
+  # DNS in the lucairn namespace.
+  endpoint: "witness.lucairn.svc.cluster.local:50051"
+  # mTLS is reserved for a future slice. v1 speaks plaintext gRPC
+  # constrained at the NetworkPolicy / Service mesh layer. Setting
+  # tls.enabled=true today is a no-op; the dashboard binary ignores it
+  # until the mTLS slice lands.
+  tls:
+    enabled: false
+    # The 3 ref blocks below are scaffolding for the upcoming mTLS
+    # slice; populated values are silently ignored by today's image.
+    caRef:
+      name: ""
+      key: ca.crt
+    certRef:
+      name: ""
+      key: tls.crt
+    keyRef:
+      name: ""
+      key: tls.key
+
 resources:
   requests:
     cpu: 50m

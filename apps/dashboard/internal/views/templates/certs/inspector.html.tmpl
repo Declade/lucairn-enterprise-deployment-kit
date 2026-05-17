@@ -1,0 +1,68 @@
+{{ define "main" }}
+<section class="lc-page-section">
+  <header class="lc-page-header lc-page-header--with-aside">
+    <div>
+      <h1 class="lc-page-title">Cert <code class="lc-mono">{{ .Cert.ID }}</code></h1>
+      <p class="lc-page-lede">Recorded {{ formatDate .Cert.CreatedAt }} for customer <code class="lc-mono">{{ .Cert.CustomerID }}</code>. The chain below is re-verified live against the Lucairn witness.</p>
+    </div>
+    <aside class="lc-header-aside">
+      <a class="lc-link" href="/certs">Back to browser</a>
+    </aside>
+  </header>
+
+  {{ if .WitnessErr }}
+    <div class="lc-banner lc-banner--warn" role="alert">
+      <strong>Witness unreachable.</strong> {{ .WitnessErr }}
+    </div>
+  {{ end }}
+
+  <div class="lc-cert-summary lc-card">
+    <div class="lc-cert-summary-row">
+      <span class="lc-text-muted">Overall verdict</span>
+      <span>
+        {{ if eq .Result.OverallVerdict "verified" }}<span class="lc-pill lc-pill--ok">verified</span>
+        {{ else if eq .Result.OverallVerdict "partial" }}<span class="lc-pill lc-pill--warn">partial</span>
+        {{ else if eq .Result.OverallVerdict "failed" }}<span class="lc-pill lc-pill--fail">failed</span>
+        {{ else }}<span class="lc-text-muted font-tabular">{{ .Result.OverallVerdict }}</span>{{ end }}
+        {{ if .Result.ByokExempt }}<span class="lc-badge lc-badge-info" title="BYOK run — customer-supplied LLM key forwarded">BYOK_EXEMPT</span>{{ end }}
+      </span>
+    </div>
+    <div class="lc-cert-summary-row">
+      <span class="lc-text-muted">Completeness</span>
+      <span class="font-tabular">{{ .Result.Completeness }}</span>
+    </div>
+    <div class="lc-cert-summary-row">
+      <span class="lc-text-muted">Signatures valid</span>
+      <span class="font-tabular">{{ if .Result.SignaturesValid }}yes{{ else }}no{{ end }}</span>
+    </div>
+    <div class="lc-cert-summary-row">
+      <span class="lc-text-muted">Isolation verified</span>
+      <span class="font-tabular">{{ if .Result.IsolationVerified }}yes{{ else }}no{{ end }}</span>
+    </div>
+    {{ if .Result.TSATimestamp }}
+    <div class="lc-cert-summary-row">
+      <span class="lc-text-muted">TSA timestamp</span>
+      <a class="lc-link font-tabular" href="{{ .Result.TSATimestamp }}" target="_blank" rel="noopener noreferrer">Open in new tab</a>
+    </div>
+    {{ end }}
+    {{ if .RekorURL }}
+    <div class="lc-cert-summary-row">
+      <span class="lc-text-muted">Rekor entry</span>
+      <a class="lc-link font-tabular" href="{{ .RekorURL }}" target="_blank" rel="noopener noreferrer"><code class="lc-mono">{{ .Result.RekorUUID }}</code></a>
+    </div>
+    {{ end }}
+    <form class="lc-cert-summary-actions" method="post" action="/certs/{{ .Cert.ID }}/reverify">
+      <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+      <button type="submit" class="lc-login-button">Re-verify now</button>
+    </form>
+  </div>
+
+  {{ template "claim_chain" . }}
+
+  {{ if .Result.Error }}
+    <div class="lc-banner lc-banner--fail" role="alert">
+      <strong>Verifier error.</strong> <code class="lc-mono">{{ .Result.Error }}</code>
+    </div>
+  {{ end }}
+</section>
+{{ end }}

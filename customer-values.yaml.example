@@ -130,3 +130,20 @@ dsa-certification:
       keyId: "REPLACE_WITH_CUSTOMER_KEY_ID_WHEN_CERTIFICATION_ENABLED"
       keyFile: /keys/customer-key.pem
 
+
+# Lucairn Enterprise Dashboard. OFF by default. When dashboard.enabled
+# flips to true, the binary boots with cert pages rendering "not
+# configured" unless auditDB.connectionStringRef.name is also set. See
+# INSTALL.md § "Enable the Lucairn dashboard" + "Audit DB + Witness
+# wiring (cert browser + inspector)".
+dashboard:
+  enabled: false
+  # Slice 3 cert surface (opt-in). Leave connectionStringRef.name empty
+  # to ship the dashboard without the cert browser; the cert pages
+  # render a friendly "not configured" explainer in that mode.
+  # auditDB:
+  #   connectionStringRef:
+  #     name: lucairn-dashboard-audit-db
+  #     key: connection-string
+  # witness:
+  #   endpoint: "witness.lucairn.svc.cluster.local:50051"

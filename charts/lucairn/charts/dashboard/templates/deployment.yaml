@@ -67,6 +67,22 @@ spec:
               value: {{ required "dashboard.oidc.callbackURL or dashboard.oidc.publicURL is required when oidc.enabled=true" .Values.oidc.publicURL | quote }}
             {{- end }}
             {{- end }}
+            {{- /* Slice 3: cert browser + inspector. Both fields are
+               optional — when AuditDB.connectionStringRef.name is empty,
+               the cert pages render a "not configured" explainer and
+               the binary skips dial. Witness endpoint always renders
+               (defaults to the in-cluster Service DNS in values.yaml). */ -}}
+            {{- if .Values.auditDB.connectionStringRef.name }}
+            - name: LUCAIRN_DASHBOARD_AUDIT_DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auditDB.connectionStringRef.name | quote }}
+                  key: {{ .Values.auditDB.connectionStringRef.key | default "connection-string" | quote }}
+            {{- end }}
+            - name: LUCAIRN_DASHBOARD_WITNESS_ENDPOINT
+              value: {{ .Values.witness.endpoint | default "witness.lucairn.svc.cluster.local:50051" | quote }}
+            - name: LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED
+              value: {{ .Values.witness.tls.enabled | default false | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.service.containerPort }}

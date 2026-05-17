@@ -5,7 +5,11 @@
 // telemetry or operational state crosses the customer-vendor boundary.
 //
 // Slice 1 shipped: auth + shell foundation.
-// Slice 2 adds: OIDC SSO (opt-in; default OFF).
+// Slice 2 added: OIDC SSO (opt-in; default OFF).
+// Slice 3 adds: cert browser + inspector + audit-grade live validator
+//               (gates on LUCAIRN_DASHBOARD_AUDIT_DB_URL +
+//                LUCAIRN_DASHBOARD_WITNESS_ENDPOINT; cert pages render
+//                a "not configured" explainer when those are unset).
 //
 // Design: specs/prd-2026-05-17-enterprise-dashboard.md.
 package main
@@ -25,6 +29,8 @@ import (
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/config"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/server"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/store"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/witness"
 )
 
 //go:embed static
@@ -89,6 +95,38 @@ func main() {
 		log.Printf("oidc enabled (issuer=%s, callback=%s)", cfg.OIDCIssuerURL, cfg.OIDCCallbackURL)
 	}
 
+	// Cert browser + inspector wiring (Slice 3).
+	//
+	// Both pieces are optional. When the operator has not set the audit
+	// DB connection string OR the witness endpoint, the cert routes
+	// still register but every handler renders a "not configured"
+	// explainer instead of falling over. Same opt-in posture as the
+	// OIDC trio: register the routes, let the handler decide what to
+	// render based on whether deps are populated.
+	var (
+		certStore  *store.CertStore
+		witnessCli *witness.Client
+		certs      *handlersCertWiring
+	)
+	if cfg.AuditDBURL != "" && cfg.WitnessEndpoint != "" {
+		ctxStore, cancelStore := context.WithTimeout(context.Background(), 15*time.Second)
+		var err error
+		certStore, _, err = store.NewCertStore(ctxStore, cfg.AuditDBURL)
+		cancelStore()
+		if err != nil {
+			log.Fatalf("cert store: %v", err)
+		}
+		witnessCli, err = witness.NewClient(cfg.WitnessEndpoint)
+		if err != nil {
+			log.Fatalf("witness client: %v", err)
+		}
+		certs = &handlersCertWiring{store: certStore, witness: witnessCli, configured: true}
+		log.Printf("cert browser enabled (db=%s, witness=%s)", redactDSN(cfg.AuditDBURL), cfg.WitnessEndpoint)
+	} else {
+		certs = &handlersCertWiring{configured: false}
+		log.Printf("cert browser disabled (set LUCAIRN_DASHBOARD_AUDIT_DB_URL and LUCAIRN_DASHBOARD_WITNESS_ENDPOINT to enable)")
+	}
+
 	staticFS, err := fs.Sub(embeddedStatic, "static")
 	if err != nil {
 		log.Fatalf("static fs: %v", err)
@@ -103,6 +141,9 @@ func main() {
 		OIDCAuthenticator: oidcAuth,
 		OIDCState:         oidcState,
 		OIDCEnabled:       cfg.OIDCEnabled,
+		CertStore:         certs.store,
+		WitnessClient:     certs.witness,
+		CertConfigured:    certs.configured,
 	})
 	if err != nil {
 		log.Fatalf("server: %v", err)
@@ -115,5 +156,47 @@ func main() {
 	if err := srv.Run(ctx); err != nil {
 		log.Fatalf("server stopped: %v", err)
 	}
+	if witnessCli != nil {
+		_ = witnessCli.Close()
+	}
 	log.Printf("lucairn-dashboard shutdown complete")
+}
+
+// handlersCertWiring groups the cert-surface deps so main.go's call to
+// server.New stays terse.
+type handlersCertWiring struct {
+	store      *store.CertStore
+	witness    *witness.Client
+	configured bool
+}
+
+// redactDSN strips the user:pass from a libpq URL so the startup log
+// surfaces enough connection metadata for operators without leaking
+// the read-only password into pod logs.
+func redactDSN(s string) string {
+	if at := indexLast(s, '@'); at > 0 {
+		if scheme := indexAny(s, "://"); scheme > 0 {
+			return s[:scheme+3] + "<redacted>" + s[at:]
+		}
+		return "<redacted>" + s[at:]
+	}
+	return s
+}
+
+func indexLast(s string, c byte) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
+}
+
+func indexAny(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
 }

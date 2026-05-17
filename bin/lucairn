@@ -936,6 +936,8 @@ check_dashboard() {
 
   check_dashboard_oidc "$env_file" || return 1
 
+  check_dashboard_cert_browser "$env_file" || return 1
+
   return 0
 }
 
@@ -995,6 +997,88 @@ check_dashboard_oidc() {
       200) echo "dashboard oidc: issuer reachable (200 on ${issuer}/.well-known/openid-configuration)" ;;
       *) echo "dashboard oidc: failed (issuer discovery returned $disc_code at ${issuer}/.well-known/openid-configuration)"; fail=1 ;;
     esac
+  fi
+
+  return "$fail"
+}
+
+# Pre-flight Slice 3 cert browser configuration. Skipped silently when
+# neither LUCAIRN_DASHBOARD_AUDIT_DB_URL nor LUCAIRN_DASHBOARD_WITNESS_ENDPOINT
+# is set (cert pages render "not configured"; auth + shell still work).
+# When EITHER is set, both are required (half-wired config is the
+# Sim-class regression class the FX-17 lesson keeps catching).
+#
+# Validates:
+#   - AUDIT_DB_URL scheme is postgres:// or postgresql://
+#   - WITNESS_ENDPOINT has a colon (host:port shape)
+#   - When running against Helm + DOCTOR_INCLUDE_DASHBOARD=1: the
+#     auditDB Secret named in customer-values.yaml exists.
+#
+# Bash 3.2 compatible per the Slice 2 lesson (macOS default shell).
+check_dashboard_cert_browser() {
+  local env_file="$1"
+  local db_url witness_ep tls_enabled
+  db_url="$(env_value "$env_file" LUCAIRN_DASHBOARD_AUDIT_DB_URL)"
+  witness_ep="$(env_value "$env_file" LUCAIRN_DASHBOARD_WITNESS_ENDPOINT)"
+  tls_enabled="$(env_value "$env_file" LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED)"
+
+  # The cert surface is OPT-IN. The driver is LUCAIRN_DASHBOARD_AUDIT_DB_URL:
+  # empty AUDIT_DB_URL means cert surface OFF (the witness endpoint
+  # default in docker-compose is a no-op in that case).
+  if [ -z "$db_url" ]; then
+    echo "dashboard certs: skipped (cert browser disabled — set LUCAIRN_DASHBOARD_AUDIT_DB_URL to enable)"
+    return 0
+  fi
+
+  local fail=0
+  case "$db_url" in
+    postgres://*|postgresql://*)
+      echo "dashboard certs: db url scheme ok"
+      ;;
+    *)
+      echo "dashboard certs: failed (LUCAIRN_DASHBOARD_AUDIT_DB_URL must start with postgres:// or postgresql://, got: $db_url)"
+      fail=1
+      ;;
+  esac
+
+  if [ -z "$witness_ep" ]; then
+    echo "dashboard certs: failed (LUCAIRN_DASHBOARD_WITNESS_ENDPOINT is required when LUCAIRN_DASHBOARD_AUDIT_DB_URL is set)"
+    fail=1
+  else
+    case "$witness_ep" in
+      *:*)
+        echo "dashboard certs: witness endpoint shape ok ($witness_ep)"
+        ;;
+      *)
+        echo "dashboard certs: failed (LUCAIRN_DASHBOARD_WITNESS_ENDPOINT must be host:port, got: $witness_ep)"
+        fail=1
+        ;;
+    esac
+  fi
+
+  # TLS is reserved for the future mTLS slice; warn the operator who
+  # sets it true today so the dead-config setting does not look ignored.
+  case "$tls_enabled" in
+    true|TRUE|True|1|yes|YES|Yes|on|ON|On)
+      echo "dashboard certs: warn (LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED is a no-op in this image — mTLS lands in a future slice)"
+      ;;
+    *)
+      ;;
+  esac
+
+  # Optional kubectl-side cross-check: when the Helm secret name is
+  # known, verify it exists. Helm values surface this via
+  # LUCAIRN_DASHBOARD_AUDIT_DB_SECRET_NAME (operator-set, optional).
+  local include secret_name
+  include="${DOCTOR_INCLUDE_DASHBOARD:-0}"
+  secret_name="$(env_value "$env_file" LUCAIRN_DASHBOARD_AUDIT_DB_SECRET_NAME)"
+  if [ "$include" = "1" ] && have kubectl && [ -n "$secret_name" ]; then
+    if kubectl get secret "$secret_name" -n "${LUCAIRN_DASHBOARD_NAMESPACE:-lucairn}" >/dev/null 2>&1; then
+      echo "dashboard certs: audit-db secret ok (kubectl: $secret_name)"
+    else
+      echo "dashboard certs: failed (audit-db Secret $secret_name not found in ${LUCAIRN_DASHBOARD_NAMESPACE:-lucairn})"
+      fail=1
+    fi
   fi
 
   return "$fail"

@@ -1,0 +1,42 @@
+{{ define "claim_chain" }}
+{{- /*
+  claim_chain renders the per-claim signature breakdown for one
+  certificate. Used inline by inspector.html.tmpl and (in a future
+  slice) by an embedded validator drawer surface. The template body
+  uses signature_pill.html.tmpl as its row component.
+
+  Inputs (data passed by the inspector handler via inspectorPageData):
+    .Result.PerClaim   []witness.ClaimVerdict  (locked order:
+                                                gateway / bridge /
+                                                sanitizer / sandbox_a /
+                                                sandbox_b / witness)
+*/ -}}
+<section class="lc-card lc-validator">
+  <header class="lc-validator-header">
+    <h2 class="lc-card-title">Claim chain — per-claim signature breakdown</h2>
+    <span class="lc-text-muted">Click "Show bytes" to reveal the full Ed25519 signature + key fingerprint.</span>
+  </header>
+  <div class="lc-table-frame">
+    <table class="lc-table lc-table--compact">
+      <thead>
+        <tr>
+          <th scope="col" class="lc-table-th">Claim</th>
+          <th scope="col" class="lc-table-th">Verdict</th>
+          <th scope="col" class="lc-table-th">Public key fingerprint</th>
+          <th scope="col" class="lc-table-th">Signature</th>
+          <th scope="col" class="lc-table-th"><span class="lc-sr-only">Toggle</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {{ if .Result.PerClaim }}
+          {{ range .Result.PerClaim }}
+            {{ template "signature_pill" . }}
+          {{ end }}
+        {{ else }}
+          <tr class="lc-table-row lc-table-empty"><td class="lc-table-td" colspan="5">Witness did not return any per-claim verdicts for this cert.</td></tr>
+        {{ end }}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{ end }}
