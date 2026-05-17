@@ -220,6 +220,14 @@ func newTestAuthenticator(t *testing.T, s *stubIssuer) *OIDCAuthenticator {
 	return auth
 }
 
+// testNonce is the nonce value the default claims embed AND the value
+// every direct-Exchange test threads in as expectedNonce. Keeping them
+// in lockstep here means the per-test "no nonce mismatch" path stays
+// stable — a regression that drops the nonce wiring would fail the new
+// TestExchange_Failure_NonceMismatch test instead of false-passing the
+// happy paths.
+const testNonce = "stub-test-nonce-default"
+
 func defaultClaims(s *stubIssuer, groups []any, audience any) map[string]any {
 	now := time.Now()
 	c := map[string]any{
@@ -228,6 +236,7 @@ func defaultClaims(s *stubIssuer, groups []any, audience any) map[string]any {
 		"email": "alice@example.com",
 		"iat":   now.Unix(),
 		"exp":   now.Add(time.Hour).Unix(),
+		"nonce": testNonce,
 	}
 	if audience != nil {
 		c["aud"] = audience
@@ -280,7 +289,7 @@ func TestNewOIDCAuthenticator_RejectsBadConfig(t *testing.T) {
 func TestLoginURL_GeneratesPKCEChallenge(t *testing.T) {
 	s := newStubIssuer(t)
 	a := newTestAuthenticator(t, s)
-	u := a.LoginURL("state-x", "verifier-y")
+	u := a.LoginURL("state-x", "nonce-z", "verifier-y")
 	if !strings.Contains(u, "code_challenge=") {
 		t.Errorf("missing code_challenge in %q", u)
 	}
@@ -290,15 +299,27 @@ func TestLoginURL_GeneratesPKCEChallenge(t *testing.T) {
 	if !strings.Contains(u, "state=state-x") {
 		t.Errorf("state token not propagated in %q", u)
 	}
+	// OpenID Core §3.1.2.1: the nonce parameter must travel on the
+	// authorize URL alongside state + PKCE. Without it the ID-token
+	// nonce assertion in Exchange has nothing to compare against.
+	if !strings.Contains(u, "nonce=nonce-z") {
+		t.Errorf("nonce parameter missing from authorize URL %q", u)
+	}
 }
 
 func TestExchange_Success_AdminGroup(t *testing.T) {
 	s := newStubIssuer(t)
 	a := newTestAuthenticator(t, s)
+	// defaultClaims embeds testNonce; the happy path asserts the
+	// expectedNonce passed to Exchange must match the token's nonce
+	// claim. A regression that drops the nonce check (silently false-
+	// positives on token replay) would not change this assertion's
+	// outcome — TestExchange_Failure_NonceMismatch below is the
+	// invariant gate.
 	id := s.signIDToken(defaultClaims(s, []any{"lucairn-admins"}, nil))
 	s.seedExchange(id)
 
-	user, err := a.Exchange(context.Background(), "code-xyz", "verifier-y")
+	user, err := a.Exchange(context.Background(), "code-xyz", "verifier-y", testNonce)
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -310,13 +331,54 @@ func TestExchange_Success_AdminGroup(t *testing.T) {
 	}
 }
 
+// TestExchange_Failure_NonceMismatch locks in OpenID Core §3.1.3.7 item
+// 11: when the ID-token's `nonce` claim does not match the value the
+// flow-state-store minted at /auth/oidc/login time, Exchange must
+// fail-closed with ErrInvalidIDToken regardless of the rest of the
+// token (signature / audience / issuer / expiry / groups all green).
+//
+// The test signs an ID token with a different nonce literal, then drives
+// Exchange with the canonical testNonce expectedNonce — the verifier
+// must reject.
+func TestExchange_Failure_NonceMismatch(t *testing.T) {
+	s := newStubIssuer(t)
+	a := newTestAuthenticator(t, s)
+	claims := defaultClaims(s, []any{"lucairn-admins"}, nil)
+	claims["nonce"] = "wrong-nonce-from-replay-attack"
+	id := s.signIDToken(claims)
+	s.seedExchange(id)
+
+	_, err := a.Exchange(context.Background(), "code-xyz", "verifier-y", testNonce)
+	var iderr *ErrInvalidIDToken
+	if !errors.As(err, &iderr) {
+		t.Errorf("want ErrInvalidIDToken on nonce mismatch, got %v", err)
+	}
+}
+
+// TestExchange_Failure_EmptyExpectedNonce locks in the programmer-error
+// path. A caller MUST always pass the state-store-minted nonce. Empty
+// expectedNonce is a wiring bug; Exchange treats it as a mismatch so
+// the bug cannot decay into a silent skip of the nonce check.
+func TestExchange_Failure_EmptyExpectedNonce(t *testing.T) {
+	s := newStubIssuer(t)
+	a := newTestAuthenticator(t, s)
+	id := s.signIDToken(defaultClaims(s, []any{"lucairn-admins"}, nil))
+	s.seedExchange(id)
+
+	_, err := a.Exchange(context.Background(), "code-xyz", "verifier-y", "")
+	var iderr *ErrInvalidIDToken
+	if !errors.As(err, &iderr) {
+		t.Errorf("want ErrInvalidIDToken on empty expectedNonce, got %v", err)
+	}
+}
+
 func TestExchange_Success_ViewerGroup(t *testing.T) {
 	s := newStubIssuer(t)
 	a := newTestAuthenticator(t, s)
 	id := s.signIDToken(defaultClaims(s, []any{"lucairn-viewers"}, nil))
 	s.seedExchange(id)
 
-	user, err := a.Exchange(context.Background(), "code-xyz", "verifier-y")
+	user, err := a.Exchange(context.Background(), "code-xyz", "verifier-y", testNonce)
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -331,7 +393,7 @@ func TestExchange_Failure_NeitherGroup(t *testing.T) {
 	id := s.signIDToken(defaultClaims(s, []any{"unrelated-group"}, nil))
 	s.seedExchange(id)
 
-	_, err := a.Exchange(context.Background(), "code-xyz", "verifier-y")
+	_, err := a.Exchange(context.Background(), "code-xyz", "verifier-y", testNonce)
 	if !errors.Is(err, ErrNeitherGroup) {
 		t.Errorf("want ErrNeitherGroup, got %v", err)
 	}
@@ -343,7 +405,7 @@ func TestExchange_Failure_BothGroups_AdminWins(t *testing.T) {
 	id := s.signIDToken(defaultClaims(s, []any{"lucairn-viewers", "lucairn-admins"}, nil))
 	s.seedExchange(id)
 
-	user, err := a.Exchange(context.Background(), "code-xyz", "verifier-y")
+	user, err := a.Exchange(context.Background(), "code-xyz", "verifier-y", testNonce)
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -359,7 +421,7 @@ func TestExchange_Failure_BadSignature(t *testing.T) {
 	id := s.signTokenWithKey(defaultClaims(s, []any{"lucairn-admins"}, nil), rogue)
 	s.seedExchange(id)
 
-	_, err := a.Exchange(context.Background(), "code-xyz", "verifier-y")
+	_, err := a.Exchange(context.Background(), "code-xyz", "verifier-y", testNonce)
 	var iderr *ErrInvalidIDToken
 	if !errors.As(err, &iderr) {
 		t.Errorf("want ErrInvalidIDToken, got %v", err)
@@ -372,7 +434,7 @@ func TestExchange_Failure_BadAudience(t *testing.T) {
 	id := s.signIDToken(defaultClaims(s, []any{"lucairn-admins"}, "WRONG-CLIENT"))
 	s.seedExchange(id)
 
-	_, err := a.Exchange(context.Background(), "code-xyz", "verifier-y")
+	_, err := a.Exchange(context.Background(), "code-xyz", "verifier-y", testNonce)
 	var iderr *ErrInvalidIDToken
 	if !errors.As(err, &iderr) {
 		t.Errorf("want ErrInvalidIDToken on aud mismatch, got %v", err)
@@ -387,7 +449,7 @@ func TestExchange_Failure_Expired(t *testing.T) {
 	id := s.signIDToken(claims)
 	s.seedExchange(id)
 
-	_, err := a.Exchange(context.Background(), "code-xyz", "verifier-y")
+	_, err := a.Exchange(context.Background(), "code-xyz", "verifier-y", testNonce)
 	var iderr *ErrInvalidIDToken
 	if !errors.As(err, &iderr) {
 		t.Errorf("want ErrInvalidIDToken on expired token, got %v", err)
@@ -399,7 +461,7 @@ func TestExchange_Failure_IdPError(t *testing.T) {
 	a := newTestAuthenticator(t, s)
 	s.seedExchangeError("invalid_grant")
 
-	_, err := a.Exchange(context.Background(), "code-xyz", "verifier-y")
+	_, err := a.Exchange(context.Background(), "code-xyz", "verifier-y", testNonce)
 	if err == nil {
 		t.Fatalf("expected error when token endpoint returns invalid_grant")
 	}
@@ -413,7 +475,7 @@ func TestGroupsClaim_StringFallback(t *testing.T) {
 	id := s.signIDToken(claims)
 	s.seedExchange(id)
 
-	user, err := a.Exchange(context.Background(), "code-xyz", "verifier-y")
+	user, err := a.Exchange(context.Background(), "code-xyz", "verifier-y", testNonce)
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -429,7 +491,7 @@ func TestGroupsClaim_Missing(t *testing.T) {
 	id := s.signIDToken(claims)
 	s.seedExchange(id)
 
-	_, err := a.Exchange(context.Background(), "code-xyz", "verifier-y")
+	_, err := a.Exchange(context.Background(), "code-xyz", "verifier-y", testNonce)
 	if !errors.Is(err, ErrGroupsClaimMissing) {
 		t.Errorf("want ErrGroupsClaimMissing, got %v", err)
 	}

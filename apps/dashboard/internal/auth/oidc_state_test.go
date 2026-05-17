@@ -20,6 +20,13 @@ func TestOIDCStateStore_CreateConsume(t *testing.T) {
 	if rec.CodeVerifier == "" {
 		t.Fatalf("code verifier empty")
 	}
+	if rec.Nonce == "" {
+		t.Fatalf("nonce empty (OpenID Core §3.1.2.1 requires the flow to mint one)")
+	}
+	if rec.Nonce == rec.State || rec.Nonce == rec.CodeVerifier {
+		t.Errorf("nonce must be independent of state/verifier; got nonce=%q state=%q verifier=%q",
+			rec.Nonce, rec.State, rec.CodeVerifier)
+	}
 	if rec.NextPath != "/dashboard" {
 		t.Errorf("next path = %q want /dashboard", rec.NextPath)
 	}
@@ -30,6 +37,9 @@ func TestOIDCStateStore_CreateConsume(t *testing.T) {
 	}
 	if got.CodeVerifier != rec.CodeVerifier {
 		t.Errorf("verifier round-trip mismatch")
+	}
+	if got.Nonce != rec.Nonce {
+		t.Errorf("nonce round-trip mismatch: got %q want %q", got.Nonce, rec.Nonce)
 	}
 
 	// Second consume MUST miss — one-shot semantics close the replay window.

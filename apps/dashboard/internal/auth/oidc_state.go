@@ -10,8 +10,7 @@ import (
 // OIDCStateTTL is the maximum age of a pending OIDC authorization flow.
 // The IdP redirect-back has to land within this window or the state is
 // considered stale and the callback rejected. 10 minutes is the OAuth2
-// recommendation and matches what most IdPs (Keycloak, Azure AD, Okta,
-// Auth0, Google Workspace) expect.
+// recommendation and matches what most OIDC providers expect.
 const OIDCStateTTL = 10 * time.Minute
 
 // OIDCFlowState captures one in-flight authorization request. The state
@@ -22,8 +21,17 @@ const OIDCStateTTL = 10 * time.Minute
 // Storing the PKCE verifier server-side is critical: PKCE only defends
 // against authorization-code interception if the verifier never touches
 // the user agent. Cookie-based PKCE storage defeats the whole mechanism.
+//
+// Nonce is the OpenID Connect Core §3.1.2.1 / §3.1.3.7 ID-Token nonce.
+// Like the PKCE verifier it lives server-side; the auth-code flow embeds
+// it as the `nonce` query parameter on the authorize URL, and the
+// callback handler asserts the returned ID token's `nonce` claim matches
+// the value we minted at flow start. This closes the ID-token replay
+// window an attacker would otherwise have if they intercepted a victim's
+// token in a different session.
 type OIDCFlowState struct {
 	State        string
+	Nonce        string
 	CodeVerifier string
 	NextPath     string
 	CreatedAt    time.Time
@@ -94,8 +102,16 @@ func (s *MemoryOIDCStateStore) Create(nextPath string) (*OIDCFlowState, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Nonce uses the same 32-byte / 256-bit generator as state + verifier.
+	// OpenID Core §15.5.2 only requires the nonce be unguessable and bound
+	// to the session; reusing the helper keeps entropy uniform.
+	nonce, err := generateOIDCToken()
+	if err != nil {
+		return nil, err
+	}
 	rec := &OIDCFlowState{
 		State:        state,
+		Nonce:        nonce,
 		CodeVerifier: verifier,
 		NextPath:     nextPath,
 		CreatedAt:    s.now(),

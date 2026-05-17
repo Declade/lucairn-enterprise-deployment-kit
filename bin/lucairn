@@ -924,7 +924,7 @@ check_dashboard() {
     case "$dash_port" in
       ''|*[!0-9]*) dash_port="8443" ;;
     esac
-    code="$(curl -sS -o /dev/null -w %{http_code} --max-time 3 "http://127.0.0.1:${dash_port}/healthz" 2>/dev/null || true)"
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:${dash_port}/healthz" 2>/dev/null || true)"
     case "$code" in
       200) echo "dashboard healthz: ok (200 on :${dash_port})" ;;
       ""|000) echo "dashboard healthz: not started (no listener on :${dash_port} — expected when doctor runs pre-up)" ;;
@@ -934,7 +934,70 @@ check_dashboard() {
     echo "dashboard healthz: skipped (curl unavailable)"
   fi
 
+  check_dashboard_oidc "$env_file" || return 1
+
   return 0
+}
+
+# Pre-flight OIDC SSO configuration when LUCAIRN_DASHBOARD_OIDC_ENABLED=true.
+# Catches issuer-unreachable, missing required vars, scheme-less URLs, and
+# CALLBACK_URL/PUBLIC_URL absence before the dashboard pod crashloops on
+# startup with a misleading config error. Skipped silently when OIDC is OFF.
+check_dashboard_oidc() {
+  local env_file="$1"
+  local oidc_enabled
+  oidc_enabled="$(env_value "$env_file" LUCAIRN_DASHBOARD_OIDC_ENABLED)"
+  case "${oidc_enabled,,}" in
+    true|1|yes|on) ;;
+    *) return 0 ;;
+  esac
+
+  local fail=0 var val u
+  for var in \
+      LUCAIRN_DASHBOARD_OIDC_ISSUER_URL \
+      LUCAIRN_DASHBOARD_OIDC_CLIENT_ID \
+      LUCAIRN_DASHBOARD_OIDC_CLIENT_SECRET \
+      LUCAIRN_DASHBOARD_OIDC_ADMIN_GROUP \
+      LUCAIRN_DASHBOARD_OIDC_VIEWER_GROUP; do
+    val="$(env_value "$env_file" "$var")"
+    if [ -z "$val" ]; then
+      echo "dashboard oidc: failed ($var must be set when OIDC_ENABLED=true)"
+      fail=1
+    fi
+  done
+
+  local cb pub
+  cb="$(env_value "$env_file" LUCAIRN_DASHBOARD_OIDC_CALLBACK_URL)"
+  pub="$(env_value "$env_file" LUCAIRN_DASHBOARD_OIDC_PUBLIC_URL)"
+  if [ -z "$cb" ] && [ -z "$pub" ]; then
+    echo "dashboard oidc: failed (LUCAIRN_DASHBOARD_OIDC_CALLBACK_URL or _PUBLIC_URL required)"
+    fail=1
+  fi
+
+  for var in LUCAIRN_DASHBOARD_OIDC_ISSUER_URL LUCAIRN_DASHBOARD_OIDC_CALLBACK_URL LUCAIRN_DASHBOARD_OIDC_PUBLIC_URL; do
+    u="$(env_value "$env_file" "$var")"
+    if [ -n "$u" ]; then
+      case "$u" in
+        https://*) ;;
+        http://*) echo "dashboard oidc: warn ($var uses http://, expected https://)" ;;
+        *) echo "dashboard oidc: failed ($var must include scheme, got: $u)"; fail=1 ;;
+      esac
+    fi
+  done
+
+  if [ "$fail" -eq 0 ] && [ "${DOCTOR_OFFLINE:-0}" != "1" ] && have curl; then
+    local issuer disc_code
+    issuer="$(env_value "$env_file" LUCAIRN_DASHBOARD_OIDC_ISSUER_URL)"
+    issuer="${issuer%/}"
+    disc_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
+        "${issuer}/.well-known/openid-configuration" 2>/dev/null || echo 000)"
+    case "$disc_code" in
+      200) echo "dashboard oidc: issuer reachable (200 on ${issuer}/.well-known/openid-configuration)" ;;
+      *) echo "dashboard oidc: failed (issuer discovery returned $disc_code at ${issuer}/.well-known/openid-configuration)"; fail=1 ;;
+    esac
+  fi
+
+  return "$fail"
 }
 
 sha256_file() {

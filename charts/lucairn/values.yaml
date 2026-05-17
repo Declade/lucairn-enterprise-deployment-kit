@@ -126,13 +126,23 @@ dashboard:
     email: "admin@lucairn.local"
     passwordSecretName: ""
 
+  # OIDC SSO opt-in. Field names mirror charts/lucairn/charts/dashboard/values.yaml
+  # so customer overrides at the parent path are passed through verbatim.
+  # Pre-Slice-2 stub fields (`issuer`, `clientId`, `clientSecret`) were renamed
+  # to the sub-chart's canonical names; setting the old names here is now a
+  # no-op. See INSTALL.md / OPS.md for the supported set.
   oidc:
     enabled: false
-    issuer: ""
-    clientId: ""
-    clientSecret: ""
-    adminGroup: "lucairn-admins"
-    viewerGroup: "lucairn-viewers"
+    issuerURL: ""
+    clientID: ""
+    clientSecretRef:
+      name: ""
+      key: client-secret
+    adminGroup: lucairn-admins
+    viewerGroup: lucairn-viewers
+    groupsClaim: groups
+    publicURL: ""
+    callbackURL: ""
 
   ingress:
     enabled: false

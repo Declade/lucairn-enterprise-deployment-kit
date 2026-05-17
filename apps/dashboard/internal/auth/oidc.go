@@ -18,8 +18,8 @@ import (
 // arbitrary authenticated users — customers must explicitly authorize an
 // identity by adding them to a group, or the dashboard rejects the
 // callback. This closes the "everyone in the IdP can browse certs"
-// surprise that bites Keycloak/Azure-AD installs where any directory user
-// implicitly inherits a default access claim.
+// surprise that bites OIDC installs where any directory user implicitly
+// inherits a default access claim.
 var ErrNeitherGroup = errors.New("user is not a member of the admin or viewer group")
 
 // ErrGroupsClaimMissing is returned when the configured groups claim is
@@ -122,7 +122,7 @@ func NewOIDCAuthenticator(ctx context.Context, cfg OIDCConfig) (*OIDCAuthenticat
 
 	scopes := []string{oidc.ScopeOpenID, "profile", "email"}
 	if cfg.GroupsClaim == "" || cfg.GroupsClaim == "groups" {
-		// "groups" is the default scope Keycloak/Auth0/Okta surface
+		// "groups" is the default scope most OIDC providers surface
 		// alongside their groups claim. Adding the scope is a no-op for
 		// IdPs that don't recognize it.
 		scopes = append(scopes, "groups")
@@ -149,15 +149,19 @@ func NewOIDCAuthenticator(ctx context.Context, cfg OIDCConfig) (*OIDCAuthenticat
 // challenge embedded. The handler hands the user agent off via 302.
 //
 // PKCE is mandatory in Slice 2. RFC 7636 + the OAuth 2.1 draft both
-// treat it as required for new deployments, and every IdP in the support
-// matrix (Keycloak / Azure AD / Okta / Auth0 / Google Workspace) accepts
-// the S256 method.
-func (a *OIDCAuthenticator) LoginURL(state, codeVerifier string) string {
+// treat it as required for new deployments, and every OIDC provider
+// accepts the S256 method.
+//
+// Nonce is also mandatory (OpenID Core §3.1.2.1). The minted value
+// travels server-side via OIDCStateStore; the callback handler asserts
+// the returned ID-token nonce claim matches.
+func (a *OIDCAuthenticator) LoginURL(state, nonce, codeVerifier string) string {
 	challenge := pkceS256Challenge(codeVerifier)
 	return a.oauth2.AuthCodeURL(state,
 		oauth2.AccessTypeOnline,
 		oauth2.SetAuthURLParam("code_challenge", challenge),
 		oauth2.SetAuthURLParam("code_challenge_method", "S256"),
+		oauth2.SetAuthURLParam("nonce", nonce),
 	)
 }
 
@@ -166,11 +170,16 @@ func (a *OIDCAuthenticator) LoginURL(state, codeVerifier string) string {
 // the role is mapped from the configured groups claim and a User is
 // returned ready for session minting.
 //
+// expectedNonce is the nonce minted by OIDCStateStore.Create at flow
+// start. The ID-token's `nonce` claim MUST match (OpenID Core §3.1.3.7
+// item 11) — if it does not, the exchange fails with ErrInvalidIDToken
+// regardless of signature / audience / issuer / expiry validity.
+//
 // Failure paths are deliberately not differentiated to the caller beyond
 // the typed errors — the handler renders a single generic flash so the
 // browser cannot infer "wrong audience" vs "expired token". Operators
 // get the detail via audit-logged error wrapping.
-func (a *OIDCAuthenticator) Exchange(ctx context.Context, code, codeVerifier string) (User, error) {
+func (a *OIDCAuthenticator) Exchange(ctx context.Context, code, codeVerifier, expectedNonce string) (User, error) {
 	oauth2Token, err := a.oauth2.Exchange(ctx, code,
 		oauth2.SetAuthURLParam("code_verifier", codeVerifier),
 	)
@@ -186,6 +195,16 @@ func (a *OIDCAuthenticator) Exchange(ctx context.Context, code, codeVerifier str
 	idToken, err := a.verifier.Verify(ctx, rawIDToken)
 	if err != nil {
 		return User{}, &ErrInvalidIDToken{Underlying: err}
+	}
+
+	// Nonce assertion. Done AFTER verifier.Verify so signature / audience
+	// / issuer / expiry have already gated; a token that survives those
+	// checks but carries the wrong nonce indicates ID-token replay or a
+	// misconfigured IdP that strips the nonce parameter on the authorize
+	// hop. Empty expectedNonce ("") is a programmer error — the
+	// state-store always mints one — so we treat it as a mismatch.
+	if expectedNonce == "" || idToken.Nonce != expectedNonce {
+		return User{}, &ErrInvalidIDToken{Underlying: errors.New("id_token nonce mismatch")}
 	}
 
 	var claims map[string]any
@@ -225,9 +244,8 @@ func (a *OIDCAuthenticator) Exchange(ctx context.Context, code, codeVerifier str
 //     explicitly authorize the identity at the IdP level.
 //   - Missing claim → distinct error so misconfiguration is debuggable.
 //   - String-shaped claim (single-group string instead of an array) is
-//     normalized to a 1-element list. Keycloak/Okta default to arrays;
-//     Azure AD has historically emitted a single string when only one
-//     group is mapped.
+//     normalized to a 1-element list. Most OIDC providers default to
+//     arrays; a few emit a single string when only one group is mapped.
 func (a *OIDCAuthenticator) MapGroupsToRole(claims map[string]any) (Role, error) {
 	claimName := a.cfg.GroupsClaim
 	if claimName == "" {

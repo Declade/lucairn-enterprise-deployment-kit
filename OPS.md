@@ -163,9 +163,8 @@ departure.
 
 The rotation flow is "rotate at the IdP first, then push to the kit":
 
-1. Generate a new client secret at the IdP (Keycloak / Azure AD / Okta /
-   Auth0 / Google Workspace — each surfaces "regenerate secret" in its
-   client/app admin page).
+1. Generate a new client secret at your IdP. Consult your IdP's documentation
+   for the "regenerate secret" procedure in its client/app admin page.
 2. Update the kit:
 
 #### Compose path
