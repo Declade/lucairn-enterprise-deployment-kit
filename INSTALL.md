@@ -507,3 +507,85 @@ key management arrive in subsequent kit releases.
 ### Rotating the bootstrap password
 
 See `OPS.md` § "Dashboard: bootstrap admin + rotate credentials".
+
+### Optional: enable OIDC SSO
+
+OIDC single sign-on is opt-in. When enabled, the dashboard renders a
+"Sign in with SSO" button on `/login` next to the local-admin form.
+Local-admin sign-in continues to work for bootstrap + IdP-outage
+scenarios — there is no way to disable it in this release.
+
+Group → role mapping (LOCKED):
+
+- User in the admin group → `RoleAdmin` (full access).
+- User in the viewer group → `RoleViewer` (read-only).
+- User in BOTH groups → `RoleAdmin` wins.
+- User in NEITHER group → rejected with HTTP 401. Customers must
+  explicitly authorize identities at the IdP. The dashboard does NOT
+  auto-grant viewer to arbitrary directory users.
+
+#### Compose path
+
+1. Populate the `LUCAIRN_DASHBOARD_OIDC_*` block in `customer.env`. At
+   minimum set `LUCAIRN_DASHBOARD_OIDC_ENABLED=true` and the issuer URL,
+   client ID, client secret, admin group, viewer group, and public URL.
+2. Recreate the dashboard container:
+
+   ```bash
+   docker compose \
+     -f docker-compose.customer.yml \
+     --env-file customer.env \
+     --profile dashboard \
+     up -d --force-recreate lucairn-dashboard
+   ```
+
+3. Verify: open `https://<your-front-proxy>/login`. The "Sign in with
+   SSO" button should appear below the local form. Click it; you are
+   redirected to the IdP, complete the sign-in, and land on
+   `/dashboard`.
+
+The dashboard runs OIDC discovery against the issuer URL at startup. If
+the IdP is unreachable, the container fails-fast — the readiness probe
+flips to unready and the operator sees the discovery error in the
+container logs. This is the locked failure mode (no silently-broken
+SSO).
+
+#### Kubernetes path
+
+1. Pre-create the OIDC client_secret Secret in the lucairn namespace:
+
+   ```bash
+   kubectl -n lucairn create secret generic lucairn-dashboard-oidc \
+     --from-literal=client-secret='<your-idp-client-secret>'
+   ```
+
+2. Add the OIDC block to your `customer-values.yaml`:
+
+   ```yaml
+   dashboard:
+     enabled: true
+     oidc:
+       enabled: true
+       issuerURL: "https://idp.example.com/realms/lucairn"
+       clientID: "lucairn-dashboard"
+       clientSecretRef:
+         name: lucairn-dashboard-oidc
+         key: client-secret
+       adminGroup: lucairn-admins
+       viewerGroup: lucairn-viewers
+       groupsClaim: groups        # optional; default "groups"
+       publicURL: "https://dashboard.customer.example"
+       # callbackURL: ""           # pin explicitly when the registered URL differs
+   ```
+
+3. Apply: `helm upgrade --install lucairn charts/lucairn -f
+   customer-values.yaml --namespace lucairn --create-namespace`.
+
+4. Confirm the rollout: `kubectl -n lucairn rollout status deploy/lucairn-dashboard`
+   completes within 60s once OIDC discovery succeeds. The OIDC button is
+   live as soon as the pod is Ready.
+
+#### Rotating the OIDC client secret
+
+See `OPS.md` § "Dashboard: rotating the OIDC client secret".
+

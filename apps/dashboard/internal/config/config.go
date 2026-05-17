@@ -3,10 +3,14 @@
 // Slice 1 surface: listen address + bootstrap admin email/password + session
 // signing secret.
 //
+// Slice 2 adds optional OIDC SSO. Default OFF. When OIDC is enabled, the
+// loader validates the full quartet of required fields and fails-closed
+// if any are missing — there is no half-configured OIDC mode.
+//
 // LUCAIRN_DASHBOARD_SESSION_SECRET is intentionally OPTIONAL in Slice 1.
 // The in-memory session store uses opaque random IDs and does NOT consume
-// the secret. The value is reserved for Slice 2's flip to signed-cookie
-// sessions; once Slice 2 lands, the default in compose/values.yaml and the
+// the secret. The value is reserved for a future flip to signed-cookie
+// sessions; once that lands, the default in compose/values.yaml and the
 // enforcement in this loader will both flip together. Keeping the field
 // surface-shaped today lets operators stage rotation tooling early without
 // dragging an enforcement gate into a release that does not need it.
@@ -14,6 +18,8 @@ package config
 
 import (
 	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -24,8 +30,20 @@ const (
 	envBootstrapPassword = "LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD"
 	envSessionSecret     = "LUCAIRN_DASHBOARD_SESSION_SECRET"
 
-	defaultListenAddr     = "0.0.0.0:8443"
-	defaultBootstrapEmail = "admin@lucairn.local"
+	envOIDCEnabled      = "LUCAIRN_DASHBOARD_OIDC_ENABLED"
+	envOIDCIssuerURL    = "LUCAIRN_DASHBOARD_OIDC_ISSUER_URL"
+	envOIDCClientID     = "LUCAIRN_DASHBOARD_OIDC_CLIENT_ID"
+	envOIDCClientSecret = "LUCAIRN_DASHBOARD_OIDC_CLIENT_SECRET"
+	envOIDCAdminGroup   = "LUCAIRN_DASHBOARD_OIDC_ADMIN_GROUP"
+	envOIDCViewerGroup  = "LUCAIRN_DASHBOARD_OIDC_VIEWER_GROUP"
+	envOIDCGroupsClaim  = "LUCAIRN_DASHBOARD_OIDC_GROUPS_CLAIM"
+	envOIDCCallbackURL  = "LUCAIRN_DASHBOARD_OIDC_CALLBACK_URL"
+	envOIDCPublicURL    = "LUCAIRN_DASHBOARD_OIDC_PUBLIC_URL"
+
+	defaultListenAddr      = "0.0.0.0:8443"
+	defaultBootstrapEmail  = "admin@lucairn.local"
+	defaultOIDCGroupsClaim = "groups"
+	defaultOIDCCallbackPath = "/auth/oidc/callback"
 )
 
 // Config holds runtime configuration for the dashboard.
@@ -34,8 +52,21 @@ type Config struct {
 	BootstrapEmail    string
 	BootstrapPassword string
 	// SessionSecret is read into the Config but NOT enforced in Slice 1.
-	// Slice 2 will flip the enforcement when signed-cookie sessions land.
+	// A future slice will flip the enforcement when signed-cookie sessions
+	// land.
 	SessionSecret string
+
+	// OIDCEnabled is the master switch for SSO. When false the rest of
+	// the OIDC fields are unread and the login surface renders only the
+	// local form.
+	OIDCEnabled      bool
+	OIDCIssuerURL    string
+	OIDCClientID     string
+	OIDCClientSecret string
+	OIDCAdminGroup   string
+	OIDCViewerGroup  string
+	OIDCGroupsClaim  string
+	OIDCCallbackURL  string
 }
 
 // Load reads configuration from the environment and applies safe defaults.
@@ -50,7 +81,80 @@ func Load() (*Config, error) {
 	if cfg.BootstrapPassword == "" {
 		return nil, errors.New("LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD must be set")
 	}
+
+	if err := applyOIDCConfig(cfg); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// applyOIDCConfig reads + validates the OIDC env vars in one pass. Kept
+// separate so the Load() top-level reads cleanly and so unit tests can
+// fuzz the OIDC half without rebuilding the whole Config.
+//
+// Required when OIDCEnabled=true:
+//   - LUCAIRN_DASHBOARD_OIDC_ISSUER_URL  (must parse as URL)
+//   - LUCAIRN_DASHBOARD_OIDC_CLIENT_ID
+//   - LUCAIRN_DASHBOARD_OIDC_CLIENT_SECRET
+//   - LUCAIRN_DASHBOARD_OIDC_ADMIN_GROUP
+//   - LUCAIRN_DASHBOARD_OIDC_VIEWER_GROUP
+//   - One of LUCAIRN_DASHBOARD_OIDC_CALLBACK_URL or
+//     LUCAIRN_DASHBOARD_OIDC_PUBLIC_URL (callback URL derived from public
+//     URL by appending /auth/oidc/callback).
+//
+// Optional:
+//   - LUCAIRN_DASHBOARD_OIDC_GROUPS_CLAIM (defaults to "groups")
+func applyOIDCConfig(cfg *Config) error {
+	enabledRaw := strings.TrimSpace(strings.ToLower(os.Getenv(envOIDCEnabled)))
+	cfg.OIDCEnabled = parseBoolOIDC(enabledRaw)
+	if !cfg.OIDCEnabled {
+		return nil
+	}
+
+	cfg.OIDCIssuerURL = strings.TrimRight(strings.TrimSpace(os.Getenv(envOIDCIssuerURL)), "/")
+	cfg.OIDCClientID = strings.TrimSpace(os.Getenv(envOIDCClientID))
+	cfg.OIDCClientSecret = strings.TrimSpace(os.Getenv(envOIDCClientSecret))
+	cfg.OIDCAdminGroup = strings.TrimSpace(os.Getenv(envOIDCAdminGroup))
+	cfg.OIDCViewerGroup = strings.TrimSpace(os.Getenv(envOIDCViewerGroup))
+	cfg.OIDCGroupsClaim = firstNonEmpty(strings.TrimSpace(os.Getenv(envOIDCGroupsClaim)), defaultOIDCGroupsClaim)
+
+	if cfg.OIDCIssuerURL == "" {
+		return fmt.Errorf("%s must be set when %s=true", envOIDCIssuerURL, envOIDCEnabled)
+	}
+	if _, err := url.Parse(cfg.OIDCIssuerURL); err != nil {
+		return fmt.Errorf("%s: parse %q: %w", envOIDCIssuerURL, cfg.OIDCIssuerURL, err)
+	}
+	if cfg.OIDCClientID == "" {
+		return fmt.Errorf("%s must be set when %s=true", envOIDCClientID, envOIDCEnabled)
+	}
+	if cfg.OIDCClientSecret == "" {
+		return fmt.Errorf("%s must be set when %s=true", envOIDCClientSecret, envOIDCEnabled)
+	}
+	if cfg.OIDCAdminGroup == "" {
+		return fmt.Errorf("%s must be set when %s=true", envOIDCAdminGroup, envOIDCEnabled)
+	}
+	if cfg.OIDCViewerGroup == "" {
+		return fmt.Errorf("%s must be set when %s=true", envOIDCViewerGroup, envOIDCEnabled)
+	}
+
+	callbackURL := strings.TrimSpace(os.Getenv(envOIDCCallbackURL))
+	if callbackURL == "" {
+		publicURL := strings.TrimSpace(os.Getenv(envOIDCPublicURL))
+		if publicURL == "" {
+			return fmt.Errorf(
+				"%s or %s must be set when %s=true (callback URL is derived from public URL when absent)",
+				envOIDCCallbackURL, envOIDCPublicURL, envOIDCEnabled,
+			)
+		}
+		callbackURL = strings.TrimRight(publicURL, "/") + defaultOIDCCallbackPath
+	}
+	if _, err := url.Parse(callbackURL); err != nil {
+		return fmt.Errorf("oidc callback url %q parse: %w", callbackURL, err)
+	}
+	cfg.OIDCCallbackURL = callbackURL
+
+	return nil
 }
 
 func firstNonEmpty(values ...string) string {
@@ -60,4 +164,17 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// parseBoolOIDC accepts the canonical true tokens. Lower-cased before
+// the lookup. Anything unrecognized → false (default-OFF). Operators
+// who fat-finger "yes" silently end up with OIDC disabled — by design
+// (default-OFF is the safe failure mode).
+func parseBoolOIDC(v string) bool {
+	switch v {
+	case "true", "1", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }

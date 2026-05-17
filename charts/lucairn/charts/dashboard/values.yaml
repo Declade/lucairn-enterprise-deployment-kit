@@ -41,14 +41,44 @@ bootstrapAdmin:
 # do not silently degrade when later slices flip to signed sessions.
 sessionSecret: ""
 
-# OIDC stub (wired in Slice 2). Default OFF; operators opt in.
+# OIDC SSO is opt-in. When enabled, the dashboard renders a "Sign in
+# with SSO" button on the /login surface alongside the local-admin form.
+# Local login continues to work regardless of this setting — there is no
+# way to disable the local fallback in v1.
+#
+# Required when oidc.enabled=true:
+#   - oidc.issuerURL              issuer base URL (no trailing slash)
+#   - oidc.clientID               client_id registered at the IdP
+#   - oidc.clientSecretRef.name   K8s Secret holding the client_secret
+#   - oidc.clientSecretRef.key    key within that Secret (default "client-secret")
+#   - oidc.adminGroup             group name that maps to RoleAdmin
+#   - oidc.viewerGroup            group name that maps to RoleViewer
+#   - oidc.publicURL              externally-visible dashboard URL — used to
+#                                 derive the callback URL when oidc.callbackURL
+#                                 is empty. Pin oidc.callbackURL explicitly
+#                                 when the IdP-registered URL differs from
+#                                 publicURL + /auth/oidc/callback.
+#
+# Group mapping rules (LOCKED):
+#   - Admin group wins. User in BOTH groups → RoleAdmin.
+#   - User in neither group → 403, NOT auto-grant viewer.
+#   - Missing groups claim → 403.
+#
+# Operator pre-creates the client-secret Secret before `helm install`:
+#   kubectl -n lucairn create secret generic lucairn-dashboard-oidc \
+#     --from-literal=client-secret='<your-idp-client-secret>'
 oidc:
   enabled: false
-  issuer: ""
-  clientId: ""
-  clientSecret: ""
-  adminGroup: "lucairn-admins"
-  viewerGroup: "lucairn-viewers"
+  issuerURL: ""
+  clientID: ""
+  clientSecretRef:
+    name: ""
+    key: client-secret
+  adminGroup: lucairn-admins
+  viewerGroup: lucairn-viewers
+  groupsClaim: groups
+  publicURL: ""
+  callbackURL: ""
 
 ingress:
   enabled: false

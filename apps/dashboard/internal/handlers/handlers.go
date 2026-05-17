@@ -16,11 +16,20 @@ import (
 )
 
 // Deps groups the runtime collaborators handler funcs need.
+//
+// OIDCEnabled is a single bool the login surface reads to decide whether
+// to render the "Sign in with SSO" block + divider. The flag is set ONCE
+// at server start-up (when main.go has resolved the OIDC config + built
+// an OIDCAuthenticator); flipping it without a restart is intentionally
+// not supported in v1. Wiring it via Deps keeps the handler shape simple
+// — every login render passes through LoginGet / renderLoginError, both
+// of which lift the value into PageData uniformly.
 type Deps struct {
 	Renderer      *views.Renderer
 	Authenticator auth.Authenticator
 	Sessions      auth.SessionStore
 	SessionTTL    time.Duration
+	OIDCEnabled   bool
 }
 
 // LoginGet renders the login form.
@@ -36,9 +45,10 @@ func (d *Deps) LoginGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := views.PageData{
-		Title:     "Sign in",
-		CSRFToken: tok,
-		NextPath:  sanitizeNext(r.URL.Query().Get("next")),
+		Title:       "Sign in",
+		CSRFToken:   tok,
+		NextPath:    sanitizeNext(r.URL.Query().Get("next")),
+		OIDCEnabled: d.OIDCEnabled,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := d.Renderer.Render(w, "login.html.tmpl", data); err != nil {
@@ -140,10 +150,11 @@ func (d *Deps) renderLoginError(w http.ResponseWriter, r *http.Request, msg stri
 	}
 	w.WriteHeader(http.StatusUnauthorized)
 	data := views.PageData{
-		Title:     "Sign in",
-		Flash:     msg,
-		CSRFToken: tok,
-		NextPath:  sanitizeNext(r.PostFormValue("next")),
+		Title:       "Sign in",
+		Flash:       msg,
+		CSRFToken:   tok,
+		NextPath:    sanitizeNext(r.PostFormValue("next")),
+		OIDCEnabled: d.OIDCEnabled,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := d.Renderer.Render(w, "login.html.tmpl", data); err != nil {

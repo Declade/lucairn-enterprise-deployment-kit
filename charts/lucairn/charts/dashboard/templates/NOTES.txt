@@ -1,4 +1,4 @@
-Lucairn Enterprise Dashboard — Slice 1 (auth + shell foundation)
+Lucairn Enterprise Dashboard
 
 1) The dashboard is reachable via the Service:
    {{ include "dashboard.fullname" . }}.{{ .Values.namespace }}.svc.cluster.local:{{ .Values.service.port }}
@@ -8,9 +8,9 @@ Lucairn Enterprise Dashboard — Slice 1 (auth + shell foundation)
 
    Then open: https://localhost:{{ .Values.service.port }}/login
 
-   The dashboard expects a TLS-terminating reverse proxy in front. Slice 1
-   does NOT terminate TLS in the pod itself; your Ingress or front-proxy
-   must do so before traffic reaches the Service.
+   The dashboard expects a TLS-terminating reverse proxy in front. The pod
+   does NOT terminate TLS itself; your Ingress or front-proxy must do so
+   before traffic reaches the Service.
 
 2) Retrieve the bootstrap admin credentials:
    - Email (operator-overridable via Helm value bootstrapAdmin.email):
@@ -27,6 +27,32 @@ Lucairn Enterprise Dashboard — Slice 1 (auth + shell foundation)
      --dry-run=client -o yaml | kubectl apply -f -
    kubectl -n {{ .Values.namespace }} rollout restart deploy/{{ include "dashboard.fullname" . }}
 
-4) Slices 2-7 will add: OIDC SSO, cert browser / inspector / validator,
+{{- if .Values.oidc.enabled }}
+
+4) OIDC SSO is ENABLED.
+   - Issuer URL: {{ .Values.oidc.issuerURL }}
+   - Client ID: {{ .Values.oidc.clientID }}
+   - Admin group: {{ .Values.oidc.adminGroup }}
+   - Viewer group: {{ .Values.oidc.viewerGroup }}
+   - Client-secret Secret: {{ .Values.oidc.clientSecretRef.name }} (key: {{ .Values.oidc.clientSecretRef.key | default "client-secret" }})
+
+   The "Sign in with SSO" button appears on the /login page alongside the
+   local form. Local-admin sign-in continues to work for bootstrap and
+   IdP-outage scenarios.
+
+   Rotate the OIDC client_secret (OPS.md procedure):
+   kubectl -n {{ .Values.namespace }} create secret generic {{ .Values.oidc.clientSecretRef.name }} \
+     --from-literal={{ .Values.oidc.clientSecretRef.key | default "client-secret" }}='<new-secret>' \
+     --dry-run=client -o yaml | kubectl apply -f -
+   kubectl -n {{ .Values.namespace }} rollout restart deploy/{{ include "dashboard.fullname" . }}
+{{- else }}
+
+4) OIDC SSO is DISABLED. To enable: set dashboard.oidc.enabled=true plus the
+   required fields (issuerURL, clientID, clientSecretRef.name, adminGroup,
+   viewerGroup, publicURL OR callbackURL) and `helm upgrade`. The login
+   surface will then render a "Sign in with SSO" button.
+{{- end }}
+
+5) Future kit releases will add: cert browser / inspector / validator,
    server health + Grafana embedding, API key management, audit log
    browser, and compliance PDF export.
