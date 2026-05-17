@@ -947,8 +947,8 @@ check_dashboard_oidc() {
   local env_file="$1"
   local oidc_enabled
   oidc_enabled="$(env_value "$env_file" LUCAIRN_DASHBOARD_OIDC_ENABLED)"
-  case "${oidc_enabled,,}" in
-    true|1|yes|on) ;;
+  case "$oidc_enabled" in
+    true|TRUE|True|1|yes|YES|Yes|on|ON|On) ;;
     *) return 0 ;;
   esac
 
