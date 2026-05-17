@@ -41,7 +41,7 @@
   </td>
   <td class="lc-sigrow-cell">
     {{ if or .PubKeyFingerprint .SignatureHex }}
-      <button type="button" class="lc-link-button" x-on:click="open = !open" x-text="open ? 'Hide bytes' : 'Show bytes'" aria-expanded="false"></button>
+      <button type="button" class="lc-link-button" x-on:click="open = !open" x-text="open ? 'Hide bytes' : 'Show bytes'" :aria-expanded="open.toString()" aria-expanded="false"></button>
     {{ end }}
   </td>
 </tr>

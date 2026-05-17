@@ -13,6 +13,26 @@ import (
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/views"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/witness"
+	"golang.org/x/time/rate"
+)
+
+// Process-wide bulk-job concurrency + rate budget.
+//
+// bug-hunter F-4: the previous per-job pool + per-job tick meant N
+// concurrent bulk jobs could slam the witness with N × bulkWorkerPool
+// in-flight calls and N × bulkRateLimit RPC/s. Both knobs now live at
+// package scope so the dashboard's witness blast radius is bounded
+// across the whole process, regardless of how many jobs run in parallel.
+var (
+	// globalWitnessSem caps in-flight VerifyCertificate gRPC calls
+	// across every bulk job. Sized to bulkWorkerPool (5) — the witness's
+	// stated steady-state inbound budget for one consumer.
+	globalWitnessSem = make(chan struct{}, bulkWorkerPool)
+
+	// globalWitnessLimiter is a token-bucket rate-limiter shared by every
+	// bulk job. Limit=10 RPC/s, burst=10 matches the bulkRateLimit value.
+	// rate.NewLimiter is concurrency-safe; package-scope is fine.
+	globalWitnessLimiter = rate.NewLimiter(rate.Limit(bulkRateLimit), bulkRateLimit)
 )
 
 const (
@@ -138,24 +158,48 @@ func (b *BulkReverifyDeps) BulkReverifyHandler(w http.ResponseWriter, r *http.Re
 	http.Redirect(w, r, "/certs/bulk-reverify/"+job.id+"/progress", http.StatusSeeOther)
 }
 
-// runJob executes the bulk verify using a worker pool + a token-bucket-
-// shaped rate limiter. Each Verify call also flows through the
-// Verifier.Invalidate path so the cached snapshot is bypassed.
+// runJob executes the bulk verify using the process-wide worker pool +
+// rate limiter (globalWitnessSem + globalWitnessLimiter). Each Verify
+// call also flows through the Verifier.Invalidate path so the cached
+// snapshot is bypassed. Per-cert audit log lines emit `cert.verify_requested`
+// so a post-hoc forensic grep matches both single-cert and bulk paths
+// against the same event name (bug-hunter F-5).
 func (b *BulkReverifyDeps) runJob(job *bulkJob, ids []string) {
-	workers := make(chan struct{}, bulkWorkerPool)
-	tick := time.Second / bulkRateLimit
 	var wg sync.WaitGroup
 
 	for _, id := range ids {
-		workers <- struct{}{}
+		// Acquire a global worker slot BEFORE spawning the goroutine so
+		// the launch loop blocks once 5 jobs are concurrently in-flight
+		// across the entire process — not just within this one job.
+		globalWitnessSem <- struct{}{}
 		wg.Add(1)
 		go func(certID string) {
 			defer wg.Done()
-			defer func() { <-workers }()
+			defer func() { <-globalWitnessSem }()
 
-			b.Verifier.Invalidate(certID)
 			ctx, cancel := context.WithTimeout(context.Background(), bulkPerCertTimeout)
 			defer cancel()
+
+			// Block under the process-wide token-bucket limiter so the
+			// witness sees ≤ bulkRateLimit RPC/s regardless of how many
+			// bulk jobs run in parallel. Wait returns an error iff ctx
+			// fires first; in that case the job records a failure for
+			// this cert and moves on.
+			if err := globalWitnessLimiter.Wait(ctx); err != nil {
+				job.mu.Lock()
+				job.done++
+				job.failed++
+				job.results[certID] = "error: rate-limit wait: " + truncErr(err.Error())
+				job.mu.Unlock()
+				return
+			}
+
+			// Per-cert audit log: matches the single-cert event name at
+			// certs.go ReverifyHandler so post-hoc forensic grep parity
+			// holds (bug-hunter F-5).
+			log.Printf("cert.verify_requested user_id=%s cert_id=%s bulk_job_id=%s", job.user, certID, job.id)
+
+			b.Verifier.Invalidate(certID)
 			res, err := b.Verifier.Verify(ctx, certID)
 			job.mu.Lock()
 			job.done++
@@ -181,7 +225,6 @@ func (b *BulkReverifyDeps) runJob(job *bulkJob, ids []string) {
 			}
 			job.mu.Unlock()
 		}(id)
-		time.Sleep(tick)
 	}
 	wg.Wait()
 	job.mu.Lock()

@@ -1,140 +1,336 @@
-// Minimal Lucairn Witness gRPC contract used by the dashboard's cert
-// inspector + validator. Vendored intentionally as a SUBSET of the
-// upstream `services/veil-witness/api/witness.proto` schema; only the
-// fields the dashboard's cert browser + inspector + audit-grade validator
-// surfaces are kept here.
+// Vendored from Declade/dual-sandbox-architecture:
+//   proto/veil/v1/veil.proto @ commit f24bf0d2565ff5d414c0ee13c3188675d8f67d3c
+// + proto/common/v1/types.proto (only EntityCount inlined, for SanitizerClaim).
 //
-// Upstream source the wire format MUST stay byte-compatible with:
-//   Declade/dual-sandbox-architecture/services/veil-witness/api/witness.proto
-//   (CertServer.VerifyCertificate at internal/server/cert_server.go:201 ―
-//   per PRD prd-2026-05-17-enterprise-dashboard.md § D7).
+// This file is the CANONICAL upstream `dsa.veil.v1` schema, vendored
+// verbatim so the dashboard speaks the real witness gRPC contract:
+//   service VeilCertificateService { GetCertificate, VerifyCertificate, ... }
+// NOT the previous (invented) `lucairn.witness.v1.CertVerifier` shape,
+// which empirically returned codes.Unimplemented against a real witness.
 //
-// Cross-language byte equality with the witness service is REQUIRED — the
-// dashboard reconstructs the cert envelope from the same per-claim signed
-// canonical bytes. Field numbers, enum values, and oneof tags must remain
-// IDENTICAL to upstream. If a field is unknown to this proto, the gRPC
-// payload still decodes (unknown fields are preserved by protobuf
-// semantics) — but expanding our view of any new field MUST be a
-// coordinated edit on both repos.
+// KEEP IN SYNC: when the upstream proto field numbers or message names
+// change, regenerate via:
+//   make -C apps/dashboard proto-sync
+// (or directly:)
+//   protoc --proto_path=internal/witness \
+//     --go_out=internal/witness/pb --go_opt=paths=source_relative \
+//     --go-grpc_out=internal/witness/pb --go-grpc_opt=paths=source_relative \
+//     internal/witness/witness.proto
 //
-// Out of scope here: AssembleCertificate, ListCertificates, mintEvidence
-// — those RPCs run server-side only. The dashboard never calls them.
+// The contract-drift-detector subagent runs against every Slice-touching
+// PR; expect it to flag any drift between this vendored copy and upstream.
+// The Go-level regression test TestVerify_RealUpstreamServiceShape
+// (verify_client_test.go) locks the fully-qualified method names dialed
+// so a future copy-paste typo in this file is caught at unit-test time.
 //
-// Update protocol: bump major + regenerate pb stubs via
-//   cd apps/dashboard
-//   protoc --go_out=. --go_opt=paths=source_relative \
-//          --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-//          internal/witness/witness.proto
+// Cross-language byte equality with the witness service is REQUIRED —
+// the witness reconstructs the per-claim canonical bytes from THIS schema
+// when it Verifies; we don't canonicalize anything on the dashboard side
+// (we just round-trip the envelope). Field numbers, enum values, oneof
+// tags MUST remain IDENTICAL to upstream.
+//
+// Out of scope here: VeilWitnessService.SubmitClaim — that RPC is the
+// per-service emit path; the dashboard never calls it. It is intentionally
+// omitted from this vendored copy. If the upstream witness ever adds a
+// dashboard-facing RPC under VeilWitnessService, regenerate this file.
 
 syntax = "proto3";
 
-package lucairn.witness.v1;
+package dsa.veil.v1;
 
 option go_package = "github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/witness/pb;witnesspb";
 
-// CertVerifier is the SUBSET of the upstream witness gRPC surface the
-// dashboard consumes. Backend service exposed on tcp/50051 by default.
-service CertVerifier {
-  // VerifyCertificate validates a single cert by its UUID. The witness
-  // performs:
-  //   - reconstruction of the canonical bytes per claim
-  //   - Ed25519 signature verification per claim
-  //   - chain integrity check (claim hashes link)
-  //   - TSA timestamp envelope check (RFC 3161)
-  //   - Sigstore Rekor inclusion-proof check
-  // Returns a structured per-claim verdict. Network / DB / decode errors
-  // come back as gRPC status; the dashboard surfaces those as a
-  // degraded-state badge ("Witness unreachable") rather than crashing.
-  rpc VerifyCertificate(VerifyCertificateRequest) returns (VerifyCertificateResponse);
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+// --- Enums ---
+
+enum ClaimType {
+  CLAIM_TYPE_UNSPECIFIED = 0;
+  CLAIM_TYPE_TOKEN_GENERATED = 1;
+  CLAIM_TYPE_PII_SANITIZED = 2;
+  CLAIM_TYPE_INFERENCE_COMPLETED = 3;
+  CLAIM_TYPE_EVENTS_RECORDED = 4;
 }
 
-message VerifyCertificateRequest {
-  // cert_id is the UUID under which the cert was stored in the audit /
-  // bridge Postgres. Required.
-  string cert_id = 1;
+enum IsolationProbeStatus {
+  ISOLATION_PROBE_UNKNOWN = 0;
+  ISOLATION_PROBE_VERIFIED = 1;
+  ISOLATION_PROBE_BREACHED = 2;
+  ISOLATION_PROBE_LOCKED = 3;
+  // BYOK_EXEMPT means the gateway routed inference to a customer-supplied
+  // upstream provider (BYOK / `X-Upstream-Key`). Sandbox B did not perform
+  // isolated inference for this run; the isolation invariant is therefore
+  // intentionally inapplicable rather than violated. The verifier treats
+  // this as VERIFIED-equivalent for the overall verdict, with a separate
+  // VerificationResult.byok_exempt = true flag so consumers can render
+  // "VERIFIED (BYOK exempt)" cleanly.
+  ISOLATION_PROBE_BYOK_EXEMPT = 4;
 }
 
-// VerifyCertificateResponse is the dashboard-facing subset of the witness
-// proto. Unknown fields beyond these are preserved on the wire but not
-// surfaced in the UI until a coordinated proto bump lands.
-message VerifyCertificateResponse {
-  // overall_verdict is the verifier's headline conclusion. Values:
-  //   "verified" / "partial" / "failed" / "byok_exempt"
-  // BYOK_EXEMPT runs (per dual-sandbox-architecture PR #152) MUST be
-  // surfaced as "verified" with byok_exempt = true so the audit reader
-  // sees the right semantic verdict.
-  string overall_verdict = 1;
-
-  // completeness reports which claims are present. "full" = all 6 claim
-  // types present; "partial" = bridge + sanitizer present, sandbox-* may
-  // be absent on BYOK_EXEMPT runs.
-  string completeness = 2;
-
-  // signatures_valid is true iff every per-claim Ed25519 signature
-  // verified against the witness-anchored public key set.
-  bool signatures_valid = 3;
-
-  // byok_exempt is set when this cert was produced by a BYOK run (the
-  // customer's own upstream LLM key was forwarded by the gateway; the
-  // managed sandbox-b never ran for the inference claim). isolation_verified
-  // remains true in this case — see CLAUDE.md § BYOK_EXEMPT.
-  bool byok_exempt = 4;
-
-  // isolation_verified mirrors the dual-sandbox-architecture invariant:
-  // raw identity data was never exposed to the AI service on this run.
-  bool isolation_verified = 5;
-
-  // tsa_timestamp is the RFC 3161 timestamp envelope URL or value the
-  // dashboard deep-links to (FreeTSA per CLAUDE.md sub-processors).
-  string tsa_timestamp = 6;
-
-  // rekor_uuid is the Sigstore Rekor entry UUID the dashboard deep-links
-  // to. May be empty during the transition window after audit-trail wave.
-  string rekor_uuid = 7;
-
-  // per_claim is one entry per claim type. UI renders these in the locked
-  // order: gateway, bridge, sanitizer, sandbox-a, sandbox-b, witness.
-  repeated PerClaimVerdict per_claim = 8;
-
-  // cert_url is the canonical browser-visible URL for this cert (used by
-  // the UI as a copy-and-share anchor). Optional; the UI synthesizes one
-  // from the cert id when this is empty.
-  string cert_url = 9;
-
-  // error is set when the witness can answer the verify request but
-  // recovered a fail-to-verify path (e.g. signature mismatch on a claim).
-  // The dashboard renders this verbatim in the inspector's failure panel.
-  string error = 10;
+enum QIVerdict {
+  QI_VERDICT_UNKNOWN = 0;
+  QI_VERDICT_PASS = 1;
+  QI_VERDICT_GENERALIZED = 2;
+  QI_VERDICT_BLOCKED = 3;
 }
 
-// PerClaimVerdict captures one slot in the 6-row claim chain.
-message PerClaimVerdict {
-  // claim_type is one of: "gateway", "bridge", "sanitizer",
-  // "sandbox_a", "sandbox_b", "witness".
-  string claim_type = 1;
+enum Completeness {
+  COMPLETENESS_UNSPECIFIED = 0;
+  COMPLETENESS_FULL = 1;
+  COMPLETENESS_PARTIAL = 2;
+}
 
-  // verdict is "ok" or "fail". The UI renders an "ok"-pill or "fail"-pill
-  // accordingly; semantic-status colors only.
-  string verdict = 2;
+enum Verdict {
+  VERDICT_UNSPECIFIED = 0;
+  VERDICT_VERIFIED = 1;
+  VERDICT_PARTIAL = 2;
+  VERDICT_FAILED = 3;
+}
 
-  // pub_key_fingerprint is the SHA-256 of the claim's Ed25519 public
-  // key, hex-encoded. The UI surfaces the first 16 hex chars in the pill;
-  // the click-to-reveal flow shows the full fingerprint.
-  string pub_key_fingerprint = 3;
+// CC-017 P3: async transparency-log anchor state. A certificate is always
+// written and signed immediately; the attestor retry loop then transitions
+// the record from PENDING_ANCHOR to either ANCHORED or ANCHOR_FAILED.
+// Consumers must render ANCHOR_FAILED alongside anchor_human_note so that
+// operators see the signed record is valid but the external anchor did not
+// confirm.
+enum AnchorStatus {
+  ANCHOR_STATUS_UNSPECIFIED = 0;
+  ANCHOR_STATUS_PENDING = 1;
+  ANCHOR_STATUS_ANCHORED = 2;
+  ANCHOR_STATUS_FAILED = 3;
+}
 
-  // signature_hex is the full per-claim signature, hex-encoded. UI
-  // surfaces the first 16 hex chars in the pill + ellipsis; click-to-reveal
-  // shows the full bytes. NEVER store / log this string outside of the
-  // verify-response cache.
-  string signature_hex = 4;
+// --- Common (inlined from proto/common/v1/types.proto:54 EntityCount) ---
 
-  // canonical_payload_hash is the SHA-256 of the canonical signed bytes
-  // for this claim, hex-encoded. Used by audit-grade investigators who
-  // want to reconstruct the canonical bytes offline.
-  string canonical_payload_hash = 5;
+// EntityCount represents a per-type PII entity count.
+// Shared between audit and veil protos. Inlined here under the local
+// `dsa.veil.v1` package so this proto file is self-contained — the
+// upstream definition lives in `dsa.common.v1`, but mirroring just this
+// one message (vs vendoring the entire common types proto) keeps the
+// dashboard's vendored surface minimal.
+message EntityCount {
+  string entity_type = 1;
+  int32 count = 2;
+}
 
-  // error is set when this claim failed verification. The UI renders this
-  // verbatim under the pill so the operator can immediately see why a
-  // single claim flipped to red.
-  string error = 6;
+// --- Claim Messages ---
+
+message VeilClaim {
+  string claim_id = 1;
+  string request_id = 2;
+  string service_id = 3;
+  ClaimType claim_type = 4;
+
+  repeated string data_seen = 5;
+  repeated string data_not_seen = 6;
+
+  bytes canonical_payload = 7;
+
+  oneof payload {
+    BridgeClaim bridge = 10;
+    SanitizerClaim sanitizer = 11;
+    InferenceClaim inference = 12;
+    AuditClaim audit = 13;
+  }
+
+  google.protobuf.Timestamp timestamp = 14;
+  bytes signature = 15;
+}
+
+message BridgeClaim {
+  bytes token_hash = 1;
+  uint64 epoch = 2;
+  bool encryption_enabled = 3;
+}
+
+message SanitizerClaim {
+  uint32 pii_entities_found = 1;
+  bytes redaction_manifest_hash = 2;
+  repeated string layers_active = 3;
+  QIScore qi_score = 4;
+  // Field number kept identical to upstream `dsa.common.v1.EntityCount`
+  // reference. Wire-format is independent of the type-name as long as the
+  // tag + on-the-wire shape matches.
+  repeated EntityCount entity_counts = 5;
+  string sanitization_summary = 6;
+}
+
+message QIScore {
+  uint32 k_anonymity = 1;
+  float l_diversity = 2;
+  float risk_score = 3;
+  float threshold = 4;
+  QIVerdict verdict = 5;
+  repeated string fields_generalized = 6;
+}
+
+message InferenceClaim {
+  IsolationProbeStatus isolation_probe = 1;
+  string model_used = 2;
+  bytes response_hash = 3;
+}
+
+message AuditClaim {
+  repeated string event_ids = 1;
+  bytes chain_head_hash = 2;
+  bytes previous_chain_hash = 3;
+  uint64 chain_length = 4;
+}
+
+// --- Certificate Messages ---
+
+message VeilCertificate {
+  string certificate_id = 1;
+  string request_id = 2;
+  uint32 protocol_version = 3;
+
+  repeated VeilClaim claims = 4;
+  VerificationResult verification = 5;
+
+  bytes witness_signature = 6;
+  string witness_key_id = 7;
+
+  ExternalAttestation attestation = 8;
+  google.protobuf.Timestamp issued_at = 9;
+
+  FormalVerification formal_verification = 10;
+  AuditIntegrity audit_integrity = 11;
+  PrivacyBudget privacy_budget = 12;
+
+  // CC-017 P3: async transparency-log anchor state exposed on export and
+  // lookup. The cryptographic signature over core certificate fields is
+  // always valid; the fields below only describe whether the external
+  // TSA/Rekor anchor confirmed within the retry window.
+  AnchorStatusInfo anchor_status = 13;
+
+  // client_id is the org_id metadata for client-side correlation. NOT
+  // covered by the witness signable; NOT tamper-evident at this layer.
+  // Tamper-evidence is INDIRECT: org_id is also carried in the bridge
+  // claim's canonical_payload (which IS bridge-signed and is part of the
+  // witness signable via `claims`). Cross-checking customer can correlate
+  // cert.client_id against the bridge claim payload's org_id (defense-in-
+  // depth, optional). Promote to signable in the future SDK signable-
+  // versioning workstream.
+  optional string client_id = 14;
+}
+
+message AnchorStatusInfo {
+  AnchorStatus status = 1;
+  uint32 attempts = 2;
+  string last_error = 3;
+  // Human-readable operator note. Populated on ANCHOR_FAILED with the exact
+  // text consumers must render next to the certificate so operators see
+  // that the signed record is valid but the external anchor could not be
+  // confirmed.
+  string human_note = 4;
+}
+
+message VerificationResult {
+  bool signatures_valid = 1;
+  Completeness completeness = 2;
+  repeated string missing_services = 3;
+  bool temporal_consistent = 4;
+  bool data_visibility_consistent = 5;
+  bool isolation_verified = 6;
+  QIScore qi_score = 7;
+  Verdict overall_verdict = 8;
+  // BYOK exemption: true when at least one dsa-ai claim in the chain
+  // carried IsolationProbe = ISOLATION_PROBE_BYOK_EXEMPT, indicating the
+  // gateway routed inference to a customer-supplied upstream provider.
+  // When true, isolation_verified is set true (BYOK_EXEMPT is accepted as
+  // VERIFIED-equivalent for the overall verdict) and the cert is safe to
+  // render as VERIFIED. Consumers SHOULD render a "BYOK exempt" badge
+  // alongside the verified state. Older verifiers without this field
+  // still see overall_verdict = VERIFIED and isolation_verified = true.
+  bool byok_exempt = 9;
+}
+
+message ExternalAttestation {
+  TimestampAttestation timestamp = 1;
+  TransparencyLogEntry transparency_log = 2;
+  NotaryAttestation notary = 3;
+}
+
+message TimestampAttestation {
+  string provider = 1;
+  bytes timestamp_token = 2;
+  bytes cert_hash = 3;
+  string hash_algorithm = 4;
+}
+
+message TransparencyLogEntry {
+  string provider = 1;
+  int64 log_index = 2;
+  bytes inclusion_proof = 3;
+  bytes signed_entry_timestamp = 4;
+  string log_url = 5;
+}
+
+message NotaryAttestation {
+  string provider = 1;
+  bytes notary_signature = 2;
+  string notary_public_key_id = 3;
+  repeated string checks_performed = 4;
+  google.protobuf.Timestamp attested_at = 5;
+}
+
+message FormalVerification {
+  string spec_hash = 1;
+  string proof_hash = 2;
+  string model_version = 3;
+  google.protobuf.Timestamp verified_at = 4;
+}
+
+message MerkleInclusionProof {
+  uint64 tree_size = 1;
+  uint64 leaf_index = 2;
+  repeated bytes path_hashes = 3;
+  repeated bool is_right = 4;
+  bytes root_hash = 5;
+  bytes root_signature = 6;
+}
+
+message TransparencyLogProof {
+  string log_name = 1;
+  uint64 log_index = 2;
+  bytes inclusion_proof = 3;
+}
+
+message AuditIntegrity {
+  bytes merkle_root = 1;
+  uint64 tree_size = 2;
+  MerkleInclusionProof inclusion_proof = 3;
+  repeated TransparencyLogProof log_proofs = 4;
+}
+
+message PrivacyBudget {
+  double epsilon_consumed = 1;
+  double epsilon_remaining = 2;
+  double budget_utilization_pct = 3;
+  double reidentification_bound = 4;
+  string composition_method = 5;
+}
+
+// --- Service Definitions ---
+
+message GetCertificateRequest {
+  string request_id = 1;
+  google.protobuf.Duration wait_timeout = 2;
+}
+
+message ExportRequest {
+  string customer_id = 1;
+  google.protobuf.Timestamp from = 2;
+  google.protobuf.Timestamp to = 3;
+}
+
+// VeilCertificateService is the canonical witness surface the dashboard
+// consumes for cert lookup + verification. Method names + signatures
+// match upstream EXACTLY; any drift is caught by the Go-level
+// TestVerify_RealUpstreamServiceShape regression test.
+service VeilCertificateService {
+  rpc GetCertificate(GetCertificateRequest) returns (VeilCertificate);
+  rpc ExportCertificates(ExportRequest) returns (stream VeilCertificate);
+  rpc VerifyCertificate(VeilCertificate) returns (VerificationResult);
 }

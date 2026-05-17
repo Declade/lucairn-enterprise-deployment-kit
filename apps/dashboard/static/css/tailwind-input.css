@@ -545,6 +545,18 @@
   outline-offset: 2px;
 }
 
+.lc-secondary-button:disabled,
+.lc-secondary-button[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.lc-secondary-button:disabled:hover,
+.lc-secondary-button[disabled]:hover {
+  border-color: var(--color-border-default);
+  background: var(--color-bg-panel);
+}
+
 .lc-link {
   color: var(--color-accent-highlight);
   text-decoration: none;

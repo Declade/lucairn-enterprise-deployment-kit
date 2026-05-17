@@ -78,13 +78,6 @@ type inspectorPageData struct {
 	RekorURL   string
 }
 
-// bulkPageData renders the bulk-selection screen. Includes a snapshot
-// of the user's current selection so a back-button does not lose it.
-type bulkPageData struct {
-	views.PageData
-	Selected []string
-}
-
 // BrowserHandler is GET /certs.
 func (d *CertsDeps) BrowserHandler(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.CurrentUser(r)
@@ -208,6 +201,71 @@ func (d *CertsDeps) InspectorHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ValidatorHandler is GET /certs/{id}/validator. Renders the audit-grade
+// per-claim signature breakdown for a single cert. Same data path as the
+// inspector (Get + Verify on the witness, same cache) but the template
+// omits the summary card — the validator page is the URL an auditor
+// hands off when the body is meant to be purely cryptographic evidence,
+// not an operator overview.
+//
+// Cache + singleflight semantics are inherited from the witness client,
+// so two adjacent /inspector + /validator views of the same cert serve
+// from the same in-memory snapshot.
+func (d *CertsDeps) ValidatorHandler(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.CurrentUser(r)
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	tok, err := auth.IssueToken(w, r)
+	if err != nil {
+		log.Printf("certs_validator: csrf issue: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !d.Configured {
+		d.renderNotConfigured(w, user, tok, "certs")
+		return
+	}
+	id := extractCertID(r.URL.Path, "/certs/")
+	id = strings.TrimSuffix(id, "/validator")
+	if !validCertID(id) {
+		http.NotFound(w, r)
+		return
+	}
+	cert, err := d.Store.Get(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		log.Printf("certs_validator: get: %v", err)
+		http.Error(w, "cert store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	result, vErr := d.Verifier.Verify(r.Context(), id)
+	data := inspectorPageData{
+		PageData: views.PageData{
+			Title:      "Cert validator",
+			User:       user,
+			CSRFToken:  tok,
+			ActivePage: "certs",
+		},
+		Cert: cert,
+	}
+	if vErr != nil {
+		log.Printf("certs_validator: verify: %v", vErr)
+		data.WitnessErr = "Witness unreachable. The cert chain renders from the audit DB, but live signature re-verification is unavailable. Retry once connectivity is restored."
+	} else {
+		data.Result = result
+		data.RekorURL = rekorDeepLink(result.RekorUUID)
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := d.Renderer.Render(w, "certs/validator.html.tmpl", data); err != nil {
+		log.Printf("certs_validator: render: %v", err)
+	}
+}
+
 // ReverifyHandler is POST /certs/{id}/reverify. Bypasses cache and
 // returns the inspector page rendered with a fresh witness response.
 //
@@ -313,50 +371,6 @@ func (d *CertsDeps) CSVExportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Printf("certs_csv: iter: %v", err)
-	}
-}
-
-// BulkSelectHandler is GET /certs/bulk. Renders the selection UI for
-// bulk re-verify. Server-side state is intentionally absent — the
-// selection ride-shares with the browser via the form action.
-func (d *CertsDeps) BulkSelectHandler(w http.ResponseWriter, r *http.Request) {
-	user, ok := auth.CurrentUser(r)
-	if !ok {
-		http.Redirect(w, r, "/login", http.StatusFound)
-		return
-	}
-	tok, err := auth.IssueToken(w, r)
-	if err != nil {
-		log.Printf("certs_bulk: csrf issue: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if !d.Configured {
-		d.renderNotConfigured(w, user, tok, "certs")
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		// Selection from a GET link should never fail to parse; if it
-		// does, render the empty-selection page (the form below still
-		// renders the submit-with-zero affordance).
-		log.Printf("certs_bulk: parse form: %v", err)
-	}
-	selected := r.Form["cert_id"]
-	if len(selected) > 100 {
-		selected = selected[:100]
-	}
-	data := bulkPageData{
-		PageData: views.PageData{
-			Title:      "Bulk re-verify",
-			User:       user,
-			CSRFToken:  tok,
-			ActivePage: "certs",
-		},
-		Selected: selected,
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := d.Renderer.Render(w, "certs/bulk.html.tmpl", data); err != nil {
-		log.Printf("certs_bulk: render: %v", err)
 	}
 }
 
