@@ -441,8 +441,8 @@ inspection, compliance PDF export, and API key management can enable it.
 
 Bundled in this kit version: dashboard auth + shell foundation +
 optional OIDC SSO + cert browser, cert inspector, audit-defensibility-grade
-live validator, server health overview, embedded Grafana dashboards, AND
-API key management. Audit log browser and compliance PDF arrive in
+live validator, server health overview, embedded Grafana dashboards,
+API key management, AND audit log browser. Compliance PDF arrives in
 subsequent kit releases.
 
 ### Compose path
@@ -946,8 +946,8 @@ EVENT log), NOT `postgres-bridge` (the cert log that
 The two are independent databases with independent Postgres roles.
 The dashboard reads both at runtime through DISTINCT env vars:
 
-- `LUCAIRN_DASHBOARD_AUDIT_DB_URL`     → cert browser (Slice 3)
-- `LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL` → audit log browser (Slice 6)
+- `LUCAIRN_DASHBOARD_AUDIT_DB_URL`     → cert browser
+- `LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL` → audit log browser
 
 #### Saved-filter table migration (required for per-user dropdowns)
 

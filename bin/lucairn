@@ -1185,7 +1185,7 @@ check_dashboard_keys() {
 # Bash 3.2 compatible per Slice 2 lesson #7.
 check_dashboard_audit_log() {
   local env_file="$1"
-  local audit_url audit_url_low audit_url_stripped
+  local audit_url audit_url_low audit_url_stripped sf_url sf_stripped sf_low
   audit_url="$(env_value "$env_file" LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL)"
 
   # OPT-IN — empty = surface disabled cleanly.
@@ -1238,12 +1238,68 @@ check_dashboard_audit_log() {
 
   # (5) Role grant probe via psql when available. Best-effort. Skips
   # silently when psql is not installed (operator's choice of tooling).
+  #
+  # KD-5: Slice 3's LUCAIRN_DASHBOARD_AUDIT_DB_URL points at the CERT
+  # DB (postgres-bridge), Slice 6's LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL
+  # points at the EVENT DB (postgres-audit). The two are independent
+  # Postgres instances; pointing the audit-log URL at the cert DB is
+  # a load-bearing misconfiguration that surfaces only at /audit
+  # render time. Mention the distinction in the WARN so operators
+  # don't have to re-read INSTALL.md to debug a no-events page.
   if [ "${DOCTOR_OFFLINE:-0}" != "1" ] && have psql; then
     if psql "$audit_url" -X -q -t -c 'SELECT 1 FROM audit_events LIMIT 1' >/dev/null 2>&1; then
       echo "dashboard audit-log: role can SELECT audit_events"
     else
-      echo "dashboard audit-log: warn (psql could not SELECT audit_events — verify the role's grants OR run pre-up when the audit DB is not yet reachable)"
+      echo "dashboard audit-log: warn (psql could not SELECT audit_events — verify the role's grants OR run pre-up when the audit DB is not yet reachable; confirm you are pointing at postgres-audit, NOT the cert DB; LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL targets the audit-event stream, LUCAIRN_DASHBOARD_AUDIT_DB_URL targets the cert browser)"
     fi
+  fi
+
+  # KD-1: dashboard_saved_filters table existence probe. Without the
+  # migration applied, the /audit surface still works but the
+  # saved-filter dropdown silently degrades (the handler swallows
+  # ErrSavedFilterTableMissing into a banner). Surface the friendly
+  # fix here so operators see the gap during pre-flight.
+  if [ "${DOCTOR_OFFLINE:-0}" != "1" ] && have psql; then
+    if psql "$audit_url" -X -q -t -c 'SELECT 1 FROM dashboard_saved_filters LIMIT 1' >/dev/null 2>&1; then
+      echo "dashboard audit-log: dashboard_saved_filters table ok"
+    else
+      echo "dashboard audit-log: warn (dashboard_saved_filters missing — apply apps/dashboard/migrations/000001_create_saved_filters.up.sql; saved filters will be silently absent at runtime)"
+    fi
+  fi
+
+  # KD-2: INSERT grant probe. After Slice 6 fix-up r1 H3/DRIFT-006 the
+  # dashboard's reveal-raw + csv_export_with_reveal paths INSERT into
+  # audit_events; without the grant those flows fail-close with 500.
+  # We probe via DO $$ ... $$ so the row is rolled back if it lands;
+  # nothing persists on a successful probe.
+  if [ "${DOCTOR_OFFLINE:-0}" != "1" ] && have psql; then
+    if psql "$audit_url" -X -q -t -c "
+        DO \$\$ BEGIN
+          INSERT INTO dashboard_saved_filters(user_email,name,filter_json)
+            VALUES('__doctor__','__probe__','{}') ON CONFLICT DO NOTHING;
+          DELETE FROM dashboard_saved_filters WHERE user_email='__doctor__' AND name='__probe__';
+        END \$\$;" >/dev/null 2>&1; then
+      echo "dashboard audit-log: role INSERT+DELETE on dashboard_saved_filters ok"
+    else
+      echo "dashboard audit-log: warn (role cannot INSERT on dashboard_saved_filters — GRANT INSERT,SELECT,UPDATE,DELETE ON dashboard_saved_filters TO audit_app; filter saves will silently fail)"
+    fi
+  fi
+
+  # KD-4: saved-filters override URL — same scheme + placeholder gates
+  # the main audit-log URL goes through. Operators who pass a
+  # placeholder here would hit a fail-closed boot loop.
+  sf_url="$(env_value "$env_file" LUCAIRN_DASHBOARD_AUDIT_LOG_SAVED_FILTERS_DB_URL)"
+  if [ -n "$sf_url" ]; then
+    sf_stripped="$(printf '%s' "$sf_url" | tr -d ' \t\n\r')"
+    case "$sf_stripped" in
+      postgres://*|postgresql://*) ;;
+      *) echo "dashboard audit-log: failed (LUCAIRN_DASHBOARD_AUDIT_LOG_SAVED_FILTERS_DB_URL must start with postgres://)"; fail=1 ;;
+    esac
+    sf_low="$(printf '%s' "$sf_stripped" | tr '[:upper:]' '[:lower:]')"
+    case "$sf_low" in
+      *change_me*|*changeme*|*your-*|*placeholder*|*replace_me*|*replaceme*|*todo:set*)
+        echo "dashboard audit-log: failed (LUCAIRN_DASHBOARD_AUDIT_LOG_SAVED_FILTERS_DB_URL still matches a placeholder)"; fail=1 ;;
+    esac
   fi
 
   # (4) kubectl path — Secret existence + non-empty VALUE check.

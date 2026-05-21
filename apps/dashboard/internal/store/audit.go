@@ -30,10 +30,13 @@
 //	payload_type        TEXT NOT NULL DEFAULT 'FLAT_JSON'
 //	payload_bytes       BYTEA
 //
-// The dashboard reads the `audit_app` role (INSERT + SELECT on
-// audit_events). Saved-filters require an additional table; see
-// saved_filters.go for the dedicated table + the privilege expansion
-// note in OPS.md.
+// The dashboard reads + writes the `audit_app` role on audit_events:
+// SELECT for the /audit browsing surface and INSERT for the paired
+// reveal-raw + csv_export_with_reveal audit events emitted by the
+// dashboard's DBEmitter (Slice 6 fix-up r1 H3 / DRIFT-006). Without
+// INSERT, those flows fail-close with 500 and never return raw PII.
+// Saved-filters require an additional table; see saved_filters.go for
+// the dedicated table + the privilege expansion note in OPS.md.
 //
 // # Defence in depth
 //
@@ -61,6 +64,15 @@ import (
 // upstream emit writes JSON bytes here; older rows may contain other
 // shapes which the render-time guard handles via the malformed-JSON
 // fallback).
+//
+// PayloadBytes carries the migration-000005 `payload_bytes` column
+// (typed binary payloads emitted by services that use the upstream
+// audit-service's typed-events API). When PayloadType == "FLAT_JSON"
+// the column is NULL + ignored; the JSON lives in Payload as usual.
+// For any other PayloadType the dashboard renders an explainer banner
+// + the raw bytes hex-encoded so operators see the row exists without
+// the dashboard pretending to decode a binary encoding it doesn't
+// know. Slice 6 fix-up r1 DRIFT-002.
 type AuditEvent struct {
 	ID                int64
 	EventID           string
@@ -71,6 +83,7 @@ type AuditEvent struct {
 	PreviousEventHash string
 	EventHash         string
 	Payload           []byte
+	PayloadBytes      []byte
 	RequestID         string
 	PayloadType       string
 }
@@ -201,6 +214,9 @@ func (s *AuditStore) ListEvents(ctx context.Context, filter AuditFilter) ([]Audi
 
 	where, args := buildAuditWhere(filter, 1)
 	listSQL := strings.Builder{}
+	// Slice 6 fix-up r1 DRIFT-002: read payload_bytes column too so
+	// typed-event payloads (where payload_type != 'FLAT_JSON') don't
+	// silently render as empty.
 	listSQL.WriteString(`SELECT
 			id,
 			event_id,
@@ -212,7 +228,8 @@ func (s *AuditStore) ListEvents(ctx context.Context, filter AuditFilter) ([]Audi
 			COALESCE(event_hash, ''),
 			COALESCE(payload, ''::bytea),
 			COALESCE(request_id, ''),
-			COALESCE(payload_type, 'FLAT_JSON')
+			COALESCE(payload_type, 'FLAT_JSON'),
+			COALESCE(payload_bytes, ''::bytea)
 		FROM audit_events
 		WHERE 1=1`)
 	listSQL.WriteString(where)
@@ -239,6 +256,7 @@ func (s *AuditStore) ListEvents(ctx context.Context, filter AuditFilter) ([]Audi
 			&e.Payload,
 			&e.RequestID,
 			&e.PayloadType,
+			&e.PayloadBytes,
 		); err != nil {
 			return nil, 0, fmt.Errorf("store: scan audit event: %w", err)
 		}
@@ -266,6 +284,20 @@ func (s *AuditStore) GetEvent(ctx context.Context, eventID string) (*AuditEvent,
 	if strings.TrimSpace(eventID) == "" {
 		return nil, errors.New("store: event_id required")
 	}
+	// Slice 6 fix-up r1 DRIFT-002: also load payload_bytes (migration
+	// 000005) so typed-event detail pages render the binary blob
+	// hex-encoded rather than silently empty.
+	//
+	// Slice 6 fix-up r1 DRIFT-001 (documentation): the payload_contains
+	// LIKE filter compares against payload::text — Postgres renders
+	// BYTEA values as `\x<hex>` strings, so the operator searches the
+	// hex form, not the JSON form. Operators searching for an actor
+	// email won't match because the comparison is against hex bytes.
+	// A real fix would require either (a) storing payload as JSONB
+	// (migration + upstream-coordination), or (b) `convert_from(payload,
+	// 'UTF8')` which crashes on non-UTF-8 bytes. Both are out of scope
+	// for this fix-up; document the limitation and let operators use
+	// event_type + source_service + actor as the primary filters.
 	const sql = `SELECT
 			id,
 			event_id,
@@ -277,7 +309,8 @@ func (s *AuditStore) GetEvent(ctx context.Context, eventID string) (*AuditEvent,
 			COALESCE(event_hash, ''),
 			COALESCE(payload, ''::bytea),
 			COALESCE(request_id, ''),
-			COALESCE(payload_type, 'FLAT_JSON')
+			COALESCE(payload_type, 'FLAT_JSON'),
+			COALESCE(payload_bytes, ''::bytea)
 		FROM audit_events
 		WHERE event_id = $1`
 	var e AuditEvent
@@ -294,6 +327,7 @@ func (s *AuditStore) GetEvent(ctx context.Context, eventID string) (*AuditEvent,
 		&e.Payload,
 		&e.RequestID,
 		&e.PayloadType,
+		&e.PayloadBytes,
 	); err != nil {
 		return nil, err
 	}

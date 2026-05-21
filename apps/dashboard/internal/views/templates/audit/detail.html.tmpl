@@ -88,6 +88,19 @@
     </section>
     <h2 class="lc-card-title">Payload {{ if .RevealSucceeded }}(raw){{ else }}(redacted){{ end }}</h2>
     <pre class="lc-codeblock">{{ .DetailRedacted }}</pre>
+    {{- /*
+        Slice 6 fix-up r1 DRIFT-002: when the upstream emitter used the
+        typed-events API (migration 000005), the binary payload lands
+        in payload_bytes instead of payload. Surface the bytes as a
+        hex blob plus an explainer so operators see the row exists
+        without the dashboard pretending to decode the encoding.
+    */ -}}
+    {{ if and .DetailEvent (ne .DetailEvent.PayloadType "FLAT_JSON") (gt (len .DetailEvent.PayloadBytes) 0) }}
+      <div class="lc-banner lc-banner--info" role="note">
+        This event uses a typed binary encoding (<code class="lc-mono">{{ .DetailEvent.PayloadType }}</code>). The dashboard does not decode this format; the raw bytes are shown below as hex.
+      </div>
+      <pre class="lc-codeblock lc-codeblock--mono">{{ printf "%x" .DetailEvent.PayloadBytes }}</pre>
+    {{ end }}
   {{ else }}
     <div class="lc-banner lc-banner--fail" role="alert">Event not found.</div>
   {{ end }}

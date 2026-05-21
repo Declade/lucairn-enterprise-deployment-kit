@@ -473,6 +473,34 @@ above is sufficient. If you wired a separate
 `LUCAIRN_DASHBOARD_AUDIT_LOG_SAVED_FILTERS_DB_URL` with a dedicated
 `dashboard_app` role, rotate that role + URL identically.
 
+### `migrations/audit/000003_least_privilege_role.up.sql.tmpl` is a template
+
+Note for operators applying migrations manually: the
+`migrations/audit/000003_least_privilege_role.up.sql.tmpl` file is
+NOT plain SQL — the `${AUDIT_APP_PASSWORD}` placeholder is substituted
+at deploy time by `scripts/render-migrations.sh` (invoked from the
+`prep-migrations` compose service). Running `migrate up` against the
+raw `.tmpl` file would INSERT a literal `${AUDIT_APP_PASSWORD}`
+string into the role's password and the next dashboard restart would
+fail authentication.
+
+If you need to apply this migration manually:
+
+```bash
+# Render via the same script the compose pipeline uses.
+AUDIT_APP_PASSWORD='<password>' VEIL_APP_PASSWORD='<password>' \
+  SRC_ROOT=./migrations OUT_ROOT=/tmp/rendered \
+  scripts/render-migrations.sh
+
+# Then run the RENDERED .up.sql file (not the .up.sql.tmpl original).
+psql "$AUDIT_DB_URL" -f /tmp/rendered/audit/000003_least_privilege_role.up.sql
+```
+
+The script fails-closed when `$AUDIT_APP_PASSWORD` or
+`$VEIL_APP_PASSWORD` is unset (exit 2) so a forgotten env var
+surfaces immediately rather than silently corrupting the migration.
+Slice 6 fix-up r1 DRIFT-003.
+
 ## Audit log: reveal raw payload + CSV export with PII
 
 The admin "Reveal raw" button on the `/audit/{event_id}` detail

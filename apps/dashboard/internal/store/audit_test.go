@@ -84,8 +84,12 @@ func (r *fakeAuditRows) Scan(dest ...any) error {
 	}
 	row := r.data[r.idx]
 	r.idx++
+	// Slice 6 fix-up r1 DRIFT-002: production SELECT now reads 12
+	// columns (payload_bytes added). The fake accepts 11 OR 12 so the
+	// legacy Slice 6 r0 tests keep working AND the new payload_bytes
+	// path stays covered.
 	if len(dest) < 11 {
-		return errors.New("audit rows scan expects 11 fields")
+		return errors.New("audit rows scan expects ≥11 fields")
 	}
 	*(dest[0].(*int64)) = row.ID
 	*(dest[1].(*string)) = row.EventID
@@ -98,6 +102,9 @@ func (r *fakeAuditRows) Scan(dest ...any) error {
 	*(dest[8].(*[]byte)) = append([]byte(nil), row.Payload...)
 	*(dest[9].(*string)) = row.RequestID
 	*(dest[10].(*string)) = row.PayloadType
+	if len(dest) >= 12 {
+		*(dest[11].(*[]byte)) = append([]byte(nil), row.PayloadBytes...)
+	}
 	return nil
 }
 
@@ -130,7 +137,7 @@ func (r *fakeAuditRow) Scan(dest ...any) error {
 		return pgx.ErrNoRows
 	}
 	if len(dest) < 11 {
-		return errors.New("audit row scan expects 11 fields")
+		return errors.New("audit row scan expects ≥11 fields")
 	}
 	*(dest[0].(*int64)) = r.getEv.ID
 	*(dest[1].(*string)) = r.getEv.EventID
@@ -143,6 +150,11 @@ func (r *fakeAuditRow) Scan(dest ...any) error {
 	*(dest[8].(*[]byte)) = append([]byte(nil), r.getEv.Payload...)
 	*(dest[9].(*string)) = r.getEv.RequestID
 	*(dest[10].(*string)) = r.getEv.PayloadType
+	// Slice 6 fix-up r1 DRIFT-002: accept the 12th payload_bytes field
+	// when the production SELECT lists it (current GetEvent path).
+	if len(dest) >= 12 {
+		*(dest[11].(*[]byte)) = append([]byte(nil), r.getEv.PayloadBytes...)
+	}
 	return nil
 }
 

@@ -186,7 +186,15 @@
           {{ else }}
             {{ range .RowsRedacted }}
               <tr class="lc-table-row">
-                <td class="lc-table-td font-tabular">{{ formatDate .Timestamp }}</td>
+                {{- /*
+                    Slice 6 fix-up r1 UX-M3: <time> wrapper carries the
+                    machine-readable datetime + a relative-age tooltip
+                    so operators triage at a glance without re-parsing
+                    UTC offsets.
+                */ -}}
+                <td class="lc-table-td font-tabular">
+                  <time datetime="{{ .Timestamp.UTC.Format "2006-01-02T15:04:05Z07:00" }}" title="{{ relativeAge .Timestamp }}">{{ formatDate .Timestamp }}</time>
+                </td>
                 <td class="lc-table-td"><a class="lc-link" href="/audit/{{ .EventID }}"><span class="lc-pill">{{ .EventType }}</span></a></td>
                 <td class="lc-table-td"><span class="lc-badge">{{ .SourceService }}</span></td>
                 <td class="lc-table-td lc-mono">{{ .Actor }}</td>
@@ -201,9 +209,46 @@
 
     {{ if gt .TotalPages 1 }}
       <nav class="lc-pagination" aria-label="Pagination">
-        <a class="lc-pagination-link{{ if not .HasPrev }} is-disabled{{ end }}" href="/audit?page={{ .PrevPage }}&{{ filterURL .Filter }}">Previous</a>
+        {{- /*
+            Slice 6 fix-up r1 UX-M4: aria-disabled + no href on the
+            disabled state so the link is not keyboard-reachable when
+            the current page is at the boundary.
+        */ -}}
+        {{ if .HasPrev }}
+          <a class="lc-pagination-link" href="/audit?page={{ .PrevPage }}&{{ filterURL .Filter }}">Previous</a>
+        {{ else }}
+          <span class="lc-pagination-link is-disabled" aria-disabled="true">Previous</span>
+        {{ end }}
         <span class="lc-pagination-info">Page {{ .Page }} of {{ .TotalPages }}</span>
-        <a class="lc-pagination-link{{ if not .HasNext }} is-disabled{{ end }}" href="/audit?page={{ .NextPage }}&{{ filterURL .Filter }}">Next</a>
+        {{ if .HasNext }}
+          <a class="lc-pagination-link" href="/audit?page={{ .NextPage }}&{{ filterURL .Filter }}">Next</a>
+        {{ else }}
+          <span class="lc-pagination-link is-disabled" aria-disabled="true">Next</span>
+        {{ end }}
+        {{- /*
+            Slice 6 fix-up r1 UX-M2: page-size selector. Operators on
+            busy logs want to widen from the default 50; the previous
+            UI only exposed page navigation. Submitting the form
+            resets to page=1 (different page-size invalidates the
+            current page number).
+        */ -}}
+        <form method="get" action="/audit" class="lc-pagination-size" aria-label="Rows per page">
+          {{- /* Re-emit all filter fields so the page-size change
+                preserves the operator's current filter set. */ -}}
+          {{ range .Filter.EventTypes }}<input type="hidden" name="event_type" value="{{ . }}">{{ end }}
+          {{ range .Filter.SourceServices }}<input type="hidden" name="source_service" value="{{ . }}">{{ end }}
+          {{ range .Filter.Actors }}<input type="hidden" name="actor" value="{{ . }}">{{ end }}
+          <input type="hidden" name="request_id" value="{{ .Filter.RequestID }}">
+          <input type="hidden" name="payload_contains" value="{{ .Filter.PayloadContains }}">
+          <input type="hidden" name="from" value="{{ formatDateTimeLocal .Filter.TimestampFrom }}">
+          <input type="hidden" name="to" value="{{ formatDateTimeLocal .Filter.TimestampTo }}">
+          <label for="audit-page-size" class="lc-text-muted">Rows / page</label>
+          <select id="audit-page-size" name="page_size" onchange="this.form.submit()">
+            {{ range $size := (intList 50 100 200) }}
+              <option value="{{ $size }}"{{ if eq $.PageSize $size }} selected{{ end }}>{{ $size }}</option>
+            {{ end }}
+          </select>
+        </form>
       </nav>
     {{ end }}
 

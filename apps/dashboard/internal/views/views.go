@@ -95,6 +95,39 @@ func FuncMap() template.FuncMap {
 		"savedFilterURL": func(sf SavedFilterReader) string {
 			return serializeFilter(sf.SavedFilterReader())
 		},
+		// intList builds a []int from the supplied varargs. Slice 6
+		// fix-up r1 UX-M2: the audit page-size dropdown iterates over
+		// {{ range $size := (intList 50 100 200) }} to render a stable
+		// allowlist without leaking int literals into the template.
+		"intList": func(values ...int) []int { return values },
+		// relativeAge renders a "5 min ago" / "2 hours ago" / "3 days
+		// ago" string. Slice 6 fix-up r1 UX-M3: operators triaging a
+		// busy audit log scan timestamps relatively. The template
+		// renders the absolute timestamp as the body + relativeAge in
+		// the title= attribute (or vice-versa) — both visible without
+		// JS.
+		"relativeAge": func(t time.Time) string {
+			if t.IsZero() {
+				return ""
+			}
+			now := time.Now().UTC()
+			d := now.Sub(t.UTC())
+			if d < 0 {
+				// Future timestamp; happens when clocks drift. Render
+				// the absolute form rather than "-5 min ago".
+				return t.UTC().Format("2006-01-02 15:04 UTC")
+			}
+			switch {
+			case d < time.Minute:
+				return "just now"
+			case d < time.Hour:
+				return fmt.Sprintf("%d min ago", int(d/time.Minute))
+			case d < 24*time.Hour:
+				return fmt.Sprintf("%d hours ago", int(d/time.Hour))
+			default:
+				return fmt.Sprintf("%d days ago", int(d/(24*time.Hour)))
+			}
+		},
 	}
 }
 
