@@ -235,7 +235,7 @@ services:
   # which compose file the operator started from.
   lucairn-dashboard:
     profiles: ["dashboard"]
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.6.0}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.7.0}"
     restart: unless-stopped
     environment:
       LUCAIRN_DASHBOARD_LISTEN_ADDR: "${LUCAIRN_DASHBOARD_LISTEN_ADDR:-0.0.0.0:8443}"
@@ -273,6 +273,9 @@ services:
       # configured" explainer.
       LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL: "${LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL:-}"
       LUCAIRN_DASHBOARD_AUDIT_LOG_SAVED_FILTERS_DB_URL: "${LUCAIRN_DASHBOARD_AUDIT_LOG_SAVED_FILTERS_DB_URL:-}"
+      # Compliance PDF export. Admin-only + always-on surface.
+      LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS: "${LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS:-365}"
+      LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME: "${LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME:-}"
     ports:
       - "127.0.0.1:8443:8443"
     healthcheck:

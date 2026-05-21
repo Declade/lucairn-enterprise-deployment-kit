@@ -30,11 +30,13 @@ import (
 
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/audit"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/compliance"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/config"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/gateway"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/grafana"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/handlers"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/health"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/imagemanifest"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/server"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/store"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/witness"
@@ -43,6 +45,17 @@ import (
 
 //go:embed static
 var embeddedStatic embed.FS
+
+// embeddedImageManifest is the kit's image-manifest.yaml copied at
+// build time into apps/dashboard/. The build pipeline (Dockerfile +
+// Makefile image-build target) copies the canonical kit-root manifest
+// into this path so the binary's view of the pinned image set is
+// the same the operator installed. Empty / missing file = the
+// compliance PDF cover renders the "Image manifest unavailable"
+// fallback copy instead of crashing the binary.
+//
+//go:embed image-manifest.yaml
+var embeddedImageManifest []byte
 
 // version is set at build time via -ldflags "-X main.version=<git-sha>". It
 // defaults to "dev" for local builds.
@@ -112,18 +125,22 @@ func main() {
 	// OIDC trio: register the routes, let the handler decide what to
 	// render based on whether deps are populated.
 	var (
-		certStore  *store.CertStore
-		witnessCli *witness.Client
-		certs      *handlersCertWiring
+		certStore           *store.CertStore
+		witnessCli          *witness.Client
+		certs               *handlersCertWiring
+		complianceCertPool  *pgxpool.Pool
+		complianceAuditPool *pgxpool.Pool
 	)
 	if cfg.AuditDBURL != "" && cfg.WitnessEndpoint != "" {
 		ctxStore, cancelStore := context.WithTimeout(context.Background(), 15*time.Second)
 		var err error
-		certStore, _, err = store.NewCertStore(ctxStore, cfg.AuditDBURL)
+		var certPoolTmp *pgxpool.Pool
+		certStore, certPoolTmp, err = store.NewCertStore(ctxStore, cfg.AuditDBURL)
 		cancelStore()
 		if err != nil {
 			log.Fatalf("cert store: %v", err)
 		}
+		complianceCertPool = certPoolTmp
 		witnessCli, err = witness.NewClient(cfg.WitnessEndpoint)
 		if err != nil {
 			log.Fatalf("witness client: %v", err)
@@ -254,6 +271,9 @@ func main() {
 		if auditPool != nil {
 			auditEmitter = audit.NewDBEmitter(auditPool, "lucairn-dashboard")
 			log.Printf("audit emitter: DBEmitter (writes to audit_events on audit-log DB)")
+			// Retain the pool reference so the Slice 7 compliance
+			// aggregator can reuse it for its audit-events scan.
+			complianceAuditPool = auditPool
 		}
 		log.Printf("audit log browser enabled (db=%s)", redactDSN(cfg.AuditLogDBURL))
 	} else {
@@ -279,6 +299,38 @@ func main() {
 	} else {
 		log.Printf("grafana embed disabled (set LUCAIRN_DASHBOARD_GRAFANA_URL + LUCAIRN_DASHBOARD_GRAFANA_JWT_SECRET to enable)")
 	}
+
+	// Slice 7 wiring: compliance PDF export. The surface is ADMIN-ONLY
+	// and always enabled when the dashboard is enabled (no opt-in env
+	// var). The aggregator reuses the Slice 3 cert DB pool (for cert
+	// counts) and the Slice 6 audit-log DB pool (for sanitizer +
+	// audit-event counts); either may be nil — the aggregator returns
+	// zero-value counts for that population and the PDF cover renders
+	// "(no rows recorded in this window)" for those tables.
+	//
+	// The image-manifest.yaml is embedded at build time. A parse error
+	// (or missing file in dev builds) logs but does NOT crash the
+	// binary — the PDF cover falls back to "Image manifest unavailable"
+	// copy. The kit's release pipeline copies the canonical kit-root
+	// manifest into apps/dashboard/ before the Docker build (handled
+	// by the kit Makefile / Dockerfile).
+	manifest, mfErr := imagemanifest.Parse(embeddedImageManifest)
+	if mfErr != nil {
+		log.Printf("compliance: image manifest unavailable (%v) — PDF cover will render the fallback copy", mfErr)
+	}
+	complianceConfigured := true // Surface always-on; admin-only at the router.
+	complianceAggregator := compliance.NewAggregator(
+		complianceCertPool,
+		complianceAuditPool,
+		compliance.AggregatorOpts{
+			MaxWindowDays: cfg.ComplianceMaxWindowDays,
+		},
+	)
+	complianceKitVersion := manifest.KitVersion
+	if complianceKitVersion == "" {
+		complianceKitVersion = "unknown"
+	}
+	log.Printf("compliance export enabled (admin-only; kit_version=%s; image_digests=%d entries)", complianceKitVersion, len(manifest.Digests))
 
 	staticFS, err := fs.Sub(embeddedStatic, "static")
 	if err != nil {
@@ -336,6 +388,13 @@ func main() {
 		SavedFilters:      savedFiltersIface,
 		AuditEmitter:      auditEmitter,
 		AuditConfigured:   auditConfigured,
+		// Slice 7: compliance PDF export.
+		ComplianceAggregator:      complianceAggregator,
+		ComplianceConfigured:      complianceConfigured,
+		ComplianceKitVersion:      complianceKitVersion,
+		ComplianceImageDigests:    manifest.Digests,
+		ComplianceMaxWindowDays:   cfg.ComplianceMaxWindowDays,
+		ComplianceDefaultCustomer: cfg.ComplianceDefaultCustomer,
 	})
 	if err != nil {
 		log.Fatalf("server: %v", err)

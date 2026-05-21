@@ -944,7 +944,86 @@ check_dashboard() {
 
   check_dashboard_audit_log "$env_file" || return 1
 
+  check_dashboard_compliance "$env_file" || return 1
+
   return 0
+}
+
+# Pre-flight Slice 7 compliance PDF export configuration.
+#
+# The compliance surface is ADMIN-ONLY and always enabled when the
+# dashboard is enabled — there is no opt-in env var. The two knobs
+# (LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS +
+# LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME) are optional
+# overrides. The doctor checks the shape of each:
+#
+#   1. MAX_WINDOW_DAYS, when set, must be a positive integer
+#      (otherwise the binary fails-closed at boot).
+#   2. MAX_WINDOW_DAYS > 3650 → WARN (likely operator typo; the
+#      compliance.HardMaxWindowDays cap kicks in inside the binary).
+#   3. DEFAULT_CUSTOMER_NAME, when set, must NOT contain a banned
+#      literal from the project mechanism-allowlist (the same set
+#      compliance.banned_literals.go enforces at PDF render time).
+#      The grep below mirrors the regex the dashboard binary uses.
+#
+# Bash 3.2 compatible per Slice 2 lesson #7.
+check_dashboard_compliance() {
+  local env_file="$1"
+  local max_days default_customer
+  max_days="$(env_value "$env_file" LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS)"
+  default_customer="$(env_value "$env_file" LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME)"
+
+  local fail=0
+
+  # (1) + (2) max-window-days shape.
+  if [ -n "$max_days" ]; then
+    case "$max_days" in
+      ''|*[!0-9]*)
+        echo "dashboard compliance: failed (LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS must be a positive integer, got: $max_days)"
+        fail=1
+        ;;
+      *)
+        if [ "$max_days" -le 0 ]; then
+          echo "dashboard compliance: failed (LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS must be > 0, got: $max_days)"
+          fail=1
+        elif [ "$max_days" -gt 3650 ]; then
+          echo "dashboard compliance: warn (LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS=$max_days exceeds 3650 days (~10 years); the binary will cap at 3650 — likely operator typo)"
+        else
+          echo "dashboard compliance: max window ok ($max_days days)"
+        fi
+        ;;
+    esac
+  fi
+
+  # (3) default-customer-name banned-literal grep. The case-fold pattern
+  # mirrors the project mechanism-allowlist set used by the dashboard's
+  # render-time guard. Order matters: longer phrases first so partial
+  # matches don't get swallowed.
+  if [ -n "$default_customer" ]; then
+    local customer_low
+    customer_low="$(printf '%s' "$default_customer" | tr '[:upper:]' '[:lower:]')"
+    case "$customer_low" in
+      *"iso 27001"*|*"iso 27701"*|*"iso 42001"*|*"soc 2"*|*hipaa*|*"pci-dss"*|*"pci dss"*|*"encrypted at rest"*|*"penetration test"*|*"pen test"*|*"red team"*|*"regular audits"*|*"multi-factor auth"*|*"end-to-end encryption"*|*"e2e encryption"*|*mfa*|*"pro+"*|*pro_plus*|*"solo free"*|*"solo pro"*|*"the veil"*|*theveil*|*dsaveil*)
+        echo "dashboard compliance: failed (LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME contains a banned mechanism-allowlist literal; the PDF cover render would fail-closed at first export)"
+        fail=1
+        ;;
+      *)
+        # Length cap mirrors compliance.SanitizeCustomerName (200 chars).
+        if [ "${#default_customer}" -gt 200 ]; then
+          echo "dashboard compliance: failed (LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME exceeds 200 chars; the binary will reject the value at boot)"
+          fail=1
+        else
+          echo "dashboard compliance: default customer name ok"
+        fi
+        ;;
+    esac
+  fi
+
+  if [ "$fail" -eq 0 ] && [ -z "$max_days" ] && [ -z "$default_customer" ]; then
+    echo "dashboard compliance: skipped (no overrides set; binary uses defaults — 365-day max window, no default customer name)"
+  fi
+
+  return "$fail"
 }
 
 # Pre-flight Slice 5 API key management configuration. Skipped silently

@@ -23,12 +23,19 @@ RUN go mod download
 # Bring the rest of the dashboard source.
 COPY . .
 
-# Verify fonts + CSS are present BEFORE compiling. The Go build embeds them
-# via //go:embed; a missing file silently produces a 0-byte asset, so we
-# fail-fast at image-build time instead.
+# Verify fonts + CSS + image-manifest are present BEFORE compiling. The
+# Go build embeds them via //go:embed; a missing file silently produces
+# a 0-byte asset, so we fail-fast at image-build time instead.
+#
+# The image-manifest.yaml is copied from the kit root into apps/dashboard/
+# by the kit's image-build target. When missing the compliance PDF cover
+# falls back to "Image manifest unavailable" copy — non-fatal but the
+# customer-evidence chain loses the kit-version+image-digest footer, so
+# treat as a build-time hard fail.
 RUN test -f static/css/dashboard.css || (echo "missing static/css/dashboard.css — run tailwindcss before docker build" >&2 && exit 1) && \
     test -f "static/fonts/Geist[wght].woff2" || (echo "missing fonts — run scripts/fetch-fonts.sh before docker build" >&2 && exit 1) && \
-    test -f static/icons/sprite.svg || (echo "missing icons sprite" >&2 && exit 1)
+    test -f static/icons/sprite.svg || (echo "missing icons sprite" >&2 && exit 1) && \
+    test -f image-manifest.yaml || (echo "missing image-manifest.yaml — copy from kit root before docker build" >&2 && exit 1)
 
 # Static, stripped, no-CGO, locked compile flags.
 ARG VERSION=dev

@@ -442,8 +442,8 @@ inspection, compliance PDF export, and API key management can enable it.
 Bundled in this kit version: dashboard auth + shell foundation +
 optional OIDC SSO + cert browser, cert inspector, audit-defensibility-grade
 live validator, server health overview, embedded Grafana dashboards,
-API key management, AND audit log browser. Compliance PDF arrives in
-subsequent kit releases.
+API key management, audit log browser, AND compliance PDF export.
+The v1.0-dashboard arc is feature-complete.
 
 ### Compose path
 
@@ -1036,4 +1036,79 @@ The CSV export endpoint also supports `?reveal=true` for admins. The
 endpoint emits an `audit.csv_export_with_reveal` event BEFORE the
 stream begins so the audit trail captures bulk reveals even if the
 client disconnects mid-stream.
+
+### Compliance PDF export
+
+The dashboard's `/compliance` surface is ADMIN-ONLY and ALWAYS-ON
+when the dashboard is enabled. There is NO opt-in env var. An admin
+picks a date range + a customer name, clicks Generate PDF, and the
+dashboard streams a PDF download. The PDF carries:
+
+- Cover page: customer name, date range, kit version, dashboard
+  version, generated timestamp, AND the pinned image-manifest the
+  kit shipped with (every service + its tag).
+- Category 1 (Art. 10 + 15 sanitizer): total sanitizer event count
+  + per-detection-layer breakdown (L1 / L2 / L3 / unknown).
+- Category 2 (Art. 12 + 14 evidence): total certificate count +
+  per-verdict breakdown.
+- Category 3 (Art. 10 + 12 + 14 + 15 inventory): total audit-event
+  count + per-event-type breakdown.
+
+The aggregator reuses the dashboard's existing DB pool connections —
+the cert DB pool for Category 2's cert counts, the audit-log DB pool
+for Category 1 + 3 sanitizer-event + audit-event counts. Neither
+populates anything if the corresponding surface env var is empty;
+the PDF still generates with "(no rows recorded in this window)"
+placeholder copy.
+
+#### Render-time banned-literal guard
+
+The PDF generator funnels every text-emit through a render-time
+banned-literal scanner. The corpus matches the project's locked
+mechanism-allowlist set. If a literal appears anywhere — in the
+customer name, in the kit version, in an aggregated count label —
+the handler returns HTTP 500 with `PDF generation failed` and ZERO
+PDF bytes touch the wire. This is the same fail-closed pattern the
+admin "Reveal raw" audit flow follows.
+
+#### Audit emit on every PDF generation
+
+Every successful PDF generation emits an
+`audit.compliance_pdf_generated` event into the audit-log DB (when
+configured). Payload carries the actor email, the customer name,
+the window endpoints, the page count, the byte size, and the
+aggregated cert / sanitizer / audit counts so future audits can
+correlate the PDF artefact back to the exact window scanned.
+
+If the audit emit fails (DB unreachable mid-export, role grant
+missing), the handler returns 500 + ZERO PDF bytes — the dashboard
+refuses to surface evidence content without a matching audit row.
+
+#### Configuration
+
+Two optional knobs control the surface; both have safe defaults.
+
+Compose path (in `customer.env`):
+
+```bash
+# Optional — cap the date-range span; defaults to 365 days.
+#LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS=365
+
+# Optional — pre-populate the form's customer-name input.
+#LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME=Acme Corp GmbH
+```
+
+Kubernetes path (in `customer-values.yaml`):
+
+```yaml
+dashboard:
+  enabled: true
+  compliance:
+    maxWindowDays: 365
+    defaultCustomerName: ""
+```
+
+The `bin/lucairn doctor` adds a `check_dashboard_compliance` probe
+that rejects banned-literal values in `DEFAULT_CUSTOMER_NAME` and
+out-of-range `MAX_WINDOW_DAYS` values before the dashboard boots.
 

@@ -46,7 +46,7 @@ dependencies:
     # not need a second chart repository during first deployment.
     condition: certification.enabled
   - name: dashboard
-    version: 0.6.0
+    version: 0.7.0
     # Enterprise Dashboard sub-chart. OFF by default; customer opts in via
     # --set dashboard.enabled=true (or via their customer-values.yaml).
     condition: dashboard.enabled

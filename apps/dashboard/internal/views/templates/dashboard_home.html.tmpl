@@ -2,7 +2,7 @@
 <section class="lc-page-section">
   <header class="lc-page-header">
     <h1 class="lc-page-title">Operator overview</h1>
-    <p class="lc-page-lede">Hello, <strong>{{ .User.Email }}</strong>. The dashboard foundation is online. Compliance export ships in an upcoming kit release; everything else below is live.</p>
+    <p class="lc-page-lede">Hello, <strong>{{ .User.Email }}</strong>. The Lucairn Enterprise Dashboard is feature-complete: cert browser, server health, audit log, API key management, and compliance export are all live below.</p>
   </header>
   <div class="lc-card-grid">
     <article class="lc-card">
@@ -26,13 +26,15 @@
       </header>
       <p class="lc-card-body">Filter audit events with render-time PII guard; reveal raw is admin-only and logged via a paired <code class="lc-mono">audit.reveal_raw</code> event.</p>
     </article>
+    {{ if hasRole .User "admin" }}
     <article class="lc-card">
       <header class="lc-card-header">
-        <h2 class="lc-card-title">Compliance export</h2>
-        {{ template "statusdot" dict "Status" "warn" "Label" "Available in a later kit release" "Timestamp" "" }}
+        <h2 class="lc-card-title"><a class="lc-link" href="/compliance">Compliance export</a></h2>
+        {{ template "statusdot" dict "Status" "ok" "Label" "Live" "Timestamp" "" }}
       </header>
-      <p class="lc-card-body">PDF aggregation broken down by the three-category AI Act scheme. Cover page cites kit version + image digests.</p>
+      <p class="lc-card-body">PDF aggregation broken down by the three-category AI Act scheme (Art. 10 + 15 sanitizer, Art. 12 + 14 evidence, Art. 10 + 12 + 14 + 15 inventory). Cover page cites kit version + image digests. Generation emits a paired <code class="lc-mono">audit.compliance_pdf_generated</code> event.</p>
     </article>
+    {{ end }}
     {{ if hasRole .User "admin" }}
     <article class="lc-card">
       <header class="lc-card-header">

@@ -166,6 +166,20 @@ spec:
                   key: {{ .Values.audit.savedFiltersDBConnectionStringRef.key | default "url" | quote }}
             {{- end }}
             {{- end }}
+            {{- /* Compliance PDF export. The surface is admin-only and
+               always-on when the dashboard is enabled; these env vars
+               are optional overrides for the date-range cap + the
+               default customer name pre-populated on the form. */ -}}
+            {{- if .Values.compliance }}
+            {{- if .Values.compliance.maxWindowDays }}
+            - name: LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS
+              value: {{ .Values.compliance.maxWindowDays | quote }}
+            {{- end }}
+            {{- if .Values.compliance.defaultCustomerName }}
+            - name: LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME
+              value: {{ .Values.compliance.defaultCustomerName | quote }}
+            {{- end }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.containerPort }}

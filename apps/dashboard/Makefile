@@ -3,7 +3,7 @@
 # The repo-root Makefile (../../Makefile) owns CLI tests + packaging. This
 # file owns local dashboard chores (proto regen, go test, go build).
 
-.PHONY: proto-sync test build
+.PHONY: proto-sync test build image-manifest-sync
 
 # proto-sync regenerates the vendored upstream witness proto stubs.
 #
@@ -29,3 +29,12 @@ test:
 
 build:
 	go build ./...
+
+# image-manifest-sync copies the kit-root image-manifest.yaml into
+# apps/dashboard/ so the //go:embed directive in main.go pulls the
+# canonical kit-wide manifest at build time. Run this BEFORE
+# `docker build` or `go build` (in CI; the Dockerfile's pre-compile
+# guard fails-closed if the file isn't present). The compliance PDF
+# cover page renders the embedded manifest verbatim.
+image-manifest-sync:
+	cp ../../image-manifest.yaml ./image-manifest.yaml

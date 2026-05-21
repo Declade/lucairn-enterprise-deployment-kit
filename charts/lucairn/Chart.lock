@@ -37,6 +37,6 @@ dependencies:
   version: 0.1.0
 - name: dashboard
   repository: ""
-  version: 0.6.0
-digest: sha256:ae7039498cb91cd9d365cac3afd9a70c7514a74d2b5d3aa7f81c430b54b13f33
-generated: "2026-05-21T11:50:27.331688+02:00"
+  version: 0.7.0
+digest: sha256:be209b90f42b217b58da41d7a84996d6fac8e9bd2c8abe0e067b815ec61d9a4f
+generated: "2026-05-21T13:46:31.50214+02:00"
