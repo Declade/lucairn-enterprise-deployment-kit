@@ -38,3 +38,30 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{- /*
+  validators.keysGatewayAdminHalfConfig
+
+  Slice 5 sibling of the Grafana embed guard. Fails fast when the
+  /keys surface is enabled (`dashboard.gateway.adminURL` set) but the
+  Secret-name ref carrying the admin token is empty. Without this guard
+  the deployment template's `required` only fires once Helm renders
+  every env-var slot; surfacing the failure at the validator
+  invocation site keeps the error message close to the consumer's
+  call.
+
+  Invoked from charts/lucairn/charts/dashboard/templates/deployment.yaml
+  via `{{ include "validators.keysGatewayAdminHalfConfig" $ }}`.
+*/ -}}
+{{- define "validators.keysGatewayAdminHalfConfig" -}}
+{{- $dashboard := (default dict .Values.dashboard) -}}
+{{- if $dashboard.enabled -}}
+{{- $gw := (default dict $dashboard.gateway) -}}
+{{- if $gw.adminURL -}}
+{{- $secretRef := (default dict $gw.adminTokenSecretRef) -}}
+{{- if not $secretRef.name -}}
+{{- fail (printf "dashboard.gateway.adminURL is set (=%q) but dashboard.gateway.adminTokenSecretRef.name is empty — the dashboard pod cannot mount the gateway admin token and would 401 on every /keys request. Pre-create a K8s Secret (typically `lucairn-dashboard-gateway-admin`) with key `admin-token` carrying the gateway's DSA_ADMIN_KEY value, then set dashboard.gateway.adminTokenSecretRef.name to its name. See INSTALL.md § \"Enable API key management (Slice 5)\"." $gw.adminURL) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

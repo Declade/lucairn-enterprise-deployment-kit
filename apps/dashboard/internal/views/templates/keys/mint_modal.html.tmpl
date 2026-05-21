@@ -1,0 +1,35 @@
+{{ define "keys-mint-modal" }}
+<aside class="lc-drawer"
+       role="dialog"
+       aria-modal="true"
+       aria-labelledby="lc-mint-title"
+       x-data="{ open: true, copied: false, plaintext: {{ .JustMinted.RawKey | printf "%q" }} }"
+       x-trap.inert.noscroll="open"
+       x-on:keydown.escape.window="open = false; plaintext = ''"
+       x-show="open">
+  <div class="lc-drawer-backdrop" x-on:click="open = false; plaintext = ''"></div>
+  <div class="lc-drawer-panel">
+    <header class="lc-drawer-header">
+      <h2 id="lc-mint-title" class="lc-drawer-title">New API key &mdash; copy now, it will not appear again</h2>
+      <button type="button" class="lc-link-button" aria-label="Close" x-on:click="open = false; plaintext = ''">Close</button>
+    </header>
+    <div class="lc-drawer-body">
+      <p class="lc-text-muted">Customer: <code class="lc-mono">{{ .JustMinted.KeyID }}</code> &mdash; prefix <code class="lc-mono">{{ .JustMinted.KeyPrefix }}</code></p>
+      <div class="lc-banner lc-banner--warn" role="status">
+        Treat the plaintext key below as bearer-equivalent. The gateway never stores it in recoverable form &mdash; this is the only chance to copy it. Closing this dialog removes the value from the page.
+      </div>
+      <label class="lc-text-muted" for="lc-mint-raw">Plaintext key</label>
+      <pre class="lc-codeblock"><code id="lc-mint-raw" x-text="plaintext"></code></pre>
+      <div class="lc-card-actions">
+        <button type="button"
+                class="lc-login-button"
+                x-on:click="navigator.clipboard.writeText(plaintext).then(() => { copied = true; setTimeout(() => copied = false, 5000); })">Copy key</button>
+        <span class="lc-pill lc-pill--ok" x-show="copied" x-transition>Copied</span>
+        <button type="button"
+                class="lc-secondary-button"
+                x-on:click="open = false; plaintext = ''">I copied it, close</button>
+      </div>
+    </div>
+  </div>
+</aside>
+{{ end }}

@@ -67,6 +67,10 @@ const (
 	envGrafanaPanelWitnessUID    = "LUCAIRN_DASHBOARD_GRAFANA_PANEL_WITNESS_VERIFY_RATE_UID"
 	envGrafanaPanelAuditUID      = "LUCAIRN_DASHBOARD_GRAFANA_PANEL_AUDIT_LOG_VOLUME_UID"
 
+	// Slice 5: API key management against the gateway admin HTTP surface.
+	envGatewayAdminURL   = "LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL"
+	envGatewayAdminToken = "LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN"
+
 	defaultListenAddr       = "0.0.0.0:8443"
 	defaultBootstrapEmail   = "admin@lucairn.local"
 	defaultOIDCGroupsClaim  = "groups"
@@ -123,6 +127,13 @@ type Config struct {
 	GrafanaPanelSanitizerUID string
 	GrafanaPanelWitnessUID   string
 	GrafanaPanelAuditUID     string
+
+	// Slice 5: API key management. Both fields are OPTIONAL — when
+	// either is empty, the /keys surface still registers but renders
+	// the "not configured" explainer. Setting one without the other is
+	// a configuration error caught at boot.
+	GatewayAdminURL   string
+	GatewayAdminToken string
 }
 
 // Load reads configuration from the environment and applies safe defaults.
@@ -150,7 +161,44 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	if err := applyKeysSurfaceConfig(cfg); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// applyKeysSurfaceConfig reads + validates the Slice 5 API-key
+// management env vars.
+//
+// The /keys surface is OPT-IN. The driver is the pair
+// LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL + LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN.
+// Both must be set together; setting only one is a half-wired config
+// caught here (Slice 3 pattern #25 — fail-closed at boot, not silently
+// at first /keys request).
+func applyKeysSurfaceConfig(cfg *Config) error {
+	cfg.GatewayAdminURL = strings.TrimSpace(os.Getenv(envGatewayAdminURL))
+	cfg.GatewayAdminToken = strings.TrimSpace(os.Getenv(envGatewayAdminToken))
+	if cfg.GatewayAdminURL == "" && cfg.GatewayAdminToken == "" {
+		return nil
+	}
+	if cfg.GatewayAdminURL == "" {
+		return fmt.Errorf("%s must be set when %s is set", envGatewayAdminURL, envGatewayAdminToken)
+	}
+	if cfg.GatewayAdminToken == "" {
+		return fmt.Errorf("%s must be set when %s is set", envGatewayAdminToken, envGatewayAdminURL)
+	}
+	u, err := url.Parse(cfg.GatewayAdminURL)
+	if err != nil {
+		return fmt.Errorf("%s parse %q: %w", envGatewayAdminURL, cfg.GatewayAdminURL, err)
+	}
+	switch u.Scheme {
+	case "http", "https":
+		// ok
+	default:
+		return fmt.Errorf("%s scheme must be http:// or https://, got %q", envGatewayAdminURL, u.Scheme)
+	}
+	return nil
 }
 
 // applyHealthSurfaceConfig reads + validates the Slice 4 server-health +

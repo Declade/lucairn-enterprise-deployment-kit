@@ -117,6 +117,21 @@ spec:
               value: {{ .Values.grafana.panels.auditLogVolumeUID | quote }}
             {{- end }}
             {{- end }}
+            {{- /* Slice 5: API key management against the gateway admin
+               HTTP surface. Both env vars render together when adminURL is
+               set; the umbrella-chart `fail` template in _validators.tpl
+               catches the half-wired (URL set, secret missing) case at
+               `helm install/upgrade` time so a dashboard pod never boots
+               into a state where /keys returns 401 on every request. */ -}}
+            {{- if .Values.gateway.adminURL }}
+            - name: LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL
+              value: {{ .Values.gateway.adminURL | quote }}
+            - name: LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "dashboard.gateway.adminTokenSecretRef.name is required when dashboard.gateway.adminURL is set (operator pre-creates the Secret with key 'admin-token' carrying the gateway's DSA_ADMIN_KEY value)" .Values.gateway.adminTokenSecretRef.name | quote }}
+                  key: {{ .Values.gateway.adminTokenSecretRef.key | default "admin-token" | quote }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.containerPort }}

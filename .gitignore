@@ -10,4 +10,11 @@ customer-bundles/
 *.tgz
 .certs/
 keys/
+# Exempt the dashboard's API-key management template directory
+# (Slice 5). The root `keys/` pattern excludes crypto material that
+# customers may leave next to the kit (Ed25519 pairs, etc.); the
+# dashboard's `views/templates/keys/` subdir is unrelated source
+# code and must ship in the repo.
+!apps/dashboard/internal/views/templates/keys/
+!apps/dashboard/internal/views/templates/keys/**
 .DS_Store

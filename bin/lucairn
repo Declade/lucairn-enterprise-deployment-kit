@@ -940,7 +940,171 @@ check_dashboard() {
 
   check_dashboard_grafana "$env_file" || return 1
 
+  check_dashboard_keys "$env_file" || return 1
+
   return 0
+}
+
+# Pre-flight Slice 5 API key management configuration. Skipped silently
+# when LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL is unset (the /keys surface
+# is off; the dashboard still renders cert browser + server health).
+#
+# Validates 6 failure modes:
+#   1. URL set + token unset → FAIL
+#   2. Token set + URL unset → FAIL (half-wired the other way)
+#   3. Token matches a placeholder pattern (CHANGE_ME_*, etc.) → FAIL
+#   4. URL unreachable (`curl -sf --max-time 5 "$url/healthz"` fails)
+#      → FAIL (skipped when DOCTOR_OFFLINE=1)
+#   5. URL + token set + endpoint returns 401 on /api/v1/admin/customers
+#      → FAIL (skipped when DOCTOR_OFFLINE=1)
+#   6. URL + token set + 200 + zero customers → WARN (/keys surface
+#      will render the "no customers" empty state)
+#
+# kubectl path: when DOCTOR_INCLUDE_DASHBOARD=1 and kubectl is
+# available, verify the Secret named LUCAIRN_DASHBOARD_GATEWAY_ADMIN_SECRET_NAME
+# (default `lucairn-dashboard-gateway-admin`) exists AND carries a
+# non-empty `admin-token` data key (Slice 4 C14 pattern — verify the
+# VALUE not just the Secret existence).
+#
+# Bash 3.2 compatible per Slice 2 lesson #7 (no `${,,}`, no `declare -A`,
+# no `mapfile`/`readarray`).
+check_dashboard_keys() {
+  local env_file="$1"
+  local gw_url gw_token
+  gw_url="$(env_value "$env_file" LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL)"
+  gw_token="$(env_value "$env_file" LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN)"
+
+  # OPT-IN — both unset = surface disabled cleanly.
+  if [ -z "$gw_url" ] && [ -z "$gw_token" ]; then
+    echo "dashboard keys: skipped (/keys surface disabled — set LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL + LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN to enable)"
+    return 0
+  fi
+
+  local fail=0
+
+  # (1) + (2) Half-wired guards.
+  if [ -n "$gw_url" ] && [ -z "$gw_token" ]; then
+    echo "dashboard keys: failed (LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL is set but LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN is empty — the dashboard would 401 on every /keys request)"
+    fail=1
+  fi
+  if [ -n "$gw_token" ] && [ -z "$gw_url" ]; then
+    echo "dashboard keys: failed (LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN is set but LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL is empty — set both or neither)"
+    fail=1
+  fi
+
+  if [ "$fail" -eq 1 ]; then
+    return "$fail"
+  fi
+
+  # (3) Placeholder rejection. Mirrors the Slice 4 GAP-1 grafana
+  # secret pattern + the gateway admin client's NewAdminClient
+  # constructor (apps/dashboard/internal/gateway/admin_client.go::
+  # isPlaceholderToken).
+  case "$gw_token" in
+    CHANGE_ME*|CHANGEME*|changeme*|change_me*|TODO*|todo*|REPLACE_ME*|REPLACE_WITH*|replace_me*|replace_with*|your-admin-token*|your_admin_token*|placeholder*|PLACEHOLDER*)
+      echo "dashboard keys: failed (LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN still matches a placeholder (e.g. CHANGE_ME_*) — replace with the gateway's DSA_ADMIN_KEY value)"
+      fail=1
+      ;;
+  esac
+
+  # URL scheme check.
+  case "$gw_url" in
+    https://*)
+      echo "dashboard keys: url scheme ok (https)"
+      ;;
+    http://*)
+      echo "dashboard keys: warn (LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL uses http://; expected on in-cluster service DNS, audit before exposing externally)"
+      ;;
+    *)
+      echo "dashboard keys: failed (LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL must start with http:// or https://, got: $gw_url)"
+      fail=1
+      ;;
+  esac
+
+  if [ "$fail" -eq 1 ]; then
+    return "$fail"
+  fi
+
+  # (4) + (5) Reachability + auth probe. Best-effort; --max-time keeps
+  # doctor responsive even when the gateway is genuinely down.
+  if [ "${DOCTOR_OFFLINE:-0}" != "1" ] && have curl; then
+    local probe_url probe_code
+    probe_url="${gw_url%/}/healthz"
+    probe_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
+        "$probe_url" 2>/dev/null || echo 000)"
+    case "$probe_code" in
+      200|204)
+        echo "dashboard keys: gateway reachable ($probe_code on $probe_url)"
+        ;;
+      000)
+        echo "dashboard keys: warn (gateway unreachable at $probe_url — expected when doctor runs pre-up)"
+        ;;
+      *)
+        echo "dashboard keys: failed (gateway $probe_url returned $probe_code; verify LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL)"
+        fail=1
+        ;;
+    esac
+
+    if [ "$fail" -eq 0 ] && [ "$probe_code" = "200" -o "$probe_code" = "204" ]; then
+      local admin_url admin_code admin_body
+      admin_url="${gw_url%/}/api/v1/admin/customers"
+      admin_body="$(mktemp 2>/dev/null || echo /tmp/lucairn-doctor-keys.$$)"
+      admin_code="$(curl -sS -o "$admin_body" -w '%{http_code}' --max-time 5 \
+          -H "X-Admin-Key: $gw_token" "$admin_url" 2>/dev/null || echo 000)"
+      case "$admin_code" in
+        200)
+          echo "dashboard keys: admin auth ok ($admin_code on $admin_url)"
+          # (6) Zero-customers warn.
+          if [ -s "$admin_body" ]; then
+            # Lightweight count of customer entries — match the
+            # comma-separated "customer_id":"…" pattern. Bash 3.2
+            # compatible, no jq dependency.
+            local cust_count
+            cust_count="$(grep -o '"customer_id"' "$admin_body" 2>/dev/null | wc -l | tr -d ' ')"
+            if [ "${cust_count:-0}" -eq 0 ]; then
+              echo "dashboard keys: warn (gateway has zero customers — /keys surface will render the \"no customers configured\" empty state)"
+            else
+              echo "dashboard keys: gateway reports $cust_count customer(s)"
+            fi
+          fi
+          ;;
+        401|403)
+          echo "dashboard keys: failed (admin token rejected by gateway ($admin_code) — verify LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN matches the gateway's DSA_ADMIN_KEY env var)"
+          fail=1
+          ;;
+        000)
+          echo "dashboard keys: warn (admin endpoint unreachable; gateway /healthz returned 200 but $admin_url timed out)"
+          ;;
+        *)
+          echo "dashboard keys: failed (admin endpoint $admin_url returned $admin_code)"
+          fail=1
+          ;;
+      esac
+      rm -f "$admin_body" 2>/dev/null || true
+    fi
+  fi
+
+  # kubectl path — Secret existence + non-empty VALUE check.
+  if [ "$fail" -eq 0 ] && [ "${DOCTOR_INCLUDE_DASHBOARD:-0}" = "1" ] && have kubectl; then
+    local dash_ns secret_name secret_key val
+    dash_ns="${LUCAIRN_DASHBOARD_NAMESPACE:-lucairn}"
+    secret_name="${LUCAIRN_DASHBOARD_GATEWAY_ADMIN_SECRET_NAME:-lucairn-dashboard-gateway-admin}"
+    secret_key="${LUCAIRN_DASHBOARD_GATEWAY_ADMIN_SECRET_KEY:-admin-token}"
+    if ! kubectl get secret "$secret_name" -n "$dash_ns" >/dev/null 2>&1; then
+      echo "dashboard keys: failed (Secret $secret_name missing in namespace $dash_ns — pre-create with: kubectl -n $dash_ns create secret generic $secret_name --from-literal=$secret_key=<gateway DSA_ADMIN_KEY value>)"
+      fail=1
+    else
+      val=$(kubectl get secret "$secret_name" -n "$dash_ns" -o jsonpath="{.data.${secret_key}}" 2>/dev/null | base64 -d 2>/dev/null || true)
+      if [ -z "$val" ]; then
+        echo "dashboard keys: failed (Secret $secret_name in $dash_ns has missing/empty key '$secret_key' — verify the key name and value)"
+        fail=1
+      else
+        echo "dashboard keys: kubectl Secret $secret_name present in $dash_ns (key '$secret_key' non-empty)"
+      fi
+    fi
+  fi
+
+  return "$fail"
 }
 
 # Pre-flight Slice 4 server-health + Grafana embedding configuration.

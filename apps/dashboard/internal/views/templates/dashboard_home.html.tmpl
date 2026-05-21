@@ -2,7 +2,7 @@
 <section class="lc-page-section">
   <header class="lc-page-header">
     <h1 class="lc-page-title">Operator overview</h1>
-    <p class="lc-page-lede">Hello, <strong>{{ .User.Email }}</strong>. The dashboard foundation is online. Additional views &mdash; audit log, compliance export, and API key management &mdash; will be added in upcoming kit releases.</p>
+    <p class="lc-page-lede">Hello, <strong>{{ .User.Email }}</strong>. The dashboard foundation is online. Additional views &mdash; audit log and compliance export &mdash; will be added in upcoming kit releases.</p>
   </header>
   <div class="lc-card-grid">
     <article class="lc-card">
@@ -36,10 +36,10 @@
     {{ if hasRole .User "admin" }}
     <article class="lc-card">
       <header class="lc-card-header">
-        <h2 class="lc-card-title">API keys</h2>
-        {{ template "statusdot" dict "Status" "warn" "Label" "Available in a later kit release" "Timestamp" "" }}
+        <h2 class="lc-card-title"><a class="lc-link" href="/keys">API keys</a></h2>
+        {{ template "statusdot" dict "Status" "ok" "Label" "Live" "Timestamp" "" }}
       </header>
-      <p class="lc-card-body">Mint, rotate, revoke, and inspect lcr_live_* keys via the gateway admin surface.</p>
+      <p class="lc-card-body">Mint, rotate, revoke, and bulk-revoke lcr_live_* keys via the gateway admin surface. Plaintext shown once on mint &mdash; copy before closing.</p>
     </article>
     {{ end }}
   </div>

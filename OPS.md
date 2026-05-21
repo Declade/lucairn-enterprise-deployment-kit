@@ -323,3 +323,98 @@ When to rotate:
 - Whenever an operator with cluster Secret read access leaves the team.
 - After any Grafana-side incident response that suspects key compromise.
 
+## Rotating the gateway admin token
+
+The dashboard's `/keys` surface authenticates against the gateway
+admin HTTP API using the same bearer token the gateway validates
+constant-time (`DSA_ADMIN_KEY`). Rotation is a two-step:
+
+1. Mint a fresh 32-byte (or longer) random token: `openssl rand -hex 32`.
+2. Update the gateway's `DSA_ADMIN_KEY` AND the dashboard's
+   `LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN` to the new value, in
+   any order.
+
+The dashboard reads the token on every admin call (no in-memory
+cache); the gateway picks up the new value on its next env-var
+reload (compose: container recreate; Helm: rolling restart of the
+gateway Deployment). A brief mismatch window (≤ rolling-restart
+duration) is acceptable — clients of the dashboard's `/keys`
+surface see a temporary `502` and retry on next page reload.
+
+### Compose path
+
+```bash
+NEW_TOKEN="$(openssl rand -hex 32)"
+
+# 1) Update both env values atomically in customer.env.
+sed -i.bak \
+  -e "s|^DSA_ADMIN_KEY=.*|DSA_ADMIN_KEY=${NEW_TOKEN}|" \
+  -e "s|^LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN=.*|LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN=${NEW_TOKEN}|" \
+  customer.env
+
+# 2) Recreate both containers.
+docker compose -f docker-compose.customer.yml \
+  --env-file customer.env up -d --force-recreate gateway
+
+docker compose -f docker-compose.customer.yml \
+  --env-file customer.env --profile dashboard \
+  up -d --force-recreate lucairn-dashboard
+
+# 3) Verify doctor sees the new token end-to-end.
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
+```
+
+### Kubernetes path
+
+```bash
+NEW_TOKEN="$(openssl rand -hex 32)"
+
+# 1) Rotate the Secret carrying DSA_ADMIN_KEY on the gateway side
+#    (typically named `lucairn-gateway-admin`).
+kubectl -n lucairn create secret generic lucairn-gateway-admin \
+  --from-literal=admin-key="${NEW_TOKEN}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# 2) Rotate the dashboard-side mirror Secret.
+kubectl -n lucairn create secret generic lucairn-dashboard-gateway-admin \
+  --from-literal=admin-token="${NEW_TOKEN}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# 3) Roll both Deployments so they re-read the Secret values.
+kubectl -n lucairn rollout restart deploy/gateway
+kubectl -n lucairn rollout restart deploy/lucairn-dashboard
+
+# 4) Verify the dashboard's pre-flight passes.
+DOCTOR_INCLUDE_DASHBOARD=1 bin/lucairn doctor --env customer.env \
+  --compose docker-compose.customer.yml
+```
+
+When to rotate:
+
+- Day-1 after first successful `/keys` page load (replace any
+  bootstrap value the kit shipped with).
+- Whenever a dashboard admin user leaves the team.
+- On the same cadence as the rest of the kit's bearer tokens.
+
+## Bulk-revoking API keys via the dashboard
+
+The `/keys` page supports bulk revoke via row checkboxes + the
+"Revoke selected" toolbar button. Per Slice 3 pattern #5, every
+key in the bulk selection emits its own `key.revoke_requested`
+audit event (NOT one aggregate `key.bulk_revoke_requested`) so the
+audit stream stays joinable with single-revoke entries.
+
+Operational bounds the dashboard enforces against the gateway
+admin surface:
+
+- Worker pool size = 5 concurrent `DeleteKey` RPCs per bulk job.
+- Process-wide rate limit = 10 RPC/s (shared across all
+  in-flight bulk jobs).
+- Max keys per single bulk submission = 100 (oversize requests
+  receive HTTP 413).
+
+Operators who need to revoke more than 100 keys in one motion
+submit multiple bulk jobs back-to-back. The gateway's per-IP
+admin rate limit (60/min) is the harder ceiling — the
+dashboard's 10 RPC/s stays well under it.
+
