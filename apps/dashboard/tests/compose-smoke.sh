@@ -200,18 +200,18 @@ case "$MINT_LOC" in
 esac
 echo "compose-smoke: POST /keys/mint ok (302 -> /login)"
 
-echo "compose-smoke: hitting POST /keys/some-prefix/revoke (expect 302 -> /login; auth-gated)"
-REVOKE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8443/keys/some-prefix/revoke)
+echo "compose-smoke: hitting POST /keys/some-key-id/revoke (expect 302 -> /login; auth-gated)"
+REVOKE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8443/keys/some-key-id/revoke)
 if [ "$REVOKE_CODE" != "302" ]; then
-  echo "compose-smoke: POST /keys/some-prefix/revoke expected 302, got $REVOKE_CODE" >&2
+  echo "compose-smoke: POST /keys/some-key-id/revoke expected 302, got $REVOKE_CODE" >&2
   exit 1
 fi
-REVOKE_LOC=$(curl -s -o /dev/null -w "%{redirect_url}" -X POST http://127.0.0.1:8443/keys/some-prefix/revoke)
+REVOKE_LOC=$(curl -s -o /dev/null -w "%{redirect_url}" -X POST http://127.0.0.1:8443/keys/some-key-id/revoke)
 case "$REVOKE_LOC" in
   */login*) ;;
-  *) echo "compose-smoke: POST /keys/some-prefix/revoke redirect target should be /login, got $REVOKE_LOC" >&2 ; exit 1 ;;
+  *) echo "compose-smoke: POST /keys/some-key-id/revoke redirect target should be /login, got $REVOKE_LOC" >&2 ; exit 1 ;;
 esac
-echo "compose-smoke: POST /keys/some-prefix/revoke ok (302 -> /login)"
+echo "compose-smoke: POST /keys/some-key-id/revoke ok (302 -> /login)"
 
 echo "compose-smoke: hitting POST /keys/bulk-revoke (expect 302 -> /login; auth-gated)"
 BULK_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8443/keys/bulk-revoke)

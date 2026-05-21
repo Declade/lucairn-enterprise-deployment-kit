@@ -498,8 +498,13 @@
   transition: border-color 200ms ease-out;
 }
 
-.lc-filter-input:focus {
-  outline: none;
+/* Slice 5 fix-up r1 UX-M4: :focus → :focus-visible so the ring only
+ * appears for keyboard navigation. Mouse clicks would otherwise paint
+ * the accent ring on a dropdown the user is actively interacting
+ * with, which is noisy. */
+.lc-filter-input:focus-visible {
+  outline: 2px solid var(--color-accent-highlight);
+  outline-offset: 2px;
   border-color: var(--color-accent-highlight);
 }
 
@@ -509,6 +514,18 @@
   gap: 8px;
   font-size: 13px;
   color: var(--color-text-secondary);
+}
+
+/* Slice 5 fix-up r1 UX-M3: checkbox focus-visible ring. Operators
+ * tab through the bulk-revoke row checkboxes; without an explicit
+ * ring the active checkbox is invisible against the table background
+ * for keyboard-only users. The Lucairn accent token used as the ring
+ * preserves single-accent discipline. Applies to ANY input[type=
+ * checkbox] in the dashboard so future surfaces get the affordance
+ * for free. */
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--color-accent-highlight);
+  outline-offset: 2px;
 }
 
 .lc-filter-actions {
@@ -525,6 +542,16 @@
   align-items: center;
   justify-content: space-between;
   padding: 8px 0 12px;
+}
+
+/* Slice 5 fix-up r1 UX-M1: actions group at the right edge of the
+ * table toolbar. Used by /keys to group the Revoke-selected +
+ * Mint-new-key buttons. Keeps the toolbar single-line with the count
+ * label on the left and grouped actions on the right. */
+.lc-table-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .lc-secondary-button {
