@@ -72,6 +72,14 @@ func TestRender_EmitsRequiredSections(t *testing.T) {
 		"lucairn-dashboard",
 		"dsa-gateway",
 		"This report is an automated count",
+		// Release-gate polish (2026-05-21) — regulator-validator FAIL [6/7]
+		// closure: the cover caveat MUST frame the 3-category obligation
+		// overlay as Lucairn's opinion, never as the AI Act's own
+		// categorization. This assertion locks the fix against silent
+		// regression (tautological-test bug class — Slice 4 C33 / Slice 5
+		// BH-H2 / Slice 6 H2 / Slice 7 BH-M1 pattern).
+		"Lucairn's opinionated obligation overlay",
+		"Regulation (EU) 2024/1689 does not itself define these three categories",
 	} {
 		if !strings.Contains(out, must) {
 			t.Errorf("output missing %q\nfull:\n%s", must, out)

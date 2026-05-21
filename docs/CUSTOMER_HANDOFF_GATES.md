@@ -65,7 +65,7 @@ bin/lucairn doctor \
   --offline
 ```
 
-For registry delivery, run the non-offline doctor check from a host with the same registry credentials the customer will use:
+For registry delivery, run the non-offline doctor check from a host that has the same registry access the customer will use (Lucairn-default GHCR is public, no credentials needed; a private mirror requires the matching credentials):
 
 ```bash
 bin/lucairn doctor \

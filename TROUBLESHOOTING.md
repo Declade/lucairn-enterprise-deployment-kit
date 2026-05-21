@@ -15,7 +15,7 @@ Common causes:
 - `GATEWAY_KEYSTORE_KEY` is not base64 32 bytes.
 - A required Veil key is blank.
 - Host port 8080 or 8085 is already in use.
-- Private GHCR images are not pullable. Run `docker login ghcr.io` or use the customer registry mirror in `LUCAIRN_IMAGE_REGISTRY`.
+- GHCR images fail to pull. The default `ghcr.io/declade/*` Lucairn images are public; transient pull failures usually mean network egress restriction on the host. If your install uses a private mirror, run `docker login ghcr.io` against the mirror credentials or set `LUCAIRN_IMAGE_REGISTRY` to the mirror prefix.
 
 ## Docker / OrbStack: "All Predefined Address Pools Have Been Fully Subnetted"
 
