@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -71,9 +72,16 @@ type Page struct {
 // Querier is the subset of pgx-shaped methods the cert store needs. The
 // production pool implements this directly (via *pgxpool.Pool); tests
 // drive a pgxmock-friendly stub.
+//
+// Exec is REQUIRED for non-returning statements (INSERT / DELETE / UPDATE).
+// Using Query for INSERT/DELETE leaks a pgx.Rows that must be Close()d;
+// per Slice 6 reviewer-chain B1 the saved-filters Save + Delete paths
+// previously discarded the Rows and starved the connection pool after
+// ~4 saves. Exec returns a pgconn.CommandTag and never opens a Rows.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
 // CertStore is the cert browser's data layer.

@@ -308,14 +308,28 @@ func (d *AuditDeps) RevealRawHandler(w http.ResponseWriter, r *http.Request) {
 	// Emit FIRST, then return raw. If emit fails we 500 + return
 	// nothing — the admin has to retry (and the audit trail stays
 	// consistent with the on-screen reveal).
-	d.AuditEmitter.Emit("audit.reveal_raw", user.Email, map[string]string{
+	//
+	// Slice 6 fix-up r1 H3 / DRIFT-006: Emit now returns an error.
+	// LogEmitter always returns nil (pod-logs-only fallback);
+	// DBEmitter returns the wrapped INSERT error when the audit DB
+	// write fails. We MUST 500 in either case for fail-closed
+	// invariance: if the trail loses the reveal, the screen MUST NOT
+	// show the raw payload.
+	if err := d.AuditEmitter.Emit(r.Context(), "audit.reveal_raw", user.Email, map[string]any{
 		"target_event_id":     ev.EventID,
 		"target_event_type":   ev.EventType,
 		"target_source":       ev.SourceService,
 		"target_request_id":   ev.RequestID,
 		"target_payload_type": ev.PayloadType,
-	})
-	tok, _ := auth.IssueToken(w, r)
+	}); err != nil {
+		log.Printf("audit_reveal: emit failed (fail-closed; raw payload NOT returned): %v", err)
+		http.Error(w, "audit emit failed", http.StatusInternalServerError)
+		return
+	}
+	tok, err := auth.IssueToken(w, r)
+	if err != nil {
+		log.Printf("audit_reveal: csrf issue: %v", err)
+	}
 	data := auditPageData{
 		PageData: views.PageData{
 			Title:      "Audit event " + eventID,
@@ -367,10 +381,19 @@ func (d *AuditDeps) CSVExportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if reveal {
 		// Emit the heads-up BEFORE we begin writing the response.
-		d.AuditEmitter.Emit("audit.csv_export_with_reveal", user.Email, map[string]string{
+		//
+		// Slice 6 fix-up r1 H3 / DRIFT-006: Emit failure MUST
+		// short-circuit the export — the same fail-closed invariance as
+		// reveal-raw (no raw PII on the wire without a matching audit
+		// row).
+		if err := d.AuditEmitter.Emit(r.Context(), "audit.csv_export_with_reveal", user.Email, map[string]any{
 			"row_count":    strconv.Itoa(len(events)),
 			"filter_query": redactQueryForAudit(r.URL.RawQuery),
-		})
+		}); err != nil {
+			log.Printf("audit_csv: reveal emit failed (fail-closed; raw payload NOT streamed): %v", err)
+			http.Error(w, "audit emit failed", http.StatusInternalServerError)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -634,11 +657,29 @@ func (d *AuditDeps) populatePagination(data *auditPageData) {
 func (d *AuditDeps) populateRedactedRows(data *auditPageData) {
 	data.RowsRedacted = make([]renderedRow, 0, len(data.Events))
 	for _, ev := range data.Events {
-		preview := string(ev.Payload)
+		// Slice 6 fix-up r1 H1: the flat piiguard.Redact treats every
+		// 5-digit number as a German postal code, every 13-19 digit
+		// number as a PAN, and HH:MM:SS timestamps as IPv6. Audit
+		// payloads carry numeric leaves (id, latency_ms, port,
+		// response_size, BIGSERIAL ids) that MUST NOT be redacted —
+		// they're the operator's primary triage signal. RedactJSON
+		// walks the structure and only Redact()s string leaves,
+		// preserving every number / boolean / null as-is. Falls back
+		// to flat Redact on non-JSON / malformed input via its
+		// internal contract.
+		var preview string
+		if redacted, err := piiguard.RedactJSON(ev.Payload); err == nil && len(redacted) > 0 {
+			preview = string(redacted)
+		} else {
+			// Defence-in-depth: the JSON walker should never error
+			// because its malformed-input branch already falls back
+			// to flat Redact; if we somehow land here, render the
+			// sentinel rather than the raw bytes.
+			preview = "[REDACTED — render error]"
+		}
 		if len(preview) > 80 {
 			preview = preview[:80] + "…"
 		}
-		preview = piiguard.Redact(preview)
 		data.RowsRedacted = append(data.RowsRedacted, renderedRow{
 			ID:             ev.ID,
 			EventID:        ev.EventID,

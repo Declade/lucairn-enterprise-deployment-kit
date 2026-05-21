@@ -126,6 +126,14 @@ var ErrSavedFilterNameLength = errors.New("store: saved filter name must be 1-10
 var ErrSavedFilterTableMissing = errors.New("store: dashboard_saved_filters table missing — apply apps/dashboard/migrations/000001_create_saved_filters.up.sql")
 
 // Save inserts or updates one filter for (user, name).
+//
+// Slice 6 fix-up r1 B1: Save uses Exec, NOT Query. Query for a
+// non-returning INSERT returns a pgx.Rows that MUST be Close()d to
+// return the connection to the pool. The previous implementation
+// discarded the Rows; every Save leaked one connection from the
+// MaxConns=4 saved-filters pool. After ~4 saves the pool blocked + the
+// "Save" button hung with no error in logs. Exec returns a
+// pgconn.CommandTag and never opens a Rows.
 func (s *SavedFiltersStore) Save(ctx context.Context, user, name string, filter AuditFilter) error {
 	name = strings.TrimSpace(name)
 	if len(name) == 0 || len(name) > 100 {
@@ -145,7 +153,7 @@ func (s *SavedFiltersStore) Save(ctx context.Context, user, name string, filter 
 		ON CONFLICT (user_email, name) DO UPDATE SET
 			filter_json = EXCLUDED.filter_json,
 			updated_at = NOW()`
-	if _, err := s.db.Query(ctx, sqlInsert, user, name, string(payload)); err != nil {
+	if _, err := s.db.Exec(ctx, sqlInsert, user, name, string(payload)); err != nil {
 		if isMissingTableErr(err) {
 			return ErrSavedFilterTableMissing
 		}
@@ -195,6 +203,9 @@ func (s *SavedFiltersStore) List(ctx context.Context, user string) ([]SavedFilte
 }
 
 // Delete removes one filter for (user, name).
+//
+// Slice 6 fix-up r1 B1: Delete uses Exec, NOT Query. Same connection-leak
+// rationale as Save above.
 func (s *SavedFiltersStore) Delete(ctx context.Context, user, name string) error {
 	user = strings.TrimSpace(user)
 	name = strings.TrimSpace(name)
@@ -202,7 +213,7 @@ func (s *SavedFiltersStore) Delete(ctx context.Context, user, name string) error
 		return errors.New("store: delete saved filter requires non-empty user + name")
 	}
 	const sqlDel = `DELETE FROM dashboard_saved_filters WHERE user_email = $1 AND name = $2`
-	if _, err := s.db.Query(ctx, sqlDel, user, name); err != nil {
+	if _, err := s.db.Exec(ctx, sqlDel, user, name); err != nil {
 		if isMissingTableErr(err) {
 			return ErrSavedFilterTableMissing
 		}

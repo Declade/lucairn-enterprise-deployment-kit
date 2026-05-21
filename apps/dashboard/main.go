@@ -38,6 +38,7 @@ import (
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/server"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/store"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/witness"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 //go:embed static
@@ -213,7 +214,13 @@ func main() {
 	if cfg.AuditLogDBURL != "" {
 		ctxAudit, cancelAudit := context.WithTimeout(context.Background(), 15*time.Second)
 		var err error
-		auditStore, _, err = store.NewAuditStore(ctxAudit, cfg.AuditLogDBURL)
+		// Slice 6 fix-up r1 H3 / DRIFT-006: retain the pgxpool so we
+		// can construct DBEmitter against it below. The pool is shared
+		// between the audit-events read path (AuditStore) and the
+		// audit-events write path (DBEmitter); pgxpool handles
+		// concurrent access.
+		var auditPool *pgxpool.Pool
+		auditStore, auditPool, err = store.NewAuditStore(ctxAudit, cfg.AuditLogDBURL)
 		cancelAudit()
 		if err != nil {
 			log.Fatalf("audit log store: %v", err)
@@ -236,9 +243,22 @@ func main() {
 			savedFilters = nil
 		}
 		auditConfigured = true
+		// Slice 6 fix-up r1 H3 / DRIFT-006: when the audit-log DB is
+		// wired we swap the pod-logs-only LogEmitter for a DBEmitter
+		// that INSERTs into audit_events via the audit_app role's
+		// existing INSERT grant. The dashboard's own audit-trail
+		// browser then surfaces dashboard-emitted events (reveal-raw,
+		// csv_export_with_reveal, key.mint_requested, key.revoke_requested)
+		// alongside upstream service events. LogEmitter remains the
+		// fallback for dev installs that haven't wired AUDIT_LOG_DB_URL.
+		if auditPool != nil {
+			auditEmitter = audit.NewDBEmitter(auditPool, "dsa-dashboard")
+			log.Printf("audit emitter: DBEmitter (writes to audit_events on audit-log DB)")
+		}
 		log.Printf("audit log browser enabled (db=%s)", redactDSN(cfg.AuditLogDBURL))
 	} else {
 		log.Printf("audit log browser disabled (set LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL to enable)")
+		log.Printf("audit emitter: LogEmitter — pod-logs-only fallback; dashboard-emitted audit events will NOT be queryable via /audit. Set LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL to enable the DBEmitter path.")
 	}
 
 	if cfg.GrafanaURL != "" {
