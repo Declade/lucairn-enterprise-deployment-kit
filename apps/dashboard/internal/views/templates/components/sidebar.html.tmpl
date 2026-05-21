@@ -23,11 +23,11 @@
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 4 H20 V20 H4 Z"/><path d="M4 9 H20"/><path d="M9 4 V20"/></svg>
       <span>Audit log</span>
     </a>
+    {{ if hasRole .User "admin" }}
     <a class="lc-sidebar-link{{ if eq .ActivePage "compliance" }} is-active{{ end }}" href="/compliance"{{ if eq .ActivePage "compliance" }} aria-current="page"{{ end }}>
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 4 L20 8 V14 C20 17.5 16 20 12 21 C8 20 4 17.5 4 14 V8 Z"/><path d="M9 12 L11 14 L15 10"/></svg>
       <span>Compliance</span>
     </a>
-    {{ if hasRole .User "admin" }}
     <a class="lc-sidebar-link{{ if eq .ActivePage "keys" }} is-active{{ end }}" href="/keys"{{ if eq .ActivePage "keys" }} aria-current="page"{{ end }}>
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="12" r="4"/><path d="M12 12 L20 12"/><path d="M17 12 V15"/><path d="M19 12 V14"/></svg>
       <span>API keys</span>
@@ -35,7 +35,7 @@
     {{ end }}
   </nav>
   <footer class="lc-sidebar-footer">
-    <small class="lc-text-muted">Lucairn Dashboard v0.6.0</small>
+    <small class="lc-text-muted">Lucairn Dashboard v{{ if dashboardVersion }}{{ dashboardVersion }}{{ else }}dev{{ end }}</small>
   </footer>
 </aside>
 {{ end }}

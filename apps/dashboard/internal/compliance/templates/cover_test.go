@@ -61,7 +61,7 @@ func TestRender_EmitsRequiredSections(t *testing.T) {
 	out := rec.joined()
 	for _, must := range []string{
 		"Lucairn - Compliance Export",
-		"AI Act Article 10 / 12 / 14 / 15 evidence summary",
+		"AI Act Art. 10 / 12 / 14 / 15 evidence summary",
 		"Customer",
 		"Acme Corp GmbH",
 		"Date range",

@@ -186,7 +186,13 @@ func (a *Aggregator) validateWindow(from, to time.Time) (time.Time, time.Time, e
 	if !from.Before(to) {
 		return time.Time{}, time.Time{}, ErrWindowInvalid
 	}
-	spanDays := int(to.Sub(from)/(24*time.Hour)) + 1
+	// The window is half-open [from, to); the handler already converts an
+	// inclusive user-supplied 'to' date to a half-open exclusive instant
+	// by adding 1 day (see compliance.go). Computing spanDays as the bare
+	// duration in days correctly counts the number of VISIBLE inclusive
+	// days the user asked for — a 365-visible-day annual export produces
+	// to.Sub(from) == 365*24h, hence spanDays == 365, at the default cap.
+	spanDays := int(to.Sub(from) / (24 * time.Hour))
 	if spanDays > a.maxWindowDays {
 		return time.Time{}, time.Time{}, fmt.Errorf("%w: %d days (max %d)", ErrWindowTooLarge, spanDays, a.maxWindowDays)
 	}

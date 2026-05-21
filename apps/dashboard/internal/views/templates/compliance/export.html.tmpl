@@ -15,7 +15,10 @@
       <div class="lc-banner lc-banner--fail" role="alert">{{ .FlashError }}</div>
     {{ end }}
 
-    <form class="lc-filter-form" method="post" action="/compliance/export" aria-label="Generate compliance PDF">
+    <form class="lc-filter-form" method="post" action="/compliance/export"
+          aria-label="Generate compliance PDF"
+          x-data="{ loading: false }"
+          x-on:submit="loading = true">
       <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
 
       <fieldset class="lc-filter-fieldset">
@@ -52,7 +55,9 @@
       </fieldset>
 
       <div class="lc-filter-actions">
-        <button type="submit" class="lc-primary-button">Generate PDF</button>
+        <button type="submit" class="lc-primary-button"
+                :disabled="loading"
+                x-text="loading ? 'Generating…' : 'Generate PDF'">Generate PDF</button>
         <span class="lc-text-muted">Generation emits a paired <code class="lc-mono">audit.compliance_pdf_generated</code> event with the actor + window + page count + byte size.</span>
       </div>
     </form>

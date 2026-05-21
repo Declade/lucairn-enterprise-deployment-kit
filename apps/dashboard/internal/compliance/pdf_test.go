@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -150,6 +151,53 @@ func TestGeneratePDF_PDFContentsHaveZeroBannedLiterals_pdftotext(t *testing.T) {
 	}
 }
 
+// TestGeneratePDF_NoArticleWordInOutput locks the CE-F-001 BLOCKER fix:
+// the rendered PDF body MUST cite AI Act provisions as "Art. N" (per
+// CLAUDE.md AI Act citation format lock + claim-enforcement policy
+// CC-001). The "Article N" form is reserved for the regulation's own
+// long-form headings and MUST NOT appear in Lucairn-emitted body copy.
+//
+// regexp matches "Article" followed by a space + digit, which is the
+// exact pattern fix-up r1 removed from pdf.go + cover.go.
+func TestGeneratePDF_NoArticleWordInOutput(t *testing.T) {
+	if _, err := exec.LookPath("pdftotext"); err != nil {
+		t.Skip("pdftotext not installed; Art.-format regression check skipped")
+	}
+
+	bytes_, _, err := GeneratePDF(sampleInput())
+	if err != nil {
+		t.Fatalf("GeneratePDF = %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	pdfPath := tmpDir + "/out.pdf"
+	if err := writeFile(pdfPath, bytes_); err != nil {
+		t.Fatalf("write tmp PDF: %v", err)
+	}
+
+	cmd := exec.Command("pdftotext", "-layout", pdfPath, "-")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("pdftotext: %v", err)
+	}
+	text := string(out)
+
+	// "Article \d" MUST NOT appear in the rendered PDF body or cover.
+	re := regexp.MustCompile(`Article \d+`)
+	if loc := re.FindStringIndex(text); loc != nil {
+		ctx := text[max(0, loc[0]-40):min(len(text), loc[1]+40)]
+		t.Errorf("PDF text contains long-form AI Act citation (CE-F-001 regression):\n%s\nfull text (first 1500 chars):\n%s", ctx, text[:min(1500, len(text))])
+	}
+
+	// "Art. N" MUST appear (the short-form citation is the locked
+	// project convention). 4 article numbers cover the 3 categories.
+	for _, must := range []string{"Art. 10", "Art. 12", "Art. 14", "Art. 15"} {
+		if !strings.Contains(text, must) {
+			t.Errorf("PDF text missing locked short-form citation %q", must)
+		}
+	}
+}
+
 func TestGeneratePDF_StableSizeAndPageCount(t *testing.T) {
 	// fpdf's PDF output isn't byte-deterministic across runs even with
 	// SetCreationDate pinned — internal map iteration (aliasMap +
@@ -245,6 +293,13 @@ func writeFile(path string, data []byte) error {
 
 func min(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b

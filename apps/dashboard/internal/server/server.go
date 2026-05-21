@@ -122,6 +122,11 @@ func New(opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("server: load views: %w", err)
 	}
+	// BH-H2 fix-up r1: thread the binary's ldflag-injected version into
+	// the views package so the sidebar footer renders the live build
+	// number on every page (closes the v0.6.0 hardcoded literal). Empty
+	// opts.Version falls through to "dev" in the sidebar template.
+	views.SetDashboardVersion(opts.Version)
 	deps := &handlers.Deps{
 		Renderer:      renderer,
 		Authenticator: opts.Authenticator,

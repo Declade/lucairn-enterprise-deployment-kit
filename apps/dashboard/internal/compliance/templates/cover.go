@@ -104,7 +104,7 @@ func Render(r CoverRenderer, in CoverInput, assert AssertFn) error {
 	// Subtitle.
 	r.SetFont("Helvetica", "", 11)
 	r.SetTextColor(120, 120, 125)
-	subtitle := "AI Act Article 10 / 12 / 14 / 15 evidence summary"
+	subtitle := "AI Act Art. 10 / 12 / 14 / 15 evidence summary"
 	if err := assert("subtitle", subtitle); err != nil {
 		return err
 	}
@@ -173,9 +173,9 @@ func Render(r CoverRenderer, in CoverInput, assert AssertFn) error {
 	r.SetFont("Helvetica", "I", 8)
 	r.SetTextColor(140, 140, 145)
 	caveat := strings.Join([]string{
-		"This report is an automated count produced by the Lucairn Enterprise Dashboard.",
-		"It documents what occurred inside the customer's own infrastructure during the window above.",
-		"Lucairn is the software vendor; the customer is the regulator-facing operator.",
+		"This report is an automated count produced by the Lucairn Enterprise Dashboard. It documents what occurred inside the customer's own infrastructure during the window above.",
+		"Lucairn is the software vendor; the customer is the regulator-facing operator and remains responsible for assessing the AI system's classification, conformity-assessment, and obligations under Regulation (EU) 2024/1689.",
+		"This report is informational and is not legal advice. Review by qualified counsel is required before relying on it for compliance decisions. Lucairn UG (i.Gr.) disclaims all liability for downstream use.",
 	}, " ")
 	if err := assert("cover_caveat", caveat); err != nil {
 		return err

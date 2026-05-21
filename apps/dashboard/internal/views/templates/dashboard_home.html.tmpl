@@ -32,7 +32,7 @@
         <h2 class="lc-card-title"><a class="lc-link" href="/compliance">Compliance export</a></h2>
         {{ template "statusdot" dict "Status" "ok" "Label" "Live" "Timestamp" "" }}
       </header>
-      <p class="lc-card-body">PDF aggregation broken down by the three-category AI Act scheme (Art. 10 + 15 sanitizer, Art. 12 + 14 evidence, Art. 10 + 12 + 14 + 15 inventory). Cover page cites kit version + image digests. Generation emits a paired <code class="lc-mono">audit.compliance_pdf_generated</code> event.</p>
+      <p class="lc-card-body">PDF aggregation broken down by Lucairn's three-category obligation overlay across the AI Act high-risk requirements (Cat 1: Art. 10 + 15 sanitizer; Cat 2: Art. 12 + 14 evidence; Cat 3: Art. 10 + 12 + 14 + 15 inventory). The grouping is Lucairn's framing; the AI Act itself does not impose this categorization. Cover page cites kit version + image digests. Generation emits a paired <code class="lc-mono">audit.compliance_pdf_generated</code> event.</p>
     </article>
     {{ end }}
     {{ if hasRole .User "admin" }}

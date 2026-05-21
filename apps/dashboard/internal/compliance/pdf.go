@@ -165,7 +165,7 @@ func renderCategory1(pdf *fpdf.Fpdf, s *ComplianceSummary, customerName string) 
 	const section = "Category 1 (Art. 10 + 15 sanitizer)"
 
 	pdf.AddPage()
-	if err := writeCategoryHeader(pdf, section, "Article 10 — data governance and training data quality. Article 15 — accuracy, robustness, and cybersecurity."); err != nil {
+	if err := writeCategoryHeader(pdf, section, "Art. 10 — data and data governance. Art. 15 — accuracy, robustness and cybersecurity."); err != nil {
 		return err
 	}
 
@@ -232,7 +232,7 @@ func renderCategory2(pdf *fpdf.Fpdf, s *ComplianceSummary, customerName string) 
 	const section = "Category 2 (Art. 12 + 14 evidence)"
 
 	pdf.AddPage()
-	if err := writeCategoryHeader(pdf, section, "Article 12 — record-keeping and logging. Article 14 — human oversight."); err != nil {
+	if err := writeCategoryHeader(pdf, section, "Art. 12 — record-keeping (automatic event logs over the system's lifetime). Art. 14 — human oversight."); err != nil {
 		return err
 	}
 
@@ -300,7 +300,7 @@ func renderCategory3(pdf *fpdf.Fpdf, s *ComplianceSummary, customerName string) 
 	const section = "Category 3 (Art. 10 + 12 + 14 + 15 inventory)"
 
 	pdf.AddPage()
-	if err := writeCategoryHeader(pdf, section, "Cross-cutting inventory across Article 10 (data governance), 12 (logging), 14 (human oversight), 15 (robustness)."); err != nil {
+	if err := writeCategoryHeader(pdf, section, "Cross-cutting inventory across Art. 10 (data and data governance), Art. 12 (record-keeping), Art. 14 (human oversight), Art. 15 (accuracy, robustness and cybersecurity)."); err != nil {
 		return err
 	}
 
