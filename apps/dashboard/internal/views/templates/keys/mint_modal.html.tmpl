@@ -22,7 +22,7 @@
       <pre class="lc-codeblock"><code id="lc-mint-raw" x-text="plaintext"></code></pre>
       <div class="lc-card-actions">
         <button type="button"
-                class="lc-login-button"
+                class="lc-primary-button"
                 x-on:click="navigator.clipboard.writeText(plaintext).then(() => { copied = true; setTimeout(() => copied = false, 5000); })">Copy key</button>
         <span class="lc-pill lc-pill--ok" x-show="copied" x-transition>Copied</span>
         <button type="button"

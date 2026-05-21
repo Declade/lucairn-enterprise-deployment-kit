@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -17,6 +16,8 @@ import (
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/audit"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/gateway"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/testutil"
+	"golang.org/x/time/rate"
 )
 
 // fakeAdmin is the in-memory test double for the handlers.AdminClient
@@ -421,6 +422,11 @@ func TestKeys_BulkRevokeAdmin_EmitsPerKeyAudit(t *testing.T) {
 		ListCustomersOut: []gateway.CustomerEntry{{CustomerID: "cust_a"}},
 	}
 	d, em := newKeysDeps(t, admin)
+	// Swap the production 4s-per-token limiter for an unbounded one
+	// so the audit-emission semantics get tested without the
+	// 12s+ rate-limit wait. The pacing itself is locked-in by
+	// TestKeys_BulkRevokeRespectsGatewayOuter20PerMinLimit below.
+	d.revokeLimiter = rate.NewLimiter(rate.Inf, keysBulkRevokeBurst)
 	tok, cookie := issueCSRF(t)
 
 	form := url.Values{}
@@ -475,12 +481,199 @@ func TestKeys_BulkRevokeAdmin_TooLarge_413(t *testing.T) {
 	}
 }
 
+// TestKeys_BulkRevokeRespectsGatewayOuter20PerMinLimit locks in the
+// DRIFT-001 fix (Slice 5 fix-up r1): the dashboard's bulk-revoke
+// RPC pacing must stay UNDER the gateway's outer per-IP admin
+// limiter at services/gateway/cmd/server/main.go:823 (20 req/min).
+// Previous setting (rate.Limit(10), burst=10) interpreted "10" as
+// 10/SECOND = 600/min, slamming the gateway 30x over the wall.
+//
+// We don't drive a live gateway — instead we assert the pacing
+// invariant directly: consecutive RevokeKey calls must be spaced
+// at least keysBulkRevokeInterval apart once the initial burst is
+// consumed.
+func TestKeys_BulkRevokeRespectsGatewayOuter20PerMinLimit(t *testing.T) {
+	t.Parallel()
+	// Use the PRODUCTION limiter — the whole point of the test.
+	admin := &timestampingAdmin{
+		inner: &fakeAdmin{
+			ListCustomersOut: []gateway.CustomerEntry{{CustomerID: "cust_a"}},
+		},
+	}
+	d, _ := newKeysDeps(t, admin)
+	// Verify NewKeysDeps installed the production-shaped limiter.
+	if d.revokeLimiter.Limit() != keysBulkRevokeEvery {
+		t.Fatalf("limiter rate=%v want %v", d.revokeLimiter.Limit(), keysBulkRevokeEvery)
+	}
+	if d.revokeLimiter.Burst() != keysBulkRevokeBurst {
+		t.Fatalf("limiter burst=%d want %d", d.revokeLimiter.Burst(), keysBulkRevokeBurst)
+	}
+
+	tok, cookie := issueCSRF(t)
+	form := url.Values{}
+	form.Set("csrf", tok)
+	form.Set("customer_id", "cust_a")
+	// Bulk 3 keys — enough to observe 2 inter-call gaps, both of
+	// which must be ≥ keysBulkRevokeInterval (4s).
+	form.Add("key_id", "k1")
+	form.Add("key_id", "k2")
+	form.Add("key_id", "k3")
+	req := httptest.NewRequest(http.MethodPost, "/keys/bulk-revoke", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	req = withKeysSession(req, newKeysSession(auth.RoleAdmin))
+	rr := httptest.NewRecorder()
+	d.BulkRevokeHandler(rr, req)
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	times := admin.snapshot()
+	if len(times) != 3 {
+		t.Fatalf("got %d RevokeKey calls, want 3", len(times))
+	}
+	// First call may be immediate (burst=1). Subsequent calls MUST
+	// each pay the interval. Allow a small slop (200ms) for
+	// goroutine scheduling jitter — the test still catches any
+	// regression to rate.Limit(10) (= 100ms/call, 40x faster).
+	const slop = 200 * time.Millisecond
+	for i := 1; i < len(times); i++ {
+		gap := times[i].Sub(times[i-1])
+		minGap := keysBulkRevokeInterval - slop
+		if gap < minGap {
+			t.Errorf("call %d→%d gap=%v want ≥%v (limiter regression: dashboard would burst past gateway 20/min)",
+				i-1, i, gap, minGap)
+		}
+	}
+}
+
+// TestGetCustomers_FirstCallerCancelDoesNotPoisonCoalesced locks in
+// the BH-H2 fix: when caller A's request ctx cancels mid-fetch,
+// caller B (coalesced via singleflight) MUST still receive the
+// customer list. The fix detaches the inner gateway-call ctx from
+// any single caller's ctx so cancellation cannot poison peers.
+func TestGetCustomers_FirstCallerCancelDoesNotPoisonCoalesced(t *testing.T) {
+	t.Parallel()
+	gate := make(chan struct{})
+	admin := &slowAdmin{
+		gate: gate,
+		out:  []gateway.CustomerEntry{{CustomerID: "cust_a"}},
+	}
+	d, _ := newKeysDeps(t, admin)
+
+	// Caller A: ctx that we'll cancel BEFORE the gateway returns.
+	ctxA, cancelA := context.WithCancel(context.Background())
+	// Caller B: independent ctx.
+	ctxB := context.Background()
+
+	type result struct {
+		out []gateway.CustomerEntry
+		err error
+	}
+	resA := make(chan result, 1)
+	resB := make(chan result, 1)
+
+	go func() {
+		out, err := d.getCustomers(ctxA)
+		resA <- result{out: out, err: err}
+	}()
+	// Give A a head-start so it owns the singleflight slot.
+	time.Sleep(50 * time.Millisecond)
+	go func() {
+		out, err := d.getCustomers(ctxB)
+		resB <- result{out: out, err: err}
+	}()
+	// Cancel A while the admin call is still gated.
+	time.Sleep(50 * time.Millisecond)
+	cancelA()
+	// Release the admin call so the singleflight closure can
+	// complete on B's behalf.
+	close(gate)
+
+	select {
+	case r := <-resB:
+		if r.err != nil {
+			t.Fatalf("caller B err=%v (caller A's cancel poisoned the coalesced result)", r.err)
+		}
+		if len(r.out) != 1 || r.out[0].CustomerID != "cust_a" {
+			t.Errorf("caller B got %+v, want [{cust_a}]", r.out)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("caller B never returned — coalesced fetch may be wedged on A's cancelled ctx")
+	}
+
+	// Drain caller A — its result is don't-care. It may legitimately
+	// return either the value (if the inner call completed before A's
+	// goroutine observed the cancel) or a cancellation error. Both
+	// outcomes are acceptable; only caller B's invariant is
+	// load-bearing.
+	select {
+	case <-resA:
+	case <-time.After(2 * time.Second):
+		t.Log("caller A did not return within 2s; non-fatal")
+	}
+}
+
+// slowAdmin is an AdminClient stub that blocks on a channel before
+// returning, letting tests stage cancellation precisely.
+type slowAdmin struct {
+	gate <-chan struct{}
+	out  []gateway.CustomerEntry
+}
+
+func (s *slowAdmin) ListCustomers(ctx context.Context) ([]gateway.CustomerEntry, error) {
+	<-s.gate
+	return append([]gateway.CustomerEntry(nil), s.out...), nil
+}
+func (s *slowAdmin) ListKeys(ctx context.Context, customerID string, reveal bool) (*gateway.ListKeysResult, error) {
+	return nil, gateway.ErrCustomerNotFound
+}
+func (s *slowAdmin) MintKey(ctx context.Context, customerID string) (*gateway.MintKeyResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (s *slowAdmin) RevokeKey(ctx context.Context, customerID, keyID string) (*gateway.RevokeKeyResult, error) {
+	return nil, errors.New("not implemented")
+}
+
+// timestampingAdmin captures wall-clock for every RevokeKey call so
+// the rate-pacing invariant can be asserted directly.
+type timestampingAdmin struct {
+	inner     *fakeAdmin
+	mu        sync.Mutex
+	callTimes []time.Time
+}
+
+func (a *timestampingAdmin) ListCustomers(ctx context.Context) ([]gateway.CustomerEntry, error) {
+	return a.inner.ListCustomers(ctx)
+}
+func (a *timestampingAdmin) ListKeys(ctx context.Context, customerID string, reveal bool) (*gateway.ListKeysResult, error) {
+	return a.inner.ListKeys(ctx, customerID, reveal)
+}
+func (a *timestampingAdmin) MintKey(ctx context.Context, customerID string) (*gateway.MintKeyResult, error) {
+	return a.inner.MintKey(ctx, customerID)
+}
+func (a *timestampingAdmin) RevokeKey(ctx context.Context, customerID, keyID string) (*gateway.RevokeKeyResult, error) {
+	a.mu.Lock()
+	a.callTimes = append(a.callTimes, time.Now())
+	a.mu.Unlock()
+	return a.inner.RevokeKey(ctx, customerID, keyID)
+}
+
+// snapshot returns a defensive copy of the recorded call times so
+// the test can read without holding the mutex.
+func (a *timestampingAdmin) snapshot() []time.Time {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]time.Time, len(a.callTimes))
+	copy(out, a.callTimes)
+	return out
+}
+
 func TestKeys_PlaintextNeverLogged(t *testing.T) {
 	// NOTE: intentionally NOT t.Parallel — log.SetOutput is process-
 	// global; running this test in parallel with other handlers tests
 	// that also call log.Printf would race on the buffer. Serial
 	// execution closes the race without weakening the assertion.
-	var buf safeBuffer
+	var buf testutil.SafeBuffer
 	oldOut := log.Writer()
 	oldFlags := log.Flags()
 	log.SetOutput(&buf)
@@ -656,28 +849,15 @@ func TestExtractKeyIDFromRevokePath(t *testing.T) {
 	}
 }
 
-// safeBuffer wraps bytes.Buffer with a mutex so log.SetOutput
-// targeting it doesn't race with parallel sibling-test log.Printf
-// calls during the brief window before t.Cleanup restores the
-// original writer.
-type safeBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (s *safeBuffer) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.buf.Write(p)
-}
-
-func (s *safeBuffer) String() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.buf.String()
-}
-
-// stubBodyDrainer is unused; kept to satisfy go vet on io import in
-// case future tests stream large bodies.
+// Slice 5 fix-up r1: safeBuffer moved to internal/testutil.SafeBuffer
+// so audit/emitter_test.go (and any future test that needs to capture
+// log writer output during parallel sibling-test runs) imports a single
+// shared helper. Keep this comment for future readers grepping for the
+// pattern.
+//
+// io.Discard / errors.New retained-import guards: many sibling tests
+// use them already, but keeping the explicit references here means a
+// future refactor that removes the last consumer still leaves the
+// import in place until intentionally pruned.
 var _ = io.Discard
 var _ = errors.New

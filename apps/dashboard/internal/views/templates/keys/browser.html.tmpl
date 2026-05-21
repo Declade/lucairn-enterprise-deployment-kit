@@ -43,7 +43,7 @@
     <form method="post" action="/keys/mint" style="margin-bottom:16px">
       <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
       <input type="hidden" name="customer_id" value="{{ .SelectedID }}">
-      <button type="submit" class="lc-login-button">Mint new key</button>
+      <button type="submit" class="lc-primary-button">Mint new key</button>
     </form>
 
     {{ if .KeysResult }}
@@ -96,10 +96,33 @@
                     </td>
                     <td class="lc-table-td">
                       {{ if .KeyID }}
-                        <form method="post" action="/keys/{{ .KeyID }}/revoke" style="display:inline">
+                        <form method="post" action="/keys/{{ .KeyID }}/revoke" style="display:inline" x-data="{ confirming: false }">
                           <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
                           <input type="hidden" name="customer_id" value="{{ $.SelectedID }}">
-                          <button type="submit" class="lc-secondary-button" onclick="return confirm('Revoke key {{ .KeyPrefix }}? Any caller using this key will start receiving 401 from the gateway.')">Revoke</button>
+                          {{- /*
+                            Inline-expand confirm pattern (Slice 5 fix-up r1, UX-B1):
+                            native browser confirm() dialogs break the Lucairn
+                            design discipline (system chrome leaks through; cannot
+                            theme; cannot match the design tokens). Instead, the
+                            "Revoke" button toggles a per-row Alpine state that
+                            reveals a Cancel + Confirm pair. The actual form POST
+                            fires only from the Confirm button. Prefix +
+                            Key ID stay visible in the same row throughout so
+                            the operator verifies before committing.
+                          */ -}}
+                          <button type="button"
+                                  class="lc-secondary-button"
+                                  x-show="!confirming"
+                                  x-on:click="confirming = true"
+                                  aria-label="Revoke key {{ .KeyPrefix }}">Revoke</button>
+                          <span x-show="confirming" x-cloak class="lc-revoke-confirm" role="group" aria-label="Confirm revoke for key {{ .KeyPrefix }}">
+                            <span class="lc-text-muted lc-revoke-confirm-label">Revoke <code class="lc-mono">{{ .KeyPrefix }}</code>?</span>
+                            <button type="button"
+                                    class="lc-secondary-button"
+                                    x-on:click="confirming = false">Cancel</button>
+                            <button type="submit"
+                                    class="lc-secondary-button lc-secondary-button--danger">Confirm revoke</button>
+                          </span>
                         </form>
                       {{ end }}
                     </td>
