@@ -16,7 +16,7 @@
     {{ end }}
 
     {{ if .FlashError }}
-      <div class="lc-banner lc-banner--fail" role="alert">{{ .FlashError }}</div>
+      <div class="lc-banner lc-banner--fail" role="alert" aria-live="assertive">{{ .FlashError }}</div>
     {{ end }}
 
     <form class="lc-filter-form" method="post" action="/compliance/export"

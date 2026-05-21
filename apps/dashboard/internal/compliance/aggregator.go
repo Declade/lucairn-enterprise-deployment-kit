@@ -21,11 +21,15 @@
 // to keep aggregate scans bounded; PDFs spanning multiple years are
 // the operator's signal to slice the export.
 //
-// Concurrency model: each `Summary` call issues three parallel queries
-// via errgroup, one per population. The aggregator does NOT keep any
-// internal caching — the gateway-admin client + cert browser already
-// cache; compliance PDFs are infrequent enough that a fresh query is
-// the simpler design (avoids stale evidence in the artefact).
+// Concurrency model: each `Summary` call issues the three count queries
+// sequentially (cert → sanitizer → audit). Compliance PDFs are
+// generated infrequently (operator-driven, on-demand), so the simpler
+// sequential path is preferred over a parallel errgroup; latency is
+// dominated by the planner-bounded Postgres scans rather than wall-
+// clock concurrency. The aggregator does NOT keep any internal caching
+// — the gateway-admin client + cert browser already cache; compliance
+// PDFs need a fresh query every time so the artefact reflects the
+// current audit state (no stale evidence).
 package compliance
 
 import (
@@ -440,6 +444,13 @@ func (a *Aggregator) Summary(ctx context.Context, from, to time.Time) (*Complian
 //
 // Allowed: Unicode letters + digits + spaces + common punctuation
 // (. , - _ ( ) & ' / : @ + ).
+//
+// Rejected (L2 fix-up r1): the U+202A..U+202E bidi-override / U+2066..
+// U+2069 isolate / U+200B..U+200D zero-width family of Unicode confusables.
+// These don't render visibly but can flip text directionality on the
+// PDF cover page or produce visually-identical strings that hash to
+// different bytes (Trojan-Source-class attacks against the customer-
+// name display).
 func SanitizeCustomerName(name string) (string, error) {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
@@ -451,6 +462,22 @@ func SanitizeCustomerName(name string) (string, error) {
 	for i, r := range trimmed {
 		if r < 0x20 || r == 0x7F {
 			return "", fmt.Errorf("compliance: customer name contains control character at offset %d", i)
+		}
+		// Bidi-override + isolate + zero-width sweep. The literals are
+		// inlined as Go Unicode escape sequences (‪ etc.) so the
+		// source file stays free of bidi-control characters that would
+		// otherwise flip directionality on any editor rendering this
+		// file. Equivalent to `unicode.IsControl` plus targeted
+		// confusable-class entries, but cheaper to read at the call
+		// site than pulling in unicode.RangeTable.
+		switch r {
+		// U+202A..U+202E bidi-override family (LRE, RLE, PDF, LRO, RLO)
+		case '\u202A', '\u202B', '\u202C', '\u202D', '\u202E',
+			// U+2066..U+2069 directional isolates (LRI, RLI, FSI, PDI)
+			'\u2066', '\u2067', '\u2068', '\u2069',
+			// U+200B..U+200D zero-width family (ZWSP, ZWNJ, ZWJ) + U+FEFF BOM
+			'\u200B', '\u200C', '\u200D', '\uFEFF':
+			return "", fmt.Errorf("compliance: customer name contains forbidden Unicode bidi/zero-width character at offset %d", i)
 		}
 	}
 	// Banned-literal scan before returning. The customer name lands on
