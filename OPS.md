@@ -334,12 +334,16 @@ constant-time (`DSA_ADMIN_KEY`). Rotation is a two-step:
    `LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN` to the new value, in
    any order.
 
-The dashboard reads the token on every admin call (no in-memory
-cache); the gateway picks up the new value on its next env-var
-reload (compose: container recreate; Helm: rolling restart of the
-gateway Deployment). A brief mismatch window (≤ rolling-restart
-duration) is acceptable — clients of the dashboard's `/keys`
-surface see a temporary `502` and retry on next page reload.
+The dashboard holds the token in process memory (read once from
+the env var or mounted secret at boot) and includes it on every
+admin call. To pick up the rotated value the dashboard container
+itself must restart (compose: `docker compose ... up -d --force-
+recreate lucairn-dashboard`; Helm: rolling restart of the
+`lucairn-dashboard` Deployment). The gateway likewise picks up
+its new `DSA_ADMIN_KEY` on its own restart. A brief mismatch window
+(≤ rolling-restart duration) is acceptable — clients of the
+dashboard's `/keys` surface see a temporary `502` and retry on
+next page reload.
 
 ### Compose path
 
@@ -399,10 +403,10 @@ When to rotate:
 ## Bulk-revoking API keys via the dashboard
 
 The `/keys` page supports bulk revoke via row checkboxes + the
-"Revoke selected" toolbar button. Per Slice 3 pattern #5, every
-key in the bulk selection emits its own `key.revoke_requested`
-audit event (NOT one aggregate `key.bulk_revoke_requested`) so the
-audit stream stays joinable with single-revoke entries.
+"Revoke selected" toolbar button. Every key in the bulk selection
+emits its own `key.revoke_requested` audit event (NOT one
+aggregate `key.bulk_revoke_requested`) so the audit stream stays
+joinable with single-revoke entries.
 
 Operational bounds the dashboard enforces against the gateway
 admin surface:

@@ -103,7 +103,7 @@
                     <td class="lc-table-td font-tabular">{{ formatDate .LastUsedAt }}</td>
                     <td class="lc-table-td">
                       {{ if .KeyID }}<span class="lc-pill lc-pill--ok">active</span>
-                      {{ else }}<span class="lc-pill" title="Control-API-synced — operator cannot self-revoke">imported</span>{{ end }}
+                      {{ else }}<span class="lc-pill lc-pill--warn" title="Control-API-synced — operator cannot self-revoke">imported</span>{{ end }}
                     </td>
                     <td class="lc-table-td">
                       {{ if .KeyID }}

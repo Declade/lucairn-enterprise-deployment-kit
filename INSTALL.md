@@ -710,7 +710,7 @@ The SAME shared secret is consumed by both the dashboard pod
 > Compose path) causes the embedded iframe to land on Grafana's
 > login screen instead of authenticating via the signed JWT. The
 > Helm path catches this at render time with a `fail` template
-> guard (added in Slice 4 fix-up r1). The Compose path is
+> guard. The Compose path is
 > validated by `bin/lucairn doctor`'s `dashboard grafana:` probe
 > + the soft `/api/datasources/proxy/*` reachability check.
 
@@ -835,9 +835,10 @@ gateway listener as the data plane (mounted under
 `DSA_ADMIN_KEY` constant-time-compared bearer token.
 
 > **`/keys` is admin-only.** Viewers reach the route only via direct
-> URL typing and receive a `404 Not Found` (the locked Slice 1
-> `RequireRole` 404-not-403 pattern at
-> `apps/dashboard/internal/auth/middleware.go:77-91`). Plaintext keys
+> URL typing and receive a `404 Not Found` (the dashboard's
+> `RequireRole` middleware deliberately returns 404 rather than 403
+> to avoid disclosing route existence to non-admin sessions; see
+> `apps/dashboard/internal/auth/middleware.go`). Plaintext keys
 > are shown ONCE on the post-mint modal with
 > `Cache-Control: no-store + Pragma: no-cache + Referrer-Policy:
 > no-referrer` headers so the value never enters intermediary caches,

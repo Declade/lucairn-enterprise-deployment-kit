@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log"
@@ -288,6 +289,15 @@ func (d *KeysDeps) MintHandler(w http.ResponseWriter, r *http.Request) {
 		listResult = list
 	}
 	customers, _ := d.getCustomers(r.Context())
+	// Slice 5 fix-up r1 BH-L1: if the customer-list call hiccups (or
+	// somehow returns empty) AFTER a successful mint, synthesize a
+	// single-entry list from the mint's customerID so the post-mint
+	// render still carries valid context. Without this fallback the
+	// page would render the "No customers configured" empty state
+	// while ALSO surfacing the just-minted modal — confusing.
+	if len(customers) == 0 {
+		customers = []gateway.CustomerEntry{{CustomerID: customerID}}
+	}
 
 	data := keysPageData{
 		PageData: views.PageData{
@@ -306,7 +316,7 @@ func (d *KeysDeps) MintHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	d.render(w, data)
+	d.renderMint(w, data)
 }
 
 // RevokeHandler is POST /keys/{key_id}/revoke. CSRF-required.
@@ -657,4 +667,25 @@ func (d *KeysDeps) render(w http.ResponseWriter, data keysPageData) {
 	if err := d.Renderer.Render(w, "keys/browser.html.tmpl", data); err != nil {
 		log.Printf("keys_browser: render: %v", err)
 	}
+}
+
+// renderMint renders the post-mint page (which includes the modal
+// carrying the plaintext key). Slice 5 fix-up r1 BH-L2: buffer the
+// template output FIRST so a render error doesn't commit a partial
+// page to the wire. If the render errors, log the key_id so the
+// operator can correlate the orphan key against the gateway audit
+// stream and revoke it manually.
+func (d *KeysDeps) renderMint(w http.ResponseWriter, data keysPageData) {
+	var buf bytes.Buffer
+	if err := d.Renderer.Render(&buf, "keys/browser.html.tmpl", data); err != nil {
+		keyID := ""
+		if data.JustMinted != nil {
+			keyID = data.JustMinted.KeyID
+		}
+		log.Printf("keys_mint: render failed for key_id=%s: %v (operator: revoke this key_id via gateway admin API or the /keys browser once render is healthy)", keyID, err)
+		http.Error(w, "render error after successful mint — see server logs to revoke the orphan key", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(buf.Bytes())
 }
