@@ -14,10 +14,12 @@ image:
   # Pinned to the current release tag. Bumped per kit-dashboard release
   # cadence — independent from charts/lucairn/values.yaml global.imageTag
   # (bumping --set global.imageTag=X will NOT bump the dashboard tag).
-  # The 0.7.0 release closes the v1.0-dashboard arc: auth + OIDC + cert
+  # The 0.7.0 release closed the v1.0-dashboard arc: auth + OIDC + cert
   # browser + server health + Grafana embedding + API key management +
-  # audit log browser + compliance PDF export are all live.
-  tag: "0.7.0"
+  # audit log browser + compliance PDF export are all live. 0.7.1
+  # carries the release-gate polish patch (PDF Lucairn-opinion framing
+  # on the 3-category overlay + UI CSS-class consistency).
+  tag: "0.7.1"
   pullPolicy: IfNotPresent
 
 service:

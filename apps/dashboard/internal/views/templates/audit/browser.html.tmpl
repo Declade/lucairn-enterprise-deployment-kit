@@ -105,7 +105,7 @@
                   surface in detail.html.tmpl) — a previous non-standard
                   HTML attribute used here was a no-op (no JS handler).
               */ -}}
-              <div x-data="{ confirming: false }" style="display:inline">
+              <span x-data="{ confirming: false }">
                 <button type="button"
                         class="lc-link-button"
                         x-show="!confirming"
@@ -127,7 +127,7 @@
                     <button type="submit" class="lc-link-button">Confirm delete</button>
                   </form>
                 </span>
-              </div>
+              </span>
             </li>
           {{ end }}
         </ul>
@@ -243,7 +243,7 @@
           <input type="hidden" name="from" value="{{ formatDateTimeLocal .Filter.TimestampFrom }}">
           <input type="hidden" name="to" value="{{ formatDateTimeLocal .Filter.TimestampTo }}">
           <label for="audit-page-size" class="lc-text-muted">Rows / page</label>
-          <select id="audit-page-size" name="page_size" onchange="this.form.submit()">
+          <select id="audit-page-size" name="page_size" class="lc-filter-input" onchange="this.form.submit()">
             {{ range $size := (intList 50 100 200) }}
               <option value="{{ $size }}"{{ if eq $.PageSize $size }} selected{{ end }}>{{ $size }}</option>
             {{ end }}

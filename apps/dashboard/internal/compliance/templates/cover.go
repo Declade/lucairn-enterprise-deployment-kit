@@ -179,6 +179,7 @@ func Render(r CoverRenderer, in CoverInput, assert AssertFn) error {
 	caveat := strings.Join([]string{
 		"This report is an automated count produced by the Lucairn Enterprise Dashboard. It documents what occurred inside the customer's own infrastructure during the window above.",
 		"Lucairn is the software vendor; the customer is the regulator-facing operator and remains responsible for assessing the AI system's classification, conformity-assessment, and obligations under Regulation (EU) 2024/1689.",
+		"The 'Category 1 / 2 / 3' grouping in this report is Lucairn's opinionated obligation overlay for engineering convenience; Regulation (EU) 2024/1689 does not itself define these three categories.",
 		"This report is informational, not legal advice. Review by qualified counsel is required before relying on it for compliance decisions. Lucairn UG (i.Gr.) disclaims all liability for downstream use.",
 	}, " ")
 	if err := assert("cover_caveat", caveat); err != nil {

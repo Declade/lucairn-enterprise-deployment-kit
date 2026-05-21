@@ -110,11 +110,12 @@ cp customer.env.example customer.env
 chmod 600 customer.env
 ```
 
-3. Log in to the private image registry.
+3. (Optional) Configure a private image mirror.
 
-Lucairn provides a GHCR username/token or mirrors the images into the customer's registry.
+GHCR-hosted Lucairn images are public and pull without credentials. Skip this step on a standard install. Only run `docker login` if you mirror the images into a private registry or you operate behind an air-gapped proxy that requires authentication.
 
 ```bash
+# Only if mirroring or air-gapping — not required for stock installs.
 docker login ghcr.io
 ```
 
@@ -458,14 +459,15 @@ The v1.0-dashboard arc is feature-complete.
    ```bash
    docker compose \
      -f docker-compose.customer.yml \
-     -f docker-compose.self-hosted.yml \
      --env-file customer.env \
      --profile dashboard \
      up -d lucairn-dashboard
    ```
 
-   (Add `-f docker-compose.self-hosted-byok.yml` when running with the
-   BYOK overlay.)
+   (Add `-f docker-compose.self-hosted.yml` only when running a
+   self-hosted-inference install; add `-f docker-compose.self-hosted-byok.yml`
+   when running with the BYOK overlay. Split-deployment customers should
+   use only `docker-compose.customer.yml` as shown above.)
 
 4. Confirm health: `curl -fsS http://127.0.0.1:8443/healthz` returns
    `{"status":"ok","version":"..."}`. The container binds only to
@@ -494,8 +496,11 @@ The v1.0-dashboard arc is feature-complete.
    kubectl -n lucairn port-forward svc/lucairn-dashboard 8443:8443
    ```
 
-   Open `https://localhost:8443/login`. The default email is
-   `admin@lucairn.local` (override with
+   Open `http://localhost:8443/login`. The dashboard container serves
+   plain HTTP on port 8443 internally; TLS termination is handled by
+   your ingress (Kubernetes Ingress, kube-proxy, or the Compose-path
+   Caddy/nginx fronting), not by the dashboard binary. The default
+   email is `admin@lucairn.local` (override with
    `dashboard.bootstrapAdmin.email`).
 
 5. Run the dashboard-specific doctor check via the kit CLI:
@@ -963,7 +968,11 @@ the surface (or after, if you don't mind the surface rendering an
 # first-boot convenience and MUST be rotated before any production
 # use — never run with the default credential against a customer-data
 # instance.
-psql 'postgres://dsa:CHANGE_ME@127.0.0.1:5433/audit' \
+docker compose \
+  -f docker-compose.customer.yml \
+  --env-file customer.env \
+  exec -T postgres-audit \
+  psql -U dsa -d audit \
   < apps/dashboard/migrations/000001_create_saved_filters.up.sql
 ```
 
@@ -1081,9 +1090,14 @@ the window endpoints, the page count, the byte size, and the
 aggregated cert / sanitizer / audit counts so future audits can
 correlate the PDF artefact back to the exact window scanned.
 
-If the audit emit fails (DB unreachable mid-export, role grant
-missing), the handler returns 500 + ZERO PDF bytes — the dashboard
-refuses to surface evidence content without a matching audit row.
+When the audit-log DB is configured (`LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL`
+set), the handler fail-closes if the DB INSERT fails (DB unreachable
+mid-export, role grant missing): returns 500 + ZERO PDF bytes — the
+dashboard refuses to surface evidence content without a matching audit
+row. In dev installs without the audit-log DB wired, the LogEmitter
+fallback always returns nil and PDF generation proceeds; the audit row
+lands only in pod logs. Configure the DB URL for the fail-closed
+guarantee before any customer hand-off.
 
 #### Configuration
 

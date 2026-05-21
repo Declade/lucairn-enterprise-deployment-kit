@@ -25,7 +25,7 @@
             returns. Pattern lifted verbatim from the keys/browser
             revoke flow.
         */ -}}
-        <div x-data="{ confirming: false }" style="display:inline">
+        <span x-data="{ confirming: false }">
           <button type="button"
                   class="lc-secondary-button lc-secondary-button--danger"
                   x-show="!confirming"
@@ -52,7 +52,7 @@
                       class="lc-secondary-button lc-secondary-button--danger">Reveal payload</button>
             </form>
           </span>
-        </div>
+        </span>
       {{ end }}
     </div>
   </header>
