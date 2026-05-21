@@ -6,7 +6,7 @@
 // it points at postgres-bridge (which holds veil_certificates). The audit
 // EVENT log lives in a separate Postgres instance (`postgres-audit`) with
 // its own role + schema (per
-// /Users/marcschuelke/dual-sandbox-architecture/services/audit/migrations/000001_create_events.up.sql).
+// dual-sandbox-architecture/services/audit/migrations/000001_create_events.up.sql).
 // Slice 6 introduces a NEW env var `LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL` to
 // keep the two connections independent; downstream code never reaches a
 // place where the cert DB and the audit DB would get conflated.
