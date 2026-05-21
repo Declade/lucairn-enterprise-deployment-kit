@@ -499,7 +499,6 @@ psql "$AUDIT_DB_URL" -f /tmp/rendered/audit/000003_least_privilege_role.up.sql
 The script fails-closed when `$AUDIT_APP_PASSWORD` or
 `$VEIL_APP_PASSWORD` is unset (exit 2) so a forgotten env var
 surfaces immediately rather than silently corrupting the migration.
-Slice 6 fix-up r1 DRIFT-003.
 
 ## Audit log: reveal raw payload + CSV export with PII
 
