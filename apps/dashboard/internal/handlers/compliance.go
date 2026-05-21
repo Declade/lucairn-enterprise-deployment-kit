@@ -89,17 +89,23 @@ func NewComplianceDeps(
 }
 
 // compliancePageData is the render payload for /compliance.
+//
+// PartialDataWarning is non-empty when either DB pool is unwired —
+// the handler explains which category the PDF will surface zeros for
+// so operators don't hand a regulator artefact with silent-zero
+// sections (KD-C3 fix-up r1).
 type compliancePageData struct {
 	views.PageData
-	Configured       bool
-	NotConfigured    string
-	DefaultCustomer  string
-	DefaultFrom      string // YYYY-MM-DD
-	DefaultTo        string // YYYY-MM-DD
-	MaxWindowDays    int
-	FlashError       string
-	KitVersion       string
-	DashboardVersion string
+	Configured         bool
+	NotConfigured      string
+	PartialDataWarning string
+	DefaultCustomer    string
+	DefaultFrom        string // YYYY-MM-DD
+	DefaultTo          string // YYYY-MM-DD
+	MaxWindowDays      int
+	FlashError         string
+	KitVersion         string
+	DashboardVersion   string
 }
 
 // ExportPage is GET /compliance. Admin-only (RequireRole handles the
@@ -139,6 +145,21 @@ func (d *ComplianceDeps) ExportPage(w http.ResponseWriter, r *http.Request) {
 	}
 	if !d.Configured {
 		data.NotConfigured = "Compliance export is not configured on this install. Set LUCAIRN_DASHBOARD_AUDIT_DB_URL (cert browser) and LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL (audit log browser) to populate the certificate and audit-event counts. See INSTALL.md § \"Compliance PDF export\"."
+	} else if d.Aggregator != nil {
+		// Partial-data honesty banner: when either DB pool is unwired the
+		// PDF generates with silent zeros for that category. Render an
+		// explicit banner so operators don't hand a zero-count PDF to a
+		// regulator counsel and miss the gap. KD-C3 fix-up r1.
+		hasCert := d.Aggregator.HasCertDB()
+		hasAudit := d.Aggregator.HasAuditDB()
+		switch {
+		case !hasCert && !hasAudit:
+			data.PartialDataWarning = "Partial data: both the cert DB (LUCAIRN_DASHBOARD_AUDIT_DB_URL) and the audit-log DB (LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL) are unwired on this install. The PDF will contain zero counts in all three categories. Wire both DB pools before relying on this export for regulator submission."
+		case !hasCert:
+			data.PartialDataWarning = "Partial data: the cert DB (LUCAIRN_DASHBOARD_AUDIT_DB_URL) is unwired on this install. Cat 2 + Cat 3 certificate counts will be zero in the generated PDF."
+		case !hasAudit:
+			data.PartialDataWarning = "Partial data: the audit-log DB (LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL) is unwired on this install. Cat 1 + Cat 3 sanitizer + audit-event counts will be zero in the generated PDF."
+		}
 	}
 	d.render(w, "compliance/export.html.tmpl", data)
 }
