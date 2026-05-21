@@ -561,6 +561,78 @@
   background: var(--color-bg-panel);
 }
 
+/* Slice 5 fix-up r1: secondary-button danger modifier. Used for the
+ * "Confirm revoke" branch of the inline-expand confirm pattern. Keeps
+ * the secondary-button shape (operators learn one button family) but
+ * tints the border with the status-fail token so the destructive
+ * action is unambiguous. No new colors invented — reuses the single
+ * status-fail token already in the system. */
+.lc-secondary-button--danger {
+  border-color: var(--color-status-fail);
+  color: var(--color-status-fail);
+}
+
+.lc-secondary-button--danger:hover {
+  border-color: var(--color-status-fail);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+/* Slice 5 fix-up r1: primary-button is the accent-tinted action used
+ * outside of the /login surface. Mint, Confirm-and-apply, and other
+ * high-emphasis CTAs reach for this class. The /login flow keeps the
+ * lc-login-button name for visual continuity (it's the entire purpose
+ * of the lc-login-card composition); everywhere else uses
+ * lc-primary-button. Single-accent discipline preserved — the
+ * background draws from --color-accent-highlight (the one
+ * non-status accent in the token system).
+ */
+.lc-primary-button {
+  background: var(--color-accent-highlight);
+  color: var(--color-bg-base);
+  border: 0;
+  border-radius: var(--radius-button);
+  padding: 8px 16px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 200ms ease-out;
+}
+
+.lc-primary-button:hover {
+  background: var(--color-accent-mid);
+}
+
+.lc-primary-button:focus-visible {
+  outline: 2px solid var(--color-accent-highlight);
+  outline-offset: 2px;
+}
+
+.lc-primary-button:disabled,
+.lc-primary-button[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Slice 5 fix-up r1: lc-revoke-confirm is the inline-expand container
+ * that replaces the native confirm() dialog on /keys. Groups the
+ * prefix label + Cancel + Confirm buttons so they render inline with
+ * the row. */
+.lc-revoke-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.lc-revoke-confirm-label {
+  font-size: 12px;
+}
+
+/* x-cloak hides Alpine-bound elements until the framework hydrates,
+ * preventing a flash of the confirmation panel during initial render. */
+[x-cloak] { display: none !important; }
+
 .lc-link {
   color: var(--color-accent-highlight);
   text-decoration: none;

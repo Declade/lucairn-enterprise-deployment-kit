@@ -1,17 +1,26 @@
 package audit
 
 import (
-	"bytes"
 	"log"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/testutil"
 )
 
+// NOTE: TestLogEmitter_FormatStable + TestLogEmitter_NoSecretLeak both
+// mutate the package-global log.Writer(). They are intentionally NOT
+// t.Parallel'd — running them in parallel with each other (or with any
+// other sibling test that calls log.Printf) would race on the buffer
+// AND on the writer pointer itself. The Slice 4 C33 lesson
+// (handlers/keys_test.go TestKeys_PlaintextNeverLogged) applies here
+// too: serial execution + a sync.Mutex-wrapped buffer is the
+// load-bearing pair.
+
 func TestLogEmitter_FormatStable(t *testing.T) {
-	t.Parallel()
-	var buf bytes.Buffer
+	var buf testutil.SafeBuffer
 	oldOut := log.Writer()
 	oldFlags := log.Flags()
 	log.SetOutput(&buf)
@@ -43,8 +52,8 @@ func TestLogEmitter_FormatStable(t *testing.T) {
 }
 
 func TestLogEmitter_NoSecretLeak(t *testing.T) {
-	t.Parallel()
-	var buf bytes.Buffer
+	// Intentionally NOT t.Parallel — see top-of-file note.
+	var buf testutil.SafeBuffer
 	oldOut := log.Writer()
 	oldFlags := log.Flags()
 	log.SetOutput(&buf)

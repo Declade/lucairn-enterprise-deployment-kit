@@ -79,22 +79,43 @@ func NewKeysDeps(renderer *views.Renderer, admin AdminClient, emitter audit.Emit
 		cacheTTL:      5 * time.Minute,
 		clock:         time.Now,
 		revokePool:    make(chan struct{}, keysBulkRevokePool),
-		revokeLimiter: rate.NewLimiter(rate.Limit(keysBulkRevokeRate), keysBulkRevokeRate),
+		revokeLimiter: rate.NewLimiter(keysBulkRevokeEvery, keysBulkRevokeBurst),
 	}
 }
 
-const (
-	// keysBulkRevokePool caps in-flight RevokeKey gRPC calls per bulk
-	// job. Slice 3 pattern #24 — workers + global limit prevent the
-	// dashboard from slamming the gateway admin surface even when many
-	// admins run bulk revoke concurrently.
-	keysBulkRevokePool = 5
+// keysBulkRevokePool caps in-flight RevokeKey HTTP calls per bulk
+// job. Slice 3 pattern #24 — workers + global limit prevent the
+// dashboard from slamming the gateway admin surface even when many
+// admins run bulk revoke concurrently.
+const keysBulkRevokePool = 5
 
-	// keysBulkRevokeRate caps the gateway-side RPC/s budget. Upstream
-	// per-IP cap is 60/min combined (10/min per dimension), so 10/s
-	// here keeps the dashboard well under any single per-IP bucket.
-	keysBulkRevokeRate = 10
-)
+// keysBulkRevokeInterval is the minimum time between successive
+// RevokeKey calls the dashboard issues against the gateway admin
+// API. The BINDING constraint upstream is the OUTER per-IP admin
+// limiter at
+// `dual-sandbox-architecture/services/gateway/cmd/server/main.go:823`
+// (`middleware.NewRateLimiter(20, time.Minute, IPKeyFunc)`) — 20
+// req/min per source IP across ALL `/api/v1/admin/*` routes. The
+// inner `customerKeysLimiter` at `admin.go:216` allows 60/min on the
+// per-customer-keys subset but is gated by the outer 20/min — it
+// never executes when the outer limiter is already rejecting the
+// request.
+//
+// 4s/call ≈ 15/min sustained, leaving headroom for other dashboard
+// surfaces (cert browser, server-health probes) sharing the same IP
+// bucket against the gateway. Burst=1 means a fresh bulk job pays
+// the full 4s per the first call, which is load-bearing — bursting
+// past the outer limiter only converts a graceful queue into 429s
+// the dashboard cannot recover from.
+const keysBulkRevokeInterval = 4 * time.Second
+
+// keysBulkRevokeBurst is intentionally 1; see keysBulkRevokeInterval.
+const keysBulkRevokeBurst = 1
+
+// keysBulkRevokeEvery wraps rate.Every(keysBulkRevokeInterval) — kept
+// as a package-scope helper so tests can reach for the same value
+// without re-computing it.
+var keysBulkRevokeEvery = rate.Every(keysBulkRevokeInterval)
 
 // keysPageData carries the render shape for /keys.
 type keysPageData struct {
@@ -465,7 +486,17 @@ func (d *KeysDeps) getCustomers(ctx context.Context) ([]gateway.CustomerEntry, e
 		}
 		d.cacheMu.RUnlock()
 
-		fresh, err := d.Admin.ListCustomers(ctx)
+		// Detach the inner gateway-call ctx from the caller's ctx.
+		// singleflight.Do passes the FIRST caller's closure to every
+		// coalesced caller; if caller A's request ctx cancels mid-
+		// fetch, caller B (and any others coalesced on the same key)
+		// would otherwise receive the cancellation and surface a
+		// spurious 502 to the operator. The 10s timeout matches the
+		// gateway admin-call SLO and bounds the worst-case wait so
+		// coalesced callers cannot block forever if the gateway hangs.
+		inner, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		fresh, err := d.Admin.ListCustomers(inner)
 		if err != nil {
 			return nil, err
 		}
