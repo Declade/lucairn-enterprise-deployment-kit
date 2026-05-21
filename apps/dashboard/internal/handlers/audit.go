@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,14 @@ import (
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/views"
 	"github.com/jackc/pgx/v5"
 )
+
+// savedFilterNameRE is the server-side allowlist for the saved-filter
+// `name` form field. Slice 6 fix-up r1 BH-M1: the previous code only
+// enforced length (1-100) — a filter named `foo/../bar` URL-encoded
+// in the path would parse incorrectly + the delete-by-name SQL would
+// silently miss. The allowlist matches what the operator can type via
+// a normal keyboard + bans any path-shape character.
+var savedFilterNameRE = regexp.MustCompile(`^[A-Za-z0-9 \-_.]{1,100}$`)
 
 // AuditDeps groups the runtime collaborators for the audit-log browser.
 //
@@ -198,7 +207,7 @@ func (d *AuditDeps) BrowserHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			if errors.Is(err, store.ErrSavedFilterTableMissing) {
 				data.NotApplied = true
-				data.NotAppliedHint = "Saved filters require the operator to apply the dashboard migration apps/dashboard/migrations/000001_create_saved_filters.up.sql against the audit-log DB. See OPS.md § \"Enable saved filters\"."
+				data.NotAppliedHint = "Saved filters require the operator to apply the dashboard migration apps/dashboard/migrations/000001_create_saved_filters.up.sql against the audit-log DB. See INSTALL.md § \"Saved-filter table migration\"."
 			} else {
 				log.Printf("audit_browser: list saved filters: %v", err)
 			}
@@ -498,8 +507,11 @@ func (d *AuditDeps) SavedFiltersPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "filter name required", http.StatusBadRequest)
 		return
 	}
-	if len(name) > 100 {
-		http.Error(w, "filter name too long (max 100 chars)", http.StatusBadRequest)
+	// Slice 6 fix-up r1 BH-M1: server-side allowlist; the URL encodes
+	// the name on the delete path, so any path-shape characters (slash,
+	// backslash, NUL) MUST be rejected at the save site.
+	if !savedFilterNameRE.MatchString(name) {
+		http.Error(w, "filter name must be 1-100 chars and contain only A-Z, a-z, 0-9, space, -, _, .", http.StatusBadRequest)
 		return
 	}
 	filter, _, _ := d.parseFilterFromQuery(r.PostForm)

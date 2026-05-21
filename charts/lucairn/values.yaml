@@ -2,7 +2,7 @@ global:
   vertical: finance
   imageRegistry: "ghcr.io/declade"
   imagePullSecrets: []
-  imageTag: "0.4.0" # NOTE: dashboard sub-chart ships independently — dashboard image is pinned in the dashboard.image.tag block below (currently 0.5.0).
+  imageTag: "0.4.0" # NOTE: dashboard sub-chart ships independently — dashboard image is pinned in the dashboard.image.tag block below (currently 0.6.0).
   # Slice 4 — namespace of the bundled observability sub-chart (Grafana
   # + Loki + Tempo). The dashboard sub-chart's secret-grafana-jwt.yaml
   # mirrors the Helm-generated shared secret into this namespace so the
@@ -211,7 +211,7 @@ dashboard:
   # Leave adminURL empty to ship the dashboard with /keys rendering the
   # "not configured" explainer. When set, also pre-create the K8s
   # Secret holding the admin token (gateway's DSA_ADMIN_KEY) at key
-  # `admin-token`. See INSTALL.md § "Enable API key management (Slice 5)".
+  # `admin-token`. See INSTALL.md § "Enable API key management".
   gateway:
     adminURL: ""
     adminTokenSecretRef:

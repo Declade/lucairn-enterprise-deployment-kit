@@ -260,9 +260,13 @@ gateway:
 # at runtime via DISTINCT env vars (LUCAIRN_DASHBOARD_AUDIT_DB_URL
 # for certs, LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL for events).
 #
-# The role the dashboard connects as MUST have INSERT + SELECT on
-# audit_events (matches the default audit_app role at
-# dual-sandbox-architecture/services/audit/migrations/000003_least_privilege_role.up.sql).
+# The role the dashboard connects as MUST have BOTH:
+#   - SELECT on audit_events (browsing + render-time PII guard)
+#   - INSERT on audit_events (paired audit events for admin reveal-raw
+#     + csv_export_with_reveal — without INSERT those flows fail-close
+#     with 500 and DO NOT return raw PII).
+# Matches the default audit_app role at
+# dual-sandbox-architecture/services/audit/migrations/000003_least_privilege_role.up.sql.
 #
 # Saved filters require an additional table the operator pre-creates
 # via apps/dashboard/migrations/000001_create_saved_filters.up.sql.
