@@ -1,0 +1,61 @@
+{{ define "main" }}
+<section class="lc-page-section">
+  <header class="lc-page-header lc-page-header--with-aside">
+    <div>
+      <h1 class="lc-page-title">Audit event {{ if .DetailEvent }}{{ .DetailEvent.EventID }}{{ end }}</h1>
+      {{ if .DetailEvent }}
+        <p class="lc-page-lede">
+          <span class="lc-pill">{{ .DetailEvent.EventType }}</span>
+          <span class="lc-badge">{{ .DetailEvent.SourceService }}</span>
+          <span class="font-tabular lc-text-muted">{{ formatDate .DetailEvent.Timestamp }}</span>
+        </p>
+      {{ end }}
+    </div>
+    <div class="lc-header-aside">
+      <a class="lc-link" href="/audit">Back to list</a>
+      {{ if and .RevealEnabled .DetailEvent (not .RevealSucceeded) }}
+        <form method="post" action="/audit/{{ .DetailEvent.EventID }}/reveal-raw" style="display:inline" data-confirm="Reveal raw payload? This emits a paired audit.reveal_raw event.">
+          <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+          <input type="hidden" name="csrf_token" value="{{ .CSRFToken }}">
+          <button type="submit" class="lc-secondary-button lc-secondary-button--danger">Reveal raw</button>
+        </form>
+      {{ end }}
+    </div>
+  </header>
+
+  {{ if .RevealSucceeded }}
+    <div class="lc-banner lc-banner--warn" role="status">
+      Raw payload revealed. A paired <code class="lc-mono">audit.reveal_raw</code> event has been written to the audit log.
+    </div>
+  {{ end }}
+
+  {{ if .DetailEvent }}
+    <section class="lc-cert-summary">
+      <div class="lc-cert-summary-row">
+        <span class="lc-text-muted">Actor</span>
+        <span class="lc-mono">{{ .DetailEvent.Actor }}</span>
+      </div>
+      <div class="lc-cert-summary-row">
+        <span class="lc-text-muted">Request ID</span>
+        <span class="lc-mono">{{ if .DetailEvent.RequestID }}<a class="lc-link" href="/audit?request_id={{ .DetailEvent.RequestID }}">{{ .DetailEvent.RequestID }}</a>{{ else }}&mdash;{{ end }}</span>
+      </div>
+      <div class="lc-cert-summary-row">
+        <span class="lc-text-muted">Payload type</span>
+        <span class="lc-mono">{{ .DetailEvent.PayloadType }}</span>
+      </div>
+      <div class="lc-cert-summary-row">
+        <span class="lc-text-muted">Event hash</span>
+        <span class="lc-mono">{{ .DetailEvent.EventHash }}</span>
+      </div>
+      <div class="lc-cert-summary-row">
+        <span class="lc-text-muted">Previous hash</span>
+        <span class="lc-mono">{{ if .DetailEvent.PreviousEventHash }}{{ .DetailEvent.PreviousEventHash }}{{ else }}&mdash;{{ end }}</span>
+      </div>
+    </section>
+    <h2 class="lc-card-title">Payload {{ if .RevealSucceeded }}(raw){{ else }}(redacted){{ end }}</h2>
+    <pre class="lc-codeblock">{{ .DetailRedacted }}</pre>
+  {{ else }}
+    <div class="lc-banner lc-banner--fail" role="alert">Event not found.</div>
+  {{ end }}
+</section>
+{{ end }}

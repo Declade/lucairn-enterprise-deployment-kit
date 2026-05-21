@@ -115,10 +115,10 @@ dashboard:
   image:
     repository: lucairn-dashboard
     # Pinned to the current slice's release tag. Bumped per slice
-    # (Slice 1=0.1.0 → Slice 5=0.5.0). Empty fallback to Chart.AppVersion
-    # remains the last-resort default in the sub-chart's
-    # `dashboard.image` helper.
-    tag: "0.5.0"
+    # (Slice 1=0.1.0 → Slice 6=0.6.0). Empty fallback to
+    # Chart.AppVersion remains the last-resort default in the
+    # sub-chart's `dashboard.image` helper.
+    tag: "0.6.0"
     pullPolicy: IfNotPresent
 
   service:
@@ -217,6 +217,27 @@ dashboard:
     adminTokenSecretRef:
       name: ""
       key: "admin-token"
+
+  # Slice 6: audit log browser. Field names mirror
+  # charts/lucairn/charts/dashboard/values.yaml so customer overrides
+  # at the parent path are passed through verbatim. Leave
+  # auditLogDBConnectionStringRef.name empty to ship the dashboard
+  # with /audit rendering the "not configured" explainer.
+  #
+  # IMPORTANT: the audit-LOG connection (this block) points at
+  # postgres-audit (event stream); it is DISTINCT from the cert-LOG
+  # connection (`.auditDB.connectionStringRef` above) which points
+  # at postgres-bridge.
+  audit:
+    auditLogDBConnectionStringRef:
+      name: ""
+      key: url
+    # Optional hardening: separate role/Secret for the
+    # dashboard_saved_filters table only. Empty = reuse the
+    # auditLogDBConnectionStringRef above.
+    savedFiltersDBConnectionStringRef:
+      name: ""
+      key: url
 
 # Observability sub-chart override block (Slice 4 fold-in). When
 # enabling the dashboard's Grafana embedding, also flip

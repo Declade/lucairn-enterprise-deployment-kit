@@ -27,7 +27,7 @@ fi
 # something to pull from. The compose config references the GHCR-tagged
 # image; we tag the local build to that exact name so docker compose finds
 # it without going to the network.
-LOCAL_TAG="${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.5.0}"
+LOCAL_TAG="${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.6.0}"
 echo "compose-smoke: building image as ${LOCAL_TAG}"
 docker build -t "${LOCAL_TAG}" -f apps/dashboard/Dockerfile apps/dashboard >/dev/null
 
@@ -225,5 +225,55 @@ case "$BULK_LOC" in
   *) echo "compose-smoke: POST /keys/bulk-revoke redirect target should be /login, got $BULK_LOC" >&2 ; exit 1 ;;
 esac
 echo "compose-smoke: POST /keys/bulk-revoke ok (302 -> /login)"
+
+# Slice 6: audit log browser routes. Compose smoke does NOT wire an
+# audit-log DB secret so the surface is disabled; an unauthenticated
+# GET still goes through the auth middleware and 302's to /login. The
+# "not configured" explainer renders only AFTER session load when the
+# operator clicks /audit.
+echo "compose-smoke: hitting GET /audit (expect 302 -> /login; auth-gated)"
+AUDIT_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8443/audit)
+if [ "$AUDIT_CODE" != "302" ]; then
+  echo "compose-smoke: GET /audit expected 302, got $AUDIT_CODE" >&2
+  exit 1
+fi
+AUDIT_LOC=$(curl -s -o /dev/null -w "%{redirect_url}" http://127.0.0.1:8443/audit)
+case "$AUDIT_LOC" in
+  */login*) ;;
+  *) echo "compose-smoke: GET /audit redirect target should be /login, got $AUDIT_LOC" >&2 ; exit 1 ;;
+esac
+echo "compose-smoke: GET /audit ok (302 -> /login)"
+
+echo "compose-smoke: hitting GET /audit/some-event-id (expect 302 -> /login; auth-gated)"
+AUDIT_DETAIL_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8443/audit/some-event-id)
+if [ "$AUDIT_DETAIL_CODE" != "302" ]; then
+  echo "compose-smoke: GET /audit/some-event-id expected 302, got $AUDIT_DETAIL_CODE" >&2
+  exit 1
+fi
+echo "compose-smoke: GET /audit/some-event-id ok (302 -> /login)"
+
+echo "compose-smoke: hitting POST /audit/some-event-id/reveal-raw (expect 302 -> /login; auth-gated)"
+REVEAL_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8443/audit/some-event-id/reveal-raw)
+if [ "$REVEAL_CODE" != "302" ]; then
+  echo "compose-smoke: POST /audit/some-event-id/reveal-raw expected 302, got $REVEAL_CODE" >&2
+  exit 1
+fi
+echo "compose-smoke: POST /audit/some-event-id/reveal-raw ok (302 -> /login)"
+
+echo "compose-smoke: hitting GET /audit/export.csv (expect 302 -> /login; auth-gated)"
+CSV_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8443/audit/export.csv)
+if [ "$CSV_CODE" != "302" ]; then
+  echo "compose-smoke: GET /audit/export.csv expected 302, got $CSV_CODE" >&2
+  exit 1
+fi
+echo "compose-smoke: GET /audit/export.csv ok (302 -> /login)"
+
+echo "compose-smoke: hitting POST /audit/saved-filters (expect 302 -> /login; auth-gated)"
+SF_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8443/audit/saved-filters)
+if [ "$SF_CODE" != "302" ]; then
+  echo "compose-smoke: POST /audit/saved-filters expected 302, got $SF_CODE" >&2
+  exit 1
+fi
+echo "compose-smoke: POST /audit/saved-filters ok (302 -> /login)"
 
 echo "compose-smoke: ok"

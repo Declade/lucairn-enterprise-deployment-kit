@@ -200,6 +200,47 @@ func main() {
 		log.Printf("keys surface disabled (set LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL + LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN to enable)")
 	}
 
+	// Slice 6 wiring: audit log browser. The new env var
+	// LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL points at postgres-audit
+	// (separate from Slice 3's LUCAIRN_DASHBOARD_AUDIT_DB_URL which
+	// points at postgres-bridge for certs). When empty → /audit
+	// renders the "not configured" explainer.
+	var (
+		auditStore       *store.AuditStore
+		savedFilters     *store.SavedFiltersStore
+		auditConfigured  bool
+	)
+	if cfg.AuditLogDBURL != "" {
+		ctxAudit, cancelAudit := context.WithTimeout(context.Background(), 15*time.Second)
+		var err error
+		auditStore, _, err = store.NewAuditStore(ctxAudit, cfg.AuditLogDBURL)
+		cancelAudit()
+		if err != nil {
+			log.Fatalf("audit log store: %v", err)
+		}
+		// Reuse the audit-log pool's Querier for saved filters when no
+		// separate saved-filters URL is set. The default makes operator
+		// onboarding simpler; a separate role / URL is the opt-in
+		// hardening path documented in OPS.md.
+		// pgxpool implements the store.Querier interface directly via
+		// its Query / QueryRow methods.
+		savedFiltersURL := cfg.SavedFiltersDBURL
+		if savedFiltersURL == "" {
+			savedFiltersURL = cfg.AuditLogDBURL
+		}
+		ctxSF, cancelSF := context.WithTimeout(context.Background(), 15*time.Second)
+		savedFilters, _, err = store.NewSavedFiltersStoreFromURL(ctxSF, savedFiltersURL)
+		cancelSF()
+		if err != nil {
+			log.Printf("saved filters disabled (%v) — apply apps/dashboard/migrations/000001_create_saved_filters.up.sql and restart to enable", err)
+			savedFilters = nil
+		}
+		auditConfigured = true
+		log.Printf("audit log browser enabled (db=%s)", redactDSN(cfg.AuditLogDBURL))
+	} else {
+		log.Printf("audit log browser disabled (set LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL to enable)")
+	}
+
 	if cfg.GrafanaURL != "" {
 		s, err := grafana.NewSigner(cfg.GrafanaJWTSecret, 0, nil)
 		if err != nil {
@@ -242,6 +283,16 @@ func main() {
 		keysAdminIface = adminClient
 	}
 
+	// Same typed-nil → pure-nil dance for the Slice 6 audit stores.
+	var auditStoreIface handlers.AuditReadStore
+	if auditStore != nil {
+		auditStoreIface = auditStore
+	}
+	var savedFiltersIface handlers.SavedFiltersReadWriteStore
+	if savedFilters != nil {
+		savedFiltersIface = savedFilters
+	}
+
 	srv, err := server.New(server.Options{
 		ListenAddr:        cfg.ListenAddr,
 		Version:           version,
@@ -261,6 +312,10 @@ func main() {
 		KeysAdmin:         keysAdminIface,
 		KeysAudit:         auditEmitter,
 		KeysConfigured:    keysConfigured,
+		AuditStore:        auditStoreIface,
+		SavedFilters:      savedFiltersIface,
+		AuditEmitter:      auditEmitter,
+		AuditConfigured:   auditConfigured,
 	})
 	if err != nil {
 		log.Fatalf("server: %v", err)

@@ -235,7 +235,7 @@ services:
   # which compose file the operator started from.
   lucairn-dashboard:
     profiles: ["dashboard"]
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.5.0}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.6.0}"
     restart: unless-stopped
     environment:
       LUCAIRN_DASHBOARD_LISTEN_ADDR: "${LUCAIRN_DASHBOARD_LISTEN_ADDR:-0.0.0.0:8443}"
@@ -267,6 +267,12 @@ services:
       # Slice 5: API key management. Both must be set together.
       LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL: "${LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL:-}"
       LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN: "${LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN:-}"
+      # Slice 6: audit log browser. The env var name is DISTINCT from
+      # LUCAIRN_DASHBOARD_AUDIT_DB_URL (Slice 3); this one points at
+      # postgres-audit (event log). Empty = /audit renders the "not
+      # configured" explainer.
+      LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL: "${LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL:-}"
+      LUCAIRN_DASHBOARD_AUDIT_LOG_SAVED_FILTERS_DB_URL: "${LUCAIRN_DASHBOARD_AUDIT_LOG_SAVED_FILTERS_DB_URL:-}"
     ports:
       - "127.0.0.1:8443:8443"
     healthcheck:

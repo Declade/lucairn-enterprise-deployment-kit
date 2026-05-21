@@ -1,0 +1,175 @@
+{{ define "main" }}
+<section class="lc-page-section">
+  <header class="lc-page-header">
+    <h1 class="lc-page-title">Audit log</h1>
+    <p class="lc-page-lede">Filter, page, and export operator-visible audit events. Personal identifiers are redacted in the default render. Admin "Reveal raw" emits a paired <code class="lc-mono">audit.reveal_raw</code> event.</p>
+  </header>
+
+  {{ if not .Configured }}
+    <div class="lc-banner lc-banner--warn" role="status">
+      {{ .NotConfigured }}
+    </div>
+  {{ else }}
+
+    {{ if .NotApplied }}
+      <div class="lc-banner lc-banner--warn" role="status">
+        {{ .NotAppliedHint }}
+      </div>
+    {{ end }}
+
+    <form class="lc-filter-form" method="get" action="/audit" aria-label="Filter audit events">
+      <fieldset class="lc-filter-fieldset">
+        <legend class="lc-text-muted">Event type</legend>
+        <label class="lc-filter-field">
+          <span class="lc-filter-label">Comma-separated</span>
+          <input type="text" class="lc-filter-input lc-mono" name="event_type" value="{{ joinStrings .Filter.EventTypes }}" placeholder="key.mint_requested, audit.reveal_raw" autocomplete="off">
+        </label>
+        {{ if .EventTypes }}
+          <small class="lc-text-muted">Known values: {{ joinStrings .EventTypes }}</small>
+        {{ end }}
+      </fieldset>
+
+      <fieldset class="lc-filter-fieldset">
+        <legend class="lc-text-muted">Source service</legend>
+        <label class="lc-filter-field">
+          <span class="lc-filter-label">Comma-separated</span>
+          <input type="text" class="lc-filter-input lc-mono" name="source_service" value="{{ joinStrings .Filter.SourceServices }}" placeholder="dsa-gateway, dsa-witness" autocomplete="off">
+        </label>
+        {{ if .SourceServices }}
+          <small class="lc-text-muted">Known values: {{ joinStrings .SourceServices }}</small>
+        {{ end }}
+      </fieldset>
+
+      <fieldset class="lc-filter-fieldset">
+        <legend class="lc-text-muted">Actor</legend>
+        <label class="lc-filter-field">
+          <span class="lc-filter-label">Comma-separated emails or principals</span>
+          <input type="text" class="lc-filter-input lc-mono" name="actor" value="{{ joinStrings .Filter.Actors }}" autocomplete="off">
+        </label>
+      </fieldset>
+
+      <fieldset class="lc-filter-fieldset">
+        <legend class="lc-text-muted">Request</legend>
+        <label class="lc-filter-field">
+          <span class="lc-filter-label">request_id (exact)</span>
+          <input type="text" class="lc-filter-input lc-mono" name="request_id" value="{{ .Filter.RequestID }}" autocomplete="off">
+        </label>
+      </fieldset>
+
+      <fieldset class="lc-filter-fieldset">
+        <legend class="lc-text-muted">Payload search</legend>
+        <label class="lc-filter-field">
+          <span class="lc-filter-label">Substring (LIKE), max 256 chars</span>
+          <input type="text" class="lc-filter-input" name="payload_contains" value="{{ .Filter.PayloadContains }}" maxlength="256" autocomplete="off">
+        </label>
+      </fieldset>
+
+      <fieldset class="lc-filter-fieldset">
+        <legend class="lc-text-muted">Date range</legend>
+        <label class="lc-filter-field">
+          <span class="lc-filter-label">From (UTC)</span>
+          <input type="datetime-local" class="lc-filter-input" name="from" value="{{ formatDateTimeLocal .Filter.TimestampFrom }}">
+        </label>
+        <label class="lc-filter-field">
+          <span class="lc-filter-label">To (UTC)</span>
+          <input type="datetime-local" class="lc-filter-input" name="to" value="{{ formatDateTimeLocal .Filter.TimestampTo }}">
+        </label>
+      </fieldset>
+
+      <div class="lc-filter-actions">
+        <button type="submit" class="lc-primary-button">Apply filters</button>
+        <a class="lc-link" href="/audit">Clear</a>
+        <span class="lc-text-muted">Showing {{ .StartIndex }}&ndash;{{ .EndIndex }} of {{ .Total }} events</span>
+      </div>
+    </form>
+
+    {{ if .SavedFilters }}
+      <section class="lc-card" aria-label="Saved filters">
+        <header class="lc-card-header">
+          <h2 class="lc-card-title">Saved filters</h2>
+        </header>
+        <ul class="lc-list">
+          {{ range .SavedFilters }}
+            <li class="lc-filter-check">
+              <a class="lc-link lc-mono" href="/audit?{{ savedFilterURL . }}">{{ .Name }}</a>
+              <form method="post" action="/audit/saved-filters/{{ .Name }}" style="display:inline" data-confirm="Delete this saved filter?">
+                <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+                <input type="hidden" name="csrf_token" value="{{ $.CSRFToken }}">
+                <input type="hidden" name="_method" value="delete">
+                <button type="submit" class="lc-link-button">Delete</button>
+              </form>
+            </li>
+          {{ end }}
+        </ul>
+      </section>
+    {{ end }}
+
+    <div class="lc-table-toolbar">
+      <div class="lc-table-toolbar-actions">
+        <form method="post" action="/audit/saved-filters" class="lc-revoke-confirm">
+          <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+          <input type="hidden" name="csrf_token" value="{{ .CSRFToken }}">
+          <input type="hidden" name="event_type" value="{{ joinStrings .Filter.EventTypes }}">
+          <input type="hidden" name="source_service" value="{{ joinStrings .Filter.SourceServices }}">
+          <input type="hidden" name="actor" value="{{ joinStrings .Filter.Actors }}">
+          <input type="hidden" name="request_id" value="{{ .Filter.RequestID }}">
+          <input type="hidden" name="payload_contains" value="{{ .Filter.PayloadContains }}">
+          <input type="hidden" name="from" value="{{ formatDateTimeLocal .Filter.TimestampFrom }}">
+          <input type="hidden" name="to" value="{{ formatDateTimeLocal .Filter.TimestampTo }}">
+          <label class="lc-filter-label" for="save-filter-name">Save current filter as</label>
+          <input id="save-filter-name" type="text" class="lc-filter-input" name="name" maxlength="100" placeholder="my-investigation" required>
+          <button type="submit" class="lc-secondary-button">Save</button>
+        </form>
+      </div>
+      <div class="lc-table-toolbar-actions">
+        <a class="lc-secondary-button" href="/audit/export.csv?{{ filterURL .Filter }}">Export CSV</a>
+        {{ if .RevealEnabled }}
+          <a class="lc-secondary-button lc-secondary-button--danger" href="/audit/export.csv?reveal=true&{{ filterURL .Filter }}" title="Admin only — emits audit.csv_export_with_reveal event">Export with raw PII</a>
+        {{ end }}
+      </div>
+    </div>
+
+    <div class="lc-table-frame">
+      <table class="lc-table lc-table--compact" aria-label="Audit events">
+        <thead>
+          <tr>
+            <th class="lc-table-th">Timestamp</th>
+            <th class="lc-table-th">Event</th>
+            <th class="lc-table-th">Source</th>
+            <th class="lc-table-th">Actor</th>
+            <th class="lc-table-th">Request</th>
+            <th class="lc-table-th">Payload preview</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{ if not .RowsRedacted }}
+            <tr class="lc-table-empty">
+              <td class="lc-table-td" colspan="6">No audit events match your filters. Try widening the date range or removing filters.</td>
+            </tr>
+          {{ else }}
+            {{ range .RowsRedacted }}
+              <tr class="lc-table-row">
+                <td class="lc-table-td font-tabular">{{ formatDate .Timestamp }}</td>
+                <td class="lc-table-td"><a class="lc-link" href="/audit/{{ .EventID }}"><span class="lc-pill">{{ .EventType }}</span></a></td>
+                <td class="lc-table-td"><span class="lc-badge">{{ .SourceService }}</span></td>
+                <td class="lc-table-td lc-mono">{{ .Actor }}</td>
+                <td class="lc-table-td lc-mono">{{ if .RequestID }}<a class="lc-link" href="/audit?request_id={{ .RequestID }}">{{ .RequestID }}</a>{{ end }}</td>
+                <td class="lc-table-td lc-mono">{{ .PayloadPreview }}</td>
+              </tr>
+            {{ end }}
+          {{ end }}
+        </tbody>
+      </table>
+    </div>
+
+    {{ if gt .TotalPages 1 }}
+      <nav class="lc-pagination" aria-label="Pagination">
+        <a class="lc-pagination-link{{ if not .HasPrev }} is-disabled{{ end }}" href="/audit?page={{ .PrevPage }}&{{ filterURL .Filter }}">Previous</a>
+        <span class="lc-pagination-info">Page {{ .Page }} of {{ .TotalPages }}</span>
+        <a class="lc-pagination-link{{ if not .HasNext }} is-disabled{{ end }}" href="/audit?page={{ .NextPage }}&{{ filterURL .Filter }}">Next</a>
+      </nav>
+    {{ end }}
+
+  {{ end }}
+</section>
+{{ end }}
