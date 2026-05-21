@@ -6,7 +6,7 @@
 -- (default: audit_app) gains INSERT / SELECT / UPDATE / DELETE on
 -- this NEW table only — audit_events itself remains INSERT + SELECT
 -- (matches the immutable-log policy at
--- /Users/marcschuelke/dual-sandbox-architecture/services/audit/migrations/
+-- dual-sandbox-architecture/services/audit/migrations/
 --   000003_least_privilege_role.up.sql).
 --
 -- Operators uncomfortable with widening audit_app's surface may

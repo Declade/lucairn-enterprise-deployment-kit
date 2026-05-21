@@ -35,7 +35,7 @@
 // (email, IBAN, phone E.164, IPv4/IPv6, UUID, SSN, German tax ID,
 // US date of birth, MRN, etc.) at the rendering edge.
 //
-// The original implementation brief prescribed vendoring from the
+// The original implementation brief prescribed vendoring from an
 // upstream policy.go file. policy.go does not exist; the live
 // recognizer set is Python. The patterns below cite the
 // recognizers.py constant they mirror so a future drift between the
@@ -150,6 +150,18 @@ func init() {
 		// recognizer (de) at recognizers.py: F-prefix legacy + 2-5
 		// uppercase letters + 4-digit year + 3-6 digit serial.
 		{`\b(?:F\d{8}|[A-Z]{2,5}-\d{4}-\d{3,6})\b`, MarkerAktenZ, "fallnummer"},
+
+		// Slice 6 fix-up r1 DRIFT-004: German Aktenzeichen patterns
+		// from recognizers.py:685-687 (az_standard + az_city_prefix).
+		// az_standard: <chamber-number> <prefix> <serial>/<year>
+		// (e.g., "11 Ca 4321/24"). az_city_prefix: <city> <chamber>
+		// <prefix> <serial>/<year>. Both reuse MarkerAktenZ.
+		// az_standard: chamber-digit(s) + space + 1-3 upper-case +
+		// space + digits + slash + 2-or-4 digit year.
+		{`\b\d{1,3}\s+[A-Z][A-Za-z]{0,3}\s+\d{1,6}/(?:\d{2}|\d{4})\b`, MarkerAktenZ, "german_aktenzeichen:az_standard"},
+		// az_city_prefix: 2-3 upper-case city code + dot + space +
+		// then az_standard tail. Matches "AG. 11 Ca 4321/24"-style.
+		{`\b[A-Z]{2,3}\.\s+\d{1,3}\s+[A-Z][A-Za-z]{0,3}\s+\d{1,6}/(?:\d{2}|\d{4})\b`, MarkerAktenZ, "german_aktenzeichen:az_city_prefix"},
 
 		// Medical record number — `medical_record_number` recognizer
 		// at recognizers.py (en).
