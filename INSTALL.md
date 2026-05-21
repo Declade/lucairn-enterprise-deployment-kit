@@ -683,7 +683,7 @@ GRANT SELECT ON veil_certificates TO lucairn_dashboard_ro;
 
 See `OPS.md` § "Dashboard: rotating audit DB credentials".
 
-### Enable server health + Grafana embedding (Slice 4)
+### Enable server health + Grafana embedding
 
 The dashboard's `/health` surface is ALWAYS-ON by default — it polls
 the 12 standard kit services every 10 seconds and renders a card
@@ -716,7 +716,7 @@ The SAME shared secret is consumed by both the dashboard pod
 
 #### Compose path
 
-1. Add the Slice 4 block to `customer.env`:
+1. Add the server health + Grafana block to `customer.env`:
 
    ```bash
    LUCAIRN_DASHBOARD_GRAFANA_URL=https://grafana.lucairn.local
@@ -825,7 +825,7 @@ The SAME shared secret is consumed by both the dashboard pod
 
 See `OPS.md` § "Rotating the Grafana JWT shared secret".
 
-### Enable API key management (Slice 5)
+### Enable API key management
 
 The dashboard's `/keys` surface lets an admin operator mint,
 rotate, revoke, and bulk-revoke `lcr_live_*` API keys against the
@@ -846,7 +846,7 @@ gateway listener as the data plane (mounted under
 
 #### Compose path
 
-1. Add the Slice 5 block to `customer.env`:
+1. Add the API key management block to `customer.env`:
 
    ```bash
    LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL=http://gateway:8080
