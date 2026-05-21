@@ -13,6 +13,7 @@ import (
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/audit"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/compliance"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/views"
 )
 
 // fakeQuerier is a pgx-shaped fake (defined in audit_test.go path
@@ -292,6 +293,78 @@ func TestCompliance_POST_EmptyCustomerNameRejected(t *testing.T) {
 	}
 }
 
+// TestCompliance_POST_ExactMaxWindow_Accepted exercises the BH-H1 fix-up
+// boundary: an exact MaxWindowDays-visible-day window MUST be accepted
+// (the +1 off-by-one rejected 365-day annual exports at the default cap).
+// 365 visible days inclusive: from=2026-01-01 / to=2026-12-31 → half-open
+// [2026-01-01, 2027-01-01) → to.Sub(from) == 365 * 24h → spanDays == 365.
+func TestCompliance_POST_ExactMaxWindow_Accepted(t *testing.T) {
+	emitter := audit.NewMemoryEmitter()
+	d := newComplianceDeps(t, emitter, true)
+	d.MaxWindowDays = 365
+	form := url.Values{}
+	form.Set("customer_name", "Acme Corp GmbH")
+	form.Set("from", "2026-01-01")
+	form.Set("to", "2026-12-31") // 365 visible days inclusive
+	req := withCSRFAndUser(t, http.MethodPost, "/compliance/export", form, newAdminUser())
+	rr := httptest.NewRecorder()
+	d.ExportPDF(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("365-visible-day window code = %d, want 200; body: %s", rr.Code,
+			rr.Body.String()[:min(500, len(rr.Body.String()))])
+	}
+	if !bytes.HasPrefix(rr.Body.Bytes(), []byte("%PDF-1.")) {
+		t.Errorf("365-day body missing %%PDF-1. magic")
+	}
+}
+
+// TestCompliance_POST_OneOverMaxWindow_Rejected anchors the upper
+// boundary: a 366-visible-day window at the default 365-day cap MUST
+// be rejected. Pairs with ExactMaxWindow_Accepted to lock the exact
+// boundary (≤365 accept, >365 reject) so future refactors don't
+// regress either side. BH-H1 fix-up r1.
+func TestCompliance_POST_OneOverMaxWindow_Rejected(t *testing.T) {
+	d := newComplianceDeps(t, audit.NewMemoryEmitter(), true)
+	d.MaxWindowDays = 365
+	form := url.Values{}
+	form.Set("customer_name", "Acme")
+	form.Set("from", "2026-01-01")
+	form.Set("to", "2027-01-01") // 366 visible days inclusive
+	req := withCSRFAndUser(t, http.MethodPost, "/compliance/export", form, newAdminUser())
+	rr := httptest.NewRecorder()
+	d.ExportPDF(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("366-visible-day window code = %d, want 400", rr.Code)
+	}
+}
+
+// TestPageData_VersionRendered_FromLdflag asserts the ldflag-injected
+// version string flows from views.SetDashboardVersion into the sidebar
+// footer rendered on every page. BH-H2 fix-up r1 — closes the v0.6.0
+// hardcoded literal that was visible on every dashboard page.
+func TestPageData_VersionRendered_FromLdflag(t *testing.T) {
+	// Snapshot + restore the package-level version so this test stays
+	// hermetic regardless of other tests' ordering.
+	prev := views.DashboardVersion()
+	views.SetDashboardVersion("0.7.0")
+	defer views.SetDashboardVersion(prev)
+
+	d := newComplianceDeps(t, audit.NewMemoryEmitter(), true)
+	req := withUser(httptest.NewRequest(http.MethodGet, "/compliance", nil), newAdminUser())
+	rr := httptest.NewRecorder()
+	d.ExportPage(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /compliance code = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "Lucairn Dashboard v0.7.0") {
+		t.Errorf("sidebar footer missing 'Lucairn Dashboard v0.7.0' (ldflag-injected version did not reach the template)")
+	}
+	if strings.Contains(body, "Lucairn Dashboard v0.6.0") {
+		t.Errorf("sidebar footer still renders hardcoded 'Lucairn Dashboard v0.6.0' — BH-H2 regression")
+	}
+}
+
 func TestParseComplianceDateRange(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -330,6 +403,34 @@ func TestParseComplianceDateRange(t *testing.T) {
 			to:      "2026-06-30",
 			maxDays: 30,
 			wantErr: true,
+		},
+		{
+			// BH-H1 fix-up r1: an exact 365-visible-day annual window
+			// MUST pass at the default 365-day cap. The previous +1
+			// off-by-one rejected this canonical case.
+			name:    "exact_365_visible_days_accepted",
+			from:    "2026-01-01",
+			to:      "2026-12-31",
+			maxDays: 365,
+			fromUTC: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			toUTC:   time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			// Companion boundary: 366 visible days at cap=365 MUST reject.
+			name:    "one_over_max_rejected",
+			from:    "2026-01-01",
+			to:      "2027-01-01",
+			maxDays: 365,
+			wantErr: true,
+		},
+		{
+			// Exact match at small cap: 30-visible-day window with cap=30.
+			name:    "exact_30_visible_days_accepted",
+			from:    "2026-04-01",
+			to:      "2026-04-30",
+			maxDays: 30,
+			fromUTC: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+			toUTC:   time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
 		},
 	}
 	for _, tc := range cases {

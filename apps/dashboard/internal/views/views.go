@@ -106,6 +106,15 @@ func FuncMap() template.FuncMap {
 		// renders the absolute timestamp as the body + relativeAge in
 		// the title= attribute (or vice-versa) — both visible without
 		// JS.
+		// dashboardVersion returns the running binary's semantic version
+		// (ldflag-injected at build time, threaded through server.New →
+		// SetDashboardVersion). Empty string falls through to "dev" in
+		// the sidebar footer so test renderers without an ldflag don't
+		// render a literal "v" prefix on an empty value. BH-H2 fix-up r1
+		// — closes the v0.6.0 hardcoded literal visible on every page.
+		"dashboardVersion": func() string {
+			return dashboardVersion
+		},
 		"relativeAge": func(t time.Time) string {
 			if t.IsZero() {
 				return ""
@@ -178,9 +187,32 @@ func serializeFilter(f FilterReader) string {
 }
 
 // Renderer holds the parsed template set.
+//
+// dashboardVersion is the semantic version of the running binary,
+// surfaced to every template via the `dashboardVersion` FuncMap entry.
+// Set via SetDashboardVersion at boot (server.New threads opts.Version
+// through). Empty string renders as "dev" in the sidebar footer so the
+// template still renders cleanly in tests + dev builds.
 type Renderer struct {
 	templates map[string]*template.Template
 }
+
+// dashboardVersion is the package-level version string surfaced to every
+// template via FuncMap. server.New calls SetDashboardVersion at boot so
+// the ldflag-injected main.version flows to the sidebar footer (BH-H2
+// fix-up r1 — closes the v0.6.0 hardcoded literal visible on every page).
+var dashboardVersion string
+
+// SetDashboardVersion records the dashboard binary's version for every
+// subsequent template render. Idempotent; safe to call once at boot.
+// Empty string falls through to the sidebar's "dev" fallback.
+func SetDashboardVersion(v string) {
+	dashboardVersion = v
+}
+
+// DashboardVersion exposes the configured version for tests + ad-hoc
+// callers (the template helper reads it directly).
+func DashboardVersion() string { return dashboardVersion }
 
 // New parses every page template. Each page template is parsed alongside the
 // layout + all components so {{ template "..." }} resolves at runtime.
@@ -374,6 +406,13 @@ func componentTemplateNames() ([]string, error) {
 // + IdP-outage cases. Slice 2 explicitly does NOT add a way to disable
 // local login; that decision is deferred to a future slice if customer
 // signals demand it.
+//
+// The running binary's semantic version is NOT carried on PageData —
+// it's a binary-wide constant (ldflag-injected via main.version), so
+// every page surfaces it via the `dashboardVersion` template helper
+// instead of threading the same string through every handler's
+// PageData{} construction. server.New calls views.SetDashboardVersion
+// at boot to wire opts.Version into the helper.
 type PageData struct {
 	Title       string
 	User        auth.User

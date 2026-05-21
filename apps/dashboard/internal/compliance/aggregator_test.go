@@ -128,9 +128,35 @@ func TestValidateWindow_RejectsExcessiveSpan(t *testing.T) {
 func TestValidateWindow_AcceptsBoundaryWindow(t *testing.T) {
 	a := NewAggregator(nil, nil, AggregatorOpts{MaxWindowDays: 30})
 	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	to := time.Date(2026, 1, 30, 0, 0, 0, 0, time.UTC) // 29 days span + 1 = 30 days
+	to := time.Date(2026, 1, 30, 0, 0, 0, 0, time.UTC) // 29-day half-open span
 	if _, _, err := a.validateWindow(from, to); err != nil {
-		t.Errorf("validateWindow 30-day window = %v, want nil", err)
+		t.Errorf("validateWindow 29-day half-open window = %v, want nil", err)
+	}
+}
+
+// TestValidateWindow_ExactMaxAccepted locks the BH-H1 boundary: a
+// half-open span of EXACTLY MaxWindowDays MUST be accepted. Before
+// fix-up r1 the +1 off-by-one rejected this — 365-visible-day annual
+// exports failed at the default cap.
+func TestValidateWindow_ExactMaxAccepted(t *testing.T) {
+	a := NewAggregator(nil, nil, AggregatorOpts{MaxWindowDays: 30})
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC) // exactly 30 days half-open
+	if _, _, err := a.validateWindow(from, to); err != nil {
+		t.Errorf("validateWindow exact 30-day half-open window = %v, want nil (BH-H1 boundary)", err)
+	}
+}
+
+// TestValidateWindow_OneOverMaxRejected anchors the upper edge: a span
+// of MaxWindowDays + 1 MUST reject. Pairs with ExactMaxAccepted to lock
+// the cap exactly at MaxWindowDays.
+func TestValidateWindow_OneOverMaxRejected(t *testing.T) {
+	a := NewAggregator(nil, nil, AggregatorOpts{MaxWindowDays: 30})
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC) // 31 days half-open
+	_, _, err := a.validateWindow(from, to)
+	if !errors.Is(err, ErrWindowTooLarge) {
+		t.Errorf("validateWindow 31-day half-open window = %v, want ErrWindowTooLarge", err)
 	}
 }
 

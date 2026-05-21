@@ -138,7 +138,7 @@ func (d *ComplianceDeps) ExportPage(w http.ResponseWriter, r *http.Request) {
 		DashboardVersion: d.DashboardVersion,
 	}
 	if !d.Configured {
-		data.NotConfigured = "Compliance export is not configured on this install. Set LUCAIRN_DASHBOARD_AUDIT_DB_URL (Slice 3) and LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL (Slice 6) to populate the certificate and audit-event counts. See INSTALL.md § \"Compliance PDF export\"."
+		data.NotConfigured = "Compliance export is not configured on this install. Set LUCAIRN_DASHBOARD_AUDIT_DB_URL (cert browser) and LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL (audit log browser) to populate the certificate and audit-event counts. See INSTALL.md § \"Compliance PDF export\"."
 	}
 	d.render(w, "compliance/export.html.tmpl", data)
 }
@@ -297,7 +297,12 @@ func parseComplianceDateRange(fromStr, toStr string, maxWindowDays int) (time.Ti
 	if !from.Before(to) {
 		return time.Time{}, time.Time{}, compliance.ErrWindowInvalid
 	}
-	spanDays := int(to.Sub(from)/(24*time.Hour)) + 1
+	// spanDays counts the number of VISIBLE inclusive days the user asked
+	// for. After the +1-day half-open conversion above, to.Sub(from) ==
+	// (visible-days)*24h. An exact `maxWindowDays`-day request (e.g. 365
+	// visible days at default cap) MUST pass; the inclusive form's
+	// off-by-one would reject it.
+	spanDays := int(to.Sub(from) / (24 * time.Hour))
 	if maxWindowDays > 0 && spanDays > maxWindowDays {
 		return time.Time{}, time.Time{}, compliance.ErrWindowTooLarge
 	}

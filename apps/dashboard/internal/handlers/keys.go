@@ -176,7 +176,7 @@ func (d *KeysDeps) BrowserHandler(w http.ResponseWriter, r *http.Request) {
 		Configured: d.Configured,
 	}
 	if !d.Configured {
-		data.NotConfigured = "API key management is not configured on this install. Set LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL and LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN (or the matching Helm values) and restart the dashboard. See INSTALL.md § \"Enable API key management (Slice 5)\"."
+		data.NotConfigured = "API key management is not configured on this install. Set LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL and LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN (or the matching Helm values) and restart the dashboard. See INSTALL.md § \"Enable API key management\"."
 		d.render(w, data)
 		return
 	}
