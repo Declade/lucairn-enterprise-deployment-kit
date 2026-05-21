@@ -198,10 +198,13 @@ type KeyEntry struct {
 	LastUsedAt time.Time `json:"last_used_at,omitempty"`
 }
 
-// ListKeysResult mirrors adminCustomerKeysResponse. Only the fields the
-// dashboard surface reads are extracted from the JSON envelope;
-// trailing extras (e.g. RelinkResponse) are preserved into Extras for
-// future expansion without forcing a contract change here.
+// ListKeysResult mirrors adminCustomerKeysResponse. Tracks the fields
+// the gateway DTO exposes at
+// `dual-sandbox-architecture/services/gateway/internal/api/
+// admin_customer_keys.go:75` field-for-field. Slice 5 fix-up r1
+// DRIFT-002: RelinkResponse added — the original comment promised an
+// "Extras" catch-all field that never actually existed; the gateway
+// DTO has a finite known set, so we mirror it directly.
 type ListKeysResult struct {
 	CustomerID     string     `json:"customer_id"`
 	Tier           string     `json:"tier"`
@@ -210,6 +213,12 @@ type ListKeysResult struct {
 	HasProviderKey bool       `json:"has_provider_key"`
 	MaxKeys        int        `json:"max_keys"`
 	Keys           []KeyEntry `json:"keys"`
+	// RelinkResponse mirrors the gateway DTO's nullable bool. The
+	// dashboard does NOT currently expose toggle UI for this field
+	// (toggle lives on the gateway admin's PATCH endpoint), but the
+	// list surface reads it so an operator can confirm the current
+	// state at a glance.
+	RelinkResponse *bool `json:"relink_response,omitempty"`
 }
 
 // MintKeyResult mirrors adminMintKeyResponse. RawKey is the plaintext

@@ -14,7 +14,7 @@
       <button type="button" class="lc-link-button" aria-label="Close" x-on:click="open = false; plaintext = ''">Close</button>
     </header>
     <div class="lc-drawer-body">
-      <p class="lc-text-muted">Customer: <code class="lc-mono">{{ .JustMinted.KeyID }}</code> &mdash; prefix <code class="lc-mono">{{ .JustMinted.KeyPrefix }}</code></p>
+      <p class="lc-text-muted">Key ID: <code class="lc-mono">{{ .JustMinted.KeyID }}</code> &mdash; prefix <code class="lc-mono">{{ .JustMinted.KeyPrefix }}</code></p>
       <div class="lc-banner lc-banner--warn" role="status">
         Treat the plaintext key below as bearer-equivalent. The gateway never stores it in recoverable form &mdash; this is the only chance to copy it. Closing this dialog removes the value from the page.
       </div>

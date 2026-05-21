@@ -119,17 +119,28 @@ spec:
             {{- end }}
             {{- /* Slice 5: API key management against the gateway admin
                HTTP surface. Both env vars render together when adminURL is
-               set; the umbrella-chart `fail` template in _validators.tpl
-               catches the half-wired (URL set, secret missing) case at
-               `helm install/upgrade` time so a dashboard pod never boots
-               into a state where /keys returns 401 on every request. */ -}}
+               set. The umbrella-chart `fail` template at
+               charts/lucairn/templates/_validators.tpl::
+               validators.keysGatewayAdminHalfConfig (invoked from
+               charts/lucairn/templates/validators.yaml) is the SOLE gate
+               for the half-wired (URL set, secret name missing) case.
+               That validator's fail-message is significantly more
+               actionable than the generic `required` template-function
+               error (which fires only after Helm has rendered every
+               other env-var slot), so it is the load-bearing checkpoint
+               at `helm install/upgrade` time. If adminURL is set and
+               adminTokenSecretRef.name is empty here, the validator has
+               ALREADY rendered an explicit error — we never reach this
+               line. Slice 5 fix-up r1 BH-M1/C5-LOW: dropped the `required`
+               wrapper that previously fired BEFORE the validator could
+               surface its friendly message. */ -}}
             {{- if .Values.gateway.adminURL }}
             - name: LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL
               value: {{ .Values.gateway.adminURL | quote }}
             - name: LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "dashboard.gateway.adminTokenSecretRef.name is required when dashboard.gateway.adminURL is set (operator pre-creates the Secret with key 'admin-token' carrying the gateway's DSA_ADMIN_KEY value)" .Values.gateway.adminTokenSecretRef.name | quote }}
+                  name: {{ .Values.gateway.adminTokenSecretRef.name | quote }}
                   key: {{ .Values.gateway.adminTokenSecretRef.key | default "admin-token" | quote }}
             {{- end }}
           ports:

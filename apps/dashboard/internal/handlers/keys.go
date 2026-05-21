@@ -421,23 +421,68 @@ func (d *KeysDeps) BulkRevokeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var wg sync.WaitGroup
+	// Normalise + de-dupe keyIDs up front so the loop body operates on
+	// a flat list. Empty entries are silently dropped (same as before
+	// this fix-up); any caller submitting an empty + non-empty mix
+	// will see exactly len(non_empty) audit events.
+	normalized := make([]string, 0, len(keyIDs))
 	for _, kid := range keyIDs {
-		kid := strings.TrimSpace(kid)
+		kid = strings.TrimSpace(kid)
 		if kid == "" {
 			continue
 		}
+		normalized = append(normalized, kid)
+	}
+
+	var wg sync.WaitGroup
+	// Slice 5 fix-up r1 BH-M3: the original loop unconditionally
+	// blocked on `d.revokePool <- struct{}{}` — if the request ctx
+	// cancelled mid-loop, the operator's browser already moved on but
+	// this handler kept spinning until every worker slot freed up,
+	// silently dropping audit events for the still-queued keys.
+	//
+	// The ctx-aware acquire turns the cancellation into a clean
+	// "abort + audit the remainder as cancelled" pattern. Audit
+	// events still cover EVERY key the operator submitted, so the
+	// audit stream stays joinable with single-revoke entries (per
+	// Slice 3 pattern #5). Bulk=true + outcome=cancelled tells the
+	// downstream analyst this was the user's abort, not a gateway
+	// fault.
+	cancelRemainder := func(from int) {
+		for _, remaining := range normalized[from:] {
+			d.Audit.Emit("key.revoke_requested", user.Email, map[string]string{
+				"customer_id": customerID,
+				"key_id":      remaining,
+				"outcome":     "cancelled",
+				"bulk":        "true",
+			})
+		}
+	}
+
+loop:
+	for i, kid := range normalized {
+		select {
+		case d.revokePool <- struct{}{}:
+		case <-r.Context().Done():
+			cancelRemainder(i)
+			break loop
+		}
 		wg.Add(1)
-		// Acquire the per-package worker slot BEFORE goroutine launch
-		// so unbounded goroutine fan-out is impossible.
-		d.revokePool <- struct{}{}
 		go func(kid string) {
 			defer wg.Done()
 			defer func() { <-d.revokePool }()
 			// Honour the package-wide rate limiter before issuing
 			// each call. WaitN(1) blocks until a token is available
-			// or ctx cancels.
+			// or ctx cancels. If the wait returns an error (ctx
+			// done while metered), audit outcome=cancelled so the
+			// stream stays consistent with cancelRemainder.
 			if err := d.revokeLimiter.Wait(r.Context()); err != nil {
+				d.Audit.Emit("key.revoke_requested", user.Email, map[string]string{
+					"customer_id": customerID,
+					"key_id":      kid,
+					"outcome":     "cancelled",
+					"bulk":        "true",
+				})
 				return
 			}
 			_, err := d.Admin.RevokeKey(r.Context(), customerID, kid)
@@ -445,6 +490,8 @@ func (d *KeysDeps) BulkRevokeHandler(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				if errors.Is(err, gateway.ErrKeyNotFound) {
 					outcome = "already_revoked"
+				} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					outcome = "cancelled"
 				} else {
 					outcome = "failed"
 					log.Printf("keys_bulk_revoke: revoke %s: %v", kid, err)

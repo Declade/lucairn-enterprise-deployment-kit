@@ -40,10 +40,18 @@
       <div class="lc-banner lc-banner--fail" role="alert">{{ .KeysErr }}</div>
     {{ end }}
 
-    <form method="post" action="/keys/mint" style="margin-bottom:16px">
+    {{- /*
+      Slice 5 fix-up r1 UX-M1: Mint CTA moved INTO the lc-table-toolbar
+      alongside the Revoke-selected button so all per-customer table
+      actions group together. HTML disallows nested forms, so the
+      Mint button uses the `form=...` attribute to target a sibling
+      form sitting outside the bulk-revoke form. The Mint form
+      itself carries no visible UI; only the hidden csrf + customer_id
+      inputs the POST handler reads.
+    */ -}}
+    <form id="keys-mint-form" method="post" action="/keys/mint" hidden>
       <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
       <input type="hidden" name="customer_id" value="{{ .SelectedID }}">
-      <button type="submit" class="lc-primary-button">Mint new key</button>
     </form>
 
     {{ if .KeysResult }}
@@ -56,10 +64,13 @@
             {{ len .KeysResult.Keys }} key{{ if ne (len .KeysResult.Keys) 1 }}s{{ end }} for <code class="lc-mono">{{ .KeysResult.CustomerID }}</code>
             &mdash; tier <strong>{{ .KeysResult.Tier }}</strong>{{ if .KeysResult.MaxKeys }} (cap {{ .KeysResult.MaxKeys }}){{ end }}
           </span>
-          <button type="submit" class="lc-secondary-button" :disabled="selected === 0">
-            <span x-show="selected === 0">Revoke selected</span>
-            <span x-show="selected > 0" x-text="'Revoke ' + selected + ' selected'"></span>
-          </button>
+          <div class="lc-table-toolbar-actions">
+            <button type="submit" class="lc-secondary-button" :disabled="selected === 0">
+              <span x-show="selected === 0">Revoke selected</span>
+              <span x-show="selected > 0" x-text="'Revoke ' + selected + ' selected'"></span>
+            </button>
+            <button type="submit" form="keys-mint-form" class="lc-primary-button">Mint new key</button>
+          </div>
         </div>
 
         <div class="lc-table-frame">

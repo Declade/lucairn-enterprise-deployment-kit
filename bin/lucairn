@@ -982,6 +982,30 @@ check_dashboard_keys() {
 
   local fail=0
 
+  # Slice 5 fix-up r1 KD-1: whitespace-strip + length-compare BEFORE
+  # any other checks. A leading or trailing space (a common copy-paste
+  # footgun) silently breaks byte-for-byte comparison against the
+  # gateway's DSA_ADMIN_KEY. We use `tr` rather than bash 4+ `${var//}`
+  # so we stay Bash 3.2 compatible per Slice 2 lesson #7.
+  local gw_url_stripped gw_token_stripped
+  gw_url_stripped="$(printf '%s' "$gw_url" | tr -d ' \t\n\r')"
+  gw_token_stripped="$(printf '%s' "$gw_token" | tr -d ' \t\n\r')"
+  if [ "${#gw_url_stripped}" != "${#gw_url}" ]; then
+    echo "dashboard keys: failed (LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL has leading/trailing whitespace — strip it before retrying)"
+    fail=1
+  fi
+  if [ "${#gw_token_stripped}" != "${#gw_token}" ]; then
+    echo "dashboard keys: failed (LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN has leading/trailing whitespace — strip it before retrying)"
+    fail=1
+  fi
+  if [ "$fail" -eq 1 ]; then
+    return "$fail"
+  fi
+  # All subsequent checks operate on the stripped values so that
+  # downstream curl invocations see byte-identical input.
+  gw_url="$gw_url_stripped"
+  gw_token="$gw_token_stripped"
+
   # (1) + (2) Half-wired guards.
   if [ -n "$gw_url" ] && [ -z "$gw_token" ]; then
     echo "dashboard keys: failed (LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL is set but LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN is empty — the dashboard would 401 on every /keys request)"
@@ -999,9 +1023,15 @@ check_dashboard_keys() {
   # (3) Placeholder rejection. Mirrors the Slice 4 GAP-1 grafana
   # secret pattern + the gateway admin client's NewAdminClient
   # constructor (apps/dashboard/internal/gateway/admin_client.go::
-  # isPlaceholderToken).
-  case "$gw_token" in
-    CHANGE_ME*|CHANGEME*|changeme*|change_me*|TODO*|todo*|REPLACE_ME*|REPLACE_WITH*|replace_me*|replace_with*|your-admin-token*|your_admin_token*|placeholder*|PLACEHOLDER*)
+  # isPlaceholderToken). Slice 5 fix-up r1 BH-M2: pre-lowercase via
+  # `tr` so MixedCase placeholder values like
+  # "Change_Me_to_real_gateway_admin_token" are rejected too. The Go
+  # side already case-folds via strings.ToLower; this brings shell
+  # parity.
+  local gw_token_low
+  gw_token_low="$(printf '%s' "$gw_token" | tr '[:upper:]' '[:lower:]')"
+  case "$gw_token_low" in
+    change_me*|changeme*|todo*|replace_me*|replace_with*|your-admin-token*|your_admin_token*|placeholder*)
       echo "dashboard keys: failed (LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN still matches a placeholder (e.g. CHANGE_ME_*) — replace with the gateway's DSA_ADMIN_KEY value)"
       fail=1
       ;;
@@ -1028,22 +1058,44 @@ check_dashboard_keys() {
   # (4) + (5) Reachability + auth probe. Best-effort; --max-time keeps
   # doctor responsive even when the gateway is genuinely down.
   if [ "${DOCTOR_OFFLINE:-0}" != "1" ] && have curl; then
-    local probe_url probe_code
+    local probe_url probe_code probe_diag
     probe_url="${gw_url%/}/healthz"
+    # Capture both stderr (for TLS / cert diagnostics) and stdout (the
+    # HTTP code). Slice 5 fix-up r1 KD-2: when the probe collapses to
+    # code 000 against an https:// URL, parse the curl error output to
+    # distinguish "gateway is down" from "TLS handshake / cert chain
+    # rejected" and surface the latter as a fail with an actionable
+    # hint rather than the generic pre-up warn.
+    probe_diag="$(mktemp 2>/dev/null || echo /tmp/lucairn-doctor-keys-diag.$$)"
     probe_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
-        "$probe_url" 2>/dev/null || echo 000)"
+        "$probe_url" 2>"$probe_diag" || echo 000)"
     case "$probe_code" in
       200|204)
         echo "dashboard keys: gateway reachable ($probe_code on $probe_url)"
         ;;
       000)
-        echo "dashboard keys: warn (gateway unreachable at $probe_url — expected when doctor runs pre-up)"
+        case "$gw_url" in
+          https://*)
+            if [ -s "$probe_diag" ] && grep -qiE 'SSL|certificate|x509|TLS|self.?signed|CA' "$probe_diag" 2>/dev/null; then
+              local first_diag
+              first_diag="$(head -1 "$probe_diag" 2>/dev/null | tr -d '\r')"
+              echo "dashboard keys: failed (TLS error reaching gateway: $first_diag — for a self-signed or corporate-CA gateway, install the CA bundle inside the dashboard container, or use plain HTTP between dashboard and gateway over in-cluster DNS)"
+              fail=1
+            else
+              echo "dashboard keys: warn (gateway unreachable at $probe_url — expected when doctor runs pre-up)"
+            fi
+            ;;
+          *)
+            echo "dashboard keys: warn (gateway unreachable at $probe_url — expected when doctor runs pre-up)"
+            ;;
+        esac
         ;;
       *)
         echo "dashboard keys: failed (gateway $probe_url returned $probe_code; verify LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL)"
         fail=1
         ;;
     esac
+    rm -f "$probe_diag" 2>/dev/null || true
 
     if [ "$fail" -eq 0 ] && [ "$probe_code" = "200" -o "$probe_code" = "204" ]; then
       local admin_url admin_code admin_body
@@ -1069,7 +1121,13 @@ check_dashboard_keys() {
           fi
           ;;
         401|403)
-          echo "dashboard keys: failed (admin token rejected by gateway ($admin_code) — verify LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN matches the gateway's DSA_ADMIN_KEY env var)"
+          # Slice 5 fix-up r1 KD-3: extend the 401 message with the
+          # ingress-strip diagnostic. The most common non-obvious cause
+          # of a 401 when the token is correct is a reverse-proxy /
+          # ingress controller that strips the X-Admin-Key header
+          # (Caddy + nginx default behavior; both need a snippet to
+          # forward custom headers).
+          echo "dashboard keys: failed (admin token rejected by gateway ($admin_code) — verify LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN matches the gateway's DSA_ADMIN_KEY env var byte-for-byte; if the token is correct, verify your ingress/reverse-proxy does not strip the X-Admin-Key header (nginx: 'proxy_pass_request_headers on' or allowlist X-Admin-Key in a configuration-snippet; Caddy: 'request_header X-Admin-Key' propagation; cloud LB: confirm header forwarding policy))"
           fail=1
           ;;
         000)

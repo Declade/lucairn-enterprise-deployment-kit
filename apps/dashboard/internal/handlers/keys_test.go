@@ -546,6 +546,71 @@ func TestKeys_BulkRevokeRespectsGatewayOuter20PerMinLimit(t *testing.T) {
 	}
 }
 
+// TestKeys_BulkRevokeContextCancellationEmitsCancelledAudit locks in
+// the BH-M3 fix (Slice 5 fix-up r1): when the request ctx cancels
+// mid-bulk, the remaining keys MUST be audited with outcome=cancelled
+// (NOT silently dropped from the audit stream). Slice 3 pattern #5
+// invariant: every key the operator submitted appears in the audit
+// stream — bulk=true + outcome={revoked|already_revoked|cancelled|
+// failed} disambiguates outcomes downstream.
+func TestKeys_BulkRevokeContextCancellationEmitsCancelledAudit(t *testing.T) {
+	t.Parallel()
+	admin := &fakeAdmin{
+		ListCustomersOut: []gateway.CustomerEntry{{CustomerID: "cust_a"}},
+	}
+	d, em := newKeysDeps(t, admin)
+	// Use production-shape limiter — cancellation must work even
+	// when the limiter is metering between calls.
+	tok, cookie := issueCSRF(t)
+	form := url.Values{}
+	form.Set("csrf", tok)
+	form.Set("customer_id", "cust_a")
+	const total = 6
+	for i := 0; i < total; i++ {
+		form.Add("key_id", "k_"+strings.Repeat("a", i+1))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/keys/bulk-revoke", strings.NewReader(form.Encode())).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	req = withKeysSession(req, newKeysSession(auth.RoleAdmin))
+	rr := httptest.NewRecorder()
+
+	// Cancel quickly so the rate limiter blocks on the 2nd+ key.
+	done := make(chan struct{})
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		cancel()
+		close(done)
+	}()
+	d.BulkRevokeHandler(rr, req)
+	<-done
+
+	// Total audit events MUST equal total (one per key in the form).
+	// Some carry outcome=revoked (the calls that landed before
+	// cancellation), the rest outcome=cancelled.
+	revoked := 0
+	cancelled := 0
+	other := 0
+	for _, e := range em.Events() {
+		switch e.Payload["outcome"] {
+		case "revoked", "already_revoked":
+			revoked++
+		case "cancelled":
+			cancelled++
+		default:
+			other++
+		}
+	}
+	if revoked+cancelled+other != total {
+		t.Fatalf("audit events: %d revoked + %d cancelled + %d other = %d, want %d (every key in the bulk MUST appear in the audit stream regardless of cancellation)",
+			revoked, cancelled, other, revoked+cancelled+other, total)
+	}
+	if cancelled == 0 {
+		t.Errorf("no cancelled audit events emitted; cancellation discipline regressed")
+	}
+}
+
 // TestGetCustomers_FirstCallerCancelDoesNotPoisonCoalesced locks in
 // the BH-H2 fix: when caller A's request ctx cancels mid-fetch,
 // caller B (coalesced via singleflight) MUST still receive the

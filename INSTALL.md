@@ -440,9 +440,10 @@ who want a first-party UI for cert workflows, server health, audit log
 inspection, compliance PDF export, and API key management can enable it.
 
 Bundled in this kit version: dashboard auth + shell foundation +
-optional OIDC SSO + cert browser, cert inspector, and audit-defensibility-grade
-live validator. Server health, audit log browser, compliance PDF, and
-API key management arrive in subsequent kit releases.
+optional OIDC SSO + cert browser, cert inspector, audit-defensibility-grade
+live validator, server health overview, embedded Grafana dashboards, AND
+API key management. Audit log browser and compliance PDF arrive in
+subsequent kit releases.
 
 ### Compose path
 
@@ -604,9 +605,10 @@ Locked posture:
 - Dashboard never writes to the audit DB.
 - The DB user holds SELECT on `veil_certificates` ONLY. No INSERT,
   UPDATE, DELETE, DDL.
-- Both admin and viewer roles can browse + re-verify certs. (Per the
-  PRD, admin-only gates land with API key management in a future kit
-  release.)
+- Both admin and viewer roles can browse + re-verify certs.
+  (Cert-browser role differentiation is reserved for a future kit
+  release; the `/keys` API key management surface is admin-only in
+  this release.)
 - Bulk re-verify caps each job at 100 certs and rate-limits the
   witness gRPC channel to 10 calls per second.
 
@@ -630,7 +632,7 @@ GRANT SELECT ON veil_certificates TO lucairn_dashboard_ro;
 
    ```bash
    LUCAIRN_DASHBOARD_AUDIT_DB_URL=postgres://lucairn_dashboard_ro:<password>@postgres-bridge:5432/dsa?sslmode=require
-   LUCAIRN_DASHBOARD_WITNESS_ENDPOINT=witness:50051
+   LUCAIRN_DASHBOARD_WITNESS_ENDPOINT=veil-witness:50058
    ```
 
 2. Run `bin/lucairn doctor` — the new `dashboard certs:` pre-flight
@@ -669,7 +671,7 @@ GRANT SELECT ON veil_certificates TO lucairn_dashboard_ro;
          name: lucairn-dashboard-audit-db
          key: connection-string
      witness:
-       endpoint: "witness.lucairn.svc.cluster.local:50051"
+       endpoint: "veil-witness.dsa-witness.svc.cluster.local:50058"
    ```
 
 3. Apply: `helm upgrade --install lucairn charts/lucairn -f customer-values.yaml --namespace lucairn`.
