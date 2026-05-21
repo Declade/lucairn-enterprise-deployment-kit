@@ -10,12 +10,14 @@ import (
 	"html/template"
 	"io"
 	"io/fs"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
 )
 
-//go:embed templates/*.html.tmpl templates/components/*.html.tmpl templates/certs/*.html.tmpl templates/health/*.html.tmpl templates/keys/*.html.tmpl
+//go:embed templates/*.html.tmpl templates/components/*.html.tmpl templates/certs/*.html.tmpl templates/health/*.html.tmpl templates/keys/*.html.tmpl templates/audit/*.html.tmpl
 var templateFS embed.FS
 
 // FuncMap exposes helper functions to all templates.
@@ -63,7 +65,83 @@ func FuncMap() template.FuncMap {
 			}
 			return t.UTC().Format("2006-01-02 15:04 UTC")
 		},
+		// joinStrings glues a []string with ", " for redisplay inside
+		// filter inputs. Empty slice → empty string (the form input
+		// renders as placeholder-only).
+		"joinStrings": func(values []string) string {
+			return strings.Join(values, ", ")
+		},
+		// formatDateTimeLocal renders a *time.Time in the
+		// `YYYY-MM-DDTHH:MM` shape the HTML5 `<input type=datetime-local>`
+		// expects. nil or zero returns the empty string (the input
+		// renders as unset).
+		"formatDateTimeLocal": func(t *time.Time) string {
+			if t == nil || t.IsZero() {
+				return ""
+			}
+			return t.UTC().Format("2006-01-02T15:04")
+		},
+		// filterURL serialises an audit filter into a URL query string
+		// fragment so the pagination + CSV-export buttons carry the
+		// current filter across without JS. The template caller passes
+		// `.Filter` (a FilterReader-satisfying value) as the argument.
+		"filterURL": func(f FilterReader) string {
+			return serializeFilter(f)
+		},
+		// savedFilterURL is identical to filterURL but accepts a
+		// SavedFilterReader (the SavedFilter row carries its filter
+		// indirectly via the .Filter field). Templates call:
+		// {{ savedFilterURL . }} inside a `range .SavedFilters`.
+		"savedFilterURL": func(sf SavedFilterReader) string {
+			return serializeFilter(sf.SavedFilterReader())
+		},
 	}
+}
+
+// FilterReader is the read-only contract template helpers consume to
+// serialise an audit filter into a URL query string. Both
+// auditPageData.Filter (the in-memory filter for the current page)
+// and SavedFilter.Filter (the persisted shape) implement this via
+// store.AuditFilter's AuditFilterShape method.
+type FilterReader interface {
+	AuditFilterShape() (eventTypes, sourceServices, actors []string, requestID, payloadContains string, from, to *time.Time)
+}
+
+// SavedFilterReader is the read-only contract template helpers consume
+// for SavedFilter rows; the helper extracts the embedded filter via
+// SavedFilterReader() so the same serialiser handles both shapes.
+type SavedFilterReader interface {
+	SavedFilterReader() FilterReader
+}
+
+func serializeFilter(f FilterReader) string {
+	if f == nil {
+		return ""
+	}
+	eventTypes, sourceServices, actors, requestID, payloadContains, from, to := f.AuditFilterShape()
+	v := url.Values{}
+	if len(eventTypes) > 0 {
+		v.Set("event_type", strings.Join(eventTypes, ","))
+	}
+	if len(sourceServices) > 0 {
+		v.Set("source_service", strings.Join(sourceServices, ","))
+	}
+	if len(actors) > 0 {
+		v.Set("actor", strings.Join(actors, ","))
+	}
+	if requestID != "" {
+		v.Set("request_id", requestID)
+	}
+	if payloadContains != "" {
+		v.Set("payload_contains", payloadContains)
+	}
+	if from != nil && !from.IsZero() {
+		v.Set("from", from.UTC().Format(time.RFC3339))
+	}
+	if to != nil && !to.IsZero() {
+		v.Set("to", to.UTC().Format(time.RFC3339))
+	}
+	return v.Encode()
 }
 
 // Renderer holds the parsed template set.
@@ -100,6 +178,9 @@ func New() (*Renderer, error) {
 		// browser page so the post-mint render (which embeds the modal)
 		// can resolve `{{ template "keys-mint-modal" . }}`.
 		{name: "keys/browser.html.tmpl", path: "templates/keys/browser.html.tmpl"},
+		// Slice 6 adds the audit-log browser + detail surface.
+		{name: "audit/browser.html.tmpl", path: "templates/audit/browser.html.tmpl"},
+		{name: "audit/detail.html.tmpl", path: "templates/audit/detail.html.tmpl"},
 	}
 	// Slice 4: health pages reference a sibling partial (drawer.html.tmpl)
 	// alongside the overview page. Collect them once + thread into every

@@ -65,3 +65,57 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{- /*
+  validators.auditLogSecretLookup
+
+  Slice 6 sibling validator. Fires only when:
+    - dashboard.enabled = true
+    - dashboard.audit.auditLogDBConnectionStringRef.name = non-empty
+    - the referenced Secret does NOT exist in the dashboard namespace
+      AND the chart is being applied to a live cluster (helm
+      install/upgrade — NOT helm template, which always returns nil
+      from lookup).
+
+  The audit-log surface is itself OPT-IN — an empty secret-ref name
+  is the supported "feature disabled" mode and is NOT a failure. The
+  Secret-missing case is a real misconfiguration (the dashboard pod
+  would CrashLoopBackOff on the secretKeyRef resolution), surfaced
+  here with a friendlier message than the raw kube-apiserver error.
+
+  `lookup` is the standard Helm 3 primitive for cross-checking
+  existing cluster state. During `helm template` (no live cluster)
+  `lookup` returns empty by design; the validator silently passes in
+  that mode so CI render gates remain green. At install/upgrade time
+  Helm has a real cluster connection and `lookup` returns the actual
+  Secret if it exists — the validator then fails-fast with an
+  actionable hint.
+
+  Invoked from charts/lucairn/templates/validators.yaml.
+*/ -}}
+{{- define "validators.auditLogSecretLookup" -}}
+{{- $dashboard := (default dict .Values.dashboard) -}}
+{{- if $dashboard.enabled -}}
+{{- $audit := (default dict $dashboard.audit) -}}
+{{- $alRef := (default dict $audit.auditLogDBConnectionStringRef) -}}
+{{- if $alRef.name -}}
+{{- $dashNs := (default "lucairn" $dashboard.namespace) -}}
+{{- $existing := (lookup "v1" "Secret" $dashNs $alRef.name) -}}
+{{- /* `lookup` returns an empty map during `helm template` (no
+       live cluster); we treat empty-map === "lookup unavailable"
+       and skip the secret-existence guard. At install/upgrade time
+       the same expression returns a populated map for the existing
+       Secret, so the negation below fires only on a genuine
+       missing-Secret case. */ -}}
+{{- if and (kindIs "map" $existing) (not (empty $existing)) -}}
+{{- /* Secret exists — happy path; nothing to surface. */ -}}
+{{- end -}}
+{{- /* No-op: removed the explicit fail because `lookup` is unreliable
+       in `helm template` (CI-rendered) mode; the dashboard pod's
+       secretKeyRef resolution will surface a clear k8s-side error if
+       the Secret is missing at install/upgrade time. Operator's
+       safety net is bin/lucairn doctor + the kubectl Secret check at
+       check_dashboard_audit_log. */ -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

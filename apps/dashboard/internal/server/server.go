@@ -68,6 +68,18 @@ type Options struct {
 	KeysAdmin      handlers.AdminClient
 	KeysAudit      audit.Emitter
 	KeysConfigured bool
+
+	// Slice 6 — audit log browser. AuditStore is the read-only audit
+	// DB layer; SavedFilters is the per-user filter persistence
+	// (may be nil — the surface still renders without it).
+	// AuditEmitter mirrors KeysAudit — used for the paired
+	// audit.reveal_raw + audit.csv_export_with_reveal events.
+	// Half-wired AuditConfigured=true but AuditStore=nil fail-closes
+	// at New().
+	AuditStore      handlers.AuditReadStore
+	SavedFilters    handlers.SavedFiltersReadWriteStore
+	AuditEmitter    audit.Emitter
+	AuditConfigured bool
 }
 
 // Server bundles the HTTP server and its lifecycle.
@@ -146,6 +158,10 @@ func New(opts Options) (*Server, error) {
 	// Slice 5 keys surface validation — same half-wired guard.
 	if opts.KeysConfigured && opts.KeysAdmin == nil {
 		return nil, errors.New("server: KeysConfigured requires KeysAdmin")
+	}
+	// Slice 6 audit surface validation — same half-wired guard.
+	if opts.AuditConfigured && opts.AuditStore == nil {
+		return nil, errors.New("server: AuditConfigured requires AuditStore")
 	}
 	healthDeps := &handlers.HealthDeps{
 		Renderer:          renderer,
@@ -318,6 +334,74 @@ func New(opts Options) (*Server, error) {
 			return
 		}
 		http.NotFound(w, r)
+	}))
+
+	// Slice 6 — audit log browser. Both viewer and admin can access;
+	// PII redaction is render-time. Admin "Reveal raw" is an
+	// admin-only POST that emits a paired audit.reveal_raw event.
+	// CSV export with `?reveal=true` is also admin-only.
+	auditDeps := handlers.NewAuditDeps(renderer, opts.AuditStore, opts.SavedFilters, opts.AuditEmitter, opts.AuditConfigured)
+	mux.HandleFunc("/audit", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		auditDeps.BrowserHandler(w, r)
+	})
+	mux.Handle("/audit/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch path {
+		case "/audit/":
+			http.Redirect(w, r, "/audit", http.StatusPermanentRedirect)
+			return
+		case "/audit/export.csv":
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			auditDeps.CSVExportHandler(w, r)
+			return
+		case "/audit/export.csv/":
+			http.Redirect(w, r, "/audit/export.csv", http.StatusPermanentRedirect)
+			return
+		case "/audit/saved-filters":
+			switch r.Method {
+			case http.MethodGet:
+				auditDeps.SavedFiltersGet(w, r)
+				return
+			case http.MethodPost:
+				auditDeps.SavedFiltersPost(w, r)
+				return
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+		}
+		// /audit/saved-filters/{name} — DELETE-as-POST (form action
+		// with hidden _method=delete).
+		if strings.HasPrefix(path, "/audit/saved-filters/") {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			auditDeps.SavedFiltersDelete(w, r)
+			return
+		}
+		// /audit/{event_id}/reveal-raw — admin reveal POST
+		if strings.HasSuffix(path, "/reveal-raw") {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			auditDeps.RevealRawHandler(w, r)
+			return
+		}
+		// /audit/{event_id} — detail GET.
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		auditDeps.DetailHandler(w, r)
 	}))
 
 	// Slice 5 — API key management. Admin-only. The middleware

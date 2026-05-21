@@ -143,6 +143,29 @@ spec:
                   name: {{ .Values.gateway.adminTokenSecretRef.name | quote }}
                   key: {{ .Values.gateway.adminTokenSecretRef.key | default "admin-token" | quote }}
             {{- end }}
+            {{- /* Slice 6: audit log browser. The env var name
+               LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL is DISTINCT from the
+               Slice 3 LUCAIRN_DASHBOARD_AUDIT_DB_URL — the two point at
+               different Postgres instances (postgres-bridge for certs,
+               postgres-audit for events). When auditLogDBConnectionStringRef
+               is empty the env var is not rendered and /audit renders
+               the "not configured" explainer. */ -}}
+            {{- if (default dict .Values.audit).auditLogDBConnectionStringRef }}
+            {{- if .Values.audit.auditLogDBConnectionStringRef.name }}
+            - name: LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.audit.auditLogDBConnectionStringRef.name | quote }}
+                  key: {{ .Values.audit.auditLogDBConnectionStringRef.key | default "url" | quote }}
+            {{- end }}
+            {{- if and (.Values.audit.savedFiltersDBConnectionStringRef) (.Values.audit.savedFiltersDBConnectionStringRef.name) }}
+            - name: LUCAIRN_DASHBOARD_AUDIT_LOG_SAVED_FILTERS_DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.audit.savedFiltersDBConnectionStringRef.name | quote }}
+                  key: {{ .Values.audit.savedFiltersDBConnectionStringRef.key | default "url" | quote }}
+            {{- end }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.containerPort }}

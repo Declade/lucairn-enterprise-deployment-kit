@@ -21,10 +21,10 @@
     </article>
     <article class="lc-card">
       <header class="lc-card-header">
-        <h2 class="lc-card-title">Audit log</h2>
-        {{ template "statusdot" dict "Status" "warn" "Label" "Available in a later kit release" "Timestamp" "" }}
+        <h2 class="lc-card-title"><a class="lc-link" href="/audit">Audit log</a></h2>
+        {{ template "statusdot" dict "Status" "ok" "Label" "Live" "Timestamp" "" }}
       </header>
-      <p class="lc-card-body">Filter audit events with render-time PII guard; reveal raw is admin-only and logged.</p>
+      <p class="lc-card-body">Filter audit events with render-time PII guard; reveal raw is admin-only and logged via a paired <code class="lc-mono">audit.reveal_raw</code> event.</p>
     </article>
     <article class="lc-card">
       <header class="lc-card-header">

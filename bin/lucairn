@@ -942,6 +942,8 @@ check_dashboard() {
 
   check_dashboard_keys "$env_file" || return 1
 
+  check_dashboard_audit_log "$env_file" || return 1
+
   return 0
 }
 
@@ -1158,6 +1160,108 @@ check_dashboard_keys() {
         fail=1
       else
         echo "dashboard keys: kubectl Secret $secret_name present in $dash_ns (key '$secret_key' non-empty)"
+      fi
+    fi
+  fi
+
+  return "$fail"
+}
+
+# Pre-flight Slice 6 audit log browser configuration. Skipped silently
+# when LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL is unset (the /audit surface
+# is off; the rest of the dashboard keeps working).
+#
+# Validates 5 failure modes:
+#   1. URL set + URL not parsable (doesn't start with postgres://) → FAIL
+#   2. URL set + matches a placeholder pattern (CHANGE_ME_*, etc.) → FAIL
+#   3. URL set + pg_isready / curl probe fails → WARN (audit log DB
+#      unreachable; dashboard will fail-closed at boot — operator may
+#      see expected pre-up state)
+#   4. kubectl path: Secret missing OR data key empty (Slice 4 C14
+#      pattern — verify VALUE not just existence)
+#   5. psql path: connect + SELECT 1 FROM audit_events LIMIT 1 fails →
+#      FAIL (role missing grants is the load-bearing case)
+#
+# Bash 3.2 compatible per Slice 2 lesson #7.
+check_dashboard_audit_log() {
+  local env_file="$1"
+  local audit_url audit_url_low audit_url_stripped
+  audit_url="$(env_value "$env_file" LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL)"
+
+  # OPT-IN — empty = surface disabled cleanly.
+  if [ -z "$audit_url" ]; then
+    echo "dashboard audit-log: skipped (/audit surface disabled — set LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL to enable)"
+    return 0
+  fi
+
+  local fail=0
+
+  # Whitespace-strip pre-check (Slice 5 fix-up r1 KD-1 pattern).
+  audit_url_stripped="$(printf '%s' "$audit_url" | tr -d ' \t\n\r')"
+  if [ "${#audit_url_stripped}" != "${#audit_url}" ]; then
+    echo "dashboard audit-log: failed (LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL has leading/trailing whitespace — strip it before retrying)"
+    return 1
+  fi
+  audit_url="$audit_url_stripped"
+
+  # (1) Scheme check.
+  case "$audit_url" in
+    postgres://*|postgresql://*)
+      echo "dashboard audit-log: url scheme ok (postgres)"
+      ;;
+    *)
+      echo "dashboard audit-log: failed (LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL must start with postgres:// or postgresql://, got: $audit_url)"
+      return 1
+      ;;
+  esac
+
+  # (2) Placeholder rejection. Case-fold via tr (Slice 5 fix-up r1
+  # BH-M2 / Slice 5 pattern #40). Match the same indicators the Go
+  # store's isPlaceholderURL recognises.
+  audit_url_low="$(printf '%s' "$audit_url" | tr '[:upper:]' '[:lower:]')"
+  case "$audit_url_low" in
+    *change_me*|*changeme*|*your-*|*placeholder*|*replace_me*|*replaceme*|*todo:set*)
+      echo "dashboard audit-log: failed (LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL still matches a placeholder pattern (e.g. CHANGE_ME) — replace with the real connection string)"
+      return 1
+      ;;
+  esac
+
+  # (3) Reachability probe via pg_isready when available, falling back
+  # to a curl-shaped TCP probe via /dev/tcp when pg_isready is missing.
+  if [ "${DOCTOR_OFFLINE:-0}" != "1" ] && have pg_isready; then
+    if pg_isready -d "$audit_url" -t 5 >/dev/null 2>&1; then
+      echo "dashboard audit-log: db reachable (pg_isready)"
+    else
+      echo "dashboard audit-log: warn (audit log DB unreachable via pg_isready; the dashboard will fail-closed at boot — expected pre-up state)"
+    fi
+  fi
+
+  # (5) Role grant probe via psql when available. Best-effort. Skips
+  # silently when psql is not installed (operator's choice of tooling).
+  if [ "${DOCTOR_OFFLINE:-0}" != "1" ] && have psql; then
+    if psql "$audit_url" -X -q -t -c 'SELECT 1 FROM audit_events LIMIT 1' >/dev/null 2>&1; then
+      echo "dashboard audit-log: role can SELECT audit_events"
+    else
+      echo "dashboard audit-log: warn (psql could not SELECT audit_events — verify the role's grants OR run pre-up when the audit DB is not yet reachable)"
+    fi
+  fi
+
+  # (4) kubectl path — Secret existence + non-empty VALUE check.
+  if [ "$fail" -eq 0 ] && [ "${DOCTOR_INCLUDE_DASHBOARD:-0}" = "1" ] && have kubectl; then
+    local dash_ns secret_name secret_key val
+    dash_ns="${LUCAIRN_DASHBOARD_NAMESPACE:-lucairn}"
+    secret_name="${LUCAIRN_DASHBOARD_AUDIT_LOG_SECRET_NAME:-lucairn-dashboard-audit-log}"
+    secret_key="${LUCAIRN_DASHBOARD_AUDIT_LOG_SECRET_KEY:-url}"
+    if ! kubectl get secret "$secret_name" -n "$dash_ns" >/dev/null 2>&1; then
+      echo "dashboard audit-log: failed (Secret $secret_name missing in namespace $dash_ns — pre-create with: kubectl -n $dash_ns create secret generic $secret_name --from-literal=$secret_key='postgres://audit_app:PASS@postgres-audit:5432/audit')"
+      fail=1
+    else
+      val=$(kubectl get secret "$secret_name" -n "$dash_ns" -o jsonpath="{.data.${secret_key}}" 2>/dev/null | base64 -d 2>/dev/null || true)
+      if [ -z "$val" ]; then
+        echo "dashboard audit-log: failed (Secret $secret_name in $dash_ns has missing/empty key '$secret_key' — verify the key name and value)"
+        fail=1
+      else
+        echo "dashboard audit-log: kubectl Secret $secret_name present in $dash_ns (key '$secret_key' non-empty)"
       fi
     fi
   fi

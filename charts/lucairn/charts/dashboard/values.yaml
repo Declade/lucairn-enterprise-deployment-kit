@@ -12,13 +12,13 @@ replicaCount: 1
 image:
   repository: lucairn-dashboard
   # Pinned to the current slice's release tag. Slice 1 = 0.1.0, Slice 2 =
-  # 0.2.0, Slice 3 = 0.3.0, Slice 4 = 0.4.0, Slice 5 = 0.5.0. Empty
-  # fallback maps to Chart.AppVersion in the deployment template — kept
-  # that way as the last-resort default. NOTE: this is INDEPENDENT from
-  # charts/lucairn/values.yaml global.imageTag — bumping --set
-  # global.imageTag=X will NOT bump the dashboard tag. The dashboard ships
-  # on its own release cadence.
-  tag: "0.5.0"
+  # 0.2.0, Slice 3 = 0.3.0, Slice 4 = 0.4.0, Slice 5 = 0.5.0, Slice 6 =
+  # 0.6.0. Empty fallback maps to Chart.AppVersion in the deployment
+  # template — kept that way as the last-resort default. NOTE: this is
+  # INDEPENDENT from charts/lucairn/values.yaml global.imageTag —
+  # bumping --set global.imageTag=X will NOT bump the dashboard tag.
+  # The dashboard ships on its own release cadence.
+  tag: "0.6.0"
   pullPolicy: IfNotPresent
 
 service:
@@ -244,6 +244,48 @@ gateway:
   adminTokenSecretRef:
     name: ""
     key: "admin-token"
+
+# ─────────────────────────────────────────────────────────────────
+# Slice 6: audit log browser.
+# ─────────────────────────────────────────────────────────────────
+#
+# The /audit surface is OPT-IN. Leave audit.auditLogDBConnectionStringRef
+# empty to ship the dashboard with /audit rendering the "not configured"
+# explainer.
+#
+# IMPORTANT: this connection string points at postgres-audit (the
+# AUDIT EVENT LOG), NOT postgres-bridge (the CERT LOG that Slice 3's
+# .auditDB.connectionStringRef configures). The two are independent
+# databases and require separate Secrets. The dashboard reads both
+# at runtime via DISTINCT env vars (LUCAIRN_DASHBOARD_AUDIT_DB_URL
+# for certs, LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL for events).
+#
+# The role the dashboard connects as MUST have INSERT + SELECT on
+# audit_events (matches the default audit_app role at
+# dual-sandbox-architecture/services/audit/migrations/000003_least_privilege_role.up.sql).
+#
+# Saved filters require an additional table the operator pre-creates
+# via apps/dashboard/migrations/000001_create_saved_filters.up.sql.
+# Without that table, the surface still works — the saved-filter
+# dropdown renders a friendly "apply the dashboard migration" banner.
+#
+# Operator pre-creates the K8s Secret:
+#   kubectl -n lucairn create secret generic lucairn-dashboard-audit-log \
+#     --from-literal=url='postgres://audit_app:CHANGE_ME@postgres-audit:5432/audit?sslmode=disable'
+audit:
+  # K8s Secret with key `url` (libpq postgres URL). Empty = surface
+  # disabled. Operators uncomfortable widening audit_app's role can
+  # supply a separate connection string at savedFiltersDBConnectionStringRef
+  # below (a dedicated dashboard_app role with grants on the new
+  # dashboard_saved_filters table only).
+  auditLogDBConnectionStringRef:
+    name: ""
+    key: url
+  # Optional: separate connection string for the dashboard_saved_filters
+  # table. Empty = re-use auditLogDBConnectionStringRef.
+  savedFiltersDBConnectionStringRef:
+    name: ""
+    key: url
 
 resources:
   requests:

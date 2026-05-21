@@ -9,3 +9,4 @@
 */ -}}
 {{- include "validators.grafanaEmbedCrossChart" $ -}}
 {{- include "validators.keysGatewayAdminHalfConfig" $ -}}
+{{- include "validators.auditLogSecretLookup" $ -}}

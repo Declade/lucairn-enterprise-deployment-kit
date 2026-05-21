@@ -932,3 +932,103 @@ selector (single-customer installs hide the selector entirely).
 
 See `OPS.md` § "Rotating the gateway admin token".
 
+### Enable audit log browser
+
+The dashboard's `/audit` surface is OPT-IN. When enabled, both viewer
+and admin roles can filter / page / save filters / export the audit
+event stream from the customer-side `postgres-audit` instance. PII is
+redacted in the default render; an admin can "Reveal raw" per event,
+which emits a paired `audit.reveal_raw` event into the same audit log.
+
+**IMPORTANT**: this connection points at `postgres-audit` (the audit
+EVENT log), NOT `postgres-bridge` (the cert log that
+`LUCAIRN_DASHBOARD_AUDIT_DB_URL` configures for the cert browser).
+The two are independent databases with independent Postgres roles.
+The dashboard reads both at runtime through DISTINCT env vars:
+
+- `LUCAIRN_DASHBOARD_AUDIT_DB_URL`     → cert browser (Slice 3)
+- `LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL` → audit log browser (Slice 6)
+
+#### Saved-filter table migration (required for per-user dropdowns)
+
+The audit-log browser persists per-user filter dropdowns in a new
+`dashboard_saved_filters` table. Apply the migration BEFORE enabling
+the surface (or after, if you don't mind the surface rendering an
+"apply the migration" banner until you do):
+
+```bash
+psql 'postgres://dsa:dsa@127.0.0.1:5433/audit' \
+  < apps/dashboard/migrations/000001_create_saved_filters.up.sql
+```
+
+The migration grants INSERT/SELECT/UPDATE/DELETE on the new table to
+the existing `audit_app` role (the same role the dashboard connects
+as for reading `audit_events`). Operators uncomfortable widening the
+role can instead pre-create a separate `dashboard_app` role with
+grants on `dashboard_saved_filters` only and wire its connection
+string via `LUCAIRN_DASHBOARD_AUDIT_LOG_SAVED_FILTERS_DB_URL`.
+
+#### Compose path
+
+Edit `customer.env`:
+
+```bash
+LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL=postgres://audit_app:CHANGE_ME@postgres-audit:5432/audit?sslmode=disable
+# Optional — separate role for saved filters:
+# LUCAIRN_DASHBOARD_AUDIT_LOG_SAVED_FILTERS_DB_URL=postgres://dashboard_app:...@postgres-audit:5432/audit
+```
+
+Restart the dashboard container:
+
+```bash
+docker compose -f docker-compose.customer.yml --env-file customer.env --profile dashboard up -d --force-recreate lucairn-dashboard
+```
+
+Verify `bin/lucairn doctor` returns green for `dashboard audit-log`:
+
+```bash
+./bin/lucairn doctor
+```
+
+#### Kubernetes path
+
+Pre-create the Secret holding the libpq connection string:
+
+```bash
+kubectl -n lucairn create secret generic lucairn-dashboard-audit-log \
+  --from-literal=url='postgres://audit_app:REAL_PASSWORD@postgres-audit:5432/audit?sslmode=disable'
+```
+
+Then update `customer-values.yaml`:
+
+```yaml
+dashboard:
+  enabled: true
+  audit:
+    auditLogDBConnectionStringRef:
+      name: lucairn-dashboard-audit-log
+      key: url
+```
+
+Apply with `helm upgrade --install lucairn ./charts/lucairn -f customer-values.yaml`.
+
+#### Rotating the audit log DB credentials
+
+See `OPS.md` § "Rotating the audit log DB credentials".
+
+#### Reveal raw audit event payload
+
+The admin "Reveal raw" button on the `/audit/{event_id}` detail page
+returns the unredacted payload AND emits a paired
+`audit.reveal_raw` event into the same `audit_events` table. The
+event payload identifies the operator who clicked, the target event,
+the target's source service, and the target's `request_id`. This
+closes the compliance loop — auditors can answer "who unmasked
+event X" by filtering for `event_type=audit.reveal_raw` with the
+target_event_id matching.
+
+The CSV export endpoint also supports `?reveal=true` for admins. The
+endpoint emits an `audit.csv_export_with_reveal` event BEFORE the
+stream begins so the audit trail captures bulk reveals even if the
+client disconnects mid-stream.
+

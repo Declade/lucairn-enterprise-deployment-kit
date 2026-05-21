@@ -422,3 +422,80 @@ submit multiple bulk jobs back-to-back. The gateway's per-IP
 admin rate limit (60/min) is the harder ceiling — the
 dashboard's 10 RPC/s stays well under it.
 
+
+
+## Rotating the audit log DB credentials
+
+The dashboard's `/audit` surface connects to `postgres-audit` as the
+`audit_app` role (default) or a custom role you wired via
+`LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL`. Rotate on the same cadence as
+the other audit-DB credentials in the kit.
+
+Step 1 — rotate `audit_app`'s password in `postgres-audit`:
+
+```bash
+docker compose -f docker-compose.customer.yml --env-file customer.env \
+  exec postgres-audit psql -U dsa -d audit \
+  -c "ALTER USER audit_app WITH PASSWORD '<NEW_PASSWORD>';"
+```
+
+Step 2 — update the dashboard env var (Compose) OR Secret (K8s):
+
+```bash
+# Compose path: edit customer.env
+LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL=postgres://audit_app:<NEW_PASSWORD>@postgres-audit:5432/audit?sslmode=disable
+
+# K8s path: rotate the Secret
+kubectl -n lucairn create secret generic lucairn-dashboard-audit-log \
+  --from-literal=url="postgres://audit_app:<NEW_PASSWORD>@postgres-audit:5432/audit?sslmode=disable" \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+Step 3 — rolling-restart the dashboard so it re-reads the env var:
+
+```bash
+# Compose:
+docker compose -f docker-compose.customer.yml --env-file customer.env --profile dashboard up -d --force-recreate lucairn-dashboard
+
+# K8s:
+kubectl -n lucairn rollout restart deploy/lucairn-dashboard
+```
+
+Step 4 — verify `bin/lucairn doctor` returns green for the
+`dashboard audit-log` section:
+
+```bash
+./bin/lucairn doctor
+```
+
+If saved filters share the same role (the default), the rotation
+above is sufficient. If you wired a separate
+`LUCAIRN_DASHBOARD_AUDIT_LOG_SAVED_FILTERS_DB_URL` with a dedicated
+`dashboard_app` role, rotate that role + URL identically.
+
+## Audit log: reveal raw payload + CSV export with PII
+
+The admin "Reveal raw" button on the `/audit/{event_id}` detail
+page returns the unredacted payload to the browser AND emits a
+paired `audit.reveal_raw` event into `audit_events`. The event
+captures:
+
+- `actor` — the admin's email
+- `target_event_id` — the event the admin unmasked
+- `target_event_type`, `target_source`, `target_request_id`,
+  `target_payload_type` — context for the auditor
+
+A future `audit.reveal_raw` audit (the meta-audit) is therefore
+fully self-describing.
+
+The CSV export endpoint `/audit/export.csv?reveal=true` is also
+admin-only. It emits one `audit.csv_export_with_reveal` event
+BEFORE the stream starts (so the audit trail records the bulk
+reveal even if the operator's browser drops mid-stream). The
+event payload captures the operator + the filter query the
+export used.
+
+Default (no `?reveal=true`) CSV export streams REDACTED payloads
+to anyone with dashboard access; no audit event is emitted (the
+operator-visible state of the redacted browser is exactly what
+they see in the file).

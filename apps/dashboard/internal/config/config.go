@@ -71,6 +71,12 @@ const (
 	envGatewayAdminURL   = "LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL"
 	envGatewayAdminToken = "LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN"
 
+	// Slice 6: audit log browser. Note the env var name is
+	// LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL — distinct from the Slice 3
+	// LUCAIRN_DASHBOARD_AUDIT_DB_URL (which points at the cert DB).
+	envAuditLogDBURL    = "LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL"
+	envSavedFiltersDBURL = "LUCAIRN_DASHBOARD_AUDIT_LOG_SAVED_FILTERS_DB_URL"
+
 	defaultListenAddr       = "0.0.0.0:8443"
 	defaultBootstrapEmail   = "admin@lucairn.local"
 	defaultOIDCGroupsClaim  = "groups"
@@ -134,6 +140,16 @@ type Config struct {
 	// a configuration error caught at boot.
 	GatewayAdminURL   string
 	GatewayAdminToken string
+
+	// Slice 6: audit log browser. Both fields are OPTIONAL.
+	// AuditLogDBURL drives the /audit surface; empty = "not
+	// configured" explainer. SavedFiltersDBURL is an optional
+	// hardening override — operators uncomfortable widening the
+	// audit_app role's privileges can point this at a separate role
+	// with INSERT/SELECT/UPDATE/DELETE on dashboard_saved_filters.
+	// Empty = fall back to AuditLogDBURL.
+	AuditLogDBURL     string
+	SavedFiltersDBURL string
 }
 
 // Load reads configuration from the environment and applies safe defaults.
@@ -165,7 +181,53 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	if err := applyAuditLogSurfaceConfig(cfg); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// applyAuditLogSurfaceConfig reads + validates the Slice 6 audit-log
+// browser env vars.
+//
+// AuditLogDBURL is OPTIONAL — empty disables the /audit surface.
+// When set, the URL must parse and use the postgres:// scheme.
+// SavedFiltersDBURL is optional hardening: if set, must also be a
+// postgres:// URL.
+func applyAuditLogSurfaceConfig(cfg *Config) error {
+	cfg.AuditLogDBURL = strings.TrimSpace(os.Getenv(envAuditLogDBURL))
+	cfg.SavedFiltersDBURL = strings.TrimSpace(os.Getenv(envSavedFiltersDBURL))
+	if cfg.AuditLogDBURL == "" {
+		// Surface disabled. Discard the saved-filters URL so main.go's
+		// audit wiring also short-circuits cleanly even if the
+		// operator set saved-filters without audit.
+		cfg.SavedFiltersDBURL = ""
+		return nil
+	}
+	u, err := url.Parse(cfg.AuditLogDBURL)
+	if err != nil {
+		return fmt.Errorf("%s: parse: %w", envAuditLogDBURL, err)
+	}
+	switch u.Scheme {
+	case "postgres", "postgresql":
+		// ok
+	default:
+		return fmt.Errorf("%s scheme must be postgres:// or postgresql://, got %q", envAuditLogDBURL, u.Scheme)
+	}
+	if cfg.SavedFiltersDBURL != "" {
+		uSF, err := url.Parse(cfg.SavedFiltersDBURL)
+		if err != nil {
+			return fmt.Errorf("%s: parse: %w", envSavedFiltersDBURL, err)
+		}
+		switch uSF.Scheme {
+		case "postgres", "postgresql":
+			// ok
+		default:
+			return fmt.Errorf("%s scheme must be postgres:// or postgresql://, got %q", envSavedFiltersDBURL, uSF.Scheme)
+		}
+	}
+	return nil
 }
 
 // applyKeysSurfaceConfig reads + validates the Slice 5 API-key
