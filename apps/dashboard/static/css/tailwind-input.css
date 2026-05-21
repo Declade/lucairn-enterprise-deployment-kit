@@ -858,6 +858,15 @@ input[type="checkbox"]:focus-visible {
   background: rgba(239, 68, 68, 0.08);
 }
 
+/* Release-gate polish (2026-05-21): typed-binary-encoding callout on
+   /audit/{id} uses .lc-banner--info; the class had no rule prior and
+   rendered as a plain unframed box. Matches the health surface's
+   .lc-callout--info idiom (accent-mid border + 8% tint). */
+.lc-banner--info {
+  border-color: var(--color-accent-mid);
+  background: color-mix(in srgb, var(--color-accent-mid) 8%, transparent);
+}
+
 .lc-validator-header {
   display: flex;
   align-items: baseline;
@@ -921,6 +930,17 @@ input[type="checkbox"]:focus-visible {
 .lc-pagination-info {
   color: var(--color-text-secondary);
   font-size: 12px;
+}
+
+/* Release-gate polish (2026-05-21): /audit page-size selector lives in
+   a <form class="lc-pagination-size"> that previously had no layout
+   rule and pushed the label + select onto separate lines below the
+   pagination links. Inline flex matches the surrounding .lc-pagination
+   row. */
+.lc-pagination-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .lc-progress {

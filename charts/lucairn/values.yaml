@@ -2,7 +2,7 @@ global:
   vertical: finance
   imageRegistry: "ghcr.io/declade"
   imagePullSecrets: []
-  imageTag: "0.4.0" # NOTE: dashboard sub-chart ships independently — dashboard image is pinned in the dashboard.image.tag block below (currently 0.7.0).
+  imageTag: "0.4.0" # NOTE: dashboard sub-chart ships independently — dashboard image is pinned in the dashboard.image.tag block below (currently 0.7.1).
   # Slice 4 — namespace of the bundled observability sub-chart (Grafana
   # + Loki + Tempo). The dashboard sub-chart's secret-grafana-jwt.yaml
   # mirrors the Helm-generated shared secret into this namespace so the
@@ -115,9 +115,11 @@ dashboard:
   image:
     repository: lucairn-dashboard
     # Pinned to the current release tag. Bumped per kit-dashboard
-    # release cadence. The 0.7.0 release closes the v1.0-dashboard arc
-    # with the addition of the compliance PDF export surface.
-    tag: "0.7.0"
+    # release cadence. The 0.7.0 release closed the v1.0-dashboard arc
+    # with the addition of the compliance PDF export surface; 0.7.1
+    # carries the release-gate polish patch (PDF Lucairn-opinion
+    # framing on the 3-category overlay + UI CSS-class consistency).
+    tag: "0.7.1"
     pullPolicy: IfNotPresent
 
   service:

@@ -1,6 +1,6 @@
 # Lucairn Enterprise Deployment Kit
 
-Target release: `v1.3.0-customer-demo-data`
+Target release: `v1.4.0-dashboard`
 
 This repository contains the customer-installable Lucairn deployment kit for first enterprise self-hosted installs. The operating rule is simple: customer IT installs and operates the stack; Lucairn support never needs shell access to the customer box.
 
@@ -82,7 +82,7 @@ compose `up -d` line above and populate `ANTHROPIC_API_KEY` (or
 `OPENAI_API_KEY`) in `customer.env` first. See `INSTALL.md` § "Self-hosted
 with managed LLM (BYOK)".
 
-GHCR images are private — `docker login ghcr.io` is required with the GHCR PAT Lucairn provides at customer-handoff (or mirror the images into your own registry and override `LUCAIRN_IMAGE_REGISTRY`). See `INSTALL.md` step 3. License keys are optional (kit runs in unregistered/dev mode without them — see `bin/lucairn-init --dev`).
+GHCR images are public — no registry credentials required. `docker login ghcr.io` is only needed if you override `LUCAIRN_IMAGE_REGISTRY` to a private mirror or air-gapped registry. License keys are optional (kit runs in unregistered/dev mode without them — see `bin/lucairn-init --dev`).
 Before a real customer handoff, run the gates in `docs/CUSTOMER_HANDOFF_GATES.md`.
 
 ## Per-Customer Bundle
