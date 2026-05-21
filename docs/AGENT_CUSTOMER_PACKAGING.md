@@ -112,7 +112,7 @@ docker compose \
   up -d
 ```
 
-For registry-based delivery, they skip `docker load` and use the registry credentials supplied by Lucairn.
+For registry-based delivery, they skip `docker load` and pull directly from `ghcr.io/declade/*` (no Lucairn-supplied credentials required — GHCR-hosted Lucairn images are public). Customer-side private mirrors only need their own mirror credentials.
 
 ## Agent Failure Handling
 

@@ -9,7 +9,7 @@ Use a fresh Linux host or VM with:
 - Docker Engine and Docker Compose v2 installed
 - no Lucairn repo checkout
 - no pre-pulled Lucairn images unless the customer will also receive them that way
-- no copied secrets except the exact bundle, registry credentials, and customer-approved env values
+- no copied secrets except the exact bundle and customer-approved env values (Lucairn-default GHCR images are public; registry credentials are only required if the customer mirrors the images into a private registry)
 
 ## Rehearsal Steps
 

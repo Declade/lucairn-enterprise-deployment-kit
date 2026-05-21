@@ -430,7 +430,7 @@ curl -fsS http://127.0.0.1:8085/readyz
 
 ## Clean-Host Rehearsal
 
-Before sending a first customer bundle, repeat the customer-bundle path on a clean Linux host or VM that has no repo checkout, no local Docker images, and no copied secrets except the exact handoff bundle and registry credentials. Record the transcript against `docs/CLEAN_HOST_REHEARSAL.md`.
+Before sending a first customer bundle, repeat the customer-bundle path on a clean Linux host or VM that has no repo checkout, no local Docker images, and no copied secrets except the exact handoff bundle (and any private-mirror registry credentials only if the customer uses a mirror; the default GHCR-hosted Lucairn images are public). Record the transcript against `docs/CLEAN_HOST_REHEARSAL.md`.
 
 ## Enable the Lucairn dashboard (optional)
 
@@ -962,12 +962,12 @@ the surface (or after, if you don't mind the surface rendering an
 "apply the migration" banner until you do):
 
 ```bash
-# Replace the password below with the rotated value from customer.env
-# (the Postgres rotation runbook in OPS.md walks operators through
-# superuser rotation end-to-end). The `dsa:dsa` default ships only for
-# first-boot convenience and MUST be rotated before any production
-# use — never run with the default credential against a customer-data
-# instance.
+# Runs psql inside the postgres-audit container via `docker compose exec`.
+# Auths over the container's local Unix socket — no password is needed
+# (the rotated POSTGRES_PASSWORD from customer.env is ONLY consumed for
+# network connections; container-local exec is socket-trusted). The
+# `dsa` superuser is the container default (POSTGRES_USER=dsa). Stack
+# must be up (`docker compose up -d`) so postgres-audit is running.
 docker compose \
   -f docker-compose.customer.yml \
   --env-file customer.env \
