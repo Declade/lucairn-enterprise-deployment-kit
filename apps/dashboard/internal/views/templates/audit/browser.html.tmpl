@@ -101,9 +101,9 @@
             <li class="lc-filter-check">
               <a class="lc-link lc-mono" href="/audit?{{ savedFilterURL . }}">{{ .Name }}</a>
               {{- /*
-                  Slice 6 fix-up r1 UX-H1: data-confirm was a no-op.
-                  Same Alpine inline-confirm pattern as the reveal-raw
-                  surface in detail.html.tmpl.
+                  Alpine inline-confirm pattern (same as the reveal-raw
+                  surface in detail.html.tmpl) — a previous non-standard
+                  HTML attribute used here was a no-op (no JS handler).
               */ -}}
               <div x-data="{ confirming: false }" style="display:inline">
                 <button type="button"

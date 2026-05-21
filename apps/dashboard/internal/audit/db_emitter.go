@@ -14,7 +14,7 @@
 //
 //	event_id        TEXT NOT NULL UNIQUE        — UUIDv4 per emit
 //	event_type      TEXT NOT NULL               — from the call site
-//	source_service  TEXT NOT NULL               — "dsa-dashboard"
+//	source_service  TEXT NOT NULL               — "lucairn-dashboard"
 //	actor           TEXT NOT NULL               — caller's email
 //	timestamp                                   — NOW()
 //	event_hash      TEXT NOT NULL               — SHA-256 of canonical
@@ -52,7 +52,7 @@ import (
 
 // DBEmitter INSERTs each Emit() call into audit_events.
 //
-// service is the source_service column value (always "dsa-dashboard"
+// service is the source_service column value (always "lucairn-dashboard"
 // in production; injectable for tests). pool is the audit-log DB pool;
 // the audit_app role this connects as already holds INSERT on
 // audit_events per migration 000003. now lets tests pin the timestamp;
@@ -68,7 +68,7 @@ type DBEmitter struct {
 func NewDBEmitter(pool *pgxpool.Pool, sourceService string) *DBEmitter {
 	svc := strings.TrimSpace(sourceService)
 	if svc == "" {
-		svc = "dsa-dashboard"
+		svc = "lucairn-dashboard"
 	}
 	return &DBEmitter{
 		pool:    pool,

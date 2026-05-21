@@ -152,7 +152,7 @@ func TestAudit_ListViewer_RendersRedactedPayloads(t *testing.T) {
 			ID:            1,
 			EventID:       "ev-1",
 			EventType:     "key.revoke_requested",
-			SourceService: "dsa-dashboard",
+			SourceService: "lucairn-dashboard",
 			Actor:         "bob@example.com",
 			Timestamp:     time.Now().UTC(),
 			Payload:       []byte(`{"key_id":"key_1","actor_email":"bob@example.com","ip":"192.168.42.7"}`),
@@ -186,7 +186,7 @@ func TestAudit_ListAdmin_StillRedactedByDefault(t *testing.T) {
 			ID:            1,
 			EventID:       "ev-2",
 			EventType:     "audit.reveal_raw",
-			SourceService: "dsa-dashboard",
+			SourceService: "lucairn-dashboard",
 			Actor:         "admin@lucairn.local",
 			Timestamp:     time.Now().UTC(),
 			Payload:       []byte(`{"target_request_id":"req-7","target_email":"alice@example.com"}`),
@@ -208,7 +208,7 @@ func TestAudit_RevealRawAdmin_EmitsAuditEvent(t *testing.T) {
 	ev := &store.AuditEvent{
 		EventID:       "ev-target",
 		EventType:     "key.mint_requested",
-		SourceService: "dsa-dashboard",
+		SourceService: "lucairn-dashboard",
 		Actor:         "alice@example.com",
 		Timestamp:     time.Now(),
 		Payload:       []byte(`{"key_id":"k1","actor_email":"alice@example.com"}`),
@@ -339,6 +339,37 @@ func TestAudit_CSVExport_RevealAdminEmitsAuditEvent(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "alice@example.com") {
 		t.Fatalf("admin reveal csv did NOT emit raw email: %s", rr.Body.String())
+	}
+}
+
+// TestAudit_CSVExportReveal_EmitFailsReturns500NoRaw verifies the
+// fail-closed invariance on the CSV-export-with-reveal path: if the
+// emitter returns an error (e.g. audit DB unreachable), the handler
+// MUST 500 before streaming any rows and MUST NOT leak raw PII into
+// the response body. Mirrors TestAudit_RevealRawAdmin_EmitFailsReturns500
+// for the reveal-raw single-event path.
+func TestAudit_CSVExportReveal_EmitFailsReturns500NoRaw(t *testing.T) {
+	t.Parallel()
+	mem := audit.NewMemoryEmitter()
+	mem.SetEmitErr(errors.New("synthetic CSV-reveal DB INSERT failure"))
+	st := &fakeAuditReadStore{
+		events: []store.AuditEvent{{
+			EventID: "ev-csv-fail", EventType: "x", SourceService: "y", Actor: "alice@example.com",
+			Timestamp: time.Now().UTC(),
+			Payload:   []byte(`{"email":"alice@example.com"}`),
+		}},
+		total: 1,
+	}
+	d := NewAuditDeps(newRenderer(t), st, newFakeSavedFilters(), mem, true)
+	req := withUser(httptest.NewRequest(http.MethodGet, "/audit/export.csv?reveal=true", nil), newAdminUser())
+	rr := httptest.NewRecorder()
+	d.CSVExportHandler(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("csv-reveal emit-failure status: got %d want 500", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), "alice@example.com") {
+		t.Fatalf("FAIL-CLOSED INVARIANT BROKEN: csv-export-with-reveal leaked raw email after emit failure: %s", rr.Body.String())
 	}
 }
 
@@ -597,7 +628,7 @@ func TestAudit_RevealRawViaMiddleware(t *testing.T) {
 	ev := &store.AuditEvent{
 		EventID:       "ev-target-middleware",
 		EventType:     "key.mint_requested",
-		SourceService: "dsa-dashboard",
+		SourceService: "lucairn-dashboard",
 		Actor:         "alice@example.com",
 		Timestamp:     time.Now(),
 		Payload:       []byte(`{"key_id":"k1"}`),
@@ -659,7 +690,7 @@ func TestAudit_RevealRawAdmin_EmitFailsReturns500(t *testing.T) {
 	ev := &store.AuditEvent{
 		EventID:       "ev-emit-fail",
 		EventType:     "key.mint_requested",
-		SourceService: "dsa-dashboard",
+		SourceService: "lucairn-dashboard",
 		Actor:         "alice@example.com",
 		Timestamp:     time.Now(),
 		Payload:       []byte(`{"email":"alice@example.com","key_id":"k1"}`),
@@ -708,7 +739,7 @@ func TestAudit_RevealRawAdmin_EmitsToDB(t *testing.T) {
 	ev := &store.AuditEvent{
 		EventID:       "ev-db-emit",
 		EventType:     "key.mint_requested",
-		SourceService: "dsa-dashboard",
+		SourceService: "lucairn-dashboard",
 		Actor:         "alice@example.com",
 		Timestamp:     time.Now(),
 		Payload:       []byte(`{"key_id":"k1"}`),

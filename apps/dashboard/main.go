@@ -252,7 +252,7 @@ func main() {
 		// alongside upstream service events. LogEmitter remains the
 		// fallback for dev installs that haven't wired AUDIT_LOG_DB_URL.
 		if auditPool != nil {
-			auditEmitter = audit.NewDBEmitter(auditPool, "dsa-dashboard")
+			auditEmitter = audit.NewDBEmitter(auditPool, "lucairn-dashboard")
 			log.Printf("audit emitter: DBEmitter (writes to audit_events on audit-log DB)")
 		}
 		log.Printf("audit log browser enabled (db=%s)", redactDSN(cfg.AuditLogDBURL))
