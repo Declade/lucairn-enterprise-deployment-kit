@@ -78,7 +78,7 @@ func TestRender_EmitsRequiredSections(t *testing.T) {
 		// categorization. This assertion locks the fix against silent
 		// regression (tautological-test bug class — Slice 4 C33 / Slice 5
 		// BH-H2 / Slice 6 H2 / Slice 7 BH-M1 pattern).
-		"Lucairn's opinionated obligation overlay",
+		"Lucairn's opinionated obligation overlay for engineering convenience",
 		"Regulation (EU) 2024/1689 does not itself define these three categories",
 	} {
 		if !strings.Contains(out, must) {
