@@ -15,15 +15,15 @@
       <a class="lc-link" href="/audit">Back to list</a>
       {{ if and .RevealEnabled .DetailEvent (not .RevealSucceeded) }}
         {{- /*
-            Slice 6 fix-up r1 UX-H1: the previous `data-confirm` attribute
-            was a NO-OP — not a standard HTML attribute, no JS handler
-            anywhere in the codebase, so clicking "Reveal raw" submitted
-            IMMEDIATELY and revealed raw PII with zero confirmation
-            step. Combined with the H3/DRIFT-006 DB-emit fix this means:
-            an admin clicking the button now (a) sees an inline confirm
-            FIRST and (b) a paired audit.reveal_raw row is INSERTed
-            BEFORE the raw payload returns. Pattern lifted verbatim from
-            Slice 5 keys/browser.html.tmpl revoke flow.
+            Alpine inline-confirm. A previous attempt used a non-standard
+            HTML attribute as a "confirm" signal — it was a no-op (no JS
+            handler anywhere), so the form submitted immediately and
+            revealed raw PII with zero confirmation step. Combined with
+            the DB-emit fix this means: admin clicking the button now
+            (a) sees an inline confirm FIRST and (b) a paired
+            audit.reveal_raw row is INSERTed BEFORE the raw payload
+            returns. Pattern lifted verbatim from the keys/browser
+            revoke flow.
         */ -}}
         <div x-data="{ confirming: false }" style="display:inline">
           <button type="button"

@@ -147,8 +147,8 @@ func TestHashEvent_ChangesOnAnyFieldChange(t *testing.T) {
 func TestNewDBEmitter_DefaultsServiceWhenEmpty(t *testing.T) {
 	t.Parallel()
 	em := NewDBEmitter(nil, "")
-	if em.service != "dsa-dashboard" {
-		t.Errorf("default service: got %q want dsa-dashboard", em.service)
+	if em.service != "lucairn-dashboard" {
+		t.Errorf("default service: got %q want lucairn-dashboard", em.service)
 	}
 }
 
