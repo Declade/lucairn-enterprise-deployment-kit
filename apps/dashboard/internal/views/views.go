@@ -17,7 +17,7 @@ import (
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
 )
 
-//go:embed templates/*.html.tmpl templates/components/*.html.tmpl templates/certs/*.html.tmpl templates/health/*.html.tmpl templates/keys/*.html.tmpl templates/audit/*.html.tmpl
+//go:embed templates/*.html.tmpl templates/components/*.html.tmpl templates/certs/*.html.tmpl templates/health/*.html.tmpl templates/keys/*.html.tmpl templates/audit/*.html.tmpl templates/compliance/*.html.tmpl
 var templateFS embed.FS
 
 // FuncMap exposes helper functions to all templates.
@@ -214,6 +214,12 @@ func New() (*Renderer, error) {
 		// Slice 6 adds the audit-log browser + detail surface.
 		{name: "audit/browser.html.tmpl", path: "templates/audit/browser.html.tmpl"},
 		{name: "audit/detail.html.tmpl", path: "templates/audit/detail.html.tmpl"},
+		// Slice 7 closes the v1.0-dashboard arc with the compliance
+		// PDF export surface. Admin-only; the form posts to
+		// /compliance/export which returns PDF bytes (no html template
+		// for the export endpoint itself — the response Content-Type
+		// flips to application/pdf).
+		{name: "compliance/export.html.tmpl", path: "templates/compliance/export.html.tmpl"},
 	}
 	// Slice 4: health pages reference a sibling partial (drawer.html.tmpl)
 	// alongside the overview page. Collect them once + thread into every

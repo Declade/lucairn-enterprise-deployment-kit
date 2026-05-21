@@ -77,6 +77,13 @@ const (
 	envAuditLogDBURL    = "LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL"
 	envSavedFiltersDBURL = "LUCAIRN_DASHBOARD_AUDIT_LOG_SAVED_FILTERS_DB_URL"
 
+	// Slice 7: compliance PDF export. Both knobs are OPTIONAL — when
+	// neither AuditDBURL (Slice 3) nor AuditLogDBURL (Slice 6) is
+	// configured, the compliance surface still renders but the
+	// aggregator returns zero-value counts.
+	envComplianceMaxWindowDays   = "LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS"
+	envComplianceDefaultCustomer = "LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME"
+
 	defaultListenAddr       = "0.0.0.0:8443"
 	defaultBootstrapEmail   = "admin@lucairn.local"
 	defaultOIDCGroupsClaim  = "groups"
@@ -150,6 +157,14 @@ type Config struct {
 	// Empty = fall back to AuditLogDBURL.
 	AuditLogDBURL     string
 	SavedFiltersDBURL string
+
+	// Slice 7: compliance PDF export. Both knobs are OPTIONAL — the
+	// surface always registers (admin-only) regardless. The aggregator
+	// returns zero-value counts when neither AuditDBURL nor
+	// AuditLogDBURL is configured; the PDF still generates but the
+	// category tables show "(no rows recorded in this window)".
+	ComplianceMaxWindowDays   int
+	ComplianceDefaultCustomer string
 }
 
 // Load reads configuration from the environment and applies safe defaults.
@@ -185,7 +200,43 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	if err := applyComplianceSurfaceConfig(cfg); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// applyComplianceSurfaceConfig reads + validates the Slice 7
+// compliance-export env vars.
+//
+// Both are optional. When unset, the aggregator's package-level
+// defaults apply (MaxWindowDays=365). DefaultCustomerName gets
+// sanitized via compliance.SanitizeCustomerName on POST — at boot we
+// only enforce length + banned-literal-class shape so a typo in the
+// env var fails the binary loudly rather than rendering a corrupt
+// cover page on first export.
+func applyComplianceSurfaceConfig(cfg *Config) error {
+	cfg.ComplianceDefaultCustomer = strings.TrimSpace(os.Getenv(envComplianceDefaultCustomer))
+	if len(cfg.ComplianceDefaultCustomer) > 200 {
+		return fmt.Errorf("%s must be ≤200 chars, got %d", envComplianceDefaultCustomer, len(cfg.ComplianceDefaultCustomer))
+	}
+
+	if v := strings.TrimSpace(os.Getenv(envComplianceMaxWindowDays)); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err != nil || n <= 0 {
+			return fmt.Errorf("%s must be a positive integer, got %q", envComplianceMaxWindowDays, v)
+		}
+		// Hard ceiling at 3650 days (10 years) per
+		// compliance.HardMaxWindowDays. Set in code path not constant
+		// reference to avoid the config package importing compliance.
+		const hardMax = 3650
+		if n > hardMax {
+			return fmt.Errorf("%s must be ≤%d (10 years), got %d", envComplianceMaxWindowDays, hardMax, n)
+		}
+		cfg.ComplianceMaxWindowDays = n
+	}
+	return nil
 }
 
 // applyAuditLogSurfaceConfig reads + validates the Slice 6 audit-log

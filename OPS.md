@@ -526,3 +526,40 @@ Default (no `?reveal=true`) CSV export streams REDACTED payloads
 to anyone with dashboard access; no audit event is emitted (the
 operator-visible state of the redacted browser is exactly what
 they see in the file).
+
+## Compliance PDF export — audit trail
+
+Every PDF generation through the dashboard's `/compliance` surface
+emits one `audit.compliance_pdf_generated` event into
+`audit_events` (when the audit-log DB is configured; pod-log fallback
+otherwise). The event payload captures:
+
+- `actor` — the admin's email
+- `customer_name` — the sanitised string from the form
+- `window_from` / `window_to` — RFC3339 timestamps of the exported
+  range
+- `page_count` — number of PDF pages produced
+- `byte_size` — total size of the PDF bytes returned
+- `cert_count` / `sanitizer_events` / `audit_events` — the
+  aggregated counts the cover page summarises
+
+The handler emits the audit event BEFORE writing PDF bytes to the
+response stream. If the emit fails (DB unreachable mid-export,
+audit_app role grant missing) the handler returns HTTP 500 with
+`audit emit failed` and ZERO PDF bytes touch the wire. The
+fail-closed mirror of the reveal-raw + csv_export_with_reveal
+flows: evidence content never surfaces without a matching audit
+row.
+
+### Render-time banned-literal guard
+
+The compliance PDF renderer scans every text-emit against the
+project's locked mechanism-allowlist set. If a banned literal
+appears in the customer name, the kit-version metadata, or anywhere
+else in the rendered copy, the handler returns HTTP 500 with `PDF
+generation failed`. The most common operator-side cause is a
+banned-literal substring inside
+`LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME`. The
+`bin/lucairn doctor` pre-up probe rejects the same set so the
+operator catches the misconfiguration before the dashboard pod
+boots; the in-binary guard is the second layer of defence.

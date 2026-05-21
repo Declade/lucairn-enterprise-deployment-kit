@@ -114,11 +114,10 @@ dashboard:
 
   image:
     repository: lucairn-dashboard
-    # Pinned to the current slice's release tag. Bumped per slice
-    # (Slice 1=0.1.0 → Slice 6=0.6.0). Empty fallback to
-    # Chart.AppVersion remains the last-resort default in the
-    # sub-chart's `dashboard.image` helper.
-    tag: "0.6.0"
+    # Pinned to the current release tag. Bumped per kit-dashboard
+    # release cadence. The 0.7.0 release closes the v1.0-dashboard arc
+    # with the addition of the compliance PDF export surface.
+    tag: "0.7.0"
     pullPolicy: IfNotPresent
 
   service:
@@ -238,6 +237,15 @@ dashboard:
     savedFiltersDBConnectionStringRef:
       name: ""
       key: url
+
+  # Compliance PDF export. Admin-only + always-on surface (no opt-in
+  # env var). Field names mirror charts/lucairn/charts/dashboard/values.yaml
+  # so customer overrides at the parent path are passed through verbatim.
+  # The aggregator returns zero-value counts when neither auditDB nor
+  # audit-log DB is wired; the PDF still renders with empty tables.
+  compliance:
+    maxWindowDays: 365
+    defaultCustomerName: ""
 
 # Observability sub-chart override block (Slice 4 fold-in). When
 # enabling the dashboard's Grafana embedding, also flip

@@ -12,7 +12,7 @@ This repository contains the customer-installable Lucairn deployment kit for fir
 - `docker-compose.self-hosted.yml` - self-hosted inference overlay with model runtime profiles.
 - `customer.env.example` - annotated Compose env file.
 - `model-manifest.example.yaml` - runtime-neutral model manifest template.
-- `apps/dashboard/` - Lucairn Enterprise Dashboard (opt-in operator UI; local-admin sign-in + OIDC SSO + cert browser + cert inspector + audit-defensibility-grade live validator + bulk re-verify + server health overview with embedded Grafana panels + API key management: mint, rotate, revoke, bulk-revoke + audit log browser: filter, paginate, save filters, CSV export, admin-only raw-PII reveal with paired `audit.reveal_raw` event).
+- `apps/dashboard/` - Lucairn Enterprise Dashboard (opt-in operator UI; local-admin sign-in + OIDC SSO + cert browser + cert inspector + audit-defensibility-grade live validator + bulk re-verify + server health overview with embedded Grafana panels + API key management: mint, rotate, revoke, bulk-revoke + audit log browser: filter, paginate, save filters, CSV export, admin-only raw-PII reveal with paired `audit.reveal_raw` event + compliance PDF export: AI Act 3-category structure, fail-closed banned-literal guard, per-generation audit emit).
 - `bin/lucairn` - customer CLI with `doctor` and `support-bundle`.
 - `bin/lucairn bundle create/prepare/verify` - per-customer bundle builder, agent package factory, and verifier.
 - `bin/lucairn-init` - one-command env file generator with Ed25519 pair derivation and `--dev` / `--production` modes.

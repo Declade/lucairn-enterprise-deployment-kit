@@ -27,7 +27,7 @@ fi
 # something to pull from. The compose config references the GHCR-tagged
 # image; we tag the local build to that exact name so docker compose finds
 # it without going to the network.
-LOCAL_TAG="${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.6.0}"
+LOCAL_TAG="${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.7.0}"
 echo "compose-smoke: building image as ${LOCAL_TAG}"
 docker build -t "${LOCAL_TAG}" -f apps/dashboard/Dockerfile apps/dashboard >/dev/null
 
@@ -275,5 +275,35 @@ if [ "$SF_CODE" != "302" ]; then
   exit 1
 fi
 echo "compose-smoke: POST /audit/saved-filters ok (302 -> /login)"
+
+# Compliance PDF export. Admin-only + CSRF-gated POST. Unauthenticated
+# requests get the same 302 -> /login auth gate; the role check fires
+# AFTER session load and viewers see 404 (per the locked RequireRole
+# pattern at apps/dashboard/internal/auth/middleware.go:77).
+echo "compose-smoke: hitting GET /compliance (expect 302 -> /login; auth-gated)"
+COMP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8443/compliance)
+if [ "$COMP_CODE" != "302" ]; then
+  echo "compose-smoke: GET /compliance expected 302, got $COMP_CODE" >&2
+  exit 1
+fi
+COMP_LOC=$(curl -s -o /dev/null -w "%{redirect_url}" http://127.0.0.1:8443/compliance)
+case "$COMP_LOC" in
+  */login*) ;;
+  *) echo "compose-smoke: GET /compliance redirect target should be /login, got $COMP_LOC" >&2 ; exit 1 ;;
+esac
+echo "compose-smoke: GET /compliance ok (302 -> /login)"
+
+echo "compose-smoke: hitting POST /compliance/export (expect 302 -> /login; auth-gated)"
+EXP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8443/compliance/export)
+if [ "$EXP_CODE" != "302" ]; then
+  echo "compose-smoke: POST /compliance/export expected 302, got $EXP_CODE" >&2
+  exit 1
+fi
+EXP_LOC=$(curl -s -o /dev/null -w "%{redirect_url}" -X POST http://127.0.0.1:8443/compliance/export)
+case "$EXP_LOC" in
+  */login*) ;;
+  *) echo "compose-smoke: POST /compliance/export redirect target should be /login, got $EXP_LOC" >&2 ; exit 1 ;;
+esac
+echo "compose-smoke: POST /compliance/export ok (302 -> /login)"
 
 echo "compose-smoke: ok"

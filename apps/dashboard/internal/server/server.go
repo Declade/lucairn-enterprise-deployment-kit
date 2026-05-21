@@ -14,6 +14,7 @@ import (
 
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/audit"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/compliance"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/grafana"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/handlers"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/store"
@@ -80,6 +81,25 @@ type Options struct {
 	SavedFilters    handlers.SavedFiltersReadWriteStore
 	AuditEmitter    audit.Emitter
 	AuditConfigured bool
+
+	// Slice 7 — compliance PDF export. Aggregator wraps the cert DB
+	// (Slice 3) + audit-log DB (Slice 6) pools; either may be nil
+	// when the corresponding surface is unconfigured (the aggregator
+	// returns zero-value counts for that population).
+	// ComplianceConfigured is the honesty bit: false renders the
+	// "not configured" explainer + POST returns 404. Admin-only
+	// (RequireRole gate at the mux level — viewers see 404).
+	//
+	// KitVersion + DashboardVersion + ImageDigests are the static
+	// metadata embedded on every PDF cover page so the customer's
+	// evidence chain documents what kit + image set produced the
+	// artefact.
+	ComplianceAggregator     *compliance.Aggregator
+	ComplianceConfigured     bool
+	ComplianceKitVersion     string
+	ComplianceImageDigests   map[string]string
+	ComplianceMaxWindowDays  int
+	ComplianceDefaultCustomer string
 }
 
 // Server bundles the HTTP server and its lifecycle.
@@ -162,6 +182,12 @@ func New(opts Options) (*Server, error) {
 	// Slice 6 audit surface validation — same half-wired guard.
 	if opts.AuditConfigured && opts.AuditStore == nil {
 		return nil, errors.New("server: AuditConfigured requires AuditStore")
+	}
+	// Slice 7 compliance surface validation — same half-wired guard.
+	// ComplianceConfigured=true but Aggregator=nil would crash the
+	// /compliance/export handler at first POST; fail-closed at New().
+	if opts.ComplianceConfigured && opts.ComplianceAggregator == nil {
+		return nil, errors.New("server: ComplianceConfigured requires ComplianceAggregator")
 	}
 	healthDeps := &handlers.HealthDeps{
 		Renderer:          renderer,
@@ -457,6 +483,50 @@ func New(opts Options) (*Server, error) {
 	}))
 	mux.Handle("/keys", auth.RequireRole(auth.RoleAdmin, keysMux))
 	mux.Handle("/keys/", auth.RequireRole(auth.RoleAdmin, keysMux))
+
+	// Slice 7 — compliance PDF export. Admin-only (RequireRole 404s
+	// viewers per the locked Slice 1 pattern). The /compliance GET
+	// renders the form; /compliance/export POST returns PDF bytes
+	// after fail-closed banned-literal + audit-emit gates fire.
+	complianceDeps := handlers.NewComplianceDeps(
+		renderer,
+		opts.ComplianceAggregator,
+		opts.AuditEmitter,
+		opts.ComplianceKitVersion,
+		opts.Version,
+		opts.ComplianceImageDigests,
+		opts.ComplianceMaxWindowDays,
+		opts.ComplianceDefaultCustomer,
+		opts.ComplianceConfigured,
+	)
+	complianceMux := http.NewServeMux()
+	complianceMux.HandleFunc("/compliance", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		complianceDeps.ExportPage(w, r)
+	})
+	complianceMux.Handle("/compliance/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/compliance/":
+			http.Redirect(w, r, "/compliance", http.StatusPermanentRedirect)
+			return
+		case "/compliance/export":
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			complianceDeps.ExportPDF(w, r)
+			return
+		case "/compliance/export/":
+			http.Redirect(w, r, "/compliance/export", http.StatusPermanentRedirect)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	mux.Handle("/compliance", auth.RequireRole(auth.RoleAdmin, complianceMux))
+	mux.Handle("/compliance/", auth.RequireRole(auth.RoleAdmin, complianceMux))
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {

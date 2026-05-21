@@ -1,0 +1,75 @@
+{{ define "main" }}
+<section class="lc-page-section">
+  <header class="lc-page-header">
+    <h1 class="lc-page-title">Compliance export</h1>
+    <p class="lc-page-lede">Generate an AI Act evidence summary as a PDF. The export aggregates certificate, sanitizer, and audit-event counts for the chosen window and packages them with the kit version + pinned image manifest. Banned-literal claims are blocked at render time.</p>
+  </header>
+
+  {{ if not .Configured }}
+    <div class="lc-banner lc-banner--warn" role="status">
+      {{ .NotConfigured }}
+    </div>
+  {{ else }}
+
+    {{ if .FlashError }}
+      <div class="lc-banner lc-banner--fail" role="alert">{{ .FlashError }}</div>
+    {{ end }}
+
+    <form class="lc-filter-form" method="post" action="/compliance/export" aria-label="Generate compliance PDF">
+      <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+
+      <fieldset class="lc-filter-fieldset">
+        <legend class="lc-text-muted">Customer name</legend>
+        <label class="lc-filter-field">
+          <span class="lc-filter-label">Appears on the PDF cover page</span>
+          <input type="text" class="lc-filter-input" name="customer_name" value="{{ .DefaultCustomer }}" maxlength="200" placeholder="Acme Corp GmbH" autocomplete="off" required>
+        </label>
+        <small class="lc-text-muted">1&ndash;200 characters. Banned-literal claims (the project mechanism-allowlist) are rejected before render.</small>
+      </fieldset>
+
+      <fieldset class="lc-filter-fieldset">
+        <legend class="lc-text-muted">Date range</legend>
+        <label class="lc-filter-field">
+          <span class="lc-filter-label">From (UTC)</span>
+          <input type="date" class="lc-filter-input" name="from" value="{{ .DefaultFrom }}" required>
+        </label>
+        <label class="lc-filter-field">
+          <span class="lc-filter-label">To (UTC, inclusive)</span>
+          <input type="date" class="lc-filter-input" name="to" value="{{ .DefaultTo }}" required>
+        </label>
+        <small class="lc-text-muted">Maximum window: {{ .MaxWindowDays }} days. Both dates inclusive; the aggregator query is half-open [from, to+1) internally.</small>
+      </fieldset>
+
+      <fieldset class="lc-filter-fieldset">
+        <legend class="lc-text-muted">Format</legend>
+        <label class="lc-filter-field">
+          <span class="lc-filter-label">Output</span>
+          <select class="lc-filter-input" name="format" aria-label="Output format">
+            <option value="pdf" selected>PDF (A4 portrait)</option>
+          </select>
+        </label>
+        <small class="lc-text-muted">Additional formats may be added in a later kit release.</small>
+      </fieldset>
+
+      <div class="lc-filter-actions">
+        <button type="submit" class="lc-primary-button">Generate PDF</button>
+        <span class="lc-text-muted">Generation emits a paired <code class="lc-mono">audit.compliance_pdf_generated</code> event with the actor + window + page count + byte size.</span>
+      </div>
+    </form>
+
+    <section class="lc-card" aria-label="Build metadata">
+      <header class="lc-card-header">
+        <h2 class="lc-card-title">Build metadata embedded on cover page</h2>
+      </header>
+      <dl class="lc-meta-list">
+        <dt class="lc-text-muted">Kit version</dt>
+        <dd><code class="lc-mono">{{ .KitVersion }}</code></dd>
+        <dt class="lc-text-muted">Dashboard version</dt>
+        <dd><code class="lc-mono">{{ .DashboardVersion }}</code></dd>
+      </dl>
+      <p class="lc-text-muted">The exported PDF cover page lists the pinned image manifest the kit shipped with so the customer's evidence chain documents exactly what was installed.</p>
+    </section>
+
+  {{ end }}
+</section>
+{{ end }}

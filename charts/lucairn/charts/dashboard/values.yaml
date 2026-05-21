@@ -11,14 +11,13 @@ replicaCount: 1
 
 image:
   repository: lucairn-dashboard
-  # Pinned to the current slice's release tag. Slice 1 = 0.1.0, Slice 2 =
-  # 0.2.0, Slice 3 = 0.3.0, Slice 4 = 0.4.0, Slice 5 = 0.5.0, Slice 6 =
-  # 0.6.0. Empty fallback maps to Chart.AppVersion in the deployment
-  # template — kept that way as the last-resort default. NOTE: this is
-  # INDEPENDENT from charts/lucairn/values.yaml global.imageTag —
-  # bumping --set global.imageTag=X will NOT bump the dashboard tag.
-  # The dashboard ships on its own release cadence.
-  tag: "0.6.0"
+  # Pinned to the current release tag. Bumped per kit-dashboard release
+  # cadence — independent from charts/lucairn/values.yaml global.imageTag
+  # (bumping --set global.imageTag=X will NOT bump the dashboard tag).
+  # The 0.7.0 release closes the v1.0-dashboard arc: auth + OIDC + cert
+  # browser + server health + Grafana embedding + API key management +
+  # audit log browser + compliance PDF export are all live.
+  tag: "0.7.0"
   pullPolicy: IfNotPresent
 
 service:
@@ -290,6 +289,35 @@ audit:
   savedFiltersDBConnectionStringRef:
     name: ""
     key: url
+
+# ─────────────────────────────────────────────────────────────────
+# Compliance PDF export.
+# ─────────────────────────────────────────────────────────────────
+#
+# The /compliance surface is ADMIN-ONLY and ALWAYS-ON when the
+# dashboard is enabled. There is NO opt-in env var — the surface
+# registers regardless of whether the cert DB (Slice 3) and the
+# audit-log DB (Slice 6) are wired. When neither is wired, the
+# aggregator returns zero-value counts and the generated PDF still
+# renders cleanly with "(no rows recorded in this window)" placeholder
+# tables.
+#
+# Both knobs below are OPTIONAL.
+#
+#   maxWindowDays           cap on the date-range span the aggregator
+#                           will scan. Default 365; values >3650 are
+#                           rejected at boot (likely operator typo).
+#                           Operators wanting longer spans slice the
+#                           export.
+#
+#   defaultCustomerName     pre-populates the customer-name input on
+#                           the /compliance form. Must NOT contain a
+#                           banned mechanism-allowlist literal — the
+#                           doctor + render-time guards both reject
+#                           those values fail-closed.
+compliance:
+  maxWindowDays: 365
+  defaultCustomerName: ""
 
 resources:
   requests:
