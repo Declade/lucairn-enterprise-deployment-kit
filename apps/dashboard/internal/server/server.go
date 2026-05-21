@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/audit"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/grafana"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/handlers"
@@ -60,6 +61,13 @@ type Options struct {
 	GrafanaSigner     *grafana.Signer
 	GrafanaConfig     handlers.GrafanaPanelConfig
 	GrafanaConfigured bool
+
+	// Slice 5 — API key management against the gateway admin HTTP API.
+	// Half-wired states (KeysConfigured=true but KeysAdmin nil) fail-closed
+	// at New(), mirroring the Slice 3 + Slice 4 pattern.
+	KeysAdmin      handlers.AdminClient
+	KeysAudit      audit.Emitter
+	KeysConfigured bool
 }
 
 // Server bundles the HTTP server and its lifecycle.
@@ -135,6 +143,10 @@ func New(opts Options) (*Server, error) {
 			return nil, errors.New("server: GrafanaConfigured requires GrafanaConfig.BaseURL")
 		}
 	}
+	// Slice 5 keys surface validation — same half-wired guard.
+	if opts.KeysConfigured && opts.KeysAdmin == nil {
+		return nil, errors.New("server: KeysConfigured requires KeysAdmin")
+	}
 	healthDeps := &handlers.HealthDeps{
 		Renderer:          renderer,
 		Poller:            opts.HealthPoller,
@@ -143,6 +155,7 @@ func New(opts Options) (*Server, error) {
 		HealthConfigured:  opts.HealthConfigured,
 		GrafanaConfigured: opts.GrafanaConfigured,
 	}
+	keysDeps := handlers.NewKeysDeps(renderer, opts.KeysAdmin, opts.KeysAudit, opts.KeysConfigured)
 	var certDeps *handlers.CertsDeps
 	var bulkDeps *handlers.BulkReverifyDeps
 	if opts.CertConfigured {
@@ -306,6 +319,60 @@ func New(opts Options) (*Server, error) {
 		}
 		http.NotFound(w, r)
 	}))
+
+	// Slice 5 — API key management. Admin-only. The middleware
+	// (RequireRole) returns 404 for viewers per the locked Slice 1
+	// pattern (apps/dashboard/internal/auth/middleware.go:77-91 +
+	// middleware_test.go::TestRequireRole_NotFoundForWrongRole). The
+	// handler also fail-closes internally as defense-in-depth.
+	keysMux := http.NewServeMux()
+	keysMux.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		keysDeps.BrowserHandler(w, r)
+	})
+	keysMux.Handle("/keys/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch path {
+		case "/keys/":
+			http.Redirect(w, r, "/keys", http.StatusPermanentRedirect)
+			return
+		case "/keys/mint":
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			keysDeps.MintHandler(w, r)
+			return
+		case "/keys/mint/":
+			http.Redirect(w, r, "/keys/mint", http.StatusPermanentRedirect)
+			return
+		case "/keys/bulk-revoke":
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			keysDeps.BulkRevokeHandler(w, r)
+			return
+		case "/keys/bulk-revoke/":
+			http.Redirect(w, r, "/keys/bulk-revoke", http.StatusPermanentRedirect)
+			return
+		}
+		// /keys/{key_id}/revoke
+		if strings.HasSuffix(path, "/revoke") {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			keysDeps.RevokeHandler(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	mux.Handle("/keys", auth.RequireRole(auth.RoleAdmin, keysMux))
+	mux.Handle("/keys/", auth.RequireRole(auth.RoleAdmin, keysMux))
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {

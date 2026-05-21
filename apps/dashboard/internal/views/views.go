@@ -15,7 +15,7 @@ import (
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
 )
 
-//go:embed templates/*.html.tmpl templates/components/*.html.tmpl templates/certs/*.html.tmpl templates/health/*.html.tmpl
+//go:embed templates/*.html.tmpl templates/components/*.html.tmpl templates/certs/*.html.tmpl templates/health/*.html.tmpl templates/keys/*.html.tmpl
 var templateFS embed.FS
 
 // FuncMap exposes helper functions to all templates.
@@ -95,12 +95,25 @@ func New() (*Renderer, error) {
 		// + the explicit template files listed here when present in
 		// templates/health/.
 		{name: "health/overview.html.tmpl", path: "templates/health/overview.html.tmpl"},
+		// Slice 5 adds the API-key management surface. The mint-modal
+		// partial is collected via keysPartialTemplateNames() alongside the
+		// browser page so the post-mint render (which embeds the modal)
+		// can resolve `{{ template "keys-mint-modal" . }}`.
+		{name: "keys/browser.html.tmpl", path: "templates/keys/browser.html.tmpl"},
 	}
 	// Slice 4: health pages reference a sibling partial (drawer.html.tmpl)
 	// alongside the overview page. Collect them once + thread into every
 	// page's parse list so the partial's `{{ define "health-drawer" }}`
 	// block is available regardless of which page is being rendered.
 	healthPartials, err := healthPartialTemplateNames()
+	if err != nil {
+		return nil, err
+	}
+	// Slice 5: same pattern as health — collect every non-page partial
+	// under templates/keys/ so the browser page can resolve
+	// `{{ template "keys-mint-modal" . }}` without enumerating the
+	// partial in the pages list.
+	keysPartials, err := keysPartialTemplateNames()
 	if err != nil {
 		return nil, err
 	}
@@ -113,12 +126,38 @@ func New() (*Renderer, error) {
 		}
 		files = append(files, componentTemplates...)
 		files = append(files, healthPartials...)
+		files = append(files, keysPartials...)
 		if _, err := t.ParseFS(templateFS, files...); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", page.name, err)
 		}
 		r.templates[page.name] = t
 	}
 	return r, nil
+}
+
+// keysPartialTemplateNames returns every file under templates/keys/
+// EXCEPT the named page templates (browser.html.tmpl). Mirrors
+// healthPartialTemplateNames so the mint-modal partial joins every
+// page's parse set without per-page enumeration.
+func keysPartialTemplateNames() ([]string, error) {
+	entries, err := fs.ReadDir(templateFS, "templates/keys")
+	if err != nil {
+		return nil, err
+	}
+	skip := map[string]struct{}{
+		"browser.html.tmpl": {},
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if _, ok := skip[e.Name()]; ok {
+			continue
+		}
+		names = append(names, "templates/keys/"+e.Name())
+	}
+	return names, nil
 }
 
 // healthPartialTemplateNames returns every file under templates/health/

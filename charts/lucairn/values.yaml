@@ -2,7 +2,7 @@ global:
   vertical: finance
   imageRegistry: "ghcr.io/declade"
   imagePullSecrets: []
-  imageTag: "0.4.0"
+  imageTag: "0.4.0" # NOTE: dashboard sub-chart ships independently — dashboard image is pinned in the dashboard.image.tag block below (currently 0.5.0).
   # Slice 4 — namespace of the bundled observability sub-chart (Grafana
   # + Loki + Tempo). The dashboard sub-chart's secret-grafana-jwt.yaml
   # mirrors the Helm-generated shared secret into this namespace so the
@@ -115,10 +115,10 @@ dashboard:
   image:
     repository: lucairn-dashboard
     # Pinned to the current slice's release tag. Bumped per slice
-    # (Slice 1=0.1.0 → Slice 4=0.4.0). Empty fallback to Chart.AppVersion
+    # (Slice 1=0.1.0 → Slice 5=0.5.0). Empty fallback to Chart.AppVersion
     # remains the last-resort default in the sub-chart's
     # `dashboard.image` helper.
-    tag: "0.4.0"
+    tag: "0.5.0"
     pullPolicy: IfNotPresent
 
   service:
@@ -204,6 +204,19 @@ dashboard:
 
   healthPollIntervalSeconds: 10
   healthServices: ""
+
+  # Slice 5: API key management against the gateway admin HTTP surface.
+  # Field names mirror charts/lucairn/charts/dashboard/values.yaml so
+  # customer overrides at the parent path are passed through verbatim.
+  # Leave adminURL empty to ship the dashboard with /keys rendering the
+  # "not configured" explainer. When set, also pre-create the K8s
+  # Secret holding the admin token (gateway's DSA_ADMIN_KEY) at key
+  # `admin-token`. See INSTALL.md § "Enable API key management (Slice 5)".
+  gateway:
+    adminURL: ""
+    adminTokenSecretRef:
+      name: ""
+      key: "admin-token"
 
 # Observability sub-chart override block (Slice 4 fold-in). When
 # enabling the dashboard's Grafana embedding, also flip

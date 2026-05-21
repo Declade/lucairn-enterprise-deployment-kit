@@ -12,13 +12,13 @@ replicaCount: 1
 image:
   repository: lucairn-dashboard
   # Pinned to the current slice's release tag. Slice 1 = 0.1.0, Slice 2 =
-  # 0.2.0, Slice 3 = 0.3.0, Slice 4 = 0.4.0. Empty fallback maps to
-  # Chart.AppVersion in the deployment template — kept that way as the
-  # last-resort default. NOTE: this is INDEPENDENT from
+  # 0.2.0, Slice 3 = 0.3.0, Slice 4 = 0.4.0, Slice 5 = 0.5.0. Empty
+  # fallback maps to Chart.AppVersion in the deployment template — kept
+  # that way as the last-resort default. NOTE: this is INDEPENDENT from
   # charts/lucairn/values.yaml global.imageTag — bumping --set
   # global.imageTag=X will NOT bump the dashboard tag. The dashboard ships
   # on its own release cadence.
-  tag: "0.4.0"
+  tag: "0.5.0"
   pullPolicy: IfNotPresent
 
 service:
@@ -205,6 +205,45 @@ healthPollIntervalSeconds: 10
 # (12 services covering the kit's standard service mesh). Set to
 # the literal "disabled" to turn polling off entirely.
 healthServices: ""
+
+# ─────────────────────────────────────────────────────────────────
+# Slice 5: API key management (mint / rotate / revoke / bulk).
+# ─────────────────────────────────────────────────────────────────
+#
+# The /keys surface is OPT-IN. Leave gateway.adminURL empty to ship
+# the dashboard with /keys rendering the "not configured" explainer
+# (auth + shell + cert browser + server health still work).
+#
+# When enabling /keys, the operator pre-creates a K8s Secret holding
+# the gateway's DSA_ADMIN_KEY value at key `admin-token`:
+#
+#   kubectl -n lucairn create secret generic lucairn-dashboard-gateway-admin \
+#     --from-literal=admin-token='<the value of DSA_ADMIN_KEY on the gateway>'
+#
+# Then set both:
+#   - dashboard.gateway.adminURL              http(s)://host:port of the
+#                                             gateway admin surface
+#                                             (in-cluster default
+#                                             "http://gateway:8080").
+#   - dashboard.gateway.adminTokenSecretRef.name  the Secret name above.
+#
+# Setting adminURL without the secretRef.name (or vice versa) fails the
+# umbrella-chart render with a `fail` template (Slice 4 pattern #28).
+#
+# Role rule: /keys is ADMIN ONLY. Viewers reach the route only via
+# direct typing and see a 404 (per the locked Slice 1 RequireRole
+# 404-not-403 pattern at apps/dashboard/internal/auth/middleware.go:77).
+gateway:
+  # In-cluster URL of the gateway admin HTTP surface. Leave empty to
+  # disable the /keys surface entirely.
+  adminURL: ""
+  # K8s Secret holding the admin bearer token. The Secret MUST exist
+  # in the dashboard namespace; the dashboard pod mounts it via
+  # secretKeyRef. Operators rotate by `kubectl patch` + rolling
+  # restart (see OPS.md § "Rotating the gateway admin token").
+  adminTokenSecretRef:
+    name: ""
+    key: "admin-token"
 
 resources:
   requests:

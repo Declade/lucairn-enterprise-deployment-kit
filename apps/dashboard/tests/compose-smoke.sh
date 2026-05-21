@@ -27,7 +27,7 @@ fi
 # something to pull from. The compose config references the GHCR-tagged
 # image; we tag the local build to that exact name so docker compose finds
 # it without going to the network.
-LOCAL_TAG="${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.4.0}"
+LOCAL_TAG="${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.5.0}"
 echo "compose-smoke: building image as ${LOCAL_TAG}"
 docker build -t "${LOCAL_TAG}" -f apps/dashboard/Dockerfile apps/dashboard >/dev/null
 
@@ -169,5 +169,61 @@ case "$JWT_LOC" in
   *) echo "compose-smoke: POST /health/grafana-jwt redirect target should be /login, got $JWT_LOC" >&2 ; exit 1 ;;
 esac
 echo "compose-smoke: POST /health/grafana-jwt ok (302 -> /login)"
+
+# Slice 5: /keys surface. Same auth-gated pattern as /health — an
+# unauthenticated GET should 302 to /login regardless of role; the
+# admin-only RequireRole gate fires AFTER session load and would
+# return 404 to viewers (per Slice 1 RequireRole lock).
+echo "compose-smoke: hitting GET /keys (expect 302 -> /login; auth-gated)"
+KEYS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8443/keys)
+if [ "$KEYS_CODE" != "302" ]; then
+  echo "compose-smoke: GET /keys expected 302, got $KEYS_CODE" >&2
+  exit 1
+fi
+KEYS_LOC=$(curl -s -o /dev/null -w "%{redirect_url}" http://127.0.0.1:8443/keys)
+case "$KEYS_LOC" in
+  */login*) ;;
+  *) echo "compose-smoke: GET /keys redirect target should be /login, got $KEYS_LOC" >&2 ; exit 1 ;;
+esac
+echo "compose-smoke: GET /keys ok (302 -> /login)"
+
+echo "compose-smoke: hitting POST /keys/mint (expect 302 -> /login; auth-gated)"
+MINT_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8443/keys/mint)
+if [ "$MINT_CODE" != "302" ]; then
+  echo "compose-smoke: POST /keys/mint expected 302, got $MINT_CODE" >&2
+  exit 1
+fi
+MINT_LOC=$(curl -s -o /dev/null -w "%{redirect_url}" -X POST http://127.0.0.1:8443/keys/mint)
+case "$MINT_LOC" in
+  */login*) ;;
+  *) echo "compose-smoke: POST /keys/mint redirect target should be /login, got $MINT_LOC" >&2 ; exit 1 ;;
+esac
+echo "compose-smoke: POST /keys/mint ok (302 -> /login)"
+
+echo "compose-smoke: hitting POST /keys/some-prefix/revoke (expect 302 -> /login; auth-gated)"
+REVOKE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8443/keys/some-prefix/revoke)
+if [ "$REVOKE_CODE" != "302" ]; then
+  echo "compose-smoke: POST /keys/some-prefix/revoke expected 302, got $REVOKE_CODE" >&2
+  exit 1
+fi
+REVOKE_LOC=$(curl -s -o /dev/null -w "%{redirect_url}" -X POST http://127.0.0.1:8443/keys/some-prefix/revoke)
+case "$REVOKE_LOC" in
+  */login*) ;;
+  *) echo "compose-smoke: POST /keys/some-prefix/revoke redirect target should be /login, got $REVOKE_LOC" >&2 ; exit 1 ;;
+esac
+echo "compose-smoke: POST /keys/some-prefix/revoke ok (302 -> /login)"
+
+echo "compose-smoke: hitting POST /keys/bulk-revoke (expect 302 -> /login; auth-gated)"
+BULK_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8443/keys/bulk-revoke)
+if [ "$BULK_CODE" != "302" ]; then
+  echo "compose-smoke: POST /keys/bulk-revoke expected 302, got $BULK_CODE" >&2
+  exit 1
+fi
+BULK_LOC=$(curl -s -o /dev/null -w "%{redirect_url}" -X POST http://127.0.0.1:8443/keys/bulk-revoke)
+case "$BULK_LOC" in
+  */login*) ;;
+  *) echo "compose-smoke: POST /keys/bulk-revoke redirect target should be /login, got $BULK_LOC" >&2 ; exit 1 ;;
+esac
+echo "compose-smoke: POST /keys/bulk-revoke ok (302 -> /login)"
 
 echo "compose-smoke: ok"

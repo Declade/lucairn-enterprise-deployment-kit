@@ -823,3 +823,109 @@ The SAME shared secret is consumed by both the dashboard pod
 
 See `OPS.md` § "Rotating the Grafana JWT shared secret".
 
+### Enable API key management (Slice 5)
+
+The dashboard's `/keys` surface lets an admin operator mint,
+rotate, revoke, and bulk-revoke `lcr_live_*` API keys against the
+gateway's existing admin HTTP API. The endpoint lives on the same
+gateway listener as the data plane (mounted under
+`/api/v1/admin/`) and is authenticated with the gateway's
+`DSA_ADMIN_KEY` constant-time-compared bearer token.
+
+> **`/keys` is admin-only.** Viewers reach the route only via direct
+> URL typing and receive a `404 Not Found` (the locked Slice 1
+> `RequireRole` 404-not-403 pattern at
+> `apps/dashboard/internal/auth/middleware.go:77-91`). Plaintext keys
+> are shown ONCE on the post-mint modal with
+> `Cache-Control: no-store + Pragma: no-cache + Referrer-Policy:
+> no-referrer` headers so the value never enters intermediary caches,
+> browser back-button history, or referrer logs.
+
+#### Compose path
+
+1. Add the Slice 5 block to `customer.env`:
+
+   ```bash
+   LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL=http://gateway:8080
+   LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN=<your DSA_ADMIN_KEY value>
+   ```
+
+   The dashboard container resolves `http://gateway:8080` via the
+   compose DNS network — no host-side ingress is required.
+
+2. Run `bin/lucairn doctor` — the new `dashboard keys:` pre-flight
+   surfaces invalid URL schemes, placeholder tokens, gateway
+   unreachability, and admin-token rejection (`401`).
+
+3. Recreate the dashboard container:
+
+   ```bash
+   docker compose -f docker-compose.customer.yml \
+     --env-file customer.env --profile dashboard \
+     up -d --force-recreate lucairn-dashboard
+   ```
+
+4. Verify: log into the dashboard as admin → click the
+   "API keys" sidebar entry → mint a test key → copy the plaintext
+   from the modal → exchange the key against the gateway with
+   `curl -H "X-API-Key: <minted-key>" https://<gateway-host>/v1/messages …`.
+
+#### Kubernetes path
+
+1. Pre-create the Secret carrying the admin token. The Secret name +
+   key the dashboard sub-chart consumes are
+   `lucairn-dashboard-gateway-admin` + `admin-token` by default;
+   override via `dashboard.gateway.adminTokenSecretRef.{name,key}`.
+
+   ```bash
+   kubectl -n lucairn create secret generic lucairn-dashboard-gateway-admin \
+     --from-literal=admin-token='<gateway DSA_ADMIN_KEY value>'
+   ```
+
+2. Wire `dashboard.gateway.*` in `customer-values.yaml`:
+
+   ```yaml
+   dashboard:
+     enabled: true
+     gateway:
+       adminURL: "http://gateway.lucairn.svc.cluster.local:8080"
+       adminTokenSecretRef:
+         name: lucairn-dashboard-gateway-admin
+         key: admin-token
+   ```
+
+   The umbrella chart's render-time validator catches the half-wired
+   case (URL set, secretRef.name empty) at `helm install/upgrade`
+   time so the dashboard pod never boots into a 401-rain state.
+
+3. Apply: `helm upgrade --install lucairn charts/lucairn -f
+   customer-values.yaml --namespace lucairn`.
+
+4. Confirm the rollout + the new env vars are injected:
+
+   ```bash
+   kubectl -n lucairn rollout status deploy/lucairn-dashboard
+   kubectl -n lucairn exec deploy/lucairn-dashboard -- env | \
+     grep LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL
+   ```
+
+5. Verify same as Compose step 4 above.
+
+#### Bootstrapping the first customer
+
+If the gateway keystore has zero customers, the `/keys` page renders
+an empty-state pointing here. Mint your first customer via the
+kit's helper:
+
+```bash
+export LUCAIRN_ADMIN_KEY="$(grep '^DSA_ADMIN_KEY=' customer.env | cut -d= -f2-)"
+./bin/lucairn-mint-customer --name "Acme GmbH" --email "ops@acme.de" --tier enterprise
+```
+
+Reload `/keys` and the new customer appears in the auto-detected
+selector (single-customer installs hide the selector entirely).
+
+#### Rotating the gateway admin token
+
+See `OPS.md` § "Rotating the gateway admin token".
+

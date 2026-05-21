@@ -28,8 +28,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/audit"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/config"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/gateway"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/grafana"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/handlers"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/health"
@@ -177,6 +179,27 @@ func main() {
 			log.Printf("health poller started (%d services, interval %ds)", len(services), cfg.HealthPollIntervalSeconds)
 		}
 	}
+	// Slice 5 wiring: API key management against gateway admin HTTP API.
+	// Both URL + token must be set together (config-loader already
+	// validated the half-wired case); empty → /keys renders the
+	// "not configured" explainer.
+	var (
+		adminClient     *gateway.AdminClient
+		keysConfigured  bool
+		auditEmitter    audit.Emitter = audit.NewLogEmitter()
+	)
+	if cfg.GatewayAdminURL != "" && cfg.GatewayAdminToken != "" {
+		ac, err := gateway.NewAdminClient(cfg.GatewayAdminURL, cfg.GatewayAdminToken, nil)
+		if err != nil {
+			log.Fatalf("gateway admin client: %v", err)
+		}
+		adminClient = ac
+		keysConfigured = true
+		log.Printf("keys surface enabled (gateway admin=%s)", cfg.GatewayAdminURL)
+	} else {
+		log.Printf("keys surface disabled (set LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL + LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN to enable)")
+	}
+
 	if cfg.GrafanaURL != "" {
 		s, err := grafana.NewSigner(cfg.GrafanaJWTSecret, 0, nil)
 		if err != nil {
@@ -210,6 +233,15 @@ func main() {
 		healthPollerIface = healthPoller
 	}
 
+	// Cast nil-typed nil into the handlers.AdminClient interface so a
+	// pure-nil interface value reaches server.New (signal "not
+	// configured" downstream without leaking a typed-nil that breaks
+	// `if adminClient != nil` further down the chain).
+	var keysAdminIface handlers.AdminClient
+	if adminClient != nil {
+		keysAdminIface = adminClient
+	}
+
 	srv, err := server.New(server.Options{
 		ListenAddr:        cfg.ListenAddr,
 		Version:           version,
@@ -226,6 +258,9 @@ func main() {
 		GrafanaSigner:     grafanaSigner,
 		GrafanaConfig:     grafanaCfg,
 		GrafanaConfigured: grafanaConfigured,
+		KeysAdmin:         keysAdminIface,
+		KeysAudit:         auditEmitter,
+		KeysConfigured:    keysConfigured,
 	})
 	if err != nil {
 		log.Fatalf("server: %v", err)

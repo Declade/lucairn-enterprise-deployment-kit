@@ -1,0 +1,124 @@
+{{ define "main" }}
+<section class="lc-page-section">
+  <header class="lc-page-header">
+    <h1 class="lc-page-title">API keys</h1>
+    <p class="lc-page-lede">Mint, rotate, and revoke <code class="lc-mono">lcr_live_*</code> keys held in the gateway keystore. The plaintext key value is shown ONCE on mint &mdash; copy it before closing the dialog.</p>
+  </header>
+
+  {{ if not .Configured }}
+    <div class="lc-banner lc-banner--warn" role="status">
+      {{ .NotConfigured }}
+    </div>
+  {{ else if .NoCustomers }}
+    <div class="lc-banner lc-banner--warn" role="status">
+      No customers are configured in the gateway keystore. Mint your first customer with <code class="lc-mono">bin/lucairn-mint-customer</code> (see <a class="lc-link" href="#bootstrap-customers">OPS.md &mdash; bootstrapping the first customer</a>), then reload this page.
+    </div>
+  {{ else }}
+
+    {{ if .ShowSelector }}
+      <form class="lc-filter-form" method="get" action="/keys" aria-label="Select customer">
+        <fieldset class="lc-filter-fieldset">
+          <legend class="lc-text-muted">Customer</legend>
+          <label class="lc-filter-field">
+            <span class="lc-filter-label">Tenant</span>
+            <select class="lc-filter-input font-tabular" name="customer_id" onchange="this.form.submit()">
+              {{ range .Customers }}
+                <option value="{{ .CustomerID }}"{{ if eq .CustomerID $.SelectedID }} selected{{ end }}>{{ .CustomerID }} &mdash; {{ .Tier }}</option>
+              {{ end }}
+            </select>
+          </label>
+        </fieldset>
+        <div class="lc-filter-actions">
+          <noscript><button type="submit" class="lc-secondary-button">Apply</button></noscript>
+        </div>
+      </form>
+    {{ else if .CustomersWarn }}
+      <p class="lc-text-muted">{{ .CustomersWarn }}</p>
+    {{ end }}
+
+    {{ if .KeysErr }}
+      <div class="lc-banner lc-banner--fail" role="alert">{{ .KeysErr }}</div>
+    {{ end }}
+
+    <form method="post" action="/keys/mint" style="margin-bottom:16px">
+      <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+      <input type="hidden" name="customer_id" value="{{ .SelectedID }}">
+      <button type="submit" class="lc-login-button">Mint new key</button>
+    </form>
+
+    {{ if .KeysResult }}
+      <form method="post" action="/keys/bulk-revoke" x-data="{ selected: 0 }">
+        <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+        <input type="hidden" name="customer_id" value="{{ .SelectedID }}">
+
+        <div class="lc-table-toolbar">
+          <span class="lc-text-muted font-tabular">
+            {{ len .KeysResult.Keys }} key{{ if ne (len .KeysResult.Keys) 1 }}s{{ end }} for <code class="lc-mono">{{ .KeysResult.CustomerID }}</code>
+            &mdash; tier <strong>{{ .KeysResult.Tier }}</strong>{{ if .KeysResult.MaxKeys }} (cap {{ .KeysResult.MaxKeys }}){{ end }}
+          </span>
+          <button type="submit" class="lc-secondary-button" :disabled="selected === 0">
+            <span x-show="selected === 0">Revoke selected</span>
+            <span x-show="selected > 0" x-text="'Revoke ' + selected + ' selected'"></span>
+          </button>
+        </div>
+
+        <div class="lc-table-frame">
+          <table class="lc-table">
+            <thead>
+              <tr>
+                <th scope="col" class="lc-table-th lc-table-th--check"><span class="lc-sr-only">Select</span></th>
+                <th scope="col" class="lc-table-th">Prefix</th>
+                <th scope="col" class="lc-table-th">Key ID</th>
+                <th scope="col" class="lc-table-th">Created (UTC)</th>
+                <th scope="col" class="lc-table-th">Last used (UTC)</th>
+                <th scope="col" class="lc-table-th">Status</th>
+                <th scope="col" class="lc-table-th"><span class="lc-sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {{ if .KeysResult.Keys }}
+                {{ range .KeysResult.Keys }}
+                  <tr class="lc-table-row">
+                    <td class="lc-table-td">
+                      {{ if .KeyID }}
+                        <input type="checkbox" name="key_id" value="{{ .KeyID }}" aria-label="Select key {{ .KeyPrefix }}" x-on:change="selected += $el.checked ? 1 : -1">
+                      {{ end }}
+                    </td>
+                    <td class="lc-table-td font-tabular"><code class="lc-mono">{{ .KeyPrefix }}</code></td>
+                    <td class="lc-table-td font-tabular">
+                      {{ if .KeyID }}<code class="lc-mono">{{ .KeyID }}</code>{{ else }}<span class="lc-text-muted">&mdash;</span>{{ end }}
+                    </td>
+                    <td class="lc-table-td font-tabular">{{ formatDate .CreatedAt }}</td>
+                    <td class="lc-table-td font-tabular">{{ formatDate .LastUsedAt }}</td>
+                    <td class="lc-table-td">
+                      {{ if .KeyID }}<span class="lc-pill lc-pill--ok">active</span>
+                      {{ else }}<span class="lc-pill" title="Control-API-synced — operator cannot self-revoke">imported</span>{{ end }}
+                    </td>
+                    <td class="lc-table-td">
+                      {{ if .KeyID }}
+                        <form method="post" action="/keys/{{ .KeyID }}/revoke" style="display:inline">
+                          <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+                          <input type="hidden" name="customer_id" value="{{ $.SelectedID }}">
+                          <button type="submit" class="lc-secondary-button" onclick="return confirm('Revoke key {{ .KeyPrefix }}? Any caller using this key will start receiving 401 from the gateway.')">Revoke</button>
+                        </form>
+                      {{ end }}
+                    </td>
+                  </tr>
+                {{ end }}
+              {{ else }}
+                <tr class="lc-table-row lc-table-empty">
+                  <td class="lc-table-td" colspan="7">No keys for this customer yet. Click <strong>Mint new key</strong> above to provision one.</td>
+                </tr>
+              {{ end }}
+            </tbody>
+          </table>
+        </div>
+      </form>
+    {{ end }}
+  {{ end }}
+</section>
+
+{{ if .JustMinted }}
+  {{ template "keys-mint-modal" . }}
+{{ end }}
+{{ end }}
