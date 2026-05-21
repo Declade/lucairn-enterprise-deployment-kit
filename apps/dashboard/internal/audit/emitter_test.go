@@ -1,6 +1,8 @@
 package audit
 
 import (
+	"context"
+	"errors"
 	"log"
 	"strings"
 	"sync"
@@ -31,10 +33,12 @@ func TestLogEmitter_FormatStable(t *testing.T) {
 	})
 
 	em := &LogEmitter{now: func() time.Time { return time.Date(2026, 5, 21, 12, 30, 0, 0, time.UTC) }}
-	em.Emit("key.mint_requested", "admin@lucairn.local", map[string]string{
+	if err := em.Emit(context.Background(), "key.mint_requested", "admin@lucairn.local", map[string]any{
 		"customer_id": "cust_a",
 		"key_id":      "k_abcd",
-	})
+	}); err != nil {
+		t.Fatalf("LogEmitter.Emit returned err: %v", err)
+	}
 	got := buf.String()
 	// Keys must appear in alphabetical order in the line.
 	wantContains := []string{
@@ -69,10 +73,12 @@ func TestLogEmitter_NoSecretLeak(t *testing.T) {
 	// leak worse. This test pins that newline + quote injection is
 	// scrubbed (an attacker who somehow got newline-bearing data into
 	// a payload value cannot forge log lines).
-	em.Emit("key.mint_requested", "admin@lucairn.local", map[string]string{
+	if err := em.Emit(context.Background(), "key.mint_requested", "admin@lucairn.local", map[string]any{
 		"customer_id": "cust\nfake_event_type=key.bypass",
 		"key_id":      "k_with\"quote",
-	})
+	}); err != nil {
+		t.Fatalf("LogEmitter.Emit returned err: %v", err)
+	}
 	got := buf.String()
 	if strings.Contains(got, "\n") && strings.Count(got, "\n") > 1 {
 		t.Errorf("log line has more than one newline (potential injection): %q", got)
@@ -87,9 +93,9 @@ func TestMemoryEmitter_CapturesEvents(t *testing.T) {
 	t.Parallel()
 	em := NewMemoryEmitter()
 
-	em.Emit("key.mint_requested", "alice", map[string]string{"customer_id": "c1"})
-	em.Emit("key.revoke_requested", "alice", map[string]string{"customer_id": "c1", "key_id": "k1"})
-	em.Emit("key.revoke_requested", "alice", map[string]string{"customer_id": "c1", "key_id": "k2"})
+	_ = em.Emit(context.Background(), "key.mint_requested", "alice", map[string]any{"customer_id": "c1"})
+	_ = em.Emit(context.Background(), "key.revoke_requested", "alice", map[string]any{"customer_id": "c1", "key_id": "k1"})
+	_ = em.Emit(context.Background(), "key.revoke_requested", "alice", map[string]any{"customer_id": "c1", "key_id": "k2"})
 
 	events := em.Events()
 	if len(events) != 3 {
@@ -106,8 +112,8 @@ func TestMemoryEmitter_CapturesEvents(t *testing.T) {
 func TestMemoryEmitter_DeepCopyPayload(t *testing.T) {
 	t.Parallel()
 	em := NewMemoryEmitter()
-	pl := map[string]string{"customer_id": "c1"}
-	em.Emit("key.mint_requested", "alice", pl)
+	pl := map[string]any{"customer_id": "c1"}
+	_ = em.Emit(context.Background(), "key.mint_requested", "alice", pl)
 	// Mutating the caller's payload AFTER Emit must NOT leak into the
 	// captured event — otherwise tests that assert payload contents are
 	// fragile.
@@ -129,7 +135,7 @@ func TestMemoryEmitter_Concurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < perGoroutine; j++ {
-				em.Emit("key.revoke_requested", "alice", map[string]string{
+				_ = em.Emit(context.Background(), "key.revoke_requested", "alice", map[string]any{
 					"key_id": "k",
 				})
 			}
@@ -144,9 +150,33 @@ func TestMemoryEmitter_Concurrent(t *testing.T) {
 func TestMemoryEmitter_Reset(t *testing.T) {
 	t.Parallel()
 	em := NewMemoryEmitter()
-	em.Emit("e", "a", nil)
+	_ = em.Emit(context.Background(), "e", "a", nil)
 	em.Reset()
 	if len(em.Events()) != 0 {
 		t.Errorf("Reset did not clear events: %v", em.Events())
+	}
+}
+
+// TestMemoryEmitter_SetEmitErr verifies SetEmitErr returns the injected
+// error from subsequent Emit calls — the test hook for the handler's
+// fail-closed path in Slice 6 H3 / DRIFT-006.
+func TestMemoryEmitter_SetEmitErr(t *testing.T) {
+	t.Parallel()
+	em := NewMemoryEmitter()
+	injected := errors.New("synthetic INSERT failure")
+	em.SetEmitErr(injected)
+	err := em.Emit(context.Background(), "audit.reveal_raw", "admin", map[string]any{"k": "v"})
+	if !errors.Is(err, injected) {
+		t.Fatalf("SetEmitErr: got err=%v, want %v", err, injected)
+	}
+	// Event is still recorded so tests can verify the handler tried to
+	// emit before failing.
+	if len(em.Events()) != 1 {
+		t.Errorf("event not recorded on injected failure: %d events", len(em.Events()))
+	}
+	// Restoring nil clears the failure injection.
+	em.SetEmitErr(nil)
+	if err := em.Emit(context.Background(), "audit.reveal_raw", "admin", nil); err != nil {
+		t.Errorf("Emit after clearing SetEmitErr: %v", err)
 	}
 }

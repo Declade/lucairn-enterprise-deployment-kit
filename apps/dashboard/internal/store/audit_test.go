@@ -56,6 +56,14 @@ func (f *fakeAuditDB) QueryRow(ctx context.Context, sql string, args ...any) pgx
 	return &fakeAuditRow{getEv: f.getRow, err: f.getErr}
 }
 
+// Exec satisfies the widened Querier contract introduced in Slice 6
+// fix-up r1 B1. Audit store doesn't call Exec today; included for
+// interface compliance.
+func (f *fakeAuditDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	f.calls = append(f.calls, queryCall{sql: sql, args: args})
+	return pgconn.CommandTag{}, nil
+}
+
 // fakeAuditRows iterates a slice of AuditEvent values.
 type fakeAuditRows struct {
 	data []AuditEvent

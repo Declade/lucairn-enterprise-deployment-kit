@@ -323,12 +323,20 @@ func TestKeys_MintAdmin_ShowsPlaintextOnce_WithNoCacheHeaders(t *testing.T) {
 	if events[0].EventType != "key.mint_requested" {
 		t.Errorf("event type=%s", events[0].EventType)
 	}
-	if v := events[0].Payload["key_prefix"]; v != "lcr_live_freshpfx" {
+	if v, _ := events[0].Payload["key_prefix"].(string); v != "lcr_live_freshpfx" {
 		t.Errorf("payload key_prefix=%q", v)
 	}
 	for k, v := range events[0].Payload {
-		if strings.Contains(v, "freshpfx") && k != "key_prefix" && k != "key_id" {
-			t.Errorf("raw key fragment leaked into audit payload key=%s value=%s", k, v)
+		// Slice 6 fix-up r1 H3 / DRIFT-006: Payload value type widened
+		// from string to any. Cast to string for the leak-check; only
+		// string-typed values can carry the prefix fragment we worry
+		// about.
+		vs, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(vs, "freshpfx") && k != "key_prefix" && k != "key_id" {
+			t.Errorf("raw key fragment leaked into audit payload key=%s value=%s", k, vs)
 		}
 	}
 

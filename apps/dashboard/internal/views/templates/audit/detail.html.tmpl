@@ -14,11 +14,45 @@
     <div class="lc-header-aside">
       <a class="lc-link" href="/audit">Back to list</a>
       {{ if and .RevealEnabled .DetailEvent (not .RevealSucceeded) }}
-        <form method="post" action="/audit/{{ .DetailEvent.EventID }}/reveal-raw" style="display:inline" data-confirm="Reveal raw payload? This emits a paired audit.reveal_raw event.">
-          <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
-          <input type="hidden" name="csrf_token" value="{{ .CSRFToken }}">
-          <button type="submit" class="lc-secondary-button lc-secondary-button--danger">Reveal raw</button>
-        </form>
+        {{- /*
+            Slice 6 fix-up r1 UX-H1: the previous `data-confirm` attribute
+            was a NO-OP — not a standard HTML attribute, no JS handler
+            anywhere in the codebase, so clicking "Reveal raw" submitted
+            IMMEDIATELY and revealed raw PII with zero confirmation
+            step. Combined with the H3/DRIFT-006 DB-emit fix this means:
+            an admin clicking the button now (a) sees an inline confirm
+            FIRST and (b) a paired audit.reveal_raw row is INSERTed
+            BEFORE the raw payload returns. Pattern lifted verbatim from
+            Slice 5 keys/browser.html.tmpl revoke flow.
+        */ -}}
+        <div x-data="{ confirming: false }" style="display:inline">
+          <button type="button"
+                  class="lc-secondary-button lc-secondary-button--danger"
+                  x-show="!confirming"
+                  x-on:click="confirming = true"
+                  aria-label="Reveal raw payload for event {{ .DetailEvent.EventID }}">Reveal raw</button>
+          <span x-show="confirming"
+                x-cloak
+                class="lc-revoke-confirm"
+                role="group"
+                aria-label="Confirm raw payload reveal">
+            <span class="lc-text-muted lc-revoke-confirm-label">
+              This writes a paired
+              <code class="lc-mono">audit.reveal_raw</code> event to the audit log.
+            </span>
+            <button type="button"
+                    class="lc-secondary-button"
+                    x-on:click="confirming = false">Cancel</button>
+            <form method="post"
+                  action="/audit/{{ .DetailEvent.EventID }}/reveal-raw"
+                  style="display:inline">
+              <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+              <input type="hidden" name="csrf_token" value="{{ .CSRFToken }}">
+              <button type="submit"
+                      class="lc-secondary-button lc-secondary-button--danger">Reveal payload</button>
+            </form>
+          </span>
+        </div>
       {{ end }}
     </div>
   </header>

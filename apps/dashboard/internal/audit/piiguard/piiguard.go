@@ -17,6 +17,15 @@
 //
 //	dual-sandbox-architecture/services/sanitizer/recognizers.py
 //
+// Vendored from upstream commit 58b6adfa80eb809fa84310db9572f489c6646312
+// (dual-sandbox-architecture HEAD as of Slice 6 fix-up r1 ship).
+// Slice 6 fix-up r1 H4: an un-pinned reference cannot detect drift —
+// `grep` only confirms the name still exists upstream, not that the
+// regex semantics are still aligned. Future hardening: a CI job that
+// re-reads the upstream SHA at this exact path + compares against the
+// pinned SHA here, flagging any drift since the last vendoring pass
+// (see TODO comment near `rules` init below).
+//
 // The vendored regexes here are an INDEPENDENT subset (only the
 // high-precision shapes that fire deterministically without spaCy
 // context boosts). They are NOT copy-pasted verbatim because the
@@ -26,11 +35,17 @@
 // (email, IBAN, phone E.164, IPv4/IPv6, UUID, SSN, German tax ID,
 // US date of birth, MRN, etc.) at the rendering edge.
 //
-// The brief at Opus Advisor/specs prescribed vendoring from the
+// The original implementation brief prescribed vendoring from the
 // upstream policy.go file. policy.go does not exist; the live
 // recognizer set is Python. The patterns below cite the
 // recognizers.py constant they mirror so a future drift between the
 // two layers is detectable by `grep`.
+//
+// TODO(piiguard-drift-check): add a CI step that fetches
+// dual-sandbox-architecture@<vendoredUpstreamSHA> and diffs the
+// imported recognizer regexes against the patterns below. Flag any
+// upstream-side change since the SHA above so the vendoring pass is
+// re-run. Tracked separately from this slice.
 //
 // # Failure mode discipline
 //

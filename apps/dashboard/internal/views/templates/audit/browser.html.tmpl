@@ -83,26 +83,58 @@
       </div>
     </form>
 
-    {{ if .SavedFilters }}
-      <section class="lc-card" aria-label="Saved filters">
-        <header class="lc-card-header">
-          <h2 class="lc-card-title">Saved filters</h2>
-        </header>
+    {{- /*
+        Slice 6 fix-up r1 UX-M1: the saved-filters card now always
+        renders. Previously this whole block was gated on
+        `.SavedFilters` and the operator hit a blank page in the
+        empty state, missing the "Save current filter as" path that
+        kept rendering further down. The empty-state copy points
+        operators at the Save form.
+    */ -}}
+    <section class="lc-card" aria-label="Saved filters">
+      <header class="lc-card-header">
+        <h2 class="lc-card-title">Saved filters</h2>
+      </header>
+      {{ if .SavedFilters }}
         <ul class="lc-list">
           {{ range .SavedFilters }}
             <li class="lc-filter-check">
               <a class="lc-link lc-mono" href="/audit?{{ savedFilterURL . }}">{{ .Name }}</a>
-              <form method="post" action="/audit/saved-filters/{{ .Name }}" style="display:inline" data-confirm="Delete this saved filter?">
-                <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-                <input type="hidden" name="csrf_token" value="{{ $.CSRFToken }}">
-                <input type="hidden" name="_method" value="delete">
-                <button type="submit" class="lc-link-button">Delete</button>
-              </form>
+              {{- /*
+                  Slice 6 fix-up r1 UX-H1: data-confirm was a no-op.
+                  Same Alpine inline-confirm pattern as the reveal-raw
+                  surface in detail.html.tmpl.
+              */ -}}
+              <div x-data="{ confirming: false }" style="display:inline">
+                <button type="button"
+                        class="lc-link-button"
+                        x-show="!confirming"
+                        x-on:click="confirming = true"
+                        aria-label="Delete saved filter {{ .Name }}">Delete</button>
+                <span x-show="confirming"
+                      x-cloak
+                      class="lc-revoke-confirm"
+                      role="group"
+                      aria-label="Confirm delete saved filter {{ .Name }}">
+                  <span class="lc-text-muted lc-revoke-confirm-label">Delete <code class="lc-mono">{{ .Name }}</code>?</span>
+                  <button type="button"
+                          class="lc-link-button"
+                          x-on:click="confirming = false">Cancel</button>
+                  <form method="post" action="/audit/saved-filters/{{ .Name }}" style="display:inline">
+                    <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+                    <input type="hidden" name="csrf_token" value="{{ $.CSRFToken }}">
+                    <input type="hidden" name="_method" value="delete">
+                    <button type="submit" class="lc-link-button">Confirm delete</button>
+                  </form>
+                </span>
+              </div>
             </li>
           {{ end }}
         </ul>
-      </section>
-    {{ end }}
+      {{ else }}
+        <p class="lc-text-muted">No saved filters yet. Save your current filter set below to reuse it later.</p>
+      {{ end }}
+    </section>
 
     <div class="lc-table-toolbar">
       <div class="lc-table-toolbar-actions">
@@ -132,13 +164,18 @@
     <div class="lc-table-frame">
       <table class="lc-table lc-table--compact" aria-label="Audit events">
         <thead>
+          {{- /*
+              Slice 6 fix-up r1 UX-H2: scope="col" on every <th> for
+              screen-reader table navigation. Matches the Slice 5
+              keys/browser.html.tmpl pattern.
+          */ -}}
           <tr>
-            <th class="lc-table-th">Timestamp</th>
-            <th class="lc-table-th">Event</th>
-            <th class="lc-table-th">Source</th>
-            <th class="lc-table-th">Actor</th>
-            <th class="lc-table-th">Request</th>
-            <th class="lc-table-th">Payload preview</th>
+            <th scope="col" class="lc-table-th">Timestamp</th>
+            <th scope="col" class="lc-table-th">Event</th>
+            <th scope="col" class="lc-table-th">Source</th>
+            <th scope="col" class="lc-table-th">Actor</th>
+            <th scope="col" class="lc-table-th">Request</th>
+            <th scope="col" class="lc-table-th">Payload preview</th>
           </tr>
         </thead>
         <tbody>

@@ -34,6 +34,10 @@ type fakeDB struct {
 	// batchPairs drives GetRequestIDsByCertIDs's 2-column SELECT path.
 	batchPairs []certIDRequestIDPair
 	batchErr   error
+
+	// execErr lets Slice 6 saved-filter tests inject Exec failures
+	// without disturbing the cert store's Query / QueryRow paths.
+	execErr error
 }
 
 // certIDRequestIDPair holds one row of the batch cert_id → request_id
@@ -66,6 +70,17 @@ func (f *fakeDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row 
 		return &fakeRow{countVal: f.count, err: f.countErr}
 	}
 	return &fakeRow{getVal: f.getRow, err: f.getErr}
+}
+
+// Exec satisfies the widened Querier contract introduced in Slice 6
+// fix-up r1 B1. Records the call so saved-filter tests can verify no
+// rows-leak path was hit, and lets execErr inject failure scenarios.
+func (f *fakeDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	f.calls = append(f.calls, queryCall{sql: sql, args: args})
+	if f.execErr != nil {
+		return pgconn.CommandTag{}, f.execErr
+	}
+	return pgconn.CommandTag{}, nil
 }
 
 type fakeRows struct {

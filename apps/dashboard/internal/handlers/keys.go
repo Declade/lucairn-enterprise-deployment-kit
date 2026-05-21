@@ -274,11 +274,19 @@ func (d *KeysDeps) MintHandler(w http.ResponseWriter, r *http.Request) {
 	// Audit event — payload carries identifiers only. raw_key never
 	// enters the audit emitter (the LogEmitter would print it; the
 	// MemoryEmitter would expose it via Events()).
-	d.Audit.Emit("key.mint_requested", user.Email, map[string]string{
+	//
+	// Slice 6 fix-up r1 H3 / DRIFT-006: Emit now returns an error.
+	// Key-flow emits are best-effort (the mint already succeeded and
+	// the operator's browser is waiting on the post-mint page); log
+	// + continue on failure so the surface stays usable. Reveal-raw
+	// audit emits MUST fail-closed (see audit.go RevealRawHandler).
+	if err := d.Audit.Emit(r.Context(), "key.mint_requested", user.Email, map[string]any{
 		"customer_id": customerID,
 		"key_id":      minted.KeyID,
 		"key_prefix":  minted.KeyPrefix,
-	})
+	}); err != nil {
+		log.Printf("keys_mint: audit emit: %v", err)
+	}
 
 	// Re-fetch the (now updated) list so the post-mint view shows the
 	// new key inline. Best-effort — if the gateway hiccups between
@@ -357,11 +365,13 @@ func (d *KeysDeps) RevokeHandler(w http.ResponseWriter, r *http.Request) {
 	if _, err := d.Admin.RevokeKey(r.Context(), customerID, keyID); err != nil {
 		if errors.Is(err, gateway.ErrKeyNotFound) {
 			// Idempotent: already gone is success from the operator's POV.
-			d.Audit.Emit("key.revoke_requested", user.Email, map[string]string{
+			if aerr := d.Audit.Emit(r.Context(), "key.revoke_requested", user.Email, map[string]any{
 				"customer_id": customerID,
 				"key_id":      keyID,
 				"outcome":     "already_revoked",
-			})
+			}); aerr != nil {
+				log.Printf("keys_revoke: audit emit (already_revoked): %v", aerr)
+			}
 			http.Redirect(w, r, redirectBackToBrowser(customerID), http.StatusSeeOther)
 			return
 		}
@@ -374,11 +384,13 @@ func (d *KeysDeps) RevokeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d.Audit.Emit("key.revoke_requested", user.Email, map[string]string{
+	if aerr := d.Audit.Emit(r.Context(), "key.revoke_requested", user.Email, map[string]any{
 		"customer_id": customerID,
 		"key_id":      keyID,
 		"outcome":     "revoked",
-	})
+	}); aerr != nil {
+		log.Printf("keys_revoke: audit emit (revoked): %v", aerr)
+	}
 	http.Redirect(w, r, redirectBackToBrowser(customerID), http.StatusSeeOther)
 }
 
@@ -460,12 +472,14 @@ func (d *KeysDeps) BulkRevokeHandler(w http.ResponseWriter, r *http.Request) {
 	// fault.
 	cancelRemainder := func(from int) {
 		for _, remaining := range normalized[from:] {
-			d.Audit.Emit("key.revoke_requested", user.Email, map[string]string{
+			if aerr := d.Audit.Emit(context.Background(), "key.revoke_requested", user.Email, map[string]any{
 				"customer_id": customerID,
 				"key_id":      remaining,
 				"outcome":     "cancelled",
 				"bulk":        "true",
-			})
+			}); aerr != nil {
+				log.Printf("keys_bulk_revoke: audit emit (cancelled): %v", aerr)
+			}
 		}
 	}
 
@@ -487,12 +501,14 @@ loop:
 			// done while metered), audit outcome=cancelled so the
 			// stream stays consistent with cancelRemainder.
 			if err := d.revokeLimiter.Wait(r.Context()); err != nil {
-				d.Audit.Emit("key.revoke_requested", user.Email, map[string]string{
+				if aerr := d.Audit.Emit(context.Background(), "key.revoke_requested", user.Email, map[string]any{
 					"customer_id": customerID,
 					"key_id":      kid,
 					"outcome":     "cancelled",
 					"bulk":        "true",
-				})
+				}); aerr != nil {
+					log.Printf("keys_bulk_revoke: audit emit (rate-limit cancel): %v", aerr)
+				}
 				return
 			}
 			_, err := d.Admin.RevokeKey(r.Context(), customerID, kid)
@@ -507,12 +523,14 @@ loop:
 					log.Printf("keys_bulk_revoke: revoke %s: %v", kid, err)
 				}
 			}
-			d.Audit.Emit("key.revoke_requested", user.Email, map[string]string{
+			if aerr := d.Audit.Emit(context.Background(), "key.revoke_requested", user.Email, map[string]any{
 				"customer_id": customerID,
 				"key_id":      kid,
 				"outcome":     outcome,
 				"bulk":        "true",
-			})
+			}); aerr != nil {
+				log.Printf("keys_bulk_revoke: audit emit (%s): %v", outcome, aerr)
+			}
 		}(kid)
 	}
 	wg.Wait()
