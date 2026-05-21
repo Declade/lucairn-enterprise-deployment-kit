@@ -149,6 +149,10 @@ func Render(r CoverRenderer, in CoverInput, assert AssertFn) error {
 	r.SetTextColor(80, 80, 85)
 	keys := sortedKeys(in.ImageDigests)
 	if len(keys) == 0 {
+		// Constant fallback text; bypasses AssertFn intentionally because
+		// the string contains no operator-supplied substrings. Listed
+		// here so the BH-L5 / L1 follow-up audit treats this as a known
+		// allow-listed exception rather than a coverage gap.
 		r.MultiCell(0, 6, "Image manifest unavailable in this build.", "", "L", false)
 	} else {
 		for _, k := range keys {
