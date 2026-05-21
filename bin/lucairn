@@ -492,15 +492,31 @@ check_container_images() {
   done
 
   # The dashboard ships under its own opt-in flag with an INDEPENDENT image
-  # tag (LUCAIRN_DASHBOARD_IMAGE_TAG, defaults 0.1.0). Only verify when
-  # opted-in so non-dashboard operators do not see a spurious failure for a
-  # registry path they never pull. dashboard_opted_in() recognises all three
-  # opt-in channels (env-flag, DOCTOR_INCLUDE_DASHBOARD=1, COMPOSE_PROFILES
-  # heuristic) so `--profile dashboard` alone no longer bypasses the check.
+  # tag (LUCAIRN_DASHBOARD_IMAGE_TAG, defaults to the kit's pinned dashboard
+  # version). Only verify when opted-in so non-dashboard operators do not see
+  # a spurious failure for a registry path they never pull. dashboard_opted_in()
+  # recognises all three opt-in channels (env-flag, DOCTOR_INCLUDE_DASHBOARD=1,
+  # COMPOSE_PROFILES heuristic) so `--profile dashboard` alone no longer
+  # bypasses the check.
+  #
+  # KCID-MED-3 fix-up r1: the fallback tag MUST stay in sync with the
+  # dashboard image tag on every kit release. The locked surface list
+  # (now 10 surfaces — was 9 through Slice 5 #41 / Slice 6) is documented
+  # in customer.env.example § "dashboard.image.tag" and includes:
+  #   1. customer.env.example LUCAIRN_DASHBOARD_IMAGE_TAG default
+  #   2. customer.env.example inline comment (line ~207)
+  #   3. charts/lucairn/values.yaml dashboard.image.tag
+  #   4. charts/lucairn/values.yaml inline comment (line 5)
+  #   5. charts/lucairn/charts/dashboard/values.yaml image.tag
+  #   6. charts/lucairn/charts/dashboard/Chart.yaml appVersion
+  #   7. docker-compose.customer.yml lucairn-dashboard image tag
+  #   8. docker-compose.self-hosted.yml lucairn-dashboard image tag
+  #   9. apps/dashboard/image-manifest.yaml dashboard tag
+  #  10. bin/lucairn this fallback (LINE BELOW)
   local dash_tag dash_ref
   if dashboard_opted_in "$env_file"; then
     dash_tag="$(env_value "$env_file" LUCAIRN_DASHBOARD_IMAGE_TAG)"
-    dash_tag="${dash_tag:-0.1.0}"
+    dash_tag="${dash_tag:-0.7.0}"
     dash_ref="${registry}/lucairn-dashboard:${dash_tag}"
     if ! docker manifest inspect "$dash_ref" >/dev/null 2>&1; then
       echo "container images: failed ($dash_ref not pullable; check registry credentials or image tag)"
@@ -964,14 +980,33 @@ check_dashboard() {
 #   3. DEFAULT_CUSTOMER_NAME, when set, must NOT contain a banned
 #      literal from the project mechanism-allowlist (the same set
 #      compliance.banned_literals.go enforces at PDF render time).
-#      The grep below mirrors the regex the dashboard binary uses.
+#      The grep below mirrors the Go regex's word-boundary semantics
+#      so doctor and Go converge — substring matching is too coarse
+#      (`Smfa Holdings`, `Test mfa-protected.com`, `Big Red Team Inc`
+#      all false-positive a substring check).
+#   4. DEFAULT_CUSTOMER_NAME, when set, must NOT contain control
+#      characters; the Go binary fails-closed at first export but
+#      doctor catches the regression before customer drives the form.
+#   5. Partial-data warning: when both DB pools are unset, the
+#      generated PDF will contain zero counts in all categories.
+#      Customers handing a zero-count PDF to a regulator without a
+#      banner is the failure mode this probe pre-empts.
 #
 # Bash 3.2 compatible per Slice 2 lesson #7.
+#
+# Implementation note: the banned-literal pattern is a `grep -E` regex
+# anchored on either end with `(^|[^A-Za-z0-9])` / `($|[^A-Za-z0-9])`
+# boundaries to match the Go compliance/banned_literals.go regex.
+# Pattern entries are kept in the same order as the Go file's
+# `boundedEncoded` + `rawEncoded` arrays so future drift between
+# doctor and Go is easier to spot.
 check_dashboard_compliance() {
   local env_file="$1"
-  local max_days default_customer
+  local max_days default_customer cert_db audit_db
   max_days="$(env_value "$env_file" LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS)"
   default_customer="$(env_value "$env_file" LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME)"
+  cert_db="$(env_value "$env_file" LUCAIRN_DASHBOARD_AUDIT_DB_URL)"
+  audit_db="$(env_value "$env_file" LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL)"
 
   local fail=0
 
@@ -987,7 +1022,10 @@ check_dashboard_compliance() {
           echo "dashboard compliance: failed (LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS must be > 0, got: $max_days)"
           fail=1
         elif [ "$max_days" -gt 3650 ]; then
-          echo "dashboard compliance: warn (LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS=$max_days exceeds 3650 days (~10 years); the binary will cap at 3650 — likely operator typo)"
+          # BH-L2: the binary fails-closed at boot rather than silently
+          # capping, so doctor escalates from warn to failed for honesty.
+          echo "dashboard compliance: failed (LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS=$max_days exceeds the 3650-day hard cap; the dashboard binary will reject the value at boot — likely operator typo)"
+          fail=1
         else
           echo "dashboard compliance: max window ok ($max_days days)"
         fi
@@ -995,28 +1033,58 @@ check_dashboard_compliance() {
     esac
   fi
 
-  # (3) default-customer-name banned-literal grep. The case-fold pattern
-  # mirrors the project mechanism-allowlist set used by the dashboard's
-  # render-time guard. Order matters: longer phrases first so partial
-  # matches don't get swallowed.
+  # (3) default-customer-name banned-literal grep. Word-boundary regex
+  # mirrors Go's compliance.bannedLiteralPattern (apps/dashboard/
+  # internal/compliance/banned_literals.go). Substring matching is
+  # specifically wrong: `Smfa Holdings`, `Test mfa-protected.com`, and
+  # `Big Red Team Inc` all false-positive a substring check. BH-M2 +
+  # KD-C1 fix-up r1.
   if [ -n "$default_customer" ]; then
-    local customer_low
-    customer_low="$(printf '%s' "$default_customer" | tr '[:upper:]' '[:lower:]')"
-    case "$customer_low" in
-      *"iso 27001"*|*"iso 27701"*|*"iso 42001"*|*"soc 2"*|*hipaa*|*"pci-dss"*|*"pci dss"*|*"encrypted at rest"*|*"penetration test"*|*"pen test"*|*"red team"*|*"regular audits"*|*"multi-factor auth"*|*"end-to-end encryption"*|*"e2e encryption"*|*mfa*|*"pro+"*|*pro_plus*|*"solo free"*|*"solo pro"*|*"the veil"*|*theveil*|*dsaveil*)
-        echo "dashboard compliance: failed (LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME contains a banned mechanism-allowlist literal; the PDF cover render would fail-closed at first export)"
+    local banned_re_bounded banned_re_raw
+    # Bounded set (mirror of Go boundedEncoded; case-insensitive via
+    # grep -Ei). Order: longer phrases first.
+    banned_re_bounded='(^|[^A-Za-z0-9])(SOC 2|ISO 27001|ISO 27701|ISO 42001|HIPAA|PCI-DSS|PCI DSS|encrypted at rest|penetration test|pen test|red team|MFA|multi-factor authentication|end-to-end encryption|E2E encryption|regular audits|Pro\+|pro_plus|Solo Free|Solo Pro|The Veil|theveil|dsaveil)($|[^A-Za-z0-9])'
+    # Raw set (mirror of Go rawEncoded — no boundary wrap because they
+    # carry their own anchors via character classes / non-word chars).
+    banned_re_raw='TLS 1\.[23]|99\.9%|99\.99%'
+
+    local banned_hit=""
+    if printf '%s' "$default_customer" | LC_ALL=C grep -Eiq -- "$banned_re_bounded"; then
+      banned_hit="$(printf '%s' "$default_customer" | LC_ALL=C grep -Eio -- "$banned_re_bounded" | head -n 1)"
+    elif printf '%s' "$default_customer" | LC_ALL=C grep -Eiq -- "$banned_re_raw"; then
+      banned_hit="$(printf '%s' "$default_customer" | LC_ALL=C grep -Eio -- "$banned_re_raw" | head -n 1)"
+    fi
+
+    if [ -n "$banned_hit" ]; then
+      echo "dashboard compliance: failed (LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME contains a banned mechanism-allowlist literal (\"$banned_hit\"); the PDF cover render would fail-closed at first export)"
+      fail=1
+    else
+      # Length cap mirrors compliance.SanitizeCustomerName (200 chars).
+      if [ "${#default_customer}" -gt 200 ]; then
+        echo "dashboard compliance: failed (LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME exceeds 200 chars; the binary will reject the value at boot)"
         fail=1
-        ;;
-      *)
-        # Length cap mirrors compliance.SanitizeCustomerName (200 chars).
-        if [ "${#default_customer}" -gt 200 ]; then
-          echo "dashboard compliance: failed (LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME exceeds 200 chars; the binary will reject the value at boot)"
-          fail=1
-        else
-          echo "dashboard compliance: default customer name ok"
-        fi
-        ;;
-    esac
+      # KD-C2 fix-up r1: control characters silently break the cover
+      # render (binary returns 500 at first POST). Probe via `od -An -tx1`
+      # for any byte in the 0x00-0x1F / 0x7F range — Bash 3.2 compatible.
+      elif printf '%s' "$default_customer" | LC_ALL=C od -An -tx1 | tr -d ' \n' | LC_ALL=C grep -Eq '(0[0-9a-f]|1[0-9a-f]|7f)'; then
+        echo "dashboard compliance: failed (LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME contains a control character; the binary will reject the value at boot)"
+        fail=1
+      else
+        echo "dashboard compliance: default customer name ok"
+      fi
+    fi
+  fi
+
+  # (5) Partial-data warning. KD-C3 fix-up r1. Compliance is always-on;
+  # if either DB pool is unset the PDF will silently contain zero counts
+  # in the affected categories. Doctor surfaces the gap BEFORE the
+  # customer drives a regulator-aimed export.
+  if [ -z "$cert_db" ] && [ -z "$audit_db" ]; then
+    echo "dashboard compliance: warn (LUCAIRN_DASHBOARD_AUDIT_DB_URL + LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL both unset — compliance PDF will contain zero counts in all three categories)"
+  elif [ -z "$cert_db" ]; then
+    echo "dashboard compliance: warn (LUCAIRN_DASHBOARD_AUDIT_DB_URL unset — Cat 2 + Cat 3 certificate counts will be zero in the generated PDF)"
+  elif [ -z "$audit_db" ]; then
+    echo "dashboard compliance: warn (LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL unset — Cat 1 + Cat 3 sanitizer + audit-event counts will be zero in the generated PDF)"
   fi
 
   if [ "$fail" -eq 0 ] && [ -z "$max_days" ] && [ -z "$default_customer" ]; then

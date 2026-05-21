@@ -293,6 +293,67 @@ func TestCompliance_POST_EmptyCustomerNameRejected(t *testing.T) {
 	}
 }
 
+// TestCompliance_BrowserViewer_Returns404 drives a viewer-session through
+// the production middleware chain to assert a viewer's GET /compliance
+// resolves to 404 (RequireRole pattern). BH-M1 fix-up r1 — closes the
+// tautological-test gap (Slice 4 C33 / Slice 5 BH-H2 / Slice 6 H2
+// recurrence) where every prior compliance test called the handler
+// directly without exercising the route-level role gate.
+func TestCompliance_BrowserViewer_Returns404(t *testing.T) {
+	t.Parallel()
+	d := newComplianceDeps(t, audit.NewMemoryEmitter(), true)
+
+	sessStore := auth.NewMemorySessionStore(time.Hour, time.Hour)
+	defer sessStore.Close()
+	sess, err := sessStore.Create(auth.User{Email: "viewer@lucairn.local", Role: auth.RoleViewer})
+	if err != nil {
+		t.Fatalf("create viewer session: %v", err)
+	}
+	complianceMux := http.NewServeMux()
+	complianceMux.HandleFunc("/compliance", d.ExportPage)
+	mux := auth.LoadSession(sessStore)(auth.RequireSession()(auth.RequireRole(auth.RoleAdmin, complianceMux)))
+
+	req := httptest.NewRequest(http.MethodGet, "/compliance", nil)
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sess.ID})
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("viewer GET /compliance via middleware chain: got %d want 404", rr.Code)
+	}
+}
+
+// TestCompliance_ExportPOSTViewer_Returns404 mirrors BrowserViewer for
+// the POST surface. The route-level RequireRole gate MUST return 404 to
+// viewers BEFORE the handler runs (no PDF bytes can leak, no audit row
+// emitted). BH-M1 fix-up r1.
+func TestCompliance_ExportPOSTViewer_Returns404(t *testing.T) {
+	t.Parallel()
+	d := newComplianceDeps(t, audit.NewMemoryEmitter(), true)
+
+	sessStore := auth.NewMemorySessionStore(time.Hour, time.Hour)
+	defer sessStore.Close()
+	sess, err := sessStore.Create(auth.User{Email: "viewer@lucairn.local", Role: auth.RoleViewer})
+	if err != nil {
+		t.Fatalf("create viewer session: %v", err)
+	}
+	complianceMux := http.NewServeMux()
+	complianceMux.HandleFunc("/compliance/export", d.ExportPDF)
+	mux := auth.LoadSession(sessStore)(auth.RequireSession()(auth.RequireRole(auth.RoleAdmin, complianceMux)))
+
+	form := url.Values{}
+	form.Set("customer_name", "Acme")
+	form.Set("from", "2026-04-01")
+	form.Set("to", "2026-04-30")
+	req := httptest.NewRequest(http.MethodPost, "/compliance/export", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sess.ID})
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("viewer POST /compliance/export via middleware chain: got %d want 404", rr.Code)
+	}
+}
+
 // TestCompliance_POST_ExactMaxWindow_Accepted exercises the BH-H1 fix-up
 // boundary: an exact MaxWindowDays-visible-day window MUST be accepted
 // (the +1 off-by-one rejected 365-day annual exports at the default cap).

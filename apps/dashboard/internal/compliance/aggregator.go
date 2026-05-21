@@ -175,6 +175,18 @@ func NewAggregator(certDB, auditDB Querier, opts AggregatorOpts) *Aggregator {
 	}
 }
 
+// HasCertDB reports whether the cert DB pool is wired. When false, the
+// cert-count queries return empty CertCounts; the handler renders a
+// partial-data banner so operators don't hand over a regulator PDF with
+// silent zeros in Cat 2 + Cat 3. KD-C3 fix-up r1.
+func (a *Aggregator) HasCertDB() bool { return a.certDB != nil }
+
+// HasAuditDB reports whether the audit-log DB pool is wired. When false,
+// the sanitizer + audit-event count queries return empty structs; the
+// handler renders a partial-data banner so operators see that Cat 1 +
+// Cat 3 will be zero. KD-C3 fix-up r1.
+func (a *Aggregator) HasAuditDB() bool { return a.auditDB != nil }
+
 // validateWindow enforces the half-open interval + max-window guard.
 // Returns canonical UTC-normalised from / to.
 func (a *Aggregator) validateWindow(from, to time.Time) (time.Time, time.Time, error) {

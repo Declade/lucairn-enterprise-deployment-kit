@@ -160,6 +160,29 @@ func TestValidateWindow_OneOverMaxRejected(t *testing.T) {
 	}
 }
 
+// TestValidateWindow_HasCertDBHasAuditDB locks the public booleans the
+// handler reads to render the partial-data banner. KD-C3 fix-up r1.
+func TestValidateWindow_HasCertDBHasAuditDB(t *testing.T) {
+	// Both nil.
+	a0 := NewAggregator(nil, nil, AggregatorOpts{})
+	if a0.HasCertDB() || a0.HasAuditDB() {
+		t.Errorf("nil/nil: HasCertDB=%v HasAuditDB=%v, want both false", a0.HasCertDB(), a0.HasAuditDB())
+	}
+	stub := &fakeQuerier{}
+	a1 := NewAggregator(stub, nil, AggregatorOpts{})
+	if !a1.HasCertDB() || a1.HasAuditDB() {
+		t.Errorf("stub/nil: HasCertDB=%v HasAuditDB=%v, want true/false", a1.HasCertDB(), a1.HasAuditDB())
+	}
+	a2 := NewAggregator(nil, stub, AggregatorOpts{})
+	if a2.HasCertDB() || !a2.HasAuditDB() {
+		t.Errorf("nil/stub: HasCertDB=%v HasAuditDB=%v, want false/true", a2.HasCertDB(), a2.HasAuditDB())
+	}
+	a3 := NewAggregator(stub, stub, AggregatorOpts{})
+	if !a3.HasCertDB() || !a3.HasAuditDB() {
+		t.Errorf("stub/stub: HasCertDB=%v HasAuditDB=%v, want both true", a3.HasCertDB(), a3.HasAuditDB())
+	}
+}
+
 func TestCountCertsInWindow_NilCertDBReturnsEmpty(t *testing.T) {
 	a := NewAggregator(nil, nil, AggregatorOpts{})
 	from := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)

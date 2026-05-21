@@ -958,10 +958,11 @@ the surface (or after, if you don't mind the surface rendering an
 
 ```bash
 # Replace the password below with the rotated value from customer.env
-# (Op-2 runbook in OPS.md walks operators through superuser rotation
-# end-to-end). The `dsa:dsa` default ships only for first-boot
-# convenience and MUST be rotated before any production use — the
-# 2026-04-29 BSI incident response codified this.
+# (the Postgres rotation runbook in OPS.md walks operators through
+# superuser rotation end-to-end). The `dsa:dsa` default ships only for
+# first-boot convenience and MUST be rotated before any production
+# use — never run with the default credential against a customer-data
+# instance.
 psql 'postgres://dsa:CHANGE_ME@127.0.0.1:5433/audit' \
   < apps/dashboard/migrations/000001_create_saved_filters.up.sql
 ```

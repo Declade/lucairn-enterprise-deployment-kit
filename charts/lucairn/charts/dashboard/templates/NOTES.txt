@@ -53,10 +53,21 @@ Lucairn Enterprise Dashboard
    surface will then render a "Sign in with SSO" button.
 {{- end }}
 
-5) Available in this release: certificate browser, inspector, audit-grade
-   validator, and bulk re-verify. Optional surface — requires
-   LUCAIRN_DASHBOARD_AUDIT_DB_URL set; see INSTALL.md "Audit DB +
-   Witness wiring".
+5) Available in this release (v1.0-dashboard feature-complete):
+   - certificate browser + inspector + audit-grade validator + bulk re-verify
+   - server health + embedded Grafana panels
+   - API key management against the gateway admin surface
+   - audit log browser with filters + saved-filter persistence + CSV export
+   - compliance PDF export (AI Act Art. 10 / 12 / 14 / 15 evidence summary)
 
-6) Future kit releases will add: server health + Grafana embedding,
-   API key management, audit log browser, and compliance PDF export.
+   Most surfaces are optional and gate on their respective env vars
+   (LUCAIRN_DASHBOARD_AUDIT_DB_URL for certs/compliance,
+   LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL for audit + compliance,
+   LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL for API keys, etc.). Surfaces with
+   their env vars unset render an in-product "not configured" explainer
+   instead of breaking the page. See INSTALL.md "Audit DB + Witness
+   wiring" and the per-surface sections.
+
+6) This is the v1.0 dashboard arc. Future releases will add per-customer
+   visibility refinements + cross-surface features as customer signals
+   land — see the project roadmap in OPS.md.

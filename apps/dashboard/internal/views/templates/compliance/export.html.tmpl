@@ -11,6 +11,10 @@
     </div>
   {{ else }}
 
+    {{ if .PartialDataWarning }}
+      <div class="lc-banner lc-banner--warn" role="status">{{ .PartialDataWarning }}</div>
+    {{ end }}
+
     {{ if .FlashError }}
       <div class="lc-banner lc-banner--fail" role="alert">{{ .FlashError }}</div>
     {{ end }}
@@ -25,9 +29,9 @@
         <legend class="lc-text-muted">Customer name</legend>
         <label class="lc-filter-field">
           <span class="lc-filter-label">Appears on the PDF cover page</span>
-          <input type="text" class="lc-filter-input" name="customer_name" value="{{ .DefaultCustomer }}" maxlength="200" placeholder="Acme Corp GmbH" autocomplete="off" required>
+          <input type="text" class="lc-filter-input" name="customer_name" value="{{ .DefaultCustomer }}" maxlength="200" placeholder="Acme Corp GmbH" autocomplete="off" required aria-describedby="customer-name-hint">
         </label>
-        <small class="lc-text-muted">1&ndash;200 characters. Banned-literal claims (the project mechanism-allowlist) are rejected before render.</small>
+        <small id="customer-name-hint" class="lc-text-muted">1&ndash;200 characters. Banned-literal claims (the project mechanism-allowlist) are rejected before render.</small>
       </fieldset>
 
       <fieldset class="lc-filter-fieldset">
@@ -62,16 +66,18 @@
       </div>
     </form>
 
-    <section class="lc-card" aria-label="Build metadata">
+    <section class="lc-card lc-cert-summary" aria-label="Build metadata">
       <header class="lc-card-header">
         <h2 class="lc-card-title">Build metadata embedded on cover page</h2>
       </header>
-      <dl class="lc-meta-list">
-        <dt class="lc-text-muted">Kit version</dt>
-        <dd><code class="lc-mono">{{ .KitVersion }}</code></dd>
-        <dt class="lc-text-muted">Dashboard version</dt>
-        <dd><code class="lc-mono">{{ .DashboardVersion }}</code></dd>
-      </dl>
+      <div class="lc-cert-summary-row">
+        <span class="lc-text-muted">Kit version</span>
+        <code class="lc-mono">{{ .KitVersion }}</code>
+      </div>
+      <div class="lc-cert-summary-row">
+        <span class="lc-text-muted">Dashboard version</span>
+        <code class="lc-mono">{{ .DashboardVersion }}</code>
+      </div>
       <p class="lc-text-muted">The exported PDF cover page lists the pinned image manifest the kit shipped with so the customer's evidence chain documents exactly what was installed.</p>
     </section>
 
