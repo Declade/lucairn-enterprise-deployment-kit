@@ -11,12 +11,30 @@
   <div class="lc-drawer-panel">
     <header class="lc-drawer-header">
       <h2 id="lc-mint-title" class="lc-drawer-title">New API key &mdash; copy now, it will not appear again</h2>
-      <button type="button" class="lc-link-button" aria-label="Close" x-on:click="open = false; plaintext = ''">Close</button>
+      {{- /* Slice 5 fix-up r1 UX-L1: close button moved from
+         lc-link-button (~16x16 click target) to lc-secondary-button
+         + × glyph (~28x28 click target) to meet the 24x24 minimum
+         touch-target. The dialog also has an "I copied it, close"
+         CTA as the primary affordance; this corner button is the
+         secondary escape hatch. */ -}}
+      <button type="button" class="lc-secondary-button" aria-label="Close" x-on:click="open = false; plaintext = ''">&times;</button>
     </header>
     <div class="lc-drawer-body">
       <p class="lc-text-muted">Key ID: <code class="lc-mono">{{ .JustMinted.KeyID }}</code> &mdash; prefix <code class="lc-mono">{{ .JustMinted.KeyPrefix }}</code></p>
+      {{- /* Slice 5 fix-up r1 BH-L3: copy softened from "removes the
+         value from the page" to "removes the value from the visible
+         UI" — the plaintext literal still sits inside the
+         x-data="plaintext: …" attribute on the parent aside element
+         until the next page load, so promising "from the page" is
+         technically incorrect. Closing the modal does remove it from
+         the visible DOM tree (x-show goes false) and the page
+         carries Cache-Control: no-store + Referrer-Policy:
+         no-referrer headers so back-button history + outbound
+         referrers don't surface it. A future iteration could load
+         the plaintext via x-init then immediately removeAttribute(
+         "x-data") to scrub the source attribute too; deferred. */ -}}
       <div class="lc-banner lc-banner--warn" role="status">
-        Treat the plaintext key below as bearer-equivalent. The gateway never stores it in recoverable form &mdash; this is the only chance to copy it. Closing this dialog removes the value from the page.
+        Treat the plaintext key below as bearer-equivalent. The gateway never stores it in recoverable form &mdash; this is the only chance to copy it. Closing this dialog removes the value from the visible UI.
       </div>
       <label class="lc-text-muted" for="lc-mint-raw">Plaintext key</label>
       <pre class="lc-codeblock"><code id="lc-mint-raw" x-text="plaintext"></code></pre>
