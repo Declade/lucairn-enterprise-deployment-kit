@@ -12,7 +12,6 @@
     {{ if .DemoToggleOK }}
     <form class="lc-home-toggle-form" method="post" action="/dashboard/toggle-demo">
       <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
-      <input type="hidden" name="csrf_token" value="{{ .CSRFToken }}">
       <div class="lc-toggle-switch" role="group" aria-label="Demo data view">
         <span class="lc-toggle-switch-label {{ if not .DemoMode }}is-active{{ end }}">Live</span>
         <button type="submit" class="lc-toggle-switch-track {{ if .DemoMode }}is-on{{ end }}"
@@ -136,7 +135,7 @@
       <div class="lc-chart-body lc-chart-body--centered">
         {{ donutSVG .Metrics.VerdictLabels .Metrics.VerdictValues 180 }}
       </div>
-      <ul class="lc-chart-legend">
+      <ul class="lc-chart-legend" role="list" aria-label="Verdict distribution legend">
         {{ range .Metrics.VerdictBuckets }}
           <li class="lc-legend-row">
             <span class="lc-legend-dot lc-legend-dot--{{ .Label }}" aria-hidden="true"></span>

@@ -164,6 +164,24 @@ dashboard:
   #     witnessVerifyRateUID: ""
   #     auditLogVolumeUID: ""
 
+  # Dashboard 0.8.0 — demo mode + per-user demo-data toggle on the
+  # operator-overview home page. Both default OFF. Leaves the dashboard
+  # behaving identically to 0.7.x when this block is commented out
+  # entirely (the Helm template guards on `(default dict .Values.demoMode)`
+  # so missing keys are nil-safe).
+  #
+  # demoMode.enabled=true swaps real stores for in-memory fixtures at
+  # boot time — every surface renders populated. NOT FOR PRODUCTION;
+  # see INSTALL.md § "Enable demo mode + the per-user demo-data toggle".
+  #
+  # demoMode.toggleEnabled=true exposes the per-user `Live ◯○ Demo`
+  # switch in the dashboard home-page header. Cookie-scoped
+  # (lucairn_dash_demo_view, 30-day TTL, HttpOnly+Secure+Lax). Auto-
+  # enabled whenever demoMode.enabled=true.
+  # demoMode:
+  #   enabled: false
+  #   toggleEnabled: false
+
 # Observability sub-chart — Slice 4 fold-in. Set jwt.enabled=true to
 # wire Grafana into the dashboard's embed handoff. The Secret name
 # below must match the dashboard's auto-generated Secret (default

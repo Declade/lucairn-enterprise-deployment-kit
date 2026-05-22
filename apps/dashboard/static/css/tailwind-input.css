@@ -1060,6 +1060,10 @@ input[type="checkbox"]:focus-visible {
 .lc-kpi-tile-link:hover {
   text-decoration: underline;
 }
+.lc-kpi-tile-link:focus-visible {
+  outline: 2px solid var(--color-accent-highlight);
+  outline-offset: 2px;
+}
 .lc-kpi-value {
   font-family: var(--font-display);
   font-size: 32px;
@@ -1127,11 +1131,14 @@ input[type="checkbox"]:focus-visible {
   min-height: 240px;
 }
 .lc-chart-card--wide {
-  grid-column: span 1;
+  grid-column: span 1; /* narrow: stack on small viewports */
 }
 @media (min-width: 1100px) {
   .lc-chart-card--wide {
-    grid-column: span 1;
+    grid-column: span 2; /* wide: panoramic on desktop — the 30-day
+                            sparkline takes 2/3 of the 3-col grid so
+                            the time-series reads at a glance while
+                            the donut + bar rows flank it. */
   }
 }
 .lc-chart-head {

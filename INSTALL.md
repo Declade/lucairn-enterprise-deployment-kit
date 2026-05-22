@@ -327,10 +327,16 @@ The script prints the raw API key **once** — capture it to a 0600 file. Smoke 
 
 ## Kubernetes Install
 
-1. Create the image pull secret.
+1. (Optional) Create the image pull secret.
+
+   GHCR-hosted Lucairn images are public and pull without credentials —
+   skip this step on a standard install. Only run it when you mirror the
+   images into a private registry that requires authentication.
 
 ```bash
 kubectl create namespace lucairn
+# Only when mirroring or pulling from a private registry; for the public
+# default registry (ghcr.io/declade/*) leave this block out.
 kubectl create secret docker-registry lucairn-registry \
   --namespace lucairn \
   --docker-server ghcr.io \
@@ -1154,6 +1160,10 @@ LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD=<rotated value>
 # Demo paths (both default to OFF):
 LUCAIRN_DASHBOARD_DEMO_MODE=true
 LUCAIRN_DASHBOARD_DEMO_TOGGLE_ENABLED=true
+# Optional — pre-populate the compliance form's customer-name field
+# so the demo PDF cover renders a stable label (matches the fixture
+# data in apps/dashboard/internal/compliance/templates/cover_test.go):
+LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME=Acme Corp GmbH
 ```
 
 Kubernetes path (in `customer-values.yaml`):

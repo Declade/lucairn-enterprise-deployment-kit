@@ -102,7 +102,15 @@ func (d *Deps) DashboardHome(w http.ResponseWriter, r *http.Request) {
 // ToggleDemoMode flips the DemoToggleCookieName cookie's value
 // between "true" and "false" and redirects back to /dashboard. POST
 // only — GET would let a malicious page CSRF the user via image link.
-// CSRF token already validated by the auth-chain middleware.
+// CSRF validated per request — the server does NOT carry a global
+// CSRF middleware; every POST handler in the package (LoginPost /
+// LogoutPost / MintKey / RevokeKey / RevealRaw / ExportPDF / ...)
+// calls auth.VerifyToken explicitly. Bug-hunter r1 BLOCKER closure:
+// the prior comment claiming "CSRF token already validated by the
+// auth-chain middleware" was false — there is no such middleware in
+// the chain (server.go:583-587 = SecurityHeaders → LoadSession →
+// RequireSession). Adding VerifyToken keeps the toggle endpoint
+// consistent with the rest of the package.
 func (d *Deps) ToggleDemoMode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -114,6 +122,11 @@ func (d *Deps) ToggleDemoMode(w http.ResponseWriter, r *http.Request) {
 	}
 	if !d.DemoToggleEnabled {
 		http.Error(w, "demo toggle disabled on this install", http.StatusForbidden)
+		return
+	}
+	if err := auth.VerifyToken(r); err != nil {
+		log.Printf("toggle_demo_mode: csrf verify: %v", err)
+		http.Error(w, "csrf verification failed", http.StatusForbidden)
 		return
 	}
 
