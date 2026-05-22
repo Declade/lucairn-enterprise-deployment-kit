@@ -115,6 +115,56 @@ func FuncMap() template.FuncMap {
 		"dashboardVersion": func() string {
 			return dashboardVersion
 		},
+		// sparklineSVG renders a tiny inline SVG line chart from a slice
+		// of int values. Caller-supplied width/height in pixels. Returns
+		// template.HTML so the SVG isn't escaped. Values are normalised
+		// to the chart height; zero-value slice renders an empty <svg/>
+		// so the template never panics on missing data.
+		"sparklineSVG": func(values []int, width, height int) template.HTML {
+			return template.HTML(renderSparkline(values, width, height))
+		},
+		// donutSVG renders an inline SVG donut chart given parallel
+		// label + value slices. The accent + status palette is locked
+		// to the design tokens (no per-slice colour overrides).
+		"donutSVG": func(labels []string, values []int, size int) template.HTML {
+			return template.HTML(renderDonut(labels, values, size))
+		},
+		// barRowSVG renders one row of a horizontal bar chart: the
+		// label, the value, the proportional bar. Combine multiple
+		// calls in a template loop to build a full bar chart.
+		"barRowSVG": func(label string, value, max int, width int) template.HTML {
+			return template.HTML(renderBarRow(label, value, max, width))
+		},
+		// kpiDeltaText renders a "+5.3%" or "-2.1%" string with a sign
+		// glyph. Empty when delta is exactly zero (template hides the
+		// row when this is empty).
+		"kpiDeltaText": func(delta float64) string {
+			if delta == 0 {
+				return ""
+			}
+			sign := "+"
+			if delta < 0 {
+				sign = "-"
+				delta = -delta
+			}
+			return fmt.Sprintf("%s%.1f%%", sign, delta)
+		},
+		// kpiDeltaClass returns "up" / "down" / "flat" so templates can
+		// pick the right colour without re-parsing the delta string.
+		"kpiDeltaClass": func(delta float64) string {
+			switch {
+			case delta > 0:
+				return "up"
+			case delta < 0:
+				return "down"
+			default:
+				return "flat"
+			}
+		},
+		// commaInt formats an int with thousand separators (4567 → "4,567").
+		"commaInt": func(n int) string {
+			return commaSeparate(n)
+		},
 		"relativeAge": func(t time.Time) string {
 			if t.IsZero() {
 				return ""
@@ -421,4 +471,19 @@ type PageData struct {
 	NextPath    string
 	ActivePage  string
 	OIDCEnabled bool
+}
+
+// DashboardHomePageData is the render payload for
+// templates/dashboard_home.html.tmpl. Embeds PageData so the shared
+// layout (sidebar / topbar / sign-out) renders unchanged. Metrics is
+// any value — declared as a generic interface here so the dashboard
+// package can pass its own Metrics struct without views needing to
+// import dashboard (which would create a cycle:
+// views → dashboard → handlers → views). The template accesses
+// Metrics fields via reflection, which Go's html/template handles.
+type DashboardHomePageData struct {
+	PageData
+	Metrics      any
+	DemoMode     bool
+	DemoToggleOK bool
 }

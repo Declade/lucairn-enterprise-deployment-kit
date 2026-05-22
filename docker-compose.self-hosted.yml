@@ -235,7 +235,7 @@ services:
   # which compose file the operator started from.
   lucairn-dashboard:
     profiles: ["dashboard"]
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.7.1}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.8.0}"
     restart: unless-stopped
     environment:
       LUCAIRN_DASHBOARD_LISTEN_ADDR: "${LUCAIRN_DASHBOARD_LISTEN_ADDR:-0.0.0.0:8443}"
@@ -276,6 +276,11 @@ services:
       # Compliance PDF export. Admin-only + always-on surface.
       LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS: "${LUCAIRN_DASHBOARD_COMPLIANCE_MAX_WINDOW_DAYS:-365}"
       LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME: "${LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME:-}"
+      # Dashboard 0.8.0 — demo mode (boot-time store swap) + per-user
+      # demo-toggle (cookie-scoped header switch on home page). Both OFF
+      # by default. See customer.env.example for full documentation.
+      LUCAIRN_DASHBOARD_DEMO_MODE: "${LUCAIRN_DASHBOARD_DEMO_MODE:-}"
+      LUCAIRN_DASHBOARD_DEMO_TOGGLE_ENABLED: "${LUCAIRN_DASHBOARD_DEMO_TOGGLE_ENABLED:-}"
     ports:
       - "127.0.0.1:8443:8443"
     healthcheck:

@@ -30,6 +30,17 @@ type Deps struct {
 	Sessions      auth.SessionStore
 	SessionTTL    time.Duration
 	OIDCEnabled   bool
+
+	// Dashboard home (overview) metrics providers. LiveMetrics wraps
+	// the production stores; DemoMetrics wraps internal/demodata/.
+	// Either may be nil — DashboardHome falls back to ZeroMetrics
+	// when neither is wired, and falls back to LiveMetrics when
+	// demo-toggle is on but DemoMetrics is nil. DemoToggleEnabled
+	// is the install-time switch that exposes the in-page toggle
+	// to operators; false hides the button entirely.
+	LiveMetrics       MetricsProvider
+	DemoMetrics       MetricsProvider
+	DemoToggleEnabled bool
 }
 
 // LoginGet renders the login form.
@@ -116,29 +127,13 @@ func (d *Deps) LogoutPost(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
-// DashboardHome renders the post-login landing page.
-func (d *Deps) DashboardHome(w http.ResponseWriter, r *http.Request) {
-	user, ok := auth.CurrentUser(r)
-	if !ok {
-		http.Redirect(w, r, "/login", http.StatusFound)
-		return
-	}
-	tok, err := auth.IssueToken(w, r)
-	if err != nil {
-		log.Printf("dashboard_home: csrf issue: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	data := views.PageData{
-		Title:      "Home",
-		User:       user,
-		CSRFToken:  tok,
-		ActivePage: "home",
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := d.Renderer.Render(w, "dashboard_home.html.tmpl", data); err != nil {
-		log.Printf("dashboard_home: render: %v", err)
-	}
+// DashboardHome is implemented on Deps in dashboard_home.go (the
+// enterprise overview page); the placeholder body below remained from
+// pre-overview Slice 1. Now redirects to the new implementation so
+// any vestigial caller surface still works.
+//
+// Deprecated: use the canonical DashboardHome in dashboard_home.go.
+func (d *Deps) dashboardHomeOriginalDeprecated(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Deps) renderLoginError(w http.ResponseWriter, r *http.Request, msg string) {

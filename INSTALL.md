@@ -1127,3 +1127,48 @@ The `bin/lucairn doctor` adds a `check_dashboard_compliance` probe
 that rejects banned-literal values in `DEFAULT_CUSTOMER_NAME` and
 out-of-range `MAX_WINDOW_DAYS` values before the dashboard boots.
 
+### Enable demo mode + the per-user demo-data toggle (dashboard 0.8.0+)
+
+The dashboard ships with an opt-in demo path so a customer-IT or
+operator can show the dashboard fully populated WITHOUT standing up
+postgres-bridge + postgres-audit + the gateway admin HTTP API. Two
+independent knobs, both OFF by default:
+
+1. `LUCAIRN_DASHBOARD_DEMO_MODE=true` swaps the real cert / audit /
+   saved-filters / admin-client stores for in-memory fixtures at boot
+   time (50 synthetic certs, ~300 audit events, 3 customers + keys).
+   Every surface renders populated. CSV export of certs + witness
+   Verify degrade to friendly errors. **NOT FOR PRODUCTION** — leave
+   UNSET on any install that talks to a real Lucairn stack.
+2. `LUCAIRN_DASHBOARD_DEMO_TOGGLE_ENABLED=true` exposes a per-user
+   `Live ◯○ Demo` switch in the dashboard home-page header. Cookie-
+   scoped (`lucairn_dash_demo_view`, 30-day TTL, HttpOnly+Secure+Lax)
+   so each signed-in user has their own preference. Auto-enabled when
+   `LUCAIRN_DASHBOARD_DEMO_MODE=true` is also set.
+
+Compose path (in `customer.env`):
+
+```ini
+LUCAIRN_DASHBOARD_ENABLED=true
+LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD=<rotated value>
+# Demo paths (both default to OFF):
+LUCAIRN_DASHBOARD_DEMO_MODE=true
+LUCAIRN_DASHBOARD_DEMO_TOGGLE_ENABLED=true
+```
+
+Kubernetes path (in `customer-values.yaml`):
+
+```yaml
+dashboard:
+  enabled: true
+  demoMode:
+    enabled: true        # OFF in production
+    toggleEnabled: true  # exposes the header switch on the home page
+```
+
+The dashboard logs a clear `DEMO MODE: ...` banner at boot when
+`LUCAIRN_DASHBOARD_DEMO_MODE=true` is detected, so the operator can
+verify which path is active. The dashboard binary refuses to start
+demo mode silently — both env vars are independent + greppable in
+the pod logs.
+

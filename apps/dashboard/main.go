@@ -32,6 +32,8 @@ import (
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/compliance"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/config"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/dashboard"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/demodata"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/gateway"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/grafana"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/handlers"
@@ -365,6 +367,72 @@ func main() {
 		savedFiltersIface = savedFilters
 	}
 
+	// LUCAIRN_DASHBOARD_DEMO_MODE — single-binary demo path. When set to
+	// "true" the dashboard overrides every backing-service-dependent
+	// surface (certs / keys / audit-log) with in-memory fixtures from
+	// internal/demodata/. Used for prospect demos + new-operator
+	// onboarding so the operator can SEE the dashboard fully populated
+	// without standing up postgres-bridge + postgres-audit + the
+	// gateway admin API. NOT for production: fixture data is hard-coded
+	// + the cert CSV export + witness Verify path degrade to friendly
+	// errors. Health surface + compliance PDF export work identically
+	// in demo mode (both already work standalone).
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("LUCAIRN_DASHBOARD_DEMO_MODE")), "true") {
+		demoCert := demodata.NewCertStore()
+		demoAudit := demodata.NewAuditStore()
+		demoAdmin := demodata.NewAdminClient()
+		// Construct a witness client pointing at a dead endpoint. The
+		// gRPC client defers TCP connect to first RPC (per witness.NewClient
+		// godoc) so dashboard boot is unaffected; Verify calls return a
+		// connection-refused error which the validator/inspector handlers
+		// surface as the standard "verifier unavailable" banner.
+		demoWitness, _ := witness.NewClient("127.0.0.1:60099")
+		certs = &handlersCertWiring{
+			store:      demoCert,
+			witness:    demoWitness,
+			configured: true,
+		}
+		keysAdminIface = demoAdmin
+		keysConfigured = true
+		auditStoreIface = demoAudit
+		savedFiltersIface = demoAudit
+		auditConfigured = true
+		log.Printf("DEMO MODE: dashboard wired with in-memory fixtures " +
+			"(50 certs, ~300 audit events, 3 customers + keys). " +
+			"CSV export of certs + witness Verify will fail gracefully. " +
+			"NOT FOR PRODUCTION — unset LUCAIRN_DASHBOARD_DEMO_MODE to disable.")
+	}
+
+	// Dashboard home (overview) — build both the live and demo metrics
+	// providers. LiveMetrics wraps whatever real stores got wired
+	// above; nil-safe per source so half-wired installs still render
+	// non-zero tiles for the surfaces that ARE configured. DemoMetrics
+	// always uses the in-memory demodata fixtures (zero-cost when
+	// the toggle is OFF).
+	//
+	// The in-page toggle is opt-in at install time via
+	// LUCAIRN_DASHBOARD_DEMO_TOGGLE_ENABLED=true, but auto-enabled
+	// whenever LUCAIRN_DASHBOARD_DEMO_MODE=true is set (the
+	// demo-image build implies the operator expects the toggle).
+	demoToggleEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv("LUCAIRN_DASHBOARD_DEMO_TOGGLE_ENABLED")), "true") ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("LUCAIRN_DASHBOARD_DEMO_MODE")), "true")
+	liveMetricsProvider := dashboard.NewProvider(dashboard.ComputeInput{
+		Certs:        certs.store,
+		Audits:       auditStoreIface,
+		Admin:        keysAdminIface,
+		HealthPoller: healthPollerIface,
+	})
+	// Demo provider — always built so the toggle can flip on demand.
+	demoCertStore := demodata.NewCertStore()
+	demoAuditStore := demodata.NewAuditStore()
+	demoAdminClient := demodata.NewAdminClient()
+	demoMetricsProvider := dashboard.NewProvider(dashboard.ComputeInput{
+		Certs:        demoCertStore,
+		Audits:       demoAuditStore,
+		Admin:        demoAdminClient,
+		HealthPoller: healthPollerIface, // health is always-on if any poller
+	})
+
 	srv, err := server.New(server.Options{
 		ListenAddr:        cfg.ListenAddr,
 		Version:           version,
@@ -388,6 +456,10 @@ func main() {
 		SavedFilters:      savedFiltersIface,
 		AuditEmitter:      auditEmitter,
 		AuditConfigured:   auditConfigured,
+		// Dashboard home overview (enterprise KPI page).
+		LiveMetrics:       liveMetricsProvider,
+		DemoMetrics:       demoMetricsProvider,
+		DemoToggleEnabled: demoToggleEnabled,
 		// Slice 7: compliance PDF export.
 		ComplianceAggregator:      complianceAggregator,
 		ComplianceConfigured:      complianceConfigured,
@@ -411,9 +483,15 @@ func main() {
 }
 
 // handlersCertWiring groups the cert-surface deps so main.go's call to
-// server.New stays terse.
+// server.New stays terse. The store field accepts EITHER the production
+// *store.CertStore OR an in-memory demo replacement; both satisfy the
+// CertStorer + BulkCertResolver interfaces declared in
+// apps/dashboard/internal/handlers/.
 type handlersCertWiring struct {
-	store      *store.CertStore
+	store interface {
+		handlers.CertStorer
+		handlers.BulkCertResolver
+	}
 	witness    *witness.Client
 	configured bool
 }

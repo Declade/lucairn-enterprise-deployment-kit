@@ -7,7 +7,20 @@ import (
 	"testing"
 
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/auth"
+	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/dashboard"
 )
+
+// homeData wraps a PageData in DashboardHomePageData with zero-value
+// Metrics so tests that render dashboard_home.html.tmpl don't have to
+// reach for the dashboard package's Compute path. The template guards
+// chart sections behind HasAnyData() so a zero Metrics renders an
+// empty-state hint, not nothing.
+func homeData(pd PageData) DashboardHomePageData {
+	return DashboardHomePageData{
+		PageData: pd,
+		Metrics:  dashboard.ZeroMetrics(),
+	}
+}
 
 func loadOrFail(t *testing.T) *Renderer {
 	t.Helper()
@@ -37,10 +50,10 @@ func TestRenderer_LoginRendersWithoutUser(t *testing.T) {
 
 func TestRenderer_DashboardRendersUserEmail(t *testing.T) {
 	r := loadOrFail(t)
-	out, err := r.RenderString("dashboard_home.html.tmpl", PageData{
+	out, err := r.RenderString("dashboard_home.html.tmpl", homeData(PageData{
 		Title: "Home",
 		User:  auth.User{Email: "admin@example.com", Role: auth.RoleAdmin},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -99,7 +112,7 @@ func TestRenderer_NoEmoji(t *testing.T) {
 		data any
 	}{
 		{"login.html.tmpl", PageData{Title: "Sign in", CSRFToken: "x"}},
-		{"dashboard_home.html.tmpl", PageData{Title: "Home", User: auth.User{Email: "a@b", Role: auth.RoleAdmin}, CSRFToken: "x"}},
+		{"dashboard_home.html.tmpl", homeData(PageData{Title: "Home", User: auth.User{Email: "a@b", Role: auth.RoleAdmin}, CSRFToken: "x"})},
 	} {
 		out, err := r.RenderString(page.name, page.data)
 		if err != nil {
@@ -118,7 +131,7 @@ func TestRenderer_NoBannedLiterals(t *testing.T) {
 		data any
 	}{
 		{"login.html.tmpl", PageData{Title: "Sign in", CSRFToken: "x"}},
-		{"dashboard_home.html.tmpl", PageData{Title: "Home", User: auth.User{Email: "a@b", Role: auth.RoleAdmin}, CSRFToken: "x"}},
+		{"dashboard_home.html.tmpl", homeData(PageData{Title: "Home", User: auth.User{Email: "a@b", Role: auth.RoleAdmin}, CSRFToken: "x"})},
 	} {
 		out, err := r.RenderString(page.name, page.data)
 		if err != nil {
@@ -197,20 +210,20 @@ func TestRenderer_LoginSSOButtonGatedOnOIDCEnabled(t *testing.T) {
 // inside the template (no client-side state involved).
 func TestRenderer_ViewerHidesAdminLinks(t *testing.T) {
 	r := loadOrFail(t)
-	viewerOut, err := r.RenderString("dashboard_home.html.tmpl", PageData{
+	viewerOut, err := r.RenderString("dashboard_home.html.tmpl", homeData(PageData{
 		Title: "Home",
 		User:  auth.User{Email: "v@b", Role: auth.RoleViewer},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("render viewer: %v", err)
 	}
 	if strings.Contains(viewerOut, "API keys") {
 		t.Errorf("viewer must not see API keys link")
 	}
-	adminOut, err := r.RenderString("dashboard_home.html.tmpl", PageData{
+	adminOut, err := r.RenderString("dashboard_home.html.tmpl", homeData(PageData{
 		Title: "Home",
 		User:  auth.User{Email: "a@b", Role: auth.RoleAdmin},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("render admin: %v", err)
 	}
