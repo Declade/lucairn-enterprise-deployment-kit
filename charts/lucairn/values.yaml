@@ -2,7 +2,7 @@ global:
   vertical: finance
   imageRegistry: "ghcr.io/declade"
   imagePullSecrets: []
-  imageTag: "0.4.0" # NOTE: dashboard sub-chart ships independently — dashboard image is pinned in the dashboard.image.tag block below (currently 0.8.0).
+  imageTag: "0.4.0" # NOTE: dashboard sub-chart ships independently — dashboard image is pinned in the dashboard.image.tag block below (currently 0.8.1).
   # Slice 4 — namespace of the bundled observability sub-chart (Grafana
   # + Loki + Tempo). The dashboard sub-chart's secret-grafana-jwt.yaml
   # mirrors the Helm-generated shared secret into this namespace so the
@@ -116,12 +116,12 @@ dashboard:
     repository: lucairn-dashboard
     # Pinned to the current release tag. Bumped per kit-dashboard
     # release cadence. The 0.7.0 release closed the v1.0-dashboard arc;
-    # 0.7.1 carried the release-gate polish; 0.8.0 adds the enterprise
+    # 0.7.1 carried the release-gate polish; 0.8.1 adds the enterprise
     # operator-overview home page (KPI tiles + 30-day cert sparkline +
     # verdict donut + sanitizer bars + recent-activity table) and the
     # per-user demo-data toggle (opt-in via demoMode.toggleEnabled
     # below).
-    tag: "0.8.0"
+    tag: "0.8.1"
     pullPolicy: IfNotPresent
 
   service:

@@ -15,9 +15,9 @@ image:
   # cadence — independent from charts/lucairn/values.yaml global.imageTag
   # (bumping --set global.imageTag=X will NOT bump the dashboard tag).
   # The 0.7.0 release closed the v1.0-dashboard arc (7 surfaces); 0.7.1
-  # carried the release-gate polish; 0.8.0 adds the enterprise
+  # carried the release-gate polish; 0.8.1 adds the enterprise
   # operator-overview home page + the per-user demo-data toggle.
-  tag: "0.8.0"
+  tag: "0.8.1"
   pullPolicy: IfNotPresent
 
 service:
@@ -350,7 +350,7 @@ containerSecurityContext:
   capabilities:
     drop: ["ALL"]
 
-# Dashboard 0.8.0 — enterprise home page + per-user demo-data toggle.
+# Dashboard 0.8.1 — enterprise home page + per-user demo-data toggle.
 #
 # enabled=true swaps the real cert/audit/saved-filters/admin-client
 # stores for in-memory fixtures (50 certs, ~300 audit events, 3

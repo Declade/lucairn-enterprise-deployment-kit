@@ -1166,6 +1166,18 @@ LUCAIRN_DASHBOARD_DEMO_TOGGLE_ENABLED=true
 LUCAIRN_DASHBOARD_COMPLIANCE_DEFAULT_CUSTOMER_NAME=Acme Corp GmbH
 ```
 
+Run the dashboard standalone (no core stack required in demo mode):
+
+```bash
+docker compose -f docker-compose.customer.yml --env-file customer.env \
+  --profile dashboard up -d lucairn-dashboard
+```
+
+In demo mode the core stack (gateway, postgres, sanitizer) does NOT
+need to be running — the dashboard boots standalone with in-memory
+fixture data. Open `http://localhost:8443/login` and sign in with the
+bootstrap email + password.
+
 Kubernetes path (in `customer-values.yaml`):
 
 ```yaml
