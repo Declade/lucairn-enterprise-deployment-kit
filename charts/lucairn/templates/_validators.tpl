@@ -119,3 +119,47 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{- /*
+  validators.dashboardDemoModeNotProduction
+
+  Fails fast when dashboard.demoMode.enabled is true AND
+  global.dsaEnv = "production". Compose-path equivalent in
+  bin/lucairn doctor at check_dashboard_demo_mode_not_production.
+  Prevents the silent-fixture-data-to-customer footgun.
+*/ -}}
+{{- define "validators.dashboardDemoModeNotProduction" -}}
+{{- $dashboard := (default dict .Values.dashboard) -}}
+{{- $global := (default dict .Values.global) -}}
+{{- if $dashboard.enabled -}}
+{{- $demoMode := (default dict $dashboard.demoMode) -}}
+{{- if $demoMode.enabled -}}
+{{- if eq (default "" $global.dsaEnv) "production" -}}
+{{- fail (printf "dashboard.demoMode.enabled is true AND global.dsaEnv=\"production\". This combination boots the dashboard with in-memory fixture data — customers would see fake cert counts, audit events, and compliance PDF numbers. Set dashboard.demoMode.enabled=false in production, or set global.dsaEnv to a non-production value if this is intentionally a sandbox/staging/demo install.") -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
+  validators.dashboardDemoToggleNotProduction
+
+  Surfaces a `# WARN-toggle-in-prod:` comment in the rendered
+  manifest when dashboard.demoMode.toggleEnabled is true AND
+  global.dsaEnv = "production". Helm has no native `warn` so we
+  emit a manifest comment a render-time grep can catch.
+  Compose-path equivalent in bin/lucairn doctor at
+  check_dashboard_demo_toggle_not_production.
+*/ -}}
+{{- define "validators.dashboardDemoToggleNotProduction" -}}
+{{- $dashboard := (default dict .Values.dashboard) -}}
+{{- $global := (default dict .Values.global) -}}
+{{- if $dashboard.enabled -}}
+{{- $demoMode := (default dict $dashboard.demoMode) -}}
+{{- if $demoMode.toggleEnabled -}}
+{{- if eq (default "" $global.dsaEnv) "production" -}}
+# WARN-toggle-in-prod: dashboard.demoMode.toggleEnabled=true with global.dsaEnv="production". Admins can flip the home page to demo data via POST /dashboard/toggle-demo. Non-destructive but operationally confusing; leave toggleEnabled=false unless this is intentionally a sandbox.
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

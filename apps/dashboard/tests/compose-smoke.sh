@@ -27,7 +27,7 @@ fi
 # something to pull from. The compose config references the GHCR-tagged
 # image; we tag the local build to that exact name so docker compose finds
 # it without going to the network.
-LOCAL_TAG="${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.8.0}"
+LOCAL_TAG="${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.8.1}"
 echo "compose-smoke: building image as ${LOCAL_TAG}"
 docker build -t "${LOCAL_TAG}" -f apps/dashboard/Dockerfile apps/dashboard >/dev/null
 

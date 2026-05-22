@@ -516,7 +516,7 @@ check_container_images() {
   local dash_tag dash_ref
   if dashboard_opted_in "$env_file"; then
     dash_tag="$(env_value "$env_file" LUCAIRN_DASHBOARD_IMAGE_TAG)"
-    dash_tag="${dash_tag:-0.8.0}"
+    dash_tag="${dash_tag:-0.8.1}"
     dash_ref="${registry}/lucairn-dashboard:${dash_tag}"
     if ! docker manifest inspect "$dash_ref" >/dev/null 2>&1; then
       echo "container images: failed ($dash_ref not pullable; check registry credentials or image tag)"
@@ -1121,7 +1121,17 @@ check_dashboard_compliance() {
   # if either DB pool is unset the PDF will silently contain zero counts
   # in the affected categories. Doctor surfaces the gap BEFORE the
   # customer drives a regulator-aimed export.
-  if [ -z "$cert_db" ] && [ -z "$audit_db" ]; then
+  #
+  # 0.8.1 fix: skip the partial-data warn when LUCAIRN_DASHBOARD_DEMO_MODE
+  # is true — the compliance aggregator inherits the demo cert + audit
+  # stores via Compute(), so the PDF renders with fixture counts (NOT
+  # zeros) even when both DB URLs are empty. The pre-existing warn was
+  # operationally wrong about the PDF outcome in demo mode.
+  local demo_mode
+  demo_mode="$(env_value "$env_file" LUCAIRN_DASHBOARD_DEMO_MODE)"
+  if [ "$(printf '%s' "${demo_mode}" | tr '[:upper:]' '[:lower:]' | tr -d ' \t')" = "true" ]; then
+    echo "dashboard compliance: skipped in demo mode (fixture data provides counts; DB URLs are intentionally unset)"
+  elif [ -z "$cert_db" ] && [ -z "$audit_db" ]; then
     echo "dashboard compliance: warn (LUCAIRN_DASHBOARD_AUDIT_DB_URL + LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL both unset — compliance PDF will contain zero counts in all three categories)"
   elif [ -z "$cert_db" ]; then
     echo "dashboard compliance: warn (LUCAIRN_DASHBOARD_AUDIT_DB_URL unset — Cat 2 + Cat 3 certificate counts will be zero in the generated PDF)"

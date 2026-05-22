@@ -10,3 +10,5 @@
 {{- include "validators.grafanaEmbedCrossChart" $ -}}
 {{- include "validators.keysGatewayAdminHalfConfig" $ -}}
 {{- include "validators.auditLogSecretLookup" $ -}}
+{{- include "validators.dashboardDemoModeNotProduction" $ -}}
+{{- include "validators.dashboardDemoToggleNotProduction" $ -}}

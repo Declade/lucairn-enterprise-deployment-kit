@@ -1,6 +1,6 @@
 # Lucairn Enterprise Deployment Kit
 
-Target release: `v1.4.0-dashboard`
+Target release: `v1.5.1-dashboard`
 
 This repository contains the customer-installable Lucairn deployment kit for first enterprise self-hosted installs. The operating rule is simple: customer IT installs and operates the stack; Lucairn support never needs shell access to the customer box.
 
@@ -34,8 +34,12 @@ Split-deployment fast path:
 
 ```bash
 cp customer.env.example customer.env
+# Edit customer.env — every REPLACE_ME_* placeholder must be filled in before
+# the live doctor pass below. The offline doctor catches placeholder values
+# (intentional: that's the gate that surfaces every secret you owe).
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
-docker login ghcr.io
+# docker login ghcr.io  # OPTIONAL: only when mirroring to a private registry.
+                        # Lucairn-default GHCR images are public.
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 ```
