@@ -14,12 +14,10 @@ image:
   # Pinned to the current release tag. Bumped per kit-dashboard release
   # cadence — independent from charts/lucairn/values.yaml global.imageTag
   # (bumping --set global.imageTag=X will NOT bump the dashboard tag).
-  # The 0.7.0 release closed the v1.0-dashboard arc: auth + OIDC + cert
-  # browser + server health + Grafana embedding + API key management +
-  # audit log browser + compliance PDF export are all live. 0.7.1
-  # carries the release-gate polish patch (PDF Lucairn-opinion framing
-  # on the 3-category overlay + UI CSS-class consistency).
-  tag: "0.7.1"
+  # The 0.7.0 release closed the v1.0-dashboard arc (7 surfaces); 0.7.1
+  # carried the release-gate polish; 0.8.0 adds the enterprise
+  # operator-overview home page + the per-user demo-data toggle.
+  tag: "0.8.0"
   pullPolicy: IfNotPresent
 
 service:
@@ -351,3 +349,24 @@ containerSecurityContext:
     type: RuntimeDefault
   capabilities:
     drop: ["ALL"]
+
+# Dashboard 0.8.0 — enterprise home page + per-user demo-data toggle.
+#
+# enabled=true swaps the real cert/audit/saved-filters/admin-client
+# stores for in-memory fixtures (50 certs, ~300 audit events, 3
+# customers + keys) at boot time. Every dashboard surface renders
+# fully populated WITHOUT requiring postgres-bridge + postgres-audit
+# + gateway-admin HTTP API to be wired. CSV export of certs + witness
+# Verify degrade to friendly errors. NOT FOR PRODUCTION — leave OFF
+# (the default) on any install that talks to a real Lucairn stack.
+#
+# toggleEnabled=true exposes the per-user demo-data switch in the
+# dashboard home page header (top-right). Cookie-scoped
+# (lucairn_dash_demo_view, 30-day TTL, HttpOnly+Secure+Lax) so each
+# user's view preference is per-user. Auto-enabled whenever
+# enabled=true; can also be enabled standalone (rare — operator
+# wants the toggle button but no boot-time swap; useful when the
+# operator wants admins to opt into demo data on demand).
+demoMode:
+  enabled: false
+  toggleEnabled: false

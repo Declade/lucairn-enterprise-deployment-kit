@@ -17,7 +17,6 @@ import (
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/compliance"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/grafana"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/handlers"
-	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/store"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/views"
 	"github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/witness"
 )
@@ -48,7 +47,17 @@ type Options struct {
 	// validates this so a half-wired surface is caught at boot rather
 	// than at first request. When CertConfigured is false, the cert
 	// routes still register and render a "not configured" explainer.
-	CertStore      *store.CertStore
+	//
+	// CertStore is the union of the two handler interfaces (CertStorer
+	// for list/get/stream; BulkCertResolver for the cert_id → request_id
+	// resolver the bulk re-verify worker uses). *store.CertStore (the
+	// production pgx-backed impl) satisfies both. Demo-mode injects an
+	// in-memory implementation that also satisfies both — see
+	// internal/demodata/.
+	CertStore interface {
+		handlers.CertStorer
+		handlers.BulkCertResolver
+	}
 	WitnessClient  *witness.Client
 	CertConfigured bool
 
@@ -94,6 +103,16 @@ type Options struct {
 	// metadata embedded on every PDF cover page so the customer's
 	// evidence chain documents what kit + image set produced the
 	// artefact.
+	// Dashboard home (overview) — enterprise KPI page. LiveMetrics is
+	// the production data path; DemoMetrics wraps the in-memory
+	// fixtures from internal/demodata. Either may be nil; the home
+	// handler falls back to ZeroMetrics when both are missing.
+	// DemoToggleEnabled exposes the in-page toggle so admins/viewers
+	// can flip the home page between live + demo without restart.
+	LiveMetrics       handlers.MetricsProvider
+	DemoMetrics       handlers.MetricsProvider
+	DemoToggleEnabled bool
+
 	ComplianceAggregator     *compliance.Aggregator
 	ComplianceConfigured     bool
 	ComplianceKitVersion     string
@@ -128,11 +147,14 @@ func New(opts Options) (*Server, error) {
 	// opts.Version falls through to "dev" in the sidebar template.
 	views.SetDashboardVersion(opts.Version)
 	deps := &handlers.Deps{
-		Renderer:      renderer,
-		Authenticator: opts.Authenticator,
-		Sessions:      opts.Sessions,
-		SessionTTL:    8 * time.Hour,
-		OIDCEnabled:   opts.OIDCEnabled,
+		Renderer:          renderer,
+		Authenticator:     opts.Authenticator,
+		Sessions:          opts.Sessions,
+		SessionTTL:        8 * time.Hour,
+		OIDCEnabled:       opts.OIDCEnabled,
+		LiveMetrics:       opts.LiveMetrics,
+		DemoMetrics:       opts.DemoMetrics,
+		DemoToggleEnabled: opts.DemoToggleEnabled,
 	}
 	// Slice 2: OIDC wiring is opt-in. The Options validation below
 	// requires the OIDC trio to be set together OR omitted together —
@@ -270,6 +292,17 @@ func New(opts Options) (*Server, error) {
 			return
 		}
 		deps.DashboardHome(w, r)
+	})
+	// Demo-data toggle: flips the per-user lucairn_dash_demo_view cookie
+	// between "true" and "false" and redirects back to /dashboard. POST
+	// only — CSRF guard fires via the shared auth/CSRF middleware chain
+	// (the form embeds {{ .CSRFToken }}).
+	mux.HandleFunc("/dashboard/toggle-demo", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		deps.ToggleDemoMode(w, r)
 	})
 
 	// Slice 3 cert routes. All gated through the auth chain below.

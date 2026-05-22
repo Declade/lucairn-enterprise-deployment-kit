@@ -180,6 +180,25 @@ spec:
               value: {{ .Values.compliance.defaultCustomerName | quote }}
             {{- end }}
             {{- end }}
+            {{- /* Dashboard 0.8.0 — enterprise home page + per-user
+               demo-data toggle. Both env vars OFF by default; flip
+               either via dashboard.demoMode.enabled or
+               dashboard.demoMode.toggleEnabled in customer-values.yaml.
+               demoMode.enabled swaps the real stores for in-memory
+               fixtures at boot time across ALL surfaces — intended for
+               prospect demos + new-operator onboarding, NOT production.
+               demoMode.toggleEnabled exposes a per-user header switch
+               on the dashboard home page so admins can flip the
+               home-page data source between live + demo without a
+               restart (cookie-scoped per user). */ -}}
+            {{- if (default dict .Values.demoMode).enabled }}
+            - name: LUCAIRN_DASHBOARD_DEMO_MODE
+              value: "true"
+            {{- end }}
+            {{- if (default dict .Values.demoMode).toggleEnabled }}
+            - name: LUCAIRN_DASHBOARD_DEMO_TOGGLE_ENABLED
+              value: "true"
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.containerPort }}

@@ -1,49 +1,205 @@
 {{ define "main" }}
 <section class="lc-page-section">
-  <header class="lc-page-header">
-    <h1 class="lc-page-title">Operator overview</h1>
-    <p class="lc-page-lede">Hello, <strong>{{ .User.Email }}</strong>. The Lucairn Enterprise Dashboard is feature-complete: cert browser, server health, audit log, API key management, and compliance export are all live below.</p>
+  <header class="lc-home-header">
+    <div class="lc-home-header-text">
+      <h1 class="lc-page-title">Operator overview</h1>
+      <p class="lc-page-lede">
+        Hello, <strong>{{ .User.Email }}</strong>.
+        Activity for the last <span class="lc-mono">{{ commaInt 30 }}</span> days.
+        {{ if .DemoMode }}<span class="lc-pill lc-pill--warn lc-mono">Demo data view</span>{{ end }}
+      </p>
+    </div>
+    {{ if .DemoToggleOK }}
+    <form class="lc-home-toggle-form" method="post" action="/dashboard/toggle-demo">
+      <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+      <input type="hidden" name="csrf_token" value="{{ .CSRFToken }}">
+      <div class="lc-toggle-switch" role="group" aria-label="Demo data view">
+        <span class="lc-toggle-switch-label {{ if not .DemoMode }}is-active{{ end }}">Live</span>
+        <button type="submit" class="lc-toggle-switch-track {{ if .DemoMode }}is-on{{ end }}"
+                aria-pressed="{{ if .DemoMode }}true{{ else }}false{{ end }}"
+                aria-label="Toggle demo data view">
+          <span class="lc-toggle-switch-knob"></span>
+        </button>
+        <span class="lc-toggle-switch-label {{ if .DemoMode }}is-active{{ end }}">Demo</span>
+      </div>
+    </form>
+    {{ end }}
   </header>
-  <div class="lc-card-grid">
-    <article class="lc-card">
-      <header class="lc-card-header">
-        <h2 class="lc-card-title"><a class="lc-link" href="/certs">Cert browser</a></h2>
-        {{ template "statusdot" dict "Status" "ok" "Label" "Live" "Timestamp" "" }}
-      </header>
-      <p class="lc-card-body">Filter, sort, and inspect Lucairn certificates. Includes audit-defensibility-grade per-claim signature breakdown.</p>
-    </article>
-    <article class="lc-card">
-      <header class="lc-card-header">
-        <h2 class="lc-card-title"><a class="lc-link" href="/health">Server health</a></h2>
-        {{ template "statusdot" dict "Status" "ok" "Label" "Live" "Timestamp" "" }}
-      </header>
-      <p class="lc-card-body">One screen per kit service; rolling readiness polled from each service's health endpoint. Click a card to open the embedded Grafana panel (when configured).</p>
-    </article>
-    <article class="lc-card">
-      <header class="lc-card-header">
-        <h2 class="lc-card-title"><a class="lc-link" href="/audit">Audit log</a></h2>
-        {{ template "statusdot" dict "Status" "ok" "Label" "Live" "Timestamp" "" }}
-      </header>
-      <p class="lc-card-body">Filter audit events with render-time PII guard; reveal raw is admin-only and logged via a paired <code class="lc-mono">audit.reveal_raw</code> event.</p>
-    </article>
-    {{ if hasRole .User "admin" }}
-    <article class="lc-card">
-      <header class="lc-card-header">
-        <h2 class="lc-card-title"><a class="lc-link" href="/compliance">Compliance export</a></h2>
-        {{ template "statusdot" dict "Status" "ok" "Label" "Live" "Timestamp" "" }}
-      </header>
-      <p class="lc-card-body">PDF aggregation broken down by Lucairn's three-category obligation overlay across the AI Act high-risk requirements (Cat 1: Art. 10 + 15 sanitizer; Cat 2: Art. 12 + 14 evidence; Cat 3: Art. 10 + 12 + 14 + 15 inventory). The grouping is Lucairn's framing; the AI Act itself does not impose this categorization. Cover page cites kit version + image digests. Generation emits a paired <code class="lc-mono">audit.compliance_pdf_generated</code> event.</p>
-    </article>
-    {{ end }}
-    {{ if hasRole .User "admin" }}
-    <article class="lc-card">
-      <header class="lc-card-header">
-        <h2 class="lc-card-title"><a class="lc-link" href="/keys">API keys</a></h2>
-        {{ template "statusdot" dict "Status" "ok" "Label" "Live" "Timestamp" "" }}
-      </header>
-      <p class="lc-card-body">Mint, rotate, revoke, and bulk-revoke <code class="lc-mono">lcr_live_*</code> keys via the gateway admin surface. Plaintext shown once on mint &mdash; copy before closing.</p>
-    </article>
-    {{ end }}
+
+  {{ if not .Metrics.HasAnyData }}
+  <div class="lc-banner lc-banner--info" role="status">
+    No live data sources are wired yet.
+    {{ if .DemoToggleOK }}Flip the toggle above to <strong>Demo</strong> to populate the view, or{{ end }}
+    set <code class="lc-mono">LUCAIRN_DASHBOARD_AUDIT_DB_URL</code> +
+    <code class="lc-mono">LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL</code> +
+    <code class="lc-mono">LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL</code>
+    to enable live metrics.
   </div>
+  {{ end }}
+
+  <section class="lc-kpi-grid" aria-label="Key performance indicators">
+    <article class="lc-kpi-tile">
+      <header class="lc-kpi-tile-head">
+        <h3 class="lc-kpi-label">Certificates issued</h3>
+        <a href="/certs" class="lc-kpi-tile-link" aria-label="Open cert browser">Browse</a>
+      </header>
+      <div class="lc-kpi-value">{{ commaInt .Metrics.CertsTotal }}</div>
+      <div class="lc-kpi-meta">
+        <span class="lc-kpi-sub">Last 24h: <span class="lc-mono">{{ commaInt .Metrics.CertsLast24h }}</span></span>
+        {{ if .Metrics.CertsLast24hDelta }}
+        <span class="lc-kpi-delta lc-kpi-delta--{{ kpiDeltaClass .Metrics.CertsLast24hDelta }}">
+          {{ kpiDeltaText .Metrics.CertsLast24hDelta }} vs prior 24h
+        </span>
+        {{ end }}
+      </div>
+      <div class="lc-kpi-spark">{{ sparklineSVG .Metrics.CertVolumeValues 240 36 }}</div>
+    </article>
+
+    <article class="lc-kpi-tile">
+      <header class="lc-kpi-tile-head">
+        <h3 class="lc-kpi-label">Audit events</h3>
+        <a href="/audit" class="lc-kpi-tile-link" aria-label="Open audit log">Browse</a>
+      </header>
+      <div class="lc-kpi-value">{{ commaInt .Metrics.AuditEventsTotal }}</div>
+      <div class="lc-kpi-meta">
+        <span class="lc-kpi-sub">Last 24h: <span class="lc-mono">{{ commaInt .Metrics.AuditLast24h }}</span></span>
+      </div>
+    </article>
+
+    <article class="lc-kpi-tile">
+      <header class="lc-kpi-tile-head">
+        <h3 class="lc-kpi-label">PII redactions</h3>
+      </header>
+      <div class="lc-kpi-value">{{ commaInt .Metrics.RedactionsTotal }}</div>
+      <div class="lc-kpi-meta">
+        <span class="lc-kpi-sub">Last 24h: <span class="lc-mono">{{ commaInt .Metrics.RedactionsLast24h }}</span></span>
+      </div>
+    </article>
+
+    <article class="lc-kpi-tile">
+      <header class="lc-kpi-tile-head">
+        <h3 class="lc-kpi-label">Services healthy</h3>
+        <a href="/health" class="lc-kpi-tile-link" aria-label="Open health overview">View</a>
+      </header>
+      <div class="lc-kpi-value">
+        <span class="lc-mono">{{ .Metrics.ServicesUp }}</span><span class="lc-kpi-frac">/{{ .Metrics.ServicesTotal }}</span>
+      </div>
+      <div class="lc-kpi-meta">
+        {{ if .Metrics.ServicesAllGreen }}
+          <span class="lc-statusdot lc-statusdot--ok"><span class="lc-statusdot-dot"></span> All green</span>
+        {{ else if eq .Metrics.ServicesTotal 0 }}
+          <span class="lc-text-muted">No poller</span>
+        {{ else }}
+          <span class="lc-statusdot lc-statusdot--warn"><span class="lc-statusdot-dot"></span> {{ commaInt (sub .Metrics.ServicesTotal .Metrics.ServicesUp) }} need attention</span>
+        {{ end }}
+      </div>
+    </article>
+
+    {{ if hasRole .User "admin" }}
+    <article class="lc-kpi-tile">
+      <header class="lc-kpi-tile-head">
+        <h3 class="lc-kpi-label">Active API keys</h3>
+        <a href="/keys" class="lc-kpi-tile-link" aria-label="Open API keys">Manage</a>
+      </header>
+      <div class="lc-kpi-value">{{ commaInt .Metrics.KeysActive }}</div>
+      <div class="lc-kpi-meta">
+        <span class="lc-kpi-sub">Across <span class="lc-mono">{{ commaInt .Metrics.CustomersWithKeys }}</span> customers</span>
+      </div>
+    </article>
+
+    <article class="lc-kpi-tile">
+      <header class="lc-kpi-tile-head">
+        <h3 class="lc-kpi-label">Compliance export</h3>
+        <a href="/compliance" class="lc-kpi-tile-link" aria-label="Open compliance export">Generate</a>
+      </header>
+      <div class="lc-kpi-value">PDF</div>
+      <div class="lc-kpi-meta">
+        <span class="lc-kpi-sub">AI Act Art. 10 / 12 / 14 / 15 evidence</span>
+      </div>
+    </article>
+    {{ end }}
+  </section>
+
+  <section class="lc-chart-grid" aria-label="Trends and distributions">
+    <article class="lc-chart-card lc-chart-card--wide">
+      <header class="lc-chart-head">
+        <h3 class="lc-chart-title">Cert volume — last 30 days</h3>
+        <span class="lc-chart-meta">{{ commaInt .Metrics.CertsTotal }} total certs in window</span>
+      </header>
+      <div class="lc-chart-body">{{ sparklineSVG .Metrics.CertVolumeValues 700 180 }}</div>
+    </article>
+
+    <article class="lc-chart-card">
+      <header class="lc-chart-head">
+        <h3 class="lc-chart-title">Verdict mix</h3>
+      </header>
+      <div class="lc-chart-body lc-chart-body--centered">
+        {{ donutSVG .Metrics.VerdictLabels .Metrics.VerdictValues 180 }}
+      </div>
+      <ul class="lc-chart-legend">
+        {{ range .Metrics.VerdictBuckets }}
+          <li class="lc-legend-row">
+            <span class="lc-legend-dot lc-legend-dot--{{ .Label }}" aria-hidden="true"></span>
+            <span class="lc-legend-label">{{ .Label }}</span>
+            <span class="lc-legend-value lc-mono">{{ commaInt .Count }}</span>
+          </li>
+        {{ end }}
+      </ul>
+    </article>
+
+    <article class="lc-chart-card">
+      <header class="lc-chart-head">
+        <h3 class="lc-chart-title">Sanitizer by detection layer</h3>
+        <span class="lc-chart-meta">PII redactions in window</span>
+      </header>
+      <div class="lc-chart-body">
+        {{ $maxR := .Metrics.RedactionMax }}
+        {{ range .Metrics.RedactionLayers }}
+        <div class="lc-bar-row">
+          <span class="lc-bar-label lc-mono">{{ .Label }}</span>
+          <span class="lc-bar-fill">{{ barRowSVG .Label .Count $maxR 220 }}</span>
+          <span class="lc-bar-value lc-mono">{{ commaInt .Count }}</span>
+        </div>
+        {{ else }}
+        <p class="lc-empty-state">No redaction events in window.</p>
+        {{ end }}
+      </div>
+    </article>
+  </section>
+
+  <section class="lc-recent" aria-label="Recent activity">
+    <header class="lc-recent-head">
+      <h2 class="lc-section-title">Recent activity</h2>
+      <a href="/audit" class="lc-link">Open audit log →</a>
+    </header>
+    {{ if not .Metrics.RecentActivity }}
+      <p class="lc-empty-state">No audit events yet.</p>
+    {{ else }}
+    <div class="lc-table-frame">
+      <table class="lc-table lc-table--compact">
+        <thead>
+          <tr>
+            <th class="lc-table-th">When</th>
+            <th class="lc-table-th">Event</th>
+            <th class="lc-table-th">Source</th>
+            <th class="lc-table-th">Actor</th>
+            <th class="lc-table-th">Request</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{ range .Metrics.RecentActivity }}
+          <tr class="lc-table-row">
+            <td class="lc-table-td lc-mono" title="{{ .When.UTC.Format "2006-01-02 15:04:05 UTC" }}">{{ relativeAge .When }}</td>
+            <td class="lc-table-td lc-mono">{{ .EventType }}</td>
+            <td class="lc-table-td">{{ .Source }}</td>
+            <td class="lc-table-td">{{ .Actor }}</td>
+            <td class="lc-table-td lc-mono">{{ .RequestID }}</td>
+          </tr>
+          {{ end }}
+        </tbody>
+      </table>
+    </div>
+    {{ end }}
+  </section>
 </section>
 {{ end }}

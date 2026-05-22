@@ -943,6 +943,321 @@ input[type="checkbox"]:focus-visible {
   gap: 8px;
 }
 
+/* -----------------------------------------------------------------
+   Enterprise dashboard home (2026-05-22): KPI tiles + chart cards +
+   demo-data toggle + recent-activity table.
+   -----------------------------------------------------------------*/
+
+.lc-home-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+.lc-home-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lc-home-toggle-form {
+  margin: 0;
+}
+
+/* Toggle switch (Live ◯○ Demo). Pure-CSS segmented control; the
+   <button> in the middle is the switch itself, the labels flank it. */
+.lc-toggle-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  background: var(--color-bg-panel);
+  border: 1px solid var(--color-border-default);
+  border-radius: 999px;
+}
+.lc-toggle-switch-label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+}
+.lc-toggle-switch-label.is-active {
+  color: var(--color-accent-highlight);
+}
+.lc-toggle-switch-track {
+  position: relative;
+  width: 36px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-border-default);
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.2s ease-out, border-color 0.2s ease-out;
+}
+.lc-toggle-switch-track.is-on {
+  background: color-mix(in srgb, var(--color-accent-highlight) 30%, transparent);
+  border-color: var(--color-accent-highlight);
+}
+.lc-toggle-switch-knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  transition: left 0.2s ease-out, background 0.2s ease-out;
+}
+.lc-toggle-switch-track.is-on .lc-toggle-switch-knob {
+  left: 19px;
+  background: var(--color-accent-highlight);
+}
+.lc-toggle-switch-track:focus-visible {
+  outline: 2px solid var(--color-accent-highlight);
+  outline-offset: 2px;
+}
+
+/* KPI grid: 6 tiles, responsive auto-fill. */
+.lc-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.lc-kpi-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+  background: var(--color-bg-panel);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-panel);
+  min-height: 140px;
+}
+.lc-kpi-tile-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.lc-kpi-label {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.lc-kpi-tile-link {
+  font-size: 11px;
+  color: var(--color-accent-highlight);
+  text-decoration: none;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.lc-kpi-tile-link:hover {
+  text-decoration: underline;
+}
+.lc-kpi-value {
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.lc-kpi-frac {
+  font-size: 18px;
+  color: var(--color-text-muted);
+  margin-left: 2px;
+  font-weight: 400;
+}
+.lc-kpi-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.lc-kpi-sub {
+  color: var(--color-text-secondary);
+}
+.lc-kpi-delta {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.lc-kpi-delta--up {
+  color: var(--color-status-ok);
+}
+.lc-kpi-delta--down {
+  color: var(--color-status-fail);
+}
+.lc-kpi-delta--flat {
+  color: var(--color-text-muted);
+}
+.lc-kpi-spark {
+  margin-top: auto;
+  padding-top: 8px;
+  height: 36px;
+  display: block;
+}
+.lc-kpi-spark svg {
+  display: block;
+  width: 100%;
+  height: 36px;
+}
+
+/* Chart grid: 1 wide + 2 narrow. */
+.lc-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.lc-chart-card {
+  padding: 16px;
+  background: var(--color-bg-panel);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-panel);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 240px;
+}
+.lc-chart-card--wide {
+  grid-column: span 1;
+}
+@media (min-width: 1100px) {
+  .lc-chart-card--wide {
+    grid-column: span 1;
+  }
+}
+.lc-chart-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--color-border-default);
+  padding-bottom: 8px;
+}
+.lc-chart-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+.lc-chart-meta {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.lc-chart-body {
+  flex: 1;
+}
+.lc-chart-body--centered {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lc-chart-body svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+.lc-chart-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 8px 0 0 0;
+  list-style: none;
+  border-top: 1px solid var(--color-border-default);
+}
+.lc-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.lc-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+}
+.lc-legend-dot--passed { background: var(--color-status-ok); }
+.lc-legend-dot--partial { background: var(--color-status-warn); }
+.lc-legend-dot--failed { background: var(--color-status-fail); }
+.lc-legend-dot--no-verdict { background: var(--color-text-muted); }
+.lc-legend-label {
+  flex: 1;
+  color: var(--color-text-secondary);
+  text-transform: lowercase;
+}
+.lc-legend-value {
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Bar rows: label | bar | value. Three-column flex. */
+.lc-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+}
+.lc-bar-label {
+  width: 28px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.lc-bar-fill {
+  flex: 1;
+  display: block;
+}
+.lc-bar-fill svg {
+  display: block;
+  width: 100%;
+}
+.lc-bar-value {
+  width: 56px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Recent activity table — reuses .lc-table; just adds spacing + a
+   compact section header. */
+.lc-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.lc-recent-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.lc-section-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+.lc-empty-state {
+  color: var(--color-text-muted);
+  font-size: 13px;
+  padding: 16px;
+  text-align: center;
+  border: 1px dashed var(--color-border-default);
+  border-radius: var(--radius-button);
+}
+
 .lc-progress {
   width: 100%;
   height: 6px;

@@ -516,7 +516,7 @@ check_container_images() {
   local dash_tag dash_ref
   if dashboard_opted_in "$env_file"; then
     dash_tag="$(env_value "$env_file" LUCAIRN_DASHBOARD_IMAGE_TAG)"
-    dash_tag="${dash_tag:-0.7.1}"
+    dash_tag="${dash_tag:-0.8.0}"
     dash_ref="${registry}/lucairn-dashboard:${dash_tag}"
     if ! docker manifest inspect "$dash_ref" >/dev/null 2>&1; then
       echo "container images: failed ($dash_ref not pullable; check registry credentials or image tag)"
