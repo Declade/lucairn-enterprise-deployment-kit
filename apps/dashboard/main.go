@@ -416,8 +416,22 @@ func main() {
 	// demo-image build implies the operator expects the toggle).
 	demoToggleEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv("LUCAIRN_DASHBOARD_DEMO_TOGGLE_ENABLED")), "true") ||
 		strings.EqualFold(strings.TrimSpace(os.Getenv("LUCAIRN_DASHBOARD_DEMO_MODE")), "true")
+	// Bug-hunter r1 HIGH fix: same typed-nil → pure-nil dance applied
+	// to the cert store as the audit/admin paths above. The
+	// handlersCertWiring.store field is an anonymous interface — when
+	// the cert surface is unconfigured (`certs = &handlersCertWiring{
+	// configured: false }`) the field is the interface zero value.
+	// Converting that to dashboard.CertStorer in the ComputeInput
+	// literal SHOULD preserve nil-ness, but the defensive read
+	// matches the existing pattern + makes the nil-check at
+	// metrics.go:in.Certs!=nil unambiguous regardless of future Go
+	// interface-conversion semantic changes.
+	var liveCertStorer dashboard.CertStorer
+	if certs.store != nil {
+		liveCertStorer = certs.store
+	}
 	liveMetricsProvider := dashboard.NewProvider(dashboard.ComputeInput{
-		Certs:        certs.store,
+		Certs:        liveCertStorer,
 		Audits:       auditStoreIface,
 		Admin:        keysAdminIface,
 		HealthPoller: healthPollerIface,

@@ -962,6 +962,48 @@ check_dashboard() {
 
   check_dashboard_compliance "$env_file" || return 1
 
+  check_dashboard_demo_mode_not_production "$env_file" || return 1
+
+  check_dashboard_demo_toggle_not_production "$env_file" || return 1
+
+  return 0
+}
+
+# Pre-flight: LUCAIRN_DASHBOARD_DEMO_MODE must NEVER coexist with
+# DSA_ENV=production. demo mode swaps the real cert/audit/admin stores
+# for in-memory fixtures at boot (apps/dashboard/main.go:380); an
+# operator who silently runs in demo mode against a production install
+# would ship the customer fixture-populated cert browsers + audit
+# logs + compliance PDF cover pages. Caught here as FAIL, not WARN.
+check_dashboard_demo_mode_not_production() {
+  local env_file="$1"
+  local demo dsa_env
+  demo="$(env_value "$env_file" LUCAIRN_DASHBOARD_DEMO_MODE)"
+  dsa_env="$(env_value "$env_file" DSA_ENV)"
+  if [ "$(printf '%s' "${demo}" | tr '[:upper:]' '[:lower:]' | tr -d ' \t')" = "true" ] \
+     && [ "$dsa_env" = "production" ]; then
+    echo "dashboard demo mode: failed (LUCAIRN_DASHBOARD_DEMO_MODE=true with DSA_ENV=production; dashboard boots with in-memory fixture data — cert browser, audit log, compliance PDF would all serve fake numbers to the customer)"
+    return 1
+  fi
+  return 0
+}
+
+# Pre-flight: LUCAIRN_DASHBOARD_DEMO_TOGGLE_ENABLED in production.
+# Warn (not fail) — the toggle only affects the per-user home-page
+# view; it does NOT swap the live stores. But it lets any signed-in
+# admin flip the home page to fixture data with one POST, which can
+# confuse a CISO reviewing the dashboard side-by-side with the
+# compliance PDF (which always uses real data).
+check_dashboard_demo_toggle_not_production() {
+  local env_file="$1"
+  local toggle dsa_env
+  toggle="$(env_value "$env_file" LUCAIRN_DASHBOARD_DEMO_TOGGLE_ENABLED)"
+  dsa_env="$(env_value "$env_file" DSA_ENV)"
+  if [ "$(printf '%s' "${toggle}" | tr '[:upper:]' '[:lower:]' | tr -d ' \t')" = "true" ] \
+     && [ "$dsa_env" = "production" ]; then
+    warn "dashboard demo toggle: warn (LUCAIRN_DASHBOARD_DEMO_TOGGLE_ENABLED=true with DSA_ENV=production; any signed-in admin can flip the home page to demo data via POST /dashboard/toggle-demo — leave unset unless this install is intentionally a sandbox)"
+    # Warn, not fail — toggle is non-destructive (cookie-scoped, per-user).
+  fi
   return 0
 }
 
