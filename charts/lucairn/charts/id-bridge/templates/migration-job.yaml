@@ -7,6 +7,17 @@ metadata:
   labels:
     app.kubernetes.io/name: {{ .Chart.Name }}-migrate
     app.kubernetes.io/part-of: dsa
+  annotations:
+    # K8s Job pod templates are immutable. Without these annotations, `helm
+    # upgrade` would fail because Helm tries to mutate `spec.template` on the
+    # existing Job (only `metadata`, `parallelism`, `suspend`, `activeDeadline-
+    # Seconds`, and `ttlSecondsAfterFinished` are mutable). The pre-install /
+    # pre-upgrade hook + before-hook-creation delete policy makes Helm delete
+    # the previous Job (if any) before creating the new one each release, so
+    # the pod template is recreated from scratch instead of mutated.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   backoffLimit: 3
   template:
