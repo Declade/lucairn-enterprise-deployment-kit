@@ -150,7 +150,7 @@ dashboard-multiarch-build: dashboard-buildx-bootstrap
 		apps/dashboard/
 	@echo ""
 	@echo "Verifying $(REGISTRY)/lucairn-dashboard:$(VERSION) was published with the expected platforms ($(PLATFORMS)) ..."
-	@bash scripts/verify-multiarch-manifests.sh $(REGISTRY) $(VERSION) "$(DASHBOARD_PUBLISH_SERVICES)" \
+	@REQUIRED_PLATFORMS="linux/amd64 linux/arm64" bash scripts/verify-multiarch-manifests.sh $(REGISTRY) $(VERSION) "$(DASHBOARD_PUBLISH_SERVICES)" \
 		|| (echo "  WARNING: verifier expects linux/amd64 + linux/arm64; PLATFORMS=$(PLATFORMS) may have intentionally published single-arch (bisect)." >&2; \
 		    if [ "$(PLATFORMS)" = "linux/amd64,linux/arm64" ]; then echo "  PLATFORMS is the canonical multi-arch set — failing." >&2 && exit 1; \
 		    else echo "  Non-canonical PLATFORMS — treating verifier exit as expected." >&2; fi)
@@ -231,9 +231,9 @@ dashboard-multiarch-promote-aliases:
 # all three tags at once; individual targets call the script directly with
 # only the tags they actually touched.
 dashboard-verify-manifests:
-	@bash scripts/verify-multiarch-manifests.sh $(REGISTRY) $(VERSION) "$(DASHBOARD_PUBLISH_SERVICES)"
-	@bash scripts/verify-multiarch-manifests.sh $(REGISTRY) $(MINOR_TAG) "$(DASHBOARD_PUBLISH_SERVICES)"
-	@bash scripts/verify-multiarch-manifests.sh $(REGISTRY) latest "$(DASHBOARD_PUBLISH_SERVICES)"
+	@REQUIRED_PLATFORMS="linux/amd64 linux/arm64" bash scripts/verify-multiarch-manifests.sh $(REGISTRY) $(VERSION) "$(DASHBOARD_PUBLISH_SERVICES)"
+	@REQUIRED_PLATFORMS="linux/amd64 linux/arm64" bash scripts/verify-multiarch-manifests.sh $(REGISTRY) $(MINOR_TAG) "$(DASHBOARD_PUBLISH_SERVICES)"
+	@REQUIRED_PLATFORMS="linux/amd64 linux/arm64" bash scripts/verify-multiarch-manifests.sh $(REGISTRY) latest "$(DASHBOARD_PUBLISH_SERVICES)"
 
 clean:
 	rm -rf dist support-bundles
