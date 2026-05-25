@@ -242,7 +242,7 @@ gen_ed25519_pair() {
   # `public_bytes(Encoding.Raw, PublicFormat.Raw)` API rather than the
   # newer `public_bytes_raw()` shortcut. The shortcut was added in
   # cryptography 40.0 (May 2023); the older API works back to
-  # cryptography 2.5 (2019). Ubuntu 22.04 LTS's apt-installed
+  # cryptography 2.6 (Feb 2019, when Ed25519 was added). Ubuntu 22.04 LTS's apt-installed
   # `python3-cryptography` package is 3.4.8 — old enough that
   # `public_bytes_raw` is an AttributeError. The Encoding/PublicFormat
   # form pulls in two extra imports but works on every cryptography
@@ -323,7 +323,7 @@ set_kv() {
 
 # Pair generation
 for slot in "${VEIL_PAIRED_SLOTS[@]}"; do
-  pair="$(gen_ed25519_pair)" || fail "Ed25519 derivation failed for $slot — install python3-cryptography (>=2.5, the Ubuntu 22.04 apt package 3.4.8 works) or 'pip install pynacl'" 3
+  pair="$(gen_ed25519_pair)" || fail "Ed25519 derivation failed for $slot — install python3-cryptography (>=2.6, the Ubuntu 22.04 apt package 3.4.8 works) or 'pip install pynacl'" 3
   seed="${pair%%:*}"
   pub="${pair##*:}"
   set_kv "VEIL_${slot}_SIGNING_KEY" "$seed"

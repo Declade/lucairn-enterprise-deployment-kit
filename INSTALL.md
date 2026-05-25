@@ -30,7 +30,7 @@ For Docker Compose:
 - 4 vCPU, 16 GB RAM minimum for customer-side split deployment.
 - TLS-terminating reverse proxy such as Caddy, Nginx, Traefik, or an enterprise ingress proxy.
 - Outbound HTTPS to Lucairn-provided remote Sandbox B endpoint if using split deployment.
-- Python 3 with the `cryptography` library (>=2.5) OR `pynacl`. Required by
+- Python 3 with the `cryptography` library (>=2.6) OR `pynacl`. Required by
   `bin/lucairn-init` and `scripts/derive-veil-pubkey.sh` for Ed25519 keypair
   generation. On Ubuntu 22.04 LTS the apt-installed `python3-cryptography`
   package (3.4.8) is sufficient: `sudo apt install python3-cryptography`.
@@ -374,6 +374,9 @@ The script prints the raw API key **once** — capture it to a 0600 file. Smoke 
    § "Registry Authentication"), then create the namespace + Secret:
 
 ```bash
+export GHCR_USERNAME=<your-github-username>
+export GHCR_TOKEN=$(cat ~/.ghcr-token)   # PAT from the Compose-path Registry Authentication step above
+
 kubectl create namespace lucairn
 kubectl create secret docker-registry lucairn-registry \
   --namespace lucairn \
