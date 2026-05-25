@@ -94,6 +94,10 @@ services:
       SANDBOX_B_REDIS_URL: "redis://redis-ai:6379"
       SANDBOX_B_VERTICALS_DIR: "/app/verticals"
       SANDBOX_B_WORKERS: "${SANDBOX_B_WORKERS:-4}"
+      # Internal isolation-probe target. sandbox-b's boot_safety verifies it
+      # can reach sandbox-a via this gRPC address as part of the witness
+      # claim chain. Default matches the canonical self-hosted compose layout.
+      SANDBOX_A_PROBE_TARGET: "${SANDBOX_A_PROBE_TARGET:-sandbox-a:50053}"
       BRIDGE_ADDR: "id-bridge:50052"
       AUDIT_SERVICE_ADDR: "audit:50051"
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
