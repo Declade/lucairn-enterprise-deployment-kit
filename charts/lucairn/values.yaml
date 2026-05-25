@@ -7,9 +7,15 @@ global:
   # infrastructure/templates/pull-secrets.yaml. Operator passes at install
   # time via `--set-file global.imagePullDockerConfigJson=$DOCKER_CONFIG/config.json`
   # — NEVER write the value into customer-values.yaml (would leak the
-  # registry PAT into git). Empty value skips Secret rendering; pods will
-  # then ImagePullBackOff on private images. (Closes Sim 5 Helm Gap #1.)
+  # registry PAT into git). Empty value fails-closed at template time with a
+  # clear error (closes bug-hunter M2 / doctor-coverage GAP-1). Set
+  # `global.skipPullSecretGuard: true` below to suppress the guard for
+  # mirrored public-registry deploys. (Closes Sim 5 Helm Gap #1.)
   imagePullDockerConfigJson: ""
+  # Escape hatch for the pull-secrets fail-guard. Set to true if all images
+  # are pulled from a public mirror (no auth needed) and no
+  # imagePullDockerConfigJson is provided. Default false — the guard fires.
+  skipPullSecretGuard: false
   imageTag: "0.4.1" # NOTE: dashboard sub-chart ships independently — dashboard image is pinned in the dashboard.image.tag block below (currently 0.8.1).
   # Slice 4 — namespace of the bundled observability sub-chart (Grafana
   # + Loki + Tempo). The dashboard sub-chart's secret-grafana-jwt.yaml
