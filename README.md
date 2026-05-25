@@ -59,6 +59,8 @@ docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 # license-bundle.json contains {"license_key":"…","signing_key":"…"} from Lucairn sales
 bin/lucairn-init --production --license license-bundle.json --byok --output customer.env
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
+# Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)
+docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 docker compose \
   -f docker-compose.customer.yml \
   -f docker-compose.self-hosted.yml \
@@ -72,6 +74,8 @@ docker compose \
 ```bash
 bin/lucairn-init --dev --output customer.env
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
+# Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)
+docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 docker compose \
   -f docker-compose.customer.yml \
   -f docker-compose.self-hosted.yml \

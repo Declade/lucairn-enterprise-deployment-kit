@@ -6,6 +6,8 @@ Goal: a competent platform engineer should complete a standard install in about 
 
 ```
 git clone https://github.com/Declade/lucairn-enterprise-deployment-kit && cd lucairn-enterprise-deployment-kit
+# Authenticate against ghcr.io (one-time per host; see § "Registry Authentication" for details)
+docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 ./bin/lucairn-init --dev
 docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env up -d
 ```
@@ -15,6 +17,12 @@ That's it. `bin/lucairn-init --dev` writes a fully-populated, doctor-passing
 passwords, sensible dev-mode defaults) and runs `bin/lucairn doctor` against
 it before exiting. Use `bin/lucairn-mint-customer` once the stack is healthy
 to provision your first customer.
+
+The `docker login` step assumes you already minted a `read:packages` PAT
+into `~/.ghcr-token` AND Lucairn granted your GitHub account package-pull
+access. First-time setup walkthrough is in § "Registry Authentication"
+below. Skip the login step entirely if you mirror images into a private
+registry — set `LUCAIRN_IMAGE_REGISTRY` instead.
 
 For production deployment with a Lucairn-issued license, see "Choose A
 Deployment Mode" below and use `./bin/lucairn-init --production --license
