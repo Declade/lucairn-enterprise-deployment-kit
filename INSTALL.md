@@ -469,14 +469,22 @@ helm template lucairn charts/lucairn -f customer-values.yaml --namespace lucairn
 ```
 
 5. Install. This runs the namespace pre-install hooks and creates every
-   `dsa-*` namespace.
+   `dsa-*` namespace. Use `--wait=false` so the command returns
+   immediately rather than blocking on pods / Jobs that cannot pull
+   images until Phase 2 completes.
 
 ```bash
 helm upgrade --install lucairn charts/lucairn \
   -f customer-values.yaml \
   --namespace lucairn \
-  --create-namespace
+  --create-namespace \
+  --wait=false
 ```
+
+   Job pods may transiently show `ImagePullBackOff` between this `helm
+   install` and Phase 2 Secret-replication; this resolves automatically
+   once Phase 2 completes (Kubernetes' default image-pull backoff retries
+   every ~30 sec).
 
 6. Phase 2 (post-helm): replicate the pull Secret into every `dsa-*`
    workload namespace the chart just created. Pods in these namespaces
@@ -520,6 +528,26 @@ is decoupled from the demo workloads.
 ```bash
 kubectl get pods -A -l app.kubernetes.io/part-of=dsa
 kubectl rollout status deployment/gateway -n dsa-edge
+```
+
+   Database-migration Jobs are named with the Helm release revision as a
+   suffix — e.g. `audit-migrate-r1`, `id-bridge-migrate-r1`,
+   `sandbox-a-migrate-r1`, `veil-witness-migrate-r1` on the first
+   install; `*-migrate-r2` on the first `helm upgrade`, and so on. Each
+   release creates a NEW Job resource because Kubernetes treats Job
+   `spec.template` as immutable for existing resources; versioned names
+   sidestep the immutability constraint. Old Jobs stay in the cluster as
+   audit history but do not block subsequent upgrades. To clean up an
+   older release's migration Job once the new one has succeeded:
+
+```bash
+# Replace <chart>, <namespace>, and <N> as appropriate.
+kubectl delete job <chart>-migrate-r<N> -n <namespace>
+# e.g. kubectl delete job audit-migrate-r1 -n dsa-audit
+kubectl get jobs -n dsa-audit
+kubectl get jobs -n dsa-bridge
+kubectl get jobs -n dsa-ai
+kubectl get jobs -n dsa-witness
 ```
 
 ## Support Bundle
