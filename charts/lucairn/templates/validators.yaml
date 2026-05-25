@@ -12,3 +12,4 @@
 {{- include "validators.auditLogSecretLookup" $ -}}
 {{- include "validators.dashboardDemoModeNotProduction" $ -}}
 {{- include "validators.dashboardDemoToggleNotProduction" $ -}}
+{{- include "validators.gatewayPostgresKeystoreSubchartMismatch" $ -}}
