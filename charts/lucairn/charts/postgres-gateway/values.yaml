@@ -1,0 +1,56 @@
+# Postgres instance backing the gateway's PostgresKeyStore (durable API-key
+# storage across pod restarts + HA replicas). Colocated with the gateway in
+# dsa-edge so the keystore connection stays intra-namespace.
+namespace: dsa-edge
+
+replicaCount: 1
+
+image:
+  repository: postgres
+  tag: "16-alpine"
+  pullPolicy: IfNotPresent
+
+service:
+  port: 5432
+
+postgresql:
+  user: gateway
+  database: gateway_keystore
+  # PVC reclaim Retain — losing keystore on uninstall would silently strand all
+  # customer API keys. Helm uninstall preserves the PVC; operator runs `kubectl
+  # delete pvc postgres-gateway-data -n dsa-edge` manually to drop keys.
+  storageSize: 1Gi
+  storageClass: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+securityContext:
+  runAsUser: 999
+  runAsGroup: 999
+  fsGroup: 999
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: ["ALL"]
+
+secrets:
+  backend: k8s-native  # k8s-native | vault | aws | azure
+  values:
+    # PRODUCTION: MUST override with a strong, unique password (gateway role).
+    # Empty value at install time fails-closed in templates/secret.yaml so the
+    # operator gets a clear error instead of a silently weak default.
+    postgresPassword: ""
+  vault:
+    path: "dsa/data/postgres-gateway"
+  aws:
+    name: "dsa/postgres-gateway"
+  azure:
+    name: "dsa-postgres-gateway"
