@@ -30,6 +30,12 @@ For Docker Compose:
 - 4 vCPU, 16 GB RAM minimum for customer-side split deployment.
 - TLS-terminating reverse proxy such as Caddy, Nginx, Traefik, or an enterprise ingress proxy.
 - Outbound HTTPS to Lucairn-provided remote Sandbox B endpoint if using split deployment.
+- Python 3 with the `cryptography` library (>=2.5) OR `pynacl`. Required by
+  `bin/lucairn-init` and `scripts/derive-veil-pubkey.sh` for Ed25519 keypair
+  generation. On Ubuntu 22.04 LTS the apt-installed `python3-cryptography`
+  package (3.4.8) is sufficient: `sudo apt install python3-cryptography`.
+  Newer distros come with it preinstalled. If neither package is available,
+  `pip install pynacl` is the smallest alternative.
 
 For Kubernetes:
 
@@ -38,6 +44,37 @@ For Kubernetes:
 - Ingress controller with TLS.
 - NetworkPolicy-capable CNI. Cilium is preferred for DNS controls and WireGuard encryption.
 - Secret manager integration, or permission to create Kubernetes native secrets.
+
+## Registry Authentication
+
+The Lucairn-default GHCR images (`ghcr.io/declade/dsa-*` and
+`ghcr.io/declade/lucairn-dashboard`) are currently **private** — a GitHub
+personal-access token (PAT) with `read:packages` scope is required to pull
+them. Authenticate against ghcr.io once before running `docker compose up`
+or `docker pull`:
+
+```bash
+# 1. Mint a GitHub PAT (Settings → Developer settings → Personal access
+#    tokens → Tokens (classic)) with the `read:packages` scope and write
+#    the value to a 0600 file.
+echo "<paste-PAT-value>" > ~/.ghcr-token
+chmod 600 ~/.ghcr-token
+
+# 2. Log Docker into ghcr.io with that token.
+cat ~/.ghcr-token | docker login ghcr.io -u <your-github-username> --password-stdin
+```
+
+The login cookie persists in `~/.docker/config.json` until you `docker
+logout ghcr.io` or the PAT expires. Customers running on an air-gapped
+host or behind a private mirror that uses different credentials should
+`docker login` against the mirror instead and set `LUCAIRN_IMAGE_REGISTRY`
+in `customer.env` to the mirror prefix.
+
+Lucairn does NOT provision per-customer GHCR credentials at handoff time
+— the customer's own GitHub account or service-account PAT is sufficient.
+If your organization blocks GitHub access entirely, request a sealed
+customer bundle (with `images/lucairn-images.tar` for `docker load`); see
+`docs/CUSTOMER_BUNDLE.md`.
 
 ## Choose A Deployment Mode
 
@@ -110,16 +147,18 @@ cp customer.env.example customer.env
 chmod 600 customer.env
 ```
 
-3. (Optional) Configure a private image mirror.
+3. Authenticate against the image registry.
 
-GHCR-hosted Lucairn images are public and pull without credentials. Skip this step on a standard install. Only run `docker login` if you mirror the images into a private registry or you operate behind an air-gapped proxy that requires authentication.
+The Lucairn-default GHCR images are private. See § "Registry Authentication"
+above for the full PAT-based login walkthrough; the short version:
 
 ```bash
-# Only if mirroring or air-gapping — not required for stock installs.
-docker login ghcr.io
+echo "<your-PAT>" | docker login ghcr.io -u <your-github-username> --password-stdin
 ```
 
-If the customer uses an internal registry mirror, set `LUCAIRN_IMAGE_REGISTRY` in `customer.env`.
+If the customer uses an internal registry mirror, `docker login` against
+the mirror credentials instead and set `LUCAIRN_IMAGE_REGISTRY` in
+`customer.env` to the mirror prefix.
 
 4. Replace every `REPLACE_*` value in `customer.env`.
 
@@ -327,22 +366,25 @@ The script prints the raw API key **once** — capture it to a 0600 file. Smoke 
 
 ## Kubernetes Install
 
-1. (Optional) Create the image pull secret.
+1. Create the image pull secret.
 
-   GHCR-hosted Lucairn images are public and pull without credentials —
-   skip this step on a standard install. Only run it when you mirror the
-   images into a private registry that requires authentication.
+   The Lucairn-default GHCR images are private — Kubernetes pods need a
+   `dockerconfigjson` Secret to pull them. Mint a GitHub PAT with the
+   `read:packages` scope (or reuse the one from the Compose path
+   § "Registry Authentication"), then create the namespace + Secret:
 
 ```bash
 kubectl create namespace lucairn
-# Only when mirroring or pulling from a private registry; for the public
-# default registry (ghcr.io/declade/*) leave this block out.
 kubectl create secret docker-registry lucairn-registry \
   --namespace lucairn \
   --docker-server ghcr.io \
   --docker-username "$GHCR_USERNAME" \
   --docker-password "$GHCR_TOKEN"
 ```
+
+If the customer mirrors the images into a private registry, point this
+Secret at the mirror's hostname + mirror credentials instead and set
+`global.imageRegistry` in `customer-values.yaml` to the mirror prefix.
 
 2. Prepare values.
 
@@ -436,7 +478,7 @@ curl -fsS http://127.0.0.1:8085/readyz
 
 ## Clean-Host Rehearsal
 
-Before sending a first customer bundle, repeat the customer-bundle path on a clean Linux host or VM that has no repo checkout, no local Docker images, and no copied secrets except the exact handoff bundle (and any private-mirror registry credentials only if the customer uses a mirror; the default GHCR-hosted Lucairn images are public). Record the transcript against `docs/CLEAN_HOST_REHEARSAL.md`.
+Before sending a first customer bundle, repeat the customer-bundle path on a clean Linux host or VM that has no repo checkout, no local Docker images, and no copied secrets except the exact handoff bundle (plus the GitHub PAT used to authenticate against ghcr.io, or the matching private-mirror credentials if the customer mirrors the images). Record the transcript against `docs/CLEAN_HOST_REHEARSAL.md`.
 
 ## Enable the Lucairn dashboard (optional)
 

@@ -46,19 +46,30 @@ command -v python3 >/dev/null 2>&1 || {
 }
 
 python3 - "$seed_hex" <<'PY'
+# We deliberately use the cryptography library's older
+# `public_bytes(Encoding.Raw, PublicFormat.Raw)` API rather than the
+# newer `public_bytes_raw()` shortcut. The shortcut was added in
+# cryptography 40.0 (May 2023); the older API works back to
+# cryptography 2.5 (2019). Ubuntu 22.04 LTS's apt-installed
+# `python3-cryptography` package is 3.4.8 — old enough that
+# `public_bytes_raw` is an AttributeError. The Encoding/PublicFormat
+# form pulls in two extra imports but works on every cryptography
+# version a customer is likely to have installed via apt.
 import binascii, sys
 seed = binascii.unhexlify(sys.argv[1])
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    pub = Ed25519PrivateKey.from_private_bytes(seed).public_key().public_bytes_raw()
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    pub = Ed25519PrivateKey.from_private_bytes(seed).public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
 except Exception:
     try:
         from nacl.signing import SigningKey
         pub = bytes(SigningKey(seed).verify_key)
     except Exception as e:
         sys.stderr.write(
-            "error: neither 'cryptography' nor 'pynacl' is installed.\n"
-            "  pip install cryptography  (preferred)\n"
+            "error: neither 'cryptography' (>=2.5) nor 'pynacl' is installed.\n"
+            "  On Ubuntu 22.04 the apt-installed python3-cryptography (3.4.8) works.\n"
+            "  Otherwise: pip install cryptography  (preferred)\n"
             f"  underlying error: {e}\n"
         )
         sys.exit(2)

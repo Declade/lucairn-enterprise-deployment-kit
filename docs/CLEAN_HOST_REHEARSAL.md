@@ -9,7 +9,7 @@ Use a fresh Linux host or VM with:
 - Docker Engine and Docker Compose v2 installed
 - no Lucairn repo checkout
 - no pre-pulled Lucairn images unless the customer will also receive them that way
-- no copied secrets except the exact bundle and customer-approved env values (Lucairn-default GHCR images are public; registry credentials are only required if the customer mirrors the images into a private registry)
+- no copied secrets except the exact bundle, customer-approved env values, and the GitHub PAT used to authenticate against ghcr.io (Lucairn-default GHCR images are currently private; the rehearser MUST exercise the `docker login ghcr.io` flow the customer will use. If the customer mirrors the images into a private registry, use the mirror's credentials instead.)
 
 ## Rehearsal Steps
 

@@ -38,8 +38,10 @@ cp customer.env.example customer.env
 # the live doctor pass below. The offline doctor catches placeholder values
 # (intentional: that's the gate that surfaces every secret you owe).
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
-# docker login ghcr.io  # OPTIONAL: only when mirroring to a private registry.
-                        # Lucairn-default GHCR images are public.
+# Authenticate against ghcr.io with a GitHub PAT (`read:packages` scope).
+# Lucairn-default GHCR images are currently private; see INSTALL.md
+# § "Registry Authentication" for the full walkthrough.
+# echo "<your-PAT>" | docker login ghcr.io -u <github-username> --password-stdin
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 ```
@@ -86,7 +88,7 @@ compose `up -d` line above and populate `ANTHROPIC_API_KEY` (or
 `OPENAI_API_KEY`) in `customer.env` first. See `INSTALL.md` § "Self-hosted
 with managed LLM (BYOK)".
 
-GHCR images are public — no registry credentials required. `docker login ghcr.io` is only needed if you override `LUCAIRN_IMAGE_REGISTRY` to a private mirror or air-gapped registry. License keys are optional (kit runs in unregistered/dev mode without them — see `bin/lucairn-init --dev`).
+GHCR images are currently private — a GitHub PAT with the `read:packages` scope is required (`docker login ghcr.io -u <github-username> --password-stdin`). See `INSTALL.md` § "Registry Authentication" for the full walkthrough. Override `LUCAIRN_IMAGE_REGISTRY` if you mirror into a private registry. License keys are optional (kit runs in unregistered/dev mode without them — see `bin/lucairn-init --dev`).
 Before a real customer handoff, run the gates in `docs/CUSTOMER_HANDOFF_GATES.md`.
 
 ## Per-Customer Bundle

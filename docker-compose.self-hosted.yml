@@ -240,7 +240,16 @@ services:
     environment:
       LUCAIRN_DASHBOARD_LISTEN_ADDR: "${LUCAIRN_DASHBOARD_LISTEN_ADDR:-0.0.0.0:8443}"
       LUCAIRN_DASHBOARD_BOOTSTRAP_EMAIL: "${LUCAIRN_DASHBOARD_BOOTSTRAP_EMAIL:-admin@lucairn.local}"
-      LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD: "${LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD:?LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD is required when the dashboard profile is active}"
+      # Compose v2 evaluates ${VAR:?...} at config-load time across ALL
+      # service definitions — `profiles:` does NOT scope env interpolation.
+      # Using `:?` here would block `docker compose up -d` (no dashboard
+      # profile) on a stock kit install. The dashboard binary itself
+      # fail-fasts at startup if BootstrapPassword is empty (see
+      # apps/dashboard/internal/config/config.go:179-180), so security
+      # regression is impossible — the dashboard container only starts
+      # when the profile is explicitly activated, and refuses to boot
+      # with an unset password.
+      LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD: "${LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD:-}"
       LUCAIRN_DASHBOARD_SESSION_SECRET: "${LUCAIRN_DASHBOARD_SESSION_SECRET:-}"
       LUCAIRN_DASHBOARD_OIDC_ENABLED: "${LUCAIRN_DASHBOARD_OIDC_ENABLED:-false}"
       LUCAIRN_DASHBOARD_OIDC_ISSUER_URL: "${LUCAIRN_DASHBOARD_OIDC_ISSUER_URL:-}"

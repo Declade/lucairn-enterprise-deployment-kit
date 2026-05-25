@@ -238,12 +238,22 @@ gen_keystore_key() {
 gen_ed25519_pair() {
   local seed pub
   seed="$(openssl rand -hex 32)"
+  # We deliberately use the cryptography library's older
+  # `public_bytes(Encoding.Raw, PublicFormat.Raw)` API rather than the
+  # newer `public_bytes_raw()` shortcut. The shortcut was added in
+  # cryptography 40.0 (May 2023); the older API works back to
+  # cryptography 2.5 (2019). Ubuntu 22.04 LTS's apt-installed
+  # `python3-cryptography` package is 3.4.8 — old enough that
+  # `public_bytes_raw` is an AttributeError. The Encoding/PublicFormat
+  # form pulls in two extra imports but works on every cryptography
+  # version a customer is likely to have installed via apt.
   pub="$(python3 - "$seed" <<'PY' 2>/dev/null || true
 import binascii, sys
 seed = binascii.unhexlify(sys.argv[1])
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    pub = Ed25519PrivateKey.from_private_bytes(seed).public_key().public_bytes_raw()
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    pub = Ed25519PrivateKey.from_private_bytes(seed).public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
 except Exception:
     try:
         from nacl.signing import SigningKey
@@ -313,7 +323,7 @@ set_kv() {
 
 # Pair generation
 for slot in "${VEIL_PAIRED_SLOTS[@]}"; do
-  pair="$(gen_ed25519_pair)" || fail "Ed25519 derivation failed for $slot — install python3 cryptography or pynacl" 3
+  pair="$(gen_ed25519_pair)" || fail "Ed25519 derivation failed for $slot — install python3-cryptography (>=2.5, the Ubuntu 22.04 apt package 3.4.8 works) or 'pip install pynacl'" 3
   seed="${pair%%:*}"
   pub="${pair##*:}"
   set_kv "VEIL_${slot}_SIGNING_KEY" "$seed"

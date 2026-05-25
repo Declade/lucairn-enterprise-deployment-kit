@@ -112,7 +112,7 @@ docker compose \
   up -d
 ```
 
-For registry-based delivery, they skip `docker load` and pull directly from `ghcr.io/declade/*` (no Lucairn-supplied credentials required — GHCR-hosted Lucairn images are public). Customer-side private mirrors only need their own mirror credentials.
+For registry-based delivery, they skip `docker load` and pull directly from `ghcr.io/declade/*` after authenticating with a GitHub PAT (`read:packages` scope) — Lucairn-default GHCR images are currently private; see `INSTALL.md` § "Registry Authentication". Lucairn does not provision per-customer GHCR credentials; the customer's own GitHub account or service-account PAT is sufficient. Customer-side private mirrors need their own mirror credentials.
 
 ## Agent Failure Handling
 
