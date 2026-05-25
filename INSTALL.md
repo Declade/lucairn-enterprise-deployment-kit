@@ -21,8 +21,11 @@ to provision your first customer.
 The `docker login` step assumes you already minted a `read:packages` PAT
 into `~/.ghcr-token` AND Lucairn granted your GitHub account package-pull
 access. First-time setup walkthrough is in § "Registry Authentication"
-below. Skip the login step entirely if you mirror images into a private
-registry — set `LUCAIRN_IMAGE_REGISTRY` instead.
+below. Skip the ghcr.io `docker login` step ONLY when you are mirroring
+images to a private registry — set `LUCAIRN_IMAGE_REGISTRY` to the mirror
+prefix. If your private mirror requires authentication, run `docker login
+<your-mirror-host>` instead (same `--password-stdin < ~/.<registry>-token`
+pattern as the ghcr.io flow above).
 
 For production deployment with a Lucairn-issued license, see "Choose A
 Deployment Mode" below and use `./bin/lucairn-init --production --license
@@ -433,25 +436,62 @@ chmod 600 ~/.ghcr-token   # belt-and-suspenders
    hooks.
 
 ```bash
-export GHCR_USERNAME=<your-github-username>
-export GHCR_TOKEN=$(cat ~/.ghcr-token)   # PAT from the 0600 file you just created
-
 # Phase 1 (pre-helm): create the pull Secret in the lucairn release
-# namespace only. The `lucairn` namespace is created by `helm install
-# --create-namespace` if it doesn't already exist, so pre-creating it
-# here is safe and idempotent (it is NOT a Helm-managed hook).
+# namespace. We build the Secret from the dockerconfigjson that
+# `docker login --password-stdin` produces, so the PAT only ever appears
+# via stdin (and then via a file-read by kubectl). Passing the PAT as a
+# kubectl command-line flag would leak it into the kubectl process's
+# argv (visible via `ps auxe` to any other user on the host — notably a
+# CI/CD agent or shared bastion).
+
+# 1. Log Docker into ghcr.io (or your mirror) — PAT only ever transits via stdin.
+docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
+
+# 2. Create the lucairn release namespace. The `lucairn` namespace is
+#    created by `helm install --create-namespace` if it doesn't already
+#    exist, so pre-creating it here is safe and idempotent (it is NOT a
+#    Helm-managed hook).
 kubectl create namespace lucairn 2>/dev/null || true
-kubectl create secret docker-registry lucairn-registry \
+
+# 3. Build the pull Secret from the Docker config that the login above
+#    produced. `--from-file=.dockerconfigjson=$HOME/.docker/config.json`
+#    reads the file at apply-time; the PAT goes from `docker login` →
+#    file → kubectl via file-read, never as a command-line argument.
+kubectl create secret generic lucairn-registry \
   --namespace lucairn \
-  --docker-server ghcr.io \
-  --docker-username "$GHCR_USERNAME" \
-  --docker-password "$GHCR_TOKEN" \
+  --from-file=.dockerconfigjson=$HOME/.docker/config.json \
+  --type=kubernetes.io/dockerconfigjson \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-If the customer mirrors the images into a private registry, point this
-Secret at the mirror's hostname + mirror credentials instead and set
-`global.imageRegistry` in `customer-values.yaml` to the mirror prefix.
+If the customer mirrors the images into a private registry, run
+`docker login <your-mirror-host>` against the mirror's credentials
+instead before step 3, then set `global.imageRegistry` in
+`customer-values.yaml` to the mirror prefix. The same `--from-file`
+pattern produces a Secret carrying the mirror creds — `kubectl create
+secret generic ... --type=kubernetes.io/dockerconfigjson` is
+registry-agnostic.
+
+Security-conscious deployments (multi-tenant bastions, shared CI agents,
+or hosts where `~/.docker/config.json` already carries unrelated
+registry creds for docker hub / ECR / GCR / etc.) should isolate the
+login into a temporary docker config dir so the resulting Secret
+contains ONLY the lucairn-registry credentials:
+
+```bash
+# Optional: isolate the docker config so the resulting Secret carries
+# ONLY the lucairn-registry credentials (no docker hub / ECR / GCR / etc.
+# entries from prior logins on this host).
+TMP_DOCKER_CFG=$(mktemp -d)
+DOCKER_CONFIG=$TMP_DOCKER_CFG docker login ghcr.io \
+  -u <your-github-username> --password-stdin < ~/.ghcr-token
+kubectl create secret generic lucairn-registry \
+  --namespace lucairn \
+  --from-file=.dockerconfigjson=$TMP_DOCKER_CFG/config.json \
+  --type=kubernetes.io/dockerconfigjson \
+  --dry-run=client -o yaml | kubectl apply -f -
+rm -rf "$TMP_DOCKER_CFG"
+```
 
 2. Prepare values.
 
