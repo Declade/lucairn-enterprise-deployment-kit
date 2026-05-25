@@ -28,6 +28,13 @@ global:
   ollamaEnabled: true
   demoEnabled: false
 
+# By default, the gateway uses postgres-gateway for keystore persistence
+# (postgresKeystore.enabled=true), so GATEWAY_KEYSTORE_PATH is intentionally
+# left empty and only GATEWAY_KEYSTORE_DSN is wired. Emitting BOTH would trip
+# the gateway's mutual-exclusion check and crash-loop the pod. To use the
+# legacy file-keystore path instead, set BOTH gateway.postgresKeystore.enabled=false
+# AND postgres-gateway.enabled=false, then set gateway.keystorePath="/etc/dsa/keystore"
+# (and ensure the gateway container has a writable volume mounted there).
 gateway:
   ingress:
     enabled: true

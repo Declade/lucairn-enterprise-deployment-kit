@@ -20,7 +20,9 @@ data:
   GATEWAY_VERTICALS_DIR: {{ .Values.verticalsDir | quote }}
   SANITIZER_URL: {{ .Values.sanitizerUrl | quote }}
   SANDBOX_B_PROXY_URL: {{ .Values.sandboxBProxyUrl | quote }}
+  {{- if .Values.keystorePath }}
   GATEWAY_KEYSTORE_PATH: {{ .Values.keystorePath | quote }}
+  {{- end }}
   GRPC_TLS_ENABLED: {{ .Values.grpcTlsEnabled | quote }}
   VEIL_ENABLED: {{ .Values.veilEnabled | quote }}
   VEIL_WITNESS_CERT_ADDR: {{ .Values.veilWitnessCertAddr | quote }}

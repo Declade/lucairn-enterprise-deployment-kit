@@ -594,11 +594,19 @@ kubectl exec -n dsa-edge statefulset/postgres-gateway -- \
   > gateway_keystore.$(date -u +%Y%m%dT%H%M%SZ).sql
 ```
 
+**`gateway.keystorePath` default.** In postgres-keystore mode (the default)
+`gateway.keystorePath` is empty and `GATEWAY_KEYSTORE_PATH` is omitted from
+the gateway ConfigMap entirely. The gateway enforces that
+`GATEWAY_KEYSTORE_PATH` and `GATEWAY_KEYSTORE_DSN` are mutually exclusive at
+boot — emitting both crash-loops the pod.
+
 **Disabling the keystore.** Single-replica dev deployments can opt out
 via `gateway.postgresKeystore.enabled: false` AND
-`postgres-gateway.enabled: false`. The gateway then falls back to the
-legacy file-keystore path under `gateway.keystorePath`; this loses the
-HA + restart-survival guarantees and is NOT recommended for production.
+`postgres-gateway.enabled: false`. To then fall back to the legacy
+file-keystore path, ALSO set `gateway.keystorePath: "/etc/dsa/keystore"`
+(or another writable mount) — without it the gateway has no keystore
+backing at all. This loses the HA + restart-survival guarantees and is
+NOT recommended for production.
 
 ## Support Bundle
 
