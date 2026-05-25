@@ -38,17 +38,8 @@ cp customer.env.example customer.env
 # the live doctor pass below. The offline doctor catches placeholder values
 # (intentional: that's the gate that surfaces every secret you owe).
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
-# Authenticate against ghcr.io with a GitHub PAT (`read:packages` scope).
-# Lucairn-default GHCR images are currently private; you must also have
-# package-pull access granted by Lucairn (contact support@lucairn.eu).
-# See INSTALL.md § "Registry Authentication" for the full walkthrough.
-# Save the PAT to a 0600 file first so it never enters your shell history:
-#   umask 077 && cat > ~/.ghcr-token <<'EOF'
-#   github_pat_xxxxxxxxxxxxxxxxxxxxxxxxx
-#   EOF
-#   chmod 600 ~/.ghcr-token
-# Then login via stdin from the file:
-#   docker login ghcr.io -u <github-username> --password-stdin < ~/.ghcr-token
+# Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)
+docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 ```
