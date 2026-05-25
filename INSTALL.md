@@ -400,6 +400,14 @@ The script prints the raw API key **once** — capture it to a 0600 file. Smoke 
 
 ## Kubernetes Install
 
+**IMPORTANT: Run steps 1-6 in the SAME shell session.** Step 1 exports
+`DOCKER_CONFIG` to a temporary directory; step 4 (`helm template`) and
+step 5 (`helm upgrade --install ... --set-file ...`) both read it. If
+your session ends between steps (laptop sleeps, tmux detaches, terminal
+closes, ssh disconnects), repeat step 1 from scratch — the temp dir
+from the prior session may have been cleaned up by the OS or by
+`rm -rf "$DOCKER_CONFIG"` in step 6.
+
 1. Stage the registry credentials.
 
    The Lucairn-default GHCR images are private — Kubernetes pods need a
@@ -547,8 +555,12 @@ postgres-gateway:
     storageSize: 5Gi
   secrets:
     values:
-      postgresPassword: "<strong-unique-password>"
+      postgresPassword: "REPLACE_WITH_POSTGRES_GATEWAY_PASSWORD"
 ```
+
+The placeholder above mirrors the `REPLACE_WITH_POSTGRES_GATEWAY_PASSWORD`
+entry already in `customer-values.yaml.example` (step 2 `cp` above). Fill
+that single entry — do NOT add a separate `postgres-gateway:` block.
 
 The chart fails at install time if `postgresPassword` is empty (so the
 keystore DB is never silently created with no auth). The gateway reads
@@ -564,6 +576,13 @@ same set of customer API keys. To intentionally drop the keystore
 ```bash
 kubectl delete pvc postgres-gateway-data -n dsa-edge
 ```
+
+Note: The `postgres-gateway` PVC is the ONLY PVC in the kit with the
+Retain annotation. The `audit`, `id-bridge`, and `veil-witness`
+subchart PVCs do NOT carry this annotation — a `helm uninstall` will
+delete them. If you intend to preserve audit cert history, identity
+tokens, or witness signatures across an uninstall, back up those
+databases first with `pg_dump` against each.
 
 **Backup.** The keystore is a small Postgres instance; a periodic
 `pg_dump` of the `gateway_keystore` database into the customer's
