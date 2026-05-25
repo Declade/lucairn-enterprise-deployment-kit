@@ -1,13 +1,23 @@
-# Namespaces are pre-install hooks so they exist before migration Jobs run.
-# IMPORTANT: hook-delete-policy is intentionally OMITTED. Namespaces persist
-# across upgrades to protect namespaced PVCs (e.g. postgres-gateway-data in
-# dsa-edge) from cascade deletion. A namespace deletion cascades to delete
-# every namespaced resource regardless of `helm.sh/resource-policy: keep`
-# annotations, which would silently nuke the keystore PVC every upgrade
-# (Sim 5 Codex r1 BLOCKER).
-# Note: Namespaces are NOT deleted on helm uninstall (by design — prevents
-# accidental data loss). Cleanup is operator-managed via
-# `kubectl delete namespace dsa-*` for full teardown.
+# Namespaces are NORMAL release-owned resources (NOT Helm hooks). Helm's
+# hardcoded install order puts Namespace at index 1 (after CRD), so workloads
+# in dependency order land in the right namespace without needing a pre-install
+# hook for ordering. See https://helm.sh/docs/topics/charts_hooks/ for the
+# default install order.
+#
+# WHY NOT HOOKS (Sim 5 Codex r1 + r2 BLOCKER):
+# Helm applies `helm.sh/hook-delete-policy: before-hook-creation` AS THE
+# DEFAULT when no delete policy is specified. That means every `helm upgrade`
+# would DELETE the previous Namespace hook resource before recreating it,
+# cascading deletion of every namespaced resource inside (including the
+# postgres-gateway-data PVC). Removing the explicit delete-policy line is NOT
+# enough — the default still applies. The only correct fix is to stop making
+# namespaces hooks entirely.
+#
+# `helm.sh/resource-policy: keep` ensures `helm uninstall` also preserves the
+# namespaces — matches the existing "Namespaces are NOT deleted on helm
+# uninstall (by design — prevents accidental data loss)" doc contract.
+# Cleanup is operator-managed via `kubectl delete namespace dsa-*` for full
+# teardown.
 {{- range .Values.namespaces }}
 ---
 apiVersion: v1
@@ -18,6 +28,5 @@ metadata:
     app.kubernetes.io/part-of: dsa
     dsa.io/namespace: {{ .label }}
   annotations:
-    helm.sh/hook: pre-install,pre-upgrade
-    helm.sh/hook-weight: "-10"
+    "helm.sh/resource-policy": keep
 {{- end }}
