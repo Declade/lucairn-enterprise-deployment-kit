@@ -480,7 +480,14 @@ helm upgrade --install lucairn charts/lucairn \
 
 6. Phase 2 (post-helm): replicate the pull Secret into every `dsa-*`
    workload namespace the chart just created. Pods in these namespaces
-   need the Secret to pull images from ghcr.io.
+   need the Secret to pull images from whichever registry Phase 1
+   authenticated against (ghcr.io by default, or a private mirror).
+
+   This works for both the default ghcr.io install and for
+   private-mirror deployments — the Phase-1 Secret you created in the
+   `lucairn` namespace is copied verbatim, so whatever credentials it
+   carries (ghcr.io, your mirror's Harbor / ECR / GCR / Artifactory /
+   etc.) propagate to every workload namespace.
 
    The canonical workload-namespace list comes from
    `charts/lucairn/charts/infrastructure/values.yaml` (`namespaces:`
@@ -488,17 +495,18 @@ helm upgrade --install lucairn charts/lucairn \
    in `customer-values.yaml`, adjust the loop to match.
 
 ```bash
-# Copy the lucairn-registry Secret from the lucairn namespace into each
-# dsa-* namespace. `kubectl create --dry-run=client -o yaml | kubectl
-# apply -f -` makes the command idempotent — safe to re-run after a PAT
-# rotation or a partial install.
-for ns in dsa-edge dsa-identity dsa-bridge dsa-ai dsa-audit dsa-observability dsa-ingest dsa-admin dsa-witness dsa-demo; do
-  kubectl create secret docker-registry lucairn-registry \
-    --namespace "$ns" \
-    --docker-server ghcr.io \
-    --docker-username "$GHCR_USERNAME" \
-    --docker-password "$GHCR_TOKEN" \
-    --dry-run=client -o yaml | kubectl apply -f -
+# Phase 2 — replicate the lucairn-registry Secret from the install
+# namespace into every workload namespace Helm just created. Works for
+# both default ghcr.io and private-mirror deployments because we copy
+# the EXISTING Secret's dockerconfigjson verbatim, not re-encode
+# credentials per namespace. `kubectl apply` is idempotent — safe to
+# re-run after a PAT rotation or a partial install.
+set -euo pipefail
+WORKLOAD_NAMESPACES="dsa-edge dsa-identity dsa-bridge dsa-ai dsa-audit dsa-observability dsa-ingest dsa-admin dsa-witness dsa-demo"
+for ns in $WORKLOAD_NAMESPACES; do
+  kubectl get secret lucairn-registry -n lucairn -o yaml \
+    | sed "s|namespace: lucairn|namespace: $ns|" \
+    | kubectl apply -n "$ns" -f -
 done
 ```
 
