@@ -431,6 +431,11 @@ VEIL_SANDBOX_B_PUBLIC_KEY=$(get_val VEIL_SANDBOX_B_PUBLIC_KEY)
 VEIL_SANDBOX_B_SIGNING_KEY=$(get_val VEIL_SANDBOX_B_SIGNING_KEY)
 LOCAL_SANDBOX_B_API_KEY=local-sandbox-b-key
 
+# Internal isolation-probe target. sandbox-b's boot_safety verifies it can
+# reach sandbox-a via this gRPC address as part of the witness claim chain.
+# The default value matches the standard self-hosted compose layout.
+SANDBOX_A_PROBE_TARGET=sandbox-a:50053
+
 # Gateway URL + local bind ports
 GATEWAY_BASE_URL=$GATEWAY_BASE_URL_OVERRIDE
 GATEWAY_PORT=8080
