@@ -1,8 +1,9 @@
 # Lucairn Helm customer values.
 # Copy to customer-values.yaml, replace every REPLACE_* value, then run:
 #   helm upgrade --install lucairn charts/lucairn \
+#     --namespace lucairn --create-namespace \
 #     -f customer-values.yaml \
-#     --set-file global.imagePullDockerConfigJson=$DOCKER_CONFIG/config.json
+#     --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json"
 #
 # WARNING: DO NOT write the dockerconfigjson value into this file — it must
 # come from the --set-file flag at install time. Embedding the registry PAT
