@@ -60,6 +60,12 @@ spec:
       ports:
         - port: 50058
           protocol: TCP
+    # Intra-namespace (gateway → postgres-gateway for the PostgresKeyStore)
+    - to:
+        - podSelector: {}
+      ports:
+        - port: 5432
+          protocol: TCP
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -76,6 +82,12 @@ spec:
         - port: 8080
           protocol: TCP
         - port: 8085
+          protocol: TCP
+    # Intra-namespace (gateway → postgres-gateway for the PostgresKeyStore)
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 5432
           protocol: TCP
 
 # ============================================================

@@ -25,6 +25,46 @@ spec:
       serviceAccountName: {{ .Chart.Name }}
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
+      {{- if .Values.postgresKeystore.enabled }}
+      initContainers:
+        # Block gateway startup until the PostgresKeyStore backing DB is
+        # reachable. Gateway boots with PostgresKeyStore when
+        # GATEWAY_KEYSTORE_DSN is set; racing it against postgres-gateway
+        # readiness would produce confusing fail-closed logs on first install.
+        # 5 min cap matches the StatefulSet's worst-case PVC-bind latency.
+        - name: wait-for-postgres-gateway
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for postgres-gateway..."
+              for i in $(seq 1 150); do
+                if pg_isready -h {{ .Values.postgresKeystore.host }} -p {{ .Values.postgresKeystore.port }} -U {{ .Values.postgresKeystore.user }} -d {{ .Values.postgresKeystore.database }} -t 2; then
+                  echo "postgres-gateway ready."
+                  exit 0
+                fi
+                sleep 2
+              done
+              echo "postgres-gateway not ready after 5 min — failing initContainer." >&2
+              exit 1
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.image.repository }}:{{ .Values.image.tag | default .Values.global.imageTag | default .Chart.AppVersion }}"
@@ -50,6 +90,13 @@ spec:
               value: {{ .Values.streaming.enabled | quote }}
             - name: STREAM_TIMEOUT
               value: {{ .Values.streaming.timeoutSeconds | quote }}
+            {{- if .Values.postgresKeystore.enabled }}
+            - name: GATEWAY_KEYSTORE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgresKeystore.dsnSecretRef.name }}
+                  key: {{ .Values.postgresKeystore.dsnSecretRef.key }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.apiPort }}

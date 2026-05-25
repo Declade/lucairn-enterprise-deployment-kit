@@ -79,6 +79,21 @@ streaming:
   enabled: false
   timeoutSeconds: 300
 
+# PostgresKeyStore wiring (closes Sim 5 Helm Gap #6 — in-memory keystore
+# wipes on pod restart + cross-replica reads miss with HA). When enabled,
+# gateway boots with PostgresKeyStore backed by the postgres-gateway
+# subchart. Default ON so HA + restart-survival work out of the box; flip
+# off only for single-replica dev runs against the file-keystore path.
+postgresKeystore:
+  enabled: true
+  host: postgres-gateway.dsa-edge.svc.cluster.local
+  port: 5432
+  user: gateway
+  database: gateway_keystore
+  dsnSecretRef:
+    name: gateway-keystore-db-credentials
+    key: dsn
+
 # PR-C1 fix-up round 1 (FIX-6): gateway-side sanitize cache. Default OFF —
 # operators flip enabled=true per environment after the cert-chain integration
 # follow-up PR ships. Override maxEntries / ttlSeconds per-environment if needed.
