@@ -400,16 +400,16 @@ The script prints the raw API key **once** — capture it to a 0600 file. Smoke 
 
 ## Kubernetes Install
 
-1. Create the image pull secret.
+1. Stage the registry credentials.
 
    The Lucairn-default GHCR images are private — Kubernetes pods need a
-   `dockerconfigjson` Secret to pull them, AND the GitHub account that owns
-   the PAT must have been granted package-pull access by Lucairn (see
-   § "Registry Authentication" → "Prerequisite — Lucairn-issued GHCR access"
-   above). Mint a GitHub PAT with the `read:packages` scope (or reuse the
-   one from the Compose path § "Registry Authentication"). If you have not
-   yet saved the PAT to a 0600 file, do that first so the value never
-   appears in your shell history:
+   `dockerconfigjson` payload to pull them, AND the GitHub account that
+   owns the PAT must have been granted package-pull access by Lucairn
+   (see § "Registry Authentication" → "Prerequisite — Lucairn-issued
+   GHCR access" above). Mint a GitHub PAT with the `read:packages` scope
+   (or reuse the one from the Compose path § "Registry Authentication").
+   If you have not yet saved the PAT to a 0600 file, do that first so
+   the value never appears in your shell history:
 
 ```bash
 umask 077
@@ -419,72 +419,47 @@ EOF
 chmod 600 ~/.ghcr-token   # belt-and-suspenders
 ```
 
-   Then create the pull Secret. Kubernetes Secrets are namespace-scoped —
-   a Secret in one namespace cannot be referenced by pods in another, so
-   the pull Secret must exist in every workload namespace or pods will
-   fail with `ImagePullBackOff`.
-
-   The `dsa-*` workload namespaces are rendered by the chart as Helm
-   `pre-install,pre-upgrade` hooks (see
-   `charts/lucairn/charts/infrastructure/templates/namespaces.yaml`).
-   Helm hooks **cannot adopt preexisting resources** — if you
-   `kubectl create namespace dsa-edge` before `helm install`, the
-   release will fail with `AlreadyExists`. Therefore the Secret
-   replication must happen in two phases: create the Secret in the
-   `lucairn` release namespace BEFORE `helm install`, then replicate it
-   across the `dsa-*` namespaces AFTER `helm install` creates them via
-   hooks.
+   The chart now renders the per-namespace `lucairn-registry` Secret as
+   a normal release-owned resource (one Secret per `dsa-*` namespace).
+   The operator only needs to produce a single `dockerconfigjson` file
+   and pass it to `helm install` via `--set-file
+   global.imagePullDockerConfigJson=...`. Helm re-renders the Secret on
+   every install + upgrade, so the previous two-phase manual
+   `kubectl create secret` loop is no longer needed.
 
 Kubernetes pull Secrets require a `dockerconfigjson` payload with a
 base64 `auth` entry. On hosts where Docker uses `credsStore`/`credHelpers`
 (Docker Desktop, hardened workstations), `docker login` writes the
 credential to the OS keychain and stores only helper metadata in
 `~/.docker/config.json` — that metadata is not usable by Kubernetes
-(pods would fail with `ImagePullBackOff`). We use an isolated
-`DOCKER_CONFIG` set to a freshly-`mktemp`'d directory for the login, so
-the resulting `config.json` has a direct `auth` entry the Secret can read.
-The PAT only ever appears via stdin (and then via a file-read by kubectl) —
-passing the PAT as a kubectl command-line flag would leak it into the
-kubectl process's argv (visible via `ps auxe` to any other user on the
-host — notably a CI/CD agent or shared bastion).
+(pods would fail with `ImagePullBackOff`). Use an isolated
+`DOCKER_CONFIG` set to a freshly-`mktemp`'d directory for the login,
+so the resulting `config.json` has a direct `auth` entry the chart can
+render into the per-namespace Secret. The PAT only ever appears via
+stdin (and then via the `--set-file` flag read at install time).
 
 ```bash
-# Phase 1 (pre-helm): create the pull Secret in the lucairn release namespace.
-
-# 1. Create an isolated Docker config for the install (avoids credsStore/credHelpers
-#    on Docker Desktop / hardened workstations that store credentials outside config.json).
+# 1. Create an isolated Docker config for the install (avoids credsStore /
+#    credHelpers on Docker Desktop / hardened workstations that store
+#    credentials outside config.json).
 DOCKER_CONFIG=$(mktemp -d)
 export DOCKER_CONFIG
 
-# 2. Log Docker into ghcr.io (or your mirror).
+# 2. Log Docker into ghcr.io (or your private mirror).
 docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 
-# 3. Create the lucairn release namespace. The `lucairn` namespace is
-#    created by `helm install --create-namespace` if it doesn't already
-#    exist, so pre-creating it here is safe and idempotent (it is NOT a
-#    Helm-managed hook).
-kubectl create namespace lucairn 2>/dev/null || true
-
-# 4. Build the pull Secret directly from the temp $DOCKER_CONFIG/config.json
-#    (which now contains an actual `auth` base64 entry usable by Kubernetes imagePullSecrets).
-kubectl create secret generic lucairn-registry \
-  --from-file=.dockerconfigjson="$DOCKER_CONFIG/config.json" \
-  --namespace lucairn \
-  --type=kubernetes.io/dockerconfigjson \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-# 5. Clean up the temp Docker config.
-rm -rf "$DOCKER_CONFIG"
-unset DOCKER_CONFIG
+# The resulting $DOCKER_CONFIG/config.json now contains a real `auth`
+# entry usable by Kubernetes imagePullSecrets. KEEP the path — the
+# `helm install` step below reads it via --set-file. Do NOT copy the
+# file contents into customer-values.yaml; that would leak the registry
+# PAT into version control.
 ```
 
 If the customer mirrors the images into a private registry, swap
 `docker login ghcr.io` for `docker login <your-mirror-host>` against
 the mirror's credentials, then set `global.imageRegistry` in
 `customer-values.yaml` to the mirror prefix. The same isolated
-`$DOCKER_CONFIG` + `--from-file` pattern produces a Secret carrying
-the mirror creds — `kubectl create secret generic ... --type=kubernetes.io/dockerconfigjson`
-is registry-agnostic.
+`$DOCKER_CONFIG` + `--set-file` recipe works for any registry.
 
 2. Prepare values.
 
@@ -492,69 +467,41 @@ is registry-agnostic.
 cp customer-values.yaml.example customer-values.yaml
 ```
 
-3. Replace every `REPLACE_*` value. Prefer an external secret manager for production.
+3. Replace every `REPLACE_*` value. Prefer an external secret manager
+   for production. The `postgres-gateway.secrets.values.postgresPassword`
+   field is new in chart v1.4.0 — see § "Postgres-Gateway Keystore" below.
 
 4. Build chart dependencies and render once.
 
 ```bash
 helm dependency build charts/lucairn
-helm template lucairn charts/lucairn -f customer-values.yaml --namespace lucairn >/tmp/lucairn-rendered.yaml
+helm template lucairn charts/lucairn \
+  -f customer-values.yaml \
+  --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
+  --namespace lucairn \
+  >/tmp/lucairn-rendered.yaml
 ```
 
-5. Install. This runs the namespace pre-install hooks and creates every
-   `dsa-*` namespace. Use `--wait=false` so the command returns
-   immediately rather than blocking on pods / Jobs that cannot pull
-   images until Phase 2 completes.
+5. Install. This runs the namespace pre-install hooks, creates every
+   `dsa-*` namespace, AND renders the per-namespace `lucairn-registry`
+   pull Secret in a single Helm transaction. Pods pull images without
+   any manual `kubectl create secret` step.
 
 ```bash
 helm upgrade --install lucairn charts/lucairn \
   -f customer-values.yaml \
+  --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
   --namespace lucairn \
   --create-namespace \
   --wait=false
 ```
 
-   Job pods may transiently show `ImagePullBackOff` between this `helm
-   install` and Phase 2 Secret-replication; this resolves automatically
-   once Phase 2 completes (Kubernetes' default image-pull backoff retries
-   every ~30 sec).
-
-6. Phase 2 (post-helm): replicate the pull Secret into every `dsa-*`
-   workload namespace the chart just created. Pods in these namespaces
-   need the Secret to pull images from whichever registry Phase 1
-   authenticated against (ghcr.io by default, or a private mirror).
-
-   This works for both the default ghcr.io install and for
-   private-mirror deployments — the Phase-1 Secret you created in the
-   `lucairn` namespace is copied verbatim, so whatever credentials it
-   carries (ghcr.io, your mirror's Harbor / ECR / GCR / Artifactory /
-   etc.) propagate to every workload namespace.
-
-   The canonical workload-namespace list comes from
-   `charts/lucairn/charts/infrastructure/values.yaml` (`namespaces:`
-   block); the loop below mirrors that list. If you override namespaces
-   in `customer-values.yaml`, adjust the loop to match.
+6. Clean up the isolated Docker config.
 
 ```bash
-# Phase 2 — replicate the lucairn-registry Secret from the install
-# namespace into every workload namespace Helm just created. Works for
-# both default ghcr.io and private-mirror deployments because we copy
-# the EXISTING Secret's dockerconfigjson verbatim, not re-encode
-# credentials per namespace. `kubectl apply` is idempotent — safe to
-# re-run after a PAT rotation or a partial install.
-set -euo pipefail
-WORKLOAD_NAMESPACES="dsa-edge dsa-identity dsa-bridge dsa-ai dsa-audit dsa-observability dsa-ingest dsa-admin dsa-witness dsa-demo"
-for ns in $WORKLOAD_NAMESPACES; do
-  kubectl get secret lucairn-registry -n lucairn -o yaml \
-    | sed "s|namespace: lucairn|namespace: $ns|" \
-    | kubectl apply -n "$ns" -f -
-done
+rm -rf "$DOCKER_CONFIG"
+unset DOCKER_CONFIG
 ```
-
-The `dsa-demo` namespace is always rendered by the chart (its workloads
-are gated separately by `global.demoEnabled`), so the loop includes it
-unconditionally — safe in all configurations because the Secret object
-is decoupled from the demo workloads.
 
 7. Watch rollout.
 
@@ -582,6 +529,57 @@ kubectl get jobs -n dsa-bridge
 kubectl get jobs -n dsa-ai
 kubectl get jobs -n dsa-witness
 ```
+
+## Postgres-Gateway Keystore
+
+Chart v1.4.0 ships a dedicated `postgres-gateway` StatefulSet in the
+`dsa-edge` namespace. It backs the gateway's `PostgresKeyStore` —
+customer-minted API keys persist across pod restarts AND replicate
+correctly across HA replicas. Without it, the gateway's in-memory
+keystore loses every key on restart, and roughly half of subsequent
+authenticated requests hit a replica that never saw the mint.
+
+**Required value** in `customer-values.yaml`:
+
+```yaml
+postgres-gateway:
+  postgresql:
+    storageSize: 5Gi
+  secrets:
+    values:
+      postgresPassword: "<strong-unique-password>"
+```
+
+The chart fails at install time if `postgresPassword` is empty (so the
+keystore DB is never silently created with no auth). The gateway reads
+its DSN from the `gateway-keystore-db-credentials` Secret rendered by
+the subchart; no manual wiring is required.
+
+**Reclaim policy = Retain.** The PVC carries `helm.sh/resource-policy:
+keep`. Running `helm uninstall lucairn` removes every workload but
+preserves the keystore PVC, so a subsequent re-install picks up the
+same set of customer API keys. To intentionally drop the keystore
+(scratch re-install, decommission, etc.), the operator runs:
+
+```bash
+kubectl delete pvc postgres-gateway-data -n dsa-edge
+```
+
+**Backup.** The keystore is a small Postgres instance; a periodic
+`pg_dump` of the `gateway_keystore` database into the customer's
+existing backup pipeline is sufficient:
+
+```bash
+kubectl exec -n dsa-edge statefulset/postgres-gateway -- \
+  pg_dump --no-owner --no-acl -U gateway gateway_keystore \
+  > gateway_keystore.$(date -u +%Y%m%dT%H%M%SZ).sql
+```
+
+**Disabling the keystore.** Single-replica dev deployments can opt out
+via `gateway.postgresKeystore.enabled: false` AND
+`postgres-gateway.enabled: false`. The gateway then falls back to the
+legacy file-keystore path under `gateway.keystorePath`; this loses the
+HA + restart-survival guarantees and is NOT recommended for production.
 
 ## Support Bundle
 
