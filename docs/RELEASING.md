@@ -97,19 +97,26 @@ What this does:
 
 1. **Guard 1 — PLATFORMS check** — refuses promotion unless PLATFORMS
    equals `linux/amd64,linux/arm64`. Override with `FORCE_ALIAS=1`
-   (emergency only — see § Emergency override).
+   (emergency only — see § Emergency override). Note: only the literal
+   string `1` enables the override; any other value (including `0`, `true`,
+   `false`) is treated as "not set".
 2. **Guard 2 — semver check** — refuses promotion unless VERSION matches
    `^[0-9]+\.[0-9]+\.[0-9]+$`. Suffixes (`-rc1`, `-bisect-amd64`, `-dev`,
    etc.) are rejected. Override with `FORCE_ALIAS=1`.
-3. **Source-multi-arch verify** — calls
-   `scripts/verify-multiarch-manifests.sh` against
-   `:$(VERSION)` BEFORE any alias copy. Closes the "build verifier silently
-   failed but alias copy ran anyway" race.
-4. **`docker buildx imagetools create`** — clones the multi-arch manifest
+3. **Guard 3 — MINOR_TAG consistency check** — refuses promotion unless
+   MINOR_TAG equals `major.minor(VERSION)`. Prevents accidentally promoting
+   `:0.9.0` to `:0.8` + `:latest` (which would silently overwrite the
+   wrong minor-version channel). Override with `FORCE_ALIAS=1`.
+4. **Source-multi-arch verify** — calls
+   `scripts/verify-multiarch-manifests.sh` against `:$(VERSION)` BEFORE
+   any alias copy. **Pinned** `REQUIRED_PLATFORMS="linux/amd64 linux/arm64"`
+   so an inherited env override cannot weaken the check.
+5. **`docker buildx imagetools create`** — clones the multi-arch manifest
    list into `:$(MINOR_TAG)` + `:latest` in a single invocation. No
    rebuild, no layer re-upload, just a manifest copy. Both aliases either
    both advance or both fail.
-5. **Post-promotion verifier** — re-asserts each alias is multi-arch.
+6. **Post-promotion verifier** — re-asserts each alias is multi-arch.
+   Same `REQUIRED_PLATFORMS` pin as step 4.
 
 ### Bisect publishes (exact tag only, aliases NEVER advance)
 
