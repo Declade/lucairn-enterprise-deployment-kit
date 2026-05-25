@@ -1,0 +1,6 @@
+apiVersion: v2
+name: postgres-gateway
+description: Postgres-backed keystore for the Lucairn gateway (closes Sim 5 Helm Gap #6; PRD specs/prd-2026-05-26-helm-blockers-gap1-gap6.md)
+type: application
+version: 0.1.0
+appVersion: "16-alpine"
