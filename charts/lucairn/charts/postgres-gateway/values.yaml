@@ -51,13 +51,20 @@ containerSecurityContext:
   capabilities:
     drop: ["ALL"]
 
+# secrets.backend supported in v1.4.0: k8s-native ONLY.
+# Roadmap (future release): vault | aws | azure via ExternalSecret templates
+# (workstream-C-doctor-extension). Non-k8s-native renders fail-fast in
+# templates/secret.yaml with a clear error rather than silently rendering
+# an install that references a non-existent gateway-keystore-db-credentials
+# Secret (Sim 5 Codex r1 MED).
 secrets:
-  backend: k8s-native  # k8s-native | vault | aws | azure
+  backend: k8s-native
   values:
     # PRODUCTION: MUST override with a strong, unique password (gateway role).
     # Empty value at install time fails-closed in templates/secret.yaml so the
     # operator gets a clear error instead of a silently weak default.
     postgresPassword: ""
+  # Roadmap-only — not yet wired to ExternalSecret templates in v1.4.0.
   vault:
     path: "dsa/data/postgres-gateway"
   aws:
