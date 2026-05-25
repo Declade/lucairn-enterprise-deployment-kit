@@ -17,6 +17,9 @@ dependencies:
 - name: gateway
   repository: ""
   version: 0.1.0
+- name: postgres-gateway
+  repository: ""
+  version: 0.1.0
 - name: observability
   repository: ""
   version: 0.1.0
@@ -38,5 +41,5 @@ dependencies:
 - name: dashboard
   repository: ""
   version: 0.8.1
-digest: sha256:a67cf4d62215bce4fd2efde57e84568ac4365b4fd21d2981ca72374f033e0391
-generated: "2026-05-22T10:27:40.459731+02:00"
+digest: sha256:a253e07c611fe2db66b91b66b68321c706a85d788eb888d0b5402998febb01b3
+generated: "2026-05-25T20:58:31.667821+02:00"
