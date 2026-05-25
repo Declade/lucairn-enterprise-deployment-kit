@@ -1,23 +1,18 @@
 {{- if .Values.postgresql.enabled }}
+# Migration Job uses .Release.Revision-suffixed name so each helm release
+# creates a NEW Job resource. Kubernetes treats Job spec.template as
+# immutable for existing resources; versioned names sidestep the
+# immutability constraint while keeping migrations as normal resources
+# that apply in the regular install order (after Secrets + Postgres +
+# Phase-2 imagePullSecret replication).
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ .Chart.Name }}-migrate
+  name: {{ .Chart.Name }}-migrate-r{{ .Release.Revision }}
   namespace: {{ .Values.namespace }}
   labels:
     app.kubernetes.io/name: {{ .Chart.Name }}-migrate
     app.kubernetes.io/part-of: dsa
-  annotations:
-    # K8s Job pod templates are immutable. Without these annotations, `helm
-    # upgrade` would fail because Helm tries to mutate `spec.template` on the
-    # existing Job (only `metadata`, `parallelism`, `suspend`, `activeDeadline-
-    # Seconds`, and `ttlSecondsAfterFinished` are mutable). The pre-install /
-    # pre-upgrade hook + before-hook-creation delete policy makes Helm delete
-    # the previous Job (if any) before creating the new one each release, so
-    # the pod template is recreated from scratch instead of mutated.
-    "helm.sh/hook": pre-install,pre-upgrade
-    "helm.sh/hook-weight": "0"
-    "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   backoffLimit: 3
   template:
