@@ -1,13 +1,23 @@
 # Lucairn Helm customer values.
 # Copy to customer-values.yaml, replace every REPLACE_* value, then run:
-#   helm upgrade --install lucairn charts/lucairn -f customer-values.yaml
+#   helm upgrade --install lucairn charts/lucairn \
+#     -f customer-values.yaml \
+#     --set-file global.imagePullDockerConfigJson=$DOCKER_CONFIG/config.json
+#
+# WARNING: DO NOT write the dockerconfigjson value into this file — it must
+# come from the --set-file flag at install time. Embedding the registry PAT
+# into customer-values.yaml would leak it into version control. See
+# INSTALL.md § "Kubernetes Install" for the isolated $DOCKER_CONFIG recipe.
 
 global:
   dsaEnv: production
   imageRegistry: ghcr.io/declade
-  imageTag: "0.4.0"
+  imageTag: "0.4.1"
   imagePullSecrets:
     - name: lucairn-registry
+  # imagePullDockerConfigJson is ALWAYS passed via `--set-file ...` at
+  # install time (see header). Leave it blank here.
+  imagePullDockerConfigJson: ""
   postgresqlSslmode: require
   nodeIsolation: true
   dnsRestriction: true
@@ -43,6 +53,17 @@ gateway:
       veilAISigningKey: ""
       dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
       gatewayKeystoreKey: "REPLACE_WITH_BASE64_32_BYTES"
+
+# Postgres instance backing the gateway's PostgresKeyStore — required for
+# HA + restart-survival of customer-minted API keys. PVC reclaim Retain;
+# `helm uninstall` preserves the keystore PVC (drop manually via
+# `kubectl delete pvc postgres-gateway-data -n dsa-edge`).
+postgres-gateway:
+  postgresql:
+    storageSize: 5Gi
+  secrets:
+    values:
+      postgresPassword: "REPLACE_WITH_POSTGRES_GATEWAY_PASSWORD"
 
 audit:
   postgresql:
