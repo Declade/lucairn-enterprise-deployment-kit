@@ -60,9 +60,15 @@ spec:
       ports:
         - port: 50058
           protocol: TCP
-    # Intra-namespace (gateway → postgres-gateway for the PostgresKeyStore)
+    # Intra-namespace (gateway → postgres-gateway for the PostgresKeyStore).
+    # Closes bug-hunter M4: named podSelector scopes the rule to the
+    # postgres-gateway StatefulSet pods (labelled app.kubernetes.io/name=
+    # postgres-gateway in templates/statefulset.yaml) instead of allowing
+    # all dsa-edge pods to dial each other on 5432.
     - to:
-        - podSelector: {}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres-gateway
       ports:
         - port: 5432
           protocol: TCP
@@ -83,9 +89,15 @@ spec:
           protocol: TCP
         - port: 8085
           protocol: TCP
-    # Intra-namespace (gateway → postgres-gateway for the PostgresKeyStore)
+    # Intra-namespace (postgres-gateway ← gateway for the PostgresKeyStore).
+    # Closes bug-hunter M4: named podSelector scopes the rule to the
+    # gateway Deployment pods (labelled app.kubernetes.io/name=gateway in
+    # gateway/templates/deployment.yaml) instead of allowing any dsa-edge
+    # pod to dial 5432.
     - from:
-        - podSelector: {}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
       ports:
         - port: 5432
           protocol: TCP
