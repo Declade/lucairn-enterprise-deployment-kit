@@ -142,6 +142,36 @@
 {{- end -}}
 
 {{- /*
+  validators.gatewayPostgresKeystoreSubchartMismatch
+
+  Closes bug-hunter H1. Fails fast when:
+    - gateway.postgresKeystore.enabled = true (gateway will try to read
+      GATEWAY_KEYSTORE_DSN from the gateway-keystore-db-credentials Secret)
+    AND
+    - postgres-gateway.enabled = false (the StatefulSet + Secret would
+      never render, so the gateway pod CrashLoopBackOffs at boot trying
+      to dial a non-existent Service / read a non-existent Secret).
+
+  Either both must be true (production / HA path) or both must be false
+  (single-replica dev fallback to file-keystore at gateway.keystorePath).
+
+  Cannot use sibling subchart .Subcharts access from inside the gateway
+  subchart (Helm 3 doesn't reliably propagate that across all minor
+  versions), so the guard lives in the umbrella validator layer where
+  both subchart value trees are visible via the umbrella's .Values
+  (postgres-gateway is keyed with a hyphen, so we use `index` to read
+  it). Invoked from charts/lucairn/templates/validators.yaml.
+*/ -}}
+{{- define "validators.gatewayPostgresKeystoreSubchartMismatch" -}}
+{{- $gateway := (default dict .Values.gateway) -}}
+{{- $pk := (default dict $gateway.postgresKeystore) -}}
+{{- $pgGW := (default dict (index .Values "postgres-gateway")) -}}
+{{- if and $pk.enabled (not $pgGW.enabled) -}}
+{{- fail "gateway.postgresKeystore.enabled=true requires postgres-gateway.enabled=true. The gateway boots with PostgresKeyStore and reads GATEWAY_KEYSTORE_DSN from the gateway-keystore-db-credentials Secret rendered by the postgres-gateway subchart. With postgres-gateway disabled, the Secret + StatefulSet are missing and the gateway pod CrashLoopBackOffs at boot. Either set both to true (production / HA path) or flip BOTH off and use the legacy file-keystore via gateway.keystorePath (single-replica dev only). See INSTALL.md § \"Postgres-Gateway Keystore\"." -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
   validators.dashboardDemoToggleNotProduction
 
   Surfaces a `# WARN-toggle-in-prod:` comment in the rendered
