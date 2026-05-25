@@ -188,13 +188,13 @@ dashboard-multiarch-build: dashboard-buildx-bootstrap
 # `push-alias-tags` in `dual-sandbox-architecture/Makefile`.
 dashboard-multiarch-promote-aliases:
 	@set -e; \
-	if [ "$(PLATFORMS)" != "linux/amd64,linux/arm64" ] && [ -z "$(FORCE_ALIAS)" ]; then \
+	if [ "$(PLATFORMS)" != "linux/amd64,linux/arm64" ] && [ "$(FORCE_ALIAS)" != "1" ]; then \
 		echo "REFUSING alias promotion: PLATFORMS=$(PLATFORMS) is not the required multi-arch set (linux/amd64,linux/arm64)." >&2; \
 		echo "Re-invoke with FORCE_ALIAS=1 to override (emergency only — see docs/RELEASING.md)." >&2; \
 		exit 1; \
 	fi; \
 	if ! echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$'; then \
-		if [ -z "$(FORCE_ALIAS)" ]; then \
+		if [ "$(FORCE_ALIAS)" != "1" ]; then \
 			echo "REFUSING alias promotion: VERSION=$(VERSION) is not a release semver (X.Y.Z)." >&2; \
 			echo "Any -rc, -bisect, or -dev suffix is rejected. Re-invoke with FORCE_ALIAS=1 to override (emergency only)." >&2; \
 			exit 1; \
@@ -202,8 +202,15 @@ dashboard-multiarch-promote-aliases:
 			echo "FORCE_ALIAS=1 set — proceeding with alias copy for non-semver VERSION=$(VERSION)." >&2; \
 		fi; \
 	fi; \
+	expected_minor=$$(echo "$(VERSION)" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/'); \
+	if [ "$(MINOR_TAG)" != "$$expected_minor" ] && [ "$(FORCE_ALIAS)" != "1" ]; then \
+		echo "REFUSING alias promotion: MINOR_TAG=$(MINOR_TAG) does not match major.minor of VERSION=$(VERSION) (expected $$expected_minor)." >&2; \
+		echo "Promoting :$(VERSION) to :$(MINOR_TAG) would silently overwrite the wrong minor-version channel." >&2; \
+		echo "Re-invoke with MINOR_TAG=$$expected_minor (or FORCE_ALIAS=1 for emergency only)." >&2; \
+		exit 1; \
+	fi; \
 	echo "Verifying $(REGISTRY)/lucairn-dashboard:$(VERSION) is multi-arch on the registry before promoting aliases..."; \
-	bash scripts/verify-multiarch-manifests.sh $(REGISTRY) $(VERSION) "$(DASHBOARD_PUBLISH_SERVICES)"; \
+	REQUIRED_PLATFORMS="linux/amd64 linux/arm64" bash scripts/verify-multiarch-manifests.sh $(REGISTRY) $(VERSION) "$(DASHBOARD_PUBLISH_SERVICES)"; \
 	echo ""; \
 	echo "Promoting $(REGISTRY)/lucairn-dashboard:$(VERSION) -> :$(MINOR_TAG) + :latest..."; \
 	docker buildx imagetools create \
@@ -212,8 +219,8 @@ dashboard-multiarch-promote-aliases:
 		$(REGISTRY)/lucairn-dashboard:$(VERSION); \
 	echo ""; \
 	echo "Verifying every alias is multi-arch (Sim 5 Gap 3 regression guard) ..."; \
-	bash scripts/verify-multiarch-manifests.sh $(REGISTRY) $(MINOR_TAG) "$(DASHBOARD_PUBLISH_SERVICES)"; \
-	bash scripts/verify-multiarch-manifests.sh $(REGISTRY) latest "$(DASHBOARD_PUBLISH_SERVICES)"; \
+	REQUIRED_PLATFORMS="linux/amd64 linux/arm64" bash scripts/verify-multiarch-manifests.sh $(REGISTRY) $(MINOR_TAG) "$(DASHBOARD_PUBLISH_SERVICES)"; \
+	REQUIRED_PLATFORMS="linux/amd64 linux/arm64" bash scripts/verify-multiarch-manifests.sh $(REGISTRY) latest "$(DASHBOARD_PUBLISH_SERVICES)"; \
 	echo ""; \
 	echo "Alias promotion complete: :$(MINOR_TAG) + :latest now point at :$(VERSION)."
 
