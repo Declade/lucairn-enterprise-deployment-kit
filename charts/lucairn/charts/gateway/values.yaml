@@ -21,7 +21,14 @@ auditServiceAddr: "audit.dsa-audit.svc:50051"
 verticalsDir: "/etc/dsa/verticals"
 sanitizerUrl: "http://sandbox-a.dsa-identity.svc:8086"
 sandboxBProxyUrl: "http://sandbox-b.dsa-ai.svc.cluster.local:8084"
-keystorePath: "/etc/dsa/keystore"
+# Default empty: postgresKeystore.enabled=true is the umbrella default and the
+# gateway derives its keystore from GATEWAY_KEYSTORE_DSN. Setting BOTH
+# GATEWAY_KEYSTORE_PATH and a Postgres backing trips the gateway's
+# mutual-exclusion check (services/gateway/internal/auth/apikey.go:522) and
+# crash-loops the pod. To opt into the legacy file-keystore path, set
+# gateway.postgresKeystore.enabled=false AND postgres-gateway.enabled=false
+# AND override keystorePath here to a writable mount (e.g. "/etc/dsa/keystore").
+keystorePath: ""
 grpcTlsEnabled: "false"
 veilEnabled: "true"
 enableTestProvider: "false"
