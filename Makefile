@@ -1,5 +1,6 @@
 .PHONY: test package customer-bundle clean \
         dashboard-buildx-bootstrap dashboard-multiarch-build \
+        dashboard-multiarch-promote-aliases \
         dashboard-verify-manifests
 
 test:
@@ -19,17 +20,45 @@ customer-bundle:
 # ----------------------------------------------------------------------------
 #
 # Mirrors the `release-multiarch` pattern from
-# `dual-sandbox-architecture/Makefile` (PR #196). The kit publishes ONE image
-# (`lucairn-dashboard`) on an independent cadence from the dsa-* services, so
-# the kit gets its own dedicated target rather than sharing DSA's
+# `dual-sandbox-architecture/Makefile` (PR #196 r5/r6). The kit publishes ONE
+# image (`lucairn-dashboard`) on an independent cadence from the dsa-* services,
+# so the kit gets its own dedicated target rather than sharing DSA's
 # `PUBLISH_SERVICES` matrix.
+#
+# TWO-PHASE PUBLISH (Codex r1 BLOCKER on PR #34 — fix-up r1):
+#
+#   Phase 1 — `dashboard-multiarch-build`: builds + pushes ONLY the exact
+#     `:$(VERSION)` tag. Does NOT touch `:$(MINOR_TAG)` or `:latest`. Safe to
+#     run with any VERSION + PLATFORMS combination including single-arch
+#     bisect runs and -rc/-bisect/-dev suffixes — rolling aliases are never
+#     affected.
+#
+#   Phase 2 — `dashboard-multiarch-promote-aliases`: copies the exact-VERSION
+#     manifest list into `:$(MINOR_TAG)` + `:latest` via
+#     `docker buildx imagetools create`. Refuses to run unless:
+#       (a) PLATFORMS equals the canonical multi-arch set
+#           (linux/amd64,linux/arm64), AND
+#       (b) VERSION matches release semver (^[0-9]+\.[0-9]+\.[0-9]+$ — no
+#           -rc/-bisect/-dev suffixes), AND
+#       (c) the source `:$(VERSION)` tag is already verified multi-arch on
+#           the remote registry.
+#     `FORCE_ALIAS=1` overrides (a) + (b) for emergency operator use only.
+#
+# This split closes the atomic-alias-promotion-on-single-arch-build defect
+# class: a single buildx invocation publishing `:VERSION` + `:MINOR` +
+# `:latest` atomically would have promoted an arm64-only bisect image (or an
+# -rc tag) to `:0.8` + `:latest` before the verifier could fire, recreating
+# the exact `exec format error` failure Sim 5 Gap #3 is meant to prevent.
 #
 # Default arguments are the production release values; override at the
 # command line for bisect / staging runs:
 #
-#   make dashboard-multiarch-build                          # release defaults
-#   make dashboard-multiarch-build VERSION=0.8.2 MINOR_TAG=0.8
-#   make dashboard-multiarch-build PLATFORMS=linux/amd64 VERSION=0.8.1-bisect-amd64
+#   make dashboard-multiarch-build                                  # exact tag only, multi-arch
+#   make dashboard-multiarch-build VERSION=0.8.2                    # exact :0.8.2 only
+#   make dashboard-multiarch-build VERSION=0.8.1-bisect-amd64 PLATFORMS=linux/amd64
+#                                                                   # bisect: exact tag only, NEVER aliases
+#   make dashboard-multiarch-promote-aliases VERSION=0.8.2 MINOR_TAG=0.8
+#                                                                   # promote :0.8.2 -> :0.8 + :latest
 #
 # Sim 5 (2026-05-25) found `ghcr.io/declade/lucairn-dashboard:0.8.1` was
 # arm64-only — same `exec format error` failure mode that closed Sim 4 Gap 5
@@ -83,11 +112,15 @@ dashboard-buildx-bootstrap:
 	fi
 	docker buildx inspect --bootstrap | grep -E 'Platforms|Status'
 
-# Build the multi-arch dashboard image and push it to GHCR. One buildx
-# invocation produces a manifest list and writes the three publish tags
-# (exact / minor / latest) atomically. Re-uses the canonical
-# `apps/dashboard/Dockerfile` which is multi-stage Go + distroless and
-# cross-compiles cleanly under QEMU (CGO disabled).
+# Phase 1: build the multi-arch dashboard image and push ONLY the exact
+# :$(VERSION) tag. Re-uses the canonical `apps/dashboard/Dockerfile` which is
+# multi-stage Go + distroless and cross-compiles cleanly under QEMU (CGO
+# disabled).
+#
+# Does NOT touch `:$(MINOR_TAG)` or `:latest`. Rolling alias promotion is a
+# SEPARATE target (`dashboard-multiarch-promote-aliases`) so bisect and -rc
+# publishes can never advance the rolling aliases. Closes Codex r1 BLOCKER on
+# PR #34 (mirrors DSA PR #196 r5/r6).
 dashboard-multiarch-build: dashboard-buildx-bootstrap
 	@echo "Pre-flight: copy kit-root image-manifest.yaml into apps/dashboard/ ..."
 	$(MAKE) -C apps/dashboard image-manifest-sync
@@ -106,26 +139,90 @@ dashboard-multiarch-build: dashboard-buildx-bootstrap
 	@echo "  OK: static/css, static/fonts/*.woff2, static/icons/sprite.svg, apps/dashboard/image-manifest.yaml all present."
 	@echo ""
 	@echo "Building + pushing $(REGISTRY)/lucairn-dashboard:$(VERSION) for platforms: $(PLATFORMS) ..."
-	@echo "Also publishing :$(MINOR_TAG) + :latest aliases."
+	@echo "Exact tag ONLY — :$(MINOR_TAG) + :latest aliases are NOT touched by this target."
+	@echo "Run \`make dashboard-multiarch-promote-aliases VERSION=$(VERSION) MINOR_TAG=$(MINOR_TAG)\` to advance aliases when ready."
 	docker buildx build \
 		--builder $(BUILDX_BUILDER) \
 		--platform $(PLATFORMS) \
 		--tag $(REGISTRY)/lucairn-dashboard:$(VERSION) \
-		--tag $(REGISTRY)/lucairn-dashboard:$(MINOR_TAG) \
-		--tag $(REGISTRY)/lucairn-dashboard:latest \
 		--build-arg VERSION=$(VERSION) \
 		--push \
 		apps/dashboard/
 	@echo ""
-	@echo "Verifying every pushed tag is multi-arch (Sim 5 Gap 3 regression guard) ..."
-	$(MAKE) dashboard-verify-manifests REGISTRY=$(REGISTRY) VERSION=$(VERSION) MINOR_TAG=$(MINOR_TAG)
+	@echo "Verifying $(REGISTRY)/lucairn-dashboard:$(VERSION) was published with the expected platforms ($(PLATFORMS)) ..."
+	@bash scripts/verify-multiarch-manifests.sh $(REGISTRY) $(VERSION) "$(DASHBOARD_PUBLISH_SERVICES)" \
+		|| (echo "  WARNING: verifier expects linux/amd64 + linux/arm64; PLATFORMS=$(PLATFORMS) may have intentionally published single-arch (bisect)." >&2; \
+		    if [ "$(PLATFORMS)" = "linux/amd64,linux/arm64" ]; then echo "  PLATFORMS is the canonical multi-arch set — failing." >&2 && exit 1; \
+		    else echo "  Non-canonical PLATFORMS — treating verifier exit as expected." >&2; fi)
 	@echo ""
-	@echo "Multi-arch release complete: $(REGISTRY)/lucairn-dashboard $(VERSION) ($(PLATFORMS))"
+	@echo "Phase 1 (exact-tag build) complete: $(REGISTRY)/lucairn-dashboard:$(VERSION) ($(PLATFORMS))"
+
+# Phase 2: promote the exact `:$(VERSION)` tag into rolling `:$(MINOR_TAG)` +
+# `:latest` aliases. Uses `docker buildx imagetools create` to COPY the
+# multi-arch manifest list — no rebuild, no layer re-upload, just a manifest
+# clone. Both alias tags are written in a single invocation so they either
+# both advance or both fail.
+#
+# GUARDS (fail-closed):
+#   1. PLATFORMS must equal the canonical multi-arch set
+#      (linux/amd64,linux/arm64). Single-arch / bisect runs skip alias copy
+#      unless `FORCE_ALIAS=1` is set explicitly.
+#   2. VERSION must match the release semver regex (^[0-9]+\.[0-9]+\.[0-9]+$).
+#      Any suffix (-bisect-amd64, -rc1, -dev, etc.) skips alias copy unless
+#      `FORCE_ALIAS=1` is set explicitly.
+#   3. Source `:$(VERSION)` tag MUST be verified multi-arch on the remote
+#      registry BEFORE any `imagetools create` call — closes the "build
+#      verifier silently failed but alias copy ran anyway" race.
+#   4. After alias promotion, each alias is re-verified multi-arch.
+#
+# FORCE_ALIAS=1 is documented in `docs/RELEASING.md` § "Emergency override".
+# Use sparingly — exists only so an operator can recover from a botched
+# release without manual GHCR tag surgery.
+#
+# IMPLEMENTATION NOTE: the entire guard recipe runs in a SINGLE shell
+# invocation (one long `\\`-continued block) because each Makefile recipe
+# line is a separate sub-shell — `exit 0` in an earlier line only ends that
+# line's sub-shell, NOT the whole target. Without the single-shell structure,
+# the "Skipping" branches would print their warning and then fall through
+# into the imagetools step anyway, defeating the guard. Same shape as DSA
+# `push-alias-tags` in `dual-sandbox-architecture/Makefile`.
+dashboard-multiarch-promote-aliases:
+	@set -e; \
+	if [ "$(PLATFORMS)" != "linux/amd64,linux/arm64" ] && [ -z "$(FORCE_ALIAS)" ]; then \
+		echo "REFUSING alias promotion: PLATFORMS=$(PLATFORMS) is not the required multi-arch set (linux/amd64,linux/arm64)." >&2; \
+		echo "Re-invoke with FORCE_ALIAS=1 to override (emergency only — see docs/RELEASING.md)." >&2; \
+		exit 1; \
+	fi; \
+	if ! echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$'; then \
+		if [ -z "$(FORCE_ALIAS)" ]; then \
+			echo "REFUSING alias promotion: VERSION=$(VERSION) is not a release semver (X.Y.Z)." >&2; \
+			echo "Any -rc, -bisect, or -dev suffix is rejected. Re-invoke with FORCE_ALIAS=1 to override (emergency only)." >&2; \
+			exit 1; \
+		else \
+			echo "FORCE_ALIAS=1 set — proceeding with alias copy for non-semver VERSION=$(VERSION)." >&2; \
+		fi; \
+	fi; \
+	echo "Verifying $(REGISTRY)/lucairn-dashboard:$(VERSION) is multi-arch on the registry before promoting aliases..."; \
+	bash scripts/verify-multiarch-manifests.sh $(REGISTRY) $(VERSION) "$(DASHBOARD_PUBLISH_SERVICES)"; \
+	echo ""; \
+	echo "Promoting $(REGISTRY)/lucairn-dashboard:$(VERSION) -> :$(MINOR_TAG) + :latest..."; \
+	docker buildx imagetools create \
+		--tag $(REGISTRY)/lucairn-dashboard:$(MINOR_TAG) \
+		--tag $(REGISTRY)/lucairn-dashboard:latest \
+		$(REGISTRY)/lucairn-dashboard:$(VERSION); \
+	echo ""; \
+	echo "Verifying every alias is multi-arch (Sim 5 Gap 3 regression guard) ..."; \
+	bash scripts/verify-multiarch-manifests.sh $(REGISTRY) $(MINOR_TAG) "$(DASHBOARD_PUBLISH_SERVICES)"; \
+	bash scripts/verify-multiarch-manifests.sh $(REGISTRY) latest "$(DASHBOARD_PUBLISH_SERVICES)"; \
+	echo ""; \
+	echo "Alias promotion complete: :$(MINOR_TAG) + :latest now point at :$(VERSION)."
 
 # Regression guard for Sim 5 Gap 3. Asserts that every published dashboard tag
 # (exact / minor / latest) contains BOTH `linux/amd64` and `linux/arm64` in its
 # manifest list. Re-uses `scripts/verify-multiarch-manifests.sh` (vendored from
-# dual-sandbox-architecture PR #196).
+# dual-sandbox-architecture PR #196). Operator-facing convenience that checks
+# all three tags at once; individual targets call the script directly with
+# only the tags they actually touched.
 dashboard-verify-manifests:
 	@bash scripts/verify-multiarch-manifests.sh $(REGISTRY) $(VERSION) "$(DASHBOARD_PUBLISH_SERVICES)"
 	@bash scripts/verify-multiarch-manifests.sh $(REGISTRY) $(MINOR_TAG) "$(DASHBOARD_PUBLISH_SERVICES)"
