@@ -21,6 +21,16 @@ postgresql:
   # delete pvc postgres-gateway-data -n dsa-edge` manually to drop keys.
   storageSize: 1Gi
   storageClass: ""
+  # Bundled postgres:16-alpine StatefulSet ships without TLS args/cert mounts,
+  # so the keystore DSN MUST use sslmode=disable. The global
+  # `global.postgresqlSslmode` (default "require") is intended for
+  # customer-supplied EXTERNAL Postgres which may already be configured for
+  # TLS — those paths are upstream of this chart-local default and unaffected.
+  # If you swap the bundled StatefulSet for an external TLS-enabled keystore
+  # via secrets.backend != "k8s-native" (roadmap, not yet implemented),
+  # override `postgres-gateway.postgresql.sslmode: require` for that path.
+  # Closes Sim 5 Codex r1 HIGH (bundled gateway server does not speak TLS).
+  sslmode: disable
 
 resources:
   requests:

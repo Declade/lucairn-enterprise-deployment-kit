@@ -66,6 +66,13 @@ gateway:
 # HA + restart-survival of customer-minted API keys. PVC reclaim Retain;
 # `helm uninstall` preserves the keystore PVC (drop manually via
 # `kubectl delete pvc postgres-gateway-data -n dsa-edge`).
+#
+# postgresql.sslmode defaults to "disable" (chart-local default) because the
+# bundled postgres:16-alpine StatefulSet ships without TLS args/cert mounts.
+# The global.postgresqlSslmode=require above applies to OTHER DSNs (audit,
+# id-bridge, etc.) where customers may front the bundled servers with TLS.
+# Override `postgres-gateway.postgresql.sslmode: require` only if you swap
+# the bundled keystore Postgres for a customer-managed TLS-enabled instance.
 postgres-gateway:
   postgresql:
     storageSize: 5Gi
