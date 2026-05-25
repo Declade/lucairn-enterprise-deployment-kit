@@ -65,7 +65,7 @@ bin/lucairn doctor \
   --offline
 ```
 
-For registry delivery, run the non-offline doctor check from a host that has the same registry access the customer will use (Lucairn-default GHCR is public, no credentials needed; a private mirror requires the matching credentials):
+For registry delivery, run the non-offline doctor check from a host that has the same registry access the customer will use (Lucairn-default GHCR is currently private — a GitHub PAT with `read:packages` scope is required via `docker login ghcr.io`; see `INSTALL.md` § "Registry Authentication". A private mirror requires the matching mirror credentials):
 
 ```bash
 bin/lucairn doctor \

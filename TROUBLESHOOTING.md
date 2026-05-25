@@ -15,7 +15,7 @@ Common causes:
 - `GATEWAY_KEYSTORE_KEY` is not base64 32 bytes.
 - A required Veil key is blank.
 - Host port 8080 or 8085 is already in use.
-- GHCR images fail to pull. The default `ghcr.io/declade/*` Lucairn images are public; transient pull failures usually mean network egress restriction on the host. If your install uses a private mirror, run `docker login ghcr.io` against the mirror credentials or set `LUCAIRN_IMAGE_REGISTRY` to the mirror prefix.
+- GHCR images fail to pull. The default `ghcr.io/declade/*` Lucairn images are private — a 401 / `unauthorized` from `docker pull` means you have not yet authenticated. Mint a GitHub PAT with the `read:packages` scope and run `echo "<PAT>" | docker login ghcr.io -u <github-username> --password-stdin`; see `INSTALL.md` § "Registry Authentication". If the install uses a private mirror, `docker login` against the mirror credentials and set `LUCAIRN_IMAGE_REGISTRY` to the mirror prefix. Transient pull failures (TCP timeout / EOF) usually mean network egress restriction on the host rather than auth.
 
 ## Docker / OrbStack: "All Predefined Address Pools Have Been Fully Subnetted"
 
