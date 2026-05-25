@@ -50,7 +50,7 @@ python3 - "$seed_hex" <<'PY'
 # `public_bytes(Encoding.Raw, PublicFormat.Raw)` API rather than the
 # newer `public_bytes_raw()` shortcut. The shortcut was added in
 # cryptography 40.0 (May 2023); the older API works back to
-# cryptography 2.5 (2019). Ubuntu 22.04 LTS's apt-installed
+# cryptography 2.6 (Feb 2019, when Ed25519 was added). Ubuntu 22.04 LTS's apt-installed
 # `python3-cryptography` package is 3.4.8 — old enough that
 # `public_bytes_raw` is an AttributeError. The Encoding/PublicFormat
 # form pulls in two extra imports but works on every cryptography
@@ -67,7 +67,7 @@ except Exception:
         pub = bytes(SigningKey(seed).verify_key)
     except Exception as e:
         sys.stderr.write(
-            "error: neither 'cryptography' (>=2.5) nor 'pynacl' is installed.\n"
+            "error: neither 'cryptography' (>=2.6) nor 'pynacl' is installed.\n"
             "  On Ubuntu 22.04 the apt-installed python3-cryptography (3.4.8) works.\n"
             "  Otherwise: pip install cryptography  (preferred)\n"
             f"  underlying error: {e}\n"
