@@ -47,21 +47,41 @@ For Kubernetes:
 
 ## Registry Authentication
 
+### Prerequisite — Lucairn-issued GHCR access
+
+The default Lucairn images live in the private `ghcr.io/declade/*` registry.
+A self-minted GitHub PAT with `read:packages` scope is NOT sufficient; the
+GitHub account that owns the PAT must also have been GRANTED package-pull
+access by Lucairn. Contact support@lucairn.eu with the GitHub username you
+will use for the install BEFORE attempting any `docker pull` / `docker login`
+step below — Lucairn provisions access typically within one business day.
+
+If your install runs purely from a private internal registry mirror, this
+prerequisite is moot — see "Mirroring images to a private registry" below.
+
+### Login walkthrough
+
 The Lucairn-default GHCR images (`ghcr.io/declade/dsa-*` and
 `ghcr.io/declade/lucairn-dashboard`) are currently **private** — a GitHub
 personal-access token (PAT) with `read:packages` scope is required to pull
-them. Authenticate against ghcr.io once before running `docker compose up`
-or `docker pull`:
+them, AND the GitHub account that owns the PAT must have been granted
+package-pull access per the prerequisite above. Authenticate against
+ghcr.io once before running `docker compose up` or `docker pull`:
 
 ```bash
 # 1. Mint a GitHub PAT (Settings → Developer settings → Personal access
 #    tokens → Tokens (classic)) with the `read:packages` scope and write
-#    the value to a 0600 file.
-echo "<paste-PAT-value>" > ~/.ghcr-token
-chmod 600 ~/.ghcr-token
+#    the value to a 0600 file. Using a 0600 file (instead of pasting the
+#    PAT directly into a `docker login` command) keeps the PAT out of
+#    your shell history.
+umask 077
+cat > ~/.ghcr-token <<'EOF'
+github_pat_xxxxxxxxxxxxxxxxxxxxxxxxx
+EOF
+chmod 600 ~/.ghcr-token   # belt-and-suspenders
 
-# 2. Log Docker into ghcr.io with that token.
-cat ~/.ghcr-token | docker login ghcr.io -u <your-github-username> --password-stdin
+# 2. Log Docker into ghcr.io via stdin from the file.
+docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 ```
 
 The login cookie persists in `~/.docker/config.json` until you `docker
@@ -149,11 +169,14 @@ chmod 600 customer.env
 
 3. Authenticate against the image registry.
 
-The Lucairn-default GHCR images are private. See § "Registry Authentication"
-above for the full PAT-based login walkthrough; the short version:
+The Lucairn-default GHCR images are private. Lucairn must first grant your
+GitHub account package-pull access — see § "Registry Authentication"
+above for the prerequisite contact-flow and the full PAT-based login
+walkthrough. The short version (read the PAT from a 0600 file so it
+never appears in your shell history):
 
 ```bash
-echo "<your-PAT>" | docker login ghcr.io -u <your-github-username> --password-stdin
+docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 ```
 
 If the customer uses an internal registry mirror, `docker login` against
@@ -369,21 +392,55 @@ The script prints the raw API key **once** — capture it to a 0600 file. Smoke 
 1. Create the image pull secret.
 
    The Lucairn-default GHCR images are private — Kubernetes pods need a
-   `dockerconfigjson` Secret to pull them. Mint a GitHub PAT with the
-   `read:packages` scope (or reuse the one from the Compose path
-   § "Registry Authentication"), then create the namespace + Secret:
+   `dockerconfigjson` Secret to pull them, AND the GitHub account that owns
+   the PAT must have been granted package-pull access by Lucairn (see
+   § "Registry Authentication" → "Prerequisite — Lucairn-issued GHCR access"
+   above). Mint a GitHub PAT with the `read:packages` scope (or reuse the
+   one from the Compose path § "Registry Authentication"). If you have not
+   yet saved the PAT to a 0600 file, do that first so the value never
+   appears in your shell history:
+
+```bash
+umask 077
+cat > ~/.ghcr-token <<'EOF'
+github_pat_xxxxxxxxxxxxxxxxxxxxxxxxx
+EOF
+chmod 600 ~/.ghcr-token   # belt-and-suspenders
+```
+
+   Then create the pull Secret in every namespace the Helm chart deploys
+   workloads into. Kubernetes Secrets are namespace-scoped — a Secret in
+   one namespace cannot be referenced by pods in another, so the pull
+   Secret must be replicated across all workload namespaces or every pod
+   outside the `lucairn` namespace will fail with `ImagePullBackOff`.
+
+   The canonical workload-namespace list comes from
+   `charts/lucairn/charts/infrastructure/values.yaml` (`namespaces:` block);
+   the loop below mirrors that list. If you override namespaces in
+   `customer-values.yaml`, adjust the loop to match.
 
 ```bash
 export GHCR_USERNAME=<your-github-username>
-export GHCR_TOKEN=$(cat ~/.ghcr-token)   # PAT from the Compose-path Registry Authentication step above
+export GHCR_TOKEN=$(cat ~/.ghcr-token)   # PAT from the 0600 file you just created
 
-kubectl create namespace lucairn
-kubectl create secret docker-registry lucairn-registry \
-  --namespace lucairn \
-  --docker-server ghcr.io \
-  --docker-username "$GHCR_USERNAME" \
-  --docker-password "$GHCR_TOKEN"
+# Replicate the pull Secret into every workload namespace the chart
+# deploys to. (Secrets are namespace-scoped; pods can only reference
+# Secrets in their own namespace.) `--dry-run=client -o yaml | kubectl
+# apply -f -` makes the command idempotent — safe to re-run after a
+# PAT rotation or a partial install.
+for ns in lucairn dsa-edge dsa-identity dsa-bridge dsa-ai dsa-audit dsa-observability dsa-ingest dsa-admin dsa-witness; do
+  kubectl create namespace "$ns" 2>/dev/null || true
+  kubectl create secret docker-registry lucairn-registry \
+    --namespace "$ns" \
+    --docker-server ghcr.io \
+    --docker-username "$GHCR_USERNAME" \
+    --docker-password "$GHCR_TOKEN" \
+    --dry-run=client -o yaml | kubectl apply -f -
+done
 ```
+
+If you have `global.demoEnabled: true` in `customer-values.yaml`, also
+include `dsa-demo` in the namespace loop above.
 
 If the customer mirrors the images into a private registry, point this
 Secret at the mirror's hostname + mirror credentials instead and set
