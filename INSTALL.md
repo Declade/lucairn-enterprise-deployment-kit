@@ -408,39 +408,38 @@ EOF
 chmod 600 ~/.ghcr-token   # belt-and-suspenders
 ```
 
-   Then create the pull Secret in every namespace the Helm chart deploys
-   workloads into. Kubernetes Secrets are namespace-scoped — a Secret in
-   one namespace cannot be referenced by pods in another, so the pull
-   Secret must be replicated across all workload namespaces or every pod
-   outside the `lucairn` namespace will fail with `ImagePullBackOff`.
+   Then create the pull Secret. Kubernetes Secrets are namespace-scoped —
+   a Secret in one namespace cannot be referenced by pods in another, so
+   the pull Secret must exist in every workload namespace or pods will
+   fail with `ImagePullBackOff`.
 
-   The canonical workload-namespace list comes from
-   `charts/lucairn/charts/infrastructure/values.yaml` (`namespaces:` block);
-   the loop below mirrors that list. If you override namespaces in
-   `customer-values.yaml`, adjust the loop to match.
+   The `dsa-*` workload namespaces are rendered by the chart as Helm
+   `pre-install,pre-upgrade` hooks (see
+   `charts/lucairn/charts/infrastructure/templates/namespaces.yaml`).
+   Helm hooks **cannot adopt preexisting resources** — if you
+   `kubectl create namespace dsa-edge` before `helm install`, the
+   release will fail with `AlreadyExists`. Therefore the Secret
+   replication must happen in two phases: create the Secret in the
+   `lucairn` release namespace BEFORE `helm install`, then replicate it
+   across the `dsa-*` namespaces AFTER `helm install` creates them via
+   hooks.
 
 ```bash
 export GHCR_USERNAME=<your-github-username>
 export GHCR_TOKEN=$(cat ~/.ghcr-token)   # PAT from the 0600 file you just created
 
-# Replicate the pull Secret into every workload namespace the chart
-# deploys to. (Secrets are namespace-scoped; pods can only reference
-# Secrets in their own namespace.) `--dry-run=client -o yaml | kubectl
-# apply -f -` makes the command idempotent — safe to re-run after a
-# PAT rotation or a partial install.
-for ns in lucairn dsa-edge dsa-identity dsa-bridge dsa-ai dsa-audit dsa-observability dsa-ingest dsa-admin dsa-witness; do
-  kubectl create namespace "$ns" 2>/dev/null || true
-  kubectl create secret docker-registry lucairn-registry \
-    --namespace "$ns" \
-    --docker-server ghcr.io \
-    --docker-username "$GHCR_USERNAME" \
-    --docker-password "$GHCR_TOKEN" \
-    --dry-run=client -o yaml | kubectl apply -f -
-done
+# Phase 1 (pre-helm): create the pull Secret in the lucairn release
+# namespace only. The `lucairn` namespace is created by `helm install
+# --create-namespace` if it doesn't already exist, so pre-creating it
+# here is safe and idempotent (it is NOT a Helm-managed hook).
+kubectl create namespace lucairn 2>/dev/null || true
+kubectl create secret docker-registry lucairn-registry \
+  --namespace lucairn \
+  --docker-server ghcr.io \
+  --docker-username "$GHCR_USERNAME" \
+  --docker-password "$GHCR_TOKEN" \
+  --dry-run=client -o yaml | kubectl apply -f -
 ```
-
-If you have `global.demoEnabled: true` in `customer-values.yaml`, also
-include `dsa-demo` in the namespace loop above.
 
 If the customer mirrors the images into a private registry, point this
 Secret at the mirror's hostname + mirror credentials instead and set
@@ -461,7 +460,8 @@ helm dependency build charts/lucairn
 helm template lucairn charts/lucairn -f customer-values.yaml --namespace lucairn >/tmp/lucairn-rendered.yaml
 ```
 
-5. Install.
+5. Install. This runs the namespace pre-install hooks and creates every
+   `dsa-*` namespace.
 
 ```bash
 helm upgrade --install lucairn charts/lucairn \
@@ -470,7 +470,36 @@ helm upgrade --install lucairn charts/lucairn \
   --create-namespace
 ```
 
-6. Watch rollout.
+6. Phase 2 (post-helm): replicate the pull Secret into every `dsa-*`
+   workload namespace the chart just created. Pods in these namespaces
+   need the Secret to pull images from ghcr.io.
+
+   The canonical workload-namespace list comes from
+   `charts/lucairn/charts/infrastructure/values.yaml` (`namespaces:`
+   block); the loop below mirrors that list. If you override namespaces
+   in `customer-values.yaml`, adjust the loop to match.
+
+```bash
+# Copy the lucairn-registry Secret from the lucairn namespace into each
+# dsa-* namespace. `kubectl create --dry-run=client -o yaml | kubectl
+# apply -f -` makes the command idempotent — safe to re-run after a PAT
+# rotation or a partial install.
+for ns in dsa-edge dsa-identity dsa-bridge dsa-ai dsa-audit dsa-observability dsa-ingest dsa-admin dsa-witness dsa-demo; do
+  kubectl create secret docker-registry lucairn-registry \
+    --namespace "$ns" \
+    --docker-server ghcr.io \
+    --docker-username "$GHCR_USERNAME" \
+    --docker-password "$GHCR_TOKEN" \
+    --dry-run=client -o yaml | kubectl apply -f -
+done
+```
+
+The `dsa-demo` namespace is always rendered by the chart (its workloads
+are gated separately by `global.demoEnabled`), so the loop includes it
+unconditionally — safe in all configurations because the Secret object
+is decoupled from the demo workloads.
+
+7. Watch rollout.
 
 ```bash
 kubectl get pods -A -l app.kubernetes.io/part-of=dsa
