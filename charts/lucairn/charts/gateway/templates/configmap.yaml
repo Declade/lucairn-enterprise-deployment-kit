@@ -40,6 +40,16 @@ data:
   # Required when dsaEnv=production + veilEnabled=true (gateway log.Fatals
   # otherwise per CC-017 P2 production gate, gateway/main.go:434).
   VEIL_WITNESS_ADDR: {{ .Values.veilWitnessAddr | quote }}
+  # Veil cert-chain manifest wiring (Vast cascade H, 2026-05-26). Mirrors
+  # the env vars Compose passes to the gateway at docker-compose.customer.yml
+  # lines 423-432. Without these, the gateway's veil-cert handler boots with
+  # bare hardcoded defaults — Compose deploys override to these literals.
+  # Aligning Helm with Compose fixes the cert-chain regression where bridge
+  # + audit claims arrive at the witness but the cert verifier reports them
+  # as `missing_services` and downgrades the cert verdict to PARTIAL.
+  VEIL_ISSUER: {{ .Values.veilIssuer | quote }}
+  VEIL_MANIFEST_SIGNING_KEY_ID: {{ .Values.veilManifestSigningKeyId | quote }}
+  VEIL_WITNESS_SIGNED_MANIFEST_PATH: {{ .Values.veilWitnessSignedManifestPath | quote }}
   GATEWAY_REQUIRE_READINESS: {{ ternary "true" "false" .Values.readiness.required | quote }}
   GATEWAY_READINESS_USE_CASE: {{ .Values.readiness.useCase | quote }}
   GATEWAY_READINESS_MAX_AGE: {{ .Values.readiness.maxAge | quote }}

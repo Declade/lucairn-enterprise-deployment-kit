@@ -66,6 +66,20 @@ veilWitnessCertAddr: "veil-witness.dsa-witness.svc.cluster.local:50058"
 # global.dsaEnv=production AND veilEnabled=true (gateway log.Fatals
 # otherwise per CC-017 P2 production gate at gateway/main.go:434).
 veilWitnessAddr: "veil-witness.dsa-witness.svc.cluster.local:50057"
+# Veil cert-chain manifest wiring (Vast cascade H, 2026-05-26). Mirrors the
+# 6 env vars Compose passes to the gateway at customer.env.example
+# lines 95-102. Without these, the gateway's veil-cert handler boots with
+# bare defaults and the cert-chain assembler can't tie incoming bridge/audit
+# claims to the expected service set — verifier surfaces them as
+# `missing_services` and downgrades the cert to COMPLETENESS_PARTIAL /
+# VERDICT_PARTIAL even when all four service claims are successfully
+# emitted and persisted in the witness DB. The 3 literals below carry the
+# same defaults as customer.env.example; the 3 pubkey companions are
+# derived from existing signing keys via scripts/render-values.sh and
+# rendered into the gateway secret block below.
+veilIssuer: "Lucairn Veil Witness"
+veilManifestSigningKeyId: "gateway_manifest_v1"
+veilWitnessSignedManifestPath: "/certs/witness-signed-manifest.json"
 gatewayBaseUrl: ""
 readiness:
   required: false
@@ -178,6 +192,26 @@ secrets:
     # Generate via `bin/lucairn-init` (paired-slot GATEWAY) or directly
     # via scripts/derive-veil-pubkey.sh after `openssl rand -hex 32`.
     veilGatewaySigningKey: ""
+    # VEIL_GATEWAY_PUBLIC_KEY — Ed25519 public key derived from
+    # veilGatewaySigningKey via scripts/derive-veil-pubkey.sh. Published
+    # in /.well-known/veil-keys.json so external SDK verifiers can
+    # validate gateway-emitted GATEWAY_REQUEST_COMPLETED claims.
+    # (Vast cascade H, 2026-05-26.)
+    veilGatewayPublicKey: ""
+    # VEIL_GATEWAY_MANIFEST_PUBLIC_KEY — public counterpart of the
+    # gateway's manifest-signing private key. Same derivation source as
+    # veilGatewayPublicKey (Ed25519 pub of veilGatewaySigningKey); the
+    # manifest path reuses the gateway emitter keypair. Published in
+    # /.well-known/veil-keys.json keys[] so the W2B Runtime Invariant
+    # Harness #3 can verify signatures.*.key_id linkage. Same caveat as
+    # Compose: leaving empty silently degrades the harness self-check
+    # but does NOT block normal cert verification. (Vast cascade H.)
+    veilGatewayManifestPublicKey: ""
+    # VEIL_WITNESS_MANIFEST_PUBLIC_KEY — public counterpart of the
+    # witness manifest-signing private key. Derived from the witness
+    # signing seed (same Ed25519 derivation as VEIL_WITNESS_PUBLIC_KEY).
+    # Same harness #3 rationale as veilGatewayManifestPublicKey above.
+    veilWitnessManifestPublicKey: ""
     veilWitnessPublicKey: ""
     veilBridgePublicKey: ""
     veilSanitizerPublicKey: ""

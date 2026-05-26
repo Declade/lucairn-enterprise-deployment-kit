@@ -126,6 +126,16 @@ gateway:
       # Paired pubkey is published at gateway's /.well-known/veil-keys.json
       # for external SDK verifier validation. (Fix-up #11.)
       veilGatewaySigningKey: "REPLACE_WITH_64_HEX_GATEWAY_SIGNING_KEY"
+      # Vast cascade H (2026-05-26): VEIL_GATEWAY_PUBLIC_KEY +
+      # GATEWAY_MANIFEST_PUBLIC_KEY + WITNESS_MANIFEST_PUBLIC_KEY.
+      # All three are DERIVED Ed25519 pubkeys, not independent
+      # secrets — render-values.sh fills them from the matching
+      # signing seeds. Manifest pubkeys reuse the gateway/witness
+      # emitter keypairs by design (single Ed25519 derivation per
+      # service; mirrors Compose customer.env.example lines 87-95).
+      veilGatewayPublicKey: "REPLACE_WITH_64_HEX_GATEWAY_PUBLIC_KEY"
+      veilGatewayManifestPublicKey: "REPLACE_WITH_64_HEX_GATEWAY_MANIFEST_PUBLIC_KEY"
+      veilWitnessManifestPublicKey: "REPLACE_WITH_64_HEX_WITNESS_MANIFEST_PUBLIC_KEY"
       veilWitnessPublicKey: "REPLACE_WITH_64_HEX_WITNESS_PUBLIC_KEY"
       veilBridgePublicKey: "REPLACE_WITH_64_HEX_BRIDGE_PUBLIC_KEY"
       veilSanitizerPublicKey: "REPLACE_WITH_64_HEX_SANITIZER_PUBLIC_KEY"
