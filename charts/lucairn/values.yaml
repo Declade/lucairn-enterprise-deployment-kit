@@ -42,12 +42,20 @@ global:
   demoEnabled: false
   # Node pool isolation: when true, Sandbox A and Sandbox B are scheduled
   # on separate node pools (dsa.io/zone=identity vs dsa.io/zone=ai) with
-  # hard anti-affinity. Requires labeled + tainted nodes. Disable for dev.
+  # hard anti-affinity. Requires labeled + tainted nodes (managed-K8s
+  # node pools or Cilium-equivalent). Default false targets vanilla
+  # K8s (Kind, vanilla EKS/GKE/AKS) where these labels do not exist
+  # and would block scheduling. Flip on at a customer site that has
+  # the labeled nodes provisioned. (Vast-verify finding #1.)
   nodeIsolation: false
   # DNS restriction: deploy CoreDNS/Cilium policies to prevent cross-namespace
   # DNS resolution (dsa-ai cannot discover dsa-identity service names).
-  # Requires Cilium CNI or CoreDNS firewall plugin. Disable for dev.
-  dnsRestriction: true
+  # Requires Cilium CNI or CoreDNS firewall plugin. Default false targets
+  # vanilla K8s where neither is configured; flipping on without the
+  # required CNI policy crashes service discovery between dsa-edge /
+  # dsa-identity / dsa-ai / dsa-witness. Flip on at a customer site
+  # that runs Cilium with CNP enforcement. (Vast-verify finding #1.)
+  dnsRestriction: false
   # PostgreSQL sslmode: "disable" for local dev, "require" for production.
   postgresqlSslmode: require
   # Cilium WireGuard transparent encryption for all pod-to-pod traffic.
