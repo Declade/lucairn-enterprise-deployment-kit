@@ -95,6 +95,15 @@ gateway:
       adminKey: "REPLACE_WITH_64_HEX_ADMIN_KEY"
       sandboxBApiKey: "REPLACE_WITH_SANDBOX_B_API_KEY"
       veilManifestSigningKey: "REPLACE_WITH_64_HEX_MANIFEST_SIGNING_KEY"
+      # Gateway-emitted GATEWAY_REQUEST_COMPLETED claim signing key
+      # (Ed25519 seed, 64-char hex). REQUIRED in production:
+      # gateway/main.go:438 log.Fatals at boot if empty when
+      # global.dsaEnv=production + veilEnabled=true. `bin/lucairn-init`
+      # already produces VEIL_GATEWAY_SIGNING_KEY in customer.env under
+      # the VEIL_PAIRED_SLOTS=GATEWAY entry — paste the SAME value here.
+      # Paired pubkey is published at gateway's /.well-known/veil-keys.json
+      # for external SDK verifier validation. (Fix-up #11.)
+      veilGatewaySigningKey: "REPLACE_WITH_64_HEX_GATEWAY_SIGNING_KEY"
       veilWitnessPublicKey: "REPLACE_WITH_64_HEX_WITNESS_PUBLIC_KEY"
       veilBridgePublicKey: "REPLACE_WITH_64_HEX_BRIDGE_PUBLIC_KEY"
       veilSanitizerPublicKey: "REPLACE_WITH_64_HEX_SANITIZER_PUBLIC_KEY"
