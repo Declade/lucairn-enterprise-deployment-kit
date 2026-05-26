@@ -764,8 +764,16 @@ The v1.0-dashboard arc is feature-complete.
 
 1. Set `dashboard.enabled: true` in your `customer-values.yaml` (or
    `--set dashboard.enabled=true` on the install command).
-2. Apply: `helm upgrade --install lucairn charts/lucairn -f
-   customer-values.yaml --namespace lucairn --create-namespace`.
+2. Apply (same `$DOCKER_CONFIG`-staged session as § "Kubernetes
+   Install"):
+
+   ```bash
+   helm upgrade --install lucairn charts/lucairn \
+     -f customer-values.yaml \
+     --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
+     --namespace lucairn --create-namespace
+   ```
+
 3. Retrieve the bootstrap password (Helm-generated random 32-char):
 
    ```bash
@@ -868,8 +876,15 @@ SSO).
        # callbackURL: ""           # pin explicitly when the registered URL differs
    ```
 
-3. Apply: `helm upgrade --install lucairn charts/lucairn -f
-   customer-values.yaml --namespace lucairn --create-namespace`.
+3. Apply (same `$DOCKER_CONFIG`-staged session as § "Kubernetes
+   Install"):
+
+   ```bash
+   helm upgrade --install lucairn charts/lucairn \
+     -f customer-values.yaml \
+     --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
+     --namespace lucairn --create-namespace
+   ```
 
 4. Confirm the rollout: `kubectl -n lucairn rollout status deploy/lucairn-dashboard`
    completes within 60s once OIDC discovery succeeds. The OIDC button is
@@ -962,7 +977,15 @@ GRANT SELECT ON veil_certificates TO lucairn_dashboard_ro;
        endpoint: "veil-witness.dsa-witness.svc.cluster.local:50058"
    ```
 
-3. Apply: `helm upgrade --install lucairn charts/lucairn -f customer-values.yaml --namespace lucairn`.
+3. Apply (same `$DOCKER_CONFIG`-staged session as § "Kubernetes
+   Install"):
+
+   ```bash
+   helm upgrade --install lucairn charts/lucairn \
+     -f customer-values.yaml \
+     --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
+     --namespace lucairn
+   ```
 
 4. Confirm the rollout: `kubectl -n lucairn rollout status deploy/lucairn-dashboard`.
    Cert browser is live as soon as the pod is Ready.
@@ -1100,8 +1123,15 @@ The SAME shared secret is consumed by both the dashboard pod
              key: shared-secret
    ```
 
-3. Apply: `helm upgrade --install lucairn charts/lucairn \
-   -f customer-values.yaml --namespace lucairn`.
+3. Apply (same `$DOCKER_CONFIG`-staged session as § "Kubernetes
+   Install"):
+
+   ```bash
+   helm upgrade --install lucairn charts/lucairn \
+     -f customer-values.yaml \
+     --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
+     --namespace lucairn
+   ```
 
 4. Confirm both rollouts: `kubectl -n lucairn rollout status
    deploy/lucairn-dashboard` + `kubectl -n dsa-observability
@@ -1189,8 +1219,15 @@ gateway listener as the data plane (mounted under
    case (URL set, secretRef.name empty) at `helm install/upgrade`
    time so the dashboard pod never boots into a 401-rain state.
 
-3. Apply: `helm upgrade --install lucairn charts/lucairn -f
-   customer-values.yaml --namespace lucairn`.
+3. Apply (same `$DOCKER_CONFIG`-staged session as § "Kubernetes
+   Install"):
+
+   ```bash
+   helm upgrade --install lucairn charts/lucairn \
+     -f customer-values.yaml \
+     --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
+     --namespace lucairn
+   ```
 
 4. Confirm the rollout + the new env vars are injected:
 
@@ -1308,7 +1345,13 @@ dashboard:
       key: url
 ```
 
-Apply with `helm upgrade --install lucairn ./charts/lucairn -f customer-values.yaml`.
+Apply (same `$DOCKER_CONFIG`-staged session as § "Kubernetes Install"):
+
+```bash
+helm upgrade --install lucairn ./charts/lucairn \
+  -f customer-values.yaml \
+  --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json"
+```
 
 #### Rotating the audit log DB credentials
 
