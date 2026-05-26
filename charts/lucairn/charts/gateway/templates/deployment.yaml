@@ -137,6 +137,14 @@ spec:
               mountPath: {{ .Values.readiness.bundleMountPath }}
               readOnly: true
             {{- end }}
+            {{- if and .Values.keystore.persistence.enabled .Values.keystorePath }}
+            # v1.0 keystore writable mount. The container's root FS stays
+            # read-only (containerSecurityContext.readOnlyRootFilesystem=true);
+            # only this PVC-backed mount is writable, so keystore writes
+            # succeed without relaxing the hardened FS posture.
+            - name: keystore
+              mountPath: {{ .Values.keystorePath }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
@@ -159,6 +167,11 @@ spec:
             items:
               - key: {{ .Values.readiness.bundleSecretKey }}
                 path: {{ .Values.readiness.bundleFileName }}
+        {{- end }}
+        {{- if and .Values.keystore.persistence.enabled .Values.keystorePath }}
+        - name: keystore
+          persistentVolumeClaim:
+            claimName: {{ .Chart.Name }}-keystore
         {{- end }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:

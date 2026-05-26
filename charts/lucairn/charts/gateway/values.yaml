@@ -1,6 +1,11 @@
 namespace: dsa-edge
 
-replicaCount: 2
+# v1.0 ships single-replica gateway. The keystore persists across pod
+# restarts via a PVC mounted at keystorePath (default /etc/dsa/keystore).
+# Multi-replica HA is the v2.0 roadmap — see INSTALL.md § "Lucairn
+# Enterprise v1.0 deployment topology". Do NOT set replicaCount > 1 in
+# v1.0; the in-memory keystore is not shared across replicas.
+replicaCount: 1
 
 image:
   repository: dsa-gateway
@@ -21,14 +26,14 @@ auditServiceAddr: "audit.dsa-audit.svc:50051"
 verticalsDir: "/etc/dsa/verticals"
 sanitizerUrl: "http://sandbox-a.dsa-identity.svc:8086"
 sandboxBProxyUrl: "http://sandbox-b.dsa-ai.svc.cluster.local:8084"
-# Default empty: postgresKeystore.enabled=true is the umbrella default and the
-# gateway derives its keystore from GATEWAY_KEYSTORE_DSN. Setting BOTH
-# GATEWAY_KEYSTORE_PATH and a Postgres backing trips the gateway's
-# mutual-exclusion check (services/gateway/internal/auth/apikey.go:522) and
-# crash-loops the pod. To opt into the legacy file-keystore path, set
-# gateway.postgresKeystore.enabled=false AND postgres-gateway.enabled=false
-# AND override keystorePath here to a writable mount (e.g. "/etc/dsa/keystore").
-keystorePath: ""
+# v1.0 default: file-keystore persisted on a PVC mounted at /etc/dsa/keystore
+# (see keystore.persistence block below). The gateway emits GATEWAY_KEYSTORE_PATH
+# into its ConfigMap whenever this value is non-empty. The legacy
+# mutual-exclusion check (services/gateway/internal/auth/apikey.go:522) still
+# applies — if a v2.0 operator opts into postgresKeystore.enabled=true,
+# they MUST clear this value back to "" to avoid emitting both
+# GATEWAY_KEYSTORE_PATH and GATEWAY_KEYSTORE_DSN (which crash-loops the pod).
+keystorePath: "/etc/dsa/keystore"
 grpcTlsEnabled: "false"
 veilEnabled: "true"
 enableTestProvider: "false"
@@ -59,9 +64,13 @@ resources:
     memory: 128Mi
 
 hpa:
-  enabled: true
-  minReplicas: 2
-  maxReplicas: 10
+  # v1.0 ships single-replica gateway with file-keystore on PVC. HPA stays
+  # OFF because (a) the file-keystore is RWO PVC-backed (single writer) and
+  # (b) the gateway's in-memory key state is not shared across replicas
+  # under the v1.0 architecture. Multi-replica HA is the v2.0 roadmap.
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
   targetCPUUtilization: 70
 
 pdb:
@@ -86,13 +95,16 @@ streaming:
   enabled: false
   timeoutSeconds: 300
 
-# PostgresKeyStore wiring (closes Sim 5 Helm Gap #6 — in-memory keystore
-# wipes on pod restart + cross-replica reads miss with HA). When enabled,
-# gateway boots with PostgresKeyStore backed by the postgres-gateway
-# subchart. Default ON so HA + restart-survival work out of the box; flip
-# off only for single-replica dev runs against the file-keystore path.
+# PostgresKeyStore wiring is the v2.0 multi-replica HA path. When enabled
+# together with postgres-gateway.enabled=true, the gateway boots with the
+# Postgres-backed keystore (cross-replica reads + restart-survival). v1.0
+# ships this DISABLED — the file-keystore at keystorePath (above) on the
+# PVC defined in keystore.persistence (below) provides restart-survival
+# for the single-replica install. Do NOT flip on in v1.0 without ALSO
+# enabling postgres-gateway, clearing keystorePath, and bumping
+# replicaCount — see INSTALL.md § "v2.0 roadmap" for the full opt-in.
 postgresKeystore:
-  enabled: true
+  enabled: false
   host: postgres-gateway.dsa-edge.svc.cluster.local
   port: 5432
   user: gateway
@@ -100,6 +112,17 @@ postgresKeystore:
   dsnSecretRef:
     name: gateway-keystore-db-credentials
     key: dsn
+
+# v1.0 keystore PVC. Mounted at .Values.keystorePath above (default
+# /etc/dsa/keystore). RWO + Retain so `helm uninstall` preserves customer
+# API keys for clean re-install (matches the v2.0 postgres-gateway PVC
+# semantics). 1Gi is generous — typical keystore.json is <100KB.
+keystore:
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""  # empty = cluster default StorageClass
+    accessMode: ReadWriteOnce
 
 # PR-C1 fix-up round 1 (FIX-6): gateway-side sanitize cache. Default OFF —
 # operators flip enabled=true per environment after the cert-chain integration
