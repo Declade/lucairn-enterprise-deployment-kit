@@ -1,6 +1,31 @@
 namespace: dsa-bridge
 
-replicaCount: 2
+# v1.0 ships single-replica id-bridge. While the pending-relinkage store
+# IS Postgres-backed (services/id-bridge/cmd/server/main.go:234), the
+# Policy object also holds an in-memory cache (services/id-bridge/internal/
+# relinkage/relinkage.go — `p.pending map[string]*PendingRelinkage`) and
+# runs a per-pod SweepExpired goroutine every 60s. With multi-replica:
+#   1. Each pod runs its own SweepExpired loop → double `relinkage.expired`
+#      audit emits for the same expired row.
+#   2. Pod A's cache won't see pod B's resolve until pod A queries
+#      postgres (read-through happens only on cache miss in resolveCtx).
+#      Pod A's stale cache could re-emit relinkage.* audit events for an
+#      already-resolved row.
+#   3. The pending-list endpoint mixes the in-memory snapshot path and
+#      the store path inconsistently across replicas.
+# Compose works because it runs ONE id-bridge container.
+#
+# Multi-replica id-bridge is a v2.0 design (lease-based SweepExpired
+# coordination + cache-invalidation pubsub). Until then, leave
+# replicaCount=1 + hpa.enabled=false; the umbrella validator
+# (validators.idBridgeSingleReplica) fails-fast on any operator who flips
+# either knob without the v2.0 backend ready.
+#
+# Vast cascade I sweep (fix-up #15, 2026-05-26): id-bridge shares the
+# veil-witness defect class — pod-local state cannot be safely split
+# across replicas via standard K8s Service load-balancing, even when a
+# postgres-backed store is wired alongside the cache.
+replicaCount: 1
 
 image:
   repository: dsa-id-bridge
@@ -26,10 +51,13 @@ resources:
     cpu: 200m
     memory: 128Mi
 
+# v1.0 ships HPA disabled — see replicaCount comment above. The in-memory
+# pending cache + SweepExpired goroutine are pod-local; HPA scaling
+# beyond 1 replica produces double-audit-emit and stale-cache races.
 hpa:
-  enabled: true
-  minReplicas: 2
-  maxReplicas: 10
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
   targetCPUUtilization: 70
 
 pdb:

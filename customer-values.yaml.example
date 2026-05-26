@@ -181,6 +181,18 @@ postgres-gateway:
 # entry (with the ingress + secrets values) in favor of the later one.
 # The umbrella validator enforces that both flags toggle together.
 
+# Vast cascade I sweep (fix-up #15, 2026-05-26): the audit, id-bridge,
+# sandbox-a, sandbox-b, and veil-witness subcharts ALL ship single-
+# replica + HPA off in v1.0 because each holds pod-local in-memory state
+# that K8s Service load-balancing cannot safely split across replicas
+# (claim accumulator, EVENTS_RECORDED veil-claim dedup map, pending-
+# relinkage cache + SweepExpired goroutine, authRateLimiter + sanitizer
+# sidecar, untested multi-replica veil-emitter variance — respectively).
+# Compose works because it runs ONE container per service. Do NOT override
+# replicaCount or hpa.enabled on these subcharts; the umbrella validator
+# (validators.podLocalStateSingleReplica) fails-fast on any operator who
+# does. Multi-replica HA is a v2.0 design — see INSTALL.md § "v2.0
+# roadmap".
 audit:
   postgresql:
     storageSize: 50Gi
