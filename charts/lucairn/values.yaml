@@ -56,8 +56,14 @@ global:
   # dsa-identity / dsa-ai / dsa-witness. Flip on at a customer site
   # that runs Cilium with CNP enforcement. (Vast-verify finding #1.)
   dnsRestriction: false
-  # PostgreSQL sslmode: "disable" for local dev, "require" for production.
-  postgresqlSslmode: require
+  # PostgreSQL sslmode. The bundled postgres-* StatefulSets in this chart
+  # do NOT configure TLS — they ship as plain-TCP Postgres pods inside the
+  # cluster. Default "disable" matches the Compose path and avoids the
+  # "no pg_hba.conf entry for SSL" connection failure pilots hit on Vast
+  # vanilla K8s. Override to "require" ONLY if you swap in an external
+  # Postgres with TLS configured AND wire its CA into each subchart's
+  # client config. (Vast-verify finding #2.)
+  postgresqlSslmode: disable
   # Cilium WireGuard transparent encryption for all pod-to-pod traffic.
   # Requires Cilium CNI with WireGuard support. Provides mTLS-equivalent
   # encryption without application changes or certificate management.
