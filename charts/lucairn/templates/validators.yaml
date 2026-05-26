@@ -13,3 +13,5 @@
 {{- include "validators.dashboardDemoModeNotProduction" $ -}}
 {{- include "validators.dashboardDemoToggleNotProduction" $ -}}
 {{- include "validators.gatewayPostgresKeystoreSubchartMismatch" $ -}}
+{{- include "validators.gatewayFileKeystoreSingleReplica" $ -}}
+{{- include "validators.gatewayPostgresModeKeystorePathEmpty" $ -}}
