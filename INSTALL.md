@@ -33,6 +33,26 @@ Deployment Mode" below and use `./bin/lucairn-init --production --license
 populate the provider key before `docker compose up`. The
 `bin/lucairn-init --help` lists every flag.
 
+## Lucairn Enterprise v1.0 deployment topology
+
+**v1.0 ships single-replica gateway.** Each Helm install runs one gateway
+pod with a persistent volume mounted at `/etc/dsa/keystore`. API keys
+persist across pod restarts via the PVC. Pilot customers handling
+<500 req/sec are easily served by a single pod.
+
+**Horizontal scaling is roadmapped for v2.0.** The chart includes the
+`postgres-gateway` subchart for v2.0 multi-replica HA, but it is disabled
+by default and not exercised in v1.0. Operators should NOT set
+`gateway.replicaCount > 1` or `postgres-gateway.enabled: true` until v2.0
+ships — the umbrella validator fails-fast on the mixed case (one flag on,
+one off).
+
+Back up the keystore PVC (`kubectl get pvc -n dsa-edge | grep keystore`)
+on the schedule appropriate for your operational policy. The PVC has
+`helm.sh/resource-policy: keep` so `helm uninstall` preserves keystore
+data (matching the existing `postgres-gateway-data` PVC pattern carried
+forward for v2.0).
+
 ## Pre-Requisites
 
 For Docker Compose:
@@ -476,8 +496,11 @@ cp customer-values.yaml.example customer-values.yaml
 ```
 
 3. Replace every `REPLACE_*` value. Prefer an external secret manager
-   for production. The `postgres-gateway.secrets.values.postgresPassword`
-   field is new in chart v1.4.0 — see § "Postgres-Gateway Keystore" below.
+   for production. The gateway's keystore is persisted on a PVC in v1.0
+   (chart v1.4.0+) — see § "Lucairn Enterprise v1.0 deployment topology"
+   above. The postgres-gateway subchart for v2.0 multi-replica HA is
+   default-disabled — see § "v2.0 roadmap (postgres-gateway keystore)"
+   below for the opt-in recipe.
 
 4. Build chart dependencies and render once.
 
@@ -538,55 +561,78 @@ kubectl get jobs -n dsa-ai
 kubectl get jobs -n dsa-witness
 ```
 
-## Postgres-Gateway Keystore
+## v1.0 gateway keystore (file-keystore on PVC)
 
-Chart v1.4.0 ships a dedicated `postgres-gateway` StatefulSet in the
-`dsa-edge` namespace. It backs the gateway's `PostgresKeyStore` —
-customer-minted API keys persist across pod restarts AND replicate
-correctly across HA replicas. Without it, the gateway's in-memory
-keystore loses every key on restart, and roughly half of subsequent
-authenticated requests hit a replica that never saw the mint.
+v1.0 ships a single-replica gateway. Its keystore is persisted on a
+PersistentVolumeClaim named `gateway-keystore` in the `dsa-edge`
+namespace, mounted into the gateway pod at `/etc/dsa/keystore`
+(`gateway.keystorePath`). The container's root filesystem stays
+read-only — only the keystore mount is writable.
 
-**Required value** in `customer-values.yaml`:
+**Reclaim policy = Retain.** The PVC carries `helm.sh/resource-policy:
+keep`. Running `helm uninstall lucairn` removes the gateway workload but
+preserves the keystore PVC, so a subsequent re-install picks up the same
+set of customer API keys. To intentionally drop the keystore (scratch
+re-install, decommission, etc.), the operator runs:
+
+```bash
+kubectl delete pvc gateway-keystore -n dsa-edge
+```
+
+**Backup.** The keystore file is small (typically <100KB). A periodic
+`kubectl cp` of `/etc/dsa/keystore/` out of the gateway pod into the
+customer's existing backup pipeline is sufficient:
+
+```bash
+GATEWAY_POD=$(kubectl get pod -n dsa-edge -l app.kubernetes.io/name=gateway -o jsonpath='{.items[0].metadata.name}')
+kubectl cp -n dsa-edge "$GATEWAY_POD":/etc/dsa/keystore "./gateway-keystore.$(date -u +%Y%m%dT%H%M%SZ)"
+```
+
+**Why single-replica in v1.0.** The file-keystore is a RWO PVC (single
+writer). HPA stays off (`gateway.hpa.enabled: false`) and
+`gateway.replicaCount: 1` — multiple gateway pods cannot share the same
+RWO PVC, and the gateway's in-memory key state is not shared across
+replicas under the v1.0 architecture. Pilot customers handling
+<500 req/sec are easily served by a single pod.
+
+## v2.0 roadmap (postgres-gateway keystore)
+
+The chart includes a `postgres-gateway` subchart that is the v2.0 path
+for multi-replica gateway HA. **It is disabled by default** and not
+exercised in v1.0. Do NOT enable it on a v1.0 install — the umbrella
+validator fails-fast on the mixed configuration (one paired flag on,
+one off).
+
+When v2.0 ships, the opt-in recipe in `customer-values.yaml` will be:
 
 ```yaml
 postgres-gateway:
+  enabled: true
   postgresql:
     storageSize: 5Gi
   secrets:
     values:
       postgresPassword: "REPLACE_WITH_POSTGRES_GATEWAY_PASSWORD"
+
+gateway:
+  replicaCount: 2     # or higher
+  keystorePath: ""    # clear so GATEWAY_KEYSTORE_PATH is NOT emitted
+  keystore:
+    persistence:
+      enabled: false  # v2.0 uses Postgres-backed keystore, not PVC
+  postgresKeystore:
+    enabled: true
+  hpa:
+    enabled: true     # safe under Postgres-backed keystore
 ```
 
-The placeholder above mirrors the `REPLACE_WITH_POSTGRES_GATEWAY_PASSWORD`
-entry already in `customer-values.yaml.example` (step 2 `cp` above). Fill
-that single entry — do NOT add a separate `postgres-gateway:` block.
+The gateway enforces that `GATEWAY_KEYSTORE_PATH` and
+`GATEWAY_KEYSTORE_DSN` are mutually exclusive at boot — emitting both
+crash-loops the pod. The umbrella `gatewayPostgresKeystoreSubchartMismatch`
+validator catches the mixed case before render. Both flags must be ON
+together (v2.0 opt-in) or OFF together (v1.0 default).
 
-The chart fails at install time if `postgresPassword` is empty (so the
-keystore DB is never silently created with no auth). The gateway reads
-its DSN from the `gateway-keystore-db-credentials` Secret rendered by
-the subchart; no manual wiring is required.
-
-**Reclaim policy = Retain.** The PVC carries `helm.sh/resource-policy:
-keep`. Running `helm uninstall lucairn` removes every workload but
-preserves the keystore PVC, so a subsequent re-install picks up the
-same set of customer API keys. To intentionally drop the keystore
-(scratch re-install, decommission, etc.), the operator runs:
-
-```bash
-kubectl delete pvc postgres-gateway-data -n dsa-edge
-```
-
-Note: The `postgres-gateway` PVC is the ONLY PVC in the kit with the
-Retain annotation. The `audit`, `id-bridge`, and `veil-witness`
-subchart PVCs do NOT carry this annotation — a `helm uninstall` will
-delete them. If you intend to preserve audit cert history, identity
-tokens, or witness signatures across an uninstall, back up those
-databases first with `pg_dump` against each.
-
-**Backup.** The keystore is a small Postgres instance; a periodic
-`pg_dump` of the `gateway_keystore` database into the customer's
-existing backup pipeline is sufficient:
+**v2.0 backup** (forward-looking, when the subchart is opt-in enabled):
 
 ```bash
 kubectl exec -n dsa-edge statefulset/postgres-gateway -- \
@@ -594,19 +640,17 @@ kubectl exec -n dsa-edge statefulset/postgres-gateway -- \
   > gateway_keystore.$(date -u +%Y%m%dT%H%M%SZ).sql
 ```
 
-**`gateway.keystorePath` default.** In postgres-keystore mode (the default)
-`gateway.keystorePath` is empty and `GATEWAY_KEYSTORE_PATH` is omitted from
-the gateway ConfigMap entirely. The gateway enforces that
-`GATEWAY_KEYSTORE_PATH` and `GATEWAY_KEYSTORE_DSN` are mutually exclusive at
-boot — emitting both crash-loops the pod.
+The v2.0 postgres-gateway PVC (`postgres-gateway-data`) also carries
+`helm.sh/resource-policy: keep`, mirroring the v1.0 `gateway-keystore`
+PVC reclaim semantics.
 
-**Disabling the keystore.** Single-replica dev deployments can opt out
-via `gateway.postgresKeystore.enabled: false` AND
-`postgres-gateway.enabled: false`. To then fall back to the legacy
-file-keystore path, ALSO set `gateway.keystorePath: "/etc/dsa/keystore"`
-(or another writable mount) — without it the gateway has no keystore
-backing at all. This loses the HA + restart-survival guarantees and is
-NOT recommended for production.
+Note: The `gateway-keystore` PVC (v1.0) and `postgres-gateway-data` PVC
+(v2.0 when enabled) are the ONLY PVCs in the kit with the Retain
+annotation. The `audit`, `id-bridge`, and `veil-witness` subchart PVCs
+do NOT carry this annotation — a `helm uninstall` will delete them. If
+you intend to preserve audit cert history, identity tokens, or witness
+signatures across an uninstall, back up those databases first with
+`pg_dump` against each.
 
 ## Support Bundle
 
