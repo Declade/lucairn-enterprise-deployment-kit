@@ -34,6 +34,12 @@ data:
   GRPC_TLS_ENABLED: {{ .Values.grpcTlsEnabled | quote }}
   VEIL_ENABLED: {{ .Values.veilEnabled | quote }}
   VEIL_WITNESS_CERT_ADDR: {{ .Values.veilWitnessCertAddr | quote }}
+  # Witness gRPC for gateway-emitted GATEWAY_REQUEST_COMPLETED claims
+  # (port 50057, distinct from VEIL_WITNESS_CERT_ADDR's 50058 cert endpoint).
+  # FQDN — same K8s cross-namespace rationale as BRIDGE_HEALTH_ADDR above.
+  # Required when dsaEnv=production + veilEnabled=true (gateway log.Fatals
+  # otherwise per CC-017 P2 production gate, gateway/main.go:434).
+  VEIL_WITNESS_ADDR: {{ .Values.veilWitnessAddr | quote }}
   GATEWAY_REQUIRE_READINESS: {{ ternary "true" "false" .Values.readiness.required | quote }}
   GATEWAY_READINESS_USE_CASE: {{ .Values.readiness.useCase | quote }}
   GATEWAY_READINESS_MAX_AGE: {{ .Values.readiness.maxAge | quote }}
