@@ -289,13 +289,20 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # From dsa-edge (Gateway)
+    # From dsa-edge (Gateway — gRPC 50052 + HTTP /readyz 8082 for the
+    # dependency-aware /healthz check via BRIDGE_HEALTH_ADDR).
+    # Without port 8082 the gateway TCP-connect to id-bridge:8082 times
+    # out and /healthz returns 503 (bridge check status=fail) which
+    # crash-loops the gateway under Kubernetes liveness. See Sim 5
+    # Helm Gap #7 / Vast diagnostic.
     - from:
         - namespaceSelector:
             matchLabels:
               dsa.io/namespace: edge
       ports:
         - port: 50052
+          protocol: TCP
+        - port: 8082
           protocol: TCP
     # From dsa-identity (token revocation)
     - from:
@@ -312,6 +319,18 @@ spec:
               dsa.io/namespace: ingest
       ports:
         - port: 50052
+          protocol: TCP
+    # From dsa-observability (Prometheus / OTel scrape of the HTTP
+    # /readyz + /metrics endpoint on port 8082). observability-egress
+    # in this same file already permits 8082 toward all
+    # app.kubernetes.io/part-of=dsa namespaces; the destination side
+    # needs the matching ingress rule for scraping to land.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: observability
+      ports:
+        - port: 8082
           protocol: TCP
 {{- if .Values.global.demoEnabled }}
     # From dsa-demo (demo webapp — read-only DB + gRPC access)
