@@ -142,8 +142,16 @@ spec:
             # read-only (containerSecurityContext.readOnlyRootFilesystem=true);
             # only this PVC-backed mount is writable, so keystore writes
             # succeed without relaxing the hardened FS posture.
+            #
+            # subPath: keystore.json makes kubelet mount the SINGLE FILE
+            # `keystore.json` from the PVC root at the operator's keystorePath
+            # (default /etc/dsa/keystore). Without subPath, the PVC is mounted
+            # as a DIRECTORY at keystorePath and the gateway crashloops
+            # because its file-keystore expects a regular file. (Closes
+            # Vast-verify BLOCKER-1 in fix-up #8.)
             - name: keystore
               mountPath: {{ .Values.keystorePath }}
+              subPath: keystore.json
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
