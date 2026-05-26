@@ -210,6 +210,19 @@ spec:
       ports:
         - port: 50053
           protocol: TCP
+    # From dsa-observability (Prometheus / OTel scrape of HTTP health
+    # + sanitizer + invariant ports). observability-egress in this same
+    # file already permits 8083 + 8086 toward all part-of=dsa
+    # namespaces; the destination side needs the matching ingress.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: observability
+      ports:
+        - port: 8083
+          protocol: TCP
+        - port: 8086
+          protocol: TCP
 {{- if .Values.global.demoEnabled }}
     # From dsa-demo (demo webapp — read-only DB access)
     - from:
@@ -443,6 +456,17 @@ spec:
       ports:
         - port: 50054
           protocol: TCP
+    # From dsa-observability (Prometheus / OTel scrape of HTTP health +
+    # invariant + metrics). observability-egress in this same file
+    # already permits 8084 toward all part-of=dsa namespaces; the
+    # destination side needs the matching ingress.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: observability
+      ports:
+        - port: 8084
+          protocol: TCP
 {{- if .Values.global.demoEnabled }}
     # From dsa-demo (demo webapp — inference gRPC)
     - from:
@@ -471,13 +495,24 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # From all DSA namespaces
+    # From all DSA namespaces (gRPC claim emission)
     - from:
         - namespaceSelector:
             matchLabels:
               app.kubernetes.io/part-of: dsa
       ports:
         - port: 50051
+          protocol: TCP
+    # From dsa-observability (Prometheus / OTel scrape of HTTP health
+    # + metrics on 8081). observability-egress in this same file
+    # already permits 8081 toward all part-of=dsa namespaces; the
+    # destination side needs the matching ingress.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: observability
+      ports:
+        - port: 8081
           protocol: TCP
 {{- if .Values.global.demoEnabled }}
     # From dsa-demo (demo webapp — read-only DB access)

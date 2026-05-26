@@ -59,6 +59,18 @@ spec:
       ports:
         - port: 50058
           protocol: TCP
+    # From dsa-observability (Prometheus / OTel scrape of HTTP health
+    # + metrics on 50059). observability-egress in
+    # infrastructure/network-policies.yaml already permits 50059 toward
+    # all part-of=dsa namespaces; the destination side needs the
+    # matching ingress. [Sim 5 Helm Gap #7 proactive sweep]
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: observability
+      ports:
+        - port: {{ .Values.service.healthPort }}
+          protocol: TCP
     # Intra-namespace (PostgreSQL ← app, migrations)
     - from:
         - podSelector: {}
