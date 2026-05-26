@@ -16,7 +16,7 @@ global:
   # are pulled from a public mirror (no auth needed) and no
   # imagePullDockerConfigJson is provided. Default false — the guard fires.
   skipPullSecretGuard: false
-  imageTag: "0.4.1" # NOTE: dashboard sub-chart ships independently — dashboard image is pinned in the dashboard.image.tag block below (currently 0.8.1).
+  imageTag: "0.4.0" # NOTE: dashboard sub-chart ships independently — dashboard image is pinned in the dashboard.image.tag block below (currently 0.8.1).
   # Slice 4 — namespace of the bundled observability sub-chart (Grafana
   # + Loki + Tempo). The dashboard sub-chart's secret-grafana-jwt.yaml
   # mirrors the Helm-generated shared secret into this namespace so the
@@ -77,7 +77,10 @@ gateway:
   enabled: true
 
 postgres-gateway:
-  enabled: true
+  # v2.0 multi-replica gateway HA. v1.0 ships single-replica + file-keystore
+  # on PVC; postgres-gateway is opt-in only and default-disabled. See
+  # INSTALL.md § "Lucairn Enterprise v1.0 deployment topology".
+  enabled: false
 
 observability:
   enabled: true
