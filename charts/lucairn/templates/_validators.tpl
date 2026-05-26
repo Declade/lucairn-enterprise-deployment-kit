@@ -278,6 +278,95 @@
 {{- end -}}
 
 {{- /*
+  validators.podLocalStateSingleReplica
+
+  Vast cascade I (fix-up #15, 2026-05-26) — umbrella v1.0 invariant.
+
+  Several subcharts hold pod-local in-memory state that CANNOT be safely
+  split across replicas via standard K8s Service load-balancing. The
+  demo-readiness blocker was that K8s Service round-robin routed emitter
+  claims across two veil-witness pods → neither pod ever accumulated
+  4/4 → cert chain always finalised PARTIAL. Same defect class as
+  gateway's Invariant A (file-keystore on RWO PVC).
+
+  v1.0 ships single-replica + HPA off for ALL of the following:
+
+    - veil-witness  (in-memory accumulator: sync.Map at
+                     services/veil-witness/internal/accumulator/
+                     accumulator.go:42)
+    - audit         (in-memory EVENTS_RECORDED veil-claim dedup
+                     winner-result map: sync.Map at
+                     services/audit/internal/server/server.go:97)
+    - id-bridge     (in-memory pending-relinkage cache +
+                     per-pod SweepExpired goroutine at
+                     services/id-bridge/internal/relinkage/
+                     relinkage.go — postgres-backed store but the
+                     cache is still pod-local)
+    - sandbox-a     (in-memory authRateLimiter at
+                     services/sandbox-a/internal/server/server.go:29
+                     + sanitizer SIDECAR which scales with the pod)
+    - sandbox-b     (conservative — Python service appears stateless
+                     across requests, but Compose runs ONE sandbox-b
+                     and multi-replica is structurally UNTESTED for a
+                     load-bearing veil-claim emitter; v2.0 unlocks
+                     after explicit pressure-test PR)
+
+  Per-subchart fail-fast: replicaCount must be exactly 1 AND
+  hpa.enabled must be false. Any other configuration unlocks the v1.0
+  cert-chain-PARTIAL footgun.
+
+  Multi-replica HA for these subcharts is a v2.0 design (shared-store
+  accumulator / dedup coordination / SweepExpired lease / Redis-backed
+  rate-limit counters).
+
+  Invoked from charts/lucairn/templates/validators.yaml.
+*/ -}}
+{{- define "validators.podLocalStateSingleReplica" -}}
+{{- $subcharts := list
+  (dict "name" "veil-witness" "stateDesc" "in-memory claim accumulator (sync.Map at services/veil-witness/internal/accumulator/accumulator.go:42)" "footgun" "cert chain always finalises PARTIAL because K8s Service round-robin splits emitter claims across pods")
+  (dict "name" "audit" "stateDesc" "in-memory EVENTS_RECORDED veil-claim dedup winner-result map (sync.Map at services/audit/internal/server/server.go:97)" "footgun" "F1 fail-closed dedup uniformity invariant breaks — two pods can both emit EVENTS_RECORDED for the same request_id")
+  (dict "name" "id-bridge" "stateDesc" "in-memory pending-relinkage cache + per-pod SweepExpired goroutine (services/id-bridge/internal/relinkage/relinkage.go)" "footgun" "double `relinkage.expired` audit emits and stale-cache races between pods, even though the postgres store is shared")
+  (dict "name" "sandbox-a" "stateDesc" "in-memory authRateLimiter (services/sandbox-a/internal/server/server.go:29) + bundled sanitizer sidecar" "footgun" "brute-force rate-limit bypass via Service round-robin (10 failures × N pods)")
+  (dict "name" "sandbox-b" "stateDesc" "Python service stateless across requests but Compose runs ONE container and multi-replica is structurally untested for a load-bearing veil-claim emitter" "footgun" "untested operational variance on a load-bearing veil-claim emitter going into the v1.0 demo lane")
+  (dict "name" "admin" "stateDesc" "in-memory portal RateLimiter (services/admin/internal/api/portal_middleware.go:90 — `entries map[string]*entry`)" "footgun" "portal rate-limit bypass via K8s Service round-robin across pods")
+  (dict "name" "ingest" "stateDesc" "in-memory connector cursor state (services/ingest/internal/servicenow/connector.go — `lastFetched time.Time`; DICOM connector tempDir + pendingFiles slice)" "footgun" "double-consumption of source incidents across pods, both pods race the same source-row cursor; DICOM temp files local to each pod")
+  (dict "name" "demo" "stateDesc" "demo portal is the customer-facing demo lane and runs against a single deterministic dataset" "footgun" "operational variance on the demo lane is conservative-bad for v1.0; Compose runs ONE demo container")
+  (dict "name" "dashboard" "stateDesc" "in-memory session store (apps/dashboard/internal/auth/session.go:49) + in-memory OIDC state (apps/dashboard/internal/auth/oidc_state.go:57) + per-pod bulk-reverify job state (apps/dashboard/internal/handlers/bulk_reverify.go)" "footgun" "operator forced re-login on every request when round-robin lands on the pod that did not mint the session cookie; OIDC state lookup fails the same way; bulk-reverify jobs disappear when the originating pod is re-scheduled")
+-}}
+{{- range $sc := $subcharts -}}
+{{- $vals := (default dict (index $.Values $sc.name)) -}}
+{{- /* Skip the check if the subchart is opt-in AND currently disabled —
+       there's nothing to validate, and the values block may be empty/nil
+       so accessing `.replicaCount` on it would fall through to the
+       default=1 branch and pass anyway. We're explicit about this so the
+       intent is obvious to future readers. Helm/Sprig `range` does not
+       support `continue` so the guard is an `if … else` wrapper around
+       the full check body. */ -}}
+{{- $enabledKnown := hasKey $vals "enabled" -}}
+{{- $enabled := true -}}
+{{- if $enabledKnown -}}
+{{- $enabled = $vals.enabled -}}
+{{- end -}}
+{{- if $enabled -}}
+{{- /* Default replicaCount=1 when omitted (chart default), otherwise
+       coerce to int and fail loudly on any non-1 value — including 0,
+       which would deploy zero pods and silently disable the service. */ -}}
+{{- $replicaCount := 1 -}}
+{{- if hasKey $vals "replicaCount" -}}
+{{- $replicaCount = int $vals.replicaCount -}}
+{{- end -}}
+{{- if ne $replicaCount 1 -}}
+{{- fail (printf "v1.0 requires %s.replicaCount: 1 (current: %d). This subchart holds %s. Multi-replica produces %s. For multi-replica HA, see v2.0 roadmap." $sc.name $replicaCount $sc.stateDesc $sc.footgun) -}}
+{{- end -}}
+{{- $hpa := (default dict $vals.hpa) -}}
+{{- if $hpa.enabled -}}
+{{- fail (printf "v1.0 requires %s.hpa.enabled: false. This subchart holds %s. HPA scaling beyond 1 replica produces %s. For multi-replica HA, see v2.0 roadmap." $sc.name $sc.stateDesc $sc.footgun) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
   validators.dashboardDemoToggleNotProduction
 
   Surfaces a `# WARN-toggle-in-prod:` comment in the rendered

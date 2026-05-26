@@ -15,3 +15,4 @@
 {{- include "validators.gatewayPostgresKeystoreSubchartMismatch" $ -}}
 {{- include "validators.gatewayFileKeystoreSingleReplica" $ -}}
 {{- include "validators.gatewayPostgresModeKeystorePathEmpty" $ -}}
+{{- include "validators.podLocalStateSingleReplica" $ -}}
