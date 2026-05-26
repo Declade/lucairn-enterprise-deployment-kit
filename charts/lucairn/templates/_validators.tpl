@@ -207,9 +207,18 @@
 {{- $gateway := (default dict .Values.gateway) -}}
 {{- $pk := (default dict $gateway.postgresKeystore) -}}
 {{- if not $pk.enabled -}}
-{{- $replicaCount := int (default 1 $gateway.replicaCount) -}}
-{{- if gt $replicaCount 1 -}}
-{{- fail (printf "v1.0 file-keystore mode requires gateway.replicaCount: 1 (current: %d). ReadWriteOnce PVC cannot be shared across pods. For multi-replica HA, enable postgres-gateway opt-in (v2.0 roadmap)." $replicaCount) -}}
+{{- /* Codex r2 LOW: use `hasKey` + explicit nil check rather than
+       `default 1 ...` — Helm/Sprig's `default` treats 0 as falsy, so
+       `default 1 0` would silently coerce replicaCount=0 to 1 and mask
+       the bug. We want replicaCount=0 to fail loudly because the chart,
+       INSTALL.md, and validator message all say replicaCount: 1 — any
+       other value (including 0) contradicts that contract. */ -}}
+{{- $replicaCount := 1 -}}
+{{- if hasKey $gateway "replicaCount" -}}
+{{- $replicaCount = int $gateway.replicaCount -}}
+{{- end -}}
+{{- if ne $replicaCount 1 -}}
+{{- fail (printf "v1.0 file-keystore mode requires gateway.replicaCount: 1 (current: %d). ReadWriteOnce PVC cannot be shared across pods, and replicaCount=0 would deploy zero gateway pods. For multi-replica HA, enable postgres-gateway opt-in (v2.0 roadmap)." $replicaCount) -}}
 {{- end -}}
 {{- $hpa := (default dict $gateway.hpa) -}}
 {{- if $hpa.enabled -}}
