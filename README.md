@@ -127,8 +127,17 @@ For Kubernetes:
 ```bash
 cp customer-values.yaml.example customer-values.yaml
 helm dependency build charts/lucairn
-helm upgrade --install lucairn charts/lucairn -f customer-values.yaml --namespace lucairn --create-namespace
+helm upgrade --install lucairn charts/lucairn \
+  -f customer-values.yaml \
+  --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
+  --namespace lucairn --create-namespace
 ```
+
+The `--set-file global.imagePullDockerConfigJson=...` flag is required —
+the chart guards against missing pull-secret payloads and `helm` will
+refuse to render without it. See `INSTALL.md` § "Kubernetes Install"
+for the full prerequisite recipe (`DOCKER_CONFIG` staging, GHCR PAT,
+etc.).
 
 ## Support Bundle
 
