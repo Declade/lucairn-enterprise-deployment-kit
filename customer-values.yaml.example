@@ -193,6 +193,25 @@ sandbox-b:
 veil-witness:
   postgresql:
     storageSize: 50Gi
+  # The veil-witness pod consumes the 4 ed25519 public keys below as
+  # VEIL_BRIDGE_PUBLIC_KEY / VEIL_SANITIZER_PUBLIC_KEY /
+  # VEIL_SANDBOX_B_PUBLIC_KEY / VEIL_AUDIT_PUBLIC_KEY environment
+  # variables (see charts/lucairn/charts/veil-witness/templates/configmap.yaml).
+  # Missing values crash the pod on boot. These are the SAME ed25519
+  # public keys as gateway.secrets.values.{veilBridgePublicKey,
+  # veilSanitizerPublicKey, veilSandboxBPublicKey, veilAuditPublicKey}
+  # above — copy each REPLACE_WITH_* placeholder verbatim into both
+  # places. (Vast-verify finding #4.)
+  config:
+    # MUST match gateway.secrets.values.veilBridgePublicKey above.
+    bridgePublicKey: "REPLACE_WITH_64_HEX_BRIDGE_PUBLIC_KEY"
+    # MUST match gateway.secrets.values.veilSanitizerPublicKey above.
+    sanitizerPublicKey: "REPLACE_WITH_64_HEX_SANITIZER_PUBLIC_KEY"
+    # MUST match gateway.secrets.values.veilSandboxBPublicKey above.
+    sandboxBPublicKey: "REPLACE_WITH_64_HEX_SANDBOX_B_PUBLIC_KEY"
+    # MUST match gateway.secrets.values.veilAuditPublicKey above.
+    auditPublicKey: "REPLACE_WITH_64_HEX_AUDIT_PUBLIC_KEY"
+    insecureDevMode: "false"
   secrets:
     values:
       postgresPassword: "REPLACE_WITH_VEIL_POSTGRES_PASSWORD"
