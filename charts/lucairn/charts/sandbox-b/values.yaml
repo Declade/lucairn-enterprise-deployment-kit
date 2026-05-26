@@ -1,6 +1,31 @@
 namespace: dsa-ai
 
-replicaCount: 2
+# v1.0 ships single-replica sandbox-b conservatively. The Python service
+# itself looks stateless across requests (services/sandbox-b/inference/
+# pipeline.py — BYOK adapter cache is a per-request perf optimisation,
+# templates are loaded once from disk). HOWEVER:
+#   1. Compose runs ONE sandbox-b container; multi-replica behaviour is
+#      structurally UNTESTED end-to-end.
+#   2. sandbox-b is a load-bearing veil-claim emitter (CLAIM_INFERENCE
+#      via veil_emitter.py). Multi-replica adds variance to the cert
+#      chain at a moment where the demo lane already pressures every
+#      pod-local-state subchart with single-replica pinning (see
+#      veil-witness, audit, id-bridge, sandbox-a).
+#   3. The Redis dependency below is single-replica by design (PVC-
+#      backed StatefulSet at templates/redis-statefulset.yaml); scaling
+#      sandbox-b creates N inference workers all pointed at one Redis,
+#      which is the v2.0 design but adds another untested variable to
+#      v1.0 demo readiness.
+# Conservative-good for v1.0: pin single-replica. Multi-replica
+# sandbox-b is a v2.0 design once Redis-backed coordination is end-to-
+# end tested. The umbrella validator (validators.sandboxBSingleReplica)
+# fails-fast on any operator who flips either knob.
+#
+# Vast cascade I sweep (fix-up #15, 2026-05-26): sandbox-b is the only
+# subchart in the sweep where state is structurally OK but operational
+# variance is the v1.0 risk. Re-enable multi-replica in v2.0 with an
+# explicit pressure-test PR.
+replicaCount: 1
 
 image:
   repository: dsa-sandbox-b
@@ -37,10 +62,13 @@ resources:
     cpu: 500m
     memory: 512Mi
 
+# v1.0 ships HPA disabled — see replicaCount comment above. Multi-
+# replica sandbox-b is untested end-to-end; HPA would silently ramp into
+# the same untested territory.
 hpa:
-  enabled: true
-  minReplicas: 2
-  maxReplicas: 10
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
   targetCPUUtilization: 70
 
 pdb:

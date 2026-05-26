@@ -1,6 +1,34 @@
 namespace: dsa-identity
 
-replicaCount: 2
+# v1.0 ships single-replica sandbox-a. The pod runs a per-pod
+# authRateLimiter (services/sandbox-a/internal/server/server.go:29 —
+# `failures map[string][]time.Time`) that tracks failed auth attempts
+# in-memory. With multi-replica sandbox-a behind a K8s Service:
+#   1. A brute-forcer's 10-failure rate-limit becomes 10 × N pods.
+#      Pod A counts 10, pod B counts 0 → brute-force rate-limit bypass
+#      via Service round-robin load-balancing.
+#   2. The sanitizer is wired as a SIDECAR in this same pod (see
+#      templates/deployment.yaml `name: sanitizer` container at line
+#      152). Scaling sandbox-a also scales the sanitizer; each sanitizer
+#      instance holds its own canary-token signing state and per-request
+#      caches. The gateway points at sandbox-a.dsa-identity.svc:8086
+#      (see gateway/values.yaml:34) so multi-replica sanitizer is
+#      reachable but untested for the sidecar topology — adding
+#      multi-pod variance to a v1.0 demo lane is conservative-bad.
+# Compose works because it runs ONE sandbox-a container with one
+# sanitizer sidecar.
+#
+# Multi-replica sandbox-a is a v2.0 design (Redis-backed rate-limit
+# counters + sanitizer as a standalone Deployment + sidecar removal).
+# Until then, leave replicaCount=1 + hpa.enabled=false; the umbrella
+# validator (validators.sandboxASingleReplica) fails-fast on any
+# operator who flips either knob without the v2.0 backend ready.
+#
+# Vast cascade I sweep (fix-up #15, 2026-05-26): sandbox-a + bundled
+# sanitizer sidecar share the veil-witness defect class — pod-local
+# state cannot be safely split across replicas via standard K8s Service
+# load-balancing.
+replicaCount: 1
 
 image:
   repository: dsa-sandbox-a
@@ -24,10 +52,13 @@ resources:
     cpu: 200m
     memory: 128Mi
 
+# v1.0 ships HPA disabled — see replicaCount comment above. The
+# authRateLimiter is pod-local; HPA scaling beyond 1 replica produces a
+# brute-force rate-limit bypass.
 hpa:
-  enabled: true
-  minReplicas: 2
-  maxReplicas: 10
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
   targetCPUUtilization: 70
 
 pdb:

@@ -1,6 +1,26 @@
 namespace: dsa-audit
 
-replicaCount: 2
+# v1.0 ships single-replica audit because the EVENTS_RECORDED veil-claim
+# dedup winner-result map is in-memory per-pod (services/audit/internal/
+# server/server.go:97 — `veilClaimSent sync.Map`). Multi-replica audit
+# pods would split the same-request_id dedup state: pod A's losers block
+# on pod A's winner, pod B's losers block on pod B's winner — both pods
+# can emit the EVENTS_RECORDED veil claim for the same request_id,
+# violating the F1 fail-closed uniformity invariant (locked by
+# TestEmitEvent_PipelineCompletion_RetryAfterFailureDoesNotShortCircuit).
+# Postgres backs the audit log itself but NOT the per-pod dedup channel
+# coordination map. Compose works because it runs ONE audit container.
+#
+# Multi-replica audit is a v2.0 design (Postgres- or Redis-backed
+# winner-result coordination). Until then, leave replicaCount=1 +
+# hpa.enabled=false; the umbrella validator
+# (validators.auditSingleReplica) fails-fast on any operator who flips
+# either knob without the v2.0 backend ready.
+#
+# Vast cascade I sweep (fix-up #15, 2026-05-26): audit shares the
+# veil-witness defect class — pod-local state cannot be safely split
+# across replicas via standard K8s Service load-balancing.
+replicaCount: 1
 
 image:
   repository: dsa-audit
@@ -23,10 +43,13 @@ resources:
     cpu: 200m
     memory: 128Mi
 
+# v1.0 ships HPA disabled — see replicaCount comment above. The
+# veilClaimSent sync.Map is pod-local; HPA scaling beyond 1 replica
+# breaks the F1 dedup invariant.
 hpa:
-  enabled: true
-  minReplicas: 2
-  maxReplicas: 10
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
   targetCPUUtilization: 70
 
 pdb:
