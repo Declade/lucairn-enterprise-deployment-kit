@@ -491,16 +491,42 @@ the mirror's credentials, then set `global.imageRegistry` in
 
 2. Prepare values.
 
+Two options:
+
+   **Option A — automated (recommended for dev / pilot installs)**:
+
+```bash
+bash scripts/render-values.sh customer-values.yaml
+```
+
+   `scripts/render-values.sh` copies `customer-values.yaml.example`,
+   fills every `REPLACE_*` placeholder with a correctly-shaped random
+   value, derives every `VEIL_*_PUBLIC_KEY` from its matching
+   `VEIL_*_SIGNING_KEY` seed (via `scripts/derive-veil-pubkey.sh`), and
+   substitutes a SINGLE shared `dsaServiceToken` across all subcharts.
+   The output is a ready-to-install `customer-values.yaml`.
+
+   **Option B — manual**:
+
 ```bash
 cp customer-values.yaml.example customer-values.yaml
 ```
 
-3. Replace every `REPLACE_*` value. Prefer an external secret manager
-   for production. The gateway's keystore is persisted on a PVC in v1.0
-   (chart v1.4.0+) — see § "Lucairn Enterprise v1.0 deployment topology"
-   above. The postgres-gateway subchart for v2.0 multi-replica HA is
-   default-disabled — see § "v2.0 roadmap (postgres-gateway keystore)"
-   below for the opt-in recipe.
+   then replace every `REPLACE_*` value by hand. Prefer Option A unless
+   you need fine-grained control over individual values. **WARNING — DO
+   NOT use `openssl rand -hex 32` to generate `VEIL_*_PUBLIC_KEY`
+   slots.** The public key MUST be derived from the corresponding
+   signing key seed via `scripts/derive-veil-pubkey.sh`; independent
+   random hex yields a key that does NOT match the seed and every
+   claim the service signs is silently rejected by the witness
+   verifier with `UNAUTHENTICATED: invalid signature`.
+
+3. Confirm the values file is complete and sane. Prefer an external
+   secret manager for production. The gateway's keystore is persisted
+   on a PVC in v1.0 (chart v1.4.0+) — see § "Lucairn Enterprise v1.0
+   deployment topology" above. The postgres-gateway subchart for v2.0
+   multi-replica HA is default-disabled — see § "v2.0 roadmap
+   (postgres-gateway keystore)" below for the opt-in recipe.
 
 4. Build chart dependencies and render once.
 
