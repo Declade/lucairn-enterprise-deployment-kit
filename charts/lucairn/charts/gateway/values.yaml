@@ -60,6 +60,12 @@ grpcTlsEnabled: "false"
 veilEnabled: "true"
 enableTestProvider: "false"
 veilWitnessCertAddr: "veil-witness.dsa-witness.svc.cluster.local:50058"
+# Witness gRPC for gateway-emitted GATEWAY_REQUEST_COMPLETED claims
+# (port 50057, distinct from veilWitnessCertAddr above). FQDN — same
+# K8s cross-namespace rationale as bridgeHealthAddr. Required when
+# global.dsaEnv=production AND veilEnabled=true (gateway log.Fatals
+# otherwise per CC-017 P2 production gate at gateway/main.go:434).
+veilWitnessAddr: "veil-witness.dsa-witness.svc.cluster.local:50057"
 gatewayBaseUrl: ""
 readiness:
   required: false
