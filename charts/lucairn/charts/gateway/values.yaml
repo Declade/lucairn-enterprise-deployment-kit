@@ -170,6 +170,14 @@ secrets:
     adminKey: ""
     sandboxBApiKey: ""
     veilManifestSigningKey: ""
+    # Gateway-emitted GATEWAY_REQUEST_COMPLETED claim signing key.
+    # Ed25519 seed, 64-char hex (paired with VEIL_GATEWAY_PUBLIC_KEY
+    # which the gateway publishes at /.well-known/veil-keys.json).
+    # REQUIRED when global.dsaEnv=production + veilEnabled=true — the
+    # gateway binary log.Fatals otherwise (services/gateway/main.go:438).
+    # Generate via `bin/lucairn-init` (paired-slot GATEWAY) or directly
+    # via scripts/derive-veil-pubkey.sh after `openssl rand -hex 32`.
+    veilGatewaySigningKey: ""
     veilWitnessPublicKey: ""
     veilBridgePublicKey: ""
     veilSanitizerPublicKey: ""
