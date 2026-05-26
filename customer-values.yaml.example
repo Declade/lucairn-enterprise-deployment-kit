@@ -44,11 +44,14 @@ global:
 
   # === gRPC TLS between services ===
   # Bundled subcharts do NOT provision TLS certs for inter-service
-  # gRPC. Default off matches Compose; flip on only after wiring
-  # cert-manager (or equivalent) at the customer site. Audit refuses
-  # to start on dsaEnv=production + grpcTlsEnabled=true without certs
-  # mounted. (Vast-verify finding #3.)
-  grpcTlsEnabled: "false"
+  # gRPC. Each subchart's per-chart `grpcTlsEnabled` defaults to
+  # "false"; the gateway, audit, id-bridge, sandbox-a, sandbox-b
+  # values blocks below MUST stay at "false" until cert-manager (or
+  # equivalent) is wired at the customer site. Audit + id-bridge
+  # refuse to start on dsaEnv=production + grpcTlsEnabled="true"
+  # without certs mounted. The per-subchart flag below is the
+  # load-bearing one (Helm subcharts don't read global.grpcTlsEnabled).
+  # (Vast-verify finding #3.)
 
   wireguardEncryption: false
   llmEgressEnabled: true
@@ -74,7 +77,11 @@ gateway:
     host: lucairn.customer.example
     tlsSecret: lucairn-gateway-tls
   gatewayBaseUrl: https://lucairn.customer.example
-  grpcTlsEnabled: "true"
+  # gRPC TLS between services. Default "false" matches the Compose
+  # path; bundled subcharts do NOT provision certs. Flip to "true"
+  # only after wiring cert-manager (or equivalent) at the customer
+  # site. (Vast-verify finding #3.)
+  grpcTlsEnabled: "false"
   streaming:
     enabled: true
     timeoutSeconds: 300
