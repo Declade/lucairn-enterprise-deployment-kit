@@ -187,8 +187,29 @@ sed -i.bak "s|REPLACE_WITH_AUDIT_APP_PASSWORD|$(openssl rand -hex 16)|" "$OUTPUT
 sed -i.bak "s|REPLACE_WITH_VEIL_APP_PASSWORD|$(openssl rand -hex 16)|" "$OUTPUT"
 sed -i.bak "s|REPLACE_WITH_REDIS_PASSWORD|$(openssl rand -hex 16)|" "$OUTPUT"
 sed -i.bak "s|REPLACE_WITH_CANARY_HMAC_KEY|$(openssl rand -hex 32)|" "$OUTPUT"
-sed -i.bak "s|REPLACE_WITH_SANDBOX_B_API_KEY|$(openssl rand -hex 32)|" "$OUTPUT"
-sed -i.bak "s|REPLACE_WITH_SANDBOX_B_API_KEYS|$(openssl rand -hex 32)|" "$OUTPUT"
+# Sandbox-B inter-service auth token. The gateway sends this as the
+# `x-dsa-license` gRPC metadata header on every inference RPC; sandbox-b's
+# APIKeyInterceptor cross-checks it against the same shared value. They
+# MUST be the same string.
+#
+# Two cascade bugs closed here (Vast cascade BLOCKER G, 2026-05-26):
+#
+#  1. The plural-named REPLACE_WITH_SANDBOX_B_API_KEYS placeholder MUST be
+#     substituted BEFORE the singular REPLACE_WITH_SANDBOX_B_API_KEY.
+#     Otherwise the shorter pattern matches first (sed is greedy on the
+#     leftmost match but does NOT word-boundary), substituting the prefix
+#     and leaving an unsubstituted trailing `S` in the plural slot —
+#     producing two different runtime values that differ by one byte.
+#
+#  2. Both placeholders MUST resolve to the SAME random value. Two
+#     independent `openssl rand -hex 32` calls produce two distinct keys,
+#     so the gateway's x-dsa-license header never matches sandbox-b's
+#     allowed-keys set — every inference RPC returns UNAUTHENTICATED and
+#     the gateway translates that to HTTP 503 "Inference service
+#     unavailable" for every customer request.
+SHARED_SANDBOX_B_API_KEY=$(openssl rand -hex 32)
+sed -i.bak "s|REPLACE_WITH_SANDBOX_B_API_KEYS|$SHARED_SANDBOX_B_API_KEY|" "$OUTPUT"
+sed -i.bak "s|REPLACE_WITH_SANDBOX_B_API_KEY|$SHARED_SANDBOX_B_API_KEY|" "$OUTPUT"
 
 # Bridge master + encryption keys — paired-named but independent values
 sed -i.bak "s|REPLACE_WITH_64_HEX_BRIDGE_MASTER_KEY|$(openssl rand -hex 32)|" "$OUTPUT"
@@ -249,6 +270,12 @@ DSAENV=$(grep -E "^  dsaEnv:" "$OUTPUT" | awk '{print $2}' | tr -d '"' || echo "
 SVC_TOKEN_COUNT=$(grep -c "$SHARED_SERVICE_TOKEN" "$OUTPUT" || true)
 KEYSTORE_PAD=$(echo "$KEYSTORE_KEY" | grep -cE '=$' || true)
 PUBKEY_COUNT=$(grep -cE "REPLACE_WITH_64_HEX.*PUBLIC_KEY" "$OUTPUT" || true)
+# Sandbox-B api key must appear in BOTH the gateway slot (sandboxBApiKey)
+# and the sandbox-b slot (sandboxBApiKeys) with the SAME value, and there
+# must be ZERO leftover `S` chars from the prefix-match bug. Closes Vast
+# cascade BLOCKER G.
+SB_API_KEY_MATCHES=$(grep -c "$SHARED_SANDBOX_B_API_KEY" "$OUTPUT" || true)
+SB_API_KEY_STRAY_S=$(grep -cE "^      sandboxBApiKey[sS]?:.*${SHARED_SANDBOX_B_API_KEY}S\"" "$OUTPUT" || true)
 
 echo ""
 echo "=== render-values.sh self-check ==="
@@ -257,6 +284,8 @@ echo "dsaEnv:           $DSAENV  (expected: development)"
 echo "Shared svc token: $SVC_TOKEN_COUNT occurrence(s)  (expected: >=1 in global.dsaServiceToken)"
 echo "Keystore padding: $KEYSTORE_PAD  (expected: 1 — must end in =)"
 echo "Pubkey REPLACE_*: $PUBKEY_COUNT unresolved  (expected: 0)"
+echo "Sandbox-B key:    $SB_API_KEY_MATCHES occurrence(s)  (expected: 2 — gateway slot + sandbox-b slot match)"
+echo "Sandbox-B stray:  $SB_API_KEY_STRAY_S trailing-S (expected: 0 — cascade G prefix-match bug)"
 echo ""
 
 if [ "$KEYSTORE_PAD" != "1" ]; then
@@ -266,6 +295,16 @@ fi
 
 if [ "$PUBKEY_COUNT" -ne 0 ]; then
   echo "ERROR: Unresolved VEIL_*_PUBLIC_KEY placeholders remain — witness verifier will reject signatures." >&2
+  exit 1
+fi
+
+if [ "$SB_API_KEY_MATCHES" -lt 2 ]; then
+  echo "ERROR: SANDBOX_B_API_KEY did not render into both gateway + sandbox-b slots. Cascade G regression." >&2
+  exit 1
+fi
+
+if [ "$SB_API_KEY_STRAY_S" -ne 0 ]; then
+  echo "ERROR: Sandbox-B api key has a trailing S — sed prefix-match regression. Cascade G." >&2
   exit 1
 fi
 
