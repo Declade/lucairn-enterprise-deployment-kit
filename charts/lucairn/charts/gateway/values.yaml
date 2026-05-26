@@ -23,6 +23,11 @@ waitTimeout: "30"
 
 identityServiceAddr: "sandbox-a.dsa-identity.svc:50053"
 bridgeServiceAddr: "id-bridge.dsa-bridge.svc:50052"
+# Gateway probes id-bridge's HTTP /readyz endpoint for its dependency-aware
+# /healthz check. Must be FQDN (not bare hostname) because gateway lives in
+# dsa-edge namespace and id-bridge lives in dsa-bridge — K8s DNS search
+# list doesn't cross namespaces by default. See Sim 5 Helm Gap #4.
+bridgeHealthAddr: "id-bridge.dsa-bridge.svc:8082"
 inferenceServiceAddr: "sandbox-b.dsa-ai.svc:50054"
 auditServiceAddr: "audit.dsa-audit.svc:50051"
 verticalsDir: "/etc/dsa/verticals"
