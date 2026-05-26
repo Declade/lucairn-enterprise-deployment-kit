@@ -190,6 +190,17 @@ secrets:
     sandboxBApiKeys: ""
     adminKey: ""
     dsaManagedAiKey: ""
+    # Inter-service auth token. Gateway → sandbox-b inference RPC
+    # authenticates with this shared bearer token. Prefer the umbrella
+    # `global.dsaServiceToken` (rendered via `render-values.sh` as a single
+    # value across all subcharts). This per-subchart slot is a backward-
+    # compat fallback for existing customer-values.yaml files.
+    # (Vast cascade BLOCKER B, 2026-05-26.)
+    dsaServiceToken: ""
+    # DSA license envelope cross-checked by sandbox-b's gRPC interceptor.
+    # Empty for development installs (matches Compose dev mode). In
+    # production, paste the SAME value here as gateway.secrets.values.licenseKey.
+    licenseKey: ""
   vault:
     path: "dsa/data/sandbox-b"
   aws:
