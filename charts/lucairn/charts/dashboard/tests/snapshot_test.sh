@@ -24,12 +24,26 @@ if ! command -v kubeconform >/dev/null 2>&1; then
   fi
 fi
 
+# Codex r2 LOW fix: the umbrella chart now enforces a pull-secret guard at
+# render time (--set-file global.imagePullDockerConfigJson=... is required
+# in real installs). For the snapshot test we materialize a throwaway
+# Docker config with a dummy `test:test` ghcr.io credential so the render
+# completes without forcing operators to provision a real registry token
+# just to run the test. The credential never reaches a real registry.
+SNAPSHOT_TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$SNAPSHOT_TMPDIR"' EXIT
+SNAPSHOT_DOCKER_CONFIG="$SNAPSHOT_TMPDIR/dockerconfig.json"
+cat > "$SNAPSHOT_DOCKER_CONFIG" <<'EOF'
+{"auths":{"ghcr.io":{"auth":"dGVzdDp0ZXN0"}}}
+EOF
+
 echo "snapshot_test: helm dependency update"
 helm dependency update charts/lucairn >/dev/null
 
 echo "snapshot_test: helm template + kubeconform"
 helm template lucairn charts/lucairn \
   -f customer-values.yaml.example \
+  --set-file global.imagePullDockerConfigJson="$SNAPSHOT_DOCKER_CONFIG" \
   --set dashboard.enabled=true \
   | kubeconform -strict -summary -ignore-missing-schemas
 
@@ -39,6 +53,7 @@ helm template lucairn charts/lucairn \
 echo "snapshot_test: confirming dashboard renders nothing when disabled"
 DISABLED_RENDER="$(helm template lucairn charts/lucairn \
   -f customer-values.yaml.example \
+  --set-file global.imagePullDockerConfigJson="$SNAPSHOT_DOCKER_CONFIG" \
   --set dashboard.enabled=false || true)"
 if echo "$DISABLED_RENDER" | grep -q "lucairn-dashboard"; then
   echo "snapshot_test: dashboard.enabled=false STILL rendered a dashboard resource — opt-in is broken" >&2
