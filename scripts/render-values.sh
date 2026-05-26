@@ -118,6 +118,16 @@ sed -i.bak "s|REPLACE_WITH_64_HEX_AUDIT_SIGNING_KEY|$SEED_AUDIT|" "$OUTPUT"
 # Substitute the DERIVED public-key slots. Each pubkey appears in
 # multiple chart locations (gateway.secrets.values + veil-witness.config
 # for BRIDGE/SANITIZER/SANDBOX_B/AUDIT); -g substitutes every occurrence.
+#
+# Order matters: GATEWAY_MANIFEST_PUBLIC_KEY + WITNESS_MANIFEST_PUBLIC_KEY
+# share their canonical name suffix with the plain GATEWAY_PUBLIC_KEY +
+# WITNESS_PUBLIC_KEY placeholders, so substitute the LONGER manifest
+# variants FIRST. sed is greedy on the leftmost match and would otherwise
+# leave the `_MANIFEST_PUBLIC_KEY` suffix as a partial-substitution
+# trailing fragment (same defect class as the Vast cascade G prefix-match
+# bug closure).
+sed -i.bak "s|REPLACE_WITH_64_HEX_GATEWAY_MANIFEST_PUBLIC_KEY|$PUB_GATEWAY|g" "$OUTPUT"
+sed -i.bak "s|REPLACE_WITH_64_HEX_WITNESS_MANIFEST_PUBLIC_KEY|$PUB_WITNESS|g" "$OUTPUT"
 sed -i.bak "s|REPLACE_WITH_64_HEX_GATEWAY_PUBLIC_KEY|$PUB_GATEWAY|g" "$OUTPUT"
 sed -i.bak "s|REPLACE_WITH_64_HEX_WITNESS_PUBLIC_KEY|$PUB_WITNESS|g" "$OUTPUT"
 sed -i.bak "s|REPLACE_WITH_64_HEX_BRIDGE_PUBLIC_KEY|$PUB_BRIDGE|g" "$OUTPUT"
