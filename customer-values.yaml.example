@@ -98,6 +98,15 @@ gateway:
       veilSandboxBPublicKey: "REPLACE_WITH_64_HEX_SANDBOX_B_PUBLIC_KEY"
       veilAuditPublicKey: "REPLACE_WITH_64_HEX_AUDIT_PUBLIC_KEY"
       veilAISigningKey: ""
+      # === Inter-service auth token ===
+      # ALL FOUR `dsaServiceToken` placeholders below (gateway, audit,
+      # id-bridge, sandbox-a) MUST be the SAME string — they are the
+      # shared bearer token services use to authenticate to each
+      # other. Generate ONCE with `openssl rand -hex 32` and paste
+      # the same value into every dsaServiceToken occurrence in this
+      # file. Different values silently break inter-service calls
+      # at runtime. A future v1.0.1 refactor will lift this to a
+      # single global.dsaServiceToken. (Vast-verify finding #5.)
       dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
       gatewayKeystoreKey: "REPLACE_WITH_BASE64_32_BYTES"
 
@@ -144,6 +153,7 @@ audit:
       # init container. Must not contain ' or \ (rendered into SQL string).
       auditAppPassword: "REPLACE_WITH_AUDIT_APP_PASSWORD"
       veilSigningKey: "REPLACE_WITH_64_HEX_AUDIT_SIGNING_KEY"
+      # MUST match gateway.secrets.values.dsaServiceToken above (Vast finding #5).
       dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
 
 id-bridge:
@@ -155,6 +165,7 @@ id-bridge:
       masterKey: "REPLACE_WITH_64_HEX_BRIDGE_MASTER_KEY"
       veilSigningKey: "REPLACE_WITH_64_HEX_BRIDGE_SIGNING_KEY"
       bridgeEncryptionKey: "REPLACE_WITH_64_HEX_BRIDGE_ENCRYPTION_KEY"
+      # MUST match gateway.secrets.values.dsaServiceToken above (Vast finding #5).
       dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
 
 sandbox-a:
@@ -168,6 +179,7 @@ sandbox-a:
       encryptionKey: "REPLACE_WITH_64_HEX_SANDBOX_A_ENCRYPTION_KEY"
       adminKey: "REPLACE_WITH_64_HEX_ADMIN_KEY"
       veilSigningKey: "REPLACE_WITH_64_HEX_SANITIZER_OR_SANDBOX_A_SIGNING_KEY"
+      # MUST match gateway.secrets.values.dsaServiceToken above (Vast finding #5).
       dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
       # Sanitizer sidecar canary-token signing key (≥32 chars). Without it,
       # canary-token leak detection silently disables. Compose-path parity:
