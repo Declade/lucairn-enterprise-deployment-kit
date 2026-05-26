@@ -152,13 +152,17 @@ sed -i.bak "s|REPLACE_WITH_BASE64_32_BYTES|$KEYSTORE_KEY|" "$OUTPUT"
 # ----------------------------------------------------------------------
 # 4. License key + license signing key
 #
-# In dev mode we use a non-empty placeholder string (compose-path
-# parity: `dev-license-key-not-needed`). In production the operator
-# replaces both via --set or a values overlay.
+# In dev mode both stay EMPTY (matches the Compose dev-path setting
+# `DSA_LICENSE_KEY=` in customer.env). The gateway binary parses the
+# license envelope at boot — a non-empty malformed value crashes the
+# pod with `invalid license key: malformed license key`, while an
+# empty value combined with DSA_ENV=development is the supported dev
+# bypass. In production the operator replaces both via --set or a
+# values overlay before flipping global.dsaEnv to "production".
 # ----------------------------------------------------------------------
 
-sed -i.bak "s|REPLACE_WITH_LICENSE_KEY|dev-license-key-not-needed|" "$OUTPUT"
-sed -i.bak "s|REPLACE_WITH_LICENSE_SIGNING_KEY|$(openssl rand -hex 32)|" "$OUTPUT"
+sed -i.bak "s|REPLACE_WITH_LICENSE_KEY||" "$OUTPUT"
+sed -i.bak "s|REPLACE_WITH_LICENSE_SIGNING_KEY||" "$OUTPUT"
 
 # ----------------------------------------------------------------------
 # 5. Veil manifest signing key (single hex32, no paired pubkey)
