@@ -13,6 +13,14 @@ metadata:
 data:
   IDENTITY_SERVICE_ADDR: {{ .Values.identityServiceAddr | quote }}
   BRIDGE_SERVICE_ADDR: {{ .Values.bridgeServiceAddr | quote }}
+  # Gateway probes id-bridge's HTTP /readyz endpoint for its dependency-aware
+  # /healthz check. Must be FQDN (not bare hostname) because gateway lives in
+  # dsa-edge namespace and id-bridge lives in dsa-bridge — K8s DNS search
+  # list doesn't cross namespaces by default. Without this, the gateway
+  # binary falls back to its Compose default "id-bridge:8082" which fails to
+  # resolve in K8s, and /healthz:8085 returns 503 (bridge check status=fail).
+  # See Sim 5 Helm Gap #4 / Vast diagnostic.
+  BRIDGE_HEALTH_ADDR: {{ .Values.bridgeHealthAddr | quote }}
   INFERENCE_SERVICE_ADDR: {{ .Values.inferenceServiceAddr | quote }}
   # Forward-looking: Gateway does not yet consume AUDIT_SERVICE_ADDR
   # but the network policy allows the connection for future audit emission
