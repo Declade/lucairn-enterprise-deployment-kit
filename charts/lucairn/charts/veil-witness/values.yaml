@@ -1,6 +1,26 @@
 namespace: dsa-witness
 
-replicaCount: 2
+# v1.0 ships single-replica veil-witness because the claim accumulator
+# is in-memory per-pod (services/veil-witness/internal/accumulator/
+# accumulator.go:42 — `pending sync.Map`, no shared store). Multi-replica
+# witness would split claims across pods via the K8s Service load-
+# balancer: pod A sees the bridge claim, pod B sees the audit claim,
+# pod C sees the sanitizer claim — and neither pod ever accumulates the
+# full 4/4 set before the 30s claimTimeout window closes. Both pods then
+# finalise PARTIAL certs and the customer-visible cert chain never
+# reaches COMPLETENESS_FULL + VERDICT_VERIFIED. Compose works because it
+# runs ONE witness container.
+#
+# Multi-replica veil-witness is a v2.0 design (Postgres- or Redis-backed
+# accumulator). Until then, leave replicaCount=1 + hpa.enabled=false; the
+# umbrella validator (validators.veilWitnessSingleReplica) fails-fast on
+# any operator who flips either knob without the v2.0 backend ready.
+#
+# Vast cascade I (fix-up #15, 2026-05-26): closed the v1.0 demo-readiness
+# blocker that the cert chain on Helm always finalised PARTIAL because
+# K8s Service load-balancing split emitter claims across two witness
+# pods.
+replicaCount: 1
 
 image:
   repository: dsa-veil-witness
@@ -20,10 +40,14 @@ resources:
     cpu: 200m
     memory: 128Mi
 
+# v1.0 ships HPA disabled — see replicaCount comment above. The
+# accumulator is pod-local; HPA scaling beyond 1 replica breaks cert
+# chain completeness. Re-enable only when v2.0 ships a shared-store
+# accumulator backend.
 hpa:
-  enabled: true
-  minReplicas: 2
-  maxReplicas: 10
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
   targetCPUUtilization: 70
 
 pdb:
