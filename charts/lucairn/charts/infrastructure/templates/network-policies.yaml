@@ -332,6 +332,22 @@ spec:
       ports:
         - port: 50052
           protocol: TCP
+    # From dsa-ai (Sandbox B — pull-based token rotation via BRIDGE_ADDR).
+    # Sandbox B subscribes to bridge on port 50052 for token rotation
+    # events. ai-egress in this same file already permits port 50052
+    # toward dsa-bridge (and bridge-egress permits 50052 toward dsa-ai
+    # for the symmetric direction); the destination side here needs
+    # the matching ingress so the connection actually establishes.
+    # Without this rule the TCP connect to id-bridge:50052 from
+    # sandbox-b times out → token rotation stalls → inference 503s
+    # under load. [Sim 5 Helm cascade F — surfaced on Vast fix-up #13.]
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: ai
+      ports:
+        - port: 50052
+          protocol: TCP
     # From dsa-ingest (future: token generation, redaction maps)
     - from:
         - namespaceSelector:
