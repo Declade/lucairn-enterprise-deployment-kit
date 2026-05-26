@@ -182,7 +182,7 @@
 {{- /*
   validators.gatewayFileKeystoreSingleReplica
 
-  Decision 9 (Option C pivot) topology guard.
+  Decision 9 (Option C pivot) topology guard — Invariant A.
 
   v1.0 file-keystore mode pins the gateway to a single replica because
   the keystore persists on a ReadWriteOnce PVC mounted at
@@ -192,11 +192,23 @@
   to fail PVC mount, or worse, two pods write to the same on-disk
   keystore on the same node and silently corrupt it.
 
-  Fails fast when EITHER:
-    - gateway.postgresKeystore.enabled=false (file-keystore mode, v1.0)
-      AND gateway.replicaCount > 1
-    - gateway.postgresKeystore.enabled=false (file-keystore mode, v1.0)
-      AND gateway.hpa.enabled=true
+  Fails fast in file-keystore mode (gateway.postgresKeystore.enabled=false)
+  when ANY of the following is true:
+    - gateway.replicaCount != 1
+      (the chart, INSTALL.md, and the validator message all say "1";
+      replicaCount=0 contradicts the docs and would deploy zero gateway
+      pods, replicaCount>1 collides with the RWO PVC)
+    - gateway.hpa.enabled = true
+      (HPA scaling beyond 1 replica breaks ReadWriteOnce PVC sharing)
+    - gateway.keystorePath = ""
+      (Codex r2 MED: empty path causes the gateway ConfigMap to omit
+      GATEWAY_KEYSTORE_PATH; the gateway binary then silently falls
+      back to in-memory keystore, violating Decision 9's v1.0
+      persistence guarantee)
+    - gateway.keystore.persistence.enabled != true
+      (Codex r2 MED: PVC must be enabled so the file keystore survives
+      pod restarts; without it the keystore lives on the pod's emptyDir
+      and is wiped on every restart)
 
   Multi-replica HA is the v2.0 opt-in path through the postgres-gateway
   subchart; see INSTALL.md § "v2.0 roadmap (postgres-gateway keystore)".
@@ -223,6 +235,15 @@
 {{- $hpa := (default dict $gateway.hpa) -}}
 {{- if $hpa.enabled -}}
 {{- fail "v1.0 file-keystore mode requires gateway.hpa.enabled: false. HPA scaling beyond 1 replica breaks ReadWriteOnce PVC sharing. For multi-replica HA, enable postgres-gateway opt-in (v2.0 roadmap)." -}}
+{{- end -}}
+{{- $keystorePath := (default "" $gateway.keystorePath) -}}
+{{- if eq $keystorePath "" -}}
+{{- fail "v1.0 file-keystore mode requires gateway.keystorePath to be non-empty (typically \"/etc/dsa/keystore\"). An empty path causes the gateway ConfigMap to omit GATEWAY_KEYSTORE_PATH; the gateway binary then silently falls back to an in-memory keystore that loses every minted key on pod restart, violating the v1.0 persistence guarantee. For multi-replica HA without a keystore path, enable postgres-gateway opt-in (v2.0 roadmap)." -}}
+{{- end -}}
+{{- $keystore := (default dict $gateway.keystore) -}}
+{{- $persistence := (default dict $keystore.persistence) -}}
+{{- if not $persistence.enabled -}}
+{{- fail "v1.0 file-keystore mode requires gateway.keystore.persistence.enabled: true so the gateway-keystore PVC mounts at gateway.keystorePath and survives pod restarts. With persistence disabled the keystore would live on the pod's emptyDir and be wiped on every restart, violating the v1.0 persistence guarantee. For multi-replica HA without a PVC, enable postgres-gateway opt-in (v2.0 roadmap)." -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
