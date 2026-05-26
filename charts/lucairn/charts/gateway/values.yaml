@@ -1,7 +1,9 @@
 namespace: dsa-edge
 
 # v1.0 ships single-replica gateway. The keystore persists across pod
-# restarts via a PVC mounted at keystorePath (default /etc/dsa/keystore).
+# restarts via a PVC mounted at the PARENT directory of keystorePath
+# (default parent /etc/dsa/keystore-dir; keystorePath
+# /etc/dsa/keystore-dir/keystore.json — see keystorePath block below).
 # Multi-replica HA is the v2.0 roadmap — see INSTALL.md § "Lucairn
 # Enterprise v1.0 deployment topology". Do NOT set replicaCount > 1 in
 # v1.0; the in-memory keystore is not shared across replicas.
@@ -26,14 +28,29 @@ auditServiceAddr: "audit.dsa-audit.svc:50051"
 verticalsDir: "/etc/dsa/verticals"
 sanitizerUrl: "http://sandbox-a.dsa-identity.svc:8086"
 sandboxBProxyUrl: "http://sandbox-b.dsa-ai.svc.cluster.local:8084"
-# v1.0 default: file-keystore persisted on a PVC mounted at /etc/dsa/keystore
-# (see keystore.persistence block below). The gateway emits GATEWAY_KEYSTORE_PATH
-# into its ConfigMap whenever this value is non-empty. The legacy
-# mutual-exclusion check (services/gateway/internal/auth/apikey.go:522) still
-# applies — if a v2.0 operator opts into postgresKeystore.enabled=true,
-# they MUST clear this value back to "" to avoid emitting both
+# v1.0 default: file-keystore persisted on a PVC.
+#
+# Keystore is a single FILE inside a PVC-mounted PARENT directory.
+# The PVC mounts at the parent of keystorePath (here /etc/dsa/keystore-dir),
+# and the gateway binary creates keystore.json inside it on first run
+# (matches the Compose model where the host volume is the parent dir).
+#
+# Do NOT set this to the parent directory itself — the gateway binary
+# calls os.ReadFile(keystorePath) on the full path and would error with
+# "is a directory" on a fresh PVC. Also do NOT try to use kubelet
+# subPath to project a single file from a PVC: for `persistentVolumeClaim`
+# (empty volume) sources, subPath creates a DIRECTORY at the target
+# inside the volume rather than mapping a single file (unlike configMap/
+# secret projections). Fix-up #8 used subPath and the gateway still saw
+# a directory; fix-up #9 reverts to mounting the parent directory.
+#
+# The gateway emits GATEWAY_KEYSTORE_PATH into its ConfigMap whenever
+# this value is non-empty. The legacy mutual-exclusion check
+# (services/gateway/internal/auth/apikey.go:522) still applies — if a
+# v2.0 operator opts into postgresKeystore.enabled=true, they MUST
+# clear this value back to "" to avoid emitting both
 # GATEWAY_KEYSTORE_PATH and GATEWAY_KEYSTORE_DSN (which crash-loops the pod).
-keystorePath: "/etc/dsa/keystore"
+keystorePath: "/etc/dsa/keystore-dir/keystore.json"
 grpcTlsEnabled: "false"
 veilEnabled: "true"
 enableTestProvider: "false"
@@ -113,10 +130,12 @@ postgresKeystore:
     name: gateway-keystore-db-credentials
     key: dsn
 
-# v1.0 keystore PVC. Mounted at .Values.keystorePath above (default
-# /etc/dsa/keystore). RWO + Retain so `helm uninstall` preserves customer
-# API keys for clean re-install (matches the v2.0 postgres-gateway PVC
-# semantics). 1Gi is generous — typical keystore.json is <100KB.
+# v1.0 keystore PVC. Mounted at the PARENT directory of .Values.keystorePath
+# above (default parent /etc/dsa/keystore-dir; gateway then creates
+# keystore.json inside it on first run). RWO + Retain so `helm uninstall`
+# preserves customer API keys for clean re-install (matches the v2.0
+# postgres-gateway PVC semantics). 1Gi is generous — typical
+# keystore.json is <100KB.
 keystore:
   persistence:
     enabled: true

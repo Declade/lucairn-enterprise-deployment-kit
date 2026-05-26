@@ -60,10 +60,13 @@ global:
   demoEnabled: false
 
 # v1.0 ships single-replica gateway with the file-keystore persisted on a
-# PVC mounted at /etc/dsa/keystore (gateway.keystore.persistence.enabled=true
-# by default; gateway.keystorePath="/etc/dsa/keystore" by default). The PVC
-# carries helm.sh/resource-policy: keep so `helm uninstall` preserves API
-# keys for clean re-install. Pilot customers handling <500 req/sec are
+# PVC mounted at the parent of gateway.keystorePath
+# (gateway.keystore.persistence.enabled=true by default;
+# gateway.keystorePath="/etc/dsa/keystore-dir/keystore.json" by default,
+# PVC mount at /etc/dsa/keystore-dir, gateway creates keystore.json inside
+# it on first run — matches the Compose volume-on-parent-dir model). The
+# PVC carries helm.sh/resource-policy: keep so `helm uninstall` preserves
+# API keys for clean re-install. Pilot customers handling <500 req/sec are
 # comfortably served by a single pod.
 #
 # Multi-replica gateway HA is the v2.0 opt-in path via the postgres-gateway
