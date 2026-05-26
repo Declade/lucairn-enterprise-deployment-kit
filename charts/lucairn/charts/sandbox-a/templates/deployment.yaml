@@ -20,6 +20,19 @@ spec:
         app.kubernetes.io/part-of: dsa
     spec:
       serviceAccountName: {{ .Chart.Name }}
+      # DNS search list workaround for the sandbox-a binary's hostname
+      # regex, which rejects FQDNs (sandbox-b.dsa-ai.svc.cluster.local)
+      # but accepts short hostnames. With this search list, the
+      # SANDBOX_B_PROBE_TARGET="sandbox-b:50054" lookup below resolves
+      # via dsa-ai.svc.cluster.local at DNS resolution time — short
+      # hostname goes through the binary's regex, FQDN translation
+      # happens at the resolver. (Vast-verify finding #6 chart-side
+      # workaround. A DSA-side regex fix is the architectural answer
+      # for v1.0.1; this closes the install gate today without an
+      # image republish.)
+      dnsConfig:
+        searches:
+          - dsa-ai.svc.cluster.local
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
       {{- if .Values.global.nodeIsolation }}
@@ -85,7 +98,12 @@ spec:
             - name: SANITIZER_ADDR
               value: "http://localhost:8086"
             - name: SANDBOX_B_PROBE_TARGET
-              value: "sandbox-b.dsa-ai.svc.cluster.local:50054"
+              # SHORT hostname — the sandbox-a binary's input regex
+              # rejects FQDNs. The pod's dnsConfig.searches above
+              # (dsa-ai.svc.cluster.local) makes the kubelet resolver
+              # try the full FQDN at lookup time. (Vast-verify finding #6
+              # chart-side workaround.)
+              value: "sandbox-b:50054"
             - name: DSA_ENV
               valueFrom:
                 configMapKeyRef:
