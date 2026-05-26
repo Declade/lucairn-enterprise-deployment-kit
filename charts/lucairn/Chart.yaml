@@ -3,7 +3,7 @@ name: lucairn
 description: Lucairn enterprise self-hosted deployment kit
 type: application
 version: 1.4.0
-appVersion: "0.4.1"
+appVersion: "0.4.0"
 
 dependencies:
   - name: infrastructure
@@ -26,9 +26,13 @@ dependencies:
     condition: gateway.enabled
   - name: postgres-gateway
     version: 0.1.0
-    # Postgres-backed keystore for the gateway (closes Sim 5 Helm Gap #6).
-    # ON by default — required for HA + restart-survival. Flip off only
-    # for single-replica dev runs against the legacy file-keystore path.
+    # Postgres-backed keystore for the gateway is the v2.0 multi-replica HA
+    # path (closes Sim 5 Helm Gap #6 when HA ships). DEFAULT OFF in v1.0:
+    # v1.0 ships single-replica gateway + file-keystore on PVC. The subchart
+    # remains in the dependency tree so v2.0 operators can opt in cleanly,
+    # but it does NOT render in default v1.0 installs. Do NOT flip on without
+    # ALSO setting gateway.postgresKeystore.enabled=true AND
+    # gateway.replicaCount>=2 — see INSTALL.md § "v2.0 roadmap".
     condition: postgres-gateway.enabled
   - name: observability
     version: 0.1.0

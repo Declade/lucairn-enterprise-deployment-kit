@@ -13,7 +13,7 @@
 global:
   dsaEnv: production
   imageRegistry: ghcr.io/declade
-  imageTag: "0.4.1"
+  imageTag: "0.4.0"
   imagePullSecrets:
     - name: lucairn-registry
   # imagePullDockerConfigJson is ALWAYS passed via `--set-file ...` at
@@ -28,13 +28,17 @@ global:
   ollamaEnabled: true
   demoEnabled: false
 
-# By default, the gateway uses postgres-gateway for keystore persistence
-# (postgresKeystore.enabled=true), so GATEWAY_KEYSTORE_PATH is intentionally
-# left empty and only GATEWAY_KEYSTORE_DSN is wired. Emitting BOTH would trip
-# the gateway's mutual-exclusion check and crash-loop the pod. To use the
-# legacy file-keystore path instead, set BOTH gateway.postgresKeystore.enabled=false
-# AND postgres-gateway.enabled=false, then set gateway.keystorePath="/etc/dsa/keystore"
-# (and ensure the gateway container has a writable volume mounted there).
+# v1.0 ships single-replica gateway with the file-keystore persisted on a
+# PVC mounted at /etc/dsa/keystore (gateway.keystore.persistence.enabled=true
+# by default; gateway.keystorePath="/etc/dsa/keystore" by default). The PVC
+# carries helm.sh/resource-policy: keep so `helm uninstall` preserves API
+# keys for clean re-install. Pilot customers handling <500 req/sec are
+# comfortably served by a single pod.
+#
+# Multi-replica gateway HA is the v2.0 opt-in path via the postgres-gateway
+# subchart further down. Do NOT enable it in v1.0 — the chart fails-fast
+# if you flip only one of the two paired flags. See INSTALL.md
+# § "Lucairn Enterprise v1.0 deployment topology" + "v2.0 roadmap".
 gateway:
   ingress:
     enabled: true
@@ -62,23 +66,38 @@ gateway:
       dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
       gatewayKeystoreKey: "REPLACE_WITH_BASE64_32_BYTES"
 
-# Postgres instance backing the gateway's PostgresKeyStore — required for
-# HA + restart-survival of customer-minted API keys. PVC reclaim Retain;
-# `helm uninstall` preserves the keystore PVC (drop manually via
-# `kubectl delete pvc postgres-gateway-data -n dsa-edge`).
+# postgres-gateway is the v2.0 path for multi-replica gateway HA. v1.0
+# ships single-replica with the file-keystore on PVC (block above). Leave
+# both flags below at false until v2.0. Enabling either without the other
+# or with gateway.replicaCount > 1 produces undefined behavior — the
+# umbrella validator fails-fast on the mixed case. See INSTALL.md
+# § "v2.0 roadmap".
 #
-# postgresql.sslmode defaults to "disable" (chart-local default) because the
-# bundled postgres:16-alpine StatefulSet ships without TLS args/cert mounts.
-# The global.postgresqlSslmode=require above applies to OTHER DSNs (audit,
-# id-bridge, etc.) where customers may front the bundled servers with TLS.
-# Override `postgres-gateway.postgresql.sslmode: require` only if you swap
-# the bundled keystore Postgres for a customer-managed TLS-enabled instance.
+# When v2.0 ships, the opt-in recipe will be:
+#   postgres-gateway:
+#     enabled: true
+#     postgresql:
+#       storageSize: 5Gi
+#     secrets:
+#       values:
+#         postgresPassword: "REPLACE_WITH_POSTGRES_GATEWAY_PASSWORD"
+#   gateway:
+#     replicaCount: 2     # or higher
+#     keystorePath: ""    # clear so GATEWAY_KEYSTORE_PATH is NOT emitted
+#     keystore:
+#       persistence:
+#         enabled: false  # v2.0 uses Postgres-backed keystore, not PVC
+#     postgresKeystore:
+#       enabled: true
+#     hpa:
+#       enabled: true     # safe under Postgres-backed keystore
 postgres-gateway:
-  postgresql:
-    storageSize: 5Gi
-  secrets:
-    values:
-      postgresPassword: "REPLACE_WITH_POSTGRES_GATEWAY_PASSWORD"
+  enabled: false
+# NOTE: gateway.postgresKeystore.enabled: false is the chart default (see
+# charts/lucairn/charts/gateway/values.yaml). Do NOT add a second top-level
+# `gateway:` block here — YAML would silently drop the earlier `gateway:`
+# entry (with the ingress + secrets values) in favor of the later one.
+# The umbrella validator enforces that both flags toggle together.
 
 audit:
   postgresql:

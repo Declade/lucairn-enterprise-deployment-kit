@@ -144,16 +144,21 @@
 {{- /*
   validators.gatewayPostgresKeystoreSubchartMismatch
 
-  Closes bug-hunter H1. Fails fast when:
-    - gateway.postgresKeystore.enabled = true (gateway will try to read
-      GATEWAY_KEYSTORE_DSN from the gateway-keystore-db-credentials Secret)
-    AND
-    - postgres-gateway.enabled = false (the StatefulSet + Secret would
-      never render, so the gateway pod CrashLoopBackOffs at boot trying
-      to dial a non-existent Service / read a non-existent Secret).
+  Closes bug-hunter H1 (original) + Option C pivot (2026-05-26):
+  v1.0 ships single-replica + file-keystore on PVC (both flags OFF).
+  The postgres-gateway subchart is the v2.0 opt-in HA path (both flags
+  ON). Anything in between is a misconfiguration we must fail-fast on.
 
-  Either both must be true (production / HA path) or both must be false
-  (single-replica dev fallback to file-keystore at gateway.keystorePath).
+  Fails when EITHER:
+    - gateway.postgresKeystore.enabled = true AND postgres-gateway.enabled = false
+      (gateway boots with PostgresKeyStore but the StatefulSet + Secret
+       never render → CrashLoopBackOff on the dial / Secret lookup)
+    - gateway.postgresKeystore.enabled = false AND postgres-gateway.enabled = true
+      (postgres-gateway StatefulSet renders but the gateway never reads
+       GATEWAY_KEYSTORE_DSN → keys land on the file PVC and the Postgres
+       DB stays empty / orphan, silently confusing the v2.0 operator)
+
+  Both OFF (v1.0 default) and both ON (v2.0 opt-in) pass.
 
   Cannot use sibling subchart .Subcharts access from inside the gateway
   subchart (Helm 3 doesn't reliably propagate that across all minor
@@ -167,7 +172,10 @@
 {{- $pk := (default dict $gateway.postgresKeystore) -}}
 {{- $pgGW := (default dict (index .Values "postgres-gateway")) -}}
 {{- if and $pk.enabled (not $pgGW.enabled) -}}
-{{- fail "gateway.postgresKeystore.enabled=true requires postgres-gateway.enabled=true. The gateway boots with PostgresKeyStore and reads GATEWAY_KEYSTORE_DSN from the gateway-keystore-db-credentials Secret rendered by the postgres-gateway subchart. With postgres-gateway disabled, the Secret + StatefulSet are missing and the gateway pod CrashLoopBackOffs at boot. Either set both to true (production / HA path) or flip BOTH off and use the legacy file-keystore via gateway.keystorePath (single-replica dev only). See INSTALL.md § \"Postgres-Gateway Keystore\"." -}}
+{{- fail "gateway.postgresKeystore.enabled=true requires postgres-gateway.enabled=true. The gateway boots with PostgresKeyStore and reads GATEWAY_KEYSTORE_DSN from the gateway-keystore-db-credentials Secret rendered by the postgres-gateway subchart. With postgres-gateway disabled, the Secret + StatefulSet are missing and the gateway pod CrashLoopBackOffs at boot. v1.0 default is BOTH flags OFF (single-replica + file-keystore on PVC); v2.0 opt-in is BOTH flags ON. See INSTALL.md § \"v2.0 roadmap\"." -}}
+{{- end -}}
+{{- if and (not $pk.enabled) $pgGW.enabled -}}
+{{- fail "postgres-gateway.enabled=true requires gateway.postgresKeystore.enabled=true. The postgres-gateway StatefulSet will render and consume a PVC, but the gateway will keep using the file-keystore at gateway.keystorePath — leaving the Postgres database empty and orphan. v1.0 default is BOTH flags OFF (single-replica + file-keystore on PVC); v2.0 opt-in is BOTH flags ON together with gateway.replicaCount>=2 and gateway.keystorePath=\"\". See INSTALL.md § \"v2.0 roadmap\"." -}}
 {{- end -}}
 {{- end -}}
 
