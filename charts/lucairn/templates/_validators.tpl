@@ -180,6 +180,74 @@
 {{- end -}}
 
 {{- /*
+  validators.gatewayFileKeystoreSingleReplica
+
+  Decision 9 (Option C pivot) topology guard.
+
+  v1.0 file-keystore mode pins the gateway to a single replica because
+  the keystore persists on a ReadWriteOnce PVC mounted at
+  gateway.keystorePath (typically /etc/dsa/keystore). A RWO PVC can
+  only be attached to one node at a time — scaling beyond replicaCount=1
+  (or enabling HPA, which then ramps replicas) causes the second pod
+  to fail PVC mount, or worse, two pods write to the same on-disk
+  keystore on the same node and silently corrupt it.
+
+  Fails fast when EITHER:
+    - gateway.postgresKeystore.enabled=false (file-keystore mode, v1.0)
+      AND gateway.replicaCount > 1
+    - gateway.postgresKeystore.enabled=false (file-keystore mode, v1.0)
+      AND gateway.hpa.enabled=true
+
+  Multi-replica HA is the v2.0 opt-in path through the postgres-gateway
+  subchart; see INSTALL.md § "v2.0 roadmap (postgres-gateway keystore)".
+
+  Invoked from charts/lucairn/templates/validators.yaml.
+*/ -}}
+{{- define "validators.gatewayFileKeystoreSingleReplica" -}}
+{{- $gateway := (default dict .Values.gateway) -}}
+{{- $pk := (default dict $gateway.postgresKeystore) -}}
+{{- if not $pk.enabled -}}
+{{- $replicaCount := int (default 1 $gateway.replicaCount) -}}
+{{- if gt $replicaCount 1 -}}
+{{- fail (printf "v1.0 file-keystore mode requires gateway.replicaCount: 1 (current: %d). ReadWriteOnce PVC cannot be shared across pods. For multi-replica HA, enable postgres-gateway opt-in (v2.0 roadmap)." $replicaCount) -}}
+{{- end -}}
+{{- $hpa := (default dict $gateway.hpa) -}}
+{{- if $hpa.enabled -}}
+{{- fail "v1.0 file-keystore mode requires gateway.hpa.enabled: false. HPA scaling beyond 1 replica breaks ReadWriteOnce PVC sharing. For multi-replica HA, enable postgres-gateway opt-in (v2.0 roadmap)." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
+  validators.gatewayPostgresModeKeystorePathEmpty
+
+  Decision 9 (Option C pivot) topology guard — counterpart to
+  validators.gatewayFileKeystoreSingleReplica.
+
+  v2.0 opt-in path (postgres-keystore mode) requires gateway.keystorePath
+  to be cleared back to "" — otherwise the gateway ConfigMap emits BOTH
+  GATEWAY_KEYSTORE_PATH and GATEWAY_KEYSTORE_DSN, and the gateway binary
+  crash-loops on the mutual-exclusion check at
+  services/gateway/internal/auth/apikey.go:522.
+
+  Fails fast when:
+    - gateway.postgresKeystore.enabled=true (Postgres mode, v2.0 opt-in)
+      AND gateway.keystorePath != ""
+
+  Invoked from charts/lucairn/templates/validators.yaml.
+*/ -}}
+{{- define "validators.gatewayPostgresModeKeystorePathEmpty" -}}
+{{- $gateway := (default dict .Values.gateway) -}}
+{{- $pk := (default dict $gateway.postgresKeystore) -}}
+{{- if $pk.enabled -}}
+{{- $kp := (default "" $gateway.keystorePath) -}}
+{{- if ne $kp "" -}}
+{{- fail (printf "Postgres-keystore mode (postgresKeystore.enabled: true) requires gateway.keystorePath: \"\" to avoid mutual-exclusion crash in the gateway binary (current: %q). Clear keystorePath when enabling Postgres mode." $kp) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
   validators.dashboardDemoToggleNotProduction
 
   Surfaces a `# WARN-toggle-in-prod:` comment in the rendered
