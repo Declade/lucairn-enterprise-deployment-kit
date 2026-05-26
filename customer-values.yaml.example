@@ -19,9 +19,37 @@ global:
   # imagePullDockerConfigJson is ALWAYS passed via `--set-file ...` at
   # install time (see header). Leave it blank here.
   imagePullDockerConfigJson: ""
-  postgresqlSslmode: require
-  nodeIsolation: true
-  dnsRestriction: true
+
+  # === Cluster type ===
+  # Default values target a vanilla Kubernetes cluster (Kind, vanilla
+  # EKS/GKE/AKS) with no Cilium and no labeled+tainted node pools.
+  # If your cluster runs Cilium with WireGuard encryption + CNP
+  # enforcement AND you have provisioned dsa.io/zone=identity /
+  # dsa.io/zone=ai node pools, flip BOTH flags below to true:
+  #   nodeIsolation: true
+  #   dnsRestriction: true
+  # Otherwise leave them false — flipping them on without the
+  # supporting CNI policy + labeled nodes breaks pod scheduling
+  # (nodeIsolation) and cross-namespace service discovery
+  # (dnsRestriction). (Vast-verify finding #1.)
+  nodeIsolation: false
+  dnsRestriction: false
+
+  # === Postgres SSL ===
+  # Bundled postgres-* StatefulSets do NOT configure TLS. Default
+  # sslmode=disable matches the Compose path. Override to "require"
+  # only if you swap in an external Postgres with TLS configured.
+  # (Vast-verify finding #2.)
+  postgresqlSslmode: disable
+
+  # === gRPC TLS between services ===
+  # Bundled subcharts do NOT provision TLS certs for inter-service
+  # gRPC. Default off matches Compose; flip on only after wiring
+  # cert-manager (or equivalent) at the customer site. Audit refuses
+  # to start on dsaEnv=production + grpcTlsEnabled=true without certs
+  # mounted. (Vast-verify finding #3.)
+  grpcTlsEnabled: "false"
+
   wireguardEncryption: false
   llmEgressEnabled: true
   ingestEgressEnabled: false
