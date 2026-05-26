@@ -143,15 +143,23 @@ spec:
             # only this PVC-backed mount is writable, so keystore writes
             # succeed without relaxing the hardened FS posture.
             #
-            # subPath: keystore.json makes kubelet mount the SINGLE FILE
-            # `keystore.json` from the PVC root at the operator's keystorePath
-            # (default /etc/dsa/keystore). Without subPath, the PVC is mounted
-            # as a DIRECTORY at keystorePath and the gateway crashloops
-            # because its file-keystore expects a regular file. (Closes
-            # Vast-verify BLOCKER-1 in fix-up #8.)
+            # Mount the PVC at the PARENT directory of keystorePath. The
+            # gateway binary calls os.ReadFile(keystorePath) on the full
+            # file path, so the mount must be at the parent dir (NOT
+            # keystorePath itself, which would make the path a directory
+            # on a fresh PVC). This matches the Compose model where the
+            # host volume is the parent dir and the gateway creates
+            # keystore.json inside it on first run.
+            #
+            # NOTE: subPath does NOT work for projecting a single file
+            # out of a `persistentVolumeClaim` (empty) volume — kubelet
+            # creates a DIRECTORY at the subPath inside the volume and
+            # bind-mounts that directory into the container, leaving the
+            # gateway with the same "is a directory" error. (Fix-up #8
+            # used subPath and was ineffective; fix-up #9 mounts the
+            # parent dir instead. Closes Vast-verify BLOCKER-1.)
             - name: keystore
-              mountPath: {{ .Values.keystorePath }}
-              subPath: keystore.json
+              mountPath: {{ .Values.keystorePath | dir }}
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
