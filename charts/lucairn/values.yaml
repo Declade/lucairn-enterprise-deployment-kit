@@ -68,9 +68,40 @@ global:
   # Requires Cilium CNI with WireGuard support. Provides mTLS-equivalent
   # encryption without application changes or certificate management.
   wireguardEncryption: false
+  # Single shared inter-service auth token consumed by gateway / audit /
+  # id-bridge / sandbox-a / sandbox-b secret templates. Empty value lets
+  # each subchart fall back to its own `secrets.values.dsaServiceToken`
+  # for backward compatibility with existing customer-values.yaml files.
+  # Render-time helper `render-values.sh` writes a single value here so
+  # all five subcharts share the same token — without it, the per-
+  # subchart placeholders rendered as four different random values and
+  # broke service-to-service auth (Vast cascade BLOCKER D, 2026-05-26).
+  dsaServiceToken: ""
+  # Shared DSA license envelope consumed by gateway + sandbox-b. Empty
+  # value lets each subchart fall back to its own `secrets.values.licenseKey`
+  # for backward compatibility. (Vast cascade BLOCKER B, 2026-05-26.)
+  dsaLicenseKey: ""
   # DSA environment: "development" | "production". Controls fail-closed guards in pipeline services.
-  # Override to "production" in values-prod.yaml.
-  dsaEnv: production
+  #
+  # v1.0 ships "development" as the chart default because the bundled
+  # subcharts do NOT provision inter-service gRPC TLS certs (each
+  # subchart's `grpcTlsEnabled` defaults to "false"). The gateway / audit
+  # / id-bridge / sandbox-a binaries hard-refuse the combo
+  # `DSA_ENV=production` + `GRPC_TLS_ENABLED=false` at boot with
+  # `GRPC_TLS_ENABLED=true is required when DSA_ENV=production; refusing
+  # to start with plaintext transport`. Flipping the default to
+  # "development" matches the actual TLS posture the chart ships with
+  # so a fresh `helm install` succeeds end-to-end on a vanilla cluster
+  # without manual operator-side overrides (Vast cascade BLOCKER A,
+  # 2026-05-26).
+  #
+  # Customers who wire cert-manager (or equivalent) and flip every
+  # subchart's `grpcTlsEnabled` to "true" can also flip this to
+  # "production" via `--set global.dsaEnv=production` or by loading
+  # `values-prod.yaml` which already sets the combo correctly. Prod-grade
+  # TLS provisioning is the v2.0 roadmap. See INSTALL.md
+  # § "v1.0 chart-default TLS posture".
+  dsaEnv: development
 
 infrastructure:
   enabled: true

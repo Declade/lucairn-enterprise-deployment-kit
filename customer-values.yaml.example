@@ -11,7 +11,14 @@
 # INSTALL.md § "Kubernetes Install" for the isolated $DOCKER_CONFIG recipe.
 
 global:
-  dsaEnv: production
+  # v1.0 ships "development" as the chart default because the bundled
+  # subcharts do NOT provision inter-service gRPC TLS certs. The gateway /
+  # audit / id-bridge / sandbox-a binaries refuse to boot on the combo
+  # `DSA_ENV=production` + `GRPC_TLS_ENABLED=false`. Flip to "production"
+  # ONLY after wiring cert-manager (or equivalent) AND setting every
+  # subchart's `grpcTlsEnabled: "true"` below. Prod-grade TLS provisioning
+  # is the v2.0 roadmap. (Vast cascade BLOCKER A, 2026-05-26.)
+  dsaEnv: development
   imageRegistry: ghcr.io/declade
   imageTag: "0.4.0"
   imagePullSecrets:
@@ -58,6 +65,21 @@ global:
   ingestEgressEnabled: false
   ollamaEnabled: true
   demoEnabled: false
+
+  # === Shared inter-service auth token ===
+  # Single value consumed by gateway / audit / id-bridge / sandbox-a /
+  # sandbox-b secret templates. Generate ONCE with `openssl rand -hex 32`
+  # and paste here — render-values.sh does this automatically. Replaces
+  # the old per-subchart `dsaServiceToken` placeholders which the renderer
+  # used to substitute with four DIFFERENT random values, silently
+  # breaking inter-service auth at runtime. (Vast cascade BLOCKER D,
+  # 2026-05-26.)
+  dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
+  # Shared DSA license envelope. Empty value targets development /
+  # self-hosted installs (Compose dev mode parity). In production, paste
+  # the SAME value here as gateway.secrets.values.licenseKey. (Vast
+  # cascade BLOCKER B, 2026-05-26.)
+  dsaLicenseKey: ""
 
 # v1.0 ships single-replica gateway with the file-keystore persisted on a
 # PVC mounted at the parent of gateway.keystorePath
@@ -110,16 +132,10 @@ gateway:
       veilSandboxBPublicKey: "REPLACE_WITH_64_HEX_SANDBOX_B_PUBLIC_KEY"
       veilAuditPublicKey: "REPLACE_WITH_64_HEX_AUDIT_PUBLIC_KEY"
       veilAISigningKey: ""
-      # === Inter-service auth token ===
-      # ALL FOUR `dsaServiceToken` placeholders below (gateway, audit,
-      # id-bridge, sandbox-a) MUST be the SAME string — they are the
-      # shared bearer token services use to authenticate to each
-      # other. Generate ONCE with `openssl rand -hex 32` and paste
-      # the same value into every dsaServiceToken occurrence in this
-      # file. Different values silently break inter-service calls
-      # at runtime. A future v1.0.1 refactor will lift this to a
-      # single global.dsaServiceToken. (Vast-verify finding #5.)
-      dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
+      # dsaServiceToken lifted to global.dsaServiceToken (Vast cascade
+      # BLOCKER D, 2026-05-26). Leave this slot empty; the chart reads
+      # from global with this as the backward-compat fallback.
+      dsaServiceToken: ""
       gatewayKeystoreKey: "REPLACE_WITH_BASE64_32_BYTES"
 
 # postgres-gateway is the v2.0 path for multi-replica gateway HA. v1.0
@@ -165,8 +181,8 @@ audit:
       # init container. Must not contain ' or \ (rendered into SQL string).
       auditAppPassword: "REPLACE_WITH_AUDIT_APP_PASSWORD"
       veilSigningKey: "REPLACE_WITH_64_HEX_AUDIT_SIGNING_KEY"
-      # MUST match gateway.secrets.values.dsaServiceToken above (Vast finding #5).
-      dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
+      # dsaServiceToken lifted to global.dsaServiceToken (BLOCKER D).
+      dsaServiceToken: ""
 
 id-bridge:
   postgresql:
@@ -177,8 +193,8 @@ id-bridge:
       masterKey: "REPLACE_WITH_64_HEX_BRIDGE_MASTER_KEY"
       veilSigningKey: "REPLACE_WITH_64_HEX_BRIDGE_SIGNING_KEY"
       bridgeEncryptionKey: "REPLACE_WITH_64_HEX_BRIDGE_ENCRYPTION_KEY"
-      # MUST match gateway.secrets.values.dsaServiceToken above (Vast finding #5).
-      dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
+      # dsaServiceToken lifted to global.dsaServiceToken (BLOCKER D).
+      dsaServiceToken: ""
 
 sandbox-a:
   postgresql:
@@ -191,8 +207,8 @@ sandbox-a:
       encryptionKey: "REPLACE_WITH_64_HEX_SANDBOX_A_ENCRYPTION_KEY"
       adminKey: "REPLACE_WITH_64_HEX_ADMIN_KEY"
       veilSigningKey: "REPLACE_WITH_64_HEX_SANITIZER_OR_SANDBOX_A_SIGNING_KEY"
-      # MUST match gateway.secrets.values.dsaServiceToken above (Vast finding #5).
-      dsaServiceToken: "REPLACE_WITH_64_HEX_SERVICE_TOKEN"
+      # dsaServiceToken lifted to global.dsaServiceToken (BLOCKER D).
+      dsaServiceToken: ""
       # Sanitizer sidecar canary-token signing key (≥32 chars). Without it,
       # canary-token leak detection silently disables. Compose-path parity:
       # CANARY_HMAC_KEY :? enforced in docker-compose.customer.yml.
@@ -213,6 +229,14 @@ sandbox-b:
       sandboxBApiKeys: "REPLACE_WITH_SANDBOX_B_API_KEYS"
       adminKey: "REPLACE_WITH_64_HEX_ADMIN_KEY"
       dsaManagedAiKey: ""
+      # dsaServiceToken lifted to global.dsaServiceToken (BLOCKER B + D).
+      # Sandbox-b's gRPC interceptor authenticates inbound gateway → sandbox-b
+      # inference calls against this token. Without it every customer
+      # request returns 503 `Inference service unavailable`.
+      dsaServiceToken: ""
+      # DSA license envelope cross-checked by sandbox-b. Lifted to
+      # global.dsaLicenseKey. Empty for dev installs (Compose parity).
+      licenseKey: ""
 
 veil-witness:
   postgresql:
