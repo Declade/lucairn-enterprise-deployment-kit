@@ -651,8 +651,28 @@ services:
       LUCAIRN_DASHBOARD_DEMO_TOGGLE_ENABLED: "${LUCAIRN_DASHBOARD_DEMO_TOGGLE_ENABLED:-}"
     ports:
       - "127.0.0.1:8443:8443"
+    networks:
+      # Cert browser (Slice 3) needs to reach BOTH the cert DB and the
+      # witness cert RPC; these live on two distinct internal bridges:
+      #   - dsa-witness:               postgres-veil (the cert log DB)
+      #   - dsa-witness-certification: veil-witness:50058 (cert RPC)
+      # The dashboard binary fails-OPEN if either dep is unreachable (cert
+      # pages render the "store unavailable" banner), but the customer
+      # cannot browse certs at all without both attachments — so wire
+      # both up by default. Audit-log + gateway-admin surfaces wire in
+      # additional bridges only when their opt-in env vars are set.
+      - dsa-witness
+      - dsa-witness-certification
+    # NOTE: the HEALTHCHECK below is intentionally DISABLED. The dashboard
+    # image is gcr.io/distroless/static-debian12:nonroot — it contains
+    # only the lucairn-dashboard binary; no wget, curl, busybox, or shell.
+    # The previous wget-based check always reported `unhealthy` even when
+    # the binary was serving /healthz=200. Compose doesn't cascade-restart
+    # leaf services, so the false `unhealthy` was purely cosmetic but
+    # confused operators during install verification. A binary-side
+    # `--healthcheck` flag is the proper fix (tracked as Sim 5 Gap #4);
+    # until that ships in a dashboard image bump, disable the check
+    # entirely. Helm probes are unaffected (kubelet does httpGet natively,
+    # see charts/lucairn/charts/dashboard/templates/deployment.yaml).
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8443/healthz"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      disable: true
