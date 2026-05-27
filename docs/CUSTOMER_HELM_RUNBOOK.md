@@ -142,19 +142,21 @@ Use the in-cluster admin endpoint (avoids host-network rate limits that can hit 
 
 ```bash
 # Extract the admin key from the rendered Secret
-ADMIN_KEY=$(kubectl get secret -n dsa-edge gateway-secrets -o yaml | grep -E "dsaAdminKey:|adminKey:" | tail -1 | awk '{print $2}' | base64 -d)
+# Secret name is "gateway-credentials" (chart name + "-credentials" suffix).
+# Field is "DSA_ADMIN_KEY" (matches the gateway container env var).
+ADMIN_KEY=$(kubectl get secret -n dsa-edge gateway-credentials -o jsonpath='{.data.DSA_ADMIN_KEY}' | base64 -d)
 echo "Admin key (first 8 chars): ${ADMIN_KEY:0:8}..."
 
 # Your Anthropic key (already in customer-values.yaml from Step 4)
-ANTHROPIC_KEY=$(grep -E "anthropic.*Key:|providerKey:" customer-values.yaml | head -1 | awk '{print $2}' | tr -d '"')
+ANTHROPIC_KEY=$(grep -E 'anthropicApiKey:' customer-values.yaml | head -1 | awk '{print $2}' | tr -d '"')
 
-# Mint a customer via in-cluster temp pod
+# Mint a customer via in-cluster temp pod. Note: response field is `dsa_api_key`.
 CUSTOMER_KEY=$(kubectl run mint --image=curlimages/curl:latest --restart=Never --rm -i --quiet -- \
   curl -s -X POST \
     -H "x-admin-key: $ADMIN_KEY" \
     -H "Content-Type: application/json" \
     -d '{"customer_id":"my_first_customer","provider":"anthropic","provider_key":"'$ANTHROPIC_KEY'","tier":"enterprise"}' \
-    http://gateway.dsa-edge.svc.cluster.local:8080/api/v1/admin/keys | jq -r .rawKey)
+    http://gateway.dsa-edge.svc.cluster.local:8080/api/v1/admin/keys | jq -r .dsa_api_key)
 
 echo "Customer API key: $CUSTOMER_KEY"
 ```
