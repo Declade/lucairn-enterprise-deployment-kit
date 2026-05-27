@@ -17,7 +17,11 @@ image:
   # The 0.7.0 release closed the v1.0-dashboard arc (7 surfaces); 0.7.1
   # carried the release-gate polish; 0.8.1 adds the enterprise
   # operator-overview home page + the per-user demo-data toggle.
-  tag: "0.8.1"
+  # 0.8.2 (2026-05-27) rewrites the cert browser SQL to match the
+  # real veil_certificates schema — fixes the PR #38 phantom-column
+  # bug where /certs / /certs.csv crashed on "column cert_id does
+  # not exist" against any real customer install.
+  tag: "0.8.2"
   pullPolicy: IfNotPresent
 
 service:
@@ -93,17 +97,22 @@ ingress:
 # Slice 3: cert browser + inspector + audit-grade validator.
 # ─────────────────────────────────────────────────────────────────
 #
-# The cert surface is OPTIONAL. Leave the connection-string ref empty
-# to ship the dashboard without the cert pages — they render a "not
-# configured" explainer instead of attempting to reach the audit DB.
+# Dashboard 0.8.2 (2026-05-27) ships the cert browser ENABLED by
+# default. The customer-values.yaml.example wires `auditDB.connectionStringRef`
+# to the bundled cert log (postgres-veil + the veil_app role); the
+# customer can navigate to /certs immediately after login.
 #
-# When enabling the cert surface, the operator pre-creates:
+# To use a dedicated read-only role instead of veil_app (least privilege),
+# pre-create:
 #   1. A read-only Postgres role with SELECT on veil_certificates only.
 #      (See INSTALL.md § "Audit DB + Witness wiring".)
 #   2. A K8s Secret holding the libpq connection string. Recommended
 #      shape:
 #        kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
-#          --from-literal=connection-string='postgres://lucairn_dashboard_ro:...@postgres-bridge:5432/dsa?sslmode=verify-full'
+#          --from-literal=connection-string='postgres://lucairn_dashboard_ro:...@postgres-veil:5432/veil?sslmode=verify-full'
+#
+# Leave connectionStringRef.name empty to ship the dashboard with the
+# cert pages rendering "not configured" (fail-open default).
 #
 # Group mapping rules already in effect from Slice 2 are unchanged:
 # both admin and viewer roles can browse + re-verify certs. API-key
@@ -253,7 +262,7 @@ gateway:
 # explainer.
 #
 # IMPORTANT: this connection string points at postgres-audit (the
-# AUDIT EVENT LOG), NOT postgres-bridge (the CERT LOG that Slice 3's
+# AUDIT EVENT LOG), NOT postgres-veil (the CERT LOG that Slice 3's
 # .auditDB.connectionStringRef configures). The two are independent
 # databases and require separate Secrets. The dashboard reads both
 # at runtime via DISTINCT env vars (LUCAIRN_DASHBOARD_AUDIT_DB_URL
