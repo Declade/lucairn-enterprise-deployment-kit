@@ -87,24 +87,26 @@ For production (TLS + license bundle), see `INSTALL.md § Choose A Deployment Mo
 
 ## 5. Inject your managed-LLM API key
 
-Edit `customer.env` and set ONE of the provider keys. Anthropic example:
+`bin/lucairn-init --byok` already wrote an uncommented but empty `ANTHROPIC_API_KEY=` line into `customer.env`. Replace the empty value with your real `sk-ant-...` key:
 
 ```bash
-# Replace REPLACE_WITH_YOUR_ANTHROPIC_KEY with sk-ant-...
-sed -i 's|^# ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=REPLACE_WITH_YOUR_ANTHROPIC_KEY|' customer.env
+# Replace <your-key-here> with your real sk-ant-... key, then run:
+sed -i.bak 's|^ANTHROPIC_API_KEY=.*$|ANTHROPIC_API_KEY=<your-key-here>|' customer.env
 
-# Or just open the file and uncomment + populate the right line:
+# Or just open the file in your editor and set the right line:
 #   ANTHROPIC_API_KEY=sk-ant-...
 #   OPENAI_API_KEY=sk-...
 #   MISTRAL_API_KEY=...
 #   GEMINI_API_KEY=...
 ```
 
-Verify presence (does not print the key):
+Verify a real key is present (does not print the key):
 
 ```bash
-grep -c '^ANTHROPIC_API_KEY=' customer.env  # → 1
+grep -c '^ANTHROPIC_API_KEY=sk-ant-' customer.env  # → 1
 ```
+
+If this returns `0`, the sed didn't land (typo in `<your-key-here>`, key didn't start with `sk-ant-`, or you used a non-Anthropic provider). Re-run step 5 with the correct key.
 
 If you have keys for multiple providers, add multiple lines. The Sandbox B adapter only registers providers whose env var is set.
 
@@ -113,7 +115,7 @@ If you have keys for multiple providers, add multiple lines. The Sandbox B adapt
 ## 6. Bring up the stack
 
 ```bash
-docker compose \
+docker compose -p compose-demo \
   -f docker-compose.customer.yml \
   -f docker-compose.self-hosted.yml \
   -f docker-compose.self-hosted-byok.yml \
@@ -121,12 +123,14 @@ docker compose \
   up -d
 ```
 
+The `-p compose-demo` flag pins the Docker Compose project name so container names start with `compose-demo-*` regardless of the directory name on disk. Without it, Compose defaults the project name to the current directory name (`lucairn-enterprise-deployment-kit-*`).
+
 This pulls 13 images (~3 GB first time, cached thereafter) and starts the full pilot stack. Compose returns when containers are started; healthchecks take another ~30 s to settle.
 
 Wait for everything to report `(healthy)`:
 
 ```bash
-docker compose \
+docker compose -p compose-demo \
   -f docker-compose.customer.yml \
   -f docker-compose.self-hosted.yml \
   -f docker-compose.self-hosted-byok.yml \
@@ -283,7 +287,7 @@ Your PAT lacks `read:packages` scope OR your GitHub account has not been granted
 Inspect the logs for the unhealthy container:
 
 ```bash
-docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml -f docker-compose.self-hosted-byok.yml --env-file customer.env logs <service> --tail 100
+docker compose -p compose-demo -f docker-compose.customer.yml -f docker-compose.self-hosted.yml -f docker-compose.self-hosted-byok.yml --env-file customer.env logs <service> --tail 100
 ```
 
 Common causes:
@@ -297,7 +301,7 @@ Common causes:
 The sanitizer didn't find any PII. Check that you sent the German clinical payload verbatim — names + DOB + insurance number + address + phone + email together should produce `redaction_count ≥ 6`. If the payload is correct, check:
 
 ```bash
-docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml -f docker-compose.self-hosted-byok.yml --env-file customer.env logs sanitizer --tail 50
+docker compose -p compose-demo -f docker-compose.customer.yml -f docker-compose.self-hosted.yml -f docker-compose.self-hosted-byok.yml --env-file customer.env logs sanitizer --tail 50
 ```
 
 ### `signatures_valid: False` on step 8 cert verify
@@ -313,7 +317,7 @@ The customer key you minted in step 7 may have been wiped by a gateway restart. 
 The managed-LLM provider call timed out. Verify outbound reach:
 
 ```bash
-docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml -f docker-compose.self-hosted-byok.yml --env-file customer.env exec sandbox-b \
+docker compose -p compose-demo -f docker-compose.customer.yml -f docker-compose.self-hosted.yml -f docker-compose.self-hosted-byok.yml --env-file customer.env exec sandbox-b \
   curl -sS -o /dev/null -w "%{http_code}\n" https://api.anthropic.com/v1/messages
 # Expect: 401 (the dummy x-api-key was rejected, but TCP + DNS worked).
 ```
@@ -323,9 +327,9 @@ If you see `0` or `Could not resolve host`, the box can't reach the provider. Fi
 ### How do I tear down?
 
 ```bash
-docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml -f docker-compose.self-hosted-byok.yml --env-file customer.env down
+docker compose -p compose-demo -f docker-compose.customer.yml -f docker-compose.self-hosted.yml -f docker-compose.self-hosted-byok.yml --env-file customer.env down
 # Add -v to also remove the persistent Postgres + gateway volumes (DESTROYS DATA):
-docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml -f docker-compose.self-hosted-byok.yml --env-file customer.env down -v
+docker compose -p compose-demo -f docker-compose.customer.yml -f docker-compose.self-hosted.yml -f docker-compose.self-hosted-byok.yml --env-file customer.env down -v
 ```
 
 ---
