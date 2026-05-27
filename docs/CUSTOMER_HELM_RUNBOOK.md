@@ -70,14 +70,20 @@ This writes a complete `customer-values.yaml` to your current directory. Every c
 
 ## Step 4 — Add your Anthropic API key
 
-Open `customer-values.yaml` and find the line containing `REPLACE_WITH_YOUR_ANTHROPIC_KEY`. Replace with your real `sk-ant-...` key.
+`scripts/render-values.sh` writes the Anthropic key field as `anthropicApiKey: ""` (empty string). Replace the empty string with your real `sk-ant-...` key:
 
 ```bash
-# Replace REPLACE_WITH_YOUR_ANTHROPIC_KEY with your real key:
-sed -i.bak 's|REPLACE_WITH_YOUR_ANTHROPIC_KEY|sk-ant-XXXXXXX...|' customer-values.yaml
+# Replace <your-key-here> with your real sk-ant-... key, then run:
+sed -i.bak 's|anthropicApiKey: ""|anthropicApiKey: "<your-key-here>"|' customer-values.yaml
 ```
 
-(Replace `sk-ant-XXXXXXX...` with your actual key.)
+Verify a real key landed (does not print the key):
+
+```bash
+grep -c '^      anthropicApiKey: "sk-ant-' customer-values.yaml  # → 1
+```
+
+If this returns `0`, the sed didn't land (typo in `<your-key-here>` or key doesn't start with `sk-ant-`). Re-run with the correct key.
 
 ---
 
@@ -115,11 +121,13 @@ If `--wait` exits with `context deadline exceeded`, run `kubectl get pods -A` to
 
 ## Step 7 — Verify all pods are Ready
 
+The `helm install --wait` flag already waits for Helm-managed pods to be ready. As a redundant visual check, list pods across the Lucairn namespaces:
+
 ```bash
-kubectl wait --for=condition=ready pod --all -A --timeout=10m
+kubectl get pods -A | grep -E 'lucairn|dsa-'
 ```
 
-Expected: `condition met` for ~25 pods. Pods run across these namespaces:
+Expected: ~25 pods, all `Running` or `Completed` (Completed = Jobs). Pods run across these namespaces:
 - `lucairn` — chart-managed Helm hooks
 - `dsa-edge` — gateway
 - `dsa-bridge` — id-bridge + postgres-bridge
@@ -133,6 +141,9 @@ Expected: `condition met` for ~25 pods. Pods run across these namespaces:
 
 If any pod is stuck `ImagePullBackOff` → re-run Step 2 and reinstall.
 If any pod is stuck `CrashLoopBackOff` → check its logs (`kubectl logs -n <ns> <pod>`) — likely a missed REPLACE_* value in `customer-values.yaml`.
+
+(If you want a wait that fails on any unready Helm-managed pod, scope to the Helm label so you don't pick up Completed Jobs + kube-system pods:
+`kubectl wait --for=condition=ready pod -l app.kubernetes.io/managed-by=Helm -n lucairn --timeout=10m`.)
 
 ---
 
@@ -175,18 +186,18 @@ PF_PID=$!
 sleep 3
 ```
 
-Send a request with realistic PII payload:
+Send a request with a realistic German clinical PII payload (matches the Compose runbook's payload, reliably produces ≥6 redactions):
 
 ```bash
 RESP=$(curl -s -w "\n%{http_code}" \
   -H "Authorization: Bearer $CUSTOMER_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-haiku-4-5",
-    "max_tokens": 100,
+    "model": "claude-haiku-4-5-20251001",
+    "max_tokens": 150,
     "messages": [{
       "role": "user",
-      "content": "Patient Anna Schmidt, geb. 12.03.1978, Versicherungsnummer A4501289-DE, leidet an Hypertonie und Diabetes Typ 2."
+      "content": "Bitte fasse zusammen: Anna Schmidt, geboren am 12.03.1978, Versicherungsnummer A4501289-DE, wohnhaft Münchner Straße 42, klagt über Brustschmerzen seit gestern. Telefon 089-12345678, Email anna.schmidt@example.de. Antworte auf Deutsch in einem Satz."
     }]
   }' \
   http://localhost:8080/v1/messages)
@@ -203,12 +214,17 @@ Expected output:
 HTTP 200
 {
   "pii_in_ai": false,
-  "redaction_count": 4,
-  "veil_certificate_url": "http://localhost:8080/api/v1/veil/certificate/<request_id>/verify"
+  "redaction_count": 6,
+  "veil_certificate_url": "https://lucairn.customer.example/api/v1/veil/certificate/<request_id>"
 }
 ```
 
-The customer's PII (name, DOB, Versicherungsnummer) was sanitized BEFORE the prompt reached Anthropic. Anthropic returned a response based on placeholders. Lucairn then re-linked the response (mapping placeholders back to the customer's view).
+Notes:
+- `redaction_count` is `≥ 6` for the payload above (name + DOB + insurance number + address + phone + email).
+- The host portion of `veil_certificate_url` reflects `gateway.gatewayBaseUrl` from your `customer-values.yaml` (chart default: `https://lucairn.customer.example`). The fetch in Step 10 uses your local port-forward — it does NOT need to match the URL field.
+- The URL does NOT have a `/verify` suffix; the cert endpoint is `GET /api/v1/veil/certificate/<request_id>` directly.
+
+The customer's PII (name, DOB, Versicherungsnummer, address, phone, email) was sanitized BEFORE the prompt reached Anthropic. Anthropic returned a response based on placeholders. Lucairn then re-linked the response (mapping placeholders back to the customer's view).
 
 ---
 
@@ -217,17 +233,20 @@ The customer's PII (name, DOB, Versicherungsnummer) was sanitized BEFORE the pro
 Every inference produces a Veil Certificate proving sanitization happened + which services participated.
 
 ```bash
-# Extract the request_id from the previous response
-REQ_ID=$(echo "$BODY" | jq -r '.metadata.dsa_compliance.veil_certificate_url' | awk -F/ '{print $(NF-1)}')
+# Extract the request_id from the previous response.
+# veil_certificate_url ends with .../<request_id> directly (no /verify suffix),
+# so $NF (last field) is the request_id.
+REQ_ID=$(echo "$BODY" | jq -r '.metadata.dsa_compliance.veil_certificate_url' | awk -F/ '{print $NF}')
 echo "Request ID: $REQ_ID"
 
 # Wait ~35 seconds for the witness accumulator to finalize
 # (claims from bridge + sanitizer + ai + audit each arrive within ~30 sec)
 sleep 35
 
-# Fetch the cert chain verdict
+# Fetch the cert chain verdict.
+# Endpoint: GET /api/v1/veil/certificate/<request_id>  (no /verify suffix)
 CERT=$(curl -s -H "Authorization: Bearer $CUSTOMER_KEY" \
-  http://localhost:8080/api/v1/veil/certificate/$REQ_ID/verify)
+  http://localhost:8080/api/v1/veil/certificate/$REQ_ID)
 
 echo "$CERT" | jq '{
   signatures_valid,
@@ -271,7 +290,7 @@ Walk these checks after Step 10 — all should be ✓ for a successful install:
 - [ ] All pods in `lucairn` + `dsa-*` namespaces report Ready (`kubectl get pods -A`)
 - [ ] Customer mint returned `lcr_live_*` key
 - [ ] First inference returned HTTP 200 with `pii_in_ai: false`
-- [ ] `redaction_count` ≥ 4 on a payload with realistic PII
+- [ ] `redaction_count` ≥ 4 on a payload with realistic PII (≥6 on the documented German clinical payload)
 - [ ] Cert chain reports `signatures_valid: true`, `completeness: COMPLETENESS_FULL`, `overall_verdict: VERDICT_VERIFIED`
 - [ ] 4 claims with types `TOKEN_GENERATED + PII_SANITIZED + INFERENCE_COMPLETED + EVENTS_RECORDED`
 - [ ] No `missing_services` in the cert verdict
