@@ -365,23 +365,27 @@ func (d *CertsDeps) CSVExportHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		default:
 		}
-		var (
-			id, cid, verdict string
-			createdAt        time.Time
-			redactions       int
-			claims           int
-		)
-		if err := rows.Scan(&id, &cid, &createdAt, &verdict, &redactions, &claims); err != nil {
+		// Stream now projects 5 SQL columns (certificate_id, customer_id,
+		// created_at, verdict, certificate_raw); RedactionCount +
+		// ClaimCount are derived from the proto payload via
+		// store.ScanStreamRow. RedactionMin filter (if set) is honoured
+		// post-parse here — Stream cannot push it into SQL because
+		// there is no redaction_count column.
+		row, err := store.ScanStreamRow(rows)
+		if err != nil {
 			log.Printf("certs_csv: scan: %v", err)
 			return
 		}
+		if filter.RedactionMin > 0 && row.RedactionCount < filter.RedactionMin {
+			continue
+		}
 		if err := cw.Write([]string{
-			id,
-			cid,
-			createdAt.UTC().Format(time.RFC3339),
-			verdict,
-			strconv.Itoa(redactions),
-			strconv.Itoa(claims),
+			row.CertID,
+			row.CustomerID,
+			row.CreatedAt.UTC().Format(time.RFC3339),
+			row.Verdict,
+			strconv.Itoa(row.RedactionCount),
+			strconv.Itoa(row.ClaimCount),
 		}); err != nil {
 			log.Printf("certs_csv: write: %v", err)
 			return
