@@ -386,31 +386,32 @@ After login, these surfaces work out of the box on a default Helm install:
 
 - `/dashboard` — operator home with KPI tiles + 30-day sparkline + sanitizer bars
 - `/health` — server health pills for every kit service (polled every 10s, in-cluster reach)
+- `/certs` — **cert browser + inspector + audit-grade validator**. Dashboard 0.8.2+ ships with the cert browser surface enabled by default; the customer-values.yaml.example template wires `dashboard.auditDB.connectionStringRef` to the bundled cert log automatically. Pre-create the cert-DB Secret per the recipe below before `helm install` (the Secret name is `lucairn-dashboard-audit-db`). Each cert detail page surfaces the 4 signed claims (`TOKEN_GENERATED` + `PII_SANITIZED` + `INFERENCE_COMPLETED` + `EVENTS_RECORDED`), the witness verdict (`VERIFIED` / `PARTIAL` / `FAILED`), completeness (`FULL` / `PARTIAL`), and `signatures_valid` / `byok_exempt` / `isolation_verified` flags.
 - `/compliance` — admin-only signed-claim summary PDF export (cover + image manifest + cert window)
 - `/audit` — renders the "not configured" explainer until you wire `dashboard.audit.auditLogDBConnectionStringRef.name` against the `postgres-audit` database (see the dashboard sub-chart values for the wiring template)
 - `/keys` — renders the "not configured" explainer until you wire `dashboard.gateway.adminURL` + `dashboard.gateway.adminTokenSecretRef.name`
 
-### Cert browser caveat
+### Cert browser — enabled by default in 0.8.2
 
-The `/certs` surface (cert list + per-cert inspector) is **not wired by default** in this kit release. The Slice-3 cert browser query targets a `cert_id` / `redaction_count` / `claim_count` schema that the shipped `veil_certificates` migrations don't expose. Use the curl + jq path from Step 10 to inspect individual certs by `request_id` until a kit release ships the matching schema migration.
+Dashboard 0.8.2 (2026-05-27) rewrites the cert browser SQL to match the real `veil_certificates` schema. The earlier "not wired by default" caveat (phantom `cert_id` / `redaction_count` / `claim_count` columns) is closed.
 
-If you want to enable it anyway on a future kit release that adds the columns, pre-create the cert-DB Secret and wire it in `customer-values.yaml`:
+Pre-create the cert-DB Secret in the `lucairn` namespace before `helm install`. The recommended pattern is a dedicated read-only role with `SELECT` on `veil_certificates` only:
 
 ```bash
-VEIL_APP_PW=$(kubectl -n dsa-witness get secret veil-witness-postgresql -o jsonpath='{.data.password}' | base64 -d)
+# As the postgres-veil DB owner (inside the dsa-witness namespace):
+kubectl -n dsa-witness exec -it veil-witness-postgresql-0 -- psql -U veil -d veil <<'SQL'
+CREATE ROLE lucairn_dashboard_ro WITH LOGIN PASSWORD '<generate>';
+GRANT CONNECT ON DATABASE veil TO lucairn_dashboard_ro;
+GRANT USAGE ON SCHEMA public TO lucairn_dashboard_ro;
+GRANT SELECT ON veil_certificates TO lucairn_dashboard_ro;
+SQL
+
+# Create the Secret the dashboard chart reads at runtime:
 kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
-  --from-literal=connection-string="postgres://veil_app:$VEIL_APP_PW@veil-witness-postgresql.dsa-witness.svc.cluster.local:5432/veil?sslmode=disable"
+  --from-literal=connection-string='postgres://lucairn_dashboard_ro:<password>@veil-witness-postgresql.dsa-witness.svc.cluster.local:5432/veil?sslmode=verify-full'
 ```
 
-```yaml
-dashboard:
-  enabled: true
-  auditDB:
-    connectionStringRef:
-      name: lucairn-dashboard-audit-db
-  witness:
-    endpoint: veil-witness.dsa-witness.svc.cluster.local:50058
-```
+The `customer-values.yaml.example` ships the matching wire-up. If you prefer the over-privileged shortcut, reuse the bundled `veil_app` role instead (the dashboard binary never issues writes regardless of the DB role's grants).
 
 ### Cleanup port-forward when done
 
