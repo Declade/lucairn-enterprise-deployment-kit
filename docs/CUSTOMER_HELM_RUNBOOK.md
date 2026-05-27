@@ -309,6 +309,117 @@ This is the cryptographic proof your compliance team needs:
 
 ---
 
+## Step 11 — Enable the operator dashboard (optional)
+
+The dashboard is a single Go binary that ships a web UI for the operator surfaces — home / KPIs, server health, compliance PDF export, audit log browser, and API key management. Compliance teams use it to inspect signed cert claims and run periodic PDF exports without curl/jq. Skip this step if engineer-grade JSON API access via Step 10 is enough.
+
+### Pre-create the bootstrap admin Secret
+
+The dashboard reads its bootstrap admin password from a Kubernetes Secret. Pre-create it before flipping `dashboard.enabled=true`:
+
+```bash
+DASH_PW=$(openssl rand -base64 24)
+DASH_SS=$(openssl rand -hex 24)
+echo "Bootstrap password: $DASH_PW"
+# Capture this value — you'll log in as admin@lucairn.local with it.
+
+kubectl -n lucairn create secret generic lucairn-dashboard-bootstrap-admin \
+  --from-literal=password="$DASH_PW" \
+  --from-literal=session-secret="$DASH_SS"
+```
+
+### Enable the dashboard in customer-values.yaml
+
+Edit `customer-values.yaml` and flip the dashboard block:
+
+```yaml
+dashboard:
+  enabled: true
+  bootstrapAdmin:
+    email: admin@lucairn.local
+    passwordSecretName: lucairn-dashboard-bootstrap-admin
+```
+
+The umbrella chart already wires the dashboard sub-chart into the `lucairn` namespace and exposes a `ClusterIP` service on port 8443. The bootstrap admin Secret you pre-created supplies both the password and the session-secret env vars at pod start.
+
+### Apply the upgrade
+
+Use the same isolated `DOCKER_CONFIG` session pattern from Step 6 so the registry credential never leaks into the global Docker config:
+
+```bash
+DOCKER_CONFIG=$(mktemp -d)
+helm get values lucairn -n lucairn -o yaml \
+  | python3 -c 'import yaml,sys; d=yaml.safe_load(sys.stdin); print(d["global"]["imagePullDockerConfigJson"])' \
+  > "$DOCKER_CONFIG/config.json"
+
+helm upgrade lucairn ./charts/lucairn -n lucairn \
+  -f customer-values.yaml \
+  --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
+  --timeout 5m --wait
+
+rm -rf "$DOCKER_CONFIG"
+```
+
+Watch for the `lucairn-dashboard` pod to reach `Running`:
+
+```bash
+kubectl get pods -n lucairn
+# NAME                                 READY   STATUS    RESTARTS   AGE
+# lucairn-dashboard-58b4b478c7-ttlk5   1/1     Running   0          30s
+```
+
+### Port-forward + verify
+
+```bash
+kubectl port-forward -n lucairn svc/lucairn-dashboard 18443:8443 &
+PF_PID=$!
+
+curl -fsS http://127.0.0.1:18443/healthz
+# Expect: 200 OK
+```
+
+Then open `http://127.0.0.1:18443/login` in your browser and sign in with `admin@lucairn.local` + the password you captured above. Production-grade ingress is documented in `INSTALL.md § Enable the Lucairn dashboard (optional)` — port-forward is fine for first-touch verification.
+
+### Login + the surfaces that work today
+
+After login, these surfaces work out of the box on a default Helm install:
+
+- `/dashboard` — operator home with KPI tiles + 30-day sparkline + sanitizer bars
+- `/health` — server health pills for every kit service (polled every 10s, in-cluster reach)
+- `/compliance` — admin-only signed-claim summary PDF export (cover + image manifest + cert window)
+- `/audit` — renders the "not configured" explainer until you wire `dashboard.audit.auditLogDBConnectionStringRef.name` against the `postgres-audit` database (see the dashboard sub-chart values for the wiring template)
+- `/keys` — renders the "not configured" explainer until you wire `dashboard.gateway.adminURL` + `dashboard.gateway.adminTokenSecretRef.name`
+
+### Cert browser caveat
+
+The `/certs` surface (cert list + per-cert inspector) is **not wired by default** in this kit release. The Slice-3 cert browser query targets a `cert_id` / `redaction_count` / `claim_count` schema that the shipped `veil_certificates` migrations don't expose. Use the curl + jq path from Step 10 to inspect individual certs by `request_id` until a kit release ships the matching schema migration.
+
+If you want to enable it anyway on a future kit release that adds the columns, pre-create the cert-DB Secret and wire it in `customer-values.yaml`:
+
+```bash
+VEIL_APP_PW=$(kubectl -n dsa-witness get secret veil-witness-postgresql -o jsonpath='{.data.password}' | base64 -d)
+kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
+  --from-literal=connection-string="postgres://veil_app:$VEIL_APP_PW@veil-witness-postgresql.dsa-witness.svc.cluster.local:5432/veil?sslmode=disable"
+```
+
+```yaml
+dashboard:
+  enabled: true
+  auditDB:
+    connectionStringRef:
+      name: lucairn-dashboard-audit-db
+  witness:
+    endpoint: veil-witness.dsa-witness.svc.cluster.local:50058
+```
+
+### Cleanup port-forward when done
+
+```bash
+kill $PF_PID 2>/dev/null
+```
+
+---
+
 ## Verification checklist
 
 Walk these checks after Step 10 — all should be ✓ for a successful install:
