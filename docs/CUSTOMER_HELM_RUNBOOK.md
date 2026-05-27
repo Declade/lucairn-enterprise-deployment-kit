@@ -178,9 +178,11 @@ Save the `lcr_live_*` key — your application/customer uses it for inference re
 
 ---
 
-## Step 9 — Send first inference
+## Step 8.5 — Warmup sandbox-b's Ollama runtime (~35s)
 
-Port-forward the gateway so your local `curl` can reach it:
+On a fresh install, sandbox-b's local Ollama runtime cold-starts on the first inference, which makes that very first request sometimes land with `COMPLETENESS_PARTIAL` (the `dsa-ai` claim arrives outside the witness's 30s accumulator window). Send one warmup request first; the customer-observable request afterwards reliably produces FULL.
+
+Port-forward the gateway first (kept open through Step 10):
 
 ```bash
 kubectl port-forward -n dsa-edge svc/gateway 8080:8080 &
@@ -188,7 +190,27 @@ PF_PID=$!
 sleep 3
 ```
 
-Send a request with a realistic German clinical PII payload (matches the Compose runbook's payload, reliably produces ≥6 redactions):
+Send the warmup request and discard the response:
+
+```bash
+# Warmup — discard the response
+curl -s -o /dev/null \
+  -H "Authorization: Bearer $CUSTOMER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":10,"messages":[{"role":"user","content":"warmup"}]}' \
+  http://localhost:8080/v1/messages
+
+# Wait for accumulator to flush + Ollama runtime to settle
+sleep 35
+```
+
+Now your demo's first customer-observable request will produce a FULL cert chain.
+
+---
+
+## Step 9 — Send first customer-observable inference
+
+The gateway port-forward from Step 8.5 is still open. Send a request with a realistic German clinical PII payload (matches the Compose runbook's payload, reliably produces ≥6 redactions):
 
 ```bash
 RESP=$(curl -s -w "\n%{http_code}" \
