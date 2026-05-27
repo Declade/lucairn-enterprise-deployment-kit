@@ -301,8 +301,6 @@ Expected:
 }
 ```
 
-**First-inference flake note:** On a freshly-installed cluster, the sandbox-b pod may still be warming up (Ollama model pull + cold-start). The first inference can land while the cert accumulator is still waiting for the AI claim → `completeness: COMPLETENESS_PARTIAL` with `missing_services: ["dsa-ai"]`. If you see this, wait until `kubectl get pods -n dsa-ai` shows `sandbox-b-*` with `0` recent restarts, then send a second inference — the second cert will be `COMPLETENESS_FULL`.
-
 This is the cryptographic proof your compliance team needs:
 - **signatures_valid: true** — every claim's Ed25519 signature checks out against the published public keys
 - **completeness: COMPLETENESS_FULL** — all 4 expected services participated
