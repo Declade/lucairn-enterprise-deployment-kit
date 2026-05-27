@@ -331,22 +331,31 @@ After login, these surfaces work out of the box on a default Compose install:
 
 - `/dashboard` — operator home with KPI tiles + 30-day sparkline + sanitizer bars
 - `/health` — server health pills for every kit service (polled every 10s)
+- `/certs` — **cert browser + inspector + audit-grade validator**. The Compose stack wires `LUCAIRN_DASHBOARD_AUDIT_DB_URL` to the bundled `postgres-veil` cert log automatically (dashboard 0.8.2+), so the compliance team can browse the cert chain immediately after login. Each cert detail page surfaces the 4 signed claims (`TOKEN_GENERATED` + `PII_SANITIZED` + `INFERENCE_COMPLETED` + `EVENTS_RECORDED`), the witness verdict (`VERIFIED` / `PARTIAL` / `FAILED`), completeness (`FULL` / `PARTIAL`), and `signatures_valid` / `byok_exempt` / `isolation_verified` flags.
 - `/compliance` — admin-only signed-claim summary PDF export (cover + image manifest + cert window)
 - `/audit` — renders the "not configured" explainer until you wire `LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL` against the `postgres-audit` database (see customer.env.example for the wiring template)
 - `/keys` — renders the "not configured" explainer until you wire `LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL` + `LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN`
 
-### Cert browser caveat
+### Cert browser — enabled by default in 0.8.2
 
-The `/certs` surface (cert list + per-cert inspector) is **not wired by default** in this kit release. The Slice-3 cert browser query targets a `cert_id` / `redaction_count` / `claim_count` schema that the shipped `veil_certificates` migrations don't expose. Use the curl + jq path from Step 10 to inspect individual certs by `request_id` until a kit release ships the matching schema migration.
+Dashboard 0.8.2 (2026-05-27) rewrites the cert browser SQL to match the real `veil_certificates` schema and wires the database connection by default. The earlier "not wired by default" caveat (phantom `cert_id` / `redaction_count` / `claim_count` columns) is closed.
 
-If you want to enable it anyway on a future kit release that adds the columns, set:
+The default wiring uses the `veil_app` role on `postgres-veil` (the cert log database). The role has SELECT on `veil_certificates` (the dashboard's only read path), plus the unused INSERT + UPDATE(attestation_raw) grants the witness writer needs. The dashboard binary never issues INSERT/UPDATE/DELETE — defence in depth keeps the cert log effectively read-only from the dashboard's perspective.
 
+To use a dedicated read-only role instead, pre-create one and override the env var:
+
+```bash
+# As the postgres-veil DB owner:
+psql -h postgres-veil -U veil -d veil <<'SQL'
+CREATE ROLE lucairn_dashboard_ro WITH LOGIN PASSWORD '<generate>';
+GRANT CONNECT ON DATABASE veil TO lucairn_dashboard_ro;
+GRANT USAGE ON SCHEMA public TO lucairn_dashboard_ro;
+GRANT SELECT ON veil_certificates TO lucairn_dashboard_ro;
+SQL
+
+echo "LUCAIRN_DASHBOARD_AUDIT_DB_URL=postgres://lucairn_dashboard_ro:<password>@postgres-veil:5432/veil?sslmode=disable" >> customer.env
+docker compose -p compose-demo -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --profile dashboard --env-file customer.env up -d --force-recreate lucairn-dashboard
 ```
-LUCAIRN_DASHBOARD_AUDIT_DB_URL=postgres://veil_app:<VEIL_APP_PASSWORD>@postgres-veil:5432/veil?sslmode=disable
-LUCAIRN_DASHBOARD_WITNESS_ENDPOINT=veil-witness:50058
-```
-
-The `veil_app` role ships with SELECT on `veil_certificates` (see `migrations/veil-witness/000002_restrict_veil_role.up.sql.tmpl`).
 
 ### Cosmetic healthcheck note
 
