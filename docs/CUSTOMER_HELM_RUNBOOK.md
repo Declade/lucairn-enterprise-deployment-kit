@@ -66,6 +66,8 @@ bash scripts/render-values.sh customer-values.yaml
 
 This writes a complete `customer-values.yaml` to your current directory. Every cryptographic placeholder is filled with a freshly-generated value. The ONLY value not auto-generated is your Anthropic API key (Step 4).
 
+**Note on script output:** the script may print a warning like `REPLACE_WITH_CUSTOMER_KEY_ID_WHEN_CERTIFICATION_ENABLED still present`. This is expected for the default (non-certification) install — that placeholder is only filled when you enable per-customer certification mode (an optional Enterprise feature). Ignore the warning unless you are explicitly enabling certification.
+
 ---
 
 ## Step 4 — Add your Anthropic API key
