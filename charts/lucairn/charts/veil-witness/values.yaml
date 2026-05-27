@@ -94,6 +94,26 @@ config:
   proofModelVersion: "1.0.0"
   insecureDevMode: "false"
 
+# Operator dashboard ingress allowance into the witness namespace.
+#
+# When enabled (default), witness-ingress NetworkPolicy gains a rule
+# permitting the dashboard pod to dial postgres-veil:5432 (read-only
+# cert-browser surface, PR #39) AND veil-witness:50058 (gRPC cert
+# verification). Disable only when the dashboard subchart is not
+# installed OR runs outside the lucairn namespace with a custom label set.
+#
+# Surfaced by the Helm UI verifier on PR #39 install (task
+# a66c203bd0b0eb926): the dashboard cert-browser cleared the auth gate
+# but every list/inspect query timed out because the lucairn namespace
+# has no `dsa.io/namespace=…` label that the legacy witness-ingress rules
+# match on. Live cluster was unblocked with an ad-hoc NP; this stanza
+# lands the same allowance in the chart so a fresh install works
+# out-of-the-box for the demo.
+dashboardIngress:
+  enabled: true
+  namespace: lucairn
+  podName: lucairn-dashboard
+
 secrets:
   backend: k8s-native  # k8s-native | vault | aws | azure
   values:

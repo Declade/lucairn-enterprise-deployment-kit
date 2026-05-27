@@ -59,6 +59,37 @@ spec:
       ports:
         - port: 50058
           protocol: TCP
+    # Certificate retrieval + postgres read-only browse from the operator
+    # dashboard (.Values.dashboardIngress.namespace, default "lucairn").
+    # The dashboard's cert-browser surface (PR #39) reads veil_certificates
+    # rows directly from postgres-veil on 5432 with a read-only role, AND
+    # verifies certificates by hitting the witness gRPC service on 50058.
+    # The lucairn namespace has no `dsa.io/namespace=…` label so the
+    # existing edge rule above misses it. The combined namespaceSelector +
+    # podSelector pins the rule to the dashboard pod so other lucairn
+    # pods (future surfaces) cannot piggy-back on this allowance.
+    #
+    # Surfaced by the Helm UI verifier on PR #39 install: dashboard logs
+    # showed `dial error: timeout` on 5432 + `i/o timeout` dialling
+    # 50058, leaving the cert browser non-functional in the bundled-DB
+    # default install. Ad-hoc NP was applied live to unblock; this
+    # commit lands the same fix in the chart so fresh installs work
+    # out-of-the-box.
+    {{- if .Values.dashboardIngress.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.dashboardIngress.namespace | quote }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Values.dashboardIngress.podName | quote }}
+              app.kubernetes.io/component: dashboard
+      ports:
+        - port: 5432
+          protocol: TCP
+        - port: 50058
+          protocol: TCP
+    {{- end }}
     # From dsa-observability (Prometheus / OTel scrape of HTTP health
     # + metrics on 50059). observability-egress in
     # infrastructure/network-policies.yaml already permits 50059 toward
