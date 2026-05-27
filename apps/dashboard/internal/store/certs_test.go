@@ -7,9 +7,36 @@ import (
 	"testing"
 	"time"
 
+	witnesspb "github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/witness/pb"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"google.golang.org/protobuf/proto"
 )
+
+// mustMarshalCertWithCounts builds a protobuf-marshaled VeilCertificate
+// payload that produces (redactionCount, claimCount) when scanned by
+// parseClaimCounts. claimCount = number of claims in the chain; the
+// second claim is the sanitizer carrying pii_entities_found=redactionCount.
+func mustMarshalCertWithCounts(t *testing.T, redactionCount int, claimCount int) []byte {
+	t.Helper()
+	cert := &witnesspb.VeilCertificate{}
+	for i := 0; i < claimCount; i++ {
+		claim := &witnesspb.VeilClaim{}
+		if i == 1 { // second claim is the sanitizer (matches assembler order)
+			claim.Payload = &witnesspb.VeilClaim_Sanitizer{
+				Sanitizer: &witnesspb.SanitizerClaim{
+					PiiEntitiesFound: uint32(redactionCount),
+				},
+			}
+		}
+		cert.Claims = append(cert.Claims, claim)
+	}
+	b, err := proto.Marshal(cert)
+	if err != nil {
+		t.Fatalf("marshal cert fixture: %v", err)
+	}
+	return b
+}
 
 // queryCall records one Query/QueryRow invocation against the fake DB so
 // tests can assert the SQL + bind variables match the expected shape.
@@ -18,17 +45,27 @@ type queryCall struct {
 	args []any
 }
 
+// fakeCertRow couples a CertSummary fixture with the protobuf-marshaled
+// certificate_raw bytes that the production scan path parses into
+// RedactionCount + ClaimCount. Tests that don't care about counts pass
+// RawCert: nil — parseClaimCounts returns (0, 0, false) and the
+// resulting CertSummary has zero counts but a populated id/verdict/etc.
+type fakeCertRow struct {
+	Summary CertSummary
+	RawCert []byte
+}
+
 // fakeDB is a deterministic in-process implementation of Querier. It
 // matches the rows-typed contract pgx.Rows imposes without depending on
 // a docker-postgres fixture; that lift is reserved for the
 // internal/integration test which actually exercises a real Postgres.
 type fakeDB struct {
 	calls    []queryCall
-	listRows []CertSummary
+	listRows []fakeCertRow
 	listErr  error
 	count    int
 	countErr error
-	getRow   *CertSummary
+	getRow   *fakeCertRow
 	getErr   error
 
 	// batchPairs drives GetRequestIDsByCertIDs's 2-column SELECT path.
@@ -84,7 +121,7 @@ func (f *fakeDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comm
 }
 
 type fakeRows struct {
-	data []CertSummary
+	data []fakeCertRow
 	idx  int
 	err  error
 }
@@ -101,33 +138,43 @@ func (r *fakeRows) Scan(dest ...any) error {
 	}
 	row := r.data[r.idx]
 	r.idx++
-	// CertSummary scan order matches the SELECT projection in store.go's
-	// List: id, request_id, customer_id, created_at, verdict,
-	// redaction_count, claim_count (7 columns). The Stream SELECT keeps
-	// the historical 6-column shape (no request_id); tests that exercise
-	// Stream don't hit this fake's Scan via fakeRows because they don't
-	// drain the row iterator (Stream callers in handlers iterate the real
-	// pgx.Rows via the CSV writer).
+	// Scan order matches the SELECT projection in store.go's List after
+	// the PR #38 schema rewrite (2026-05-27): certificate_id, request_id,
+	// customer_id, created_at, verdict, certificate_raw — 6 columns.
+	// RedactionCount + ClaimCount are derived in the production path by
+	// parseClaimCounts(certificate_raw). Tests that want non-zero counts
+	// pre-marshal a VeilCertificate fixture into row.RawCert via
+	// mustMarshalCertWithCounts.
 	if id, ok := dest[0].(*string); ok {
-		*id = row.ID
+		*id = row.Summary.ID
 	}
 	if rid, ok := dest[1].(*string); ok {
-		*rid = row.RequestID
+		*rid = row.Summary.RequestID
 	}
 	if cid, ok := dest[2].(*string); ok {
-		*cid = row.CustomerID
+		*cid = row.Summary.CustomerID
 	}
 	if ts, ok := dest[3].(*time.Time); ok {
-		*ts = row.CreatedAt
+		*ts = row.Summary.CreatedAt
 	}
 	if v, ok := dest[4].(*string); ok {
-		*v = row.Verdict
+		// The DB stores the proto enum String() form, e.g.
+		// "VERDICT_VERIFIED"; the production scan path lowercases it via
+		// NormaliseVerdict. We emit raw DB form so the production
+		// pipeline exercises that normalisation.
+		switch row.Summary.Verdict {
+		case "verified":
+			*v = "VERDICT_VERIFIED"
+		case "partial":
+			*v = "VERDICT_PARTIAL"
+		case "failed":
+			*v = "VERDICT_FAILED"
+		default:
+			*v = row.Summary.Verdict
+		}
 	}
-	if rc, ok := dest[5].(*int); ok {
-		*rc = row.RedactionCount
-	}
-	if cc, ok := dest[6].(*int); ok {
-		*cc = row.ClaimCount
+	if b, ok := dest[5].(*[]byte); ok {
+		*b = row.RawCert
 	}
 	return nil
 }
@@ -174,7 +221,7 @@ func (r *fakeBatchRows) Conn() *pgx.Conn                              { return n
 
 type fakeRow struct {
 	countVal int
-	getVal   *CertSummary
+	getVal   *fakeCertRow
 	err      error
 }
 
@@ -183,28 +230,35 @@ func (r *fakeRow) Scan(dest ...any) error {
 		return r.err
 	}
 	if r.getVal != nil {
-		// Get-row variant: scan all 7 columns (id, request_id, customer_id,
-		// created_at, verdict, redaction_count, claim_count).
+		// Get-row variant: 6-column scan matching the PR #38 schema
+		// rewrite — certificate_id, request_id, customer_id, created_at,
+		// verdict (proto-enum form), certificate_raw.
 		if id, ok := dest[0].(*string); ok {
-			*id = r.getVal.ID
+			*id = r.getVal.Summary.ID
 		}
 		if rid, ok := dest[1].(*string); ok {
-			*rid = r.getVal.RequestID
+			*rid = r.getVal.Summary.RequestID
 		}
 		if cid, ok := dest[2].(*string); ok {
-			*cid = r.getVal.CustomerID
+			*cid = r.getVal.Summary.CustomerID
 		}
 		if ts, ok := dest[3].(*time.Time); ok {
-			*ts = r.getVal.CreatedAt
+			*ts = r.getVal.Summary.CreatedAt
 		}
 		if v, ok := dest[4].(*string); ok {
-			*v = r.getVal.Verdict
+			switch r.getVal.Summary.Verdict {
+			case "verified":
+				*v = "VERDICT_VERIFIED"
+			case "partial":
+				*v = "VERDICT_PARTIAL"
+			case "failed":
+				*v = "VERDICT_FAILED"
+			default:
+				*v = r.getVal.Summary.Verdict
+			}
 		}
-		if rc, ok := dest[5].(*int); ok {
-			*rc = r.getVal.RedactionCount
-		}
-		if cc, ok := dest[6].(*int); ok {
-			*cc = r.getVal.ClaimCount
+		if b, ok := dest[5].(*[]byte); ok {
+			*b = r.getVal.RawCert
 		}
 		return nil
 	}
@@ -218,9 +272,9 @@ func (r *fakeRow) Scan(dest ...any) error {
 func TestList_NoFilter_PaginatesWithLimitOffset(t *testing.T) {
 	t.Parallel()
 	db := &fakeDB{
-		listRows: []CertSummary{
-			{ID: "a", CustomerID: "cust-1", CreatedAt: time.Now(), Verdict: "verified"},
-			{ID: "b", CustomerID: "cust-1", CreatedAt: time.Now(), Verdict: "partial"},
+		listRows: []fakeCertRow{
+			{Summary: CertSummary{ID: "a", CustomerID: "cust-1", CreatedAt: time.Now(), Verdict: "verified"}},
+			{Summary: CertSummary{ID: "b", CustomerID: "cust-1", CreatedAt: time.Now(), Verdict: "partial"}},
 		},
 		count: 2,
 	}
@@ -248,10 +302,29 @@ func TestList_NoFilter_PaginatesWithLimitOffset(t *testing.T) {
 	if db.calls[0].args[1] != 0 {
 		t.Errorf("offset arg: got %v want 0", db.calls[0].args[1])
 	}
+	// Schema invariant: SELECT must target certificate_id (no phantom
+	// cert_id column on veil_certificates) and read certificate_raw so
+	// the production scan path can derive RedactionCount + ClaimCount.
+	if !strings.Contains(db.calls[0].sql, "certificate_id::text") {
+		t.Errorf("List SQL must SELECT certificate_id::text, got: %s", db.calls[0].sql)
+	}
+	if !strings.Contains(db.calls[0].sql, "certificate_raw") {
+		t.Errorf("List SQL must SELECT certificate_raw (proto payload), got: %s", db.calls[0].sql)
+	}
 }
 
 func TestList_FilterBuildsPositionalWhereClause(t *testing.T) {
 	t.Parallel()
+	// Schema-rewrite contract (PR #38 follow-up — 2026-05-27):
+	//   - Verdicts arrive in UI form ("verified" / "partial" / "failed")
+	//     and are translated to the proto-enum form ("VERDICT_VERIFIED"
+	//     / "VERDICT_PARTIAL" / "VERDICT_FAILED") that the DB stores
+	//     before binding.
+	//   - RedactionMin is NOT pushed into SQL — veil_certificates has no
+	//     redaction_count column. The List path strips RedactionMin from
+	//     the SQL filter and applies it post-parse in Go. When
+	//     RedactionMin is set, SQL emits a defensive LIMIT 2000 (no
+	//     OFFSET) and Go does the Limit/Offset slice after filtering.
 	db := &fakeDB{count: 0}
 	s := NewCertStoreWithDB(db)
 	from := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
@@ -268,21 +341,30 @@ func TestList_FilterBuildsPositionalWhereClause(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 	got := db.calls[0].sql
-	// Every filter clause MUST appear with positional bindings.
+	// SQL surface: every column-backed filter clause appears with positional
+	// bindings. RedactionMin does NOT appear (no column).
 	for _, want := range []string{
 		"AND created_at >= $1",
 		"AND created_at < $2",
 		"AND verdict IN ($3,$4)",
 		"AND customer_id = $5",
-		"AND COALESCE(redaction_count,0) >= $6",
-		"LIMIT $7 OFFSET $8",
+		"LIMIT 2000",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing clause %q in SQL: %s", want, got)
 		}
 	}
-	// Args ordering: from, to, verdict[0], verdict[1], customer, min, limit, offset
-	wantArgs := []any{from, to, "verified", "partial", "cust-7", 3, 50, 0}
+	if strings.Contains(got, "redaction_count") {
+		t.Errorf("RedactionMin MUST NOT appear in SQL (no DB column); got: %s", got)
+	}
+	if strings.Contains(got, "OFFSET") {
+		t.Errorf("RedactionMin filter path must skip SQL OFFSET (Go-side pagination); got: %s", got)
+	}
+	if strings.Contains(got, "cert_id::text") {
+		t.Errorf("List SQL must use certificate_id (no phantom cert_id column); got: %s", got)
+	}
+	// Args ordering: from, to, verdict[0] (proto form), verdict[1], customer
+	wantArgs := []any{from, to, "VERDICT_VERIFIED", "VERDICT_PARTIAL", "cust-7"}
 	if len(db.calls[0].args) != len(wantArgs) {
 		t.Fatalf("arg count: got %d want %d", len(db.calls[0].args), len(wantArgs))
 	}
@@ -331,18 +413,22 @@ func TestGet_NotFoundReturnsPgxErrNoRows(t *testing.T) {
 
 func TestGet_ReturnsRow(t *testing.T) {
 	t.Parallel()
-	want := CertSummary{
-		ID:             "veil_0190d3a1-aaaa-bbbb-cccc-ddddeeeeffff",
-		RequestID:      "req_aaaaaaaa-bbbb-cccc-dddd-eeeeffff0000",
-		CustomerID:     "cust-1",
-		CreatedAt:      time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC),
-		Verdict:        "verified",
-		RedactionCount: 5,
-		ClaimCount:     6,
+	summary := CertSummary{
+		ID:         "veil_0190d3a1-aaaa-bbbb-cccc-ddddeeeeffff",
+		RequestID:  "req_aaaaaaaa-bbbb-cccc-dddd-eeeeffff0000",
+		CustomerID: "cust-1",
+		CreatedAt:  time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC),
+		Verdict:    "verified",
 	}
-	db := &fakeDB{getRow: &want}
+	rawCert := mustMarshalCertWithCounts(t, 5, 6)
+	// CertSummary returned from Get inherits the proto-derived counts
+	// after parseClaimCounts.
+	want := summary
+	want.RedactionCount = 5
+	want.ClaimCount = 6
+	db := &fakeDB{getRow: &fakeCertRow{Summary: summary, RawCert: rawCert}}
 	s := NewCertStoreWithDB(db)
-	got, err := s.Get(context.Background(), want.ID)
+	got, err := s.Get(context.Background(), summary.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -354,11 +440,16 @@ func TestGet_ReturnsRow(t *testing.T) {
 	if !strings.Contains(db.calls[0].sql, "request_id") {
 		t.Errorf("Get SQL must SELECT request_id (witness lookup key): %s", db.calls[0].sql)
 	}
+	// Schema invariant: WHERE clause keys off certificate_id, not the
+	// phantom cert_id column.
+	if !strings.Contains(db.calls[0].sql, "WHERE certificate_id = $1") {
+		t.Errorf("Get SQL must use WHERE certificate_id = $1, got: %s", db.calls[0].sql)
+	}
 }
 
 func TestStream_BuildsSelectWithoutLimit(t *testing.T) {
 	t.Parallel()
-	db := &fakeDB{listRows: []CertSummary{{ID: "a"}}}
+	db := &fakeDB{listRows: []fakeCertRow{{Summary: CertSummary{ID: "a"}}}}
 	s := NewCertStoreWithDB(db)
 	rows, err := s.Stream(context.Background(), CertFilter{Verdicts: []string{"verified"}})
 	if err != nil {
@@ -370,6 +461,20 @@ func TestStream_BuildsSelectWithoutLimit(t *testing.T) {
 	}
 	if !strings.Contains(db.calls[0].sql, "AND verdict IN ($1)") {
 		t.Errorf("Stream missing verdict filter binding: %s", db.calls[0].sql)
+	}
+	// UI verdict "verified" must be translated to the proto-enum form
+	// before binding (DB stores VERDICT_VERIFIED).
+	if len(db.calls[0].args) < 1 || db.calls[0].args[0] != "VERDICT_VERIFIED" {
+		t.Errorf("Stream verdict binding: got %v want VERDICT_VERIFIED", db.calls[0].args)
+	}
+	// Schema invariant: Stream SELECT targets certificate_id +
+	// certificate_raw (not phantom cert_id / redaction_count /
+	// claim_count columns).
+	if !strings.Contains(db.calls[0].sql, "certificate_id::text") {
+		t.Errorf("Stream SQL must SELECT certificate_id::text, got: %s", db.calls[0].sql)
+	}
+	if !strings.Contains(db.calls[0].sql, "certificate_raw") {
+		t.Errorf("Stream SQL must SELECT certificate_raw, got: %s", db.calls[0].sql)
 	}
 }
 

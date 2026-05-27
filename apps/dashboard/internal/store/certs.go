@@ -21,9 +21,11 @@ import (
 	"strings"
 	"time"
 
+	witnesspb "github.com/Declade/lucairn-enterprise-deployment-kit/apps/dashboard/internal/witness/pb"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/proto"
 )
 
 // CertSummary is one row in the cert-browser list view. Fields are the
@@ -120,6 +122,37 @@ func NewCertStoreWithDB(db Querier) *CertStore {
 // List returns the visible page + total count for filter. Caller renders
 // pagination using total / page.Limit. Pagination errors surface as
 // errors; empty result (no rows match) returns (nil, 0, nil).
+//
+// SCHEMA NOTE (PR #38 follow-up — 2026-05-27):
+// The upstream `veil_certificates` table (per
+// migrations/veil-witness/000001_create_veil_certificates.up.sql) exposes:
+//
+//   certificate_id TEXT PRIMARY KEY
+//   request_id     TEXT NOT NULL UNIQUE
+//   customer_id    TEXT NOT NULL DEFAULT ''
+//   issued_at      TIMESTAMPTZ
+//   verdict        TEXT  (proto enum String() form, e.g. "VERDICT_VERIFIED")
+//   protocol_version INTEGER
+//   certificate_raw  BYTEA  (proto.Marshal of dsa.veil.v1.VeilCertificate)
+//   attestation_raw  BYTEA
+//   created_at       TIMESTAMPTZ
+//   anchor_status    TEXT
+//   anchor_attempts  INTEGER
+//   anchor_last_error TEXT
+//   anchor_human_note TEXT
+//
+// There is NO `cert_id`, `redaction_count`, or `claim_count` column. The
+// earlier dashboard SQL targeted a phantom schema. We now:
+//   - SELECT certificate_id (the correct column)
+//   - parse certificate_raw with proto.Unmarshal(witnesspb.VeilCertificate)
+//     to derive RedactionCount (sum of SanitizerClaim.pii_entities_found
+//     across all sanitizer claims) + ClaimCount (len(VeilCertificate.claims))
+//   - normalise verdict from "VERDICT_VERIFIED" → "verified" before render
+//
+// RedactionMin filter is applied POST-parse in Go, after the SQL fetch.
+// The COUNT(*) reflects the full filter (including RedactionMin) by
+// fetching one wider page when RedactionMin is set; the case-without-
+// RedactionMin keeps SQL-side LIMIT/OFFSET for honest pagination.
 func (s *CertStore) List(ctx context.Context, filter CertFilter, page Page) ([]CertSummary, int, error) {
 	if page.Limit <= 0 {
 		page.Limit = 50
@@ -133,25 +166,52 @@ func (s *CertStore) List(ctx context.Context, filter CertFilter, page Page) ([]C
 	if page.Offset < 0 {
 		page.Offset = 0
 	}
-	where, args, _ := buildWhere(filter, 1)
+	// Verdict filter values arrive in UI form ("verified" / "partial" /
+	// "failed"). The DB stores the proto enum String() ("VERDICT_VERIFIED"
+	// / "VERDICT_PARTIAL" / "VERDICT_FAILED") because veil-witness
+	// cmd/server/main.go:272 persists OverallVerdict.String() verbatim.
+	// Map UI → DB before the SELECT so the IN-clause matches anything.
+	dbFilter := filter
+	dbFilter.Verdicts = dbVerdictsFromUI(filter.Verdicts)
+	// RedactionMin lives in the proto payload, not as a column, so we
+	// strip it from the SQL filter and apply it post-parse.
+	hasRedactionFilter := dbFilter.RedactionMin > 0
+	dbFilter.RedactionMin = 0
+	where, args, _ := buildWhere(dbFilter, 1)
 
 	listSQL := strings.Builder{}
 	listSQL.WriteString(`
 		SELECT
-			cert_id::text,
+			certificate_id::text,
 			COALESCE(request_id::text, '') AS request_id,
 			customer_id::text,
 			created_at,
 			COALESCE(verdict, '') AS verdict,
-			COALESCE(redaction_count, 0) AS redaction_count,
-			COALESCE(claim_count, 0) AS claim_count
+			certificate_raw
 		FROM veil_certificates
 		WHERE 1=1`)
 	listSQL.WriteString(where)
-	fmt.Fprintf(&listSQL, `
-		ORDER BY created_at DESC
+	listSQL.WriteString(`
+		ORDER BY created_at DESC`)
+
+	// When no RedactionMin filter is active, push LIMIT/OFFSET to SQL —
+	// honest pagination + minimal rows hauled across the wire.
+	// When RedactionMin IS active, fetch a wider window (capped) and
+	// filter+paginate in Go. The COUNT(*) below reflects only the
+	// SQL-level WHERE; the Go-side filter then narrows the actual rows
+	// list, which (combined with the offset) is the best honest
+	// pagination we can offer without a derived column.
+	if !hasRedactionFilter {
+		fmt.Fprintf(&listSQL, `
 		LIMIT $%d OFFSET $%d`, len(args)+1, len(args)+2)
-	args = append(args, page.Limit, page.Offset)
+		args = append(args, page.Limit, page.Offset)
+	} else {
+		// Cap at 2000 rows so a crafted RedactionMin filter cannot OOM
+		// the dashboard. In practice customer audit DBs have <1k certs
+		// per pilot window; this is purely defensive.
+		listSQL.WriteString(`
+		LIMIT 2000`)
+	}
 
 	rows, err := s.db.Query(ctx, listSQL.String(), args...)
 	if err != nil {
@@ -160,17 +220,9 @@ func (s *CertStore) List(ctx context.Context, filter CertFilter, page Page) ([]C
 	defer rows.Close()
 	out := make([]CertSummary, 0, page.Limit)
 	for rows.Next() {
-		var cs CertSummary
-		if err := rows.Scan(
-			&cs.ID,
-			&cs.RequestID,
-			&cs.CustomerID,
-			&cs.CreatedAt,
-			&cs.Verdict,
-			&cs.RedactionCount,
-			&cs.ClaimCount,
-		); err != nil {
-			return nil, 0, fmt.Errorf("store: scan cert: %w", err)
+		cs, scanErr := scanCertRow(rows)
+		if scanErr != nil {
+			return nil, 0, scanErr
 		}
 		out = append(out, cs)
 	}
@@ -181,37 +233,167 @@ func (s *CertStore) List(ctx context.Context, filter CertFilter, page Page) ([]C
 	// Total count uses the SAME WHERE clause as the list query so
 	// pagination is honest. Re-build args from the start so $N indices
 	// don't drift.
-	countWhere, countArgs, _ := buildWhere(filter, 1)
+	countWhere, countArgs, _ := buildWhere(dbFilter, 1)
 	countSQL := "SELECT COUNT(*) FROM veil_certificates WHERE 1=1" + countWhere
 	var total int
 	if err := s.db.QueryRow(ctx, countSQL, countArgs...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("store: count certs: %w", err)
 	}
+
+	// Apply RedactionMin filter + Go-side pagination when a redaction
+	// filter is active. The total count narrows to the post-filter set.
+	if hasRedactionFilter {
+		filtered := make([]CertSummary, 0, len(out))
+		for _, cs := range out {
+			if cs.RedactionCount >= filter.RedactionMin {
+				filtered = append(filtered, cs)
+			}
+		}
+		total = len(filtered)
+		start := page.Offset
+		if start > len(filtered) {
+			start = len(filtered)
+		}
+		end := start + page.Limit
+		if end > len(filtered) {
+			end = len(filtered)
+		}
+		out = filtered[start:end]
+	}
 	return out, total, nil
 }
 
-// Stream is identical to List except it does not cap rows and yields a
-// rows.Rows-shaped iterator the CSV writer drains directly. Pagination
-// is ignored — Stream is used by the CSV export only, which honours the
-// same filter as the browser but emits every matching row. The caller
-// MUST close the returned rows iterator.
+// scanCertRow scans a single 6-column SELECT (certificate_id, request_id,
+// customer_id, created_at, verdict, certificate_raw) into a CertSummary,
+// parsing the proto payload to populate RedactionCount + ClaimCount and
+// normalising the verdict from proto-enum form to UI form. Used by both
+// List and Stream so the two paths can't drift.
+func scanCertRow(rows pgx.Rows) (CertSummary, error) {
+	var cs CertSummary
+	var rawCert []byte
+	if err := rows.Scan(
+		&cs.ID,
+		&cs.RequestID,
+		&cs.CustomerID,
+		&cs.CreatedAt,
+		&cs.Verdict,
+		&rawCert,
+	); err != nil {
+		return CertSummary{}, fmt.Errorf("store: scan cert: %w", err)
+	}
+	cs.Verdict = NormaliseVerdict(cs.Verdict)
+	if rc, cc, ok := parseClaimCounts(rawCert); ok {
+		cs.RedactionCount = rc
+		cs.ClaimCount = cc
+	}
+	return cs, nil
+}
+
+// parseClaimCounts unmarshals the protobuf-encoded VeilCertificate payload
+// stored in veil_certificates.certificate_raw and returns
+// (redaction_count, claim_count, ok).
+//
+// redaction_count = sum of SanitizerClaim.pii_entities_found across every
+// CLAIM_TYPE_PII_SANITIZED claim. claim_count = len(cert.claims).
+//
+// A malformed or empty payload returns (0, 0, false); callers render
+// zero counts rather than failing the row — the cert is still listable
+// even if a future protocol bump introduces an unrecognised payload.
+func parseClaimCounts(raw []byte) (int, int, bool) {
+	if len(raw) == 0 {
+		return 0, 0, false
+	}
+	var cert witnesspb.VeilCertificate
+	if err := proto.Unmarshal(raw, &cert); err != nil {
+		return 0, 0, false
+	}
+	claimCount := len(cert.GetClaims())
+	redactions := 0
+	for _, claim := range cert.GetClaims() {
+		if san := claim.GetSanitizer(); san != nil {
+			redactions += int(san.GetPiiEntitiesFound())
+		}
+	}
+	return redactions, claimCount, true
+}
+
+// NormaliseVerdict converts the proto-enum String() form persisted in
+// veil_certificates.verdict ("VERDICT_VERIFIED" / "VERDICT_PARTIAL" /
+// "VERDICT_FAILED" / "VERDICT_UNSPECIFIED") to the lowercase UI form
+// the renderer + filter checkboxes match on ("verified" / "partial" /
+// "failed"). Anything outside the closed set is returned lowercased
+// + prefix-stripped so the operator sees the raw verdict instead of
+// the dashboard silently dropping it.
+func NormaliseVerdict(raw string) string {
+	switch raw {
+	case "VERDICT_VERIFIED":
+		return "verified"
+	case "VERDICT_PARTIAL":
+		return "partial"
+	case "VERDICT_FAILED":
+		return "failed"
+	case "", "VERDICT_UNSPECIFIED":
+		return ""
+	}
+	// Defensive: strip VERDICT_ prefix + lowercase so any future enum
+	// value (e.g. VERDICT_PENDING) renders as "pending" instead of
+	// disappearing. Not in the closed UI allowlist; the template's
+	// fallback branch will render it as muted text.
+	out := strings.TrimPrefix(raw, "VERDICT_")
+	return strings.ToLower(out)
+}
+
+// dbVerdictsFromUI converts the UI verdict allowlist ("verified" /
+// "partial" / "failed") to the proto-enum String() form persisted in
+// veil_certificates.verdict ("VERDICT_VERIFIED" / "VERDICT_PARTIAL" /
+// "VERDICT_FAILED"). Unknown values are dropped — defence-in-depth
+// against a future regression that adds a verdict to the UI without
+// updating this mapping (the SQL filter would simply match zero rows).
+func dbVerdictsFromUI(uiVerdicts []string) []string {
+	if len(uiVerdicts) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(uiVerdicts))
+	for _, v := range uiVerdicts {
+		switch v {
+		case "verified":
+			out = append(out, "VERDICT_VERIFIED")
+		case "partial":
+			out = append(out, "VERDICT_PARTIAL")
+		case "failed":
+			out = append(out, "VERDICT_FAILED")
+		}
+	}
+	return out
+}
+
+// Stream yields the matching rows for CSV export without paging. The
+// caller MUST close the returned rows iterator.
+//
+// Schema-rewrite note (PR #38 follow-up — 2026-05-27): the historical
+// 6-column projection was (cert_id, customer_id, created_at, verdict,
+// redaction_count, claim_count) — none of redaction_count / claim_count
+// exists. Stream now projects (certificate_id, customer_id, created_at,
+// verdict, certificate_raw). The handler scans 5 fields and parses the
+// proto payload to derive the redaction_count + claim_count columns the
+// CSV emits.
 func (s *CertStore) Stream(ctx context.Context, filter CertFilter) (pgx.Rows, error) {
-	where, args, _ := buildWhere(filter, 1)
+	// Same UI→DB verdict translation + post-parse RedactionMin handling
+	// as List(). RedactionMin in CSV mode is honoured but enforced on
+	// the streaming consumer side (handlers/certs.go) via the same
+	// parseClaimCounts helper — there is no way to push it into SQL.
+	dbFilter := filter
+	dbFilter.Verdicts = dbVerdictsFromUI(filter.Verdicts)
+	dbFilter.RedactionMin = 0 // never push to SQL — no column
+	where, args, _ := buildWhere(dbFilter, 1)
 	sql := strings.Builder{}
-	// NOTE: column order intentionally omits request_id — the CSV export
-	// surface is operator-facing only (the certificate_id is what auditors
-	// quote in tickets). The Stream caller in handlers/certs.go scans 6
-	// fields in the same order as the historical SELECT projection; adding
-	// request_id to Stream would force a scan-order change in the CSV
-	// writer for a column nobody consumes off the export.
 	sql.WriteString(`
 		SELECT
-			cert_id::text,
+			certificate_id::text,
 			customer_id::text,
 			created_at,
 			COALESCE(verdict, '') AS verdict,
-			COALESCE(redaction_count, 0) AS redaction_count,
-			COALESCE(claim_count, 0) AS claim_count
+			certificate_raw
 		FROM veil_certificates
 		WHERE 1=1`)
 	sql.WriteString(where)
@@ -224,35 +406,88 @@ func (s *CertStore) Stream(ctx context.Context, filter CertFilter) (pgx.Rows, er
 	return rows, nil
 }
 
+// StreamRow holds the parsed CSV row emitted by the cert export. The
+// CSV handler in handlers/certs.go uses this struct to consume the
+// Stream rows uniformly (post-parse so redaction_count / claim_count
+// reflect the proto payload, not phantom DB columns).
+type StreamRow struct {
+	CertID         string
+	CustomerID     string
+	CreatedAt      time.Time
+	Verdict        string
+	RedactionCount int
+	ClaimCount     int
+}
+
+// ScanStreamRow consumes one pgx.Rows row produced by Stream() and
+// returns a parsed StreamRow with the proto payload turned into derived
+// columns. Apply RedactionMin filtering on the returned struct in the
+// caller — Stream cannot push it into SQL because the column does not
+// exist.
+func ScanStreamRow(rows pgx.Rows) (StreamRow, error) {
+	var (
+		row     StreamRow
+		rawCert []byte
+		verdict string
+	)
+	if err := rows.Scan(
+		&row.CertID,
+		&row.CustomerID,
+		&row.CreatedAt,
+		&verdict,
+		&rawCert,
+	); err != nil {
+		return StreamRow{}, fmt.Errorf("store: scan stream row: %w", err)
+	}
+	row.Verdict = NormaliseVerdict(verdict)
+	if rc, cc, ok := parseClaimCounts(rawCert); ok {
+		row.RedactionCount = rc
+		row.ClaimCount = cc
+	}
+	return row, nil
+}
+
 // Get returns the single CertSummary for id, or pgx.ErrNoRows when the id
 // is not present. The cert inspector calls this before invoking the
 // witness — when the row is absent the inspector renders a 404. The
 // returned CertSummary.RequestID is the witness's lookup key the
 // inspector / validator / reverify handlers pass to Verifier.Verify.
+//
+// Schema rewrite (PR #38 follow-up — 2026-05-27): id is the
+// veil_certificates.certificate_id text column (NOT a phantom `cert_id`).
+// RedactionCount + ClaimCount are derived from parsing
+// certificate_raw — see parseClaimCounts.
 func (s *CertStore) Get(ctx context.Context, id string) (CertSummary, error) {
 	const sql = `
 		SELECT
-			cert_id::text,
+			certificate_id::text,
 			COALESCE(request_id::text, '') AS request_id,
 			customer_id::text,
 			created_at,
 			COALESCE(verdict, '') AS verdict,
-			COALESCE(redaction_count, 0) AS redaction_count,
-			COALESCE(claim_count, 0) AS claim_count
+			certificate_raw
 		FROM veil_certificates
-		WHERE cert_id = $1`
-	var cs CertSummary
+		WHERE certificate_id = $1`
+	var (
+		cs      CertSummary
+		rawCert []byte
+		verdict string
+	)
 	row := s.db.QueryRow(ctx, sql, id)
 	if err := row.Scan(
 		&cs.ID,
 		&cs.RequestID,
 		&cs.CustomerID,
 		&cs.CreatedAt,
-		&cs.Verdict,
-		&cs.RedactionCount,
-		&cs.ClaimCount,
+		&verdict,
+		&rawCert,
 	); err != nil {
 		return CertSummary{}, err
+	}
+	cs.Verdict = NormaliseVerdict(verdict)
+	if rc, cc, ok := parseClaimCounts(rawCert); ok {
+		cs.RedactionCount = rc
+		cs.ClaimCount = cc
 	}
 	return cs, nil
 }
@@ -281,10 +516,10 @@ func (s *CertStore) GetRequestIDsByCertIDs(ctx context.Context, certIDs []string
 	}
 	const sql = `
 		SELECT
-			cert_id::text,
+			certificate_id::text,
 			COALESCE(request_id::text, '') AS request_id
 		FROM veil_certificates
-		WHERE cert_id = ANY($1::text[])`
+		WHERE certificate_id = ANY($1::text[])`
 	rows, err := s.db.Query(ctx, sql, certIDs)
 	if err != nil {
 		return nil, fmt.Errorf("store: batch request_id lookup: %w", err)
@@ -308,9 +543,15 @@ func (s *CertStore) GetRequestIDsByCertIDs(ctx context.Context, certIDs []string
 // pagination params after.
 //
 // Defense-in-depth: verdicts and customer_id are bound to placeholders
-// (no string interpolation); redaction_min / dates are bound likewise.
-// The query is read-only by virtue of the read-only Postgres role the
-// customer creates per INSTALL.md.
+// (no string interpolation); dates are bound likewise. The query is
+// read-only by virtue of the read-only Postgres role the customer
+// creates per INSTALL.md.
+//
+// RedactionMin is intentionally NOT pushed into SQL — the underlying
+// veil_certificates table has no redaction_count column. The List path
+// strips RedactionMin from the CertFilter before calling buildWhere and
+// re-applies the filter in Go after parsing the proto payload (see
+// CertStore.List + parseClaimCounts).
 func buildWhere(filter CertFilter, startIdx int) (string, []any, int) {
 	var b strings.Builder
 	args := make([]any, 0, 6)
@@ -340,11 +581,8 @@ func buildWhere(filter CertFilter, startIdx int) (string, []any, int) {
 		args = append(args, filter.CustomerID)
 		idx++
 	}
-	if filter.RedactionMin > 0 {
-		fmt.Fprintf(&b, " AND COALESCE(redaction_count,0) >= $%d", idx)
-		args = append(args, filter.RedactionMin)
-		idx++
-	}
+	// Intentionally no RedactionMin clause — column does not exist on
+	// veil_certificates. Caller filters post-parse in Go.
 	return b.String(), args, idx
 }
 
