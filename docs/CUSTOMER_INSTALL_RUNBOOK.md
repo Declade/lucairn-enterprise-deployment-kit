@@ -276,6 +276,84 @@ This runbook intentionally stops at `http://localhost:8080` for the dev / pilot 
 
 ---
 
+## 11. Enable the operator dashboard (optional)
+
+The dashboard is a single Go binary that ships a web UI for the operator surfaces — home / KPIs, server health, compliance PDF export, audit log browser, and API key management. Compliance teams use it to inspect signed cert claims and run periodic PDF exports without curl/jq. Skip this step if engineer-grade JSON API access via Step 10 is enough.
+
+### Generate dashboard secrets
+
+```bash
+DASH_PW=$(openssl rand -base64 24)
+DASH_SS=$(openssl rand -hex 24)
+echo "Bootstrap password: $DASH_PW"
+# Capture this value — you'll log in as admin@lucairn.local with it.
+```
+
+### Append dashboard env vars to customer.env
+
+```bash
+cat >> customer.env <<EOF
+
+# ── Dashboard (optional; --profile dashboard) ──
+LUCAIRN_DASHBOARD_ENABLED=true
+LUCAIRN_DASHBOARD_BOOTSTRAP_EMAIL=admin@lucairn.local
+LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD=$DASH_PW
+LUCAIRN_DASHBOARD_SESSION_SECRET=$DASH_SS
+EOF
+```
+
+### Bring up the dashboard alongside the running stack
+
+```bash
+docker compose -p compose-demo \
+  -f docker-compose.customer.yml \
+  -f docker-compose.self-hosted.yml \
+  -f docker-compose.self-hosted-byok.yml \
+  --profile dashboard \
+  --env-file customer.env \
+  up -d
+```
+
+The `--profile dashboard` flag opts the `lucairn-dashboard` service into the rendered Compose project. Without it the dashboard service is filtered out (the rest of the stack is unaffected). The dashboard container is wired to the `dsa-witness` and `dsa-witness-certification` networks so it can reach the witness service when the cert browser is enabled (see below).
+
+### Verify
+
+```bash
+curl -fsS http://127.0.0.1:8443/healthz
+# Expect: 200 OK
+```
+
+Then open `http://127.0.0.1:8443/login` in your browser (or behind your front proxy as documented in Step 10) and sign in with `admin@lucairn.local` + the password you captured above.
+
+### Login + the surfaces that work today
+
+After login, these surfaces work out of the box on a default Compose install:
+
+- `/dashboard` — operator home with KPI tiles + 30-day sparkline + sanitizer bars
+- `/health` — server health pills for every kit service (polled every 10s)
+- `/compliance` — admin-only signed-claim summary PDF export (cover + image manifest + cert window)
+- `/audit` — renders the "not configured" explainer until you wire `LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL` against the `postgres-audit` database (see customer.env.example for the wiring template)
+- `/keys` — renders the "not configured" explainer until you wire `LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL` + `LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN`
+
+### Cert browser caveat
+
+The `/certs` surface (cert list + per-cert inspector) is **not wired by default** in this kit release. The Slice-3 cert browser query targets a `cert_id` / `redaction_count` / `claim_count` schema that the shipped `veil_certificates` migrations don't expose. Use the curl + jq path from Step 10 to inspect individual certs by `request_id` until a kit release ships the matching schema migration.
+
+If you want to enable it anyway on a future kit release that adds the columns, set:
+
+```
+LUCAIRN_DASHBOARD_AUDIT_DB_URL=postgres://veil_app:<VEIL_APP_PASSWORD>@postgres-veil:5432/veil?sslmode=disable
+LUCAIRN_DASHBOARD_WITNESS_ENDPOINT=veil-witness:50058
+```
+
+The `veil_app` role ships with SELECT on `veil_certificates` (see `migrations/veil-witness/000002_restrict_veil_role.up.sql.tmpl`).
+
+### Cosmetic healthcheck note
+
+The dashboard image is `gcr.io/distroless/static-debian12:nonroot` — it contains only the dashboard binary, no shell or `wget`. The Compose `healthcheck` block is intentionally disabled (`healthcheck: { disable: true }`) so `docker compose ps` doesn't false-flag the container as `unhealthy`. The actual liveness check is `curl -fsS http://127.0.0.1:8443/healthz` from the host. The Helm path is unaffected — kubelet performs `httpGet` probes natively.
+
+---
+
 ## Troubleshooting
 
 ### `Login Succeeded` did not appear after step 2
