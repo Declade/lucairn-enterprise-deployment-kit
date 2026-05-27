@@ -251,14 +251,16 @@ CERT=$(curl -s -H "Authorization: Bearer $CUSTOMER_KEY" \
   http://localhost:8080/api/v1/veil/certificate/$REQ_ID)
 
 echo "$CERT" | jq '{
-  signatures_valid,
-  completeness,
-  overall_verdict,
-  claims_count: (.signed_claims | length),
-  claims_types: [.signed_claims[]?.claim_type],
-  missing_services
+  signatures_valid: .verification.signatures_valid,
+  completeness:     .verification.completeness,
+  overall_verdict:  .verification.overall_verdict,
+  claims_count:     (.claims | length),
+  claims_types:     [.claims[]?.claim_type],
+  missing_services: .verification.missing_services
 }'
 ```
+
+The verification verdict fields (`signatures_valid`, `completeness`, `overall_verdict`, `missing_services`) live under `.verification`. The claim list is the top-level `.claims` array (NOT `.signed_claims` — that key doesn't exist).
 
 Expected:
 ```json
@@ -276,6 +278,8 @@ Expected:
   "missing_services": []
 }
 ```
+
+**First-inference flake note:** On a freshly-installed cluster, the sandbox-b pod may still be warming up (Ollama model pull + cold-start). The first inference can land while the cert accumulator is still waiting for the AI claim → `completeness: COMPLETENESS_PARTIAL` with `missing_services: ["dsa-ai"]`. If you see this, wait until `kubectl get pods -n dsa-ai` shows `sandbox-b-*` with `0` recent restarts, then send a second inference — the second cert will be `COMPLETENESS_FULL`.
 
 This is the cryptographic proof your compliance team needs:
 - **signatures_valid: true** — every claim's Ed25519 signature checks out against the published public keys
