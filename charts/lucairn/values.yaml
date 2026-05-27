@@ -185,8 +185,10 @@ dashboard:
     # operator-overview home page (KPI tiles + 30-day cert sparkline +
     # verdict donut + sanitizer bars + recent-activity table) and the
     # per-user demo-data toggle (opt-in via demoMode.toggleEnabled
-    # below).
-    tag: "0.8.1"
+    # below). 0.8.2 (2026-05-27) rewrites the cert browser SQL to
+    # match the real veil_certificates schema — fixes the PR #38
+    # phantom-column bug.
+    tag: "0.8.2"
     pullPolicy: IfNotPresent
 
   service:

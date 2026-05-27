@@ -574,7 +574,7 @@ services:
   # INSTALL.md § "Enable the Lucairn dashboard (optional)".
   lucairn-dashboard:
     profiles: ["dashboard"]
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.8.1}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.8.2}"
     restart: unless-stopped
     environment:
       LUCAIRN_DASHBOARD_LISTEN_ADDR: "${LUCAIRN_DASHBOARD_LISTEN_ADDR:-0.0.0.0:8443}"
@@ -604,10 +604,18 @@ services:
       LUCAIRN_DASHBOARD_OIDC_PUBLIC_URL: "${LUCAIRN_DASHBOARD_OIDC_PUBLIC_URL:-}"
       LUCAIRN_DASHBOARD_OIDC_CALLBACK_URL: "${LUCAIRN_DASHBOARD_OIDC_CALLBACK_URL:-}"
       # Slice 3 cert surface: cert browser + inspector + validator.
-      # Both AUDIT_DB_URL and WITNESS_ENDPOINT must be set together for
-      # the cert pages to dial backends; leaving them empty ships the
-      # dashboard with cert pages rendering "not configured".
-      LUCAIRN_DASHBOARD_AUDIT_DB_URL: "${LUCAIRN_DASHBOARD_AUDIT_DB_URL:-}"
+      # Dashboard 0.8.2 enables the cert browser by default — the
+      # compose stack pre-provisions postgres-veil (the cert log DB)
+      # with the veil_app role that already has SELECT on
+      # veil_certificates (migrations/veil-witness/000002_restrict_veil_role.up.sql.tmpl).
+      # The dashboard never issues INSERT/UPDATE/DELETE; the only
+      # over-grant is INSERT + UPDATE(attestation_raw), which the
+      # binary code path does not exercise. Operators can switch to a
+      # dedicated read-only role by overriding LUCAIRN_DASHBOARD_AUDIT_DB_URL
+      # in customer.env (see customer.env.example for the recipe).
+      # WITNESS_ENDPOINT defaults to the cert RPC port on the bundled
+      # veil-witness service.
+      LUCAIRN_DASHBOARD_AUDIT_DB_URL: "${LUCAIRN_DASHBOARD_AUDIT_DB_URL:-postgres://veil_app:${VEIL_APP_PASSWORD:-veil_app_password}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}}"
       LUCAIRN_DASHBOARD_WITNESS_ENDPOINT: "${LUCAIRN_DASHBOARD_WITNESS_ENDPOINT:-veil-witness:50058}"
       LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED: "${LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED:-false}"
       # Slice 4: server-health overview + Grafana embedding plumbing.

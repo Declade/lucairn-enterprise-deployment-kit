@@ -311,21 +311,27 @@ dsa-certification:
 
 
 # Lucairn Enterprise Dashboard. OFF by default. When dashboard.enabled
-# flips to true, the binary boots with cert pages rendering "not
-# configured" unless auditDB.connectionStringRef.name is also set. See
-# INSTALL.md § "Enable the Lucairn dashboard" + "Audit DB + Witness
+# flips to true, the cert browser surface (/certs + /certs/{id} +
+# /certs.csv) is wired automatically — see auditDB block below. The
+# customer can navigate to /certs immediately after login.
+# See INSTALL.md § "Enable the Lucairn dashboard" + "Audit DB + Witness
 # wiring (cert browser + inspector)".
 dashboard:
   enabled: false
-  # Slice 3 cert surface (opt-in). Leave connectionStringRef.name empty
-  # to ship the dashboard without the cert browser; the cert pages
-  # render a friendly "not configured" explainer in that mode.
-  # auditDB:
-  #   connectionStringRef:
-  #     name: lucairn-dashboard-audit-db
-  #     key: connection-string
-  # witness:
-  #   endpoint: "witness.lucairn.svc.cluster.local:50051"
+  # Slice 3 cert surface. Dashboard 0.8.2 (2026-05-27) ships with the
+  # cert browser ENABLED by default — point connectionStringRef at the
+  # K8s Secret the operator pre-created with SELECT on veil_certificates.
+  # The compose path uses the bundled veil_app role for this; on
+  # Kubernetes the recommended pattern is a dedicated `lucairn_dashboard_ro`
+  # role (INSTALL.md § "Audit DB + Witness wiring" has the recipe).
+  # Setting connectionStringRef.name to empty string ships the cert
+  # browser as "not configured" (fail-open).
+  auditDB:
+    connectionStringRef:
+      name: lucairn-dashboard-audit-db
+      key: connection-string
+  witness:
+    endpoint: "veil-witness.dsa-witness.svc.cluster.local:50058"
 
   # Slice 4 — server health overview + Grafana embedding plumbing.
   # /health probing is ALWAYS-ON at the binary level (cards render
