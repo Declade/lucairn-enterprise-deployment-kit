@@ -139,23 +139,47 @@ redact_stream() {
     function secret_key(k) {
       return k ~ /(KEY|TOKEN|SECRET|PASSWORD|PRIVATE|SIGNING|CERT|CREDENTIAL|API_KEY|LICENSE)/
     }
+    # scrub_inline masks high-confidence secret tokens that can appear ANYWHERE
+    # on a line (compose logs, config dumps, prose), not just on KEY=value /
+    # KEY: value lines. Runs on every non-comment line BEFORE the structural
+    # KEY=value early-return so an sk-/lcr- key on a non-secret-named "=" line
+    # (e.g. "note=please use sk-ant-...") is still scrubbed (OBS-06).
+    function scrub_inline(line) {
+      # Provider API keys (sk-ant-, sk-, etc.) and Lucairn keys (lcr_live_, ...).
+      gsub(/sk-[A-Za-z0-9._-]+/, "<redacted>", line)
+      gsub(/lcr_[A-Za-z0-9._-]+/, "<redacted>", line)
+      # Bearer tokens: "Bearer <token>" (Authorization headers, log lines).
+      gsub(/[Bb]earer[[:space:]]+[A-Za-z0-9._~+\/=-]+/, "Bearer <redacted>", line)
+      # JWTs: three base64url segments separated by dots, starting with the
+      # standard "eyJ" header prefix (handles tokens NOT preceded by "Bearer").
+      gsub(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/, "<redacted>", line)
+      # Email addresses. (TLD written as [A-Za-z][A-Za-z]+ rather than {2,}
+      # so it does not depend on awk interval-quantifier support — the support
+      # bundle is generated on arbitrary customer hosts with varied awks.)
+      gsub(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z][A-Za-z]+/, "<redacted>", line)
+      # E.164 phone numbers: leading "+" then 8 or more digits (written
+      # without an interval quantifier for the same portability reason).
+      gsub(/\+[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*/, "<redacted>", line)
+      return line
+    }
     /^[[:space:]]*#/ || /^[[:space:]]*$/ { print; next }
-    index($0, "=") > 0 {
-      k = trim($1)
+    {
+      line = scrub_inline($0)
+    }
+    index(line, "=") > 0 {
+      split(line, _kv, "=")
+      k = trim(_kv[1])
       if (secret_key(k)) {
         print k "=<redacted>"
       } else {
-        print
+        print line
       }
       next
     }
     {
-      line = $0
       if (line ~ /(KEY|TOKEN|SECRET|PASSWORD|PRIVATE|SIGNING|CERT|CREDENTIAL|API_KEY|LICENSE):/) {
         sub(/:.*/, ": <redacted>", line)
       }
-      gsub(/(sk-[A-Za-z0-9._-]+)/, "<redacted>", line)
-      gsub(/(lcr_[A-Za-z0-9._-]+)/, "<redacted>", line)
       print line
     }
   '
