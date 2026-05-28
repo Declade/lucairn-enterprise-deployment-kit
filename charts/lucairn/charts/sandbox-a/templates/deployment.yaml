@@ -20,6 +20,8 @@ spec:
         app.kubernetes.io/part-of: dsa
     spec:
       serviceAccountName: {{ .Chart.Name }}
+      # Graceful connection draining on rolling restart / node drain (HA-04).
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 30 }}
       # DNS search list workaround for the sandbox-a binary's hostname
       # regex, which rejects FQDNs (sandbox-b.dsa-ai.svc.cluster.local)
       # but accepts short hostnames. With this search list, the
@@ -149,6 +151,16 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          {{- if and .Values.gracefulShutdown (gt (int (.Values.gracefulShutdown.preStopSleepSeconds | default 0)) 0) }}
+          # preStop drain delay (HA-04): hold the container open while
+          # kube-proxy removes this pod from Service endpoints, so in-flight
+          # requests are not dropped on rolling restart / node drain. The
+          # runtime image is alpine, so /bin/sh + sleep are available.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep {{ int .Values.gracefulShutdown.preStopSleepSeconds }}"]
+          {{- end }}
         - name: sanitizer
           image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.sanitizer.image.repository }}:{{ .Values.sanitizer.image.tag | default .Values.global.imageTag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.sanitizer.image.pullPolicy }}
@@ -224,8 +236,13 @@ spec:
               port: sanitizer
             periodSeconds: 10
           readinessProbe:
+            # /readyz (not /healthz) so readiness means the sanitizer is
+            # FUNCTIONALLY ready — Presidio NLP engine warmed and the PII
+            # pipeline loaded — not merely that the HTTP listener is up.
+            # /healthz is connectivity-only and would flip the sidecar
+            # Ready while it still 503s real /v1/sanitize traffic (HA-09).
             httpGet:
-              path: /healthz
+              path: /readyz
               port: sanitizer
             periodSeconds: 10
           resources:

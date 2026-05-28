@@ -53,6 +53,32 @@ on the schedule appropriate for your operational policy. The PVC has
 data (matching the existing `postgres-gateway-data` PVC pattern carried
 forward for v2.0).
 
+### Node drain in v1.0 (single-replica services)
+
+Because the request-path services run a single replica in v1.0, the chart
+intentionally renders **no PodDisruptionBudget** for them. A PDB with
+`minAvailable: 1` on a one-pod workload would make `kubectl drain` hang
+forever — the drain can never evict the only pod without violating the
+budget. So `kubectl drain` works normally, but expect a brief gap on the
+drained service while Kubernetes reschedules the pod onto another node:
+
+```bash
+# Drain a node for maintenance (single-replica services see brief downtime).
+kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
+# After maintenance:
+kubectl uncordon <node>
+```
+
+To minimise the gap, schedule node maintenance during a low-traffic window,
+and pre-warm a replacement node so rescheduling is fast. Each service also
+runs a `preStop` drain delay (default 5s, `gracefulShutdown.preStopSleepSeconds`
+in the subchart values) so in-flight requests complete before the pod exits
+during the reschedule.
+
+When v2.0 unlocks 2+ replicas, the PDB auto-renders with `maxUnavailable: 1`,
+which lets `kubectl drain` evict one pod at a time while keeping the service
+available throughout.
+
 ## Pre-Requisites
 
 For Docker Compose:
