@@ -98,7 +98,7 @@ services:
     logging: *default-logging
     environment:
       POSTGRES_USER: dsa
-      POSTGRES_PASSWORD: ${POSTGRES_AUDIT_PASSWORD:-dsa}
+      POSTGRES_PASSWORD: ${POSTGRES_AUDIT_PASSWORD:?POSTGRES_AUDIT_PASSWORD must be set (no weak default; see customer.env)}
       POSTGRES_DB: audit
     volumes:
       - pg-audit-data:/var/lib/postgresql/data
@@ -115,7 +115,7 @@ services:
     logging: *default-logging
     environment:
       POSTGRES_USER: dsa
-      POSTGRES_PASSWORD: ${POSTGRES_BRIDGE_PASSWORD:-dsa}
+      POSTGRES_PASSWORD: ${POSTGRES_BRIDGE_PASSWORD:?POSTGRES_BRIDGE_PASSWORD must be set (no weak default; see customer.env)}
       POSTGRES_DB: bridge
     volumes:
       - pg-bridge-data:/var/lib/postgresql/data
@@ -132,7 +132,7 @@ services:
     logging: *default-logging
     environment:
       POSTGRES_USER: dsa
-      POSTGRES_PASSWORD: ${POSTGRES_SANDBOX_A_PASSWORD:-dsa}
+      POSTGRES_PASSWORD: ${POSTGRES_SANDBOX_A_PASSWORD:?POSTGRES_SANDBOX_A_PASSWORD must be set (no weak default; see customer.env)}
       POSTGRES_DB: sandbox_a
     volumes:
       - pg-sandbox-a-data:/var/lib/postgresql/data
@@ -150,7 +150,7 @@ services:
     environment:
       POSTGRES_DB: veil
       POSTGRES_USER: veil
-      POSTGRES_PASSWORD: ${POSTGRES_VEIL_PASSWORD:-veil}
+      POSTGRES_PASSWORD: ${POSTGRES_VEIL_PASSWORD:?POSTGRES_VEIL_PASSWORD must be set (no weak default; see customer.env)}
     networks:
       - dsa-witness
     healthcheck:
@@ -173,8 +173,8 @@ services:
     logging: *default-logging
     command: ["/bin/sh", "/scripts/render-migrations.sh"]
     environment:
-      AUDIT_APP_PASSWORD: "${AUDIT_APP_PASSWORD:-audit_app_password}"
-      VEIL_APP_PASSWORD: "${VEIL_APP_PASSWORD:-veil_app_password}"
+      AUDIT_APP_PASSWORD: "${AUDIT_APP_PASSWORD:?AUDIT_APP_PASSWORD must be set (no weak default; see customer.env)}"
+      VEIL_APP_PASSWORD: "${VEIL_APP_PASSWORD:?VEIL_APP_PASSWORD must be set (no weak default; see customer.env)}"
     volumes:
       - ./migrations:/migrations-src:ro
       - ./scripts/render-migrations.sh:/scripts/render-migrations.sh:ro
@@ -195,7 +195,7 @@ services:
       - dsa-audit
     command:
       - "-path=/migrations/audit"
-      - "-database=postgres://dsa:${POSTGRES_AUDIT_PASSWORD:-dsa}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
+      - "-database=postgres://dsa:${POSTGRES_AUDIT_PASSWORD:?POSTGRES_AUDIT_PASSWORD must be set (no weak default; see customer.env)}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
       - "up"
     restart: "no"
 
@@ -213,7 +213,7 @@ services:
       - dsa-bridge
     command:
       - "-path=/migrations/id-bridge"
-      - "-database=postgres://dsa:${POSTGRES_BRIDGE_PASSWORD:-dsa}@postgres-bridge:5432/bridge?sslmode=${POSTGRES_SSLMODE:-disable}"
+      - "-database=postgres://dsa:${POSTGRES_BRIDGE_PASSWORD:?POSTGRES_BRIDGE_PASSWORD must be set (no weak default; see customer.env)}@postgres-bridge:5432/bridge?sslmode=${POSTGRES_SSLMODE:-disable}"
       - "up"
     restart: "no"
 
@@ -231,7 +231,7 @@ services:
       - dsa-identity
     command:
       - "-path=/migrations/sandbox-a"
-      - "-database=postgres://dsa:${POSTGRES_SANDBOX_A_PASSWORD:-dsa}@postgres-sandbox-a:5432/sandbox_a?sslmode=${POSTGRES_SSLMODE:-disable}"
+      - "-database=postgres://dsa:${POSTGRES_SANDBOX_A_PASSWORD:?POSTGRES_SANDBOX_A_PASSWORD must be set (no weak default; see customer.env)}@postgres-sandbox-a:5432/sandbox_a?sslmode=${POSTGRES_SSLMODE:-disable}"
       - "up"
     restart: "no"
 
@@ -249,7 +249,7 @@ services:
       - dsa-witness
     command:
       - "-path=/migrations/veil-witness"
-      - "-database=postgres://veil:${POSTGRES_VEIL_PASSWORD:-veil}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}"
+      - "-database=postgres://veil:${POSTGRES_VEIL_PASSWORD:?POSTGRES_VEIL_PASSWORD must be set (no weak default; see customer.env)}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}"
       - "up"
     restart: "no"
 
@@ -263,7 +263,7 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *dsa-prod-auth
-      AUDIT_DATABASE_URL: "postgres://audit_app:${AUDIT_APP_PASSWORD:-audit_app_password}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
+      AUDIT_DATABASE_URL: "postgres://audit_app:${AUDIT_APP_PASSWORD:?AUDIT_APP_PASSWORD must be set (no weak default; see customer.env)}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
       VEIL_ENABLED: "${VEIL_ENABLED:-true}"
       VEIL_SIGNING_KEY: "${VEIL_AUDIT_SIGNING_KEY}"
@@ -289,7 +289,7 @@ services:
         condition: service_healthy
     environment:
       <<: *dsa-prod-auth
-      BRIDGE_DATABASE_URL: "postgres://dsa:${POSTGRES_BRIDGE_PASSWORD:-dsa}@postgres-bridge:5432/bridge?sslmode=${POSTGRES_SSLMODE:-disable}"
+      BRIDGE_DATABASE_URL: "postgres://dsa:${POSTGRES_BRIDGE_PASSWORD:?POSTGRES_BRIDGE_PASSWORD must be set (no weak default; see customer.env)}@postgres-bridge:5432/bridge?sslmode=${POSTGRES_SSLMODE:-disable}"
       BRIDGE_MASTER_KEY: "${BRIDGE_MASTER_KEY}"
       BRIDGE_EPHEMERAL: "${SANDBOX_A_EPHEMERAL:-true}"
       DSA_BRIDGE_ENCRYPTION_KEY: "${DSA_BRIDGE_ENCRYPTION_KEY:?DSA_BRIDGE_ENCRYPTION_KEY is required}"
@@ -317,7 +317,7 @@ services:
         condition: service_healthy
     environment:
       <<: *dsa-prod-auth
-      SANDBOX_A_DATABASE_URL: "postgres://dsa:${POSTGRES_SANDBOX_A_PASSWORD:-dsa}@postgres-sandbox-a:5432/sandbox_a?sslmode=${POSTGRES_SSLMODE:-disable}"
+      SANDBOX_A_DATABASE_URL: "postgres://dsa:${POSTGRES_SANDBOX_A_PASSWORD:?POSTGRES_SANDBOX_A_PASSWORD must be set (no weak default; see customer.env)}@postgres-sandbox-a:5432/sandbox_a?sslmode=${POSTGRES_SSLMODE:-disable}"
       SANDBOX_A_ENCRYPTION_KEY: "${SANDBOX_A_ENCRYPTION_KEY}"
       SANDBOX_A_EPHEMERAL: "${SANDBOX_A_EPHEMERAL:-true}"
       AUDIT_SERVICE_ADDR: "audit:50051"
@@ -399,7 +399,7 @@ services:
       migrate-veil:
         condition: service_completed_successfully
     environment:
-      VEIL_DB_URL: "postgres://veil_app:${VEIL_APP_PASSWORD:-veil_app_password}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}"
+      VEIL_DB_URL: "postgres://veil_app:${VEIL_APP_PASSWORD:?VEIL_APP_PASSWORD must be set (no weak default; see customer.env)}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}"
       VEIL_WITNESS_SIGNING_KEY: "${VEIL_WITNESS_SIGNING_KEY}"
       VEIL_WITNESS_KEY_ID: "${VEIL_WITNESS_KEY_ID:-witness_v1}"
       VEIL_CLAIM_TIMEOUT: "30s"
@@ -655,7 +655,7 @@ services:
       # in customer.env (see customer.env.example for the recipe).
       # WITNESS_ENDPOINT defaults to the cert RPC port on the bundled
       # veil-witness service.
-      LUCAIRN_DASHBOARD_AUDIT_DB_URL: "${LUCAIRN_DASHBOARD_AUDIT_DB_URL:-postgres://veil_app:${VEIL_APP_PASSWORD:-veil_app_password}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}}"
+      LUCAIRN_DASHBOARD_AUDIT_DB_URL: "${LUCAIRN_DASHBOARD_AUDIT_DB_URL:-postgres://veil_app:${VEIL_APP_PASSWORD:?VEIL_APP_PASSWORD must be set (no weak default; see customer.env)}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}}"
       LUCAIRN_DASHBOARD_WITNESS_ENDPOINT: "${LUCAIRN_DASHBOARD_WITNESS_ENDPOINT:-veil-witness:50058}"
       LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED: "${LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED:-false}"
       # Slice 4: server-health overview + Grafana embedding plumbing.

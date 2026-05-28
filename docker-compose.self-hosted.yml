@@ -290,7 +290,7 @@ services:
       # Dashboard 0.8.2 enables the cert browser by default — see the
       # rationale in docker-compose.customer.yml. Operators can pin a
       # dedicated read-only role by overriding LUCAIRN_DASHBOARD_AUDIT_DB_URL.
-      LUCAIRN_DASHBOARD_AUDIT_DB_URL: "${LUCAIRN_DASHBOARD_AUDIT_DB_URL:-postgres://veil_app:${VEIL_APP_PASSWORD:-veil_app_password}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}}"
+      LUCAIRN_DASHBOARD_AUDIT_DB_URL: "${LUCAIRN_DASHBOARD_AUDIT_DB_URL:-postgres://veil_app:${VEIL_APP_PASSWORD:?VEIL_APP_PASSWORD must be set (no weak default; see customer.env)}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}}"
       LUCAIRN_DASHBOARD_WITNESS_ENDPOINT: "${LUCAIRN_DASHBOARD_WITNESS_ENDPOINT:-veil-witness:50058}"
       LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED: "${LUCAIRN_DASHBOARD_WITNESS_TLS_ENABLED:-false}"
       # Slice 4: server-health overview + Grafana embedding plumbing.
