@@ -117,6 +117,29 @@ sanitizer:
   llmScanMode: "sequential"
   llmScanRestoreThreshold: 0.85
 
+# ollama-identity is the L3 PII-plane LLM runtime (the on-GPU PII Shield).
+# It only renders when sanitizer.llmScanEnabled=true. Images are pinned by
+# released tag + sha256 digest (NET-02 supply-chain hardening) so the
+# PII-plane runtime cannot silently float to a mutable `:latest`. Override
+# repository/tag/digest per environment if you mirror images into a private
+# registry. The model-pull init container uses a pinned curl image to fetch
+# the GGUF weights.
+ollamaIdentity:
+  image:
+    repository: ollama/ollama
+    tag: "0.6.2"
+    # sha256 digest for ollama/ollama:0.6.2 (linux multi-arch index). When set,
+    # the image ref renders as repository:tag@sha256:... so the pull is
+    # digest-verified. Leave empty to pin by tag only.
+    digest: "sha256:74a0929e1e082a09e4fdeef8594b8f4537f661366a04080e600c90ea9f712721"
+    pullPolicy: IfNotPresent
+  # Image used by the model-pull init container to download the GGUF weights.
+  curlImage:
+    repository: curlimages/curl
+    tag: "8.11.1"
+    digest: "sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69"
+    pullPolicy: IfNotPresent
+
 secrets:
   backend: k8s-native
   values:

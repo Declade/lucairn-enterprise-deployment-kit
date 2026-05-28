@@ -13,7 +13,10 @@
 # host-side prep steps; CI re-runs them on a Linux runner before docker
 # build to catch drift.
 
-FROM golang:1.23-alpine AS builder
+# Base images pinned by sha256 digest (SUP-06 supply-chain hardening) so the
+# build cannot silently float to a re-tagged upstream. Bump the digest
+# alongside the tag when intentionally upgrading.
+FROM golang:1.23-alpine@sha256:383395b794dffa5b53012a212365d40c8e37109a626ca30d6151c8348d380b5f AS builder
 WORKDIR /src
 
 # Pre-cache the module graph.
@@ -44,7 +47,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w -X main.version=${VERSION}" \
     -o /out/lucairn-dashboard .
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:d093aa3e30dbadd3efe1310db061a14da60299baff8450a17fe0ccc514a16639
 COPY --from=builder /out/lucairn-dashboard /lucairn-dashboard
 
 # OCI image labels — Slice 4 fold-in. Locks GHCR package metadata to the

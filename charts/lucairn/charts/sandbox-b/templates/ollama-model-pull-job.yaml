@@ -15,6 +15,10 @@ spec:
         app.kubernetes.io/name: {{ .Chart.Name }}-ollama-pull
         dsa.io/model-pull: "true"
     spec:
+      # NET-05: this pod never calls the Kubernetes API; using the
+      # namespace default ServiceAccount it would still auto-mount an
+      # unused token. Disable the mount at the pod level.
+      automountServiceAccountToken: false
       containers:
         - name: pull
           image: "{{ .Values.ollama.image.repository }}:{{ .Values.ollama.image.tag }}"

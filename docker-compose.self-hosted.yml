@@ -12,6 +12,18 @@
 # plus a selectable model runtime. Runtimes should expose an OpenAI-compatible
 # HTTP API at MODEL_RUNTIME_URL unless using the ollama profile.
 
+# OBS-08: bound container log growth (disk-fill DoS surface). Mirrors the
+# base customer compose anchor. Services defined only in this overlay
+# (sandbox-b, redis-ai, ollama, the model-runtime profiles, lucairn-dashboard)
+# reference it directly; the gateway/audit/id-bridge/veil-witness overlay
+# stubs inherit `logging:` from docker-compose.customer.yml at merge time.
+# (Compose anchors do not cross files, so the anchor is redefined here.)
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${LUCAIRN_LOG_MAX_SIZE:-50m}"
+    max-file: "${LUCAIRN_LOG_MAX_FILE:-5}"
+
 networks:
   dsa-ai:
     driver: bridge
@@ -63,6 +75,7 @@ services:
 
   redis-ai:
     image: redis:7-alpine
+    logging: *default-logging
     command: redis-server --appendonly yes --maxmemory ${SANDBOX_B_REDIS_MAXMEMORY:-256mb} --maxmemory-policy allkeys-lru
     volumes:
       - redis-ai-data:/data
@@ -77,6 +90,7 @@ services:
 
   sandbox-b:
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sandbox-b:${LUCAIRN_IMAGE_TAG:-0.4.0}"
+    logging: *default-logging
     depends_on:
       redis-ai:
         condition: service_healthy
@@ -131,6 +145,7 @@ services:
   model-runtime:
     profiles: ["llama-cpp"]
     image: "${LLAMA_CPP_IMAGE:-ghcr.io/ggerganov/llama.cpp:server}"
+    logging: *default-logging
     command:
       - "-m"
       - "/models/${MODEL_FILE:-model.gguf}"
@@ -149,6 +164,7 @@ services:
   model-runtime-vllm:
     profiles: ["vllm"]
     image: "${VLLM_IMAGE:-vllm/vllm-openai:latest}"
+    logging: *default-logging
     command:
       - "--model"
       - "/models/${MODEL_PATH:-.}"
@@ -167,6 +183,7 @@ services:
   model-runtime-tgi:
     profiles: ["tgi"]
     image: "${TGI_IMAGE:-ghcr.io/huggingface/text-generation-inference:latest}"
+    logging: *default-logging
     command:
       - "--model-id"
       - "/models/${MODEL_PATH:-.}"
@@ -183,6 +200,7 @@ services:
   ollama:
     profiles: ["ollama"]
     image: "${OLLAMA_IMAGE:-ollama/ollama:latest}"
+    logging: *default-logging
     environment:
       OLLAMA_HOST: "0.0.0.0:11434"
     volumes:
@@ -195,6 +213,7 @@ services:
   model-runtime-onnxruntime:
     profiles: ["onnxruntime"]
     image: "${ONNXRUNTIME_OPENAI_IMAGE:-ghcr.io/declade/openai-compatible-onnxruntime:latest}"
+    logging: *default-logging
     volumes:
       - ${LUCAIRN_MODEL_DIR:-../models}:/models:ro
     networks:
@@ -206,6 +225,7 @@ services:
   model-runtime-triton:
     profiles: ["triton"]
     image: "${TRITON_OPENAI_IMAGE:-ghcr.io/declade/openai-compatible-triton:latest}"
+    logging: *default-logging
     volumes:
       - ${LUCAIRN_MODEL_DIR:-../models}:/models:ro
     networks:
@@ -217,6 +237,7 @@ services:
   model-runtime-custom:
     profiles: ["custom-runtime"]
     image: "${MODEL_RUNTIME_IMAGE:-ghcr.io/declade/openai-compatible-runtime:latest}"
+    logging: *default-logging
     command: ${MODEL_RUNTIME_COMMAND:-}
     environment:
       MODEL_DIR: "/models"
@@ -240,6 +261,7 @@ services:
   lucairn-dashboard:
     profiles: ["dashboard"]
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.8.2}"
+    logging: *default-logging
     restart: unless-stopped
     environment:
       LUCAIRN_DASHBOARD_LISTEN_ADDR: "${LUCAIRN_DASHBOARD_LISTEN_ADDR:-0.0.0.0:8443}"

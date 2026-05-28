@@ -19,6 +19,10 @@ spec:
         app.kubernetes.io/name: {{ .Chart.Name }}-ollama
         app.kubernetes.io/part-of: dsa
     spec:
+      # NET-05: this pod never calls the Kubernetes API; using the
+      # namespace default ServiceAccount it would still auto-mount an
+      # unused token. Disable the mount at the pod level.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: false
       containers:
