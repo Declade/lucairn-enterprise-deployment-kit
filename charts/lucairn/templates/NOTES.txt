@@ -43,6 +43,26 @@ Gateway keystore encryption (#17):
   raw bytes (AES-256). Rotation requires re-keying the on-disk keystore;
   re-running install with a different value invalidates every encrypted record.
 
+=======================================================
+  ⚠  DATA DESTRUCTION ON UNINSTALL — READ BEFORE `helm uninstall`
+=======================================================
+
+The compliance databases (audit, id-bridge, veil-witness) hold your
+REGULATOR-CITED EVIDENCE: the immutable audit trail (AI Act Art. 12 /
+GDPR Art. 30), the re-linkage tokens (GDPR DSAR / erasure), and the
+signed witness certificates. This data is NOT recoverable once gone.
+
+  • The PVCs for these three databases carry `helm.sh/resource-policy: keep`,
+    so `helm uninstall` does NOT delete them. The data SURVIVES an uninstall
+    and is re-bound on the next install into the same namespaces.
+  • To DELETE the data on purpose you must remove the PVCs explicitly:
+      kubectl delete pvc audit-postgresql-data       -n dsa-audit
+      kubectl delete pvc id-bridge-postgresql-data    -n dsa-bridge
+      kubectl delete pvc veil-witness-postgresql-data  -n dsa-witness
+  • BEFORE any uninstall/reinstall or PVC deletion: take a backup.
+    See OPS.md § Backups for the pg_dump / pg_restore recipes (Compose + Helm)
+    and the restore-validation step.
+
 Prerequisites:
 {{- if ne .Values.global.secrets.backend "k8s-native" }}
   ⚠ External Secrets Operator must be installed

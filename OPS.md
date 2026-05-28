@@ -39,12 +39,21 @@ kubectl logs -n dsa-witness deploy/veil-witness --tail=300
 
 ## Backups
 
+> ⚠ **The three compliance databases hold your regulator-cited evidence.**
+> `audit` (immutable audit trail — AI Act Art. 12 / GDPR Art. 30), `bridge`
+> (re-linkage tokens — GDPR DSAR / erasure), and `veil` (signed witness
+> certificates). This data is NOT recoverable once the volume is gone. On the
+> Helm path the PVCs carry `helm.sh/resource-policy: keep` so `helm uninstall`
+> does NOT delete them — but disk loss, a deliberate `kubectl delete pvc`, or a
+> Compose `docker compose down -v` still destroys them. **Take a backup before
+> any uninstall/reinstall, PVC deletion, version upgrade, or host migration.**
+
 Back up these volumes or databases:
 
-- `pg-audit-data`
-- `pg-bridge-data`
-- `pg-sandbox-a-data`
-- `postgres-veil-data`
+- `pg-audit-data` (DB `audit`) — **compliance**
+- `pg-bridge-data` (DB `bridge`) — **compliance**
+- `postgres-veil-data` (DB `veil`) — **compliance**
+- `pg-sandbox-a-data` (DB `sandbox_a`)
 - `gateway-data`
 - `cert-store` when certification is enabled
 
@@ -52,8 +61,144 @@ Recommended minimum:
 
 - Nightly encrypted database backups.
 - 30-day retention.
-- Quarterly restore test.
+- Quarterly restore test (see "Restore validation" below).
 - Backup encryption key held outside the Lucairn host.
+
+### Compose path — backup (logical `pg_dump`)
+
+Run from the kit directory. These are logical dumps in custom format
+(`-Fc`), which restore cleanly across patch versions and are safe to gzip.
+
+```bash
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+OUT="./backups/${STAMP}"
+mkdir -p "${OUT}" && chmod 700 "${OUT}"
+
+# Compliance DBs. Adjust users if you changed POSTGRES_*_USER:
+#   postgres-audit  -> DB audit,  user dsa
+#   postgres-bridge -> DB bridge, user dsa
+#   postgres-veil   -> DB veil,   user veil
+for svc_db_user in \
+  "postgres-audit:audit:dsa" \
+  "postgres-bridge:bridge:dsa" \
+  "postgres-veil:veil:veil"; do
+  svc="${svc_db_user%%:*}"; rest="${svc_db_user#*:}"; db="${rest%%:*}"; usr="${rest##*:}"
+  docker compose -f docker-compose.customer.yml --env-file customer.env \
+    exec -T "${svc}" pg_dump -U "${usr}" -d "${db}" -Fc \
+    > "${OUT}/${db}.dump"
+done
+
+# Verify each dump is non-empty and lists a table-of-contents.
+for db in audit bridge veil; do
+  test -s "${OUT}/${db}.dump" || { echo "EMPTY DUMP: ${db}"; exit 1; }
+  pg_restore --list "${OUT}/${db}.dump" >/dev/null \
+    && echo "OK ${db} ($(du -h "${OUT}/${db}.dump" | cut -f1))"
+done
+```
+
+### Compose path — restore (`pg_restore`)
+
+Restore into a freshly provisioned, EMPTY database (the dump does not
+truncate existing rows). For the append-only audit DB, restore into a clean
+DB only — never replay a dump over a populated audit trail.
+
+```bash
+SRC="./backups/<STAMP>"   # the directory produced by the backup step
+
+for svc_db_user in \
+  "postgres-audit:audit:dsa" \
+  "postgres-bridge:bridge:dsa" \
+  "postgres-veil:veil:veil"; do
+  svc="${svc_db_user%%:*}"; rest="${svc_db_user#*:}"; db="${rest%%:*}"; usr="${rest##*:}"
+  docker compose -f docker-compose.customer.yml --env-file customer.env \
+    exec -T "${svc}" pg_restore -U "${usr}" -d "${db}" --no-owner --clean --if-exists \
+    < "${SRC}/${db}.dump"
+done
+```
+
+### Helm path — backup (logical `pg_dump`)
+
+The compliance Postgres pods are `audit-postgresql-0` (ns `dsa-audit`),
+`id-bridge-postgresql-0` (ns `dsa-bridge`), and
+`veil-witness-postgresql-0` (ns `dsa-witness`). The DB password is in each
+chart's `<chart>-credentials` Secret under key `POSTGRES_PASSWORD`; pass it
+via `PGPASSWORD` so it never lands in shell history.
+
+```bash
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+OUT="./backups/${STAMP}"
+mkdir -p "${OUT}" && chmod 700 "${OUT}"
+
+# ns:pod:db:user:secret
+for row in \
+  "dsa-audit:audit-postgresql-0:audit:dsa:audit-credentials" \
+  "dsa-bridge:id-bridge-postgresql-0:bridge:dsa:id-bridge-credentials" \
+  "dsa-witness:veil-witness-postgresql-0:veil:veil:veil-witness-credentials"; do
+  ns="${row%%:*}";  r="${row#*:}"
+  pod="${r%%:*}";   r="${r#*:}"
+  db="${r%%:*}";    r="${r#*:}"
+  usr="${r%%:*}";   sec="${r##*:}"
+  pw="$(kubectl -n "${ns}" get secret "${sec}" \
+        -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)"
+  kubectl -n "${ns}" exec -i "${pod}" -- \
+    env PGPASSWORD="${pw}" pg_dump -U "${usr}" -d "${db}" -Fc \
+    > "${OUT}/${db}.dump"
+  unset pw
+  test -s "${OUT}/${db}.dump" \
+    && pg_restore --list "${OUT}/${db}.dump" >/dev/null \
+    && echo "OK ${db} ($(du -h "${OUT}/${db}.dump" | cut -f1))"
+done
+```
+
+### Helm path — restore (`pg_restore`)
+
+```bash
+SRC="./backups/<STAMP>"
+
+for row in \
+  "dsa-audit:audit-postgresql-0:audit:dsa:audit-credentials" \
+  "dsa-bridge:id-bridge-postgresql-0:bridge:dsa:id-bridge-credentials" \
+  "dsa-witness:veil-witness-postgresql-0:veil:veil:veil-witness-credentials"; do
+  ns="${row%%:*}";  r="${row#*:}"
+  pod="${r%%:*}";   r="${r#*:}"
+  db="${r%%:*}";    r="${r#*:}"
+  usr="${r%%:*}";   sec="${r##*:}"
+  pw="$(kubectl -n "${ns}" get secret "${sec}" \
+        -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)"
+  kubectl -n "${ns}" exec -i "${pod}" -- \
+    env PGPASSWORD="${pw}" pg_restore -U "${usr}" -d "${db}" \
+        --no-owner --clean --if-exists \
+    < "${SRC}/${db}.dump"
+  unset pw
+done
+```
+
+### Restore validation
+
+A backup you have never restored is not a backup. Quarterly, restore the
+latest dumps into a throwaway database (a scratch Compose stack or a temp
+namespace) and assert row counts are non-zero and recent:
+
+```bash
+# Example: validate the audit dump restored into a scratch Postgres.
+# (substitute your scratch connection details)
+psql "<scratch-dsn>" -c "SELECT count(*) AS audit_events FROM audit_events;"
+psql "<scratch-dsn>" -c "SELECT max(created_at) FROM audit_events;"
+# Witness certs:
+psql "<scratch-dsn>" -c "SELECT count(*) AS certificates FROM veil_certificates;"
+```
+
+Confirm the counts match the live system's order of magnitude and the
+newest timestamp is within your RPO window. Record the validation date as
+backup evidence (see the Upgrade runbook step 7).
+
+> **Deferred (Tier-B, needs Marc decision + live Vast verify):** automated
+> scheduling of these dumps. The Helm path will get a `CronJob` running
+> `pg_dump` per compliance DB on a retention policy, and the Compose path a
+> `bin/lucairn backup` / `bin/lucairn restore` wrapper, with documented
+> RPO/RTO targets. Until then these are operator-run manual procedures. There
+> is intentionally no point-in-time-recovery (WAL archiving) story here — the
+> logical-dump RPO equals your backup interval.
 
 ## Key Rotation
 

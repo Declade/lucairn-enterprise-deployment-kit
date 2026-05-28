@@ -7,6 +7,15 @@ metadata:
   labels:
     app.kubernetes.io/name: {{ .Chart.Name }}-postgresql
     app.kubernetes.io/part-of: dsa
+  annotations:
+    # Survive helm uninstall — this PVC holds the ID-bridge re-linkage tokens
+    # that map pseudonyms back to identities (GDPR re-linkage / DSAR fulfilment).
+    # Losing it strands every pseudonymised record with no way to re-link or
+    # satisfy a data-subject access/erasure request. Mirrors the gateway
+    # keystore + postgres-gateway PVC reclaim policy. Operator drops the data
+    # explicitly with:
+    #   kubectl delete pvc {{ .Chart.Name }}-postgresql-data -n {{ .Values.namespace }}
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteOnce
