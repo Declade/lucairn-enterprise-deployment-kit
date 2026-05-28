@@ -84,17 +84,26 @@ Do not rotate all Veil keys at once. Keep retired public keys available through 
 > roadmap". Do NOT plan to scale the gateway horizontally on v1.0.
 >
 > The same single-replica + HPA-off lock applies to every pod-local-state
-> subchart (audit, id-bridge, sandbox-a, veil-witness, ingest, dashboard);
-> the per-subchart validator rejects `replicaCount != 1` for each. The
-> Compose path has no render-time guard — operators MUST keep these services
-> single-instance on Compose by the same constraint.
+> subchart (audit, id-bridge, sandbox-a, sandbox-b, veil-witness, ingest,
+> dashboard); the per-subchart validator rejects `replicaCount != 1` for
+> each. **Sandbox B is included in this lock** — even though its Python
+> service is stateless across requests, it is a load-bearing veil-claim
+> emitter that is structurally UNTESTED at multi-replica, so the validator
+> hard-rejects `sandbox-b.replicaCount > 1` (see
+> `charts/lucairn/templates/_validators.tpl`, the
+> `validators.podLocalStateSingleReplica` guard). The Compose path has no
+> render-time guard — operators MUST keep these services single-instance on
+> Compose by the same constraint.
 
 What you CAN scale on v1.0:
 
-- **Sandbox B workers** — stateless inference workers for full self-hosted
-  Kubernetes deployments scale horizontally.
 - **Databases — vertically** before sharding. Scale the bundled Postgres
   instances up (CPU/memory/disk) rather than out.
+
+Horizontal scaling of Sandbox B workers (stateless inference workers) lands
+in v2.0 alongside the rest of the shared-state refactor — see INSTALL.md §
+"v2.0 roadmap". On v1.0 it stays single-replica with the rest of the
+pod-local-state subcharts above.
 
 For Compose installs, move to Kubernetes before adding multi-host complexity.
 Horizontal HA of the gateway and the other pod-local-state services lands in
