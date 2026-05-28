@@ -53,8 +53,26 @@ hpa:
   targetCPUUtilization: 70
 
 pdb:
+  # v1.0 single-replica lock: the PDB only renders at replicaCount >= 2
+  # (the v2.0 multi-replica unlock). On a single-replica workload a PDB
+  # with minAvailable: 1 makes `kubectl drain` hang forever, so v1.0
+  # renders no PDB. When 2+ replicas run, maxUnavailable lets drain evict
+  # one pod at a time. See templates/pdb.yaml.
   enabled: true
-  minAvailable: 1
+  maxUnavailable: 1
+
+# Graceful shutdown / connection draining on rolling restart + node drain
+# (HA-04). On pod termination the kubelet sends SIGTERM and removes the pod
+# from Service endpoints CONCURRENTLY — without a drain delay, in-flight
+# requests routed just before endpoint removal are dropped. The preStop
+# sleep holds the container open while kube-proxy propagates the endpoint
+# removal across nodes, then the process exits gracefully.
+# terminationGracePeriodSeconds MUST exceed preStopSleepSeconds.
+gracefulShutdown:
+  # Seconds to sleep in preStop before SIGTERM, letting endpoint removal
+  # propagate. 0 disables the preStop hook entirely.
+  preStopSleepSeconds: 5
+terminationGracePeriodSeconds: 30
 
 securityContext:
   runAsNonRoot: true

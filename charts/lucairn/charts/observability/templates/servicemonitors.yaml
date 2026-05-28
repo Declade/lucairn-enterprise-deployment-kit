@@ -1,5 +1,16 @@
 {{- if .Values.serviceMonitors.enabled }}
-{{- range list "audit" "id-bridge" "sandbox-a" "sandbox-b" "gateway" }}
+{{- /*
+  OBS-02: scrape /metrics ONLY from services that actually expose a
+  Prometheus endpoint. As of v1.0 that is gateway and veil-witness; the
+  Go health muxes on audit / id-bridge / sandbox-a / sandbox-b do NOT yet
+  register promhttp (tracked as OBS-04, a v2.0 carry-forward), so a
+  ServiceMonitor pointed at them produces nothing but `up=0` scrape
+  failures and noisy Prometheus target-down alerts. They are removed here
+  and re-added once promhttp lands on their health muxes. veil-witness DOES
+  expose /metrics on its health port (50059) but was previously omitted —
+  it is added below with its correct namespace mapping (dsa-witness).
+*/ -}}
+{{- range list "gateway" "veil-witness" }}
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
@@ -11,16 +22,10 @@ metadata:
 spec:
   namespaceSelector:
     matchNames:
-      {{- if eq . "audit" }}
-      - dsa-audit
-      {{- else if eq . "id-bridge" }}
-      - dsa-bridge
-      {{- else if eq . "sandbox-a" }}
-      - dsa-identity
-      {{- else if eq . "sandbox-b" }}
-      - dsa-ai
-      {{- else if eq . "gateway" }}
+      {{- if eq . "gateway" }}
       - dsa-edge
+      {{- else if eq . "veil-witness" }}
+      - dsa-witness
       {{- end }}
   selector:
     matchLabels:

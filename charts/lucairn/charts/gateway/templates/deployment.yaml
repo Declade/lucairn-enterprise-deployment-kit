@@ -23,6 +23,8 @@ spec:
         app.kubernetes.io/part-of: dsa
     spec:
       serviceAccountName: {{ .Chart.Name }}
+      # Graceful connection draining on rolling restart / node drain (HA-04).
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 30 }}
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
       {{- if .Values.postgresKeystore.enabled }}
@@ -165,6 +167,16 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          {{- if and .Values.gracefulShutdown (gt (int (.Values.gracefulShutdown.preStopSleepSeconds | default 0)) 0) }}
+          # preStop drain delay (HA-04): hold the container open while
+          # kube-proxy removes this pod from Service endpoints, so in-flight
+          # requests are not dropped on rolling restart / node drain. The
+          # runtime image is alpine, so /bin/sh + sleep are available.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep {{ int .Values.gracefulShutdown.preStopSleepSeconds }}"]
+          {{- end }}
       volumes:
         - name: verticals
           projected:

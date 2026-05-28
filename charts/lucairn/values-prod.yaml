@@ -1,5 +1,21 @@
 # deploy/helm/values-prod.yaml
-# Production overlay: HA, resource requests, ESO
+# Production overlay: resource requests, ESO, prod-only security flags.
+#
+# v1.0 SINGLE-REPLICA LOCK: every replicaCount below is 1. The umbrella
+# chart's own validator (charts/lucairn/templates/_validators.tpl —
+# validators.podLocalStateSingleReplica + the gateway file-keystore check)
+# HARD-FAILS render on any replicaCount != 1 for veil-witness / audit /
+# id-bridge / sandbox-a / sandbox-b / gateway, because each holds pod-local
+# in-memory state that K8s Service round-robin cannot safely split (cert
+# chain finalises PARTIAL, dedup uniformity breaks, rate-limit bypass).
+# Multi-replica HA is the v2.0 roadmap. Do NOT raise these to 2 — the
+# install will fail to render. See INSTALL.md § "v1.0 deployment topology".
+#
+# Smoke-test this overlay renders before shipping:
+#   helm template lucairn charts/lucairn -f charts/lucairn/values-prod.yaml \
+#     --set gateway.secrets.values.dsaServiceToken=x \
+#     --set sandbox-b.redis.password=x \
+#     --set sandbox-b.secrets.values.sandboxBApiKeys=x >/dev/null && echo OK
 global:
   secrets:
     backend: vault
@@ -19,7 +35,7 @@ global:
   dsaEnv: production
 
 audit:
-  replicaCount: 2
+  replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
   resources:
     requests:
       cpu: 200m
@@ -33,7 +49,7 @@ audit:
       dsaServiceToken: ""
 
 id-bridge:
-  replicaCount: 2
+  replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
   resources:
     requests:
       cpu: 200m
@@ -47,7 +63,7 @@ id-bridge:
       dsaServiceToken: ""
 
 sandbox-a:
-  replicaCount: 2
+  replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
   resources:
     requests:
       cpu: 200m
@@ -61,7 +77,7 @@ sandbox-a:
       dsaServiceToken: ""
 
 sandbox-b:
-  replicaCount: 2
+  replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
   workers: 4
   redis:
     # Password MUST be provided at install time via --set or external secret.
@@ -86,7 +102,7 @@ sandbox-b:
 
 veil-witness:
   enabled: true
-  replicaCount: 2
+  replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
   resources:
     requests:
       cpu: 200m
@@ -108,7 +124,7 @@ demo:
   enabled: false
 
 gateway:
-  replicaCount: 2
+  replicaCount: 1  # v1.0 single-replica lock (file-keystore on RWO PVC)
   resources:
     requests:
       cpu: 200m

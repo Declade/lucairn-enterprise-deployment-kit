@@ -1,4 +1,18 @@
-{{- if .Values.pdb.enabled }}
+{{- /*
+  v1.0 single-replica lock: a PodDisruptionBudget with minAvailable: 1 on a
+  single-replica workload makes `kubectl drain` hang forever — the node
+  drain can never evict the only pod without violating the budget (HA-03).
+  So the PDB only renders once the workload runs 2+ replicas (the v2.0
+  multi-replica HA unlock). When it does render it uses maxUnavailable: 1,
+  which always permits draining exactly one pod at a time while keeping the
+  rest available, instead of the drain-blocking minAvailable form.
+  Default replicaCount=1 when omitted (chart default); coerce to int.
+*/ -}}
+{{- $replicaCount := 1 -}}
+{{- if hasKey .Values "replicaCount" -}}
+{{- $replicaCount = int .Values.replicaCount -}}
+{{- end -}}
+{{- if and .Values.pdb.enabled (ge $replicaCount 2) }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -8,7 +22,7 @@ metadata:
     app.kubernetes.io/name: {{ .Chart.Name }}
     app.kubernetes.io/part-of: dsa
 spec:
-  minAvailable: {{ .Values.pdb.minAvailable }}
+  maxUnavailable: {{ .Values.pdb.maxUnavailable | default 1 }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ .Chart.Name }}

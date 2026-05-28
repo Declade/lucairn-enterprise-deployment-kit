@@ -136,8 +136,67 @@ ruby -e 'require "yaml"; ARGV.each { |f| YAML.load_file(f); puts "yaml ok: #{f}"
 
 if command -v helm >/dev/null 2>&1; then
   helm lint "$ROOT/charts/lucairn" -f "$ROOT/customer-values.yaml.example"
+
+  CHART="$ROOT/charts/lucairn"
+
+  # HA-02 regression guard: values-prod.yaml MUST render. It previously
+  # shipped replicaCount: 2 on pod-local-state services that the chart's
+  # OWN validator (templates/_validators.tpl) hard-rejects, so
+  # `helm install -f values-prod.yaml` failed at render time. All
+  # replicaCounts are now pinned to 1 (the v1.0 single-replica lock).
+  PROD_RENDER="$(helm template lucairn "$CHART" \
+    -f "$CHART/values-prod.yaml" \
+    --set global.skipPullSecretGuard=true \
+    --set gateway.secrets.values.dsaServiceToken=x \
+    --set audit.secrets.values.dsaServiceToken=x \
+    --set id-bridge.secrets.values.dsaServiceToken=x \
+    --set sandbox-a.secrets.values.dsaServiceToken=x \
+    --set admin.secrets.values.dsaServiceToken=x \
+    --set ingest.secrets.values.dsaServiceToken=x \
+    --set sandbox-b.redis.password=xxxxxxxx \
+    --set sandbox-b.secrets.values.sandboxBApiKeys=x)"
+  echo "helm template (values-prod.yaml): rendered ok (HA-02)"
+
+  # HA-03 guard: at the v1.0 single-replica lock, no PodDisruptionBudget
+  # may render — a PDB with minAvailable:1 on a one-pod workload blocks
+  # `kubectl drain` forever. PDBs auto-render only at replicaCount >= 2.
+  DEFAULT_RENDER="$(helm template lucairn "$CHART" --set global.skipPullSecretGuard=true)"
+  if echo "$DEFAULT_RENDER" | grep -q "kind: PodDisruptionBudget"; then
+    echo "HA-03: PodDisruptionBudget rendered at single-replica (drain footgun)" >&2
+    exit 1
+  fi
+  echo "helm template (default): no PDB at single-replica (HA-03)"
+
+  # HA-04 guard: gateway + the 5 stateless/service Deployments each carry a
+  # preStop drain hook + terminationGracePeriodSeconds. 6 services total.
+  GRACE_COUNT="$(echo "$DEFAULT_RENDER" | grep -c "terminationGracePeriodSeconds: 30" || true)"
+  PRESTOP_COUNT="$(echo "$DEFAULT_RENDER" | grep -c 'sleep 5"]' || true)"
+  if [ "$GRACE_COUNT" -lt 6 ] || [ "$PRESTOP_COUNT" -lt 6 ]; then
+    echo "HA-04: expected >=6 graceful-shutdown blocks (grace=$GRACE_COUNT prestop=$PRESTOP_COUNT)" >&2
+    exit 1
+  fi
+  echo "helm template (default): graceful-shutdown on $PRESTOP_COUNT services (HA-04)"
+
+  # HA-09 guard: the sandbox-a sanitizer sidecar readiness uses /readyz
+  # (functional) not /healthz (connectivity-only).
+  if ! echo "$DEFAULT_RENDER" | grep -q "port: sanitizer"; then
+    echo "HA-09: sanitizer port not found in render" >&2
+    exit 1
+  fi
+
+  # OBS-02 guard: ServiceMonitors scrape ONLY the services that expose
+  # /metrics (gateway + veil-witness), with correct namespace mapping.
+  SM_RENDER="$(helm template lucairn "$CHART" \
+    --set global.skipPullSecretGuard=true \
+    --set observability.serviceMonitors.enabled=true)"
+  SM_NAMES="$(echo "$SM_RENDER" | awk '/kind: ServiceMonitor/{f=1} f&&/name: dsa-/{print $2; f=0}' | sort | tr '\n' ' ')"
+  if [ "$SM_NAMES" != "dsa-gateway dsa-veil-witness " ]; then
+    echo "OBS-02: ServiceMonitors must be exactly gateway+veil-witness, got: $SM_NAMES" >&2
+    exit 1
+  fi
+  echo "helm template (serviceMonitors): scrape only gateway+veil-witness (OBS-02)"
 else
-  echo "helm lint: skipped (helm not installed)"
+  echo "helm lint + template smoke: skipped (helm not installed)"
 fi
 
 if docker compose version >/dev/null 2>&1; then
