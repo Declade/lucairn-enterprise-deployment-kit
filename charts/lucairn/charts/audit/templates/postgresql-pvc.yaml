@@ -7,6 +7,14 @@ metadata:
   labels:
     app.kubernetes.io/name: {{ .Chart.Name }}-postgresql
     app.kubernetes.io/part-of: dsa
+  annotations:
+    # Survive helm uninstall — this PVC holds the immutable audit trail
+    # (AI Act Art. 12 logging / GDPR Art. 30 records of processing). Losing it
+    # destroys the regulator-cited compliance evidence with no recovery path.
+    # Mirrors the gateway keystore + postgres-gateway PVC reclaim policy.
+    # Operator drops the data explicitly with:
+    #   kubectl delete pvc {{ .Chart.Name }}-postgresql-data -n {{ .Values.namespace }}
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteOnce
