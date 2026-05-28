@@ -4,11 +4,22 @@
 # (the VEIL_*_SIGNING_KEY value generated with `openssl rand -hex 32`).
 #
 # Usage:
-#   scripts/derive-veil-pubkey.sh <64-char-hex-seed>
+#   scripts/derive-veil-pubkey.sh <64-char-hex-seed>   # legacy argv form
+#   printf '%s' "$SEED" | scripts/derive-veil-pubkey.sh # stdin form (preferred)
 #
-# Example:
+# SEC-04 (hardening 2026-05-28): the seed is an Ed25519 PRIVATE-key seed.
+# Passing it as `$1` exposes it in the process argument list (`ps auxww`,
+# `/proc/<pid>/cmdline`) of any local user for the lifetime of the call.
+# The stdin form keeps the secret off the argument list entirely. The argv
+# form is retained for backward compatibility (existing INSTALL.md one-liners
+# + the catch-all renderer fallback) but the bundled render-values.sh now
+# feeds the seed via stdin.
+#
+# Example (stdin, preferred):
 #   $ SEED=$(openssl rand -hex 32)
-#   $ echo "VEIL_AUDIT_SIGNING_KEY=$SEED"
+#   $ printf '%s' "$SEED" | scripts/derive-veil-pubkey.sh
+#
+# Example (legacy argv):
 #   $ echo "VEIL_AUDIT_PUBLIC_KEY=$(scripts/derive-veil-pubkey.sh "$SEED")"
 #
 # Why this exists:
@@ -28,12 +39,23 @@
 
 set -euo pipefail
 
-if [ "$#" -ne 1 ]; then
-  echo "usage: $0 <64-char-hex-seed>" >&2
+# Accept the seed from argv ($1) OR, when no argument is given, from stdin.
+# The stdin form (preferred) keeps the private-key seed off the process
+# argument list. We strip a single trailing newline so `printf '%s' "$SEED"`
+# and `echo "$SEED"` both work.
+if [ "$#" -gt 1 ]; then
+  echo "usage: $0 [<64-char-hex-seed>]   (or pipe the seed on stdin)" >&2
   exit 2
+elif [ "$#" -eq 1 ]; then
+  seed_hex="$1"
+else
+  # No argv seed: read it from stdin. `read -r` drops the trailing newline.
+  if [ -t 0 ]; then
+    echo "error: no seed argument and stdin is a terminal; pipe the 64-char hex seed or pass it as \$1" >&2
+    exit 2
+  fi
+  IFS= read -r seed_hex || true
 fi
-
-seed_hex="$1"
 
 if ! printf '%s' "$seed_hex" | grep -Eq '^[0-9a-fA-F]{64}$'; then
   echo "error: input must be 64 hex characters (32 bytes); got: ${#seed_hex} chars" >&2

@@ -53,6 +53,14 @@
 
 set -euo pipefail
 
+# SEC-04 (hardening 2026-05-28): the output file holds every signing-key
+# seed, the keystore key, and all Postgres passwords in plaintext. Tighten
+# the umask BEFORE the template is copied so the file is created 0600 (owner
+# read/write only) rather than inheriting a world-/group-readable default
+# umask (commonly 022 → 0644). We also chmod 600 explicitly after writing in
+# case the destination already existed with looser perms.
+umask 077
+
 if [ "$#" -ne 1 ]; then
   echo "usage: $0 <output-path>" >&2
   echo "" >&2
@@ -77,6 +85,9 @@ if [ ! -x "$DERIVE" ]; then
 fi
 
 cp "$TEMPLATE" "$OUTPUT"
+# Defensive: if $OUTPUT pre-existed with looser perms, the umask above does
+# not retighten it (umask only affects newly-created files). Force 0600.
+chmod 600 "$OUTPUT"
 
 # ----------------------------------------------------------------------
 # 1. Paired Ed25519 keys (BLOCKER C closure)
@@ -96,12 +107,18 @@ SEED_SANITIZER=$(openssl rand -hex 32)
 SEED_SANDBOX_B=$(openssl rand -hex 32)
 SEED_AUDIT=$(openssl rand -hex 32)
 
-PUB_GATEWAY=$("$DERIVE" "$SEED_GATEWAY")
-PUB_WITNESS=$("$DERIVE" "$SEED_WITNESS")
-PUB_BRIDGE=$("$DERIVE" "$SEED_BRIDGE")
-PUB_SANITIZER=$("$DERIVE" "$SEED_SANITIZER")
-PUB_SANDBOX_B=$("$DERIVE" "$SEED_SANDBOX_B")
-PUB_AUDIT=$("$DERIVE" "$SEED_AUDIT")
+# SEC-04 (hardening 2026-05-28): feed each private-key seed to the derive
+# helper via stdin, NOT as an argv parameter. As an argument, the 32-byte
+# seed would be visible in `ps`/`/proc/<pid>/cmdline` to every local user for
+# the duration of the python3 subprocess. Piping it keeps the secret off the
+# process argument list. The helper now accepts the seed on stdin (and still
+# supports argv for the legacy catch-all path / INSTALL.md one-liners).
+PUB_GATEWAY=$(printf '%s' "$SEED_GATEWAY" | "$DERIVE")
+PUB_WITNESS=$(printf '%s' "$SEED_WITNESS" | "$DERIVE")
+PUB_BRIDGE=$(printf '%s' "$SEED_BRIDGE" | "$DERIVE")
+PUB_SANITIZER=$(printf '%s' "$SEED_SANITIZER" | "$DERIVE")
+PUB_SANDBOX_B=$(printf '%s' "$SEED_SANDBOX_B" | "$DERIVE")
+PUB_AUDIT=$(printf '%s' "$SEED_AUDIT" | "$DERIVE")
 
 # Substitute the signing-key slots. Each placeholder name uses the
 # canonical chart literal. Note SANITIZER's signing slot is
@@ -318,4 +335,24 @@ if [ "$SB_API_KEY_STRAY_S" -ne 0 ]; then
   exit 1
 fi
 
-echo "render-values.sh: $OUTPUT ready."
+# SEC-04 (hardening 2026-05-28): verify the rendered file is owner-only
+# readable. The umask + explicit chmod above should guarantee 0600, but a
+# pre-existing file, an exotic filesystem (e.g. a FAT/exFAT USB stick that
+# ignores Unix mode bits), or an ACL could leave it group/world-readable.
+# Surface that loudly — this file is a plaintext secret bundle.
+OUTPUT_MODE=""
+if stat -f '%Lp' "$OUTPUT" >/dev/null 2>&1; then
+  OUTPUT_MODE="$(stat -f '%Lp' "$OUTPUT")"   # BSD/macOS stat
+elif stat -c '%a' "$OUTPUT" >/dev/null 2>&1; then
+  OUTPUT_MODE="$(stat -c '%a' "$OUTPUT")"    # GNU/Linux stat
+fi
+if [ -n "$OUTPUT_MODE" ] && [ "$OUTPUT_MODE" != "600" ]; then
+  echo "" >&2
+  echo "WARNING — $OUTPUT is mode $OUTPUT_MODE, not 600. It holds plaintext" >&2
+  echo "signing seeds, the keystore key, and DB passwords. Run:" >&2
+  echo "  chmod 600 \"$OUTPUT\"" >&2
+  echo "and store it on an encrypted, access-controlled volume." >&2
+  echo "" >&2
+fi
+
+echo "render-values.sh: $OUTPUT ready (mode ${OUTPUT_MODE:-unknown}; keep it 0600)."

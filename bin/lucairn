@@ -270,14 +270,23 @@ validate_keystore_key() {
   local env_file="$1" val
   val="$(env_value "$env_file" GATEWAY_KEYSTORE_KEY)"
   [ -z "$val" ] && return 0
-  if ! printf '%s' "$val" | openssl enc -A -d -base64 >/tmp/lucairn-keystore-key.$$ 2>/dev/null; then
-    rm -f /tmp/lucairn-keystore-key.$$
+  # SEC-05 (hardening 2026-05-28): measure the decoded length entirely
+  # in-memory. The previous implementation wrote the decoded 32-byte key to
+  # a predictable `/tmp/lucairn-keystore-key.$$` path (PID-guessable, default
+  # umask, and left briefly on disk on the openssl-success path before the
+  # `rm`) — a secret-on-disk exposure with no need. We never write the
+  # decoded key to disk now:
+  #   1. a decode probe (output to /dev/null) catches malformed base64; and
+  #   2. a `decode | wc -c` pipe measures the byte count.
+  # The decoded bytes flow only through the pipe into `wc -c` (which discards
+  # them after counting), so the plaintext key never lands in a file or even
+  # in a shell variable (`bytes` holds only the integer count).
+  if ! printf '%s' "$val" | openssl enc -A -d -base64 >/dev/null 2>&1; then
     echo "secret format: GATEWAY_KEYSTORE_KEY must be base64"
     return 1
   fi
   local bytes
-  bytes="$(wc -c < /tmp/lucairn-keystore-key.$$ | tr -d ' ')"
-  rm -f /tmp/lucairn-keystore-key.$$
+  bytes="$(printf '%s' "$val" | openssl enc -A -d -base64 2>/dev/null | wc -c | tr -d ' ')"
   if [ "$bytes" != "32" ]; then
     echo "secret format: GATEWAY_KEYSTORE_KEY must decode to 32 bytes"
     return 1
@@ -691,6 +700,59 @@ check_local_sandbox_b_api_key() {
     echo "local SB: LOCAL_SANDBOX_B_API_KEY too short (need ≥ 32 chars)"
     return 1
   fi
+}
+
+check_postgres_passwords() {
+  # SEC-01 (hardening 2026-05-28): the four POSTGRES_*_PASSWORD vars plus the
+  # two app-role passwords (AUDIT_APP_PASSWORD / VEIL_APP_PASSWORD) all carry a
+  # weak `:-` shell fallback in docker-compose.customer.yml (`:-dsa` / `:-veil`
+  # / `:-audit_app_password` / `:-veil_app_password`). Those fallbacks are
+  # being removed in favour of `${VAR:?...}` fail-fast, but doctor must also
+  # reject the weak literals (and blank / too-short values) up front so the
+  # operator sees an actionable pre-flight error rather than a compose
+  # variable-is-not-set crash at `up` time.
+  #
+  # Mirrors check_local_sandbox_b_api_key: non-empty AND non-weak-literal AND
+  # min-length. Postgres binds NO host port in either compose file (the DBs sit
+  # on segmented internal Docker networks), so this is lateral-movement /
+  # defence-in-depth, not an externally-reachable bypass — hence enforced only
+  # in production (DSA_ENV=production), matching the other prod-gated checks.
+  local env_file="$1"
+  [ "$(env_value "$env_file" DSA_ENV)" = "production" ] || return 0
+  local failed=0 key val
+  # Parallel arrays: password var name + its well-known weak compose fallback.
+  local pw_keys=(
+    POSTGRES_AUDIT_PASSWORD POSTGRES_BRIDGE_PASSWORD
+    POSTGRES_SANDBOX_A_PASSWORD POSTGRES_VEIL_PASSWORD
+    AUDIT_APP_PASSWORD VEIL_APP_PASSWORD
+  )
+  local pw_weak=(
+    dsa dsa
+    dsa veil
+    audit_app_password veil_app_password
+  )
+  local i=0
+  for key in "${pw_keys[@]}"; do
+    val="$(env_value "$env_file" "$key")"
+    local weak="${pw_weak[$i]}"
+    i=$((i + 1))
+    if [ -z "$val" ]; then
+      echo "db password: $key unset in production (compose used to fall back to weak default '$weak'; set a real secret)"
+      failed=1
+      continue
+    fi
+    if [ "$val" = "$weak" ]; then
+      echo "db password: $key is the kit's well-known weak fallback ('$weak') — replace with a real secret"
+      failed=1
+      continue
+    fi
+    if [ "${#val}" -lt 12 ]; then
+      echo "db password: $key too short (need ≥ 12 chars)"
+      failed=1
+      continue
+    fi
+  done
+  return "$failed"
 }
 
 check_gateway_base_url_https() {
@@ -2759,6 +2821,14 @@ doctor() {
   check_local_sandbox_b_api_key "$env_file" || sb_key_failed=1
   [ "$sb_key_failed" -eq 0 ] || return 1
 
+  # SEC-01 (hardening 2026-05-28): Postgres + app-role passwords must be
+  # non-empty, non-weak-literal, and ≥ 12 chars in production (the weak
+  # `:-dsa`/`:-veil`/`:-*_app_password` compose fallbacks are being removed in
+  # favour of `${VAR:?...}` fail-fast).
+  local pg_pw_failed=0
+  check_postgres_passwords "$env_file" || pg_pw_failed=1
+  [ "$pg_pw_failed" -eq 0 ] || return 1
+
   # Sim 3 G9: production GATEWAY_BASE_URL must be https.
   local url_failed=0
   check_gateway_base_url_https "$env_file" || url_failed=1
@@ -2903,6 +2973,22 @@ doctor() {
     else
       echo "network policies: not found or cluster unavailable ($kube_namespace)"
     fi
+
+    # SEC-08 (hardening 2026-05-28): k8s-native Secrets are base64-ENCODED,
+    # not encrypted. They are readable by anyone with `get secret` RBAC and,
+    # unless the cluster operator has enabled etcd encryption-at-rest (the
+    # operator's responsibility, which this kit cannot verify), they sit in
+    # etcd in cleartext. For production, recommend the chart's External
+    # Secrets Operator (ESO) backend so the signing seeds / keystore key / DB
+    # passwords live in a real secrets manager (HashiCorp Vault, AWS Secrets
+    # Manager, or Azure Key Vault) and are only materialised into the
+    # namespace at runtime. This is INFO-level (advisory) — it never fails
+    # the doctor — because the default k8s-native path is a supported
+    # configuration when etcd encryption + tight RBAC are in place.
+    info "secrets backend (k8s): INFO — Helm default is secrets.backend=k8s-native (base64 Secrets, NOT encryption)."
+    info "  For production, set secrets.backend=vault|aws|azure (External Secrets Operator) so secrets live"
+    info "  in a real secrets manager, OR ensure etcd encryption-at-rest + strict 'get secret' RBAC are enabled."
+    info "  See INSTALL.md § 'Production secrets: External Secrets Operator (ESO)'."
   else
     echo "network policies: skipped (kubectl unavailable)"
   fi

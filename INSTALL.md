@@ -635,6 +635,81 @@ kubectl get jobs -n dsa-ai
 kubectl get jobs -n dsa-witness
 ```
 
+## Production secrets: External Secrets Operator (ESO)
+
+By default the chart materialises every secret (signing seeds, the gateway
+keystore key, Postgres + app-role passwords, the admin/service tokens) as a
+Kubernetes `Secret` via `global.secrets.backend: k8s-native`. **A Kubernetes
+Secret is base64-ENCODED, not encrypted.** Anyone with `get secret` RBAC in
+the namespace can read every value, and — unless your cluster operator has
+enabled etcd encryption-at-rest — the values sit in etcd in cleartext.
+
+For production we recommend storing these secrets in a real secrets manager
+and letting the [External Secrets Operator](https://external-secrets.io/)
+(ESO) sync them into the namespace at runtime. The chart already ships
+`ExternalSecret` + `ClusterSecretStore` templates for three backends —
+HashiCorp Vault, AWS Secrets Manager, and Azure Key Vault. Selecting any of
+them flips the chart from inline `Secret` objects to ESO-managed
+`ExternalSecret` objects automatically.
+
+**Prerequisite:** install the External Secrets Operator in the cluster
+(`helm repo add external-secrets https://charts.external-secrets.io && helm
+install external-secrets external-secrets/external-secrets -n
+external-secrets --create-namespace`) and provision a `ClusterSecretStore`
+auth path (Vault Kubernetes auth role / AWS IRSA service account / Azure
+workload identity).
+
+### HashiCorp Vault
+
+```yaml
+# customer-values.yaml  (merged via -f)
+global:
+  secrets:
+    backend: vault
+    vault:
+      endpoint: "https://vault.internal:8200"
+      role: dsa            # Vault Kubernetes-auth role bound to the namespace SA
+      mountPath: dsa       # KV v2 mount the Lucairn secrets live under
+```
+
+### AWS Secrets Manager
+
+```yaml
+global:
+  secrets:
+    backend: aws
+    aws:
+      region: eu-central-1
+      # The eso-service-account in each namespace must be IRSA-annotated with
+      # an IAM role granting secretsmanager:GetSecretValue on the Lucairn
+      # secret paths.
+      serviceAccountAnnotation: "arn:aws:iam::<acct>:role/lucairn-eso"
+```
+
+### Azure Key Vault
+
+```yaml
+global:
+  secrets:
+    backend: azure
+    azure:
+      keyVaultName: lucairn-prod-kv
+      tenantId: "<azure-tenant-id>"   # ManagedIdentity auth
+```
+
+When `backend` is any value other than `k8s-native`, the chart renders an
+`ExternalSecret` per service that pulls each key (e.g. `gateway-keystore-key`,
+`postgres-veil-password`, `veil-witness-signing-key`) from the configured
+store. Populate those keys in your secrets manager BEFORE `helm install` — an
+unresolved `ExternalSecret` leaves the target `Secret` empty and the
+dependent pod crash-loops at boot. `bin/lucairn doctor` emits an INFO
+reminder when it detects a Kubernetes context still on the default
+`k8s-native` backend.
+
+If you must stay on `k8s-native` (smaller pilots, air-gapped clusters), at
+minimum enable [etcd encryption-at-rest](https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/)
+and restrict `get secret` RBAC to the Lucairn service accounts only.
+
 ## v1.0 gateway keystore (file-keystore on PVC)
 
 v1.0 ships a single-replica gateway. Its keystore is persisted on a

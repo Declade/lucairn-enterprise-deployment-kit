@@ -9,6 +9,9 @@ bash -n "$ROOT/tests/test_lucairn_cli.sh"
 bash -n "$ROOT/tests/test_model_manifest_sha256.sh"
 bash -n "$ROOT/tests/test_bundle_verify_replay_guard.sh"
 bash -n "$ROOT/tests/test_backup_helm.sh"
+bash -n "$ROOT/tests/test_sec_hardening.sh"
+bash -n "$ROOT/scripts/render-values.sh"
+bash -n "$ROOT/scripts/derive-veil-pubkey.sh"
 
 # ── Hardening regression assertions (KIT-4: NET-02/SUP-06/NET-05/OBS-08/OBS-09) ──
 # Static (grep/render) assertions so they run without docker. Placed early so
