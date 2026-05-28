@@ -200,9 +200,12 @@ Diagnose:
 # Read what the kit expects
 cat image-manifest.yaml
 
-# Compare with what is actually deployed
-docker inspect deploy-gateway-1 --format '{{.Config.Image}}'
-docker inspect deploy-sanitizer-1 --format '{{.Config.Image}}'
+# Compare with what is actually deployed. Use `docker compose` (with the same
+# -f / --env-file flags you ran `up` with) so the lookup is independent of the
+# project-name prefix Compose derives from your install directory — hardcoded
+# container names like `deploy-gateway-1` only match if your directory happened
+# to be named `deploy`.
+docker compose -f docker-compose.customer.yml --env-file customer.env images gateway sanitizer
 ```
 
 `bin/lucairn doctor` warns when `LUCAIRN_IMAGE_TAG` in `customer.env` differs
@@ -252,7 +255,16 @@ Verify outbound reach from inside the container. A 401 is the expected
 pass — name resolution + TCP both worked, only the dummy key was rejected:
 
 ```bash
-docker exec lucairn-sandbox-b-1 \
+# Use `docker compose exec <service>` (with the same -f / --env-file flags you
+# ran `up` with) rather than a hardcoded container name like
+# `lucairn-sandbox-b-1` — Compose derives the container-name prefix from your
+# install directory, so the hardcoded name only matches a `lucairn`-named dir.
+docker compose \
+  -f docker-compose.customer.yml \
+  -f docker-compose.self-hosted.yml \
+  -f docker-compose.self-hosted-byok.yml \
+  --env-file customer.env \
+  exec sandbox-b \
   curl -sS -o /dev/null -w "%{http_code}\n" \
   https://api.anthropic.com/v1/messages
 # Expect: 401  (NOT 0 / NXDOMAIN / connection refused)

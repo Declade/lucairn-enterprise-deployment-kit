@@ -20,7 +20,13 @@ if grep -R "lucairn-enterprise-deployment-kit-1.1.0-enterprise-customer-bundle" 
   exit 1
 fi
 
-grep -q "v1.3.0-customer-demo-data" "$ROOT/README.md"
+# Kit release version must be consistent across README target, VERSION, and
+# image-manifest.kit_version (INS-05; see docs/RELEASING.md § "Version
+# reconciliation"). README carries the git-tag `v` prefix; VERSION + manifest
+# do not — strip it before comparing.
+KIT_VER="$(tr -d '[:space:]' < "$ROOT/VERSION")"
+grep -q "v${KIT_VER}" "$ROOT/README.md"
+grep -q "^kit_version: \"${KIT_VER}\"" "$ROOT/image-manifest.yaml"
 grep -q "clean-host rehearsal" "$ROOT/docs/CLEAN_HOST_REHEARSAL.md"
 grep -q "handoff gate" "$ROOT/docs/CUSTOMER_HANDOFF_GATES.md"
 

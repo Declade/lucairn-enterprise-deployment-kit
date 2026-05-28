@@ -173,6 +173,74 @@ Phase 2 promote) is the only audit-clean path for production releases.
    make dashboard-multiarch-promote-aliases VERSION=0.8.2 MINOR_TAG=0.8
    ```
 
+## Version reconciliation
+
+The kit carries TWO distinct version axes. Keep each axis internally
+consistent — they drifted in the past (Sim findings INS-05: README claimed
+`v1.5.1-dashboard` while `VERSION` said `1.3.0-customer-demo-data` and
+`image-manifest.kit_version` said `1.3.0-customer-demo-data`, and the umbrella
+chart said `1.4.0`).
+
+### Axis 1 — kit release version (the customer-facing kit tag)
+
+This is the single canonical string identifying a kit release. It carries the
+optional `-<slug>` release suffix (e.g. `1.5.1-dashboard`). These three MUST
+be byte-identical:
+
+- `README.md` — the `Target release: vX.Y.Z-slug` line (carries the `v`
+  prefix used by git tags).
+- `VERSION` — the bare `X.Y.Z-slug` string (no `v` prefix).
+- `image-manifest.yaml` — `kit_version: "X.Y.Z-slug"` (no `v` prefix).
+
+The only permitted difference is the leading `v` on the README line (git-tag
+convention). Strip it before comparing.
+
+### Axis 2 — Helm chart SemVer
+
+The umbrella `charts/lucairn/Chart.yaml` `version:` is the Helm chart's own
+SemVer and MUST be clean SemVer (no `-<slug>` build-metadata suffix) so
+`helm package` accepts it. It tracks the kit release version on its
+`major.minor.patch` only: kit `1.5.1-dashboard` → chart `version: 1.5.1`.
+The dashboard sub-chart (`charts/lucairn/charts/dashboard/Chart.yaml`)
+`version`/`appVersion` track the dashboard image tag pinned at
+`image-manifest.yaml` `optional_services.lucairn-dashboard.image_tag` and the
+umbrella dependency `version:` for `name: dashboard`.
+
+### Pre-release equality checklist
+
+Before tagging a kit release, assert ALL of the following are equal (run from
+the kit repo root):
+
+```bash
+# Axis 1 — kit release version: these three must match (ignoring the README 'v').
+README_VER=$(grep -oE 'Target release: `v[^`]+`' README.md | sed -E 's/.*`v(.*)`/\1/')
+FILE_VER=$(tr -d '[:space:]' < VERSION)
+MANIFEST_VER=$(grep -E '^kit_version:' image-manifest.yaml | sed -E 's/.*"(.*)".*/\1/')
+echo "README=$README_VER  VERSION=$FILE_VER  manifest=$MANIFEST_VER"
+[ "$README_VER" = "$FILE_VER" ] && [ "$FILE_VER" = "$MANIFEST_VER" ] \
+  && echo "kit-version OK" || { echo "kit-version MISMATCH"; exit 1; }
+
+# Axis 2 — Helm chart SemVer = major.minor.patch of the kit version, no suffix.
+CHART_VER=$(grep -E '^version:' charts/lucairn/Chart.yaml | awk '{print $2}')
+KIT_MMP=${FILE_VER%%-*}
+echo "Chart.yaml version=$CHART_VER  expected=$KIT_MMP"
+[ "$CHART_VER" = "$KIT_MMP" ] && echo "chart-version OK" || { echo "chart-version MISMATCH"; exit 1; }
+
+# Dashboard sub-chart appVersion must match the pinned dashboard image tag.
+DASH_IMG=$(grep -A2 'lucairn-dashboard:' image-manifest.yaml | grep image_tag | sed -E 's/.*"(.*)".*/\1/')
+DASH_APP=$(grep -E '^appVersion:' charts/lucairn/charts/dashboard/Chart.yaml | sed -E 's/.*"(.*)".*/\1/')
+echo "dashboard image=$DASH_IMG  appVersion=$DASH_APP"
+[ "$DASH_IMG" = "$DASH_APP" ] && echo "dashboard-version OK" || { echo "dashboard-version MISMATCH"; exit 1; }
+```
+
+After bumping the dashboard sub-chart version, regenerate the umbrella
+`Chart.lock` so its `dashboard` entry + digest match Chart.yaml (Helm refuses
+to render an out-of-sync lock):
+
+```bash
+helm dependency update charts/lucairn
+```
+
 ## See also
 
 - `apps/dashboard/Dockerfile` — multi-stage Go + distroless image definition.
