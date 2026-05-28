@@ -33,3 +33,15 @@ data:
             period: 24h
     limits_config:
       retention_period: {{ .Values.loki.retention }}
+    # OBS-09: without a compactor running with retention_enabled, the
+    # limits_config.retention_period above is advisory only — chunks are never
+    # actually deleted and the Loki PVC grows unbounded. The compactor scans
+    # the TSDB index, marks expired streams, and deletes their chunks from the
+    # filesystem object store. delete_request_store is mandatory in Loki 3.x
+    # when retention_enabled is true.
+    compactor:
+      working_directory: /loki/compactor
+      delete_request_store: filesystem
+      retention_enabled: true
+      retention_delete_delay: 2h
+      compaction_interval: 10m

@@ -59,10 +59,15 @@ spec:
         dsa.io/model-pull: "true"
         dsa.io/sandbox: identity
     spec:
+      # NET-05: this pod never calls the Kubernetes API; using the
+      # namespace default ServiceAccount it would still auto-mount an
+      # unused token. Disable the mount at the pod level.
+      automountServiceAccountToken: false
       restartPolicy: Never
       initContainers:
         - name: load-model
-          image: "curlimages/curl:latest"
+          image: "{{ .Values.ollamaIdentity.curlImage.repository }}:{{ .Values.ollamaIdentity.curlImage.tag }}{{ if .Values.ollamaIdentity.curlImage.digest }}@{{ .Values.ollamaIdentity.curlImage.digest }}{{ end }}"
+          imagePullPolicy: {{ .Values.ollamaIdentity.curlImage.pullPolicy }}
           env:
             - name: MODEL_AUTH
               valueFrom:
@@ -99,7 +104,8 @@ spec:
               memory: 512Mi
       containers:
         - name: model-create
-          image: "ollama/ollama:latest"
+          image: "{{ .Values.ollamaIdentity.image.repository }}:{{ .Values.ollamaIdentity.image.tag }}{{ if .Values.ollamaIdentity.image.digest }}@{{ .Values.ollamaIdentity.image.digest }}{{ end }}"
+          imagePullPolicy: {{ .Values.ollamaIdentity.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

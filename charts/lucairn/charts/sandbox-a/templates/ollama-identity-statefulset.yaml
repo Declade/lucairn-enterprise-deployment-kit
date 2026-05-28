@@ -19,11 +19,16 @@ spec:
         app.kubernetes.io/name: ollama-identity
         app.kubernetes.io/part-of: dsa
     spec:
+      # NET-05: this pod never calls the Kubernetes API; using the
+      # namespace default ServiceAccount it would still auto-mount an
+      # unused token. Disable the mount at the pod level.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: false
       containers:
         - name: ollama
-          image: "ollama/ollama:latest"
+          image: "{{ .Values.ollamaIdentity.image.repository }}:{{ .Values.ollamaIdentity.image.tag }}{{ if .Values.ollamaIdentity.image.digest }}@{{ .Values.ollamaIdentity.image.digest }}{{ end }}"
+          imagePullPolicy: {{ .Values.ollamaIdentity.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

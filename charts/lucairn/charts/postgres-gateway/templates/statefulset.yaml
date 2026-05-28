@@ -18,6 +18,10 @@ spec:
         app.kubernetes.io/name: postgres-gateway
         app.kubernetes.io/part-of: dsa
     spec:
+      # NET-05: this pod never calls the Kubernetes API; using the
+      # namespace default ServiceAccount it would still auto-mount an
+      # unused token. Disable the mount at the pod level.
+      automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
       containers:

@@ -29,6 +29,17 @@ x-dsa-prod-auth: &dsa-prod-auth
   DSA_ENV: "${DSA_ENV:-production}"
   DSA_SERVICE_TOKEN: "${DSA_SERVICE_TOKEN:?DSA_SERVICE_TOKEN is required for customer deployment}"
 
+# OBS-08: bound container log growth so an unattended deployment cannot
+# disk-fill the host (a denial-of-service surface). json-file driver with
+# rotation at 50 MB × 5 files = max 250 MB per container before the oldest
+# rotated file is dropped. Override LUCAIRN_LOG_MAX_SIZE / LUCAIRN_LOG_MAX_FILE
+# to tune. Each service references this via `logging: *default-logging`.
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${LUCAIRN_LOG_MAX_SIZE:-50m}"
+    max-file: "${LUCAIRN_LOG_MAX_FILE:-5}"
+
 networks:
   # Identity-plane bridges. `internal: true` is defence-in-depth on top of
   # the code-level air-gap: Sandbox A holds the raw-PII-to-pseudonym mapping
@@ -84,6 +95,7 @@ services:
 
   postgres-audit:
     image: postgres:16-alpine
+    logging: *default-logging
     environment:
       POSTGRES_USER: dsa
       POSTGRES_PASSWORD: ${POSTGRES_AUDIT_PASSWORD:-dsa}
@@ -100,6 +112,7 @@ services:
 
   postgres-bridge:
     image: postgres:16-alpine
+    logging: *default-logging
     environment:
       POSTGRES_USER: dsa
       POSTGRES_PASSWORD: ${POSTGRES_BRIDGE_PASSWORD:-dsa}
@@ -116,6 +129,7 @@ services:
 
   postgres-sandbox-a:
     image: postgres:16-alpine
+    logging: *default-logging
     environment:
       POSTGRES_USER: dsa
       POSTGRES_PASSWORD: ${POSTGRES_SANDBOX_A_PASSWORD:-dsa}
@@ -132,6 +146,7 @@ services:
 
   postgres-veil:
     image: postgres:16-alpine
+    logging: *default-logging
     environment:
       POSTGRES_DB: veil
       POSTGRES_USER: veil
@@ -155,6 +170,7 @@ services:
   # sed; no apk install required. See scripts/render-migrations.sh.
   prep-migrations:
     image: alpine:3.20
+    logging: *default-logging
     command: ["/bin/sh", "/scripts/render-migrations.sh"]
     environment:
       AUDIT_APP_PASSWORD: "${AUDIT_APP_PASSWORD:-audit_app_password}"
@@ -167,6 +183,7 @@ services:
 
   migrate-audit:
     image: migrate/migrate:v4.17.0
+    logging: *default-logging
     depends_on:
       postgres-audit:
         condition: service_healthy
@@ -184,6 +201,7 @@ services:
 
   migrate-bridge:
     image: migrate/migrate:v4.17.0
+    logging: *default-logging
     depends_on:
       postgres-bridge:
         condition: service_healthy
@@ -201,6 +219,7 @@ services:
 
   migrate-sandbox-a:
     image: migrate/migrate:v4.17.0
+    logging: *default-logging
     depends_on:
       postgres-sandbox-a:
         condition: service_healthy
@@ -218,6 +237,7 @@ services:
 
   migrate-veil:
     image: migrate/migrate:v4.17.0
+    logging: *default-logging
     depends_on:
       postgres-veil:
         condition: service_healthy
@@ -237,6 +257,7 @@ services:
 
   audit:
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-audit:${LUCAIRN_IMAGE_TAG:-0.4.0}"
+    logging: *default-logging
     depends_on:
       migrate-audit:
         condition: service_completed_successfully
@@ -260,6 +281,7 @@ services:
 
   id-bridge:
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-id-bridge:${LUCAIRN_IMAGE_TAG:-0.4.0}"
+    logging: *default-logging
     depends_on:
       migrate-bridge:
         condition: service_completed_successfully
@@ -287,6 +309,7 @@ services:
 
   sandbox-a:
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sandbox-a:${LUCAIRN_IMAGE_TAG:-0.4.0}"
+    logging: *default-logging
     depends_on:
       migrate-sandbox-a:
         condition: service_completed_successfully
@@ -313,6 +336,7 @@ services:
 
   redis-sanitizer:
     image: redis:7-alpine
+    logging: *default-logging
     command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
     networks:
       - dsa-identity
@@ -325,6 +349,7 @@ services:
 
   sanitizer:
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer:${LUCAIRN_IMAGE_TAG:-0.4.0}"
+    logging: *default-logging
     depends_on:
       sandbox-a:
         condition: service_healthy
@@ -369,6 +394,7 @@ services:
 
   veil-witness:
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-veil-witness:${LUCAIRN_IMAGE_TAG:-0.4.0}"
+    logging: *default-logging
     depends_on:
       migrate-veil:
         condition: service_completed_successfully
@@ -414,6 +440,7 @@ services:
 
   gateway:
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-gateway:${LUCAIRN_IMAGE_TAG:-0.4.0}"
+    logging: *default-logging
     depends_on:
       sandbox-a:
         condition: service_healthy
@@ -525,6 +552,7 @@ services:
     # the services opt-in until registry access is fixed.
     profiles: ["certification"]
     image: ${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-cert-builder:${LUCAIRN_IMAGE_TAG:-0.4.0}
+    logging: *default-logging
     restart: unless-stopped
     environment:
       BUILD_AUTH_TOKEN: ${BUILD_AUTH_TOKEN:?BUILD_AUTH_TOKEN required}
@@ -551,6 +579,7 @@ services:
   cert-portal:
     profiles: ["certification"]
     image: ${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-cert-portal:${LUCAIRN_IMAGE_TAG:-0.4.0}
+    logging: *default-logging
     restart: unless-stopped
     environment:
       PORTAL_API_KEY: ${PORTAL_API_KEY:?PORTAL_API_KEY required}
@@ -575,6 +604,7 @@ services:
   lucairn-dashboard:
     profiles: ["dashboard"]
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.8.2}"
+    logging: *default-logging
     restart: unless-stopped
     environment:
       LUCAIRN_DASHBOARD_LISTEN_ADDR: "${LUCAIRN_DASHBOARD_LISTEN_ADDR:-0.0.0.0:8443}"
