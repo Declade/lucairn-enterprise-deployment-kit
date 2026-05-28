@@ -1,8 +1,13 @@
 apiVersion: v2
 name: lucairn
 description: Lucairn enterprise self-hosted deployment kit
+# Helm chart SemVer. Tracks the kit release version (VERSION file,
+# image-manifest.kit_version, README target) on its major.minor.patch
+# axis; the kit's `-<slug>` release-suffix (e.g. 1.5.1-dashboard) is NOT
+# carried here because Helm chart versions must be clean SemVer for
+# `helm package`. See docs/RELEASING.md § "Version reconciliation".
 type: application
-version: 1.4.0
+version: 1.5.1
 appVersion: "0.4.0"
 
 dependencies:
@@ -56,7 +61,7 @@ dependencies:
     # not need a second chart repository during first deployment.
     condition: certification.enabled
   - name: dashboard
-    version: 0.8.1
+    version: 0.8.2
     # Enterprise Dashboard sub-chart. OFF by default; customer opts in via
     # --set dashboard.enabled=true (or via their customer-values.yaml).
     condition: dashboard.enabled

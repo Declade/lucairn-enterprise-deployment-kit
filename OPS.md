@@ -70,13 +70,36 @@ Do not rotate all Veil keys at once. Keep retired public keys available through 
 
 ## Scaling
 
-Scale stateless services first:
+> **v1.0 topology lock — the gateway is single-replica.** Lucairn Enterprise
+> v1.0 ships a single-replica gateway with a file-keystore on a ReadWriteOnce
+> PVC. The keystore is pod-local and is NOT shared across replicas, so the
+> Helm chart's validator **hard-rejects** `gateway.replicaCount > 1` (and
+> `gateway.hpa.enabled: true`) at render time — `helm install`/`upgrade`
+> will FAIL the render with an explicit error rather than deploy a
+> split-brain keystore. See `charts/lucairn/templates/_validators.tpl`
+> (the `gateway.replicaCount != 1` guard), `charts/lucairn/charts/gateway/values.yaml`
+> (the `replicaCount: 1` lock + HPA-disabled block), and INSTALL.md §
+> "Lucairn Enterprise v1.0 deployment topology". Multi-replica gateway HA is
+> the v2.0 roadmap (postgres-gateway keystore) — see INSTALL.md § "v2.0
+> roadmap". Do NOT plan to scale the gateway horizontally on v1.0.
+>
+> The same single-replica + HPA-off lock applies to every pod-local-state
+> subchart (audit, id-bridge, sandbox-a, veil-witness, ingest, dashboard);
+> the per-subchart validator rejects `replicaCount != 1` for each. The
+> Compose path has no render-time guard — operators MUST keep these services
+> single-instance on Compose by the same constraint.
 
-- Gateway
-- Sanitizer
-- Sandbox B workers for full self-hosted Kubernetes deployments
+What you CAN scale on v1.0:
 
-Scale databases vertically before sharding. For Compose installs, move to Kubernetes before adding multi-host complexity.
+- **Sandbox B workers** — stateless inference workers for full self-hosted
+  Kubernetes deployments scale horizontally.
+- **Databases — vertically** before sharding. Scale the bundled Postgres
+  instances up (CPU/memory/disk) rather than out.
+
+For Compose installs, move to Kubernetes before adding multi-host complexity.
+Horizontal HA of the gateway and the other pod-local-state services lands in
+v2.0 with the shared-state refactor — until then, vertical scaling and
+single-replica are the v1.0 SLA.
 
 ## Upgrade
 
@@ -87,6 +110,64 @@ Scale databases vertically before sharding. For Compose installs, move to Kubern
 5. Apply the release.
 6. Confirm `/healthz`, `/readyz`, and one synthetic inference request.
 7. Generate a support bundle and archive it internally as upgrade evidence.
+
+## Rollback
+
+If an upgrade fails its post-apply checks (step 6 above), roll back to the
+last known-good image set. The **known-good combination is the pinned set in
+`image-manifest.yaml`** (`default_lucairn_image_tag` plus any per-service
+`services:`/`optional_services:` pins) — that is the exact tag tuple this kit
+release was validated against. Roll back BOTH the kit checkout and the images
+together so the config tree and the recognizer registry stay in sync (the Sim 2
+F3 drift class documented in `image-manifest.yaml`).
+
+### Compose path
+
+```bash
+# 1) Revert LUCAIRN_IMAGE_TAG in customer.env to the previous known-good tag
+#    (the value from image-manifest.yaml `default_lucairn_image_tag` for the
+#    kit release you are rolling back to). Keep the file at mode 0600.
+sed -i 's/^LUCAIRN_IMAGE_TAG=.*/LUCAIRN_IMAGE_TAG=<previous-known-good-tag>/' customer.env
+
+# 2) Re-pull and recreate with the reverted tag.
+docker compose -f docker-compose.customer.yml --env-file customer.env pull
+docker compose -f docker-compose.customer.yml --env-file customer.env up -d
+
+# 3) Confirm the manifest matches what is now running, then health-check.
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
+```
+
+If the upgrade ran database migrations, restore the pre-upgrade database
+backup from § Backups BEFORE re-pointing the images at the older tag — older
+images may not understand a newer schema. Roll the data back first, then the
+images.
+
+### Kubernetes path
+
+```bash
+# Show revision history and roll back to the previous (or a named) revision.
+helm history lucairn -n lucairn
+helm rollback lucairn -n lucairn          # previous revision
+# helm rollback lucairn <REVISION> -n lucairn   # a specific revision
+
+# Confirm the rolled-back release is healthy. The gateway Deployment lives in
+# the dsa-edge namespace (see INSTALL.md § "Kubernetes Install").
+kubectl rollout status deployment/gateway -n dsa-edge
+kubectl get pods -A -l app.kubernetes.io/part-of=dsa
+```
+
+`helm rollback` re-applies the chart manifests (including image tags) from the
+target revision. As on Compose, if the failed upgrade applied schema
+migrations, restore the database backup (§ Backups) before rolling the release
+back — Helm does not undo data migrations.
+
+> **Warn — compliance-DB volumes are NOT auto-preserved in v1.0.** The
+> gateway-keystore PVC carries `helm.sh/resource-policy: keep`, but the audit,
+> id-bridge, and veil-witness Postgres PVCs do NOT. A `helm uninstall` (not a
+> rollback) destroys those compliance databases. Always take a fresh backup (§
+> Backups) BEFORE any uninstall or destructive rollback. Automated
+> backup/restore + PVC retain-policy for the compliance DBs is tracked
+> separately (HA-01 / INS-02) and is not yet shipped.
 
 ## Dashboard: bootstrap admin + rotate credentials
 
