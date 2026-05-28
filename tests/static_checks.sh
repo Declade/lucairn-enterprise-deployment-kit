@@ -123,6 +123,21 @@ fi
 KIT_VER="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 grep -q "v${KIT_VER}" "$ROOT/README.md"
 grep -q "^kit_version: \"${KIT_VER}\"" "$ROOT/image-manifest.yaml"
+
+# Release-version gate (was a hardcoded grep for "v1.3.0-customer-demo-data",
+# which silently aborted the whole script under `set -e` once README's
+# `Target release:` line moved to v1.5.1-dashboard — taking every downstream
+# assertion, including the HA-* / OBS-02 guards below, offline). In addition to
+# the INS-05 reconciliation above, derive the version from the README's own
+# canonical `Target release: \`vX\`` line and assert it is present + non-empty
+# + well-formed, so the downstream HA-* / OBS-02 guards always run.
+README_RELEASE_VER="$(grep -m1 -oE 'Target release: `v[0-9][0-9A-Za-z.-]*`' "$ROOT/README.md" \
+  | sed -E 's/^Target release: `v//; s/`$//')"
+if [ -z "$README_RELEASE_VER" ]; then
+  echo "README is missing a well-formed 'Target release: \`vX.Y.Z\`' version line" >&2
+  exit 1
+fi
+echo "README target release version: v${README_RELEASE_VER}"
 grep -q "clean-host rehearsal" "$ROOT/docs/CLEAN_HOST_REHEARSAL.md"
 grep -q "handoff gate" "$ROOT/docs/CUSTOMER_HANDOFF_GATES.md"
 
@@ -161,7 +176,18 @@ if command -v helm >/dev/null 2>&1; then
   # may render — a PDB with minAvailable:1 on a one-pod workload blocks
   # `kubectl drain` forever. PDBs auto-render only at replicaCount >= 2.
   DEFAULT_RENDER="$(helm template lucairn "$CHART" --set global.skipPullSecretGuard=true)"
-  if echo "$DEFAULT_RENDER" | grep -q "kind: PodDisruptionBudget"; then
+  # NOTE: use `grep -c` (count the whole stream) rather than `grep -q` for the
+  # checks against $DEFAULT_RENDER. Under `set -o pipefail`, `grep -q` exits 0
+  # on the FIRST match and closes the pipe, which sends SIGPIPE (exit 141) to
+  # the `echo "$DEFAULT_RENDER"` writing the ~160KB render upstream. pipefail
+  # then propagates that 141 as the pipeline status, so `if ! ... grep -q`
+  # spuriously takes the failure branch even though the pattern matched. The
+  # race is load-dependent (only fires once the upstream write is large enough
+  # to still be in flight when grep closes the pipe), which is exactly the
+  # HA-09 case below. Counting reads the whole stream, so echo never gets
+  # SIGPIPE and the result is deterministic.
+  PDB_COUNT="$(echo "$DEFAULT_RENDER" | grep -c "kind: PodDisruptionBudget" || true)"
+  if [ "$PDB_COUNT" -gt 0 ]; then
     echo "HA-03: PodDisruptionBudget rendered at single-replica (drain footgun)" >&2
     exit 1
   fi
@@ -178,11 +204,15 @@ if command -v helm >/dev/null 2>&1; then
   echo "helm template (default): graceful-shutdown on $PRESTOP_COUNT services (HA-04)"
 
   # HA-09 guard: the sandbox-a sanitizer sidecar readiness uses /readyz
-  # (functional) not /healthz (connectivity-only).
-  if ! echo "$DEFAULT_RENDER" | grep -q "port: sanitizer"; then
+  # (functional) not /healthz (connectivity-only). Count-based for the same
+  # pipefail/SIGPIPE reason documented at the HA-03 check above (this pattern
+  # DOES match, so `grep -q` would race and spuriously fail here).
+  SANITIZER_PORT_COUNT="$(echo "$DEFAULT_RENDER" | grep -c "port: sanitizer" || true)"
+  if [ "$SANITIZER_PORT_COUNT" -lt 1 ]; then
     echo "HA-09: sanitizer port not found in render" >&2
     exit 1
   fi
+  echo "helm template (default): sanitizer readiness probe present (HA-09)"
 
   # OBS-02 guard: ServiceMonitors scrape ONLY the services that expose
   # /metrics (gateway + veil-witness), with correct namespace mapping.
