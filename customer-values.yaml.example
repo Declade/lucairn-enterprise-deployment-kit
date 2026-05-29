@@ -80,6 +80,12 @@ global:
   # the SAME value here as gateway.secrets.values.licenseKey. (Vast
   # cascade BLOCKER B, 2026-05-26.)
   dsaLicenseKey: ""
+  # Deployment entitlement license (Ed25519, offline). Gates Enterprise
+  # FEATURES with a grace-then-degrade expiry. Lucairn issues the signed
+  # token + verify public key. Empty = unregistered mode (Enterprise
+  # features locked, core PII pipeline still runs).
+  lucairnLicenseKey: ""
+  lucairnLicensePublicKey: ""
 
 # v1.0 ships single-replica gateway with the file-keystore persisted on a
 # PVC mounted at the parent of gateway.keystorePath
@@ -114,6 +120,11 @@ gateway:
     values:
       licenseKey: "REPLACE_WITH_LICENSE_KEY"
       licenseSigningKey: "REPLACE_WITH_LICENSE_SIGNING_KEY"
+      # Deployment entitlement license (Ed25519, offline). Leave EMPTY for
+      # unregistered mode (Enterprise features locked, core PII pipeline
+      # still runs). Lucairn provides the signed token + verify public key.
+      lucairnLicenseKey: ""
+      lucairnLicensePublicKey: ""
       adminKey: "REPLACE_WITH_64_HEX_ADMIN_KEY"
       sandboxBApiKey: "REPLACE_WITH_SANDBOX_B_API_KEY"
       veilManifestSigningKey: "REPLACE_WITH_64_HEX_MANIFEST_SIGNING_KEY"

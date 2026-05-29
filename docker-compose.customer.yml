@@ -489,6 +489,16 @@ services:
       GATEWAY_WAIT_TIMEOUT: "120"
       DSA_LICENSE_KEY: "${DSA_LICENSE_KEY}"
       DSA_LICENSE_SIGNING_KEY: "${DSA_LICENSE_SIGNING_KEY}"
+      # Deployment entitlement license (Ed25519, offline). Distinct from the
+      # DSA_LICENSE_* platform tier license above: gates Enterprise FEATURES
+      # (e.g. the custom-trained L3 PII shield) with a grace-then-degrade
+      # expiry. Empty = unregistered mode (Enterprise features locked, core
+      # PII pipeline still runs). LUCAIRN_LICENSE_PUBLIC_KEY is the verify
+      # key Lucairn provides; LUCAIRN_LICENSE_KEY is the signed token.
+      # Issued by Lucairn via `bin/lucairn license issue`.
+      LUCAIRN_LICENSE_KEY: "${LUCAIRN_LICENSE_KEY:-}"
+      LUCAIRN_LICENSE_PUBLIC_KEY: "${LUCAIRN_LICENSE_PUBLIC_KEY:-}"
+      LUCAIRN_LICENSE_GRACE_DAYS: "${LUCAIRN_LICENSE_GRACE_DAYS:-14}"
       SANITIZER_URL: "http://sanitizer:8086"
       DSA_ADMIN_KEY: "${DSA_ADMIN_KEY}"
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
