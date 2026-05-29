@@ -69,11 +69,15 @@ spec:
             timeoutSeconds: 5
           resources:
             requests:
-              cpu: 500m
-              memory: 512Mi
+              cpu: {{ (.Values.ollamaIdentity.resources).requests.cpu | default "500m" }}
+              # FIX-A (full-stack-test-results-2026-05-29): exposed as a chart
+              # value. The L3 PII shield (qwen2.5:7b) needs ~6-8Gi resident;
+              # the default 10Gi limit already fits it (the OOMKill BLOCKER was
+              # on sandbox-b's bundled ollama at 2Gi, fixed there too).
+              memory: {{ (.Values.ollamaIdentity.resources).requests.memory | default "512Mi" }}
             limits:
-              cpu: 2000m
-              memory: 10Gi
+              cpu: {{ (.Values.ollamaIdentity.resources).limits.cpu | default "2000m" }}
+              memory: {{ (.Values.ollamaIdentity.resources).limits.memory | default "10Gi" }}
   volumeClaimTemplates:
     - metadata:
         name: data

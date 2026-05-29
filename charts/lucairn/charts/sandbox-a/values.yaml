@@ -130,6 +130,12 @@ sanitizer:
   qiEngineAction: "generalize"
   llmScanEnabled: false
   llmScanTimeout: 30
+  # FIX-B (full-stack-test-results-2026-05-29): L3 fail-mode for the sanitizer.
+  # true = fail-CLOSED (503 l3_scrubber_unavailable when the L3 deep PII shield
+  # is unavailable — the safe default). false = continue-mode (proceed L1+L2,
+  # cert honestly downgraded to PARTIAL with llm_pii_scan omitted from
+  # layers_active). Wired into the sanitizer container env as LUCAIRN_L3_REQUIRED.
+  l3Required: true
   # TOB-003 fix (2026-05-09): default "sequential" — Pro/Enterprise overlays
   # MUST explicitly set "ensemble" to opt into L3 reversal path.
   llmScanMode: "sequential"
@@ -164,6 +170,18 @@ ollamaIdentity:
   # immediately after each request (NOT recommended when the L3 shield is
   # required — risks readyz flapping).
   keepAlive: "-1"
+  # FIX-A (full-stack-test-results-2026-05-29): L3 PII shield (qwen2.5:7b)
+  # resource envelope, exposed as a chart value. The default 10Gi limit fits
+  # the qwen2.5:7b model resident; lower it only if you mirror a smaller L3
+  # model. (The OOMKill BLOCKER from the full-stack test was on sandbox-b's
+  # bundled ollama at 2Gi, fixed in that subchart too.)
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 10Gi
 
 secrets:
   backend: k8s-native

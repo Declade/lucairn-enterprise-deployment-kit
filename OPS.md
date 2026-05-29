@@ -293,6 +293,21 @@ upload plaintext.
 If your S3 credentials come from IRSA / an instance role, leave the
 `accessKeySecretRef.name` / `secretKeySecretRef.name` empty.
 
+> **⚠️ Backup CronJob + NetworkPolicy-enforced clusters (2026-05-29 full-stack test).**
+> By default the backup CronJob installs its tools (`age`, `aws-cli`) at runtime
+> via `apk add` in an init container (`backup.installToolsAtRuntime: true`). On a
+> NetworkPolicy-ENFORCING cluster (Calico/Cilium — the [hard prerequisite for
+> the Veil isolation invariant](docs/CUSTOMER_HELM_RUNBOOK.md#prereqs-1-time))
+> the chart's egress NPs block the alpine package CDN, so the init container
+> cannot reach the mirror and the job fails (and the public CDN is flaky even
+> with egress allowed). The backup *logic* (pg_dump → age-encrypt → S3 upload)
+> is identical to the proven `bin/lucairn backup` Compose path. To make the
+> CronJob robust on an NP-enforced cluster, EITHER:
+> - set `backup.installToolsAtRuntime: false` and point `backup.image` at a
+>   pre-baked image that already contains `age` + `aws-cli` (recommended), OR
+> - add a backup-egress NetworkPolicy allowing the init container to reach your
+>   package mirror + S3 endpoint.
+
 #### Compose path
 
 `bin/lucairn` wraps the same pipeline against the compose stack:

@@ -216,6 +216,17 @@ spec:
                 configMapKeyRef:
                   name: {{ .Chart.Name }}-config
                   key: QI_ENGINE_ACTION
+            # FIX-B (full-stack-test-results-2026-05-29): wire the L3 fail-mode
+            # knob into the sanitizer container. Default "true" = fail-CLOSED
+            # (503 l3_scrubber_unavailable when the L3 deep PII shield is down).
+            # Set sanitizer.l3Required=false to fall back to continue-mode (cert
+            # honestly downgraded to PARTIAL). Without this env the operator
+            # could not select continue-mode on a stock install (blocked G1c).
+            # NOTE: use hasKey, NOT `| default true` — Sprig's `default` treats
+            # the boolean `false` as empty and would clobber an explicit
+            # l3Required=false back to true. hasKey honors an explicit false.
+            - name: LUCAIRN_L3_REQUIRED
+              value: {{ if hasKey .Values.sanitizer "l3Required" }}{{ .Values.sanitizer.l3Required | quote }}{{ else }}{{ "true" | quote }}{{ end }}
           volumeMounts:
             - name: sanitizer-config
               mountPath: /config
