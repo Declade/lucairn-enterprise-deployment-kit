@@ -15,6 +15,10 @@ Usage:
   lucairn backup --env customer.env [--compose docker-compose.customer.yml] [--verify]
   lucairn restore --env customer.env --stamp YYYYMMDDTHHMMSSZ [--compose docker-compose.customer.yml] [--db audit|bridge|veil]
 
+  lucairn license issue --license-id ID --customer-id ID --customer-name NAME --valid-until YYYY-MM-DD [--features csv] --signing-key-hex HEX
+  lucairn license verify --license TOKEN --public-key-hex HEX
+  lucairn license gen-key
+
 Commands:
   doctor          Validate customer deployment prerequisites.
   support-bundle  Generate a redacted support archive for customer review.
@@ -25,6 +29,7 @@ Commands:
                   backup CronJobs (see charts/lucairn + OPS.md § Backups).
   restore         Download -> decrypt -> pg_restore a chosen --stamp's dumps
                   into the LIVE compose compliance DBs (restore into clean DBs).
+  license         Issue / verify / generate keys for deployment entitlement licenses (operator-only).
 USAGE
 }
 
@@ -3297,6 +3302,81 @@ restore() {
   info "restore: ok ($stamp)"
 }
 
+# ---------------------------------------------------------------------------
+# license — issue / verify / gen-key for self-hosted DEPLOYMENT entitlement
+# licenses (Ed25519-signed, offline-verifiable). OPERATOR/Lucairn-side only.
+#
+# The actual signing lives in the DSA gateway tool `license-sign` (so the
+# canonical signed bytes are byte-identical to what the gateway verifier
+# reconstructs — a cross-repo contract). This wrapper locates that tool and
+# shells out. Discovery order:
+#   1. $LUCAIRN_LICENSE_SIGN_BIN  — explicit path to a prebuilt binary.
+#   2. `license-sign` on $PATH.
+#   3. `go run ./services/gateway/cmd/license-sign` from $DSA_REPO (the
+#      dual-sandbox-architecture clone) — Lucairn-internal build path.
+#
+# This is the deployment FEATURE license — distinct from the platform tier
+# license issued by the gateway's HMAC `license-gen`. The private signing
+# seed (LICENSE_SIGNING_KEY_SEED_HEX) lives ONLY in the Lucairn vault and is
+# NEVER shipped to a customer. See docs/operations on the License Signing
+# Key (DSA repo: docs/operations/key-ceremony-runbook.md).
+# ---------------------------------------------------------------------------
+
+license_usage() {
+  cat <<'USAGE'
+Usage:
+  lucairn license issue   --license-id ID --customer-id ID --customer-name NAME \
+                          --valid-until YYYY-MM-DD [--features csv] \
+                          --signing-key-hex HEX | --signing-key-file PATH
+  lucairn license verify  --license TOKEN | --license-file PATH \
+                          --public-key-hex HEX | --public-key-file PATH
+  lucairn license gen-key
+
+Notes:
+  - issue/gen-key are OPERATOR-only (Lucairn). The signing seed never ships to customers.
+  - Customers receive the signed token + the public key only.
+  - Set LUCAIRN_LICENSE_SIGN_BIN, put `license-sign` on PATH, or set DSA_REPO
+    to the dual-sandbox-architecture clone so this wrapper can run the signer.
+USAGE
+}
+
+# license_sign_runner echoes the command prefix used to invoke the DSA
+# license-sign tool, or fails with guidance if none is available.
+license_sign_runner() {
+  if [ -n "${LUCAIRN_LICENSE_SIGN_BIN:-}" ]; then
+    [ -x "$LUCAIRN_LICENSE_SIGN_BIN" ] || fail "LUCAIRN_LICENSE_SIGN_BIN=$LUCAIRN_LICENSE_SIGN_BIN is not executable"
+    printf '%s' "$LUCAIRN_LICENSE_SIGN_BIN"
+    return 0
+  fi
+  if have license-sign; then
+    printf 'license-sign'
+    return 0
+  fi
+  if [ -n "${DSA_REPO:-}" ] && [ -d "$DSA_REPO/services/gateway/cmd/license-sign" ]; then
+    have go || fail "DSA_REPO is set but 'go' is not on PATH (needed to run license-sign from source)"
+    printf 'go -C %q run ./services/gateway/cmd/license-sign' "$DSA_REPO"
+    return 0
+  fi
+  fail "license-sign tool not found. Set LUCAIRN_LICENSE_SIGN_BIN to a prebuilt binary, put 'license-sign' on PATH, or set DSA_REPO to the dual-sandbox-architecture clone."
+}
+
+license_command() {
+  local subcmd="${1:-}"
+  case "$subcmd" in
+    issue|verify|gen-key)
+      shift
+      # shellcheck disable=SC2046  # word-split runner prefix intentionally
+      exec $(license_sign_runner) "$subcmd" "$@"
+      ;;
+    -h|--help|"")
+      license_usage
+      ;;
+    *)
+      fail "unknown license subcommand: $subcmd (want: issue | verify | gen-key)"
+      ;;
+  esac
+}
+
 main() {
   local cmd="${1:-}"
   case "$cmd" in
@@ -3305,6 +3385,7 @@ main() {
     bundle) shift; bundle_command "$@" ;;
     backup) shift; backup "$@" ;;
     restore) shift; restore "$@" ;;
+    license) shift; license_command "$@" ;;
     -h|--help|"") usage ;;
     *) fail "unknown command: $cmd" ;;
   esac

@@ -208,6 +208,28 @@ start outside dev mode. For a self-hosted-inference install, replace
 ignores it) and follow the model runtime steps in the `docker-compose.self-hosted.yml`
 overlay (`MODEL_RUNTIME_PROFILE`, `MODEL_NAME`, `MODEL_PATH`, etc.).
 
+### Deployment license (Enterprise features)
+
+The gateway enforces a self-hosted deployment entitlement license that gates
+Enterprise-only features (e.g. the custom-trained L3 PII shield) with a
+grace-then-degrade expiry. It is verified entirely offline (no phone-home), so
+air-gapped installs work. Lucairn issues you two values:
+
+- `LUCAIRN_LICENSE_KEY` — the signed license token.
+- `LUCAIRN_LICENSE_PUBLIC_KEY` — the verification public key.
+
+Set both in `customer.env` (Compose) or under `gateway.secrets.values`
+(Helm — see `customer-values.yaml.example`). Leave them EMPTY for sandbox/dev:
+in `DSA_ENV=development` the gateway warns-not-enforces; in production an empty
+license runs in unregistered mode (Enterprise features locked, **core PII
+pipeline still runs**). After expiry, a 14-day grace window
+(`LUCAIRN_LICENSE_GRACE_DAYS`) keeps everything working with loud warnings
+before Enterprise features degrade. The core compliance pipeline is never
+broken over licensing. See OPS.md → "Deployment license" for status checks +
+renewal.
+
+> Lucairn-side (issuing a license): `bin/lucairn license issue --license-id … --customer-id … --customer-name … --valid-until YYYY-MM-DD --features l3_custom_shield --signing-key-hex <seed>`. The private signing seed stays in the Lucairn vault and never ships to the customer.
+
 ## Docker Compose Install
 
 1. Unpack the release bundle.

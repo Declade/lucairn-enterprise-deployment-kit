@@ -16,6 +16,7 @@ Minimum alerts:
 - Certificate expiry under 30 days.
 - Support bundle generation failure.
 - Audit or Veil Witness write errors.
+- Deployment license entering grace or degrade: `gateway_license_state{phase="grace"} == 1` (renewal due) and `gateway_license_state{phase="degraded"} == 1` (Enterprise features now locked). See the License section below.
 
 Kubernetes installs should also alert on unavailable replicas, HPA maxed out for more than 15 minutes, and denied network-policy traffic that indicates unexpected cross-zone access.
 
@@ -390,6 +391,34 @@ Rotate in this order:
 6. `GATEWAY_KEYSTORE_KEY` only with a coordinated re-encryption migration.
 
 Do not rotate all Veil keys at once. Keep retired public keys available through the witness-signed manifest retention window.
+
+## Deployment license
+
+The gateway enforces a self-hosted deployment entitlement license (Ed25519-signed, verified fully offline — no phone-home). It is separate from the platform tier license (`DSA_LICENSE_KEY`). It gates Enterprise-only FEATURES (e.g. the custom-trained L3 PII shield) and carries an expiry with a grace-then-degrade lifecycle. It does NOT enforce volume or seat caps (usage is metered elsewhere) and does NOT touch tier names.
+
+Env (Compose: `customer.env`; Helm: `gateway.secrets.values.lucairnLicenseKey` / `lucairnLicensePublicKey` or `global.*`):
+
+- `LUCAIRN_LICENSE_KEY` — the signed license token Lucairn issues you (or `LUCAIRN_LICENSE_FILE` for a mounted file).
+- `LUCAIRN_LICENSE_PUBLIC_KEY` — the verification public key Lucairn provides (64-char hex). Same value for all customers of a given Lucairn signing-key generation.
+- `LUCAIRN_LICENSE_GRACE_DAYS` — grace window after expiry (default 14).
+
+Lifecycle:
+
+- **Active** (before `valid_until`): full function.
+- **Grace** (up to `LUCAIRN_LICENSE_GRACE_DAYS` after expiry): everything keeps working, loud warnings in gateway logs, `LICENSE_EXPIRED_GRACE` audit event, `gateway_license_state{phase="grace"}=1`. Renew during this window.
+- **Degraded** (after grace): Enterprise features lock with a clear `feature_not_licensed` response; **the core PII sanitization pipeline keeps running** (licensing never breaks the compliance function); `LICENSE_EXPIRED_DEGRADED` audit event; `gateway_license_state{phase="degraded"}=1`.
+- **Unregistered** (no license in production): Enterprise features locked, core pipeline runs. `gateway_license_state{phase="unlicensed"}=1`.
+- **Dev/test**: `DSA_ENV=development` (or `test`) → warn-not-enforce, so dev/CI/demo are never blocked.
+
+Check current status (operator endpoint, behind the admin key):
+
+```bash
+curl -fsS -H "X-Admin-Key: $DSA_ADMIN_KEY" \
+  "$GATEWAY_BASE_URL/api/v1/admin/license-status" | jq .
+# -> {"phase":"active","enforced":true,"enabled_features":["l3_custom_shield"],"valid_until":"...","grace_until":"..."}
+```
+
+Renewal: Lucairn issues a fresh `LUCAIRN_LICENSE_KEY`; replace the env value (and `LUCAIRN_LICENSE_PUBLIC_KEY` if the signing key rotated) and restart the gateway. Because expiry is grace-then-degrade, a brief renewal delay never bricks the core pipeline.
 
 ## Scaling
 

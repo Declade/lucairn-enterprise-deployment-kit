@@ -33,6 +33,11 @@ data:
   {{- end }}
   GRPC_TLS_ENABLED: {{ .Values.grpcTlsEnabled | quote }}
   VEIL_ENABLED: {{ .Values.veilEnabled | quote }}
+  # Deployment-license grace window (days after valid_until during which all
+  # functionality keeps working with loud warnings before Enterprise features
+  # degrade). Non-secret config; the signed token + public key live in the
+  # gateway-credentials Secret (LUCAIRN_LICENSE_KEY / _PUBLIC_KEY).
+  LUCAIRN_LICENSE_GRACE_DAYS: {{ .Values.licenseGraceDays | default 14 | quote }}
   VEIL_WITNESS_CERT_ADDR: {{ .Values.veilWitnessCertAddr | quote }}
   # Witness gRPC for gateway-emitted GATEWAY_REQUEST_COMPLETED claims
   # (port 50057, distinct from VEIL_WITNESS_CERT_ADDR's 50058 cert endpoint).

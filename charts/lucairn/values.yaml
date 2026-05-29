@@ -81,6 +81,15 @@ global:
   # value lets each subchart fall back to its own `secrets.values.licenseKey`
   # for backward compatibility. (Vast cascade BLOCKER B, 2026-05-26.)
   dsaLicenseKey: ""
+  # Deployment entitlement license (Ed25519, offline-verifiable). DISTINCT
+  # from dsaLicenseKey above: gates Enterprise FEATURES (e.g. the
+  # custom-trained L3 PII shield) with a grace-then-degrade expiry. Empty =
+  # unregistered mode (Enterprise features locked, core PII pipeline still
+  # runs). Lucairn issues the signed token + the verify public key via
+  # `bin/lucairn license issue`. Empty here lets the gateway subchart fall
+  # back to its own gateway.secrets.values.lucairnLicenseKey slot.
+  lucairnLicenseKey: ""
+  lucairnLicensePublicKey: ""
   # DSA environment: "development" | "production". Controls fail-closed guards in pipeline services.
   #
   # v1.0 ships "development" as the chart default because the bundled

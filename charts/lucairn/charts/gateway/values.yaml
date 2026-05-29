@@ -58,6 +58,9 @@ sandboxBProxyUrl: "http://sandbox-b.dsa-ai.svc.cluster.local:8084"
 keystorePath: "/etc/dsa/keystore-dir/keystore.json"
 grpcTlsEnabled: "false"
 veilEnabled: "true"
+# Deployment-license grace window in days (after valid_until, before
+# Enterprise features degrade). Non-secret config. Default 14.
+licenseGraceDays: 14
 enableTestProvider: "false"
 veilWitnessCertAddr: "veil-witness.dsa-witness.svc.cluster.local:50058"
 # Witness gRPC for gateway-emitted GATEWAY_REQUEST_COMPLETED claims
@@ -199,6 +202,15 @@ secrets:
   values:
     licenseKey: ""
     licenseSigningKey: ""
+    # Deployment entitlement license (Ed25519, offline). Distinct from the
+    # platform tier license above: gates Enterprise FEATURES with a
+    # grace-then-degrade expiry. Empty = unregistered mode (Enterprise
+    # features locked, core PII pipeline still runs). Lucairn issues the
+    # signed token (lucairnLicenseKey) + the verify public key
+    # (lucairnLicensePublicKey) via `bin/lucairn license issue`. Both can
+    # also be lifted to global.lucairnLicenseKey / global.lucairnLicensePublicKey.
+    lucairnLicenseKey: ""
+    lucairnLicensePublicKey: ""
     adminKey: ""
     sandboxBApiKey: ""
     veilManifestSigningKey: ""
