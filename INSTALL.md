@@ -161,6 +161,22 @@ If your organization blocks GitHub access entirely, request a sealed
 customer bundle (with `images/lucairn-images.tar` for `docker load`); see
 `docs/CUSTOMER_BUNDLE.md`.
 
+### Verify image signatures (supply-chain provenance)
+
+Every published Lucairn image is cosign-signed and logged to the Sigstore
+Rekor public transparency log. Before deploying, you can verify the whole
+published set against the kit-bundled public key (`keys/lucairn-cosign.pub`)
+with `cosign` on PATH:
+
+```bash
+bin/lucairn verify-images --tag 0.5.0
+# or a single image:
+cosign verify --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.0
+```
+
+See **OPS.md → "Verify image signatures"** for the full recipe and the
+custody model.
+
 ## Choose A Deployment Mode
 
 Before running `docker compose up`, decide which inference-side topology the

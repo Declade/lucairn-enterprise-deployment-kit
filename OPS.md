@@ -407,6 +407,53 @@ Rotate in this order:
 
 Do not rotate all Veil keys at once. Keep retired public keys available through the witness-signed manifest retention window.
 
+## Verify image signatures
+
+Every published Lucairn container image is **cosign-signed** with a single
+Lucairn-held Image Signing Key, and each signature is uploaded to the
+**Sigstore Rekor public transparency log**. You can independently verify, before
+or after pulling, that each image came from Lucairn and that its signature is
+recorded in a public log — without trusting the registry alone.
+
+This is supply-chain image provenance. It is separate from the per-request
+Veil certificate chain: image signing proves "this binary is the one Lucairn
+published"; the cert chain proves "this request was sanitized, isolated, and
+attested." Both are independently checkable.
+
+The public key ships with this kit at `keys/lucairn-cosign.pub`. Verification
+needs `cosign` on PATH — install it from
+<https://github.com/sigstore/cosign/releases> (verify its published checksum)
+and nothing else; the public key alone is sufficient (no Lucairn phone-home,
+no private material).
+
+**Verify the whole published set (recommended):**
+
+```bash
+# Verifies all 12 dsa-* images + the dashboard against keys/lucairn-cosign.pub
+# and the Rekor transparency log. Prints PASS/FAIL per image; exits non-zero if
+# ANY signature is missing or invalid. Uses the tag/registry from
+# image-manifest.yaml (override with --tag / --registry / --dashboard-tag).
+bin/lucairn verify-images
+
+# Pin an explicit release tag (the released image version), e.g.:
+bin/lucairn verify-images --tag 0.5.0
+```
+
+**Verify a single image with raw cosign:**
+
+```bash
+cosign verify --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.0
+```
+
+A successful `cosign verify` exits 0 and reports the signature payload plus a
+Rekor transparency-log entry (`logIndex`). An unsigned or tampered image — or
+any image not signed by the Lucairn key — exits non-zero and is rejected.
+
+For the Image Signing Key's custody model, generation, and rotation procedure,
+see the DSA repo `docs/operations/key-ceremony-runbook.md` § Key Inventory
+(Image Signing Key). The private cosign key and its password are Lucairn-held,
+stored mode-600 on the Lucairn issuer host, and are never distributed.
+
 ## Deployment license
 
 The gateway enforces a self-hosted deployment entitlement license (Ed25519-signed, verified fully offline — no phone-home). It is separate from the platform tier license (`DSA_LICENSE_KEY`). It gates Enterprise-only FEATURES (e.g. the custom-trained L3 PII shield) and carries an expiry with a grace-then-degrade lifecycle. It does NOT enforce volume or seat caps (usage is metered elsewhere) and does NOT touch tier names.
