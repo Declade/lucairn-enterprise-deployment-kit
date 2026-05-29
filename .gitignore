@@ -9,7 +9,17 @@ customer-bundles/
 *.tar.gz
 *.tgz
 .certs/
-keys/
+# Ignore everything customers may drop in the root keys/ dir (Ed25519 pairs,
+# private cosign keys, etc.) — a safety net against committing private material.
+# A negation on a file requires first re-including the directory itself (git
+# will not descend into an excluded dir), so we exclude keys/* (contents) rather
+# than keys/ (the dir) and then exempt the one PUBLIC key we ship.
+keys/*
+# Exempt the Lucairn cosign PUBLIC key (B1 supply-chain provenance): the
+# distributable public key customers use to verify image signatures
+# (`bin/lucairn verify-images` / `cosign verify --key`). PUBLIC key only —
+# never a private cosign key or its password.
+!keys/lucairn-cosign.pub
 # Exempt the dashboard's API-key management template directory
 # (Slice 5). The root `keys/` pattern excludes crypto material that
 # customers may leave next to the kit (Ed25519 pairs, etc.); the

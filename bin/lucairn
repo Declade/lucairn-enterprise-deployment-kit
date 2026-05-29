@@ -19,6 +19,8 @@ Usage:
   lucairn license verify --license TOKEN --public-key-hex HEX
   lucairn license gen-key
 
+  lucairn verify-images [--registry REG] [--tag TAG] [--dashboard-tag TAG] [--key PATH] [--no-dashboard]
+
 Commands:
   doctor          Validate customer deployment prerequisites.
   support-bundle  Generate a redacted support archive for customer review.
@@ -30,6 +32,9 @@ Commands:
   restore         Download -> decrypt -> pg_restore a chosen --stamp's dumps
                   into the LIVE compose compliance DBs (restore into clean DBs).
   license         Issue / verify / generate keys for deployment entitlement licenses (operator-only).
+  verify-images   Verify the published Lucairn images' cosign signatures against
+                  the bundled public key + the Sigstore Rekor transparency log.
+                  Requires `cosign` on PATH.
 USAGE
 }
 
@@ -3429,6 +3434,148 @@ restore() {
 }
 
 # ---------------------------------------------------------------------------
+# verify-images — cryptographically verify the published Lucairn images against
+# the bundled cosign public key + the Sigstore Rekor public transparency log.
+#
+# Lucairn cosign-signs every customer-pulled container image at release time
+# with a single Lucairn-held Image Signing Key (custody documented in the DSA
+# repo: docs/operations/key-ceremony-runbook.md § Key Inventory). The matching
+# PUBLIC key ships in this kit at keys/lucairn-cosign.pub, so a customer can
+# independently verify that each image they pull was signed by Lucairn and that
+# the signature is recorded in a public transparency log — answering an
+# enterprise supply-chain questionnaire without trusting the registry alone.
+#
+# This is supply-chain image provenance. It is ORTHOGONAL to the Veil
+# certificate chain (which signs per-request claims with the Witness/claim keys
+# at runtime). Image signing proves "this binary is the one Lucairn published";
+# the cert chain proves "this request was sanitized + isolated + attested".
+#
+# Image set: the full published DSA image set (the publish.yaml / Makefile
+# DSA_ALL_IMAGES single-source-of-truth = 12 images) + the dashboard. Registry
+# and default tag are read from image-manifest.yaml; LUCAIRN_IMAGE_REGISTRY /
+# LUCAIRN_IMAGE_TAG / LUCAIRN_DASHBOARD_IMAGE_TAG env overrides win when set.
+# ---------------------------------------------------------------------------
+
+verify_images_usage() {
+  cat <<'USAGE'
+Usage:
+  lucairn verify-images [--registry REG] [--tag TAG] [--dashboard-tag TAG] \
+                        [--key PATH] [--no-dashboard]
+
+Verifies every published Lucairn image's cosign signature against the bundled
+public key (keys/lucairn-cosign.pub) and the Sigstore Rekor public transparency
+log. Prints PASS/FAIL per image. Exits non-zero if ANY image's signature is
+missing or invalid.
+
+Requires `cosign` on PATH (https://github.com/sigstore/cosign).
+
+Options:
+  --registry REG       Image registry (default: image-manifest.yaml value).
+  --tag TAG            Tag for the dsa-* images (default: manifest value or
+                       $LUCAIRN_IMAGE_TAG).
+  --dashboard-tag TAG  Tag for lucairn-dashboard (default: manifest value or
+                       $LUCAIRN_DASHBOARD_IMAGE_TAG).
+  --key PATH           cosign public key (default: keys/lucairn-cosign.pub).
+  --no-dashboard       Skip the dashboard image.
+USAGE
+}
+
+# manifest_value KEY — extract a top-level scalar from image-manifest.yaml,
+# stripping the key prefix, any inline comment, surrounding whitespace, and
+# wrapping quotes. Mirrors the awk extraction used by check_image_manifest.
+manifest_value() {
+  local key="$1" manifest="${ROOT}/image-manifest.yaml"
+  [ -f "$manifest" ] || return 0
+  awk -v k="$key" -F: '
+    $0 ~ "^[[:space:]]*" k ":" {
+      sub(/^[^:]+:[[:space:]]*/, "");
+      sub(/[[:space:]]+#.*$/, "");
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "");
+      gsub(/^"|"$/, "");
+      print; exit
+    }' "$manifest"
+}
+
+verify_images() {
+  local registry="" tag="" dashboard_tag="" key="" want_dashboard=1
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --registry) registry="${2:-}"; shift 2 ;;
+      --tag) tag="${2:-}"; shift 2 ;;
+      --dashboard-tag) dashboard_tag="${2:-}"; shift 2 ;;
+      --key) key="${2:-}"; shift 2 ;;
+      --no-dashboard) want_dashboard=0; shift ;;
+      -h|--help) verify_images_usage; return 0 ;;
+      *) fail "verify-images: unknown argument: $1 (see: lucairn verify-images --help)" ;;
+    esac
+  done
+
+  if ! have cosign; then
+    fail "verify-images: 'cosign' not found on PATH. Install it from https://github.com/sigstore/cosign/releases (verify its published checksum), then re-run. cosign is the only dependency."
+  fi
+
+  # Public key: explicit --key wins, else the kit-bundled key.
+  key="${key:-$ROOT/keys/lucairn-cosign.pub}"
+  [ -f "$key" ] || fail "verify-images: public key not found at '$key' (the kit ships keys/lucairn-cosign.pub)"
+
+  # Registry + tags: CLI flag > env > manifest > built-in fallback.
+  registry="${registry:-${LUCAIRN_IMAGE_REGISTRY:-$(manifest_value default_lucairn_image_registry)}}"
+  registry="${registry:-ghcr.io/declade}"
+  tag="${tag:-${LUCAIRN_IMAGE_TAG:-$(manifest_value default_lucairn_image_tag)}}"
+  tag="${tag:-0.5.0}"
+
+  # The authoritative published image set = the DSA publish.yaml / Makefile
+  # DSA_ALL_IMAGES single-source-of-truth (12 images). verify-images covers the
+  # FULL published set, not just the 7 the kit's doctor pre-flights, because any
+  # published artifact could be pulled (e.g. admin/demo/ingest in ops paths).
+  local dsa_images="dsa-gateway dsa-sanitizer dsa-audit dsa-id-bridge dsa-sandbox-a dsa-sandbox-b dsa-veil-witness dsa-reid-guard dsa-admin dsa-demo dsa-ingest dsa-llm-auditor"
+
+  local failed=0 checked=0 image ref
+  info "verify-images: verifying cosign signatures against $key"
+  info "verify-images: registry=$registry tag=$tag (+ Rekor transparency log)"
+  echo
+
+  for image in $dsa_images; do
+    ref="${registry}/${image}:${tag}"
+    checked=$((checked + 1))
+    if cosign verify --key "$key" "$ref" >/dev/null 2>&1; then
+      info "PASS  $ref"
+    else
+      echo "FAIL  $ref (signature missing or does not verify against the Lucairn public key)" >&2
+      failed=$((failed + 1))
+    fi
+  done
+
+  if [ "$want_dashboard" -eq 1 ]; then
+    local dtag
+    dtag="${dashboard_tag:-${LUCAIRN_DASHBOARD_IMAGE_TAG:-$(manifest_value image_tag)}}"
+    # manifest_value image_tag would grab the FIRST `image_tag:` (a service
+    # override, usually empty). The dashboard tag is pinned under
+    # optional_services.lucairn-dashboard; extract it explicitly.
+    if [ -z "$dtag" ] || [ "$dtag" = '""' ]; then
+      dtag="$(awk '/^[[:space:]]*lucairn-dashboard:/{f=1; next} f && /image_tag:/{sub(/^[^:]+:[[:space:]]*/,""); sub(/[[:space:]]+#.*$/,""); gsub(/^[[:space:]]+|[[:space:]]+$/,""); gsub(/^"|"$/,""); print; exit}' "${ROOT}/image-manifest.yaml" 2>/dev/null)"
+    fi
+    dtag="${dtag:-0.8.2}"
+    ref="${registry}/lucairn-dashboard:${dtag}"
+    checked=$((checked + 1))
+    if cosign verify --key "$key" "$ref" >/dev/null 2>&1; then
+      info "PASS  $ref"
+    else
+      echo "FAIL  $ref (signature missing or does not verify against the Lucairn public key)" >&2
+      failed=$((failed + 1))
+    fi
+  fi
+
+  echo
+  if [ "$failed" -eq 0 ]; then
+    info "verify-images: OK — all $checked images verified (cosign signature valid + Rekor entry present)"
+    return 0
+  fi
+  echo "verify-images: FAILED — $failed of $checked images did not verify" >&2
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # license — issue / verify / gen-key for self-hosted DEPLOYMENT entitlement
 # licenses (Ed25519-signed, offline-verifiable). OPERATOR/Lucairn-side only.
 #
@@ -3512,6 +3659,7 @@ main() {
     backup) shift; backup "$@" ;;
     restore) shift; restore "$@" ;;
     license) shift; license_command "$@" ;;
+    verify-images) shift; verify_images "$@" ;;
     -h|--help|"") usage ;;
     *) fail "unknown command: $cmd" ;;
   esac
