@@ -59,11 +59,20 @@ spec:
             timeoutSeconds: 5
           resources:
             requests:
-              cpu: 500m
-              memory: 512Mi
+              cpu: {{ (.Values.ollama.resources).requests.cpu | default "500m" }}
+              # FIX-A (full-stack-test-results-2026-05-29): the L3-capable model
+              # (qwen2.5:7b, hardcoded in the sanitizer configmap) needs ~6-8Gi
+              # resident. The previous 2Gi limit OOMKilled it mid-inference ->
+              # gateway 500. Default the request high enough to schedule the
+              # real model; override via .Values.ollama.resources for tinyllama.
+              memory: {{ (.Values.ollama.resources).requests.memory | default "2Gi" }}
             limits:
-              cpu: 2000m
-              memory: 2Gi
+              cpu: {{ (.Values.ollama.resources).limits.cpu | default "2000m" }}
+              # FIX-A: raised 2Gi -> 8Gi default so bundled ollama can run the
+              # qwen2.5:7b L3 PII shield without OOMKill. Exposed as a chart
+              # value (.Values.ollama.resources.limits.memory) so operators
+              # running only the small upstream model can lower it.
+              memory: {{ (.Values.ollama.resources).limits.memory | default "8Gi" }}
               {{- if .Values.ollama.gpu.enabled }}
               nvidia.com/gpu: {{ .Values.ollama.gpu.count }}
               {{- end }}

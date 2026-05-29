@@ -368,6 +368,13 @@ services:
       # All emitters use the witness's plain gRPC port (50057).
       VEIL_WITNESS_ADDR: "veil-witness:50057"
       QI_ENGINE_ENABLED: "${QI_ENGINE_ENABLED:-true}"
+      # FIX-B (full-stack-test-results-2026-05-29): wire the L3 fail-mode knob
+      # into the sanitizer container. Default "true" = fail-CLOSED (503
+      # l3_scrubber_unavailable when the L3 deep PII shield is down). Set to
+      # "false" to fall back to continue-mode (cert honestly downgraded to
+      # PARTIAL, llm_pii_scan omitted from layers_active). Without this env the
+      # operator could not select continue-mode on a stock install.
+      LUCAIRN_L3_REQUIRED: "${LUCAIRN_L3_REQUIRED:-true}"
       DP_BUDGET_REDIS_URL: "redis://redis-sanitizer:6379/0"
     volumes:
       - ${SANITIZER_CONFIG_FILE:-./config/default-sanitizer.yaml}:/config/config.yaml:ro
@@ -500,6 +507,13 @@ services:
       LUCAIRN_LICENSE_PUBLIC_KEY: "${LUCAIRN_LICENSE_PUBLIC_KEY:-}"
       LUCAIRN_LICENSE_GRACE_DAYS: "${LUCAIRN_LICENSE_GRACE_DAYS:-14}"
       SANITIZER_URL: "http://sanitizer:8086"
+      # FIX-C (full-stack-test-results-2026-05-29): wire the sanitize-cache knob
+      # into the gateway container. Default "false" (matches the Helm chart
+      # default gateway.sanitizeCache.enabled=false). Set "true" to enable the
+      # sanitize-result cache so identical requests skip re-scrubbing and the
+      # cache-replay carve-out keeps the cert FULL without a fail-open bump.
+      # Without this env the cache was permanently off on a stock Compose install.
+      SANITIZE_CACHE_ENABLED: "${SANITIZE_CACHE_ENABLED:-false}"
       DSA_ADMIN_KEY: "${DSA_ADMIN_KEY}"
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
       # Invariant poller: only Sandbox A (local). Sandbox B is remote — no probe.

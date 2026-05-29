@@ -3242,7 +3242,13 @@ backup() {
   local stamp work aws_extra
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   work="$(mktemp -d)"
-  trap 'rm -rf "$work"' RETURN
+  # FIX-D (full-stack-test-results-2026-05-29): bake the workdir path into the
+  # RETURN trap at registration time (double-quote, not single-quote) so the
+  # cleanup never re-expands "$work" when the trap fires — that late expansion
+  # tripped `set -u` ("work: unbound variable") once a nested function return
+  # ran this trap out of the local's scope.
+  # shellcheck disable=SC2064
+  trap "rm -rf '$work'" RETURN
   aws_extra="$(backup_aws_args "$endpoint")"
 
   local row svc db usr dump enc key
@@ -3338,7 +3344,13 @@ backup_verify_roundtrip() {
     sleep 1
   done
   [ "$ready" -eq 1 ] || fail "verify($db): scratch postgres never became ready"
-  docker exec -i "$scratch" pg_restore -U "$usr" -d "$db" --no-owner --clean --if-exists < "$plain" \
+  # FIX-D (full-stack-test-results-2026-05-29): --no-acl. The dump carries
+  # GRANT/REVOKE statements for the live app role (e.g. audit_app), which does
+  # NOT exist in this throwaway postgres:16-alpine. Without --no-acl pg_restore
+  # errors on the ACL statements and the verify aborts even though the DATA
+  # round-trips fine. The verify only proves the dump restores + has tables;
+  # ACL restoration is not part of that contract.
+  docker exec -i "$scratch" pg_restore -U "$usr" -d "$db" --no-owner --no-acl --clean --if-exists < "$plain" \
     || fail "verify($db): pg_restore failed"
   local tables
   tables="$(docker exec "$scratch" psql -U "$usr" -d "$db" -tAc \
@@ -3386,7 +3398,11 @@ restore() {
   require_file "$identity" "age identity file"
   aws_extra="$(backup_aws_args "$endpoint")"
 
-  local work; work="$(mktemp -d)"; trap 'rm -rf "$work"' RETURN
+  # FIX-D (full-stack-test-results-2026-05-29): bake the workdir into the RETURN
+  # trap at registration time so the cleanup never re-expands "$work" under
+  # `set -u` when the trap fires out of this local's scope.
+  # shellcheck disable=SC2064
+  local work; work="$(mktemp -d)"; trap "rm -rf '$work'" RETURN
   local row svc db usr key enc plain
   for row in $LUCAIRN_BACKUP_DBS; do
     svc="${row%%:*}"; db="${row#*:}"; usr="${db##*:}"; db="${db%%:*}"

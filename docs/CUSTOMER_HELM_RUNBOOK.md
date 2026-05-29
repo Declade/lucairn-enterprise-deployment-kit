@@ -13,6 +13,7 @@
 ## Prereqs (1-time)
 
 - Kubernetes 1.27+ cluster (Kind, EKS, GKE, AKS, vanilla — single node is fine for pilot scale)
+- **A NetworkPolicy-ENFORCING CNI (Calico or Cilium) — HARD PREREQUISITE, see callout below**
 - `kubectl` configured for the cluster + access to create namespaces, ClusterRoles, NetworkPolicies
 - `helm` v3.12+ installed locally
 - `docker` available locally (for ghcr.io PAT setup; no Docker required on the cluster itself)
@@ -20,6 +21,37 @@
 - 8 GB RAM, 4 cores, 50 GB storage available
 - An Anthropic API key (`sk-ant-...`) for BYOK inference
 - A GitHub Personal Access Token with `read:packages` scope (for pulling Lucairn images from `ghcr.io/declade/*`)
+
+> ### ⚠️ HARD PREREQUISITE — your CNI MUST enforce NetworkPolicies
+>
+> The Veil isolation invariant (Sandbox B — the AI plane — can NEVER reach
+> Sandbox A — the identity plane) is enforced by the chart's NetworkPolicies.
+> **A CNI that does not enforce NetworkPolicies silently defeats this control.**
+> The chart's NPs render correctly either way; they simply have no effect
+> without an enforcer.
+>
+> - **`kindnet`** (the default CNI on a stock `kind` cluster) does **NOT** enforce
+>   NetworkPolicies. On kindnet, Sandbox B *can* reach Sandbox A, the isolation
+>   prober detects the breach, and the sanitizer locks **fail-closed** (`/readyz`
+>   503) — i.e. the install correctly refuses to serve rather than serve without
+>   isolation. This was reproduced in the 2026-05-29 full-stack test: on kindnet
+>   the invariant locks; swapping to **Calico v3.27.3** made Sandbox B → Sandbox A
+>   `BLOCKED`, the invariant `verified`, and the chain operational.
+> - Use **Calico** or **Cilium** in production. For a `kind` pilot, create the
+>   cluster with the default CNI disabled and install Calico:
+>   ```bash
+>   kind create cluster --config - <<'EOF'
+>   kind: Cluster
+>   apiVersion: kind.x-k8s.io/v1alpha4
+>   networking:
+>     disableDefaultCNI: true   # disable kindnet so Calico can enforce NPs
+>     podSubnet: "192.168.0.0/16"
+>   EOF
+>   kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.3/manifests/calico.yaml
+>   # wait for calico-node + calico-kube-controllers to be Ready before installing Lucairn
+>   ```
+> - Managed clusters: EKS (VPC CNI + Calico for NP), GKE (enable Dataplane V2 /
+>   Network Policy), AKS (Azure or Calico network policy) all satisfy this.
 
 ---
 

@@ -130,6 +130,19 @@ ollama:
   model: "tinyllama"
   storageSize: 20Gi
   storageClass: ""
+  # FIX-A (full-stack-test-results-2026-05-29): the bundled ollama default was
+  # limits.memory 2Gi, which OOMKills the L3-capable qwen2.5:7b model that the
+  # sanitizer configmap hardcodes -> mid-inference gateway 500. Defaults raised
+  # to an 8Gi limit so the real model fits. If you run ONLY the small upstream
+  # model (tinyllama, ~640MB) you may lower these; if you mirror a larger L3
+  # model, raise limits.memory accordingly.
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: 2000m
+      memory: 8Gi
   gpu:
     enabled: false
     count: 1
