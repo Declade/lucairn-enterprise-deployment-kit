@@ -20,6 +20,11 @@ keys/*
 # (`bin/lucairn verify-images` / `cosign verify --key`). PUBLIC key only —
 # never a private cosign key or its password.
 !keys/lucairn-cosign.pub
+# Exempt the per-release signed-image digest records (B1 supply-chain
+# provenance). These are PUBLIC: each line is `<repo>:<tag> <sha256:digest>`,
+# the authoritative set `bin/lucairn verify-images` verifies BY DIGEST. No
+# private material — image digests are derivable from the public registry.
+!keys/image-digests-*.txt
 # Exempt the dashboard's API-key management template directory
 # (Slice 5). The root `keys/` pattern excludes crypto material that
 # customers may leave next to the kit (Ed25519 pairs, etc.); the
