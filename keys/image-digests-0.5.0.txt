@@ -1,0 +1,32 @@
+# Lucairn signed-image digest record — release 0.5.0
+#
+# AUTHORITATIVE record of which exact image bytes were cosign-signed for this
+# release. `bin/lucairn verify-images` reads this file as the SINGLE source of
+# the verify set: for each entry it (1) resolves the tag's CURRENT digest and
+# asserts it EQUALS the recorded digest (a mismatch means the tag was
+# re-pointed — downgrade/substitution — and is a hard FAIL), then (2) runs
+# `cosign verify --key keys/lucairn-cosign.pub <repo>@<recorded-digest>`,
+# binding verification to the exact signed bytes (not the mutable tag).
+#
+# Resolved + signature-verified on the Lucairn issuer host (Hetzner
+# 116.203.110.162) with cosign v2.4.1 against /home/deploy/.lucairn-cosign/
+# cosign.pub on 2026-05-29. All 13 artifacts PASS with a Rekor tlog entry.
+#
+# Format: <repo>:<tag> <sha256:digest>   (one per line; '#' starts a comment)
+#
+# Digests are PUBLIC. Slice 3 will fold these into image-manifest.yaml +
+# `doctor --strict`; this file is the Slice-1 interim record + the auto-written
+# output of scripts/sign-images.sh (DSA repo) at sign time.
+ghcr.io/declade/dsa-gateway:0.5.0 sha256:4c969d401356c7ffb9862e38a77a4ffae36a2a27573cb2e61c9cfe280e6d7a8a
+ghcr.io/declade/dsa-sanitizer:0.5.0 sha256:e9940b9be2708ec5a36c0b5e29dfc4fa52ac0b2bb1d3c2f015bf1ac359bbf8a5
+ghcr.io/declade/dsa-audit:0.5.0 sha256:204e4bc3a7e1fc0525ebbdfc6c3311ab0b9df4648728c86024c67f3be43fee72
+ghcr.io/declade/dsa-id-bridge:0.5.0 sha256:d52d00dfea23a8b8029c1ed9d80e1251813e52a46be72e3dfa0563e475240e04
+ghcr.io/declade/dsa-sandbox-a:0.5.0 sha256:498a7a60a088c0fdf0060c1b7dcd2960d8c547fd986aa4308ae5da9943b6c25b
+ghcr.io/declade/dsa-sandbox-b:0.5.0 sha256:d5477b16d2af606f724cb1be0481db55f079f66881b078d5ecf8a43beb257c9e
+ghcr.io/declade/dsa-veil-witness:0.5.0 sha256:4c3b36b9ec306e2668f0bbb811863f04dfa27f0465c6a3d7fae4ed1ecc1741a6
+ghcr.io/declade/dsa-reid-guard:0.5.0 sha256:9ca2cfa7bfcafe9a1d7d9816c1314c510daff60b0fdd2b94abc534a417c569a6
+ghcr.io/declade/dsa-admin:0.5.0 sha256:79848c223f55a4a1aba971562e4303c7ee8b84cc1ad495bc79a368689e24ada1
+ghcr.io/declade/dsa-demo:0.5.0 sha256:56a67527fe3314c38d24ef1934ebe9f0064c99c8697cb68666cb0d3baf1f0741
+ghcr.io/declade/dsa-ingest:0.5.0 sha256:f17705804ca1be3f46302523cb55d1c2acd80c3212d5abbc1b7c34aee621a9ff
+ghcr.io/declade/dsa-llm-auditor:0.5.0 sha256:1e1035831e78430f92b80fc9360c68c7b580efee265707de8c8677d72339cce9
+ghcr.io/declade/lucairn-dashboard:0.8.2 sha256:a586b88991ac5d71cf6523b833462648775b1e97a66cbee67876e9f992f0387e

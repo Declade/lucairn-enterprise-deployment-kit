@@ -3450,40 +3450,61 @@ restore() {
 # at runtime). Image signing proves "this binary is the one Lucairn published";
 # the cert chain proves "this request was sanitized + isolated + attested".
 #
-# Image set: the full published DSA image set (the publish.yaml / Makefile
-# DSA_ALL_IMAGES single-source-of-truth = 12 images) + the dashboard. Registry
-# and default tag are read from image-manifest.yaml; LUCAIRN_IMAGE_REGISTRY /
-# LUCAIRN_IMAGE_TAG / LUCAIRN_DASHBOARD_IMAGE_TAG env overrides win when set.
+# Image set + digests: the AUTHORITATIVE verify set is keys/image-digests-<tag>.txt
+# — one `<repo>:<tag> <sha256:digest>` line per signed artifact, recorded at sign
+# time by scripts/sign-images.sh (DSA repo) and committed to this kit. That file
+# is the single source of WHAT was signed (it also covers artifacts not listed in
+# image-manifest.yaml, e.g. admin/demo/ingest). verify-images binds verification
+# to the exact signed BYTES (digest), not the mutable tag, so a re-pointed tag is
+# caught as a downgrade/substitution rather than silently re-verified.
+#
+# Slice 3 will fold these digests into image-manifest.yaml + `doctor --strict`;
+# keys/image-digests-*.txt is the Slice-1 interim record.
 # ---------------------------------------------------------------------------
 
 verify_images_usage() {
   cat <<'USAGE'
 Usage:
-  lucairn verify-images [--registry REG] [--tag TAG] [--dashboard-tag TAG] \
-                        [--key PATH] [--no-dashboard]
+  lucairn verify-images [--tag TAG] [--registry REG] [--key PATH]
 
-Verifies every published Lucairn image's cosign signature against the bundled
-public key (keys/lucairn-cosign.pub) and the Sigstore Rekor public transparency
-log. Prints PASS/FAIL per image. Exits non-zero if ANY image's signature is
-missing or invalid.
+Verifies every published Lucairn image's cosign signature BY DIGEST against the
+bundled public key (keys/lucairn-cosign.pub) and the Sigstore Rekor public
+transparency log.
 
-Requires `cosign` on PATH (https://github.com/sigstore/cosign).
+For each image recorded in keys/image-digests-<tag>.txt it:
+  1. resolves the tag's CURRENT registry digest and asserts it EQUALS the
+     recorded (signed) digest — a mismatch means the tag was re-pointed to
+     other bytes (downgrade/substitution) and is a hard FAIL;
+  2. runs `cosign verify --key <pubkey> <repo>@<recorded-digest>` and requires
+     a transparency-log (Rekor) entry in the output before printing PASS.
+
+Exits non-zero if any image's digest drifted, signature is missing/invalid, or
+no transparency-log entry is present.
+
+Requires `cosign` (>= v2.0) on PATH (https://github.com/sigstore/cosign) and a
+tool to resolve tag->digest (`docker buildx imagetools`, `crane`, or `skopeo`).
 
 Options:
-  --registry REG       Image registry (default: image-manifest.yaml value).
-  --tag TAG            Tag for the dsa-* images (default: manifest value or
-                       $LUCAIRN_IMAGE_TAG).
-  --dashboard-tag TAG  Tag for lucairn-dashboard (default: manifest value or
-                       $LUCAIRN_DASHBOARD_IMAGE_TAG).
-  --key PATH           cosign public key (default: keys/lucairn-cosign.pub).
-  --no-dashboard       Skip the dashboard image.
+  --tag TAG       Release tag to verify (default: the single release covered by
+                  the present keys/image-digests-*.txt — currently 0.5.0).
+                  Errors if no keys/image-digests-<tag>.txt exists.
+  --registry REG  Override the registry host for ALL images (default: the
+                  registry recorded in the digests file, e.g. ghcr.io/declade).
+  --key PATH      cosign public key (default: keys/lucairn-cosign.pub).
 USAGE
 }
 
-# manifest_value KEY — extract a top-level scalar from image-manifest.yaml,
-# stripping the key prefix, any inline comment, surrounding whitespace, and
-# wrapping quotes. Mirrors the awk extraction used by check_image_manifest.
-manifest_value() {
+# image_manifest_value KEY — extract a top-level scalar from
+# image-manifest.yaml, stripping the key prefix, any inline comment, surrounding
+# whitespace, and wrapping quotes. Mirrors the awk extraction used by
+# check_image_manifest.
+#
+# NOTE: named image_manifest_value (not manifest_value) to avoid colliding with
+# the model-manifest helper manifest_value() defined earlier in this file, which
+# takes (manifest, key) and scans the `model:` block. Bash is last-def-wins, so
+# a same-named def here would silently break validate_model_manifest /
+# manifest_checksum_policy (bundle create/verify/prepare) → "missing model.name".
+image_manifest_value() {
   local key="$1" manifest="${ROOT}/image-manifest.yaml"
   [ -f "$manifest" ] || return 0
   awk -v k="$key" -F: '
@@ -3496,79 +3517,165 @@ manifest_value() {
     }' "$manifest"
 }
 
+# verify_images_default_tag — derive the default --tag from the SINGLE
+# keys/image-digests-*.txt present (FIX-5: do not fall back to the manifest's
+# lagging tag). Errors if zero or more than one digests file exists.
+verify_images_default_tag() {
+  local f matches=() base
+  for f in "$ROOT"/keys/image-digests-*.txt; do
+    [ -e "$f" ] || continue
+    matches+=("$f")
+  done
+  if [ "${#matches[@]}" -eq 0 ]; then
+    fail "verify-images: no keys/image-digests-*.txt found — cannot determine which release to verify. Pass --tag TAG once a keys/image-digests-<tag>.txt exists."
+  fi
+  if [ "${#matches[@]}" -gt 1 ]; then
+    fail "verify-images: multiple keys/image-digests-*.txt present — pass --tag TAG to pick a release."
+  fi
+  base="$(basename "${matches[0]}")"
+  base="${base#image-digests-}"
+  printf '%s' "${base%.txt}"
+}
+
+# image_current_digest REF — resolve a tag ref to its CURRENT registry digest
+# using whichever resolver is on PATH. Echoes "sha256:..." or empty on failure.
+image_current_digest() {
+  local ref="$1" d=""
+  if have docker; then
+    d="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null)" || d=""
+  fi
+  if [ -z "$d" ] && have crane; then
+    d="$(crane digest "$ref" 2>/dev/null)" || d=""
+  fi
+  if [ -z "$d" ] && have skopeo; then
+    d="$(skopeo inspect --format '{{.Digest}}' "docker://$ref" 2>/dev/null)" || d=""
+  fi
+  printf '%s' "$d"
+}
+
 verify_images() {
-  local registry="" tag="" dashboard_tag="" key="" want_dashboard=1
+  local registry="" tag="" key=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --registry) registry="${2:-}"; shift 2 ;;
-      --tag) tag="${2:-}"; shift 2 ;;
-      --dashboard-tag) dashboard_tag="${2:-}"; shift 2 ;;
-      --key) key="${2:-}"; shift 2 ;;
-      --no-dashboard) want_dashboard=0; shift ;;
+      --registry) [ $# -ge 2 ] || fail "verify-images: --registry needs a value (see: lucairn verify-images --help)"; registry="$2"; shift 2 ;;
+      --tag)      [ $# -ge 2 ] || fail "verify-images: --tag needs a value (see: lucairn verify-images --help)"; tag="$2"; shift 2 ;;
+      --key)      [ $# -ge 2 ] || fail "verify-images: --key needs a value (see: lucairn verify-images --help)"; key="$2"; shift 2 ;;
       -h|--help) verify_images_usage; return 0 ;;
       *) fail "verify-images: unknown argument: $1 (see: lucairn verify-images --help)" ;;
     esac
   done
 
+  # cosign presence + version floor (FIX-4: require >= v2.x; this also underpins
+  # the tlog-by-default assumption the Rekor-entry check below relies on).
   if ! have cosign; then
-    fail "verify-images: 'cosign' not found on PATH. Install it from https://github.com/sigstore/cosign/releases (verify its published checksum), then re-run. cosign is the only dependency."
+    fail "verify-images: 'cosign' not found on PATH. Install it from https://github.com/sigstore/cosign/releases (verify its published checksum — see OPS.md), then re-run."
+  fi
+  local cosign_major
+  cosign_major="$(cosign version 2>/dev/null | awk -F'[v.]' '/GitVersion/{print $2; exit}')"
+  case "$cosign_major" in
+    ''|*[!0-9]*) warn "verify-images: could not parse cosign version (expected >= v2.0); proceeding, but a Rekor tlog entry is still required for PASS." ;;
+    *) [ "$cosign_major" -ge 2 ] || fail "verify-images: cosign >= v2.0 is required (found v${cosign_major}.x). Upgrade from https://github.com/sigstore/cosign/releases." ;;
+  esac
+
+  # A tag->digest resolver is required to bind verification to the signed bytes.
+  if ! have docker && ! have crane && ! have skopeo; then
+    fail "verify-images: need a registry digest resolver on PATH — install one of: 'docker' (buildx imagetools), 'crane', or 'skopeo'."
   fi
 
   # Public key: explicit --key wins, else the kit-bundled key.
   key="${key:-$ROOT/keys/lucairn-cosign.pub}"
   [ -f "$key" ] || fail "verify-images: public key not found at '$key' (the kit ships keys/lucairn-cosign.pub)"
 
-  # Registry + tags: CLI flag > env > manifest > built-in fallback.
-  registry="${registry:-${LUCAIRN_IMAGE_REGISTRY:-$(manifest_value default_lucairn_image_registry)}}"
-  registry="${registry:-ghcr.io/declade}"
-  tag="${tag:-${LUCAIRN_IMAGE_TAG:-$(manifest_value default_lucairn_image_tag)}}"
-  tag="${tag:-0.5.0}"
-
-  # The authoritative published image set = the DSA publish.yaml / Makefile
-  # DSA_ALL_IMAGES single-source-of-truth (12 images). verify-images covers the
-  # FULL published set, not just the 7 the kit's doctor pre-flights, because any
-  # published artifact could be pulled (e.g. admin/demo/ingest in ops paths).
-  local dsa_images="dsa-gateway dsa-sanitizer dsa-audit dsa-id-bridge dsa-sandbox-a dsa-sandbox-b dsa-veil-witness dsa-reid-guard dsa-admin dsa-demo dsa-ingest dsa-llm-auditor"
-
-  local failed=0 checked=0 image ref
-  info "verify-images: verifying cosign signatures against $key"
-  info "verify-images: registry=$registry tag=$tag (+ Rekor transparency log)"
-  echo
-
-  for image in $dsa_images; do
-    ref="${registry}/${image}:${tag}"
-    checked=$((checked + 1))
-    if cosign verify --key "$key" "$ref" >/dev/null 2>&1; then
-      info "PASS  $ref"
-    else
-      echo "FAIL  $ref (signature missing or does not verify against the Lucairn public key)" >&2
-      failed=$((failed + 1))
-    fi
-  done
-
-  if [ "$want_dashboard" -eq 1 ]; then
-    local dtag
-    dtag="${dashboard_tag:-${LUCAIRN_DASHBOARD_IMAGE_TAG:-$(manifest_value image_tag)}}"
-    # manifest_value image_tag would grab the FIRST `image_tag:` (a service
-    # override, usually empty). The dashboard tag is pinned under
-    # optional_services.lucairn-dashboard; extract it explicitly.
-    if [ -z "$dtag" ] || [ "$dtag" = '""' ]; then
-      dtag="$(awk '/^[[:space:]]*lucairn-dashboard:/{f=1; next} f && /image_tag:/{sub(/^[^:]+:[[:space:]]*/,""); sub(/[[:space:]]+#.*$/,""); gsub(/^[[:space:]]+|[[:space:]]+$/,""); gsub(/^"|"$/,""); print; exit}' "${ROOT}/image-manifest.yaml" 2>/dev/null)"
-    fi
-    dtag="${dtag:-0.8.2}"
-    ref="${registry}/lucairn-dashboard:${dtag}"
-    checked=$((checked + 1))
-    if cosign verify --key "$key" "$ref" >/dev/null 2>&1; then
-      info "PASS  $ref"
-    else
-      echo "FAIL  $ref (signature missing or does not verify against the Lucairn public key)" >&2
-      failed=$((failed + 1))
-    fi
+  # Registry override: ONLY when explicitly requested (CLI flag or env). The
+  # registry recorded in each digests-file line is authoritative by default;
+  # an override is for air-gapped mirrors that re-host the SAME signed bytes.
+  # image_manifest_value provides a last-resort default for an operator who has
+  # set the manifest registry but expects verify-images to honor it.
+  registry="${registry:-${LUCAIRN_IMAGE_REGISTRY:-}}"
+  if [ -z "$registry" ]; then
+    local mreg; mreg="$(image_manifest_value default_lucairn_image_registry)"
+    # Only treat the manifest registry as an override if it DIFFERS from the
+    # recorded host (a mirror); otherwise leave empty (use recorded refs as-is).
+    case "$mreg" in
+      ''|ghcr.io/declade) registry="" ;;
+      *) registry="$mreg" ;;
+    esac
   fi
 
+  # Tag: CLI flag wins; otherwise default to the single committed digests file
+  # (NOT the manifest's possibly-lagging default_lucairn_image_tag — FIX-5).
+  tag="${tag:-$(verify_images_default_tag)}"
+  local digests_file="$ROOT/keys/image-digests-${tag}.txt"
+  [ -f "$digests_file" ] || fail "verify-images: no signed-digest record for tag '$tag' (expected $digests_file). This release was not signed, or the tag is wrong."
+
+  local failed=0 checked=0 line ref recorded current out rc repo repo_tag
+  info "verify-images: verifying cosign signatures BY DIGEST against $key"
+  info "verify-images: tag=$tag  record=$digests_file  (+ Rekor transparency log)"
+  [ -n "$registry" ] && info "verify-images: registry override: $registry"
   echo
+
+  # Read the digests file as the single source of the verify set.
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Strip comments + blank lines.
+    line="${line%%#*}"
+    ref="${line%% *}"
+    recorded="${line##* }"
+    # Trim surrounding whitespace from the ref field.
+    ref="${ref#"${ref%%[![:space:]]*}"}"
+    ref="${ref%"${ref##*[![:space:]]}"}"
+    [ -n "$ref" ] || continue
+    # A well-formed entry is "<repo>:<tag> <sha256:...>"; the digest must parse.
+    case "$recorded" in
+      sha256:*) ;;
+      *) echo "FAIL  $ref (malformed digest record — expected '<repo>:<tag> sha256:...', got: '$line')" >&2; failed=$((failed + 1)); checked=$((checked + 1)); continue ;;
+    esac
+
+    # Apply optional mirror override: swap the registry+org host prefix, keep
+    # the trailing <repo>:<tag>. Recorded ref is <host>/<org>/<repo>:<tag>.
+    if [ -n "$registry" ]; then
+      repo_tag="${ref#*/}"      # drop host segment (e.g. ghcr.io)
+      repo_tag="${repo_tag#*/}" # drop org segment (e.g. declade) -> repo:tag
+      ref="${registry%/}/${repo_tag}"
+    fi
+
+    checked=$((checked + 1))
+    repo="${ref%:*}"
+
+    # 1. Resolve current tag digest and assert it matches the recorded digest.
+    current="$(image_current_digest "$ref")"
+    if [ -z "$current" ]; then
+      echo "FAIL  $ref (could not resolve current registry digest — image missing or registry unreachable)" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    if [ "$current" != "$recorded" ]; then
+      echo "FAIL  $ref (TAG RE-POINTED: current digest $current != signed digest $recorded — downgrade/substitution; refusing to verify)" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+
+    # 2. cosign verify against the recorded digest; capture output; require a
+    #    transparency-log entry before PASS (FIX-3).
+    out="$(cosign verify --key "$key" --output json "${repo}@${recorded}" 2>&1)"; rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "FAIL  ${repo}@${recorded} (cosign verify failed: $(printf '%s' "$out" | tail -n1))" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    if ! printf '%s' "$out" | grep -qiE 'logindex|tlogentries|"bundle"|rekor'; then
+      echo "FAIL  ${repo}@${recorded} (signature valid but NO transparency-log (Rekor) entry found — refusing to PASS)" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    info "PASS  ${repo}@${recorded}  (signature valid + Rekor entry present)"
+  done < "$digests_file"
+
+  echo
+  if [ "$checked" -eq 0 ]; then
+    fail "verify-images: digests file $digests_file contained no image entries."
+  fi
   if [ "$failed" -eq 0 ]; then
-    info "verify-images: OK — all $checked images verified (cosign signature valid + Rekor entry present)"
+    info "verify-images: OK — all $checked images verified by digest (cosign signature valid + Rekor entry present)"
     return 0
   fi
   echo "verify-images: FAILED — $failed of $checked images did not verify" >&2

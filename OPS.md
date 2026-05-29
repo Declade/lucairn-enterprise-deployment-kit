@@ -420,34 +420,68 @@ Veil certificate chain: image signing proves "this binary is the one Lucairn
 published"; the cert chain proves "this request was sanitized, isolated, and
 attested." Both are independently checkable.
 
-The public key ships with this kit at `keys/lucairn-cosign.pub`. Verification
-needs `cosign` on PATH — install it from
-<https://github.com/sigstore/cosign/releases> (verify its published checksum)
-and nothing else; the public key alone is sufficient (no Lucairn phone-home,
-no private material).
+The public key ships with this kit at `keys/lucairn-cosign.pub`, and the exact
+**signed digests** for each release ship at `keys/image-digests-<tag>.txt`.
+Verification needs `cosign` (>= v2.0) plus a registry digest resolver
+(`docker buildx`, `crane`, or `skopeo`) on PATH — nothing else; the public key
+alone is sufficient (no Lucairn phone-home, no private material).
+
+**Pin `cosign` itself (recommended).** cosign releases publish a
+`cosign_checksums.txt` next to the binaries. Pin a known-good SHA-256 so a
+tampered cosign can't quietly weaken your verification:
+
+```bash
+# 1. Download the binary + the project's checksums file for a pinned version.
+VER=v2.4.1
+curl -sSLO "https://github.com/sigstore/cosign/releases/download/${VER}/cosign-linux-amd64"
+curl -sSLO "https://github.com/sigstore/cosign/releases/download/${VER}/cosign_checksums.txt"
+
+# 2. Verify the binary against the published checksum (must print 'OK').
+grep ' cosign-linux-amd64$' cosign_checksums.txt | sha256sum -c -
+
+# 3. Optionally cross-check that sha256 against one you recorded out-of-band.
+sha256sum cosign-linux-amd64
+
+# 4. Install.
+chmod +x cosign-linux-amd64 && sudo mv cosign-linux-amd64 /usr/local/bin/cosign
+cosign version   # must report v2.x
+```
 
 **Verify the whole published set (recommended):**
 
 ```bash
-# Verifies all 12 dsa-* images + the dashboard against keys/lucairn-cosign.pub
-# and the Rekor transparency log. Prints PASS/FAIL per image; exits non-zero if
-# ANY signature is missing or invalid. Uses the tag/registry from
-# image-manifest.yaml (override with --tag / --registry / --dashboard-tag).
+# Reads keys/image-digests-<tag>.txt as the authoritative signed set, resolves
+# each tag's CURRENT registry digest and asserts it equals the SIGNED digest (a
+# re-pointed tag = downgrade/substitution = hard FAIL), then cosign-verifies
+# each image BY DIGEST and requires a Rekor transparency-log entry. Prints
+# PASS/FAIL per image; exits non-zero if ANY image fails.
+# With one release recorded, no flag is needed — the tag is read from the
+# committed keys/image-digests-*.txt (currently 0.5.0):
 bin/lucairn verify-images
 
-# Pin an explicit release tag (the released image version), e.g.:
+# Or pin the release explicitly:
 bin/lucairn verify-images --tag 0.5.0
+
+# Air-gapped mirror that re-hosts the SAME signed bytes:
+bin/lucairn verify-images --tag 0.5.0 --registry registry.internal/lucairn
 ```
 
-**Verify a single image with raw cosign:**
+**Verify a single image with raw cosign (by digest).** Read the signed digest
+from `keys/image-digests-0.5.0.txt`, then:
 
 ```bash
-cosign verify --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.0
+cosign verify --key keys/lucairn-cosign.pub \
+  ghcr.io/declade/dsa-gateway@sha256:<digest-from-the-record-file>
 ```
 
 A successful `cosign verify` exits 0 and reports the signature payload plus a
 Rekor transparency-log entry (`logIndex`). An unsigned or tampered image — or
-any image not signed by the Lucairn key — exits non-zero and is rejected.
+any image whose tag was re-pointed to other bytes — exits non-zero and is
+rejected.
+
+> The `keys/image-digests-<tag>.txt` record is the Slice-1 interim source of
+> truth for the signed set. A later release will fold these digests into
+> `image-manifest.yaml` and have `lucairn doctor --strict` enforce them.
 
 For the Image Signing Key's custody model, generation, and rotation procedure,
 see the DSA repo `docs/operations/key-ceremony-runbook.md` § Key Inventory

@@ -163,19 +163,26 @@ customer bundle (with `images/lucairn-images.tar` for `docker load`); see
 
 ### Verify image signatures (supply-chain provenance)
 
-Every published Lucairn image is cosign-signed and logged to the Sigstore
-Rekor public transparency log. Before deploying, you can verify the whole
-published set against the kit-bundled public key (`keys/lucairn-cosign.pub`)
-with `cosign` on PATH:
+Every published Lucairn image is cosign-signed (by digest) and logged to the
+Sigstore Rekor public transparency log. Before deploying, you can verify the
+whole published set against the kit-bundled public key
+(`keys/lucairn-cosign.pub`) and the per-release signed-digest record
+(`keys/image-digests-<tag>.txt`). You need `cosign` (>= v2.0) and a digest
+resolver (`docker buildx`, `crane`, or `skopeo`) on PATH:
 
 ```bash
 bin/lucairn verify-images --tag 0.5.0
-# or a single image:
-cosign verify --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.0
+# or, with one release recorded, just:
+bin/lucairn verify-images
+# or a single image, by its signed digest (from keys/image-digests-0.5.0.txt):
+cosign verify --key keys/lucairn-cosign.pub \
+  ghcr.io/declade/dsa-gateway@sha256:<digest-from-the-record-file>
 ```
 
-See **OPS.md → "Verify image signatures"** for the full recipe and the
-custody model.
+`verify-images` fails if any tag was re-pointed away from its signed digest, so
+a verified set is bound to the exact bytes Lucairn signed. See
+**OPS.md → "Verify image signatures"** for the full recipe (including how to
+pin cosign itself by checksum) and the key-custody model.
 
 ## Choose A Deployment Mode
 
