@@ -105,6 +105,24 @@ else
   echo "NET-05: helm render assertion skipped (helm not installed)"
 fi
 # ── end hardening assertions ──
+# WS-2 / HA-01 regression guard: the plaintext-upload safety check in BOTH
+# backup paths must read >= the full age v1 magic ("age-encryption.org/v1",
+# 21 bytes) before grepping. A 16-byte read TRUNCATES the 18-char needle so it
+# can NEVER match — that aborts every valid backup before upload (BLOCKER).
+# This is a pure-static byte-arithmetic check; it needs no age/aws/docker so it
+# runs even where the live round-trip (LIVE-VERIFY on Vast) cannot.
+grep -q 'head -c 64 "$enc" | grep -q "age-encryption.org"' "$ROOT/bin/lucairn" \
+  || { echo "HA-01: bin/lucairn plaintext guard must read >= 64 bytes (found 16-byte read or other)" >&2; exit 1; }
+if grep -q 'head -c 16 "$enc"' "$ROOT/bin/lucairn"; then
+  echo "HA-01: bin/lucairn plaintext guard still uses head -c 16 (truncated needle, aborts every backup)" >&2; exit 1
+fi
+grep -q 'head -c 64 "${ENC}" | grep -q "age-encryption.org"' \
+  "$ROOT/charts/lucairn/templates/backup-cronjobs.yaml" \
+  || { echo "HA-01: Helm backup CronJob plaintext guard must read >= 64 bytes" >&2; exit 1; }
+if grep -q 'head -c 16 "${ENC}"' "$ROOT/charts/lucairn/templates/backup-cronjobs.yaml"; then
+  echo "HA-01: Helm backup CronJob plaintext guard still uses head -c 16" >&2; exit 1
+fi
+echo "ha-01 backup plaintext-guard byte-width: ok (both paths read >= 64 bytes)"
 
 test -f "$ROOT/OPS.md"
 test -f "$ROOT/TROUBLESHOOTING.md"

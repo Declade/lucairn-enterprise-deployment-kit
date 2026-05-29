@@ -97,17 +97,70 @@ spec:
           imagePullSecrets:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- /* installToolsAtRuntime defaults true. Resolve via hasKey — NOT
+                 Sprig `default` — because `default true false` returns true
+                 (Sprig treats the boolean false as "empty"), which would make
+                 installToolsAtRuntime=false silently still render the root
+                 initContainer. */ -}}
+          {{- $installTools := true -}}
+          {{- if hasKey $img "installToolsAtRuntime" -}}{{- $installTools = $img.installToolsAtRuntime -}}{{- end -}}
+          {{- if $installTools }}
+          # The default image (postgres:16-alpine) ships pg_dump/pg_restore but
+          # NOT age or aws. `apk add` writes to root-owned paths (/lib/apk/db,
+          # /usr/bin, /var/cache/apk) and CANNOT run as uid 65534 — so the
+          # runtime tool install runs in a root initContainer that drops the
+          # binaries into a shared emptyDir mounted at /opt/lucairn-tools/bin,
+          # which the non-root main container puts on PATH. The main container
+          # itself never runs as root. Air-gapped sites that pre-bake age + aws
+          # into the image set installToolsAtRuntime=false and skip this entirely.
+          initContainers:
+            - name: install-tools
+              image: "{{ default "postgres" $img.repository }}:{{ default "16-alpine" $img.tag }}"
+              imagePullPolicy: {{ default "IfNotPresent" $img.pullPolicy }}
+              securityContext:
+                # apk needs root to write to /usr/bin etc; this is the ONLY
+                # privileged step and it touches no compliance data.
+                runAsNonRoot: false
+                runAsUser: 0
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  echo "backup(init): installing age + aws-cli into shared volume ..."
+                  apk add --no-cache age aws-cli >/dev/null
+                  mkdir -p /opt/lucairn-tools/bin
+                  for b in age age-keygen aws; do
+                    if command -v "$b" >/dev/null 2>&1; then
+                      cp -f "$(command -v "$b")" /opt/lucairn-tools/bin/
+                    fi
+                  done
+                  # aws-cli on alpine is a python package whose `aws` entrypoint
+                  # imports the awscli module from site-packages; copying only
+                  # the launcher would break it. Symlink the whole prefix is
+                  # unreliable across images, so fall back to a thin wrapper that
+                  # re-execs the system aws if it is still present at run time.
+                  if [ ! -x /opt/lucairn-tools/bin/aws ]; then
+                    printf '#!/bin/sh\nexec /usr/bin/aws "$@"\n' > /opt/lucairn-tools/bin/aws
+                  fi
+                  chmod -R 0755 /opt/lucairn-tools/bin
+                  echo "backup(init): tools staged in /opt/lucairn-tools/bin"
+              {{- with $backup.resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              volumeMounts:
+                - name: tools
+                  mountPath: /opt/lucairn-tools
+          {{- end }}
           containers:
             - name: backup
               image: "{{ default "postgres" $img.repository }}:{{ default "16-alpine" $img.tag }}"
               imagePullPolicy: {{ default "IfNotPresent" $img.pullPolicy }}
               securityContext:
                 allowPrivilegeEscalation: false
-                # apk add (installToolsAtRuntime) needs a writable rootfs, so
-                # readOnlyRootFilesystem is left default here. Air-gapped sites
-                # using a pre-baked image (installToolsAtRuntime=false) can
-                # harden this further; the chart keeps the default permissive
-                # so the runtime-install path works out of the box.
                 capabilities:
                   drop: ["ALL"]
               command: ["/bin/sh", "-c"]
@@ -118,6 +171,11 @@ spec:
               args:
                 - |
                   set -eu
+                  # The root initContainer (when installToolsAtRuntime=true)
+                  # staged age + aws here; put it first on PATH. When a pre-baked
+                  # image bundles the tools this dir is simply empty + harmless.
+                  PATH="/opt/lucairn-tools/bin:${PATH}"
+                  export PATH
                   STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
                   WORK="$(mktemp -d)"
                   DUMP="${WORK}/${BK_DB}-${STAMP}.dump"
@@ -130,10 +188,13 @@ spec:
                     AWS_ARGS="--endpoint-url ${BK_S3_ENDPOINT}"
                   fi
 
-                  if [ "${BK_INSTALL_TOOLS}" = "true" ]; then
-                    echo "backup(${BK_NAME}): installing age + aws-cli ..."
-                    apk add --no-cache age aws-cli >/dev/null
-                  fi
+                  # Tools must be present (from the initContainer or a pre-baked
+                  # image). apk is NOT run here — the main container is non-root
+                  # and apk would fail. Fail fast with an actionable message.
+                  command -v age >/dev/null 2>&1 \
+                    || { echo "backup(${BK_NAME}): 'age' not found — initContainer install failed or pre-baked image lacks it" >&2; exit 1; }
+                  command -v aws >/dev/null 2>&1 \
+                    || { echo "backup(${BK_NAME}): 'aws' not found — initContainer install failed or pre-baked image lacks it" >&2; exit 1; }
 
                   echo "backup(${BK_NAME}): pg_dump -Fc ${DUMP} ..."
                   export PGPASSWORD="${POSTGRES_PASSWORD}"
@@ -149,9 +210,12 @@ spec:
                   age -r "${RECIPIENT}" -o "${ENC}" "${DUMP}"
                   rm -f "${DUMP}"
                   # Defensive: the uploaded object must be age-encrypted, never
-                  # a raw pg_dump. age files start with the "age-encryption.org"
-                  # header magic; a custom-format pg_dump starts with "PGDMP".
-                  head -c 16 "${ENC}" | grep -q "age-encryption.org" \
+                  # a raw pg_dump. age v1 files begin with the literal version
+                  # line "age-encryption.org/v1" (21 bytes); a custom-format
+                  # pg_dump begins with "PGDMP". Read >= the full magic before
+                  # grepping — a 16-byte slice TRUNCATES the 18-char needle and
+                  # can NEVER match, which would abort every valid backup.
+                  head -c 64 "${ENC}" | grep -q "age-encryption.org" \
                     || { echo "backup(${BK_NAME}): encryption check FAILED — refusing to upload plaintext" >&2; exit 1; }
 
                   echo "backup(${BK_NAME}): uploading s3://${BK_S3_BUCKET}/${KEY} ..."
@@ -186,8 +250,6 @@ spec:
                   value: {{ $user | quote }}
                 - name: BK_SSLMODE
                   value: {{ $sslmode | quote }}
-                - name: BK_INSTALL_TOOLS
-                  value: {{ default true $img.installToolsAtRuntime | quote }}
                 - name: BK_RETENTION_DAYS
                   value: {{ default 30 $backup.retentionDays | quote }}
                 - name: BK_S3_BUCKET
@@ -233,9 +295,18 @@ spec:
               volumeMounts:
                 - name: tmp
                   mountPath: /tmp
+                {{- if $installTools }}
+                - name: tools
+                  mountPath: /opt/lucairn-tools
+                  readOnly: true
+                {{- end }}
           volumes:
             - name: tmp
               emptyDir: {}
+            {{- if $installTools }}
+            - name: tools
+              emptyDir: {}
+            {{- end }}
 {{ end }}
 {{- end }}
 {{- end }}
