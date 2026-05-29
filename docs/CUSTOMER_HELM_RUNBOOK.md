@@ -206,6 +206,27 @@ sleep 35
 
 Now your demo's first customer-observable request will produce a FULL cert chain.
 
+### L3 deep PII shield must be warm before a demo (fail-CLOSED)
+
+When the L3 deep PII shield is enabled (`sanitizer.llmScanEnabled=true`), Lucairn is **fail-CLOSED**: if the L3 model (`qwen2.5:7b` on the `ollama-identity` StatefulSet in `dsa-identity`) is unavailable, the gateway returns `503 l3_scrubber_unavailable` (with a `Retry-After` header) instead of silently shipping a request with only L1+L2 scrubbing. This is governed by the `LUCAIRN_L3_REQUIRED` env var (default `true`).
+
+To keep the block from firing because of a cold start mid-demo:
+
+1. The chart pins the model resident via `OLLAMA_KEEP_ALIVE=-1` on the `ollama-identity` pod (`sandboxA` chart value `ollamaIdentity.keepAlive`, default `"-1"`). Leave it at the default for demos.
+2. Confirm L3 is warm before the demo — the sanitizer's readiness probe gates on it:
+
+```bash
+# ollama-identity must list qwen2.5:7b (the L3 model)
+kubectl exec -n dsa-identity statefulset/ollama-identity -- ollama list
+
+# Sanitizer /readyz returns 200 only when L3 is live (when L3 is required).
+# A 503 with reason "l3_scrubber_unavailable" means the shield is not warm yet.
+kubectl exec -n dsa-identity deploy/sandbox-a -c sanitizer -- \
+  sh -c 'curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8086/readyz'
+```
+
+If you must demo without the L3 shield (not recommended), set `LUCAIRN_L3_REQUIRED=false` on the sanitizer — the request then proceeds with L1+L2 only and the **certificate is honestly downgraded to PARTIAL** (the witness omits `llm_pii_scan` from `layers_active`), and `gateway_fail_open_total` / `sanitizer_l3_unavailable_total` increment so the degradation is observable.
+
 ---
 
 ## Step 9 — Send first customer-observable inference

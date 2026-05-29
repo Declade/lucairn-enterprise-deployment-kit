@@ -35,6 +35,15 @@ spec:
               drop:
                 - ALL
             readOnlyRootFilesystem: false
+          env:
+            # FAIL-01 demo warmth (PRD prd-2026-05-29-fail-safe-scrubber, §6):
+            # keep the L3 deep PII shield model resident in memory so the new
+            # fail-CLOSED block can never fire because of a cold-start hiccup
+            # mid-demo. OLLAMA_KEEP_ALIVE=-1 pins loaded models indefinitely.
+            # Belt-and-suspenders alongside the model-pull job + the readyz
+            # liveness gate. Overridable via .Values.ollamaIdentity.keepAlive.
+            - name: OLLAMA_KEEP_ALIVE
+              value: {{ (.Values.ollamaIdentity).keepAlive | default "-1" | quote }}
           ports:
             - containerPort: 11434
               name: http

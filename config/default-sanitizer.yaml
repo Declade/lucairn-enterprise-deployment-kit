@@ -91,7 +91,11 @@ sanitizer:
     ollama_url: http://ollama:11434
     model: qwen2.5:7b
     timeout_seconds: 30
-    fallback_on_error: continue
+    # FAIL-01 (PRD prd-2026-05-29-fail-safe-scrubber): fail-CLOSED — block the
+    # request with a 503 l3_scrubber_unavailable when the L3 deep PII shield is
+    # unavailable rather than silently shipping L1+L2-only coverage. Overridable
+    # per deployment via the LUCAIRN_L3_REQUIRED env var (default true).
+    fallback_on_error: reject
     # Phase 3 (2026-05-09) added "ensemble" mode for L3 reversals. Default
     # stays "sequential" so existing customers see ZERO behavior drift on
     # this PR's deploy. (TOB-003 fix, 2026-05-09 — earlier draft flipped the

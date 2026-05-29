@@ -157,6 +157,13 @@ ollamaIdentity:
     tag: "8.11.1"
     digest: "sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69"
     pullPolicy: IfNotPresent
+  # FAIL-01 demo warmth (PRD prd-2026-05-29-fail-safe-scrubber, §6): keep the
+  # L3 scan model resident so the new fail-CLOSED block can never fire from a
+  # cold-start hiccup mid-demo. "-1" pins loaded models indefinitely; set a
+  # Go duration (e.g. "30m") to expire idle models, or "0" to unload
+  # immediately after each request (NOT recommended when the L3 shield is
+  # required — risks readyz flapping).
+  keepAlive: "-1"
 
 secrets:
   backend: k8s-native
