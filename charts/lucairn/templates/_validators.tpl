@@ -388,3 +388,44 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{- /*
+  validators.backupHalfConfig
+
+  WS-2 / HA-01 backup guard. The compliance-DB backup CronJobs are OPT-IN
+  (backup.enabled defaults false). When an operator flips backup.enabled=true
+  they MUST also provide a destination bucket, the S3 credential Secret refs
+  (unless using IRSA / instance-role, which is the only case where leaving the
+  accessKey/secretKey refs empty is valid), and an age encryption recipient
+  Secret. Without these the CronJob would render but every run would fail at
+  upload/encrypt time — a silent "backups are configured but never land"
+  footgun on the most compliance-critical data in the system.
+
+  Fails fast when backup.enabled=true AND any of:
+    - backup.s3.bucket is empty (no destination)
+    - backup.encryption.recipientSecretRef.name is empty (dumps would be
+      uploaded UNENCRYPTED — never acceptable for compliance data, so this is
+      a hard fail, not a warning)
+
+  The S3 credential Secret refs are intentionally NOT hard-required here: an
+  empty accessKey/secretKey ref is the supported "use IRSA / instance-role
+  credentials" mode. A misconfigured credential surfaces as an upload auth
+  error in the CronJob logs, which `bin/lucairn` / OPS.md tell the operator to
+  check after enabling backups.
+
+  Invoked from charts/lucairn/templates/validators.yaml.
+*/ -}}
+{{- define "validators.backupHalfConfig" -}}
+{{- $backup := (default dict .Values.backup) -}}
+{{- if $backup.enabled -}}
+{{- $s3 := (default dict $backup.s3) -}}
+{{- if not $s3.bucket -}}
+{{- fail "backup.enabled=true but backup.s3.bucket is empty. The compliance-DB backup CronJobs have no destination — every run would fail at upload. Set backup.s3.bucket to your S3-compatible bucket (AWS S3 / Hetzner / MinIO), or set backup.enabled=false to disable automated backups. See OPS.md § Backups." -}}
+{{- end -}}
+{{- $enc := (default dict $backup.encryption) -}}
+{{- $recRef := (default dict $enc.recipientSecretRef) -}}
+{{- if not $recRef.name -}}
+{{- fail "backup.enabled=true but backup.encryption.recipientSecretRef.name is empty. Compliance-DB dumps would be uploaded UNENCRYPTED to the bucket — never acceptable for AI Act / GDPR evidence. Pre-create a K8s Secret holding an age recipient (public key, age1...) and set backup.encryption.recipientSecretRef.name to it. Hold the matching age IDENTITY (private key) OUTSIDE the cluster — it is required to restore. See OPS.md § Backups." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

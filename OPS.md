@@ -199,6 +199,169 @@ backup evidence (see the Upgrade runbook step 7).
 > RPO/RTO targets. Until then these are operator-run manual procedures. There
 > is intentionally no point-in-time-recovery (WAL archiving) story here — the
 > logical-dump RPO equals your backup interval.
+### Automated backups (recommended)
+
+> The PVCs carry `helm.sh/resource-policy: keep` so `helm uninstall` does NOT
+> delete them. That stops accidental delete; it is NOT a backup. Disk loss, a
+> deliberate `kubectl delete pvc`, a Compose `docker compose down -v`, or a host
+> migration still destroys the data. The automated backups below are the real
+> durability fix.
+
+Lucairn ships automated, offsite, **client-side-encrypted** logical backups of
+the three compliance databases:
+
+- `audit` (immutable audit trail — AI Act Art. 12 / GDPR Art. 30),
+- `bridge` (re-linkage tokens — GDPR DSAR / erasure),
+- `veil` (signed witness certificates).
+
+Each backup is `pg_dump -Fc` (logical, custom-format) → encrypted with
+[`age`](https://github.com/FiloSottile/age) using an operator-held recipient
+key → uploaded to a configured S3-compatible bucket (AWS S3, Hetzner Object
+Storage, MinIO, Ceph). The bucket may be **your** bucket or one the operator
+runs — no new sub-processor is forced. The bucket **never holds plaintext**
+compliance data: the object is verified to carry the `age` header before
+upload, and the pipeline aborts rather than upload an unencrypted dump.
+
+RPO / RTO:
+
+- **RPO = the backup interval** (default daily → up to ~24h of data loss in a
+  worst-case full-volume loss). Tighten by lowering `backup.schedule` /
+  `LUCAIRN_BACKUP_RETENTION_DAYS` cadence.
+- **RTO = restore time**, dominated by dump download + `pg_restore` into a fresh
+  DB. For the small compliance DBs this is typically minutes; measure it in your
+  quarterly restore test and record the number here.
+- There is intentionally **no point-in-time-recovery (WAL archiving)** — the
+  logical-dump RPO equals your backup interval.
+
+Retention: prune backups older than `retentionDays` (default 30). **Retention
+must be ≥ your audit-evidence retention obligation** — do not lower it below
+your regulator-mandated period.
+
+> **Crypto-shred vs backup-aging caveat (DATA-08):** an encrypted backup
+> contains the wrapped data-encryption keys (DEKs) that were live at dump time.
+> After a record is crypto-shredded in the live DB (its wrapped key destroyed),
+> that record's wrapped key still persists inside any backup taken **before** the
+> shred, until that backup ages out per `retentionDays`. Account for this window
+> when you document erasure timelines: full erasure of a record is only complete
+> once every backup containing its wrapped key has aged out.
+
+#### Helm path
+
+Enable in `customer-values.yaml` (default OFF — existing installs are
+unchanged):
+
+```yaml
+backup:
+  enabled: true
+  schedule: "30 2 * * *"     # daily 02:30 UTC; RPO == this interval
+  retentionDays: 30          # >= your audit-evidence retention obligation
+  s3:
+    endpoint: ""             # blank = AWS S3; set for Hetzner/MinIO
+    bucket: my-compliance-backups
+    region: eu-central-1
+    accessKeySecretRef: { name: lucairn-backup-s3, key: accessKeyId }
+    secretKeySecretRef: { name: lucairn-backup-s3, key: secretAccessKey }
+  encryption:
+    recipientSecretRef: { name: lucairn-backup-age, key: recipient }
+```
+
+Pre-create the Secrets in EACH compliance namespace (`dsa-audit`, `dsa-bridge`,
+`dsa-witness`) — the CronJobs run in their source DB's namespace:
+
+```bash
+# Generate the age key pair ONCE on a secured operator host. Keep the private
+# identity OFF the cluster — it is required to restore.
+age-keygen -o lucairn-backup-age.key            # prints the public recipient
+RECIPIENT="$(grep 'public key:' lucairn-backup-age.key | awk '{print $NF}')"
+
+for ns in dsa-audit dsa-bridge dsa-witness; do
+  kubectl -n "$ns" create secret generic lucairn-backup-age \
+    --from-literal=recipient="$RECIPIENT"
+  kubectl -n "$ns" create secret generic lucairn-backup-s3 \
+    --from-literal=accessKeyId="$AWS_ACCESS_KEY_ID" \
+    --from-literal=secretAccessKey="$AWS_SECRET_ACCESS_KEY"
+done
+```
+
+With `backup.enabled=true` the chart renders one CronJob per compliance DB
+(`lucairn-backup-audit`, `lucairn-backup-id-bridge`, `lucairn-backup-veil-witness`).
+A half-config (enabled without a bucket or without an age recipient) fails fast
+at `helm install`/`template` with an actionable message — it will never silently
+upload plaintext.
+
+If your S3 credentials come from IRSA / an instance role, leave the
+`accessKeySecretRef.name` / `secretKeySecretRef.name` empty.
+
+#### Compose path
+
+`bin/lucairn` wraps the same pipeline against the compose stack:
+
+```bash
+# Set LUCAIRN_BACKUP_* in customer.env (bucket, region, age recipient,
+# retention). S3 creds come from the standard AWS resolution (env / ~/.aws /
+# instance role) — never from customer.env.
+bin/lucairn backup  --env customer.env
+bin/lucairn backup  --env customer.env --verify    # + restore-into-throwaway smoke
+```
+
+`--verify` decrypts each fresh dump (needs `LUCAIRN_BACKUP_AGE_IDENTITY_FILE`)
+and restores it into a throwaway `postgres:16-alpine` container, asserting it
+restores cleanly with non-zero tables.
+
+### Restore runbook
+
+A backup you have never restored is not a backup. Restore into a **freshly
+provisioned, EMPTY** database — the dump does not truncate existing rows, and
+for the append-only `audit` DB you must never replay a dump over a populated
+audit trail.
+
+Compose path:
+
+```bash
+# STAMP is the backup timestamp (YYYYMMDDTHHMMSSZ) in the S3 key.
+bin/lucairn restore --env customer.env --stamp 20260529T023000Z
+# Single DB only:
+bin/lucairn restore --env customer.env --stamp 20260529T023000Z --db audit
+```
+
+Helm path (download + decrypt on a secured operator host, then pipe into the
+live pod):
+
+```bash
+KEY="lucairn/postgres-audit/audit-20260529T023000Z.dump.age"
+aws s3 cp "s3://my-compliance-backups/${KEY}" ./audit.dump.age
+age -d -i lucairn-backup-age.key -o ./audit.dump ./audit.dump.age
+PW="$(kubectl -n dsa-audit get secret audit-credentials \
+      -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)"
+kubectl -n dsa-audit exec -i audit-postgresql-0 -- \
+  env PGPASSWORD="$PW" pg_restore -U dsa -d audit --no-owner --clean --if-exists \
+  < ./audit.dump
+```
+
+> **Least-privilege role note (KIT-2 open question):** the audit/veil services
+> connect at runtime as the least-privilege append-only roles (`audit_app` /
+> `veil_app`). The dumps are taken as the schema-owning superuser
+> (`dsa` / `veil`) and `pg_restore --clean --if-exists` runs as that same owner,
+> so the append-only grants on `*_app` do not block restore. **Restore as the
+> owner role, not the `*_app` role.** If you have hardened the owner role's
+> privileges, grant it `CREATE`/`DROP` on the target schema for the duration of
+> the restore. LIVE-VERIFY this on your cluster as part of the quarterly restore
+> test and record the result.
+
+### Restore validation
+
+Quarterly, restore the latest dumps into a throwaway database and assert row
+counts are non-zero and recent:
+
+```bash
+psql "<scratch-dsn>" -c "SELECT count(*) AS audit_events FROM audit_events;"
+psql "<scratch-dsn>" -c "SELECT max(created_at) FROM audit_events;"
+psql "<scratch-dsn>" -c "SELECT count(*) AS certificates FROM veil_certificates;"
+```
+
+Confirm the counts match the live system's order of magnitude and the newest
+timestamp is within your RPO window. Record the validation date as backup
+evidence.
 
 ## Key Rotation
 

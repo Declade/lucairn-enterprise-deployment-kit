@@ -289,3 +289,52 @@ grep -q "selected staging dir:" "$TMPDIR/single.out"
 grep -q "/customer-data" "$TMPDIR/single.out"
 
 echo "lucairn data-staging ambiguity tests: ok"
+
+# ---------------------------------------------------------------------------
+# WS-2 / HA-01 — compliance-DB backup / restore CLI guards.
+#
+# The full backup -> S3 -> restore round-trip needs age + aws + docker and a
+# live S3 bucket — that is the LIVE-VERIFY-on-Vast gate (PRD § LIVE-VERIFY).
+# These tests cover the arg-parsing + fail-fast guards that do NOT need those
+# tools: missing --env, missing bucket, missing age recipient (backup), and
+# missing --stamp (restore). Each must error before any pg_dump / S3 call.
+# ---------------------------------------------------------------------------
+
+# backup with no --env errors.
+set +e
+"$ROOT/bin/lucairn" backup > "$TMPDIR/bk.out" 2>&1
+BK_STATUS=$?
+set -e
+[ "$BK_STATUS" -ne 0 ] || { echo "backup without --env should have failed" >&2; exit 1; }
+grep -q -- "--env customer.env is required" "$TMPDIR/bk.out"
+
+# help advertises both new commands.
+"$ROOT/bin/lucairn" --help > "$TMPDIR/help.out"
+grep -q "lucairn backup --env" "$TMPDIR/help.out"
+grep -q "lucairn restore --env" "$TMPDIR/help.out"
+
+# A backup env file missing the bucket fails fast. If age/aws are absent the
+# tool-presence guard fires first — also an acceptable fail-fast. Assert backup
+# does NOT succeed and never reaches a pg_dump invocation.
+BK_ENV="$TMPDIR/backup-nobucket.env"
+cat > "$BK_ENV" <<'ENV'
+LUCAIRN_BACKUP_AGE_RECIPIENT=age1exampleexampleexampleexampleexampleexampleexampleexample
+ENV
+set +e
+"$ROOT/bin/lucairn" backup --env "$BK_ENV" > "$TMPDIR/bk2.out" 2>&1
+BK2_STATUS=$?
+set -e
+[ "$BK2_STATUS" -ne 0 ] || { echo "backup with no bucket should have failed" >&2; exit 1; }
+if grep -q "pg_dump" "$TMPDIR/bk2.out"; then
+  echo "backup reached pg_dump despite missing config" >&2; exit 1
+fi
+
+# restore with no --stamp fails fast.
+set +e
+"$ROOT/bin/lucairn" restore --env "$BK_ENV" > "$TMPDIR/rs.out" 2>&1
+RS_STATUS=$?
+set -e
+[ "$RS_STATUS" -ne 0 ] || { echo "restore without --stamp should have failed" >&2; exit 1; }
+grep -q -- "--stamp" "$TMPDIR/rs.out"
+
+echo "lucairn backup/restore CLI guard tests: ok"

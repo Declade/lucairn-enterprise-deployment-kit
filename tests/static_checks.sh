@@ -8,6 +8,7 @@ bash -n "$ROOT/scripts/package-release.sh"
 bash -n "$ROOT/tests/test_lucairn_cli.sh"
 bash -n "$ROOT/tests/test_model_manifest_sha256.sh"
 bash -n "$ROOT/tests/test_bundle_verify_replay_guard.sh"
+bash -n "$ROOT/tests/test_backup_helm.sh"
 
 # ── Hardening regression assertions (KIT-4: NET-02/SUP-06/NET-05/OBS-08/OBS-09) ──
 # Static (grep/render) assertions so they run without docker. Placed early so
@@ -225,6 +226,9 @@ if command -v helm >/dev/null 2>&1; then
     exit 1
   fi
   echo "helm template (serviceMonitors): scrape only gateway+veil-witness (OBS-02)"
+
+  # WS-2 / HA-01 backup-CronJob render + fail-fast checks.
+  bash "$ROOT/tests/test_backup_helm.sh"
 else
   echo "helm lint + template smoke: skipped (helm not installed)"
 fi

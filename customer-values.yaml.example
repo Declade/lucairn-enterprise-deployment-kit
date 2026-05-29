@@ -291,6 +291,46 @@ veil-witness:
       signingKey: "REPLACE_WITH_64_HEX_WITNESS_SIGNING_KEY"
       keyId: "witness_v1"
 
+# ---------------------------------------------------------------------------
+# Automated offsite compliance-DB backups (WS-2 / HA-01). DEFAULT OFF.
+# ---------------------------------------------------------------------------
+# Scheduled, encrypted, offsite logical backups of the 3 compliance DBs.
+# Enable for demo/pilot + production. One CronJob per DB runs pg_dump -Fc ->
+# age-encrypt (client-side) -> upload to your S3-compatible bucket, then prunes
+# objects older than retentionDays. Builds on the PVC resource-policy:keep
+# safety net — keep stops accidental delete, backups give offsite durability.
+#
+# BEFORE enabling, pre-create these Secrets in EACH compliance namespace
+# (dsa-audit, dsa-bridge, dsa-witness) — see OPS.md § Backups:
+#   - the age recipient Secret (public key, age1...), and
+#   - the S3 credential Secret (unless using IRSA / instance-role creds).
+# Hold the age IDENTITY (private key) OUTSIDE the cluster — it is required to
+# restore; losing it makes every backup unrecoverable.
+backup:
+  enabled: false
+  # Daily at 02:30 UTC. RPO == this interval. See OPS.md § Backups for RPO/RTO.
+  schedule: "30 2 * * *"
+  # COMPLIANCE: keep retentionDays >= your audit-evidence retention obligation.
+  # NOTE the crypto-shred caveat (OPS.md): a shredded record's wrapped key
+  # persists in any backup taken before the shred until that backup ages out.
+  retentionDays: 30
+  s3:
+    endpoint: ""                 # blank = AWS S3; set for Hetzner/MinIO
+    bucket: "REPLACE_WITH_BACKUP_BUCKET"
+    region: "eu-central-1"
+    prefix: ""                   # optional key prefix, e.g. "acme-prod/"
+    forcePathStyle: true         # true for MinIO/Ceph/most non-AWS endpoints
+    accessKeySecretRef:
+      name: ""                   # e.g. lucairn-backup-s3 (empty = IRSA/role)
+      key: "accessKeyId"
+    secretKeySecretRef:
+      name: ""                   # e.g. lucairn-backup-s3 (empty = IRSA/role)
+      key: "secretAccessKey"
+  encryption:
+    recipientSecretRef:
+      name: ""                   # REQUIRED — e.g. lucairn-backup-age
+      key: "recipient"
+
 observability:
   enabled: true
 

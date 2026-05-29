@@ -12,11 +12,19 @@ Usage:
   lucairn bundle create --customer-slug acme --models-dir ./models --model-manifest model-manifest.yaml --env customer.env --image-tar images.tar [--customer-data-dir ./customer-data]
   lucairn bundle prepare --customer-slug acme --staging-dir /secure/staging/acme [--output dist/customer-bundles]
   lucairn bundle verify --bundle dist/customer-bundles/lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ.tar.gz
+  lucairn backup --env customer.env [--compose docker-compose.customer.yml] [--verify]
+  lucairn restore --env customer.env --stamp YYYYMMDDTHHMMSSZ [--compose docker-compose.customer.yml] [--db audit|bridge|veil]
 
 Commands:
   doctor          Validate customer deployment prerequisites.
   support-bundle  Generate a redacted support archive for customer review.
   bundle          Create, prepare, or verify per-customer delivery bundles.
+  backup          pg_dump -> age-encrypt -> upload the 3 compliance DBs to S3,
+                  then prune per LUCAIRN_BACKUP_RETENTION_DAYS. --verify does a
+                  restore-into-throwaway smoke. Compose-path peer of the Helm
+                  backup CronJobs (see charts/lucairn + OPS.md § Backups).
+  restore         Download -> decrypt -> pg_restore a chosen --stamp's dumps
+                  into the LIVE compose compliance DBs (restore into clean DBs).
 USAGE
 }
 
@@ -3047,12 +3055,251 @@ support_bundle() {
   echo "support bundle: $archive"
 }
 
+# ---------------------------------------------------------------------------
+# Compose-path compliance-DB backup / restore (WS-2 / HA-01).
+# ---------------------------------------------------------------------------
+#
+# The Helm path ships CronJobs (charts/lucairn/templates/backup-cronjobs.yaml).
+# The Compose path gets `lucairn backup` / `lucairn restore` wrappers that run
+# the SAME pipeline: pg_dump -Fc -> client-side encrypt with age -> upload to
+# the configured S3-compatible bucket (backup), and download -> decrypt ->
+# pg_restore into a fresh DB (restore). `lucairn backup --verify` does a
+# restore-into-throwaway smoke against a scratch Postgres container.
+#
+# Config is read from the customer.env file (--env):
+#   LUCAIRN_BACKUP_S3_BUCKET      (required) destination bucket
+#   LUCAIRN_BACKUP_S3_ENDPOINT    (optional) S3 endpoint for Hetzner/MinIO
+#   LUCAIRN_BACKUP_S3_REGION      (optional, default eu-central-1)
+#   LUCAIRN_BACKUP_S3_PREFIX      (optional) key prefix inside the bucket
+#   LUCAIRN_BACKUP_AGE_RECIPIENT  (required for backup) age public key (age1...)
+#   LUCAIRN_BACKUP_AGE_IDENTITY_FILE (required for restore/--verify) path to
+#                                 the age private identity, held OUTSIDE the host
+#   LUCAIRN_BACKUP_RETENTION_DAYS (optional, default 30)
+# S3 credentials use the standard AWS resolution (env AWS_ACCESS_KEY_ID /
+# AWS_SECRET_ACCESS_KEY, ~/.aws/credentials, or instance role) — never read
+# from customer.env so they never land in the support bundle.
+#
+# The three compliance DBs (compose service:db:user):
+#   postgres-audit:audit:dsa   postgres-bridge:bridge:dsa   postgres-veil:veil:veil
+LUCAIRN_BACKUP_DBS="postgres-audit:audit:dsa postgres-bridge:bridge:dsa postgres-veil:veil:veil"
+
+backup_require_tools() {
+  have age || fail "age not found — install age (https://github.com/FiloSottile/age) for client-side backup encryption"
+  have aws || fail "aws CLI not found — install awscli for S3 upload/download"
+}
+
+backup_aws_args() {
+  # Emit the --endpoint-url flag (if any) on stdout for the caller to expand.
+  local endpoint="$1"
+  [ -n "$endpoint" ] && printf -- '--endpoint-url %s' "$endpoint" || true
+}
+
+# lucairn backup --env customer.env [--compose FILE] [--verify]
+backup() {
+  local env_file="" compose_file="$ROOT/docker-compose.customer.yml" do_verify=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --env) env_file="$2"; shift 2 ;;
+      --compose) compose_file="$2"; shift 2 ;;
+      --verify) do_verify=1; shift ;;
+      -h|--help) usage; return 0 ;;
+      *) fail "backup: unknown option: $1" ;;
+    esac
+  done
+  [ -n "$env_file" ] || fail "backup: --env customer.env is required"
+  require_file "$env_file" "env file"
+  backup_require_tools
+
+  local dc; dc="$(compose_cmd)"
+  [ -n "$dc" ] || fail "docker compose not available"
+
+  local bucket endpoint region prefix recipient retention
+  bucket="$(env_value "$env_file" LUCAIRN_BACKUP_S3_BUCKET)"
+  endpoint="$(env_value "$env_file" LUCAIRN_BACKUP_S3_ENDPOINT)"
+  region="$(env_value "$env_file" LUCAIRN_BACKUP_S3_REGION)"; [ -n "$region" ] || region="eu-central-1"
+  prefix="$(env_value "$env_file" LUCAIRN_BACKUP_S3_PREFIX)"
+  recipient="$(env_value "$env_file" LUCAIRN_BACKUP_AGE_RECIPIENT)"
+  retention="$(env_value "$env_file" LUCAIRN_BACKUP_RETENTION_DAYS)"; [ -n "$retention" ] || retention="30"
+
+  [ -n "$bucket" ] || fail "backup: LUCAIRN_BACKUP_S3_BUCKET is empty in $env_file — set a destination bucket"
+  [ -n "$recipient" ] || fail "backup: LUCAIRN_BACKUP_AGE_RECIPIENT is empty in $env_file — dumps would be uploaded UNENCRYPTED; set an age recipient (public key, age1...)"
+
+  local stamp work aws_extra
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  work="$(mktemp -d)"
+  trap 'rm -rf "$work"' RETURN
+  aws_extra="$(backup_aws_args "$endpoint")"
+
+  local row svc db usr dump enc key
+  for row in $LUCAIRN_BACKUP_DBS; do
+    svc="${row%%:*}"; db="${row#*:}"; usr="${db##*:}"; db="${db%%:*}"
+    dump="$work/${db}-${stamp}.dump"
+    enc="${dump}.age"
+    key="${prefix}lucairn/${svc}/${db}-${stamp}.dump.age"
+
+    info "backup($db): pg_dump -Fc via $svc ..."
+    # shellcheck disable=SC2086
+    $dc -f "$compose_file" --env-file "$env_file" exec -T "$svc" \
+      pg_dump -U "$usr" -d "$db" -Fc > "$dump"
+    [ -s "$dump" ] || fail "backup($db): EMPTY DUMP from $svc"
+
+    info "backup($db): encrypting with age (client-side) ..."
+    age -r "$recipient" -o "$enc" "$dump"
+    rm -f "$dump"
+    head -c 16 "$enc" | grep -q "age-encryption.org" \
+      || fail "backup($db): encryption check FAILED — refusing to upload plaintext"
+
+    info "backup($db): uploading s3://${bucket}/${key} ..."
+    # shellcheck disable=SC2086
+    aws s3 cp "$enc" "s3://${bucket}/${key}" --region "$region" $aws_extra
+
+    if [ "$do_verify" -eq 1 ]; then
+      backup_verify_roundtrip "$enc" "$env_file" "$db" "$usr"
+    fi
+    rm -f "$enc"
+    info "backup($db): OK ${key}"
+  done
+
+  backup_prune "$bucket" "$region" "$prefix" "$retention" "$aws_extra"
+  info "backup: ok ($stamp)"
+}
+
+# Prune S3 objects older than retention days under each compliance-DB prefix.
+backup_prune() {
+  local bucket="$1" region="$2" prefix="$3" retention="$4" aws_extra="$5"
+  local cutoff
+  cutoff="$(date -u -d "-${retention} days" +%Y-%m-%d 2>/dev/null \
+    || date -u -v-"${retention}"d +%Y-%m-%d)"
+  info "backup: pruning objects older than ${retention} days (< ${cutoff}) ..."
+  local row svc p oldkey
+  for row in $LUCAIRN_BACKUP_DBS; do
+    svc="${row%%:*}"
+    p="${prefix}lucairn/${svc}/"
+    # shellcheck disable=SC2086
+    aws s3api list-objects-v2 --bucket "$bucket" --prefix "$p" --region "$region" $aws_extra \
+      --query "Contents[?LastModified<='${cutoff}'].Key" --output text 2>/dev/null \
+      | tr '\t' '\n' | while read -r oldkey; do
+          [ -n "$oldkey" ] && [ "$oldkey" != "None" ] || continue
+          info "backup: pruning s3://${bucket}/${oldkey}"
+          # shellcheck disable=SC2086
+          aws s3 rm "s3://${bucket}/${oldkey}" --region "$region" $aws_extra || true
+        done
+  done
+}
+
+# Decrypt an encrypted dump into a throwaway Postgres container and assert it
+# pg_restores cleanly + has non-zero rows. Used by `backup --verify`.
+backup_verify_roundtrip() {
+  local enc="$1" env_file="$2" db="$3" usr="$4"
+  local identity scratch
+  identity="$(env_value "$env_file" LUCAIRN_BACKUP_AGE_IDENTITY_FILE)"
+  [ -n "$identity" ] || fail "backup --verify: LUCAIRN_BACKUP_AGE_IDENTITY_FILE is empty — need the age private identity to decrypt"
+  require_file "$identity" "age identity file"
+
+  local work2 plain
+  work2="$(mktemp -d)"
+  plain="$work2/${db}.dump"
+  info "verify($db): decrypting + restoring into a throwaway postgres:16-alpine ..."
+  age -d -i "$identity" -o "$plain" "$enc"
+  [ -s "$plain" ] || { rm -rf "$work2"; fail "verify($db): decrypt produced empty output"; }
+
+  scratch="lucairn-bk-verify-${db}-$$"
+  docker run -d --rm --name "$scratch" \
+    -e POSTGRES_PASSWORD=verify -e POSTGRES_DB="$db" -e POSTGRES_USER="$usr" \
+    postgres:16-alpine >/dev/null
+  # `fail` does `exit 1`, which fires the EXIT trap (not the RETURN trap), so
+  # register the scratch-container teardown on BOTH so a hard failure mid-verify
+  # never leaks a running throwaway Postgres. EXIT runs once at script end.
+  # shellcheck disable=SC2064
+  trap "docker rm -f '$scratch' >/dev/null 2>&1 || true; rm -rf '$work2'" RETURN EXIT
+  local i ready=0
+  for i in $(seq 1 30); do
+    if docker exec "$scratch" pg_isready -U "$usr" -d "$db" >/dev/null 2>&1; then ready=1; break; fi
+    sleep 1
+  done
+  [ "$ready" -eq 1 ] || fail "verify($db): scratch postgres never became ready"
+  docker exec -i "$scratch" pg_restore -U "$usr" -d "$db" --no-owner --clean --if-exists < "$plain" \
+    || fail "verify($db): pg_restore failed"
+  local tables
+  tables="$(docker exec "$scratch" psql -U "$usr" -d "$db" -tAc \
+    "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" 2>/dev/null || echo 0)"
+  [ "${tables:-0}" -gt 0 ] || fail "verify($db): restored DB has zero public tables"
+  info "verify($db): OK — restored ${tables} public tables into throwaway DB"
+  # Clear the EXIT trap on success so a later DB's verify can register its own
+  # without this one's teardown firing for an already-removed container. The
+  # RETURN trap still fires now to clean THIS DB's scratch + workdir.
+  trap - EXIT
+}
+
+# lucairn restore --env customer.env --stamp STAMP [--compose FILE] [--db NAME]
+# Downloads + decrypts + pg_restores the chosen STAMP's dumps into the LIVE
+# compose compliance DBs. Restore into clean DBs only (the dump does not
+# truncate existing rows; --clean --if-exists drops+recreates objects).
+restore() {
+  local env_file="" compose_file="$ROOT/docker-compose.customer.yml" stamp="" only_db=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --env) env_file="$2"; shift 2 ;;
+      --compose) compose_file="$2"; shift 2 ;;
+      --stamp) stamp="$2"; shift 2 ;;
+      --db) only_db="$2"; shift 2 ;;
+      -h|--help) usage; return 0 ;;
+      *) fail "restore: unknown option: $1" ;;
+    esac
+  done
+  [ -n "$env_file" ] || fail "restore: --env customer.env is required"
+  [ -n "$stamp" ] || fail "restore: --stamp YYYYMMDDTHHMMSSZ is required (the backup timestamp to restore)"
+  require_file "$env_file" "env file"
+  backup_require_tools
+
+  local dc; dc="$(compose_cmd)"
+  [ -n "$dc" ] || fail "docker compose not available"
+
+  local bucket endpoint region prefix identity aws_extra
+  bucket="$(env_value "$env_file" LUCAIRN_BACKUP_S3_BUCKET)"
+  endpoint="$(env_value "$env_file" LUCAIRN_BACKUP_S3_ENDPOINT)"
+  region="$(env_value "$env_file" LUCAIRN_BACKUP_S3_REGION)"; [ -n "$region" ] || region="eu-central-1"
+  prefix="$(env_value "$env_file" LUCAIRN_BACKUP_S3_PREFIX)"
+  identity="$(env_value "$env_file" LUCAIRN_BACKUP_AGE_IDENTITY_FILE)"
+  [ -n "$bucket" ] || fail "restore: LUCAIRN_BACKUP_S3_BUCKET is empty in $env_file"
+  [ -n "$identity" ] || fail "restore: LUCAIRN_BACKUP_AGE_IDENTITY_FILE is empty in $env_file — need the age private identity to decrypt"
+  require_file "$identity" "age identity file"
+  aws_extra="$(backup_aws_args "$endpoint")"
+
+  local work; work="$(mktemp -d)"; trap 'rm -rf "$work"' RETURN
+  local row svc db usr key enc plain
+  for row in $LUCAIRN_BACKUP_DBS; do
+    svc="${row%%:*}"; db="${row#*:}"; usr="${db##*:}"; db="${db%%:*}"
+    if [ -n "$only_db" ] && [ "$db" != "$only_db" ]; then continue; fi
+    key="${prefix}lucairn/${svc}/${db}-${stamp}.dump.age"
+    enc="$work/${db}.dump.age"; plain="$work/${db}.dump"
+
+    info "restore($db): downloading s3://${bucket}/${key} ..."
+    # shellcheck disable=SC2086
+    aws s3 cp "s3://${bucket}/${key}" "$enc" --region "$region" $aws_extra \
+      || fail "restore($db): download failed — check the --stamp and bucket"
+    info "restore($db): decrypting ..."
+    age -d -i "$identity" -o "$plain" "$enc"
+    [ -s "$plain" ] || fail "restore($db): decrypt produced empty output"
+
+    info "restore($db): pg_restore --clean --if-exists into LIVE $svc ..."
+    # shellcheck disable=SC2086
+    $dc -f "$compose_file" --env-file "$env_file" exec -T "$svc" \
+      pg_restore -U "$usr" -d "$db" --no-owner --clean --if-exists < "$plain" \
+      || fail "restore($db): pg_restore failed"
+    info "restore($db): OK"
+  done
+  info "restore: ok ($stamp)"
+}
+
 main() {
   local cmd="${1:-}"
   case "$cmd" in
     doctor) shift; doctor "$@" ;;
     support-bundle) shift; support_bundle "$@" ;;
     bundle) shift; bundle_command "$@" ;;
+    backup) shift; backup "$@" ;;
+    restore) shift; restore "$@" ;;
     -h|--help|"") usage ;;
     *) fail "unknown command: $cmd" ;;
   esac
