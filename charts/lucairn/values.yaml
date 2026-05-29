@@ -103,6 +103,107 @@ global:
   # § "v1.0 chart-default TLS posture".
   dsaEnv: development
 
+# ---------------------------------------------------------------------------
+# Automated offsite compliance-DB backups (WS-2 / HA-01).
+# ---------------------------------------------------------------------------
+#
+# Scheduled, encrypted, offsite logical backups of the THREE compliance
+# databases — audit (AI Act Art. 12 / GDPR Art. 30 immutable trail),
+# id-bridge (GDPR re-linkage / DSAR tokens), and veil-witness (signed cert
+# chain). One Helm CronJob per compliance DB runs `pg_dump -Fc` → client-side
+# encrypt (age) → upload to a configured S3-compatible bucket, then prunes
+# objects older than `retentionDays`.
+#
+# DEFAULT OFF. Existing installs do not surprise-change; demo/pilot and new
+# customers opt in with `backup.enabled: true`. The Compose path has the
+# matching `bin/lucairn backup` / `bin/lucairn restore` wrapper.
+#
+# Builds ON TOP of the PVC `helm.sh/resource-policy: keep` safety net (#42):
+# keep stops accidental delete-on-uninstall, backups give real offsite
+# durability + a tested restore path.
+#
+# DATA-08 crypto-shred caveat (documented in OPS.md): an encrypted backup
+# contains the wrapped DEKs that were live at dump time. After a record is
+# crypto-shredded (its wrapped key destroyed in the live DB), that record's
+# wrapped key still persists inside any backup taken before the shred, until
+# that backup ages out per `retentionDays`. Set `retentionDays` no lower than
+# the customer's audit-evidence retention obligation AND account for this
+# shred-vs-backup-aging window.
+backup:
+  # Master on/off. OFF by default (opt-in).
+  enabled: false
+  # Cron schedule (CronJob spec.schedule). Default 02:30 UTC daily.
+  # RPO == this interval (default 24h). See OPS.md § Backups for RPO/RTO.
+  schedule: "30 2 * * *"
+  # Prune backup objects older than this many days. Default 30.
+  # COMPLIANCE: must be >= your audit-evidence retention obligation. Do NOT
+  # lower below your regulator-mandated retention. See the DATA-08 caveat above.
+  retentionDays: 30
+  # Backup container image. Must contain `pg_dump`/`pg_restore` (matching the
+  # bundled Postgres major, 16), plus `age` (client-side encryption) and an
+  # S3 client (`aws`). Default reuses the bundled postgres image and installs
+  # `age` + `aws-cli` at job start via apk (needs egress to the alpine repo +
+  # the S3 endpoint at run time). For air-gapped sites, override with a
+  # pre-baked private image that bundles pg_dump + age + aws.
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+    # When true, the entrypoint runs `apk add age aws-cli` before the dump.
+    # Set false ONLY if your image already bundles age + aws (air-gapped).
+    installToolsAtRuntime: true
+  # Resource requests/limits for the backup pod.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  # CronJob history + concurrency knobs.
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  # Forbid overlapping runs (a long dump must not collide with the next tick).
+  concurrencyPolicy: Forbid
+  # Fail the Job (and surface in `kubectl get cronjob`) after this many seconds.
+  activeDeadlineSeconds: 3600
+  backoffLimit: 2
+  # S3-compatible destination. Works with AWS S3, Hetzner Object Storage,
+  # MinIO, Ceph RGW, etc. Customer-supplied bucket OR an operator-run default —
+  # the operator chooses; no new sub-processor is forced.
+  s3:
+    # S3 API endpoint. For AWS S3 leave blank to use the AWS default for the
+    # region; for Hetzner/MinIO set e.g. https://nbg1.your-objectstorage.com
+    # or https://minio.internal:9000.
+    endpoint: ""
+    bucket: ""        # REQUIRED when backup.enabled — the destination bucket.
+    region: "eu-central-1"
+    # Optional key prefix inside the bucket (e.g. "lucairn/acme-prod/").
+    prefix: ""
+    # Force path-style addressing (MinIO / Ceph / most non-AWS endpoints).
+    forcePathStyle: true
+    # K8s Secret refs for the S3 credentials. NEVER inline the values here —
+    # pre-create the Secret(s) and reference by name + key. Both may point at
+    # the same Secret with different keys. Leave name empty to use IRSA /
+    # instance-role credentials (AWS-native, no static keys).
+    accessKeySecretRef:
+      name: ""        # e.g. lucairn-backup-s3
+      key: "accessKeyId"
+    secretKeySecretRef:
+      name: ""        # e.g. lucairn-backup-s3
+      key: "secretAccessKey"
+  # Client-side encryption. The dump is encrypted with `age` BEFORE upload so
+  # the bucket never holds plaintext compliance data. Provide an age recipient
+  # (public key, `age1...`) or an SSH recipient via the Secret. The matching
+  # private identity is held by the operator OUTSIDE the cluster and is
+  # required to restore — losing it makes every backup unrecoverable.
+  encryption:
+    # K8s Secret holding the age RECIPIENT (public key). Key default `recipient`.
+    # Multiple recipients (newline-separated) are supported by age.
+    recipientSecretRef:
+      name: ""        # REQUIRED when backup.enabled — e.g. lucairn-backup-age
+      key: "recipient"
+
 infrastructure:
   enabled: true
 

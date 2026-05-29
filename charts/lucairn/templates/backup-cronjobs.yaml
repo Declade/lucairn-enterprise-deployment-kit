@@ -1,0 +1,241 @@
+{{- /*
+  WS-2 / HA-01 — automated offsite compliance-DB backups.
+
+  One CronJob per compliance database (audit / id-bridge / veil-witness).
+  Each job:
+    1. pg_dump -Fc the source DB (logical custom-format dump),
+    2. client-side encrypt the dump with `age` (recipient from a Secret) so
+       the bucket NEVER holds plaintext compliance data,
+    3. upload the encrypted artifact to the configured S3-compatible bucket,
+    4. prune objects older than backup.retentionDays.
+
+  Gated by backup.enabled (default OFF). Each per-DB CronJob ALSO renders only
+  when its source subchart is enabled AND bundles its own Postgres
+  (postgresql.enabled) — an external/customer-managed Postgres
+  (postgresql.enabled=false) has no in-cluster pod/Secret to dump and is the
+  operator's own backup responsibility (documented in OPS.md).
+
+  Half-config (enabled without bucket / age recipient) fails fast via
+  validators.backupHalfConfig in _validators.tpl.
+
+  Cross-namespace note: each CronJob runs in its source DB's namespace
+  (dsa-audit / dsa-bridge / dsa-witness) so it can reach the Postgres Service
+  and read the per-chart credentials Secret (POSTGRES_PASSWORD) without
+  cross-namespace Secret copies. S3 creds + age recipient Secrets must exist in
+  EACH of those namespaces (OPS.md documents the pre-create step).
+*/ -}}
+{{- $backup := (default dict .Values.backup) -}}
+{{- if $backup.enabled -}}
+{{- $s3 := (default dict $backup.s3) -}}
+{{- $enc := (default dict $backup.encryption) -}}
+{{- $recRef := (default dict $enc.recipientSecretRef) -}}
+{{- $akRef := (default dict $s3.accessKeySecretRef) -}}
+{{- $skRef := (default dict $s3.secretKeySecretRef) -}}
+{{- $img := (default dict $backup.image) -}}
+{{- /* The three compliance DBs. service/secret names follow the subchart
+       convention `<chart>-postgresql` / `<chart>-credentials`; db + user come
+       from each subchart's postgresql block. valuesKey is how the subchart is
+       keyed in the umbrella .Values (hyphenated for id-bridge). */ -}}
+{{- $dbs := list
+  (dict "name" "audit"        "valuesKey" "audit"        "defaultNs" "dsa-audit"   "defaultUser" "dsa"  "defaultDb" "audit")
+  (dict "name" "id-bridge"    "valuesKey" "id-bridge"    "defaultNs" "dsa-bridge"  "defaultUser" "dsa"  "defaultDb" "bridge")
+  (dict "name" "veil-witness" "valuesKey" "veil-witness" "defaultNs" "dsa-witness" "defaultUser" "veil" "defaultDb" "veil")
+-}}
+{{- range $db := $dbs -}}
+{{- $sub := (default dict (index $.Values $db.valuesKey)) -}}
+{{- /* Default-enabled subcharts: treat missing `enabled` as true (matches the
+       umbrella default in values.yaml). */ -}}
+{{- $subEnabled := true -}}
+{{- if hasKey $sub "enabled" -}}{{- $subEnabled = $sub.enabled -}}{{- end -}}
+{{- $pg := (default dict $sub.postgresql) -}}
+{{- /* postgresql.enabled defaults true in every compliance subchart. */ -}}
+{{- $pgEnabled := true -}}
+{{- if hasKey $pg "enabled" -}}{{- $pgEnabled = $pg.enabled -}}{{- end -}}
+{{- if and $subEnabled $pgEnabled -}}
+{{- $ns := (default $db.defaultNs $sub.namespace) -}}
+{{- $user := (default $db.defaultUser $pg.user) -}}
+{{- $database := (default $db.defaultDb $pg.database) -}}
+{{- $svc := printf "%s-postgresql" $db.name -}}
+{{- $credSecret := printf "%s-credentials" $db.name -}}
+{{- $sslmode := (default "disable" (default dict $.Values.global).postgresqlSslmode) }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: lucairn-backup-{{ $db.name }}
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: lucairn-backup
+    app.kubernetes.io/component: compliance-db-backup
+    app.kubernetes.io/part-of: dsa
+    lucairn.eu/compliance-db: {{ $db.name }}
+spec:
+  schedule: {{ $backup.schedule | quote }}
+  concurrencyPolicy: {{ default "Forbid" $backup.concurrencyPolicy }}
+  successfulJobsHistoryLimit: {{ default 3 $backup.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ default 3 $backup.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ default 2 $backup.backoffLimit }}
+      activeDeadlineSeconds: {{ default 3600 $backup.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: lucairn-backup
+            app.kubernetes.io/component: compliance-db-backup
+            lucairn.eu/compliance-db: {{ $db.name }}
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            fsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          {{- with (default dict $.Values.global).imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: backup
+              image: "{{ default "postgres" $img.repository }}:{{ default "16-alpine" $img.tag }}"
+              imagePullPolicy: {{ default "IfNotPresent" $img.pullPolicy }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                # apk add (installToolsAtRuntime) needs a writable rootfs, so
+                # readOnlyRootFilesystem is left default here. Air-gapped sites
+                # using a pre-baked image (installToolsAtRuntime=false) can
+                # harden this further; the chart keeps the default permissive
+                # so the runtime-install path works out of the box.
+                capabilities:
+                  drop: ["ALL"]
+              command: ["/bin/sh", "-c"]
+              # The entrypoint is fully STATIC shell (no Helm directives inside
+              # the block scalar — every per-DB value is injected via env vars
+              # below) so the YAML block scalar indentation is never disturbed
+              # by template trim markers.
+              args:
+                - |
+                  set -eu
+                  STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+                  WORK="$(mktemp -d)"
+                  DUMP="${WORK}/${BK_DB}-${STAMP}.dump"
+                  ENC="${DUMP}.age"
+                  PREFIX="${BK_S3_PREFIX}lucairn/${BK_NAME}/"
+                  KEY="${PREFIX}${BK_DB}-${STAMP}.dump.age"
+
+                  AWS_ARGS=""
+                  if [ -n "${BK_S3_ENDPOINT}" ]; then
+                    AWS_ARGS="--endpoint-url ${BK_S3_ENDPOINT}"
+                  fi
+
+                  if [ "${BK_INSTALL_TOOLS}" = "true" ]; then
+                    echo "backup(${BK_NAME}): installing age + aws-cli ..."
+                    apk add --no-cache age aws-cli >/dev/null
+                  fi
+
+                  echo "backup(${BK_NAME}): pg_dump -Fc ${DUMP} ..."
+                  export PGPASSWORD="${POSTGRES_PASSWORD}"
+                  export PGSSLMODE="${BK_SSLMODE}"
+                  pg_dump -h "${BK_PGHOST}" -p 5432 -U "${BK_PGUSER}" \
+                    -d "${BK_DB}" -Fc \
+                    > "${DUMP}"
+                  test -s "${DUMP}" || { echo "backup(${BK_NAME}): EMPTY DUMP — aborting" >&2; exit 1; }
+
+                  echo "backup(${BK_NAME}): encrypting with age (client-side) ..."
+                  # RECIPIENT is the age public key (age1... or ssh-...). The
+                  # matching private identity lives OUTSIDE the cluster.
+                  age -r "${RECIPIENT}" -o "${ENC}" "${DUMP}"
+                  rm -f "${DUMP}"
+                  # Defensive: the uploaded object must be age-encrypted, never
+                  # a raw pg_dump. age files start with the "age-encryption.org"
+                  # header magic; a custom-format pg_dump starts with "PGDMP".
+                  head -c 16 "${ENC}" | grep -q "age-encryption.org" \
+                    || { echo "backup(${BK_NAME}): encryption check FAILED — refusing to upload plaintext" >&2; exit 1; }
+
+                  echo "backup(${BK_NAME}): uploading s3://${BK_S3_BUCKET}/${KEY} ..."
+                  aws s3 cp "${ENC}" "s3://${BK_S3_BUCKET}/${KEY}" \
+                    --region "${BK_S3_REGION}" ${AWS_ARGS}
+
+                  echo "backup(${BK_NAME}): pruning objects older than ${BK_RETENTION_DAYS} days ..."
+                  CUTOFF="$(date -u -d "-${BK_RETENTION_DAYS} days" +%Y-%m-%d 2>/dev/null \
+                    || date -u -v-"${BK_RETENTION_DAYS}"d +%Y-%m-%d)"
+                  aws s3api list-objects-v2 --bucket "${BK_S3_BUCKET}" --prefix "${PREFIX}" \
+                    --region "${BK_S3_REGION}" ${AWS_ARGS} \
+                    --query "Contents[?LastModified<='${CUTOFF}'].Key" --output text 2>/dev/null \
+                    | tr '\t' '\n' | while read -r OLDKEY; do
+                        [ -n "${OLDKEY}" ] && [ "${OLDKEY}" != "None" ] || continue
+                        echo "backup(${BK_NAME}): pruning s3://${BK_S3_BUCKET}/${OLDKEY}"
+                        aws s3 rm "s3://${BK_S3_BUCKET}/${OLDKEY}" \
+                          --region "${BK_S3_REGION}" ${AWS_ARGS} || true
+                      done
+
+                  rm -rf "${WORK}"
+                  echo "backup(${BK_NAME}): OK ${KEY}"
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: BK_NAME
+                  value: {{ $db.name | quote }}
+                - name: BK_DB
+                  value: {{ $database | quote }}
+                - name: BK_PGHOST
+                  value: {{ $svc | quote }}
+                - name: BK_PGUSER
+                  value: {{ $user | quote }}
+                - name: BK_SSLMODE
+                  value: {{ $sslmode | quote }}
+                - name: BK_INSTALL_TOOLS
+                  value: {{ default true $img.installToolsAtRuntime | quote }}
+                - name: BK_RETENTION_DAYS
+                  value: {{ default 30 $backup.retentionDays | quote }}
+                - name: BK_S3_BUCKET
+                  value: {{ $s3.bucket | quote }}
+                - name: BK_S3_REGION
+                  value: {{ default "eu-central-1" $s3.region | quote }}
+                - name: BK_S3_ENDPOINT
+                  value: {{ default "" $s3.endpoint | quote }}
+                - name: BK_S3_PREFIX
+                  value: {{ default "" $s3.prefix | quote }}
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $credSecret }}
+                      key: POSTGRES_PASSWORD
+                - name: RECIPIENT
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $recRef.name }}
+                      key: {{ default "recipient" $recRef.key }}
+                {{- if $akRef.name }}
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $akRef.name }}
+                      key: {{ default "accessKeyId" $akRef.key }}
+                {{- end }}
+                {{- if $skRef.name }}
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $skRef.name }}
+                      key: {{ default "secretAccessKey" $skRef.key }}
+                {{- end }}
+                {{- if $s3.forcePathStyle }}
+                - name: AWS_S3_FORCE_PATH_STYLE
+                  value: "true"
+                {{- end }}
+              {{- with $backup.resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}
+{{ end }}
+{{- end }}
+{{- end }}
