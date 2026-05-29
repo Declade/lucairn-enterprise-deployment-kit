@@ -3146,7 +3146,12 @@ backup() {
     info "backup($db): encrypting with age (client-side) ..."
     age -r "$recipient" -o "$enc" "$dump"
     rm -f "$dump"
-    head -c 16 "$enc" | grep -q "age-encryption.org" \
+    # Defensive: the uploaded object must be age-encrypted, never a raw
+    # pg_dump. age v1 files begin with the literal "age-encryption.org/v1"
+    # (21 bytes); a custom-format pg_dump begins with "PGDMP". Read >= the
+    # full magic before grepping — a 16-byte slice TRUNCATES the 18-char
+    # needle and can NEVER match, which would abort every valid backup.
+    head -c 64 "$enc" | grep -q "age-encryption.org" \
       || fail "backup($db): encryption check FAILED — refusing to upload plaintext"
 
     info "backup($db): uploading s3://${bucket}/${key} ..."

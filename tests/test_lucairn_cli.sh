@@ -337,4 +337,38 @@ set -e
 [ "$RS_STATUS" -ne 0 ] || { echo "restore without --stamp should have failed" >&2; exit 1; }
 grep -q -- "--stamp" "$TMPDIR/rs.out"
 
+# Regression guard (HA-01): the plaintext-upload check must read >= the full
+# age v1 magic ("age-encryption.org/v1", 21 bytes). `head -c 16` truncates the
+# 18-char needle and can NEVER match, aborting every valid backup. Assert the
+# source uses head -c 64 and the broken 16-byte read is gone.
+grep -q 'head -c 64 "$enc" | grep -q "age-encryption.org"' "$ROOT/bin/lucairn" \
+  || { echo "backup plaintext guard must read >= 64 bytes" >&2; exit 1; }
+if grep -q 'head -c 16 "$enc"' "$ROOT/bin/lucairn"; then
+  echo "backup plaintext guard still uses head -c 16 (truncated needle)" >&2; exit 1
+fi
+
+# Runtime round-trip of the guard logic itself, when age is available: an
+# age-encrypted file MUST pass `head -c 64 | grep age-encryption.org`, and a
+# raw pg_dump (PGDMP magic) MUST fail it. This exercises the actual byte math
+# without needing docker / S3.
+if command -v age >/dev/null 2>&1; then
+  AGEKEY="$TMPDIR/guard.key"
+  age-keygen -o "$AGEKEY" 2>"$TMPDIR/guard.pub"
+  REC="$(grep 'public key:' "$TMPDIR/guard.pub" | awk '{print $NF}')"
+  printf 'PGDMP raw custom-format dump content that must be rejected' > "$TMPDIR/guard.dump"
+  age -r "$REC" -o "$TMPDIR/guard.enc" "$TMPDIR/guard.dump"
+  head -c 64 "$TMPDIR/guard.enc" | grep -q "age-encryption.org" \
+    || { echo "guard FALSE-NEGATIVE: encrypted file failed the head -c 64 check" >&2; exit 1; }
+  if head -c 64 "$TMPDIR/guard.dump" | grep -q "age-encryption.org"; then
+    echo "guard FALSE-POSITIVE: raw PGDMP dump passed the encryption check" >&2; exit 1
+  fi
+  # Prove the old broken read would have wrongly rejected the encrypted file.
+  if head -c 16 "$TMPDIR/guard.enc" | grep -q "age-encryption.org"; then
+    echo "unexpected: head -c 16 matched (age header changed?)" >&2; exit 1
+  fi
+  echo "lucairn backup plaintext-guard byte-math test: ok (encrypted passes, raw rejected, 16-byte read proven broken)"
+else
+  echo "lucairn backup plaintext-guard byte-math test: skipped (age not installed)"
+fi
+
 echo "lucairn backup/restore CLI guard tests: ok"

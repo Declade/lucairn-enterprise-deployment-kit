@@ -328,7 +328,10 @@ Helm path (download + decrypt on a secured operator host, then pipe into the
 live pod):
 
 ```bash
-KEY="lucairn/postgres-audit/audit-20260529T023000Z.dump.age"
+# NOTE the key prefix: the Helm CronJob writes under the CHART name
+# (lucairn/audit/ , lucairn/id-bridge/ , lucairn/veil-witness/) — NOT the
+# compose service name. See "S3 key prefixes differ between paths" below.
+KEY="lucairn/audit/audit-20260529T023000Z.dump.age"
 aws s3 cp "s3://my-compliance-backups/${KEY}" ./audit.dump.age
 age -d -i lucairn-backup-age.key -o ./audit.dump ./audit.dump.age
 PW="$(kubectl -n dsa-audit get secret audit-credentials \
@@ -337,6 +340,18 @@ kubectl -n dsa-audit exec -i audit-postgresql-0 -- \
   env PGPASSWORD="$PW" pg_restore -U dsa -d audit --no-owner --clean --if-exists \
   < ./audit.dump
 ```
+
+> **S3 key prefixes differ between the Helm and Compose paths — they are NOT
+> interoperable.** The Helm CronJob keys backups under the **chart** name:
+> `lucairn/audit/`, `lucairn/id-bridge/`, `lucairn/veil-witness/`. The Compose
+> `bin/lucairn backup` keys them under the **compose service** name:
+> `lucairn/postgres-audit/`, `lucairn/postgres-bridge/`, `lucairn/postgres-veil/`.
+> A backup taken by one path will NOT be found by the other path's restore (it
+> lives under a different prefix). Restore each path with its own runbook, or
+> use the same `s3.prefix` only if you never mix the two backup mechanisms
+> against one bucket. The underlying dump format (`pg_dump -Fc`) is identical,
+> so a manual `aws s3 cp` + `age -d` + `pg_restore` works against either prefix
+> if you point at the right key.
 
 > **Least-privilege role note (KIT-2 open question):** the audit/veil services
 > connect at runtime as the least-privilege append-only roles (`audit_app` /

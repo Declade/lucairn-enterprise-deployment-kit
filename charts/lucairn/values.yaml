@@ -149,8 +149,12 @@ backup:
     repository: postgres
     tag: "16-alpine"
     pullPolicy: IfNotPresent
-    # When true, the entrypoint runs `apk add age aws-cli` before the dump.
-    # Set false ONLY if your image already bundles age + aws (air-gapped).
+    # When true, a ROOT initContainer runs `apk add age aws-cli` and stages the
+    # binaries into a shared volume that the non-root main container puts on
+    # PATH. `apk` requires root (it writes /usr/bin, /lib/apk/db, /var/cache/apk)
+    # so it cannot run in the main container, which is locked to uid 65534.
+    # Set false ONLY if your image already bundles age + aws (air-gapped) — then
+    # no initContainer is rendered and nothing runs as root.
     installToolsAtRuntime: true
   # Resource requests/limits for the backup pod.
   resources:
