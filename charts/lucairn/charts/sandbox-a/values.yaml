@@ -116,7 +116,7 @@ sanitizer:
     # (e.g. ghcr.io/declade) so this resolves to ghcr.io/declade/dsa-sanitizer.
     # Override per-environment if you mirror images.
     repository: dsa-sanitizer
-    # Empty `tag` falls through to `.Values.global.imageTag` (0.4.0 today)
+    # Empty `tag` falls through to `.Values.global.imageTag` (0.5.0 today)
     # so the side-car stays in lockstep with the rest of the kit.
     tag: ""
     pullPolicy: IfNotPresent

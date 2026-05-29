@@ -16,7 +16,7 @@ global:
   # are pulled from a public mirror (no auth needed) and no
   # imagePullDockerConfigJson is provided. Default false — the guard fires.
   skipPullSecretGuard: false
-  imageTag: "0.4.0" # NOTE: dashboard sub-chart ships independently — dashboard image is pinned in the dashboard.image.tag block below (currently 0.8.1).
+  imageTag: "0.5.0" # NOTE: dashboard sub-chart ships independently — dashboard image is pinned in the dashboard.image.tag block below (currently 0.8.1).
   # Slice 4 — namespace of the bundled observability sub-chart (Grafana
   # + Loki + Tempo). The dashboard sub-chart's secret-grafana-jwt.yaml
   # mirrors the Helm-generated shared secret into this namespace so the
