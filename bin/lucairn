@@ -3608,13 +3608,49 @@ verify_images() {
   local digests_file="$ROOT/keys/image-digests-${tag}.txt"
   [ -f "$digests_file" ] || fail "verify-images: no signed-digest record for tag '$tag' (expected $digests_file). This release was not signed, or the tag is wrong."
 
+  # ---- FIX-A: canonical EXPECTED artifact set (membership + cardinality) ----
+  # The digests file is the verify SOURCE, but it must contain EXACTLY the
+  # artifacts Lucairn publishes for a release — no more, no fewer, no dups. A
+  # truncated/trimmed file (e.g. one entry) must NOT pass as "all verified".
+  #
+  # SINGLE SOURCE OF TRUTH for the release image set. If a future release
+  # legitimately adds/removes an image, update THIS list (and the dashboard
+  # pin below) — it is the one place verify-images keys off.
+  #
+  # The 12 dsa-* services ride the release --tag (default 0.5.0); the dashboard
+  # ships on its OWN independent cadence and is pinned here (currently 0.8.2),
+  # mirroring optional_services.lucairn-dashboard.image_tag in image-manifest.yaml
+  # and the 10 dashboard-tag surfaces documented in customer.env.example.
+  local dsa_images=(
+    dsa-gateway dsa-sanitizer dsa-audit dsa-id-bridge dsa-sandbox-a dsa-sandbox-b
+    dsa-veil-witness dsa-reid-guard dsa-admin dsa-demo dsa-ingest dsa-llm-auditor
+  )
+  local dashboard_image="lucairn-dashboard"
+  local dashboard_tag="0.8.2"   # FIX-A: dashboard's own pinned tag (NOT --tag)
+  local canonical_host="ghcr.io/declade"
+
+  # Build the expected recorded-ref set (as the digests file records them, i.e.
+  # BEFORE any --registry mirror override; the file is canonical-host-pinned).
+  # Bash 3.2 compatible (Slice 2 lesson #7): indexed arrays only, no `local -A`.
+  local -a expected_refs=()
+  local _img
+  for _img in "${dsa_images[@]}"; do
+    expected_refs+=("${canonical_host}/${_img}:${tag}")
+  done
+  expected_refs+=("${canonical_host}/${dashboard_image}:${dashboard_tag}")
+
   local failed=0 checked=0 line ref recorded current out rc repo repo_tag
   info "verify-images: verifying cosign signatures BY DIGEST against $key"
   info "verify-images: tag=$tag  record=$digests_file  (+ Rekor transparency log)"
+  info "verify-images: expecting EXACTLY ${#expected_refs[@]} artifacts (${#dsa_images[@]} dsa-* @ $tag + $dashboard_image @ $dashboard_tag)"
   [ -n "$registry" ] && info "verify-images: registry override: $registry"
   echo
 
-  # Read the digests file as the single source of the verify set.
+  # ---- Pass 1: load the digests file into PARALLEL indexed arrays (ref[i] ->
+  # digest[i]) and detect malformed lines + DUPLICATE refs. No associative
+  # arrays — bash 3.2 has none — so membership is a linear scan (the set is ~13).
+  local -a file_refs=() file_digests=()
+  local i seen
   while IFS= read -r line || [ -n "$line" ]; do
     # Strip comments + blank lines.
     line="${line%%#*}"
@@ -3627,8 +3663,55 @@ verify_images() {
     # A well-formed entry is "<repo>:<tag> <sha256:...>"; the digest must parse.
     case "$recorded" in
       sha256:*) ;;
-      *) echo "FAIL  $ref (malformed digest record — expected '<repo>:<tag> sha256:...', got: '$line')" >&2; failed=$((failed + 1)); checked=$((checked + 1)); continue ;;
+      *) fail "verify-images: malformed digest record for '$ref' in $digests_file — expected '<repo>:<tag> sha256:...', got: '$line'" ;;
     esac
+    # DUPLICATE detection: ref already recorded -> hard FAIL.
+    seen=0
+    for i in "${file_refs[@]:+${file_refs[@]}}"; do
+      [ "$i" = "$ref" ] && { seen=1; break; }
+    done
+    [ "$seen" -eq 0 ] || fail "verify-images: DUPLICATE entry for '$ref' in $digests_file — each artifact must appear exactly once."
+    file_refs+=("$ref")
+    file_digests+=("$recorded")
+  done < "$digests_file"
+
+  # ---- FIX-A: assert EXACT membership of the expected set against the file.
+  # MISSING: an expected artifact is not recorded -> hard FAIL (truncation).
+  local -a missing=() unexpected=()
+  local want have found
+  for want in "${expected_refs[@]}"; do
+    found=0
+    for have in "${file_refs[@]:+${file_refs[@]}}"; do
+      [ "$have" = "$want" ] && { found=1; break; }
+    done
+    [ "$found" -eq 1 ] || missing+=("$want")
+  done
+  # UNEXPECTED: a recorded artifact is not in the canonical set -> hard FAIL.
+  for have in "${file_refs[@]:+${file_refs[@]}}"; do
+    found=0
+    for want in "${expected_refs[@]}"; do
+      [ "$want" = "$have" ] && { found=1; break; }
+    done
+    [ "$found" -eq 1 ] || unexpected+=("$have")
+  done
+  if [ "${#missing[@]}" -gt 0 ] || [ "${#unexpected[@]}" -gt 0 ]; then
+    echo "verify-images: FAILED — $digests_file does not match the expected artifact set." >&2
+    [ "${#missing[@]}" -gt 0 ]    && echo "  MISSING (expected but not recorded):    ${missing[*]}" >&2
+    [ "${#unexpected[@]}" -gt 0 ] && echo "  UNEXPECTED (recorded but not expected):  ${unexpected[*]}" >&2
+    echo "  Expected exactly ${#expected_refs[@]} artifacts; the canonical set lives in verify_images() (dsa_images + dashboard pin)." >&2
+    return 1
+  fi
+
+  # ---- Pass 2: per-image digest verify, in canonical order. set -e-safe so
+  # one cosign failure does NOT abort the loop (FIX-B) — every image is checked
+  # and accounted, and the summary reports ALL failures.
+  for ref in "${expected_refs[@]}"; do
+    # Look up the recorded digest for this expected ref (linear scan; verified
+    # present by the membership check above).
+    recorded=""
+    for i in $(seq 0 $(( ${#file_refs[@]} - 1 ))); do
+      if [ "${file_refs[$i]}" = "$ref" ]; then recorded="${file_digests[$i]}"; break; fi
+    done
 
     # Apply optional mirror override: swap the registry+org host prefix, keep
     # the trailing <repo>:<tag>. Recorded ref is <host>/<org>/<repo>:<tag>.
@@ -3655,8 +3738,13 @@ verify_images() {
     fi
 
     # 2. cosign verify against the recorded digest; capture output; require a
-    #    transparency-log entry before PASS (FIX-3).
-    out="$(cosign verify --key "$key" --output json "${repo}@${recorded}" 2>&1)"; rc=$?
+    #    transparency-log entry before PASS (FIX-3). FIX-B: the `if` guard keeps
+    #    a nonzero cosign exit from tripping `set -e` so the loop continues.
+    if out="$(cosign verify --key "$key" --output json "${repo}@${recorded}" 2>&1)"; then
+      rc=0
+    else
+      rc=$?
+    fi
     if [ "$rc" -ne 0 ]; then
       echo "FAIL  ${repo}@${recorded} (cosign verify failed: $(printf '%s' "$out" | tail -n1))" >&2
       failed=$((failed + 1))
@@ -3668,7 +3756,7 @@ verify_images() {
       continue
     fi
     info "PASS  ${repo}@${recorded}  (signature valid + Rekor entry present)"
-  done < "$digests_file"
+  done
 
   echo
   if [ "$checked" -eq 0 ]; then
