@@ -92,7 +92,13 @@ data:
         ollama_url: "http://ollama-identity:11434"
         model: "qwen2.5:7b"
         timeout_seconds: {{ .Values.sanitizer.llmScanTimeout | default 30 }}
-        fallback_on_error: "continue"
+        # FAIL-01 (PRD prd-2026-05-29-fail-safe-scrubber): fail-CLOSED. When the
+        # L3 deep PII shield (on-device Qwen via Ollama) is unavailable, the
+        # sanitizer returns a 503 l3_scrubber_unavailable rather than silently
+        # shipping a request with only L1+L2 coverage. The effective fail-mode
+        # is governed by the LUCAIRN_L3_REQUIRED env var (default true → reject);
+        # operators set it to "false" per deployment to restore continue-mode.
+        fallback_on_error: "reject"
         # Default sequential (TOB-003 fix, 2026-05-09): "ensemble" silently
         # changes cert payload shape across ALL customers regardless of the
         # per-request enable_l3_reversals flag. Pro/Enterprise overlays opt in
