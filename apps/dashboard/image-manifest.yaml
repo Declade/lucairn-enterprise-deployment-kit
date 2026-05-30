@@ -128,8 +128,8 @@ optional_services:
 # digest — complementary checks.
 #
 # `pending: true` entries have a schema slot but no recorded digest yet (filled
-# during the digest-pin ceremony — see docs/operations/key-ceremony-runbook.md
-# § Digest-pin ceremony). doctor --strict SKIPS pending entries (warn, never
+# during the digest-pin ceremony — see OPS.md § "Digest-pin enforcement
+# (doctor --strict)"). doctor --strict SKIPS pending entries (warn, never
 # block) so a fresh install is never broken by an un-filled slot.
 #
 # Format per entry:

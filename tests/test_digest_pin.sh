@@ -110,10 +110,10 @@ make_kit_root() {
   cat > "$kroot/bin/drive.sh" <<'DRV'
 #!/usr/bin/env bash
 set -uo pipefail
-envf="$1"; strict="$2"
+envf="$1"; strict="$2"; offline="${3:-0}"
 set --                                  # empty args -> sourced `main` is harmless
 source "$(dirname "$0")/lucairn" >/dev/null 2>&1
-check_image_digests "$envf" "$strict"
+check_image_digests "$envf" "$strict" "$offline"
 DRV
   chmod +x "$kroot/bin/drive.sh"
   printf '%s' "$kroot"
@@ -130,6 +130,30 @@ make_stub_crane() {
 #!/usr/bin/env bash
 # crane digest <ref>
 ref="\$2"
+rec="\$(awk -v want="\$ref" '
+  /^[[:space:]]*ref:[[:space:]]*/ { r=\$0; sub(/^[[:space:]]*ref:[[:space:]]*/,"",r); gsub(/"/,"",r); cur=r; next }
+  /^[[:space:]]*digest:[[:space:]]*/ { d=\$0; sub(/^[[:space:]]*digest:[[:space:]]*/,"",d); gsub(/"/,"",d); if (cur==want) { print d; exit } }
+' "$stub_manifest")"
+if [ -n "\$rec" ]; then echo "\$rec"; else echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; fi
+CR
+  chmod +x "$shim/crane"
+  printf '%s' "$shim"
+}
+
+# A stub crane that resolves every ref to its recorded digest EXCEPT one target
+# ref, for which it emits NOTHING (exit 1) — modelling the induced-empty/error
+# resolution an attacker would force for the single ref they swap. The resolver
+# IS present (crane is on PATH), so check_image_digests sees this as UNRESOLVED,
+# not "no resolver". This is the fail-OPEN HIGH case.
+make_stub_crane_empty_for() {
+  # $1 = manifest whose recorded digests the stub echoes; $2 = ref to blank out
+  local stub_manifest="$1" target_ref="$2" shim
+  shim="$(mktemp -d)"
+  cat > "$shim/crane" <<CR
+#!/usr/bin/env bash
+# crane digest <ref>
+ref="\$2"
+if [ "\$ref" = "$target_ref" ]; then exit 1; fi   # induced empty/error for the swapped ref
 rec="\$(awk -v want="\$ref" '
   /^[[:space:]]*ref:[[:space:]]*/ { r=\$0; sub(/^[[:space:]]*ref:[[:space:]]*/,"",r); gsub(/"/,"",r); cur=r; next }
   /^[[:space:]]*digest:[[:space:]]*/ { d=\$0; sub(/^[[:space:]]*digest:[[:space:]]*/,"",d); gsub(/"/,"",d); if (cur==want) { print d; exit } }
@@ -197,9 +221,12 @@ printf '%s' "$out_bs" | grep -qi "failing closed" \
 echo "digest-pin: tampered digest -> normal rc=0 (warn) + strict BLOCKS (non-zero) ok"
 
 # ---------------------------------------------------------------------------
-# 5c. No resolver on PATH -> SKIP (do not block, even --strict). "cannot verify"
-#     is not "verified mismatch"; a fresh install on a host without
-#     docker/crane/skopeo must never be blocked by --strict.
+# 5c. No resolver on PATH.
+#       --strict  -> HARD ERROR (non-zero): --strict cannot verify anything
+#                    without a resolver, so it must NOT report a green run.
+#       plain     -> SKIP (rc=0, warn-only): a fresh install on a host without
+#                    docker/crane/skopeo is never blocked by a PLAIN doctor.
+#     (HIGH [trailofbits]: distinguish "verified nothing" from "verified all".)
 # ---------------------------------------------------------------------------
 NORES="$TMP/nores"
 mkdir -p "$NORES"
@@ -207,12 +234,195 @@ for b in bash awk sed grep cat env mktemp tr head dirname; do
   src="$(command -v "$b" 2>/dev/null)" && ln -sf "$src" "$NORES/$b"
 done
 set +e
-out_nr="$(PATH="$NORES" "$KROOT_OK/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_nr=$?
+out_nr_s="$(PATH="$NORES" "$KROOT_OK/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_nr_s=$?
+out_nr_n="$(PATH="$NORES" "$KROOT_OK/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_nr_n=$?
 set -e
-[ "$rc_nr" -eq 0 ] || { printf '%s\n' "$out_nr" >&2; fail "no-resolver --strict should SKIP (rc=0), got $rc_nr"; }
-printf '%s' "$out_nr" | grep -qi "no registry digest resolver on PATH" \
-  || fail "no-resolver path should report the skip reason"
-echo "digest-pin: no-resolver host -> --strict SKIPS (never blocks a fresh install) ok"
+[ "$rc_nr_s" -ne 0 ] || { printf '%s\n' "$out_nr_s" >&2; fail "no-resolver --strict should HARD ERROR (non-zero), got $rc_nr_s"; }
+printf '%s' "$out_nr_s" | grep -qi "requires a digest resolver" \
+  || fail "no-resolver --strict should report the resolver requirement"
+[ "$rc_nr_n" -eq 0 ] || { printf '%s\n' "$out_nr_n" >&2; fail "no-resolver PLAIN doctor should SKIP (rc=0), got $rc_nr_n"; }
+printf '%s' "$out_nr_n" | grep -qi "no registry digest resolver on PATH" \
+  || fail "no-resolver plain path should report the skip reason"
+echo "digest-pin: no-resolver host -> --strict HARD ERRORS, plain doctor SKIPS ok"
+
+# ---------------------------------------------------------------------------
+# 5d. --strict + --offline -> HARD ERROR (non-zero). You cannot enforce LIVE
+#     registry digests offline; a resolver IS present here, so the only reason
+#     it errors is the offline incompatibility.
+# ---------------------------------------------------------------------------
+set +e
+out_off="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF" 1 1 2>&1)"; rc_off=$?
+out_off_plain="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF" 0 1 2>&1)"; rc_off_plain=$?
+set -e
+[ "$rc_off" -ne 0 ] || { printf '%s\n' "$out_off" >&2; fail "--strict + --offline should HARD ERROR (non-zero), got $rc_off"; }
+printf '%s' "$out_off" | grep -qi "incompatible with --offline" \
+  || fail "--strict + --offline should report the incompatibility"
+[ "$rc_off_plain" -eq 0 ] || { printf '%s\n' "$out_off_plain" >&2; fail "plain --offline doctor should stay rc=0, got $rc_off_plain"; }
+echo "digest-pin: --strict + --offline -> hard error; plain --offline rc=0 ok"
+
+# ---------------------------------------------------------------------------
+# 5e. Induced-empty resolution (the fail-OPEN HIGH). The resolver IS present but
+#     returns NOTHING for the ONE ref an attacker swapped -> UNRESOLVED.
+#       --strict -> FAIL-CLOSED (non-zero): a verifier was available and could
+#                   not confirm a ref it was told to enforce.
+#       plain    -> warn-only (rc=0).
+# ---------------------------------------------------------------------------
+GW_REF="ghcr.io/declade/dsa-gateway:0.5.0"
+SHIM_EMPTY="$(make_stub_crane_empty_for "$MANIFEST" "$GW_REF")"
+set +e
+out_ur_s="$(PATH="$SHIM_EMPTY:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_ur_s=$?
+out_ur_n="$(PATH="$SHIM_EMPTY:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_ur_n=$?
+set -e
+[ "$rc_ur_s" -ne 0 ] || { printf '%s\n' "$out_ur_s" >&2; fail "induced-empty --strict should FAIL-CLOSED (non-zero), got $rc_ur_s"; }
+printf '%s' "$out_ur_s" | grep -qi "UNRESOLVED" \
+  || fail "induced-empty --strict should report UNRESOLVED for the swapped ref"
+printf '%s' "$out_ur_s" | grep -qi "could not be resolved while a resolver was present" \
+  || fail "induced-empty --strict should announce the fail-closed reason"
+[ "$rc_ur_n" -eq 0 ] || { printf '%s\n' "$out_ur_n" >&2; fail "induced-empty plain doctor should stay rc=0 (warn), got $rc_ur_n"; }
+rm -rf "$SHIM_EMPTY"
+echo "digest-pin: induced-empty resolution -> --strict FAILS-CLOSED, plain warns ok"
+
+# ---------------------------------------------------------------------------
+# 5f. Cardinality floor: --strict must verify > 0 refs. A manifest whose every
+#     non-pending entry is set pending -> verified==0 -> distinct FAIL message.
+# ---------------------------------------------------------------------------
+ALLPEND="$TMP/image-manifest.allpending.yaml"
+# Append "pending: true" semantics by replacing every recorded digest line with
+# a pending marker (same indentation). Awk over the digests block only.
+awk '
+  /^image_digests:[[:space:]]*$/ { print; inblock=1; next }
+  inblock && /^[^[:space:]#]/ { inblock=0 }
+  inblock && /^[[:space:]]*digest:[[:space:]]*"sha256:/ {
+    ind=$0; sub(/[^[:space:]].*$/, "", ind); print ind "pending: true"; next
+  }
+  { print }
+' "$MANIFEST" > "$ALLPEND"
+KROOT_ALLPEND="$(make_kit_root "$ALLPEND")"
+set +e
+out_cf="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_ALLPEND/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_cf=$?
+out_cf_n="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_ALLPEND/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_cf_n=$?
+set -e
+[ "$rc_cf" -ne 0 ] || { printf '%s\n' "$out_cf" >&2; fail "cardinality-floor --strict (verified==0) should FAIL (non-zero), got $rc_cf"; }
+printf '%s' "$out_cf" | grep -qi "verified no recorded digests" \
+  || fail "cardinality-floor --strict should use the DISTINCT 'verified no recorded digests' message"
+printf '%s' "$out_cf" | grep -q "verified=0" \
+  || fail "cardinality-floor summary should report verified=0"
+[ "$rc_cf_n" -eq 0 ] || { printf '%s\n' "$out_cf_n" >&2; fail "cardinality-floor plain doctor should stay rc=0, got $rc_cf_n"; }
+rm -rf "$KROOT_ALLPEND"
+echo "digest-pin: cardinality floor -> --strict FAILS when verified==0 (distinct msg) ok"
+
+# ---------------------------------------------------------------------------
+# 5g. INVALID — a present-but-malformed recorded digest (truncated hex). The
+#     digest LINE is present but the value fails ^sha256:[0-9a-f]{64}$ -> INVALID
+#     (a manifest-integrity error, NOT a pending slot).
+#       --strict -> FAIL-CLOSED. plain -> warn (rc=0).
+# ---------------------------------------------------------------------------
+MALFORMED="$TMP/image-manifest.malformed.yaml"
+# Truncate the gateway digest's hex to 8 chars (still starts sha256: but invalid).
+sed 's#digest: "sha256:4c969d401356c7ffb9862e38a77a4ffae36a2a27573cb2e61c9cfe280e6d7a8a"#digest: "sha256:4c969d40"#' \
+  "$MANIFEST" > "$MALFORMED"
+! diff -q "$MANIFEST" "$MALFORMED" >/dev/null || fail "malformed sed did not modify the manifest"
+# Sanity: the parser must mark this entry INVALID (not PENDING, not a digest).
+INV_PARSE="$(
+  set --
+  source "$CLI" >/dev/null 2>&1
+  parse_image_digests "$MALFORMED"
+)"
+printf '%s\n' "$INV_PARSE" | grep -q "^${GW_REF}	INVALID$" \
+  || fail "parser should mark a malformed gateway digest as INVALID (got: $(printf '%s\n' "$INV_PARSE" | grep "$GW_REF"))"
+KROOT_MAL="$(make_kit_root "$MALFORMED")"
+set +e
+out_inv_s="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_MAL/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_inv_s=$?
+out_inv_n="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_MAL/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_inv_n=$?
+set -e
+[ "$rc_inv_s" -ne 0 ] || { printf '%s\n' "$out_inv_s" >&2; fail "malformed-digest --strict should FAIL-CLOSED (non-zero), got $rc_inv_s"; }
+printf '%s' "$out_inv_s" | grep -qi "INVALID manifest entry" \
+  || fail "malformed-digest --strict should report the INVALID entry"
+[ "$rc_inv_n" -eq 0 ] || { printf '%s\n' "$out_inv_n" >&2; fail "malformed-digest plain doctor should stay rc=0 (warn), got $rc_inv_n"; }
+rm -rf "$KROOT_MAL"
+echo "digest-pin: INVALID (malformed digest) -> --strict FAILS-CLOSED, plain warns ok"
+
+# ---------------------------------------------------------------------------
+# 5h. INVALID — digest + pending:true CONTRADICTION. An entry carrying BOTH a
+#     valid digest AND pending: true must NOT silently honor the later line ->
+#     INVALID. --strict fails closed.
+# ---------------------------------------------------------------------------
+CONTRA="$TMP/image-manifest.contradiction.yaml"
+# Add a `pending: true` line right after the gateway digest, at the SAME indent.
+awk '
+  /^[[:space:]]*digest:[[:space:]]*"sha256:4c969d401356c7ffb9862e38a77a4ffae36a2a27573cb2e61c9cfe280e6d7a8a"/ {
+    print
+    ind=$0; sub(/[^[:space:]].*$/, "", ind); print ind "pending: true"; next
+  }
+  { print }
+' "$MANIFEST" > "$CONTRA"
+! diff -q "$MANIFEST" "$CONTRA" >/dev/null || fail "contradiction awk did not modify the manifest"
+CON_PARSE="$(
+  set --
+  source "$CLI" >/dev/null 2>&1
+  parse_image_digests "$CONTRA"
+)"
+printf '%s\n' "$CON_PARSE" | grep -q "^${GW_REF}	INVALID$" \
+  || fail "parser should mark a digest+pending contradiction as INVALID (got: $(printf '%s\n' "$CON_PARSE" | grep "$GW_REF"))"
+KROOT_CON="$(make_kit_root "$CONTRA")"
+set +e
+out_con_s="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_CON/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_con_s=$?
+out_con_n="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_CON/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_con_n=$?
+set -e
+[ "$rc_con_s" -ne 0 ] || { printf '%s\n' "$out_con_s" >&2; fail "digest+pending --strict should FAIL-CLOSED (non-zero), got $rc_con_s"; }
+[ "$rc_con_n" -eq 0 ] || { printf '%s\n' "$out_con_n" >&2; fail "digest+pending plain doctor should stay rc=0 (warn), got $rc_con_n"; }
+rm -rf "$KROOT_CON"
+echo "digest-pin: INVALID (digest+pending contradiction) -> --strict FAILS-CLOSED, plain warns ok"
+
+# ---------------------------------------------------------------------------
+# 5i. Reordered entry: `digest:` BEFORE its `ref:` within the entry. Must NOT
+#     silently become a skipped PENDING — the digest associates with the entry
+#     (order-independent) and verifies normally under --strict.
+# ---------------------------------------------------------------------------
+REORDER_PARSE="$(
+  set --
+  source "$CLI" >/dev/null 2>&1
+  cat > "$TMP/reorder.yaml" <<'YML'
+image_digests:
+  signed_artifacts:
+    dsa-gateway:
+      digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      ref: "ghcr.io/declade/dsa-gateway:0.5.0"
+YML
+  parse_image_digests "$TMP/reorder.yaml"
+)"
+# The reordered entry must resolve to the digest (a real sha256 verdict), NOT
+# PENDING and NOT a mis-attributed <no-ref>.
+printf '%s\n' "$REORDER_PARSE" \
+  | grep -q "^ghcr.io/declade/dsa-gateway:0.5.0	sha256:1111111111111111111111111111111111111111111111111111111111111111$" \
+  || fail "digest-before-ref must associate the digest with its ref (got: $REORDER_PARSE)"
+printf '%s\n' "$REORDER_PARSE" | grep -q "PENDING" \
+  && fail "digest-before-ref must NOT silently become PENDING"
+printf '%s\n' "$REORDER_PARSE" | grep -q "<no-ref>" \
+  && fail "digest-before-ref must NOT mis-attribute to <no-ref>"
+echo "digest-pin: digest-before-ref parses correctly (not a silent PENDING) ok"
+
+# ---------------------------------------------------------------------------
+# 5j. Orphan digest with NO matching ref before the next entry -> surfaced as a
+#     synthetic <no-ref>\tINVALID line, never silently dropped.
+# ---------------------------------------------------------------------------
+ORPHAN_PARSE="$(
+  set --
+  source "$CLI" >/dev/null 2>&1
+  cat > "$TMP/orphan.yaml" <<'YML'
+image_digests:
+  signed_artifacts:
+    orphan_no_ref:
+      digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    dsa-gateway:
+      ref: "ghcr.io/declade/dsa-gateway:0.5.0"
+      digest: "sha256:4c969d401356c7ffb9862e38a77a4ffae36a2a27573cb2e61c9cfe280e6d7a8a"
+YML
+  parse_image_digests "$TMP/orphan.yaml"
+)"
+printf '%s\n' "$ORPHAN_PARSE" | grep -q "^<no-ref>	INVALID$" \
+  || fail "an orphan digest (no ref) must surface as <no-ref>\tINVALID (got: $ORPHAN_PARSE)"
+echo "digest-pin: orphan digest (no ref) -> surfaced as <no-ref> INVALID ok"
 
 rm -rf "$KROOT_OK" "$KROOT_BAD" "$SHIM_OK"
 echo "lucairn digest-pin tests: ok"
