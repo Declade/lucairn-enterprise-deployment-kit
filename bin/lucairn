@@ -3874,7 +3874,7 @@ verify_images() {
 # (package count, SPDX version, document name). `--download PATH` writes the raw
 # SBOM. Non-zero exit if the attestation is missing/invalid or has no Rekor
 # entry. This is supply-chain provenance ONLY — orthogonal to the per-request
-# Veil certificate chain.
+# Lucairn certificate chain.
 # ---------------------------------------------------------------------------
 sbom_usage() {
   cat <<'USAGE'
