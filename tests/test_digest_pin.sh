@@ -15,10 +15,11 @@
 #        b. one tampered manifest digest               -> normal rc=0 (warn-only),
 #                                                         strict rc!=0 (BLOCKS).
 #        c. pending entries are SKIPPED in both modes (never block under --strict).
-#        d. no resolver on PATH                         -> SKIP (strict rc=0): a
-#                                                         "cannot verify" host
-#                                                         never blocks a fresh
-#                                                         install.
+#        d. no resolver on PATH                         -> --strict HARD-ERRORS
+#                                                         (rc!=0): it refuses to
+#                                                         report a green run it
+#                                                         could not verify. Plain
+#                                                         doctor SKIPS warn-only.
 #
 # The "resolver" is a fake `crane` shim that, for any ref, echoes the digest the
 # manifest records for that ref (so a clean manifest => all match). The tamper
@@ -423,6 +424,75 @@ YML
 printf '%s\n' "$ORPHAN_PARSE" | grep -q "^<no-ref>	INVALID$" \
   || fail "an orphan digest (no ref) must surface as <no-ref>\tINVALID (got: $ORPHAN_PARSE)"
 echo "digest-pin: orphan digest (no ref) -> surfaced as <no-ref> INVALID ok"
+
+# ---------------------------------------------------------------------------
+# 5k. Dashboard enforcement under --strict (Codex r1 BLOCKER fix). The dashboard
+#     deploys via LUCAIRN_IMAGE_REGISTRY + its OWN tag var
+#     LUCAIRN_DASHBOARD_IMAGE_TAG (docker-compose.customer.yml:630), DISTINCT
+#     from the dsa-* LUCAIRN_IMAGE_TAG. digest_resolve_env_ref must apply those
+#     overrides so an operator's dashboard tag/registry swap is digest-checked
+#     like the dsa-* services — it is one of the 13 signed artifacts.
+#
+#       (i)  a dashboard tag override whose resolved ref's current digest != the
+#            recorded dashboard digest -> --strict FAILS (dashboard IS enforced);
+#            plain doctor stays rc=0 (warn-only).
+#       (ii) a matching dashboard override (stub echoes the recorded digest for
+#            the resolved ref) -> the dashboard counts toward verified++.
+# ---------------------------------------------------------------------------
+DASH_REF="ghcr.io/declade/lucairn-dashboard:0.8.2"
+DASH_DIGEST="$(awk '
+  /^[[:space:]]*ref:[[:space:]]*"ghcr.io\/declade\/lucairn-dashboard:0.8.2"/ { hit=1; next }
+  hit && /^[[:space:]]*digest:[[:space:]]*/ { d=$0; sub(/^[[:space:]]*digest:[[:space:]]*/,"",d); gsub(/"/,"",d); print d; exit }
+' "$MANIFEST")"
+[ -n "$DASH_DIGEST" ] || fail "could not read the recorded dashboard digest from the manifest"
+
+# Override the dashboard tag to a tag the stub does NOT know -> the resolved ref
+# is ghcr.io/declade/lucairn-dashboard:9.9.9, absent from the stub's manifest, so
+# the stub returns the sentinel all-zero digest -> MISMATCH vs the recorded
+# dashboard digest -> --strict must BLOCK. (Before the fix, the override was
+# ignored, the canonical :0.8.2 ref resolved to its recorded digest, and --strict
+# wrongly PASSED — the dashboard was un-enforced.)
+ENVF_DASH_SWAP="$TMP/customer.dash-swap.env"
+printf 'LUCAIRN_IMAGE_TAG=0.5.0\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nLUCAIRN_DASHBOARD_IMAGE_TAG=9.9.9\n' > "$ENVF_DASH_SWAP"
+set +e
+out_dsw_s="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP" 1 2>&1)"; rc_dsw_s=$?
+out_dsw_n="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP" 0 2>&1)"; rc_dsw_n=$?
+set -e
+[ "$rc_dsw_s" -ne 0 ] || { printf '%s\n' "$out_dsw_s" >&2; fail "dashboard tag swap --strict should BLOCK (non-zero) — the dashboard must be enforced, got $rc_dsw_s"; }
+printf '%s' "$out_dsw_s" | grep -qi "lucairn-dashboard:9.9.9" \
+  || fail "dashboard tag swap --strict should resolve+report the OVERRIDDEN ref (lucairn-dashboard:9.9.9), proving the dashboard tag env var is applied"
+printf '%s' "$out_dsw_s" | grep -qi "MISMATCH (ghcr.io/declade/lucairn-dashboard:9.9.9" \
+  || fail "dashboard tag swap --strict should report the dashboard MISMATCH"
+[ "$rc_dsw_n" -eq 0 ] || { printf '%s\n' "$out_dsw_n" >&2; fail "dashboard tag swap plain doctor should stay rc=0 (warn-only), got $rc_dsw_n"; }
+echo "digest-pin: dashboard tag override (digest mismatch) -> --strict BLOCKS, plain warns ok"
+
+# Matching dashboard override: a stub that ALSO echoes the recorded dashboard
+# digest for the OVERRIDDEN ref (ghcr.io/declade/lucairn-dashboard:9.9.9). This
+# proves the dashboard counts toward verified++ (cardinality floor) once its
+# resolved ref matches — i.e. the env-resolved dashboard ref flows through the
+# normal verify path exactly like the dsa-* services.
+SHIM_DASH_OK="$(mktemp -d)"
+cat > "$SHIM_DASH_OK/crane" <<CR
+#!/usr/bin/env bash
+# crane digest <ref> — echo the recorded digest for any ref, AND map the
+# overridden dashboard ref to the recorded dashboard digest.
+ref="\$2"
+if [ "\$ref" = "ghcr.io/declade/lucairn-dashboard:9.9.9" ]; then echo "$DASH_DIGEST"; exit 0; fi
+rec="\$(awk -v want="\$ref" '
+  /^[[:space:]]*ref:[[:space:]]*/ { r=\$0; sub(/^[[:space:]]*ref:[[:space:]]*/,"",r); gsub(/"/,"",r); cur=r; next }
+  /^[[:space:]]*digest:[[:space:]]*/ { d=\$0; sub(/^[[:space:]]*digest:[[:space:]]*/,"",d); gsub(/"/,"",d); if (cur==want) { print d; exit } }
+' "$MANIFEST")"
+if [ -n "\$rec" ]; then echo "\$rec"; else echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; fi
+CR
+chmod +x "$SHIM_DASH_OK/crane"
+set +e
+out_dok_s="$(PATH="$SHIM_DASH_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP" 1 2>&1)"; rc_dok_s=$?
+set -e
+[ "$rc_dok_s" -eq 0 ] || { printf '%s\n' "$out_dok_s" >&2; fail "matching dashboard override --strict should rc=0 (verified), got $rc_dok_s"; }
+printf '%s' "$out_dok_s" | grep -qi "image digest: ok (ghcr.io/declade/lucairn-dashboard:9.9.9" \
+  || fail "matching dashboard override --strict should report the resolved dashboard ref ok (counts toward verified++)"
+rm -rf "$SHIM_DASH_OK"
+echo "digest-pin: matching dashboard override -> --strict verifies the dashboard (counts toward floor) ok"
 
 rm -rf "$KROOT_OK" "$KROOT_BAD" "$SHIM_OK"
 echo "lucairn digest-pin tests: ok"

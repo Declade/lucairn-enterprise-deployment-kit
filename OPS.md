@@ -537,7 +537,12 @@ registry digest resolver on PATH (`docker buildx imagetools`, `crane`, or
   `crane`/`skopeo` or ensure `docker buildx` is available.
 
 The `dsa-*` services honor your `LUCAIRN_IMAGE_TAG` / `LUCAIRN_IMAGE_REGISTRY`
-overrides when the effective ref is resolved.
+overrides when the effective ref is resolved. The `lucairn-dashboard` image —
+also one of the cosign-signed artifacts — honors the same
+`LUCAIRN_IMAGE_REGISTRY` plus its OWN tag var `LUCAIRN_DASHBOARD_IMAGE_TAG`
+(default `0.8.2`, distinct from the `dsa-*` `LUCAIRN_IMAGE_TAG`), so a dashboard
+tag/registry override is digest-checked under `--strict` like the `dsa-*`
+services.
 
 **Pending (un-pinned) entries.** Some `image_digests:` slots ship as
 `pending: true` — they have a schema slot but no enforceable digest yet. These
