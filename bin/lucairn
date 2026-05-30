@@ -20,6 +20,7 @@ Usage:
   lucairn license gen-key
 
   lucairn verify-images [--registry REG] [--tag TAG] [--dashboard-tag TAG] [--key PATH] [--no-dashboard]
+  lucairn sbom <image-ref> [--key PATH] [--registry REG] [--download PATH]
 
 Commands:
   doctor          Validate customer deployment prerequisites.
@@ -35,6 +36,9 @@ Commands:
   verify-images   Verify the published Lucairn images' cosign signatures against
                   the bundled public key + the Sigstore Rekor transparency log.
                   Requires `cosign` on PATH.
+  sbom            Fetch + verify the cosign-signed SPDX SBOM attestation for a
+                  published Lucairn image and summarize it (package count, SPDX
+                  version). --download writes the raw SBOM. Requires `cosign`.
 USAGE
 }
 
@@ -3858,6 +3862,177 @@ verify_images() {
 }
 
 # ---------------------------------------------------------------------------
+# sbom — fetch + verify the Software Bill of Materials (SBOM) for a published
+# Lucairn image (B1 Slice 2). Each image carries an SPDX-JSON SBOM attached as
+# a cosign-signed SPDX attestation, with a Sigstore Rekor transparency-log
+# entry — generated at release time by the DSA repo's scripts/sbom-images.sh
+# using the SAME Image Signing Key that signs the images themselves (no new
+# key, no new sub-processor; Rekor is already Lucairn sub-processor #8).
+#
+# This verifies the attestation against the kit-bundled public key, requires a
+# transparency-log entry, then extracts + summarizes the SPDX-JSON predicate
+# (package count, SPDX version, document name). `--download PATH` writes the raw
+# SBOM. Non-zero exit if the attestation is missing/invalid or has no Rekor
+# entry. This is supply-chain provenance ONLY — orthogonal to the per-request
+# Veil certificate chain.
+# ---------------------------------------------------------------------------
+sbom_usage() {
+  cat <<'USAGE'
+Usage:
+  lucairn sbom <image-ref> [--key PATH] [--registry REG] [--download PATH]
+
+Fetches + verifies the cosign-signed SPDX-JSON SBOM attestation for a published
+Lucairn image and prints a short summary (package count, SPDX version, document
+name). The SBOM is provided as a cosign attestation logged to the Sigstore Rekor
+public transparency log; this command requires both a valid signature AND a
+transparency-log entry before reporting OK.
+
+Arguments:
+  <image-ref>     The image to fetch the SBOM for, e.g.
+                  ghcr.io/declade/dsa-gateway:0.5.0 (a tag or @sha256: digest).
+
+Options:
+  --key PATH      cosign public key (default: keys/lucairn-cosign.pub).
+  --registry REG  Override ONLY the registry+org host prefix of <image-ref>
+                  (for an air-gapped mirror re-hosting the SAME signed bytes).
+  --download PATH Also write the raw verified SPDX-JSON SBOM predicate to PATH.
+
+Requires `cosign` (>= v2.0) on PATH (https://github.com/sigstore/cosign). `jq`
+is used for the richest summary if present; a minimal summary is printed without
+it. Exits non-zero if the attestation is missing/invalid or has no Rekor entry.
+USAGE
+}
+
+# sbom_summarize_spdx FILE — print a one-screen summary of an SPDX-JSON SBOM.
+# Uses jq if available (package count + spdxVersion + doc name); otherwise a
+# best-effort grep-based fallback so the command still works on a bare host.
+sbom_summarize_spdx() {
+  local f="$1" pkgs="" ver="" name=""
+  if have jq; then
+    pkgs="$(jq -r '(.packages // []) | length' "$f" 2>/dev/null)"
+    ver="$(jq -r '.spdxVersion // "unknown"' "$f" 2>/dev/null)"
+    name="$(jq -r '.name // "unknown"' "$f" 2>/dev/null)"
+  else
+    # Fallback: count "SPDXRef-Package-" entries (one per package in SPDX-JSON);
+    # pull spdxVersion + name by their JSON keys. Approximate but informative.
+    pkgs="$(grep -o '"SPDXID"[[:space:]]*:[[:space:]]*"SPDXRef-Package-' "$f" 2>/dev/null | wc -l | tr -d ' ')"
+    ver="$(sed -n 's/.*"spdxVersion"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" 2>/dev/null | head -n1)"
+    name="$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" 2>/dev/null | head -n1)"
+    [ -n "$ver" ] || ver="unknown"
+    [ -n "$name" ] || name="unknown"
+  fi
+  case "$pkgs" in ''|*[!0-9]*) pkgs=0 ;; esac
+  info "sbom: format=SPDX-JSON  spdxVersion=$ver  document=$name  packages=$pkgs"
+  if [ "$pkgs" -eq 0 ]; then
+    warn "sbom: the SBOM lists 0 packages — that is unusual for a real image (verify it is the expected artifact)"
+  fi
+}
+
+sbom() {
+  local image_ref="" key="" registry="" download=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --key)      [ $# -ge 2 ] || fail "sbom: --key needs a value (see: lucairn sbom --help)"; key="$2"; shift 2 ;;
+      --registry) [ $# -ge 2 ] || fail "sbom: --registry needs a value (see: lucairn sbom --help)"; registry="$2"; shift 2 ;;
+      --download) [ $# -ge 2 ] || fail "sbom: --download needs a value (see: lucairn sbom --help)"; download="$2"; shift 2 ;;
+      -h|--help)  sbom_usage; return 0 ;;
+      -*)         fail "sbom: unknown option: $1 (see: lucairn sbom --help)" ;;
+      *)
+        [ -z "$image_ref" ] || fail "sbom: only one <image-ref> is supported (got extra: $1)"
+        image_ref="$1"; shift ;;
+    esac
+  done
+
+  [ -n "$image_ref" ] || { sbom_usage; fail "sbom: an <image-ref> is required (e.g. ghcr.io/declade/dsa-gateway:0.5.0)"; }
+
+  # cosign presence + version floor (mirrors verify-images; the Rekor-entry
+  # check below relies on the tlog-by-default contract of cosign v2.x).
+  if ! have cosign; then
+    fail "sbom: 'cosign' not found on PATH. Install it from https://github.com/sigstore/cosign/releases (verify its published checksum — see OPS.md), then re-run."
+  fi
+  local cosign_major
+  cosign_major="$(cosign version 2>/dev/null | awk -F'[v.]' '/GitVersion/{print $2; exit}')"
+  case "$cosign_major" in
+    ''|*[!0-9]*) warn "sbom: could not parse cosign version (expected >= v2.0); proceeding, but a Rekor tlog entry is still required for OK." ;;
+    *) [ "$cosign_major" -ge 2 ] || fail "sbom: cosign >= v2.0 is required (found v${cosign_major}.x). Upgrade from https://github.com/sigstore/cosign/releases." ;;
+  esac
+
+  # Public key: explicit --key wins, else the kit-bundled key.
+  key="${key:-$ROOT/keys/lucairn-cosign.pub}"
+  [ -f "$key" ] || fail "sbom: public key not found at '$key' (the kit ships keys/lucairn-cosign.pub)"
+
+  # Optional mirror override: swap the registry+org host prefix, keep the
+  # trailing <repo>:<tag|@digest>. Same semantics as verify-images.
+  if [ -n "$registry" ]; then
+    local rest="${image_ref#*/}"   # drop host segment (e.g. ghcr.io)
+    rest="${rest#*/}"              # drop org segment (e.g. declade) -> repo:tag
+    image_ref="${registry%/}/${rest}"
+  fi
+
+  info "sbom: verifying the SPDX SBOM attestation for $image_ref against $key (+ Rekor transparency log)"
+
+  # Verify the SPDX-JSON attestation. cosign verify-attestation exits non-zero
+  # if there is no valid signed attestation of the requested type. Capture
+  # output; set -e-safe so we can give a clear error.
+  local out rc
+  if out="$(cosign verify-attestation --type spdxjson --key "$key" "$image_ref" 2>&1)"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo "sbom: FAILED — no valid SPDX SBOM attestation for $image_ref (cosign: $(printf '%s' "$out" | tail -n1))" >&2
+    return 1
+  fi
+  # Require a transparency-log (Rekor) entry, mirroring verify-images' posture.
+  if ! printf '%s' "$out" | grep -qiE 'logindex|tlogentries|"bundle"|rekor'; then
+    echo "sbom: FAILED — SBOM attestation present but NO transparency-log (Rekor) entry found — refusing to report OK" >&2
+    return 1
+  fi
+
+  # Extract the SPDX-JSON predicate from the (DSSE-wrapped, base64) attestation.
+  # cosign emits one JSON object per line: {payload:<base64 DSSE envelope>,...}.
+  # The DSSE payload base64-decodes to an in-toto Statement whose `.predicate`
+  # is the SPDX-JSON SBOM.
+  local tmp_sbom
+  tmp_sbom="$(mktemp)"
+  local extracted=0
+  if have jq; then
+    # Take the FIRST attestation line, decode its DSSE payload, emit .predicate.
+    if printf '%s\n' "$out" \
+        | grep -E '^\{' \
+        | head -n1 \
+        | jq -r '.payload' 2>/dev/null \
+        | base64 -d 2>/dev/null \
+        | jq '.predicate' > "$tmp_sbom" 2>/dev/null \
+        && [ -s "$tmp_sbom" ] \
+        && [ "$(head -c 4 "$tmp_sbom")" != "null" ]; then
+      extracted=1
+    fi
+  fi
+  if [ "$extracted" -eq 1 ]; then
+    sbom_summarize_spdx "$tmp_sbom"
+    if [ -n "$download" ]; then
+      cp "$tmp_sbom" "$download"
+      info "sbom: raw SPDX-JSON SBOM written to $download"
+    fi
+  else
+    # Could not parse the predicate (jq missing or unexpected shape). The
+    # attestation IS verified — report OK but note the summary was skipped.
+    warn "sbom: attestation verified, but could not parse the SPDX predicate for a summary (install 'jq' for the full summary)."
+    if [ -n "$download" ]; then
+      # Best-effort raw dump of the verified attestation envelope.
+      printf '%s\n' "$out" | grep -E '^\{' | head -n1 > "$download" 2>/dev/null || true
+      info "sbom: raw cosign attestation envelope written to $download (install 'jq' to extract the SPDX predicate)."
+    fi
+  fi
+  rm -f "$tmp_sbom"
+
+  info "sbom: OK — SPDX SBOM attestation for $image_ref is valid (cosign signature valid + Rekor entry present)"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # license — issue / verify / gen-key for self-hosted DEPLOYMENT entitlement
 # licenses (Ed25519-signed, offline-verifiable). OPERATOR/Lucairn-side only.
 #
@@ -3942,6 +4117,7 @@ main() {
     restore) shift; restore "$@" ;;
     license) shift; license_command "$@" ;;
     verify-images) shift; verify_images "$@" ;;
+    sbom) shift; sbom "$@" ;;
     -h|--help|"") usage ;;
     *) fail "unknown command: $cmd" ;;
   esac

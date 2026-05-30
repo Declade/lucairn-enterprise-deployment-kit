@@ -488,6 +488,58 @@ see the DSA repo `docs/operations/key-ceremony-runbook.md` § Key Inventory
 (Image Signing Key). The private cosign key and its password are Lucairn-held,
 stored mode-600 on the Lucairn issuer host, and are never distributed.
 
+## Fetch + verify the Software Bill of Materials (SBOM)
+
+Every published Lucairn image ships a per-image **Software Bill of Materials**
+(SBOM) in **SPDX-JSON** format, listing every package the image contains. The
+SBOM is attached to its image as a **cosign-signed SPDX attestation**, with the
+signature logged to the **Sigstore Rekor public transparency log** — signed by
+the **same Image Signing Key** that signs the images themselves (no extra key,
+no extra vendor). You can fetch the SBOM, verify it came from Lucairn, and
+inspect exactly what is in each image — useful for vulnerability triage and a
+supply-chain questionnaire's "do you provide an SBOM?".
+
+Verification needs `cosign` (>= v2.0) on PATH (see "Verify image signatures"
+above for the pin-cosign-by-checksum recipe). `jq` is recommended for the
+richest summary.
+
+**Fetch + verify with the kit helper (recommended):**
+
+```bash
+# Verifies the SPDX SBOM attestation against keys/lucairn-cosign.pub, requires a
+# Rekor transparency-log entry, then summarizes it (package count, SPDX version,
+# document name). Exits non-zero if the attestation is missing/invalid.
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.0
+
+# Also save the raw verified SPDX-JSON SBOM to a file:
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.0 \
+  --download dsa-gateway-0.5.0.spdx.json
+
+# Air-gapped mirror that re-hosts the SAME signed bytes:
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.0 \
+  --registry registry.internal/lucairn
+```
+
+**Fetch + verify with raw cosign (equivalent):**
+
+```bash
+# Verify the SPDX attestation (prints the signed DSSE envelope + Rekor entry):
+cosign verify-attestation --type spdxjson \
+  --key keys/lucairn-cosign.pub \
+  ghcr.io/declade/dsa-gateway:0.5.0
+
+# Extract just the SPDX-JSON SBOM predicate (the package list):
+cosign verify-attestation --type spdxjson \
+  --key keys/lucairn-cosign.pub \
+  ghcr.io/declade/dsa-gateway:0.5.0 \
+  | jq -r '.payload' | base64 -d | jq '.predicate' > dsa-gateway-0.5.0.spdx.json
+```
+
+A successful verification exits 0 and reports a Rekor transparency-log entry; a
+missing or invalid attestation exits non-zero. The same procedure works for any
+published image (the 12 `dsa-*` services + `lucairn-dashboard`) — swap the
+image reference.
+
 ## Deployment license
 
 The gateway enforces a self-hosted deployment entitlement license (Ed25519-signed, verified fully offline — no phone-home). It is separate from the platform tier license (`DSA_LICENSE_KEY`). It gates Enterprise-only FEATURES (e.g. the custom-trained L3 PII shield) and carries an expiry with a grace-then-degrade lifecycle. It does NOT enforce volume or seat caps (usage is metered elsewhere) and does NOT touch tier names.

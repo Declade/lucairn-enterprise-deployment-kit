@@ -10,6 +10,7 @@ bash -n "$ROOT/tests/test_model_manifest_sha256.sh"
 bash -n "$ROOT/tests/test_bundle_verify_replay_guard.sh"
 bash -n "$ROOT/tests/test_backup_helm.sh"
 bash -n "$ROOT/tests/test_sec_hardening.sh"
+bash -n "$ROOT/tests/test_sbom.sh"
 bash -n "$ROOT/scripts/render-values.sh"
 bash -n "$ROOT/scripts/derive-veil-pubkey.sh"
 
@@ -263,5 +264,10 @@ if docker compose version >/dev/null 2>&1; then
 else
   echo "compose config: skipped (docker compose not installed)"
 fi
+
+# B1 Slice 2: `lucairn sbom` arg-parse + SPDX-summary + fail-fast tests. These
+# are self-contained (no docker/helm/cosign needed) so they run here as part of
+# the static gate.
+bash "$ROOT/tests/test_sbom.sh"
 
 echo "static checks: ok"
