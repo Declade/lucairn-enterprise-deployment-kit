@@ -783,27 +783,41 @@ parse_image_digests() {
   ' "$manifest"
 }
 
-# digest_resolve_env_ref RECORDED_REF ENV_TAG ENV_REGISTRY — translate a
-# canonical recorded ref into the ref the OPERATOR actually pulls, applying the
-# env LUCAIRN_IMAGE_TAG / LUCAIRN_IMAGE_REGISTRY overrides to the dsa-* images
-# (so --strict checks what the operator deploys, not a stale canonical ref).
-# Non-dsa refs (ollama, dashboard, runtime adapters, ollama:// models) are
+# digest_resolve_env_ref RECORDED_REF ENV_TAG ENV_REGISTRY ENV_DASH_TAG —
+# translate a canonical recorded ref into the ref the OPERATOR actually pulls,
+# applying the env overrides so --strict checks what the operator deploys, not a
+# stale canonical ref:
+#   - the 12 dsa-* services ride LUCAIRN_IMAGE_REGISTRY + LUCAIRN_IMAGE_TAG
+#     (docker-compose.customer.yml: ${LUCAIRN_IMAGE_REGISTRY}/dsa-<n>:${LUCAIRN_IMAGE_TAG});
+#   - lucairn-dashboard rides the SAME LUCAIRN_IMAGE_REGISTRY but its OWN tag var
+#     LUCAIRN_DASHBOARD_IMAGE_TAG (default 0.8.2 — DISTINCT from the dsa-* tag),
+#     per docker-compose.customer.yml:630
+#     (${LUCAIRN_IMAGE_REGISTRY}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG}).
+#     It is one of the 13 cosign-signed artifacts, so --strict MUST enforce it.
+# Other non-dsa refs (ollama runtime, runtime adapters, ollama:// models) are
 # returned unchanged — they have their own independent tags. Echoes the
 # resolved ref, or empty for an ollama:// model pseudo-ref (not an OCI image).
 digest_resolve_env_ref() {
-  local rref="$1" env_tag="$2" env_reg="$3"
+  local rref="$1" env_tag="$2" env_reg="$3" env_dash_tag="$4"
   # Ollama model pseudo-refs are not OCI images — caller skips them.
   case "$rref" in
     ollama://*) printf ''; return 0 ;;
   esac
-  # Only the 12 dsa-* services ride LUCAIRN_IMAGE_TAG/REGISTRY. Match a
-  # "<host>/dsa-<name>:<tag>" ref and re-point host + tag from env.
   case "$rref" in
+    # The 12 dsa-* services: re-point host + tag from the shared registry + the
+    # dsa-* tag env var.
     */dsa-*:*)
       local repo name
       repo="${rref%:*}"          # strip :tag
       name="${repo##*/}"         # dsa-<name>
       printf '%s/%s:%s' "$env_reg" "$name" "$env_tag"
+      ;;
+    # The dashboard: SAME registry override, but its OWN distinct tag env var.
+    # Match "<host>/lucairn-dashboard:<tag>" so an operator's registry/tag
+    # override is digest-checked like the dsa-* services (RESOLVE-FOR-VERIFY only
+    # — no @sha256: rewrite of the compose ref).
+    */lucairn-dashboard:*)
+      printf '%s/%s:%s' "$env_reg" "lucairn-dashboard" "$env_dash_tag"
       ;;
     *) printf '%s' "$rref" ;;
   esac
@@ -864,9 +878,13 @@ check_image_digests() {
     return 0
   fi
 
-  local env_tag env_reg
+  local env_tag env_reg env_dash_tag
   env_tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)";       env_tag="${env_tag:-0.5.0}"
   env_reg="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)";  env_reg="${env_reg:-ghcr.io/declade}"
+  # The dashboard rides the SAME registry override but its OWN tag var
+  # (docker-compose.customer.yml:630) — default 0.8.2, distinct from the dsa-*
+  # LUCAIRN_IMAGE_TAG. Without this, a dashboard tag swap escapes --strict.
+  env_dash_tag="$(env_value "$env_file" LUCAIRN_DASHBOARD_IMAGE_TAG)"; env_dash_tag="${env_dash_tag:-0.8.2}"
 
   local mismatched=0 verified=0 pending=0 unresolved=0 invalid=0 informational=0
   local rref recorded eff_ref current
@@ -894,7 +912,7 @@ check_image_digests() {
       continue
     fi
 
-    eff_ref="$(digest_resolve_env_ref "$rref" "$env_tag" "$env_reg")"
+    eff_ref="$(digest_resolve_env_ref "$rref" "$env_tag" "$env_reg" "$env_dash_tag")"
     if [ -z "$eff_ref" ]; then
       # ollama:// model pseudo-ref with a recorded digest is informational only:
       # not OCI-resolvable, so neither verifiable nor a dangerous skip. It does

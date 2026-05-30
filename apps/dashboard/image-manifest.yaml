@@ -119,7 +119,8 @@ optional_services:
 # bytes this kit release was validated + signed against (tag re-point / image
 # substitution / accidental downgrade). Resolution needs a registry digest
 # resolver on PATH (docker buildx imagetools / crane / skopeo); --strict on a
-# host with no resolver SKIPS (cannot verify) rather than block.
+# host with no resolver HARD-ERRORS (non-zero) — it refuses to report a green
+# run it could not verify. (Plain `doctor` with no resolver SKIPS warn-only.)
 #
 # `signed_artifacts` digests are the SAME values recorded in
 # keys/image-digests-<tag>.txt (the cosign-sign + `verify-images` source of
