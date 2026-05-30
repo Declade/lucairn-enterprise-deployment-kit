@@ -3537,9 +3537,10 @@ verify_images_default_tag() {
   printf '%s' "${base%.txt}"
 }
 
-# sanitize_digest STR — trim surrounding whitespace from STR and echo it back
+# sanitize_digest STR — trim SURROUNDING whitespace from STR and echo it back
 # ONLY if it is a bare, canonical image digest (sha256:<64 lowercase hex>).
-# Anything else (empty, multi-line text dump, partial output) echoes empty.
+# Anything else (empty, multi-line text dump, partial output, INTERNAL
+# whitespace) echoes empty.
 # This is the load-bearing gate that stops a resolver's human-readable
 # inspect output from ever being mistaken for a digest. Surfaced by the A1
 # Vast fresh-install verify: `docker buildx imagetools inspect --format
@@ -3547,13 +3548,24 @@ verify_images_default_tag() {
 # the bare digest) for a multi-arch image INDEX — non-empty, so the old code
 # accepted it and never fell through to crane/skopeo, then false-reported
 # "TAG RE-POINTED" because the text dump != the recorded digest.
+#
+# FIX-2 (security): trim ONLY leading/trailing whitespace — NEVER strip
+# internal whitespace. The previous `tr -d '[:space:]'` deleted ALL
+# whitespace, so "sha256:<32hex>\n<32hex>" collapsed into a valid-looking
+# "sha256:<64hex>" and passed the gate. For a signature-verification gate
+# that must REJECT, so a stray newline inside a malformed/spliced digest can
+# never be sanitized into a fake-valid one. The anchored ^...$ regex below
+# then naturally rejects any remaining internal whitespace.
 sanitize_digest() {
   local d="$1"
-  # Trim leading/trailing whitespace (incl. newlines a text dump would carry).
-  d="$(printf '%s' "$d" | tr -d '[:space:]')"
+  # Trim ONLY leading/trailing whitespace (incl. surrounding newlines a text
+  # dump would carry). Do NOT touch internal whitespace — see FIX-2 above.
+  d="${d#"${d%%[![:space:]]*}"}"   # strip leading whitespace
+  d="${d%"${d##*[![:space:]]}"}"   # strip trailing whitespace
   case "$d" in
     sha256:*)
-      # Exactly "sha256:" + 64 lowercase hex chars, nothing else.
+      # Exactly "sha256:" + 64 lowercase hex chars, nothing else (the anchored
+      # ^...$ rejects any internal whitespace/newline that survived the trim).
       if printf '%s' "$d" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
         printf '%s' "$d"
       fi
@@ -3566,24 +3578,52 @@ sanitize_digest() {
 # digest) or empty on failure. Each resolver's output is validated through
 # sanitize_digest; an invalid/non-digest result is treated as "no result" and
 # falls through to the next resolver, so a text-dump can never leak through.
+#
+# FIX-1 (security, HIGH): the resolver MUST always yield the manifest-list /
+# INDEX (top-level) digest — the same digest cosign signs
+# (scripts/sign-images.sh: "cosign signs the manifest-list digest") and the
+# one recorded in keys/image-digests-<tag>.txt. For a multi-arch image,
+# `{{json .Manifest}}` is an OCI index whose JSON carries a top-level
+# "digest" (the INDEX) AND a nested "manifests":[{...,"digest":<CHILD>},...]
+# array of per-architecture CHILD digests. A greedy/last-match extraction
+# grabs a CHILD digest → child != recorded INDEX → false "TAG RE-POINTED".
+# We therefore extract ONLY the top-level/index digest:
+#   - with jq:    `.digest` (jq returns the top-level field, never a child);
+#   - without jq: truncate the JSON at the first "manifests" occurrence so a
+#                 nested child digest is structurally unreachable, then take
+#                 the FIRST "digest" match.
 image_current_digest() {
-  local ref="$1" d="" raw=""
+  local ref="$1" d="" raw="" head=""
   if have docker; then
-    # Prefer the JSON manifest form — robust across buildx versions: extract
-    # the index/manifest ".digest" field. Fall back to the legacy template.
+    # Primary: parse the OCI index/manifest JSON and take the TOP-LEVEL digest.
     raw="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' 2>/dev/null)" || raw=""
     if [ -n "$raw" ]; then
-      d="$(sanitize_digest "$(printf '%s' "$raw" | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]\{64\}\)".*/\1/p' | head -n1)")"
+      if have jq; then
+        # jq returns the top-level ".digest" = the index/manifest-list digest,
+        # never a nested per-arch child. // empty => empty string on absence.
+        d="$(sanitize_digest "$(printf '%s' "$raw" | jq -r '.digest // empty' 2>/dev/null)")"
+      else
+        # No jq: drop everything from the FIRST "manifests" key onward so the
+        # nested per-arch child digests are unreachable, THEN take the first
+        # "digest" — which is now guaranteed to be the top-level index digest.
+        head="$(printf '%s' "$raw" | sed 's/"manifests".*//')"
+        d="$(sanitize_digest "$(printf '%s' "$head" | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]\{64\}\).*/\1/p' | head -n1)")"
+      fi
     fi
+    # Fallback: the Docker-documented template returns the manifest-list/index
+    # digest directly. (On buildx v0.23 this may text-dump for a multi-arch
+    # INDEX, in which case sanitize_digest rejects it and we fall through.)
     if [ -z "$d" ]; then
       raw="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null)" || raw=""
       d="$(sanitize_digest "$raw")"
     fi
   fi
+  # crane digest returns the index digest for a multi-arch ref by default.
   if [ -z "$d" ] && have crane; then
     raw="$(crane digest "$ref" 2>/dev/null)" || raw=""
     d="$(sanitize_digest "$raw")"
   fi
+  # skopeo inspect (no --raw) reports the manifest-list/index digest.
   if [ -z "$d" ] && have skopeo; then
     raw="$(skopeo inspect --format '{{.Digest}}' "docker://$ref" 2>/dev/null)" || raw=""
     d="$(sanitize_digest "$raw")"
