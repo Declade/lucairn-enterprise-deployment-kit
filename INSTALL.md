@@ -184,6 +184,25 @@ a verified set is bound to the exact bytes Lucairn signed. See
 **OPS.md → "Verify image signatures"** for the full recipe (including how to
 pin cosign itself by checksum) and the key-custody model.
 
+#### Fetch the SBOM (Software Bill of Materials)
+
+Each published image also ships a per-image **SPDX-JSON SBOM**, attached as a
+cosign-signed SPDX attestation logged to the Sigstore Rekor public transparency
+log (signed by the same Image Signing Key — no extra key or vendor). Fetch +
+verify it, and inspect exactly what is in each image:
+
+```bash
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.0
+# save the raw verified SBOM:
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.0 --download dsa-gateway-0.5.0.spdx.json
+# or with raw cosign:
+cosign verify-attestation --type spdxjson \
+  --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.0
+```
+
+See **OPS.md → "Fetch + verify the Software Bill of Materials (SBOM)"** for the
+full recipe.
+
 ## Choose A Deployment Mode
 
 Before running `docker compose up`, decide which inference-side topology the
