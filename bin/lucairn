@@ -7,7 +7,7 @@ VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || printf 'unknown')"
 usage() {
   cat <<'USAGE'
 Usage:
-  lucairn doctor --env customer.env --compose docker-compose.customer.yml [--offline] [--check-images] [--skip-image-check] [--strict-runtime]
+  lucairn doctor --env customer.env --compose docker-compose.customer.yml [--offline] [--check-images] [--skip-image-check] [--strict-runtime] [--strict]
   lucairn support-bundle --env customer.env --compose docker-compose.customer.yml [--output bundles] [--offline]
   lucairn bundle create --customer-slug acme --models-dir ./models --model-manifest model-manifest.yaml --env customer.env --image-tar images.tar [--customer-data-dir ./customer-data]
   lucairn bundle prepare --customer-slug acme --staging-dir /secure/staging/acme [--output dist/customer-bundles]
@@ -24,6 +24,14 @@ Usage:
 
 Commands:
   doctor          Validate customer deployment prerequisites.
+                  --strict-runtime fail-closes on the gateway /healthz + /readyz
+                  runtime probes. --strict (distinct) fail-closes on image DIGEST
+                  pins: blocks when a deployed tag's current registry digest does
+                  not match the digest recorded in image-manifest.yaml (tag
+                  re-point / substitution / downgrade). Without --strict, a digest
+                  mismatch only warns. --strict needs a digest resolver on PATH
+                  (docker buildx imagetools / crane / skopeo); pending manifest
+                  entries are always skipped.
   support-bundle  Generate a redacted support archive for customer review.
   bundle          Create, prepare, or verify per-customer delivery bundles.
   backup          pg_dump -> age-encrypt -> upload the 3 compliance DBs to S3,
@@ -626,6 +634,167 @@ check_image_manifest() {
   fi
 
   echo "image manifest: read from image-manifest.yaml (kit_version=$manifest_kit_version, pinned_tag=$manifest_tag)"
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# B1 Slice 3 — digest-pin verification.
+#
+# The image-manifest.yaml `image_digests:` block records the `@sha256:` digest
+# each image was built + (for the 13 signed Lucairn artifacts) cosign-signed
+# against. check_image_digests resolves each recorded ref's CURRENT registry
+# digest (reusing the verify-images resolver, image_current_digest) and compares
+# it to the recorded digest:
+#
+#   - normal doctor:        a mismatch WARNS (today's warn-only posture; never
+#                           changes the doctor exit code).
+#   - doctor --strict:      a mismatch BLOCKS (returns non-zero -> doctor fails).
+#
+# `pending: true` entries (schema slots with no recorded digest yet — filled at
+# the digest-pin ceremony) are SKIPPED with an info note in BOTH modes, so a
+# fresh install is never broken by an un-filled slot even under --strict.
+#
+# If no digest resolver is on PATH (docker buildx imagetools / crane / skopeo),
+# the check SKIPS (it cannot resolve current digests) — --strict does NOT block
+# in that case, because "cannot verify" is distinct from "verified mismatch".
+# This mirrors check_container_images' "skipped (docker unavailable)" posture
+# and keeps --offline installs honest.
+#
+# Bash 3.2 compatible (kit lesson: indexed arrays only, no `local -A`).
+# -----------------------------------------------------------------------------
+
+# parse_image_digests MANIFEST — emit one "<ref>\t<digest-or-PENDING>" line per
+# entry in the image_digests: block. PENDING marks a `pending: true` slot (no
+# enforceable digest). Driven by indentation: every `ref:` line opens an entry;
+# the following `digest:`/`pending:` lines (more-indented) belong to it until
+# the next `ref:` at the same-or-shallower indent. Tolerant of the grouping
+# sub-keys (signed_artifacts/pii_plane/runtime) because it keys off `ref:`/
+# `digest:`/`pending:` leaf lines only, not the group names.
+parse_image_digests() {
+  local manifest="$1"
+  [ -f "$manifest" ] || return 0
+  awk '
+    # Only consider lines INSIDE the image_digests: block.
+    /^image_digests:[[:space:]]*$/ { inblock=1; next }
+    # A new TOP-LEVEL key (column 0, non-space) ends the block.
+    inblock && /^[^[:space:]#]/ { inblock=0 }
+    !inblock { next }
+    {
+      line=$0
+      sub(/[[:space:]]+#.*$/, "", line)            # strip trailing comments
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", line) # trim
+    }
+    line ~ /^ref:[[:space:]]*/ {
+      # Flush the previous entry if it had a ref but no digest/pending verdict.
+      if (have_ref) { print ref "\t" (verdict==""?"PENDING":verdict) }
+      val=line; sub(/^ref:[[:space:]]*/, "", val); gsub(/^"|"$/, "", val)
+      ref=val; verdict=""; have_ref=1; next
+    }
+    line ~ /^digest:[[:space:]]*/ {
+      val=line; sub(/^digest:[[:space:]]*/, "", val); gsub(/^"|"$/, "", val)
+      if (val ~ /^sha256:[0-9a-f]{64}$/) verdict=val
+      next
+    }
+    line ~ /^pending:[[:space:]]*true[[:space:]]*$/ { verdict="PENDING"; next }
+    END { if (have_ref) print ref "\t" (verdict==""?"PENDING":verdict) }
+  ' "$manifest"
+}
+
+# digest_resolve_env_ref RECORDED_REF ENV_TAG ENV_REGISTRY — translate a
+# canonical recorded ref into the ref the OPERATOR actually pulls, applying the
+# env LUCAIRN_IMAGE_TAG / LUCAIRN_IMAGE_REGISTRY overrides to the dsa-* images
+# (so --strict checks what the operator deploys, not a stale canonical ref).
+# Non-dsa refs (ollama, dashboard, runtime adapters, ollama:// models) are
+# returned unchanged — they have their own independent tags. Echoes the
+# resolved ref, or empty for an ollama:// model pseudo-ref (not an OCI image).
+digest_resolve_env_ref() {
+  local rref="$1" env_tag="$2" env_reg="$3"
+  # Ollama model pseudo-refs are not OCI images — caller skips them.
+  case "$rref" in
+    ollama://*) printf ''; return 0 ;;
+  esac
+  # Only the 12 dsa-* services ride LUCAIRN_IMAGE_TAG/REGISTRY. Match a
+  # "<host>/dsa-<name>:<tag>" ref and re-point host + tag from env.
+  case "$rref" in
+    */dsa-*:*)
+      local repo name
+      repo="${rref%:*}"          # strip :tag
+      name="${repo##*/}"         # dsa-<name>
+      printf '%s/%s:%s' "$env_reg" "$name" "$env_tag"
+      ;;
+    *) printf '%s' "$rref" ;;
+  esac
+}
+
+# check_image_digests ENV_FILE STRICT — verify recorded digests against current
+# registry digests. STRICT=1 makes a mismatch fatal (return 1); STRICT=0 warns.
+# Returns 0 unless STRICT=1 AND at least one resolvable ref MISMATCHED.
+check_image_digests() {
+  local env_file="$1" strict="${2:-0}" manifest_file="${ROOT}/image-manifest.yaml"
+
+  if [ ! -f "$manifest_file" ]; then
+    [ "$strict" -eq 1 ] && warn "doctor --strict: image-manifest.yaml not found; cannot verify digests"
+    return 0
+  fi
+
+  # No `image_digests:` block at all (older kit): nothing to enforce.
+  if ! grep -q '^image_digests:[[:space:]]*$' "$manifest_file"; then
+    [ "$strict" -eq 1 ] && warn "doctor --strict: image-manifest.yaml has no image_digests: block; cannot verify digests"
+    return 0
+  fi
+
+  # A resolver is required to read CURRENT registry digests. Without one we
+  # cannot verify — SKIP (do not block, even under --strict): "cannot verify"
+  # is not "verified mismatch".
+  if ! have docker && ! have crane && ! have skopeo; then
+    echo "image digests: skipped (no registry digest resolver on PATH — install docker/crane/skopeo to enforce digest pins)"
+    return 0
+  fi
+
+  local env_tag env_reg
+  env_tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)";       env_tag="${env_tag:-0.5.0}"
+  env_reg="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)";  env_reg="${env_reg:-ghcr.io/declade}"
+
+  local mismatched=0 checked=0 pending=0 unresolved=0
+  local rref recorded eff_ref current
+  while IFS="$(printf '\t')" read -r rref recorded; do
+    [ -n "$rref" ] || continue
+    if [ "$recorded" = "PENDING" ]; then
+      pending=$((pending + 1))
+      echo "image digest: $rref pending (no digest recorded yet — filled at the digest-pin ceremony; --strict skips)"
+      continue
+    fi
+    eff_ref="$(digest_resolve_env_ref "$rref" "$env_tag" "$env_reg")"
+    if [ -z "$eff_ref" ]; then
+      # ollama:// model pseudo-ref with a recorded digest is informational only.
+      echo "image digest: $rref recorded $recorded (model manifest — not OCI-resolvable; informational)"
+      continue
+    fi
+    current="$(image_current_digest "$eff_ref")"
+    if [ -z "$current" ]; then
+      unresolved=$((unresolved + 1))
+      echo "image digest: $eff_ref UNRESOLVED (registry unreachable/unauthenticated or image missing — cannot compare; not treated as a mismatch)"
+      continue
+    fi
+    checked=$((checked + 1))
+    if [ "$current" = "$recorded" ]; then
+      echo "image digest: ok ($eff_ref @ $recorded)"
+    else
+      mismatched=$((mismatched + 1))
+      if [ "$strict" -eq 1 ]; then
+        echo "image digest: MISMATCH ($eff_ref resolved $current, manifest pins $recorded) — tag re-pointed/substituted/downgraded" >&2
+      else
+        warn "image digest mismatch: $eff_ref resolved $current but image-manifest.yaml pins $recorded (tag re-pointed/substituted/downgraded); run 'doctor --strict' to fail-closed"
+      fi
+    fi
+  done < <(parse_image_digests "$manifest_file")
+
+  echo "image digests: checked=$checked matched=$((checked - mismatched)) mismatched=$mismatched pending=$pending unresolved=$unresolved"
+
+  if [ "$strict" -eq 1 ] && [ "$mismatched" -gt 0 ]; then
+    echo "doctor --strict: $mismatched image digest(s) did not match the pinned manifest — failing closed" >&2
+    return 1
+  fi
   return 0
 }
 
@@ -2692,7 +2861,7 @@ bundle_command() {
 }
 
 doctor() {
-  local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-system" check_images=1 strict_runtime=0
+  local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-system" check_images=1 strict_runtime=0 strict_digest=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --env) env_file="$2"; shift 2 ;;
@@ -2703,6 +2872,11 @@ doctor() {
       --postgres-url) postgres_url="$2"; shift 2 ;;
       --kube-namespace) kube_namespace="$2"; shift 2 ;;
       --strict-runtime) strict_runtime=1; shift ;;
+      # --strict (B1 Slice 3) enforces image DIGEST pins (block on a tag whose
+      # current registry digest != the manifest-recorded digest). It is a
+      # DISTINCT switch from --strict-runtime (which fail-closes on gateway
+      # /healthz + /readyz probes). Passing both is allowed and independent.
+      --strict) strict_digest=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) fail "unknown doctor argument: $1" ;;
     esac
@@ -2933,6 +3107,16 @@ doctor() {
   # Image-manifest drift warning. Runs in --offline mode as well so customers
   # without network egress still get the warning.
   check_image_manifest "$env_file"
+
+  # B1 Slice 3: digest-pin verification. Warn-only in normal mode; --strict
+  # BLOCKS on a tag whose CURRENT registry digest != the manifest-recorded
+  # digest (re-point/substitution/downgrade). Needs a registry digest resolver
+  # (docker/crane/skopeo) + network; SKIPS cleanly without either (and under
+  # --offline, where refs resolve UNRESOLVED, never a mismatch). pending entries
+  # are always skipped. Honors LUCAIRN_IMAGE_TAG/REGISTRY overrides on dsa-*.
+  if ! check_image_digests "$env_file" "$strict_digest"; then
+    return 1
+  fi
 
   if [ "$check_images" -eq 1 ]; then
     check_container_images "$env_file" || return 1

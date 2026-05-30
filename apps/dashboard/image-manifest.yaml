@@ -95,3 +95,126 @@ optional_services:
     image_tag: ""
   lucairn-dashboard:
     image_tag: "0.8.2"
+
+# -----------------------------------------------------------------------------
+# Digest pins (B1 Slice 3 — supply-chain provenance).
+#
+# Each entry records the exact `@sha256:` content digest the release was built +
+# (for the signed Lucairn images) cosign-signed against. This block answers the
+# procurement question "are your images digest-pinned and enforced?" WITHOUT
+# rewriting compose/helm refs to `@sha256:` — that would break the operator's
+# `LUCAIRN_IMAGE_TAG` / per-image-tag override ergonomics. Instead:
+#
+#   - compose/helm keep their `repository:tag` refs (override-friendly);
+#   - `bin/lucairn doctor`           WARNS when an env-resolved tag's CURRENT
+#                                    registry digest differs from the recorded
+#                                    digest below (today's warn-only posture);
+#   - `bin/lucairn doctor --strict`  BLOCKS (non-zero exit) on any such mismatch,
+#                                    so a re-pointed / substituted / downgraded
+#                                    tag fails the gate. `--strict` is the
+#                                    enforcement switch; plain `doctor` never
+#                                    blocks on a digest mismatch (back-compat).
+#
+# A digest mismatch under --strict means the mutable tag no longer points at the
+# bytes this kit release was validated + signed against (tag re-point / image
+# substitution / accidental downgrade). Resolution needs a registry digest
+# resolver on PATH (docker buildx imagetools / crane / skopeo); --strict on a
+# host with no resolver SKIPS (cannot verify) rather than block.
+#
+# `signed_artifacts` digests are the SAME values recorded in
+# keys/image-digests-<tag>.txt (the cosign-sign + `verify-images` source of
+# truth); they are kept in lockstep. `verify-images` proves the SIGNATURE over
+# the digest; `doctor --strict` proves the deployed TAG still resolves to that
+# digest — complementary checks.
+#
+# `pending: true` entries have a schema slot but no recorded digest yet (filled
+# during the digest-pin ceremony — see docs/operations/key-ceremony-runbook.md
+# § Digest-pin ceremony). doctor --strict SKIPS pending entries (warn, never
+# block) so a fresh install is never broken by an un-filled slot.
+#
+# Format per entry:
+#   <key>:
+#     ref: "<repo>:<tag>"          # the mutable ref operators actually pull
+#     digest: "sha256:<64hex>"     # the recorded content digest (or omit if pending)
+#     pending: true                # OPTIONAL — schema-only slot, --strict skips
+image_digests:
+  # --- Signed Lucairn images (13 artifacts; cosign-signed + Rekor-logged in
+  # --- Slice 1; digests mirror keys/image-digests-0.5.0.txt). doctor --strict
+  # --- ENFORCES these (resolve tag->digest, block on mismatch).
+  signed_artifacts:
+    dsa-gateway:
+      ref: "ghcr.io/declade/dsa-gateway:0.5.0"
+      digest: "sha256:4c969d401356c7ffb9862e38a77a4ffae36a2a27573cb2e61c9cfe280e6d7a8a"
+    dsa-sanitizer:
+      ref: "ghcr.io/declade/dsa-sanitizer:0.5.0"
+      digest: "sha256:e9940b9be2708ec5a36c0b5e29dfc4fa52ac0b2bb1d3c2f015bf1ac359bbf8a5"
+    dsa-audit:
+      ref: "ghcr.io/declade/dsa-audit:0.5.0"
+      digest: "sha256:204e4bc3a7e1fc0525ebbdfc6c3311ab0b9df4648728c86024c67f3be43fee72"
+    dsa-id-bridge:
+      ref: "ghcr.io/declade/dsa-id-bridge:0.5.0"
+      digest: "sha256:d52d00dfea23a8b8029c1ed9d80e1251813e52a46be72e3dfa0563e475240e04"
+    dsa-sandbox-a:
+      ref: "ghcr.io/declade/dsa-sandbox-a:0.5.0"
+      digest: "sha256:498a7a60a088c0fdf0060c1b7dcd2960d8c547fd986aa4308ae5da9943b6c25b"
+    dsa-sandbox-b:
+      ref: "ghcr.io/declade/dsa-sandbox-b:0.5.0"
+      digest: "sha256:d5477b16d2af606f724cb1be0481db55f079f66881b078d5ecf8a43beb257c9e"
+    dsa-veil-witness:
+      ref: "ghcr.io/declade/dsa-veil-witness:0.5.0"
+      digest: "sha256:4c3b36b9ec306e2668f0bbb811863f04dfa27f0465c6a3d7fae4ed1ecc1741a6"
+    dsa-reid-guard:
+      ref: "ghcr.io/declade/dsa-reid-guard:0.5.0"
+      digest: "sha256:9ca2cfa7bfcafe9a1d7d9816c1314c510daff60b0fdd2b94abc534a417c569a6"
+    dsa-admin:
+      ref: "ghcr.io/declade/dsa-admin:0.5.0"
+      digest: "sha256:79848c223f55a4a1aba971562e4303c7ee8b84cc1ad495bc79a368689e24ada1"
+    dsa-demo:
+      ref: "ghcr.io/declade/dsa-demo:0.5.0"
+      digest: "sha256:56a67527fe3314c38d24ef1934ebe9f0064c99c8697cb68666cb0d3baf1f0741"
+    dsa-ingest:
+      ref: "ghcr.io/declade/dsa-ingest:0.5.0"
+      digest: "sha256:f17705804ca1be3f46302523cb55d1c2acd80c3212d5abbc1b7c34aee621a9ff"
+    dsa-llm-auditor:
+      ref: "ghcr.io/declade/dsa-llm-auditor:0.5.0"
+      digest: "sha256:1e1035831e78430f92b80fc9360c68c7b580efee265707de8c8677d72339cce9"
+    lucairn-dashboard:
+      ref: "ghcr.io/declade/lucairn-dashboard:0.8.2"
+      digest: "sha256:a586b88991ac5d71cf6523b833462648775b1e97a66cbee67876e9f992f0387e"
+  # --- PII-plane runtime (sandbox-a / sandbox-b L3 shield). ollama-identity is
+  # --- the load-bearing L3 image and is ALSO digest-pinned in the chart
+  # --- (charts/lucairn/charts/sandbox-a/values.yaml ollamaIdentity.image.digest);
+  # --- the value here is the SAME multi-arch index digest. The L3 MODEL
+  # --- (qwen2.5:7b) is an Ollama model manifest, not an OCI image — its digest
+  # --- comes from `ollama pull qwen2.5:7b` at ceremony time, so it is pending.
+  pii_plane:
+    ollama-identity:
+      ref: "ollama/ollama:0.6.2"
+      digest: "sha256:74a0929e1e082a09e4fdeef8594b8f4537f661366a04080e600c90ea9f712721"
+    qwen2.5-7b-model:
+      ref: "ollama://qwen2.5:7b"
+      pending: true   # Ollama model digest — fill via `ollama pull qwen2.5:7b` at the digest-pin ceremony
+  # --- Self-hosted runtime alternatives (docker-compose.self-hosted.yml). These
+  # --- are OPT-IN (the operator selects ONE) and several float a mutable :latest
+  # --- or are operator-built; their digest is recorded at the digest-pin
+  # --- ceremony for the specific runtime the customer deploys. Pending until
+  # --- then; doctor --strict SKIPS pending entries (never blocks a fresh install).
+  runtime:
+    llama-cpp:
+      ref: "ghcr.io/ggerganov/llama.cpp:server"
+      pending: true   # mutable :server tag — pin at ceremony to the deployed digest
+    vllm:
+      ref: "vllm/vllm-openai:latest"
+      pending: true   # mutable :latest — pin at ceremony to the deployed digest
+    tgi:
+      ref: "ghcr.io/huggingface/text-generation-inference:latest"
+      pending: true   # mutable :latest — pin at ceremony to the deployed digest
+    onnxruntime:
+      ref: "ghcr.io/declade/openai-compatible-onnxruntime:latest"
+      pending: true   # operator-built adapter image — pin at ceremony
+    triton:
+      ref: "ghcr.io/declade/openai-compatible-triton:latest"
+      pending: true   # operator-built adapter image — pin at ceremony
+    runtime:
+      ref: "ghcr.io/declade/openai-compatible-runtime:latest"
+      pending: true   # operator-built adapter image — pin at ceremony

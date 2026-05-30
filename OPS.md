@@ -479,9 +479,68 @@ Rekor transparency-log entry (`logIndex`). An unsigned or tampered image — or
 any image whose tag was re-pointed to other bytes — exits non-zero and is
 rejected.
 
-> The `keys/image-digests-<tag>.txt` record is the Slice-1 interim source of
-> truth for the signed set. A later release will fold these digests into
-> `image-manifest.yaml` and have `lucairn doctor --strict` enforce them.
+> The `keys/image-digests-<tag>.txt` record is the authoritative signed-set
+> source for `verify-images`. These same digests are also folded into
+> `image-manifest.yaml` (the `image_digests:` block) so `lucairn doctor`
+> can WARN — and `lucairn doctor --strict` BLOCK — when a deployed tag's
+> current registry digest no longer matches the recorded one. See
+> **Digest-pin enforcement** below.
+
+### Digest-pin enforcement (`doctor --strict`)
+
+`image-manifest.yaml` records the `@sha256:` content digest each image was
+built + signed against (the `image_digests:` block; the 13 signed Lucairn
+artifacts are kept in lockstep with `keys/image-digests-<tag>.txt`). This lets
+`doctor` verify that the mutable tags you deploy still resolve to the exact
+bytes this kit release was validated against — **without** rewriting your
+compose/Helm refs to `@sha256:`, so your `LUCAIRN_IMAGE_TAG` /
+`LUCAIRN_IMAGE_REGISTRY` overrides keep working.
+
+```bash
+# Warn-only (default): a tag whose current registry digest differs from the
+# recorded one prints a warning but does NOT fail the doctor run.
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
+
+# Fail-closed: --strict makes any such digest mismatch a hard error (non-zero
+# exit), so a re-pointed / substituted / downgraded tag fails the gate. This is
+# distinct from --strict-runtime (which fail-closes on the gateway /healthz +
+# /readyz probes); you can pass both, they are independent.
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --strict
+```
+
+`--strict` needs a registry digest resolver on PATH (`docker buildx
+imagetools`, `crane`, or `skopeo`) plus network reach to the registry. On a
+host with **no resolver** (or under `--offline`), the digest check SKIPS — it
+cannot read current digests, and "cannot verify" is deliberately not treated as
+"verified mismatch", so a fresh install is never blocked by an un-resolvable
+check. The `dsa-*` services honor your `LUCAIRN_IMAGE_TAG` /
+`LUCAIRN_IMAGE_REGISTRY` overrides when the effective ref is resolved.
+
+**Pending (un-pinned) entries.** Some `image_digests:` slots ship as
+`pending: true` — they have a schema slot but no enforceable digest yet. These
+are the L3 PII-shield model (`qwen2.5:7b`, an Ollama model manifest, not an OCI
+image) and the opt-in self-hosted runtime alternatives
+(`docker-compose.self-hosted.yml`: vLLM / TGI / ONNX Runtime / Triton /
+llama.cpp / the generic runtime adapter), which float a mutable tag or are
+operator-built. `doctor --strict` SKIPS pending entries (it never blocks on
+them), and they are filled in during the **digest-pin ceremony** for the
+specific runtime a customer actually deploys:
+
+```bash
+# L3 model digest (run on a host with ollama):
+ollama pull qwen2.5:7b
+ollama show qwen2.5:7b --modelfile | grep -i digest   # record the model digest
+
+# Self-hosted runtime image digest (run on a host with a resolver), for the ONE
+# runtime you deploy, e.g. vLLM:
+crane digest vllm/vllm-openai:<the-tag-you-pin>        # or: skopeo / docker buildx imagetools
+```
+
+Record the resolved value into the matching `pending:` slot's `digest:` field
+in `image-manifest.yaml` (drop the `pending: true` line). The
+`ollama-identity` runtime image is already digest-pinned — both in
+`image-manifest.yaml` and in the Helm chart
+(`charts/lucairn/charts/sandbox-a/values.yaml` → `ollamaIdentity.image.digest`).
 
 For the Image Signing Key's custody model, generation, and rotation procedure,
 see the DSA repo `docs/operations/key-ceremony-runbook.md` § Key Inventory

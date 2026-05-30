@@ -11,6 +11,7 @@ bash -n "$ROOT/tests/test_bundle_verify_replay_guard.sh"
 bash -n "$ROOT/tests/test_backup_helm.sh"
 bash -n "$ROOT/tests/test_sec_hardening.sh"
 bash -n "$ROOT/tests/test_sbom.sh"
+bash -n "$ROOT/tests/test_digest_pin.sh"
 bash -n "$ROOT/scripts/render-values.sh"
 bash -n "$ROOT/scripts/derive-veil-pubkey.sh"
 
@@ -269,5 +270,37 @@ fi
 # are self-contained (no docker/helm/cosign needed) so they run here as part of
 # the static gate.
 bash "$ROOT/tests/test_sbom.sh"
+
+# B1 Slice 3: digest-pin + `doctor --strict`. parse_image_digests + the
+# clean/tampered/no-resolver strict-gating cases run against a STUB resolver, so
+# they are self-contained (no docker/crane/skopeo/cosign needed) and belong in
+# the static gate. The live registry round-trip is the post-merge Vast
+# edge-verify (PRD § Acceptance / Slice 3).
+bash "$ROOT/tests/test_digest_pin.sh"
+
+# B1 Slice 3: the manifest digest block records EXACTLY the 13 cosign-signed
+# artifacts (keys/image-digests-0.5.0.txt) under signed_artifacts, in lockstep.
+# Assert the block exists + every signed digest appears identically, so a future
+# tag/digest bump that updates the digests file but forgets the manifest (or vice
+# versa) fails the static gate rather than silently drifting --strict away from
+# verify-images. apps/dashboard/image-manifest.yaml must stay byte-identical to
+# the root manifest (existing kit invariant — both pin the same set).
+grep -q '^image_digests:[[:space:]]*$' "$ROOT/image-manifest.yaml" \
+  || { echo "B1-S3: image-manifest.yaml is missing the image_digests: block" >&2; exit 1; }
+while IFS= read -r _l; do
+  _l="${_l%%#*}"; _ref="${_l%% *}"; _rec="${_l##* }"
+  _ref="${_ref#"${_ref%%[![:space:]]*}"}"; _ref="${_ref%"${_ref##*[![:space:]]}"}"
+  [ -n "$_ref" ] || continue
+  case "$_rec" in sha256:*) ;; *) continue ;; esac
+  grep -qF "ref: \"$_ref\"" "$ROOT/image-manifest.yaml" \
+    || { echo "B1-S3: signed ref $_ref absent from image-manifest.yaml digest block" >&2; exit 1; }
+  grep -qF "digest: \"$_rec\"" "$ROOT/image-manifest.yaml" \
+    || { echo "B1-S3: signed digest $_rec ($_ref) absent from image-manifest.yaml digest block" >&2; exit 1; }
+done < "$ROOT/keys/image-digests-0.5.0.txt"
+if [ -f "$ROOT/apps/dashboard/image-manifest.yaml" ]; then
+  diff -q "$ROOT/image-manifest.yaml" "$ROOT/apps/dashboard/image-manifest.yaml" >/dev/null \
+    || { echo "B1-S3: apps/dashboard/image-manifest.yaml drifted from the root image-manifest.yaml" >&2; exit 1; }
+fi
+echo "B1-S3: image_digests block in lockstep with keys/image-digests-0.5.0.txt + dashboard manifest synced"
 
 echo "static checks: ok"
