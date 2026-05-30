@@ -3537,18 +3537,56 @@ verify_images_default_tag() {
   printf '%s' "${base%.txt}"
 }
 
+# sanitize_digest STR — trim surrounding whitespace from STR and echo it back
+# ONLY if it is a bare, canonical image digest (sha256:<64 lowercase hex>).
+# Anything else (empty, multi-line text dump, partial output) echoes empty.
+# This is the load-bearing gate that stops a resolver's human-readable
+# inspect output from ever being mistaken for a digest. Surfaced by the A1
+# Vast fresh-install verify: `docker buildx imagetools inspect --format
+# '{{.Manifest.Digest}}'` on buildx v0.23.0 returns the full text dump (not
+# the bare digest) for a multi-arch image INDEX — non-empty, so the old code
+# accepted it and never fell through to crane/skopeo, then false-reported
+# "TAG RE-POINTED" because the text dump != the recorded digest.
+sanitize_digest() {
+  local d="$1"
+  # Trim leading/trailing whitespace (incl. newlines a text dump would carry).
+  d="$(printf '%s' "$d" | tr -d '[:space:]')"
+  case "$d" in
+    sha256:*)
+      # Exactly "sha256:" + 64 lowercase hex chars, nothing else.
+      if printf '%s' "$d" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+        printf '%s' "$d"
+      fi
+      ;;
+  esac
+}
+
 # image_current_digest REF — resolve a tag ref to its CURRENT registry digest
-# using whichever resolver is on PATH. Echoes "sha256:..." or empty on failure.
+# using whichever resolver is on PATH. Echoes "sha256:..." (validated bare
+# digest) or empty on failure. Each resolver's output is validated through
+# sanitize_digest; an invalid/non-digest result is treated as "no result" and
+# falls through to the next resolver, so a text-dump can never leak through.
 image_current_digest() {
-  local ref="$1" d=""
+  local ref="$1" d="" raw=""
   if have docker; then
-    d="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null)" || d=""
+    # Prefer the JSON manifest form — robust across buildx versions: extract
+    # the index/manifest ".digest" field. Fall back to the legacy template.
+    raw="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' 2>/dev/null)" || raw=""
+    if [ -n "$raw" ]; then
+      d="$(sanitize_digest "$(printf '%s' "$raw" | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]\{64\}\)".*/\1/p' | head -n1)")"
+    fi
+    if [ -z "$d" ]; then
+      raw="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null)" || raw=""
+      d="$(sanitize_digest "$raw")"
+    fi
   fi
   if [ -z "$d" ] && have crane; then
-    d="$(crane digest "$ref" 2>/dev/null)" || d=""
+    raw="$(crane digest "$ref" 2>/dev/null)" || raw=""
+    d="$(sanitize_digest "$raw")"
   fi
   if [ -z "$d" ] && have skopeo; then
-    d="$(skopeo inspect --format '{{.Digest}}' "docker://$ref" 2>/dev/null)" || d=""
+    raw="$(skopeo inspect --format '{{.Digest}}' "docker://$ref" 2>/dev/null)" || raw=""
+    d="$(sanitize_digest "$raw")"
   fi
   printf '%s' "$d"
 }
@@ -3727,7 +3765,7 @@ verify_images() {
     # 1. Resolve current tag digest and assert it matches the recorded digest.
     current="$(image_current_digest "$ref")"
     if [ -z "$current" ]; then
-      echo "FAIL  $ref (could not resolve current registry digest — image missing or registry unreachable)" >&2
+      echo "FAIL  $ref (could not resolve a valid registry digest — image missing, registry unreachable/unauthenticated, or no working resolver. Install 'crane' or 'skopeo', or upgrade Docker buildx, then re-run; ensure 'docker login' to the registry succeeded.)" >&2
       failed=$((failed + 1))
       continue
     fi
