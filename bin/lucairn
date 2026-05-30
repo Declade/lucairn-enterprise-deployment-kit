@@ -3554,23 +3554,32 @@ verify_images_default_tag() {
 # whitespace, so "sha256:<32hex>\n<32hex>" collapsed into a valid-looking
 # "sha256:<64hex>" and passed the gate. For a signature-verification gate
 # that must REJECT, so a stray newline inside a malformed/spliced digest can
-# never be sanitized into a fake-valid one. The anchored ^...$ regex below
+# never be sanitized into a fake-valid one. The anchored ^...$ match below
 # then naturally rejects any remaining internal whitespace.
+#
+# FIX-3 (security): validate with a WHOLE-STRING bash `[[ =~ ]]` match, NOT
+# line-oriented `grep -Eq`. `grep`'s ^/$ anchor to LINE boundaries, so a
+# multi-line dump like "sha256:<64hex>\njunk" matched on the FIRST line and
+# the function then echoed the WHOLE multi-line string. Bash `=~` anchors $
+# at end-of-STRING (no REG_NEWLINE), so an internal newline blocks the match
+# → rejected. A belt-and-suspenders internal-whitespace guard runs first.
 sanitize_digest() {
   local d="$1"
   # Trim ONLY leading/trailing whitespace (incl. surrounding newlines a text
   # dump would carry). Do NOT touch internal whitespace — see FIX-2 above.
   d="${d#"${d%%[![:space:]]*}"}"   # strip leading whitespace
   d="${d%"${d##*[![:space:]]}"}"   # strip trailing whitespace
+  # Belt-and-suspenders: any surviving internal whitespace (space, tab,
+  # newline) is illegal in a bare digest — reject outright (see FIX-3).
   case "$d" in
-    sha256:*)
-      # Exactly "sha256:" + 64 lowercase hex chars, nothing else (the anchored
-      # ^...$ rejects any internal whitespace/newline that survived the trim).
-      if printf '%s' "$d" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
-        printf '%s' "$d"
-      fi
-      ;;
+    *[[:space:]]*) return 0 ;;
   esac
+  # Exactly "sha256:" + 64 lowercase hex chars, nothing else. Whole-STRING
+  # match: bash `=~` anchors $ at end-of-string (no REG_NEWLINE), so any
+  # internal newline that survived the trim blocks the match and is rejected.
+  if [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    printf '%s' "$d"
+  fi
 }
 
 # image_current_digest REF — resolve a tag ref to its CURRENT registry digest
