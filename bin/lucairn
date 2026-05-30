@@ -25,13 +25,17 @@ Usage:
 Commands:
   doctor          Validate customer deployment prerequisites.
                   --strict-runtime fail-closes on the gateway /healthz + /readyz
-                  runtime probes. --strict (distinct) fail-closes on image DIGEST
-                  pins: blocks when a deployed tag's current registry digest does
-                  not match the digest recorded in image-manifest.yaml (tag
-                  re-point / substitution / downgrade). Without --strict, a digest
-                  mismatch only warns. --strict needs a digest resolver on PATH
-                  (docker buildx imagetools / crane / skopeo); pending manifest
-                  entries are always skipped.
+                  runtime probes. --strict (distinct) is a verify-or-fail gate on
+                  image DIGEST pins: a green --strict means every enforceable ref
+                  was resolved + matched the digest recorded in
+                  image-manifest.yaml. It fail-closes on a mismatch (tag re-point
+                  / substitution / downgrade), on an UNRESOLVED non-pending ref
+                  (resolver present but could not confirm it), on an INVALID
+                  manifest entry, and when it verified nothing (cardinality
+                  floor). Without --strict, all of these only warn. --strict
+                  requires a digest resolver on PATH (docker buildx imagetools /
+                  crane / skopeo) and is incompatible with --offline (both hard
+                  errors); pending manifest entries are always skipped.
   support-bundle  Generate a redacted support archive for customer review.
   bundle          Create, prepare, or verify per-customer delivery bundles.
   backup          pg_dump -> age-encrypt -> upload the 3 compliance DBs to S3,
@@ -638,65 +642,144 @@ check_image_manifest() {
 }
 
 # -----------------------------------------------------------------------------
-# B1 Slice 3 — digest-pin verification.
+# B1 Slice 3 — digest-pin verification (verify-or-fail under --strict).
 #
 # The image-manifest.yaml `image_digests:` block records the `@sha256:` digest
 # each image was built + (for the 13 signed Lucairn artifacts) cosign-signed
 # against. check_image_digests resolves each recorded ref's CURRENT registry
 # digest (reusing the verify-images resolver, image_current_digest) and compares
-# it to the recorded digest:
+# it to the recorded digest.
 #
-#   - normal doctor:        a mismatch WARNS (today's warn-only posture; never
-#                           changes the doctor exit code).
-#   - doctor --strict:      a mismatch BLOCKS (returns non-zero -> doctor fails).
+# --strict is a VERIFY-OR-FAIL gate: a green `doctor --strict` ALWAYS means
+# "every non-pending recorded ref was actually resolved and matched, with at
+# least one ref confirmed and no dangerous skip". The fail-OPEN class this
+# closes: an attacker who induces an empty/error resolution for the ONE ref they
+# swap must NOT get a green --strict (TOB HIGH). Per-verdict semantics:
+#
+#   verdict / condition         normal doctor          doctor --strict
+#   --------------------------  ---------------------  -----------------------
+#   match                       ok (verified++)        ok (verified++)
+#   mismatch                    WARN (rc unchanged)    FAIL (non-zero)
+#   UNRESOLVED (empty/error,    WARN/info              FAIL-CLOSED  *
+#     resolver present)
+#   INVALID (malformed digest   WARN                   FAIL-CLOSED
+#     or digest+pending)
+#   PENDING (no digest /        info (skip)            skip (legitimate)
+#     pending:true)
+#
+#   * UNRESOLVED under --strict fails closed because "a verifier WAS available
+#     and could not confirm a ref I was told to enforce" is the dangerous skip.
+#
+# Pre-conditions checked up front under --strict (HARD ERROR, before any ref):
+#   - --strict + --offline            -> incompatible (cannot enforce LIVE
+#                                        digests offline). Non-zero.
+#   - --strict + NO resolver on PATH  -> cannot verify anything. Non-zero.
+#                                        (The non-strict path still SKIPS cleanly
+#                                        with no resolver — unchanged.)
+#
+# CARDINALITY FLOOR: under --strict, require verified > 0. If everything is
+# pending/unresolved (verified==0) the gate FAILs with a DISTINCT message — a
+# "--strict" that verified nothing must not look identical to one that verified
+# everything.
+#
+# Default doctor (no --strict) is WARN-ONLY on ALL of the above: a plain
+# `doctor` run NEVER goes non-zero on a digest finding (today's posture,
+# unchanged). --strict and --strict-runtime stay independent + combinable.
 #
 # `pending: true` entries (schema slots with no recorded digest yet — filled at
 # the digest-pin ceremony) are SKIPPED with an info note in BOTH modes, so a
 # fresh install is never broken by an un-filled slot even under --strict.
 #
-# If no digest resolver is on PATH (docker buildx imagetools / crane / skopeo),
-# the check SKIPS (it cannot resolve current digests) — --strict does NOT block
-# in that case, because "cannot verify" is distinct from "verified mismatch".
-# This mirrors check_container_images' "skipped (docker unavailable)" posture
-# and keeps --offline installs honest.
-#
 # Bash 3.2 compatible (kit lesson: indexed arrays only, no `local -A`).
 # -----------------------------------------------------------------------------
 
-# parse_image_digests MANIFEST — emit one "<ref>\t<digest-or-PENDING>" line per
-# entry in the image_digests: block. PENDING marks a `pending: true` slot (no
-# enforceable digest). Driven by indentation: every `ref:` line opens an entry;
-# the following `digest:`/`pending:` lines (more-indented) belong to it until
-# the next `ref:` at the same-or-shallower indent. Tolerant of the grouping
-# sub-keys (signed_artifacts/pii_plane/runtime) because it keys off `ref:`/
-# `digest:`/`pending:` leaf lines only, not the group names.
+# parse_image_digests MANIFEST — emit one "<ref>\t<verdict>" line per entry in
+# the image_digests: block. The verdict is one of:
+#   - sha256:<64-hex>  a VALID recorded digest (enforceable under --strict).
+#   - PENDING          a `pending: true` slot OR no digest line at all (a
+#                      legitimately un-filled schema slot — skipped by --strict).
+#   - INVALID          an integrity error in the manifest, NEVER a legitimate
+#                      pending slot. Emitted when:
+#                        (a) a `digest:` line is PRESENT but its value fails the
+#                            ^sha256:[0-9a-f]{64}$ regex (malformed/truncated);
+#                        (b) an entry has BOTH a valid `digest:` AND
+#                            `pending: true` (CONTRADICTION — do not silently
+#                            honor the later line);
+#                        (c) a `digest:`/`pending:` leaf appears with NO `ref:`
+#                            to attribute it to (digest-without-a-matching-ref,
+#                            e.g. a truncated/reordered entry that lost its ref).
+#                      check_image_digests fail-closes on INVALID under --strict.
+#
+# Entries are delimited by the per-image MAP-KEY HEADER line (`dsa-gateway:`,
+# `qwen-l3-model:`, ...) — a bare `key:` with no inline value — NOT by the `ref:`
+# leaf. This makes ref/digest/pending ORDER-INDEPENDENT within an entry: a
+# reordered entry (`digest:` before its `ref:`) is associated correctly instead
+# of being mis-attributed to a neighbour or silently downgraded to PENDING. The
+# group headers (signed_artifacts:/pii_plane:/runtime:) are the same shape and
+# simply flush the completed entry before them (an empty flush is a no-op). An
+# entry that accumulated leaf keys but never saw a `ref:` (e.g. a truncated /
+# corrupted entry) is surfaced as a synthetic "<no-ref>\tINVALID" line at its
+# boundary, so a digest-without-a-matching-ref can never silently vanish.
+#
+# Bash 3.2 / POSIX-awk compatible (no gawk extensions, no associative arrays).
 parse_image_digests() {
   local manifest="$1"
   [ -f "$manifest" ] || return 0
   awk '
+    # Resolve the stashed leaf keys (digest + pending flag) into a single
+    # verdict. Order-independent: contradiction and malformed checks fire
+    # regardless of which leaf was seen first within the entry.
+    function resolve() {
+      if (s_digest_present && s_digest_bad) return "INVALID"   # malformed digest
+      if (s_digest_present && s_pending)    return "INVALID"   # contradiction
+      if (s_digest_present)                 return s_digest    # valid digest
+      if (s_pending)                        return "PENDING"   # explicit pending
+      return "PENDING"                                          # no leaf -> slot
+    }
+    function reset_stash() {
+      s_digest=""; s_digest_present=0; s_digest_bad=0; s_pending=0
+      have_ref=0; ref=""; have_leaf=0
+    }
+    # Close the current entry: emit its verdict, or surface an orphan (leaf keys
+    # with no ref) as <no-ref>\tINVALID. Empty entries (group headers) are no-ops.
+    function flush() {
+      if (have_ref) {
+        print ref "\t" resolve()
+      } else if (have_leaf) {
+        print "<no-ref>\tINVALID"
+      }
+      reset_stash()
+    }
+    BEGIN { reset_stash() }
     # Only consider lines INSIDE the image_digests: block.
     /^image_digests:[[:space:]]*$/ { inblock=1; next }
-    # A new TOP-LEVEL key (column 0, non-space) ends the block.
-    inblock && /^[^[:space:]#]/ { inblock=0 }
+    # A new TOP-LEVEL key (column 0, non-space) ends the block: flush + stop.
+    inblock && /^[^[:space:]#]/ { flush(); inblock=0 }
     !inblock { next }
     {
       line=$0
       sub(/[[:space:]]+#.*$/, "", line)            # strip trailing comments
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", line) # trim
     }
+    line == "" { next }                            # blank / comment-only line
+    # Leaf keys (always carry an inline value) — checked BEFORE the boundary
+    # rule so a `digest:` with an empty value is recorded as a (bad) digest, not
+    # mistaken for an entry header.
     line ~ /^ref:[[:space:]]*/ {
-      # Flush the previous entry if it had a ref but no digest/pending verdict.
-      if (have_ref) { print ref "\t" (verdict==""?"PENDING":verdict) }
       val=line; sub(/^ref:[[:space:]]*/, "", val); gsub(/^"|"$/, "", val)
-      ref=val; verdict=""; have_ref=1; next
+      ref=val; have_ref=1; have_leaf=1; next
     }
-    line ~ /^digest:[[:space:]]*/ {
+    line ~ /^digest:/ {
       val=line; sub(/^digest:[[:space:]]*/, "", val); gsub(/^"|"$/, "", val)
-      if (val ~ /^sha256:[0-9a-f]{64}$/) verdict=val
+      s_digest_present=1; have_leaf=1
+      if (val ~ /^sha256:[0-9a-f]{64}$/) { s_digest=val } else { s_digest_bad=1 }
       next
     }
-    line ~ /^pending:[[:space:]]*true[[:space:]]*$/ { verdict="PENDING"; next }
-    END { if (have_ref) print ref "\t" (verdict==""?"PENDING":verdict) }
+    line ~ /^pending:[[:space:]]*true[[:space:]]*$/ { s_pending=1; have_leaf=1; next }
+    # Entry / group MAP-KEY HEADER (bare `key:` with no inline value): a boundary.
+    # Flush the entry that just ended, then start a fresh one.
+    line ~ /^[A-Za-z0-9._\/-]+:[[:space:]]*$/ { flush(); next }
+    END { flush() }
   ' "$manifest"
 }
 
@@ -726,27 +809,57 @@ digest_resolve_env_ref() {
   esac
 }
 
-# check_image_digests ENV_FILE STRICT — verify recorded digests against current
-# registry digests. STRICT=1 makes a mismatch fatal (return 1); STRICT=0 warns.
-# Returns 0 unless STRICT=1 AND at least one resolvable ref MISMATCHED.
+# check_image_digests ENV_FILE STRICT OFFLINE — verify recorded digests against
+# CURRENT registry digests. STRICT=1 is the VERIFY-OR-FAIL gate (see the block
+# comment above for the full per-verdict decision table); STRICT=0 is warn-only
+# and NEVER changes the doctor exit code. OFFLINE=1 marks the --offline run
+# (incompatible with --strict).
+#
+# Returns non-zero ONLY under STRICT=1, for any of: --offline (hard error), no
+# resolver on PATH (hard error), a mismatch, an UNRESOLVED non-pending ref, an
+# INVALID manifest entry, or the cardinality floor (verified==0). STRICT=0
+# always returns 0.
 check_image_digests() {
-  local env_file="$1" strict="${2:-0}" manifest_file="${ROOT}/image-manifest.yaml"
+  local env_file="$1" strict="${2:-0}" offline="${3:-0}"
+  local manifest_file="${ROOT}/image-manifest.yaml"
 
   if [ ! -f "$manifest_file" ]; then
-    [ "$strict" -eq 1 ] && warn "doctor --strict: image-manifest.yaml not found; cannot verify digests"
+    if [ "$strict" -eq 1 ]; then
+      echo "doctor --strict: image-manifest.yaml not found; cannot verify digests — failing closed" >&2
+      return 1
+    fi
     return 0
   fi
 
   # No `image_digests:` block at all (older kit): nothing to enforce.
   if ! grep -q '^image_digests:[[:space:]]*$' "$manifest_file"; then
-    [ "$strict" -eq 1 ] && warn "doctor --strict: image-manifest.yaml has no image_digests: block; cannot verify digests"
+    if [ "$strict" -eq 1 ]; then
+      echo "doctor --strict: image-manifest.yaml has no image_digests: block; cannot verify digests — failing closed" >&2
+      return 1
+    fi
     return 0
   fi
 
-  # A resolver is required to read CURRENT registry digests. Without one we
-  # cannot verify — SKIP (do not block, even under --strict): "cannot verify"
-  # is not "verified mismatch".
-  if ! have docker && ! have crane && ! have skopeo; then
+  # --strict pre-conditions (HARD ERROR up front, before touching any ref).
+  # A green --strict must mean "verified live"; --offline cannot do that.
+  if [ "$strict" -eq 1 ] && [ "$offline" -eq 1 ]; then
+    echo "doctor --strict: incompatible with --offline (cannot enforce LIVE registry digests offline). Drop --offline, or run plain --offline doctor for a warn-only check." >&2
+    return 1
+  fi
+
+  # Resolver presence is the AUTHORITATIVE signal that we CAN read current
+  # digests. It is distinct from image_current_digest returning empty (= a
+  # resolver IS present but the resolution failed -> UNRESOLVED, handled below).
+  local have_resolver=0
+  if have docker || have crane || have skopeo; then have_resolver=1; fi
+
+  if [ "$have_resolver" -eq 0 ]; then
+    if [ "$strict" -eq 1 ]; then
+      echo "doctor --strict: requires a digest resolver; install crane/skopeo or ensure docker buildx is available — failing closed (cannot verify digests)" >&2
+      return 1
+    fi
+    # Non-strict: SKIP cleanly (unchanged warn-only posture — "cannot verify" is
+    # not "verified mismatch").
     echo "image digests: skipped (no registry digest resolver on PATH — install docker/crane/skopeo to enforce digest pins)"
     return 0
   fi
@@ -755,29 +868,58 @@ check_image_digests() {
   env_tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)";       env_tag="${env_tag:-0.5.0}"
   env_reg="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)";  env_reg="${env_reg:-ghcr.io/declade}"
 
-  local mismatched=0 checked=0 pending=0 unresolved=0
+  local mismatched=0 verified=0 pending=0 unresolved=0 invalid=0 informational=0
   local rref recorded eff_ref current
   while IFS="$(printf '\t')" read -r rref recorded; do
     [ -n "$rref" ] || continue
+
+    # INVALID: a manifest-integrity error (malformed digest, digest+pending
+    # contradiction, or a digest/pending leaf with no ref). NEVER a legitimate
+    # pending slot -> fail-closed under --strict.
+    if [ "$recorded" = "INVALID" ]; then
+      invalid=$((invalid + 1))
+      if [ "$strict" -eq 1 ]; then
+        echo "image digest: INVALID manifest entry ($rref) — present-but-broken digest or digest+pending contradiction; manifest-integrity error, not a pending slot" >&2
+      else
+        warn "image digest: INVALID manifest entry ($rref) — present-but-broken digest or digest+pending contradiction; run 'doctor --strict' to fail-closed"
+      fi
+      continue
+    fi
+
+    # PENDING: a legitimately un-filled schema slot (by design) -> skip in both
+    # modes; does NOT count toward the cardinality floor.
     if [ "$recorded" = "PENDING" ]; then
       pending=$((pending + 1))
       echo "image digest: $rref pending (no digest recorded yet — filled at the digest-pin ceremony; --strict skips)"
       continue
     fi
+
     eff_ref="$(digest_resolve_env_ref "$rref" "$env_tag" "$env_reg")"
     if [ -z "$eff_ref" ]; then
-      # ollama:// model pseudo-ref with a recorded digest is informational only.
+      # ollama:// model pseudo-ref with a recorded digest is informational only:
+      # not OCI-resolvable, so neither verifiable nor a dangerous skip. It does
+      # NOT count toward the cardinality floor and never fails --strict.
+      informational=$((informational + 1))
       echo "image digest: $rref recorded $recorded (model manifest — not OCI-resolvable; informational)"
       continue
     fi
+
     current="$(image_current_digest "$eff_ref")"
     if [ -z "$current" ]; then
+      # UNRESOLVED: a resolver IS present (checked above) yet could not confirm a
+      # ref we were told to enforce. Under --strict this is the DANGEROUS SKIP an
+      # attacker would induce for the one ref they swap -> FAIL-CLOSED.
       unresolved=$((unresolved + 1))
-      echo "image digest: $eff_ref UNRESOLVED (registry unreachable/unauthenticated or image missing — cannot compare; not treated as a mismatch)"
+      if [ "$strict" -eq 1 ]; then
+        echo "image digest: UNRESOLVED ($eff_ref — a resolver is present but the current digest could not be read; registry unreachable/unauthenticated or image missing) — failing closed under --strict" >&2
+      else
+        warn "image digest: UNRESOLVED ($eff_ref — registry unreachable/unauthenticated or image missing; cannot compare); run 'doctor --strict' to fail-closed"
+      fi
       continue
     fi
-    checked=$((checked + 1))
+
     if [ "$current" = "$recorded" ]; then
+      verified=$((verified + 1))
       echo "image digest: ok ($eff_ref @ $recorded)"
     else
       mismatched=$((mismatched + 1))
@@ -789,13 +931,34 @@ check_image_digests() {
     fi
   done < <(parse_image_digests "$manifest_file")
 
-  echo "image digests: checked=$checked matched=$((checked - mismatched)) mismatched=$mismatched pending=$pending unresolved=$unresolved"
+  echo "image digests: verified=$verified mismatched=$mismatched unresolved=$unresolved invalid=$invalid pending=$pending informational=$informational"
 
-  if [ "$strict" -eq 1 ] && [ "$mismatched" -gt 0 ]; then
-    echo "doctor --strict: $mismatched image digest(s) did not match the pinned manifest — failing closed" >&2
-    return 1
+  if [ "$strict" -ne 1 ]; then
+    return 0
   fi
-  return 0
+
+  # --strict verify-or-fail gate. Any of the following is a fail-closed.
+  local rc=0
+  if [ "$mismatched" -gt 0 ]; then
+    echo "doctor --strict: $mismatched image digest(s) did not match the pinned manifest — failing closed" >&2
+    rc=1
+  fi
+  if [ "$unresolved" -gt 0 ]; then
+    echo "doctor --strict: $unresolved recorded digest(s) could not be resolved while a resolver was present — failing closed (a verifier was available and could not confirm a ref it was told to enforce)" >&2
+    rc=1
+  fi
+  if [ "$invalid" -gt 0 ]; then
+    echo "doctor --strict: $invalid image-manifest digest entry(ies) are INVALID (malformed digest or digest+pending contradiction) — failing closed" >&2
+    rc=1
+  fi
+  # Cardinality floor: a --strict that verified nothing must not look like one
+  # that verified everything. Distinct message; only reported when nothing else
+  # already failed (a mismatch/unresolved/invalid run is already non-zero).
+  if [ "$rc" -eq 0 ] && [ "$verified" -eq 0 ]; then
+    echo "doctor --strict: verified no recorded digests (every enforceable ref was pending/unresolved) — failing closed (refusing to report a green --strict that confirmed nothing)" >&2
+    rc=1
+  fi
+  return "$rc"
 }
 
 # -----------------------------------------------------------------------------
@@ -3108,13 +3271,15 @@ doctor() {
   # without network egress still get the warning.
   check_image_manifest "$env_file"
 
-  # B1 Slice 3: digest-pin verification. Warn-only in normal mode; --strict
-  # BLOCKS on a tag whose CURRENT registry digest != the manifest-recorded
-  # digest (re-point/substitution/downgrade). Needs a registry digest resolver
-  # (docker/crane/skopeo) + network; SKIPS cleanly without either (and under
-  # --offline, where refs resolve UNRESOLVED, never a mismatch). pending entries
-  # are always skipped. Honors LUCAIRN_IMAGE_TAG/REGISTRY overrides on dsa-*.
-  if ! check_image_digests "$env_file" "$strict_digest"; then
+  # B1 Slice 3: digest-pin verification (verify-or-fail under --strict). Warn-
+  # only in normal mode (never changes the exit code); --strict is a fail-closed
+  # gate — see check_image_digests' block comment for the full decision table.
+  # --strict + --offline is a HARD ERROR (cannot enforce LIVE digests offline);
+  # --strict with NO resolver on PATH is a HARD ERROR; a non-pending ref that a
+  # present resolver cannot confirm (UNRESOLVED) fails closed; an INVALID
+  # manifest entry fails closed; and --strict requires at least one ref actually
+  # verified (cardinality floor). Honors LUCAIRN_IMAGE_TAG/REGISTRY on dsa-*.
+  if ! check_image_digests "$env_file" "$strict_digest" "$offline"; then
     return 1
   fi
 

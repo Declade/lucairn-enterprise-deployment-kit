@@ -287,20 +287,43 @@ bash "$ROOT/tests/test_digest_pin.sh"
 # the root manifest (existing kit invariant — both pin the same set).
 grep -q '^image_digests:[[:space:]]*$' "$ROOT/image-manifest.yaml" \
   || { echo "B1-S3: image-manifest.yaml is missing the image_digests: block" >&2; exit 1; }
+
+# Strengthened (MED [trailofbits]): assert via the ACTUAL parser, not a textual
+# grep. A grep for `ref:`/`digest:` substrings cannot catch a future careless
+# edit that DOWNGRADES a signed ref to PENDING (drops the digest line) or to
+# INVALID (truncates the digest, or adds a stray `pending: true`) — the textual
+# substring may still be present elsewhere while the parser's per-entry verdict
+# silently changes. We run parse_image_digests over the SHIPPED manifest and
+# assert each of the 13 signed_artifacts resolves to its EXACT recorded digest
+# verdict — never PENDING, INVALID, or <no-ref>.
+_PARSED_STATIC="$(
+  set --
+  source "$ROOT/bin/lucairn" >/dev/null 2>&1
+  parse_image_digests "$ROOT/image-manifest.yaml"
+)"
 while IFS= read -r _l; do
   _l="${_l%%#*}"; _ref="${_l%% *}"; _rec="${_l##* }"
   _ref="${_ref#"${_ref%%[![:space:]]*}"}"; _ref="${_ref%"${_ref##*[![:space:]]}"}"
   [ -n "$_ref" ] || continue
   case "$_rec" in sha256:*) ;; *) continue ;; esac
-  grep -qF "ref: \"$_ref\"" "$ROOT/image-manifest.yaml" \
-    || { echo "B1-S3: signed ref $_ref absent from image-manifest.yaml digest block" >&2; exit 1; }
-  grep -qF "digest: \"$_rec\"" "$ROOT/image-manifest.yaml" \
-    || { echo "B1-S3: signed digest $_rec ($_ref) absent from image-manifest.yaml digest block" >&2; exit 1; }
+  # The parser must resolve this signed ref to its EXACT recorded digest. A
+  # PENDING/INVALID/absent verdict here = a signed ref was downgraded -> FAIL.
+  printf '%s\n' "$_PARSED_STATIC" | grep -qF "$(printf '%s\t%s' "$_ref" "$_rec")" \
+    || { echo "B1-S3: signed ref $_ref does NOT resolve to its recorded digest $_rec via parse_image_digests (downgraded to PENDING/INVALID, or absent) — a signed ref was silently weakened" >&2; exit 1; }
 done < "$ROOT/keys/image-digests-0.5.0.txt"
+# Defensive: the parser must emit NO INVALID / <no-ref> verdicts for the shipped
+# manifest (a clean manifest has none — any is a manifest-integrity regression).
+# Use `if` (not `&&`) so the no-match happy path does not trip `set -e`.
+if printf '%s\n' "$_PARSED_STATIC" | grep -q $'\tINVALID$'; then
+  echo "B1-S3: parse_image_digests reports an INVALID entry in the shipped image-manifest.yaml" >&2; exit 1
+fi
+if printf '%s\n' "$_PARSED_STATIC" | grep -q '^<no-ref>'; then
+  echo "B1-S3: parse_image_digests reports an orphan <no-ref> entry in the shipped image-manifest.yaml" >&2; exit 1
+fi
 if [ -f "$ROOT/apps/dashboard/image-manifest.yaml" ]; then
   diff -q "$ROOT/image-manifest.yaml" "$ROOT/apps/dashboard/image-manifest.yaml" >/dev/null \
     || { echo "B1-S3: apps/dashboard/image-manifest.yaml drifted from the root image-manifest.yaml" >&2; exit 1; }
 fi
-echo "B1-S3: image_digests block in lockstep with keys/image-digests-0.5.0.txt + dashboard manifest synced"
+echo "B1-S3: image_digests block in lockstep with keys/image-digests-0.5.0.txt (via parser) + dashboard manifest synced"
 
 echo "static checks: ok"

@@ -501,20 +501,43 @@ compose/Helm refs to `@sha256:`, so your `LUCAIRN_IMAGE_TAG` /
 # recorded one prints a warning but does NOT fail the doctor run.
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 
-# Fail-closed: --strict makes any such digest mismatch a hard error (non-zero
-# exit), so a re-pointed / substituted / downgraded tag fails the gate. This is
-# distinct from --strict-runtime (which fail-closes on the gateway /healthz +
-# /readyz probes); you can pass both, they are independent.
+# Fail-closed (verify-or-fail): --strict is a hard gate. A green --strict ALWAYS
+# means "every enforceable ref was actually resolved and matched, with at least
+# one ref confirmed and no dangerous skip". It fails (non-zero exit) on any of:
+#   - a digest MISMATCH (re-pointed / substituted / downgraded tag);
+#   - an UNRESOLVED non-pending ref (a resolver was present but could not read
+#     the current digest — fail-closed, so an attacker can't pass by inducing an
+#     error for the one ref they swapped);
+#   - an INVALID manifest entry (a present-but-malformed digest, or a digest +
+#     pending:true contradiction — a manifest-integrity error, NOT a pending
+#     slot);
+#   - the cardinality floor: --strict verified nothing (everything pending /
+#     unresolved) — distinct message, refusing to report a green run that
+#     confirmed nothing.
+# --strict is distinct from --strict-runtime (which fail-closes on the gateway
+# /healthz + /readyz probes); you can pass both, they are independent.
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --strict
 ```
 
-`--strict` needs a registry digest resolver on PATH (`docker buildx
-imagetools`, `crane`, or `skopeo`) plus network reach to the registry. On a
-host with **no resolver** (or under `--offline`), the digest check SKIPS — it
-cannot read current digests, and "cannot verify" is deliberately not treated as
-"verified mismatch", so a fresh install is never blocked by an un-resolvable
-check. The `dsa-*` services honor your `LUCAIRN_IMAGE_TAG` /
-`LUCAIRN_IMAGE_REGISTRY` overrides when the effective ref is resolved.
+**Resolver + offline.** `--strict` enforces LIVE registry digests, so it needs a
+registry digest resolver on PATH (`docker buildx imagetools`, `crane`, or
+`skopeo`) plus network reach to the registry:
+
+- **plain `doctor`** (no `--strict`) with **no resolver** SKIPS the digest check
+  (warns, never fails the run) — "cannot verify" is deliberately not treated as
+  "verified mismatch", so a fresh install is never blocked by an un-resolvable
+  check.
+- **plain `doctor --offline`** skips the LIVE digest comparison (warn-only) — by
+  definition it has no registry reach.
+- **`doctor --strict --offline`** is a **hard error** (non-zero): you cannot
+  enforce live digests offline. Drop `--offline`, or run a plain `--offline`
+  doctor for the warn-only check.
+- **`doctor --strict` with NO resolver on PATH** is a **hard error** (non-zero):
+  `--strict` cannot verify anything without a resolver — install
+  `crane`/`skopeo` or ensure `docker buildx` is available.
+
+The `dsa-*` services honor your `LUCAIRN_IMAGE_TAG` / `LUCAIRN_IMAGE_REGISTRY`
+overrides when the effective ref is resolved.
 
 **Pending (un-pinned) entries.** Some `image_digests:` slots ship as
 `pending: true` — they have a schema slot but no enforceable digest yet. These
