@@ -270,9 +270,23 @@ echo "digest-pin: --strict + --offline -> hard error; plain --offline rc=0 ok"
 # ---------------------------------------------------------------------------
 GW_REF="ghcr.io/declade/dsa-gateway:0.5.0"
 SHIM_EMPTY="$(make_stub_crane_empty_for "$MANIFEST" "$GW_REF")"
+# The crane stub MUST be the SOLE resolver image_current_digest can find. We
+# cannot append :/usr/bin:/bin here: on a box where a REAL docker/crane/skopeo
+# lives in a system bin dir, the production resolver (which probes `have docker`
+# FIRST) would resolve the swapped ref for REAL and the induced-empty condition
+# would never trigger -> 5e false-fails (the original `:/usr/bin:/bin` bug found
+# by the Vast verify; the production enforcement itself is correct). So build an
+# isolated PATH that contains ONLY the crane stub + symlinks to the coreutils
+# the verify path needs (mirrors the curated $NORES dir in 5c) — and NO real
+# docker/crane/skopeo. This makes the stub the deterministic sole resolver on
+# ANY box (macOS bash 3.2 AND Linux with docker in /usr/bin).
+for b in bash awk sed grep cat env mktemp tr head tail dirname; do
+  src="$(command -v "$b" 2>/dev/null)" && ln -sf "$src" "$SHIM_EMPTY/$b"
+done
+EMPTY_PATH="$SHIM_EMPTY"
 set +e
-out_ur_s="$(PATH="$SHIM_EMPTY:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_ur_s=$?
-out_ur_n="$(PATH="$SHIM_EMPTY:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_ur_n=$?
+out_ur_s="$(PATH="$EMPTY_PATH" "$KROOT_OK/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_ur_s=$?
+out_ur_n="$(PATH="$EMPTY_PATH" "$KROOT_OK/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_ur_n=$?
 set -e
 [ "$rc_ur_s" -ne 0 ] || { printf '%s\n' "$out_ur_s" >&2; fail "induced-empty --strict should FAIL-CLOSED (non-zero), got $rc_ur_s"; }
 printf '%s' "$out_ur_s" | grep -qi "UNRESOLVED" \
