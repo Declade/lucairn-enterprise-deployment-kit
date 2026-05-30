@@ -499,6 +499,13 @@ no extra vendor). You can fetch the SBOM, verify it came from Lucairn, and
 inspect exactly what is in each image — useful for vulnerability triage and a
 supply-chain questionnaire's "do you provide an SBOM?".
 
+Note the division of labour: `lucairn verify-images` is the image-integrity gate
+— it is digest-pinned (verifies against the recorded signed digest in
+`keys/image-digests-<tag>.txt`) and refuses a re-pointed tag as a
+downgrade/substitution. `lucairn sbom` instead fetches + verifies the SBOM
+attestation for whatever bytes the given image ref currently resolves to, so run
+`verify-images` first if you want to assert the bytes are the published ones.
+
 Verification needs `cosign` (>= v2.0) on PATH (see "Verify image signatures"
 above for the pin-cosign-by-checksum recipe). `jq` is recommended for the
 richest summary.
