@@ -235,7 +235,14 @@ services:
 
   ollama:
     profiles: ["ollama"]
-    image: "${OLLAMA_IMAGE:-ollama/ollama:latest}"
+    # Default is PINNED to the digest recorded in image-manifest.yaml
+    # (pii_plane.ollama-identity → ollama/ollama:0.6.2@sha256:74a0929…) so that
+    # an operator who leaves OLLAMA_IMAGE unset/empty runs the SAME image that
+    # `bin/lucairn doctor --strict` verifies — closing the false-green where a
+    # floating :latest default would pass --strict against the pinned manifest
+    # ref. An explicit OLLAMA_IMAGE override still wins; a floating/unpinned
+    # override correctly reds --strict (PR #60).
+    image: "${OLLAMA_IMAGE:-ollama/ollama:0.6.2@sha256:74a0929e1e082a09e4fdeef8594b8f4537f661366a04080e600c90ea9f712721}"
     logging: *default-logging
     environment:
       OLLAMA_HOST: "0.0.0.0:11434"
@@ -267,7 +274,10 @@ services:
   #     exec ollama-identity ollama pull qwen2.5:7b
   # See INSTALL.md § Self-hosted inference for the full pre-stage step.
   ollama-identity:
-    image: "${OLLAMA_IMAGE:-ollama/ollama:latest}"
+    # Default PINNED to the recorded manifest digest (see the AI-plane `ollama`
+    # service above) so an unset/empty OLLAMA_IMAGE keeps `doctor --strict`
+    # honest. Explicit override still honored; floating override reds --strict.
+    image: "${OLLAMA_IMAGE:-ollama/ollama:0.6.2@sha256:74a0929e1e082a09e4fdeef8594b8f4537f661366a04080e600c90ea9f712721}"
     logging: *default-logging
     environment:
       OLLAMA_HOST: "0.0.0.0:11434"
