@@ -480,7 +480,10 @@ those seeds**, then install.
 
 ```bash
 # Decrypt the offline escrow blob on the operator host (see the escrow section).
-age -d -i veil-escrow.identity -o /dev/shm/veil-seeds.env veil-seeds.escrow.age
+# umask 077 BEFORE the write so the seed-bearing plaintext is created 0600 — under
+# the default umask 022 it would land 0644 (world-readable to local users).
+( umask 077; age -d -i veil-escrow.identity -o /dev/shm/veil-seeds.env veil-seeds.escrow.age )
+chmod 0600 /dev/shm/veil-seeds.env   # belt-and-suspenders if age ignored the umask
 # Exports the seven root seeds: VEIL_AUDIT/BRIDGE/SANITIZER/SANDBOX_B/WITNESS/
 # GATEWAY_SIGNING_KEY + VEIL_MANIFEST_SIGNING_KEY (the "What to escrow" set).
 set -a; . /dev/shm/veil-seeds.env; set +a
@@ -522,7 +525,9 @@ PUB_WITNESS_MANIFEST=$(printf '%s' "$VEIL_WITNESS_SIGNING_KEY"  | scripts/derive
 #     table's Helm column; public-key slots are the gateway.secrets.values.veil*
 #     roster (the source of /.well-known/veil-keys.json) plus the four witness
 #     emitter pubkeys the witness ConfigMap needs to verify claims.
-cat > /dev/shm/restore-seeds.values.yaml <<EOF
+#     The ( umask 077; cat > ... ) subshell creates the seed-bearing overlay 0600;
+#     a plain `cat >` under umask 022 would create it 0644 (world-readable).
+( umask 077; cat > /dev/shm/restore-seeds.values.yaml <<EOF
 veil-witness:
   secrets: { values: { signingKey: "${VEIL_WITNESS_SIGNING_KEY}" } }
   # The witness verifies emitter claims against these four pubkeys
@@ -562,6 +567,8 @@ sandbox-a:
 sandbox-b:
   secrets: { values: { veilSigningKey: "${VEIL_SANDBOX_B_SIGNING_KEY}" } }
 EOF
+)
+chmod 0600 /dev/shm/restore-seeds.values.yaml   # confirm 0600 regardless of umask
 
 # (c) Install pointing at the (still empty) compliance DBs. The overlay now
 #     carries the restored seeds AND every re-derived public key, so the gateway
@@ -595,20 +602,40 @@ shred -u /dev/shm/veil-seeds.env /dev/shm/restore-seeds.values.yaml
 > extend the gateway ExternalSecret**.
 >
 > Until the chart is extended, an ESO restore must **supply those four values
-> out-of-band** — set them on the gateway Secret directly after ESO sync (e.g.
-> `kubectl patch secret gateway-credentials` with the re-derived
-> `VEIL_GATEWAY_PUBLIC_KEY` / `VEIL_GATEWAY_MANIFEST_PUBLIC_KEY` /
-> `VEIL_WITNESS_MANIFEST_PUBLIC_KEY` and the restored `VEIL_GATEWAY_SIGNING_KEY`),
-> or carry just those four in a small `k8s-native`-style values overlay for the
-> gateway subchart. Do **not** assume the ESO path alone yields the full roster
-> as written — verify with the well-known key_id check below before declaring the
+> through the secret store itself** — because on a non-`k8s-native` gateway
+> backend `charts/lucairn/charts/gateway/templates/secret.yaml` is guarded by
+> `{{- if eq .Values.secrets.backend "k8s-native" }}` and does **NOT** render, so
+> `gateway.secrets.values.veil*` overlay values are **silently ignored** (a
+> `k8s-native`-style values overlay for the gateway subchart does nothing on the
+> ESO backend). Two backend-accurate options:
+>
+> 1. **Stay on ESO** — put the re-derived `VEIL_GATEWAY_PUBLIC_KEY` /
+>    `VEIL_GATEWAY_MANIFEST_PUBLIC_KEY` / `VEIL_WITNESS_MANIFEST_PUBLIC_KEY` and
+>    the restored `VEIL_GATEWAY_SIGNING_KEY` **into the external secret store** (the
+>    same store the gateway ExternalSecret syncs from) keyed under names the
+>    extended ExternalSecret will map — OR, on the shipped chart that does not yet
+>    map them, `kubectl patch secret gateway-credentials` to add the four `data:`
+>    entries on the **materialized** `gateway-credentials` Secret **after** ESO
+>    has synced it (re-apply the patch after any ESO refresh that recreates the
+>    Secret, since ESO owns it).
+> 2. **Flip the gateway subchart to `k8s-native`** (`gateway.secrets.backend:
+>    k8s-native`) for the restore and supply the **full** gateway Secret inputs via
+>    the values overlay above — then the chart-rendered `secret.yaml` materializes
+>    the complete roster.
+>
+> Do **not** assume the ESO path alone yields the full roster as written, and do
+> **not** carry the missing pubkeys in a gateway values overlay while the backend
+> stays ESO — verify with the well-known key_id check below before declaring the
 > restore complete.
 
 **Compose path** — restore the `VEIL_*` seeds into `customer.env` (mode 0600)
 from the decrypted escrow blob, then bring the stack up empty:
 
 ```bash
-age -d -i veil-escrow.identity -o /dev/shm/veil-seeds.env veil-seeds.escrow.age
+# umask 077 so the decrypted seed plaintext is created 0600, not 0644 under the
+# default umask 022 (it holds the seven root signing seeds in cleartext).
+( umask 077; age -d -i veil-escrow.identity -o /dev/shm/veil-seeds.env veil-seeds.escrow.age )
+chmod 0600 /dev/shm/veil-seeds.env
 # Merge the VEIL_* lines into customer.env (keep the file at mode 0600), then:
 shred -u /dev/shm/veil-seeds.env
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
@@ -783,11 +810,20 @@ secrets — see `bin/lucairn:231-236`.
 > The gateway binary signs its manifest with `VEIL_MANIFEST_SIGNING_KEY`
 > (`veil.go:206`), so `VEIL_GATEWAY_MANIFEST_PUBLIC_KEY` MUST be the Ed25519
 > public of `VEIL_MANIFEST_SIGNING_KEY` (NOT `VEIL_GATEWAY_SIGNING_KEY`) or the
-> W2B Runtime Invariant Harness #3 self-check degrades. Restore relies on the
-> corrected `scripts/render-values.sh` and `customer.env.example`, which now
-> derive this public key from `VEIL_MANIFEST_SIGNING_KEY` automatically — re-run
-> `render-values.sh` (or follow the `customer.env.example` derivation lines) and
-> the manifest public key matches the signer with no manual override needed.
+> W2B Runtime Invariant Harness #3 self-check degrades.
+>
+> **The restore overlay above re-derives this pubkey explicitly (step (a),
+> `PUB_GATEWAY_MANIFEST ← VEIL_MANIFEST_SIGNING_KEY`) — that re-derivation is the
+> authoritative restore path and is runtime-correct on its own, independent of the
+> renderer.** A separate sibling PR (#63, `fix/render-values-gateway-manifest-pubkey`)
+> fixes `scripts/render-values.sh` and `customer.env.example` so a *fresh* render
+> derives `VEIL_GATEWAY_MANIFEST_PUBLIC_KEY` from `VEIL_MANIFEST_SIGNING_KEY`
+> automatically. **AFTER #63 merges**, re-running `render-values.sh` (or following
+> the `customer.env.example` derivation lines) produces the correct manifest
+> public key with no manual override. **Until #63 merges, the renderer and
+> `customer.env.example` on `main` still derive it from the wrong seed** — so for
+> any restore today, use the explicit re-derivation in the overlay above as the
+> source of truth and do NOT rely on a `render-values.sh` re-run alone.
 
 These are the seeds at cluster-loss risk. The **License Signing Key** and the
 **Image Signing Key** are Lucairn-held, off-cluster keys — they are NOT part of
@@ -808,7 +844,9 @@ RECIPIENT="$(grep 'public key:' veil-escrow.identity | awk '{print $NF}')"
 # 2) Assemble the seven ROOT seeds you generated at the ceremony into one env
 #    file in a tmpfs (never a shared/persisted filesystem). These are the exact
 #    env-var names the deploy consumes — see the "What to escrow" table above.
-cat > /dev/shm/veil-seeds.env <<'EOF'
+#    ( umask 077; cat > ... ) creates the cleartext-seed file 0600; a plain
+#    `cat >` under umask 022 would leave it 0644 (world-readable to local users).
+( umask 077; cat > /dev/shm/veil-seeds.env <<'EOF'
 VEIL_AUDIT_SIGNING_KEY=<audit seed hex>
 VEIL_BRIDGE_SIGNING_KEY=<bridge seed hex>
 VEIL_SANITIZER_SIGNING_KEY=<sanitizer seed hex>
@@ -817,6 +855,8 @@ VEIL_WITNESS_SIGNING_KEY=<witness seed hex>
 VEIL_GATEWAY_SIGNING_KEY=<gateway seed hex>
 VEIL_MANIFEST_SIGNING_KEY=<gateway manifest seed hex>
 EOF
+)
+chmod 0600 /dev/shm/veil-seeds.env
 
 # 3) Record a NON-DISCLOSING checksum of the plaintext (so step 4 can prove the
 #    blob round-trips without ever re-printing a live seed). Store this checksum
