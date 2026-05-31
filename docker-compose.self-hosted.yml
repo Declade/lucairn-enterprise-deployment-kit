@@ -40,10 +40,27 @@ networks:
   dsa-model-runtime:
     driver: bridge
     internal: true
+  # Identity-plane L3 model network. SPLIT-KNOWLEDGE INVARIANT: the sanitizer's
+  # level-3 deep PII shield must scan RAW identity data, so its model instance
+  # (ollama-identity, below) lives on its OWN isolated bridge — never the same
+  # net as sandbox-b / the AI-plane inference ollama. This mirrors the Helm
+  # chart, which runs a dedicated `ollama-identity` StatefulSet in the identity
+  # plane (charts/lucairn/charts/sandbox-a/templates/ollama-identity-*.yaml),
+  # separate from sandbox-b's bundled inference ollama
+  # (charts/lucairn/charts/sandbox-b/templates/ollama-statefulset.yaml).
+  # internal: true — identity-plane isolation, no egress; the L3 model must be
+  # pre-staged (see ollama-identity below + INSTALL.md self-hosted section).
+  dsa-model-runtime-identity:
+    driver: bridge
+    internal: true
 
 volumes:
   redis-ai-data:
   ollama-model-store:
+  # Dedicated model store for the identity-plane L3 PII-shield ollama. Kept
+  # separate from ollama-model-store (the AI-plane inference ollama) so the
+  # two model instances never share state — split-knowledge isolation.
+  ollama-identity-model-store:
 
 services:
   gateway:
@@ -72,6 +89,25 @@ services:
       VEIL_SANDBOX_B_PUBLIC_KEY: "${VEIL_SANDBOX_B_PUBLIC_KEY}"
     networks:
       - dsa-witness-ai
+
+  # L3 reachability for self-hosted installs. The sanitizer's level-3 deep PII
+  # shield dials hostname "ollama" (config/default-sanitizer.yaml:91
+  # `ollama_url: http://ollama:11434`, fail-CLOSED), but the base customer
+  # compose only attaches the sanitizer to its identity nets (dsa-identity +
+  # dsa-witness-identity). Append the identity-only L3 net here so the
+  # sanitizer can reach the in-cluster L3 model — WITHOUT going through the
+  # AI-plane net that sandbox-b uses. On dsa-model-runtime-identity the
+  # hostname "ollama" resolves to the ollama-identity service (via its network
+  # alias), NOT to the AI-plane inference ollama. The sanitizer is deliberately
+  # NOT placed on dsa-model-runtime: that is the whole point — no shared net
+  # with sandbox-b, preserving the split-knowledge invariant (the identity
+  # plane that sees raw PII is air-gapped from the AI plane). Compose UNIONs
+  # networks across overlays, so the sanitizer keeps dsa-identity +
+  # dsa-witness-identity (from docker-compose.customer.yml) and gains ONLY
+  # dsa-model-runtime-identity here. No sanitizer config change is needed.
+  sanitizer:
+    networks:
+      - dsa-model-runtime-identity
 
   redis-ai:
     image: redis:7-alpine
@@ -208,6 +244,47 @@ services:
       - ${LUCAIRN_MODEL_DIR:-../models}:/models:ro
     networks:
       - dsa-model-runtime
+    restart: on-failure
+
+  # ── Identity-plane L3 PII-shield model (ollama-identity) ────────────
+  # Dedicated ollama instance for the sanitizer's level-3 deep PII shield
+  # (qwen2.5:7b). It is DELIBERATELY separate from the `ollama` service
+  # above (the AI-plane inference runtime used by sandbox-b): the L3 shield
+  # scans RAW identity data, so per the split-knowledge invariant it must
+  # run on its own identity-only network with NO shared net to the AI plane.
+  # This mirrors the Helm chart's separate `ollama-identity` StatefulSet
+  # (charts/lucairn/charts/sandbox-a/templates/ollama-identity-statefulset.yaml).
+  #
+  # ALWAYS-ON in the self-hosted overlay (NOT behind `profiles: ["ollama"]`):
+  # the sanitizer's L3 is fail-CLOSED-required (LUCAIRN_L3_REQUIRED defaults
+  # to "true"), so it must reach a model regardless of which inference runtime
+  # profile (ollama / vllm / tgi / ...) the operator picks for sandbox-b.
+  #
+  # PRE-STAGE the L3 model after the stack is up (one-time, requires egress
+  # on the host running the pull, not inside this internal-only net):
+  #   docker compose -f docker-compose.customer.yml \
+  #     -f docker-compose.self-hosted.yml --env-file customer.env \
+  #     exec ollama-identity ollama pull qwen2.5:7b
+  # See INSTALL.md § Self-hosted inference for the full pre-stage step.
+  ollama-identity:
+    image: "${OLLAMA_IMAGE:-ollama/ollama:latest}"
+    logging: *default-logging
+    environment:
+      OLLAMA_HOST: "0.0.0.0:11434"
+      # Keep the L3 model resident so the fail-CLOSED L3 block never fires on a
+      # cold-start hiccup mid-request. Mirrors the Helm ollama-identity
+      # OLLAMA_KEEP_ALIVE=-1 (charts/.../ollama-identity-statefulset.yaml:45-46).
+      OLLAMA_KEEP_ALIVE: "${OLLAMA_IDENTITY_KEEP_ALIVE:--1}"
+    volumes:
+      - ollama-identity-model-store:/root/.ollama
+      - ${LUCAIRN_MODEL_DIR:-../models}:/models:ro
+    networks:
+      dsa-model-runtime-identity:
+        aliases:
+          # The sanitizer dials hostname "ollama" (its unchanged DSA-owned
+          # config). On the identity-only net that alias resolves HERE — to
+          # the L3 identity model — NOT to the AI-plane inference ollama.
+          - ollama
     restart: on-failure
 
   model-runtime-onnxruntime:
