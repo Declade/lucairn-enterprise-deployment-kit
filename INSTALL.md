@@ -756,6 +756,25 @@ dependent pod crash-loops at boot. `bin/lucairn doctor` emits an INFO
 reminder when it detects a Kubernetes context still on the default
 `k8s-native` backend.
 
+**App-role passwords are conditional.** The `app_password` property on the
+audit and veil-witness secrets (synced as `AUDIT_APP_PASSWORD` /
+`VEIL_APP_PASSWORD`) is consumed only by the bundled-Postgres migrate Job,
+which bakes the restricted `audit_app` / `veil_app` runtime roles. It is
+synced **only when `postgresql.enabled: true`** for that subchart. For
+external Postgres (`postgresql.enabled: false`) there is no migrate Job, so
+you do not need to populate `app_password` in your secrets manager — the
+`ExternalSecret` does not request it.
+
+**External Postgres + runtime least-privilege.** With external Postgres the
+chart has a single DSN slot per service: the runtime connects via
+`external.databaseUrl` (mapped to `DATABASE_URL_APP`). Because there is no
+bundled migrate Job to create a restricted role, **you own role choice**.
+Run schema migrations out-of-band with a superuser (or migration-only) role,
+then set `external.databaseUrl` to a **restricted runtime-role DSN**
+(`veil_app` for veil-witness, the append-only `audit_app` for audit) so the
+running pods never hold superuser. Supplying a superuser DSN here works but
+forfeits least-privilege at runtime.
+
 If you must stay on `k8s-native` (smaller pilots, air-gapped clusters), at
 minimum enable [etcd encryption-at-rest](https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/)
 and restrict `get secret` RBAC to the Lucairn service accounts only.

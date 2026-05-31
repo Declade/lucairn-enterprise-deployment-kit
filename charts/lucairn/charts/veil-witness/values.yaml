@@ -93,7 +93,15 @@ postgresql:
     tag: "16-alpine"
   storageSize: 10Gi
   storageClass: ""
+  # Superuser, used by the migration Job (CREATE ROLE / GRANT) and Postgres
+  # bootstrap ONLY. The runtime witness deployment connects as `appUser`.
   user: veil
+  # Least-privilege role the runtime veil-witness connects as (INT-001).
+  # Created + granted by the 000002_restrict_veil_role migration. Must match
+  # the role literal the migration bakes (`veil_app`). The migrate Job still
+  # runs as the `user` superuser above because it executes CREATE ROLE/GRANT
+  # that the restricted role itself is not permitted to run.
+  appUser: veil_app
   database: veil
 
 external:
