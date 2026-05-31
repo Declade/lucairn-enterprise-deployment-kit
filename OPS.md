@@ -454,28 +454,64 @@ You need, OFF the lost cluster:
 Bring up an EMPTY deployment (no data yet) and provide the recovered `VEIL_*`
 seeds BEFORE the witness and gateway start signing.
 
-**Helm path** — re-create the seed Secrets in their namespaces, then install:
+**Helm path** — feed the recovered seeds to the chart via a values overlay (the
+chart owns the Secrets on `k8s-native`), then install:
 
 ```bash
 # Decrypt the offline escrow blob on the operator host (see the escrow section).
 age -d -i veil-escrow.identity -o /dev/shm/veil-seeds.env veil-seeds.escrow.age
-set -a; . /dev/shm/veil-seeds.env; set +a    # exports VEIL_WITNESS_SIGNING_KEY, the 4 claim seeds, the 2 manifest seeds
-
-# Provide the witness seed + the four claim seeds + the gateway manifest seed as
-# the Secrets your values reference (names match your chart's secret wiring).
-kubectl create namespace dsa-witness 2>/dev/null || true
-kubectl -n dsa-witness create secret generic veil-witness-credentials \
-  --from-literal=VEIL_WITNESS_SIGNING_KEY="$VEIL_WITNESS_SIGNING_KEY" \
-  --dry-run=client -o yaml | kubectl apply -f -
-# ...repeat per service for the bridge/sanitizer/sandbox-b/audit claim seeds and
-#    the gateway VEIL_MANIFEST_SIGNING_KEY, matching your secrets.backend wiring.
-
-# Now install the chart pointing at the (still empty) compliance DBs.
-helm install lucairn ./charts/lucairn -n lucairn --create-namespace \
-  -f customer-values.yaml
-
-shred -u /dev/shm/veil-seeds.env    # remove the decrypted seeds from the host
+# Exports the seven root seeds: VEIL_AUDIT/BRIDGE/SANITIZER/SANDBOX_B/WITNESS/
+# GATEWAY_SIGNING_KEY + VEIL_MANIFEST_SIGNING_KEY (the "What to escrow" set).
+set -a; . /dev/shm/veil-seeds.env; set +a
 ```
+
+On `k8s-native` (the default — `charts/lucairn/values.yaml:32`,
+`charts/lucairn/charts/*/values.yaml secrets.backend: k8s-native`), the
+`<service>-credentials` Secrets are **chart-managed**: the chart renders them
+itself from your values (`charts/lucairn/charts/veil-witness/templates/secret.yaml:1-30`,
+`charts/lucairn/charts/gateway/templates/secret.yaml:1-38`). Do **NOT**
+pre-create those Secrets with `kubectl create secret` — `helm install` would then
+fail with an existing-resource ownership conflict. Instead, put the recovered
+seeds into your **values overlay** so the chart creates the Secrets with the
+right data, then install:
+
+```bash
+# Write the recovered root seeds into a restore values overlay (mode 0600).
+# The slot names match the "What to escrow" table's Helm column.
+cat > /dev/shm/restore-seeds.values.yaml <<EOF
+veil-witness:
+  secrets: { values: { signingKey: "${VEIL_WITNESS_SIGNING_KEY}" } }
+gateway:
+  secrets:
+    values:
+      veilGatewaySigningKey: "${VEIL_GATEWAY_SIGNING_KEY}"
+      veilManifestSigningKey: "${VEIL_MANIFEST_SIGNING_KEY}"
+id-bridge:
+  secrets: { values: { veilSigningKey: "${VEIL_BRIDGE_SIGNING_KEY}" } }
+audit:
+  secrets: { values: { veilSigningKey: "${VEIL_AUDIT_SIGNING_KEY}" } }
+sandbox-b:
+  secrets: { values: { veilSigningKey: "${VEIL_SANDBOX_B_SIGNING_KEY}" } }
+# sanitizer subchart takes its seed via the same secrets.values.veilSigningKey
+# slot; set it from VEIL_SANITIZER_SIGNING_KEY using your chart's wiring.
+EOF
+
+# Install pointing at the (still empty) compliance DBs. The derived public keys
+# (VEIL_*_PUBLIC_KEY, the two manifest public keys) are re-derived from these
+# seeds with scripts/derive-veil-pubkey.sh — see customer.env.example:94-108.
+helm install lucairn ./charts/lucairn -n lucairn --create-namespace \
+  -f customer-values.yaml -f /dev/shm/restore-seeds.values.yaml
+
+shred -u /dev/shm/veil-seeds.env /dev/shm/restore-seeds.values.yaml
+```
+
+> **External Secrets backend (`vault` / `aws` / `azure`).** Do NOT use the
+> values overlay above. Restore the recovered seed values **into your secret
+> store BEFORE `helm install`** (`charts/lucairn/charts/*/templates/externalsecret.yaml`
+> pull them at sync time); the ExternalSecret then materializes each
+> `<service>-credentials` Secret. The chart does not own those Secrets on this
+> backend, so there is no pre-create conflict — but the data must be in the store
+> first or the pods start without their signing seeds.
 
 **Compose path** — restore the `VEIL_*` seeds into `customer.env` (mode 0600)
 from the decrypted escrow blob, then bring the stack up empty:
@@ -572,20 +608,45 @@ re-provide in Step 1. Escrow closes that gap.
 > escrow. The offline escrow below is the recovery path for the **`k8s-native`**
 > Secret backend and the **Compose** path, where the cluster holds the only copy.
 
-#### What to escrow (exactly the customer-cluster seeds)
+#### What to escrow (exactly the customer-cluster ROOT seeds)
 
-At the key ceremony, take an OFFLINE encrypted copy of exactly these **seven**
-per-deployment customer-cluster seeds:
+Escrow exactly the **independently-generated root signing seeds** the deployment
+consumes — the seeds you produced at the ceremony with
+`openssl rand -hex 32` (`customer.env.example:86`). These are the only values at
+cluster-loss risk; the public keys and the manifest public keys are **derived
+from them**, so they are NOT escrowed (you re-derive them on restore — see the
+note below).
 
-| Seed | Env var | Held by |
-|------|---------|---------|
-| Witness Signing Key | `VEIL_WITNESS_SIGNING_KEY` | veil-witness |
-| Bridge Claim Key | `VEIL_SIGNING_KEY` (id-bridge) | id-bridge |
-| Sanitizer Claim Key | `VEIL_SIGNING_KEY` (sanitizer) | sanitizer |
-| Sandbox B Claim Key | `VEIL_SIGNING_KEY` (sandbox-b) | sandbox-b |
-| Audit Claim Key | `VEIL_SIGNING_KEY` (audit) | audit |
-| Manifest Signing Key (gateway) | `VEIL_MANIFEST_SIGNING_KEY` | gateway |
-| Manifest Signing Key (witness) | (witness manifest seed, ceremony host) | veil-witness |
+These are the env-var names the deploy actually consumes on the **Compose** path
+(value-position `${...}` substitutions) and the matching `secrets.values.*` slots
+on the **Helm** path. Take an OFFLINE encrypted copy of exactly this set:
+
+| Root seed | Env var (Compose) | Helm `secrets.values.*` slot | Held by | Cite |
+|-----------|-------------------|------------------------------|---------|------|
+| Audit Claim Key     | `VEIL_AUDIT_SIGNING_KEY`     | `audit.secrets.values.veilSigningKey`         | audit        | `docker-compose.customer.yml:269`, `charts/lucairn/charts/audit/templates/secret.yaml:27` |
+| Bridge Claim Key    | `VEIL_BRIDGE_SIGNING_KEY`    | `id-bridge.secrets.values.veilSigningKey`     | id-bridge    | `docker-compose.customer.yml:298`, `charts/lucairn/charts/id-bridge/templates/secret.yaml:19` |
+| Sanitizer Claim Key | `VEIL_SANITIZER_SIGNING_KEY` | sanitizer subchart `secrets.values.veilSigningKey` | sanitizer | `docker-compose.customer.yml:367` |
+| Sandbox-B Claim Key | `VEIL_SANDBOX_B_SIGNING_KEY` | `sandbox-b.secrets.values.veilSigningKey`     | sandbox-b    | `customer.env.example:55`, `charts/lucairn/charts/sandbox-b/templates/secret.yaml:37` |
+| Witness Signing Key | `VEIL_WITNESS_SIGNING_KEY`   | `veil-witness.secrets.values.signingKey`      | veil-witness | `docker-compose.customer.yml:410`, `charts/lucairn/charts/veil-witness/templates/secret.yaml:27` |
+| Gateway Claim Key   | `VEIL_GATEWAY_SIGNING_KEY`   | `gateway.secrets.values.veilGatewaySigningKey`| gateway      | `docker-compose.customer.yml:532` (`:?required`), `charts/lucairn/charts/gateway/templates/secret.yaml:38` |
+| Gateway Manifest Signing Key | `VEIL_MANIFEST_SIGNING_KEY` | `gateway.secrets.values.veilManifestSigningKey` | gateway   | `docker-compose.customer.yml:533`, `charts/lucairn/charts/gateway/templates/secret.yaml:27` |
+
+`bin/lucairn doctor` env-presence-checks this same set (minus `VEIL_SANDBOX_B_SIGNING_KEY`,
+whose presence it infers from the Sandbox-B path) as the deployment's required
+secrets — see `bin/lucairn:231-236`.
+
+> **Derived — do NOT escrow these** (re-derive from the seeds above on restore via
+> `scripts/derive-veil-pubkey.sh`, `customer.env.example:94-108`):
+> - All `VEIL_*_PUBLIC_KEY` companions (witness/bridge/sanitizer/audit/gateway).
+> - `VEIL_GATEWAY_MANIFEST_PUBLIC_KEY` — Ed25519 public of `VEIL_GATEWAY_SIGNING_KEY`
+>   (`charts/lucairn/charts/gateway/values.yaml:233`, `customer.env.example:107`).
+> - `VEIL_WITNESS_MANIFEST_PUBLIC_KEY` — Ed25519 public of `VEIL_WITNESS_SIGNING_KEY`
+>   (`charts/lucairn/charts/gateway/values.yaml:240-242`, `customer.env.example:108`).
+>
+> There is **no separate witness-manifest signing seed**: the witness manifest is
+> signed with the witness signing key, and the gateway manifest is signed with
+> `VEIL_MANIFEST_SIGNING_KEY`. Escrowing the seven roots above recovers every
+> signing and manifest path.
 
 These are the seeds at cluster-loss risk. The **License Signing Key** and the
 **Image Signing Key** are Lucairn-held, off-cluster keys — they are NOT part of
@@ -603,25 +664,44 @@ to your own recipient and keep the identity offline:
 age-keygen -o veil-escrow.identity            # prints the public recipient
 RECIPIENT="$(grep 'public key:' veil-escrow.identity | awk '{print $NF}')"
 
-# 2) Assemble the seven seeds you generated at the ceremony into one env file in
-#    a tmpfs (never a shared/persisted filesystem):
+# 2) Assemble the seven ROOT seeds you generated at the ceremony into one env
+#    file in a tmpfs (never a shared/persisted filesystem). These are the exact
+#    env-var names the deploy consumes — see the "What to escrow" table above.
 cat > /dev/shm/veil-seeds.env <<'EOF'
-VEIL_WITNESS_SIGNING_KEY=<witness seed hex>
+VEIL_AUDIT_SIGNING_KEY=<audit seed hex>
 VEIL_BRIDGE_SIGNING_KEY=<bridge seed hex>
 VEIL_SANITIZER_SIGNING_KEY=<sanitizer seed hex>
 VEIL_SANDBOX_B_SIGNING_KEY=<sandbox-b seed hex>
-VEIL_AUDIT_SIGNING_KEY=<audit seed hex>
+VEIL_WITNESS_SIGNING_KEY=<witness seed hex>
+VEIL_GATEWAY_SIGNING_KEY=<gateway seed hex>
 VEIL_MANIFEST_SIGNING_KEY=<gateway manifest seed hex>
-VEIL_WITNESS_MANIFEST_SIGNING_KEY=<witness manifest seed hex>
 EOF
 
-# 3) Encrypt to your offline recipient, then destroy the plaintext.
+# 3) Record a NON-DISCLOSING checksum of the plaintext (so step 4 can prove the
+#    blob round-trips without ever re-printing a live seed). Store this checksum
+#    alongside the escrow blob — it is a hash, not key material.
+sha256sum /dev/shm/veil-seeds.env | awk '{print $1}' > veil-seeds.escrow.sha256
+
+# 4) Encrypt to your offline recipient, then destroy the plaintext.
 age -r "$RECIPIENT" -o veil-seeds.escrow.age /dev/shm/veil-seeds.env
 shred -u /dev/shm/veil-seeds.env
 
-# 4) Verify the round-trip decrypts before you rely on it.
-age -d -i veil-escrow.identity veil-seeds.escrow.age | head -1   # should print the first VEIL_* line
+# 5) Verify the round-trip WITHOUT disclosing any seed: decrypt to the same
+#    checksum and compare. Nothing is echoed to the terminal; only an OK/FAIL.
+if [ "$(age -d -i veil-escrow.identity veil-seeds.escrow.age | sha256sum | awk '{print $1}')" \
+     = "$(cat veil-seeds.escrow.sha256)" ]; then
+  echo "escrow round-trip OK"
+else
+  echo "escrow round-trip FAILED — do not rely on this blob" >&2
+fi
 ```
+
+> The decrypt in step 5 streams straight into `sha256sum` — the plaintext seeds
+> are never written to disk or printed to the terminal, so a live seed never
+> reaches scrollback or shell history. If you prefer an end-to-end proof instead
+> of a checksum, restore the blob into a throwaway cluster (see "full
+> cold-restore" above) and confirm a fresh cert verifies — that also never
+> discloses a seed.
 
 Store `veil-seeds.escrow.age` **separately from your `age`/GPG identity**, and
 **OFF the S3 compliance-data backups** — the escrow copy must not co-reside with
