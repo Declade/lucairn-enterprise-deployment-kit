@@ -554,6 +554,12 @@ operator-built. `doctor --strict` SKIPS pending entries (it never blocks on
 them), and they are filled in during the **digest-pin ceremony** for the
 specific runtime a customer actually deploys:
 
+> This ceremony pull is to **record** the model's digest for the manifest. It
+> is NOT how you stage the runtime model into a customer's air-gapped
+> `ollama-identity` — that runs on an internal-only (no-egress) network; see
+> INSTALL.md § "Pre-stage the L3 deep PII-shield model" for the throwaway-pull
+> staging procedure.
+
 ```bash
 # L3 model digest (run on a host with ollama):
 ollama pull qwen2.5:7b

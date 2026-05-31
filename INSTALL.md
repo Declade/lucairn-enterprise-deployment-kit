@@ -420,24 +420,49 @@ See `TROUBLESHOOTING.md` § "`/healthz` Returns 200 But `/readyz` Returns 503".
 
 **Pre-stage the L3 deep PII-shield model.** The self-hosted overlay runs a
 dedicated, always-on `ollama-identity` container for the sanitizer's level-3
-deep PII shield. It lives on its own identity-only network (the sanitizer
-reaches it via the `ollama` network alias) and is isolated from the AI-plane
-inference runtime — the model must be pre-staged once after the stack is up
-(the identity network is `internal: true`, so run the pull from the host,
-which has egress):
+deep PII shield (`qwen2.5:7b`, matching `config/default-sanitizer.yaml`'s
+`model:`). It lives on its own identity-only network (the sanitizer reaches it
+via the `ollama` network alias) and is isolated from the AI-plane inference
+runtime to preserve the split-knowledge invariant. That network is
+`internal: true` — it has **no egress** — so `ollama-identity` itself cannot
+reach the model registry, and `docker compose exec ollama-identity ollama pull`
+would run the pull *inside* that egress-less network namespace and fail.
+
+Stage the model once, air-gap-preserving: bring the stack up (which creates the
+identity model-store volume), then run a **throwaway** egress-enabled ollama
+container that writes the model into that same named volume. The always-on
+`ollama-identity` then serves the cached model with no egress of its own.
 
 ```bash
+# 1. Find the identity model-store volume (created when the stack first came up):
+docker volume ls -q | grep ollama-identity-model-store
+
+# 2. Stage qwen2.5:7b into it via a one-time throwaway ollama that DOES have
+#    egress (the running ollama-identity is on an internal-only net and cannot
+#    pull). The ollama image's entrypoint is `ollama`, so override it to run a
+#    shell. Use the recorded, digest-pinned image (image-manifest.yaml →
+#    pii_plane.ollama-identity):
+docker run --rm --entrypoint sh \
+  -v <ollama-identity-model-store-volume-name>:/root/.ollama \
+  ollama/ollama:0.6.2@sha256:74a0929e1e082a09e4fdeef8594b8f4537f661366a04080e600c90ea9f712721 \
+  -c 'ollama serve >/dev/null 2>&1 & sleep 5 && ollama pull qwen2.5:7b'
+
+# 3. Restart ollama-identity so it loads the freshly staged model from the volume:
 docker compose \
   -f docker-compose.customer.yml \
   -f docker-compose.self-hosted.yml \
   --env-file customer.env \
-  exec ollama-identity ollama pull qwen2.5:7b
+  restart ollama-identity
 ```
 
-Until the model is present, the sanitizer is fail-CLOSED (`LUCAIRN_L3_REQUIRED`
-defaults to `true`): the gateway returns `503 l3_scrubber_unavailable` rather
-than ship a request with only L1+L2 scrubbing. This is the same `qwen2.5:7b`
-L3 model the Helm chart pre-pulls into its `ollama-identity` StatefulSet.
+The running `ollama-identity` keeps **no egress** (`internal: true`); only the
+one-time throwaway staging container in step 2 has egress, and it exits as soon
+as the pull completes. This procedure is validated on a fresh install.
+
+Until the model is staged, the L3 deep PII shield is unavailable and the
+sanitizer is fail-CLOSED by design (`LUCAIRN_L3_REQUIRED` defaults to `true`):
+the gateway returns `503 l3_scrubber_unavailable` rather than ship a request
+with only L1+L2 scrubbing.
 
 ### Self-hosted with managed LLM (BYOK Anthropic, OpenAI, etc.)
 

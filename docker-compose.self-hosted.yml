@@ -235,13 +235,16 @@ services:
 
   ollama:
     profiles: ["ollama"]
-    # Default is PINNED to the digest recorded in image-manifest.yaml
-    # (pii_plane.ollama-identity → ollama/ollama:0.6.2@sha256:74a0929…) so that
-    # an operator who leaves OLLAMA_IMAGE unset/empty runs the SAME image that
-    # `bin/lucairn doctor --strict` verifies — closing the false-green where a
-    # floating :latest default would pass --strict against the pinned manifest
-    # ref. An explicit OLLAMA_IMAGE override still wins; a floating/unpinned
-    # override correctly reds --strict (PR #60).
+    # Default pinned to the recorded manifest digest
+    # (image-manifest.yaml → pii_plane.ollama-identity →
+    # ollama/ollama:0.6.2@sha256:74a0929…) so the DEPLOYED image matches the
+    # pinned-and-verified manifest ref (run-vs-verify parity): an operator who
+    # leaves OLLAMA_IMAGE unset/empty runs the byte-identical digest that
+    # `bin/lucairn doctor --strict` verifies in the manifest. The OLLAMA_IMAGE
+    # override fail-closed handling (floating/unpinned override → red) lives in
+    # `bin/lucairn doctor --strict` (PR #60); doctor resolves the MANIFEST ref,
+    # not this compose default, so the pin does not itself change --strict's
+    # verdict.
     image: "${OLLAMA_IMAGE:-ollama/ollama:0.6.2@sha256:74a0929e1e082a09e4fdeef8594b8f4537f661366a04080e600c90ea9f712721}"
     logging: *default-logging
     environment:
@@ -267,16 +270,20 @@ services:
   # to "true"), so it must reach a model regardless of which inference runtime
   # profile (ollama / vllm / tgi / ...) the operator picks for sandbox-b.
   #
-  # PRE-STAGE the L3 model after the stack is up (one-time, requires egress
-  # on the host running the pull, not inside this internal-only net):
-  #   docker compose -f docker-compose.customer.yml \
-  #     -f docker-compose.self-hosted.yml --env-file customer.env \
-  #     exec ollama-identity ollama pull qwen2.5:7b
-  # See INSTALL.md § Self-hosted inference for the full pre-stage step.
+  # PRE-STAGE the L3 model (qwen2.5:7b) ONCE after the stack is up. This
+  # service is on the internal-only `dsa-model-runtime-identity` net (no
+  # egress), so it CANNOT pull the model itself — `docker compose exec
+  # ollama-identity ollama pull` runs inside this egress-less net namespace and
+  # fails. Instead, stage qwen2.5:7b into this service's named volume
+  # (ollama-identity-model-store) via a one-time throwaway egress-enabled
+  # ollama, then restart this service to load it. See INSTALL.md
+  # § "Pre-stage the L3 deep PII-shield model" for the exact procedure.
   ollama-identity:
-    # Default PINNED to the recorded manifest digest (see the AI-plane `ollama`
-    # service above) so an unset/empty OLLAMA_IMAGE keeps `doctor --strict`
-    # honest. Explicit override still honored; floating override reds --strict.
+    # Default pinned to the recorded manifest digest (see the AI-plane `ollama`
+    # service above) so the deployed image matches the pinned-and-verified
+    # manifest ref (run-vs-verify parity) when OLLAMA_IMAGE is unset/empty. The
+    # override fail-closed handling lives in `bin/lucairn doctor --strict`
+    # (PR #60); the pin does not itself change --strict's verdict.
     image: "${OLLAMA_IMAGE:-ollama/ollama:0.6.2@sha256:74a0929e1e082a09e4fdeef8594b8f4537f661366a04080e600c90ea9f712721}"
     logging: *default-logging
     environment:
