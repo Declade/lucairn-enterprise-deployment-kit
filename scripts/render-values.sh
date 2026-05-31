@@ -106,6 +106,16 @@ SEED_BRIDGE=$(openssl rand -hex 32)
 SEED_SANITIZER=$(openssl rand -hex 32)
 SEED_SANDBOX_B=$(openssl rand -hex 32)
 SEED_AUDIT=$(openssl rand -hex 32)
+# The gateway signs its /.well-known manifest with VEIL_MANIFEST_SIGNING_KEY
+# — a SEPARATE seed from SEED_GATEWAY (which is the gateway CLAIM seed). The
+# gateway publishes VEIL_GATEWAY_MANIFEST_PUBLIC_KEY verbatim from env as the
+# verifying key for that manifest signature (DSA gateway veil.go: signs with
+# GatewayManifestSigningKeyHex=VEIL_MANIFEST_SIGNING_KEY, publishes
+# VEIL_GATEWAY_MANIFEST_PUBLIC_KEY in the well-known-keys loop). So the
+# manifest pubkey MUST be derived from THIS seed, not from SEED_GATEWAY.
+# (Contrast WITNESS: the witness signs its manifest with the same SEED_WITNESS
+# it uses for claims, so WITNESS_MANIFEST_PUBLIC_KEY = PUB_WITNESS is correct.)
+SEED_MANIFEST=$(openssl rand -hex 32)
 
 # SEC-04 (hardening 2026-05-28): feed each private-key seed to the derive
 # helper via stdin, NOT as an argv parameter. As an argument, the 32-byte
@@ -119,6 +129,7 @@ PUB_BRIDGE=$(printf '%s' "$SEED_BRIDGE" | "$DERIVE")
 PUB_SANITIZER=$(printf '%s' "$SEED_SANITIZER" | "$DERIVE")
 PUB_SANDBOX_B=$(printf '%s' "$SEED_SANDBOX_B" | "$DERIVE")
 PUB_AUDIT=$(printf '%s' "$SEED_AUDIT" | "$DERIVE")
+PUB_MANIFEST=$(printf '%s' "$SEED_MANIFEST" | "$DERIVE")
 
 # Substitute the signing-key slots. Each placeholder name uses the
 # canonical chart literal. Note SANITIZER's signing slot is
@@ -143,7 +154,12 @@ sed -i.bak "s|REPLACE_WITH_64_HEX_AUDIT_SIGNING_KEY|$SEED_AUDIT|" "$OUTPUT"
 # leave the `_MANIFEST_PUBLIC_KEY` suffix as a partial-substitution
 # trailing fragment (same defect class as the Vast cascade G prefix-match
 # bug closure).
-sed -i.bak "s|REPLACE_WITH_64_HEX_GATEWAY_MANIFEST_PUBLIC_KEY|$PUB_GATEWAY|g" "$OUTPUT"
+# GATEWAY_MANIFEST_PUBLIC_KEY pairs with VEIL_MANIFEST_SIGNING_KEY (=SEED_MANIFEST,
+# substituted in step 5 below), NOT with SEED_GATEWAY — see the SEED_MANIFEST
+# comment above. Using PUB_GATEWAY here (the v0 bug) published a manifest pubkey
+# that did not match the manifest signer, silently failing the gateway's Runtime
+# Invariant Harness #3 manifest self-check.
+sed -i.bak "s|REPLACE_WITH_64_HEX_GATEWAY_MANIFEST_PUBLIC_KEY|$PUB_MANIFEST|g" "$OUTPUT"
 sed -i.bak "s|REPLACE_WITH_64_HEX_WITNESS_MANIFEST_PUBLIC_KEY|$PUB_WITNESS|g" "$OUTPUT"
 sed -i.bak "s|REPLACE_WITH_64_HEX_GATEWAY_PUBLIC_KEY|$PUB_GATEWAY|g" "$OUTPUT"
 sed -i.bak "s|REPLACE_WITH_64_HEX_WITNESS_PUBLIC_KEY|$PUB_WITNESS|g" "$OUTPUT"
@@ -192,10 +208,17 @@ sed -i.bak "s|REPLACE_WITH_LICENSE_KEY||" "$OUTPUT"
 sed -i.bak "s|REPLACE_WITH_LICENSE_SIGNING_KEY||" "$OUTPUT"
 
 # ----------------------------------------------------------------------
-# 5. Veil manifest signing key (single hex32, no paired pubkey)
+# 5. Veil manifest signing key (gateway manifest signer)
+#
+# This is the seed the gateway signs its /.well-known manifest with. Its
+# derived pubkey (PUB_MANIFEST) was published above as
+# VEIL_GATEWAY_MANIFEST_PUBLIC_KEY, so the published verifying key matches
+# the signer. We substitute SEED_MANIFEST (captured alongside the other
+# seeds) — NOT an inline `openssl rand` — so the seed and its published
+# pubkey stay paired.
 # ----------------------------------------------------------------------
 
-sed -i.bak "s|REPLACE_WITH_64_HEX_MANIFEST_SIGNING_KEY|$(openssl rand -hex 32)|" "$OUTPUT"
+sed -i.bak "s|REPLACE_WITH_64_HEX_MANIFEST_SIGNING_KEY|$SEED_MANIFEST|" "$OUTPUT"
 
 # ----------------------------------------------------------------------
 # 6. Postgres + app-role passwords
