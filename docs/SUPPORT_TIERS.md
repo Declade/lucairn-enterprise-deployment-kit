@@ -1,6 +1,6 @@
 # Support Tiers
 
-## Free / Developer
+## Developer
 
 - Documentation only.
 - GitHub issues.
