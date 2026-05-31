@@ -484,16 +484,22 @@ veil-witness:
 gateway:
   secrets:
     values:
+      # Gateway per-request CLAIM signer.
       veilGatewaySigningKey: "${VEIL_GATEWAY_SIGNING_KEY}"
+      # Gateway MANIFEST signer — the key the gateway signs /.well-known with
+      # (veil.go:206). VEIL_GATEWAY_MANIFEST_PUBLIC_KEY derives from THIS seed,
+      # not from veilGatewaySigningKey.
       veilManifestSigningKey: "${VEIL_MANIFEST_SIGNING_KEY}"
 id-bridge:
   secrets: { values: { veilSigningKey: "${VEIL_BRIDGE_SIGNING_KEY}" } }
 audit:
   secrets: { values: { veilSigningKey: "${VEIL_AUDIT_SIGNING_KEY}" } }
+sandbox-a:
+  # The sanitizer is a sidecar in the sandbox-a pod (no sanitizer subchart);
+  # its seed restores through the sandbox-a slot. See the escrow table note.
+  secrets: { values: { veilSigningKey: "${VEIL_SANITIZER_SIGNING_KEY}" } }
 sandbox-b:
   secrets: { values: { veilSigningKey: "${VEIL_SANDBOX_B_SIGNING_KEY}" } }
-# sanitizer subchart takes its seed via the same secrets.values.veilSigningKey
-# slot; set it from VEIL_SANITIZER_SIGNING_KEY using your chart's wiring.
 EOF
 
 # Install pointing at the (still empty) compliance DBs. The derived public keys
@@ -621,32 +627,63 @@ These are the env-var names the deploy actually consumes on the **Compose** path
 (value-position `${...}` substitutions) and the matching `secrets.values.*` slots
 on the **Helm** path. Take an OFFLINE encrypted copy of exactly this set:
 
-| Root seed | Env var (Compose) | Helm `secrets.values.*` slot | Held by | Cite |
-|-----------|-------------------|------------------------------|---------|------|
-| Audit Claim Key     | `VEIL_AUDIT_SIGNING_KEY`     | `audit.secrets.values.veilSigningKey`         | audit        | `docker-compose.customer.yml:269`, `charts/lucairn/charts/audit/templates/secret.yaml:27` |
-| Bridge Claim Key    | `VEIL_BRIDGE_SIGNING_KEY`    | `id-bridge.secrets.values.veilSigningKey`     | id-bridge    | `docker-compose.customer.yml:298`, `charts/lucairn/charts/id-bridge/templates/secret.yaml:19` |
-| Sanitizer Claim Key | `VEIL_SANITIZER_SIGNING_KEY` | sanitizer subchart `secrets.values.veilSigningKey` | sanitizer | `docker-compose.customer.yml:367` |
-| Sandbox-B Claim Key | `VEIL_SANDBOX_B_SIGNING_KEY` | `sandbox-b.secrets.values.veilSigningKey`     | sandbox-b    | `customer.env.example:55`, `charts/lucairn/charts/sandbox-b/templates/secret.yaml:37` |
-| Witness Signing Key | `VEIL_WITNESS_SIGNING_KEY`   | `veil-witness.secrets.values.signingKey`      | veil-witness | `docker-compose.customer.yml:410`, `charts/lucairn/charts/veil-witness/templates/secret.yaml:27` |
-| Gateway Claim Key   | `VEIL_GATEWAY_SIGNING_KEY`   | `gateway.secrets.values.veilGatewaySigningKey`| gateway      | `docker-compose.customer.yml:532` (`:?required`), `charts/lucairn/charts/gateway/templates/secret.yaml:38` |
-| Gateway Manifest Signing Key | `VEIL_MANIFEST_SIGNING_KEY` | `gateway.secrets.values.veilManifestSigningKey` | gateway   | `docker-compose.customer.yml:533`, `charts/lucairn/charts/gateway/templates/secret.yaml:27` |
+| Root seed | Env var (Compose) | Helm `secrets.values.*` slot | Consumed by (pod) | Derived public key(s) | Cite |
+|-----------|-------------------|------------------------------|-------------------|-----------------------|------|
+| Audit Claim Key     | `VEIL_AUDIT_SIGNING_KEY`     | `audit.secrets.values.veilSigningKey`            | audit         | `VEIL_AUDIT_PUBLIC_KEY`     | `docker-compose.customer.yml:269`, `charts/lucairn/charts/audit/templates/secret.yaml:27`, `charts/lucairn/charts/audit/values.yaml:124` |
+| Bridge Claim Key    | `VEIL_BRIDGE_SIGNING_KEY`    | `id-bridge.secrets.values.veilSigningKey`        | id-bridge     | `VEIL_BRIDGE_PUBLIC_KEY`    | `docker-compose.customer.yml:298`, `charts/lucairn/charts/id-bridge/templates/secret.yaml:19`, `charts/lucairn/charts/id-bridge/values.yaml:118` |
+| Sanitizer Claim Key | `VEIL_SANITIZER_SIGNING_KEY` | `sandbox-a.secrets.values.veilSigningKey`        | sandbox-a (sanitizer **sidecar**) | `VEIL_SANITIZER_PUBLIC_KEY` | `docker-compose.customer.yml:367` (sanitizer svc), `charts/lucairn/charts/sandbox-a/templates/secret.yaml:20`, `charts/lucairn/charts/sandbox-a/templates/deployment.yaml:164-193` (sidecar `name: sanitizer` reads `VEIL_SIGNING_KEY`), `customer-values.yaml.example:242` |
+| Sandbox-B Claim Key | `VEIL_SANDBOX_B_SIGNING_KEY` | `sandbox-b.secrets.values.veilSigningKey`        | sandbox-b     | `VEIL_SANDBOX_B_PUBLIC_KEY` | `docker-compose.self-hosted.yml:157`, `customer.env.example:55`, `charts/lucairn/charts/sandbox-b/templates/secret.yaml:37`, `charts/lucairn/charts/sandbox-b/values.yaml:248` |
+| Witness Signing Key | `VEIL_WITNESS_SIGNING_KEY`   | `veil-witness.secrets.values.signingKey`         | veil-witness  | `VEIL_WITNESS_PUBLIC_KEY` + `VEIL_WITNESS_MANIFEST_PUBLIC_KEY` | `docker-compose.customer.yml:410`, `charts/lucairn/charts/veil-witness/templates/secret.yaml:27`, `charts/lucairn/charts/veil-witness/values.yaml:155` |
+| Gateway Claim Key   | `VEIL_GATEWAY_SIGNING_KEY`   | `gateway.secrets.values.veilGatewaySigningKey`   | gateway       | `VEIL_GATEWAY_PUBLIC_KEY`   | `docker-compose.customer.yml:532` (`:?required`), `charts/lucairn/charts/gateway/templates/secret.yaml:38`, `charts/lucairn/charts/gateway/values.yaml:224` |
+| Gateway Manifest Signing Key | `VEIL_MANIFEST_SIGNING_KEY` | `gateway.secrets.values.veilManifestSigningKey` | gateway      | `VEIL_GATEWAY_MANIFEST_PUBLIC_KEY` | `docker-compose.customer.yml:533`, `charts/lucairn/charts/gateway/templates/secret.yaml:27`, `charts/lucairn/charts/gateway/values.yaml:216`; signs the gateway manifest at `dual-sandbox-architecture services/gateway/internal/api/veil.go:206` (signer wired from `VEIL_MANIFEST_SIGNING_KEY` at `main.go:1095`, published as `gateway_manifest_v1` at `veil.go:1284`) |
+
+> **The sanitizer has no subchart of its own.** It runs as a sidecar container
+> (`name: sanitizer`) inside the **sandbox-a** pod, so its signing seed is
+> restored through the **`sandbox-a`** Helm slot — `sandbox-a.secrets.values.veilSigningKey`
+> (`charts/lucairn/charts/sandbox-a/templates/deployment.yaml:164-193`). On the
+> Compose path the seed is the distinct `VEIL_SANITIZER_SIGNING_KEY` var consumed
+> by the `sanitizer` service (`docker-compose.customer.yml:367`); on the Helm path
+> the same value goes into the sandbox-a slot. `customer-values.yaml.example:242`
+> labels the slot `REPLACE_WITH_64_HEX_SANITIZER_OR_SANDBOX_A_SIGNING_KEY`
+> precisely because the sandbox-a pod's Veil signature *is* the sanitizer
+> sidecar's signature — there is no separate sandbox-a root seed.
 
 `bin/lucairn doctor` env-presence-checks this same set (minus `VEIL_SANDBOX_B_SIGNING_KEY`,
 whose presence it infers from the Sandbox-B path) as the deployment's required
 secrets — see `bin/lucairn:231-236`.
 
 > **Derived — do NOT escrow these** (re-derive from the seeds above on restore via
-> `scripts/derive-veil-pubkey.sh`, `customer.env.example:94-108`):
-> - All `VEIL_*_PUBLIC_KEY` companions (witness/bridge/sanitizer/audit/gateway).
-> - `VEIL_GATEWAY_MANIFEST_PUBLIC_KEY` — Ed25519 public of `VEIL_GATEWAY_SIGNING_KEY`
->   (`charts/lucairn/charts/gateway/values.yaml:233`, `customer.env.example:107`).
+> `scripts/derive-veil-pubkey.sh`, which emits the Ed25519 public of a signing
+> seed — `scripts/derive-veil-pubkey.sh:3-4`):
+> - The per-service `VEIL_*_PUBLIC_KEY` companions — each is the Ed25519 public of
+>   its same-named signing seed (`VEIL_AUDIT_PUBLIC_KEY` ← `VEIL_AUDIT_SIGNING_KEY`,
+>   `VEIL_BRIDGE_PUBLIC_KEY` ← `VEIL_BRIDGE_SIGNING_KEY`, `VEIL_SANITIZER_PUBLIC_KEY`
+>   ← `VEIL_SANITIZER_SIGNING_KEY`, `VEIL_AUDIT`/`VEIL_SANDBOX_B`/`VEIL_WITNESS`/
+>   `VEIL_GATEWAY` likewise). See `customer.env.example:94-101`.
+> - `VEIL_GATEWAY_MANIFEST_PUBLIC_KEY` — Ed25519 public of **`VEIL_MANIFEST_SIGNING_KEY`**
+>   (NOT `VEIL_GATEWAY_SIGNING_KEY`). The gateway signs its manifest with the
+>   `VEIL_MANIFEST_SIGNING_KEY` seed (`dual-sandbox-architecture services/gateway/internal/api/veil.go:206`,
+>   signer wired from `VEIL_MANIFEST_SIGNING_KEY` at `main.go:1095`; published as
+>   `gateway_manifest_v1` at `veil.go:1284`). Derive it with
+>   `scripts/derive-veil-pubkey.sh "$VEIL_MANIFEST_SIGNING_KEY"`.
 > - `VEIL_WITNESS_MANIFEST_PUBLIC_KEY` — Ed25519 public of `VEIL_WITNESS_SIGNING_KEY`
->   (`charts/lucairn/charts/gateway/values.yaml:240-242`, `customer.env.example:108`).
+>   (`charts/lucairn/charts/gateway/values.yaml:240-242`). Derive it with
+>   `scripts/derive-veil-pubkey.sh "$VEIL_WITNESS_SIGNING_KEY"`.
 >
 > There is **no separate witness-manifest signing seed**: the witness manifest is
-> signed with the witness signing key, and the gateway manifest is signed with
-> `VEIL_MANIFEST_SIGNING_KEY`. Escrowing the seven roots above recovers every
-> signing and manifest path.
+> signed with the witness signing key (`VEIL_WITNESS_SIGNING_KEY`), and the
+> gateway manifest is signed with `VEIL_MANIFEST_SIGNING_KEY` — these are two of
+> the seven roots above, not extra seeds. `VEIL_GATEWAY_SIGNING_KEY` is the
+> gateway's own per-request **claim** signature (`main.go:462`), a distinct root
+> from the gateway **manifest** signer. Escrowing the seven roots above recovers
+> every signing and manifest path.
+>
+> ⚠ The comment at `customer.env.example:103-108` still says
+> `VEIL_GATEWAY_MANIFEST_PUBLIC_KEY` derives from `VEIL_GATEWAY_SIGNING_KEY`; that
+> note is stale. The gateway binary signs the manifest with `VEIL_MANIFEST_SIGNING_KEY`
+> (`veil.go:206`), so the manifest public key MUST be derived from
+> `VEIL_MANIFEST_SIGNING_KEY` or the W2B Runtime Invariant Harness #3 self-check
+> degrades. Follow the code, not the example comment.
 
 These are the seeds at cluster-loss risk. The **License Signing Key** and the
 **Image Signing Key** are Lucairn-held, off-cluster keys — they are NOT part of
