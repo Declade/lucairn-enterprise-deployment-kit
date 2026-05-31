@@ -394,6 +394,254 @@ Confirm the counts match the live system's order of magnitude and the newest
 timestamp is within your RPO window. Record the validation date as backup
 evidence.
 
+## Disaster recovery: full cold-restore
+
+The per-DB restore procedures above (§ Backups → "Restore runbook") recover
+your compliance data **into a still-running deployment**. This section is the
+different, heavier case: **the whole cluster is gone** (disk loss, a destroyed
+namespace, a host migration, a `kubectl delete pvc`) and you are rebuilding the
+deployment from nothing. It choreographs the existing tooling end-to-end so a
+fresh deployment comes back **signing and verifying certificates** — not just
+holding the old data.
+
+> **This runbook reuses only tooling that already ships.** It does NOT
+> introduce a new backup mechanism. It sequences four things you already have:
+> your offline **signing-seed escrow** (§ "Signing-key escrow & cold recovery"
+> below), the `age`-encrypted **compliance-DB dumps** (§ Backups), the
+> **witness-signed manifest** ceremony (`bin/lucairn` / the Veil key-ceremony
+> runbook), and a **fresh-cert verify** (`bin/lucairn doctor` + a synthetic
+> request). The same NO-point-in-time-recovery limit from § Backups applies:
+> the data you recover is exactly what was in your most recent dump, so your
+> recovery point is your backup interval — **measure your own recovery time in
+> your environment**; it is not a guaranteed figure.
+
+### What a cold-restore must re-establish, and in what order
+
+The ordering matters: the witness-signed manifest is verified at gateway boot
+against the witness public key, and a fresh certificate only verifies once the
+signing seeds AND the restored evidence are both back. Re-establish in this
+order:
+
+1. **Signing seeds first** — re-provide the customer-cluster `VEIL_*` seeds from
+   your offline escrow (§ below). Without these the witness cannot sign and the
+   gateway will not accept a mismatched manifest.
+2. **Compliance data** — restore the three compliance DBs (`audit`, `bridge`,
+   `veil`) from your most recent dumps using the EXISTING restore tooling.
+3. **Witness-signed manifest** — regenerate / redeploy the witness-signed
+   `/.well-known/veil-keys.json` blob so the gateway boots and verifies it.
+4. **Fresh-cert verify** — submit one synthetic request and confirm a freshly
+   issued certificate verifies end-to-end.
+
+A common ordering mistake is re-establishing the manifest before the seeds are
+back: the gateway then fails closed at boot on an env↔blob mismatch. Re-provide
+seeds first.
+
+### Step 0 — prerequisites on a secured operator host
+
+You need, OFF the lost cluster:
+
+- Your **offline signing-seed escrow blob** and the `age`/`gpg` identity that
+  decrypts it (§ "Signing-key escrow & cold recovery").
+- Your most recent **compliance-DB dumps** — either reachable in your S3 bucket
+  (the automated CronJob / `bin/lucairn backup` path) or a local copy — plus the
+  `age` identity file that decrypts them (`LUCAIRN_BACKUP_AGE_IDENTITY_FILE`).
+- The kit checkout at the **same release** the dumps were taken against (roll
+  the config tree and images together — see § Rollback).
+- `kubectl`/`helm` (Helm path) or `docker compose` (Compose path), plus `age`.
+
+### Step 1 — provision an empty deployment and re-provide the signing seeds
+
+Bring up an EMPTY deployment (no data yet) and provide the recovered `VEIL_*`
+seeds BEFORE the witness and gateway start signing.
+
+**Helm path** — re-create the seed Secrets in their namespaces, then install:
+
+```bash
+# Decrypt the offline escrow blob on the operator host (see the escrow section).
+age -d -i veil-escrow.identity -o /dev/shm/veil-seeds.env veil-seeds.escrow.age
+set -a; . /dev/shm/veil-seeds.env; set +a    # exports VEIL_WITNESS_SIGNING_KEY, the 4 claim seeds, the 2 manifest seeds
+
+# Provide the witness seed + the four claim seeds + the gateway manifest seed as
+# the Secrets your values reference (names match your chart's secret wiring).
+kubectl create namespace dsa-witness 2>/dev/null || true
+kubectl -n dsa-witness create secret generic veil-witness-credentials \
+  --from-literal=VEIL_WITNESS_SIGNING_KEY="$VEIL_WITNESS_SIGNING_KEY" \
+  --dry-run=client -o yaml | kubectl apply -f -
+# ...repeat per service for the bridge/sanitizer/sandbox-b/audit claim seeds and
+#    the gateway VEIL_MANIFEST_SIGNING_KEY, matching your secrets.backend wiring.
+
+# Now install the chart pointing at the (still empty) compliance DBs.
+helm install lucairn ./charts/lucairn -n lucairn --create-namespace \
+  -f customer-values.yaml
+
+shred -u /dev/shm/veil-seeds.env    # remove the decrypted seeds from the host
+```
+
+**Compose path** — restore the `VEIL_*` seeds into `customer.env` (mode 0600)
+from the decrypted escrow blob, then bring the stack up empty:
+
+```bash
+age -d -i veil-escrow.identity -o /dev/shm/veil-seeds.env veil-seeds.escrow.age
+# Merge the VEIL_* lines into customer.env (keep the file at mode 0600), then:
+shred -u /dev/shm/veil-seeds.env
+docker compose -f docker-compose.customer.yml --env-file customer.env up -d
+```
+
+> Customers on the `vault` / `aws` / `azure` secrets backend (External Secrets)
+> re-provide the seeds by restoring them into that backend instead — the offline
+> escrow is the recovery path for the **`k8s-native`** Secret backend (and for
+> the Compose path), where a lost cluster also loses the only copy of the seed.
+
+### Step 2 — restore the three compliance DBs from your dumps
+
+Use the EXISTING restore tooling — do NOT hand-roll a new path. Restore into the
+freshly provisioned, EMPTY databases (the dumps do not truncate, and the
+append-only `audit` DB must never be replayed over populated rows).
+
+```bash
+# Compose path (wraps download + age-decrypt + pg_restore):
+bin/lucairn restore --env customer.env --stamp <YYYYMMDDTHHMMSSZ>
+
+# Helm path: download + decrypt on the operator host, pipe into each pod —
+# exactly the per-DB "Restore runbook" steps in § Backups, run for all three
+# DBs (audit, bridge, veil). The S3 key prefix is the CHART name on the Helm
+# path (lucairn/audit/, lucairn/id-bridge/, lucairn/veil-witness/).
+```
+
+The recovered data is exactly the content of your most recent dump — anything
+written after that dump is not recoverable (no point-in-time recovery; the RPO
+equals your backup interval).
+
+### Step 3 — re-establish the witness-signed manifest
+
+With the seeds back and the DBs restored, regenerate / redeploy the
+witness-signed `/.well-known/veil-keys.json` blob so the gateway boots and the
+W2B runtime harness's manifest check passes. The blob is produced at the
+ceremony host with the recovered witness seed and distributed to each gateway
+(see the Veil **Key Ceremony Runbook**, § "Producing the witness-signed
+manifest blob"). After redeploying the blob, restart the gateway so it
+re-reads and re-verifies it against `VEIL_WITNESS_PUBLIC_KEY` at boot.
+
+### Step 4 — verify a fresh certificate end-to-end
+
+Confirm the rebuilt deployment is not just holding old data but is **issuing
+verifiable certificates again**:
+
+```bash
+# Pre-flight wiring.
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
+
+# Submit one synthetic request, wait, fetch the fresh cert, check the verdict.
+curl -s "$GATEWAY_BASE_URL/.well-known/veil-keys.json" | jq '.keys | length'   # expect 5
+# Then submit a proxy request and GET /api/v1/veil/certificate/<request_id> —
+# the verification block must show overall_verdict = VERDICT_VERIFIED with a
+# valid witness signature (see the Veil Key Ceremony Runbook § Verification).
+```
+
+A `VERDICT_VERIFIED` on a freshly issued certificate is the cold-restore
+success condition: the seeds, the restored evidence, and the manifest are all
+coherent again.
+
+### Restore-drill evidence (HA-01 closure)
+
+> **PENDING — filled by the executed Vast/Kind cold-restore drill (merge gate).**
+> This runbook is closed only once it has been run verbatim on a fresh
+> throwaway cluster from empty → re-provided seeds → restored DBs → manifest →
+> a `VERDICT_VERIFIED` fresh cert. Record the result on one line here:
+>
+>     restore drill PASSED on 2026-__-__, measured RTO ~__ min (Vast/Kind, fresh cluster)
+>
+> Until that line is present and dated, treat the cold-restore path as
+> documented-but-unverified. The measured RTO is **evidence from one drill in a
+> specific environment — measure your own**; it is not a committed or guaranteed
+> figure.
+
+### Signing-key escrow & cold recovery
+
+The compliance-DB backups above protect your **data**. They do NOT protect your
+**signing seeds** — the backup pipeline dumps the three Postgres DBs and nothing
+else. On the `k8s-native` Secret backend (and on the Compose path), the
+customer-cluster `VEIL_*` signing seeds live ONLY inside the cluster. If the
+cluster/Secret is lost, those seeds are gone: existing certificates stay
+verifiable by anyone holding the public keys, but the rebuilt deployment cannot
+re-issue or continue signing, and a cold-restore (above) has nothing to
+re-provide in Step 1. Escrow closes that gap.
+
+> **Customers on the `vault` / `aws` / `azure` (External Secrets) backend** keep
+> their seeds in that backend and recover them from there — that backend IS the
+> escrow. The offline escrow below is the recovery path for the **`k8s-native`**
+> Secret backend and the **Compose** path, where the cluster holds the only copy.
+
+#### What to escrow (exactly the customer-cluster seeds)
+
+At the key ceremony, take an OFFLINE encrypted copy of exactly these **seven**
+per-deployment customer-cluster seeds:
+
+| Seed | Env var | Held by |
+|------|---------|---------|
+| Witness Signing Key | `VEIL_WITNESS_SIGNING_KEY` | veil-witness |
+| Bridge Claim Key | `VEIL_SIGNING_KEY` (id-bridge) | id-bridge |
+| Sanitizer Claim Key | `VEIL_SIGNING_KEY` (sanitizer) | sanitizer |
+| Sandbox B Claim Key | `VEIL_SIGNING_KEY` (sandbox-b) | sandbox-b |
+| Audit Claim Key | `VEIL_SIGNING_KEY` (audit) | audit |
+| Manifest Signing Key (gateway) | `VEIL_MANIFEST_SIGNING_KEY` | gateway |
+| Manifest Signing Key (witness) | (witness manifest seed, ceremony host) | veil-witness |
+
+These are the seeds at cluster-loss risk. The **License Signing Key** and the
+**Image Signing Key** are Lucairn-held, off-cluster keys — they are NOT part of
+your customer-cluster escrow (Lucairn holds their custody separately).
+
+#### How to escrow — offline `age` (or GPG), off the data backups
+
+The operator holds the escrow copy. Use the same `age` tooling the backups
+already use — there is **no new vendor and no hosted key service**; you encrypt
+to your own recipient and keep the identity offline:
+
+```bash
+# ONE-TIME at the key ceremony, on a secured operator host (NOT a cluster node).
+# 1) Generate (or reuse) an escrow recipient key pair. Keep the identity OFFLINE.
+age-keygen -o veil-escrow.identity            # prints the public recipient
+RECIPIENT="$(grep 'public key:' veil-escrow.identity | awk '{print $NF}')"
+
+# 2) Assemble the seven seeds you generated at the ceremony into one env file in
+#    a tmpfs (never a shared/persisted filesystem):
+cat > /dev/shm/veil-seeds.env <<'EOF'
+VEIL_WITNESS_SIGNING_KEY=<witness seed hex>
+VEIL_BRIDGE_SIGNING_KEY=<bridge seed hex>
+VEIL_SANITIZER_SIGNING_KEY=<sanitizer seed hex>
+VEIL_SANDBOX_B_SIGNING_KEY=<sandbox-b seed hex>
+VEIL_AUDIT_SIGNING_KEY=<audit seed hex>
+VEIL_MANIFEST_SIGNING_KEY=<gateway manifest seed hex>
+VEIL_WITNESS_MANIFEST_SIGNING_KEY=<witness manifest seed hex>
+EOF
+
+# 3) Encrypt to your offline recipient, then destroy the plaintext.
+age -r "$RECIPIENT" -o veil-seeds.escrow.age /dev/shm/veil-seeds.env
+shred -u /dev/shm/veil-seeds.env
+
+# 4) Verify the round-trip decrypts before you rely on it.
+age -d -i veil-escrow.identity veil-seeds.escrow.age | head -1   # should print the first VEIL_* line
+```
+
+Store `veil-seeds.escrow.age` **separately from your `age`/GPG identity**, and
+**OFF the S3 compliance-data backups** — the escrow copy must not co-reside with
+the data dumps (it is the recovery input the cold-restore § consumes, and
+keeping signing seeds out of the data backups preserves the key-custody
+separation; see the DATA-08 crypto-shred caveat in § Backups). GPG works the
+same way: `gpg --encrypt --recipient <key> veil-seeds.env` / `gpg --decrypt`.
+
+> **Custody rules (do not bypass):**
+> - The escrow copy is generated **off-cluster** at the ceremony. Never write a
+>   plaintext seed to a cluster node or into a data backup.
+> - The `age`/GPG **identity** stays offline and separate from the escrow blob.
+> - Escrow is **not** key rotation. It recovers the SAME seeds you already run;
+>   it never changes what is signed. Rotating a seed is the separate "Key
+>   Rotation" procedure below (and the Veil Key Ceremony Runbook).
+> - Re-verify the decrypt round-trip whenever you regenerate the escrow blob.
+
+This escrow blob is exactly what the cold-restore runbook above consumes in
+Step 1 to bring a rebuilt deployment back to a signing, verifying state.
+
 ## Key Rotation
 
 Rotate in this order:
@@ -406,6 +654,13 @@ Rotate in this order:
 6. `GATEWAY_KEYSTORE_KEY` only with a coordinated re-encryption migration.
 
 Do not rotate all Veil keys at once. Keep retired public keys available through the witness-signed manifest retention window.
+
+> **Rotation is not escrow.** Rotating a Veil seed replaces it with a new pair;
+> it changes nothing about how a cold cluster recovers an EXISTING seed. To
+> survive a full cluster/Secret loss you need an offline copy of the seeds you
+> currently run — see § "Disaster recovery: full cold-restore" → "Signing-key
+> escrow & cold recovery" above. Whenever you rotate a seed, regenerate the
+> escrow blob so it holds the current seed set.
 
 ## Verify image signatures
 
