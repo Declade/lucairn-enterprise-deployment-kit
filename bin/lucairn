@@ -783,7 +783,7 @@ parse_image_digests() {
   ' "$manifest"
 }
 
-# digest_resolve_env_ref RECORDED_REF ENV_TAG ENV_REGISTRY ENV_DASH_TAG —
+# digest_resolve_env_ref RECORDED_REF ENV_TAG ENV_REGISTRY ENV_DASH_TAG ENV_OLLAMA —
 # translate a canonical recorded ref into the ref the OPERATOR actually pulls,
 # applying the env overrides so --strict checks what the operator deploys, not a
 # stale canonical ref:
@@ -794,11 +794,22 @@ parse_image_digests() {
 #     per docker-compose.customer.yml:630
 #     (${LUCAIRN_IMAGE_REGISTRY}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG}).
 #     It is one of the 13 cosign-signed artifacts, so --strict MUST enforce it.
-# Other non-dsa refs (ollama runtime, runtime adapters, ollama:// models) are
-# returned unchanged — they have their own independent tags. Echoes the
-# resolved ref, or empty for an ollama:// model pseudo-ref (not an OCI image).
+#   - ollama-identity (the self-hosted L3 PII-plane runtime) rides OLLAMA_IMAGE
+#     (docker-compose.self-hosted.yml:202: ${OLLAMA_IMAGE:-ollama/ollama:latest}).
+#     The recorded ref is the canonical immutable ollama/ollama:<ver> tag. An
+#     OLLAMA_IMAGE override that is digest-pinned (@sha256:) is RESOLVED+compared
+#     like the dsa-* services; an override that is UNPINNED (a mutable :latest)
+#     is a verify-or-fail hole --strict cannot durably close -> we emit the
+#     __UNPINNED_OVERRIDE__ sentinel so the caller fails CLOSED (a mutable tag is
+#     not a durable guarantee, even if it coincidentally resolves to the recorded
+#     digest right now). With no override set, the canonical immutable recorded
+#     tag is returned and verified honestly.
+# Other non-dsa refs (runtime adapters, ollama:// models) are returned unchanged
+# — they have their own independent tags. Echoes the resolved ref, the
+# __UNPINNED_OVERRIDE__:<ref> sentinel, or empty for an ollama:// model
+# pseudo-ref (not an OCI image).
 digest_resolve_env_ref() {
-  local rref="$1" env_tag="$2" env_reg="$3" env_dash_tag="$4"
+  local rref="$1" env_tag="$2" env_reg="$3" env_dash_tag="$4" env_ollama="${5:-}"
   # Ollama model pseudo-refs are not OCI images — caller skips them.
   case "$rref" in
     ollama://*) printf ''; return 0 ;;
@@ -818,6 +829,25 @@ digest_resolve_env_ref() {
     # — no @sha256: rewrite of the compose ref).
     */lucairn-dashboard:*)
       printf '%s/%s:%s' "$env_reg" "lucairn-dashboard" "$env_dash_tag"
+      ;;
+    # ollama-identity (self-hosted L3 runtime): honor the OLLAMA_IMAGE override
+    # (docker-compose.self-hosted.yml). The recorded ref is "ollama/ollama:<ver>".
+    ollama/ollama:*)
+      if [ -z "$env_ollama" ]; then
+        # No override: the operator is on the shipped (pinned) default or is not
+        # running the self-hosted ollama runtime. The recorded ref is an
+        # immutable canonical tag -> resolve+verify it honestly, unchanged.
+        printf '%s' "$rref"
+      elif printf '%s' "$env_ollama" | grep -q '@sha256:'; then
+        # Digest-pinned override -> resolve THAT image so --strict compares the
+        # operator's actual digest against the recorded one (match -> verified;
+        # differ -> MISMATCH fail-closed).
+        printf '%s' "$env_ollama"
+      else
+        # Unpinned override (a mutable :latest etc.): --strict cannot durably
+        # verify a floating tag. Route to fail-CLOSED via the sentinel.
+        printf '__UNPINNED_OVERRIDE__:%s' "$env_ollama"
+      fi
       ;;
     *) printf '%s' "$rref" ;;
   esac
@@ -878,16 +908,22 @@ check_image_digests() {
     return 0
   fi
 
-  local env_tag env_reg env_dash_tag
+  local env_tag env_reg env_dash_tag env_ollama
   env_tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)";       env_tag="${env_tag:-0.5.0}"
   env_reg="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)";  env_reg="${env_reg:-ghcr.io/declade}"
   # The dashboard rides the SAME registry override but its OWN tag var
   # (docker-compose.customer.yml:630) — default 0.8.2, distinct from the dsa-*
   # LUCAIRN_IMAGE_TAG. Without this, a dashboard tag swap escapes --strict.
   env_dash_tag="$(env_value "$env_file" LUCAIRN_DASHBOARD_IMAGE_TAG)"; env_dash_tag="${env_dash_tag:-0.8.2}"
+  # The self-hosted ollama-identity runtime rides OLLAMA_IMAGE
+  # (docker-compose.self-hosted.yml:202). Without this, an OLLAMA_IMAGE override
+  # (esp. a mutable :latest) escapes --strict — the false-green this fix closes.
+  # NO fallback default: an EMPTY value means "no override", which the resolver
+  # treats as the canonical immutable recorded tag (verified honestly).
+  env_ollama="$(env_value "$env_file" OLLAMA_IMAGE)"
 
   local mismatched=0 verified=0 pending=0 unresolved=0 invalid=0 informational=0
-  local rref recorded eff_ref current
+  local rref recorded eff_ref current override_ref
   while IFS="$(printf '\t')" read -r rref recorded; do
     [ -n "$rref" ] || continue
 
@@ -912,7 +948,7 @@ check_image_digests() {
       continue
     fi
 
-    eff_ref="$(digest_resolve_env_ref "$rref" "$env_tag" "$env_reg" "$env_dash_tag")"
+    eff_ref="$(digest_resolve_env_ref "$rref" "$env_tag" "$env_reg" "$env_dash_tag" "$env_ollama")"
     if [ -z "$eff_ref" ]; then
       # ollama:// model pseudo-ref with a recorded digest is informational only:
       # not OCI-resolvable, so neither verifiable nor a dangerous skip. It does
@@ -921,6 +957,24 @@ check_image_digests() {
       echo "image digest: $rref recorded $recorded (model manifest — not OCI-resolvable; informational)"
       continue
     fi
+
+    case "$eff_ref" in
+      __UNPINNED_OVERRIDE__:*)
+        # An UNPINNED OLLAMA_IMAGE override (a mutable :latest etc.) is in
+        # effect: --strict cannot durably verify a floating tag, so this is the
+        # SAME verify-or-fail hole the dsa-* MISMATCH path closes. Count it as a
+        # mismatch and fail closed under --strict — NEVER silently pass the
+        # canonical recorded ref while an override is in force.
+        override_ref="${eff_ref#__UNPINNED_OVERRIDE__:}"
+        mismatched=$((mismatched + 1))
+        if [ "$strict" -eq 1 ]; then
+          echo "image digest: MISMATCH (OLLAMA_IMAGE override ($override_ref) is unpinned and does not match the recorded digest $recorded — a mutable tag cannot be digest-verified; pin OLLAMA_IMAGE to a recorded digest (ollama/ollama:0.6.2@$recorded), or use the digest-pinned Helm path) — failing closed under --strict" >&2
+        else
+          warn "image digest: OLLAMA_IMAGE override ($override_ref) is unpinned; --strict cannot verify a mutable tag against the recorded digest $recorded — pin OLLAMA_IMAGE to a recorded digest to enable enforcement; run 'doctor --strict' to fail-closed"
+        fi
+        continue
+        ;;
+    esac
 
     current="$(image_current_digest "$eff_ref")"
     if [ -z "$current" ]; then
