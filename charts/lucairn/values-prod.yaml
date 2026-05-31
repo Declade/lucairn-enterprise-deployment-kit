@@ -11,8 +11,12 @@
 # Multi-replica HA is the v2.0 roadmap. Do NOT raise these to 2 — the
 # install will fail to render. See INSTALL.md § "v1.0 deployment topology".
 #
-# Smoke-test this overlay renders before shipping:
+# Smoke-test this overlay renders before shipping (skipPullSecretGuard=true so
+# the render does not require registry pull credentials — it does NOT relax the
+# prod overlay itself, which keeps the guard; it only makes this dev sanity-
+# check render standalone):
 #   helm template lucairn charts/lucairn -f charts/lucairn/values-prod.yaml \
+#     --set global.skipPullSecretGuard=true \
 #     --set gateway.secrets.values.dsaServiceToken=x \
 #     --set sandbox-b.redis.password=x \
 #     --set sandbox-b.secrets.values.sandboxBApiKeys=x >/dev/null && echo OK
