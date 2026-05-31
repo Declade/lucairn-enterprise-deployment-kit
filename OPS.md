@@ -455,7 +455,28 @@ Bring up an EMPTY deployment (no data yet) and provide the recovered `VEIL_*`
 seeds BEFORE the witness and gateway start signing.
 
 **Helm path** — feed the recovered seeds to the chart via a values overlay (the
-chart owns the Secrets on `k8s-native`), then install:
+chart owns the Secrets on `k8s-native`), **plus the public keys re-derived from
+those seeds**, then install.
+
+> **Why you must re-derive and set the public keys, not just the seeds.** On
+> `k8s-native` the chart does **NOT** derive any public key from a seed — it
+> plugs each `secrets.values.veil*PublicKey` slot verbatim into the gateway
+> Secret (`charts/lucairn/charts/gateway/templates/secret.yaml:48-55`) and each
+> `veil-witness.config.*PublicKey` into the witness ConfigMap
+> (`charts/lucairn/charts/veil-witness/templates/configmap.yaml:13-16`). Only the
+> one-time `scripts/render-values.sh` derives them, and a cold-restore re-uses
+> your *original* `customer-values.yaml` rather than re-running that renderer.
+> If you restore only the private seeds onto a freshly-rendered base, the public
+> keys come from a **different (fresh) render** and no longer match the restored
+> seeds — every Veil signature then fails verification and the well-known roster
+> is wrong. So the restore overlay must carry **every public key re-derived from
+> the restored seeds**.
+>
+> **Equivalent alternative:** preserve and restore your **original rendered
+> `customer-values.yaml`** (it already holds the matching public keys for the
+> seeds you escrowed) and skip the re-derivation. Re-derive-from-seeds is the
+> primary path documented here because the seeds — not the rendered values file —
+> are what the escrow blob actually holds.
 
 ```bash
 # Decrypt the offline escrow blob on the operator host (see the escrow section).
@@ -476,24 +497,60 @@ seeds into your **values overlay** so the chart creates the Secrets with the
 right data, then install:
 
 ```bash
-# Write the recovered root seeds into a restore values overlay (mode 0600).
-# The slot names match the "What to escrow" table's Helm column.
+# (a) Re-derive every public key from the RESTORED seeds. The chart does not do
+#     this for you — it plugs each *PublicKey slot verbatim — so derive them here
+#     and set them in the overlay below. derive-veil-pubkey.sh emits the Ed25519
+#     public of a signing seed (scripts/derive-veil-pubkey.sh:3-4); pipe the seed
+#     on stdin so it never lands on the process argument list (SEC-04).
+PUB_AUDIT=$(printf '%s' "$VEIL_AUDIT_SIGNING_KEY"       | scripts/derive-veil-pubkey.sh)
+PUB_BRIDGE=$(printf '%s' "$VEIL_BRIDGE_SIGNING_KEY"     | scripts/derive-veil-pubkey.sh)
+PUB_SANITIZER=$(printf '%s' "$VEIL_SANITIZER_SIGNING_KEY" | scripts/derive-veil-pubkey.sh)
+PUB_SANDBOX_B=$(printf '%s' "$VEIL_SANDBOX_B_SIGNING_KEY" | scripts/derive-veil-pubkey.sh)
+PUB_WITNESS=$(printf '%s' "$VEIL_WITNESS_SIGNING_KEY"   | scripts/derive-veil-pubkey.sh)
+PUB_GATEWAY=$(printf '%s' "$VEIL_GATEWAY_SIGNING_KEY"   | scripts/derive-veil-pubkey.sh)
+# Manifest public keys — runtime-derivation source matters (see the escrow
+# section's "Derived — do NOT escrow these" note):
+#   VEIL_GATEWAY_MANIFEST_PUBLIC_KEY  ← VEIL_MANIFEST_SIGNING_KEY  (the gateway
+#       signs its manifest with this seed at veil.go:206 — NOT veilGatewaySigningKey)
+#   VEIL_WITNESS_MANIFEST_PUBLIC_KEY  ← VEIL_WITNESS_SIGNING_KEY   (witness
+#       signs its manifest blob with the witness seed; sign-manifest --witness-signing-key-hex)
+PUB_GATEWAY_MANIFEST=$(printf '%s' "$VEIL_MANIFEST_SIGNING_KEY" | scripts/derive-veil-pubkey.sh)
+PUB_WITNESS_MANIFEST=$(printf '%s' "$VEIL_WITNESS_SIGNING_KEY"  | scripts/derive-veil-pubkey.sh)
+
+# (b) Write the recovered seeds AND the re-derived public keys into a restore
+#     values overlay (mode 0600). Seed slot names match the "What to escrow"
+#     table's Helm column; public-key slots are the gateway.secrets.values.veil*
+#     roster (the source of /.well-known/veil-keys.json) plus the four witness
+#     emitter pubkeys the witness ConfigMap needs to verify claims.
 cat > /dev/shm/restore-seeds.values.yaml <<EOF
 veil-witness:
   secrets: { values: { signingKey: "${VEIL_WITNESS_SIGNING_KEY}" } }
+  # The witness verifies emitter claims against these four pubkeys
+  # (charts/lucairn/charts/veil-witness/templates/configmap.yaml:13-16).
+  config:
+    bridgePublicKey: "${PUB_BRIDGE}"
+    sanitizerPublicKey: "${PUB_SANITIZER}"
+    sandboxBPublicKey: "${PUB_SANDBOX_B}"
+    auditPublicKey: "${PUB_AUDIT}"
 gateway:
   secrets:
     values:
-      # Gateway per-request CLAIM signer.
+      # Gateway per-request CLAIM signer + its public counterpart.
       veilGatewaySigningKey: "${VEIL_GATEWAY_SIGNING_KEY}"
+      veilGatewayPublicKey: "${PUB_GATEWAY}"
       # Gateway MANIFEST signer — the key the gateway signs /.well-known with
-      # (veil.go:206). VEIL_GATEWAY_MANIFEST_PUBLIC_KEY derives from THIS seed,
-      # not from veilGatewaySigningKey. scripts/render-values.sh now derives the
-      # gateway manifest public key from VEIL_MANIFEST_SIGNING_KEY automatically,
-      # so this mapping matches what render-values.sh produces; setting both
-      # values explicitly here is a belt-and-suspenders restore check, not a
-      # workaround for a renderer bug.
+      # (services/gateway/internal/api/veil.go:206). Its public counterpart
+      # VEIL_GATEWAY_MANIFEST_PUBLIC_KEY is the Ed25519 public of THIS seed.
       veilManifestSigningKey: "${VEIL_MANIFEST_SIGNING_KEY}"
+      veilGatewayManifestPublicKey: "${PUB_GATEWAY_MANIFEST}"
+      # The remaining well-known roster pubkeys the gateway publishes
+      # (veil.go:1262-1301): witness + witness-manifest + the four emitters.
+      veilWitnessPublicKey: "${PUB_WITNESS}"
+      veilWitnessManifestPublicKey: "${PUB_WITNESS_MANIFEST}"
+      veilBridgePublicKey: "${PUB_BRIDGE}"
+      veilSanitizerPublicKey: "${PUB_SANITIZER}"
+      veilSandboxBPublicKey: "${PUB_SANDBOX_B}"
+      veilAuditPublicKey: "${PUB_AUDIT}"
 id-bridge:
   secrets: { values: { veilSigningKey: "${VEIL_BRIDGE_SIGNING_KEY}" } }
 audit:
@@ -506,11 +563,10 @@ sandbox-b:
   secrets: { values: { veilSigningKey: "${VEIL_SANDBOX_B_SIGNING_KEY}" } }
 EOF
 
-# Install pointing at the (still empty) compliance DBs. The derived public keys
-# (VEIL_*_PUBLIC_KEY, the two manifest public keys) are re-derived from these
-# seeds with scripts/derive-veil-pubkey.sh — the corrected render-values.sh
-# wires VEIL_GATEWAY_MANIFEST_PUBLIC_KEY from VEIL_MANIFEST_SIGNING_KEY, so a
-# fresh render matches the gateway's signer (see customer.env.example).
+# (c) Install pointing at the (still empty) compliance DBs. The overlay now
+#     carries the restored seeds AND every re-derived public key, so the gateway
+#     Secret + witness ConfigMap match the restored signers — signatures verify
+#     and the well-known roster is complete.
 helm install lucairn ./charts/lucairn -n lucairn --create-namespace \
   -f customer-values.yaml -f /dev/shm/restore-seeds.values.yaml
 
@@ -524,6 +580,29 @@ shred -u /dev/shm/veil-seeds.env /dev/shm/restore-seeds.values.yaml
 > `<service>-credentials` Secret. The chart does not own those Secrets on this
 > backend, so there is no pre-create conflict — but the data must be in the store
 > first or the pods start without their signing seeds.
+>
+> **⚠ Supported full-restore path is the bundled `k8s-native` values-overlay
+> above — not the ESO path as currently shipped.** The gateway ExternalSecret
+> template (`charts/lucairn/charts/gateway/templates/externalsecret.yaml`) does
+> **NOT** map four of the gateway-roster keys:
+> `VEIL_GATEWAY_SIGNING_KEY`, `VEIL_GATEWAY_PUBLIC_KEY`,
+> `VEIL_GATEWAY_MANIFEST_PUBLIC_KEY`, and `VEIL_WITNESS_MANIFEST_PUBLIC_KEY`
+> have no `data:` entry, so an ESO restore on the shipped chart **cannot** produce
+> the documented 8-key gateway roster on its own (it materializes
+> `VEIL_MANIFEST_SIGNING_KEY` + the five emitter pubkeys, and nothing else from
+> the manifest/gateway set). This is a shipped-chart gap of the same class as the
+> witness/audit ExternalSecret completeness fix — **tracked as a follow-up to
+> extend the gateway ExternalSecret**.
+>
+> Until the chart is extended, an ESO restore must **supply those four values
+> out-of-band** — set them on the gateway Secret directly after ESO sync (e.g.
+> `kubectl patch secret gateway-credentials` with the re-derived
+> `VEIL_GATEWAY_PUBLIC_KEY` / `VEIL_GATEWAY_MANIFEST_PUBLIC_KEY` /
+> `VEIL_WITNESS_MANIFEST_PUBLIC_KEY` and the restored `VEIL_GATEWAY_SIGNING_KEY`),
+> or carry just those four in a small `k8s-native`-style values overlay for the
+> gateway subchart. Do **not** assume the ESO path alone yields the full roster
+> as written — verify with the well-known key_id check below before declaring the
+> restore complete.
 
 **Compose path** — restore the `VEIL_*` seeds into `customer.env` (mode 0600)
 from the decrypted escrow blob, then bring the stack up empty:
@@ -587,12 +666,17 @@ bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 # services/gateway/internal/api/veil.go:1262-1301). Assert the key_ids by name
 # rather than a bare count so a missing manifest key is caught explicitly. This
 # reads only public key_ids — no private key material is disclosed.
+# This is a GATE: it must exit non-zero when any key_id is missing. The
+# success/failure branch is attached to jq's own exit status — do NOT fold a
+# `|| echo ...` onto the jq pipeline, because the `||` would swallow jq's
+# non-zero exit and the check would falsely pass on a missing key.
 curl -s "$GATEWAY_BASE_URL/.well-known/veil-keys.json" \
   | jq -e '[.keys[].key_id] as $ids
            | ["witness_v1","bridge_v1","sanitizer_v1","sandbox_b_v1","audit_v1",
               "gateway_manifest_v1","witness_manifest_v1"]
-           | all(. as $k | $ids | index($k))' \
-  && echo "all 7 key_ids present" || echo "MISSING key_id — check VEIL_*_PUBLIC_KEY wiring"
+           | all(. as $k | $ids | index($k))' >/dev/null \
+  || { echo "MISSING key_id — check VEIL_*_PUBLIC_KEY wiring" >&2; exit 1; }
+echo "all 7 key_ids present"
 # Then submit a proxy request and GET /api/v1/veil/certificate/<request_id> —
 # the verification block must show overall_verdict = VERDICT_VERIFIED with a
 # valid witness signature (see the Veil Key Ceremony Runbook § Verification).
