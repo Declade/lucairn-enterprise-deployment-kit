@@ -34,6 +34,21 @@ Verify network isolation invariant:
   kubectl exec -n dsa-identity deploy/sandbox-a -- \
     wget -qO- --timeout=3 http://sandbox-b.dsa-ai.svc:8084/healthz
 
+⚠  NetworkPolicy enforcement preflight (NET-07):
+  The isolation invariant above is enforced by this chart's NetworkPolicies.
+  Those objects render correctly on ANY cluster, but they only take EFFECT if
+  your CNI actually enforces NetworkPolicies. A non-enforcing CNI (e.g. stock
+  `kindnet`) leaves Sandbox B → Sandbox A reachable with no error at install
+  time — the air-gap is silently inert.
+  • A NetworkPolicy-enforcing CNI (Calico or Cilium) is a HARD prerequisite.
+    See docs/CUSTOMER_HELM_RUNBOOK.md#prereqs-1-time for the proven remedies
+    (Calico v3.27.3 / GKE Dataplane V2 / Azure or Calico network policy).
+  • To actively confirm your CNI enforces NetworkPolicies, run:
+      lucairn net-preflight
+    It deploys a throwaway pod-pair behind a deny-all NetworkPolicy and proves
+    the connection is BLOCKED, then tears itself down. (`lucairn doctor` only
+    checks that NetworkPolicy OBJECTS are present, not that they are enforced.)
+
 Gateway keystore encryption (#17):
   GATEWAY_KEYSTORE_KEY is REQUIRED for gateway boot. The chart wires it via
   the gateway-credentials Secret. Provision per backend:
