@@ -488,7 +488,11 @@ gateway:
       veilGatewaySigningKey: "${VEIL_GATEWAY_SIGNING_KEY}"
       # Gateway MANIFEST signer — the key the gateway signs /.well-known with
       # (veil.go:206). VEIL_GATEWAY_MANIFEST_PUBLIC_KEY derives from THIS seed,
-      # not from veilGatewaySigningKey.
+      # not from veilGatewaySigningKey. scripts/render-values.sh now derives the
+      # gateway manifest public key from VEIL_MANIFEST_SIGNING_KEY automatically,
+      # so this mapping matches what render-values.sh produces; setting both
+      # values explicitly here is a belt-and-suspenders restore check, not a
+      # workaround for a renderer bug.
       veilManifestSigningKey: "${VEIL_MANIFEST_SIGNING_KEY}"
 id-bridge:
   secrets: { values: { veilSigningKey: "${VEIL_BRIDGE_SIGNING_KEY}" } }
@@ -504,7 +508,9 @@ EOF
 
 # Install pointing at the (still empty) compliance DBs. The derived public keys
 # (VEIL_*_PUBLIC_KEY, the two manifest public keys) are re-derived from these
-# seeds with scripts/derive-veil-pubkey.sh — see customer.env.example:94-108.
+# seeds with scripts/derive-veil-pubkey.sh — the corrected render-values.sh
+# wires VEIL_GATEWAY_MANIFEST_PUBLIC_KEY from VEIL_MANIFEST_SIGNING_KEY, so a
+# fresh render matches the gateway's signer (see customer.env.example).
 helm install lucairn ./charts/lucairn -n lucairn --create-namespace \
   -f customer-values.yaml -f /dev/shm/restore-seeds.values.yaml
 
@@ -573,8 +579,20 @@ verifiable certificates again**:
 # Pre-flight wiring.
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 
-# Submit one synthetic request, wait, fetch the fresh cert, check the verdict.
-curl -s "$GATEWAY_BASE_URL/.well-known/veil-keys.json" | jq '.keys | length'   # expect 5
+# Confirm the published key roster carries every expected key_id. A fully
+# configured deployment publishes the five service keys PLUS the two manifest
+# keys (gateway + witness) when VEIL_GATEWAY_MANIFEST_PUBLIC_KEY and
+# VEIL_WITNESS_MANIFEST_PUBLIC_KEY are set — the gateway only appends a key
+# when its public-key env var is non-empty (dual-sandbox-architecture
+# services/gateway/internal/api/veil.go:1262-1301). Assert the key_ids by name
+# rather than a bare count so a missing manifest key is caught explicitly. This
+# reads only public key_ids — no private key material is disclosed.
+curl -s "$GATEWAY_BASE_URL/.well-known/veil-keys.json" \
+  | jq -e '[.keys[].key_id] as $ids
+           | ["witness_v1","bridge_v1","sanitizer_v1","sandbox_b_v1","audit_v1",
+              "gateway_manifest_v1","witness_manifest_v1"]
+           | all(. as $k | $ids | index($k))' \
+  && echo "all 7 key_ids present" || echo "MISSING key_id — check VEIL_*_PUBLIC_KEY wiring"
 # Then submit a proxy request and GET /api/v1/veil/certificate/<request_id> —
 # the verification block must show overall_verdict = VERDICT_VERIFIED with a
 # valid witness signature (see the Veil Key Ceremony Runbook § Verification).
@@ -678,12 +696,14 @@ secrets — see `bin/lucairn:231-236`.
 > from the gateway **manifest** signer. Escrowing the seven roots above recovers
 > every signing and manifest path.
 >
-> ⚠ The comment at `customer.env.example:103-108` still says
-> `VEIL_GATEWAY_MANIFEST_PUBLIC_KEY` derives from `VEIL_GATEWAY_SIGNING_KEY`; that
-> note is stale. The gateway binary signs the manifest with `VEIL_MANIFEST_SIGNING_KEY`
-> (`veil.go:206`), so the manifest public key MUST be derived from
-> `VEIL_MANIFEST_SIGNING_KEY` or the W2B Runtime Invariant Harness #3 self-check
-> degrades. Follow the code, not the example comment.
+> The gateway binary signs its manifest with `VEIL_MANIFEST_SIGNING_KEY`
+> (`veil.go:206`), so `VEIL_GATEWAY_MANIFEST_PUBLIC_KEY` MUST be the Ed25519
+> public of `VEIL_MANIFEST_SIGNING_KEY` (NOT `VEIL_GATEWAY_SIGNING_KEY`) or the
+> W2B Runtime Invariant Harness #3 self-check degrades. Restore relies on the
+> corrected `scripts/render-values.sh` and `customer.env.example`, which now
+> derive this public key from `VEIL_MANIFEST_SIGNING_KEY` automatically — re-run
+> `render-values.sh` (or follow the `customer.env.example` derivation lines) and
+> the manifest public key matches the signer with no manual override needed.
 
 These are the seeds at cluster-loss risk. The **License Signing Key** and the
 **Image Signing Key** are Lucairn-held, off-cluster keys — they are NOT part of
