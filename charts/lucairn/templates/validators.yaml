@@ -17,3 +17,4 @@
 {{- include "validators.gatewayPostgresModeKeystorePathEmpty" $ -}}
 {{- include "validators.podLocalStateSingleReplica" $ -}}
 {{- include "validators.backupHalfConfig" $ -}}
+{{- include "validators.privateRegistryPullSecrets" $ -}}

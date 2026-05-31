@@ -7,7 +7,7 @@
 global:
   imageRegistry: ghcr.io/declade
   imagePullSecrets:
-    - name: ghcr-creds
+    - name: lucairn-registry  # chart-managed Secret (infrastructure/pull-secrets.yaml); 'ghcr-creds' was never created by the chart -> ImagePullBackOff
   secrets:
     backend: k8s-native
   dnsRestriction: false

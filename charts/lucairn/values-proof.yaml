@@ -6,6 +6,10 @@ global:
   vertical: test
   dnsRestriction: false
   dsaEnv: development
+  # Kind clusters pre-load images via `kind load docker-image` — no registry
+  # pull auth / pull Secret is needed, so skip the private-registry pull-Secret
+  # guard (it exists for real private-registry installs, not local Kind).
+  skipPullSecretGuard: true
 
 observability:
   enabled: false

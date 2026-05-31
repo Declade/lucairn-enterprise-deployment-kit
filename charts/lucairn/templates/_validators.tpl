@@ -429,3 +429,44 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{- /*
+  validators.privateRegistryPullSecrets
+
+  Item C / B1-S3 Vast carry-forward (Gap #6). Closes the bare-default
+  ImagePullBackOff footgun: every private dsa-* Deployment + migration-Job
+  attaches its pull Secret via `{{- with .Values.global.imagePullSecrets }}`
+  (gateway/sandbox-a/sandbox-b/id-bridge/audit/veil-witness/admin/ingest/
+  demo/dashboard deployments + postgres-gateway StatefulSet). The chart
+  default (values.yaml) ships global.imagePullSecrets: [] with a private
+  global.imageRegistry (ghcr.io/declade). A bare `helm install -f values.yaml`
+  (no customer-values.yaml) therefore renders ZERO imagePullSecrets on every
+  private workload — each pod ImagePullBackOffs with a non-obvious error.
+  This is DISTINCT from the imagePullDockerConfigJson guard in
+  infrastructure/templates/pull-secrets.yaml: that guard renders the
+  chart-managed lucairn-registry Secret, but an operator can satisfy it via
+  `--set-file global.imagePullDockerConfigJson=...` and STILL leave
+  global.imagePullSecrets empty (the Secret exists but no pod references it).
+  This validator catches the residual case.
+
+  Fails fast when ALL of:
+    - global.imageRegistry contains "ghcr.io/declade" (private registry)
+    - global.imagePullSecrets is empty
+    - global.skipPullSecretGuard is not true (escape hatch for operators who
+      attach pull credentials out-of-band, e.g. a node-level imagePullSecret
+      on the namespace default ServiceAccount, or a mirrored public registry)
+
+  Invoked from charts/lucairn/templates/validators.yaml.
+*/ -}}
+{{- define "validators.privateRegistryPullSecrets" -}}
+{{- $global := (default dict .Values.global) -}}
+{{- if not $global.skipPullSecretGuard -}}
+{{- $registry := (default "" $global.imageRegistry) -}}
+{{- if contains "ghcr.io/declade" $registry -}}
+{{- $pullSecrets := (default list $global.imagePullSecrets) -}}
+{{- if empty $pullSecrets -}}
+{{- fail (printf "global.imageRegistry=%q is a PRIVATE registry but global.imagePullSecrets is empty — every dsa-* Deployment, migration-Job, and the postgres-gateway StatefulSet would render with no imagePullSecrets and ImagePullBackOff at pull time. Install with the customer overlay (-f customer-values.yaml, which sets global.imagePullSecrets: [{name: lucairn-registry}]) together with --set-file global.imagePullDockerConfigJson=$DOCKER_CONFIG/config.json. If you attach registry credentials out-of-band (e.g. a node/ServiceAccount-level imagePullSecret, or a mirrored public registry), set global.skipPullSecretGuard=true to suppress this guard. See INSTALL.md § \"Kubernetes Install\"." $registry) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

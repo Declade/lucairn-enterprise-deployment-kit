@@ -12,9 +12,13 @@ global:
   # `global.skipPullSecretGuard: true` below to suppress the guard for
   # mirrored public-registry deploys. (Closes Sim 5 Helm Gap #1.)
   imagePullDockerConfigJson: ""
-  # Escape hatch for the pull-secrets fail-guard. Set to true if all images
-  # are pulled from a public mirror (no auth needed) and no
-  # imagePullDockerConfigJson is provided. Default false — the guard fires.
+  # Escape hatch for BOTH pull-secret fail-guards:
+  #   1. infrastructure/pull-secrets.yaml — empty imagePullDockerConfigJson
+  #   2. validators.privateRegistryPullSecrets — private imageRegistry with
+  #      empty imagePullSecrets (bare `helm install -f values.yaml` footgun)
+  # Set to true if all images are pulled from a public mirror (no auth needed),
+  # or if you attach registry credentials out-of-band (node/ServiceAccount-level
+  # imagePullSecret). Default false — the guards fire.
   skipPullSecretGuard: false
   imageTag: "0.5.0" # NOTE: dashboard sub-chart ships independently — dashboard image is pinned in the dashboard.image.tag block below (currently 0.8.2).
   # Slice 4 — namespace of the bundled observability sub-chart (Grafana

@@ -1,6 +1,6 @@
 # deploy/helm/values-test.yaml
 # Overlay for ephemeral Kind test clusters.
-# Usage: helm install dsa deploy/helm/ -f deploy/helm/values-dev.yaml -f deploy/helm/values-test.yaml
+# Usage: helm install dsa deploy/helm/ -f deploy/helm/values-dev.yaml -f deploy/helm/values-test.yaml --set global.skipPullSecretGuard=true
 #
 # ⚠ DEV-ONLY: every secret in this file is a publicly-known dev placeholder.
 # Production deploys MUST inject real values via --set / ESO / Vault and
@@ -16,6 +16,10 @@ global:
   dnsRestriction: false  # Kind uses Calico, not Cilium
   llmShieldEnabled: true  # enable LLM PII Shield (Layer 3) for test
   dsaEnv: development
+  # Kind clusters pre-load images via `kind load docker-image` — no registry
+  # pull auth / pull Secret is needed, so skip the private-registry pull-Secret
+  # guard (it exists for real private-registry installs, not local Kind).
+  skipPullSecretGuard: true
 
 gateway:
   replicaCount: 1
