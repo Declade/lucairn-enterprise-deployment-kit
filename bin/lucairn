@@ -3096,7 +3096,7 @@ bundle_command() {
 }
 
 doctor() {
-  local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-system" check_images=1 strict_runtime=0 strict_digest=0
+  local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-edge" check_images=1 strict_runtime=0 strict_digest=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --env) env_file="$2"; shift 2 ;;
@@ -3423,7 +3423,11 @@ doctor() {
 
   if have kubectl; then
     if kubectl get networkpolicy -n "$kube_namespace" >/dev/null 2>&1; then
-      echo "network policies: ok ($kube_namespace)"
+      # Presence only: this confirms NetworkPolicy OBJECTS exist in the
+      # namespace, NOT that the CNI enforces them. A non-enforcing CNI (e.g.
+      # stock kindnet) returns these objects yet leaves the air-gap inert.
+      # Run 'lucairn net-preflight' to actively verify CNI enforcement.
+      echo "network policies: present in $kube_namespace (presence only — run 'lucairn net-preflight' to verify CNI enforcement)"
     else
       echo "network policies: not found or cluster unavailable ($kube_namespace)"
     fi
