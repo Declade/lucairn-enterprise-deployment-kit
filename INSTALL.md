@@ -418,6 +418,27 @@ gateway will start but `/readyz` will return 503 because the placeholder
 `SANDBOX_B_REMOTE_ENDPOINT=https://inference.lucairn.example` is unreachable.
 See `TROUBLESHOOTING.md` § "`/healthz` Returns 200 But `/readyz` Returns 503".
 
+**Pre-stage the L3 deep PII-shield model.** The self-hosted overlay runs a
+dedicated, always-on `ollama-identity` container for the sanitizer's level-3
+deep PII shield. It lives on its own identity-only network (the sanitizer
+reaches it via the `ollama` network alias) and is isolated from the AI-plane
+inference runtime — the model must be pre-staged once after the stack is up
+(the identity network is `internal: true`, so run the pull from the host,
+which has egress):
+
+```bash
+docker compose \
+  -f docker-compose.customer.yml \
+  -f docker-compose.self-hosted.yml \
+  --env-file customer.env \
+  exec ollama-identity ollama pull qwen2.5:7b
+```
+
+Until the model is present, the sanitizer is fail-CLOSED (`LUCAIRN_L3_REQUIRED`
+defaults to `true`): the gateway returns `503 l3_scrubber_unavailable` rather
+than ship a request with only L1+L2 scrubbing. This is the same `qwen2.5:7b`
+L3 model the Helm chart pre-pulls into its `ollama-identity` StatefulSet.
+
 ### Self-hosted with managed LLM (BYOK Anthropic, OpenAI, etc.)
 
 When the customer wants the Lucairn control + identity plane on-premise but
