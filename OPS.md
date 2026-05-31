@@ -704,6 +704,17 @@ curl -s "$GATEWAY_BASE_URL/.well-known/veil-keys.json" \
            | all(. as $k | $ids | index($k))' >/dev/null \
   || { echo "MISSING key_id — check VEIL_*_PUBLIC_KEY wiring" >&2; exit 1; }
 echo "all 7 key_ids present"
+# NOTE: the published roster is exactly these 7 (five emitter pubkeys + the two
+# manifest pubkeys). buildPublicKeyManifest() does NOT publish the gateway CLAIM
+# pubkey VEIL_GATEWAY_PUBLIC_KEY (there is no gateway_v1 key_id in
+# /.well-known/veil-keys.json — veil.go:1262-1301). The restored
+# veilGatewayPublicKey is consumed by the WITNESS, not the roster: it is the key
+# the witness uses to verify the gateway's per-request CLAIM signature
+# (services/veil-witness/cmd/server/main.go:49,114 — CC-017 P2). Its correctness
+# is therefore confirmed by the fresh-cert end-to-end check below (a
+# VERDICT_VERIFIED cert with the gateway claim verifying), NOT by this roster
+# gate. Do NOT add gateway_v1 to the expected-id list above — it would make this
+# gate fail against a correctly configured deployment.
 # Then submit a proxy request and GET /api/v1/veil/certificate/<request_id> —
 # the verification block must show overall_verdict = VERDICT_VERIFIED with a
 # valid witness signature (see the Veil Key Ceremony Runbook § Verification).
@@ -888,8 +899,36 @@ Store `veil-seeds.escrow.age` **separately from your `age`/GPG identity**, and
 **OFF the S3 compliance-data backups** — the escrow copy must not co-reside with
 the data dumps (it is the recovery input the cold-restore § consumes, and
 keeping signing seeds out of the data backups preserves the key-custody
-separation; see the DATA-08 crypto-shred caveat in § Backups). GPG works the
-same way: `gpg --encrypt --recipient <key> veil-seeds.env` / `gpg --decrypt`.
+separation; see the DATA-08 crypto-shred caveat in § Backups).
+
+GPG works the same way, but you **must** harden it to mirror the `age` flow — a
+bare `gpg --decrypt` writes the plaintext seeds to **stdout** (scrollback +
+shell history), which breaks the "a live seed is never printed" guarantee.
+Always decrypt under `umask 077` straight into a `0600` tmpfs file, then verify
+with the same non-disclosing checksum compare (never echo the seed):
+
+```bash
+# --- GPG escrow CREATE (fallback for the age create flow above) ---
+# Step 2's ( umask 077; cat > /dev/shm/veil-seeds.env ... ) + step 3's
+# sha256sum-to-veil-seeds.escrow.sha256 are IDENTICAL; only encrypt/decrypt change.
+gpg --encrypt --recipient <key> -o veil-seeds.escrow.gpg /dev/shm/veil-seeds.env
+shred -u /dev/shm/veil-seeds.env
+# Verify the round-trip WITHOUT disclosing any seed (stream straight to sha256sum):
+if [ "$(gpg --decrypt veil-seeds.escrow.gpg 2>/dev/null | sha256sum | awk '{print $1}')" \
+     = "$(cat veil-seeds.escrow.sha256)" ]; then
+  echo "escrow round-trip OK"
+else
+  echo "escrow round-trip FAILED — do not rely on this blob" >&2
+fi
+
+# --- GPG escrow DECRYPT (fallback for the restore decrypt flow above) ---
+# umask 077 BEFORE the write so the seed-bearing plaintext is created 0600;
+# --output writes to the file, NOT stdout, so no live seed reaches the terminal.
+( umask 077; gpg --decrypt --output /dev/shm/veil-seeds.env veil-seeds.escrow.gpg )
+chmod 0600 /dev/shm/veil-seeds.env   # belt-and-suspenders if gpg ignored the umask
+set -a; . /dev/shm/veil-seeds.env; set +a
+# ... use the seeds, then: shred -u /dev/shm/veil-seeds.env
+```
 
 > **Custody rules (do not bypass):**
 > - The escrow copy is generated **off-cluster** at the ceremony. Never write a
