@@ -141,9 +141,13 @@ gateway:
       # GATEWAY_MANIFEST_PUBLIC_KEY + WITNESS_MANIFEST_PUBLIC_KEY.
       # All three are DERIVED Ed25519 pubkeys, not independent
       # secrets — render-values.sh fills them from the matching
-      # signing seeds. Manifest pubkeys reuse the gateway/witness
-      # emitter keypairs by design (single Ed25519 derivation per
-      # service; mirrors Compose customer.env.example lines 87-95).
+      # signing seeds. The two manifest pubkeys pair with DIFFERENT
+      # signing keys (mirrors Compose customer.env.example):
+      #   - veilGatewayManifestPublicKey pairs with veilManifestSigningKey
+      #     (a SEPARATE manifest seed, NOT the gateway emitter/claim key
+      #     veilGatewaySigningKey).
+      #   - veilWitnessManifestPublicKey pairs with veilWitnessSigningKey
+      #     (the witness signs its manifest with its own claim seed).
       veilGatewayPublicKey: "REPLACE_WITH_64_HEX_GATEWAY_PUBLIC_KEY"
       veilGatewayManifestPublicKey: "REPLACE_WITH_64_HEX_GATEWAY_MANIFEST_PUBLIC_KEY"
       veilWitnessManifestPublicKey: "REPLACE_WITH_64_HEX_WITNESS_MANIFEST_PUBLIC_KEY"
