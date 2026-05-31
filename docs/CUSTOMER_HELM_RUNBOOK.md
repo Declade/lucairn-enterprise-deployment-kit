@@ -24,7 +24,7 @@
 
 > ### ⚠️ HARD PREREQUISITE — your CNI MUST enforce NetworkPolicies
 >
-> The Veil isolation invariant (Sandbox B — the AI plane — can NEVER reach
+> Veil isolation invariant (Sandbox B — the AI plane — can NEVER reach
 > Sandbox A — the identity plane) is enforced by the chart's NetworkPolicies.
 > **A CNI that does not enforce NetworkPolicies silently defeats this control.**
 > The chart's NPs render correctly either way; they simply have no effect
