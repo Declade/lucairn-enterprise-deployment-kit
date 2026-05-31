@@ -95,7 +95,16 @@ postgresql:
     tag: "16-alpine"
   storageSize: 10Gi
   storageClass: ""
+  # Superuser, used by the migration Job (CREATE ROLE / GRANT) and Postgres
+  # bootstrap ONLY. The runtime audit deployment connects as `appUser`.
   user: dsa
+  # Least-privilege role the runtime audit service connects as (INT-001).
+  # Created + granted by the 000003_least_privilege_role migration (NOSUPERUSER,
+  # append-only — INSERT but no DELETE/TRUNCATE on audit_events). Must match the
+  # role literal the migration bakes (`audit_app`). The migrate Job still runs
+  # as the `user` superuser above because it executes CREATE ROLE/GRANT/REVOKE
+  # that the restricted role itself is not permitted to run.
+  appUser: audit_app
   database: audit
 
 external:

@@ -39,7 +39,10 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Chart.Name }}-credentials
-                  key: DATABASE_URL
+                  # INT-001 least-privilege: runtime connects as the restricted,
+                  # append-only audit_app role, NOT the migrate-only superuser
+                  # DATABASE_URL.
+                  key: DATABASE_URL_APP
             - name: VEIL_SIGNING_KEY
               valueFrom:
                 secretKeyRef:
