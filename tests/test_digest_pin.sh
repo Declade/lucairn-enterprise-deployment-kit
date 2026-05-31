@@ -508,5 +508,87 @@ printf '%s' "$out_dok_s" | grep -qi "image digest: ok (ghcr.io/declade/lucairn-d
 rm -rf "$SHIM_DASH_OK"
 echo "digest-pin: matching dashboard override -> --strict verifies the dashboard (counts toward floor) ok"
 
+# ---------------------------------------------------------------------------
+# 5l. ollama-identity OLLAMA_IMAGE enforcement under --strict (C5 fail-OPEN fix).
+#     The self-hosted L3 PII-plane runtime deploys via OLLAMA_IMAGE
+#     (docker-compose.self-hosted.yml:202: ${OLLAMA_IMAGE:-ollama/ollama:latest}).
+#     Before the fix, OLLAMA_IMAGE was NEVER consulted: --strict resolved the
+#     canonical immutable ollama/ollama:0.6.2 tag, matched the recorded digest,
+#     and reported GREEN for an image the operator was NOT running (a mutable
+#     :latest). That is a FALSE-GREEN in a verify-or-fail gate.
+#
+#       (i)   UNPINNED override (OLLAMA_IMAGE=ollama/ollama:latest) -> --strict
+#             FAILS CLOSED (non-zero): a mutable tag cannot be digest-verified;
+#             plain doctor stays rc=0 (warn-only).
+#       (ii)  recorded-DIGEST-pinned override -> --strict resolves THAT image and
+#             counts it toward verified++ (rc=0).
+#       (iii) NO override -> the canonical immutable recorded ollama tag is
+#             verified honestly (rc=0), unchanged behavior.
+# ---------------------------------------------------------------------------
+OLLAMA_REF="ollama/ollama:0.6.2"
+OLLAMA_DIGEST="$(awk '
+  /^[[:space:]]*ref:[[:space:]]*"ollama\/ollama:0.6.2"/ { hit=1; next }
+  hit && /^[[:space:]]*digest:[[:space:]]*/ { d=$0; sub(/^[[:space:]]*digest:[[:space:]]*/,"",d); gsub(/"/,"",d); print d; exit }
+' "$MANIFEST")"
+[ -n "$OLLAMA_DIGEST" ] || fail "could not read the recorded ollama-identity digest from the manifest"
+
+# (i) UNPINNED override -> fail-closed. SHIM_OK resolves ollama/ollama:0.6.2 to
+# its recorded digest, but the resolver is NEVER reached for an unpinned override
+# (the resolver short-circuits to the __UNPINNED_OVERRIDE__ fail-closed path), so
+# the stub's behavior is irrelevant here.
+ENVF_OLLAMA_LATEST="$TMP/customer.ollama-latest.env"
+printf 'LUCAIRN_IMAGE_TAG=0.5.0\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nOLLAMA_IMAGE=ollama/ollama:latest\n' > "$ENVF_OLLAMA_LATEST"
+set +e
+out_ol_s="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_LATEST" 1 2>&1)"; rc_ol_s=$?
+out_ol_n="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_LATEST" 0 2>&1)"; rc_ol_n=$?
+set -e
+[ "$rc_ol_s" -ne 0 ] || { printf '%s\n' "$out_ol_s" >&2; fail "unpinned OLLAMA_IMAGE=ollama/ollama:latest --strict should FAIL-CLOSED (non-zero) — the false-green class is the C5 bug, got $rc_ol_s"; }
+printf '%s' "$out_ol_s" | grep -qi "OLLAMA_IMAGE override (ollama/ollama:latest) is unpinned" \
+  || fail "unpinned OLLAMA_IMAGE --strict should name the unpinned override in the MISMATCH message"
+printf '%s' "$out_ol_s" | grep -qi "failing closed" \
+  || fail "unpinned OLLAMA_IMAGE --strict should announce failing closed"
+# CRITICAL: --strict must NOT report the canonical ollama:0.6.2 ref as ok while
+# an override is in force (that WAS the false-green).
+printf '%s' "$out_ol_s" | grep -qi "image digest: ok (ollama/ollama:0.6.2 " \
+  && fail "unpinned OLLAMA_IMAGE --strict must NOT silently pass the canonical ollama/ollama:0.6.2 ref (the false-green)"
+[ "$rc_ol_n" -eq 0 ] || { printf '%s\n' "$out_ol_n" >&2; fail "unpinned OLLAMA_IMAGE plain doctor should stay rc=0 (warn-only), got $rc_ol_n"; }
+echo "digest-pin: unpinned OLLAMA_IMAGE override -> --strict FAILS-CLOSED, plain warns ok (C5 false-green closed)"
+
+# (ii) recorded-DIGEST-pinned override -> verified++. A stub that ALSO echoes the
+# recorded ollama digest for the digest-pinned override ref proves the operator's
+# pinned image flows through the normal verify path and counts toward the floor.
+OLLAMA_PIN="ollama/ollama:0.6.2@${OLLAMA_DIGEST}"
+ENVF_OLLAMA_PIN="$TMP/customer.ollama-pin.env"
+printf 'LUCAIRN_IMAGE_TAG=0.5.0\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nOLLAMA_IMAGE=%s\n' "$OLLAMA_PIN" > "$ENVF_OLLAMA_PIN"
+SHIM_OLLAMA_OK="$(mktemp -d)"
+cat > "$SHIM_OLLAMA_OK/crane" <<CR
+#!/usr/bin/env bash
+# crane digest <ref> — echo the recorded digest for any ref, AND map the
+# digest-pinned ollama override ref to the recorded ollama digest.
+ref="\$2"
+if [ "\$ref" = "$OLLAMA_PIN" ]; then echo "$OLLAMA_DIGEST"; exit 0; fi
+rec="\$(awk -v want="\$ref" '
+  /^[[:space:]]*ref:[[:space:]]*/ { r=\$0; sub(/^[[:space:]]*ref:[[:space:]]*/,"",r); gsub(/"/,"",r); cur=r; next }
+  /^[[:space:]]*digest:[[:space:]]*/ { d=\$0; sub(/^[[:space:]]*digest:[[:space:]]*/,"",d); gsub(/"/,"",d); if (cur==want) { print d; exit } }
+' "$MANIFEST")"
+if [ -n "\$rec" ]; then echo "\$rec"; else echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; fi
+CR
+chmod +x "$SHIM_OLLAMA_OK/crane"
+set +e
+out_opin_s="$(PATH="$SHIM_OLLAMA_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_PIN" 1 2>&1)"; rc_opin_s=$?
+set -e
+[ "$rc_opin_s" -eq 0 ] || { printf '%s\n' "$out_opin_s" >&2; fail "recorded-digest-pinned OLLAMA_IMAGE --strict should rc=0 (verified), got $rc_opin_s"; }
+printf '%s' "$out_opin_s" | grep -qiF "image digest: ok ($OLLAMA_PIN @ $OLLAMA_DIGEST)" \
+  || fail "recorded-digest-pinned OLLAMA_IMAGE --strict should report the pinned ollama ref ok (counts toward verified++)"
+rm -rf "$SHIM_OLLAMA_OK"
+echo "digest-pin: recorded-digest-pinned OLLAMA_IMAGE override -> --strict verifies it (counts toward floor) ok"
+
+# (iii) NO override -> canonical immutable recorded ollama tag verified honestly.
+# The 5a clean run already exercises rc=0 with no OLLAMA_IMAGE in $ENVF; assert
+# the ollama-identity line is reported ok there so we lock the unchanged path.
+printf '%s' "$out_s" | grep -qi "image digest: ok (ollama/ollama:0.6.2 " \
+  || fail "with NO OLLAMA_IMAGE override, --strict should verify the canonical ollama/ollama:0.6.2 ref ok (unchanged honest path)"
+echo "digest-pin: no OLLAMA_IMAGE override -> canonical ollama ref verified honestly ok"
+
 rm -rf "$KROOT_OK" "$KROOT_BAD" "$SHIM_OK"
 echo "lucairn digest-pin tests: ok"
