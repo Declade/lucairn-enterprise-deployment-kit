@@ -3422,14 +3422,20 @@ doctor() {
   fi
 
   if have kubectl; then
-    if kubectl get networkpolicy -n "$kube_namespace" >/dev/null 2>&1; then
-      # Presence only: this confirms NetworkPolicy OBJECTS exist in the
-      # namespace, NOT that the CNI enforces them. A non-enforcing CNI (e.g.
-      # stock kindnet) returns these objects yet leaves the air-gap inert.
-      # Run 'lucairn net-preflight' to actively verify CNI enforcement.
-      echo "network policies: present in $kube_namespace (presence only — run 'lucairn net-preflight' to verify CNI enforcement)"
+    # `kubectl get networkpolicy -n <ns>` exits 0 even when the namespace
+    # exists with ZERO NetworkPolicy objects (it prints "No resources found"
+    # to stderr, rc=0). So we cannot treat exit-0 as "present" — we must count
+    # the objects. Even a non-empty count is PRESENCE ONLY: it confirms the
+    # NetworkPolicy OBJECTS exist, NOT that the CNI enforces them. A
+    # non-enforcing CNI (e.g. stock kindnet) returns these objects yet leaves
+    # the air-gap inert. Run 'lucairn net-preflight' to actively verify CNI
+    # enforcement.
+    np_objs="$(kubectl get networkpolicy -n "$kube_namespace" -o name 2>/dev/null)"
+    if [ -n "$np_objs" ]; then
+      np_count="$(printf '%s\n' "$np_objs" | grep -c '^networkpolicy')"
+      echo "network policies: present in $kube_namespace ($np_count) — presence only; run 'lucairn net-preflight' to verify CNI enforcement"
     else
-      echo "network policies: not found or cluster unavailable ($kube_namespace)"
+      echo "network policies: NONE found in $kube_namespace (or cluster unavailable) — the Veil air-gap is unenforced; see docs/CUSTOMER_HELM_RUNBOOK.md#prereqs-1-time"
     fi
 
     # SEC-08 (hardening 2026-05-28): k8s-native Secrets are base64-ENCODED,
