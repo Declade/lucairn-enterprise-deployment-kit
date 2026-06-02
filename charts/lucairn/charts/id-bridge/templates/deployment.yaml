@@ -50,11 +50,11 @@ spec:
                 configMapKeyRef:
                   name: {{ .Chart.Name }}-config
                   key: AUDIT_SERVICE_ADDR
-            - name: VEIL_SIGNING_KEY
+            - name: LCR_SIGNING_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Chart.Name }}-credentials
-                  key: VEIL_SIGNING_KEY
+                  key: LCR_SIGNING_KEY
             - name: DSA_BRIDGE_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:

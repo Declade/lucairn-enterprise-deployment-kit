@@ -265,9 +265,9 @@ services:
       <<: *dsa-prod-auth
       AUDIT_DATABASE_URL: "postgres://audit_app:${AUDIT_APP_PASSWORD:?AUDIT_APP_PASSWORD must be set (no weak default; see customer.env)}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
-      VEIL_ENABLED: "${VEIL_ENABLED:-true}"
-      VEIL_SIGNING_KEY: "${VEIL_AUDIT_SIGNING_KEY}"
-      VEIL_WITNESS_ADDR: "veil-witness:50057"
+      LCR_ENABLED: "${LCR_ENABLED:-true}"
+      LCR_SIGNING_KEY: "${VEIL_AUDIT_SIGNING_KEY}"
+      LCR_WITNESS_ADDR: "veil-witness:50057"
     networks:
       - dsa-audit
       - dsa-audit-identity
@@ -294,9 +294,9 @@ services:
       BRIDGE_EPHEMERAL: "${SANDBOX_A_EPHEMERAL:-true}"
       DSA_BRIDGE_ENCRYPTION_KEY: "${DSA_BRIDGE_ENCRYPTION_KEY:?DSA_BRIDGE_ENCRYPTION_KEY is required}"
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
-      VEIL_ENABLED: "${VEIL_ENABLED:-true}"
-      VEIL_SIGNING_KEY: "${VEIL_BRIDGE_SIGNING_KEY}"
-      VEIL_WITNESS_ADDR: "veil-witness:50057"
+      LCR_ENABLED: "${LCR_ENABLED:-true}"
+      LCR_SIGNING_KEY: "${VEIL_BRIDGE_SIGNING_KEY}"
+      LCR_WITNESS_ADDR: "veil-witness:50057"
     networks:
       - dsa-bridge
       - dsa-witness-bridge
@@ -363,10 +363,10 @@ services:
       # DSA_ENV=production: sanitizer refuses to start without it
       # (services/sanitizer/canary.py:317).
       CANARY_HMAC_KEY: "${CANARY_HMAC_KEY:?CANARY_HMAC_KEY required for sanitizer canary issuance}"
-      VEIL_ENABLED: "${VEIL_ENABLED:-true}"
-      VEIL_SIGNING_KEY: "${VEIL_SANITIZER_SIGNING_KEY}"
+      LCR_ENABLED: "${LCR_ENABLED:-true}"
+      LCR_SIGNING_KEY: "${VEIL_SANITIZER_SIGNING_KEY}"
       # All emitters use the witness's plain gRPC port (50057).
-      VEIL_WITNESS_ADDR: "veil-witness:50057"
+      LCR_WITNESS_ADDR: "veil-witness:50057"
       QI_ENGINE_ENABLED: "${QI_ENGINE_ENABLED:-true}"
       # FIX-B (full-stack-test-results-2026-05-29): wire the L3 fail-mode knob
       # into the sanitizer container. Default "true" = fail-CLOSED (503
@@ -406,18 +406,18 @@ services:
       migrate-veil:
         condition: service_completed_successfully
     environment:
-      VEIL_DB_URL: "postgres://veil_app:${VEIL_APP_PASSWORD:?VEIL_APP_PASSWORD must be set (no weak default; see customer.env)}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}"
+      LCR_DB_URL: "postgres://veil_app:${VEIL_APP_PASSWORD:?VEIL_APP_PASSWORD must be set (no weak default; see customer.env)}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}"
       VEIL_WITNESS_SIGNING_KEY: "${VEIL_WITNESS_SIGNING_KEY}"
       VEIL_WITNESS_KEY_ID: "${VEIL_WITNESS_KEY_ID:-witness_v1}"
-      VEIL_CLAIM_TIMEOUT: "30s"
+      LCR_CLAIM_TIMEOUT: "30s"
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
-      VEIL_TSA_URL: "${VEIL_TSA_URL:-}"
-      VEIL_REKOR_URL: "${VEIL_REKOR_URL:-}"
-      VEIL_BRIDGE_PUBLIC_KEY: "${VEIL_BRIDGE_PUBLIC_KEY}"
-      VEIL_SANITIZER_PUBLIC_KEY: "${VEIL_SANITIZER_PUBLIC_KEY}"
-      VEIL_AUDIT_PUBLIC_KEY: "${VEIL_AUDIT_PUBLIC_KEY}"
+      LCR_TSA_URL: "${LCR_TSA_URL:-}"
+      LCR_REKOR_URL: "${LCR_REKOR_URL:-}"
+      LCR_BRIDGE_PUBLIC_KEY: "${LCR_BRIDGE_PUBLIC_KEY}"
+      LCR_SANITIZER_PUBLIC_KEY: "${LCR_SANITIZER_PUBLIC_KEY}"
+      LCR_AUDIT_PUBLIC_KEY: "${LCR_AUDIT_PUBLIC_KEY}"
       # Sandbox B public key still needed — Witness verifies claims from the remote Sandbox B
-      VEIL_SANDBOX_B_PUBLIC_KEY: "${VEIL_SANDBOX_B_PUBLIC_KEY}"
+      LCR_SANDBOX_B_PUBLIC_KEY: "${LCR_SANDBOX_B_PUBLIC_KEY}"
       # TOB-S009: opt-in mTLS for the cert RPCs (:50058). See base
       # docker-compose.yml veil-witness service for the full operator
       # runbook + the graceful-degradation rationale.
@@ -454,14 +454,14 @@ services:
       id-bridge:
         condition: service_healthy
     environment:
-      VEIL_ISSUER: "${VEIL_ISSUER:-Lucairn Veil Witness}"
-      VEIL_MANIFEST_SIGNING_KEY_ID: "${VEIL_MANIFEST_SIGNING_KEY_ID:-gateway_manifest_v1}"
+      LCR_ISSUER: "${LCR_ISSUER:-Lucairn Veil Witness}"
+      LCR_MANIFEST_SIGNING_KEY_ID: "${LCR_MANIFEST_SIGNING_KEY_ID:-gateway_manifest_v1}"
       # Public counterparts of the gateway/witness manifest-signing private
       # keys; published in /.well-known/veil-keys.json keys[] so the W2B
       # Runtime Invariant Harness #3 can verify signatures.*.key_id
       # linkage. Default-empty so dev environments without manifest pubkey
       # wiring keep the prior 5-key keys[] shape (no boot regression).
-      VEIL_GATEWAY_MANIFEST_PUBLIC_KEY: "${VEIL_GATEWAY_MANIFEST_PUBLIC_KEY:-}"
+      LCR_GATEWAY_MANIFEST_PUBLIC_KEY: "${LCR_GATEWAY_MANIFEST_PUBLIC_KEY:-}"
       VEIL_WITNESS_MANIFEST_PUBLIC_KEY: "${VEIL_WITNESS_MANIFEST_PUBLIC_KEY:-}"
       VEIL_WITNESS_SIGNED_MANIFEST_PATH: "${VEIL_WITNESS_SIGNED_MANIFEST_PATH:-/certs/witness-signed-manifest.json}"
       # Per-service Ed25519 public keys — gateway needs these to publish the
@@ -470,11 +470,11 @@ services:
       # the well-known endpoint return keys[]: [] even when the witness had
       # the keys — caught by Sim 3 dead-reference sweep 2026-05-15.
       VEIL_WITNESS_PUBLIC_KEY: "${VEIL_WITNESS_PUBLIC_KEY}"
-      VEIL_BRIDGE_PUBLIC_KEY: "${VEIL_BRIDGE_PUBLIC_KEY}"
-      VEIL_SANITIZER_PUBLIC_KEY: "${VEIL_SANITIZER_PUBLIC_KEY}"
-      VEIL_AUDIT_PUBLIC_KEY: "${VEIL_AUDIT_PUBLIC_KEY}"
-      VEIL_GATEWAY_PUBLIC_KEY: "${VEIL_GATEWAY_PUBLIC_KEY}"
-      VEIL_SANDBOX_B_PUBLIC_KEY: "${VEIL_SANDBOX_B_PUBLIC_KEY}"
+      LCR_BRIDGE_PUBLIC_KEY: "${LCR_BRIDGE_PUBLIC_KEY}"
+      LCR_SANITIZER_PUBLIC_KEY: "${LCR_SANITIZER_PUBLIC_KEY}"
+      LCR_AUDIT_PUBLIC_KEY: "${LCR_AUDIT_PUBLIC_KEY}"
+      LCR_GATEWAY_PUBLIC_KEY: "${LCR_GATEWAY_PUBLIC_KEY}"
+      LCR_SANDBOX_B_PUBLIC_KEY: "${LCR_SANDBOX_B_PUBLIC_KEY}"
       # Canary HMAC key — gateway's outbound canary-detector matches inbound
       # canary tokens against the same key the sanitizer issues them with.
       CANARY_HMAC_KEY: "${CANARY_HMAC_KEY:?CANARY_HMAC_KEY required for canary detection}"
@@ -526,11 +526,11 @@ services:
       # this on first run alongside the rest of the secrets; re-runs are
       # idempotent so the encrypted keystore stays decryptable across reruns.
       GATEWAY_KEYSTORE_KEY: "${GATEWAY_KEYSTORE_KEY:?required — run bin/lucairn-init --dev (or --production) or set in customer.env}"
-      VEIL_ENABLED: "${VEIL_ENABLED:-true}"
-      VEIL_WITNESS_CERT_ADDR: "veil-witness:50058"
-      VEIL_WITNESS_ADDR: "veil-witness:50057"
-      VEIL_GATEWAY_SIGNING_KEY: "${VEIL_GATEWAY_SIGNING_KEY:?required}"
-      VEIL_MANIFEST_SIGNING_KEY: "${VEIL_MANIFEST_SIGNING_KEY:-}"
+      LCR_ENABLED: "${LCR_ENABLED:-true}"
+      LCR_WITNESS_CERT_ADDR: "veil-witness:50058"
+      LCR_WITNESS_ADDR: "veil-witness:50057"
+      LCR_GATEWAY_SIGNING_KEY: "${LCR_GATEWAY_SIGNING_KEY:?required}"
+      LCR_MANIFEST_SIGNING_KEY: "${LCR_MANIFEST_SIGNING_KEY:-}"
       GATEWAY_BASE_URL: ${GATEWAY_BASE_URL:-http://localhost:8080}
       SUPABASE_URL: "${SUPABASE_URL:-}"
       LUCAIRN_RESOURCE_BASE_URL: "${LUCAIRN_RESOURCE_BASE_URL:-}"

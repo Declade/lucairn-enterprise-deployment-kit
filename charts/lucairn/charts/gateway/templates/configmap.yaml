@@ -32,19 +32,19 @@ data:
   GATEWAY_KEYSTORE_PATH: {{ .Values.keystorePath | quote }}
   {{- end }}
   GRPC_TLS_ENABLED: {{ .Values.grpcTlsEnabled | quote }}
-  VEIL_ENABLED: {{ .Values.veilEnabled | quote }}
+  LCR_ENABLED: {{ .Values.veilEnabled | quote }}
   # Deployment-license grace window (days after valid_until during which all
   # functionality keeps working with loud warnings before Enterprise features
   # degrade). Non-secret config; the signed token + public key live in the
   # gateway-credentials Secret (LUCAIRN_LICENSE_KEY / _PUBLIC_KEY).
   LUCAIRN_LICENSE_GRACE_DAYS: {{ .Values.licenseGraceDays | default 14 | quote }}
-  VEIL_WITNESS_CERT_ADDR: {{ .Values.veilWitnessCertAddr | quote }}
+  LCR_WITNESS_CERT_ADDR: {{ .Values.veilWitnessCertAddr | quote }}
   # Witness gRPC for gateway-emitted GATEWAY_REQUEST_COMPLETED claims
-  # (port 50057, distinct from VEIL_WITNESS_CERT_ADDR's 50058 cert endpoint).
+  # (port 50057, distinct from LCR_WITNESS_CERT_ADDR's 50058 cert endpoint).
   # FQDN — same K8s cross-namespace rationale as BRIDGE_HEALTH_ADDR above.
   # Required when dsaEnv=production + veilEnabled=true (gateway log.Fatals
   # otherwise per CC-017 P2 production gate, gateway/main.go:434).
-  VEIL_WITNESS_ADDR: {{ .Values.veilWitnessAddr | quote }}
+  LCR_WITNESS_ADDR: {{ .Values.veilWitnessAddr | quote }}
   # Veil cert-chain manifest wiring (Vast cascade H, 2026-05-26). Mirrors
   # the env vars Compose passes to the gateway at docker-compose.customer.yml
   # lines 423-432. Without these, the gateway's veil-cert handler boots with
@@ -52,8 +52,8 @@ data:
   # Aligning Helm with Compose fixes the cert-chain regression where bridge
   # + audit claims arrive at the witness but the cert verifier reports them
   # as `missing_services` and downgrades the cert verdict to PARTIAL.
-  VEIL_ISSUER: {{ .Values.veilIssuer | quote }}
-  VEIL_MANIFEST_SIGNING_KEY_ID: {{ .Values.veilManifestSigningKeyId | quote }}
+  LCR_ISSUER: {{ .Values.veilIssuer | quote }}
+  LCR_MANIFEST_SIGNING_KEY_ID: {{ .Values.veilManifestSigningKeyId | quote }}
   VEIL_WITNESS_SIGNED_MANIFEST_PATH: {{ .Values.veilWitnessSignedManifestPath | quote }}
   GATEWAY_REQUIRE_READINESS: {{ ternary "true" "false" .Values.readiness.required | quote }}
   GATEWAY_READINESS_USE_CASE: {{ .Values.readiness.useCase | quote }}

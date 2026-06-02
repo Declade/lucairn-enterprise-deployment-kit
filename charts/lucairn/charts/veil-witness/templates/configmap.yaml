@@ -7,14 +7,14 @@ metadata:
     app.kubernetes.io/name: {{ .Chart.Name }}
     app.kubernetes.io/part-of: dsa
 data:
-  VEIL_CLAIM_TIMEOUT: {{ .Values.config.claimTimeout | quote }}
-  VEIL_TSA_URL: {{ .Values.config.tsaUrl | quote }}
-  VEIL_REKOR_URL: {{ .Values.config.rekorUrl | quote }}
-  VEIL_BRIDGE_PUBLIC_KEY: {{ .Values.config.bridgePublicKey | quote }}
-  VEIL_SANITIZER_PUBLIC_KEY: {{ .Values.config.sanitizerPublicKey | quote }}
-  VEIL_SANDBOX_B_PUBLIC_KEY: {{ .Values.config.sandboxBPublicKey | quote }}
-  VEIL_AUDIT_PUBLIC_KEY: {{ .Values.config.auditPublicKey | quote }}
-  VEIL_PROOF_SPEC_PATH: {{ .Values.config.proofSpecPath | quote }}
-  VEIL_PROOF_OUTPUT_PATH: {{ .Values.config.proofOutputPath | quote }}
-  VEIL_PROOF_MODEL_VERSION: {{ .Values.config.proofModelVersion | quote }}
+  LCR_CLAIM_TIMEOUT: {{ .Values.config.claimTimeout | quote }}
+  LCR_TSA_URL: {{ .Values.config.tsaUrl | quote }}
+  LCR_REKOR_URL: {{ .Values.config.rekorUrl | quote }}
+  LCR_BRIDGE_PUBLIC_KEY: {{ .Values.config.bridgePublicKey | quote }}
+  LCR_SANITIZER_PUBLIC_KEY: {{ .Values.config.sanitizerPublicKey | quote }}
+  LCR_SANDBOX_B_PUBLIC_KEY: {{ .Values.config.sandboxBPublicKey | quote }}
+  LCR_AUDIT_PUBLIC_KEY: {{ .Values.config.auditPublicKey | quote }}
+  LCR_PROOF_SPEC_PATH: {{ .Values.config.proofSpecPath | quote }}
+  LCR_PROOF_OUTPUT_PATH: {{ .Values.config.proofOutputPath | quote }}
+  LCR_PROOF_MODEL_VERSION: {{ .Values.config.proofModelVersion | quote }}
   INSECURE_DEV_MODE: {{ .Values.config.insecureDevMode | quote }}

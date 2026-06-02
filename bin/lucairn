@@ -232,14 +232,14 @@ require_env_values() {
     VEIL_BRIDGE_SIGNING_KEY
     VEIL_SANITIZER_SIGNING_KEY
     VEIL_WITNESS_SIGNING_KEY
-    VEIL_GATEWAY_SIGNING_KEY
-    VEIL_MANIFEST_SIGNING_KEY
+    LCR_GATEWAY_SIGNING_KEY
+    LCR_MANIFEST_SIGNING_KEY
     VEIL_WITNESS_PUBLIC_KEY
-    VEIL_BRIDGE_PUBLIC_KEY
-    VEIL_SANITIZER_PUBLIC_KEY
-    VEIL_AUDIT_PUBLIC_KEY
-    VEIL_GATEWAY_PUBLIC_KEY
-    VEIL_SANDBOX_B_PUBLIC_KEY
+    LCR_BRIDGE_PUBLIC_KEY
+    LCR_SANITIZER_PUBLIC_KEY
+    LCR_AUDIT_PUBLIC_KEY
+    LCR_GATEWAY_PUBLIC_KEY
+    LCR_SANDBOX_B_PUBLIC_KEY
     CANARY_HMAC_KEY
   )
 
@@ -1335,32 +1335,32 @@ check_insecure_dev_mode_off_in_prod() {
 
 check_veil_rekor_url_in_prod() {
   # NEW-2: veil-witness loud-fails when DSA_ENV=production without
-  # VEIL_REKOR_URL set (unless VEIL_DEV_MODE=true overrides).
+  # LCR_REKOR_URL set (unless LCR_DEV_MODE=true overrides).
   local env_file="$1"
   [ "$(env_value "$env_file" DSA_ENV)" = "production" ] || return 0
-  [ "$(env_value "$env_file" VEIL_DEV_MODE)" = "true" ] && return 0
-  [ -z "$(env_value "$env_file" VEIL_REKOR_URL)" ] \
-    && { echo "veil rekor: VEIL_REKOR_URL required in production (set VEIL_DEV_MODE=true to bypass for non-production)"; return 1; }
+  [ "$(env_value "$env_file" LCR_DEV_MODE)" = "true" ] && return 0
+  [ -z "$(env_value "$env_file" LCR_REKOR_URL)" ] \
+    && { echo "veil rekor: LCR_REKOR_URL required in production (set LCR_DEV_MODE=true to bypass for non-production)"; return 1; }
   return 0
 }
 
 check_veil_tsa_url_in_prod() {
   # NEW-5: parallel to NEW-2. PR #105 in dual-sandbox added HTTPS startup
-  # enforcement on VEIL_TSA_URL — witness exits at boot if empty/non-https
+  # enforcement on LCR_TSA_URL — witness exits at boot if empty/non-https
   # in production. customer.env.example default is empty, so an operator
   # following the example into production hits an immediate crashloop with
   # no doctor pre-flight.
   local env_file="$1"
   [ "$(env_value "$env_file" DSA_ENV)" = "production" ] || return 0
-  [ "$(env_value "$env_file" VEIL_DEV_MODE)" = "true" ] && return 0
+  [ "$(env_value "$env_file" LCR_DEV_MODE)" = "true" ] && return 0
   local url
-  url="$(env_value "$env_file" VEIL_TSA_URL)"
+  url="$(env_value "$env_file" LCR_TSA_URL)"
   if [ -z "$url" ]; then
-    echo "veil TSA: VEIL_TSA_URL required in production (FreeTSA sub-processor: https://freetsa.org/tsr — set VEIL_DEV_MODE=true to bypass for non-production)"; return 1
+    echo "veil TSA: LCR_TSA_URL required in production (FreeTSA sub-processor: https://freetsa.org/tsr — set LCR_DEV_MODE=true to bypass for non-production)"; return 1
   fi
   case "$url" in
     https://*) ;;
-    *) echo "veil TSA: VEIL_TSA_URL must use https:// in production (got: $url)"; return 1 ;;
+    *) echo "veil TSA: LCR_TSA_URL must use https:// in production (got: $url)"; return 1 ;;
   esac
   return 0
 }
@@ -3153,9 +3153,9 @@ doctor() {
     BRIDGE_MASTER_KEY DSA_ADMIN_KEY GATEWAY_KEYSTORE_KEY
     GATEWAY_BASE_URL
     VEIL_AUDIT_SIGNING_KEY VEIL_BRIDGE_SIGNING_KEY VEIL_SANITIZER_SIGNING_KEY
-    VEIL_WITNESS_SIGNING_KEY VEIL_GATEWAY_SIGNING_KEY VEIL_MANIFEST_SIGNING_KEY
-    VEIL_WITNESS_PUBLIC_KEY VEIL_BRIDGE_PUBLIC_KEY VEIL_SANITIZER_PUBLIC_KEY
-    VEIL_AUDIT_PUBLIC_KEY VEIL_GATEWAY_PUBLIC_KEY
+    VEIL_WITNESS_SIGNING_KEY LCR_GATEWAY_SIGNING_KEY LCR_MANIFEST_SIGNING_KEY
+    VEIL_WITNESS_PUBLIC_KEY LCR_BRIDGE_PUBLIC_KEY LCR_SANITIZER_PUBLIC_KEY
+    LCR_AUDIT_PUBLIC_KEY LCR_GATEWAY_PUBLIC_KEY
     POSTGRES_AUDIT_PASSWORD POSTGRES_BRIDGE_PASSWORD
     POSTGRES_SANDBOX_A_PASSWORD POSTGRES_VEIL_PASSWORD
     AUDIT_APP_PASSWORD VEIL_APP_PASSWORD
@@ -3173,16 +3173,16 @@ doctor() {
   #
   # - Split deployment (SANDBOX_B_REMOTE_ENDPOINT set):
   #   * SANDBOX_B_API_KEY:           Lucairn-provided
-  #   * VEIL_SANDBOX_B_PUBLIC_KEY:   Lucairn-provided (matches Lucairn-hosted SB signing key)
-  #   * VEIL_SANDBOX_B_SIGNING_KEY:  not used on customer side (lives on Lucairn SB fleet)
+  #   * LCR_SANDBOX_B_PUBLIC_KEY:   Lucairn-provided (matches Lucairn-hosted SB signing key)
+  #   * LCR_SANDBOX_B_SIGNING_KEY:  not used on customer side (lives on Lucairn SB fleet)
   #
   # - Self-hosted (SANDBOX_B_REMOTE_ENDPOINT empty):
   #   * SANDBOX_B_API_KEY:           not used; sandbox-b reads LOCAL_SANDBOX_B_API_KEY
   #                                  from the self-hosted overlay (which has its own
   #                                  default), so the example placeholder is harmless.
-  #   * VEIL_SANDBOX_B_PUBLIC_KEY:   operator-generated (witness reads this; MUST be
+  #   * LCR_SANDBOX_B_PUBLIC_KEY:   operator-generated (witness reads this; MUST be
   #                                  the derived public key for the SIGNING key below)
-  #   * VEIL_SANDBOX_B_SIGNING_KEY:  operator-generated (sandbox-b uses this to sign
+  #   * LCR_SANDBOX_B_SIGNING_KEY:  operator-generated (sandbox-b uses this to sign
   #                                  CLAIM_TYPE_INFERENCE_GENERATED; required at boot
   #                                  via :? enforcement in docker-compose.self-hosted.yml)
   #
@@ -3194,8 +3194,8 @@ doctor() {
     placeholder_keys+=(SANDBOX_B_API_KEY)
   fi
   placeholder_keys+=(
-    VEIL_SANDBOX_B_PUBLIC_KEY
-    VEIL_SANDBOX_B_SIGNING_KEY
+    LCR_SANDBOX_B_PUBLIC_KEY
+    LCR_SANDBOX_B_SIGNING_KEY
   )
   for key in "${placeholder_keys[@]}"; do
     validate_no_placeholder "$env_file" "$key" || placeholder_failed=1
@@ -3212,18 +3212,18 @@ doctor() {
     DSA_SERVICE_TOKEN DSA_BRIDGE_ENCRYPTION_KEY SANDBOX_A_ENCRYPTION_KEY
     BRIDGE_MASTER_KEY DSA_ADMIN_KEY VEIL_AUDIT_SIGNING_KEY
     VEIL_BRIDGE_SIGNING_KEY VEIL_SANITIZER_SIGNING_KEY VEIL_WITNESS_SIGNING_KEY
-    VEIL_GATEWAY_SIGNING_KEY VEIL_MANIFEST_SIGNING_KEY VEIL_WITNESS_PUBLIC_KEY
-    VEIL_BRIDGE_PUBLIC_KEY VEIL_SANITIZER_PUBLIC_KEY VEIL_AUDIT_PUBLIC_KEY
+    LCR_GATEWAY_SIGNING_KEY LCR_MANIFEST_SIGNING_KEY VEIL_WITNESS_PUBLIC_KEY
+    LCR_BRIDGE_PUBLIC_KEY LCR_SANITIZER_PUBLIC_KEY LCR_AUDIT_PUBLIC_KEY
   )
-  # VEIL_SANDBOX_B_PUBLIC_KEY: hex64 in BOTH modes. Split deployment gets
+  # LCR_SANDBOX_B_PUBLIC_KEY: hex64 in BOTH modes. Split deployment gets
   # the value from Lucairn; self-hosted gets it from the operator's
-  # `scripts/derive-veil-pubkey.sh "$VEIL_SANDBOX_B_SIGNING_KEY"` output
+  # `scripts/derive-veil-pubkey.sh "$LCR_SANDBOX_B_SIGNING_KEY"` output
   # (per the corrected step 4a table in INSTALL.md).
-  # VEIL_SANDBOX_B_SIGNING_KEY: sandbox-b parses it as hex at boot — a
+  # LCR_SANDBOX_B_SIGNING_KEY: sandbox-b parses it as hex at boot — a
   # non-hex 64-char value (e.g. base64 from `openssl rand -base64 48`)
   # crashloops sandbox-b with `encoding/hex decode failed`. Wave-5: add it
   # to the hex64 set so doctor catches it pre-flight.
-  hex64_keys+=(VEIL_SANDBOX_B_PUBLIC_KEY VEIL_SANDBOX_B_SIGNING_KEY)
+  hex64_keys+=(LCR_SANDBOX_B_PUBLIC_KEY LCR_SANDBOX_B_SIGNING_KEY)
   for key in "${hex64_keys[@]}"; do
     validate_hex64 "$env_file" "$key" || format_failed=1
   done
@@ -3297,12 +3297,12 @@ doctor() {
   check_insecure_dev_mode_off_in_prod "$env_file" || insecure_failed=1
   [ "$insecure_failed" -eq 0 ] || return 1
 
-  # Sim 3 round-2 NEW-2: VEIL_REKOR_URL required in prod (unless dev-mode).
+  # Sim 3 round-2 NEW-2: LCR_REKOR_URL required in prod (unless dev-mode).
   local rekor_failed=0
   check_veil_rekor_url_in_prod "$env_file" || rekor_failed=1
   [ "$rekor_failed" -eq 0 ] || return 1
 
-  # Wave-5 NEW-5: VEIL_TSA_URL required in prod (parallel to NEW-2; PR #105
+  # Wave-5 NEW-5: LCR_TSA_URL required in prod (parallel to NEW-2; PR #105
   # dual-sandbox enforcement). Crashloop gap — witness fail-fasts at boot.
   local tsa_failed=0
   check_veil_tsa_url_in_prod "$env_file" || tsa_failed=1

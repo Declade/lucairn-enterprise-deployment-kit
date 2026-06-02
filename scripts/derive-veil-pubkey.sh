@@ -20,7 +20,7 @@
 #   $ printf '%s' "$SEED" | scripts/derive-veil-pubkey.sh
 #
 # Example (legacy argv):
-#   $ echo "VEIL_AUDIT_PUBLIC_KEY=$(scripts/derive-veil-pubkey.sh "$SEED")"
+#   $ echo "LCR_AUDIT_PUBLIC_KEY=$(scripts/derive-veil-pubkey.sh "$SEED")"
 #
 # Why this exists:
 #   The `VEIL_*_SIGNING_KEY` env vars are Ed25519 private-key seeds rendered

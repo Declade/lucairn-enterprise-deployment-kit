@@ -86,7 +86,7 @@ services:
 
   veil-witness:
     environment:
-      VEIL_SANDBOX_B_PUBLIC_KEY: "${VEIL_SANDBOX_B_PUBLIC_KEY}"
+      LCR_SANDBOX_B_PUBLIC_KEY: "${LCR_SANDBOX_B_PUBLIC_KEY}"
     networks:
       - dsa-witness-ai
 
@@ -153,9 +153,9 @@ services:
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
       DSA_ADMIN_KEY: "${DSA_ADMIN_KEY:?DSA_ADMIN_KEY is required}"
       SANDBOX_B_API_KEYS: "${LOCAL_SANDBOX_B_API_KEY:-local-sandbox-b-key}"
-      VEIL_ENABLED: "${VEIL_ENABLED:-true}"
-      VEIL_SIGNING_KEY: "${VEIL_SANDBOX_B_SIGNING_KEY:?VEIL_SANDBOX_B_SIGNING_KEY is required for self-hosted Sandbox B}"
-      VEIL_WITNESS_ADDR: "veil-witness:50057"
+      LCR_ENABLED: "${LCR_ENABLED:-true}"
+      LCR_SIGNING_KEY: "${LCR_SANDBOX_B_SIGNING_KEY:?LCR_SANDBOX_B_SIGNING_KEY is required for self-hosted Sandbox B}"
+      LCR_WITNESS_ADDR: "veil-witness:50057"
       OLLAMA_URL: "${OLLAMA_URL:-http://ollama:11434}"
       OPENAI_API_KEY: "${MODEL_RUNTIME_API_KEY:-local-model-runtime}"
       OPENAI_BASE_URL: "${MODEL_RUNTIME_URL:-http://model-runtime:8000/v1}"
