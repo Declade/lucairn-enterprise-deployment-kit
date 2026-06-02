@@ -120,14 +120,25 @@ grep -q "doctor: ok" "$TMPDIR/happy.out"
 echo "SEC hardening happy-path: ok"
 
 # --- Stage 3 legacy fallback: pre-Stage-3 customer.env with VEIL_ prefix ---
-# Builds the same fixture but renames the 5 dual-name keys to their legacy
-# VEIL_ form. Doctor must still PASS via env_value_with_legacy.
+# Builds the same fixture but renames ALL 12 dual-name keys to their legacy
+# VEIL_ form (6 signing + 6 public). Doctor must still PASS via
+# env_value_with_legacy. This exercises the full Stage-3 deprecation surface
+# (was 5 keys pre-fix-up-#3; bug-hunter proved the missing 7 broke the
+# customer migration path — bin/lucairn:243-260 + docker-compose.customer.yml
+# lines 425-489/544).
 LEGACY_ENV="$TMPDIR/legacy-veil.env"
 sed -E -e 's/^LCR_AUDIT_SIGNING_KEY=/VEIL_AUDIT_SIGNING_KEY=/' \
        -e 's/^LCR_BRIDGE_SIGNING_KEY=/VEIL_BRIDGE_SIGNING_KEY=/' \
        -e 's/^LCR_SANITIZER_SIGNING_KEY=/VEIL_SANITIZER_SIGNING_KEY=/' \
        -e 's/^LCR_WITNESS_SIGNING_KEY=/VEIL_WITNESS_SIGNING_KEY=/' \
+       -e 's/^LCR_GATEWAY_SIGNING_KEY=/VEIL_GATEWAY_SIGNING_KEY=/' \
+       -e 's/^LCR_MANIFEST_SIGNING_KEY=/VEIL_MANIFEST_SIGNING_KEY=/' \
        -e 's/^LCR_WITNESS_PUBLIC_KEY=/VEIL_WITNESS_PUBLIC_KEY=/' \
+       -e 's/^LCR_BRIDGE_PUBLIC_KEY=/VEIL_BRIDGE_PUBLIC_KEY=/' \
+       -e 's/^LCR_SANITIZER_PUBLIC_KEY=/VEIL_SANITIZER_PUBLIC_KEY=/' \
+       -e 's/^LCR_AUDIT_PUBLIC_KEY=/VEIL_AUDIT_PUBLIC_KEY=/' \
+       -e 's/^LCR_GATEWAY_PUBLIC_KEY=/VEIL_GATEWAY_PUBLIC_KEY=/' \
+       -e 's/^LCR_SANDBOX_B_PUBLIC_KEY=/VEIL_SANDBOX_B_PUBLIC_KEY=/' \
        "$ENV_FILE" > "$LEGACY_ENV"
 if ! run_doctor "$TMPDIR/legacy.out" "$LEGACY_ENV"; then
   echo "FAIL: Stage 3 legacy-fallback doctor should PASS for pre-Stage-3 customer.env" >&2
