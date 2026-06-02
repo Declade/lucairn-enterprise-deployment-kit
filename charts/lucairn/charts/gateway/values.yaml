@@ -215,20 +215,20 @@ secrets:
     sandboxBApiKey: ""
     veilManifestSigningKey: ""
     # Gateway-emitted GATEWAY_REQUEST_COMPLETED claim signing key.
-    # Ed25519 seed, 64-char hex (paired with VEIL_GATEWAY_PUBLIC_KEY
+    # Ed25519 seed, 64-char hex (paired with LCR_GATEWAY_PUBLIC_KEY
     # which the gateway publishes at /.well-known/veil-keys.json).
     # REQUIRED when global.dsaEnv=production + veilEnabled=true — the
     # gateway binary log.Fatals otherwise (services/gateway/main.go:438).
     # Generate via `bin/lucairn-init` (paired-slot GATEWAY) or directly
     # via scripts/derive-veil-pubkey.sh after `openssl rand -hex 32`.
     veilGatewaySigningKey: ""
-    # VEIL_GATEWAY_PUBLIC_KEY — Ed25519 public key derived from
+    # LCR_GATEWAY_PUBLIC_KEY — Ed25519 public key derived from
     # veilGatewaySigningKey via scripts/derive-veil-pubkey.sh. Published
     # in /.well-known/veil-keys.json so external SDK verifiers can
     # validate gateway-emitted GATEWAY_REQUEST_COMPLETED claims.
     # (Vast cascade H, 2026-05-26.)
     veilGatewayPublicKey: ""
-    # VEIL_GATEWAY_MANIFEST_PUBLIC_KEY — public counterpart of the
+    # LCR_GATEWAY_MANIFEST_PUBLIC_KEY — public counterpart of the
     # gateway's manifest-signing private key. Same derivation source as
     # veilGatewayPublicKey (Ed25519 pub of veilGatewaySigningKey); the
     # manifest path reuses the gateway emitter keypair. Published in

@@ -10,8 +10,8 @@ data:
   GRPC_ADDR: ":{{ .Values.service.grpcPort }}"
   HEALTH_ADDR: ":{{ .Values.service.healthPort }}"
   AUDIT_SERVICE_ADDR: {{ .Values.auditServiceAddr | quote }}
-  VEIL_ENABLED: {{ .Values.veilEnabled | quote }}
-  VEIL_WITNESS_ADDR: {{ .Values.veilWitnessAddr | quote }}
+  LCR_ENABLED: {{ .Values.veilEnabled | quote }}
+  LCR_WITNESS_ADDR: {{ .Values.veilWitnessAddr | quote }}
   GRPC_TLS_ENABLED: {{ .Values.grpcTlsEnabled | quote }}
   BRIDGE_ENCRYPTION_ENABLED: {{ .Values.encryptionEnabled | quote }}
   BRIDGE_ENCRYPTION_PROVIDER: {{ .Values.encryptionProvider | quote }}

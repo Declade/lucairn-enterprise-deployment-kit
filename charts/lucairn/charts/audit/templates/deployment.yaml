@@ -43,11 +43,11 @@ spec:
                   # append-only audit_app role, NOT the migrate-only superuser
                   # DATABASE_URL.
                   key: DATABASE_URL_APP
-            - name: VEIL_SIGNING_KEY
+            - name: LCR_SIGNING_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Chart.Name }}-credentials
-                  key: VEIL_SIGNING_KEY
+                  key: LCR_SIGNING_KEY
             - name: DSA_SERVICE_TOKEN
               valueFrom:
                 secretKeyRef:

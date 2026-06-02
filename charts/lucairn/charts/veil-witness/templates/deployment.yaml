@@ -29,7 +29,7 @@ spec:
           image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.image.repository }}:{{ .Values.image.tag | default .Values.global.imageTag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
-            - name: VEIL_DB_URL
+            - name: LCR_DB_URL
               valueFrom:
                 secretKeyRef:
                   name: {{ .Chart.Name }}-credentials

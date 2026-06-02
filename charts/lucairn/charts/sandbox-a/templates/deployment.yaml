@@ -181,26 +181,26 @@ spec:
               value: "8086"
             - name: HOME
               value: /tmp/home
-            - name: VEIL_ENABLED
+            - name: LCR_ENABLED
               valueFrom:
                 configMapKeyRef:
                   name: {{ .Chart.Name }}-config
-                  key: VEIL_ENABLED
-            - name: VEIL_SIGNING_KEY
+                  key: LCR_ENABLED
+            - name: LCR_SIGNING_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Chart.Name }}-credentials
-                  key: VEIL_SIGNING_KEY
+                  key: LCR_SIGNING_KEY
             - name: CANARY_HMAC_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Chart.Name }}-credentials
                   key: CANARY_HMAC_KEY
-            - name: VEIL_WITNESS_ADDR
+            - name: LCR_WITNESS_ADDR
               valueFrom:
                 configMapKeyRef:
                   name: {{ .Chart.Name }}-config
-                  key: VEIL_WITNESS_ADDR
+                  key: LCR_WITNESS_ADDR
             - name: QI_ENGINE_ENABLED
               valueFrom:
                 configMapKeyRef:

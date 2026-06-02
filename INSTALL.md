@@ -79,6 +79,44 @@ When v2.0 unlocks 2+ replicas, the PDB auto-renders with `maxUnavailable: 1`,
 which lets `kubectl drain` evict one pod at a time while keeping the service
 available throughout.
 
+## Migration from earlier kit versions (Stage 3 env rename)
+
+Starting with the Stage 3 gateway rebrand, the canonical env-var names
+for the 29 runtime-config keys below changed from `VEIL_*` to `LCR_*`
+(for example, `VEIL_MANIFEST_SIGNING_KEY` is now `LCR_MANIFEST_SIGNING_KEY`,
+`VEIL_WITNESS_ADDR` is now `LCR_WITNESS_ADDR`, etc.). The full list of
+renamed keys is enumerated in the gateway README; the kit's
+`customer.env.example` and `customer-values.yaml.example` ship with the
+new names.
+
+**Existing installs keep working unchanged.** The gateway image (v0.5.0+)
+reads each setting under its `LCR_*` name first, then falls back to the
+legacy `VEIL_*` name if `LCR_*` is unset. Your existing
+`customer.env` / `customer-values.yaml` continues to work; no atomic
+upgrade is required.
+
+**To migrate at your own pace to the canonical `LCR_*` names** (recommended
+before the legacy fallback is removed in a future kit release):
+
+```bash
+# Docker-compose customers — rename env keys in customer.env
+sed -i 's/^VEIL_/LCR_/' customer.env
+
+# Kubernetes customers — rename env keys in customer-values.yaml,
+# then re-run helm upgrade
+sed -i 's/VEIL_/LCR_/g' customer-values.yaml
+helm upgrade lucairn charts/lucairn -f customer-values.yaml -n lucairn
+```
+
+Env-var keys NOT in the rename list (`VEIL_APP_PASSWORD`,
+`VEIL_PAIRED_SLOTS`, the four `VEIL_*_SIGNING_KEY` service-internal seeds,
+the four `VEIL_WITNESS_*` witness-internal keys, postgres passwords, etc.)
+are unchanged in this release and remain `VEIL_*`.
+
+After the `sed`, run `./bin/lucairn doctor` (Docker Compose) or
+`helm test lucairn` (Kubernetes) to confirm the rename did not break any
+required-key check.
+
 ## Pre-Requisites
 
 For Docker Compose:
@@ -214,7 +252,7 @@ customer's own host or on Lucairn-hosted infrastructure.
 |---|---|---|---|---|
 | **Self-hosted inference (local model)** | Customer's host (local container plus model runtime) | `docker-compose.customer.yml` plus `docker-compose.self-hosted.yml` | `DSA_LICENSE_KEY`, `DSA_LICENSE_SIGNING_KEY` only | None to Lucairn at request time. Model runtime fetched once at install. |
 | **Self-hosted inference (managed LLM / BYOK)** | Customer's host (local container; LLM call goes out to operator-declared FQDNs) | `docker-compose.customer.yml` plus `docker-compose.self-hosted.yml` plus `docker-compose.self-hosted-byok.yml` | Same as self-hosted local-model **plus** `LUCAIRN_LLM_EGRESS_ALLOWLIST` and provider key(s) (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) | HTTPS to operator-declared LLM FQDNs only. Sandbox A / ID Bridge / Sanitizer / Audit / Witness stay on internal-only networks. |
-| **Split deployment** | Lucairn-hosted | `docker-compose.customer.yml` only | All of the self-hosted list **plus** `SANDBOX_B_REMOTE_ENDPOINT`, `SANDBOX_B_API_KEY`, `VEIL_SANDBOX_B_PUBLIC_KEY`, optional mTLS material (`SANDBOX_B_CLIENT_CERT` etc.) | HTTPS to Lucairn-provided endpoint per request. |
+| **Split deployment** | Lucairn-hosted | `docker-compose.customer.yml` only | All of the self-hosted list **plus** `SANDBOX_B_REMOTE_ENDPOINT`, `SANDBOX_B_API_KEY`, `LCR_SANDBOX_B_PUBLIC_KEY`, optional mTLS material (`SANDBOX_B_CLIENT_CERT` etc.) | HTTPS to Lucairn-provided endpoint per request. |
 
 Pick **self-hosted inference (local model)** when:
 
@@ -335,25 +373,25 @@ Operator-generated keypairs (always required):
 
 | Signing-key slot              | Public-key slot              |
 |-------------------------------|------------------------------|
-| `VEIL_AUDIT_SIGNING_KEY`      | `VEIL_AUDIT_PUBLIC_KEY`      |
-| `VEIL_BRIDGE_SIGNING_KEY`     | `VEIL_BRIDGE_PUBLIC_KEY`     |
-| `VEIL_SANITIZER_SIGNING_KEY`  | `VEIL_SANITIZER_PUBLIC_KEY`  |
+| `VEIL_AUDIT_SIGNING_KEY`      | `LCR_AUDIT_PUBLIC_KEY`      |
+| `VEIL_BRIDGE_SIGNING_KEY`     | `LCR_BRIDGE_PUBLIC_KEY`     |
+| `VEIL_SANITIZER_SIGNING_KEY`  | `LCR_SANITIZER_PUBLIC_KEY`  |
 | `VEIL_WITNESS_SIGNING_KEY`    | `VEIL_WITNESS_PUBLIC_KEY`    |
-| `VEIL_GATEWAY_SIGNING_KEY`    | `VEIL_GATEWAY_PUBLIC_KEY`    |
+| `LCR_GATEWAY_SIGNING_KEY`    | `LCR_GATEWAY_PUBLIC_KEY`    |
 
 For self-hosted-inference modes (`docker-compose.self-hosted.yml` or
 the BYOK overlay), also generate the Sandbox B pair locally — sandbox-b
 runs on the customer host in those modes, signs `CLAIM_TYPE_INFERENCE_GENERATED`
-with `VEIL_SANDBOX_B_SIGNING_KEY` at boot, and the witness verifies
-those claims against `VEIL_SANDBOX_B_PUBLIC_KEY`:
+with `LCR_SANDBOX_B_SIGNING_KEY` at boot, and the witness verifies
+those claims against `LCR_SANDBOX_B_PUBLIC_KEY`:
 
 | Signing-key slot              | Public-key slot              | Modes        |
 |-------------------------------|------------------------------|--------------|
-| `VEIL_SANDBOX_B_SIGNING_KEY`  | `VEIL_SANDBOX_B_PUBLIC_KEY`  | self-hosted (local model or BYOK) |
+| `LCR_SANDBOX_B_SIGNING_KEY`  | `LCR_SANDBOX_B_PUBLIC_KEY`  | self-hosted (local model or BYOK) |
 
 In **split deployment** the Sandbox B signing key lives on the
 Lucairn-hosted Sandbox B fleet; Lucairn issues the matching public key
-during onboarding. Do not regenerate `VEIL_SANDBOX_B_PUBLIC_KEY` in
+during onboarding. Do not regenerate `LCR_SANDBOX_B_PUBLIC_KEY` in
 split-deployment mode — use whatever value Lucairn provides.
 
 For each pair generate the signing-key seed with `openssl rand -hex 32`,
@@ -364,13 +402,13 @@ one service in two lines of output you can paste into `customer.env`:
 ```bash
 SEED=$(openssl rand -hex 32)
 echo "VEIL_AUDIT_SIGNING_KEY=$SEED"
-echo "VEIL_AUDIT_PUBLIC_KEY=$(scripts/derive-veil-pubkey.sh "$SEED")"
+echo "LCR_AUDIT_PUBLIC_KEY=$(scripts/derive-veil-pubkey.sh "$SEED")"
 ```
 
 Repeat for `BRIDGE`, `SANITIZER`, `WITNESS`, `GATEWAY`, and (for
 self-hosted modes) `SANDBOX_B`.
 
-`VEIL_MANIFEST_SIGNING_KEY` (no matching `_PUBLIC_KEY` slot) is the
+`LCR_MANIFEST_SIGNING_KEY` (no matching `_PUBLIC_KEY` slot) is the
 manifest-only signing key and only needs the `openssl rand -hex 32`
 step.
 

@@ -106,12 +106,12 @@ SEED_BRIDGE=$(openssl rand -hex 32)
 SEED_SANITIZER=$(openssl rand -hex 32)
 SEED_SANDBOX_B=$(openssl rand -hex 32)
 SEED_AUDIT=$(openssl rand -hex 32)
-# The gateway signs its /.well-known manifest with VEIL_MANIFEST_SIGNING_KEY
+# The gateway signs its /.well-known manifest with LCR_MANIFEST_SIGNING_KEY
 # — a SEPARATE seed from SEED_GATEWAY (which is the gateway CLAIM seed). The
-# gateway publishes VEIL_GATEWAY_MANIFEST_PUBLIC_KEY verbatim from env as the
+# gateway publishes LCR_GATEWAY_MANIFEST_PUBLIC_KEY verbatim from env as the
 # verifying key for that manifest signature (DSA gateway veil.go: signs with
-# GatewayManifestSigningKeyHex=VEIL_MANIFEST_SIGNING_KEY, publishes
-# VEIL_GATEWAY_MANIFEST_PUBLIC_KEY in the well-known-keys loop). So the
+# GatewayManifestSigningKeyHex=LCR_MANIFEST_SIGNING_KEY, publishes
+# LCR_GATEWAY_MANIFEST_PUBLIC_KEY in the well-known-keys loop). So the
 # manifest pubkey MUST be derived from THIS seed, not from SEED_GATEWAY.
 # (Contrast WITNESS: the witness signs its manifest with the same SEED_WITNESS
 # it uses for claims, so WITNESS_MANIFEST_PUBLIC_KEY = PUB_WITNESS is correct.)
@@ -154,7 +154,7 @@ sed -i.bak "s|REPLACE_WITH_64_HEX_AUDIT_SIGNING_KEY|$SEED_AUDIT|" "$OUTPUT"
 # leave the `_MANIFEST_PUBLIC_KEY` suffix as a partial-substitution
 # trailing fragment (same defect class as the Vast cascade G prefix-match
 # bug closure).
-# GATEWAY_MANIFEST_PUBLIC_KEY pairs with VEIL_MANIFEST_SIGNING_KEY (=SEED_MANIFEST,
+# GATEWAY_MANIFEST_PUBLIC_KEY pairs with LCR_MANIFEST_SIGNING_KEY (=SEED_MANIFEST,
 # substituted in step 5 below), NOT with SEED_GATEWAY — see the SEED_MANIFEST
 # comment above. Using PUB_GATEWAY here (the v0 bug) published a manifest pubkey
 # that did not match the manifest signer, silently failing the gateway's Runtime
@@ -212,7 +212,7 @@ sed -i.bak "s|REPLACE_WITH_LICENSE_SIGNING_KEY||" "$OUTPUT"
 #
 # This is the seed the gateway signs its /.well-known manifest with. Its
 # derived pubkey (PUB_MANIFEST) was published above as
-# VEIL_GATEWAY_MANIFEST_PUBLIC_KEY, so the published verifying key matches
+# LCR_GATEWAY_MANIFEST_PUBLIC_KEY, so the published verifying key matches
 # the signer. We substitute SEED_MANIFEST (captured alongside the other
 # seeds) — NOT an inline `openssl rand` — so the seed and its published
 # pubkey stay paired.

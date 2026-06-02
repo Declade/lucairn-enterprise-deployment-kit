@@ -132,12 +132,12 @@ gateway:
       # (Ed25519 seed, 64-char hex). REQUIRED in production:
       # gateway/main.go:438 log.Fatals at boot if empty when
       # global.dsaEnv=production + veilEnabled=true. `bin/lucairn-init`
-      # already produces VEIL_GATEWAY_SIGNING_KEY in customer.env under
+      # already produces LCR_GATEWAY_SIGNING_KEY in customer.env under
       # the VEIL_PAIRED_SLOTS=GATEWAY entry — paste the SAME value here.
       # Paired pubkey is published at gateway's /.well-known/veil-keys.json
       # for external SDK verifier validation. (Fix-up #11.)
       veilGatewaySigningKey: "REPLACE_WITH_64_HEX_GATEWAY_SIGNING_KEY"
-      # Vast cascade H (2026-05-26): VEIL_GATEWAY_PUBLIC_KEY +
+      # Vast cascade H (2026-05-26): LCR_GATEWAY_PUBLIC_KEY +
       # GATEWAY_MANIFEST_PUBLIC_KEY + WITNESS_MANIFEST_PUBLIC_KEY.
       # All three are DERIVED Ed25519 pubkeys, not independent
       # secrets — render-values.sh fills them from the matching
@@ -279,8 +279,8 @@ veil-witness:
   postgresql:
     storageSize: 50Gi
   # The veil-witness pod consumes the 4 ed25519 public keys below as
-  # VEIL_BRIDGE_PUBLIC_KEY / VEIL_SANITIZER_PUBLIC_KEY /
-  # VEIL_SANDBOX_B_PUBLIC_KEY / VEIL_AUDIT_PUBLIC_KEY environment
+  # LCR_BRIDGE_PUBLIC_KEY / LCR_SANITIZER_PUBLIC_KEY /
+  # LCR_SANDBOX_B_PUBLIC_KEY / LCR_AUDIT_PUBLIC_KEY environment
   # variables (see charts/lucairn/charts/veil-witness/templates/configmap.yaml).
   # Missing values crash the pod on boot. These are the SAME ed25519
   # public keys as gateway.secrets.values.{veilBridgePublicKey,

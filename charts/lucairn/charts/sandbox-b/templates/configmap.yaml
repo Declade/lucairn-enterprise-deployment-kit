@@ -16,8 +16,8 @@ data:
   PYTHONDONTWRITEBYTECODE: "1"
   BRIDGE_ADDR: {{ .Values.bridgeAddr | quote }}
   AUDIT_SERVICE_ADDR: {{ .Values.auditServiceAddr | quote }}
-  VEIL_ENABLED: {{ .Values.veilEnabled | quote }}
-  VEIL_WITNESS_ADDR: {{ .Values.veilWitnessAddr | quote }}
+  LCR_ENABLED: {{ .Values.veilEnabled | quote }}
+  LCR_WITNESS_ADDR: {{ .Values.veilWitnessAddr | quote }}
   GRPC_TLS_ENABLED: {{ .Values.grpcTlsEnabled | quote }}
   DSA_ENV: {{ required "global.dsaEnv must be set to \"development\" or \"production\" in the umbrella values" .Values.global.dsaEnv | quote }}
   {{- if .Values.ollama.enabled }}
