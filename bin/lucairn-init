@@ -505,7 +505,7 @@ POSTGRES_BRIDGE_PASSWORD=$(get_val POSTGRES_BRIDGE_PASSWORD)
 POSTGRES_SANDBOX_A_PASSWORD=$(get_val POSTGRES_SANDBOX_A_PASSWORD)
 POSTGRES_VEIL_PASSWORD=$(get_val POSTGRES_VEIL_PASSWORD)
 AUDIT_APP_PASSWORD=$(get_val AUDIT_APP_PASSWORD)
-# VEIL_APP_PASSWORD is the postgres role-password for the `veil_app` SQL role
+# VEIL_APP_PASSWORD is the postgres role-password for the veil_app SQL role
 # (created by 000002_restrict_veil_role.up.sql migration). The kit treats it
 # as a postgres-namespace name — same category as POSTGRES_VEIL_PASSWORD —
 # and leaves it on the legacy VEIL_ prefix. Renaming would cascade into

@@ -422,11 +422,14 @@ services:
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
       LCR_TSA_URL: "${LCR_TSA_URL:-}"
       LCR_REKOR_URL: "${LCR_REKOR_URL:-}"
-      LCR_BRIDGE_PUBLIC_KEY: "${LCR_BRIDGE_PUBLIC_KEY}"
-      LCR_SANITIZER_PUBLIC_KEY: "${LCR_SANITIZER_PUBLIC_KEY}"
-      LCR_AUDIT_PUBLIC_KEY: "${LCR_AUDIT_PUBLIC_KEY}"
+      # Stage 3 dual-name (pubkeys): canonical LCR_X first, legacy VEIL_X
+      # fallback so pre-Stage-3 customer.env files keep working with this
+      # compose file. Mirrors the audit/bridge/sanitizer pattern above.
+      LCR_BRIDGE_PUBLIC_KEY: "${LCR_BRIDGE_PUBLIC_KEY:-${VEIL_BRIDGE_PUBLIC_KEY}}"
+      LCR_SANITIZER_PUBLIC_KEY: "${LCR_SANITIZER_PUBLIC_KEY:-${VEIL_SANITIZER_PUBLIC_KEY}}"
+      LCR_AUDIT_PUBLIC_KEY: "${LCR_AUDIT_PUBLIC_KEY:-${VEIL_AUDIT_PUBLIC_KEY}}"
       # Sandbox B public key still needed — Witness verifies claims from the remote Sandbox B
-      LCR_SANDBOX_B_PUBLIC_KEY: "${LCR_SANDBOX_B_PUBLIC_KEY}"
+      LCR_SANDBOX_B_PUBLIC_KEY: "${LCR_SANDBOX_B_PUBLIC_KEY:-${VEIL_SANDBOX_B_PUBLIC_KEY}}"
       # TOB-S009: opt-in mTLS for the cert RPCs (:50058). See base
       # docker-compose.yml veil-witness service for the full operator
       # runbook + the graceful-degradation rationale.
@@ -482,11 +485,14 @@ services:
       # the well-known endpoint return keys[]: [] even when the witness had
       # the keys — caught by Sim 3 dead-reference sweep 2026-05-15.
       LCR_WITNESS_PUBLIC_KEY: "${LCR_WITNESS_PUBLIC_KEY:-${VEIL_WITNESS_PUBLIC_KEY}}"
-      LCR_BRIDGE_PUBLIC_KEY: "${LCR_BRIDGE_PUBLIC_KEY}"
-      LCR_SANITIZER_PUBLIC_KEY: "${LCR_SANITIZER_PUBLIC_KEY}"
-      LCR_AUDIT_PUBLIC_KEY: "${LCR_AUDIT_PUBLIC_KEY}"
-      LCR_GATEWAY_PUBLIC_KEY: "${LCR_GATEWAY_PUBLIC_KEY}"
-      LCR_SANDBOX_B_PUBLIC_KEY: "${LCR_SANDBOX_B_PUBLIC_KEY}"
+      # Stage 3 dual-name (pubkeys): canonical LCR_X first, legacy VEIL_X
+      # fallback so pre-Stage-3 customer.env files keep working with this
+      # compose file. Mirrors the witness pubkey pattern at line 484.
+      LCR_BRIDGE_PUBLIC_KEY: "${LCR_BRIDGE_PUBLIC_KEY:-${VEIL_BRIDGE_PUBLIC_KEY}}"
+      LCR_SANITIZER_PUBLIC_KEY: "${LCR_SANITIZER_PUBLIC_KEY:-${VEIL_SANITIZER_PUBLIC_KEY}}"
+      LCR_AUDIT_PUBLIC_KEY: "${LCR_AUDIT_PUBLIC_KEY:-${VEIL_AUDIT_PUBLIC_KEY}}"
+      LCR_GATEWAY_PUBLIC_KEY: "${LCR_GATEWAY_PUBLIC_KEY:-${VEIL_GATEWAY_PUBLIC_KEY}}"
+      LCR_SANDBOX_B_PUBLIC_KEY: "${LCR_SANDBOX_B_PUBLIC_KEY:-${VEIL_SANDBOX_B_PUBLIC_KEY}}"
       # Canary HMAC key — gateway's outbound canary-detector matches inbound
       # canary tokens against the same key the sanitizer issues them with.
       CANARY_HMAC_KEY: "${CANARY_HMAC_KEY:?CANARY_HMAC_KEY required for canary detection}"
@@ -541,8 +547,12 @@ services:
       LCR_ENABLED: "${LCR_ENABLED:-true}"
       LCR_WITNESS_CERT_ADDR: "veil-witness:50058"
       LCR_WITNESS_ADDR: "veil-witness:50057"
-      LCR_GATEWAY_SIGNING_KEY: "${LCR_GATEWAY_SIGNING_KEY:?required}"
-      LCR_MANIFEST_SIGNING_KEY: "${LCR_MANIFEST_SIGNING_KEY:-}"
+      # Stage 3 dual-name: canonical LCR_X first, legacy VEIL_X fallback.
+      # For the gateway signing key the strict-required marker `:?` lives on
+      # the legacy slot so the variable is REQUIRED (either name must be set)
+      # but pre-Stage-3 customer.env files keep booting unchanged.
+      LCR_GATEWAY_SIGNING_KEY: "${LCR_GATEWAY_SIGNING_KEY:-${VEIL_GATEWAY_SIGNING_KEY:?required (set LCR_GATEWAY_SIGNING_KEY or legacy VEIL_GATEWAY_SIGNING_KEY)}}"
+      LCR_MANIFEST_SIGNING_KEY: "${LCR_MANIFEST_SIGNING_KEY:-${VEIL_MANIFEST_SIGNING_KEY:-}}"
       GATEWAY_BASE_URL: ${GATEWAY_BASE_URL:-http://localhost:8080}
       SUPABASE_URL: "${SUPABASE_URL:-}"
       LUCAIRN_RESOURCE_BASE_URL: "${LUCAIRN_RESOURCE_BASE_URL:-}"
