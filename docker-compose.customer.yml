@@ -266,7 +266,10 @@ services:
       AUDIT_DATABASE_URL: "postgres://audit_app:${AUDIT_APP_PASSWORD:?AUDIT_APP_PASSWORD must be set (no weak default; see customer.env)}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
       LCR_ENABLED: "${LCR_ENABLED:-true}"
-      LCR_SIGNING_KEY: "${VEIL_AUDIT_SIGNING_KEY}"
+      # Stage 3 dual-name: canonical LCR_AUDIT_SIGNING_KEY first, legacy
+      # VEIL_AUDIT_SIGNING_KEY fallback so pre-Stage-3 customer.env files
+      # keep working with this compose file.
+      LCR_SIGNING_KEY: "${LCR_AUDIT_SIGNING_KEY:-${VEIL_AUDIT_SIGNING_KEY}}"
       LCR_WITNESS_ADDR: "veil-witness:50057"
     networks:
       - dsa-audit
@@ -295,7 +298,9 @@ services:
       DSA_BRIDGE_ENCRYPTION_KEY: "${DSA_BRIDGE_ENCRYPTION_KEY:?DSA_BRIDGE_ENCRYPTION_KEY is required}"
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
       LCR_ENABLED: "${LCR_ENABLED:-true}"
-      LCR_SIGNING_KEY: "${VEIL_BRIDGE_SIGNING_KEY}"
+      # Stage 3 dual-name: canonical LCR_BRIDGE_SIGNING_KEY first, legacy
+      # VEIL_BRIDGE_SIGNING_KEY fallback.
+      LCR_SIGNING_KEY: "${LCR_BRIDGE_SIGNING_KEY:-${VEIL_BRIDGE_SIGNING_KEY}}"
       LCR_WITNESS_ADDR: "veil-witness:50057"
     networks:
       - dsa-bridge
@@ -364,7 +369,9 @@ services:
       # (services/sanitizer/canary.py:317).
       CANARY_HMAC_KEY: "${CANARY_HMAC_KEY:?CANARY_HMAC_KEY required for sanitizer canary issuance}"
       LCR_ENABLED: "${LCR_ENABLED:-true}"
-      LCR_SIGNING_KEY: "${VEIL_SANITIZER_SIGNING_KEY}"
+      # Stage 3 dual-name: canonical LCR_SANITIZER_SIGNING_KEY first, legacy
+      # VEIL_SANITIZER_SIGNING_KEY fallback.
+      LCR_SIGNING_KEY: "${LCR_SANITIZER_SIGNING_KEY:-${VEIL_SANITIZER_SIGNING_KEY}}"
       # All emitters use the witness's plain gRPC port (50057).
       LCR_WITNESS_ADDR: "veil-witness:50057"
       QI_ENGINE_ENABLED: "${QI_ENGINE_ENABLED:-true}"
@@ -407,8 +414,10 @@ services:
         condition: service_completed_successfully
     environment:
       LCR_DB_URL: "postgres://veil_app:${VEIL_APP_PASSWORD:?VEIL_APP_PASSWORD must be set (no weak default; see customer.env)}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}"
-      VEIL_WITNESS_SIGNING_KEY: "${VEIL_WITNESS_SIGNING_KEY}"
-      VEIL_WITNESS_KEY_ID: "${VEIL_WITNESS_KEY_ID:-witness_v1}"
+      # Stage 3 dual-name: emit canonical LCR_ first with legacy VEIL_
+      # fallback. veil-witness binary reads either at boot (envcompat).
+      LCR_WITNESS_SIGNING_KEY: "${LCR_WITNESS_SIGNING_KEY:-${VEIL_WITNESS_SIGNING_KEY}}"
+      LCR_WITNESS_KEY_ID: "${LCR_WITNESS_KEY_ID:-${VEIL_WITNESS_KEY_ID:-witness_v1}}"
       LCR_CLAIM_TIMEOUT: "30s"
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
       LCR_TSA_URL: "${LCR_TSA_URL:-}"
@@ -426,11 +435,13 @@ services:
       WITNESS_MTLS_SERVER_KEY_PATH: "${WITNESS_MTLS_SERVER_KEY_PATH:-}"
     volumes:
       # TOB-S009 mTLS cert dir (read-only). Default empty-string mount
-      # is intentionally an explicit `${VEIL_WITNESS_MTLS_HOST_DIR:-}`
+      # is intentionally an explicit `${LCR_WITNESS_MTLS_HOST_DIR:-…}`
       # — operators set this to /opt/dsa/certs/witness-mtls in
       # customer.env after their TLS bootstrap (e.g. `bin/lucairn-init`
-      # + their own cert authority) has run on the box.
-      - ${VEIL_WITNESS_MTLS_HOST_DIR:-./.certs/witness-mtls}:/etc/witness-mtls:ro
+      # + their own cert authority) has run on the box. Stage 3 dual-name:
+      # canonical LCR_WITNESS_MTLS_HOST_DIR first, legacy VEIL_WITNESS_MTLS_HOST_DIR
+      # fallback.
+      - ${LCR_WITNESS_MTLS_HOST_DIR:-${VEIL_WITNESS_MTLS_HOST_DIR:-./.certs/witness-mtls}}:/etc/witness-mtls:ro
     networks:
       - dsa-witness
       - dsa-witness-bridge
@@ -462,14 +473,15 @@ services:
       # linkage. Default-empty so dev environments without manifest pubkey
       # wiring keep the prior 5-key keys[] shape (no boot regression).
       LCR_GATEWAY_MANIFEST_PUBLIC_KEY: "${LCR_GATEWAY_MANIFEST_PUBLIC_KEY:-}"
-      VEIL_WITNESS_MANIFEST_PUBLIC_KEY: "${VEIL_WITNESS_MANIFEST_PUBLIC_KEY:-}"
-      VEIL_WITNESS_SIGNED_MANIFEST_PATH: "${VEIL_WITNESS_SIGNED_MANIFEST_PATH:-/certs/witness-signed-manifest.json}"
+      # Stage 3 dual-name (manifest + path + witness pubkey):
+      LCR_WITNESS_MANIFEST_PUBLIC_KEY: "${LCR_WITNESS_MANIFEST_PUBLIC_KEY:-${VEIL_WITNESS_MANIFEST_PUBLIC_KEY:-}}"
+      LCR_WITNESS_SIGNED_MANIFEST_PATH: "${LCR_WITNESS_SIGNED_MANIFEST_PATH:-${VEIL_WITNESS_SIGNED_MANIFEST_PATH:-/certs/witness-signed-manifest.json}}"
       # Per-service Ed25519 public keys — gateway needs these to publish the
       # discovery surface at /.well-known/veil-keys.json (external SDK
       # verifiers fetch this to validate certs). Missing wirings here made
       # the well-known endpoint return keys[]: [] even when the witness had
       # the keys — caught by Sim 3 dead-reference sweep 2026-05-15.
-      VEIL_WITNESS_PUBLIC_KEY: "${VEIL_WITNESS_PUBLIC_KEY}"
+      LCR_WITNESS_PUBLIC_KEY: "${LCR_WITNESS_PUBLIC_KEY:-${VEIL_WITNESS_PUBLIC_KEY}}"
       LCR_BRIDGE_PUBLIC_KEY: "${LCR_BRIDGE_PUBLIC_KEY}"
       LCR_SANITIZER_PUBLIC_KEY: "${LCR_SANITIZER_PUBLIC_KEY}"
       LCR_AUDIT_PUBLIC_KEY: "${LCR_AUDIT_PUBLIC_KEY}"
@@ -551,8 +563,10 @@ services:
       # Mount mTLS certificates if provided (set SANDBOX_B_CERT_DIR in config.env)
       - ${SANDBOX_B_CERT_DIR:-./.certs}:/certs:ro
       # TOB-S009: deploy-local CA + gateway client cert for mTLS to the
-      # witness. Same default as the witness service above.
-      - ${VEIL_WITNESS_MTLS_HOST_DIR:-./.certs/witness-mtls}:/etc/witness-mtls:ro
+      # witness. Same default as the witness service above. Stage 3 dual-name:
+      # canonical LCR_WITNESS_MTLS_HOST_DIR first, legacy VEIL_WITNESS_MTLS_HOST_DIR
+      # fallback.
+      - ${LCR_WITNESS_MTLS_HOST_DIR:-${VEIL_WITNESS_MTLS_HOST_DIR:-./.certs/witness-mtls}}:/etc/witness-mtls:ro
     ports:
       - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
       - "127.0.0.1:${GATEWAY_HEALTH_PORT:-8085}:8085"

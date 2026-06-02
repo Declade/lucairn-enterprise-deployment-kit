@@ -54,7 +54,12 @@ data:
   # as `missing_services` and downgrades the cert verdict to PARTIAL.
   LCR_ISSUER: {{ .Values.veilIssuer | quote }}
   LCR_MANIFEST_SIGNING_KEY_ID: {{ .Values.veilManifestSigningKeyId | quote }}
-  VEIL_WITNESS_SIGNED_MANIFEST_PATH: {{ .Values.veilWitnessSignedManifestPath | quote }}
+  # Stage 3 gateway rebrand: kit-side env-var name renamed VEIL_ → LCR_.
+  # The chart-internal values key `veilWitnessSignedManifestPath` is preserved
+  # for backward compat with existing customer-values.yaml files. Gateway image
+  # v0.5.0+ accepts the legacy VEIL_WITNESS_SIGNED_MANIFEST_PATH at runtime via
+  # envcompat fallback.
+  LCR_WITNESS_SIGNED_MANIFEST_PATH: {{ .Values.veilWitnessSignedManifestPath | quote }}
   GATEWAY_REQUIRE_READINESS: {{ ternary "true" "false" .Values.readiness.required | quote }}
   GATEWAY_READINESS_USE_CASE: {{ .Values.readiness.useCase | quote }}
   GATEWAY_READINESS_MAX_AGE: {{ .Values.readiness.maxAge | quote }}
