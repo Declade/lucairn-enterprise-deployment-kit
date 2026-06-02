@@ -3199,10 +3199,12 @@ doctor() {
   local remote_endpoint
   remote_endpoint="$(env_value "$env_file" SANDBOX_B_REMOTE_ENDPOINT)"
   local placeholder_failed=0
-  # Stage 3: the 5 dual-name keys appear under BOTH the LCR_ canonical and
+  # Stage 3: the 12 dual-name keys appear under BOTH the LCR_ canonical and
   # the legacy VEIL_ prefix. validate_no_placeholder is no-op on empty values,
   # so listing both is safe — only the prefix that the operator actually set
-  # gets the placeholder-format check.
+  # gets the placeholder-format check. A pre-Stage-3 customer.env with
+  # VEIL_X=REPLACE_ME_PLACEHOLDER would otherwise pass required_dual (either
+  # name set counts as present) but skip the placeholder gate entirely.
   local placeholder_keys=(
     DSA_SERVICE_TOKEN DSA_BRIDGE_ENCRYPTION_KEY SANDBOX_A_ENCRYPTION_KEY
     BRIDGE_MASTER_KEY DSA_ADMIN_KEY GATEWAY_KEYSTORE_KEY
@@ -3211,10 +3213,13 @@ doctor() {
     LCR_BRIDGE_SIGNING_KEY VEIL_BRIDGE_SIGNING_KEY
     LCR_SANITIZER_SIGNING_KEY VEIL_SANITIZER_SIGNING_KEY
     LCR_WITNESS_SIGNING_KEY VEIL_WITNESS_SIGNING_KEY
-    LCR_GATEWAY_SIGNING_KEY LCR_MANIFEST_SIGNING_KEY
+    LCR_GATEWAY_SIGNING_KEY VEIL_GATEWAY_SIGNING_KEY
+    LCR_MANIFEST_SIGNING_KEY VEIL_MANIFEST_SIGNING_KEY
     LCR_WITNESS_PUBLIC_KEY VEIL_WITNESS_PUBLIC_KEY
-    LCR_BRIDGE_PUBLIC_KEY LCR_SANITIZER_PUBLIC_KEY
-    LCR_AUDIT_PUBLIC_KEY LCR_GATEWAY_PUBLIC_KEY
+    LCR_BRIDGE_PUBLIC_KEY VEIL_BRIDGE_PUBLIC_KEY
+    LCR_SANITIZER_PUBLIC_KEY VEIL_SANITIZER_PUBLIC_KEY
+    LCR_AUDIT_PUBLIC_KEY VEIL_AUDIT_PUBLIC_KEY
+    LCR_GATEWAY_PUBLIC_KEY VEIL_GATEWAY_PUBLIC_KEY
     POSTGRES_AUDIT_PASSWORD POSTGRES_BRIDGE_PASSWORD
     POSTGRES_SANDBOX_A_PASSWORD POSTGRES_VEIL_PASSWORD
     AUDIT_APP_PASSWORD VEIL_APP_PASSWORD
@@ -3253,7 +3258,7 @@ doctor() {
     placeholder_keys+=(SANDBOX_B_API_KEY)
   fi
   placeholder_keys+=(
-    LCR_SANDBOX_B_PUBLIC_KEY
+    LCR_SANDBOX_B_PUBLIC_KEY VEIL_SANDBOX_B_PUBLIC_KEY
     LCR_SANDBOX_B_SIGNING_KEY
   )
   for key in "${placeholder_keys[@]}"; do
@@ -3271,6 +3276,8 @@ doctor() {
   # LCR_X and the legacy VEIL_X form is safe — only the prefix actually
   # populated in customer.env gets the format check. Pre-Stage-3 customer.env
   # files set the VEIL_ form; post-Stage-3 bin/lucairn-init emits the LCR_ form.
+  # All 12 dual-name keys (5 signing + 1 manifest signing + 6 public) appear
+  # under BOTH prefixes here to keep parity with placeholder_keys above.
   local hex64_keys=(
     DSA_SERVICE_TOKEN DSA_BRIDGE_ENCRYPTION_KEY SANDBOX_A_ENCRYPTION_KEY
     BRIDGE_MASTER_KEY DSA_ADMIN_KEY
@@ -3278,9 +3285,13 @@ doctor() {
     LCR_BRIDGE_SIGNING_KEY VEIL_BRIDGE_SIGNING_KEY
     LCR_SANITIZER_SIGNING_KEY VEIL_SANITIZER_SIGNING_KEY
     LCR_WITNESS_SIGNING_KEY VEIL_WITNESS_SIGNING_KEY
-    LCR_GATEWAY_SIGNING_KEY LCR_MANIFEST_SIGNING_KEY
+    LCR_GATEWAY_SIGNING_KEY VEIL_GATEWAY_SIGNING_KEY
+    LCR_MANIFEST_SIGNING_KEY VEIL_MANIFEST_SIGNING_KEY
     LCR_WITNESS_PUBLIC_KEY VEIL_WITNESS_PUBLIC_KEY
-    LCR_BRIDGE_PUBLIC_KEY LCR_SANITIZER_PUBLIC_KEY LCR_AUDIT_PUBLIC_KEY
+    LCR_BRIDGE_PUBLIC_KEY VEIL_BRIDGE_PUBLIC_KEY
+    LCR_SANITIZER_PUBLIC_KEY VEIL_SANITIZER_PUBLIC_KEY
+    LCR_AUDIT_PUBLIC_KEY VEIL_AUDIT_PUBLIC_KEY
+    LCR_GATEWAY_PUBLIC_KEY VEIL_GATEWAY_PUBLIC_KEY
   )
   # LCR_SANDBOX_B_PUBLIC_KEY: hex64 in BOTH modes. Split deployment gets
   # the value from Lucairn; self-hosted gets it from the operator's
@@ -3290,7 +3301,7 @@ doctor() {
   # non-hex 64-char value (e.g. base64 from `openssl rand -base64 48`)
   # crashloops sandbox-b with `encoding/hex decode failed`. Wave-5: add it
   # to the hex64 set so doctor catches it pre-flight.
-  hex64_keys+=(LCR_SANDBOX_B_PUBLIC_KEY LCR_SANDBOX_B_SIGNING_KEY)
+  hex64_keys+=(LCR_SANDBOX_B_PUBLIC_KEY VEIL_SANDBOX_B_PUBLIC_KEY LCR_SANDBOX_B_SIGNING_KEY)
   for key in "${hex64_keys[@]}"; do
     validate_hex64 "$env_file" "$key" || format_failed=1
   done
