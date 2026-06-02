@@ -76,13 +76,13 @@ GATEWAY_BASE_URL=https://lucairn.customer.example
 LUCAIRN_RESOURCE_BASE_URL=https://lucairn.customer.example
 LCR_REKOR_URL=https://rekor.sigstore.dev
 LCR_TSA_URL=https://freetsa.org/tsr
-VEIL_AUDIT_SIGNING_KEY=$SEED_AUDIT
-VEIL_BRIDGE_SIGNING_KEY=$SEED_BRIDGE
-VEIL_SANITIZER_SIGNING_KEY=$SEED_SAN
-VEIL_WITNESS_SIGNING_KEY=$SEED_WIT
+LCR_AUDIT_SIGNING_KEY=$SEED_AUDIT
+LCR_BRIDGE_SIGNING_KEY=$SEED_BRIDGE
+LCR_SANITIZER_SIGNING_KEY=$SEED_SAN
+LCR_WITNESS_SIGNING_KEY=$SEED_WIT
 LCR_GATEWAY_SIGNING_KEY=$SEED_GW
 LCR_MANIFEST_SIGNING_KEY=$(gen_seed)
-VEIL_WITNESS_PUBLIC_KEY=$PUB_WIT
+LCR_WITNESS_PUBLIC_KEY=$PUB_WIT
 LCR_BRIDGE_PUBLIC_KEY=$PUB_BRIDGE
 LCR_SANITIZER_PUBLIC_KEY=$PUB_SAN
 LCR_AUDIT_PUBLIC_KEY=$PUB_AUDIT
@@ -118,6 +118,24 @@ if ! run_doctor "$TMPDIR/happy.out"; then
 fi
 grep -q "doctor: ok" "$TMPDIR/happy.out"
 echo "SEC hardening happy-path: ok"
+
+# --- Stage 3 legacy fallback: pre-Stage-3 customer.env with VEIL_ prefix ---
+# Builds the same fixture but renames the 5 dual-name keys to their legacy
+# VEIL_ form. Doctor must still PASS via env_value_with_legacy.
+LEGACY_ENV="$TMPDIR/legacy-veil.env"
+sed -E -e 's/^LCR_AUDIT_SIGNING_KEY=/VEIL_AUDIT_SIGNING_KEY=/' \
+       -e 's/^LCR_BRIDGE_SIGNING_KEY=/VEIL_BRIDGE_SIGNING_KEY=/' \
+       -e 's/^LCR_SANITIZER_SIGNING_KEY=/VEIL_SANITIZER_SIGNING_KEY=/' \
+       -e 's/^LCR_WITNESS_SIGNING_KEY=/VEIL_WITNESS_SIGNING_KEY=/' \
+       -e 's/^LCR_WITNESS_PUBLIC_KEY=/VEIL_WITNESS_PUBLIC_KEY=/' \
+       "$ENV_FILE" > "$LEGACY_ENV"
+if ! run_doctor "$TMPDIR/legacy.out" "$LEGACY_ENV"; then
+  echo "FAIL: Stage 3 legacy-fallback doctor should PASS for pre-Stage-3 customer.env" >&2
+  cat "$TMPDIR/legacy.out" >&2
+  exit 1
+fi
+grep -q "doctor: ok" "$TMPDIR/legacy.out"
+echo "Stage 3 legacy-fallback: ok"
 
 # --- SEC-01: password validation -------------------------------------------
 # Run doctor on a copy of the fixture with one var overridden; expect failure

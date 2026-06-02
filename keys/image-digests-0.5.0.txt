@@ -8,9 +8,8 @@
 # `cosign verify --key keys/lucairn-cosign.pub <repo>@<recorded-digest>`,
 # binding verification to the exact signed bytes (not the mutable tag).
 #
-# Resolved + signature-verified on the Lucairn issuer host (Hetzner
-# 116.203.110.162) with cosign v2.4.1 against /home/deploy/.lucairn-cosign/
-# cosign.pub on 2026-05-29. All 13 artifacts PASS with a Rekor tlog entry.
+# Resolved + signature-verified on the Lucairn signing host with cosign
+# v2.4.1 on 2026-05-29. All 13 artifacts PASS with a Rekor tlog entry.
 #
 # Format: <repo>:<tag> <sha256:digest>   (one per line; '#' starts a comment)
 #

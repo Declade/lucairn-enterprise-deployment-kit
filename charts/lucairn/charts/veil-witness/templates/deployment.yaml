@@ -36,16 +36,20 @@ spec:
                   # INT-001 least-privilege: runtime connects as the restricted
                   # veil_app role, NOT the migrate-only superuser DATABASE_URL.
                   key: DATABASE_URL_APP
-            - name: VEIL_WITNESS_SIGNING_KEY
+            # Stage 3 gateway rebrand: env-var names renamed VEIL_ → LCR_.
+            # The veil-witness image (v0.5.0+) accepts both forms via envcompat
+            # fallback at boot, so legacy operator-managed Secrets with VEIL_
+            # keys are still readable; new chart-rendered Secrets emit LCR_.
+            - name: LCR_WITNESS_SIGNING_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Chart.Name }}-credentials
-                  key: VEIL_WITNESS_SIGNING_KEY
-            - name: VEIL_WITNESS_KEY_ID
+                  key: LCR_WITNESS_SIGNING_KEY
+            - name: LCR_WITNESS_KEY_ID
               valueFrom:
                 secretKeyRef:
                   name: {{ .Chart.Name }}-credentials
-                  key: VEIL_WITNESS_KEY_ID
+                  key: LCR_WITNESS_KEY_ID
           envFrom:
             - configMapRef:
                 name: {{ .Chart.Name }}-config
