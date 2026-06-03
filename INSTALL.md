@@ -128,12 +128,13 @@ changed, leaving the two postgres-namespace carve-outs alone:
 # keys in customer.env. (POSTGRES_VEIL_PASSWORD and VEIL_APP_PASSWORD stay.)
 # Covers the full Stage-3 dual-name surface: 7 signing keys (audit/bridge/
 # sanitizer/witness/gateway/manifest/sandbox-b) + 7 public keys (witness/
-# bridge/sanitizer/audit/gateway/sandbox-b/gateway-manifest) + 7 runtime-
+# bridge/sanitizer/audit/gateway/sandbox-b/gateway-manifest) + 10 runtime-
 # config keys (enabled/issuer/manifest-key-id/witness-key-id/witness-signed-
-# manifest-path/witness-mtls-host-dir/witness-manifest-public-key).
+# manifest-path/witness-mtls-host-dir/witness-manifest-public-key/tsa-url/
+# rekor-url/dev-mode).
 sed -i -E 's/^VEIL_(AUDIT|BRIDGE|SANITIZER|WITNESS|GATEWAY|MANIFEST|SANDBOX_B)_SIGNING_KEY=/LCR_\1_SIGNING_KEY=/' customer.env
 sed -i -E 's/^VEIL_(WITNESS|BRIDGE|SANITIZER|AUDIT|GATEWAY|SANDBOX_B|GATEWAY_MANIFEST)_PUBLIC_KEY=/LCR_\1_PUBLIC_KEY=/' customer.env
-sed -i -E 's/^VEIL_(ENABLED|ISSUER|MANIFEST_SIGNING_KEY_ID|WITNESS_KEY_ID|WITNESS_SIGNED_MANIFEST_PATH|WITNESS_MTLS_HOST_DIR|WITNESS_MANIFEST_PUBLIC_KEY)=/LCR_\1=/' customer.env
+sed -i -E 's/^VEIL_(ENABLED|ISSUER|MANIFEST_SIGNING_KEY_ID|WITNESS_KEY_ID|WITNESS_SIGNED_MANIFEST_PATH|WITNESS_MTLS_HOST_DIR|WITNESS_MANIFEST_PUBLIC_KEY|TSA_URL|REKOR_URL|DEV_MODE)=/LCR_\1=/' customer.env
 
 # Kubernetes customers — the chart's customer-values.yaml schema is
 # unchanged (chart-internal value keys are camelCase, e.g. veilSigningKey).
