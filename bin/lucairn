@@ -1387,11 +1387,16 @@ check_insecure_dev_mode_off_in_prod() {
 check_veil_rekor_url_in_prod() {
   # NEW-2: veil-witness loud-fails when DSA_ENV=production without
   # LCR_REKOR_URL set (unless LCR_DEV_MODE=true overrides).
+  # Stage 3 dual-name: accept either LCR_REKOR_URL (canonical) OR the
+  # legacy VEIL_REKOR_URL — docker-compose.customer.yml:425 now passes
+  # whichever is set into the witness container, so this preflight must
+  # reflect the same legacy fallback or pre-Stage-3 customer.envs FAIL
+  # the doctor even though the runtime would have booted successfully.
   local env_file="$1"
   [ "$(env_value "$env_file" DSA_ENV)" = "production" ] || return 0
-  [ "$(env_value "$env_file" LCR_DEV_MODE)" = "true" ] && return 0
-  [ -z "$(env_value "$env_file" LCR_REKOR_URL)" ] \
-    && { echo "veil rekor: LCR_REKOR_URL required in production (set LCR_DEV_MODE=true to bypass for non-production)"; return 1; }
+  [ "$(env_value_with_legacy "$env_file" LCR_DEV_MODE VEIL_DEV_MODE)" = "true" ] && return 0
+  [ -z "$(env_value_with_legacy "$env_file" LCR_REKOR_URL VEIL_REKOR_URL)" ] \
+    && { echo "veil rekor: LCR_REKOR_URL (or legacy VEIL_REKOR_URL) required in production (set LCR_DEV_MODE=true to bypass for non-production)"; return 1; }
   return 0
 }
 
@@ -1401,17 +1406,20 @@ check_veil_tsa_url_in_prod() {
   # in production. customer.env.example default is empty, so an operator
   # following the example into production hits an immediate crashloop with
   # no doctor pre-flight.
+  # Stage 3 dual-name: accept either LCR_TSA_URL (canonical) OR the legacy
+  # VEIL_TSA_URL — docker-compose.customer.yml:424 now passes whichever is
+  # set into the witness container; doctor must mirror the runtime contract.
   local env_file="$1"
   [ "$(env_value "$env_file" DSA_ENV)" = "production" ] || return 0
-  [ "$(env_value "$env_file" LCR_DEV_MODE)" = "true" ] && return 0
+  [ "$(env_value_with_legacy "$env_file" LCR_DEV_MODE VEIL_DEV_MODE)" = "true" ] && return 0
   local url
-  url="$(env_value "$env_file" LCR_TSA_URL)"
+  url="$(env_value_with_legacy "$env_file" LCR_TSA_URL VEIL_TSA_URL)"
   if [ -z "$url" ]; then
-    echo "veil TSA: LCR_TSA_URL required in production (FreeTSA sub-processor: https://freetsa.org/tsr — set LCR_DEV_MODE=true to bypass for non-production)"; return 1
+    echo "veil TSA: LCR_TSA_URL (or legacy VEIL_TSA_URL) required in production (FreeTSA sub-processor: https://freetsa.org/tsr — set LCR_DEV_MODE=true to bypass for non-production)"; return 1
   fi
   case "$url" in
     https://*) ;;
-    *) echo "veil TSA: LCR_TSA_URL must use https:// in production (got: $url)"; return 1 ;;
+    *) echo "veil TSA: LCR_TSA_URL (or legacy VEIL_TSA_URL) must use https:// in production (got: $url)"; return 1 ;;
   esac
   return 0
 }

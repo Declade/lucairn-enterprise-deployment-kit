@@ -86,7 +86,15 @@ services:
 
   veil-witness:
     environment:
-      LCR_SANDBOX_B_PUBLIC_KEY: "${LCR_SANDBOX_B_PUBLIC_KEY}"
+      # Stage 3 dual-name: canonical LCR_X first, legacy VEIL_X fallback.
+      # This override merges INTO docker-compose.customer.yml's veil-witness
+      # service. Compose's environment-merge is per-key: a key set on the
+      # overlay REPLACES the base value entirely (it doesn't recursively
+      # merge fallbacks). Without the legacy slot below, a pre-Stage-3
+      # customer.env that only has VEIL_SANDBOX_B_PUBLIC_KEY set would
+      # land an empty string here, breaking the witness's sandbox-B
+      # claim verification path on self-hosted installs.
+      LCR_SANDBOX_B_PUBLIC_KEY: "${LCR_SANDBOX_B_PUBLIC_KEY:-${VEIL_SANDBOX_B_PUBLIC_KEY}}"
     networks:
       - dsa-witness-ai
 
@@ -153,7 +161,7 @@ services:
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
       DSA_ADMIN_KEY: "${DSA_ADMIN_KEY:?DSA_ADMIN_KEY is required}"
       SANDBOX_B_API_KEYS: "${LOCAL_SANDBOX_B_API_KEY:-local-sandbox-b-key}"
-      LCR_ENABLED: "${LCR_ENABLED:-true}"
+      LCR_ENABLED: "${LCR_ENABLED:-${VEIL_ENABLED:-true}}"
       LCR_SIGNING_KEY: "${LCR_SANDBOX_B_SIGNING_KEY:-${VEIL_SANDBOX_B_SIGNING_KEY:?LCR_SANDBOX_B_SIGNING_KEY (or legacy VEIL_SANDBOX_B_SIGNING_KEY) is required for self-hosted Sandbox B}}"
       LCR_WITNESS_ADDR: "veil-witness:50057"
       OLLAMA_URL: "${OLLAMA_URL:-http://ollama:11434}"
