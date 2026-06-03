@@ -3259,7 +3259,7 @@ doctor() {
   fi
   placeholder_keys+=(
     LCR_SANDBOX_B_PUBLIC_KEY VEIL_SANDBOX_B_PUBLIC_KEY
-    LCR_SANDBOX_B_SIGNING_KEY
+    LCR_SANDBOX_B_SIGNING_KEY VEIL_SANDBOX_B_SIGNING_KEY
   )
   for key in "${placeholder_keys[@]}"; do
     validate_no_placeholder "$env_file" "$key" || placeholder_failed=1
@@ -3301,7 +3301,7 @@ doctor() {
   # non-hex 64-char value (e.g. base64 from `openssl rand -base64 48`)
   # crashloops sandbox-b with `encoding/hex decode failed`. Wave-5: add it
   # to the hex64 set so doctor catches it pre-flight.
-  hex64_keys+=(LCR_SANDBOX_B_PUBLIC_KEY VEIL_SANDBOX_B_PUBLIC_KEY LCR_SANDBOX_B_SIGNING_KEY)
+  hex64_keys+=(LCR_SANDBOX_B_PUBLIC_KEY VEIL_SANDBOX_B_PUBLIC_KEY LCR_SANDBOX_B_SIGNING_KEY VEIL_SANDBOX_B_SIGNING_KEY)
   for key in "${hex64_keys[@]}"; do
     validate_hex64 "$env_file" "$key" || format_failed=1
   done
