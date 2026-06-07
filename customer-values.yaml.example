@@ -254,10 +254,19 @@ id-bridge:
 #   image:
 #     # Override repository if you mirror images into a private registry.
 #     repository: dsa-pii-ml
-#     # Empty tag falls through to global.imageTag.
-#     tag: ""
-#     # Pin the sha256 digest for digest-verified pulls (NET-02).
-#     digest: ""
+#     # Tag pin. Defaults to the subchart's pinned 0.5.1 — DO NOT blank this
+#     # to fall through to global.imageTag (0.5.0 in v1.0); the pii-ml
+#     # sidecar ships on an INDEPENDENT release cadence and there is no
+#     # matching dsa-pii-ml image at the umbrella tag. The chart template
+#     # (charts/lucairn/charts/pii-ml/templates/deployment.yaml) explicitly
+#     # excludes global.imageTag from the fallback chain to enforce this.
+#     # Override ONLY when pinning a DIFFERENT pii-ml version.
+#     tag: "0.5.1"
+#     # Pin the sha256 multi-arch index digest for digest-verified pulls
+#     # (NET-02). This MUST match the digest recorded in image-manifest.yaml
+#     # under image_digests.signed_artifacts.dsa-pii-ml. Override ONLY when
+#     # pinning a DIFFERENT pii-ml version (alongside `tag` above).
+#     digest: "sha256:5cc46f58db9f0c84f6a8ed9428fe91a2a481ae0c6a3dfa3f02e4a607da80d1cc"
 #   hfRevisions:
 #     piiranha: "255acde67a2f34cf452eb42e365b24d2957352fc"
 #     gliner: "443d26d654e0324125a96bebd8e796c14ff2efe6"
