@@ -171,11 +171,13 @@ image_digests:
       ref: "ghcr.io/declade/dsa-sandbox-b:0.5.0"
       digest: "sha256:d5477b16d2af606f724cb1be0481db55f079f66881b078d5ecf8a43beb257c9e"
     dsa-pii-ml:
-      # Pinned digest filled at kit-release time. PR #241 shipped the DSA-side
-      # service at sha256:c4b39db80c5f... (1.74GB image); kit release will
-      # cosign-sign + record the final multi-arch digest here.
+      # Multi-arch manifest list (linux/amd64 + linux/arm64) published from
+      # PR #241's final state (commit 0cb627c, Codex r1 fix-ups). Built on
+      # the Hetzner pilot builder (lucairn-multiarch) 2026-06-07. Per-arch
+      # manifest digests: amd64=sha256:7201de66279104328a8458478575ea603c00f5de35279be2f782544d41f7fce3,
+      # arm64=sha256:6ef424e6ca467c240df622fa37b39bcee7b2aa2a602e2de8e10a405c07e2f09e.
       ref: "ghcr.io/declade/dsa-pii-ml:0.5.1"
-      pending: true
+      digest: "sha256:5cc46f58db9f0c84f6a8ed9428fe91a2a481ae0c6a3dfa3f02e4a607da80d1cc"
     dsa-veil-witness:
       ref: "ghcr.io/declade/dsa-veil-witness:0.5.0"
       digest: "sha256:4c3b36b9ec306e2668f0bbb811863f04dfa27f0465c6a3d7fae4ed1ecc1741a6"
