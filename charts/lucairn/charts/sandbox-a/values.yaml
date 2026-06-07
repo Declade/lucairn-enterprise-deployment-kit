@@ -168,6 +168,13 @@ sanitizer:
     # in the sanitizer-configmap.yaml template. Override only if pii-ml is
     # deployed to a non-default namespace OR an external endpoint.
     endpoint: ""
+    # Per-scan gRPC deadline (seconds). Sanitizer's config.py reads this as
+    # the flat `deadline_seconds` field on `pii_ml_client`; missing → 5.0.
+    deadlineSeconds: 5
+    # Sanitizer's pii-ml client circuit breaker. Tuned in camelCase here;
+    # the configmap template flattens to the in-tree-canonical flat fields
+    # `circuit_breaker_open_after` + `circuit_breaker_half_open_seconds`
+    # (sanitizer's config.py:595-606 reads ONLY the flat names).
     circuitBreaker:
       consecutiveFailures: 3
       halfOpenSeconds: 30

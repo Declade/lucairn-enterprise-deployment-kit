@@ -27,14 +27,20 @@ image:
   # Default repository follows the chart's `global.imageRegistry` prefix
   # (e.g. ghcr.io/declade) so this resolves to ghcr.io/declade/dsa-pii-ml.
   repository: dsa-pii-ml
-  # Empty `tag` falls through to `.Values.global.imageTag` so the sidecar
-  # stays in lockstep with the rest of the kit. Orchestrator pins the
-  # concrete tag + sha256 digest at kit-release time via image-manifest.yaml.
-  tag: ""
-  # Image digest (NET-02 supply-chain hardening). When set, the image ref
-  # renders as repository:tag@sha256:... so the pull is digest-verified.
-  # Leave empty to pin by tag only.
-  digest: ""
+  # Tag is PINNED to the sidecar's release version (0.5.1) because the
+  # rest of the kit ships on appVersion 0.5.0 and the templated fallthrough
+  # `image.tag | default global.imageTag | default Chart.AppVersion` would
+  # otherwise resolve to 0.5.0 and pull a non-existent image. The pii-ml
+  # sidecar has an INDEPENDENT release cadence from the dsa-* core services
+  # (mirrors the lucairn-dashboard pattern); operators who mirror images
+  # into a private registry must mirror dsa-pii-ml:0.5.1 specifically.
+  tag: "0.5.1"
+  # Image digest (NET-02 supply-chain hardening). The multi-arch manifest
+  # index digest for ghcr.io/declade/dsa-pii-ml:0.5.1 is recorded in
+  # image-manifest.yaml under image_digests.signed_artifacts.dsa-pii-ml.
+  # When set, the image ref renders as repository:tag@sha256:... so the
+  # pull is digest-verified (resists tag-repoint / image substitution).
+  digest: "sha256:5cc46f58db9f0c84f6a8ed9428fe91a2a481ae0c6a3dfa3f02e4a607da80d1cc"
   pullPolicy: IfNotPresent
 
 service:
@@ -59,18 +65,23 @@ eagerLoad: true
 exitOnLoadFailure: true
 
 # HuggingFace model revision pins. SHAs lifted verbatim from PR #241
-# Codex r1 fix-up `3c561030` (closed CODEX-HIGH on supply-chain).
+# Codex r1 fix-up `3c561030` (closed CODEX-HIGH on supply-chain) — the
+# image at ghcr.io/declade/dsa-pii-ml:0.5.1 was built against THESE exact
+# 40-char hex revisions. The kit MUST propagate them verbatim; a mismatch
+# silently re-downloads weights at a different revision (or fails the
+# image-side guard) on first cold-cache boot.
+#
 # These are LOAD-BEARING — changing them silently swaps the underlying
 # model behavior, which can cascade into per-layer F1 / over-redaction
 # regressions. Operators upgrading the pii-ml image MUST verify these
 # match the values baked into the image's image-manifest.yaml entry.
 hfRevisions:
   # iiiorg/piiranha-v1-detect-personal-information
-  piiranha: "255acde6b1cffb4e2737b75e8c93f5d68ad8a6a5"
+  piiranha: "255acde67a2f34cf452eb42e365b24d2957352fc"
   # urchade/gliner_multi-v2.1 (primary)
-  gliner: "443d26d6a89e4ca4ef89bd8a4ad7c6b8f7f7a8aa"
+  gliner: "443d26d654e0324125a96bebd8e796c14ff2efe6"
   # urchade/gliner_medium-v2.1 (fallback)
-  glinerFallback: "40ec419315b6e34a0b3b7c2e5b3a8e2a3e7c8f4b"
+  glinerFallback: "40ec419335d09393f298636f471328b722c6da9e"
 
 # HuggingFace cache volume. The sidecar writes downloaded model weights to
 # HF_HOME at first boot; subsequent restarts hit the cache.
@@ -149,3 +160,30 @@ pdb:
 # Production default false; flipping to true breaks the fail-CLOSED ready
 # gate. NEVER set true in production.
 allowLazyNotReady: false
+
+# Log verbosity for the sidecar's Python logger. Default INFO matches the
+# image's server.py default. Operators tuning a noisy install can drop to
+# WARNING; debugging a cold-cache load issue can lift to DEBUG.
+logLevel: "INFO"
+
+# gRPC worker pool size. The sidecar is single-process (no fork-safety
+# concerns since PR #240 extracted Phase 7) and serves unary RPCs from the
+# sanitizer; 8 workers covers concurrent scan bursts at single-tenant
+# pilot load. Raise only if sanitizer queue depth metrics show contention.
+grpcWorkers: 8
+
+# Per-scanner enable toggles inside the sidecar process. Default both ON.
+# Paired with sanitizer-side flags (sandbox-a.sanitizer.piiranha.enabled /
+# .gliner.enabled): operators wanting to disable one scanner without
+# disabling the whole sidecar set the per-scanner flag here false AND
+# the matching sanitizer-side flag false. Setting only one half is a
+# documented misconfiguration (`bin/lucairn doctor` warns).
+piiranhaEnabled: true
+glinerEnabled: true
+
+# v1.0 single-replica lock — operator opt-in gate for multi-replica.
+# Multi-replica is unsupported in v1.0 (per PRD § Out of scope: the sidecar
+# is single-process Python; multi-replica scaling needs a Redis-backed
+# circuit-breaker state share and is a v2 design). The umbrella validator
+# fails-closed when replicaCount > 1 unless this flag is true.
+allowMultiReplica: false

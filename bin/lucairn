@@ -605,6 +605,20 @@ check_container_images() {
     fi
   done
 
+  # pii-ml sidecar (Phase 7 ML PII scanners — Piiranha + GLiNER). Pinned to
+  # its OWN per-service tag in image-manifest.yaml because it has an
+  # INDEPENDENT release cadence from the umbrella LUCAIRN_IMAGE_TAG (mirrors
+  # the lucairn-dashboard handling). Default 0.5.1; override via the env
+  # var LUCAIRN_PII_ML_IMAGE_TAG.
+  local pii_ml_tag pii_ml_ref
+  pii_ml_tag="$(env_value "$env_file" LUCAIRN_PII_ML_IMAGE_TAG)"
+  pii_ml_tag="${pii_ml_tag:-0.5.1}"
+  pii_ml_ref="${registry}/dsa-pii-ml:${pii_ml_tag}"
+  if ! docker manifest inspect "$pii_ml_ref" >/dev/null 2>&1; then
+    echo "container images: failed ($pii_ml_ref not pullable; check registry credentials or image tag)"
+    failed=1
+  fi
+
   # The dashboard ships under its own opt-in flag with an INDEPENDENT image
   # tag (LUCAIRN_DASHBOARD_IMAGE_TAG, defaults to the kit's pinned dashboard
   # version). Only verify when opted-in so non-dashboard operators do not see
@@ -1372,6 +1386,123 @@ check_sanitizer_config_image_compat() {
     "${major_minor}."*) return 0 ;;
     *) echo "sanitizer drift: LUCAIRN_IMAGE_TAG=$tag is outside sanitizer_config_compat=$compat — sanitizer will crash on Unknown recognizer at boot"; return 1 ;;
   esac
+}
+
+# ----------------------------------------------------------------------------
+# Phase 7 pii-ml sidecar checks (PR #240 production-path follow-up).
+#
+# kit-doctor-coverage-auditor r1 finding: `doctor` was BLIND to the entire
+# pii-ml subchart surface — paired-toggle drift, fabricated revision SHAs,
+# dev-mode `allowLazyNotReady` flipped on in production, an unwritable HF
+# cache path, and undersized cluster-node memory all silently degrade
+# Phase 7 with no operator-visible signal. The five functions below close
+# those gaps. They run in BOTH `doctor` and `doctor --strict`; failures
+# are non-fatal warnings except where explicitly noted.
+# ----------------------------------------------------------------------------
+
+check_pii_ml_paired_toggles() {
+  # Phase 7 has TWO independent enable gates (umbrella `pii-ml.enabled` +
+  # sanitizer-side `sandbox-a.sanitizer.piiranha.enabled` / `gliner.enabled`).
+  # The half-enabled combos are non-fatal but documented misconfigurations:
+  # log them so operators see the drift before it surfaces as circuit
+  # breaker open warnings in sanitizer logs.
+  local env_file="$1"
+  # Env vars override the values-tree default-on; absence == default.
+  local piiranha_enabled gliner_enabled pii_ml_enabled
+  piiranha_enabled="$(env_value "$env_file" LUCAIRN_SANITIZER_PIIRANHA_ENABLED)"
+  gliner_enabled="$(env_value "$env_file" LUCAIRN_SANITIZER_GLINER_ENABLED)"
+  pii_ml_enabled="$(env_value "$env_file" LUCAIRN_PII_ML_ENABLED)"
+  # Default the sidecar to on (chart's pii-ml.enabled=true at v1.7.0) and
+  # the sanitizer-side flags to off (Helm convention, opt-in).
+  pii_ml_enabled="${pii_ml_enabled:-true}"
+  piiranha_enabled="${piiranha_enabled:-false}"
+  gliner_enabled="${gliner_enabled:-false}"
+  if [ "$piiranha_enabled" = "true" ] || [ "$gliner_enabled" = "true" ]; then
+    if [ "$pii_ml_enabled" != "true" ]; then
+      echo "pii-ml paired toggles: failed (sanitizer Phase 7 layers enabled but pii-ml sidecar disabled — every Phase 7 scan dials a nonexistent service; circuit breaker opens within 3 requests and Phase 7 stays dormant)"
+      return 1
+    fi
+  fi
+  if [ "$pii_ml_enabled" = "true" ] && [ "$piiranha_enabled" = "false" ] && [ "$gliner_enabled" = "false" ]; then
+    warn "pii-ml sidecar deployed but BOTH sanitizer Phase 7 layers off — wasted resources, Phase 7 never fires (flip sandbox-a.sanitizer.{piiranha,gliner}.enabled true to activate)"
+  fi
+  echo "pii-ml paired toggles: ok"
+  return 0
+}
+
+check_pii_ml_hf_revisions() {
+  # HuggingFace revision SHAs are LOAD-BEARING (PR #241 Codex r1 fix-up
+  # CODEX-HIGH closure). The image at ghcr.io/declade/dsa-pii-ml:0.5.1
+  # was built against specific 40-char-hex SHAs; mismatched env overrides
+  # silently re-download weights at a DIFFERENT revision on first cold-cache
+  # boot, which can cascade into per-layer F1 / over-redaction regressions.
+  # Fail on any override that isn't a 40-char hex string.
+  local env_file="$1" failed=0
+  local var val
+  for var in LUCAIRN_PII_ML_PIIRANHA_REVISION LUCAIRN_PII_ML_GLINER_REVISION LUCAIRN_PII_ML_GLINER_FALLBACK_REVISION; do
+    val="$(env_value "$env_file" "$var")"
+    [ -z "$val" ] && continue
+    if ! printf '%s' "$val" | grep -Eq '^[0-9a-f]{40}$'; then
+      echo "pii-ml HF revisions: failed ($var=$val is not a 40-char lowercase hex HF revision SHA — pii-ml image will reject the override at boot)"
+      failed=1
+    fi
+  done
+  if [ "$failed" -eq 0 ]; then
+    echo "pii-ml HF revisions: ok"
+  fi
+  [ "$failed" -eq 0 ]
+}
+
+check_pii_ml_lazy_not_ready_off_in_prod() {
+  # Production fail-CLOSED ready gate (PR #240 Codex r1 HIGH-3): the
+  # sidecar's /readyz returns 200 ONLY when both Piiranha + GLiNER are
+  # loaded. `LUCAIRN_PII_ML_ALLOW_LAZY_NOT_READY=true` is a dev-loop debug
+  # opt-in that lets gRPC scans run BEFORE models load (returns
+  # scan_status=inference_error per call) — it breaks the fail-CLOSED
+  # gate that PR #240's review locked in. NEVER set true in production.
+  local env_file="$1"
+  [ "$(env_value "$env_file" DSA_ENV)" = "production" ] || return 0
+  [ "$(env_value "$env_file" LUCAIRN_PII_ML_ALLOW_LAZY_NOT_READY)" = "true" ] \
+    && { echo "pii-ml lazy-not-ready: failed (LUCAIRN_PII_ML_ALLOW_LAZY_NOT_READY=true is incompatible with DSA_ENV=production — defeats the fail-CLOSED readyz gate)"; return 1; }
+  echo "pii-ml lazy-not-ready: ok"
+  return 0
+}
+
+check_pii_ml_hf_cache_writable() {
+  # The sidecar writes downloaded HF weights to HF_HOME at first boot
+  # (~1.6GB one-time). The named volume `pii-ml-hf-cache` is the default;
+  # an operator who mounts a bind-mount or PVC with the wrong permissions
+  # causes a silent download loop (writes 4xx, /readyz never flips green).
+  # Compose-path warning; the Helm subchart uses an emptyDir by default
+  # and PVC requires explicit storageClass.
+  local env_file="$1" override
+  override="$(env_value "$env_file" LUCAIRN_PII_ML_HF_CACHE_DIR)"
+  [ -z "$override" ] && { echo "pii-ml HF cache: ok (named volume default)"; return 0; }
+  if [ -e "$override" ] && [ ! -w "$override" ]; then
+    warn "pii-ml HF cache: $override is not writable; sidecar will loop on first-boot HF weight download"
+  fi
+  echo "pii-ml HF cache: ok"
+  return 0
+}
+
+check_pii_ml_node_memory() {
+  # Sidecar resource limits default 4Gi memory. Node-level allocatable
+  # memory must comfortably exceed that or the pod won't schedule. The
+  # compose-path memory cap is enforced by mem_limit (FIX-20); the Helm
+  # subchart uses resources.limits.memory. This check is a heuristic
+  # for COMPOSE installs only (the Helm path goes through Kubernetes
+  # scheduler which surfaces FailedScheduling events naturally).
+  local env_file="$1"
+  # Only emit on compose installs; the Helm path delegates to the scheduler.
+  if have free; then
+    local total_mb
+    total_mb="$(free -m 2>/dev/null | awk '/^Mem:/ { print $2; exit }')"
+    if [ -n "$total_mb" ] && [ "$total_mb" -lt 5120 ] 2>/dev/null; then
+      warn "pii-ml node memory: host total RAM ${total_mb}MB < 5GB; the 4Gi sidecar limit will compete with other services"
+    fi
+  fi
+  echo "pii-ml node memory: ok"
+  return 0
 }
 
 check_insecure_dev_mode_off_in_prod() {
@@ -3377,6 +3508,26 @@ doctor() {
   local compat_failed=0
   check_sanitizer_config_image_compat "$env_file" || compat_failed=1
   [ "$compat_failed" -eq 0 ] || return 1
+
+  # Phase 7 pii-ml sidecar suite (PR #240). Five orthogonal checks:
+  # paired toggles, HF revision shape, prod-mode lazy-not-ready, HF
+  # cache writability, host node memory heuristic. Failures here are
+  # split: paired-toggle inverse + bad-shape HF rev + prod-mode lazy
+  # are fatal; cache writability + host memory are warnings.
+  local pii_ml_toggle_failed=0
+  check_pii_ml_paired_toggles "$env_file" || pii_ml_toggle_failed=1
+  [ "$pii_ml_toggle_failed" -eq 0 ] || return 1
+
+  local pii_ml_rev_failed=0
+  check_pii_ml_hf_revisions "$env_file" || pii_ml_rev_failed=1
+  [ "$pii_ml_rev_failed" -eq 0 ] || return 1
+
+  local pii_ml_lazy_failed=0
+  check_pii_ml_lazy_not_ready_off_in_prod "$env_file" || pii_ml_lazy_failed=1
+  [ "$pii_ml_lazy_failed" -eq 0 ] || return 1
+
+  check_pii_ml_hf_cache_writable "$env_file"
+  check_pii_ml_node_memory "$env_file"
 
   # Sim 3 round-2 NEW-1: INSECURE_DEV_MODE incompatible with prod.
   local insecure_failed=0

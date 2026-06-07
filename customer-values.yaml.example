@@ -259,9 +259,9 @@ id-bridge:
 #     # Pin the sha256 digest for digest-verified pulls (NET-02).
 #     digest: ""
 #   hfRevisions:
-#     piiranha: "255acde6b1cffb4e2737b75e8c93f5d68ad8a6a5"
-#     gliner: "443d26d6a89e4ca4ef89bd8a4ad7c6b8f7f7a8aa"
-#     glinerFallback: "40ec419315b6e34a0b3b7c2e5b3a8e2a3e7c8f4b"
+#     piiranha: "255acde67a2f34cf452eb42e365b24d2957352fc"
+#     gliner: "443d26d654e0324125a96bebd8e796c14ff2efe6"
+#     glinerFallback: "40ec419335d09393f298636f471328b722c6da9e"
 #   hfCacheVolume:
 #     # type: emptyDir | pvc. Default emptyDir re-downloads weights per pod
 #     # start; pvc persists across restarts (recommended for air-gapped).
@@ -274,6 +274,19 @@ id-bridge:
 #     limits:
 #       cpu: 2000m
 #       memory: 4Gi
+#   # Dev / debug opt-in: when true, gRPC scans before models finish loading
+#   # return scan_status=inference_error (per call) rather than blocking OR
+#   # fail-OPEN. DO NOT set true in production — defeats the fail-CLOSED
+#   # /readyz gate that PR #240 Codex r1 review locked in.
+#   allowLazyNotReady: false
+#   # Per-scanner sidecar enable flags. Default both on. To run ONLY one
+#   # scanner inside the sidecar, flip the matching half false here AND
+#   # the matching sandbox-a.sanitizer.{piiranha,gliner}.enabled below.
+#   piiranhaEnabled: true
+#   glinerEnabled: true
+#   # Operator-tunable knobs (parity with the image's env-var contract):
+#   logLevel: "INFO"
+#   grpcWorkers: 8
 
 sandbox-a:
   postgresql:
