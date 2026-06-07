@@ -62,7 +62,7 @@ kubectl exec -n dsa-identity deploy/pii-ml -- \
   python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8088/readyz').read())"
 ```
 
-**Compose path** (e.g. Bhatia Advisory on Azure Container Apps):
+**Compose path** (e.g. a customer deploying on Azure Container Apps):
 
 ```bash
 # Sidecar container status

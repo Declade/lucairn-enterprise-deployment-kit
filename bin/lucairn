@@ -1401,30 +1401,63 @@ check_sanitizer_config_image_compat() {
 # ----------------------------------------------------------------------------
 
 check_pii_ml_paired_toggles() {
-  # Phase 7 has TWO independent enable gates (umbrella `pii-ml.enabled` +
-  # sanitizer-side `sandbox-a.sanitizer.piiranha.enabled` / `gliner.enabled`).
-  # The half-enabled combos are non-fatal but documented misconfigurations:
-  # log them so operators see the drift before it surfaces as circuit
-  # breaker open warnings in sanitizer logs.
+  # Phase 7 has TWO independent enable gates:
+  #   1. Umbrella subchart deploy gate: `pii-ml.enabled` in
+  #      `charts/lucairn/values.yaml`. Default true (v1.7.0).
+  #   2. Sanitizer-side dial gates: `sanitizer.piiranha.enabled` +
+  #      `sanitizer.gliner.enabled` in the sanitizer YAML config (compose
+  #      path: $SANITIZER_CONFIG_FILE, default config/default-sanitizer.yaml;
+  #      Helm path: rendered via the sandbox-a sanitizer-configmap from
+  #      `sandbox-a.sanitizer.{piiranha,gliner}.enabled`).
+  #
+  # r2 bug-hunter NEW-1 + kit-doctor W1 convergence: the prior version of
+  # this check read synthetic env vars `LUCAIRN_SANITIZER_PIIRANHA_ENABLED` +
+  # `LUCAIRN_SANITIZER_GLINER_ENABLED` that exist nowhere in the codebase.
+  # Phase 7 toggles are YAML-config controlled, not env-controlled, on both
+  # compose + Helm paths. Read them from the YAML files directly so the
+  # check sees the actual operator-configured state.
   local env_file="$1"
-  # Env vars override the values-tree default-on; absence == default.
-  local piiranha_enabled gliner_enabled pii_ml_enabled
-  piiranha_enabled="$(env_value "$env_file" LUCAIRN_SANITIZER_PIIRANHA_ENABLED)"
-  gliner_enabled="$(env_value "$env_file" LUCAIRN_SANITIZER_GLINER_ENABLED)"
-  pii_ml_enabled="$(env_value "$env_file" LUCAIRN_PII_ML_ENABLED)"
-  # Default the sidecar to on (chart's pii-ml.enabled=true at v1.7.0) and
-  # the sanitizer-side flags to off (Helm convention, opt-in).
-  pii_ml_enabled="${pii_ml_enabled:-true}"
+  local config_file
+  config_file="$(env_value "$env_file" SANITIZER_CONFIG_FILE)"
+  config_file="${config_file:-${ROOT}/config/default-sanitizer.yaml}"
+
+  # Read pii-ml.enabled from the umbrella values.yaml (kit default state).
+  # Customer overrides via customer-values.yaml are out of scope for this
+  # check — it surfaces kit-default drift, not customer-override drift.
+  local sidecar_enabled
+  if [ -f "${ROOT}/charts/lucairn/values.yaml" ]; then
+    sidecar_enabled="$(awk '/^pii-ml:/{found=1; next} found && /^[[:space:]]+enabled:/{gsub(/[[:space:]]|enabled:/,""); print; exit} /^[a-z]/{found=0}' "${ROOT}/charts/lucairn/values.yaml")"
+  fi
+  # PRD-documented default is true; fall through to true when chart absent
+  # OR awk produced no match (treat as "kit shipped without the chart" only
+  # in degenerate test envs).
+  sidecar_enabled="${sidecar_enabled:-true}"
+
+  # Read piiranha + gliner enabled from the sanitizer YAML config (2-space
+  # indent under `sanitizer:`). The sanitizer YAML loader (config.py) reads
+  # them as `sanitizer.piiranha.enabled` + `sanitizer.gliner.enabled`.
+  local piiranha_enabled gliner_enabled
+  if [ -f "$config_file" ]; then
+    piiranha_enabled="$(awk '/^  piiranha:/{found=1; next} found && /^    enabled:/{gsub(/[[:space:]]|enabled:/,""); print; exit} /^  [a-z]/{found=0}' "$config_file")"
+    gliner_enabled="$(awk '/^  gliner:/{found=1; next} found && /^    enabled:/{gsub(/[[:space:]]|enabled:/,""); print; exit} /^  [a-z]/{found=0}' "$config_file")"
+  fi
+  # Sanitizer-side default is OFF (Helm convention, opt-in) — matches the
+  # in-tree `config/default-sanitizer.yaml` which ships without Phase 7
+  # sections at all (operators opt in by adding the blocks).
   piiranha_enabled="${piiranha_enabled:-false}"
   gliner_enabled="${gliner_enabled:-false}"
+
+  local phase7_any_on=0
   if [ "$piiranha_enabled" = "true" ] || [ "$gliner_enabled" = "true" ]; then
-    if [ "$pii_ml_enabled" != "true" ]; then
-      echo "pii-ml paired toggles: failed (sanitizer Phase 7 layers enabled but pii-ml sidecar disabled — every Phase 7 scan dials a nonexistent service; circuit breaker opens within 3 requests and Phase 7 stays dormant)"
-      return 1
-    fi
+    phase7_any_on=1
   fi
-  if [ "$pii_ml_enabled" = "true" ] && [ "$piiranha_enabled" = "false" ] && [ "$gliner_enabled" = "false" ]; then
-    warn "pii-ml sidecar deployed but BOTH sanitizer Phase 7 layers off — wasted resources, Phase 7 never fires (flip sandbox-a.sanitizer.{piiranha,gliner}.enabled true to activate)"
+
+  if [ "$phase7_any_on" -eq 1 ] && [ "$sidecar_enabled" != "true" ]; then
+    echo "pii-ml paired toggles: failed (sanitizer Phase 7 enabled in $config_file but pii-ml.enabled != true in charts/lucairn/values.yaml — sanitizer will dial a nonexistent sidecar; circuit breaker opens within 3 requests and Phase 7 stays dormant)"
+    return 1
+  fi
+  if [ "$phase7_any_on" -eq 0 ] && [ "$sidecar_enabled" = "true" ]; then
+    warn "pii-ml paired toggles: sidecar deployed (pii-ml.enabled=true) but sanitizer Phase 7 layers off in $config_file — sidecar is consuming memory with no inference work"
   fi
   echo "pii-ml paired toggles: ok"
   return 0
@@ -1442,8 +1475,8 @@ check_pii_ml_hf_revisions() {
   for var in LUCAIRN_PII_ML_PIIRANHA_REVISION LUCAIRN_PII_ML_GLINER_REVISION LUCAIRN_PII_ML_GLINER_FALLBACK_REVISION; do
     val="$(env_value "$env_file" "$var")"
     [ -z "$val" ] && continue
-    if ! printf '%s' "$val" | grep -Eq '^[0-9a-f]{40}$'; then
-      echo "pii-ml HF revisions: failed ($var=$val is not a 40-char lowercase hex HF revision SHA — pii-ml image will reject the override at boot)"
+    if ! printf '%s' "$val" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+      echo "pii-ml HF revisions: failed ($var=$val is not a 40-char hex HF revision SHA — pii-ml image will reject the override at boot)"
       failed=1
     fi
   done
@@ -1468,6 +1501,27 @@ check_pii_ml_lazy_not_ready_off_in_prod() {
   return 0
 }
 
+check_pii_ml_exit_on_load_failure_in_prod() {
+  # r2 kit-doctor G1: `LUCAIRN_PII_ML_EXIT_ON_LOAD_FAILURE=false` in
+  # production silently degrades Phase 7 to permanent circuit-open.
+  # The image's startup probe lets the container come up "healthy" even
+  # though eager_load() failed → /readyz returns 503 forever → sanitizer's
+  # circuit breaker opens within 3 requests and Phase 7 stays dormant for
+  # the lifetime of the pod with no operator-visible signal beyond logs.
+  # `true` (default) crash-loops the pod so the scheduler / docker
+  # restarts it and the operator sees the failure surface naturally.
+  local env_file="$1"
+  [ "$(env_value "$env_file" DSA_ENV)" = "production" ] || return 0
+  local val
+  val="$(env_value "$env_file" LUCAIRN_PII_ML_EXIT_ON_LOAD_FAILURE)"
+  if [ "$val" = "false" ]; then
+    echo "pii-ml exit-on-load-failure: failed (LUCAIRN_PII_ML_EXIT_ON_LOAD_FAILURE=false in production — sidecar will NOT restart on eager-load failure; Phase 7 silently degrades to permanent circuit-open)"
+    return 1
+  fi
+  echo "pii-ml exit-on-load-failure: ok"
+  return 0
+}
+
 check_pii_ml_hf_cache_writable() {
   # The sidecar writes downloaded HF weights to HF_HOME at first boot
   # (~1.6GB one-time). The named volume `pii-ml-hf-cache` is the default;
@@ -1475,13 +1529,23 @@ check_pii_ml_hf_cache_writable() {
   # causes a silent download loop (writes 4xx, /readyz never flips green).
   # Compose-path warning; the Helm subchart uses an emptyDir by default
   # and PVC requires explicit storageClass.
+  #
+  # r2 bug-hunter NEW-2 + kit-doctor W2 convergence: the prior version
+  # checked only `[ -e "$override" ] && [ ! -w "$override" ]`. A
+  # nonexistent override path falls through silently — sidecar's first-boot
+  # `eager_load()` hits `OSError: [Errno 2] No such file or directory`
+  # and CrashLoopBackOffs with no operator-visible signal at install time.
+  # Add the missing branch.
   local env_file="$1" override
   override="$(env_value "$env_file" LUCAIRN_PII_ML_HF_CACHE_DIR)"
   [ -z "$override" ] && { echo "pii-ml HF cache: ok (named volume default)"; return 0; }
   if [ -e "$override" ] && [ ! -w "$override" ]; then
-    warn "pii-ml HF cache: $override is not writable; sidecar will loop on first-boot HF weight download"
+    warn "pii-ml HF cache: $override is not writable by uid 10001; sidecar will fail to write HF model cache → CrashLoopBackOff with sys.exit(2)"
+  elif [ ! -e "$override" ]; then
+    warn "pii-ml HF cache: $override does not exist; sidecar will fail to write HF weights at first boot (mkdir required, owned by uid 10001)"
+  else
+    echo "pii-ml HF cache: ok ($override writable)"
   fi
-  echo "pii-ml HF cache: ok"
   return 0
 }
 
@@ -3525,6 +3589,12 @@ doctor() {
   local pii_ml_lazy_failed=0
   check_pii_ml_lazy_not_ready_off_in_prod "$env_file" || pii_ml_lazy_failed=1
   [ "$pii_ml_lazy_failed" -eq 0 ] || return 1
+
+  # r2 kit-doctor G1: prod-mode silent-degrade gate paired with the lazy-
+  # not-ready check above (both close production fail-CLOSED holes).
+  local pii_ml_exit_failed=0
+  check_pii_ml_exit_on_load_failure_in_prod "$env_file" || pii_ml_exit_failed=1
+  [ "$pii_ml_exit_failed" -eq 0 ] || return 1
 
   check_pii_ml_hf_cache_writable "$env_file"
   check_pii_ml_node_memory "$env_file"
