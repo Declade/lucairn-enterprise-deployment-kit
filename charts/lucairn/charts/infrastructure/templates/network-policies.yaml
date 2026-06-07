@@ -148,13 +148,19 @@ spec:
       ports:
         - port: 50057
           protocol: TCP
-    # Intra-namespace (app → PostgreSQL, sanitizer → ollama-identity)
+    # Intra-namespace (app → PostgreSQL, sanitizer → ollama-identity,
+    # sanitizer → pii-ml gRPC sidecar on 50056). Closes bug-hunter
+    # BLOCKER-4: Phase 7 (Piiranha + GLiNER) dials pii-ml.dsa-identity.svc
+    # on port 50056; without it the default-deny applies and every Phase 7
+    # scan times out at the gRPC deadline, opening the circuit breaker.
     - to:
         - podSelector: {}
       ports:
         - port: 5432
           protocol: TCP
         - port: 11434
+          protocol: TCP
+        - port: 50056
           protocol: TCP
     # DNS resolution (required for hostname lookups)
     - to:

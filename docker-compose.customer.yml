@@ -363,16 +363,20 @@ services:
   #
   # Memory: 4Gi limit covers Piiranha (110MB) + GLiNER (1.5GB) + transformers
   # /torch (~600MB) + Python/grpcio overhead + headroom. HF weights download
-  # at first boot (~1.6GB one-time); mount LUCAIRN_PII_ML_HF_CACHE_DIR to a
-  # named volume for cross-restart persistence.
+  # at first boot (~1.6GB one-time); the named volume below is mounted at
+  # the image's HF_HOME (/home/appuser/.cache/huggingface) for cross-restart
+  # persistence so subsequent starts skip the re-download.
   pii-ml:
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-pii-ml:${LUCAIRN_PII_ML_IMAGE_TAG:-${LUCAIRN_IMAGE_TAG:-0.5.1}}"
     logging: *default-logging
     environment:
       DSA_ENV: "${DSA_ENV:-production}"
       # gRPC + HTTP bind addresses (ports verified against PR #241 final).
+      # NOTE: the image reads LUCAIRN_PII_ML_HEALTH_ADDR (NOT HTTP_ADDR) —
+      # locked at PR #241 server.py:63. Misnamed env vars silently fall
+      # back to the hardcoded image default 0.0.0.0:8088.
       LUCAIRN_PII_ML_GRPC_ADDR: "0.0.0.0:50056"
-      LUCAIRN_PII_ML_HTTP_ADDR: "0.0.0.0:8088"
+      LUCAIRN_PII_ML_HEALTH_ADDR: "0.0.0.0:8088"
       # Eager-load policy. Production default true so /readyz reflects
       # model-ready state accurately + first scan hits a warm inference path.
       LUCAIRN_PII_ML_EAGER_LOAD: "${LUCAIRN_PII_ML_EAGER_LOAD:-true}"
@@ -382,11 +386,18 @@ services:
       # HF revision SHAs — load-bearing supply-chain pins (PR #241 Codex r1
       # fix-up CODEX-HIGH closure). DO NOT override unless you mirror HF
       # weights into a private bucket AND verify the same SHAs.
-      LUCAIRN_PII_ML_PIIRANHA_REVISION: "${LUCAIRN_PII_ML_PIIRANHA_REVISION:-255acde6b1cffb4e2737b75e8c93f5d68ad8a6a5}"
-      LUCAIRN_PII_ML_GLINER_REVISION: "${LUCAIRN_PII_ML_GLINER_REVISION:-443d26d6a89e4ca4ef89bd8a4ad7c6b8f7f7a8aa}"
-      LUCAIRN_PII_ML_GLINER_FALLBACK_REVISION: "${LUCAIRN_PII_ML_GLINER_FALLBACK_REVISION:-40ec419315b6e34a0b3b7c2e5b3a8e2a3e7c8f4b}"
+      LUCAIRN_PII_ML_PIIRANHA_REVISION: "${LUCAIRN_PII_ML_PIIRANHA_REVISION:-255acde67a2f34cf452eb42e365b24d2957352fc}"
+      LUCAIRN_PII_ML_GLINER_REVISION: "${LUCAIRN_PII_ML_GLINER_REVISION:-443d26d654e0324125a96bebd8e796c14ff2efe6}"
+      LUCAIRN_PII_ML_GLINER_FALLBACK_REVISION: "${LUCAIRN_PII_ML_GLINER_FALLBACK_REVISION:-40ec419335d09393f298636f471328b722c6da9e}"
       # NEVER set true in production — opt-in for dev / single-shot debugging.
       LUCAIRN_PII_ML_ALLOW_LAZY_NOT_READY: "${LUCAIRN_PII_ML_ALLOW_LAZY_NOT_READY:-false}"
+      # Operator-tunable knobs surfaced for parity with the image's env-var
+      # contract (PR #241 server.py). Defaults match the in-tree compose
+      # baseline (LUCAIRN_PII_ML_LOG_LEVEL=INFO, GRPC_WORKERS=8, scanners on).
+      LUCAIRN_PII_ML_LOG_LEVEL: "${LUCAIRN_PII_ML_LOG_LEVEL:-INFO}"
+      LUCAIRN_PII_ML_GRPC_WORKERS: "${LUCAIRN_PII_ML_GRPC_WORKERS:-8}"
+      LUCAIRN_PII_ML_PIIRANHA_ENABLED: "${LUCAIRN_PII_ML_PIIRANHA_ENABLED:-true}"
+      LUCAIRN_PII_ML_GLINER_ENABLED: "${LUCAIRN_PII_ML_GLINER_ENABLED:-true}"
       HF_HOME: "/home/appuser/.cache/huggingface"
     volumes:
       # Persist HF weights across container restarts. Named volume avoids
@@ -394,6 +405,12 @@ services:
       - pii-ml-hf-cache:/home/appuser/.cache/huggingface
     networks:
       - dsa-identity
+    # Docker Compose v2 (non-Swarm) ignores the `deploy:` block; `mem_limit`
+    # is the v2 schema directive that DOES enforce a hard memory cap on
+    # plain `docker compose up`. Both are set so the 4Gi ceiling is honored
+    # whether the operator runs Compose v2, Swarm, or k8s-compose. The
+    # values MUST match.
+    mem_limit: 4g
     deploy:
       resources:
         limits:

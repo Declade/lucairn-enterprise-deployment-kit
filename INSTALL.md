@@ -144,6 +144,33 @@ defaults match the SHAs baked into the `dsa-pii-ml` image's
 `image-manifest.yaml` entry. Override only if you mirror HF weights into
 a private bucket AND verify the same SHAs are present.
 
+**On image upgrade:** when you bump the `dsa-pii-ml` image tag to a new
+release, check `image-manifest.yaml` § `services.dsa-pii-ml` for the new
+recorded `image_tag` AND verify the HF SHAs in `pii-ml.hfRevisions` still
+match the values baked into the new image. A SHA mismatch on a kit
+upgrade will silently re-download model weights at a different revision
+on first cold-cache boot.
+
+### Managed-container-runtime caveat (ACA / ECS / Cloud Run)
+
+Managed container runtimes — Azure Container Apps (ACA), AWS ECS, GCP
+Cloud Run — may NOT honor Compose `depends_on` health conditions across
+containers in the same container group. In those topologies, sanitizer
+can start before pii-ml is ready; the sanitizer-side circuit breaker
+opens within 3 failed scans and Phase 7 stays dormant (functional but
+log-noisy) until the breaker's half-open window elapses.
+
+Operators deploying on managed runtimes should EITHER:
+
+- Verify sanitizer does not start until pii-ml `/readyz` returns 200 in
+  their runtime's healthcheck model (manual sequencing or external
+  orchestration), OR
+- Disable Phase 7 entirely (`pii-ml.enabled: false` +
+  `sandbox-a.sanitizer.piiranha.enabled: false` +
+  `sandbox-a.sanitizer.gliner.enabled: false`) and manage Phase 7
+  separately as a dedicated sidecar deployment in their runtime's
+  preferred model.
+
 ### Memory requirements
 
 The sidecar's resource limits default to `4Gi` memory + `2 CPU`. Plan
@@ -248,7 +275,13 @@ required-key check.
 For Docker Compose:
 
 - Linux host with Docker Engine and Docker Compose v2.
-- 4 vCPU, 16 GB RAM minimum for customer-side split deployment.
+- **20 GB RAM minimum** when Phase 7 ML PII scanners are enabled (the
+  default — the `pii-ml` sidecar runs Piiranha + GLiNER and reserves up
+  to 4 GB for the container, on top of sandbox-a + sanitizer + ollama-
+  identity + gateway + witness + audit + id-bridge baseline). **16 GB
+  RAM** is the floor only when Phase 7 is disabled (see § "Phase 7 ML
+  PII scanners" for the opt-out recipe). 4 vCPU is sufficient for either
+  topology at single-tenant pilot load.
 - TLS-terminating reverse proxy such as Caddy, Nginx, Traefik, or an enterprise ingress proxy.
 - Outbound HTTPS to Lucairn-provided remote Sandbox B endpoint if using split deployment.
 - Python 3 with the `cryptography` library (>=2.6) OR `pynacl`. Required by
@@ -565,6 +598,16 @@ For **split deployment**:
 ```bash
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 ```
+
+> **First-boot pii-ml delay.** The kit ships the Phase 7 ML PII sidecar
+> (`pii-ml`) which downloads ~1.6GB of HuggingFace model weights on first
+> cold-cache boot. The `sanitizer` service depends on `pii-ml` being
+> healthy; expect **3-8 minutes** before `/readyz` returns 200 the FIRST
+> time you run `up -d`. Subsequent restarts hit the named volume cache
+> and complete in seconds. Stream the load progress with
+> `docker compose logs -f pii-ml`; see TROUBLESHOOTING.md §
+> "Sanitizer Stuck In Starting / Gateway /readyz 503 After Adding
+> pii-ml" if the load stalls.
 
 For **self-hosted inference**, load the self-hosted overlay so the local
 Sandbox B container + model runtime profile come up alongside the customer

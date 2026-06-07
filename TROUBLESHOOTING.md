@@ -157,6 +157,69 @@ docker compose -f docker-compose.customer.yml --env-file customer.env logs --tai
 
 If memory pressure appears, raise the container memory limit. The Compose kit defaults to 2 GB for sanitizer.
 
+## Sanitizer Stuck In Starting / Gateway /readyz 503 After Adding pii-ml
+
+Symptom: `docker compose ps` (Compose) or `kubectl get pods -n dsa-identity`
+(Helm) shows `sanitizer` in `Created` / `(starting)` / `(unhealthy)` for
+3-8 minutes after a fresh deploy. The gateway's `/readyz` returns 503
+with `sanitizer_unavailable` during that window.
+
+Cause: Phase 7 ML PII scanners (Piiranha + GLiNER) shipped at PR #240 as
+a dedicated `pii-ml` gRPC sidecar. On first cold-cache boot, the sidecar
+downloads ~1.6GB of HuggingFace model weights (Piiranha ~110MB, GLiNER
+primary ~1.5GB). The sanitizer service declares
+`depends_on: pii-ml: service_healthy` (Compose) / waits on the
+sidecar's `/readyz` (Helm) so the sanitizer cannot become healthy until
+pii-ml does. The compose healthcheck `start_period: 180s` covers a
+warm-cache boot; cold-cache first-install can run to 5-8 minutes on
+constrained network egress.
+
+Diagnose:
+
+```bash
+# Compose path — watch HF weight downloads stream into the named volume
+docker compose -f docker-compose.customer.yml --env-file customer.env \
+  logs -f pii-ml | grep -E 'booting|loading|ready|error'
+
+# Helm path — same markers from the kubelet log stream
+kubectl logs -n dsa-identity deploy/pii-ml --tail=200 -f \
+  | grep -E 'booting|loading|ready|error'
+
+# Look for these markers in order:
+#   "pii-ml booting"           — startup begin
+#   "loading piiranha @ <SHA>" — HF fetch + model load (~5-30s warm, 1-3 min cold)
+#   "loading gliner @ <SHA>"   — HF fetch + model load (~30-90s warm, 3-6 min cold)
+#   "ready"                    — both loaded, readyz flipped to 200
+```
+
+If logs stall on `loading piiranha @ <SHA>` for > 5 minutes, check
+network egress to `huggingface.co` from the sidecar container/pod —
+operators with restrictive corporate proxies need to allowlist
+`huggingface.co` + `cdn-lfs.huggingface.co`.
+
+If the pii-ml container exits and restart-loops with `sys.exit(2)` or
+`sys.exit(3)`, the HF cache is corrupted or the weights download was
+interrupted mid-write. Recover by removing the named volume + bringing
+the stack back up to re-download from scratch:
+
+```bash
+# Compose path
+docker compose -f docker-compose.customer.yml --env-file customer.env stop pii-ml
+docker volume rm "$(docker compose -f docker-compose.customer.yml --env-file customer.env config --volumes | grep pii-ml-hf-cache || echo pii-ml-hf-cache)"
+docker compose -f docker-compose.customer.yml --env-file customer.env up -d pii-ml
+
+# Helm path: delete the pod (the emptyDir cache vanishes with it)
+kubectl delete pod -n dsa-identity -l app.kubernetes.io/name=pii-ml
+```
+
+On air-gapped sites where huggingface.co is unreachable: see
+`OPS.md` § "pii-ml sidecar — HF cache PVC" for the pre-staged-weights
+recipe.
+
+Escape hatch (operator escalation): if Phase 7 is causing operational
+problems and you need to drop back to L1+L2 immediately, see
+`OPS.md` § "Disabling Phase 7 entirely".
+
 ## Certificate Errors
 
 Run:

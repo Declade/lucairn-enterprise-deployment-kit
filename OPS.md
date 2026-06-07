@@ -47,6 +47,8 @@ scanners" for the deployment shape; this section covers ops.
 
 ### Health diagnostics
 
+**Helm path:**
+
 ```bash
 # Sidecar pod status
 kubectl get pod -n dsa-identity -l app.kubernetes.io/name=pii-ml
@@ -60,7 +62,24 @@ kubectl exec -n dsa-identity deploy/pii-ml -- \
   python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8088/readyz').read())"
 ```
 
+**Compose path** (e.g. Bhatia Advisory on Azure Container Apps):
+
+```bash
+# Sidecar container status
+docker compose -f docker-compose.customer.yml --env-file customer.env ps pii-ml
+
+# /healthz (always-up after container start)
+docker compose -f docker-compose.customer.yml --env-file customer.env \
+  exec pii-ml python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8088/healthz').read())"
+
+# /readyz (200 only after both models loaded — fail-CLOSED ready gate)
+docker compose -f docker-compose.customer.yml --env-file customer.env \
+  exec pii-ml python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8088/readyz').read())"
+```
+
 ### Inspecting model load logs
+
+**Helm path:**
 
 ```bash
 # Model load progress + boot warnings
@@ -71,6 +90,13 @@ kubectl logs -n dsa-identity deploy/pii-ml --tail=200
 #   "loading piiranha @ <SHA>" — HF fetch + model load (~5-30s)
 #   "loading gliner @ <SHA>"   — HF fetch + model load (~30-90s)
 #   "ready"                    — both loaded, readyz flipped to 200
+```
+
+**Compose path:**
+
+```bash
+docker compose -f docker-compose.customer.yml --env-file customer.env \
+  logs --tail 200 -f pii-ml
 ```
 
 ### Eager-load failure behavior

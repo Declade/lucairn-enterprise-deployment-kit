@@ -82,7 +82,12 @@ spec:
             # LUCAIRN_PII_ML_GRPC_ADDR convention).
             - name: LUCAIRN_PII_ML_GRPC_ADDR
               value: "0.0.0.0:{{ .Values.service.grpcPort }}"
-            - name: LUCAIRN_PII_ML_HTTP_ADDR
+            # HTTP /healthz + /readyz bind address. The image's server.py
+            # reads LUCAIRN_PII_ML_HEALTH_ADDR (NOT HTTP_ADDR) — locked at
+            # PR #241 server.py:63. Mismatched env names silently fall
+            # through to the hardcoded image default 0.0.0.0:8088 and
+            # operator port customization is ignored.
+            - name: LUCAIRN_PII_ML_HEALTH_ADDR
               value: "0.0.0.0:{{ .Values.service.httpPort }}"
             # Eager-load policy. Production default true → boot blocks until
             # both models load; /readyz reflects accurately. Mirrors PR #240
@@ -110,6 +115,19 @@ spec:
             # OR fail-OPEN. Production default false. NEVER set true in prod.
             - name: LUCAIRN_PII_ML_ALLOW_LAZY_NOT_READY
               value: {{ .Values.allowLazyNotReady | quote }}
+            # Operator-tunable knobs surfaced for parity with the image's
+            # env-var contract (PR #241 server.py). Defaults match the
+            # in-tree compose defaults.
+            - name: LUCAIRN_PII_ML_LOG_LEVEL
+              value: {{ .Values.logLevel | default "INFO" | quote }}
+            - name: LUCAIRN_PII_ML_GRPC_WORKERS
+              value: {{ .Values.grpcWorkers | default 8 | quote }}
+            # Per-scanner sidecar enable flags. Paired with sanitizer-side
+            # flags (sandbox-a.sanitizer.piiranha.enabled / .gliner.enabled).
+            - name: LUCAIRN_PII_ML_PIIRANHA_ENABLED
+              value: {{ .Values.piiranhaEnabled | default true | quote }}
+            - name: LUCAIRN_PII_ML_GLINER_ENABLED
+              value: {{ .Values.glinerEnabled | default true | quote }}
           volumeMounts:
             - name: hf-cache
               mountPath: /home/appuser/.cache/huggingface

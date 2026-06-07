@@ -82,7 +82,15 @@ services:
     # vars in the Helm subchart). The kit's pii-ml.hfRevisions block in
     # charts/lucairn/values.yaml MUST stay in lockstep with these — Sim 2
     # F3-class drift surface.
-    image_tag: ""
+    #
+    # PINNED to 0.5.1 because the rest of the kit ships on
+    # default_lucairn_image_tag=0.5.0 and the sidecar has an INDEPENDENT
+    # release cadence (its release is tied to PR #240 production-path
+    # follow-up, not the umbrella 0.5.0 cycle). Operators MUST mirror
+    # dsa-pii-ml:0.5.1 specifically; bumping LUCAIRN_IMAGE_TAG does NOT
+    # cascade to this service. `bin/lucairn doctor --strict` enforces the
+    # pin against the recorded digest below.
+    image_tag: "0.5.1"
   dsa-veil-witness:
     image_tag: ""
   dsa-gateway:
