@@ -59,7 +59,16 @@ spec:
       {{- end }}
       containers:
         - name: {{ .Chart.Name }}
-          image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.image.repository }}:{{ .Values.image.tag | default .Values.global.imageTag | default .Chart.AppVersion }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ end }}"
+          # Image-tag fallback chain explicitly EXCLUDES global.imageTag —
+          # the pii-ml sidecar ships on an INDEPENDENT release cadence from
+          # the umbrella dsa-* services. The umbrella tag (0.5.0 in v1.0)
+          # has no matching dsa-pii-ml image in GHCR, so falling through
+          # would pull a non-existent tag fail-closed at pod start. If an
+          # operator sets `pii-ml.image.tag: ""` to override, the chart
+          # falls back to Chart.AppVersion (currently 0.5.1) — NEVER to
+          # global.imageTag. Mirrors the docker-compose.customer.yml:370
+          # discipline + closes Codex r1 FINDING-3 (kit PR #65).
+          image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ end }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
@@ -132,15 +141,29 @@ spec:
             - name: hf-cache
               mountPath: /home/appuser/.cache/huggingface
           startupProbe:
-            # Model load can take 30-120s depending on whether the HF cache
-            # volume is warm. 120s × 60 retries = 7200s ceiling tolerates
-            # cold-cache first-boot OR a constrained dev cluster.
+            # Cold-cache first-boot eager-load (Piiranha + GLiNER primary +
+            # GLiNER fallback) takes 3-8 minutes in PR #241 production
+            # observation (~1.6GB HF weights downloaded from network +
+            # loaded into transformers/torch). server.py does NOT start
+            # listening on /healthz until eager-load completes.
+            #
+            # Budget: 5s × 180 retries + 10s initialDelay = 910s ≈ 15min.
+            # Covers documented worst-case (8min) + headroom. Subsequent
+            # restarts hit the HF cache PVC / emptyDir and complete in seconds
+            # — the probe still ratchets the same budget on warm boots
+            # because failureThreshold is the ceiling, not the expected.
+            #
+            # The /healthz endpoint flips green BEFORE /readyz because the
+            # readinessProbe also gates on model-loaded state (see below).
+            # Result: pod stays "Starting" through the entire cold-cache
+            # window and Kubernetes does not roll-restart the pod
+            # mid-load.
             httpGet:
               path: /healthz
               port: http
             initialDelaySeconds: 10
             periodSeconds: 5
-            failureThreshold: 60
+            failureThreshold: 180
           livenessProbe:
             httpGet:
               path: /healthz

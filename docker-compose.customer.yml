@@ -367,7 +367,15 @@ services:
   # the image's HF_HOME (/home/appuser/.cache/huggingface) for cross-restart
   # persistence so subsequent starts skip the re-download.
   pii-ml:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-pii-ml:${LUCAIRN_PII_ML_IMAGE_TAG:-${LUCAIRN_IMAGE_TAG:-0.5.1}}"
+    # Pinned to a DEDICATED LUCAIRN_PII_ML_IMAGE_TAG (default 0.5.1) — the
+    # pii-ml sidecar ships on its own release cadence INDEPENDENT of the
+    # umbrella LUCAIRN_IMAGE_TAG (mirrors the lucairn-dashboard pattern).
+    # DO NOT fall back to LUCAIRN_IMAGE_TAG: the umbrella tag (0.5.0 in v1.0)
+    # has no matching dsa-pii-ml image in GHCR, so the fall-through would
+    # pull a non-existent tag fail-closed at boot. `bin/lucairn doctor`
+    # validates the SAME LUCAIRN_PII_ML_IMAGE_TAG env var (see
+    # bin/lucairn:608-616) so any customer override is caught pre-up.
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-pii-ml:${LUCAIRN_PII_ML_IMAGE_TAG:-0.5.1}"
     logging: *default-logging
     environment:
       DSA_ENV: "${DSA_ENV:-production}"
