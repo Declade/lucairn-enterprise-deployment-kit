@@ -19,7 +19,7 @@ namespace: dsa-identity
 
 # Single-replica only. The sidecar serves intra-cluster gRPC unary calls
 # from the sanitizer. Multi-replica scaling is a v2 design when an
-# Enterprise multi-customer deployment (e.g. Bhatia Advisory at scale)
+# Enterprise multi-customer deployment at scale
 # hits the throughput ceiling. Per PR #240 PRD § Out of scope.
 replicaCount: 1
 
