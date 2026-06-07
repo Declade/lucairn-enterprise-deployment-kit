@@ -38,6 +38,122 @@ kubectl logs -n dsa-identity deploy/sandbox-a --tail=300
 kubectl logs -n dsa-witness deploy/veil-witness --tail=300
 ```
 
+## pii-ml sidecar (Phase 7 ML PII scanners)
+
+The `pii-ml` deployment in `dsa-identity` runs Piiranha + GLiNER as a
+single-process Python gRPC service extracted from the sanitizer monolith
+at PR #240 production-path follow-up. See INSTALL.md § "Phase 7 ML PII
+scanners" for the deployment shape; this section covers ops.
+
+### Health diagnostics
+
+```bash
+# Sidecar pod status
+kubectl get pod -n dsa-identity -l app.kubernetes.io/name=pii-ml
+
+# /healthz (always-up after container start)
+kubectl exec -n dsa-identity deploy/pii-ml -- \
+  python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8088/healthz').read())"
+
+# /readyz (200 only after both models loaded — fail-CLOSED ready gate)
+kubectl exec -n dsa-identity deploy/pii-ml -- \
+  python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8088/readyz').read())"
+```
+
+### Inspecting model load logs
+
+```bash
+# Model load progress + boot warnings
+kubectl logs -n dsa-identity deploy/pii-ml --tail=200
+
+# Look for these markers:
+#   "pii-ml booting"           — startup begin
+#   "loading piiranha @ <SHA>" — HF fetch + model load (~5-30s)
+#   "loading gliner @ <SHA>"   — HF fetch + model load (~30-90s)
+#   "ready"                    — both loaded, readyz flipped to 200
+```
+
+### Eager-load failure behavior
+
+The sidecar runs with `LUCAIRN_PII_ML_EXIT_ON_LOAD_FAILURE=true` by
+default. On a corrupted HF cache, missing weights, or a load-time
+exception, the process hard-exits (`sys.exit(2)` for Piiranha,
+`sys.exit(3)` for GLiNER) and Kubernetes restarts the container per the
+`restartPolicy: Always` semantics on the Deployment. This is intentional
+fail-CLOSED behavior locked at PR #240 Codex r1 review.
+
+If the restart loop persists:
+
+1. Check `kubectl describe pod -n dsa-identity -l app.kubernetes.io/name=pii-ml`
+   for OOMKilled (raise `pii-ml.resources.limits.memory`).
+2. Check pod logs for a corrupted HF cache — typically resolved by
+   recreating the pod (`emptyDir` cache) OR wiping the PVC contents.
+3. Verify the HF revision SHAs in `pii-ml.hfRevisions` match the values
+   baked into the image's `image-manifest.yaml` entry — a mismatch
+   silently re-downloads weights at a different revision and may break.
+
+### Disabling Phase 7 entirely (operator escape hatch)
+
+If Phase 7 is causing operational problems and you need to drop back to
+L1+L2 without uninstalling the chart:
+
+```bash
+# In customer-values.yaml:
+pii-ml:
+  enabled: false
+sandbox-a:
+  sanitizer:
+    piiranha:
+      enabled: false
+    gliner:
+      enabled: false
+
+# Then:
+helm upgrade lucairn charts/lucairn -f customer-values.yaml
+```
+
+This removes the pii-ml deployment and tells sanitizer to skip Phase 7
+in the rendered config. Sanitizer keeps L1+L2 + L3 (Ollama identity)
+running unchanged. The customer pipeline degrades to the pre-PR-#240
+coverage profile.
+
+### pii-ml sidecar — HF cache PVC
+
+For air-gapped sites or sites that restart the pii-ml pod frequently
+(e.g. during cluster upgrades), persist the HF cache to a PVC so the
+~1.6GB weight download happens once per cluster instead of once per pod
+restart.
+
+```yaml
+# In customer-values.yaml:
+pii-ml:
+  hfCacheVolume:
+    type: pvc
+    pvc:
+      storageClass: ""        # leave blank for cluster default, or set explicitly
+      storageSize: 3Gi
+      accessMode: ReadWriteOnce
+```
+
+The PVC carries `helm.sh/resource-policy: keep` so `helm uninstall`
+preserves the downloaded weights for clean re-install (mirroring the
+`postgres-*` PVC pattern).
+
+For air-gapped sites that cannot fetch HF weights at boot:
+
+1. On a connected operator host, populate a directory with the HF cache
+   layout for both Piiranha + GLiNER (the HF Python lib's standard cache
+   structure under `~/.cache/huggingface/`).
+2. Pack as a tarball + copy to the cluster.
+3. Pre-create the PVC via `kubectl apply` of a PVC manifest matching the
+   chart's naming (`pii-ml-hf-cache`), bind it via a one-shot Job that
+   untars the cache contents to `/home/appuser/.cache/huggingface`, then
+   `helm upgrade --install lucairn ...` with `pii-ml.hfCacheVolume.type=pvc`.
+
+The sidecar boot will skip the HF download and load weights directly
+from the pre-staged cache. See the Lucairn support team for an
+air-gapped staging script template.
+
 ## Backups
 
 > ⚠ **The three compliance databases hold your regulator-cited evidence.**

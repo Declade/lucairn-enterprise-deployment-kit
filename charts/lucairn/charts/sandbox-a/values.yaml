@@ -141,6 +141,37 @@ sanitizer:
   llmScanMode: "sequential"
   llmScanRestoreThreshold: 0.85
 
+  # Phase 7 — ML PII scanners extracted into the pii-ml gRPC sidecar
+  # (PR #240 production-path follow-up, "A3 Proper"). DEFAULT OFF here.
+  #
+  # Operators enable Phase 7 by flipping BOTH:
+  #   1. Umbrella `pii-ml.enabled: true` (deploys the sidecar) — default ON
+  #   2. The piiranha/gliner enabled flags below (sanitizer dials the sidecar)
+  #
+  # Closes DRIFT-001 from PR #241 contract-drift r1: in-tree
+  # config/default-sanitizer.yaml grew these sections at PR #240 ship time;
+  # the Helm-rendered ConfigMap fell behind. Adding them here + in
+  # sanitizer-configmap.yaml restores chart ↔ in-tree parity.
+  piiranha:
+    enabled: false
+    grpcDeadlineSeconds: 5
+  gliner:
+    enabled: false
+    grpcDeadlineSeconds: 5
+    skipMinTextLen: 32
+    skipMaxEntityDensity: 0.30
+  kAnonymity:
+    enabled: false
+    k: 5
+  piiMlClient:
+    # Empty (default) resolves to pii-ml.<namespace>.svc.cluster.local:50056
+    # in the sanitizer-configmap.yaml template. Override only if pii-ml is
+    # deployed to a non-default namespace OR an external endpoint.
+    endpoint: ""
+    circuitBreaker:
+      consecutiveFailures: 3
+      halfOpenSeconds: 30
+
 # ollama-identity is the L3 PII-plane LLM runtime (the on-GPU PII Shield).
 # It only renders when sanitizer.llmScanEnabled=true. Images are pinned by
 # released tag + sha256 digest (NET-02 supply-chain hardening) so the

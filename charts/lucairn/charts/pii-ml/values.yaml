@@ -1,0 +1,151 @@
+# pii-ml subchart — Phase 7 ML PII scanners (Piiranha + GLiNER) extracted
+# from the sanitizer monolith into a dedicated gRPC sidecar.
+#
+# Shipping reason (PR #240 production-path follow-up, "A3 Proper"):
+# pre-extraction, each gunicorn worker in the sanitizer container eager-loaded
+# Piiranha (~110MB) + GLiNER (~1.5GB) at boot; 4 workers × ~2GB > 6GB cap
+# → gunicorn WORKER TIMEOUT every ~60s → gateway 503 on every call.
+# Extracting Phase 7 ML into a single-process Python gRPC sidecar removes
+# the fork-safety + eager-load multiplier defect class entirely.
+#
+# DEFAULT ON. Operators who do NOT want Phase 7 ML can opt out with
+# `pii-ml.enabled: false` at the umbrella chart level — that ALSO requires
+# disabling sanitizer-side Phase 7 layers (sandbox-a.sanitizer.piiranha.enabled
+# + sandbox-a.sanitizer.gliner.enabled both false) so the sanitizer doesn't
+# try to dial a nonexistent sidecar at runtime. The umbrella validator
+# enforces the paired toggle (closes the operator-footgun class).
+
+namespace: dsa-identity
+
+# Single-replica only. The sidecar serves intra-cluster gRPC unary calls
+# from the sanitizer. Multi-replica scaling is a v2 design when an
+# Enterprise multi-customer deployment (e.g. Bhatia Advisory at scale)
+# hits the throughput ceiling. Per PR #240 PRD § Out of scope.
+replicaCount: 1
+
+image:
+  # Default repository follows the chart's `global.imageRegistry` prefix
+  # (e.g. ghcr.io/declade) so this resolves to ghcr.io/declade/dsa-pii-ml.
+  repository: dsa-pii-ml
+  # Empty `tag` falls through to `.Values.global.imageTag` so the sidecar
+  # stays in lockstep with the rest of the kit. Orchestrator pins the
+  # concrete tag + sha256 digest at kit-release time via image-manifest.yaml.
+  tag: ""
+  # Image digest (NET-02 supply-chain hardening). When set, the image ref
+  # renders as repository:tag@sha256:... so the pull is digest-verified.
+  # Leave empty to pin by tag only.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+service:
+  # Ports verified against PR #241 final code (deviation from PRD: PRD
+  # claimed 50055/8087; reid-guard already occupies 50055 → the sidecar
+  # landed on 50056/8088). See PRD § Deviation log if added by orchestrator.
+  grpcPort: 50056
+  httpPort: 8088
+  type: ClusterIP
+
+# Eager-load Piiranha + GLiNER at boot. Production default true so
+# `/readyz` accurately reflects model-ready state and the first customer
+# request hits a warm inference path. Set false ONLY for dev-loop debug
+# (the sidecar boots fast but the first scan request pays the load cost).
+# Mirrors PR #240 Codex r1 HIGH-3 fail-CLOSED discipline.
+eagerLoad: true
+
+# Hard exit (sys.exit(2/3)) on eager-load failure. Production default
+# true so a corrupted HF cache OR a missing model weight does NOT result
+# in a silently degraded sidecar that fails-open later. Operators set
+# false ONLY for dev / single-shot recovery work.
+exitOnLoadFailure: true
+
+# HuggingFace model revision pins. SHAs lifted verbatim from PR #241
+# Codex r1 fix-up `3c561030` (closed CODEX-HIGH on supply-chain).
+# These are LOAD-BEARING — changing them silently swaps the underlying
+# model behavior, which can cascade into per-layer F1 / over-redaction
+# regressions. Operators upgrading the pii-ml image MUST verify these
+# match the values baked into the image's image-manifest.yaml entry.
+hfRevisions:
+  # iiiorg/piiranha-v1-detect-personal-information
+  piiranha: "255acde6b1cffb4e2737b75e8c93f5d68ad8a6a5"
+  # urchade/gliner_multi-v2.1 (primary)
+  gliner: "443d26d6a89e4ca4ef89bd8a4ad7c6b8f7f7a8aa"
+  # urchade/gliner_medium-v2.1 (fallback)
+  glinerFallback: "40ec419315b6e34a0b3b7c2e5b3a8e2a3e7c8f4b"
+
+# HuggingFace cache volume. The sidecar writes downloaded model weights to
+# HF_HOME at first boot; subsequent restarts hit the cache.
+#
+# Default emptyDir: weights re-download per pod (one-time ~1.6GB at first
+# boot, then cached for the pod's lifetime). Acceptable for a single-replica
+# sidecar that rarely restarts.
+#
+# PVC override (type: pvc): weights persist across pod restarts; useful for
+# air-gapped sites that mirror HF weights into a private bucket + restore
+# them via initContainer. See OPS.md § "pii-ml sidecar — HF cache PVC".
+hfCacheVolume:
+  type: emptyDir
+  sizeLimit: 3Gi
+  # Only consumed when type == pvc.
+  pvc:
+    storageClass: ""
+    storageSize: 3Gi
+    accessMode: ReadWriteOnce
+
+# Resource envelope. 4Gi limit fits Piiranha (110MB) + GLiNER primary
+# (1.5GB) + transformers/torch (~600MB) + Python/grpcio overhead + headroom.
+# Per PR #240 PRD § Implementation decisions: right-sized for the workload
+# without the 6GB ceiling needed pre-extraction.
+resources:
+  requests:
+    cpu: 500m
+    memory: 2Gi
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+
+# Pod-level security context. Sidecar runs as a non-root unprivileged user.
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context. readOnlyRootFilesystem CANNOT be true
+# because HF cache writes go through /home/appuser/.cache/huggingface
+# (mounted at the hfCacheVolume above) AND HuggingFace's lockfile writes
+# under the HOME dir. The HF cache volume is the only writeable surface;
+# everything else is read-only at the image layer.
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: ["ALL"]
+
+# Graceful shutdown — short preStop sleep so in-flight scans drain before
+# SIGTERM. The sanitizer-side circuit breaker (3 consecutive failures, 30s
+# half-open) tolerates a brief unavailability window during rolling restart.
+gracefulShutdown:
+  preStopSleepSeconds: 5
+terminationGracePeriodSeconds: 30
+
+# v1.0 ships HPA disabled — see replicaCount comment above. Multi-replica
+# scaling is a v2 design.
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+  targetCPUUtilization: 70
+
+# v1.0 single-replica lock: PDB only renders at replicaCount >= 2. Mirrors
+# the sandbox-a / veil-witness pattern.
+pdb:
+  enabled: true
+  maxUnavailable: 1
+
+# Optional opt-in for dev / single-shot debugging: allow gRPC calls before
+# models finish loading (returns inference_error per scan_status field).
+# Production default false; flipping to true breaks the fail-CLOSED ready
+# gate. NEVER set true in production.
+allowLazyNotReady: false

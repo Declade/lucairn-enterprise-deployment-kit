@@ -114,3 +114,61 @@ data:
       enabled: false
       threshold: 0.25
       action: generalize
+
+    # ──────────────────────────────────────────────────────────────────
+    # Phase 7 — ML PII scanners (Piiranha + GLiNER) extracted into the
+    # pii-ml gRPC sidecar (PR #240 production-path follow-up, "A3 Proper").
+    #
+    # IMPORTANT: these blocks have TWO independent enable gates:
+    #   1. The umbrella chart's `pii-ml.enabled` flag controls whether the
+    #      sidecar DEPLOYS at all.
+    #   2. The sanitizer-side `piiranha.enabled` / `gliner.enabled` flags
+    #      below control whether the sanitizer attempts to CALL the sidecar.
+    #
+    # Helm operators opt into Phase 7 ML by flipping BOTH gates on. The
+    # half-enabled combos are NON-fatal (no fail-fast guard yet, future
+    # work) but documented misconfigurations:
+    #   - sanitizer layers enabled + sidecar disabled → sanitizer dials a
+    #     nonexistent service every scan; circuit breaker opens within 3
+    #     requests and Phase 7 stays dormant (functional but log-noisy)
+    #   - sidecar enabled + sanitizer layers disabled → wasted resources,
+    #     Phase 7 layers never fire
+    #
+    # Closes contract-drift-detector DRIFT-001 (PR #241): the in-tree
+    # config/default-sanitizer.yaml grew Phase 7 sections at PR #240; the
+    # Helm-rendered sanitizer ConfigMap fell behind. Default-OFF here to
+    # match the Helm convention (operators opt in), vs default-ON in the
+    # in-tree default-sanitizer.yaml.
+    # ──────────────────────────────────────────────────────────────────
+    piiranha:
+      enabled: {{ .Values.sanitizer.piiranha.enabled | default false }}
+      # gRPC deadline per scan call (seconds). The sidecar's eager-load
+      # pre-warms inference; first-call latency should be < 5s.
+      grpc_deadline_seconds: {{ .Values.sanitizer.piiranha.grpcDeadlineSeconds | default 5 }}
+
+    gliner:
+      enabled: {{ .Values.sanitizer.gliner.enabled | default false }}
+      grpc_deadline_seconds: {{ .Values.sanitizer.gliner.grpcDeadlineSeconds | default 5 }}
+      # Adaptive-skip thresholds. Sanitizer passes l1_l2_entity_count +
+      # text_len to the sidecar; the sidecar applies these to decide
+      # whether to run GLiNER inference at all (skipped_short / skipped_dense).
+      skip_min_text_len: {{ .Values.sanitizer.gliner.skipMinTextLen | default 32 }}
+      skip_max_entity_density: {{ .Values.sanitizer.gliner.skipMaxEntityDensity | default 0.30 }}
+
+    k_anonymity:
+      # k-anonymity is pure math — stays in-process in sanitizer (NOT in
+      # the pii-ml sidecar). Default OFF for Helm operators; flip on via
+      # `.Values.sanitizer.kAnonymity.enabled`. See PRD § Out of scope.
+      enabled: {{ .Values.sanitizer.kAnonymity.enabled | default false }}
+      k: {{ .Values.sanitizer.kAnonymity.k | default 5 }}
+
+    pii_ml_client:
+      # gRPC endpoint for the pii-ml sidecar. The default resolves to the
+      # pii-ml subchart's Service in the sandbox-a namespace (dsa-identity).
+      # Sanitizer's pii_ml_client.py dials this on every Phase 7 scan.
+      endpoint: "{{ .Values.sanitizer.piiMlClient.endpoint | default (printf "pii-ml.%s.svc.cluster.local:50056" .Values.namespace) }}"
+      # Circuit breaker: open after N consecutive failures, half-open after
+      # half_open_seconds. Mirrors PR #240 PRD § Implementation decisions.
+      circuit_breaker:
+        consecutive_failures: {{ .Values.sanitizer.piiMlClient.circuitBreaker.consecutiveFailures | default 3 }}
+        half_open_seconds: {{ .Values.sanitizer.piiMlClient.circuitBreaker.halfOpenSeconds | default 30 }}

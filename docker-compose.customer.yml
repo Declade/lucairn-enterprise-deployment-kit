@@ -89,6 +89,10 @@ volumes:
   # Holds the migration SQL after the prep-migrations service has rendered
   # any *.up.sql.tmpl through envsubst. Migrate runners mount this read-only.
   rendered-migrations:
+  # HF model weight cache for the pii-ml sidecar. Persists Piiranha + GLiNER
+  # weights across container restarts so subsequent boots skip the ~1.6GB
+  # download.
+  pii-ml-hf-cache:
 
 services:
   # ── Infrastructure ──────────────────────────────────────────────
@@ -352,11 +356,65 @@ services:
       retries: 5
     restart: on-failure
 
+  # Phase 7 ML PII scanners (Piiranha + GLiNER) extracted from the sanitizer
+  # monolith into a dedicated single-process gRPC sidecar at PR #240
+  # production-path follow-up ("A3 Proper"). Sanitizer dials this on every
+  # Phase 7 scan via LUCAIRN_PII_ML_ADDR below.
+  #
+  # Memory: 4Gi limit covers Piiranha (110MB) + GLiNER (1.5GB) + transformers
+  # /torch (~600MB) + Python/grpcio overhead + headroom. HF weights download
+  # at first boot (~1.6GB one-time); mount LUCAIRN_PII_ML_HF_CACHE_DIR to a
+  # named volume for cross-restart persistence.
+  pii-ml:
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-pii-ml:${LUCAIRN_PII_ML_IMAGE_TAG:-${LUCAIRN_IMAGE_TAG:-0.5.1}}"
+    logging: *default-logging
+    environment:
+      DSA_ENV: "${DSA_ENV:-production}"
+      # gRPC + HTTP bind addresses (ports verified against PR #241 final).
+      LUCAIRN_PII_ML_GRPC_ADDR: "0.0.0.0:50056"
+      LUCAIRN_PII_ML_HTTP_ADDR: "0.0.0.0:8088"
+      # Eager-load policy. Production default true so /readyz reflects
+      # model-ready state accurately + first scan hits a warm inference path.
+      LUCAIRN_PII_ML_EAGER_LOAD: "${LUCAIRN_PII_ML_EAGER_LOAD:-true}"
+      # Hard-exit on load failure. Production default true so a corrupted
+      # HF cache cannot produce a silently-degraded sidecar.
+      LUCAIRN_PII_ML_EXIT_ON_LOAD_FAILURE: "${LUCAIRN_PII_ML_EXIT_ON_LOAD_FAILURE:-true}"
+      # HF revision SHAs — load-bearing supply-chain pins (PR #241 Codex r1
+      # fix-up CODEX-HIGH closure). DO NOT override unless you mirror HF
+      # weights into a private bucket AND verify the same SHAs.
+      LUCAIRN_PII_ML_PIIRANHA_REVISION: "${LUCAIRN_PII_ML_PIIRANHA_REVISION:-255acde6b1cffb4e2737b75e8c93f5d68ad8a6a5}"
+      LUCAIRN_PII_ML_GLINER_REVISION: "${LUCAIRN_PII_ML_GLINER_REVISION:-443d26d6a89e4ca4ef89bd8a4ad7c6b8f7f7a8aa}"
+      LUCAIRN_PII_ML_GLINER_FALLBACK_REVISION: "${LUCAIRN_PII_ML_GLINER_FALLBACK_REVISION:-40ec419315b6e34a0b3b7c2e5b3a8e2a3e7c8f4b}"
+      # NEVER set true in production — opt-in for dev / single-shot debugging.
+      LUCAIRN_PII_ML_ALLOW_LAZY_NOT_READY: "${LUCAIRN_PII_ML_ALLOW_LAZY_NOT_READY:-false}"
+      HF_HOME: "/home/appuser/.cache/huggingface"
+    volumes:
+      # Persist HF weights across container restarts. Named volume avoids
+      # the cold-cache penalty on every restart.
+      - pii-ml-hf-cache:/home/appuser/.cache/huggingface
+    networks:
+      - dsa-identity
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    healthcheck:
+      # /readyz fails-CLOSED until both Piiranha + GLiNER are loaded. The
+      # long start_period (180s) covers cold-cache first-boot model download.
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8088/readyz')\" || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 180s
+    restart: on-failure
+
   sanitizer:
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer:${LUCAIRN_IMAGE_TAG:-0.5.0}"
     logging: *default-logging
     depends_on:
       sandbox-a:
+        condition: service_healthy
+      pii-ml:
         condition: service_healthy
     environment:
       SANITIZER_CONFIG_PATH: "${SANITIZER_CONFIG_PATH:-/config/config.yaml}"
@@ -382,6 +440,13 @@ services:
       # PARTIAL, llm_pii_scan omitted from layers_active). Without this env the
       # operator could not select continue-mode on a stock install.
       LUCAIRN_L3_REQUIRED: "${LUCAIRN_L3_REQUIRED:-true}"
+      # Phase 7 ML sidecar wiring (PR #240 production-path follow-up).
+      # Sanitizer's pii_ml_client.py reads this at boot and dials it on
+      # every Phase 7 scan. Sanitizer only dials when Phase 7 layers are
+      # enabled in the rendered config (default-sanitizer.yaml piiranha +
+      # gliner blocks), so an unreachable endpoint is non-fatal in the
+      # Phase-7-disabled topology.
+      LUCAIRN_PII_ML_ADDR: "${LUCAIRN_PII_ML_ADDR:-pii-ml:50056}"
       DP_BUDGET_REDIS_URL: "redis://redis-sanitizer:6379/0"
     volumes:
       - ${SANITIZER_CONFIG_FILE:-./config/default-sanitizer.yaml}:/config/config.yaml:ro

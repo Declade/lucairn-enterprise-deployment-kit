@@ -1,0 +1,165 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+    app.kubernetes.io/component: pii-ml-sidecar
+spec:
+  {{- if not .Values.hpa.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/part-of: dsa
+        app.kubernetes.io/component: pii-ml-sidecar
+    spec:
+      # NET-05: this pod never calls the Kubernetes API; using the namespace
+      # default ServiceAccount it would still auto-mount an unused token.
+      # Disable the mount at the pod level (mirrors ollama-identity-statefulset).
+      automountServiceAccountToken: false
+      # Graceful drain on rolling restart / node drain.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 30 }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      {{- if .Values.global.nodeIsolation }}
+      # Node pool isolation: pii-ml scans RAW identity data (Piiranha + GLiNER
+      # see plaintext PII before redaction) so it must run on the identity
+      # node pool, NEVER on the AI plane (sandbox-b's node pool).
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: dsa.io/zone
+                    operator: In
+                    values:
+                      - identity
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values:
+                      - sandbox-b
+              topologyKey: kubernetes.io/hostname
+      tolerations:
+        - key: dsa.io/zone
+          operator: Equal
+          value: identity
+          effect: NoSchedule
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.image.repository }}:{{ .Values.image.tag | default .Values.global.imageTag | default .Chart.AppVersion }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ end }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.service.grpcPort }}
+              protocol: TCP
+            - name: http
+              containerPort: {{ .Values.service.httpPort }}
+              protocol: TCP
+          env:
+            # HF cache lives under the appuser HOME. The image's Dockerfile
+            # creates this user (uid 10001) with HOME=/home/appuser. The
+            # hfCacheVolume mount below sits at /home/appuser/.cache/huggingface.
+            - name: HOME
+              value: /home/appuser
+            - name: HF_HOME
+              value: /home/appuser/.cache/huggingface
+            # gRPC bind address (matches the in-tree services/pii-ml/server.py
+            # LUCAIRN_PII_ML_GRPC_ADDR convention).
+            - name: LUCAIRN_PII_ML_GRPC_ADDR
+              value: "0.0.0.0:{{ .Values.service.grpcPort }}"
+            - name: LUCAIRN_PII_ML_HTTP_ADDR
+              value: "0.0.0.0:{{ .Values.service.httpPort }}"
+            # Eager-load policy. Production default true → boot blocks until
+            # both models load; /readyz reflects accurately. Mirrors PR #240
+            # Codex r1 HIGH-3 fail-CLOSED discipline.
+            - name: LUCAIRN_PII_ML_EAGER_LOAD
+              value: {{ .Values.eagerLoad | quote }}
+            # Hard-exit on load failure (sys.exit(2) Piiranha / sys.exit(3)
+            # GLiNER). Production default true so a corrupted HF cache cannot
+            # produce a silently-degraded sidecar.
+            - name: LUCAIRN_PII_ML_EXIT_ON_LOAD_FAILURE
+              value: {{ .Values.exitOnLoadFailure | quote }}
+            # HF revision SHAs — load-bearing supply-chain pins (PR #241 Codex
+            # r1 fix-up CODEX-HIGH closure). The image bakes the same SHAs
+            # into its image-manifest.yaml entry; these env vars provide an
+            # operator-visible verification surface and a runtime override
+            # path for emergency rollback.
+            - name: LUCAIRN_PII_ML_PIIRANHA_REVISION
+              value: {{ .Values.hfRevisions.piiranha | quote }}
+            - name: LUCAIRN_PII_ML_GLINER_REVISION
+              value: {{ .Values.hfRevisions.gliner | quote }}
+            - name: LUCAIRN_PII_ML_GLINER_FALLBACK_REVISION
+              value: {{ .Values.hfRevisions.glinerFallback | quote }}
+            # Dev / debug opt-in: when true, gRPC scans before models finish
+            # loading return scan_status=inference_error rather than blocking
+            # OR fail-OPEN. Production default false. NEVER set true in prod.
+            - name: LUCAIRN_PII_ML_ALLOW_LAZY_NOT_READY
+              value: {{ .Values.allowLazyNotReady | quote }}
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /home/appuser/.cache/huggingface
+          startupProbe:
+            # Model load can take 30-120s depending on whether the HF cache
+            # volume is warm. 120s × 60 retries = 7200s ceiling tolerates
+            # cold-cache first-boot OR a constrained dev cluster.
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            # /readyz returns 200 ONLY when both Piiranha + GLiNER models are
+            # loaded. PR #240 Codex r1 HIGH-3 discipline: the readyz gate
+            # MUST fail-CLOSED; Kubernetes uses this to NOT route traffic
+            # to an unhealthy sidecar.
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if and .Values.gracefulShutdown (gt (int (.Values.gracefulShutdown.preStopSleepSeconds | default 0)) 0) }}
+          # preStop drain delay (HA-04): hold the container open while
+          # kube-proxy removes this pod from Service endpoints, so in-flight
+          # gRPC scans drain before SIGTERM.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep {{ int .Values.gracefulShutdown.preStopSleepSeconds }}"]
+          {{- end }}
+      volumes:
+        - name: hf-cache
+          {{- if eq .Values.hfCacheVolume.type "pvc" }}
+          persistentVolumeClaim:
+            claimName: {{ .Chart.Name }}-hf-cache
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.hfCacheVolume.sizeLimit | default "3Gi" }}
+          {{- end }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -224,6 +224,19 @@ backup:
 infrastructure:
   enabled: true
 
+# pii-ml gRPC sidecar (Piiranha + GLiNER ML PII scanners). Phase 7 ML
+# extracted from the sanitizer monolith into a dedicated single-process
+# container at PR #240 production-path follow-up ("A3 Proper").
+#
+# DEFAULT ON. When sidecar is enabled + sanitizer's piiranha/gliner layer
+# flags are ALSO on, sanitizer routes Phase 7 scans through the sidecar.
+# When sidecar is disabled, sanitizer's pii_ml_client.py is never invoked
+# (the layer flags in sandbox-a.sanitizer.piiranha.enabled / .gliner.enabled
+# gate the dial, not just the deployment) — Phase 7 layers stay dormant.
+# See INSTALL.md § "Phase 7 ML PII scanners".
+pii-ml:
+  enabled: true
+
 audit:
   enabled: true
 

@@ -39,7 +39,7 @@
 
 # Kit release this manifest was tested for. Must match VERSION at the
 # repo root. doctor warns when the values diverge.
-kit_version: "1.6.0-stage-3-rebrand"
+kit_version: "1.7.0-pii-ml-sidecar"
 
 # Default tag applied to every dsa-* image unless a per-service override
 # exists in `services:` below. Operators set LUCAIRN_IMAGE_TAG in customer.env
@@ -74,6 +74,15 @@ services:
     # syncing config/default-sanitizer.yaml is the Sim 2 F3 failure mode.
     sanitizer_config_path: "config/default-sanitizer.yaml"
     sanitizer_config_compat: "0.5.x"   # version line the config is targeting
+  dsa-pii-ml:
+    # Phase 7 ML sidecar (Piiranha + GLiNER). Shipped at PR #240 production-
+    # path follow-up. The HF revision SHAs the image is built against are
+    # baked into the image's own config (verified via the
+    # LUCAIRN_PII_ML_PIIRANHA_REVISION + LUCAIRN_PII_ML_GLINER_REVISION env
+    # vars in the Helm subchart). The kit's pii-ml.hfRevisions block in
+    # charts/lucairn/values.yaml MUST stay in lockstep with these — Sim 2
+    # F3-class drift surface.
+    image_tag: ""
   dsa-veil-witness:
     image_tag: ""
   dsa-gateway:
@@ -161,6 +170,12 @@ image_digests:
     dsa-sandbox-b:
       ref: "ghcr.io/declade/dsa-sandbox-b:0.5.0"
       digest: "sha256:d5477b16d2af606f724cb1be0481db55f079f66881b078d5ecf8a43beb257c9e"
+    dsa-pii-ml:
+      # Pinned digest filled at kit-release time. PR #241 shipped the DSA-side
+      # service at sha256:c4b39db80c5f... (1.74GB image); kit release will
+      # cosign-sign + record the final multi-arch digest here.
+      ref: "ghcr.io/declade/dsa-pii-ml:0.5.1"
+      pending: true
     dsa-veil-witness:
       ref: "ghcr.io/declade/dsa-veil-witness:0.5.0"
       digest: "sha256:4c3b36b9ec306e2668f0bbb811863f04dfa27f0465c6a3d7fae4ed1ecc1741a6"

@@ -1,0 +1,31 @@
+{{- /*
+  HF cache PVC. Renders ONLY when .Values.hfCacheVolume.type == "pvc".
+  Default emptyDir means weights re-download per pod start (one-time ~1.6GB
+  at first boot). PVC mode is for air-gapped sites + multi-restart pods.
+  See OPS.md § "pii-ml sidecar — HF cache PVC".
+
+  helm.sh/resource-policy: keep stops `helm uninstall` from deleting the
+  downloaded HF weights, mirroring the postgres-* PVC pattern used elsewhere
+  in this chart.
+*/}}
+{{- if eq .Values.hfCacheVolume.type "pvc" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Chart.Name }}-hf-cache
+  namespace: {{ .Values.namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+spec:
+  accessModes:
+    - {{ .Values.hfCacheVolume.pvc.accessMode | default "ReadWriteOnce" }}
+  resources:
+    requests:
+      storage: {{ .Values.hfCacheVolume.pvc.storageSize | default "3Gi" }}
+  {{- if .Values.hfCacheVolume.pvc.storageClass }}
+  storageClassName: {{ .Values.hfCacheVolume.pvc.storageClass | quote }}
+  {{- end }}
+{{- end }}
