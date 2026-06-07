@@ -424,13 +424,20 @@ services:
         limits:
           memory: 4G
     healthcheck:
-      # /readyz fails-CLOSED until both Piiranha + GLiNER are loaded. The
-      # long start_period (180s) covers cold-cache first-boot model download.
+      # /readyz fails-CLOSED until both Piiranha + GLiNER are loaded.
+      # Total Compose healthcheck budget MUST mirror the Helm startupProbe
+      # budget so neither deploy path silently breaks on slow HF networks:
+      #   Helm: initialDelay 10s + failureThreshold 180 × period 5s = 910s
+      #   Compose: start_period 900s + retries 12 × interval 10s = 1020s
+      # INSTALL.md documents 3-8min cold-cache first-boot model download;
+      # the 1020s budget covers documented worst case + 200s headroom.
+      # Sanitizer depends_on this service_healthy — under-budgeting here
+      # silently stalls customer Compose deploys on cold caches.
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8088/readyz')\" || exit 1"]
       interval: 10s
       timeout: 10s
-      retries: 18
-      start_period: 180s
+      retries: 12
+      start_period: 900s
     restart: on-failure
 
   sanitizer:
