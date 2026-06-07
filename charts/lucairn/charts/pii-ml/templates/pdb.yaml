@@ -1,0 +1,25 @@
+{{- /*
+  v1.0 single-replica lock: PDB only renders once replicaCount >= 2 (the
+  v2 multi-replica unlock). On a single-replica workload, a PDB with
+  minAvailable: 1 makes `kubectl drain` hang forever. Mirrors the sandbox-a
+  / veil-witness pattern.
+*/ -}}
+{{- $replicaCount := 1 -}}
+{{- if hasKey .Values "replicaCount" -}}
+{{- $replicaCount = int .Values.replicaCount -}}
+{{- end -}}
+{{- if and .Values.pdb.enabled (ge $replicaCount 2) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+spec:
+  maxUnavailable: {{ .Values.pdb.maxUnavailable | default 1 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+{{- end }}

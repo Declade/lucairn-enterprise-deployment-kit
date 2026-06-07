@@ -79,6 +79,101 @@ When v2.0 unlocks 2+ replicas, the PDB auto-renders with `maxUnavailable: 1`,
 which lets `kubectl drain` evict one pod at a time while keeping the service
 available throughout.
 
+## Phase 7 ML PII scanners (Piiranha + GLiNER, pii-ml sidecar)
+
+The kit includes a dedicated `pii-ml` gRPC sidecar service that runs the
+Phase 7 ML PII scanners — `iiiorg/piiranha-v1-detect-personal-information`
+(a fine-tuned transformer NER for personal data) plus
+`urchade/gliner_multi-v2.1` (a zero-shot NER for German + English PII).
+The sidecar was extracted from the sanitizer monolith at the PR #240
+production-path follow-up after the original in-process eager-load
+exhausted gunicorn worker memory on the pilot box.
+
+### Architecture summary
+
+- The `pii-ml` deployment ships in the `dsa-identity` namespace alongside
+  `sandbox-a` + `sanitizer`. It exposes a gRPC service on port `50056` and
+  an HTTP `/healthz` + `/readyz` probe on port `8088`.
+- The sanitizer dials the sidecar via the in-cluster Service DNS
+  `pii-ml.dsa-identity.svc.cluster.local:50056` whenever a request
+  reaches Phase 7. A circuit breaker (3 consecutive failures, 30s
+  half-open) gracefully degrades to L1+L2 if the sidecar is unavailable.
+- The sidecar eager-loads both models at boot. `/readyz` returns 200 ONLY
+  after both models are loaded — the readyz gate is fail-CLOSED, so a
+  failed model load keeps the sidecar out of the Service endpoint set
+  and traffic never reaches it.
+- HF model weight downloads (~1.6GB one-time) happen at first boot.
+  Default config uses an `emptyDir` HF cache that re-downloads weights per
+  pod start; override to a PVC for cross-restart persistence
+  (recommended for air-gapped sites — see
+  `OPS.md` § "pii-ml sidecar — HF cache PVC").
+
+### Default-on with paired enable gates
+
+`pii-ml.enabled: true` is the chart default. Phase 7 activation requires
+flipping BOTH of:
+
+1. `pii-ml.enabled: true` — deploys the sidecar (default on)
+2. `sandbox-a.sanitizer.piiranha.enabled: true` AND
+   `sandbox-a.sanitizer.gliner.enabled: true` — sanitizer dials the
+   sidecar on Phase 7 scans (default off)
+
+The half-enabled combos are non-fatal but documented misconfigurations:
+
+- Sidecar deployed, sanitizer layers off → wasted resources, Phase 7
+  layers never fire.
+- Sidecar disabled, sanitizer layers on → sanitizer dials a nonexistent
+  service every Phase 7 scan; the circuit breaker opens within 3
+  requests and Phase 7 stays dormant (functional but log-noisy).
+
+### Opting out entirely
+
+Set `pii-ml.enabled: false` AND
+`sandbox-a.sanitizer.piiranha.enabled: false` AND
+`sandbox-a.sanitizer.gliner.enabled: false` in your `customer-values.yaml`.
+The sidecar deployment will not render, the sanitizer's Phase 7 code path
+stays dormant, and the request pipeline runs L1+L2 only.
+
+### HuggingFace model revision pins
+
+The chart pins three HF revision SHAs (Piiranha primary, GLiNER primary,
+GLiNER fallback) via `pii-ml.hfRevisions.{piiranha,gliner,glinerFallback}`.
+These are LOAD-BEARING — changing them silently swaps the model behavior
+and can cascade into per-layer F1 / over-redaction regressions. The
+defaults match the SHAs baked into the `dsa-pii-ml` image's
+`image-manifest.yaml` entry. Override only if you mirror HF weights into
+a private bucket AND verify the same SHAs are present.
+
+### Memory requirements
+
+The sidecar's resource limits default to `4Gi` memory + `2 CPU`. Plan
+your node sizing accordingly. The sanitizer's memory ceiling is back to
+the compose-default `2Gi` post-extraction (the 6Gi box-local override
+needed pre-PR #240 to fit both models in the sanitizer container is no
+longer required).
+
+### Dev / debug knob: `LUCAIRN_PII_ML_ALLOW_LAZY_NOT_READY`
+
+`pii-ml.allowLazyNotReady: false` is the production default. Flipping it
+on lets the sidecar accept gRPC scans before models finish loading (it
+returns `scan_status=inference_error` per call instead of blocking OR
+fail-OPEN). This is a dev-loop debug aid — NEVER set it on in
+production: it disables the fail-CLOSED readyz gate that PR #240's Codex
+r1 review locked in.
+
+### Verifying Phase 7 is active
+
+After deploying the chart with Phase 7 enabled, the demo prompt should
+return both `piiranha_pii` AND `gliner_ner` in the sanitized response's
+`layers_active` field. If either is missing, check:
+
+- Sidecar pod logs (`kubectl logs -n dsa-identity deploy/pii-ml`) for
+  model load failures.
+- Sanitizer pod logs for circuit-breaker-open warnings on the pii-ml
+  client.
+- The Helm-rendered `sanitizer-config` ConfigMap's `piiranha.enabled` +
+  `gliner.enabled` keys — they must both be `true`.
+
 ## Migration from earlier kit versions (Stage 3 env rename)
 
 Starting with the Stage 3 gateway rebrand, the canonical env-var names for

@@ -1,0 +1,10 @@
+apiVersion: v2
+name: pii-ml
+description: Lucairn pii-ml gRPC sidecar — Piiranha + GLiNER ML PII scanners (Phase 7)
+type: application
+version: 0.1.0
+# IMPORTANT: appVersion is a placeholder. The DSA PR #241 image tag the
+# orchestrator will pin here goes through the standard kit image-republish
+# flow (see image-manifest.yaml). Orchestrator MUST pin the actual
+# ghcr.io/declade/dsa-pii-ml tag + sha256 digest before merging.
+appVersion: "0.5.1"

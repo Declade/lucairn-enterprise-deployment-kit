@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+    app.kubernetes.io/component: pii-ml-sidecar
+spec:
+  type: {{ .Values.service.type | default "ClusterIP" }}
+  ports:
+    - port: {{ .Values.service.grpcPort }}
+      targetPort: grpc
+      name: grpc
+      protocol: TCP
+    - port: {{ .Values.service.httpPort }}
+      targetPort: http
+      name: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}

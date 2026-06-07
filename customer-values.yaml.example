@@ -233,11 +233,65 @@ id-bridge:
       # dsaServiceToken lifted to global.dsaServiceToken (BLOCKER D).
       dsaServiceToken: ""
 
+# Phase 7 ML PII scanners (Piiranha + GLiNER) extracted into the pii-ml
+# gRPC sidecar at PR #240 production-path follow-up ("A3 Proper").
+#
+# DEFAULT ON. Disable BOTH this subchart AND the sanitizer-side piiranha +
+# gliner flags (sandbox-a.sanitizer.piiranha.enabled +
+# sandbox-a.sanitizer.gliner.enabled) to opt out of Phase 7 entirely.
+#
+# Memory: ~4Gi limit per sidecar pod (Piiranha 110MB + GLiNER 1.5GB + torch
+# + Python overhead + headroom). HF model weights are downloaded at first
+# boot (~1.6GB one-time). For air-gapped sites, override the HF cache to
+# a PVC + pre-stage weights via initContainer — see OPS.md § "pii-ml
+# sidecar — HF cache PVC".
+#
+# HF revision SHAs are LOAD-BEARING (PR #241 Codex r1 fix-up CODEX-HIGH
+# closure). Override only if you mirror HF weights into a private bucket
+# AND verify the same SHAs.
+# pii-ml:
+#   enabled: true
+#   image:
+#     # Override repository if you mirror images into a private registry.
+#     repository: dsa-pii-ml
+#     # Empty tag falls through to global.imageTag.
+#     tag: ""
+#     # Pin the sha256 digest for digest-verified pulls (NET-02).
+#     digest: ""
+#   hfRevisions:
+#     piiranha: "255acde6b1cffb4e2737b75e8c93f5d68ad8a6a5"
+#     gliner: "443d26d6a89e4ca4ef89bd8a4ad7c6b8f7f7a8aa"
+#     glinerFallback: "40ec419315b6e34a0b3b7c2e5b3a8e2a3e7c8f4b"
+#   hfCacheVolume:
+#     # type: emptyDir | pvc. Default emptyDir re-downloads weights per pod
+#     # start; pvc persists across restarts (recommended for air-gapped).
+#     type: emptyDir
+#     sizeLimit: 3Gi
+#   resources:
+#     requests:
+#       cpu: 500m
+#       memory: 2Gi
+#     limits:
+#       cpu: 2000m
+#       memory: 4Gi
+
 sandbox-a:
   postgresql:
     storageSize: 50Gi
   sanitizer:
     llmScanEnabled: false
+    # Phase 7 ML PII scanners (gRPC sidecar) — paired with `pii-ml.enabled`
+    # above. Default OFF here so a stock customer install opts in
+    # explicitly. Flip BOTH to true to activate Phase 7 layers.
+    piiranha:
+      enabled: false
+    gliner:
+      enabled: false
+    # k-anonymity is pure math, stays in-process in sanitizer (NOT in the
+    # sidecar). Default OFF — operators opt in per their over-redaction
+    # tolerance and corpus characteristics.
+    kAnonymity:
+      enabled: false
   secrets:
     values:
       postgresPassword: "REPLACE_WITH_SANDBOX_A_POSTGRES_PASSWORD"

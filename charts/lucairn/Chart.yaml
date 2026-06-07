@@ -7,13 +7,22 @@ description: Lucairn enterprise self-hosted deployment kit
 # carried here because Helm chart versions must be clean SemVer for
 # `helm package`. See docs/RELEASING.md § "Version reconciliation".
 type: application
-version: 1.6.0
-appVersion: "0.5.0"
+version: 1.7.0
+appVersion: "0.5.1"
 
 dependencies:
   - name: infrastructure
     version: 0.1.0
     condition: infrastructure.enabled
+  - name: pii-ml
+    version: 0.1.0
+    # pii-ml gRPC sidecar (Piiranha + GLiNER ML PII scanners). DEFAULT ON.
+    # Operators disabling Phase 7 ML must ALSO disable the sanitizer-side
+    # piiranha + gliner flags (sandbox-a.sanitizer.piiranha.enabled +
+    # sandbox-a.sanitizer.gliner.enabled). Sanitizer's pii_ml_client.py only
+    # dials when those layer flags are on, so half-enabled combos are
+    # non-fatal but documented as misconfigurations in INSTALL.md.
+    condition: pii-ml.enabled
   - name: audit
     version: 0.1.0
     condition: audit.enabled

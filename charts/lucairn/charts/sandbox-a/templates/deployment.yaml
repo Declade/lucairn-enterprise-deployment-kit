@@ -227,6 +227,21 @@ spec:
             # l3Required=false back to true. hasKey honors an explicit false.
             - name: LUCAIRN_L3_REQUIRED
               value: {{ if hasKey .Values.sanitizer "l3Required" }}{{ .Values.sanitizer.l3Required | quote }}{{ else }}{{ "true" | quote }}{{ end }}
+            # Phase 7 ML sidecar wiring (PR #240 production-path follow-up).
+            # Sanitizer's pii_ml_client.py reads LUCAIRN_PII_ML_ADDR at boot
+            # and dials this on every Phase 7 scan. Default resolves to the
+            # pii-ml subchart's Service in this namespace; override via
+            # .Values.sanitizer.piiMlClient.endpoint if pii-ml is deployed
+            # to a non-default namespace or to an external endpoint.
+            #
+            # When Phase 7 is disabled (sanitizer.piiranha.enabled=false +
+            # sanitizer.gliner.enabled=false) this env is still emitted but
+            # never consumed; sanitizer's pii_ml_client.py only dials when
+            # the layer is enabled in the rendered config.yaml. Setting an
+            # invalid endpoint here is therefore non-fatal in the
+            # Phase-7-disabled topology.
+            - name: LUCAIRN_PII_ML_ADDR
+              value: "{{ .Values.sanitizer.piiMlClient.endpoint | default (printf "pii-ml.%s.svc.cluster.local:50056" .Values.namespace) }}"
           volumeMounts:
             - name: sanitizer-config
               mountPath: /config
