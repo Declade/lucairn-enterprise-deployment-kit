@@ -50,20 +50,21 @@ spec:
                 secretKeyRef:
                   name: {{ .Chart.Name }}-credentials
                   key: LCR_WITNESS_KEY_ID
-          {{- if .Values.witnessMtls.serverSecret }}
-          env:
+            {{- if .Values.witnessMtls.serverSecret }}
             # TOB-S009 / fable HIGH (2026-06-10): opt-in witness server-side mTLS.
             # When witnessMtls.serverSecret is set the witness reads these three
             # paths to enable mutual-TLS on the cert RPC port (:50058).
             # When unset the witness degrades gracefully to unauthenticated
-            # (mirrors docker-compose.yml:835-844).
+            # (mirrors docker-compose.customer.yml:596-610 graceful-degradation
+            # comment). LCR_WITNESS_SIGNING_KEY is defined above in the same
+            # env: block — there is exactly ONE env: key on this container.
             - name: WITNESS_MTLS_CA_BUNDLE_PATH
               value: "{{ .Values.witnessMtls.mountPath }}/{{ .Values.witnessMtls.caBundle }}"
             - name: WITNESS_MTLS_SERVER_CERT_PATH
               value: "{{ .Values.witnessMtls.mountPath }}/{{ .Values.witnessMtls.serverCert }}"
             - name: WITNESS_MTLS_SERVER_KEY_PATH
               value: "{{ .Values.witnessMtls.mountPath }}/{{ .Values.witnessMtls.serverKey }}"
-          {{- end }}
+            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ .Chart.Name }}-config

@@ -185,11 +185,13 @@ sanitizer:
       consecutiveFailures: 3
       halfOpenSeconds: 30
 
-# Option B cache (PRD prd-2026-06-10-option-b-cache-redis.md):
-# Dedicated Redis for the sanitizer content-addressed redaction cache.
+# Sanitizer content-address cache — dedicated Redis for the sanitizer
+# content-addressed redaction cache. See INSTALL.md § "Sanitizer content
+# cache (Redis — default ON)" for the operator runbook and
+# disable/external-Redis instructions.
 # Isolated from redis-sanitizer (DP-budget keys, db 0) so allkeys-lru
 # eviction under cache pressure NEVER touches the DP-budget accounting.
-# Default ON — mirrors the DSA docker-compose.yml default.
+# Default ON — mirrors the docker-compose.customer.yml default.
 # Set sanitizerCache.enabled=false to fall back to the sanitizer's
 # per-worker in-process LRU cache (same fallback the sanitizer app.py
 # uses when Redis is unreachable — fail-OPEN, not a 500).

@@ -242,11 +242,12 @@ spec:
             # Phase-7-disabled topology.
             - name: LUCAIRN_PII_ML_ADDR
               value: "{{ .Values.sanitizer.piiMlClient.endpoint | default (printf "pii-ml.%s.svc.cluster.local:50056" .Values.namespace) }}"
-            # Option B cache (PRD prd-2026-06-10-option-b-cache-redis.md):
-            # Wire the sanitizer content-cache backend. Default "redis" uses
-            # the bundled redis-sanitizer-cache StatefulSet in this namespace.
-            # The sanitizer app.py fails-OPEN on any Redis error (cache miss,
-            # not 500) so the scanner pipeline is never blocked by cache outage.
+            # Sanitizer content-address cache — see INSTALL.md § "Sanitizer
+            # content cache (Redis — default ON)" for the operator runbook.
+            # Default "redis" uses the bundled redis-sanitizer-cache StatefulSet
+            # in this namespace. The sanitizer app.py fails-OPEN on any Redis
+            # error (cache miss, not 500) so the scanner pipeline is never
+            # blocked by cache outage.
             # Set sanitizerCache.enabled=false to fall back to per-worker LRU.
             - name: SANITIZER_CACHE_BACKEND
               value: {{ if .Values.sanitizerCache.enabled }}{{ .Values.sanitizerCache.backend | default "redis" | quote }}{{ else }}"memory"{{ end }}

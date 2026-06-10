@@ -38,4 +38,7 @@ veil-witness.secrets.backend = vault | aws | azure (see values.yaml).
 {{- if eq $key $zeroKey -}}
 {{- fail "[veil-witness] secrets.values.signingKey is the all-zeroes placeholder. This is a known-bad default: every certificate issued under it is trivially forgeable. Generate a real key with: openssl rand -hex 32\nThen pass it via --set \"veil-witness.secrets.values.signingKey=$(openssl rand -hex 32)\" or store it in your secrets backend (vault/aws/azure)." -}}
 {{- end -}}
+{{- if not (mustRegexMatch "^[0-9a-fA-F]{64}$" $key) -}}
+{{- fail "[veil-witness] secrets.values.signingKey must be exactly 64 hex characters (32 bytes, encoded as lowercase or uppercase hex). Generate a valid key with: openssl rand -hex 32" -}}
+{{- end -}}
 {{- end -}}

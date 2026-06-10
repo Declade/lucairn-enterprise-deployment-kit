@@ -74,7 +74,7 @@ data:
   # TOB-S009 / fable HIGH (2026-06-10): gateway-side mTLS for the witness
   # cert RPC dial (:50058). Emitted only when witnessMtls.clientSecret is set.
   # When unset the gateway connects without mTLS (graceful degradation —
-  # mirrors docker-compose.customer.yml:448-454).
+  # mirrors docker-compose.customer.yml:730-736).
   WITNESS_MTLS_CA_BUNDLE_PATH: "{{ .Values.witnessMtls.mountPath }}/{{ .Values.witnessMtls.caBundle }}"
   WITNESS_MTLS_CLIENT_CERT_PATH: "{{ .Values.witnessMtls.mountPath }}/{{ .Values.witnessMtls.clientCert }}"
   WITNESS_MTLS_CLIENT_KEY_PATH: "{{ .Values.witnessMtls.mountPath }}/{{ .Values.witnessMtls.clientKey }}"

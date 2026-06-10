@@ -1,6 +1,7 @@
 {{- if .Values.sanitizerCache.enabled }}
-# Option B cache (PRD prd-2026-06-10-option-b-cache-redis.md):
 # Dedicated Redis for the sanitizer content-addressed redaction cache.
+# See INSTALL.md § "Sanitizer content cache (Redis — default ON)" for the
+# operator runbook and disable/external-Redis instructions.
 # Isolated from redis-sanitizer (DP-budget keys) so allkeys-lru eviction
 # under cache pressure NEVER touches the DP-budget accounting.
 # No published host port — internal-only (BSI 2026-04-29 port-bind policy).
