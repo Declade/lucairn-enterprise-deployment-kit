@@ -157,7 +157,7 @@ docker compose -f docker-compose.customer.yml --env-file customer.env logs --tai
 
 If memory pressure appears, raise the container memory limit. The Compose kit defaults to 2 GB for sanitizer.
 
-## Sanitizer Stuck In Starting / Gateway /readyz 503 After Enabling Phase 7
+## pii-ml Sidecar Slow to Become Ready After Enabling Phase 7
 
 > **Only applies if you have OPTED IN to Phase 7 ML.** Phase 7 is
 > **disabled by default** as of chart v1.7.1 — a default install does not
@@ -166,21 +166,29 @@ If memory pressure appears, raise the container memory limit. The Compose kit de
 > (Helm `pii-ml.enabled: true` + sanitizer flags, or Compose
 > `--profile phase7`).
 
-Symptom: `docker compose ps` (Compose) or `kubectl get pods -n dsa-identity`
-(Helm) shows `sanitizer` in `Created` / `(starting)` / `(unhealthy)` for
-3-8 minutes after enabling Phase 7. The gateway's `/readyz` returns 503
-with `sanitizer_unavailable` during that window.
+Symptom: after enabling Phase 7, `docker compose --profile phase7 ps`
+(Compose) or `kubectl get pods -n dsa-identity` (Helm) shows the
+**`pii-ml` sidecar** in `Created` / `(starting)` / `(not ready)` for
+3-8 minutes on its first cold-cache boot while it downloads and loads the
+ML model weights. The **sanitizer itself stays up and `(healthy)`** during
+this window — it does NOT block on the sidecar — and the gateway's
+`/readyz` returns 200. Phase 7 ML scans fail-OPEN (circuit-open degrade)
+until the sidecar finishes loading; the deterministic L1+L2 layers run the
+whole time, so PII is still redacted and certs are still anchored.
 
 Cause: Phase 7 ML PII scanners (Piiranha + GLiNER) shipped at PR #240 as
 a dedicated `pii-ml` gRPC sidecar (opt-in as of v1.7.1). On first
 cold-cache boot, the sidecar downloads ~1.6GB of HuggingFace model
-weights (Piiranha ~110MB, GLiNER primary ~1.5GB). On the Helm path the
-sanitizer waits on the sidecar's `/readyz`; on the Compose path the
-sanitizer has no hard dependency on pii-ml (so it starts immediately),
-but Phase 7 scans return a circuit-open degrade until the sidecar's
-`/readyz` flips to 200. The pii-ml compose healthcheck `start_period`
-covers a warm-cache boot; cold-cache first-install can run to 5-8 minutes
-on constrained network egress.
+weights (Piiranha ~110MB, GLiNER primary ~1.5GB) and eager-loads both
+into memory. The sanitizer has **no hard dependency on pii-ml on either
+path** — there is no `depends_on: pii-ml` on the Compose `sanitizer`
+service and no readiness gate against the sidecar on the Helm `sandbox-a`
+Deployment, so the sanitizer starts independently in seconds. It dials the
+sidecar lazily at request time; its `pii_ml_client` circuit breaker returns
+a circuit-open degrade until the sidecar's own `/readyz` flips to 200. The
+pii-ml compose healthcheck `start_period` covers a warm-cache boot;
+cold-cache first-install can run to 5-8 minutes on constrained network
+egress — but only the **sidecar** is affected, never the sanitizer.
 
 Diagnose:
 
