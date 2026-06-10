@@ -361,12 +361,37 @@ services:
   # production-path follow-up ("A3 Proper"). Sanitizer dials this on every
   # Phase 7 scan via LUCAIRN_PII_ML_ADDR below.
   #
+  # DEFAULT-OFF as of kit v1.7.1 (2026-06-10): gated behind the `phase7`
+  # Compose profile so a stock `docker compose -f docker-compose.customer.yml
+  # up -d` does NOT start this sidecar. The Phase 7 ML layer was suspended
+  # for performance — the ML sidecar saturates CPU and overloads on large
+  # prompts (~147KB routed Claude Code turns), inducing ~90s/turn latency and
+  # a fail-closed refusal on the reference pilot. The deterministic layers
+  # (known-entity matching + Presidio L1/L2) remain active with the sidecar
+  # absent. The sanitizer service below has NO hard `depends_on` on this
+  # service, so the default stack starts cleanly without it (the sanitizer
+  # only dials pii-ml when the piiranha/gliner layer flags are on in
+  # config/default-sanitizer.yaml — both default false). Mirrors the Helm
+  # umbrella `pii-ml.enabled: false` default.
+  #
+  # To re-enable Phase 7 on Compose: bring the stack up with the profile
+  # active AND flip the sanitizer-side layer flags, e.g.
+  #   docker compose --profile phase7 -f docker-compose.customer.yml \
+  #     --env-file customer.env up -d
+  # after setting sanitizer.piiranha.enabled=true + sanitizer.gliner.enabled
+  # =true in config/default-sanitizer.yaml. See INSTALL.md § "Re-enabling
+  # Phase 7".
+  #
   # Memory: 4Gi limit covers Piiranha (110MB) + GLiNER (1.5GB) + transformers
   # /torch (~600MB) + Python/grpcio overhead + headroom. HF weights download
   # at first boot (~1.6GB one-time); the named volume below is mounted at
   # the image's HF_HOME (/home/appuser/.cache/huggingface) for cross-restart
   # persistence so subsequent starts skip the re-download.
   pii-ml:
+    # Opt-in optional service (mirrors the `certification` + `dashboard`
+    # profile convention used by cert-builder / cert-portal / lucairn-dashboard
+    # below). NOT deployed by a default `docker compose up`.
+    profiles: ["phase7"]
     # Pinned to a DEDICATED LUCAIRN_PII_ML_IMAGE_TAG (default 0.5.1) — the
     # pii-ml sidecar ships on its own release cadence INDEPENDENT of the
     # umbrella LUCAIRN_IMAGE_TAG (mirrors the lucairn-dashboard pattern).
@@ -444,9 +469,19 @@ services:
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer:${LUCAIRN_IMAGE_TAG:-0.5.0}"
     logging: *default-logging
     depends_on:
+      # NO hard `pii-ml: service_healthy` dependency. As of kit v1.7.1 the
+      # pii-ml sidecar is profile-gated (`phase7`) and OFF by default, so a
+      # default `docker compose up` must NOT block the sanitizer on a service
+      # that is not deployed. The sanitizer only dials pii-ml when the
+      # piiranha/gliner layer flags are enabled in the rendered config (both
+      # default false), and its pii_ml_client circuit breaker degrades
+      # gracefully if the endpoint is ever unreachable — so the sanitizer
+      # starts cleanly with no pii-ml present. When Phase 7 is re-enabled via
+      # `--profile phase7`, the sanitizer simply dials the now-running sidecar
+      # at LUCAIRN_PII_ML_ADDR; the sidecar's own readyz gate fails closed
+      # until both models are loaded, so an in-flight cold boot returns a
+      # circuit-open degrade rather than a half-loaded scan.
       sandbox-a:
-        condition: service_healthy
-      pii-ml:
         condition: service_healthy
     environment:
       SANITIZER_CONFIG_PATH: "${SANITIZER_CONFIG_PATH:-/config/config.yaml}"
