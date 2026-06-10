@@ -233,7 +233,7 @@ infrastructure:
 # overloads on large prompts (~147KB routed Claude Code turns), which
 # induced ~90s/turn latency and a fail-closed refusal on the pilot. The
 # deterministic layers (known-entity matching + Presidio L1/L2) remain
-# active. See PRD prd-2026-06-10-gateway-sanitizer-failclosed-phase7-fix.md.
+# active. See INSTALL.md § "Re-enabling Phase 7".
 #
 # Re-enabling Phase 7 requires flipping BOTH gates back on:
 #   1. pii-ml.enabled: true (this flag — deploys the sidecar), AND

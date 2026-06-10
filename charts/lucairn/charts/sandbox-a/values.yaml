@@ -145,10 +145,9 @@ sanitizer:
   # (PR #240 production-path follow-up, "A3 Proper"). DEFAULT OFF here.
   #
   # As of chart v1.7.1 (2026-06-10) Phase 7 ML is SUSPENDED by default at
-  # BOTH gates for performance (the ML sidecar overloads on large prompts;
-  # see PRD prd-2026-06-10-gateway-sanitizer-failclosed-phase7-fix.md). The
-  # deterministic layers (known_entity_matching + Presidio L1/L2) remain
-  # active.
+  # BOTH gates for performance (the ML sidecar overloads on large prompts).
+  # The deterministic layers (known_entity_matching + Presidio L1/L2) remain
+  # active. See INSTALL.md § "Re-enabling Phase 7".
   #
   # Operators re-enable Phase 7 by flipping BOTH:
   #   1. Umbrella `pii-ml.enabled: true` (deploys the sidecar) — DEFAULT OFF

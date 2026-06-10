@@ -624,13 +624,24 @@ check_container_images() {
   #   6. customer-values.yaml.example pii-ml.image.tag "0.5.1" + digest
   #   7. image-manifest.yaml entry for dsa-pii-ml
   # On any pii-ml release bump, update ALL 7 surfaces in lockstep.
-  local pii_ml_tag pii_ml_ref
-  pii_ml_tag="$(env_value "$env_file" LUCAIRN_PII_ML_IMAGE_TAG)"
-  pii_ml_tag="${pii_ml_tag:-0.5.1}"
-  pii_ml_ref="${registry}/dsa-pii-ml:${pii_ml_tag}"
-  if ! docker manifest inspect "$pii_ml_ref" >/dev/null 2>&1; then
-    echo "container images: failed ($pii_ml_ref not pullable; check registry credentials or image tag)"
-    failed=1
+  #
+  # v1.7.1 default-OFF gate: Phase 7 ML is suspended by default, so the
+  # dsa-pii-ml image is NOT pulled on a stock install. Only verify its
+  # pullability when Phase 7 is actually enabled — otherwise a default-OFF
+  # customer who never pulled the image would see a spurious fatal failure
+  # for a registry path they never use (mirrors the dashboard_opted_in gate
+  # below). When the operator re-enables Phase 7, this check fires again.
+  if pii_ml_layer_enabled "$env_file"; then
+    local pii_ml_tag pii_ml_ref
+    pii_ml_tag="$(env_value "$env_file" LUCAIRN_PII_ML_IMAGE_TAG)"
+    pii_ml_tag="${pii_ml_tag:-0.5.1}"
+    pii_ml_ref="${registry}/dsa-pii-ml:${pii_ml_tag}"
+    if ! docker manifest inspect "$pii_ml_ref" >/dev/null 2>&1; then
+      echo "container images: failed ($pii_ml_ref not pullable; check registry credentials or image tag)"
+      failed=1
+    fi
+  else
+    echo "container images: pii-ml skipped (Phase 7 ML disabled — sidecar not deployed)"
   fi
 
   # The dashboard ships under its own opt-in flag with an INDEPENDENT image
@@ -858,12 +869,18 @@ parse_image_digests() {
   ' "$manifest"
 }
 
-# digest_resolve_env_ref RECORDED_REF ENV_TAG ENV_REGISTRY ENV_DASH_TAG ENV_OLLAMA —
+# digest_resolve_env_ref RECORDED_REF ENV_TAG ENV_REGISTRY ENV_DASH_TAG ENV_OLLAMA ENV_PII_ML_TAG —
 # translate a canonical recorded ref into the ref the OPERATOR actually pulls,
 # applying the env overrides so --strict checks what the operator deploys, not a
 # stale canonical ref:
 #   - the 12 dsa-* services ride LUCAIRN_IMAGE_REGISTRY + LUCAIRN_IMAGE_TAG
 #     (docker-compose.customer.yml: ${LUCAIRN_IMAGE_REGISTRY}/dsa-<n>:${LUCAIRN_IMAGE_TAG});
+#   - dsa-pii-ml (the Phase 7 ML sidecar) rides the SAME LUCAIRN_IMAGE_REGISTRY
+#     but its OWN tag var LUCAIRN_PII_ML_IMAGE_TAG (default 0.5.1 — DISTINCT from
+#     the dsa-* tag; the umbrella tag has no matching dsa-pii-ml image in GHCR),
+#     per docker-compose.customer.yml. It is NOT cosign-signed (own release
+#     cadence) but it IS digest-pinned in image-manifest.yaml, so --strict
+#     resolves it against its own tag. MUST be matched BEFORE the */dsa-*:* arm.
 #   - lucairn-dashboard rides the SAME LUCAIRN_IMAGE_REGISTRY but its OWN tag var
 #     LUCAIRN_DASHBOARD_IMAGE_TAG (default 0.8.2 — DISTINCT from the dsa-* tag),
 #     per docker-compose.customer.yml:630
@@ -884,12 +901,19 @@ parse_image_digests() {
 # __UNPINNED_OVERRIDE__:<ref> sentinel, or empty for an ollama:// model
 # pseudo-ref (not an OCI image).
 digest_resolve_env_ref() {
-  local rref="$1" env_tag="$2" env_reg="$3" env_dash_tag="$4" env_ollama="${5:-}"
+  local rref="$1" env_tag="$2" env_reg="$3" env_dash_tag="$4" env_ollama="${5:-}" env_pii_ml_tag="${6:-0.5.1}"
   # Ollama model pseudo-refs are not OCI images — caller skips them.
   case "$rref" in
     ollama://*) printf ''; return 0 ;;
   esac
   case "$rref" in
+    # The pii-ml sidecar: SAME registry override, but its OWN distinct tag env
+    # var (LUCAIRN_PII_ML_IMAGE_TAG). MUST precede the */dsa-*:* arm below —
+    # "dsa-pii-ml" also matches "dsa-*", and that arm would wrongly rewrite the
+    # tag to the umbrella LUCAIRN_IMAGE_TAG.
+    */dsa-pii-ml:*)
+      printf '%s/%s:%s' "$env_reg" "dsa-pii-ml" "$env_pii_ml_tag"
+      ;;
     # The 12 dsa-* services: re-point host + tag from the shared registry + the
     # dsa-* tag env var.
     */dsa-*:*)
@@ -990,6 +1014,13 @@ check_image_digests() {
   # (docker-compose.customer.yml:630) — default 0.8.2, distinct from the dsa-*
   # LUCAIRN_IMAGE_TAG. Without this, a dashboard tag swap escapes --strict.
   env_dash_tag="$(env_value "$env_file" LUCAIRN_DASHBOARD_IMAGE_TAG)"; env_dash_tag="${env_dash_tag:-0.8.2}"
+  # The pii-ml sidecar (Phase 7 ML) rides the SAME LUCAIRN_IMAGE_REGISTRY but
+  # its OWN tag var LUCAIRN_PII_ML_IMAGE_TAG (default 0.5.1 — DISTINCT from the
+  # dsa-* LUCAIRN_IMAGE_TAG; the umbrella tag has no matching dsa-pii-ml image
+  # in GHCR). Without this, the */dsa-*:* case below would rewrite the recorded
+  # dsa-pii-ml:0.5.1 ref to dsa-pii-ml:<umbrella-tag> and never resolve.
+  local env_pii_ml_tag
+  env_pii_ml_tag="$(env_value "$env_file" LUCAIRN_PII_ML_IMAGE_TAG)"; env_pii_ml_tag="${env_pii_ml_tag:-0.5.1}"
   # The self-hosted ollama-identity runtime rides OLLAMA_IMAGE
   # (docker-compose.self-hosted.yml:202). Without this, an OLLAMA_IMAGE override
   # (esp. a mutable :latest) escapes --strict — the false-green this fix closes.
@@ -1023,7 +1054,7 @@ check_image_digests() {
       continue
     fi
 
-    eff_ref="$(digest_resolve_env_ref "$rref" "$env_tag" "$env_reg" "$env_dash_tag" "$env_ollama")"
+    eff_ref="$(digest_resolve_env_ref "$rref" "$env_tag" "$env_reg" "$env_dash_tag" "$env_ollama" "$env_pii_ml_tag")"
     if [ -z "$eff_ref" ]; then
       # ollama:// model pseudo-ref with a recorded digest is informational only:
       # not OCI-resolvable, so neither verifiable nor a dangerous skip. It does
@@ -1414,10 +1445,49 @@ check_sanitizer_config_image_compat() {
 # are non-fatal warnings except where explicitly noted.
 # ----------------------------------------------------------------------------
 
+# pii_ml_layer_enabled returns 0 (true) when Phase 7 ML is in use on EITHER
+# deploy path, 1 (false) when it is fully off. Used to gate the node-memory
+# heuristic + the image-pullability check so a default-OFF install (kit
+# v1.7.1) does NOT warn about 5GB RAM or fail on an unpulled dsa-pii-ml image
+# it never deploys. "In use" = the Helm umbrella sidecar gate is on
+# (charts/lucairn/values.yaml `pii-ml.enabled: true`) OR the sanitizer-side
+# layer flags are on (config/default-sanitizer.yaml piiranha/gliner enabled).
+# Reads the SAME kit-default surfaces as check_pii_ml_paired_toggles via the
+# same awk extraction (customer-values.yaml overrides are out of scope — this
+# gates on the kit-shipped default state).
+pii_ml_layer_enabled() {
+  local env_file="$1"
+  local config_file
+  config_file="$(env_value "$env_file" SANITIZER_CONFIG_FILE)"
+  config_file="${config_file:-${ROOT}/config/default-sanitizer.yaml}"
+
+  local sidecar_enabled=""
+  if [ -f "${ROOT}/charts/lucairn/values.yaml" ]; then
+    sidecar_enabled="$(awk '/^pii-ml:/{found=1; next} found && /^[[:space:]]+enabled:/{gsub(/[[:space:]]|enabled:/,""); print; exit} /^[a-z]/{found=0}' "${ROOT}/charts/lucairn/values.yaml")"
+  fi
+  # Default OFF as of kit v1.7.1 (umbrella pii-ml.enabled: false).
+  sidecar_enabled="${sidecar_enabled:-false}"
+
+  local piiranha_enabled="" gliner_enabled=""
+  if [ -f "$config_file" ]; then
+    piiranha_enabled="$(awk '/^  piiranha:/{found=1; next} found && /^    enabled:/{gsub(/[[:space:]]|enabled:/,""); print; exit} /^  [a-z]/{found=0}' "$config_file")"
+    gliner_enabled="$(awk '/^  gliner:/{found=1; next} found && /^    enabled:/{gsub(/[[:space:]]|enabled:/,""); print; exit} /^  [a-z]/{found=0}' "$config_file")"
+  fi
+  piiranha_enabled="${piiranha_enabled:-false}"
+  gliner_enabled="${gliner_enabled:-false}"
+
+  if [ "$sidecar_enabled" = "true" ] || [ "$piiranha_enabled" = "true" ] || [ "$gliner_enabled" = "true" ]; then
+    return 0
+  fi
+  return 1
+}
+
 check_pii_ml_paired_toggles() {
   # Phase 7 has TWO independent enable gates:
   #   1. Umbrella subchart deploy gate: `pii-ml.enabled` in
-  #      `charts/lucairn/values.yaml`. Default true (v1.7.0).
+  #      `charts/lucairn/values.yaml`. Default OFF as of v1.7.1
+  #      (2026-06-10) — Phase 7 ML suspended for performance; was true
+  #      through v1.7.0.
   #   2. Sanitizer-side dial gates: `sanitizer.piiranha.enabled` +
   #      `sanitizer.gliner.enabled` in the sanitizer YAML config (compose
   #      path: $SANITIZER_CONFIG_FILE, default config/default-sanitizer.yaml;
@@ -1442,10 +1512,12 @@ check_pii_ml_paired_toggles() {
   if [ -f "${ROOT}/charts/lucairn/values.yaml" ]; then
     sidecar_enabled="$(awk '/^pii-ml:/{found=1; next} found && /^[[:space:]]+enabled:/{gsub(/[[:space:]]|enabled:/,""); print; exit} /^[a-z]/{found=0}' "${ROOT}/charts/lucairn/values.yaml")"
   fi
-  # PRD-documented default is true; fall through to true when chart absent
-  # OR awk produced no match (treat as "kit shipped without the chart" only
-  # in degenerate test envs).
-  sidecar_enabled="${sidecar_enabled:-true}"
+  # Default OFF as of kit v1.7.1 (Phase 7 ML suspended; umbrella
+  # pii-ml.enabled: false). Fall through to false when chart absent OR awk
+  # produced no match (treat as "kit shipped without the chart" only in
+  # degenerate test envs) — matches the shipped default so an absent chart
+  # never spuriously warns about an idle sidecar.
+  sidecar_enabled="${sidecar_enabled:-false}"
 
   # Read piiranha + gliner enabled from the sanitizer YAML config (2-space
   # indent under `sanitizer:`). The sanitizer YAML loader (config.py) reads
@@ -1571,6 +1643,13 @@ check_pii_ml_node_memory() {
   # for COMPOSE installs only (the Helm path goes through Kubernetes
   # scheduler which surfaces FailedScheduling events naturally).
   local env_file="$1"
+  # v1.7.1 default-OFF gate: the 4Gi sidecar is not deployed unless Phase 7
+  # is enabled, so a default install on a < 5GB host must NOT warn — it never
+  # runs pii-ml. Skip the heuristic entirely when Phase 7 is off.
+  if ! pii_ml_layer_enabled "$env_file"; then
+    echo "pii-ml node memory: skipped (Phase 7 ML disabled — sidecar not deployed)"
+    return 0
+  fi
   # Only emit on compose installs; the Helm path delegates to the scheduler.
   if have free; then
     local total_mb

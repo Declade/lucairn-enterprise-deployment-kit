@@ -118,7 +118,6 @@ exhausted gunicorn worker memory on the pilot box.
 > (known-entity matching + Presidio L1/L2) remain active**, so PII is still
 > redacted and certs are still anchored — only the optional ML augmentation
 > layer is suspended. This is reversible (see "Re-enabling Phase 7" below).
-> See PRD `prd-2026-06-10-gateway-sanitizer-failclosed-phase7-fix.md`.
 
 Phase 7 activation requires flipping BOTH gates ON (both default OFF as of
 v1.7.1):
@@ -150,10 +149,20 @@ augmentation layer fires on top of the deterministic L1+L2 layers. Note
 the [memory requirements](#memory-requirements) (4Gi for the sidecar) and
 the first-boot HF weight download (~1.6GB) before re-enabling.
 
-For the Compose deploy path, re-enable by setting
-`sanitizer.piiranha.enabled: true` + `sanitizer.gliner.enabled: true` in
-your `config/default-sanitizer.yaml` (the `pii-ml` sidecar service is
-defined in `docker-compose.customer.yml`).
+For the Compose deploy path, the `pii-ml` sidecar service is gated behind
+the `phase7` Compose profile (so a default `docker compose up` does not
+start it). Re-enable Phase 7 by (1) setting `sanitizer.piiranha.enabled:
+true` + `sanitizer.gliner.enabled: true` in your
+`config/default-sanitizer.yaml`, then (2) bringing the stack up with the
+profile active:
+
+```bash
+docker compose --profile phase7 \
+  -f docker-compose.customer.yml --env-file customer.env up -d
+```
+
+Note the 4Gi sidecar memory requirement and the ~1.6GB first-boot HF
+weight download (3–8 minutes cold-cache) before re-enabling.
 
 ### HuggingFace model revision pins
 

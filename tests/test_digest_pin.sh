@@ -55,7 +55,12 @@ grep -qi "image DIGEST" "$TMP/help.out" \
 echo "digest-pin: usage advertises --strict (distinct from --strict-runtime) ok"
 
 # ---------------------------------------------------------------------------
-# 3. parse_image_digests parses the real manifest: 14 real digests + 7 pending.
+# 3. parse_image_digests parses the real manifest: 15 real digests + 7 pending.
+#    The 15 real-digest entries = 13 signed artifacts (the 12 dsa-* services +
+#    lucairn-dashboard, all in keys/image-digests-0.5.0.txt) + ollama/ollama
+#    + the dsa-pii-ml sidecar (digest-pinned in image-manifest.yaml at PR #240
+#    but NOT in the cosign-signed set — it ships on its own release cadence).
+#    The count was 14 before the pii-ml sidecar's manifest entry was added.
 #    Source the CLI with EMPTY args so the trailing `main "$@"` becomes
 #    `main` -> usage (harmless, no exit), making the helper functions callable.
 # ---------------------------------------------------------------------------
@@ -66,15 +71,15 @@ PARSED="$(
 )"
 real_count="$(printf '%s\n' "$PARSED" | grep -c $'\tsha256:' || true)"
 pending_count="$(printf '%s\n' "$PARSED" | grep -c $'\tPENDING' || true)"
-[ "$real_count" = "14" ] \
-  || fail "expected 14 real-digest entries (13 signed + ollama), got $real_count"
+[ "$real_count" = "15" ] \
+  || fail "expected 15 real-digest entries (13 signed + ollama + dsa-pii-ml sidecar), got $real_count"
 [ "$pending_count" = "7" ] \
   || fail "expected 7 pending entries (qwen model + 6 runtime), got $pending_count"
 # Spot-check the gateway ref maps to its recorded digest.
 printf '%s\n' "$PARSED" \
   | grep -q "^ghcr.io/declade/dsa-gateway:0.5.0	sha256:4c969d401356c7ffb9862e38a77a4ffae36a2a27573cb2e61c9cfe280e6d7a8a$" \
   || fail "parse_image_digests did not map the gateway ref to its recorded digest"
-echo "digest-pin: parse_image_digests reads 14 real + 7 pending entries ok"
+echo "digest-pin: parse_image_digests reads 15 real + 7 pending entries ok"
 
 # ---------------------------------------------------------------------------
 # 4. Lockstep: every signed artifact in keys/image-digests-0.5.0.txt must appear

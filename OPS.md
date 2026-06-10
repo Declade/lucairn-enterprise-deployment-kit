@@ -118,13 +118,22 @@ If the restart loop persists:
    baked into the image's `image-manifest.yaml` entry — a mismatch
    silently re-downloads weights at a different revision and may break.
 
-### Disabling Phase 7 entirely (operator escape hatch)
+### Phase 7 is OFF by default (chart v1.7.1)
 
-If Phase 7 is causing operational problems and you need to drop back to
-L1+L2 without uninstalling the chart:
+As of chart v1.7.1 (2026-06-10) the Phase 7 ML PII layer (Piiranha +
+GLiNER) is **DISABLED by default** — the ML sidecar saturated CPU and
+overloaded on large prompts (~147KB routed Claude Code turns), inducing
+~90s/turn latency and a fail-closed refusal on the reference pilot. A
+fresh install therefore runs L1+L2 (known-entity matching + Presidio) +
+L3 (Ollama identity) with the pii-ml sidecar absent. There is nothing to
+disable on a default install — the state below is already the shipped
+default.
+
+If you previously re-enabled Phase 7 and need to drop back to the default
+L1+L2(+L3) profile without uninstalling the chart:
 
 ```bash
-# In customer-values.yaml:
+# In customer-values.yaml (this is the v1.7.1 default — both gates off):
 pii-ml:
   enabled: false
 sandbox-a:
@@ -140,8 +149,18 @@ helm upgrade lucairn charts/lucairn -f customer-values.yaml
 
 This removes the pii-ml deployment and tells sanitizer to skip Phase 7
 in the rendered config. Sanitizer keeps L1+L2 + L3 (Ollama identity)
-running unchanged. The customer pipeline degrades to the pre-PR-#240
-coverage profile.
+running unchanged. The customer pipeline runs the deterministic-only
+coverage profile (the pre-PR-#240 profile).
+
+### Re-enabling Phase 7
+
+To turn the ML layer back on, flip BOTH gates — see
+`INSTALL.md` § "Re-enabling Phase 7" for the full Helm + Compose recipe
+(and the 4Gi memory + ~1.6GB HF-download prerequisites). In short, set
+`pii-ml.enabled: true` AND `sandbox-a.sanitizer.piiranha.enabled: true` +
+`sandbox-a.sanitizer.gliner.enabled: true` (Helm), or bring the Compose
+stack up with `--profile phase7` after flipping the sanitizer-side flags
+in `config/default-sanitizer.yaml`.
 
 ### pii-ml sidecar — HF cache PVC
 

@@ -39,7 +39,7 @@
 
 # Kit release this manifest was tested for. Must match VERSION at the
 # repo root. doctor warns when the values diverge.
-kit_version: "1.5.1-dashboard"
+kit_version: "1.7.1-phase7-suspended"
 
 # Default tag applied to every dsa-* image unless a per-service override
 # exists in `services:` below. Operators set LUCAIRN_IMAGE_TAG in customer.env
@@ -74,6 +74,23 @@ services:
     # syncing config/default-sanitizer.yaml is the Sim 2 F3 failure mode.
     sanitizer_config_path: "config/default-sanitizer.yaml"
     sanitizer_config_compat: "0.5.x"   # version line the config is targeting
+  dsa-pii-ml:
+    # Phase 7 ML sidecar (Piiranha + GLiNER). Shipped at PR #240 production-
+    # path follow-up. The HF revision SHAs the image is built against are
+    # baked into the image's own config (verified via the
+    # LUCAIRN_PII_ML_PIIRANHA_REVISION + LUCAIRN_PII_ML_GLINER_REVISION env
+    # vars in the Helm subchart). The kit's pii-ml.hfRevisions block in
+    # charts/lucairn/values.yaml MUST stay in lockstep with these — Sim 2
+    # F3-class drift surface.
+    #
+    # PINNED to 0.5.1 because the rest of the kit ships on
+    # default_lucairn_image_tag=0.5.0 and the sidecar has an INDEPENDENT
+    # release cadence (its release is tied to PR #240 production-path
+    # follow-up, not the umbrella 0.5.0 cycle). Operators MUST mirror
+    # dsa-pii-ml:0.5.1 specifically; bumping LUCAIRN_IMAGE_TAG does NOT
+    # cascade to this service. `bin/lucairn doctor --strict` enforces the
+    # pin against the recorded digest below.
+    image_tag: "0.5.1"
   dsa-veil-witness:
     image_tag: ""
   dsa-gateway:
@@ -161,6 +178,14 @@ image_digests:
     dsa-sandbox-b:
       ref: "ghcr.io/declade/dsa-sandbox-b:0.5.0"
       digest: "sha256:d5477b16d2af606f724cb1be0481db55f079f66881b078d5ecf8a43beb257c9e"
+    dsa-pii-ml:
+      # Multi-arch manifest list (linux/amd64 + linux/arm64) published from
+      # PR #241's final state (commit 0cb627c, Codex r1 fix-ups). Built on
+      # the Hetzner pilot builder (lucairn-multiarch) 2026-06-07. Per-arch
+      # manifest digests: amd64=sha256:7201de66279104328a8458478575ea603c00f5de35279be2f782544d41f7fce3,
+      # arm64=sha256:6ef424e6ca467c240df622fa37b39bcee7b2aa2a602e2de8e10a405c07e2f09e.
+      ref: "ghcr.io/declade/dsa-pii-ml:0.5.1"
+      digest: "sha256:5cc46f58db9f0c84f6a8ed9428fe91a2a481ae0c6a3dfa3f02e4a607da80d1cc"
     dsa-veil-witness:
       ref: "ghcr.io/declade/dsa-veil-witness:0.5.0"
       digest: "sha256:4c3b36b9ec306e2668f0bbb811863f04dfa27f0465c6a3d7fae4ed1ecc1741a6"
