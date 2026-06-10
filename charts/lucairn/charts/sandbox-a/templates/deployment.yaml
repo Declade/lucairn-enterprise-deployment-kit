@@ -248,10 +248,19 @@ spec:
             # in this namespace. The sanitizer app.py fails-OPEN on any Redis
             # error (cache miss, not 500) so the scanner pipeline is never
             # blocked by cache outage.
-            # Set sanitizerCache.enabled=false to fall back to per-worker LRU.
+            #
+            # sanitizerCache.enabled  — controls whether the BUNDLED
+            #   redis-sanitizer-cache StatefulSet is deployed. It does NOT
+            #   force the backend to "memory". Set enabled=false + backend=redis
+            #   + redisUrl=<external> to point at an operator-managed Redis
+            #   without deploying the bundled StatefulSet.
+            # sanitizerCache.backend  — controls which backend the sanitizer
+            #   uses ("redis" or "memory"). Defaults to "redis".
+            # sanitizerCache.redisUrl — URL passed to the sanitizer when
+            #   backend=redis. Defaults to the bundled service DNS when empty.
             - name: SANITIZER_CACHE_BACKEND
-              value: {{ if .Values.sanitizerCache.enabled }}{{ .Values.sanitizerCache.backend | default "redis" | quote }}{{ else }}"memory"{{ end }}
-            {{- if .Values.sanitizerCache.enabled }}
+              value: {{ .Values.sanitizerCache.backend | default "redis" | quote }}
+            {{- if eq (.Values.sanitizerCache.backend | default "redis") "redis" }}
             - name: SANITIZER_CACHE_REDIS_URL
               value: {{ .Values.sanitizerCache.redisUrl | default (printf "redis://%s-sanitizer-cache.%s.svc.cluster.local:6379/0" .Chart.Name .Values.namespace) | quote }}
             - name: SANITIZER_CACHE_TTL_SECONDS
