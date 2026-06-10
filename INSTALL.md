@@ -638,14 +638,22 @@ docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 > regardless. See § "Phase 7 ML PII scanners" to re-enable.
 >
 > **First-boot pii-ml delay (only with `--profile phase7`).** When you bring
-> the stack up with the `phase7` profile active, the `pii-ml` sidecar
-> downloads ~1.6GB of HuggingFace model weights on first cold-cache boot and
-> the sanitizer waits on the sidecar's `/readyz`; expect **3-8 minutes**
-> before `/readyz` returns 200 the FIRST time you run `--profile phase7 up
-> -d`. Subsequent restarts hit the named volume cache and complete in
-> seconds. Stream the load progress with `docker compose logs -f pii-ml`;
-> see TROUBLESHOOTING.md § "Sanitizer Stuck In Starting / Gateway /readyz
-> 503 After Enabling Phase 7" if the load stalls.
+> the stack up with the `phase7` profile active, the `pii-ml` sidecar deploys
+> and downloads ~1.6GB of HuggingFace model weights on first cold-cache boot.
+> On the Compose path the sanitizer does **NOT** block on the sidecar at
+> startup — it has no `depends_on: pii-ml` (see `docker-compose.customer.yml`,
+> the `sanitizer` service depends only on `sandbox-a`), so the sanitizer
+> starts independently in seconds and dials `pii-ml` lazily at request time
+> (and only when the sanitizer-side `piiranha`/`gliner` flags are also
+> enabled). Expect the sidecar's own `/readyz` to take **3-8 minutes** to
+> return 200 the FIRST time you run `--profile phase7 up -d`; during that
+> window the sanitizer is **not** stuck or unhealthy — Phase 7 scans
+> fail-OPEN (circuit-open degrade) and the deterministic L1+L2 layers still
+> run, so PII is still redacted and certs are still anchored. Subsequent
+> restarts hit the named volume cache and the sidecar loads in seconds.
+> Stream the load progress with `docker compose --profile phase7 logs -f
+> pii-ml`; see TROUBLESHOOTING.md § "Sanitizer Stuck In Starting / Gateway
+> /readyz 503 After Enabling Phase 7" if the load stalls.
 
 For **self-hosted inference**, load the self-hosted overlay so the local
 Sandbox B container + model runtime profile come up alongside the customer
