@@ -161,8 +161,8 @@ dashboardIngress:
 # The witness logs a warning and degrades to unauthenticated when any of the
 # three paths are unset — this preserves the fail-open semantics that keep
 # bridge/sanitizer/audit claims flowing even when the operator has not yet
-# provisioned the CA. (Mirrors docker-compose.yml:835-844 graceful-degradation
-# comment.)
+# provisioned the CA. (Mirrors docker-compose.customer.yml:596-610
+# graceful-degradation comment.)
 witnessMtls:
   # Name of a pre-existing Kubernetes Secret in the veil-witness namespace
   # that contains the CA bundle, server certificate, and server private key.

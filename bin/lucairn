@@ -468,8 +468,10 @@ check_dev_mode_consistency() {
 }
 
 check_certs() {
-  local env_file="$1" checked=0 failed=0 key path
-  local cert_keys=(SANDBOX_B_CLIENT_CERT SANDBOX_B_CA_CERT GRPC_TLS_CERT_FILE WITNESS_MTLS_CA_BUNDLE_PATH WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH)
+  local env_file="$1" offline="${2:-0}" checked=0 failed=0 key path
+  # WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH added (was missing — gateway crashloop
+  # on mTLS-enabled deploy when only CERT was checked but KEY was absent).
+  local cert_keys=(SANDBOX_B_CLIENT_CERT SANDBOX_B_CA_CERT GRPC_TLS_CERT_FILE WITNESS_MTLS_CA_BUNDLE_PATH WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH)
   for key in "${cert_keys[@]}"; do
     path="$(env_value "$env_file" "$key")"
     [ -z "$path" ] && continue
@@ -479,11 +481,63 @@ check_certs() {
       failed=1
       continue
     fi
-    if ! openssl x509 -checkend 2592000 -noout -in "$path" >/dev/null 2>&1; then
-      echo "certs: $key expires within 30 days or is invalid"
-      failed=1
-    fi
+    # Skip x509 expiry check for private keys (not PEM certs).
+    case "$key" in
+      *_KEY_PATH|*_KEY)
+        # Private key — file-exists check above is sufficient.
+        ;;
+      *)
+        if ! openssl x509 -checkend 2592000 -noout -in "$path" >/dev/null 2>&1; then
+          echo "certs: $key expires within 30 days or is invalid"
+          failed=1
+        fi
+        ;;
+    esac
   done
+
+  # Witness mTLS triple-completeness: CA + CERT + KEY must all be set or all
+  # unset. A partial set (e.g. CERT without KEY) means the gateway crashes on
+  # startup with a TLS handshake failure that is hard to diagnose.
+  local mtls_ca mtls_cert mtls_key mtls_set=0 mtls_unset=0
+  mtls_ca="$(env_value "$env_file" WITNESS_MTLS_CA_BUNDLE_PATH)"
+  mtls_cert="$(env_value "$env_file" WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH)"
+  mtls_key="$(env_value "$env_file" WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH)"
+  [ -n "$mtls_ca" ]   && mtls_set=$((mtls_set+1)) || mtls_unset=$((mtls_unset+1))
+  [ -n "$mtls_cert" ] && mtls_set=$((mtls_set+1)) || mtls_unset=$((mtls_unset+1))
+  [ -n "$mtls_key" ]  && mtls_set=$((mtls_set+1)) || mtls_unset=$((mtls_unset+1))
+  if [ "$mtls_set" -gt 0 ] && [ "$mtls_unset" -gt 0 ]; then
+    warn "witness mTLS: partial config — WITNESS_MTLS_CA_BUNDLE_PATH + WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH + WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH must all be set or all unset; gateway will crash-loop with a TLS handshake error"
+  fi
+
+  # Redis sanitizer-cache reachability: when SANITIZER_CACHE_BACKEND=redis and
+  # the URL is set, TCP-probe the cache. A reachable Redis is not required for
+  # a healthy deploy (the sanitizer fails-open), but an unreachable URL silently
+  # falls back to per-worker LRU — surface it so the operator sees it at doctor
+  # time rather than discovering the miss-rate anomaly in production.
+  if [ "$offline" -eq 0 ]; then
+    local cache_backend cache_url cache_host cache_port
+    cache_backend="$(env_value "$env_file" SANITIZER_CACHE_BACKEND)"
+    cache_url="$(env_value "$env_file" SANITIZER_CACHE_REDIS_URL)"
+    if [ "${cache_backend:-redis}" = "redis" ] && [ -n "$cache_url" ]; then
+      cache_host="$(url_host "$cache_url")"
+      cache_port="$(url_port "$cache_url")"
+      cache_port="${cache_port:-6379}"
+      if [ -n "$cache_host" ]; then
+        if ! python3 -c "
+import socket, sys
+try:
+    s = socket.create_connection(('$cache_host', $cache_port), timeout=2)
+    s.close()
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
+          warn "redis-sanitizer-cache: cannot reach $cache_host:$cache_port (SANITIZER_CACHE_REDIS_URL=$cache_url); sanitizer will fall back to per-worker in-process LRU — cache hit-rate will be ~25% under 4 gunicorn workers. Run doctor with --offline to suppress this probe."
+        fi
+      fi
+    fi
+  fi
+
   if [ "$failed" -eq 0 ]; then
     if [ "$checked" -eq 1 ]; then
       echo "certs: ok"
@@ -3844,7 +3898,7 @@ doctor() {
   check_sandbox_b_remote_coherent "$env_file" || sb_remote_failed=1
   [ "$sb_remote_failed" -eq 0 ] || return 1
 
-  check_certs "$env_file"
+  check_certs "$env_file" "$offline"
 
   # Dev-mode-env consistency check. Catches the "production-defaults
   # vs dev install" foot-gun Sim 3 final-smoothing hit three times:
