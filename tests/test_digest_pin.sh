@@ -6,7 +6,7 @@
 #   1. bash -n syntax.
 #   2. usage() advertises `doctor --strict` and distinguishes it from
 #      --strict-runtime.
-#   3. parse_image_digests parses the real image-manifest.yaml block: 14 real
+#   3. parse_image_digests parses the real image-manifest.yaml block: 15 real
 #      digests + 7 pending entries (Bash-only, deterministic).
 #   4. The manifest digest block stays the SINGLE-SOURCE-of-truth lockstep with
 #      keys/image-digests-<tag>.txt for the 13 signed artifacts.

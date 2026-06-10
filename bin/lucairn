@@ -1451,7 +1451,10 @@ check_sanitizer_config_image_compat() {
 # v1.7.1) does NOT warn about 5GB RAM or fail on an unpulled dsa-pii-ml image
 # it never deploys. "In use" = the Helm umbrella sidecar gate is on
 # (charts/lucairn/values.yaml `pii-ml.enabled: true`) OR the sanitizer-side
-# layer flags are on (config/default-sanitizer.yaml piiranha/gliner enabled).
+# layer flags are on (config/default-sanitizer.yaml piiranha/gliner enabled)
+# OR the Compose `phase7` profile is selected via COMPOSE_PROFILES (env file OR
+# live shell), which re-enables the 4GB pii-ml sidecar without flipping the
+# sanitizer YAML — so the gated image-pull + node-memory checks must still run.
 # Reads the SAME kit-default surfaces as check_pii_ml_paired_toggles via the
 # same awk extraction (customer-values.yaml overrides are out of scope — this
 # gates on the kit-shipped default state).
@@ -1479,6 +1482,23 @@ pii_ml_layer_enabled() {
   if [ "$sidecar_enabled" = "true" ] || [ "$piiranha_enabled" = "true" ] || [ "$gliner_enabled" = "true" ]; then
     return 0
   fi
+
+  # COMPOSE_PROFILES re-enable channel (mirror dashboard_opted_in:135-159).
+  # An operator can re-enable Phase 7 on the compose path via
+  # `COMPOSE_PROFILES=phase7` (env file OR live shell) WITHOUT flipping the
+  # sanitizer YAML; the 4GB sidecar still deploys, so the gated checks must
+  # see it. Guarded on the compose file actually declaring a phase7 profile so
+  # a stray value where the file does not wire it does not trip the heuristic.
+  local compose_file="${ROOT:-$(pwd)}/docker-compose.customer.yml"
+  if [ -f "$compose_file" ] && grep -q 'profiles:.*phase7' "$compose_file" 2>/dev/null; then
+    local compose_profiles_env compose_profiles_live
+    compose_profiles_env="$(env_value "$env_file" COMPOSE_PROFILES)"
+    compose_profiles_live="${COMPOSE_PROFILES:-}"
+    case ",${compose_profiles_env},${compose_profiles_live}," in
+      *,phase7,*) return 0 ;;
+    esac
+  fi
+
   return 1
 }
 
