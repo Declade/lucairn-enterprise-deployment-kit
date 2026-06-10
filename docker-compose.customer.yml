@@ -356,6 +356,24 @@ services:
       retries: 5
     restart: on-failure
 
+  # Option B cache (PRD prd-2026-06-10-option-b-cache-redis.md):
+  # Dedicated Redis for the sanitizer content-addressed redaction cache.
+  # Isolated from redis-sanitizer (DP-budget keys, 64MB) so allkeys-lru
+  # eviction under cache pressure NEVER touches the DP-budget accounting.
+  # Docker-only — no published host port (BSI 2026-04-29 port-bind policy).
+  redis-sanitizer-cache:
+    image: redis:7-alpine
+    logging: *default-logging
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    networks:
+      - dsa-identity
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: on-failure
+
   # Phase 7 ML PII scanners (Piiranha + GLiNER) extracted from the sanitizer
   # monolith into a dedicated single-process gRPC sidecar at PR #240
   # production-path follow-up ("A3 Proper"). Sanitizer dials this on every
@@ -519,6 +537,14 @@ services:
       # Phase-7-disabled topology.
       LUCAIRN_PII_ML_ADDR: "${LUCAIRN_PII_ML_ADDR:-pii-ml:50056}"
       DP_BUDGET_REDIS_URL: "redis://redis-sanitizer:6379/0"
+      # Option B cache (PRD prd-2026-06-10-option-b-cache-redis.md):
+      # Content-cache backend. DB 0 on the SEPARATE redis-sanitizer-cache
+      # service — never shares memory budget with DP-budget keys.
+      # The sanitizer fails-OPEN on any Redis error (cache miss, not 500)
+      # so the scanner pipeline keeps running when the cache is unavailable.
+      SANITIZER_CACHE_BACKEND: "${SANITIZER_CACHE_BACKEND:-redis}"
+      SANITIZER_CACHE_REDIS_URL: "redis://redis-sanitizer-cache:6379/0"
+      SANITIZER_CACHE_TTL_SECONDS: "${SANITIZER_CACHE_TTL_SECONDS:-3600}"
     volumes:
       - ${SANITIZER_CONFIG_FILE:-./config/default-sanitizer.yaml}:/config/config.yaml:ro
       # Safe-terms file referenced by default-sanitizer.yaml's

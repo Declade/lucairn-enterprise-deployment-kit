@@ -1103,6 +1103,54 @@ set -a; . /dev/shm/veil-seeds.env; set +a
 This escrow blob is exactly what the cold-restore runbook above consumes in
 Step 1 to bring a rebuilt deployment back to a signing, verifying state.
 
+## Witness mTLS
+
+The veil-witness cert RPC port (:50058) accepts unauthenticated callers by
+default. For production, see INSTALL.md § "Witness mTLS" for the full
+enable recipe (Compose path and Helm/Kubernetes path). The witness degrades
+gracefully to unauthenticated when any server-side cert path is unset, so
+claims keep flowing during a cert rotation.
+
+**To verify mTLS is active:**
+
+```bash
+# Should see TLS handshake, not a plain-text connection
+openssl s_client -connect <witness-host>:50058 \
+  -CAfile /opt/dsa/certs/witness-mtls/ca.crt \
+  -cert   /opt/dsa/certs/witness-mtls/gateway-client.crt \
+  -key    /opt/dsa/certs/witness-mtls/gateway-client.key
+```
+
+---
+
+## Sanitizer content cache (Redis)
+
+The sanitizer ships with a dedicated Redis content-cache
+(`redis-sanitizer-cache` / Helm: `sandbox-a-sanitizer-cache` StatefulSet)
+that is **default ON**. Cache hits skip Presidio L1/L2 entirely; the
+cache fails-OPEN on Redis outage (miss, not 500).
+
+**To verify the cache is working (Compose):**
+
+```bash
+# Two identical requests — second should show cache_hit_ratio=1.0
+docker exec dsa-sandbox-a-1 wget -qO- \
+  "http://localhost:8086/v1/sanitize" \
+  --post-data '{"text":"Erika Schmidt, born 01.01.1980"}' | jq '.cache_stats'
+```
+
+**To monitor cache hit ratio (Helm):**
+
+```bash
+kubectl exec -n dsa-identity deploy/sandbox-a -c sanitizer -- \
+  wget -qO- http://localhost:8086/v1/sanitize \
+  --post-data '{"text":"test"}' | jq '.cache_stats'
+```
+
+To disable the bundled Redis cache, see INSTALL.md § "Sanitizer content cache".
+
+---
+
 ## Key Rotation
 
 Rotate in this order:

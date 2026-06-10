@@ -139,6 +139,11 @@ spec:
               mountPath: {{ .Values.readiness.bundleMountPath }}
               readOnly: true
             {{- end }}
+            {{- if .Values.witnessMtls.clientSecret }}
+            - name: witness-mtls-certs
+              mountPath: {{ .Values.witnessMtls.mountPath | quote }}
+              readOnly: true
+            {{- end }}
             {{- if and .Values.keystore.persistence.enabled .Values.keystorePath }}
             # v1.0 keystore writable mount. The container's root FS stays
             # read-only (containerSecurityContext.readOnlyRootFilesystem=true);
@@ -200,6 +205,11 @@ spec:
         - name: keystore
           persistentVolumeClaim:
             claimName: {{ .Chart.Name }}-keystore
+        {{- end }}
+        {{- if .Values.witnessMtls.clientSecret }}
+        - name: witness-mtls-certs
+          secret:
+            secretName: {{ .Values.witnessMtls.clientSecret }}
         {{- end }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:

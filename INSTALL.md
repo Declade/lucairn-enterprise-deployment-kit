@@ -1177,6 +1177,128 @@ you intend to preserve audit cert history, identity tokens, or witness
 signatures across an uninstall, back up those databases first with
 `pg_dump` against each.
 
+## Witness mTLS (optional — recommended for production)
+
+By default the veil-witness cert RPC port (:50058) accepts unauthenticated
+callers. For production deployments Lucairn recommends enabling mutual-TLS
+so only the gateway (and, optionally, the dashboard) can query certificates.
+
+### Compose path
+
+1. Run the bootstrap CA script to generate a deploy-local CA + server cert
+   for the witness + a client cert for the gateway:
+
+   ```bash
+   scripts/bootstrap-mtls-ca.sh /opt/dsa/certs/witness-mtls
+   ```
+
+2. Add to `customer.env`:
+
+   ```bash
+   LCR_WITNESS_MTLS_HOST_DIR=/opt/dsa/certs/witness-mtls
+   WITNESS_MTLS_CA_BUNDLE_PATH=/etc/witness-mtls/ca.crt
+   WITNESS_MTLS_SERVER_CERT_PATH=/etc/witness-mtls/witness-server.crt
+   WITNESS_MTLS_SERVER_KEY_PATH=/etc/witness-mtls/witness-server.key
+   WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH=/etc/witness-mtls/gateway-client.crt
+   WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH=/etc/witness-mtls/gateway-client.key
+   WITNESS_MTLS_SERVER_NAME=witness
+   ```
+
+3. Recreate the witness and gateway containers:
+
+   ```bash
+   docker compose -f docker-compose.customer.yml up -d --no-deps --force-recreate veil-witness gateway
+   ```
+
+The witness logs a warning and degrades gracefully to unauthenticated when
+any of the three server-side paths are unset — claims from bridge, sanitizer,
+and audit continue flowing while the operator provisions the CA.
+
+### Kubernetes (Helm) path
+
+1. Generate certs (or use your PKI) and create Kubernetes Secrets:
+
+   ```bash
+   # Witness namespace secret (server cert + CA bundle)
+   kubectl create secret generic witness-mtls-server-certs \
+     --namespace dsa-witness \
+     --from-file=ca.crt=./certs/ca.crt \
+     --from-file=server.crt=./certs/witness-server.crt \
+     --from-file=server.key=./certs/witness-server.key
+
+   # Gateway namespace secret (client cert + CA bundle)
+   kubectl create secret generic gateway-witness-mtls-certs \
+     --namespace dsa-edge \
+     --from-file=ca.crt=./certs/ca.crt \
+     --from-file=gateway-client.crt=./certs/gateway-client.crt \
+     --from-file=gateway-client.key=./certs/gateway-client.key
+   ```
+
+2. Add to your `customer-values.yaml`:
+
+   ```yaml
+   veil-witness:
+     witnessMtls:
+       serverSecret: witness-mtls-server-certs
+
+   gateway:
+     witnessMtls:
+       clientSecret: gateway-witness-mtls-certs
+   ```
+
+3. Upgrade:
+
+   ```bash
+   helm upgrade lucairn charts/lucairn -f customer-values.yaml
+   ```
+
+---
+
+## Sanitizer content cache (Redis — default ON)
+
+The sanitizer ships with a dedicated Redis content-address cache
+(`redis-sanitizer-cache`) that remembers redaction results for identical
+input segments. Cache hits skip the Presidio L1/L2 scanner pipeline
+entirely, cutting per-cached-segment latency from ~500ms to <50ms.
+
+The cache is **fail-open**: when Redis is unavailable (pod restart,
+OOMKill, network blip) the sanitizer falls back to computing fresh per
+request — no 500 errors, no cert failures.
+
+### Compose path
+
+`redis-sanitizer-cache` ships in `docker-compose.customer.yml` and starts
+automatically with the default stack. No extra steps required.
+
+To disable (fall back to per-worker in-process LRU):
+
+```bash
+# In customer.env
+SANITIZER_CACHE_BACKEND=memory
+```
+
+### Kubernetes (Helm) path
+
+Enabled by default (`sandbox-a.sanitizerCache.enabled: true`). To disable:
+
+```yaml
+sandbox-a:
+  sanitizerCache:
+    enabled: false
+```
+
+To point at an external Redis (instead of the bundled StatefulSet):
+
+```yaml
+sandbox-a:
+  sanitizerCache:
+    enabled: false        # disables the bundled StatefulSet
+    backend: "redis"
+    redisUrl: "redis://my-redis.infra.svc.cluster.local:6379/2"
+```
+
+---
+
 ## Support Bundle
 
 If installation fails, generate a bundle:

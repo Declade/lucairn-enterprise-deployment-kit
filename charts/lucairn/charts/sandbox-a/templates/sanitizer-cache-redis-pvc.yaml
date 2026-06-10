@@ -1,0 +1,22 @@
+{{- if .Values.sanitizerCache.enabled }}
+# Option B cache: PVC for the sanitizer content-cache Redis.
+# Keeps the cache warm across pod restarts so a node bounce does not
+# spike sanitizer latency until the TTL-based eviction refills the cache.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Chart.Name }}-sanitizer-cache-data
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-sanitizer-cache
+    app.kubernetes.io/part-of: dsa
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.sanitizerCache.storageClass }}
+  storageClassName: {{ .Values.sanitizerCache.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.sanitizerCache.storageSize }}
+{{- end }}

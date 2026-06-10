@@ -1,0 +1,20 @@
+{{- if .Values.sanitizerCache.enabled }}
+# Option B cache: ClusterIP Service for the sanitizer content-cache Redis.
+# No NodePort / LoadBalancer — internal-only (BSI 2026-04-29 port-bind policy).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Chart.Name }}-sanitizer-cache
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-sanitizer-cache
+    app.kubernetes.io/part-of: dsa
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6379
+      targetPort: redis
+      name: redis
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}-sanitizer-cache
+{{- end }}

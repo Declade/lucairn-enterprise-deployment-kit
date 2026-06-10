@@ -185,6 +185,38 @@ sanitizer:
       consecutiveFailures: 3
       halfOpenSeconds: 30
 
+# Option B cache (PRD prd-2026-06-10-option-b-cache-redis.md):
+# Dedicated Redis for the sanitizer content-addressed redaction cache.
+# Isolated from redis-sanitizer (DP-budget keys, db 0) so allkeys-lru
+# eviction under cache pressure NEVER touches the DP-budget accounting.
+# Default ON — mirrors the DSA docker-compose.yml default.
+# Set sanitizerCache.enabled=false to fall back to the sanitizer's
+# per-worker in-process LRU cache (same fallback the sanitizer app.py
+# uses when Redis is unreachable — fail-OPEN, not a 500).
+sanitizerCache:
+  enabled: true
+  # Redis image — must match the redis-sanitizer-cache image in docker-compose.yml.
+  image:
+    repository: redis
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
+  # 512MB allkeys-lru — isolated from DP-budget redis (64MB). Mirrors
+  # docker-compose.yml redis-sanitizer-cache definition.
+  maxmemory: "512mb"
+  maxmemoryPolicy: "allkeys-lru"
+  # PVC for persistence (optional but keeps cache warm across pod restarts).
+  storageSize: 1Gi
+  storageClass: ""
+  # Sanitizer cache env knobs wired into the sanitizer sidecar container.
+  # The sanitizer reads SANITIZER_CACHE_REDIS_URL when SANITIZER_CACHE_BACKEND=redis.
+  # SANITIZER_CACHE_BACKEND defaults to "redis" so the sidecar picks up the
+  # bundled redis-sanitizer-cache by default. Set to "memory" to disable.
+  backend: "redis"
+  # DB 0 on the SEPARATE redis-sanitizer-cache service (never shares DB with
+  # DP-budget keys on redis-sanitizer:6379/0).
+  redisUrl: ""  # auto-derived from service name when empty; override for external Redis
+  ttlSeconds: 3600
+
 # ollama-identity is the L3 PII-plane LLM runtime (the on-GPU PII Shield).
 # It only renders when sanitizer.llmScanEnabled=true. Images are pinned by
 # released tag + sha256 digest (NET-02 supply-chain hardening) so the
