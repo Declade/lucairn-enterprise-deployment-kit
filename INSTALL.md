@@ -108,12 +108,22 @@ exhausted gunicorn worker memory on the pilot box.
   (recommended for air-gapped sites — see
   `OPS.md` § "pii-ml sidecar — HF cache PVC").
 
-### Default-on with paired enable gates
+### Default-OFF as of chart v1.7.1 — Phase 7 ML suspended
 
-`pii-ml.enabled: true` is the chart default. Phase 7 activation requires
-flipping BOTH of:
+> **Product change (chart v1.7.1, 2026-06-10):** the Phase 7 ML PII layer
+> (Piiranha + GLiNER) is **DISABLED by default** for fresh enterprise
+> installs. The ML sidecar saturates CPU and overloads on large prompts
+> (~147KB routed Claude Code turns), which induced ~90s/turn latency and
+> a fail-closed refusal on the reference pilot. The **deterministic layers
+> (known-entity matching + Presidio L1/L2) remain active**, so PII is still
+> redacted and certs are still anchored — only the optional ML augmentation
+> layer is suspended. This is reversible (see "Re-enabling Phase 7" below).
+> See PRD `prd-2026-06-10-gateway-sanitizer-failclosed-phase7-fix.md`.
 
-1. `pii-ml.enabled: true` — deploys the sidecar (default on)
+Phase 7 activation requires flipping BOTH gates ON (both default OFF as of
+v1.7.1):
+
+1. `pii-ml.enabled: true` — deploys the sidecar (**default off** as of v1.7.1)
 2. `sandbox-a.sanitizer.piiranha.enabled: true` AND
    `sandbox-a.sanitizer.gliner.enabled: true` — sanitizer dials the
    sidecar on Phase 7 scans (default off)
@@ -126,13 +136,24 @@ The half-enabled combos are non-fatal but documented misconfigurations:
   service every Phase 7 scan; the circuit breaker opens within 3
   requests and Phase 7 stays dormant (functional but log-noisy).
 
-### Opting out entirely
+With BOTH gates off (the v1.7.1 default), the sidecar does not deploy, the
+sanitizer never dials it, and the sanitizer starts happily with no pii-ml
+sidecar present.
 
-Set `pii-ml.enabled: false` AND
-`sandbox-a.sanitizer.piiranha.enabled: false` AND
-`sandbox-a.sanitizer.gliner.enabled: false` in your `customer-values.yaml`.
-The sidecar deployment will not render, the sanitizer's Phase 7 code path
-stays dormant, and the request pipeline runs L1+L2 only.
+### Re-enabling Phase 7
+
+Set `pii-ml.enabled: true` AND
+`sandbox-a.sanitizer.piiranha.enabled: true` AND
+`sandbox-a.sanitizer.gliner.enabled: true` in your `customer-values.yaml`.
+The sidecar renders, the sanitizer dials it on Phase 7 scans, and the ML
+augmentation layer fires on top of the deterministic L1+L2 layers. Note
+the [memory requirements](#memory-requirements) (4Gi for the sidecar) and
+the first-boot HF weight download (~1.6GB) before re-enabling.
+
+For the Compose deploy path, re-enable by setting
+`sanitizer.piiranha.enabled: true` + `sanitizer.gliner.enabled: true` in
+your `config/default-sanitizer.yaml` (the `pii-ml` sidecar service is
+defined in `docker-compose.customer.yml`).
 
 ### HuggingFace model revision pins
 

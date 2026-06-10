@@ -236,9 +236,14 @@ id-bridge:
 # Phase 7 ML PII scanners (Piiranha + GLiNER) extracted into the pii-ml
 # gRPC sidecar at PR #240 production-path follow-up ("A3 Proper").
 #
-# DEFAULT ON. Disable BOTH this subchart AND the sanitizer-side piiranha +
-# gliner flags (sandbox-a.sanitizer.piiranha.enabled +
-# sandbox-a.sanitizer.gliner.enabled) to opt out of Phase 7 entirely.
+# DEFAULT OFF as of chart v1.7.1 (2026-06-10) — Phase 7 ML SUSPENDED by
+# default for performance (the ML sidecar overloads on large prompts). The
+# deterministic layers (known-entity matching + Presidio L1/L2) remain
+# active. To re-enable Phase 7, set BOTH `pii-ml.enabled: true` here AND the
+# sanitizer-side piiranha + gliner flags (sandbox-a.sanitizer.piiranha.enabled
+# + sandbox-a.sanitizer.gliner.enabled). With the sidecar off the sanitizer
+# never dials it and starts happily. See INSTALL.md § "Phase 7 ML PII
+# scanners" + PRD prd-2026-06-10-gateway-sanitizer-failclosed-phase7-fix.md.
 #
 # Memory: ~4Gi limit per sidecar pod (Piiranha 110MB + GLiNER 1.5GB + torch
 # + Python overhead + headroom). HF model weights are downloaded at first
@@ -249,6 +254,10 @@ id-bridge:
 # HF revision SHAs are LOAD-BEARING (PR #241 Codex r1 fix-up CODEX-HIGH
 # closure). Override only if you mirror HF weights into a private bucket
 # AND verify the same SHAs.
+#
+# The block below is the RE-ENABLE example — uncomment it (with
+# pii-ml.enabled: true) ONLY when you also flip the sanitizer-side
+# piiranha + gliner flags under sandbox-a.sanitizer below.
 # pii-ml:
 #   enabled: true
 #   image:

@@ -39,7 +39,7 @@
 
 # Kit release this manifest was tested for. Must match VERSION at the
 # repo root. doctor warns when the values diverge.
-kit_version: "1.7.0-pii-ml-sidecar"
+kit_version: "1.7.1-phase7-suspended"
 
 # Default tag applied to every dsa-* image unless a per-service override
 # exists in `services:` below. Operators set LUCAIRN_IMAGE_TAG in customer.env
