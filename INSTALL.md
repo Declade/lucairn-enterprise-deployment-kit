@@ -183,18 +183,24 @@ on first cold-cache boot.
 
 ### Managed-container-runtime caveat (ACA / ECS / Cloud Run)
 
+The sanitizer has **no startup dependency on pii-ml on any path** — there
+is no `depends_on: pii-ml` on the Compose `sanitizer` service and no
+readiness gate against the sidecar on the Helm `sandbox-a` Deployment — so
+the sanitizer always starts independently regardless of runtime. While the
+`pii-ml` sidecar is still cold-loading its models (3-8 minutes on a fresh
+cold cache), the sanitizer is already up and serving: its `pii_ml_client`
+circuit breaker opens within 3 failed scans and Phase 7 ML stays dormant
+(functional but log-noisy) until the sidecar's `/readyz` flips to 200,
+while the deterministic L1+L2 layers run the whole time.
+
 Managed container runtimes — Azure Container Apps (ACA), AWS ECS, GCP
-Cloud Run — may NOT honor Compose `depends_on` health conditions across
-containers in the same container group. In those topologies, sanitizer
-can start before pii-ml is ready; the sanitizer-side circuit breaker
-opens within 3 failed scans and Phase 7 stays dormant (functional but
-log-noisy) until the breaker's half-open window elapses.
+Cloud Run — that run pii-ml as a co-located sidecar should plan for that
+cold-load window. Operators deploying Phase 7 on managed runtimes should
+EITHER:
 
-Operators deploying on managed runtimes should EITHER:
-
-- Verify sanitizer does not start until pii-ml `/readyz` returns 200 in
-  their runtime's healthcheck model (manual sequencing or external
-  orchestration), OR
+- Pre-stage the HF weight cache (see `OPS.md` § "pii-ml sidecar — HF cache
+  PVC", or bake the weights into a derived image) so the sidecar reaches
+  `/readyz` 200 quickly and the fail-open window stays short, OR
 - Disable Phase 7 entirely (`pii-ml.enabled: false` +
   `sandbox-a.sanitizer.piiranha.enabled: false` +
   `sandbox-a.sanitizer.gliner.enabled: false`) and manage Phase 7
@@ -652,8 +658,8 @@ docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 > run, so PII is still redacted and certs are still anchored. Subsequent
 > restarts hit the named volume cache and the sidecar loads in seconds.
 > Stream the load progress with `docker compose --profile phase7 logs -f
-> pii-ml`; see TROUBLESHOOTING.md § "Sanitizer Stuck In Starting / Gateway
-> /readyz 503 After Enabling Phase 7" if the load stalls.
+> pii-ml`; see TROUBLESHOOTING.md § "pii-ml Sidecar Slow to Become Ready
+> After Enabling Phase 7" if the load stalls.
 
 For **self-hosted inference**, load the self-hosted overlay so the local
 Sandbox B container + model runtime profile come up alongside the customer
