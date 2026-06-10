@@ -1,0 +1,78 @@
+{{- if .Values.sanitizerCache.enabled }}
+# Option B cache (PRD prd-2026-06-10-option-b-cache-redis.md):
+# Dedicated Redis for the sanitizer content-addressed redaction cache.
+# Isolated from redis-sanitizer (DP-budget keys) so allkeys-lru eviction
+# under cache pressure NEVER touches the DP-budget accounting.
+# No published host port — internal-only (BSI 2026-04-29 port-bind policy).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Chart.Name }}-sanitizer-cache
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-sanitizer-cache
+    app.kubernetes.io/part-of: dsa
+spec:
+  serviceName: {{ .Chart.Name }}-sanitizer-cache
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}-sanitizer-cache
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}-sanitizer-cache
+        app.kubernetes.io/part-of: dsa
+    spec:
+      # This pod never calls the Kubernetes API; disable the auto-mounted
+      # service account token (NET-05 pattern from sandbox-b redis).
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+        - name: redis
+          image: "{{ .Values.sanitizerCache.image.repository }}:{{ .Values.sanitizerCache.image.tag }}"
+          imagePullPolicy: {{ .Values.sanitizerCache.image.pullPolicy }}
+          args:
+            - "--maxmemory"
+            - {{ .Values.sanitizerCache.maxmemory | quote }}
+            - "--maxmemory-policy"
+            - {{ .Values.sanitizerCache.maxmemoryPolicy | quote }}
+          ports:
+            - containerPort: 6379
+              name: redis
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "redis-cli ping"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "redis-cli ping"
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Chart.Name }}-sanitizer-cache-data
+{{- end }}

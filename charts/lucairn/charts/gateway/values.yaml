@@ -197,6 +197,33 @@ sanitizeCache:
   maxEntries: 10000
   ttlSeconds: 3600
 
+# TOB-S009 / fable HIGH (2026-06-10): opt-in gateway-side mTLS for the
+# witness cert RPC dial (:50058). Default OFF (empty secretName) preserves
+# the pre-mTLS behaviour.
+#
+# To enable: create a Kubernetes Secret in the gateway namespace (dsa-edge)
+# containing the CA bundle and the gateway's client cert/key, then set:
+#   witnessMtls:
+#     clientSecret: gateway-witness-mtls-certs
+#     caBundle: ca.crt
+#     clientCert: gateway-client.crt
+#     clientKey: gateway-client.key
+#     serverName: witness
+# See OPS.md § "Witness mTLS" for the full enable recipe.
+witnessMtls:
+  # Name of a pre-existing Kubernetes Secret in the gateway namespace (dsa-edge)
+  # containing the CA bundle + gateway client cert/key. Leave empty (default)
+  # to connect to the witness without mTLS.
+  clientSecret: ""
+  # Key names inside the Secret.
+  caBundle: "ca.crt"
+  clientCert: "gateway-client.crt"
+  clientKey: "gateway-client.key"
+  # TLS server name the gateway uses when dialing the witness (:50058).
+  serverName: "witness"
+  # Mount path inside the gateway container.
+  mountPath: "/etc/witness-mtls"
+
 secrets:
   backend: k8s-native  # k8s-native | vault | aws | azure
   values:

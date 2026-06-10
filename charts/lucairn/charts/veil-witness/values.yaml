@@ -140,6 +140,42 @@ dashboardIngress:
   namespace: lucairn
   podName: lucairn-dashboard
 
+# TOB-S009 / fable HIGH (2026-06-10): opt-in mutual-TLS for the witness cert
+# RPC port (:50058). Default OFF (empty strings) preserves the pre-mTLS
+# behaviour for operators who have not run bootstrap-mtls-ca.sh.
+#
+# To enable:
+#   1. Run `scripts/bootstrap-mtls-ca.sh` (or your own CA tooling) to
+#      generate a deploy-local CA + server cert/key for the witness +
+#      a client cert/key for each service that dials :50058
+#      (gateway, dashboard). See OPS.md § "Witness mTLS".
+#   2. Store the PEM files in a Kubernetes Secret and reference them here:
+#        witnessMtls:
+#          serverSecret: witness-mtls-server-certs   # Secret in dsa-witness ns
+#          caBundle: ca.crt                          # key inside the Secret
+#          serverCert: server.crt
+#          serverKey: server.key
+#   3. For each dialer (gateway, dashboard), set their own witnessMtls block
+#      (see gateway/values.yaml § witnessMtls and dashboard/values.yaml).
+#
+# The witness logs a warning and degrades to unauthenticated when any of the
+# three paths are unset — this preserves the fail-open semantics that keep
+# bridge/sanitizer/audit claims flowing even when the operator has not yet
+# provisioned the CA. (Mirrors docker-compose.yml:835-844 graceful-degradation
+# comment.)
+witnessMtls:
+  # Name of a pre-existing Kubernetes Secret in the veil-witness namespace
+  # that contains the CA bundle, server certificate, and server private key.
+  # Leave empty (default) to run without mTLS (current pilot posture).
+  serverSecret: ""
+  # Key names inside the Secret referenced by serverSecret.
+  caBundle: "ca.crt"
+  serverCert: "server.crt"
+  serverKey: "server.key"
+  # Mount path inside the witness container. Must match the paths you
+  # pass to WITNESS_MTLS_CA_BUNDLE_PATH / *_SERVER_CERT_PATH / *_SERVER_KEY_PATH.
+  mountPath: "/etc/witness-mtls"
+
 secrets:
   backend: k8s-native  # k8s-native | vault | aws | azure
   values:
