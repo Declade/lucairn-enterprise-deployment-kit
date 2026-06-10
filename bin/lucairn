@@ -1705,11 +1705,27 @@ check_pii_ml_node_memory() {
 }
 
 check_pii_ml_healthcheck_budget_parity() {
-  # Compose healthcheck budget (start_period + retries × interval) MUST
-  # match the Helm startupProbe budget (initialDelaySeconds + failureThreshold
-  # × periodSeconds). Mismatch silently breaks one deploy path on cold HF
-  # caches — sanitizer depends_on pii-ml service_healthy on Compose, and
-  # under-budgeted Compose healthchecks stall sanitizer.
+  # Only relevant when Phase 7 is actually deployed (`--profile phase7` on
+  # Compose, or pii-ml.enabled / piiranha|gliner flags on Helm). Default OFF
+  # as of kit v1.7.1 — when Phase 7 is off the pii-ml sidecar is never
+  # started, so its healthcheck budget can't matter. Gate before checking.
+  local env_file="$1"
+  if ! pii_ml_layer_enabled "$env_file"; then
+    echo "pii-ml healthcheck budget: skipped (Phase 7 ML disabled — sidecar not deployed)"
+    return 0
+  fi
+  # The pii-ml SIDECAR's own readiness budget governs how long it has to
+  # cold-load the piiranha/gliner models before its healthcheck/startupProbe
+  # gives up. NOTE: the sanitizer does NOT depend_on pii-ml — its compose
+  # `depends_on` is only `sandbox-a: service_healthy` (see
+  # docker-compose.customer.yml), and Phase 7 scans fail-OPEN (L1+L2 still
+  # run) while the sidecar is still loading. So an under-budgeted healthcheck
+  # never stalls the sanitizer; the risk is the SIDECAR itself being marked
+  # unhealthy / restart-looped before it ever becomes ready, leaving Phase 7
+  # permanently degraded on slow networks. Keep the Compose healthcheck budget
+  # (start_period + retries × interval) in parity with the Helm startupProbe
+  # budget (initialDelaySeconds + failureThreshold × periodSeconds) so the
+  # sidecar gets the same readiness window on both deploy paths.
   #
   # INSTALL.md documents 3-8min cold-cache first-boot model download.
   # Target budget: 900-1020s (15-17min) to cover documented worst case
@@ -1746,7 +1762,7 @@ check_pii_ml_healthcheck_budget_parity() {
   local tolerance=240
 
   if [ "$compose_budget" -lt "$documented_max" ]; then
-    warn "pii-ml healthcheck budget: Compose budget ${compose_budget}s < documented cold-cache worst case ${documented_max}s — sanitizer service_healthy will stall on slow networks"
+    warn "pii-ml healthcheck budget: Compose budget ${compose_budget}s < documented cold-cache worst case ${documented_max}s — the pii-ml sidecar may be marked unhealthy before its models finish loading on slow networks (Phase 7 left degraded)"
     return 1
   fi
   if [ "$helm_budget" -lt "$documented_max" ]; then
@@ -3797,9 +3813,12 @@ doctor() {
   check_pii_ml_node_memory "$env_file"
 
   # PR #65 Codex r2: Compose healthcheck budget vs Helm startupProbe parity.
-  # Under-budgeted Compose healthcheck silently stalls sanitizer on cold caches.
+  # Under-budgeted healthcheck can mark the pii-ml SIDECAR unhealthy before its
+  # models finish cold-loading, leaving Phase 7 degraded on slow networks (the
+  # sanitizer does NOT depend on pii-ml, so it is never stalled). Gated on
+  # Phase 7 being enabled — skips cleanly on the default-OFF path.
   local pii_ml_budget_failed=0
-  check_pii_ml_healthcheck_budget_parity || pii_ml_budget_failed=1
+  check_pii_ml_healthcheck_budget_parity "$env_file" || pii_ml_budget_failed=1
   [ "$pii_ml_budget_failed" -eq 0 ] || return 1
 
   # Sim 3 round-2 NEW-1: INSECURE_DEV_MODE incompatible with prod.
