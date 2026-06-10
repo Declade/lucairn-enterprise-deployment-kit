@@ -1569,9 +1569,11 @@ check_pii_ml_paired_toggles() {
     piiranha_enabled="$(awk '/^  piiranha:/{found=1; next} found && /^    enabled:/{gsub(/[[:space:]]|enabled:/,""); print; exit} /^  [a-z]/{found=0}' "$config_file")"
     gliner_enabled="$(awk '/^  gliner:/{found=1; next} found && /^    enabled:/{gsub(/[[:space:]]|enabled:/,""); print; exit} /^  [a-z]/{found=0}' "$config_file")"
   fi
-  # Sanitizer-side default is OFF (Helm convention, opt-in) — matches the
-  # in-tree `config/default-sanitizer.yaml` which ships without Phase 7
-  # sections at all (operators opt in by adding the blocks).
+  # Sanitizer-side default is OFF (opt-in) — matches the in-tree
+  # `config/default-sanitizer.yaml`, which ships the Phase 7 piiranha/gliner
+  # blocks with `enabled: false` (Phase 7 ML suspended by default as of kit
+  # v1.7.1; operators opt in by flipping these to true). Fall through to
+  # false when the file is absent or awk finds no explicit flag.
   piiranha_enabled="${piiranha_enabled:-false}"
   gliner_enabled="${gliner_enabled:-false}"
 
