@@ -155,8 +155,11 @@ dashboardIngress:
 #          caBundle: ca.crt                          # key inside the Secret
 #          serverCert: server.crt
 #          serverKey: server.key
-#   3. For each dialer (gateway, dashboard), set their own witnessMtls block
-#      (see gateway/values.yaml § witnessMtls and dashboard/values.yaml).
+#   3. For each dialer (gateway), set their own witnessMtls block
+#      (see charts/lucairn/charts/gateway/values.yaml § witnessMtls).
+#      The dashboard dials the witness via `witness.endpoint` + `witness.tls`
+#      (see charts/lucairn/charts/dashboard/values.yaml § witness); its mTLS
+#      slice is not yet shipped — dashboard/values.yaml has no witnessMtls block.
 #
 # The witness logs a warning and degrades to unauthenticated when any of the
 # three paths are unset — this preserves the fail-open semantics that keep

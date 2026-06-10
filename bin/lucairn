@@ -471,7 +471,11 @@ check_certs() {
   local env_file="$1" offline="${2:-0}" checked=0 failed=0 key path
   # WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH added (was missing — gateway crashloop
   # on mTLS-enabled deploy when only CERT was checked but KEY was absent).
-  local cert_keys=(SANDBOX_B_CLIENT_CERT SANDBOX_B_CA_CERT GRPC_TLS_CERT_FILE WITNESS_MTLS_CA_BUNDLE_PATH WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH)
+  # WITNESS_MTLS_SERVER_CERT_PATH + WITNESS_MTLS_SERVER_KEY_PATH added — the
+  # witness reads these at startup (services/veil-witness/cmd/server/main.go:809)
+  # and silently degrades to unauthenticated if either is missing/bad; surface
+  # the gap at doctor time before the operator discovers it under load.
+  local cert_keys=(SANDBOX_B_CLIENT_CERT SANDBOX_B_CA_CERT GRPC_TLS_CERT_FILE WITNESS_MTLS_CA_BUNDLE_PATH WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH WITNESS_MTLS_SERVER_CERT_PATH WITNESS_MTLS_SERVER_KEY_PATH)
   for key in "${cert_keys[@]}"; do
     path="$(env_value "$env_file" "$key")"
     [ -z "$path" ] && continue
@@ -495,8 +499,8 @@ check_certs() {
     esac
   done
 
-  # Witness mTLS triple-completeness: CA + CERT + KEY must all be set or all
-  # unset. A partial set (e.g. CERT without KEY) means the gateway crashes on
+  # Witness mTLS triple-completeness (gateway-client side): CA + CERT + KEY
+  # must all be set or all unset. A partial set means the gateway crashes on
   # startup with a TLS handshake failure that is hard to diagnose.
   local mtls_ca mtls_cert mtls_key mtls_set=0 mtls_unset=0
   mtls_ca="$(env_value "$env_file" WITNESS_MTLS_CA_BUNDLE_PATH)"
@@ -506,7 +510,25 @@ check_certs() {
   [ -n "$mtls_cert" ] && mtls_set=$((mtls_set+1)) || mtls_unset=$((mtls_unset+1))
   [ -n "$mtls_key" ]  && mtls_set=$((mtls_set+1)) || mtls_unset=$((mtls_unset+1))
   if [ "$mtls_set" -gt 0 ] && [ "$mtls_unset" -gt 0 ]; then
-    warn "witness mTLS: partial config — WITNESS_MTLS_CA_BUNDLE_PATH + WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH + WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH must all be set or all unset; gateway will crash-loop with a TLS handshake error"
+    warn "witness mTLS: partial gateway-client config — WITNESS_MTLS_CA_BUNDLE_PATH + WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH + WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH must all be set or all unset; gateway will crash-loop with a TLS handshake error"
+  fi
+
+  # Witness mTLS triple-completeness (witness server side): the witness reads
+  # WITNESS_MTLS_SERVER_CERT_PATH + WITNESS_MTLS_SERVER_KEY_PATH at startup
+  # (services/veil-witness/cmd/server/main.go:809) and SILENTLY degrades to
+  # unauthenticated when either is missing or unreadable — no crash, no loud
+  # log, just witness mTLS inactive. A missing CA bundle on the server side
+  # means the witness cannot verify the gateway's client certificate.
+  # All three (CA + server-cert + server-key) must be set together or none.
+  local srv_ca srv_cert srv_key srv_set=0 srv_unset=0
+  srv_ca="$(env_value "$env_file" WITNESS_MTLS_CA_BUNDLE_PATH)"  # shared CA
+  srv_cert="$(env_value "$env_file" WITNESS_MTLS_SERVER_CERT_PATH)"
+  srv_key="$(env_value "$env_file" WITNESS_MTLS_SERVER_KEY_PATH)"
+  [ -n "$srv_ca" ]   && srv_set=$((srv_set+1)) || srv_unset=$((srv_unset+1))
+  [ -n "$srv_cert" ] && srv_set=$((srv_set+1)) || srv_unset=$((srv_unset+1))
+  [ -n "$srv_key" ]  && srv_set=$((srv_set+1)) || srv_unset=$((srv_unset+1))
+  if [ "$srv_set" -gt 0 ] && [ "$srv_unset" -gt 0 ]; then
+    warn "witness mTLS: partial server-side config — WITNESS_MTLS_CA_BUNDLE_PATH + WITNESS_MTLS_SERVER_CERT_PATH + WITNESS_MTLS_SERVER_KEY_PATH must all be set or all unset; a partial set leaves the witness mTLS silently inactive (no crash — it degrades to unauthenticated)"
   fi
 
   # Redis sanitizer-cache reachability: when SANITIZER_CACHE_BACKEND=redis and

@@ -1279,21 +1279,27 @@ SANITIZER_CACHE_BACKEND=memory
 
 ### Kubernetes (Helm) path
 
-Enabled by default (`sandbox-a.sanitizerCache.enabled: true`). To disable:
+`sanitizerCache.enabled` controls whether the **bundled** `redis-sanitizer-cache`
+StatefulSet is deployed. It is independent of `sanitizerCache.backend`, which
+controls which cache backend the sanitizer process uses.
+
+Enabled by default (`sandbox-a.sanitizerCache.enabled: true`). To fall back to
+per-worker in-process LRU (no Redis at all):
 
 ```yaml
 sandbox-a:
   sanitizerCache:
-    enabled: false
+    enabled: false   # disables bundled StatefulSet
+    backend: "memory"
 ```
 
-To point at an external Redis (instead of the bundled StatefulSet):
+To point at an **external** Redis (skip the bundled StatefulSet, use your own):
 
 ```yaml
 sandbox-a:
   sanitizerCache:
     enabled: false        # disables the bundled StatefulSet
-    backend: "redis"
+    backend: "redis"      # sanitizer still uses Redis — just not the bundled one
     redisUrl: "redis://my-redis.infra.svc.cluster.local:6379/2"
 ```
 
