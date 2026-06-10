@@ -305,13 +305,14 @@ required-key check.
 For Docker Compose:
 
 - Linux host with Docker Engine and Docker Compose v2.
-- **20 GB RAM minimum** when Phase 7 ML PII scanners are enabled (the
-  default — the `pii-ml` sidecar runs Piiranha + GLiNER and reserves up
-  to 4 GB for the container, on top of sandbox-a + sanitizer + ollama-
-  identity + gateway + witness + audit + id-bridge baseline). **16 GB
-  RAM** is the floor only when Phase 7 is disabled (see § "Phase 7 ML
-  PII scanners" for the opt-out recipe). 4 vCPU is sufficient for either
-  topology at single-tenant pilot load.
+- **16 GB RAM minimum** for the default topology (Phase 7 ML PII scanners
+  **disabled by default** as of chart v1.7.1 — see § "Phase 7 ML PII
+  scanners"). This covers the deterministic L1+L2 layers plus the
+  sandbox-a + sanitizer + ollama-identity + gateway + witness + audit +
+  id-bridge baseline. **20 GB RAM** is required only when Phase 7 is
+  explicitly re-enabled — the `pii-ml` sidecar runs Piiranha + GLiNER and
+  reserves up to 4 GB for the container on top of that baseline. 4 vCPU is
+  sufficient for either topology at single-tenant pilot load.
 - TLS-terminating reverse proxy such as Caddy, Nginx, Traefik, or an enterprise ingress proxy.
 - Outbound HTTPS to Lucairn-provided remote Sandbox B endpoint if using split deployment.
 - Python 3 with the `cryptography` library (>=2.6) OR `pynacl`. Required by
@@ -629,15 +630,22 @@ For **split deployment**:
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 ```
 
-> **First-boot pii-ml delay.** The kit ships the Phase 7 ML PII sidecar
-> (`pii-ml`) which downloads ~1.6GB of HuggingFace model weights on first
-> cold-cache boot. The `sanitizer` service depends on `pii-ml` being
-> healthy; expect **3-8 minutes** before `/readyz` returns 200 the FIRST
-> time you run `up -d`. Subsequent restarts hit the named volume cache
-> and complete in seconds. Stream the load progress with
-> `docker compose logs -f pii-ml`; see TROUBLESHOOTING.md §
-> "Sanitizer Stuck In Starting / Gateway /readyz 503 After Adding
-> pii-ml" if the load stalls.
+> **Default path: no pii-ml dependency.** As of chart v1.7.1 the Phase 7 ML
+> PII sidecar (`pii-ml`) is **disabled by default** and is gated behind the
+> `phase7` Compose profile, so a plain `up -d` does NOT start it and the
+> `sanitizer` service has **no `pii-ml` dependency** — it starts independently
+> and `/readyz` returns 200 in seconds. The deterministic L1+L2 layers run
+> regardless. See § "Phase 7 ML PII scanners" to re-enable.
+>
+> **First-boot pii-ml delay (only with `--profile phase7`).** When you bring
+> the stack up with the `phase7` profile active, the `pii-ml` sidecar
+> downloads ~1.6GB of HuggingFace model weights on first cold-cache boot and
+> the sanitizer waits on the sidecar's `/readyz`; expect **3-8 minutes**
+> before `/readyz` returns 200 the FIRST time you run `--profile phase7 up
+> -d`. Subsequent restarts hit the named volume cache and complete in
+> seconds. Stream the load progress with `docker compose logs -f pii-ml`;
+> see TROUBLESHOOTING.md § "Sanitizer Stuck In Starting / Gateway /readyz
+> 503 After Enabling Phase 7" if the load stalls.
 
 For **self-hosted inference**, load the self-hosted overlay so the local
 Sandbox B container + model runtime profile come up alongside the customer

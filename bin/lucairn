@@ -1539,6 +1539,28 @@ check_pii_ml_paired_toggles() {
   # never spuriously warns about an idle sidecar.
   sidecar_enabled="${sidecar_enabled:-false}"
 
+  # r2 Codex HIGH: the sidecar-on signal is NOT only the Helm pii-ml.enabled
+  # value. On the Compose path the 4GB pii-ml sidecar deploys via
+  # `COMPOSE_PROFILES=phase7` (env file OR live shell) WITHOUT flipping any
+  # Helm/YAML value. Without this channel, profile-on + scanners-off printed
+  # "pii-ml paired toggles: ok" while deploying a no-op idle sidecar — it must
+  # WARN instead. Mirror the EXACT detection added to pii_ml_layer_enabled
+  # (~1486-1500) + dashboard_opted_in (135-159): comma-wrapped `,phase7,`
+  # match against the env-file value AND the live shell value, guarded on the
+  # compose file actually declaring a phase7 profile so a stray value where
+  # the file does not wire it never trips the heuristic.
+  if [ "$sidecar_enabled" != "true" ]; then
+    local compose_file="${ROOT:-$(pwd)}/docker-compose.customer.yml"
+    if [ -f "$compose_file" ] && grep -q 'profiles:.*phase7' "$compose_file" 2>/dev/null; then
+      local compose_profiles_env compose_profiles_live
+      compose_profiles_env="$(env_value "$env_file" COMPOSE_PROFILES)"
+      compose_profiles_live="${COMPOSE_PROFILES:-}"
+      case ",${compose_profiles_env},${compose_profiles_live}," in
+        *,phase7,*) sidecar_enabled="true" ;;
+      esac
+    fi
+  fi
+
   # Read piiranha + gliner enabled from the sanitizer YAML config (2-space
   # indent under `sanitizer:`). The sanitizer YAML loader (config.py) reads
   # them as `sanitizer.piiranha.enabled` + `sanitizer.gliner.enabled`.
