@@ -8,12 +8,15 @@
 # Extracting Phase 7 ML into a single-process Python gRPC sidecar removes
 # the fork-safety + eager-load multiplier defect class entirely.
 #
-# DEFAULT ON. Operators who do NOT want Phase 7 ML can opt out with
-# `pii-ml.enabled: false` at the umbrella chart level — that ALSO requires
-# disabling sanitizer-side Phase 7 layers (sandbox-a.sanitizer.piiranha.enabled
-# + sandbox-a.sanitizer.gliner.enabled both false) so the sanitizer doesn't
-# try to dial a nonexistent sidecar at runtime. The umbrella validator
-# enforces the paired toggle (closes the operator-footgun class).
+# DEFAULT OFF as of chart v1.7.1 (2026-06-10) — Phase 7 ML SUSPENDED for
+# performance (the ML sidecar saturated CPU on large prompts; the
+# deterministic L1+L2 layers remain active). The umbrella ships
+# `pii-ml.enabled: false`. Operators who WANT Phase 7 ML opt IN by setting
+# `pii-ml.enabled: true` at the umbrella chart level — that ALSO requires
+# enabling the sanitizer-side Phase 7 layers (sandbox-a.sanitizer.piiranha.enabled
+# + sandbox-a.sanitizer.gliner.enabled both true) so the sanitizer actually
+# dials the now-deployed sidecar at runtime. The umbrella validator enforces
+# the paired toggle (closes the operator-footgun class).
 
 namespace: dsa-identity
 

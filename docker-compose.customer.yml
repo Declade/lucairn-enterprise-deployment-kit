@@ -456,8 +456,12 @@ services:
       #   Compose: start_period 900s + retries 12 × interval 10s = 1020s
       # INSTALL.md documents 3-8min cold-cache first-boot model download;
       # the 1020s budget covers documented worst case + 200s headroom.
-      # Sanitizer depends_on this service_healthy — under-budgeting here
-      # silently stalls customer Compose deploys on cold caches.
+      # NOTE: the sanitizer has NO hard `depends_on: pii-ml` (see the
+      # sanitizer service below) — this service is profile-gated (`phase7`)
+      # and OFF by default. The generous readyz budget here matters when
+      # Phase 7 IS re-enabled via `--profile phase7`: under-budgeting then
+      # would surface as circuit-open degrades on cold caches while the
+      # sidecar's models finish loading.
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8088/readyz')\" || exit 1"]
       interval: 10s
       timeout: 10s
