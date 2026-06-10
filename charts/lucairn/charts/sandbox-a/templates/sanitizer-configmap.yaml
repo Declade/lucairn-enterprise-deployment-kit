@@ -136,8 +136,8 @@ data:
       # Closes contract-drift-detector DRIFT-001 (PR #241): the in-tree
       # config/default-sanitizer.yaml grew Phase 7 sections at PR #240; the
       # Helm-rendered sanitizer ConfigMap fell behind. Default-OFF here to
-      # match the Helm convention (operators opt in), vs default-ON in the
-      # in-tree default-sanitizer.yaml.
+      # match the in-tree default-sanitizer.yaml, which is ALSO Phase-7-OFF
+      # by default (Phase 7 suspended by default as of chart v1.7.1).
       # ──────────────────────────────────────────────────────────────────
       piiranha:
         enabled: {{ .Values.sanitizer.piiranha.enabled | default false }}
