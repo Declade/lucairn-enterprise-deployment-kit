@@ -7,7 +7,7 @@ description: Lucairn enterprise self-hosted deployment kit
 # carried here because Helm chart versions must be clean SemVer for
 # `helm package`. See docs/RELEASING.md § "Version reconciliation".
 type: application
-version: 1.7.0
+version: 1.7.1
 appVersion: "0.5.1"
 
 dependencies:
@@ -16,12 +16,16 @@ dependencies:
     condition: infrastructure.enabled
   - name: pii-ml
     version: 0.1.0
-    # pii-ml gRPC sidecar (Piiranha + GLiNER ML PII scanners). DEFAULT ON.
-    # Operators disabling Phase 7 ML must ALSO disable the sanitizer-side
-    # piiranha + gliner flags (sandbox-a.sanitizer.piiranha.enabled +
+    # pii-ml gRPC sidecar (Piiranha + GLiNER ML PII scanners). DEFAULT OFF
+    # as of chart v1.7.1 (2026-06-10) — Phase 7 ML SUSPENDED for performance
+    # (the ML sidecar overloads on large prompts). The deterministic layers
+    # (known-entity matching + Presidio) remain active. Re-enabling requires
+    # flipping pii-ml.enabled=true AND the sanitizer-side piiranha + gliner
+    # flags (sandbox-a.sanitizer.piiranha.enabled +
     # sandbox-a.sanitizer.gliner.enabled). Sanitizer's pii_ml_client.py only
-    # dials when those layer flags are on, so half-enabled combos are
-    # non-fatal but documented as misconfigurations in INSTALL.md.
+    # dials when those layer flags are on, so with the sidecar off the
+    # sanitizer starts happily and Phase 7 stays dormant. See INSTALL.md +
+    # PRD prd-2026-06-10-gateway-sanitizer-failclosed-phase7-fix.md.
     condition: pii-ml.enabled
   - name: audit
     version: 0.1.0
