@@ -219,6 +219,47 @@ sanitizerCache:
   redisUrl: ""  # auto-derived from service name when empty; override for external Redis
   ttlSeconds: 3600
 
+# Streaming chunk-aware state backend (TMS Slice 3 / DSA PR #267).
+# Fixes the cross-worker FAIL-CLOSED bug (kit issue #68): gunicorn routes
+# each SSE chunk of one streaming response to an ARBITRARY worker; with the
+# per-worker in-process store (~88% of chunks landed on the wrong worker on
+# the Hetzner pilot and triggered alignment-bail fail-closed immediately).
+# Option B moves per-stream state to the SAME redis-sanitizer-cache Redis so
+# any worker rehydrates the full PlaceholderRegistry + tail-buffer.
+#
+# stream-state keys (tms:stream:* / tms:streamlock:* / tms:streammut:*)
+# share DB 0 on redis-sanitizer-cache with the content-cache keys
+# (tms:cache:*). They never collide (distinct prefixes) and never touch the
+# DP-budget namespace (redis-sanitizer:6379/0, a SEPARATE StatefulSet).
+#
+# CONSTRAINT: mutationMarkerTtlSeconds MUST be strictly greater than
+# ttlSeconds. The sanitizer fails-fast at import time and clamps the marker
+# TTL to max(2×ttlSeconds, ttlSeconds+60) if this is violated. Raise
+# ttlSeconds only if your streams routinely exceed 5 minutes; raise
+# mutationMarkerTtlSeconds proportionally (minimum ttlSeconds + 60).
+sanitizerStreamState:
+  # "redis" (default) — shared Redis, closes cross-worker FAIL-CLOSED.
+  # "memory" — per-worker in-process store (pre-Slice-3 fallback; causes
+  #            ~88% streaming FAIL-CLOSED under gunicorn; use only as a
+  #            temporary revert if the shared Redis is unavailable).
+  backend: "redis"
+  # Redis URL for stream-state keys. Points at the SAME redis-sanitizer-cache
+  # StatefulSet as sanitizerCache.redisUrl (DB 0, distinct key prefix).
+  # Auto-derived from the bundled service name when empty; override only if
+  # you use an external Redis (set sanitizerCache.enabled=false too).
+  redisUrl: ""  # auto-derived from service name when empty; must match sanitizerCache.redisUrl
+  # Per-stream state key TTL (seconds). Set >= longest expected streaming
+  # response. Streams not closed within this window are evicted; a new chunk
+  # after eviction starts fresh state (alignment-bail risk on very long streams).
+  ttlSeconds: 300
+  # Cert-integrity mutation-marker TTL (seconds). The marker outlives the
+  # stream state so the gateway can detect mid-stream fresh-state resets that
+  # would produce a cert with renumbered placeholders (a cert-integrity
+  # violation). MUST be strictly > ttlSeconds. Default 600 = 2× the state TTL
+  # plus a 60-second margin. The sanitizer clamps to max(2×ttlSeconds,
+  # ttlSeconds+60) on boot if you set this too low.
+  mutationMarkerTtlSeconds: 600
+
 # ollama-identity is the L3 PII-plane LLM runtime (the on-GPU PII Shield).
 # It only renders when sanitizer.llmScanEnabled=true. Images are pinned by
 # released tag + sha256 digest (NET-02 supply-chain hardening) so the

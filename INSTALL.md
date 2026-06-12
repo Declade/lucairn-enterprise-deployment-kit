@@ -1305,6 +1305,75 @@ sandbox-a:
 
 ---
 
+## Sanitizer streaming state (Redis — default ON)
+
+**This section only matters if you serve Anthropic-SSE streaming responses
+through Lucairn (i.e. your application uses the streaming path).**
+
+The sanitizer runs N=4 gunicorn workers. For a streaming response, the gateway
+POSTs each SSE chunk (`content_block_delta`) as an **independent** HTTP request
+that gunicorn load-balances arbitrarily. Without a shared backend, each chunk
+may land on a different worker whose `PlaceholderRegistry` is empty — the
+registry drift causes alignment-bail fail-closed on the very next chunk (~88%
+FAIL-CLOSED observed on the Lucairn pilot before this fix — DSA PR #267).
+
+The streaming state backend shares the **same `redis-sanitizer-cache` Redis**
+as the content cache (`sandbox-a.sanitizerCache`), using a distinct
+`tms:stream:*` / `tms:streamlock:*` / `tms:streammut:*` key prefix so the two
+never collide with each other or with the DP-budget namespace on the other
+Redis instance.
+
+### Cert-integrity constraint: marker TTL must exceed state TTL
+
+`sandbox-a.sanitizerStreamState.mutationMarkerTtlSeconds` (default 600) MUST
+be **strictly greater** than `sanitizerStreamState.ttlSeconds` (default 300).
+The sanitizer clamps the marker TTL to `max(2 × ttlSeconds, ttlSeconds + 60)`
+at boot and logs a warning if this is violated. The mutation marker outlives
+the stream state so the gateway can detect mid-stream fresh-state resets that
+would produce a cert with renumbered placeholders (cert-integrity violation).
+Raise both TTLs proportionally when serving very long streaming responses.
+
+### Compose path
+
+The streaming state backend is wired automatically in `docker-compose.customer.yml`
+(via `SANITIZER_STREAM_STATE_BACKEND=redis` defaulted in `docker-compose.yml`).
+No extra steps required.
+
+To fall back to the per-worker in-process store (emergency revert — accepts
+streaming FAIL-CLOSED risk):
+
+```bash
+# In customer.env
+SANITIZER_STREAM_STATE_BACKEND=memory
+```
+
+### Kubernetes (Helm) path
+
+`sandbox-a.sanitizerStreamState.backend` defaults to `"redis"` and points at
+the same bundled `redis-sanitizer-cache` StatefulSet as the content cache.
+No extra steps required on a default install.
+
+To fall back to the per-worker in-process store (emergency revert):
+
+```yaml
+sandbox-a:
+  sanitizerStreamState:
+    backend: "memory"   # WARNING: causes ~88% streaming FAIL-CLOSED under gunicorn
+```
+
+To point at an **external** Redis (when `sanitizerCache.enabled=false`):
+
+```yaml
+sandbox-a:
+  sanitizerStreamState:
+    backend: "redis"
+    redisUrl: "redis://my-redis.infra.svc.cluster.local:6379/0"  # must match sanitizerCache.redisUrl
+    ttlSeconds: 300
+    mutationMarkerTtlSeconds: 600  # MUST be strictly > ttlSeconds
+```
+
+---
+
 ## Support Bundle
 
 If installation fails, generate a bundle:
