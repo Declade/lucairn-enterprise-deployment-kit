@@ -233,10 +233,11 @@ sanitizerCache:
 # DP-budget namespace (redis-sanitizer:6379/0, a SEPARATE StatefulSet).
 #
 # CONSTRAINT: mutationMarkerTtlSeconds MUST be strictly greater than
-# ttlSeconds. The sanitizer fails-fast at import time and clamps the marker
-# TTL to max(2×ttlSeconds, ttlSeconds+60) if this is violated. Raise
-# ttlSeconds only if your streams routinely exceed 5 minutes; raise
-# mutationMarkerTtlSeconds proportionally (minimum ttlSeconds + 60).
+# ttlSeconds. Default (unset) = max(2×ttlSeconds, ttlSeconds+60). If you
+# set mutationMarkerTtlSeconds explicitly and it is ≤ ttlSeconds, the
+# sanitizer clamps it up to ttlSeconds+60 at boot. Raise ttlSeconds only
+# if your streams routinely exceed 5 minutes; raise mutationMarkerTtlSeconds
+# proportionally (minimum ttlSeconds + 60).
 sanitizerStreamState:
   # "redis" (default) — shared Redis, closes cross-worker FAIL-CLOSED.
   # "memory" — per-worker in-process store (pre-Slice-3 fallback; causes
@@ -255,9 +256,9 @@ sanitizerStreamState:
   # Cert-integrity mutation-marker TTL (seconds). The marker outlives the
   # stream state so the gateway can detect mid-stream fresh-state resets that
   # would produce a cert with renumbered placeholders (a cert-integrity
-  # violation). MUST be strictly > ttlSeconds. Default 600 = 2× the state TTL
-  # plus a 60-second margin. The sanitizer clamps to max(2×ttlSeconds,
-  # ttlSeconds+60) on boot if you set this too low.
+  # violation). MUST be strictly > ttlSeconds. Default (unset) = max(2×ttlSeconds,
+  # ttlSeconds+60); if you set it ≤ ttlSeconds the sanitizer clamps it up to
+  # ttlSeconds+60 at boot.
   mutationMarkerTtlSeconds: 600
 
 # ollama-identity is the L3 PII-plane LLM runtime (the on-GPU PII Shield).
