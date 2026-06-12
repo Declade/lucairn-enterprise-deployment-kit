@@ -278,15 +278,17 @@ spec:
             #   PlaceholderRegistry + tail-buffer the prior chunk produced. Set to
             #   "memory" only as a temporary revert if Redis is unavailable.
             #
-            # SANITIZER_STREAM_STATE_REDIS_URL — must point at the SAME
-            #   redis-sanitizer-cache Redis as SANITIZER_CACHE_REDIS_URL. The
-            #   stream-state keys live under a SEPARATE key prefix ("tms:stream:")
-            #   so they never collide with the content-cache ("tms:cache:") or the
+            # SANITIZER_STREAM_STATE_REDIS_URL — resolves to the SAME Redis URL
+            #   as SANITIZER_CACHE_REDIS_URL so both always share the same Redis
+            #   instance (bundled or external). Resolution order:
+            #     1. sanitizerStreamState.redisUrl (explicit override)
+            #     2. sanitizerCache.redisUrl        (mirrors the cache URL — covers
+            #                                        the external-Redis topology where
+            #                                        sanitizerCache.enabled=false)
+            #     3. bundled service DNS              (default bundled StatefulSet)
+            #   Stream-state keys use a SEPARATE key prefix ("tms:stream:")
+            #   and never collide with the content-cache ("tms:cache:") or the
             #   DP-budget namespace ("privacy_budget:") on the other Redis instance.
-            #   Defaults to the bundled service URL when empty; the sanitizer also
-            #   falls back to SANITIZER_CACHE_REDIS_URL when the var is unset, but
-            #   explicit wiring here guarantees the correct URL even when that
-            #   fallback chain differs.
             #
             # SANITIZER_STREAM_STATE_TTL_SECONDS — per-stream state key TTL (s).
             #   Default 300 (5 min). Set >= the longest expected streaming response.
@@ -296,17 +298,28 @@ spec:
             #   (sanitizer fails-fast and clamps on boot if violated). The marker
             #   survives the stream state so the gateway can detect mid-stream fresh-
             #   state resets that would produce an unsigned cert with renumbered
-            #   placeholders. Default 600 (2× the state TTL + margin).
+            #   placeholders. Default (unset) = max(2×ttlSeconds, ttlSeconds+60);
+            #   if you set it ≤ state TTL the sanitizer clamps it up to ttlSeconds+60.
+            #   Both TTL vars are emitted unconditionally (also read by the memory
+            #   store) so backend=memory operators' ttlSeconds/mutationMarkerTtlSeconds
+            #   overrides take effect.
             - name: SANITIZER_STREAM_STATE_BACKEND
               value: {{ .Values.sanitizerStreamState.backend | default "redis" | quote }}
             {{- if eq (.Values.sanitizerStreamState.backend | default "redis") "redis" }}
             - name: SANITIZER_STREAM_STATE_REDIS_URL
-              value: {{ .Values.sanitizerStreamState.redisUrl | default (printf "redis://%s-sanitizer-cache.%s.svc.cluster.local:6379/0" .Chart.Name .Values.namespace) | quote }}
+              {{- $streamRedisUrl := .Values.sanitizerStreamState.redisUrl | default "" }}
+              {{- if $streamRedisUrl }}
+              value: {{ $streamRedisUrl | quote }}
+              {{- else if .Values.sanitizerCache.redisUrl }}
+              value: {{ .Values.sanitizerCache.redisUrl | quote }}
+              {{- else }}
+              value: {{ printf "redis://%s-sanitizer-cache.%s.svc.cluster.local:6379/0" .Chart.Name .Values.namespace | quote }}
+              {{- end }}
+            {{- end }}
             - name: SANITIZER_STREAM_STATE_TTL_SECONDS
               value: {{ .Values.sanitizerStreamState.ttlSeconds | default 300 | quote }}
             - name: SANITIZER_STREAM_MUTATION_MARKER_TTL_SECONDS
               value: {{ .Values.sanitizerStreamState.mutationMarkerTtlSeconds | default 600 | quote }}
-            {{- end }}
           volumeMounts:
             - name: sanitizer-config
               mountPath: /config

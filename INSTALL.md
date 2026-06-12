@@ -1327,8 +1327,9 @@ Redis instance.
 
 `sandbox-a.sanitizerStreamState.mutationMarkerTtlSeconds` (default 600) MUST
 be **strictly greater** than `sanitizerStreamState.ttlSeconds` (default 300).
-The sanitizer clamps the marker TTL to `max(2 × ttlSeconds, ttlSeconds + 60)`
-at boot and logs a warning if this is violated. The mutation marker outlives
+Default (unset) marker TTL = `max(2 × ttlSeconds, ttlSeconds + 60)`. If you
+set it explicitly and it is ≤ `ttlSeconds`, the sanitizer clamps it up to
+`ttlSeconds + 60` at boot and logs a warning. The mutation marker outlives
 the stream state so the gateway can detect mid-stream fresh-state resets that
 would produce a cert with renumbered placeholders (cert-integrity violation).
 Raise both TTLs proportionally when serving very long streaming responses.
@@ -1336,11 +1337,12 @@ Raise both TTLs proportionally when serving very long streaming responses.
 ### Compose path
 
 The streaming state backend is wired automatically in `docker-compose.customer.yml`
-(via `SANITIZER_STREAM_STATE_BACKEND=redis` defaulted in `docker-compose.yml`).
+(all four `SANITIZER_STREAM_STATE_*` vars are set with safe defaults pointing at the
+same `redis-sanitizer-cache` service as the content cache).
 No extra steps required.
 
 To fall back to the per-worker in-process store (emergency revert — accepts
-streaming FAIL-CLOSED risk):
+streaming FAIL-CLOSED risk), add to `customer.env`:
 
 ```bash
 # In customer.env

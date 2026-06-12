@@ -545,6 +545,13 @@ services:
       SANITIZER_CACHE_BACKEND: "${SANITIZER_CACHE_BACKEND:-redis}"
       SANITIZER_CACHE_REDIS_URL: "redis://redis-sanitizer-cache:6379/0"
       SANITIZER_CACHE_TTL_SECONDS: "${SANITIZER_CACHE_TTL_SECONDS:-3600}"
+      # Streaming chunk-aware state backend (TMS Slice 3 / DSA PR #267).
+      # Fixes cross-worker FAIL-CLOSED (kit #68) — shares the same
+      # redis-sanitizer-cache Redis as the content cache (distinct key prefix).
+      SANITIZER_STREAM_STATE_BACKEND: "${SANITIZER_STREAM_STATE_BACKEND:-redis}"
+      SANITIZER_STREAM_STATE_REDIS_URL: "${SANITIZER_STREAM_STATE_REDIS_URL:-redis://redis-sanitizer-cache:6379/0}"
+      SANITIZER_STREAM_STATE_TTL_SECONDS: "${SANITIZER_STREAM_STATE_TTL_SECONDS:-300}"
+      SANITIZER_STREAM_MUTATION_MARKER_TTL_SECONDS: "${SANITIZER_STREAM_MUTATION_MARKER_TTL_SECONDS:-600}"
     volumes:
       - ${SANITIZER_CONFIG_FILE:-./config/default-sanitizer.yaml}:/config/config.yaml:ro
       # Safe-terms file referenced by default-sanitizer.yaml's
