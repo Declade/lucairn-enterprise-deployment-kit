@@ -1980,6 +1980,28 @@ check_tms_trust_zones() {
     return 0
   fi
 
+  # FIX P1: null / {} / { } (empty object with any inner whitespace) = no
+  # policy configured.  The gateway treats these as IDENTITY (no override, no
+  # startup log, valid on ANY image version).  Short-circuit HERE — before the
+  # version gate — so that a null or {} value on an old image tag (e.g.
+  # LUCAIRN_IMAGE_TAG=0.5.0) does NOT produce a spurious version-gate FAIL,
+  # matching the documented "null/{} → ok" behaviour in INSTALL.md.
+  # Only values with actual content (e.g. {"":"x"} or {"x":"y"}) fall through
+  # to the version gate and JSON validation below.
+  local _policy_trimmed
+  _policy_trimmed="$(printf '%s' "$policy" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')"
+  case "$_policy_trimmed" in
+    null|'{}')
+      echo "tms trust zones: ok (not configured — gateway uses built-in defaults)"
+      return 0
+      ;;
+  esac
+  # Also match { <whitespace only> } via a lightweight regex (no python needed).
+  if printf '%s' "$_policy_trimmed" | grep -qE '^\{[[:space:]]*\}$'; then
+    echo "tms trust zones: ok (not configured — gateway uses built-in defaults)"
+    return 0
+  fi
+
   # --- (b) VERSION GATE ---------------------------------------------------
   # Check BEFORE parsing: a valid policy on an old image is the silent-no-op
   # danger. Block it here so the operator bumps the tag before applying the
@@ -2044,6 +2066,14 @@ check_tms_trust_zones() {
   # means a policy IS set. The gateway's own fail-loud at startup is the real
   # enforcement gate; doctor degrades to a warning rather than a hard fail.
   # (Note: the version gate above uses sort/awk, not python3 — it already ran.)
+  #
+  # INTENTIONAL DEGRADE (FIX P3): skipping JSON validation when python3 is
+  # absent means an invalid policy could pass doctor on such hosts. This is
+  # the lesser-evil choice: a false-FAIL on a valid policy (false positive) is
+  # worse than a missed-invalid on an exotic host. The gateway's own startup
+  # fail-loud (it refuses to boot on an invalid GATEWAY_TMS_TRUST_ZONES) is the
+  # authoritative enforcement gate; doctor is a pre-flight convenience, not the
+  # gatekeeper.
   if ! have python3; then
     warn "tms trust zones: python3 unavailable -- skipping JSON validation; the gateway's own fail-loud at startup is the enforcement gate"
     return 0
@@ -2091,6 +2121,9 @@ check_tms_trust_zones() {
     '        sys.exit(1)' \
     '    seen[k] = True' \
     'for k, v in data.items():' \
+    '    if k == "":' \
+    '        print("EMPTY_KEY", flush=True)' \
+    '        sys.exit(1)' \
     '    print(str(k) + "\t" + str(v), flush=True)' \
     > "$parse_tmp"
 
@@ -2114,6 +2147,9 @@ check_tms_trust_zones() {
         ;;
       DUPLICATE_KEY:*)
         echo "tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES contains a duplicate segment-type key: ${parse_out#DUPLICATE_KEY: }"
+        ;;
+      EMPTY_KEY)
+        echo "tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES contains an empty segment-type key; the gateway refuses to start with empty keys"
         ;;
       JSON_PARSE_ERROR:*)
         echo "tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES is not valid JSON: ${parse_out#JSON_PARSE_ERROR: }"

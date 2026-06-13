@@ -112,10 +112,10 @@ assert_case "e_tag_latest" \
   'LUCAIRN_IMAGE_TAG=latest
 GATEWAY_TMS_TRUST_ZONES={"code_block":"full_scan"}' 1 "is not an exact semver pin"
 
-# (f) null -> ok (identity, matches gateway)
+# (f) null -> ok (no-policy short-circuit, matches gateway identity behaviour)
 assert_case "f_null_identity" \
   'LUCAIRN_IMAGE_TAG=0.5.1
-GATEWAY_TMS_TRUST_ZONES=null' 0 "identity"
+GATEWAY_TMS_TRUST_ZONES=null' 0 "not configured"
 
 # --- Additional robustness cases (reviewer-chain hardening) --------------
 # Weaker-than-default override allowed (operator owns the risk).
@@ -123,10 +123,10 @@ assert_case "weaker_ok" \
   'LUCAIRN_IMAGE_TAG=0.5.2
 GATEWAY_TMS_TRUST_ZONES={"tool_result_content":"shallow"}' 0 "ok"
 
-# Empty object {} -> ok (identity).
+# Empty object {} -> ok (no-policy short-circuit, matches gateway identity behaviour).
 assert_case "empty_obj_identity" \
   'LUCAIRN_IMAGE_TAG=0.5.1
-GATEWAY_TMS_TRUST_ZONES={}' 0 "identity"
+GATEWAY_TMS_TRUST_ZONES={}' 0 "not configured"
 
 # Array top-level -> fail with a CLEAN message (not a traceback).
 assert_case "array_invalid" \
@@ -167,6 +167,34 @@ GATEWAY_TMS_TRUST_ZONES={"code_block":"full_scan"}' 1 "is not an exact semver pi
 assert_case "tag_0510_ok" \
   'LUCAIRN_IMAGE_TAG=0.5.10
 GATEWAY_TMS_TRUST_ZONES={"code_block":"full_scan"}' 0 "ok"
+
+# --- FIX P1: null / {} / whitespace-{} must skip the version gate --------
+# {} + old image tag 0.5.0 -> ok (version gate NOT fired — identity short-circuit)
+assert_case "p1_empty_obj_050" \
+  'LUCAIRN_IMAGE_TAG=0.5.0
+GATEWAY_TMS_TRUST_ZONES={}' 0 "not configured"
+
+# null + old image tag 0.5.0 -> ok
+assert_case "p1_null_050" \
+  'LUCAIRN_IMAGE_TAG=0.5.0
+GATEWAY_TMS_TRUST_ZONES=null' 0 "not configured"
+
+# { } (whitespace inside) + 0.5.0 -> ok
+assert_case "p1_ws_obj_050" \
+  'LUCAIRN_IMAGE_TAG=0.5.0
+GATEWAY_TMS_TRUST_ZONES={ }' 0 "not configured"
+
+# Positive control: a real override with 0.5.0 must still FAIL the version gate
+# (proves FIX P1 did NOT weaken the gate for non-empty policies).
+assert_case "p1_real_policy_050_still_fails" \
+  'LUCAIRN_IMAGE_TAG=0.5.0
+GATEWAY_TMS_TRUST_ZONES={"system_prompt":"full_scan"}' 1 "requires gateway image >= 0.5.1"
+
+# --- FIX P2: empty JSON key must fail with the EMPTY-KEY message ----------
+# {"":"full_scan"} + 0.5.1 -> fail, message contains "empty segment-type key"
+assert_case "p2_empty_key_fail" \
+  'LUCAIRN_IMAGE_TAG=0.5.1
+GATEWAY_TMS_TRUST_ZONES={"":"full_scan"}' 1 "empty segment-type key"
 
 # --- Degraded-environment cases ------------------------------------------
 # Build a PATH that has the usual tools but NOT python3, to prove the JSON
