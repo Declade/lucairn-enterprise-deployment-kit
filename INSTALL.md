@@ -2290,7 +2290,7 @@ operator-configured downgrade.
 When an override is active, the gateway logs two clear banner lines at startup
 (verbatim from `services/gateway/cmd/server/main.go`):
 ```
-TMS trust-zone override ACTIVE (self-hosted deployment-global): system_prompt=full_scan,code_block=full_scan
+TMS trust-zone override ACTIVE (self-hosted deployment-global): code_block=full_scan system_prompt=full_scan
 TMS trust-zone override: WARNING — this changes scan policy for ALL keys on this deployment (not per-customer). Ensure this is a self-hosted Enterprise deployment, not the hosted multi-tenant pilot.
 ```
 When `GATEWAY_TMS_TRUST_ZONES` is unset the gateway instead logs:
