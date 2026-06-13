@@ -2287,11 +2287,18 @@ safety floor — **you own the compliance posture** when weakening below default
 Lucairn Support cannot be held responsible for PII exposures resulting from an
 operator-configured downgrade.
 
-When an override is active, the gateway logs a clear banner at startup:
+When an override is active, the gateway logs two clear banner lines at startup
+(verbatim from `services/gateway/cmd/server/main.go`):
 ```
-GATEWAY_TMS_TRUST_ZONES override active (N entries) — this changes scan policy for ALL keys on this deployment: ...
+TMS trust-zone override ACTIVE (self-hosted deployment-global): system_prompt=full_scan,code_block=full_scan
+TMS trust-zone override: WARNING — this changes scan policy for ALL keys on this deployment (not per-customer). Ensure this is a self-hosted Enterprise deployment, not the hosted multi-tenant pilot.
 ```
-This banner is searchable in pod logs and is included in support bundles.
+When `GATEWAY_TMS_TRUST_ZONES` is unset the gateway instead logs:
+```
+TMS trust-zone override: none (GATEWAY_TMS_TRUST_ZONES unset — classifier defaults in effect)
+```
+The `TMS trust-zone override ACTIVE` line is searchable in pod logs and is
+included in support bundles.
 
 ### Prerequisite: gateway image >= 0.5.1
 
@@ -2302,10 +2309,16 @@ but the gateway binary that reads the env var is **not yet in GHCR**. Setting
 present in the ConfigMap but the gateway does not read it.
 
 `lucairn doctor` **blocks** setting this on an image older than 0.5.1 with a clear
-error:
+error (verbatim from `bin/lucairn`):
 ```
-tms trust zones: failed — GATEWAY_TMS_TRUST_ZONES requires gateway image >= 0.5.1
-  (your LUCAIRN_IMAGE_TAG is 0.5.0); bump the tag or unset the policy
+tms trust zones: failed — GATEWAY_TMS_TRUST_ZONES requires gateway image >= 0.5.1 (the release containing TMS Slice 4); your LUCAIRN_IMAGE_TAG is 0.5.0. Bump the tag or unset the policy — on an older image the policy is silently ignored.
+```
+
+If `LUCAIRN_IMAGE_TAG` is not an exact `MAJOR.MINOR.PATCH` pin (e.g. `latest`,
+`v0.5.1`, `sha-…`, or a bare `0.5`), the doctor fails closed — it cannot prove
+the image is new enough:
+```
+tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES is set but LUCAIRN_IMAGE_TAG="latest" is not an exact semver pin; doctor cannot confirm the gateway image is >= 0.5.1. Pin an exact tag (e.g. 0.5.1) or unset the policy.
 ```
 
 When the 0.5.1 image is published to GHCR, update `LUCAIRN_IMAGE_TAG=0.5.1` in
@@ -2362,10 +2375,20 @@ policy errors before they reach the gateway:
 
 - **Invalid zone value** (typo, e.g. `full_scna`) → `FAIL` — doctor names the
   bad key and the bad value.
+- **Non-object policy** (a JSON array, string, or number instead of an object)
+  → `FAIL` with a clean message (e.g. `must be a JSON object (got array)`).
+- **`null` or empty object `{}`** → `ok` (identity) — matches the gateway, which
+  treats both as "no override, use built-in defaults".
+- **Duplicate segment-type key** → `FAIL` — matches the gateway's fail-loud.
 - **Unknown segment type** → `WARN` — forward-compatible; the gateway also
   warns but boots cleanly.
 - **Gateway image < 0.5.1** with a non-empty policy → `FAIL` — bump the tag or
   unset the policy first.
+- **Non-semver `LUCAIRN_IMAGE_TAG`** (e.g. `latest`, `v0.5.1`, `sha-…`, bare
+  `0.5`) with a non-empty policy → `FAIL` (fail-closed: the doctor cannot prove
+  the image is ≥ 0.5.1; pin an exact `MAJOR.MINOR.PATCH` tag).
+- **`python3` unavailable on the doctor host** → `WARN` (JSON validation
+  skipped; the gateway's own fail-loud at startup remains the enforcement gate).
 
 ### Auditability
 

@@ -1951,7 +1951,8 @@ check_sandbox_b_remote_coherent() {
 #       policy is active, but the gateway image is too old to read the env
 #       var. Doctor catches this at pre-flight time.
 #
-# Valid zones (must match services/gateway/internal/api/tms_types.go consts):
+# Vocab mirrors dual-sandbox-architecture services/gateway/internal/api/tms_types.go
+# (the DSA-repo source of truth: 4 zones / 9 segment types). Valid zones:
 #   trusted_platform | full_scan | value_only | shallow
 #
 # Valid segment types (9, same source):
@@ -1987,9 +1988,35 @@ check_tms_trust_zones() {
   image_tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)"
   image_tag="${image_tag:-0.5.0}"
 
-  # Robust semver compare using sort -V (available on macOS + Linux).
-  # If sort -V is absent, skip the version gate (conservative: no false fail).
-  if have sort; then
+  # FIX 2 (fail-closed on non-semver tag): sort -V orders non-semver tags
+  # (`latest`, `v0.5.0`, `sha-...`, `main`, `0.5.1-rc1`) AFTER plain numeric
+  # versions, so the gate would PASS on such a tag while the real image is an
+  # older 0.5.0 → silent no-op. Require an EXACT semver pin (MAJOR.MINOR.PATCH)
+  # before the version compare; anything else fails closed (the policy is set
+  # but we cannot prove the image is >= TMS_MIN_IMAGE_TAG).
+  case "$image_tag" in
+    *[!0-9.]*|.*|*.|*..*)
+      echo "tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES is set but LUCAIRN_IMAGE_TAG=\"$image_tag\" is not an exact semver pin; doctor cannot confirm the gateway image is >= $TMS_MIN_IMAGE_TAG. Pin an exact tag (e.g. $TMS_MIN_IMAGE_TAG) or unset the policy."
+      return 1
+      ;;
+  esac
+  # A bare "0.5" (two segments) or "5" (one) also can't be ordered safely
+  # against MAJOR.MINOR.PATCH — require exactly three dot-separated numeric
+  # parts. (The case above already rejects empties / non-digit / leading or
+  # trailing dot / double-dot; this counts the segments.)
+  local _tag_parts
+  _tag_parts="$(printf '%s' "$image_tag" | awk -F. '{print NF}')"
+  if [ "$_tag_parts" != "3" ]; then
+    echo "tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES is set but LUCAIRN_IMAGE_TAG=\"$image_tag\" is not an exact semver pin; doctor cannot confirm the gateway image is >= $TMS_MIN_IMAGE_TAG. Pin an exact tag (e.g. $TMS_MIN_IMAGE_TAG) or unset the policy."
+    return 1
+  fi
+
+  # FIX 3 (sort -V portability): BusyBox/Alpine `sort` lacks -V and would
+  # compare lexically (wrong: "0.5.10" < "0.5.2"). Probe that sort -V actually
+  # works AND orders correctly; if not, fail closed (never SKIP the gate while
+  # the policy is set).
+  if printf '0.5.0\n0.5.1\n' | sort -V >/dev/null 2>&1 \
+     && [ "$(printf '0.5.1\n0.5.0\n' | sort -V | head -1)" = "0.5.0" ]; then
     local older
     older="$(printf '%s\n%s\n' "$image_tag" "$TMS_MIN_IMAGE_TAG" | sort -V | head -1)"
     if [ "$older" = "$TMS_MIN_IMAGE_TAG" ] && [ "$image_tag" != "$TMS_MIN_IMAGE_TAG" ]; then
@@ -1999,19 +2026,41 @@ check_tms_trust_zones() {
       return 1
     fi
     # When equal (image_tag == TMS_MIN_IMAGE_TAG) the gate passes (ok).
+  else
+    echo "tms trust zones: failed -- cannot verify gateway image >= $TMS_MIN_IMAGE_TAG (sort -V unavailable on this host); pin LUCAIRN_IMAGE_TAG=${TMS_MIN_IMAGE_TAG}+ and re-run, or validate manually"
+    return 1
   fi
 
   # --- (a) VALUE VALIDATION -----------------------------------------------
-  # Valid constants (mirror tms_types.go exactly).
+  # Valid constants (mirror dual-sandbox-architecture
+  # services/gateway/internal/api/tms_types.go exactly — DSA-repo source of truth).
   local valid_zones="trusted_platform full_scan value_only shallow"
   local valid_segments="system_prompt platform_metadata user_content assistant_content tool_use_input tool_result_content code_block thinking_block unknown"
+
+  # FIX 4 (python3 absent → degrade to warn, never false-FAIL): a host without
+  # python3 cannot run the JSON validator. A customer NOT using TMS already
+  # short-circuited at the empty-policy early return above, so reaching here
+  # means a policy IS set. The gateway's own fail-loud at startup is the real
+  # enforcement gate; doctor degrades to a warning rather than a hard fail.
+  # (Note: the version gate above uses sort/awk, not python3 — it already ran.)
+  if ! have python3; then
+    warn "tms trust zones: python3 unavailable -- skipping JSON validation; the gateway's own fail-loud at startup is the enforcement gate"
+    return 0
+  fi
 
   # Use python3 to parse JSON (present on all supported platforms).
   # Write to a temp file to avoid heredoc-in-subshell bash 3.2 parse quirks.
   # Returns a tab-separated stream of KEY<TAB>VALUE lines, one per entry.
-  # On error prints JSON_PARSE_ERROR: ... or DUPLICATE_KEY: ... and exits 1.
+  # On error prints JSON_PARSE_ERROR / DUPLICATE_KEY / NOT_OBJECT and exits 1.
+  # On the IDENTITY cases (top-level JSON null or empty object {}) exits 0 with
+  # no output (matches the gateway, which treats null/{} as no-op).
+  #
+  # FIX 1 (mktemp portability): the literal `mktemp /tmp/lcr-tms-check.XXXXXX.py`
+  # has the X's NOT trailing, which GNU/Linux mktemp rejects ("too few X's") →
+  # empty path → false-FAIL on Linux. Use the file's portable convention
+  # (matches the keys-diag / admin-body checks above).
   local parse_tmp parse_out
-  parse_tmp="$(mktemp /tmp/lcr-tms-check.XXXXXX.py)"
+  parse_tmp="$(mktemp 2>/dev/null || echo /tmp/lcr-tms-check.$$)"
   # Write the python validator to the temp file (no heredoc needed here).
   printf '%s\n' \
     'import sys, json' \
@@ -2020,6 +2069,18 @@ check_tms_trust_zones() {
     '    data = json.loads(raw)' \
     'except json.JSONDecodeError as e:' \
     '    print("JSON_PARSE_ERROR: " + str(e), flush=True)' \
+    '    sys.exit(1)' \
+    '# FIX 5: top-level null or empty object == IDENTITY (gateway treats both' \
+    '# as no-op, no error). Exit 0 silently to match.' \
+    'if data is None or data == {}:' \
+    '    sys.exit(0)' \
+    '# FIX 5: a list / scalar / non-object top level is invalid -- emit a clean' \
+    '# message naming the JSON type, NOT a traceback.' \
+    'if not isinstance(data, dict):' \
+    '    _t = type(data).__name__' \
+    '    _names = {"list": "array", "str": "string", "int": "number",' \
+    '              "float": "number", "bool": "boolean"}' \
+    '    print("NOT_OBJECT: " + _names.get(_t, _t), flush=True)' \
     '    sys.exit(1)' \
     'pairs = json.loads(raw, object_pairs_hook=lambda p: p)' \
     'seen = {}' \
@@ -2036,9 +2097,40 @@ check_tms_trust_zones() {
   local parse_rc=$?
   rm -f "$parse_tmp"
 
+  # FIX 4 (distinguish python3 command failure from validator exit-1): a 127
+  # (command not found / interpreter error) must NOT be reported as "invalid
+  # JSON". have python3 above should prevent this, but guard defensively.
+  if [ "$parse_rc" -eq 127 ]; then
+    warn "tms trust zones: python3 failed to execute (exit 127) -- skipping JSON validation; the gateway's own fail-loud at startup is the enforcement gate"
+    return 0
+  fi
+
   if [ "$parse_rc" -ne 0 ]; then
-    echo "tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES is not valid JSON or contains duplicate keys: $parse_out"
+    # FIX 5: surface the clean validator message rather than a raw traceback.
+    case "$parse_out" in
+      NOT_OBJECT:*)
+        echo "tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES must be a JSON object (got ${parse_out#NOT_OBJECT: })"
+        ;;
+      DUPLICATE_KEY:*)
+        echo "tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES contains a duplicate segment-type key: ${parse_out#DUPLICATE_KEY: }"
+        ;;
+      JSON_PARSE_ERROR:*)
+        echo "tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES is not valid JSON: ${parse_out#JSON_PARSE_ERROR: }"
+        ;;
+      *)
+        echo "tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES is not valid JSON or contains duplicate keys: $parse_out"
+        ;;
+    esac
     return 1
+  fi
+
+  # FIX 5: IDENTITY short-circuit. The validator exits 0 with NO output for a
+  # top-level JSON null or empty object {} (both are no-ops the gateway accepts).
+  # An empty parse_out fed into the `<<EOF` heredoc below would yield one blank
+  # line and wrongly trip the empty-key guard, so treat it as identity here.
+  if [ -z "$parse_out" ]; then
+    echo "tms trust zones: ok (GATEWAY_TMS_TRUST_ZONES is identity — null or {} — gateway uses built-in defaults)"
+    return 0
   fi
 
   local tms_failed=0

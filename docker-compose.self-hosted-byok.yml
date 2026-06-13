@@ -44,6 +44,15 @@
 # Declaring the intended allowlist in `LUCAIRN_LLM_EGRESS_ALLOWLIST` keeps
 # the operator-documented intent close to the running compose state, and
 # `bin/lucairn doctor` will surface that the overlay is in effect.
+#
+# NOTE (TMS Slice 4 trust-zone tuning): this overlay defines NO `gateway:`
+# service — it only adds the egress network + provider credentials to
+# `sandbox-b`. It is always layered ON TOP of docker-compose.customer.yml
+# (+ docker-compose.self-hosted.yml), both of which already pass
+# GATEWAY_TMS_TRUST_ZONES through to the gateway. The policy is therefore
+# already wired on every documented BYOK Compose path; no passthrough is
+# added here (adding an empty gateway stub for one inherited env var would be
+# noise). Requires gateway image >= 0.5.1. See INSTALL.md § "Phase 8".
 
 networks:
   # New non-internal bridge. Only Sandbox B joins this network. Sandbox A,
