@@ -2016,7 +2016,8 @@ check_tms_trust_zones() {
   # works AND orders correctly; if not, fail closed (never SKIP the gate while
   # the policy is set).
   if printf '0.5.0\n0.5.1\n' | sort -V >/dev/null 2>&1 \
-     && [ "$(printf '0.5.1\n0.5.0\n' | sort -V | head -1)" = "0.5.0" ]; then
+     && [ "$(printf '0.5.1\n0.5.0\n' | sort -V | head -1)" = "0.5.0" ] \
+     && [ "$(printf '0.5.10\n0.5.2\n' | sort -V | head -1)" = "0.5.2" ]; then
     local older
     older="$(printf '%s\n%s\n' "$image_tag" "$TMS_MIN_IMAGE_TAG" | sort -V | head -1)"
     if [ "$older" = "$TMS_MIN_IMAGE_TAG" ] && [ "$image_tag" != "$TMS_MIN_IMAGE_TAG" ]; then
