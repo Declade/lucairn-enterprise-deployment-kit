@@ -2,6 +2,28 @@
 {{- if .Values.readiness.existingBundleSecret -}}
 {{- $readinessBundlePath = printf "%s/%s" (trimSuffix "/" .Values.readiness.bundleMountPath) .Values.readiness.bundleFileName -}}
 {{- end -}}
+{{- /*
+  FIX 6 — Helm-native version gate for TMS Slice 4 trust-zone tuning.
+
+  The kit doctor only guards the Compose path (it reads customer.env). A Helm
+  customer who sets gateway.tms.trustZones on a gateway image < 0.5.1 would
+  otherwise get a SILENT no-op (the env key renders into the ConfigMap but the
+  0.5.0 gateway binary does not read GATEWAY_TMS_TRUST_ZONES). This fails the
+  render at `helm template` / `helm upgrade --dry-run` instead.
+
+  $tag MUST be the SAME effective image tag the deployment resolves
+  (charts/lucairn/charts/gateway/templates/deployment.yaml:
+   .Values.image.tag | default .Values.global.imageTag | default .Chart.AppVersion)
+  so the guard's tag matches the actually-deployed image.
+*/ -}}
+{{- if .Values.tms.trustZones }}
+{{- $tag := .Values.image.tag | default .Values.global.imageTag | default .Chart.AppVersion | toString }}
+{{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+$" $tag) }}
+{{- fail (printf "[gateway] tms.trustZones is set but the gateway image tag (%q) is not an exact semver >= 0.5.1 (the release that reads GATEWAY_TMS_TRUST_ZONES). Pin global.imageTag to 0.5.1+ or unset gateway.tms.trustZones." $tag) }}
+{{- else if semverCompare "< 0.5.1" $tag }}
+{{- fail (printf "[gateway] tms.trustZones is set but global.imageTag (%s) < 0.5.1 — the gateway image that reads GATEWAY_TMS_TRUST_ZONES is silently ignored below 0.5.1. Bump global.imageTag to 0.5.1+ or unset gateway.tms.trustZones." $tag) }}
+{{- end }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

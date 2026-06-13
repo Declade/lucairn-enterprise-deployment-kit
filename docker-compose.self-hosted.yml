@@ -73,6 +73,13 @@ services:
       SANDBOX_B_INVARIANT_URL: "http://sandbox-b:8084/invariant"
       SANDBOX_B_REMOTE_ENDPOINT: ""
       SANDBOX_B_API_KEY: "${LOCAL_SANDBOX_B_API_KEY:-local-sandbox-b-key}"
+      # TMS Slice 4 — per-deployment trust-zone tuning (self-hosted Enterprise only).
+      # This overlay merges INTO docker-compose.customer.yml's gateway service,
+      # which already sets GATEWAY_TMS_TRUST_ZONES — restating it here keeps the
+      # passthrough explicit on the self-hosted path (Compose per-key merge means
+      # this value is identical to the base). Requires gateway image >= 0.5.1.
+      # See INSTALL.md § "Phase 8".
+      GATEWAY_TMS_TRUST_ZONES: "${GATEWAY_TMS_TRUST_ZONES:-}"
     networks:
       - dsa-ai
 
