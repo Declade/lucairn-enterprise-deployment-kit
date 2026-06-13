@@ -189,6 +189,46 @@ keystore:
     storageClass: ""  # empty = cluster default StorageClass
     accessMode: ReadWriteOnce
 
+# TMS Slice 4 — per-deployment trust-zone tuning (self-hosted Enterprise only).
+#
+# Override the sanitizer's per-content-type scan strictness for THIS deployment.
+# An empty map (default) leaves every segment type at its built-in default zone
+# (system_prompt/platform_metadata → trusted_platform [skipped]; user_content/
+# assistant_content/thinking_block → full_scan; tool_use_input/tool_result_content
+# → value_only; code_block → shallow). Non-empty maps are rendered into the
+# gateway env as GATEWAY_TMS_TRUST_ZONES (compact JSON) via the ConfigMap.
+#
+# Direction: bidirectional — you may scan MORE or LESS strictly than the default.
+# Operator owns the risk. This setting changes scan policy for ALL API keys on
+# this deployment; it does NOT affect any other Lucairn deployment.
+#
+# Prerequisite: gateway image >= 0.5.1 (the release containing TMS Slice 4).
+# `lucairn doctor` blocks setting this on an older image. An incorrect zone
+# value (not one of: trusted_platform, full_scan, value_only, shallow) causes
+# the gateway to refuse to start with a clear error.
+#
+# Example — require full scanning of system prompts and code blocks:
+#   tms:
+#     trustZones:
+#       system_prompt: full_scan
+#       code_block: full_scan
+#
+# Example — relax tool-result scanning (weaker than default; operator takes risk):
+#   tms:
+#     trustZones:
+#       tool_result_content: shallow
+#
+# Helm install/upgrade: --set gateway.tms.trustZones.system_prompt=full_scan
+# See INSTALL.md § "Phase 8 — Per-deployment trust-zone tuning".
+tms:
+  # trustZones: segment_type → trust_zone override map.
+  # Valid zones: trusted_platform | full_scan | value_only | shallow
+  # Valid segment types: system_prompt | platform_metadata | user_content |
+  #   assistant_content | tool_use_input | tool_result_content | code_block |
+  #   thinking_block | unknown
+  # Empty map = identity (use gateway built-in defaults for all segments).
+  trustZones: {}
+
 # PR-C1 fix-up round 1 (FIX-6): gateway-side sanitize cache. Default OFF —
 # operators flip enabled=true per environment after the cert-chain integration
 # follow-up PR ships. Override maxEntries / ttlSeconds per-environment if needed.

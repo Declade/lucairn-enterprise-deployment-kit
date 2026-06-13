@@ -2238,3 +2238,141 @@ verify which path is active. The dashboard binary refuses to start
 demo mode silently — both env vars are independent + greppable in
 the pod logs.
 
+## Phase 8 — Per-deployment trust-zone tuning (self-hosted Enterprise)
+
+> **Enterprise self-hosted only.** This feature has no effect on Lucairn-hosted
+> Developer or Pro tiers. The hosted pilot's `GATEWAY_TMS_TRUST_ZONES` stays
+> unset (operator cannot override it). This tuning affects only YOUR deployment.
+
+### What it is
+
+The Lucairn gateway classifies every request into named segments (system prompt,
+user message, tool call, etc.) and assigns each a *trust zone* that controls how
+deeply the sanitizer scans it. The built-in defaults are tuned for the broadest
+safety baseline. Phase 8 lets a self-hosted Enterprise operator override those
+defaults for their whole deployment via a single environment variable or Helm value.
+
+Overrides apply to **all API keys on this deployment** — there is no per-key
+granularity in v1.0. The gateway applies the override on every request from the
+moment it boots. A `helm upgrade` → pod restart is the apply path (no hot-reload).
+
+### The 9 segment types and their built-in default zones
+
+| Segment type             | Built-in default zone                         |
+|--------------------------|-----------------------------------------------|
+| `system_prompt`          | `trusted_platform` — **skipped** (not scanned)|
+| `platform_metadata`      | `trusted_platform` — **skipped**              |
+| `user_content`           | `full_scan` — full PII scan                   |
+| `assistant_content`      | `full_scan`                                   |
+| `thinking_block`         | `full_scan`                                   |
+| `tool_use_input`         | `value_only` — values scanned, keys skipped   |
+| `tool_result_content`    | `value_only`                                  |
+| `code_block`             | `shallow` — heuristic scan only               |
+| `unknown`                | `full_scan` — unknown content scanned in full |
+
+### The 4 trust zones
+
+| Zone               | What the sanitizer does                                      |
+|--------------------|--------------------------------------------------------------|
+| `trusted_platform` | Skip entirely — no PII scan, no redaction, no cert manifest entry generated |
+| `full_scan`        | Full PII scan (all detectors: known-entity + Presidio + optional ML)        |
+| `value_only`       | Scan only JSON / structured VALUES, not key names             |
+| `shallow`          | Heuristic / pattern-matching scan only (no ML, no Presidio)  |
+
+### Direction and risk
+
+Both STRICTER (e.g. `system_prompt: full_scan`) and WEAKER (e.g.
+`tool_result_content: shallow`) than the defaults are allowed. There is no
+safety floor — **you own the compliance posture** when weakening below defaults.
+Lucairn Support cannot be held responsible for PII exposures resulting from an
+operator-configured downgrade.
+
+When an override is active, the gateway logs a clear banner at startup:
+```
+GATEWAY_TMS_TRUST_ZONES override active (N entries) — this changes scan policy for ALL keys on this deployment: ...
+```
+This banner is searchable in pod logs and is included in support bundles.
+
+### Prerequisite: gateway image >= 0.5.1
+
+This feature ships in the next gateway image release (0.5.1). The current
+`appVersion: 0.5.0` (chart v1.9.0) includes the Helm wiring and doctor pre-flight
+but the gateway binary that reads the env var is **not yet in GHCR**. Setting
+`GATEWAY_TMS_TRUST_ZONES` on a 0.5.0 image is a **silent no-op** — the var is
+present in the ConfigMap but the gateway does not read it.
+
+`lucairn doctor` **blocks** setting this on an image older than 0.5.1 with a clear
+error:
+```
+tms trust zones: failed — GATEWAY_TMS_TRUST_ZONES requires gateway image >= 0.5.1
+  (your LUCAIRN_IMAGE_TAG is 0.5.0); bump the tag or unset the policy
+```
+
+When the 0.5.1 image is published to GHCR, update `LUCAIRN_IMAGE_TAG=0.5.1` in
+`customer.env` (Compose) or `--set global.imageTag=0.5.1` (Helm), then apply the
+policy.
+
+### Helm
+
+Set overrides via `--set` at install or upgrade time:
+
+```bash
+# Require full scanning of system prompts (stricter than default):
+helm upgrade lucairn charts/lucairn \
+  --set gateway.tms.trustZones.system_prompt=full_scan
+
+# Require full scanning of both system prompts and code blocks:
+helm upgrade lucairn charts/lucairn \
+  --set gateway.tms.trustZones.system_prompt=full_scan \
+  --set gateway.tms.trustZones.code_block=full_scan
+```
+
+In `customer-values.yaml`:
+
+```yaml
+gateway:
+  tms:
+    trustZones:
+      system_prompt: full_scan
+      code_block: full_scan
+```
+
+An empty `trustZones: {}` (the default) means no overrides — gateway uses
+built-in defaults for all segments. The `GATEWAY_TMS_TRUST_ZONES` key is absent
+from the ConfigMap when trustZones is empty.
+
+### Compose
+
+In `customer.env`:
+
+```
+# Require full scanning of system prompts:
+GATEWAY_TMS_TRUST_ZONES={"system_prompt":"full_scan"}
+
+# Require full scanning of system prompts AND code blocks:
+GATEWAY_TMS_TRUST_ZONES={"system_prompt":"full_scan","code_block":"full_scan"}
+```
+
+Leave the line commented-out (or unset) to use gateway defaults.
+
+### Pre-flight validation
+
+Run `lucairn doctor` before `docker compose up` (or `helm upgrade`) to catch
+policy errors before they reach the gateway:
+
+- **Invalid zone value** (typo, e.g. `full_scna`) → `FAIL` — doctor names the
+  bad key and the bad value.
+- **Unknown segment type** → `WARN` — forward-compatible; the gateway also
+  warns but boots cleanly.
+- **Gateway image < 0.5.1** with a non-empty policy → `FAIL` — bump the tag or
+  unset the policy first.
+
+### Auditability
+
+The effective trust zone for each segment is recorded in the signed cert's
+**TMS manifest** (`tms_manifest_body`, unsigned metadata alongside the cert).
+Every request processed under a tuned policy is auditable after the fact: the
+manifest shows which segment type was assigned which zone and what the scan
+outcome was. This is the same manifest the Lucairn dashboard surfaces in the
+cert detail view.
+

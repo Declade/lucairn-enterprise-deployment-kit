@@ -741,6 +741,11 @@ services:
       WITNESS_MTLS_CLIENT_CERT_PATH: "${WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH:-}"
       WITNESS_MTLS_CLIENT_KEY_PATH: "${WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH:-}"
       WITNESS_MTLS_SERVER_NAME: "${WITNESS_MTLS_SERVER_NAME:-witness}"
+      # TMS Slice 4 — per-deployment trust-zone tuning (self-hosted Enterprise only).
+      # Set to a compact JSON map of segment_type → trust_zone overrides in customer.env.
+      # Default empty = gateway uses its built-in defaults (unset = identity, no change).
+      # Requires gateway image >= 0.5.1. See INSTALL.md § "Phase 8" + customer.env.example.
+      GATEWAY_TMS_TRUST_ZONES: "${GATEWAY_TMS_TRUST_ZONES:-}"
     volumes:
       - ./starter-templates:/etc/dsa/starter-templates:ro
       - gateway-data:/data

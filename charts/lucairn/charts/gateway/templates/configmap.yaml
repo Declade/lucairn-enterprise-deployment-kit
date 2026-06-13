@@ -80,3 +80,11 @@ data:
   WITNESS_MTLS_CLIENT_KEY_PATH: "{{ .Values.witnessMtls.mountPath }}/{{ .Values.witnessMtls.clientKey }}"
   WITNESS_MTLS_SERVER_NAME: {{ .Values.witnessMtls.serverName | default "witness" | quote }}
   {{- end }}
+  {{- if .Values.tms.trustZones }}
+  # TMS Slice 4 — per-deployment trust-zone override (self-hosted Enterprise only).
+  # Rendered only when tms.trustZones is non-empty; absent key = gateway uses its
+  # built-in defaults (unset = identity, no policy change). The gateway parses this
+  # JSON at startup and fails-loud on any unknown zone value or duplicate key.
+  # Requires gateway image >= 0.5.1. See INSTALL.md § "Phase 8".
+  GATEWAY_TMS_TRUST_ZONES: {{ .Values.tms.trustZones | toJson | quote }}
+  {{- end }}
