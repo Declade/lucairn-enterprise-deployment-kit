@@ -1931,6 +1931,161 @@ check_sandbox_b_remote_coherent() {
   return 0
 }
 
+# check_tms_trust_zones — TMS Slice 4 pre-flight (Phase 8).
+#
+# Two orthogonal checks:
+#
+#   (a) VALUE validation (only when GATEWAY_TMS_TRUST_ZONES is set + non-empty):
+#       Parse the JSON; FAIL if:
+#         - not valid JSON
+#         - any zone VALUE not in the 4 valid zones (names the bad key+value)
+#         - any empty segment-type key
+#         - any duplicate top-level key
+#       WARN (not fail) on an unknown segment-type key (forward-compat; the
+#       gateway also warns + uses default for unknown types).
+#
+#   (b) VERSION GATE (silent-no-op guard):
+#       If GATEWAY_TMS_TRUST_ZONES is set + non-empty AND LUCAIRN_IMAGE_TAG
+#       is semver-lower than TMS_MIN_IMAGE_TAG → FAIL with a clear message.
+#       "Silent no-op" is the dangerous failure mode: operator thinks the
+#       policy is active, but the gateway image is too old to read the env
+#       var. Doctor catches this at pre-flight time.
+#
+# Valid zones (must match services/gateway/internal/api/tms_types.go consts):
+#   trusted_platform | full_scan | value_only | shallow
+#
+# Valid segment types (9, same source):
+#   system_prompt | platform_metadata | user_content | assistant_content |
+#   tool_use_input | tool_result_content | code_block | thinking_block | unknown
+#
+# Uses python3 for JSON parsing (already required by other doctor checks).
+# `jq` would be cleaner but is not a declared doctor dependency; python3 is
+# always present. The gateway remains the authoritative fail-loud gate; this
+# pre-flight mirrors it exactly so operators see the error before `docker
+# compose up`, not at runtime.
+check_tms_trust_zones() {
+  local env_file="$1"
+
+  # Version-gate threshold. Update this constant when a new gateway image
+  # changes the set of valid zones or segment types.
+  local TMS_MIN_IMAGE_TAG="0.5.1"
+
+  local policy
+  policy="$(env_value "$env_file" GATEWAY_TMS_TRUST_ZONES)"
+
+  # Unset or empty = identity (gateway uses defaults). No complaint.
+  if [ -z "$policy" ]; then
+    echo "tms trust zones: ok (not configured — gateway uses built-in defaults)"
+    return 0
+  fi
+
+  # --- (b) VERSION GATE ---------------------------------------------------
+  # Check BEFORE parsing: a valid policy on an old image is the silent-no-op
+  # danger. Block it here so the operator bumps the tag before applying the
+  # policy.
+  local image_tag
+  image_tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)"
+  image_tag="${image_tag:-0.5.0}"
+
+  # Robust semver compare using sort -V (available on macOS + Linux).
+  # If sort -V is absent, skip the version gate (conservative: no false fail).
+  if have sort; then
+    local older
+    older="$(printf '%s\n%s\n' "$image_tag" "$TMS_MIN_IMAGE_TAG" | sort -V | head -1)"
+    if [ "$older" = "$TMS_MIN_IMAGE_TAG" ] && [ "$image_tag" != "$TMS_MIN_IMAGE_TAG" ]; then
+      : # image_tag >= TMS_MIN_IMAGE_TAG — gate passes
+    elif [ "$older" = "$image_tag" ] && [ "$image_tag" != "$TMS_MIN_IMAGE_TAG" ]; then
+      echo "tms trust zones: failed — GATEWAY_TMS_TRUST_ZONES requires gateway image >= $TMS_MIN_IMAGE_TAG (the release containing TMS Slice 4); your LUCAIRN_IMAGE_TAG is $image_tag. Bump the tag or unset the policy — on an older image the policy is silently ignored."
+      return 1
+    fi
+    # When equal (image_tag == TMS_MIN_IMAGE_TAG) the gate passes (ok).
+  fi
+
+  # --- (a) VALUE VALIDATION -----------------------------------------------
+  # Valid constants (mirror tms_types.go exactly).
+  local valid_zones="trusted_platform full_scan value_only shallow"
+  local valid_segments="system_prompt platform_metadata user_content assistant_content tool_use_input tool_result_content code_block thinking_block unknown"
+
+  # Use python3 to parse JSON (present on all supported platforms).
+  # Write to a temp file to avoid heredoc-in-subshell bash 3.2 parse quirks.
+  # Returns a tab-separated stream of KEY<TAB>VALUE lines, one per entry.
+  # On error prints JSON_PARSE_ERROR: ... or DUPLICATE_KEY: ... and exits 1.
+  local parse_tmp parse_out
+  parse_tmp="$(mktemp /tmp/lcr-tms-check.XXXXXX.py)"
+  # Write the python validator to the temp file (no heredoc needed here).
+  printf '%s\n' \
+    'import sys, json' \
+    'raw = sys.argv[1]' \
+    'try:' \
+    '    data = json.loads(raw)' \
+    'except json.JSONDecodeError as e:' \
+    '    print("JSON_PARSE_ERROR: " + str(e), flush=True)' \
+    '    sys.exit(1)' \
+    'pairs = json.loads(raw, object_pairs_hook=lambda p: p)' \
+    'seen = {}' \
+    'for k, v in pairs:' \
+    '    if k in seen:' \
+    '        print("DUPLICATE_KEY: " + k, flush=True)' \
+    '        sys.exit(1)' \
+    '    seen[k] = True' \
+    'for k, v in data.items():' \
+    '    print(str(k) + "\t" + str(v), flush=True)' \
+    > "$parse_tmp"
+
+  parse_out="$(python3 "$parse_tmp" "$policy" 2>&1)"
+  local parse_rc=$?
+  rm -f "$parse_tmp"
+
+  if [ "$parse_rc" -ne 0 ]; then
+    echo "tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES is not valid JSON or contains duplicate keys: $parse_out"
+    return 1
+  fi
+
+  local tms_failed=0
+
+  # Process each KEY<TAB>VALUE line from the parser output.
+  while IFS="	" read -r seg zone; do
+    # Empty key guard (the gateway fail-loud rule: empty key -> startup error).
+    if [ -z "$seg" ]; then
+      echo "tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES contains an empty segment-type key (value: \"$zone\"); the gateway refuses to start with empty keys"
+      tms_failed=1
+      continue
+    fi
+
+    # Zone value validation -- fail on unknown zone.
+    local zone_ok=0
+    local z
+    for z in $valid_zones; do
+      [ "$zone" = "$z" ] && zone_ok=1 && break
+    done
+    if [ "$zone_ok" -eq 0 ]; then
+      echo "tms trust zones: failed -- unknown zone value \"$zone\" for segment \"$seg\" (valid zones: $valid_zones)"
+      tms_failed=1
+      continue
+    fi
+
+    # Segment type validation -- WARN (not fail) on unknown segment type.
+    # The gateway also warns + uses default for unknown types (forward-compat).
+    local seg_ok=0
+    local s
+    for s in $valid_segments; do
+      [ "$seg" = "$s" ] && seg_ok=1 && break
+    done
+    if [ "$seg_ok" -eq 0 ]; then
+      warn "tms trust zones: unknown segment type \"$seg\" (not in: $valid_segments) -- this entry will be IGNORED by the gateway (forward-compat: a future gateway may recognise it)"
+    fi
+  done <<EOF
+$parse_out
+EOF
+
+  if [ "$tms_failed" -ne 0 ]; then
+    return 1
+  fi
+
+  echo "tms trust zones: ok (GATEWAY_TMS_TRUST_ZONES valid; effective on gateway image >= $TMS_MIN_IMAGE_TAG)"
+  return 0
+}
+
 # check_dashboard validates the Lucairn Enterprise Dashboard pre-flight.
 #
 # Triggered when:
@@ -3919,6 +4074,15 @@ doctor() {
   local sb_remote_failed=0
   check_sandbox_b_remote_coherent "$env_file" || sb_remote_failed=1
   [ "$sb_remote_failed" -eq 0 ] || return 1
+
+  # Phase 8 (TMS Slice 4): per-deployment trust-zone policy pre-flight.
+  # (a) validates the JSON shape + zone values against the gateway's valid-set;
+  # (b) version-gates the policy to require gateway image >= 0.5.1 so a
+  # silently-ignored policy on an older image surfaces at install time.
+  # Skipped silently when GATEWAY_TMS_TRUST_ZONES is unset (the common case).
+  local tms_failed=0
+  check_tms_trust_zones "$env_file" || tms_failed=1
+  [ "$tms_failed" -eq 0 ] || return 1
 
   check_certs "$env_file" "$offline"
 
