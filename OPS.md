@@ -1501,7 +1501,7 @@ docker compose -f docker-compose.customer.yml --env-file customer.env pull sanit
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d --no-deps --force-recreate sanitizer
 ```
 
-**Helm:** set `global.imageTag: "0.5.1"` (or override `sandbox-a.sanitizer.imageTag`) and apply:
+**Helm:** set `global.imageTag: "0.5.1"` (or override `sandbox-a.sanitizer.image.tag`) and apply:
 ```bash
 helm upgrade lucairn charts/lucairn -n lucairn -f your-values.yaml
 ```

@@ -1510,6 +1510,129 @@ check_sanitizer_config_image_compat() {
 }
 
 # ----------------------------------------------------------------------------
+# Safe-terms file deliverability (Slice 4 over-redaction fix-up).
+#
+# The v0.5.1 sanitizer reads two OPTIONAL safe-term files referenced from the
+# active sanitizer config (default config/default-sanitizer.yaml, overridable
+# via SANITIZER_CONFIG_FILE):
+#   - `safe_terms_file:`        ANY-WORD list (suppress span if ANY word matches)
+#   - `strict_safe_terms_file:` WHOLE-SPAN-EXACT list (the v0.5.1 over-redaction
+#                               fix — suppress only when the WHOLE span equals a
+#                               term, so "Claude" is suppressed but "Claude
+#                               Müller" still redacts).
+# If the config references one of these files but the file is NOT actually
+# delivered to the running container, the directive resolves to an EMPTY set and
+# the over-redaction fix becomes a SILENT NO-OP — product vocabulary
+# (Claude/signable/…) keeps getting mis-tagged as PERSON with no operator signal.
+#
+# Compose path: the file must exist at the host-side source the bind-mount
+# resolves (SANITIZER_STRICT_SAFE_TERMS_FILE / SANITIZER_SAFE_TERMS_FILE env, or
+# the bundled ./config default). Helm path: the file must be a key in the
+# sanitizer ConfigMap template (charts/.../sanitizer-configmap.yaml) so it lands
+# in /config. Both checks are local-file-stat / grep only — fully --offline-safe.
+#
+# Warn-level (not fail-closed): a missing safe-terms file degrades READABILITY
+# (over-redaction), never recall — it errs toward over-redaction, the safe
+# direction. A loud warn lets the operator fix it without bricking the install.
+# ----------------------------------------------------------------------------
+
+# _sanitizer_config_declares KEY ENV_FILE — echo the value of a top-level
+# sanitizer-config directive (e.g. strict_safe_terms_file) from the ACTIVE
+# sanitizer YAML, or empty if absent/commented. Mirrors pii_ml_layer_enabled's
+# config-file resolution.
+_sanitizer_config_declares() {
+  local key="$1" env_file="$2" config_file
+  config_file="$(env_value "$env_file" SANITIZER_CONFIG_FILE)"
+  config_file="${config_file:-${ROOT}/config/default-sanitizer.yaml}"
+  # Resolve a relative SANITIZER_CONFIG_FILE (e.g. ./config/...) against ROOT.
+  case "$config_file" in
+    /*) ;;
+    *) config_file="${ROOT}/${config_file#./}" ;;
+  esac
+  [ -f "$config_file" ] || { printf ''; return 0; }
+  # Active (non-commented) `<indent>key: <value>` line; strip key+comment+quotes.
+  awk -v k="$key" '
+    $0 ~ "^[[:space:]]*"k":[[:space:]]" {
+      sub(/^[[:space:]]*[A-Za-z0-9_]+:[[:space:]]*/, "");
+      sub(/[[:space:]]+#.*$/, "");
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "");
+      gsub(/^"|"$/, "");
+      print; exit
+    }' "$config_file"
+}
+
+# check_strict_safe_terms_file ENV_FILE — when the active sanitizer config
+# references strict_safe_terms_file, verify the host-side source the Compose
+# bind-mount points at actually exists (else the v0.5.1 over-redaction fix is a
+# silent no-op). Helm delivery is covered by check_safe_terms_files_deliverable.
+check_strict_safe_terms_file() {
+  local env_file="$1"
+  local declared
+  declared="$(_sanitizer_config_declares strict_safe_terms_file "$env_file")"
+  # Not referenced by the active config -> nothing to verify (pre-0.5.1 configs).
+  [ -n "$declared" ] || { echo "strict safe-terms: not configured (skip)"; return 0; }
+
+  # Compose host-side source: the env override, else the bundled default that
+  # docker-compose.customer.yml bind-mounts to /config/safe-terms-strict.txt.
+  local src
+  src="$(env_value "$env_file" SANITIZER_STRICT_SAFE_TERMS_FILE)"
+  src="${src:-./config/safe-terms-strict.txt}"
+  local src_path="$src"
+  case "$src_path" in
+    /*) ;;
+    *) src_path="${ROOT}/${src_path#./}" ;;
+  esac
+  if [ -f "$src_path" ]; then
+    echo "strict safe-terms: ok (source $src present for the bind-mount)"
+    return 0
+  fi
+  warn "strict safe-terms: config references strict_safe_terms_file=$declared but the Compose host-side source ($src) does not exist — the over-redaction fix will be a SILENT NO-OP (product vocabulary like 'Claude'/'signable' keeps getting mis-tagged as PERSON). Restore ./config/safe-terms-strict.txt or point SANITIZER_STRICT_SAFE_TERMS_FILE at your strict list."
+  return 0
+}
+
+# check_safe_terms_files_deliverable ENV_FILE — for EVERY safe-terms directive
+# (safe_terms_file + strict_safe_terms_file) the active sanitizer config
+# references, assert the referenced /config/<file> is actually delivered:
+#   - Compose: the host-side bind-mount source file exists on disk;
+#   - Helm:    the basename is a key in the sanitizer ConfigMap template.
+# A referenced-but-undelivered file = silent over-redaction. Warn-level + offline.
+check_safe_terms_files_deliverable() {
+  local env_file="$1"
+  local cm="${ROOT}/charts/lucairn/charts/sandbox-a/templates/sanitizer-configmap.yaml"
+  local any=0 key declared base src src_path
+  # (directive env-override) pairs; iterate both safe-terms directives.
+  for key in safe_terms_file strict_safe_terms_file; do
+    declared="$(_sanitizer_config_declares "$key" "$env_file")"
+    [ -n "$declared" ] || continue
+    any=1
+    base="${declared##*/}"   # /config/safe-terms-strict.txt -> safe-terms-strict.txt
+
+    # Compose delivery: host-side source for the bind-mount.
+    case "$key" in
+      strict_safe_terms_file) src="$(env_value "$env_file" SANITIZER_STRICT_SAFE_TERMS_FILE)"; src="${src:-./config/${base}}" ;;
+      safe_terms_file)        src="$(env_value "$env_file" SANITIZER_SAFE_TERMS_FILE)";        src="${src:-./config/${base}}" ;;
+    esac
+    src_path="$src"
+    case "$src_path" in /*) ;; *) src_path="${ROOT}/${src_path#./}" ;; esac
+    local compose_ok=0 helm_ok=0
+    [ -f "$src_path" ] && compose_ok=1
+
+    # Helm delivery: the basename must be a data key in the sanitizer ConfigMap.
+    if [ -f "$cm" ] && grep -qE "^[[:space:]]+${base}:[[:space:]]*\|?[[:space:]]*$" "$cm"; then
+      helm_ok=1
+    fi
+
+    if [ "$compose_ok" -eq 1 ] || [ "$helm_ok" -eq 1 ]; then
+      echo "safe-terms deliverability: ok ($key -> $base; compose-src=$([ $compose_ok -eq 1 ] && echo yes || echo no), helm-configmap-key=$([ $helm_ok -eq 1 ] && echo yes || echo no))"
+    else
+      warn "safe-terms deliverability: config references $key=$declared but '$base' is delivered by NEITHER the Compose bind-mount (no host-side source at $src) NOR the Helm sanitizer ConfigMap (no '$base' data key in $cm) — the directive resolves to an empty set => SILENT over-redaction. Supply the file (Compose) or add it as a ConfigMap key (Helm)."
+    fi
+  done
+  [ "$any" -eq 1 ] || echo "safe-terms deliverability: no safe-terms files configured (skip)"
+  return 0
+}
+
+# ----------------------------------------------------------------------------
 # Phase 7 pii-ml sidecar checks (PR #240 production-path follow-up).
 #
 # kit-doctor-coverage-auditor r1 finding: `doctor` was BLIND to the entire
@@ -4147,6 +4270,14 @@ doctor() {
   local compat_failed=0
   check_sanitizer_config_image_compat "$env_file" || compat_failed=1
   [ "$compat_failed" -eq 0 ] || return 1
+
+  # Slice 4 over-redaction fix-up: safe-terms file deliverability. Guards the
+  # v0.5.1 strict whole-span safe list (+ any any-word safe_terms_file) from
+  # silently no-op'ing because the referenced /config file is not actually
+  # delivered to the sanitizer container. Warn-level (over-redaction errs safe,
+  # never under-redaction) + --offline-safe (local file-stat / grep only).
+  check_strict_safe_terms_file "$env_file"
+  check_safe_terms_files_deliverable "$env_file"
 
   # Phase 7 pii-ml sidecar suite (PR #240). Five orthogonal checks:
   # paired toggles, HF revision shape, prod-mode lazy-not-ready, HF
