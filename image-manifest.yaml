@@ -83,10 +83,9 @@ services:
     # charts/lucairn/values.yaml MUST stay in lockstep with these — Sim 2
     # F3-class drift surface.
     #
-    # PINNED to 0.5.1 because the rest of the kit ships on
-    # default_lucairn_image_tag=0.5.0 and the sidecar has an INDEPENDENT
+    # PINNED to 0.5.1 explicitly because the sidecar has an INDEPENDENT
     # release cadence (its release is tied to PR #240 production-path
-    # follow-up, not the umbrella 0.5.0 cycle). Operators MUST mirror
+    # follow-up, not the umbrella release cycle). Operators MUST mirror
     # dsa-pii-ml:0.5.1 specifically; bumping LUCAIRN_IMAGE_TAG does NOT
     # cascade to this service. `bin/lucairn doctor --strict` enforces the
     # pin against the recorded digest below.
@@ -161,9 +160,9 @@ image_digests:
   # --- ENFORCES these (resolve tag->digest, block on mismatch).
   signed_artifacts:
     # ⚠️  DIGEST-ENFORCEMENT FORK (Slice 4 fix-up, FLAGGED to Marc / release-infra):
-    # The over-redaction fix republished ONLY 6 core images multi-arch at 0.5.1
-    # (gateway/sanitizer/audit/id-bridge/sandbox-a/veil-witness); the other dsa-*
-    # services were NOT rebuilt and have NO 0.5.1 tag. The signed_artifacts refs
+    # The over-redaction fix republished 7 core images multi-arch at 0.5.1
+    # (gateway/sanitizer/audit/id-bridge/sandbox-a/sandbox-b/veil-witness); the
+    # other dsa-* services were NOT rebuilt and have NO 0.5.1 tag. The signed_artifacts refs
     # below therefore STAY at 0.5.0 because `doctor --strict` / check_image_digests
     # resolve EVERY dsa-* ref through a SINGLE LUCAIRN_IMAGE_TAG
     # (digest_resolve_env_ref, bin/lucairn:995) — there is no per-service tag

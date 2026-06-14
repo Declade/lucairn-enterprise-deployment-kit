@@ -1,9 +1,9 @@
-# Lucairn signed-image digest record — release 0.5.1 (PARTIAL: 6 core images)
+# Lucairn signed-image digest record — release 0.5.1 (PARTIAL: 7 core images)
 #
 # AUTHORITATIVE record of which exact image bytes were republished for the
-# 0.5.1 over-redaction fix. ONLY the 6 core images below were rebuilt +
+# 0.5.1 over-redaction fix. ONLY the 7 core images below were rebuilt +
 # pushed multi-arch at 0.5.1. The remaining signed artifacts
-# (sandbox-b / reid-guard / admin / demo / ingest / llm-auditor / dashboard)
+# (reid-guard / admin / demo / ingest / llm-auditor / dashboard)
 # were NOT rebuilt and remain at their 0.5.0 / 0.8.2 pins recorded in
 # keys/image-digests-0.5.0.txt.
 #
@@ -18,7 +18,7 @@
 # ----------------------------------------------------------------------------
 # The DIGESTS below are recorded (so plain `bin/lucairn doctor` resolves the
 # 0.5.1 tags correctly), but `verify-images --tag 0.5.1` step (2) /
-# `doctor --strict` cosign-verify will only PASS once the 6 republished 0.5.1
+# `doctor --strict` cosign-verify will only PASS once the 7 republished 0.5.1
 # images have been cosign-SIGNED in GHCR (+ Rekor-logged) with the Lucairn
 # release signing key. That signing runs at IMAGE PUSH time in the DSA repo
 # (scripts/sign-images.sh), NOT here in the kit, and requires the cosign
@@ -31,8 +31,8 @@
 # ALSO NOTE: `verify-images` with no --tag errors when MORE THAN ONE
 # keys/image-digests-*.txt exists (verify_images_default_tag). With both 0.5.0
 # and 0.5.1 present, operators MUST pass `--tag 0.5.1` (or `--tag 0.5.0`)
-# explicitly. The 0.5.1 set is PARTIAL (6 of the 12 dsa-* services), so a plain
-# `verify-images --tag 0.5.1` will also report the 6 non-rebuilt dsa-* services
+# explicitly. The 0.5.1 set is PARTIAL (7 of the 12 dsa-* services), so a plain
+# `verify-images --tag 0.5.1` will also report the 5 non-rebuilt dsa-* services
 # as MISSING — that exact-membership assertion expects all 12 dsa-* at one tag.
 # See the report / handover for the release-infra follow-up.
 #
@@ -44,4 +44,5 @@ ghcr.io/declade/dsa-sanitizer:0.5.1 sha256:0c8ecee94f5a823c8b7f8985ce594729e36a7
 ghcr.io/declade/dsa-audit:0.5.1 sha256:a214864b0271d4504d1e1402a54652b333e115033f9795358273e46fdef0ee48
 ghcr.io/declade/dsa-id-bridge:0.5.1 sha256:991eb7dcb9417a74b0cdcd5d412afc9fdcfa02e77e8bf43a0168de6d54ae2185
 ghcr.io/declade/dsa-sandbox-a:0.5.1 sha256:76c678929275503e2027f50d53eb7b4c8da5e1fd3e795aa39315bd61aa730231
+ghcr.io/declade/dsa-sandbox-b:0.5.1 sha256:9f3681af97fcf577b280f4bd6be526c692ed42aa7cccab0dcb37f8f6acbd7223
 ghcr.io/declade/dsa-veil-witness:0.5.1 sha256:01e207cf9bf90e283d6fd0095eb7f8c53cb5e7b733bd2bd99af087b39110cc66
