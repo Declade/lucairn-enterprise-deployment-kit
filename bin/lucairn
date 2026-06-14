@@ -506,20 +506,31 @@ check_l3_required_wired() {
   # shield this doctor can't see — but make the silent-503 trap loud.
   #
   # "Wired" heuristic (offline-safe, file-stat / grep only). The L3 shield is the
-  # `ollama-identity` service, which lives ONLY in the opt-in self-hosted overlay
-  # (docker-compose.self-hosted.yml, compose-profile-gated `ollama`) — never in
-  # the base docker-compose.customer.yml that every install uses. Because the
-  # doctor cannot see which overlays the operator passes to `docker compose`,
-  # treat L3 as "wired" ONLY when the operator gives a positive signal:
+  # always-on `ollama-identity` service, which lives ONLY in the opt-in
+  # self-hosted overlay (docker-compose.self-hosted.yml) — never in the base
+  # docker-compose.customer.yml that every install uses. The self-hosted overlay
+  # ALSO restores LUCAIRN_L3_REQUIRED's fail-CLOSED default (true), so requiring
+  # L3 there is correct, not a trap. Because the doctor sees only the single
+  # `--compose` file (the base, per the usage examples), treat L3 as "wired"
+  # ONLY when the operator gives a positive signal:
   #   - the base docker-compose.customer.yml itself defines `ollama-identity`
   #     (an operator who folded the shield into the base), OR
+  #   - this is a self-hosted deployment — the self-hosted overlay file is
+  #     present AND defines `ollama-identity` AND the env signals self-hosted
+  #     (SANDBOX_B_REMOTE_ENDPOINT empty/unset; split deployment sets it to a
+  #     remote URL, self-hosted blanks it per INSTALL.md). The always-on L3
+  #     shield is wired regardless of MODEL_RUNTIME_PROFILE (it is NOT
+  #     profile-gated), so this covers vllm/tgi/llama-cpp inference too, OR
   #   - the env file sets an external L3 endpoint (OLLAMA_URL / LUCAIRN_L3_ADDR), OR
-  #   - the env file opts into the self-hosted L3 model runtime (MODEL_RUNTIME_PROFILE=ollama).
+  #   - the env file opts into the self-hosted ollama runtime (MODEL_RUNTIME_PROFILE=ollama).
   # Otherwise warn (not fail — the operator may wire something this offline check
-  # can't observe).
+  # can't observe). The dangerous case the warn still catches: an explicit
+  # LUCAIRN_L3_REQUIRED=true on a SPLIT install (remote Sandbox B, no L3 service).
   local env_file="$1" l3_req
   l3_req="$(env_value "$env_file" LUCAIRN_L3_REQUIRED)"
-  # Compose fallback default is now "false"; only the explicit "true" is risky.
+  # Compose fallback default is now deployment-aware (split=false, self-hosted=
+  # true); only an explicit "true" in the env file is potentially risky (it can
+  # only mislead on the split path — self-hosted already defaults true).
   [ "$l3_req" = "true" ] || return 0
 
   local l3_wired=0
@@ -527,6 +538,18 @@ check_l3_required_wired() {
   if [ -f "$ROOT/docker-compose.customer.yml" ] \
      && grep -qE '^  ollama-identity:' "$ROOT/docker-compose.customer.yml" 2>/dev/null; then
     l3_wired=1
+  fi
+  # Self-hosted deployment: the self-hosted overlay wires the always-on L3
+  # shield. Recognize it from (overlay file defines ollama-identity) + (env is
+  # self-hosted: SANDBOX_B_REMOTE_ENDPOINT empty/unset).
+  if [ "$l3_wired" -eq 0 ] \
+     && [ -f "$ROOT/docker-compose.self-hosted.yml" ] \
+     && grep -qE '^  ollama-identity:' "$ROOT/docker-compose.self-hosted.yml" 2>/dev/null; then
+    local remote_sb
+    remote_sb="$(env_value "$env_file" SANDBOX_B_REMOTE_ENDPOINT)"
+    if [ -z "$remote_sb" ]; then
+      l3_wired=1
+    fi
   fi
   if [ "$l3_wired" -eq 0 ]; then
     local ext_l3 runtime_profile
