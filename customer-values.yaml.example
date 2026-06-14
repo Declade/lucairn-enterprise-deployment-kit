@@ -20,7 +20,7 @@ global:
   # is the v2.0 roadmap. (Vast cascade BLOCKER A, 2026-05-26.)
   dsaEnv: development
   imageRegistry: ghcr.io/declade
-  imageTag: "0.5.0"
+  imageTag: "0.5.1"
   imagePullSecrets:
     - name: lucairn-registry
   # imagePullDockerConfigJson is ALWAYS passed via `--set-file ...` at

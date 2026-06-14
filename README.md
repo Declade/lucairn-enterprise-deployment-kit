@@ -1,6 +1,6 @@
 # Lucairn Enterprise Deployment Kit
 
-Target release: `v1.7.1-phase7-suspended`
+Target release: `v1.9.1`
 
 This repository contains the customer-installable Lucairn deployment kit for first enterprise self-hosted installs. The operating rule is simple: customer IT installs and operates the stack; Lucairn support never needs shell access to the customer box.
 

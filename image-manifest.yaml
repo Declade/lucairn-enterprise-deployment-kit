@@ -39,12 +39,12 @@
 
 # Kit release this manifest was tested for. Must match VERSION at the
 # repo root. doctor warns when the values diverge.
-kit_version: "1.7.1-phase7-suspended"
+kit_version: "1.9.1"
 
 # Default tag applied to every dsa-* image unless a per-service override
 # exists in `services:` below. Operators set LUCAIRN_IMAGE_TAG in customer.env
 # to use a different default; doctor warns when env != this manifest value.
-default_lucairn_image_tag: "0.5.0"
+default_lucairn_image_tag: "0.5.1"
 
 # Registry the kit was validated against. doctor warns when env's
 # LUCAIRN_IMAGE_REGISTRY differs.
@@ -160,6 +160,21 @@ image_digests:
   # --- Slice 1; digests mirror keys/image-digests-0.5.0.txt). doctor --strict
   # --- ENFORCES these (resolve tag->digest, block on mismatch).
   signed_artifacts:
+    # ⚠️  DIGEST-ENFORCEMENT FORK (Slice 4 fix-up, FLAGGED to Marc / release-infra):
+    # The over-redaction fix republished ONLY 6 core images multi-arch at 0.5.1
+    # (gateway/sanitizer/audit/id-bridge/sandbox-a/veil-witness); the other dsa-*
+    # services were NOT rebuilt and have NO 0.5.1 tag. The signed_artifacts refs
+    # below therefore STAY at 0.5.0 because `doctor --strict` / check_image_digests
+    # resolve EVERY dsa-* ref through a SINGLE LUCAIRN_IMAGE_TAG
+    # (digest_resolve_env_ref, bin/lucairn:995) — there is no per-service tag
+    # override path. Splitting the dsa-* set across 0.5.0 and 0.5.1 here would make
+    # `doctor --strict` MISMATCH whichever 6 services do not match the operator's
+    # single LUCAIRN_IMAGE_TAG. The 0.5.1 multi-arch digests are recorded out-of-band
+    # in keys/image-digests-0.5.1.txt for the release-infra follow-up. Promoting them
+    # into --strict enforcement needs EITHER a full 12-service 0.5.1 republish OR
+    # per-service tag support in digest_resolve_env_ref — both out of fix-up scope.
+    # See the fix-up report / handover. (Customer-facing install tag IS 0.5.1 via
+    # default_lucairn_image_tag + customer.env + values; plain `doctor` is correct.)
     dsa-gateway:
       ref: "ghcr.io/declade/dsa-gateway:0.5.0"
       digest: "sha256:4c969d401356c7ffb9862e38a77a4ffae36a2a27573cb2e61c9cfe280e6d7a8a"
