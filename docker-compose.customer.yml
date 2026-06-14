@@ -523,12 +523,19 @@ services:
       LCR_WITNESS_ADDR: "veil-witness:50057"
       QI_ENGINE_ENABLED: "${QI_ENGINE_ENABLED:-true}"
       # FIX-B (full-stack-test-results-2026-05-29): wire the L3 fail-mode knob
-      # into the sanitizer container. Default "true" = fail-CLOSED (503
-      # l3_scrubber_unavailable when the L3 deep PII shield is down). Set to
-      # "false" to fall back to continue-mode (cert honestly downgraded to
-      # PARTIAL, llm_pii_scan omitted from layers_active). Without this env the
-      # operator could not select continue-mode on a stock install.
-      LUCAIRN_L3_REQUIRED: "${LUCAIRN_L3_REQUIRED:-true}"
+      # into the sanitizer container. "true" = fail-CLOSED (503
+      # l3_scrubber_unavailable when the L3 deep PII shield is down); "false" =
+      # continue-mode (cert honestly downgraded to PARTIAL, llm_pii_scan omitted
+      # from layers_active).
+      #
+      # Fallback default "false": the stock docker-compose.customer.yml install
+      # runs L1+L2 only and does NOT start the GPU Ollama/Qwen L3 shield
+      # (`ollama-identity`, Enterprise-only). With "true" + no L3 service the
+      # sanitizer /readyz fails liveness and the gateway fail-closes 503 on
+      # EVERY request. Set LUCAIRN_L3_REQUIRED=true in customer.env ONLY after a
+      # reachable L3 shield is wired (see customer.env.example + `bin/lucairn
+      # doctor`, which warns on "true" without an L3 service).
+      LUCAIRN_L3_REQUIRED: "${LUCAIRN_L3_REQUIRED:-false}"
       # Phase 7 ML sidecar wiring (PR #240 production-path follow-up).
       # Sanitizer's pii_ml_client.py reads this at boot and dials it on
       # every Phase 7 scan. Sanitizer only dials when Phase 7 layers are

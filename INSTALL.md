@@ -335,9 +335,13 @@ sed -i -E 's/^VEIL_(ENABLED|ISSUER|MANIFEST_SIGNING_KEY_ID|WITNESS_KEY_ID|WITNES
 helm upgrade lucairn charts/lucairn -f customer-values.yaml -n lucairn
 ```
 
-After the optional migration, run `./bin/lucairn doctor` (Docker Compose) or
-`helm test lucairn` (Kubernetes) to confirm the rename did not break any
-required-key check.
+After the optional migration, run `./bin/lucairn doctor` (Docker Compose) to
+confirm the rename did not break any required-key check. On Kubernetes the chart
+ships no test hook that validates the env rename (`helm test lucairn` only runs
+the optional dashboard `/healthz` probe, and only when the dashboard subchart is
+enabled) — instead re-run `helm template` / `helm upgrade` and confirm the
+gateway and witness pods reach Ready, since they fail-closed at boot on a missing
+required key.
 
 ## Pre-Requisites
 
@@ -438,10 +442,10 @@ whole published set against the kit-bundled public key
 resolver (`docker buildx`, `crane`, or `skopeo`) on PATH:
 
 ```bash
-bin/lucairn verify-images --tag 0.5.0
+bin/lucairn verify-images --tag 0.5.1
 # or, with one release recorded, just:
 bin/lucairn verify-images
-# or a single image, by its signed digest (from keys/image-digests-0.5.0.txt):
+# or a single image, by its signed digest (from keys/image-digests-0.5.1.txt):
 cosign verify --key keys/lucairn-cosign.pub \
   ghcr.io/declade/dsa-gateway@sha256:<digest-from-the-record-file>
 ```
@@ -459,12 +463,12 @@ log (signed by the same Image Signing Key — no extra key or vendor). Fetch +
 verify it, and inspect exactly what is in each image:
 
 ```bash
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.0
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.1
 # save the raw verified SBOM:
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.0 --download dsa-gateway-0.5.0.spdx.json
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.1 --download dsa-gateway-0.5.1.spdx.json
 # or with raw cosign:
 cosign verify-attestation --type spdxjson \
-  --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.0
+  --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.1
 ```
 
 See **OPS.md → "Fetch + verify the Software Bill of Materials (SBOM)"** for the
@@ -552,7 +556,7 @@ renewal.
 1. Unpack the release bundle.
 
 ```bash
-tar -xzf lucairn-enterprise-deployment-kit-1.3.0-customer-demo-data.tar.gz
+tar -xzf lucairn-enterprise-deployment-kit-1.9.1.tar.gz
 cd lucairn-enterprise-deployment-kit
 ```
 
@@ -2335,11 +2339,12 @@ included in support bundles.
 
 ### Prerequisite: gateway image >= 0.5.1
 
-This feature ships in the next gateway image release (0.5.1). The current
-`appVersion: 0.5.0` (chart v1.9.0) includes the Helm wiring and doctor pre-flight
-but the gateway binary that reads the env var is **not yet in GHCR**. Setting
-`GATEWAY_TMS_TRUST_ZONES` on a 0.5.0 image is a **silent no-op** — the var is
-present in the ConfigMap but the gateway does not read it.
+This feature ships in the gateway image at `0.5.1` (the current release —
+`appVersion: 0.5.1`, chart `v1.9.1`), which is published to GHCR. The gateway
+binary that reads `GATEWAY_TMS_TRUST_ZONES` is present from `0.5.1` onward.
+Setting `GATEWAY_TMS_TRUST_ZONES` on an **older** image (e.g. `0.5.0`) is a
+**silent no-op** — the var is present in the ConfigMap but that older gateway
+does not read it.
 
 `lucairn doctor` **blocks** setting this on an image older than 0.5.1 with a clear
 error (verbatim from `bin/lucairn`):
@@ -2354,9 +2359,9 @@ the image is new enough:
 tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES is set but LUCAIRN_IMAGE_TAG="latest" is not an exact semver pin; doctor cannot confirm the gateway image is >= 0.5.1. Pin an exact tag (e.g. 0.5.1) or unset the policy.
 ```
 
-When the 0.5.1 image is published to GHCR, update `LUCAIRN_IMAGE_TAG=0.5.1` in
-`customer.env` (Compose) or `--set global.imageTag=0.5.1` (Helm), then apply the
-policy.
+Pin `LUCAIRN_IMAGE_TAG=0.5.1` in `customer.env` (Compose) or
+`--set global.imageTag=0.5.1` (Helm) — the current published release — then apply
+the policy.
 
 ### Helm
 

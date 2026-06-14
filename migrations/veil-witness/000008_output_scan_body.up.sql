@@ -1,0 +1,27 @@
+-- Output-side provenance catcher (PRD prd-2026-06-10-output-provenance-
+-- catcher.md § Deviation log 2026-06-10). Adds a NULLABLE BYTEA column to
+-- veil_certificates that stores the canonical-JSON bytes of the gateway's
+-- post-relink OUTPUT-SIDE provenance scan result — hash + offsets + count +
+-- entity-types + status of the un-attributed (likely AI-generated) identity-
+-- shaped spans the LLM produced that did NOT come from the customer's
+-- sanitized input. The body NEVER contains the raw flagged text.
+--
+-- Sibling of sanitized_fields_body (migration 000007) and redaction_manifest_
+-- body (migration 000006): same unsigned-metadata pattern. The body rides the
+-- dsa-audit AuditClaim (NOT the sanitizer claim, NOT a gateway claim, NOT the
+-- InferenceClaim — see the PRD deviation log). Hash-bound via output_scan_hash
+-- inside the AuditClaim's canonical_payload (which IS audit-signed and IS part
+-- of the witness signable via `claim_ids[]`).
+--
+-- DURABILITY INSURANCE ONLY: the production gateway / SDK read the body from
+-- CertificateRaw (the assembled VeilCertificate proto's claims[]/audit-claim
+-- oneof payload) — NOT from this dedicated column. The column exists so a
+-- future direct-DB retrieval path can bypass the gRPC + proto-unmarshal cost
+-- if needed. Mirrors the durability-insurance pattern from migrations 000006
+-- and 000007.
+--
+-- Trust boundary: the body is hash/offsets/count/entity-types/status only —
+-- POST-relink derived metadata. No raw PII enters this column; no raw flagged
+-- text enters this column; no HTTP headers enter this column.
+ALTER TABLE veil_certificates
+    ADD COLUMN output_scan_body BYTEA NULL;

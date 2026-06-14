@@ -467,6 +467,130 @@ check_dev_mode_consistency() {
   return 0
 }
 
+check_dsa_env_valid() {
+  # HIGH-2 (overnight fix 2026-06-14): DSA_ENV must be one of the recognized
+  # values. The DSA services and this doctor's ~15 production guards switch on
+  # the EXACT string "production" (gateway main.go:515
+  # `isProduction := DSA_ENV == "production"`). A typo — "Production", "prod",
+  # "prd", "producton", a trailing space — silently makes EVERY production
+  # guard skip (return 0), so the install passes doctor + boots WITHOUT the
+  # Veil/manifest fail-closed posture the operator intended. Fail loudly on any
+  # unrecognized value rather than degrade silently. The dev-side audit gate
+  # (main.go:415 `isDevEnv := DSA_ENV in {development,test}`) is deny-by-default
+  # so it stays fail-closed on a typo, but the Veil/manifest gates do not —
+  # this check closes that asymmetry at pre-flight.
+  local env_file="$1" dsa_env
+  dsa_env="$(env_value "$env_file" DSA_ENV)"
+  # Empty is reported by the required-secrets check; don't double-report here.
+  [ -z "$dsa_env" ] && return 0
+  case "$dsa_env" in
+    development|test|production)
+      return 0
+      ;;
+    *)
+      echo "DSA_ENV: failed — value '$dsa_env' is not recognized (allowed: development, test, production)."
+      echo "DSA_ENV:   an unrecognized value silently disables EVERY production guard (the gateway treats only the exact string \"production\" as production; main.go:515)."
+      echo "DSA_ENV:   fix the typo — e.g. 'production' not 'prod'/'Production'; check for trailing whitespace or quotes."
+      return 1
+      ;;
+  esac
+}
+
+check_l3_required_wired() {
+  # HIGH-1 (overnight fix 2026-06-14): the L3 deep PII shield is the GPU
+  # Ollama/Qwen service (`ollama-identity`), Enterprise-only and NOT started by
+  # the stock docker-compose.customer.yml install. With LUCAIRN_L3_REQUIRED=true
+  # but no reachable L3 service, the sanitizer /readyz fails liveness and the
+  # gateway fail-closes 503 on EVERY request (sanitizer app.py:1709-1720). Warn
+  # (not fail) — an Enterprise operator may legitimately wire an external L3
+  # shield this doctor can't see — but make the silent-503 trap loud.
+  #
+  # "Wired" heuristic (offline-safe, file-stat / grep only). The L3 shield is the
+  # `ollama-identity` service, which lives ONLY in the opt-in self-hosted overlay
+  # (docker-compose.self-hosted.yml, compose-profile-gated `ollama`) — never in
+  # the base docker-compose.customer.yml that every install uses. Because the
+  # doctor cannot see which overlays the operator passes to `docker compose`,
+  # treat L3 as "wired" ONLY when the operator gives a positive signal:
+  #   - the base docker-compose.customer.yml itself defines `ollama-identity`
+  #     (an operator who folded the shield into the base), OR
+  #   - the env file sets an external L3 endpoint (OLLAMA_URL / LUCAIRN_L3_ADDR), OR
+  #   - the env file opts into the self-hosted L3 model runtime (MODEL_RUNTIME_PROFILE=ollama).
+  # Otherwise warn (not fail — the operator may wire something this offline check
+  # can't observe).
+  local env_file="$1" l3_req
+  l3_req="$(env_value "$env_file" LUCAIRN_L3_REQUIRED)"
+  # Compose fallback default is now "false"; only the explicit "true" is risky.
+  [ "$l3_req" = "true" ] || return 0
+
+  local l3_wired=0
+  # Only the BASE customer compose counts as an always-applied definition.
+  if [ -f "$ROOT/docker-compose.customer.yml" ] \
+     && grep -qE '^  ollama-identity:' "$ROOT/docker-compose.customer.yml" 2>/dev/null; then
+    l3_wired=1
+  fi
+  if [ "$l3_wired" -eq 0 ]; then
+    local ext_l3 runtime_profile
+    ext_l3="$(env_value "$env_file" OLLAMA_URL)"
+    [ -z "$ext_l3" ] && ext_l3="$(env_value "$env_file" LUCAIRN_L3_ADDR)"
+    runtime_profile="$(env_value "$env_file" MODEL_RUNTIME_PROFILE)"
+    if [ -n "$ext_l3" ] || [ "$runtime_profile" = "ollama" ]; then
+      l3_wired=1
+    fi
+  fi
+
+  if [ "$l3_wired" -eq 0 ]; then
+    warn "L3 shield: warn (LUCAIRN_L3_REQUIRED=true but no L3 shield appears wired — the base docker-compose.customer.yml has no 'ollama-identity' service, and the env sets no OLLAMA_URL/LUCAIRN_L3_ADDR and no MODEL_RUNTIME_PROFILE=ollama). The stock install runs L1+L2 only; with L3 required but absent the sanitizer /readyz fails liveness and the gateway fail-closes 503 on EVERY request. Set LUCAIRN_L3_REQUIRED=false for an L1+L2 install, or wire the GPU Ollama/Qwen shield (Enterprise self-hosted overlay) before requiring it."
+  fi
+  return 0
+}
+
+check_migration_set_floor() {
+  # MEDIUM (overnight fix 2026-06-14): the Compose migrate path renders ONLY the
+  # kit's migrations/<tree>/ files (render-migrations.sh → migrate-veil /
+  # migrate-audit). If the kit ships fewer migrations than the pinned image
+  # expects, the customer gets a green pre-flight then a witness that FATALs at
+  # boot / cert writes that fail "column does not exist". check_render_migrations_safe
+  # only validates passwords, not file count — this gap hid the 0.5.1 install
+  # BLOCKERs. Compare the kit's highest per-service migration number against a
+  # known-required floor for the pinned 0.5.x image. Helm bakes /migrations into
+  # the image and is unaffected — Compose only.
+  #
+  # Floor bump procedure: when a new DSA migration ships in the image, copy the
+  # up+down pair into migrations/<tree>/ AND bump the matching floor below.
+  local env_file="$1" failed=0
+  # service:required-highest-migration-number (decimal, no leading zeros).
+  local floors="veil-witness:10 audit:6"
+  local entry tree floor highest f num
+  for entry in $floors; do
+    tree="${entry%%:*}"
+    floor="${entry##*:}"
+    local dir="$ROOT/migrations/$tree"
+    if [ ! -d "$dir" ]; then
+      echo "migration set: failed — migrations/$tree/ missing (Compose migrate-$tree will have nothing to apply)"
+      failed=1
+      continue
+    fi
+    # Highest NNNNNN_ prefix across *.up.sql / *.up.sql.tmpl files. sort -V is
+    # portable enough; fall back to numeric sort on the stripped prefix.
+    highest=0
+    for f in "$dir"/*.up.sql "$dir"/*.up.sql.tmpl; do
+      [ -f "$f" ] || continue
+      num="$(basename "$f" | sed -E 's/^0*([0-9]+)_.*/\1/')"
+      case "$num" in
+        ''|*[!0-9]*) continue ;;
+      esac
+      [ "$num" -gt "$highest" ] && highest="$num"
+    done
+    if [ "$highest" -lt "$floor" ]; then
+      echo "migration set: failed — migrations/$tree/ tops out at $highest but the pinned image requires through $floor."
+      echo "migration set:   a fresh Compose install will boot a $tree that fatals / fails cert writes on a missing column."
+      echo "migration set:   copy the missing up+down migration pairs from the DSA $tree service into migrations/$tree/."
+      failed=1
+    fi
+  done
+  return "$failed"
+}
+
 check_certs() {
   local env_file="$1" offline="${2:-0}" checked=0 failed=0 key path
   # WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH added (was missing — gateway crashloop
@@ -4222,6 +4346,13 @@ doctor() {
     return 1
   fi
 
+  # HIGH-2 (overnight 2026-06-14): DSA_ENV value-set validation. Runs BEFORE
+  # the production-gated checks below so a typo ("prod"/"Production") that would
+  # silently skip every prod guard fails loudly here instead.
+  local dsa_env_failed=0
+  check_dsa_env_valid "$env_file" || dsa_env_failed=1
+  [ "$dsa_env_failed" -eq 0 ] || return 1
+
   # Sim 3 G6: reject known dual-sandbox dev-default literals in prod.
   local dev_default_failed=0
   check_no_dev_default_keys "$env_file" || dev_default_failed=1
@@ -4231,6 +4362,20 @@ doctor() {
   local migration_failed=0
   check_render_migrations_safe "$env_file" || migration_failed=1
   [ "$migration_failed" -eq 0 ] || return 1
+
+  # MEDIUM (overnight 2026-06-14): Compose migrate path renders ONLY the kit's
+  # migrations/<tree>/ files. If the kit ships fewer than the pinned image
+  # requires, the witness/audit fatal at boot on a missing column. This gap hid
+  # the 0.5.1 install BLOCKERs that check_render_migrations_safe (passwords only)
+  # missed. Helm bakes /migrations and is unaffected — Compose only.
+  local migration_floor_failed=0
+  check_migration_set_floor "$env_file" || migration_floor_failed=1
+  [ "$migration_floor_failed" -eq 0 ] || return 1
+
+  # HIGH-1 (overnight 2026-06-14): LUCAIRN_L3_REQUIRED=true with no L3 service
+  # wired fail-closes 503 on every request. Warn-only (an Enterprise operator
+  # may wire an external L3 this doctor can't see).
+  check_l3_required_wired "$env_file"
 
   # Sim 3 G3: LUCAIRN_IMAGE_TAG must be set explicitly.
   local tag_failed=0
