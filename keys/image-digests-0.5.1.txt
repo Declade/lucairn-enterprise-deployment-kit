@@ -1,11 +1,9 @@
-# Lucairn signed-image digest record — release 0.5.1 (PARTIAL: 7 core images)
+# Lucairn signed-image digest record — release 0.5.1
+# 12 dsa-* @ 0.5.1 + lucairn-dashboard @ 0.8.2, all cosign-signed 2026-06-14
 #
-# AUTHORITATIVE record of which exact image bytes were republished for the
-# 0.5.1 over-redaction fix. ONLY the 7 core images below were rebuilt +
-# pushed multi-arch at 0.5.1. The remaining signed artifacts
-# (reid-guard / admin / demo / ingest / llm-auditor / dashboard)
-# were NOT rebuilt and remain at their 0.5.0 / 0.8.2 pins recorded in
-# keys/image-digests-0.5.0.txt.
+# AUTHORITATIVE record of which exact image bytes were published for the
+# 0.5.1 over-redaction fix. All 12 dsa-* services republished multi-arch at
+# 0.5.1 and cosign-signed (GHCR + Rekor-logged) on 2026-06-14.
 #
 # `bin/lucairn verify-images` reads this file as the verify set: for each entry
 # it (1) resolves the tag's CURRENT digest and asserts it EQUALS the recorded
@@ -13,28 +11,6 @@
 # and is a hard FAIL), then (2) runs
 # `cosign verify --key keys/lucairn-cosign.pub <repo>@<recorded-digest>`,
 # binding verification to the exact signed bytes (not the mutable tag).
-#
-# ⚠️  COSIGN SIGNATURE NOT YET ESTABLISHED FOR 0.5.1 — RELEASE-INFRA STEP REQUIRED
-# ----------------------------------------------------------------------------
-# The DIGESTS below are recorded (so plain `bin/lucairn doctor` resolves the
-# 0.5.1 tags correctly), but `verify-images --tag 0.5.1` step (2) /
-# `doctor --strict` cosign-verify will only PASS once the 7 republished 0.5.1
-# images have been cosign-SIGNED in GHCR (+ Rekor-logged) with the Lucairn
-# release signing key. That signing runs at IMAGE PUSH time in the DSA repo
-# (scripts/sign-images.sh), NOT here in the kit, and requires the cosign
-# PRIVATE key (release-infra secret — NOT available in this worktree). Until
-# the 0.5.1 images are signed in the registry, `cosign verify` against these
-# digests will fail with "no matching signatures". The kit-side record (this
-# file + image-manifest.yaml) is correct and complete; the missing piece is
-# the registry-side signature, which Marc / release-infra must mint.
-#
-# ALSO NOTE: `verify-images` with no --tag errors when MORE THAN ONE
-# keys/image-digests-*.txt exists (verify_images_default_tag). With both 0.5.0
-# and 0.5.1 present, operators MUST pass `--tag 0.5.1` (or `--tag 0.5.0`)
-# explicitly. The 0.5.1 set is PARTIAL (7 of the 12 dsa-* services), so a plain
-# `verify-images --tag 0.5.1` will also report the 5 non-rebuilt dsa-* services
-# as MISSING — that exact-membership assertion expects all 12 dsa-* at one tag.
-# See the report / handover for the release-infra follow-up.
 #
 # Format: <repo>:<tag> <sha256:digest>   (one per line; '#' starts a comment)
 #
@@ -46,3 +22,9 @@ ghcr.io/declade/dsa-id-bridge:0.5.1 sha256:991eb7dcb9417a74b0cdcd5d412afc9fdcfa0
 ghcr.io/declade/dsa-sandbox-a:0.5.1 sha256:76c678929275503e2027f50d53eb7b4c8da5e1fd3e795aa39315bd61aa730231
 ghcr.io/declade/dsa-sandbox-b:0.5.1 sha256:9f3681af97fcf577b280f4bd6be526c692ed42aa7cccab0dcb37f8f6acbd7223
 ghcr.io/declade/dsa-veil-witness:0.5.1 sha256:01e207cf9bf90e283d6fd0095eb7f8c53cb5e7b733bd2bd99af087b39110cc66
+ghcr.io/declade/dsa-reid-guard:0.5.1 sha256:ea9fb5abb3d4f5bc1a27e8895d3ad15405107c565440e0159aae2d26dbc3a637
+ghcr.io/declade/dsa-admin:0.5.1 sha256:bbe1a46a26dc285890b03cb88646da148ac3f0e3117c05d5c492c930f60a69a4
+ghcr.io/declade/dsa-demo:0.5.1 sha256:249d838f6614eb20d8c2c8475f13548d43b3319ad548262a972cea6d4a7c1b91
+ghcr.io/declade/dsa-ingest:0.5.1 sha256:85bc631d23ebe637535ceeb94ca4f4547fd371070f302ce20737dca651739d6d
+ghcr.io/declade/dsa-llm-auditor:0.5.1 sha256:bfa28d79b6cf4a470b9f551f81d440a62666b1e855da276a0baee3656865fe49
+ghcr.io/declade/lucairn-dashboard:0.8.2 sha256:a586b88991ac5d71cf6523b833462648775b1e97a66cbee67876e9f992f0387e
