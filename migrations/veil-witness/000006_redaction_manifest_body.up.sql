@@ -1,0 +1,21 @@
+-- C' sanitizer-manifest endpoint (PRD: prd-2026-06-05-sanitizer-manifest-endpoint).
+-- Adds the canonical-JSON manifest body (placeholder→category→original map)
+-- alongside each cert. The SHA-256 of these bytes is signed in the cert's
+-- PII_SANITIZED claim canonical_payload (`redaction_manifest_hash`), so
+-- tamper-evidence is INDIRECT — the body itself is UNSIGNED metadata.
+--
+-- DURABILITY INSURANCE ONLY: the production gateway reads the manifest
+-- body from `certificate_raw` (proto-embedded copy inside the cert) via
+-- the GetCertificate gRPC path — NOT from this dedicated column. The
+-- column exists so a future direct-DB retrieval path can bypass the
+-- gRPC + proto-unmarshal cost if needed, and as a defense-in-depth
+-- backup for high-PII certs.
+--
+-- The column is NULLABLE because:
+--   - Older certs (pre-this-migration) have no body persisted.
+--   - Certs whose PII_SANITIZED claim never carried a manifest (e.g. the
+--     pure-cache-hit path before the body was added) write NULL.
+--   - Legacy callers that ship the old proto without the new field leave
+--     it unset.
+-- The gateway's sub-resource endpoint returns 404 for NULL bodies.
+ALTER TABLE veil_certificates ADD COLUMN redaction_manifest_body BYTEA NULL;

@@ -1,0 +1,34 @@
+-- TMS Slice 5 cert-manifest enrichment (PRD prd-2026-06-08-typed-message-
+-- schema-sanitizer-rewrite § Slice 5 + prd-2026-06-10-overnight-bhatia-
+-- usability-and-fable-queue WS3). Adds a NULLABLE BYTEA column to
+-- veil_certificates that stores the canonical-JSON bytes of the per-segment
+-- Typed-Message-Schema manifest — which TMS trust-zone each request segment
+-- landed in (trusted_platform / full_scan / value_only / shallow) and the
+-- resulting scan disposition (skipped / scanned / shallow / value_only) +
+-- per-segment redaction count.
+--
+-- This is the "document the rest (tool calls)" artifact: a tool-call schema /
+-- system prompt / code block passed through TRUSTED_PLATFORM is DOCUMENTED in
+-- the cert manifest with scan_outcome=skipped rather than silently absent.
+--
+-- Sibling of redaction_manifest_body (migration 000006) +
+-- sanitized_fields_body (migration 000007): same unsigned-metadata pattern,
+-- hash-bound via tms_manifest_hash inside the PII_SANITIZED claim's
+-- canonical_payload (which IS sanitizer-signed and IS part of the witness
+-- signable via `claim_ids[]`, and is promoted into the v3 top-level signable
+-- map via the tms_manifest_hash key).
+--
+-- DURABILITY INSURANCE ONLY: the production gateway reads the body from
+-- CertificateRaw (the assembled VeilCertificate proto's claims[]/sanitizer-
+-- claim oneof payload) — NOT from this dedicated column. The column exists so
+-- a future direct-DB retrieval path can bypass the gRPC + proto-unmarshal
+-- cost if needed. Mirrors the durability-insurance pattern from migrations
+-- 000006 + 000007.
+--
+-- Trust boundary: the body is per-segment metadata (field_key + trust_zone +
+-- scan_outcome + redaction_count). No raw PII enters this column; no HTTP
+-- headers (Authorization, x-api-key, BYOK keys) enter this column. The
+-- placeholder/original text lives in redaction_manifest_body /
+-- sanitized_fields_body, NOT here.
+ALTER TABLE veil_certificates
+    ADD COLUMN tms_manifest_body BYTEA NULL;

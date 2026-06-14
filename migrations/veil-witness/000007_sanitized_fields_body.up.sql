@@ -1,0 +1,27 @@
+-- D' upstream-request capture (PRD prd-2026-06-06-d-prime-upstream-request-
+-- capture). Adds a NULLABLE BYTEA column to veil_certificates that stores
+-- the canonical-JSON bytes of the placeholder-substituted text fields the
+-- sanitizer returned to the gateway as `sanitized_fields` — what the LLM
+-- literally saw (every system prompt + message + tool result with PII
+-- placeholders substituted).
+--
+-- Sibling of redaction_manifest_body (migration 000006): same unsigned-
+-- metadata pattern, hash-bound via sanitized_fields_hash inside the
+-- PII_SANITIZED claim's canonical_payload (which IS sanitizer-signed and
+-- IS part of the witness signable via `claim_ids[]`).
+--
+-- DURABILITY INSURANCE ONLY: the production gateway reads the body from
+-- CertificateRaw (the assembled VeilCertificate proto's
+-- claims[]/sanitizer-claim oneof payload) — NOT from this dedicated
+-- column. The column exists so a future direct-DB retrieval path can
+-- bypass the gRPC + proto-unmarshal cost if needed. Mirrors the
+-- durability-insurance pattern from migration 000006 redaction_manifest_body.
+--
+-- Trust boundary: the body is the placeholder-substituted text the gateway
+-- ships upstream — i.e. POST-sanitization. No raw PII enters this column;
+-- no HTTP headers (Authorization, x-api-key, BYOK keys) enter this column.
+-- The structure is the same map returned in the sanitizer HTTP response at
+-- services/gateway/internal/clients/sanitizer.go:140
+-- (`SanitizeResponse.SanitizedFields map[string]string`).
+ALTER TABLE veil_certificates
+    ADD COLUMN sanitized_fields_body BYTEA NULL;
