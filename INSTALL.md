@@ -2,6 +2,39 @@
 
 Goal: a competent platform engineer should complete a standard install in about 3 hours without a vendor call.
 
+## Release notes
+
+### v0.5.1 / chart 1.9.1 (2026-06-14) — L1+L2 over-redaction fix
+
+**Upgrade from v0.5.0:** pull the new images (`LUCAIRN_IMAGE_TAG=0.5.1` in
+`customer.env`; or `global.imageTag: "0.5.1"` in Helm values). No database
+migration required. The sanitizer container restart is the only operational
+step.
+
+**What changed:**
+
+- **Strict product-vocabulary safe list (no recall loss):** The hosted L1+L2
+  sanitizer (Presidio/spaCy) mis-tagged system/product vocabulary as PERSON on
+  ITSM and ServiceNow payloads — `Claude` appeared as `[PERSON_4]` 81× in a
+  single session; `signable` appeared as `[PERSON_2]`. Root cause: spaCy's
+  English NER tagged these at PERSON@0.85 confidence. Fix: a new
+  *strict whole-span-exact* safe list (`config/safe-terms-strict.txt`) — a
+  Presidio detection is suppressed ONLY when the entire detected span equals a
+  safe term. Multi-token spans like "Claude Müller" are **NOT** suppressed;
+  the surname still redacts. Recall on real PII is unchanged (hard gate:
+  100% recall on the conv-3cde524c adversarial fixture).
+  Terms: `Claude / Opus / Sonnet / Haiku / Anthropic / Lucairn / Codex / Veil /
+  signable / Remedy`.
+
+- **German place-name de_places en-exclusion:** The German place-name
+  recognizer (`de_places`) no longer fires on English-language input. Baked
+  into the sanitizer image; no config change required.
+
+Both fixes are delivered in the `0.5.1` sanitizer image. The strict safe list
+is also bundled in the kit (`config/safe-terms-strict.txt`), mounted into the
+sanitizer container, and wired in `config/default-sanitizer.yaml` and the ITSM
+starter template (`starter-templates/itsm/config.yaml`).
+
 ## Quickstart (30 seconds, dev mode)
 
 ```

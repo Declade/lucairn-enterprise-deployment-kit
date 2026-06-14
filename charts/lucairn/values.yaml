@@ -20,7 +20,7 @@ global:
   # or if you attach registry credentials out-of-band (node/ServiceAccount-level
   # imagePullSecret). Default false — the guards fire.
   skipPullSecretGuard: false
-  imageTag: "0.5.0" # NOTE: dashboard sub-chart ships independently — dashboard image is pinned in the dashboard.image.tag block below (currently 0.8.2).
+  imageTag: "0.5.1" # NOTE: dashboard sub-chart ships independently — dashboard image is pinned in the dashboard.image.tag block below (currently 0.8.2).
   # Slice 4 — namespace of the bundled observability sub-chart (Grafana
   # + Loki + Tempo). The dashboard sub-chart's secret-grafana-jwt.yaml
   # mirrors the Helm-generated shared secret into this namespace so the

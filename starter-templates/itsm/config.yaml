@@ -37,6 +37,13 @@ sanitizer:
     # vendor-specific vocabulary that collides with Lucairn's PII
     # recognizers should add a `safe_terms_file:` line pointing at a
     # newline-separated list mounted into the sanitizer container.
+    safe_terms_file: /config/medical-terms.txt
+    # Strict whole-span-exact safe list (v0.5.1). Stops product vocabulary
+    # (Claude/Opus/Sonnet/Haiku/Anthropic/Lucairn/Codex/Veil/signable/Remedy)
+    # from being mis-tagged as PERSON by spaCy on ITSM/ServiceNow payloads.
+    # Whole-span-exact semantics: "Claude" alone → suppressed; "Claude Müller"
+    # → NOT suppressed (surname still redacts). See config/safe-terms-strict.txt.
+    strict_safe_terms_file: /config/safe-terms-strict.txt
   llm_audit:
     enabled: false
 

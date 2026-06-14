@@ -83,6 +83,12 @@ sanitizer:
       - dutch_bsn
       - order_number
     safe_terms_file: /config/medical-terms.txt
+    # Strict whole-span-exact safe list (v0.5.1). Suppresses Presidio/spaCy
+    # PERSON false positives on product vocabulary (Claude/signable/…) where
+    # the ENTIRE detected span exactly equals the safe term. Does NOT suppress
+    # multi-token spans like "Claude Müller" — those still redact the surname.
+    # See config/safe-terms-strict.txt for the term list and semantics.
+    strict_safe_terms_file: /config/safe-terms-strict.txt
     safe_patterns:
       # GPS/decimal coordinates: digits with 4+ decimal places (32.85768, -97.3 etc.)
       - '-?\d{1,3}\.\d{4,}'
