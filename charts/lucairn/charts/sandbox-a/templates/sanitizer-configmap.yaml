@@ -73,12 +73,19 @@ data:
           - belgian_rnn
           - dutch_bsn
           - order_number
-        # safe_terms_file: operators wanting safe-terms suppression must
-        # supply their own ConfigMap (e.g. medical-terms.txt) and mount it at
-        # /config/medical-terms.txt, then uncomment the line below. The
+        # safe_terms_file: operators wanting any-word safe-terms suppression
+        # must supply their own ConfigMap (e.g. medical-terms.txt) and mount
+        # it at /config/medical-terms.txt, then uncomment the line below. The
         # default kit ConfigMap intentionally omits this to avoid a
         # missing-file warning on a clean install.
         # safe_terms_file: /config/medical-terms.txt
+        # Strict whole-span-exact safe list (v0.5.1). Suppresses
+        # Presidio/spaCy PERSON false positives on product vocabulary
+        # (Claude/signable/…) without touching recall on real names.
+        # Delivered as the `safe-terms-strict.txt` key in this ConfigMap
+        # (mounted at /config/safe-terms-strict.txt by the sanitizer
+        # volumeMount → /config directory binding).
+        strict_safe_terms_file: /config/safe-terms-strict.txt
         safe_patterns:
           # GPS / decimal coordinates: digits with 4+ decimal places.
           - '-?\d{1,3}\.\d{4,}'
@@ -185,3 +192,46 @@ data:
       enabled: false
       threshold: 0.25
       action: generalize
+  # Strict whole-span-exact safe list (v0.5.1). Mounted alongside config.yaml
+  # in the /config directory (sanitizer volumeMount: mountPath: /config).
+  # Referenced by strict_safe_terms_file: /config/safe-terms-strict.txt above.
+  # Terms: product vocab (Claude/Opus/Sonnet/Haiku/Anthropic/Lucairn/Codex/
+  # Veil/signable/Remedy) — spaCy PERSON@0.85 false positives on ITSM/
+  # ServiceNow payloads. Whole-span-exact semantics only; multi-token spans
+  # like "Claude Müller" are NOT suppressed — the surname still redacts.
+  safe-terms-strict.txt: |
+    # Strict whole-span-exact safe list for the Lucairn sanitizer.
+    #
+    # SEMANTICS (different from config/medical-terms.txt):
+    #   A Presidio/spaCy NER detection is suppressed ONLY when the ENTIRE detected
+    #   span (lowercased + stripped) exactly equals a term here. No first-word
+    #   match, no any-word match. This prevents under-redaction of real names whose
+    #   first token happens to be a safe term:
+    #
+    #     "claude"         alone → suppressed  (product vocabulary FP)
+    #     "claude müller"  → NOT suppressed    (real person's full name; span
+    #                                           differs from "claude")
+    #
+    # DO NOT add real given names here. "marc" is a real given name tagged
+    # PERSON@0.85 by spaCy — safe-listing it would be an under-redaction that
+    # leaks real identity data. (See Slice 1 findings and the "claude müller"
+    # adversarial test in test_overredaction_recall_fixture.py.)
+    #
+    # "grep" was considered (it is tagged PERSON@0.85 in the conv-3cde524c run)
+    # but intentionally dropped: it is also a real-world surname. Errs toward
+    # over-redaction by design.
+    #
+    # Source: Slice 2 of PRD prd-2026-06-14-overredaction-tuning.md.
+    # Verified against conv-3cde524c manifest (root cause: SpacyRecognizer en
+    # tags these as PERSON@0.85 on English-prose ITSM/ServiceNow payloads).
+    #
+    Claude
+    Opus
+    Sonnet
+    Haiku
+    Anthropic
+    Lucairn
+    Codex
+    Veil
+    signable
+    Remedy

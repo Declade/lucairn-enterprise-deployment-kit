@@ -1484,6 +1484,28 @@ single-replica are the v1.0 SLA.
 6. Confirm `/healthz`, `/readyz`, and one synthetic inference request.
 7. Generate a support bundle and archive it internally as upgrade evidence.
 
+### v0.5.1 / chart 1.9.1 — over-redaction fix (2026-06-14)
+
+Schema change: none. No database migration required.
+
+Sanitizer-only image change: the `0.5.1` sanitizer image includes two
+L1+L2 false-positive-reduction fixes. Operators get fewer PERSON redactions
+on product vocabulary (Claude/signable/…) with no change to recall on real
+PII. The strict safe list is bundled in `config/safe-terms-strict.txt` and
+auto-mounted by `docker-compose.customer.yml`; Helm operators get it via the
+`sanitizer-config` ConfigMap key `safe-terms-strict.txt`.
+
+**Compose:** set `LUCAIRN_IMAGE_TAG=0.5.1` in `customer.env`, then:
+```bash
+docker compose -f docker-compose.customer.yml --env-file customer.env pull sanitizer
+docker compose -f docker-compose.customer.yml --env-file customer.env up -d --no-deps --force-recreate sanitizer
+```
+
+**Helm:** set `global.imageTag: "0.5.1"` (or override `sandbox-a.sanitizer.imageTag`) and apply:
+```bash
+helm upgrade lucairn charts/lucairn -n lucairn -f your-values.yaml
+```
+
 ## Rollback
 
 If an upgrade fails its post-apply checks (step 6 above), roll back to the
