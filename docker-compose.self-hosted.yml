@@ -121,6 +121,23 @@ services:
   # dsa-witness-identity (from docker-compose.customer.yml) and gains ONLY
   # dsa-model-runtime-identity here. No sanitizer config change is needed.
   sanitizer:
+    environment:
+      # L3 fail-mode default is DEPLOYMENT-AWARE. The base
+      # docker-compose.customer.yml (split deployment) defaults
+      # LUCAIRN_L3_REQUIRED to "false" because it starts NO L3 service —
+      # requiring L3 there would 503 every request. This self-hosted overlay
+      # DOES wire the always-on L3 shield (the `ollama-identity` service +
+      # `dsa-model-runtime-identity` net below), so it RESTORES the
+      # fail-CLOSED-by-default contract: when L3 is wired, a request must not
+      # silently degrade to L1+L2 if the shield is down — it fail-closes (503
+      # l3_scrubber_unavailable). Compose's per-key environment merge means
+      # this value REPLACES the base "false" default on the self-hosted path.
+      # An operator can still override (set LUCAIRN_L3_REQUIRED=false in
+      # customer.env) for a deliberate continue-mode self-hosted install.
+      # Mirrors the Helm chart, which fail-closes L3 by default when
+      # ollama-identity runs. See INSTALL.md § self-hosted "Pre-stage the L3
+      # deep PII-shield model" + customer.env.example LUCAIRN_L3_REQUIRED.
+      LUCAIRN_L3_REQUIRED: "${LUCAIRN_L3_REQUIRED:-true}"
     networks:
       - dsa-model-runtime-identity
 

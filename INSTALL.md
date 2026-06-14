@@ -758,9 +758,21 @@ one-time throwaway staging container in step 2 has egress, and it exits as soon
 as the pull completes. This procedure is validated on a fresh install.
 
 Until the model is staged, the L3 deep PII shield is unavailable and the
-sanitizer is fail-CLOSED by design (`LUCAIRN_L3_REQUIRED` defaults to `true`):
-the gateway returns `503 l3_scrubber_unavailable` rather than ship a request
-with only L1+L2 scrubbing.
+sanitizer is fail-CLOSED by design: the gateway returns
+`503 l3_scrubber_unavailable` rather than ship a request with only L1+L2
+scrubbing. The `LUCAIRN_L3_REQUIRED` default is **deployment-aware**:
+
+- **Self-hosted** (`docker-compose.customer.yml` + `docker-compose.self-hosted.yml`)
+  defaults to `true` (fail-closed) because this overlay wires the always-on
+  `ollama-identity` L3 shield — a request must not silently degrade to L1+L2 if
+  the shield is down.
+- **Split deployment** (`docker-compose.customer.yml` alone) defaults to `false`
+  because that path starts no L3 service; requiring L3 there would 503 every
+  request.
+
+Set `LUCAIRN_L3_REQUIRED` in `customer.env` to override either default (e.g.
+`false` for a deliberate continue-mode self-hosted install, in which the cert is
+honestly downgraded to PARTIAL when the shield is down).
 
 ### Self-hosted with managed LLM (BYOK Anthropic, OpenAI, etc.)
 
