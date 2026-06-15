@@ -104,7 +104,9 @@ echo "manifest-blob: prod + /certs mapped to custom SANDBOX_B_CERT_DIR (present)
 # ---------------------------------------------------------------------------
 # C. prod + container /certs path but blob MISSING at the host source -> FAIL,
 #    and the message must name the HOST path (not /certs on the host) + the
-#    ceremony + the honest "sign-manifest not in the image" note.
+#    ceremony + the turnkey sign-manifest remediation (docker run
+#    --entrypoint sign-manifest …, pointing at INSTALL.md § 4b; the tool now
+#    ships inside the pinned dsa-veil-witness:0.5.2 image).
 # ---------------------------------------------------------------------------
 HOST_CERTS_EMPTY="$TMP/empty-certs-dir"
 mkdir -p "$HOST_CERTS_EMPTY"   # dir exists, but no manifest file inside
@@ -118,8 +120,12 @@ printf '%s' "$OUT" | grep -qF "$HOST_CERTS_EMPTY/witness-signed-manifest.json" \
   || fail "prod + missing host blob should name the resolved HOST path, not /certs on the host"
 printf '%s' "$OUT" | grep -qi "OPS.md" \
   || fail "prod + missing host blob should point at the OPS.md ceremony"
-printf '%s' "$OUT" | grep -qi "not yet shipped in the pinned image" \
-  || fail "prod + missing host blob should honestly note sign-manifest is not in the image"
+printf '%s' "$OUT" | grep -qi "sign-manifest" \
+  || fail "prod + missing host blob should give the sign-manifest remediation"
+printf '%s' "$OUT" | grep -qi "docker run" \
+  || fail "prod + missing host blob should give the turnkey 'docker run --entrypoint sign-manifest' remediation"
+printf '%s' "$OUT" | grep -qi "INSTALL.md" \
+  || fail "prod + missing host blob should point at INSTALL.md § 4b for the full sign-manifest command"
 echo "manifest-blob: prod + /certs default + host blob MISSING -> FAIL (names host path + ceremony) ok"
 
 # ---------------------------------------------------------------------------
