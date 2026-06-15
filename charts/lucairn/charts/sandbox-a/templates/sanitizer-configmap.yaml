@@ -86,6 +86,14 @@ data:
         # (mounted at /config/safe-terms-strict.txt by the sanitizer
         # volumeMount → /config directory binding).
         strict_safe_terms_file: /config/safe-terms-strict.txt
+        # A6 strict LOCATION stop-list (v0.5.2). Drops spaCy-NER LOCATION false
+        # positives on common English words ("West"/"Loop"/…) mis-tagged in
+        # messy ITSM/ServiceNow prose. Dropped ONLY when entity_type == LOCATION
+        # on a single whole token present in the list — longer tokens, PERSON
+        # spans, and real surnames-in-identity (L1) untouched. Delivered as the
+        # `safe-terms-strict-location.txt` key in this ConfigMap (mounted at
+        # /config/safe-terms-strict-location.txt by the /config volume binding).
+        spacy_location_stop_terms_file: /config/safe-terms-strict-location.txt
         safe_patterns:
           # GPS / decimal coordinates: digits with 4+ decimal places.
           - '-?\d{1,3}\.\d{4,}'
@@ -235,3 +243,58 @@ data:
     Veil
     signable
     Remedy
+  # A6 strict LOCATION stop-list (v0.5.2). Mounted alongside config.yaml in the
+  # /config directory (sanitizer volumeMount: mountPath: /config). Referenced by
+  # spacy_location_stop_terms_file: /config/safe-terms-strict-location.txt above.
+  # Drops spaCy-NER LOCATION false positives on common English words mis-tagged
+  # in messy ITSM/ServiceNow prose. A detection is dropped ONLY when ALL hold:
+  # (1) entity_type == LOCATION, (2) the firing recognizer is spaCy's own NER
+  # (never de_places/street_address/...), (3) the span is a SINGLE token, and
+  # (4) the lowercased span exactly equals a term here. Multi-word places
+  # ("West Berlin"), longer tokens ("Westminster"), PERSON-tagged "West", and L1
+  # identity surnames are all untouched — recall-safe by construction. `de`
+  # de_places (German text) is unaffected. `marc`/`grep`/`may` are deliberately
+  # excluded as real-name/real-PII risks. Mirrors config/safe-terms-strict-location.txt.
+  safe-terms-strict-location.txt: |
+    # Strict whole-token LOCATION stop-list for the L2 spaCy NER (over-redaction
+    # tuning workstream, A6 — PRD prd-2026-06-14-overredaction-tuning.md).
+    #
+    # SEMANTICS (recall-safe by construction — see presidio_scan._is_spacy_location_stopword):
+    #   A spaCy-NER detection is dropped ONLY when ALL hold:
+    #     1. entity_type == LOCATION, AND
+    #     2. the firing recognizer is spaCy's own NER (`SpacyRecognizer`) — never
+    #        a custom/structured recognizer (de_places, street_address, ...), AND
+    #     3. the detected span is a SINGLE token (no internal whitespace), AND
+    #     4. the lowercased span EXACTLY equals a term in this file.
+    #
+    #   Multi-word places ("West Berlin") are one span → condition (3) fails →
+    #   still redacted. Longer single tokens ("Westminster") fail (4). A PERSON-
+    #   tagged "West" fails (1). An identity surname "West" is caught by L1
+    #   token_last_name BEFORE L2 runs. The `de` de_places list is UNTOUCHED.
+    #
+    # `west` and `for` are the two live-confirmed A6 false positives from the
+    # real /lucairn-start run (conv 3cde524c); the rest are pre-vetted Slice-3
+    # en-exclusion terms. `marc`, `grep`, and `may` are deliberately EXCLUDED as
+    # real-name / real-PII risks. Errs toward over-redaction by design.
+    #
+    # Source: A6 of PRD prd-2026-06-14-overredaction-tuning.md.
+    #
+    below
+    block
+    bug
+    bulk
+    first
+    for
+    grill
+    hub
+    just
+    last
+    line
+    list
+    loop
+    over
+    plan
+    rank
+    see
+    slop
+    west

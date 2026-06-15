@@ -31,7 +31,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLI="$ROOT/bin/lucairn"
 MANIFEST="$ROOT/image-manifest.yaml"
-DIGESTS_FILE="$ROOT/keys/image-digests-0.5.1.txt"
+DIGESTS_FILE="$ROOT/keys/image-digests-0.5.2.txt"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -57,7 +57,7 @@ echo "digest-pin: usage advertises --strict (distinct from --strict-runtime) ok"
 # ---------------------------------------------------------------------------
 # 3. parse_image_digests parses the real manifest: 15 real digests + 7 pending.
 #    The 15 real-digest entries = 13 signed artifacts (the 12 dsa-* services +
-#    lucairn-dashboard, all in keys/image-digests-0.5.1.txt) + ollama/ollama
+#    lucairn-dashboard, all in keys/image-digests-0.5.2.txt) + ollama/ollama
 #    + the dsa-pii-ml sidecar (digest-pinned in image-manifest.yaml at PR #240
 #    but NOT in the cosign-signed set — it ships on its own release cadence).
 #    The count was 14 before the pii-ml sidecar's manifest entry was added.
@@ -77,12 +77,12 @@ pending_count="$(printf '%s\n' "$PARSED" | grep -c $'\tPENDING' || true)"
   || fail "expected 7 pending entries (qwen model + 6 runtime), got $pending_count"
 # Spot-check the gateway ref maps to its recorded digest.
 printf '%s\n' "$PARSED" \
-  | grep -q "^ghcr.io/declade/dsa-gateway:0.5.1	sha256:7662f95529d159f2409c1e8036e5feb01292cce2c98f3d0e7b417ceb08a3144f$" \
+  | grep -q "^ghcr.io/declade/dsa-gateway:0.5.2	sha256:e1234bc354dcc7b1dd77cb864a1f90f78f349fb3f15ef36beb25a089c51c1b1c$" \
   || fail "parse_image_digests did not map the gateway ref to its recorded digest"
 echo "digest-pin: parse_image_digests reads 15 real + 7 pending entries ok"
 
 # ---------------------------------------------------------------------------
-# 4. Lockstep: every signed artifact in keys/image-digests-0.5.1.txt must appear
+# 4. Lockstep: every signed artifact in keys/image-digests-0.5.2.txt must appear
 #    in the manifest digest block with the IDENTICAL digest (the manifest folds
 #    in the cosign-signed digests; drift here breaks --strict vs verify-images).
 # ---------------------------------------------------------------------------
@@ -93,9 +93,9 @@ while IFS= read -r line; do
   [ -n "$ref" ] || continue
   case "$rec" in sha256:*) ;; *) continue ;; esac
   printf '%s\n' "$PARSED" | grep -q "^${ref}	${rec}$" \
-    || fail "lockstep: $ref $rec is in keys/image-digests-0.5.1.txt but not (identically) in the manifest digest block"
+    || fail "lockstep: $ref $rec is in keys/image-digests-0.5.2.txt but not (identically) in the manifest digest block"
 done < "$DIGESTS_FILE"
-echo "digest-pin: manifest digest block is in lockstep with keys/image-digests-0.5.1.txt ok"
+echo "digest-pin: manifest digest block is in lockstep with keys/image-digests-0.5.2.txt ok"
 
 # ---------------------------------------------------------------------------
 # Build an isolated kit ROOT so the CLI's ROOT="$(cd "$(dirname "$0")/..")"
@@ -171,7 +171,7 @@ CR
 }
 
 ENVF="$TMP/customer.env"
-printf 'LUCAIRN_IMAGE_TAG=0.5.1\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\n' > "$ENVF"
+printf 'LUCAIRN_IMAGE_TAG=0.5.2\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\n' > "$ENVF"
 
 # ---------------------------------------------------------------------------
 # 5a. Clean manifest: stub resolves every ref to the recorded digest -> all
@@ -204,7 +204,7 @@ echo "digest-pin: clean manifest -> normal rc=0 + strict rc=0, pending skipped o
 # ---------------------------------------------------------------------------
 TAMPERED="$TMP/image-manifest.tampered.yaml"
 # Replace the gateway digest's first hex char run with a different value.
-sed 's#sha256:7662f95529d159f2409c1e8036e5feb01292cce2c98f3d0e7b417ceb08a3144f#sha256:dead00401356c7ffb9862e38a77a4ffae36a2a27573cb2e61c9cfe280e6d7a8a#' \
+sed 's#sha256:e1234bc354dcc7b1dd77cb864a1f90f78f349fb3f15ef36beb25a089c51c1b1c#sha256:dead00401356c7ffb9862e38a77a4ffae36a2a27573cb2e61c9cfe280e6d7a8a#' \
   "$MANIFEST" > "$TAMPERED"
 # Sanity: the tamper actually changed the file.
 ! diff -q "$MANIFEST" "$TAMPERED" >/dev/null || fail "tamper sed did not modify the manifest"
@@ -273,7 +273,7 @@ echo "digest-pin: --strict + --offline -> hard error; plain --offline rc=0 ok"
 #                   not confirm a ref it was told to enforce.
 #       plain    -> warn-only (rc=0).
 # ---------------------------------------------------------------------------
-GW_REF="ghcr.io/declade/dsa-gateway:0.5.1"
+GW_REF="ghcr.io/declade/dsa-gateway:0.5.2"
 SHIM_EMPTY="$(make_stub_crane_empty_for "$MANIFEST" "$GW_REF")"
 # The crane stub MUST be the SOLE resolver image_current_digest can find. We
 # cannot append :/usr/bin:/bin here: on a box where a REAL docker/crane/skopeo
@@ -339,7 +339,7 @@ echo "digest-pin: cardinality floor -> --strict FAILS when verified==0 (distinct
 # ---------------------------------------------------------------------------
 MALFORMED="$TMP/image-manifest.malformed.yaml"
 # Truncate the gateway digest's hex to 8 chars (still starts sha256: but invalid).
-sed 's#digest: "sha256:7662f95529d159f2409c1e8036e5feb01292cce2c98f3d0e7b417ceb08a3144f"#digest: "sha256:7662f955"#' \
+sed 's#digest: "sha256:e1234bc354dcc7b1dd77cb864a1f90f78f349fb3f15ef36beb25a089c51c1b1c"#digest: "sha256:7662f955"#' \
   "$MANIFEST" > "$MALFORMED"
 ! diff -q "$MANIFEST" "$MALFORMED" >/dev/null || fail "malformed sed did not modify the manifest"
 # Sanity: the parser must mark this entry INVALID (not PENDING, not a digest).
@@ -370,7 +370,7 @@ echo "digest-pin: INVALID (malformed digest) -> --strict FAILS-CLOSED, plain war
 CONTRA="$TMP/image-manifest.contradiction.yaml"
 # Add a `pending: true` line right after the gateway digest, at the SAME indent.
 awk '
-  /^[[:space:]]*digest:[[:space:]]*"sha256:7662f95529d159f2409c1e8036e5feb01292cce2c98f3d0e7b417ceb08a3144f"/ {
+  /^[[:space:]]*digest:[[:space:]]*"sha256:e1234bc354dcc7b1dd77cb864a1f90f78f349fb3f15ef36beb25a089c51c1b1c"/ {
     print
     ind=$0; sub(/[^[:space:]].*$/, "", ind); print ind "pending: true"; next
   }
@@ -407,14 +407,14 @@ image_digests:
   signed_artifacts:
     dsa-gateway:
       digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-      ref: "ghcr.io/declade/dsa-gateway:0.5.1"
+      ref: "ghcr.io/declade/dsa-gateway:0.5.2"
 YML
   parse_image_digests "$TMP/reorder.yaml"
 )"
 # The reordered entry must resolve to the digest (a real sha256 verdict), NOT
 # PENDING and NOT a mis-attributed <no-ref>.
 printf '%s\n' "$REORDER_PARSE" \
-  | grep -q "^ghcr.io/declade/dsa-gateway:0.5.1	sha256:1111111111111111111111111111111111111111111111111111111111111111$" \
+  | grep -q "^ghcr.io/declade/dsa-gateway:0.5.2	sha256:1111111111111111111111111111111111111111111111111111111111111111$" \
   || fail "digest-before-ref must associate the digest with its ref (got: $REORDER_PARSE)"
 printf '%s\n' "$REORDER_PARSE" | grep -q "PENDING" \
   && fail "digest-before-ref must NOT silently become PENDING"
@@ -435,8 +435,8 @@ image_digests:
     orphan_no_ref:
       digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
     dsa-gateway:
-      ref: "ghcr.io/declade/dsa-gateway:0.5.1"
-      digest: "sha256:7662f95529d159f2409c1e8036e5feb01292cce2c98f3d0e7b417ceb08a3144f"
+      ref: "ghcr.io/declade/dsa-gateway:0.5.2"
+      digest: "sha256:e1234bc354dcc7b1dd77cb864a1f90f78f349fb3f15ef36beb25a089c51c1b1c"
 YML
   parse_image_digests "$TMP/orphan.yaml"
 )"
@@ -472,7 +472,7 @@ DASH_DIGEST="$(awk '
 # ignored, the canonical :0.8.2 ref resolved to its recorded digest, and --strict
 # wrongly PASSED — the dashboard was un-enforced.)
 ENVF_DASH_SWAP="$TMP/customer.dash-swap.env"
-printf 'LUCAIRN_IMAGE_TAG=0.5.1\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nLUCAIRN_DASHBOARD_IMAGE_TAG=9.9.9\n' > "$ENVF_DASH_SWAP"
+printf 'LUCAIRN_IMAGE_TAG=0.5.2\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nLUCAIRN_DASHBOARD_IMAGE_TAG=9.9.9\n' > "$ENVF_DASH_SWAP"
 set +e
 out_dsw_s="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP" 1 2>&1)"; rc_dsw_s=$?
 out_dsw_n="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP" 0 2>&1)"; rc_dsw_n=$?
@@ -542,7 +542,7 @@ OLLAMA_DIGEST="$(awk '
 # (the resolver short-circuits to the __UNPINNED_OVERRIDE__ fail-closed path), so
 # the stub's behavior is irrelevant here.
 ENVF_OLLAMA_LATEST="$TMP/customer.ollama-latest.env"
-printf 'LUCAIRN_IMAGE_TAG=0.5.1\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nOLLAMA_IMAGE=ollama/ollama:latest\n' > "$ENVF_OLLAMA_LATEST"
+printf 'LUCAIRN_IMAGE_TAG=0.5.2\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nOLLAMA_IMAGE=ollama/ollama:latest\n' > "$ENVF_OLLAMA_LATEST"
 set +e
 out_ol_s="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_LATEST" 1 2>&1)"; rc_ol_s=$?
 out_ol_n="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_LATEST" 0 2>&1)"; rc_ol_n=$?
@@ -564,7 +564,7 @@ echo "digest-pin: unpinned OLLAMA_IMAGE override -> --strict FAILS-CLOSED, plain
 # pinned image flows through the normal verify path and counts toward the floor.
 OLLAMA_PIN="ollama/ollama:0.6.2@${OLLAMA_DIGEST}"
 ENVF_OLLAMA_PIN="$TMP/customer.ollama-pin.env"
-printf 'LUCAIRN_IMAGE_TAG=0.5.1\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nOLLAMA_IMAGE=%s\n' "$OLLAMA_PIN" > "$ENVF_OLLAMA_PIN"
+printf 'LUCAIRN_IMAGE_TAG=0.5.2\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nOLLAMA_IMAGE=%s\n' "$OLLAMA_PIN" > "$ENVF_OLLAMA_PIN"
 SHIM_OLLAMA_OK="$(mktemp -d)"
 cat > "$SHIM_OLLAMA_OK/crane" <<CR
 #!/usr/bin/env bash

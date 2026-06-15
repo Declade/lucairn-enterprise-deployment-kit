@@ -1,0 +1,71 @@
+# Strict whole-token LOCATION stop-list for the L2 spaCy NER (over-redaction
+# tuning workstream, A6 — PRD prd-2026-06-14-overredaction-tuning.md).
+#
+# PURPOSE
+# -------
+# After Slice 3 dropped these common English words from the `en` `de_places`
+# gazetteer recognizer, a SECOND, DISTINCT L2 mechanism still mis-tags some of
+# them as LOCATION: spaCy's OWN English NER (`SpacyRecognizer`) tags a bare
+# title-case token like "West" as LOCATION @ 0.85 in messy agentic/ITSM prose.
+# That is a different recognizer than `de_places_en` (@ 0.40), so the Slice-3
+# de_places en-exclusion does NOT suppress it. This file is the targeted fix.
+#
+# SEMANTICS (recall-safe by construction — see presidio_scan._is_spacy_location_stopword)
+# A detection is dropped ONLY when ALL of the following hold:
+#   1. entity_type == LOCATION, AND
+#   2. the firing recognizer is spaCy's own NER (`SpacyRecognizer`) — never a
+#      custom/structured recognizer (de_places, street_address, ...), AND
+#   3. the detected span is a SINGLE token (no internal whitespace), AND
+#   4. the lowercased span EXACTLY equals a term in this file.
+#
+# Why this cannot lower recall on real PII:
+#   * A multi-word place ("West Berlin", "West End", "West Bank") is ONE span
+#     "West Berlin"/... — condition (3) fails → still redacted.
+#   * A longer single token ("Weston", "Westminster") fails condition (4) →
+#     still redacted.
+#   * A real person whose NAME is "West" tagged as PERSON fails condition (1)
+#     → still redacted (only LOCATION-typed spans are filtered).
+#   * A real caller surname "West" present in the request's identity context is
+#     caught by L1 `token_last_name` BEFORE L2 ever runs — the exact same
+#     "Claude Müller" precedent that makes the Slice-2 strict safe-list safe.
+#   * The `de` de_places recognizer (German text) is UNTOUCHED — these words
+#     stay in the full de-places list for German input.
+#
+# 19 terms total. `west` and `for` are the two live-confirmed A6 false
+# positives from the real /lucairn-start run (conv 3cde524c, profile fixture
+# `tests/fixtures/conv-3cde524c-overredaction-profile.json`) — spaCy's own
+# SpacyRecognizer still mis-tagged them after Slice 3 dropped them from the
+# en de_places gazetteer. The remaining 17 are pre-emptively included from
+# the already-vetted Slice-3 en-exclusion set (all accepted as non-PII there)
+# to guard against the same spaCy-NER mis-tag on similar agentic/ITSM prose.
+# `marc`, `grep`, and `may` were deliberately excluded as real-name risks
+# (see DELIBERATELY EXCLUDED above).
+#
+# DELIBERATELY EXCLUDED (real-name / real-PII risk — Slice 2 precedent):
+#   * marc, grep — PERSON-class FPs (Slice 2 territory), never LOCATION; `marc`
+#     is a real given name and stays redactable.
+#   * may       — a real English surname ("May") and the month; held back so a
+#     bare LOCATION-tagged "May" is never suppressed. Errs toward
+#     over-redaction by design.
+# Any future addition MUST be a common English word with NO plausible
+# standalone person/place reading, and MUST keep the recall fixture at 100%.
+
+below
+block
+bug
+bulk
+first
+for
+grill
+hub
+just
+last
+line
+list
+loop
+over
+plan
+rank
+see
+slop
+west

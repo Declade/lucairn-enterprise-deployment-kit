@@ -48,6 +48,13 @@ sanitizer:
     # → NOT suppressed (surname still redacts). Delivered by both the Compose
     # bind-mount and the Helm sanitizer ConfigMap. See config/safe-terms-strict.txt.
     strict_safe_terms_file: /config/safe-terms-strict.txt
+    # A6 strict LOCATION stop-list (v0.5.2). Drops spaCy-NER LOCATION false
+    # positives on common English words (West/Loop/…) the en SpacyRecognizer
+    # mis-tags as LOCATION in messy ITSM/ServiceNow prose. Whole-token-exact
+    # only: multi-word places, longer tokens, PERSON spans, and L1 identity
+    # surnames stay redacted (recall-safe). Delivered by both the Compose
+    # bind-mount and the Helm sanitizer ConfigMap. See config/safe-terms-strict-location.txt.
+    spacy_location_stop_terms_file: /config/safe-terms-strict-location.txt
   llm_audit:
     enabled: false
 

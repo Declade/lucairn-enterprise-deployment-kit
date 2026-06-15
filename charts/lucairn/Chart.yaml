@@ -7,8 +7,8 @@ description: Lucairn enterprise self-hosted deployment kit
 # carried here because Helm chart versions must be clean SemVer for
 # `helm package`. See docs/RELEASING.md § "Version reconciliation".
 type: application
-version: 1.9.1
-appVersion: "0.5.1"
+version: 1.9.2
+appVersion: "0.5.2"
 
 dependencies:
   - name: infrastructure
