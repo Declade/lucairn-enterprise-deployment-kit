@@ -4,6 +4,38 @@ Goal: a competent platform engineer should complete a standard install in about 
 
 ## Release notes
 
+### v0.5.2 / chart 1.9.2 (2026-06-15) — A6 LOCATION stop-list + turnkey sign-manifest
+
+**Upgrade from v0.5.1:** pull the new images (`LUCAIRN_IMAGE_TAG=0.5.2` in
+`customer.env`; or `global.imageTag: "0.5.2"` in Helm values). No database
+migration required. The sanitizer container restart is the only operational
+step. The 12 `dsa-*` images are republished + cosign-signed + Rekor-logged at
+`0.5.2` (`bin/lucairn verify-images --tag 0.5.2` → 13/13). `dsa-pii-ml` stays
+`0.5.1` (independent cadence) and `lucairn-dashboard` stays `0.8.2`.
+
+**What changed:**
+
+- **A6 strict LOCATION stop-list (no recall loss):** A second, distinct L2
+  mechanism — spaCy's *own* English NER (`SpacyRecognizer`) — still mis-tagged
+  common English words like `West`/`Loop`/`For` as LOCATION in messy
+  ITSM/ServiceNow prose, even after the 0.5.1 `de_places` en-exclusion. Fix: a
+  new whole-token-exact LOCATION stop-list (`config/safe-terms-strict-location.txt`)
+  drops a detection ONLY when it is a single LOCATION-typed token from spaCy's
+  own NER that exactly matches a listed term. Multi-word places ("West Berlin"),
+  longer tokens ("Westminster"), PERSON-tagged "West", and L1 identity surnames
+  all stay redacted — recall-safe by construction (`marc`/`grep`/`may` are
+  deliberately excluded as real-name risks). Bundled in the kit
+  (`config/safe-terms-strict-location.txt`), mounted into the sanitizer
+  container, and wired in `config/default-sanitizer.yaml`, the ITSM starter
+  template, and the Helm sanitizer ConfigMap.
+
+- **`sign-manifest` is now turnkey:** The `dsa-veil-witness:0.5.2` image ships
+  the `sign-manifest` tool at `/usr/local/bin/sign-manifest`. The production
+  key-ceremony step (INSTALL § 4b) now uses
+  `docker run --entrypoint sign-manifest ghcr.io/declade/dsa-veil-witness:0.5.2 …`
+  — no Go toolchain, no build-from-source, no dev-mode fallback. Closes
+  BLOCKER-3.
+
 ### v0.5.1 / chart 1.9.1 (2026-06-14) — L1+L2 over-redaction fix
 
 **Upgrade from v0.5.0:** pull the new images (`LUCAIRN_IMAGE_TAG=0.5.1` in
@@ -442,10 +474,10 @@ whole published set against the kit-bundled public key
 resolver (`docker buildx`, `crane`, or `skopeo`) on PATH:
 
 ```bash
-bin/lucairn verify-images --tag 0.5.1
+bin/lucairn verify-images --tag 0.5.2
 # or, with one release recorded, just:
 bin/lucairn verify-images
-# or a single image, by its signed digest (from keys/image-digests-0.5.1.txt):
+# or a single image, by its signed digest (from keys/image-digests-0.5.2.txt):
 cosign verify --key keys/lucairn-cosign.pub \
   ghcr.io/declade/dsa-gateway@sha256:<digest-from-the-record-file>
 ```
@@ -463,12 +495,12 @@ log (signed by the same Image Signing Key — no extra key or vendor). Fetch +
 verify it, and inspect exactly what is in each image:
 
 ```bash
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.1
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.2
 # save the raw verified SBOM:
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.1 --download dsa-gateway-0.5.1.spdx.json
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.2 --download dsa-gateway-0.5.2.spdx.json
 # or with raw cosign:
 cosign verify-attestation --type spdxjson \
-  --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.1
+  --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.2
 ```
 
 See **OPS.md → "Fetch + verify the Software Bill of Materials (SBOM)"** for the
@@ -556,7 +588,7 @@ renewal.
 1. Unpack the release bundle.
 
 ```bash
-tar -xzf lucairn-enterprise-deployment-kit-1.9.1.tar.gz
+tar -xzf lucairn-enterprise-deployment-kit-1.9.2.tar.gz
 cd lucairn-enterprise-deployment-kit
 ```
 
@@ -674,12 +706,21 @@ protocol versions — is documented in **OPS.md § "witness-signed manifest"** a
 the Veil **Key Ceremony Runbook** (§ "Producing the witness-signed manifest
 blob"). The invocation is:
 
+The `sign-manifest` tool ships **inside the pinned `dsa-veil-witness:0.5.2`
+image** (`/usr/local/bin/sign-manifest`), so the ceremony is turnkey via
+`docker run --entrypoint sign-manifest` on the ceremony host — no Go toolchain,
+no build-from-source, no dev-mode fallback:
+
 ```bash
 # On the ceremony host, with the witness seed available. keys.json is the
 # per-service key roster (service_id / key_id / public_key / purpose /
 # algorithm / key_state — the shape the gateway's buildPublicKeyManifest emits).
-sign-manifest \
-  --keys-json ./keys.json \
+# The default image entrypoint is `veil-witness`, so override it to sign-manifest.
+docker run --rm \
+  --entrypoint sign-manifest \
+  -v "$PWD/keys.json:/keys.json:ro" \
+  ghcr.io/declade/dsa-veil-witness:0.5.2 \
+  --keys-json /keys.json \
   --issuer "$LCR_ISSUER" \
   --witness-signing-key-hex "$LCR_WITNESS_SIGNING_KEY" \
   --witness-key-id witness_manifest_v1 \
@@ -690,24 +731,22 @@ sign-manifest \
 # Helm: the chart mounts gateway.secrets — see OPS.md).
 ```
 
-> **Known limitation (0.5.1): `sign-manifest` is NOT shipped in the pinned
-> image.** The `sign-manifest` binary is a DSA Go tool built only from source —
-> the 0.5.1 `dsa-veil-witness` image builds `cmd/server` only, not
-> `cmd/sign-manifest` — so there is **no `docker run` path to it yet**. Until it
-> ships in a future release, choose one of:
+> **Flags** (run `docker run --rm --entrypoint sign-manifest
+> ghcr.io/declade/dsa-veil-witness:0.5.2 -h` to confirm against your pin):
+> `--keys-json` (required), `--issuer` (required; matches `LCR_ISSUER` / legacy
+> `VEIL_ISSUER` at the gateway), `--witness-signing-key-hex` (required; the
+> Ed25519 witness seed, hex 32 bytes), `--witness-key-id` (default
+> `witness_manifest_v1`), `--version` (default `1`), `--protocol-versions`
+> (default `1,2`), `--signed-at` (RFC3339; empty uses current UTC). The witness
+> seed only ever enters the container as a flag value on the ceremony host —
+> it never leaves that machine. Keep `bin/lucairn doctor`'s `check_manifest_blob`
+> pre-flight (it FAILS a production install whose manifest blob is missing) as
+> the gate that this step ran before first production boot.
 >
-> - **Build it from source on the ceremony host** (the secured, witness-seed-
->   holding machine): clone the DSA repo and
->   `cd services/veil-witness && go build -o sign-manifest ./cmd/sign-manifest`,
->   then run the invocation above. (Go toolchain required; this is a one-time
->   ceremony step, not a per-deploy dependency.)
-> - **Install in dev mode** (`DSA_ENV=development`) if you do not yet need the
->   dual-signed witness-rooted manifest — the gateway falls back to the legacy
->   single-sig path and does NOT require the blob. (Dev mode disables the
->   production fail-closed guards; use it only for a non-production install.)
->
-> This is a known gap; shipping `sign-manifest` in the image is tracked for the
-> next release.
+> **(Was a known limitation through 0.5.1: `sign-manifest` was not shipped in
+> the image and had to be built from source on the ceremony host, or the install
+> run in dev mode. The 0.5.2 `dsa-veil-witness` image ships the tool — the
+> `docker run` path above replaces both workarounds. Closes BLOCKER-3.)**
 
 5. Run offline validation before network checks.
 
@@ -2409,9 +2448,10 @@ included in support bundles.
 
 ### Prerequisite: gateway image >= 0.5.1
 
-This feature ships in the gateway image at `0.5.1` (the current release —
-`appVersion: 0.5.1`, chart `v1.9.1`), which is published to GHCR. The gateway
-binary that reads `GATEWAY_TMS_TRUST_ZONES` is present from `0.5.1` onward.
+This feature first shipped in the gateway image at `0.5.1` (the feature floor);
+the current published release is `0.5.2` (`appVersion: 0.5.2`, chart `v1.9.2`),
+also published to GHCR. The gateway binary that reads `GATEWAY_TMS_TRUST_ZONES`
+is present from `0.5.1` onward, so any `>= 0.5.1` pin (including `0.5.2`) works.
 Setting `GATEWAY_TMS_TRUST_ZONES` on an **older** image (e.g. `0.5.0`) is a
 **silent no-op** — the var is present in the ConfigMap but that older gateway
 does not read it.
@@ -2429,9 +2469,9 @@ the image is new enough:
 tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES is set but LUCAIRN_IMAGE_TAG="latest" is not an exact semver pin; doctor cannot confirm the gateway image is >= 0.5.1. Pin an exact tag (e.g. 0.5.1) or unset the policy.
 ```
 
-Pin `LUCAIRN_IMAGE_TAG=0.5.1` in `customer.env` (Compose) or
-`--set global.imageTag=0.5.1` (Helm) — the current published release — then apply
-the policy.
+Pin `LUCAIRN_IMAGE_TAG=0.5.2` in `customer.env` (Compose) or
+`--set global.imageTag=0.5.2` (Helm) — the current published release (any exact
+`>= 0.5.1` pin satisfies the feature floor) — then apply the policy.
 
 ### Helm
 
