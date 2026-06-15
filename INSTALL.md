@@ -651,6 +651,64 @@ The helper requires Python 3 with the `cryptography` package (preferred)
 or `pynacl`. Both are pure-Python wheels; install with
 `pip install cryptography` if either is missing.
 
+### 4b. Produce the witness-signed manifest (production only)
+
+> **Production-only — skip in dev mode.** This step is required ONLY when you
+> install with `DSA_ENV=production`. A `DSA_ENV=development` install does NOT
+> need the blob: the gateway tolerates its absence and falls back to the legacy
+> single-sig path. `bin/lucairn doctor` enforces this asymmetry — it FAILS a
+> production install whose manifest blob is missing, and SKIPS the check in dev.
+
+When `DSA_ENV=production`, the gateway **`log.Fatal`s at boot** if the
+witness-signed manifest blob is missing or unreadable (dual-sandbox-architecture
+`services/gateway/internal/api/veil.go:182-197`). The blob — a base64-encoded,
+witness-signed copy of the published `/.well-known/veil-keys.json` key roster —
+must exist at `LCR_WITNESS_SIGNED_MANIFEST_PATH` (kit default
+`/certs/witness-signed-manifest.json`) **before first production boot**, or the
+stack boot-loops rather than starts.
+
+The blob is produced at your **key-ceremony host** (the machine holding the
+witness signing seed) with the `sign-manifest` tool. The full ceremony —
+assembling the `keys.json` roster from your derived public keys, issuer, and
+protocol versions — is documented in **OPS.md § "witness-signed manifest"** and
+the Veil **Key Ceremony Runbook** (§ "Producing the witness-signed manifest
+blob"). The invocation is:
+
+```bash
+# On the ceremony host, with the witness seed available. keys.json is the
+# per-service key roster (service_id / key_id / public_key / purpose /
+# algorithm / key_state — the shape the gateway's buildPublicKeyManifest emits).
+sign-manifest \
+  --keys-json ./keys.json \
+  --issuer "$LCR_ISSUER" \
+  --witness-signing-key-hex "$LCR_WITNESS_SIGNING_KEY" \
+  --witness-key-id witness_manifest_v1 \
+  > witness-signed-manifest.json
+
+# Then mount/copy witness-signed-manifest.json to the gateway host at the path
+# in LCR_WITNESS_SIGNED_MANIFEST_PATH (Compose: bind-mount into /certs/;
+# Helm: the chart mounts gateway.secrets — see OPS.md).
+```
+
+> **Known limitation (0.5.1): `sign-manifest` is NOT shipped in the pinned
+> image.** The `sign-manifest` binary is a DSA Go tool built only from source —
+> the 0.5.1 `dsa-veil-witness` image builds `cmd/server` only, not
+> `cmd/sign-manifest` — so there is **no `docker run` path to it yet**. Until it
+> ships in a future release, choose one of:
+>
+> - **Build it from source on the ceremony host** (the secured, witness-seed-
+>   holding machine): clone the DSA repo and
+>   `cd services/veil-witness && go build -o sign-manifest ./cmd/sign-manifest`,
+>   then run the invocation above. (Go toolchain required; this is a one-time
+>   ceremony step, not a per-deploy dependency.)
+> - **Install in dev mode** (`DSA_ENV=development`) if you do not yet need the
+>   dual-signed witness-rooted manifest — the gateway falls back to the legacy
+>   single-sig path and does NOT require the blob. (Dev mode disables the
+>   production fail-closed guards; use it only for a non-production install.)
+>
+> This is a known gap; shipping `sign-manifest` in the image is tracked for the
+> next release.
+
 5. Run offline validation before network checks.
 
 ```bash
