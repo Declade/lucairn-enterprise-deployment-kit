@@ -514,13 +514,16 @@ check_manifest_blob() {
   # local/sandbox install must NOT be blocked here. Mirrors the prod-gating of the
   # ~15 production guards below (each `[ "$dsa_env" = production ] || return 0`).
   #
-  # Path resolution mirrors the gateway + compose default: read the canonical
-  # LCR_WITNESS_SIGNED_MANIFEST_PATH first, then the legacy
-  # VEIL_WITNESS_SIGNED_MANIFEST_PATH, then fall back to the kit compose default
-  # /certs/witness-signed-manifest.json (docker-compose.customer.yml:668 uses the
-  # same `:-/certs/witness-signed-manifest.json` default), so an env file that
-  # simply omits the var is checked against the path the gateway will actually use.
-  local env_file="$1" dsa_env path
+  # CONTAINER-vs-HOST path mapping (Codex r1 BLOCKER): the configured
+  # LCR_WITNESS_SIGNED_MANIFEST_PATH (default /certs/witness-signed-manifest.json)
+  # is the CONTAINER path the gateway reads — NOT a host path. The gateway service
+  # bind-mounts the host dir ${SANDBOX_B_CERT_DIR:-./.certs} -> /certs:ro
+  # (docker-compose.customer.yml:766). The doctor runs on the HOST, so it must
+  # stat the host-side source, not /certs on the host's own filesystem (which
+  # never exists). Mirror the host-source resolution already used by
+  # check_strict_safe_terms_file. Relative bind-mount sources resolve against the
+  # COMPOSE DIRECTORY (where `docker compose` resolves relative volume paths).
+  local env_file="$1" compose_file="${2:-}" dsa_env path
   dsa_env="$(env_value "$env_file" DSA_ENV)"
   [ "$dsa_env" = "production" ] || return 0
 
@@ -528,16 +531,72 @@ check_manifest_blob() {
     LCR_WITNESS_SIGNED_MANIFEST_PATH VEIL_WITNESS_SIGNED_MANIFEST_PATH)"
   [ -n "$path" ] || path="/certs/witness-signed-manifest.json"
 
-  if [ ! -e "$path" ]; then
-    echo "manifest blob: failed — DSA_ENV=production but the witness-signed manifest is missing at $path."
+  # Compose dir = where relative bind-mount sources resolve from. The caller
+  # passes the resolved --compose path; fall back to the kit default at ROOT.
+  local compose_dir
+  compose_file="${compose_file:-${ROOT}/docker-compose.customer.yml}"
+  compose_dir="$(cd "$(dirname "$compose_file")" 2>/dev/null && pwd)" || compose_dir="$ROOT"
+
+  # Resolve the configured CONTAINER path to the HOST path the doctor can stat.
+  #   - under /certs        -> map the /certs prefix to the gateway bind-mount
+  #                            source ${SANDBOX_B_CERT_DIR:-./.certs}, resolved
+  #                            relative to the compose dir.
+  #   - absolute, not /certs -> operator customized to an absolute host path; the
+  #                            gateway sees the same path only if they also mount
+  #                            it there, but it IS already a host path so stat it
+  #                            as-is (best-effort).
+  #   - relative, not /certs -> we cannot reliably map an arbitrary relative
+  #                            container path back to its host bind-mount source;
+  #                            WARN rather than false-fail a non-standard setup.
+  local host_path="" how
+  case "$path" in
+    /certs|/certs/*)
+      local cert_dir cert_dir_abs rel
+      cert_dir="$(env_value "$env_file" SANDBOX_B_CERT_DIR)"
+      cert_dir="${cert_dir:-./.certs}"
+      cert_dir_abs="$cert_dir"
+      case "$cert_dir_abs" in
+        /*) ;;
+        *)  cert_dir_abs="${compose_dir}/${cert_dir_abs#./}" ;;
+      esac
+      rel="${path#/certs}"      # /certs/witness-signed-manifest.json -> /witness-signed-manifest.json ; /certs -> ""
+      rel="${rel#/}"            # strip the leading slash so we can join cleanly
+      host_path="${cert_dir_abs%/}${rel:+/}${rel}"
+      how="container /certs -> host bind-mount source ${cert_dir} (compose dir ${compose_dir})"
+      ;;
+    /*)
+      # Absolute host path (operator override) — stat as-is.
+      host_path="$path"
+      how="absolute host path (operator override)"
+      ;;
+    *)
+      # Relative, non-/certs container path — not mappable to a host source.
+      warn "manifest blob: DSA_ENV=production and LCR_WITNESS_SIGNED_MANIFEST_PATH='$path' is a relative, non-/certs path the doctor cannot map to its host bind-mount source — skipping the host-side existence pre-flight. Confirm the gateway can read a non-empty witness-signed manifest at '$path' inside its container (veil.go:182-197), or use the default /certs/witness-signed-manifest.json so this check can verify it."
+      return 0
+      ;;
+  esac
+
+  if [ ! -e "$host_path" ]; then
+    echo "manifest blob: failed — DSA_ENV=production but the witness-signed manifest is missing on the host at $host_path ($how)."
+    echo "manifest blob:   the gateway reads it at the container path $path; with the bind-mount above, the host source must exist at $host_path."
     echo "manifest blob:   the production gateway log.Fatal's at boot without it (veil.go:182-197) — the stack will boot-loop, not start."
-    echo "manifest blob:   produce it on your ceremony host with the witness seed — see OPS.md § 'witness-signed manifest' and INSTALL.md § 'Produce the witness-signed manifest (production)' — then mount it at $path."
+    echo "manifest blob:   produce it on your ceremony host with the witness seed — see OPS.md § 'witness-signed manifest' and INSTALL.md § 'Produce the witness-signed manifest (production)' — then place it at $host_path (it bind-mounts to $path)."
     echo "manifest blob:   note: the sign-manifest tool is NOT yet shipped in the pinned image (0.5.1); build it from the DSA source services/veil-witness/cmd/sign-manifest, OR run a DSA_ENV=development install (legacy single-sig fallback) which does not require the blob."
     return 1
   fi
-  if [ ! -s "$path" ]; then
-    echo "manifest blob: failed — DSA_ENV=production but the witness-signed manifest at $path is empty (0 bytes)."
-    echo "manifest blob:   the gateway treats a malformed/empty blob as a HARD fatal at boot (veil.go:182-197), even in dev. Re-run the ceremony — see OPS.md § 'witness-signed manifest'."
+  if [ ! -f "$host_path" ]; then
+    echo "manifest blob: failed — DSA_ENV=production but $host_path is not a regular file ($how)."
+    echo "manifest blob:   the gateway reads the witness-signed manifest as a regular file at the container path $path (veil.go:182-197); a directory (or other non-file) at the host source will be bind-mounted as $path and fail at boot. Place the signed-manifest JSON file there, not a directory."
+    return 1
+  fi
+  if [ ! -r "$host_path" ]; then
+    echo "manifest blob: failed — DSA_ENV=production but $host_path is not readable ($how)."
+    echo "manifest blob:   the gateway must be able to read the witness-signed manifest at boot (veil.go:182-197). Fix the file permissions so the host source (bind-mounted read-only to $path) is readable."
+    return 1
+  fi
+  if [ ! -s "$host_path" ]; then
+    echo "manifest blob: failed — DSA_ENV=production but the witness-signed manifest at $host_path is empty (0 bytes) ($how)."
+    echo "manifest blob:   the gateway treats a malformed/empty blob as a HARD fatal at boot (veil.go:182-197). Re-run the ceremony — see OPS.md § 'witness-signed manifest'."
     return 1
   fi
   return 0
@@ -4428,7 +4487,7 @@ doctor() {
   # the operator gets an actionable doctor failure (with the ceremony pointer)
   # instead of a boot-loop. Production-gated; skips dev/test cleanly.
   local manifest_blob_failed=0
-  check_manifest_blob "$env_file" || manifest_blob_failed=1
+  check_manifest_blob "$env_file" "$compose_file" || manifest_blob_failed=1
   [ "$manifest_blob_failed" -eq 0 ] || return 1
 
   # Sim 3 G6: reject known dual-sandbox dev-default literals in prod.
