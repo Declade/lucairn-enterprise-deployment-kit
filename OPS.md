@@ -1220,18 +1220,18 @@ cosign version   # must report v2.x
 # each image BY DIGEST and requires a Rekor transparency-log entry. Prints
 # PASS/FAIL per image; exits non-zero if ANY image fails.
 # With one release recorded, no flag is needed — the tag is read from the
-# committed keys/image-digests-*.txt (currently 0.5.0):
+# committed keys/image-digests-*.txt (currently 0.5.1):
 bin/lucairn verify-images
 
 # Or pin the release explicitly:
-bin/lucairn verify-images --tag 0.5.0
+bin/lucairn verify-images --tag 0.5.1
 
 # Air-gapped mirror that re-hosts the SAME signed bytes:
-bin/lucairn verify-images --tag 0.5.0 --registry registry.internal/lucairn
+bin/lucairn verify-images --tag 0.5.1 --registry registry.internal/lucairn
 ```
 
 **Verify a single image with raw cosign (by digest).** Read the signed digest
-from `keys/image-digests-0.5.0.txt`, then:
+from `keys/image-digests-0.5.1.txt`, then:
 
 ```bash
 cosign verify --key keys/lucairn-cosign.pub \
@@ -1373,14 +1373,14 @@ richest summary.
 # Verifies the SPDX SBOM attestation against keys/lucairn-cosign.pub, requires a
 # Rekor transparency-log entry, then summarizes it (package count, SPDX version,
 # document name). Exits non-zero if the attestation is missing/invalid.
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.0
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.1
 
 # Also save the raw verified SPDX-JSON SBOM to a file:
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.0 \
-  --download dsa-gateway-0.5.0.spdx.json
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.1 \
+  --download dsa-gateway-0.5.1.spdx.json
 
 # Air-gapped mirror that re-hosts the SAME signed bytes:
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.0 \
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.1 \
   --registry registry.internal/lucairn
 ```
 
@@ -1390,13 +1390,13 @@ bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.0 \
 # Verify the SPDX attestation (prints the signed DSSE envelope + Rekor entry):
 cosign verify-attestation --type spdxjson \
   --key keys/lucairn-cosign.pub \
-  ghcr.io/declade/dsa-gateway:0.5.0
+  ghcr.io/declade/dsa-gateway:0.5.1
 
 # Extract just the SPDX-JSON SBOM predicate (the package list):
 cosign verify-attestation --type spdxjson \
   --key keys/lucairn-cosign.pub \
-  ghcr.io/declade/dsa-gateway:0.5.0 \
-  | jq -r '.payload' | base64 -d | jq '.predicate' > dsa-gateway-0.5.0.spdx.json
+  ghcr.io/declade/dsa-gateway:0.5.1 \
+  | jq -r '.payload' | base64 -d | jq '.predicate' > dsa-gateway-0.5.1.spdx.json
 ```
 
 A successful verification exits 0 and reports a Rekor transparency-log entry; a

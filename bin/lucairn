@@ -496,6 +496,53 @@ check_dsa_env_valid() {
   esac
 }
 
+check_manifest_blob() {
+  # BLOCKER-3 (overnight follow-up 2026-06-15) — the SAFE containment.
+  # When DSA_ENV=production the gateway log.Fatal's at boot if the witness-signed
+  # manifest blob is unset, missing, or unreadable (dual-sandbox-architecture
+  # services/gateway/internal/api/veil.go:182-197): an UNSET path errors
+  # "VEIL_WITNESS_SIGNED_MANIFEST_PATH is required in production"; a SET-but-
+  # MISSING path is fatal because cfg.IsProduction overrides the dev
+  # os.ErrNotExist tolerance. The blob is produced by the `sign-manifest` DSA Go
+  # binary at the key ceremony — that tool is NOT shipped in the pinned image
+  # (0.5.1), so a fresh production install can boot-loop the gateway with a
+  # cryptic fatal unless the operator ran the ceremony first. This pre-flight
+  # turns that boot-time fatal into a loud, actionable doctor failure.
+  #
+  # Production-gated ONLY (skip dev/test): in DSA_ENV=development/test the gateway
+  # tolerates a missing blob and falls back to the legacy single-sig path, so a
+  # local/sandbox install must NOT be blocked here. Mirrors the prod-gating of the
+  # ~15 production guards below (each `[ "$dsa_env" = production ] || return 0`).
+  #
+  # Path resolution mirrors the gateway + compose default: read the canonical
+  # LCR_WITNESS_SIGNED_MANIFEST_PATH first, then the legacy
+  # VEIL_WITNESS_SIGNED_MANIFEST_PATH, then fall back to the kit compose default
+  # /certs/witness-signed-manifest.json (docker-compose.customer.yml:668 uses the
+  # same `:-/certs/witness-signed-manifest.json` default), so an env file that
+  # simply omits the var is checked against the path the gateway will actually use.
+  local env_file="$1" dsa_env path
+  dsa_env="$(env_value "$env_file" DSA_ENV)"
+  [ "$dsa_env" = "production" ] || return 0
+
+  path="$(env_value_with_legacy "$env_file" \
+    LCR_WITNESS_SIGNED_MANIFEST_PATH VEIL_WITNESS_SIGNED_MANIFEST_PATH)"
+  [ -n "$path" ] || path="/certs/witness-signed-manifest.json"
+
+  if [ ! -e "$path" ]; then
+    echo "manifest blob: failed — DSA_ENV=production but the witness-signed manifest is missing at $path."
+    echo "manifest blob:   the production gateway log.Fatal's at boot without it (veil.go:182-197) — the stack will boot-loop, not start."
+    echo "manifest blob:   produce it on your ceremony host with the witness seed — see OPS.md § 'witness-signed manifest' and INSTALL.md § 'Produce the witness-signed manifest (production)' — then mount it at $path."
+    echo "manifest blob:   note: the sign-manifest tool is NOT yet shipped in the pinned image (0.5.1); build it from the DSA source services/veil-witness/cmd/sign-manifest, OR run a DSA_ENV=development install (legacy single-sig fallback) which does not require the blob."
+    return 1
+  fi
+  if [ ! -s "$path" ]; then
+    echo "manifest blob: failed — DSA_ENV=production but the witness-signed manifest at $path is empty (0 bytes)."
+    echo "manifest blob:   the gateway treats a malformed/empty blob as a HARD fatal at boot (veil.go:182-197), even in dev. Re-run the ceremony — see OPS.md § 'witness-signed manifest'."
+    return 1
+  fi
+  return 0
+}
+
 check_l3_required_wired() {
   # HIGH-1 (overnight fix 2026-06-14): the L3 deep PII shield is the GPU
   # Ollama/Qwen service (`ollama-identity`), Enterprise-only and NOT started by
@@ -4375,6 +4422,14 @@ doctor() {
   local dsa_env_failed=0
   check_dsa_env_valid "$env_file" || dsa_env_failed=1
   [ "$dsa_env_failed" -eq 0 ] || return 1
+
+  # BLOCKER-3 (overnight follow-up 2026-06-15): production gateways log.Fatal at
+  # boot if the witness-signed manifest blob is missing/empty. Pre-flight it so
+  # the operator gets an actionable doctor failure (with the ceremony pointer)
+  # instead of a boot-loop. Production-gated; skips dev/test cleanly.
+  local manifest_blob_failed=0
+  check_manifest_blob "$env_file" || manifest_blob_failed=1
+  [ "$manifest_blob_failed" -eq 0 ] || return 1
 
   # Sim 3 G6: reject known dual-sandbox dev-default literals in prod.
   local dev_default_failed=0

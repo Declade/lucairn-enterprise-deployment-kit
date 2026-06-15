@@ -54,6 +54,13 @@ openssl req -x509 -newkey ed25519 -nodes -days 365 \
   -keyout "$TMPDIR/sb-client.key" -out "$TMPDIR/sb-client.crt" >/dev/null 2>&1
 cp "$TMPDIR/sb-client.crt" "$TMPDIR/sb-ca.crt"
 
+# Witness-signed manifest blob for the production check_manifest_blob pre-flight
+# (overnight follow-up 2026-06-15). DSA_ENV=production now FAILS doctor without
+# it; a coherent prod fixture must carry one. The content is only stat'd by the
+# doctor (existence + non-empty), so a placeholder blob suffices here.
+printf '{"canonical_body_b64":"e30=","witness_signature_hex":"00"}\n' \
+  > "$TMPDIR/witness-signed-manifest.json"
+
 ENV_FILE="$TMPDIR/customer.env"
 cat > "$ENV_FILE" <<ENV
 LUCAIRN_IMAGE_REGISTRY=ghcr.io/declade
@@ -82,6 +89,7 @@ LCR_SANITIZER_SIGNING_KEY=$SEED_SAN
 LCR_WITNESS_SIGNING_KEY=$SEED_WIT
 LCR_GATEWAY_SIGNING_KEY=$SEED_GW
 LCR_MANIFEST_SIGNING_KEY=$(gen_seed)
+LCR_WITNESS_SIGNED_MANIFEST_PATH=$TMPDIR/witness-signed-manifest.json
 LCR_WITNESS_PUBLIC_KEY=$PUB_WIT
 LCR_BRIDGE_PUBLIC_KEY=$PUB_BRIDGE
 LCR_SANITIZER_PUBLIC_KEY=$PUB_SAN
