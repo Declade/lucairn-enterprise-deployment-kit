@@ -44,6 +44,15 @@
 
 set -euo pipefail
 
+KIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+readonly KIT_ROOT
+# Kit-local state file recording the customer_id of the LAST successful mint.
+# `bin/lucairn license issue` reads this to auto-fill --customer-id (A9). It is
+# single-customer / last-write-wins: a fresh mint overwrites it. That is fine
+# for the single-customer self-hosted install path (one gateway, one customer);
+# for multi-customer operator use, pass --customer-id explicitly to license issue.
+readonly CUSTOMER_ID_STATE_FILE="${KIT_ROOT}/.lucairn-customer-id"
+
 readonly DEFAULT_GATEWAY_URL="http://localhost:8080"
 readonly DEFAULT_TIER="enterprise"
 # Enterprise sensible defaults — picked to match the audit-shipped enterprise
@@ -372,6 +381,22 @@ if [ -z "${RAW_KEY}" ]; then
   cat "${RESP_BODY}" >&2
   exit 4
 fi
+
+# Persist the minted customer_id to the kit-local state file (mode 0600) so
+# `bin/lucairn license issue` can auto-fill --customer-id (A9). Write atomically
+# (temp + mv in the same dir) and chmod 0600. Failure to persist is non-fatal —
+# the mint itself succeeded; the operator can still pass --customer-id manually.
+# Single-customer / last-write-wins (see CUSTOMER_ID_STATE_FILE note at top).
+{
+  state_tmp="$(mktemp "${KIT_ROOT}/.lucairn-customer-id.XXXXXX" 2>/dev/null)" && {
+    chmod 0600 "${state_tmp}" 2>/dev/null || true
+    printf '%s\n' "${CUSTOMER_ID}" > "${state_tmp}" \
+      && mv "${state_tmp}" "${CUSTOMER_ID_STATE_FILE}" \
+      && chmod 0600 "${CUSTOMER_ID_STATE_FILE}" 2>/dev/null \
+      && echo "persisted customer_id -> ${CUSTOMER_ID_STATE_FILE} (mode 0600; license issue auto-fills --customer-id from this)" >&2 \
+      || { rm -f "${state_tmp}" 2>/dev/null || true; echo "warn: could not persist customer_id to ${CUSTOMER_ID_STATE_FILE} (pass --customer-id to 'lucairn license issue' manually)" >&2; }
+  }
+} || echo "warn: could not persist customer_id to ${CUSTOMER_ID_STATE_FILE} (pass --customer-id to 'lucairn license issue' manually)" >&2
 
 if [ "${VERBOSE}" = "true" ]; then
   echo "# HTTP ${HTTP_STATUS}" >&2

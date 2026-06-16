@@ -47,7 +47,10 @@ docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 **Self-hosted with BYOK to a managed cloud LLM** (recommended for first install — no local GPU required, customer keeps their existing Anthropic/OpenAI/etc. account):
 
 ```bash
-# license-bundle.json contains {"license_key":"…","signing_key":"…"} from Lucairn sales
+# license-bundle.json from Lucairn sales. Required: license_key + signing_key
+# (HMAC platform license). Optional: entitlement_token + entitlement_public_key
+# (Ed25519 deployment entitlement) → LUCAIRN_LICENSE_KEY + LUCAIRN_LICENSE_PUBLIC_KEY.
+# {"license_key":"…","signing_key":"…","entitlement_token":"…","entitlement_public_key":"…"}
 bin/lucairn-init --production --license license-bundle.json --byok --output customer.env
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
 # Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)

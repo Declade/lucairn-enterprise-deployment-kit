@@ -1,5 +1,10 @@
 customer.env
 *.env
+# Kit-local customer_id state written by bin/lucairn-mint-customer (mode 0600);
+# consumed by `bin/lucairn license issue` to auto-fill --customer-id. Customer-
+# specific runtime state — never commit. (Also covered by the .* temp form.)
+.lucairn-customer-id
+.lucairn-customer-id.*
 support-bundles/
 dist/
 customer-staging/

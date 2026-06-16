@@ -311,6 +311,27 @@ require_env_values() {
     missing=1
   fi
 
+  # Deployment entitlement pair (Ed25519, A9): LUCAIRN_LICENSE_KEY (signed token)
+  # + LUCAIRN_LICENSE_PUBLIC_KEY (verification public key). Both empty = OK
+  # (unregistered/INERT — the gateway's anti-tamper only activates on a pin-baked
+  # image; core PII pipeline runs regardless). Both set = OK (entitlement
+  # configured). Exactly one set = WARN (mismatched config — the gateway can't
+  # verify a token with no public key, or a public key with no token does
+  # nothing). This is a WARN, never a hard failure: an empty entitlement is a
+  # valid posture, and the gateway degrades gracefully, so doctor must not block
+  # the install over it. (Mirrors the DSA_LICENSE_* pair logic above, but warn-
+  # only by design.)
+  local ent_key ent_pub
+  ent_key="$(env_value "$env_file" LUCAIRN_LICENSE_KEY)"
+  ent_pub="$(env_value "$env_file" LUCAIRN_LICENSE_PUBLIC_KEY)"
+  if [ -n "$ent_key" ] && [ -n "$ent_pub" ]; then
+    echo "entitlement: LUCAIRN_LICENSE_KEY + LUCAIRN_LICENSE_PUBLIC_KEY set (deployment entitlement configured)"
+  elif [ -z "$ent_key" ] && [ -z "$ent_pub" ]; then
+    echo "entitlement: empty LUCAIRN_LICENSE_KEY / LUCAIRN_LICENSE_PUBLIC_KEY -> unregistered (Enterprise features locked in production; core pipeline runs)"
+  else
+    warn "entitlement: LUCAIRN_LICENSE_KEY and LUCAIRN_LICENSE_PUBLIC_KEY should be both set or both empty (one is set, the other is not — the gateway cannot verify the entitlement). Re-run bin/lucairn-init --production with a complete --license bundle (entitlement_token + entitlement_public_key)."
+  fi
+
   [ "$missing" -eq 0 ]
 }
 
@@ -5818,6 +5839,11 @@ Notes:
   - Customers receive the signed token + the public key only.
   - Set LUCAIRN_LICENSE_SIGN_BIN, put `license-sign` on PATH, or set DSA_REPO
     to the dual-sandbox-architecture clone so this wrapper can run the signer.
+  - --customer-id auto-fill: if you run `bin/lucairn-mint-customer` first, the
+    minted customer_id is persisted to .lucairn-customer-id and `license issue`
+    auto-fills --customer-id from it when you do not pass one explicitly. An
+    explicit --customer-id always wins. The id MUST match the customer's gateway
+    keystore customer_id or the gateway returns 403 entitlement_mismatch.
 USAGE
 }
 
@@ -5841,15 +5867,55 @@ license_sign_runner() {
   fail "license-sign tool not found. Set LUCAIRN_LICENSE_SIGN_BIN to a prebuilt binary, put 'license-sign' on PATH, or set DSA_REPO to the dual-sandbox-architecture clone."
 }
 
+# customer_id_state_file echoes the path to the kit-local customer_id state file
+# written by bin/lucairn-mint-customer. Kept as a function so the path is defined
+# in exactly one place and resolves relative to the kit ROOT.
+customer_id_state_file() {
+  printf '%s' "${ROOT}/.lucairn-customer-id"
+}
+
+# args_have_customer_id returns 0 if --customer-id (or --customer-id=...) is
+# already present in the passed args, 1 otherwise. An explicitly-passed
+# --customer-id ALWAYS wins; we never override it.
+args_have_customer_id() {
+  local a
+  for a in "$@"; do
+    case "$a" in
+      --customer-id|--customer-id=*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 license_command() {
   local subcmd="${1:-}"
   case "$subcmd" in
-    issue|verify|gen-key)
+    issue)
       shift
-      # NOTE: --customer-id MUST match the customer's keystore customer_id (the
-      # value shown by 'lucairn-mint-customer'). A mismatch causes the gateway to
-      # return 403 entitlement_mismatch. Auto-fill from the synced record is a
-      # planned enhancement.
+      # A9 auto-fill: --customer-id MUST match the customer's keystore
+      # customer_id (the value shown by 'lucairn-mint-customer'); a mismatch
+      # causes the gateway to return 403 entitlement_mismatch. If the caller did
+      # NOT pass --customer-id explicitly, fill it from the kit-local state file
+      # that lucairn-mint-customer persisted on the last successful mint.
+      # Explicit --customer-id always wins (never overridden). If neither is
+      # available, fail with an actionable pointer instead of shelling out to a
+      # signer that would reject the call.
+      local state_file cid
+      state_file="$(customer_id_state_file)"
+      if args_have_customer_id "$@"; then
+        # Explicit flag present — pass everything through unchanged.
+        # shellcheck disable=SC2046  # word-split runner prefix intentionally
+        exec $(license_sign_runner) issue "$@"
+      elif [ -s "$state_file" ] && cid="$(head -n1 "$state_file" | tr -d '\r\n')" && [ -n "$cid" ]; then
+        warn "license issue: auto-filling --customer-id $cid from $state_file (run with an explicit --customer-id to override)"
+        # shellcheck disable=SC2046  # word-split runner prefix intentionally
+        exec $(license_sign_runner) issue --customer-id "$cid" "$@"
+      else
+        fail "license issue: no --customer-id given and no persisted customer_id at $state_file. Run 'bin/lucairn-mint-customer --name \"<Customer>\"' first (it records the customer_id), or pass --customer-id <id> explicitly. The id MUST match the customer's gateway keystore customer_id or the gateway returns 403 entitlement_mismatch."
+      fi
+      ;;
+    verify|gen-key)
+      shift
       # shellcheck disable=SC2046  # word-split runner prefix intentionally
       exec $(license_sign_runner) "$subcmd" "$@"
       ;;

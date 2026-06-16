@@ -3,43 +3,34 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
+# Also remove the kit-local customer_id state file the A9 auto-fill sub-tests
+# write into $ROOT (it is gitignored, but clean it up on every exit path so a
+# mid-run abort never leaves it behind).
+trap 'rm -rf "$TMPDIR"; rm -f "$ROOT/.lucairn-customer-id"' EXIT
 
+# Generate the base customer.env with bin/lucairn-init (real, coherent Ed25519
+# keypairs + non-sentinel secrets) instead of a hand-frozen heredoc. The frozen
+# heredoc bit-rotted against later doctor checks (the repeating-character
+# "sentinel" reject added 2026-05-15 + the production manifest-blob gate added
+# 2026-06-15), since CI only `bash -n`'s this file and never executed it. Using
+# --dev keeps doctor green (no production manifest gate) and additionally
+# exercises the lucairn-init code path A9 modifies.
+# Use the kit's default image tag (image-manifest.yaml default_lucairn_image_tag,
+# within the sanitizer_config_compat range) so the sanitizer-drift check passes.
 ENV_FILE="$TMPDIR/customer.env"
-cat > "$ENV_FILE" <<'ENV'
-LUCAIRN_IMAGE_REGISTRY=ghcr.io/declade
-LUCAIRN_IMAGE_TAG=1.0.0
-DSA_ENV=production
-DSA_LICENSE_KEY=lcr_enterprise_test_secret
-DSA_LICENSE_SIGNING_KEY=test-license-signing-secret
-SANDBOX_B_REMOTE_ENDPOINT=https://inference.customer.example
-SANDBOX_B_API_KEY=sk-test-sandbox-b-secret
-DSA_SERVICE_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-DSA_BRIDGE_ENCRYPTION_KEY=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-SANDBOX_A_ENCRYPTION_KEY=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-BRIDGE_MASTER_KEY=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-DSA_ADMIN_KEY=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
-GATEWAY_KEYSTORE_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-GATEWAY_BASE_URL=https://lucairn.customer.example
-LCR_AUDIT_SIGNING_KEY=1111111111111111111111111111111111111111111111111111111111111111
-LCR_BRIDGE_SIGNING_KEY=2222222222222222222222222222222222222222222222222222222222222222
-LCR_SANITIZER_SIGNING_KEY=3333333333333333333333333333333333333333333333333333333333333333
-LCR_WITNESS_SIGNING_KEY=4444444444444444444444444444444444444444444444444444444444444444
-LCR_GATEWAY_SIGNING_KEY=5555555555555555555555555555555555555555555555555555555555555555
-LCR_MANIFEST_SIGNING_KEY=6666666666666666666666666666666666666666666666666666666666666666
-LCR_WITNESS_PUBLIC_KEY=7777777777777777777777777777777777777777777777777777777777777777
-LCR_BRIDGE_PUBLIC_KEY=8888888888888888888888888888888888888888888888888888888888888888
-LCR_SANITIZER_PUBLIC_KEY=9999999999999999999999999999999999999999999999999999999999999999
-LCR_AUDIT_PUBLIC_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-LCR_SANDBOX_B_PUBLIC_KEY=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-POSTGRES_AUDIT_PASSWORD=postgres-audit-secret
-POSTGRES_BRIDGE_PASSWORD=postgres-bridge-secret
-POSTGRES_SANDBOX_A_PASSWORD=postgres-sandbox-a-secret
-POSTGRES_VEIL_PASSWORD=postgres-veil-secret
-BUILD_AUTH_TOKEN=build-token-secret
-CUSTOMER_KEY_ID=customer-key-id-secret
-PORTAL_API_KEY=portal-api-key-secret
-ENV
+"$ROOT/bin/lucairn-init" --dev --output "$ENV_FILE" --skip-doctor >/dev/null 2>&1
+KIT_IMAGE_TAG="$(grep -E '^LUCAIRN_IMAGE_TAG=' "$ENV_FILE" | tail -1 | sed 's/^[^=]*=//')"
+
+# The support-bundle redaction asserts below need DSA_LICENSE_KEY +
+# SANDBOX_B_API_KEY present in the env file. --dev leaves DSA_LICENSE_KEY empty
+# and SANDBOX_B_API_KEY blank, so set dummy values for the redaction coverage.
+# (DSA_LICENSE_KEY here is a redaction-test sentinel, not a real license — the
+# gateway never sees this file.)
+{
+  printf 'DSA_LICENSE_KEY=lcr_enterprise_test_secret\n'
+  printf 'DSA_LICENSE_SIGNING_KEY=test-license-signing-secret\n'
+  printf 'SANDBOX_B_API_KEY=sk-test-sandbox-b-secret\n'
+} >> "$ENV_FILE"
 
 "$ROOT/bin/lucairn" doctor \
   --env "$ENV_FILE" \
@@ -49,6 +40,11 @@ ENV
 grep -q "doctor: ok" "$TMPDIR/doctor.out"
 grep -q "required secrets: ok" "$TMPDIR/doctor.out"
 grep -q "compose file: ok" "$TMPDIR/doctor.out"
+
+# A9: with no LUCAIRN_LICENSE_* set, doctor reports the entitlement as
+# unregistered (a WARN-class informational line) and still PASSES — an empty
+# deployment entitlement is a valid posture (core pipeline runs).
+grep -q "entitlement: empty LUCAIRN_LICENSE_KEY" "$TMPDIR/doctor.out"
 
 "$ROOT/bin/lucairn" support-bundle \
   --env "$ENV_FILE" \
@@ -72,6 +68,115 @@ if grep -R "lcr_enterprise_test_secret\\|sk-test-sandbox-b-secret\\|postgres-aud
 fi
 
 echo "lucairn cli tests: ok"
+
+# --- A9: deployment-entitlement doctor coverage ------------------------------
+
+# Both entitlement vars set -> doctor reports "configured" and still passes.
+ENV_ENT="$TMPDIR/customer-entitlement.env"
+cp "$ENV_FILE" "$ENV_ENT"
+{
+  printf 'LUCAIRN_LICENSE_KEY=ent_token_dummy\n'
+  printf 'LUCAIRN_LICENSE_PUBLIC_KEY=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n'
+  printf 'LUCAIRN_LICENSE_GRACE_DAYS=14\n'
+} >> "$ENV_ENT"
+"$ROOT/bin/lucairn" doctor \
+  --env "$ENV_ENT" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --offline > "$TMPDIR/doctor-ent.out"
+grep -q "doctor: ok" "$TMPDIR/doctor-ent.out"
+grep -q "entitlement: LUCAIRN_LICENSE_KEY + LUCAIRN_LICENSE_PUBLIC_KEY set" "$TMPDIR/doctor-ent.out"
+
+# Exactly one entitlement var set -> doctor WARNs (to stderr) but does NOT fail
+# (an incomplete entitlement is a config smell, not an install blocker).
+ENV_ENT_HALF="$TMPDIR/customer-entitlement-half.env"
+cp "$ENV_FILE" "$ENV_ENT_HALF"
+printf 'LUCAIRN_LICENSE_KEY=ent_token_dummy_only\n' >> "$ENV_ENT_HALF"
+"$ROOT/bin/lucairn" doctor \
+  --env "$ENV_ENT_HALF" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --offline > "$TMPDIR/doctor-ent-half.out" 2> "$TMPDIR/doctor-ent-half.err"
+grep -q "doctor: ok" "$TMPDIR/doctor-ent-half.out"
+grep -q "warn: entitlement:" "$TMPDIR/doctor-ent-half.err"
+
+echo "lucairn entitlement doctor tests: ok"
+
+# --- A9: lucairn-init writes the entitlement vars from the bundle ------------
+
+# Production bundle carrying the entitlement fields -> customer.env gets them.
+INIT_BUNDLE="$TMPDIR/a9-bundle.json"
+printf '{"license_key":"lic_x","signing_key":"sk_x","entitlement_token":"tok_dummy","entitlement_public_key":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"}' > "$INIT_BUNDLE"
+INIT_OUT="$TMPDIR/a9-customer.env"
+"$ROOT/bin/lucairn-init" --production --license "$INIT_BUNDLE" --output "$INIT_OUT" --skip-doctor >/dev/null 2>&1
+grep -q '^LUCAIRN_LICENSE_KEY=tok_dummy$' "$INIT_OUT"
+grep -q '^LUCAIRN_LICENSE_PUBLIC_KEY=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff$' "$INIT_OUT"
+grep -q '^DSA_LICENSE_KEY=lic_x$' "$INIT_OUT"
+
+# Backward-compat: a bundle WITHOUT entitlement fields still parses; the
+# entitlement vars are written empty (unregistered/INERT).
+INIT_BUNDLE_NOENT="$TMPDIR/a9-bundle-noent.json"
+printf '{"license_key":"lic_y","signing_key":"sk_y"}' > "$INIT_BUNDLE_NOENT"
+INIT_OUT_NOENT="$TMPDIR/a9-customer-noent.env"
+"$ROOT/bin/lucairn-init" --production --license "$INIT_BUNDLE_NOENT" --output "$INIT_OUT_NOENT" --skip-doctor >/dev/null 2>&1
+grep -q '^LUCAIRN_LICENSE_KEY=$' "$INIT_OUT_NOENT"
+grep -q '^LUCAIRN_LICENSE_PUBLIC_KEY=$' "$INIT_OUT_NOENT"
+
+# --dev: entitlement vars present but empty (grace defaults to 14).
+INIT_OUT_DEV="$TMPDIR/a9-customer-dev.env"
+"$ROOT/bin/lucairn-init" --dev --output "$INIT_OUT_DEV" --skip-doctor >/dev/null 2>&1
+grep -q '^LUCAIRN_LICENSE_KEY=$' "$INIT_OUT_DEV"
+grep -q '^LUCAIRN_LICENSE_PUBLIC_KEY=$' "$INIT_OUT_DEV"
+grep -q '^LUCAIRN_LICENSE_GRACE_DAYS=14$' "$INIT_OUT_DEV"
+
+echo "lucairn-init entitlement wiring tests: ok"
+
+# --- A9: customer_id persistence + license-issue auto-fill -------------------
+
+# Stub the license-sign runner with a script that echoes its args so we can
+# observe what --customer-id the wrapper injected.
+STUB_BIN="$TMPDIR/stub-license-sign"
+cat > "$STUB_BIN" <<'STUB'
+#!/usr/bin/env bash
+printf 'STUBARGS:'
+for a in "$@"; do printf ' %s' "$a"; done
+printf '\n'
+STUB
+chmod +x "$STUB_BIN"
+
+# No persisted customer_id and no explicit flag -> license issue must fail with
+# the actionable pointer (it must NOT silently shell out without a customer_id).
+rm -f "$ROOT/.lucairn-customer-id"
+set +e
+LUCAIRN_LICENSE_SIGN_BIN="$STUB_BIN" "$ROOT/bin/lucairn" license issue \
+  --license-id lic_x --customer-name "Bhatia" --valid-until 2027-01-01 \
+  --signing-key-hex deadbeef > "$TMPDIR/issue-noid.out" 2>&1
+ISSUE_NOID_STATUS=$?
+set -e
+if [ "$ISSUE_NOID_STATUS" -eq 0 ]; then
+  echo "license issue with no customer_id should fail" >&2
+  exit 1
+fi
+grep -q "no persisted customer_id" "$TMPDIR/issue-noid.out"
+
+# Persist a customer_id (simulate a successful mint) and confirm auto-fill.
+printf 'bhatia_test\n' > "$ROOT/.lucairn-customer-id"
+chmod 0600 "$ROOT/.lucairn-customer-id"
+LUCAIRN_LICENSE_SIGN_BIN="$STUB_BIN" "$ROOT/bin/lucairn" license issue \
+  --license-id lic_x --customer-name "Bhatia" --valid-until 2027-01-01 \
+  --signing-key-hex deadbeef > "$TMPDIR/issue-autofill.out" 2>&1
+grep -q "STUBARGS: issue --customer-id bhatia_test --license-id lic_x" "$TMPDIR/issue-autofill.out"
+
+# Explicit --customer-id wins over the persisted value (never overridden).
+LUCAIRN_LICENSE_SIGN_BIN="$STUB_BIN" "$ROOT/bin/lucairn" license issue \
+  --customer-id explicit_override --license-id lic_x --customer-name "Bhatia" \
+  --valid-until 2027-01-01 --signing-key-hex deadbeef > "$TMPDIR/issue-explicit.out" 2>&1
+grep -q "STUBARGS: issue --customer-id explicit_override --license-id lic_x" "$TMPDIR/issue-explicit.out"
+if grep -q "bhatia_test" "$TMPDIR/issue-explicit.out"; then
+  echo "explicit --customer-id must not be overridden by the persisted value" >&2
+  exit 1
+fi
+
+rm -f "$ROOT/.lucairn-customer-id"
+echo "lucairn license auto-fill tests: ok"
 
 FAKEBIN="$TMPDIR/fakebin"
 mkdir -p "$FAKEBIN"
@@ -104,7 +209,7 @@ if [ "$IMAGE_CHECK_STATUS" -eq 0 ]; then
 fi
 
 grep -q "container images: failed" "$TMPDIR/image-check.out"
-grep -q "dsa-gateway:1.0.0" "$TMPDIR/image-check.out"
+grep -q "dsa-gateway:${KIT_IMAGE_TAG}" "$TMPDIR/image-check.out"
 
 echo "lucairn image-check test: ok"
 
