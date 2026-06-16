@@ -44,7 +44,7 @@ set -euo pipefail
 
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly KIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-readonly DEFAULT_IMAGE_TAG="0.5.2"
+readonly DEFAULT_IMAGE_TAG="0.5.3"
 readonly DEFAULT_OUTPUT="${KIT_ROOT}/customer.env"
 
 # Temp files that hold plaintext keypair material during derivation. The
@@ -94,7 +94,7 @@ Options:
   --byok-allowlist <list>  Override the BYOK FQDN allowlist (comma-separated, no scheme).
                            Implies --byok.
   --output <path>          Where to write the file (default: ./customer.env).
-  --image-tag <tag>        LUCAIRN_IMAGE_TAG value (default: 0.5.2). Must match
+  --image-tag <tag>        LUCAIRN_IMAGE_TAG value (default: 0.5.3). Must match
                            image-manifest.yaml default_lucairn_image_tag; doctor
                            warns when they diverge.
   --gateway-base-url <url> Override GATEWAY_BASE_URL (default: dev=http://localhost:8080,

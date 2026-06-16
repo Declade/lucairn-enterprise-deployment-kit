@@ -1214,16 +1214,16 @@ cosign version   # must report v2.x
 # each image BY DIGEST and requires a Rekor transparency-log entry. Prints
 # PASS/FAIL per image; exits non-zero if ANY image fails.
 # The kit retains prior-release digest records (keys/image-digests-0.5.0.txt,
-# -0.5.1.txt, -0.5.2.txt). With MORE THAN ONE record present, verify-images
-# requires an explicit --tag — pin the current release (0.5.2):
-bin/lucairn verify-images --tag 0.5.2
+# -0.5.1.txt, -0.5.2.txt, -0.5.3.txt). With MORE THAN ONE record present, verify-images
+# requires an explicit --tag — pin the current release (0.5.3):
+bin/lucairn verify-images --tag 0.5.3
 
 # Air-gapped mirror that re-hosts the SAME signed bytes:
-bin/lucairn verify-images --tag 0.5.2 --registry registry.internal/lucairn
+bin/lucairn verify-images --tag 0.5.3 --registry registry.internal/lucairn
 ```
 
 **Verify a single image with raw cosign (by digest).** Read the signed digest
-from `keys/image-digests-0.5.2.txt`, then:
+from `keys/image-digests-0.5.3.txt`, then:
 
 ```bash
 cosign verify --key keys/lucairn-cosign.pub \
@@ -1365,14 +1365,14 @@ richest summary.
 # Verifies the SPDX SBOM attestation against keys/lucairn-cosign.pub, requires a
 # Rekor transparency-log entry, then summarizes it (package count, SPDX version,
 # document name). Exits non-zero if the attestation is missing/invalid.
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.2
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.3
 
 # Also save the raw verified SPDX-JSON SBOM to a file:
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.2 \
-  --download dsa-gateway-0.5.2.spdx.json
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.3 \
+  --download dsa-gateway-0.5.3.spdx.json
 
 # Air-gapped mirror that re-hosts the SAME signed bytes:
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.2 \
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.3 \
   --registry registry.internal/lucairn
 ```
 
@@ -1382,13 +1382,13 @@ bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.2 \
 # Verify the SPDX attestation (prints the signed DSSE envelope + Rekor entry):
 cosign verify-attestation --type spdxjson \
   --key keys/lucairn-cosign.pub \
-  ghcr.io/declade/dsa-gateway:0.5.2
+  ghcr.io/declade/dsa-gateway:0.5.3
 
 # Extract just the SPDX-JSON SBOM predicate (the package list):
 cosign verify-attestation --type spdxjson \
   --key keys/lucairn-cosign.pub \
-  ghcr.io/declade/dsa-gateway:0.5.2 \
-  | jq -r '.payload' | base64 -d | jq '.predicate' > dsa-gateway-0.5.2.spdx.json
+  ghcr.io/declade/dsa-gateway:0.5.3 \
+  | jq -r '.payload' | base64 -d | jq '.predicate' > dsa-gateway-0.5.3.spdx.json
 ```
 
 A successful verification exits 0 and reports a Rekor transparency-log entry; a
@@ -1483,6 +1483,36 @@ single-replica are the v1.0 SLA.
 5. Apply the release.
 6. Confirm `/healthz`, `/readyz`, and one synthetic inference request.
 7. Generate a support bundle and archive it internally as upgrade evidence.
+
+### v0.5.3 / chart 1.9.3 — Lucairn anti-tamper (INERT until pin-baked) + S1–S6 security remediations (2026-06-16)
+
+Schema change: none. No database migration required.
+
+All 12 `dsa-*` images are republished + cosign-signed + Rekor-logged at `0.5.3`
+(`bin/lucairn verify-images --tag 0.5.3` → 13/13). `dsa-pii-ml` stays `0.5.1`
+(independent cadence) and `lucairn-dashboard` stays `0.8.2`.
+
+- **Deployment-entitlement anti-tamper (INERT on stock images):** 0.5.3 carries
+  the anti-tamper coupling (Lucairn PRs #291/#292) — fail-closed boot on a
+  missing/forged entitlement; `POST /api/v1/register` disabled; `DSA_ENV=development`
+  bypass closed; `customer_id` coupling. The stock GHCR images ship
+  `PinnedPublicKeyHex=""` and are fully INERT — enforcement activates only on a
+  Lucairn-built pin-baked gateway image.
+- **S1–S6 security remediations:** six security-audit findings remediated across
+  the `dsa-*` service images.
+
+**Upgrade from v0.5.2:** pull the new images (`LUCAIRN_IMAGE_TAG=0.5.3`); no DB migration.
+
+**Compose:** set `LUCAIRN_IMAGE_TAG=0.5.3` in `customer.env`, then:
+```bash
+docker compose -f docker-compose.customer.yml --env-file customer.env pull
+docker compose -f docker-compose.customer.yml --env-file customer.env up -d --force-recreate
+```
+
+**Helm:** set `global.imageTag: "0.5.3"` and apply:
+```bash
+helm upgrade lucairn charts/lucairn -n lucairn -f your-values.yaml
+```
 
 ### v0.5.2 / chart 1.9.2 — A6 LOCATION stop-list + turnkey sign-manifest (2026-06-15)
 
