@@ -15,7 +15,8 @@ You will need:
 - Docker Engine 24+ and Docker Compose v2 (`docker compose version` reports `v2.x`).
 - 16 GB RAM recommended (4 vCPUs, 50 GB disk free). ~8 GB is feasible for this pilot topology **because the L3 deep PII shield is off by default** (`LUCAIRN_L3_REQUIRED=false`) — the `ollama-identity` container runs but loads no `qwen2.5:7b` model, so it idles at a few hundred MB instead of the ~5 GB resident a loaded model needs. If you later stage the L3 model and set `LUCAIRN_L3_REQUIRED=true`, provision the full 16 GB. (INSTALL.md states 16 GB recommended for the L3-on default; the two figures are reconciled by whether the L3 model is loaded.)
 - Outbound HTTPS to:
-  - `ghcr.io` (one-time pull of the 7 Lucairn `dsa-*` images; ~3 GB total including the postgres / redis / alpine / migrate / ollama images from Docker Hub).
+  - `ghcr.io` — the 7 Lucairn `dsa-*` images (`dsa-gateway`, `dsa-sandbox-a`, `dsa-sandbox-b`, `dsa-sanitizer`, `dsa-veil-witness`, `dsa-audit`, `dsa-id-bridge`) are pulled from the private `ghcr.io/declade/*` namespace.
+  - `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com` — the public base images (`postgres`, `redis`, `alpine`, the `migrate` image, and `ollama/ollama`) are pulled from Docker Hub. A host that allowlists only `ghcr.io` will authenticate to GHCR successfully but fail `docker compose up` when Docker attempts to pull these base images. If your policy prohibits direct Docker Hub access, mirror these images into your own internal registry and set `LUCAIRN_IMAGE_REGISTRY` in `customer.env` accordingly.
   - The managed-LLM provider you intend to BYOK (`api.anthropic.com` by default).
 - A managed-LLM API key for one of: Anthropic, OpenAI, Mistral, Gemini.
 - A GitHub account that Lucairn has granted `read:packages` access to the `Declade/lucairn-enterprise-deployment-kit` GHCR namespace, plus a Personal Access Token (PAT) with `read:packages` scope.
