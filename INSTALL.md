@@ -579,9 +579,11 @@ air-gapped installs work. Lucairn issues you two values:
 - `LUCAIRN_LICENSE_KEY` — the signed license token.
 - `LUCAIRN_LICENSE_PUBLIC_KEY` — the verification public key.
 
-Set both in `customer.env` (Compose) or under `gateway.secrets.values`
-(Helm — see `customer-values.yaml.example`). Leave them EMPTY for sandbox/dev:
-in `DSA_ENV=development` the gateway warns-not-enforces; in production an empty
+`bin/lucairn-init --production` populates both automatically when you carry
+them in the `--license` bundle (see below); otherwise set them in `customer.env`
+(Compose) or under `gateway.secrets.values` (Helm — see
+`customer-values.yaml.example`). Leave them EMPTY for sandbox/dev: in
+`DSA_ENV=development` the gateway warns-not-enforces; in production an empty
 license runs in unregistered mode (Enterprise features locked, **core PII
 pipeline still runs**). After expiry, a 14-day grace window
 (`LUCAIRN_LICENSE_GRACE_DAYS`) keeps everything working with loud warnings
@@ -589,7 +591,36 @@ before Enterprise features degrade. The core compliance pipeline is never
 broken over licensing. See OPS.md → "Deployment license" for status checks +
 renewal.
 
-> Lucairn-side (issuing a license): `bin/lucairn license issue --license-id … --customer-id … --customer-name … --valid-until YYYY-MM-DD --features l3_custom_shield --signing-key-hex <seed>`. The private signing seed stays in the Lucairn vault and never ships to the customer.
+#### Combined `--license` bundle (HMAC + Ed25519 entitlement)
+
+The `--license` file `bin/lucairn-init --production` reads can carry **both**
+licenses in one bundle. Four fields:
+
+```json
+{
+  "license_key":            "<HMAC platform-tier license>   (REQUIRED)",
+  "signing_key":            "<HMAC platform-tier signing key> (REQUIRED)",
+  "entitlement_token":      "<Ed25519 deployment entitlement token> (OPTIONAL)",
+  "entitlement_public_key": "<Ed25519 verification public key, hex64> (OPTIONAL)"
+}
+```
+
+(An `entitlement_grace_days` integer field is also accepted; it overrides the
+default 14-day grace.) The line-based form is equivalent:
+`license_key=…` / `signing_key=…` / `entitlement_token=…` /
+`entitlement_public_key=…`, one per line.
+
+`bin/lucairn-init --production --license <bundle>` writes `DSA_LICENSE_KEY` +
+`DSA_LICENSE_SIGNING_KEY` from the first two fields **and** `LUCAIRN_LICENSE_KEY`
++ `LUCAIRN_LICENSE_PUBLIC_KEY` (+ `LUCAIRN_LICENSE_GRACE_DAYS`) from the
+entitlement fields. A bundle that carries only `license_key` + `signing_key`
+still works — the entitlement vars stay empty (unregistered/INERT). `bin/lucairn
+doctor` emits an `entitlement:` line and **warns** (does not fail) if exactly one
+of `LUCAIRN_LICENSE_KEY` / `LUCAIRN_LICENSE_PUBLIC_KEY` is set.
+
+> Lucairn-side (issuing the deployment entitlement): `bin/lucairn license issue --license-id … --customer-id … --customer-name … --valid-until YYYY-MM-DD --features l3_custom_shield --signing-key-hex <seed>`. The private signing seed stays in the Lucairn vault and never ships to the customer. The resulting token becomes `entitlement_token` in the bundle (→ `LUCAIRN_LICENSE_KEY`); the matching public key (from `bin/lucairn license gen-key`) becomes `entitlement_public_key` (→ `LUCAIRN_LICENSE_PUBLIC_KEY`).
+>
+> **`--customer-id` auto-fill:** the entitlement is coupled to the customer's gateway keystore `customer_id` — a mismatch returns `403 entitlement_mismatch`. If you mint the customer with `bin/lucairn-mint-customer` first, the derived `customer_id` is persisted to a kit-local `.lucairn-customer-id` file (mode 0600), and `bin/lucairn license issue` auto-fills `--customer-id` from it when you do not pass one explicitly. An explicit `--customer-id` always wins. (Single-customer / last-write-wins: a new mint overwrites the recorded id.)
 
 ## Docker Compose Install
 

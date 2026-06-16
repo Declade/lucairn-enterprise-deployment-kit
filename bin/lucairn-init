@@ -20,7 +20,13 @@
 #                   GATEWAY_BASE_URL=http://localhost:8080
 #   --production    requires --license <path> (file with license_key + signing_key,
 #                   either as JSON {"license_key":"...","signing_key":"..."} or as
-#                   two newline-separated values starting with key=)
+#                   two newline-separated values starting with key=). The bundle
+#                   MAY also carry the Ed25519 deployment entitlement:
+#                   entitlement_token / entitlement_public_key (+ optional
+#                   entitlement_grace_days) → LUCAIRN_LICENSE_KEY /
+#                   LUCAIRN_LICENSE_PUBLIC_KEY / LUCAIRN_LICENSE_GRACE_DAYS.
+#                   Bundles without the entitlement fields still parse (those
+#                   vars stay empty = unregistered/INERT).
 #   --byok          modifier on either mode; sets LUCAIRN_LLM_EGRESS_ALLOWLIST and
 #                   prints the FQDN-enforcement-is-your-responsibility warning
 #
@@ -72,8 +78,16 @@ Modes (exactly one required):
 Options:
   --license <path>         License bundle. Required for --production. Two formats
                            accepted:
-                             1) JSON: {"license_key":"...","signing_key":"..."}
-                             2) Two lines: license_key=... / signing_key=...
+                             1) JSON: {"license_key":"...","signing_key":"...",
+                                       "entitlement_token":"...",
+                                       "entitlement_public_key":"..."}
+                             2) Lines: license_key=... / signing_key=... /
+                                       entitlement_token=... / entitlement_public_key=...
+                           license_key + signing_key are REQUIRED (HMAC platform
+                           license). entitlement_token + entitlement_public_key
+                           (+ optional entitlement_grace_days) are OPTIONAL — the
+                           Ed25519 deployment entitlement the gateway reads for
+                           the anti-tamper. Omit them to run unregistered/INERT.
   --byok                   BYOK / managed-LLM mode. Sets LUCAIRN_LLM_EGRESS_ALLOWLIST=
                            api.anthropic.com,api.openai.com and prints a banner about
                            FQDN-enforcement responsibility.
@@ -175,9 +189,28 @@ if [ ! -f "$KIT_ROOT/docker-compose.customer.yml" ]; then
 fi
 
 # License parsing ------------------------------------------------------------
+#
+# The --license bundle carries up to FIVE fields:
+#   license_key / signing_key        — HMAC platform-tier license (REQUIRED;
+#                                       maps to DSA_LICENSE_KEY / *_SIGNING_KEY)
+#   entitlement_token                 — Ed25519 deployment entitlement token
+#                                       (OPTIONAL; maps to LUCAIRN_LICENSE_KEY)
+#   entitlement_public_key            — Ed25519 verification public key, hex64
+#                                       (OPTIONAL; maps to LUCAIRN_LICENSE_PUBLIC_KEY)
+#   entitlement_grace_days            — grace window override (OPTIONAL;
+#                                       maps to LUCAIRN_LICENSE_GRACE_DAYS, default 14)
+#
+# The entitlement fields are the A9 wiring: they let `--production` populate the
+# Ed25519 deployment-entitlement env vars the gateway reads for the anti-tamper
+# coupling. They are NOT required — a bundle carrying only license_key/signing_key
+# parses fine and the entitlement vars stay empty (unpinned/INERT — the gateway's
+# anti-tamper only activates on a pin-baked release image).
 
 LICENSE_KEY=""
 LICENSE_SIGNING_KEY=""
+ENTITLEMENT_TOKEN=""
+ENTITLEMENT_PUBLIC_KEY=""
+ENTITLEMENT_GRACE_DAYS=""
 
 if [ "$MODE" = "production" ]; then
   [ -f "$LICENSE_PATH" ] || fail "license file not found: $LICENSE_PATH" 5
@@ -188,14 +221,23 @@ if [ "$MODE" = "production" ]; then
     if have jq; then
       LICENSE_KEY="$(jq -r '.license_key // empty' "$LICENSE_PATH" 2>/dev/null || true)"
       LICENSE_SIGNING_KEY="$(jq -r '.signing_key // empty' "$LICENSE_PATH" 2>/dev/null || true)"
+      ENTITLEMENT_TOKEN="$(jq -r '.entitlement_token // empty' "$LICENSE_PATH" 2>/dev/null || true)"
+      ENTITLEMENT_PUBLIC_KEY="$(jq -r '.entitlement_public_key // empty' "$LICENSE_PATH" 2>/dev/null || true)"
+      ENTITLEMENT_GRACE_DAYS="$(jq -r '.entitlement_grace_days // empty' "$LICENSE_PATH" 2>/dev/null || true)"
     else
       LICENSE_KEY="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("license_key",""))' "$LICENSE_PATH" 2>/dev/null || true)"
       LICENSE_SIGNING_KEY="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("signing_key",""))' "$LICENSE_PATH" 2>/dev/null || true)"
+      ENTITLEMENT_TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("entitlement_token",""))' "$LICENSE_PATH" 2>/dev/null || true)"
+      ENTITLEMENT_PUBLIC_KEY="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("entitlement_public_key",""))' "$LICENSE_PATH" 2>/dev/null || true)"
+      ENTITLEMENT_GRACE_DAYS="$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])).get("entitlement_grace_days",""); print("" if v=="" else v)' "$LICENSE_PATH" 2>/dev/null || true)"
     fi
   else
-    # Fallback: two-line key=value text format.
+    # Fallback: two-line (or more) key=value text format.
     LICENSE_KEY="$(grep -E '^license_key=' "$LICENSE_PATH" | head -1 | sed 's/^license_key=//' || true)"
     LICENSE_SIGNING_KEY="$(grep -E '^signing_key=' "$LICENSE_PATH" | head -1 | sed 's/^signing_key=//' || true)"
+    ENTITLEMENT_TOKEN="$(grep -E '^entitlement_token=' "$LICENSE_PATH" | head -1 | sed 's/^entitlement_token=//' || true)"
+    ENTITLEMENT_PUBLIC_KEY="$(grep -E '^entitlement_public_key=' "$LICENSE_PATH" | head -1 | sed 's/^entitlement_public_key=//' || true)"
+    ENTITLEMENT_GRACE_DAYS="$(grep -E '^entitlement_grace_days=' "$LICENSE_PATH" | head -1 | sed 's/^entitlement_grace_days=//' || true)"
   fi
 
   if [ -z "$LICENSE_KEY" ] || [ -z "$LICENSE_SIGNING_KEY" ]; then
@@ -349,12 +391,23 @@ done
 set_kv GATEWAY_KEYSTORE_KEY "$(gen_keystore_key)"
 
 # Mode-dependent fields
+#
+# The LUCAIRN_LICENSE_* (Ed25519 deployment entitlement) slots are ALWAYS
+# declared so render_env's get_val resolves them in both modes:
+#   - --dev:        empty token + public key, grace=14 → unpinned/INERT (the
+#                   gateway's anti-tamper only activates on a pin-baked image).
+#   - --production: populated from the --license bundle's entitlement_* fields
+#                   when present; empty (unregistered mode) when the bundle
+#                   carries only the HMAC license_key/signing_key.
 case "$MODE" in
   dev)
     set_kv DSA_ENV development
     set_kv GRPC_TLS_ENABLED false
     set_kv DSA_LICENSE_KEY ""
     set_kv DSA_LICENSE_SIGNING_KEY ""
+    set_kv LUCAIRN_LICENSE_KEY ""
+    set_kv LUCAIRN_LICENSE_PUBLIC_KEY ""
+    set_kv LUCAIRN_LICENSE_GRACE_DAYS 14
     : "${GATEWAY_BASE_URL_OVERRIDE:=http://localhost:8080}"
     ;;
   production)
@@ -362,6 +415,9 @@ case "$MODE" in
     set_kv GRPC_TLS_ENABLED true
     set_kv DSA_LICENSE_KEY "$LICENSE_KEY"
     set_kv DSA_LICENSE_SIGNING_KEY "$LICENSE_SIGNING_KEY"
+    set_kv LUCAIRN_LICENSE_KEY "$ENTITLEMENT_TOKEN"
+    set_kv LUCAIRN_LICENSE_PUBLIC_KEY "$ENTITLEMENT_PUBLIC_KEY"
+    set_kv LUCAIRN_LICENSE_GRACE_DAYS "${ENTITLEMENT_GRACE_DAYS:-14}"
     : "${GATEWAY_BASE_URL_OVERRIDE:=https://lucairn.customer.example}"
     ;;
 esac
@@ -421,6 +477,20 @@ POSTGRES_SSLMODE=disable
 # License (empty in dev mode triggers the gateway's dev-mode bypass)
 DSA_LICENSE_KEY=$(get_val DSA_LICENSE_KEY)
 DSA_LICENSE_SIGNING_KEY=$(get_val DSA_LICENSE_SIGNING_KEY)
+
+# Deployment entitlement license (Ed25519, offline-verifiable). This is a
+# SEPARATE license from DSA_LICENSE_* above: it gates Enterprise-only FEATURES
+# (e.g. the custom-trained L3 PII shield) and is the value the gateway reads to
+# enforce the deployment anti-tamper coupling on a pin-baked release image.
+# Lucairn issues a signed token (LUCAIRN_LICENSE_KEY) + a verification public
+# key (LUCAIRN_LICENSE_PUBLIC_KEY). In --production both are populated from the
+# --license bundle's entitlement_token / entitlement_public_key fields when
+# present; in --dev (and bundles without entitlement fields) they stay EMPTY =
+# unregistered/INERT (core PII pipeline still runs; nothing bricks).
+# LUCAIRN_LICENSE_GRACE_DAYS overrides the default 14-day post-expiry grace.
+LUCAIRN_LICENSE_KEY=$(get_val LUCAIRN_LICENSE_KEY)
+LUCAIRN_LICENSE_PUBLIC_KEY=$(get_val LUCAIRN_LICENSE_PUBLIC_KEY)
+LUCAIRN_LICENSE_GRACE_DAYS=$(get_val LUCAIRN_LICENSE_GRACE_DAYS)
 
 # Sandbox B (self-hosted mode — local container generates its own keypair;
 # split deployments override SANDBOX_B_REMOTE_ENDPOINT + SANDBOX_B_API_KEY
