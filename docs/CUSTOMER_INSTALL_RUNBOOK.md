@@ -13,7 +13,7 @@ You will need:
 
 - Ubuntu 22.04+ x86_64 (Debian 12, RHEL 9, AL2023 also tested) with `sudo`.
 - Docker Engine 24+ and Docker Compose v2 (`docker compose version` reports `v2.x`).
-- 16 GB RAM recommended (4 vCPUs, 50 GB disk free). ~8 GB is feasible for this pilot topology **because the L3 deep PII shield is off by default** (`LUCAIRN_L3_REQUIRED=false`) — the `ollama-identity` container runs but loads no `qwen2.5:7b` model, so it idles at a few hundred MB instead of the ~5 GB resident a loaded model needs. If you later stage the L3 model and set `LUCAIRN_L3_REQUIRED=true`, provision the full 16 GB. (INSTALL.md states 16 GB minimum for the L3-on default; the two figures are reconciled by whether the L3 model is loaded.)
+- 16 GB RAM recommended (4 vCPUs, 50 GB disk free). ~8 GB is feasible for this pilot topology **because the L3 deep PII shield is off by default** (`LUCAIRN_L3_REQUIRED=false`) — the `ollama-identity` container runs but loads no `qwen2.5:7b` model, so it idles at a few hundred MB instead of the ~5 GB resident a loaded model needs. If you later stage the L3 model and set `LUCAIRN_L3_REQUIRED=true`, provision the full 16 GB. (INSTALL.md states 16 GB recommended for the L3-on default; the two figures are reconciled by whether the L3 model is loaded.)
 - Outbound HTTPS to:
   - `ghcr.io` (one-time pull of the 7 Lucairn `dsa-*` images; ~3 GB total including the postgres / redis / alpine / migrate / ollama images from Docker Hub).
   - The managed-LLM provider you intend to BYOK (`api.anthropic.com` by default).
@@ -181,7 +181,7 @@ If any container is `unhealthy` or `restarting`, see § Troubleshooting.
 >
 > **To re-enable L3 later:** pre-stage the `qwen2.5:7b` model into the
 > `ollama-identity` volume (the air-gap-preserving throwaway-container procedure
-> is in **INSTALL.md § "Pre-stage the L3 deep PII-shield model"**), then set
+> is in INSTALL.md, the "Pre-stage the L3 deep PII-shield model" section), then set
 > `LUCAIRN_L3_REQUIRED=true` in `customer.env`, re-run `bin/lucairn doctor`, and
 > restart the stack. Provision the full 16 GB RAM (§ 1) when you do.
 
