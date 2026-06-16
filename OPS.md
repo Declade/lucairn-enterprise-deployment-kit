@@ -885,19 +885,14 @@ A `VERDICT_VERIFIED` on a freshly issued certificate is the cold-restore
 success condition: the seeds, the restored evidence, and the manifest are all
 coherent again.
 
-### Restore-drill evidence (HA-01 closure)
+### Restore-drill evidence
 
-> **PENDING — filled by the executed Vast/Kind cold-restore drill (merge gate).**
-> This runbook is closed only once it has been run verbatim on a fresh
-> throwaway cluster from empty → re-provided seeds → restored DBs → manifest →
-> a `VERDICT_VERIFIED` fresh cert. Record the result on one line here:
->
->     restore drill PASSED on 2026-__-__, measured RTO ~__ min (Vast/Kind, fresh cluster)
->
-> Until that line is present and dated, treat the cold-restore path as
-> documented-but-unverified. The measured RTO is **evidence from one drill in a
-> specific environment — measure your own**; it is not a committed or guaranteed
-> figure.
+> **Run your own restore drill — see the cold-restore procedure above.** Execute
+> it verbatim on a fresh throwaway cluster (empty → re-provided seeds → restored
+> DBs → manifest → a `VERDICT_VERIFIED` fresh cert), and record the date and the
+> measured RTO in your own change-management system. Treat the cold-restore path
+> as verified for your environment only once you have run it there: RTO is
+> environment-specific evidence, not a committed or guaranteed figure.
 
 ### Signing-key escrow & cold recovery
 
@@ -985,17 +980,16 @@ secrets — see `bin/lucairn:231-236`.
 > W2B Runtime Invariant Harness #3 self-check degrades.
 >
 > **The restore overlay above re-derives this pubkey explicitly (step (a),
-> `PUB_GATEWAY_MANIFEST ← LCR_MANIFEST_SIGNING_KEY`) — that re-derivation is the
-> authoritative restore path and is runtime-correct on its own, independent of the
-> renderer.** A separate sibling PR (#63, `fix/render-values-gateway-manifest-pubkey`)
-> fixes `scripts/render-values.sh` and `customer.env.example` so a *fresh* render
-> derives `LCR_GATEWAY_MANIFEST_PUBLIC_KEY` from `LCR_MANIFEST_SIGNING_KEY`
-> automatically. **AFTER #63 merges**, re-running `render-values.sh` (or following
-> the `customer.env.example` derivation lines) produces the correct manifest
-> public key with no manual override. **Until #63 merges, the renderer and
-> `customer.env.example` on `main` still derive it from the wrong seed** — so for
-> any restore today, use the explicit re-derivation in the overlay above as the
-> source of truth and do NOT rely on a `render-values.sh` re-run alone.
+> `PUB_GATEWAY_MANIFEST ← LCR_MANIFEST_SIGNING_KEY`).** The renderer does the
+> same thing correctly: `scripts/render-values.sh` derives
+> `LCR_GATEWAY_MANIFEST_PUBLIC_KEY` from `LCR_MANIFEST_SIGNING_KEY` (the manifest
+> seed), **not** from `LCR_GATEWAY_SIGNING_KEY` (the gateway claim seed) —
+> `render-values.sh:118,132,162` (`PUB_MANIFEST=derive(SEED_MANIFEST)`, then
+> substituted into the `*_GATEWAY_MANIFEST_PUBLIC_KEY` slot). `customer.env.example`
+> documents the same derivation. So either path — re-running `render-values.sh`,
+> following the `customer.env.example` derivation lines, or the explicit overlay
+> re-derivation above — produces a manifest public key that matches the manifest
+> signer, with no manual override needed.
 
 These are the seeds at cluster-loss risk. The **License Signing Key** and the
 **Image Signing Key** are Lucairn-held, off-cluster keys — they are NOT part of

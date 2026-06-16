@@ -520,6 +520,18 @@ QI_ENGINE_ENABLED=true
 SANITIZER_CONFIG_FILE=./config/default-sanitizer.yaml
 SANITIZER_SAFE_TERMS_FILE=./config/medical-terms.txt
 
+# L3 deep PII shield NOT required (L1+L2 active). Re-enable: pre-stage the ollama model (see runbook) then set LUCAIRN_L3_REQUIRED=true.
+# Emitted explicitly so the value wins over BOTH compose fallbacks: the
+# self-hosted overlay (docker-compose.self-hosted.yml) defaults this to "true"
+# (fail-CLOSED) because it wires the always-on ollama-identity service, but on a
+# fresh install the qwen2.5:7b L3 model is NOT yet staged into that service's
+# egress-less volume — so "true" + unstaged model => the sanitizer /readyz fails
+# liveness and the gateway fail-closes 503 l3_scrubber_unavailable on the FIRST
+# (and every) request. Setting "false" runs L1+L2 (deterministic + sandbox-a
+# regex/dictionary) and honestly downgrades the cert to PARTIAL (llm_pii_scan
+# omitted from layers_active) instead of hard-failing.
+LUCAIRN_L3_REQUIRED=false
+
 # Certification profile (opt-in; only used with --profile certification).
 # Non-empty placeholders so docker compose's :? interpolation succeeds even
 # when the certification profile is NOT active. Replace before enabling the

@@ -380,14 +380,19 @@ required key.
 For Docker Compose:
 
 - Linux host with Docker Engine and Docker Compose v2.
-- **16 GB RAM minimum** for the default topology (Phase 7 ML PII scanners
-  **disabled by default** as of chart v1.7.1 — see § "Phase 7 ML PII
-  scanners"). This covers the deterministic L1+L2 layers plus the
-  sandbox-a + sanitizer + ollama-identity + gateway + witness + audit +
-  id-bridge baseline. **20 GB RAM** is required only when Phase 7 is
-  explicitly re-enabled — the `pii-ml` sidecar runs Piiranha + GLiNER and
-  reserves up to 4 GB for the container on top of that baseline. 4 vCPU is
-  sufficient for either topology at single-tenant pilot load.
+- **16 GB RAM recommended** for the default topology with the L3 deep PII
+  shield enabled (Phase 7 ML PII scanners **disabled by default** as of chart
+  v1.7.1 — see § "Phase 7 ML PII scanners"). This covers the deterministic
+  L1+L2 layers plus the sandbox-a + sanitizer + ollama-identity + gateway +
+  witness + audit + id-bridge baseline **with the `qwen2.5:7b` L3 model
+  resident in `ollama-identity` (~5 GB)**. **~8 GB is feasible with L3 disabled**
+  (`LUCAIRN_L3_REQUIRED=false`, the kit's `lucairn-init` default): the
+  `ollama-identity` container still runs but loads no model, so it idles at a
+  few hundred MB and the L1+L2 stack fits in ~8 GB. **20 GB RAM** is required
+  only when Phase 7 is explicitly re-enabled — the `pii-ml` sidecar runs
+  Piiranha + GLiNER and reserves up to 4 GB for the container on top of the
+  L3-on baseline. 4 vCPU is sufficient for any of these topologies at
+  single-tenant pilot load.
 - TLS-terminating reverse proxy such as Caddy, Nginx, Traefik, or an enterprise ingress proxy.
 - Outbound HTTPS to Lucairn-provided remote Sandbox B endpoint if using split deployment.
 - Python 3 with the `cryptography` library (>=2.6) OR `pynacl`. Required by
@@ -682,6 +687,24 @@ step.
 The helper requires Python 3 with the `cryptography` package (preferred)
 or `pynacl`. Both are pure-Python wheels; install with
 `pip install cryptography` if either is missing.
+
+### 4a-bis. Generate the opaque service secrets (hex32)
+
+These are not signing keypairs — they are opaque shared secrets and HMAC keys.
+Generate each independently with `openssl rand -hex 32` (no derivation step):
+
+| Secret slot                  | Generate with        | Notes |
+|------------------------------|----------------------|-------|
+| `DSA_SERVICE_TOKEN`          | `openssl rand -hex 32` | Inter-service auth token. |
+| `DSA_BRIDGE_ENCRYPTION_KEY`  | `openssl rand -hex 32` | id-bridge payload encryption. |
+| `SANDBOX_A_ENCRYPTION_KEY`   | `openssl rand -hex 32` | sandbox-a at-rest encryption. |
+| `BRIDGE_MASTER_KEY`          | `openssl rand -hex 32` | id-bridge master key. |
+| `DSA_ADMIN_KEY`              | `openssl rand -hex 32` | Gateway admin bearer (mint/admin APIs). |
+| `CANARY_HMAC_KEY`            | `openssl rand -hex 32` | **Required for `DSA_ENV=production`.** The sanitizer signs its canary-token tripwires with this HMAC key and **refuses to boot without it** when `DSA_ENV=production`. `bin/lucairn-init` auto-generates it, so an init-driven install is fine; a **manual-path** customer filling `customer.env` by hand MUST set it or the sanitizer crash-loops at boot. |
+
+`GATEWAY_KEYSTORE_KEY` is the exception: generate it as base64-32-bytes
+(`openssl rand -base64 32`), not hex — `bin/lucairn doctor` decodes it and
+checks the byte count is exactly 32.
 
 ### 4b. Produce the witness-signed manifest (production only)
 
