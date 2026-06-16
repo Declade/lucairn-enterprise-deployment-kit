@@ -264,6 +264,53 @@ fi
 rm -f "$ROOT/.lucairn-customer-id"
 echo "lucairn license auto-fill tests: ok"
 
+# --- M1 fixup: clean exit 1 (not 127) when no signer is configured ----------
+#
+# Regression guard for the `exec $(license_sign_runner) …` bug: when the runner
+# could not be resolved (no LUCAIRN_LICENSE_SIGN_BIN, no `license-sign` on PATH,
+# no DSA_REPO) the inner `fail`/exit 1 only exited the $(...) SUBSHELL, leaving
+# `exec  issue …` → `exec: issue: not found` (EXIT 127) AFTER the actionable
+# message. Run `license issue` with NO signer available and assert: exit 1 (not
+# 127), the actionable "license-sign tool not found" message IS printed, and the
+# spurious `exec: issue: not found` line is NOT.
+NOSIGN_BIN="$TMPDIR/nosign-bin"
+mkdir -p "$NOSIGN_BIN"
+# A minimal PATH with the coreutils bin/lucairn needs early but WITHOUT
+# license-sign or go, so license_sign_runner exhausts all three discovery paths.
+for t in bash cat dirname pwd head tr printf grep sed env cut awk; do
+  src="$(command -v "$t" 2>/dev/null)" && [ -n "$src" ] && ln -sf "$src" "$NOSIGN_BIN/$t"
+done
+rm -f "$ROOT/.lucairn-customer-id"
+set +e
+env -i PATH="$NOSIGN_BIN" HOME="$TMPDIR" "$ROOT/bin/lucairn" license issue \
+  --license-id lic_x --customer-id cust_x --customer-name "Bhatia" \
+  --valid-until 2027-01-01 --signing-key-hex deadbeef \
+  > "$TMPDIR/issue-nosigner.out" 2> "$TMPDIR/issue-nosigner.err"
+ISSUE_NOSIGNER_STATUS=$?
+set -e
+if [ "$ISSUE_NOSIGNER_STATUS" -ne 1 ]; then
+  echo "license issue with no signer must exit 1, got $ISSUE_NOSIGNER_STATUS" >&2
+  cat "$TMPDIR/issue-nosigner.out" "$TMPDIR/issue-nosigner.err" >&2
+  exit 1
+fi
+grep -q "license-sign tool not found" "$TMPDIR/issue-nosigner.err"
+if grep -q "exec: issue: not found" "$TMPDIR/issue-nosigner.out" "$TMPDIR/issue-nosigner.err"; then
+  echo "license issue emitted the spurious 'exec: issue: not found' bash error" >&2
+  exit 1
+fi
+
+# Companion: with a stubbed signer present (LUCAIRN_LICENSE_SIGN_BIN=/bin/echo)
+# the A9 auto-fill still injects --customer-id and execs the signer. Use the
+# persisted-id path so we exercise the auto-fill branch end-to-end.
+printf 'm1_fixup_cid\n' > "$ROOT/.lucairn-customer-id"
+chmod 0600 "$ROOT/.lucairn-customer-id"
+LUCAIRN_LICENSE_SIGN_BIN=/bin/echo "$ROOT/bin/lucairn" license issue \
+  --license-id lic_x --customer-name "Bhatia" --valid-until 2027-01-01 \
+  --signing-key-hex deadbeef > "$TMPDIR/issue-stub-echo.out" 2>&1
+grep -q "issue --customer-id m1_fixup_cid --license-id lic_x" "$TMPDIR/issue-stub-echo.out"
+rm -f "$ROOT/.lucairn-customer-id"
+echo "lucairn license no-signer exit-code tests: ok"
+
 FAKEBIN="$TMPDIR/fakebin"
 mkdir -p "$FAKEBIN"
 cat > "$FAKEBIN/docker" <<'DOCKER'

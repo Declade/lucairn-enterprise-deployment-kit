@@ -591,6 +591,23 @@ before Enterprise features degrade. The core compliance pipeline is never
 broken over licensing. See OPS.md → "Deployment license" for status checks +
 renewal.
 
+> **Caveat — anti-tamper is pin-gated; the env vars alone do not enforce it.**
+> The two env vars above always drive Enterprise **feature-gating** (the
+> grace-then-degrade lifecycle) on any image — that is the stock behavior. The
+> hardened **anti-tamper coupling** (fail-closed boot on a missing/forged
+> entitlement; `POST /api/v1/register` disabled → `403 registration_disabled`;
+> `DSA_ENV=development` bypass closed; key↔entitlement `customer_id` coupling →
+> `403 entitlement_mismatch`) is a single switch that is active **only** on a
+> **pin-baked release gateway image** — one Lucairn built with the Ed25519
+> public key baked into the binary's `PinnedPublicKeyHex` via `-ldflags -X`.
+> **Stock / committed / GHCR images ship `PinnedPublicKeyHex=""` and are fully
+> INERT for anti-tamper:** setting `LUCAIRN_LICENSE_KEY` +
+> `LUCAIRN_LICENSE_PUBLIC_KEY` on a stock image gives you feature-gating but
+> **no** anti-tamper effect. The pin-baked image is built by Lucairn (the
+> operator); a self-building customer needs the gateway Dockerfile's
+> `ARG LUCAIRN_LICENSE_PUBLIC_KEY_HEX` (in dual-sandbox-architecture) and should
+> contact Lucairn for the pin-bake build recipe.
+
 #### Combined `--license` bundle (HMAC + Ed25519 entitlement)
 
 The `--license` file `bin/lucairn-init --production` reads can carry **both**
@@ -619,6 +636,8 @@ doctor` emits an `entitlement:` line and **warns** (does not fail) if exactly on
 of `LUCAIRN_LICENSE_KEY` / `LUCAIRN_LICENSE_PUBLIC_KEY` is set.
 
 > Lucairn-side (issuing the deployment entitlement): `bin/lucairn license issue --license-id … --customer-id … --customer-name … --valid-until YYYY-MM-DD --features l3_custom_shield --signing-key-hex <seed>`. The private signing seed stays in the Lucairn vault and never ships to the customer. The resulting token becomes `entitlement_token` in the bundle (→ `LUCAIRN_LICENSE_KEY`); the matching public key (from `bin/lucairn license gen-key`) becomes `entitlement_public_key` (→ `LUCAIRN_LICENSE_PUBLIC_KEY`).
+>
+> `license issue` / `verify` / `gen-key` shell out to the DSA `license-sign` tool (so the signed bytes match the gateway verifier). Set **`LUCAIRN_LICENSE_SIGN_BIN`** to point at a prebuilt `license-sign` binary; otherwise the wrapper uses `license-sign` on `PATH`, then `go run` from `DSA_REPO` (the dual-sandbox-architecture clone). With none of the three available the command fails cleanly (exit 1) with an actionable pointer.
 >
 > **`--customer-id` auto-fill:** the entitlement is coupled to the customer's gateway keystore `customer_id` — a mismatch returns `403 entitlement_mismatch`. If you mint the customer with `bin/lucairn-mint-customer` first, the derived `customer_id` is persisted to a kit-local `.lucairn-customer-id` file (mode 0600), and `bin/lucairn license issue` auto-fills `--customer-id` from it when you do not pass one explicitly. An explicit `--customer-id` always wins. (Single-customer / last-write-wins: a new mint overwrites the recorded id.)
 
