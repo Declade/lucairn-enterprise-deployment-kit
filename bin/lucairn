@@ -5846,20 +5846,10 @@ license_command() {
   case "$subcmd" in
     issue|verify|gen-key)
       shift
-      # TODO (A4 — grill-locked, follow-up): `license issue` should auto-fill
-      # --customer-id from the synced customer record so the entitlement
-      # CustomerID can't mismatch the keystore CustomerID minted by
-      # bin/lucairn-mint-customer (a mismatch => the gateway 403s the customer).
-      # NOT wired here: the kit has no clean local source for that customer_id.
-      # license issue runs at the Lucairn vault host (the only place the license
-      # signing seed lives) and is a pure pass-through to the DSA `license-sign`
-      # tool; the keystore CustomerID lives in the gateway keystore reachable only
-      # via control-plane/admin access the kit deliberately does not hold, and
-      # bin/lucairn-mint-customer only prints customer_id to the operator
-      # terminal (it persists it nowhere this wrapper could read). The correct
-      # fix belongs in the control-plane / license-sign tooling (DSA repo), where
-      # the keystore record is the authoritative source. Until then, the operator
-      # must pass the SAME --customer-id to both mint-customer and license issue.
+      # NOTE: --customer-id MUST match the customer's keystore customer_id (the
+      # value shown by 'lucairn-mint-customer'). A mismatch causes the gateway to
+      # return 403 entitlement_mismatch. Auto-fill from the synced record is a
+      # planned enhancement.
       # shellcheck disable=SC2046  # word-split runner prefix intentionally
       exec $(license_sign_runner) "$subcmd" "$@"
       ;;
