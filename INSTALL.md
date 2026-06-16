@@ -386,7 +386,7 @@ For Docker Compose:
   L1+L2 layers plus the sandbox-a + sanitizer + ollama-identity + gateway +
   witness + audit + id-bridge baseline **with the `qwen2.5:7b` L3 model
   resident in `ollama-identity` (~5 GB)**. **~8 GB is feasible with L3 disabled**
-  (`LUCAIRN_L3_REQUIRED=false`, the kit's `lucairn-init` default): the
+  (`LUCAIRN_L3_REQUIRED=false`, the kit default for all install paths): the
   `ollama-identity` container still runs but loads no model, so it idles at a
   few hundred MB and the L1+L2 stack fits in ~8 GB. **20 GB RAM** is required
   only when Phase 7 is explicitly re-enabled — the `pii-ml` sidecar runs
@@ -877,9 +877,10 @@ The running `ollama-identity` keeps **no egress** (`internal: true`); only the
 one-time throwaway staging container in step 2 has egress, and it exits as soon
 as the pull completes. This procedure is validated on a fresh install.
 
-**Out-of-the-box default — continue-mode (L1+L2 only).** `lucairn-init`
-writes `LUCAIRN_L3_REQUIRED=false` into `customer.env` for every deployment
-path. With this default the stack runs continue-mode: the sanitizer applies the
+**Out-of-the-box default — continue-mode (L1+L2 only).** Both `lucairn-init`
+and the bare `customer.env.example` (manual `cp customer.env.example customer.env`
+path) set `LUCAIRN_L3_REQUIRED=false` for every deployment path. With this
+default the stack runs continue-mode: the sanitizer applies the
 L1 (deterministic regex/dictionary) + L2 (sandbox-a) PII layers, the L3 shield
 is treated as optional, and the verification certificate is honestly downgraded
 to **`COMPLETENESS_PARTIAL`** (the witness omits `llm_pii_scan` from

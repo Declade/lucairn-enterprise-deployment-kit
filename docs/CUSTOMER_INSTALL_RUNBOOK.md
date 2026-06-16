@@ -170,8 +170,9 @@ block on it.)
 
 If any container is `unhealthy` or `restarting`, see § Troubleshooting.
 
-> **L3 deep PII shield is OFF by default for now.** The kit's `lucairn-init`
-> writes `LUCAIRN_L3_REQUIRED=false` into `customer.env`, so the stack runs the
+> **L3 deep PII shield is OFF by default for now.** Both `lucairn-init` and
+> the bare `customer.env.example` (manual `cp customer.env.example customer.env`
+> path) set `LUCAIRN_L3_REQUIRED=false`, so the stack runs the
 > L1 (deterministic regex/dictionary) + L2 (sandbox-a) PII layers and does **not**
 > require the optional L3 model (`qwen2.5:7b`) to be staged before your first
 > inference. With L3 off, the request proceeds on L1+L2 and the verification
