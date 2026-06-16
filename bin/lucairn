@@ -326,10 +326,32 @@ require_env_values() {
   ent_pub="$(env_value "$env_file" LUCAIRN_LICENSE_PUBLIC_KEY)"
   if [ -n "$ent_key" ] && [ -n "$ent_pub" ]; then
     echo "entitlement: LUCAIRN_LICENSE_KEY + LUCAIRN_LICENSE_PUBLIC_KEY set (deployment entitlement configured)"
+    # Gap 3 (A9 fixup): production pubkey-match reminder. doctor runs kit-side
+    # and cannot see the key generation baked into the gateway image, so it
+    # can't verify the pin — but a mismatch between LUCAIRN_LICENSE_PUBLIC_KEY
+    # here and the baked pin causes a fail-closed boot, not a silent error.
+    # One WARN, informational only (never sets missing), so the operator
+    # confirms the pair before the container starts.
+    if [ "$(env_value "$env_file" DSA_ENV)" = "production" ]; then
+      warn "entitlement: ensure LUCAIRN_LICENSE_PUBLIC_KEY matches the key generation baked into the gateway image — a mismatch fails the entitlement check closed at boot (fail-closed, not a silent error). doctor runs kit-side and cannot see the baked pin."
+    fi
   elif [ -z "$ent_key" ] && [ -z "$ent_pub" ]; then
     echo "entitlement: empty LUCAIRN_LICENSE_KEY / LUCAIRN_LICENSE_PUBLIC_KEY -> unregistered (Enterprise features locked in production; core pipeline runs)"
   else
     warn "entitlement: LUCAIRN_LICENSE_KEY and LUCAIRN_LICENSE_PUBLIC_KEY should be both set or both empty (one is set, the other is not — the gateway cannot verify the entitlement). Re-run bin/lucairn-init --production with a complete --license bundle (entitlement_token + entitlement_public_key)."
+  fi
+
+  # Gap 2 (A9 fixup): LUCAIRN_LICENSE_GRACE_DAYS range check. When set, the
+  # gateway parses it as a non-negative integer (days of post-expiry grace);
+  # a non-integer value (e.g. "14d", "2.5", "-1") is rejected at boot →
+  # fatal. Empty = unset (gateway default applies), so no-op on empty. A bad
+  # value is a hard failure here (sets missing) so doctor blocks the install
+  # instead of letting it green-then-crashloop.
+  local ent_grace
+  ent_grace="$(env_value "$env_file" LUCAIRN_LICENSE_GRACE_DAYS)"
+  if [ -n "$ent_grace" ] && ! printf '%s' "$ent_grace" | grep -Eq '^[0-9]+$'; then
+    echo "entitlement: LUCAIRN_LICENSE_GRACE_DAYS must be a non-negative integer (got '${ent_grace}') — the gateway rejects a non-integer grace at boot (fatal). Set it to a plain number of days (e.g. 14) or leave it empty for the gateway default."
+    missing=1
   fi
 
   [ "$missing" -eq 0 ]
@@ -4479,6 +4501,13 @@ doctor() {
   # crashloops sandbox-b with `encoding/hex decode failed`. Wave-5: add it
   # to the hex64 set so doctor catches it pre-flight.
   hex64_keys+=(LCR_SANDBOX_B_PUBLIC_KEY VEIL_SANDBOX_B_PUBLIC_KEY LCR_SANDBOX_B_SIGNING_KEY VEIL_SANDBOX_B_SIGNING_KEY)
+  # LUCAIRN_LICENSE_PUBLIC_KEY (A9 deployment entitlement): the gateway's
+  # LoadPublicKeyHex rejects any non-64-hex value (PEM fragment, wrong
+  # length, embedded whitespace) with log.Fatal on a pinned/production
+  # boot — a green-then-crashloop. validate_hex64 is a no-op on empty, so
+  # the unpinned/both-empty posture stays clean; only a populated-but-
+  # malformed pubkey trips it. (Single canonical key; no legacy VEIL_ form.)
+  hex64_keys+=(LUCAIRN_LICENSE_PUBLIC_KEY)
   for key in "${hex64_keys[@]}"; do
     validate_hex64 "$env_file" "$key" || format_failed=1
   done

@@ -98,6 +98,92 @@ printf 'LUCAIRN_LICENSE_KEY=ent_token_dummy_only\n' >> "$ENV_ENT_HALF"
 grep -q "doctor: ok" "$TMPDIR/doctor-ent-half.out"
 grep -q "warn: entitlement:" "$TMPDIR/doctor-ent-half.err"
 
+# --- A9 fixup: CRASHLOOP-class format/range guards + prod reminder -----------
+
+# (a) Gap 1: a malformed LUCAIRN_LICENSE_PUBLIC_KEY (not 64-hex) -> doctor FAILS.
+# The gateway's LoadPublicKeyHex log.Fatals on a non-64-hex pubkey on a pinned
+# boot, so doctor must ERROR here instead of going green-then-crashloop. Both a
+# non-hex token AND a too-short (32-char) hex string must be rejected.
+for BAD_PUB in "not-hex" "0011223344556677889900112233aabb"; do
+  ENV_BADPUB="$TMPDIR/customer-entitlement-badpub.env"
+  cp "$ENV_FILE" "$ENV_BADPUB"
+  {
+    printf 'LUCAIRN_LICENSE_KEY=ent_token_dummy\n'
+    printf 'LUCAIRN_LICENSE_PUBLIC_KEY=%s\n' "$BAD_PUB"
+  } >> "$ENV_BADPUB"
+  set +e
+  "$ROOT/bin/lucairn" doctor \
+    --env "$ENV_BADPUB" \
+    --compose "$ROOT/docker-compose.customer.yml" \
+    --offline > "$TMPDIR/doctor-badpub.out" 2>&1
+  BADPUB_STATUS=$?
+  set -e
+  if [ "$BADPUB_STATUS" -eq 0 ]; then
+    echo "doctor should FAIL on a malformed LUCAIRN_LICENSE_PUBLIC_KEY ('$BAD_PUB')" >&2
+    exit 1
+  fi
+  grep -q "secret format: LUCAIRN_LICENSE_PUBLIC_KEY must be 64 hex chars" "$TMPDIR/doctor-badpub.out"
+done
+
+# (b) Gap 1 happy path: a valid 64-hex LUCAIRN_LICENSE_PUBLIC_KEY -> doctor passes.
+ENV_GOODPUB="$TMPDIR/customer-entitlement-goodpub.env"
+cp "$ENV_FILE" "$ENV_GOODPUB"
+{
+  printf 'LUCAIRN_LICENSE_KEY=ent_token_dummy\n'
+  printf 'LUCAIRN_LICENSE_PUBLIC_KEY=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n'
+} >> "$ENV_GOODPUB"
+"$ROOT/bin/lucairn" doctor \
+  --env "$ENV_GOODPUB" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --offline > "$TMPDIR/doctor-goodpub.out"
+grep -q "doctor: ok" "$TMPDIR/doctor-goodpub.out"
+grep -q "secret formats: ok" "$TMPDIR/doctor-goodpub.out"
+
+# (c) Gap 2: a non-integer LUCAIRN_LICENSE_GRACE_DAYS (e.g. "14d") -> doctor
+# FAILS; a plain integer ("14") -> doctor passes. The gateway rejects a
+# non-integer grace at boot (fatal), so doctor must block it pre-flight.
+ENV_BADGRACE="$TMPDIR/customer-entitlement-badgrace.env"
+cp "$ENV_FILE" "$ENV_BADGRACE"
+printf 'LUCAIRN_LICENSE_GRACE_DAYS=14d\n' >> "$ENV_BADGRACE"
+set +e
+"$ROOT/bin/lucairn" doctor \
+  --env "$ENV_BADGRACE" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --offline > "$TMPDIR/doctor-badgrace.out" 2>&1
+BADGRACE_STATUS=$?
+set -e
+if [ "$BADGRACE_STATUS" -eq 0 ]; then
+  echo "doctor should FAIL on a non-integer LUCAIRN_LICENSE_GRACE_DAYS ('14d')" >&2
+  exit 1
+fi
+grep -q "LUCAIRN_LICENSE_GRACE_DAYS must be a non-negative integer" "$TMPDIR/doctor-badgrace.out"
+
+ENV_GOODGRACE="$TMPDIR/customer-entitlement-goodgrace.env"
+cp "$ENV_FILE" "$ENV_GOODGRACE"
+printf 'LUCAIRN_LICENSE_GRACE_DAYS=14\n' >> "$ENV_GOODGRACE"
+"$ROOT/bin/lucairn" doctor \
+  --env "$ENV_GOODGRACE" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --offline > "$TMPDIR/doctor-goodgrace.out"
+grep -q "doctor: ok" "$TMPDIR/doctor-goodgrace.out"
+
+# (d) Gap 3: production + both entitlement vars set -> the pubkey-match reminder
+# WARN appears (informational only; doctor still passes — kit-side doctor can't
+# see the baked pin). The dev ENV_ENT case above must NOT emit it.
+ENV_PROD_ENT="$TMPDIR/customer-entitlement-prod.env"
+cp "$ENV_ENT" "$ENV_PROD_ENT"
+printf 'DSA_ENV=production\n' >> "$ENV_PROD_ENT"
+"$ROOT/bin/lucairn" doctor \
+  --env "$ENV_PROD_ENT" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --offline > "$TMPDIR/doctor-prod-ent.out" 2> "$TMPDIR/doctor-prod-ent.err" || true
+grep -q "warn: entitlement: ensure LUCAIRN_LICENSE_PUBLIC_KEY matches" "$TMPDIR/doctor-prod-ent.err"
+# The dev both-set run earlier must NOT carry the prod reminder.
+if grep -q "ensure LUCAIRN_LICENSE_PUBLIC_KEY matches" "$TMPDIR/doctor-ent.out"; then
+  echo "prod pubkey-match reminder leaked into a non-production doctor run" >&2
+  exit 1
+fi
+
 echo "lucairn entitlement doctor tests: ok"
 
 # --- A9: lucairn-init writes the entitlement vars from the bundle ------------
