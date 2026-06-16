@@ -4,6 +4,32 @@ Goal: a competent platform engineer should complete a standard install in about 
 
 ## Release notes
 
+### v0.5.3 / chart 1.9.3 (2026-06-16) — Lucairn anti-tamper (INERT until pin-baked) + S1–S6 security remediations
+
+**Upgrade from v0.5.2:** pull the new images (`LUCAIRN_IMAGE_TAG=0.5.3` in
+`customer.env`; or `global.imageTag: "0.5.3"` in Helm values). No database
+migration required. The 12 `dsa-*` images are republished + cosign-signed +
+Rekor-logged at `0.5.3` (`bin/lucairn verify-images --tag 0.5.3` → 13/13).
+`dsa-pii-ml` stays `0.5.1` (independent cadence) and `lucairn-dashboard` stays
+`0.8.2`.
+
+**What changed:**
+
+- **Deployment-entitlement anti-tamper (INERT on stock images):** 0.5.3 carries
+  the anti-tamper coupling from Lucairn PRs #291/#292 — fail-closed boot on a
+  missing/forged entitlement; `POST /api/v1/register` disabled (`403
+  registration_disabled`); `DSA_ENV=development` enforcement bypass closed;
+  `customer_id` coupling (`403 entitlement_mismatch`). **The stock GHCR images
+  ship `PinnedPublicKeyHex=""` and are fully INERT for anti-tamper.** Setting
+  `LUCAIRN_LICENSE_KEY` + `LUCAIRN_LICENSE_PUBLIC_KEY` on a stock image gives
+  feature-gating only — no fail-closed boot, no key↔entitlement coupling,
+  `/api/v1/register` stays open, `DSA_ENV=development` still bypasses.
+  Enforcement activates only on a Lucairn-built pin-baked gateway image (built
+  with the Ed25519 public key baked into `PinnedPublicKeyHex` via `-ldflags -X`).
+
+- **S1–S6 security remediations:** six security-audit findings remediated across
+  the `dsa-*` service images (see the Lucairn security advisory for full detail).
+
 ### v0.5.2 / chart 1.9.2 (2026-06-15) — A6 LOCATION stop-list + turnkey sign-manifest
 
 **Upgrade from v0.5.1:** pull the new images (`LUCAIRN_IMAGE_TAG=0.5.2` in
@@ -482,10 +508,10 @@ whole published set against the kit-bundled public key
 resolver (`docker buildx`, `crane`, or `skopeo`) on PATH:
 
 ```bash
-bin/lucairn verify-images --tag 0.5.2
+bin/lucairn verify-images --tag 0.5.3
 # or, with one release recorded, just:
 bin/lucairn verify-images
-# or a single image, by its signed digest (from keys/image-digests-0.5.2.txt):
+# or a single image, by its signed digest (from keys/image-digests-0.5.3.txt):
 cosign verify --key keys/lucairn-cosign.pub \
   ghcr.io/declade/dsa-gateway@sha256:<digest-from-the-record-file>
 ```
@@ -503,12 +529,12 @@ log (signed by the same Image Signing Key — no extra key or vendor). Fetch +
 verify it, and inspect exactly what is in each image:
 
 ```bash
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.2
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.3
 # save the raw verified SBOM:
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.2 --download dsa-gateway-0.5.2.spdx.json
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.3 --download dsa-gateway-0.5.3.spdx.json
 # or with raw cosign:
 cosign verify-attestation --type spdxjson \
-  --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.2
+  --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.3
 ```
 
 See **OPS.md → "Fetch + verify the Software Bill of Materials (SBOM)"** for the
@@ -646,7 +672,7 @@ of `LUCAIRN_LICENSE_KEY` / `LUCAIRN_LICENSE_PUBLIC_KEY` is set.
 1. Unpack the release bundle.
 
 ```bash
-tar -xzf lucairn-enterprise-deployment-kit-1.9.2.tar.gz
+tar -xzf lucairn-enterprise-deployment-kit-1.9.3.tar.gz
 cd lucairn-enterprise-deployment-kit
 ```
 
@@ -782,7 +808,7 @@ protocol versions — is documented in **OPS.md § "witness-signed manifest"** a
 the Veil **Key Ceremony Runbook** (§ "Producing the witness-signed manifest
 blob"). The invocation is:
 
-The `sign-manifest` tool ships **inside the pinned `dsa-veil-witness:0.5.2`
+The `sign-manifest` tool ships **inside the pinned `dsa-veil-witness:0.5.3`
 image** (`/usr/local/bin/sign-manifest`), so the ceremony is turnkey via
 `docker run --entrypoint sign-manifest` on the ceremony host — no Go toolchain,
 no build-from-source, no dev-mode fallback:
@@ -795,7 +821,7 @@ no build-from-source, no dev-mode fallback:
 docker run --rm \
   --entrypoint sign-manifest \
   -v "$PWD/keys.json:/keys.json:ro" \
-  ghcr.io/declade/dsa-veil-witness:0.5.2 \
+  ghcr.io/declade/dsa-veil-witness:0.5.3 \
   --keys-json /keys.json \
   --issuer "$LCR_ISSUER" \
   --witness-signing-key-hex "$LCR_WITNESS_SIGNING_KEY" \
@@ -808,7 +834,7 @@ docker run --rm \
 ```
 
 > **Flags** (run `docker run --rm --entrypoint sign-manifest
-> ghcr.io/declade/dsa-veil-witness:0.5.2 -h` to confirm against your pin):
+> ghcr.io/declade/dsa-veil-witness:0.5.3 -h` to confirm against your pin):
 > `--keys-json` (required), `--issuer` (required; matches `LCR_ISSUER` / legacy
 > `VEIL_ISSUER` at the gateway), `--witness-signing-key-hex` (required; the
 > Ed25519 witness seed, hex 32 bytes), `--witness-key-id` (default
@@ -821,7 +847,7 @@ docker run --rm \
 >
 > **(Was a known limitation through 0.5.1: `sign-manifest` was not shipped in
 > the image and had to be built from source on the ceremony host, or the install
-> run in dev mode. The 0.5.2 `dsa-veil-witness` image ships the tool — the
+> run in dev mode. The 0.5.2 `dsa-veil-witness` image shipped the tool — the
 > `docker run` path above replaces both workarounds. Closes BLOCKER-3.)**
 
 5. Run offline validation before network checks.
@@ -2533,9 +2559,9 @@ included in support bundles.
 ### Prerequisite: gateway image >= 0.5.1
 
 This feature first shipped in the gateway image at `0.5.1` (the feature floor);
-the current published release is `0.5.2` (`appVersion: 0.5.2`, chart `v1.9.2`),
+the current published release is `0.5.3` (`appVersion: 0.5.3`, chart `v1.9.3`),
 also published to GHCR. The gateway binary that reads `GATEWAY_TMS_TRUST_ZONES`
-is present from `0.5.1` onward, so any `>= 0.5.1` pin (including `0.5.2`) works.
+is present from `0.5.1` onward, so any `>= 0.5.1` pin (including `0.5.3`) works.
 Setting `GATEWAY_TMS_TRUST_ZONES` on an **older** image (e.g. `0.5.0`) is a
 **silent no-op** — the var is present in the ConfigMap but that older gateway
 does not read it.
@@ -2553,8 +2579,8 @@ the image is new enough:
 tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES is set but LUCAIRN_IMAGE_TAG="latest" is not an exact semver pin; doctor cannot confirm the gateway image is >= 0.5.1. Pin an exact tag (e.g. 0.5.1) or unset the policy.
 ```
 
-Pin `LUCAIRN_IMAGE_TAG=0.5.2` in `customer.env` (Compose) or
-`--set global.imageTag=0.5.2` (Helm) — the current published release (any exact
+Pin `LUCAIRN_IMAGE_TAG=0.5.3` in `customer.env` (Compose) or
+`--set global.imageTag=0.5.3` (Helm) — the current published release (any exact
 `>= 0.5.1` pin satisfies the feature floor) — then apply the policy.
 
 ### Helm
