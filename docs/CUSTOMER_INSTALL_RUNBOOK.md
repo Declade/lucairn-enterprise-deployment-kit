@@ -13,9 +13,9 @@ You will need:
 
 - Ubuntu 22.04+ x86_64 (Debian 12, RHEL 9, AL2023 also tested) with `sudo`.
 - Docker Engine 24+ and Docker Compose v2 (`docker compose version` reports `v2.x`).
-- 8 GB RAM, 4 vCPUs, 50 GB disk free.
+- 16 GB RAM recommended (4 vCPUs, 50 GB disk free). ~8 GB is feasible for this pilot topology **because the L3 deep PII shield is off by default** (`LUCAIRN_L3_REQUIRED=false`) — the `ollama-identity` container runs but loads no `qwen2.5:7b` model, so it idles at a few hundred MB instead of the ~5 GB resident a loaded model needs. If you later stage the L3 model and set `LUCAIRN_L3_REQUIRED=true`, provision the full 16 GB. (INSTALL.md states 16 GB minimum for the L3-on default; the two figures are reconciled by whether the L3 model is loaded.)
 - Outbound HTTPS to:
-  - `ghcr.io` (one-time image pull, ~3 GB across 13 images).
+  - `ghcr.io` (one-time pull of the 7 Lucairn `dsa-*` images; ~3 GB total including the postgres / redis / alpine / migrate / ollama images from Docker Hub).
   - The managed-LLM provider you intend to BYOK (`api.anthropic.com` by default).
 - A managed-LLM API key for one of: Anthropic, OpenAI, Mistral, Gemini.
 - A GitHub account that Lucairn has granted `read:packages` access to the `Declade/lucairn-enterprise-deployment-kit` GHCR namespace, plus a Personal Access Token (PAT) with `read:packages` scope.
@@ -125,7 +125,7 @@ docker compose -p compose-demo \
 
 The `-p compose-demo` flag pins the Docker Compose project name so container names start with `compose-demo-*` regardless of the directory name on disk. Without it, Compose defaults the project name to the current directory name (`lucairn-enterprise-deployment-kit-*`).
 
-This pulls 13 images (~3 GB first time, cached thereafter) and starts the full pilot stack. Compose returns when containers are started; healthchecks take another ~30 s to settle.
+This pulls 12 distinct images (~3 GB first time, cached thereafter — 7 Lucairn `dsa-*` images from `ghcr.io`, plus postgres / redis / alpine / migrate / ollama from Docker Hub) and starts the full pilot stack: 15 long-running containers (see below). Compose returns when containers are started; healthchecks take another ~30 s to settle.
 
 Wait for everything to report `(healthy)`:
 
@@ -138,25 +138,52 @@ docker compose -p compose-demo \
   ps --format 'table {{.Name}}\t{{.Status}}'
 ```
 
-You should see 13 containers, all `Up X seconds (healthy)`:
+You should see 15 containers. All report `Up X seconds (healthy)` except
+`ollama-identity`, which has no Compose healthcheck (the image ships no shell,
+and its L3 model is not staged by default — see § 1 and INSTALL.md) and so
+reports `Up X seconds` with no `(healthy)` suffix. That bare `Up` is expected,
+not a failure:
 
 ```
-compose-demo-audit-1                Up (healthy)
-compose-demo-gateway-1              Up (healthy)
-compose-demo-id-bridge-1            Up (healthy)
-compose-demo-postgres-audit-1       Up (healthy)
-compose-demo-postgres-bridge-1      Up (healthy)
-compose-demo-postgres-sandbox-a-1   Up (healthy)
-compose-demo-postgres-veil-1        Up (healthy)
-compose-demo-redis-ai-1             Up (healthy)
-compose-demo-redis-sanitizer-1      Up (healthy)
-compose-demo-sandbox-a-1            Up (healthy)
-compose-demo-sandbox-b-1            Up (healthy)
-compose-demo-sanitizer-1            Up (healthy)
-compose-demo-veil-witness-1         Up (healthy)
+compose-demo-audit-1                  Up (healthy)
+compose-demo-gateway-1                Up (healthy)
+compose-demo-id-bridge-1              Up (healthy)
+compose-demo-ollama-identity-1        Up
+compose-demo-postgres-audit-1         Up (healthy)
+compose-demo-postgres-bridge-1        Up (healthy)
+compose-demo-postgres-sandbox-a-1     Up (healthy)
+compose-demo-postgres-veil-1          Up (healthy)
+compose-demo-redis-ai-1               Up (healthy)
+compose-demo-redis-sanitizer-1        Up (healthy)
+compose-demo-redis-sanitizer-cache-1  Up (healthy)
+compose-demo-sandbox-a-1              Up (healthy)
+compose-demo-sandbox-b-1              Up (healthy)
+compose-demo-sanitizer-1              Up (healthy)
+compose-demo-veil-witness-1           Up (healthy)
 ```
+
+(The one-shot `prep-migrations` + `migrate-*` jobs run once and exit, so they
+do not appear in steady-state `ps`. `ollama-identity` is the always-on L3
+PII-shield runtime: it runs but holds no model until you stage one — with
+`LUCAIRN_L3_REQUIRED=false` (the kit default) the stack runs L1+L2 and does not
+block on it.)
 
 If any container is `unhealthy` or `restarting`, see § Troubleshooting.
+
+> **L3 deep PII shield is OFF by default for now.** The kit's `lucairn-init`
+> writes `LUCAIRN_L3_REQUIRED=false` into `customer.env`, so the stack runs the
+> L1 (deterministic regex/dictionary) + L2 (sandbox-a) PII layers and does **not**
+> require the optional L3 model (`qwen2.5:7b`) to be staged before your first
+> inference. With L3 off, the request proceeds on L1+L2 and the verification
+> certificate is honestly downgraded to **PARTIAL** (the witness omits
+> `llm_pii_scan` from `layers_active`); you do **not** get a `503
+> l3_scrubber_unavailable` on the first request.
+>
+> **To re-enable L3 later:** pre-stage the `qwen2.5:7b` model into the
+> `ollama-identity` volume (the air-gap-preserving throwaway-container procedure
+> is in **INSTALL.md § "Pre-stage the L3 deep PII-shield model"**), then set
+> `LUCAIRN_L3_REQUIRED=true` in `customer.env`, re-run `bin/lucairn doctor`, and
+> restart the stack. Provision the full 16 GB RAM (§ 1) when you do.
 
 ---
 
