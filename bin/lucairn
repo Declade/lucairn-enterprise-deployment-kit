@@ -5919,34 +5919,49 @@ args_have_customer_id() {
 license_command() {
   local subcmd="${1:-}"
   case "$subcmd" in
-    issue)
+    issue|verify|gen-key)
       shift
-      # A9 auto-fill: --customer-id MUST match the customer's keystore
-      # customer_id (the value shown by 'lucairn-mint-customer'); a mismatch
-      # causes the gateway to return 403 entitlement_mismatch. If the caller did
-      # NOT pass --customer-id explicitly, fill it from the kit-local state file
-      # that lucairn-mint-customer persisted on the last successful mint.
-      # Explicit --customer-id always wins (never overridden). If neither is
-      # available, fail with an actionable pointer instead of shelling out to a
-      # signer that would reject the call.
-      local state_file cid
-      state_file="$(customer_id_state_file)"
-      if args_have_customer_id "$@"; then
-        # Explicit flag present — pass everything through unchanged.
-        # shellcheck disable=SC2046  # word-split runner prefix intentionally
-        exec $(license_sign_runner) issue "$@"
-      elif [ -s "$state_file" ] && cid="$(head -n1 "$state_file" | tr -d '\r\n')" && [ -n "$cid" ]; then
-        warn "license issue: auto-filling --customer-id $cid from $state_file (run with an explicit --customer-id to override)"
-        # shellcheck disable=SC2046  # word-split runner prefix intentionally
-        exec $(license_sign_runner) issue --customer-id "$cid" "$@"
+      # Resolve the signer FIRST, into a local, before any exec. The runner can
+      # legitimately fail (no LUCAIRN_LICENSE_SIGN_BIN, no license-sign on PATH,
+      # no DSA_REPO) — when it does it calls fail/exit 1, but inside a $(...)
+      # that exit only ends the SUBSHELL, leaving an empty command. The old
+      # `exec $(license_sign_runner) …` then ran `exec  issue …`, which the
+      # outer shell reported as `exec: issue: not found` (EXIT 127) with a
+      # spurious bash error AFTER the actionable message. Capture the runner's
+      # exit status here and fail CLEANLY (exit 1, the same actionable message)
+      # before we ever reach exec.
+      local runner
+      runner="$(license_sign_runner)" || exit $?
+      # Defensive: a runner that somehow returned 0 with empty output must not
+      # degrade into `exec  <subcmd>` (the 127 failure mode). Fail cleanly.
+      [ -n "$runner" ] || fail "license-sign tool not found. Set LUCAIRN_LICENSE_SIGN_BIN to a prebuilt binary, put 'license-sign' on PATH, or set DSA_REPO to the dual-sandbox-architecture clone."
+
+      if [ "$subcmd" = "issue" ]; then
+        # A9 auto-fill: --customer-id MUST match the customer's keystore
+        # customer_id (the value shown by 'lucairn-mint-customer'); a mismatch
+        # causes the gateway to return 403 entitlement_mismatch. If the caller
+        # did NOT pass --customer-id explicitly, fill it from the kit-local
+        # state file that lucairn-mint-customer persisted on the last successful
+        # mint. Explicit --customer-id always wins (never overridden). If
+        # neither is available, fail with an actionable pointer instead of
+        # shelling out to a signer that would reject the call.
+        local state_file cid
+        state_file="$(customer_id_state_file)"
+        if args_have_customer_id "$@"; then
+          # Explicit flag present — pass everything through unchanged.
+          # shellcheck disable=SC2086  # word-split runner prefix intentionally
+          exec $runner issue "$@"
+        elif [ -s "$state_file" ] && cid="$(head -n1 "$state_file" | tr -d '\r\n')" && [ -n "$cid" ]; then
+          warn "license issue: auto-filling --customer-id $cid from $state_file (run with an explicit --customer-id to override)"
+          # shellcheck disable=SC2086  # word-split runner prefix intentionally
+          exec $runner issue --customer-id "$cid" "$@"
+        else
+          fail "license issue: no --customer-id given and no persisted customer_id at $state_file. Run 'bin/lucairn-mint-customer --name \"<Customer>\"' first (it records the customer_id), or pass --customer-id <id> explicitly. The id MUST match the customer's gateway keystore customer_id or the gateway returns 403 entitlement_mismatch."
+        fi
       else
-        fail "license issue: no --customer-id given and no persisted customer_id at $state_file. Run 'bin/lucairn-mint-customer --name \"<Customer>\"' first (it records the customer_id), or pass --customer-id <id> explicitly. The id MUST match the customer's gateway keystore customer_id or the gateway returns 403 entitlement_mismatch."
+        # shellcheck disable=SC2086  # word-split runner prefix intentionally
+        exec $runner "$subcmd" "$@"
       fi
-      ;;
-    verify|gen-key)
-      shift
-      # shellcheck disable=SC2046  # word-split runner prefix intentionally
-      exec $(license_sign_runner) "$subcmd" "$@"
       ;;
     -h|--help|"")
       license_usage
