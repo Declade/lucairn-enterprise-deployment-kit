@@ -394,6 +394,9 @@ For Docker Compose:
   L3-on baseline. 4 vCPU is sufficient for any of these topologies at
   single-tenant pilot load.
 - TLS-terminating reverse proxy such as Caddy, Nginx, Traefik, or an enterprise ingress proxy.
+- Outbound HTTPS to the image registries used during `docker compose up` / `docker pull`:
+  - `ghcr.io` — the 7 Lucairn `dsa-*` images are in the private `ghcr.io/declade/*` namespace (authentication required; see § "Registry Authentication").
+  - `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com` — public base images (`postgres`, `redis`, `alpine`, the `migrate` image, and `ollama/ollama`) are pulled from Docker Hub. A host that allowlists only `ghcr.io` will pass GHCR auth but fail on these pulls. If direct Docker Hub access is prohibited, mirror these images into your internal registry and set `LUCAIRN_IMAGE_REGISTRY` in `customer.env`.
 - Outbound HTTPS to Lucairn-provided remote Sandbox B endpoint if using split deployment.
 - Python 3 with the `cryptography` library (>=2.6) OR `pynacl`. Required by
   `bin/lucairn-init` and `scripts/derive-veil-pubkey.sh` for Ed25519 keypair
