@@ -877,22 +877,29 @@ The running `ollama-identity` keeps **no egress** (`internal: true`); only the
 one-time throwaway staging container in step 2 has egress, and it exits as soon
 as the pull completes. This procedure is validated on a fresh install.
 
-Until the model is staged, the L3 deep PII shield is unavailable and the
-sanitizer is fail-CLOSED by design: the gateway returns
-`503 l3_scrubber_unavailable` rather than ship a request with only L1+L2
-scrubbing. The `LUCAIRN_L3_REQUIRED` default is **deployment-aware**:
+**Out-of-the-box default — continue-mode (L1+L2 only).** `lucairn-init`
+writes `LUCAIRN_L3_REQUIRED=false` into `customer.env` for every deployment
+path. With this default the stack runs continue-mode: the sanitizer applies the
+L1 (deterministic regex/dictionary) + L2 (sandbox-a) PII layers, the L3 shield
+is treated as optional, and the verification certificate is honestly downgraded
+to **`COMPLETENESS_PARTIAL`** (the witness omits `llm_pii_scan` from
+`layers_active`). The gateway does **not** return `503 l3_scrubber_unavailable`
+— requests complete immediately even though the `qwen2.5:7b` model has not yet
+been staged.
 
-- **Self-hosted** (`docker-compose.customer.yml` + `docker-compose.self-hosted.yml`)
-  defaults to `true` (fail-closed) because this overlay wires the always-on
-  `ollama-identity` L3 shield — a request must not silently degrade to L1+L2 if
-  the shield is down.
-- **Split deployment** (`docker-compose.customer.yml` alone) defaults to `false`
-  because that path starts no L3 service; requiring L3 there would 503 every
-  request.
+The pre-stage procedure above is the **optional** path to **re-enable L3
+fail-closed** mode. To activate it after staging the model:
 
-Set `LUCAIRN_L3_REQUIRED` in `customer.env` to override either default (e.g.
-`false` for a deliberate continue-mode self-hosted install, in which the cert is
-honestly downgraded to PARTIAL when the shield is down).
+1. Complete the throwaway-pull staging procedure above.
+2. Set `LUCAIRN_L3_REQUIRED=true` in `customer.env`.
+3. Restart the stack (`docker compose … up -d`).
+
+With `LUCAIRN_L3_REQUIRED=true` the sanitizer is fail-CLOSED: the gateway
+returns `503 l3_scrubber_unavailable` if the L3 shield is unreachable rather
+than degrading to L1+L2 silently. The certificate completeness becomes
+`COMPLETENESS_FULL` once the model is loaded and all four claim layers are
+active. Provision the full 16 GB RAM before enabling this mode (see
+§ Pre-Requisites).
 
 ### Self-hosted with managed LLM (BYOK Anthropic, OpenAI, etc.)
 
