@@ -258,17 +258,32 @@ print("claims_signed:    ", len(d["claims"]))
 '
 ```
 
-Expected output:
+Expected output (default L3-off install):
 
 ```
 signatures_valid:  True
-completeness:      COMPLETENESS_FULL
+completeness:      COMPLETENESS_PARTIAL
 overall_verdict:   VERDICT_VERIFIED
 byok_exempt:       True
 claims_signed:     4
 ```
 
-That is your end-to-end PASS gate. Four services (bridge, sanitizer, AI, audit) each signed their own claim. The witness assembled and signed the chain. Every signature verifies against the deployed Ed25519 keypairs.
+**PASS gate:** `signatures_valid: True` and `overall_verdict: VERDICT_VERIFIED`
+are the mandatory signals. `completeness: COMPLETENESS_PARTIAL` is **correct and
+expected** with the default `LUCAIRN_L3_REQUIRED=false` config — it means the
+L1+L2 PII layers are active and the chain is fully signed; the L3 deep PII
+shield is simply not loaded, so `llm_pii_scan` is absent from `layers_active`.
+This is NOT a failure. Do not confuse PARTIAL completeness with a broken stack.
+
+`completeness: COMPLETENESS_FULL` is expected ONLY if you have re-enabled L3:
+pre-staged the `qwen2.5:7b` model into the `ollama-identity` volume AND set
+`LUCAIRN_L3_REQUIRED=true` in `customer.env` (see INSTALL.md §
+"Pre-stage the L3 deep PII-shield model"). If you see FULL without having done
+both of those steps, open a support ticket.
+
+Four services (bridge, sanitizer, AI, audit) each signed their own claim. The
+witness assembled and signed the chain. Every signature verifies against the
+deployed Ed25519 keypairs.
 
 ---
 
