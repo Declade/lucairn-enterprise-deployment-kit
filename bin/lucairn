@@ -4995,11 +4995,14 @@ doctor() {
       echo "network policies: present in $kube_namespace ($np_count) — presence only (CNI enforcement NOT verified)"
       echo "network policies:   To actively verify CNI enforcement, run:"
       echo "network policies:     kubectl apply -f docs/cni-probe-job.yaml"
-      echo "network policies:     kubectl wait --for=condition=complete -n lucairn-probe job/lucairn-cni-probe --timeout=60s"
+      echo "network policies:     kubectl wait --for=condition=complete -n lucairn-probe job/lucairn-cni-probe --timeout=90s"
       echo "network policies:     kubectl logs -n lucairn-probe job/lucairn-cni-probe"
-      echo "network policies:   A PASS result confirms the blocked flow was rejected (CNI enforcing)."
-      echo "network policies:   A FAIL result means the CNI is NOT enforcing NetworkPolicy — the"
-      echo "network policies:   Sandbox-A↔Sandbox-B isolation air-gap is inert. See docs/cni-probe-job.yaml."
+      echo "network policies:   PASS — blocked flow rejected; CNI enforcing NetworkPolicy."
+      echo "network policies:   FAIL — blocked flow reachable; CNI NOT enforcing; isolation air-gap is inert."
+      echo "network policies:   INCONCLUSIVE — DNS did not resolve; sandbox-a may not be deployed or"
+      echo "network policies:     the namespace differs from the chart default (dsa-identity)."
+      echo "network policies:   Clean up: kubectl delete namespace lucairn-probe"
+      echo "network policies:   See docs/cni-probe-job.yaml for full verdict logic."
     else
       echo "network policies: NONE found in $kube_namespace (or cluster unavailable) — the Sandbox-A↔Sandbox-B isolation air-gap is unenforced; see docs/CUSTOMER_HELM_RUNBOOK.md#prereqs-1-time"
     fi

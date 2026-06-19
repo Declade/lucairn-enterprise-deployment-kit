@@ -7,55 +7,92 @@
 # inert while doctor reports "presence only". This job provides a definitive answer.
 #
 # What it tests:
-#   ALLOWED flow  — probe namespace  →  lucairn namespace  on port 8080 (gateway)
-#                   Expected: connection succeeds (gateway is reachable inside the cluster)
-#   BLOCKED flow  — probe namespace  →  dsa-edge namespace  on port 50053 (sandbox-a gRPC)
-#                   Expected: connection REFUSED (NetworkPolicy isolates sandbox-a)
+#   BLOCKED flow  — lucairn-probe namespace  →  dsa-identity namespace
+#                   on port 50053 (sandbox-a gRPC)
+#                   Expected: connection REFUSED/TIMEOUT (NetworkPolicy isolates
+#                   sandbox-a from arbitrary namespaces)
+#
+# Probe DNS targets (confirmed from chart-rendered Service metadata):
+#   sandbox-a (BLOCKED target): sandbox-a.dsa-identity.svc.cluster.local:50053
+#     Source: charts/lucairn/charts/sandbox-a/Chart.yaml name=sandbox-a
+#             charts/lucairn/charts/sandbox-a/values.yaml namespace=dsa-identity
+#             charts/lucairn/charts/sandbox-a/values.yaml service.grpcPort=50053
+#
+# Three-way verdict logic (not any-failure=PASS):
+#   INCONCLUSIVE — target DNS does NOT resolve (NXDOMAIN / unresolvable).
+#                  Cannot verify enforcement. Likely wrong release name, wrong
+#                  namespace, or sandbox-a not deployed. Exits NON-ZERO.
+#   PASS         — DNS resolves AND connection is refused/timed out.
+#                  NetworkPolicy enforcement confirmed. Exits 0.
+#   FAIL         — DNS resolves AND connection SUCCEEDS.
+#                  CNI is NOT enforcing NetworkPolicy; isolation air-gap is inert.
+#                  Exits NON-ZERO.
 #
 # How to deploy and read:
-#   1.  Create the probe namespace:
-#         kubectl create namespace lucairn-probe --dry-run=client -o yaml | kubectl apply -f -
-#
-#   2.  Apply this manifest (RBAC + Job):
+#   1.  Apply this manifest (creates the probe namespace, RBAC, and Job):
 #         kubectl apply -f docs/cni-probe-job.yaml
 #
-#   3.  Wait for completion (up to 60s):
+#   2.  Wait for completion (up to 90s):
 #         kubectl wait --for=condition=complete -n lucairn-probe \
-#           job/lucairn-cni-probe --timeout=60s
+#           job/lucairn-cni-probe --timeout=90s
+#       Note: --for=condition=complete does NOT trigger on a failed Job.
+#       If the wait times out, check logs with step 3 and look for FAIL/INCONCLUSIVE.
 #
-#   4.  Read the result:
+#   3.  Read the result:
 #         kubectl logs -n lucairn-probe job/lucairn-cni-probe
 #
 #   PASS output (CNI is enforcing):
-#     [PASS] allowed flow: gateway:8080 reachable as expected
-#     [PASS] blocked flow: sandbox-a:50053 rejected as expected — CNI enforcing NetworkPolicy
+#     [RESOLVE] sandbox-a.dsa-identity.svc.cluster.local resolves — DNS OK
+#     [PASS] blocked flow: sandbox-a.dsa-identity.svc.cluster.local:50053 rejected as expected
 #     CNI probe: PASS — NetworkPolicy enforcement confirmed
 #
 #   FAIL output (CNI is NOT enforcing — isolation air-gap is inert):
-#     [FAIL] blocked flow: sandbox-a:50053 is REACHABLE — CNI does NOT enforce NetworkPolicy
-#     CNI probe: FAIL — the Sandbox-A<->Sandbox-B isolation air-gap is NOT enforced.
-#     Install a CNI that supports NetworkPolicy (Calico, Cilium, Weave Net)
-#     and re-run this probe before handling production data.
+#     [RESOLVE] sandbox-a.dsa-identity.svc.cluster.local resolves — DNS OK
+#     [FAIL] blocked flow: sandbox-a.dsa-identity.svc.cluster.local:50053 is REACHABLE
+#            CNI does NOT enforce NetworkPolicy — isolation air-gap is inert.
+#     CNI probe: FAIL
+#            Install a CNI that supports NetworkPolicy (Calico, Cilium, Weave Net)
+#            and re-run this probe before handling production data.
 #
-#   The Job exits non-zero on any FAIL — CI/CD pipelines can treat a non-zero
-#   exit as a gate: `kubectl wait --for=condition=complete` fails if the Job fails.
+#   INCONCLUSIVE output (DNS did not resolve — wrong name/namespace or not deployed):
+#     [INCONCLUSIVE] sandbox-a.dsa-identity.svc.cluster.local does NOT resolve
+#                    Cannot verify CNI enforcement. Possible causes:
+#                      - sandbox-a is not deployed yet (check: kubectl get pod -n dsa-identity)
+#                      - Helm release used a non-default namespace (adjust BLOCKED_HOST below)
+#                      - Cluster DNS is not functioning
+#     CNI probe: INCONCLUSIVE — cannot verify enforcement; see above
+#
+#   The Job exits non-zero on FAIL or INCONCLUSIVE — CI/CD pipelines can treat a
+#   non-zero exit as a gate.
+#
+# Adjusting for a non-default Helm release namespace:
+#   If your Helm install uses a different namespace for sandbox-a, edit the
+#   BLOCKED_HOST env var below to match:
+#     sandbox-a.<your-namespace>.svc.cluster.local
+#   The chart default is namespace=dsa-identity (sandbox-a/values.yaml:namespace).
 #
 # Clean up after use:
-#   kubectl delete -f docs/cni-probe-job.yaml
 #   kubectl delete namespace lucairn-probe
-#
-# Namespace / target assumptions:
-#   - The gateway service is named "gateway" in namespace "lucairn" on port 8080.
-#   - The sandbox-a gRPC service is named "sandbox-a" in namespace "dsa-edge" on port 50053.
-#   Adjust the SERVICE_HOST_* / SERVICE_PORT_* env vars below if your deployment uses
-#   different names, namespaces, or ports (e.g. when Helm release name differs).
+#   (Deleting the namespace removes the Job, ServiceAccount, and all other
+#    namespaced resources created by this manifest in a single step.)
 #
 # Security note:
-#   This probe uses a standard busybox image with netcat (nc). It performs
-#   connection-only probes (no data sent, no authentication), then exits.
+#   This probe uses a standard busybox image with netcat (nc) and nslookup.
+#   It performs connection-only probes (no data sent, no authentication), then exits.
 #   The probe namespace has no access to cluster secrets or PVC storage.
 #   Delete the probe namespace after use.
 #
+---
+# Namespace: created first so the namespaced resources below can be applied
+# in a single `kubectl apply -f docs/cni-probe-job.yaml` invocation.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lucairn-probe
+  labels:
+    app.kubernetes.io/name: lucairn-cni-probe
+    app.kubernetes.io/component: cni-enforcement-probe
+    app.kubernetes.io/managed-by: lucairn-kit
 ---
 # RBAC: allow the probe pod to run in the lucairn-probe namespace.
 apiVersion: v1
@@ -97,7 +134,7 @@ spec:
         runAsGroup: 65534
       containers:
         - name: probe
-          # busybox ships nc (netcat) — lightweight, no extra dependencies.
+          # busybox ships nc (netcat) and nslookup — lightweight, no extra dependencies.
           image: busybox:1.36
           imagePullPolicy: IfNotPresent
           securityContext:
@@ -106,19 +143,20 @@ spec:
             capabilities:
               drop: [ALL]
           env:
-            # ALLOWED target: the gateway service. Adjust if your Helm release
-            # name or namespace differs.
-            - name: ALLOWED_HOST
-              value: "gateway.lucairn.svc.cluster.local"
-            - name: ALLOWED_PORT
-              value: "8080"
-            # BLOCKED target: sandbox-a gRPC port. The Lucairn NetworkPolicy
-            # should block cross-namespace access to this port from outside dsa-edge.
+            # BLOCKED target: sandbox-a gRPC service.
+            # Chart-rendered DNS: sandbox-a.dsa-identity.svc.cluster.local
+            #   Service name  = chart name "sandbox-a"
+            #                   (charts/lucairn/charts/sandbox-a/Chart.yaml)
+            #   Namespace     = values.yaml:namespace = "dsa-identity"
+            #   Port          = values.yaml:service.grpcPort = 50053
+            #   Service.yaml  = charts/lucairn/charts/sandbox-a/templates/service.yaml
+            # The Lucairn NetworkPolicy should block cross-namespace access to
+            # this port from the lucairn-probe namespace.
             - name: BLOCKED_HOST
-              value: "sandbox-a.dsa-edge.svc.cluster.local"
+              value: "sandbox-a.dsa-identity.svc.cluster.local"
             - name: BLOCKED_PORT
               value: "50053"
-            # Timeout in seconds for each nc probe (keep short).
+            # Timeout in seconds for each nc connect attempt (keep short).
             - name: PROBE_TIMEOUT
               value: "5"
           command:
@@ -127,35 +165,44 @@ spec:
             - |
               RESULT=0
 
-              # --- BLOCKED flow ---
+              # --- Step 1: DNS resolution check ---
+              # If the target does not resolve, we CANNOT distinguish "CNI blocks it"
+              # from "wrong name/namespace/not-deployed". Treat as INCONCLUSIVE and
+              # exit non-zero — never print "enforcement confirmed" on an unresolved target.
+              if ! nslookup "$BLOCKED_HOST" >/dev/null 2>&1; then
+                echo "[INCONCLUSIVE] ${BLOCKED_HOST} does NOT resolve"
+                echo "               Cannot verify CNI enforcement. Possible causes:"
+                echo "                 - sandbox-a is not deployed yet"
+                echo "                   (check: kubectl get pod -n dsa-identity)"
+                echo "                 - Helm release used a non-default namespace"
+                echo "                   (adjust BLOCKED_HOST in docs/cni-probe-job.yaml)"
+                echo "                 - Cluster DNS is not functioning"
+                echo "CNI probe: INCONCLUSIVE — cannot verify enforcement; see above"
+                exit 1
+              fi
+              echo "[RESOLVE] ${BLOCKED_HOST} resolves — DNS OK"
+
+              # --- Step 2: Blocked flow connection attempt ---
               # The NetworkPolicy should prevent this namespace from reaching
               # sandbox-a's gRPC port. If nc succeeds, the CNI is NOT enforcing.
+              # nc -z: scan (connect) only, send no data.
+              # nc -w: connect timeout in seconds.
+              # Exit 0 = connection succeeded (FAIL); non-zero = refused/timeout (PASS).
               if nc -z -w "$PROBE_TIMEOUT" "$BLOCKED_HOST" "$BLOCKED_PORT" 2>/dev/null; then
-                echo "[FAIL] blocked flow: ${BLOCKED_HOST}:${BLOCKED_PORT} is REACHABLE — CNI does NOT enforce NetworkPolicy"
+                echo "[FAIL] blocked flow: ${BLOCKED_HOST}:${BLOCKED_PORT} is REACHABLE"
+                echo "       CNI does NOT enforce NetworkPolicy — isolation air-gap is inert."
                 RESULT=1
               else
-                echo "[PASS] blocked flow: ${BLOCKED_HOST}:${BLOCKED_PORT} rejected as expected — CNI enforcing NetworkPolicy"
-              fi
-
-              # --- ALLOWED flow ---
-              # The gateway should be reachable from this probe namespace
-              # (no NetworkPolicy blocks inbound to the gateway on port 8080).
-              # A failure here may indicate the gateway is not running yet
-              # (non-fatal for the CNI enforcement conclusion).
-              if nc -z -w "$PROBE_TIMEOUT" "$ALLOWED_HOST" "$ALLOWED_PORT" 2>/dev/null; then
-                echo "[PASS] allowed flow: ${ALLOWED_HOST}:${ALLOWED_PORT} reachable as expected"
-              else
-                echo "[WARN] allowed flow: ${ALLOWED_HOST}:${ALLOWED_PORT} unreachable — gateway may not be running yet"
-                echo "       This does NOT indicate a CNI enforcement problem; check gateway pod status."
+                echo "[PASS] blocked flow: ${BLOCKED_HOST}:${BLOCKED_PORT} rejected as expected"
               fi
 
               # --- Summary ---
               if [ "$RESULT" -eq 0 ]; then
                 echo "CNI probe: PASS — NetworkPolicy enforcement confirmed"
               else
-                echo "CNI probe: FAIL — the Sandbox-A<->Sandbox-B isolation air-gap is NOT enforced."
-                echo "           Install a CNI that supports NetworkPolicy (Calico, Cilium, Weave Net)"
-                echo "           and re-run this probe before handling production data."
+                echo "CNI probe: FAIL"
+                echo "       Install a CNI that supports NetworkPolicy (Calico, Cilium, Weave Net)"
+                echo "       and re-run this probe before handling production data."
               fi
 
               exit "$RESULT"
