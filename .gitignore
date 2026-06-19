@@ -14,6 +14,9 @@ customer-bundles/
 *.tar.gz
 *.tgz
 .certs/
+# Default output directory of scripts/bootstrap-grpc-certs.sh.
+# Private CA and service keys land here — NEVER commit.
+grpc-certs/
 # Ignore everything customers may drop in the root keys/ dir (Ed25519 pairs,
 # private cosign keys, etc.) — a safety net against committing private material.
 # A negation on a file requires first re-including the directory itself (git

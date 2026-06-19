@@ -28,8 +28,12 @@
 # Usage:
 #   bash scripts/bootstrap-grpc-certs.sh [OUTPUT_DIR]
 #
-# OUTPUT_DIR defaults to ./grpc-certs (create it before helm install).
+# OUTPUT_DIR defaults to .certs/grpc-certs — already covered by the repo
+# .gitignore (.certs/ rule), so private keys cannot be accidentally staged.
 # Re-running is IDEMPOTENT: existing key/cert pairs are NOT overwritten.
+# IMPORTANT: if you removed ca.key (offline-storage advice) and re-run in the
+# same OUTPUT_DIR, the script FAILS FAST rather than generating a mismatched CA
+# that would silently break mTLS. Use a fresh OUTPUT_DIR or restore ca.key.
 # To rotate, delete the individual files (or the whole dir) and re-run.
 #
 # Produces:
@@ -48,7 +52,11 @@
 
 set -euo pipefail
 
-CERT_DIR="${1:-${CERT_DIR:-./grpc-certs}}"
+# Default to .certs/grpc-certs — already covered by the repo .gitignore's
+# .certs/ rule, so a plain `bash scripts/bootstrap-grpc-certs.sh` run can
+# never accidentally stage private keys. Operators may override via $1 or
+# $CERT_DIR, but they should ensure their chosen path is also gitignored.
+CERT_DIR="${1:-${CERT_DIR:-.certs/grpc-certs}}"
 CA_DAYS="${CA_DAYS:-3650}"
 LEAF_DAYS="${LEAF_DAYS:-365}"
 
@@ -68,7 +76,33 @@ chmod 700 "${CERT_DIR}"
 log() { printf '[bootstrap-grpc-certs] %s\n' "$*"; }
 
 # ── 1. Per-deploy CA ──────────────────────────────────────────────────────────
-if [ ! -f "${CERT_DIR}/ca.key" ]; then
+# Partial-CA-pair guard (Codex r1 P2):
+# If ca.crt exists WITHOUT ca.key (operator followed the "store ca.key
+# offline" advice), regenerating the CA produces a NEW root that can no
+# longer sign — or verify — the existing leaf certs. Silently doing so would
+# produce a broken mTLS setup. Fail fast instead.
+ca_crt_exists=false
+ca_key_exists=false
+[ -f "${CERT_DIR}/ca.crt" ] && ca_crt_exists=true
+[ -f "${CERT_DIR}/ca.key" ] && ca_key_exists=true
+
+if $ca_crt_exists && ! $ca_key_exists; then
+  log "ERROR: partial CA pair detected — ca.crt is present but ca.key is absent."
+  log "  Regenerating the CA would orphan the existing leaf certs and break mTLS."
+  log "  Options:"
+  log "    a) Restore ca.key from your offline store, then re-run."
+  log "    b) Use a fresh OUTPUT_DIR (e.g. .certs/grpc-certs-$(date +%Y%m%d)) to"
+  log "       generate a new CA + all-new leaf certs from scratch."
+  exit 1
+fi
+
+if ! $ca_crt_exists && $ca_key_exists; then
+  log "ERROR: partial CA pair detected — ca.key is present but ca.crt is absent."
+  log "  This is an unexpected state. Remove or restore ca.crt before re-running."
+  exit 1
+fi
+
+if ! $ca_crt_exists && ! $ca_key_exists; then
   log "generating CA private key (ED25519)"
   openssl genpkey -algorithm ED25519 -out "${CERT_DIR}/ca.key"
   log "issuing self-signed CA cert (${CA_DAYS} days)"
@@ -77,7 +111,7 @@ if [ ! -f "${CERT_DIR}/ca.key" ]; then
     -out "${CERT_DIR}/ca.crt" \
     -subj "/CN=lucairn-grpc-deploy-ca"
 else
-  log "ca.key exists — reusing"
+  log "ca.key + ca.crt both exist — reusing CA"
 fi
 
 # ── 2. Per-service server + client certs ─────────────────────────────────────
