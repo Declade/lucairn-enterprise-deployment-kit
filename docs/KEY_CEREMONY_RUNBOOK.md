@@ -39,7 +39,7 @@ Each Lucairn attestation-protocol participant holds an Ed25519 key pair. Private
 | Audit Claim Key | audit | Signs audit-recorded claims | `LCR_AUDIT_SIGNING_KEY` | `LCR_AUDIT_PUBLIC_KEY` |
 | Gateway Claim Key | gateway | Signs gateway claims | `LCR_GATEWAY_SIGNING_KEY` | `LCR_GATEWAY_PUBLIC_KEY` |
 | Manifest Signing Key (gateway) | gateway | Co-signs `/.well-known/veil-keys.json`; gateway-side "alive + healthy" signature | `LCR_MANIFEST_SIGNING_KEY` | `LCR_GATEWAY_MANIFEST_PUBLIC_KEY` |
-| Manifest Signing Key (witness) | veil-witness | Pre-signs `/.well-known/veil-keys.json` at ceremony; deployed as a blob | `LCR_WITNESS_SIGNING_KEY` (same seed) | `LCR_WITNESS_MANIFEST_PUBLIC_KEY` |
+| Manifest Signing Key (witness) | veil-witness | Pre-signs `/.well-known/veil-keys.json` at ceremony via `sign-manifest --witness-signing-key-hex`; deployed as a blob | **`LCR_WITNESS_SIGNING_KEY` (no separate key — same seed as "Witness Signing Key" above)** | `LCR_WITNESS_MANIFEST_PUBLIC_KEY` (= `LCR_WITNESS_PUBLIC_KEY`) |
 
 > **Legacy env-var names:** the 0.5.x images accept `VEIL_*_SIGNING_KEY` / `VEIL_*_PUBLIC_KEY` as a fallback (envcompat shim). New installs MUST use the `LCR_*` canonical names above.
 
@@ -94,30 +94,36 @@ The script falls back to `pynacl` only when `cryptography` is unavailable. Do **
 
 ### 3.3 Generate a full key set in one ceremony session
 
-The ceremony generates **eight** key pairs: one per claim-signing service plus **two** manifest keys — a gateway manifest key (`LCR_MANIFEST_SIGNING_KEY` / `LCR_GATEWAY_MANIFEST_PUBLIC_KEY`) and a witness manifest key (`LCR_WITNESS_MANIFEST_SIGNING_KEY` / `LCR_WITNESS_MANIFEST_PUBLIC_KEY`). Both manifest public keys must appear in `keys.json` (§ 6.1) so that the gateway's boot check (`verifyEnvKeysMatchBlobActive`) accepts the signed blob.
+The ceremony generates **seven** key pairs: one per claim-signing service plus **one** dedicated gateway manifest key (`LCR_MANIFEST_SIGNING_KEY`). There is **no** separate "witness manifest" seed — the two manifest public keys that appear in `keys.json` are simply the **public halves of existing signing seeds**:
+
+| Env var set on gateway | Derived from | Source |
+|---|---|---|
+| `LCR_GATEWAY_MANIFEST_PUBLIC_KEY` | `LCR_MANIFEST_SIGNING_KEY` | gateway source `veil.go:202`, wired at `server/main.go:1278` |
+| `LCR_WITNESS_MANIFEST_PUBLIC_KEY` | `LCR_WITNESS_SIGNING_KEY` | `sign-manifest` tool signs the blob with this seed (`main.go:92,138`); gateway verifies via `LCR_WITNESS_PUBLIC_KEY` = same public key (`veil.go:290,301`) |
+
+> **Why this matters:** `sign-manifest --witness-signing-key-hex` takes the **witness signing seed** (`LCR_WITNESS_SIGNING_KEY`). The gateway verifies the blob signature against `LCR_WITNESS_PUBLIC_KEY` = `pub(LCR_WITNESS_SIGNING_KEY)`. If you derive `LCR_WITNESS_MANIFEST_PUBLIC_KEY` from a **different** seed, the published `witness_manifest_v1` entry in `/.well-known/veil-keys.json` will not match the key that actually signed the blob, and any relying party that re-verifies the blob signature against the manifest will fail.
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
-# SERVICES list: 6 claim-signing keys + 2 manifest keys.
-# GATEWAY_MANIFEST → LCR_MANIFEST_SIGNING_KEY / LCR_GATEWAY_MANIFEST_PUBLIC_KEY
-# WITNESS_MANIFEST → LCR_WITNESS_MANIFEST_SIGNING_KEY / LCR_WITNESS_MANIFEST_PUBLIC_KEY
-SERVICES=("WITNESS" "BRIDGE" "SANITIZER" "SANDBOX_B" "AUDIT" "GATEWAY" "GATEWAY_MANIFEST" "WITNESS_MANIFEST")
+# SERVICES list: 6 claim-signing keys + 1 dedicated gateway manifest key.
+# The witness manifest public key is NOT a new keypair — it is derived from
+# the existing WITNESS signing seed (see table above).
+SERVICES=("WITNESS" "BRIDGE" "SANITIZER" "SANDBOX_B" "AUDIT" "GATEWAY" "GATEWAY_MANIFEST")
+
+declare -A SEEDS  # save seeds so we can re-use the WITNESS seed below
 
 for svc in "${SERVICES[@]}"; do
   SEED=$(openssl rand -hex 32)
+  SEEDS[$svc]="$SEED"
   # Use the bundled helper (cryptography-first, no seed in argv/ps):
   PUBKEY=$(printf '%s' "$SEED" | ./scripts/derive-veil-pubkey.sh)
   echo "=== $svc ==="
   case "$svc" in
     GATEWAY_MANIFEST)
-      echo "  LCR_MANIFEST_SIGNING_KEY (private):     $SEED"
-      echo "  LCR_GATEWAY_MANIFEST_PUBLIC_KEY:         $PUBKEY"
-      ;;
-    WITNESS_MANIFEST)
-      echo "  LCR_WITNESS_MANIFEST_SIGNING_KEY (private): $SEED"
-      echo "  LCR_WITNESS_MANIFEST_PUBLIC_KEY:         $PUBKEY"
+      echo "  LCR_MANIFEST_SIGNING_KEY (private):  $SEED"
+      echo "  LCR_GATEWAY_MANIFEST_PUBLIC_KEY:      $PUBKEY"
       ;;
     *)
       echo "  LCR_${svc}_SIGNING_KEY (private): $SEED"
@@ -126,6 +132,15 @@ for svc in "${SERVICES[@]}"; do
   esac
   echo ""
 done
+
+# Derive the WITNESS manifest public key from the WITNESS signing seed —
+# not a new seed. sign-manifest signs the blob with LCR_WITNESS_SIGNING_KEY;
+# the gateway verifies it against LCR_WITNESS_PUBLIC_KEY (same key).
+echo "=== WITNESS_MANIFEST_PUBLIC_KEY (derived from WITNESS seed — no new seed) ==="
+WITNESS_MANIFEST_PUB=$(printf '%s' "${SEEDS[WITNESS]}" | ./scripts/derive-veil-pubkey.sh)
+echo "  LCR_WITNESS_MANIFEST_PUBLIC_KEY: $WITNESS_MANIFEST_PUB"
+echo "  (same value as LCR_WITNESS_PUBLIC_KEY above — confirm they match)"
+echo ""
 ```
 
 **Store the output securely immediately.** Do not pipe to a file on a shared filesystem. Use Vault, a password manager, or encrypted storage.
@@ -170,7 +185,20 @@ The **Gateway** also reads public keys for the `/.well-known/veil-keys.json` man
 | `LCR_GATEWAY_MANIFEST_PUBLIC_KEY` | gateway manifest-signing key |
 | `LCR_WITNESS_MANIFEST_PUBLIC_KEY` | witness manifest-signing key |
 
-All of the above are wired for you by `bin/lucairn-init` (both `--dev` and `--production` modes). In a **manual** ceremony, fill each value in `customer.env` by hand after deriving the public keys from the seeds.
+The five claim-signing public keys and `LCR_WITNESS_PUBLIC_KEY` are wired for you by `bin/lucairn-init` (both `--dev` and `--production` modes).
+
+> **`bin/lucairn-init` does NOT populate `LCR_GATEWAY_MANIFEST_PUBLIC_KEY` or `LCR_WITNESS_MANIFEST_PUBLIC_KEY`** — it emits both as empty strings (`bin/lucairn-init:548-549`). You must derive and fill them manually from the correct signing seeds as part of the ceremony (§ 3.3 / § 3.2):
+>
+> ```bash
+> # After lucairn-init has written customer.env, fill the two manifest pubkeys:
+> LCR_GATEWAY_MANIFEST_PUBLIC_KEY=$(printf '%s' "$LCR_MANIFEST_SIGNING_KEY" | ./scripts/derive-veil-pubkey.sh)
+> LCR_WITNESS_MANIFEST_PUBLIC_KEY=$(printf '%s' "$LCR_WITNESS_SIGNING_KEY"  | ./scripts/derive-veil-pubkey.sh)
+> # Then write both lines into customer.env and proceed to § 6.
+> ```
+>
+> Without these two values set, the gateway serves a `keys` array with only 5 entries and the Runtime Invariant Harness #3 self-check will degrade to FAIL. The blob verification at boot still passes (the missing entries are simply absent from `verifyEnvKeysMatchBlobActive`), but the published manifest is incomplete.
+
+In a **manual** ceremony, fill each value in `customer.env` by hand after deriving the public keys from the seeds.
 
 ---
 
@@ -354,7 +382,7 @@ The protocol is advisory (never blocks inference), so a brief window of unverifi
 | Witness Signing Key | Annually | High-value key; signs all certificates |
 | Claim Signing Keys (bridge, sanitizer, sandbox-b, audit, gateway) | Every 6 months | Standard signing-key rotation |
 | Manifest Signing Key (gateway) | Annually | Gateway-local signature; rotate independently of the witness key |
-| Manifest Signing Key (witness) | Co-rotate with Witness Signing Key | Re-issue the witness-signed blob alongside Witness rotations |
+| Manifest Signing Key (witness) | Co-rotate with Witness Signing Key | The witness manifest public key IS the witness signing public key — rotating `LCR_WITNESS_SIGNING_KEY` automatically rotates the manifest entry; re-issue the blob with the new seed |
 
 ---
 
