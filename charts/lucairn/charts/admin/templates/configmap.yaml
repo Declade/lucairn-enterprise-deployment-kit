@@ -22,4 +22,10 @@ data:
   AUDIT_READY_URL: {{ .Values.auditReadyURL | quote }}
   INGEST_HEALTH_URL: {{ .Values.ingestHealthURL | quote }}
   INGEST_READY_URL: {{ .Values.ingestReadyURL | quote }}
+  # admin calls tlsutil.RequireTLSInProduction() at boot
+  # (services/admin/cmd/server/main.go:49). When DSA_ENV=production it
+  # log.Fatals unless GRPC_TLS_ENABLED=true (or the DSA_MTLS_* family is set),
+  # refusing to start with plaintext transport. values-prod.yaml sets the
+  # coherent pair (dsaEnv=production + admin.grpcTlsEnabled="true").
+  GRPC_TLS_ENABLED: {{ .Values.grpcTlsEnabled | quote }}
   DSA_ENV: {{ required "global.dsaEnv must be set to \"development\" or \"production\" in the umbrella values" .Values.global.dsaEnv | quote }}

@@ -38,6 +38,15 @@ spec:
               value: {{ .Values.auditAddr | quote }}
             - name: DSA_ENV
               value: {{ .Values.global.dsaEnv | default "development" | quote }}
+            # ingest calls tlsutil.RequireTLSInProduction() at boot
+            # (services/ingest/cmd/server/main.go:69). When DSA_ENV=production it
+            # log.Fatals unless GRPC_TLS_ENABLED=true (or the DSA_MTLS_* family is
+            # set), refusing to start with plaintext transport. values-prod.yaml
+            # sets the coherent pair (dsaEnv=production + ingest.grpcTlsEnabled="true").
+            # ingest is enabled=false by default, so this only matters when an
+            # operator opts ingest in under the production overlay.
+            - name: GRPC_TLS_ENABLED
+              value: {{ .Values.grpcTlsEnabled | quote }}
             {{- if .Values.secrets.values.dsaServiceToken }}
             - name: DSA_SERVICE_TOKEN
               valueFrom:

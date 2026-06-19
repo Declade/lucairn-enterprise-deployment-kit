@@ -2,6 +2,12 @@ namespace: dsa-ingest
 
 replicaCount: 1
 
+# gRPC transport TLS. Default "false" (dev: plaintext). values-prod.yaml flips
+# this to "true" — required because the ingest binary calls
+# tlsutil.RequireTLSInProduction() at boot and hard-refuses (log.Fatal) under
+# DSA_ENV=production with plaintext transport.
+grpcTlsEnabled: "false"
+
 image:
   repository: dsa-ingest
   tag: ""

@@ -115,6 +115,11 @@ config:
   sanitizerPublicKey: ""
   sandboxBPublicKey: ""
   auditPublicKey: ""
+  # Peer pubkey the witness uses to verify gateway-signed claims (consumed at
+  # services/veil-witness/cmd/server/main.go:51 → publicKeys["dsa-gateway"]).
+  # Populate from the SAME ceremony value as gateway.secrets.values.veilGatewayPublicKey.
+  # Empty = the witness cannot verify gateway claims → cert verdict downgrades.
+  gatewayPublicKey: ""
   proofSpecPath: "/app/formal-verification/isolation-invariant.tla"
   proofOutputPath: "/app/formal-verification/isolation-invariant.out"
   proofModelVersion: "1.0.0"

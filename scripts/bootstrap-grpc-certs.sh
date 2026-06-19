@@ -1,12 +1,29 @@
 #!/usr/bin/env bash
-# bootstrap-grpc-certs.sh — per-deploy CA + per-service gRPC TLS certs for
-# the Lucairn production Helm posture (values-prod.yaml).
+# bootstrap-grpc-certs.sh — per-deploy CA + per-service gRPC certs for the
+# Lucairn production Helm posture (values-prod.yaml).
 #
-# Required BEFORE applying values-prod.yaml (dsaEnv=production +
-# grpcTlsEnabled=true). The Go gateway / audit / id-bridge / sandbox-a
-# services call tlsutil.RequireTLSInProduction() at boot and hard-refuse
-# (log.Fatal) when DSA_ENV=production and GRPC_TLS_ENABLED=true but the
-# expected cert files are absent.
+# WHAT THE PROD OVERLAY ACTUALLY ENFORCES
+# ---------------------------------------
+# values-prod.yaml sets dsaEnv=production + grpcTlsEnabled="true" on the Go
+# gRPC services (gateway / audit / id-bridge / sandbox-a / admin; ingest when
+# opted in). Those services call tlsutil.RequireTLSInProduction() at boot and
+# refuse to start with PLAINTEXT transport under DSA_ENV=production — so the
+# prod overlay's grpcTlsEnabled="true" is what clears that plaintext refusal.
+#
+# IMPORTANT — what grpcTlsEnabled="true" alone does (and does NOT) do:
+#   * It enables ENCRYPTED gRPC transport (TLS). With NO cert PATHS wired,
+#     tlsutil SELF-GENERATES an ephemeral server cert and the clients dial
+#     with InsecureSkipVerify=true → the link is ENCRYPTED but NOT
+#     peer-authenticated. The services do NOT hard-refuse when cert files are
+#     absent in this mode; they fall back to the ephemeral self-signed cert.
+#   * Full, peer-AUTHENTICATED mTLS (each side verifies the other against a
+#     shared CA) requires the CA + per-service certs this script generates,
+#     PLUS chart wiring that mounts them and sets the DSA_MTLS_*_PATH env vars.
+#
+# This script provisions the CA + certs for OPTIONAL full peer-authenticated
+# mTLS. The chart-side cert-CONSUMPTION wiring (volume mounts + DSA_MTLS_*_PATH
+# env) is a documented FOLLOW-UP (consistent with the PRD's cert-manager
+# dependency deferral) — see the "NEXT STEPS" output printed at the end.
 #
 # Usage:
 #   bash scripts/bootstrap-grpc-certs.sh [OUTPUT_DIR]
@@ -22,11 +39,6 @@
 #
 # Services provisioned (mirroring the Lucairn gRPC mesh):
 #   gateway  audit  id-bridge  sandbox-a  sandbox-b  veil-witness
-#
-# After running, load each cert pair into the cluster as a K8s Secret, then
-# reference the Secret in the relevant subchart's values (witnessMtls or a
-# DSA_MTLS_* env-var injection). See INSTALL.md § "Production gRPC TLS" for
-# the full wiring runbook.
 #
 # Environment overrides:
 #   CERT_DIR   (positional $1 takes precedence)  — output directory
@@ -79,17 +91,30 @@ fi
 #   sandbox-a    → dsa-identity
 #   sandbox-b    → dsa-ai
 #   veil-witness → dsa-witness
-
-declare -A SVC_NS
-SVC_NS["gateway"]="dsa-edge"
-SVC_NS["audit"]="dsa-audit"
-SVC_NS["id-bridge"]="dsa-bridge"
-SVC_NS["sandbox-a"]="dsa-identity"
-SVC_NS["sandbox-b"]="dsa-ai"
-SVC_NS["veil-witness"]="dsa-witness"
+#   admin        → dsa-admin
+#   ingest       → dsa-ingest
+#
+# NOTE: a plain `case` is used here on purpose — `declare -A` (associative
+# arrays) is bash 4+, but macOS ships bash 3.2 as /bin/bash. Under
+# `set -euo pipefail` an associative-array reference on bash 3.2 aborts the
+# script after only the CA is generated (no service certs). The case below
+# is portable to bash 3.2.
+ns_for() {
+  case "$1" in
+    gateway)      printf 'dsa-edge' ;;
+    audit)        printf 'dsa-audit' ;;
+    id-bridge)    printf 'dsa-bridge' ;;
+    sandbox-a)    printf 'dsa-identity' ;;
+    sandbox-b)    printf 'dsa-ai' ;;
+    veil-witness) printf 'dsa-witness' ;;
+    admin)        printf 'dsa-admin' ;;
+    ingest)       printf 'dsa-ingest' ;;
+    *)            printf 'lucairn' ;;
+  esac
+}
 
 for svc in $SERVICES; do
-  ns="${SVC_NS[$svc]:-lucairn}"
+  ns="$(ns_for "$svc")"
   server_key="${CERT_DIR}/${svc}-server.key"
   server_crt="${CERT_DIR}/${svc}-server.crt"
   client_key="${CERT_DIR}/${svc}-client.key"
@@ -190,16 +215,23 @@ log "     sandbox-a   → dsa-identity"
 log "     sandbox-b   → dsa-ai"
 log "     veil-witness → dsa-witness"
 log ""
-log "3. Wire each Secret into the subchart via DSA_MTLS_* env vars or"
-log "   the subchart's mTLS values block in your customer-values.yaml."
-log "   See INSTALL.md § 'Production gRPC TLS' for the full wiring runbook."
+log "3. [FOLLOW-UP] Wire each Secret into the subchart for full peer-"
+log "   authenticated mTLS: mount the cert files and set the DSA_MTLS_*_PATH"
+log "   env vars (server triple: CA_BUNDLE + SERVER_CERT + SERVER_KEY; client"
+log "   triple: CA_BUNDLE + CLIENT_CERT + CLIENT_KEY). The chart cert-mount +"
+log "   DSA_MTLS_*_PATH wiring is a documented follow-up (cert-manager"
+log "   dependency deferral). Until that wiring lands, the prod overlay still"
+log "   runs ENCRYPTED gRPC via tlsutil's ephemeral self-signed cert."
 log ""
-log "4. THEN apply values-prod.yaml:"
+log "4. Apply values-prod.yaml (this is what clears the prod plaintext refuse —"
+log "   it does NOT require the certs above; those are the optional mTLS upgrade):"
 log "   helm upgrade --install lucairn charts/lucairn \\"
 log "     -f charts/lucairn/values-prod.yaml \\"
 log "     -f your-customer-values.yaml \\"
 log "     --set-file global.imagePullDockerConfigJson=~/.docker/config.json"
 log ""
-log "WARNING: Do NOT apply values-prod.yaml (dsaEnv=production) before step 2."
-log "Services crash-loop if GRPC_TLS_ENABLED=true and cert files are absent."
+log "NOTE: dsaEnv=production REQUIRES grpcTlsEnabled=\"true\" (values-prod.yaml"
+log "sets both) — a Go service refuses to start with PLAINTEXT transport under"
+log "production. With grpcTlsEnabled=\"true\" but no cert PATHS wired, transport"
+log "is ENCRYPTED via an ephemeral self-signed cert (no peer auth, no crash)."
 log "──────────────────────────────────────────────────────────────────────────"

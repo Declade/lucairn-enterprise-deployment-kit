@@ -11,13 +11,20 @@
 # Multi-replica HA is the v2.0 roadmap. Do NOT raise these to 2 — the
 # install will fail to render. See INSTALL.md § "v1.0 deployment topology".
 #
-# PREREQUISITE — gRPC TLS certs:
-#   Run scripts/bootstrap-grpc-certs.sh BEFORE applying this overlay.
-#   The script generates a per-deploy CA + per-service certs and prints
-#   the `kubectl create secret` commands to load them. Every service
-#   with grpcTlsEnabled=true expects its cert Secret to exist at pod start
-#   time; missing certs cause a TLS dial failure at boot (not a Fatal — but
-#   the service cannot communicate with any peer).
+# gRPC TRANSPORT (encrypted) — automatic with this overlay:
+#   dsaEnv=production + the per-subchart grpcTlsEnabled="true" below give every
+#   Go gRPC service ENCRYPTED transport. This is REQUIRED: each service calls
+#   tlsutil.RequireTLSInProduction() at boot and refuses to start with PLAINTEXT
+#   under production. With no cert PATHS wired, tlsutil self-generates an
+#   ephemeral cert and clients dial with InsecureSkipVerify — encrypted but NOT
+#   peer-authenticated. No extra steps are needed for this baseline.
+#
+# OPTIONAL — full peer-authenticated mTLS:
+#   Run scripts/bootstrap-grpc-certs.sh to generate a per-deploy CA + per-service
+#   certs, load them as K8s Secrets (the script prints the commands), then wire
+#   the cert paths via DSA_MTLS_*_PATH env (a documented follow-up — chart
+#   cert-mount wiring tracks the cert-manager dependency). This upgrades the
+#   encrypted-only baseline above to mutually-authenticated mTLS.
 #
 # GATEWAY_KEYSTORE_DSN note:
 #   On an ESO backend, GATEWAY_KEYSTORE_DSN is NOT managed by the
@@ -51,12 +58,17 @@ global:
   postgresqlSslmode: require
   wireguardEncryption: true
   # Production environment flag — enables dev-secret rejection guards.
-  # WARNING: dsaEnv=production causes every Go service to hard-refuse at boot
-  # if GRPC_TLS_ENABLED=false (tlsutil.go:636:
-  #   "GRPC_TLS_ENABLED=true is required when DSA_ENV=production; refusing to
-  #    start with plaintext transport").
-  # The per-subchart grpcTlsEnabled: "true" values below form the coherent
-  # pair. NEVER set dsaEnv=production without them.
+  # WARNING: dsaEnv=production causes every Go gRPC service that calls
+  # tlsutil.RequireTLSInProduction() to refuse PLAINTEXT transport at boot
+  # if GRPC_TLS_ENABLED=false (pkg/tlsutil/tlsutil.go:658:
+  #   "GRPC_TLS_ENABLED=true (or the DSA_MTLS_* family) is required when
+  #    DSA_ENV=production; refusing to start with plaintext transport").
+  # Services with this guard: gateway, audit, id-bridge, sandbox-a, admin
+  # (services/admin/cmd/server/main.go:49), and ingest when enabled
+  # (services/ingest/cmd/server/main.go:69). The per-subchart
+  # grpcTlsEnabled: "true" values below form the coherent pair — every prod
+  # service that renders DSA_ENV=production ALSO gets GRPC_TLS_ENABLED=true.
+  # NEVER set dsaEnv=production without them.
   # Slice-0 confirmed (2026-06-19): global.grpcTlsEnabled is NOT read by
   # subchart templates (they use `.Values.grpcTlsEnabled`, local scope), so
   # the flag MUST be set per-subchart — setting it only under global: renders
@@ -137,6 +149,11 @@ sandbox-b:
 
 veil-witness:
   enabled: true
+  # No grpcTlsEnabled here BY DESIGN: the witness binary does NOT call
+  # tlsutil.RequireTLSInProduction() (verified Slice-0, 2026-06-19) — its
+  # transport security is the opt-in WITNESS_MTLS_* family on :50058, default
+  # off. It therefore does not boot-fatal under dsaEnv=production with
+  # plaintext, so omitting the flag is coherent (not a gap).
   replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
   resources:
     requests:
@@ -174,12 +191,22 @@ gateway:
       dsaServiceToken: ""
 
 admin:
+  # M7 (Slice-0 confirmed): admin calls tlsutil.RequireTLSInProduction()
+  # (services/admin/cmd/server/main.go:49) → log.Fatal under dsaEnv=production
+  # without gRPC TLS. Set per-subchart (templates use .Values.grpcTlsEnabled,
+  # local scope — global.grpcTlsEnabled is not read by the subchart).
+  grpcTlsEnabled: "true"
   secrets:
     values:
       # PRODUCTION: Set dsaServiceToken via --set or Vault; do not commit here.
       dsaServiceToken: ""
 
 ingest:
+  # ingest calls tlsutil.RequireTLSInProduction()
+  # (services/ingest/cmd/server/main.go:69) → log.Fatal under dsaEnv=production
+  # without gRPC TLS. ingest.enabled defaults to false; this pair only takes
+  # effect when an operator opts ingest in under the production overlay.
+  grpcTlsEnabled: "true"
   secrets:
     values:
       # PRODUCTION: Set dsaServiceToken via --set or Vault; do not commit here.

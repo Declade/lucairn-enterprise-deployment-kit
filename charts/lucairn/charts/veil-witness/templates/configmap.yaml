@@ -14,6 +14,16 @@ data:
   LCR_SANITIZER_PUBLIC_KEY: {{ .Values.config.sanitizerPublicKey | quote }}
   LCR_SANDBOX_B_PUBLIC_KEY: {{ .Values.config.sandboxBPublicKey | quote }}
   LCR_AUDIT_PUBLIC_KEY: {{ .Values.config.auditPublicKey | quote }}
+  # Peer pubkey for verifying gateway-signed claims. The witness reads this at
+  # cmd/server/main.go:51 → populates publicKeys["dsa-gateway"] at :127. Without
+  # it the witness cannot verify the gateway claim → silent cert-verdict
+  # downgrade for every cert. This is a PUBLIC key (not secret material — same
+  # class as the four sibling LCR_*_PUBLIC_KEY entries above), and the witness
+  # deployment only bulk-loads env via `envFrom: configMapRef` (NOT secretRef),
+  # so the configmap is the correct + working placement. Operator supplies the
+  # value from the same key ceremony that produces the gateway's
+  # veilGatewayPublicKey (gateway secret.yaml:48).
+  LCR_GATEWAY_PUBLIC_KEY: {{ .Values.config.gatewayPublicKey | quote }}
   LCR_PROOF_SPEC_PATH: {{ .Values.config.proofSpecPath | quote }}
   LCR_PROOF_OUTPUT_PATH: {{ .Values.config.proofOutputPath | quote }}
   LCR_PROOF_MODEL_VERSION: {{ .Values.config.proofModelVersion | quote }}
