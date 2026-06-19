@@ -6,10 +6,10 @@
 # customer.env.example with ~30 seconds of './bin/lucairn-init --dev'.
 #
 # Generates:
-#   - 5 Ed25519 keypairs (one private + matching public for each VEIL_*
+#   - 5 Ed25519 keypairs (one private + matching public for each LCR_*
 #     signing slot the gateway/sanitizer/witness/bridge/audit services expect)
 #   - hex32 values via `openssl rand -hex 32` for service-token / bridge-encryption /
-#     sandbox-a-encryption / bridge-master / admin / and all VEIL_*_SIGNING_KEY slots
+#     sandbox-a-encryption / bridge-master / admin / and all LCR_*_SIGNING_KEY slots
 #   - alphanumeric-only postgres passwords (no SQL-special characters because
 #     scripts/render-migrations.sh's envsubst breaks on '\'',' \', '$', etc.)
 #   - GATEWAY_KEYSTORE_KEY as 32-byte base64

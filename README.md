@@ -93,7 +93,7 @@ compose `up -d` line above and populate `ANTHROPIC_API_KEY` (or
 `OPENAI_API_KEY`) in `customer.env` first. See `INSTALL.md` § "Self-hosted
 with managed LLM (BYOK)".
 
-GHCR images are currently private — a GitHub PAT with the `read:packages` scope is required AND Lucairn must have granted your GitHub account package-pull access (contact support@lucairn.eu before minting a PAT). Save the PAT to a 0600 file (`~/.ghcr-token`) then run `docker login ghcr.io -u <github-username> --password-stdin < ~/.ghcr-token`. See `INSTALL.md` § "Registry Authentication" for the full walkthrough including the Lucairn-grant prerequisite. Override `LUCAIRN_IMAGE_REGISTRY` if you mirror into a private registry. License keys are optional (kit runs in unregistered/dev mode without them — see `bin/lucairn-init --dev`).
+**Step 0 — Registry access required first:** GHCR images are currently private. A GitHub PAT with `read:packages` scope is NOT sufficient on its own — Lucairn must GRANT your GitHub account package-pull access. Email support@lucairn.eu with your GitHub username and wait for confirmation BEFORE minting a PAT or running `docker login`. See `INSTALL.md` § "Step 0 — Registry access" for the full sequence. Save the PAT to a 0600 file (`~/.ghcr-token`) then run `docker login ghcr.io -u <github-username> --password-stdin < ~/.ghcr-token`. Override `LUCAIRN_IMAGE_REGISTRY` if you mirror into a private registry. License keys are optional (kit runs in unregistered/dev mode without them — see `bin/lucairn-init --dev`).
 Before a real customer handoff, run the gates in `docs/CUSTOMER_HANDOFF_GATES.md`.
 
 ## Per-Customer Bundle

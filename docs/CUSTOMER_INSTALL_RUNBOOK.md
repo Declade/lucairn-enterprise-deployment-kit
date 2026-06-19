@@ -15,7 +15,7 @@ You will need:
 - Docker Engine 24+ and Docker Compose v2 (`docker compose version` reports `v2.x`).
 - 16 GB RAM recommended (4 vCPUs, 50 GB disk free). ~8 GB is feasible for this pilot topology **because the L3 deep PII shield is off by default** (`LUCAIRN_L3_REQUIRED=false`) — the `ollama-identity` container runs but loads no `qwen2.5:7b` model, so it idles at a few hundred MB instead of the ~5 GB resident a loaded model needs. If you later stage the L3 model and set `LUCAIRN_L3_REQUIRED=true`, provision the full 16 GB. (INSTALL.md states 16 GB recommended for the L3-on default; the two figures are reconciled by whether the L3 model is loaded.)
 - Outbound HTTPS to:
-  - `ghcr.io` — the 7 Lucairn `dsa-*` images (`dsa-gateway`, `dsa-sandbox-a`, `dsa-sandbox-b`, `dsa-sanitizer`, `dsa-veil-witness`, `dsa-audit`, `dsa-id-bridge`) are pulled from the private `ghcr.io/declade/*` namespace.
+  - `ghcr.io` — the 12 Lucairn `dsa-*` images (`dsa-gateway`, `dsa-sandbox-a`, `dsa-sandbox-b`, `dsa-sanitizer`, `dsa-veil-witness`, `dsa-audit`, `dsa-id-bridge`, `dsa-reid-guard`, `dsa-admin`, `dsa-demo`, `dsa-ingest`, `dsa-llm-auditor`) are pulled from the private `ghcr.io/declade/*` namespace. **Lucairn must grant your GitHub account package-pull access BEFORE running `docker login`** — contact support@lucairn.eu with your GitHub username and wait for confirmation before attempting any docker pull step.
   - `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com` — the public base images (`postgres:16-alpine`, `redis:7-alpine`, `alpine:3.20`, `migrate/migrate:v4.17.0`, `ollama/ollama`) are pulled from Docker Hub. A host that allowlists only `ghcr.io` will authenticate to GHCR successfully but fail `docker compose up` when Docker attempts to pull these base images. **`LUCAIRN_IMAGE_REGISTRY` does not redirect these pulls** — it only prefixes the Lucairn `dsa-*` images (`dsa-gateway`, `dsa-sandbox-a`, `dsa-audit`, and the other `ghcr.io/declade/*` images). The base images are hardcoded in the compose files and are not registry-templated. If your policy prohibits direct Docker Hub access, configure a **registry pull-through mirror / cache** for `registry-1.docker.io` (the standard approach); alternatively, mirror those specific image tags and edit the `image:` lines in the compose files.
   - The managed-LLM provider you intend to BYOK (`api.anthropic.com` by default).
 - A managed-LLM API key for one of: Anthropic, OpenAI, Mistral, Gemini.
@@ -36,6 +36,14 @@ If any line fails, fix that prerequisite before continuing.
 
 ## 2. Authenticate to the Lucairn image registry (one-time per host)
 
+> **Grant required BEFORE this step.** A self-minted GitHub PAT alone is NOT
+> sufficient. Lucairn must first GRANT your GitHub account package-pull access
+> to the `ghcr.io/declade/*` registry. Email **support@lucairn.eu** with your
+> GitHub username and wait for confirmation (typically one business day) BEFORE
+> proceeding. Attempting `docker login` without the grant will succeed (GitHub
+> accepts valid PATs), but `docker pull` will immediately fail with `denied:
+> permission_denied`.
+
 Write your GHCR PAT to a 0600 file and `docker login` once:
 
 ```bash
@@ -44,7 +52,7 @@ printf '%s' '<YOUR_GHCR_READ_PACKAGES_PAT>' > ~/.ghcr-token
 docker login ghcr.io -u <YOUR_GITHUB_USERNAME> --password-stdin < ~/.ghcr-token
 ```
 
-Expected output: `Login Succeeded`. If you see `denied: permission_denied`, your PAT does not yet have package-pull access — contact Lucairn support with your GitHub username.
+Expected output: `Login Succeeded`. If you see `denied: permission_denied` on a subsequent `docker pull`, the grant has not yet been applied — contact Lucairn support with your GitHub username.
 
 If you mirror Lucairn images to your own internal registry instead, skip the `docker login` step and set `LUCAIRN_IMAGE_REGISTRY=<your-mirror-prefix>` in `customer.env` after step 4.
 
@@ -126,7 +134,7 @@ docker compose -p compose-demo \
 
 The `-p compose-demo` flag pins the Docker Compose project name so container names start with `compose-demo-*` regardless of the directory name on disk. Without it, Compose defaults the project name to the current directory name (`lucairn-enterprise-deployment-kit-*`).
 
-This pulls 12 distinct images (~3 GB first time, cached thereafter — 7 Lucairn `dsa-*` images from `ghcr.io`, plus postgres / redis / alpine / migrate / ollama from Docker Hub) and starts the full pilot stack: 15 long-running containers (see below). Compose returns when containers are started; healthchecks take another ~30 s to settle.
+This pulls 12 distinct images (~3 GB first time, cached thereafter — 7 Lucairn `dsa-*` images from `ghcr.io` for this demo overlay, plus `postgres`, `redis`, `alpine`, `migrate`, and `ollama` from Docker Hub; the full kit ships 12 `dsa-*` images but only 7 are active in this topology) and starts the full pilot stack: 15 long-running containers (see below). Compose returns when containers are started; healthchecks take another ~30 s to settle.
 
 Wait for everything to report `(healthy)`:
 
