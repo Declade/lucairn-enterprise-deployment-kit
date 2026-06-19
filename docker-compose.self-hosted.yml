@@ -157,7 +157,7 @@ services:
     restart: on-failure
 
   sandbox-b:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sandbox-b:${LUCAIRN_IMAGE_TAG:-0.5.3}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sandbox-b:${LUCAIRN_IMAGE_TAG:-0.5.4}"
     logging: *default-logging
     depends_on:
       redis-ai:

@@ -4,6 +4,29 @@ Goal: a competent platform engineer should complete a standard install in about 
 
 ## Release notes
 
+### v0.5.4 / chart 1.9.4 (2026-06-19) — per-key MCP tool-scope enforcement + B2 website tool_allowlist
+
+**Upgrade from v0.5.3:** pull the new images (`LUCAIRN_IMAGE_TAG=0.5.4` in
+`customer.env`; or `global.imageTag: "0.5.4"` in Helm values). No database
+migration required on the gateway/DSA stack (Supabase `api_keys.tool_allowlist`
+migration applies to the hosted control-plane only; self-hosted kit is unaffected).
+The 12 `dsa-*` images are republished + cosign-signed + Rekor-logged at `0.5.4`
+(`bin/lucairn verify-images --tag 0.5.4` → 13/13). `dsa-pii-ml` stays `0.5.1`
+(independent cadence) and `lucairn-dashboard` stays `0.8.2`.
+
+**What changed:**
+
+- **Per-key MCP tool-scope enforcement (gateway):** the gateway now reads a
+  `tool_allowlist` field from the customer profile (synced via `ControlAPISync`)
+  and enforces it server-side on every `/api/v1/mcp` request — only MCP data-source
+  tools in the allowlist are forwarded to the model; all other `mcp__*` tools are
+  stripped. Empty allowlist (default) is byte-identical to pre-0.5.4 behaviour
+  (INERT until configured). Controlled via the admin UI `ToolAllowlistForm` or
+  the `/api/admin/keys/:id/tool-allowlist` route. Ships in DSA PR #303.
+- **Approach B scoping:** only MCP data-source tools (`mcp__*` prefixed) are
+  stripped by the allowlist; non-MCP tools (Claude Code built-ins, custom tools)
+  are always passed through — zero-maintenance, no built-in catalog to maintain.
+
 ### v0.5.3 / chart 1.9.3 (2026-06-16) — Lucairn anti-tamper (INERT until pin-baked) + S1–S6 security remediations
 
 **Upgrade from v0.5.2:** pull the new images (`LUCAIRN_IMAGE_TAG=0.5.3` in
@@ -537,10 +560,8 @@ whole published set against the kit-bundled public key
 resolver (`docker buildx`, `crane`, or `skopeo`) on PATH:
 
 ```bash
-bin/lucairn verify-images --tag 0.5.3
-# or, with one release recorded, just:
-bin/lucairn verify-images
-# or a single image, by its signed digest (from keys/image-digests-0.5.3.txt):
+bin/lucairn verify-images --tag 0.5.4
+# or a single image, by its signed digest (from keys/image-digests-0.5.4.txt):
 cosign verify --key keys/lucairn-cosign.pub \
   ghcr.io/declade/dsa-gateway@sha256:<digest-from-the-record-file>
 ```
@@ -558,12 +579,12 @@ log (signed by the same Image Signing Key — no extra key or vendor). Fetch +
 verify it, and inspect exactly what is in each image:
 
 ```bash
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.3
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.4
 # save the raw verified SBOM:
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.3 --download dsa-gateway-0.5.3.spdx.json
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.4 --download dsa-gateway-0.5.4.spdx.json
 # or with raw cosign:
 cosign verify-attestation --type spdxjson \
-  --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.3
+  --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.4
 ```
 
 See **OPS.md → "Fetch + verify the Software Bill of Materials (SBOM)"** for the
@@ -836,7 +857,7 @@ protocol versions — is documented in **OPS.md § "witness-signed manifest"** a
 the **Key Ceremony Runbook** (`docs/KEY_CEREMONY_RUNBOOK.md` § 6 "Producing the
 witness-signed manifest blob"). The invocation is:
 
-The `sign-manifest` tool ships **inside the pinned `dsa-veil-witness:0.5.3`
+The `sign-manifest` tool ships **inside the pinned `dsa-veil-witness:0.5.4`
 image** (`/usr/local/bin/sign-manifest`), so the ceremony is turnkey via
 `docker run --entrypoint sign-manifest` on the ceremony host — no Go toolchain,
 no build-from-source, no dev-mode fallback:
@@ -849,7 +870,7 @@ no build-from-source, no dev-mode fallback:
 docker run --rm \
   --entrypoint sign-manifest \
   -v "$PWD/keys.json:/keys.json:ro" \
-  ghcr.io/declade/dsa-veil-witness:0.5.3 \
+  ghcr.io/declade/dsa-veil-witness:0.5.4 \
   --keys-json /keys.json \
   --issuer "$LCR_ISSUER" \
   --witness-signing-key-hex "$LCR_WITNESS_SIGNING_KEY" \
@@ -862,7 +883,7 @@ docker run --rm \
 ```
 
 > **Flags** (run `docker run --rm --entrypoint sign-manifest
-> ghcr.io/declade/dsa-veil-witness:0.5.3 -h` to confirm against your pin):
+> ghcr.io/declade/dsa-veil-witness:0.5.4 -h` to confirm against your pin):
 > `--keys-json` (required), `--issuer` (required; matches `LCR_ISSUER` / legacy
 > `VEIL_ISSUER` at the gateway), `--witness-signing-key-hex` (required; the
 > Ed25519 witness seed, hex 32 bytes), `--witness-key-id` (default
@@ -2587,9 +2608,9 @@ included in support bundles.
 ### Prerequisite: gateway image >= 0.5.1
 
 This feature first shipped in the gateway image at `0.5.1` (the feature floor);
-the current published release is `0.5.3` (`appVersion: 0.5.3`, chart `v1.9.3`),
+the current published release is `0.5.4` (`appVersion: 0.5.4`, chart `v1.9.4`),
 also published to GHCR. The gateway binary that reads `GATEWAY_TMS_TRUST_ZONES`
-is present from `0.5.1` onward, so any `>= 0.5.1` pin (including `0.5.3`) works.
+is present from `0.5.1` onward, so any `>= 0.5.1` pin (including `0.5.4`) works.
 Setting `GATEWAY_TMS_TRUST_ZONES` on an **older** image (e.g. `0.5.0`) is a
 **silent no-op** — the var is present in the ConfigMap but that older gateway
 does not read it.
@@ -2607,8 +2628,8 @@ the image is new enough:
 tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES is set but LUCAIRN_IMAGE_TAG="latest" is not an exact semver pin; doctor cannot confirm the gateway image is >= 0.5.1. Pin an exact tag (e.g. 0.5.1) or unset the policy.
 ```
 
-Pin `LUCAIRN_IMAGE_TAG=0.5.3` in `customer.env` (Compose) or
-`--set global.imageTag=0.5.3` (Helm) — the current published release (any exact
+Pin `LUCAIRN_IMAGE_TAG=0.5.4` in `customer.env` (Compose) or
+`--set global.imageTag=0.5.4` (Helm) — the current published release (any exact
 `>= 0.5.1` pin satisfies the feature floor) — then apply the policy.
 
 ### Helm

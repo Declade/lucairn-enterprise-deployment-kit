@@ -39,12 +39,12 @@
 
 # Kit release this manifest was tested for. Must match VERSION at the
 # repo root. doctor warns when the values diverge.
-kit_version: "1.9.3"
+kit_version: "1.9.4"
 
 # Default tag applied to every dsa-* image unless a per-service override
 # exists in `services:` below. Operators set LUCAIRN_IMAGE_TAG in customer.env
 # to use a different default; doctor warns when env != this manifest value.
-default_lucairn_image_tag: "0.5.3"
+default_lucairn_image_tag: "0.5.4"
 
 # Registry the kit was validated against. doctor warns when env's
 # LUCAIRN_IMAGE_REGISTRY differs.
@@ -156,31 +156,31 @@ optional_services:
 #     pending: true                # OPTIONAL — schema-only slot, --strict skips
 image_digests:
   # --- Signed Lucairn images (13 artifacts; cosign-signed + Rekor-logged;
-  # --- digests mirror keys/image-digests-0.5.3.txt). doctor --strict
+  # --- digests mirror keys/image-digests-0.5.4.txt). doctor --strict
   # --- ENFORCES these (resolve tag->digest, block on mismatch).
   signed_artifacts:
-    # Full 0.5.3 umbrella — all 12 dsa-* republished multi-arch + cosign-signed
-    # (GHCR + Rekor) on 2026-06-16; digests mirror keys/image-digests-0.5.3.txt;
-    # verify with `lucairn verify-images --tag 0.5.3`. (dsa-pii-ml stays pinned
+    # Full 0.5.4 umbrella — all 12 dsa-* republished multi-arch + cosign-signed
+    # (GHCR + Rekor) on 2026-06-19; digests mirror keys/image-digests-0.5.4.txt;
+    # verify with `lucairn verify-images --tag 0.5.4`. (dsa-pii-ml stays pinned
     # at 0.5.1 — independent release cadence; lucairn-dashboard stays at 0.8.2.)
     dsa-gateway:
-      ref: "ghcr.io/declade/dsa-gateway:0.5.3"
-      digest: "sha256:a5a4fd24d265e59da3a9c3c6f498ca46eb8435f4ad842a153697b275d3f6e7b5"
+      ref: "ghcr.io/declade/dsa-gateway:0.5.4"
+      digest: "sha256:f73e55e0a3d3445d3242d2a73aff7086427da50cbcd2e47e3c8cd4f0fad2bece"
     dsa-sanitizer:
-      ref: "ghcr.io/declade/dsa-sanitizer:0.5.3"
-      digest: "sha256:0d50324ac9fa325d70755e9e873111444a60e66c0e94268c5a17c91a00321aa9"
+      ref: "ghcr.io/declade/dsa-sanitizer:0.5.4"
+      digest: "sha256:5204d30b1cd4ae12ec2faf47eaf7a4f9fdfaf5137c37cb625752f96452eea9df"
     dsa-audit:
-      ref: "ghcr.io/declade/dsa-audit:0.5.3"
-      digest: "sha256:18db1b62b30c5643b9e19e2705fed4084dbc5fd17aa9e742d7be2c4c0d9fdf5b"
+      ref: "ghcr.io/declade/dsa-audit:0.5.4"
+      digest: "sha256:52fb366d5b425618a14f15d9a9a5e9abf6d1bf51cfcdc4c56e655884f53b0404"
     dsa-id-bridge:
-      ref: "ghcr.io/declade/dsa-id-bridge:0.5.3"
-      digest: "sha256:b4316c6153bc476f212c0078013c7c9c0f5ccfbbb8e14eb8b26cea481539e20f"
+      ref: "ghcr.io/declade/dsa-id-bridge:0.5.4"
+      digest: "sha256:3aaee7958071e95fae29847679537e949b0876c6b423a3653ae9ed4fb4baf746"
     dsa-sandbox-a:
-      ref: "ghcr.io/declade/dsa-sandbox-a:0.5.3"
-      digest: "sha256:b5d045b9a1bea794886a968091ba0e1bdfba79b46cf8db96ba144dd8a80d79db"
+      ref: "ghcr.io/declade/dsa-sandbox-a:0.5.4"
+      digest: "sha256:8b75837e5b123e6f0c4c89a26ae72b6c73627cfb508a73b1c01f713f6be36b84"
     dsa-sandbox-b:
-      ref: "ghcr.io/declade/dsa-sandbox-b:0.5.3"
-      digest: "sha256:77e03cf099c6a770563b4c9f66a1d982bd231f616538e044a033f46d956601a8"
+      ref: "ghcr.io/declade/dsa-sandbox-b:0.5.4"
+      digest: "sha256:8aad459fc04a03de849cb2cc6ae812146b46d89bc023e171e232cf7ee7d09aef"
     dsa-pii-ml:
       # Multi-arch manifest list (linux/amd64 + linux/arm64) published from
       # PR #241's final state (commit 0cb627c, Codex r1 fix-ups). Built on
@@ -190,23 +190,23 @@ image_digests:
       ref: "ghcr.io/declade/dsa-pii-ml:0.5.1"
       digest: "sha256:5cc46f58db9f0c84f6a8ed9428fe91a2a481ae0c6a3dfa3f02e4a607da80d1cc"
     dsa-veil-witness:
-      ref: "ghcr.io/declade/dsa-veil-witness:0.5.3"
-      digest: "sha256:a640ac76e6176d173668f87b49b117fa23e2ac5053fbd10292671a9ea4d5fb93"
+      ref: "ghcr.io/declade/dsa-veil-witness:0.5.4"
+      digest: "sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523"
     dsa-reid-guard:
-      ref: "ghcr.io/declade/dsa-reid-guard:0.5.3"
-      digest: "sha256:2646ef65f2f4e793b8d644fb53673ef9c944690c80e4a4a2c83a801f0b578509"
+      ref: "ghcr.io/declade/dsa-reid-guard:0.5.4"
+      digest: "sha256:eedcb193febbb0049e700cd5bc365fc257f4a47c73e564ccc756624db6d61704"
     dsa-admin:
-      ref: "ghcr.io/declade/dsa-admin:0.5.3"
-      digest: "sha256:95dc897f801e952f883ba9e09943c044df714107ac2b675e8bbb334c416db6cc"
+      ref: "ghcr.io/declade/dsa-admin:0.5.4"
+      digest: "sha256:b2a7485dbc8009fdf51d4ec1312907ca774a54390ad647d8e0bff58b35a615a6"
     dsa-demo:
-      ref: "ghcr.io/declade/dsa-demo:0.5.3"
-      digest: "sha256:c2c852bf24de0de92602db4cf330ac3ef576a7c2551f117bd3d02b399c4ebeb2"
+      ref: "ghcr.io/declade/dsa-demo:0.5.4"
+      digest: "sha256:1b787649cb46a457c8d3f546b86a972952cb258b5f5f4fbf56b62e4ea4fe188c"
     dsa-ingest:
-      ref: "ghcr.io/declade/dsa-ingest:0.5.3"
-      digest: "sha256:21a1fb2f5ffd620d534e579c1d067f21837d62d6ec995c258d000c686760ca8e"
+      ref: "ghcr.io/declade/dsa-ingest:0.5.4"
+      digest: "sha256:c6c4fc054abb237c43138894214aab4ca9c38a7acbab42a66b09dd150fe55156"
     dsa-llm-auditor:
-      ref: "ghcr.io/declade/dsa-llm-auditor:0.5.3"
-      digest: "sha256:1b40d21087f7f90d068119cd1b0b1dc1635648d3908aa52b508e27e1da963e2c"
+      ref: "ghcr.io/declade/dsa-llm-auditor:0.5.4"
+      digest: "sha256:d8889e3ac59b46e31870f42c119134fefddf6f8f5062b3b65295f588146f88cd"
     lucairn-dashboard:
       ref: "ghcr.io/declade/lucairn-dashboard:0.8.2"
       digest: "sha256:a586b88991ac5d71cf6523b833462648775b1e97a66cbee67876e9f992f0387e"

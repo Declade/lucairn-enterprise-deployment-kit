@@ -624,7 +624,7 @@ check_manifest_blob() {
     echo "manifest blob:   the gateway reads it at the container path $path; with the bind-mount above, the host source must exist at $host_path."
     echo "manifest blob:   the production gateway log.Fatal's at boot without it (veil.go:182-197) — the stack will boot-loop, not start."
     echo "manifest blob:   produce it on your ceremony host with the witness seed — see OPS.md § 'witness-signed manifest' and INSTALL.md § 'Produce the witness-signed manifest (production)' — then place it at $host_path (it bind-mounts to $path)."
-    echo "manifest blob:   note: the sign-manifest tool ships INSIDE the pinned dsa-veil-witness:0.5.3 image (/usr/local/bin/sign-manifest) — produce the blob turnkey on the ceremony host with: docker run --rm --entrypoint sign-manifest ghcr.io/declade/dsa-veil-witness:0.5.3 … (see INSTALL.md § 4b 'Produce the witness-signed manifest' for the full command + flags). OR run a DSA_ENV=development install (legacy single-sig fallback) which does not require the blob."
+    echo "manifest blob:   note: the sign-manifest tool ships INSIDE the pinned dsa-veil-witness:0.5.4 image (/usr/local/bin/sign-manifest) — produce the blob turnkey on the ceremony host with: docker run --rm --entrypoint sign-manifest ghcr.io/declade/dsa-veil-witness:0.5.4 … (see INSTALL.md § 4b 'Produce the witness-signed manifest' for the full command + flags). OR run a DSA_ENV=development install (legacy single-sig fallback) which does not require the blob."
     return 1
   fi
   if [ ! -f "$host_path" ]; then
@@ -5500,10 +5500,10 @@ tool to resolve tag->digest (`docker buildx imagetools`, `crane`, or `skopeo`).
 Options:
   --tag TAG       Release tag to verify. Defaults to the SINGLE release covered
                   by keys/image-digests-*.txt when exactly one record is present.
-                  The kit now ships multiple records (0.5.0, 0.5.1, 0.5.2, 0.5.3 —
-                  current is 0.5.3), so --tag is effectively REQUIRED: with more
-                  than one keys/image-digests-*.txt present this errors and asks
-                  you to pass --tag (pin the current release: --tag 0.5.3). Also
+                  The kit now ships multiple records (0.5.0, 0.5.1, 0.5.2, 0.5.3,
+                  0.5.4 — current is 0.5.4), so --tag is effectively REQUIRED: with
+                  more than one keys/image-digests-*.txt present this errors and asks
+                  you to pass --tag (pin the current release: --tag 0.5.4). Also
                   errors if no keys/image-digests-<tag>.txt exists for the tag.
   --registry REG  Override the registry host for ALL images (default: the
                   registry recorded in the digests file, e.g. ghcr.io/declade).
@@ -5721,7 +5721,7 @@ verify_images() {
   # legitimately adds/removes an image, update THIS list (and the dashboard
   # pin below) — it is the one place verify-images keys off.
   #
-  # The 12 dsa-* services ride the release --tag (current release 0.5.3; --tag is
+  # The 12 dsa-* services ride the release --tag (current release 0.5.4; --tag is
   # required when multiple keys/image-digests-*.txt records are present); the dashboard
   # ships on its OWN independent cadence and is pinned here (currently 0.8.2),
   # mirroring optional_services.lucairn-dashboard.image_tag in image-manifest.yaml

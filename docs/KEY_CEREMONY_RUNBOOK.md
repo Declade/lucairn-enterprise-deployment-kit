@@ -5,7 +5,7 @@
 **Scope:** Generation, distribution, rotation, and revocation of Ed25519 signing keys used by the Lucairn attestation protocol, for customers running the `lucairn-enterprise-deployment-kit`.
 
 > **No DSA source tree required.** Every tool referenced here ships inside the pinned
-> `dsa-veil-witness:0.5.3` image (`/usr/local/bin/sign-manifest`). The ceremony is
+> `dsa-veil-witness:0.5.4` image (`/usr/local/bin/sign-manifest`). The ceremony is
 > turnkey via `docker run --entrypoint sign-manifest` — no Go toolchain, no build-from-source.
 
 ---
@@ -244,7 +244,7 @@ The full roster for a standard install has **seven entries**: five claim-signing
 
 ### 6.2 Run sign-manifest (no Go toolchain needed)
 
-The `sign-manifest` tool is embedded in `dsa-veil-witness:0.5.3` at `/usr/local/bin/sign-manifest`. Invoke it with `docker run --entrypoint`:
+The `sign-manifest` tool is embedded in `dsa-veil-witness:0.5.4` at `/usr/local/bin/sign-manifest`. Invoke it with `docker run --entrypoint`:
 
 ```bash
 # On the ceremony host, with the witness seed available.
@@ -252,7 +252,7 @@ The `sign-manifest` tool is embedded in `dsa-veil-witness:0.5.3` at `/usr/local/
 docker run --rm \
   --entrypoint sign-manifest \
   -v "$PWD/keys.json:/keys.json:ro" \
-  ghcr.io/declade/dsa-veil-witness:0.5.3 \
+  ghcr.io/declade/dsa-veil-witness:0.5.4 \
   --keys-json /keys.json \
   --issuer "${LCR_ISSUER:-Lucairn Veil Witness}" \
   --witness-signing-key-hex "$LCR_WITNESS_SIGNING_KEY" \
@@ -260,7 +260,7 @@ docker run --rm \
   > witness-signed-manifest.json
 ```
 
-**Flags** (run `docker run --rm --entrypoint sign-manifest ghcr.io/declade/dsa-veil-witness:0.5.3 -h` to confirm against your pin):
+**Flags** (run `docker run --rm --entrypoint sign-manifest ghcr.io/declade/dsa-veil-witness:0.5.4 -h` to confirm against your pin):
 - `--keys-json` (required) — path to the keys.json roster inside the container
 - `--issuer` (required) — must match `LCR_ISSUER` on the gateway
 - `--witness-signing-key-hex` (required) — Ed25519 witness seed, 64 hex chars
@@ -468,7 +468,7 @@ DERIVE PUB:    printf '%s' "$SEED_HEX" | ./scripts/derive-veil-pubkey.sh
 VERIFY PAIR:   compare derived public key with stored public key
 SIGN MANIFEST: docker run --rm --entrypoint sign-manifest \
                  -v "$PWD/keys.json:/keys.json:ro" \
-                 ghcr.io/declade/dsa-veil-witness:0.5.3 \
+                 ghcr.io/declade/dsa-veil-witness:0.5.4 \
                  --keys-json /keys.json --issuer "Lucairn Veil Witness" \
                  --witness-signing-key-hex "$LCR_WITNESS_SIGNING_KEY" \
                  --witness-key-id witness_manifest_v1 > witness-signed-manifest.json
