@@ -1126,7 +1126,67 @@ export LUCAIRN_ADMIN_KEY="$(grep '^DSA_ADMIN_KEY=' customer.env | cut -d= -f2-)"
   --tier enterprise
 ```
 
-The script prints the raw API key **once** — capture it to a 0600 file. Smoke with `curl -H "x-api-key: <raw_key>" $GATEWAY_BASE_URL/api/v1/usage`. See `./bin/lucairn-mint-customer --help` for all flags including `--byok-per-request`, `--managed-ai`, `--provider-key`, `--dry-run`, and `--verbose`.
+The script prints the raw API key **once** — capture it to a 0600 file. Smoke with `curl -H "x-api-key: <raw_key>" $GATEWAY_BASE_URL/api/v1/usage`. See `./bin/lucairn-mint-customer --help` for all flags including `--byok-per-request`, `--managed-ai`, `--provider-key`, `--dry-run`, `--verbose`, and `--tool-scope`.
+
+## Scoping MCP tools per engagement
+
+Operators can restrict which MCP data-source servers a key is allowed to
+call at mint time using the `--tool-scope` flag. This implements per-engagement
+least-privilege MCP tool scoping: the gateway forwards only the specified
+servers' tools to the model and drops all other MCP data-source tools.
+
+**Requires gateway image 0.5.4+.** This flag has no effect on gateway 0.5.3
+or earlier — the field is silently ignored by those images.
+
+### Minting a scoped key
+
+```bash
+export LUCAIRN_ADMIN_KEY="$(grep '^DSA_ADMIN_KEY=' customer.env | cut -d= -f2-)"
+
+./bin/lucairn-mint-customer \
+  --name "Jonas Köhler / Example Insurance" \
+  --email "jonas.koehler@example-insurance.de" \
+  --tier enterprise \
+  --tool-scope servicenow
+```
+
+To scope to multiple servers, pass a comma-separated list:
+
+```bash
+./bin/lucairn-mint-customer \
+  --name "Fatima Al-Hassan / Acme Corp" \
+  --email "fatima.alhassan@acme.example" \
+  --tier enterprise \
+  --tool-scope "servicenow,jira"
+```
+
+### Semantics
+
+- **Empty or omitted** (no `--tool-scope`): no scoping applied — all MCP
+  tools are forwarded to the model. This is the default and is byte-identical
+  to pre-0.5.4 behaviour.
+- **Set to one or more server names**: only those servers' MCP tools are
+  forwarded. All other MCP data-source (`mcp__*`) tools are dropped before
+  the request reaches the model. Non-MCP tools (built-in Claude Code tools,
+  custom non-`mcp__` tools) are always forwarded regardless of scope.
+- **Scope is mint-time only (v1)**: to change an existing key's scope,
+  re-mint a new key with the desired `--tool-scope` and revoke the old one.
+  There is no in-place update for tool scope in v1.
+
+### Dry-run validation
+
+Use `--dry-run` to inspect the resolved payload before firing:
+
+```bash
+./bin/lucairn-mint-customer --dry-run \
+  --name "Test Engagement" \
+  --email "ops@test.example" \
+  --tier enterprise \
+  --tool-scope servicenow
+```
+
+The dry-run output shows `tool_allowlist` in the POST body when the flag is
+set, and omits it entirely when not set.
 
 ## Kubernetes Install
 
