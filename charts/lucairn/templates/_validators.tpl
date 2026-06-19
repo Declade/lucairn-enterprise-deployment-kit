@@ -483,3 +483,50 @@
   global asymmetrically — hasKey is false at umbrella scope but true at subchart
   scope — so the old guard's fallbacks diverged into a phantom split).
 */ -}}
+
+{{- /*
+  validators.deprecatedL3RequiredKeys
+
+  Codex P1 (2026-06-19 fix-up). When chart 1.9.4 collapsed L3-required to the
+  single global.l3Required knob it DROPPED the per-subchart overrides
+  sandbox-a.sanitizer.l3Required AND veil-witness.config.l3Required. An operator
+  upgrading with an OLD values file that still sets one of those deprecated keys
+  (e.g. sandbox-a.sanitizer.l3Required=true) would have it SILENTLY IGNORED — the
+  pod templates no longer read it — so LUCAIRN_L3_REQUIRED falls back to "false"
+  and the stack quietly downgrades from fail-closed to continue-mode. That is a
+  silent SECURITY downgrade on upgrade. We refuse to silently ignore the key:
+  fail-fast with an actionable migration message.
+
+  PRESENCE check only (hasKey on the deprecated key). We deliberately do NOT
+  resolve or compare global.l3Required — that value-comparison was exactly the
+  null-propagation fragility that false-failed valid installs (see the REMOVED
+  guard NOTE above). A deprecated key is wrong regardless of its value, so we
+  fire on mere presence.
+
+  Every level is nil-guarded: if the subchart values subtree is absent (subchart
+  disabled / values block omitted) the traversal short-circuits and the guard
+  never errors. It fires ONLY when the deprecated l3Required key is genuinely
+  present.
+
+  Invoked from charts/lucairn/templates/validators.yaml.
+*/ -}}
+{{- define "validators.deprecatedL3RequiredKeys" -}}
+{{- if hasKey .Values "sandbox-a" -}}
+{{- with (index .Values "sandbox-a") -}}
+{{- if .sanitizer -}}
+{{- if hasKey .sanitizer "l3Required" -}}
+{{- fail "sandbox-a.sanitizer.l3Required is REMOVED in chart 1.9.4 — L3-required is now the single knob global.l3Required (read by BOTH the sanitizer and the veil-witness so they cannot drift). Set global.l3Required=true (or false) instead, and delete sandbox-a.sanitizer.l3Required from your values file." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey .Values "veil-witness" -}}
+{{- with (index .Values "veil-witness") -}}
+{{- if .config -}}
+{{- if hasKey .config "l3Required" -}}
+{{- fail "veil-witness.config.l3Required is REMOVED in chart 1.9.4 — L3-required is now the single knob global.l3Required (read by BOTH the sanitizer and the veil-witness so they cannot drift). Set global.l3Required=true (or false) instead, and delete veil-witness.config.l3Required from your values file." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

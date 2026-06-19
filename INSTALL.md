@@ -1051,6 +1051,16 @@ active. Provision the full 16 GB RAM before enabling this mode (see
 > correctly downgrades the cert to `PARTIAL`. (Before this single-knob wiring the
 > Helm witness defaulted to L3-required ⇒ every fresh L3-off install's certs
 > silently downgraded to `PARTIAL`.)
+>
+> **Migration (chart 1.9.4+):** the old per-subchart overrides
+> `sandbox-a.sanitizer.l3Required` and `veil-witness.config.l3Required` are
+> **REMOVED**. They are no longer read by the pod templates, so leaving them in a
+> values file would *silently* fall back to `LUCAIRN_L3_REQUIRED="false"` — a
+> silent fail-closed→continue-mode security downgrade on upgrade. To prevent that,
+> the chart now **`fail`s the `helm template`/`helm install`** when either
+> deprecated key is present, with a message pointing you at `global.l3Required`.
+> Delete those keys from your values file and set `global.l3Required=true` (or
+> `false`) instead.
 
 ### Self-hosted with managed LLM (BYOK Anthropic, OpenAI, etc.)
 
