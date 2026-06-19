@@ -146,17 +146,14 @@ sanitizer:
   # L3 shield (set sanitizer.llmScanEnabled=true to deploy the GPU ollama-identity
   # sidecar) flip L3-required true to restore fail-closed L3.
   #
-  # SINGLE SOURCE OF TRUTH (rehearsal fix 2026-06-19): the effective value is now
-  # global.l3Required (default false) so the sanitizer AND the veil-witness read
-  # ONE knob and can never drift (drift ⇒ witness downgrades every cert to
-  # COMPLETENESS_PARTIAL — verifier.go:170-172,503). This per-subchart key is
-  # therefore COMMENTED OUT by default (no baked-in value) so the global drives
-  # it. Uncomment / set it ONLY to override L3-required for the sanitizer alone
-  # for legacy reasons — but note that overriding ONLY the sanitizer side
-  # re-introduces the very drift this fix closes; prefer global.l3Required.
-  # An explicit value here is still honored first for backward-compat with
-  # existing customer-values.yaml files that set sanitizer.l3Required.
-  # l3Required: false
+  # SINGLE SOURCE OF TRUTH (rehearsal fix 2026-06-19, collapsed 2026-06-19
+  # fix-up): there is NO per-subchart sanitizer.l3Required override. The ONE L3
+  # knob is global.l3Required (charts/lucairn/values.yaml, default false). The
+  # sanitizer container AND the veil-witness pod resolve LUCAIRN_L3_REQUIRED from
+  # that single global with the SAME fallback ("false"), so they can never drift
+  # (drift ⇒ witness downgrades every cert to COMPLETENESS_PARTIAL —
+  # verifier.go:170-172,503). To require L3, set global.l3Required=true (pair it
+  # with sanitizer.llmScanEnabled=true so the GPU L3 shield is actually deployed).
   # TOB-003 fix (2026-05-09): default "sequential" — Pro/Enterprise overlays
   # MUST explicitly set "ensemble" to opt into L3 reversal path.
   llmScanMode: "sequential"

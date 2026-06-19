@@ -118,16 +118,15 @@ spec:
             # a change to global.l3Required change the pod template, triggering a
             # rollout in lockstep with the sanitizer.
             #
-            # RESOLUTION (FIX B.i): resolve from global.l3Required (default
-            # false) — the ONE shared knob the witness subchart can actually see
-            # (subchart value isolation hides the sibling sandbox-a's
-            # sanitizer.l3Required). Any per-subchart override that diverges from
-            # the global is caught LOUDLY at render time by the umbrella guard
-            # validators.witnessSanitizerL3Split (charts/lucairn/templates/
-            # _validators.tpl) — there is no silent one-sided override path here.
-            # hasKey (NOT `| default`) so an explicit global false is honored
-            # (Sprig's `default` treats boolean false as empty and would clobber
-            # it back to "false" anyway, but hasKey keeps the intent explicit).
+            # RESOLUTION (collapsed to ONE knob, 2026-06-19 fix-up): resolve
+            # from global.l3Required (default false) — the SINGLE shared knob.
+            # The sanitizer (sandbox-a) pod template uses this IDENTICAL
+            # expression with the SAME fallback ("false"), so the two sides
+            # resolve byte-identically in EVERY case (including null/absent
+            # global) and CANNOT split. There is no per-subchart override and no
+            # render-time split-guard needed — the split is structurally
+            # impossible. hasKey (NOT `| default`) so an explicit global false is
+            # honored (Sprig's `default` treats boolean false as empty).
             - name: LUCAIRN_L3_REQUIRED
               value: {{ if hasKey .Values.global "l3Required" }}{{ .Values.global.l3Required | quote }}{{ else }}{{ "false" | quote }}{{ end }}
             {{- if .Values.witnessMtls.serverSecret }}
