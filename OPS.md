@@ -569,8 +569,8 @@ holding the old data.
 > introduce a new backup mechanism. It sequences four things you already have:
 > your offline **signing-seed escrow** (§ "Signing-key escrow & cold recovery"
 > below), the `age`-encrypted **compliance-DB dumps** (§ Backups), the
-> **witness-signed manifest** ceremony (`bin/lucairn` / the Veil key-ceremony
-> runbook), and a **fresh-cert verify** (`bin/lucairn doctor` + a synthetic
+> **witness-signed manifest** ceremony (`bin/lucairn` / the Key Ceremony Runbook
+> at `docs/KEY_CEREMONY_RUNBOOK.md`), and a **fresh-cert verify** (`bin/lucairn doctor` + a synthetic
 > request). The same NO-point-in-time-recovery limit from § Backups applies:
 > the data you recover is exactly what was in your most recent dump, so your
 > recovery point is your backup interval — **measure your own recovery time in
@@ -833,8 +833,8 @@ With the seeds back and the DBs restored, regenerate / redeploy the
 witness-signed `/.well-known/veil-keys.json` blob so the gateway boots and the
 W2B runtime harness's manifest check passes. The blob is produced at the
 ceremony host with the recovered witness seed and distributed to each gateway
-(see the Veil **Key Ceremony Runbook**, § "Producing the witness-signed
-manifest blob"). After redeploying the blob, restart the gateway so it
+(see the **Key Ceremony Runbook** at `docs/KEY_CEREMONY_RUNBOOK.md` § 6
+"Producing the witness-signed manifest blob"). After redeploying the blob, restart the gateway so it
 re-reads and re-verifies it against `LCR_WITNESS_PUBLIC_KEY` at boot.
 
 ### Step 4 — verify a fresh certificate end-to-end
@@ -878,7 +878,7 @@ echo "all 7 key_ids present"
 # gate fail against a correctly configured deployment.
 # Then submit a proxy request and GET /api/v1/veil/certificate/<request_id> —
 # the verification block must show overall_verdict = VERDICT_VERIFIED with a
-# valid witness signature (see the Veil Key Ceremony Runbook § Verification).
+# valid witness signature (see the Key Ceremony Runbook § 7 Verification at docs/KEY_CEREMONY_RUNBOOK.md).
 ```
 
 A `VERDICT_VERIFIED` on a freshly issued certificate is the cold-restore
@@ -1091,7 +1091,7 @@ set -a; . /dev/shm/veil-seeds.env; set +a
 > - The `age`/GPG **identity** stays offline and separate from the escrow blob.
 > - Escrow is **not** key rotation. It recovers the SAME seeds you already run;
 >   it never changes what is signed. Rotating a seed is the separate "Key
->   Rotation" procedure below (and the Veil Key Ceremony Runbook).
+>   Rotation" procedure below (and the Key Ceremony Runbook at `docs/KEY_CEREMONY_RUNBOOK.md`).
 > - Re-verify the decrypt round-trip whenever you regenerate the escrow blob.
 
 This escrow blob is exactly what the cold-restore runbook above consumes in
@@ -1333,8 +1333,8 @@ in `image-manifest.yaml` (drop the `pending: true` line). The
 (`charts/lucairn/charts/sandbox-a/values.yaml` → `ollamaIdentity.image.digest`).
 
 For the Image Signing Key's custody model, generation, and rotation procedure,
-see the DSA repo `docs/operations/key-ceremony-runbook.md` § Key Inventory
-(Image Signing Key). The private cosign key and its password are Lucairn-held,
+see the Key Ceremony Runbook (`docs/KEY_CEREMONY_RUNBOOK.md` § 1 "Key Inventory" — Image
+Signing Key). The private cosign key and its password are Lucairn-held,
 stored mode-600 on the Lucairn issuer host, and are never distributed.
 
 ## Fetch + verify the Software Bill of Materials (SBOM)

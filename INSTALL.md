@@ -93,11 +93,40 @@ is also bundled in the kit (`config/safe-terms-strict.txt`), mounted into the
 sanitizer container, and wired in `config/default-sanitizer.yaml` and the ITSM
 starter template (`starter-templates/itsm/config.yaml`).
 
+## Step 0 — Registry access (REQUIRED before any docker pull)
+
+> **Do this before any other step.** The 12 Lucairn `dsa-*` images live in the
+> **private** `ghcr.io/declade/*` registry. A self-minted GitHub PAT alone is
+> NOT sufficient — Lucairn must also GRANT package-pull access to the GitHub
+> account that owns the PAT. Without this grant every `docker pull` / `docker
+> compose up` will fail with `denied: permission_denied`.
+
+**How to get access:**
+
+1. Email **support@lucairn.eu** with your GitHub username.
+2. Wait for Lucairn to confirm registry access (typically within one business day).
+3. Only then proceed to mint a PAT and run `docker login` (§ "Registry Authentication" below).
+
+If you intend to mirror images to your own internal registry instead, this prerequisite is moot — skip to § "Mirroring images to a private registry".
+
+> **Base images also need outbound access.** In addition to `ghcr.io`, the stack
+> pulls public base images from Docker Hub (`registry-1.docker.io`,
+> `auth.docker.io`, `production.cloudflare.docker.com`):
+> `postgres:16-alpine`, `redis:7-alpine`, `alpine:3.20`,
+> `migrate/migrate:v4.17.0`, `ollama/ollama`. A host that allowlists only
+> `ghcr.io` will authenticate successfully but fail `docker compose up` when
+> Docker attempts these pulls. **`LUCAIRN_IMAGE_REGISTRY` does NOT redirect
+> base-image pulls** — it only prefixes the 12 Lucairn `dsa-*` images. To block
+> direct Docker Hub access, configure a **registry pull-through mirror** for
+> `registry-1.docker.io` on your infrastructure; alternatively, manually mirror
+> the specific tags above and edit the `image:` lines in the compose files.
+
 ## Quickstart (30 seconds, dev mode)
 
 ```
 git clone https://github.com/Declade/lucairn-enterprise-deployment-kit && cd lucairn-enterprise-deployment-kit
-# Authenticate against ghcr.io (one-time per host; see § "Registry Authentication" for details)
+# Step 0: Lucairn must GRANT your GitHub account registry access BEFORE this step.
+# See § "Step 0 — Registry access" above. One-time per host:
 docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 ./bin/lucairn-init --dev
 docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env up -d
@@ -109,10 +138,10 @@ passwords, sensible dev-mode defaults) and runs `bin/lucairn doctor` against
 it before exiting. Use `bin/lucairn-mint-customer` once the stack is healthy
 to provision your first customer.
 
-The `docker login` step assumes you already minted a `read:packages` PAT
-into `~/.ghcr-token` AND Lucairn granted your GitHub account package-pull
-access. First-time setup walkthrough is in § "Registry Authentication"
-below. Skip the ghcr.io `docker login` step ONLY when you are mirroring
+The `docker login` step requires Lucairn to have granted package-pull access
+to the GitHub account that owns the PAT (see § "Step 0" above). First-time
+setup walkthrough is in § "Registry Authentication" below. Skip the ghcr.io
+`docker login` step ONLY when you are mirroring
 images to a private registry — set `LUCAIRN_IMAGE_REGISTRY` to the mirror
 prefix. If your private mirror requires authentication, run `docker login
 <your-mirror-host>` instead (same `--password-stdin < ~/.<registry>-token`
@@ -421,8 +450,8 @@ For Docker Compose:
   single-tenant pilot load.
 - TLS-terminating reverse proxy such as Caddy, Nginx, Traefik, or an enterprise ingress proxy.
 - Outbound HTTPS to the image registries used during `docker compose up` / `docker pull`:
-  - `ghcr.io` — the 7 Lucairn `dsa-*` images are in the private `ghcr.io/declade/*` namespace (authentication required; see § "Registry Authentication").
-  - `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com` — public base images (`postgres:16-alpine`, `redis:7-alpine`, `alpine:3.20`, `migrate/migrate:v4.17.0`, `ollama/ollama`) are pulled from Docker Hub. A host that allowlists only `ghcr.io` will pass GHCR auth but fail on these pulls. **`LUCAIRN_IMAGE_REGISTRY` does not redirect these pulls** — it only prefixes the Lucairn `dsa-*` images (e.g. `dsa-gateway`, `dsa-sandbox-a`, `dsa-audit`, and the other six `ghcr.io/declade/*` images). The base images are hardcoded in the compose files and are not registry-templated. If direct Docker Hub access is prohibited, the standard approach is to configure a **registry pull-through mirror / cache** for `registry-1.docker.io` on your infrastructure; alternatively, manually mirror the specific image tags listed above and edit the `image:` lines in the compose files.
+  - `ghcr.io` — the 12 Lucairn `dsa-*` images are in the private `ghcr.io/declade/*` namespace (authentication required; see § "Step 0 — Registry access" above and § "Registry Authentication" below). **Lucairn must grant your GitHub account package-pull access before `docker login` will work** — see § "Step 0".
+  - `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com` — public base images (`postgres:16-alpine`, `redis:7-alpine`, `alpine:3.20`, `migrate/migrate:v4.17.0`, `ollama/ollama`) are pulled from Docker Hub. A host that allowlists only `ghcr.io` will pass GHCR auth but fail on these pulls. **`LUCAIRN_IMAGE_REGISTRY` does not redirect these pulls** — it only prefixes the 12 Lucairn `dsa-*` images (e.g. `dsa-gateway`, `dsa-sandbox-a`, `dsa-audit`, and the other nine `ghcr.io/declade/*` images). The base images are hardcoded in the compose files and are not registry-templated. If direct Docker Hub access is prohibited, the standard approach is to configure a **registry pull-through mirror / cache** for `registry-1.docker.io` on your infrastructure; alternatively, manually mirror the specific image tags listed above and edit the `image:` lines in the compose files.
 - Outbound HTTPS to Lucairn-provided remote Sandbox B endpoint if using split deployment.
 - Python 3 with the `cryptography` library (>=2.6) OR `pynacl`. Required by
   `bin/lucairn-init` and `scripts/derive-veil-pubkey.sh` for Ed25519 keypair
@@ -805,8 +834,8 @@ The blob is produced at your **key-ceremony host** (the machine holding the
 witness signing seed) with the `sign-manifest` tool. The full ceremony —
 assembling the `keys.json` roster from your derived public keys, issuer, and
 protocol versions — is documented in **OPS.md § "witness-signed manifest"** and
-the Veil **Key Ceremony Runbook** (§ "Producing the witness-signed manifest
-blob"). The invocation is:
+the **Key Ceremony Runbook** (`docs/KEY_CEREMONY_RUNBOOK.md` § 6 "Producing the
+witness-signed manifest blob"). The invocation is:
 
 The `sign-manifest` tool ships **inside the pinned `dsa-veil-witness:0.5.3`
 image** (`/usr/local/bin/sign-manifest`), so the ceremony is turnkey via

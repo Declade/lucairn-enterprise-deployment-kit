@@ -1,0 +1,42 @@
+[
+  {
+    "service_id": "dsa-witness",
+    "key_id": "witness_v1",
+    "public_key": "0000000000000000000000000000000000000000000000000000000000000000",
+    "purpose": "Certificate signing",
+    "algorithm": "Ed25519",
+    "key_state": "active"
+  },
+  {
+    "service_id": "dsa-bridge",
+    "key_id": "bridge_v1",
+    "public_key": "1111111111111111111111111111111111111111111111111111111111111111",
+    "purpose": "Bridge claim signing",
+    "algorithm": "Ed25519",
+    "key_state": "active"
+  },
+  {
+    "service_id": "dsa-sanitizer",
+    "key_id": "sanitizer_v1",
+    "public_key": "2222222222222222222222222222222222222222222222222222222222222222",
+    "purpose": "Sanitizer claim signing",
+    "algorithm": "Ed25519",
+    "key_state": "active"
+  },
+  {
+    "service_id": "dsa-ai",
+    "key_id": "sandbox_b_v1",
+    "public_key": "3333333333333333333333333333333333333333333333333333333333333333",
+    "purpose": "Inference claim signing",
+    "algorithm": "Ed25519",
+    "key_state": "active"
+  },
+  {
+    "service_id": "dsa-audit",
+    "key_id": "audit_v1",
+    "public_key": "4444444444444444444444444444444444444444444444444444444444444444",
+    "purpose": "Audit claim signing",
+    "algorithm": "Ed25519",
+    "key_state": "active"
+  }
+]
