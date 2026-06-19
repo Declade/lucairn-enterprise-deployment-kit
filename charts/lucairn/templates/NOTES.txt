@@ -44,10 +44,14 @@ Verify network isolation invariant:
     See docs/CUSTOMER_HELM_RUNBOOK.md#prereqs-1-time for the proven remedies
     (Calico v3.27.3 / GKE Dataplane V2 / Azure or Calico network policy).
   • To actively confirm your CNI enforces NetworkPolicies, run:
-      lucairn net-preflight
-    It deploys a throwaway pod-pair behind a deny-all NetworkPolicy and proves
-    the connection is BLOCKED, then tears itself down. (`lucairn doctor` only
-    checks that NetworkPolicy OBJECTS are present, not that they are enforced.)
+      kubectl apply -f docs/cni-probe-job.yaml
+      kubectl wait --for=condition=complete -n lucairn-probe job/lucairn-cni-probe --timeout=90s
+      kubectl logs -n lucairn-probe job/lucairn-cni-probe
+    PASS — blocked flow rejected; CNI enforcing NetworkPolicy.
+    FAIL — blocked flow reachable; CNI NOT enforcing; isolation air-gap is inert.
+    Clean up: kubectl delete namespace lucairn-probe
+    (`lucairn doctor` only checks that NetworkPolicy OBJECTS are present, not
+    that they are enforced.)
 
 Gateway keystore encryption (#17):
   GATEWAY_KEYSTORE_KEY is REQUIRED for gateway boot. The chart wires it via

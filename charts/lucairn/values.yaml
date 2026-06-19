@@ -113,7 +113,7 @@ global:
   # "production" via `--set global.dsaEnv=production` or by loading
   # `values-prod.yaml` which already sets the combo correctly. Prod-grade
   # TLS provisioning is the v2.0 roadmap. See INSTALL.md
-  # § "v1.0 chart-default TLS posture".
+  # § "v1.0 gateway keystore (file-keystore on PVC)".
   dsaEnv: development
 
 # ---------------------------------------------------------------------------

@@ -96,6 +96,8 @@ The script falls back to `pynacl` only when `cryptography` is unavailable. Do **
 
 The ceremony generates **seven** key pairs: one per claim-signing service plus **one** dedicated gateway manifest key (`LCR_MANIFEST_SIGNING_KEY`). There is **no** separate "witness manifest" seed — the two manifest public keys that appear in `keys.json` are simply the **public halves of existing signing seeds**:
 
+> **Two different "sevens":** this section uses "seven" to mean **6 claim seeds + 1 manifest seed = 7 key PAIRS/seeds generated**. Section §6 also says "seven entries" in `keys.json` — that "seven" means **5 claim public keys + 2 manifest public keys = 7 manifest ENTRIES**. The counts are different sets and are intentionally not the same number.
+
 | Env var set on gateway | Derived from | Source |
 |---|---|---|
 | `LCR_GATEWAY_MANIFEST_PUBLIC_KEY` | `LCR_MANIFEST_SIGNING_KEY` | gateway source `veil.go:202`, wired at `server/main.go:1278` |
@@ -181,7 +183,7 @@ The **Gateway** also reads public keys for the `/.well-known/veil-keys.json` man
 | `LCR_SANITIZER_PUBLIC_KEY` | sanitizer |
 | `LCR_SANDBOX_B_PUBLIC_KEY` | sandbox-b |
 | `LCR_AUDIT_PUBLIC_KEY` | audit |
-| `LCR_GATEWAY_PUBLIC_KEY` | gateway (claim key) |
+| `LCR_GATEWAY_PUBLIC_KEY` | gateway claim key — **consumed by the WITNESS** to verify gateway claims; also served by the gateway in `/.well-known/veil-keys.json` |
 | `LCR_GATEWAY_MANIFEST_PUBLIC_KEY` | gateway manifest-signing key |
 | `LCR_WITNESS_MANIFEST_PUBLIC_KEY` | witness manifest-signing key |
 
@@ -462,7 +464,7 @@ For the production Helm posture (`grpcTlsEnabled=true`, `dsaEnv=production`), se
 
 ```
 GENERATE:      openssl rand -hex 32
-DERIVE PUB:    ./scripts/derive-veil-pubkey.sh <seed-hex>
+DERIVE PUB:    printf '%s' "$SEED_HEX" | ./scripts/derive-veil-pubkey.sh
 VERIFY PAIR:   compare derived public key with stored public key
 SIGN MANIFEST: docker run --rm --entrypoint sign-manifest \
                  -v "$PWD/keys.json:/keys.json:ro" \

@@ -470,4 +470,53 @@ echo "M9: production no-backup check_backup_preflight(strict=1) → FAIL (rc=1):
 
 echo "M9 phantom-Helm-var removed (PR #81 fix-up): ok"
 
+# ---------------------------------------------------------------------------
+# M9-HELM-MANAGED: LUCAIRN_BACKUP_HELM_MANAGED=true passes check_backup_preflight
+# under both default (strict=0) and --strict (strict=1) when no bucket is set.
+# This is the central Helm-path behavior added alongside the M9 phantom-var fix
+# (PR #81 review r2): the Helm operator sets this var to assert chart-managed
+# backup; doctor accepts it without requiring a bucket.
+# ---------------------------------------------------------------------------
+M9_HM_ENV="$TMPDIR/m9-helm-managed.env"
+grep -v '^DSA_ENV=\|^LUCAIRN_BACKUP_S3_BUCKET=\|^LUCAIRN_HELM_BACKUP_ENABLED=' "$ENV_FILE" > "$M9_HM_ENV"
+printf 'DSA_ENV=production\nLUCAIRN_BACKUP_HELM_MANAGED=true\n' >> "$M9_HM_ENV"
+
+# Case: LUCAIRN_BACKUP_HELM_MANAGED=true + no bucket → PASS (strict=0).
+M9_HM_WARN_OUT="$TMPDIR/m9-hm-warn.out"
+set +e
+(
+  set --
+  # shellcheck disable=SC1090
+  . "$ROOT/bin/lucairn" >/dev/null 2>&1
+  check_backup_preflight "$M9_HM_ENV" 0
+) > "$M9_HM_WARN_OUT" 2>&1
+M9_HM_WARN_RC=$?
+set -e
+if [ "$M9_HM_WARN_RC" -ne 0 ]; then
+  echo "FAIL: M9-HELM-MANAGED check_backup_preflight(strict=0) should PASS (LUCAIRN_BACKUP_HELM_MANAGED=true), got rc=$M9_HM_WARN_RC" >&2
+  cat "$M9_HM_WARN_OUT" >&2
+  exit 1
+fi
+echo "M9-HELM-MANAGED: LUCAIRN_BACKUP_HELM_MANAGED=true, no bucket, strict=0 → PASS: ok"
+
+# Case: LUCAIRN_BACKUP_HELM_MANAGED=true + no bucket → PASS (strict=1).
+M9_HM_STRICT_OUT="$TMPDIR/m9-hm-strict.out"
+set +e
+(
+  set --
+  # shellcheck disable=SC1090
+  . "$ROOT/bin/lucairn" >/dev/null 2>&1
+  check_backup_preflight "$M9_HM_ENV" 1
+) > "$M9_HM_STRICT_OUT" 2>&1
+M9_HM_STRICT_RC=$?
+set -e
+if [ "$M9_HM_STRICT_RC" -ne 0 ]; then
+  echo "FAIL: M9-HELM-MANAGED check_backup_preflight(strict=1) should PASS (LUCAIRN_BACKUP_HELM_MANAGED=true), got rc=$M9_HM_STRICT_RC" >&2
+  cat "$M9_HM_STRICT_OUT" >&2
+  exit 1
+fi
+echo "M9-HELM-MANAGED: LUCAIRN_BACKUP_HELM_MANAGED=true, no bucket, strict=1 → PASS: ok"
+
+echo "M9-HELM-MANAGED backup_preflight Helm path (--strict passes): ok"
+
 echo "all sec-hardening tests: ok"

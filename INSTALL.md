@@ -782,7 +782,7 @@ one service in two lines of output you can paste into `customer.env`:
 ```bash
 SEED=$(openssl rand -hex 32)
 echo "LCR_AUDIT_SIGNING_KEY=$SEED"
-echo "LCR_AUDIT_PUBLIC_KEY=$(scripts/derive-veil-pubkey.sh "$SEED")"
+echo "LCR_AUDIT_PUBLIC_KEY=$(printf '%s' "$SEED" | scripts/derive-veil-pubkey.sh)"
 ```
 
 Repeat for `BRIDGE`, `SANITIZER`, `WITNESS`, `GATEWAY`, and (for
@@ -823,8 +823,7 @@ checks the byte count is exactly 32.
 > production install whose manifest blob is missing, and SKIPS the check in dev.
 
 When `DSA_ENV=production`, the gateway **`log.Fatal`s at boot** if the
-witness-signed manifest blob is missing or unreadable (dual-sandbox-architecture
-`services/gateway/internal/api/veil.go:182-197`). The blob — a base64-encoded,
+witness-signed manifest blob is missing or unreadable. The blob — a base64-encoded,
 witness-signed copy of the published `/.well-known/veil-keys.json` key roster —
 must exist at `LCR_WITNESS_SIGNED_MANIFEST_PATH` (kit default
 `/certs/witness-signed-manifest.json`) **before first production boot**, or the
