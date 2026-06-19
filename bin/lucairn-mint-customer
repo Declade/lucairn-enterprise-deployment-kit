@@ -99,6 +99,15 @@ Optional:
                                  If --byok-per-request is set and the gateway
                                  rejects with "required when managed_ai is false",
                                  re-run with --provider-key supplied.
+  --tool-scope <SERVERS>         Comma-separated MCP server names whose tools this key
+                                 may call (e.g. "servicenow" or "servicenow,jira").
+                                 When set, the gateway will scope the key's MCP tool
+                                 access to these servers only; all other MCP data-source
+                                 tools are filtered before forwarding to the model.
+                                 When omitted, no scoping is applied and all tools are
+                                 forwarded (inert — same behaviour as before).
+                                 Requires gateway image 0.5.4+. On earlier images this
+                                 field is silently ignored by the gateway.
 
 Auth (one required):
   --admin-key <KEY>              Admin key inline. Avoid — leaves the key in shell history.
@@ -129,6 +138,14 @@ Examples:
       --name "Acme Corp" --email "ops@acme.example" --tier pro \\
       --monthly-limit 100000 --rate-limit-rpm 120
 
+  # Mint an engagement key scoped to ServiceNow only (requires gateway 0.5.4+)
+  LUCAIRN_ADMIN_KEY=... \\
+    lucairn-mint-customer \\
+      --name "Jonas Köhler / Example Insurance" \\
+      --email "jonas.koehler@example-insurance.de" \\
+      --tier enterprise \\
+      --tool-scope servicenow
+
 Exit codes:
   0   success — raw key printed
   2   usage error (missing flag, conflicting flags)
@@ -156,6 +173,7 @@ BYOK_PER_REQUEST="auto" # auto: true for Enterprise default, false otherwise
 MANAGED_AI="false"
 PROVIDER="anthropic"
 PROVIDER_KEY=""
+TOOL_SCOPE=""
 ADMIN_KEY=""
 ADMIN_KEY_FILE=""
 GATEWAY_URL=""
@@ -176,6 +194,7 @@ while [ $# -gt 0 ]; do
     --managed-ai)        MANAGED_AI="true"; shift ;;
     --provider)          PROVIDER="${2:?--provider requires a value}"; shift 2 ;;
     --provider-key)      PROVIDER_KEY="${2:?--provider-key requires a value}"; shift 2 ;;
+    --tool-scope)        TOOL_SCOPE="${2:?--tool-scope requires a value}"; shift 2 ;;
     --admin-key)         ADMIN_KEY="${2:?--admin-key requires a value}"; shift 2 ;;
     --admin-key-file)    ADMIN_KEY_FILE="${2:?--admin-key-file requires a path}"; shift 2 ;;
     --gateway-url)       GATEWAY_URL="${2:?--gateway-url requires a value}"; shift 2 ;;
@@ -288,6 +307,51 @@ if [ -n "${PROVIDER_KEY}" ]; then
   PROVIDER_KEY_JSON=", \"provider_key\": \"${PK_ESC}\""
 fi
 
+# Build the tool_allowlist JSON fragment when --tool-scope is supplied.
+# When NOT supplied, this is empty and the field is OMITTED from the body
+# (inert — matches gateway behavior: nil allowlist = no scoping = all tools forwarded).
+# Each server name is split on comma, trimmed of surrounding whitespace,
+# and JSON-encoded as a quoted string. Newlines in names are rejected.
+TOOL_ALLOWLIST_JSON=""
+if [ -n "${TOOL_SCOPE}" ]; then
+  case "${TOOL_SCOPE}" in
+    *$'\n'*) fail "--tool-scope may not contain newlines" 2 ;;
+  esac
+  # Build the JSON array from the comma-separated list using jq if available,
+  # otherwise via a portable printf+sed loop.
+  if command -v jq >/dev/null 2>&1; then
+    TOOL_ALLOWLIST_JSON=", \"tool_allowlist\": $(printf '%s' "${TOOL_SCOPE}" \
+      | tr ',' '\n' \
+      | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' \
+      | jq -R . \
+      | jq -s .)"
+  else
+    # Portable fallback: build the array element-by-element.
+    _arr="["
+    _first="true"
+    # Split on comma using IFS
+    _IFS_SAVE="${IFS}"
+    IFS=","
+    for _srv in ${TOOL_SCOPE}; do
+      IFS="${_IFS_SAVE}"
+      # trim leading/trailing whitespace
+      _srv="$(printf '%s' "${_srv}" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+      # JSON-escape (quotes + backslashes)
+      _srv_esc="$(printf '%s' "${_srv}" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+      if [ "${_first}" = "true" ]; then
+        _arr="${_arr}\"${_srv_esc}\""
+        _first="false"
+      else
+        _arr="${_arr},\"${_srv_esc}\""
+      fi
+      IFS=","
+    done
+    IFS="${_IFS_SAVE}"
+    _arr="${_arr}]"
+    TOOL_ALLOWLIST_JSON=", \"tool_allowlist\": ${_arr}"
+  fi
+fi
+
 PAYLOAD=$(cat <<JSON
 {
   "customer_id": "${CUSTOMER_ID}",
@@ -298,7 +362,7 @@ PAYLOAD=$(cat <<JSON
   "rate_limit_rpm": ${RATE_LIMIT_RPM},
   "tier": "${TIER}",
   "managed_ai": ${MANAGED_AI},
-  "byok_per_request": ${BYOK_PER_REQUEST}${PROVIDER_KEY_JSON}
+  "byok_per_request": ${BYOK_PER_REQUEST}${PROVIDER_KEY_JSON}${TOOL_ALLOWLIST_JSON}
 }
 JSON
 )
@@ -319,6 +383,11 @@ if [ "${DRY_RUN}" = "true" ]; then
   printf '  managed_ai      = %s\n' "${MANAGED_AI}"
   printf '  byok_per_request= %s\n' "${BYOK_PER_REQUEST}"
   printf '  provider        = %s\n' "${PROVIDER}"
+  if [ -n "${TOOL_SCOPE}" ]; then
+    printf '  tool_scope      = %s (requires gateway 0.5.4+)\n' "${TOOL_SCOPE}"
+  else
+    printf '  tool_scope      = (not set — all MCP tools forwarded; inert)\n'
+  fi
   exit 0
 fi
 

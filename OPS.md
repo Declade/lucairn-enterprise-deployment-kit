@@ -6,6 +6,46 @@ Mint a new customer + first API key with `bin/lucairn-mint-customer` (run after 
 
 Tier promotion and key revocation are exposed by the gateway as `PATCH /api/v1/admin/keys/tier` and `DELETE /api/v1/admin/customers/{cid}/keys/{key_id}`. A future v2 of `bin/lucairn-mint-customer` will surface these as `--promote-tier` and `--revoke` subcommands.
 
+## Scoping MCP tools per engagement
+
+Operators can restrict which MCP data-source servers a key may call at mint
+time using the `--tool-scope` flag on `bin/lucairn-mint-customer`. This
+implements per-engagement least-privilege: the gateway forwards only the
+listed servers' MCP tools to the model; all other MCP data-source tools are
+dropped. Non-MCP tools (built-in and custom non-`mcp__` tools) are always
+forwarded regardless of scope.
+
+**Requires gateway image 0.5.4+.** The field is silently ignored by 0.5.3
+and earlier images — no error, no effect.
+
+```bash
+# Scope a key to ServiceNow tools only
+./bin/lucairn-mint-customer \
+  --name "Jonas Köhler / Example Insurance" \
+  --email "jonas.koehler@example-insurance.de" \
+  --tier enterprise \
+  --tool-scope servicenow
+
+# Scope to multiple servers (comma-separated)
+./bin/lucairn-mint-customer \
+  --name "Fatima Al-Hassan / Acme Corp" \
+  --email "fatima.alhassan@acme.example" \
+  --tier enterprise \
+  --tool-scope "servicenow,jira"
+```
+
+**Key semantics:**
+
+- **Omitted / empty**: inert — no scoping, all MCP tools forwarded (same
+  behaviour as gateway <0.5.4).
+- **Set**: gateway enforces the allowlist per-request; unlisted MCP
+  data-source tools are filtered before the model sees them.
+- **To change scope on an existing key**: re-mint with the new `--tool-scope`
+  and revoke the old key. No in-place update in v1.
+
+See `INSTALL.md § "Scoping MCP tools per engagement"` for dry-run validation
+and the full semantics reference.
+
 ## Monitoring
 
 Minimum alerts:
