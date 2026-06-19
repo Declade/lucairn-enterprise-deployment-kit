@@ -285,7 +285,7 @@ bash "$ROOT/tests/test_digest_pin.sh"
 bash "$ROOT/tests/test_manifest_blob.sh"
 
 # B1 Slice 3: the manifest digest block records EXACTLY the 13 cosign-signed
-# artifacts (keys/image-digests-0.5.3.txt) under signed_artifacts, in lockstep.
+# artifacts (keys/image-digests-0.5.4.txt) under signed_artifacts, in lockstep.
 # Assert the block exists + every signed digest appears identically, so a future
 # tag/digest bump that updates the digests file but forgets the manifest (or vice
 # versa) fails the static gate rather than silently drifting --strict away from
@@ -316,7 +316,7 @@ while IFS= read -r _l; do
   # PENDING/INVALID/absent verdict here = a signed ref was downgraded -> FAIL.
   printf '%s\n' "$_PARSED_STATIC" | grep -qF "$(printf '%s\t%s' "$_ref" "$_rec")" \
     || { echo "B1-S3: signed ref $_ref does NOT resolve to its recorded digest $_rec via parse_image_digests (downgraded to PENDING/INVALID, or absent) — a signed ref was silently weakened" >&2; exit 1; }
-done < "$ROOT/keys/image-digests-0.5.3.txt"
+done < "$ROOT/keys/image-digests-0.5.4.txt"
 # Defensive: the parser must emit NO INVALID / <no-ref> verdicts for the shipped
 # manifest (a clean manifest has none — any is a manifest-integrity regression).
 # Use `if` (not `&&`) so the no-match happy path does not trip `set -e`.
@@ -330,6 +330,6 @@ if [ -f "$ROOT/apps/dashboard/image-manifest.yaml" ]; then
   diff -q "$ROOT/image-manifest.yaml" "$ROOT/apps/dashboard/image-manifest.yaml" >/dev/null \
     || { echo "B1-S3: apps/dashboard/image-manifest.yaml drifted from the root image-manifest.yaml" >&2; exit 1; }
 fi
-echo "B1-S3: image_digests block in lockstep with keys/image-digests-0.5.3.txt (via parser) + dashboard manifest synced"
+echo "B1-S3: image_digests block in lockstep with keys/image-digests-0.5.4.txt (via parser) + dashboard manifest synced"
 
 echo "static checks: ok"
