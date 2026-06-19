@@ -317,25 +317,35 @@ if [ -n "${TOOL_SCOPE}" ]; then
   case "${TOOL_SCOPE}" in
     *$'\n'*) fail "--tool-scope may not contain newlines" 2 ;;
   esac
+  # Refuse any control char (tab, etc.) — legitimate MCP server names never
+  # contain them, and a raw control char breaks the portable-path JSON escape.
+  if printf '%s' "${TOOL_SCOPE}" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+    fail "--tool-scope may not contain control characters" 2
+  fi
   # Build the JSON array from the comma-separated list using jq if available,
-  # otherwise via a portable printf+sed loop.
+  # otherwise via a portable printf+sed loop. Both paths drop blank elements so
+  # an all-blank value (e.g. "  ") yields [] (inert), never [""] (deny-all).
   if command -v jq >/dev/null 2>&1; then
     TOOL_ALLOWLIST_JSON=", \"tool_allowlist\": $(printf '%s' "${TOOL_SCOPE}" \
       | tr ',' '\n' \
       | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' \
       | jq -R . \
-      | jq -s .)"
+      | jq -s 'map(select(length > 0))')"
   else
     # Portable fallback: build the array element-by-element.
     _arr="["
     _first="true"
-    # Split on comma using IFS
+    # Split on comma using IFS. set -f disables pathname (glob) expansion so a
+    # value like 'servicenow,*' is NOT expanded against the CWD (TOB-79-01).
     _IFS_SAVE="${IFS}"
+    set -f
     IFS=","
     for _srv in ${TOOL_SCOPE}; do
       IFS="${_IFS_SAVE}"
       # trim leading/trailing whitespace
       _srv="$(printf '%s' "${_srv}" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+      # drop blank elements — matches the jq path; an all-blank value -> [] (inert)
+      if [ -z "${_srv}" ]; then IFS=","; continue; fi
       # JSON-escape (quotes + backslashes)
       _srv_esc="$(printf '%s' "${_srv}" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
       if [ "${_first}" = "true" ]; then
@@ -347,6 +357,7 @@ if [ -n "${TOOL_SCOPE}" ]; then
       IFS=","
     done
     IFS="${_IFS_SAVE}"
+    set +f
     _arr="${_arr}]"
     TOOL_ALLOWLIST_JSON=", \"tool_allowlist\": ${_arr}"
   fi
