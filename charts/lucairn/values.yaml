@@ -63,10 +63,13 @@ global:
   # AND the witness pod (they agree → COMPLETENESS_FULL with L3 absent).
   # Enterprise operators who enable the GPU L3 shield
   # (sandbox-a sanitizer.llmScanEnabled=true) set this true so BOTH sides require
-  # L3 (fail-closed sanitizer + the witness demanding the L3 layer). The
-  # per-subchart sanitizer.l3Required override (sandbox-a/values.yaml) is still
-  # honored for backward-compat with existing customer-values.yaml files; absent
-  # an explicit per-subchart value, both sides read this global.
+  # L3 (fail-closed sanitizer + the witness demanding the L3 layer).
+  #
+  # SINGLE KNOB (2026-06-19 fix-up): this is the ONLY L3-required knob. The
+  # sanitizer (sandbox-a) and the veil-witness pod templates resolve
+  # LUCAIRN_L3_REQUIRED from this exact key with the SAME fallback ("false"), so
+  # the two sides resolve byte-identically in EVERY case (including null/absent)
+  # and can never split. There is no per-subchart sanitizer.l3Required override.
   l3Required: false
   # Node pool isolation: when true, Sandbox A and Sandbox B are scheduled
   # on separate node pools (dsa.io/zone=identity vs dsa.io/zone=ai) with

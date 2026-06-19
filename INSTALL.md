@@ -1039,18 +1039,18 @@ active. Provision the full 16 GB RAM before enabling this mode (see
 > `COMPLETENESS_PARTIAL`** (`verifier.go:503`) — even on an otherwise-healthy
 > stack. Set the flag the SAME on both sides.
 >
-> **Helm:** this is wired as the single `global.l3Required` value
-> (`charts/lucairn/values.yaml`, default `false`). Both the `sandbox-a`
-> sanitizer container AND the `veil-witness` pod read it — flip it once with
+> **Helm:** this is wired as the SINGLE `global.l3Required` value
+> (`charts/lucairn/values.yaml`, default `false`) — there is no per-subchart
+> override. Both the `sandbox-a` sanitizer container AND the `veil-witness` pod
+> resolve `LUCAIRN_L3_REQUIRED` from this one key with the SAME fallback
+> (`false`), so the two sides resolve identically in every case and can never
+> split. The default (`false`) yields `LUCAIRN_L3_REQUIRED="false"` on both ⇒
+> `COMPLETENESS_FULL` with L3 absent. To require L3, flip it once with
 > `--set global.l3Required=true` (after staging the GPU L3 shield, i.e.
-> `sandbox-a.sanitizer.llmScanEnabled=true`) and BOTH sides agree. The default
-> (`false`) yields `LUCAIRN_L3_REQUIRED="false"` on both ⇒ `COMPLETENESS_FULL`
-> with L3 absent. (Before this single-knob wiring the Helm witness defaulted to
-> L3-required ⇒ every fresh L3-off install's certs silently downgraded to
-> `PARTIAL`.) An explicit per-subchart `sandbox-a.sanitizer.l3Required` /
-> `veil-witness.config.l3Required` override is still honored first for
-> backward-compat — but setting only ONE re-introduces the drift; prefer the
-> global.
+> `--set sandbox-a.sanitizer.llmScanEnabled=true`) so an absent L3 layer
+> correctly downgrades the cert to `PARTIAL`. (Before this single-knob wiring the
+> Helm witness defaulted to L3-required ⇒ every fresh L3-off install's certs
+> silently downgraded to `PARTIAL`.)
 
 ### Self-hosted with managed LLM (BYOK Anthropic, OpenAI, etc.)
 

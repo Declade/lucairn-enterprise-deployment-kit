@@ -473,74 +473,13 @@
 {{- end -}}
 
 {{- /*
-  validators.witnessSanitizerL3Split
-
-  FIX B (bug-hunter + trailofbits LOW, 2026-06-19). Structural guard
-  against a witness↔sanitizer LUCAIRN_L3_REQUIRED split.
-
-  Background: the veil-witness and the sanitizer (sandbox-a) MUST render
-  the SAME LUCAIRN_L3_REQUIRED value or the witness binary downgrades
-  EVERY certificate to COMPLETENESS_PARTIAL (verifier.go:170-172,503).
-  global.l3Required is the single shared knob both sides read by default.
-
-  The footgun this closes: a one-sided per-subchart override. An operator
-  who sets sandbox-a.sanitizer.l3Required (the sanitizer's own override)
-  WITHOUT also setting global.l3Required moves ONLY the sanitizer — the
-  witness subchart cannot see the sibling sandbox-a's value (Helm subchart
-  value isolation: a subchart sees only .Values.global.* plus its own
-  tree), so the witness keeps reading global.l3Required (default false)
-  while the sanitizer reads its override → the two sides DISAGREE → spurious
-  COMPLETENESS_PARTIAL on every cert, SILENTLY.
-
-  The umbrella validator layer is the ONLY scope that can see BOTH
-  .Values.global.l3Required AND .Values["sandbox-a"].sanitizer.l3Required,
-  so the cross-subchart guard lives here (same rationale + same hyphenated
-  `index .Values "sandbox-a"` access pattern as
-  validators.gatewayPostgresKeystoreSubchartMismatch).
-
-  Resolution mirrored from the two pod templates:
-    SANITIZER (sandbox-a/templates/deployment.yaml LUCAIRN_L3_REQUIRED):
-      1. explicit sanitizer.l3Required (hasKey honors explicit false)
-      2. else global.l3Required
-      3. else "true"  (sanitizer's safe fail-closed fallback)
-    WITNESS (veil-witness/templates/deployment.yaml LUCAIRN_L3_REQUIRED):
-      1. global.l3Required
-      2. else "false"
-  Both normalized to a string (printf "%v") so a boolean `true` and a
-  string "true" compare equal.
-
-  Fails fast when sanitizer-effective != witness-effective. Passes
-  silently when they agree — including the stock default (no override,
-  both read global.l3Required=false → "false"=="false") and the
-  recommended path (operator sets global.l3Required, leaves the
-  per-subchart override absent → both read the same global). Backward
-  compatible: an existing customer-values.yaml that set
-  sanitizer.l3Required only needs to ALSO set global.l3Required to the
-  same value — the message says exactly that.
-
-  Invoked from charts/lucairn/templates/validators.yaml.
+  NOTE: the former validators.witnessSanitizerL3Split guard was REMOVED
+  (2026-06-19 fix-up). A witness↔sanitizer LUCAIRN_L3_REQUIRED split is now
+  STRUCTURALLY IMPOSSIBLE — both pod templates resolve the env from the SAME
+  single key global.l3Required with the SAME fallback ("false"), and there is
+  no per-subchart sanitizer.l3Required override anymore. With one knob read
+  identically by both sides, the guard was dead code; it also false-failed a
+  valid install when global.l3Required was null (Helm propagates a top-level nil
+  global asymmetrically — hasKey is false at umbrella scope but true at subchart
+  scope — so the old guard's fallbacks diverged into a phantom split).
 */ -}}
-{{- define "validators.witnessSanitizerL3Split" -}}
-{{- $global := (default dict .Values.global) -}}
-{{- $sandboxA := (default dict (index .Values "sandbox-a")) -}}
-{{- $san := (default dict $sandboxA.sanitizer) -}}
-{{- /* SANITIZER effective: per-subchart override > global > "true". */ -}}
-{{- $sanEff := "" -}}
-{{- if hasKey $san "l3Required" -}}
-{{- $sanEff = printf "%v" $san.l3Required -}}
-{{- else if hasKey $global "l3Required" -}}
-{{- $sanEff = printf "%v" $global.l3Required -}}
-{{- else -}}
-{{- $sanEff = "true" -}}
-{{- end -}}
-{{- /* WITNESS effective: global > "false" (matches the witness pod spec). */ -}}
-{{- $witEff := "" -}}
-{{- if hasKey $global "l3Required" -}}
-{{- $witEff = printf "%v" $global.l3Required -}}
-{{- else -}}
-{{- $witEff = "false" -}}
-{{- end -}}
-{{- if ne $sanEff $witEff -}}
-{{- fail (printf "LUCAIRN_L3_REQUIRED split: the sanitizer (sandbox-a) would render %q but the veil-witness would render %q. These MUST be equal or the witness downgrades EVERY certificate to COMPLETENESS_PARTIAL (verifier.go:170-172,503). This happens because you set the per-subchart override sandbox-a.sanitizer.l3Required without setting the shared knob global.l3Required — the witness subchart cannot see the sandbox-a value (Helm subchart value isolation) and reads global.l3Required instead. FIX: set global.l3Required=%s (the single knob BOTH the sanitizer and the witness consume) and remove the sandbox-a.sanitizer.l3Required override. See values.yaml § global.l3Required." $sanEff $witEff $sanEff) -}}
-{{- end -}}
-{{- end -}}

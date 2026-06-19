@@ -18,4 +18,3 @@
 {{- include "validators.podLocalStateSingleReplica" $ -}}
 {{- include "validators.backupHalfConfig" $ -}}
 {{- include "validators.privateRegistryPullSecrets" $ -}}
-{{- include "validators.witnessSanitizerL3Split" $ -}}

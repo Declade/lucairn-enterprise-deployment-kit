@@ -27,6 +27,6 @@ data:
   # OLD L3 setting while the sanitizer rolled to the NEW one → the two sides
   # disagree → every cert silently downgrades to COMPLETENESS_PARTIAL until a
   # manual restart. Sourcing it from the pod spec makes an L3 change roll BOTH
-  # pods together. Divergence between a per-subchart override and the shared
-  # global.l3Required is caught LOUDLY at render time by the umbrella guard
-  # validators.witnessSanitizerL3Split.
+  # pods together. Both the witness and the sanitizer (sandbox-a) resolve it
+  # from the SINGLE knob global.l3Required with the SAME fallback ("false"), so
+  # the two sides can never split — there is no per-subchart override.
