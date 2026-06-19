@@ -83,49 +83,47 @@ Store this as the private key seed. The Lucairn services derive the full Ed25519
 
 ### 3.2 Derive the public key from a seed
 
-The kit ships a helper:
+The kit ships a helper that uses `python3-cryptography` (already required by the bootstrap pipeline) and keeps the seed off the process argument list:
 
 ```bash
-# From the kit root
-./scripts/derive-veil-pubkey.sh <seed-hex-64>
+# From the kit root — stdin form (preferred, no seed in ps output)
+printf '%s' "$SEED_HEX" | ./scripts/derive-veil-pubkey.sh
 ```
 
-Or inline with Python:
-
-```bash
-python3 -c "
-from nacl.signing import SigningKey
-import sys
-seed = bytes.fromhex(sys.argv[1])
-sk = SigningKey(seed)
-print(sk.verify_key.encode().hex())
-" "$SEED_HEX"
-```
+The script falls back to `pynacl` only when `cryptography` is unavailable. Do **not** use a raw PyNaCl `python3 -c` one-liner — it requires `pynacl` explicitly (fails on hosts with only `python3-cryptography`) and embeds the private seed in the process argument list, visible via `ps auxww` for the duration of the call.
 
 ### 3.3 Generate a full key set in one ceremony session
+
+The ceremony generates **eight** key pairs: one per claim-signing service plus **two** manifest keys — a gateway manifest key (`LCR_MANIFEST_SIGNING_KEY` / `LCR_GATEWAY_MANIFEST_PUBLIC_KEY`) and a witness manifest key (`LCR_WITNESS_MANIFEST_SIGNING_KEY` / `LCR_WITNESS_MANIFEST_PUBLIC_KEY`). Both manifest public keys must appear in `keys.json` (§ 6.1) so that the gateway's boot check (`verifyEnvKeysMatchBlobActive`) accepts the signed blob.
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVICES=("WITNESS" "BRIDGE" "SANITIZER" "SANDBOX_B" "AUDIT" "GATEWAY" "MANIFEST")
+# SERVICES list: 6 claim-signing keys + 2 manifest keys.
+# GATEWAY_MANIFEST → LCR_MANIFEST_SIGNING_KEY / LCR_GATEWAY_MANIFEST_PUBLIC_KEY
+# WITNESS_MANIFEST → LCR_WITNESS_MANIFEST_SIGNING_KEY / LCR_WITNESS_MANIFEST_PUBLIC_KEY
+SERVICES=("WITNESS" "BRIDGE" "SANITIZER" "SANDBOX_B" "AUDIT" "GATEWAY" "GATEWAY_MANIFEST" "WITNESS_MANIFEST")
 
 for svc in "${SERVICES[@]}"; do
   SEED=$(openssl rand -hex 32)
-  PUBKEY=$(python3 -c "
-from nacl.signing import SigningKey
-seed = bytes.fromhex('$SEED')
-sk = SigningKey(seed)
-print(sk.verify_key.encode().hex())
-")
+  # Use the bundled helper (cryptography-first, no seed in argv/ps):
+  PUBKEY=$(printf '%s' "$SEED" | ./scripts/derive-veil-pubkey.sh)
   echo "=== $svc ==="
-  echo "  LCR_${svc}_SIGNING_KEY (private): $SEED"
-  # The gateway manifest public key uses a distinct env-var name
-  if [[ "$svc" == "MANIFEST" ]]; then
-    echo "  LCR_GATEWAY_MANIFEST_PUBLIC_KEY: $PUBKEY"
-  else
-    echo "  LCR_${svc}_PUBLIC_KEY:            $PUBKEY"
-  fi
+  case "$svc" in
+    GATEWAY_MANIFEST)
+      echo "  LCR_MANIFEST_SIGNING_KEY (private):     $SEED"
+      echo "  LCR_GATEWAY_MANIFEST_PUBLIC_KEY:         $PUBKEY"
+      ;;
+    WITNESS_MANIFEST)
+      echo "  LCR_WITNESS_MANIFEST_SIGNING_KEY (private): $SEED"
+      echo "  LCR_WITNESS_MANIFEST_PUBLIC_KEY:         $PUBKEY"
+      ;;
+    *)
+      echo "  LCR_${svc}_SIGNING_KEY (private): $SEED"
+      echo "  LCR_${svc}_PUBLIC_KEY:            $PUBKEY"
+      ;;
+  esac
   echo ""
 done
 ```
@@ -194,19 +192,25 @@ The blob is produced once, at your **ceremony host** (the machine holding the wi
 
 ### 6.1 Assemble the keys.json roster
 
-The `keys.json` roster lists every public key the deployed gateways will advertise. Start from the example in this kit (`docs/example-keys.json`) and substitute your real derived public keys:
+The `keys.json` roster must contain an entry for **every non-empty `LCR_*_PUBLIC_KEY` env var** the gateway will be configured with. The gateway's `verifyEnvKeysMatchBlobActive` boot check (gateway source `veil.go:322-369`) derives the same list from env at startup and rejects any signed blob whose active-key subset does not byte-match — causing a boot-loop.
+
+The full roster for a standard install has **seven entries**: five claim-signing keys, plus the two manifest-signing public keys (`gateway_manifest_v1` and `witness_manifest_v1`). Start from `docs/example-keys.json` and substitute your real derived public keys:
 
 ```json
 [
-  { "service_id": "dsa-witness",   "key_id": "witness_v1",   "public_key": "<LCR_WITNESS_PUBLIC_KEY>",   "purpose": "Certificate signing",    "algorithm": "Ed25519", "key_state": "active" },
-  { "service_id": "dsa-bridge",    "key_id": "bridge_v1",    "public_key": "<LCR_BRIDGE_PUBLIC_KEY>",    "purpose": "Bridge claim signing",   "algorithm": "Ed25519", "key_state": "active" },
-  { "service_id": "dsa-sanitizer", "key_id": "sanitizer_v1", "public_key": "<LCR_SANITIZER_PUBLIC_KEY>", "purpose": "Sanitizer claim signing","algorithm": "Ed25519", "key_state": "active" },
-  { "service_id": "dsa-ai",        "key_id": "sandbox_b_v1", "public_key": "<LCR_SANDBOX_B_PUBLIC_KEY>", "purpose": "Inference claim signing","algorithm": "Ed25519", "key_state": "active" },
-  { "service_id": "dsa-audit",     "key_id": "audit_v1",     "public_key": "<LCR_AUDIT_PUBLIC_KEY>",     "purpose": "Audit claim signing",    "algorithm": "Ed25519", "key_state": "active" }
+  { "service_id": "dsa-witness",   "key_id": "witness_v1",          "public_key": "<LCR_WITNESS_PUBLIC_KEY>",          "purpose": "Certificate signing",    "algorithm": "Ed25519", "key_state": "active" },
+  { "service_id": "dsa-bridge",    "key_id": "bridge_v1",           "public_key": "<LCR_BRIDGE_PUBLIC_KEY>",           "purpose": "Bridge claim signing",   "algorithm": "Ed25519", "key_state": "active" },
+  { "service_id": "dsa-sanitizer", "key_id": "sanitizer_v1",        "public_key": "<LCR_SANITIZER_PUBLIC_KEY>",        "purpose": "Sanitizer claim signing","algorithm": "Ed25519", "key_state": "active" },
+  { "service_id": "dsa-ai",        "key_id": "sandbox_b_v1",        "public_key": "<LCR_SANDBOX_B_PUBLIC_KEY>",        "purpose": "Inference claim signing","algorithm": "Ed25519", "key_state": "active" },
+  { "service_id": "dsa-audit",     "key_id": "audit_v1",            "public_key": "<LCR_AUDIT_PUBLIC_KEY>",            "purpose": "Audit claim signing",    "algorithm": "Ed25519", "key_state": "active" },
+  { "service_id": "dsa-gateway",   "key_id": "gateway_manifest_v1", "public_key": "<LCR_GATEWAY_MANIFEST_PUBLIC_KEY>", "purpose": "Manifest signing",       "algorithm": "Ed25519", "key_state": "active" },
+  { "service_id": "dsa-witness",   "key_id": "witness_manifest_v1", "public_key": "<LCR_WITNESS_MANIFEST_PUBLIC_KEY>", "purpose": "Manifest signing",       "algorithm": "Ed25519", "key_state": "active" }
 ]
 ```
 
 > **Schema:** each entry requires `service_id` / `key_id` / `public_key` / `purpose` / `algorithm` / `key_state`. See `docs/example-keys.json` for a committed template with the correct field names.
+>
+> **Rule:** include an entry for every public key you set in `customer.env`. If you add or omit a key, regenerate the blob — a mismatch causes a boot-loop with a descriptive error.
 
 ### 6.2 Run sign-manifest (no Go toolchain needed)
 
@@ -240,10 +244,15 @@ The witness seed only ever enters the container as a flag value on the ceremony 
 ### 6.3 Deploy the blob to the gateway host
 
 ```bash
-# Compose path: place the blob where LCR_WITNESS_SIGNED_MANIFEST_PATH points.
-# Default: /certs/witness-signed-manifest.json (bind-mounted from the host at
-# the path set in docker-compose.customer.yml's "certs" volume or bind).
-scp witness-signed-manifest.json gateway-host:/certs/witness-signed-manifest.json
+# Compose path: place the blob in the HOST directory that is bind-mounted into
+# the gateway container at /certs.  In docker-compose.customer.yml line 773:
+#   ${SANDBOX_B_CERT_DIR:-./.certs}:/certs:ro
+# The default host source is ./.certs (relative to the kit root on the gateway
+# host).  If you set SANDBOX_B_CERT_DIR in customer.env, use that path instead.
+#
+# Copy to the HOST bind source — NOT to /certs (that is the container path):
+scp witness-signed-manifest.json \
+  gateway-host:"${SANDBOX_B_CERT_DIR:-./.certs}/witness-signed-manifest.json"
 
 # Then recreate the gateway so it re-reads + re-verifies the blob at boot.
 # Use the canonical overlay set for your install (see OPS.md § Deploy).
@@ -270,18 +279,24 @@ After any ceremony or rotation, run these checks:
 
 ```bash
 curl -s http://localhost:8080/.well-known/veil-keys.json | jq '.keys | length'
-# Expected: 5 or more (witness, bridge, sanitizer, sandbox-b, audit)
+# Expected: 7 for a standard install (witness, bridge, sanitizer, sandbox-b,
+# audit, gateway_manifest_v1, witness_manifest_v1). Fewer indicates that
+# LCR_GATEWAY_MANIFEST_PUBLIC_KEY or LCR_WITNESS_MANIFEST_PUBLIC_KEY are unset.
 ```
 
 ### 7.2 Submit a test request and verify the certificate
 
 ```bash
-REQUEST_ID=$(curl -s -X POST http://localhost:8080/v1/messages \
+# The gateway embeds the request ID at metadata.dsa_compliance.request_id
+# (anthropic_types.go:dsaCompliance struct), not at the top-level .request_id.
+# Also available at metadata.dsa_compliance.veil_certificate_url.
+RESPONSE=$(curl -s -X POST http://localhost:8080/v1/messages \
   -H "x-api-key: $API_KEY" \
   -H "Content-Type: application/json" \
   -H "anthropic-version: 2023-06-01" \
-  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":20,"messages":[{"role":"user","content":"Hi"}]}' \
-  | jq -r '.request_id // empty')
+  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":20,"messages":[{"role":"user","content":"Hi"}]}')
+
+REQUEST_ID=$(printf '%s' "$RESPONSE" | jq -r '.metadata.dsa_compliance.request_id // empty')
 
 sleep 5
 
@@ -294,18 +309,13 @@ Expected: `"overall_verdict": "VERDICT_VERIFIED"`.
 ### 7.3 Verify a specific key pair matches
 
 ```bash
-python3 -c "
-from nacl.signing import SigningKey
-import sys
-seed = bytes.fromhex(sys.argv[1])
-expected_pub = sys.argv[2]
-sk = SigningKey(seed)
-actual_pub = sk.verify_key.encode().hex()
-if actual_pub == expected_pub:
-    print('MATCH')
-else:
-    print(f'MISMATCH: expected {expected_pub}, got {actual_pub}')
-" "$PRIVATE_SEED" "$PUBLIC_KEY"
+# Use the bundled helper (cryptography-first, seed stays off argv/ps):
+ACTUAL_PUB=$(printf '%s' "$PRIVATE_SEED" | ./scripts/derive-veil-pubkey.sh)
+if [ "$ACTUAL_PUB" = "$PUBLIC_KEY" ]; then
+  echo "MATCH"
+else
+  echo "MISMATCH: expected $PUBLIC_KEY, got $ACTUAL_PUB"
+fi
 ```
 
 ### 7.4 Troubleshooting
@@ -360,11 +370,8 @@ COMPROMISED_SVC="id-bridge"  # example
 
 # 2. Generate replacement key pair immediately
 NEW_SEED=$(openssl rand -hex 32)
-NEW_PUBKEY=$(python3 -c "
-from nacl.signing import SigningKey
-seed = bytes.fromhex('$NEW_SEED')
-print(SigningKey(seed).verify_key.encode().hex())
-")
+# Use the bundled helper (cryptography-first, seed stays off argv/ps):
+NEW_PUBKEY=$(printf '%s' "$NEW_SEED" | ./scripts/derive-veil-pubkey.sh)
 
 # 3. Update Witness with new public key; restart Witness
 #    (update customer.env or Vault/ESO, then restart the veil-witness container)

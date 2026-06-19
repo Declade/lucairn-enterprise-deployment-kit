@@ -38,5 +38,21 @@
     "purpose": "Audit claim signing",
     "algorithm": "Ed25519",
     "key_state": "active"
+  },
+  {
+    "service_id": "dsa-gateway",
+    "key_id": "gateway_manifest_v1",
+    "public_key": "5555555555555555555555555555555555555555555555555555555555555555",
+    "purpose": "Manifest signing",
+    "algorithm": "Ed25519",
+    "key_state": "active"
+  },
+  {
+    "service_id": "dsa-witness",
+    "key_id": "witness_manifest_v1",
+    "public_key": "6666666666666666666666666666666666666666666666666666666666666666",
+    "purpose": "Manifest signing",
+    "algorithm": "Ed25519",
+    "key_state": "active"
   }
 ]
