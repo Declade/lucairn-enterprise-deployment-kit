@@ -11,6 +11,21 @@
 # Multi-replica HA is the v2.0 roadmap. Do NOT raise these to 2 — the
 # install will fail to render. See INSTALL.md § "v1.0 deployment topology".
 #
+# PREREQUISITE — gRPC TLS certs:
+#   Run scripts/bootstrap-grpc-certs.sh BEFORE applying this overlay.
+#   The script generates a per-deploy CA + per-service certs and prints
+#   the `kubectl create secret` commands to load them. Every service
+#   with grpcTlsEnabled=true expects its cert Secret to exist at pod start
+#   time; missing certs cause a TLS dial failure at boot (not a Fatal — but
+#   the service cannot communicate with any peer).
+#
+# GATEWAY_KEYSTORE_DSN note:
+#   On an ESO backend, GATEWAY_KEYSTORE_DSN is NOT managed by the
+#   ExternalSecret (it is a separate secretKeyRef in
+#   gateway/templates/deployment.yaml:96-101 under postgresKeystore.enabled).
+#   On a cold-restore you MUST re-seed that Secret independently or the
+#   gateway crash-loops when postgresKeystore.enabled=true.
+#
 # Smoke-test this overlay renders before shipping (skipPullSecretGuard=true so
 # the render does not require registry pull credentials — it does NOT relax the
 # prod overlay itself, which keeps the guard; it only makes this dev sanity-
@@ -18,8 +33,10 @@
 #   helm template lucairn charts/lucairn -f charts/lucairn/values-prod.yaml \
 #     --set global.skipPullSecretGuard=true \
 #     --set gateway.secrets.values.dsaServiceToken=x \
-#     --set sandbox-b.redis.password=x \
-#     --set sandbox-b.secrets.values.sandboxBApiKeys=x >/dev/null && echo OK
+#     --set "sandbox-b.redis.password=x" \
+#     --set "sandbox-b.secrets.values.sandboxBApiKeys=x" \
+#     --set "veil-witness.secrets.values.signingKey=$(openssl rand -hex 32)" \
+#     >/dev/null && echo OK
 global:
   secrets:
     backend: vault
@@ -33,13 +50,24 @@ global:
   nodeIsolation: true
   postgresqlSslmode: require
   wireguardEncryption: true
-  # Production: enforce gRPC TLS between all services
-  grpcTlsEnabled: true
-  # Production environment flag — enables dev-secret rejection guards
+  # Production environment flag — enables dev-secret rejection guards.
+  # WARNING: dsaEnv=production causes every Go service to hard-refuse at boot
+  # if GRPC_TLS_ENABLED=false (tlsutil.go:636:
+  #   "GRPC_TLS_ENABLED=true is required when DSA_ENV=production; refusing to
+  #    start with plaintext transport").
+  # The per-subchart grpcTlsEnabled: "true" values below form the coherent
+  # pair. NEVER set dsaEnv=production without them.
+  # Slice-0 confirmed (2026-06-19): global.grpcTlsEnabled is NOT read by
+  # subchart templates (they use `.Values.grpcTlsEnabled`, local scope), so
+  # the flag MUST be set per-subchart — setting it only under global: renders
+  # GRPC_TLS_ENABLED="false" in every ConfigMap.
   dsaEnv: production
 
 audit:
   replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
+  # M7 (Slice-0 confirmed): set per-subchart, not global — templates use
+  # .Values.grpcTlsEnabled (local), not .Values.global.grpcTlsEnabled.
+  grpcTlsEnabled: "true"
   resources:
     requests:
       cpu: 200m
@@ -54,6 +82,7 @@ audit:
 
 id-bridge:
   replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
+  grpcTlsEnabled: "true"
   resources:
     requests:
       cpu: 200m
@@ -68,6 +97,7 @@ id-bridge:
 
 sandbox-a:
   replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
+  grpcTlsEnabled: "true"
   resources:
     requests:
       cpu: 200m
@@ -82,6 +112,7 @@ sandbox-a:
 
 sandbox-b:
   replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
+  grpcTlsEnabled: "true"
   workers: 4
   redis:
     # Password MUST be provided at install time via --set or external secret.
@@ -129,6 +160,7 @@ demo:
 
 gateway:
   replicaCount: 1  # v1.0 single-replica lock (file-keystore on RWO PVC)
+  grpcTlsEnabled: "true"
   resources:
     requests:
       cpu: 200m
