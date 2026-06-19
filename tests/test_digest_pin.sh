@@ -204,7 +204,7 @@ echo "digest-pin: clean manifest -> normal rc=0 + strict rc=0, pending skipped o
 # ---------------------------------------------------------------------------
 TAMPERED="$TMP/image-manifest.tampered.yaml"
 # Replace the gateway digest's first hex char run with a different value.
-sed 's#sha256:a5a4fd24d265e59da3a9c3c6f498ca46eb8435f4ad842a153697b275d3f6e7b5#sha256:dead00401356c7ffb9862e38a77a4ffae36a2a27573cb2e61c9cfe280e6d7a8a#' \
+sed 's#sha256:f73e55e0a3d3445d3242d2a73aff7086427da50cbcd2e47e3c8cd4f0fad2bece#sha256:dead00401356c7ffb9862e38a77a4ffae36a2a27573cb2e61c9cfe280e6d7a8a#' \
   "$MANIFEST" > "$TAMPERED"
 # Sanity: the tamper actually changed the file.
 ! diff -q "$MANIFEST" "$TAMPERED" >/dev/null || fail "tamper sed did not modify the manifest"
@@ -339,7 +339,7 @@ echo "digest-pin: cardinality floor -> --strict FAILS when verified==0 (distinct
 # ---------------------------------------------------------------------------
 MALFORMED="$TMP/image-manifest.malformed.yaml"
 # Truncate the gateway digest's hex to 8 chars (still starts sha256: but invalid).
-sed 's#digest: "sha256:a5a4fd24d265e59da3a9c3c6f498ca46eb8435f4ad842a153697b275d3f6e7b5"#digest: "sha256:7662f955"#' \
+sed 's#digest: "sha256:f73e55e0a3d3445d3242d2a73aff7086427da50cbcd2e47e3c8cd4f0fad2bece"#digest: "sha256:7662f955"#' \
   "$MANIFEST" > "$MALFORMED"
 ! diff -q "$MANIFEST" "$MALFORMED" >/dev/null || fail "malformed sed did not modify the manifest"
 # Sanity: the parser must mark this entry INVALID (not PENDING, not a digest).
@@ -370,7 +370,7 @@ echo "digest-pin: INVALID (malformed digest) -> --strict FAILS-CLOSED, plain war
 CONTRA="$TMP/image-manifest.contradiction.yaml"
 # Add a `pending: true` line right after the gateway digest, at the SAME indent.
 awk '
-  /^[[:space:]]*digest:[[:space:]]*"sha256:a5a4fd24d265e59da3a9c3c6f498ca46eb8435f4ad842a153697b275d3f6e7b5"/ {
+  /^[[:space:]]*digest:[[:space:]]*"sha256:f73e55e0a3d3445d3242d2a73aff7086427da50cbcd2e47e3c8cd4f0fad2bece"/ {
     print
     ind=$0; sub(/[^[:space:]].*$/, "", ind); print ind "pending: true"; next
   }

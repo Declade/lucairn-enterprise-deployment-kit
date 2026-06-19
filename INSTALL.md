@@ -722,7 +722,7 @@ of `LUCAIRN_LICENSE_KEY` / `LUCAIRN_LICENSE_PUBLIC_KEY` is set.
 1. Unpack the release bundle.
 
 ```bash
-tar -xzf lucairn-enterprise-deployment-kit-1.9.3.tar.gz
+tar -xzf lucairn-enterprise-deployment-kit-1.9.4.tar.gz
 cd lucairn-enterprise-deployment-kit
 ```
 
