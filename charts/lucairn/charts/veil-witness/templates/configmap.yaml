@@ -18,13 +18,15 @@ data:
   LCR_PROOF_OUTPUT_PATH: {{ .Values.config.proofOutputPath | quote }}
   LCR_PROOF_MODEL_VERSION: {{ .Values.config.proofModelVersion | quote }}
   INSECURE_DEV_MODE: {{ .Values.config.insecureDevMode | quote }}
-  # L3-required flag — MUST agree with the sanitizer (sandbox-a) or the witness
-  # downgrades every cert to COMPLETENESS_PARTIAL. The witness binary reads this
-  # (verifier.go:171) and "mirrors config.l3_required() in the sanitizer so the
-  # two sides agree" (verifier.go:170). Single source of truth: global.l3Required
-  # (default false ⇒ "false" on BOTH sides). A per-subchart config.l3Required
-  # override is honored first (hasKey, NOT `| default` — Sprig's `default` treats
-  # boolean false as empty and would clobber an explicit false back to true);
-  # otherwise the global; otherwise "false". This is the SAME knob the sanitizer
-  # container reads (sandbox-a/templates/deployment.yaml LUCAIRN_L3_REQUIRED).
-  LUCAIRN_L3_REQUIRED: {{ if hasKey .Values.config "l3Required" }}{{ .Values.config.l3Required | quote }}{{ else if hasKey .Values.global "l3Required" }}{{ .Values.global.l3Required | quote }}{{ else }}{{ "false" | quote }}{{ end }}
+  # NOTE: LUCAIRN_L3_REQUIRED is intentionally NOT in this ConfigMap.
+  # FIX A (Codex r1 P2, 2026-06-19): it now lives DIRECTLY in the witness
+  # Deployment pod spec env (veil-witness/templates/deployment.yaml) — the same
+  # way the sanitizer (sandbox-a) wires it. A ConfigMap value consumed via
+  # `envFrom: configMapRef` does NOT roll the pod on `helm upgrade` when the
+  # value changes (no pod-template change), so the witness would have kept the
+  # OLD L3 setting while the sanitizer rolled to the NEW one → the two sides
+  # disagree → every cert silently downgrades to COMPLETENESS_PARTIAL until a
+  # manual restart. Sourcing it from the pod spec makes an L3 change roll BOTH
+  # pods together. Divergence between a per-subchart override and the shared
+  # global.l3Required is caught LOUDLY at render time by the umbrella guard
+  # validators.witnessSanitizerL3Split.

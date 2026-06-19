@@ -103,6 +103,33 @@ spec:
                 secretKeyRef:
                   name: {{ .Chart.Name }}-credentials
                   key: LCR_WITNESS_KEY_ID
+            # L3-required flag — MUST agree with the sanitizer (sandbox-a) or the
+            # witness downgrades every cert to COMPLETENESS_PARTIAL. The witness
+            # binary reads this (verifier.go:170-172,503) and "mirrors
+            # config.l3_required() in the sanitizer so the two sides agree".
+            #
+            # FIX A (Codex r1 P2, 2026-06-19): this env lives in the POD SPEC,
+            # NOT the ConfigMap consumed via envFrom. An envFrom-sourced value
+            # does NOT update in-place when `helm upgrade` changes the ConfigMap
+            # (no pod-template change ⇒ no rollout), so the witness would keep
+            # the OLD L3 value while the sanitizer — whose value is already in
+            # its pod spec — rolls to the NEW one, leaving the two sides in
+            # disagreement until a manual restart. Putting the value here makes
+            # a change to global.l3Required change the pod template, triggering a
+            # rollout in lockstep with the sanitizer.
+            #
+            # RESOLUTION (FIX B.i): resolve from global.l3Required (default
+            # false) — the ONE shared knob the witness subchart can actually see
+            # (subchart value isolation hides the sibling sandbox-a's
+            # sanitizer.l3Required). Any per-subchart override that diverges from
+            # the global is caught LOUDLY at render time by the umbrella guard
+            # validators.witnessSanitizerL3Split (charts/lucairn/templates/
+            # _validators.tpl) — there is no silent one-sided override path here.
+            # hasKey (NOT `| default`) so an explicit global false is honored
+            # (Sprig's `default` treats boolean false as empty and would clobber
+            # it back to "false" anyway, but hasKey keeps the intent explicit).
+            - name: LUCAIRN_L3_REQUIRED
+              value: {{ if hasKey .Values.global "l3Required" }}{{ .Values.global.l3Required | quote }}{{ else }}{{ "false" | quote }}{{ end }}
             {{- if .Values.witnessMtls.serverSecret }}
             # TOB-S009 / fable HIGH (2026-06-10): opt-in witness server-side mTLS.
             # When witnessMtls.serverSecret is set the witness reads these three
