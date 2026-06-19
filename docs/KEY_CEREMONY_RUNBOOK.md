@@ -120,7 +120,12 @@ print(sk.verify_key.encode().hex())
 ")
   echo "=== $svc ==="
   echo "  LCR_${svc}_SIGNING_KEY (private): $SEED"
-  echo "  LCR_${svc}_PUBLIC_KEY:            $PUBKEY"
+  # The gateway manifest public key uses a distinct env-var name
+  if [[ "$svc" == "MANIFEST" ]]; then
+    echo "  LCR_GATEWAY_MANIFEST_PUBLIC_KEY: $PUBKEY"
+  else
+    echo "  LCR_${svc}_PUBLIC_KEY:            $PUBKEY"
+  fi
   echo ""
 done
 ```
@@ -414,7 +419,7 @@ Production Helm installs use the External Secrets Operator (ESO) to sync secrets
 
 See `charts/lucairn/charts/*/templates/externalsecret.yaml` for the per-service `ExternalSecret` definitions and `docs/CUSTOMER_HELM_RUNBOOK.md` for the full Helm ceremony runbook.
 
-For the production Helm posture (`grpcTlsEnabled=true`, `dsaEnv=production`), see `values-prod.yaml` (Slice 3 of this workstream) and `scripts/bootstrap-grpc-certs.sh`.
+For the production Helm posture (`grpcTlsEnabled=true`, `dsaEnv=production`), see `charts/lucairn/values-prod.yaml` and `scripts/bootstrap-grpc-certs.sh` in the kit's Helm production posture.
 
 ---
 
