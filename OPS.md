@@ -1500,11 +1500,16 @@ All 12 `dsa-*` images are republished + cosign-signed + Rekor-logged at `0.5.4`
 
 **Upgrade from v0.5.3:** pull the new images (`LUCAIRN_IMAGE_TAG=0.5.4`); no DB migration.
 
-**Compose:** set `LUCAIRN_IMAGE_TAG=0.5.4` in `customer.env`, then re-run with the SAME `-f` overlay set you normally use:
+**Compose:** set `LUCAIRN_IMAGE_TAG=0.5.4` in `customer.env`, then re-run with the SAME `-f` overlay set you normally use — a self-hosted (full on-prem) install MUST include `docker-compose.self-hosted.yml`, or the gateway is recreated with split-deployment settings and the local `sandbox-b` is orphaned:
 
 ```bash
+# Split deployment (Sandbox B remote — the default):
 docker compose -f docker-compose.customer.yml --env-file customer.env pull
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
+
+# Self-hosted (full on-prem) — include the self-hosted overlay:
+docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env pull
+docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env up -d
 ```
 
 **Helm:** set `global.imageTag: "0.5.4"` and apply:
