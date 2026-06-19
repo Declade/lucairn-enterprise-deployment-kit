@@ -831,11 +831,15 @@ check_backup_preflight() {
   # resource-policy:keep protects against accidental loss, but offsite encrypted
   # backups are the only protection against storage-level failure.
   #
-  # Mode-agnostic: pass if EITHER:
-  #   - Helm path: LUCAIRN_HELM_BACKUP_ENABLED env var set to "true"
-  #     (the kit's customer.env template exposes this as a proxy for
-  #     backup.enabled in values.yaml; the doctor can't parse YAML directly).
-  #     OR the LUCAIRN_BACKUP_S3_BUCKET env var is non-empty (Compose path).
+  # Mode-agnostic — PASS if EITHER signal is present:
+  #   Compose path: LUCAIRN_BACKUP_S3_BUCKET is non-empty.
+  #   Helm path:    LUCAIRN_BACKUP_HELM_MANAGED=true is set.
+  #                 This is an EXPLICIT operator assertion, not a phantom auto-var.
+  #                 Set it when backup.enabled=true is configured in values.yaml;
+  #                 the chart validates that configuration fail-closed at helm-upgrade
+  #                 time via _validators.tpl (missing bucket → template error), so
+  #                 doctor does not re-validate the Helm backup config itself.
+  #
   # Gated on DSA_ENV=production (non-prod installs may legitimately skip backup).
   # WARN by default; FAIL under --strict (mirroring check_image_digests).
   local env_file="$1" strict="${2:-0}"
@@ -845,22 +849,27 @@ check_backup_preflight() {
   [ "$dsa_env" = "production" ] || return 0
 
   # Compose path: LUCAIRN_BACKUP_S3_BUCKET non-empty → backup configured; pass.
-  # Helm path: NOT checked here. Helm backup is validated fail-closed at
-  # helm-upgrade time by charts/lucairn/templates/_validators.tpl
-  # (backup.enabled=true without a bucket → template error), so doctor does not
-  # re-check the Helm path. The phantom LUCAIRN_HELM_BACKUP_ENABLED var does not
-  # exist anywhere in the kit and would silently false-pass a Helm install.
   local bucket
   bucket="$(env_value "$env_file" LUCAIRN_BACKUP_S3_BUCKET)"
   [ -n "$bucket" ] && return 0
 
-  # No Compose backup configured.
-  local msg="backup pre-flight: WARN — DSA_ENV=production but LUCAIRN_BACKUP_S3_BUCKET is not set."
-  local detail1="backup pre-flight:   Compose: set LUCAIRN_BACKUP_S3_BUCKET in $env_file."
-  local detail2="backup pre-flight:   Helm:    use 'backup.enabled=true' in values.yaml — validated by the chart at helm-upgrade time."
-  local detail3="backup pre-flight:   The compliance DBs (audit-trail + veil-witness) are your only AI Act Art.12"
-  local detail4="backup pre-flight:   audit-retention evidence. Storage failure without offsite backup = irrecoverable."
-  local detail5="backup pre-flight:   See OPS.md § Backups for setup and docs/CUSTOMER_HELM_RUNBOOK.md § Backup."
+  # Helm path: LUCAIRN_BACKUP_HELM_MANAGED=true is an explicit operator assertion
+  # that Helm-managed backup (backup.enabled=true in values.yaml) is configured.
+  # The chart validates the Helm backup configuration at helm-upgrade time via
+  # _validators.tpl, so doctor does not re-check Helm values here.
+  # This is NOT a phantom auto-var — the operator must set it deliberately.
+  local helm_managed
+  helm_managed="$(env_value "$env_file" LUCAIRN_BACKUP_HELM_MANAGED)"
+  [ "$helm_managed" = "true" ] && return 0
+
+  # Neither signal is present — backup is not confirmed for a production install.
+  local msg="backup pre-flight: WARN — DSA_ENV=production but no backup signal found."
+  local detail1="backup pre-flight:   Compose: set LUCAIRN_BACKUP_S3_BUCKET to your offsite bucket in $env_file."
+  local detail2="backup pre-flight:   Helm:    ensure backup.enabled=true in values.yaml (validated at helm-upgrade)"
+  local detail3="backup pre-flight:            AND set LUCAIRN_BACKUP_HELM_MANAGED=true in $env_file to confirm."
+  local detail4="backup pre-flight:   The compliance DBs (audit-trail + veil-witness) are your only AI Act Art.12"
+  local detail5="backup pre-flight:   audit-retention evidence. Storage failure without offsite backup = irrecoverable."
+  local detail6="backup pre-flight:   See OPS.md § Backups for setup and docs/CUSTOMER_HELM_RUNBOOK.md § Backup."
 
   if [ "$strict" -eq 1 ]; then
     echo "$msg" >&2
@@ -869,6 +878,7 @@ check_backup_preflight() {
     echo "$detail3" >&2
     echo "$detail4" >&2
     echo "$detail5" >&2
+    echo "$detail6" >&2
     echo "backup pre-flight: FAIL (--strict)" >&2
     return 1
   else
@@ -878,6 +888,7 @@ check_backup_preflight() {
     warn "$detail3"
     warn "$detail4"
     warn "$detail5"
+    warn "$detail6"
     return 0
   fi
 }
@@ -4914,11 +4925,9 @@ doctor() {
   check_dashboard "$env_file" || return 1
 
   # M9 (deal-#1 hardening 2026-06-19): backup pre-flight.
-  # The compliance DBs (audit-trail + veil-witness) are the only AI Act Art.12
-  # audit-retention evidence. WARN (always) / FAIL (--strict) when DSA_ENV=production
-  # but LUCAIRN_BACKUP_S3_BUCKET is not set (Compose path). The Helm path is
-  # validated fail-closed at helm-upgrade time by _validators.tpl, so doctor
-  # only checks the Compose signal. Runs in both --offline and live modes.
+  # WARN (always) / FAIL (--strict) when DSA_ENV=production and NEITHER
+  # LUCAIRN_BACKUP_S3_BUCKET (Compose path) NOR LUCAIRN_BACKUP_HELM_MANAGED=true
+  # (explicit Helm operator assertion) is set. Runs in both --offline and live modes.
   check_backup_preflight "$env_file" "$strict_digest" || return 1
 
   if [ "$offline" -eq 1 ]; then

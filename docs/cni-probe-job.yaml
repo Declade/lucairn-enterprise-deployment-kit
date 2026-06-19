@@ -7,24 +7,37 @@
 # inert while doctor reports "presence only". This job provides a definitive answer.
 #
 # What it tests:
-#   BLOCKED flow  — lucairn-probe namespace  →  dsa-identity namespace
-#                   on port 50053 (sandbox-a gRPC)
-#                   Expected: connection REFUSED/TIMEOUT (NetworkPolicy isolates
-#                   sandbox-a from arbitrary namespaces)
+#   POSITIVE CONTROL — lucairn-probe namespace → kube-dns.kube-system.svc.cluster.local:53
+#                      This flow MUST succeed (cluster DNS is always reachable from any
+#                      namespace; NetworkPolicy should not block it). If it fails the
+#                      cluster or probe itself is broken — not an enforcement signal.
+#   BLOCKED flow     — lucairn-probe namespace → dsa-identity namespace
+#                      on port 50053 (sandbox-a gRPC)
+#                      Expected: connection REFUSED/TIMEOUT (NetworkPolicy isolates
+#                      sandbox-a from arbitrary namespaces)
+#
+#   CAVEAT: ensure the full Lucairn stack is deployed before running this probe.
+#   If sandbox-a is down or not yet deployed, a connect failure is INCONCLUSIVE
+#   (non-policy cause) rather than enforcement-confirmed.
 #
 # Probe DNS targets (confirmed from chart-rendered Service metadata):
+#   positive control: kube-dns.kube-system.svc.cluster.local:53
+#     Always reachable from any pod; verifies cluster DNS + network layer are healthy.
 #   sandbox-a (BLOCKED target): sandbox-a.dsa-identity.svc.cluster.local:50053
 #     Source: charts/lucairn/charts/sandbox-a/Chart.yaml name=sandbox-a
 #             charts/lucairn/charts/sandbox-a/values.yaml namespace=dsa-identity
 #             charts/lucairn/charts/sandbox-a/values.yaml service.grpcPort=50053
 #
-# Three-way verdict logic (not any-failure=PASS):
-#   INCONCLUSIVE — target DNS does NOT resolve (NXDOMAIN / unresolvable).
-#                  Cannot verify enforcement. Likely wrong release name, wrong
-#                  namespace, or sandbox-a not deployed. Exits NON-ZERO.
-#   PASS         — DNS resolves AND connection is refused/timed out.
+# Four-way verdict logic:
+#   INCONCLUSIVE — positive control UNREACHABLE.
+#                  The cluster or probe pod is broken — this is NOT an enforcement signal.
+#                  Exits NON-ZERO. Never prints "enforcement confirmed".
+#   INCONCLUSIVE — protected target DNS does NOT resolve (NXDOMAIN).
+#                  Cannot distinguish CNI enforcement from "sandbox-a not deployed".
+#                  Exits NON-ZERO.
+#   PASS         — positive control reachable AND protected target connection refused/timed out.
 #                  NetworkPolicy enforcement confirmed. Exits 0.
-#   FAIL         — DNS resolves AND connection SUCCEEDS.
+#   FAIL         — positive control reachable AND protected target connection SUCCEEDS.
 #                  CNI is NOT enforcing NetworkPolicy; isolation air-gap is inert.
 #                  Exits NON-ZERO.
 #
@@ -42,11 +55,13 @@
 #         kubectl logs -n lucairn-probe job/lucairn-cni-probe
 #
 #   PASS output (CNI is enforcing):
+#     [CONTROL] kube-dns.kube-system.svc.cluster.local:53 reachable — cluster healthy
 #     [RESOLVE] sandbox-a.dsa-identity.svc.cluster.local resolves — DNS OK
 #     [PASS] blocked flow: sandbox-a.dsa-identity.svc.cluster.local:50053 rejected as expected
 #     CNI probe: PASS — NetworkPolicy enforcement confirmed
 #
 #   FAIL output (CNI is NOT enforcing — isolation air-gap is inert):
+#     [CONTROL] kube-dns.kube-system.svc.cluster.local:53 reachable — cluster healthy
 #     [RESOLVE] sandbox-a.dsa-identity.svc.cluster.local resolves — DNS OK
 #     [FAIL] blocked flow: sandbox-a.dsa-identity.svc.cluster.local:50053 is REACHABLE
 #            CNI does NOT enforce NetworkPolicy — isolation air-gap is inert.
@@ -54,7 +69,14 @@
 #            Install a CNI that supports NetworkPolicy (Calico, Cilium, Weave Net)
 #            and re-run this probe before handling production data.
 #
-#   INCONCLUSIVE output (DNS did not resolve — wrong name/namespace or not deployed):
+#   INCONCLUSIVE output (positive control failed — cluster/probe broken):
+#     [INCONCLUSIVE] positive control kube-dns.kube-system.svc.cluster.local:53 UNREACHABLE
+#                    Cluster network or probe pod is not healthy — cannot determine
+#                    CNI enforcement status. Investigate cluster DNS and networking.
+#     CNI probe: INCONCLUSIVE — cluster/probe not healthy; cannot verify enforcement
+#
+#   INCONCLUSIVE output (protected target DNS did not resolve):
+#     [CONTROL] kube-dns.kube-system.svc.cluster.local:53 reachable — cluster healthy
 #     [INCONCLUSIVE] sandbox-a.dsa-identity.svc.cluster.local does NOT resolve
 #                    Cannot verify CNI enforcement. Possible causes:
 #                      - sandbox-a is not deployed yet (check: kubectl get pod -n dsa-identity)
@@ -143,6 +165,13 @@ spec:
             capabilities:
               drop: [ALL]
           env:
+            # POSITIVE CONTROL: cluster DNS service — always reachable from any pod.
+            # If this fails the cluster/probe is broken; result is INCONCLUSIVE,
+            # NOT an enforcement signal.
+            - name: CONTROL_HOST
+              value: "kube-dns.kube-system.svc.cluster.local"
+            - name: CONTROL_PORT
+              value: "53"
             # BLOCKED target: sandbox-a gRPC service.
             # Chart-rendered DNS: sandbox-a.dsa-identity.svc.cluster.local
             #   Service name  = chart name "sandbox-a"
@@ -163,9 +192,22 @@ spec:
             - /bin/sh
             - -euc
             - |
-              RESULT=0
+              # --- Step 1: Positive control ---
+              # Verify the cluster network layer is healthy before interpreting a
+              # blocked-target connect failure as "CNI enforcing". If the probe pod
+              # cannot reach kube-dns (always reachable from any namespace), the
+              # cluster or probe itself is broken — NOT an enforcement signal.
+              # NO path may print "enforcement confirmed" / PASS unless this succeeds.
+              if ! nc -z -w "$PROBE_TIMEOUT" "$CONTROL_HOST" "$CONTROL_PORT" 2>/dev/null; then
+                echo "[INCONCLUSIVE] positive control ${CONTROL_HOST}:${CONTROL_PORT} UNREACHABLE"
+                echo "               Cluster network or probe pod is not healthy — cannot determine"
+                echo "               CNI enforcement status. Investigate cluster DNS and networking."
+                echo "CNI probe: INCONCLUSIVE — cluster/probe not healthy; cannot verify enforcement"
+                exit 1
+              fi
+              echo "[CONTROL] ${CONTROL_HOST}:${CONTROL_PORT} reachable — cluster healthy"
 
-              # --- Step 1: DNS resolution check ---
+              # --- Step 2: DNS resolution check for protected target ---
               # If the target does not resolve, we CANNOT distinguish "CNI blocks it"
               # from "wrong name/namespace/not-deployed". Treat as INCONCLUSIVE and
               # exit non-zero — never print "enforcement confirmed" on an unresolved target.
@@ -182,30 +224,26 @@ spec:
               fi
               echo "[RESOLVE] ${BLOCKED_HOST} resolves — DNS OK"
 
-              # --- Step 2: Blocked flow connection attempt ---
+              # --- Step 3: Blocked flow connection attempt ---
               # The NetworkPolicy should prevent this namespace from reaching
               # sandbox-a's gRPC port. If nc succeeds, the CNI is NOT enforcing.
               # nc -z: scan (connect) only, send no data.
               # nc -w: connect timeout in seconds.
               # Exit 0 = connection succeeded (FAIL); non-zero = refused/timeout (PASS).
+              # Positive control already passed, so a connect failure here means
+              # policy enforcement — not a probe/cluster health issue.
               if nc -z -w "$PROBE_TIMEOUT" "$BLOCKED_HOST" "$BLOCKED_PORT" 2>/dev/null; then
                 echo "[FAIL] blocked flow: ${BLOCKED_HOST}:${BLOCKED_PORT} is REACHABLE"
                 echo "       CNI does NOT enforce NetworkPolicy — isolation air-gap is inert."
-                RESULT=1
-              else
-                echo "[PASS] blocked flow: ${BLOCKED_HOST}:${BLOCKED_PORT} rejected as expected"
-              fi
-
-              # --- Summary ---
-              if [ "$RESULT" -eq 0 ]; then
-                echo "CNI probe: PASS — NetworkPolicy enforcement confirmed"
-              else
                 echo "CNI probe: FAIL"
                 echo "       Install a CNI that supports NetworkPolicy (Calico, Cilium, Weave Net)"
                 echo "       and re-run this probe before handling production data."
+                exit 1
               fi
 
-              exit "$RESULT"
+              echo "[PASS] blocked flow: ${BLOCKED_HOST}:${BLOCKED_PORT} rejected as expected"
+              echo "CNI probe: PASS — NetworkPolicy enforcement confirmed"
+              exit 0
           resources:
             requests:
               cpu: 10m
