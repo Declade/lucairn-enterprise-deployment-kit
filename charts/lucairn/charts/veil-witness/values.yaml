@@ -22,6 +22,12 @@ namespace: dsa-witness
 # pods.
 replicaCount: 1
 
+# gRPC-TLS for the :50057 claim-intake server. Must match the TLS posture of
+# the emitter clients (gateway/audit/id-bridge pkg/veil/emitter.go:117 dials
+# with TLS in production). Set to "true" under values-prod.yaml; default "false"
+# preserves plaintext dev behaviour (no RequireTLSInProduction() guard here).
+grpcTlsEnabled: "false"
+
 image:
   repository: dsa-veil-witness
   tag: ""  # defaults to Chart.appVersion

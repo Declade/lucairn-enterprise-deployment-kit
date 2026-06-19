@@ -149,11 +149,14 @@ sandbox-b:
 
 veil-witness:
   enabled: true
-  # No grpcTlsEnabled here BY DESIGN: the witness binary does NOT call
-  # tlsutil.RequireTLSInProduction() (verified Slice-0, 2026-06-19) — its
-  # transport security is the opt-in WITNESS_MTLS_* family on :50058, default
-  # off. It therefore does not boot-fatal under dsaEnv=production with
-  # plaintext, so omitting the flag is coherent (not a gap).
+  # grpcTlsEnabled="true" makes the :50057 claim-intake server serve gRPC TLS.
+  # Required under production: the emitter clients (gateway, audit, id-bridge
+  # pkg/veil/emitter.go:117 → tlsutil.ClientCredentialsForPeer) dial :50057
+  # with TLS in production — a plaintext server would fail the handshake and
+  # drop all claims, breaking cert minting. The witness binary does NOT call
+  # RequireTLSInProduction() (no boot-fatal); this flag is the correct lever.
+  # WITNESS_MTLS_* remains the separate opt-in for full mTLS on :50058.
+  grpcTlsEnabled: "true"
   replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
   resources:
     requests:

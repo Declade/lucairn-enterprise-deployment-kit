@@ -16,15 +16,27 @@ data:
   LCR_AUDIT_PUBLIC_KEY: {{ .Values.config.auditPublicKey | quote }}
   # Peer pubkey for verifying gateway-signed claims. The witness reads this at
   # cmd/server/main.go:51 → populates publicKeys["dsa-gateway"] at :127. Without
-  # it the witness cannot verify the gateway claim → silent cert-verdict
-  # downgrade for every cert. This is a PUBLIC key (not secret material — same
-  # class as the four sibling LCR_*_PUBLIC_KEY entries above), and the witness
-  # deployment only bulk-loads env via `envFrom: configMapRef` (NOT secretRef),
-  # so the configmap is the correct + working placement. Operator supplies the
-  # value from the same key ceremony that produces the gateway's
-  # veilGatewayPublicKey (gateway secret.yaml:48).
+  # it the witness cannot verify the gateway claim — the gateway-emitted claim is
+  # OPTIONAL/non-critical (veil-witness main.go:124-127; gateway not in
+  # ExpectedServiceOrderList) so the cert flow still completes; the gateway claim
+  # simply isn't verified. This is a PUBLIC key (not secret material — same class
+  # as the four sibling LCR_*_PUBLIC_KEY entries above), and the witness deployment
+  # only bulk-loads env via `envFrom: configMapRef` (NOT secretRef), so the
+  # configmap is the correct + working placement. Operator supplies the value from
+  # the same key ceremony that produces the gateway's veilGatewayPublicKey
+  # (gateway secret.yaml:48).
   LCR_GATEWAY_PUBLIC_KEY: {{ .Values.config.gatewayPublicKey | quote }}
   LCR_PROOF_SPEC_PATH: {{ .Values.config.proofSpecPath | quote }}
   LCR_PROOF_OUTPUT_PATH: {{ .Values.config.proofOutputPath | quote }}
   LCR_PROOF_MODEL_VERSION: {{ .Values.config.proofModelVersion | quote }}
   INSECURE_DEV_MODE: {{ .Values.config.insecureDevMode | quote }}
+  # gRPC-TLS for the :50057 claim-intake server. The claim-intake clients
+  # (gateway, audit, id-bridge veil emitters) call tlsutil.ClientCredentialsForPeer
+  # (pkg/veil/emitter.go:117) which fail-closes in production — they dial with TLS.
+  # Without this flag the witness serves PLAINTEXT on :50057, causing a
+  # TLS-client→plaintext-server handshake failure that silently drops all emitted
+  # claims and breaks cert minting. Set to "true" under values-prod.yaml so client
+  # and server are symmetric. The witness binary does NOT call
+  # RequireTLSInProduction() (no boot-fatal); this flag is the correct on/off
+  # lever. WITNESS_MTLS_* remains the separate opt-in for full mTLS on :50058.
+  GRPC_TLS_ENABLED: {{ .Values.grpcTlsEnabled | quote }}
