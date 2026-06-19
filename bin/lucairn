@@ -753,70 +753,30 @@ check_mtls_partial_config() {
     return 0
   fi
 
-  # At least one is set — validate both triples.
-  local failed=0 missing_vars=""
+  # At least one is set — the ONLY non-crashing non-empty config is ALL FIVE
+  # vars set (full server+client mesh). A complete server-only triple (no client
+  # vars) or complete client-only triple (no server vars) still crashes sandbox-b
+  # and the sanitizer at boot, because both services require the full mesh
+  # (mtls_sans.py:284-288, gunicorn.conf.py:93-108, tlsutil.go:626). Therefore:
+  # once ANY of the 5 credential-bearing vars is set, ALL 5 must be set.
+  local missing_vars=""
+  [ -z "$ca" ]          && missing_vars="${missing_vars} DSA_MTLS_CA_BUNDLE_PATH"
+  [ -z "$server_cert" ] && missing_vars="${missing_vars} DSA_MTLS_SERVER_CERT_PATH"
+  [ -z "$server_key" ]  && missing_vars="${missing_vars} DSA_MTLS_SERVER_KEY_PATH"
+  [ -z "$client_cert" ] && missing_vars="${missing_vars} DSA_MTLS_CLIENT_CERT_PATH"
+  [ -z "$client_key" ]  && missing_vars="${missing_vars} DSA_MTLS_CLIENT_KEY_PATH"
 
-  # Server triple: CA + SERVER_CERT + SERVER_KEY
-  # Partial = some but not all of the triple are set.
-  local server_any=0 server_complete=1
-  [ -n "$ca" ]          && server_any=1 || server_complete=0
-  [ -n "$server_cert" ] && server_any=1 || server_complete=0
-  [ -n "$server_key" ]  && server_any=1 || server_complete=0
-
-  # Client triple: CA + CLIENT_CERT + CLIENT_KEY
-  local client_any=0 client_complete=1
-  [ -n "$ca" ]          && client_any=1 || client_complete=0
-  [ -n "$client_cert" ] && client_any=1 || client_complete=0
-  [ -n "$client_key" ]  && client_any=1 || client_complete=0
-
-  # Determine intended side(s): any credential-bearing var set means at least
-  # one side is intended. Check each side independently.
-  local any_set=0
-  { [ -n "$ca" ] || [ -n "$server_cert" ] || [ -n "$server_key" ] || \
-    [ -n "$client_cert" ] || [ -n "$client_key" ]; } && any_set=1
-
-  if [ "$any_set" -eq 0 ]; then
-    return 0
-  fi
-
-  # Check: if any server-side var is set but the triple is incomplete.
-  if { [ -n "$server_cert" ] || [ -n "$server_key" ]; } && [ "$server_complete" -eq 0 ]; then
-    failed=1
-    [ -z "$ca" ]          && missing_vars="${missing_vars} DSA_MTLS_CA_BUNDLE_PATH"
-    [ -z "$server_cert" ] && missing_vars="${missing_vars} DSA_MTLS_SERVER_CERT_PATH"
-    [ -z "$server_key" ]  && missing_vars="${missing_vars} DSA_MTLS_SERVER_KEY_PATH"
-  fi
-
-  # Check: if any client-side var is set but the triple is incomplete.
-  if { [ -n "$client_cert" ] || [ -n "$client_key" ]; } && [ "$client_complete" -eq 0 ]; then
-    failed=1
-    [ -z "$ca" ]          && missing_vars="${missing_vars} DSA_MTLS_CA_BUNDLE_PATH"
-    [ -z "$client_cert" ] && missing_vars="${missing_vars} DSA_MTLS_CLIENT_CERT_PATH"
-    [ -z "$client_key" ]  && missing_vars="${missing_vars} DSA_MTLS_CLIENT_KEY_PATH"
-  fi
-
-  # Edge: CA set alone with neither a server cert nor a client cert indicates
-  # intent to use mTLS but both triples are incomplete.
-  if [ -n "$ca" ] && [ -z "$server_cert" ] && [ -z "$server_key" ] && \
-     [ -z "$client_cert" ] && [ -z "$client_key" ]; then
-    failed=1
-    missing_vars="${missing_vars} DSA_MTLS_SERVER_CERT_PATH DSA_MTLS_SERVER_KEY_PATH"
-    missing_vars="${missing_vars} (or DSA_MTLS_CLIENT_CERT_PATH DSA_MTLS_CLIENT_KEY_PATH)"
-  fi
-
-  if [ "$failed" -eq 1 ]; then
-    # Deduplicate missing vars (simple sort -u approach).
-    local unique_missing
-    unique_missing="$(printf '%s\n' $missing_vars | sort -u | tr '\n' ' ')"
+  if [ -n "$missing_vars" ]; then
     echo "mTLS config: FAIL — partial mTLS configuration detected."
     echo "mTLS config:   At least one DSA_MTLS_* credential-bearing var is set but"
-    echo "mTLS config:   the triple is incomplete. sandbox-b and the sanitizer will"
-    echo "mTLS config:   sys.exit(1) at boot on a partial config (mtls_sans.py:284-288,"
+    echo "mTLS config:   the full mesh is incomplete. sandbox-b and the sanitizer require"
+    echo "mTLS config:   ALL FIVE vars (server + client mesh); a server-only or client-only"
+    echo "mTLS config:   triple still causes sys.exit(1) at boot (mtls_sans.py:284-288,"
     echo "mTLS config:   gunicorn.conf.py:93-108, tlsutil.go:626)."
-    echo "mTLS config:   Missing (or conflicting) vars:${unique_missing}"
-    echo "mTLS config:   Server triple: DSA_MTLS_CA_BUNDLE_PATH + DSA_MTLS_SERVER_CERT_PATH + DSA_MTLS_SERVER_KEY_PATH"
-    echo "mTLS config:   Client triple: DSA_MTLS_CA_BUNDLE_PATH + DSA_MTLS_CLIENT_CERT_PATH + DSA_MTLS_CLIENT_KEY_PATH"
-    echo "mTLS config:   Either complete the intended triple, or unset all 5 to disable mTLS."
+    echo "mTLS config:   Missing vars:${missing_vars}"
+    echo "mTLS config:   Required: DSA_MTLS_CA_BUNDLE_PATH + DSA_MTLS_SERVER_CERT_PATH + DSA_MTLS_SERVER_KEY_PATH"
+    echo "mTLS config:          + DSA_MTLS_CLIENT_CERT_PATH + DSA_MTLS_CLIENT_KEY_PATH"
+    echo "mTLS config:   Either set all 5 vars, or unset all 5 to disable mTLS."
     return 1
   fi
   return 0
@@ -851,16 +811,13 @@ check_readiness_bundle() {
     return 1
   fi
 
-  # Bundle var is set — also check the path exists (if non-empty and looks like a path).
-  if [ "${bundle#/}" != "$bundle" ] || [ "${bundle#./}" != "$bundle" ]; then
-    if [ ! -f "$bundle" ]; then
-      echo "readiness bundle: FAIL — GATEWAY_READINESS_BUNDLE=$bundle is set but the file does not exist."
-      echo "readiness bundle:   The gateway will Fatal at boot when it cannot open this path."
-      echo "readiness bundle:   Run the readiness bundle ceremony, or correct the path."
-      return 1
-    fi
-  fi
-
+  # Bundle var is set — env-var PRESENCE is sufficient. Do NOT stat the path on
+  # the host filesystem: in Helm installs the value is a container-internal mount
+  # path (e.g. /etc/dsa/readiness/readiness-bundle.json, built by
+  # charts/lucairn/charts/gateway/templates/configmap.yaml:88 via
+  # readiness.bundleMountPath) which will never exist on the operator's host.
+  # The Go gateway resolves the path inside its own container at boot; doctor
+  # running on the host must not re-stat it. Check env-var PRESENCE, not fs.
   return 0
 }
 
@@ -887,20 +844,20 @@ check_backup_preflight() {
   # Only fire in production.
   [ "$dsa_env" = "production" ] || return 0
 
-  # Check Compose path: LUCAIRN_BACKUP_S3_BUCKET non-empty.
+  # Compose path: LUCAIRN_BACKUP_S3_BUCKET non-empty → backup configured; pass.
+  # Helm path: NOT checked here. Helm backup is validated fail-closed at
+  # helm-upgrade time by charts/lucairn/templates/_validators.tpl
+  # (backup.enabled=true without a bucket → template error), so doctor does not
+  # re-check the Helm path. The phantom LUCAIRN_HELM_BACKUP_ENABLED var does not
+  # exist anywhere in the kit and would silently false-pass a Helm install.
   local bucket
   bucket="$(env_value "$env_file" LUCAIRN_BACKUP_S3_BUCKET)"
   [ -n "$bucket" ] && return 0
 
-  # Check Helm proxy env var: LUCAIRN_HELM_BACKUP_ENABLED=true.
-  local helm_backup
-  helm_backup="$(env_value "$env_file" LUCAIRN_HELM_BACKUP_ENABLED)"
-  [ "$helm_backup" = "true" ] && return 0
-
-  # No backup configured.
-  local msg="backup pre-flight: WARN — DSA_ENV=production but no offsite backup is configured."
+  # No Compose backup configured.
+  local msg="backup pre-flight: WARN — DSA_ENV=production but LUCAIRN_BACKUP_S3_BUCKET is not set."
   local detail1="backup pre-flight:   Compose: set LUCAIRN_BACKUP_S3_BUCKET in $env_file."
-  local detail2="backup pre-flight:   Helm:    set LUCAIRN_HELM_BACKUP_ENABLED=true in $env_file (mirrors values.yaml backup.enabled)."
+  local detail2="backup pre-flight:   Helm:    use 'backup.enabled=true' in values.yaml — validated by the chart at helm-upgrade time."
   local detail3="backup pre-flight:   The compliance DBs (audit-trail + veil-witness) are your only AI Act Art.12"
   local detail4="backup pre-flight:   audit-retention evidence. Storage failure without offsite backup = irrecoverable."
   local detail5="backup pre-flight:   See OPS.md § Backups for setup and docs/CUSTOMER_HELM_RUNBOOK.md § Backup."
@@ -4959,9 +4916,9 @@ doctor() {
   # M9 (deal-#1 hardening 2026-06-19): backup pre-flight.
   # The compliance DBs (audit-trail + veil-witness) are the only AI Act Art.12
   # audit-retention evidence. WARN (always) / FAIL (--strict) when DSA_ENV=production
-  # but no offsite backup is configured. Mode-agnostic: pass if EITHER the Compose
-  # LUCAIRN_BACKUP_S3_BUCKET is non-empty OR the Helm proxy LUCAIRN_HELM_BACKUP_ENABLED
-  # is "true". Runs in both --offline and live modes (pure env-file check).
+  # but LUCAIRN_BACKUP_S3_BUCKET is not set (Compose path). The Helm path is
+  # validated fail-closed at helm-upgrade time by _validators.tpl, so doctor
+  # only checks the Compose signal. Runs in both --offline and live modes.
   check_backup_preflight "$env_file" "$strict_digest" || return 1
 
   if [ "$offline" -eq 1 ]; then

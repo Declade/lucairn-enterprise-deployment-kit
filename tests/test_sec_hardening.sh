@@ -244,4 +244,230 @@ if printf 'notvalidhex' | "$DERIVE" >/dev/null 2>&1; then
 fi
 echo "SEC-04 derive-veil-pubkey stdin path: ok"
 
+# ---------------------------------------------------------------------------
+# M1 fix (PR #81 review): tightened mTLS partial-config detection.
+#
+# Rule: once ANY of the 5 DSA_MTLS_* credential-bearing vars is set, ALL FIVE
+# must be set. A complete server-only triple (CA+SERVER_CERT+SERVER_KEY, no
+# client vars) or complete client-only triple (CA+CLIENT_CERT+CLIENT_KEY, no
+# server vars) still crashes sandbox-b and the sanitizer at boot (full mesh
+# required). Previously these two configs passed doctor (false-GREENs).
+# ---------------------------------------------------------------------------
+M1_BASE="$TMPDIR/m1-base.env"
+# Strip any existing DSA_MTLS_* vars from the coherent fixture so we start clean.
+grep -v '^DSA_MTLS_' "$ENV_FILE" > "$M1_BASE"
+
+# Case 1: none → pass (mTLS disabled).
+if ! run_doctor "$TMPDIR/m1-none.out" "$M1_BASE"; then
+  echo "FAIL: M1 none-set should PASS (mTLS disabled)" >&2
+  cat "$TMPDIR/m1-none.out" >&2
+  exit 1
+fi
+echo "M1: none-set → PASS (mTLS disabled): ok"
+
+# Case 2: all 5 set → pass (full mesh).
+M1_ALL="$TMPDIR/m1-all.env"
+cp "$M1_BASE" "$M1_ALL"
+{
+  printf 'DSA_MTLS_CA_BUNDLE_PATH=/etc/dsa/certs/ca.crt\n'
+  printf 'DSA_MTLS_SERVER_CERT_PATH=/etc/dsa/certs/server.crt\n'
+  printf 'DSA_MTLS_SERVER_KEY_PATH=/etc/dsa/certs/server.key\n'
+  printf 'DSA_MTLS_CLIENT_CERT_PATH=/etc/dsa/certs/client.crt\n'
+  printf 'DSA_MTLS_CLIENT_KEY_PATH=/etc/dsa/certs/client.key\n'
+} >> "$M1_ALL"
+if ! run_doctor "$TMPDIR/m1-all.out" "$M1_ALL"; then
+  echo "FAIL: M1 all-5-set should PASS (full mesh)" >&2
+  cat "$TMPDIR/m1-all.out" >&2
+  exit 1
+fi
+echo "M1: all-5-set → PASS (full mesh): ok"
+
+# Case 3: complete server triple (CA+SERVER_CERT+SERVER_KEY) but NO client
+# vars → FAIL (crashes sandbox-b/sanitizer; was a false-GREEN before the fix).
+M1_SERVER_ONLY="$TMPDIR/m1-server-only.env"
+cp "$M1_BASE" "$M1_SERVER_ONLY"
+{
+  printf 'DSA_MTLS_CA_BUNDLE_PATH=/etc/dsa/certs/ca.crt\n'
+  printf 'DSA_MTLS_SERVER_CERT_PATH=/etc/dsa/certs/server.crt\n'
+  printf 'DSA_MTLS_SERVER_KEY_PATH=/etc/dsa/certs/server.key\n'
+} >> "$M1_SERVER_ONLY"
+if run_doctor "$TMPDIR/m1-server-only.out" "$M1_SERVER_ONLY"; then
+  echo "FAIL: M1 complete-server-only should FAIL (no client vars; was false-GREEN)" >&2
+  cat "$TMPDIR/m1-server-only.out" >&2
+  exit 1
+fi
+grep -q "mTLS config: FAIL" "$TMPDIR/m1-server-only.out" \
+  || { echo "FAIL: M1 server-only missing expected error" >&2; cat "$TMPDIR/m1-server-only.out" >&2; exit 1; }
+grep -q "DSA_MTLS_CLIENT_CERT_PATH" "$TMPDIR/m1-server-only.out" \
+  || { echo "FAIL: M1 server-only should name missing DSA_MTLS_CLIENT_CERT_PATH" >&2; exit 1; }
+grep -q "DSA_MTLS_CLIENT_KEY_PATH" "$TMPDIR/m1-server-only.out" \
+  || { echo "FAIL: M1 server-only should name missing DSA_MTLS_CLIENT_KEY_PATH" >&2; exit 1; }
+echo "M1: complete-server-only → FAIL (client vars missing; false-GREEN fixed): ok"
+
+# Case 4: complete client triple (CA+CLIENT_CERT+CLIENT_KEY) but NO server
+# vars → FAIL (crashes sandbox-b/sanitizer; was a false-GREEN before the fix).
+M1_CLIENT_ONLY="$TMPDIR/m1-client-only.env"
+cp "$M1_BASE" "$M1_CLIENT_ONLY"
+{
+  printf 'DSA_MTLS_CA_BUNDLE_PATH=/etc/dsa/certs/ca.crt\n'
+  printf 'DSA_MTLS_CLIENT_CERT_PATH=/etc/dsa/certs/client.crt\n'
+  printf 'DSA_MTLS_CLIENT_KEY_PATH=/etc/dsa/certs/client.key\n'
+} >> "$M1_CLIENT_ONLY"
+if run_doctor "$TMPDIR/m1-client-only.out" "$M1_CLIENT_ONLY"; then
+  echo "FAIL: M1 complete-client-only should FAIL (no server vars; was false-GREEN)" >&2
+  cat "$TMPDIR/m1-client-only.out" >&2
+  exit 1
+fi
+grep -q "mTLS config: FAIL" "$TMPDIR/m1-client-only.out" \
+  || { echo "FAIL: M1 client-only missing expected error" >&2; cat "$TMPDIR/m1-client-only.out" >&2; exit 1; }
+grep -q "DSA_MTLS_SERVER_CERT_PATH" "$TMPDIR/m1-client-only.out" \
+  || { echo "FAIL: M1 client-only should name missing DSA_MTLS_SERVER_CERT_PATH" >&2; exit 1; }
+grep -q "DSA_MTLS_SERVER_KEY_PATH" "$TMPDIR/m1-client-only.out" \
+  || { echo "FAIL: M1 client-only should name missing DSA_MTLS_SERVER_KEY_PATH" >&2; exit 1; }
+echo "M1: complete-client-only → FAIL (server vars missing; false-GREEN fixed): ok"
+
+echo "M1 mTLS partial-config detection (PR #81 fix-up): ok"
+
+# ---------------------------------------------------------------------------
+# M5 fix (PR #81 review): drop host-path stat for readiness bundle.
+#
+# GATEWAY_REQUIRE_READINESS=true + bundle UNSET → FAIL (env-var missing).
+# GATEWAY_REQUIRE_READINESS=true + bundle = container-internal path (e.g.
+# /etc/dsa/readiness/readiness-bundle.json, never on the host) → PASS.
+# Previously the path-existence stat triggered a false-RED for any Helm install.
+# ---------------------------------------------------------------------------
+M5_BASE="$TMPDIR/m5-base.env"
+grep -v '^GATEWAY_REQUIRE_READINESS=\|^GATEWAY_READINESS_BUNDLE=' "$ENV_FILE" > "$M5_BASE"
+
+# Case 1: GATEWAY_REQUIRE_READINESS unset → pass (feature off).
+if ! run_doctor "$TMPDIR/m5-off.out" "$M5_BASE"; then
+  echo "FAIL: M5 require-readiness unset should PASS (feature off)" >&2
+  cat "$TMPDIR/m5-off.out" >&2
+  exit 1
+fi
+echo "M5: GATEWAY_REQUIRE_READINESS unset → PASS (feature off): ok"
+
+# Case 2: GATEWAY_REQUIRE_READINESS=true, bundle UNSET → FAIL.
+M5_UNSET="$TMPDIR/m5-unset-bundle.env"
+cp "$M5_BASE" "$M5_UNSET"
+printf 'GATEWAY_REQUIRE_READINESS=true\n' >> "$M5_UNSET"
+if run_doctor "$TMPDIR/m5-unset.out" "$M5_UNSET"; then
+  echo "FAIL: M5 require-readiness=true + bundle unset should FAIL" >&2
+  cat "$TMPDIR/m5-unset.out" >&2
+  exit 1
+fi
+grep -q "readiness bundle: FAIL" "$TMPDIR/m5-unset.out" \
+  || { echo "FAIL: M5 missing expected readiness bundle FAIL message" >&2; cat "$TMPDIR/m5-unset.out" >&2; exit 1; }
+echo "M5: GATEWAY_REQUIRE_READINESS=true + bundle unset → FAIL: ok"
+
+# Case 3: GATEWAY_REQUIRE_READINESS=true + container-internal path that does
+# NOT exist on the host → PASS (the path-existence stat was a false-RED).
+M5_HELM="$TMPDIR/m5-helm-path.env"
+cp "$M5_BASE" "$M5_HELM"
+{
+  printf 'GATEWAY_REQUIRE_READINESS=true\n'
+  printf 'GATEWAY_READINESS_BUNDLE=/etc/dsa/readiness/readiness-bundle.json\n'
+} >> "$M5_HELM"
+if ! run_doctor "$TMPDIR/m5-helm.out" "$M5_HELM"; then
+  echo "FAIL: M5 require-readiness=true + container-internal bundle path should PASS (false-RED fixed)" >&2
+  cat "$TMPDIR/m5-helm.out" >&2
+  exit 1
+fi
+echo "M5: GATEWAY_REQUIRE_READINESS=true + container-internal path → PASS (false-RED fixed): ok"
+
+echo "M5 readiness-bundle host-path-stat removed (PR #81 fix-up): ok"
+
+# ---------------------------------------------------------------------------
+# M9 fix (PR #81 review): drop phantom LUCAIRN_HELM_BACKUP_ENABLED arm.
+#
+# Helm backup is validated fail-closed at helm-upgrade time by _validators.tpl,
+# so doctor must NOT check a phantom var. The Compose path (LUCAIRN_BACKUP_S3_BUCKET
+# non-empty) is the only doctor-visible signal.
+#
+# Cases to prove:
+#   - production + LUCAIRN_BACKUP_S3_BUCKET set → PASS.
+#   - production + LUCAIRN_HELM_BACKUP_ENABLED=true (phantom) + no bucket → WARN/FAIL.
+#   - production + no bucket, no phantom var → WARN (default), FAIL under --strict.
+# ---------------------------------------------------------------------------
+M9_BASE="$TMPDIR/m9-base.env"
+grep -v '^DSA_ENV=\|^LUCAIRN_BACKUP_S3_BUCKET=\|^LUCAIRN_HELM_BACKUP_ENABLED=' "$ENV_FILE" > "$M9_BASE"
+printf 'DSA_ENV=production\n' >> "$M9_BASE"
+
+# Case 1: production + bucket set → PASS.
+M9_BUCKET="$TMPDIR/m9-bucket.env"
+cp "$M9_BASE" "$M9_BUCKET"
+printf 'LUCAIRN_BACKUP_S3_BUCKET=lucairn-backups-prod\n' >> "$M9_BUCKET"
+if ! run_doctor "$TMPDIR/m9-bucket.out" "$M9_BUCKET"; then
+  echo "FAIL: M9 production + bucket set should PASS" >&2
+  cat "$TMPDIR/m9-bucket.out" >&2
+  exit 1
+fi
+echo "M9: production + LUCAIRN_BACKUP_S3_BUCKET set → PASS: ok"
+
+# Case 2: production + LUCAIRN_HELM_BACKUP_ENABLED=true (phantom var) + no bucket
+# → must still WARN/FAIL (phantom var must not suppress the warning).
+M9_PHANTOM="$TMPDIR/m9-phantom.env"
+cp "$M9_BASE" "$M9_PHANTOM"
+printf 'LUCAIRN_HELM_BACKUP_ENABLED=true\n' >> "$M9_PHANTOM"
+# doctor exits 0 in WARN mode but emits the backup warning on stderr.
+M9_PHANTOM_RC=0
+"$ROOT/bin/lucairn" doctor --env "$M9_PHANTOM" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --offline > "$TMPDIR/m9-phantom.out" 2> "$TMPDIR/m9-phantom.err" || M9_PHANTOM_RC=$?
+if ! grep -q "backup pre-flight: WARN" "$TMPDIR/m9-phantom.err"; then
+  echo "FAIL: M9 phantom LUCAIRN_HELM_BACKUP_ENABLED=true must still WARN (phantom var falsely suppressed the warning)" >&2
+  cat "$TMPDIR/m9-phantom.out" "$TMPDIR/m9-phantom.err" >&2
+  exit 1
+fi
+echo "M9: LUCAIRN_HELM_BACKUP_ENABLED=true (phantom) + no bucket → WARN (phantom not accepted): ok"
+
+# Case 3: production + no bucket, no phantom var.
+# Test WARN (strict=0) and FAIL (strict=1) by calling check_backup_preflight
+# directly (sourcing the CLI with empty args so main "$@" is harmless).
+# This avoids the --offline + --strict incompatibility enforced by
+# check_image_digests (which runs before backup in the full doctor flow and
+# would block the backup check from ever being reached).
+# Test WARN (strict=0) and FAIL (strict=1) by calling check_backup_preflight
+# directly via source, writing output to files to avoid subshell RC confusion.
+M9_WARN_OUT="$TMPDIR/m9-warn.out"
+M9_STRICT_OUT="$TMPDIR/m9-strict.out"
+
+set +e
+(
+  set --
+  # shellcheck disable=SC1090
+  . "$ROOT/bin/lucairn" >/dev/null 2>&1
+  check_backup_preflight "$M9_BASE" 0
+) > "$M9_WARN_OUT" 2>&1
+M9_WARN_RC=$?
+set -e
+if [ "$M9_WARN_RC" -ne 0 ]; then
+  echo "FAIL: M9 check_backup_preflight(strict=0) should return 0 (warn only), got $M9_WARN_RC" >&2
+  cat "$M9_WARN_OUT" >&2
+  exit 1
+fi
+grep -q "backup pre-flight: WARN" "$M9_WARN_OUT" \
+  || { echo "FAIL: M9 expected backup pre-flight WARN in output" >&2; cat "$M9_WARN_OUT" >&2; exit 1; }
+echo "M9: production no-backup check_backup_preflight(strict=0) → WARN (rc=0): ok"
+
+set +e
+(
+  set --
+  # shellcheck disable=SC1090
+  . "$ROOT/bin/lucairn" >/dev/null 2>&1
+  check_backup_preflight "$M9_BASE" 1
+) > "$M9_STRICT_OUT" 2>&1
+M9_STRICT_RC=$?
+set -e
+if [ "$M9_STRICT_RC" -eq 0 ]; then
+  echo "FAIL: M9 check_backup_preflight(strict=1) should return 1 (--strict fail), got 0" >&2
+  cat "$M9_STRICT_OUT" >&2
+  exit 1
+fi
+grep -q "backup pre-flight: FAIL" "$M9_STRICT_OUT" \
+  || { echo "FAIL: M9 --strict FAIL message missing" >&2; cat "$M9_STRICT_OUT" >&2; exit 1; }
+echo "M9: production no-backup check_backup_preflight(strict=1) → FAIL (rc=1): ok"
+
+echo "M9 phantom-Helm-var removed (PR #81 fix-up): ok"
+
 echo "all sec-hardening tests: ok"
