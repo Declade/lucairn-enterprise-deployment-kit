@@ -24,6 +24,59 @@ spec:
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 30 }}
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
+      {{- if .Values.postgresql.enabled }}
+      initContainers:
+        # Migration-completion gate (rehearsal fix 2026-06-19). The runtime
+        # witness connects as the restricted `veil_app` role (LCR_DB_URL =
+        # DATABASE_URL_APP), which does not exist until the
+        # 000002_restrict_veil_role migration Job runs CREATE ROLE. Without this
+        # gate the witness Deployment starts before the migration and
+        # CrashLoopBackOffs with `password authentication failed for user
+        # "veil_app"` until the migration completes, then self-heals — a
+        # scary-but-transient CrashLoopBackOff on a no-shell-access deliverable.
+        # Same dependency class + same fix as the audit subchart. Block startup
+        # until an AUTHENTICATED connection as veil_app succeeds (proves postgres
+        # is up AND the migration created+granted the role — stronger than
+        # pg_isready). Mirrors the gateway wait-for-postgres initContainer.
+        - name: wait-for-migration
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for veil-witness migration (veil_app role) to be ready..."
+              for i in $(seq 1 150); do
+                if psql "$DATABASE_URL_APP" -tAc 'SELECT 1' >/dev/null 2>&1; then
+                  echo "veil_app role ready — migration complete."
+                  exit 0
+                fi
+                sleep 2
+              done
+              echo "veil_app role not ready after 5 min — failing initContainer." >&2
+              exit 1
+          env:
+            - name: DATABASE_URL_APP
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Chart.Name }}-credentials
+                  key: DATABASE_URL_APP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.image.repository }}:{{ .Values.image.tag | default .Values.global.imageTag | default .Chart.AppVersion }}"
