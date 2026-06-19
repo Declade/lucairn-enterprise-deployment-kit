@@ -18,3 +18,13 @@ data:
   LCR_PROOF_OUTPUT_PATH: {{ .Values.config.proofOutputPath | quote }}
   LCR_PROOF_MODEL_VERSION: {{ .Values.config.proofModelVersion | quote }}
   INSECURE_DEV_MODE: {{ .Values.config.insecureDevMode | quote }}
+  # L3-required flag — MUST agree with the sanitizer (sandbox-a) or the witness
+  # downgrades every cert to COMPLETENESS_PARTIAL. The witness binary reads this
+  # (verifier.go:171) and "mirrors config.l3_required() in the sanitizer so the
+  # two sides agree" (verifier.go:170). Single source of truth: global.l3Required
+  # (default false ⇒ "false" on BOTH sides). A per-subchart config.l3Required
+  # override is honored first (hasKey, NOT `| default` — Sprig's `default` treats
+  # boolean false as empty and would clobber an explicit false back to true);
+  # otherwise the global; otherwise "false". This is the SAME knob the sanitizer
+  # container reads (sandbox-a/templates/deployment.yaml LUCAIRN_L3_REQUIRED).
+  LUCAIRN_L3_REQUIRED: {{ if hasKey .Values.config "l3Required" }}{{ .Values.config.l3Required | quote }}{{ else if hasKey .Values.global "l3Required" }}{{ .Values.global.l3Required | quote }}{{ else }}{{ "false" | quote }}{{ end }}

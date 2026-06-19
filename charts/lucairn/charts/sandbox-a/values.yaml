@@ -136,16 +136,27 @@ sanitizer:
   # downgraded to PARTIAL with llm_pii_scan omitted from layers_active). Wired
   # into the sanitizer container env as LUCAIRN_L3_REQUIRED.
   #
-  # DEFAULT false (overnight follow-up 2026-06-15 — the Helm side of #73's Compose
+  # DEFAULT (overnight follow-up 2026-06-15 — the Helm side of #73's Compose
   # fix): the L3 shield is the GPU `ollama-identity` StatefulSet, which renders
   # ONLY when sanitizer.llmScanEnabled=true (ollama-identity-statefulset.yaml:1).
   # With the stock default llmScanEnabled=false, a `true` here required L3 but
   # deployed no L3 service → the sanitizer /readyz fails liveness and the gateway
-  # fail-closes 503 on EVERY request (same trap #73 fixed for Compose). Keep this
-  # false=true PAIRED with llmScanEnabled. Enterprise operators who enable the L3
-  # shield (set sanitizer.llmScanEnabled=true to deploy the GPU ollama-identity
-  # sidecar) set l3Required=true to restore fail-closed L3.
-  l3Required: false
+  # fail-closes 503 on EVERY request (same trap #73 fixed for Compose). Keep
+  # L3-required PAIRED with llmScanEnabled. Enterprise operators who enable the
+  # L3 shield (set sanitizer.llmScanEnabled=true to deploy the GPU ollama-identity
+  # sidecar) flip L3-required true to restore fail-closed L3.
+  #
+  # SINGLE SOURCE OF TRUTH (rehearsal fix 2026-06-19): the effective value is now
+  # global.l3Required (default false) so the sanitizer AND the veil-witness read
+  # ONE knob and can never drift (drift ⇒ witness downgrades every cert to
+  # COMPLETENESS_PARTIAL — verifier.go:170-172,503). This per-subchart key is
+  # therefore COMMENTED OUT by default (no baked-in value) so the global drives
+  # it. Uncomment / set it ONLY to override L3-required for the sanitizer alone
+  # for legacy reasons — but note that overriding ONLY the sanitizer side
+  # re-introduces the very drift this fix closes; prefer global.l3Required.
+  # An explicit value here is still honored first for backward-compat with
+  # existing customer-values.yaml files that set sanitizer.l3Required.
+  # l3Required: false
   # TOB-003 fix (2026-05-09): default "sequential" — Pro/Enterprise overlays
   # MUST explicitly set "ensemble" to opt into L3 reversal path.
   llmScanMode: "sequential"

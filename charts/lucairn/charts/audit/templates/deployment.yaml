@@ -24,6 +24,63 @@ spec:
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 30 }}
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
+      {{- if .Values.postgresql.enabled }}
+      initContainers:
+        # Migration-completion gate (rehearsal fix 2026-06-19). The runtime audit
+        # container connects as the restricted `audit_app` role (DATABASE_URL_APP),
+        # but that role does not exist until the 000003_least_privilege_role
+        # migration Job runs CREATE ROLE. Without this gate the audit Deployment
+        # starts before the migration and CrashLoopBackOffs ~3× with
+        # `pq: password authentication failed for user "audit_app"` until the
+        # migration completes, then self-heals — a scary-but-transient
+        # CrashLoopBackOff on a no-shell-access self-hosted deliverable.
+        #
+        # Block startup until an AUTHENTICATED connection as audit_app succeeds
+        # (SELECT 1). A successful auth proves BOTH that postgres is up AND that
+        # the migration created+granted the audit_app role — strictly stronger
+        # than pg_isready (which only proves the server is listening, not that the
+        # app role exists). Mirrors the gateway wait-for-postgres initContainer
+        # pattern (gateway/templates/deployment.yaml). 5 min cap matches the
+        # migrate Job backoff + StatefulSet PVC-bind worst case.
+        - name: wait-for-migration
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for audit migration (audit_app role) to be ready..."
+              for i in $(seq 1 150); do
+                if psql "$DATABASE_URL_APP" -tAc 'SELECT 1' >/dev/null 2>&1; then
+                  echo "audit_app role ready — migration complete."
+                  exit 0
+                fi
+                sleep 2
+              done
+              echo "audit_app role not ready after 5 min — failing initContainer." >&2
+              exit 1
+          env:
+            - name: DATABASE_URL_APP
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Chart.Name }}-credentials
+                  key: DATABASE_URL_APP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.image.repository }}:{{ .Values.image.tag | default .Values.global.imageTag | default .Chart.AppVersion }}"

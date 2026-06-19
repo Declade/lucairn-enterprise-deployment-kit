@@ -217,16 +217,24 @@ spec:
                   name: {{ .Chart.Name }}-config
                   key: QI_ENGINE_ACTION
             # FIX-B (full-stack-test-results-2026-05-29): wire the L3 fail-mode
-            # knob into the sanitizer container. Default "true" = fail-CLOSED
-            # (503 l3_scrubber_unavailable when the L3 deep PII shield is down).
-            # Set sanitizer.l3Required=false to fall back to continue-mode (cert
-            # honestly downgraded to PARTIAL). Without this env the operator
-            # could not select continue-mode on a stock install (blocked G1c).
-            # NOTE: use hasKey, NOT `| default true` — Sprig's `default` treats
-            # the boolean `false` as empty and would clobber an explicit
-            # l3Required=false back to true. hasKey honors an explicit false.
+            # knob into the sanitizer container. "true" = fail-CLOSED
+            # (503 l3_scrubber_unavailable when the L3 deep PII shield is down);
+            # "false" = continue-mode (cert honestly downgraded to PARTIAL).
+            #
+            # SINGLE SOURCE OF TRUTH (rehearsal fix 2026-06-19): this env MUST
+            # equal the veil-witness LUCAIRN_L3_REQUIRED or the witness downgrades
+            # every cert to COMPLETENESS_PARTIAL (verifier.go:170-172,503). The
+            # witness configmap reads the SAME resolution. Order:
+            #   1. explicit per-subchart sanitizer.l3Required (backward-compat
+            #      for existing customer-values.yaml — hasKey honors an explicit
+            #      false; Sprig's `default` would clobber false back to true);
+            #   2. else global.l3Required (default false — the one knob both
+            #      the sanitizer and the witness consume);
+            #   3. else "true" (original safe fail-closed fallback).
+            # Stock install: sanitizer.l3Required is unset ⇒ reads global.l3Required
+            # (false) ⇒ "false" here AND "false" on the witness ⇒ they agree.
             - name: LUCAIRN_L3_REQUIRED
-              value: {{ if hasKey .Values.sanitizer "l3Required" }}{{ .Values.sanitizer.l3Required | quote }}{{ else }}{{ "true" | quote }}{{ end }}
+              value: {{ if hasKey .Values.sanitizer "l3Required" }}{{ .Values.sanitizer.l3Required | quote }}{{ else if hasKey .Values.global "l3Required" }}{{ .Values.global.l3Required | quote }}{{ else }}{{ "true" | quote }}{{ end }}
             # Phase 7 ML sidecar wiring (PR #240 production-path follow-up).
             # Sanitizer's pii_ml_client.py reads LUCAIRN_PII_ML_ADDR at boot
             # and dials this on every Phase 7 scan. Default resolves to the

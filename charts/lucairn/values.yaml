@@ -44,6 +44,30 @@ global:
   ingestEgressEnabled: false
   ollamaEnabled: true
   demoEnabled: false
+  # L3 deep-PII-shield required flag — SINGLE SOURCE OF TRUTH for BOTH the
+  # sanitizer (sandbox-a) AND the veil-witness. The witness binary reads
+  # LUCAIRN_L3_REQUIRED (services/veil-witness/internal/verifier/verifier.go:171)
+  # and "mirrors config.l3_required() in the sanitizer so the two sides agree"
+  # (verifier.go:170). When the two sides DISAGREE — witness L3-required=true but
+  # the sanitizer skips the L3 `llm_pii_scan` layer because L3 is off — the
+  # witness downgrades every cert to COMPLETENESS_PARTIAL (verifier.go:503).
+  #
+  # The kit ships L3 OFF (no GPU ollama-identity sidecar — sandbox-a/values.yaml
+  # llmScanEnabled=false). Before this knob existed the witness subchart wired
+  # LUCAIRN_L3_REQUIRED NOWHERE → the witness defaulted to L3-required=true while
+  # the sanitizer skipped L3 → every fresh install's certs silently downgraded to
+  # PARTIAL (Helm-AKS rehearsal had to hand-patch the witness configmap to get
+  # FULL). This single global makes flipping L3 ONE value both sides consume.
+  #
+  # Default false ⇒ LUCAIRN_L3_REQUIRED="false" on BOTH the sanitizer container
+  # AND the witness pod (they agree → COMPLETENESS_FULL with L3 absent).
+  # Enterprise operators who enable the GPU L3 shield
+  # (sandbox-a sanitizer.llmScanEnabled=true) set this true so BOTH sides require
+  # L3 (fail-closed sanitizer + the witness demanding the L3 layer). The
+  # per-subchart sanitizer.l3Required override (sandbox-a/values.yaml) is still
+  # honored for backward-compat with existing customer-values.yaml files; absent
+  # an explicit per-subchart value, both sides read this global.
+  l3Required: false
   # Node pool isolation: when true, Sandbox A and Sandbox B are scheduled
   # on separate node pools (dsa.io/zone=identity vs dsa.io/zone=ai) with
   # hard anti-affinity. Requires labeled + tainted nodes (managed-K8s
