@@ -4,6 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || printf 'unknown')"
 
+# Version-awareness (selfhosted-update-advisory-infra). `check-updates` fetches +
+# cosign-verifies this public feed; `doctor`'s freshness check reads RELEASE_DATE
+# with ZERO network. The feed URL is overridable for internal mirrors / testing.
+LUCAIRN_FEED_URL_DEFAULT="https://lucairn.eu/.well-known/version-feed.json"
+LUCAIRN_STALENESS_DAYS="${LUCAIRN_STALENESS_DAYS:-90}"
+
 usage() {
   cat <<'USAGE'
 Usage:
@@ -21,6 +27,7 @@ Usage:
 
   lucairn verify-images [--registry REG] [--tag TAG] [--dashboard-tag TAG] [--key PATH] [--no-dashboard]
   lucairn sbom <image-ref> [--key PATH] [--registry REG] [--download PATH]
+  lucairn check-updates [--offline] [--feed-url URL]
 
 Commands:
   doctor          Validate customer deployment prerequisites.
@@ -51,6 +58,11 @@ Commands:
   sbom            Fetch + verify the cosign-signed SPDX SBOM attestation for a
                   published Lucairn image and summarize it (package count, SPDX
                   version). --download writes the raw SBOM. Requires `cosign`.
+  check-updates   Opt-in online check: fetch + cosign-verify the public version
+                  feed, then report current vs latest / minimum-secure. Sends
+                  nothing identifying (a plain GET, no credentials). FAILS CLOSED
+                  on a bad/missing signature (never reports "up to date"
+                  unverified). --offline exits cleanly. Requires cosign + curl + jq.
 USAGE
 }
 
@@ -4554,6 +4566,10 @@ doctor() {
   echo "env file: ok ($env_file)"
   echo "compose file: ok ($compose_file)"
 
+  # Zero-network, WARN-only kit-freshness signal (never fails the install; air-
+  # gapped doctor still passes). For the online specifics, run check-updates.
+  doctor_staleness
+
   if require_env_values "$env_file"; then
     echo "required secrets: ok"
   else
@@ -6185,10 +6201,185 @@ license_command() {
   esac
 }
 
+# ---------------------------------------------------------------------------
+# Version awareness (selfhosted-update-advisory-infra)
+# ---------------------------------------------------------------------------
+
+# ver_lt A B -> success (0) iff SemVer A < B (numeric major.minor.patch; any
+# -suffix is ignored). Portable — no `sort -V` (which is missing on some hosts).
+ver_lt() {
+  local a="${1%%-*}" b="${2%%-*}" lo
+  [ "$a" = "$b" ] && return 1
+  lo="$(printf '%s\n%s\n' "$a" "$b" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)"
+  [ "$lo" = "$a" ]
+}
+
+# days_since YYYY-MM-DD -> integer days from that date to today (UTC); empty if
+# no usable `date` (so callers degrade gracefully). Portable across GNU + BSD date.
+days_since() {
+  local d="$1" epoch now
+  epoch="$(date -u -d "$d" +%s 2>/dev/null)" \
+    || epoch="$(date -u -j -f '%Y-%m-%d' "$d" +%s 2>/dev/null)" \
+    || { printf ''; return 0; }
+  now="$(date -u +%s)"
+  printf '%s' $(( (now - epoch) / 86400 ))
+}
+
+# doctor_staleness: ZERO-NETWORK, WARN-only freshness check. Never fails the
+# install and never returns non-zero — an air-gapped `doctor` still passes. Reads
+# only the kit-bundled RELEASE_DATE; warns when the kit is older than
+# LUCAIRN_STALENESS_DAYS so the operator knows to check for security releases.
+doctor_staleness() {
+  local rd days
+  if [ ! -f "$ROOT/RELEASE_DATE" ]; then
+    echo "kit freshness: skipped (no RELEASE_DATE bundled)"
+    return 0
+  fi
+  rd="$(tr -d '[:space:]' < "$ROOT/RELEASE_DATE")"
+  if ! printf '%s' "$rd" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+    echo "kit freshness: skipped (RELEASE_DATE not YYYY-MM-DD: $rd)"
+    return 0
+  fi
+  days="$(days_since "$rd")"
+  if [ -z "$days" ]; then
+    echo "kit freshness: skipped (no usable 'date' to compute age; released $rd)"
+    return 0
+  fi
+  if [ "$days" -lt 0 ]; then
+    echo "kit freshness: warn (RELEASE_DATE $rd is in the future — possible clock skew or a tampered date; run 'bin/lucairn check-updates' to confirm the latest version)"
+    return 0
+  fi
+  if [ "$days" -gt "$LUCAIRN_STALENESS_DAYS" ]; then
+    echo "kit freshness: warn (this kit is ${days} days old — released ${rd}, threshold ${LUCAIRN_STALENESS_DAYS}d)"
+    echo "  Check https://lucairn.eu/security for advisories, and run 'bin/lucairn check-updates' for the latest + minimum-secure version."
+  else
+    echo "kit freshness: ok (released ${rd}, ${days} days ago)"
+  fi
+  return 0
+}
+
+# check_updates: OPT-IN online version check. Fetches the cosign-signed public
+# version feed and reports current vs latest / minimum-secure. It sends NOTHING
+# identifying — a plain GET, no query params, no credentials, no body — so nothing
+# about this deployment leaves the host. It FAILS CLOSED: on any fetch/verify
+# error it reports the error and exits non-zero; it NEVER claims "up to date" on a
+# missing or invalid signature, so a network attacker cannot suppress a security
+# upgrade. `--offline` exits cleanly (0) without erroring the install.
+check_updates() {
+  local offline=0 feed_url="${LUCAIRN_FEED_URL:-$LUCAIRN_FEED_URL_DEFAULT}"
+  local key="$ROOT/keys/lucairn-cosign.pub"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --offline) offline=1; shift ;;
+      --feed-url) [ "$#" -ge 2 ] || fail "check-updates: --feed-url needs a URL"; feed_url="$2"; shift 2 ;;
+      -h|--help) usage; return 0 ;;
+      *) fail "unknown check-updates argument: $1 (want: --offline | --feed-url URL)" ;;
+    esac
+  done
+
+  local current="$VERSION"
+
+  if [ "$offline" -eq 1 ]; then
+    echo "check-updates: offline — skipped (current kit $current)."
+    echo "  Run online to check, or see https://lucairn.eu/security for advisories."
+    return 0
+  fi
+
+  # Fail-closed prerequisites: without these the feed cannot be VERIFIED, so we
+  # must not proceed to report a status. (These run before any temp dir.)
+  have curl   || fail "check-updates: 'curl' not found on PATH (needed to fetch the signed feed)."
+  have cosign || fail "check-updates: 'cosign' not found on PATH — cannot verify the feed signature; refusing to report status. Install it (verify its checksum — see OPS.md), then re-run."
+  have jq     || fail "check-updates: 'jq' not found on PATH (needed to parse the feed)."
+  [ -f "$key" ] || fail "check-updates: verification key not found at '$key' (the kit ships keys/lucairn-cosign.pub)."
+
+  local tmp rc=0
+  tmp="$(mktemp -d)"
+  _check_updates_online "$tmp" "$feed_url" "$key" "$current" || rc=$?
+  rm -rf "$tmp"
+  return "$rc"
+}
+
+# _check_updates_online: the fetch -> cosign-verify -> parse -> report body, split
+# from check_updates so its temp dir is cleaned on every return path without a
+# RETURN trap (a RETURN trap leaks: it would also fire for the caller's return,
+# where the temp-dir local is unbound under set -u).
+_check_updates_online() {
+  local tmp="$1" feed_url="$2" key="$3" current="$4"
+
+  # Pure GET — no query params, no credentials. Nothing about this deployment is sent.
+  if ! curl -sSfL --max-time 20 "$feed_url" -o "$tmp/feed.json"; then
+    echo "check-updates: could not fetch the version feed from $feed_url (offline? use --offline). Not reporting status." >&2
+    return 1
+  fi
+  if ! curl -sSfL --max-time 20 "${feed_url}.sig" -o "$tmp/feed.json.sig"; then
+    echo "check-updates: could not fetch the feed signature (${feed_url}.sig). Refusing to report status without a verifiable signature." >&2
+    return 1
+  fi
+
+  # FAIL CLOSED: a bad/missing signature must never read as "up to date".
+  # Key-only verification — the bundled Lucairn public key IS the trust anchor; a
+  # feed not signed by the matching private key fails closed. We deliberately do
+  # NOT also require the Rekor transparency log here (--insecure-ignore-tlog):
+  # that would add a second network dependency (rekor.sigstore.dev) to an opt-in
+  # check on often-locked-down enterprise egress, without addressing the threat
+  # this guards — a MITM forging "you're up to date", which is impossible without
+  # the private key. The feed is still Rekor-logged at signing time
+  # (scripts/release-kit.sh) for anyone who wants to cross-check transparency.
+  if ! cosign verify-blob --key "$key" --insecure-ignore-tlog=true --signature "$tmp/feed.json.sig" "$tmp/feed.json" >/dev/null 2>&1; then
+    echo "check-updates: the version feed FAILED signature verification against keys/lucairn-cosign.pub — refusing to report status. This usually means tampering or a stale signature; it can also be a cosign major-version mismatch (the feed is signed with cosign v2.x). Verify https://lucairn.eu/security manually." >&2
+    return 1
+  fi
+  if ! jq -e . "$tmp/feed.json" >/dev/null 2>&1; then
+    echo "check-updates: the verified feed is not valid JSON — refusing to report status." >&2
+    return 1
+  fi
+
+  local latest latest_img latest_tag released security min_secure adv_count
+  latest="$(jq -r '.latest.kit_version // empty' "$tmp/feed.json")"
+  latest_img="$(jq -r '.latest.image_tag // empty' "$tmp/feed.json")"
+  latest_tag="$(jq -r '.latest.tag // empty' "$tmp/feed.json")"
+  released="$(jq -r '.latest.released // empty' "$tmp/feed.json")"
+  security="$(jq -r '.latest.security // false' "$tmp/feed.json")"
+  min_secure="$(jq -r '.minimum_secure.kit_version // empty' "$tmp/feed.json")"
+  adv_count="$(jq -r 'if (.advisories | type) == "array" then (.advisories | length) else 0 end' "$tmp/feed.json" 2>/dev/null || printf 0)"
+  if [ -z "$latest" ]; then
+    echo "check-updates: the verified feed is missing latest.kit_version — refusing to report status." >&2
+    return 1
+  fi
+
+  echo "check-updates: feed verified (cosign OK)."
+  echo "  current:        $current"
+  echo "  latest:         $latest${latest_img:+ (image $latest_img)}${latest_tag:+ [$latest_tag]}${released:+, released $released}"
+  echo "  minimum secure: ${min_secure:-unknown}"
+
+  # Security floor first — being below minimum_secure is the loud case.
+  if [ -n "$min_secure" ] && ver_lt "$current" "$min_secure"; then
+    echo "  SECURITY: your kit ($current) is BELOW the minimum-secure version ($min_secure). Upgrade promptly."
+    if [ "${adv_count:-0}" -gt 0 ]; then
+      echo "  open advisories:"
+      jq -r '.advisories[] | "    - \(.id) [\(.severity)] fixed in \(.fixed_in): \(.summary) (\(.url))"' "$tmp/feed.json"
+    fi
+    echo "  Upgrade: set LUCAIRN_IMAGE_TAG to ${latest_img:-the latest image} and follow OPS.md § Upgrade."
+    return 0
+  fi
+
+  if [ "$current" = "$latest" ]; then
+    echo "  status: up to date."
+  elif ver_lt "$current" "$latest"; then
+    local sec_note=""; [ "$security" = "true" ] && sec_note=" (security release)"
+    echo "  status: UPDATE AVAILABLE -> $latest${sec_note}."
+    echo "  Upgrade: set LUCAIRN_IMAGE_TAG to ${latest_img:-the latest image} and follow OPS.md § Upgrade."
+  else
+    echo "  status: ahead of the published feed ($current > $latest) — likely a pre-release build."
+  fi
+  return 0
+}
+
 main() {
   local cmd="${1:-}"
   case "$cmd" in
     doctor) shift; doctor "$@" ;;
+    check-updates) shift; check_updates "$@" ;;
     support-bundle) shift; support_bundle "$@" ;;
     bundle) shift; bundle_command "$@" ;;
     backup) shift; backup "$@" ;;
