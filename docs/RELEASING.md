@@ -1,8 +1,73 @@
 # Releasing the Lucairn Enterprise Deployment Kit
 
-This doc covers the **image-publish path** for the kit. It does NOT cover
-release packaging (see `scripts/package-release.sh` + `make package`) or
-customer-bundle assembly (see `bin/lucairn bundle prepare` + `docs/CUSTOMER_BUNDLE.md`).
+This doc covers two release paths:
+
+1. **Kit distribution release** — the customer-facing kit: a clean `vX.Y.Z` tag,
+   a cosign-signed tarball + Helm chart, a GitHub Release, and the signed version
+   feed. See [§ Kit distribution release](#kit-distribution-release) below.
+2. **Image-publish path** — republishing the `lucairn-dashboard` image (and, in
+   `dual-sandbox-architecture`, the `dsa-*` images). See [§ When to publish a new
+   image](#when-to-publish-a-new-image) onward.
+
+Customer-bundle assembly is separate: `bin/lucairn bundle prepare` +
+`docs/CUSTOMER_BUNDLE.md`.
+
+## Kit distribution release
+
+A kit release gives a self-hosted customer a canonical, signed download and a
+machine-readable signal that it exists. It is cut with **`scripts/release-kit.sh`**
+(or `make release-kit`). The script is **dry-run by default**: it builds and
+cosign-signs the artifacts into `dist/` but does **not** tag, push, or create a
+GitHub Release until you pass `--publish`.
+
+### Prerequisites
+
+- `cosign`, `helm`, `jq`, `git`, `tar` on `PATH`; `gh` (authenticated) for `--publish`.
+- `COSIGN_KEY` pointing at the Lucairn cosign **private** key (on the release
+  host at `/home/deploy/.lucairn-cosign/`). It is the private half of
+  `keys/lucairn-cosign.pub` — the **same key that signs the `dsa-*` images**, so
+  no new trust root. If the key is encrypted, export `COSIGN_PASSWORD` (or
+  `COSIGN_PASSWORD_FILE`) the way the image-signing ceremony does. The private
+  key never lives in this repo.
+
+### Steps
+
+1. **Bump the version identity together** (the [equality checklist](#pre-release-equality-checklist)
+   must pass): `VERSION`, `README.md` "Target release", `image-manifest.yaml`
+   `kit_version`, `charts/lucairn/Chart.yaml` `version` — and **`RELEASE_DATE`**
+   (the kit-bundled release date, `YYYY-MM-DD`, read by `bin/lucairn doctor`'s
+   staleness check and emitted as the feed's `latest.released`). Commit the bump.
+2. **Curate the feed source** `release/version-feed.source.json` if this release
+   changes the security floor (`minimum_secure`) or publishes an advisory
+   (prepend to `advisories[]`). Keep it in lockstep with the published advisory
+   on <https://lucairn.eu/security>.
+3. **Dry-run** to build + sign + self-verify everything:
+   ```bash
+   COSIGN_KEY=/home/deploy/.lucairn-cosign/cosign.key make release-kit
+   # for a security release, add: RELEASE_ARGS="--security --advisory-url https://lucairn.eu/security#LUCAIRN-YYYY-NNN"
+   ```
+   This writes to `dist/`: the tarball + `.sig`, the chart `.tgz` + `.sig`,
+   `version-feed.json` + `.sig`, and the release notes (from `CHANGELOG.md`).
+   Every signature is self-verified against `keys/lucairn-cosign.pub`.
+4. **Publish** (creates + pushes the `vX.Y.Z` tag and the GitHub Release with all
+   signed assets + notes):
+   ```bash
+   COSIGN_KEY=/home/deploy/.lucairn-cosign/cosign.key make release-kit PUBLISH=1
+   ```
+   Refuses to run if the working tree is dirty or the tag already exists.
+5. **Update the public feed**: copy `dist/version-feed.json` + `dist/version-feed.json.sig`
+   into `lucairn-website/public/.well-known/`, commit, and deploy the site
+   (`ssh deploy@<host> /opt/bin/deploy-website.sh`). The customer's
+   `bin/lucairn check-updates` (ships in a later kit version) fetches and
+   cosign-verifies this feed; it fails closed — it never reports "up to date" on
+   a missing/invalid signature.
+
+### Tag scheme
+
+Clean SemVer `vX.Y.Z` matching `VERSION` (e.g. `v1.9.4`) — no suffixes. (Older
+suffixed tags such as `v1.6.0-stage-3-rebrand` and the `*-dashboard` tags predate
+this scheme.) The Rekor transparency log is used by default, matching the
+image-signing ceremony; `--no-tlog` is offline/test only.
 
 ## When to publish a new image
 
@@ -231,6 +296,12 @@ DASH_IMG=$(grep -A2 'lucairn-dashboard:' image-manifest.yaml | grep image_tag | 
 DASH_APP=$(grep -E '^appVersion:' charts/lucairn/charts/dashboard/Chart.yaml | sed -E 's/.*"(.*)".*/\1/')
 echo "dashboard image=$DASH_IMG  appVersion=$DASH_APP"
 [ "$DASH_IMG" = "$DASH_APP" ] && echo "dashboard-version OK" || { echo "dashboard-version MISMATCH"; exit 1; }
+
+# RELEASE_DATE must be this release's date (read by `bin/lucairn doctor`
+# staleness + emitted as the version feed's latest.released). Bump it with VERSION.
+echo "RELEASE_DATE=$(cat RELEASE_DATE)"
+grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' RELEASE_DATE \
+  && echo "release-date OK" || { echo "RELEASE_DATE missing/malformed (want YYYY-MM-DD)"; exit 1; }
 ```
 
 After bumping the dashboard sub-chart version, regenerate the umbrella
@@ -249,9 +320,5 @@ helm dependency update charts/lucairn
 - `scripts/verify-multiarch-manifests.sh` — the platform verifier, vendored
   from `dual-sandbox-architecture/scripts/`. Stays byte-identical on the
   platform-checking core so the two release paths converge.
-- `dual-sandbox-architecture/Makefile` — `release-multiarch` target. The
-  precedent pattern.
-- `Opus Advisor/specs/sim5-compose-x86-2026-05-25.md` — Sim 5 § Gap #3 (the
-  original blocker this target closes).
-- `Opus Advisor/specs/sim4-enterprise-end-to-end-2026-05-25.md` — Sim 4 § Gap
-  5 (the original dsa-* arm64-only blocker; closed by PR #196).
+- `dual-sandbox-architecture/Makefile` — `release-multiarch` target (the
+  precedent pattern for the multi-arch image publish).
