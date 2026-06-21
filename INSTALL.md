@@ -4,6 +4,10 @@ Goal: a competent platform engineer should complete a standard install in about 
 
 ## Release notes
 
+> The canonical changelog is [`CHANGELOG.md`](CHANGELOG.md). Security advisories
+> are published at <https://lucairn.eu/security>; the disclosure process and
+> contact are in [`SECURITY.md`](SECURITY.md).
+
 ### v0.5.4 / chart 1.9.4 (2026-06-19) — per-key MCP tool-scope enforcement + B2 website tool_allowlist
 
 **Upgrade from v0.5.3:** pull the new images (`LUCAIRN_IMAGE_TAG=0.5.4` in
@@ -51,7 +55,8 @@ Rekor-logged at `0.5.3` (`bin/lucairn verify-images --tag 0.5.3` → 13/13).
   with the Ed25519 public key baked into `PinnedPublicKeyHex` via `-ldflags -X`).
 
 - **S1–S6 security remediations:** six security-audit findings remediated across
-  the `dsa-*` service images (see the Lucairn security advisory for full detail).
+  the `dsa-*` service images (see the [Lucairn security advisories](https://lucairn.eu/security)
+  and [`SECURITY.md`](SECURITY.md) for full detail).
 
 ### v0.5.2 / chart 1.9.2 (2026-06-15) — A6 LOCATION stop-list + turnkey sign-manifest
 

@@ -19,6 +19,8 @@ This repository contains the customer-installable Lucairn deployment kit for fir
 - `bin/lucairn-mint-customer` - mints first customer + `lcr_live_*` API key against a running gateway.
 - `migrations/`, `config/`, `starter-templates/` - runtime assets needed by the Compose path.
 - `INSTALL.md`, `OPS.md`, `TROUBLESHOOTING.md` - day-1 and day-2 runbooks.
+- `CHANGELOG.md` - per-release notes (kit version ↔ image tag).
+- `SECURITY.md` - how to report a vulnerability + where security advisories are published.
 - `docs/` - enterprise support, SDK, mirror, clean-host rehearsal, customer bundle, handoff gates, DPA, and vendor-assisted install notes.
 
 ## Fast Path
