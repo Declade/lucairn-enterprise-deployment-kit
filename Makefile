@@ -1,4 +1,4 @@
-.PHONY: test package customer-bundle clean \
+.PHONY: test package release-kit customer-bundle clean \
         dashboard-buildx-bootstrap dashboard-multiarch-build \
         dashboard-multiarch-promote-aliases \
         dashboard-verify-manifests
@@ -11,6 +11,12 @@ test:
 
 package:
 	bash scripts/package-release.sh
+
+# Cut a kit release: build + cosign-sign the tarball/chart/feed, then (with
+# PUBLISH=1) tag + create the GitHub Release. Dry-run by default. See
+# docs/RELEASING.md § "Kit distribution release". Requires COSIGN_KEY.
+release-kit:
+	bash scripts/release-kit.sh $(if $(filter 1,$(PUBLISH)),--publish,) $(RELEASE_ARGS)
 
 customer-bundle:
 	@test -n "$(CUSTOMER_SLUG)" || (echo "CUSTOMER_SLUG is required" >&2; exit 1)

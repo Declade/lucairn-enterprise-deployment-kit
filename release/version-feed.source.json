@@ -1,0 +1,17 @@
+{
+  "_comment": "Human-curated source for the public version feed. scripts/release-kit.sh injects schema/generated/latest from VERSION + image-manifest.yaml + RELEASE_DATE and merges the two fields below. Edit minimum_secure when a security release raises the floor; prepend a new advisory to advisories[] when one is published. The generated, signed dist/version-feed.json + .sig are deployed to lucairn-website/public/.well-known/.",
+  "minimum_secure": {
+    "kit_version": "1.9.3",
+    "image_tag": "0.5.3"
+  },
+  "advisories": [
+    {
+      "id": "LUCAIRN-2026-001",
+      "severity": "high",
+      "fixed_in": "1.9.3",
+      "image_fixed_in": "0.5.3",
+      "summary": "Security remediations across the dsa-* service images (S1-S6).",
+      "url": "https://lucairn.eu/security#LUCAIRN-2026-001"
+    }
+  ]
+}
