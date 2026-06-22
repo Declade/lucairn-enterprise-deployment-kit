@@ -60,6 +60,20 @@ check_ver_lt "1.0.0-1"   "1.0.0-alpha" true   # numeric ident < alphanumeric
 check_ver_lt "1.0.0+a"   "1.0.0+b"     false  # build metadata: equal precedence
 check_ver_lt "1.0.0-rc1+x" "1.0.0"    true    # +build stripped, then -pre < rel
 
+# Codex r2 MEDIUM x2 — crash/overflow safety of the numeric comparisons. Each of
+# these previously fed an empty/non-numeric/overflowing operand to `[ -lt ]`/`-gt`,
+# which errors ("integer expression expected" / "number truncated after N digits")
+# under `set -e` on bash 3.2. The fix routes both compares through _num_lt, which
+# normalizes + length-compares instead. The asserts below (a) confirm NO crash —
+# the harness runs under `set -euo pipefail`, so any non-zero from `[` would abort
+# — and (b) pin a defined boolean result.
+check_ver_lt "1.0.0-alpha..1" "1.0.0"            true    # empty prerelease id: no crash
+check_ver_lt "1.0.0"          "1.0.0-alpha..1"   false   # symmetric: no crash
+check_ver_lt "1.0.0"   "99999999999999999999.0.0" true   # overflowing component: no overflow
+check_ver_lt "99999999999999999999.0.0" "1.0.0"  false   # symmetric: no overflow
+check_ver_lt "007.0.0" "7.0.0"          false   # leading zeros normalized (007 == 7)
+check_ver_lt "1.0.0"   "1.0.10"         true    # length-compare path (9 vs 10)
+
 echo "ver_lt unit tests: ok"
 
 # --- Behavioral: check-updates takes the SECURITY branch for a below-min ------
