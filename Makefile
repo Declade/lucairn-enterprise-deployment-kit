@@ -5,6 +5,7 @@
 
 test:
 	bash tests/test_lucairn_cli.sh
+	bash tests/test_check_updates.sh
 	bash tests/test_redact_stream.sh
 	bash tests/test_tms_trust_zones.sh
 	bash tests/static_checks.sh

@@ -6205,13 +6205,71 @@ license_command() {
 # Version awareness (selfhosted-update-advisory-infra)
 # ---------------------------------------------------------------------------
 
-# ver_lt A B -> success (0) iff SemVer A < B (numeric major.minor.patch; any
-# -suffix is ignored). Portable — no `sort -V` (which is missing on some hosts).
+# ver_lt A B -> success (0) iff SemVer A < B. Compares the numeric
+# major.minor.patch core per-component (so 0.10.0 > 0.9.0, not a lexical compare),
+# then applies SemVer prerelease precedence on an equal core: a version WITH a
+# -prerelease ranks BELOW the same core WITHOUT one (1.0.0-rc1 < 1.0.0). Build
+# metadata (+meta) is NOT part of precedence and is stripped first. Portable —
+# no `sort -V` (missing on some hosts), POSIX-shell arithmetic only.
+#
+# _ver_pre_lt PRE_A PRE_B -> success (0) iff SemVer prerelease A < B. Both args
+# are the dot-separated prerelease identifiers (never empty here). Per SemVer:
+# numeric identifiers compare numerically, alphanumeric lexically (ASCII), numeric
+# < alphanumeric, and a shorter set of identifiers (a prefix) is lower.
+_ver_pre_lt() {
+  local a="$1" b="$2" ai bi
+  while [ -n "$a" ] || [ -n "$b" ]; do
+    # A ran out of identifiers first (a prefix of B) -> A < B.
+    [ -z "$a" ] && return 0
+    # B ran out first (a prefix of A) -> A is NOT < B.
+    [ -z "$b" ] && return 1
+    ai="${a%%.*}"; bi="${b%%.*}"
+    if [ "$ai" != "$bi" ]; then
+      case "$ai" in *[!0-9]*) local a_num=0 ;; *) local a_num=1 ;; esac
+      case "$bi" in *[!0-9]*) local b_num=0 ;; *) local b_num=1 ;; esac
+      if [ "$a_num" -eq 1 ] && [ "$b_num" -eq 1 ]; then
+        [ "$ai" -lt "$bi" ] && return 0 || return 1   # both numeric
+      elif [ "$a_num" -eq 1 ]; then
+        return 0   # numeric identifier always lower than alphanumeric
+      elif [ "$b_num" -eq 1 ]; then
+        return 1
+      else
+        [ "$ai" \< "$bi" ] && return 0 || return 1    # both alphanumeric, lexical
+      fi
+    fi
+    # Identifiers equal — advance both. Strip the leading identifier + its dot;
+    # if there was no dot, the remainder is empty.
+    case "$a" in *.*) a="${a#*.}" ;; *) a="" ;; esac
+    case "$b" in *.*) b="${b#*.}" ;; *) b="" ;; esac
+  done
+  return 1   # identical prerelease strings -> not less
+}
+
 ver_lt() {
-  local a="${1%%-*}" b="${2%%-*}" lo
-  [ "$a" = "$b" ] && return 1
-  lo="$(printf '%s\n%s\n' "$a" "$b" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)"
-  [ "$lo" = "$a" ]
+  # Strip +build metadata (not part of precedence), then split into core / -pre.
+  local a="${1%%+*}" b="${2%%+*}"
+  local a_core="${a%%-*}" b_core="${b%%-*}"
+  local a_pre="" b_pre=""
+  case "$a" in *-*) a_pre="${a#*-}" ;; esac
+  case "$b" in *-*) b_pre="${b#*-}" ;; esac
+
+  # Compare the numeric core per component (major, minor, patch). Missing
+  # components default to 0 so "1.0" and "1.0.0" compare equal.
+  local i av bv
+  for i in 1 2 3; do
+    av="$(printf '%s' "$a_core" | cut -d. -f"$i")"; av="${av:-0}"
+    bv="$(printf '%s' "$b_core" | cut -d. -f"$i")"; bv="${bv:-0}"
+    case "$av" in *[!0-9]*) av=0 ;; esac
+    case "$bv" in *[!0-9]*) bv=0 ;; esac
+    if [ "$av" -lt "$bv" ]; then return 0; fi
+    if [ "$av" -gt "$bv" ]; then return 1; fi
+  done
+
+  # Cores equal — apply prerelease precedence.
+  if [ -n "$a_pre" ] && [ -z "$b_pre" ]; then return 0; fi   # 1.0.0-rc1 < 1.0.0
+  if [ -z "$a_pre" ] && [ -n "$b_pre" ]; then return 1; fi   # 1.0.0 > 1.0.0-rc1
+  if [ -z "$a_pre" ] && [ -z "$b_pre" ]; then return 1; fi   # equal releases
+  _ver_pre_lt "$a_pre" "$b_pre"                              # both prerelease
 }
 
 # days_since YYYY-MM-DD -> integer days from that date to today (UTC); empty if
