@@ -6212,10 +6212,38 @@ license_command() {
 # metadata (+meta) is NOT part of precedence and is stripped first. Portable —
 # no `sort -V` (missing on some hosts), POSIX-shell arithmetic only.
 #
+# _num_lt A B -> success (0) iff the decimal integer A < B. Deliberately AVOIDS
+# `[ -lt ]`/`-gt`, which fail under `set -e` on (a) a non-numeric/empty operand
+# ("integer expression expected") and (b) a value wider than the shell's signed
+# int ("number truncated after N digits" + a wrong result). Instead: normalize a
+# non-digit/empty operand to "0", strip leading zeros, then compare by digit
+# LENGTH first (longer digit string = larger number — overflow-proof for any
+# width) and lexically only on a length tie. Pure POSIX string ops; bash-3.2-safe.
+_num_lt() {
+  local a="$1" b="$2"
+  # Normalize: empty or any non-digit -> "0" (never reaches `[ -lt ]`).
+  case "$a" in ''|*[!0-9]*) a=0 ;; esac
+  case "$b" in ''|*[!0-9]*) b=0 ;; esac
+  # Strip leading zeros so "007" == "7" (but keep a lone "0").
+  while [ "${#a}" -gt 1 ]; do case "$a" in 0*) a="${a#0}" ;; *) break ;; esac; done
+  while [ "${#b}" -gt 1 ]; do case "$b" in 0*) b="${b#0}" ;; *) break ;; esac; done
+  # Longer digit string is the larger number (no shell-int overflow).
+  if [ "${#a}" -ne "${#b}" ]; then
+    [ "${#a}" -lt "${#b}" ] && return 0 || return 1
+  fi
+  # Equal length: a plain ASCII string compare is a correct numeric compare.
+  # shellcheck disable=SC2071  # \< is INTENTIONAL — string compare on equal-length
+  # zero-stripped digit strings sorts identically to numbers WITHOUT the overflow
+  # `-lt` would hit; the whole point of this helper is to avoid `[ -lt ]` here.
+  [ "$a" \< "$b" ] && return 0 || return 1
+}
+
 # _ver_pre_lt PRE_A PRE_B -> success (0) iff SemVer prerelease A < B. Both args
 # are the dot-separated prerelease identifiers (never empty here). Per SemVer:
 # numeric identifiers compare numerically, alphanumeric lexically (ASCII), numeric
-# < alphanumeric, and a shorter set of identifiers (a prefix) is lower.
+# < alphanumeric, and a shorter set of identifiers (a prefix) is lower. An EMPTY
+# identifier (e.g. the gap in "alpha..1") is invalid SemVer — we classify it as
+# non-numeric so it compares lexically (empty sorts first) without crashing.
 _ver_pre_lt() {
   local a="$1" b="$2" ai bi
   while [ -n "$a" ] || [ -n "$b" ]; do
@@ -6225,10 +6253,11 @@ _ver_pre_lt() {
     [ -z "$b" ] && return 1
     ai="${a%%.*}"; bi="${b%%.*}"
     if [ "$ai" != "$bi" ]; then
-      case "$ai" in *[!0-9]*) local a_num=0 ;; *) local a_num=1 ;; esac
-      case "$bi" in *[!0-9]*) local b_num=0 ;; *) local b_num=1 ;; esac
+      # An EMPTY identifier is invalid SemVer -> treat as non-numeric (lexical).
+      case "$ai" in ''|*[!0-9]*) local a_num=0 ;; *) local a_num=1 ;; esac
+      case "$bi" in ''|*[!0-9]*) local b_num=0 ;; *) local b_num=1 ;; esac
       if [ "$a_num" -eq 1 ] && [ "$b_num" -eq 1 ]; then
-        [ "$ai" -lt "$bi" ] && return 0 || return 1   # both numeric
+        _num_lt "$ai" "$bi" && return 0 || return 1   # both numeric (overflow-safe)
       elif [ "$a_num" -eq 1 ]; then
         return 0   # numeric identifier always lower than alphanumeric
       elif [ "$b_num" -eq 1 ]; then
@@ -6261,8 +6290,9 @@ ver_lt() {
     bv="$(printf '%s' "$b_core" | cut -d. -f"$i")"; bv="${bv:-0}"
     case "$av" in *[!0-9]*) av=0 ;; esac
     case "$bv" in *[!0-9]*) bv=0 ;; esac
-    if [ "$av" -lt "$bv" ]; then return 0; fi
-    if [ "$av" -gt "$bv" ]; then return 1; fi
+    # Overflow-safe: _num_lt never feeds an arbitrary-width value to `[ -lt ]`.
+    if _num_lt "$av" "$bv"; then return 0; fi
+    if _num_lt "$bv" "$av"; then return 1; fi
   done
 
   # Cores equal — apply prerelease precedence.
