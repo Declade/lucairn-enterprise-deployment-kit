@@ -811,45 +811,75 @@ check_mtls_partial_config_helm() {
   #
   # serverName and mountPath are tuning vars with safe defaults; excluded.
   #
+  # Two supported values-file shapes (INSTALL.md § "Witness mTLS"):
+  #   (a) top-level `witnessMtls:` (direct subchart / customer-values.yaml.example)
+  #   (b) nested `gateway.witnessMtls:` (umbrella-chart install per INSTALL.md)
+  # The awk parser detects the witnessMtls block at any indentation level.
+  #
   # Usage: check_mtls_partial_config_helm <values_file>
   local values_file="$1"
   [ -f "$values_file" ] || return 0   # no values file → Compose path; skip
 
   # awk: extract scalar values from the `witnessMtls:` block.
   # Handles both quoted and unquoted YAML values (strips surrounding quotes).
-  # Stops on the next top-level key (unindented non-comment line).
+  #
+  # Two supported shapes (both documented — see INSTALL.md § "Witness mTLS"):
+  #   (a) Direct subchart / customer-values.yaml.example — top-level:
+  #         witnessMtls:
+  #           clientSecret: "..."
+  #   (b) Umbrella chart install per INSTALL.md — nested under gateway:
+  #         gateway:
+  #           witnessMtls:
+  #             clientSecret: "..."
+  #
+  # The awk detects the `witnessMtls:` line at any indentation level, records
+  # that indentation depth (block_indent), and extracts child fields that are
+  # indented strictly deeper.  Block terminates on any non-comment line whose
+  # leading-space count is <= block_indent.
   local client_secret ca_bundle client_cert client_key
   client_secret="$(awk '
-    /^witnessMtls:/{in_block=1; next}
-    in_block && /^[^[:space:]]/{in_block=0}
-    in_block && /^[[:space:]]+clientSecret:/{
-      sub(/^[[:space:]]+clientSecret:[[:space:]]*/,"")
-      gsub(/^"|"$|^'"'"'|'"'"'$/,"")
-      print; exit}
+    /witnessMtls:/{match($0,/^[[:space:]]*/); block_indent=RLENGTH; in_block=1; next}
+    in_block{
+      match($0,/^[[:space:]]*/); ci=RLENGTH
+      if(/[^[:space:]]/ && ci<=block_indent){in_block=0; next}
+      if(/[[:space:]]clientSecret:[[:space:]]*/){
+        sub(/^[[:space:]]*clientSecret:[[:space:]]*/,"")
+        gsub(/^"|"$|^'"'"'|'"'"'$/,"")
+        print; exit}
+    }
   ' "$values_file")"
   ca_bundle="$(awk '
-    /^witnessMtls:/{in_block=1; next}
-    in_block && /^[^[:space:]]/{in_block=0}
-    in_block && /^[[:space:]]+caBundle:/{
-      sub(/^[[:space:]]+caBundle:[[:space:]]*/,"")
-      gsub(/^"|"$|^'"'"'|'"'"'$/,"")
-      print; exit}
+    /witnessMtls:/{match($0,/^[[:space:]]*/); block_indent=RLENGTH; in_block=1; next}
+    in_block{
+      match($0,/^[[:space:]]*/); ci=RLENGTH
+      if(/[^[:space:]]/ && ci<=block_indent){in_block=0; next}
+      if(/[[:space:]]caBundle:[[:space:]]*/){
+        sub(/^[[:space:]]*caBundle:[[:space:]]*/,"")
+        gsub(/^"|"$|^'"'"'|'"'"'$/,"")
+        print; exit}
+    }
   ' "$values_file")"
   client_cert="$(awk '
-    /^witnessMtls:/{in_block=1; next}
-    in_block && /^[^[:space:]]/{in_block=0}
-    in_block && /^[[:space:]]+clientCert:/{
-      sub(/^[[:space:]]+clientCert:[[:space:]]*/,"")
-      gsub(/^"|"$|^'"'"'|'"'"'$/,"")
-      print; exit}
+    /witnessMtls:/{match($0,/^[[:space:]]*/); block_indent=RLENGTH; in_block=1; next}
+    in_block{
+      match($0,/^[[:space:]]*/); ci=RLENGTH
+      if(/[^[:space:]]/ && ci<=block_indent){in_block=0; next}
+      if(/[[:space:]]clientCert:[[:space:]]*/){
+        sub(/^[[:space:]]*clientCert:[[:space:]]*/,"")
+        gsub(/^"|"$|^'"'"'|'"'"'$/,"")
+        print; exit}
+    }
   ' "$values_file")"
   client_key="$(awk '
-    /^witnessMtls:/{in_block=1; next}
-    in_block && /^[^[:space:]]/{in_block=0}
-    in_block && /^[[:space:]]+clientKey:/{
-      sub(/^[[:space:]]+clientKey:[[:space:]]*/,"")
-      gsub(/^"|"$|^'"'"'|'"'"'$/,"")
-      print; exit}
+    /witnessMtls:/{match($0,/^[[:space:]]*/); block_indent=RLENGTH; in_block=1; next}
+    in_block{
+      match($0,/^[[:space:]]*/); ci=RLENGTH
+      if(/[^[:space:]]/ && ci<=block_indent){in_block=0; next}
+      if(/[[:space:]]clientKey:[[:space:]]*/){
+        sub(/^[[:space:]]*clientKey:[[:space:]]*/,"")
+        gsub(/^"|"$|^'"'"'|'"'"'$/,"")
+        print; exit}
+    }
   ' "$values_file")"
 
   # If clientSecret is empty, mTLS is off — no further checks needed.

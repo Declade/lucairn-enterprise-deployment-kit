@@ -639,6 +639,78 @@ echo "H9-Helm: clientSecret set + clientCert/clientKey empty → FAIL (partial c
 echo "H9 Helm-path witnessMtls partial-config detection: ok"
 
 # ---------------------------------------------------------------------------
+# H9 umbrella-path: witnessMtls nested under gateway: (INSTALL.md documented path).
+#
+# INSTALL.md § "Witness mTLS" documents the umbrella-chart install as:
+#   gateway:
+#     witnessMtls:
+#       clientSecret: gateway-witness-mtls-certs
+# The doctor's check_mtls_partial_config_helm must parse this nested form too.
+# ---------------------------------------------------------------------------
+
+# Case 6: umbrella-path witnessMtls.clientSecret = "" → PASS (mTLS off).
+HELM_UMBL_OFF_VALS="$TMPDIR/helm-mtls-umbrella-off.yaml"
+cat > "$HELM_UMBL_OFF_VALS" <<'YAML'
+gateway:
+  witnessMtls:
+    clientSecret: ""
+    caBundle: "ca.crt"
+    clientCert: "gateway-client.crt"
+    clientKey: "gateway-client.key"
+YAML
+if ! run_doctor_with_values "$TMPDIR/helm-mtls-umbrella-off.out" "$ENV_FILE" "$HELM_UMBL_OFF_VALS"; then
+  echo "FAIL: H9-Helm umbrella clientSecret=empty → doctor should PASS (mTLS off)" >&2
+  cat "$TMPDIR/helm-mtls-umbrella-off.out" >&2
+  exit 1
+fi
+echo "H9-Helm umbrella: clientSecret='' (mTLS off) → PASS: ok"
+
+# Case 7: umbrella-path witnessMtls fully set → PASS (full mesh).
+HELM_UMBL_ALL_VALS="$TMPDIR/helm-mtls-umbrella-all.yaml"
+cat > "$HELM_UMBL_ALL_VALS" <<'YAML'
+gateway:
+  witnessMtls:
+    clientSecret: "gateway-witness-mtls-certs"
+    caBundle: "ca.crt"
+    clientCert: "gateway-client.crt"
+    clientKey: "gateway-client.key"
+    serverName: "witness"
+    mountPath: "/etc/witness-mtls"
+YAML
+if ! run_doctor_with_values "$TMPDIR/helm-mtls-umbrella-all.out" "$ENV_FILE" "$HELM_UMBL_ALL_VALS"; then
+  echo "FAIL: H9-Helm umbrella all fields set → doctor should PASS (full mesh)" >&2
+  cat "$TMPDIR/helm-mtls-umbrella-all.out" >&2
+  exit 1
+fi
+echo "H9-Helm umbrella: all fields set → PASS (full mesh): ok"
+
+# Case 8: umbrella-path clientSecret set + caBundle empty → FAIL (partial config).
+# This is the exact gap Codex r1 found: a real customer's umbrella values.yaml with
+# gateway.witnessMtls.clientSecret set + an empty caBundle was passing the check
+# (false-GREEN) before the umbrella-path fix.
+HELM_UMBL_PARTIAL_VALS="$TMPDIR/helm-mtls-umbrella-partial.yaml"
+cat > "$HELM_UMBL_PARTIAL_VALS" <<'YAML'
+gateway:
+  witnessMtls:
+    clientSecret: "gateway-witness-mtls-certs"
+    caBundle: ""
+    clientCert: "gateway-client.crt"
+    clientKey: "gateway-client.key"
+YAML
+if run_doctor_with_values "$TMPDIR/helm-mtls-umbrella-partial.out" "$ENV_FILE" "$HELM_UMBL_PARTIAL_VALS"; then
+  echo "FAIL: H9-Helm umbrella clientSecret set + caBundle empty → doctor should FAIL" >&2
+  cat "$TMPDIR/helm-mtls-umbrella-partial.out" >&2
+  exit 1
+fi
+grep -q "mTLS config (Helm): FAIL" "$TMPDIR/helm-mtls-umbrella-partial.out" \
+  || { echo "FAIL: H9-Helm umbrella partial missing expected FAIL message" >&2; cat "$TMPDIR/helm-mtls-umbrella-partial.out" >&2; exit 1; }
+grep -q "caBundle" "$TMPDIR/helm-mtls-umbrella-partial.out" \
+  || { echo "FAIL: H9-Helm umbrella partial should name caBundle in error" >&2; exit 1; }
+echo "H9-Helm umbrella: clientSecret set + caBundle empty → FAIL (partial config): ok"
+
+echo "H9 umbrella-path witnessMtls detection: ok"
+
+# ---------------------------------------------------------------------------
 # M23 Helm-path: empty canaryHmacKey WARN (audit 2026-06-23).
 #
 # When gateway.secrets.values.canaryHmacKey is absent or empty in the Helm
