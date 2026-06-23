@@ -611,4 +611,75 @@ echo "M23-Helm: canaryHmacKey set → PASS (no WARN): ok"
 
 echo "M23 Helm-path canaryHmacKey empty WARN: ok"
 
+# ---------------------------------------------------------------------------
+# M23-P2: backend-aware canary WARN (Codex r3, 2026-06-23).
+# For vault/aws/azure backends the inline canaryHmacKey field is ignored by
+# the chart (ExternalSecret uses the remote store, not the inline values).
+# Doctor must NOT warn about the inline field being empty for those backends;
+# instead it warns about canaryHmacKeyInRemote not being true.
+# ---------------------------------------------------------------------------
+
+# Case 4: vault backend + empty inline canaryHmacKey → warn about remote opt-in
+# (NOT the inline-field warn), doctor still PASS.
+HELM_VAULT_NO_REMOTE_VALS="$TMPDIR/helm-vault-no-remote.yaml"
+cat > "$HELM_VAULT_NO_REMOTE_VALS" <<'YAML'
+gateway:
+  secrets:
+    backend: vault
+    values:
+      licenseKey: "test-license"
+YAML
+HELM_VAULT_NO_REMOTE_RC=0
+"$ROOT/bin/lucairn" doctor --env "$ENV_FILE" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --values "$HELM_VAULT_NO_REMOTE_VALS" \
+  --offline > "$TMPDIR/helm-vault-no-remote.out" 2> "$TMPDIR/helm-vault-no-remote.err" || HELM_VAULT_NO_REMOTE_RC=$?
+if [ "$HELM_VAULT_NO_REMOTE_RC" -ne 0 ]; then
+  echo "FAIL: M23-P2 vault backend + no remote opt-in → doctor should PASS (warn only, not fail)" >&2
+  cat "$TMPDIR/helm-vault-no-remote.out" "$TMPDIR/helm-vault-no-remote.err" >&2
+  exit 1
+fi
+# Must NOT emit the k8s-native inline-value warning.
+if grep -q "gateway.secrets.values.canaryHmacKey" "$TMPDIR/helm-vault-no-remote.err"; then
+  echo "FAIL: M23-P2 vault backend → must NOT warn about inline canaryHmacKey (that field is ignored for external backends)" >&2
+  cat "$TMPDIR/helm-vault-no-remote.err" >&2
+  exit 1
+fi
+# Must emit the remote opt-in warning instead.
+if ! grep -q "canaryHmacKeyInRemote" "$TMPDIR/helm-vault-no-remote.err"; then
+  echo "FAIL: M23-P2 vault backend → expected WARN mentioning canaryHmacKeyInRemote" >&2
+  cat "$TMPDIR/helm-vault-no-remote.err" >&2
+  exit 1
+fi
+echo "M23-P2: vault backend + no remote opt-in → remote WARN (not inline WARN), doctor PASS: ok"
+
+# Case 5: vault backend + canaryHmacKeyInRemote: true → no WARN at all.
+HELM_VAULT_WITH_REMOTE_VALS="$TMPDIR/helm-vault-with-remote.yaml"
+cat > "$HELM_VAULT_WITH_REMOTE_VALS" <<'YAML'
+gateway:
+  secrets:
+    backend: vault
+    canaryHmacKeyInRemote: true
+    values:
+      licenseKey: "test-license"
+YAML
+HELM_VAULT_WITH_REMOTE_RC=0
+"$ROOT/bin/lucairn" doctor --env "$ENV_FILE" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --values "$HELM_VAULT_WITH_REMOTE_VALS" \
+  --offline > "$TMPDIR/helm-vault-with-remote.out" 2> "$TMPDIR/helm-vault-with-remote.err" || HELM_VAULT_WITH_REMOTE_RC=$?
+if [ "$HELM_VAULT_WITH_REMOTE_RC" -ne 0 ]; then
+  echo "FAIL: M23-P2 vault backend + canaryHmacKeyInRemote=true → doctor should PASS" >&2
+  cat "$TMPDIR/helm-vault-with-remote.out" "$TMPDIR/helm-vault-with-remote.err" >&2
+  exit 1
+fi
+if grep -q "canary key (Helm)" "$TMPDIR/helm-vault-with-remote.err"; then
+  echo "FAIL: M23-P2 vault backend + canaryHmacKeyInRemote=true → should NOT emit canary WARN" >&2
+  cat "$TMPDIR/helm-vault-with-remote.err" >&2
+  exit 1
+fi
+echo "M23-P2: vault backend + canaryHmacKeyInRemote=true → PASS (no WARN): ok"
+
+echo "M23-P2 backend-aware canary WARN: ok"
+
 echo "all sec-hardening tests: ok"
