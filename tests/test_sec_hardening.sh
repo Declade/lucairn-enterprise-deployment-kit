@@ -524,4 +524,198 @@ echo "M9-HELM-MANAGED: LUCAIRN_BACKUP_HELM_MANAGED=true, no bucket, strict=1 →
 
 echo "M9-HELM-MANAGED backup_preflight Helm path (--strict passes): ok"
 
+# ---------------------------------------------------------------------------
+# H9 Helm-path mTLS partial-config detection (audit 2026-06-23).
+#
+# check_mtls_partial_config_helm parses the witnessMtls: block in a values.yaml:
+#   clientSecret = ""           → mTLS off → PASS (all-empty posture)
+#   clientSecret + caBundle + clientCert + clientKey all set → PASS (full mesh)
+#   clientSecret set + any cert-key field empty              → FAIL (partial)
+# ---------------------------------------------------------------------------
+
+run_doctor_with_values() {  # writes output to $1, env=$2, values=$3
+  local out="$1" env="${2:-$ENV_FILE}" vals="$3"
+  set +e
+  "$ROOT/bin/lucairn" doctor --env "$env" \
+    --compose "$ROOT/docker-compose.customer.yml" \
+    --values "$vals" \
+    --offline > "$out" 2>&1
+  local rc=$?
+  set -e
+  return "$rc"
+}
+
+# Synthesise minimal values.yaml fixtures for the witnessMtls block.
+# The doctor's --values path only exercises the Helm-specific checks; the full
+# Compose checks still run against the base ENV_FILE fixture.
+
+# Case 1: witnessMtls absent entirely → PASS (mTLS off; no block in the file).
+HELM_NONE_VALS="$TMPDIR/helm-mtls-none.yaml"
+printf 'gateway:\n  ingress:\n    enabled: true\n' > "$HELM_NONE_VALS"
+if ! run_doctor_with_values "$TMPDIR/helm-mtls-none.out" "$ENV_FILE" "$HELM_NONE_VALS"; then
+  echo "FAIL: H9-Helm none → doctor should PASS (no witnessMtls block)" >&2
+  cat "$TMPDIR/helm-mtls-none.out" >&2
+  exit 1
+fi
+echo "H9-Helm: no witnessMtls block → PASS (mTLS off): ok"
+
+# Case 2: witnessMtls.clientSecret = "" → PASS (mTLS explicitly off).
+HELM_OFF_VALS="$TMPDIR/helm-mtls-off.yaml"
+cat > "$HELM_OFF_VALS" <<'YAML'
+witnessMtls:
+  clientSecret: ""
+  caBundle: "ca.crt"
+  clientCert: "gateway-client.crt"
+  clientKey: "gateway-client.key"
+YAML
+if ! run_doctor_with_values "$TMPDIR/helm-mtls-off.out" "$ENV_FILE" "$HELM_OFF_VALS"; then
+  echo "FAIL: H9-Helm clientSecret=empty → doctor should PASS (mTLS off)" >&2
+  cat "$TMPDIR/helm-mtls-off.out" >&2
+  exit 1
+fi
+echo "H9-Helm: clientSecret='' (mTLS off) → PASS: ok"
+
+# Case 3: witnessMtls fully set (clientSecret + caBundle + clientCert + clientKey
+# all non-empty) → PASS (full mesh).
+HELM_ALL_VALS="$TMPDIR/helm-mtls-all.yaml"
+cat > "$HELM_ALL_VALS" <<'YAML'
+witnessMtls:
+  clientSecret: "gateway-witness-mtls-certs"
+  caBundle: "ca.crt"
+  clientCert: "gateway-client.crt"
+  clientKey: "gateway-client.key"
+  serverName: "witness"
+  mountPath: "/etc/witness-mtls"
+YAML
+if ! run_doctor_with_values "$TMPDIR/helm-mtls-all.out" "$ENV_FILE" "$HELM_ALL_VALS"; then
+  echo "FAIL: H9-Helm all fields set → doctor should PASS (full mesh)" >&2
+  cat "$TMPDIR/helm-mtls-all.out" >&2
+  exit 1
+fi
+echo "H9-Helm: all fields set → PASS (full mesh): ok"
+
+# Case 4: clientSecret set but caBundle empty → FAIL (partial config).
+HELM_PARTIAL_CA_VALS="$TMPDIR/helm-mtls-partial-ca.yaml"
+cat > "$HELM_PARTIAL_CA_VALS" <<'YAML'
+witnessMtls:
+  clientSecret: "gateway-witness-mtls-certs"
+  caBundle: ""
+  clientCert: "gateway-client.crt"
+  clientKey: "gateway-client.key"
+YAML
+if run_doctor_with_values "$TMPDIR/helm-mtls-partial-ca.out" "$ENV_FILE" "$HELM_PARTIAL_CA_VALS"; then
+  echo "FAIL: H9-Helm clientSecret set + caBundle empty → doctor should FAIL" >&2
+  cat "$TMPDIR/helm-mtls-partial-ca.out" >&2
+  exit 1
+fi
+grep -q "mTLS config (Helm): FAIL" "$TMPDIR/helm-mtls-partial-ca.out" \
+  || { echo "FAIL: H9-Helm partial-ca missing expected FAIL message" >&2; cat "$TMPDIR/helm-mtls-partial-ca.out" >&2; exit 1; }
+grep -q "caBundle" "$TMPDIR/helm-mtls-partial-ca.out" \
+  || { echo "FAIL: H9-Helm partial-ca should name caBundle in error" >&2; exit 1; }
+echo "H9-Helm: clientSecret set + caBundle empty → FAIL (partial config): ok"
+
+# Case 5: clientSecret set but clientCert and clientKey empty → FAIL (partial config).
+HELM_PARTIAL_CERT_VALS="$TMPDIR/helm-mtls-partial-cert.yaml"
+cat > "$HELM_PARTIAL_CERT_VALS" <<'YAML'
+witnessMtls:
+  clientSecret: "gateway-witness-mtls-certs"
+  caBundle: "ca.crt"
+  clientCert: ""
+  clientKey: ""
+YAML
+if run_doctor_with_values "$TMPDIR/helm-mtls-partial-cert.out" "$ENV_FILE" "$HELM_PARTIAL_CERT_VALS"; then
+  echo "FAIL: H9-Helm clientSecret set + clientCert/clientKey empty → doctor should FAIL" >&2
+  cat "$TMPDIR/helm-mtls-partial-cert.out" >&2
+  exit 1
+fi
+grep -q "mTLS config (Helm): FAIL" "$TMPDIR/helm-mtls-partial-cert.out" \
+  || { echo "FAIL: H9-Helm partial-cert missing expected FAIL message" >&2; cat "$TMPDIR/helm-mtls-partial-cert.out" >&2; exit 1; }
+grep -q "clientCert" "$TMPDIR/helm-mtls-partial-cert.out" \
+  || { echo "FAIL: H9-Helm partial-cert should name clientCert in error" >&2; exit 1; }
+grep -q "clientKey" "$TMPDIR/helm-mtls-partial-cert.out" \
+  || { echo "FAIL: H9-Helm partial-cert should name clientKey in error" >&2; exit 1; }
+echo "H9-Helm: clientSecret set + clientCert/clientKey empty → FAIL (partial config): ok"
+
+echo "H9 Helm-path witnessMtls partial-config detection: ok"
+
+# ---------------------------------------------------------------------------
+# M23 Helm-path: empty canaryHmacKey WARN (audit 2026-06-23).
+#
+# When gateway.secrets.values.canaryHmacKey is absent or empty in the Helm
+# values.yaml, the gateway's canary L3-leak detection is silently disabled.
+# Doctor must emit a WARN (return 0 — not a hard failure).
+# ---------------------------------------------------------------------------
+
+# Case 1: canaryHmacKey absent → WARN present, doctor still passes.
+HELM_NO_CANARY_VALS="$TMPDIR/helm-no-canary.yaml"
+cat > "$HELM_NO_CANARY_VALS" <<'YAML'
+gateway:
+  secrets:
+    values:
+      licenseKey: "test-license"
+YAML
+HELM_NO_CANARY_RC=0
+"$ROOT/bin/lucairn" doctor --env "$ENV_FILE" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --values "$HELM_NO_CANARY_VALS" \
+  --offline > "$TMPDIR/helm-no-canary.out" 2> "$TMPDIR/helm-no-canary.err" || HELM_NO_CANARY_RC=$?
+if [ "$HELM_NO_CANARY_RC" -ne 0 ]; then
+  echo "FAIL: M23-Helm canaryHmacKey absent → doctor should PASS (warn only, not fail)" >&2
+  cat "$TMPDIR/helm-no-canary.out" "$TMPDIR/helm-no-canary.err" >&2
+  exit 1
+fi
+if ! grep -q "canary key (Helm)" "$TMPDIR/helm-no-canary.err"; then
+  echo "FAIL: M23-Helm canaryHmacKey absent → expected WARN on stderr" >&2
+  cat "$TMPDIR/helm-no-canary.out" "$TMPDIR/helm-no-canary.err" >&2
+  exit 1
+fi
+echo "M23-Helm: canaryHmacKey absent → WARN (doctor still PASS): ok"
+
+# Case 2: canaryHmacKey explicitly empty → same WARN, same PASS.
+HELM_EMPTY_CANARY_VALS="$TMPDIR/helm-empty-canary.yaml"
+cat > "$HELM_EMPTY_CANARY_VALS" <<'YAML'
+gateway:
+  secrets:
+    values:
+      canaryHmacKey: ""
+YAML
+HELM_EMPTY_CANARY_RC=0
+"$ROOT/bin/lucairn" doctor --env "$ENV_FILE" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --values "$HELM_EMPTY_CANARY_VALS" \
+  --offline > "$TMPDIR/helm-empty-canary.out" 2> "$TMPDIR/helm-empty-canary.err" || HELM_EMPTY_CANARY_RC=$?
+if [ "$HELM_EMPTY_CANARY_RC" -ne 0 ]; then
+  echo "FAIL: M23-Helm canaryHmacKey='' → doctor should PASS (warn only, not fail)" >&2
+  cat "$TMPDIR/helm-empty-canary.out" "$TMPDIR/helm-empty-canary.err" >&2
+  exit 1
+fi
+if ! grep -q "canary key (Helm)" "$TMPDIR/helm-empty-canary.err"; then
+  echo "FAIL: M23-Helm canaryHmacKey='' → expected WARN on stderr" >&2
+  cat "$TMPDIR/helm-empty-canary.out" "$TMPDIR/helm-empty-canary.err" >&2
+  exit 1
+fi
+echo "M23-Helm: canaryHmacKey='' → WARN (doctor still PASS): ok"
+
+# Case 3: canaryHmacKey set → no WARN.
+HELM_SET_CANARY_VALS="$TMPDIR/helm-set-canary.yaml"
+printf 'gateway:\n  secrets:\n    values:\n      canaryHmacKey: "%s"\n' "$(openssl rand -hex 32)" > "$HELM_SET_CANARY_VALS"
+HELM_SET_CANARY_RC=0
+"$ROOT/bin/lucairn" doctor --env "$ENV_FILE" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --values "$HELM_SET_CANARY_VALS" \
+  --offline > "$TMPDIR/helm-set-canary.out" 2> "$TMPDIR/helm-set-canary.err" || HELM_SET_CANARY_RC=$?
+if [ "$HELM_SET_CANARY_RC" -ne 0 ]; then
+  echo "FAIL: M23-Helm canaryHmacKey set → doctor should PASS" >&2
+  cat "$TMPDIR/helm-set-canary.out" "$TMPDIR/helm-set-canary.err" >&2
+  exit 1
+fi
+if grep -q "canary key (Helm)" "$TMPDIR/helm-set-canary.err"; then
+  echo "FAIL: M23-Helm canaryHmacKey set → should NOT emit canary WARN" >&2
+  cat "$TMPDIR/helm-set-canary.err" >&2
+  exit 1
+fi
+echo "M23-Helm: canaryHmacKey set → PASS (no WARN): ok"
+
+echo "M23 Helm-path canaryHmacKey empty WARN: ok"
+
 echo "all sec-hardening tests: ok"

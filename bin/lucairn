@@ -790,6 +790,142 @@ check_mtls_partial_config() {
   return 0
 }
 
+check_mtls_partial_config_helm() {
+  # H9 Helm-path mTLS partial-config detection (audit 2026-06-23).
+  #
+  # The Helm path wires witness mTLS via values.yaml `witnessMtls:` block rather
+  # than env vars (charts/lucairn/charts/gateway/templates/configmap.yaml:95-104):
+  # the gateway configmap emits WITNESS_MTLS_* env vars only when
+  # `witnessMtls.clientSecret` is non-empty.
+  #
+  # Partial-config risk: an operator sets clientSecret (non-empty) but leaves one
+  # or more of caBundle/clientCert/clientKey empty → the gateway emits a broken
+  # WITNESS_MTLS_CA_BUNDLE_PATH that is just the mountPath with a trailing slash +
+  # empty filename → TLS handshake fails at boot.
+  #
+  # Valid postures:
+  #   clientSecret = ""           → mTLS off; all key fields are irrelevant; PASS.
+  #   clientSecret non-empty
+  #     + caBundle + clientCert + clientKey all non-empty → full mesh; PASS.
+  #     + ANY of the three cert-key fields empty           → partial; FAIL.
+  #
+  # serverName and mountPath are tuning vars with safe defaults; excluded.
+  #
+  # Usage: check_mtls_partial_config_helm <values_file>
+  local values_file="$1"
+  [ -f "$values_file" ] || return 0   # no values file → Compose path; skip
+
+  # awk: extract scalar values from the `witnessMtls:` block.
+  # Handles both quoted and unquoted YAML values (strips surrounding quotes).
+  # Stops on the next top-level key (unindented non-comment line).
+  local client_secret ca_bundle client_cert client_key
+  client_secret="$(awk '
+    /^witnessMtls:/{in_block=1; next}
+    in_block && /^[^[:space:]]/{in_block=0}
+    in_block && /^[[:space:]]+clientSecret:/{
+      sub(/^[[:space:]]+clientSecret:[[:space:]]*/,"")
+      gsub(/^"|"$|^'"'"'|'"'"'$/,"")
+      print; exit}
+  ' "$values_file")"
+  ca_bundle="$(awk '
+    /^witnessMtls:/{in_block=1; next}
+    in_block && /^[^[:space:]]/{in_block=0}
+    in_block && /^[[:space:]]+caBundle:/{
+      sub(/^[[:space:]]+caBundle:[[:space:]]*/,"")
+      gsub(/^"|"$|^'"'"'|'"'"'$/,"")
+      print; exit}
+  ' "$values_file")"
+  client_cert="$(awk '
+    /^witnessMtls:/{in_block=1; next}
+    in_block && /^[^[:space:]]/{in_block=0}
+    in_block && /^[[:space:]]+clientCert:/{
+      sub(/^[[:space:]]+clientCert:[[:space:]]*/,"")
+      gsub(/^"|"$|^'"'"'|'"'"'$/,"")
+      print; exit}
+  ' "$values_file")"
+  client_key="$(awk '
+    /^witnessMtls:/{in_block=1; next}
+    in_block && /^[^[:space:]]/{in_block=0}
+    in_block && /^[[:space:]]+clientKey:/{
+      sub(/^[[:space:]]+clientKey:[[:space:]]*/,"")
+      gsub(/^"|"$|^'"'"'|'"'"'$/,"")
+      print; exit}
+  ' "$values_file")"
+
+  # If clientSecret is empty, mTLS is off — no further checks needed.
+  [ -z "$client_secret" ] && return 0
+
+  # clientSecret is set; all three cert-key fields must be non-empty.
+  local missing_fields=""
+  [ -z "$ca_bundle" ]    && missing_fields="${missing_fields} caBundle"
+  [ -z "$client_cert" ]  && missing_fields="${missing_fields} clientCert"
+  [ -z "$client_key" ]   && missing_fields="${missing_fields} clientKey"
+
+  if [ -n "$missing_fields" ]; then
+    echo "mTLS config (Helm): FAIL — partial witnessMtls configuration in $values_file."
+    echo "mTLS config (Helm):   witnessMtls.clientSecret is set but the following cert-key"
+    echo "mTLS config (Helm):   fields are empty; the gateway will emit broken"
+    echo "mTLS config (Helm):   WITNESS_MTLS_* paths and crash-loop at boot."
+    echo "mTLS config (Helm):   Missing fields:${missing_fields}"
+    echo "mTLS config (Helm):   Either set all three (caBundle + clientCert + clientKey)"
+    echo "mTLS config (Helm):   or clear clientSecret to disable witness mTLS."
+    return 1
+  fi
+  return 0
+}
+
+check_canary_hmac_key_helm() {
+  # [LOW] Helm-path canary-key empty WARN (audit 2026-06-23).
+  #
+  # The gateway uses CANARY_HMAC_KEY (emitted from gateway.secrets.values.canaryHmacKey
+  # in charts/lucairn/charts/gateway/templates/secret.yaml:80) to sign canary tokens
+  # that the sanitizer embeds in requests.  When the key is empty the canary-based
+  # L3-leak detection is silently disabled — the gateway never fires the
+  # canary-match alarm even when an L3 model leaks a sentinel back to the gateway.
+  #
+  # For the Compose path CANARY_HMAC_KEY is already a hard required field
+  # (require_env_values). For the Helm path the customer values.yaml default is
+  # canaryHmacKey: "" (optional field), so an operator who never sets it gets no
+  # warning that L3-leak detection is off.
+  #
+  # This check is WARN-only (returns 0 always) — canary detection is a defence-
+  # in-depth tripwire; its absence is not a boot-blocking error.
+  #
+  # Usage: check_canary_hmac_key_helm <values_file>
+  local values_file="$1"
+  [ -f "$values_file" ] || return 0   # no values file → Compose path; skip
+
+  # Extract gateway.secrets.values.canaryHmacKey from the values file.
+  # The key lives three levels deep: gateway: → secrets: → values: → canaryHmacKey.
+  # State machine: track each level independently.  Exit a level only when a line
+  # at the SAME indent as the opening key (or shallower) appears.  This avoids
+  # the false-exit bug where the "exit secrets:" pattern also matched "    values:".
+  #
+  # Expected indentation:
+  #   gateway:              (0 spaces)
+  #     secrets:            (2 spaces) — peer of other top-level gateway sub-keys
+  #       values:           (4 spaces)
+  #         canaryHmacKey:  (6 spaces)
+  local canary_key
+  canary_key="$(awk '
+    /^gateway:/{in_gw=1; next}
+    in_gw && /^[^[:space:]]/{in_gw=0}
+    in_gw && /^  secrets:/{in_sec=1; next}
+    in_sec && /^  [^[:space:]]/{in_sec=0}
+    in_sec && /^    values:/{in_val=1; next}
+    in_val && /^    [^[:space:]]/{in_val=0}
+    in_val && /^[[:space:]]+canaryHmacKey:/{
+      sub(/^[[:space:]]+canaryHmacKey:[[:space:]]*/,"")
+      gsub(/^"|"$|^'"'"'|'"'"'$/,"")
+      print; exit}
+  ' "$values_file")"
+
+  if [ -z "$canary_key" ]; then
+    warn "canary key (Helm): gateway.secrets.values.canaryHmacKey is not set in $values_file — canary L3-leak detection is silently disabled. Set a 32-byte hex secret (openssl rand -hex 32) to enable it. (audit 2026-06-23)"
+  fi
+  return 0
+}
+
 check_readiness_bundle() {
   # M5 (deal-#1 hardening 2026-06-19): readiness-bundle boot-Fatal pre-flight.
   #
@@ -4531,11 +4667,17 @@ bundle_command() {
 }
 
 doctor() {
-  local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-edge" check_images=1 strict_runtime=0 strict_digest=0
+  local env_file="" compose_file="" values_file="" offline=0 postgres_url="" kube_namespace="dsa-edge" check_images=1 strict_runtime=0 strict_digest=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --env) env_file="$2"; shift 2 ;;
       --compose) compose_file="$2"; shift 2 ;;
+      # --values: path to a customer Helm values.yaml (e.g. customer-values.yaml).
+      # When provided, the doctor also runs Helm-path checks (witnessMtls partial-
+      # config + canaryHmacKey empty WARN) against the values file. The --env and
+      # --compose flags remain required for the Compose-path checks. (H9/M23 audit
+      # 2026-06-23.)
+      --values) values_file="$2"; shift 2 ;;
       --offline) offline=1; check_images=0; shift ;;
       --check-images) check_images=1; shift ;;
       --skip-image-check) check_images=0; shift ;;
@@ -4557,10 +4699,15 @@ doctor() {
 
   require_file "$env_file" "env file"
   require_file "$compose_file" "compose file"
+  # values_file is optional; validate path only when supplied.
+  if [ -n "$values_file" ]; then
+    require_file "$values_file" "values file"
+  fi
 
   echo "lucairn doctor $VERSION"
   echo "env file: ok ($env_file)"
   echo "compose file: ok ($compose_file)"
+  [ -n "$values_file" ] && echo "values file: ok ($values_file)"
 
   # Zero-network, WARN-only kit-freshness signal (never fails the install; air-
   # gapped doctor still passes). For the online specifics, run check-updates.
@@ -4723,13 +4870,23 @@ doctor() {
   check_dsa_env_valid "$env_file" || dsa_env_failed=1
   [ "$dsa_env_failed" -eq 0 ] || return 1
 
-  # M1 (deal-#1 hardening 2026-06-19): mTLS partial-config detection.
+  # H9 (audit 2026-06-23): mTLS partial-config detection — Compose path.
   # sandbox-b (main.py:284-288) and the sanitizer (gunicorn.conf.py:93-108)
-  # sys.exit(1) at boot if ANY of the 5 credential-bearing DSA_MTLS_* vars is
-  # set but the server or client triple is incomplete. Mode-agnostic (any env).
+  # sys.exit(1) at boot if ANY of the 5 credential-bearing WITNESS_MTLS_* vars
+  # is set but the server or client triple is incomplete. Mode-agnostic (any env).
   local mtls_failed=0
   check_mtls_partial_config "$env_file" || mtls_failed=1
   [ "$mtls_failed" -eq 0 ] || return 1
+
+  # H9 Helm-path: witnessMtls partial-config detection in values.yaml.
+  # Runs only when --values was supplied; no-op otherwise.
+  local helm_mtls_failed=0
+  check_mtls_partial_config_helm "$values_file" || helm_mtls_failed=1
+  [ "$helm_mtls_failed" -eq 0 ] || return 1
+
+  # M23 Helm-path: canaryHmacKey empty WARN in values.yaml.
+  # Runs only when --values was supplied; no-op otherwise.
+  check_canary_hmac_key_helm "$values_file"
 
   # M5 (deal-#1 hardening 2026-06-19): readiness-bundle boot-Fatal pre-flight.
   # When GATEWAY_REQUIRE_READINESS=true (Helm-only in the kit default, but
