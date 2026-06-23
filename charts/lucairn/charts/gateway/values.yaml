@@ -266,6 +266,17 @@ witnessMtls:
 
 secrets:
   backend: k8s-native  # k8s-native | vault | aws | azure
+  # P2 fix (2026-06-23 Codex r3): opt-in gate for the canaryHmacKey remoteRef
+  # in the ExternalSecret. For vault/aws/azure backends the ExternalSecret
+  # controller will require this property to exist in the remote store before
+  # it can sync gateway-credentials — existing installs that don't have
+  # canaryHmacKey in their remote store would go NotReady/stale on upgrade.
+  # Set to true ONLY after you've provisioned the canaryHmacKey property in
+  # your remote store (same 32-byte hex value as the k8s-native path; must
+  # match sandbox-a's canaryHmacKey). The k8s-native Secret path is unaffected
+  # by this flag — canaryHmacKey is always wired there.
+  # Default: false (safe for upgrade; canary remote-ref not added to ExternalSecret)
+  canaryHmacKeyInRemote: false
   values:
     licenseKey: ""
     licenseSigningKey: ""

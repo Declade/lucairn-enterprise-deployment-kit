@@ -168,6 +168,12 @@ gateway:
       # Without it the gateway's canary L3-leak detection is silently disabled.
       # render-values.sh auto-fills BOTH occurrences from one openssl rand call.
       # Generate manually with: openssl rand -hex 32
+      # NOTE (k8s-native backend only): this field is wired into the k8s Secret
+      # unconditionally. For vault/aws/azure backends this inline value is
+      # IGNORED — the ExternalSecret uses your remote store instead. To enable
+      # canary detection on an external backend: (1) provision the canaryHmacKey
+      # property in your remote store (same 32-byte hex value, must match
+      # sandbox-a), (2) set gateway.secrets.canaryHmacKeyInRemote: true.
       canaryHmacKey: "REPLACE_WITH_CANARY_HMAC_KEY"
 
 # postgres-gateway is the v2.0 path for multi-replica gateway HA. v1.0
