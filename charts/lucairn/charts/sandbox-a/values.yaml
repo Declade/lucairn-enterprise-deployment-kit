@@ -158,6 +158,11 @@ sanitizer:
   # MUST explicitly set "ensemble" to opt into L3 reversal path.
   llmScanMode: "sequential"
   llmScanRestoreThreshold: 0.85
+  # M12 fix (2026-06-23): gunicorn worker timeout. Compose sets 120 s
+  # (docker-compose.customer.yml:511 GUNICORN_TIMEOUT: "120"); the Helm
+  # chart previously omitted this, defaulting to gunicorn's built-in 30 s
+  # and causing 503 on large prompts. Mirror the Compose default here.
+  gunicornTimeout: 120
 
   # Phase 7 — ML PII scanners extracted into the pii-ml gRPC sidecar
   # (PR #240 production-path follow-up, "A3 Proper"). DEFAULT OFF here.

@@ -729,35 +729,33 @@ check_l3_required_wired() {
 }
 
 check_mtls_partial_config() {
-  # M1 (deal-#1 hardening 2026-06-19): mTLS partial-config detection.
+  # H9 fix (2026-06-23): mTLS partial-config detection — reads WITNESS_MTLS_*,
+  # the vars customers actually set (customer.env.example:157-163).
   #
-  # Both sandbox-b (services/sandbox-b/main.py:284-288, via
-  # mtls_sans.load_server_credentials() → PartialMTLSConfigError → sys.exit(1))
-  # and the sanitizer (services/sanitizer/gunicorn.conf.py:93-108, inline
-  # RuntimeError on gunicorn master startup → implicit sys.exit(1)) crash at boot
-  # when ANY one of the five credential-bearing DSA_MTLS_* env vars is set but
-  # the corresponding triple is incomplete. The Go services also refuse in
-  # production (pkg/tlsutil/tlsutil.go:626 RequireTLSInProduction).
+  # Previously this function read DSA_MTLS_* (an internal mesh prefix set
+  # by the docker-compose.mtls.yml overlay, never by the customer). Customers
+  # configure the five WITNESS_MTLS_* vars; the old DSA_MTLS_* check was a
+  # permanently dead path that gave a false GREEN on every real deployment.
   #
-  # The trigger is ANY ONE of the 5 credential-bearing vars being set
-  # (DSA_MTLS_SERVER_NAME is a tuning var, NOT credential-bearing; excluded).
-  # Two coherent sub-sets exist:
-  #   server triple: CA_BUNDLE + SERVER_CERT + SERVER_KEY
-  #   client triple: CA_BUNDLE + CLIENT_CERT + CLIENT_KEY
+  # The five credential-bearing vars are:
+  #   WITNESS_MTLS_CA_BUNDLE_PATH           (shared CA — both sides)
+  #   WITNESS_MTLS_SERVER_CERT_PATH         (witness server cert)
+  #   WITNESS_MTLS_SERVER_KEY_PATH          (witness server key)
+  #   WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH (gateway client cert)
+  #   WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH  (gateway client key)
   #
-  # A stray CLIENT_CERT alone (no key, no CA) is also fatal — the check must
-  # enumerate all 5 vars and detect any partial coverage.
+  # WITNESS_MTLS_SERVER_NAME is a tuning var, NOT credential-bearing; excluded.
   #
   # If ZERO of the 5 are set → mTLS is disabled; pass immediately.
-  # If ALL vars of the intended side(s) are populated → coherent; pass.
+  # If ALL 5 are populated → coherent full mesh; pass.
   # If ANY are set but a triple is incomplete → FAIL naming the missing var(s).
   local env_file="$1"
   local ca    server_cert server_key client_cert client_key
-  ca="$(env_value          "$env_file" DSA_MTLS_CA_BUNDLE_PATH)"
-  server_cert="$(env_value "$env_file" DSA_MTLS_SERVER_CERT_PATH)"
-  server_key="$(env_value  "$env_file" DSA_MTLS_SERVER_KEY_PATH)"
-  client_cert="$(env_value "$env_file" DSA_MTLS_CLIENT_CERT_PATH)"
-  client_key="$(env_value  "$env_file" DSA_MTLS_CLIENT_KEY_PATH)"
+  ca="$(env_value          "$env_file" WITNESS_MTLS_CA_BUNDLE_PATH)"
+  server_cert="$(env_value "$env_file" WITNESS_MTLS_SERVER_CERT_PATH)"
+  server_key="$(env_value  "$env_file" WITNESS_MTLS_SERVER_KEY_PATH)"
+  client_cert="$(env_value "$env_file" WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH)"
+  client_key="$(env_value  "$env_file" WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH)"
 
   # If nothing is set, skip.
   if [ -z "$ca" ] && [ -z "$server_cert" ] && [ -z "$server_key" ] && \
@@ -768,26 +766,24 @@ check_mtls_partial_config() {
   # At least one is set — the ONLY non-crashing non-empty config is ALL FIVE
   # vars set (full server+client mesh). A complete server-only triple (no client
   # vars) or complete client-only triple (no server vars) still crashes sandbox-b
-  # and the sanitizer at boot, because both services require the full mesh
-  # (mtls_sans.py:284-288, gunicorn.conf.py:93-108, tlsutil.go:626). Therefore:
-  # once ANY of the 5 credential-bearing vars is set, ALL 5 must be set.
+  # and the sanitizer at boot, because both services require the full mesh.
+  # Therefore: once ANY of the 5 credential-bearing vars is set, ALL 5 must be set.
   local missing_vars=""
-  [ -z "$ca" ]          && missing_vars="${missing_vars} DSA_MTLS_CA_BUNDLE_PATH"
-  [ -z "$server_cert" ] && missing_vars="${missing_vars} DSA_MTLS_SERVER_CERT_PATH"
-  [ -z "$server_key" ]  && missing_vars="${missing_vars} DSA_MTLS_SERVER_KEY_PATH"
-  [ -z "$client_cert" ] && missing_vars="${missing_vars} DSA_MTLS_CLIENT_CERT_PATH"
-  [ -z "$client_key" ]  && missing_vars="${missing_vars} DSA_MTLS_CLIENT_KEY_PATH"
+  [ -z "$ca" ]          && missing_vars="${missing_vars} WITNESS_MTLS_CA_BUNDLE_PATH"
+  [ -z "$server_cert" ] && missing_vars="${missing_vars} WITNESS_MTLS_SERVER_CERT_PATH"
+  [ -z "$server_key" ]  && missing_vars="${missing_vars} WITNESS_MTLS_SERVER_KEY_PATH"
+  [ -z "$client_cert" ] && missing_vars="${missing_vars} WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH"
+  [ -z "$client_key" ]  && missing_vars="${missing_vars} WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH"
 
   if [ -n "$missing_vars" ]; then
     echo "mTLS config: FAIL — partial mTLS configuration detected."
-    echo "mTLS config:   At least one DSA_MTLS_* credential-bearing var is set but"
+    echo "mTLS config:   At least one WITNESS_MTLS_* credential-bearing var is set but"
     echo "mTLS config:   the full mesh is incomplete. sandbox-b and the sanitizer require"
     echo "mTLS config:   ALL FIVE vars (server + client mesh); a server-only or client-only"
-    echo "mTLS config:   triple still causes sys.exit(1) at boot (mtls_sans.py:284-288,"
-    echo "mTLS config:   gunicorn.conf.py:93-108, tlsutil.go:626)."
+    echo "mTLS config:   triple still causes sys.exit(1) at boot."
     echo "mTLS config:   Missing vars:${missing_vars}"
-    echo "mTLS config:   Required: DSA_MTLS_CA_BUNDLE_PATH + DSA_MTLS_SERVER_CERT_PATH + DSA_MTLS_SERVER_KEY_PATH"
-    echo "mTLS config:          + DSA_MTLS_CLIENT_CERT_PATH + DSA_MTLS_CLIENT_KEY_PATH"
+    echo "mTLS config:   Required: WITNESS_MTLS_CA_BUNDLE_PATH + WITNESS_MTLS_SERVER_CERT_PATH + WITNESS_MTLS_SERVER_KEY_PATH"
+    echo "mTLS config:          + WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH + WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH"
     echo "mTLS config:   Either set all 5 vars, or unset all 5 to disable mTLS."
     return 1
   fi

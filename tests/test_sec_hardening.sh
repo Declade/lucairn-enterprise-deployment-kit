@@ -245,88 +245,93 @@ fi
 echo "SEC-04 derive-veil-pubkey stdin path: ok"
 
 # ---------------------------------------------------------------------------
-# M1 fix (PR #81 review): tightened mTLS partial-config detection.
+# H9 fix (2026-06-23): mTLS partial-config detection now reads WITNESS_MTLS_*
+# (the vars customers actually set, per customer.env.example:157-163).
 #
-# Rule: once ANY of the 5 DSA_MTLS_* credential-bearing vars is set, ALL FIVE
-# must be set. A complete server-only triple (CA+SERVER_CERT+SERVER_KEY, no
-# client vars) or complete client-only triple (CA+CLIENT_CERT+CLIENT_KEY, no
-# server vars) still crashes sandbox-b and the sanitizer at boot (full mesh
-# required). Previously these two configs passed doctor (false-GREENs).
+# Previously this test injected DSA_MTLS_* (internal mesh overlay prefix),
+# so the check permanently fired on a path no customer ever reaches.
+# Now injects WITNESS_MTLS_* and asserts the check fires on partial configs.
+#
+# Rule: once ANY of the 5 WITNESS_MTLS_* credential-bearing vars is set,
+# ALL FIVE must be set. A complete server-only triple or complete client-only
+# triple still crashes sandbox-b and the sanitizer at boot (full mesh required).
 # ---------------------------------------------------------------------------
 M1_BASE="$TMPDIR/m1-base.env"
-# Strip any existing DSA_MTLS_* vars from the coherent fixture so we start clean.
-grep -v '^DSA_MTLS_' "$ENV_FILE" > "$M1_BASE"
+# Strip any existing WITNESS_MTLS_* vars from the coherent fixture so we start clean.
+grep -v '^WITNESS_MTLS_' "$ENV_FILE" > "$M1_BASE"
 
 # Case 1: none → pass (mTLS disabled).
 if ! run_doctor "$TMPDIR/m1-none.out" "$M1_BASE"; then
-  echo "FAIL: M1 none-set should PASS (mTLS disabled)" >&2
+  echo "FAIL: H9 none-set should PASS (mTLS disabled)" >&2
   cat "$TMPDIR/m1-none.out" >&2
   exit 1
 fi
-echo "M1: none-set → PASS (mTLS disabled): ok"
+echo "H9: none-set → PASS (mTLS disabled): ok"
 
-# Case 2: all 5 set → pass (full mesh).
+# Case 2: all 5 set (pointing at the already-created $TMPDIR test certs) → pass.
+# The cert-existence check (check_certs) also runs and must be satisfied, so we
+# reuse the self-signed $TMPDIR/sb-client.{crt,key} + sb-ca.crt created above.
 M1_ALL="$TMPDIR/m1-all.env"
 cp "$M1_BASE" "$M1_ALL"
 {
-  printf 'DSA_MTLS_CA_BUNDLE_PATH=/etc/dsa/certs/ca.crt\n'
-  printf 'DSA_MTLS_SERVER_CERT_PATH=/etc/dsa/certs/server.crt\n'
-  printf 'DSA_MTLS_SERVER_KEY_PATH=/etc/dsa/certs/server.key\n'
-  printf 'DSA_MTLS_CLIENT_CERT_PATH=/etc/dsa/certs/client.crt\n'
-  printf 'DSA_MTLS_CLIENT_KEY_PATH=/etc/dsa/certs/client.key\n'
+  printf 'WITNESS_MTLS_CA_BUNDLE_PATH=%s\n'               "$TMPDIR/sb-ca.crt"
+  printf 'WITNESS_MTLS_SERVER_CERT_PATH=%s\n'             "$TMPDIR/sb-client.crt"
+  printf 'WITNESS_MTLS_SERVER_KEY_PATH=%s\n'              "$TMPDIR/sb-client.key"
+  printf 'WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH=%s\n'     "$TMPDIR/sb-client.crt"
+  printf 'WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH=%s\n'      "$TMPDIR/sb-client.key"
 } >> "$M1_ALL"
 if ! run_doctor "$TMPDIR/m1-all.out" "$M1_ALL"; then
-  echo "FAIL: M1 all-5-set should PASS (full mesh)" >&2
+  echo "FAIL: H9 all-5-set should PASS (full mesh)" >&2
   cat "$TMPDIR/m1-all.out" >&2
   exit 1
 fi
-echo "M1: all-5-set → PASS (full mesh): ok"
+echo "H9: all-5-set → PASS (full mesh): ok"
 
 # Case 3: complete server triple (CA+SERVER_CERT+SERVER_KEY) but NO client
-# vars → FAIL (crashes sandbox-b/sanitizer; was a false-GREEN before the fix).
+# vars → FAIL (partial config; real customer would get a crash at boot).
 M1_SERVER_ONLY="$TMPDIR/m1-server-only.env"
 cp "$M1_BASE" "$M1_SERVER_ONLY"
 {
-  printf 'DSA_MTLS_CA_BUNDLE_PATH=/etc/dsa/certs/ca.crt\n'
-  printf 'DSA_MTLS_SERVER_CERT_PATH=/etc/dsa/certs/server.crt\n'
-  printf 'DSA_MTLS_SERVER_KEY_PATH=/etc/dsa/certs/server.key\n'
+  printf 'WITNESS_MTLS_CA_BUNDLE_PATH=%s\n'   "$TMPDIR/sb-ca.crt"
+  printf 'WITNESS_MTLS_SERVER_CERT_PATH=%s\n' "$TMPDIR/sb-client.crt"
+  printf 'WITNESS_MTLS_SERVER_KEY_PATH=%s\n'  "$TMPDIR/sb-client.key"
 } >> "$M1_SERVER_ONLY"
 if run_doctor "$TMPDIR/m1-server-only.out" "$M1_SERVER_ONLY"; then
-  echo "FAIL: M1 complete-server-only should FAIL (no client vars; was false-GREEN)" >&2
+  echo "FAIL: H9 complete-server-only should FAIL (no client vars)" >&2
   cat "$TMPDIR/m1-server-only.out" >&2
   exit 1
 fi
 grep -q "mTLS config: FAIL" "$TMPDIR/m1-server-only.out" \
-  || { echo "FAIL: M1 server-only missing expected error" >&2; cat "$TMPDIR/m1-server-only.out" >&2; exit 1; }
-grep -q "DSA_MTLS_CLIENT_CERT_PATH" "$TMPDIR/m1-server-only.out" \
-  || { echo "FAIL: M1 server-only should name missing DSA_MTLS_CLIENT_CERT_PATH" >&2; exit 1; }
-grep -q "DSA_MTLS_CLIENT_KEY_PATH" "$TMPDIR/m1-server-only.out" \
-  || { echo "FAIL: M1 server-only should name missing DSA_MTLS_CLIENT_KEY_PATH" >&2; exit 1; }
-echo "M1: complete-server-only → FAIL (client vars missing; false-GREEN fixed): ok"
+  || { echo "FAIL: H9 server-only missing expected error" >&2; cat "$TMPDIR/m1-server-only.out" >&2; exit 1; }
+grep -q "WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH" "$TMPDIR/m1-server-only.out" \
+  || { echo "FAIL: H9 server-only should name missing WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH" >&2; exit 1; }
+grep -q "WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH" "$TMPDIR/m1-server-only.out" \
+  || { echo "FAIL: H9 server-only should name missing WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH" >&2; exit 1; }
+echo "H9: complete-server-only → FAIL (client vars missing): ok"
 
 # Case 4: complete client triple (CA+CLIENT_CERT+CLIENT_KEY) but NO server
-# vars → FAIL (crashes sandbox-b/sanitizer; was a false-GREEN before the fix).
+# vars → FAIL (partial config; real customer would get a crash at boot).
 M1_CLIENT_ONLY="$TMPDIR/m1-client-only.env"
 cp "$M1_BASE" "$M1_CLIENT_ONLY"
 {
-  printf 'DSA_MTLS_CA_BUNDLE_PATH=/etc/dsa/certs/ca.crt\n'
-  printf 'DSA_MTLS_CLIENT_CERT_PATH=/etc/dsa/certs/client.crt\n'
-  printf 'DSA_MTLS_CLIENT_KEY_PATH=/etc/dsa/certs/client.key\n'
+  printf 'WITNESS_MTLS_CA_BUNDLE_PATH=%s\n'               "$TMPDIR/sb-ca.crt"
+  printf 'WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH=%s\n'     "$TMPDIR/sb-client.crt"
+  printf 'WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH=%s\n'      "$TMPDIR/sb-client.key"
 } >> "$M1_CLIENT_ONLY"
 if run_doctor "$TMPDIR/m1-client-only.out" "$M1_CLIENT_ONLY"; then
-  echo "FAIL: M1 complete-client-only should FAIL (no server vars; was false-GREEN)" >&2
+  echo "FAIL: H9 complete-client-only should FAIL (no server vars)" >&2
   cat "$TMPDIR/m1-client-only.out" >&2
   exit 1
 fi
 grep -q "mTLS config: FAIL" "$TMPDIR/m1-client-only.out" \
-  || { echo "FAIL: M1 client-only missing expected error" >&2; cat "$TMPDIR/m1-client-only.out" >&2; exit 1; }
-grep -q "DSA_MTLS_SERVER_CERT_PATH" "$TMPDIR/m1-client-only.out" \
-  || { echo "FAIL: M1 client-only should name missing DSA_MTLS_SERVER_CERT_PATH" >&2; exit 1; }
-grep -q "DSA_MTLS_SERVER_KEY_PATH" "$TMPDIR/m1-client-only.out" \
-  || { echo "FAIL: M1 client-only should name missing DSA_MTLS_SERVER_KEY_PATH" >&2; exit 1; }
-echo "M1: complete-client-only → FAIL (server vars missing; false-GREEN fixed): ok"
+  || { echo "FAIL: H9 client-only missing expected error" >&2; cat "$TMPDIR/m1-client-only.out" >&2; exit 1; }
+grep -q "WITNESS_MTLS_SERVER_CERT_PATH" "$TMPDIR/m1-client-only.out" \
+  || { echo "FAIL: H9 client-only should name missing WITNESS_MTLS_SERVER_CERT_PATH" >&2; exit 1; }
+grep -q "WITNESS_MTLS_SERVER_KEY_PATH" "$TMPDIR/m1-client-only.out" \
+  || { echo "FAIL: H9 client-only should name missing WITNESS_MTLS_SERVER_KEY_PATH" >&2; exit 1; }
+echo "H9: complete-client-only → FAIL (server vars missing): ok"
 
-echo "M1 mTLS partial-config detection (PR #81 fix-up): ok"
+echo "H9 mTLS partial-config detection (WITNESS_MTLS_* fix): ok"
 
 # ---------------------------------------------------------------------------
 # M5 fix (PR #81 review): drop host-path stat for readiness bundle.
