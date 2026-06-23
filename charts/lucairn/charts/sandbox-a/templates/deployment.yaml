@@ -179,6 +179,12 @@ spec:
               value: /config/config.yaml
             - name: SANITIZER_PORT
               value: "8086"
+            # M12 fix (2026-06-23): gunicorn worker timeout. Compose sets
+            # 120 s (docker-compose.customer.yml:511); the chart previously
+            # omitted this, causing 503 on large prompts due to gunicorn's
+            # built-in 30 s default. Mirror the Compose value.
+            - name: GUNICORN_TIMEOUT
+              value: {{ .Values.sanitizer.gunicornTimeout | default 120 | quote }}
             - name: HOME
               value: /tmp/home
             - name: LCR_ENABLED

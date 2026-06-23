@@ -328,6 +328,15 @@ secrets:
     # Set per-environment via --set or a values overlay; never commit a real value.
     # Gateway fails-closed at boot if missing/malformed/wrong-length.
     gatewayKeystoreKey: ""
+    # M23 fix (2026-06-23): CANARY_HMAC_KEY for the gateway's canary-detection
+    # leg. The Compose path hard-fails without it (docker-compose.customer.yml:690
+    # CANARY_HMAC_KEY: "${CANARY_HMAC_KEY:?CANARY_HMAC_KEY required}"). The Helm
+    # chart previously omitted this entry, silently leaving canary-verification
+    # inactive for all Helm installs. Must match the CANARY_HMAC_KEY set in the
+    # sandbox-a subchart (secrets.values.canaryHmacKey) — both the sanitizer
+    # (issues canaries) and the gateway (detects them) share the same key.
+    # Generate with: openssl rand -hex 32
+    canaryHmacKey: ""
   vault:
     path: "dsa/data/gateway"
   aws:
