@@ -800,20 +800,19 @@ check_mtls_partial_config() {
 # and remains.
 
 check_canary_hmac_key_helm() {
-  # [LOW] Helm-path canary-key WARN (audit 2026-06-23; P2 backend-aware fix 2026-06-23).
+  # [LOW] Helm-path canary-key WARN (audit 2026-06-23).
   #
   # The gateway uses CANARY_HMAC_KEY to detect L3-model canary-token leaks.
   # When the key is absent the detection is silently disabled.
   #
-  # Backend-aware behaviour (P2 fix — Codex r3):
-  #   k8s-native backend: key lives in gateway.secrets.values.canaryHmacKey
-  #     (wired into the k8s Secret unconditionally).  Warn when that field is
-  #     empty/absent — the operator should set it.
-  #   vault / aws / azure backend: inline values.canaryHmacKey is IGNORED by
-  #     the chart (the ExternalSecret uses the remote store).  An inline value
-  #     here would only suppress the doctor warning without actually enabling
-  #     canary detection.  Instead, warn about the opt-in flag
-  #     gateway.secrets.canaryHmacKeyInRemote not being true.
+  # For the k8s-native backend, the key lives in gateway.secrets.values.canaryHmacKey
+  # (wired into both the gateway and sandbox-a k8s Secrets automatically). Warn when
+  # that field is empty/absent — the operator should set it.
+  #
+  # NOTE — H10 DEFERRAL: Full canary Helm validation for external-secret backends
+  # (vault/aws/azure) — ExternalSecret remoteRef wiring, sandbox-a issuing-side
+  # ExternalSecret, and gateway/sandbox-a key-match enforcement — requires
+  # helm-render-based validation and is deferred to the kit-CI follow-up (H10).
   #
   # This check is WARN-only (returns 0 always) — canary detection is a
   # defence-in-depth tripwire; its absence is not a boot-blocking error.
@@ -822,74 +821,29 @@ check_canary_hmac_key_helm() {
   local values_file="$1"
   [ -f "$values_file" ] || return 0   # no values file → Compose path; skip
 
-  # Extract gateway.secrets.backend from the values file.
+  # Extract gateway.secrets.values.canaryHmacKey from the values file.
+  # The key lives three levels deep: gateway: → secrets: → values: → canaryHmacKey.
   # Expected indentation:
-  #   gateway:          (0 spaces)
-  #     secrets:        (2 spaces)
-  #       backend:      (4 spaces)
-  local secrets_backend
-  secrets_backend="$(awk '
+  #   gateway:              (0 spaces)
+  #     secrets:            (2 spaces)
+  #       values:           (4 spaces)
+  #         canaryHmacKey:  (6 spaces)
+  local canary_key
+  canary_key="$(awk '
     /^gateway:/{in_gw=1; next}
     in_gw && /^[^[:space:]]/{in_gw=0}
     in_gw && /^  secrets:/{in_sec=1; next}
     in_sec && /^  [^[:space:]]/{in_sec=0}
-    in_sec && /^    backend:/{
-      sub(/^[[:space:]]+backend:[[:space:]]*/,"")
+    in_sec && /^    values:/{in_val=1; next}
+    in_val && /^    [^[:space:]]/{in_val=0}
+    in_val && /^[[:space:]]+canaryHmacKey:/{
+      sub(/^[[:space:]]+canaryHmacKey:[[:space:]]*/,"")
       gsub(/^"|"$|^'"'"'|'"'"'$/,"")
       print; exit}
   ' "$values_file")"
-  # Default if not specified in the values file: k8s-native (chart default).
-  secrets_backend="${secrets_backend:-k8s-native}"
-
-  case "$secrets_backend" in
-    k8s-native)
-      # Extract gateway.secrets.values.canaryHmacKey from the values file.
-      # The key lives three levels deep: gateway: → secrets: → values: → canaryHmacKey.
-      # Expected indentation:
-      #   gateway:              (0 spaces)
-      #     secrets:            (2 spaces)
-      #       values:           (4 spaces)
-      #         canaryHmacKey:  (6 spaces)
-      local canary_key
-      canary_key="$(awk '
-        /^gateway:/{in_gw=1; next}
-        in_gw && /^[^[:space:]]/{in_gw=0}
-        in_gw && /^  secrets:/{in_sec=1; next}
-        in_sec && /^  [^[:space:]]/{in_sec=0}
-        in_sec && /^    values:/{in_val=1; next}
-        in_val && /^    [^[:space:]]/{in_val=0}
-        in_val && /^[[:space:]]+canaryHmacKey:/{
-          sub(/^[[:space:]]+canaryHmacKey:[[:space:]]*/,"")
-          gsub(/^"|"$|^'"'"'|'"'"'$/,"")
-          print; exit}
-      ' "$values_file")"
-      if [ -z "$canary_key" ]; then
-        warn "canary key (Helm): gateway.secrets.values.canaryHmacKey is not set in $values_file — canary L3-leak detection is silently disabled. Set a 32-byte hex secret (openssl rand -hex 32) to enable it. (audit 2026-06-23)"
-      fi
-      ;;
-    vault|aws|azure)
-      # For external backends the inline canaryHmacKey field is not rendered into
-      # the ExternalSecret (it would require the property to exist in the remote
-      # store and break existing installs on upgrade).  Setting an inline value
-      # here only suppresses this warning — it doesn't enable canary detection.
-      # To enable: (1) provision the canaryHmacKey property in your remote store,
-      # (2) set gateway.secrets.canaryHmacKeyInRemote: true in your values overlay.
-      local canary_in_remote
-      canary_in_remote="$(awk '
-        /^gateway:/{in_gw=1; next}
-        in_gw && /^[^[:space:]]/{in_gw=0}
-        in_gw && /^  secrets:/{in_sec=1; next}
-        in_sec && /^  [^[:space:]]/{in_sec=0}
-        in_sec && /^    canaryHmacKeyInRemote:/{
-          sub(/^[[:space:]]+canaryHmacKeyInRemote:[[:space:]]*/,"")
-          gsub(/^"|"$|^'"'"'|'"'"'$/,"")
-          print; exit}
-      ' "$values_file")"
-      if [ "$canary_in_remote" != "true" ]; then
-        warn "canary key (Helm): gateway.secrets.canaryHmacKeyInRemote is not true in $values_file (backend=$secrets_backend) — canary L3-leak detection is silently disabled. To enable: (1) provision canaryHmacKey in your $secrets_backend secret store, (2) set gateway.secrets.canaryHmacKeyInRemote: true. (audit 2026-06-23)"
-      fi
-      ;;
-  esac
+  if [ -z "$canary_key" ]; then
+    warn "canary key (Helm): gateway.secrets.values.canaryHmacKey is not set in $values_file — canary L3-leak detection is silently disabled. Set a 32-byte hex secret (openssl rand -hex 32) to enable it (also set sandbox-a.secrets.values.canaryHmacKey to the SAME value — both consumers share this key). (audit 2026-06-23)"
+  fi
   return 0
 }
 
