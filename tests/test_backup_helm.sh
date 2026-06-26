@@ -18,6 +18,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHART="$ROOT/charts/lucairn"
 VALUES="$ROOT/customer-values.yaml.example"
 
+# Shared test constants (TEST_SIGNING_KEY for helm render injection).
+# shellcheck source=lib/test-helpers.sh
+source "$ROOT/tests/lib/test-helpers.sh"
+
 if ! command -v helm >/dev/null 2>&1; then
   echo "backup-helm tests: skipped (helm not installed)"
   exit 0
@@ -25,8 +29,13 @@ fi
 
 # Common --set flags that satisfy the chart's pre-existing validators so the
 # render reaches our CronJob template. imagePullDockerConfigJson satisfies the
-# pull-secret guard.
-COMMON=(--set "global.imagePullDockerConfigJson=x")
+# pull-secret guard. TEST_SIGNING_KEY satisfies the veil-witness all-zeroes
+# signing-key guard (customer-values.yaml.example has a placeholder value that
+# fails the hex validation; we override it here for test renders only).
+COMMON=(
+  --set "global.imagePullDockerConfigJson=x"
+  --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}"
+)
 
 render() {
   helm template lucairn "$CHART" -f "$VALUES" "${COMMON[@]}" "$@"
