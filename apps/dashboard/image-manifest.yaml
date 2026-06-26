@@ -58,6 +58,24 @@ default_lucairn_image_registry: "ghcr.io/declade"
 # requires a coordinated upgrade across multiple services, those services
 # should be pinned together here so an operator pulling the kit cannot
 # accidentally mix incompatible versions.
+# NOTE FOR AIR-GAP MIRROR OPERATORS — mirror ALL signed artifacts, not just
+# the services listed below. The `services:` block covers only the 8 images
+# that the default Compose stack actually pulls. Five additional images are
+# cosign-signed and published alongside every release but are NOT pulled by
+# the default compose path — they are optional or deployment-specific:
+#
+#   dsa-reid-guard    (L4 Re-ID guard — pulled when reid-guard profile enabled)
+#   dsa-admin         (admin API service — pulled when admin profile enabled)
+#   dsa-demo          (demo portal — pulled when demo profile enabled)
+#   dsa-ingest        (data ingest service — reserved, not wired by default)
+#   dsa-llm-auditor   (LLM audit service — pulled when llm-auditor profile enabled)
+#
+# A mirror sized from `services:` alone (8 images) will be MISSING these 5
+# artifacts. Size your mirror from the `signed_artifacts:` block below (13
+# Lucairn images + lucairn-dashboard) to ensure every cosign-verified image
+# is available offline. The `optional_services:` block (lucairn-dashboard,
+# dsa-cert-builder, dsa-cert-portal) contains further images used only with
+# specific profiles.
 services:
   dsa-audit:
     image_tag: ""    # inherits default

@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "feat/**", "fix/**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    name: Kit test harness
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Pin helm to a Helm 3 release. The chart uses apiVersion: v2 (Helm 3+).
+      # Local development uses helm v4.1.3 (renders identically on all tested
+      # assertions). CI pins v3.16.x — the stable Helm 3 LTS series — for
+      # reproducibility.  If a future chart feature requires Helm 4, bump this
+      # pin and retest.
+      - name: Install helm v3.16.4
+        run: |
+          curl -fsSL https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz \
+            | tar -xz --strip-components=1 -C /usr/local/bin linux-amd64/helm
+          helm version --short
+
+      # kubeconform validates rendered K8s manifests.  Matches local version.
+      - name: Install kubeconform v0.7.0
+        run: |
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      # cosign is used by tests/test_digest_pin.sh (missing-cosign fast-fail
+      # path is SKIPPED when cosign is present; present on CI so test coverage
+      # matches local).
+      - name: Install cosign v2.4.1
+        run: |
+          curl -fsSL https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64 \
+            -o /usr/local/bin/cosign
+          chmod +x /usr/local/bin/cosign
+          cosign version
+
+      - name: Run make test
+        run: make test

@@ -3,6 +3,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Shared test constants (TEST_SIGNING_KEY for helm render injection).
+# shellcheck source=lib/test-helpers.sh
+source "$ROOT/tests/lib/test-helpers.sh"
+
 bash -n "$ROOT/bin/lucairn"
 bash -n "$ROOT/scripts/package-release.sh"
 bash -n "$ROOT/tests/test_lucairn_cli.sh"
@@ -89,7 +93,8 @@ if command -v helm >/dev/null 2>&1; then
   RENDER_FILE="$(mktemp)"
   helm template lucairn "$ROOT/charts/lucairn" \
     --set global.skipPullSecretGuard=true \
-    --set sandbox-a.sanitizer.llmScanEnabled=true >"$RENDER_FILE" 2>/dev/null
+    --set sandbox-a.sanitizer.llmScanEnabled=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" >"$RENDER_FILE" 2>/dev/null
   grep -q "automountServiceAccountToken: false" "$RENDER_FILE" \
     || { echo "NET-05: no automountServiceAccountToken:false rendered" >&2; rm -f "$RENDER_FILE"; exit 1; }
   # promtail SA must NOT have the disable (it needs the K8s API).
@@ -193,13 +198,14 @@ if command -v helm >/dev/null 2>&1; then
     --set admin.secrets.values.dsaServiceToken=x \
     --set ingest.secrets.values.dsaServiceToken=x \
     --set sandbox-b.redis.password=xxxxxxxx \
-    --set sandbox-b.secrets.values.sandboxBApiKeys=x)"
+    --set sandbox-b.secrets.values.sandboxBApiKeys=x \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}")"
   echo "helm template (values-prod.yaml): rendered ok (HA-02)"
 
   # HA-03 guard: at the v1.0 single-replica lock, no PodDisruptionBudget
   # may render — a PDB with minAvailable:1 on a one-pod workload blocks
   # `kubectl drain` forever. PDBs auto-render only at replicaCount >= 2.
-  DEFAULT_RENDER="$(helm template lucairn "$CHART" --set global.skipPullSecretGuard=true)"
+  DEFAULT_RENDER="$(helm template lucairn "$CHART" --set global.skipPullSecretGuard=true --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}")"
   # NOTE: use `grep -c` (count the whole stream) rather than `grep -q` for the
   # checks against $DEFAULT_RENDER. Under `set -o pipefail`, `grep -q` exits 0
   # on the FIRST match and closes the pipe, which sends SIGPIPE (exit 141) to
@@ -242,7 +248,8 @@ if command -v helm >/dev/null 2>&1; then
   # /metrics (gateway + veil-witness), with correct namespace mapping.
   SM_RENDER="$(helm template lucairn "$CHART" \
     --set global.skipPullSecretGuard=true \
-    --set observability.serviceMonitors.enabled=true)"
+    --set observability.serviceMonitors.enabled=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}")"
   SM_NAMES="$(echo "$SM_RENDER" | awk '/kind: ServiceMonitor/{f=1} f&&/name: dsa-/{print $2; f=0}' | sort | tr '\n' ' ')"
   if [ "$SM_NAMES" != "dsa-gateway dsa-veil-witness " ]; then
     echo "OBS-02: ServiceMonitors must be exactly gateway+veil-witness, got: $SM_NAMES" >&2
