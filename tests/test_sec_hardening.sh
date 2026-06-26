@@ -524,91 +524,424 @@ echo "M9-HELM-MANAGED: LUCAIRN_BACKUP_HELM_MANAGED=true, no bucket, strict=1 →
 
 echo "M9-HELM-MANAGED backup_preflight Helm path (--strict passes): ok"
 
-# ---------------------------------------------------------------------------
-# M23 Helm-path: empty canaryHmacKey WARN (audit 2026-06-23).
-# NOTE: H9 Helm-path mTLS partial-config tests (witnessMtls: block) were removed
-# here.  A raw values.yaml text-parser cannot (a) merge Helm chart defaults (would
-# false-FAIL a valid config where caBundle/clientCert/clientKey come from chart
-# defaults) nor (b) see that witness mTLS is SPLIT across gateway.witnessMtls.
-# clientSecret + veil-witness.witnessMtls.serverSecret (would false-GREEN a
-# half-enabled config).  Correct validation requires `helm template` render —
-# deferred to the kit-CI follow-up (H10).
+# ===========================================================================
+# H10 (2026-06-26): render-based Helm-path doctor checks.
 #
-# When gateway.secrets.values.canaryHmacKey is absent or empty in the Helm
-# values.yaml, the gateway's canary L3-leak detection is silently disabled.
-# Doctor must emit a WARN (return 0 — not a hard failure).
+# Replaces the prior text-parser canary tests (and re-adds the reverted
+# witness-mTLS partial-config tests) with RENDER-based assertions. The reverted
+# text-parser (commit 195cc58) could not (a) merge Helm chart defaults nor
+# (b) see that witness mTLS is SPLIT across gateway.witnessMtls.clientSecret +
+# veil-witness.witnessMtls.serverSecret. The render-based checks
+# (check_mtls_partial_config_helm + check_canary_hmac_key_helm in bin/lucairn)
+# `helm template`-render the customer's values, merging chart defaults, and
+# inspect the MERGED rendered env/secret output — the only correct path.
+#
+# These cases require helm. They self-skip (with a NOTE) on a helm-absent
+# runner, mirroring the doctor's own graceful-skip behaviour, so the harness
+# stays green on machines without helm.
+# ===========================================================================
+
+if ! command -v helm >/dev/null 2>&1; then
+  echo "H10 render-based Helm doctor checks: SKIPPED — helm not installed (render-based checks require helm)"
+else
+
+# run_doctor_with_values <out_file> <values_file>  → echoes the doctor exit code.
+# Combines stdout+stderr into <out_file> (doctor emits FAILs on stdout, WARNs on
+# stderr; tests grep the merged stream). The base ENV_FILE drives the Compose
+# checks; the values file drives the Helm-path render checks.
+run_doctor_with_values() {
+  local out="$1" vals="$2"
+  set +e
+  "$ROOT/bin/lucairn" doctor --env "$ENV_FILE" \
+    --compose "$ROOT/docker-compose.customer.yml" \
+    --values "$vals" \
+    --offline > "$out" 2>&1
+  local rc=$?
+  set -e
+  return "$rc"
+}
+
+# A render-time canary value; the actual value is irrelevant to the check
+# (it compares gateway vs sandbox-a for equality) but must be non-empty.
+H10_CANARY="$(openssl rand -hex 32)"
+
+# ---------------------------------------------------------------------------
+# Witness mTLS partial-config — render-based (8 cases; re-add of the reverted
+# text-parser tests, now render-and-inspect).
+#
+# Render signal: WITNESS_MTLS_CLIENT_CERT_PATH (gateway client side, gated on
+# gateway.witnessMtls.clientSecret) + WITNESS_MTLS_SERVER_CERT_PATH (witness
+# server side, gated on veil-witness.witnessMtls.serverSecret).
+#   both / neither → consistent → PASS
+#   exactly one    → split/half-config → FAIL
 # ---------------------------------------------------------------------------
 
-# Case 1: canaryHmacKey absent → WARN present, doctor still passes.
-HELM_NO_CANARY_VALS="$TMPDIR/helm-no-canary.yaml"
-cat > "$HELM_NO_CANARY_VALS" <<'YAML'
+# Case M1: no witnessMtls block anywhere → mTLS off both sides → PASS (no flag).
+MTLS_NONE_VALS="$TMPDIR/h10-mtls-none.yaml"
+cat > "$MTLS_NONE_VALS" <<YAML
+gateway:
+  ingress:
+    enabled: true
+  secrets:
+    values:
+      canaryHmacKey: "$H10_CANARY"
+sandbox-a:
+  secrets:
+    values:
+      canaryHmacKey: "$H10_CANARY"
+YAML
+if ! run_doctor_with_values "$TMPDIR/h10-mtls-none.out" "$MTLS_NONE_VALS"; then
+  echo "FAIL: H10-mTLS none → doctor should PASS (mTLS off both sides)" >&2
+  cat "$TMPDIR/h10-mtls-none.out" >&2; exit 1
+fi
+if grep -q "mTLS config (Helm): FAIL" "$TMPDIR/h10-mtls-none.out"; then
+  echo "FAIL: H10-mTLS none → should NOT flag a mTLS FAIL" >&2
+  cat "$TMPDIR/h10-mtls-none.out" >&2; exit 1
+fi
+echo "H10-mTLS: no witnessMtls → PASS (mTLS off): ok"
+
+# Case M2: BOTH sides enabled (full mesh) → PASS.
+MTLS_FULL_VALS="$TMPDIR/h10-mtls-full.yaml"
+cat > "$MTLS_FULL_VALS" <<YAML
+gateway:
+  witnessMtls:
+    clientSecret: "gateway-witness-mtls-certs"
+  secrets:
+    values:
+      canaryHmacKey: "$H10_CANARY"
+veil-witness:
+  witnessMtls:
+    serverSecret: "witness-mtls-server-certs"
+sandbox-a:
+  secrets:
+    values:
+      canaryHmacKey: "$H10_CANARY"
+YAML
+if ! run_doctor_with_values "$TMPDIR/h10-mtls-full.out" "$MTLS_FULL_VALS"; then
+  echo "FAIL: H10-mTLS full mesh → doctor should PASS (both sides set)" >&2
+  cat "$TMPDIR/h10-mtls-full.out" >&2; exit 1
+fi
+if grep -q "mTLS config (Helm): FAIL" "$TMPDIR/h10-mtls-full.out"; then
+  echo "FAIL: H10-mTLS full mesh → should NOT flag a mTLS FAIL" >&2
+  cat "$TMPDIR/h10-mtls-full.out" >&2; exit 1
+fi
+echo "H10-mTLS: full mesh (both sides) → PASS: ok"
+
+# Case M3: gateway client ONLY (no witness server) → FAIL (half-config).
+# This is a false-GREEN the text-parser produced; the render sees only the
+# gateway-side WITNESS_MTLS_CLIENT_CERT_PATH.
+MTLS_GW_ONLY_VALS="$TMPDIR/h10-mtls-gw-only.yaml"
+cat > "$MTLS_GW_ONLY_VALS" <<YAML
+gateway:
+  witnessMtls:
+    clientSecret: "gateway-witness-mtls-certs"
+  secrets:
+    values:
+      canaryHmacKey: "$H10_CANARY"
+sandbox-a:
+  secrets:
+    values:
+      canaryHmacKey: "$H10_CANARY"
+YAML
+if run_doctor_with_values "$TMPDIR/h10-mtls-gw-only.out" "$MTLS_GW_ONLY_VALS"; then
+  echo "FAIL: H10-mTLS gateway-only → doctor should FAIL (witness server side missing)" >&2
+  cat "$TMPDIR/h10-mtls-gw-only.out" >&2; exit 1
+fi
+grep -q "mTLS config (Helm): FAIL" "$TMPDIR/h10-mtls-gw-only.out" \
+  || { echo "FAIL: H10-mTLS gateway-only missing expected FAIL message" >&2; cat "$TMPDIR/h10-mtls-gw-only.out" >&2; exit 1; }
+grep -q "gateway client side is enabled" "$TMPDIR/h10-mtls-gw-only.out" \
+  || { echo "FAIL: H10-mTLS gateway-only should name the gateway-enabled side" >&2; exit 1; }
+echo "H10-mTLS: gateway client only → FAIL (half-config): ok"
+
+# Case M4: witness server ONLY (no gateway client) → FAIL (half-config).
+MTLS_SRV_ONLY_VALS="$TMPDIR/h10-mtls-srv-only.yaml"
+cat > "$MTLS_SRV_ONLY_VALS" <<YAML
+veil-witness:
+  witnessMtls:
+    serverSecret: "witness-mtls-server-certs"
 gateway:
   secrets:
     values:
-      licenseKey: "test-license"
+      canaryHmacKey: "$H10_CANARY"
+sandbox-a:
+  secrets:
+    values:
+      canaryHmacKey: "$H10_CANARY"
 YAML
-HELM_NO_CANARY_RC=0
-"$ROOT/bin/lucairn" doctor --env "$ENV_FILE" \
-  --compose "$ROOT/docker-compose.customer.yml" \
-  --values "$HELM_NO_CANARY_VALS" \
-  --offline > "$TMPDIR/helm-no-canary.out" 2> "$TMPDIR/helm-no-canary.err" || HELM_NO_CANARY_RC=$?
-if [ "$HELM_NO_CANARY_RC" -ne 0 ]; then
-  echo "FAIL: M23-Helm canaryHmacKey absent → doctor should PASS (warn only, not fail)" >&2
-  cat "$TMPDIR/helm-no-canary.out" "$TMPDIR/helm-no-canary.err" >&2
-  exit 1
+if run_doctor_with_values "$TMPDIR/h10-mtls-srv-only.out" "$MTLS_SRV_ONLY_VALS"; then
+  echo "FAIL: H10-mTLS witness-server-only → doctor should FAIL (gateway client side missing)" >&2
+  cat "$TMPDIR/h10-mtls-srv-only.out" >&2; exit 1
 fi
-if ! grep -q "canary key (Helm)" "$TMPDIR/helm-no-canary.err"; then
-  echo "FAIL: M23-Helm canaryHmacKey absent → expected WARN on stderr" >&2
-  cat "$TMPDIR/helm-no-canary.out" "$TMPDIR/helm-no-canary.err" >&2
-  exit 1
-fi
-echo "M23-Helm: canaryHmacKey absent → WARN (doctor still PASS): ok"
+grep -q "mTLS config (Helm): FAIL" "$TMPDIR/h10-mtls-srv-only.out" \
+  || { echo "FAIL: H10-mTLS witness-server-only missing expected FAIL message" >&2; cat "$TMPDIR/h10-mtls-srv-only.out" >&2; exit 1; }
+grep -q "witness server side is enabled" "$TMPDIR/h10-mtls-srv-only.out" \
+  || { echo "FAIL: H10-mTLS witness-server-only should name the witness-enabled side" >&2; exit 1; }
+echo "H10-mTLS: witness server only → FAIL (half-config): ok"
 
-# Case 2: canaryHmacKey explicitly empty → same WARN, same PASS.
-HELM_EMPTY_CANARY_VALS="$TMPDIR/helm-empty-canary.yaml"
-cat > "$HELM_EMPTY_CANARY_VALS" <<'YAML'
+# Case M5: DEFAULT-MERGE proof — gateway clientSecret set but caBundle/clientCert/
+# clientKey OMITTED from the values file (they come from chart DEFAULTS). The
+# text-parser false-FAILed this (couldn't see the defaults). The render merges
+# them, so with the witness server side also enabled this is a valid full mesh
+# → PASS.
+MTLS_DEFAULTS_VALS="$TMPDIR/h10-mtls-defaults.yaml"
+cat > "$MTLS_DEFAULTS_VALS" <<YAML
+gateway:
+  witnessMtls:
+    clientSecret: "gateway-witness-mtls-certs"
+  secrets:
+    values:
+      canaryHmacKey: "$H10_CANARY"
+veil-witness:
+  witnessMtls:
+    serverSecret: "witness-mtls-server-certs"
+sandbox-a:
+  secrets:
+    values:
+      canaryHmacKey: "$H10_CANARY"
+YAML
+if ! run_doctor_with_values "$TMPDIR/h10-mtls-defaults.out" "$MTLS_DEFAULTS_VALS"; then
+  echo "FAIL: H10-mTLS default-merge → doctor should PASS (cert paths from chart defaults)" >&2
+  cat "$TMPDIR/h10-mtls-defaults.out" >&2; exit 1
+fi
+if grep -q "mTLS config (Helm): FAIL" "$TMPDIR/h10-mtls-defaults.out"; then
+  echo "FAIL: H10-mTLS default-merge → should NOT false-FAIL (defaults supply cert paths)" >&2
+  cat "$TMPDIR/h10-mtls-defaults.out" >&2; exit 1
+fi
+echo "H10-mTLS: full mesh with cert paths from chart defaults → PASS (default-merge proof): ok"
+
+# Case M6: gateway-side witnessMtls with EMPTY clientSecret → mTLS off → PASS.
+MTLS_EMPTY_VALS="$TMPDIR/h10-mtls-empty.yaml"
+cat > "$MTLS_EMPTY_VALS" <<YAML
+gateway:
+  witnessMtls:
+    clientSecret: ""
+  secrets:
+    values:
+      canaryHmacKey: "$H10_CANARY"
+veil-witness:
+  witnessMtls:
+    serverSecret: ""
+sandbox-a:
+  secrets:
+    values:
+      canaryHmacKey: "$H10_CANARY"
+YAML
+if ! run_doctor_with_values "$TMPDIR/h10-mtls-empty.out" "$MTLS_EMPTY_VALS"; then
+  echo "FAIL: H10-mTLS empty secrets → doctor should PASS (mTLS off)" >&2
+  cat "$TMPDIR/h10-mtls-empty.out" >&2; exit 1
+fi
+if grep -q "mTLS config (Helm): FAIL" "$TMPDIR/h10-mtls-empty.out"; then
+  echo "FAIL: H10-mTLS empty secrets → should NOT flag (both sides off)" >&2
+  cat "$TMPDIR/h10-mtls-empty.out" >&2; exit 1
+fi
+echo "H10-mTLS: empty client+server secret → PASS (mTLS off): ok"
+
+# Case M7: half-config (witness server only) takes precedence even when canary is
+# fully wired → the mTLS FAIL fires (independence of the two render checks).
+# (Reuses M4's render but asserts the doctor stops on the mTLS FAIL.)
+if run_doctor_with_values "$TMPDIR/h10-mtls-precedence.out" "$MTLS_SRV_ONLY_VALS"; then
+  echo "FAIL: H10-mTLS precedence → half-mTLS must FAIL even with canary fully wired" >&2
+  cat "$TMPDIR/h10-mtls-precedence.out" >&2; exit 1
+fi
+grep -q "mTLS config (Helm): FAIL" "$TMPDIR/h10-mtls-precedence.out" \
+  || { echo "FAIL: H10-mTLS precedence missing mTLS FAIL" >&2; exit 1; }
+echo "H10-mTLS: half-config FAILs independently of canary wiring: ok"
+
+# Case M8: helm-absent graceful skip — simulated by pointing the doctor at a
+# values file but invoking with a PATH that masks helm. We assert the doctor
+# does NOT flag the half-config (it cannot render) and INFO-skips. We mirror the
+# real-world "compose-mode customer with no helm" posture: a half-mTLS values
+# file must NOT cause a spurious FAIL when helm is unavailable.
+H10_NOHELM_BIN="$TMPDIR/h10-nohelm-bin"
+rm -rf "$H10_NOHELM_BIN"; mkdir -p "$H10_NOHELM_BIN"
+# Mirror every PATH dir, symlinking each tool EXCEPT helm.
+_h10_oldifs="$IFS"; IFS=':'
+for _d in $PATH; do
+  [ -d "$_d" ] || continue
+  for _f in "$_d"/*; do
+    [ -e "$_f" ] || continue
+    _b="$(basename "$_f")"
+    [ "$_b" = "helm" ] && continue
+    [ -e "$H10_NOHELM_BIN/$_b" ] || ln -sf "$_f" "$H10_NOHELM_BIN/$_b" 2>/dev/null || true
+  done
+done
+IFS="$_h10_oldifs"
+H10_NOHELM_RC=0
+PATH="$H10_NOHELM_BIN" "$ROOT/bin/lucairn" doctor --env "$ENV_FILE" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --values "$MTLS_SRV_ONLY_VALS" \
+  --offline > "$TMPDIR/h10-nohelm.out" 2>&1 || H10_NOHELM_RC=$?
+if [ "$H10_NOHELM_RC" -ne 0 ]; then
+  echo "FAIL: H10 helm-absent → doctor should PASS (graceful skip, not flag the half-config), rc=$H10_NOHELM_RC" >&2
+  cat "$TMPDIR/h10-nohelm.out" >&2; exit 1
+fi
+grep -q "mTLS config (Helm): skipped — helm not installed" "$TMPDIR/h10-nohelm.out" \
+  || { echo "FAIL: H10 helm-absent → expected mTLS graceful-skip INFO" >&2; cat "$TMPDIR/h10-nohelm.out" >&2; exit 1; }
+grep -q "canary key (Helm): skipped — helm not installed" "$TMPDIR/h10-nohelm.out" \
+  || { echo "FAIL: H10 helm-absent → expected canary graceful-skip INFO" >&2; cat "$TMPDIR/h10-nohelm.out" >&2; exit 1; }
+if grep -q "mTLS config (Helm): FAIL" "$TMPDIR/h10-nohelm.out"; then
+  echo "FAIL: H10 helm-absent → must NOT flag a mTLS FAIL (cannot render without helm)" >&2
+  cat "$TMPDIR/h10-nohelm.out" >&2; exit 1
+fi
+echo "H10-mTLS: helm absent → graceful SKIP (no spurious FAIL): ok"
+
+echo "H10 render-based witness-mTLS partial-config detection: ok"
+
+# ---------------------------------------------------------------------------
+# Canary two-consumer (gateway ↔ sandbox-a) — render-based.
+#
+# Render compares CANARY_HMAC_KEY from the gateway-credentials Secret vs the
+# sandbox-a-credentials Secret:
+#   both empty            → canary off          → WARN (PASS)
+#   both set AND equal     → consistently wired  → PASS (no WARN/FAIL)
+#   one set, other empty   → half-config         → FAIL
+#   both set but unequal   → key mismatch        → FAIL
+# ---------------------------------------------------------------------------
+
+# Case C1: both empty → canary off → WARN, doctor still PASS.
+CANARY_OFF_VALS="$TMPDIR/h10-canary-off.yaml"
+cat > "$CANARY_OFF_VALS" <<'YAML'
 gateway:
   secrets:
     values:
       canaryHmacKey: ""
+sandbox-a:
+  secrets:
+    values:
+      canaryHmacKey: ""
 YAML
-HELM_EMPTY_CANARY_RC=0
-"$ROOT/bin/lucairn" doctor --env "$ENV_FILE" \
-  --compose "$ROOT/docker-compose.customer.yml" \
-  --values "$HELM_EMPTY_CANARY_VALS" \
-  --offline > "$TMPDIR/helm-empty-canary.out" 2> "$TMPDIR/helm-empty-canary.err" || HELM_EMPTY_CANARY_RC=$?
-if [ "$HELM_EMPTY_CANARY_RC" -ne 0 ]; then
-  echo "FAIL: M23-Helm canaryHmacKey='' → doctor should PASS (warn only, not fail)" >&2
-  cat "$TMPDIR/helm-empty-canary.out" "$TMPDIR/helm-empty-canary.err" >&2
-  exit 1
+if ! run_doctor_with_values "$TMPDIR/h10-canary-off.out" "$CANARY_OFF_VALS"; then
+  echo "FAIL: H10-canary both-empty → doctor should PASS (WARN only)" >&2
+  cat "$TMPDIR/h10-canary-off.out" >&2; exit 1
 fi
-if ! grep -q "canary key (Helm)" "$TMPDIR/helm-empty-canary.err"; then
-  echo "FAIL: M23-Helm canaryHmacKey='' → expected WARN on stderr" >&2
-  cat "$TMPDIR/helm-empty-canary.out" "$TMPDIR/helm-empty-canary.err" >&2
-  exit 1
+grep -q "canary key (Helm): CANARY_HMAC_KEY is empty on BOTH" "$TMPDIR/h10-canary-off.out" \
+  || { echo "FAIL: H10-canary both-empty → expected WARN" >&2; cat "$TMPDIR/h10-canary-off.out" >&2; exit 1; }
+if grep -q "canary key (Helm): FAIL" "$TMPDIR/h10-canary-off.out"; then
+  echo "FAIL: H10-canary both-empty → must be WARN, not FAIL" >&2
+  cat "$TMPDIR/h10-canary-off.out" >&2; exit 1
 fi
-echo "M23-Helm: canaryHmacKey='' → WARN (doctor still PASS): ok"
+echo "H10-canary: both empty → WARN (doctor still PASS): ok"
 
-# Case 3: canaryHmacKey set → no WARN.
-HELM_SET_CANARY_VALS="$TMPDIR/helm-set-canary.yaml"
-printf 'gateway:\n  secrets:\n    values:\n      canaryHmacKey: "%s"\n' "$(openssl rand -hex 32)" > "$HELM_SET_CANARY_VALS"
-HELM_SET_CANARY_RC=0
-"$ROOT/bin/lucairn" doctor --env "$ENV_FILE" \
-  --compose "$ROOT/docker-compose.customer.yml" \
-  --values "$HELM_SET_CANARY_VALS" \
-  --offline > "$TMPDIR/helm-set-canary.out" 2> "$TMPDIR/helm-set-canary.err" || HELM_SET_CANARY_RC=$?
-if [ "$HELM_SET_CANARY_RC" -ne 0 ]; then
-  echo "FAIL: M23-Helm canaryHmacKey set → doctor should PASS" >&2
-  cat "$TMPDIR/helm-set-canary.out" "$TMPDIR/helm-set-canary.err" >&2
-  exit 1
+# Case C2: both set to the SAME value → consistently wired → PASS, no WARN/FAIL.
+CANARY_MATCH_VALS="$TMPDIR/h10-canary-match.yaml"
+cat > "$CANARY_MATCH_VALS" <<YAML
+gateway:
+  secrets:
+    values:
+      canaryHmacKey: "$H10_CANARY"
+sandbox-a:
+  secrets:
+    values:
+      canaryHmacKey: "$H10_CANARY"
+YAML
+if ! run_doctor_with_values "$TMPDIR/h10-canary-match.out" "$CANARY_MATCH_VALS"; then
+  echo "FAIL: H10-canary match → doctor should PASS" >&2
+  cat "$TMPDIR/h10-canary-match.out" >&2; exit 1
 fi
-if grep -q "canary key (Helm)" "$TMPDIR/helm-set-canary.err"; then
-  echo "FAIL: M23-Helm canaryHmacKey set → should NOT emit canary WARN" >&2
-  cat "$TMPDIR/helm-set-canary.err" >&2
-  exit 1
+if grep -qE "canary key \(Helm\): (FAIL|CANARY_HMAC_KEY is empty)" "$TMPDIR/h10-canary-match.out"; then
+  echo "FAIL: H10-canary match → should emit no canary WARN/FAIL" >&2
+  cat "$TMPDIR/h10-canary-match.out" >&2; exit 1
 fi
-echo "M23-Helm: canaryHmacKey set → PASS (no WARN): ok"
+echo "H10-canary: both set + matching → PASS (no WARN/FAIL): ok"
 
-echo "M23 Helm-path canaryHmacKey empty WARN: ok"
+# Case C3: gateway set, sandbox-a EMPTY → half-config → FAIL.
+# (This is the exact two-consumer false-GREEN the gateway-only text-parser
+# produced.)
+CANARY_HALF_VALS="$TMPDIR/h10-canary-half.yaml"
+cat > "$CANARY_HALF_VALS" <<YAML
+gateway:
+  secrets:
+    values:
+      canaryHmacKey: "$H10_CANARY"
+sandbox-a:
+  secrets:
+    values:
+      canaryHmacKey: ""
+YAML
+if run_doctor_with_values "$TMPDIR/h10-canary-half.out" "$CANARY_HALF_VALS"; then
+  echo "FAIL: H10-canary half (gateway set, sandbox-a empty) → doctor should FAIL" >&2
+  cat "$TMPDIR/h10-canary-half.out" >&2; exit 1
+fi
+grep -q "canary key (Helm): FAIL" "$TMPDIR/h10-canary-half.out" \
+  || { echo "FAIL: H10-canary half missing expected FAIL message" >&2; cat "$TMPDIR/h10-canary-half.out" >&2; exit 1; }
+grep -q "sandbox-a.secrets.values.canaryHmacKey is EMPTY" "$TMPDIR/h10-canary-half.out" \
+  || { echo "FAIL: H10-canary half should name the empty sandbox-a key" >&2; cat "$TMPDIR/h10-canary-half.out" >&2; exit 1; }
+echo "H10-canary: gateway set + sandbox-a empty → FAIL (two-consumer half): ok"
+
+# Case C4: both set but to DIFFERENT values → key mismatch → FAIL.
+CANARY_MISMATCH_VALS="$TMPDIR/h10-canary-mismatch.yaml"
+cat > "$CANARY_MISMATCH_VALS" <<YAML
+gateway:
+  secrets:
+    values:
+      canaryHmacKey: "$(openssl rand -hex 32)"
+sandbox-a:
+  secrets:
+    values:
+      canaryHmacKey: "$(openssl rand -hex 32)"
+YAML
+if run_doctor_with_values "$TMPDIR/h10-canary-mismatch.out" "$CANARY_MISMATCH_VALS"; then
+  echo "FAIL: H10-canary mismatch (different values) → doctor should FAIL" >&2
+  cat "$TMPDIR/h10-canary-mismatch.out" >&2; exit 1
+fi
+grep -q "canary key (Helm): FAIL" "$TMPDIR/h10-canary-mismatch.out" \
+  || { echo "FAIL: H10-canary mismatch missing expected FAIL message" >&2; cat "$TMPDIR/h10-canary-mismatch.out" >&2; exit 1; }
+grep -q "Both are set but to DIFFERENT values" "$TMPDIR/h10-canary-mismatch.out" \
+  || { echo "FAIL: H10-canary mismatch should report DIFFERENT values" >&2; cat "$TMPDIR/h10-canary-mismatch.out" >&2; exit 1; }
+echo "H10-canary: both set + mismatched → FAIL (key mismatch): ok"
+
+# Case C5: external-secret backend (vault) → INFO-skip (no native canary
+# evidence to compare); doctor PASSes. The chart intentionally omits
+# CANARY_HMAC_KEY from the ExternalSecret.
+CANARY_VAULT_VALS="$TMPDIR/h10-canary-vault.yaml"
+cat > "$CANARY_VAULT_VALS" <<'YAML'
+gateway:
+  secrets:
+    backend: vault
+sandbox-a:
+  secrets:
+    backend: vault
+YAML
+if ! run_doctor_with_values "$TMPDIR/h10-canary-vault.out" "$CANARY_VAULT_VALS"; then
+  echo "FAIL: H10-canary vault backend → doctor should PASS (INFO-skip canary check)" >&2
+  cat "$TMPDIR/h10-canary-vault.out" >&2; exit 1
+fi
+grep -q "canary key (Helm): skipped — external-secret backend" "$TMPDIR/h10-canary-vault.out" \
+  || { echo "FAIL: H10-canary vault → expected external-backend INFO-skip" >&2; cat "$TMPDIR/h10-canary-vault.out" >&2; exit 1; }
+if grep -q "canary key (Helm): FAIL" "$TMPDIR/h10-canary-vault.out"; then
+  echo "FAIL: H10-canary vault → must NOT FAIL (external backend is operator-manual)" >&2
+  cat "$TMPDIR/h10-canary-vault.out" >&2; exit 1
+fi
+echo "H10-canary: external-secret backend (vault) → INFO-skip (PASS): ok"
+
+# Case C6: MIXED backend — gateway k8s-native (canary set), sandbox-a vault →
+# INFO-skip (NOT a misleading "sandbox-a empty" FAIL). sandbox-a's native Secret
+# is absent under vault, so there is no render evidence to compare on that side.
+CANARY_MIXED_VALS="$TMPDIR/h10-canary-mixed.yaml"
+cat > "$CANARY_MIXED_VALS" <<YAML
+gateway:
+  secrets:
+    backend: k8s-native
+    values:
+      canaryHmacKey: "$H10_CANARY"
+sandbox-a:
+  secrets:
+    backend: vault
+YAML
+if ! run_doctor_with_values "$TMPDIR/h10-canary-mixed.out" "$CANARY_MIXED_VALS"; then
+  echo "FAIL: H10-canary mixed backend → doctor should PASS (INFO-skip, not a false sandbox-a-empty FAIL)" >&2
+  cat "$TMPDIR/h10-canary-mixed.out" >&2; exit 1
+fi
+grep -q "canary key (Helm): skipped — external-secret backend" "$TMPDIR/h10-canary-mixed.out" \
+  || { echo "FAIL: H10-canary mixed → expected external-backend INFO-skip" >&2; cat "$TMPDIR/h10-canary-mixed.out" >&2; exit 1; }
+if grep -q "canary key (Helm): FAIL" "$TMPDIR/h10-canary-mixed.out"; then
+  echo "FAIL: H10-canary mixed → must NOT false-FAIL (sandbox-a is on vault, not empty)" >&2
+  cat "$TMPDIR/h10-canary-mixed.out" >&2; exit 1
+fi
+echo "H10-canary: mixed backend (gateway native + sandbox-a vault) → INFO-skip (PASS): ok"
+
+echo "H10 render-based canary two-consumer detection: ok"
+
+fi  # end helm-present guard
 
 echo "all sec-hardening tests: ok"

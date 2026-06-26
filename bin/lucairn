@@ -790,60 +790,241 @@ check_mtls_partial_config() {
   return 0
 }
 
-# NOTE (H10 follow-up): Helm-path mTLS partial-config detection (check_mtls_partial_config_helm)
-# was removed here (audit 2026-06-23, reverted post Codex r1+r2).  A raw values.yaml text-parser
-# cannot (a) merge Helm chart defaults (false-FAILs a valid config where caBundle/clientCert/
-# clientKey come from chart defaults) nor (b) see the split gateway/witness secret layout
-# (false-GREENs a half-enabled config).  Correct validation requires `helm template` render
-# + inspecting rendered env vars — deferred to the kit-CI follow-up (H10).
-# The Compose-path check (check_mtls_partial_config above, WITNESS_MTLS_* env vars) is correct
-# and remains.
+# ---------------------------------------------------------------------------
+# H10 (2026-06-26): render-based Helm-path doctor checks.
+#
+# The prior text-parser approach (check_mtls_partial_config_helm) was reverted
+# (commit 195cc58, Codex r1+r2) because a raw values.yaml parser cannot:
+#   (a) merge Helm chart DEFAULTS — it false-FAILs a valid config where
+#       caBundle/clientCert/clientKey come from chart defaults, not the
+#       customer's values file; and
+#   (b) see that witness mTLS is SPLIT across two subcharts —
+#       gateway.witnessMtls.clientSecret (gateway client side) +
+#       veil-witness.witnessMtls.serverSecret (witness server side) — so it
+#       false-GREENs a half-enabled config (one side on, the other off).
+#
+# The correct approach is to `helm template`-RENDER the customer's values
+# (merging chart defaults automatically) and inspect the MERGED rendered
+# output. Both checks below are HELM-PATH-ONLY with graceful skip when helm is
+# absent or the deployment is Compose-mode (no --values supplied).
+# ---------------------------------------------------------------------------
+
+# A fixed, non-zero, valid 64-hex test signingKey injected at render time so the
+# all-zeroes anti-forgery guard (charts/lucairn/charts/veil-witness/templates/
+# _validate.tpl) does not abort the render. The value is irrelevant — it only
+# must be a valid 64-hex non-zero, non-placeholder key so the render proceeds;
+# it is never written to any artifact. Mirrors the Slice-2 fixed-test-key
+# decision (deterministic over a per-run `openssl rand`).
+DOCTOR_HELM_RENDER_TEST_SIGNING_KEY="1111111111111111111111111111111111111111111111111111111111111111"
+
+# helm_render_values <values_file> <chart_dir>
+#
+# Render the umbrella chart with the customer's values merged over chart
+# defaults, injecting the test signingKey (so the all-zeroes guard does not
+# abort) and skipping the pull-secret guard (an unrelated install-time gate).
+# Prints the merged rendered manifests to stdout; returns 1 if the render fails
+# for ANY reason (so callers can INFO-skip rather than false-FAIL on an
+# unrelated chart/values error — render-breakage is caught by static_checks).
+helm_render_values() {
+  local values_file="$1" chart_dir="$2"
+  helm template lucairn "$chart_dir" \
+    -f "$values_file" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=$DOCTOR_HELM_RENDER_TEST_SIGNING_KEY" \
+    2>/dev/null
+}
+
+check_mtls_partial_config_helm() {
+  # H10 render-based witness-mTLS split/half-config detection (re-add of the
+  # reverted check_mtls_partial_config_helm; audit 2026-06-23 → H10 2026-06-26).
+  #
+  # Witness mTLS is wired across TWO subcharts (the split the text-parser missed):
+  #   - GATEWAY (client) side: charts/lucairn/charts/gateway/templates/
+  #     configmap.yaml:95-103 emits WITNESS_MTLS_CLIENT_CERT_PATH (+ CA + KEY +
+  #     SERVER_NAME) ONLY when gateway.witnessMtls.clientSecret is non-empty.
+  #   - WITNESS (server) side: charts/lucairn/charts/veil-witness/templates/
+  #     deployment.yaml:132-145 emits WITNESS_MTLS_SERVER_CERT_PATH (+ CA + KEY)
+  #     ONLY when veil-witness.witnessMtls.serverSecret is non-empty.
+  #
+  # Render-and-inspect logic (chart defaults are merged automatically because we
+  # inspect the RENDER, not raw values):
+  #   gateway-client signal  = WITNESS_MTLS_CLIENT_CERT_PATH present in render.
+  #   witness-server signal  = WITNESS_MTLS_SERVER_CERT_PATH present in render.
+  #   both present  → full mesh        → PASS.
+  #   neither       → mTLS off         → PASS.
+  #   exactly one   → SPLIT/half-config → FAIL (handshake fails at boot: the
+  #                   enabled side requires its peer's cert, the disabled side
+  #                   presents none).
+  #
+  # Usage: check_mtls_partial_config_helm <values_file> <chart_dir>
+  local values_file="$1" chart_dir="$2"
+  [ -n "$values_file" ] && [ -f "$values_file" ] || return 0   # Compose path; skip
+  if ! have helm; then
+    info "mTLS config (Helm): skipped — helm not installed (render-based check requires helm)."
+    return 0
+  fi
+  [ -d "$chart_dir" ] || { info "mTLS config (Helm): skipped — chart dir not found ($chart_dir)."; return 0; }
+
+  local render
+  if ! render="$(helm_render_values "$values_file" "$chart_dir")"; then
+    info "mTLS config (Helm): skipped — chart render failed (unrelated to witness mTLS; see static_checks)."
+    return 0
+  fi
+  [ -n "$render" ] || { info "mTLS config (Helm): skipped — empty render."; return 0; }
+
+  # here-strings (not `printf | grep -q`): under `set -o pipefail`, `grep -q`
+  # exits on first match + closes the pipe → SIGPIPE-kills the writer → pipeline
+  # exit 141 → misread. The here-string has no pipe.
+  local gateway_client=0 witness_server=0
+  grep -q "WITNESS_MTLS_CLIENT_CERT_PATH" <<<"$render" && gateway_client=1
+  grep -q "WITNESS_MTLS_SERVER_CERT_PATH" <<<"$render" && witness_server=1
+
+  if [ "$gateway_client" -eq "$witness_server" ]; then
+    # both on (full mesh) or both off (mTLS disabled) — consistent → PASS.
+    return 0
+  fi
+
+  echo "mTLS config (Helm): FAIL — half-enabled witness mTLS in the rendered chart."
+  if [ "$gateway_client" -eq 1 ]; then
+    echo "mTLS config (Helm):   The gateway client side is enabled"
+    echo "mTLS config (Helm):   (gateway.witnessMtls.clientSecret is set → WITNESS_MTLS_CLIENT_CERT_PATH"
+    echo "mTLS config (Helm):   renders) but the witness server side is NOT"
+    echo "mTLS config (Helm):   (veil-witness.witnessMtls.serverSecret is empty → no WITNESS_MTLS_SERVER_CERT_PATH)."
+    echo "mTLS config (Helm):   The gateway will present a client cert to a witness that does not require"
+    echo "mTLS config (Helm):   mTLS — the handshake at the cert RPC dial (:50058) fails."
+  else
+    echo "mTLS config (Helm):   The witness server side is enabled"
+    echo "mTLS config (Helm):   (veil-witness.witnessMtls.serverSecret is set → WITNESS_MTLS_SERVER_CERT_PATH"
+    echo "mTLS config (Helm):   renders) but the gateway client side is NOT"
+    echo "mTLS config (Helm):   (gateway.witnessMtls.clientSecret is empty → no WITNESS_MTLS_CLIENT_CERT_PATH)."
+    echo "mTLS config (Helm):   The witness will require client auth that the gateway cannot present —"
+    echo "mTLS config (Helm):   the handshake at the cert RPC dial (:50058) fails."
+  fi
+  echo "mTLS config (Helm):   Either enable BOTH sides (gateway.witnessMtls.clientSecret +"
+  echo "mTLS config (Helm):   veil-witness.witnessMtls.serverSecret) or clear BOTH to disable witness mTLS."
+  echo "mTLS config (Helm):   See OPS.md § \"Witness mTLS\"."
+  return 1
+}
 
 check_canary_hmac_key_helm() {
-  # [LOW] Helm-path canary-key WARN (audit 2026-06-23).
+  # H10 render-based canary two-consumer (gateway ↔ sandbox-a) validation
+  # (extends the prior gateway-only WARN; audit 2026-06-23 → H10 2026-06-26).
   #
-  # The gateway uses CANARY_HMAC_KEY to detect L3-model canary-token leaks.
-  # When the key is absent the detection is silently disabled.
+  # CANARY_HMAC_KEY is consumed by BOTH the gateway (canary-leak DETECTION) and
+  # sandbox-a (canary-token ISSUING/signing); the two MUST share the same key or
+  # leaked tokens cannot be authenticated and detection silently fails. On the
+  # default k8s-native backend the key renders into both
+  # gateway-credentials and sandbox-a-credentials native Secrets from each
+  # subchart's secrets.values.canaryHmacKey (gateway/templates/secret.yaml:80,
+  # sandbox-a/templates/secret.yaml:23).
   #
-  # For the k8s-native backend, the key lives in gateway.secrets.values.canaryHmacKey
-  # (wired into both the gateway and sandbox-a k8s Secrets automatically). Warn when
-  # that field is empty/absent — the operator should set it.
+  # Render-and-inspect logic (extracts CANARY_HMAC_KEY per-chart by tracking the
+  # `# Source:` marker helm emits before each rendered file):
+  #   both empty            → canary off          → PASS (WARN-only — defence-in-depth tripwire off).
+  #   both set AND equal     → consistently wired  → PASS.
+  #   one set, other empty   → half-config         → FAIL (two-consumer mismatch).
+  #   both set but unequal   → key mismatch        → FAIL (gateway can't authenticate sandbox-a's tokens).
   #
-  # NOTE — H10 DEFERRAL: Full canary Helm validation for external-secret backends
-  # (vault/aws/azure) — ExternalSecret remoteRef wiring, sandbox-a issuing-side
-  # ExternalSecret, and gateway/sandbox-a key-match enforcement — requires
-  # helm-render-based validation and is deferred to the kit-CI follow-up (H10).
+  # External-secret backends (vault/aws/azure): the chart INTENTIONALLY omits
+  # CANARY_HMAC_KEY from both ExternalSecrets (gateway/templates/
+  # externalsecret.yaml:215 documents this deferral) → no rendered native Secret
+  # carries the key. There is no render evidence to compare, so this check
+  # INFO-skips for external backends (canary wiring is operator-manual there —
+  # matches the chart's own H10 deferral note). Detected by the absence of the
+  # native gateway-credentials Secret in the render.
   #
-  # This check is WARN-only (returns 0 always) — canary detection is a
-  # defence-in-depth tripwire; its absence is not a boot-blocking error.
-  #
-  # Usage: check_canary_hmac_key_helm <values_file>
-  local values_file="$1"
-  [ -f "$values_file" ] || return 0   # no values file → Compose path; skip
+  # Usage: check_canary_hmac_key_helm <values_file> <chart_dir>
+  local values_file="$1" chart_dir="$2"
+  [ -n "$values_file" ] && [ -f "$values_file" ] || return 0   # Compose path; skip
+  if ! have helm; then
+    info "canary key (Helm): skipped — helm not installed (render-based check requires helm)."
+    return 0
+  fi
+  [ -d "$chart_dir" ] || { info "canary key (Helm): skipped — chart dir not found ($chart_dir)."; return 0; }
 
-  # Extract gateway.secrets.values.canaryHmacKey from the values file.
-  # The key lives three levels deep: gateway: → secrets: → values: → canaryHmacKey.
-  # Expected indentation:
-  #   gateway:              (0 spaces)
-  #     secrets:            (2 spaces)
-  #       values:           (4 spaces)
-  #         canaryHmacKey:  (6 spaces)
-  local canary_key
-  canary_key="$(awk '
-    /^gateway:/{in_gw=1; next}
-    in_gw && /^[^[:space:]]/{in_gw=0}
-    in_gw && /^  secrets:/{in_sec=1; next}
-    in_sec && /^  [^[:space:]]/{in_sec=0}
-    in_sec && /^    values:/{in_val=1; next}
-    in_val && /^    [^[:space:]]/{in_val=0}
-    in_val && /^[[:space:]]+canaryHmacKey:/{
-      sub(/^[[:space:]]+canaryHmacKey:[[:space:]]*/,"")
+  local render
+  if ! render="$(helm_render_values "$values_file" "$chart_dir")"; then
+    info "canary key (Helm): skipped — chart render failed (unrelated to canary; see static_checks)."
+    return 0
+  fi
+  [ -n "$render" ] || { info "canary key (Helm): skipped — empty render."; return 0; }
+
+  # External-secret backend: both native credentials Secrets are gated on
+  # secrets.backend == k8s-native (gateway/sandbox-a templates/secret.yaml:1).
+  # If EITHER subchart uses an external backend its native Secret is absent →
+  # no rendered CANARY_HMAC_KEY evidence to compare on that side → INFO-skip the
+  # whole two-consumer check (canary wiring is operator-manual on external
+  # backends; matches the chart's own H10 deferral note). Skipping when EITHER
+  # side is external (not just the gateway) avoids a misleading "sandbox-a empty"
+  # FAIL on a mixed k8s-native/vault config.
+  # NOTE: use here-strings (not `printf | grep -q`) — under `set -o pipefail`,
+  # `grep -q` exits on the first match and closes the pipe, SIGPIPE-killing the
+  # writer → the pipeline exit becomes 141, which the `if` would misread as
+  # "no match". The here-string has no pipe and no SIGPIPE.
+  local gw_native=0 sa_native=0
+  grep -q "# Source: lucairn/charts/gateway/templates/secret.yaml" <<<"$render" && gw_native=1
+  grep -q "# Source: lucairn/charts/sandbox-a/templates/secret.yaml" <<<"$render" && sa_native=1
+  if [ "$gw_native" -eq 0 ] || [ "$sa_native" -eq 0 ]; then
+    info "canary key (Helm): skipped — external-secret backend (vault/aws/azure) on the gateway"
+    info "canary key (Helm):   and/or sandbox-a; the chart does not render CANARY_HMAC_KEY into the"
+    info "canary key (Helm):   ExternalSecret (operator-manual wiring; see gateway externalsecret.yaml)."
+    info "canary key (Helm):   Two-consumer validation is k8s-native only."
+    return 0
+  fi
+
+  # Extract CANARY_HMAC_KEY from the gateway-credentials and sandbox-a-credentials
+  # native Secret blocks, scoped by the `# Source:` marker helm emits per file.
+  # here-strings (not `printf | awk`): the awk `exit` closes the read end early
+  # → SIGPIPE on the writer → pipeline exit 141 under pipefail. The here-string
+  # has no pipe.
+  local gw_key sa_key
+  gw_key="$(awk '
+    /^# Source: lucairn\/charts\/gateway\/templates\/secret\.yaml$/{in_blk=1; next}
+    in_blk && /^# Source:/{in_blk=0}
+    in_blk && /^[[:space:]]+CANARY_HMAC_KEY:[[:space:]]*/{
+      sub(/^[[:space:]]+CANARY_HMAC_KEY:[[:space:]]*/,"")
       gsub(/^"|"$|^'"'"'|'"'"'$/,"")
       print; exit}
-  ' "$values_file")"
-  if [ -z "$canary_key" ]; then
-    warn "canary key (Helm): gateway.secrets.values.canaryHmacKey is not set in $values_file — canary L3-leak detection is silently disabled. Set a 32-byte hex secret (openssl rand -hex 32) to enable it (also set sandbox-a.secrets.values.canaryHmacKey to the SAME value — both consumers share this key). (audit 2026-06-23)"
+  ' <<<"$render")"
+  sa_key="$(awk '
+    /^# Source: lucairn\/charts\/sandbox-a\/templates\/secret\.yaml$/{in_blk=1; next}
+    in_blk && /^# Source:/{in_blk=0}
+    in_blk && /^[[:space:]]+CANARY_HMAC_KEY:[[:space:]]*/{
+      sub(/^[[:space:]]+CANARY_HMAC_KEY:[[:space:]]*/,"")
+      gsub(/^"|"$|^'"'"'|'"'"'$/,"")
+      print; exit}
+  ' <<<"$render")"
+
+  # Both empty → canary off (a defence-in-depth tripwire being off is WARN, not FAIL).
+  if [ -z "$gw_key" ] && [ -z "$sa_key" ]; then
+    warn "canary key (Helm): CANARY_HMAC_KEY is empty on BOTH the gateway and sandbox-a — canary"
+    warn "canary key (Helm):   L3-leak detection is silently disabled. Set the SAME 32-byte hex secret"
+    warn "canary key (Helm):   (openssl rand -hex 32) on gateway.secrets.values.canaryHmacKey AND"
+    warn "canary key (Helm):   sandbox-a.secrets.values.canaryHmacKey to enable it. (audit 2026-06-23)"
+    return 0
   fi
+
+  # Half-config (one set, other empty) OR key mismatch → FAIL (two-consumer break).
+  if [ "$gw_key" != "$sa_key" ]; then
+    echo "canary key (Helm): FAIL — the gateway and sandbox-a CANARY_HMAC_KEY do not match in the rendered chart."
+    if [ -z "$sa_key" ]; then
+      echo "canary key (Helm):   gateway.secrets.values.canaryHmacKey is set but"
+      echo "canary key (Helm):   sandbox-a.secrets.values.canaryHmacKey is EMPTY."
+    elif [ -z "$gw_key" ]; then
+      echo "canary key (Helm):   sandbox-a.secrets.values.canaryHmacKey is set but"
+      echo "canary key (Helm):   gateway.secrets.values.canaryHmacKey is EMPTY."
+    else
+      echo "canary key (Helm):   Both are set but to DIFFERENT values."
+    fi
+    echo "canary key (Helm):   Canary detection is a two-consumer scheme: sandbox-a SIGNS canary tokens"
+    echo "canary key (Helm):   and the gateway DETECTS leaks of them — both must use the IDENTICAL key,"
+    echo "canary key (Helm):   or leaked tokens cannot be authenticated and detection silently fails."
+    echo "canary key (Helm):   Set gateway.secrets.values.canaryHmacKey and"
+    echo "canary key (Helm):   sandbox-a.secrets.values.canaryHmacKey to the SAME value."
+    return 1
+  fi
+
+  # Both set and equal → consistently wired → PASS.
   return 0
 }
 
@@ -4795,16 +4976,29 @@ doctor() {
   # sandbox-b (main.py:284-288) and the sanitizer (gunicorn.conf.py:93-108)
   # sys.exit(1) at boot if ANY of the 5 credential-bearing WITNESS_MTLS_* vars
   # is set but the server or client triple is incomplete. Mode-agnostic (any env).
-  # NOTE: Helm-path mTLS detection (witnessMtls: block) deferred to H10 follow-up —
-  # requires `helm template` render; a raw values.yaml parser cannot merge chart
-  # defaults or see the split gateway/witness secret layout.
   local mtls_failed=0
   check_mtls_partial_config "$env_file" || mtls_failed=1
   [ "$mtls_failed" -eq 0 ] || return 1
 
-  # M23 Helm-path: canaryHmacKey empty WARN in values.yaml.
-  # Runs only when --values was supplied; no-op otherwise.
-  check_canary_hmac_key_helm "$values_file"
+  # H10 (2026-06-26): Helm-path witness-mTLS split/half-config detection.
+  # Renders the chart with the customer's values (merging chart defaults) and
+  # FAILs if witness mTLS is enabled on exactly one side (gateway client XOR
+  # witness server) — a half-config that breaks the cert RPC handshake. Runs only
+  # when --values was supplied; graceful-skips when helm is absent. (re-add of
+  # the reverted text-parser; now render-based — see check_mtls_partial_config_helm.)
+  local helm_mtls_failed=0
+  check_mtls_partial_config_helm "$values_file" "$ROOT/charts/lucairn" || helm_mtls_failed=1
+  [ "$helm_mtls_failed" -eq 0 ] || return 1
+
+  # H10 (2026-06-26): Helm-path canary two-consumer (gateway ↔ sandbox-a) check.
+  # Renders the chart and FAILs on a half/mismatched CANARY_HMAC_KEY (one side
+  # set, the other empty, or both set to different values) — both consumers must
+  # share the IDENTICAL key. WARNs (not FAIL) when both are empty (canary off).
+  # External-secret backends INFO-skip. Runs only when --values was supplied;
+  # graceful-skips when helm is absent.
+  local helm_canary_failed=0
+  check_canary_hmac_key_helm "$values_file" "$ROOT/charts/lucairn" || helm_canary_failed=1
+  [ "$helm_canary_failed" -eq 0 ] || return 1
 
   # M5 (deal-#1 hardening 2026-06-19): readiness-bundle boot-Fatal pre-flight.
   # When GATEWAY_REQUIRE_READINESS=true (Helm-only in the kit default, but
