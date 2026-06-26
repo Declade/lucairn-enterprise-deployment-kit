@@ -15,33 +15,49 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Pin helm to a Helm 3 release. The chart uses apiVersion: v2 (Helm 3+).
-      # Local development uses helm v4.1.3 (renders identically on all tested
-      # assertions). CI pins v3.16.x — the stable Helm 3 LTS series — for
-      # reproducibility.  If a future chart feature requires Helm 4, bump this
-      # pin and retest.
-      - name: Install helm v3.16.4
+      # Install CI tools into a runner-writable directory.  GitHub-hosted
+      # ubuntu-latest runners execute workflow steps as the unprivileged
+      # "runner" user; /usr/local/bin is root-owned and not writable without
+      # sudo.  We use $RUNNER_TEMP/bin (always writable by the runner user)
+      # and register it via $GITHUB_PATH so subsequent steps find the
+      # binaries on PATH.
+      #
+      # Pinned versions (linux-amd64 builds):
+      #   helm        v3.16.4  — stable Helm 3 LTS; chart uses apiVersion: v2.
+      #                          Local dev uses v4.1.3 (renders identically on
+      #                          all tested assertions); bump pin if Helm 4
+      #                          features are ever required.
+      #   kubeconform v0.7.0   — validates rendered K8s manifests; matches
+      #                          local version.
+      #   cosign      v2.4.1   — used by tests/test_sbom.sh; when present the
+      #                          missing-cosign fast-fail path is SKIPPED so CI
+      #                          coverage matches local.
+      - name: Install CI tools (helm v3.16.4, kubeconform v0.7.0, cosign v2.4.1)
         run: |
+          TOOL_DIR="$RUNNER_TEMP/bin"
+          mkdir -p "$TOOL_DIR"
+
+          # helm v3.16.4 — linux-amd64
           curl -fsSL https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz \
-            | tar -xz --strip-components=1 -C /usr/local/bin linux-amd64/helm
-          helm version --short
+            | tar -xz --strip-components=1 -C "$TOOL_DIR" linux-amd64/helm
 
-      # kubeconform validates rendered K8s manifests.  Matches local version.
-      - name: Install kubeconform v0.7.0
-        run: |
+          # kubeconform v0.7.0 — linux-amd64
           curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz \
-            | tar -xz -C /usr/local/bin kubeconform
-          kubeconform -v
+            | tar -xz -C "$TOOL_DIR" kubeconform
 
-      # cosign is used by tests/test_sbom.sh (missing-cosign fast-fail
-      # path is SKIPPED when cosign is present; present on CI so test coverage
-      # matches local).
-      - name: Install cosign v2.4.1
-        run: |
+          # cosign v2.4.1 — linux-amd64
           curl -fsSL https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64 \
-            -o /usr/local/bin/cosign
-          chmod +x /usr/local/bin/cosign
-          cosign version
+            -o "$TOOL_DIR/cosign"
+
+          chmod +x "$TOOL_DIR/helm" "$TOOL_DIR/kubeconform" "$TOOL_DIR/cosign"
+
+          # Register for subsequent steps (GITHUB_PATH affects steps AFTER this one)
+          echo "$TOOL_DIR" >> "$GITHUB_PATH"
+
+          # Smoke-check versions (uses absolute paths since PATH not yet updated)
+          "$TOOL_DIR/helm" version --short
+          "$TOOL_DIR/kubeconform" -v
+          "$TOOL_DIR/cosign" version
 
       - name: Run make test
         run: make test
