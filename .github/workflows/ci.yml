@@ -29,10 +29,16 @@ jobs:
       #                          features are ever required.
       #   kubeconform v0.7.0   — validates rendered K8s manifests; matches
       #                          local version.
-      #   cosign      v2.4.1   — used by tests/test_sbom.sh; when present the
-      #                          missing-cosign fast-fail path is SKIPPED so CI
-      #                          coverage matches local.
-      - name: Install CI tools (helm v3.16.4, kubeconform v0.7.0, cosign v2.4.1)
+      #
+      # cosign is intentionally NOT installed here.  tests/test_sbom.sh
+      # assertion 6 tests the missing-cosign fast-fail path: it uses
+      # `if command -v cosign` and SKIPS when cosign is on PATH.  Installing
+      # cosign would cause that regression path to be silently un-exercised in
+      # CI.  No other test needs a real cosign binary: test_check_updates.sh
+      # and test_sbom.sh assertion 7 each use a local shim/stub that does not
+      # require the real binary.  The full fetch+verify path (real cosign +
+      # GHCR) is covered by the post-merge edge-verify, not the unit harness.
+      - name: Install CI tools (helm v3.16.4, kubeconform v0.7.0)
         run: |
           TOOL_DIR="$RUNNER_TEMP/bin"
           mkdir -p "$TOOL_DIR"
@@ -45,11 +51,7 @@ jobs:
           curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz \
             | tar -xz -C "$TOOL_DIR" kubeconform
 
-          # cosign v2.4.1 — linux-amd64
-          curl -fsSL https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64 \
-            -o "$TOOL_DIR/cosign"
-
-          chmod +x "$TOOL_DIR/helm" "$TOOL_DIR/kubeconform" "$TOOL_DIR/cosign"
+          chmod +x "$TOOL_DIR/helm" "$TOOL_DIR/kubeconform"
 
           # Register for subsequent steps (GITHUB_PATH affects steps AFTER this one)
           echo "$TOOL_DIR" >> "$GITHUB_PATH"
@@ -57,7 +59,6 @@ jobs:
           # Smoke-check versions (uses absolute paths since PATH not yet updated)
           "$TOOL_DIR/helm" version --short
           "$TOOL_DIR/kubeconform" -v
-          "$TOOL_DIR/cosign" version
 
       - name: Run make test
         run: make test
