@@ -8,6 +8,7 @@ test:
 	bash tests/test_check_updates.sh
 	bash tests/test_redact_stream.sh
 	bash tests/test_tms_trust_zones.sh
+	bash tests/test_sec_hardening.sh
 	bash tests/static_checks.sh
 
 package:

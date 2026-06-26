@@ -843,7 +843,7 @@ check_mtls_partial_config_helm() {
   #     configmap.yaml:95-103 emits WITNESS_MTLS_CLIENT_CERT_PATH (+ CA + KEY +
   #     SERVER_NAME) ONLY when gateway.witnessMtls.clientSecret is non-empty.
   #   - WITNESS (server) side: charts/lucairn/charts/veil-witness/templates/
-  #     deployment.yaml:132-145 emits WITNESS_MTLS_SERVER_CERT_PATH (+ CA + KEY)
+  #     deployment.yaml:132-146 emits WITNESS_MTLS_SERVER_CERT_PATH (+ CA + KEY)
   #     ONLY when veil-witness.witnessMtls.serverSecret is non-empty.
   #
   # Render-and-inspect logic (chart defaults are merged automatically because we
@@ -965,10 +965,14 @@ check_canary_hmac_key_helm() {
   grep -q "# Source: lucairn/charts/gateway/templates/secret.yaml" <<<"$render" && gw_native=1
   grep -q "# Source: lucairn/charts/sandbox-a/templates/secret.yaml" <<<"$render" && sa_native=1
   if [ "$gw_native" -eq 0 ] || [ "$sa_native" -eq 0 ]; then
-    info "canary key (Helm): skipped — external-secret backend (vault/aws/azure) on the gateway"
-    info "canary key (Helm):   and/or sandbox-a; the chart does not render CANARY_HMAC_KEY into the"
-    info "canary key (Helm):   ExternalSecret (operator-manual wiring; see gateway externalsecret.yaml)."
-    info "canary key (Helm):   Two-consumer validation is k8s-native only."
+    info "canary key (Helm): skipped — no native credentials Secret rendered for the gateway"
+    info "canary key (Helm):   and/or sandbox-a (external-secret backend, or the subchart is disabled)."
+    info "canary key (Helm):   The chart does not render CANARY_HMAC_KEY into ExternalSecrets"
+    info "canary key (Helm):   (see gateway/templates/externalsecret.yaml). Two-consumer validation"
+    info "canary key (Helm):   is k8s-native only."
+    info "canary key (Helm):   NOTE: for vault/aws/azure backends you MUST manually verify that"
+    info "canary key (Helm):   CANARY_HMAC_KEY is identical on BOTH the gateway and sandbox-a"
+    info "canary key (Helm):   secret paths — doctor cannot render-check it for you."
     return 0
   fi
 
