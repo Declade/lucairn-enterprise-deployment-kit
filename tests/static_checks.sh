@@ -179,7 +179,8 @@ ruby -e 'require "yaml"; ARGV.each { |f| YAML.load_file(f); puts "yaml ok: #{f}"
   "$ROOT/charts/lucairn/values.yaml"
 
 if command -v helm >/dev/null 2>&1; then
-  helm lint "$ROOT/charts/lucairn" -f "$ROOT/customer-values.yaml.example"
+  helm lint "$ROOT/charts/lucairn" -f "$ROOT/customer-values.yaml.example" \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}"
 
   CHART="$ROOT/charts/lucairn"
 

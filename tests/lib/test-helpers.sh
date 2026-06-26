@@ -6,7 +6,7 @@
 # passes at render time without weakening the production guard itself.
 #
 # The guard lives at:
-#   charts/lucairn/charts/veil-witness/templates/_validate.tpl:38
+#   charts/lucairn/charts/veil-witness/templates/_validate.tpl:39
 #   ({{ fail }} on the all-zeroes placeholder "0000…0000")
 #
 # TEST_SIGNING_KEY is a fixed, obviously-non-production hex constant. Its
@@ -14,9 +14,12 @@
 # non-zero). It MUST NOT be the all-zeroes default.
 #
 # Usage:
-#   source "$(dirname "$0")/lib/test-helpers.sh"
+#   source "$ROOT/tests/lib/test-helpers.sh"
 #   helm template lucairn charts/lucairn \
 #     --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
 #     ...
 
-readonly TEST_SIGNING_KEY="1111111111111111111111111111111111111111111111111111111111111111"
+# Guard against double-sourcing (e.g. static_checks.sh sources this file,
+# then calls test_backup_helm.sh which also sources it).  `readonly` errors
+# on re-declaration in bash, so skip the assignment when already set.
+[ -n "${TEST_SIGNING_KEY:-}" ] || readonly TEST_SIGNING_KEY="1111111111111111111111111111111111111111111111111111111111111111"

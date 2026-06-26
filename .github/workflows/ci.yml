@@ -33,7 +33,7 @@ jobs:
             | tar -xz -C /usr/local/bin kubeconform
           kubeconform -v
 
-      # cosign is used by tests/test_digest_pin.sh (missing-cosign fast-fail
+      # cosign is used by tests/test_sbom.sh (missing-cosign fast-fail
       # path is SKIPPED when cosign is present; present on CI so test coverage
       # matches local).
       - name: Install cosign v2.4.1
