@@ -906,7 +906,7 @@ if ! run_doctor_with_values "$TMPDIR/h10-canary-vault.out" "$CANARY_VAULT_VALS";
   echo "FAIL: H10-canary vault backend → doctor should PASS (INFO-skip canary check)" >&2
   cat "$TMPDIR/h10-canary-vault.out" >&2; exit 1
 fi
-grep -q "canary key (Helm): skipped — external-secret backend" "$TMPDIR/h10-canary-vault.out" \
+grep -q "canary key (Helm): skipped — no native credentials Secret rendered" "$TMPDIR/h10-canary-vault.out" \
   || { echo "FAIL: H10-canary vault → expected external-backend INFO-skip" >&2; cat "$TMPDIR/h10-canary-vault.out" >&2; exit 1; }
 if grep -q "canary key (Helm): FAIL" "$TMPDIR/h10-canary-vault.out"; then
   echo "FAIL: H10-canary vault → must NOT FAIL (external backend is operator-manual)" >&2
@@ -932,7 +932,7 @@ if ! run_doctor_with_values "$TMPDIR/h10-canary-mixed.out" "$CANARY_MIXED_VALS";
   echo "FAIL: H10-canary mixed backend → doctor should PASS (INFO-skip, not a false sandbox-a-empty FAIL)" >&2
   cat "$TMPDIR/h10-canary-mixed.out" >&2; exit 1
 fi
-grep -q "canary key (Helm): skipped — external-secret backend" "$TMPDIR/h10-canary-mixed.out" \
+grep -q "canary key (Helm): skipped — no native credentials Secret rendered" "$TMPDIR/h10-canary-mixed.out" \
   || { echo "FAIL: H10-canary mixed → expected external-backend INFO-skip" >&2; cat "$TMPDIR/h10-canary-mixed.out" >&2; exit 1; }
 if grep -q "canary key (Helm): FAIL" "$TMPDIR/h10-canary-mixed.out"; then
   echo "FAIL: H10-canary mixed → must NOT false-FAIL (sandbox-a is on vault, not empty)" >&2
