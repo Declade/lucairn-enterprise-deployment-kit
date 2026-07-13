@@ -783,6 +783,22 @@ if grep -q "mTLS config (Helm): FAIL" "$TMPDIR/h10-nohelm.out"; then
   cat "$TMPDIR/h10-nohelm.out" >&2; exit 1
 fi
 
+# Repeating --values must retain the same fail-closed Helm requirement. The
+# files are deliberately valid local fixtures; without Helm doctor must not
+# claim it inspected either their individual or layered render contract.
+H10_NOHELM_MULTI_RC=0
+PATH="$H10_NOHELM_BIN" "$ROOT/bin/lucairn" doctor --env "$ENV_FILE" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --values "$MTLS_SRV_ONLY_VALS" \
+  --values "$MTLS_NONE_VALS" \
+  --offline > "$TMPDIR/h10-nohelm-multi.out" 2>&1 || H10_NOHELM_MULTI_RC=$?
+if [ "$H10_NOHELM_MULTI_RC" -eq 0 ]; then
+  echo "FAIL: doctor with repeated --values must fail closed when helm is absent" >&2
+  cat "$TMPDIR/h10-nohelm-multi.out" >&2; exit 1
+fi
+grep -q "enterprise mTLS (Helm): FAIL — helm is required with --values" "$TMPDIR/h10-nohelm-multi.out" \
+  || { echo "FAIL: repeated --values did not report the Helm fail-closed error" >&2; cat "$TMPDIR/h10-nohelm-multi.out" >&2; exit 1; }
+
 # Compose-only doctor remains deliberately graceful without Helm: it never
 # claimed to inspect a Helm values contract, so the legacy H10 helpers and the
 # enterprise render inspection all stay out of scope.

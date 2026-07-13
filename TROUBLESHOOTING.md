@@ -151,8 +151,9 @@ gateway:
     fileName: witness-signed-manifest.json
 ```
 
-Run `bin/lucairn doctor --values customer-production-values.yaml --offline`
-before retrying. In production with Veil enabled, Helm rejects a missing or
+Run `bin/lucairn doctor --values charts/lucairn/values-prod.yaml --values customer-production-values.yaml --offline`
+before retrying. The order must match Helm: parent production values first,
+then the customer overlay. In production with Veil enabled, Helm rejects a missing or
 partial block and any projected-path mismatch before it contacts the cluster.
 
 ## `/healthz` Returns 200 But `/readyz` Returns 503
@@ -279,7 +280,10 @@ Run:
 
 ```bash
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
-bin/lucairn doctor --values customer-production-values.yaml --offline
+bin/lucairn doctor \
+  --values charts/lucairn/values-prod.yaml \
+  --values customer-production-values.yaml \
+  --offline
 openssl x509 -noout -subject -issuer -dates -in path/to/cert.pem
 ```
 

@@ -13,8 +13,8 @@ LUCAIRN_STALENESS_DAYS="${LUCAIRN_STALENESS_DAYS:-90}"
 usage() {
   cat <<'USAGE'
 Usage:
-  lucairn doctor --env customer.env --compose docker-compose.customer.yml [--values production-values.yaml] [--offline] [--check-images] [--skip-image-check] [--strict-runtime] [--strict]
-  lucairn doctor --values production-values.yaml [--offline]
+  lucairn doctor --env customer.env --compose docker-compose.customer.yml [--values values.yaml]... [--offline] [--check-images] [--skip-image-check] [--strict-runtime] [--strict]
+  lucairn doctor --values values.yaml [--values customer-overlay.yaml]... [--offline]
   lucairn support-bundle --env customer.env --compose docker-compose.customer.yml [--output bundles] [--offline]
   lucairn bundle create --customer-slug acme --models-dir ./models --model-manifest model-manifest.yaml --env customer.env --image-tar images.tar [--customer-data-dir ./customer-data]
   lucairn bundle prepare --customer-slug acme --staging-dir /secure/staging/acme [--output dist/customer-bundles]
@@ -31,8 +31,10 @@ Usage:
   lucairn check-updates [--offline] [--feed-url URL]
 
 Commands:
-  doctor          Validate customer deployment prerequisites. With --values
-                  alone, validate the Helm production contract without
+  doctor          Validate customer deployment prerequisites. --values is
+                  repeatable; files are rendered in the supplied order, as
+                  repeated Helm -f arguments. With --values alone, validate
+                  the Helm production contract without
                   requiring Compose-path files. The isolated cluster battery
                   verifies the live Secret material and handshakes.
                   --strict-runtime fail-closes on the gateway /healthz + /readyz
@@ -244,6 +246,12 @@ redact_stream() {
 require_file() {
   local file="$1" label="$2"
   [ -f "$file" ] || fail "$label not found: $file"
+}
+
+require_readable_file() {
+  local file="$1" label="$2"
+  require_file "$file" "$label"
+  [ -r "$file" ] || fail "$label is not readable: $file"
 }
 
 require_env_values() {
@@ -821,7 +829,7 @@ check_mtls_partial_config() {
 # decision (deterministic over a per-run `openssl rand`).
 DOCTOR_HELM_RENDER_TEST_SIGNING_KEY="1111111111111111111111111111111111111111111111111111111111111111"
 
-# helm_render_values <values_file> <chart_dir>
+# helm_render_values <chart_dir> <values_file> [...]
 #
 # Render the umbrella chart with the customer's values merged over chart
 # defaults, injecting the test signingKey (so the all-zeroes guard does not
@@ -830,9 +838,13 @@ DOCTOR_HELM_RENDER_TEST_SIGNING_KEY="1111111111111111111111111111111111111111111
 # for ANY reason (so callers can INFO-skip rather than false-FAIL on an
 # unrelated chart/values error — render-breakage is caught by static_checks).
 helm_render_values() {
-  local values_file="$1" chart_dir="$2"
-  helm template lucairn "$chart_dir" \
-    -f "$values_file" \
+  local chart_dir="$1" values_file
+  shift
+  local helm_args=(template lucairn "$chart_dir")
+  for values_file in "$@"; do
+    helm_args+=(-f "$values_file")
+  done
+  helm "${helm_args[@]}" \
     --set global.skipPullSecretGuard=true \
     --set "veil-witness.secrets.values.signingKey=$DOCTOR_HELM_RENDER_TEST_SIGNING_KEY"
 }
@@ -859,9 +871,10 @@ check_mtls_partial_config_helm() {
   #                   enabled side requires its peer's cert, the disabled side
   #                   presents none).
   #
-  # Usage: check_mtls_partial_config_helm <values_file> <chart_dir>
-  local values_file="$1" chart_dir="$2"
-  [ -n "$values_file" ] && [ -f "$values_file" ] || return 0   # Compose path; skip
+  # Usage: check_mtls_partial_config_helm <chart_dir> <values_file> [...]
+  local chart_dir="$1" values_file
+  shift
+  [ "$#" -gt 0 ] || return 0   # Compose path; skip
   if ! have helm; then
     info "mTLS config (Helm): skipped — helm not installed (render-based check requires helm)."
     return 0
@@ -869,7 +882,7 @@ check_mtls_partial_config_helm() {
   [ -d "$chart_dir" ] || { info "mTLS config (Helm): skipped — chart dir not found ($chart_dir)."; return 0; }
 
   local render
-  if ! render="$(helm_render_values "$values_file" "$chart_dir")"; then
+  if ! render="$(helm_render_values "$chart_dir" "$@")"; then
     info "mTLS config (Helm): skipped — chart render failed (unrelated to witness mTLS; see static_checks)."
     return 0
   fi
@@ -909,7 +922,7 @@ check_mtls_partial_config_helm() {
   return 1
 }
 
-# check_enterprise_mtls_helm <values_file> <chart_dir>
+# check_enterprise_mtls_helm <chart_dir> <values_file> [...]
 #
 # Production-only Helm contract check for the DSA_MTLS_* full mesh. Template
 # validation owns completeness of the values contract; this doctor check makes
@@ -918,13 +931,14 @@ check_mtls_partial_config_helm() {
 # inspects Helm's merged render rather than raw YAML so values inheritance
 # cannot cause a false result.
 check_enterprise_mtls_helm() {
-  local values_file="$1" chart_dir="$2"
-  [ -n "$values_file" ] && [ -f "$values_file" ] || return 0
+  local chart_dir="$1"
+  shift
+  [ "$#" -gt 0 ] || return 0
   if ! have helm; then
     # `--values` explicitly asks doctor to inspect the customer's Helm
     # production contract. A green result without Helm would say nothing about
     # the rendered DSA_MTLS_* topology, so fail closed. Compose-only doctor
-    # calls never reach this branch (values_file is empty) and retain their
+    # calls never reach this branch (no values files) and retain their
     # documented graceful behavior; the legacy H10 helpers also keep their
     # independent INFO-skips when no Helm inspection was requested.
     echo "enterprise mTLS (Helm): FAIL — helm is required with --values; cannot inspect the production render contract. Install helm and retry."
@@ -933,7 +947,7 @@ check_enterprise_mtls_helm() {
   [ -d "$chart_dir" ] || { echo "enterprise mTLS (Helm): FAIL — chart directory not found: $chart_dir"; return 1; }
 
   local render
-  if ! render="$(helm_render_values "$values_file" "$chart_dir" 2>&1)"; then
+  if ! render="$(helm_render_values "$chart_dir" "$@" 2>&1)"; then
     echo "enterprise mTLS (Helm): FAIL — production values did not render."
     echo "$render"
     return 1
@@ -1021,9 +1035,10 @@ check_canary_hmac_key_helm() {
   # matches the chart's own H10 deferral note). Detected by the absence of the
   # native gateway-credentials Secret in the render.
   #
-  # Usage: check_canary_hmac_key_helm <values_file> <chart_dir>
-  local values_file="$1" chart_dir="$2"
-  [ -n "$values_file" ] && [ -f "$values_file" ] || return 0   # Compose path; skip
+  # Usage: check_canary_hmac_key_helm <chart_dir> <values_file> [...]
+  local chart_dir="$1"
+  shift
+  [ "$#" -gt 0 ] || return 0   # Compose path; skip
   if ! have helm; then
     info "canary key (Helm): skipped — helm not installed (render-based check requires helm)."
     return 0
@@ -1031,7 +1046,7 @@ check_canary_hmac_key_helm() {
   [ -d "$chart_dir" ] || { info "canary key (Helm): skipped — chart dir not found ($chart_dir)."; return 0; }
 
   local render
-  if ! render="$(helm_render_values "$values_file" "$chart_dir")"; then
+  if ! render="$(helm_render_values "$chart_dir" "$@")"; then
     info "canary key (Helm): skipped — chart render failed (unrelated to canary; see static_checks)."
     return 0
   fi
@@ -4861,15 +4876,27 @@ bundle_command() {
 }
 
 doctor() {
-  local env_file="" compose_file="" values_file="" offline=0 postgres_url="" kube_namespace="dsa-edge" check_images=1 strict_runtime=0 strict_digest=0 values_only=0
+  local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-edge" check_images=1 strict_runtime=0 strict_digest=0 values_only=0 values_count=0 values_file
+  # Indexed arrays are supported by the Bash 3.2 baseline; do not use
+  # associative arrays or other Bash-4-only features in this customer CLI.
+  local values_files
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --env) env_file="$2"; shift 2 ;;
       --compose) compose_file="$2"; shift 2 ;;
-      # --values: path to a customer Helm values.yaml (e.g. production-values.yaml).
-      # It may be used alone for the Helm-only doctor contract, or together with
-      # --env/--compose for the existing combined deployment checks.
-      --values) values_file="$2"; shift 2 ;;
+      # --values: a repeatable, ordered Helm values.yaml path. It may be used
+      # alone for the Helm-only doctor contract, or with --env/--compose for
+      # the existing combined deployment checks.
+      --values)
+        [ "$#" -ge 2 ] || fail "--values requires a file path"
+        if [ "$values_count" -eq 0 ]; then
+          values_files[0]="$2"
+        else
+          values_files[${values_count}]="$2"
+        fi
+        values_count=$((values_count + 1))
+        shift 2
+        ;;
       --offline) offline=1; check_images=0; shift ;;
       --check-images) check_images=1; shift ;;
       --skip-image-check) check_images=0; shift ;;
@@ -4886,16 +4913,20 @@ doctor() {
     esac
   done
 
-  if [ -n "$values_file" ] && [ -z "$env_file" ] && [ -z "$compose_file" ]; then
+  if [ "$values_count" -gt 0 ] && [ -z "$env_file" ] && [ -z "$compose_file" ]; then
     values_only=1
   fi
 
   if [ "$values_only" -eq 1 ]; then
-    require_file "$values_file" "values file"
+    for values_file in "${values_files[@]}"; do
+      require_readable_file "$values_file" "values file"
+    done
     echo "lucairn doctor $VERSION"
-    echo "values file: ok ($values_file)"
+    for values_file in "${values_files[@]}"; do
+      echo "values file: ok ($values_file)"
+    done
     local values_mtls_failed=0
-    check_enterprise_mtls_helm "$values_file" "$ROOT/charts/lucairn" || values_mtls_failed=1
+    check_enterprise_mtls_helm "$ROOT/charts/lucairn" "${values_files[@]}" || values_mtls_failed=1
     [ "$values_mtls_failed" -eq 0 ] || return 1
     echo "doctor: ok"
     return 0
@@ -4906,15 +4937,21 @@ doctor() {
 
   require_file "$env_file" "env file"
   require_file "$compose_file" "compose file"
-  # values_file is optional; validate path only when supplied.
-  if [ -n "$values_file" ]; then
-    require_file "$values_file" "values file"
+  # Values files are optional; validate every supplied path before any checks.
+  if [ "$values_count" -gt 0 ]; then
+    for values_file in "${values_files[@]}"; do
+      require_readable_file "$values_file" "values file"
+    done
   fi
 
   echo "lucairn doctor $VERSION"
   echo "env file: ok ($env_file)"
   echo "compose file: ok ($compose_file)"
-  [ -n "$values_file" ] && echo "values file: ok ($values_file)"
+  if [ "$values_count" -gt 0 ]; then
+    for values_file in "${values_files[@]}"; do
+      echo "values file: ok ($values_file)"
+    done
+  fi
 
   # Zero-network, WARN-only kit-freshness signal (never fails the install; air-
   # gapped doctor still passes). For the online specifics, run check-updates.
@@ -5091,13 +5128,15 @@ doctor() {
   # witness server) — a half-config that breaks the cert RPC handshake. Runs only
   # when --values was supplied; graceful-skips when helm is absent. (re-add of
   # the reverted text-parser; now render-based — see check_mtls_partial_config_helm.)
-  local helm_mtls_failed=0
-  check_mtls_partial_config_helm "$values_file" "$ROOT/charts/lucairn" || helm_mtls_failed=1
-  [ "$helm_mtls_failed" -eq 0 ] || return 1
+  if [ "$values_count" -gt 0 ]; then
+    local helm_mtls_failed=0
+    check_mtls_partial_config_helm "$ROOT/charts/lucairn" "${values_files[@]}" || helm_mtls_failed=1
+    [ "$helm_mtls_failed" -eq 0 ] || return 1
 
-  local enterprise_helm_mtls_failed=0
-  check_enterprise_mtls_helm "$values_file" "$ROOT/charts/lucairn" || enterprise_helm_mtls_failed=1
-  [ "$enterprise_helm_mtls_failed" -eq 0 ] || return 1
+    local enterprise_helm_mtls_failed=0
+    check_enterprise_mtls_helm "$ROOT/charts/lucairn" "${values_files[@]}" || enterprise_helm_mtls_failed=1
+    [ "$enterprise_helm_mtls_failed" -eq 0 ] || return 1
+  fi
 
   # H10 (2026-06-26): Helm-path canary two-consumer (gateway ↔ sandbox-a) check.
   # Renders the chart and FAILs on a half/mismatched CANARY_HMAC_KEY (one side
@@ -5105,9 +5144,11 @@ doctor() {
   # share the IDENTICAL key. WARNs (not FAIL) when both are empty (canary off).
   # External-secret backends INFO-skip. Runs only when --values was supplied;
   # graceful-skips when helm is absent.
-  local helm_canary_failed=0
-  check_canary_hmac_key_helm "$values_file" "$ROOT/charts/lucairn" || helm_canary_failed=1
-  [ "$helm_canary_failed" -eq 0 ] || return 1
+  if [ "$values_count" -gt 0 ]; then
+    local helm_canary_failed=0
+    check_canary_hmac_key_helm "$ROOT/charts/lucairn" "${values_files[@]}" || helm_canary_failed=1
+    [ "$helm_canary_failed" -eq 0 ] || return 1
+  fi
 
   # M5 (deal-#1 hardening 2026-06-19): readiness-bundle boot-Fatal pre-flight.
   # When GATEWAY_REQUIRE_READINESS=true (Helm-only in the kit default, but
