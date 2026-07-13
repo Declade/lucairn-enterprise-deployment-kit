@@ -3,9 +3,9 @@ set -euo pipefail
 
 # Offline contract for the Kind image preloader. Docker and Kind are local
 # doubles: this proves image discovery is based only on renderable PodSpecs,
-# test-hook images are excluded, and each discovered image is pulled, exported
-# for the disposable node platform, then loaded through Kind's all-node archive
-# operation. The double also asserts archives are deleted between images.
+# test-hook images are excluded, every image is digest-validated before any
+# archive save/import, and each discovered image is exported for the disposable
+# node platform then loaded through Kind's all-node archive operation.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PRELOAD="$ROOT/scripts/preload-enterprise-mtls-kind-images.sh"
@@ -57,7 +57,7 @@ spec:
     spec:
       containers:
         - name: install
-          image: busybox:1.36
+          image: postgres:16-alpine
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
@@ -68,7 +68,7 @@ spec:
     spec:
       containers:
         - name: workload
-          image: example.invalid/future-controller:1.0
+          image: ghcr.io/declade/dsa-veil-witness:0.5.4
 ---
 apiVersion: batch/v1
 kind: Job
@@ -107,13 +107,30 @@ case "${1:-}:${2:-}" in
     printf 'docker inspect %s\n' "$4" >> "$PRELOAD_CALLS"
     ;;
   image:inspect)
-    [ "$#" -eq 5 ] && [ "$3" = '--format' ] && [ "$4" = '{{.Os}}/{{.Architecture}}' ] && [ "$5" = 'sha256:preload-test-node' ] || exit 92
-    printf '%s\n' 'linux/arm64'
-    printf 'docker image inspect %s\n' "$5" >> "$PRELOAD_CALLS"
+    if [ "$#" -eq 5 ] && [ "$3" = '--format' ] && [ "$4" = '{{.Os}}/{{.Architecture}}' ] && [ "$5" = 'sha256:preload-test-node' ]; then
+      printf '%s\n' 'linux/arm64'
+      printf 'docker image inspect %s\n' "$5" >> "$PRELOAD_CALLS"
+    elif [ "$#" -eq 5 ] && [ "$3" = '--format' ] && [ "$4" = '{{range .RepoDigests}}{{println .}}{{end}}' ]; then
+      case "$5" in
+        ghcr.io/declade/dsa-gateway:0.5.4) digest='sha256:f73e55e0a3d3445d3242d2a73aff7086427da50cbcd2e47e3c8cd4f0fad2bece' ;;
+        ghcr.io/declade/dsa-sanitizer:0.5.4) digest='sha256:5204d30b1cd4ae12ec2faf47eaf7a4f9fdfaf5137c37cb625752f96452eea9df' ;;
+        ghcr.io/declade/dsa-veil-witness:0.5.4) digest='sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523' ;;
+        migrate/migrate:v4.17.0) digest='sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa' ;;
+        postgres:16-alpine) digest='sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777' ;;
+        *) exit 92 ;;
+      esac
+      if [ "${PRELOAD_DIGEST_MISMATCH:-}" = "$5" ]; then
+        digest='sha256:0000000000000000000000000000000000000000000000000000000000000000'
+      fi
+      printf '%s@%s\n' "${5%%:*}" "$digest"
+      printf 'docker image inspect digest %s\n' "$5" >> "$PRELOAD_CALLS"
+    else
+      exit 92
+    fi
     ;;
   pull:*)
-    [ "$#" -eq 2 ] || exit 93
-    printf 'docker pull %s\n' "$2" >> "$PRELOAD_CALLS"
+    [ "$#" -eq 4 ] && [ "$2" = '--platform' ] && [ "$3" = 'linux/arm64' ] || exit 93
+    printf 'docker pull --platform %s %s\n' "$3" "$4" >> "$PRELOAD_CALLS"
     ;;
   image:save)
     [ "$#" -eq 7 ] && [ "$3" = '--platform' ] && [ "$4" = 'linux/arm64' ] && [ "$5" = '--output' ] || exit 94
@@ -147,6 +164,28 @@ KIND
 chmod 0700 "$FAKE_BIN/docker" "$FAKE_BIN/kind"
 
 IMAGE_LIST="$TMPDIR/images.txt"
+MISMATCH_CALLS="$TMPDIR/mismatch-calls"
+MISMATCH_ARCHIVE_DIR="$TMPDIR/mismatch-archives"
+if PATH="$FAKE_BIN:$PATH" PRELOAD_CALLS="$MISMATCH_CALLS" \
+  PRELOAD_ARCHIVE_DIR="$MISMATCH_ARCHIVE_DIR" PRELOAD_ARCHIVES_DURING_LOAD="$ARCHIVES_DURING_LOAD" \
+  PRELOAD_DIGEST_MISMATCH='ghcr.io/declade/dsa-gateway:0.5.4' "$PRELOAD" \
+  --cluster preload-test \
+  --rendered-manifest "$MANIFEST" \
+  --image-list "$TMPDIR/mismatch-images.txt" \
+  --archive-dir "$MISMATCH_ARCHIVE_DIR" \
+  >"$TMPDIR/mismatch.stdout" 2>"$TMPDIR/mismatch.stderr"; then
+  echo "Kind image preloader accepted a tag re-targeted digest" >&2
+  exit 1
+fi
+grep -Fq 'digest mismatch or unresolved content: ghcr.io/declade/dsa-gateway:0.5.4' "$TMPDIR/mismatch.stderr" \
+  || { cat "$TMPDIR/mismatch.stderr" >&2; echo "Kind image preloader did not identify the tag re-target" >&2; exit 1; }
+if grep -Eq 'docker image save|kind load image-archive' "$MISMATCH_CALLS"; then
+  echo "Kind image preloader saved or imported before rejecting a digest mismatch" >&2
+  exit 1
+fi
+[ ! -e "$MISMATCH_ARCHIVE_DIR" ] \
+  || { echo "Kind image preloader left an archive directory after digest mismatch" >&2; exit 1; }
+
 if ! PATH="$FAKE_BIN:$PATH" PRELOAD_CALLS="$CALLS" \
   PRELOAD_ARCHIVE_DIR="$ARCHIVE_DIR" PRELOAD_ARCHIVES_DURING_LOAD="$ARCHIVES_DURING_LOAD" "$PRELOAD" \
   --cluster preload-test \
@@ -166,16 +205,16 @@ grep -Fq 'loaded 5 rendered topology image(s) into all 3 node(s) of preload-test
   || { echo "Kind image preloader did not report all-node preload" >&2; exit 1; }
 
 printf '%s\n' \
-  busybox:1.36 \
-  example.invalid/future-controller:1.0 \
   ghcr.io/declade/dsa-gateway:0.5.4 \
   ghcr.io/declade/dsa-sanitizer:0.5.4 \
+  ghcr.io/declade/dsa-veil-witness:0.5.4 \
   migrate/migrate:v4.17.0 \
+  postgres:16-alpine \
   > "$TMPDIR/expected-images"
 diff -u "$TMPDIR/expected-images" "$IMAGE_LIST"
 
 while IFS= read -r image; do
-  grep -Fxq "docker pull $image" "$CALLS" \
+  grep -Fxq "docker pull --platform linux/arm64 $image" "$CALLS" \
     || { echo "image was not pulled before Kind load: $image" >&2; exit 1; }
   grep -Fxq "docker image save --platform linux/arm64 $image" "$CALLS" \
     || { echo "image was not saved for the disposable Kind platform: $image" >&2; exit 1; }

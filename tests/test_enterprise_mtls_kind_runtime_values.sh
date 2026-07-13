@@ -71,7 +71,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
         *) exit 94 ;;
       esac
       ;;
-    ghcr.io/declade/dsa-veil-witness:0.5.4)
+    ghcr.io/declade/dsa-veil-witness:0.5.4@sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523)
       image_seen=1
       image_index="$i"
       ;;
@@ -921,12 +921,30 @@ case "${1:-}:${2:-}" in
     printf '%s\n' 'sha256:runtime-render-node'
     ;;
   image:inspect)
-    [ "$#" -eq 5 ] && [ "$3" = '--format' ] && [ "$4" = '{{.Os}}/{{.Architecture}}' ] && [ "$5" = 'sha256:runtime-render-node' ] || exit 82
-    printf '%s\n' 'linux/arm64'
+    if [ "$#" -eq 5 ] && [ "$3" = '--format' ] && [ "$4" = '{{.Os}}/{{.Architecture}}' ] && [ "$5" = 'sha256:runtime-render-node' ]; then
+      printf '%s\n' 'linux/arm64'
+    elif [ "$#" -eq 5 ] && [ "$3" = '--format' ] && [ "$4" = '{{range .RepoDigests}}{{println .}}{{end}}' ]; then
+      case "$5" in
+        ghcr.io/declade/dsa-audit:0.5.4) digest='sha256:52fb366d5b425618a14f15d9a9a5e9abf6d1bf51cfcdc4c56e655884f53b0404' ;;
+        ghcr.io/declade/dsa-gateway:0.5.4) digest='sha256:f73e55e0a3d3445d3242d2a73aff7086427da50cbcd2e47e3c8cd4f0fad2bece' ;;
+        ghcr.io/declade/dsa-id-bridge:0.5.4) digest='sha256:3aaee7958071e95fae29847679537e949b0876c6b423a3653ae9ed4fb4baf746' ;;
+        ghcr.io/declade/dsa-sandbox-a:0.5.4) digest='sha256:8b75837e5b123e6f0c4c89a26ae72b6c73627cfb508a73b1c01f713f6be36b84' ;;
+        ghcr.io/declade/dsa-sandbox-b:0.5.4) digest='sha256:8aad459fc04a03de849cb2cc6ae812146b46d89bc023e171e232cf7ee7d09aef' ;;
+        ghcr.io/declade/dsa-sanitizer:0.5.4) digest='sha256:5204d30b1cd4ae12ec2faf47eaf7a4f9fdfaf5137c37cb625752f96452eea9df' ;;
+        ghcr.io/declade/dsa-veil-witness:0.5.4) digest='sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523' ;;
+        migrate/migrate:v4.17.0) digest='sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa' ;;
+        postgres:16-alpine) digest='sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777' ;;
+        redis:7-alpine) digest='sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99' ;;
+        *) exit 82 ;;
+      esac
+      printf '%s@%s\n' "${5%%:*}" "$digest"
+    else
+      exit 82
+    fi
     ;;
   pull:*)
-    [ "$#" -eq 2 ] || exit 83
-    printf 'pull %s\n' "$2" >> "$PRELOAD_CALLS"
+    [ "$#" -eq 4 ] && [ "$2" = '--platform' ] && [ "$3" = 'linux/arm64' ] || exit 83
+    printf 'pull %s %s\n' "$3" "$4" >> "$PRELOAD_CALLS"
     ;;
   image:save)
     [ "$#" -eq 7 ] && [ "$3" = '--platform' ] && [ "$4" = 'linux/arm64' ] && [ "$5" = '--output' ] || exit 84
@@ -989,7 +1007,7 @@ KIND
     abort "rendered sanitizer image omitted from preload" unless actual.include?("ghcr.io/declade/dsa-sanitizer:0.5.4")
   ' "$RENDER" "$PRELOAD_IMAGES"
   while IFS= read -r image; do
-    grep -Fxq "pull $image" "$PRELOAD_CALLS" \
+    grep -Fxq "pull linux/arm64 $image" "$PRELOAD_CALLS" \
       || { echo "rendered image was not pulled before install: $image" >&2; exit 1; }
     grep -Fxq "save linux/arm64 $image" "$PRELOAD_CALLS" \
       || { echo "rendered image was not saved for the Kind node platform: $image" >&2; exit 1; }
