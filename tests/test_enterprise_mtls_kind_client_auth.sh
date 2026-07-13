@@ -86,11 +86,29 @@ import (
 
 func TestClientAuthRejectionRequiresVerifiedServer(t *testing.T) {
 	remoteAlert := errors.New("remote error: tls: certificate required")
-	if err := clientAuthRejectionResult(false, remoteAlert); err == nil {
-		t.Fatal("unverified remote TLS alert counted as client-auth rejection")
-	}
-	if err := clientAuthRejectionResult(true, remoteAlert); err != nil {
-		t.Fatalf("verified server client-cert alert was not accepted: %v", err)
+	timeout := errors.New("i/o timeout")
+	nonAlert := errors.New("connection reset by peer")
+	for _, test := range []struct {
+		name     string
+		verified bool
+		err      error
+		wantOK   bool
+	}{
+		{name: "verified remote alert", verified: true, err: remoteAlert, wantOK: true},
+		{name: "unverified remote alert", verified: false, err: remoteAlert},
+		{name: "verified timeout", verified: true, err: timeout},
+		{name: "verified accepted open", verified: true, err: nil},
+		{name: "verified non-alert", verified: true, err: nonAlert},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := clientAuthRejectionResult(test.verified, test.err)
+			if test.wantOK && err != nil {
+				t.Fatalf("accepted client-auth rejection result failed: %v", err)
+			}
+			if !test.wantOK && err == nil {
+				t.Fatal("invalid client-auth result counted as a rejection")
+			}
+		})
 	}
 }
 GO

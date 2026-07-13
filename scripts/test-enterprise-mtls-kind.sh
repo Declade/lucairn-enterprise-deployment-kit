@@ -631,7 +631,52 @@ fi
 PROBE_IMAGE="lucairn-enterprise-mtls-probe:kind-$$"
 PROBE_CONTEXT="$STATE_DIR/enterprise-mtls-probe-context"
 PROBE_DOCKERFILE="$PROBE_CONTEXT/Dockerfile"
-PROBE_IMAGE_ID_FILE="$STATE_DIR/enterprise-mtls-probe.image-id"
+
+# The local scratch probe is not part of the Helm render, but its Pod uses this
+# exact tag with imagePullPolicy: Never. Save the captured image ID together
+# with that tag, then reject any archive that cannot prove the tag is its only
+# manifest entry before it reaches Kind. Docker Desktop's .Id can be an OCI
+# index digest while the archive config is platform-specific, so those two
+# digest values are intentionally not compared.
+require_probe_archive_tag_binding() {
+  local archive="$1" runtime_tag="$2" expected_image_id="$3"
+  if ! ruby -rjson -rrubygems/package -e '
+    archive, runtime_tag, expected_image_id = ARGV
+    abort "invalid captured image ID" unless expected_image_id.match?(/\Asha256:[0-9a-f]{64}\z/)
+    manifest_json = nil
+
+    File.open(archive, "rb") do |file|
+      Gem::Package::TarReader.new(file) do |tar|
+        tar.each do |entry|
+          next unless entry.full_name == "manifest.json"
+          abort "archive has multiple manifest.json entries" if manifest_json
+          abort "archive manifest.json is not a regular file" unless entry.file?
+          manifest_json = entry.read
+        end
+      end
+    end
+
+    abort "archive is missing manifest.json" unless manifest_json
+    manifest = JSON.parse(manifest_json)
+    abort "archive manifest is not an array" unless manifest.is_a?(Array)
+    abort "archive must contain exactly one manifest entry" unless manifest.length == 1
+
+    entry = manifest.fetch(0)
+    abort "archive manifest entry is malformed" unless entry.is_a?(Hash)
+    abort "archive has invalid runtime tag binding" unless entry["RepoTags"] == [runtime_tag]
+    config = entry["Config"]
+    case config
+    when /\Ablobs\/sha256\/[0-9a-f]{64}\z/
+    when /\A[0-9a-f]{64}\.json\z/
+    else
+      abort "archive config path is malformed"
+    end
+  ' "$archive" "$runtime_tag" "$expected_image_id"; then
+    echo "FAIL: scratch probe archive tag binding is invalid: $runtime_tag" >&2
+    exit 1
+  fi
+}
+
 mkdir -p "$PROBE_CONTEXT"
 cp "$GATEWAY_TLS_HELPER" "$PROBE_CONTEXT/probe"
 cat > "$PROBE_DOCKERFILE" <<'DOCKERFILE'
@@ -648,17 +693,12 @@ if ! [[ "$PROBE_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]; then
   echo "FAIL: local scratch probe image has no immutable image ID" >&2
   exit 1
 fi
-printf '%s\n' "$PROBE_IMAGE_ID" > "$PROBE_IMAGE_ID_FILE"
-if [ "$(<"$PROBE_IMAGE_ID_FILE")" != "$PROBE_IMAGE_ID" ] \
-  || [ "$(docker image inspect --format '{{.Id}}' "$PROBE_IMAGE")" != "$PROBE_IMAGE_ID" ]; then
-  echo "FAIL: local scratch probe image ID changed before archive" >&2
-  exit 1
-fi
-if ! docker image save --output "$PROBE_ARCHIVE" "$PROBE_IMAGE" \
+if ! docker image save --output "$PROBE_ARCHIVE" "$PROBE_IMAGE_ID" "$PROBE_IMAGE" \
   || [ ! -s "$PROBE_ARCHIVE" ]; then
   echo "FAIL: could not archive the verified local scratch probe image" >&2
   exit 1
 fi
+require_probe_archive_tag_binding "$PROBE_ARCHIVE" "$PROBE_IMAGE" "$PROBE_IMAGE_ID"
 if ! kind load image-archive --name "$CLUSTER" "$PROBE_ARCHIVE"; then
   echo "FAIL: could not load the verified local scratch probe image into Kind" >&2
   exit 1

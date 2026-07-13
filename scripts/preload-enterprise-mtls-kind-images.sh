@@ -205,10 +205,63 @@ require_recorded_digest() {
   fi
 }
 
+# `docker image save <image-id>` deliberately emits RepoTags: null. Kind can
+# import those bytes, but a rendered Pod using the runtime tag may then fail to
+# select the imported image. Save the captured immutable ID together with the
+# required runtime tag, then inspect Docker's completed archive before Kind
+# sees it. Docker Desktop's containerd image store reports an OCI index digest
+# for .Id while save writes the selected platform config, so those digests must
+# not be compared. Instead the archive must have exactly one tagged entry;
+# accepting an ID-only entry or a tag that moved after capture would make the
+# preload evidence diverge from the rendered PodSpec.
+require_archive_tag_binding() {
+  local archive="$1" runtime_tag="$2" expected_image_id="$3"
+  if ! ruby -rjson -rrubygems/package -e '
+    archive, runtime_tag, expected_image_id = ARGV
+    abort "invalid captured image ID" unless expected_image_id.match?(/\Asha256:[0-9a-f]{64}\z/)
+    manifest_json = nil
+
+    File.open(archive, "rb") do |file|
+      Gem::Package::TarReader.new(file) do |tar|
+        tar.each do |entry|
+          next unless entry.full_name == "manifest.json"
+          abort "archive has multiple manifest.json entries" if manifest_json
+          abort "archive manifest.json is not a regular file" unless entry.file?
+          manifest_json = entry.read
+        end
+      end
+    end
+
+    abort "archive is missing manifest.json" unless manifest_json
+    manifest = JSON.parse(manifest_json)
+    abort "archive manifest is not an array" unless manifest.is_a?(Array)
+    abort "archive must contain exactly one manifest entry" unless manifest.length == 1
+
+    entry = manifest.fetch(0)
+    abort "archive manifest entry is malformed" unless entry.is_a?(Hash)
+    abort "archive has invalid runtime tag binding" unless entry["RepoTags"] == [runtime_tag]
+    config = entry["Config"]
+    case config
+    when /\Ablobs\/sha256\/[0-9a-f]{64}\z/
+    when /\A[0-9a-f]{64}\.json\z/
+    else
+      abort "archive config path is malformed"
+    end
+  ' "$archive" "$runtime_tag" "$expected_image_id"; then
+    echo "FAIL: archive tag binding is invalid: $runtime_tag" >&2
+    exit 1
+  fi
+}
+
 # Validate the full rendered image set before creating a single archive. This
 # gives a tag re-target no opportunity to partially populate Kind before the
-# preloader rejects the evidence/runtime mismatch. Pull a single Kind-node
-# platform so Docker Desktop never retains an incomplete multi-platform index.
+# preloader rejects the evidence/runtime mismatch. Capture Docker's local
+# immutable image ID as part of this validation, then save that ID together
+# with the runtime tag and verify the resulting archive binding. Pull a single
+# Kind-node platform so Docker Desktop never retains an incomplete
+# multi-platform index.
+validated_images=()
+validated_image_ids=()
 while IFS= read -r image; do
   [ -n "$image" ] || continue
   if ! record="$(recorded_image "$image")"; then
@@ -224,25 +277,35 @@ EOF
   }
   docker pull --platform "$kind_platform" "$image" >/dev/null
   require_recorded_digest "$image" "$recorded_digest"
+  local_image_id="$(docker image inspect --format '{{.Id}}' "$image")"
+  if ! [[ "$local_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "FAIL: rendered image has no immutable local image ID: $image" >&2
+    exit 1
+  fi
+  validated_images+=("$image")
+  validated_image_ids+=("$local_image_id")
 done < "$IMAGE_LIST"
 
 image_count=0
-while IFS= read -r image; do
-  [ -n "$image" ] || continue
+for index in "${!validated_images[@]}"; do
+  image="${validated_images[$index]}"
+  local_image_id="${validated_image_ids[$index]}"
+  runtime_tag="${image%@*}"
   # Docker reads the caller's existing DOCKER_CONFIG. The harness never copies
   # or prints registry credentials. The archive filename is sequence-based so
   # image names never become filesystem paths. The EXIT trap removes a partial
   # archive if either save or the Kind import fails.
   image_count=$((image_count + 1))
   archive="$ARCHIVE_DIR/image-$image_count.tar"
-  docker image save --platform "$kind_platform" --output "$archive" "$image" >/dev/null
+  docker image save --platform "$kind_platform" --output "$archive" "$local_image_id" "$runtime_tag" >/dev/null
   if [ ! -s "$archive" ]; then
     echo "FAIL: platform-specific image archive is empty: $image" >&2
     exit 1
   fi
+  require_archive_tag_binding "$archive" "$runtime_tag" "$local_image_id"
   kind load image-archive --name "$CLUSTER" "$archive" >/dev/null
   rm -f -- "$archive"
   archive=""
-done < "$IMAGE_LIST"
+done
 
 echo "Kind preload: loaded $image_count rendered topology image(s) into all $node_count node(s) of $CLUSTER." >&2

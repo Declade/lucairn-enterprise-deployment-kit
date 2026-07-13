@@ -771,13 +771,110 @@ ruby -e '
   source = File.read(ARGV.fetch(0))
   dockerfile = source[/cat > "\$PROBE_DOCKERFILE" <<\x27DOCKERFILE\x27\n(?<body>.*?)^DOCKERFILE$/m, :body] || abort("Kind harness misses local probe Dockerfile")
   abort "local probe Dockerfile must use scratch only" unless dockerfile == "FROM scratch\nCOPY probe /probe\n"
-  ["PROBE_IMAGE=\"lucairn-enterprise-mtls-probe:kind-$$\"", "docker build --network=none --pull=false --platform \"linux/$GATEWAY_NODE_ARCH\" --tag \"$PROBE_IMAGE\"", "PROBE_IMAGE_ID=\"$(docker image inspect --format", "[[ \"$PROBE_IMAGE_ID\" =~ ^sha256:[0-9a-f]{64}$ ]]", "local scratch probe image ID changed before archive", "docker image save --output \"$PROBE_ARCHIVE\" \"$PROBE_IMAGE\"", "kind load image-archive --name \"$CLUSTER\" \"$PROBE_ARCHIVE\"", "docker image rm -f \"$PROBE_IMAGE\""].each do |needle|
+  ["PROBE_IMAGE=\"lucairn-enterprise-mtls-probe:kind-$$\"", "docker build --network=none --pull=false --platform \"linux/$GATEWAY_NODE_ARCH\" --tag \"$PROBE_IMAGE\"", "PROBE_IMAGE_ID=\"$(docker image inspect --format", "[[ \"$PROBE_IMAGE_ID\" =~ ^sha256:[0-9a-f]{64}$ ]]", "docker image save --output \"$PROBE_ARCHIVE\" \"$PROBE_IMAGE_ID\" \"$PROBE_IMAGE\"", "require_probe_archive_tag_binding \"$PROBE_ARCHIVE\" \"$PROBE_IMAGE\" \"$PROBE_IMAGE_ID\"", "archive must contain exactly one manifest entry", "kind load image-archive --name \"$CLUSTER\" \"$PROBE_ARCHIVE\"", "docker image rm -f \"$PROBE_IMAGE\""].each do |needle|
     abort "local probe supply-chain control missing: #{needle}" unless source.include?(needle)
   end
   ["alpine:3.20", "apk add", "openssl s_client", "probe() {"].each do |forbidden|
     abort "Kind harness retains remote/mutable probe residue: #{forbidden}" if source.include?(forbidden)
   end
 ' "$KIND_GATE"
+
+# Extract and execute only the scratch-probe build/inspect/save/load sequence
+# with local doubles. The Docker double retags the mutable probe name as soon
+# as the script captures .Id; save must receive that captured ID and tag. A
+# valid selected-platform config differs from the captured index digest, while
+# a retargeted tag yields two manifest entries and must not reach Kind.
+PROBE_PRELOAD="$TMPDIR/probe-preload.sh"
+ruby -e '
+  source = File.read(ARGV.fetch(0))
+  start = source.index("PROBE_IMAGE=\"lucairn-enterprise-mtls-probe:kind-$$\"") || abort("Kind harness misses local probe preload")
+  finish = source.index("\n\n\"${K[@]}\" -n dsa-edge create configmap enterprise-mtls-negative-ca", start) || abort("Kind harness misses local probe preload boundary")
+  File.write(ARGV.fetch(1), source[start...finish])
+' "$KIND_GATE" "$PROBE_PRELOAD"
+PROBE_FAKE_BIN="$TMPDIR/probe-fake-bin"
+PROBE_STATE="$TMPDIR/probe-state"
+mkdir -p "$PROBE_FAKE_BIN" "$PROBE_STATE"
+printf '%s\n' helper > "$PROBE_STATE/gateway-tls-helper"
+chmod 0700 "$PROBE_STATE/gateway-tls-helper"
+cat > "$PROBE_FAKE_BIN/docker" <<'DOCKER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}:${2:-}" in
+  build:--network=none)
+    [ "${3:-}" = "--pull=false" ] && [ "${4:-}" = "--platform" ] && [ "${5:-}" = "linux/amd64" ] || exit 91
+    ;;
+  image:inspect)
+    [ "$#" -eq 5 ] && [ "$3" = "--format" ] && [ "$4" = "{{.Id}}" ] || exit 92
+    # The mutable tag is substituted immediately after validation returns.
+    : > "$PROBE_TAG_SUBSTITUTED"
+    printf '%s\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    ;;
+  image:save)
+    [ "$#" -eq 6 ] && [ "$3" = "--output" ] && [ -e "$PROBE_TAG_SUBSTITUTED" ] || exit 93
+    [ "$5" = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ] || exit 94
+    case "$6" in lucairn-enterprise-mtls-probe:kind-[0-9]*) ;; *) exit 95 ;; esac
+    ARCHIVE="$4" RUNTIME_TAG="$6" PROBE_ARCHIVE_TAG_RETARGETED="${PROBE_ARCHIVE_TAG_RETARGETED:-}" ruby -rjson -rrubygems/package -e '
+      entry = {
+        "Config" => "blobs/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "RepoTags" => [ENV.fetch("RUNTIME_TAG")],
+        "Layers" => []
+      }
+      manifest = JSON.generate(
+        if ENV.fetch("PROBE_ARCHIVE_TAG_RETARGETED", "") == "1"
+          [entry.merge("RepoTags" => nil), entry.merge("Config" => "blobs/sha256/#{"c" * 64}")]
+        else
+          [entry]
+        end
+      )
+      File.open(ENV.fetch("ARCHIVE"), "wb") do |file|
+        Gem::Package::TarWriter.new(file) do |tar|
+          tar.add_file_simple("manifest.json", 0o644, manifest.bytesize) { |entry| entry.write(manifest) }
+        end
+      end
+    '
+    printf '%s %s\n' "$5" "$6" > "$PROBE_SAVE_ARGUMENT"
+    ;;
+  *) exit 96 ;;
+esac
+DOCKER
+cat > "$PROBE_FAKE_BIN/kind" <<'KIND'
+#!/usr/bin/env bash
+set -euo pipefail
+
+[ "${1:-}" = "load" ] && [ "${2:-}" = "image-archive" ] && [ "${3:-}" = "--name" ] \
+  && [ "${4:-}" = "probe-preload-test" ] && [ -s "${5:-}" ] || exit 96
+[ -z "${PROBE_KIND_LOAD:-}" ] || : > "$PROBE_KIND_LOAD"
+KIND
+chmod 0700 "$PROBE_FAKE_BIN/docker" "$PROBE_FAKE_BIN/kind"
+PROBE_TAG_SUBSTITUTED="$TMPDIR/probe-tag-substituted"
+PROBE_SAVE_ARGUMENT="$TMPDIR/probe-save-argument"
+if ! PATH="$PROBE_FAKE_BIN:$PATH" STATE_DIR="$PROBE_STATE" \
+  GATEWAY_TLS_HELPER="$PROBE_STATE/gateway-tls-helper" GATEWAY_NODE_ARCH=amd64 \
+  PROBE_ARCHIVE="$PROBE_STATE/enterprise-mtls-probe.tar" CLUSTER=probe-preload-test \
+  PROBE_TAG_SUBSTITUTED="$PROBE_TAG_SUBSTITUTED" PROBE_SAVE_ARGUMENT="$PROBE_SAVE_ARGUMENT" \
+  bash -e "$PROBE_PRELOAD"; then
+  echo "Kind scratch-probe preload did not save its validated immutable ID" >&2
+  exit 1
+fi
+[ -e "$PROBE_TAG_SUBSTITUTED" ] && grep -Eq '^sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa lucairn-enterprise-mtls-probe:kind-[0-9]+$' "$PROBE_SAVE_ARGUMENT" || {
+  echo "Kind scratch-probe preload saved a mutable tag after substitution" >&2
+  exit 1
+}
+PROBE_RETARGETED_KIND_LOAD="$TMPDIR/probe-retargeted-kind-load"
+if PATH="$PROBE_FAKE_BIN:$PATH" STATE_DIR="$PROBE_STATE" \
+  GATEWAY_TLS_HELPER="$PROBE_STATE/gateway-tls-helper" GATEWAY_NODE_ARCH=amd64 \
+  PROBE_ARCHIVE="$PROBE_STATE/enterprise-mtls-probe-retargeted.tar" CLUSTER=probe-preload-test \
+  PROBE_TAG_SUBSTITUTED="$PROBE_TAG_SUBSTITUTED" PROBE_SAVE_ARGUMENT="$PROBE_SAVE_ARGUMENT" \
+  PROBE_ARCHIVE_TAG_RETARGETED=1 PROBE_KIND_LOAD="$PROBE_RETARGETED_KIND_LOAD" \
+  bash -e "$PROBE_PRELOAD" >"$TMPDIR/probe-retargeted.stdout" 2>"$TMPDIR/probe-retargeted.stderr"; then
+  echo "Kind scratch-probe preload accepted a retargeted multi-entry archive" >&2
+  exit 1
+fi
+grep -Fq 'archive must contain exactly one manifest entry' "$TMPDIR/probe-retargeted.stderr" \
+  || { cat "$TMPDIR/probe-retargeted.stderr" >&2; echo "Kind scratch-probe preload did not reject the retargeted manifest" >&2; exit 1; }
+[ ! -e "$PROBE_RETARGETED_KIND_LOAD" ] \
+  || { echo "Kind scratch-probe preload loaded a retargeted archive before rejection" >&2; exit 1; }
 
 # The accepted fixture must itself remain free of application secret values and
 # explicitly shrink the rendered topology to the locked default mesh.
@@ -985,6 +1082,8 @@ case "${1:-}:${2:-}" in
         *) exit 82 ;;
       esac
       printf '%s@%s\n' "${5%%:*}" "$digest"
+    elif [ "$#" -eq 5 ] && [ "$3" = '--format' ] && [ "$4" = '{{.Id}}' ]; then
+      printf '%s\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     else
       exit 82
     fi
@@ -994,14 +1093,27 @@ case "${1:-}:${2:-}" in
     printf 'pull %s %s\n' "$3" "$4" >> "$PRELOAD_CALLS"
     ;;
   image:save)
-    [ "$#" -eq 7 ] && [ "$3" = '--platform' ] && [ "$4" = 'linux/arm64' ] && [ "$5" = '--output' ] || exit 84
+    [ "$#" -eq 8 ] && [ "$3" = '--platform' ] && [ "$4" = 'linux/arm64' ] && [ "$5" = '--output' ] || exit 84
     case "$6" in "$PRELOAD_ARCHIVE_DIR"/image-[0-9]*.tar) ;; *) exit 85 ;; esac
     [ ! -e "$6" ] || exit 86
     if find "$PRELOAD_ARCHIVE_DIR" -type f -print -quit | grep -q .; then exit 87; fi
-    printf '%s' archive > "$6"
-    printf 'save %s %s\n' "$4" "$7" >> "$PRELOAD_CALLS"
+    [ "$7" = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ] || exit 88
+    case "$8" in ghcr.io/declade/*:0.5.4|migrate/migrate:v4.17.0|postgres:16-alpine|redis:7-alpine) ;; *) exit 89 ;; esac
+    ARCHIVE="$6" RUNTIME_TAG="$8" ruby -rjson -rrubygems/package -e '
+      manifest = JSON.generate([{
+        "Config" => "blobs/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "RepoTags" => [ENV.fetch("RUNTIME_TAG")],
+        "Layers" => []
+      }])
+      File.open(ENV.fetch("ARCHIVE"), "wb") do |file|
+        Gem::Package::TarWriter.new(file) do |tar|
+          tar.add_file_simple("manifest.json", 0o644, manifest.bytesize) { |entry| entry.write(manifest) }
+        end
+      end
+    '
+    printf 'save %s %s %s\n' "$4" "$7" "$8" >> "$PRELOAD_CALLS"
     ;;
-  *) exit 88 ;;
+  *) exit 90 ;;
 esac
 DOCKER
   cat > "$PRELOAD_FAKE_BIN/kind" <<'KIND'
@@ -1056,8 +1168,10 @@ KIND
   while IFS= read -r image; do
     grep -Fxq "pull linux/arm64 $image" "$PRELOAD_CALLS" \
       || { echo "rendered image was not pulled before install: $image" >&2; exit 1; }
-    grep -Fxq "save linux/arm64 $image" "$PRELOAD_CALLS" \
-      || { echo "rendered image was not saved for the Kind node platform: $image" >&2; exit 1; }
+  done < "$PRELOAD_IMAGES"
+  while IFS= read -r image; do
+    grep -Fxq "save linux/arm64 sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa $image" "$PRELOAD_CALLS" \
+      || { echo "rendered image was not saved with its captured immutable ID and runtime tag for the Kind node platform: $image" >&2; exit 1; }
   done < "$PRELOAD_IMAGES"
   [ ! -e "$PRELOAD_ARCHIVE_DIR" ] \
     || { echo "runtime render preload left image archives behind" >&2; exit 1; }
