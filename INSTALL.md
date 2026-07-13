@@ -1662,11 +1662,16 @@ Use `charts/lucairn/values-prod.yaml` as the production base. It enables
 postgres-gateway) rather than allowing an insecure or partial extension. To use
 different names or key names, change all entries in `global.mtls` together.
 
-Before install, run the Helm-only preflight against your complete customer
-values. A green render alone is not an accepted deployment.
+Before install, run the Helm-only preflight with the same ordered values pair
+as Helm. Keep customer-specific values in the overlay; do not flatten or copy
+the production contract into it. A green render alone is not an accepted
+deployment.
 
 ```bash
-bin/lucairn doctor --values customer-production-values.yaml --offline
+bin/lucairn doctor \
+  --values charts/lucairn/values-prod.yaml \
+  --values customer-production-values.yaml \
+  --offline
 helm template lucairn charts/lucairn \
   -f charts/lucairn/values-prod.yaml \
   -f customer-production-values.yaml >/dev/null

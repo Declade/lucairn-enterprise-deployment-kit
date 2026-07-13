@@ -1180,7 +1180,10 @@ contract before an upgrade; a missing Secret name/key, partial block, or path
 mismatch must be a Helm render failure, never a bypass or placeholder blob:
 
 ```bash
-bin/lucairn doctor --values customer-production-values.yaml --offline
+bin/lucairn doctor \
+  --values charts/lucairn/values-prod.yaml \
+  --values customer-production-values.yaml \
+  --offline
 helm template lucairn charts/lucairn \
   -f charts/lucairn/values-prod.yaml \
   -f customer-production-values.yaml >/dev/null

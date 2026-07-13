@@ -613,6 +613,58 @@ grep -q 'enterprise mTLS (Helm): production render contract: ok' "$TMPDIR/doctor
 grep -q 'doctor: ok' "$TMPDIR/doctor-ok.out" \
   || { echo "doctor did not pass the complete generated enterprise mTLS values" >&2; exit 1; }
 
+# Production installs layer the parent production contract before the customer
+# overlay. Doctor must pass that exact ordered pair, while retaining its
+# single-file accepted-fixture compatibility above.
+"$ROOT/bin/lucairn" doctor \
+  --values "$CHART/values-prod.yaml" \
+  --values "$RUNTIME_VALUES" \
+  --offline > "$TMPDIR/doctor-layered-ok.out"
+grep -q 'doctor: ok' "$TMPDIR/doctor-layered-ok.out" \
+  || { echo "doctor did not pass the ordered production values pair" >&2; exit 1; }
+
+# The customer overlay wins when supplied after the parent, exactly as repeated
+# Helm -f semantics require. Clearing one required Secret must therefore fail.
+ruby -ryaml -e '
+  values = YAML.load_file(ARGV.fetch(0))
+  values.fetch("global").fetch("mtls").fetch("secrets")["audit"] = ""
+  File.write(ARGV.fetch(1), YAML.dump(values))
+' "$RUNTIME_VALUES" "$TMPDIR/doctor-clear-audit.yaml"
+if "$ROOT/bin/lucairn" doctor \
+  --values "$CHART/values-prod.yaml" \
+  --values "$TMPDIR/doctor-clear-audit.yaml" \
+  --offline > "$TMPDIR/doctor-clear-audit.out" 2>&1; then
+  echo "doctor accepted a customer overlay that clears the production audit mTLS Secret" >&2
+  exit 1
+fi
+grep -q 'global.mtls.secrets.audit' "$TMPDIR/doctor-clear-audit.out" \
+  || { echo "doctor did not expose the layered audit Secret error" >&2; exit 1; }
+
+# Reversing those same files changes the result: values-prod.yaml restores the
+# audit Secret when it is last. This proves doctor preserves ordered -f inputs
+# rather than collapsing them into a single file.
+"$ROOT/bin/lucairn" doctor \
+  --values "$TMPDIR/doctor-clear-audit.yaml" \
+  --values "$CHART/values-prod.yaml" \
+  --offline > "$TMPDIR/doctor-reversed-order.out"
+grep -q 'doctor: ok' "$TMPDIR/doctor-reversed-order.out" \
+  || { echo "doctor did not preserve the supplied values-file order" >&2; exit 1; }
+
+# Every repeated values path is validated before doctor asks Helm to render.
+if "$ROOT/bin/lucairn" doctor \
+  --values "$CHART/values-prod.yaml" \
+  --values "$TMPDIR/does-not-exist.yaml" \
+  --offline > "$TMPDIR/doctor-missing-values.out" 2>&1; then
+  echo "doctor accepted a missing values file in a repeated --values list" >&2
+  exit 1
+fi
+grep -q 'values file not found:' "$TMPDIR/doctor-missing-values.out" \
+  || { echo "doctor did not clearly identify the missing repeated values file" >&2; exit 1; }
+
+"$ROOT/bin/lucairn" doctor --help > "$TMPDIR/doctor-help.out"
+grep -q -- '--values values.yaml \[--values customer-overlay.yaml\]...' "$TMPDIR/doctor-help.out" \
+  || { echo "doctor help does not document repeatable ordered --values" >&2; exit 1; }
+
 cat > "$TMPDIR/doctor-invalid.yaml" <<'YAML'
 global:
   dsaEnv: production

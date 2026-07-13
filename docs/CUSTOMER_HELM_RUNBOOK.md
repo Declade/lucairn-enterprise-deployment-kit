@@ -137,9 +137,9 @@ Expected output: `Saving N charts ... Downloading ...` then `Deleting outdated c
 ### Production mTLS gate (required before a production install)
 
 The generated `customer-values.yaml` is a development/pilot starting point.
-For production, create and retain an effective `production-values.yaml` that
-contains your generated application values plus the parent production overlay
-from `charts/lucairn/values-prod.yaml`. `global.dsaEnv` must be exactly
+For production, retain your generated application values as
+`production-values.yaml` and layer it after the parent production overlay
+from `charts/lucairn/values-prod.yaml`; do not merge the files. `global.dsaEnv` must be exactly
 `production`; production refuses to render unless `global.mtls.enabled=true`.
 Do not attempt to enable transport with child-chart TLS settings.
 
@@ -153,11 +153,14 @@ only mounts them. The production names are `lucairn-mtls-gateway` (dsa-edge),
 by the production overlay as well. Never put CA or private-key bytes in Helm
 values or Git.
 
-Run doctor against the complete effective production file—not the static
-overlay alone, which intentionally has no application secrets:
+Run doctor against the same ordered pair used by Helm—not the static overlay
+alone, which intentionally has no application secrets:
 
 ```bash
-bin/lucairn doctor --values production-values.yaml --offline
+bin/lucairn doctor \
+  --values charts/lucairn/values-prod.yaml \
+  --values production-values.yaml \
+  --offline
 ```
 
 This command fails closed if Helm is unavailable because it cannot inspect the
@@ -182,7 +185,8 @@ Helm render.
 helm install lucairn ./charts/lucairn \
   --namespace lucairn \
   --create-namespace \
-  -f customer-values.yaml \
+  -f charts/lucairn/values-prod.yaml \
+  -f production-values.yaml \
   --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
   --wait --timeout 10m
 ```
