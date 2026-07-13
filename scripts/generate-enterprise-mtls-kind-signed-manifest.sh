@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Sign the public verifier roster using only the witness seed in the private
-# application-secret source directory. The host Docker argv receives paths,
-# never seed bytes or a secret-bearing Helm values file.
+# application-secret source directory. The host Docker argv and stdout receive
+# paths/output only, never seed bytes or a secret-bearing Helm values file.
 
 if [ "$#" -ne 3 ]; then
   echo "usage: $0 <public-overlay.yaml-path> <application-secrets-directory> <witness-signed-manifest.json-path>" >&2
@@ -45,7 +45,9 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 
 # The signer accepts only a public overlay and private source files. Ruby
 # writes the seven-entry public roster and mounts a mode-0600 seed file into the
-# ceremony container; neither private input reaches argv or stdout.
+# short-lived ceremony container. The current signer CLI accepts
+# --witness-signing-key-hex, so that seed is expanded only inside the container;
+# the host Docker argv and stdout never receive it.
 ruby -ryaml -rjson - "$PUBLIC_OVERLAY" "$WITNESS_ENV" "$KEYS_JSON" "$SIGNING_SEED_FILE" <<'RUBY'
 values = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
 private_env = File.readlines(ARGV.fetch(1), chomp: true).each_with_object({}) do |line, map|

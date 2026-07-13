@@ -545,21 +545,84 @@ if ! command -v helm >/dev/null 2>&1; then
   echo "H10 render-based Helm doctor checks: SKIPPED — helm not installed (render-based checks require helm)"
 else
 
-# run_doctor_with_values <out_file> <values_file>  → echoes the doctor exit code.
+# run_doctor_with_values <out_file> <values_file> [...]  → echoes the doctor
+# exit code. Values are deliberately forwarded one-for-one so layered Helm
+# semantics can be exercised here.
 # Combines stdout+stderr into <out_file> (doctor emits FAILs on stdout, WARNs on
 # stderr; tests grep the merged stream). The base ENV_FILE drives the Compose
 # checks; the values file drives the Helm-path render checks.
 run_doctor_with_values() {
-  local out="$1" vals="$2"
+  local out="$1"
+  shift
+  local doctor_args=(doctor --env "$ENV_FILE" --compose "$ROOT/docker-compose.customer.yml") vals
+  for vals in "$@"; do
+    doctor_args+=(--values "$vals")
+  done
+  doctor_args+=(--offline)
   set +e
-  "$ROOT/bin/lucairn" doctor --env "$ENV_FILE" \
-    --compose "$ROOT/docker-compose.customer.yml" \
-    --values "$vals" \
-    --offline > "$out" 2>&1
+  "$ROOT/bin/lucairn" "${doctor_args[@]}" > "$out" 2>&1
   local rc=$?
   set -e
   return "$rc"
 }
+
+# Production external-custody doctor renders must preserve the caller's exact
+# ordered registry-auth decision. The base profile has a private registry, so
+# endpoint-only values must fail the chart guard; a later overlay can make that
+# decision valid without doctor silently overriding it.
+PROD_VALUES="$ROOT/charts/lucairn/values-prod.yaml"
+PROD_SITE_VALUES="$ROOT/charts/lucairn/values-prod-site.example.yaml"
+PROD_ENDPOINT_ONLY="$TMPDIR/h10-production-endpoint-only.yaml"
+cat > "$PROD_ENDPOINT_ONLY" <<'YAML'
+global:
+  secrets:
+    vault:
+      endpoint: "https://vault.example.internal"
+YAML
+if helm template lucairn "$ROOT/charts/lucairn" -f "$PROD_VALUES" -f "$PROD_ENDPOINT_ONLY" >"$TMPDIR/h10-production-endpoint-only.rendered" 2>"$TMPDIR/h10-production-endpoint-only.err"; then
+  echo "FAIL: endpoint-only production overlay must fail the raw Helm registry guard" >&2
+  exit 1
+fi
+grep -Fq 'global.imageRegistry="ghcr.io/declade" is a PRIVATE registry but global.imagePullSecrets is empty' "$TMPDIR/h10-production-endpoint-only.err" \
+  || { echo "FAIL: endpoint-only raw Helm render omitted the private-registry guard" >&2; cat "$TMPDIR/h10-production-endpoint-only.err" >&2; exit 1; }
+if run_doctor_with_values "$TMPDIR/h10-production-endpoint-only.doctor.out" "$PROD_VALUES" "$PROD_ENDPOINT_ONLY"; then
+  echo "FAIL: endpoint-only production overlay must make doctor fail" >&2
+  cat "$TMPDIR/h10-production-endpoint-only.doctor.out" >&2; exit 1
+fi
+grep -Fq 'global.imageRegistry="ghcr.io/declade" is a PRIVATE registry but global.imagePullSecrets is empty' "$TMPDIR/h10-production-endpoint-only.doctor.out" \
+  || { echo "FAIL: endpoint-only doctor omitted the actionable private-registry guard" >&2; cat "$TMPDIR/h10-production-endpoint-only.doctor.out" >&2; exit 1; }
+if grep -Fq 'doctor: ok' "$TMPDIR/h10-production-endpoint-only.doctor.out"; then
+  echo "FAIL: endpoint-only production overlay printed doctor: ok" >&2
+  cat "$TMPDIR/h10-production-endpoint-only.doctor.out" >&2; exit 1
+fi
+
+if ! run_doctor_with_values "$TMPDIR/h10-production-site-example.doctor.out" "$PROD_VALUES" "$PROD_SITE_VALUES"; then
+  echo "FAIL: checked-in production site example must pass doctor" >&2
+  cat "$TMPDIR/h10-production-site-example.doctor.out" >&2; exit 1
+fi
+grep -Fq 'doctor: ok' "$TMPDIR/h10-production-site-example.doctor.out" \
+  || { echo "FAIL: checked-in production site example did not finish doctor successfully" >&2; cat "$TMPDIR/h10-production-site-example.doctor.out" >&2; exit 1; }
+
+PROD_EXTERNAL_REGISTRY_AUTH="$TMPDIR/h10-production-external-registry-auth.yaml"
+cat > "$PROD_EXTERNAL_REGISTRY_AUTH" <<'YAML'
+global:
+  imagePullSecrets: []
+  skipPullSecretGuard: true
+YAML
+if ! run_doctor_with_values "$TMPDIR/h10-production-external-registry-auth.doctor.out" "$PROD_VALUES" "$PROD_SITE_VALUES" "$PROD_EXTERNAL_REGISTRY_AUTH"; then
+  echo "FAIL: explicit external registry-auth overlay must pass doctor" >&2
+  cat "$TMPDIR/h10-production-external-registry-auth.doctor.out" >&2; exit 1
+fi
+grep -Fq 'doctor: ok' "$TMPDIR/h10-production-external-registry-auth.doctor.out" \
+  || { echo "FAIL: explicit external registry-auth overlay did not finish doctor successfully" >&2; cat "$TMPDIR/h10-production-external-registry-auth.doctor.out" >&2; exit 1; }
+
+if ! run_doctor_with_values "$TMPDIR/h10-production-ordered-registry-auth.doctor.out" "$PROD_VALUES" "$PROD_ENDPOINT_ONLY" "$PROD_EXTERNAL_REGISTRY_AUTH"; then
+  echo "FAIL: later registry-auth overlay must preserve ordered values semantics and pass doctor" >&2
+  cat "$TMPDIR/h10-production-ordered-registry-auth.doctor.out" >&2; exit 1
+fi
+grep -Fq 'doctor: ok' "$TMPDIR/h10-production-ordered-registry-auth.doctor.out" \
+  || { echo "FAIL: ordered registry-auth overlay did not finish doctor successfully" >&2; cat "$TMPDIR/h10-production-ordered-registry-auth.doctor.out" >&2; exit 1; }
+echo "H10-production registry-auth doctor parity: ok"
 
 # A render-time canary value; the actual value is irrelevant to the check
 # (it compares gateway vs sandbox-a for equality) but must be non-empty.

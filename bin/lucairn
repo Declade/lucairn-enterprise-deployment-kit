@@ -885,7 +885,10 @@ helm_render_values() {
   fi
   case "$custody_mode" in
     external)
-      helm "${helm_args[@]}" --set global.skipPullSecretGuard=true
+      # Production registry authentication is an operator decision expressed
+      # in the ordered values files. Do not bypass the chart's fail-closed
+      # private-registry guard while doctor is inspecting that exact render.
+      helm "${helm_args[@]}"
       ;;
     legacy)
       helm "${helm_args[@]}" \
