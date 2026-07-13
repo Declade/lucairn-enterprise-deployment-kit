@@ -725,6 +725,12 @@ require_probe_archive_tag_binding() {
 
 mkdir -p "$PROBE_CONTEXT"
 cp "$GATEWAY_TLS_HELPER" "$PROBE_CONTEXT/probe"
+# The harness-wide umask 077 (custody hygiene for private state) makes the
+# compiled helper 0700; docker COPY preserves that mode, the image file is
+# root-owned, and the probe Pod runs as 65532 → exec "/probe" permission
+# denied. The helper is a purpose-built public test binary with no secret
+# material, so world-exec in the disposable build context is correct.
+chmod 0755 "$PROBE_CONTEXT/probe"
 cat > "$PROBE_DOCKERFILE" <<'DOCKERFILE'
 FROM scratch
 COPY probe /probe
