@@ -658,6 +658,8 @@ ruby -ryaml -e '
     component = fixture.fetch(name)
     abort "accepted fixture does not disable #{name}" unless component["enabled"] == false
   end
+  abort "accepted fixture does not enable Veil Witness" unless fixture.dig("veil-witness", "enabled") == true
+  abort "generated runtime values do not enable Veil Witness" unless runtime.dig("veil-witness", "enabled") == true
   abort "accepted fixture does not enable the Sandbox-B harness-only readiness adapter" unless fixture.dig("sandbox-b", "enableTestProvider") == "true"
   abort "generated runtime values omit the Sandbox-B harness-only readiness adapter" unless runtime.dig("sandbox-b", "enableTestProvider") == "true"
   abort "accepted fixture does not disable Sandbox-B Ollama" unless fixture.dig("sandbox-b", "ollama", "enabled") == false
