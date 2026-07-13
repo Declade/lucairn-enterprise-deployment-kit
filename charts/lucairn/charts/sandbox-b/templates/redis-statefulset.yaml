@@ -30,7 +30,10 @@ spec:
       containers:
         - name: redis
           image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
-          {{- if .Values.redis.password }}
+          {{- /* External-backend Kind custody supplies REDIS_PASSWORD through the
+                pre-created target Secret. It must not require an inline Helm
+                value merely to make the bundled Redis StatefulSet authenticate. */}}
+          {{- if or .Values.redis.password (ne .Values.secrets.backend "k8s-native") }}
           args:
             - "--requirepass"
             - "$(REDIS_PASSWORD)"

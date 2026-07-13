@@ -19,6 +19,7 @@ bash -n "$ROOT/tests/test_digest_pin.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_helm.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_cert_contract.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_kind_runtime_values.sh"
+bash -n "$ROOT/tests/test_enterprise_mtls_kind_custody.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_kind_image_preload.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_kind_client_auth.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_ceremony_docs.sh"
@@ -28,6 +29,8 @@ bash -n "$ROOT/scripts/render-values.sh"
 bash -n "$ROOT/scripts/derive-veil-pubkey.sh"
 bash -n "$ROOT/scripts/enterprise-mtls-fixture-certs.sh"
 bash -n "$ROOT/scripts/generate-enterprise-mtls-kind-runtime-values.sh"
+bash -n "$ROOT/scripts/generate-enterprise-mtls-kind-signed-manifest.sh"
+bash -n "$ROOT/scripts/assert-enterprise-mtls-release-custody.sh"
 bash -n "$ROOT/scripts/preload-enterprise-mtls-kind-images.sh"
 bash -n "$ROOT/scripts/resolve-enterprise-mtls-kind-kubectl.sh"
 bash -n "$ROOT/scripts/test-enterprise-mtls-kind.sh"
@@ -52,11 +55,9 @@ for required_term in global.mtls operator/PKI doctor readiness acceptance; do
 done
 
 # Kind preloads every rendered product image. It must not require, read, or
-# transfer registry credentials through Helm; the chart guard is explicitly
-# bypassed only for this disposable, preloaded environment.
-for required_flag in \
-  '--set global.skipPullSecretGuard=true' \
-  '--set global.secrets.backend=k8s-native'; do
+# transfer registry credentials through Helm; its public overlay retains the
+# production ExternalSecret backends while bypassing only the pull-secret guard.
+for required_flag in '--set global.skipPullSecretGuard=true'; do
   grep -Fq -- "$required_flag" "$ROOT/scripts/test-enterprise-mtls-kind.sh" \
     || { echo "enterprise mTLS Kind gate missing required Helm flag: $required_flag" >&2; exit 1; }
 done
@@ -93,7 +94,7 @@ done
 # The ephemeral application fixture is a static/render contract: it never
 # starts Kind, but proves the harness-owned STATE_DIR generation, key pairing,
 # optional-workload suppression, and no-output discipline.
-bash "$ROOT/tests/test_enterprise_mtls_kind_runtime_values.sh"
+bash "$ROOT/tests/test_enterprise_mtls_kind_custody.sh"
 bash "$ROOT/tests/test_enterprise_mtls_kind_image_preload.sh"
 bash "$ROOT/tests/test_enterprise_mtls_kind_client_auth.sh"
 bash "$ROOT/tests/test_enterprise_mtls_ceremony_docs.sh"

@@ -67,7 +67,7 @@ This puts you on `main` which contains the verified v1.0 release.
 
 ---
 
-## Step 2 — Set up ghcr.io credentials in an isolated DOCKER_CONFIG
+## Step 2 — Development/pilot only: set up ghcr.io credentials in an isolated DOCKER_CONFIG
 
 The kit's images are private. The chart-managed pull Secret needs a clean `config.json` with literal auth credentials (not a credsStore helper redirect).
 
@@ -89,7 +89,7 @@ Expected: `PAT OK`.
 
 ---
 
-## Step 3 — Render customer-values.yaml via the canonical script
+## Step 3 — Development/pilot only: render customer-values.yaml via the canonical script
 
 The kit ships a `scripts/render-values.sh` that generates all REPLACE_* values: AES keys, Ed25519 signing keys with derived public keys, service tokens, random passwords, etc.
 
@@ -103,7 +103,7 @@ This writes a complete `customer-values.yaml` to your current directory. Every c
 
 ---
 
-## Step 4 — Add your Anthropic API key
+## Step 4 — Development/pilot only: add your Anthropic API key
 
 `scripts/render-values.sh` writes the Anthropic key field as `anthropicApiKey: ""` (empty string). Replace the empty string with your real `sk-ant-...` key:
 
@@ -120,6 +120,11 @@ grep -c '^      anthropicApiKey: "sk-ant-' customer-values.yaml  # → 1
 
 If this returns `0`, the sed didn't land (typo in `<your-key-here>` or key doesn't start with `sk-ant-`). Re-run with the correct key.
 
+These Docker-config and `customer-values.yaml` steps are for a
+development/pilot install only. Do not carry that file, its inline application
+credentials, or `global.imagePullDockerConfigJson` into the production steps
+below.
+
 ---
 
 ## Step 5 — Fetch chart dependencies
@@ -132,7 +137,7 @@ Expected output: `Saving N charts ... Downloading ...` then `Deleting outdated c
 
 ---
 
-## Step 6 — Install Lucairn
+## Step 6 — Production install
 
 ### Production mTLS gate (required before a production install)
 
@@ -154,6 +159,41 @@ only mounts them. The production names are `lucairn-mtls-gateway` (dsa-edge),
 (dsa-witness). Create the separately signed gateway manifest Secret required
 by the production overlay as well. Never put CA or private-key bytes in Helm
 values or Git.
+
+#### Production only: create or intentionally adopt namespaces before Secrets
+
+On a clean cluster, create the `lucairn` release namespace and the six
+production workload namespaces **before** creating PKI, signed-manifest, or
+registry Secrets. The chart owns Namespace objects for the six `dsa-*`
+namespaces, so pre-existing namespaces must carry Helm's ownership metadata
+for the `lucairn` release. This is intentional adoption only; do not use this
+block to claim an unrelated namespace.
+
+```bash
+kubectl create namespace lucairn --dry-run=client -o yaml | kubectl apply -f -
+
+for namespace in dsa-edge dsa-audit dsa-bridge dsa-identity dsa-ai dsa-witness; do
+  kubectl create namespace "$namespace" --dry-run=client -o yaml | kubectl apply -f -
+  kubectl label namespace "$namespace" app.kubernetes.io/managed-by=Helm --overwrite
+  kubectl annotate namespace "$namespace" meta.helm.sh/release-name=lucairn --overwrite
+  kubectl annotate namespace "$namespace" meta.helm.sh/release-namespace=lucairn --overwrite
+done
+```
+
+Then create the PKI Secrets from protected files (repeat for the seven named
+identities above) and create the signed gateway manifest Secret. These are
+operator-owned inputs; Helm only references them.
+
+```bash
+kubectl -n <namespace> create secret generic <secret-name> \
+  --from-file=ca.crt=/secure/pki/ca.crt \
+  --from-file=tls.crt=/secure/pki/<identity>.crt \
+  --from-file=tls.key=/secure/pki/<identity>.key
+
+kubectl -n dsa-edge create secret generic lucairn-witness-signed-manifest \
+  --from-file=witness-signed-manifest.json=/secure/ceremony/witness-signed-manifest.json \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
 
 Registry authentication is outside Helm and release history. Set
 `global.skipPullSecretGuard=true` (already in the production profile) and use
@@ -186,22 +226,25 @@ bash scripts/test-enterprise-mtls-kind.sh
 ```
 
 That battery uses fresh disposable certificates and never tests a customer
-cluster. After the customer install, record readiness plus the approved local
-workload acceptance evidence; do not infer mTLS acceptance from a successful
-Helm render.
+cluster. It proves production `ExternalSecret`/`ClusterSecretStore` API
+admission plus workload, application, and mTLS behavior using pre-created
+target Secrets; it **does not prove live ESO reconciliation**. Production
+operators must still populate the configured external backend and verify their
+installed ESO controller separately. After the customer install, record
+readiness plus the approved local workload acceptance evidence; do not infer
+mTLS acceptance from a successful Helm render.
 
 ```bash
 helm install lucairn ./charts/lucairn \
   --namespace lucairn \
-  --create-namespace \
   -f charts/lucairn/values-prod.yaml \
   --wait --timeout 10m
 ```
 
 This takes ~3-5 minutes. Helm:
-1. Creates all `dsa-*` + `lucairn` namespaces
-2. Pulls all Lucairn images from ghcr.io
-3. Renders + applies all StatefulSets, Deployments, Services, ConfigMaps, Secrets, NetworkPolicies
+1. Adopts the six pre-created `dsa-*` namespaces for this release and uses the pre-created `lucairn` release namespace
+2. Pulls all Lucairn images from ghcr.io using out-of-band authentication
+3. Renders + applies StatefulSets, Deployments, Services, ConfigMaps, ExternalSecrets, and NetworkPolicies (not Helm-owned credential Secrets)
 4. Runs migration Jobs for Postgres + sandbox-a + id-bridge + veil-witness
 5. Waits for all pods to reach Ready
 
@@ -437,7 +480,11 @@ kubectl -n lucairn create secret generic lucairn-dashboard-bootstrap-admin \
   --from-literal=session-secret="$DASH_SS"
 ```
 
-### Enable the dashboard in customer-values.yaml
+### Development/pilot only: enable the dashboard in customer-values.yaml
+
+This optional workflow uses the development/pilot values path below. It is not
+an approved production override: production rejects the dashboard and never
+accepts Docker or application-secret bytes through Helm values.
 
 Edit `customer-values.yaml` and flip the dashboard block:
 
@@ -453,7 +500,7 @@ The umbrella chart already wires the dashboard sub-chart into the `lucairn` name
 
 ### Apply the upgrade
 
-Use the same isolated `DOCKER_CONFIG` session pattern from Step 6 so the registry credential never leaks into the global Docker config:
+Use the isolated development/pilot `DOCKER_CONFIG` session pattern from Step 2 so the registry credential never leaks into the global Docker config:
 
 ```bash
 DOCKER_CONFIG=$(mktemp -d)

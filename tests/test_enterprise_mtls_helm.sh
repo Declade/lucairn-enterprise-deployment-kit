@@ -5,19 +5,20 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHART="$ROOT/charts/lucairn"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
-RUNTIME_VALUES="$TMPDIR/runtime-values.yaml"
+PUBLIC_OVERLAY="$TMPDIR/public-overlay.yaml"
+APPLICATION_SECRETS="$TMPDIR/application-secrets"
 
 if ! command -v helm >/dev/null 2>&1; then
   echo "enterprise mTLS Helm contract: ERROR — Helm CLI is required; install Helm and rerun make test." >&2
   exit 2
 fi
 
-bash "$ROOT/scripts/generate-enterprise-mtls-kind-runtime-values.sh" "$RUNTIME_VALUES"
+bash "$ROOT/scripts/generate-enterprise-mtls-kind-runtime-values.sh" "$PUBLIC_OVERLAY" "$APPLICATION_SECRETS"
 
 render() {
   helm template lucairn "$CHART" \
     -f "$CHART/values-prod.yaml" \
-    -f "$RUNTIME_VALUES" \
+    -f "$PUBLIC_OVERLAY" \
     "$@"
 }
 
@@ -416,7 +417,7 @@ for consumer in "${mtls_consumers[@]}"; do
   grep -Fq '{{- $mtlsEnabled := and (kindIs "bool" .Values.global.mtls.enabled) .Values.global.mtls.enabled -}}' "$consumer" \
     || { echo "mTLS consumer lacks the strict boolean guard: $consumer" >&2; exit 1; }
 done
-if rg -n -F \
+if grep -n -F \
   -e '{{- if .Values.global.mtls.enabled' \
   -e '{{- if not .Values.global.mtls.enabled' \
   -e '{{- if and (not .Values.global.mtls.enabled' \
@@ -460,6 +461,58 @@ for workload in gateway audit id-bridge sandbox-a sandbox-b veil-witness; do
   fi
   grep -q "${workload}.enabled must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology." "$disabled_file" \
     || { echo "${workload}.enabled=false did not produce the mandatory-topology error" >&2; exit 1; }
+done
+
+# Production must remain names-and-paths-only: a Docker config would render
+# Helm-owned registry Secrets, and every mandatory child must select an
+# External Secrets provider rather than rendering a k8s-native application
+# Secret. Check each child explicitly so a new default or one local override
+# cannot bypass the umbrella production gate.
+docker_config_file="$TMPDIR/production-docker-config.out"
+if render --set-string global.imagePullDockerConfigJson=eyJhdXRocyI6e319 >"$docker_config_file" 2>&1; then
+  echo "production render accepted global.imagePullDockerConfigJson" >&2
+  exit 1
+fi
+grep -Fq 'global.imagePullDockerConfigJson must be empty when global.dsaEnv=production.' "$docker_config_file" \
+  || { echo "production Docker-config rejection was not actionable" >&2; exit 1; }
+
+for workload in gateway audit id-bridge sandbox-a sandbox-b veil-witness; do
+  backend_file="$TMPDIR/${workload}-k8s-native.out"
+  backend_args=(--set "${workload}.secrets.backend=k8s-native")
+  # Sandbox B validates bundled Redis input before the umbrella validator.
+  # Supply a disposable value solely to reach the parent backend rejection.
+  if [[ "$workload" == "sandbox-b" ]]; then
+    backend_args+=(--set-string sandbox-b.redis.password=validator-test-only)
+  fi
+  if [[ "$workload" == "veil-witness" ]]; then
+    backend_args+=(--set-string veil-witness.secrets.values.signingKey=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef)
+  fi
+  if render "${backend_args[@]}" >"$backend_file" 2>&1; then
+    echo "production render accepted ${workload}.secrets.backend=k8s-native" >&2
+    exit 1
+  fi
+  grep -Fq "${workload}.secrets.backend must be one of vault, aws, or azure when global.dsaEnv=production;" "$backend_file" \
+    || { echo "${workload} k8s-native backend rejection was not actionable" >&2; exit 1; }
+done
+
+# Every optional profile remains outside the verified names-and-paths-only
+# production topology. These include all previously guarded profiles plus the
+# secret-owning Admin, Observability, and Ingest surfaces.
+for optional_path in pii-ml.enabled postgres-gateway.enabled demo.enabled ingest.enabled admin.enabled observability.enabled certification.enabled dashboard.enabled; do
+  optional_file="$TMPDIR/${optional_path//./-}.out"
+  optional_args=(--set "${optional_path}=true")
+  # This legacy opt-in renders its own k8s-native Secret before the umbrella
+  # template unless its required value is present. Supply a disposable test
+  # value solely so the production validator can prove it rejects the surface.
+  if [[ "$optional_path" == "postgres-gateway.enabled" ]]; then
+    optional_args+=(--set-string postgres-gateway.secrets.values.postgresPassword=validator-test-only)
+  fi
+  if render "${optional_args[@]}" >"$optional_file" 2>&1; then
+    echo "production render accepted ${optional_path}=true" >&2
+    exit 1
+  fi
+  grep -Fq "unsupported optional secret-owning surface: ${optional_path}=true is outside the verified default production mTLS topology." "$optional_file" \
+    || { echo "${optional_path}=true rejection was not actionable" >&2; exit 1; }
 done
 
 # Every default-topology claim source is mandatory in production. Keep accepted
@@ -668,13 +721,16 @@ if render --set ingest.enabled=true >"$TMPDIR/unsupported.out" 2>&1; then
   echo "production render accepted unsupported ingest mTLS wiring" >&2
   exit 1
 fi
-grep -q 'unsupported optional gRPC profile' "$TMPDIR/unsupported.out" \
+grep -q 'unsupported optional secret-owning surface: ingest.enabled=true is outside the verified default production mTLS topology.' "$TMPDIR/unsupported.out" \
   || { echo "unsupported profile failure was not actionable" >&2; exit 1; }
 
 # The Helm-only doctor mode deliberately needs neither customer.env nor a
-# Compose file. The complete generated document is the pre-install contract
-# gate; the static fixture alone intentionally omits application secrets.
-"$ROOT/bin/lucairn" doctor --values "$RUNTIME_VALUES" --offline > "$TMPDIR/doctor-ok.out"
+# Compose file. Production values plus the generated public overlay are the
+# pre-install contract; all private application inputs remain out of Helm.
+"$ROOT/bin/lucairn" doctor \
+  --values "$CHART/values-prod.yaml" \
+  --values "$PUBLIC_OVERLAY" \
+  --offline > "$TMPDIR/doctor-ok.out"
 grep -q 'enterprise mTLS (Helm): production render contract: ok' "$TMPDIR/doctor-ok.out" \
   || { echo "doctor did not report the accepted enterprise mTLS contract" >&2; exit 1; }
 grep -q 'doctor: ok' "$TMPDIR/doctor-ok.out" \
@@ -685,7 +741,7 @@ grep -q 'doctor: ok' "$TMPDIR/doctor-ok.out" \
 # single-file accepted-fixture compatibility above.
 "$ROOT/bin/lucairn" doctor \
   --values "$CHART/values-prod.yaml" \
-  --values "$RUNTIME_VALUES" \
+  --values "$PUBLIC_OVERLAY" \
   --offline > "$TMPDIR/doctor-layered-ok.out"
 grep -q 'doctor: ok' "$TMPDIR/doctor-layered-ok.out" \
   || { echo "doctor did not pass the ordered production values pair" >&2; exit 1; }
@@ -696,7 +752,7 @@ ruby -ryaml -e '
   values = YAML.load_file(ARGV.fetch(0))
   values.fetch("global").fetch("mtls").fetch("secrets")["audit"] = ""
   File.write(ARGV.fetch(1), YAML.dump(values))
-' "$RUNTIME_VALUES" "$TMPDIR/doctor-clear-audit.yaml"
+' "$PUBLIC_OVERLAY" "$TMPDIR/doctor-clear-audit.yaml"
 if "$ROOT/bin/lucairn" doctor \
   --values "$CHART/values-prod.yaml" \
   --values "$TMPDIR/doctor-clear-audit.yaml" \
@@ -763,8 +819,8 @@ if "$ROOT/bin/lucairn" doctor --values "$TMPDIR/doctor-invalid.yaml" --offline \
   echo "doctor accepted an incomplete production mTLS values contract" >&2
   exit 1
 fi
-grep -q 'global.mtls.secrets.audit' "$TMPDIR/doctor-invalid.out" \
-  || { echo "doctor did not expose the missing identity error" >&2; exit 1; }
+grep -Fq 'refusing fixed test signing-key injection because production external-backend custody could not be established.' "$TMPDIR/doctor-invalid.out" \
+  || { echo "doctor did not fail closed on incomplete production external-backend custody" >&2; exit 1; }
 
 # Doctor delegates to Helm's render validator, so its production gate must
 # preserve the same strict boolean contract rather than accepting a quoted
@@ -775,8 +831,8 @@ ruby -ryaml -e '
   values = YAML.load_file(ARGV.fetch(0))
   values.fetch("global").fetch("mtls")["enabled"] = "false"
   File.write(ARGV.fetch(1), YAML.dump(values))
-' "$RUNTIME_VALUES" "$TMPDIR/doctor-mtls-string.yaml"
-if "$ROOT/bin/lucairn" doctor --values "$TMPDIR/doctor-mtls-string.yaml" --offline \
+' "$PUBLIC_OVERLAY" "$TMPDIR/doctor-mtls-string.yaml"
+if "$ROOT/bin/lucairn" doctor --values "$CHART/values-prod.yaml" --values "$TMPDIR/doctor-mtls-string.yaml" --offline \
   > "$TMPDIR/doctor-mtls-string.out" 2>&1; then
   echo "doctor accepted string global.mtls.enabled" >&2
   exit 1
@@ -802,7 +858,7 @@ sandbox-b:
     values:
       sandboxBApiKeys: test-api-key
 YAML
-if "$ROOT/bin/lucairn" doctor --values "$TMPDIR/doctor-disabled-workload.yaml" --offline \
+if "$ROOT/bin/lucairn" doctor --values "$CHART/values-prod.yaml" --values "$TMPDIR/doctor-disabled-workload.yaml" --offline \
   > "$TMPDIR/doctor-disabled-workload.out" 2>&1; then
   echo "doctor accepted gateway.enabled=false in production values" >&2
   exit 1

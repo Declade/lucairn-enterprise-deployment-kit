@@ -829,24 +829,74 @@ check_mtls_partial_config() {
 # decision (deterministic over a per-run `openssl rand`).
 DOCTOR_HELM_RENDER_TEST_SIGNING_KEY="1111111111111111111111111111111111111111111111111111111111111111"
 
+# doctor_helm_render_custody_mode <values_file> [...]
+#
+# A production render that resolves every mandatory child to an external
+# backend must not receive the fixed test seed below: that would put a
+# secret-shaped literal in Helm argv even though no native Secret is rendered.
+# Merge the ordered values files with Helm-compatible recursive map semantics.
+# Production uncertainty fails closed so a malformed or partial overlay cannot
+# silently fall back to the legacy seed injection path.
+doctor_helm_render_custody_mode() {
+  ruby -ryaml - "$@" <<'RUBY'
+def deep_merge(left, right)
+  left.merge(right) do |_key, a, b|
+    a.is_a?(Hash) && b.is_a?(Hash) ? deep_merge(a, b) : b
+  end
+end
+
+values = ARGV.reduce({}) do |merged, path|
+  parsed = YAML.safe_load(File.read(path), aliases: true)
+  abort "values document is not a mapping: #{path}" unless parsed.is_a?(Hash)
+  deep_merge(merged, parsed)
+end
+production = values.dig("global", "dsaEnv") == "production"
+unless production
+  puts "legacy"
+  exit 0
+end
+children = %w[gateway audit id-bridge sandbox-a sandbox-b veil-witness]
+backends = children.map { |child| values.dig(child, "secrets", "backend") }
+unless backends.all? { |backend| %w[vault aws azure].include?(backend) }
+  abort "production values do not resolve every mandatory child to an external backend"
+end
+puts "external"
+RUBY
+}
+
 # helm_render_values <chart_dir> <values_file> [...]
 #
-# Render the umbrella chart with the customer's values merged over chart
-# defaults, injecting the test signingKey (so the all-zeroes guard does not
-# abort) and skipping the pull-secret guard (an unrelated install-time gate).
-# Prints the merged rendered manifests to stdout; returns 1 if the render fails
-# for ANY reason (so callers can INFO-skip rather than false-FAIL on an
-# unrelated chart/values error — render-breakage is caught by static_checks).
+# Render the umbrella chart with the customer's ordered values merged over chart
+# defaults. Legacy/development native-secret renders retain the fixed signing
+# seed so their historical validation behavior is unchanged. A production
+# ExternalSecret render omits it entirely; the signer and target Secret custody
+# are outside Helm. Prints manifests to stdout; returns 1 on any render/custody
+# determination failure.
 helm_render_values() {
   local chart_dir="$1" values_file
   shift
-  local helm_args=(template lucairn "$chart_dir")
+  local helm_args=(template lucairn "$chart_dir") custody_mode
   for values_file in "$@"; do
     helm_args+=(-f "$values_file")
   done
-  helm "${helm_args[@]}" \
-    --set global.skipPullSecretGuard=true \
-    --set "veil-witness.secrets.values.signingKey=$DOCTOR_HELM_RENDER_TEST_SIGNING_KEY"
+  if ! custody_mode="$(doctor_helm_render_custody_mode "$@")"; then
+    echo "doctor Helm render: refusing fixed test signing-key injection because production external-backend custody could not be established." >&2
+    return 1
+  fi
+  case "$custody_mode" in
+    external)
+      helm "${helm_args[@]}" --set global.skipPullSecretGuard=true
+      ;;
+    legacy)
+      helm "${helm_args[@]}" \
+        --set global.skipPullSecretGuard=true \
+        --set "veil-witness.secrets.values.signingKey=$DOCTOR_HELM_RENDER_TEST_SIGNING_KEY"
+      ;;
+    *)
+      echo "doctor Helm render: unknown custody mode" >&2
+      return 1
+      ;;
+  esac
 }
 
 check_mtls_partial_config_helm() {
