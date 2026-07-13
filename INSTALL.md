@@ -1696,11 +1696,15 @@ performs positive handshakes and wrong-CA, wrong-SAN, no-client, expired-leaf,
 and partial-Secret negatives, rotates the Audit leaf, and tears down its owned
 state. The five non-Witness positive checks run from its generic probe; the
 two Witness checks run a temporary verified-TLS helper in the actual gateway
-Pod using that Pod's projected identity and network-policy identity. The same
-temporary helper invokes the gateway health handler locally over loopback,
-then is deleted after that evidence battery. The Witness checks prove transport
-handshakes only; they do not claim to invoke gateway application Witness RPC
-methods. It requires authenticated GHCR credentials in `DOCKER_CONFIG` and a
+Pod using that Pod's projected leaf identity. The same temporary helper invokes
+the gateway health handler locally over loopback, then is deleted after that
+evidence battery. Because this harness uses stock Kind/kindnet, it proves only
+the actual Pod's projected-leaf transport identity; it does not prove
+NetworkPolicy enforcement or per-link caller authorization. The Witness checks
+prove transport handshakes only; they do not claim to invoke gateway application
+Witness RPC methods. mTLS proves CA membership authentication and exact server
+identity, while authorization remains a separate NetworkPolicy and application
+control. It requires authenticated GHCR credentials in `DOCKER_CONFIG` and a
 functioning container runtime. It does not use a production or customer
 context.
 

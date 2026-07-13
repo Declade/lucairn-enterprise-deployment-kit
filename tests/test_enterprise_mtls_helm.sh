@@ -168,6 +168,19 @@ for config in gateway audit id-bridge sandbox-a sandbox-b; do
     || { echo "$config lacks the DSA mTLS CA path" >&2; exit 1; }
 done
 
+# Every mandatory workload emits claims through the same verified Witness
+# endpoint. The accepted production fixture keeps LCR enabled with the chart's
+# canonical quoted string, not merely a truthy value accepted by Helm.
+ruby -ryaml -e '
+  docs = YAML.load_stream(File.read(ARGV.fetch(0))).compact
+  %w[gateway audit id-bridge sandbox-a sandbox-b].each do |name|
+    config = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "#{name}-config" } || abort("render misses #{name} ConfigMap")
+    data = config.fetch("data")
+    abort "#{name} does not enable the mandatory Witness claim path" unless data["LCR_ENABLED"] == "true"
+    abort "#{name} does not target the canonical Witness claim endpoint" unless data["LCR_WITNESS_ADDR"] == "veil-witness.dsa-witness.svc.cluster.local:50057"
+  end
+' "$RENDER"
+
 # The gateway's sanitizer client is HTTP-based rather than gRPC. In the
 # production mTLS profile the rendered operator contract must still name HTTPS
 # explicitly; tlsutil.ForceHTTPS repeats the upgrade in the pinned runtime as
@@ -449,18 +462,47 @@ for workload in gateway audit id-bridge sandbox-a sandbox-b veil-witness; do
     || { echo "${workload}.enabled=false did not produce the mandatory-topology error" >&2; exit 1; }
 done
 
-# The witness claim and certificate ports are part of the production topology;
-# setting this legacy-compatible flag false must not bypass their validation.
-if render --set gateway.veilEnabled=false >"$TMPDIR/veil-disabled.out" 2>&1; then
-  echo "production render accepted gateway.veilEnabled=false" >&2
-  exit 1
-fi
-grep -q 'gateway.veilEnabled must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology.' "$TMPDIR/veil-disabled.out" \
-  || { echo "gateway.veilEnabled=false did not produce the mandatory-topology error" >&2; exit 1; }
+# Every default-topology claim source is mandatory in production. Keep accepted
+# true shapes exact: false, aliases, case/whitespace variants, numbers, null,
+# maps, and lists must fail closed with the path that caused the rejection.
+for path in gateway.veilEnabled audit.veilEnabled id-bridge.veilEnabled sandbox-a.veilEnabled sandbox-b.veilEnabled; do
+  error="${path} must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology."
+  for setter in --set --set-string; do
+    accepted_file="$TMPDIR/${path//./-}-${setter#--}-true.yaml"
+    if ! render "$setter" "${path}=true" >"$accepted_file"; then
+      echo "production render rejected accepted ${setter#--} ${path}=true" >&2
+      exit 1
+    fi
+  done
+  false_file="$TMPDIR/${path//./-}-false.out"
+  if render --set "${path}=false" >"$false_file" 2>&1; then
+    echo "production render accepted ${path}=false" >&2
+    exit 1
+  fi
+  grep -Fq "$error" "$false_file" \
+    || { echo "${path}=false did not produce the mandatory-topology error" >&2; exit 1; }
+  for value in false yes on TRUE ' true' 'true ' 1; do
+    shape_file="$TMPDIR/${path//./-}-${value// /_}.out"
+    if render --set-string "${path}=${value}" >"$shape_file" 2>&1; then
+      echo "production render accepted ambiguous ${path}=${value}" >&2
+      exit 1
+    fi
+    grep -Fq "$error" "$shape_file" \
+      || { echo "ambiguous ${path}=${value} did not produce the mandatory-topology error" >&2; exit 1; }
+  done
+  for value in null 1 '{}' '[]'; do
+    shape_file="$TMPDIR/${path//./-}-json-${value//[^[:alnum:]]/_}.out"
+    if render --set-json "${path}=${value}" >"$shape_file" 2>&1; then
+      echo "production render accepted ambiguous ${path}=${value}" >&2
+      exit 1
+    fi
+    grep -Fq "$error" "$shape_file" \
+      || { echo "ambiguous ${path}=${value} did not produce the mandatory-topology error" >&2; exit 1; }
+  done
+done
 
-# Keep the accepted true shapes exact: aliases and whitespace must not turn a
-# production dependency or the production Veil path back on by accident.
-for path in gateway.enabled gateway.veilEnabled; do
+# Mandatory workload enablement uses the same exact-shape semantics.
+for path in gateway.enabled; do
   for value in false TRUE ' true' 'true ' 1; do
     shape_file="$TMPDIR/${path//./-}-${value// /_}.out"
     if render --set-string "${path}=${value}" >"$shape_file" 2>&1; then
