@@ -493,15 +493,20 @@ For Kubernetes:
 - Kubernetes 1.28 or newer.
 - Helm 3.13 or newer.
 - Ingress controller with TLS.
-- **A NetworkPolicy-ENFORCING CNI (Calico or Cilium) — HARD PREREQUISITE.** The
-  Veil isolation invariant (AI plane can never reach the identity plane) is
+- **A NetworkPolicy-enforcing CNI (Calico or Cilium) for the Veil isolation
+  control — a separate production control from the Helm mTLS transport gate.**
+  The Veil isolation invariant (AI plane can never reach the identity plane) is
   enforced by the chart's NetworkPolicies; a CNI that does not enforce them
-  (e.g. `kindnet`, the default on a stock `kind` cluster) silently defeats the
-  control — the chart then fails CLOSED (the sanitizer `/readyz` 503s rather
-  than serve without isolation). Use Calico or Cilium; for a `kind` pilot create
-  the cluster with `disableDefaultCNI: true` and install Calico. See the Helm
-  runbook (`docs/CUSTOMER_HELM_RUNBOOK.md` § Prereqs) for the exact recipe.
-  Cilium is preferred for DNS controls and WireGuard encryption.
+  (e.g. `kindnet`, the default on a stock `kind` cluster) leaves those objects
+  inert. Do not infer isolation from Pod readiness or mTLS acceptance. The stock
+  Kind/kindnet mTLS harness can reach Ready, but proves only mTLS transport and
+  projected-leaf identity; it gives no NetworkPolicy-enforcement evidence. For
+  production, operators must separately deploy and verify a
+  NetworkPolicy-enforcing CNI such as Calico or Cilium before relying on Veil
+  isolation; for a `kind` pilot create the cluster with `disableDefaultCNI:
+  true` and install Calico. See the Helm runbook
+  (`docs/CUSTOMER_HELM_RUNBOOK.md` § Prereqs) for the exact recipe. Cilium is
+  preferred for DNS controls and WireGuard encryption.
 - Secret manager integration, or permission to create Kubernetes native secrets.
 
 ## Registry Authentication
