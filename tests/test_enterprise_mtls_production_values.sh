@@ -321,6 +321,43 @@ ruby -e '
   abort "distinct-owner regression changed real ancestor mode" unless (stat.mode & 0o7777) == 0o1777
 ' "$DISTINCT_OWNER_ANCESTOR_REALPATH" "$DISTINCT_OWNER_REAL_UID"
 
+# Ancestor ownership is required even without group/world write bits: its
+# owner can rename the checked descendant before source or stage creation.
+# Simulate a foreign owner in File.lstat without requiring privileged chown.
+OWNER_WRITABLE_ANCESTOR="$TMPDIR/distinct-owner-0711-ancestor"
+OWNER_WRITABLE_LEAF="$OWNER_WRITABLE_ANCESTOR/private-leaf"
+OWNER_WRITABLE_OUTPUT="$OWNER_WRITABLE_LEAF/values.yaml"
+mkdir -p "$OWNER_WRITABLE_LEAF"
+chmod 711 "$OWNER_WRITABLE_ANCESTOR"
+chmod 700 "$OWNER_WRITABLE_LEAF"
+OWNER_WRITABLE_ANCESTOR_REALPATH="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$OWNER_WRITABLE_ANCESTOR")"
+OWNER_WRITABLE_REAL_UID="$(ruby -e 'print File.lstat(ARGV.fetch(0)).uid' "$OWNER_WRITABLE_ANCESTOR_REALPATH")"
+ruby -e '
+  stat = File.lstat(ARGV.fetch(0))
+  abort "owner-writable ancestor setup is not EUID-owned 0711" unless stat.uid == Process.euid && (stat.mode & 0o7777) == 0o711
+' "$OWNER_WRITABLE_ANCESTOR_REALPATH"
+rm -f -- "$OPENSSL_CALL_LOG"
+if OPENSSL_CALL_LOG="$OPENSSL_CALL_LOG" \
+  PATH="$OPENSSL_SHIM_DIR:$PATH" \
+  PRODUCTION_OVERLAY_DISTINCT_OWNER_ANCESTOR="$OWNER_WRITABLE_ANCESTOR_REALPATH" \
+  PRODUCTION_OVERLAY_DISTINCT_OWNER_UID="$DISTINCT_OWNER_FAKE_UID" \
+  RUBYOPT="-r$DISTINCT_OWNER_STAT_PROXY" \
+  bash "$ROOT/scripts/render-production-values.sh" "$OWNER_WRITABLE_OUTPUT" >/dev/null 2>&1; then
+  echo "production renderer accepted a private leaf below a distinct-owner 0711 ancestor" >&2
+  exit 1
+fi
+[ ! -e "$OPENSSL_CALL_LOG" ] \
+  || { echo "production renderer generated secrets before rejecting a distinct-owner 0711 ancestor" >&2; exit 1; }
+[ ! -e "$OWNER_WRITABLE_OUTPUT" ] && [ ! -L "$OWNER_WRITABLE_OUTPUT" ] \
+  || { echo "production renderer published output below a distinct-owner 0711 ancestor" >&2; exit 1; }
+assert_no_staged_overlay "$OWNER_WRITABLE_LEAF"
+assert_no_source_overlay "$OWNER_WRITABLE_LEAF"
+ruby -e '
+  stat = File.lstat(ARGV.fetch(0))
+  abort "owner-writable regression changed real ancestor ownership" unless stat.uid == Integer(ARGV.fetch(1))
+  abort "owner-writable regression changed real ancestor mode" unless (stat.mode & 0o7777) == 0o711
+' "$OWNER_WRITABLE_ANCESTOR_REALPATH" "$OWNER_WRITABLE_REAL_UID"
+
 STICKY_TMP_ROOT="$(mktemp -d /tmp/lucairn-production-values-sticky.XXXXXX)"
 ruby -e '
   stat = File.stat(File.realpath(ARGV.fetch(0)))
