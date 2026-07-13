@@ -156,9 +156,24 @@ do not substitute the development/pilot `customer-values.yaml`. The renderer
 refuses an existing output path. Regeneration must use a different new path and
 is a deliberate, coordinated credential-rotation ceremony requiring application,
 database, and service rollout planning. Never overwrite the existing overlay in
-place. Then run
-`bin/lucairn doctor --values charts/lucairn/values-prod.yaml --values customer-production-values.yaml --offline`
-before retrying. The order must match Helm: parent production values first,
+place. Then assign `OVERLAY` to that new path and run the same pair used by
+Helm before retrying:
+
+```bash
+OVERLAY="$PWD/customer-production-values-rotated-YYYYMMDD.yaml"
+bin/lucairn doctor \
+  --values charts/lucairn/values-prod.yaml \
+  --values "$OVERLAY" \
+  --offline
+helm template lucairn charts/lucairn \
+  -f charts/lucairn/values-prod.yaml \
+  -f "$OVERLAY" >/dev/null
+helm upgrade --install lucairn charts/lucairn \
+  -f charts/lucairn/values-prod.yaml \
+  -f "$OVERLAY"
+```
+
+The order must match Helm: parent production values first,
 then the customer overlay. In production with Veil enabled, Helm rejects a missing or
 partial block and any projected-path mismatch before it contacts the cluster.
 
@@ -286,9 +301,12 @@ Run:
 
 ```bash
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
+# Use the protected first-install path for normal upgrades, or the distinct
+# rotated path selected during the coordinated replacement ceremony.
+OVERLAY="${OVERLAY:-$PWD/customer-production-values.yaml}"
 bin/lucairn doctor \
   --values charts/lucairn/values-prod.yaml \
-  --values customer-production-values.yaml \
+  --values "$OVERLAY" \
   --offline
 openssl x509 -noout -subject -issuer -dates -in path/to/cert.pem
 ```

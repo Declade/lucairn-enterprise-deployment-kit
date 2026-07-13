@@ -1657,13 +1657,24 @@ is separate from the readiness-bundle contract; it projects exactly one file,
 read-only, at the gateway path that verifies the witness signature at startup.
 
 Use `charts/lucairn/values-prod.yaml` as the production base. On the first
-production install, create its application-only companion once with
-`bash scripts/render-production-values.sh customer-production-values.yaml`.
-Reuse that protected overlay unchanged for normal upgrades; never rename,
-reuse, or layer the development/pilot `customer-values.yaml` after the
-production base. The renderer refuses an existing output path. A credential
-rotation instead uses a different new overlay path and a coordinated
-application, database, and service rollout before the Helm values path changes.
+production install, assign the application-only companion a new protected path
+and create it once:
+
+```bash
+OVERLAY="$PWD/customer-production-values.yaml"
+bash scripts/render-production-values.sh "$OVERLAY"
+```
+
+Reuse that same `$OVERLAY` unchanged for normal upgrades; never rename, reuse,
+or layer the development/pilot `customer-values.yaml` after the production
+base. The renderer refuses an existing output path. A credential rotation
+instead assigns `OVERLAY` to a different new path before generation, then uses
+that new path after the coordinated application, database, and service rollout:
+
+```bash
+OVERLAY="$PWD/customer-production-values-rotated-YYYYMMDD.yaml"
+bash scripts/render-production-values.sh "$OVERLAY"
+```
 It enables
 `global.mtls`, fixes these Secret names, and rejects all optional gRPC profiles
 (`ingest`, `admin`, dashboard, certification, PII ML, demo, and
@@ -1678,11 +1689,11 @@ deployment.
 ```bash
 bin/lucairn doctor \
   --values charts/lucairn/values-prod.yaml \
-  --values customer-production-values.yaml \
+  --values "$OVERLAY" \
   --offline
 helm template lucairn charts/lucairn \
   -f charts/lucairn/values-prod.yaml \
-  -f customer-production-values.yaml >/dev/null
+  -f "$OVERLAY" >/dev/null
 ```
 
 Then install and wait for every workload; run the handshake battery before
@@ -1691,7 +1702,7 @@ declaring success:
 ```bash
 helm upgrade --install lucairn charts/lucairn \
   -f charts/lucairn/values-prod.yaml \
-  -f customer-production-values.yaml \
+  -f "$OVERLAY" \
   --namespace lucairn --create-namespace --wait --timeout 12m
 
 # Isolated, destructive-to-its-own-Kind-cluster acceptance only:

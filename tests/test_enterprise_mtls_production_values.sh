@@ -72,30 +72,92 @@ assert_no_renderer_temp() {
   fi
 }
 
-# A writer can fail after writing part of the same-directory staging file. A
-# PATH shim makes that failure deterministic without adding a production-only
-# test switch. The output must not be published and the EXIT trap must remove
-# the partial secret-bearing stage.
-WRITE_SHIM_DIR="$TMPDIR/write-failure-bin"
-mkdir "$WRITE_SHIM_DIR"
-cat > "$WRITE_SHIM_DIR/ruby" <<'EOF'
-#!/usr/bin/env bash
-stage="${!#}"
-printf '%s\n' 'partial-secret-bearing-stage' > "$stage"
-exit 1
-EOF
-chmod 700 "$WRITE_SHIM_DIR/ruby"
-WRITE_FAILURE_OUTPUT="$TMPDIR/write-failure-values.yaml"
-WRITE_FAILURE_TMPDIR="$TMPDIR/write-failure-tmp"
-mkdir "$WRITE_FAILURE_TMPDIR"
-if TMPDIR="$WRITE_FAILURE_TMPDIR" PATH="$WRITE_SHIM_DIR:$PATH" bash "$ROOT/scripts/render-production-values.sh" "$WRITE_FAILURE_OUTPUT" >/dev/null 2>&1; then
-  echo "production renderer unexpectedly survived staged write failure" >&2
+# A syntactically valid but short stage write must not publish. RUBYOPT scopes
+# the fault to the staging inode and makes File#write return the short byte
+# count it actually wrote, without adding a production-only renderer switch.
+SHORT_WRITE_PATCH="$TMPDIR/short-stage-write.rb"
+cat > "$SHORT_WRITE_PATCH" <<'RUBY'
+class File
+  alias_method :production_overlay_original_write, :write
+
+  def write(data, *args)
+    if ENV["PRODUCTION_OVERLAY_SHORT_STAGE_WRITE"] == "1" && path.include?(".lucairn-production-values.")
+      return production_overlay_original_write("---\nglobal: {}\n", *args)
+    end
+    production_overlay_original_write(data, *args)
+  end
+end
+RUBY
+SHORT_WRITE_OUTPUT="$TMPDIR/short-write-values.yaml"
+SHORT_WRITE_TMPDIR="$TMPDIR/short-write-tmp"
+mkdir "$SHORT_WRITE_TMPDIR"
+if TMPDIR="$SHORT_WRITE_TMPDIR" PRODUCTION_OVERLAY_SHORT_STAGE_WRITE=1 RUBYOPT="-r$SHORT_WRITE_PATCH" bash "$ROOT/scripts/render-production-values.sh" "$SHORT_WRITE_OUTPUT" >/dev/null 2>&1; then
+  echo "production renderer accepted a syntactically valid short stage write" >&2
   exit 1
 fi
-[ ! -e "$WRITE_FAILURE_OUTPUT" ] && [ ! -L "$WRITE_FAILURE_OUTPUT" ] \
-  || { echo "production renderer published output after staged write failure" >&2; exit 1; }
+[ ! -e "$SHORT_WRITE_OUTPUT" ] && [ ! -L "$SHORT_WRITE_OUTPUT" ] \
+  || { echo "production renderer published output after a short stage write" >&2; exit 1; }
 assert_no_staged_overlay "$TMPDIR"
-assert_no_renderer_temp "$WRITE_FAILURE_TMPDIR"
+assert_no_renderer_temp "$SHORT_WRITE_TMPDIR"
+
+# Replacing the mktemp-created stage with a symlink must fail at the NOFOLLOW
+# open, leave the replacement target untouched, and publish nothing.
+STAGE_REPLACEMENT_TARGET="$TMPDIR/stage-replacement-sentinel.yaml"
+printf '%s\n' 'stage-replacement-sentinel' > "$STAGE_REPLACEMENT_TARGET"
+STAGE_REPLACE_SHIM_DIR="$TMPDIR/stage-replace-bin"
+REAL_MKTEMP="$(command -v mktemp)"
+mkdir "$STAGE_REPLACE_SHIM_DIR"
+cat > "$STAGE_REPLACE_SHIM_DIR/mktemp" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+path="\$("$REAL_MKTEMP" "\$@")"
+case "\${1:-}" in
+  */.lucairn-production-values.XXXXXX)
+    rm -f -- "\$path"
+    ln -s "\$STAGE_REPLACEMENT_TARGET" "\$path"
+    ;;
+esac
+printf '%s\\n' "\$path"
+EOF
+chmod 700 "$STAGE_REPLACE_SHIM_DIR/mktemp"
+STAGE_REPLACEMENT_OUTPUT="$TMPDIR/stage-replacement-values.yaml"
+STAGE_REPLACEMENT_TMPDIR="$TMPDIR/stage-replacement-tmp"
+mkdir "$STAGE_REPLACEMENT_TMPDIR"
+if TMPDIR="$STAGE_REPLACEMENT_TMPDIR" PATH="$STAGE_REPLACE_SHIM_DIR:$PATH" bash "$ROOT/scripts/render-production-values.sh" "$STAGE_REPLACEMENT_OUTPUT" >/dev/null 2>&1; then
+  echo "production renderer accepted a replaced staging path" >&2
+  exit 1
+fi
+[ "$(<"$STAGE_REPLACEMENT_TARGET")" = 'stage-replacement-sentinel' ] \
+  || { echo "production renderer wrote secrets through a replaced staging path" >&2; exit 1; }
+[ ! -e "$STAGE_REPLACEMENT_OUTPUT" ] && [ ! -L "$STAGE_REPLACEMENT_OUTPUT" ] \
+  || { echo "production renderer published output after staging-path replacement" >&2; exit 1; }
+assert_no_staged_overlay "$TMPDIR"
+assert_no_renderer_temp "$STAGE_REPLACEMENT_TMPDIR"
+
+# The renderer refuses customer-controlled group/world-writable parents before
+# it calls the canonical secret generator, and leaves no temporary material.
+OPENSSL_SHIM_DIR="$TMPDIR/unsafe-directory-bin"
+OPENSSL_CALL_LOG="$TMPDIR/unsafe-directory-openssl-called"
+mkdir "$OPENSSL_SHIM_DIR"
+cat > "$OPENSSL_SHIM_DIR/openssl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' called > "$OPENSSL_CALL_LOG"
+exit 99
+EOF
+chmod 700 "$OPENSSL_SHIM_DIR/openssl"
+for unsafe_mode in 770 707; do
+  UNSAFE_DIR="$TMPDIR/unsafe-output-$unsafe_mode"
+  mkdir "$UNSAFE_DIR"
+  chmod "$unsafe_mode" "$UNSAFE_DIR"
+  if OPENSSL_CALL_LOG="$OPENSSL_CALL_LOG" PATH="$OPENSSL_SHIM_DIR:$PATH" bash "$ROOT/scripts/render-production-values.sh" "$UNSAFE_DIR/values.yaml" >/dev/null 2>&1; then
+    echo "production renderer accepted unsafe output directory mode $unsafe_mode" >&2
+    exit 1
+  fi
+  [ ! -e "$OPENSSL_CALL_LOG" ] \
+    || { echo "production renderer generated secrets before rejecting unsafe directory mode $unsafe_mode" >&2; exit 1; }
+  assert_no_staged_overlay "$UNSAFE_DIR"
+  assert_no_renderer_temp "$UNSAFE_DIR"
+done
 
 # File.link is the non-replacing publication primitive. Simulate a destination
 # racing into existence just before that call; it must stay untouched and the
@@ -105,7 +167,7 @@ mkdir "$PUBLISH_SHIM_DIR"
 REAL_RUBY="$(command -v ruby)"
 cat > "$PUBLISH_SHIM_DIR/ruby" <<EOF
 #!/usr/bin/env bash
-if [ "\$1" = "-e" ]; then
+if [ "\$1" = "-e" ] && [ "\$#" -eq 6 ]; then
   printf '%s\\n' 'raced-destination-sentinel' > "\$4"
   exit 1
 fi
