@@ -29,6 +29,22 @@ if ! OUTPUT_DIR="$(ruby -e '
   abort "not a real directory" unless stat.directory?
   abort "not owned by the effective user" unless stat.uid == Process.euid
   abort "group/world writable" unless (stat.mode & 0o022).zero?
+
+  # The leaf remains private, but a non-sticky writable ancestor would let
+  # another principal replace that leaf after this preflight. Resolve the
+  # complete physical path and require every writable ancestor through root
+  # to have the sticky bit, as normal /tmp does.
+  ancestor = directory
+  loop do
+    ancestor_stat = File.lstat(ancestor)
+    abort "ancestor is not a real directory" unless ancestor_stat.directory?
+    if !(ancestor_stat.mode & 0o022).zero? && (ancestor_stat.mode & 0o1000).zero?
+      abort "group/world writable ancestor without sticky bit"
+    end
+    parent = File.dirname(ancestor)
+    break if parent == ancestor
+    ancestor = parent
+  end
   print directory
 ' "$OUTPUT_DIR_INPUT")"; then
   echo "error: output directory must be a real, effective-user-owned directory that is not group/world writable: $OUTPUT_DIR_INPUT" >&2
