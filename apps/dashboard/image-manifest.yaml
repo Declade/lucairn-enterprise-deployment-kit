@@ -241,6 +241,20 @@ image_digests:
     qwen2.5-7b-model:
       ref: "ollama://qwen2.5:7b"
       pending: true   # Ollama model digest — fill via `ollama pull qwen2.5:7b` at the digest-pin ceremony
+  # --- Enterprise Kind default-topology dependencies. These are the exact
+  # third-party OCI index digests used by the disposable Helm mTLS acceptance
+  # render; the preloader verifies each resolved tag against this release
+  # record before it permits docker save or Kind import.
+  enterprise_kind:
+    postgres:
+      ref: "postgres:16-alpine"
+      digest: "sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
+    redis:
+      ref: "redis:7-alpine"
+      digest: "sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99"
+    migrate:
+      ref: "migrate/migrate:v4.17.0"
+      digest: "sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa"
   # --- Self-hosted runtime alternatives (docker-compose.self-hosted.yml). These
   # --- are OPT-IN (the operator selects ONE) and several float a mutable :latest
   # --- or are operator-built; their digest is recorded at the digest-pin

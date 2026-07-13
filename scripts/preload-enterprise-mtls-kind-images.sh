@@ -14,6 +14,8 @@ CLUSTER=""
 RENDERED_MANIFEST=""
 IMAGE_LIST=""
 ARCHIVE_DIR=""
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+IMAGE_MANIFEST="$ROOT/image-manifest.yaml"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --cluster)
@@ -49,6 +51,10 @@ if [ -z "$CLUSTER" ] || [ -z "$RENDERED_MANIFEST" ] || [ -z "$IMAGE_LIST" ] || [
 fi
 if [ ! -r "$RENDERED_MANIFEST" ]; then
   echo "FAIL: rendered manifest is not readable: $RENDERED_MANIFEST" >&2
+  exit 1
+fi
+if [ ! -r "$IMAGE_MANIFEST" ]; then
+  echo "FAIL: repository image manifest is not readable: $IMAGE_MANIFEST" >&2
   exit 1
 fi
 
@@ -152,6 +158,74 @@ cleanup_archive() {
 }
 trap cleanup_archive EXIT
 
+# Return the repository-recorded tag ref and immutable digest for one rendered
+# image. A rendered explicit digest is accepted only when it is exactly the
+# recorded release digest; a tag-only ref must be recorded too. This lets the
+# render remain ergonomic while making the Kind evidence path fail closed.
+recorded_image() {
+  ruby -ryaml -e '
+    manifest = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
+    image = ARGV.fetch(1)
+    ref, explicit = image.split("@", 2)
+    abort "invalid rendered image digest" if explicit && !explicit.match?(/\Asha256:[0-9a-f]{64}\z/)
+
+    entries = []
+    walk = lambda do |value|
+      case value
+      when Hash
+        if value.key?("ref") || value.key?("digest")
+          entries << value
+        end
+        value.each_value { |child| walk.call(child) }
+      when Array
+        value.each { |child| walk.call(child) }
+      end
+    end
+    walk.call(manifest.fetch("image_digests"))
+    matches = entries.select { |entry| entry["ref"] == ref }
+    abort "rendered image is not recorded by image-manifest.yaml: #{ref}" unless matches.length == 1
+    entry = matches.fetch(0)
+    digest = entry["digest"]
+    abort "recorded image lacks an immutable digest: #{ref}" unless digest.is_a?(String) && digest.match?(/\Asha256:[0-9a-f]{64}\z/)
+    abort "rendered image digest differs from image-manifest.yaml: #{image}" if explicit && explicit != digest
+    print "#{ref}\t#{digest}"
+  ' "$IMAGE_MANIFEST" "$1"
+}
+
+# Docker records the immutable content digest(s) attached to the pulled local
+# image in RepoDigests. Require the recorded release digest to be present; an
+# empty/changed result is a tag re-target or unverifiable pull and must never
+# reach docker image save or kind load.
+require_recorded_digest() {
+  local image="$1" expected_digest="$2" resolved
+  resolved="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image")"
+  if ! printf '%s\n' "$resolved" | sed -n 's/.*@\(sha256:[0-9a-f]\{64\}\)$/\1/p' | grep -Fxq "$expected_digest"; then
+    echo "FAIL: rendered image digest mismatch or unresolved content: $image (expected $expected_digest)" >&2
+    exit 1
+  fi
+}
+
+# Validate the full rendered image set before creating a single archive. This
+# gives a tag re-target no opportunity to partially populate Kind before the
+# preloader rejects the evidence/runtime mismatch. Pull a single Kind-node
+# platform so Docker Desktop never retains an incomplete multi-platform index.
+while IFS= read -r image; do
+  [ -n "$image" ] || continue
+  if ! record="$(recorded_image "$image")"; then
+    echo "FAIL: rendered topology image is not digest-pinned by the repository: $image" >&2
+    exit 1
+  fi
+  IFS="$(printf '\t')" read -r recorded_ref recorded_digest <<EOF
+$record
+EOF
+  [ "$recorded_ref" = "${image%@*}" ] && [ -n "$recorded_digest" ] || {
+    echo "FAIL: malformed repository digest record for rendered image: $image" >&2
+    exit 1
+  }
+  docker pull --platform "$kind_platform" "$image" >/dev/null
+  require_recorded_digest "$image" "$recorded_digest"
+done < "$IMAGE_LIST"
+
 image_count=0
 while IFS= read -r image; do
   [ -n "$image" ] || continue
@@ -159,7 +233,6 @@ while IFS= read -r image; do
   # or prints registry credentials. The archive filename is sequence-based so
   # image names never become filesystem paths. The EXIT trap removes a partial
   # archive if either save or the Kind import fails.
-  docker pull "$image" >/dev/null
   image_count=$((image_count + 1))
   archive="$ARCHIVE_DIR/image-$image_count.tar"
   docker image save --platform "$kind_platform" --output "$archive" "$image" >/dev/null

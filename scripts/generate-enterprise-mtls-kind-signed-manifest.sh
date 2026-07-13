@@ -16,6 +16,8 @@ fi
 RUNTIME_VALUES="$1"
 OUTPUT="$2"
 OUTPUT_DIR="$(dirname "$OUTPUT")"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+IMAGE_MANIFEST="$ROOT/image-manifest.yaml"
 
 [ -r "$RUNTIME_VALUES" ] || {
   echo "runtime values are not readable: $RUNTIME_VALUES" >&2
@@ -38,6 +40,23 @@ command -v ruby >/dev/null 2>&1 || {
   echo "ruby is required to assemble the disposable keys.json roster" >&2
   exit 2
 }
+[ -r "$IMAGE_MANIFEST" ] || {
+  echo "image manifest is not readable: $IMAGE_MANIFEST" >&2
+  exit 2
+}
+
+# Resolve the signing image from the release manifest rather than duplicating a
+# mutable tag or a second digest literal here. The ceremony is deliberately
+# bound to the exact witness artifact recorded for this repository release.
+WITNESS_IMAGE="$(ruby -ryaml -e '
+  manifest = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
+  entry = manifest.fetch("image_digests").fetch("signed_artifacts").fetch("dsa-veil-witness")
+  ref = entry.fetch("ref")
+  digest = entry.fetch("digest")
+  abort "invalid witness image ref" unless ref == "ghcr.io/declade/dsa-veil-witness:0.5.4"
+  abort "invalid witness image digest" unless digest.match?(/\Asha256:[0-9a-f]{64}\z/)
+  print "#{ref}@#{digest}"
+' "$IMAGE_MANIFEST")"
 
 # Both the runtime values and the output are secret-adjacent ceremony artifacts.
 # Apply restrictive permissions before opening either path. Do not add xtrace:
@@ -96,7 +115,7 @@ docker run --rm \
   --entrypoint /bin/sh \
   -v "$KEYS_JSON:/keys.json:ro" \
   -v "$SIGNING_SEED_FILE:/run/secrets/witness-signing-key-hex:ro" \
-  ghcr.io/declade/dsa-veil-witness:0.5.4 \
+  "$WITNESS_IMAGE" \
   -ec 'exec sign-manifest --keys-json /keys.json --issuer "$1" --witness-signing-key-hex "$(cat /run/secrets/witness-signing-key-hex)" --witness-key-id witness_manifest_v1' \
   sign-manifest "$issuer" \
   > "$SIGNED_TMP"
