@@ -114,10 +114,18 @@ the chart's supported paths are development and production only.
     {{- end -}}
   {{- end -}}
   {{- $gateway := default dict .Values.gateway -}}
-  {{- $veilValue := $gateway.veilEnabled -}}
-  {{- $veilEnabled := or (and (kindIs "bool" $veilValue) $veilValue) (and (kindIs "string" $veilValue) (eq $veilValue "true")) -}}
-  {{- if not $veilEnabled -}}
-    {{- fail "gateway.veilEnabled must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology." -}}
+  {{- $mandatoryVeilPaths := list
+        (dict "path" "gateway.veilEnabled" "value" $gateway.veilEnabled)
+        (dict "path" "audit.veilEnabled" "value" ((default dict .Values.audit).veilEnabled))
+        (dict "path" "id-bridge.veilEnabled" "value" ((default dict (index .Values "id-bridge")).veilEnabled))
+        (dict "path" "sandbox-a.veilEnabled" "value" ((default dict (index .Values "sandbox-a")).veilEnabled))
+        (dict "path" "sandbox-b.veilEnabled" "value" ((default dict (index .Values "sandbox-b")).veilEnabled)) -}}
+  {{- range $claimPath := $mandatoryVeilPaths -}}
+    {{- $value := $claimPath.value -}}
+    {{- $enabled := or (and (kindIs "bool" $value) $value) (and (kindIs "string" $value) (eq $value "true")) -}}
+    {{- if not $enabled -}}
+      {{- fail (printf "%s must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology." $claimPath.path) -}}
+    {{- end -}}
   {{- end -}}
   {{- $manifest := default dict $gateway.witnessSignedManifest -}}
   {{- range $field := list "existingSecret" "secretKey" "mountPath" "fileName" -}}
