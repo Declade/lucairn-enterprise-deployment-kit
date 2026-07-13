@@ -88,7 +88,8 @@ the chart's supported paths are development and production only.
       (dict "path" "id-bridge.enabled" "value" ((default dict (index .Values "id-bridge")).enabled))
       (dict "path" "sandbox-a.enabled" "value" ((default dict (index .Values "sandbox-a")).enabled))
       (dict "path" "sandbox-b.enabled" "value" ((default dict (index .Values "sandbox-b")).enabled))
-      (dict "path" "veil-witness.enabled" "value" ((default dict (index .Values "veil-witness")).enabled)) -}}
+      (dict "path" "veil-witness.enabled" "value" ((default dict (index .Values "veil-witness")).enabled))
+      (dict "path" "infrastructure.enabled" "value" ((default dict .Values.infrastructure).enabled)) -}}
 {{- $optionalProfiles := list
       (dict "path" "pii-ml.enabled" "enabled" (default false (default dict (index .Values "pii-ml")).enabled))
       (dict "path" "postgres-gateway.enabled" "enabled" (default false (default dict (index .Values "postgres-gateway")).enabled))
@@ -103,7 +104,7 @@ the chart's supported paths are development and production only.
     {{- fail "global.dsaEnv=production requires global.mtls.enabled=true. The supported production topology uses verified DSA_MTLS_* transport only; legacy child grpcTlsEnabled values cannot enable production." -}}
   {{- end -}}
   {{- if not (empty $global.imagePullDockerConfigJson) -}}
-    {{- fail "global.imagePullDockerConfigJson must be empty when global.dsaEnv=production. Registry credentials must be supplied outside Helm values and release history through global.imagePullSecrets, node/default-ServiceAccount authentication, or workload identity." -}}
+    {{- fail "global.imagePullDockerConfigJson must be empty when global.dsaEnv=production. Registry credentials must be supplied outside Helm values and release history through names-only global.imagePullSecrets references to a pre-created pull Secret, or true node-level registry auth / registry workload identity outside Helm." -}}
   {{- end -}}
   {{- range $profile := $mandatoryProfiles -}}
     {{- $value := $profile.value -}}
@@ -651,19 +652,17 @@ the chart's supported paths are development and production only.
   global.imageRegistry (ghcr.io/declade). A bare `helm install -f values.yaml`
   (no customer-values.yaml) therefore renders ZERO imagePullSecrets on every
   private workload — each pod ImagePullBackOffs with a non-obvious error.
-  This is DISTINCT from the imagePullDockerConfigJson guard in
-  infrastructure/templates/pull-secrets.yaml: that guard renders the
-  chart-managed lucairn-registry Secret, but an operator can satisfy it via
-  `--set-file global.imagePullDockerConfigJson=...` and STILL leave
-  global.imagePullSecrets empty (the Secret exists but no pod references it).
-  This validator catches the residual case.
+  A names-only global.imagePullSecrets reference is the chart-owned mode: it
+  attaches a pre-created pull Secret directly to the chart-specific workload
+  PodSpecs. Leaving that list empty is supported only for true node-level
+  registry auth or registry workload identity outside Helm. This validator
+  catches any other empty-list configuration before it reaches pull time.
 
   Fails fast when ALL of:
     - global.imageRegistry contains "ghcr.io/declade" (private registry)
     - global.imagePullSecrets is empty
-    - global.skipPullSecretGuard is not true (escape hatch for operators who
-      attach pull credentials out-of-band, e.g. a node-level imagePullSecret
-      on the namespace default ServiceAccount, or a mirrored public registry)
+    - global.skipPullSecretGuard is not true (escape hatch only for true
+      node-level registry auth or registry workload identity outside Helm)
 
   Invoked from charts/lucairn/templates/validators.yaml.
 */ -}}
@@ -674,7 +673,7 @@ the chart's supported paths are development and production only.
 {{- if contains "ghcr.io/declade" $registry -}}
 {{- $pullSecrets := (default list $global.imagePullSecrets) -}}
 {{- if empty $pullSecrets -}}
-{{- fail (printf "global.imageRegistry=%q is a PRIVATE registry but global.imagePullSecrets is empty — every dsa-* Deployment, migration-Job, and the postgres-gateway StatefulSet would render with no imagePullSecrets and ImagePullBackOff at pull time. Install with the customer overlay (-f customer-values.yaml, which sets global.imagePullSecrets: [{name: lucairn-registry}]) together with --set-file global.imagePullDockerConfigJson=$DOCKER_CONFIG/config.json. If you attach registry credentials out-of-band (e.g. a node/ServiceAccount-level imagePullSecret, or a mirrored public registry), set global.skipPullSecretGuard=true to suppress this guard. See INSTALL.md § \"Kubernetes Install\"." $registry) -}}
+{{- fail (printf "global.imageRegistry=%q is a PRIVATE registry but global.imagePullSecrets is empty — every chart-specific workload PodSpec, migration-Job, and the postgres-gateway StatefulSet would render with no imagePullSecrets and ImagePullBackOff at pull time. Configure names-only global.imagePullSecrets with a pre-created pull Secret. Leave global.imagePullSecrets empty only for true node-level registry auth or registry workload identity outside Helm; then set global.skipPullSecretGuard=true to suppress this guard. See INSTALL.md § \"Kubernetes Install\"." $registry) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

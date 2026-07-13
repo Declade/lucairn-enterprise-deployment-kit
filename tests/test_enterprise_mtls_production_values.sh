@@ -163,6 +163,16 @@ assert_render_rejected mixed-child-backend \
 assert_render_rejected missing-selected-remote-reference \
   'gateway.secrets.vault.path must be a non-empty string' \
   --set-string gateway.secrets.vault.path=
+assert_render_rejected disabled-infrastructure \
+  'infrastructure.enabled must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology.' \
+  --set infrastructure.enabled=false
+
+helm template lucairn "$CHART" \
+  --set global.dsaEnv=development \
+  --set global.skipPullSecretGuard=true \
+  --set infrastructure.enabled=false \
+  --set veil-witness.secrets.values.signingKey=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  > "$TMPDIR/development-infrastructure-disabled.yaml"
 
 # Provider-specific global configuration is validated only after every child
 # selects that one provider, mirroring the single dsa-secret-store render.
@@ -217,7 +227,15 @@ ruby -e '
   end
 ' "$ROOT"
 
-for document in "$ROOT/INSTALL.md" "$ROOT/OPS.md" "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md"; do
+ruby -e '
+  content = File.read(ARGV.fetch(0))
+  abort "chart validator still claims default-ServiceAccount registry auth" if content.match?(/(?:node\/)?default[- ]serviceaccount/i)
+  abort "chart validator still claims generic ServiceAccount-level pull-secret auth" if content.match?(/serviceaccount-level/i)
+  abort "chart validator omits names-only pre-created pull-Secret guidance" unless content.match?(/names-only\s+global\.imagePullSecrets.*pre-created\s+pull\s+Secret/im)
+  abort "chart validator omits external registry-auth guidance" unless content.match?(/true\s+node-level\s+registry\s+auth.*registry\s+workload\s+identity\s+outside\s+Helm/im)
+' "$ROOT/charts/lucairn/templates/_validators.tpl"
+
+for document in "$ROOT/INSTALL.md" "$ROOT/OPS.md" "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md" "$ROOT/TROUBLESHOOTING.md"; do
   grep -Fq 'SITE_OVERLAY=/secure/operator/lucairn-production-site.yaml' "$document" \
     || { echo "production documentation omits the site overlay variable: $document" >&2; exit 1; }
   grep -Fq -- '--values "$SITE_OVERLAY"' "$document" \
@@ -225,6 +243,21 @@ for document in "$ROOT/INSTALL.md" "$ROOT/OPS.md" "$ROOT/docs/CUSTOMER_HELM_RUNB
   grep -Fq -- '-f "$SITE_OVERLAY"' "$document" \
     || { echo "production Helm documentation omits the ordered site overlay: $document" >&2; exit 1; }
 done
+
+# Troubleshooting's production recovery examples are executable shell blocks:
+# every doctor/template/install invocation must define and order the mandatory
+# site overlay after values-prod.yaml, including the certificate-error doctor.
+ruby -e '
+  content = File.read(ARGV.fetch(0))
+  normalized = content.gsub(/\\\n/, " ")
+  patterns = [
+    /SITE_OVERLAY=\/secure\/operator\/lucairn-production-site\.yaml\s+bin\/lucairn doctor\s+--values charts\/lucairn\/values-prod\.yaml\s+--values "\$SITE_OVERLAY"\s+--offline/m,
+    /helm template lucairn charts\/lucairn\s+-f charts\/lucairn\/values-prod\.yaml\s+-f "\$SITE_OVERLAY" >\/dev\/null/m,
+    /helm upgrade --install lucairn charts\/lucairn\s+-f charts\/lucairn\/values-prod\.yaml\s+-f "\$SITE_OVERLAY"/m,
+    /Production Helm uses the names-and-paths-only External Secrets profile\.\s+SITE_OVERLAY=\/secure\/operator\/lucairn-production-site\.yaml\s+bin\/lucairn doctor\s+--values charts\/lucairn\/values-prod\.yaml\s+--values "\$SITE_OVERLAY"\s+--offline/m
+  ]
+  patterns.each { |pattern| abort "TROUBLESHOOTING.md production command omits or misorders SITE_OVERLAY" unless normalized.match?(pattern) }
+' "$ROOT/TROUBLESHOOTING.md"
 
 # The first-customer flow must keep the provider key out of Helm values and
 # curl argv. These are structural assertions over the narrow code block rather
