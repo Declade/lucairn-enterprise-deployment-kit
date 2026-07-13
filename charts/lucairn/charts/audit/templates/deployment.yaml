@@ -1,3 +1,4 @@
+{{- $mtlsEnabled := and (kindIs "bool" .Values.global.mtls.enabled) .Values.global.mtls.enabled -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -141,7 +142,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
-          {{- if .Values.global.mtls.enabled }}
+          {{- if $mtlsEnabled }}
           volumeMounts:
             - name: enterprise-mtls
               mountPath: {{ .Values.global.mtls.mountPath | quote }}
@@ -161,7 +162,7 @@ spec:
               exec:
                 command: ["/bin/sh", "-c", "sleep {{ int .Values.gracefulShutdown.preStopSleepSeconds }}"]
           {{- end }}
-      {{- if .Values.global.mtls.enabled }}
+      {{- if $mtlsEnabled }}
       volumes:
         - name: enterprise-mtls
           secret:

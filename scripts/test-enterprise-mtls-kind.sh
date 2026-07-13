@@ -5,6 +5,11 @@ set -euo pipefail
 # All state is created under a unique /tmp directory and the Kind cluster name
 # is unique to this invocation. No production context, trust store, or existing
 # Kubernetes object is changed.
+#
+# This harness uses stock Kind/kindnet. kindnet does not enforce NetworkPolicy,
+# so this run does not claim NetworkPolicy identity or enforcement evidence.
+# Its identity evidence is limited to executing the helper inside each resolved
+# workload Pod with that container's own read-only projected mTLS leaf.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KEEP=0
@@ -231,10 +236,11 @@ for deployment in \
   "${K[@]}" -n "${deployment%/*}" rollout status "deployment/${deployment#*/}" --timeout=8m
 done
 
-# The witness NetworkPolicies select the real gateway workload identity, not
-# the generic dsa-edge probe. Resolve that exact Pod and container before
-# building the short-lived in-container proof helper. A label or architecture
-# ambiguity is evidence failure, not a reason to fall back to the probe Pod.
+# Resolve the exact gateway Pod and container before building the short-lived
+# in-container proof helper. A label or architecture ambiguity is evidence
+# failure, not a reason to fall back to the generic probe Pod. This proves only
+# execution with the gateway's projected leaf; stock Kind/kindnet does not make
+# it NetworkPolicy enforcement evidence.
 gateway_pods=()
 while IFS= read -r gateway_pod; do
   [ -n "$gateway_pod" ] && gateway_pods+=("$gateway_pod")
@@ -824,6 +830,141 @@ gateway_witness_handshake() {
   fi
   echo "gateway witness TLS handshake verified from actual gateway Pod: $address ($san)"
 }
+
+# Audit and ID Bridge intentionally expose no writable application volume, and
+# all three required workloads retain readOnlyRootFilesystem. `/dev/shm` is the
+# existing container-runtime tmpfs, not a chart-mounted Secret or a security
+# context change. A static helper is streamed there only for one handshake,
+# then removed before the next workload. The mTLS files remain read-only at the
+# workload's own projected mount throughout.
+WORKLOAD_HELPER_DIR="/dev/shm"
+WORKLOAD_HELPER_NAME=".enterprise-mtls-projected-identity-tls-helper"
+WORKLOAD_MTLS_DIR="/var/run/lucairn/mtls"
+
+build_workload_witness_helper() {
+  local node_arch="$1"
+  local helper="$STATE_DIR/projected-identity-witness-tls-helper-${node_arch}"
+
+  if [ ! -x "$helper" ]; then
+    if ! CGO_ENABLED=0 GOOS=linux GOARCH="$node_arch" \
+      go build -trimpath -ldflags='-s -w' -o "$helper" "$GATEWAY_WITNESS_HELPER_SOURCE"; then
+      echo "FAIL: could not cross-compile the projected-identity witness TLS helper for linux/$node_arch" >&2
+      return 1
+    fi
+  fi
+  [ -x "$helper" ] || {
+    echo "FAIL: projected-identity witness TLS helper was not built as an executable" >&2
+    return 1
+  }
+  printf '%s\n' "$helper"
+}
+
+resolve_projected_identity_workload() {
+  local identity="$1" namespace="$2" container="$3" expected_secret="$4"
+  local pods=() pod mount_volume mounted_read_only mounted_secret node runtime_machine
+
+  while IFS= read -r pod; do
+    [ -n "$pod" ] && pods+=("$pod")
+  done < <("${K[@]}" -n "$namespace" get pods -l "app.kubernetes.io/name=$container" \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+  if [ "${#pods[@]}" -ne 1 ]; then
+    echo "FAIL: expected exactly one $identity workload Pod in $namespace, found ${#pods[@]}" >&2
+    printf '%s workload Pods: %s\n' "$identity" "${pods[*]:-(none)}" >&2
+    return 1
+  fi
+  WORKLOAD_POD="${pods[0]}"
+  WORKLOAD_NAMESPACE="$namespace"
+  WORKLOAD_CONTAINER="$container"
+
+  if [ "$("${K[@]}" -n "$namespace" get pod "$WORKLOAD_POD" \
+    -o jsonpath='{range .spec.containers[*]}{.name}{"\n"}{end}' | grep -Fxc "$container" || true)" -ne 1 ]; then
+    echo "FAIL: expected exactly one $container container in $identity Pod $WORKLOAD_POD" >&2
+    return 1
+  fi
+  mount_volume="$("${K[@]}" -n "$namespace" get pod "$WORKLOAD_POD" \
+    -o go-template="{{range .spec.containers}}{{if eq .name \"$container\"}}{{range .volumeMounts}}{{if eq .mountPath \"$WORKLOAD_MTLS_DIR\"}}{{.name}}{{end}}{{end}}{{end}}{{end}}")"
+  mounted_read_only="$("${K[@]}" -n "$namespace" get pod "$WORKLOAD_POD" \
+    -o go-template="{{range .spec.containers}}{{if eq .name \"$container\"}}{{range .volumeMounts}}{{if eq .mountPath \"$WORKLOAD_MTLS_DIR\"}}{{.readOnly}}{{end}}{{end}}{{end}}{{end}}")"
+  mounted_secret="$("${K[@]}" -n "$namespace" get pod "$WORKLOAD_POD" \
+    -o go-template="{{range .spec.volumes}}{{if eq .name \"$mount_volume\"}}{{with .secret}}{{.secretName}}{{end}}{{end}}{{end}}")"
+  if [ "$mount_volume" != "enterprise-mtls" ] || [ "$mounted_read_only" != "true" ] || [ "$mounted_secret" != "$expected_secret" ]; then
+    echo "FAIL: $identity helper would not use its own read-only projected mTLS Secret at $WORKLOAD_MTLS_DIR" >&2
+    return 1
+  fi
+
+  node="$("${K[@]}" -n "$namespace" get pod "$WORKLOAD_POD" -o jsonpath='{.spec.nodeName}')"
+  if [ -z "$node" ]; then
+    echo "FAIL: $identity Pod $WORKLOAD_POD has no scheduled node" >&2
+    return 1
+  fi
+  WORKLOAD_NODE_ARCH="$("${K[@]}" get node "$node" -o jsonpath='{.metadata.labels.kubernetes\.io/arch}')"
+  case "$WORKLOAD_NODE_ARCH" in
+    amd64) WORKLOAD_NODE_MACHINES='x86_64 amd64' ;;
+    arm64) WORKLOAD_NODE_MACHINES='aarch64 arm64' ;;
+    *)
+      echo "FAIL: unsupported $identity Kind node architecture: ${WORKLOAD_NODE_ARCH:-(missing)}" >&2
+      return 1
+      ;;
+  esac
+  runtime_machine="$("${K[@]}" -n "$namespace" exec "$WORKLOAD_POD" -c "$container" -- uname -m)"
+  case " $WORKLOAD_NODE_MACHINES " in
+    *" $runtime_machine "*) ;;
+    *)
+      echo "FAIL: $identity container architecture $runtime_machine does not match node architecture $WORKLOAD_NODE_ARCH" >&2
+      return 1
+      ;;
+  esac
+}
+
+projected_identity_helper_cleanup() {
+  if ! "${K[@]}" -n "$WORKLOAD_NAMESPACE" exec "$WORKLOAD_POD" -c "$WORKLOAD_CONTAINER" -- \
+    sh -ec 'rm -f "$1"; test ! -e "$1"' -- "$WORKLOAD_HELPER_PATH"; then
+    echo "FAIL: could not delete temporary projected-identity TLS helper for $WORKLOAD_CONTAINER" >&2
+    return 1
+  fi
+}
+
+install_projected_identity_helper() {
+  if ! "${K[@]}" -n "$WORKLOAD_NAMESPACE" exec "$WORKLOAD_POD" -c "$WORKLOAD_CONTAINER" -- \
+    sh -ec 'test -d "$1" && test -w "$1" && test ! -e "$1/$2"' -- \
+    "$WORKLOAD_HELPER_DIR" "$WORKLOAD_HELPER_NAME"; then
+    echo "FAIL: $WORKLOAD_CONTAINER has no empty writable /dev/shm location for the bounded TLS helper" >&2
+    return 1
+  fi
+  if ! "${K[@]}" -n "$WORKLOAD_NAMESPACE" exec -i "$WORKLOAD_POD" -c "$WORKLOAD_CONTAINER" -- \
+    sh -ec 'umask 077; cat > "$1/$2"; chmod 0700 "$1/$2"; test -s "$1/$2" && test -x "$1/$2"' -- \
+    "$WORKLOAD_HELPER_DIR" "$WORKLOAD_HELPER_NAME" < "$WORKLOAD_HELPER_BINARY"; then
+    projected_identity_helper_cleanup || true
+    echo "FAIL: could not stream the projected-identity TLS helper into $WORKLOAD_CONTAINER /dev/shm" >&2
+    return 1
+  fi
+}
+
+projected_identity_witness_handshake() {
+  local identity="$1" namespace="$2" container="$3" expected_secret="$4"
+  local address="$5" san="$6"
+
+  if ! resolve_projected_identity_workload "$identity" "$namespace" "$container" "$expected_secret"; then
+    return 1
+  fi
+  WORKLOAD_HELPER_BINARY="$(build_workload_witness_helper "$WORKLOAD_NODE_ARCH")" || return 1
+  WORKLOAD_HELPER_PATH="$WORKLOAD_HELPER_DIR/$WORKLOAD_HELPER_NAME"
+  if ! install_projected_identity_helper; then
+    return 1
+  fi
+  if ! "${K[@]}" -n "$WORKLOAD_NAMESPACE" exec "$WORKLOAD_POD" -c "$WORKLOAD_CONTAINER" -- \
+    "$WORKLOAD_HELPER_PATH" tls-handshake "$address" "$san" \
+    "$WORKLOAD_MTLS_DIR/ca.crt" "$WORKLOAD_MTLS_DIR/tls.crt" "$WORKLOAD_MTLS_DIR/tls.key"; then
+    projected_identity_helper_cleanup || true
+    echo "FAIL: projected $identity workload TLS handshake failed: $address ($san)" >&2
+    return 1
+  fi
+  if ! projected_identity_helper_cleanup; then
+    return 1
+  fi
+  echo "PASS: projected workload identity $identity verified exact-SAN TLS to veil-witness:50057"
+}
+
 negative_handshake() {
   local description="$1" command="$2"
   if probe "$command"; then
@@ -913,13 +1054,14 @@ positive_handshake sandbox-a.dsa-identity.svc.cluster.local:50053 dsa-sandbox-a
 positive_handshake sandbox-b.dsa-ai.svc.cluster.local:50054 dsa-sandbox-b
 positive_handshake sandbox-a.dsa-identity.svc.cluster.local:8086 dsa-sanitizer
 
-# The chart's least-privilege witness rules authorize only the actual gateway
-# Pod. Stream a static, standard-library-only TLS client into the gateway's
-# existing non-secret writable keystore PVC, execute both witness handshakes
-# with the projected gateway identity, then retain it for the bounded local
-# /healthz evidence below. The witness checks are transport proofs from the
-# workload's Pod/network-policy/secret identity; they do not claim to invoke
-# either gateway application's witness RPC method.
+# Stream a static, standard-library-only TLS client into the gateway's existing
+# non-secret writable keystore PVC, execute both witness handshakes with the
+# gateway's projected leaf, then retain it for the bounded local /healthz
+# evidence below. The witness checks are transport proofs from execution in the
+# actual workload Pod with the projected Secret belonging to that workload;
+# they do not claim
+# to invoke either gateway application's witness RPC method or to prove
+# NetworkPolicy enforcement on stock Kind/kindnet.
 install_gateway_witness_helper
 if ! gateway_witness_handshake veil-witness.dsa-witness.svc.cluster.local:50057 dsa-veil-witness; then
   exit 1
@@ -927,6 +1069,22 @@ fi
 if ! gateway_witness_handshake veil-witness.dsa-witness.svc.cluster.local:50058 dsa-veil-witness; then
   exit 1
 fi
+
+# Claim intake is the shared :50057 witness path. These are intentionally
+# narrow TLS-only proofs, not application RPC or authorization tests. Audit,
+# ID Bridge, and Sandbox B are distinct real workload identities; Sandbox B is
+# the smallest mandatory pipeline choice because its rendered config points to
+# this witness address and it emits the inference claim.
+for identity_call in \
+  'audit dsa-audit audit lucairn-mtls-audit' \
+  'id-bridge dsa-bridge id-bridge lucairn-mtls-id-bridge' \
+  'sandbox-b dsa-ai sandbox-b lucairn-mtls-sandbox-b'; do
+  read -r identity namespace container secret <<<"$identity_call"
+  if ! projected_identity_witness_handshake "$identity" "$namespace" "$container" "$secret" \
+    veil-witness.dsa-witness.svc.cluster.local:50057 dsa-veil-witness; then
+    exit 1
+  fi
+done
 
 # Runtime + wire evidence for the gateway→sanitizer HTTP path. The rendered
 # ConfigMap must expose HTTPS, the direct transcript verifies the mTLS server

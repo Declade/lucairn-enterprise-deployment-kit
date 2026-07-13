@@ -1,9 +1,10 @@
+{{- $mtlsEnabled := and (kindIs "bool" .Values.global.mtls.enabled) .Values.global.mtls.enabled -}}
 {{- $readinessBundlePath := "" -}}
 {{- if .Values.readiness.existingBundleSecret -}}
 {{- $readinessBundlePath = printf "%s/%s" (trimSuffix "/" .Values.readiness.bundleMountPath) .Values.readiness.bundleFileName -}}
 {{- end -}}
 {{- $sanitizerURL := .Values.sanitizerUrl -}}
-{{- if .Values.global.mtls.enabled -}}
+{{- if $mtlsEnabled -}}
 {{- /* Keep Helm's operator surface in lock-step with tlsutil.ForceHTTPS.
 The pinned runtime repeats this conversion as defense in depth, but production
 operators must see an HTTPS endpoint in the rendered ConfigMap rather than an
@@ -68,7 +69,7 @@ data:
   {{- if .Values.keystorePath }}
   GATEWAY_KEYSTORE_PATH: {{ .Values.keystorePath | quote }}
   {{- end }}
-  {{- if .Values.global.mtls.enabled }}
+  {{- if $mtlsEnabled }}
   # Parent-authoritative verified transport. Do not read the child legacy
   # grpcTlsEnabled default in this profile.
   GRPC_TLS_ENABLED: "true"

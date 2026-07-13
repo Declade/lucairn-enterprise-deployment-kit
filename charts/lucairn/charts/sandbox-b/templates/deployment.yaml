@@ -1,3 +1,4 @@
+{{- $mtlsEnabled := and (kindIs "bool" .Values.global.mtls.enabled) .Values.global.mtls.enabled -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -117,7 +118,7 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
-            {{- if .Values.global.mtls.enabled }}
+            {{- if $mtlsEnabled }}
             - name: enterprise-mtls
               mountPath: {{ .Values.global.mtls.mountPath | quote }}
               readOnly: true
@@ -153,7 +154,7 @@ spec:
               {{- end }}
         - name: tmp
           emptyDir: {}
-        {{- if .Values.global.mtls.enabled }}
+        {{- if $mtlsEnabled }}
         - name: enterprise-mtls
           secret:
             secretName: {{ .Values.global.mtls.secrets.sandboxB }}

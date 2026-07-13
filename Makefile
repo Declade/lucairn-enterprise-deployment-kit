@@ -1,20 +1,25 @@
-.PHONY: test package release-kit customer-bundle clean \
+.PHONY: test test-enterprise-mtls-helm test-enterprise-mtls-helm-required package release-kit customer-bundle clean \
         dashboard-buildx-bootstrap dashboard-multiarch-build \
         dashboard-multiarch-promote-aliases \
         dashboard-verify-manifests
 
-test:
+test: test-enterprise-mtls-helm test-enterprise-mtls-helm-required
 	bash tests/test_lucairn_cli.sh
 	bash tests/test_check_updates.sh
 	bash tests/test_redact_stream.sh
 	bash tests/test_tms_trust_zones.sh
 	bash tests/test_sec_hardening.sh
-	bash tests/test_enterprise_mtls_helm.sh
 	bash tests/test_enterprise_mtls_cert_contract.sh
 	bash tests/test_enterprise_mtls_kind_runtime_values.sh
 	bash tests/test_enterprise_mtls_kind_image_preload.sh
 	bash tests/test_enterprise_mtls_kind_client_auth.sh
 	bash tests/static_checks.sh
+
+test-enterprise-mtls-helm:
+	bash tests/test_enterprise_mtls_helm.sh
+
+test-enterprise-mtls-helm-required:
+	bash tests/test_enterprise_mtls_helm_required.sh
 
 package:
 	bash scripts/package-release.sh
