@@ -226,15 +226,15 @@ if grep -Fq 'Pod/network-policy/secret identity' "$KIND_GATE"; then
 fi
 
 # SNI selects a virtual server but does not prove that the returned certificate
-# identifies it. Every positive edge must therefore use the shared helper's
-# exact hostname verification, and the wrong-SAN negative must deliberately
-# request a different verification hostname while retaining normal audit SNI.
+# identifies it. Every positive edge must therefore pass a distinct exact
+# hostname verifier to the static helper, and the wrong-SAN negative must
+# retain normal audit SNI while requesting a different verification hostname.
 ruby -e '
   source = File.read(ARGV.fetch(0))
   helper = source[/^positive_handshake\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses positive_handshake helper")
-  abort "positive_handshake omits exact hostname verification" unless helper.include?("-verify_hostname '\''$san'\''")
-  abort "positive_handshake must use a bounded OpenSSL deadline" unless helper.include?("timeout 15 openssl s_client")
-  abort "positive_handshake must fail rather than accept a timeout" unless helper.include?("positive mTLS handshake failed or timed out")
+  abort "positive_handshake omits exact hostname verification" unless helper.include?("probe_tls_handshake \"$address\" \"$san\" \"$san\"")
+  abort "positive_handshake does not use the static local probe" unless helper.include?("/certs/gateway/ca.crt") && helper.include?("/certs/gateway/tls.key")
+  abort "positive_handshake accepts a failed helper" unless helper.include?("positive mTLS handshake failed")
   positive_paths = source.scan(/^positive_handshake\s+\S+\s+\S+$/)
   expected_paths = [
     "positive_handshake audit.dsa-audit.svc.cluster.local:50051 dsa-audit",
@@ -243,15 +243,12 @@ ruby -e '
     "positive_handshake sandbox-b.dsa-ai.svc.cluster.local:50054 dsa-sandbox-b",
     "positive_handshake sandbox-a.dsa-identity.svc.cluster.local:8086 dsa-sanitizer"
   ]
-  abort "generic positive mTLS path roster changed: #{positive_paths.inspect}" unless positive_paths.uniq == expected_paths
-  abort "generic positive mTLS paths may repeat only the post-rotation Audit proof" unless positive_paths.count(expected_paths.fetch(0)) == 2 && positive_paths.count == 6
-  abort "generic probe must not claim a witness handshake" if positive_paths.any? { |path| path.include?("veil-witness") }
-  wrong_san = source[/^negative_handshake wrong-san "(?<command>.*)"$/, :command] || abort("Kind harness misses wrong-SAN negative")
-  servername = wrong_san[/\B-servername\s+(\S+)/, 1] || abort("wrong-SAN negative omits SNI")
-  verify_hostname = wrong_san[/\B-verify_hostname\s+(\S+)/, 1] || abort("wrong-SAN negative omits hostname verification")
-  abort "wrong-SAN negative must retain audit SNI" unless servername == "dsa-audit"
-  abort "wrong-SAN negative must verify a mismatched hostname" if servername == verify_hostname
-  %w[-verify_return_error -CAfile /certs/gateway/ca.crt -cert /certs/gateway/tls.crt -key /certs/gateway/tls.key].each do |argument|
+  abort "local positive mTLS path roster changed: #{positive_paths.inspect}" unless positive_paths.uniq == expected_paths
+  abort "local positive mTLS paths may repeat only the post-rotation Audit proof" unless positive_paths.count(expected_paths.fetch(0)) == 2 && positive_paths.count == 6
+  abort "local probe must not claim a witness handshake" if positive_paths.any? { |path| path.include?("veil-witness") }
+  wrong_san = source[/^negative_handshake wrong-san\s+(?<body>.*?)(?=^strict_client_auth_rejection)/m, :body] || abort("Kind harness misses wrong-SAN negative")
+  abort "wrong-SAN negative must retain audit SNI" unless wrong_san.include?("audit.dsa-audit.svc.cluster.local:50051 dsa-audit dsa-sandbox-a")
+  %w[/certs/gateway/ca.crt /certs/gateway/tls.crt /certs/gateway/tls.key].each do |argument|
     abort "wrong-SAN negative omits #{argument}" unless wrong_san.include?(argument)
   end
 ' "$KIND_GATE"
@@ -349,7 +346,7 @@ ruby -ropen3 -e '
     "gateway_workload_handshake veil-witness.dsa-witness.svc.cluster.local:50057 dsa-veil-witness || exit 1",
     "gateway_workload_handshake veil-witness.dsa-witness.svc.cluster.local:50058 dsa-veil-witness || exit 1",
     "gateway evidence helper deleted after workload transport and local health battery",
-    "supporting generic-probe evidence only"
+    "supporting local-probe evidence only"
   ]
   required.each { |needle| abort "Gateway workload transport contract missing: #{needle}" unless source.include?(needle) }
   abort "generic witness probe call remains" if source.match?(/^positive_handshake veil-witness\./)
@@ -547,19 +544,32 @@ ruby -ropen3 -e '
   go_source = source[source_start...source_end]
   imports = go_source[/import \(\n(?<items>.*?)\n\)/m, :items] || abort("Gateway TLS Go helper misses import block")
   actual_imports = imports.scan(/"([^"]+)"/).flatten.sort
-  expected_imports = %w[context crypto/tls crypto/x509 fmt io net net/http os time].sort
+  expected_imports = %w[context crypto/sha256 crypto/tls crypto/x509 encoding/hex errors fmt io net net/http os strings time].sort
   abort "Gateway TLS Go helper is not standard-library-only: #{actual_imports.inspect}" unless actual_imports == expected_imports
   [
     "case \"tls-handshake\":",
+    "case \"fingerprint\":",
+    "case \"client-auth-rejection\":",
+    "case \"serve\":",
+    "case \"ready\":",
     "case \"gateway-health\":",
     "tls.LoadX509KeyPair(certPath, keyPath)",
     "roots.AppendCertsFromPEM(caPEM)",
-    "Timeout: 10 * time.Second",
+    "tlsOperationTimeout    = 10 * time.Second",
     "MinVersion:         tls.VersionTLS13",
     "ServerName:         serverName",
     "RootCAs:            roots",
     "InsecureSkipVerify: false",
-    "conn.VerifyHostname(serverName)",
+    "config.VerifyConnection = func(state tls.ConnectionState) error",
+    "state.PeerCertificates[0].VerifyHostname(verifyHostname)",
+    "verifiedServer = true",
+    "if !verifiedServer {",
+    "isRemoteTLSAlert(err)",
+    "strings.HasPrefix(err.Error(), \"remote error: tls:\")",
+    "func formatFingerprint(raw []byte) string",
+    "sha256 Fingerprint=",
+    "probeServeLifetime     = 45 * time.Minute",
+    "func runProbeReady()",
     "verified TLS handshake failed",
     "healthURL              = \"http://127.0.0.1:8085/healthz\"",
     "context.WithTimeout(context.Background(), healthRequestTimeout)",
@@ -575,21 +585,22 @@ ruby -ropen3 -e '
   abort "Gateway TLS Go helper leaks errors that could contain sensitive paths or material" if go_source.match?(/fmt\.(?:Print|Printf|Fprintf).*err/)
 
   fingerprint = source[/^served_leaf_fingerprint\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses served leaf fingerprint helper")
-  abort "positive TLS fingerprint helper does not accept a bounded caller deadline" unless fingerprint.include?("timeout \"$3\" openssl s_client") && fingerprint.include?("[ \"$timeout_seconds\" -gt 15 ]")
-  abort "positive TLS fingerprint helper accepts a timeout" unless fingerprint.include?("$status\" -eq 124") && fingerprint.include?("positive TLS fingerprint handshake timed out")
+  abort "fingerprint helper does not invoke the static probe directly" unless fingerprint.include?("/probe fingerprint \"$address\" \"$san\" \"$san\"")
+  abort "fingerprint helper does not use the Gateway projected leaf" unless fingerprint.include?("/certs/gateway/ca.crt") && fingerprint.include?("/certs/gateway/tls.key")
+  abort "fingerprint helper still executes OpenSSL" if fingerprint.include?("openssl") || fingerprint.include?("timeout")
 
   rotation = source[/^await_served_leaf_fingerprint\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses exact audit replacement fingerprint convergence")
   [
     "deadline=$((SECONDS + 40))",
     "while (( SECONDS < deadline )); do",
-    "served_leaf_fingerprint \"$address\" \"$san\" \"$probe_timeout\"",
+    "served_leaf_fingerprint \"$address\" \"$san\"",
     "[ \"$observed\" = \"$expected\" ]",
     "served fingerprint was unparseable",
-    "verified TLS fingerprint handshake failed or timed out",
+    "verified TLS fingerprint handshake failed",
     "sleep_seconds=2",
     "audit replacement did not serve the exact expected fingerprint within 40s"
   ].each { |needle| abort "audit rotation convergence misses: #{needle}" unless rotation.include?(needle) }
-  abort "audit rotation convergence permits an unbounded probe" unless rotation.include?("if (( remaining < probe_timeout )); then")
+  abort "audit rotation convergence lost the static-helper bounded retry deadline" unless rotation.include?("deadline=$((SECONDS + 40))")
   abort "audit rotation convergence accepts any changed fingerprint" if rotation.match?(/!=\s*\"\$expected\".*return 0/m)
   expected_fingerprint = source.index("AUDIT_FINGERPRINT_EXPECTED=\"$(openssl x509 -in \"$ROTATE/tls.crt\"") || abort("rotation does not compute the local replacement fingerprint")
   secret_apply = source.index("create secret generic lucairn-mtls-audit", expected_fingerprint) || abort("rotation does not apply the replacement Secret")
@@ -653,7 +664,7 @@ ruby -ropen3 -e '
   abort "unexpected third fingerprint passed rotation convergence" if result == expected
   abort "unexpected third fingerprint did not fail within the bounded retry count: #{[calls, result, diagnostics].inspect}" unless calls == 20 && diagnostics.include?("exact expected fingerprint within 40s")
   calls, result, diagnostics = run_rotation_fixture.call(:timeout, ["FAIL"], false)
-  abort "fingerprint timeout did not fail within the bounded retry count" unless calls == 20 && diagnostics.include?("handshake failed or timed out")
+  abort "fingerprint timeout did not fail within the bounded retry count" unless calls == 20 && diagnostics.include?("handshake failed")
   calls, result, diagnostics = run_rotation_fixture.call(:unparseable, ["not-a-fingerprint"], false)
   abort "unparseable fingerprint did not fail closed" unless calls == 20 && diagnostics.include?("served fingerprint was unparseable")
 ' "$KIND_GATE"
@@ -667,45 +678,48 @@ command -v go >/dev/null 2>&1 || {
 }
 GATEWAY_TLS_HELPER_SOURCE="$TMPDIR/gateway-tls-helper.go"
 GATEWAY_TLS_HELPER="$TMPDIR/gateway-tls-helper"
+GATEWAY_TLS_HELPER_HOST="$TMPDIR/gateway-tls-helper-host"
 ruby -e '
   source = File.read(ARGV.fetch(0))
   source_start = source.index("package main") || abort("Kind harness misses generated Gateway Go source")
   source_end = source.index("\nGO\n", source_start) || abort("Kind harness does not terminate generated Gateway Go source")
   File.write(ARGV.fetch(1), source[source_start...source_end])
 ' "$KIND_GATE" "$GATEWAY_TLS_HELPER_SOURCE"
+CGO_ENABLED=0 go build -trimpath -o "$GATEWAY_TLS_HELPER_HOST" "$GATEWAY_TLS_HELPER_SOURCE"
+[ -x "$GATEWAY_TLS_HELPER_HOST" ] || {
+  echo "generated Gateway TLS helper did not compile for the host" >&2
+  exit 1
+}
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$GATEWAY_TLS_HELPER" "$GATEWAY_TLS_HELPER_SOURCE"
 [ -x "$GATEWAY_TLS_HELPER" ] || {
   echo "generated Gateway TLS helper did not compile as a Linux executable" >&2
   exit 1
 }
 
-# Server-side client-auth negatives must wait for the server's TLS 1.3
-# post-handshake client-certificate decision. A generic nonzero check is not
-# enough: an early s_client success, or a deadline reached while the server
-# keeps the connection open, both fail the acceptance battery.
+# Server-side client-auth negatives must verify the normal server chain/SAN and
+# accept only a non-timeout remote TLS alert; a connection failure or accepted
+# connection is not evidence.
 ruby -e '
   source = File.read(ARGV.fetch(0))
-  abort "expired-client probe must install GNU timeout support" unless source.include?("apk add --no-cache openssl coreutils")
+  abort "Kind harness retains mutable probe package installation" if source.include?("apk add --no-cache")
   generic = source[/^negative_handshake\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses generic negative helper")
-  abort "generic negative helper changed" unless generic.include?("if probe \"$command\"; then") && generic.include?("negative mTLS handshake unexpectedly passed")
+  abort "generic negative helper changed" unless generic.include?("probe_tls_handshake") && generic.include?("negative mTLS handshake unexpectedly passed")
   strict = source[/^strict_client_auth_rejection\(\) \{\n(?<body>.*?)^positive_handshake audit\.dsa-audit/m, :body] || abort("Kind harness misses shared strict client-auth helper")
   [
-    "-connect \"$address\"",
-    "-servername \"$san\"",
-    "-verify_hostname \"$san\"",
-    "-verify_return_error",
-    "-CAfile \"$ca_file\"",
-    "-quiet -ign_eof"
+    "/probe client-auth-rejection \"$address\" \"$san\" \"$san\" \"$ca_file\"",
+    "command+=(\"$client_cert\" \"$client_key\")",
+    "exec enterprise-mtls-probe -- \"${command[@]}\"",
+    "actual remote TLS alert"
   ].each do |argument|
     abort "strict client-auth helper omits #{argument}" unless strict.include?(argument)
   end
-  abort "strict client-auth helper must use a strict in-Pod deadline" unless strict.match?(/timeout\s+15\s+openssl\s+s_client/m)
-  abort "strict client-auth helper does not capture the OpenSSL status" unless strict.include?("status=$?")
-  abort "strict client-auth helper accepts a timeout" unless strict.match?(/if \[ "\$status" -eq 124 \]; then\n.*?exit 1\nfi/m) && strict.include?("timed out waiting for server rejection")
-  abort "strict client-auth helper accepts an open connection" unless strict.match?(/if \[ "\$status" -eq 0 \]; then\n.*?exit 1\nfi/m) && strict.include?("remained accepted/open")
-  abort "strict client-auth helper can mistake a timeout runner failure for OpenSSL rejection" unless strict.include?("[ \"$status\" -ge 125 ] && [ \"$status\" -le 127 ]")
-  abort "strict client-auth helper does not require the server TLS alert" unless strict.include?("(tls|ssl).*alert|alert.*(tls|ssl)")
-  abort "strict client-auth helper does not forward positional arguments to the probe shell" unless source.include?("sh -ec \"$1\" -- \"${@:2}\"")
+  abort "strict client-auth helper retains an OpenSSL shell path" if strict.include?("openssl") || strict.include?("sh -ec")
+  go_start = source.index("package main") || abort("Kind harness misses generated static helper")
+  go_source = source[go_start...source.index("\nGO\n", go_start)]
+  ["func runClientAuthRejection(args []string)", "func clientAuthRejectionError(address, serverName, verifyHostname, caPath, certPath, keyPath string, clientMaterial bool) error", "tlsConfig(caPath, certPath, keyPath, serverName, clientMaterial)", "verifiedServer := false", "config.VerifyConnection = func(state tls.ConnectionState) error", "state.PeerCertificates[0].VerifyHostname(verifyHostname)", "verifiedServer = true", "if !verifiedServer {", "conn.HandshakeContext(ctx)", "isTimeout(err)", "isRemoteTLSAlert(err)", "strings.HasPrefix(err.Error(), \"remote error: tls:\")"].each do |needle|
+    abort "static client-auth helper misses #{needle}" unless go_source.include?(needle)
+  end
+  abort "static client-auth verification flag must be set only by VerifyConnection" unless go_source.scan("verifiedServer = true").length == 1
   abort "missing-client negative still uses the generic helper" if source.match?(/^negative_handshake missing-client-cert /)
   abort "expired-client negative still uses the generic helper" if source.match?(/^negative_handshake expired-client-cert /)
   {
@@ -716,20 +730,53 @@ ruby -e '
   end
 ' "$KIND_GATE"
 
-# The probe installs OpenSSL at startup. Pod readiness must therefore remain
-# false until the exact executable used by the handshake battery exists.
+# The probe is a locally built static scratch image. Pod readiness and serving
+# must invoke /probe directly, with only the three read-only cert/config mounts.
 ruby -ryaml -e '
   source = File.read(ARGV.fetch(0))
   match = source.match(%r{(?<pod>apiVersion: v1\nkind: Pod\nmetadata:\n  name: enterprise-mtls-probe\n.*?^YAML$)}m) || abort("Kind harness misses enterprise mTLS probe manifest")
   pod = YAML.load(match[:pod].sub(/\nYAML\z/, "\n"))
-  container = pod.fetch("spec").fetch("containers").find { |item| item["name"] == "openssl" } || abort("enterprise mTLS probe misses openssl container")
+  container = pod.fetch("spec").fetch("containers").find { |item| item["name"] == "probe" } || abort("enterprise mTLS probe misses static helper container")
   expected = {
-    "exec" => { "command" => ["test", "-x", "/usr/bin/openssl"] },
+    "exec" => { "command" => ["/probe", "ready"] },
     "periodSeconds" => 1,
     "timeoutSeconds" => 1,
     "failureThreshold" => 60
   }
-  abort "enterprise mTLS probe readiness must wait for executable OpenSSL" unless container["readinessProbe"] == expected
+  abort "enterprise mTLS probe readiness must use the static helper" unless container["readinessProbe"] == expected
+  abort "enterprise mTLS probe must invoke /probe directly" unless container["command"] == ["/probe", "serve"]
+  abort "enterprise mTLS probe must never pull the local image" unless container["imagePullPolicy"] == "Never"
+  expected_pod_security_context = {
+    "runAsNonRoot" => true,
+    "runAsUser" => 65532,
+    "runAsGroup" => 65532,
+    "seccompProfile" => { "type" => "RuntimeDefault" }
+  }
+  abort "enterprise mTLS probe must not mount a service-account token" unless pod.dig("spec", "automountServiceAccountToken") == false
+  abort "enterprise mTLS probe pod security posture changed" unless pod.dig("spec", "securityContext") == expected_pod_security_context
+  expected_container_security_context = {
+    "allowPrivilegeEscalation" => false,
+    "readOnlyRootFilesystem" => true,
+    "capabilities" => { "drop" => ["ALL"] }
+  }
+  abort "enterprise mTLS probe container security posture changed" unless container["securityContext"] == expected_container_security_context
+  mounts = container.fetch("volumeMounts")
+  expected_mounts = [["gateway", "/certs/gateway"], ["expired", "/certs/expired"], ["wrong-ca", "/certs/wrong-ca"]]
+  abort "enterprise mTLS probe mount roster changed" unless mounts.map { |item| [item["name"], item["mountPath"]] } == expected_mounts
+  abort "enterprise mTLS probe has a writable certificate/config mount" unless mounts.all? { |item| item["readOnly"] == true }
+  abort "enterprise mTLS probe has a non-harness image tag" unless container["image"] == "${PROBE_IMAGE}"
+' "$KIND_GATE"
+
+ruby -e '
+  source = File.read(ARGV.fetch(0))
+  dockerfile = source[/cat > "\$PROBE_DOCKERFILE" <<\x27DOCKERFILE\x27\n(?<body>.*?)^DOCKERFILE$/m, :body] || abort("Kind harness misses local probe Dockerfile")
+  abort "local probe Dockerfile must use scratch only" unless dockerfile == "FROM scratch\nCOPY probe /probe\n"
+  ["PROBE_IMAGE=\"lucairn-enterprise-mtls-probe:kind-$$\"", "docker build --network=none --pull=false --platform \"linux/$GATEWAY_NODE_ARCH\" --tag \"$PROBE_IMAGE\"", "PROBE_IMAGE_ID=\"$(docker image inspect --format", "[[ \"$PROBE_IMAGE_ID\" =~ ^sha256:[0-9a-f]{64}$ ]]", "local scratch probe image ID changed before archive", "docker image save --output \"$PROBE_ARCHIVE\" \"$PROBE_IMAGE\"", "kind load image-archive --name \"$CLUSTER\" \"$PROBE_ARCHIVE\"", "docker image rm -f \"$PROBE_IMAGE\""].each do |needle|
+    abort "local probe supply-chain control missing: #{needle}" unless source.include?(needle)
+  end
+  ["alpine:3.20", "apk add", "openssl s_client", "probe() {"].each do |forbidden|
+    abort "Kind harness retains remote/mutable probe residue: #{forbidden}" if source.include?(forbidden)
+  end
 ' "$KIND_GATE"
 
 # The accepted fixture must itself remain free of application secret values and
@@ -1078,7 +1125,7 @@ ruby -e '
   pass_lines.each { |line| abort "Kind terminal evidence line drifted: #{line}" unless harness.include?(%Q(echo "#{line}")) }
   required_ledger_terms = [
     "### Kind acceptance evidence ledger",
-    "supporting generic-probe evidence",
+    "supporting local-probe evidence",
     "workload-originated transport handshake",
     "Actual Gateway Pod / Gateway",
     "representative application-layer gateway gRPC identity",

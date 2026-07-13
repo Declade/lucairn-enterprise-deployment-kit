@@ -867,24 +867,31 @@ protocol versions — is documented in **OPS.md § "witness-signed manifest"** a
 the **Key Ceremony Runbook** (`docs/KEY_CEREMONY_RUNBOOK.md` § 6 "Producing the
 witness-signed manifest blob"). The invocation is:
 
-The `sign-manifest` tool ships **inside the pinned `dsa-veil-witness:0.5.4`
-image** (`/usr/local/bin/sign-manifest`), so the ceremony is turnkey via
-`docker run --entrypoint sign-manifest` on the ceremony host — no Go toolchain,
-no build-from-source, no dev-mode fallback:
+The `sign-manifest` tool ships **inside the pinned
+`dsa-veil-witness:0.5.4@sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523`
+image** (`/usr/local/bin/sign-manifest`), so the ceremony is turnkey on the
+ceremony host — no Go toolchain, no build-from-source, no dev-mode fallback.
+Use this canonical command; it keeps the witness seed out of the host Docker
+argv and process list:
 
 ```bash
 # On the ceremony host, with the witness seed available. keys.json is the
 # per-service key roster (service_id / key_id / public_key / purpose /
 # algorithm / key_state — the shape the gateway's buildPublicKeyManifest emits).
-# The default image entrypoint is `veil-witness`, so override it to sign-manifest.
+# The private temporary seed file is mounted read-only and removed on every
+# exit. The single-quoted in-container command expands it only inside /bin/sh.
+umask 077
+seed_file="$(mktemp "${TMPDIR:-/tmp}/lucairn-witness-signing-key.XXXXXX")"
+chmod 0600 "$seed_file"
+trap 'rm -f "$seed_file"' EXIT HUP INT TERM
+printf '%s' "$LCR_WITNESS_SIGNING_KEY" > "$seed_file"
 docker run --rm \
-  --entrypoint sign-manifest \
+  --entrypoint /bin/sh \
   -v "$PWD/keys.json:/keys.json:ro" \
-  ghcr.io/declade/dsa-veil-witness:0.5.4 \
-  --keys-json /keys.json \
-  --issuer "$LCR_ISSUER" \
-  --witness-signing-key-hex "$LCR_WITNESS_SIGNING_KEY" \
-  --witness-key-id witness_manifest_v1 \
+  -v "$seed_file:/run/secrets/witness-signing-key-hex:ro" \
+  ghcr.io/declade/dsa-veil-witness:0.5.4@sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523 \
+  -ec 'exec sign-manifest --keys-json /keys.json --issuer "$1" --witness-signing-key-hex "$(cat /run/secrets/witness-signing-key-hex)" --witness-key-id witness_manifest_v1' \
+  sign-manifest "$LCR_ISSUER" \
   > witness-signed-manifest.json
 
 # Then mount/copy witness-signed-manifest.json to the gateway host at the path
@@ -893,14 +900,15 @@ docker run --rm \
 ```
 
 > **Flags** (run `docker run --rm --entrypoint sign-manifest
-> ghcr.io/declade/dsa-veil-witness:0.5.4 -h` to confirm against your pin):
+> ghcr.io/declade/dsa-veil-witness:0.5.4@sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523 -h`
+> to confirm against your pin):
 > `--keys-json` (required), `--issuer` (required; matches `LCR_ISSUER` / legacy
 > `VEIL_ISSUER` at the gateway), `--witness-signing-key-hex` (required; the
 > Ed25519 witness seed, hex 32 bytes), `--witness-key-id` (default
 > `witness_manifest_v1`), `--version` (default `1`), `--protocol-versions`
 > (default `1,2`), `--signed-at` (RFC3339; empty uses current UTC). The witness
-> seed only ever enters the container as a flag value on the ceremony host —
-> it never leaves that machine. Keep `bin/lucairn doctor`'s `check_manifest_blob`
+> seed is read from the private read-only mount only by the in-container shell;
+> it never appears in host Docker argv or leaves that machine. Keep `bin/lucairn doctor`'s `check_manifest_blob`
 > pre-flight (it FAILS a production install whose manifest blob is missing) as
 > the gate that this step ran before first production boot.
 >
@@ -1746,9 +1754,14 @@ mesh plus its required service
 databases/caches (not Admin, observability, or Sandbox-B Ollama/model pull),
 performs positive handshakes and wrong-CA, wrong-SAN, no-client, expired-leaf,
 and partial-Secret negatives, rotates the Audit leaf, and tears down its owned
-state. The five non-Witness positive checks run from its generic probe; the
-two Witness checks run a temporary verified-TLS helper in the actual gateway
-Pod using that Pod's projected leaf identity. The same temporary helper invokes
+state. The five non-Witness supporting positives run from a repository-built,
+no-base (`FROM scratch`) local probe image containing only the generated static
+TLS helper; it is built for the actual Kind node platform, loaded by the
+harness with `imagePullPolicy: Never`, and removed with the owned local tag and
+archive. This disposable helper image is not a product/release artifact and is
+not covered by the normal rendered-image preloader. The two Witness checks run
+a temporary verified-TLS helper in the actual gateway Pod using that Pod's
+projected leaf identity. The same temporary helper invokes
 the gateway health handler locally over loopback, then is deleted after that
 evidence battery. Because this harness uses stock Kind/kindnet, it proves only
 the actual Pod's projected-leaf transport identity; it does not prove
@@ -1765,9 +1778,9 @@ context.
 The terminal `PASS: coverage class=...` lines use these exact meanings. A
 workload-originated transport handshake executes from the named actual workload
 Pod with its read-only projected leaf and expected server SAN; it is not
-relabeled as an application request. The generic-probe positives retained by
-the harness are supporting generic-probe evidence for negative, fingerprint,
-and rotation logic—not the acceptance mechanism. The two application-layer
+relabeled as an application request. The local-probe positives retained by the
+harness are supporting local-probe evidence for negative, fingerprint, and
+rotation logic—not the acceptance mechanism. The two application-layer
 calls below are representative only.
 
 | Mandatory edge | Acceptance class | Initiating projected leaf | Expected server SAN |

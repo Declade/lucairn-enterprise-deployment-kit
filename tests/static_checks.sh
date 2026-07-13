@@ -21,11 +21,14 @@ bash -n "$ROOT/tests/test_enterprise_mtls_cert_contract.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_kind_runtime_values.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_kind_image_preload.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_kind_client_auth.sh"
+bash -n "$ROOT/tests/test_enterprise_mtls_ceremony_docs.sh"
+bash -n "$ROOT/tests/test_enterprise_mtls_kind_kubectl_resolver.sh"
 bash -n "$ROOT/scripts/render-values.sh"
 bash -n "$ROOT/scripts/derive-veil-pubkey.sh"
 bash -n "$ROOT/scripts/enterprise-mtls-fixture-certs.sh"
 bash -n "$ROOT/scripts/generate-enterprise-mtls-kind-runtime-values.sh"
 bash -n "$ROOT/scripts/preload-enterprise-mtls-kind-images.sh"
+bash -n "$ROOT/scripts/resolve-enterprise-mtls-kind-kubectl.sh"
 bash -n "$ROOT/scripts/test-enterprise-mtls-kind.sh"
 
 # Customer instructions must use the parent-owned production mTLS contract.
@@ -88,6 +91,8 @@ done
 bash "$ROOT/tests/test_enterprise_mtls_kind_runtime_values.sh"
 bash "$ROOT/tests/test_enterprise_mtls_kind_image_preload.sh"
 bash "$ROOT/tests/test_enterprise_mtls_kind_client_auth.sh"
+bash "$ROOT/tests/test_enterprise_mtls_ceremony_docs.sh"
+bash "$ROOT/tests/test_enterprise_mtls_kind_kubectl_resolver.sh"
 
 # ── Hardening regression assertions (KIT-4: NET-02/SUP-06/NET-05/OBS-08/OBS-09) ──
 # Static (grep/render) assertions so they run without docker. Placed early so

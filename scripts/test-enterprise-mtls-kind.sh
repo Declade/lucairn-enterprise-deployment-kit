@@ -22,6 +22,10 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+# Resolve the caller-owned kubectl before creating any harness state or
+# invoking Kind/Docker. Resolver failure is intentionally a zero-action gate.
+KUBECTL_BIN="$("$ROOT/scripts/resolve-enterprise-mtls-kind-kubectl.sh")"
+
 umask 077
 STATE_DIR="$(mktemp -d /tmp/lucairn-enterprise-mtls-kind.XXXXXX)"
 CLUSTER="lucairn-enterprise-mtls-${USER:-local}-$$"
@@ -32,14 +36,21 @@ WITNESS_SIGNED_MANIFEST="$STATE_DIR/witness-signed-manifest.json"
 RENDERED_MANIFEST="$STATE_DIR/rendered-topology.yaml"
 PRELOAD_IMAGES="$STATE_DIR/rendered-topology-images.txt"
 PRELOAD_ARCHIVE_DIR="$STATE_DIR/preload-archives"
-KUBECTL_BIN="${KUBECTL:-}"
+PROBE_IMAGE=""
+PROBE_ARCHIVE="$STATE_DIR/enterprise-mtls-probe.tar"
+CLUSTER_CREATED=0
 
 cleanup() {
   local rc=$?
   if [ "$KEEP" -eq 1 ]; then
     echo "enterprise mTLS Kind state retained: cluster=$CLUSTER state=$STATE_DIR kubeconfig=$KUBECONFIG" >&2
   else
-    kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
+    if [ "$CLUSTER_CREATED" -eq 1 ]; then
+      kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$PROBE_IMAGE" ]; then
+      docker image rm -f "$PROBE_IMAGE" >/dev/null 2>&1 || true
+    fi
     rm -rf "$STATE_DIR"
   fi
   exit "$rc"
@@ -60,30 +71,6 @@ if ! docker info >/dev/null 2>&1; then
   exit 2
 fi
 
-if [ -z "$KUBECTL_BIN" ]; then
-  KUBECTL_BIN="$(command -v kubectl || true)"
-fi
-if [ -z "$KUBECTL_BIN" ]; then
-  # Isolated tool provision: never writes a system path. Pin may be overridden
-  # by the caller if their Kind/Kubernetes skew policy requires it.
-  KUBECTL_VERSION="${KUBECTL_VERSION:-v1.33.4}"
-  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-  case "$(uname -m)" in
-    x86_64) arch=amd64 ;;
-    arm64|aarch64) arch=arm64 ;;
-    *) echo "BLOCKED: unsupported host architecture for isolated kubectl provision: $(uname -m)" >&2; exit 2 ;;
-  esac
-  mkdir -p "$STATE_DIR/bin"
-  KUBECTL_BIN="$STATE_DIR/bin/kubectl"
-  if ! curl --fail --location --retry 1 --connect-timeout 15 \
-    "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/${os}/${arch}/kubectl" \
-    -o "$KUBECTL_BIN"; then
-    echo "BLOCKED: could not provision isolated kubectl ${KUBECTL_VERSION}." >&2
-    exit 2
-  fi
-  chmod 0700 "$KUBECTL_BIN"
-fi
-
 DOCKER_CONFIG_FILE="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
 if [ ! -r "$DOCKER_CONFIG_FILE" ]; then
   echo "BLOCKED: authenticated GHCR Docker config not readable at $DOCKER_CONFIG_FILE." >&2
@@ -101,6 +88,7 @@ nodes:
 YAML
 
 kind create cluster --name "$CLUSTER" --config "$KIND_CONFIG" --kubeconfig "$KUBECONFIG" --wait 180s
+CLUSTER_CREATED=1
 K=("$KUBECTL_BIN" --kubeconfig "$KUBECONFIG")
 
 # values-prod pins Sandbox A and B to separate zones. Label the two isolated
@@ -238,7 +226,7 @@ done
 
 # Resolve the exact gateway Pod and container before building the short-lived
 # in-container proof helper. A label or architecture ambiguity is evidence
-# failure, not a reason to fall back to the generic probe Pod. This proves only
+# failure, not a reason to fall back to the disposable local probe Pod. This proves only
 # execution with the gateway's projected leaf; stock Kind/kindnet does not make
 # it NetworkPolicy enforcement evidence.
 gateway_pods=()
@@ -310,20 +298,24 @@ GATEWAY_TLS_HELPER_SOURCE="$STATE_DIR/gateway-tls-helper.go"
 GATEWAY_TLS_HELPER="$STATE_DIR/gateway-tls-helper"
 cat > "$GATEWAY_TLS_HELPER_SOURCE" <<'GO'
 // gateway-tls-helper is generated only in the disposable harness
-// state. It performs either one verified mutual-TLS handshake or a bounded
-// loopback gateway health request and prints no secret material, even on
-// failure.
+// state. It performs verified TLS evidence operations, a bounded local probe
+// server/readiness pair, or a loopback gateway health request. It prints no
+// secret material, even on failure.
 package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -332,6 +324,9 @@ const (
 	healthRequestTimeout   = 10 * time.Second
 	healthDialTimeout      = 5 * time.Second
 	maxHealthResponseBytes = 64 * 1024
+	tlsOperationTimeout    = 10 * time.Second
+	probeServeLifetime     = 45 * time.Minute
+	probeListenAddress     = "127.0.0.1:8080"
 )
 
 func failTLS() {
@@ -344,16 +339,10 @@ func failGatewayHealth() {
 	os.Exit(1)
 }
 
-func runTLSHandshake(args []string) {
-	if len(args) != 5 {
+func tlsConfig(caPath, certPath, keyPath, serverName string, clientMaterial bool) *tls.Config {
+	if caPath == "" || serverName == "" || (clientMaterial && (certPath == "" || keyPath == "")) {
 		failTLS()
 	}
-	address, serverName := args[0], args[1]
-	caPath, certPath, keyPath := args[2], args[3], args[4]
-	if address == "" || serverName == "" || caPath == "" || certPath == "" || keyPath == "" {
-		failTLS()
-	}
-
 	caPEM, err := os.ReadFile(caPath)
 	if err != nil {
 		failTLS()
@@ -362,26 +351,197 @@ func runTLSHandshake(args []string) {
 	if !roots.AppendCertsFromPEM(caPEM) {
 		failTLS()
 	}
-	clientCertificate, err := tls.LoadX509KeyPair(certPath, keyPath)
-	if err != nil {
-		failTLS()
-	}
-
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
-	conn, err := tls.DialWithDialer(dialer, "tcp", address, &tls.Config{
+	config := &tls.Config{
 		MinVersion:         tls.VersionTLS13,
 		ServerName:         serverName,
 		RootCAs:            roots,
-		Certificates:       []tls.Certificate{clientCertificate},
 		InsecureSkipVerify: false,
-	})
+	}
+	if clientMaterial {
+		certificate, err := tls.LoadX509KeyPair(certPath, keyPath)
+		if err != nil {
+			failTLS()
+		}
+		config.Certificates = []tls.Certificate{certificate}
+	}
+	return config
+}
+
+func dialVerified(address, serverName, verifyHostname, caPath, certPath, keyPath string) (*tls.Conn, tls.ConnectionState) {
+	if address == "" || verifyHostname == "" {
+		failTLS()
+	}
+	raw, err := (&net.Dialer{Timeout: tlsOperationTimeout}).Dial("tcp", address)
 	if err != nil {
 		failTLS()
 	}
-	defer conn.Close()
-	if err := conn.VerifyHostname(serverName); err != nil {
+	conn := tls.Client(raw, tlsConfig(caPath, certPath, keyPath, serverName, true))
+	if err := conn.SetDeadline(time.Now().Add(tlsOperationTimeout)); err != nil {
+		raw.Close()
 		failTLS()
 	}
+	if err := conn.Handshake(); err != nil {
+		raw.Close()
+		failTLS()
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		conn.Close()
+		failTLS()
+	}
+	// The standard TLS handshake verifies the chain and serverName/SNI. Keep an
+	// explicit verifier too so the wrong-SAN negative can retain normal SNI
+	// while proving a distinct expected server identity is rejected.
+	if err := conn.VerifyHostname(verifyHostname); err != nil {
+		conn.Close()
+		failTLS()
+	}
+	return conn, conn.ConnectionState()
+}
+
+func runTLSHandshake(args []string) {
+	if len(args) != 6 {
+		failTLS()
+	}
+	conn, _ := dialVerified(args[0], args[1], args[2], args[3], args[4], args[5])
+	defer conn.Close()
+}
+
+func formatFingerprint(raw []byte) string {
+	digest := sha256.Sum256(raw)
+	hexDigest := strings.ToUpper(hex.EncodeToString(digest[:]))
+	parts := make([]string, 0, sha256.Size)
+	for index := 0; index < len(hexDigest); index += 2 {
+		parts = append(parts, hexDigest[index:index+2])
+	}
+	return "sha256 Fingerprint=" + strings.Join(parts, ":")
+}
+
+func runFingerprint(args []string) {
+	if len(args) != 6 {
+		failTLS()
+	}
+	conn, state := dialVerified(args[0], args[1], args[2], args[3], args[4], args[5])
+	defer conn.Close()
+	if len(state.PeerCertificates) == 0 {
+		failTLS()
+	}
+	fmt.Println(formatFingerprint(state.PeerCertificates[0].Raw))
+}
+
+func isTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return true
+	}
+	return strings.Contains(err.Error(), "i/o timeout")
+}
+
+func runClientAuthRejection(args []string) {
+	if len(args) != 4 && len(args) != 6 {
+		failTLS()
+	}
+	address, serverName, verifyHostname, caPath := args[0], args[1], args[2], args[3]
+	if address == "" || serverName == "" || verifyHostname == "" || caPath == "" {
+		failTLS()
+	}
+	certPath, keyPath := "", ""
+	clientMaterial := len(args) == 6
+	if clientMaterial {
+		certPath, keyPath = args[4], args[5]
+	}
+	if err := clientAuthRejectionError(address, serverName, verifyHostname, caPath, certPath, keyPath, clientMaterial); err != nil {
+		failTLS()
+	}
+}
+
+func clientAuthRejectionError(address, serverName, verifyHostname, caPath, certPath, keyPath string, clientMaterial bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), tlsOperationTimeout)
+	defer cancel()
+	raw, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	if err != nil {
+		return err
+	}
+	verifiedServer := false
+	config := tlsConfig(caPath, certPath, keyPath, serverName, clientMaterial)
+	// VerifyConnection runs only after Go's normal RootCAs/ServerName checks.
+	// It additionally proves the expected target identity before an alert can be
+	// credited as server-side client-auth rejection evidence.
+	config.VerifyConnection = func(state tls.ConnectionState) error {
+		if len(state.PeerCertificates) == 0 {
+			return errors.New("server verification returned no peer certificate")
+		}
+		if err := state.PeerCertificates[0].VerifyHostname(verifyHostname); err != nil {
+			return err
+		}
+		verifiedServer = true
+		return nil
+	}
+	conn := tls.Client(raw, config)
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(tlsOperationTimeout)); err != nil {
+		return err
+	}
+	err = conn.HandshakeContext(ctx)
+	if err == nil {
+		// TLS 1.3 servers can send the client-auth alert just after the client
+		// reports handshake completion. A read with the same bounded deadline
+		// distinguishes that remote alert from an accepted/open connection.
+		_, err = conn.Read(make([]byte, 1))
+	}
+	return clientAuthRejectionResult(verifiedServer, err)
+}
+
+func clientAuthRejectionResult(verifiedServer bool, err error) error {
+	if !verifiedServer {
+		return errors.New("server verification did not complete")
+	}
+	if err == nil {
+		return errors.New("client authentication remained accepted/open")
+	}
+	if isTimeout(err) {
+		return errors.New("timed out waiting for client authentication rejection")
+	}
+	if !isRemoteTLSAlert(err) {
+		return errors.New("client authentication failed without a remote TLS alert")
+	}
+	return nil
+}
+
+func isRemoteTLSAlert(err error) bool {
+	return strings.HasPrefix(err.Error(), "remote error: tls:")
+}
+
+func runProbeServe() {
+	listener, err := net.Listen("tcp", probeListenAddress)
+	if err != nil {
+		failTLS()
+	}
+	defer listener.Close()
+	deadline := time.Now().Add(probeServeLifetime)
+	for time.Now().Before(deadline) {
+		if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(time.Second)); err != nil {
+			failTLS()
+		}
+		connection, err := listener.Accept()
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			failTLS()
+		}
+		connection.Close()
+	}
+	failTLS()
+}
+
+func runProbeReady() {
+	connection, err := net.DialTimeout("tcp", probeListenAddress, healthDialTimeout)
+	if err != nil {
+		failTLS()
+	}
+	connection.Close()
 }
 
 func runGatewayHealth() {
@@ -426,6 +586,20 @@ func main() {
 	switch os.Args[1] {
 	case "tls-handshake":
 		runTLSHandshake(os.Args[2:])
+	case "fingerprint":
+		runFingerprint(os.Args[2:])
+	case "client-auth-rejection":
+		runClientAuthRejection(os.Args[2:])
+	case "serve":
+		if len(os.Args) != 2 {
+			failTLS()
+		}
+		runProbeServe()
+	case "ready":
+		if len(os.Args) != 2 {
+			failTLS()
+		}
+		runProbeReady()
 	case "gateway-health":
 		if len(os.Args) != 2 {
 			failGatewayHealth()
@@ -450,6 +624,46 @@ fi
   exit 1
 }
 
+# The disposable probe is a repository-built local image, not a release
+# artifact and not a rendered topology image. Its scratch filesystem contains
+# only the static helper. Verify the exact local image ID before exporting it
+# to the named Kind cluster, then remove its tag/archive with harness state.
+PROBE_IMAGE="lucairn-enterprise-mtls-probe:kind-$$"
+PROBE_CONTEXT="$STATE_DIR/enterprise-mtls-probe-context"
+PROBE_DOCKERFILE="$PROBE_CONTEXT/Dockerfile"
+PROBE_IMAGE_ID_FILE="$STATE_DIR/enterprise-mtls-probe.image-id"
+mkdir -p "$PROBE_CONTEXT"
+cp "$GATEWAY_TLS_HELPER" "$PROBE_CONTEXT/probe"
+cat > "$PROBE_DOCKERFILE" <<'DOCKERFILE'
+FROM scratch
+COPY probe /probe
+DOCKERFILE
+if ! docker build --network=none --pull=false --platform "linux/$GATEWAY_NODE_ARCH" --tag "$PROBE_IMAGE" \
+  --file "$PROBE_DOCKERFILE" "$PROBE_CONTEXT" >/dev/null; then
+  echo "FAIL: could not build the repository-generated scratch probe image for linux/$GATEWAY_NODE_ARCH" >&2
+  exit 1
+fi
+PROBE_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$PROBE_IMAGE")"
+if ! [[ "$PROBE_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "FAIL: local scratch probe image has no immutable image ID" >&2
+  exit 1
+fi
+printf '%s\n' "$PROBE_IMAGE_ID" > "$PROBE_IMAGE_ID_FILE"
+if [ "$(<"$PROBE_IMAGE_ID_FILE")" != "$PROBE_IMAGE_ID" ] \
+  || [ "$(docker image inspect --format '{{.Id}}' "$PROBE_IMAGE")" != "$PROBE_IMAGE_ID" ]; then
+  echo "FAIL: local scratch probe image ID changed before archive" >&2
+  exit 1
+fi
+if ! docker image save --output "$PROBE_ARCHIVE" "$PROBE_IMAGE" \
+  || [ ! -s "$PROBE_ARCHIVE" ]; then
+  echo "FAIL: could not archive the verified local scratch probe image" >&2
+  exit 1
+fi
+if ! kind load image-archive --name "$CLUSTER" "$PROBE_ARCHIVE"; then
+  echo "FAIL: could not load the verified local scratch probe image into Kind" >&2
+  exit 1
+fi
+
 "${K[@]}" -n dsa-edge create configmap enterprise-mtls-negative-ca \
   --from-file=wrong-ca.crt="$STATE_DIR/certs/wrong-ca.crt" --dry-run=client -o yaml | "${K[@]}" apply -f -
 "${K[@]}" -n dsa-edge create secret generic enterprise-mtls-expired-gateway \
@@ -458,20 +672,33 @@ fi
   --from-file=tls.key="$STATE_DIR/certs/expired-gateway/tls.key" \
   --dry-run=client -o yaml | "${K[@]}" apply -f -
 
-cat <<'YAML' | "${K[@]}" -n dsa-edge apply -f -
+cat <<YAML | "${K[@]}" -n dsa-edge apply -f -
 apiVersion: v1
 kind: Pod
 metadata:
   name: enterprise-mtls-probe
 spec:
+  automountServiceAccountToken: false
   restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
   containers:
-    - name: openssl
-      image: alpine:3.20
-      command: ["sh", "-ec", "apk add --no-cache openssl coreutils >/dev/null && sleep 3600"]
+    - name: probe
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      image: ${PROBE_IMAGE}
+      imagePullPolicy: Never
+      command: ["/probe", "serve"]
       readinessProbe:
         exec:
-          command: ["test", "-x", "/usr/bin/openssl"]
+          command: ["/probe", "ready"]
         periodSeconds: 1
         timeoutSeconds: 1
         failureThreshold: 60
@@ -498,10 +725,6 @@ spec:
 YAML
 "${K[@]}" -n dsa-edge wait --for=condition=Ready pod/enterprise-mtls-probe --timeout=4m
 
-probe() {
-  "${K[@]}" -n dsa-edge exec enterprise-mtls-probe -- sh -ec "$1" -- "${@:2}"
-}
-
 # Gateway /healthz is an application-level call executed in the actual gateway
 # container through its loopback listener. In particular,
 # gateway/internal/clients/identity.go builds
@@ -509,7 +732,7 @@ probe() {
 # tlsutil.ClientCredentialsForPeer(tlsutil.SANSandboxA), and Ping performs the
 # GetIdentity RPC. A healthy identity check below is therefore one real
 # representative call for the shared tlsutil gRPC mechanism class. The five
-# non-witness exact-SAN checks use the generic probe; the two witness checks
+# non-witness exact-SAN checks use the repository-built local probe; the two witness checks
 # below execute the helper's exact-SAN TLS mode inside the real gateway Pod.
 # The same health response invokes SanitizerClient.Ping, which performs the
 # gateway's real /readyz request through SanitizerHTTPClientConfig + ForceHTTPS
@@ -700,51 +923,23 @@ gateway_identity_server_material_rejected() {
 }
 
 served_leaf_fingerprint() {
-  local address="$1" san="$2" timeout_seconds="${3:-15}"
-  if ! [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || [ "$timeout_seconds" -gt 15 ]; then
-    echo "FAIL: invalid TLS fingerprint probe timeout" >&2
+  local address="$1" san="$2" observed
+  if ! observed="$("${K[@]}" -n dsa-edge exec enterprise-mtls-probe -- \
+    /probe fingerprint "$address" "$san" "$san" /certs/gateway/ca.crt \
+    /certs/gateway/tls.crt /certs/gateway/tls.key)"; then
+    echo "FAIL: verified TLS fingerprint handshake failed" >&2
     return 1
   fi
-  probe '
-set +e
-result=$(mktemp)
-timeout "$3" openssl s_client \
-  -connect "$1" \
-  -servername "$2" \
-  -verify_hostname "$2" \
-  -verify_return_error \
-  -CAfile /certs/gateway/ca.crt \
-  -cert /certs/gateway/tls.crt \
-  -key /certs/gateway/tls.key \
-  </dev/null >"$result" 2>/dev/null
-status=$?
-set -e
-if [ "$status" -ne 0 ]; then
-  rm -f "$result"
-  if [ "$status" -eq 124 ]; then
-    echo "FAIL: positive TLS fingerprint handshake timed out" >&2
-  else
-    echo "FAIL: positive TLS fingerprint handshake failed" >&2
-  fi
-  exit 1
-fi
-openssl x509 -in "$result" -noout -fingerprint -sha256
-rm -f "$result"
-' "$address" "$san" "$timeout_seconds"
+  printf '%s\n' "$observed"
 }
 
 await_served_leaf_fingerprint() {
   local address="$1" san="$2" expected="$3"
   local observed="" last_diagnostic="no verified TLS fingerprint was observed"
-  local deadline=$((SECONDS + 40)) remaining probe_timeout sleep_seconds
+  local deadline=$((SECONDS + 40)) remaining sleep_seconds
 
   while (( SECONDS < deadline )); do
-    remaining=$((deadline - SECONDS))
-    probe_timeout=5
-    if (( remaining < probe_timeout )); then
-      probe_timeout="$remaining"
-    fi
-    if observed="$(served_leaf_fingerprint "$address" "$san" "$probe_timeout")"; then
+    if observed="$(served_leaf_fingerprint "$address" "$san")"; then
       if ! grep -Eq '^sha256 Fingerprint=[0-9A-F:]+$' <<<"$observed"; then
         last_diagnostic="served fingerprint was unparseable"
       elif [ "$observed" = "$expected" ]; then
@@ -754,7 +949,7 @@ await_served_leaf_fingerprint() {
         last_diagnostic="served fingerprint did not match the expected replacement"
       fi
     else
-      last_diagnostic="verified TLS fingerprint handshake failed or timed out"
+      last_diagnostic="verified TLS fingerprint handshake failed"
     fi
 
     remaining=$((deadline - SECONDS))
@@ -792,13 +987,20 @@ restore_sandbox_a_server_material() {
   gateway_health_mtls_healthy
 }
 
+probe_tls_handshake() {
+  local address="$1" server_name="$2" verify_hostname="$3" ca_file="$4" cert_file="$5" key_file="$6"
+  "${K[@]}" -n dsa-edge exec enterprise-mtls-probe -- \
+    /probe tls-handshake "$address" "$server_name" "$verify_hostname" "$ca_file" "$cert_file" "$key_file"
+}
+
 positive_handshake() {
   local address="$1" san="$2"
-  if ! probe "timeout 15 openssl s_client -connect '$address' -servername '$san' -verify_hostname '$san' -verify_return_error -CAfile /certs/gateway/ca.crt -cert /certs/gateway/tls.crt -key /certs/gateway/tls.key </dev/null >/dev/null"; then
-    echo "FAIL: positive mTLS handshake failed or timed out: $address ($san)" >&2
+  if ! probe_tls_handshake "$address" "$san" "$san" /certs/gateway/ca.crt \
+    /certs/gateway/tls.crt /certs/gateway/tls.key; then
+    echo "FAIL: positive mTLS handshake failed: $address ($san)" >&2
     exit 1
   fi
-  echo "supporting generic-probe mTLS handshake verified: $address ($san)"
+  echo "supporting local-probe mTLS handshake verified: $address ($san)"
 }
 
 GATEWAY_HELPER_NAME=".enterprise-mtls-gateway-tls-helper"
@@ -833,7 +1035,7 @@ install_gateway_tls_helper() {
 gateway_workload_handshake() {
   local address="$1" san="$2"
   if ! "${K[@]}" -n dsa-edge exec "$GATEWAY_POD" -c "$GATEWAY_CONTAINER" -- \
-    "$GATEWAY_HELPER_PATH" tls-handshake "$address" "$san" \
+    "$GATEWAY_HELPER_PATH" tls-handshake "$address" "$san" "$san" \
     "$GATEWAY_MTLS_DIR/ca.crt" "$GATEWAY_MTLS_DIR/tls.crt" "$GATEWAY_MTLS_DIR/tls.key"; then
     echo "FAIL: actual Gateway-Pod TLS handshake failed: $address ($san)" >&2
     return 1
@@ -963,7 +1165,7 @@ projected_identity_witness_handshake() {
     return 1
   fi
   if ! "${K[@]}" -n "$WORKLOAD_NAMESPACE" exec "$WORKLOAD_POD" -c "$WORKLOAD_CONTAINER" -- \
-    "$WORKLOAD_HELPER_PATH" tls-handshake "$address" "$san" \
+    "$WORKLOAD_HELPER_PATH" tls-handshake "$address" "$san" "$san" \
     "$WORKLOAD_MTLS_DIR/ca.crt" "$WORKLOAD_MTLS_DIR/tls.crt" "$WORKLOAD_MTLS_DIR/tls.key"; then
     projected_identity_helper_cleanup || true
     echo "FAIL: projected $identity workload TLS handshake failed: $address ($san)" >&2
@@ -976,8 +1178,8 @@ projected_identity_witness_handshake() {
 }
 
 negative_handshake() {
-  local description="$1" command="$2"
-  if probe "$command"; then
+  local description="$1" address="$2" server_name="$3" verify_hostname="$4" ca_file="$5" cert_file="$6" key_file="$7"
+  if probe_tls_handshake "$address" "$server_name" "$verify_hostname" "$ca_file" "$cert_file" "$key_file"; then
     echo "FAIL: negative mTLS handshake unexpectedly passed: $description" >&2
     exit 1
   fi
@@ -986,6 +1188,7 @@ negative_handshake() {
 strict_client_auth_rejection() {
   local description="$1" address="$2" san="$3" ca_file="$4"
   local client_cert="${5:-}" client_key="${6:-}"
+  local -a command=(/probe client-auth-rejection "$address" "$san" "$san" "$ca_file")
 
   if [ -n "$client_cert" ] && [ -z "$client_key" ]; then
     echo "FAIL: $description strict client-auth check has a certificate without a key" >&2
@@ -996,70 +1199,20 @@ strict_client_auth_rejection() {
     exit 1
   fi
 
-  # TLS 1.3 can finish the client side of the handshake before the server
-  # validates the client certificate. Keep stdin open to s_client and give the
-  # server a bounded window to deliver its fatal alert. GNU timeout returns
-  # 124 on an accepted/still-open connection; only a non-timeout OpenSSL error
-  # accompanied by a server TLS alert proves rejection.
-  if ! probe '
-set +e
-description=$1
-address=$2
-san=$3
-ca_file=$4
-client_cert=$5
-client_key=$6
-
-run_s_client() {
-  timeout 15 openssl s_client \
-    -connect "$address" \
-    -servername "$san" \
-    -verify_hostname "$san" \
-    -verify_return_error \
-    -CAfile "$ca_file" \
-    "$@" \
-    -quiet -ign_eof
-}
-
-result=$(mktemp)
-if [ -n "$client_cert" ]; then
-  run_s_client -cert "$client_cert" -key "$client_key" </dev/null >"$result" 2>&1
-else
-  run_s_client </dev/null >"$result" 2>&1
-fi
-status=$?
-cat "$result" >&2
-if [ "$status" -eq 124 ]; then
-  echo "FAIL: $description handshake timed out waiting for server rejection" >&2
-  rm -f "$result"
-  exit 1
-fi
-if [ "$status" -eq 0 ]; then
-  echo "FAIL: $description handshake remained accepted/open" >&2
-  rm -f "$result"
-  exit 1
-fi
-if [ "$status" -ge 125 ] && [ "$status" -le 127 ]; then
-  echo "FAIL: $description handshake could not run OpenSSL under timeout" >&2
-  rm -f "$result"
-  exit 1
-fi
-if ! grep -Eiq "(tls|ssl).*alert|alert.*(tls|ssl)" "$result"; then
-  echo "FAIL: $description handshake failed without a server TLS alert" >&2
-  rm -f "$result"
-  exit 1
-fi
-rm -f "$result"
-exit 0
-' "$description" "$address" "$san" "$ca_file" "$client_cert" "$client_key"; then
+  if [ -n "$client_cert" ]; then
+    command+=("$client_cert" "$client_key")
+  fi
+  # The helper rejects timeout/accepted connections and accepts only a verified
+  # chain/SAN handshake that reaches an actual remote TLS alert.
+  if ! "${K[@]}" -n dsa-edge exec enterprise-mtls-probe -- "${command[@]}"; then
     echo "FAIL: $description mTLS client authentication was not rejected by the server" >&2
     exit 1
   fi
   echo "negative mTLS handshake rejected: $description"
 }
 
-# Keep these generic-probe positives for the client-auth negatives, fingerprint,
-# and rotation logic below. They are supporting generic-probe evidence only;
+# Keep these local-probe positives for the client-auth negatives, fingerprint,
+# and rotation logic below. They are supporting local-probe evidence only;
 # the actual Gateway-Pod handshakes immediately following are the acceptance
 # proof for every Gateway-originated mandatory edge.
 positive_handshake audit.dsa-audit.svc.cluster.local:50051 dsa-audit
@@ -1118,8 +1271,10 @@ fi
 gateway_health_mtls_healthy
 echo "gateway sanitizer: actual client response plus verified mTLS wire fingerprint=$SANITIZER_FINGERPRINT"
 
-negative_handshake wrong-ca "openssl s_client -connect audit.dsa-audit.svc.cluster.local:50051 -servername dsa-audit -verify_return_error -CAfile /certs/wrong-ca/wrong-ca.crt -cert /certs/gateway/tls.crt -key /certs/gateway/tls.key </dev/null >/dev/null"
-negative_handshake wrong-san "openssl s_client -connect audit.dsa-audit.svc.cluster.local:50051 -servername dsa-audit -verify_hostname dsa-sandbox-a -verify_return_error -CAfile /certs/gateway/ca.crt -cert /certs/gateway/tls.crt -key /certs/gateway/tls.key </dev/null >/dev/null"
+negative_handshake wrong-ca audit.dsa-audit.svc.cluster.local:50051 dsa-audit dsa-audit \
+  /certs/wrong-ca/wrong-ca.crt /certs/gateway/tls.crt /certs/gateway/tls.key
+negative_handshake wrong-san audit.dsa-audit.svc.cluster.local:50051 dsa-audit dsa-sandbox-a \
+  /certs/gateway/ca.crt /certs/gateway/tls.crt /certs/gateway/tls.key
 strict_client_auth_rejection missing-client-cert audit.dsa-audit.svc.cluster.local:50051 dsa-audit /certs/gateway/ca.crt
 strict_client_auth_rejection expired-client-cert audit.dsa-audit.svc.cluster.local:50051 dsa-audit /certs/expired/ca.crt /certs/expired/tls.crt /certs/expired/tls.key
 
