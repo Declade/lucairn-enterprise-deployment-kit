@@ -1179,10 +1179,14 @@ The configured `gateway.veilWitnessSignedManifestPath` must equal
 contract before an upgrade; a missing Secret name/key, partial block, or path
 mismatch must be a Helm render failure, never a bypass or placeholder blob:
 
-Generate `customer-production-values.yaml` with
+On the first production install, create the application-only companion to the
+parent production profile once with
 `bash scripts/render-production-values.sh customer-production-values.yaml`.
-It is the application-only companion to the parent production profile; do not
-reuse the development/pilot `customer-values.yaml` for this ordered pair.
+Keep that protected overlay and reuse it unchanged for normal upgrades; do not
+reuse the development/pilot `customer-values.yaml` for this ordered pair. The
+renderer refuses an existing output path. For a deliberate credential rotation,
+generate a different new path and coordinate the application, database, and
+service rollout before changing the Helm values path.
 
 ```bash
 bin/lucairn doctor \

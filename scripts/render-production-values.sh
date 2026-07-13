@@ -27,8 +27,21 @@ if [ -e "$OUTPUT" ] || [ -L "$OUTPUT" ]; then
   exit 1
 fi
 
+OUTPUT_DIR="$(dirname "$OUTPUT")"
+TMP_VALUES=""
+STAGED_VALUES=""
+cleanup() {
+  rm -f -- "$TMP_VALUES" "$STAGED_VALUES"
+}
+trap cleanup EXIT
+
+# Both files hold generated credentials. Stage the final serialized document
+# beside its destination so publication can use an atomic, non-replacing hard
+# link on the same filesystem. mktemp honours the 077 umask; chmod makes the
+# required mode explicit even on a platform with different defaults.
 TMP_VALUES="$(mktemp "${TMPDIR:-/tmp}/lucairn-production-values.XXXXXX")"
-trap 'rm -f "$TMP_VALUES"' EXIT
+STAGED_VALUES="$(mktemp "$OUTPUT_DIR/.lucairn-production-values.XXXXXX")"
+chmod 600 "$STAGED_VALUES"
 
 if [ ! -x "$RENDER_VALUES" ]; then
   echo "error: render-values.sh not found or not executable at $RENDER_VALUES" >&2
@@ -63,11 +76,22 @@ ruby -ryaml -e '
   # restate the parent production topology.
   values.delete("demo")
 
-  # O_EXCL is the final TOCTOU guard: never follow, truncate, or replace an
-  # output path that appeared after the early shell refusal check.
-  File.open(ARGV.fetch(1), File::WRONLY | File::CREAT | File::EXCL, 0600) do |file|
+  staged = ARGV.fetch(1)
+  File.open(staged, File::WRONLY | File::TRUNC, 0600) do |file|
     file.write(YAML.dump(values))
+    file.flush
+    file.fsync if file.respond_to?(:fsync)
   end
-' "$TMP_VALUES" "$OUTPUT"
+  validated = YAML.load_file(staged)
+  abort "staged production overlay is not a YAML mapping" unless validated.is_a?(Hash)
+  abort "staged production overlay lacks global values" unless validated.fetch("global").is_a?(Hash)
+' "$TMP_VALUES" "$STAGED_VALUES"
+
+# File.link calls link(2) directly: publication is atomic, does not replace or
+# follow an output path that appeared after the early refusal, and also refuses
+# a raced directory (unlike a command-line ln destination operand).
+ruby -e 'File.link(ARGV.fetch(0), ARGV.fetch(1))' "$STAGED_VALUES" "$OUTPUT"
+rm -f -- "$STAGED_VALUES"
+STAGED_VALUES=""
 
 echo "render-production-values.sh: $OUTPUT ready (mode 600; keep it out of Git)."
