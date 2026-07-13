@@ -1277,12 +1277,14 @@ gateway_workload_handshake veil-witness.dsa-witness.svc.cluster.local:50058 dsa-
 
 # Claim intake is the shared :50057 witness path. These are intentionally
 # narrow TLS-only proofs, not application RPC or authorization tests. Audit,
-# ID Bridge, and Sandbox B are distinct real workload identities; Sandbox B is
+# ID Bridge, the Sanitizer sidecar, and Sandbox B are distinct real workload
+# identities. Sanitizer is the Sandbox A sidecar claim source. Sandbox B is
 # the smallest mandatory pipeline choice because its rendered config points to
 # this witness address and it emits the inference claim.
 for identity_call in \
   'audit dsa-audit audit lucairn-mtls-audit' \
   'id-bridge dsa-bridge id-bridge lucairn-mtls-id-bridge' \
+  'sanitizer dsa-identity sanitizer lucairn-mtls-sanitizer' \
   'sandbox-b dsa-ai sandbox-b lucairn-mtls-sandbox-b'; do
   read -r identity namespace container secret <<<"$identity_call"
   if ! projected_identity_witness_handshake "$identity" "$namespace" "$container" "$secret" \
@@ -1398,7 +1400,7 @@ echo "rotation replacement: audit served the exact expected replacement fingerpr
 # below claim representative application behavior. Neither class proves
 # NetworkPolicy enforcement on stock Kind/kindnet.
 echo "PASS: coverage class=workload-originated transport handshake; origin=actual-gateway-pod; projected-leaf=gateway; edges=gateway-to-audit,gateway-to-id-bridge,gateway-to-sandbox-a,gateway-to-sandbox-b,gateway-to-sanitizer,gateway-to-witness-50057,gateway-to-witness-50058; server-SANs=dsa-audit,dsa-id-bridge,dsa-sandbox-a,dsa-sandbox-b,dsa-sanitizer,dsa-veil-witness"
-echo "PASS: coverage class=workload-originated transport handshake; projected-leaves=audit,id-bridge,sandbox-b; edges=audit-to-witness,id-bridge-to-witness,sandbox-b-to-witness; server-SAN=dsa-veil-witness"
+echo "PASS: coverage class=workload-originated transport handshake; projected-leaves=audit,id-bridge,sanitizer,sandbox-b; edges=audit-to-witness,id-bridge-to-witness,sanitizer-to-witness,sandbox-b-to-witness; server-SAN=dsa-veil-witness"
 echo "PASS: coverage class=application-layer call; gateway gRPC identity; expected-server-SAN=dsa-sandbox-a"
 echo "PASS: coverage class=application-layer call; gateway-to-sanitizer HTTPS; expected-server-SAN=dsa-sanitizer"
 echo "ENTERPRISE_HELM_MTLS_KIND: PASS"
