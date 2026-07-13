@@ -48,4 +48,18 @@ if openssl x509 -checkend 0 -noout -in "$expired_leaf" >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "enterprise mTLS certificate contract: CA, SAN, trusted clientAuth expiry negatives: ok"
+# The representative server-material negative is deliberately SAN-correct and
+# still CA-issued: the real gateway client test can attribute its failure to
+# expiry, rather than to a mismatched identity or trust root.
+expired_server_leaf="$TMPDIR/certs/expired-sandbox-a/tls.crt"
+openssl x509 -checkhost dsa-sandbox-a -noout -in "$expired_server_leaf" >/dev/null
+if ! openssl verify -no_check_time -CAfile "$TMPDIR/certs/ca.crt" "$expired_server_leaf" >/dev/null 2>&1; then
+  echo "expired Sandbox A server leaf is not signed by the trusted fixture CA" >&2
+  exit 1
+fi
+if openssl x509 -checkend 0 -noout -in "$expired_server_leaf" >/dev/null 2>&1; then
+  echo "expired Sandbox A server leaf unexpectedly passed validity check" >&2
+  exit 1
+fi
+
+echo "enterprise mTLS certificate contract: CA, SAN, trusted client/server expiry negatives: ok"

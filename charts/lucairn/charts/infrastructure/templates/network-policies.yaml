@@ -59,16 +59,6 @@ spec:
       ports:
         - port: 50051
           protocol: TCP
-    # → dsa-witness (Veil Witness claims + certificate retrieval)
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              dsa.io/namespace: witness
-      ports:
-        - port: 50057
-          protocol: TCP
-        - port: 50058
-          protocol: TCP
     # Intra-namespace (gateway → postgres-gateway for the PostgresKeyStore).
     # Closes bug-hunter M4: named podSelector scopes the rule to the
     # postgres-gateway StatefulSet pods (labelled app.kubernetes.io/name=
@@ -80,6 +70,36 @@ spec:
               app.kubernetes.io/name: postgres-gateway
       ports:
         - port: 5432
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: edge-witness-egress
+  namespace: dsa-edge
+spec:
+  # Keep the witness allowance separate from the namespace's general egress
+  # policy. Kubernetes unions matching policies, so only the named gateway Pod
+  # receives this two-port exception; other dsa-edge Pods retain their existing
+  # non-witness egress posture.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  policyTypes:
+    - Egress
+  egress:
+    # → dsa-witness (Veil Witness claims + certificate retrieval)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: witness
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: veil-witness
+      ports:
+        - port: 50057
+          protocol: TCP
+        - port: 50058
           protocol: TCP
 ---
 apiVersion: networking.k8s.io/v1

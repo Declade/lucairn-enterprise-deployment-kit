@@ -1,5 +1,6 @@
 # Lucairn Helm customer values.
-# Copy to customer-values.yaml, replace every REPLACE_* value, then run:
+# Copy to customer-values.yaml, replace every REPLACE_* value, then run the
+# development/pilot install below:
 #   helm upgrade --install lucairn charts/lucairn \
 #     --namespace lucairn --create-namespace \
 #     -f customer-values.yaml \
@@ -11,14 +12,30 @@
 # INSTALL.md § "Kubernetes Install" for the isolated $DOCKER_CONFIG recipe.
 
 global:
-  # v1.0 ships "development" as the chart default because the bundled
-  # subcharts do NOT provision inter-service gRPC TLS certs. The gateway /
-  # audit / id-bridge / sandbox-a binaries refuse to boot on the combo
-  # `DSA_ENV=production` + `GRPC_TLS_ENABLED=false`. Flip to "production"
-  # ONLY after wiring cert-manager (or equivalent) AND setting every
-  # subchart's `grpcTlsEnabled: "true"` below. Prod-grade TLS provisioning
-  # is the v2.0 roadmap. (Vast cascade BLOCKER A, 2026-05-26.)
+  # This sample is a development/pilot file. Production accepts ONLY the
+  # exact token "production" and requires the parent-owned global.mtls
+  # contract below. Use charts/lucairn/values-prod.yaml as the production
+  # overlay; do not try to enable transport through child-chart flags.
   dsaEnv: development
+  # Enterprise full-mesh mTLS is the sole supported production transport
+  # contract. Helm only projects these operator/PKI-owned Secrets; it never
+  # creates or stores a CA, leaf certificate, or private key. Each identity
+  # Secret contains exactly ca.crt, tls.crt, and tls.key. values-prod.yaml
+  # supplies the canonical production names and enables this block.
+  mtls:
+    enabled: false
+    mountPath: /var/run/lucairn/mtls
+    caBundleKey: ca.crt
+    certKey: tls.crt
+    keyKey: tls.key
+    secrets:
+      gateway: ""
+      audit: ""
+      idBridge: ""
+      sandboxA: ""
+      sanitizer: ""
+      sandboxB: ""
+      veilWitness: ""
   imageRegistry: ghcr.io/declade
   imageTag: "0.5.4"
   imagePullSecrets:
@@ -48,17 +65,6 @@ global:
   # only if you swap in an external Postgres with TLS configured.
   # (Vast-verify finding #2.)
   postgresqlSslmode: disable
-
-  # === gRPC TLS between services ===
-  # Bundled subcharts do NOT provision TLS certs for inter-service
-  # gRPC. Each subchart's per-chart `grpcTlsEnabled` defaults to
-  # "false"; the gateway, audit, id-bridge, sandbox-a, sandbox-b
-  # values blocks below MUST stay at "false" until cert-manager (or
-  # equivalent) is wired at the customer site. Audit + id-bridge
-  # refuse to start on dsaEnv=production + grpcTlsEnabled="true"
-  # without certs mounted. The per-subchart flag below is the
-  # load-bearing one (Helm subcharts don't read global.grpcTlsEnabled).
-  # (Vast-verify finding #3.)
 
   wireguardEncryption: false
   llmEgressEnabled: true
@@ -108,11 +114,6 @@ gateway:
     host: lucairn.customer.example
     tlsSecret: lucairn-gateway-tls
   gatewayBaseUrl: https://lucairn.customer.example
-  # gRPC TLS between services. Default "false" matches the Compose
-  # path; bundled subcharts do NOT provision certs. Flip to "true"
-  # only after wiring cert-manager (or equivalent) at the customer
-  # site. (Vast-verify finding #3.)
-  grpcTlsEnabled: "false"
   streaming:
     enabled: true
     timeoutSeconds: 300
