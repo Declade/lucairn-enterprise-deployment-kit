@@ -1608,6 +1608,24 @@ the stated DNS SAN and be valid under the shared `ca.crt`.
 | Sandbox B | `dsa-ai` | `lucairn-mtls-sandbox-b` | `dsa-sandbox-b` |
 | Veil Witness | `dsa-witness` | `lucairn-mtls-veil-witness` | `dsa-veil-witness` |
 
+### Clean-cluster namespace create or intentional Helm adoption
+
+Before creating any operator-owned mTLS or signed-manifest Secret below, run
+this block on a clean cluster. Helm would otherwise create the namespaces only
+after those namespaced Secrets are needed. The block is idempotent, but for an
+already existing namespace it is safe **only** when you intentionally adopt
+that namespace for the `lucairn` release in the `lucairn` release namespace.
+Do not run it to silently claim ownership of an arbitrary existing namespace.
+
+```bash
+for namespace in dsa-edge dsa-audit dsa-bridge dsa-identity dsa-ai dsa-witness; do
+  kubectl create namespace "$namespace" --dry-run=client -o yaml | kubectl apply -f -
+  kubectl label namespace "$namespace" app.kubernetes.io/managed-by=Helm --overwrite
+  kubectl annotate namespace "$namespace" meta.helm.sh/release-name=lucairn --overwrite
+  kubectl annotate namespace "$namespace" meta.helm.sh/release-namespace=lucairn --overwrite
+done
+```
+
 For every row, create the Secret from PKI output; this command contains only
 file references and never places material in Helm values or Git:
 
@@ -1684,7 +1702,9 @@ different names or key names, change all entries in `global.mtls` together.
 Before install, run the Helm-only preflight with the same ordered values pair
 as Helm. Keep customer-specific values in the overlay; do not flatten or copy
 the production contract into it. A green render alone is not an accepted
-deployment.
+deployment. `$DOCKER_CONFIG/config.json` must contain the authenticated
+private-registry configuration prepared in Kubernetes Install step 1; keep it
+out of Git and logs.
 
 ```bash
 bin/lucairn doctor \
@@ -1693,7 +1713,9 @@ bin/lucairn doctor \
   --offline
 helm template lucairn charts/lucairn \
   -f charts/lucairn/values-prod.yaml \
-  -f "$OVERLAY" >/dev/null
+  -f "$OVERLAY" \
+  --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
+  >/dev/null
 ```
 
 Then install and wait for every workload; run the handshake battery before
@@ -1703,6 +1725,7 @@ declaring success:
 helm upgrade --install lucairn charts/lucairn \
   -f charts/lucairn/values-prod.yaml \
   -f "$OVERLAY" \
+  --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
   --namespace lucairn --create-namespace --wait --timeout 12m
 
 # Isolated, destructive-to-its-own-Kind-cluster acceptance only:
