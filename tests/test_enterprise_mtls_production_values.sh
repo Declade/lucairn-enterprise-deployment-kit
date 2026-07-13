@@ -64,13 +64,69 @@ assert_no_staged_overlay() {
   fi
 }
 
-assert_no_renderer_temp() {
+assert_no_source_overlay() {
   local directory="$1"
-  if find "$directory" -maxdepth 1 -name 'lucairn-production-values.*' -print -quit | grep -q .; then
-    echo "production renderer left a secret-bearing temporary overlay in $directory" >&2
+  if find "$directory" -maxdepth 1 -name '.lucairn-production-values-source.*' -print -quit | grep -q .; then
+    echo "production renderer left a secret-bearing source overlay in $directory" >&2
     exit 1
   fi
 }
+
+assert_no_source_overlay "$TMPDIR"
+assert_no_staged_overlay "$TMPDIR"
+
+# TMPDIR is caller-controlled and can be non-sticky. A mktemp shim replaces
+# any source created there with valid-looking attacker input; the renderer must
+# neither create that source nor consume it, and must publish its own overlay
+# through the validated output directory.
+UNSAFE_TMPDIR="$TMPDIR/caller-controlled-tmp"
+SOURCE_TRAP_BIN="$TMPDIR/source-trap-bin"
+SOURCE_TRAP_LOG="$TMPDIR/source-trap.log"
+SOURCE_TRAP_CALL_LOG="$TMPDIR/source-trap-calls.log"
+SOURCE_TRAP_OUTPUT="$TMPDIR/source-trap-values.yaml"
+SOURCE_TRAP_OUTPUT_DIR="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$(dirname "$SOURCE_TRAP_OUTPUT")")"
+REAL_MKTEMP="$(command -v mktemp)"
+mkdir "$UNSAFE_TMPDIR" "$SOURCE_TRAP_BIN"
+chmod 777 "$UNSAFE_TMPDIR"
+cat > "$SOURCE_TRAP_BIN/mktemp" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+path="\$("$REAL_MKTEMP" "\$@")"
+if mode="\$(stat -f '%Lp' "\$path" 2>/dev/null)"; then :; else mode="\$(stat -c '%a' "\$path")"; fi
+printf '%s|%s\\n' "\${1:-}" "\$mode" >> "$SOURCE_TRAP_CALL_LOG"
+case "\${1:-}" in
+  "$UNSAFE_TMPDIR"/lucairn-production-values.XXXXXX)
+    printf '%s\\n' "\$path" >> "$SOURCE_TRAP_LOG"
+    cat > "\$path" <<'YAML'
+---
+global:
+  dsaServiceToken: attacker-substituted-token
+YAML
+    ;;
+esac
+printf '%s\\n' "\$path"
+EOF
+chmod 700 "$SOURCE_TRAP_BIN/mktemp"
+TMPDIR="$UNSAFE_TMPDIR" PATH="$SOURCE_TRAP_BIN:$PATH" bash "$ROOT/scripts/render-production-values.sh" "$SOURCE_TRAP_OUTPUT" >/dev/null
+[ -f "$SOURCE_TRAP_OUTPUT" ] && [ ! -L "$SOURCE_TRAP_OUTPUT" ] \
+  || { echo "production renderer did not publish through the validated destination" >&2; exit 1; }
+if MODE="$(stat -f '%Lp' "$SOURCE_TRAP_OUTPUT" 2>/dev/null)"; then :; else MODE="$(stat -c '%a' "$SOURCE_TRAP_OUTPUT")"; fi
+[ "$MODE" = "600" ] || { echo "source-trap output mode is $MODE, expected 600" >&2; exit 1; }
+[ ! -s "$SOURCE_TRAP_LOG" ] \
+  || { echo "production renderer created a source overlay under caller-controlled TMPDIR" >&2; exit 1; }
+grep -Fqx "$SOURCE_TRAP_OUTPUT_DIR/.lucairn-production-values-source.XXXXXX|600" "$SOURCE_TRAP_CALL_LOG" \
+  || { echo "production renderer did not create its hidden 0600 source under the validated output directory" >&2; exit 1; }
+grep -Fqx "$SOURCE_TRAP_OUTPUT_DIR/.lucairn-production-values.XXXXXX|600" "$SOURCE_TRAP_CALL_LOG" \
+  || { echo "production renderer did not create its hidden 0600 stage under the validated output directory" >&2; exit 1; }
+assert_no_source_overlay "$UNSAFE_TMPDIR"
+assert_no_staged_overlay "$UNSAFE_TMPDIR"
+ruby -ryaml -e '
+  values = YAML.load_file(ARGV.fetch(0))
+  abort "source replacement reached the published overlay" if values.dig("global", "dsaServiceToken") == "attacker-substituted-token"
+  abort "published overlay lacks canonical generated credentials" unless values.dig("global", "dsaServiceToken").is_a?(String) && !values.dig("global", "dsaServiceToken").empty?
+' "$SOURCE_TRAP_OUTPUT"
+assert_no_source_overlay "$TMPDIR"
+assert_no_staged_overlay "$TMPDIR"
 
 # A syntactically valid but short stage write must not publish. RUBYOPT scopes
 # the fault to the staging inode and makes File#write return the short byte
@@ -98,7 +154,9 @@ fi
 [ ! -e "$SHORT_WRITE_OUTPUT" ] && [ ! -L "$SHORT_WRITE_OUTPUT" ] \
   || { echo "production renderer published output after a short stage write" >&2; exit 1; }
 assert_no_staged_overlay "$TMPDIR"
-assert_no_renderer_temp "$SHORT_WRITE_TMPDIR"
+assert_no_source_overlay "$TMPDIR"
+assert_no_source_overlay "$SHORT_WRITE_TMPDIR"
+assert_no_staged_overlay "$SHORT_WRITE_TMPDIR"
 
 # Replacing the mktemp-created stage with a symlink must fail at the NOFOLLOW
 # open, leave the replacement target untouched, and publish nothing.
@@ -132,7 +190,9 @@ fi
 [ ! -e "$STAGE_REPLACEMENT_OUTPUT" ] && [ ! -L "$STAGE_REPLACEMENT_OUTPUT" ] \
   || { echo "production renderer published output after staging-path replacement" >&2; exit 1; }
 assert_no_staged_overlay "$TMPDIR"
-assert_no_renderer_temp "$STAGE_REPLACEMENT_TMPDIR"
+assert_no_source_overlay "$TMPDIR"
+assert_no_source_overlay "$STAGE_REPLACEMENT_TMPDIR"
+assert_no_staged_overlay "$STAGE_REPLACEMENT_TMPDIR"
 
 # The renderer refuses customer-controlled group/world-writable parents before
 # it calls the canonical secret generator, and leaves no temporary material.
@@ -156,7 +216,7 @@ for unsafe_mode in 770 707; do
   [ ! -e "$OPENSSL_CALL_LOG" ] \
     || { echo "production renderer generated secrets before rejecting unsafe directory mode $unsafe_mode" >&2; exit 1; }
   assert_no_staged_overlay "$UNSAFE_DIR"
-  assert_no_renderer_temp "$UNSAFE_DIR"
+  assert_no_source_overlay "$UNSAFE_DIR"
 done
 
 # File.link is the non-replacing publication primitive. Simulate a destination
@@ -184,7 +244,9 @@ fi
 [ "$(<"$RACED_OUTPUT")" = 'raced-destination-sentinel' ] \
   || { echo "production renderer changed raced destination sentinel" >&2; exit 1; }
 assert_no_staged_overlay "$TMPDIR"
-assert_no_renderer_temp "$PUBLISH_RACE_TMPDIR"
+assert_no_source_overlay "$TMPDIR"
+assert_no_source_overlay "$PUBLISH_RACE_TMPDIR"
+assert_no_staged_overlay "$PUBLISH_RACE_TMPDIR"
 
 # The application overlay is a strict allowlist at global scope. It must not
 # carry parent-owned production controls even if the development template gains

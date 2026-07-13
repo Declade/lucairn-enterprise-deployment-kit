@@ -52,12 +52,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Both files hold generated credentials. Stage the final serialized document
-# beside its destination so publication can use an atomic, non-replacing hard
-# link on the same filesystem. The validated directory is private to the
-# effective user, which is the trust boundary for the pathname-based link
-# below; mktemp creates the initial 0600 staging inode under that boundary.
-TMP_VALUES="$(mktemp "${TMPDIR:-/tmp}/lucairn-production-values.XXXXXX")"
+# Both files hold generated credentials. Keep the canonical source and final
+# serialized document beside the destination: the validated directory is the
+# trust boundary for their pathnames and for the atomic, non-replacing hard
+# link below. mktemp creates initial 0600 inodes under that boundary.
+TMP_VALUES="$(mktemp "$OUTPUT_DIR/.lucairn-production-values-source.XXXXXX")"
 STAGED_VALUES="$(mktemp "$OUTPUT_DIR/.lucairn-production-values.XXXXXX")"
 
 if [ ! -x "$RENDER_VALUES" ]; then
