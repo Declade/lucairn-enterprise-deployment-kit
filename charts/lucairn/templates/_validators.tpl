@@ -67,6 +67,13 @@ the chart's supported paths are development and production only.
   {{- fail "global.dsaEnv must be exactly \"development\" or \"production\"; unsupported values are refused before any workload ConfigMap is rendered." -}}
 {{- end -}}
 {{- $isProduction := eq $dsaEnv "production" -}}
+{{- $mandatoryProfiles := list
+      (dict "path" "gateway.enabled" "value" ((default dict .Values.gateway).enabled))
+      (dict "path" "audit.enabled" "value" ((default dict .Values.audit).enabled))
+      (dict "path" "id-bridge.enabled" "value" ((default dict (index .Values "id-bridge")).enabled))
+      (dict "path" "sandbox-a.enabled" "value" ((default dict (index .Values "sandbox-a")).enabled))
+      (dict "path" "sandbox-b.enabled" "value" ((default dict (index .Values "sandbox-b")).enabled))
+      (dict "path" "veil-witness.enabled" "value" ((default dict (index .Values "veil-witness")).enabled)) -}}
 {{- $optionalProfiles := list
       (dict "path" "pii-ml.enabled" "enabled" (default false (default dict (index .Values "pii-ml")).enabled))
       (dict "path" "postgres-gateway.enabled" "enabled" (default false (default dict (index .Values "postgres-gateway")).enabled))
@@ -79,28 +86,37 @@ the chart's supported paths are development and production only.
   {{- if not $mtls.enabled -}}
     {{- fail "global.dsaEnv=production requires global.mtls.enabled=true. The supported production topology uses verified DSA_MTLS_* transport only; legacy child grpcTlsEnabled values cannot enable production." -}}
   {{- end -}}
+  {{- range $profile := $mandatoryProfiles -}}
+    {{- $value := $profile.value -}}
+    {{- $enabled := or (and (kindIs "bool" $value) $value) (and (kindIs "string" $value) (eq $value "true")) -}}
+    {{- if not $enabled -}}
+      {{- fail (printf "%s must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology." $profile.path) -}}
+    {{- end -}}
+  {{- end -}}
   {{- range $profile := $optionalProfiles -}}
     {{- if $profile.enabled -}}
       {{- fail (printf "unsupported optional gRPC profile: %s=true is outside the verified default production mTLS topology. Disable it or deliver its transport contract in a separate workstream." $profile.path) -}}
     {{- end -}}
   {{- end -}}
   {{- $gateway := default dict .Values.gateway -}}
-  {{- $veilEnabled := eq (toString (default false $gateway.veilEnabled)) "true" -}}
-  {{- if $veilEnabled -}}
-    {{- $manifest := default dict $gateway.witnessSignedManifest -}}
-    {{- range $field := list "existingSecret" "secretKey" "mountPath" "fileName" -}}
-      {{- if eq (default "" (index $manifest $field)) "" -}}
-        {{- fail (printf "gateway.witnessSignedManifest.%s is required when global.dsaEnv=production and gateway.veilEnabled=true. Create the witness-signed manifest Secret before install; Helm only projects its signed output." $field) -}}
-      {{- end -}}
+  {{- $veilValue := $gateway.veilEnabled -}}
+  {{- $veilEnabled := or (and (kindIs "bool" $veilValue) $veilValue) (and (kindIs "string" $veilValue) (eq $veilValue "true")) -}}
+  {{- if not $veilEnabled -}}
+    {{- fail "gateway.veilEnabled must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology." -}}
+  {{- end -}}
+  {{- $manifest := default dict $gateway.witnessSignedManifest -}}
+  {{- range $field := list "existingSecret" "secretKey" "mountPath" "fileName" -}}
+    {{- if eq (default "" (index $manifest $field)) "" -}}
+      {{- fail (printf "gateway.witnessSignedManifest.%s is required when global.dsaEnv=production and gateway.veilEnabled=true. Create the witness-signed manifest Secret before install; Helm only projects its signed output." $field) -}}
     {{- end -}}
-    {{- $manifestMountPath := default "" $manifest.mountPath -}}
-    {{- if not (hasPrefix "/" $manifestMountPath) -}}
-      {{- fail "gateway.witnessSignedManifest.mountPath must be an absolute container path when global.dsaEnv=production and gateway.veilEnabled=true." -}}
-    {{- end -}}
-    {{- $projectedManifestPath := printf "%s/%s" (trimSuffix "/" $manifestMountPath) $manifest.fileName -}}
-    {{- if ne (default "" $gateway.veilWitnessSignedManifestPath) $projectedManifestPath -}}
-      {{- fail (printf "gateway.veilWitnessSignedManifestPath (%q) must equal the witnessSignedManifest projected file (%q) when global.dsaEnv=production and gateway.veilEnabled=true." (default "" $gateway.veilWitnessSignedManifestPath) $projectedManifestPath) -}}
-    {{- end -}}
+  {{- end -}}
+  {{- $manifestMountPath := default "" $manifest.mountPath -}}
+  {{- if not (hasPrefix "/" $manifestMountPath) -}}
+    {{- fail "gateway.witnessSignedManifest.mountPath must be an absolute container path when global.dsaEnv=production and gateway.veilEnabled=true." -}}
+  {{- end -}}
+  {{- $projectedManifestPath := printf "%s/%s" (trimSuffix "/" $manifestMountPath) $manifest.fileName -}}
+  {{- if ne (default "" $gateway.veilWitnessSignedManifestPath) $projectedManifestPath -}}
+    {{- fail (printf "gateway.veilWitnessSignedManifestPath (%q) must equal the witnessSignedManifest projected file (%q) when global.dsaEnv=production and gateway.veilEnabled=true." (default "" $gateway.veilWitnessSignedManifestPath) $projectedManifestPath) -}}
   {{- end -}}
 {{- end -}}
 {{- if $mtls.enabled -}}

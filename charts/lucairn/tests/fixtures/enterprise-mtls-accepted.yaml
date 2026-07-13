@@ -60,6 +60,9 @@ certification:
 dashboard:
   enabled: false
 
+veil-witness:
+  enabled: true
+
 sandbox-b:
   # Harness-only readiness adapter: the handshake battery uses openssl and
   # never invokes inference. Enable Sandbox B's built-in healthy Echo adapter

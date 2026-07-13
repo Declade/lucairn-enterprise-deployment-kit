@@ -24,6 +24,36 @@ render() {
 RENDER="$TMPDIR/accepted.yaml"
 render > "$RENDER"
 
+# The accepted production values are layered over values.yaml. Every mandatory
+# dependency must therefore resolve to the literal boolean true, and the
+# production overlay must declare the witness explicitly: Helm otherwise
+# treats an absent dependency condition as enabled, which is too ambiguous for
+# the supported production topology. Keep the removal/false checks here so a
+# future edit cannot silently rely on that Helm fallback.
+ruby -ryaml -e '
+  defaults = YAML.load_file(ARGV.fetch(0))
+  production = YAML.load_file(ARGV.fetch(1))
+  mandatory = %w[gateway audit id-bridge sandbox-a sandbox-b veil-witness]
+  mandatory.each do |name|
+    value = production.fetch(name, {}).fetch("enabled", defaults.fetch(name, {}).fetch("enabled", nil))
+    abort "accepted production topology does not enable #{name}" unless value == true
+  end
+  witness = production.fetch("veil-witness", {})
+  abort "accepted production overlay must explicitly set veil-witness.enabled=true" unless witness["enabled"] == true
+' "$CHART/values.yaml" "$CHART/values-prod.yaml"
+
+# An explicit false or an absent (null) witness condition must fail before
+# Helm can use its legacy dependency-condition fallback.
+for witness_value in false null; do
+  witness_error="$TMPDIR/witness-enabled-${witness_value}.out"
+  if render --set-json "veil-witness.enabled=${witness_value}" >"$witness_error" 2>&1; then
+    echo "production render accepted veil-witness.enabled=${witness_value}" >&2
+    exit 1
+  fi
+  grep -q 'veil-witness.enabled must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology.' "$witness_error" \
+    || { echo "veil-witness.enabled=${witness_value} did not produce the mandatory-topology error" >&2; exit 1; }
+done
+
 # Kubelet HTTP probes cannot authenticate to the sanitizer's mTLS listener.
 # Under production mTLS the sidecar must therefore run the read-only Python
 # helper with the exact server SAN, CA, and client-leaf contract. Assert the
@@ -288,16 +318,54 @@ YAML
     || { echo "$shape global.dsaEnv did not produce the stable fail-closed error" >&2; exit 1; }
 done
 
-# Keep the accepted development posture explicit: development still renders
-# without the production mTLS contract, while production is the only supported
-# verified transport profile.
+# Keep the accepted development-off posture explicit: development may still
+# disable the Veil path without the production mTLS contract, while production
+# is the only supported verified transport profile.
 DEV_RENDER="$TMPDIR/development.yaml"
 helm template lucairn "$CHART" \
   --set global.skipPullSecretGuard=true \
   --set veil-witness.secrets.values.signingKey=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
-  --set global.dsaEnv=development > "$DEV_RENDER"
+  --set global.dsaEnv=development \
+  --set gateway.veilEnabled=false > "$DEV_RENDER"
 grep -q 'DSA_ENV: "development"' "$DEV_RENDER" \
   || { echo "development render no longer emits the accepted development environment" >&2; exit 1; }
+
+# Production is the locked default full-mesh topology, so no core dependency
+# may be disabled through Chart.yaml's optional dependency conditions. Accept
+# only the chart's literal true values; aliases, false, and absent values must
+# fail before Helm can omit a mandatory workload.
+for workload in gateway audit id-bridge sandbox-a sandbox-b veil-witness; do
+  disabled_file="$TMPDIR/disabled-${workload}.out"
+  if render --set "${workload}.enabled=false" >"$disabled_file" 2>&1; then
+    echo "production render accepted ${workload}.enabled=false" >&2
+    exit 1
+  fi
+  grep -q "${workload}.enabled must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology." "$disabled_file" \
+    || { echo "${workload}.enabled=false did not produce the mandatory-topology error" >&2; exit 1; }
+done
+
+# The witness claim and certificate ports are part of the production topology;
+# setting this legacy-compatible flag false must not bypass their validation.
+if render --set gateway.veilEnabled=false >"$TMPDIR/veil-disabled.out" 2>&1; then
+  echo "production render accepted gateway.veilEnabled=false" >&2
+  exit 1
+fi
+grep -q 'gateway.veilEnabled must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology.' "$TMPDIR/veil-disabled.out" \
+  || { echo "gateway.veilEnabled=false did not produce the mandatory-topology error" >&2; exit 1; }
+
+# Keep the accepted true shapes exact: aliases and whitespace must not turn a
+# production dependency or the production Veil path back on by accident.
+for path in gateway.enabled gateway.veilEnabled; do
+  for value in false TRUE ' true' 'true ' 1; do
+    shape_file="$TMPDIR/${path//./-}-${value// /_}.out"
+    if render --set-string "${path}=${value}" >"$shape_file" 2>&1; then
+      echo "production render accepted ambiguous ${path}=${value}" >&2
+      exit 1
+    fi
+    grep -q "${path} must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology." "$shape_file" \
+      || { echo "ambiguous ${path}=${value} did not produce the mandatory-topology error" >&2; exit 1; }
+  done
+done
 
 # Customer-facing instructions must not resurrect the removed child-chart TLS
 # model. Production is parent-authoritative global.mtls with operator-owned
@@ -385,6 +453,8 @@ gateway:
     secretKey: witness-signed-manifest.json
     mountPath: /certs
     fileName: witness-signed-manifest.json
+veil-witness:
+  enabled: true
 sandbox-b:
   redis:
     password: test-redis-password
@@ -399,5 +469,31 @@ if "$ROOT/bin/lucairn" doctor --values "$TMPDIR/doctor-invalid.yaml" --offline \
 fi
 grep -q 'global.mtls.secrets.audit' "$TMPDIR/doctor-invalid.out" \
   || { echo "doctor did not expose the missing identity error" >&2; exit 1; }
+
+# doctor --values inspects Helm's render, so it must surface the same mandatory
+# topology failure rather than reporting a production contract as healthy.
+cat > "$TMPDIR/doctor-disabled-workload.yaml" <<'YAML'
+global:
+  dsaEnv: production
+  mtls:
+    enabled: true
+gateway:
+  enabled: false
+veil-witness:
+  enabled: true
+sandbox-b:
+  redis:
+    password: test-redis-password
+  secrets:
+    values:
+      sandboxBApiKeys: test-api-key
+YAML
+if "$ROOT/bin/lucairn" doctor --values "$TMPDIR/doctor-disabled-workload.yaml" --offline \
+  > "$TMPDIR/doctor-disabled-workload.out" 2>&1; then
+  echo "doctor accepted gateway.enabled=false in production values" >&2
+  exit 1
+fi
+grep -q 'gateway.enabled must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology.' "$TMPDIR/doctor-disabled-workload.out" \
+  || { echo "doctor did not inherit the mandatory gateway topology error" >&2; exit 1; }
 
 echo "enterprise mTLS Helm production contract: ok"
