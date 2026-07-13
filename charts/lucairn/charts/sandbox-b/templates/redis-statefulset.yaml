@@ -1,4 +1,8 @@
 {{- if .Values.redis.enabled }}
+{{- /* Redis authenticates whenever Helm supplies an inline password or an
+      external backend supplies REDIS_PASSWORD through the credentials Secret.
+      Keep this single predicate in lockstep for args, env, and both probes. */}}
+{{- $redisAuthRequired := or .Values.redis.password (ne .Values.secrets.backend "k8s-native") }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -33,7 +37,7 @@ spec:
           {{- /* External-backend Kind custody supplies REDIS_PASSWORD through the
                 pre-created target Secret. It must not require an inline Helm
                 value merely to make the bundled Redis StatefulSet authenticate. */}}
-          {{- if or .Values.redis.password (ne .Values.secrets.backend "k8s-native") }}
+          {{- if $redisAuthRequired }}
           args:
             - "--requirepass"
             - "$(REDIS_PASSWORD)"
@@ -65,7 +69,7 @@ spec:
               command:
                 - sh
                 - -c
-                - "redis-cli {{- if .Values.redis.password }} -a $REDIS_PASSWORD --no-auth-warning{{- end }} ping"
+                - "redis-cli{{- if $redisAuthRequired }} -a $REDIS_PASSWORD --no-auth-warning{{- end }} ping"
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
@@ -74,7 +78,7 @@ spec:
               command:
                 - sh
                 - -c
-                - "redis-cli {{- if .Values.redis.password }} -a $REDIS_PASSWORD --no-auth-warning{{- end }} ping"
+                - "redis-cli{{- if $redisAuthRequired }} -a $REDIS_PASSWORD --no-auth-warning{{- end }} ping"
             initialDelaySeconds: 5
             periodSeconds: 5
             timeoutSeconds: 3

@@ -9,6 +9,16 @@ global:
   secrets:
     vault:
       endpoint: "https://vault.example.internal"
+  # Names only: this pre-created pull Secret must exist in every mandatory
+  # workload namespace before Helm. Helm attaches the reference to chart-specific workload PodSpecs
+  # but never receives or stores its registry credential bytes.
+  imagePullSecrets:
+    - name: lucairn-registry
+
+# Leave global.imagePullSecrets empty only for actual node-level registry auth
+# or registry workload identity configured outside Helm; that private overlay
+# also sets skipPullSecretGuard: true. Do not use that escape hatch for
+# Secret-based registry authentication.
 
 # To select AWS or Azure, set global.secrets.backend and every mandatory
 # child's secrets.backend to the same provider, then give each child its

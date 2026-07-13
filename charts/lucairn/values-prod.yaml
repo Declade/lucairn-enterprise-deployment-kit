@@ -39,9 +39,11 @@ global:
   # global.imagePullSecrets; the chart adds it directly to chart-specific
   # workload PodSpecs. Leave global.imagePullSecrets empty only for actual
   # node-level registry auth or registry workload identity configured outside
-  # Helm. No Docker config is passed to Helm.
+  # Helm. This base profile therefore fails closed until a site overlay adds a
+  # names-only pull-Secret reference, or explicitly opts into the external
+  # registry-auth escape hatch. No Docker config is passed to Helm.
   imagePullSecrets: []
-  skipPullSecretGuard: true
+  skipPullSecretGuard: false
   # Generic production supports Calico or Cilium: ordinary Kubernetes
   # NetworkPolicies remain mandatory and are enforced by either CNI. Cilium
   # DNS CRDs are an additional opt-in only after their CRD is installed.
