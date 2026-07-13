@@ -37,8 +37,9 @@ if MODE="$(stat -f '%Lp' "$RUNTIME_VALUES" 2>/dev/null)"; then :; else MODE="$(s
 # Exercise the signed-manifest generator with a local Docker double. This
 # keeps the static test offline while proving that the exact pinned ceremony
 # command receives a valid seven-entry roster derived from the generated
-# coherent keys, produces no output, cleans its temporary keys.json, and does
-# not write any generated artifact into the tracked worktree.
+# coherent keys, keeps the witness seed out of the host Docker argv, produces
+# no output, cleans its private temporary files on success and failure, and
+# does not write any generated artifact into the tracked worktree.
 [ -x "$SIGN_MANIFEST" ] || {
   echo "missing executable Kind signed-manifest generator: $SIGN_MANIFEST" >&2
   exit 1
@@ -52,47 +53,51 @@ set -euo pipefail
 [ "${1:-}" = "run" ] || exit 91
 shift
 args=("$@")
-mount=""
-seed=""
-keys_arg=""
-issuer=""
-key_id=""
+keys_mount=""
+seed_mount=""
+image_index=-1
 image_seen=0
+expected_seed="$(ruby -ryaml -e 'print YAML.load_file(ENV.fetch("RUNTIME_VALUES")).fetch("veil-witness").fetch("secrets").fetch("values").fetch("signingKey")')"
+[[ "${args[*]}" != *"$expected_seed"* ]] || exit 92
 for ((i = 0; i < ${#args[@]}; i++)); do
   case "${args[$i]}" in
     --entrypoint)
-      [ "${args[$((i + 1))]:-}" = "sign-manifest" ] || exit 92
+      [ "${args[$((i + 1))]:-}" = "/bin/sh" ] || exit 93
       ;;
     -v)
-      mount="${args[$((i + 1))]:-}"
+      case "${args[$((i + 1))]:-}" in
+        *:/keys.json:ro) keys_mount="${args[$((i + 1))]}" ;;
+        *:/run/secrets/witness-signing-key-hex:ro) seed_mount="${args[$((i + 1))]}" ;;
+        *) exit 94 ;;
+      esac
       ;;
     ghcr.io/declade/dsa-veil-witness:0.5.4)
       image_seen=1
-      ;;
-    --keys-json)
-      keys_arg="${args[$((i + 1))]:-}"
-      ;;
-    --issuer)
-      issuer="${args[$((i + 1))]:-}"
-      ;;
-    --witness-signing-key-hex)
-      seed="${args[$((i + 1))]:-}"
-      ;;
-    --witness-key-id)
-      key_id="${args[$((i + 1))]:-}"
+      image_index="$i"
       ;;
   esac
 done
-[ "$image_seen" -eq 1 ] || exit 93
-[ "$keys_arg" = "/keys.json" ] || exit 94
-[ "$key_id" = "witness_manifest_v1" ] || exit 95
-[ "$issuer" = "Lucairn Veil Witness" ] || exit 96
-[[ "$seed" =~ ^[0-9a-fA-F]{64}$ ]] || exit 97
-case "$mount" in
-  *:/keys.json:ro) keys_json="${mount%:/keys.json:ro}" ;;
-  *) exit 98 ;;
+[ "$image_seen" -eq 1 ] || exit 95
+[ "$image_index" -ge 0 ] || exit 96
+expected_command='exec sign-manifest --keys-json /keys.json --issuer "$1" --witness-signing-key-hex "$(cat /run/secrets/witness-signing-key-hex)" --witness-key-id witness_manifest_v1'
+[ "${args[$((image_index + 1))]:-}" = "-ec" ] || exit 97
+[ "${args[$((image_index + 2))]:-}" = "$expected_command" ] || exit 98
+[ "${args[$((image_index + 3))]:-}" = "sign-manifest" ] || exit 99
+[ "${args[$((image_index + 4))]:-}" = "Lucairn Veil Witness" ] || exit 100
+[ "${#args[@]}" -eq "$((image_index + 5))" ] || exit 101
+case "$keys_mount" in
+  *:/keys.json:ro) keys_json="${keys_mount%:/keys.json:ro}" ;;
+  *) exit 102 ;;
 esac
-[ -f "$keys_json" ] || exit 99
+case "$seed_mount" in
+  *:/run/secrets/witness-signing-key-hex:ro) seed_file="${seed_mount%:/run/secrets/witness-signing-key-hex:ro}" ;;
+  *) exit 103 ;;
+esac
+[ -f "$keys_json" ] || exit 104
+[ -f "$seed_file" ] || exit 105
+if MODE="$(stat -f '%Lp' "$seed_file" 2>/dev/null)"; then :; else MODE="$(stat -c '%a' "$seed_file")"; fi
+[ "$MODE" = "600" ] || exit 106
+[ "$(cat "$seed_file")" = "$expected_seed" ] || exit 107
 
 RUNTIME_VALUES="$RUNTIME_VALUES" ruby -rjson -ryaml -e '
   values = YAML.load_file(ENV.fetch("RUNTIME_VALUES"))
@@ -113,6 +118,9 @@ RUNTIME_VALUES="$RUNTIME_VALUES" ruby -rjson -ryaml -e '
     abort "wrong keys.json entry" unless key == { "service_id" => service, "key_id" => key_id, "public_key" => gateway.fetch(source), "purpose" => purpose, "algorithm" => "Ed25519", "key_state" => "active" }
   end
 ' "$keys_json"
+if [ "${FAKE_DOCKER_FAIL:-}" = "1" ]; then
+  exit 108
+fi
 printf '%s\n' '{"mock":"witness-signed-manifest"}'
 DOCKER
 chmod 0700 "$FAKE_BIN/docker"
@@ -137,11 +145,28 @@ if MODE="$(stat -f '%Lp' "$SIGNED_MANIFEST" 2>/dev/null)"; then :; else MODE="$(
   exit 1
 }
 if find "$TMPDIR" -maxdepth 1 -type d -name '.enterprise-mtls-manifest.*' | grep -q .; then
-  echo "Kind signed-manifest generator left its disposable keys.json workspace behind" >&2
+  echo "Kind signed-manifest generator left its disposable signing workspace behind" >&2
   exit 1
 fi
 if git -C "$ROOT" ls-files --error-unmatch "${SIGNED_MANIFEST#$ROOT/}" >/dev/null 2>&1; then
   echo "generated Kind signed manifest must not be tracked" >&2
+  exit 1
+fi
+
+# The workspace must be removed when the signing container fails too; the
+# caller-selected output must remain unpublished and untouched.
+FAILED_MANIFEST="$TMPDIR/witness-signed-manifest-failed.json"
+if RUNTIME_VALUES="$RUNTIME_VALUES" FAKE_DOCKER_FAIL=1 PATH="$FAKE_BIN:$PATH" "$SIGN_MANIFEST" "$RUNTIME_VALUES" "$FAILED_MANIFEST" \
+  >"$TMPDIR/sign-manifest-failure.stdout" 2>"$TMPDIR/sign-manifest-failure.stderr"; then
+  echo "Kind signed-manifest generator unexpectedly succeeded after signer failure" >&2
+  exit 1
+fi
+[ ! -e "$FAILED_MANIFEST" ] || {
+  echo "Kind signed-manifest generator published output after signer failure" >&2
+  exit 1
+}
+if find "$TMPDIR" -maxdepth 1 -type d -name '.enterprise-mtls-manifest.*' | grep -q .; then
+  echo "Kind signed-manifest generator left its private seed workspace behind after signer failure" >&2
   exit 1
 fi
 
@@ -183,10 +208,10 @@ grep -Fq -- '--wait-for-jobs' "$KIND_GATE" \
 }
 
 # The generic dsa-edge probe must not stand in for a real workload Pod. Stock
-# Kind/kindnet does not enforce NetworkPolicy, so the witness proofs are only
-# projected-leaf transport evidence from the resolved workload containers.
+# Kind/kindnet does not enforce NetworkPolicy, so every Gateway-originated
+# mandatory edge must use the resolved Gateway Pod and its projected leaf.
 for witness_port in 50057 50058; do
-  grep -Fq "gateway_witness_handshake veil-witness.dsa-witness.svc.cluster.local:${witness_port} dsa-veil-witness" "$KIND_GATE" \
+  grep -Fq "veil-witness.dsa-witness.svc.cluster.local:${witness_port} dsa-veil-witness" "$KIND_GATE" \
     || { echo "Kind harness does not execute the actual gateway to witness :${witness_port} mTLS path" >&2; exit 1; }
   if grep -Fq "positive_handshake veil-witness.dsa-witness.svc.cluster.local:${witness_port} dsa-veil-witness" "$KIND_GATE"; then
     echo "Kind harness must not run a generic-probe witness handshake on :${witness_port}" >&2
@@ -283,7 +308,7 @@ ruby -e '
   abort "projected workload calls are outside the real Kind gate" unless calls < pass
 ' "$KIND_GATE"
 
-# The two witness proofs and the gateway-local application health evidence
+# Every Gateway proof and the gateway-local application health evidence
 # must originate inside the real gateway container and use only a temporary,
 # static standard-library Go helper. Its node target, Pod/container identity,
 # projected input files, writable non-secret PVC parent, execution, bounded
@@ -303,7 +328,7 @@ ruby -ropen3 -e '
     "GATEWAY_NODE_ARCH=\"$(\"${K[@]}\" get node \"$GATEWAY_NODE\"",
     "GATEWAY_RUNTIME_MACHINE=\"$(\"${K[@]}\" -n dsa-edge exec \"$GATEWAY_POD\" -c \"$GATEWAY_CONTAINER\" -- uname -m)",
     "CGO_ENABLED=0 GOOS=linux GOARCH=\"$GATEWAY_NODE_ARCH\"",
-    "gateway-witness-tls-helper.go",
+    "gateway-tls-helper.go",
     "go build -trimpath",
     "-ldflags=",
     "-s -w",
@@ -313,19 +338,27 @@ ruby -ropen3 -e '
     "cat > \"$1/$2\"",
     "chmod 0700 \"$1/$2\"",
     "rm -f \"$1\"; test ! -e \"$1\"",
-    "gateway_witness_handshake veil-witness.dsa-witness.svc.cluster.local:50057 dsa-veil-witness",
-    "gateway_witness_handshake veil-witness.dsa-witness.svc.cluster.local:50058 dsa-veil-witness",
-    "gateway evidence helper deleted after witness and local health battery",
-    "actual workload Pod with the projected Secret belonging to that workload;\n# they do not claim\n# to invoke either gateway application"
+    "gateway_mtls_secret",
+    "lucairn-mtls-gateway",
+    "install_gateway_tls_helper",
+    "gateway_workload_handshake audit.dsa-audit.svc.cluster.local:50051 dsa-audit || exit 1",
+    "gateway_workload_handshake id-bridge.dsa-bridge.svc.cluster.local:50052 dsa-id-bridge || exit 1",
+    "gateway_workload_handshake sandbox-a.dsa-identity.svc.cluster.local:50053 dsa-sandbox-a || exit 1",
+    "gateway_workload_handshake sandbox-b.dsa-ai.svc.cluster.local:50054 dsa-sandbox-b || exit 1",
+    "gateway_workload_handshake sandbox-a.dsa-identity.svc.cluster.local:8086 dsa-sanitizer || exit 1",
+    "gateway_workload_handshake veil-witness.dsa-witness.svc.cluster.local:50057 dsa-veil-witness || exit 1",
+    "gateway_workload_handshake veil-witness.dsa-witness.svc.cluster.local:50058 dsa-veil-witness || exit 1",
+    "gateway evidence helper deleted after workload transport and local health battery",
+    "supporting generic-probe evidence only"
   ]
-  required.each { |needle| abort "gateway witness contract missing: #{needle}" unless source.include?(needle) }
+  required.each { |needle| abort "Gateway workload transport contract missing: #{needle}" unless source.include?(needle) }
   abort "generic witness probe call remains" if source.match?(/^positive_handshake veil-witness\./)
-  helper = source[/^gateway_witness_handshake\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses gateway witness helper runner")
+  helper = source[/^gateway_workload_handshake\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses Gateway workload helper runner")
   [
     "exec \"$GATEWAY_POD\" -c \"$GATEWAY_CONTAINER\" --",
     "\"$GATEWAY_HELPER_PATH\" tls-handshake \"$address\" \"$san\"",
     "\"$GATEWAY_MTLS_DIR/ca.crt\" \"$GATEWAY_MTLS_DIR/tls.crt\" \"$GATEWAY_MTLS_DIR/tls.key\""
-  ].each { |needle| abort "gateway witness helper runner misses: #{needle}" unless helper.include?(needle) }
+  ].each { |needle| abort "Gateway workload helper runner misses: #{needle}" unless helper.include?(needle) }
   health = source[/^gateway_health_response\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses gateway-local health runner")
   [
     "exec \"$GATEWAY_POD\" -c \"$GATEWAY_CONTAINER\" --",
@@ -489,22 +522,33 @@ ruby -ropen3 -e '
     abort "Kind harness retains forbidden Pod-IP or generic-probe health evidence: #{forbidden}" if source.include?(forbidden)
   end
 
-  final_witness = source.index("if ! gateway_witness_handshake veil-witness.dsa-witness.svc.cluster.local:50058 dsa-veil-witness") || abort("gateway witness :50058 proof is missing")
-  initial_health = source.index("\ngateway_health_mtls_healthy\n", final_witness) || abort("gateway initial local health proof is missing")
+  gateway_transport = source.index("install_gateway_tls_helper") || abort("Gateway workload transport helper is missing")
+  terminal_pass = source.index("echo \"PASS: coverage class=workload-originated transport handshake; origin=actual-gateway-pod") || abort("Gateway terminal workload-originated evidence is missing")
+  [
+    "audit.dsa-audit.svc.cluster.local:50051 dsa-audit",
+    "id-bridge.dsa-bridge.svc.cluster.local:50052 dsa-id-bridge",
+    "sandbox-a.dsa-identity.svc.cluster.local:50053 dsa-sandbox-a",
+    "sandbox-b.dsa-ai.svc.cluster.local:50054 dsa-sandbox-b",
+    "sandbox-a.dsa-identity.svc.cluster.local:8086 dsa-sanitizer"
+  ].each do |edge|
+    invocation = source.index("gateway_workload_handshake #{edge} || exit 1", gateway_transport) || abort("Gateway workload transport proof is missing: #{edge}")
+    abort "Gateway workload transport proof must precede terminal PASS: #{edge}" unless invocation < terminal_pass
+  end
+  initial_health = source.index("\ngateway_health_mtls_healthy\n", gateway_transport) || abort("gateway initial local health proof is missing")
   server_battery = source.index("for server_material in wrong-ca wrong-san expired; do", initial_health) || abort("gateway server-material battery is missing")
-  cleanup = source.index("\ngateway_witness_helper_cleanup\n", server_battery)
+  cleanup = source.index("\ngateway_tls_helper_cleanup\n", server_battery)
   partial_material = source.index("# Partial material must block Pod startup", server_battery)
   abort "gateway helper must remain installed through the initial local health proof" unless cleanup && cleanup > initial_health
   abort "gateway helper must remain installed through all server-material mutations and restores" unless cleanup > server_battery
   abort "gateway helper must be deleted before the next battery" unless partial_material && cleanup < partial_material
 
-  source_start = source.index("package main") || abort("Kind harness misses generated gateway witness Go source")
-  source_end = source.index("\nGO\n", source_start) || abort("Kind harness does not terminate generated gateway witness Go source")
+  source_start = source.index("package main") || abort("Kind harness misses generated Gateway Go source")
+  source_end = source.index("\nGO\n", source_start) || abort("Kind harness does not terminate generated Gateway Go source")
   go_source = source[source_start...source_end]
-  imports = go_source[/import \(\n(?<items>.*?)\n\)/m, :items] || abort("gateway witness Go helper misses import block")
+  imports = go_source[/import \(\n(?<items>.*?)\n\)/m, :items] || abort("Gateway TLS Go helper misses import block")
   actual_imports = imports.scan(/"([^"]+)"/).flatten.sort
   expected_imports = %w[context crypto/tls crypto/x509 fmt io net net/http os time].sort
-  abort "gateway witness Go helper is not standard-library-only: #{actual_imports.inspect}" unless actual_imports == expected_imports
+  abort "Gateway TLS Go helper is not standard-library-only: #{actual_imports.inspect}" unless actual_imports == expected_imports
   [
     "case \"tls-handshake\":",
     "case \"gateway-health\":",
@@ -527,8 +571,8 @@ ruby -ropen3 -e '
     "os.Stdout.Write(responseBody)",
     "response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices",
     "gateway health request failed"
-  ].each { |needle| abort "gateway witness Go helper misses: #{needle}" unless go_source.include?(needle) }
-  abort "gateway witness Go helper leaks errors that could contain sensitive paths or material" if go_source.match?(/fmt\.(?:Print|Printf|Fprintf).*err/)
+  ].each { |needle| abort "Gateway TLS Go helper misses: #{needle}" unless go_source.include?(needle) }
+  abort "Gateway TLS Go helper leaks errors that could contain sensitive paths or material" if go_source.match?(/fmt\.(?:Print|Printf|Fprintf).*err/)
 
   fingerprint = source[/^served_leaf_fingerprint\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses served leaf fingerprint helper")
   abort "positive TLS fingerprint helper does not accept a bounded caller deadline" unless fingerprint.include?("timeout \"$3\" openssl s_client") && fingerprint.include?("[ \"$timeout_seconds\" -gt 15 ]")
@@ -618,20 +662,20 @@ ruby -ropen3 -e '
 # offline and does not start Kind, but catches a helper syntax/import drift that
 # grep-level contract checks cannot see.
 command -v go >/dev/null 2>&1 || {
-  echo "Go is required to validate the generated gateway witness TLS helper" >&2
+  echo "Go is required to validate the generated Gateway TLS helper" >&2
   exit 1
 }
-GATEWAY_WITNESS_HELPER_SOURCE="$TMPDIR/gateway-witness-tls-helper.go"
-GATEWAY_WITNESS_HELPER="$TMPDIR/gateway-witness-tls-helper"
+GATEWAY_TLS_HELPER_SOURCE="$TMPDIR/gateway-tls-helper.go"
+GATEWAY_TLS_HELPER="$TMPDIR/gateway-tls-helper"
 ruby -e '
   source = File.read(ARGV.fetch(0))
-  source_start = source.index("package main") || abort("Kind harness misses generated gateway witness Go source")
-  source_end = source.index("\nGO\n", source_start) || abort("Kind harness does not terminate generated gateway witness Go source")
+  source_start = source.index("package main") || abort("Kind harness misses generated Gateway Go source")
+  source_end = source.index("\nGO\n", source_start) || abort("Kind harness does not terminate generated Gateway Go source")
   File.write(ARGV.fetch(1), source[source_start...source_end])
-' "$KIND_GATE" "$GATEWAY_WITNESS_HELPER_SOURCE"
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$GATEWAY_WITNESS_HELPER" "$GATEWAY_WITNESS_HELPER_SOURCE"
-[ -x "$GATEWAY_WITNESS_HELPER" ] || {
-  echo "generated gateway witness TLS helper did not compile as a Linux executable" >&2
+' "$KIND_GATE" "$GATEWAY_TLS_HELPER_SOURCE"
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$GATEWAY_TLS_HELPER" "$GATEWAY_TLS_HELPER_SOURCE"
+[ -x "$GATEWAY_TLS_HELPER" ] || {
+  echo "generated Gateway TLS helper did not compile as a Linux executable" >&2
   exit 1
 }
 
@@ -974,7 +1018,7 @@ for required in \
   'tlsutil.ClientCredentialsForPeer(tlsutil.SANSandboxA)' \
   'gateway_health_mtls_healthy' \
   'gateway_identity_server_material_rejected' \
-  'gateway evidence helper deleted after witness and local health battery' \
+  'gateway evidence helper deleted after workload transport and local health battery' \
   'SANITIZER_URL="$("${K[@]}" -n dsa-edge get configmap gateway-config' \
   'https://sandbox-a.dsa-identity.svc:8086' \
   'actual client response plus verified mTLS wire fingerprint' \
@@ -998,5 +1042,36 @@ for forbidden in \
     exit 1
   fi
 done
+
+# Customer-facing evidence must retain the transport/application boundary.
+# Stable terminal PASS lines and the adjacent install ledger must never relabel
+# a TLS-only proof as an application call or promise exhaustive application
+# coverage without a separately scoped runtime workstream.
+ruby -e '
+  harness = File.read(ARGV.fetch(0))
+  ledger = File.read(ARGV.fetch(1))
+  ledger_normalized = ledger.gsub(/\s+/, " ")
+  pass_lines = [
+    "PASS: coverage class=workload-originated transport handshake; origin=actual-gateway-pod; projected-leaf=gateway; edges=gateway-to-audit,gateway-to-id-bridge,gateway-to-sandbox-a,gateway-to-sandbox-b,gateway-to-sanitizer,gateway-to-witness-50057,gateway-to-witness-50058; server-SANs=dsa-audit,dsa-id-bridge,dsa-sandbox-a,dsa-sandbox-b,dsa-sanitizer,dsa-veil-witness",
+    "PASS: coverage class=workload-originated transport handshake; projected-leaves=audit,id-bridge,sandbox-b; edges=audit-to-witness,id-bridge-to-witness,sandbox-b-to-witness; server-SAN=dsa-veil-witness",
+    "PASS: coverage class=application-layer call; gateway gRPC identity; expected-server-SAN=dsa-sandbox-a",
+    "PASS: coverage class=application-layer call; gateway-to-sanitizer HTTPS; expected-server-SAN=dsa-sanitizer"
+  ]
+  pass_lines.each { |line| abort "Kind terminal evidence line drifted: #{line}" unless harness.include?(%Q(echo "#{line}")) }
+  required_ledger_terms = [
+    "### Kind acceptance evidence ledger",
+    "supporting generic-probe evidence",
+    "workload-originated transport handshake",
+    "Actual Gateway Pod / Gateway",
+    "representative application-layer gateway gRPC identity",
+    "representative application-layer gateway→sanitizer HTTPS",
+    "Residual risk: a non-representative application client could be misconfigured despite transport success.",
+    "Exhaustive per-edge application verification is deferred to a separately grilled and locked runtime workstream"
+  ]
+  required_ledger_terms.each { |term| abort "Kind evidence ledger omits #{term.inspect}" unless ledger_normalized.include?(term) }
+  abort "Kind evidence ledger presents generic probe as the Gateway acceptance mechanism" if ledger_normalized.include?("| Gateway →") && ledger_normalized.include?("Transport handshake (harness probe)")
+  witness_rows = ledger.lines.grep(/^\| .*Veil Witness/)
+  abort "Kind evidence ledger wrongly calls Witness transport an application RPC" if witness_rows.any? { |row| row.match?(/\bapplication\b/i) }
+' "$KIND_GATE" "$ROOT/INSTALL.md"
 
 echo "enterprise mTLS Kind runtime-values contract: ok"

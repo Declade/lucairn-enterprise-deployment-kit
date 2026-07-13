@@ -571,6 +571,29 @@ fi
 grep -q 'global.mtls.secrets.audit' "$TMPDIR/missing-secret.out" \
   || { echo "missing audit Secret failure was not actionable" >&2; exit 1; }
 
+# A leaf Secret is one workload identity, not a reusable credential bucket.
+# Reject duplicates across every mTLS-enabled profile before render can project
+# the same private key into two independently operated workloads.
+for duplicate in \
+  'global.mtls.secrets.sanitizer=lucairn-mtls-sandbox-a:global.mtls.secrets.sandboxA:global.mtls.secrets.sanitizer' \
+  'global.mtls.secrets.veilWitness=lucairn-mtls-audit:global.mtls.secrets.audit:global.mtls.secrets.veilWitness'; do
+  assignment="${duplicate%%:*}"
+  expected_left="${duplicate#*:}"
+  expected_left="${expected_left%%:*}"
+  expected_right="${duplicate##*:}"
+  output="$TMPDIR/duplicate-${assignment%%=*}.out"
+  if render --set "$assignment" >"$output" 2>&1; then
+    echo "production render accepted duplicate mTLS leaf Secret: $assignment" >&2
+    exit 1
+  fi
+  grep -Fq "$expected_left" "$output" \
+    || { echo "duplicate mTLS Secret failure omitted $expected_left" >&2; exit 1; }
+  grep -Fq "$expected_right" "$output" \
+    || { echo "duplicate mTLS Secret failure omitted $expected_right" >&2; exit 1; }
+  grep -Fq 'must name distinct operator-owned leaf Secrets' "$output" \
+    || { echo "duplicate mTLS Secret failure was not actionable" >&2; exit 1; }
+done
+
 # A production gateway with Veil enabled cannot get as far as install unless
 # every part of the operator-owned signed-manifest contract is present and the
 # runtime path is exactly the projected file.

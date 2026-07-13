@@ -253,10 +253,21 @@ if [ "${#gateway_pods[@]}" -ne 1 ]; then
 fi
 GATEWAY_POD="${gateway_pods[0]}"
 GATEWAY_CONTAINER="gateway"
+GATEWAY_MTLS_DIR="/var/run/lucairn/mtls"
 gateway_container_count="$("${K[@]}" -n dsa-edge get pod "$GATEWAY_POD" \
   -o jsonpath='{range .spec.containers[*]}{.name}{"\n"}{end}' | grep -Fxc "$GATEWAY_CONTAINER" || true)"
 if [ "$gateway_container_count" -ne 1 ]; then
   echo "FAIL: expected exactly one $GATEWAY_CONTAINER container in gateway Pod $GATEWAY_POD" >&2
+  exit 1
+fi
+gateway_mtls_volume="$("${K[@]}" -n dsa-edge get pod "$GATEWAY_POD" \
+  -o go-template="{{range .spec.containers}}{{if eq .name \"$GATEWAY_CONTAINER\"}}{{range .volumeMounts}}{{if eq .mountPath \"$GATEWAY_MTLS_DIR\"}}{{.name}}{{end}}{{end}}{{end}}{{end}}")"
+gateway_mtls_read_only="$("${K[@]}" -n dsa-edge get pod "$GATEWAY_POD" \
+  -o go-template="{{range .spec.containers}}{{if eq .name \"$GATEWAY_CONTAINER\"}}{{range .volumeMounts}}{{if eq .mountPath \"$GATEWAY_MTLS_DIR\"}}{{.readOnly}}{{end}}{{end}}{{end}}{{end}}")"
+gateway_mtls_secret="$("${K[@]}" -n dsa-edge get pod "$GATEWAY_POD" \
+  -o go-template="{{range .spec.volumes}}{{if eq .name \"$gateway_mtls_volume\"}}{{with .secret}}{{.secretName}}{{end}}{{end}}{{end}}")"
+if [ "$gateway_mtls_volume" != "enterprise-mtls" ] || [ "$gateway_mtls_read_only" != "true" ] || [ "$gateway_mtls_secret" != "lucairn-mtls-gateway" ]; then
+  echo "FAIL: gateway helper would not use the Gateway read-only projected mTLS Secret at $GATEWAY_MTLS_DIR" >&2
   exit 1
 fi
 GATEWAY_HELPER_DIR="/etc/dsa/keystore-dir"
@@ -295,10 +306,10 @@ case " $GATEWAY_NODE_MACHINES " in
     ;;
 esac
 
-GATEWAY_WITNESS_HELPER_SOURCE="$STATE_DIR/gateway-witness-tls-helper.go"
-GATEWAY_WITNESS_HELPER="$STATE_DIR/gateway-witness-tls-helper"
-cat > "$GATEWAY_WITNESS_HELPER_SOURCE" <<'GO'
-// gateway-witness-tls-helper is generated only in the disposable harness
+GATEWAY_TLS_HELPER_SOURCE="$STATE_DIR/gateway-tls-helper.go"
+GATEWAY_TLS_HELPER="$STATE_DIR/gateway-tls-helper"
+cat > "$GATEWAY_TLS_HELPER_SOURCE" <<'GO'
+// gateway-tls-helper is generated only in the disposable harness
 // state. It performs either one verified mutual-TLS handshake or a bounded
 // loopback gateway health request and prints no secret material, even on
 // failure.
@@ -426,16 +437,16 @@ func main() {
 }
 GO
 if ! command -v go >/dev/null 2>&1; then
-  echo "BLOCKED: Go is required to build the disposable gateway witness TLS helper." >&2
+  echo "BLOCKED: Go is required to build the disposable Gateway TLS helper." >&2
   exit 2
 fi
 if ! CGO_ENABLED=0 GOOS=linux GOARCH="$GATEWAY_NODE_ARCH" \
-  go build -trimpath -ldflags='-s -w' -o "$GATEWAY_WITNESS_HELPER" "$GATEWAY_WITNESS_HELPER_SOURCE"; then
-  echo "FAIL: could not cross-compile the gateway witness TLS helper for linux/$GATEWAY_NODE_ARCH" >&2
+  go build -trimpath -ldflags='-s -w' -o "$GATEWAY_TLS_HELPER" "$GATEWAY_TLS_HELPER_SOURCE"; then
+  echo "FAIL: could not cross-compile the gateway TLS helper for linux/$GATEWAY_NODE_ARCH" >&2
   exit 1
 fi
-[ -x "$GATEWAY_WITNESS_HELPER" ] || {
-  echo "FAIL: gateway witness TLS helper was not built as an executable" >&2
+[ -x "$GATEWAY_TLS_HELPER" ] || {
+  echo "FAIL: gateway TLS helper was not built as an executable" >&2
   exit 1
 }
 
@@ -787,22 +798,21 @@ positive_handshake() {
     echo "FAIL: positive mTLS handshake failed or timed out: $address ($san)" >&2
     exit 1
   fi
-  echo "positive mTLS handshake verified: $address ($san)"
+  echo "supporting generic-probe mTLS handshake verified: $address ($san)"
 }
 
-GATEWAY_HELPER_NAME=".enterprise-mtls-witness-tls-helper"
+GATEWAY_HELPER_NAME=".enterprise-mtls-gateway-tls-helper"
 GATEWAY_HELPER_PATH="$GATEWAY_HELPER_DIR/$GATEWAY_HELPER_NAME"
-GATEWAY_MTLS_DIR="/var/run/lucairn/mtls"
 
-gateway_witness_helper_cleanup() {
+gateway_tls_helper_cleanup() {
   if ! "${K[@]}" -n dsa-edge exec "$GATEWAY_POD" -c "$GATEWAY_CONTAINER" -- \
     sh -ec 'rm -f "$1"; test ! -e "$1"' -- "$GATEWAY_HELPER_PATH"; then
-    echo "FAIL: could not delete temporary gateway witness TLS helper" >&2
+    echo "FAIL: could not delete temporary gateway TLS helper" >&2
     return 1
   fi
 }
 
-install_gateway_witness_helper() {
+install_gateway_tls_helper() {
   # The root filesystem and projected mTLS Secret remain read-only. The
   # keystore PVC parent is the chart's existing writable, non-secret volume.
   if ! "${K[@]}" -n dsa-edge exec "$GATEWAY_POD" -c "$GATEWAY_CONTAINER" -- \
@@ -813,22 +823,22 @@ install_gateway_witness_helper() {
   fi
   if ! "${K[@]}" -n dsa-edge exec -i "$GATEWAY_POD" -c "$GATEWAY_CONTAINER" -- \
     sh -ec 'umask 077; cat > "$1/$2"; chmod 0700 "$1/$2"; test -s "$1/$2" && test -x "$1/$2"' -- \
-    "$GATEWAY_HELPER_DIR" "$GATEWAY_HELPER_NAME" < "$GATEWAY_WITNESS_HELPER"; then
-    gateway_witness_helper_cleanup || true
-    echo "FAIL: could not stream the gateway witness TLS helper into the keystore PVC" >&2
+    "$GATEWAY_HELPER_DIR" "$GATEWAY_HELPER_NAME" < "$GATEWAY_TLS_HELPER"; then
+    gateway_tls_helper_cleanup || true
+    echo "FAIL: could not stream the gateway TLS helper into the keystore PVC" >&2
     exit 1
   fi
 }
 
-gateway_witness_handshake() {
+gateway_workload_handshake() {
   local address="$1" san="$2"
   if ! "${K[@]}" -n dsa-edge exec "$GATEWAY_POD" -c "$GATEWAY_CONTAINER" -- \
     "$GATEWAY_HELPER_PATH" tls-handshake "$address" "$san" \
     "$GATEWAY_MTLS_DIR/ca.crt" "$GATEWAY_MTLS_DIR/tls.crt" "$GATEWAY_MTLS_DIR/tls.key"; then
-    echo "FAIL: actual gateway-Pod witness TLS handshake failed: $address ($san)" >&2
+    echo "FAIL: actual Gateway-Pod TLS handshake failed: $address ($san)" >&2
     return 1
   fi
-  echo "gateway witness TLS handshake verified from actual gateway Pod: $address ($san)"
+  echo "workload-originated TLS handshake verified from actual Gateway Pod: $address ($san)"
 }
 
 # Audit and ID Bridge intentionally expose no writable application volume, and
@@ -847,7 +857,7 @@ build_workload_witness_helper() {
 
   if [ ! -x "$helper" ]; then
     if ! CGO_ENABLED=0 GOOS=linux GOARCH="$node_arch" \
-      go build -trimpath -ldflags='-s -w' -o "$helper" "$GATEWAY_WITNESS_HELPER_SOURCE"; then
+      go build -trimpath -ldflags='-s -w' -o "$helper" "$GATEWAY_TLS_HELPER_SOURCE"; then
       echo "FAIL: could not cross-compile the projected-identity witness TLS helper for linux/$node_arch" >&2
       return 1
     fi
@@ -1048,27 +1058,29 @@ exit 0
   echo "negative mTLS handshake rejected: $description"
 }
 
+# Keep these generic-probe positives for the client-auth negatives, fingerprint,
+# and rotation logic below. They are supporting generic-probe evidence only;
+# the actual Gateway-Pod handshakes immediately following are the acceptance
+# proof for every Gateway-originated mandatory edge.
 positive_handshake audit.dsa-audit.svc.cluster.local:50051 dsa-audit
 positive_handshake id-bridge.dsa-bridge.svc.cluster.local:50052 dsa-id-bridge
 positive_handshake sandbox-a.dsa-identity.svc.cluster.local:50053 dsa-sandbox-a
 positive_handshake sandbox-b.dsa-ai.svc.cluster.local:50054 dsa-sandbox-b
 positive_handshake sandbox-a.dsa-identity.svc.cluster.local:8086 dsa-sanitizer
 
-# Stream a static, standard-library-only TLS client into the gateway's existing
-# non-secret writable keystore PVC, execute both witness handshakes with the
-# gateway's projected leaf, then retain it for the bounded local /healthz
-# evidence below. The witness checks are transport proofs from execution in the
-# actual workload Pod with the projected Secret belonging to that workload;
-# they do not claim
-# to invoke either gateway application's witness RPC method or to prove
-# NetworkPolicy enforcement on stock Kind/kindnet.
-install_gateway_witness_helper
-if ! gateway_witness_handshake veil-witness.dsa-witness.svc.cluster.local:50057 dsa-veil-witness; then
-  exit 1
-fi
-if ! gateway_witness_handshake veil-witness.dsa-witness.svc.cluster.local:50058 dsa-veil-witness; then
-  exit 1
-fi
+# Stream a static, standard-library-only TLS client into the actual Gateway
+# Pod's existing non-secret writable keystore PVC. Every invocation uses the
+# Gateway's verified read-only projected leaf and exact target SAN. These are
+# transport proofs only; the representative application calls below remain
+# the gateway gRPC identity and gateway→sanitizer HTTPS checks.
+install_gateway_tls_helper
+gateway_workload_handshake audit.dsa-audit.svc.cluster.local:50051 dsa-audit || exit 1
+gateway_workload_handshake id-bridge.dsa-bridge.svc.cluster.local:50052 dsa-id-bridge || exit 1
+gateway_workload_handshake sandbox-a.dsa-identity.svc.cluster.local:50053 dsa-sandbox-a || exit 1
+gateway_workload_handshake sandbox-b.dsa-ai.svc.cluster.local:50054 dsa-sandbox-b || exit 1
+gateway_workload_handshake sandbox-a.dsa-identity.svc.cluster.local:8086 dsa-sanitizer || exit 1
+gateway_workload_handshake veil-witness.dsa-witness.svc.cluster.local:50057 dsa-veil-witness || exit 1
+gateway_workload_handshake veil-witness.dsa-witness.svc.cluster.local:50058 dsa-veil-witness || exit 1
 
 # Claim intake is the shared :50057 witness path. These are intentionally
 # narrow TLS-only proofs, not application RPC or authorization tests. Audit,
@@ -1122,8 +1134,8 @@ for server_material in wrong-ca wrong-san expired; do
   gateway_identity_server_material_rejected "Sandbox A $server_material server leaf"
   restore_sandbox_a_server_material
 done
-gateway_witness_helper_cleanup
-echo "gateway evidence helper deleted after witness and local health battery"
+gateway_tls_helper_cleanup
+echo "gateway evidence helper deleted after workload transport and local health battery"
 
 # Partial material must block Pod startup before a plaintext listener exists.
 "${K[@]}" -n dsa-ai delete secret lucairn-mtls-sandbox-b
@@ -1186,4 +1198,12 @@ fi
 positive_handshake audit.dsa-audit.svc.cluster.local:50051 dsa-audit
 echo "rotation replacement: audit served the exact expected replacement fingerprint"
 
+# Keep the customer-visible evidence classes explicit: a verified TLS
+# handshake proves transport and projected-leaf use, while only the two lines
+# below claim representative application behavior. Neither class proves
+# NetworkPolicy enforcement on stock Kind/kindnet.
+echo "PASS: coverage class=workload-originated transport handshake; origin=actual-gateway-pod; projected-leaf=gateway; edges=gateway-to-audit,gateway-to-id-bridge,gateway-to-sandbox-a,gateway-to-sandbox-b,gateway-to-sanitizer,gateway-to-witness-50057,gateway-to-witness-50058; server-SANs=dsa-audit,dsa-id-bridge,dsa-sandbox-a,dsa-sandbox-b,dsa-sanitizer,dsa-veil-witness"
+echo "PASS: coverage class=workload-originated transport handshake; projected-leaves=audit,id-bridge,sandbox-b; edges=audit-to-witness,id-bridge-to-witness,sandbox-b-to-witness; server-SAN=dsa-veil-witness"
+echo "PASS: coverage class=application-layer call; gateway gRPC identity; expected-server-SAN=dsa-sandbox-a"
+echo "PASS: coverage class=application-layer call; gateway-to-sanitizer HTTPS; expected-server-SAN=dsa-sanitizer"
 echo "ENTERPRISE_HELM_MTLS_KIND: PASS"
