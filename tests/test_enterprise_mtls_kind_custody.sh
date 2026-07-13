@@ -13,7 +13,11 @@ PUBLIC="$TMPDIR/public-overlay.yaml"
 PRIVATE="$TMPDIR/application-secrets"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-mode() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
+# GNU stat first: `stat -f '%Lp'` on GNU exits 1 for a %Lp file arg but still
+# prints filesystem info to STDOUT, so a `-f … || -c …` chain captures garbage
+# on Linux. BSD `stat -c` fails cleanly (stderr only), so `-c … || -f …` is
+# correct on both platforms.
+mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
 value() { awk -F= -v key="$2" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$1"; }
 
 "$GENERATOR" "$PUBLIC" "$PRIVATE" >"$TMPDIR/generator.out" 2>"$TMPDIR/generator.err"
@@ -111,7 +115,7 @@ done
 keys_json="${keys_mount%:/keys.json:ro}"
 seed_file="${seed_mount%:/run/secrets/witness-signing-key-hex:ro}"
 [ -f "$keys_json" ] && [ -f "$seed_file" ] || exit 92
-[ "$(stat -f '%Lp' "$seed_file" 2>/dev/null || stat -c '%a' "$seed_file")" = 600 ] || exit 93
+[ "$(stat -c '%a' "$seed_file" 2>/dev/null || stat -f '%Lp' "$seed_file")" = 600 ] || exit 93
 [ "$(cat "$seed_file")" = "$seed" ] || exit 94
 PUBLIC="$PUBLIC" ruby -rjson -ryaml -e '
   keys = YAML.safe_load(File.read(ENV.fetch("PUBLIC"))).fetch("kindPublicKeys")
