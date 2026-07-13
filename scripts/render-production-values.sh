@@ -30,19 +30,17 @@ if ! OUTPUT_DIR="$(ruby -e '
   abort "not owned by the effective user" unless stat.uid == Process.euid
   abort "group/world writable" unless (stat.mode & 0o022).zero?
 
-  # The leaf remains private, but a non-sticky writable ancestor would let
-  # another principal replace that leaf after this preflight. Resolve the
-  # complete physical path and require every writable ancestor through root
-  # to have the sticky bit and be owned by this user or root, as normal /tmp
-  # does. A sticky directory owned by another principal can still let that
-  # owner rename or unlink the private leaf pathname.
+  # Resolve the complete physical path and require every ancestor through
+  # root to be owned by this user or root. An untrusted owner can replace a
+  # descendant even when its directory has no group/world write bits. For
+  # writable ancestors, also require the sticky bit, as normal /tmp has.
   ancestor = directory
   loop do
     ancestor_stat = File.lstat(ancestor)
     abort "ancestor is not a real directory" unless ancestor_stat.directory?
+    abort "ancestor is not owned by the effective user or root" unless [Process.euid, 0].include?(ancestor_stat.uid)
     unless (ancestor_stat.mode & 0o022).zero?
       abort "group/world writable ancestor without sticky bit" if (ancestor_stat.mode & 0o1000).zero?
-      abort "group/world writable ancestor is not owned by the effective user or root" unless [Process.euid, 0].include?(ancestor_stat.uid)
     end
     parent = File.dirname(ancestor)
     break if parent == ancestor
