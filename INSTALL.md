@@ -1675,54 +1675,55 @@ gateway:
     fileName: witness-signed-manifest.json
 ```
 
-If you choose different names, put the complete block in the generated
-`customer-production-values.yaml`. In production with `gateway.veilEnabled=true`,
+If you choose different names, put the complete block in a names-only overlay.
+In production with `gateway.veilEnabled=true`,
 Helm fails before install if any field is absent or if
 `veilWitnessSignedManifestPath` is not exactly `mountPath/fileName`. This Secret
 is separate from the readiness-bundle contract; it projects exactly one file,
 read-only, at the gateway path that verifies the witness signature at startup.
 
-Use `charts/lucairn/values-prod.yaml` as the production base. On the first
-production install, assign the application-only companion a new protected path
-and create it once:
+Use `charts/lucairn/values-prod.yaml` as the supported production overlay. It
+enables `global.mtls`, fixes these operator-owned Secret names, selects Vault,
+and sets an explicit Vault backend and remote path for Gateway, Audit, ID
+Bridge, Sandbox A, Sandbox B, and Veil Witness. Populate every listed remote
+reference in that External Secrets backend before Helm runs. Do not layer the
+development/pilot `customer-values.yaml`, pass an API key with `--set`, or put
+application-secret bytes in any values file. A credential rotation changes the
+backend values first, then follows the coordinated application/database/service
+rollout; Helm values remain names and paths only.
 
-```bash
-OVERLAY="$PWD/customer-production-values.yaml"
-bash scripts/render-production-values.sh "$OVERLAY"
-```
+Vault is the concrete default. To use AWS or Azure instead, change both
+`global.secrets.backend` and **every** enabled child’s `secrets.backend` to the
+same provider, then supply that child’s `secrets.aws.name` or
+`secrets.azure.name`. A global backend alone is not sufficient: each child
+ExternalSecret intentionally reads its own explicit backend and remote name.
 
-Reuse that same `$OVERLAY` unchanged for normal upgrades; never rename, reuse,
-or layer the development/pilot `customer-values.yaml` after the production
-base. The renderer refuses an existing output path. A credential rotation
-instead assigns `OVERLAY` to a different new path before generation, then uses
-that new path after the coordinated application, database, and service rollout:
+### Registry authentication is outside Helm
 
-```bash
-OVERLAY="$PWD/customer-production-values-rotated-YYYYMMDD.yaml"
-bash scripts/render-production-values.sh "$OVERLAY"
-```
-It enables
-`global.mtls`, fixes these Secret names, and rejects all optional gRPC profiles
-(`ingest`, `admin`, dashboard, certification, PII ML, demo, and
-postgres-gateway) rather than allowing an insecure or partial extension. To use
-different names or key names, change all entries in `global.mtls` together.
+Never pass a Docker config, `dockerconfigjson`, or registry token through Helm:
+that would retain it in release history. `values-prod.yaml` sets
+`global.skipPullSecretGuard=true` for the supported out-of-band registry modes.
+Choose one before install:
 
-Before install, run the Helm-only preflight with the same ordered values pair
-as Helm. Keep customer-specific values in the overlay; do not flatten or copy
-the production contract into it. A green render alone is not an accepted
-deployment. `$DOCKER_CONFIG/config.json` must contain the authenticated
-private-registry configuration prepared in Kubernetes Install step 1; keep it
-out of Git and logs.
+- Create a pull Secret in every mandatory workload namespace and set
+  `global.imagePullSecrets` to its name in a names-only overlay.
+- Configure node/default-ServiceAccount registry authentication.
+- Use workload identity for the registry.
+
+All three modes require `global.skipPullSecretGuard=true`; the second and third
+leave `global.imagePullSecrets` empty. For the first mode, create the pull
+Secret with `kubectl` after namespace adoption and before Helm. Helm never
+creates or copies its credential bytes.
+
+Before install, run the Helm-only preflight with the exact production values.
+A green render alone is not an accepted deployment, so write it to `/dev/null`.
 
 ```bash
 bin/lucairn doctor \
   --values charts/lucairn/values-prod.yaml \
-  --values "$OVERLAY" \
   --offline
 helm template lucairn charts/lucairn \
   -f charts/lucairn/values-prod.yaml \
-  -f "$OVERLAY" \
-  --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
   >/dev/null
 ```
 
@@ -1732,8 +1733,6 @@ declaring success:
 ```bash
 helm upgrade --install lucairn charts/lucairn \
   -f charts/lucairn/values-prod.yaml \
-  -f "$OVERLAY" \
-  --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
   --namespace lucairn --create-namespace --wait --timeout 12m
 
 # Isolated, destructive-to-its-own-Kind-cluster acceptance only:
@@ -1741,7 +1740,7 @@ scripts/test-enterprise-mtls-kind.sh
 ```
 
 The harness creates ephemeral CA/leaves and a mode-0600 application values
-file under a uniquely named `/tmp` state path. The latter contains fresh
+file under a mode-0700 owned private state directory. The latter contains fresh
 signing seeds, their derived public keys, database/cache credentials, shared
 service/canary tokens, and the gateway keystore key; it is never printed or
 committed. The seven mTLS identity Secrets remain independently pre-created,
@@ -1763,15 +1762,18 @@ not covered by the normal rendered-image preloader. The two Witness checks run
 a temporary verified-TLS helper in the actual gateway Pod using that Pod's
 projected leaf identity. The same temporary helper invokes
 the gateway health handler locally over loopback, then is deleted after that
-evidence battery. Because this harness uses stock Kind/kindnet, it proves only
+evidence battery. Its cleanup always attempts temporary helper removal, owned
+cluster deletion, local probe-image removal, and private state removal. A
+failed owned-cluster deletion makes the gate fail and prints only the cluster
+name plus its exact retry command. Because this harness uses stock Kind/kindnet, it proves only
 the actual Pod's projected-leaf transport identity; it does not prove
 NetworkPolicy enforcement or per-link caller authorization. The Witness checks
 prove transport handshakes only; they do not claim to invoke gateway application
 Witness RPC methods. mTLS proves CA membership authentication and exact server
 identity, while authorization remains a separate NetworkPolicy and application
-control. It requires authenticated GHCR credentials in `DOCKER_CONFIG` and a
-functioning container runtime. It does not use a production or customer
-context.
+control. It preloads every rendered product image before Helm and requires a
+functioning container runtime, but no registry credential is supplied to Helm.
+It does not use a production or customer context.
 
 ### Kind acceptance evidence ledger
 

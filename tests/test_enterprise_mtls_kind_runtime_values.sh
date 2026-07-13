@@ -783,15 +783,17 @@ ruby -ryaml -e '
 
 ruby -e '
   source = File.read(ARGV.fetch(0))
+  cleanup = File.read(ARGV.fetch(1))
   dockerfile = source[/cat > "\$PROBE_DOCKERFILE" <<\x27DOCKERFILE\x27\n(?<body>.*?)^DOCKERFILE$/m, :body] || abort("Kind harness misses local probe Dockerfile")
   abort "local probe Dockerfile must use scratch only" unless dockerfile == "FROM scratch\nCOPY probe /probe\n"
-  ["PROBE_IMAGE=\"lucairn-enterprise-mtls-probe:kind-$$\"", "docker build --network=none --pull=false --platform \"linux/$GATEWAY_NODE_ARCH\" --tag \"$PROBE_IMAGE\"", "PROBE_IMAGE_ID=\"$(docker image inspect --format", "[[ \"$PROBE_IMAGE_ID\" =~ ^sha256:[0-9a-f]{64}$ ]]", "docker image save --output \"$PROBE_ARCHIVE\" \"$PROBE_IMAGE_ID\" \"$PROBE_IMAGE\"", "require_probe_archive_tag_binding \"$PROBE_ARCHIVE\" \"$PROBE_IMAGE\" \"$PROBE_IMAGE_ID\"", "archive must contain exactly one manifest entry", "kind load image-archive --name \"$CLUSTER\" \"$PROBE_ARCHIVE\"", "docker image rm -f \"$PROBE_IMAGE\""].each do |needle|
+  ["PROBE_IMAGE=\"lucairn-enterprise-mtls-probe:kind-$$\"", "docker build --network=none --pull=false --platform \"linux/$GATEWAY_NODE_ARCH\" --tag \"$PROBE_IMAGE\"", "PROBE_IMAGE_ID=\"$(docker image inspect --format", "[[ \"$PROBE_IMAGE_ID\" =~ ^sha256:[0-9a-f]{64}$ ]]", "docker image save --output \"$PROBE_ARCHIVE\" \"$PROBE_IMAGE_ID\" \"$PROBE_IMAGE\"", "require_probe_archive_tag_binding \"$PROBE_ARCHIVE\" \"$PROBE_IMAGE\" \"$PROBE_IMAGE_ID\"", "archive must contain exactly one manifest entry", "kind load image-archive --name \"$CLUSTER\" \"$PROBE_ARCHIVE\"", "enterprise_mtls_kind_cleanup"].each do |needle|
     abort "local probe supply-chain control missing: #{needle}" unless source.include?(needle)
   end
+  abort "local probe cleanup is not unconditional" unless cleanup.include?("docker image rm -f \"$PROBE_IMAGE\"")
   ["alpine:3.20", "apk add", "openssl s_client", "probe() {"].each do |forbidden|
     abort "Kind harness retains remote/mutable probe residue: #{forbidden}" if source.include?(forbidden)
   end
-' "$KIND_GATE"
+' "$KIND_GATE" "$ROOT/scripts/lib/enterprise-mtls-kind-cleanup.sh"
 
 # Extract and execute only the scratch-probe build/inspect/save/load sequence
 # with local doubles. The Docker double retags the mutable probe name as soon
@@ -1012,6 +1014,12 @@ if command -v helm >/dev/null 2>&1; then
     -f "$RUNTIME_VALUES" \
     --set global.skipPullSecretGuard=true \
     --set global.secrets.backend=k8s-native \
+    --set gateway.secrets.backend=k8s-native \
+    --set audit.secrets.backend=k8s-native \
+    --set id-bridge.secrets.backend=k8s-native \
+    --set sandbox-a.secrets.backend=k8s-native \
+    --set sandbox-b.secrets.backend=k8s-native \
+    --set veil-witness.secrets.backend=k8s-native \
     --set global.dnsRestriction=false \
     --set global.wireguardEncryption=false \
     --set global.postgresqlSslmode=disable \

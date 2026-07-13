@@ -1,4 +1,4 @@
-.PHONY: test test-enterprise-mtls-helm test-enterprise-mtls-helm-required test-enterprise-mtls-production-values test-enterprise-mtls-ceremony-docs test-enterprise-mtls-kind-kubectl-resolver package release-kit customer-bundle clean \
+.PHONY: test test-enterprise-mtls-helm test-enterprise-mtls-helm-required test-enterprise-mtls-production-values test-enterprise-mtls-ceremony-docs test-enterprise-mtls-kind-kubectl-resolver test-enterprise-mtls-kind-cleanup package release-kit customer-bundle clean \
         dashboard-buildx-bootstrap dashboard-multiarch-build \
         dashboard-multiarch-promote-aliases \
         dashboard-verify-manifests
@@ -15,6 +15,7 @@ test: test-enterprise-mtls-helm test-enterprise-mtls-helm-required test-enterpri
 	bash tests/test_enterprise_mtls_kind_client_auth.sh
 	bash tests/test_enterprise_mtls_ceremony_docs.sh
 	bash tests/test_enterprise_mtls_kind_kubectl_resolver.sh
+	bash tests/test_enterprise_mtls_kind_cleanup.sh
 	bash tests/static_checks.sh
 
 test-enterprise-mtls-helm:
@@ -31,6 +32,9 @@ test-enterprise-mtls-ceremony-docs:
 
 test-enterprise-mtls-kind-kubectl-resolver:
 	bash tests/test_enterprise_mtls_kind_kubectl_resolver.sh
+
+test-enterprise-mtls-kind-cleanup:
+	bash tests/test_enterprise_mtls_kind_cleanup.sh
 
 package:
 	bash scripts/package-release.sh
