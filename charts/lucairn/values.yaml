@@ -36,7 +36,12 @@ global:
       mountPath: dsa
     aws:
       region: eu-central-1
-      serviceAccountAnnotation: ""
+      # This chart never creates or annotates this ServiceAccount. For AWS
+      # production, pre-create this exact ServiceAccount in this namespace and
+      # attach its EKS IRSA role outside Helm.
+      serviceAccount:
+        name: eso-service-account
+        namespace: external-secrets
     azure:
       keyVaultName: ""
       tenantId: ""

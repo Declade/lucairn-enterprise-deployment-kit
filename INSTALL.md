@@ -1452,11 +1452,25 @@ global:
     backend: aws
     aws:
       region: eu-central-1
-      # The eso-service-account in each namespace must be IRSA-annotated with
-      # an IAM role granting secretsmanager:GetSecretValue on the Lucairn
-      # secret paths.
-      serviceAccountAnnotation: "arn:aws:iam::<acct>:role/lucairn-eso"
+      # ClusterSecretStore references this exact, pre-created ServiceAccount.
+      # It is one ESO identity, not one account per application namespace.
+      serviceAccount:
+        name: eso-service-account
+        namespace: external-secrets
 ```
+
+The chart does not create this ServiceAccount or its AWS annotation. Before
+installing the production overlay, configure the exact reference above with an
+IRSA role that can read the six configured Secrets Manager entries:
+
+```bash
+kubectl -n external-secrets create serviceaccount eso-service-account \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n external-secrets annotate serviceaccount eso-service-account \
+  eks.amazonaws.com/role-arn='arn:aws:iam::<acct>:role/lucairn-eso' --overwrite
+```
+
+Do not put AWS access keys or the role ARN in Helm values.
 
 ### Azure Key Vault
 

@@ -40,14 +40,27 @@ ruby -ryaml -e '
   %w[admin observability ingest].each do |child|
     service = values.fetch(child)
     abort "production #{child} must be explicitly disabled" unless service["enabled"] == false
-    abort "production #{child} carries inline application values" if service.dig("secrets", "values")
+    abort "production #{child} carries inline application values" unless service.dig("secrets", "values").nil?
   end
   %w[gateway audit id-bridge sandbox-a sandbox-b veil-witness].each do |child|
     secrets = values.fetch(child).fetch("secrets")
     abort "#{child} relies on global backend inference" unless secrets["backend"] == "vault"
     path = secrets.dig("vault", "path")
     abort "#{child} Vault remote path drifted" unless path == expected_paths.fetch(child)
-    abort "#{child} carries inline application values" if secrets.key?("values")
+  end
+  expected_empty_values = {
+    "audit" => %w[postgresPassword auditAppPassword],
+    "id-bridge" => %w[postgresPassword],
+    "sandbox-a" => %w[postgresPassword],
+    "veil-witness" => %w[postgresPassword veilAppPassword signingKey keyId],
+  }
+  expected_empty_values.each do |child, fields|
+    inline = values.fetch(child).fetch("secrets").fetch("values")
+    abort "#{child} production values must keep a mapping" unless inline.is_a?(Hash)
+    abort "#{child} production values must override only development placeholders" unless inline.keys.sort == fields.sort && inline.values.all? { |value| value == "" }
+  end
+  %w[gateway sandbox-b].each do |child|
+    abort "#{child} production overlay must rely on its all-empty chart-default values map" if values.fetch(child).fetch("secrets").key?("values")
   end
 ' "$VALUES"
 
@@ -167,6 +180,44 @@ assert_render_rejected disabled-infrastructure \
   'infrastructure.enabled must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology.' \
   --set infrastructure.enabled=false
 
+# Production retains real child values maps, then rejects every nonempty leaf
+# so Helm never stores a credential in release history even though ESO owns
+# the resulting Kubernetes Secret.
+for child_field in \
+  gateway.dsaServiceToken \
+  audit.postgresPassword \
+  id-bridge.postgresPassword \
+  sandbox-a.postgresPassword \
+  sandbox-b.anthropicApiKey \
+  veil-witness.signingKey; do
+  child="${child_field%.*}"
+  field="${child_field##*.}"
+  assert_render_rejected "inline-${child}-credential" \
+    "${child}.secrets.values.${field} must be empty when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history" \
+    --set-string "${child}.secrets.values.${field}=review-sentinel-not-a-secret"
+done
+assert_render_rejected inline-global-service-token \
+  'global.dsaServiceToken must be empty when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history' \
+  --set-string global.dsaServiceToken=review-sentinel-not-a-secret
+assert_render_rejected inline-sandbox-b-redis-password \
+  'sandbox-b.redis.password must be empty when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history' \
+  --set-string sandbox-b.redis.password=review-sentinel-not-a-secret
+
+# Overlay files have exactly the same custody boundary as --set: Helm stores
+# both in release values, so a sentinel in an operator overlay must fail.
+cat >"$TMPDIR/inline-custody-override.yaml" <<'YAML'
+gateway:
+  secrets:
+    values:
+      dsaServiceToken: review-sentinel-not-a-secret
+YAML
+if helm template lucairn "$CHART" -f "$VALUES" -f "$SITE_VALUES" -f "$TMPDIR/inline-custody-override.yaml" >"$TMPDIR/inline-overlay.yaml" 2>"$TMPDIR/inline-overlay.err"; then
+  echo "production render accepted an inline credential in an overlay file" >&2
+  exit 1
+fi
+grep -Fq 'gateway.secrets.values.dsaServiceToken must be empty when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history' "$TMPDIR/inline-overlay.err" \
+  || { echo "production overlay credential rejection was not actionable" >&2; cat "$TMPDIR/inline-overlay.err" >&2; exit 1; }
+
 helm template lucairn "$CHART" \
   --set global.dsaEnv=development \
   --set global.skipPullSecretGuard=true \
@@ -188,6 +239,29 @@ assert_render_rejected empty-aws-region \
 assert_render_rejected missing-aws-remote-reference \
   'gateway.secrets.aws.name must be a non-empty string' \
   "${provider_children[@]}" --set-string gateway.secrets.aws.name=
+assert_render_rejected missing-aws-service-account-name \
+  'global.secrets.aws.serviceAccount.name must be a non-empty string' \
+  "${provider_children[@]}" --set-string global.secrets.aws.serviceAccount.name=
+assert_render_rejected missing-aws-service-account-namespace \
+  'global.secrets.aws.serviceAccount.namespace must be a non-empty string' \
+  "${provider_children[@]}" --set-string global.secrets.aws.serviceAccount.namespace=
+
+AWS_RENDER="$TMPDIR/aws-rendered.yaml"
+helm template lucairn "$CHART" -f "$VALUES" -f "$SITE_VALUES" --namespace lucairn \
+  "${provider_children[@]}" > "$AWS_RENDER"
+ruby -ryaml -e '
+  documents = YAML.load_stream(File.read(ARGV.fetch(0))).compact
+  store = documents.find { |document| document.is_a?(Hash) && document["kind"] == "ClusterSecretStore" }
+  abort "AWS production render must contain exactly one ClusterSecretStore" unless documents.count { |document| document.is_a?(Hash) && document["kind"] == "ClusterSecretStore" } == 1
+  aws = store.dig("spec", "provider", "aws")
+  abort "AWS store service drifted" unless aws["service"] == "SecretsManager"
+  abort "AWS store region drifted" unless aws["region"] == "eu-central-1"
+  ref = aws.dig("auth", "jwt", "serviceAccountRef")
+  abort "AWS store ServiceAccount name drifted" unless ref["name"] == "eso-service-account"
+  abort "AWS store ServiceAccount namespace drifted" unless ref["namespace"] == "external-secrets"
+  abort "AWS production render must contain exactly six ExternalSecrets" unless documents.count { |document| document.is_a?(Hash) && document["kind"] == "ExternalSecret" } == 6
+  abort "AWS production render contains Helm-owned Secrets" unless documents.none? { |document| document.is_a?(Hash) && document["kind"] == "Secret" }
+' "$AWS_RENDER"
 provider_children[1]=global.secrets.backend=azure
 for index in 3 5 7 9 11 13; do
   provider_children[$index]="${provider_children[$index]%=aws}=azure"
@@ -278,5 +352,15 @@ if rg -n -- '-d .*provider_key|--data .*provider_key|echo .*PROVIDER_KEY|echo .*
   echo "production runbook may expose a provider key through curl argv or output" >&2
   exit 1
 fi
+ruby -e '
+  content = File.read(ARGV.fetch(0))
+  block = content[/## Step 8 — Mint your first customer.*?(?=\n---)/m]
+  abort "first-customer runbook block missing" unless block
+  abort "first-customer flow must frame the admin key through stdin" unless block.include?("IFS= read -r admin_key") && block.include?("printf")
+  abort "first-customer flow must use stdin JSON body" unless block.include?("--data-binary @-")
+  abort "first-customer flow interpolates ADMIN_KEY into kubectl/POD argv" if block.match?(/\$\{?ADMIN_KEY\}?/)
+  admin_header = block[/x-admin-key:\s*[^\"\n]*/]
+  abort "first-customer flow must construct its admin header only from the runtime stdin variable" unless admin_header == "x-admin-key: ${admin_key}"
+' "$RUNBOOK"
 
 echo "enterprise mTLS production values: ESO-only names/paths contract and required-key coverage verified"

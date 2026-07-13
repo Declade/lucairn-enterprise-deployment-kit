@@ -276,16 +276,7 @@ if command -v helm >/dev/null 2>&1; then
   PROD_RENDER="$(helm template lucairn "$CHART" \
     -f "$CHART/values-prod.yaml" \
     -f "$CHART/values-prod-site.example.yaml" \
-    --set global.skipPullSecretGuard=true \
-    --set gateway.secrets.values.dsaServiceToken=x \
-    --set audit.secrets.values.dsaServiceToken=x \
-    --set id-bridge.secrets.values.dsaServiceToken=x \
-    --set sandbox-a.secrets.values.dsaServiceToken=x \
-    --set admin.secrets.values.dsaServiceToken=x \
-    --set ingest.secrets.values.dsaServiceToken=x \
-    --set sandbox-b.redis.password=xxxxxxxx \
-    --set sandbox-b.secrets.values.sandboxBApiKeys=x \
-    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}")"
+    --set global.skipPullSecretGuard=true)"
   echo "helm template (values-prod.yaml + site overlay): rendered ok (HA-02)"
 
   # HA-03 guard: at the v1.0 single-replica lock, no PodDisruptionBudget

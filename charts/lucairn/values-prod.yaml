@@ -18,6 +18,13 @@
 #   helm template lucairn charts/lucairn -f charts/lucairn/values-prod.yaml \
 #     -f /secure/operator/lucairn-production-site.yaml >/dev/null
 global:
+  # These umbrella aliases must remain empty in production. Credentials are
+  # fetched only by the six ExternalSecrets; Helm would retain aliases in its
+  # release values/history.
+  dsaServiceToken: ""
+  dsaLicenseKey: ""
+  lucairnLicenseKey: ""
+  lucairnLicensePublicKey: ""
   secrets:
     backend: vault
     vault:
@@ -72,6 +79,9 @@ audit:
       memory: 512Mi
   secrets:
     backend: vault
+    values:
+      postgresPassword: ""
+      auditAppPassword: ""
     vault:
       path: postgres-audit
 
@@ -86,6 +96,8 @@ id-bridge:
       memory: 512Mi
   secrets:
     backend: vault
+    values:
+      postgresPassword: ""
     vault:
       path: bridge
 
@@ -100,6 +112,8 @@ sandbox-a:
       memory: 512Mi
   secrets:
     backend: vault
+    values:
+      postgresPassword: ""
     vault:
       path: sandbox-a
 
@@ -108,6 +122,10 @@ sandbox-b:
   workers: 4
   # Redis credentials and every model-provider key come from this child’s
   # ExternalSecret, including the Redis StatefulSet's REDIS_PASSWORD input.
+  redis:
+    # Redis reads REDIS_PASSWORD from sandbox-b-credentials, which ESO owns.
+    # An inline password would otherwise be retained in Helm release history.
+    password: ""
   resources:
     requests:
       cpu: 500m
@@ -137,6 +155,11 @@ veil-witness:
       memory: 512Mi
   secrets:
     backend: vault
+    values:
+      postgresPassword: ""
+      veilAppPassword: ""
+      signingKey: ""
+      keyId: ""
     vault:
       path: veil-witness
 
