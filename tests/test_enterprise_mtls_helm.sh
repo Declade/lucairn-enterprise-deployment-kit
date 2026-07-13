@@ -836,12 +836,12 @@ grep -q 'global.mtls.secrets.audit' "$TMPDIR/doctor-clear-audit.out" \
   || { echo "doctor did not expose the layered audit Secret error" >&2; exit 1; }
 
 # Reversing the parent/clear pair restores the audit Secret, while a final
-# names-and-paths-only site overlay restores the required Vault endpoint. This
-# proves doctor preserves ordered -f inputs without weakening the production
-# site's required provider configuration.
+# names-only site overlay restores both the required Vault endpoint and the
+# production registry-auth decision. This proves doctor preserves ordered -f
+# inputs without weakening the production site's required configuration.
 ruby -ryaml -e '
   values = YAML.load_file(ARGV.fetch(0))
-  File.write(ARGV.fetch(1), YAML.dump({ "global" => { "secrets" => { "vault" => { "endpoint" => values.fetch("global").fetch("secrets").fetch("vault").fetch("endpoint") } } } }))
+  File.write(ARGV.fetch(1), YAML.dump({ "global" => { "secrets" => { "vault" => { "endpoint" => values.fetch("global").fetch("secrets").fetch("vault").fetch("endpoint") } }, "imagePullSecrets" => [{ "name" => "lucairn-registry" }] } }))
 ' "$PUBLIC_OVERLAY" "$TMPDIR/doctor-site-endpoint.yaml"
 "$ROOT/bin/lucairn" doctor \
   --values "$TMPDIR/doctor-clear-audit.yaml" \
