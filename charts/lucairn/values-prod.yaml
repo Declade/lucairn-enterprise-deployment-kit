@@ -33,10 +33,26 @@ global:
   nodeIsolation: true
   postgresqlSslmode: require
   wireguardEncryption: true
-  # Production: enforce gRPC TLS between all services
-  grpcTlsEnabled: true
   # Production environment flag — enables dev-secret rejection guards
   dsaEnv: production
+  # Verified DSA mTLS is mandatory in the supported production profile. These
+  # are names only: create the operator/PKI-owned Secrets in the matching
+  # namespaces before installation. Helm does not generate or retain any CA or
+  # private key material. See INSTALL.md "Enterprise full-mesh mTLS".
+  mtls:
+    enabled: true
+    mountPath: "/var/run/lucairn/mtls"
+    caBundleKey: "ca.crt"
+    certKey: "tls.crt"
+    keyKey: "tls.key"
+    secrets:
+      gateway: "lucairn-mtls-gateway"
+      audit: "lucairn-mtls-audit"
+      idBridge: "lucairn-mtls-id-bridge"
+      sandboxA: "lucairn-mtls-sandbox-a"
+      sanitizer: "lucairn-mtls-sanitizer"
+      sandboxB: "lucairn-mtls-sandbox-b"
+      veilWitness: "lucairn-mtls-veil-witness"
 
 audit:
   replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
@@ -129,6 +145,14 @@ demo:
 
 gateway:
   replicaCount: 1  # v1.0 single-replica lock (file-keystore on RWO PVC)
+  # The key ceremony signs this public manifest outside Helm, then the
+  # operator creates this Secret in dsa-edge before installation. Do not put a
+  # witness signing seed or unsigned manifest in values/Git.
+  witnessSignedManifest:
+    existingSecret: "lucairn-witness-signed-manifest"
+    secretKey: "witness-signed-manifest.json"
+    mountPath: "/certs"
+    fileName: "witness-signed-manifest.json"
   resources:
     requests:
       cpu: 200m

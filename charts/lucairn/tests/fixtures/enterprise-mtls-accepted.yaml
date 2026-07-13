@@ -1,0 +1,70 @@
+# Non-secret production fixture for the enterprise full-mesh mTLS contract.
+#
+# It names only operator/PKI-owned Kubernetes Secrets; it never contains a CA,
+# certificate, private key, application secret, or database credential. The
+# disposable-cluster harness creates the named mTLS Secrets before installation
+# and writes its separate, ephemeral application values file under STATE_DIR.
+global:
+  skipPullSecretGuard: true
+  dsaEnv: production
+  mtls:
+    enabled: true
+    mountPath: /var/run/lucairn/mtls
+    caBundleKey: ca.crt
+    certKey: tls.crt
+    keyKey: tls.key
+    secrets:
+      gateway: lucairn-mtls-gateway
+      audit: lucairn-mtls-audit
+      idBridge: lucairn-mtls-id-bridge
+      sandboxA: lucairn-mtls-sandbox-a
+      sanitizer: lucairn-mtls-sanitizer
+      sandboxB: lucairn-mtls-sandbox-b
+      veilWitness: lucairn-mtls-veil-witness
+
+# This is a names-only operator contract. The Kind harness signs the coherent
+# disposable key roster, creates this Secret in dsa-edge, and Helm projects
+# only the completed witness-signed output.
+gateway:
+  veilIssuer: Lucairn Veil Witness
+  veilWitnessSignedManifestPath: /certs/witness-signed-manifest.json
+  witnessSignedManifest:
+    existingSecret: lucairn-witness-signed-manifest
+    secretKey: witness-signed-manifest.json
+    mountPath: /certs
+    fileName: witness-signed-manifest.json
+
+# The Kind acceptance topology is exactly the supported default mesh. These
+# explicit false values guard against defaults changing beneath the harness.
+admin:
+  enabled: false
+
+observability:
+  enabled: false
+
+pii-ml:
+  enabled: false
+
+postgres-gateway:
+  enabled: false
+
+demo:
+  enabled: false
+
+ingest:
+  enabled: false
+
+certification:
+  enabled: false
+
+dashboard:
+  enabled: false
+
+sandbox-b:
+  # Harness-only readiness adapter: the handshake battery uses openssl and
+  # never invokes inference. Enable Sandbox B's built-in healthy Echo adapter
+  # so /readyz proves Redis + invariant + one healthy adapter, while avoiding
+  # the unrelated multi-GiB Ollama StatefulSet and model-pull Job in Kind.
+  enableTestProvider: "true"
+  ollama:
+    enabled: false

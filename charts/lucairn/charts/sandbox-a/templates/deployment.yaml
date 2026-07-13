@@ -72,6 +72,20 @@ spec:
             - "-addr=:{{ .Values.service.grpcPort }}"
             - "-health-addr=:{{ .Values.service.healthPort }}"
           env:
+            {{- if .Values.global.mtls.enabled }}
+            - name: DSA_MTLS_CA_BUNDLE_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.caBundleKey }}"
+            - name: DSA_MTLS_SERVER_CERT_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.certKey }}"
+            - name: DSA_MTLS_SERVER_KEY_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.keyKey }}"
+            - name: DSA_MTLS_CLIENT_CERT_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.certKey }}"
+            - name: DSA_MTLS_CLIENT_KEY_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.keyKey }}"
+            - name: DSA_MTLS_SERVER_NAME
+              value: "dsa-sandbox-a"
+            {{- end }}
             - name: SANDBOX_A_DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -147,6 +161,12 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
+          {{- if .Values.global.mtls.enabled }}
+          volumeMounts:
+            - name: enterprise-mtls-sandbox-a
+              mountPath: {{ .Values.global.mtls.mountPath | quote }}
+              readOnly: true
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
@@ -175,6 +195,20 @@ spec:
               containerPort: 8086
               protocol: TCP
           env:
+            {{- if .Values.global.mtls.enabled }}
+            - name: DSA_MTLS_CA_BUNDLE_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.caBundleKey }}"
+            - name: DSA_MTLS_SERVER_CERT_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.certKey }}"
+            - name: DSA_MTLS_SERVER_KEY_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.keyKey }}"
+            - name: DSA_MTLS_CLIENT_CERT_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.certKey }}"
+            - name: DSA_MTLS_CLIENT_KEY_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.keyKey }}"
+            - name: DSA_MTLS_SERVER_NAME
+              value: "dsa-sanitizer"
+            {{- end }}
             - name: SANITIZER_CONFIG_PATH
               value: /config/config.yaml
             - name: SANITIZER_PORT
@@ -345,28 +379,69 @@ spec:
               mountPath: /tmp
             - name: sanitizer-home
               mountPath: /tmp/home
+            {{- if .Values.global.mtls.enabled }}
+            - name: enterprise-mtls-sanitizer
+              mountPath: {{ .Values.global.mtls.mountPath | quote }}
+              readOnly: true
+            - name: sanitizer-mtls-probe
+              mountPath: /opt/lucairn/probes
+              readOnly: true
+            {{- end }}
           startupProbe:
+            {{- if .Values.global.mtls.enabled }}
+            exec:
+              command:
+                - python3
+                - /opt/lucairn/probes/sanitizer-mtls-probe.py
+                - /healthz
+            {{- else }}
             httpGet:
               path: /healthz
               port: sanitizer
+            {{- end }}
             initialDelaySeconds: 10
             periodSeconds: 5
+            {{- if .Values.global.mtls.enabled }}
+            timeoutSeconds: 5
+            {{- end }}
             failureThreshold: 60
           livenessProbe:
+            {{- if .Values.global.mtls.enabled }}
+            exec:
+              command:
+                - python3
+                - /opt/lucairn/probes/sanitizer-mtls-probe.py
+                - /healthz
+            {{- else }}
             httpGet:
               path: /healthz
               port: sanitizer
+            {{- end }}
             periodSeconds: 10
+            {{- if .Values.global.mtls.enabled }}
+            timeoutSeconds: 5
+            {{- end }}
           readinessProbe:
             # /readyz (not /healthz) so readiness means the sanitizer is
             # FUNCTIONALLY ready — Presidio NLP engine warmed and the PII
             # pipeline loaded — not merely that the HTTP listener is up.
             # /healthz is connectivity-only and would flip the sidecar
             # Ready while it still 503s real /v1/sanitize traffic (HA-09).
+            {{- if .Values.global.mtls.enabled }}
+            exec:
+              command:
+                - python3
+                - /opt/lucairn/probes/sanitizer-mtls-probe.py
+                - /readyz
+            {{- else }}
             httpGet:
               path: /readyz
               port: sanitizer
+            {{- end }}
             periodSeconds: 10
+            {{- if .Values.global.mtls.enabled }}
+            timeoutSeconds: 5
+            {{- end }}
           resources:
             requests:
               memory: "2Gi"
@@ -383,6 +458,32 @@ spec:
         - name: sanitizer-home
           emptyDir:
             sizeLimit: 500Mi
+        {{- if .Values.global.mtls.enabled }}
+        - name: sanitizer-mtls-probe
+          configMap:
+            name: sanitizer-mtls-probe
+            defaultMode: 0444
+        - name: enterprise-mtls-sandbox-a
+          secret:
+            secretName: {{ .Values.global.mtls.secrets.sandboxA }}
+            items:
+              - key: {{ .Values.global.mtls.caBundleKey }}
+                path: {{ .Values.global.mtls.caBundleKey }}
+              - key: {{ .Values.global.mtls.certKey }}
+                path: {{ .Values.global.mtls.certKey }}
+              - key: {{ .Values.global.mtls.keyKey }}
+                path: {{ .Values.global.mtls.keyKey }}
+        - name: enterprise-mtls-sanitizer
+          secret:
+            secretName: {{ .Values.global.mtls.secrets.sanitizer }}
+            items:
+              - key: {{ .Values.global.mtls.caBundleKey }}
+                path: {{ .Values.global.mtls.caBundleKey }}
+              - key: {{ .Values.global.mtls.certKey }}
+                path: {{ .Values.global.mtls.certKey }}
+              - key: {{ .Values.global.mtls.keyKey }}
+                path: {{ .Values.global.mtls.keyKey }}
+        {{- end }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

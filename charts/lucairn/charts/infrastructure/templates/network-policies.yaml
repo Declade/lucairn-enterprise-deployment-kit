@@ -59,12 +59,14 @@ spec:
       ports:
         - port: 50051
           protocol: TCP
-    # → dsa-witness (Veil Witness certificate retrieval)
+    # → dsa-witness (Veil Witness claims + certificate retrieval)
     - to:
         - namespaceSelector:
             matchLabels:
               dsa.io/namespace: witness
       ports:
+        - port: 50057
+          protocol: TCP
         - port: 50058
           protocol: TCP
     # Intra-namespace (gateway → postgres-gateway for the PostgresKeyStore).

@@ -1579,7 +1579,145 @@ you intend to preserve audit cert history, identity tokens, or witness
 signatures across an uninstall, back up those databases first with
 `pg_dump` against each.
 
-## Witness mTLS (optional — recommended for production)
+## Enterprise full-mesh mTLS (required production topology)
+
+The supported production topology is gateway, audit, ID Bridge, Sandbox A with
+its sanitizer, Sandbox B, and Veil Witness. It uses the verified
+`DSA_MTLS_*` runtime contract on every mesh gRPC/HTTPS link. The Witness claim
+port (`:50057`) belongs to that mesh; certificate retrieval (`:50058`) retains
+its explicit `WITNESS_MTLS_*` runtime path, wired from the same operator-owned
+gateway and Witness leaves.
+
+Helm does not create a CA, a certificate, or a private key. Before installation,
+your PKI must create one namespaced Secret per identity. Each Secret projects
+only these three keys: `ca.crt`, `tls.crt`, and `tls.key`. The leaf must contain
+the stated DNS SAN and be valid under the shared `ca.crt`.
+
+| Identity | Namespace | Secret | Required DNS SAN |
+| --- | --- | --- | --- |
+| Gateway | `dsa-edge` | `lucairn-mtls-gateway` | `dsa-gateway` |
+| Audit | `dsa-audit` | `lucairn-mtls-audit` | `dsa-audit` |
+| ID Bridge | `dsa-bridge` | `lucairn-mtls-id-bridge` | `dsa-id-bridge` |
+| Sandbox A | `dsa-identity` | `lucairn-mtls-sandbox-a` | `dsa-sandbox-a` |
+| Sanitizer | `dsa-identity` | `lucairn-mtls-sanitizer` | `dsa-sanitizer` |
+| Sandbox B | `dsa-ai` | `lucairn-mtls-sandbox-b` | `dsa-sandbox-b` |
+| Veil Witness | `dsa-witness` | `lucairn-mtls-veil-witness` | `dsa-veil-witness` |
+
+For every row, create the Secret from PKI output; this command contains only
+file references and never places material in Helm values or Git:
+
+```bash
+kubectl -n <namespace> create secret generic <secret-name> \
+  --from-file=ca.crt=/secure/pki/ca.crt \
+  --from-file=tls.crt=/secure/pki/<identity>.crt \
+  --from-file=tls.key=/secure/pki/<identity>.key
+```
+
+### Witness-signed manifest Secret (required when Veil is enabled)
+
+Before the first production gateway boot, complete the witness key ceremony in
+`docs/KEY_CEREMONY_RUNBOOK.md` §6. That ceremony creates a cryptographically
+valid `witness-signed-manifest.json` from the public-key roster and the witness
+signing seed **outside the cluster**. Helm must receive only that completed
+signed output; never place the witness seed, `keys.json`, or an unsigned
+placeholder in a values file or Git.
+
+Create the dedicated gateway-namespace Secret from the signed output before
+Helm runs. The atomic form is safe for a regenerated manifest during key
+rotation:
+
+```bash
+kubectl -n dsa-edge create secret generic lucairn-witness-signed-manifest \
+  --from-file=witness-signed-manifest.json=/secure/ceremony/witness-signed-manifest.json \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+`values-prod.yaml` references that Secret through this names-only contract:
+
+```yaml
+gateway:
+  veilWitnessSignedManifestPath: /certs/witness-signed-manifest.json
+  witnessSignedManifest:
+    existingSecret: lucairn-witness-signed-manifest
+    secretKey: witness-signed-manifest.json
+    mountPath: /certs
+    fileName: witness-signed-manifest.json
+```
+
+If you choose different names, put the complete block in
+`customer-production-values.yaml`. In production with `gateway.veilEnabled=true`,
+Helm fails before install if any field is absent or if
+`veilWitnessSignedManifestPath` is not exactly `mountPath/fileName`. This Secret
+is separate from the readiness-bundle contract; it projects exactly one file,
+read-only, at the gateway path that verifies the witness signature at startup.
+
+Use `charts/lucairn/values-prod.yaml` as the production base. It enables
+`global.mtls`, fixes these Secret names, and rejects all optional gRPC profiles
+(`ingest`, `admin`, dashboard, certification, PII ML, demo, and
+postgres-gateway) rather than allowing an insecure or partial extension. To use
+different names or key names, change all entries in `global.mtls` together.
+
+Before install, run the Helm-only preflight against your complete customer
+values. A green render alone is not an accepted deployment.
+
+```bash
+bin/lucairn doctor --values customer-production-values.yaml --offline
+helm template lucairn charts/lucairn \
+  -f charts/lucairn/values-prod.yaml \
+  -f customer-production-values.yaml >/dev/null
+```
+
+Then install and wait for every workload; run the handshake battery before
+declaring success:
+
+```bash
+helm upgrade --install lucairn charts/lucairn \
+  -f charts/lucairn/values-prod.yaml \
+  -f customer-production-values.yaml \
+  --namespace lucairn --create-namespace --wait --timeout 12m
+
+# Isolated, destructive-to-its-own-Kind-cluster acceptance only:
+scripts/test-enterprise-mtls-kind.sh
+```
+
+The harness creates ephemeral CA/leaves and a mode-0600 application values
+file under a uniquely named `/tmp` state path. The latter contains fresh
+signing seeds, their derived public keys, database/cache credentials, shared
+service/canary tokens, and the gateway keystore key; it is never printed or
+committed. The seven mTLS identity Secrets remain independently pre-created,
+mirroring the operator/PKI production contract. The harness creates a unique
+valid witness-signed manifest from that same coherent disposable key set and
+creates `lucairn-witness-signed-manifest` in `dsa-edge` before Helm. It does not
+write the ceremony `keys.json`, witness seed, or signed output into the
+worktree. It then creates a unique Kind cluster, installs only the mandatory
+mesh plus its required service
+databases/caches (not Admin, observability, or Sandbox-B Ollama/model pull),
+performs positive handshakes and wrong-CA, wrong-SAN, no-client, expired-leaf,
+and partial-Secret negatives, rotates the Audit leaf, and tears down its owned
+state. It requires authenticated GHCR credentials in `DOCKER_CONFIG` and a
+functioning container runtime. It does not use a production or customer
+context.
+
+### Rotation and incident replacement
+
+1. Issue a replacement leaf with the same required SAN and the same active CA.
+2. Replace only the affected identity Secret atomically (`kubectl create secret
+   generic ... --dry-run=client -o yaml | kubectl apply -f -`); do not put the
+   leaf in Helm values.
+3. Restart only that workload and wait for readiness, for example
+   `kubectl -n dsa-audit rollout restart deployment/audit` followed by
+   `kubectl -n dsa-audit rollout status deployment/audit --timeout=6m`.
+4. Re-run the positive handshake battery and retain the new certificate
+   fingerprint in the operator change record.
+
+Replacing a leaf changes what the server presents after its restart; it is not
+certificate revocation. A valid old leaf signed by the same CA remains
+cryptographically valid until expiry because the pinned DSA transport has no
+CRL/OCSP or per-link client-SAN ACL. For immediate incident invalidation,
+perform a coordinated CA rotation for every affected identity. The harness
+separately proves an expired leaf is rejected.
+
+## Witness mTLS (legacy Compose compatibility)
 
 By default the veil-witness cert RPC port (:50058) accepts unauthenticated
 callers. For production deployments Lucairn recommends enabling mutual-TLS
@@ -1616,7 +1754,12 @@ The witness logs a warning and degrades gracefully to unauthenticated when
 any of the three server-side paths are unset — claims from bridge, sanitizer,
 and audit continue flowing while the operator provisions the CA.
 
-### Kubernetes (Helm) path
+### Kubernetes (Helm) compatibility path
+
+This legacy per-child configuration is for non-production compatibility only.
+Do not combine it with `global.mtls.enabled=true`; the production validator
+rejects that ambiguous state. Use the enterprise full-mesh contract above for
+all production Helm installs.
 
 1. Generate certs (or use your PKI) and create Kubernetes Secrets:
 
@@ -2802,4 +2945,3 @@ Every request processed under a tuned policy is auditable after the fact: the
 manifest shows which segment type was assigned which zone and what the scan
 outcome was. This is the same manifest the Lucairn dashboard surfaces in the
 cert detail view.
-

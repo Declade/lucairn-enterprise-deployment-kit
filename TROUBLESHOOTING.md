@@ -121,6 +121,40 @@ Likely causes:
 - License values are missing.
 - Witness manifest path is configured but the file is not mounted.
 
+## Gateway fatals on a missing witness-signed manifest (production Helm)
+
+If the gateway exits with `cannot read witness-signed manifest` at
+`/certs/witness-signed-manifest.json`, do not disable Veil, blank the path, or
+substitute JSON. Production startup verifies a witness signature over the
+active public-key roster.
+
+Complete the ceremony in `docs/KEY_CEREMONY_RUNBOOK.md` §6, then create (or
+atomically replace) only its signed output in the dedicated gateway Secret:
+
+```bash
+kubectl -n dsa-edge create secret generic lucairn-witness-signed-manifest \
+  --from-file=witness-signed-manifest.json=/secure/ceremony/witness-signed-manifest.json \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n dsa-edge rollout restart deployment/gateway
+kubectl -n dsa-edge rollout status deployment/gateway --timeout=6m
+```
+
+The complete customer values contract is:
+
+```yaml
+gateway:
+  veilWitnessSignedManifestPath: /certs/witness-signed-manifest.json
+  witnessSignedManifest:
+    existingSecret: lucairn-witness-signed-manifest
+    secretKey: witness-signed-manifest.json
+    mountPath: /certs
+    fileName: witness-signed-manifest.json
+```
+
+Run `bin/lucairn doctor --values customer-production-values.yaml --offline`
+before retrying. In production with Veil enabled, Helm rejects a missing or
+partial block and any projected-path mismatch before it contacts the cluster.
+
 ## `/healthz` Returns 200 But `/readyz` Returns 503
 
 This is the most common "deployed but unusable" failure mode on a fresh install.
@@ -245,6 +279,7 @@ Run:
 
 ```bash
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
+bin/lucairn doctor --values customer-production-values.yaml --offline
 openssl x509 -noout -subject -issuer -dates -in path/to/cert.pem
 ```
 
@@ -254,6 +289,12 @@ Common causes:
 - Client cert and key do not match.
 - Cert expires within 30 days.
 - Witness mTLS files are mounted into the wrong directory.
+- A production Helm identity Secret is missing one of `ca.crt`, `tls.crt`, or
+  `tls.key`. The Pod must stay unready; do not bypass the projected Secret with
+  a plaintext or legacy-TLS override.
+- The leaf SAN does not match its identity (`dsa-audit`, `dsa-id-bridge`,
+  `dsa-sandbox-a`, `dsa-sanitizer`, `dsa-sandbox-b`, or
+  `dsa-veil-witness`). Reissue the leaf; do not disable server verification.
 
 ## Image / Config Version Drift
 

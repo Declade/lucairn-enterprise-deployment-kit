@@ -83,6 +83,18 @@ veilWitnessAddr: "veil-witness.dsa-witness.svc.cluster.local:50057"
 veilIssuer: "Lucairn Veil Witness"
 veilManifestSigningKeyId: "gateway_manifest_v1"
 veilWitnessSignedManifestPath: "/certs/witness-signed-manifest.json"
+# Operator-owned witness-signed public-key manifest. This is deliberately
+# separate from the readiness bundle: the gateway verifies this signature at
+# production boot, and Helm only projects the completed signed output. It
+# never receives the witness signing seed or creates a signature.
+witnessSignedManifest:
+  # Existing Secret in the gateway namespace (dsa-edge). Required when
+  # global.dsaEnv=production and veilEnabled=true.
+  existingSecret: ""
+  # Exactly one key from that Secret is projected read-only.
+  secretKey: "witness-signed-manifest.json"
+  mountPath: "/certs"
+  fileName: "witness-signed-manifest.json"
 gatewayBaseUrl: ""
 readiness:
   required: false

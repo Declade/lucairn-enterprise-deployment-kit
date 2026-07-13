@@ -1,0 +1,56 @@
+{{- if .Values.global.mtls.enabled }}
+# Kubelet HTTP probes cannot present the operator-owned client leaf required by
+# the sanitizer's mTLS listener. Keep this probe helper separate from the
+# sanitizer configuration so the non-secret executable contract is explicit.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sanitizer-mtls-probe
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+data:
+  sanitizer-mtls-probe.py: |
+    import os
+    import socket
+    import ssl
+    import sys
+
+    PATHS = {"/healthz", "/readyz"}
+    TIMEOUT_SECONDS = 2
+
+    def fail():
+        raise SystemExit(1)
+
+    if len(sys.argv) != 2 or sys.argv[1] not in PATHS:
+        fail()
+
+    try:
+        context = ssl.create_default_context(
+            purpose=ssl.Purpose.SERVER_AUTH,
+            cafile=os.environ["DSA_MTLS_CA_BUNDLE_PATH"],
+        )
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
+        context.load_cert_chain(
+            certfile=os.environ["DSA_MTLS_CLIENT_CERT_PATH"],
+            keyfile=os.environ["DSA_MTLS_CLIENT_KEY_PATH"],
+        )
+        with socket.create_connection(("127.0.0.1", 8086), TIMEOUT_SECONDS) as tcp:
+            tcp.settimeout(TIMEOUT_SECONDS)
+            with context.wrap_socket(tcp, server_hostname="dsa-sanitizer") as tls:
+                tls.settimeout(TIMEOUT_SECONDS)
+                request = (
+                    "GET {} HTTP/1.1\r\n"
+                    "Host: dsa-sanitizer\r\n"
+                    "Connection: close\r\n\r\n"
+                ).format(sys.argv[1]).encode("ascii")
+                tls.sendall(request)
+                status_line = tls.recv(4096).split(b"\r\n", 1)[0].split()
+        status = int(status_line[1]) if len(status_line) >= 2 else 0
+    except Exception:
+        fail()
+
+    raise SystemExit(0 if 200 <= status < 300 else 1)
+{{- end }}

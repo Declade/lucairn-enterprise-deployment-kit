@@ -1140,10 +1140,50 @@ Step 1 to bring a rebuilt deployment back to a signing, verifying state.
 ## Witness mTLS
 
 The veil-witness cert RPC port (:50058) accepts unauthenticated callers by
-default. For production, see INSTALL.md § "Witness mTLS" for the full
-enable recipe (Compose path and Helm/Kubernetes path). The witness degrades
-gracefully to unauthenticated when any server-side cert path is unset, so
-claims keep flowing during a cert rotation.
+default on the legacy Compose compatibility path. For production Helm, see
+INSTALL.md § "Enterprise full-mesh mTLS"; the older INSTALL.md § "Witness
+mTLS" procedure is not a production Helm substitute. The legacy Witness
+server degrades gracefully when its server-side paths are unset, but the
+production Helm contract must fail closed instead.
+
+For a production Helm deployment, this legacy Witness-only procedure is not
+the accepted transport posture. Follow INSTALL.md § "Enterprise full-mesh
+mTLS": all default topology identities receive `DSA_MTLS_*`, while `:50058`
+is wired through its separate `WITNESS_MTLS_*` path from the same PKI-owned
+Secrets. A Helm render is only a preflight; wait for readiness and complete the
+isolated handshake battery. Same-CA leaf replacement is not revocation; rotate
+the CA for immediate invalidation of a still-valid compromised leaf.
+
+## Witness-signed manifest (production Helm)
+
+The gateway verifies the witness-signed public-key manifest before it starts
+in production. This is a distinct contract from witness mTLS and readiness:
+the only Kubernetes input is one completed signed file in the
+`lucairn-witness-signed-manifest` Secret in `dsa-edge`. Helm never receives the
+witness signing seed and never signs the manifest.
+
+After completing `docs/KEY_CEREMONY_RUNBOOK.md` §6 on the ceremony host,
+replace the Secret atomically and restart only the gateway:
+
+```bash
+kubectl -n dsa-edge create secret generic lucairn-witness-signed-manifest \
+  --from-file=witness-signed-manifest.json=/secure/ceremony/witness-signed-manifest.json \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n dsa-edge rollout restart deployment/gateway
+kubectl -n dsa-edge rollout status deployment/gateway --timeout=6m
+```
+
+The configured `gateway.veilWitnessSignedManifestPath` must equal
+`gateway.witnessSignedManifest.mountPath/fileName`. Check the rendered
+contract before an upgrade; a missing Secret name/key, partial block, or path
+mismatch must be a Helm render failure, never a bypass or placeholder blob:
+
+```bash
+bin/lucairn doctor --values customer-production-values.yaml --offline
+helm template lucairn charts/lucairn \
+  -f charts/lucairn/values-prod.yaml \
+  -f customer-production-values.yaml >/dev/null
+```
 
 **To verify mTLS is active:**
 
