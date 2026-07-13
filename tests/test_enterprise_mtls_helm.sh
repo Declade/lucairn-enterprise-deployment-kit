@@ -533,6 +533,50 @@ for required_term in global.mtls operator/PKI doctor readiness acceptance; do
   fi
 done
 
+# The production mTLS instructions create operator-owned Secrets before Helm.
+# Parse that section specifically: clean clusters need the six namespaces
+# created or intentionally adopted by the lucairn release before the first
+# Secret command, and both production Helm commands need the private-registry
+# config that the empty generated overlay deliberately does not carry.
+ruby -e '
+  document = File.read(ARGV.fetch(0))
+  section = document[/^## Enterprise full-mesh mTLS \(required production topology\)$.*?(?=^## |\z)/m]
+  abort "INSTALL.md lacks the production mTLS section" unless section
+
+  adoption = section.match(/### Clean-cluster namespace create or intentional Helm adoption.*?^```bash\n(?<body>.*?)^```/m)
+  abort "production mTLS instructions lack the clean-cluster namespace adoption block" unless adoption
+  block = adoption[:body]
+  namespaces = block.match(/^for namespace in ([^;\n]+); do$/)&.captures&.first&.split
+  expected_namespaces = %w[dsa-edge dsa-audit dsa-bridge dsa-identity dsa-ai dsa-witness]
+  abort "namespace adoption block does not cover exactly the six production namespaces" unless namespaces == expected_namespaces
+  required_lines = [
+    %(kubectl create namespace "$namespace" --dry-run=client -o yaml | kubectl apply -f -),
+    %(kubectl label namespace "$namespace" app.kubernetes.io/managed-by=Helm --overwrite),
+    %(kubectl annotate namespace "$namespace" meta.helm.sh/release-name=lucairn --overwrite),
+    %(kubectl annotate namespace "$namespace" meta.helm.sh/release-namespace=lucairn --overwrite),
+  ]
+  required_lines.each do |line|
+    abort "namespace adoption block lacks #{line.inspect}" unless block.lines.map(&:strip).include?(line)
+  end
+  first_secret = section.index("kubectl -n <namespace> create secret generic")
+  abort "production mTLS instructions lack the PKI Secret command" unless first_secret
+  abort "namespace adoption must precede the first PKI Secret command" unless adoption.begin(0) < first_secret
+
+  expected_pull_config = %(--set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json")
+  commands = section.scan(/```bash\n(.*?)^```/m).flatten
+  {
+    "helm template lucairn charts/lucairn" => "template",
+    "helm upgrade --install lucairn charts/lucairn" => "install",
+  }.each do |prefix, name|
+    command = commands.find { |candidate| candidate.lines.any? { |line| line.strip.start_with?(prefix) } }
+    abort "production #{name} command missing from INSTALL.md" unless command
+    option_lines = command.lines.map(&:strip).map { |line| line.delete_suffix("\\").rstrip }
+    abort "production #{name} command lacks the exact private-registry --set-file input" unless option_lines.include?(expected_pull_config)
+  end
+  abort "production instructions do not require an authenticated private-registry config" unless section.include?("authenticated\nprivate-registry configuration")
+  abort "production instructions do not keep registry config out of Git and logs" unless section.include?("out of Git and logs")
+' "$ROOT/INSTALL.md"
+
 # NetworkPolicy enforcement is an independently verified Veil isolation
 # control. Stock Kind/kindnet can accept the mTLS transport harness, so neither
 # Pod readiness nor that acceptance supplies NetworkPolicy evidence.
