@@ -25,11 +25,21 @@ public_keys = %w[
   LCR_BRIDGE_PUBLIC_KEY LCR_SANITIZER_PUBLIC_KEY
   LCR_SANDBOX_B_PUBLIC_KEY LCR_AUDIT_PUBLIC_KEY
 ]
+# The gateway platform/entitlement license roster is issuer-signed material;
+# the Kind battery intentionally leaves it EMPTY (the supported unregistered
+# path — a random stand-in makes the pinned binary refuse to boot). Empty is
+# allowed for exactly these keys; any non-empty value must still be a real
+# secret and participates in the custody scan.
+unregistered_license_keys = %w[
+  DSA_LICENSE_KEY DSA_LICENSE_SIGNING_KEY
+  LUCAIRN_LICENSE_KEY LUCAIRN_LICENSE_PUBLIC_KEY
+]
 private_items = []
 Dir.children(directory).sort.grep(/\.env\z/).each do |name|
   File.foreach(File.join(directory, name), chomp: true) do |line|
     key, value = line.split("=", 2)
     next if value.nil? || public_keys.include?(key)
+    next if value.empty? && unregistered_license_keys.include?(key)
     abort "release-state custody check: empty or short private source item #{name}/#{key}" if value.empty? || value.length < 16
     private_items << [name, key, value]
   end
