@@ -24,7 +24,7 @@ assert_no_executable_rg_in_file() {
   # pass strips it.
   subst_hits="$(sed -e "s/'[^']*'//g" -e 's/^[[:space:]]*#.*$//' \
       -e 's/[[:space:]]#[^"]*$//' "$script" \
-    | grep -n -E '\$\([[:space:]]*rg([[:space:]]|\)|$)|`[[:space:]]*rg([[:space:]]|`|$)' || true)"
+    | grep -n -E '\$\([[:space:]]*((command|env)[[:space:]]+)*rg([[:space:]]|\)|$)|`[[:space:]]*((command|env)[[:space:]]+)*rg([[:space:]]|`|$)' || true)"
   cmd_hits="$(sed -e "s/'[^']*'//g" -e 's/"[^"]*"//g' \
       -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]#.*$//' "$script" \
     | grep -n -E '(^|[;&|()[:space:]])rg([[:space:]]|$)' || true)"
@@ -82,6 +82,22 @@ assert_no_executable_rg_self_test() {
     printf '%s\n' "value=\"\$($rg_command --version)\"" > "$fixture"
     if assert_no_executable_rg_in_file "$fixture" >/dev/null 2>&1; then
       echo "ripgrep guard misses a command substitution" >&2
+      status=1
+    fi
+  fi
+
+  if [ "$status" -eq 0 ]; then
+    printf '%s\n' "value=\"\$(command $rg_command --version)\"" > "$fixture"
+    if assert_no_executable_rg_in_file "$fixture" >/dev/null 2>&1; then
+      echo "ripgrep guard misses a command-wrapped substitution" >&2
+      status=1
+    fi
+  fi
+
+  if [ "$status" -eq 0 ]; then
+    printf '%s\n' "out=\`env $rg_command -n probe\`" > "$fixture"
+    if assert_no_executable_rg_in_file "$fixture" >/dev/null 2>&1; then
+      echo "ripgrep guard misses an env-wrapped backtick substitution" >&2
       status=1
     fi
   fi
