@@ -71,11 +71,6 @@ write_env() {
   chmod 0600 "$output"
 }
 
-gateway_license_key="$(random_hex)"
-gateway_license_signing_key="$(random_hex)"
-gateway_lucairn_license_key="$(random_hex)"
-gateway_lucairn_license_public_key="$(random_hex)"
-
 audit_postgres_password="$(random_hex)"
 audit_app_password="$(random_hex)"
 bridge_postgres_password="$(random_hex)"
@@ -84,11 +79,16 @@ witness_postgres_password="$(random_hex)"
 witness_app_password="$(random_hex)"
 sandbox_b_redis_password="$(random_hex)"
 
+# The platform-tier token and the deployment entitlement are issuer-signed
+# formats, not random 64-hex values. Keep the complete external-Secret target
+# roster empty in Kind so Gateway takes its supported unregistered path; a
+# non-empty random value makes the pinned binary fail before the battery can
+# exercise the mTLS topology.
 write_env gateway \
-  "DSA_LICENSE_KEY=$gateway_license_key" \
-  "DSA_LICENSE_SIGNING_KEY=$gateway_license_signing_key" \
-  "LUCAIRN_LICENSE_KEY=$gateway_lucairn_license_key" \
-  "LUCAIRN_LICENSE_PUBLIC_KEY=$gateway_lucairn_license_public_key" \
+  "DSA_LICENSE_KEY=" \
+  "DSA_LICENSE_SIGNING_KEY=" \
+  "LUCAIRN_LICENSE_KEY=" \
+  "LUCAIRN_LICENSE_PUBLIC_KEY=" \
   "DSA_ADMIN_KEY=$admin_key" \
   "SANDBOX_B_API_KEY=$sandbox_b_api_key" \
   "LCR_MANIFEST_SIGNING_KEY=$gateway_manifest_seed" \
@@ -144,7 +144,7 @@ write_env sandbox-b \
   "DSA_ADMIN_KEY=$admin_key" \
   "DSA_MANAGED_AI_KEY=$(random_hex)" \
   "DSA_SERVICE_TOKEN=$service_token" \
-  "DSA_LICENSE_KEY=$gateway_license_key"
+  "DSA_LICENSE_KEY="
 
 write_env veil-witness \
   "DATABASE_URL=postgres://veil:$witness_postgres_password@veil-witness-postgresql:5432/veil?sslmode=disable" \
@@ -188,6 +188,18 @@ PUBLIC_OVERLAY="$PUBLIC_OVERLAY" FIXTURE="$FIXTURE" \
         "veilWitnessPublicKey" => ENV.fetch("WITNESS_PUBLIC"),
         "veilGatewayPublicKey" => ENV.fetch("GATEWAY_PUBLIC"),
         "veilGatewayManifestPublicKey" => ENV.fetch("GATEWAY_MANIFEST_PUBLIC")
+      },
+      # These four verifier values are public configuration, not operator
+      # credentials. Veil Witness reads them from its ConfigMap, so mirror the
+      # public roster into the child value path while all private keys stay in
+      # the pre-created application Secrets.
+      "veil-witness" => {
+        "config" => {
+          "bridgePublicKey" => ENV.fetch("BRIDGE_PUBLIC"),
+          "sanitizerPublicKey" => ENV.fetch("SANITIZER_PUBLIC"),
+          "sandboxBPublicKey" => ENV.fetch("SANDBOX_B_PUBLIC"),
+          "auditPublicKey" => ENV.fetch("AUDIT_PUBLIC")
+        }
       }
     }
     output = deep_merge(fixture, kind)

@@ -25,6 +25,59 @@ render() {
 RENDER="$TMPDIR/accepted.yaml"
 render > "$RENDER"
 
+# The Kind generator has two distinct custody domains: private application
+# Secret inputs and public verifier configuration. Assert the actual ordered
+# production + generated-public-overlay render, rather than a synthetic
+# values file, so a future custody refactor cannot disconnect Veil Witness or
+# make Gateway consume a malformed stand-in license.
+ruby -ryaml -e '
+  documents = YAML.load_stream(File.read(ARGV.fetch(0))).compact
+  public_overlay = YAML.safe_load(File.read(ARGV.fetch(1)), aliases: true)
+  gateway_env = File.readlines(ARGV.fetch(2), chomp: true).each_with_object({}) do |line, values|
+    key, value = line.split("=", 2)
+    values[key] = value if key
+  end
+  named = lambda do |kind, name|
+    documents.find { |document| document["kind"] == kind && document.dig("metadata", "name") == name } \
+      || abort("missing #{kind}/#{name} in Kind production render")
+  end
+
+  witness = named.call("ConfigMap", "veil-witness-config").fetch("data")
+  public_keys = public_overlay.fetch("kindPublicKeys")
+  witness_key_map = {
+    "LCR_BRIDGE_PUBLIC_KEY" => "veilBridgePublicKey",
+    "LCR_SANITIZER_PUBLIC_KEY" => "veilSanitizerPublicKey",
+    "LCR_SANDBOX_B_PUBLIC_KEY" => "veilSandboxBPublicKey",
+    "LCR_AUDIT_PUBLIC_KEY" => "veilAuditPublicKey"
+  }
+  witness_key_map.each do |environment, overlay_key|
+    expected = public_keys.fetch(overlay_key)
+    actual = witness.fetch(environment, "")
+    abort "Kind public overlay has malformed #{overlay_key}" unless expected.match?(/\A[0-9a-f]{64}\z/i)
+    abort "Veil Witness #{environment} is empty or does not match the Kind public overlay" unless actual == expected
+  end
+
+  gateway = named.call("Deployment", "gateway")
+  container = gateway.dig("spec", "template", "spec", "containers").find { |item| item["name"] == "gateway" } \
+    || abort("gateway container missing from Kind production render")
+  env_from = container.fetch("envFrom", [])
+  config_sources = env_from.map { |source| source.dig("configMapRef", "name") }.compact
+  secret_sources = env_from.map { |source| source.dig("secretRef", "name") }.compact
+  abort "gateway ConfigMap env source drift" unless config_sources == ["gateway-config"]
+  abort "gateway credentials Secret env source drift" unless secret_sources == ["gateway-credentials"]
+  gateway_config = named.call("ConfigMap", "gateway-config").fetch("data")
+  unexpected_config_licenses = gateway_config.keys.grep(/\A(?:DSA_LICENSE_KEY|DSA_LICENSE_SIGNING_KEY|LUCAIRN_LICENSE_KEY|LUCAIRN_LICENSE_PUBLIC_KEY)\z/)
+  abort "gateway ConfigMap shadows credentials Secret license values: #{unexpected_config_licenses.join(", ")}" unless unexpected_config_licenses.empty?
+  gateway_external_secret = named.call("ExternalSecret", "gateway-credentials")
+  external_license_keys = gateway_external_secret.dig("spec", "data").map { |item| item.fetch("secretKey") }
+  license_keys = %w[DSA_LICENSE_KEY DSA_LICENSE_SIGNING_KEY LUCAIRN_LICENSE_KEY LUCAIRN_LICENSE_PUBLIC_KEY]
+  abort "gateway ExternalSecret license-key roster drift" unless (license_keys - external_license_keys).empty?
+  license_keys.each do |key|
+    abort "Kind gateway credentials source omits #{key}" unless gateway_env.key?(key)
+    abort "Kind gateway credentials source must leave #{key} empty without an issuer-signed license" unless gateway_env.fetch(key).empty?
+  end
+' "$RENDER" "$PUBLIC_OVERLAY" "$APPLICATION_SECRETS/gateway.env"
+
 # The accepted production values are layered over values.yaml. Every mandatory
 # dependency must therefore resolve to the literal boolean true, and the
 # production overlay must declare the witness explicitly: Helm otherwise
@@ -32,8 +85,8 @@ render > "$RENDER"
 # the supported production topology. Keep the removal/false checks here so a
 # future edit cannot silently rely on that Helm fallback.
 ruby -ryaml -e '
-  defaults = YAML.load_file(ARGV.fetch(0))
-  production = YAML.load_file(ARGV.fetch(1))
+  defaults = (begin; YAML.load_file(ARGV.fetch(0), aliases: true); rescue ArgumentError; YAML.load_file(ARGV.fetch(0)); end)
+  production = (begin; YAML.load_file(ARGV.fetch(1), aliases: true); rescue ArgumentError; YAML.load_file(ARGV.fetch(1)); end)
   mandatory = %w[gateway audit id-bridge sandbox-a sandbox-b veil-witness]
   mandatory.each do |name|
     value = production.fetch(name, {}).fetch("enabled", defaults.fetch(name, {}).fetch("enabled", nil))
@@ -821,7 +874,7 @@ grep -q 'doctor: ok' "$TMPDIR/doctor-layered-ok.out" \
 # The customer overlay wins when supplied after the parent, exactly as repeated
 # Helm -f semantics require. Clearing one required Secret must therefore fail.
 ruby -ryaml -e '
-  values = YAML.load_file(ARGV.fetch(0))
+  values = (begin; YAML.load_file(ARGV.fetch(0), aliases: true); rescue ArgumentError; YAML.load_file(ARGV.fetch(0)); end)
   values.fetch("global").fetch("mtls").fetch("secrets")["audit"] = ""
   File.write(ARGV.fetch(1), YAML.dump(values))
 ' "$PUBLIC_OVERLAY" "$TMPDIR/doctor-clear-audit.yaml"
@@ -840,7 +893,7 @@ grep -q 'global.mtls.secrets.audit' "$TMPDIR/doctor-clear-audit.out" \
 # production registry-auth decision. This proves doctor preserves ordered -f
 # inputs without weakening the production site's required configuration.
 ruby -ryaml -e '
-  values = YAML.load_file(ARGV.fetch(0))
+  values = (begin; YAML.load_file(ARGV.fetch(0), aliases: true); rescue ArgumentError; YAML.load_file(ARGV.fetch(0)); end)
   File.write(ARGV.fetch(1), YAML.dump({ "global" => { "secrets" => { "vault" => { "endpoint" => values.fetch("global").fetch("secrets").fetch("vault").fetch("endpoint") } }, "imagePullSecrets" => [{ "name" => "lucairn-registry" }] } }))
 ' "$PUBLIC_OVERLAY" "$TMPDIR/doctor-site-endpoint.yaml"
 "$ROOT/bin/lucairn" doctor \
@@ -906,7 +959,7 @@ grep -Fq 'refusing fixed test signing-key injection because production external-
 # complete generated values document so no unrelated Secret validation masks
 # the strict type error before the validator runs.
 ruby -ryaml -e '
-  values = YAML.load_file(ARGV.fetch(0))
+  values = (begin; YAML.load_file(ARGV.fetch(0), aliases: true); rescue ArgumentError; YAML.load_file(ARGV.fetch(0)); end)
   values.fetch("global").fetch("mtls")["enabled"] = "false"
   File.write(ARGV.fetch(1), YAML.dump(values))
 ' "$PUBLIC_OVERLAY" "$TMPDIR/doctor-mtls-string.yaml"
