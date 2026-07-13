@@ -145,6 +145,11 @@ demo:
 
 gateway:
   replicaCount: 1  # v1.0 single-replica lock (file-keystore on RWO PVC)
+  # The production mTLS contract is explicit at the operator boundary. The
+  # pinned gateway also applies tlsutil.ForceHTTPS when its DSA_MTLS_* client
+  # triple is present; that runtime guard is defense in depth, not a reason to
+  # render a compatibility http:// endpoint in production.
+  sanitizerUrl: "https://sandbox-a.dsa-identity.svc:8086"
   # The key ceremony signs this public manifest outside Helm, then the
   # operator creates this Secret in dsa-edge before installation. Do not put a
   # witness signing seed or unsigned manifest in values/Git.

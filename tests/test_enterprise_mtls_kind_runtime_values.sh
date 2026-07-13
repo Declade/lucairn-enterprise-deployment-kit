@@ -182,16 +182,20 @@ grep -Fq -- '--wait-for-jobs' "$KIND_GATE" \
   exit 1
 }
 
-# The dsa-edge probe is acceptance evidence for the chart's actual
-# witness-ingress policy, not a harness-specific allow rule. Keep both locked
-# witness ports in the probe battery and reject any NetworkPolicy manipulation
-# in the harness that could mask a chart regression.
+# The generic dsa-edge probe intentionally has no witness authorization. Both
+# witness proofs must run from the actual gateway Pod selected by the chart's
+# least-privilege policy; reject any generic-probe witness fallback or
+# NetworkPolicy manipulation that could mask a chart regression.
 for witness_port in 50057 50058; do
-  grep -Fq "positive_handshake veil-witness.dsa-witness.svc.cluster.local:${witness_port} dsa-veil-witness" "$KIND_GATE" \
-    || { echo "Kind harness does not probe the dsa-edge to witness :${witness_port} mTLS path" >&2; exit 1; }
+  grep -Fq "gateway_witness_handshake veil-witness.dsa-witness.svc.cluster.local:${witness_port} dsa-veil-witness" "$KIND_GATE" \
+    || { echo "Kind harness does not execute the actual gateway to witness :${witness_port} mTLS path" >&2; exit 1; }
+  if grep -Fq "positive_handshake veil-witness.dsa-witness.svc.cluster.local:${witness_port} dsa-veil-witness" "$KIND_GATE"; then
+    echo "Kind harness must not run a generic-probe witness handshake on :${witness_port}" >&2
+    exit 1
+  fi
 done
 if grep -Eqi '(^|[^[:alpha:]])networkpolicy([^[:alpha:]]|$)' "$KIND_GATE"; then
-  echo "Kind harness must not install or bypass a NetworkPolicy for the dsa-edge witness probe" >&2
+  echo "Kind harness must not install or bypass a NetworkPolicy for the gateway witness proof" >&2
   exit 1
 fi
 
@@ -203,8 +207,19 @@ ruby -e '
   source = File.read(ARGV.fetch(0))
   helper = source[/^positive_handshake\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses positive_handshake helper")
   abort "positive_handshake omits exact hostname verification" unless helper.include?("-verify_hostname '\''$san'\''")
+  abort "positive_handshake must use a bounded OpenSSL deadline" unless helper.include?("timeout 15 openssl s_client")
+  abort "positive_handshake must fail rather than accept a timeout" unless helper.include?("positive mTLS handshake failed or timed out")
   positive_paths = source.scan(/^positive_handshake\s+\S+\s+\S+$/)
-  abort "Kind harness has no positive mTLS paths" if positive_paths.empty?
+  expected_paths = [
+    "positive_handshake audit.dsa-audit.svc.cluster.local:50051 dsa-audit",
+    "positive_handshake id-bridge.dsa-bridge.svc.cluster.local:50052 dsa-id-bridge",
+    "positive_handshake sandbox-a.dsa-identity.svc.cluster.local:50053 dsa-sandbox-a",
+    "positive_handshake sandbox-b.dsa-ai.svc.cluster.local:50054 dsa-sandbox-b",
+    "positive_handshake sandbox-a.dsa-identity.svc.cluster.local:8086 dsa-sanitizer"
+  ]
+  abort "generic positive mTLS path roster changed: #{positive_paths.inspect}" unless positive_paths.uniq == expected_paths
+  abort "generic positive mTLS paths may repeat only the post-rotation Audit proof" unless positive_paths.count(expected_paths.fetch(0)) == 2 && positive_paths.count == 6
+  abort "generic probe must not claim a witness handshake" if positive_paths.any? { |path| path.include?("veil-witness") }
   wrong_san = source[/^negative_handshake wrong-san "(?<command>.*)"$/, :command] || abort("Kind harness misses wrong-SAN negative")
   servername = wrong_san[/\B-servername\s+(\S+)/, 1] || abort("wrong-SAN negative omits SNI")
   verify_hostname = wrong_san[/\B-verify_hostname\s+(\S+)/, 1] || abort("wrong-SAN negative omits hostname verification")
@@ -214,6 +229,358 @@ ruby -e '
     abort "wrong-SAN negative omits #{argument}" unless wrong_san.include?(argument)
   end
 ' "$KIND_GATE"
+
+# The two witness proofs and the gateway-local application health evidence
+# must originate inside the real gateway container and use only a temporary,
+# static standard-library Go helper. Its node target, Pod/container identity,
+# projected input files, writable non-secret PVC parent, execution, bounded
+# loopback health mode, and deletion are all fail-closed static requirements.
+ruby -ropen3 -e '
+  source = File.read(ARGV.fetch(0))
+  required = [
+    "GATEWAY_POD=\"${gateway_pods[0]}\"",
+    "GATEWAY_CONTAINER=\"gateway\"",
+    "expected exactly one gateway Pod after rollout",
+    "expected exactly one $GATEWAY_CONTAINER container",
+    "GATEWAY_KEYSTORE_VOLUME=\"$(\"${K[@]}\" -n dsa-edge get pod \"$GATEWAY_POD\"",
+    "does not mount the required writable keystore PVC parent $GATEWAY_HELPER_DIR",
+    "is not a persistentVolumeClaim",
+    "unsupported gateway Kind node architecture",
+    "does not match node $GATEWAY_NODE architecture $GATEWAY_NODE_ARCH",
+    "GATEWAY_NODE_ARCH=\"$(\"${K[@]}\" get node \"$GATEWAY_NODE\"",
+    "GATEWAY_RUNTIME_MACHINE=\"$(\"${K[@]}\" -n dsa-edge exec \"$GATEWAY_POD\" -c \"$GATEWAY_CONTAINER\" -- uname -m)",
+    "CGO_ENABLED=0 GOOS=linux GOARCH=\"$GATEWAY_NODE_ARCH\"",
+    "gateway-witness-tls-helper.go",
+    "go build -trimpath",
+    "-ldflags=",
+    "-s -w",
+    "GATEWAY_HELPER_DIR=\"/etc/dsa/keystore-dir\"",
+    "GATEWAY_MTLS_DIR=\"/var/run/lucairn/mtls\"",
+    "test -d \"$1\" && test -w \"$1\" && test ! -e \"$1/$2\"",
+    "cat > \"$1/$2\"",
+    "chmod 0700 \"$1/$2\"",
+    "rm -f \"$1\"; test ! -e \"$1\"",
+    "gateway_witness_handshake veil-witness.dsa-witness.svc.cluster.local:50057 dsa-veil-witness",
+    "gateway_witness_handshake veil-witness.dsa-witness.svc.cluster.local:50058 dsa-veil-witness",
+    "gateway evidence helper deleted after witness and local health battery",
+    "they do not claim to invoke\n# either gateway application"
+  ]
+  required.each { |needle| abort "gateway witness contract missing: #{needle}" unless source.include?(needle) }
+  abort "generic witness probe call remains" if source.match?(/^positive_handshake veil-witness\./)
+  helper = source[/^gateway_witness_handshake\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses gateway witness helper runner")
+  [
+    "exec \"$GATEWAY_POD\" -c \"$GATEWAY_CONTAINER\" --",
+    "\"$GATEWAY_HELPER_PATH\" tls-handshake \"$address\" \"$san\"",
+    "\"$GATEWAY_MTLS_DIR/ca.crt\" \"$GATEWAY_MTLS_DIR/tls.crt\" \"$GATEWAY_MTLS_DIR/tls.key\""
+  ].each { |needle| abort "gateway witness helper runner misses: #{needle}" unless helper.include?(needle) }
+  health = source[/^gateway_health_response\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses gateway-local health runner")
+  [
+    "exec \"$GATEWAY_POD\" -c \"$GATEWAY_CONTAINER\" --",
+    "\"$GATEWAY_HELPER_PATH\" gateway-health",
+    "mktemp -d \"${TMPDIR:-/tmp}/lucairn-gateway-health.XXXXXX\"",
+    "umask 077",
+    ">\"$stdout_file\" 2>\"$stderr_file\"",
+    "GATEWAY_HEALTH_RESPONSE=\"$(<\"$stdout_file\")\"",
+    "rm -f \"$stdout_file\" \"$stderr_file\"",
+    "rmdir \"$capture_dir\""
+  ].each { |needle| abort "gateway-local health runner misses: #{needle}" unless health.include?(needle) }
+  abort "gateway-local health runner must not use the generic probe" if health.match?(/\bprobe\b/)
+  abort "gateway-local health runner still merges kubectl stderr into JSON stdout" if health.include?("2>&1")
+
+  # Model a nonzero kubectl helper exit: kubectl adds transport text to stderr,
+  # while helper JSON stdout remains the sole parser input. The same real
+  # runner must reject malformed stdout (including a valid JSON prefix plus
+  # suffix) and retain status zero for a successful helper response.
+  structured = source[/^gateway_health_response_is_structured\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses structured gateway health validator")
+  identity_failure = source[/^gateway_health_response_has_identity_failure\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses parsed identity-failure validator")
+  healthy = source[/^gateway_health_response_is_mtls_healthy\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses healthy gateway response validator")
+  {
+    object: [%q({"status":"unhealthy"}), true],
+    prefix: ["transport diagnostic\\n{\"status\":\"unhealthy\"}", false],
+    suffix: [%q({"status":"unhealthy"} trailing-data), false]
+  }.each do |name, (fixture, expected)|
+    _stdout, _stderr, result = Open3.capture3("bash", "-c", structured, stdin_data: fixture)
+    abort "gateway structured validator #{name} fixture result changed" unless result.success? == expected
+  end
+  runner_fixture = <<~BASH
+    mock_kubectl() {
+      printf "%s" "$MOCK_STDOUT"
+      printf "%s" "$MOCK_STDERR" >&2
+      return "$MOCK_STATUS"
+    }
+    K=(mock_kubectl)
+    GATEWAY_POD=gateway-fixture
+    GATEWAY_CONTAINER=gateway
+    GATEWAY_HELPER_PATH=gateway-helper
+    gateway_health_response() {
+    #{health}
+    }
+    gateway_health_response_is_structured() {
+    #{structured}
+    }
+    gateway_health_response_has_identity_failure() {
+    #{identity_failure}
+    }
+    gateway_health_response_is_mtls_healthy() {
+    #{healthy}
+    }
+    gateway_health_response
+    helper_status=$?
+    if printf "%s" "$GATEWAY_HEALTH_RESPONSE" | gateway_health_response_has_identity_failure; then identity_status=0; else identity_status=$?; fi
+    if printf "%s" "$GATEWAY_HEALTH_RESPONSE" | gateway_health_response_is_mtls_healthy; then healthy_status=0; else healthy_status=$?; fi
+    printf "%s\\n%s\\n%s\\n" "$helper_status" "$identity_status" "$healthy_status"
+    printf "%s" "$GATEWAY_HEALTH_RESPONSE"
+  BASH
+  fixtures = {
+    nonzero_json: [
+      %q({"status":"unhealthy","checks":{"identity":{"status":"fail"},"sanitizer":{"status":"fail"}}}),
+      "command terminated with exit code 1; credential=top-secret; path=/private/private.key",
+      [1, 0, 1]
+    ],
+    malformed: [
+      %q({"status":"unhealthy","checks":{"identity":{"status":"fail"}}} trailing-data),
+      "command terminated with exit code 1; credential=top-secret; path=/private/private.key",
+      [1, 1, 1]
+    ],
+    success: [
+      %q({"status":"healthy","checks":{"identity":{"status":"ok"},"sanitizer":{"status":"ok"},"sandbox_b":{"status":"ok"}}}),
+      "", [0, 1, 0]
+    ]
+  }
+  fixtures.each do |name, (stdout, stderr, expected_statuses)|
+    output, diagnostics, process = Open3.capture3(
+      { "MOCK_STDOUT" => stdout, "MOCK_STDERR" => stderr, "MOCK_STATUS" => expected_statuses.fetch(0).to_s },
+      "bash", "-c", runner_fixture
+    )
+    abort "gateway health runner fixture #{name} did not complete" unless process.success?
+    helper_status, identity_status, healthy_status, parser_input = output.split("\n", 4)
+    actual_statuses = [helper_status, identity_status, healthy_status].map(&:to_i)
+    abort "gateway health runner fixture #{name} changed status preservation" unless actual_statuses == expected_statuses
+    abort "gateway health runner fixture #{name} mixed kubectl stderr into parser input" unless parser_input == stdout
+    combined_output = output + diagnostics
+    abort "gateway health runner fixture #{name} leaked transport diagnostics" if combined_output.include?("top-secret") || combined_output.include?("/private/private.key")
+  end
+  positive_health = source[/^gateway_health_mtls_healthy\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses bounded positive gateway health convergence")
+  [
+    "deadline=$((SECONDS + 40))",
+    "while (( SECONDS < deadline )); do",
+    "gateway_health_response_is_mtls_healthy",
+    "gateway_health_response_is_structured",
+    "[ \"$status\" -eq 0 ]",
+    "sleep 2",
+    "gateway_pod_re_resolve || true",
+    "complete application-level healthy response within 40 seconds"
+  ].each { |needle| abort "gateway positive health convergence misses: #{needle}" unless positive_health.include?(needle) }
+  abort "gateway positive health convergence accepts a one-shot response" unless positive_health.match?(/while \(\( SECONDS < deadline \)\); do.*?gateway_health_response.*?sleep 2/m)
+  healthy_response = source[/^gateway_health_response_is_mtls_healthy\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses complete gateway health JSON validator")
+  [
+    "response[\"status\"] == \"healthy\"",
+    "%w[identity sanitizer sandbox_b]",
+    "checks = response[\"checks\"]",
+    "checks.is_a?(Hash)",
+    "checks[dependency].is_a?(Hash)",
+    "checks[dependency][\"status\"] == \"ok\""
+  ].each { |needle| abort "gateway health validator misses required same-response status: #{needle}" unless healthy_response.include?(needle) }
+  abort "gateway health validator does not require a JSON object" unless healthy_response.include?("response.is_a?(Hash)")
+  {
+    positive: [%q({"status":"healthy","checks":{"identity":{"status":"ok"},"sanitizer":{"status":"ok"},"sandbox_b":{"status":"ok"}}}), true],
+    partial: [%q({"status":"healthy","checks":{"identity":{"status":"ok"},"sanitizer":{"status":"ok"}}}), false],
+    malformed: [%q({"status":"healthy","checks":), false]
+  }.each do |name, (fixture, expected)|
+    _stdout, _stderr, status = Open3.capture3("bash", "-c", healthy_response, stdin_data: fixture)
+    abort "gateway health validator #{name} nested-checks fixture result changed" unless status.success? == expected
+  end
+  rejection = source[/^gateway_identity_server_material_rejected\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses bounded gateway server-material rejection evidence")
+  [
+    "deadline=$((SECONDS + 40))",
+    "while (( SECONDS < deadline )); do",
+    "if [ \"$status\" -ne 0 ] && gateway_health_response_has_identity_failure <<<\"$response\"; then",
+    "if gateway_health_response_is_structured <<<\"$response\"; then",
+    "sleep 2",
+    "gateway_pod_re_resolve",
+    "server material left the real gateway identity client healthy through the 40s convergence window"
+  ].each { |needle| abort "gateway server-material rejection lacks bounded convergence: #{needle}" unless rejection.include?(needle) }
+  abort "gateway server-material rejection can print unstructured helper stdout" if rejection.match?(/printf .*"\$response"/)
+  abort "gateway server-material rejection lacks a bounded terminal diagnostic" unless rejection.match?(/printf .*"\$diagnostic"/)
+  abort "gateway server-material rejection accepts one-shot health evidence" unless rejection.match?(/while \(\( SECONDS < deadline \)\); do.*?gateway_health_response.*?sleep 2.*?continue/m)
+  proof = rejection.index("if [ \"$status\" -ne 0 ] && gateway_health_response_has_identity_failure <<<\"$response\"; then") || abort("gateway server-material rejection does not require a nonzero helper result plus parsed identity failure")
+  structured_retry = rejection.index("if gateway_health_response_is_structured <<<\"$response\"; then") || abort("gateway server-material rejection does not retry structured intermediate responses")
+  turnover = rejection.index("if [ \"$status\" -ne 0 ] && gateway_pod_re_resolve; then") || abort("gateway server-material rejection lost safe Pod-turnover recovery")
+  terminal = rejection.index("echo \"FAIL: $description gateway /healthz did not produce non-2xx JSON identity status=fail\"") || abort("gateway server-material rejection misses fail-closed terminal failure")
+  proof_return = rejection.index("return 0", proof) || abort("gateway server-material rejection does not return after identity-failure proof")
+  abort "structured sanitizer-only failure can be terminal before identity convergence" unless proof < structured_retry && structured_retry < turnover && turnover < terminal
+  abort "observed nonzero identity failure can reach a bounded terminal failure" unless proof < proof_return && proof_return < structured_retry
+  abort "gateway server-material rejection retains loose identity text matching" if rejection.match?(/grep -Eq.*identity/)
+  identity_failure = source[/^gateway_health_response_has_identity_failure\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses parsed identity-failure validator")
+  [
+    "response.is_a?(Hash)",
+    "response[\"checks\"].is_a?(Hash)",
+    "response[\"checks\"][\"identity\"].is_a?(Hash)",
+    "response[\"checks\"][\"identity\"][\"status\"] == \"fail\""
+  ].each { |needle| abort "identity-failure validator misses required structured check: #{needle}" unless identity_failure.include?(needle) }
+  {
+    identity_fail: [%q({"status":"unhealthy","checks":{"identity":{"status":"fail"},"sanitizer":{"status":"fail"}}}), true],
+    sanitizer_only: [%q({"status":"unhealthy","checks":{"identity":{"status":"ok"},"sanitizer":{"status":"fail"}}}), false],
+    overall_only: [%q({"status":"unhealthy","checks":{"identity":{"status":"ok"}}}), false],
+    malformed: [%q({"status":"unhealthy","checks":), false],
+    unstructured: ["gateway health request failed", false]
+  }.each do |name, (fixture, expected)|
+    _stdout, _stderr, status = Open3.capture3("bash", "-c", identity_failure, stdin_data: fixture)
+    abort "identity-failure validator #{name} fixture result changed" unless status.success? == expected
+  end
+  re_resolve = source[/^gateway_pod_re_resolve\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness cannot safely re-resolve the gateway Pod")
+  ["-l app.kubernetes.io/name=gateway", "could not safely re-resolve exactly one gateway Pod", "grep -Fxc \"$GATEWAY_CONTAINER\""].each do |needle|
+    abort "gateway Pod re-resolution is not fail-closed: #{needle}" unless re_resolve.include?(needle)
+  end
+  ["gateway_pod_ips=", "GATEWAY_POD_IP=", "http://$1:8085/healthz", "curl --fail-with-body"].each do |forbidden|
+    abort "Kind harness retains forbidden Pod-IP or generic-probe health evidence: #{forbidden}" if source.include?(forbidden)
+  end
+
+  final_witness = source.index("if ! gateway_witness_handshake veil-witness.dsa-witness.svc.cluster.local:50058 dsa-veil-witness") || abort("gateway witness :50058 proof is missing")
+  initial_health = source.index("\ngateway_health_mtls_healthy\n", final_witness) || abort("gateway initial local health proof is missing")
+  server_battery = source.index("for server_material in wrong-ca wrong-san expired; do", initial_health) || abort("gateway server-material battery is missing")
+  cleanup = source.index("\ngateway_witness_helper_cleanup\n", server_battery)
+  partial_material = source.index("# Partial material must block Pod startup", server_battery)
+  abort "gateway helper must remain installed through the initial local health proof" unless cleanup && cleanup > initial_health
+  abort "gateway helper must remain installed through all server-material mutations and restores" unless cleanup > server_battery
+  abort "gateway helper must be deleted before the next battery" unless partial_material && cleanup < partial_material
+
+  source_start = source.index("package main") || abort("Kind harness misses generated gateway witness Go source")
+  source_end = source.index("\nGO\n", source_start) || abort("Kind harness does not terminate generated gateway witness Go source")
+  go_source = source[source_start...source_end]
+  imports = go_source[/import \(\n(?<items>.*?)\n\)/m, :items] || abort("gateway witness Go helper misses import block")
+  actual_imports = imports.scan(/"([^"]+)"/).flatten.sort
+  expected_imports = %w[context crypto/tls crypto/x509 fmt io net net/http os time].sort
+  abort "gateway witness Go helper is not standard-library-only: #{actual_imports.inspect}" unless actual_imports == expected_imports
+  [
+    "case \"tls-handshake\":",
+    "case \"gateway-health\":",
+    "tls.LoadX509KeyPair(certPath, keyPath)",
+    "roots.AppendCertsFromPEM(caPEM)",
+    "Timeout: 10 * time.Second",
+    "MinVersion:         tls.VersionTLS13",
+    "ServerName:         serverName",
+    "RootCAs:            roots",
+    "InsecureSkipVerify: false",
+    "conn.VerifyHostname(serverName)",
+    "verified TLS handshake failed",
+    "healthURL              = \"http://127.0.0.1:8085/healthz\"",
+    "context.WithTimeout(context.Background(), healthRequestTimeout)",
+    "Timeout: healthRequestTimeout",
+    "Proxy:                 nil",
+    "ResponseHeaderTimeout: healthDialTimeout",
+    "io.LimitReader(response.Body, maxHealthResponseBytes+1)",
+    "http.StatusOK || response.StatusCode == http.StatusServiceUnavailable",
+    "os.Stdout.Write(responseBody)",
+    "response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices",
+    "gateway health request failed"
+  ].each { |needle| abort "gateway witness Go helper misses: #{needle}" unless go_source.include?(needle) }
+  abort "gateway witness Go helper leaks errors that could contain sensitive paths or material" if go_source.match?(/fmt\.(?:Print|Printf|Fprintf).*err/)
+
+  fingerprint = source[/^served_leaf_fingerprint\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses served leaf fingerprint helper")
+  abort "positive TLS fingerprint helper does not accept a bounded caller deadline" unless fingerprint.include?("timeout \"$3\" openssl s_client") && fingerprint.include?("[ \"$timeout_seconds\" -gt 15 ]")
+  abort "positive TLS fingerprint helper accepts a timeout" unless fingerprint.include?("$status\" -eq 124") && fingerprint.include?("positive TLS fingerprint handshake timed out")
+
+  rotation = source[/^await_served_leaf_fingerprint\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind harness misses exact audit replacement fingerprint convergence")
+  [
+    "deadline=$((SECONDS + 40))",
+    "while (( SECONDS < deadline )); do",
+    "served_leaf_fingerprint \"$address\" \"$san\" \"$probe_timeout\"",
+    "[ \"$observed\" = \"$expected\" ]",
+    "served fingerprint was unparseable",
+    "verified TLS fingerprint handshake failed or timed out",
+    "sleep_seconds=2",
+    "audit replacement did not serve the exact expected fingerprint within 40s"
+  ].each { |needle| abort "audit rotation convergence misses: #{needle}" unless rotation.include?(needle) }
+  abort "audit rotation convergence permits an unbounded probe" unless rotation.include?("if (( remaining < probe_timeout )); then")
+  abort "audit rotation convergence accepts any changed fingerprint" if rotation.match?(/!=\s*\"\$expected\".*return 0/m)
+  expected_fingerprint = source.index("AUDIT_FINGERPRINT_EXPECTED=\"$(openssl x509 -in \"$ROTATE/tls.crt\"") || abort("rotation does not compute the local replacement fingerprint")
+  secret_apply = source.index("create secret generic lucairn-mtls-audit", expected_fingerprint) || abort("rotation does not apply the replacement Secret")
+  abort "rotation validates the replacement fingerprint after mutating the Secret" unless expected_fingerprint < secret_apply
+  [
+    "generated audit replacement leaf has no valid SHA-256 fingerprint",
+    "[ \"$AUDIT_FINGERPRINT_EXPECTED\" = \"$AUDIT_FINGERPRINT_BEFORE\" ]",
+    "await_served_leaf_fingerprint audit.dsa-audit.svc.cluster.local:50051 dsa-audit \"$AUDIT_FINGERPRINT_EXPECTED\"",
+    "rotation replacement: audit served the exact expected replacement fingerprint",
+    "CA rotation or CRL/OCSP policy"
+  ].each { |needle| abort "audit rotation exact-material contract misses: #{needle}" unless source.include?(needle) }
+
+  run_rotation_fixture = lambda do |name, sequence, expected_success|
+    sequence_items = sequence.map { |item| %Q(\"#{item}\") }.join(" ")
+    fixture = <<~BASH
+      set -euo pipefail
+      await_served_leaf_fingerprint() {
+      #{rotation}
+      }
+      SECONDS=0
+      calls_file="$(mktemp)"
+      sequence=(#{sequence_items})
+      served_leaf_fingerprint() {
+        calls=$(( $(wc -l <"$calls_file") ))
+        last_index=$((${#sequence[@]} - 1))
+        if (( calls > last_index )); then index="$last_index"; else index="$calls"; fi
+        item="${sequence[$index]}"
+        printf "\\n" >>"$calls_file"
+        if [ "$item" = FAIL ]; then
+          return 1
+        fi
+        printf "%s\\n" "$item"
+      }
+      sleep() { SECONDS=$((SECONDS + $1)); }
+      result_file="$(mktemp)"
+      if await_served_leaf_fingerprint audit:50051 dsa-audit "sha256 Fingerprint=AA:BB" >"$result_file"; then status=0; else status=$?; fi
+      result="$(<"$result_file")"
+      rm -f "$result_file"
+      calls=$(( $(wc -l <"$calls_file") ))
+      rm -f "$calls_file"
+      printf "%s\\n%s\\n%s\\n" "$status" "$calls" "$result"
+    BASH
+    output, diagnostics, process = Open3.capture3("bash", "-c", fixture)
+    abort "audit rotation fixture #{name} did not complete" unless process.success?
+    status, calls, result = output.split("\n", 3)
+    succeeded = status == "0"
+    abort "audit rotation fixture #{name} success changed: #{output.inspect}" unless succeeded == expected_success
+    [calls.to_i, result.rstrip, diagnostics]
+  end
+
+  expected = "sha256 Fingerprint=AA:BB"
+  old = "sha256 Fingerprint=11:22"
+  third = "sha256 Fingerprint=CC:DD"
+  calls, result, diagnostics = run_rotation_fixture.call(:exact, [expected], true)
+  abort "exact replacement fingerprint did not pass immediately: #{[calls, result, diagnostics].inspect}" unless calls == 1 && result == expected && diagnostics.empty?
+  calls, result, diagnostics = run_rotation_fixture.call(:stale_old_then_expected, [old, expected], true)
+  abort "stale old fingerprint was not retried before the expected replacement" unless calls == 2 && result == expected && diagnostics.empty?
+  calls, result, diagnostics = run_rotation_fixture.call(:third_then_expected, [third, expected], true)
+  abort "unexpected third fingerprint was accepted or not retried" unless calls == 2 && result == expected && diagnostics.empty?
+  calls, result, diagnostics = run_rotation_fixture.call(:third_only, [third], false)
+  abort "unexpected third fingerprint passed rotation convergence" if result == expected
+  abort "unexpected third fingerprint did not fail within the bounded retry count: #{[calls, result, diagnostics].inspect}" unless calls == 20 && diagnostics.include?("exact expected fingerprint within 40s")
+  calls, result, diagnostics = run_rotation_fixture.call(:timeout, ["FAIL"], false)
+  abort "fingerprint timeout did not fail within the bounded retry count" unless calls == 20 && diagnostics.include?("handshake failed or timed out")
+  calls, result, diagnostics = run_rotation_fixture.call(:unparseable, ["not-a-fingerprint"], false)
+  abort "unparseable fingerprint did not fail closed" unless calls == 20 && diagnostics.include?("served fingerprint was unparseable")
+' "$KIND_GATE"
+
+# Compile the generated source for the target OS with CGO disabled. This stays
+# offline and does not start Kind, but catches a helper syntax/import drift that
+# grep-level contract checks cannot see.
+command -v go >/dev/null 2>&1 || {
+  echo "Go is required to validate the generated gateway witness TLS helper" >&2
+  exit 1
+}
+GATEWAY_WITNESS_HELPER_SOURCE="$TMPDIR/gateway-witness-tls-helper.go"
+GATEWAY_WITNESS_HELPER="$TMPDIR/gateway-witness-tls-helper"
+ruby -e '
+  source = File.read(ARGV.fetch(0))
+  source_start = source.index("package main") || abort("Kind harness misses generated gateway witness Go source")
+  source_end = source.index("\nGO\n", source_start) || abort("Kind harness does not terminate generated gateway witness Go source")
+  File.write(ARGV.fetch(1), source[source_start...source_end])
+' "$KIND_GATE" "$GATEWAY_WITNESS_HELPER_SOURCE"
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$GATEWAY_WITNESS_HELPER" "$GATEWAY_WITNESS_HELPER_SOURCE"
+[ -x "$GATEWAY_WITNESS_HELPER" ] || {
+  echo "generated gateway witness TLS helper did not compile as a Linux executable" >&2
+  exit 1
+}
 
 # Server-side client-auth negatives must wait for the server's TLS 1.3
 # post-handshake client-certificate decision. A generic nonzero check is not
@@ -538,5 +905,43 @@ KIND
     fi
   done
 fi
+
+# The real-cluster battery must prove workload behavior, not only probe-Pod
+# handshakes. Keep the gateway-local health call, its tlsutil mechanism-class
+# citation, sanitizer HTTPS/wire evidence, and the bounded representative
+# server-material mutations from regressing back to an OpenSSL-only claim.
+for required in \
+  '-l app.kubernetes.io/name=gateway' \
+  'http://127.0.0.1:8085/healthz' \
+  '"$GATEWAY_HELPER_PATH" gateway-health' \
+  'gateway health request failed' \
+  'gateway /healthz did not produce non-2xx JSON identity status=fail' \
+  'tlsutil.ClientCredentialsForPeer(tlsutil.SANSandboxA)' \
+  'gateway_health_mtls_healthy' \
+  'gateway_identity_server_material_rejected' \
+  'gateway evidence helper deleted after witness and local health battery' \
+  'SANITIZER_URL="$("${K[@]}" -n dsa-edge get configmap gateway-config' \
+  'https://sandbox-a.dsa-identity.svc:8086' \
+  'actual client response plus verified mTLS wire fingerprint' \
+  'for server_material in wrong-ca wrong-san expired' \
+  'restore_sandbox_a_server_material' \
+  'AUDIT_FINGERPRINT_BEFORE="$(served_leaf_fingerprint' \
+  'AUDIT_FINGERPRINT_EXPECTED="$(openssl x509 -in "$ROTATE/tls.crt"' \
+  'await_served_leaf_fingerprint audit.dsa-audit.svc.cluster.local:50051 dsa-audit "$AUDIT_FINGERPRINT_EXPECTED"' \
+  'audit replacement did not serve the exact expected fingerprint within 40s' \
+  'CA rotation or CRL/OCSP policy'; do
+  grep -Fq -- "$required" "$KIND_GATE" \
+    || { echo "Kind harness misses required workload-mTLS evidence: $required" >&2; exit 1; }
+done
+for forbidden in \
+  'gateway_pod_ips=' \
+  'GATEWAY_POD_IP=' \
+  'http://$1:8085/healthz' \
+  'curl --fail-with-body'; do
+  if grep -Fq -- "$forbidden" "$KIND_GATE"; then
+    echo "Kind harness retains forbidden Pod-IP or generic-probe health evidence: $forbidden" >&2
+    exit 1
+  fi
+done
 
 echo "enterprise mTLS Kind runtime-values contract: ok"

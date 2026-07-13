@@ -35,12 +35,14 @@
 #      base64 decode error. We strip only `\n`. (Vast cascade MED E,
 #      2026-05-26.)
 #
-#   4. dsaEnv — left as the chart default (`development`) so the
-#      bundled subcharts (which ship without inter-service gRPC TLS
-#      certs) boot cleanly on a vanilla cluster. Customers wiring
-#      cert-manager + flipping every subchart's `grpcTlsEnabled: "true"`
-#      override to `production` via `--set global.dsaEnv=production` or
-#      `values-prod.yaml`.
+#   4. Environment and mTLS — this renderer intentionally leaves the output
+#      on the development/pilot posture. It cannot create operator/PKI-owned
+#      Secrets, so it MUST NOT flip to production itself. A production
+#      operator applies the parent-owned `global.mtls` contract from
+#      charts/lucairn/values-prod.yaml (CA bundle + per-identity leaf Secret
+#      names), runs `bin/lucairn doctor --values` against the resulting
+#      effective production file, waits for readiness, and runs the mTLS
+#      acceptance battery. Child-chart TLS flags are not a production API.
 #
 # Prerequisites:
 #   - openssl (any modern version)

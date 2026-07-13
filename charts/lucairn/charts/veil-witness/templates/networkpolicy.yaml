@@ -57,6 +57,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               dsa.io/namespace: edge
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
       ports:
         - port: 50057
           protocol: TCP

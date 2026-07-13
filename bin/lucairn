@@ -921,8 +921,14 @@ check_enterprise_mtls_helm() {
   local values_file="$1" chart_dir="$2"
   [ -n "$values_file" ] && [ -f "$values_file" ] || return 0
   if ! have helm; then
-    info "enterprise mTLS (Helm): skipped — helm not installed (render-based check requires helm)."
-    return 0
+    # `--values` explicitly asks doctor to inspect the customer's Helm
+    # production contract. A green result without Helm would say nothing about
+    # the rendered DSA_MTLS_* topology, so fail closed. Compose-only doctor
+    # calls never reach this branch (values_file is empty) and retain their
+    # documented graceful behavior; the legacy H10 helpers also keep their
+    # independent INFO-skips when no Helm inspection was requested.
+    echo "enterprise mTLS (Helm): FAIL — helm is required with --values; cannot inspect the production render contract. Install helm and retry."
+    return 1
   fi
   [ -d "$chart_dir" ] || { echo "enterprise mTLS (Helm): FAIL — chart directory not found: $chart_dir"; return 1; }
 
@@ -951,6 +957,16 @@ check_enterprise_mtls_helm() {
       return 1
     fi
   done
+
+  # The gateway→sanitizer client is HTTP-based. Its pinned runtime applies
+  # tlsutil.ForceHTTPS when the verified DSA_MTLS_* client triple exists, and
+  # the rendered production operator surface must be equally explicit. Do not
+  # report a green production inspection when a future template reintroduces a
+  # compatibility http:// base URL.
+  if ! grep -q 'SANITIZER_URL: "https://' <<<"$render"; then
+    echo "enterprise mTLS (Helm): FAIL — rendered production contract lacks an HTTPS SANITIZER_URL for the verified gateway client."
+    return 1
+  fi
 
   local secret
   for secret in gateway audit id-bridge sandbox-a sanitizer sandbox-b veil-witness; do

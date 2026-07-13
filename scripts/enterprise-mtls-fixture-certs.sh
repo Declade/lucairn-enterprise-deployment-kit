@@ -99,4 +99,21 @@ openssl ca -batch -notext -config "$CA_DB/openssl.cnf" \
 cp "$OUT_DIR/ca.crt" "$EXPIRED_DIR/ca.crt"
 rm -f "$EXPIRED_DIR/request.csr"
 
+# A representative server-side expiry negative uses the Sandbox A gRPC
+# identity. It has the correct expected SAN and trusted issuing CA, so an
+# actual gateway workload client can prove that expiry itself is rejected
+# without conflating the result with a wrong CA or wrong SAN.
+EXPIRED_SERVER_DIR="$OUT_DIR/expired-sandbox-a"
+mkdir -p "$EXPIRED_SERVER_DIR"
+openssl req -newkey rsa:2048 -nodes -sha256 \
+  -subj '/CN=dsa-sandbox-a' \
+  -addext 'subjectAltName=DNS:dsa-sandbox-a' \
+  -keyout "$EXPIRED_SERVER_DIR/tls.key" -out "$EXPIRED_SERVER_DIR/request.csr" >/dev/null 2>&1
+openssl ca -batch -notext -config "$CA_DB/openssl.cnf" \
+  -extensions expired_leaf \
+  -startdate 20240101000000Z -enddate 20240102000000Z \
+  -in "$EXPIRED_SERVER_DIR/request.csr" -out "$EXPIRED_SERVER_DIR/tls.crt" >/dev/null 2>&1
+cp "$OUT_DIR/ca.crt" "$EXPIRED_SERVER_DIR/ca.crt"
+rm -f "$EXPIRED_SERVER_DIR/request.csr"
+
 echo "enterprise mTLS fixture certificates: $OUT_DIR"

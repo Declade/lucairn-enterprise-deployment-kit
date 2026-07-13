@@ -747,11 +747,10 @@ grep -q "mTLS config (Helm): FAIL" "$TMPDIR/h10-mtls-precedence.out" \
   || { echo "FAIL: H10-mTLS precedence missing mTLS FAIL" >&2; exit 1; }
 echo "H10-mTLS: half-config FAILs independently of canary wiring: ok"
 
-# Case M8: helm-absent graceful skip — simulated by pointing the doctor at a
-# values file but invoking with a PATH that masks helm. We assert the doctor
-# does NOT flag the half-config (it cannot render) and INFO-skips. We mirror the
-# real-world "compose-mode customer with no helm" posture: a half-mTLS values
-# file must NOT cause a spurious FAIL when helm is unavailable.
+# Case M8: Helm absence is fail-closed when the operator explicitly supplied
+# --values. The legacy H10 sub-checks still INFO-skip because they cannot
+# render, but the enterprise production-contract inspection itself must return
+# nonzero rather than report a green doctor result without Helm.
 H10_NOHELM_BIN="$TMPDIR/h10-nohelm-bin"
 rm -rf "$H10_NOHELM_BIN"; mkdir -p "$H10_NOHELM_BIN"
 # Mirror every PATH dir, symlinking each tool EXCEPT helm.
@@ -771,25 +770,35 @@ PATH="$H10_NOHELM_BIN" "$ROOT/bin/lucairn" doctor --env "$ENV_FILE" \
   --compose "$ROOT/docker-compose.customer.yml" \
   --values "$MTLS_SRV_ONLY_VALS" \
   --offline > "$TMPDIR/h10-nohelm.out" 2>&1 || H10_NOHELM_RC=$?
-if [ "$H10_NOHELM_RC" -ne 0 ]; then
-  echo "FAIL: H10 helm-absent → doctor should PASS (graceful skip, not flag the half-config), rc=$H10_NOHELM_RC" >&2
+if [ "$H10_NOHELM_RC" -eq 0 ]; then
+  echo "FAIL: doctor --values must fail closed when helm is absent" >&2
   cat "$TMPDIR/h10-nohelm.out" >&2; exit 1
 fi
 grep -q "mTLS config (Helm): skipped — helm not installed" "$TMPDIR/h10-nohelm.out" \
   || { echo "FAIL: H10 helm-absent → expected mTLS graceful-skip INFO" >&2; cat "$TMPDIR/h10-nohelm.out" >&2; exit 1; }
-grep -q "canary key (Helm): skipped — helm not installed" "$TMPDIR/h10-nohelm.out" \
-  || { echo "FAIL: H10 helm-absent → expected canary graceful-skip INFO" >&2; cat "$TMPDIR/h10-nohelm.out" >&2; exit 1; }
-grep -q "enterprise mTLS (Helm): skipped — helm not installed" "$TMPDIR/h10-nohelm.out" \
-  || { echo "FAIL: H10 helm-absent → expected enterprise mTLS graceful-skip INFO" >&2; cat "$TMPDIR/h10-nohelm.out" >&2; exit 1; }
+grep -q "enterprise mTLS (Helm): FAIL — helm is required with --values" "$TMPDIR/h10-nohelm.out" \
+  || { echo "FAIL: doctor --values did not report the Helm fail-closed error" >&2; cat "$TMPDIR/h10-nohelm.out" >&2; exit 1; }
 if grep -q "mTLS config (Helm): FAIL" "$TMPDIR/h10-nohelm.out"; then
-  echo "FAIL: H10 helm-absent → must NOT flag a mTLS FAIL (cannot render without helm)" >&2
+  echo "FAIL: H10 helm-absent must preserve the legacy mTLS helper graceful skip" >&2
   cat "$TMPDIR/h10-nohelm.out" >&2; exit 1
 fi
-if grep -q "enterprise mTLS (Helm): FAIL" "$TMPDIR/h10-nohelm.out"; then
-  echo "FAIL: H10 helm-absent → must NOT flag an enterprise mTLS FAIL (cannot render without helm)" >&2
-  cat "$TMPDIR/h10-nohelm.out" >&2; exit 1
+
+# Compose-only doctor remains deliberately graceful without Helm: it never
+# claimed to inspect a Helm values contract, so the legacy H10 helpers and the
+# enterprise render inspection all stay out of scope.
+H10_COMPOSE_NOHELM_RC=0
+PATH="$H10_NOHELM_BIN" "$ROOT/bin/lucairn" doctor --env "$ENV_FILE" \
+  --compose "$ROOT/docker-compose.customer.yml" \
+  --offline > "$TMPDIR/h10-compose-nohelm.out" 2>&1 || H10_COMPOSE_NOHELM_RC=$?
+if [ "$H10_COMPOSE_NOHELM_RC" -ne 0 ]; then
+  echo "FAIL: Compose-only doctor must remain graceful when helm is absent" >&2
+  cat "$TMPDIR/h10-compose-nohelm.out" >&2; exit 1
 fi
-echo "H10-mTLS: helm absent → graceful SKIP (no spurious FAIL): ok"
+if grep -q "enterprise mTLS (Helm): FAIL" "$TMPDIR/h10-compose-nohelm.out"; then
+  echo "FAIL: Compose-only doctor incorrectly attempted Helm production inspection" >&2
+  cat "$TMPDIR/h10-compose-nohelm.out" >&2; exit 1
+fi
+echo "H10-mTLS: --values fail-closed; Compose-only Helm absence remains graceful: ok"
 
 echo "H10 render-based witness-mTLS partial-config detection: ok"
 

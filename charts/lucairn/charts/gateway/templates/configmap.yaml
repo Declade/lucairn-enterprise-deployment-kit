@@ -2,6 +2,18 @@
 {{- if .Values.readiness.existingBundleSecret -}}
 {{- $readinessBundlePath = printf "%s/%s" (trimSuffix "/" .Values.readiness.bundleMountPath) .Values.readiness.bundleFileName -}}
 {{- end -}}
+{{- $sanitizerURL := .Values.sanitizerUrl -}}
+{{- if .Values.global.mtls.enabled -}}
+{{- /* Keep Helm's operator surface in lock-step with tlsutil.ForceHTTPS.
+The pinned runtime repeats this conversion as defense in depth, but production
+operators must see an HTTPS endpoint in the rendered ConfigMap rather than an
+ambiguous compatibility http:// value. */ -}}
+{{- if hasPrefix "http://" $sanitizerURL -}}
+{{- $sanitizerURL = printf "https://%s" (trimPrefix "http://" $sanitizerURL) -}}
+{{- else if not (hasPrefix "https://" $sanitizerURL) -}}
+{{- $sanitizerURL = printf "https://%s" $sanitizerURL -}}
+{{- end -}}
+{{- end -}}
 {{- /*
   FIX 6 — Helm-native version gate for TMS Slice 4 trust-zone tuning.
 
@@ -48,7 +60,10 @@ data:
   # but the network policy allows the connection for future audit emission
   AUDIT_SERVICE_ADDR: {{ .Values.auditServiceAddr | quote }}
   GATEWAY_VERTICALS_DIR: {{ .Values.verticalsDir | quote }}
-  SANITIZER_URL: {{ .Values.sanitizerUrl | quote }}
+  # Production full-mesh mTLS uses HTTPS here. The pinned gateway repeats the
+  # scheme upgrade with tlsutil.ForceHTTPS when its verified client triple is
+  # present, so a stale compatibility value cannot downgrade the live client.
+  SANITIZER_URL: {{ $sanitizerURL | quote }}
   SANDBOX_B_PROXY_URL: {{ .Values.sandboxBProxyUrl | quote }}
   {{- if .Values.keystorePath }}
   GATEWAY_KEYSTORE_PATH: {{ .Values.keystorePath | quote }}

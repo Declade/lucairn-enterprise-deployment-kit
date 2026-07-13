@@ -28,6 +28,25 @@ bash -n "$ROOT/scripts/generate-enterprise-mtls-kind-runtime-values.sh"
 bash -n "$ROOT/scripts/preload-enterprise-mtls-kind-images.sh"
 bash -n "$ROOT/scripts/test-enterprise-mtls-kind.sh"
 
+# Customer instructions must use the parent-owned production mTLS contract.
+# The former child grpcTlsEnabled guidance is unsafe because it can imply that
+# a local compatibility flag enables production transport.
+for customer_file in \
+  "$ROOT/customer-values.yaml.example" \
+  "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md" \
+  "$ROOT/scripts/render-values.sh"; do
+  if rg -n 'grpcTlsEnabled|global\.grpcTlsEnabled' "$customer_file"; then
+    echo "customer-facing instruction revives unsupported child TLS guidance: $customer_file" >&2
+    exit 1
+  fi
+done
+for required_term in global.mtls operator/PKI doctor readiness acceptance; do
+  if ! rg -q "$required_term" "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md"; then
+    echo "customer Helm runbook omits required production mTLS guidance: $required_term" >&2
+    exit 1
+  fi
+done
+
 # The real Kind gate must both create and reference its chart-managed GHCR
 # pull Secret while keeping the private-registry guard fail-closed.
 for required_flag in \

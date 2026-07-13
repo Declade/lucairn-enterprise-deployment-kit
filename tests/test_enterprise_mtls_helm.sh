@@ -138,6 +138,21 @@ for config in gateway audit id-bridge sandbox-a sandbox-b; do
     || { echo "$config lacks the DSA mTLS CA path" >&2; exit 1; }
 done
 
+# The gateway's sanitizer client is HTTP-based rather than gRPC. In the
+# production mTLS profile the rendered operator contract must still name HTTPS
+# explicitly; tlsutil.ForceHTTPS repeats the upgrade in the pinned runtime as
+# defense in depth. An http:// value here would be an ambiguous customer
+# surface even if the runtime happens to repair it.
+gateway_block="$(awk -v name="gateway-config" '
+  /^kind: ConfigMap$/{in_block=1; block=""}
+  in_block{block=block $0 "\n"}
+  in_block && $0 == "  name: " name {matched=1}
+  /^---$/{if (matched) {print block; exit} in_block=0; matched=0}
+  END{if (matched) print block}
+' "$RENDER")"
+grep -q 'SANITIZER_URL: "https://sandbox-a.dsa-identity.svc:8086"' <<<"$gateway_block" \
+  || { echo "production gateway ConfigMap does not expose an HTTPS sanitizer endpoint" >&2; exit 1; }
+
 # Seven runtime identities are required: the six core services plus the
 # sanitizer sidecar. Each container may mount its own leaf Secret only.
 for secret in \
@@ -180,14 +195,22 @@ done
 # cannot hide a widened namespace, selector, or port list.
 ruby -ryaml -e '
   docs = YAML.load_stream(File.read(ARGV.fetch(0))).compact
-  policy = docs.find { |doc| doc["kind"] == "NetworkPolicy" && doc.dig("metadata", "name") == "edge-egress" } || abort("render misses NetworkPolicy/edge-egress")
-  abort "edge-egress namespace changed" unless policy.dig("metadata", "namespace") == "dsa-edge"
+  general = docs.find { |doc| doc["kind"] == "NetworkPolicy" && doc.dig("metadata", "name") == "edge-egress" } || abort("render misses NetworkPolicy/edge-egress")
+  abort "edge-egress namespace changed" unless general.dig("metadata", "namespace") == "dsa-edge"
+  abort "edge-egress changed its non-witness namespace posture" unless general.dig("spec", "podSelector") == {}
+  abort "edge-egress must not retain a namespace-wide witness allowance" if general.fetch("spec").fetch("egress").any? { |rule| rule.fetch("to", []).any? { |target| target.dig("namespaceSelector", "matchLabels", "dsa.io/namespace") == "witness" } }
+  policy = docs.find { |doc| doc["kind"] == "NetworkPolicy" && doc.dig("metadata", "name") == "edge-witness-egress" } || abort("render misses NetworkPolicy/edge-witness-egress")
+  abort "edge-witness-egress namespace changed" unless policy.dig("metadata", "namespace") == "dsa-edge"
+  abort "edge-witness-egress must select only the gateway Pod" unless policy.dig("spec", "podSelector") == { "matchLabels" => { "app.kubernetes.io/name" => "gateway" } }
   witness = policy.fetch("spec").fetch("egress").select do |rule|
-    rule.fetch("to") == [{ "namespaceSelector" => { "matchLabels" => { "dsa.io/namespace" => "witness" } } }]
+    rule.fetch("to") == [{
+      "namespaceSelector" => { "matchLabels" => { "dsa.io/namespace" => "witness" } },
+      "podSelector" => { "matchLabels" => { "app.kubernetes.io/name" => "veil-witness" } }
+    }]
   end
-  abort "edge-egress witness rule missing or duplicated" unless witness.length == 1
+  abort "edge-witness-egress witness rule missing or duplicated" unless witness.length == 1
   ports = witness.fetch(0).fetch("ports").map { |entry| [entry.fetch("port"), entry.fetch("protocol")] }.sort
-  abort "edge-egress witness ports widened or incomplete: #{ports.inspect}" unless ports == [[50057, "TCP"], [50058, "TCP"]]
+  abort "edge-witness-egress witness ports widened or incomplete: #{ports.inspect}" unless ports == [[50057, "TCP"], [50058, "TCP"]]
 ' "$RENDER"
 
 ruby -ryaml -e '
@@ -195,29 +218,32 @@ ruby -ryaml -e '
   policy = docs.find { |doc| doc["kind"] == "NetworkPolicy" && doc.dig("metadata", "name") == "witness-ingress" } || abort("render misses NetworkPolicy/witness-ingress")
   abort "witness-ingress namespace changed" unless policy.dig("metadata", "namespace") == "dsa-witness"
   ingress = policy.fetch("spec").fetch("ingress")
-  selector = lambda do |rule, labels|
-    rule.fetch("from") == [{ "namespaceSelector" => { "matchLabels" => labels } }]
+  selector = lambda do |rule, source|
+    rule.fetch("from") == [source]
   end
   ports = lambda do |rule|
     rule.fetch("ports").map { |entry| [entry.fetch("port"), entry.fetch("protocol")] }.sort
   end
-  exact_rule = lambda do |labels, expected_ports, description|
-    matches = ingress.select { |rule| selector.call(rule, labels) }
+  exact_rule = lambda do |source, expected_ports, description|
+    matches = ingress.select { |rule| selector.call(rule, source) }
     abort "witness-ingress #{description} rule missing or duplicated" unless matches.length == 1
     actual = ports.call(matches.fetch(0))
     abort "witness-ingress #{description} ports widened or incomplete: #{actual.inspect}" unless actual == expected_ports
   end
 
-  exact_rule.call({ "dsa.io/namespace" => "edge" }, [[50057, "TCP"], [50058, "TCP"]], "edge")
+  exact_rule.call({
+    "namespaceSelector" => { "matchLabels" => { "dsa.io/namespace" => "edge" } },
+    "podSelector" => { "matchLabels" => { "app.kubernetes.io/name" => "gateway" } }
+  }, [[50057, "TCP"], [50058, "TCP"]], "gateway edge")
   {
     "bridge" => "ID Bridge",
     "identity" => "Sanitizer",
     "ai" => "Sandbox B",
     "audit" => "Audit Service"
   }.each do |namespace, description|
-    exact_rule.call({ "dsa.io/namespace" => namespace }, [[50057, "TCP"]], description)
+    exact_rule.call({ "namespaceSelector" => { "matchLabels" => { "dsa.io/namespace" => namespace } } }, [[50057, "TCP"]], description)
   end
-  exact_rule.call({ "dsa.io/namespace" => "observability" }, [[50059, "TCP"]], "observability")
+  exact_rule.call({ "namespaceSelector" => { "matchLabels" => { "dsa.io/namespace" => "observability" } } }, [[50059, "TCP"]], "observability")
 
   dashboard = ingress.select do |rule|
     rule.fetch("from") == [{
@@ -231,6 +257,66 @@ ruby -ryaml -e '
   abort "witness-ingress dashboard rule missing or widened" unless dashboard.length == 1 && ports.call(dashboard.fetch(0)) == [[5432, "TCP"], [50058, "TCP"]]
   abort "witness-ingress intra-namespace rule changed" unless ingress.any? { |rule| rule["from"] == [{ "podSelector" => {} }] && !rule.key?("ports") }
 ' "$RENDER"
+
+# `dsaEnv` is a security boundary, not a fuzzy intent label. The validator
+# must reject aliases, case/whitespace variants, arbitrary strings, and YAML
+# null/non-string shapes before any TLS-off ConfigMap can be rendered.
+for invalid_env in prod Production ' production ' developmentx; do
+  invalid_file="$TMPDIR/dsa-env-${invalid_env// /_}.out"
+  if render --set-string "global.dsaEnv=$invalid_env" >"$invalid_file" 2>&1; then
+    echo "production render accepted invalid global.dsaEnv=$invalid_env" >&2
+    exit 1
+  fi
+  grep -q 'global.dsaEnv must be exactly "development" or "production"' "$invalid_file" \
+    || { echo "invalid global.dsaEnv=$invalid_env did not produce the stable fail-closed error" >&2; exit 1; }
+done
+for shape in null object list; do
+  case "$shape" in
+    null) value='null' ;;
+    object) value='{}' ;;
+    list) value='[]' ;;
+  esac
+  cat > "$TMPDIR/dsa-env-$shape.yaml" <<YAML
+global:
+  dsaEnv: $value
+YAML
+  if render -f "$TMPDIR/dsa-env-$shape.yaml" >"$TMPDIR/dsa-env-$shape.out" 2>&1; then
+    echo "production render accepted $shape global.dsaEnv" >&2
+    exit 1
+  fi
+  grep -q 'global.dsaEnv must be exactly "development" or "production"' "$TMPDIR/dsa-env-$shape.out" \
+    || { echo "$shape global.dsaEnv did not produce the stable fail-closed error" >&2; exit 1; }
+done
+
+# Keep the accepted development posture explicit: development still renders
+# without the production mTLS contract, while production is the only supported
+# verified transport profile.
+DEV_RENDER="$TMPDIR/development.yaml"
+helm template lucairn "$CHART" \
+  --set global.skipPullSecretGuard=true \
+  --set veil-witness.secrets.values.signingKey=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --set global.dsaEnv=development > "$DEV_RENDER"
+grep -q 'DSA_ENV: "development"' "$DEV_RENDER" \
+  || { echo "development render no longer emits the accepted development environment" >&2; exit 1; }
+
+# Customer-facing instructions must not resurrect the removed child-chart TLS
+# model. Production is parent-authoritative global.mtls with operator-owned
+# Secrets, doctor/render inspection, readiness, and an acceptance battery.
+for customer_file in \
+  "$ROOT/customer-values.yaml.example" \
+  "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md" \
+  "$ROOT/scripts/render-values.sh"; do
+  if rg -n 'grpcTlsEnabled|global\.grpcTlsEnabled' "$customer_file"; then
+    echo "customer-facing instruction revives unsupported child TLS guidance: $customer_file" >&2
+    exit 1
+  fi
+done
+for required_term in global.mtls operator/PKI doctor readiness acceptance; do
+  if ! rg -q "$required_term" "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md"; then
+    echo "customer Helm runbook omits required production mTLS guidance: $required_term" >&2
+    exit 1
+  fi
+done
 
 # A production profile cannot silently downgrade when an identity is omitted.
 if render --set global.mtls.secrets.audit= >"$TMPDIR/missing-secret.out" 2>&1; then

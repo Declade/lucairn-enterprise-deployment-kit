@@ -52,7 +52,21 @@ the process starts, and `lucairn doctor --values` checks live Secret inventory.
 {{- define "validators.enterpriseFullMeshMTLS" -}}
 {{- $global := (default dict .Values.global) -}}
 {{- $mtls := (default dict $global.mtls) -}}
-{{- $isProduction := eq (default "" $global.dsaEnv) "production" -}}
+{{- $dsaEnv := $global.dsaEnv -}}
+{{- /*
+Fail closed before rendering any workload ConfigMap. The DSA runtime only
+treats the exact token "production" as production; accepting aliases, case
+variants, whitespace, null, or non-string shapes would let a production-intent
+overlay render the legacy TLS-off posture. Keep this enum deliberately small:
+the chart's supported paths are development and production only.
+*/ -}}
+{{- if not (kindIs "string" $dsaEnv) -}}
+  {{- fail "global.dsaEnv must be exactly \"development\" or \"production\"; a string value is required." -}}
+{{- end -}}
+{{- if not (has $dsaEnv (list "development" "production")) -}}
+  {{- fail "global.dsaEnv must be exactly \"development\" or \"production\"; unsupported values are refused before any workload ConfigMap is rendered." -}}
+{{- end -}}
+{{- $isProduction := eq $dsaEnv "production" -}}
 {{- $optionalProfiles := list
       (dict "path" "pii-ml.enabled" "enabled" (default false (default dict (index .Values "pii-ml")).enabled))
       (dict "path" "postgres-gateway.enabled" "enabled" (default false (default dict (index .Values "postgres-gateway")).enabled))

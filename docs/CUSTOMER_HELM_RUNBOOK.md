@@ -133,6 +133,50 @@ Expected output: `Saving N charts ... Downloading ...` then `Deleting outdated c
 
 ## Step 6 — Install Lucairn
 
+### Production mTLS gate (required before a production install)
+
+The generated `customer-values.yaml` is a development/pilot starting point.
+For production, create and retain an effective `production-values.yaml` that
+contains your generated application values plus the parent production overlay
+from `charts/lucairn/values-prod.yaml`. `global.dsaEnv` must be exactly
+`production`; production refuses to render unless `global.mtls.enabled=true`.
+Do not attempt to enable transport with child-chart TLS settings.
+
+Before Helm, the operator/PKI team creates one Secret per identity in its
+workload namespace. Each has exactly `ca.crt`, `tls.crt`, and `tls.key`; Helm
+only mounts them. The production names are `lucairn-mtls-gateway` (dsa-edge),
+`lucairn-mtls-audit` (dsa-audit), `lucairn-mtls-id-bridge` (dsa-bridge),
+`lucairn-mtls-sandbox-a` and `lucairn-mtls-sanitizer` (dsa-identity),
+`lucairn-mtls-sandbox-b` (dsa-ai), and `lucairn-mtls-veil-witness`
+(dsa-witness). Create the separately signed gateway manifest Secret required
+by the production overlay as well. Never put CA or private-key bytes in Helm
+values or Git.
+
+Run doctor against the complete effective production file—not the static
+overlay alone, which intentionally has no application secrets:
+
+```bash
+bin/lucairn doctor --values production-values.yaml --offline
+```
+
+This command fails closed if Helm is unavailable because it cannot inspect the
+rendered production transport contract. A plain Compose-only `doctor` remains
+graceful and does not perform Helm inspection.
+
+For a production install, substitute `production-values.yaml` below. A
+successful template is not acceptance: wait for readiness and execute the
+disposable acceptance battery in a non-production Kind cluster before release
+approval:
+
+```bash
+bash scripts/test-enterprise-mtls-kind.sh
+```
+
+That battery uses fresh disposable certificates and never tests a customer
+cluster. After the customer install, record readiness plus the approved local
+workload acceptance evidence; do not infer mTLS acceptance from a successful
+Helm render.
+
 ```bash
 helm install lucairn ./charts/lucairn \
   --namespace lucairn \
@@ -557,8 +601,16 @@ The witness accumulator hasn't received all 4 claims yet. Causes:
 This runbook ships v1.0 single-replica install. v2.0 will add:
 - Multi-replica HA for gateway / witness / audit / bridge / sandbox-* (every service that currently holds pod-local state needs a shared-store refactor)
 - Postgres-backed keystore via the chart's `postgres-gateway` subchart (currently opt-in via `postgres-gateway.enabled: true` + `gateway.postgresKeystore.enabled: true` + `gateway.replicaCount > 1` — but this opt-in is NOT verified for v1.0; use at your own risk)
-- gRPC TLS between services via cert-manager (currently disabled — `global.grpcTlsEnabled: false`)
 - Cilium NetworkPolicy enforcement (currently opt-in via `global.dnsRestriction: true` + `global.nodeIsolation: true`)
+
+### Certificate replacement is not revocation
+
+The documented leaf replacement drill proves that a restarted workload serves
+the new certificate fingerprint and restores verified mTLS. Replacing an
+unexpired leaf under the same CA does **not** revoke the old leaf: compromise
+invalidation requires the operator PKI's CA rotation and/or CRL/OCSP policy.
+Keep the expiry, wrong-CA, and wrong-SAN acceptance evidence with the change
+record; do not claim that same-CA replacement alone rejects an old leaf.
 
 Until v2.0, do NOT flip `replicaCount > 1` on any of the pod-local-state subcharts — the chart's validator will reject the install.
 
