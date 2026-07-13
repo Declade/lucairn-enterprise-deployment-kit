@@ -26,7 +26,7 @@ fi
 # default topology must never fall back to k8s-native secret values or a global
 # backend inference, and registry config is never a Helm value.
 ruby -ryaml -e '
-  values = YAML.load_file(ARGV.fetch(0))
+  values = (begin; YAML.load_file(ARGV.fetch(0), aliases: true); rescue ArgumentError; YAML.load_file(ARGV.fetch(0)); end)
   global = values.fetch("global")
   abort "production pull-secret guard must fail closed by default" unless global["skipPullSecretGuard"] == false
   abort "production imagePullSecrets must default to an empty list" unless global["imagePullSecrets"] == []
