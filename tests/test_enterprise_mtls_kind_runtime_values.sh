@@ -261,13 +261,13 @@ ruby -e '
 ruby -e '
   source = File.read(ARGV.fetch(0))
   required = {
-    "audit" => ["dsa-audit", "audit", "lucairn-mtls-audit"],
-    "id-bridge" => ["dsa-bridge", "id-bridge", "lucairn-mtls-id-bridge"],
-    "sanitizer" => ["dsa-identity", "sanitizer", "lucairn-mtls-sanitizer"],
-    "sandbox-b" => ["dsa-ai", "sandbox-b", "lucairn-mtls-sandbox-b"]
+    "audit" => ["dsa-audit", "audit", "audit", "lucairn-mtls-audit"],
+    "id-bridge" => ["dsa-bridge", "id-bridge", "id-bridge", "lucairn-mtls-id-bridge"],
+    "sanitizer" => ["dsa-identity", "sandbox-a", "sanitizer", "lucairn-mtls-sanitizer"],
+    "sandbox-b" => ["dsa-ai", "sandbox-b", "sandbox-b", "lucairn-mtls-sandbox-b"]
   }
-  required.each do |identity, (namespace, container, secret)|
-    call = [identity, namespace, container, secret].join(" ")
+  required.each do |identity, (namespace, pod_label, container, secret)|
+    call = [identity, namespace, pod_label, container, secret].join(" ")
     abort "Kind gate misses projected #{identity} workload roster" unless source.include?(call)
     pass = %q(echo "PASS: projected workload identity $identity verified exact-SAN TLS to veil-witness:50057")
     abort "Kind gate misses the stable projected workload identity PASS line" unless source.include?(pass)
@@ -286,9 +286,11 @@ ruby -e '
     "get node \"$node\"",
     "exec \"$WORKLOAD_POD\" -c \"$container\" -- uname -m"
   ].each { |needle| abort "projected workload resolver misses: #{needle}" unless resolve.include?(needle) }
+  abort "projected workload resolver does not select Pods by the explicit pod label" unless resolve.include?("app.kubernetes.io/name=$pod_label")
+  abort "projected workload resolver still selects Pods by the container name" if resolve.include?("app.kubernetes.io/name=$container")
   runner = source[/^projected_identity_witness_handshake\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind gate misses projected workload handshake runner")
   [
-    "resolve_projected_identity_workload \"$identity\" \"$namespace\" \"$container\" \"$expected_secret\"",
+    "resolve_projected_identity_workload \"$identity\" \"$namespace\" \"$pod_label\" \"$container\" \"$expected_secret\"",
     "build_workload_witness_helper \"$WORKLOAD_NODE_ARCH\"",
     "install_projected_identity_helper",
     "\"$WORKLOAD_HELPER_PATH\" tls-handshake \"$address\" \"$san\"",
