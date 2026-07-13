@@ -253,9 +253,9 @@ ruby -e '
   end
 ' "$KIND_GATE"
 
-# Three distinct projected client leaves must make narrow exact-SAN TLS calls
-# from the real audit, ID Bridge, and smallest mandatory pipeline workload
-# (Sandbox B) Pods. The helper can only execute after the runtime Pod mount is
+# Four distinct projected client leaves must make narrow exact-SAN TLS calls
+# from the real Audit, ID Bridge, Sanitizer sidecar, and smallest mandatory
+# pipeline workload (Sandbox B) Pods. The helper can only execute after the runtime Pod mount is
 # proven read-only and bound to that workload's own operator Secret; it must
 # never receive the generic probe or gateway leaf.
 ruby -e '
@@ -263,6 +263,7 @@ ruby -e '
   required = {
     "audit" => ["dsa-audit", "audit", "lucairn-mtls-audit"],
     "id-bridge" => ["dsa-bridge", "id-bridge", "lucairn-mtls-id-bridge"],
+    "sanitizer" => ["dsa-identity", "sanitizer", "lucairn-mtls-sanitizer"],
     "sandbox-b" => ["dsa-ai", "sandbox-b", "lucairn-mtls-sandbox-b"]
   }
   required.each do |identity, (namespace, container, secret)|
@@ -272,7 +273,7 @@ ruby -e '
     abort "Kind gate misses the stable projected workload identity PASS line" unless source.include?(pass)
   end
   abort "Kind gate does not identify Sandbox B as the pipeline workload" unless source.include?("Sandbox B is\n# the smallest mandatory pipeline choice")
-  abort "Kind gate misses the three :50057 exact-SAN projected workload calls" unless source.include?("veil-witness.dsa-witness.svc.cluster.local:50057 dsa-veil-witness")
+  abort "Kind gate misses the four :50057 exact-SAN projected workload calls" unless source.include?("veil-witness.dsa-witness.svc.cluster.local:50057 dsa-veil-witness")
   resolve = source[/^resolve_projected_identity_workload\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind gate misses projected workload resolver")
   [
     "expected exactly one $identity workload Pod",
@@ -1242,7 +1243,7 @@ ruby -e '
   ledger_normalized = ledger.gsub(/\s+/, " ")
   pass_lines = [
     "PASS: coverage class=workload-originated transport handshake; origin=actual-gateway-pod; projected-leaf=gateway; edges=gateway-to-audit,gateway-to-id-bridge,gateway-to-sandbox-a,gateway-to-sandbox-b,gateway-to-sanitizer,gateway-to-witness-50057,gateway-to-witness-50058; server-SANs=dsa-audit,dsa-id-bridge,dsa-sandbox-a,dsa-sandbox-b,dsa-sanitizer,dsa-veil-witness",
-    "PASS: coverage class=workload-originated transport handshake; projected-leaves=audit,id-bridge,sandbox-b; edges=audit-to-witness,id-bridge-to-witness,sandbox-b-to-witness; server-SAN=dsa-veil-witness",
+    "PASS: coverage class=workload-originated transport handshake; projected-leaves=audit,id-bridge,sanitizer,sandbox-b; edges=audit-to-witness,id-bridge-to-witness,sanitizer-to-witness,sandbox-b-to-witness; server-SAN=dsa-veil-witness",
     "PASS: coverage class=application-layer call; gateway gRPC identity; expected-server-SAN=dsa-sandbox-a",
     "PASS: coverage class=application-layer call; gateway-to-sanitizer HTTPS; expected-server-SAN=dsa-sanitizer"
   ]
@@ -1252,6 +1253,8 @@ ruby -e '
     "supporting local-probe evidence",
     "workload-originated transport handshake",
     "Actual Gateway Pod / Gateway",
+    "Sanitizer → Veil Witness `:50057`",
+    "Actual Sandbox A Pod / Sanitizer sidecar",
     "representative application-layer gateway gRPC identity",
     "representative application-layer gateway→sanitizer HTTPS",
     "Residual risk: a non-representative application client could be misconfigured despite transport success.",

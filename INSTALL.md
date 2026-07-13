@@ -1794,6 +1794,7 @@ calls below are representative only.
 | Gateway → Veil Witness `:50058` | workload-originated transport handshake | Actual Gateway Pod / Gateway | `dsa-veil-witness` |
 | Audit → Veil Witness `:50057` | workload-originated transport handshake | Actual Audit Pod / Audit | `dsa-veil-witness` |
 | ID Bridge → Veil Witness `:50057` | workload-originated transport handshake | Actual ID Bridge Pod / ID Bridge | `dsa-veil-witness` |
+| Sanitizer → Veil Witness `:50057` | workload-originated transport handshake | Actual Sandbox A Pod / Sanitizer sidecar | `dsa-veil-witness` |
 | Sandbox B → Veil Witness `:50057` | workload-originated transport handshake | Actual Sandbox B Pod / Sandbox B | `dsa-veil-witness` |
 
 Residual risk: a non-representative application client could be misconfigured
