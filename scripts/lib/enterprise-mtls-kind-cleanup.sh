@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Harness-local cleanup policy for scripts/test-enterprise-mtls-kind.sh.
 #
-# The caller owns CLUSTER, CLUSTER_CREATED, PROBE_IMAGE, and STATE_DIR. This
-# helper never prints a state path or any credential-related value. A failed
-# owned-cluster deletion is the one cleanup failure that changes the gate
-# result, because retaining a running cluster can retain projected Secrets.
+# The caller owns CLUSTER, CLUSTER_CREATION_ATTEMPTED, PROBE_IMAGE, and
+# STATE_DIR. This helper never prints a state path or any credential-related
+# value. A failed owned-cluster deletion is the one cleanup failure that
+# changes the gate result, because retaining a running cluster can retain
+# projected Secrets.
 
 enterprise_mtls_kind_cleanup() {
   local body_status="$1"
@@ -19,11 +20,19 @@ enterprise_mtls_kind_cleanup() {
     enterprise_mtls_kind_cleanup_helpers >/dev/null 2>&1 || true
   fi
 
-  if [ "${CLUSTER_CREATED:-0}" -eq 1 ]; then
+  # `kind create cluster --wait` can fail after creating cluster resources.
+  # Once creation has been attempted, always ask Kind to delete our uniquely
+  # named cluster. A nonzero delete is benign only when Kind can positively
+  # confirm the exact name is absent; an unreadable cluster list is fail-closed.
+  if [ "${CLUSTER_CREATION_ATTEMPTED:-0}" -eq 1 ]; then
     if ! kind delete cluster --name "$CLUSTER" >/dev/null 2>&1; then
-      printf 'ERROR: owned Kind cluster deletion failed for cluster %s\n' "$CLUSTER" >&2
-      printf 'Retry: kind delete cluster --name %s\n' "$CLUSTER" >&2
-      cluster_delete_failed=1
+      local clusters
+      if ! clusters="$(kind get clusters 2>/dev/null)" \
+        || printf '%s\n' "$clusters" | grep -Fqx -- "$CLUSTER"; then
+        printf 'ERROR: owned Kind cluster deletion failed for cluster %s\n' "$CLUSTER" >&2
+        printf 'Retry: kind delete cluster --name %s\n' "$CLUSTER" >&2
+        cluster_delete_failed=1
+      fi
     fi
   fi
 

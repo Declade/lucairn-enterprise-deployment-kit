@@ -43,7 +43,7 @@ HELM_RELEASE_ALL="$STATE_DIR/helm-release-all.txt"
 EXTERNAL_SECRETS_CRDS="$ROOT/charts/lucairn/tests/fixtures/kind-external-secrets-crds.yaml"
 PROBE_IMAGE=""
 PROBE_ARCHIVE="$STATE_DIR/enterprise-mtls-probe.tar"
-CLUSTER_CREATED=0
+CLUSTER_CREATION_ATTEMPTED=0
 GATEWAY_HELPER_INSTALLED=0
 PROJECTED_HELPER_INSTALLED=0
 
@@ -90,8 +90,8 @@ nodes:
   - role: worker
 YAML
 
+CLUSTER_CREATION_ATTEMPTED=1
 kind create cluster --name "$CLUSTER" --config "$KIND_CONFIG" --kubeconfig "$KUBECONFIG" --wait 180s
-CLUSTER_CREATED=1
 K=("$KUBECTL_BIN" --kubeconfig "$KUBECONFIG")
 
 # values-prod pins Sandbox A and B to separate zones. Label the two isolated

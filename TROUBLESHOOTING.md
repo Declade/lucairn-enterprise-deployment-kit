@@ -158,13 +158,17 @@ rollout: update the selected remote backend value first, then run the same
 preflight used by Helm before retrying:
 
 ```bash
+SITE_OVERLAY=/secure/operator/lucairn-production-site.yaml
 bin/lucairn doctor \
   --values charts/lucairn/values-prod.yaml \
+  --values "$SITE_OVERLAY" \
   --offline
 helm template lucairn charts/lucairn \
-  -f charts/lucairn/values-prod.yaml >/dev/null
+  -f charts/lucairn/values-prod.yaml \
+  -f "$SITE_OVERLAY" >/dev/null
 helm upgrade --install lucairn charts/lucairn \
-  -f charts/lucairn/values-prod.yaml
+  -f charts/lucairn/values-prod.yaml \
+  -f "$SITE_OVERLAY"
 ```
 
 The order must match Helm: parent production values first,
@@ -296,8 +300,10 @@ Run:
 ```bash
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 # Production Helm uses the names-and-paths-only External Secrets profile.
+SITE_OVERLAY=/secure/operator/lucairn-production-site.yaml
 bin/lucairn doctor \
   --values charts/lucairn/values-prod.yaml \
+  --values "$SITE_OVERLAY" \
   --offline
 openssl x509 -noout -subject -issuer -dates -in path/to/cert.pem
 ```
