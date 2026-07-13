@@ -533,6 +533,36 @@ for required_term in global.mtls operator/PKI doctor readiness acceptance; do
   fi
 done
 
+# NetworkPolicy enforcement is an independently verified Veil isolation
+# control. Stock Kind/kindnet can accept the mTLS transport harness, so neither
+# Pod readiness nor that acceptance supplies NetworkPolicy evidence.
+ruby -e '
+  required = {
+    "docs/CUSTOMER_HELM_RUNBOOK.md" => [
+      "separate from the Helm mTLS transport gate",
+      "isolation must not be inferred from Pod readiness or mTLS acceptance",
+      "it gives no NetworkPolicy-enforcement evidence",
+      "operators must separately deploy and verify a NetworkPolicy-enforcing CNI",
+    ],
+    "INSTALL.md" => [
+      "separate production control from the Helm mTLS transport gate",
+      "Do not infer isolation from Pod readiness or mTLS acceptance",
+      "it gives no NetworkPolicy-enforcement evidence",
+      "operators must separately deploy and verify a NetworkPolicy-enforcing CNI",
+    ],
+    "OPS.md" => [
+      "control to deploy and verify for the Veil isolation invariant, not the Helm mTLS transport gate",
+    ],
+  }
+  required.each do |relative_path, terms|
+    text = File.read(File.join(ARGV.fetch(0), relative_path)).gsub(/\n\s*>\s?/, " ").gsub(/\s+/, " ")
+    abort "stale kindnet automatic readyz/fail-closed claim: #{relative_path}" if text.match?(/kindnet.{0,600}(?:\/readyz|fail[- ]closed)/i)
+    terms.each do |term|
+      abort "missing NetworkPolicy/mTLS evidence boundary #{term.inspect}: #{relative_path}" unless text.include?(term)
+    end
+  end
+' "$ROOT"
+
 # A production profile cannot silently downgrade when an identity is omitted.
 if render --set global.mtls.secrets.audit= >"$TMPDIR/missing-secret.out" 2>&1; then
   echo "production render accepted an empty audit mTLS Secret" >&2

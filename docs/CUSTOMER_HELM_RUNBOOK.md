@@ -13,7 +13,7 @@
 ## Prereqs (1-time)
 
 - Kubernetes 1.27+ cluster (Kind, EKS, GKE, AKS, vanilla — single node is fine for pilot scale)
-- **A NetworkPolicy-ENFORCING CNI (Calico or Cilium) — HARD PREREQUISITE, see callout below**
+- **A NetworkPolicy-enforcing CNI (Calico or Cilium) for the Veil isolation control — a separate production control from the Helm mTLS transport gate; see callout below**
 - `kubectl` configured for the cluster + access to create namespaces, ClusterRoles, NetworkPolicies
 - `helm` v3.12+ installed locally
 - `docker` available locally (for ghcr.io PAT setup; no Docker required on the cluster itself)
@@ -28,17 +28,18 @@
 > Sandbox A — the identity plane) is enforced by the chart's NetworkPolicies.
 > **A CNI that does not enforce NetworkPolicies silently defeats this control.**
 > The chart's NPs render correctly either way; they simply have no effect
-> without an enforcer.
+> without an enforcer. This production isolation control is separate from the
+> Helm mTLS transport gate.
 >
 > - **`kindnet`** (the default CNI on a stock `kind` cluster) does **NOT** enforce
->   NetworkPolicies. On kindnet, Sandbox B *can* reach Sandbox A, the isolation
->   prober detects the breach, and the sanitizer locks **fail-closed** (`/readyz`
->   503) — i.e. the install correctly refuses to serve rather than serve without
->   isolation. This was reproduced in the 2026-05-29 full-stack test: on kindnet
->   the invariant locks; swapping to **Calico v3.27.3** made Sandbox B → Sandbox A
->   `BLOCKED`, the invariant `verified`, and the chain operational.
-> - Use **Calico** or **Cilium** in production. For a `kind` pilot, create the
->   cluster with the default CNI disabled and install Calico:
+>   NetworkPolicies. Its NetworkPolicy objects are inert, so isolation must not
+>   be inferred from Pod readiness or mTLS acceptance. The stock Kind/kindnet
+>   mTLS harness can reach Ready, but proves only projected-leaf mTLS transport;
+>   it gives no NetworkPolicy-enforcement evidence.
+> - For production, operators must separately deploy and verify a
+>   NetworkPolicy-enforcing CNI such as **Calico** or **Cilium** before relying
+>   on Veil isolation. For a `kind` pilot, create the cluster with the default
+>   CNI disabled and install Calico:
 >   ```bash
 >   kind create cluster --config - <<'EOF'
 >   kind: Cluster
