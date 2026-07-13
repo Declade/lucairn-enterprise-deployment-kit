@@ -36,7 +36,9 @@ assert_helm_required make-test-prerequisite make -s -C "$ROOT" test-enterprise-m
 # second failure is the bounded proof that `make test` fails before later
 # tests can turn an unavailable Helm CLI into a successful suite.
 make_test_output="$TMPDIR/make-test-dry-run.out"
-make -n -C "$ROOT" test >"$make_test_output"
+# --no-print-directory: GNU make 4.x auto-enables -w with -C and would emit
+# "make: Entering directory ..." as the first line (Ubuntu CI); 3.81 does not.
+make -n --no-print-directory -C "$ROOT" test >"$make_test_output"
 first_make_test_line="$(sed -n '1p' "$make_test_output")"
 if [[ "$first_make_test_line" != 'bash tests/test_enterprise_mtls_helm.sh' ]]; then
   echo "make test no longer starts with the mandatory Helm contract prerequisite" >&2
