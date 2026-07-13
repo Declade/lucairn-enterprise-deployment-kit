@@ -119,7 +119,7 @@ secrets:
     bridgeEncryptionKey: ""
     dsaServiceToken: ""  # PRODUCTION: set via existingSecret or --set; dev: inline value
   vault:
-    path: "dsa/data/bridge"
+    path: "bridge"
   aws:
     name: "dsa/bridge"
   azure:

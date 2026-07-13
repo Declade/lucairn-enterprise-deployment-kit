@@ -350,7 +350,7 @@ secrets:
     # Generate with: openssl rand -hex 32
     canaryHmacKey: ""
   vault:
-    path: "dsa/data/gateway"
+    path: "gateway"
   aws:
     name: "dsa/gateway"
   azure:

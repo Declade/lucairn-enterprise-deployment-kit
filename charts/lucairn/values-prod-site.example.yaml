@@ -1,0 +1,29 @@
+# Copy to an operator-controlled site overlay and replace only non-secret
+# provider routing values. values-prod.yaml intentionally leaves the Vault
+# endpoint empty, so it cannot render or install on its own.
+#
+# Do not put Vault tokens, application credentials, registry credentials, or
+# certificate/private-key material in this file. ESO and the site's identity
+# mechanism retrieve application credentials directly from the provider.
+global:
+  secrets:
+    vault:
+      endpoint: "https://vault.example.internal"
+
+# To select AWS or Azure, set global.secrets.backend and every mandatory
+# child's secrets.backend to the same provider, then give each child its
+# selected non-secret remote name. For example, the operator overlay may add:
+#
+# global:
+#   secrets:
+#     backend: aws
+#     aws:
+#       region: eu-central-1
+# gateway:
+#   secrets:
+#     backend: aws
+#     aws:
+#       name: customer/lucairn/gateway
+#
+# Apply the same explicit backend/name pair to audit, id-bridge, sandbox-a,
+# sandbox-b, and veil-witness. See INSTALL.md for the complete provider shape.

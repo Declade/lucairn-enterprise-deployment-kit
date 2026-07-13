@@ -261,7 +261,7 @@ secrets:
     # production, paste the SAME value here as gateway.secrets.values.licenseKey.
     licenseKey: ""
   vault:
-    path: "dsa/data/sandbox-b"
+    path: "sandbox-b"
   aws:
     name: "dsa/sandbox-b"
   azure:

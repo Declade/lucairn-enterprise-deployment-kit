@@ -28,6 +28,7 @@ ruby -ryaml - "$PUBLIC" "$PRIVATE" <<'RUBY'
 overlay = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
 expected = %w[veilAuditPublicKey veilBridgePublicKey veilGatewayManifestPublicKey veilGatewayPublicKey veilSandboxBPublicKey veilSanitizerPublicKey veilWitnessPublicKey]
 abort "public key roster drift" unless overlay.fetch("kindPublicKeys").keys.sort == expected
+abort "Kind public overlay must contain a disposable syntactically valid Vault HTTPS endpoint" unless overlay.dig("global", "secrets", "vault", "endpoint") == "https://vault.kind.invalid"
 walk = lambda do |node|
   if node.is_a?(Hash)
     abort "public overlay contains secrets.values" if node["secrets"].is_a?(Hash) && node["secrets"].key?("values")

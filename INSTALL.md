@@ -1682,15 +1682,20 @@ Helm fails before install if any field is absent or if
 is separate from the readiness-bundle contract; it projects exactly one file,
 read-only, at the gateway path that verifies the witness signature at startup.
 
-Use `charts/lucairn/values-prod.yaml` as the supported production overlay. It
-enables `global.mtls`, fixes these operator-owned Secret names, selects Vault,
-and sets an explicit Vault backend and remote path for Gateway, Audit, ID
-Bridge, Sandbox A, Sandbox B, and Veil Witness. Populate every listed remote
-reference in that External Secrets backend before Helm runs. Do not layer the
-development/pilot `customer-values.yaml`, pass an API key with `--set`, or put
-application-secret bytes in any values file. A credential rotation changes the
-backend values first, then follows the coordinated application/database/service
-rollout; Helm values remain names and paths only.
+Use `charts/lucairn/values-prod.yaml` with an operator-controlled site overlay
+as the supported production profile. The base file enables `global.mtls`, fixes
+operator-owned Secret names, selects Vault, and sets the Vault KV v2 mount
+(`dsa`) plus relative remote keys for Gateway, Audit, ID Bridge, Sandbox A,
+Sandbox B, and Veil Witness. Its Vault endpoint is intentionally empty, so
+`values-prod.yaml` alone fails closed. Copy
+`charts/lucairn/values-prod-site.example.yaml` to a protected site location and
+set its non-secret Vault endpoint (and any non-secret provider/remote routing
+choices). Populate every listed remote reference in that External Secrets
+backend before Helm runs. Do not layer development/pilot
+`customer-values.yaml`, pass an API key with `--set`, or put application-secret
+bytes in any values file. A credential rotation changes the backend values
+first, then follows the coordinated application/database/service rollout; Helm
+values remain names and paths only.
 
 Vault is the concrete default. To use AWS or Azure instead, change both
 `global.secrets.backend` and **every** enabled child’s `secrets.backend` to the
@@ -1715,15 +1720,20 @@ leave `global.imagePullSecrets` empty. For the first mode, create the pull
 Secret with `kubectl` after namespace adoption and before Helm. Helm never
 creates or copies its credential bytes.
 
-Before install, run the Helm-only preflight with the exact production values.
-A green render alone is not an accepted deployment, so write it to `/dev/null`.
+Before install, set the site-overlay path and run the Helm-only preflight with
+the ordered production values. A green render alone is not an accepted
+deployment, so write it to `/dev/null`.
 
 ```bash
+SITE_OVERLAY=/secure/operator/lucairn-production-site.yaml
+
 bin/lucairn doctor \
   --values charts/lucairn/values-prod.yaml \
+  --values "$SITE_OVERLAY" \
   --offline
 helm template lucairn charts/lucairn \
   -f charts/lucairn/values-prod.yaml \
+  -f "$SITE_OVERLAY" \
   >/dev/null
 ```
 
@@ -1733,6 +1743,7 @@ declaring success:
 ```bash
 helm upgrade --install lucairn charts/lucairn \
   -f charts/lucairn/values-prod.yaml \
+  -f "$SITE_OVERLAY" \
   --namespace lucairn --create-namespace --wait --timeout 12m
 
 # Isolated, destructive-to-its-own-Kind-cluster acceptance only:

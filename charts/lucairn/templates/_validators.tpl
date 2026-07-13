@@ -112,16 +112,70 @@ the chart's supported paths are development and production only.
       {{- fail (printf "%s must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology." $profile.path) -}}
     {{- end -}}
   {{- end -}}
+  {{- $globalSecretsRaw := $global.secrets -}}
+  {{- if not (kindIs "map" $globalSecretsRaw) -}}
+    {{- fail "global.secrets must be a YAML mapping when global.dsaEnv=production." -}}
+  {{- end -}}
+  {{- $globalSecrets := $globalSecretsRaw -}}
+  {{- $globalBackend := $globalSecrets.backend -}}
+  {{- if or (not (kindIs "string" $globalBackend)) (not (has $globalBackend (list "vault" "aws" "azure"))) -}}
+    {{- fail "global.secrets.backend must be exactly vault, aws, or azure when global.dsaEnv=production; the chart renders one dsa-secret-store provider." -}}
+  {{- end -}}
+  {{- if eq $globalBackend "vault" -}}
+    {{- $vault := $globalSecrets.vault -}}
+    {{- if not (kindIs "map" $vault) -}}
+      {{- fail "global.secrets.vault must be a YAML mapping with endpoint, mountPath, and role when global.secrets.backend=vault in production." -}}
+    {{- end -}}
+    {{- $endpoint := $vault.endpoint -}}
+    {{- if or (not (kindIs "string" $endpoint)) (not (regexMatch "^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]+)?(/[^[:space:]]*)?$" $endpoint)) -}}
+      {{- fail "global.secrets.vault.endpoint must be a non-empty HTTPS URL with a host when global.secrets.backend=vault in production. Supply it in a names-and-paths-only site overlay; never put credentials in Helm values." -}}
+    {{- end -}}
+    {{- range $field := list "mountPath" "role" -}}
+      {{- $value := index $vault $field -}}
+      {{- if or (not (kindIs "string" $value)) (empty $value) -}}
+        {{- fail (printf "global.secrets.vault.%s must be a non-empty string when global.secrets.backend=vault in production." $field) -}}
+      {{- end -}}
+    {{- end -}}
+  {{- else if eq $globalBackend "aws" -}}
+    {{- $aws := $globalSecrets.aws -}}
+    {{- if or (not (kindIs "map" $aws)) (not (kindIs "string" $aws.region)) (empty $aws.region) -}}
+      {{- fail "global.secrets.aws.region must be a non-empty string when global.secrets.backend=aws in production." -}}
+    {{- end -}}
+  {{- else if eq $globalBackend "azure" -}}
+    {{- $azure := $globalSecrets.azure -}}
+    {{- if not (kindIs "map" $azure) -}}
+      {{- fail "global.secrets.azure must be a YAML mapping with keyVaultName and tenantId when global.secrets.backend=azure in production." -}}
+    {{- end -}}
+    {{- range $field := list "keyVaultName" "tenantId" -}}
+      {{- $value := index $azure $field -}}
+      {{- if or (not (kindIs "string" $value)) (empty $value) -}}
+        {{- fail (printf "global.secrets.azure.%s must be a non-empty string when global.secrets.backend=azure in production." $field) -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
   {{- $mandatorySecretBackends := list
-        (dict "path" "gateway.secrets.backend" "value" ((default dict (default dict .Values.gateway).secrets).backend))
-        (dict "path" "audit.secrets.backend" "value" ((default dict (default dict .Values.audit).secrets).backend))
-        (dict "path" "id-bridge.secrets.backend" "value" ((default dict (default dict (index .Values "id-bridge")).secrets).backend))
-        (dict "path" "sandbox-a.secrets.backend" "value" ((default dict (default dict (index .Values "sandbox-a")).secrets).backend))
-        (dict "path" "sandbox-b.secrets.backend" "value" ((default dict (default dict (index .Values "sandbox-b")).secrets).backend))
-        (dict "path" "veil-witness.secrets.backend" "value" ((default dict (default dict (index .Values "veil-witness")).secrets).backend)) -}}
+        (dict "service" "gateway" "path" "gateway.secrets.backend" "value" ((default dict (default dict .Values.gateway).secrets).backend))
+        (dict "service" "audit" "path" "audit.secrets.backend" "value" ((default dict (default dict .Values.audit).secrets).backend))
+        (dict "service" "id-bridge" "path" "id-bridge.secrets.backend" "value" ((default dict (default dict (index .Values "id-bridge")).secrets).backend))
+        (dict "service" "sandbox-a" "path" "sandbox-a.secrets.backend" "value" ((default dict (default dict (index .Values "sandbox-a")).secrets).backend))
+        (dict "service" "sandbox-b" "path" "sandbox-b.secrets.backend" "value" ((default dict (default dict (index .Values "sandbox-b")).secrets).backend))
+        (dict "service" "veil-witness" "path" "veil-witness.secrets.backend" "value" ((default dict (default dict (index .Values "veil-witness")).secrets).backend)) -}}
   {{- range $backend := $mandatorySecretBackends -}}
     {{- if not (has $backend.value (list "vault" "aws" "azure")) -}}
       {{- fail (printf "%s must be one of vault, aws, or azure when global.dsaEnv=production; k8s-native and Helm-owned application Secrets are unsupported. Configure this mandatory child's External Secrets backend and keep credential bytes outside Helm values and release history." $backend.path) -}}
+    {{- end -}}
+    {{- if ne $backend.value $globalBackend -}}
+      {{- fail (printf "%s must equal global.secrets.backend (%s) when global.dsaEnv=production; the chart renders one dsa-secret-store provider and mixed child providers are invalid." $backend.path $globalBackend) -}}
+    {{- end -}}
+    {{- $service := default dict (index $.Values $backend.service) -}}
+    {{- $secrets := default dict $service.secrets -}}
+    {{- $remote := index $secrets $globalBackend -}}
+    {{- $remoteField := "name" -}}
+    {{- if eq $globalBackend "vault" -}}
+      {{- $remoteField = "path" -}}
+    {{- end -}}
+    {{- if or (not (kindIs "map" $remote)) (not (kindIs "string" (index (default dict $remote) $remoteField))) (empty (index (default dict $remote) $remoteField)) -}}
+      {{- fail (printf "%s.%s.%s must be a non-empty string when global.secrets.backend=%s in production." (trimSuffix ".backend" $backend.path) $globalBackend $remoteField $globalBackend) -}}
     {{- end -}}
   {{- end -}}
   {{- range $profile := $optionalProfiles -}}

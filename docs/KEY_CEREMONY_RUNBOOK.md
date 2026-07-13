@@ -452,7 +452,8 @@ Production Helm installs use the External Secrets Operator (ESO) to sync secrets
 See `charts/lucairn/charts/*/templates/externalsecret.yaml` for the per-service `ExternalSecret` definitions and `docs/CUSTOMER_HELM_RUNBOOK.md` for the full Helm ceremony runbook.
 
 For the production Helm posture (`global.mtls.enabled=true`,
-`global.dsaEnv=production`), use `charts/lucairn/values-prod.yaml` and create
+`global.dsaEnv=production`), use `charts/lucairn/values-prod.yaml` followed by
+the operator-controlled site overlay described in INSTALL.md, and create
 the mTLS identity Secrets described in INSTALL.md § "Enterprise full-mesh
 mTLS". The production gateway also requires this ceremony's signed output as a
 separate, pre-created Secret in its own namespace:

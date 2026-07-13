@@ -43,17 +43,16 @@ ruby -ryaml -e '
   abort "accepted production overlay must explicitly set veil-witness.enabled=true" unless witness["enabled"] == true
 ' "$CHART/values.yaml" "$CHART/values-prod.yaml"
 
-# An explicit false or an absent (null) witness condition must fail before
-# Helm can use its legacy dependency-condition fallback.
-for witness_value in false null; do
-  witness_error="$TMPDIR/witness-enabled-${witness_value}.out"
-  if render --set-json "veil-witness.enabled=${witness_value}" >"$witness_error" 2>&1; then
-    echo "production render accepted veil-witness.enabled=${witness_value}" >&2
-    exit 1
-  fi
-  grep -q 'veil-witness.enabled must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology.' "$witness_error" \
-    || { echo "veil-witness.enabled=${witness_value} did not produce the mandatory-topology error" >&2; exit 1; }
-done
+# An explicit false witness condition must fail before Helm can use its legacy
+# dependency-condition fallback. Helm 3.16 coalesces a --set-json null back to
+# the chart default; the explicit values-file null check appears below.
+witness_error="$TMPDIR/witness-enabled-false.out"
+if render --set veil-witness.enabled=false >"$witness_error" 2>&1; then
+  echo "production render accepted veil-witness.enabled=false" >&2
+  exit 1
+fi
+grep -q 'veil-witness.enabled must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology.' "$witness_error" \
+  || { echo "veil-witness.enabled=false did not produce the mandatory-topology error" >&2; exit 1; }
 
 # Kubelet HTTP probes cannot authenticate to the sanitizer's mTLS listener.
 # Under production mTLS the sidecar must therefore run the read-only Python
@@ -516,8 +515,8 @@ for optional_path in pii-ml.enabled postgres-gateway.enabled demo.enabled ingest
 done
 
 # Every default-topology claim source is mandatory in production. Keep accepted
-# true shapes exact: false, aliases, case/whitespace variants, numbers, null,
-# maps, and lists must fail closed with the path that caused the rejection.
+# true shapes exact: false, aliases, case/whitespace variants, numbers, maps,
+# and lists must fail closed with the path that caused the rejection.
 for path in gateway.veilEnabled audit.veilEnabled id-bridge.veilEnabled sandbox-a.veilEnabled sandbox-b.veilEnabled; do
   error="${path} must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology."
   for setter in --set --set-string; do
@@ -543,7 +542,7 @@ for path in gateway.veilEnabled audit.veilEnabled id-bridge.veilEnabled sandbox-
     grep -Fq "$error" "$shape_file" \
       || { echo "ambiguous ${path}=${value} did not produce the mandatory-topology error" >&2; exit 1; }
   done
-  for value in null 1 '{}' '[]'; do
+  for value in 1 '{}' '[]'; do
     shape_file="$TMPDIR/${path//./-}-json-${value//[^[:alnum:]]/_}.out"
     if render --set-json "${path}=${value}" >"$shape_file" 2>&1; then
       echo "production render accepted ambiguous ${path}=${value}" >&2
@@ -553,6 +552,69 @@ for path in gateway.veilEnabled audit.veilEnabled id-bridge.veilEnabled sandbox-
       || { echo "ambiguous ${path}=${value} did not produce the mandatory-topology error" >&2; exit 1; }
   done
 done
+
+# Explicit YAML null has two safe Helm-version-dependent outcomes: newer Helm
+# releases may preserve it for validation, which must reject the mandatory
+# topology path; Helm 3.16 may coalesce it back to the locked true default, in
+# which case the complete rendered manifest must remain byte-identical to the
+# accepted production render. Keep null cases in explicit values files and
+# forbid the unstable --set-json null invocation in this suite.
+for path in veil-witness.enabled gateway.veilEnabled audit.veilEnabled id-bridge.veilEnabled sandbox-a.veilEnabled sandbox-b.veilEnabled; do
+  null_values="$TMPDIR/${path//./-}-null.yaml"
+  case "$path" in
+    veil-witness.enabled)
+      cat > "$null_values" <<'YAML'
+veil-witness:
+  enabled: null
+YAML
+      ;;
+    gateway.veilEnabled)
+      cat > "$null_values" <<'YAML'
+gateway:
+  veilEnabled: null
+YAML
+      ;;
+    audit.veilEnabled)
+      cat > "$null_values" <<'YAML'
+audit:
+  veilEnabled: null
+YAML
+      ;;
+    id-bridge.veilEnabled)
+      cat > "$null_values" <<'YAML'
+id-bridge:
+  veilEnabled: null
+YAML
+      ;;
+    sandbox-a.veilEnabled)
+      cat > "$null_values" <<'YAML'
+sandbox-a:
+  veilEnabled: null
+YAML
+      ;;
+    sandbox-b.veilEnabled)
+      cat > "$null_values" <<'YAML'
+sandbox-b:
+  veilEnabled: null
+YAML
+      ;;
+  esac
+  null_file="$TMPDIR/${path//./-}-null.out"
+  error="${path} must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology."
+  if render -f "$null_values" >"$null_file" 2>&1; then
+    cmp -s "$RENDER" "$null_file" \
+      || { echo "production render accepted null ${path} with a manifest that differs from the accepted production render" >&2; exit 1; }
+  else
+    grep -Fq "$error" "$null_file" \
+      || { echo "null ${path} did not produce the mandatory-topology error" >&2; exit 1; }
+  fi
+done
+
+set_json_option='--set-json'
+if rg -n -- "${set_json_option}.*=null" "$0"; then
+  echo "enterprise mTLS Helm contract must not use ${set_json_option} with a null RHS" >&2
+  exit 1
+fi
 
 # Mandatory workload enablement uses the same exact-shape semantics.
 for path in gateway.enabled; do
@@ -763,12 +825,18 @@ fi
 grep -q 'global.mtls.secrets.audit' "$TMPDIR/doctor-clear-audit.out" \
   || { echo "doctor did not expose the layered audit Secret error" >&2; exit 1; }
 
-# Reversing those same files changes the result: values-prod.yaml restores the
-# audit Secret when it is last. This proves doctor preserves ordered -f inputs
-# rather than collapsing them into a single file.
+# Reversing the parent/clear pair restores the audit Secret, while a final
+# names-and-paths-only site overlay restores the required Vault endpoint. This
+# proves doctor preserves ordered -f inputs without weakening the production
+# site's required provider configuration.
+ruby -ryaml -e '
+  values = YAML.load_file(ARGV.fetch(0))
+  File.write(ARGV.fetch(1), YAML.dump({ "global" => { "secrets" => { "vault" => { "endpoint" => values.fetch("global").fetch("secrets").fetch("vault").fetch("endpoint") } } } }))
+' "$PUBLIC_OVERLAY" "$TMPDIR/doctor-site-endpoint.yaml"
 "$ROOT/bin/lucairn" doctor \
   --values "$TMPDIR/doctor-clear-audit.yaml" \
   --values "$CHART/values-prod.yaml" \
+  --values "$TMPDIR/doctor-site-endpoint.yaml" \
   --offline > "$TMPDIR/doctor-reversed-order.out"
 grep -q 'doctor: ok' "$TMPDIR/doctor-reversed-order.out" \
   || { echo "doctor did not preserve the supplied values-file order" >&2; exit 1; }

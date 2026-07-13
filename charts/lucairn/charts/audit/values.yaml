@@ -124,7 +124,7 @@ secrets:
     veilSigningKey: ""
     dsaServiceToken: ""  # PRODUCTION: set via existingSecret or --set; dev: inline value
   vault:
-    path: "dsa/data/postgres-audit"
+    path: "postgres-audit"
   aws:
     name: "dsa/postgres-audit"
   azure:
