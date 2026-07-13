@@ -1,9 +1,9 @@
-.PHONY: test test-enterprise-mtls-helm test-enterprise-mtls-helm-required package release-kit customer-bundle clean \
+.PHONY: test test-enterprise-mtls-helm test-enterprise-mtls-helm-required test-enterprise-mtls-production-values package release-kit customer-bundle clean \
         dashboard-buildx-bootstrap dashboard-multiarch-build \
         dashboard-multiarch-promote-aliases \
         dashboard-verify-manifests
 
-test: test-enterprise-mtls-helm test-enterprise-mtls-helm-required
+test: test-enterprise-mtls-helm test-enterprise-mtls-helm-required test-enterprise-mtls-production-values
 	bash tests/test_lucairn_cli.sh
 	bash tests/test_check_updates.sh
 	bash tests/test_redact_stream.sh
@@ -20,6 +20,9 @@ test-enterprise-mtls-helm:
 
 test-enterprise-mtls-helm-required:
 	bash tests/test_enterprise_mtls_helm_required.sh
+
+test-enterprise-mtls-production-values:
+	bash tests/test_enterprise_mtls_production_values.sh
 
 package:
 	bash scripts/package-release.sh
