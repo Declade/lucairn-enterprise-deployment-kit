@@ -17,6 +17,16 @@ fi
 OUTPUT="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RENDER_VALUES="$SCRIPT_DIR/render-values.sh"
+
+# This overlay contains freshly generated credentials. Refuse an occupied
+# destination before generating them so an ordinary upgrade cannot silently
+# rotate credentials, and include -L so dangling symlinks are refused too.
+if [ -e "$OUTPUT" ] || [ -L "$OUTPUT" ]; then
+  echo "error: refusing to overwrite existing output path: $OUTPUT" >&2
+  echo "choose a new path for a deliberate, coordinated credential rotation" >&2
+  exit 1
+fi
+
 TMP_VALUES="$(mktemp "${TMPDIR:-/tmp}/lucairn-production-values.XXXXXX")"
 trap 'rm -f "$TMP_VALUES"' EXIT
 
@@ -53,8 +63,11 @@ ruby -ryaml -e '
   # restate the parent production topology.
   values.delete("demo")
 
-  File.open(ARGV.fetch(1), "w", 0600) { |file| file.write(YAML.dump(values)) }
+  # O_EXCL is the final TOCTOU guard: never follow, truncate, or replace an
+  # output path that appeared after the early shell refusal check.
+  File.open(ARGV.fetch(1), File::WRONLY | File::CREAT | File::EXCL, 0600) do |file|
+    file.write(YAML.dump(values))
+  end
 ' "$TMP_VALUES" "$OUTPUT"
-chmod 600 "$OUTPUT"
 
 echo "render-production-values.sh: $OUTPUT ready (mode 600; keep it out of Git)."
