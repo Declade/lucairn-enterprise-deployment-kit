@@ -23,6 +23,7 @@ bash -n "$ROOT/tests/test_enterprise_mtls_kind_image_preload.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_kind_client_auth.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_ceremony_docs.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_kind_kubectl_resolver.sh"
+bash -n "$ROOT/tests/test_enterprise_mtls_kind_cleanup.sh"
 bash -n "$ROOT/scripts/render-values.sh"
 bash -n "$ROOT/scripts/derive-veil-pubkey.sh"
 bash -n "$ROOT/scripts/enterprise-mtls-fixture-certs.sh"
@@ -50,16 +51,20 @@ for required_term in global.mtls operator/PKI doctor readiness acceptance; do
   fi
 done
 
-# The real Kind gate must both create and reference its chart-managed GHCR
-# pull Secret while keeping the private-registry guard fail-closed.
+# Kind preloads every rendered product image. It must not require, read, or
+# transfer registry credentials through Helm; the chart guard is explicitly
+# bypassed only for this disposable, preloaded environment.
 for required_flag in \
-  '--set global.skipPullSecretGuard=false' \
-  "--set 'global.imagePullSecrets[0].name=lucairn-registry'" \
-  '--set global.secrets.backend=k8s-native' \
-  '--set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG_FILE"'; do
+  '--set global.skipPullSecretGuard=true' \
+  '--set global.secrets.backend=k8s-native'; do
   grep -Fq -- "$required_flag" "$ROOT/scripts/test-enterprise-mtls-kind.sh" \
     || { echo "enterprise mTLS Kind gate missing required Helm flag: $required_flag" >&2; exit 1; }
 done
+if rg -n 'DOCKER_CONFIG|imagePullDockerConfigJson|--set-file.*docker' \
+  "$ROOT/scripts/test-enterprise-mtls-kind.sh"; then
+  echo "enterprise mTLS Kind gate still transfers registry credentials through Helm" >&2
+  exit 1
+fi
 
 # Kind node output is unordered: the harness must exclude the control plane
 # and refuse to proceed unless the configured two workers were found.
@@ -93,6 +98,7 @@ bash "$ROOT/tests/test_enterprise_mtls_kind_image_preload.sh"
 bash "$ROOT/tests/test_enterprise_mtls_kind_client_auth.sh"
 bash "$ROOT/tests/test_enterprise_mtls_ceremony_docs.sh"
 bash "$ROOT/tests/test_enterprise_mtls_kind_kubectl_resolver.sh"
+bash "$ROOT/tests/test_enterprise_mtls_kind_cleanup.sh"
 
 # ── Hardening regression assertions (KIT-4: NET-02/SUP-06/NET-05/OBS-08/OBS-09) ──
 # Static (grep/render) assertions so they run without docker. Placed early so

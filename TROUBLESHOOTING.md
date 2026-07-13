@@ -151,26 +151,20 @@ gateway:
     fileName: witness-signed-manifest.json
 ```
 
-For normal upgrades, reuse the existing protected application-only overlay;
-do not substitute the development/pilot `customer-values.yaml`. The renderer
-refuses an existing output path. Regeneration must use a different new path and
-is a deliberate, coordinated credential-rotation ceremony requiring application,
-database, and service rollout planning. Never overwrite the existing overlay in
-place. Then assign `OVERLAY` to that new path and run the same pair used by
-Helm before retrying:
+For normal upgrades, use the names-and-paths-only External Secrets production
+profile; do not substitute the development/pilot `customer-values.yaml`.
+Credential rotation is a coordinated application, database, and service
+rollout: update the selected remote backend value first, then run the same
+preflight used by Helm before retrying:
 
 ```bash
-OVERLAY="$PWD/customer-production-values-rotated-YYYYMMDD.yaml"
 bin/lucairn doctor \
   --values charts/lucairn/values-prod.yaml \
-  --values "$OVERLAY" \
   --offline
 helm template lucairn charts/lucairn \
-  -f charts/lucairn/values-prod.yaml \
-  -f "$OVERLAY" >/dev/null
+  -f charts/lucairn/values-prod.yaml >/dev/null
 helm upgrade --install lucairn charts/lucairn \
-  -f charts/lucairn/values-prod.yaml \
-  -f "$OVERLAY"
+  -f charts/lucairn/values-prod.yaml
 ```
 
 The order must match Helm: parent production values first,
@@ -301,12 +295,9 @@ Run:
 
 ```bash
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
-# Use the protected first-install path for normal upgrades, or the distinct
-# rotated path selected during the coordinated replacement ceremony.
-OVERLAY="${OVERLAY:-$PWD/customer-production-values.yaml}"
+# Production Helm uses the names-and-paths-only External Secrets profile.
 bin/lucairn doctor \
   --values charts/lucairn/values-prod.yaml \
-  --values "$OVERLAY" \
   --offline
 openssl x509 -noout -subject -issuer -dates -in path/to/cert.pem
 ```

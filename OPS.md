@@ -1179,23 +1179,19 @@ The configured `gateway.veilWitnessSignedManifestPath` must equal
 contract before an upgrade; a missing Secret name/key, partial block, or path
 mismatch must be a Helm render failure, never a bypass or placeholder blob:
 
-On the first production install, create the application-only companion to the
-parent production profile once with
-`bash scripts/render-production-values.sh customer-production-values.yaml`.
-Keep that protected overlay and reuse it unchanged for normal upgrades; do not
-reuse the development/pilot `customer-values.yaml` for this ordered pair. The
-renderer refuses an existing output path. For a deliberate credential rotation,
-generate a different new path and coordinate the application, database, and
-service rollout before changing the Helm values path.
+Production uses the names-and-paths-only External Secrets contract in
+`charts/lucairn/values-prod.yaml`; do not reuse the development/pilot
+`customer-values.yaml` or generate application credentials in Helm values.
+For a deliberate credential rotation, update the selected child remote
+reference in Vault/AWS/Azure and coordinate the application, database, and
+service rollout before the next Helm upgrade.
 
 ```bash
 bin/lucairn doctor \
   --values charts/lucairn/values-prod.yaml \
-  --values customer-production-values.yaml \
   --offline
 helm template lucairn charts/lucairn \
-  -f charts/lucairn/values-prod.yaml \
-  -f customer-production-values.yaml >/dev/null
+  -f charts/lucairn/values-prod.yaml >/dev/null
 ```
 
 **To verify mTLS is active:**

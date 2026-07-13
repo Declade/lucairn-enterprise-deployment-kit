@@ -536,8 +536,8 @@ done
 # The production mTLS instructions create operator-owned Secrets before Helm.
 # Parse that section specifically: clean clusters need the six namespaces
 # created or intentionally adopted by the lucairn release before the first
-# Secret command, and both production Helm commands need the private-registry
-# config that the empty generated overlay deliberately does not carry.
+# Secret command, while application and registry credentials stay outside
+# Helm's values/release history.
 ruby -e '
   document = File.read(ARGV.fetch(0))
   section = document[/^## Enterprise full-mesh mTLS \(required production topology\)$.*?(?=^## |\z)/m]
@@ -562,7 +562,6 @@ ruby -e '
   abort "production mTLS instructions lack the PKI Secret command" unless first_secret
   abort "namespace adoption must precede the first PKI Secret command" unless adoption.begin(0) < first_secret
 
-  expected_pull_config = %(--set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json")
   commands = section.scan(/```bash\n(.*?)^```/m).flatten
   {
     "helm template lucairn charts/lucairn" => "template",
@@ -571,10 +570,11 @@ ruby -e '
     command = commands.find { |candidate| candidate.lines.any? { |line| line.strip.start_with?(prefix) } }
     abort "production #{name} command missing from INSTALL.md" unless command
     option_lines = command.lines.map(&:strip).map { |line| line.delete_suffix("\\").rstrip }
-    abort "production #{name} command lacks the exact private-registry --set-file input" unless option_lines.include?(expected_pull_config)
+    abort "production #{name} command passes registry bytes through Helm" if option_lines.any? { |line| line.include?("imagePullDockerConfigJson") || line.include?("--set-file") }
   end
-  abort "production instructions do not require an authenticated private-registry config" unless section.include?("authenticated\nprivate-registry configuration")
-  abort "production instructions do not keep registry config out of Git and logs" unless section.include?("out of Git and logs")
+  ["External Secrets", "global.skipPullSecretGuard=true", "global.imagePullSecrets", "node/default-ServiceAccount", "workload identity", "release history"].each do |term|
+    abort "production instructions omit #{term.inspect}" unless section.include?(term)
+  end
 ' "$ROOT/INSTALL.md"
 
 # NetworkPolicy enforcement is an independently verified Veil isolation

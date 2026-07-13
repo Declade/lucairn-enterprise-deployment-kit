@@ -136,39 +136,14 @@ Expected output: `Saving N charts ... Downloading ...` then `Deleting outdated c
 
 ### Production mTLS gate (required before a production install)
 
-`customer-values.yaml` is only for development/pilot installs. For a first
-production install, create a separate application-only overlay once; it reuses
-the canonical secret generator but removes every parent-owned environment,
-mTLS, network, and security control. Do not rename, reuse, or layer
-`customer-values.yaml` after the production profile.
-
-```bash
-# First install: assign a new protected path once.
-OVERLAY="$PWD/customer-production-values.yaml"
-bash scripts/render-production-values.sh "$OVERLAY"
-```
-
-Keep the resulting protected overlay and reuse it unchanged for normal Helm
-upgrades. The renderer refuses an existing output path. For credential rotation,
-assign `OVERLAY` to a different new path, generate it, and coordinate the
-application, database, and service rollout before updating the Helm values path:
-
-```bash
-# Credential rotation only; do not overwrite the first-install overlay.
-OVERLAY="$PWD/customer-production-values-rotated-YYYYMMDD.yaml"
-bash scripts/render-production-values.sh "$OVERLAY"
-```
-
-Add your Anthropic API key to the production overlay (this does not print it):
-
-```bash
-sed -i.bak 's|anthropicApiKey: ""|anthropicApiKey: "<your-key-here>"|' "$OVERLAY"
-```
-
-Helm must layer this application-only file after
-`charts/lucairn/values-prod.yaml`; do not merge the files. The parent profile
-therefore keeps `global.dsaEnv=production` and `global.mtls.enabled=true`.
-Do not attempt to enable transport with child-chart TLS settings.
+`customer-values.yaml` is only for development/pilot installs. Production uses
+the names-and-paths-only External Secrets profile in
+`charts/lucairn/values-prod.yaml`, which keeps
+`global.dsaEnv=production`, `global.mtls.enabled=true`, and explicit Vault
+paths for every default-topology child. Populate the referenced External
+Secrets backend before Helm runs; never use a shell substitution, `--set`, or a
+values file for an Anthropic/API key, database credential, signing key, or
+service token. Do not attempt to enable transport with child-chart TLS settings.
 
 Before Helm, the operator/PKI team creates one Secret per identity in its
 workload namespace. Each has exactly `ca.crt`, `tls.crt`, and `tls.key`; Helm
@@ -180,27 +155,29 @@ only mounts them. The production names are `lucairn-mtls-gateway` (dsa-edge),
 by the production overlay as well. Never put CA or private-key bytes in Helm
 values or Git.
 
-Run doctor against the same ordered pair used by Helm—not the static overlay
-alone, which intentionally has no application secrets:
+Registry authentication is outside Helm and release history. Set
+`global.skipPullSecretGuard=true` (already in the production profile) and use
+one of: a pre-created pull Secret referenced by `global.imagePullSecrets` in
+every mandatory namespace, node/default-ServiceAccount auth, or workload
+identity. Never pass a Docker config through Helm.
+
+Run doctor against the production profile:
 
 ```bash
 bin/lucairn doctor \
   --values charts/lucairn/values-prod.yaml \
-  --values "$OVERLAY" \
   --offline
 helm template lucairn ./charts/lucairn \
   -f charts/lucairn/values-prod.yaml \
-  -f "$OVERLAY" \
-  --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
-  >/tmp/lucairn-production-rendered.yaml
+  >/dev/null
 ```
 
 This command fails closed if Helm is unavailable because it cannot inspect the
 rendered production transport contract. A plain Compose-only `doctor` remains
 graceful and does not perform Helm inspection.
 
-For a production install, use the same `$OVERLAY` below. A
-successful template is not acceptance: wait for readiness and execute the
+For a production install, use the same production profile below. A successful
+template is not acceptance: wait for readiness and execute the
 disposable acceptance battery in a non-production Kind cluster before release
 approval:
 
@@ -218,8 +195,6 @@ helm install lucairn ./charts/lucairn \
   --namespace lucairn \
   --create-namespace \
   -f charts/lucairn/values-prod.yaml \
-  -f "$OVERLAY" \
-  --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
   --wait --timeout 10m
 ```
 

@@ -1,481 +1,110 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Regression for the documented production order. A development/pilot
-# customer-values.yaml contains parent controls and must never be the second
-# file after values-prod.yaml.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHART="$ROOT/charts/lucairn"
+VALUES="$CHART/values-prod.yaml"
 TMPDIR="$(mktemp -d)"
-STICKY_TMP_ROOT=""
-trap 'rm -rf "$TMPDIR" "$STICKY_TMP_ROOT"' EXIT
-OVERLAY="$TMPDIR/customer-production-values.yaml"
-RENDER="$TMPDIR/rendered.yaml"
+trap 'rm -rf "$TMPDIR"' EXIT
 
 if ! command -v helm >/dev/null 2>&1; then
-  echo "enterprise mTLS production overlay: ERROR — Helm CLI is required; install Helm and rerun make test." >&2
+  echo "enterprise mTLS production values: ERROR — Helm CLI is required; install Helm and rerun make test." >&2
   exit 2
 fi
 
-bash "$ROOT/scripts/render-production-values.sh" "$OVERLAY" >/dev/null
+[ ! -e "$ROOT/scripts/render-production-values.sh" ] \
+  || { echo "production secret renderer must be deleted" >&2; exit 1; }
+if rg -n 'render-production-values\.sh|customer-production-values\.yaml' \
+  "$ROOT/INSTALL.md" "$ROOT/OPS.md" "$ROOT/TROUBLESHOOTING.md" \
+  "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md" "$ROOT/Makefile" "$ROOT/scripts"; then
+  echo "production path still refers to a generated secret-bearing values file" >&2
+  exit 1
+fi
 
-if MODE="$(stat -f '%Lp' "$OVERLAY" 2>/dev/null)"; then :; else MODE="$(stat -c '%a' "$OVERLAY")"; fi
-[ "$MODE" = "600" ] || { echo "production overlay mode is $MODE, expected 600" >&2; exit 1; }
-
-# A production overlay holds generated DB credentials, signing keys, and
-# service tokens. Every pre-existing output type must fail without changing
-# the existing object or following a symlink. These failures happen before
-# secret generation; the succeeding overlay below remains the exact pair used
-# by the Helm and doctor contract checks.
-assert_existing_output_refused() {
-  local path="$1"
-  if bash "$ROOT/scripts/render-production-values.sh" "$path" >/dev/null 2>&1; then
-    echo "production renderer accepted existing output path: $path" >&2
-    exit 1
-  fi
-}
-
-REGULAR_SENTINEL="$TMPDIR/existing-values.yaml"
-printf '%s\n' 'regular-file-sentinel' > "$REGULAR_SENTINEL"
-assert_existing_output_refused "$REGULAR_SENTINEL"
-[ "$(<"$REGULAR_SENTINEL")" = 'regular-file-sentinel' ] \
-  || { echo "production renderer changed regular-file sentinel" >&2; exit 1; }
-
-SYMLINK_TARGET="$TMPDIR/symlink-target.yaml"
-SYMLINK_SENTINEL="$TMPDIR/existing-values-symlink.yaml"
-printf '%s\n' 'symlink-target-sentinel' > "$SYMLINK_TARGET"
-ln -s "$SYMLINK_TARGET" "$SYMLINK_SENTINEL"
-assert_existing_output_refused "$SYMLINK_SENTINEL"
-[ "$(<"$SYMLINK_TARGET")" = 'symlink-target-sentinel' ] \
-  || { echo "production renderer changed symlink target sentinel" >&2; exit 1; }
-
-DANGLING_SYMLINK="$TMPDIR/dangling-values-symlink.yaml"
-ln -s "$TMPDIR/does-not-exist.yaml" "$DANGLING_SYMLINK"
-assert_existing_output_refused "$DANGLING_SYMLINK"
-
-EXISTING_DIRECTORY="$TMPDIR/existing-values-directory"
-mkdir "$EXISTING_DIRECTORY"
-assert_existing_output_refused "$EXISTING_DIRECTORY"
-
-assert_no_staged_overlay() {
-  local directory="$1"
-  if find "$directory" -maxdepth 1 -name '.lucairn-production-values.*' -print -quit | grep -q .; then
-    echo "production renderer left a secret-bearing staged overlay in $directory" >&2
-    exit 1
-  fi
-}
-
-assert_no_source_overlay() {
-  local directory="$1"
-  if find "$directory" -maxdepth 1 -name '.lucairn-production-values-source.*' -print -quit | grep -q .; then
-    echo "production renderer left a secret-bearing source overlay in $directory" >&2
-    exit 1
-  fi
-}
-
-assert_no_source_overlay "$TMPDIR"
-assert_no_staged_overlay "$TMPDIR"
-
-# TMPDIR is caller-controlled and can be non-sticky. A mktemp shim replaces
-# any source created there with valid-looking attacker input; the renderer must
-# neither create that source nor consume it, and must publish its own overlay
-# through the validated output directory.
-UNSAFE_TMPDIR="$TMPDIR/caller-controlled-tmp"
-SOURCE_TRAP_BIN="$TMPDIR/source-trap-bin"
-SOURCE_TRAP_LOG="$TMPDIR/source-trap.log"
-SOURCE_TRAP_CALL_LOG="$TMPDIR/source-trap-calls.log"
-SOURCE_TRAP_OUTPUT="$TMPDIR/source-trap-values.yaml"
-SOURCE_TRAP_OUTPUT_DIR="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$(dirname "$SOURCE_TRAP_OUTPUT")")"
-REAL_MKTEMP="$(command -v mktemp)"
-mkdir "$UNSAFE_TMPDIR" "$SOURCE_TRAP_BIN"
-chmod 777 "$UNSAFE_TMPDIR"
-cat > "$SOURCE_TRAP_BIN/mktemp" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-path="\$("$REAL_MKTEMP" "\$@")"
-if mode="\$(stat -f '%Lp' "\$path" 2>/dev/null)"; then :; else mode="\$(stat -c '%a' "\$path")"; fi
-printf '%s|%s\\n' "\${1:-}" "\$mode" >> "$SOURCE_TRAP_CALL_LOG"
-case "\${1:-}" in
-  "$UNSAFE_TMPDIR"/lucairn-production-values.XXXXXX)
-    printf '%s\\n' "\$path" >> "$SOURCE_TRAP_LOG"
-    cat > "\$path" <<'YAML'
----
-global:
-  dsaServiceToken: attacker-substituted-token
-YAML
-    ;;
-esac
-printf '%s\\n' "\$path"
-EOF
-chmod 700 "$SOURCE_TRAP_BIN/mktemp"
-TMPDIR="$UNSAFE_TMPDIR" PATH="$SOURCE_TRAP_BIN:$PATH" bash "$ROOT/scripts/render-production-values.sh" "$SOURCE_TRAP_OUTPUT" >/dev/null
-[ -f "$SOURCE_TRAP_OUTPUT" ] && [ ! -L "$SOURCE_TRAP_OUTPUT" ] \
-  || { echo "production renderer did not publish through the validated destination" >&2; exit 1; }
-if MODE="$(stat -f '%Lp' "$SOURCE_TRAP_OUTPUT" 2>/dev/null)"; then :; else MODE="$(stat -c '%a' "$SOURCE_TRAP_OUTPUT")"; fi
-[ "$MODE" = "600" ] || { echo "source-trap output mode is $MODE, expected 600" >&2; exit 1; }
-[ ! -s "$SOURCE_TRAP_LOG" ] \
-  || { echo "production renderer created a source overlay under caller-controlled TMPDIR" >&2; exit 1; }
-grep -Fqx "$SOURCE_TRAP_OUTPUT_DIR/.lucairn-production-values-source.XXXXXX|600" "$SOURCE_TRAP_CALL_LOG" \
-  || { echo "production renderer did not create its hidden 0600 source under the validated output directory" >&2; exit 1; }
-grep -Fqx "$SOURCE_TRAP_OUTPUT_DIR/.lucairn-production-values.XXXXXX|600" "$SOURCE_TRAP_CALL_LOG" \
-  || { echo "production renderer did not create its hidden 0600 stage under the validated output directory" >&2; exit 1; }
-assert_no_source_overlay "$UNSAFE_TMPDIR"
-assert_no_staged_overlay "$UNSAFE_TMPDIR"
+# Production values are a names-and-paths-only External Secrets overlay. The
+# default topology must never fall back to k8s-native secret values or a global
+# backend inference, and registry config is never a Helm value.
 ruby -ryaml -e '
   values = YAML.load_file(ARGV.fetch(0))
-  abort "source replacement reached the published overlay" if values.dig("global", "dsaServiceToken") == "attacker-substituted-token"
-  abort "published overlay lacks canonical generated credentials" unless values.dig("global", "dsaServiceToken").is_a?(String) && !values.dig("global", "dsaServiceToken").empty?
-' "$SOURCE_TRAP_OUTPUT"
-assert_no_source_overlay "$TMPDIR"
-assert_no_staged_overlay "$TMPDIR"
-
-# A syntactically valid but short stage write must not publish. RUBYOPT scopes
-# the fault to the staging inode and makes File#write return the short byte
-# count it actually wrote, without adding a production-only renderer switch.
-SHORT_WRITE_PATCH="$TMPDIR/short-stage-write.rb"
-cat > "$SHORT_WRITE_PATCH" <<'RUBY'
-class File
-  alias_method :production_overlay_original_write, :write
-
-  def write(data, *args)
-    if ENV["PRODUCTION_OVERLAY_SHORT_STAGE_WRITE"] == "1" && path.include?(".lucairn-production-values.")
-      return production_overlay_original_write("---\nglobal: {}\n", *args)
-    end
-    production_overlay_original_write(data, *args)
+  global = values.fetch("global")
+  abort "production pull-secret guard must be explicitly bypassed for out-of-band auth" unless global["skipPullSecretGuard"] == true
+  abort "production imagePullSecrets must default to an empty out-of-band list" unless global["imagePullSecrets"] == []
+  abort "production values carry Docker registry credentials" if global.key?("imagePullDockerConfigJson")
+  abort "production global External Secrets backend is not Vault" unless global.dig("secrets", "backend") == "vault"
+  %w[admin observability ingest].each do |child|
+    service = values.fetch(child)
+    abort "production #{child} must be explicitly disabled" unless service["enabled"] == false
+    abort "production #{child} carries inline application values" if service.dig("secrets", "values")
   end
-end
-RUBY
-SHORT_WRITE_OUTPUT="$TMPDIR/short-write-values.yaml"
-SHORT_WRITE_TMPDIR="$TMPDIR/short-write-tmp"
-mkdir "$SHORT_WRITE_TMPDIR"
-if TMPDIR="$SHORT_WRITE_TMPDIR" PRODUCTION_OVERLAY_SHORT_STAGE_WRITE=1 RUBYOPT="-r$SHORT_WRITE_PATCH" bash "$ROOT/scripts/render-production-values.sh" "$SHORT_WRITE_OUTPUT" >/dev/null 2>&1; then
-  echo "production renderer accepted a syntactically valid short stage write" >&2
-  exit 1
-fi
-[ ! -e "$SHORT_WRITE_OUTPUT" ] && [ ! -L "$SHORT_WRITE_OUTPUT" ] \
-  || { echo "production renderer published output after a short stage write" >&2; exit 1; }
-assert_no_staged_overlay "$TMPDIR"
-assert_no_source_overlay "$TMPDIR"
-assert_no_source_overlay "$SHORT_WRITE_TMPDIR"
-assert_no_staged_overlay "$SHORT_WRITE_TMPDIR"
+  %w[gateway audit id-bridge sandbox-a sandbox-b veil-witness].each do |child|
+    secrets = values.fetch(child).fetch("secrets")
+    abort "#{child} relies on global backend inference" unless secrets["backend"] == "vault"
+    path = secrets.dig("vault", "path")
+    abort "#{child} has no explicit Vault remote path" unless path.is_a?(String) && !path.empty?
+    abort "#{child} carries inline application values" if secrets.key?("values")
+  end
+' "$VALUES"
 
-# Replacing the mktemp-created stage with a symlink must fail at the NOFOLLOW
-# open, leave the replacement target untouched, and publish nothing.
-STAGE_REPLACEMENT_TARGET="$TMPDIR/stage-replacement-sentinel.yaml"
-printf '%s\n' 'stage-replacement-sentinel' > "$STAGE_REPLACEMENT_TARGET"
-STAGE_REPLACE_SHIM_DIR="$TMPDIR/stage-replace-bin"
-REAL_MKTEMP="$(command -v mktemp)"
-mkdir "$STAGE_REPLACE_SHIM_DIR"
-cat > "$STAGE_REPLACE_SHIM_DIR/mktemp" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-path="\$("$REAL_MKTEMP" "\$@")"
-case "\${1:-}" in
-  */.lucairn-production-values.XXXXXX)
-    rm -f -- "\$path"
-    ln -s "\$STAGE_REPLACEMENT_TARGET" "\$path"
-    ;;
-esac
-printf '%s\\n' "\$path"
-EOF
-chmod 700 "$STAGE_REPLACE_SHIM_DIR/mktemp"
-STAGE_REPLACEMENT_OUTPUT="$TMPDIR/stage-replacement-values.yaml"
-STAGE_REPLACEMENT_TMPDIR="$TMPDIR/stage-replacement-tmp"
-mkdir "$STAGE_REPLACEMENT_TMPDIR"
-if TMPDIR="$STAGE_REPLACEMENT_TMPDIR" PATH="$STAGE_REPLACE_SHIM_DIR:$PATH" bash "$ROOT/scripts/render-production-values.sh" "$STAGE_REPLACEMENT_OUTPUT" >/dev/null 2>&1; then
-  echo "production renderer accepted a replaced staging path" >&2
-  exit 1
-fi
-[ "$(<"$STAGE_REPLACEMENT_TARGET")" = 'stage-replacement-sentinel' ] \
-  || { echo "production renderer wrote secrets through a replaced staging path" >&2; exit 1; }
-[ ! -e "$STAGE_REPLACEMENT_OUTPUT" ] && [ ! -L "$STAGE_REPLACEMENT_OUTPUT" ] \
-  || { echo "production renderer published output after staging-path replacement" >&2; exit 1; }
-assert_no_staged_overlay "$TMPDIR"
-assert_no_source_overlay "$TMPDIR"
-assert_no_source_overlay "$STAGE_REPLACEMENT_TMPDIR"
-assert_no_staged_overlay "$STAGE_REPLACEMENT_TMPDIR"
-
-# The renderer refuses customer-controlled group/world-writable parents before
-# it calls the canonical secret generator, and leaves no temporary material.
-OPENSSL_SHIM_DIR="$TMPDIR/unsafe-directory-bin"
-OPENSSL_CALL_LOG="$TMPDIR/unsafe-directory-openssl-called"
-mkdir "$OPENSSL_SHIM_DIR"
-cat > "$OPENSSL_SHIM_DIR/openssl" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' called > "$OPENSSL_CALL_LOG"
-exit 99
-EOF
-chmod 700 "$OPENSSL_SHIM_DIR/openssl"
-for unsafe_mode in 770 707; do
-  UNSAFE_DIR="$TMPDIR/unsafe-output-$unsafe_mode"
-  mkdir "$UNSAFE_DIR"
-  chmod "$unsafe_mode" "$UNSAFE_DIR"
-  if OPENSSL_CALL_LOG="$OPENSSL_CALL_LOG" PATH="$OPENSSL_SHIM_DIR:$PATH" bash "$ROOT/scripts/render-production-values.sh" "$UNSAFE_DIR/values.yaml" >/dev/null 2>&1; then
-    echo "production renderer accepted unsafe output directory mode $unsafe_mode" >&2
-    exit 1
-  fi
-  [ ! -e "$OPENSSL_CALL_LOG" ] \
-    || { echo "production renderer generated secrets before rejecting unsafe directory mode $unsafe_mode" >&2; exit 1; }
-  assert_no_staged_overlay "$UNSAFE_DIR"
-  assert_no_source_overlay "$UNSAFE_DIR"
-done
-
-# A private leaf is still replaceable when it sits below a non-sticky writable
-# ancestor. Reject that pathname before the canonical renderer can generate a
-# source or staged secret, while retaining the normal sticky-/tmp case.
-NONSTICKY_ANCESTOR="$TMPDIR/non-sticky-output-ancestor"
-NONSTICKY_LEAF="$NONSTICKY_ANCESTOR/private-leaf"
-NONSTICKY_OUTPUT="$NONSTICKY_LEAF/values.yaml"
-mkdir -p "$NONSTICKY_LEAF"
-chmod 777 "$NONSTICKY_ANCESTOR"
-chmod 700 "$NONSTICKY_LEAF"
+# Every generated ExternalSecret must cover the credential keys consumed by its
+# default-topology Pods or mandatory Jobs. The list is deliberately explicit:
+# adding a new required secretKeyRef must update this test and the ESO mapping.
 ruby -e '
-  stat = File.lstat(ARGV.fetch(0))
-  abort "non-sticky ancestor setup is not 0777" unless (stat.mode & 0o7777) == 0o777
-  stat = File.lstat(ARGV.fetch(1))
-  abort "private leaf setup is not EUID-owned 0700" unless stat.uid == Process.euid && (stat.mode & 0o7777) == 0o700
-' "$NONSTICKY_ANCESTOR" "$NONSTICKY_LEAF"
-rm -f -- "$OPENSSL_CALL_LOG"
-if OPENSSL_CALL_LOG="$OPENSSL_CALL_LOG" PATH="$OPENSSL_SHIM_DIR:$PATH" bash "$ROOT/scripts/render-production-values.sh" "$NONSTICKY_OUTPUT" >/dev/null 2>&1; then
-  echo "production renderer accepted a private leaf below a non-sticky writable ancestor" >&2
-  exit 1
-fi
-[ ! -e "$OPENSSL_CALL_LOG" ] \
-  || { echo "production renderer generated secrets before rejecting a non-sticky writable ancestor" >&2; exit 1; }
-[ ! -e "$NONSTICKY_OUTPUT" ] && [ ! -L "$NONSTICKY_OUTPUT" ] \
-  || { echo "production renderer published output below a non-sticky writable ancestor" >&2; exit 1; }
-assert_no_staged_overlay "$NONSTICKY_LEAF"
-assert_no_source_overlay "$NONSTICKY_LEAF"
-
-# A sticky ancestor owned by a different principal can still rename or unlink
-# the private leaf pathname. Simulate that ownership only in the preflight's
-# File.lstat call: the real filesystem remains EUID-owned and unchanged.
-DISTINCT_OWNER_ANCESTOR="$TMPDIR/distinct-owner-sticky-ancestor"
-DISTINCT_OWNER_LEAF="$DISTINCT_OWNER_ANCESTOR/private-leaf"
-DISTINCT_OWNER_OUTPUT="$DISTINCT_OWNER_LEAF/values.yaml"
-DISTINCT_OWNER_STAT_PROXY="$TMPDIR/distinct-owner-sticky-stat-proxy.rb"
-mkdir -p "$DISTINCT_OWNER_LEAF"
-chmod 1777 "$DISTINCT_OWNER_ANCESTOR"
-chmod 700 "$DISTINCT_OWNER_LEAF"
-DISTINCT_OWNER_ANCESTOR_REALPATH="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$DISTINCT_OWNER_ANCESTOR")"
-DISTINCT_OWNER_REAL_UID="$(ruby -e 'print File.lstat(ARGV.fetch(0)).uid' "$DISTINCT_OWNER_ANCESTOR_REALPATH")"
-DISTINCT_OWNER_FAKE_UID="$(ruby -e 'print Process.euid.zero? ? 1 : Process.euid + 1')"
-ruby -e '
-  stat = File.lstat(ARGV.fetch(0))
-  abort "distinct-owner ancestor setup is not EUID-owned 01777" unless stat.uid == Process.euid && (stat.mode & 0o7777) == 0o1777
-  fake_uid = Integer(ARGV.fetch(1))
-  abort "distinct-owner proxy UID is trusted" if [0, Process.euid].include?(fake_uid)
-' "$DISTINCT_OWNER_ANCESTOR_REALPATH" "$DISTINCT_OWNER_FAKE_UID"
-cat > "$DISTINCT_OWNER_STAT_PROXY" <<'RUBY'
-class ProductionOverlayDistinctOwnerStat
-  def initialize(stat, uid)
-    @stat = stat
-    @uid = uid
-  end
-
-  attr_reader :uid
-
-  def method_missing(name, *args, &block)
-    @stat.public_send(name, *args, &block)
-  end
-
-  def respond_to_missing?(name, include_private = false)
-    @stat.respond_to?(name, include_private) || super
-  end
-end
-
-class File
-  class << self
-    alias_method :production_overlay_distinct_owner_original_lstat, :lstat
-
-    def lstat(path)
-      stat = production_overlay_distinct_owner_original_lstat(path)
-      if File.expand_path(path) == ENV.fetch("PRODUCTION_OVERLAY_DISTINCT_OWNER_ANCESTOR")
-        ProductionOverlayDistinctOwnerStat.new(stat, Integer(ENV.fetch("PRODUCTION_OVERLAY_DISTINCT_OWNER_UID")))
-      else
-        stat
-      end
-    end
-  end
-end
-RUBY
-rm -f -- "$OPENSSL_CALL_LOG"
-if OPENSSL_CALL_LOG="$OPENSSL_CALL_LOG" \
-  PATH="$OPENSSL_SHIM_DIR:$PATH" \
-  PRODUCTION_OVERLAY_DISTINCT_OWNER_ANCESTOR="$DISTINCT_OWNER_ANCESTOR_REALPATH" \
-  PRODUCTION_OVERLAY_DISTINCT_OWNER_UID="$DISTINCT_OWNER_FAKE_UID" \
-  RUBYOPT="-r$DISTINCT_OWNER_STAT_PROXY" \
-  bash "$ROOT/scripts/render-production-values.sh" "$DISTINCT_OWNER_OUTPUT" >/dev/null 2>&1; then
-  echo "production renderer accepted a private leaf below a distinct-owner sticky ancestor" >&2
-  exit 1
-fi
-[ ! -e "$OPENSSL_CALL_LOG" ] \
-  || { echo "production renderer generated secrets before rejecting a distinct-owner sticky ancestor" >&2; exit 1; }
-[ ! -e "$DISTINCT_OWNER_OUTPUT" ] && [ ! -L "$DISTINCT_OWNER_OUTPUT" ] \
-  || { echo "production renderer published output below a distinct-owner sticky ancestor" >&2; exit 1; }
-assert_no_staged_overlay "$DISTINCT_OWNER_LEAF"
-assert_no_source_overlay "$DISTINCT_OWNER_LEAF"
-ruby -e '
-  stat = File.lstat(ARGV.fetch(0))
-  abort "distinct-owner regression changed real ancestor ownership" unless stat.uid == Integer(ARGV.fetch(1))
-  abort "distinct-owner regression changed real ancestor mode" unless (stat.mode & 0o7777) == 0o1777
-' "$DISTINCT_OWNER_ANCESTOR_REALPATH" "$DISTINCT_OWNER_REAL_UID"
-
-# Ancestor ownership is required even without group/world write bits: its
-# owner can rename the checked descendant before source or stage creation.
-# Simulate a foreign owner in File.lstat without requiring privileged chown.
-OWNER_WRITABLE_ANCESTOR="$TMPDIR/distinct-owner-0711-ancestor"
-OWNER_WRITABLE_LEAF="$OWNER_WRITABLE_ANCESTOR/private-leaf"
-OWNER_WRITABLE_OUTPUT="$OWNER_WRITABLE_LEAF/values.yaml"
-mkdir -p "$OWNER_WRITABLE_LEAF"
-chmod 711 "$OWNER_WRITABLE_ANCESTOR"
-chmod 700 "$OWNER_WRITABLE_LEAF"
-OWNER_WRITABLE_ANCESTOR_REALPATH="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$OWNER_WRITABLE_ANCESTOR")"
-OWNER_WRITABLE_REAL_UID="$(ruby -e 'print File.lstat(ARGV.fetch(0)).uid' "$OWNER_WRITABLE_ANCESTOR_REALPATH")"
-ruby -e '
-  stat = File.lstat(ARGV.fetch(0))
-  abort "owner-writable ancestor setup is not EUID-owned 0711" unless stat.uid == Process.euid && (stat.mode & 0o7777) == 0o711
-' "$OWNER_WRITABLE_ANCESTOR_REALPATH"
-rm -f -- "$OPENSSL_CALL_LOG"
-if OPENSSL_CALL_LOG="$OPENSSL_CALL_LOG" \
-  PATH="$OPENSSL_SHIM_DIR:$PATH" \
-  PRODUCTION_OVERLAY_DISTINCT_OWNER_ANCESTOR="$OWNER_WRITABLE_ANCESTOR_REALPATH" \
-  PRODUCTION_OVERLAY_DISTINCT_OWNER_UID="$DISTINCT_OWNER_FAKE_UID" \
-  RUBYOPT="-r$DISTINCT_OWNER_STAT_PROXY" \
-  bash "$ROOT/scripts/render-production-values.sh" "$OWNER_WRITABLE_OUTPUT" >/dev/null 2>&1; then
-  echo "production renderer accepted a private leaf below a distinct-owner 0711 ancestor" >&2
-  exit 1
-fi
-[ ! -e "$OPENSSL_CALL_LOG" ] \
-  || { echo "production renderer generated secrets before rejecting a distinct-owner 0711 ancestor" >&2; exit 1; }
-[ ! -e "$OWNER_WRITABLE_OUTPUT" ] && [ ! -L "$OWNER_WRITABLE_OUTPUT" ] \
-  || { echo "production renderer published output below a distinct-owner 0711 ancestor" >&2; exit 1; }
-assert_no_staged_overlay "$OWNER_WRITABLE_LEAF"
-assert_no_source_overlay "$OWNER_WRITABLE_LEAF"
-ruby -e '
-  stat = File.lstat(ARGV.fetch(0))
-  abort "owner-writable regression changed real ancestor ownership" unless stat.uid == Integer(ARGV.fetch(1))
-  abort "owner-writable regression changed real ancestor mode" unless (stat.mode & 0o7777) == 0o711
-' "$OWNER_WRITABLE_ANCESTOR_REALPATH" "$OWNER_WRITABLE_REAL_UID"
-
-STICKY_TMP_ROOT="$(mktemp -d /tmp/lucairn-production-values-sticky.XXXXXX)"
-ruby -e '
-  stat = File.stat(File.realpath(ARGV.fetch(0)))
-  abort "resolved /tmp path is not sticky" if (stat.mode & 0o1000).zero?
-' "$(dirname "$STICKY_TMP_ROOT")"
-STICKY_TMP_OUTPUT="$STICKY_TMP_ROOT/values.yaml"
-bash "$ROOT/scripts/render-production-values.sh" "$STICKY_TMP_OUTPUT" >/dev/null
-[ -f "$STICKY_TMP_OUTPUT" ] && [ ! -L "$STICKY_TMP_OUTPUT" ] \
-  || { echo "production renderer rejected a private path below sticky /tmp" >&2; exit 1; }
-assert_no_staged_overlay "$STICKY_TMP_ROOT"
-assert_no_source_overlay "$STICKY_TMP_ROOT"
-
-# File.link is the non-replacing publication primitive. Simulate a destination
-# racing into existence just before that call; it must stay untouched and the
-# now-unpublished staging file must still be cleaned.
-PUBLISH_SHIM_DIR="$TMPDIR/publish-race-bin"
-mkdir "$PUBLISH_SHIM_DIR"
-REAL_RUBY="$(command -v ruby)"
-cat > "$PUBLISH_SHIM_DIR/ruby" <<EOF
-#!/usr/bin/env bash
-if [ "\$1" = "-e" ] && [ "\$#" -eq 6 ]; then
-  printf '%s\\n' 'raced-destination-sentinel' > "\$4"
-  exit 1
-fi
-exec "$REAL_RUBY" "\$@"
-EOF
-chmod 700 "$PUBLISH_SHIM_DIR/ruby"
-RACED_OUTPUT="$TMPDIR/raced-values.yaml"
-PUBLISH_RACE_TMPDIR="$TMPDIR/publish-race-tmp"
-mkdir "$PUBLISH_RACE_TMPDIR"
-if TMPDIR="$PUBLISH_RACE_TMPDIR" PATH="$PUBLISH_SHIM_DIR:$PATH" bash "$ROOT/scripts/render-production-values.sh" "$RACED_OUTPUT" >/dev/null 2>&1; then
-  echo "production renderer unexpectedly survived publication race" >&2
-  exit 1
-fi
-[ "$(<"$RACED_OUTPUT")" = 'raced-destination-sentinel' ] \
-  || { echo "production renderer changed raced destination sentinel" >&2; exit 1; }
-assert_no_staged_overlay "$TMPDIR"
-assert_no_source_overlay "$TMPDIR"
-assert_no_source_overlay "$PUBLISH_RACE_TMPDIR"
-assert_no_staged_overlay "$PUBLISH_RACE_TMPDIR"
-
-# The application overlay is a strict allowlist at global scope. It must not
-# carry parent-owned production controls even if the development template gains
-# new controls later.
-ruby -ryaml -e '
-  overlay = YAML.load_file(ARGV.fetch(0))
-  global = overlay.fetch("global")
-  allowed = %w[
-    dsaServiceToken dsaLicenseKey lucairnLicenseKey lucairnLicensePublicKey
-    imageRegistry imageTag imagePullSecrets imagePullDockerConfigJson
-  ].sort
-  abort "production overlay contains parent-owned global keys: #{(global.keys.sort - allowed).join(", ")}" unless global.keys.sort == allowed
-  abort "production overlay must not restate the parent demo topology" if overlay.key?("demo")
-  %w[dsaEnv mtls dnsRestriction nodeIsolation postgresqlSslmode wireguardEncryption secrets].each do |key|
-    abort "production overlay contains parent-owned global.#{key}" if global.key?(key)
-  end
-' "$OVERLAY"
-
-# Model Helm's ordered value merge to prove the production security posture is
-# retained before checking the concrete rendered runtime contract below.
-ruby -ryaml -e '
-  merge = lambda do |left, right|
-    left.merge(right) do |_key, old, new|
-      old.is_a?(Hash) && new.is_a?(Hash) ? merge.call(old, new) : new
-    end
-  end
-  defaults, production, overlay = ARGV.map { |path| YAML.load_file(path) }
-  effective = merge.call(merge.call(defaults, production), overlay).fetch("global")
-  expected = {
-    "dsaEnv" => "production",
-    "dnsRestriction" => true,
-    "nodeIsolation" => true,
-    "postgresqlSslmode" => "require",
-    "wireguardEncryption" => true,
+  root = ARGV.fetch(0)
+  required = {
+    "gateway" => %w[DSA_LICENSE_KEY DSA_LICENSE_SIGNING_KEY LUCAIRN_LICENSE_KEY LUCAIRN_LICENSE_PUBLIC_KEY DSA_ADMIN_KEY SANDBOX_B_API_KEY LCR_MANIFEST_SIGNING_KEY LCR_GATEWAY_SIGNING_KEY LCR_GATEWAY_PUBLIC_KEY LCR_GATEWAY_MANIFEST_PUBLIC_KEY LCR_WITNESS_MANIFEST_PUBLIC_KEY LCR_WITNESS_PUBLIC_KEY LCR_BRIDGE_PUBLIC_KEY LCR_SANITIZER_PUBLIC_KEY LCR_SANDBOX_B_PUBLIC_KEY LCR_AUDIT_PUBLIC_KEY LCR_AI_SIGNING_KEY DSA_SERVICE_TOKEN GATEWAY_KEYSTORE_KEY CANARY_HMAC_KEY],
+    "audit" => %w[DATABASE_URL DATABASE_URL_APP POSTGRES_PASSWORD AUDIT_APP_PASSWORD LCR_SIGNING_KEY DSA_SERVICE_TOKEN],
+    "id-bridge" => %w[DATABASE_URL POSTGRES_PASSWORD MASTER_KEY LCR_SIGNING_KEY DSA_BRIDGE_ENCRYPTION_KEY DSA_SERVICE_TOKEN],
+    "sandbox-a" => %w[DATABASE_URL POSTGRES_PASSWORD ENCRYPTION_KEY DSA_ADMIN_KEY LCR_SIGNING_KEY DSA_SERVICE_TOKEN CANARY_HMAC_KEY MODEL_AUTH_SECRET],
+    "sandbox-b" => %w[SANDBOX_B_REDIS_URL REDIS_PASSWORD ANTHROPIC_API_KEY MISTRAL_API_KEY OPENAI_API_KEY GEMINI_API_KEY LCR_SIGNING_KEY SANDBOX_B_API_KEYS DSA_ADMIN_KEY DSA_MANAGED_AI_KEY DSA_SERVICE_TOKEN DSA_LICENSE_KEY],
+    "veil-witness" => %w[DATABASE_URL DATABASE_URL_APP POSTGRES_PASSWORD VEIL_APP_PASSWORD LCR_WITNESS_SIGNING_KEY LCR_WITNESS_KEY_ID],
   }
-  expected.each { |key, value| abort "effective global.#{key} lost its production posture" unless effective[key] == value }
-  abort "effective global.mtls.enabled is not true" unless effective.dig("mtls", "enabled") == true
-' "$CHART/values.yaml" "$CHART/values-prod.yaml" "$OVERLAY"
+  required.each do |child, keys|
+    source = File.read(File.join(root, "charts/lucairn/charts/#{child}/templates/externalsecret.yaml"))
+    actual = source.scan(/^\s*- secretKey: ([A-Z0-9_]+)$/).flatten
+    missing = keys - actual
+    abort "#{child} ExternalSecret misses required keys: #{missing.join(", ")}" unless missing.empty?
+    abort "#{child} ExternalSecret has no remoteRef mappings" unless source.include?("remoteRef:")
+  end
+' "$ROOT"
 
-# The exact documented pair is production first, application-only overlay
-# second. skipPullSecretGuard is test-only; the documented command supplies
-# the registry config with --set-file instead.
-helm template lucairn "$CHART" \
-  -f "$CHART/values-prod.yaml" \
-  -f "$OVERLAY" \
-  --set global.skipPullSecretGuard=true > "$RENDER"
+RENDER="$TMPDIR/rendered.yaml"
+helm template lucairn "$CHART" -f "$VALUES" --namespace lucairn > "$RENDER"
+ruby -ryaml -e '
+  release_namespace = "lucairn"
+  required = %w[
+    gateway-credentials audit-credentials id-bridge-credentials
+    sandbox-a-credentials sandbox-b-credentials veil-witness-credentials
+  ].sort
+  documents = YAML.load_stream(File.read(ARGV.fetch(0))).compact
+  external_secrets = documents.map do |document|
+    document.dig("metadata", "name") if document.is_a?(Hash) && document["kind"] == "ExternalSecret"
+  end.compact.sort
+  missing = required - external_secrets
+  abort "production render misses mandatory ExternalSecrets: #{missing.join(", ")}" unless missing.empty?
+  abort "production render must contain exactly six mandatory ExternalSecrets; got: #{external_secrets.join(", ")}" unless external_secrets == required
 
-# Preserve the doctor regression for the same ordered pair operators use.
-"$ROOT/bin/lucairn" doctor \
-  --values "$CHART/values-prod.yaml" \
-  --values "$OVERLAY" \
-  --offline > "$TMPDIR/doctor.out"
+  secrets = documents.map do |document|
+    if document.is_a?(Hash) && document["kind"] == "Secret"
+      metadata = document.fetch("metadata", {})
+      "#{metadata.fetch("namespace", release_namespace)}/#{metadata.fetch("name", "<unnamed>")}"
+    end
+  end.compact
+  abort "production render contains Helm-owned Secret objects: #{secrets.join(", ")}" unless secrets.empty?
+' "$RENDER"
+if rg -n 'dockerconfigjson|imagePullDockerConfigJson' "$RENDER"; then
+  echo "production render contains a Helm-owned registry credential" >&2
+  exit 1
+fi
+
+"$ROOT/bin/lucairn" doctor --values "$VALUES" --offline > "$TMPDIR/doctor.out"
 grep -Fq 'enterprise mTLS (Helm): production render contract: ok' "$TMPDIR/doctor.out" \
-  || { echo "doctor did not accept the documented production values pair" >&2; exit 1; }
+  || { echo "doctor did not accept the production External Secrets contract" >&2; exit 1; }
 
-for config in gateway audit id-bridge sandbox-a sandbox-b; do
-  block="$(awk -v name="$config-config" '
-    /^kind: ConfigMap$/{in_block=1; block=""}
-    in_block{block=block $0 "\n"}
-    in_block && $0 == "  name: " name {matched=1}
-    /^---$/{if (matched) {print block; exit} in_block=0; matched=0}
-    END{if (matched) print block}
-  ' "$RENDER")"
-  [ -n "$block" ] || { echo "production render misses $config ConfigMap" >&2; exit 1; }
-  grep -Fq 'DSA_ENV: "production"' <<<"$block" \
-    || { echo "$config is not rendered with DSA_ENV=production" >&2; exit 1; }
-  grep -Fq 'DSA_MTLS_CA_BUNDLE_PATH: "/var/run/lucairn/mtls/ca.crt"' <<<"$block" \
-    || { echo "$config lacks the production mTLS CA path" >&2; exit 1; }
+for required in 'External Secrets' 'global.skipPullSecretGuard=true' 'global.imagePullSecrets' \
+  'node/default-ServiceAccount' 'workload identity' 'release history' \
+  'every** enabled child’s `secrets.backend`'; do
+  grep -Fq "$required" "$ROOT/INSTALL.md" \
+    || { echo "production registry/ESO documentation omits: $required" >&2; exit 1; }
 done
 
-for key in \
-  DSA_MTLS_CA_BUNDLE_PATH \
-  DSA_MTLS_SERVER_CERT_PATH \
-  DSA_MTLS_SERVER_KEY_PATH \
-  DSA_MTLS_CLIENT_CERT_PATH \
-  DSA_MTLS_CLIENT_KEY_PATH; do
-  grep -Fq "$key" "$RENDER" \
-    || { echo "production render lacks $key" >&2; exit 1; }
-done
-
-echo "enterprise mTLS production overlay: documented ordered render and doctor contract are production and mTLS-on"
+echo "enterprise mTLS production values: ESO-only names/paths contract and required-key coverage verified"

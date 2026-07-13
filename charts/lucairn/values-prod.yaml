@@ -11,15 +11,11 @@
 # Multi-replica HA is the v2.0 roadmap. Do NOT raise these to 2 — the
 # install will fail to render. See INSTALL.md § "v1.0 deployment topology".
 #
-# Smoke-test this overlay renders before shipping (skipPullSecretGuard=true so
-# the render does not require registry pull credentials — it does NOT relax the
-# prod overlay itself, which keeps the guard; it only makes this dev sanity-
-# check render standalone):
-#   helm template lucairn charts/lucairn -f charts/lucairn/values-prod.yaml \
-#     --set global.skipPullSecretGuard=true \
-#     --set gateway.secrets.values.dsaServiceToken=x \
-#     --set sandbox-b.redis.password=x \
-#     --set sandbox-b.secrets.values.sandboxBApiKeys=x >/dev/null && echo OK
+# This is a names-and-paths-only production overlay. Application credentials
+# are supplied exclusively by the configured External Secrets backend; never
+# add credential bytes, substitutions, or `--set` secrets here. A Helm render
+# is only a preflight, so discard it rather than writing a shared output:
+#   helm template lucairn charts/lucairn -f charts/lucairn/values-prod.yaml >/dev/null
 global:
   secrets:
     backend: vault
@@ -27,6 +23,12 @@ global:
       endpoint: ""
       role: dsa
       mountPath: dsa
+  # Registry credentials are deliberately outside Helm and release history.
+  # Operators either reference a pre-created pull Secret here, or use
+  # node/default-ServiceAccount auth or workload identity. All three supported
+  # modes set this guard escape hatch; no Docker config is passed to Helm.
+  imagePullSecrets: []
+  skipPullSecretGuard: true
   # Production: enable Cilium DNS restriction and Hubble audit.
   # Requires Cilium CNI installed on the cluster.
   dnsRestriction: true
@@ -64,9 +66,9 @@ audit:
       cpu: 1000m
       memory: 512Mi
   secrets:
-    values:
-      # PRODUCTION: Set dsaServiceToken via --set or Vault; do not commit here.
-      dsaServiceToken: ""
+    backend: vault
+    vault:
+      path: dsa/data/postgres-audit
 
 id-bridge:
   replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
@@ -78,9 +80,9 @@ id-bridge:
       cpu: 1000m
       memory: 512Mi
   secrets:
-    values:
-      # PRODUCTION: Set dsaServiceToken via --set or Vault; do not commit here.
-      dsaServiceToken: ""
+    backend: vault
+    vault:
+      path: dsa/data/bridge
 
 sandbox-a:
   replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
@@ -92,16 +94,15 @@ sandbox-a:
       cpu: 1000m
       memory: 512Mi
   secrets:
-    values:
-      # PRODUCTION: Set dsaServiceToken via --set or Vault; do not commit here.
-      dsaServiceToken: ""
+    backend: vault
+    vault:
+      path: dsa/data/sandbox-a
 
 sandbox-b:
   replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
   workers: 4
-  # redis.password is application secret material. The production-only
-  # customer overlay supplies it after this parent-owned profile; never clear
-  # a supplied value here.
+  # Redis credentials and every model-provider key come from this child’s
+  # ExternalSecret, including the Redis StatefulSet's REDIS_PASSWORD input.
   resources:
     requests:
       cpu: 500m
@@ -110,9 +111,9 @@ sandbox-b:
       cpu: 2000m
       memory: 1Gi
   secrets:
-    values:
-      # PRODUCTION: Set sandboxBApiKeys via --set or Vault; do not commit here.
-      sandboxBApiKeys: ""
+    backend: vault
+    vault:
+      path: dsa/data/sandbox-b
   verticals:
     finance:
       config:
@@ -129,15 +130,15 @@ veil-witness:
     limits:
       cpu: 1000m
       memory: 512Mi
+  secrets:
+    backend: vault
+    vault:
+      path: dsa/data/veil-witness
 
 observability:
-  grafana:
-    adminCIDR: "10.0.0.0/8"  # Restrict to VPN CIDR — customize per deployment
-  loki:
-    authEnabled: true
-  secrets:
-    values:
-      grafanaAdminPassword: "CHANGE-ME-generate-random-at-install"
+  # Optional service: it owns a Helm Secret, so it is outside the supported
+  # names-and-paths-only production mTLS topology.
+  enabled: false
 
 demo:
   enabled: false
@@ -165,18 +166,15 @@ gateway:
       cpu: 1000m
       memory: 512Mi
   secrets:
-    values:
-      # PRODUCTION: Set dsaServiceToken via --set or Vault; do not commit here.
-      dsaServiceToken: ""
+    backend: vault
+    vault:
+      path: dsa/data/gateway
 
 admin:
-  secrets:
-    values:
-      # PRODUCTION: Set dsaServiceToken via --set or Vault; do not commit here.
-      dsaServiceToken: ""
+  # Optional service: explicitly disable because a missing condition otherwise
+  # enables this k8s-native Secret-owning dependency.
+  enabled: false
 
 ingest:
-  secrets:
-    values:
-      # PRODUCTION: Set dsaServiceToken via --set or Vault; do not commit here.
-      dsaServiceToken: ""
+  # Preserve the default optional posture explicitly in the supported profile.
+  enabled: false

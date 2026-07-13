@@ -12,12 +12,12 @@ set -euo pipefail
 # workload Pod with that container's own read-only projected mTLS leaf.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-KEEP=0
+# shellcheck source=lib/enterprise-mtls-kind-cleanup.sh
+source "$ROOT/scripts/lib/enterprise-mtls-kind-cleanup.sh"
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --keep) KEEP=1; shift ;;
     -h|--help)
-      echo "usage: $0 [--keep]"; exit 0 ;;
+      echo "usage: $0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -39,21 +39,26 @@ PRELOAD_ARCHIVE_DIR="$STATE_DIR/preload-archives"
 PROBE_IMAGE=""
 PROBE_ARCHIVE="$STATE_DIR/enterprise-mtls-probe.tar"
 CLUSTER_CREATED=0
+GATEWAY_HELPER_INSTALLED=0
+PROJECTED_HELPER_INSTALLED=0
+
+enterprise_mtls_kind_cleanup_helpers() {
+  if [ "$GATEWAY_HELPER_INSTALLED" -eq 1 ] && declare -F gateway_tls_helper_cleanup >/dev/null 2>&1; then
+    gateway_tls_helper_cleanup || true
+  fi
+  if [ "$PROJECTED_HELPER_INSTALLED" -eq 1 ] && declare -F projected_identity_helper_cleanup >/dev/null 2>&1; then
+    projected_identity_helper_cleanup || true
+  fi
+}
 
 cleanup() {
-  local rc=$?
-  if [ "$KEEP" -eq 1 ]; then
-    echo "enterprise mTLS Kind state retained: cluster=$CLUSTER state=$STATE_DIR kubeconfig=$KUBECONFIG" >&2
-  else
-    if [ "$CLUSTER_CREATED" -eq 1 ]; then
-      kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
-    fi
-    if [ -n "$PROBE_IMAGE" ]; then
-      docker image rm -f "$PROBE_IMAGE" >/dev/null 2>&1 || true
-    fi
-    rm -rf "$STATE_DIR"
+  local body_status=$?
+  trap - EXIT
+  enterprise_mtls_kind_cleanup "$body_status" || true
+  if [ "${ENTERPRISE_MTLS_KIND_CLUSTER_DELETE_FAILED:-0}" -eq 1 ]; then
+    exit 1
   fi
-  exit "$rc"
+  exit "$body_status"
 }
 trap cleanup EXIT
 
@@ -68,13 +73,6 @@ fi
 if ! docker info >/dev/null 2>&1; then
   echo "BLOCKED: docker is installed but unavailable; Kind cannot create the isolated cluster." >&2
   docker info 2>&1 | sed -n '1,80p' >&2 || true
-  exit 2
-fi
-
-DOCKER_CONFIG_FILE="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
-if [ ! -r "$DOCKER_CONFIG_FILE" ]; then
-  echo "BLOCKED: authenticated GHCR Docker config not readable at $DOCKER_CONFIG_FILE." >&2
-  echo "Set DOCKER_CONFIG to an existing authenticated directory; no credentials are copied into this harness state." >&2
   exit 2
 fi
 
@@ -136,19 +134,24 @@ bash "$ROOT/scripts/generate-enterprise-mtls-kind-signed-manifest.sh" \
   --offline
 
 # Render with the exact values passed to the subsequent install. The manifest
-# remains harness-private because it contains the chart-managed pull Secret;
-# the image list is then derived only from workload PodSpecs and loaded into
-# every node before Helm creates any workload.
+# remains harness-private because it contains disposable application values.
+# The image list is derived only from workload PodSpecs and loaded into every
+# node before Helm creates any workload; no registry credential is supplied to
+# Helm because Kind already has every rendered product image preloaded.
 HELM_RUNTIME_ARGS=(
   -f "$ROOT/charts/lucairn/values-prod.yaml"
   -f "$RUNTIME_VALUES"
-  --set global.skipPullSecretGuard=false
-  --set 'global.imagePullSecrets[0].name=lucairn-registry'
+  --set global.skipPullSecretGuard=true
   --set global.secrets.backend=k8s-native
+  --set gateway.secrets.backend=k8s-native
+  --set audit.secrets.backend=k8s-native
+  --set id-bridge.secrets.backend=k8s-native
+  --set sandbox-a.secrets.backend=k8s-native
+  --set sandbox-b.secrets.backend=k8s-native
+  --set veil-witness.secrets.backend=k8s-native
   --set global.dnsRestriction=false
   --set global.wireguardEncryption=false
   --set global.postgresqlSslmode=disable
-  --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG_FILE"
   --namespace lucairn
 )
 helm template lucairn "$ROOT/charts/lucairn" "${HELM_RUNTIME_ARGS[@]}" > "$RENDERED_MANIFEST"
@@ -1052,6 +1055,7 @@ gateway_tls_helper_cleanup() {
     echo "FAIL: could not delete temporary gateway TLS helper" >&2
     return 1
   fi
+  GATEWAY_HELPER_INSTALLED=0
 }
 
 install_gateway_tls_helper() {
@@ -1070,6 +1074,7 @@ install_gateway_tls_helper() {
     echo "FAIL: could not stream the gateway TLS helper into the keystore PVC" >&2
     exit 1
   fi
+  GATEWAY_HELPER_INSTALLED=1
 }
 
 gateway_workload_handshake() {
@@ -1174,6 +1179,7 @@ projected_identity_helper_cleanup() {
     echo "FAIL: could not delete temporary projected-identity TLS helper for $WORKLOAD_CONTAINER" >&2
     return 1
   fi
+  PROJECTED_HELPER_INSTALLED=0
 }
 
 install_projected_identity_helper() {
@@ -1190,6 +1196,7 @@ install_projected_identity_helper() {
     echo "FAIL: could not stream the projected-identity TLS helper into $WORKLOAD_CONTAINER /dev/shm" >&2
     return 1
   fi
+  PROJECTED_HELPER_INSTALLED=1
 }
 
 projected_identity_witness_handshake() {
