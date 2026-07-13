@@ -1139,7 +1139,7 @@ resolve_projected_identity_workload() {
     -o go-template="{{range .spec.containers}}{{if eq .name \"$container\"}}{{range .volumeMounts}}{{if eq .mountPath \"$WORKLOAD_MTLS_DIR\"}}{{.readOnly}}{{end}}{{end}}{{end}}{{end}}")"
   mounted_secret="$("${K[@]}" -n "$namespace" get pod "$WORKLOAD_POD" \
     -o go-template="{{range .spec.volumes}}{{if eq .name \"$mount_volume\"}}{{with .secret}}{{.secretName}}{{end}}{{end}}{{end}}")"
-  if [ "$mount_volume" != "enterprise-mtls" ] || [ "$mounted_read_only" != "true" ] || [ "$mounted_secret" != "$expected_secret" ]; then
+  if [ -z "$mount_volume" ] || [ "$mounted_read_only" != "true" ] || [ -z "$mounted_secret" ] || [ -z "$expected_secret" ] || [ "$mounted_secret" != "$expected_secret" ]; then
     echo "FAIL: $identity helper would not use its own read-only projected mTLS Secret at $WORKLOAD_MTLS_DIR" >&2
     return 1
   fi
