@@ -18,6 +18,44 @@ fi
 
 bash "$ROOT/scripts/render-production-values.sh" "$OVERLAY" >/dev/null
 
+if MODE="$(stat -f '%Lp' "$OVERLAY" 2>/dev/null)"; then :; else MODE="$(stat -c '%a' "$OVERLAY")"; fi
+[ "$MODE" = "600" ] || { echo "production overlay mode is $MODE, expected 600" >&2; exit 1; }
+
+# A production overlay holds generated DB credentials, signing keys, and
+# service tokens. Every pre-existing output type must fail without changing
+# the existing object or following a symlink. These failures happen before
+# secret generation; the succeeding overlay below remains the exact pair used
+# by the Helm and doctor contract checks.
+assert_existing_output_refused() {
+  local path="$1"
+  if bash "$ROOT/scripts/render-production-values.sh" "$path" >/dev/null 2>&1; then
+    echo "production renderer accepted existing output path: $path" >&2
+    exit 1
+  fi
+}
+
+REGULAR_SENTINEL="$TMPDIR/existing-values.yaml"
+printf '%s\n' 'regular-file-sentinel' > "$REGULAR_SENTINEL"
+assert_existing_output_refused "$REGULAR_SENTINEL"
+[ "$(<"$REGULAR_SENTINEL")" = 'regular-file-sentinel' ] \
+  || { echo "production renderer changed regular-file sentinel" >&2; exit 1; }
+
+SYMLINK_TARGET="$TMPDIR/symlink-target.yaml"
+SYMLINK_SENTINEL="$TMPDIR/existing-values-symlink.yaml"
+printf '%s\n' 'symlink-target-sentinel' > "$SYMLINK_TARGET"
+ln -s "$SYMLINK_TARGET" "$SYMLINK_SENTINEL"
+assert_existing_output_refused "$SYMLINK_SENTINEL"
+[ "$(<"$SYMLINK_TARGET")" = 'symlink-target-sentinel' ] \
+  || { echo "production renderer changed symlink target sentinel" >&2; exit 1; }
+
+DANGLING_SYMLINK="$TMPDIR/dangling-values-symlink.yaml"
+ln -s "$TMPDIR/does-not-exist.yaml" "$DANGLING_SYMLINK"
+assert_existing_output_refused "$DANGLING_SYMLINK"
+
+EXISTING_DIRECTORY="$TMPDIR/existing-values-directory"
+mkdir "$EXISTING_DIRECTORY"
+assert_existing_output_refused "$EXISTING_DIRECTORY"
+
 # The application overlay is a strict allowlist at global scope. It must not
 # carry parent-owned production controls even if the development template gains
 # new controls later.
