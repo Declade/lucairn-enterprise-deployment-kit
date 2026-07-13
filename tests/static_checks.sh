@@ -252,8 +252,8 @@ for cf in "$ROOT/docker-compose.customer.yml" "$ROOT/docker-compose.self-hosted.
 done
 ruby -e '
   require "yaml"
-  base = YAML.load_file(ARGV[0])
-  over = YAML.load_file(ARGV[1])
+  base = (begin; YAML.load_file(ARGV[0], aliases: true); rescue ArgumentError; YAML.load_file(ARGV[0]); end)
+  over = (begin; YAML.load_file(ARGV[1], aliases: true); rescue ArgumentError; YAML.load_file(ARGV[1]); end)
   merged = (base["services"] || {}).dup
   (over["services"] || {}).each do |n, s|
     if merged[n].is_a?(Hash) && s.is_a?(Hash)
@@ -354,7 +354,7 @@ echo "README target release version: v${README_RELEASE_VER}"
 grep -q "clean-host rehearsal" "$ROOT/docs/CLEAN_HOST_REHEARSAL.md"
 grep -q "handoff gate" "$ROOT/docs/CUSTOMER_HANDOFF_GATES.md"
 
-ruby -e 'require "yaml"; ARGV.each { |f| YAML.load_file(f); puts "yaml ok: #{f}" }' \
+ruby -e 'require "yaml"; ARGV.each { |f| (begin; YAML.load_file(f, aliases: true); rescue ArgumentError; YAML.load_file(f); end); puts "yaml ok: #{f}" }' \
   "$ROOT/docker-compose.customer.yml" \
   "$ROOT/docker-compose.self-hosted.yml" \
   "$ROOT/customer.env.example" \
