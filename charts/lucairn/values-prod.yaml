@@ -99,10 +99,9 @@ sandbox-a:
 sandbox-b:
   replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
   workers: 4
-  redis:
-    # Password MUST be provided at install time via --set or external secret.
-    # Helm will fail if left empty/placeholder when global.dsaEnv=production.
-    password: ""
+  # redis.password is application secret material. The production-only
+  # customer overlay supplies it after this parent-owned profile; never clear
+  # a supplied value here.
   resources:
     requests:
       cpu: 500m

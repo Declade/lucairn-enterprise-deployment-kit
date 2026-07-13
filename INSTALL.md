@@ -1649,14 +1649,18 @@ gateway:
     fileName: witness-signed-manifest.json
 ```
 
-If you choose different names, put the complete block in
+If you choose different names, put the complete block in the generated
 `customer-production-values.yaml`. In production with `gateway.veilEnabled=true`,
 Helm fails before install if any field is absent or if
 `veilWitnessSignedManifestPath` is not exactly `mountPath/fileName`. This Secret
 is separate from the readiness-bundle contract; it projects exactly one file,
 read-only, at the gateway path that verifies the witness signature at startup.
 
-Use `charts/lucairn/values-prod.yaml` as the production base. It enables
+Use `charts/lucairn/values-prod.yaml` as the production base. Generate its
+application-only companion with
+`bash scripts/render-production-values.sh customer-production-values.yaml`;
+never rename, reuse, or layer the development/pilot `customer-values.yaml`
+after the production base. It enables
 `global.mtls`, fixes these Secret names, and rejects all optional gRPC profiles
 (`ingest`, `admin`, dashboard, certification, PII ML, demo, and
 postgres-gateway) rather than allowing an insecure or partial extension. To use

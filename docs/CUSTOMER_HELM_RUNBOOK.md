@@ -136,11 +136,25 @@ Expected output: `Saving N charts ... Downloading ...` then `Deleting outdated c
 
 ### Production mTLS gate (required before a production install)
 
-The generated `customer-values.yaml` is a development/pilot starting point.
-For production, retain your generated application values as
-`production-values.yaml` and layer it after the parent production overlay
-from `charts/lucairn/values-prod.yaml`; do not merge the files. `global.dsaEnv` must be exactly
-`production`; production refuses to render unless `global.mtls.enabled=true`.
+`customer-values.yaml` is only for development/pilot installs. For production,
+generate a separate application-only overlay; it reuses the canonical secret
+generator but removes every parent-owned environment, mTLS, network, and
+security control. Do not rename, reuse, or layer `customer-values.yaml` after
+the production profile.
+
+```bash
+bash scripts/render-production-values.sh customer-production-values.yaml
+```
+
+Add your Anthropic API key to the production overlay (this does not print it):
+
+```bash
+sed -i.bak 's|anthropicApiKey: ""|anthropicApiKey: "<your-key-here>"|' customer-production-values.yaml
+```
+
+Helm must layer this application-only file after
+`charts/lucairn/values-prod.yaml`; do not merge the files. The parent profile
+therefore keeps `global.dsaEnv=production` and `global.mtls.enabled=true`.
 Do not attempt to enable transport with child-chart TLS settings.
 
 Before Helm, the operator/PKI team creates one Secret per identity in its
@@ -159,7 +173,7 @@ alone, which intentionally has no application secrets:
 ```bash
 bin/lucairn doctor \
   --values charts/lucairn/values-prod.yaml \
-  --values production-values.yaml \
+  --values customer-production-values.yaml \
   --offline
 ```
 
@@ -167,7 +181,7 @@ This command fails closed if Helm is unavailable because it cannot inspect the
 rendered production transport contract. A plain Compose-only `doctor` remains
 graceful and does not perform Helm inspection.
 
-For a production install, substitute `production-values.yaml` below. A
+For a production install, use `customer-production-values.yaml` below. A
 successful template is not acceptance: wait for readiness and execute the
 disposable acceptance battery in a non-production Kind cluster before release
 approval:
@@ -186,7 +200,7 @@ helm install lucairn ./charts/lucairn \
   --namespace lucairn \
   --create-namespace \
   -f charts/lucairn/values-prod.yaml \
-  -f production-values.yaml \
+  -f customer-production-values.yaml \
   --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
   --wait --timeout 10m
 ```
@@ -223,7 +237,7 @@ Expected: ~25 pods, all `Running` or `Completed` (Completed = Jobs). Pods run ac
 - `dsa-demo` — demo lane (optional)
 
 If any pod is stuck `ImagePullBackOff` → re-run Step 2 and reinstall.
-If any pod is stuck `CrashLoopBackOff` → check its logs (`kubectl logs -n <ns> <pod>`) — likely a missed REPLACE_* value in `customer-values.yaml`.
+If any pod is stuck `CrashLoopBackOff` → check its logs (`kubectl logs -n <ns> <pod>`) — likely a missed REPLACE_* value in `customer-production-values.yaml`.
 
 (If you want a wait that fails on any unready Helm-managed pod, scope to the Helm label so you don't pick up Completed Jobs + kube-system pods:
 `kubectl wait --for=condition=ready pod -l app.kubernetes.io/managed-by=Helm -n lucairn --timeout=10m`.)
@@ -241,8 +255,8 @@ Use the in-cluster admin endpoint (avoids host-network rate limits that can hit 
 ADMIN_KEY=$(kubectl get secret -n dsa-edge gateway-credentials -o jsonpath='{.data.DSA_ADMIN_KEY}' | base64 -d)
 echo "Admin key (first 8 chars): ${ADMIN_KEY:0:8}..."
 
-# Your Anthropic key (already in customer-values.yaml from Step 4)
-ANTHROPIC_KEY=$(grep -E 'anthropicApiKey:' customer-values.yaml | head -1 | awk '{print $2}' | tr -d '"')
+# Your Anthropic key (already in customer-production-values.yaml above)
+ANTHROPIC_KEY=$(grep -E 'anthropicApiKey:' customer-production-values.yaml | head -1 | awk '{print $2}' | tr -d '"')
 
 # Mint a customer via in-cluster temp pod. Note: response field is `dsa_api_key`.
 CUSTOMER_KEY=$(kubectl run mint --image=curlimages/curl:latest --restart=Never --rm -i --quiet -- \

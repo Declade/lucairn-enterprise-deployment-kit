@@ -151,7 +151,10 @@ gateway:
     fileName: witness-signed-manifest.json
 ```
 
-Run `bin/lucairn doctor --values charts/lucairn/values-prod.yaml --values customer-production-values.yaml --offline`
+Regenerate the application-only overlay with
+`bash scripts/render-production-values.sh customer-production-values.yaml` if
+needed; do not substitute the development/pilot `customer-values.yaml`.
+Then run `bin/lucairn doctor --values charts/lucairn/values-prod.yaml --values customer-production-values.yaml --offline`
 before retrying. The order must match Helm: parent production values first,
 then the customer overlay. In production with Veil enabled, Helm rejects a missing or
 partial block and any projected-path mismatch before it contacts the cluster.

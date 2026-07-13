@@ -1179,6 +1179,11 @@ The configured `gateway.veilWitnessSignedManifestPath` must equal
 contract before an upgrade; a missing Secret name/key, partial block, or path
 mismatch must be a Helm render failure, never a bypass or placeholder blob:
 
+Generate `customer-production-values.yaml` with
+`bash scripts/render-production-values.sh customer-production-values.yaml`.
+It is the application-only companion to the parent production profile; do not
+reuse the development/pilot `customer-values.yaml` for this ordered pair.
+
 ```bash
 bin/lucairn doctor \
   --values charts/lucairn/values-prod.yaml \
