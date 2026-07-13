@@ -1079,10 +1079,20 @@ case "${1:-}:${2:-}" in
         migrate/migrate:v4.17.0) digest='sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa' ;;
         postgres:16-alpine) digest='sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777' ;;
         redis:7-alpine) digest='sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99' ;;
+        sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)
+          IFS=$'\t' read -r tag digest < "$(dirname "$0")/last-captured-image" || exit 82
+          [ -n "$tag" ] && [ -n "$digest" ] || exit 82
+          printf '%s@%s\n' "${tag%%:*}" "$digest"
+          exit 0
+          ;;
         *) exit 82 ;;
       esac
+      printf '%s\t%s\n' "$5" "$digest" > "$(dirname "$0")/last-recorded-image"
       printf '%s@%s\n' "${5%%:*}" "$digest"
     elif [ "$#" -eq 5 ] && [ "$3" = '--format' ] && [ "$4" = '{{.Id}}' ]; then
+      IFS=$'\t' read -r tag digest < "$(dirname "$0")/last-recorded-image" || exit 82
+      [ "$5" = "$tag" ] && [ -n "$digest" ] || exit 82
+      printf '%s\t%s\n' "$tag" "$digest" > "$(dirname "$0")/last-captured-image"
       printf '%s\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     else
       exit 82
