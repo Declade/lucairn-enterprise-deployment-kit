@@ -247,6 +247,80 @@ fi
 assert_no_staged_overlay "$NONSTICKY_LEAF"
 assert_no_source_overlay "$NONSTICKY_LEAF"
 
+# A sticky ancestor owned by a different principal can still rename or unlink
+# the private leaf pathname. Simulate that ownership only in the preflight's
+# File.lstat call: the real filesystem remains EUID-owned and unchanged.
+DISTINCT_OWNER_ANCESTOR="$TMPDIR/distinct-owner-sticky-ancestor"
+DISTINCT_OWNER_LEAF="$DISTINCT_OWNER_ANCESTOR/private-leaf"
+DISTINCT_OWNER_OUTPUT="$DISTINCT_OWNER_LEAF/values.yaml"
+DISTINCT_OWNER_STAT_PROXY="$TMPDIR/distinct-owner-sticky-stat-proxy.rb"
+mkdir -p "$DISTINCT_OWNER_LEAF"
+chmod 1777 "$DISTINCT_OWNER_ANCESTOR"
+chmod 700 "$DISTINCT_OWNER_LEAF"
+DISTINCT_OWNER_ANCESTOR_REALPATH="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$DISTINCT_OWNER_ANCESTOR")"
+DISTINCT_OWNER_REAL_UID="$(ruby -e 'print File.lstat(ARGV.fetch(0)).uid' "$DISTINCT_OWNER_ANCESTOR_REALPATH")"
+DISTINCT_OWNER_FAKE_UID="$(ruby -e 'print Process.euid.zero? ? 1 : Process.euid + 1')"
+ruby -e '
+  stat = File.lstat(ARGV.fetch(0))
+  abort "distinct-owner ancestor setup is not EUID-owned 01777" unless stat.uid == Process.euid && (stat.mode & 0o7777) == 0o1777
+  fake_uid = Integer(ARGV.fetch(1))
+  abort "distinct-owner proxy UID is trusted" if [0, Process.euid].include?(fake_uid)
+' "$DISTINCT_OWNER_ANCESTOR_REALPATH" "$DISTINCT_OWNER_FAKE_UID"
+cat > "$DISTINCT_OWNER_STAT_PROXY" <<'RUBY'
+class ProductionOverlayDistinctOwnerStat
+  def initialize(stat, uid)
+    @stat = stat
+    @uid = uid
+  end
+
+  attr_reader :uid
+
+  def method_missing(name, *args, &block)
+    @stat.public_send(name, *args, &block)
+  end
+
+  def respond_to_missing?(name, include_private = false)
+    @stat.respond_to?(name, include_private) || super
+  end
+end
+
+class File
+  class << self
+    alias_method :production_overlay_distinct_owner_original_lstat, :lstat
+
+    def lstat(path)
+      stat = production_overlay_distinct_owner_original_lstat(path)
+      if File.expand_path(path) == ENV.fetch("PRODUCTION_OVERLAY_DISTINCT_OWNER_ANCESTOR")
+        ProductionOverlayDistinctOwnerStat.new(stat, Integer(ENV.fetch("PRODUCTION_OVERLAY_DISTINCT_OWNER_UID")))
+      else
+        stat
+      end
+    end
+  end
+end
+RUBY
+rm -f -- "$OPENSSL_CALL_LOG"
+if OPENSSL_CALL_LOG="$OPENSSL_CALL_LOG" \
+  PATH="$OPENSSL_SHIM_DIR:$PATH" \
+  PRODUCTION_OVERLAY_DISTINCT_OWNER_ANCESTOR="$DISTINCT_OWNER_ANCESTOR_REALPATH" \
+  PRODUCTION_OVERLAY_DISTINCT_OWNER_UID="$DISTINCT_OWNER_FAKE_UID" \
+  RUBYOPT="-r$DISTINCT_OWNER_STAT_PROXY" \
+  bash "$ROOT/scripts/render-production-values.sh" "$DISTINCT_OWNER_OUTPUT" >/dev/null 2>&1; then
+  echo "production renderer accepted a private leaf below a distinct-owner sticky ancestor" >&2
+  exit 1
+fi
+[ ! -e "$OPENSSL_CALL_LOG" ] \
+  || { echo "production renderer generated secrets before rejecting a distinct-owner sticky ancestor" >&2; exit 1; }
+[ ! -e "$DISTINCT_OWNER_OUTPUT" ] && [ ! -L "$DISTINCT_OWNER_OUTPUT" ] \
+  || { echo "production renderer published output below a distinct-owner sticky ancestor" >&2; exit 1; }
+assert_no_staged_overlay "$DISTINCT_OWNER_LEAF"
+assert_no_source_overlay "$DISTINCT_OWNER_LEAF"
+ruby -e '
+  stat = File.lstat(ARGV.fetch(0))
+  abort "distinct-owner regression changed real ancestor ownership" unless stat.uid == Integer(ARGV.fetch(1))
+  abort "distinct-owner regression changed real ancestor mode" unless (stat.mode & 0o7777) == 0o1777
+' "$DISTINCT_OWNER_ANCESTOR_REALPATH" "$DISTINCT_OWNER_REAL_UID"
+
 STICKY_TMP_ROOT="$(mktemp -d /tmp/lucairn-production-values-sticky.XXXXXX)"
 ruby -e '
   stat = File.stat(File.realpath(ARGV.fetch(0)))

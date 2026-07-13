@@ -33,13 +33,16 @@ if ! OUTPUT_DIR="$(ruby -e '
   # The leaf remains private, but a non-sticky writable ancestor would let
   # another principal replace that leaf after this preflight. Resolve the
   # complete physical path and require every writable ancestor through root
-  # to have the sticky bit, as normal /tmp does.
+  # to have the sticky bit and be owned by this user or root, as normal /tmp
+  # does. A sticky directory owned by another principal can still let that
+  # owner rename or unlink the private leaf pathname.
   ancestor = directory
   loop do
     ancestor_stat = File.lstat(ancestor)
     abort "ancestor is not a real directory" unless ancestor_stat.directory?
-    if !(ancestor_stat.mode & 0o022).zero? && (ancestor_stat.mode & 0o1000).zero?
-      abort "group/world writable ancestor without sticky bit"
+    unless (ancestor_stat.mode & 0o022).zero?
+      abort "group/world writable ancestor without sticky bit" if (ancestor_stat.mode & 0o1000).zero?
+      abort "group/world writable ancestor is not owned by the effective user or root" unless [Process.euid, 0].include?(ancestor_stat.uid)
     end
     parent = File.dirname(ancestor)
     break if parent == ancestor
