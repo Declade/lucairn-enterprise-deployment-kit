@@ -12,10 +12,30 @@ fi
 
 "$ROOT/scripts/enterprise-mtls-fixture-certs.sh" "$TMPDIR/certs" >/dev/null
 
+# openssl x509 -checkhost exit codes are version-dependent (OpenSSL 3.0 —
+# Ubuntu CI — always exits 0; 3.4+ exits 1 on mismatch), so the portable
+# contract is the printed verdict text, failing closed on anything else.
+san_matches() {
+  local leaf="$1" san="$2" out
+  out="$(openssl x509 -checkhost "$san" -noout -in "$leaf" 2>&1)" || true
+  case "$out" in
+    *"does NOT match certificate"*) return 1 ;;
+    *"does match certificate"*) return 0 ;;
+    *)
+      printf 'unrecognized openssl -checkhost output for %s (%s): %s\n' \
+        "$leaf" "$san" "$out" >&2
+      exit 1
+      ;;
+  esac
+}
+
 while IFS=: read -r identity san; do
   leaf="$TMPDIR/certs/$identity/tls.crt"
   openssl verify -CAfile "$TMPDIR/certs/ca.crt" "$leaf" >/dev/null
-  openssl x509 -checkhost "$san" -noout -in "$leaf" >/dev/null
+  if ! san_matches "$leaf" "$san"; then
+    echo "expected SAN $san does not match the $identity leaf" >&2
+    exit 1
+  fi
 done <<'IDENTITIES'
 gateway:dsa-gateway
 audit:dsa-audit
@@ -30,7 +50,7 @@ if openssl verify -CAfile "$TMPDIR/certs/wrong-ca.crt" "$TMPDIR/certs/audit/tls.
   echo "wrong CA unexpectedly verified an enterprise mTLS leaf" >&2
   exit 1
 fi
-if openssl x509 -checkhost dsa-audit -noout -in "$TMPDIR/certs/sandbox-a/tls.crt" >/dev/null 2>&1; then
+if san_matches "$TMPDIR/certs/sandbox-a/tls.crt" dsa-audit; then
   echo "wrong SAN unexpectedly matched the sandbox-a leaf" >&2
   exit 1
 fi
@@ -52,7 +72,10 @@ fi
 # still CA-issued: the real gateway client test can attribute its failure to
 # expiry, rather than to a mismatched identity or trust root.
 expired_server_leaf="$TMPDIR/certs/expired-sandbox-a/tls.crt"
-openssl x509 -checkhost dsa-sandbox-a -noout -in "$expired_server_leaf" >/dev/null
+if ! san_matches "$expired_server_leaf" dsa-sandbox-a; then
+  echo "expired Sandbox A server leaf lost its expected SAN" >&2
+  exit 1
+fi
 if ! openssl verify -no_check_time -CAfile "$TMPDIR/certs/ca.crt" "$expired_server_leaf" >/dev/null 2>&1; then
   echo "expired Sandbox A server leaf is not signed by the trusted fixture CA" >&2
   exit 1
