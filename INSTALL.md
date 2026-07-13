@@ -1656,11 +1656,15 @@ Helm fails before install if any field is absent or if
 is separate from the readiness-bundle contract; it projects exactly one file,
 read-only, at the gateway path that verifies the witness signature at startup.
 
-Use `charts/lucairn/values-prod.yaml` as the production base. Generate its
-application-only companion with
-`bash scripts/render-production-values.sh customer-production-values.yaml`;
-never rename, reuse, or layer the development/pilot `customer-values.yaml`
-after the production base. It enables
+Use `charts/lucairn/values-prod.yaml` as the production base. On the first
+production install, create its application-only companion once with
+`bash scripts/render-production-values.sh customer-production-values.yaml`.
+Reuse that protected overlay unchanged for normal upgrades; never rename,
+reuse, or layer the development/pilot `customer-values.yaml` after the
+production base. The renderer refuses an existing output path. A credential
+rotation instead uses a different new overlay path and a coordinated
+application, database, and service rollout before the Helm values path changes.
+It enables
 `global.mtls`, fixes these Secret names, and rejects all optional gRPC profiles
 (`ingest`, `admin`, dashboard, certification, PII ML, demo, and
 postgres-gateway) rather than allowing an insecure or partial extension. To use

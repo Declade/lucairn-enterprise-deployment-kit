@@ -56,6 +56,74 @@ EXISTING_DIRECTORY="$TMPDIR/existing-values-directory"
 mkdir "$EXISTING_DIRECTORY"
 assert_existing_output_refused "$EXISTING_DIRECTORY"
 
+assert_no_staged_overlay() {
+  local directory="$1"
+  if find "$directory" -maxdepth 1 -name '.lucairn-production-values.*' -print -quit | grep -q .; then
+    echo "production renderer left a secret-bearing staged overlay in $directory" >&2
+    exit 1
+  fi
+}
+
+assert_no_renderer_temp() {
+  local directory="$1"
+  if find "$directory" -maxdepth 1 -name 'lucairn-production-values.*' -print -quit | grep -q .; then
+    echo "production renderer left a secret-bearing temporary overlay in $directory" >&2
+    exit 1
+  fi
+}
+
+# A writer can fail after writing part of the same-directory staging file. A
+# PATH shim makes that failure deterministic without adding a production-only
+# test switch. The output must not be published and the EXIT trap must remove
+# the partial secret-bearing stage.
+WRITE_SHIM_DIR="$TMPDIR/write-failure-bin"
+mkdir "$WRITE_SHIM_DIR"
+cat > "$WRITE_SHIM_DIR/ruby" <<'EOF'
+#!/usr/bin/env bash
+stage="${!#}"
+printf '%s\n' 'partial-secret-bearing-stage' > "$stage"
+exit 1
+EOF
+chmod 700 "$WRITE_SHIM_DIR/ruby"
+WRITE_FAILURE_OUTPUT="$TMPDIR/write-failure-values.yaml"
+WRITE_FAILURE_TMPDIR="$TMPDIR/write-failure-tmp"
+mkdir "$WRITE_FAILURE_TMPDIR"
+if TMPDIR="$WRITE_FAILURE_TMPDIR" PATH="$WRITE_SHIM_DIR:$PATH" bash "$ROOT/scripts/render-production-values.sh" "$WRITE_FAILURE_OUTPUT" >/dev/null 2>&1; then
+  echo "production renderer unexpectedly survived staged write failure" >&2
+  exit 1
+fi
+[ ! -e "$WRITE_FAILURE_OUTPUT" ] && [ ! -L "$WRITE_FAILURE_OUTPUT" ] \
+  || { echo "production renderer published output after staged write failure" >&2; exit 1; }
+assert_no_staged_overlay "$TMPDIR"
+assert_no_renderer_temp "$WRITE_FAILURE_TMPDIR"
+
+# File.link is the non-replacing publication primitive. Simulate a destination
+# racing into existence just before that call; it must stay untouched and the
+# now-unpublished staging file must still be cleaned.
+PUBLISH_SHIM_DIR="$TMPDIR/publish-race-bin"
+mkdir "$PUBLISH_SHIM_DIR"
+REAL_RUBY="$(command -v ruby)"
+cat > "$PUBLISH_SHIM_DIR/ruby" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = "-e" ]; then
+  printf '%s\\n' 'raced-destination-sentinel' > "\$4"
+  exit 1
+fi
+exec "$REAL_RUBY" "\$@"
+EOF
+chmod 700 "$PUBLISH_SHIM_DIR/ruby"
+RACED_OUTPUT="$TMPDIR/raced-values.yaml"
+PUBLISH_RACE_TMPDIR="$TMPDIR/publish-race-tmp"
+mkdir "$PUBLISH_RACE_TMPDIR"
+if TMPDIR="$PUBLISH_RACE_TMPDIR" PATH="$PUBLISH_SHIM_DIR:$PATH" bash "$ROOT/scripts/render-production-values.sh" "$RACED_OUTPUT" >/dev/null 2>&1; then
+  echo "production renderer unexpectedly survived publication race" >&2
+  exit 1
+fi
+[ "$(<"$RACED_OUTPUT")" = 'raced-destination-sentinel' ] \
+  || { echo "production renderer changed raced destination sentinel" >&2; exit 1; }
+assert_no_staged_overlay "$TMPDIR"
+assert_no_renderer_temp "$PUBLISH_RACE_TMPDIR"
+
 # The application overlay is a strict allowlist at global scope. It must not
 # carry parent-owned production controls even if the development template gains
 # new controls later.

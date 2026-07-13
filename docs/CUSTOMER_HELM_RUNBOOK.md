@@ -136,15 +136,20 @@ Expected output: `Saving N charts ... Downloading ...` then `Deleting outdated c
 
 ### Production mTLS gate (required before a production install)
 
-`customer-values.yaml` is only for development/pilot installs. For production,
-generate a separate application-only overlay; it reuses the canonical secret
-generator but removes every parent-owned environment, mTLS, network, and
-security control. Do not rename, reuse, or layer `customer-values.yaml` after
-the production profile.
+`customer-values.yaml` is only for development/pilot installs. For a first
+production install, create a separate application-only overlay once; it reuses
+the canonical secret generator but removes every parent-owned environment,
+mTLS, network, and security control. Do not rename, reuse, or layer
+`customer-values.yaml` after the production profile.
 
 ```bash
 bash scripts/render-production-values.sh customer-production-values.yaml
 ```
+
+Keep the resulting protected overlay and reuse it unchanged for normal Helm
+upgrades. The renderer refuses an existing output path. For credential rotation,
+generate a different new overlay path and coordinate the application, database,
+and service rollout before updating the Helm values path.
 
 Add your Anthropic API key to the production overlay (this does not print it):
 

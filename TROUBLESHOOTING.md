@@ -152,10 +152,11 @@ gateway:
 ```
 
 For normal upgrades, reuse the existing protected application-only overlay;
-do not substitute the development/pilot `customer-values.yaml`. Regeneration
-must use a new output path and is a deliberate, coordinated credential-rotation
-ceremony requiring application, database, and service rollout planning. Never
-overwrite the existing overlay in place. Then run
+do not substitute the development/pilot `customer-values.yaml`. The renderer
+refuses an existing output path. Regeneration must use a different new path and
+is a deliberate, coordinated credential-rotation ceremony requiring application,
+database, and service rollout planning. Never overwrite the existing overlay in
+place. Then run
 `bin/lucairn doctor --values charts/lucairn/values-prod.yaml --values customer-production-values.yaml --offline`
 before retrying. The order must match Helm: parent production values first,
 then the customer overlay. In production with Veil enabled, Helm rejects a missing or
