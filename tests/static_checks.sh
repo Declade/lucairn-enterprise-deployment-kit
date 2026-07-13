@@ -267,13 +267,15 @@ if command -v helm >/dev/null 2>&1; then
 
   CHART="$ROOT/charts/lucairn"
 
-  # HA-02 regression guard: values-prod.yaml MUST render. It previously
-  # shipped replicaCount: 2 on pod-local-state services that the chart's
-  # OWN validator (templates/_validators.tpl) hard-rejects, so
-  # `helm install -f values-prod.yaml` failed at render time. All
-  # replicaCounts are now pinned to 1 (the v1.0 single-replica lock).
+  # HA-02 regression guard: the accepted ordered production values pair MUST
+  # render. values-prod.yaml intentionally fails closed until the site overlay
+  # supplies its names-and-paths-only Vault HTTPS endpoint. It previously
+  # shipped replicaCount: 2 on pod-local-state services that the chart's OWN
+  # validator (templates/_validators.tpl) hard-rejects; all replicaCounts are
+  # now pinned to 1 (the v1.0 single-replica lock).
   PROD_RENDER="$(helm template lucairn "$CHART" \
     -f "$CHART/values-prod.yaml" \
+    -f "$CHART/values-prod-site.example.yaml" \
     --set global.skipPullSecretGuard=true \
     --set gateway.secrets.values.dsaServiceToken=x \
     --set audit.secrets.values.dsaServiceToken=x \
@@ -284,7 +286,7 @@ if command -v helm >/dev/null 2>&1; then
     --set sandbox-b.redis.password=xxxxxxxx \
     --set sandbox-b.secrets.values.sandboxBApiKeys=x \
     --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}")"
-  echo "helm template (values-prod.yaml): rendered ok (HA-02)"
+  echo "helm template (values-prod.yaml + site overlay): rendered ok (HA-02)"
 
   # HA-03 guard: at the v1.0 single-replica lock, no PodDisruptionBudget
   # may render — a PDB with minAvailable:1 on a one-pod workload blocks

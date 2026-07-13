@@ -342,7 +342,7 @@ secrets:
     # detector (mirrors Compose-path CANARY_HMAC_KEY :? enforcement).
     canaryHmacKey: ""
   vault:
-    path: "dsa/data/sandbox-a"
+    path: "sandbox-a"
   aws:
     name: "dsa/sandbox-a"
   azure:

@@ -1180,18 +1180,24 @@ contract before an upgrade; a missing Secret name/key, partial block, or path
 mismatch must be a Helm render failure, never a bypass or placeholder blob:
 
 Production uses the names-and-paths-only External Secrets contract in
-`charts/lucairn/values-prod.yaml`; do not reuse the development/pilot
+`charts/lucairn/values-prod.yaml` plus an operator-controlled site overlay;
+the base file intentionally fails closed until that overlay supplies the
+non-secret provider endpoint. Do not reuse the development/pilot
 `customer-values.yaml` or generate application credentials in Helm values.
 For a deliberate credential rotation, update the selected child remote
 reference in Vault/AWS/Azure and coordinate the application, database, and
 service rollout before the next Helm upgrade.
 
 ```bash
+SITE_OVERLAY=/secure/operator/lucairn-production-site.yaml
+
 bin/lucairn doctor \
   --values charts/lucairn/values-prod.yaml \
+  --values "$SITE_OVERLAY" \
   --offline
 helm template lucairn charts/lucairn \
-  -f charts/lucairn/values-prod.yaml >/dev/null
+  -f charts/lucairn/values-prod.yaml \
+  -f "$SITE_OVERLAY" >/dev/null
 ```
 
 **To verify mTLS is active:**

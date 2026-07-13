@@ -145,10 +145,14 @@ Expected output: `Saving N charts ... Downloading ...` then `Deleting outdated c
 the names-and-paths-only External Secrets profile in
 `charts/lucairn/values-prod.yaml`, which keeps
 `global.dsaEnv=production`, `global.mtls.enabled=true`, and explicit Vault
-paths for every default-topology child. Populate the referenced External
-Secrets backend before Helm runs; never use a shell substitution, `--set`, or a
-values file for an Anthropic/API key, database credential, signing key, or
-service token. Do not attempt to enable transport with child-chart TLS settings.
+paths for every default-topology child. It deliberately leaves the Vault
+endpoint empty and therefore fails closed on its own. Create an
+operator-controlled, names-and-paths-only site overlay from
+`charts/lucairn/values-prod-site.example.yaml`, set `SITE_OVERLAY` to that
+file, and populate the referenced External Secrets backend before Helm runs.
+Never use a shell substitution, `--set`, or a values file for an Anthropic/API
+key, database credential, signing key, or service token. Do not attempt to
+enable transport with child-chart TLS settings.
 
 Before Helm, the operator/PKI team creates one Secret per identity in its
 workload namespace. Each has exactly `ca.crt`, `tls.crt`, and `tls.key`; Helm
@@ -201,14 +205,18 @@ one of: a pre-created pull Secret referenced by `global.imagePullSecrets` in
 every mandatory namespace, node/default-ServiceAccount auth, or workload
 identity. Never pass a Docker config through Helm.
 
-Run doctor against the production profile:
+Run doctor against the ordered production profile and site overlay:
 
 ```bash
+SITE_OVERLAY=/secure/operator/lucairn-production-site.yaml
+
 bin/lucairn doctor \
   --values charts/lucairn/values-prod.yaml \
+  --values "$SITE_OVERLAY" \
   --offline
 helm template lucairn ./charts/lucairn \
   -f charts/lucairn/values-prod.yaml \
+  -f "$SITE_OVERLAY" \
   >/dev/null
 ```
 
@@ -238,6 +246,7 @@ mTLS acceptance from a successful Helm render.
 helm install lucairn ./charts/lucairn \
   --namespace lucairn \
   -f charts/lucairn/values-prod.yaml \
+  -f "$SITE_OVERLAY" \
   --wait --timeout 10m
 ```
 
@@ -264,8 +273,8 @@ Expected: ~25 pods, all `Running` or `Completed` (Completed = Jobs). Pods run ac
 - `lucairn` — chart-managed Helm hooks
 - `dsa-edge` — gateway
 - `dsa-bridge` — id-bridge + postgres-bridge
-- `dsa-identity` — sandbox-a + postgres-sandbox-a
-- `dsa-ai` — sandbox-b + sanitizer
+- `dsa-identity` — sandbox-a + sanitizer + postgres-sandbox-a
+- `dsa-ai` — sandbox-b
 - `dsa-audit` — audit + postgres-audit
 - `dsa-witness` — veil-witness + postgres-veil
 - `dsa-admin` — admin portal (optional)
@@ -273,7 +282,7 @@ Expected: ~25 pods, all `Running` or `Completed` (Completed = Jobs). Pods run ac
 - `dsa-demo` — demo lane (optional)
 
 If any pod is stuck `ImagePullBackOff` → re-run Step 2 and reinstall.
-If any pod is stuck `CrashLoopBackOff` → check its logs (`kubectl logs -n <ns> <pod>`) — likely a missed REPLACE_* value in `$OVERLAY`.
+If any pod is stuck `CrashLoopBackOff` → check its logs (`kubectl logs -n <ns> <pod>`) — likely a missed non-secret site-overlay setting or unavailable external credential.
 
 (If you want a wait that fails on any unready Helm-managed pod, scope to the Helm label so you don't pick up Completed Jobs + kube-system pods:
 `kubectl wait --for=condition=ready pod -l app.kubernetes.io/managed-by=Helm -n lucairn --timeout=10m`.)
@@ -285,22 +294,27 @@ If any pod is stuck `CrashLoopBackOff` → check its logs (`kubectl logs -n <ns>
 Use the in-cluster admin endpoint (avoids host-network rate limits that can hit a brand-new install).
 
 ```bash
-# Extract the admin key from the rendered Secret
+# Extract the admin key from the ESO-managed Secret. Do not print it.
 # Secret name is "gateway-credentials" (chart name + "-credentials" suffix).
 # Field is "DSA_ADMIN_KEY" (matches the gateway container env var).
 ADMIN_KEY=$(kubectl get secret -n dsa-edge gateway-credentials -o jsonpath='{.data.DSA_ADMIN_KEY}' | base64 -d)
-echo "Admin key (first 8 chars): ${ADMIN_KEY:0:8}..."
 
-# Your Anthropic key (already in $OVERLAY above)
-ANTHROPIC_KEY=$(grep -E 'anthropicApiKey:' "$OVERLAY" | head -1 | awk '{print $2}' | tr -d '"')
+# The operator-protected provider-key file is outside Helm values and Git.
+# Refuse any mode other than 0600, then let jq read it directly into JSON.
+PROVIDER_KEY_FILE=/secure/operator/anthropic-provider-key
+provider_key_mode="$(stat -f '%Lp' "$PROVIDER_KEY_FILE" 2>/dev/null || stat -c '%a' "$PROVIDER_KEY_FILE")"
+[ "$provider_key_mode" = 600 ] || { echo "provider key file must be mode 0600" >&2; exit 1; }
 
-# Mint a customer via in-cluster temp pod. Note: response field is `dsa_api_key`.
-CUSTOMER_KEY=$(kubectl run mint --image=curlimages/curl:latest --restart=Never --rm -i --quiet -- \
-  curl -s -X POST \
-    -H "x-admin-key: $ADMIN_KEY" \
-    -H "Content-Type: application/json" \
-    -d '{"customer_id":"my_first_customer","provider":"anthropic","provider_key":"'$ANTHROPIC_KEY'","tier":"enterprise"}' \
-    http://gateway.dsa-edge.svc.cluster.local:8080/api/v1/admin/keys | jq -r .dsa_api_key)
+# Mint via stdin: the provider key is neither a Helm value nor a curl argv item.
+# Note: response field is `dsa_api_key`.
+CUSTOMER_KEY=$(jq -n --rawfile provider_key "$PROVIDER_KEY_FILE" \
+  '{customer_id:"my_first_customer", provider:"anthropic", provider_key:($provider_key | rtrimstr("\n")), tier:"enterprise"}' | \
+  kubectl run mint --image=curlimages/curl:latest --restart=Never --rm -i --quiet -- \
+    curl -s -X POST \
+      -H "x-admin-key: $ADMIN_KEY" \
+      -H "Content-Type: application/json" \
+      --data-binary @- \
+      http://gateway.dsa-edge.svc.cluster.local:8080/api/v1/admin/keys | jq -r .dsa_api_key)
 
 echo "Customer API key: $CUSTOMER_KEY"
 ```

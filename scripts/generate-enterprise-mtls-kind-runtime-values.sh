@@ -173,7 +173,12 @@ PUBLIC_OVERLAY="$PUBLIC_OVERLAY" FIXTURE="$FIXTURE" \
         "skipPullSecretGuard" => true,
         "dnsRestriction" => false,
         "wireguardEncryption" => false,
-        "postgresqlSslmode" => "disable"
+        "postgresqlSslmode" => "disable",
+        # Kind deliberately installs no ESO controller. This disposable,
+        # non-secret HTTPS endpoint only satisfies the production render
+        # contract; the harness pre-creates target Secrets and never claims
+        # ExternalSecret reconciliation.
+        "secrets" => { "vault" => { "endpoint" => "https://vault.kind.invalid" } }
       },
       "kindPublicKeys" => {
         "veilAuditPublicKey" => ENV.fetch("AUDIT_PUBLIC"),

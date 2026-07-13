@@ -194,7 +194,7 @@ secrets:
     signingKey: "0000000000000000000000000000000000000000000000000000000000000000"
     keyId: "witness_dev_v1"
   vault:
-    path: "dsa/data/veil-witness"
+    path: "veil-witness"
   aws:
     name: "dsa/veil-witness"
   azure:
