@@ -783,52 +783,21 @@ shred -u /dev/shm/veil-seeds.env /dev/shm/restore-seeds.values.yaml
 ```
 
 > **External Secrets backend (`vault` / `aws` / `azure`).** Do NOT use the
-> values overlay above. Restore the recovered seed values **into your secret
-> store BEFORE `helm install`** (`charts/lucairn/charts/*/templates/externalsecret.yaml`
-> pull them at sync time); the ExternalSecret then materializes each
-> `<service>-credentials` Secret. The chart does not own those Secrets on this
-> backend, so there is no pre-create conflict — but the data must be in the store
-> first or the pods start without their signing seeds.
+> values overlay above. The External Secrets path is the supported production
+> restore path: restore **every mapped property** — recovered signing seeds and
+> the corresponding operator-derived public keys — into the selected external
+> backend before `helm install` or recovery. The six ExternalSecrets, including
+> the gateway mappings for `LCR_GATEWAY_SIGNING_KEY`,
+> `LCR_GATEWAY_PUBLIC_KEY`, `LCR_GATEWAY_MANIFEST_PUBLIC_KEY`, and
+> `LCR_WITNESS_MANIFEST_PUBLIC_KEY`, then reconcile and materialize the complete
+> `<service>-credentials` target Secrets.
 >
-> **⚠ Supported full-restore path is the bundled `k8s-native` values-overlay
-> above — not the ESO path as currently shipped.** The gateway ExternalSecret
-> template (`charts/lucairn/charts/gateway/templates/externalsecret.yaml`) does
-> **NOT** map four of the gateway-roster keys:
-> `LCR_GATEWAY_SIGNING_KEY`, `LCR_GATEWAY_PUBLIC_KEY`,
-> `LCR_GATEWAY_MANIFEST_PUBLIC_KEY`, and `LCR_WITNESS_MANIFEST_PUBLIC_KEY`
-> have no `data:` entry, so an ESO restore on the shipped chart **cannot** produce
-> the documented 8-key gateway roster on its own (it materializes
-> `LCR_MANIFEST_SIGNING_KEY` + the five emitter pubkeys, and nothing else from
-> the manifest/gateway set). This is a shipped-chart gap of the same class as the
-> witness/audit ExternalSecret completeness fix — **tracked as a follow-up to
-> extend the gateway ExternalSecret**.
->
-> Until the chart is extended, an ESO restore must **supply those four values
-> through the secret store itself** — because on a non-`k8s-native` gateway
-> backend `charts/lucairn/charts/gateway/templates/secret.yaml` is guarded by
-> `{{- if eq .Values.secrets.backend "k8s-native" }}` and does **NOT** render, so
-> `gateway.secrets.values.veil*` overlay values are **silently ignored** (a
-> `k8s-native`-style values overlay for the gateway subchart does nothing on the
-> ESO backend). Two backend-accurate options:
->
-> 1. **Stay on ESO** — put the re-derived `LCR_GATEWAY_PUBLIC_KEY` /
->    `LCR_GATEWAY_MANIFEST_PUBLIC_KEY` / `LCR_WITNESS_MANIFEST_PUBLIC_KEY` and
->    the restored `LCR_GATEWAY_SIGNING_KEY` **into the external secret store** (the
->    same store the gateway ExternalSecret syncs from) keyed under names the
->    extended ExternalSecret will map — OR, on the shipped chart that does not yet
->    map them, `kubectl patch secret gateway-credentials` to add the four `data:`
->    entries on the **materialized** `gateway-credentials` Secret **after** ESO
->    has synced it (re-apply the patch after any ESO refresh that recreates the
->    Secret, since ESO owns it).
-> 2. **Flip the gateway subchart to `k8s-native`** (`gateway.secrets.backend:
->    k8s-native`) for the restore and supply the **full** gateway Secret inputs via
->    the values overlay above — then the chart-rendered `secret.yaml` materializes
->    the complete roster.
->
-> Do **not** assume the ESO path alone yields the full roster as written, and do
-> **not** carry the missing pubkeys in a gateway values overlay while the backend
-> stays ESO — verify with the well-known key_id check below before declaring the
-> restore complete.
+> Neither Helm nor ESO derives public keys. Derive the public values from the
+> recovered seeds with the operator tooling above, restore the resulting values
+> alongside their mapped seeds, and let ESO own every materialized Secret. Never
+> patch a materialized `gateway-credentials` Secret and never carry those secret
+> bytes in Helm values. After reconciliation, verify ExternalSecret readiness and
+> the well-known key-id checks below before declaring the restore complete.
 
 **Compose path** — restore the `VEIL_*` seeds into `customer.env` (mode 0600)
 from the decrypted escrow blob, then bring the stack up empty:

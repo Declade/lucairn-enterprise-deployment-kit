@@ -1720,17 +1720,20 @@ ExternalSecret intentionally reads its own explicit backend and remote name.
 ### Registry authentication is outside Helm
 
 Never pass a Docker config, `dockerconfigjson`, or registry token through Helm:
-that would retain it in release history. `values-prod.yaml` sets
-`global.skipPullSecretGuard=true` for the supported out-of-band registry modes.
-For Secret-based registry auth, ensure a pre-created pull Secret exists in every mandatory
-workload namespace and set `global.imagePullSecrets` to its name in a
-names-only overlay. The chart adds that reference directly to chart-specific
-workload PodSpecs. Create the pull Secret with `kubectl` after namespace
-adoption and before Helm; Helm never creates or copies its credential bytes.
+that would retain it in release history. `values-prod.yaml` deliberately leaves
+`global.imagePullSecrets: []` and `global.skipPullSecretGuard: false`, so it
+fails closed for its private registry. For Secret-based registry auth, ensure a
+pre-created pull Secret exists in every mandatory workload namespace and set
+`global.imagePullSecrets` to its name in a names-only site overlay (the checked-in
+site example uses `lucairn-registry`). The chart adds that reference directly to
+chart-specific workload PodSpecs. Create the pull Secret with `kubectl` after
+namespace adoption and before Helm; Helm never creates or copies its credential
+bytes.
 
 Leave `global.imagePullSecrets` empty only when actual node-level registry auth
-or registry workload identity is configured outside Helm. All supported modes
-require `global.skipPullSecretGuard=true`.
+or registry workload identity is configured outside Helm. Only then set
+`global.skipPullSecretGuard=true` in that private site overlay to suppress the
+private-registry guard.
 
 Before install, set the site-overlay path and run the Helm-only preflight with
 the ordered production values. A green render alone is not an accepted

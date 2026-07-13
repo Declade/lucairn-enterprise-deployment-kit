@@ -28,8 +28,8 @@ fi
 ruby -ryaml -e '
   values = YAML.load_file(ARGV.fetch(0))
   global = values.fetch("global")
-  abort "production pull-secret guard must be explicitly bypassed for out-of-band auth" unless global["skipPullSecretGuard"] == true
-  abort "production imagePullSecrets must default to an empty out-of-band list" unless global["imagePullSecrets"] == []
+  abort "production pull-secret guard must fail closed by default" unless global["skipPullSecretGuard"] == false
+  abort "production imagePullSecrets must default to an empty list" unless global["imagePullSecrets"] == []
   abort "production values carry Docker registry credentials" if global.key?("imagePullDockerConfigJson")
   abort "production global External Secrets backend is not Vault" unless global.dig("secrets", "backend") == "vault"
   abort "production generic Cilium DNS restriction must be disabled" unless global["dnsRestriction"] == false
@@ -76,6 +76,32 @@ fi
 grep -Fq 'global.secrets.vault.endpoint must be a non-empty HTTPS URL with a host' "$TMPDIR/no-site.err" \
   || { echo "empty production Vault endpoint was not rejected" >&2; exit 1; }
 
+# The production base has a private registry and therefore also needs an
+# explicit site decision: names-only pull-Secret references, or the narrowly
+# scoped external-registry-auth escape hatch.
+cat >"$TMPDIR/endpoint-only-site.yaml" <<'YAML'
+global:
+  secrets:
+    vault:
+      endpoint: "https://vault.example.internal"
+YAML
+if helm template lucairn "$CHART" -f "$VALUES" -f "$TMPDIR/endpoint-only-site.yaml" >"$TMPDIR/endpoint-only-site.yaml.rendered" 2>"$TMPDIR/endpoint-only-site.err"; then
+  echo "production rendered with an endpoint-only site overlay and no registry auth decision" >&2
+  exit 1
+fi
+grep -Fq 'global.imageRegistry="ghcr.io/declade" is a PRIVATE registry but global.imagePullSecrets is empty' "$TMPDIR/endpoint-only-site.err" \
+  || { echo "endpoint-only production overlay did not expose the private-registry guard" >&2; cat "$TMPDIR/endpoint-only-site.err" >&2; exit 1; }
+
+cat >"$TMPDIR/external-registry-auth-site.yaml" <<'YAML'
+global:
+  secrets:
+    vault:
+      endpoint: "https://vault.example.internal"
+  imagePullSecrets: []
+  skipPullSecretGuard: true
+YAML
+helm template lucairn "$CHART" -f "$VALUES" -f "$TMPDIR/external-registry-auth-site.yaml" >"$TMPDIR/external-registry-auth-site.yaml.rendered"
+
 # Every generated ExternalSecret must cover the credential keys consumed by its
 # default-topology Pods or mandatory Jobs. The list is deliberately explicit:
 # adding a new required secretKeyRef must update this test and the ESO mapping.
@@ -107,6 +133,9 @@ ruby -ryaml -e '
     sandbox-a-credentials sandbox-b-credentials veil-witness-credentials
   ].sort
   documents = YAML.load_stream(File.read(ARGV.fetch(0))).compact
+  gateway = documents.find { |document| document.is_a?(Hash) && document["kind"] == "Deployment" && document.dig("metadata", "name") == "gateway" } || abort("production render misses gateway deployment")
+  pull_secrets = gateway.dig("spec", "template", "spec", "imagePullSecrets")
+  abort "checked-in production site example must attach its names-only pull Secret reference" unless pull_secrets == [{ "name" => "lucairn-registry" }]
   external_secrets = documents.map do |document|
     document.dig("metadata", "name") if document.is_a?(Hash) && document["kind"] == "ExternalSecret"
   end.compact.sort
@@ -128,6 +157,16 @@ ruby -ryaml -e '
     abort "#{name} Vault key drifted: #{keys.inspect}" unless keys == [expected_keys.fetch(name)]
   end
 
+  redis = documents.find { |document| document.is_a?(Hash) && document["kind"] == "StatefulSet" && document.dig("metadata", "name") == "sandbox-b-redis" } || abort("production render misses sandbox-b Redis StatefulSet")
+  container = redis.dig("spec", "template", "spec", "containers")&.find { |item| item["name"] == "redis" } || abort("production Redis container missing")
+  abort "external-backend Redis must require its Secret password" unless container.fetch("args").each_cons(2).any? { |pair| pair == ["--requirepass", "$(REDIS_PASSWORD)"] }
+  password_env = container.fetch("env").find { |item| item["name"] == "REDIS_PASSWORD" }
+  abort "external-backend Redis must reference REDIS_PASSWORD from its credentials Secret" unless password_env&.dig("valueFrom", "secretKeyRef") == { "name" => "sandbox-b-credentials", "key" => "REDIS_PASSWORD" }
+  %w[livenessProbe readinessProbe].each do |probe|
+    command = container.dig(probe, "exec", "command")
+    abort "external-backend Redis #{probe} must authenticate with the runtime password variable" unless command == ["sh", "-c", "redis-cli -a $REDIS_PASSWORD --no-auth-warning ping"]
+  end
+
   secrets = documents.map do |document|
     if document.is_a?(Hash) && document["kind"] == "Secret"
       metadata = document.fetch("metadata", {})
@@ -146,6 +185,27 @@ if rg -n 'dockerconfigjson|imagePullDockerConfigJson' "$RENDER"; then
   echo "production render contains a Helm-owned registry credential" >&2
   exit 1
 fi
+
+DEV_REDIS_RENDER="$TMPDIR/development-redis-no-password.yaml"
+helm template lucairn "$CHART" \
+  --set global.dsaEnv=development \
+  --set global.skipPullSecretGuard=true \
+  --set infrastructure.enabled=false \
+  --set-string sandbox-b.redis.password= \
+  --set sandbox-b.secrets.backend=k8s-native \
+  --set veil-witness.secrets.values.signingKey=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  >"$DEV_REDIS_RENDER"
+ruby -ryaml -e '
+  documents = YAML.load_stream(File.read(ARGV.fetch(0))).compact
+  redis = documents.find { |document| document.is_a?(Hash) && document["kind"] == "StatefulSet" && document.dig("metadata", "name") == "sandbox-b-redis" } || abort("development render misses sandbox-b Redis StatefulSet")
+  container = redis.dig("spec", "template", "spec", "containers")&.find { |item| item["name"] == "redis" } || abort("development Redis container missing")
+  abort "k8s-native no-password Redis unexpectedly requires authentication" if container.fetch("args").include?("--requirepass")
+  abort "k8s-native no-password Redis unexpectedly injects REDIS_PASSWORD" if container.fetch("env", []).any? { |item| item["name"] == "REDIS_PASSWORD" }
+  %w[livenessProbe readinessProbe].each do |probe|
+    command = container.dig(probe, "exec", "command")
+    abort "k8s-native no-password Redis #{probe} must remain unauthenticated" unless command == ["sh", "-c", "redis-cli ping"]
+  end
+' "$DEV_REDIS_RENDER"
 
 if "$ROOT/bin/lucairn" doctor --values "$VALUES" --offline >"$TMPDIR/doctor-no-site.out" 2>&1; then
   echo "doctor accepted production values without a site provider overlay" >&2
@@ -321,6 +381,7 @@ ruby -e '
   root = ARGV.fetch(0)
   guidance = %w[
     charts/lucairn/values-prod.yaml
+    charts/lucairn/values-prod-site.example.yaml
     docs/CUSTOMER_HELM_RUNBOOK.md
     INSTALL.md
   ]
@@ -331,6 +392,38 @@ ruby -e '
     abort "#{path} must describe pre-created names-only imagePullSecrets" unless content.match?(/pre-created pull Secret/i) && content.match?(/name(?:s)?[- ]only/i) && content.include?("global.imagePullSecrets")
     abort "#{path} must describe PodSpec pull-Secret attachment" unless content.match?(/chart-specific\s+workload\s+PodSpecs/im)
     abort "#{path} must limit empty imagePullSecrets to external registry auth" unless content.match?(/(?:leave|leaves).*imagePullSecrets.*empty.*only.*node-level.*workload identity.*outside Helm/im)
+    obsolete_bypass_claims = [
+      /skipPullSecretGuard\s*=\s*true\s*\(already in the production profile\)/i,
+      /values-prod\.yaml\s+(?:sets|defaults? to)\s+`?global\.skipPullSecretGuard\s*(?:=|:)\s*true/i,
+    ]
+    abort "#{path} must not claim the registry escape hatch is already/defaulted in production" if obsolete_bypass_claims.any? { |claim| content.match?(claim) }
+  end
+' "$ROOT"
+
+ruby -e '
+  source = File.read(File.join(ARGV.fetch(0), "charts/lucairn/charts/gateway/templates/externalsecret.yaml"))
+  required = {
+    "LCR_GATEWAY_SIGNING_KEY" => "veilGatewaySigningKey",
+    "LCR_GATEWAY_PUBLIC_KEY" => "veilGatewayPublicKey",
+    "LCR_GATEWAY_MANIFEST_PUBLIC_KEY" => "veilGatewayManifestPublicKey",
+    "LCR_WITNESS_MANIFEST_PUBLIC_KEY" => "veilWitnessManifestPublicKey",
+  }
+  required.each do |key, property|
+    mapping = source[/^    - secretKey: #{Regexp.escape(key)}$(.*?)(?=^    - secretKey:|\z)/m]
+    abort "gateway ExternalSecret lacks complete #{key} mapping" unless mapping&.include?("property: #{property}")
+  end
+
+  ops = File.read(File.join(ARGV.fetch(0), "OPS.md"))
+  obsolete = [
+    "Supported full-restore path is the bundled `k8s-native` values-overlay",
+    "does **NOT** map four of the gateway-roster keys",
+    "kubectl patch secret gateway-credentials",
+    "Flip the gateway subchart to `k8s-native`",
+  ]
+  obsolete.each { |claim| abort "OPS retains obsolete ESO restore claim: #{claim}" if ops.include?(claim) }
+  normalized_ops = ops.gsub(/^>\s?/, "").gsub(/\s+/, " ")
+  ["The External Secrets path is the supported production restore path", "restore **every mapped property**", "let ESO own every materialized Secret", "Neither Helm nor ESO derives public keys", "ExternalSecret readiness", "well-known key-id checks"].each do |claim|
+    abort "OPS omits supported ESO restore guidance: #{claim}" unless normalized_ops.include?(claim)
   end
 ' "$ROOT"
 
