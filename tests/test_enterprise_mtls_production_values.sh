@@ -15,7 +15,7 @@ fi
 
 [ ! -e "$ROOT/scripts/render-production-values.sh" ] \
   || { echo "production secret renderer must be deleted" >&2; exit 1; }
-if rg -n 'render-production-values\.sh|customer-production-values\.yaml' \
+if grep -R -n -E 'render-production-values\.sh|customer-production-values\.yaml' \
   "$ROOT/INSTALL.md" "$ROOT/OPS.md" "$ROOT/TROUBLESHOOTING.md" \
   "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md" "$ROOT/Makefile" "$ROOT/scripts"; then
   echo "production path still refers to a generated secret-bearing values file" >&2
@@ -213,7 +213,7 @@ ruby -ryaml -e '
     }
   end
 ' "$WIREGUARD_RENDER"
-if rg -n 'dockerconfigjson|imagePullDockerConfigJson' "$RENDER"; then
+if grep -n -E 'dockerconfigjson|imagePullDockerConfigJson' "$RENDER"; then
   echo "production render contains a Helm-owned registry credential" >&2
   exit 1
 fi
@@ -495,7 +495,7 @@ ruby -e '
 # curl argv. These are structural assertions over the narrow code block rather
 # than an attempt to execute a Markdown shell program.
 RUNBOOK="$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md"
-if rg -n '\$OVERLAY' "$RUNBOOK"; then
+if grep -n -E '\$OVERLAY' "$RUNBOOK"; then
   echo "production runbook still references the undefined OVERLAY variable" >&2
   exit 1
 fi
@@ -513,7 +513,7 @@ for required in 'Cilium-only opt-in' 'ciliumnetworkpolicies.cilium.io' \
   grep -Fq -- "$required" "$RUNBOOK" \
     || { echo "production runbook omits Cilium/node-isolation opt-in guidance: $required" >&2; exit 1; }
 done
-if rg -n -- '-d .*provider_key|--data .*provider_key|echo .*PROVIDER_KEY|echo .*ANTHROPIC' "$RUNBOOK"; then
+if grep -n -E -- '-d .*provider_key|--data .*provider_key|echo .*PROVIDER_KEY|echo .*ANTHROPIC' "$RUNBOOK"; then
   echo "production runbook may expose a provider key through curl argv or output" >&2
   exit 1
 fi

@@ -135,12 +135,12 @@ run_cleanup 17 0 lucairn-enterprise-mtls-cleanup-fixture 1 1 "$BODY_AND_STATE_FA
 [ "$RUN_STATUS" -eq 17 ] || { echo "private-state deletion failure replaced an existing body failure" >&2; exit 1; }
 [ "$ENTERPRISE_MTLS_KIND_STATE_DELETE_FAILED" -eq 1 ] || { echo "combined body/state failure was not tracked" >&2; exit 1; }
 
-attempt_line="$(rg -n 'CLUSTER_CREATION_ATTEMPTED=1' "$ROOT/scripts/test-enterprise-mtls-kind.sh" | cut -d: -f1)"
-create_line="$(rg -n 'kind create cluster --name' "$ROOT/scripts/test-enterprise-mtls-kind.sh" | cut -d: -f1)"
+attempt_line="$(grep -n -E 'CLUSTER_CREATION_ATTEMPTED=1' "$ROOT/scripts/test-enterprise-mtls-kind.sh" | cut -d: -f1)"
+create_line="$(grep -n -E 'kind create cluster --name' "$ROOT/scripts/test-enterprise-mtls-kind.sh" | cut -d: -f1)"
 [ "$attempt_line" -lt "$create_line" ] \
   || { echo "Kind harness does not record creation attempt before create/wait" >&2; exit 1; }
 
-if rg -n -- '--keep|state retained|KEEP=' "$ROOT/scripts/test-enterprise-mtls-kind.sh"; then
+if grep -n -E -- '--keep|state retained|KEEP=' "$ROOT/scripts/test-enterprise-mtls-kind.sh"; then
   echo "Kind harness retains a public keep/state-retention path" >&2
   exit 1
 fi

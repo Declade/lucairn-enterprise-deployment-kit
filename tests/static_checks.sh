@@ -7,6 +7,77 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=lib/test-helpers.sh
 source "$ROOT/tests/lib/test-helpers.sh"
 
+# Keep the portable test path free of ripgrep. This roster mirrors every script
+# invoked by the Makefile test target, including its three prerequisites.
+assert_no_executable_rg_in_file() {
+  local script="$1" matches
+
+  [ -r "$script" ] \
+    || { echo "cannot inspect make test script: $script" >&2; return 1; }
+  matches="$(grep -n -E '(^|[;&|()[:space:]])rg([[:space:]]|$)' "$script" \
+    | grep -v -E '^[0-9]+:[[:space:]]*#' || true)"
+  [ -z "$matches" ] && return 0
+
+  echo "make test script contains executable rg: $script" >&2
+  echo "$matches" >&2
+  return 1
+}
+
+assert_no_executable_rg() {
+  local script
+
+  for script in \
+    "$ROOT/tests/test_lucairn_cli.sh" \
+    "$ROOT/tests/test_check_updates.sh" \
+    "$ROOT/tests/test_redact_stream.sh" \
+    "$ROOT/tests/test_tms_trust_zones.sh" \
+    "$ROOT/tests/test_sec_hardening.sh" \
+    "$ROOT/tests/test_enterprise_mtls_cert_contract.sh" \
+    "$ROOT/tests/test_enterprise_mtls_kind_custody.sh" \
+    "$ROOT/tests/test_enterprise_mtls_kind_image_preload.sh" \
+    "$ROOT/tests/test_enterprise_mtls_kind_client_auth.sh" \
+    "$ROOT/tests/test_enterprise_mtls_ceremony_docs.sh" \
+    "$ROOT/tests/test_enterprise_mtls_kind_kubectl_resolver.sh" \
+    "$ROOT/tests/test_enterprise_mtls_kind_cleanup.sh" \
+    "$ROOT/tests/static_checks.sh" \
+    "$ROOT/tests/test_enterprise_mtls_helm.sh" \
+    "$ROOT/tests/test_enterprise_mtls_helm_required.sh" \
+    "$ROOT/tests/test_enterprise_mtls_production_values.sh"; do
+    assert_no_executable_rg_in_file "$script" || return 1
+  done
+}
+
+assert_no_executable_rg_self_test() {
+  local fixture="$ROOT/tests/.static-checks-rg-$$" rg_command='r''g' status=0
+
+  printf '%s\n' "# $rg_command --version" \
+    "printf '%s\\n' 'quoted prose: $rg_command'" > "$fixture"
+  assert_no_executable_rg_in_file "$fixture" \
+    || { echo "ripgrep guard rejects comments or quoted prose" >&2; status=1; }
+
+  if [ "$status" -eq 0 ]; then
+    printf '%s\n' "$rg_command --version" > "$fixture"
+    if assert_no_executable_rg_in_file "$fixture" >/dev/null 2>&1; then
+      echo "ripgrep guard misses a plain command" >&2
+      status=1
+    fi
+  fi
+
+  if [ "$status" -eq 0 ]; then
+    printf '%s\n' "value=\"\$($rg_command --version)\"" > "$fixture"
+    if assert_no_executable_rg_in_file "$fixture" >/dev/null 2>&1; then
+      echo "ripgrep guard misses a command substitution" >&2
+      status=1
+    fi
+  fi
+
+  rm -f "$fixture"
+  return "$status"
+}
+
+assert_no_executable_rg_self_test
+assert_no_executable_rg
+
 bash -n "$ROOT/bin/lucairn"
 bash -n "$ROOT/scripts/package-release.sh"
 bash -n "$ROOT/tests/test_lucairn_cli.sh"
@@ -42,13 +113,13 @@ for customer_file in \
   "$ROOT/customer-values.yaml.example" \
   "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md" \
   "$ROOT/scripts/render-values.sh"; do
-  if rg -n 'grpcTlsEnabled|global\.grpcTlsEnabled' "$customer_file"; then
+  if grep -n -E 'grpcTlsEnabled|global\.grpcTlsEnabled' "$customer_file"; then
     echo "customer-facing instruction revives unsupported child TLS guidance: $customer_file" >&2
     exit 1
   fi
 done
 for required_term in global.mtls operator/PKI doctor readiness acceptance; do
-  if ! rg -q "$required_term" "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md"; then
+  if ! grep -q -E "$required_term" "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md"; then
     echo "customer Helm runbook omits required production mTLS guidance: $required_term" >&2
     exit 1
   fi
@@ -61,7 +132,7 @@ for required_flag in '--set global.skipPullSecretGuard=true'; do
   grep -Fq -- "$required_flag" "$ROOT/scripts/test-enterprise-mtls-kind.sh" \
     || { echo "enterprise mTLS Kind gate missing required Helm flag: $required_flag" >&2; exit 1; }
 done
-if rg -n 'DOCKER_CONFIG|imagePullDockerConfigJson|--set-file.*docker' \
+if grep -n -E 'DOCKER_CONFIG|imagePullDockerConfigJson|--set-file.*docker' \
   "$ROOT/scripts/test-enterprise-mtls-kind.sh"; then
   echo "enterprise mTLS Kind gate still transfers registry credentials through Helm" >&2
   exit 1

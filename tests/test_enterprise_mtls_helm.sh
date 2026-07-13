@@ -611,7 +611,7 @@ YAML
 done
 
 set_json_option='--set-json'
-if rg -n -- "${set_json_option}.*=null" "$0"; then
+if grep -n -E -- "${set_json_option}.*=null" "$0"; then
   echo "enterprise mTLS Helm contract must not use ${set_json_option} with a null RHS" >&2
   exit 1
 fi
@@ -636,13 +636,13 @@ for customer_file in \
   "$ROOT/customer-values.yaml.example" \
   "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md" \
   "$ROOT/scripts/render-values.sh"; do
-  if rg -n 'grpcTlsEnabled|global\.grpcTlsEnabled' "$customer_file"; then
+  if grep -n -E 'grpcTlsEnabled|global\.grpcTlsEnabled' "$customer_file"; then
     echo "customer-facing instruction revives unsupported child TLS guidance: $customer_file" >&2
     exit 1
   fi
 done
 for required_term in global.mtls operator/PKI doctor readiness acceptance; do
-  if ! rg -q "$required_term" "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md"; then
+  if ! grep -q -E "$required_term" "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md"; then
     echo "customer Helm runbook omits required production mTLS guidance: $required_term" >&2
     exit 1
   fi
