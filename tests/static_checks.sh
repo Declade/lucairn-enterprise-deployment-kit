@@ -10,16 +10,31 @@ source "$ROOT/tests/lib/test-helpers.sh"
 # Keep the portable test path free of ripgrep. This roster mirrors every script
 # invoked by the Makefile test target, including its three prerequisites.
 assert_no_executable_rg_in_file() {
-  local script="$1" matches
+  local script="$1" subst_hits cmd_hits
 
   [ -r "$script" ] \
     || { echo "cannot inspect make test script: $script" >&2; return 1; }
-  matches="$(grep -n -E '(^|[;&|()[:space:]])rg([[:space:]]|$)' "$script" \
-    | grep -v -E '^[0-9]+:[[:space:]]*#' || true)"
-  [ -z "$matches" ] && return 0
+  # Reduce each line to its executable context before matching, so inline
+  # comments and quoted prose mentioning rg are accepted while command-position
+  # rg and command substitution are rejected. Single-quoted text never
+  # executes. A whitespace-preceded # starts a comment (not stripped for the
+  # substitution pass when a double quote follows it, so `"a # b" $(rg …)`
+  # stays visible). Command substitution executes even inside double quotes,
+  # so the $(rg …)/`rg …` pass keeps double-quoted text; the command-position
+  # pass strips it.
+  subst_hits="$(sed -e "s/'[^']*'//g" -e 's/^[[:space:]]*#.*$//' \
+      -e 's/[[:space:]]#[^"]*$//' "$script" \
+    | grep -n -E '\$\([[:space:]]*rg([[:space:]]|\)|$)|`[[:space:]]*rg([[:space:]]|`|$)' || true)"
+  cmd_hits="$(sed -e "s/'[^']*'//g" -e 's/"[^"]*"//g' \
+      -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]#.*$//' "$script" \
+    | grep -n -E '(^|[;&|()[:space:]])rg([[:space:]]|$)' || true)"
+  if [ -z "$subst_hits" ] && [ -z "$cmd_hits" ]; then
+    return 0
+  fi
 
   echo "make test script contains executable rg: $script" >&2
-  echo "$matches" >&2
+  if [ -n "$subst_hits" ]; then echo "$subst_hits" >&2; fi
+  if [ -n "$cmd_hits" ]; then echo "$cmd_hits" >&2; fi
   return 1
 }
 
