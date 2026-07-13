@@ -45,17 +45,19 @@ command -v ruby >/dev/null 2>&1 || {
 umask 077
 WORK_DIR="$(mktemp -d "$OUTPUT_DIR/.enterprise-mtls-manifest.XXXXXX")"
 KEYS_JSON="$WORK_DIR/keys.json"
+SIGNING_SEED_FILE="$WORK_DIR/witness-signing-key-hex"
 SIGNED_TMP="$WORK_DIR/witness-signed-manifest.json"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 # The schema and roster deliberately mirror docs/KEY_CEREMONY_RUNBOOK.md §6.1.
 # It includes every non-empty LCR public key injected into the gateway, so the
 # gateway's verifyEnvKeysMatchBlobActive startup check can match it byte-for-byte.
-# The Ruby process writes public keys to KEYS_JSON and returns only the witness
-# seed to this shell; neither is printed.
-witness_seed="$(ruby -ryaml -rjson - "$RUNTIME_VALUES" "$KEYS_JSON" <<'RUBY'
+# The Ruby process writes public keys and the witness seed directly into the
+# private workspace; it never returns the seed to this shell or stdout.
+ruby -ryaml -rjson - "$RUNTIME_VALUES" "$KEYS_JSON" "$SIGNING_SEED_FILE" <<'RUBY'
 values = YAML.load_file(ARGV.fetch(0))
 output = ARGV.fetch(1)
+seed_output = ARGV.fetch(2)
 gateway = values.fetch("gateway").fetch("secrets").fetch("values")
 
 public_key = lambda do |key|
@@ -77,9 +79,8 @@ keys = [
 File.open(output, File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(JSON.generate(keys)) }
 witness_seed = values.fetch("veil-witness").fetch("secrets").fetch("values").fetch("signingKey")
 abort "runtime values omit a valid witness signing seed" unless witness_seed.is_a?(String) && witness_seed.match?(/\A[0-9a-f]{64}\z/i)
-STDOUT.write(witness_seed)
+File.open(seed_output, File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(witness_seed) }
 RUBY
-)"
 
 issuer="$(ruby -ryaml -e 'print YAML.load_file(ARGV.fetch(0)).fetch("gateway").fetch("veilIssuer")' "$RUNTIME_VALUES")"
 [ -n "$issuer" ] || {
@@ -88,16 +89,16 @@ issuer="$(ruby -ryaml -e 'print YAML.load_file(ARGV.fetch(0)).fetch("gateway").f
 }
 
 # Exact supported interface from docs/KEY_CEREMONY_RUNBOOK.md §6.2. The seed
-# enters the disposable signing container only through sign-manifest's required
-# --witness-signing-key-hex flag; the only persisted result is the signed blob.
+# enters the disposable signing container only through a private read-only
+# mount. The literal in-container shell command reads it for sign-manifest's
+# required flag; the host Docker argv never contains the secret bytes.
 docker run --rm \
-  --entrypoint sign-manifest \
+  --entrypoint /bin/sh \
   -v "$KEYS_JSON:/keys.json:ro" \
+  -v "$SIGNING_SEED_FILE:/run/secrets/witness-signing-key-hex:ro" \
   ghcr.io/declade/dsa-veil-witness:0.5.4 \
-  --keys-json /keys.json \
-  --issuer "$issuer" \
-  --witness-signing-key-hex "$witness_seed" \
-  --witness-key-id witness_manifest_v1 \
+  -ec 'exec sign-manifest --keys-json /keys.json --issuer "$1" --witness-signing-key-hex "$(cat /run/secrets/witness-signing-key-hex)" --witness-key-id witness_manifest_v1' \
+  sign-manifest "$issuer" \
   > "$SIGNED_TMP"
 
 [ -s "$SIGNED_TMP" ] || {

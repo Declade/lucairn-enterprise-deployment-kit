@@ -1737,6 +1737,34 @@ control. It requires authenticated GHCR credentials in `DOCKER_CONFIG` and a
 functioning container runtime. It does not use a production or customer
 context.
 
+### Kind acceptance evidence ledger
+
+The terminal `PASS: coverage class=...` lines use these exact meanings. A
+workload-originated transport handshake executes from the named actual workload
+Pod with its read-only projected leaf and expected server SAN; it is not
+relabeled as an application request. The generic-probe positives retained by
+the harness are supporting generic-probe evidence for negative, fingerprint,
+and rotation logic—not the acceptance mechanism. The two application-layer
+calls below are representative only.
+
+| Mandatory edge | Acceptance class | Initiating projected leaf | Expected server SAN |
+| --- | --- | --- | --- |
+| Gateway → Audit | workload-originated transport handshake | Actual Gateway Pod / Gateway | `dsa-audit` |
+| Gateway → ID Bridge | workload-originated transport handshake | Actual Gateway Pod / Gateway | `dsa-id-bridge` |
+| Gateway → Sandbox A | workload-originated transport handshake; representative application-layer gateway gRPC identity | Actual Gateway Pod / Gateway | `dsa-sandbox-a` |
+| Gateway → Sandbox B | workload-originated transport handshake | Actual Gateway Pod / Gateway | `dsa-sandbox-b` |
+| Gateway → Sanitizer | workload-originated transport handshake; representative application-layer gateway→sanitizer HTTPS | Actual Gateway Pod / Gateway | `dsa-sanitizer` |
+| Gateway → Veil Witness `:50057` | workload-originated transport handshake | Actual Gateway Pod / Gateway | `dsa-veil-witness` |
+| Gateway → Veil Witness `:50058` | workload-originated transport handshake | Actual Gateway Pod / Gateway | `dsa-veil-witness` |
+| Audit → Veil Witness `:50057` | workload-originated transport handshake | Actual Audit Pod / Audit | `dsa-veil-witness` |
+| ID Bridge → Veil Witness `:50057` | workload-originated transport handshake | Actual ID Bridge Pod / ID Bridge | `dsa-veil-witness` |
+| Sandbox B → Veil Witness `:50057` | workload-originated transport handshake | Actual Sandbox B Pod / Sandbox B | `dsa-veil-witness` |
+
+Residual risk: a non-representative application client could be misconfigured
+despite transport success. Exhaustive per-edge application verification is
+deferred to a separately grilled and locked runtime workstream; this Helm-only
+package must not add per-edge application RPC code to simulate it.
+
 ### Rotation and incident replacement
 
 1. Issue a replacement leaf with the same required SAN and the same active CA.

@@ -153,9 +153,18 @@ the chart's supported paths are development and production only.
     {{- end -}}
   {{- end -}}
   {{- $secrets := default dict $mtls.secrets -}}
-  {{- range $identity := list "gateway" "audit" "idBridge" "sandboxA" "sanitizer" "sandboxB" "veilWitness" -}}
+  {{- $identities := list "gateway" "audit" "idBridge" "sandboxA" "sanitizer" "sandboxB" "veilWitness" -}}
+  {{- range $identity := $identities -}}
     {{- if eq (default "" (index $secrets $identity)) "" -}}
       {{- fail (printf "global.mtls.secrets.%s is required when global.mtls.enabled=true. Create the operator-owned Secret in the workload namespace; Helm will only reference it." $identity) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- range $index, $identity := $identities -}}
+    {{- $secretName := index $secrets $identity -}}
+    {{- range $other := (slice $identities (add1 $index)) -}}
+      {{- if eq $secretName (index $secrets $other) -}}
+        {{- fail (printf "global.mtls.secrets.%s and global.mtls.secrets.%s must name distinct operator-owned leaf Secrets when global.mtls.enabled=true; each workload identity requires its own leaf Secret." $identity $other) -}}
+      {{- end -}}
     {{- end -}}
   {{- end -}}
   {{- $gateway := default dict .Values.gateway -}}
