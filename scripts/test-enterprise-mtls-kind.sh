@@ -1112,12 +1112,12 @@ build_workload_witness_helper() {
 }
 
 resolve_projected_identity_workload() {
-  local identity="$1" namespace="$2" container="$3" expected_secret="$4"
+  local identity="$1" namespace="$2" pod_label="$3" container="$4" expected_secret="$5"
   local pods=() pod mount_volume mounted_read_only mounted_secret node runtime_machine
 
   while IFS= read -r pod; do
     [ -n "$pod" ] && pods+=("$pod")
-  done < <("${K[@]}" -n "$namespace" get pods -l "app.kubernetes.io/name=$container" \
+  done < <("${K[@]}" -n "$namespace" get pods -l "app.kubernetes.io/name=$pod_label" \
     -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
   if [ "${#pods[@]}" -ne 1 ]; then
     echo "FAIL: expected exactly one $identity workload Pod in $namespace, found ${#pods[@]}" >&2
@@ -1193,10 +1193,10 @@ install_projected_identity_helper() {
 }
 
 projected_identity_witness_handshake() {
-  local identity="$1" namespace="$2" container="$3" expected_secret="$4"
-  local address="$5" san="$6"
+  local identity="$1" namespace="$2" pod_label="$3" container="$4" expected_secret="$5"
+  local address="$6" san="$7"
 
-  if ! resolve_projected_identity_workload "$identity" "$namespace" "$container" "$expected_secret"; then
+  if ! resolve_projected_identity_workload "$identity" "$namespace" "$pod_label" "$container" "$expected_secret"; then
     return 1
   fi
   WORKLOAD_HELPER_BINARY="$(build_workload_witness_helper "$WORKLOAD_NODE_ARCH")" || return 1
@@ -1282,12 +1282,12 @@ gateway_workload_handshake veil-witness.dsa-witness.svc.cluster.local:50058 dsa-
 # the smallest mandatory pipeline choice because its rendered config points to
 # this witness address and it emits the inference claim.
 for identity_call in \
-  'audit dsa-audit audit lucairn-mtls-audit' \
-  'id-bridge dsa-bridge id-bridge lucairn-mtls-id-bridge' \
-  'sanitizer dsa-identity sanitizer lucairn-mtls-sanitizer' \
-  'sandbox-b dsa-ai sandbox-b lucairn-mtls-sandbox-b'; do
-  read -r identity namespace container secret <<<"$identity_call"
-  if ! projected_identity_witness_handshake "$identity" "$namespace" "$container" "$secret" \
+  'audit dsa-audit audit audit lucairn-mtls-audit' \
+  'id-bridge dsa-bridge id-bridge id-bridge lucairn-mtls-id-bridge' \
+  'sanitizer dsa-identity sandbox-a sanitizer lucairn-mtls-sanitizer' \
+  'sandbox-b dsa-ai sandbox-b sandbox-b lucairn-mtls-sandbox-b'; do
+  read -r identity namespace pod_label container secret <<<"$identity_call"
+  if ! projected_identity_witness_handshake "$identity" "$namespace" "$pod_label" "$container" "$secret" \
     veil-witness.dsa-witness.svc.cluster.local:50057 dsa-veil-witness; then
     exit 1
   fi
