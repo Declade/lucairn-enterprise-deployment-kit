@@ -182,10 +182,9 @@ grep -Fq -- '--wait-for-jobs' "$KIND_GATE" \
   exit 1
 }
 
-# The generic dsa-edge probe intentionally has no witness authorization. Both
-# witness proofs must run from the actual gateway Pod selected by the chart's
-# least-privilege policy; reject any generic-probe witness fallback or
-# NetworkPolicy manipulation that could mask a chart regression.
+# The generic dsa-edge probe must not stand in for a real workload Pod. Stock
+# Kind/kindnet does not enforce NetworkPolicy, so the witness proofs are only
+# projected-leaf transport evidence from the resolved workload containers.
 for witness_port in 50057 50058; do
   grep -Fq "gateway_witness_handshake veil-witness.dsa-witness.svc.cluster.local:${witness_port} dsa-veil-witness" "$KIND_GATE" \
     || { echo "Kind harness does not execute the actual gateway to witness :${witness_port} mTLS path" >&2; exit 1; }
@@ -194,8 +193,10 @@ for witness_port in 50057 50058; do
     exit 1
   fi
 done
-if grep -Eqi '(^|[^[:alpha:]])networkpolicy([^[:alpha:]]|$)' "$KIND_GATE"; then
-  echo "Kind harness must not install or bypass a NetworkPolicy for the gateway witness proof" >&2
+grep -Fq 'This harness uses stock Kind/kindnet. kindnet does not enforce NetworkPolicy,' "$KIND_GATE" \
+  || { echo "Kind harness does not disclose the stock kindnet NetworkPolicy limit" >&2; exit 1; }
+if grep -Fq 'Pod/network-policy/secret identity' "$KIND_GATE"; then
+  echo "Kind harness still claims projected-leaf evidence proves NetworkPolicy identity" >&2
   exit 1
 fi
 
@@ -228,6 +229,58 @@ ruby -e '
   %w[-verify_return_error -CAfile /certs/gateway/ca.crt -cert /certs/gateway/tls.crt -key /certs/gateway/tls.key].each do |argument|
     abort "wrong-SAN negative omits #{argument}" unless wrong_san.include?(argument)
   end
+' "$KIND_GATE"
+
+# Three distinct projected client leaves must make narrow exact-SAN TLS calls
+# from the real audit, ID Bridge, and smallest mandatory pipeline workload
+# (Sandbox B) Pods. The helper can only execute after the runtime Pod mount is
+# proven read-only and bound to that workload's own operator Secret; it must
+# never receive the generic probe or gateway leaf.
+ruby -e '
+  source = File.read(ARGV.fetch(0))
+  required = {
+    "audit" => ["dsa-audit", "audit", "lucairn-mtls-audit"],
+    "id-bridge" => ["dsa-bridge", "id-bridge", "lucairn-mtls-id-bridge"],
+    "sandbox-b" => ["dsa-ai", "sandbox-b", "lucairn-mtls-sandbox-b"]
+  }
+  required.each do |identity, (namespace, container, secret)|
+    call = [identity, namespace, container, secret].join(" ")
+    abort "Kind gate misses projected #{identity} workload roster" unless source.include?(call)
+    pass = %q(echo "PASS: projected workload identity $identity verified exact-SAN TLS to veil-witness:50057")
+    abort "Kind gate misses the stable projected workload identity PASS line" unless source.include?(pass)
+  end
+  abort "Kind gate does not identify Sandbox B as the pipeline workload" unless source.include?("Sandbox B is\n# the smallest mandatory pipeline choice")
+  abort "Kind gate misses the three :50057 exact-SAN projected workload calls" unless source.include?("veil-witness.dsa-witness.svc.cluster.local:50057 dsa-veil-witness")
+  resolve = source[/^resolve_projected_identity_workload\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind gate misses projected workload resolver")
+  [
+    "expected exactly one $identity workload Pod",
+    "expected exactly one $container container",
+    "mountPath \\\"$WORKLOAD_MTLS_DIR\\\"",
+    "mounted_read_only",
+    "mounted_secret",
+    "enterprise-mtls",
+    "would not use its own read-only projected mTLS Secret",
+    "get node \"$node\"",
+    "exec \"$WORKLOAD_POD\" -c \"$container\" -- uname -m"
+  ].each { |needle| abort "projected workload resolver misses: #{needle}" unless resolve.include?(needle) }
+  runner = source[/^projected_identity_witness_handshake\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind gate misses projected workload handshake runner")
+  [
+    "resolve_projected_identity_workload \"$identity\" \"$namespace\" \"$container\" \"$expected_secret\"",
+    "build_workload_witness_helper \"$WORKLOAD_NODE_ARCH\"",
+    "install_projected_identity_helper",
+    "\"$WORKLOAD_HELPER_PATH\" tls-handshake \"$address\" \"$san\"",
+    "\"$WORKLOAD_MTLS_DIR/ca.crt\" \"$WORKLOAD_MTLS_DIR/tls.crt\" \"$WORKLOAD_MTLS_DIR/tls.key\"",
+    "projected_identity_helper_cleanup"
+  ].each { |needle| abort "projected workload handshake runner misses: #{needle}" unless runner.include?(needle) }
+  abort "projected workload helper reuses the gateway leaf" if runner.include?("/certs/gateway") || resolve.include?("lucairn-mtls-gateway")
+  installer = source[/^install_projected_identity_helper\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind gate misses projected workload helper installer")
+  ["WORKLOAD_HELPER_DIR=\"/dev/shm\"", "test -d \"$1\" && test -w \"$1\"", "cat > \"$1/$2\"", "chmod 0700 \"$1/$2\""].each do |needle|
+    abort "projected workload helper installer misses bounded safe execution: #{needle}" unless source.include?(needle)
+  end
+  abort "projected workload helper installer writes into a Secret path" if installer.include?("/var/run/lucairn/mtls")
+  calls = source.index("for identity_call in") || abort("Kind gate does not execute projected workload calls")
+  pass = source.index("ENTERPRISE_HELM_MTLS_KIND: PASS") || abort("Kind gate misses PASS terminator")
+  abort "projected workload calls are outside the real Kind gate" unless calls < pass
 ' "$KIND_GATE"
 
 # The two witness proofs and the gateway-local application health evidence
@@ -263,7 +316,7 @@ ruby -ropen3 -e '
     "gateway_witness_handshake veil-witness.dsa-witness.svc.cluster.local:50057 dsa-veil-witness",
     "gateway_witness_handshake veil-witness.dsa-witness.svc.cluster.local:50058 dsa-veil-witness",
     "gateway evidence helper deleted after witness and local health battery",
-    "they do not claim to invoke\n# either gateway application"
+    "actual workload Pod with the projected Secret belonging to that workload;\n# they do not claim\n# to invoke either gateway application"
   ]
   required.each { |needle| abort "gateway witness contract missing: #{needle}" unless source.include?(needle) }
   abort "generic witness probe call remains" if source.match?(/^positive_handshake veil-witness\./)

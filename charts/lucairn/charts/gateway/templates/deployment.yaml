@@ -1,6 +1,7 @@
 {{- if and .Values.readiness.required (not .Values.readiness.existingBundleSecret) -}}
 {{- fail "gateway.readiness.required=true requires gateway.readiness.existingBundleSecret" -}}
 {{- end -}}
+{{- $mtlsEnabled := and (kindIs "bool" .Values.global.mtls.enabled) .Values.global.mtls.enabled -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -82,7 +83,7 @@ spec:
             - secretRef:
                 name: {{ .Chart.Name }}-credentials
           env:
-            {{- if .Values.global.mtls.enabled }}
+            {{- if $mtlsEnabled }}
             # :50058 is a deliberately separate runtime contract. It uses the
             # same operator-owned gateway leaf as the DSA mesh, but the witness
             # client reads the WITNESS_MTLS_* environment family.
@@ -158,13 +159,13 @@ spec:
               readOnly: true
             {{- end }}
             {{- if .Values.witnessMtls.clientSecret }}
-            {{- if not .Values.global.mtls.enabled }}
+            {{- if not $mtlsEnabled }}
             - name: witness-mtls-certs
               mountPath: {{ .Values.witnessMtls.mountPath | quote }}
               readOnly: true
             {{- end }}
             {{- end }}
-            {{- if .Values.global.mtls.enabled }}
+            {{- if $mtlsEnabled }}
             - name: enterprise-mtls
               mountPath: {{ .Values.global.mtls.mountPath | quote }}
               readOnly: true
@@ -240,13 +241,13 @@ spec:
             claimName: {{ .Chart.Name }}-keystore
         {{- end }}
         {{- if .Values.witnessMtls.clientSecret }}
-        {{- if not .Values.global.mtls.enabled }}
+        {{- if not $mtlsEnabled }}
         - name: witness-mtls-certs
           secret:
             secretName: {{ .Values.witnessMtls.clientSecret }}
         {{- end }}
         {{- end }}
-        {{- if .Values.global.mtls.enabled }}
+        {{- if $mtlsEnabled }}
         - name: enterprise-mtls
           secret:
             secretName: {{ .Values.global.mtls.secrets.gateway }}

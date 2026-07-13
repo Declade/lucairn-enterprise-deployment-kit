@@ -1,3 +1,4 @@
+{{- $mtlsEnabled := and (kindIs "bool" .Values.global.mtls.enabled) .Values.global.mtls.enabled -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -11,7 +12,7 @@ data:
   HEALTH_ADDR: ":{{ .Values.service.healthPort }}"
   LCR_ENABLED: {{ .Values.veilEnabled | quote }}
   LCR_WITNESS_ADDR: {{ .Values.veilWitnessAddr | quote }}
-  {{- if .Values.global.mtls.enabled }}
+  {{- if $mtlsEnabled }}
   GRPC_TLS_ENABLED: "true"
   DSA_MTLS_CA_BUNDLE_PATH: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.caBundleKey }}"
   DSA_MTLS_SERVER_CERT_PATH: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.certKey }}"

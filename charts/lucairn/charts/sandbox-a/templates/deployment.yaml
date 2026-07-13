@@ -1,3 +1,4 @@
+{{- $mtlsEnabled := and (kindIs "bool" .Values.global.mtls.enabled) .Values.global.mtls.enabled -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -72,7 +73,7 @@ spec:
             - "-addr=:{{ .Values.service.grpcPort }}"
             - "-health-addr=:{{ .Values.service.healthPort }}"
           env:
-            {{- if .Values.global.mtls.enabled }}
+            {{- if $mtlsEnabled }}
             - name: DSA_MTLS_CA_BUNDLE_PATH
               value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.caBundleKey }}"
             - name: DSA_MTLS_SERVER_CERT_PATH
@@ -161,7 +162,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
-          {{- if .Values.global.mtls.enabled }}
+          {{- if $mtlsEnabled }}
           volumeMounts:
             - name: enterprise-mtls-sandbox-a
               mountPath: {{ .Values.global.mtls.mountPath | quote }}
@@ -195,7 +196,7 @@ spec:
               containerPort: 8086
               protocol: TCP
           env:
-            {{- if .Values.global.mtls.enabled }}
+            {{- if $mtlsEnabled }}
             - name: DSA_MTLS_CA_BUNDLE_PATH
               value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.caBundleKey }}"
             - name: DSA_MTLS_SERVER_CERT_PATH
@@ -379,7 +380,7 @@ spec:
               mountPath: /tmp
             - name: sanitizer-home
               mountPath: /tmp/home
-            {{- if .Values.global.mtls.enabled }}
+            {{- if $mtlsEnabled }}
             - name: enterprise-mtls-sanitizer
               mountPath: {{ .Values.global.mtls.mountPath | quote }}
               readOnly: true
@@ -388,7 +389,7 @@ spec:
               readOnly: true
             {{- end }}
           startupProbe:
-            {{- if .Values.global.mtls.enabled }}
+            {{- if $mtlsEnabled }}
             exec:
               command:
                 - python3
@@ -401,12 +402,12 @@ spec:
             {{- end }}
             initialDelaySeconds: 10
             periodSeconds: 5
-            {{- if .Values.global.mtls.enabled }}
+            {{- if $mtlsEnabled }}
             timeoutSeconds: 5
             {{- end }}
             failureThreshold: 60
           livenessProbe:
-            {{- if .Values.global.mtls.enabled }}
+            {{- if $mtlsEnabled }}
             exec:
               command:
                 - python3
@@ -418,7 +419,7 @@ spec:
               port: sanitizer
             {{- end }}
             periodSeconds: 10
-            {{- if .Values.global.mtls.enabled }}
+            {{- if $mtlsEnabled }}
             timeoutSeconds: 5
             {{- end }}
           readinessProbe:
@@ -427,7 +428,7 @@ spec:
             # pipeline loaded — not merely that the HTTP listener is up.
             # /healthz is connectivity-only and would flip the sidecar
             # Ready while it still 503s real /v1/sanitize traffic (HA-09).
-            {{- if .Values.global.mtls.enabled }}
+            {{- if $mtlsEnabled }}
             exec:
               command:
                 - python3
@@ -439,7 +440,7 @@ spec:
               port: sanitizer
             {{- end }}
             periodSeconds: 10
-            {{- if .Values.global.mtls.enabled }}
+            {{- if $mtlsEnabled }}
             timeoutSeconds: 5
             {{- end }}
           resources:
@@ -458,7 +459,7 @@ spec:
         - name: sanitizer-home
           emptyDir:
             sizeLimit: 500Mi
-        {{- if .Values.global.mtls.enabled }}
+        {{- if $mtlsEnabled }}
         - name: sanitizer-mtls-probe
           configMap:
             name: sanitizer-mtls-probe

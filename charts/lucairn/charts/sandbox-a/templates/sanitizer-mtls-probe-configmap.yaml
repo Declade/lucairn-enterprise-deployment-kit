@@ -1,4 +1,5 @@
-{{- if .Values.global.mtls.enabled }}
+{{- $mtlsEnabled := and (kindIs "bool" .Values.global.mtls.enabled) .Values.global.mtls.enabled -}}
+{{- if $mtlsEnabled }}
 # Kubelet HTTP probes cannot present the operator-owned client leaf required by
 # the sanitizer's mTLS listener. Keep this probe helper separate from the
 # sanitizer configuration so the non-secret executable contract is explicit.

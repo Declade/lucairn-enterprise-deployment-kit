@@ -50,8 +50,23 @@ Helm cannot inspect Secret data during an offline render; the projected
 the process starts, and `lucairn doctor --values` checks live Secret inventory.
 */ -}}
 {{- define "validators.enterpriseFullMeshMTLS" -}}
-{{- $global := (default dict .Values.global) -}}
-{{- $mtls := (default dict $global.mtls) -}}
+{{- $globalRaw := .Values.global -}}
+{{- if not (kindIs "map" $globalRaw) -}}
+  {{- fail "global must be a YAML mapping so global.mtls.enabled can be validated." -}}
+{{- end -}}
+{{- $global := $globalRaw -}}
+{{- $mtlsRaw := $global.mtls -}}
+{{- if not (kindIs "map" $mtlsRaw) -}}
+  {{- fail "global.mtls must be a YAML mapping with enabled set to the boolean true or false." -}}
+{{- end -}}
+{{- $mtls := $mtlsRaw -}}
+{{- if not (hasKey $mtls "enabled") -}}
+  {{- fail "global.mtls.enabled must be a YAML boolean (true or false); strings, numbers, null, maps, and lists are refused." -}}
+{{- end -}}
+{{- $mtlsEnabled := index $mtls "enabled" -}}
+{{- if not (kindIs "bool" $mtlsEnabled) -}}
+  {{- fail "global.mtls.enabled must be a YAML boolean (true or false); strings, numbers, null, maps, and lists are refused." -}}
+{{- end -}}
 {{- $dsaEnv := $global.dsaEnv -}}
 {{- /*
 Fail closed before rendering any workload ConfigMap. The DSA runtime only
@@ -83,7 +98,7 @@ the chart's supported paths are development and production only.
       (dict "path" "certification.enabled" "enabled" (default false (default dict .Values.certification).enabled))
       (dict "path" "dashboard.enabled" "enabled" (default false (default dict .Values.dashboard).enabled)) -}}
 {{- if $isProduction -}}
-  {{- if not $mtls.enabled -}}
+  {{- if not $mtlsEnabled -}}
     {{- fail "global.dsaEnv=production requires global.mtls.enabled=true. The supported production topology uses verified DSA_MTLS_* transport only; legacy child grpcTlsEnabled values cannot enable production." -}}
   {{- end -}}
   {{- range $profile := $mandatoryProfiles -}}
@@ -119,7 +134,7 @@ the chart's supported paths are development and production only.
     {{- fail (printf "gateway.veilWitnessSignedManifestPath (%q) must equal the witnessSignedManifest projected file (%q) when global.dsaEnv=production and gateway.veilEnabled=true." (default "" $gateway.veilWitnessSignedManifestPath) $projectedManifestPath) -}}
   {{- end -}}
 {{- end -}}
-{{- if $mtls.enabled -}}
+{{- if $mtlsEnabled -}}
   {{- $mountPath := default "" $mtls.mountPath -}}
   {{- if or (eq $mountPath "") (not (hasPrefix "/" $mountPath)) -}}
     {{- fail "global.mtls.mountPath must be an absolute, non-empty container path when global.mtls.enabled=true." -}}
