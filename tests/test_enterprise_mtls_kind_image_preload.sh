@@ -117,10 +117,19 @@ case "${1:-}:${2:-}" in
         ghcr.io/declade/dsa-veil-witness:0.5.4) digest='sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523' ;;
         migrate/migrate:v4.17.0) digest='sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa' ;;
         postgres:16-alpine) digest='sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777' ;;
+        sha256:1111111111111111111111111111111111111111111111111111111111111111) digest='sha256:f73e55e0a3d3445d3242d2a73aff7086427da50cbcd2e47e3c8cd4f0fad2bece' ;;
+        sha256:2222222222222222222222222222222222222222222222222222222222222222) digest='sha256:5204d30b1cd4ae12ec2faf47eaf7a4f9fdfaf5137c37cb625752f96452eea9df' ;;
+        sha256:3333333333333333333333333333333333333333333333333333333333333333) digest='sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523' ;;
+        sha256:4444444444444444444444444444444444444444444444444444444444444444) digest='sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa' ;;
+        sha256:5555555555555555555555555555555555555555555555555555555555555555) digest='sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777' ;;
+        sha256:6666666666666666666666666666666666666666666666666666666666666666) digest='sha256:0000000000000000000000000000000000000000000000000000000000000000' ;;
         *) exit 92 ;;
       esac
       if [ "${PRELOAD_DIGEST_MISMATCH:-}" = "$5" ]; then
         digest='sha256:0000000000000000000000000000000000000000000000000000000000000000'
+      fi
+      if [ "${PRELOAD_RETARGET_TAG_BEFORE_ID:-}" = "$5" ]; then
+        : > "$PRELOAD_INITIAL_TAG_DIGEST_VALIDATED"
       fi
       printf '%s@%s\n' "${5%%:*}" "$digest"
       printf 'docker image inspect digest %s\n' "$5" >> "$PRELOAD_CALLS"
@@ -133,6 +142,11 @@ case "${1:-}:${2:-}" in
         postgres:16-alpine) image_id='sha256:5555555555555555555555555555555555555555555555555555555555555555' ;;
         *) exit 92 ;;
       esac
+      if [ "${PRELOAD_RETARGET_TAG_BEFORE_ID:-}" = "$5" ]; then
+        [ -e "$PRELOAD_INITIAL_TAG_DIGEST_VALIDATED" ] || exit 101
+        : > "$PRELOAD_TAG_RETARGETED_BEFORE_ID"
+        image_id='sha256:6666666666666666666666666666666666666666666666666666666666666666'
+      fi
       if [ "${PRELOAD_SUBSTITUTE_TAGS_AFTER_INSPECT:-}" = "1" ]; then
         : > "$PRELOAD_TAGS_SUBSTITUTED"
       fi
@@ -247,6 +261,37 @@ if grep -Eq 'docker image save|kind load image-archive' "$MISMATCH_CALLS"; then
 fi
 [ ! -e "$MISMATCH_ARCHIVE_DIR" ] \
   || { echo "Kind image preloader left an archive directory after digest mismatch" >&2; exit 1; }
+
+# A runtime tag can move after its initial RepoDigests validation and before
+# Docker returns .Id. The captured replacement ID must be checked directly,
+# rejecting the changed content before any archive is saved or imported.
+PRE_ID_RETARGET_CALLS="$TMPDIR/pre-id-retarget-calls"
+PRE_ID_RETARGET_ARCHIVE_DIR="$TMPDIR/pre-id-retarget-archives"
+PRE_ID_INITIAL_TAG_DIGEST_VALIDATED="$TMPDIR/pre-id-initial-tag-digest-validated"
+PRE_ID_TAG_RETARGETED="$TMPDIR/pre-id-tag-retargeted"
+if PATH="$FAKE_BIN:$PATH" PRELOAD_CALLS="$PRE_ID_RETARGET_CALLS" \
+  PRELOAD_ARCHIVE_DIR="$PRE_ID_RETARGET_ARCHIVE_DIR" PRELOAD_ARCHIVES_DURING_LOAD="$TMPDIR/pre-id-retarget-loads" \
+  PRELOAD_RETARGET_TAG_BEFORE_ID='ghcr.io/declade/dsa-gateway:0.5.4' \
+  PRELOAD_INITIAL_TAG_DIGEST_VALIDATED="$PRE_ID_INITIAL_TAG_DIGEST_VALIDATED" \
+  PRELOAD_TAG_RETARGETED_BEFORE_ID="$PRE_ID_TAG_RETARGETED" "$PRELOAD" \
+  --cluster preload-test \
+  --rendered-manifest "$MANIFEST" \
+  --image-list "$TMPDIR/pre-id-retarget-images.txt" \
+  --archive-dir "$PRE_ID_RETARGET_ARCHIVE_DIR" \
+  >"$TMPDIR/pre-id-retarget.stdout" 2>"$TMPDIR/pre-id-retarget.stderr"; then
+  echo "Kind image preloader accepted a replacement ID after tag validation" >&2
+  exit 1
+fi
+[ -e "$PRE_ID_INITIAL_TAG_DIGEST_VALIDATED" ] && [ -e "$PRE_ID_TAG_RETARGETED" ] \
+  || { echo "Kind image preloader pre-ID retarget regression did not retarget after tag validation" >&2; exit 1; }
+grep -Fq 'digest mismatch or unresolved content: sha256:6666666666666666666666666666666666666666666666666666666666666666' "$TMPDIR/pre-id-retarget.stderr" \
+  || { cat "$TMPDIR/pre-id-retarget.stderr" >&2; echo "Kind image preloader did not reject the replacement immutable ID" >&2; exit 1; }
+if grep -Eq 'docker image save|kind load image-archive' "$PRE_ID_RETARGET_CALLS"; then
+  echo "Kind image preloader saved or imported after a pre-ID tag re-target" >&2
+  exit 1
+fi
+[ ! -e "$PRE_ID_RETARGET_ARCHIVE_DIR" ] \
+  || { echo "Kind image preloader left an archive directory after pre-ID tag re-target" >&2; exit 1; }
 
 if ! PATH="$FAKE_BIN:$PATH" PRELOAD_CALLS="$CALLS" \
   PRELOAD_ARCHIVE_DIR="$ARCHIVE_DIR" PRELOAD_ARCHIVES_DURING_LOAD="$ARCHIVES_DURING_LOAD" "$PRELOAD" \

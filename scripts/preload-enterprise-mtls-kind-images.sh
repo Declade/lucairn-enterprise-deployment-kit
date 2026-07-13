@@ -282,6 +282,7 @@ EOF
     echo "FAIL: rendered image has no immutable local image ID: $image" >&2
     exit 1
   fi
+  require_recorded_digest "$local_image_id" "$recorded_digest"
   validated_images+=("$image")
   validated_image_ids+=("$local_image_id")
 done < "$IMAGE_LIST"
