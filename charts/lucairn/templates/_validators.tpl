@@ -194,21 +194,21 @@ the chart's supported paths are development and production only.
       {{- fail (printf "%s must be a YAML mapping when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history; put them in the selected external backend instead." $valuesPath) -}}
     {{- end -}}
     {{- range $field, $value := $inlineValues -}}
-      {{- if not (empty $value) -}}
-        {{- fail (printf "%s.%s must be empty when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history; put them in the selected external backend instead." $valuesPath $field) -}}
+      {{- if or (not (kindIs "string" $value)) (ne $value "") -}}
+        {{- fail (printf "%s.%s must be exactly the empty string when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history; put them in the selected external backend instead." $valuesPath $field) -}}
       {{- end -}}
     {{- end -}}
   {{- end -}}
-  {{- range $field := list "dsaServiceToken" "dsaLicenseKey" "lucairnLicenseKey" "lucairnLicensePublicKey" -}}
+  {{- range $field := list "dsaServiceToken" "serviceToken" "dsaLicenseKey" "lucairnLicenseKey" "lucairnLicensePublicKey" -}}
     {{- $value := index $global $field -}}
-    {{- if not (empty $value) -}}
-      {{- fail (printf "global.%s must be empty when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history; put them in the selected external backend instead." $field) -}}
+    {{- if or (not (kindIs "string" $value)) (ne $value "") -}}
+      {{- fail (printf "global.%s must be exactly the empty string when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history; put them in the selected external backend instead." $field) -}}
     {{- end -}}
   {{- end -}}
   {{- $sandboxB := default dict (index .Values "sandbox-b") -}}
   {{- $sandboxBRedis := default dict $sandboxB.redis -}}
-  {{- if not (empty $sandboxBRedis.password) -}}
-    {{- fail "sandbox-b.redis.password must be empty when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history; put the Redis password in the sandbox-b external backend instead." -}}
+  {{- if or (not (kindIs "string" $sandboxBRedis.password)) (ne $sandboxBRedis.password "") -}}
+    {{- fail "sandbox-b.redis.password must be exactly the empty string when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history; put the Redis password in the sandbox-b external backend instead." -}}
   {{- end -}}
   {{- range $profile := $optionalProfiles -}}
     {{- if $profile.enabled -}}

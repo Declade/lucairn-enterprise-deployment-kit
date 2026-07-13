@@ -22,6 +22,7 @@ global:
   # fetched only by the six ExternalSecrets; Helm would retain aliases in its
   # release values/history.
   dsaServiceToken: ""
+  serviceToken: ""
   dsaLicenseKey: ""
   lucairnLicenseKey: ""
   lucairnLicensePublicKey: ""
@@ -41,10 +42,13 @@ global:
   # Helm. No Docker config is passed to Helm.
   imagePullSecrets: []
   skipPullSecretGuard: true
-  # Production: enable Cilium DNS restriction and Hubble audit.
-  # Requires Cilium CNI installed on the cluster.
-  dnsRestriction: true
-  nodeIsolation: true
+  # Generic production supports Calico or Cilium: ordinary Kubernetes
+  # NetworkPolicies remain mandatory and are enforced by either CNI. Cilium
+  # DNS CRDs are an additional opt-in only after their CRD is installed.
+  dnsRestriction: false
+  # Enable only from a site overlay after distinct, labeled and tainted
+  # identity/AI node pools are provisioned.
+  nodeIsolation: false
   postgresqlSslmode: require
   wireguardEncryption: true
   # Production environment flag — enables dev-secret rejection guards
