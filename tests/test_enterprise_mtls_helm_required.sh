@@ -35,7 +35,10 @@ assert_helm_required make-test-prerequisite make -s -C "$ROOT" test-enterprise-m
 # `test-enterprise-mtls-helm` is a direct prerequisite of `test`, so the
 # second failure is the bounded proof that `make test` fails before later
 # tests can turn an unavailable Helm CLI into a successful suite.
-if ! make -n -C "$ROOT" test | head -n 1 | grep -Fxq 'bash tests/test_enterprise_mtls_helm.sh'; then
+make_test_output="$TMPDIR/make-test-dry-run.out"
+make -n -C "$ROOT" test >"$make_test_output"
+first_make_test_line="$(sed -n '1p' "$make_test_output")"
+if [[ "$first_make_test_line" != 'bash tests/test_enterprise_mtls_helm.sh' ]]; then
   echo "make test no longer starts with the mandatory Helm contract prerequisite" >&2
   exit 1
 fi
