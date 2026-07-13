@@ -31,11 +31,16 @@ STATE_DIR="$(mktemp -d /tmp/lucairn-enterprise-mtls-kind.XXXXXX)"
 CLUSTER="lucairn-enterprise-mtls-${USER:-local}-$$"
 KUBECONFIG="$STATE_DIR/kubeconfig"
 KIND_CONFIG="$STATE_DIR/kind.yaml"
-RUNTIME_VALUES="$STATE_DIR/runtime-values.yaml"
+PUBLIC_OVERLAY="$STATE_DIR/public-overlay.yaml"
+APPLICATION_SECRETS_DIR="$STATE_DIR/application-secrets"
 WITNESS_SIGNED_MANIFEST="$STATE_DIR/witness-signed-manifest.json"
 RENDERED_MANIFEST="$STATE_DIR/rendered-topology.yaml"
 PRELOAD_IMAGES="$STATE_DIR/rendered-topology-images.txt"
 PRELOAD_ARCHIVE_DIR="$STATE_DIR/preload-archives"
+HELM_RELEASE_VALUES="$STATE_DIR/helm-release-values.yaml"
+HELM_RELEASE_MANIFEST="$STATE_DIR/helm-release-manifest.yaml"
+HELM_RELEASE_ALL="$STATE_DIR/helm-release-all.txt"
+EXTERNAL_SECRETS_CRDS="$ROOT/charts/lucairn/tests/fixtures/kind-external-secrets-crds.yaml"
 PROBE_IMAGE=""
 PROBE_ARCHIVE="$STATE_DIR/enterprise-mtls-probe.tar"
 CLUSTER_CREATED=0
@@ -119,36 +124,40 @@ for namespace in dsa-edge dsa-audit dsa-bridge dsa-identity dsa-ai dsa-witness; 
     meta.helm.sh/release-namespace=lucairn --overwrite
 done
 
+# Admit only the two API types rendered by the production profile. This is an
+# API-admission fixture, not an External Secrets Operator installation: wait
+# only for CRD Established and never inspect custom-resource status.
+"${K[@]}" apply -f "$EXTERNAL_SECRETS_CRDS"
+for crd in externalsecrets.external-secrets.io clustersecretstores.external-secrets.io; do
+  "${K[@]}" wait --for=condition=Established "crd/$crd" --timeout=60s
+done
+
 bash "$ROOT/scripts/enterprise-mtls-fixture-certs.sh" "$STATE_DIR/certs"
-# Generate the complete disposable customer-values document in the
-# harness-owned STATE_DIR; it includes the static non-secret mTLS/topology
-# contract plus fresh application values and is deliberately silent.
-bash "$ROOT/scripts/generate-enterprise-mtls-kind-runtime-values.sh" "$RUNTIME_VALUES"
+# Generate Helm/doctor-safe Kind exceptions plus six private application Secret
+# source files. The public overlay remains the only harness-generated YAML
+# passed to doctor or Helm.
+bash "$ROOT/scripts/generate-enterprise-mtls-kind-runtime-values.sh" \
+  "$PUBLIC_OVERLAY" "$APPLICATION_SECRETS_DIR"
 # The production gateway verifies this blob before opening its listeners. Build
-# the signed output from the same coherent disposable key set, then project it
-# through a dedicated operator-style Secret before Helm is invoked.
+# the signed output from the coherent public roster plus the private witness
+# source file, then project it through a dedicated operator-style Secret before
+# Helm is invoked.
 bash "$ROOT/scripts/generate-enterprise-mtls-kind-signed-manifest.sh" \
-  "$RUNTIME_VALUES" "$WITNESS_SIGNED_MANIFEST"
+  "$PUBLIC_OVERLAY" "$APPLICATION_SECRETS_DIR" "$WITNESS_SIGNED_MANIFEST"
 "$ROOT/bin/lucairn" doctor \
-  --values "$RUNTIME_VALUES" \
+  --values "$ROOT/charts/lucairn/values-prod.yaml" \
+  --values "$PUBLIC_OVERLAY" \
   --offline
 
 # Render with the exact values passed to the subsequent install. The manifest
-# remains harness-private because it contains disposable application values.
-# The image list is derived only from workload PodSpecs and loaded into every
-# node before Helm creates any workload; no registry credential is supplied to
-# Helm because Kind already has every rendered product image preloaded.
+# contains only the public overlay and production topology. The image list is
+# derived only from workload PodSpecs and loaded into every node before Helm
+# creates any workload; no registry credential is supplied to Helm because Kind
+# already has every rendered product image preloaded.
 HELM_RUNTIME_ARGS=(
   -f "$ROOT/charts/lucairn/values-prod.yaml"
-  -f "$RUNTIME_VALUES"
+  -f "$PUBLIC_OVERLAY"
   --set global.skipPullSecretGuard=true
-  --set global.secrets.backend=k8s-native
-  --set gateway.secrets.backend=k8s-native
-  --set audit.secrets.backend=k8s-native
-  --set id-bridge.secrets.backend=k8s-native
-  --set sandbox-a.secrets.backend=k8s-native
-  --set sandbox-b.secrets.backend=k8s-native
-  --set veil-witness.secrets.backend=k8s-native
   --set global.dnsRestriction=false
   --set global.wireguardEncryption=false
   --set global.postgresqlSslmode=disable
@@ -190,6 +199,23 @@ create_leaf_secret dsa-identity lucairn-mtls-sanitizer sanitizer
 create_leaf_secret dsa-ai lucairn-mtls-sandbox-b sandbox-b
 create_leaf_secret dsa-witness lucairn-mtls-veil-witness veil-witness
 
+# Target Secrets are operator-style application inputs. Only an env-file path
+# is an argv argument; kubectl consumes values from the 0600 file and the
+# generated Secret YAML is streamed directly to the API, never read/logged.
+create_application_secret() {
+  local namespace="$1" service="$2"
+  "${K[@]}" -n "$namespace" create secret generic "${service}-credentials" \
+    --from-env-file="$APPLICATION_SECRETS_DIR/${service}.env" \
+    --dry-run=client -o yaml | "${K[@]}" apply -f -
+}
+
+create_application_secret dsa-edge gateway
+create_application_secret dsa-audit audit
+create_application_secret dsa-bridge id-bridge
+create_application_secret dsa-identity sandbox-a
+create_application_secret dsa-ai sandbox-b
+create_application_secret dsa-witness veil-witness
+
 # The representative server-material negatives all target the same actual
 # gateway→Sandbox-A workload edge. Keep the gateway trust bundle unchanged so
 # each failure has one cause: wrong issuer, wrong server identity, or expiry.
@@ -205,21 +231,34 @@ cp "$STATE_DIR/certs/expired-sandbox-a/tls.key" "$INVALID_SERVER_DIR/expired/tls
   --from-file=witness-signed-manifest.json="$WITNESS_SIGNED_MANIFEST" \
   --dry-run=client -o yaml | "${K[@]}" apply -f -
 
-# The Kind harness uses production values with these explicit test-environment
-# exceptions: stock Kind has neither Cilium (DNS restriction and WireGuard) nor
-# the bundled-Postgres TLS setup, and it has no External Secrets Operator CRDs.
-# Therefore non-PKI application secrets use k8s-native here. The seven mTLS
-# identity Secrets remain pre-created by this harness and operator/PKI-owned.
-# The generated document also carries the static suppression of non-contract
-# Admin, observability, optional profile, and Sandbox-B Ollama/model-pull
-# workloads. Bundled service databases and caches remain enabled because the
-# mandatory services need them.
-# The private-registry guard remains fail-closed and is satisfied with the
-# caller's authenticated Docker config.
+# The Kind harness keeps the production Vault backend and all six rendered
+# ExternalSecrets. Stock Kind receives only CNI/Postgres TLS/test-provider
+# exceptions through the public overlay; pre-created target Secrets make the
+# mandatory workloads runnable without an ESO controller. The seven mTLS
+# identity Secrets remain independently operator/PKI-owned.
 helm upgrade --install lucairn "$ROOT/charts/lucairn" \
   "${HELM_RUNTIME_ARGS[@]}" \
   --create-namespace --kubeconfig "$KUBECONFIG" \
   --wait --wait-for-jobs --timeout 12m
+
+# Helm release state is a custody boundary too. Keep all captures in the owned
+# private state directory and reject an exact private source value in values,
+# manifest, or `get all` output before accepting runtime evidence.
+helm get values lucairn --namespace lucairn --kubeconfig "$KUBECONFIG" -o yaml > "$HELM_RELEASE_VALUES"
+helm get manifest lucairn --namespace lucairn --kubeconfig "$KUBECONFIG" > "$HELM_RELEASE_MANIFEST"
+helm get all lucairn --namespace lucairn --kubeconfig "$KUBECONFIG" > "$HELM_RELEASE_ALL"
+bash "$ROOT/scripts/assert-enterprise-mtls-release-custody.sh" \
+  "$APPLICATION_SECRETS_DIR" "$HELM_RELEASE_VALUES" "$HELM_RELEASE_MANIFEST" "$HELM_RELEASE_ALL"
+ruby -ryaml -e '
+  documents = YAML.load_stream(File.read(ARGV.fetch(0))).compact
+  external = documents.map { |doc| doc.dig("metadata", "name") if doc["kind"] == "ExternalSecret" }.compact.sort
+  expected = %w[gateway-credentials audit-credentials id-bridge-credentials sandbox-a-credentials sandbox-b-credentials veil-witness-credentials].sort
+  abort "release manifest ExternalSecret contract drift: #{external.join(", ")}" unless external == expected
+  stores = documents.map { |doc| doc.dig("metadata", "name") if doc["kind"] == "ClusterSecretStore" }.compact
+  abort "release manifest ClusterSecretStore contract drift" unless stores == ["dsa-secret-store"]
+  secrets = documents.select { |doc| doc["kind"] == "Secret" }
+  abort "release manifest contains Helm-owned Secret objects" unless secrets.empty?
+' "$HELM_RELEASE_MANIFEST"
 
 for deployment in \
   dsa-edge/gateway dsa-audit/audit dsa-bridge/id-bridge \
@@ -1410,4 +1449,5 @@ echo "PASS: coverage class=workload-originated transport handshake; origin=actua
 echo "PASS: coverage class=workload-originated transport handshake; projected-leaves=audit,id-bridge,sanitizer,sandbox-b; edges=audit-to-witness,id-bridge-to-witness,sanitizer-to-witness,sandbox-b-to-witness; server-SAN=dsa-veil-witness"
 echo "PASS: coverage class=application-layer call; gateway gRPC identity; expected-server-SAN=dsa-sandbox-a"
 echo "PASS: coverage class=application-layer call; gateway-to-sanitizer HTTPS; expected-server-SAN=dsa-sanitizer"
+echo "PASS: production ExternalSecret/ClusterSecretStore API admission plus workload/application/mTLS behavior using pre-created target Secrets; does not prove live ESO reconciliation"
 echo "ENTERPRISE_HELM_MTLS_KIND: PASS"

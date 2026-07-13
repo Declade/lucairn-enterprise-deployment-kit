@@ -95,11 +95,15 @@ the chart's supported paths are development and production only.
       (dict "path" "demo.enabled" "enabled" (default false (default dict .Values.demo).enabled))
       (dict "path" "ingest.enabled" "enabled" (default false (default dict .Values.ingest).enabled))
       (dict "path" "admin.enabled" "enabled" (default false (default dict .Values.admin).enabled))
+      (dict "path" "observability.enabled" "enabled" (default false (default dict .Values.observability).enabled))
       (dict "path" "certification.enabled" "enabled" (default false (default dict .Values.certification).enabled))
       (dict "path" "dashboard.enabled" "enabled" (default false (default dict .Values.dashboard).enabled)) -}}
 {{- if $isProduction -}}
   {{- if not $mtlsEnabled -}}
     {{- fail "global.dsaEnv=production requires global.mtls.enabled=true. The supported production topology uses verified DSA_MTLS_* transport only; legacy child grpcTlsEnabled values cannot enable production." -}}
+  {{- end -}}
+  {{- if not (empty $global.imagePullDockerConfigJson) -}}
+    {{- fail "global.imagePullDockerConfigJson must be empty when global.dsaEnv=production. Registry credentials must be supplied outside Helm values and release history through global.imagePullSecrets, node/default-ServiceAccount authentication, or workload identity." -}}
   {{- end -}}
   {{- range $profile := $mandatoryProfiles -}}
     {{- $value := $profile.value -}}
@@ -108,9 +112,21 @@ the chart's supported paths are development and production only.
       {{- fail (printf "%s must be true when global.dsaEnv=production; it is mandatory for the verified default production mTLS topology." $profile.path) -}}
     {{- end -}}
   {{- end -}}
+  {{- $mandatorySecretBackends := list
+        (dict "path" "gateway.secrets.backend" "value" ((default dict (default dict .Values.gateway).secrets).backend))
+        (dict "path" "audit.secrets.backend" "value" ((default dict (default dict .Values.audit).secrets).backend))
+        (dict "path" "id-bridge.secrets.backend" "value" ((default dict (default dict (index .Values "id-bridge")).secrets).backend))
+        (dict "path" "sandbox-a.secrets.backend" "value" ((default dict (default dict (index .Values "sandbox-a")).secrets).backend))
+        (dict "path" "sandbox-b.secrets.backend" "value" ((default dict (default dict (index .Values "sandbox-b")).secrets).backend))
+        (dict "path" "veil-witness.secrets.backend" "value" ((default dict (default dict (index .Values "veil-witness")).secrets).backend)) -}}
+  {{- range $backend := $mandatorySecretBackends -}}
+    {{- if not (has $backend.value (list "vault" "aws" "azure")) -}}
+      {{- fail (printf "%s must be one of vault, aws, or azure when global.dsaEnv=production; k8s-native and Helm-owned application Secrets are unsupported. Configure this mandatory child's External Secrets backend and keep credential bytes outside Helm values and release history." $backend.path) -}}
+    {{- end -}}
+  {{- end -}}
   {{- range $profile := $optionalProfiles -}}
     {{- if $profile.enabled -}}
-      {{- fail (printf "unsupported optional gRPC profile: %s=true is outside the verified default production mTLS topology. Disable it or deliver its transport contract in a separate workstream." $profile.path) -}}
+      {{- fail (printf "unsupported optional secret-owning surface: %s=true is outside the verified default production mTLS topology. Disable it or deliver its secret and transport contract in a separate workstream." $profile.path) -}}
     {{- end -}}
   {{- end -}}
   {{- $gateway := default dict .Values.gateway -}}
