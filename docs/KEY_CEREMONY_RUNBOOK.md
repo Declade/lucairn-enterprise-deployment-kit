@@ -244,23 +244,17 @@ The full roster for a standard install has **seven entries**: five claim-signing
 
 ### 6.2 Run sign-manifest (no Go toolchain needed)
 
-The `sign-manifest` tool is embedded in `dsa-veil-witness:0.5.4` at `/usr/local/bin/sign-manifest`. Invoke it with `docker run --entrypoint`:
+The `sign-manifest` tool is embedded in
+`dsa-veil-witness:0.5.4@sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523`
+at `/usr/local/bin/sign-manifest`. Set `LCR_ISSUER` to the value in
+`customer.env`, then run the [canonical private-seed-file command in
+INSTALL.md](../INSTALL.md#4b-produce-the-witness-signed-manifest-production-only) exactly as
+written. It uses `umask 077`, a mode-0600 temporary seed file, an EXIT cleanup
+trap, a read-only `/run/secrets/witness-signing-key-hex` mount, and a
+single-quoted in-container `/bin/sh -ec` command. The host `docker run` argv
+must never contain `LCR_WITNESS_SIGNING_KEY` expansion or its value.
 
-```bash
-# On the ceremony host, with the witness seed available.
-# LCR_ISSUER must match the value you set in customer.env (default: "Lucairn Veil Witness").
-docker run --rm \
-  --entrypoint sign-manifest \
-  -v "$PWD/keys.json:/keys.json:ro" \
-  ghcr.io/declade/dsa-veil-witness:0.5.4 \
-  --keys-json /keys.json \
-  --issuer "${LCR_ISSUER:-Lucairn Veil Witness}" \
-  --witness-signing-key-hex "$LCR_WITNESS_SIGNING_KEY" \
-  --witness-key-id witness_manifest_v1 \
-  > witness-signed-manifest.json
-```
-
-**Flags** (run `docker run --rm --entrypoint sign-manifest ghcr.io/declade/dsa-veil-witness:0.5.4 -h` to confirm against your pin):
+**Flags** (run `docker run --rm --entrypoint sign-manifest ghcr.io/declade/dsa-veil-witness:0.5.4@sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523 -h` to confirm against your pin):
 - `--keys-json` (required) — path to the keys.json roster inside the container
 - `--issuer` (required) — must match `LCR_ISSUER` on the gateway
 - `--witness-signing-key-hex` (required) — Ed25519 witness seed, 64 hex chars
@@ -269,7 +263,8 @@ docker run --rm \
 - `--protocol-versions` (default: `1,2`)
 - `--signed-at` (RFC3339; empty uses current UTC)
 
-The witness seed only ever enters the container as a flag value on the ceremony host — it never leaves that machine.
+The witness seed is read from the private read-only mount only inside the
+container. It never appears in host Docker argv or leaves that machine.
 
 ### 6.3 Deploy the blob to the gateway host
 
@@ -486,12 +481,9 @@ the production render on a missing/partial block or a path mismatch.
 GENERATE:      openssl rand -hex 32
 DERIVE PUB:    printf '%s' "$SEED_HEX" | ./scripts/derive-veil-pubkey.sh
 VERIFY PAIR:   compare derived public key with stored public key
-SIGN MANIFEST: docker run --rm --entrypoint sign-manifest \
-                 -v "$PWD/keys.json:/keys.json:ro" \
-                 ghcr.io/declade/dsa-veil-witness:0.5.4 \
-                 --keys-json /keys.json --issuer "Lucairn Veil Witness" \
-                 --witness-signing-key-hex "$LCR_WITNESS_SIGNING_KEY" \
-                 --witness-key-id witness_manifest_v1 > witness-signed-manifest.json
+SIGN MANIFEST: run §6.2's INSTALL-linked canonical command (umask 077,
+               mode-0600 temporary seed file + cleanup trap, read-only
+               /run/secrets mount, digest-pinned image, in-container read)
 CHECK SETUP:   curl -s http://gateway:8080/.well-known/veil-keys.json | jq '.keys | length'
 TEST E2E:      bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 ```
