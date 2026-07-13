@@ -124,6 +124,20 @@ case "${1:-}:${2:-}" in
       fi
       printf '%s@%s\n' "${5%%:*}" "$digest"
       printf 'docker image inspect digest %s\n' "$5" >> "$PRELOAD_CALLS"
+    elif [ "$#" -eq 5 ] && [ "$3" = '--format' ] && [ "$4" = '{{.Id}}' ]; then
+      case "$5" in
+        ghcr.io/declade/dsa-gateway:0.5.4) image_id='sha256:1111111111111111111111111111111111111111111111111111111111111111' ;;
+        ghcr.io/declade/dsa-sanitizer:0.5.4) image_id='sha256:2222222222222222222222222222222222222222222222222222222222222222' ;;
+        ghcr.io/declade/dsa-veil-witness:0.5.4) image_id='sha256:3333333333333333333333333333333333333333333333333333333333333333' ;;
+        migrate/migrate:v4.17.0) image_id='sha256:4444444444444444444444444444444444444444444444444444444444444444' ;;
+        postgres:16-alpine) image_id='sha256:5555555555555555555555555555555555555555555555555555555555555555' ;;
+        *) exit 92 ;;
+      esac
+      if [ "${PRELOAD_SUBSTITUTE_TAGS_AFTER_INSPECT:-}" = "1" ]; then
+        : > "$PRELOAD_TAGS_SUBSTITUTED"
+      fi
+      printf '%s\n' "$image_id"
+      printf 'docker image inspect ID %s\n' "$5" >> "$PRELOAD_CALLS"
     else
       exit 92
     fi
@@ -133,12 +147,59 @@ case "${1:-}:${2:-}" in
     printf 'docker pull --platform %s %s\n' "$3" "$4" >> "$PRELOAD_CALLS"
     ;;
   image:save)
-    [ "$#" -eq 7 ] && [ "$3" = '--platform' ] && [ "$4" = 'linux/arm64' ] && [ "$5" = '--output' ] || exit 94
+    [ "$#" -eq 8 ] && [ "$3" = '--platform' ] && [ "$4" = 'linux/arm64' ] && [ "$5" = '--output' ] || exit 94
     case "$6" in "$PRELOAD_ARCHIVE_DIR"/image-[0-9]*.tar) ;; *) exit 95 ;; esac
     [ ! -e "$6" ] || exit 96
     if find "$PRELOAD_ARCHIVE_DIR" -type f -print -quit | grep -q .; then exit 97; fi
-    printf '%s' archive > "$6"
-    printf 'docker image save --platform %s %s\n' "$4" "$7" >> "$PRELOAD_CALLS"
+    case "$7" in sha256:1111111111111111111111111111111111111111111111111111111111111111|sha256:2222222222222222222222222222222222222222222222222222222222222222|sha256:3333333333333333333333333333333333333333333333333333333333333333|sha256:4444444444444444444444444444444444444444444444444444444444444444|sha256:5555555555555555555555555555555555555555555555555555555555555555) ;; *) exit 99 ;; esac
+    case "$8" in ghcr.io/declade/dsa-gateway:0.5.4|ghcr.io/declade/dsa-sanitizer:0.5.4|ghcr.io/declade/dsa-veil-witness:0.5.4|migrate/migrate:v4.17.0|postgres:16-alpine) ;; *) exit 100 ;; esac
+    # Docker Desktop/containerd may report an OCI index as .Id while save
+    # writes a selected-platform config. Keep those values distinct in every
+    # accepted fixture.
+    config_id='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    ARCHIVE="$6" RUNTIME_TAG="$8" CONFIG_ID="$config_id" ARCHIVE_LEGACY_CONFIG="${PRELOAD_ARCHIVE_LEGACY_CONFIG:-}" ARCHIVE_VARIANT="${PRELOAD_ARCHIVE_VARIANT:-}" PRELOAD_ARCHIVE_TAG_RETARGETED="${PRELOAD_ARCHIVE_TAG_RETARGETED:-}" ruby -rjson -rrubygems/package -e '
+      config = ENV.fetch("CONFIG_ID").delete_prefix("sha256:")
+      config_path = if ENV.fetch("ARCHIVE_LEGACY_CONFIG", "") == "1"
+        "#{config}.json"
+      else
+        "blobs/sha256/#{config}"
+      end
+      entry = {
+        "Config" => config_path,
+        "RepoTags" => [ENV.fetch("RUNTIME_TAG")],
+        "Layers" => []
+      }
+      entries = [entry]
+      if ENV.fetch("PRELOAD_ARCHIVE_TAG_RETARGETED", "") == "1"
+        # Saving a captured ID plus a tag that was retargeted after inspect
+        # yields an ID-only entry and a separately tagged current image.
+        entries = [
+          entry.merge("RepoTags" => nil),
+          entry.merge("Config" => "blobs/sha256/#{"b" * 64}")
+        ]
+      else
+        case ENV.fetch("ARCHIVE_VARIANT", "")
+        when "missing-tag"
+          entry["RepoTags"] = []
+        when "duplicate-tag"
+          entries << entry.dup
+        when "conflicting-tags"
+          entry["RepoTags"] << "conflicting.example.invalid:tag"
+        when "malformed-config"
+          entry["Config"] = "not-a-docker-config-path"
+        when ""
+        else
+          abort "unknown archive test variant"
+        end
+      end
+      manifest = JSON.generate(entries)
+      File.open(ENV.fetch("ARCHIVE"), "wb") do |file|
+        Gem::Package::TarWriter.new(file) do |tar|
+          tar.add_file_simple("manifest.json", 0o644, manifest.bytesize) { |entry| entry.write(manifest) }
+        end
+      end
+    '
+    printf 'docker image save --platform %s %s %s\n' "$4" "$7" "$8" >> "$PRELOAD_CALLS"
     ;;
   *) exit 98 ;;
 esac
@@ -164,6 +225,7 @@ KIND
 chmod 0700 "$FAKE_BIN/docker" "$FAKE_BIN/kind"
 
 IMAGE_LIST="$TMPDIR/images.txt"
+TAGS_SUBSTITUTED="$TMPDIR/tags-substituted"
 MISMATCH_CALLS="$TMPDIR/mismatch-calls"
 MISMATCH_ARCHIVE_DIR="$TMPDIR/mismatch-archives"
 if PATH="$FAKE_BIN:$PATH" PRELOAD_CALLS="$MISMATCH_CALLS" \
@@ -204,6 +266,28 @@ fi
 grep -Fq 'loaded 5 rendered topology image(s) into all 3 node(s) of preload-test' "$TMPDIR/preload.stderr" \
   || { echo "Kind image preloader did not report all-node preload" >&2; exit 1; }
 
+# Docker also has a legacy archive config path form (<hex>.json). Accept it
+# when the sole manifest entry carries the required runtime tag.
+LEGACY_CALLS="$TMPDIR/legacy-calls"
+LEGACY_ARCHIVES="$TMPDIR/legacy-archives-during-load"
+LEGACY_ARCHIVE_DIR="$TMPDIR/legacy-archives"
+if ! PATH="$FAKE_BIN:$PATH" PRELOAD_CALLS="$LEGACY_CALLS" \
+  PRELOAD_ARCHIVE_DIR="$LEGACY_ARCHIVE_DIR" PRELOAD_ARCHIVES_DURING_LOAD="$LEGACY_ARCHIVES" \
+  PRELOAD_ARCHIVE_LEGACY_CONFIG=1 "$PRELOAD" \
+  --cluster preload-test \
+  --rendered-manifest "$MANIFEST" \
+  --image-list "$TMPDIR/legacy-images.txt" \
+  --archive-dir "$LEGACY_ARCHIVE_DIR" \
+  >"$TMPDIR/legacy.stdout" 2>"$TMPDIR/legacy.stderr"; then
+  cat "$TMPDIR/legacy.stderr" >&2
+  echo "Kind image preloader rejected a legacy config path with a matching tag binding" >&2
+  exit 1
+fi
+[ "$(wc -l < "$LEGACY_ARCHIVES" | tr -d ' ')" = "5" ] \
+  || { echo "Kind image preloader did not load every accepted legacy archive" >&2; exit 1; }
+[ ! -e "$LEGACY_ARCHIVE_DIR" ] \
+  || { echo "Kind image preloader left legacy platform archives behind" >&2; exit 1; }
+
 printf '%s\n' \
   ghcr.io/declade/dsa-gateway:0.5.4 \
   ghcr.io/declade/dsa-sanitizer:0.5.4 \
@@ -216,9 +300,92 @@ diff -u "$TMPDIR/expected-images" "$IMAGE_LIST"
 while IFS= read -r image; do
   grep -Fxq "docker pull --platform linux/arm64 $image" "$CALLS" \
     || { echo "image was not pulled before Kind load: $image" >&2; exit 1; }
-  grep -Fxq "docker image save --platform linux/arm64 $image" "$CALLS" \
-    || { echo "image was not saved for the disposable Kind platform: $image" >&2; exit 1; }
 done < "$IMAGE_LIST"
+
+# The fake Docker daemon substitutes every rendered tag immediately after its
+# local immutable ID is inspected. The preloader must request one archive with
+# both the captured ID and the required tag, then accept the single tagged
+# manifest entry even when its platform config differs from the index .Id.
+if ! PATH="$FAKE_BIN:$PATH" PRELOAD_CALLS="$TMPDIR/substitution-calls" \
+  PRELOAD_ARCHIVE_DIR="$TMPDIR/substitution-archives" PRELOAD_ARCHIVES_DURING_LOAD="$TMPDIR/substitution-loads" \
+  PRELOAD_SUBSTITUTE_TAGS_AFTER_INSPECT=1 PRELOAD_TAGS_SUBSTITUTED="$TAGS_SUBSTITUTED" "$PRELOAD" \
+  --cluster preload-test \
+  --rendered-manifest "$MANIFEST" \
+  --image-list "$TMPDIR/substitution-images.txt" \
+  --archive-dir "$TMPDIR/substitution-archives" \
+  >"$TMPDIR/substitution.stdout" 2>"$TMPDIR/substitution.stderr"; then
+  cat "$TMPDIR/substitution.stderr" >&2
+  exit 1
+fi
+[ -e "$TAGS_SUBSTITUTED" ] || {
+  echo "Kind image preloader substitution regression did not retag after inspect" >&2
+  exit 1
+}
+if grep -Eq 'docker image save --platform linux/arm64 (ghcr.io/|migrate/|postgres:)' "$TMPDIR/substitution-calls"; then
+  echo "Kind image preloader saved a mutable tag after substitution" >&2
+  exit 1
+fi
+while IFS= read -r image; do
+  grep -Eq "^docker image save --platform linux/arm64 sha256:[1-5]{64} ${image}$" "$TMPDIR/substitution-calls" \
+    || { echo "Kind image preloader did not save captured ID plus runtime tag after substitution: $image" >&2; exit 1; }
+done < "$TMPDIR/substitution-images.txt"
+
+# A later tag substitution makes Docker save two entries: the captured ID-only
+# image and the changed tag's image with another config. That must fail before
+# the first Kind import, even though the captured ID remains in the request.
+ARCHIVE_MISMATCH_CALLS="$TMPDIR/archive-mismatch-calls"
+ARCHIVE_MISMATCH_DIR="$TMPDIR/archive-mismatch-archives"
+ARCHIVE_MISMATCH_TAGS="$TMPDIR/archive-mismatch-tags-substituted"
+if PATH="$FAKE_BIN:$PATH" PRELOAD_CALLS="$ARCHIVE_MISMATCH_CALLS" \
+  PRELOAD_ARCHIVE_DIR="$ARCHIVE_MISMATCH_DIR" PRELOAD_ARCHIVES_DURING_LOAD="$TMPDIR/archive-mismatch-loads" \
+  PRELOAD_SUBSTITUTE_TAGS_AFTER_INSPECT=1 PRELOAD_TAGS_SUBSTITUTED="$ARCHIVE_MISMATCH_TAGS" \
+  PRELOAD_ARCHIVE_TAG_RETARGETED=1 "$PRELOAD" \
+  --cluster preload-test \
+  --rendered-manifest "$MANIFEST" \
+  --image-list "$TMPDIR/archive-mismatch-images.txt" \
+  --archive-dir "$ARCHIVE_MISMATCH_DIR" \
+  >"$TMPDIR/archive-mismatch.stdout" 2>"$TMPDIR/archive-mismatch.stderr"; then
+  echo "Kind image preloader accepted an archive whose runtime tag changed config after ID capture" >&2
+  exit 1
+fi
+[ -e "$ARCHIVE_MISMATCH_TAGS" ] || {
+  echo "Kind image preloader archive mismatch regression did not retag after inspect" >&2
+  exit 1
+}
+grep -Fq 'archive must contain exactly one manifest entry' "$TMPDIR/archive-mismatch.stderr" \
+  || { cat "$TMPDIR/archive-mismatch.stderr" >&2; echo "Kind image preloader did not reject the retargeted multi-entry archive" >&2; exit 1; }
+grep -Eq '^docker image save --platform linux/arm64 sha256:1111111111111111111111111111111111111111111111111111111111111111 ghcr.io/declade/dsa-gateway:0.5.4$' "$ARCHIVE_MISMATCH_CALLS" \
+  || { echo "Kind image preloader archive mismatch regression did not save captured ID plus runtime tag" >&2; exit 1; }
+if grep -Fq 'kind load image-archive' "$ARCHIVE_MISMATCH_CALLS"; then
+  echo "Kind image preloader loaded an archive before rejecting its retargeted manifest" >&2
+  exit 1
+fi
+[ ! -e "$ARCHIVE_MISMATCH_DIR" ] \
+  || { echo "Kind image preloader left an archive directory after retargeted manifest rejection" >&2; exit 1; }
+
+# The verifier is deliberately strict about every malformed or ambiguous tag
+# binding shape that Docker could place in manifest.json. None may reach Kind.
+for archive_variant in missing-tag duplicate-tag conflicting-tags malformed-config; do
+  variant_calls="$TMPDIR/archive-${archive_variant}-calls"
+  variant_dir="$TMPDIR/archive-${archive_variant}-archives"
+  if PATH="$FAKE_BIN:$PATH" PRELOAD_CALLS="$variant_calls" \
+    PRELOAD_ARCHIVE_DIR="$variant_dir" PRELOAD_ARCHIVES_DURING_LOAD="$TMPDIR/archive-${archive_variant}-loads" \
+    PRELOAD_ARCHIVE_VARIANT="$archive_variant" "$PRELOAD" \
+    --cluster preload-test \
+    --rendered-manifest "$MANIFEST" \
+    --image-list "$TMPDIR/archive-${archive_variant}-images.txt" \
+    --archive-dir "$variant_dir" \
+    >"$TMPDIR/archive-${archive_variant}.stdout" 2>"$TMPDIR/archive-${archive_variant}.stderr"; then
+    echo "Kind image preloader accepted $archive_variant archive tag binding" >&2
+    exit 1
+  fi
+  if grep -Fq 'kind load image-archive' "$variant_calls"; then
+    echo "Kind image preloader loaded $archive_variant archive before rejecting its tag binding" >&2
+    exit 1
+  fi
+  [ ! -e "$variant_dir" ] \
+    || { echo "Kind image preloader left an archive directory after $archive_variant rejection" >&2; exit 1; }
+done
 
 grep -Fxq 'docker inspect preload-test-control-plane' "$CALLS" \
   || { echo "Kind preloader did not derive a platform from its disposable node" >&2; exit 1; }
