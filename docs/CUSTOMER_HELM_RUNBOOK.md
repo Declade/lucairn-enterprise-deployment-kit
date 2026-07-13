@@ -297,27 +297,32 @@ If any pod is stuck `CrashLoopBackOff` → check its logs (`kubectl logs -n <ns>
 Use the in-cluster admin endpoint (avoids host-network rate limits that can hit a brand-new install).
 
 ```bash
-# Extract the admin key from the ESO-managed Secret. Do not print it.
-# Secret name is "gateway-credentials" (chart name + "-credentials" suffix).
-# Field is "DSA_ADMIN_KEY" (matches the gateway container env var).
-ADMIN_KEY=$(kubectl get secret -n dsa-edge gateway-credentials -o jsonpath='{.data.DSA_ADMIN_KEY}' | base64 -d)
-
 # The operator-protected provider-key file is outside Helm values and Git.
 # Refuse any mode other than 0600, then let jq read it directly into JSON.
 PROVIDER_KEY_FILE=/secure/operator/anthropic-provider-key
 provider_key_mode="$(stat -f '%Lp' "$PROVIDER_KEY_FILE" 2>/dev/null || stat -c '%a' "$PROVIDER_KEY_FILE")"
 [ "$provider_key_mode" = 600 ] || { echo "provider key file must be mode 0600" >&2; exit 1; }
 
-# Mint via stdin: the provider key is neither a Helm value nor a curl argv item.
-# Note: response field is `dsa_api_key`.
-CUSTOMER_KEY=$(jq -n --rawfile provider_key "$PROVIDER_KEY_FILE" \
-  '{customer_id:"my_first_customer", provider:"anthropic", provider_key:($provider_key | rtrimstr("\n")), tier:"enterprise"}' | \
-  kubectl run mint --image=curlimages/curl:latest --restart=Never --rm -i --quiet -- \
-    curl -s -X POST \
-      -H "x-admin-key: $ADMIN_KEY" \
-      -H "Content-Type: application/json" \
-      --data-binary @- \
-      http://gateway.dsa-edge.svc.cluster.local:8080/api/v1/admin/keys | jq -r .dsa_api_key)
+# Frame stdin as one admin-key line followed by the JSON request. Neither
+# secret is interpolated into kubectl argv or the persisted PodSpec; the fixed
+# in-Pod shell reads the first line only at runtime. Note: response field is
+# `dsa_api_key`.
+CUSTOMER_KEY=$(
+  {
+    kubectl get secret -n dsa-edge gateway-credentials -o jsonpath='{.data.DSA_ADMIN_KEY}' | base64 -d
+    printf '\n'
+    jq -n --rawfile provider_key "$PROVIDER_KEY_FILE" \
+      '{customer_id:"my_first_customer", provider:"anthropic", provider_key:($provider_key | rtrimstr("\n")), tier:"enterprise"}'
+  } | kubectl run mint --image=curlimages/curl:latest --restart=Never --rm -i --quiet -- \
+    sh -ceu '
+      IFS= read -r admin_key
+      curl -s -X POST \
+        -H "x-admin-key: ${admin_key}" \
+        -H "Content-Type: application/json" \
+        --data-binary @- \
+        http://gateway.dsa-edge.svc.cluster.local:8080/api/v1/admin/keys
+    ' | jq -r .dsa_api_key
+)
 
 echo "Customer API key: $CUSTOMER_KEY"
 ```

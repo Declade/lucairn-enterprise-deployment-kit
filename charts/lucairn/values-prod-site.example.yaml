@@ -19,6 +19,13 @@ global:
 #     backend: aws
 #     aws:
 #       region: eu-central-1
+#       # ClusterSecretStore JWT auth references this pre-created ServiceAccount.
+#       # Configure this exact external-secrets/eso-service-account with the
+#       # EKS IRSA role outside Helm; this chart creates neither the account nor
+#       # its annotation.
+#       serviceAccount:
+#         name: eso-service-account
+#         namespace: external-secrets
 # gateway:
 #   secrets:
 #     backend: aws

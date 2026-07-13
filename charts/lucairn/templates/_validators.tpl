@@ -142,6 +142,16 @@ the chart's supported paths are development and production only.
     {{- if or (not (kindIs "map" $aws)) (not (kindIs "string" $aws.region)) (empty $aws.region) -}}
       {{- fail "global.secrets.aws.region must be a non-empty string when global.secrets.backend=aws in production." -}}
     {{- end -}}
+    {{- $serviceAccount := $aws.serviceAccount -}}
+    {{- if not (kindIs "map" $serviceAccount) -}}
+      {{- fail "global.secrets.aws.serviceAccount must be a YAML mapping with name and namespace when global.secrets.backend=aws in production. Pre-create and IRSA-annotate that exact ServiceAccount outside this chart." -}}
+    {{- end -}}
+    {{- range $field := list "name" "namespace" -}}
+      {{- $value := index $serviceAccount $field -}}
+      {{- if or (not (kindIs "string" $value)) (empty $value) -}}
+        {{- fail (printf "global.secrets.aws.serviceAccount.%s must be a non-empty string when global.secrets.backend=aws in production. Pre-create and IRSA-annotate that exact ServiceAccount outside this chart." $field) -}}
+      {{- end -}}
+    {{- end -}}
   {{- else if eq $globalBackend "azure" -}}
     {{- $azure := $globalSecrets.azure -}}
     {{- if not (kindIs "map" $azure) -}}
@@ -178,6 +188,27 @@ the chart's supported paths are development and production only.
     {{- if or (not (kindIs "map" $remote)) (not (kindIs "string" (index (default dict $remote) $remoteField))) (empty (index (default dict $remote) $remoteField)) -}}
       {{- fail (printf "%s.%s.%s must be a non-empty string when global.secrets.backend=%s in production." (trimSuffix ".backend" $backend.path) $globalBackend $remoteField $globalBackend) -}}
     {{- end -}}
+    {{- $inlineValues := index $secrets "values" -}}
+    {{- $valuesPath := printf "%s.values" (trimSuffix ".backend" $backend.path) -}}
+    {{- if not (kindIs "map" $inlineValues) -}}
+      {{- fail (printf "%s must be a YAML mapping when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history; put them in the selected external backend instead." $valuesPath) -}}
+    {{- end -}}
+    {{- range $field, $value := $inlineValues -}}
+      {{- if not (empty $value) -}}
+        {{- fail (printf "%s.%s must be empty when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history; put them in the selected external backend instead." $valuesPath $field) -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+  {{- range $field := list "dsaServiceToken" "dsaLicenseKey" "lucairnLicenseKey" "lucairnLicensePublicKey" -}}
+    {{- $value := index $global $field -}}
+    {{- if not (empty $value) -}}
+      {{- fail (printf "global.%s must be empty when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history; put them in the selected external backend instead." $field) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $sandboxB := default dict (index .Values "sandbox-b") -}}
+  {{- $sandboxBRedis := default dict $sandboxB.redis -}}
+  {{- if not (empty $sandboxBRedis.password) -}}
+    {{- fail "sandbox-b.redis.password must be empty when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history; put the Redis password in the sandbox-b external backend instead." -}}
   {{- end -}}
   {{- range $profile := $optionalProfiles -}}
     {{- if $profile.enabled -}}
