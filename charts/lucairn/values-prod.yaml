@@ -27,9 +27,11 @@ global:
       role: dsa
       mountPath: dsa
   # Registry credentials are deliberately outside Helm and release history.
-  # Operators either reference a pre-created pull Secret here, or use
-  # node/default-ServiceAccount auth or workload identity. All three supported
-  # modes set this guard escape hatch; no Docker config is passed to Helm.
+  # A pre-created pull Secret is referenced by name only through
+  # global.imagePullSecrets; the chart adds it directly to chart-specific
+  # workload PodSpecs. Leave global.imagePullSecrets empty only for actual
+  # node-level registry auth or registry workload identity configured outside
+  # Helm. No Docker config is passed to Helm.
   imagePullSecrets: []
   skipPullSecretGuard: true
   # Production: enable Cilium DNS restriction and Hubble audit.

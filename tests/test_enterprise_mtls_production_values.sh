@@ -190,11 +190,32 @@ assert_render_rejected empty-azure-tenant \
   "${provider_children[@]}" --set-string global.secrets.azure.keyVaultName=customer-vault --set-string global.secrets.azure.tenantId=
 
 for required in 'External Secrets' 'global.skipPullSecretGuard=true' 'global.imagePullSecrets' \
-  'node/default-ServiceAccount' 'workload identity' 'release history' \
+  'node-level registry auth' 'workload identity' 'release history' \
   'every** enabled child’s `secrets.backend`'; do
   grep -Fq "$required" "$ROOT/INSTALL.md" \
     || { echo "production registry/ESO documentation omits: $required" >&2; exit 1; }
 done
+
+# Mandatory workloads select chart-specific ServiceAccounts, so a pull Secret
+# attached to default cannot authenticate them. Guidance must instead describe
+# the two valid modes: a names-only PodSpec reference, or genuinely external
+# node-level/workload-identity registry authentication.
+ruby -e '
+  root = ARGV.fetch(0)
+  guidance = %w[
+    charts/lucairn/values-prod.yaml
+    docs/CUSTOMER_HELM_RUNBOOK.md
+    INSTALL.md
+  ]
+  guidance.each do |path|
+    content = File.read(File.join(root, path))
+    content = content.gsub(/^\s*#\s?/, "")
+    abort "#{path} still claims default-ServiceAccount registry auth" if content.match?(/(?:node\/)?default[- ]serviceaccount/i)
+    abort "#{path} must describe pre-created names-only imagePullSecrets" unless content.match?(/pre-created pull Secret/i) && content.match?(/name(?:s)?[- ]only/i) && content.include?("global.imagePullSecrets")
+    abort "#{path} must describe PodSpec pull-Secret attachment" unless content.match?(/chart-specific\s+workload\s+PodSpecs/im)
+    abort "#{path} must limit empty imagePullSecrets to external registry auth" unless content.match?(/(?:leave|leaves).*imagePullSecrets.*empty.*only.*node-level.*workload identity.*outside Helm/im)
+  end
+' "$ROOT"
 
 for document in "$ROOT/INSTALL.md" "$ROOT/OPS.md" "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md"; do
   grep -Fq 'SITE_OVERLAY=/secure/operator/lucairn-production-site.yaml' "$document" \

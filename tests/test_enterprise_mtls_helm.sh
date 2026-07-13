@@ -687,9 +687,19 @@ ruby -e '
     option_lines = command.lines.map(&:strip).map { |line| line.delete_suffix("\\").rstrip }
     abort "production #{name} command passes registry bytes through Helm" if option_lines.any? { |line| line.include?("imagePullDockerConfigJson") || line.include?("--set-file") }
   end
-  ["External Secrets", "global.skipPullSecretGuard=true", "global.imagePullSecrets", "node/default-ServiceAccount", "workload identity", "release history"].each do |term|
+  ["External Secrets", "global.skipPullSecretGuard=true", "release history"].each do |term|
     abort "production instructions omit #{term.inspect}" unless section.include?(term)
   end
+  abort "production instructions still permit default-ServiceAccount registry auth" if section.match?(/(?:node\/)?default[- ]serviceaccount/i)
+
+  names_only_pull_secret = section.include?("global.imagePullSecrets") &&
+    section.match?(/pre-created pull Secret/i) &&
+    section.match?(/names?[- ]only/i) &&
+    section.match?(/chart-specific\s+workload\s+PodSpecs/im)
+  abort "production instructions omit the names-only pre-created pull-Secret contract" unless names_only_pull_secret
+
+  external_registry_auth = section.match?(/(?:leave|leaves).*imagePullSecrets.*empty.*only.*node-level.*workload identity.*outside Helm/im)
+  abort "production instructions omit the external node-level or workload-identity registry-auth contract" unless external_registry_auth
 ' "$ROOT/INSTALL.md"
 
 # NetworkPolicy enforcement is an independently verified Veil isolation

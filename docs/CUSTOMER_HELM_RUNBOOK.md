@@ -200,10 +200,13 @@ kubectl -n dsa-edge create secret generic lucairn-witness-signed-manifest \
 ```
 
 Registry authentication is outside Helm and release history. Set
-`global.skipPullSecretGuard=true` (already in the production profile) and use
-one of: a pre-created pull Secret referenced by `global.imagePullSecrets` in
-every mandatory namespace, node/default-ServiceAccount auth, or workload
-identity. Never pass a Docker config through Helm.
+`global.skipPullSecretGuard=true` (already in the production profile). For
+Secret-based registry auth, ensure a pre-created pull Secret exists in every mandatory workload
+namespace and reference its name only through `global.imagePullSecrets`; the
+chart adds that reference directly to chart-specific workload PodSpecs. Leave
+`global.imagePullSecrets` empty only for actual node-level registry auth or
+registry workload identity configured outside Helm. Never pass a Docker config
+through Helm.
 
 Run doctor against the ordered production profile and site overlay:
 
