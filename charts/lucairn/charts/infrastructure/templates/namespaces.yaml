@@ -29,4 +29,10 @@ metadata:
     dsa.io/namespace: {{ .label }}
   annotations:
     "helm.sh/resource-policy": keep
+    {{- if $.Values.global.wireguardEncryption }}
+    # Cilium WireGuard: encrypt all traffic in/out of this namespace. This is
+    # deliberately an operator opt-in because generic production also supports
+    # Calico, which does not consume the Cilium annotation.
+    io.cilium.network.wg-encryption: "true"
+    {{- end }}
 {{- end }}

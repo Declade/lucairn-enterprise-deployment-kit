@@ -52,7 +52,9 @@ global:
   # identity/AI node pools are provisioned.
   nodeIsolation: false
   postgresqlSslmode: require
-  wireguardEncryption: true
+  # Generic production supports Calico as well as Cilium. Enable this only in
+  # a Cilium site overlay after Cilium WireGuard encryption is configured.
+  wireguardEncryption: false
   # Production environment flag — enables dev-secret rejection guards
   dsaEnv: production
   # Verified DSA mTLS is mandatory in the supported production profile. These

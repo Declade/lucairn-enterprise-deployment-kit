@@ -3,15 +3,16 @@
 #
 # The caller owns CLUSTER, CLUSTER_CREATION_ATTEMPTED, PROBE_IMAGE, and
 # STATE_DIR. This helper never prints a state path or any credential-related
-# value. A failed owned-cluster deletion is the one cleanup failure that
-# changes the gate result, because retaining a running cluster can retain
-# projected Secrets.
+# value. A failed owned-cluster or private-state deletion changes a successful
+# gate result, because either can retain secret-bearing material.
 
 enterprise_mtls_kind_cleanup() {
   local body_status="$1"
   local cluster_delete_failed=0
+  local state_delete_failed=0
 
   ENTERPRISE_MTLS_KIND_CLUSTER_DELETE_FAILED=0
+  ENTERPRISE_MTLS_KIND_STATE_DELETE_FAILED=0
 
   # The harness defines this after it knows which temporary in-container
   # helpers were installed. It is intentionally best effort: a Pod may already
@@ -40,11 +41,23 @@ enterprise_mtls_kind_cleanup() {
     docker image rm -f "$PROBE_IMAGE" >/dev/null 2>&1 || true
   fi
   if [ -n "${STATE_DIR:-}" ]; then
-    rm -rf -- "$STATE_DIR"
+    if ! rm -rf -- "$STATE_DIR"; then
+      printf 'ERROR: private Kind harness state deletion failed\n' >&2
+      state_delete_failed=1
+    elif [ -e "$STATE_DIR" ] || [ -L "$STATE_DIR" ]; then
+      printf 'ERROR: private Kind harness state deletion failed\n' >&2
+      state_delete_failed=1
+    fi
   fi
 
   if [ "$cluster_delete_failed" -ne 0 ]; then
     ENTERPRISE_MTLS_KIND_CLUSTER_DELETE_FAILED=1
+  fi
+  if [ "$state_delete_failed" -ne 0 ]; then
+    ENTERPRISE_MTLS_KIND_STATE_DELETE_FAILED=1
+  fi
+  if [ "$cluster_delete_failed" -ne 0 ] || [ "$state_delete_failed" -ne 0 ]; then
+    [ "$body_status" -ne 0 ] && return "$body_status"
     return 1
   fi
   return "$body_status"

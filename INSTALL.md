@@ -1765,11 +1765,11 @@ helm upgrade --install lucairn charts/lucairn \
 scripts/test-enterprise-mtls-kind.sh
 ```
 
-The harness creates ephemeral CA/leaves and a mode-0600 application values
-file under a mode-0700 owned private state directory. The latter contains fresh
-signing seeds, their derived public keys, database/cache credentials, shared
-service/canary tokens, and the gateway keystore key; it is never printed or
-committed. The seven mTLS identity Secrets remain independently pre-created,
+The harness creates ephemeral CA/leaves and six mode-0600 private application
+environment files under a mode-0700 owned private state directory. They contain
+fresh signing seeds, their derived public keys, database/cache credentials,
+shared service/canary tokens, and the gateway keystore key; they are never
+printed or committed. The seven mTLS identity Secrets remain independently pre-created,
 mirroring the operator/PKI production contract. The harness creates a unique
 valid witness-signed manifest from that same coherent disposable key set and
 creates `lucairn-witness-signed-manifest` in `dsa-edge` before Helm. It does not

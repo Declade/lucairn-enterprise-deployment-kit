@@ -491,6 +491,12 @@ A half-config (enabled without a bucket or without an age recipient) fails fast
 at `helm install`/`template` with an actionable message — it will never silently
 upload plaintext.
 
+These CronJobs target only the chart-bundled PostgreSQL Services and set
+`PGSSLMODE=disable`, because those bundled servers do not expose TLS. If you
+switch a compliance service to an external PostgreSQL target, its backup TLS
+mode, CA, endpoint, and credentials remain operator-managed; the chart renders
+no backup CronJob for that external target rather than guessing a connection.
+
 If your S3 credentials come from IRSA / an instance role, leave the
 `accessKeySecretRef.name` / `secretKeySecretRef.name` empty.
 

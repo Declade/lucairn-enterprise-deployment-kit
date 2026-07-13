@@ -60,10 +60,14 @@ cleanup() {
   local body_status=$?
   trap - EXIT
   enterprise_mtls_kind_cleanup "$body_status" || true
-  if [ "${ENTERPRISE_MTLS_KIND_CLUSTER_DELETE_FAILED:-0}" -eq 1 ]; then
+  if [ "$body_status" -ne 0 ]; then
+    exit "$body_status"
+  fi
+  if [ "${ENTERPRISE_MTLS_KIND_CLUSTER_DELETE_FAILED:-0}" -eq 1 ] \
+    || [ "${ENTERPRISE_MTLS_KIND_STATE_DELETE_FAILED:-0}" -eq 1 ]; then
     exit 1
   fi
-  exit "$body_status"
+  exit 0
 }
 trap cleanup EXIT
 

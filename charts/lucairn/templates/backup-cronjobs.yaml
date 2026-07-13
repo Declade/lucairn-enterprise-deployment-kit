@@ -57,7 +57,12 @@
 {{- $database := (default $db.defaultDb $pg.database) -}}
 {{- $svc := printf "%s-postgresql" $db.name -}}
 {{- $credSecret := printf "%s-credentials" $db.name -}}
-{{- $sslmode := (default "disable" (default dict $.Values.global).postgresqlSslmode) }}
+{{- /* Every rendered backup job targets this chart's bundled PostgreSQL
+       Service. The bundled server has no TLS listener, so it must not inherit
+       global.postgresqlSslmode, which is reserved for an explicitly selected
+       external PostgreSQL target. External targets deliberately render no
+       in-cluster backup job (see the pgEnabled gate above). */ -}}
+{{- $sslmode := "disable" }}
 ---
 apiVersion: batch/v1
 kind: CronJob
