@@ -7,7 +7,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHART="$ROOT/charts/lucairn"
 TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
+STICKY_TMP_ROOT=""
+trap 'rm -rf "$TMPDIR" "$STICKY_TMP_ROOT"' EXIT
 OVERLAY="$TMPDIR/customer-production-values.yaml"
 RENDER="$TMPDIR/rendered.yaml"
 
@@ -218,6 +219,45 @@ for unsafe_mode in 770 707; do
   assert_no_staged_overlay "$UNSAFE_DIR"
   assert_no_source_overlay "$UNSAFE_DIR"
 done
+
+# A private leaf is still replaceable when it sits below a non-sticky writable
+# ancestor. Reject that pathname before the canonical renderer can generate a
+# source or staged secret, while retaining the normal sticky-/tmp case.
+NONSTICKY_ANCESTOR="$TMPDIR/non-sticky-output-ancestor"
+NONSTICKY_LEAF="$NONSTICKY_ANCESTOR/private-leaf"
+NONSTICKY_OUTPUT="$NONSTICKY_LEAF/values.yaml"
+mkdir -p "$NONSTICKY_LEAF"
+chmod 777 "$NONSTICKY_ANCESTOR"
+chmod 700 "$NONSTICKY_LEAF"
+ruby -e '
+  stat = File.lstat(ARGV.fetch(0))
+  abort "non-sticky ancestor setup is not 0777" unless (stat.mode & 0o7777) == 0o777
+  stat = File.lstat(ARGV.fetch(1))
+  abort "private leaf setup is not EUID-owned 0700" unless stat.uid == Process.euid && (stat.mode & 0o7777) == 0o700
+' "$NONSTICKY_ANCESTOR" "$NONSTICKY_LEAF"
+rm -f -- "$OPENSSL_CALL_LOG"
+if OPENSSL_CALL_LOG="$OPENSSL_CALL_LOG" PATH="$OPENSSL_SHIM_DIR:$PATH" bash "$ROOT/scripts/render-production-values.sh" "$NONSTICKY_OUTPUT" >/dev/null 2>&1; then
+  echo "production renderer accepted a private leaf below a non-sticky writable ancestor" >&2
+  exit 1
+fi
+[ ! -e "$OPENSSL_CALL_LOG" ] \
+  || { echo "production renderer generated secrets before rejecting a non-sticky writable ancestor" >&2; exit 1; }
+[ ! -e "$NONSTICKY_OUTPUT" ] && [ ! -L "$NONSTICKY_OUTPUT" ] \
+  || { echo "production renderer published output below a non-sticky writable ancestor" >&2; exit 1; }
+assert_no_staged_overlay "$NONSTICKY_LEAF"
+assert_no_source_overlay "$NONSTICKY_LEAF"
+
+STICKY_TMP_ROOT="$(mktemp -d /tmp/lucairn-production-values-sticky.XXXXXX)"
+ruby -e '
+  stat = File.stat(File.realpath(ARGV.fetch(0)))
+  abort "resolved /tmp path is not sticky" if (stat.mode & 0o1000).zero?
+' "$(dirname "$STICKY_TMP_ROOT")"
+STICKY_TMP_OUTPUT="$STICKY_TMP_ROOT/values.yaml"
+bash "$ROOT/scripts/render-production-values.sh" "$STICKY_TMP_OUTPUT" >/dev/null
+[ -f "$STICKY_TMP_OUTPUT" ] && [ ! -L "$STICKY_TMP_OUTPUT" ] \
+  || { echo "production renderer rejected a private path below sticky /tmp" >&2; exit 1; }
+assert_no_staged_overlay "$STICKY_TMP_ROOT"
+assert_no_source_overlay "$STICKY_TMP_ROOT"
 
 # File.link is the non-replacing publication primitive. Simulate a destination
 # racing into existence just before that call; it must stay untouched and the
