@@ -40,6 +40,82 @@
 {{- end -}}
 
 {{- /*
+validators.enterpriseFullMeshMTLS
+
+The umbrella owns the only supported production mTLS topology. Child chart
+defaults are intentionally ignored when global.mtls.enabled=true so a local
+legacy grpcTlsEnabled setting can never silently override the verified path.
+Helm cannot inspect Secret data during an offline render; the projected
+`items` contract in each Deployment makes missing/partial key sets fail before
+the process starts, and `lucairn doctor --values` checks live Secret inventory.
+*/ -}}
+{{- define "validators.enterpriseFullMeshMTLS" -}}
+{{- $global := (default dict .Values.global) -}}
+{{- $mtls := (default dict $global.mtls) -}}
+{{- $isProduction := eq (default "" $global.dsaEnv) "production" -}}
+{{- $optionalProfiles := list
+      (dict "path" "pii-ml.enabled" "enabled" (default false (default dict (index .Values "pii-ml")).enabled))
+      (dict "path" "postgres-gateway.enabled" "enabled" (default false (default dict (index .Values "postgres-gateway")).enabled))
+      (dict "path" "demo.enabled" "enabled" (default false (default dict .Values.demo).enabled))
+      (dict "path" "ingest.enabled" "enabled" (default false (default dict .Values.ingest).enabled))
+      (dict "path" "admin.enabled" "enabled" (default false (default dict .Values.admin).enabled))
+      (dict "path" "certification.enabled" "enabled" (default false (default dict .Values.certification).enabled))
+      (dict "path" "dashboard.enabled" "enabled" (default false (default dict .Values.dashboard).enabled)) -}}
+{{- if $isProduction -}}
+  {{- if not $mtls.enabled -}}
+    {{- fail "global.dsaEnv=production requires global.mtls.enabled=true. The supported production topology uses verified DSA_MTLS_* transport only; legacy child grpcTlsEnabled values cannot enable production." -}}
+  {{- end -}}
+  {{- range $profile := $optionalProfiles -}}
+    {{- if $profile.enabled -}}
+      {{- fail (printf "unsupported optional gRPC profile: %s=true is outside the verified default production mTLS topology. Disable it or deliver its transport contract in a separate workstream." $profile.path) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $gateway := default dict .Values.gateway -}}
+  {{- $veilEnabled := eq (toString (default false $gateway.veilEnabled)) "true" -}}
+  {{- if $veilEnabled -}}
+    {{- $manifest := default dict $gateway.witnessSignedManifest -}}
+    {{- range $field := list "existingSecret" "secretKey" "mountPath" "fileName" -}}
+      {{- if eq (default "" (index $manifest $field)) "" -}}
+        {{- fail (printf "gateway.witnessSignedManifest.%s is required when global.dsaEnv=production and gateway.veilEnabled=true. Create the witness-signed manifest Secret before install; Helm only projects its signed output." $field) -}}
+      {{- end -}}
+    {{- end -}}
+    {{- $manifestMountPath := default "" $manifest.mountPath -}}
+    {{- if not (hasPrefix "/" $manifestMountPath) -}}
+      {{- fail "gateway.witnessSignedManifest.mountPath must be an absolute container path when global.dsaEnv=production and gateway.veilEnabled=true." -}}
+    {{- end -}}
+    {{- $projectedManifestPath := printf "%s/%s" (trimSuffix "/" $manifestMountPath) $manifest.fileName -}}
+    {{- if ne (default "" $gateway.veilWitnessSignedManifestPath) $projectedManifestPath -}}
+      {{- fail (printf "gateway.veilWitnessSignedManifestPath (%q) must equal the witnessSignedManifest projected file (%q) when global.dsaEnv=production and gateway.veilEnabled=true." (default "" $gateway.veilWitnessSignedManifestPath) $projectedManifestPath) -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- if $mtls.enabled -}}
+  {{- $mountPath := default "" $mtls.mountPath -}}
+  {{- if or (eq $mountPath "") (not (hasPrefix "/" $mountPath)) -}}
+    {{- fail "global.mtls.mountPath must be an absolute, non-empty container path when global.mtls.enabled=true." -}}
+  {{- end -}}
+  {{- range $key := list "caBundleKey" "certKey" "keyKey" -}}
+    {{- if eq (default "" (index $mtls $key)) "" -}}
+      {{- fail (printf "global.mtls.%s must name a projected Secret key when global.mtls.enabled=true." $key) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $secrets := default dict $mtls.secrets -}}
+  {{- range $identity := list "gateway" "audit" "idBridge" "sandboxA" "sanitizer" "sandboxB" "veilWitness" -}}
+    {{- if eq (default "" (index $secrets $identity)) "" -}}
+      {{- fail (printf "global.mtls.secrets.%s is required when global.mtls.enabled=true. Create the operator-owned Secret in the workload namespace; Helm will only reference it." $identity) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $gateway := default dict .Values.gateway -}}
+  {{- $gatewayWitness := default dict $gateway.witnessMtls -}}
+  {{- $witness := default dict (index .Values "veil-witness") -}}
+  {{- $witnessMTLS := default dict $witness.witnessMtls -}}
+  {{- if or $gatewayWitness.clientSecret $witnessMTLS.serverSecret -}}
+    {{- fail "global.mtls.enabled=true owns the :50058 witness mTLS path. Clear gateway.witnessMtls and veil-witness.witnessMtls; the gateway and witness global.mtls Secrets are used for both :50057 and :50058." -}}
+  {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
   validators.keysGatewayAdminHalfConfig
 
   Slice 5 sibling of the Grafana embed guard. Fails fast when the

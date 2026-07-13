@@ -51,12 +51,15 @@ spec:
       ports:
         - port: 50057
           protocol: TCP
-    # Certificate retrieval from Gateway (port 50058)
+    # Gateway claim emission (50057) and certificate retrieval (50058).
+    # Keep the edge namespace limited to these two witness RPC ports.
     - from:
         - namespaceSelector:
             matchLabels:
               dsa.io/namespace: edge
       ports:
+        - port: 50057
+          protocol: TCP
         - port: 50058
           protocol: TCP
     # Certificate retrieval + postgres read-only browse from the operator

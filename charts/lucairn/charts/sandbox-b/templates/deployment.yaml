@@ -117,6 +117,11 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.global.mtls.enabled }}
+            - name: enterprise-mtls
+              mountPath: {{ .Values.global.mtls.mountPath | quote }}
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
@@ -148,6 +153,18 @@ spec:
               {{- end }}
         - name: tmp
           emptyDir: {}
+        {{- if .Values.global.mtls.enabled }}
+        - name: enterprise-mtls
+          secret:
+            secretName: {{ .Values.global.mtls.secrets.sandboxB }}
+            items:
+              - key: {{ .Values.global.mtls.caBundleKey }}
+                path: {{ .Values.global.mtls.caBundleKey }}
+              - key: {{ .Values.global.mtls.certKey }}
+                path: {{ .Values.global.mtls.certKey }}
+              - key: {{ .Values.global.mtls.keyKey }}
+                path: {{ .Values.global.mtls.keyKey }}
+        {{- end }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

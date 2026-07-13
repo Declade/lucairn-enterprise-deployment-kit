@@ -12,7 +12,17 @@ data:
   AUDIT_SERVICE_ADDR: {{ .Values.auditServiceAddr | quote }}
   LCR_ENABLED: {{ .Values.veilEnabled | quote }}
   LCR_WITNESS_ADDR: {{ .Values.veilWitnessAddr | quote }}
+  {{- if .Values.global.mtls.enabled }}
+  GRPC_TLS_ENABLED: "true"
+  DSA_MTLS_CA_BUNDLE_PATH: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.caBundleKey }}"
+  DSA_MTLS_SERVER_CERT_PATH: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.certKey }}"
+  DSA_MTLS_SERVER_KEY_PATH: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.keyKey }}"
+  DSA_MTLS_CLIENT_CERT_PATH: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.certKey }}"
+  DSA_MTLS_CLIENT_KEY_PATH: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.keyKey }}"
+  DSA_MTLS_SERVER_NAME: "dsa-id-bridge"
+  {{- else }}
   GRPC_TLS_ENABLED: {{ .Values.grpcTlsEnabled | quote }}
+  {{- end }}
   BRIDGE_ENCRYPTION_ENABLED: {{ .Values.encryptionEnabled | quote }}
   BRIDGE_ENCRYPTION_PROVIDER: {{ .Values.encryptionProvider | quote }}
   DSA_ENV: {{ required "global.dsaEnv must be set to \"development\" or \"production\" in the umbrella values" .Values.global.dsaEnv | quote }}

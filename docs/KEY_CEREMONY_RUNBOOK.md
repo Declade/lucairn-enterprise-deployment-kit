@@ -456,7 +456,27 @@ Production Helm installs use the External Secrets Operator (ESO) to sync secrets
 
 See `charts/lucairn/charts/*/templates/externalsecret.yaml` for the per-service `ExternalSecret` definitions and `docs/CUSTOMER_HELM_RUNBOOK.md` for the full Helm ceremony runbook.
 
-For the production Helm posture (`grpcTlsEnabled=true`, `dsaEnv=production`), see `charts/lucairn/values-prod.yaml` and `scripts/bootstrap-grpc-certs.sh` in the kit's Helm production posture.
+For the production Helm posture (`global.mtls.enabled=true`,
+`global.dsaEnv=production`), use `charts/lucairn/values-prod.yaml` and create
+the mTLS identity Secrets described in INSTALL.md § "Enterprise full-mesh
+mTLS". The production gateway also requires this ceremony's signed output as a
+separate, pre-created Secret in its own namespace:
+
+```bash
+# Run after §6.2 has produced witness-signed-manifest.json on the ceremony host.
+# This command receives only the signed public manifest — never keys.json or a
+# witness signing seed.
+kubectl -n dsa-edge create secret generic lucairn-witness-signed-manifest \
+  --from-file=witness-signed-manifest.json=/secure/ceremony/witness-signed-manifest.json \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+The standard production values reference that Secret with
+`gateway.witnessSignedManifest.existingSecret` and project exactly one key at
+`/certs/witness-signed-manifest.json`. If an operator changes any Secret/key or
+mount/file name, the complete `gateway.witnessSignedManifest` block and
+`gateway.veilWitnessSignedManifestPath` must be changed together. Helm fails
+the production render on a missing/partial block or a path mismatch.
 
 ---
 

@@ -82,6 +82,32 @@ spec:
           image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.image.repository }}:{{ .Values.image.tag | default .Values.global.imageTag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
+            {{- if .Values.global.mtls.enabled }}
+            # The claim-intake server (:50057) uses the verified DSA mesh.
+            - name: GRPC_TLS_ENABLED
+              value: "true"
+            - name: DSA_MTLS_CA_BUNDLE_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.caBundleKey }}"
+            - name: DSA_MTLS_SERVER_CERT_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.certKey }}"
+            - name: DSA_MTLS_SERVER_KEY_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.keyKey }}"
+            - name: DSA_MTLS_CLIENT_CERT_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.certKey }}"
+            - name: DSA_MTLS_CLIENT_KEY_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.keyKey }}"
+            - name: DSA_MTLS_SERVER_NAME
+              value: "dsa-veil-witness"
+            # Certificate retrieval (:50058) intentionally retains its own
+            # WITNESS_MTLS_* runtime contract; use the same leaf and canonical
+            # SAN so the chart does not introduce a second credential store.
+            - name: WITNESS_MTLS_CA_BUNDLE_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.caBundleKey }}"
+            - name: WITNESS_MTLS_SERVER_CERT_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.certKey }}"
+            - name: WITNESS_MTLS_SERVER_KEY_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.keyKey }}"
+            {{- end }}
             - name: LCR_DB_URL
               valueFrom:
                 secretKeyRef:
@@ -129,7 +155,7 @@ spec:
             # honored (Sprig's `default` treats boolean false as empty).
             - name: LUCAIRN_L3_REQUIRED
               value: {{ if hasKey .Values.global "l3Required" }}{{ .Values.global.l3Required | quote }}{{ else }}{{ "false" | quote }}{{ end }}
-            {{- if .Values.witnessMtls.serverSecret }}
+            {{- if and (not .Values.global.mtls.enabled) .Values.witnessMtls.serverSecret }}
             # TOB-S009 / fable HIGH (2026-06-10): opt-in witness server-side mTLS.
             # When witnessMtls.serverSecret is set the witness reads these three
             # paths to enable mutual-TLS on the cert RPC port (:50058).
@@ -195,17 +221,36 @@ spec:
               exec:
                 command: ["/bin/sh", "-c", "sleep {{ int .Values.gracefulShutdown.preStopSleepSeconds }}"]
           {{- end }}
-          {{- if .Values.witnessMtls.serverSecret }}
+          {{- if and (not .Values.global.mtls.enabled) .Values.witnessMtls.serverSecret }}
           volumeMounts:
             - name: witness-mtls-certs
               mountPath: {{ .Values.witnessMtls.mountPath | quote }}
               readOnly: true
           {{- end }}
-      {{- if .Values.witnessMtls.serverSecret }}
+          {{- if .Values.global.mtls.enabled }}
+          volumeMounts:
+            - name: enterprise-mtls
+              mountPath: {{ .Values.global.mtls.mountPath | quote }}
+              readOnly: true
+          {{- end }}
+      {{- if and (not .Values.global.mtls.enabled) .Values.witnessMtls.serverSecret }}
       volumes:
         - name: witness-mtls-certs
           secret:
             secretName: {{ .Values.witnessMtls.serverSecret }}
+      {{- end }}
+      {{- if .Values.global.mtls.enabled }}
+      volumes:
+        - name: enterprise-mtls
+          secret:
+            secretName: {{ .Values.global.mtls.secrets.veilWitness }}
+            items:
+              - key: {{ .Values.global.mtls.caBundleKey }}
+                path: {{ .Values.global.mtls.caBundleKey }}
+              - key: {{ .Values.global.mtls.certKey }}
+                path: {{ .Values.global.mtls.certKey }}
+              - key: {{ .Values.global.mtls.keyKey }}
+                path: {{ .Values.global.mtls.keyKey }}
       {{- end }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:

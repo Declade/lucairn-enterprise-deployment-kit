@@ -141,6 +141,12 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
+          {{- if .Values.global.mtls.enabled }}
+          volumeMounts:
+            - name: enterprise-mtls
+              mountPath: {{ .Values.global.mtls.mountPath | quote }}
+              readOnly: true
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
@@ -155,6 +161,19 @@ spec:
               exec:
                 command: ["/bin/sh", "-c", "sleep {{ int .Values.gracefulShutdown.preStopSleepSeconds }}"]
           {{- end }}
+      {{- if .Values.global.mtls.enabled }}
+      volumes:
+        - name: enterprise-mtls
+          secret:
+            secretName: {{ .Values.global.mtls.secrets.audit }}
+            items:
+              - key: {{ .Values.global.mtls.caBundleKey }}
+                path: {{ .Values.global.mtls.caBundleKey }}
+              - key: {{ .Values.global.mtls.certKey }}
+                path: {{ .Values.global.mtls.certKey }}
+              - key: {{ .Values.global.mtls.keyKey }}
+                path: {{ .Values.global.mtls.keyKey }}
+      {{- end }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

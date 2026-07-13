@@ -121,27 +121,39 @@ global:
   # back to its own gateway.secrets.values.lucairnLicenseKey slot.
   lucairnLicenseKey: ""
   lucairnLicensePublicKey: ""
-  # DSA environment: "development" | "production". Controls fail-closed guards in pipeline services.
-  #
-  # v1.0 ships "development" as the chart default because the bundled
-  # subcharts do NOT provision inter-service gRPC TLS certs (each
-  # subchart's `grpcTlsEnabled` defaults to "false"). The gateway / audit
-  # / id-bridge / sandbox-a binaries hard-refuse the combo
-  # `DSA_ENV=production` + `GRPC_TLS_ENABLED=false` at boot with
-  # `GRPC_TLS_ENABLED=true is required when DSA_ENV=production; refusing
-  # to start with plaintext transport`. Flipping the default to
-  # "development" matches the actual TLS posture the chart ships with
-  # so a fresh `helm install` succeeds end-to-end on a vanilla cluster
-  # without manual operator-side overrides (Vast cascade BLOCKER A,
-  # 2026-05-26).
-  #
-  # Customers who wire cert-manager (or equivalent) and flip every
-  # subchart's `grpcTlsEnabled` to "true" can also flip this to
-  # "production" via `--set global.dsaEnv=production` or by loading
-  # `values-prod.yaml` which already sets the combo correctly. Prod-grade
-  # TLS provisioning is the v2.0 roadmap. See INSTALL.md
-  # § "v1.0 gateway keystore (file-keystore on PVC)".
+  # DSA environment: "development" | "production". Development keeps the
+  # existing opt-out transport posture for compatibility. Production requires
+  # global.mtls.enabled=true; the parent chart then overrides every child
+  # legacy grpcTlsEnabled default with the verified DSA_MTLS_* contract.
   dsaEnv: development
+  # Enterprise full-mesh mTLS. This is the sole production transport contract:
+  # the operator creates every referenced Secret before install and Helm only
+  # projects the three named keys. Helm never generates, stores, or rotates CA
+  # or leaf private material.
+  #
+  # A Secret is required for each runtime identity, including the sanitizer
+  # sidecar. Each Secret has exactly these projected keys:
+  #   ca.crt  — shared trusted CA bundle
+  #   tls.crt — that identity's leaf certificate
+  #   tls.key — that identity's private key
+  #
+  # `values-prod.yaml` enables this contract and fixes the expected operator
+  # Secret names. Development remains opt-out for compatibility with the
+  # existing non-production topology.
+  mtls:
+    enabled: false
+    mountPath: "/var/run/lucairn/mtls"
+    caBundleKey: "ca.crt"
+    certKey: "tls.crt"
+    keyKey: "tls.key"
+    secrets:
+      gateway: ""
+      audit: ""
+      idBridge: ""
+      sandboxA: ""
+      sanitizer: ""
+      sandboxB: ""
+      veilWitness: ""
 
 # ---------------------------------------------------------------------------
 # Automated offsite compliance-DB backups (WS-2 / HA-01).

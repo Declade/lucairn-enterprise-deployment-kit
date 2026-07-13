@@ -9,6 +9,11 @@ test:
 	bash tests/test_redact_stream.sh
 	bash tests/test_tms_trust_zones.sh
 	bash tests/test_sec_hardening.sh
+	bash tests/test_enterprise_mtls_helm.sh
+	bash tests/test_enterprise_mtls_cert_contract.sh
+	bash tests/test_enterprise_mtls_kind_runtime_values.sh
+	bash tests/test_enterprise_mtls_kind_image_preload.sh
+	bash tests/test_enterprise_mtls_kind_client_auth.sh
 	bash tests/static_checks.sh
 
 package:

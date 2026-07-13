@@ -82,6 +82,19 @@ spec:
             - secretRef:
                 name: {{ .Chart.Name }}-credentials
           env:
+            {{- if .Values.global.mtls.enabled }}
+            # :50058 is a deliberately separate runtime contract. It uses the
+            # same operator-owned gateway leaf as the DSA mesh, but the witness
+            # client reads the WITNESS_MTLS_* environment family.
+            - name: WITNESS_MTLS_CA_BUNDLE_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.caBundleKey }}"
+            - name: WITNESS_MTLS_CLIENT_CERT_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.certKey }}"
+            - name: WITNESS_MTLS_CLIENT_KEY_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.keyKey }}"
+            - name: WITNESS_MTLS_SERVER_NAME
+              value: "dsa-veil-witness"
+            {{- end }}
             - name: SANDBOX_A_INVARIANT_URL
               value: "http://sandbox-a.dsa-identity.svc.cluster.local:8083/invariant"
             - name: SANDBOX_B_INVARIANT_URL
@@ -139,9 +152,21 @@ spec:
               mountPath: {{ .Values.readiness.bundleMountPath }}
               readOnly: true
             {{- end }}
+            {{- if .Values.witnessSignedManifest.existingSecret }}
+            - name: witness-signed-manifest
+              mountPath: {{ .Values.witnessSignedManifest.mountPath | quote }}
+              readOnly: true
+            {{- end }}
             {{- if .Values.witnessMtls.clientSecret }}
+            {{- if not .Values.global.mtls.enabled }}
             - name: witness-mtls-certs
               mountPath: {{ .Values.witnessMtls.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
+            {{- if .Values.global.mtls.enabled }}
+            - name: enterprise-mtls
+              mountPath: {{ .Values.global.mtls.mountPath | quote }}
               readOnly: true
             {{- end }}
             {{- if and .Values.keystore.persistence.enabled .Values.keystorePath }}
@@ -201,15 +226,37 @@ spec:
               - key: {{ .Values.readiness.bundleSecretKey }}
                 path: {{ .Values.readiness.bundleFileName }}
         {{- end }}
+        {{- if .Values.witnessSignedManifest.existingSecret }}
+        - name: witness-signed-manifest
+          secret:
+            secretName: {{ .Values.witnessSignedManifest.existingSecret }}
+            items:
+              - key: {{ .Values.witnessSignedManifest.secretKey }}
+                path: {{ .Values.witnessSignedManifest.fileName }}
+        {{- end }}
         {{- if and .Values.keystore.persistence.enabled .Values.keystorePath }}
         - name: keystore
           persistentVolumeClaim:
             claimName: {{ .Chart.Name }}-keystore
         {{- end }}
         {{- if .Values.witnessMtls.clientSecret }}
+        {{- if not .Values.global.mtls.enabled }}
         - name: witness-mtls-certs
           secret:
             secretName: {{ .Values.witnessMtls.clientSecret }}
+        {{- end }}
+        {{- end }}
+        {{- if .Values.global.mtls.enabled }}
+        - name: enterprise-mtls
+          secret:
+            secretName: {{ .Values.global.mtls.secrets.gateway }}
+            items:
+              - key: {{ .Values.global.mtls.caBundleKey }}
+                path: {{ .Values.global.mtls.caBundleKey }}
+              - key: {{ .Values.global.mtls.certKey }}
+                path: {{ .Values.global.mtls.certKey }}
+              - key: {{ .Values.global.mtls.keyKey }}
+                path: {{ .Values.global.mtls.keyKey }}
         {{- end }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:

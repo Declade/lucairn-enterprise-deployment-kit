@@ -779,8 +779,14 @@ grep -q "mTLS config (Helm): skipped — helm not installed" "$TMPDIR/h10-nohelm
   || { echo "FAIL: H10 helm-absent → expected mTLS graceful-skip INFO" >&2; cat "$TMPDIR/h10-nohelm.out" >&2; exit 1; }
 grep -q "canary key (Helm): skipped — helm not installed" "$TMPDIR/h10-nohelm.out" \
   || { echo "FAIL: H10 helm-absent → expected canary graceful-skip INFO" >&2; cat "$TMPDIR/h10-nohelm.out" >&2; exit 1; }
+grep -q "enterprise mTLS (Helm): skipped — helm not installed" "$TMPDIR/h10-nohelm.out" \
+  || { echo "FAIL: H10 helm-absent → expected enterprise mTLS graceful-skip INFO" >&2; cat "$TMPDIR/h10-nohelm.out" >&2; exit 1; }
 if grep -q "mTLS config (Helm): FAIL" "$TMPDIR/h10-nohelm.out"; then
   echo "FAIL: H10 helm-absent → must NOT flag a mTLS FAIL (cannot render without helm)" >&2
+  cat "$TMPDIR/h10-nohelm.out" >&2; exit 1
+fi
+if grep -q "enterprise mTLS (Helm): FAIL" "$TMPDIR/h10-nohelm.out"; then
+  echo "FAIL: H10 helm-absent → must NOT flag an enterprise mTLS FAIL (cannot render without helm)" >&2
   cat "$TMPDIR/h10-nohelm.out" >&2; exit 1
 fi
 echo "H10-mTLS: helm absent → graceful SKIP (no spurious FAIL): ok"

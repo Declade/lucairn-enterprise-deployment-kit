@@ -16,8 +16,59 @@ bash -n "$ROOT/tests/test_backup_helm.sh"
 bash -n "$ROOT/tests/test_sec_hardening.sh"
 bash -n "$ROOT/tests/test_sbom.sh"
 bash -n "$ROOT/tests/test_digest_pin.sh"
+bash -n "$ROOT/tests/test_enterprise_mtls_helm.sh"
+bash -n "$ROOT/tests/test_enterprise_mtls_cert_contract.sh"
+bash -n "$ROOT/tests/test_enterprise_mtls_kind_runtime_values.sh"
+bash -n "$ROOT/tests/test_enterprise_mtls_kind_image_preload.sh"
+bash -n "$ROOT/tests/test_enterprise_mtls_kind_client_auth.sh"
 bash -n "$ROOT/scripts/render-values.sh"
 bash -n "$ROOT/scripts/derive-veil-pubkey.sh"
+bash -n "$ROOT/scripts/enterprise-mtls-fixture-certs.sh"
+bash -n "$ROOT/scripts/generate-enterprise-mtls-kind-runtime-values.sh"
+bash -n "$ROOT/scripts/preload-enterprise-mtls-kind-images.sh"
+bash -n "$ROOT/scripts/test-enterprise-mtls-kind.sh"
+
+# The real Kind gate must both create and reference its chart-managed GHCR
+# pull Secret while keeping the private-registry guard fail-closed.
+for required_flag in \
+  '--set global.skipPullSecretGuard=false' \
+  "--set 'global.imagePullSecrets[0].name=lucairn-registry'" \
+  '--set global.secrets.backend=k8s-native' \
+  '--set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG_FILE"'; do
+  grep -Fq -- "$required_flag" "$ROOT/scripts/test-enterprise-mtls-kind.sh" \
+    || { echo "enterprise mTLS Kind gate missing required Helm flag: $required_flag" >&2; exit 1; }
+done
+
+# Kind node output is unordered: the harness must exclude the control plane
+# and refuse to proceed unless the configured two workers were found.
+KIND_GATE="$ROOT/scripts/test-enterprise-mtls-kind.sh"
+if grep -Fq 'set -- $(kind get nodes' "$KIND_GATE"; then
+  echo "enterprise mTLS Kind gate must not rely on Kind node output order" >&2
+  exit 1
+fi
+grep -Fq '*-control-plane) ;;' "$KIND_GATE" \
+  || { echo "enterprise mTLS Kind gate does not exclude the control-plane node" >&2; exit 1; }
+grep -Fq '*-worker*) workers+=("$node") ;;' "$KIND_GATE" \
+  || { echo "enterprise mTLS Kind gate does not select Kind worker nodes explicitly" >&2; exit 1; }
+grep -Fq '[ "${#workers[@]}" -ne 2 ]' "$KIND_GATE" \
+  || { echo "enterprise mTLS Kind gate does not assert exactly two workers" >&2; exit 1; }
+
+# These namespaces must exist before the operator Secrets are created, so
+# pre-adopt each chart-owned Namespace for the lucairn Helm release.
+for required_ownership in \
+  'app.kubernetes.io/managed-by=Helm' \
+  'meta.helm.sh/release-name=lucairn' \
+  'meta.helm.sh/release-namespace=lucairn'; do
+  grep -Fq "$required_ownership" "$KIND_GATE" \
+    || { echo "enterprise mTLS Kind gate missing Helm Namespace ownership: $required_ownership" >&2; exit 1; }
+done
+
+# The ephemeral application fixture is a static/render contract: it never
+# starts Kind, but proves the harness-owned STATE_DIR generation, key pairing,
+# optional-workload suppression, and no-output discipline.
+bash "$ROOT/tests/test_enterprise_mtls_kind_runtime_values.sh"
+bash "$ROOT/tests/test_enterprise_mtls_kind_image_preload.sh"
+bash "$ROOT/tests/test_enterprise_mtls_kind_client_auth.sh"
 
 # ── Hardening regression assertions (KIT-4: NET-02/SUP-06/NET-05/OBS-08/OBS-09) ──
 # Static (grep/render) assertions so they run without docker. Placed early so
@@ -180,6 +231,7 @@ ruby -e 'require "yaml"; ARGV.each { |f| YAML.load_file(f); puts "yaml ok: #{f}"
 
 if command -v helm >/dev/null 2>&1; then
   helm lint "$ROOT/charts/lucairn" -f "$ROOT/customer-values.yaml.example" \
+    --set global.skipPullSecretGuard=true \
     --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}"
 
   CHART="$ROOT/charts/lucairn"

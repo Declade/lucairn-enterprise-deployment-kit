@@ -53,7 +53,19 @@ data:
   {{- if .Values.keystorePath }}
   GATEWAY_KEYSTORE_PATH: {{ .Values.keystorePath | quote }}
   {{- end }}
+  {{- if .Values.global.mtls.enabled }}
+  # Parent-authoritative verified transport. Do not read the child legacy
+  # grpcTlsEnabled default in this profile.
+  GRPC_TLS_ENABLED: "true"
+  DSA_MTLS_CA_BUNDLE_PATH: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.caBundleKey }}"
+  DSA_MTLS_SERVER_CERT_PATH: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.certKey }}"
+  DSA_MTLS_SERVER_KEY_PATH: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.keyKey }}"
+  DSA_MTLS_CLIENT_CERT_PATH: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.certKey }}"
+  DSA_MTLS_CLIENT_KEY_PATH: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.keyKey }}"
+  DSA_MTLS_SERVER_NAME: "dsa-gateway"
+  {{- else }}
   GRPC_TLS_ENABLED: {{ .Values.grpcTlsEnabled | quote }}
+  {{- end }}
   LCR_ENABLED: {{ .Values.veilEnabled | quote }}
   # Deployment-license grace window (days after valid_until during which all
   # functionality keeps working with loud warnings before Enterprise features

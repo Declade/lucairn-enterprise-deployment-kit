@@ -13,7 +13,8 @@ LUCAIRN_STALENESS_DAYS="${LUCAIRN_STALENESS_DAYS:-90}"
 usage() {
   cat <<'USAGE'
 Usage:
-  lucairn doctor --env customer.env --compose docker-compose.customer.yml [--offline] [--check-images] [--skip-image-check] [--strict-runtime] [--strict]
+  lucairn doctor --env customer.env --compose docker-compose.customer.yml [--values production-values.yaml] [--offline] [--check-images] [--skip-image-check] [--strict-runtime] [--strict]
+  lucairn doctor --values production-values.yaml [--offline]
   lucairn support-bundle --env customer.env --compose docker-compose.customer.yml [--output bundles] [--offline]
   lucairn bundle create --customer-slug acme --models-dir ./models --model-manifest model-manifest.yaml --env customer.env --image-tar images.tar [--customer-data-dir ./customer-data]
   lucairn bundle prepare --customer-slug acme --staging-dir /secure/staging/acme [--output dist/customer-bundles]
@@ -30,7 +31,10 @@ Usage:
   lucairn check-updates [--offline] [--feed-url URL]
 
 Commands:
-  doctor          Validate customer deployment prerequisites.
+  doctor          Validate customer deployment prerequisites. With --values
+                  alone, validate the Helm production contract without
+                  requiring Compose-path files. The isolated cluster battery
+                  verifies the live Secret material and handshakes.
                   --strict-runtime fail-closes on the gateway /healthz + /readyz
                   runtime probes. --strict (distinct) is a verify-or-fail gate on
                   image DIGEST pins: a green --strict means every enforceable ref
@@ -830,8 +834,7 @@ helm_render_values() {
   helm template lucairn "$chart_dir" \
     -f "$values_file" \
     --set global.skipPullSecretGuard=true \
-    --set "veil-witness.secrets.values.signingKey=$DOCTOR_HELM_RENDER_TEST_SIGNING_KEY" \
-    2>/dev/null
+    --set "veil-witness.secrets.values.signingKey=$DOCTOR_HELM_RENDER_TEST_SIGNING_KEY"
 }
 
 check_mtls_partial_config_helm() {
@@ -904,6 +907,75 @@ check_mtls_partial_config_helm() {
   echo "mTLS config (Helm):   veil-witness.witnessMtls.serverSecret) or clear BOTH to disable witness mTLS."
   echo "mTLS config (Helm):   See OPS.md § \"Witness mTLS\"."
   return 1
+}
+
+# check_enterprise_mtls_helm <values_file> <chart_dir>
+#
+# Production-only Helm contract check for the DSA_MTLS_* full mesh. Template
+# validation owns completeness of the values contract; this doctor check makes
+# the effective rendered contract visible to the operator and rejects a chart
+# which somehow stopped projecting the runtime paths/mounts. It deliberately
+# inspects Helm's merged render rather than raw YAML so values inheritance
+# cannot cause a false result.
+check_enterprise_mtls_helm() {
+  local values_file="$1" chart_dir="$2"
+  [ -n "$values_file" ] && [ -f "$values_file" ] || return 0
+  if ! have helm; then
+    info "enterprise mTLS (Helm): skipped — helm not installed (render-based check requires helm)."
+    return 0
+  fi
+  [ -d "$chart_dir" ] || { echo "enterprise mTLS (Helm): FAIL — chart directory not found: $chart_dir"; return 1; }
+
+  local render
+  if ! render="$(helm_render_values "$values_file" "$chart_dir" 2>&1)"; then
+    echo "enterprise mTLS (Helm): FAIL — production values did not render."
+    echo "$render"
+    return 1
+  fi
+
+  # Development values have no enterprise transport promise. A production
+  # render is always subject to the parent validator, so its absence here is a
+  # defect rather than a permissive skip.
+  if ! grep -q 'DSA_ENV: "production"' <<<"$render"; then
+    info "enterprise mTLS (Helm): skipped — rendered values are not production."
+    return 0
+  fi
+
+  local key
+  for key in DSA_MTLS_CA_BUNDLE_PATH DSA_MTLS_SERVER_CERT_PATH DSA_MTLS_SERVER_KEY_PATH \
+             DSA_MTLS_CLIENT_CERT_PATH DSA_MTLS_CLIENT_KEY_PATH \
+             WITNESS_MTLS_CA_BUNDLE_PATH WITNESS_MTLS_SERVER_CERT_PATH WITNESS_MTLS_SERVER_KEY_PATH \
+             WITNESS_MTLS_CLIENT_CERT_PATH WITNESS_MTLS_CLIENT_KEY_PATH; do
+    if ! grep -q "$key" <<<"$render"; then
+      echo "enterprise mTLS (Helm): FAIL — rendered production contract lacks $key."
+      return 1
+    fi
+  done
+
+  local secret
+  for secret in gateway audit id-bridge sandbox-a sanitizer sandbox-b veil-witness; do
+    if ! grep -q "secretName: lucairn-mtls-$secret" <<<"$render"; then
+      # Secret naming is configurable; use the projected-volume marker as the
+      # stable contract when an operator intentionally uses different names.
+      if ! grep -q 'name: enterprise-mtls' <<<"$render"; then
+        echo "enterprise mTLS (Helm): FAIL — rendered production contract has no projected mTLS Secret volume for $secret."
+        return 1
+      fi
+    fi
+  done
+
+  # Production Veil startup verifies a separately ceremony-signed public-key
+  # manifest. The chart validator proves path/key coherence; retain these
+  # rendered markers here so doctor catches a future template regression that
+  # removes the projection altogether.
+  for marker in LCR_WITNESS_SIGNED_MANIFEST_PATH witness-signed-manifest; do
+    if ! grep -q "$marker" <<<"$render"; then
+      echo "enterprise mTLS (Helm): FAIL — rendered production contract lacks the witness-signed manifest $marker projection."
+      return 1
+    fi
+  done
+
+  info "enterprise mTLS (Helm): production render contract: ok"
 }
 
 check_canary_hmac_key_helm() {
@@ -4773,16 +4845,14 @@ bundle_command() {
 }
 
 doctor() {
-  local env_file="" compose_file="" values_file="" offline=0 postgres_url="" kube_namespace="dsa-edge" check_images=1 strict_runtime=0 strict_digest=0
+  local env_file="" compose_file="" values_file="" offline=0 postgres_url="" kube_namespace="dsa-edge" check_images=1 strict_runtime=0 strict_digest=0 values_only=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --env) env_file="$2"; shift 2 ;;
       --compose) compose_file="$2"; shift 2 ;;
-      # --values: path to a customer Helm values.yaml (e.g. customer-values.yaml).
-      # When provided, the doctor also runs Helm-path checks (witnessMtls partial-
-      # config + canaryHmacKey empty WARN) against the values file. The --env and
-      # --compose flags remain required for the Compose-path checks. (H9/M23 audit
-      # 2026-06-23.)
+      # --values: path to a customer Helm values.yaml (e.g. production-values.yaml).
+      # It may be used alone for the Helm-only doctor contract, or together with
+      # --env/--compose for the existing combined deployment checks.
       --values) values_file="$2"; shift 2 ;;
       --offline) offline=1; check_images=0; shift ;;
       --check-images) check_images=1; shift ;;
@@ -4799,6 +4869,21 @@ doctor() {
       *) fail "unknown doctor argument: $1" ;;
     esac
   done
+
+  if [ -n "$values_file" ] && [ -z "$env_file" ] && [ -z "$compose_file" ]; then
+    values_only=1
+  fi
+
+  if [ "$values_only" -eq 1 ]; then
+    require_file "$values_file" "values file"
+    echo "lucairn doctor $VERSION"
+    echo "values file: ok ($values_file)"
+    local values_mtls_failed=0
+    check_enterprise_mtls_helm "$values_file" "$ROOT/charts/lucairn" || values_mtls_failed=1
+    [ "$values_mtls_failed" -eq 0 ] || return 1
+    echo "doctor: ok"
+    return 0
+  fi
 
   env_file="${env_file:-$ROOT/customer.env}"
   compose_file="${compose_file:-$ROOT/docker-compose.customer.yml}"
@@ -4993,6 +5078,10 @@ doctor() {
   local helm_mtls_failed=0
   check_mtls_partial_config_helm "$values_file" "$ROOT/charts/lucairn" || helm_mtls_failed=1
   [ "$helm_mtls_failed" -eq 0 ] || return 1
+
+  local enterprise_helm_mtls_failed=0
+  check_enterprise_mtls_helm "$values_file" "$ROOT/charts/lucairn" || enterprise_helm_mtls_failed=1
+  [ "$enterprise_helm_mtls_failed" -eq 0 ] || return 1
 
   # H10 (2026-06-26): Helm-path canary two-consumer (gateway ↔ sandbox-a) check.
   # Renders the chart and FAILs on a half/mismatched CANARY_HMAC_KEY (one side

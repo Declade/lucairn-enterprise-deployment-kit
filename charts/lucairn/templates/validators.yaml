@@ -8,6 +8,7 @@
   fronted by a comment block to keep `helm template` output clean.
 */ -}}
 {{- include "validators.grafanaEmbedCrossChart" $ -}}
+{{- include "validators.enterpriseFullMeshMTLS" $ -}}
 {{- include "validators.keysGatewayAdminHalfConfig" $ -}}
 {{- include "validators.auditLogSecretLookup" $ -}}
 {{- include "validators.dashboardDemoModeNotProduction" $ -}}
