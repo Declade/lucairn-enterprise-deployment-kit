@@ -18,6 +18,24 @@ OUTPUT="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RENDER_VALUES="$SCRIPT_DIR/render-values.sh"
 
+# Resolve and validate the parent before generating any credentials.  A
+# customer directory is never chmodded: it is either already a private,
+# effective-user-owned directory or it is unsafe for secret material.
+OUTPUT_NAME="$(basename "$OUTPUT")"
+OUTPUT_DIR_INPUT="$(dirname "$OUTPUT")"
+if ! OUTPUT_DIR="$(ruby -e '
+  directory = File.realpath(ARGV.fetch(0))
+  stat = File.lstat(directory)
+  abort "not a real directory" unless stat.directory?
+  abort "not owned by the effective user" unless stat.uid == Process.euid
+  abort "group/world writable" unless (stat.mode & 0o022).zero?
+  print directory
+' "$OUTPUT_DIR_INPUT")"; then
+  echo "error: output directory must be a real, effective-user-owned directory that is not group/world writable: $OUTPUT_DIR_INPUT" >&2
+  exit 1
+fi
+OUTPUT="$OUTPUT_DIR/$OUTPUT_NAME"
+
 # This overlay contains freshly generated credentials. Refuse an occupied
 # destination before generating them so an ordinary upgrade cannot silently
 # rotate credentials, and include -L so dangling symlinks are refused too.
@@ -27,7 +45,6 @@ if [ -e "$OUTPUT" ] || [ -L "$OUTPUT" ]; then
   exit 1
 fi
 
-OUTPUT_DIR="$(dirname "$OUTPUT")"
 TMP_VALUES=""
 STAGED_VALUES=""
 cleanup() {
@@ -37,11 +54,11 @@ trap cleanup EXIT
 
 # Both files hold generated credentials. Stage the final serialized document
 # beside its destination so publication can use an atomic, non-replacing hard
-# link on the same filesystem. mktemp honours the 077 umask; chmod makes the
-# required mode explicit even on a platform with different defaults.
+# link on the same filesystem. The validated directory is private to the
+# effective user, which is the trust boundary for the pathname-based link
+# below; mktemp creates the initial 0600 staging inode under that boundary.
 TMP_VALUES="$(mktemp "${TMPDIR:-/tmp}/lucairn-production-values.XXXXXX")"
 STAGED_VALUES="$(mktemp "$OUTPUT_DIR/.lucairn-production-values.XXXXXX")"
-chmod 600 "$STAGED_VALUES"
 
 if [ ! -x "$RENDER_VALUES" ]; then
   echo "error: render-values.sh not found or not executable at $RENDER_VALUES" >&2
@@ -52,45 +69,52 @@ fi
 # duplicate its paired-key or shared-token logic here.
 bash "$RENDER_VALUES" "$TMP_VALUES" >/dev/null
 
-ruby -ryaml -e '
+STAGED_ID="$(ruby -ryaml -e '
   values = YAML.load_file(ARGV.fetch(0))
   global = values.fetch("global")
-
-  # This explicit allowlist is the production boundary. Every other global
-  # value in customer-values.yaml.example is a parent-owned environment,
-  # transport, network, or security control and must remain solely in
-  # charts/lucairn/values-prod.yaml.
-  allowed_global_keys = %w[
-    dsaServiceToken
-    dsaLicenseKey
-    lucairnLicenseKey
-    lucairnLicensePublicKey
-    imageRegistry
-    imageTag
-    imagePullSecrets
-    imagePullDockerConfigJson
-  ]
+  allowed_global_keys = %w[dsaServiceToken dsaLicenseKey lucairnLicenseKey lucairnLicensePublicKey imageRegistry imageTag imagePullSecrets imagePullDockerConfigJson]
   values["global"] = global.select { |key, _| allowed_global_keys.include?(key) }
-  # The production profile owns the optional-profile switch as well. Keep the
-  # customer inputs for disabled optional charts, but never let this overlay
-  # restate the parent production topology.
   values.delete("demo")
 
   staged = ARGV.fetch(1)
-  File.open(staged, File::WRONLY | File::TRUNC, 0600) do |file|
-    file.write(YAML.dump(values))
+  abort "runtime lacks File::NOFOLLOW for secure staging" unless File.const_defined?(:NOFOLLOW)
+  serialized = YAML.dump(values)
+  flags = File::WRONLY | File::TRUNC | File::NOFOLLOW
+  File.open(staged, flags) do |file|
+    file.chmod(0o600)
+    written = file.write(serialized)
+    abort "short write while staging production overlay" unless written == serialized.bytesize
     file.flush
     file.fsync if file.respond_to?(:fsync)
   end
-  validated = YAML.load_file(staged)
-  abort "staged production overlay is not a YAML mapping" unless validated.is_a?(Hash)
-  abort "staged production overlay lacks global values" unless validated.fetch("global").is_a?(Hash)
-' "$TMP_VALUES" "$STAGED_VALUES"
+
+  flags = File::RDONLY | File::NOFOLLOW
+  File.open(staged, flags) do |file|
+    stat = file.stat
+    abort "staged production overlay is not a regular file" unless stat.file?
+    abort "staged production overlay is not owned by the effective user" unless stat.uid == Process.euid
+    abort "staged production overlay mode is not 0600" unless (stat.mode & 0o7777) == 0o600
+    content = file.read
+    abort "staged production overlay bytes changed after write" unless content == serialized
+    parsed = YAML.load(content)
+    abort "staged production overlay does not equal the complete source object" unless parsed == values
+    print "#{stat.dev}:#{stat.ino}"
+  end
+' "$TMP_VALUES" "$STAGED_VALUES")"
 
 # File.link calls link(2) directly: publication is atomic, does not replace or
-# follow an output path that appeared after the early refusal, and also refuses
-# a raced directory (unlike a command-line ln destination operand).
-ruby -e 'File.link(ARGV.fetch(0), ARGV.fetch(1))' "$STAGED_VALUES" "$OUTPUT"
+# follow an output path that appeared after the early refusal. The parent was
+# checked as private to this effective user above; still assert immediately
+# before link that the staging pathname has not changed from the validated
+# inode. This preserves the same-directory, non-replacing publication rule.
+ruby -e '
+  staged, output, expected_dev, expected_ino = ARGV
+  stat = File.lstat(staged)
+  abort "staging path changed before publication" unless stat.file? && stat.dev == expected_dev.to_i && stat.ino == expected_ino.to_i
+  abort "staging path is not owned by the effective user" unless stat.uid == Process.euid
+  abort "staging path mode is not 0600" unless (stat.mode & 0o7777) == 0o600
+  File.link(staged, output)
+' "$STAGED_VALUES" "$OUTPUT" "${STAGED_ID%%:*}" "${STAGED_ID##*:}"
 rm -f -- "$STAGED_VALUES"
 STAGED_VALUES=""
 

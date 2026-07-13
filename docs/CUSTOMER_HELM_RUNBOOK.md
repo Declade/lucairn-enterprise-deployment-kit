@@ -143,18 +143,26 @@ mTLS, network, and security control. Do not rename, reuse, or layer
 `customer-values.yaml` after the production profile.
 
 ```bash
-bash scripts/render-production-values.sh customer-production-values.yaml
+# First install: assign a new protected path once.
+OVERLAY="$PWD/customer-production-values.yaml"
+bash scripts/render-production-values.sh "$OVERLAY"
 ```
 
 Keep the resulting protected overlay and reuse it unchanged for normal Helm
 upgrades. The renderer refuses an existing output path. For credential rotation,
-generate a different new overlay path and coordinate the application, database,
-and service rollout before updating the Helm values path.
+assign `OVERLAY` to a different new path, generate it, and coordinate the
+application, database, and service rollout before updating the Helm values path:
+
+```bash
+# Credential rotation only; do not overwrite the first-install overlay.
+OVERLAY="$PWD/customer-production-values-rotated-YYYYMMDD.yaml"
+bash scripts/render-production-values.sh "$OVERLAY"
+```
 
 Add your Anthropic API key to the production overlay (this does not print it):
 
 ```bash
-sed -i.bak 's|anthropicApiKey: ""|anthropicApiKey: "<your-key-here>"|' customer-production-values.yaml
+sed -i.bak 's|anthropicApiKey: ""|anthropicApiKey: "<your-key-here>"|' "$OVERLAY"
 ```
 
 Helm must layer this application-only file after
@@ -178,15 +186,20 @@ alone, which intentionally has no application secrets:
 ```bash
 bin/lucairn doctor \
   --values charts/lucairn/values-prod.yaml \
-  --values customer-production-values.yaml \
+  --values "$OVERLAY" \
   --offline
+helm template lucairn ./charts/lucairn \
+  -f charts/lucairn/values-prod.yaml \
+  -f "$OVERLAY" \
+  --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
+  >/tmp/lucairn-production-rendered.yaml
 ```
 
 This command fails closed if Helm is unavailable because it cannot inspect the
 rendered production transport contract. A plain Compose-only `doctor` remains
 graceful and does not perform Helm inspection.
 
-For a production install, use `customer-production-values.yaml` below. A
+For a production install, use the same `$OVERLAY` below. A
 successful template is not acceptance: wait for readiness and execute the
 disposable acceptance battery in a non-production Kind cluster before release
 approval:
@@ -205,7 +218,7 @@ helm install lucairn ./charts/lucairn \
   --namespace lucairn \
   --create-namespace \
   -f charts/lucairn/values-prod.yaml \
-  -f customer-production-values.yaml \
+  -f "$OVERLAY" \
   --set-file global.imagePullDockerConfigJson="$DOCKER_CONFIG/config.json" \
   --wait --timeout 10m
 ```
@@ -242,7 +255,7 @@ Expected: ~25 pods, all `Running` or `Completed` (Completed = Jobs). Pods run ac
 - `dsa-demo` — demo lane (optional)
 
 If any pod is stuck `ImagePullBackOff` → re-run Step 2 and reinstall.
-If any pod is stuck `CrashLoopBackOff` → check its logs (`kubectl logs -n <ns> <pod>`) — likely a missed REPLACE_* value in `customer-production-values.yaml`.
+If any pod is stuck `CrashLoopBackOff` → check its logs (`kubectl logs -n <ns> <pod>`) — likely a missed REPLACE_* value in `$OVERLAY`.
 
 (If you want a wait that fails on any unready Helm-managed pod, scope to the Helm label so you don't pick up Completed Jobs + kube-system pods:
 `kubectl wait --for=condition=ready pod -l app.kubernetes.io/managed-by=Helm -n lucairn --timeout=10m`.)
@@ -260,8 +273,8 @@ Use the in-cluster admin endpoint (avoids host-network rate limits that can hit 
 ADMIN_KEY=$(kubectl get secret -n dsa-edge gateway-credentials -o jsonpath='{.data.DSA_ADMIN_KEY}' | base64 -d)
 echo "Admin key (first 8 chars): ${ADMIN_KEY:0:8}..."
 
-# Your Anthropic key (already in customer-production-values.yaml above)
-ANTHROPIC_KEY=$(grep -E 'anthropicApiKey:' customer-production-values.yaml | head -1 | awk '{print $2}' | tr -d '"')
+# Your Anthropic key (already in $OVERLAY above)
+ANTHROPIC_KEY=$(grep -E 'anthropicApiKey:' "$OVERLAY" | head -1 | awk '{print $2}' | tr -d '"')
 
 # Mint a customer via in-cluster temp pod. Note: response field is `dsa_api_key`.
 CUSTOMER_KEY=$(kubectl run mint --image=curlimages/curl:latest --restart=Never --rm -i --quiet -- \
