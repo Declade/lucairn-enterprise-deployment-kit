@@ -34,6 +34,7 @@ ruby -ryaml -e '
   abort "production global External Secrets backend is not Vault" unless global.dig("secrets", "backend") == "vault"
   abort "production generic Cilium DNS restriction must be disabled" unless global["dnsRestriction"] == false
   abort "production generic node isolation must be disabled" unless global["nodeIsolation"] == false
+  abort "production generic Cilium WireGuard must remain an opt-in" unless global["wireguardEncryption"] == false
   abort "production serviceToken custody placeholder must be an empty string" unless global["serviceToken"] == ""
   abort "production Vault mount path drifted" unless global.dig("secrets", "vault", "mountPath") == "dsa"
   expected_paths = {
@@ -133,6 +134,12 @@ ruby -ryaml -e '
     sandbox-a-credentials sandbox-b-credentials veil-witness-credentials
   ].sort
   documents = YAML.load_stream(File.read(ARGV.fetch(0))).compact
+  identities = documents.group_by do |document|
+    metadata = document.fetch("metadata", {})
+    [document["apiVersion"], document["kind"], metadata.fetch("namespace", ""), metadata.fetch("name", "")]
+  end
+  duplicates = identities.select { |_identity, resources| resources.length > 1 }.keys
+  abort "production render has duplicate Kubernetes identities: #{duplicates.inspect}" unless duplicates.empty?
   gateway = documents.find { |document| document.is_a?(Hash) && document["kind"] == "Deployment" && document.dig("metadata", "name") == "gateway" } || abort("production render misses gateway deployment")
   pull_secrets = gateway.dig("spec", "template", "spec", "imagePullSecrets")
   abort "checked-in production site example must attach its names-only pull Secret reference" unless pull_secrets == [{ "name" => "lucairn-registry" }]
@@ -181,6 +188,31 @@ ruby -ryaml -e '
     abort "generic production render requires dsa.io/zone scheduling for #{name}" if deployment.dig("spec", "template", "spec").to_yaml.include?("dsa.io/zone")
   end
 ' "$RENDER"
+
+# Cilium WireGuard remains a site-overlay opt-in. It annotates the canonical
+# Namespace objects without creating a second object identity for any of the
+# ten DSA namespaces.
+WIREGUARD_RENDER="$TMPDIR/wireguard-rendered.yaml"
+helm template lucairn "$CHART" -f "$VALUES" -f "$SITE_VALUES" \
+  --set global.wireguardEncryption=true --namespace lucairn > "$WIREGUARD_RENDER"
+ruby -ryaml -e '
+  documents = YAML.load_stream(File.read(ARGV.fetch(0))).compact
+  identities = documents.group_by do |document|
+    metadata = document.fetch("metadata", {})
+    [document["apiVersion"], document["kind"], metadata.fetch("namespace", ""), metadata.fetch("name", "")]
+  end
+  duplicates = identities.select { |_identity, resources| resources.length > 1 }.keys
+  abort "WireGuard render has duplicate Kubernetes identities: #{duplicates.inspect}" unless duplicates.empty?
+  namespaces = documents.select { |document| document["apiVersion"] == "v1" && document["kind"] == "Namespace" }
+  expected = %w[dsa-edge dsa-identity dsa-bridge dsa-ai dsa-audit dsa-observability dsa-ingest dsa-admin dsa-witness dsa-demo]
+  abort "WireGuard render Namespace roster drifted" unless namespaces.map { |document| document.dig("metadata", "name") }.sort == expected.sort
+  namespaces.each do |document|
+    annotations = document.dig("metadata", "annotations")
+    abort "WireGuard annotation missing from canonical Namespace #{document.dig("metadata", "name")}" unless annotations == {
+      "helm.sh/resource-policy" => "keep", "io.cilium.network.wg-encryption" => "true"
+    }
+  end
+' "$WIREGUARD_RENDER"
 if rg -n 'dockerconfigjson|imagePullDockerConfigJson' "$RENDER"; then
   echo "production render contains a Helm-owned registry credential" >&2
   exit 1

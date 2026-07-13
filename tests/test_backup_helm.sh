@@ -95,6 +95,39 @@ fi
 # S3 + age Secret refs are wired (never inline values).
 grep -q "name: lucairn-backup-age" "$RENDER_OUT" || { echo "FAIL: age recipient secret ref missing" >&2; exit 1; }
 grep -q "name: lucairn-backup-s3" "$RENDER_OUT" || { echo "FAIL: s3 cred secret ref missing" >&2; exit 1; }
+# Bundled Postgres has no TLS listener. Every generated backup job must force
+# sslmode=disable even when the surrounding production profile reserves
+# global.postgresqlSslmode=require for an operator-selected external target.
+SSL_VALUES="$ROOT/charts/lucairn/values-prod.yaml"
+SSL_SITE="$ROOT/charts/lucairn/values-prod-site.example.yaml"
+SSL_RENDER="$(mktemp)"
+SSL_BK_DOCS="$(mktemp)"
+helm template lucairn "$CHART" -f "$SSL_VALUES" -f "$SSL_SITE" \
+  --set backup.enabled=true \
+  --set backup.s3.bucket=lucairn-backups \
+  --set backup.encryption.recipientSecretRef.name=lucairn-backup-age \
+  > "$SSL_RENDER"
+backup_docs "$SSL_RENDER" > "$SSL_BK_DOCS"
+[ "$(grep -c 'name: BK_SSLMODE' "$SSL_BK_DOCS" || true)" = 3 ] \
+  || { echo "FAIL: expected BK_SSLMODE in all bundled backup jobs" >&2; rm -f "$SSL_RENDER" "$SSL_BK_DOCS"; exit 1; }
+[ "$(grep -A1 'name: BK_SSLMODE' "$SSL_BK_DOCS" | grep -Ec 'value: "?disable"?' || true)" = 3 ] \
+  || { echo "FAIL: bundled backup jobs did not force BK_SSLMODE=disable" >&2; rm -f "$SSL_RENDER" "$SSL_BK_DOCS"; exit 1; }
+if grep -A1 'name: BK_SSLMODE' "$SSL_BK_DOCS" | grep -q 'value: require'; then
+  echo "FAIL: bundled backup job inherited external PostgreSQL TLS mode" >&2; rm -f "$SSL_RENDER" "$SSL_BK_DOCS"; exit 1
+fi
+rm -f "$SSL_RENDER" "$SSL_BK_DOCS"
+# External Postgres is deliberately not a chart-managed backup target: the
+# external operator's TLS disposition remains theirs and no in-cluster CronJob
+# can safely infer its endpoint, CA, or credentials.
+EXTERNAL_RENDER="$(mktemp)"
+render "${ENABLED[@]}" --set audit.postgresql.enabled=false \
+  --set global.postgresqlSslmode=require 2>/dev/null > "$EXTERNAL_RENDER"
+[ "$(grep -c 'kind: CronJob' "$EXTERNAL_RENDER" || true)" = 2 ] \
+  || { echo "FAIL: external PostgreSQL unexpectedly rendered a chart-managed backup job" >&2; rm -f "$EXTERNAL_RENDER"; exit 1; }
+if grep -A1 'name: BK_SSLMODE' "$EXTERNAL_RENDER" | grep -q 'value: require'; then
+  echo "FAIL: external PostgreSQL TLS mode leaked into a bundled backup job" >&2; rm -f "$EXTERNAL_RENDER"; exit 1
+fi
+rm -f "$EXTERNAL_RENDER"
 echo "  ok: backup.enabled=true renders 3 CronJobs (audit/id-bridge/veil-witness) with S3 + age secret refs"
 
 # 2b. installToolsAtRuntime=true (default) renders a ROOT initContainer (apk
