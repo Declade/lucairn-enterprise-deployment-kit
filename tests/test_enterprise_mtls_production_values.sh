@@ -32,6 +32,9 @@ ruby -ryaml -e '
   abort "production imagePullSecrets must default to an empty out-of-band list" unless global["imagePullSecrets"] == []
   abort "production values carry Docker registry credentials" if global.key?("imagePullDockerConfigJson")
   abort "production global External Secrets backend is not Vault" unless global.dig("secrets", "backend") == "vault"
+  abort "production generic Cilium DNS restriction must be disabled" unless global["dnsRestriction"] == false
+  abort "production generic node isolation must be disabled" unless global["nodeIsolation"] == false
+  abort "production serviceToken custody placeholder must be an empty string" unless global["serviceToken"] == ""
   abort "production Vault mount path drifted" unless global.dig("secrets", "vault", "mountPath") == "dsa"
   expected_paths = {
     "gateway" => "gateway", "audit" => "postgres-audit", "id-bridge" => "bridge",
@@ -132,6 +135,12 @@ ruby -ryaml -e '
     end
   end.compact
   abort "production render contains Helm-owned Secret objects: #{secrets.join(", ")}" unless secrets.empty?
+  abort "generic production render contains CiliumNetworkPolicy resources" unless documents.none? { |document| document.is_a?(Hash) && document["kind"] == "CiliumNetworkPolicy" }
+  %w[sandbox-a sandbox-b].each do |name|
+    deployment = documents.find { |document| document.is_a?(Hash) && document["kind"] == "Deployment" && document.dig("metadata", "name") == name }
+    abort "generic production render misses #{name} deployment" unless deployment
+    abort "generic production render requires dsa.io/zone scheduling for #{name}" if deployment.dig("spec", "template", "spec").to_yaml.include?("dsa.io/zone")
+  end
 ' "$RENDER"
 if rg -n 'dockerconfigjson|imagePullDockerConfigJson' "$RENDER"; then
   echo "production render contains a Helm-owned registry credential" >&2
@@ -193,15 +202,39 @@ for child_field in \
   child="${child_field%.*}"
   field="${child_field##*.}"
   assert_render_rejected "inline-${child}-credential" \
-    "${child}.secrets.values.${field} must be empty when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history" \
+    "${child}.secrets.values.${field} must be exactly the empty string when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history" \
     --set-string "${child}.secrets.values.${field}=review-sentinel-not-a-secret"
 done
 assert_render_rejected inline-global-service-token \
-  'global.dsaServiceToken must be empty when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history' \
+  'global.dsaServiceToken must be exactly the empty string when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history' \
   --set-string global.dsaServiceToken=review-sentinel-not-a-secret
 assert_render_rejected inline-sandbox-b-redis-password \
-  'sandbox-b.redis.password must be empty when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history' \
+  'sandbox-b.redis.password must be exactly the empty string when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history' \
   --set-string sandbox-b.redis.password=review-sentinel-not-a-secret
+assert_render_rejected typed-falsy-gateway-service-token \
+  'gateway.secrets.values.dsaServiceToken must be exactly the empty string when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history' \
+  --set gateway.secrets.values.dsaServiceToken=0
+assert_render_rejected typed-falsy-audit-postgres-password \
+  'audit.secrets.values.postgresPassword must be exactly the empty string when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history' \
+  --set audit.secrets.values.postgresPassword=false
+assert_render_rejected typed-falsy-global-dsa-service-token \
+  'global.dsaServiceToken must be exactly the empty string when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history' \
+  --set global.dsaServiceToken=0
+assert_render_rejected typed-falsy-global-service-token \
+  'global.serviceToken must be exactly the empty string when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history' \
+  --set global.serviceToken=false
+assert_render_rejected typed-falsy-sandbox-b-redis-password \
+  'sandbox-b.redis.password must be exactly the empty string when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history' \
+  --set sandbox-b.redis.password=false
+
+# String-empty placeholders are the supported production custody values.
+helm template lucairn "$CHART" -f "$VALUES" -f "$SITE_VALUES" \
+  --set-string gateway.secrets.values.dsaServiceToken= \
+  --set-string audit.secrets.values.postgresPassword= \
+  --set-string global.dsaServiceToken= \
+  --set-string global.serviceToken= \
+  --set-string sandbox-b.redis.password= \
+  >"$TMPDIR/string-empty-custody.yaml"
 
 # Overlay files have exactly the same custody boundary as --set: Helm stores
 # both in release values, so a sentinel in an operator overlay must fail.
@@ -215,7 +248,7 @@ if helm template lucairn "$CHART" -f "$VALUES" -f "$SITE_VALUES" -f "$TMPDIR/inl
   echo "production render accepted an inline credential in an overlay file" >&2
   exit 1
 fi
-grep -Fq 'gateway.secrets.values.dsaServiceToken must be empty when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history' "$TMPDIR/inline-overlay.err" \
+grep -Fq 'gateway.secrets.values.dsaServiceToken must be exactly the empty string when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history' "$TMPDIR/inline-overlay.err" \
   || { echo "production overlay credential rejection was not actionable" >&2; cat "$TMPDIR/inline-overlay.err" >&2; exit 1; }
 
 helm template lucairn "$CHART" \
@@ -348,6 +381,13 @@ for required in 'PROVIDER_KEY_FILE=/secure/operator/anthropic-provider-key' \
   grep -Fq -- "$required" "$RUNBOOK" \
     || { echo "production runbook omits protected provider-key flow: $required" >&2; exit 1; }
 done
+for required in 'Cilium-only opt-in' 'ciliumnetworkpolicies.cilium.io' \
+  'dsa.io/zone=identity' 'dsa.io/zone=ai' \
+  'single-node pilot: the hardened topology requires' \
+  'dsa.io/zone=identity:NoSchedule' 'dsa.io/zone=ai:NoSchedule'; do
+  grep -Fq -- "$required" "$RUNBOOK" \
+    || { echo "production runbook omits Cilium/node-isolation opt-in guidance: $required" >&2; exit 1; }
+done
 if rg -n -- '-d .*provider_key|--data .*provider_key|echo .*PROVIDER_KEY|echo .*ANTHROPIC' "$RUNBOOK"; then
   echo "production runbook may expose a provider key through curl argv or output" >&2
   exit 1
@@ -361,6 +401,10 @@ ruby -e '
   abort "first-customer flow interpolates ADMIN_KEY into kubectl/POD argv" if block.match?(/\$\{?ADMIN_KEY\}?/)
   admin_header = block[/x-admin-key:\s*[^\"\n]*/]
   abort "first-customer flow must construct its admin header only from the runtime stdin variable" unless admin_header == "x-admin-key: ${admin_key}"
+  pinned = "curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b"
+  abort "first-customer flow must use exactly the reviewed pinned curl helper" unless block.scan(pinned).length == 1
+  abort "first-customer flow must not use curlimages/curl:latest" if block.include?("curlimages/curl:latest")
+  abort "first-customer flow must describe the helper as a fixed reviewed identity" unless block.include?("fixed, reviewed multi-architecture image identity")
 ' "$RUNBOOK"
 
 echo "enterprise mTLS production values: ESO-only names/paths contract and required-key coverage verified"

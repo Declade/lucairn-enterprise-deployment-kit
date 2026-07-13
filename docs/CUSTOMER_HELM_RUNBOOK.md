@@ -164,6 +164,46 @@ only mounts them. The production names are `lucairn-mtls-gateway` (dsa-edge),
 by the production overlay as well. Never put CA or private-key bytes in Helm
 values or Git.
 
+#### Production networking and optional hardened node topology
+
+The ordinary Kubernetes `NetworkPolicy` resources in this chart remain
+mandatory; use a CNI that enforces them, such as Calico or Cilium. The generic
+production profile leaves `global.dnsRestriction=false` because its
+`CiliumNetworkPolicy` DNS controls are an additional Cilium-only opt-in, not a
+replacement for the mandatory baseline NetworkPolicies or mTLS. Enable that
+control only after the Cilium CRD exists:
+
+```bash
+kubectl get crd ciliumnetworkpolicies.cilium.io
+```
+
+`global.nodeIsolation` is also disabled in the generic profile. Do not enable
+it for a single-node pilot: the hardened topology requires distinct schedulable
+nodes or node pools labeled `dsa.io/zone=identity` and `dsa.io/zone=ai`, with
+the matching NoSchedule taints `dsa.io/zone=identity:NoSchedule` and
+`dsa.io/zone=ai:NoSchedule`. The chart's Sandbox A and Sandbox B tolerations
+and scheduling rules expect those exact labels and taints.
+
+Before opting in, the operator verifies both pools rather than assuming a
+label was applied to an unschedulable node:
+
+```bash
+kubectl get nodes -L dsa.io/zone
+kubectl get nodes -l dsa.io/zone=identity -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+kubectl get nodes -l dsa.io/zone=ai -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+```
+
+Only after those checks, add this non-secret, names-only site-overlay opt-in
+(within the names-and-paths-only production overlay), and set
+`dnsRestriction: true` there only for the verified Cilium CRD:
+
+```yaml
+global:
+  nodeIsolation: true
+  # Cilium-only, after `ciliumnetworkpolicies.cilium.io` exists:
+  # dnsRestriction: true
+```
+
 #### Production only: create or intentionally adopt namespaces before Secrets
 
 On a clean cluster, create the `lucairn` release namespace and the six
@@ -313,7 +353,7 @@ CUSTOMER_KEY=$(
     printf '\n'
     jq -n --rawfile provider_key "$PROVIDER_KEY_FILE" \
       '{customer_id:"my_first_customer", provider:"anthropic", provider_key:($provider_key | rtrimstr("\n")), tier:"enterprise"}'
-  } | kubectl run mint --image=curlimages/curl:latest --restart=Never --rm -i --quiet -- \
+  } | kubectl run mint --image=curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b --restart=Never --rm -i --quiet -- \
     sh -ceu '
       IFS= read -r admin_key
       curl -s -X POST \
@@ -328,6 +368,9 @@ echo "Customer API key: $CUSTOMER_KEY"
 ```
 
 Save the `lcr_live_*` key — your application/customer uses it for inference requests. It is shown ONCE and never recoverable from the kit.
+
+The curl helper uses a fixed, reviewed multi-architecture image identity; this
+pin does not add a signature-verification step.
 
 ---
 
@@ -682,7 +725,7 @@ The witness accumulator hasn't received all 4 claims yet. Causes:
 This runbook ships v1.0 single-replica install. v2.0 will add:
 - Multi-replica HA for gateway / witness / audit / bridge / sandbox-* (every service that currently holds pod-local state needs a shared-store refactor)
 - Postgres-backed keystore via the chart's `postgres-gateway` subchart (currently opt-in via `postgres-gateway.enabled: true` + `gateway.postgresKeystore.enabled: true` + `gateway.replicaCount > 1` — but this opt-in is NOT verified for v1.0; use at your own risk)
-- Cilium NetworkPolicy enforcement (currently opt-in via `global.dnsRestriction: true` + `global.nodeIsolation: true`)
+- Cilium-only DNS restriction after the Cilium CRD is installed (optional via a site overlay's `global.dnsRestriction: true`); baseline Kubernetes NetworkPolicies remain mandatory with Calico or Cilium
 
 ### Certificate replacement is not revocation
 
