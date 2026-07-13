@@ -7,6 +7,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHART="$ROOT/charts/lucairn"
+SANITIZER_TEMPLATE="$CHART/charts/sandbox-a/templates/deployment.yaml"
 FIXTURE="$CHART/tests/fixtures/enterprise-mtls-accepted.yaml"
 GENERATOR="$ROOT/scripts/generate-enterprise-mtls-kind-runtime-values.sh"
 SIGN_MANIFEST="$ROOT/scripts/generate-enterprise-mtls-kind-signed-manifest.sh"
@@ -260,6 +261,7 @@ ruby -e '
 # never receive the generic probe or gateway leaf.
 ruby -e '
   source = File.read(ARGV.fetch(0))
+  sanitizer_template = File.read(ARGV.fetch(1))
   required = {
     "audit" => ["dsa-audit", "audit", "audit", "lucairn-mtls-audit"],
     "id-bridge" => ["dsa-bridge", "id-bridge", "id-bridge", "lucairn-mtls-id-bridge"],
@@ -279,15 +281,24 @@ ruby -e '
     "expected exactly one $identity workload Pod",
     "expected exactly one $container container",
     "mountPath \\\"$WORKLOAD_MTLS_DIR\\\"",
+    "[ -z \"$mount_volume\" ]",
     "mounted_read_only",
     "mounted_secret",
-    "enterprise-mtls",
+    "[ -z \"$mounted_secret\" ]",
+    "[ -z \"$expected_secret\" ]",
+    "[ \"$mounted_secret\" != \"$expected_secret\" ]",
     "would not use its own read-only projected mTLS Secret",
     "get node \"$node\"",
     "exec \"$WORKLOAD_POD\" -c \"$container\" -- uname -m"
   ].each { |needle| abort "projected workload resolver misses: #{needle}" unless resolve.include?(needle) }
+  abort "projected workload resolver retains a literal enterprise-mtls volume-name predicate" if resolve.include?("enterprise-mtls")
   abort "projected workload resolver does not select Pods by the explicit pod label" unless resolve.include?("app.kubernetes.io/name=$pod_label")
   abort "projected workload resolver still selects Pods by the container name" if resolve.include?("app.kubernetes.io/name=$container")
+  sanitizer_container = sanitizer_template[/^        - name: sanitizer\n(?<body>.*?)^      volumes:/m, :body] || abort("Sanitizer chart misses sanitizer container")
+  sanitizer_mount = sanitizer_container[/^\s*- name: enterprise-mtls-sanitizer\n\s*mountPath: \{\{ \.Values\.global\.mtls\.mountPath \| quote \}\}\n\s*readOnly: true$/m]
+  abort "Sanitizer chart does not mount its distinct read-only enterprise-mtls-sanitizer volume" unless sanitizer_mount
+  sanitizer_volume = sanitizer_template[/^\s*- name: enterprise-mtls-sanitizer\n\s*secret:\n\s*secretName: \{\{ \.Values\.global\.mtls\.secrets\.sanitizer \}\}$/m]
+  abort "Sanitizer chart does not bind enterprise-mtls-sanitizer to the expected sanitizer Secret" unless sanitizer_volume
   runner = source[/^projected_identity_witness_handshake\(\) \{\n(?<body>.*?)^\}$/m, :body] || abort("Kind gate misses projected workload handshake runner")
   [
     "resolve_projected_identity_workload \"$identity\" \"$namespace\" \"$pod_label\" \"$container\" \"$expected_secret\"",
@@ -306,7 +317,7 @@ ruby -e '
   calls = source.index("for identity_call in") || abort("Kind gate does not execute projected workload calls")
   pass = source.index("ENTERPRISE_HELM_MTLS_KIND: PASS") || abort("Kind gate misses PASS terminator")
   abort "projected workload calls are outside the real Kind gate" unless calls < pass
-' "$KIND_GATE"
+' "$KIND_GATE" "$SANITIZER_TEMPLATE"
 
 # Every Gateway proof and the gateway-local application health evidence
 # must originate inside the real gateway container and use only a temporary,
