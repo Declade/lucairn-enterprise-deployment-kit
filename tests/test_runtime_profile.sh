@@ -36,6 +36,14 @@ copy_pre_s1_env() {
   sed '/^LUCAIRN_RUNTIME_PROFILE_REQUIRED=/d' "$2" > "$2.tmp" && mv "$2.tmp" "$2"
 }
 
+file_mode() {
+  local file="$1"
+  case "$(uname -s)" in
+    Darwin|FreeBSD|OpenBSD|NetBSD) stat -f '%Lp' "$file" 2>/dev/null ;;
+    *) stat -c '%a' "$file" 2>/dev/null ;;
+  esac
+}
+
 # Adoption changes customer.env by exactly the S1 marker; help must not retain
 # the historical promise that it only writes the sidecar.
 "$ROOT/bin/lucairn-init" --help > "$TMPDIR/lucairn-init-help.out"
@@ -396,7 +404,7 @@ sed -e '/^LUCAIRN_RUNTIME_PROFILE_REQUIRED=/d' \
 legacy_before="$(cksum "$LEGACY_ENV")"
 legacy_before_copy="$TMPDIR/legacy-before.env"
 cp "$LEGACY_ENV" "$legacy_before_copy"
-legacy_mode="$(stat -f '%Lp' "$LEGACY_ENV" 2>/dev/null || stat -c '%a' "$LEGACY_ENV")"
+legacy_mode="$(file_mode "$LEGACY_ENV")"
 "$ROOT/bin/lucairn" doctor --env "$LEGACY_ENV" --compose "$ROOT/docker-compose.customer.yml" --offline --skip-image-check >"$TMPDIR/legacy-doctor.out"
 grep -q 'runtime profile: legacy install' "$TMPDIR/legacy-doctor.out"
 "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
@@ -406,7 +414,7 @@ grep -q 'runtime profile: legacy install' "$TMPDIR/legacy-doctor.out"
 grep -qx 'LUCAIRN_RUNTIME_PROFILE_REQUIRED=1' "$LEGACY_ENV"
 sed '/^LUCAIRN_RUNTIME_PROFILE_REQUIRED=1$/d' "$LEGACY_ENV" > "$TMPDIR/legacy-without-marker.env"
 cmp -s "$legacy_before_copy" "$TMPDIR/legacy-without-marker.env"
-test "$(stat -f '%Lp' "$LEGACY_ENV" 2>/dev/null || stat -c '%a' "$LEGACY_ENV")" = "$legacy_mode"
+test "$(file_mode "$LEGACY_ENV")" = "$legacy_mode"
 test -f "$LEGACY_ENV.runtime-profile.yaml"
 grep -qx '  model_name: preserved-model' "$LEGACY_ENV.runtime-profile.yaml"
 grep -qx '  model_file: preserved-model.gguf' "$LEGACY_ENV.runtime-profile.yaml"
@@ -431,7 +439,7 @@ for adoption_abort in signal fail-after-env; do
   copy_pre_s1_env "$LOCAL_ENV" "$ADOPTION_ABORT_ENV"
   rm -f "$ADOPTION_ABORT_ENV.runtime-profile.yaml"
   cp "$ADOPTION_ABORT_ENV" "$ADOPTION_ABORT_ENV.before"
-  adoption_abort_mode="$(stat -f '%Lp' "$ADOPTION_ABORT_ENV" 2>/dev/null || stat -c '%a' "$ADOPTION_ABORT_ENV")"
+  adoption_abort_mode="$(file_mode "$ADOPTION_ABORT_ENV")"
   case "$adoption_abort" in
     signal)
       expect_fail "adoption-abort-${adoption_abort}" env LUCAIRN_TEST_TRANSACTION_HOOK=adoption-after-profile:signal "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --adopt-runtime-profile --output "$ADOPTION_ABORT_ENV" --skip-doctor
@@ -441,7 +449,7 @@ for adoption_abort in signal fail-after-env; do
       ;;
   esac
   cmp -s "$ADOPTION_ABORT_ENV.before" "$ADOPTION_ABORT_ENV"
-  test "$(stat -f '%Lp' "$ADOPTION_ABORT_ENV" 2>/dev/null || stat -c '%a' "$ADOPTION_ABORT_ENV")" = "$adoption_abort_mode"
+  test "$(file_mode "$ADOPTION_ABORT_ENV")" = "$adoption_abort_mode"
   test ! -e "$ADOPTION_ABORT_ENV.runtime-profile.yaml"
   test ! -e "$ADOPTION_ABORT_ENV.image-manifest.yaml"
   test ! -d "$TMPDIR/.lucairn-init.lock"
@@ -454,13 +462,13 @@ ADOPTION_VISIBLE_SIGNAL_ENV="$TMPDIR/adoption-env-visible-signal.env"
 copy_pre_s1_env "$LOCAL_ENV" "$ADOPTION_VISIBLE_SIGNAL_ENV"
 rm -f "$ADOPTION_VISIBLE_SIGNAL_ENV.runtime-profile.yaml"
 cp "$ADOPTION_VISIBLE_SIGNAL_ENV" "$ADOPTION_VISIBLE_SIGNAL_ENV.before"
-adoption_visible_signal_mode="$(stat -f '%Lp' "$ADOPTION_VISIBLE_SIGNAL_ENV" 2>/dev/null || stat -c '%a' "$ADOPTION_VISIBLE_SIGNAL_ENV")"
+adoption_visible_signal_mode="$(file_mode "$ADOPTION_VISIBLE_SIGNAL_ENV")"
 expect_fail adoption-env-visible-signal \
   env LUCAIRN_TEST_TRANSACTION_HOOK=adoption-env-visible:signal \
   "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --adopt-runtime-profile --output "$ADOPTION_VISIBLE_SIGNAL_ENV" --skip-doctor
 cmp -s "$ADOPTION_VISIBLE_SIGNAL_ENV.before" "$ADOPTION_VISIBLE_SIGNAL_ENV"
-test "$(stat -f '%Lp' "$ADOPTION_VISIBLE_SIGNAL_ENV" 2>/dev/null || stat -c '%a' "$ADOPTION_VISIBLE_SIGNAL_ENV")" = "$adoption_visible_signal_mode"
+test "$(file_mode "$ADOPTION_VISIBLE_SIGNAL_ENV")" = "$adoption_visible_signal_mode"
 test ! -e "$ADOPTION_VISIBLE_SIGNAL_ENV.runtime-profile.yaml"
 test ! -L "$ADOPTION_VISIBLE_SIGNAL_ENV.runtime-profile.yaml"
 test ! -e "$ADOPTION_VISIBLE_SIGNAL_ENV.image-manifest.yaml"
@@ -474,7 +482,7 @@ ADOPTION_DOUBLE_SIGNAL_ENV="$TMPDIR/adoption-double-signal.env"
 copy_pre_s1_env "$LOCAL_ENV" "$ADOPTION_DOUBLE_SIGNAL_ENV"
 rm -f "$ADOPTION_DOUBLE_SIGNAL_ENV.runtime-profile.yaml"
 cp "$ADOPTION_DOUBLE_SIGNAL_ENV" "$ADOPTION_DOUBLE_SIGNAL_ENV.before"
-adoption_double_signal_mode="$(stat -f '%Lp' "$ADOPTION_DOUBLE_SIGNAL_ENV" 2>/dev/null || stat -c '%a' "$ADOPTION_DOUBLE_SIGNAL_ENV")"
+adoption_double_signal_mode="$(file_mode "$ADOPTION_DOUBLE_SIGNAL_ENV")"
 if env LUCAIRN_TEST_TRANSACTION_HOOK=adoption-env-visible:signal LUCAIRN_TEST_CLEANUP_HOOK=second-term \
   "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --adopt-runtime-profile --output "$ADOPTION_DOUBLE_SIGNAL_ENV" --skip-doctor \
@@ -486,7 +494,7 @@ else
 fi
 test "$adoption_double_signal_status" -eq 143
 cmp -s "$ADOPTION_DOUBLE_SIGNAL_ENV.before" "$ADOPTION_DOUBLE_SIGNAL_ENV"
-test "$(stat -f '%Lp' "$ADOPTION_DOUBLE_SIGNAL_ENV" 2>/dev/null || stat -c '%a' "$ADOPTION_DOUBLE_SIGNAL_ENV")" = "$adoption_double_signal_mode"
+test "$(file_mode "$ADOPTION_DOUBLE_SIGNAL_ENV")" = "$adoption_double_signal_mode"
 test ! -L "$ADOPTION_DOUBLE_SIGNAL_ENV"
 test ! -e "$ADOPTION_DOUBLE_SIGNAL_ENV.runtime-profile.yaml"
 test ! -L "$ADOPTION_DOUBLE_SIGNAL_ENV.runtime-profile.yaml"
