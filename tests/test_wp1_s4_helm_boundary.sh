@@ -132,20 +132,81 @@ ruby -ryaml -e '
   end
 ' "$TMPDIR/render-production.yaml"
 
+schema_error_pattern() {
+  case "$1" in
+    missing) printf "^[[:space:]]*-[[:space:]]+(at ''|\\(root\\)): (missing property 'ephemeral'|ephemeral is required)[[:space:]]*$" ;;
+    boolean) printf "^[[:space:]]*-[[:space:]]+(at '/ephemeral': got boolean, want string|ephemeral: Invalid type\\. Expected: string, given: boolean)[[:space:]]*$" ;;
+    null) printf "^[[:space:]]*-[[:space:]]+(at '/ephemeral': got null, want string|ephemeral: Invalid type\\. Expected: string, given: null|at '': missing property 'ephemeral'|\\(root\\): ephemeral is required)[[:space:]]*$" ;;
+    typo) printf "^[[:space:]]*-[[:space:]]+(at '/ephemeral': value must be one of 'true', 'false'|ephemeral: ephemeral must be one of the following: \"true\", \"false\")[[:space:]]*$" ;;
+    number) printf "^[[:space:]]*-[[:space:]]+(at '/ephemeral': got number, want string|ephemeral: Invalid type\\. Expected: string, given: integer)[[:space:]]*$" ;;
+    list) printf "^[[:space:]]*-[[:space:]]+(at '/ephemeral': got array, want string|ephemeral: Invalid type\\. Expected: string, given: array)[[:space:]]*$" ;;
+    map) printf "^[[:space:]]*-[[:space:]]+(at '/ephemeral': got object, want string|ephemeral: Invalid type\\. Expected: string, given: object)[[:space:]]*$" ;;
+    *) echo "unknown schema error shape: $1" >&2; exit 2 ;;
+  esac
+}
+
+schema_diagnostic_matches() {
+  grep -Eq "$(schema_error_pattern "$1")" "$2"
+}
+
 assert_rejected() {
   local name="$1"
-  local expected="$2"
+  local shape="$2"
   shift 2
   if "$@" >"$TMPDIR/$name.out" 2>&1; then
     echo "WP1 S4 Helm boundary: accepted invalid $name" >&2
     exit 1
   fi
-  grep -Fq "$expected" "$TMPDIR/$name.out" || {
-    echo "WP1 S4 Helm boundary: $name did not produce the stable schema error: $expected" >&2
+  schema_diagnostic_matches "$shape" "$TMPDIR/$name.out" || {
+    echo "WP1 S4 Helm boundary: $name did not report the expected ephemeral $shape schema error" >&2
     cat "$TMPDIR/$name.out" >&2
     exit 1
   }
 }
+
+table_test_schema_diagnostics() {
+  local line shape
+  local table="$TMPDIR/schema-diagnostic-table.txt"
+  local -a cases=(
+    "missing|- at '': missing property 'ephemeral'"
+    "boolean|- at '/ephemeral': got boolean, want string"
+    "null|- at '/ephemeral': got null, want string"
+    "typo|- at '/ephemeral': value must be one of 'true', 'false'"
+    "number|- at '/ephemeral': got number, want string"
+    "list|- at '/ephemeral': got array, want string"
+    "map|- at '/ephemeral': got object, want string"
+    "missing|- (root): ephemeral is required"
+    "boolean|- ephemeral: Invalid type. Expected: string, given: boolean"
+    "null|- ephemeral: Invalid type. Expected: string, given: null"
+    "typo|- ephemeral: ephemeral must be one of the following: \"true\", \"false\""
+    "number|- ephemeral: Invalid type. Expected: string, given: integer"
+    "list|- ephemeral: Invalid type. Expected: string, given: array"
+    "map|- ephemeral: Invalid type. Expected: string, given: object"
+    "null|- (root): ephemeral is required"
+  )
+
+  for line in "${cases[@]}"; do
+    shape="${line%%|*}"
+    printf '%s\n' "${line#*|}" >"$table"
+    schema_diagnostic_matches "$shape" "$table" || {
+      echo "WP1 S4 Helm boundary: schema diagnostic table rejected $shape fixture" >&2
+      exit 1
+    }
+  done
+
+  printf '%s\n' "- at '/other': got boolean, want string" >"$table"
+  ! schema_diagnostic_matches boolean "$table" || {
+    echo "WP1 S4 Helm boundary: schema diagnostic table accepted a different field" >&2
+    exit 1
+  }
+  printf '%s\n' 'Error: chart dependency is missing' >"$table"
+  ! schema_diagnostic_matches typo "$table" || {
+    echo "WP1 S4 Helm boundary: schema diagnostic table accepted an unrelated Helm failure" >&2
+    exit 1
+  }
+}
+
+table_test_schema_diagnostics
 
 write_direct_invalid() {
   local value="$1"
@@ -156,7 +217,7 @@ write_direct_invalid() {
 }
 
 write_direct_invalid '__MISSING__'
-assert_rejected direct-missing "missing property 'ephemeral'" \
+assert_rejected direct-missing missing \
   helm template sandbox-a "$CHILD_CHART" -f "$TMPDIR/direct-invalid.yaml"
 
 invalid_value() {
@@ -171,21 +232,9 @@ invalid_value() {
   esac
 }
 
-schema_error() {
-  case "$1" in
-    boolean) printf 'got boolean, want string' ;;
-    null) printf 'got null, want string' ;;
-    typo) printf "value must be one of 'true', 'false'" ;;
-    number) printf 'got number, want string' ;;
-    list) printf 'got array, want string' ;;
-    map) printf 'got object, want string' ;;
-    *) echo "unknown schema error shape: $1" >&2; exit 2 ;;
-  esac
-}
-
 for shape in boolean null typo number list map; do
   write_direct_invalid "$(invalid_value "$shape")"
-  assert_rejected "direct-$shape" "$(schema_error "$shape")" \
+  assert_rejected "direct-$shape" "$shape" \
     helm template sandbox-a "$CHILD_CHART" -f "$TMPDIR/direct-invalid.yaml"
 done
 
@@ -198,7 +247,7 @@ for shape in boolean null typo number list map; do
 sandbox-a:
   ephemeral: $(invalid_value "$shape")
 YAML
-  assert_rejected "umbrella-$shape" "$(schema_error "$shape")" \
+  assert_rejected "umbrella-$shape" "$shape" \
     helm template lucairn "$CHART" \
       -f "$CHART/values-prod.yaml" \
       -f "$CHART/values-prod-site.example.yaml" \
