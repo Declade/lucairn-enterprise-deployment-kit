@@ -149,22 +149,31 @@ If you intend to mirror images to your own internal registry instead, this prere
 > `registry-1.docker.io` on your infrastructure; alternatively, manually mirror
 > the specific tags above and edit the `image:` lines in the compose files.
 
-## Quickstart (30 seconds, dev mode)
+## Dev local-runtime quickstart (model required)
 
 ```
 git clone https://github.com/Declade/lucairn-enterprise-deployment-kit && cd lucairn-enterprise-deployment-kit
 # Step 0: Lucairn must GRANT your GitHub account registry access BEFORE this step.
 # See § "Step 0 — Registry access" above. One-time per host:
 docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
-./bin/lucairn-init --dev
-docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env up -d
+# Lucairn does not ship model weights. Obtain a compatible GGUF under your
+# license/provenance process, then stage it at this exact filename.
+mkdir -p models
+cp /secure/models/customer-model-q4.gguf models/customer-model-q4.gguf
+./bin/lucairn-init --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+  --model-name customer-model --model-file customer-model-q4.gguf --model-path .
+docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env --profile llama-cpp up -d
 ```
 
-That's it. `bin/lucairn-init --dev` writes a fully-populated, doctor-passing
-`customer.env` (5 Ed25519 keypairs, hex32 service secrets, postgres
-passwords, sensible dev-mode defaults) and runs `bin/lucairn doctor` against
-it before exiting. Use `bin/lucairn-mint-customer` once the stack is healthy
-to provision your first customer.
+This path is runnable only after the required model is staged. Lucairn does
+not distribute model weights. `bin/lucairn-init --dev --runtime-mode local-runtime --local-runtime llama-cpp` writes a fully-populated `customer.env` and its non-secret
+`customer.env.runtime-profile.yaml` sidecar plus the recorded non-secret
+`customer.env.image-manifest.yaml` snapshot (5 Ed25519 keypairs, hex32 service
+secrets, postgres passwords, sensible dev-mode defaults) and runs
+`bin/lucairn doctor` against them before exiting. Keep all three artifacts
+together: `customer.env` and its two sidecars.
+Use `bin/lucairn-mint-customer` once the stack is healthy to provision your
+first customer.
 
 The `docker login` step requires Lucairn to have granted package-pull access
 to the GitHub account that owns the PAT (see § "Step 0" above). First-time
@@ -176,10 +185,15 @@ prefix. If your private mirror requires authentication, run `docker login
 pattern as the ghcr.io flow above).
 
 For production deployment with a Lucairn-issued license, see "Choose A
-Deployment Mode" below and use `./bin/lucairn-init --production --license
-<path>`. For managed-LLM mode (BYOK Anthropic, OpenAI, etc.) add `--byok` and
-populate the provider key before `docker compose up`. The
+Deployment Mode" below and use `./bin/lucairn-init --production --runtime-mode
+<mode> --license <path>`. For managed-LLM mode (BYOK Anthropic, OpenAI,
+etc.) use `--runtime-mode managed-byok` and populate the provider key before
+`docker compose up`. The
 `bin/lucairn-init --help` lists every flag.
+
+Run this enterprise kit from supported Linux or macOS operator shells, using
+Docker Compose or Kubernetes. It does not install a Windows end-user client;
+that client-install surface is WP5.
 
 ## Lucairn Enterprise v1.0 deployment topology
 
@@ -611,7 +625,7 @@ customer's own host or on Lucairn-hosted infrastructure.
 |---|---|---|---|---|
 | **Self-hosted inference (local model)** | Customer's host (local container plus model runtime) | `docker-compose.customer.yml` plus `docker-compose.self-hosted.yml` | `DSA_LICENSE_KEY`, `DSA_LICENSE_SIGNING_KEY` only | None to Lucairn at request time. Model runtime fetched once at install. |
 | **Self-hosted inference (managed LLM / BYOK)** | Customer's host (local container; LLM call goes out to operator-declared FQDNs) | `docker-compose.customer.yml` plus `docker-compose.self-hosted.yml` plus `docker-compose.self-hosted-byok.yml` | Same as self-hosted local-model **plus** `LUCAIRN_LLM_EGRESS_ALLOWLIST` and provider key(s) (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) | HTTPS to operator-declared LLM FQDNs only. Sandbox A / ID Bridge / Sanitizer / Audit / Witness stay on internal-only networks. |
-| **Split deployment** | Lucairn-hosted | `docker-compose.customer.yml` only | All of the self-hosted list **plus** `SANDBOX_B_REMOTE_ENDPOINT`, `SANDBOX_B_API_KEY`, `LCR_SANDBOX_B_PUBLIC_KEY`, optional mTLS material (`SANDBOX_B_CLIENT_CERT` etc.) | HTTPS to Lucairn-provided endpoint per request. |
+| **Split deployment** | Lucairn-hosted | `docker-compose.customer.yml` only | All of the self-hosted list **plus** a Lucairn-issued `--remote-credentials` file (one remote API key + 64-hex remote public key), `SANDBOX_B_REMOTE_ENDPOINT`, optional mTLS material (`SANDBOX_B_CLIENT_CERT` etc.) | HTTPS to Lucairn-provided endpoint per request. Endpoint and license alone are not usable. |
 
 Pick **self-hosted inference (local model)** when:
 
@@ -647,13 +661,81 @@ Pick **split deployment** when:
 If neither column matches the customer's profile, contact Lucairn before
 proceeding. Mixing modes is not supported.
 
-The bare `customer.env.example` ships **split-deployment defaults**: the
-license / signing / remote-endpoint slots are placeholder strings that the
-operator must replace with Lucairn-provisioned values before the gateway will
-start outside dev mode. For a self-hosted-inference install, replace
-`SANDBOX_B_REMOTE_ENDPOINT` with an empty string (the self-hosted overlay
-ignores it) and follow the model runtime steps in the `docker-compose.self-hosted.yml`
-overlay (`MODEL_RUNTIME_PROFILE`, `MODEL_NAME`, `MODEL_PATH`, etc.).
+`lucairn-init` requires an explicit `--runtime-mode`: `split-remote` (also
+accepted as `split/remote`, with `--remote-endpoint https://...` **and**
+`--remote-credentials /secure/lucairn-issued-remote-credentials.env`),
+`managed-byok`, or `local-runtime --local-runtime <name>`. It writes the
+non-secret canonical state files beside the env file as
+`customer.env.runtime-profile.yaml` and
+`customer.env.image-manifest.yaml`; the profile records the mode, ordered
+overlays, and a hash-bound init-time image-manifest snapshot. A
+fresh local-runtime inventory is `operator-declared` and
+`required-not-verified`: it names the required path but does not claim that a
+model file has been supplied or checked.
+`doctor`, support bundles, backup, and restore consume this state. Existing
+installations without the file remain supported as legacy installs. To adopt
+one, run init with the exact matching explicit mode and
+`--adopt-runtime-profile`; it preserves every existing setting and secret,
+then atomically adds only `LUCAIRN_RUNTIME_PROFILE_REQUIRED=1` together with
+the sidecar. Mismatches fail before mutation.
+
+For an S1-generated install, both sidecars are required beside `customer.env`.
+If its runtime marker remains in the env but either the profile or recorded
+image-manifest snapshot is deleted, replaced, malformed, or symlinked, the
+tools fail closed instead of guessing an overlay set or using the mutable kit
+manifest. Only a genuinely pre-S1 env
+with no profile marker follows the legacy path, and it remains legacy until an
+operator explicitly adopts it.
+
+### Recorded Compose lifecycle (S1)
+
+For an S1 install, do not reconstruct `docker compose -f` arguments manually.
+Use the profile-bound wrappers, each with `--env customer.env` and optionally
+`--compose /path/to/docker-compose.customer.yml` when the base file is not in
+the kit root:
+
+```bash
+bin/lucairn up --env customer.env
+bin/lucairn status --env customer.env
+bin/lucairn logs --env customer.env --tail 200 --service gateway
+bin/lucairn pull --env customer.env       # profile-bound upgrade fetch
+bin/lucairn down --env customer.env       # never removes volumes
+```
+
+They fail before Docker for missing or invalid marker-bearing state. Pre-S1
+state retains its documented one-base-file legacy path. Exact release rollback,
+rollback history, and restore proof are WP4 S4 scope and are not provided by S1.
+
+### Init lock recovery
+
+`lucairn-init` serializes writes in `.lucairn-init.lock` beside the selected
+output. A live recorded owner is never displaced. After a host crash, a lock
+whose recorded PID is provably dead is recovered automatically; a missing or
+corrupt owner is retained for a 30-second grace period before recovery to
+protect the short creator crash gap. A symlink or non-directory lock is unsafe
+and fails closed. If recovery reports a still-live owner, wait for that init
+run rather than deleting the lock manually.
+
+For a new split deployment, use `lucairn-init --runtime-mode split-remote
+--remote-endpoint https://... --remote-credentials <Lucairn-issued-file>`;
+endpoint plus a license is not sufficient. The credential file has exactly
+`sandbox_b_api_key=<opaque key>` and `sandbox_b_public_key=<64 hex>` lines;
+the remote Sandbox B signing seed remains on Lucairn infrastructure. Do not start by copying only
+`customer.env.example`, which creates an implicit legacy install. The bare
+template remains only for the clearly labeled advanced/pre-S1 manual path
+below. To adopt such an existing env without rewriting secrets, use the exact
+matching explicit mode with `--adopt-runtime-profile`.
+
+For local-runtime, init records the operator-declared model name, file, and
+path. It does not claim the model is present or usable. When preparing a
+bundle, those fields must agree with `models/model-manifest.yaml` and the
+canonical bundle `MODEL_PATH` is `.` (the delivered `models/` tree mounts at
+`/models`); direct non-bundle installs may use another safe relative path. The bundle
+preparation gate performs the later model-manifest/file validation. Model names
+use 1–128 ASCII characters matching `[A-Za-z0-9][A-Za-z0-9._:-]*`; model files
+use the stricter single-basename grammar
+`[A-Za-z0-9][A-Za-z0-9._-]*` (no slashes, absolute paths, `.`/`..`, or
+symlinks). The bundle reader rejects duplicate or unknown manifest structure.
 
 ### Deployment license (Enterprise features)
 
@@ -665,8 +747,9 @@ air-gapped installs work. Lucairn issues you two values:
 - `LUCAIRN_LICENSE_KEY` — the signed license token.
 - `LUCAIRN_LICENSE_PUBLIC_KEY` — the verification public key.
 
-`bin/lucairn-init --production` populates both automatically when you carry
-them in the `--license` bundle (see below); otherwise set them in `customer.env`
+`bin/lucairn-init --production --runtime-mode <mode> --license <bundle>`
+populates both automatically when you include the mode-compatible required
+flags and carry them in the license bundle (see below); otherwise set them in `customer.env`
 (Compose) or under `gateway.secrets.values` (Helm — see
 `customer-values.yaml.example`). Leave them EMPTY for sandbox/dev: in
 `DSA_ENV=development` the gateway warns-not-enforces; in production an empty
@@ -696,8 +779,9 @@ renewal.
 
 #### Combined `--license` bundle (HMAC + Ed25519 entitlement)
 
-The `--license` file `bin/lucairn-init --production` reads can carry **both**
-licenses in one bundle. Four fields:
+The `--license` file passed to a production init run can carry **both**
+licenses in one bundle. Production init also requires an explicit
+`--runtime-mode` plus its compatible required flags. Four fields:
 
 ```json
 {
@@ -713,7 +797,8 @@ default 14-day grace.) The line-based form is equivalent:
 `license_key=…` / `signing_key=…` / `entitlement_token=…` /
 `entitlement_public_key=…`, one per line.
 
-`bin/lucairn-init --production --license <bundle>` writes `DSA_LICENSE_KEY` +
+`bin/lucairn-init --production --runtime-mode <mode> --license <bundle>`
+(with mode-compatible required flags) writes `DSA_LICENSE_KEY` +
 `DSA_LICENSE_SIGNING_KEY` from the first two fields **and** `LUCAIRN_LICENSE_KEY`
 + `LUCAIRN_LICENSE_PUBLIC_KEY` (+ `LUCAIRN_LICENSE_GRACE_DAYS`) from the
 entitlement fields. A bundle that carries only `license_key` + `signing_key`
@@ -727,7 +812,14 @@ of `LUCAIRN_LICENSE_KEY` / `LUCAIRN_LICENSE_PUBLIC_KEY` is set.
 >
 > **`--customer-id` auto-fill:** the entitlement is coupled to the customer's gateway keystore `customer_id` — a mismatch returns `403 entitlement_mismatch`. If you mint the customer with `bin/lucairn-mint-customer` first, the derived `customer_id` is persisted to a kit-local `.lucairn-customer-id` file (mode 0600), and `bin/lucairn license issue` auto-fills `--customer-id` from it when you do not pass one explicitly. An explicit `--customer-id` always wins. (Single-customer / last-write-wins: a new mint overwrites the recorded id.)
 
-## Docker Compose Install
+## Advanced / pre-S1 manual Docker Compose install
+
+New installs must use the explicit `lucairn-init` flow above so that
+`customer.env.runtime-profile.yaml` and `customer.env.image-manifest.yaml` are
+created beside `customer.env`. This
+manual template path is retained only for a pre-S1 installation or a deliberate
+manual ceremony. It is a legacy install until the operator adopts an explicit,
+matching profile with `--adopt-runtime-profile`.
 
 1. Unpack the release bundle.
 
@@ -1085,16 +1177,23 @@ active. Provision the full 16 GB RAM before enabling this mode (see
 When the customer wants the Lucairn control + identity plane on-premise but
 is OK with the LLM call itself going to a managed cloud provider (Anthropic,
 OpenAI, Mistral, Gemini, Azure OpenAI, AWS Bedrock, internal LLM gateway),
-load the BYOK overlay on top of the customer + self-hosted overlays:
+initialize `managed-byok`, set at least one provider key, and run doctor before
+loading the BYOK overlay on top of the customer + self-hosted overlays. Init
+intentionally leaves provider keys empty and skips doctor; a fresh BYOK env is
+not doctor-passing.
 
 ```bash
-docker compose \
-  -f docker-compose.customer.yml \
-  -f docker-compose.self-hosted.yml \
-  -f docker-compose.self-hosted-byok.yml \
-  --env-file customer.env \
-  --profile "$MODEL_RUNTIME_PROFILE" \
-  up -d
+bin/lucairn-init --production --runtime-mode managed-byok \
+  --license license-bundle.json --output customer.env
+# Set ANTHROPIC_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY, or GEMINI_API_KEY
+# in customer.env, then verify before Compose:
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
+```
+
+Then use the recorded topology:
+
+```bash
+bin/lucairn up --env customer.env
 ```
 
 In `customer.env`, uncomment and populate the managed-LLM block:
@@ -2065,28 +2164,41 @@ Review the archive before emailing it to Lucairn support.
 
 ## Customer Bundle Install
 
-Use this path when Lucairn has prepared a customer-specific bundle with model files and image archives.
+Use this path when Lucairn has prepared a customer-specific bundle. The trusted
+packaging/handoff station verifies the exact tarball before sending it. On the
+clean customer host, S1 requires a separately supplied SHA256 checksum through
+the approved authenticated handoff channel before raw extraction; it does not
+yet provide completed publisher authentication.
 
-1. Unpack the bundle.
+1. Compare the tarball's digest with the separately supplied handoff checksum
+   before extracting anything. Do not use `bin/lucairn` copied from inside the
+   unverified archive for this gate.
+
+```bash
+shasum -a 256 lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ.tar.gz
+```
+
+Match the printed digest byte-for-byte to the value received through that
+channel. Stop if it differs.
+
+2. Only after that checksum gate, extract the bundle and verify its internal
+   layout/checksum contract.
 
 ```bash
 tar -xzf lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ.tar.gz
 cd lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ
-```
-
-2. Verify checksums.
-
-```bash
 bin/lucairn bundle verify --bundle .
 ```
 
-3. Load images when the bundle contains an archive.
+This post-extraction check is not a replacement for the separately supplied
+checksum gate above.
 
-```bash
-docker load -i images/lucairn-images.tar
-```
+3. Follow the image-delivery section in the generated `INSTALL-CUSTOMER.md`.
 
-If `images/lucairn-images.tar` is absent, this handoff uses registry or customer-mirror delivery. Log in to the configured registry, keep `LUCAIRN_IMAGE_REGISTRY` and `LUCAIRN_IMAGE_TAG` aligned with the handoff note, and skip `docker load`.
+Archive delivery names the archive to load only after the bundle check. Registry
+delivery requires registry authentication and must not run `docker load`.
+Directory delivery must use the authenticated handoff instructions for the
+actual files under `images/`; it must not assume an archive exists.
 
 4. Run pre-flight checks.
 
@@ -2094,16 +2206,14 @@ If `images/lucairn-images.tar` is absent, this handoff uses registry or customer
 bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --skip-image-check
 ```
 
-5. Start the selected model runtime profile.
+5. Start the mode recorded for this bundle.
 
-```bash
-docker compose \
-  -f install/docker-compose.customer.yml \
-  -f install/docker-compose.self-hosted.yml \
-  --env-file install/customer.env \
-  --profile "$MODEL_RUNTIME_PROFILE" \
-  up -d
-```
+Use the exact mode-specific Compose command in the generated
+`INSTALL-CUSTOMER.md` at the bundle root. S1 bundles include
+`install/customer.env.runtime-profile.yaml` and the recorded
+`install/customer.env.image-manifest.yaml`; split bundles intentionally omit
+self-hosted overlays, and managed-BYOK bundles require their BYOK overlay.
+There is no single fixed Compose command that is correct for every bundle.
 
 6. Confirm health.
 

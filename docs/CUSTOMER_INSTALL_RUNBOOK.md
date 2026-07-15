@@ -74,13 +74,16 @@ git branch --show-current  # → main
 
 ---
 
-## 4. Generate `customer.env` (one command, dev + BYOK mode)
+## 4. Generate `customer.env` and its runtime profile (one command, dev + BYOK mode)
 
 ```bash
-./bin/lucairn-init --dev --byok
+./bin/lucairn-init --dev --runtime-mode managed-byok
 ```
 
-This writes a fully-populated, doctor-passing `customer.env` (mode 0600). It generates:
+This writes `customer.env` (mode 0600) and the non-secret
+`customer.env.runtime-profile.yaml` sidecar and the recorded
+`customer.env.image-manifest.yaml` snapshot. Keep both sidecars beside the env;
+the S1 runtime marker fails closed if the sidecar is lost. It generates:
 
 - 5 Ed25519 service signing keypairs.
 - Hex32 service secrets (admin key, JWT secret, encryption keys).
@@ -90,13 +93,16 @@ This writes a fully-populated, doctor-passing `customer.env` (mode 0600). It gen
 
 Expected output ends with a `BYOK mode enabled` banner reminding you to add host-firewall rules.
 
-For production (TLS + license bundle), see `INSTALL.md § Choose A Deployment Mode` and run `./bin/lucairn-init --production --license <path>` instead.
+Because provider keys are customer-owned, init intentionally leaves them empty
+and skips doctor in BYOK mode. A fresh BYOK env is not doctor-passing.
+
+For production (TLS + license bundle), see `INSTALL.md § Choose A Deployment Mode` and run `./bin/lucairn-init --production --runtime-mode managed-byok --license <path>` instead.
 
 ---
 
 ## 5. Inject your managed-LLM API key
 
-`bin/lucairn-init --byok` already wrote an uncommented but empty `ANTHROPIC_API_KEY=` line into `customer.env`. Replace the empty value with your real `sk-ant-...` key:
+`bin/lucairn-init --runtime-mode managed-byok` already wrote an uncommented but empty `ANTHROPIC_API_KEY=` line into `customer.env`. Replace the empty value with your real `sk-ant-...` key:
 
 ```bash
 # Replace <your-key-here> with your real sk-ant-... key, then run:
@@ -119,17 +125,19 @@ If this returns `0`, the sed didn't land (typo in `<your-key-here>`, key didn't 
 
 If you have keys for multiple providers, add multiple lines. The Sandbox B adapter only registers providers whose env var is set.
 
+Now run the offline doctor gate before Compose. It requires at least one
+provider key and must pass before continuing:
+
+```bash
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
+```
+
 ---
 
 ## 6. Bring up the stack
 
 ```bash
-docker compose -p compose-demo \
-  -f docker-compose.customer.yml \
-  -f docker-compose.self-hosted.yml \
-  -f docker-compose.self-hosted-byok.yml \
-  --env-file customer.env \
-  up -d
+bin/lucairn up --env customer.env
 ```
 
 The `-p compose-demo` flag pins the Docker Compose project name so container names start with `compose-demo-*` regardless of the directory name on disk. Without it, Compose defaults the project name to the current directory name (`lucairn-enterprise-deployment-kit-*`).

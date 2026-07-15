@@ -1478,7 +1478,7 @@ Env (Compose: `customer.env`; Helm: `gateway.secrets.values.lucairnLicenseKey` /
 - `LUCAIRN_LICENSE_PUBLIC_KEY` — the verification public key Lucairn provides (64-char hex). Same value for all customers of a given Lucairn signing-key generation.
 - `LUCAIRN_LICENSE_GRACE_DAYS` — grace window after expiry (default 14).
 
-`bin/lucairn-init --production` writes all three when the `--license` bundle carries the entitlement fields (`entitlement_token` → `LUCAIRN_LICENSE_KEY`, `entitlement_public_key` → `LUCAIRN_LICENSE_PUBLIC_KEY`, optional `entitlement_grace_days` → `LUCAIRN_LICENSE_GRACE_DAYS`). A bundle without those fields parses fine and leaves the entitlement vars empty (unregistered/INERT). See INSTALL.md → "Combined `--license` bundle" for the bundle format. `bin/lucairn doctor` reports the entitlement pair on an `entitlement:` line and **warns** (never fails) if exactly one of the two is set.
+`bin/lucairn-init --production --runtime-mode <mode> --license <bundle>` writes all three when the selected mode's compatible required flags are included and the license bundle carries the entitlement fields (`entitlement_token` → `LUCAIRN_LICENSE_KEY`, `entitlement_public_key` → `LUCAIRN_LICENSE_PUBLIC_KEY`, optional `entitlement_grace_days` → `LUCAIRN_LICENSE_GRACE_DAYS`). A bundle without those fields parses fine and leaves the entitlement vars empty (unregistered/INERT). See INSTALL.md → "Combined `--license` bundle" for the bundle format. `bin/lucairn doctor` reports the entitlement pair on an `entitlement:` line and **warns** (never fails) if exactly one of the two is set.
 
 Issuing the entitlement (operator-side): `bin/lucairn license issue --license-id … --customer-id … --customer-name … --valid-until YYYY-MM-DD --signing-key-hex <seed>`. The `--customer-id` MUST match the customer's gateway keystore `customer_id` (a mismatch returns `403 entitlement_mismatch`). When you mint the customer with `bin/lucairn-mint-customer` first, that `customer_id` is persisted to the kit-local `.lucairn-customer-id` (mode 0600) and `bin/lucairn license issue` auto-fills `--customer-id` from it unless you pass one explicitly (explicit always wins; single-customer / last-write-wins).
 
@@ -1553,6 +1553,21 @@ single-replica are the v1.0 SLA.
 5. Apply the release.
 6. Confirm `/healthz`, `/readyz`, and one synthetic inference request.
 7. Generate a support bundle and archive it internally as upgrade evidence.
+
+For every S1 Compose install, the profile-bound upgrade sequence is:
+
+```bash
+bin/lucairn pull --env customer.env
+bin/lucairn up --env customer.env
+bin/lucairn status --env customer.env
+```
+
+Use `bin/lucairn logs --env customer.env --tail 200 --service gateway` for
+inspection and `bin/lucairn down --env customer.env` for a non-destructive
+stop. These wrappers replay the recorded overlays and local-runtime profile;
+they do not accept arbitrary Compose flags and `down` does not remove volumes.
+Exact release rollback history and restore proof remain WP4 S4 scope—do not
+interpret these S1 wrappers as completed rollback functionality.
 
 ### v0.5.4 / chart 1.9.4 — per-key MCP tool-scope enforcement + B2 website tool_allowlist (2026-06-19)
 

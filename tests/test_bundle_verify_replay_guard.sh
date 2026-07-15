@@ -52,6 +52,66 @@ OUT="$TMPDIR/bundles"
 BUNDLE="$(find "$OUT" -name 'lucairn-customer-bundle-acme-*.tar.gz' -print -quit)"
 test -n "$BUNDLE"
 
+# S1 verification must treat a bundle's runtime helper as delivered payload,
+# never as executable verifier input. Build a valid S1 bundle solely for the
+# two hostile-helper regressions below.
+S1_ENV="$TMPDIR/s1-customer.env"
+"$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+  --model-name m --model-file foo.gguf --model-path . --output "$S1_ENV" --skip-doctor >/dev/null 2>&1
+S1_OUT="$TMPDIR/s1-bundles"
+"$LUCAIRN" bundle create \
+  --customer-slug s1-acme \
+  --models-dir "$MODEL_DIR" \
+  --model-manifest "$MANIFEST" \
+  --env "$S1_ENV" \
+  --output "$S1_OUT" >/dev/null
+S1_ARCHIVE="$(find "$S1_OUT" -name 'lucairn-customer-bundle-s1-acme-*.tar.gz' -print -quit)"
+test -n "$S1_ARCHIVE"
+S1_EXTRACT="$TMPDIR/s1-extract"
+mkdir "$S1_EXTRACT"
+tar -xzf "$S1_ARCHIVE" -C "$S1_EXTRACT"
+S1_ROOT="$(find "$S1_EXTRACT" -maxdepth 1 -type d -name 'lucairn-customer-bundle-s1-acme-*' -print -quit)"
+test -f "$S1_ROOT/bin/runtime-profile-lib.sh"
+
+refresh_s1_sums() {
+  local bundle_root="$1"
+  (
+    cd "$bundle_root"
+    find . -type f ! -path './checksums/SHA256SUMS' | sort | while IFS= read -r file; do
+      if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk -v p="${file#./}" '{print $1 "  " p}'
+      else
+        shasum -a 256 "$file" | awk -v p="${file#./}" '{print $1 "  " p}'
+      fi
+    done > checksums/SHA256SUMS
+  )
+}
+
+SENTINEL="$TMPDIR/untrusted-runtime-helper-sourced"
+for helper_case in stale-checksum self-consistent; do
+  MALICIOUS_ROOT="$TMPDIR/lucairn-customer-bundle-${helper_case}"
+  cp -R "$S1_ROOT" "$MALICIOUS_ROOT"
+  cat > "$MALICIOUS_ROOT/bin/runtime-profile-lib.sh" <<'MALICIOUS'
+#!/usr/bin/env bash
+: > "${LUCAIRN_TEST_UNTRUSTED_HELPER_SENTINEL:?}"
+MALICIOUS
+  chmod 0755 "$MALICIOUS_ROOT/bin/runtime-profile-lib.sh"
+  if [ "$helper_case" = "self-consistent" ]; then
+    refresh_s1_sums "$MALICIOUS_ROOT"
+  fi
+  MALICIOUS_ARCHIVE="$TMPDIR/${helper_case}-malicious-helper.tar.gz"
+  tar -czf "$MALICIOUS_ARCHIVE" -C "$TMPDIR" "$(basename "$MALICIOUS_ROOT")"
+  rm -f "$SENTINEL"
+  set +e
+  LUCAIRN_TEST_UNTRUSTED_HELPER_SENTINEL="$SENTINEL" "$LUCAIRN" bundle verify --bundle "$MALICIOUS_ARCHIVE" > "$TMPDIR/${helper_case}-malicious-helper.out" 2>&1
+  HELPER_STATUS=$?
+  set -e
+  if [ "$helper_case" = "stale-checksum" ]; then
+    [ "$HELPER_STATUS" -ne 0 ] || { echo "stale malicious helper should fail checksum verification" >&2; exit 1; }
+  fi
+  test ! -e "$SENTINEL" || { echo "bundle verification sourced untrusted runtime-profile-lib.sh ($helper_case)" >&2; exit 1; }
+done
+
 # Baseline: plain verify still passes.
 "$LUCAIRN" bundle verify --bundle "$BUNDLE" > "$TMPDIR/verify-base.out"
 grep -q "bundle verify: ok" "$TMPDIR/verify-base.out"

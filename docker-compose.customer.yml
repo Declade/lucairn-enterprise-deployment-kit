@@ -10,9 +10,14 @@
 # are sent to the remote Sandbox B.
 #
 # Usage:
-#   cp customer.env.example customer.env   # or run bin/lucairn-init --production
-#   # Edit customer.env (fill REPLACE_ME_* + REPLACE_WITH_* values)
-#   docker compose -f docker-compose.customer.yml --env-file customer.env up -d
+#   # Initialize this split deployment (also writes customer.env.runtime-profile.yaml):
+#   bin/lucairn-init --production --runtime-mode split-remote \
+#     --remote-endpoint https://inference.customer.example \
+#     --remote-credentials /secure/lucairn-issued-remote-credentials.env \
+#     --license license-bundle.json
+#   # Keep the sidecar beside customer.env. The copy-only template route is
+#   # pre-S1 legacy only.
+#   bin/lucairn up --env customer.env
 #
 # Network Isolation Design:
 #   Same split-knowledge invariant as the full stack — Sandbox A (dsa-identity)
@@ -22,7 +27,7 @@
 # Customer split-deployment auth anchor.
 # Customers deploy in production mode; DSA_SERVICE_TOKEN must come from
 # customer.env (copy customer.env.example → customer.env and fill in,
-# or run bin/lucairn-init).
+# or run bin/lucairn-init with --runtime-mode and its compatible required flags).
 # The :? suffix makes docker compose refuse to start if the customer
 # forgets to set DSA_SERVICE_TOKEN, matching the fail-closed invariant.
 x-dsa-prod-auth: &dsa-prod-auth
@@ -630,8 +635,9 @@ services:
       # TOB-S009 mTLS cert dir (read-only). Default empty-string mount
       # is intentionally an explicit `${LCR_WITNESS_MTLS_HOST_DIR:-…}`
       # — operators set this to /opt/dsa/certs/witness-mtls in
-      # customer.env after their TLS bootstrap (e.g. `bin/lucairn-init`
-      # + their own cert authority) has run on the box. Stage 3 dual-name:
+      # customer.env after their TLS bootstrap (e.g. an init run with
+      # `--runtime-mode` and its compatible required flags + their own cert
+      # authority) has run on the box. Stage 3 dual-name:
       # canonical LCR_WITNESS_MTLS_HOST_DIR first, legacy VEIL_WITNESS_MTLS_HOST_DIR
       # fallback.
       - ${LCR_WITNESS_MTLS_HOST_DIR:-${VEIL_WITNESS_MTLS_HOST_DIR:-./.certs/witness-mtls}}:/etc/witness-mtls:ro
@@ -737,7 +743,7 @@ services:
       # `bin/lucairn-init` (introduced in commit aee5262) auto-generates
       # this on first run alongside the rest of the secrets; re-runs are
       # idempotent so the encrypted keystore stays decryptable across reruns.
-      GATEWAY_KEYSTORE_KEY: "${GATEWAY_KEYSTORE_KEY:?required — run bin/lucairn-init --dev (or --production) or set in customer.env}"
+      GATEWAY_KEYSTORE_KEY: "${GATEWAY_KEYSTORE_KEY:?required — run bin/lucairn-init with --runtime-mode and its compatible required flags, or set in customer.env}"
       LCR_ENABLED: "${LCR_ENABLED:-${VEIL_ENABLED:-true}}"
       LCR_WITNESS_CERT_ADDR: "veil-witness:50058"
       LCR_WITNESS_ADDR: "veil-witness:50057"

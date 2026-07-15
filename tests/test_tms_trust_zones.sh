@@ -64,10 +64,13 @@ assert_case_degraded() {
   local f="$WK/$name.env"
   printf '%s\n' "$contents" > "$f"
   local out rc
-  out="$(PATH="$path_override" bash -c '
+  # Source the real CLI from another directory: $0 is bash there, so this
+  # also proves BASH_SOURCE locates and loads the required sibling helper.
+  out="$(cd "$WK" && PATH="$path_override" bash -c '
     set +e
     source "'"$ROOT"'/bin/lucairn" >/dev/null 2>&1
     set +e +u +o pipefail
+    runtime_profile_endpoint_valid "https://runtime.example.invalid" || exit 97
     check_tms_trust_zones "'"$f"'" 2>&1
   ')"
   rc=$?
