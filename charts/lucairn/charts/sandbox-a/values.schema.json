@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Sandbox A deployment values",
+  "type": "object",
+  "required": [
+    "ephemeral"
+  ],
+  "properties": {
+    "ephemeral": {
+      "type": "string",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "description": "Required exact Sandbox A startup contract. Use the YAML strings \"true\" or \"false\"; YAML booleans and all other shapes are invalid."
+    }
+  }
+}

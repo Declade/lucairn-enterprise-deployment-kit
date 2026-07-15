@@ -24,6 +24,7 @@ admin:
   enabled: false
 
 sandbox-a:
+  ephemeral: "true"
   sanitizer:
     llmAuditEnabled: false
     llmScanEnabled: false

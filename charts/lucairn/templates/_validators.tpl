@@ -280,6 +280,27 @@ the chart's supported paths are development and production only.
 {{- end -}}
 
 {{- /*
+  validators.sandboxAEphemeral
+
+  Sandbox A refuses startup without SANDBOX_A_EPHEMERAL. Keep the exact
+  string boundary at the umbrella level too, rather than allowing YAML
+  coercion or a missing selected-profile value to reach the child chart.
+*/ -}}
+{{- define "validators.sandboxAEphemeral" -}}
+{{- $sandboxA := index .Values "sandbox-a" -}}
+{{- if not (kindIs "map" $sandboxA) -}}
+{{- fail "sandbox-a must be a YAML mapping containing ephemeral as the YAML string \"true\" or \"false\"." -}}
+{{- end -}}
+{{- if not (hasKey $sandboxA "ephemeral") -}}
+{{- fail "sandbox-a.ephemeral is required and must be the YAML string \"true\" or \"false\"; set it explicitly in the selected profile." -}}
+{{- end -}}
+{{- $ephemeral := index $sandboxA "ephemeral" -}}
+{{- if or (not (kindIs "string" $ephemeral)) (not (has $ephemeral (list "true" "false"))) -}}
+{{- fail "sandbox-a.ephemeral must be the YAML string \"true\" or \"false\"; YAML booleans, null, numbers, lists, maps, and other strings are refused." -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
   validators.keysGatewayAdminHalfConfig
 
   Slice 5 sibling of the Grafana embed guard. Fails fast when the

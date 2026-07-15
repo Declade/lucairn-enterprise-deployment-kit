@@ -110,6 +110,9 @@ id-bridge:
       path: bridge
 
 sandbox-a:
+  # Required string contract for Sandbox A boot. "true" preserves the
+  # existing runtime default while making the production profile unambiguous.
+  ephemeral: "true"
   replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)
   resources:
     requests:
@@ -180,6 +183,10 @@ demo:
   enabled: false
 
 gateway:
+  # WP1 S4: production policy is explicitly streaming-disabled. Do not conflate
+  # this deployment policy with the independent runtime-mode routing state.
+  streaming:
+    enabled: false
   replicaCount: 1  # v1.0 single-replica lock (file-keystore on RWO PVC)
   # The production mTLS contract is explicit at the operator boundary. The
   # pinned gateway also applies tlsutil.ForceHTTPS when its DSA_MTLS_* client

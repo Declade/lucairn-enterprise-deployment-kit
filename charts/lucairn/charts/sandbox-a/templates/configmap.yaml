@@ -27,4 +27,5 @@ data:
   QI_ENGINE_ENABLED: {{ .Values.sanitizer.qiEngineEnabled | quote }}
   QI_ENGINE_THRESHOLD: {{ .Values.sanitizer.qiEngineThreshold | quote }}
   QI_ENGINE_ACTION: {{ .Values.sanitizer.qiEngineAction | quote }}
+  SANDBOX_A_EPHEMERAL: {{ .Values.ephemeral | quote }}
   DSA_ENV: {{ required "global.dsaEnv must be set to \"development\" or \"production\" in the umbrella values" .Values.global.dsaEnv | quote }}
