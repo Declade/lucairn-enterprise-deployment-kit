@@ -298,12 +298,20 @@ id-bridge:
 
 sandbox-a:
   enabled: true
+  # Sandbox A reads this exact string at startup. Keep it explicit rather than
+  # relying on the service default so every deployment surface has the same
+  # existing runtime semantics.
+  ephemeral: "true"
 
 sandbox-b:
   enabled: true
 
 gateway:
   enabled: true
+  # WP1 S4: the supported default and production policy disable streaming.
+  # This is intentionally separate from runtime-mode routing state.
+  streaming:
+    enabled: false
 
 postgres-gateway:
   # v2.0 multi-replica gateway HA. v1.0 ships single-replica + file-keystore

@@ -1,0 +1,2 @@
+{{/* Render-time guard for direct child-chart installs. */}}
+{{- include "sandbox-a.validateEphemeral" . -}}

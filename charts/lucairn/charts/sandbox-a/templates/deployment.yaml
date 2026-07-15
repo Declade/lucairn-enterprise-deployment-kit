@@ -112,6 +112,11 @@ spec:
                 configMapKeyRef:
                   name: {{ .Chart.Name }}-config
                   key: GRPC_TLS_ENABLED
+            - name: SANDBOX_A_EPHEMERAL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Chart.Name }}-config
+                  key: SANDBOX_A_EPHEMERAL
             - name: SANITIZER_ADDR
               value: "http://localhost:8086"
             - name: SANDBOX_B_PROBE_TARGET

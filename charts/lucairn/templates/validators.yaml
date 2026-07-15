@@ -9,6 +9,7 @@
 */ -}}
 {{- include "validators.grafanaEmbedCrossChart" $ -}}
 {{- include "validators.enterpriseFullMeshMTLS" $ -}}
+{{- include "validators.sandboxAEphemeral" $ -}}
 {{- include "validators.keysGatewayAdminHalfConfig" $ -}}
 {{- include "validators.auditLogSecretLookup" $ -}}
 {{- include "validators.dashboardDemoModeNotProduction" $ -}}

@@ -732,6 +732,10 @@ services:
       # cache-replay carve-out keeps the cert FULL without a fail-open bump.
       # Without this env the cache was permanently off on a stock Compose install.
       SANITIZE_CACHE_ENABLED: "${SANITIZE_CACHE_ENABLED:-false}"
+      # WP1 S4: customer production policy is fail-closed for streaming. Keep
+      # this explicit so the Compose contract stays aligned with Helm's
+      # production gateway.streaming.enabled=false default.
+      STREAMING_ENABLED: "${STREAMING_ENABLED:-false}"
       DSA_ADMIN_KEY: "${DSA_ADMIN_KEY}"
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
       # Invariant poller: only Sandbox A (local). Sandbox B is remote — no probe.

@@ -29,6 +29,7 @@ gateway:
       cpu: 500m
 
 sandbox-a:
+  ephemeral: "true"
   replicaCount: 1
   resources:
     limits:
@@ -72,6 +73,7 @@ audit:
       dsaServiceToken: "dev-service-token-do-not-use-in-prod"
 
 sandbox-a:
+  ephemeral: "true"
   replicaCount: 1
   resources:
     limits:

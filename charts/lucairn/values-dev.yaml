@@ -47,6 +47,7 @@ id-bridge:
       dsaServiceToken: "dev-service-token-do-not-use-in-prod"
 
 sandbox-a:
+  ephemeral: "true"
   replicaCount: 1
   hpa:
     enabled: false
