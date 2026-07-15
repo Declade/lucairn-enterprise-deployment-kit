@@ -12,18 +12,24 @@ set -euo pipefail
 #               SECURITY branch, not the "ahead of the published feed" branch.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TEST_ROOT="$ROOT"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 # --- Load the helper functions out of bin/lucairn -----------------------------
 # bin/lucairn ends with `main "$@"`, so we can't source it directly (it would run
 # the CLI). Copy it, strip the final dispatch line, and source the rest so the
-# pure helper functions become available in this shell. ROOT/VERSION resolution
-# at the top of the script still works because we source from the same checkout.
-LIB="$TMPDIR/lucairn-lib.sh"
-sed '/^main "\$@"$/d' "$ROOT/bin/lucairn" > "$LIB"
+# pure helper functions become available in this shell. Mirror the CLI's
+# release layout because sourced CLI root resolution uses BASH_SOURCE.
+LIB_ROOT="$TMPDIR/lucairn-lib-root"
+LIB="$LIB_ROOT/bin/lucairn"
+mkdir -p "$LIB_ROOT/bin"
+sed '/^main "\$@"$/d' "$TEST_ROOT/bin/lucairn" > "$LIB"
+cp "$TEST_ROOT/bin/runtime-profile-lib.sh" "$LIB_ROOT/bin/runtime-profile-lib.sh"
 # shellcheck disable=SC1090  # dynamic path is the extracted lib above
 . "$LIB"
+# The extracted CLI resets ROOT to its temporary release layout.
+ROOT="$TEST_ROOT"
 
 fail_test() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -139,7 +145,9 @@ chmod +x "$STUBBIN/cosign"
 # defensively into a throwaway ROOT so the test is self-contained.
 RUN_ROOT="$TMPDIR/kitroot"
 mkdir -p "$RUN_ROOT/bin" "$RUN_ROOT/keys"
+# Mirror the release artifact layout: lucairn requires this sibling helper.
 cp "$ROOT/bin/lucairn" "$RUN_ROOT/bin/lucairn"
+cp "$ROOT/bin/runtime-profile-lib.sh" "$RUN_ROOT/bin/runtime-profile-lib.sh"
 printf '1.0.0-rc1\n' > "$RUN_ROOT/VERSION"
 printf -- '-----BEGIN PUBLIC KEY-----\nstub\n-----END PUBLIC KEY-----\n' > "$RUN_ROOT/keys/lucairn-cosign.pub"
 

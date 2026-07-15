@@ -110,10 +110,32 @@ assert_no_executable_rg_self_test
 assert_no_executable_rg
 
 bash -n "$ROOT/bin/lucairn"
+bash -n "$ROOT/bin/lucairn-init"
+bash -n "$ROOT/bin/runtime-profile-lib.sh"
 bash -n "$ROOT/scripts/package-release.sh"
 bash -n "$ROOT/tests/test_lucairn_cli.sh"
+bash -n "$ROOT/tests/test_runtime_profile.sh"
 bash -n "$ROOT/tests/test_model_manifest_sha256.sh"
 bash -n "$ROOT/tests/test_bundle_verify_replay_guard.sh"
+
+# Split-remote documentation must name the Lucairn-issued credentials file;
+# the customer Compose quickstart must use the profile-bound wrapper.
+COMPOSE_USAGE="$(awk '/^# Usage:/{in_usage=1; next} /^# Network Isolation Design:/{in_usage=0} in_usage {print}' "$ROOT/docker-compose.customer.yml")"
+RUNBOOK_DEV_GUIDANCE="$(awk '/^\*\*Development \/ evaluation:\*\*/{print; exit}' "$ROOT/docs/KEY_CEREMONY_RUNBOOK.md")"
+printf '%s\n' "$COMPOSE_USAGE" | grep -Fq -- '--remote-credentials' \
+  || { echo "split-remote Compose usage omits --remote-credentials" >&2; exit 1; }
+printf '%s\n' "$RUNBOOK_DEV_GUIDANCE" | grep -Fq -- '--remote-credentials' \
+  || { echo "split-remote development/evaluation guidance omits --remote-credentials" >&2; exit 1; }
+printf '%s\n' "$COMPOSE_USAGE" | grep -Fq -- 'bin/lucairn up --env customer.env' \
+  || { echo "customer Compose usage must use bin/lucairn up --env customer.env" >&2; exit 1; }
+
+# A local llama.cpp stack cannot be called runnable without operator-supplied
+# weights. Keep the quickstart honest when docs are edited independently.
+if grep -Eq 'Quickstart \(30 seconds|30-second.*llama\.cpp|llama\.cpp.*30-second' \
+  "$ROOT/README.md" "$ROOT/INSTALL.md" "$ROOT/docs"/*.md; then
+  echo "WP4-S1: stale model-free 30-second llama.cpp quickstart claim found" >&2
+  exit 1
+fi
 bash -n "$ROOT/tests/test_backup_helm.sh"
 bash -n "$ROOT/tests/test_sec_hardening.sh"
 bash -n "$ROOT/tests/test_sbom.sh"

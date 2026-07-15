@@ -10,6 +10,8 @@ Every handoff gate below must be satisfied before the package leaves the private
 - selected deployment path: Docker Compose bundle or Kubernetes values
 - image delivery mode: registry, customer mirror, tar archive, or directory archive
 - model runtime mode: external OpenAI-compatible endpoint or bundled self-hosted runtime profile
+- `customer.env.runtime-profile.yaml` and `customer.env.image-manifest.yaml`
+  beside `customer.env` for every S1-generated Compose install
 - exact bundle path, SHA256 checksum, and generated non-secret report
 - approved delivery channel for the bundle and checksum
 
@@ -32,6 +34,15 @@ customer_env=present
 image_delivery=archive|directory|registry
 ```
 
+For a local-runtime handoff, verify the profile's declared model name and file
+agree with `models/model-manifest.yaml`. The bundle rule is
+`MODEL_PATH=.`: the bundle's `models/` directory is mounted at `/models`.
+This is not a claim that the model is available; `bundle prepare` performs the
+later manifest/file gate. A marker-bearing env whose runtime-profile or
+recorded image-manifest sidecar is missing, symlinked, or changed must not be
+sent: it fails closed. A pre-S1 env without either sidecar is a clearly
+labeled legacy handoff until explicit adoption.
+
 If `customer_data=present`, confirm the staged data is synthetic or explicitly approved for that engagement before packaging.
 
 ## Verification Gate
@@ -39,7 +50,9 @@ If `customer_data=present`, confirm the staged data is synthetic or explicitly a
 Run these against the exact artifact that will be sent. Use `--require-sha256`,
 `--customer-slug`, and `--max-age-days` so the receiver gate matches the
 operator gate even if the manifest has been tampered to declare a weaker
-policy or replay a stale bundle:
+policy or replay a stale bundle. This runs at the trusted packaging/handoff
+station before transfer; it validates the S1 payload contract but does not
+complete publisher authentication:
 
 ```bash
 bin/lucairn bundle verify \
@@ -55,6 +68,11 @@ bin/lucairn bundle verify \
 - `--customer-slug` rejects bundles whose `bundle-manifest.txt` was built for
   a different customer (cross-customer replay).
 - `--max-age-days` rejects bundles older than N days (stale-bundle replay).
+
+The customer must receive the exact SHA256 checksum separately through the
+approved authenticated handoff channel and compare it before raw extraction.
+Never describe the `bin/lucairn` copied from an unverified archive as the
+authentication mechanism for that archive.
 
 Then extract the bundle into a temporary directory and run:
 
@@ -73,14 +91,26 @@ bin/lucairn doctor \
   --compose install/docker-compose.customer.yml
 ```
 
+For managed-BYOK, set at least one provider key in the staged env before this
+doctor gate; init deliberately leaves provider keys empty and skips its own
+doctor run.
+
+For split-remote, record that the Lucairn-issued remote credentials file was
+used at init (without recording its contents). Endpoint plus license alone is
+not a valid remote-auth handoff. Use the S1 lifecycle wrappers for start,
+upgrade pull, status, bounded logs, and non-destructive down.
+
 ## Handoff Gate
 
 Record the following in the private engagement note before sending:
 
 - bundle filename and SHA256 checksum
+- checksum delivery through the approved authenticated channel (separate from
+  the raw tarball)
 - generated report filename
 - image delivery mode and whether `docker load` is expected
 - model runtime profile and whether model weights are bundled
+- runtime-profile sidecar present (or explicitly approved pre-S1 legacy status)
 - install owner and planned install window
 - support contact path for redacted support bundles
 - explicit note that Lucairn support does not need shell access or unredacted env files

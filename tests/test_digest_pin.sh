@@ -98,8 +98,8 @@ done < "$DIGESTS_FILE"
 echo "digest-pin: manifest digest block is in lockstep with keys/image-digests-0.5.4.txt ok"
 
 # ---------------------------------------------------------------------------
-# Build an isolated kit ROOT so the CLI's ROOT="$(cd "$(dirname "$0")/..")"
-# resolves to our test tree (with a controllable manifest), and a stub `crane`
+# Build an isolated kit ROOT so the CLI's BASH_SOURCE-based ROOT resolution
+# locates this test tree (with a controllable manifest), and a stub `crane`
 # resolver that maps each ref to the digest a GIVEN manifest records for it.
 # A driver script under $KROOT/bin sources the CLI with empty args and calls
 # check_image_digests, so we exercise the real code path (env-tag override,
@@ -111,6 +111,7 @@ make_kit_root() {
   kroot="$(mktemp -d)"
   mkdir -p "$kroot/bin"
   cp "$CLI" "$kroot/bin/lucairn"
+  cp "$ROOT/bin/runtime-profile-lib.sh" "$kroot/bin/runtime-profile-lib.sh"
   cp "$src_manifest" "$kroot/image-manifest.yaml"
   printf '1.5.1-dashboard\n' > "$kroot/VERSION"
   cat > "$kroot/bin/drive.sh" <<'DRV'

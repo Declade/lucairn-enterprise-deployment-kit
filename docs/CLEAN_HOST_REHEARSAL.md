@@ -13,14 +13,19 @@ Use a fresh Linux host or VM with:
 
 ## Rehearsal Steps
 
-1. Copy only the bundle tarball and checksum to the host.
-2. Verify the checksum before extraction.
+1. Copy only the bundle tarball and the SHA256 checksum supplied through the
+   approved authenticated handoff channel to the host.
+2. Verify that external checksum before raw extraction. Do not use the CLI
+   inside the unverified archive for this gate.
 
 ```bash
 shasum -a 256 lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ.tar.gz
 ```
 
-3. Extract and verify the bundle.
+Match the printed value byte-for-byte to the separately supplied checksum and
+stop on any difference. S1 has not completed publisher authentication.
+
+3. Only after that gate, extract and verify the bundle's internal contract.
 
 ```bash
 tar -xzf lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ.tar.gz
@@ -28,13 +33,11 @@ cd lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ
 bin/lucairn bundle verify --bundle .
 ```
 
-4. If `images/lucairn-images.tar` exists, load it.
-
-```bash
-docker load -i images/lucairn-images.tar
-```
-
-If image delivery is registry-based, skip `docker load` and authenticate to the configured registry instead.
+4. Follow the image-delivery section of the generated `INSTALL-CUSTOMER.md`
+   only after the bundle check. Archive delivery names the real archive to
+   load; registry delivery skips `docker load` and authenticates to the
+   configured registry; directory delivery follows the authenticated handoff
+   instructions for its actual files and never assumes a fixed archive.
 
 5. Run the offline doctor.
 
@@ -50,14 +53,19 @@ bin/lucairn doctor --env install/customer.env --compose install/docker-compose.c
 
 7. Start the stack.
 
-```bash
-docker compose \
-  -f install/docker-compose.customer.yml \
-  -f install/docker-compose.self-hosted.yml \
-  --env-file install/customer.env \
-  --profile "$MODEL_RUNTIME_PROFILE" \
-  up -d
-```
+Run the exact mode-specific command in the generated `INSTALL-CUSTOMER.md`.
+Do not replace it with a fixed overlay command: split bundles exclude
+self-hosted files and managed-BYOK requires its own overlay. Confirm that
+`install/customer.env.runtime-profile.yaml` and
+`install/customer.env.image-manifest.yaml` remain beside `install/customer.env`;
+a marker-bearing env without either sidecar must fail closed. For managed-BYOK,
+set at least one provider key before running either doctor gate.
+
+For S1, start and inspect with `bin/lucairn up --env install/customer.env --compose install/docker-compose.customer.yml` and
+`bin/lucairn status --env install/customer.env --compose install/docker-compose.customer.yml`; use `pull`, bounded `logs`,
+and non-destructive `down` with the same `--compose install/docker-compose.customer.yml`
+path rather than recreating Compose flags. Split-remote rehearsal also requires the Lucairn-issued remote
+credential file—endpoint and license alone are insufficient.
 
 8. Confirm health.
 

@@ -22,6 +22,8 @@ Stage customer inputs outside this repository:
 ```text
 /secure/staging/[customer-slug]/
   customer.env
+  customer.env.runtime-profile.yaml  # required beside an S1-generated env
+  customer.env.image-manifest.yaml   # recorded init-time manifest; required beside S1 env
   models/
     model-manifest.yaml
     [model files referenced by model-manifest.yaml]
@@ -32,6 +34,16 @@ Stage customer inputs outside this repository:
 ```
 
 If the customer will pull images from a registry, omit `images/lucairn-images.tar`; the report will mark `image_delivery=registry`.
+
+The runtime-profile sidecar and recorded image-manifest snapshot are non-secret
+and required for an S1-generated install. Do not drop either while staging: a
+marker-bearing env without either fails closed. A genuinely pre-S1 env without
+sidecars is legacy-only until explicit profile adoption. For local-runtime,
+ensure its declared model name and file agree with `models/model-manifest.yaml`;
+the canonical bundle `MODEL_PATH` is `.` for the delivered `models/` mount.
+This is an operator declaration, not availability verification. `bundle prepare`
+rejects symlinks/special objects in staged source trees and performs the later
+model-manifest/file gate.
 
 Optional Compose overrides:
 
@@ -96,21 +108,34 @@ Before the bundle goes to the customer, a human must confirm:
 
 ## Customer Install Summary
 
-The customer extracts the tarball and follows `INSTALL-CUSTOMER.md` inside the bundle:
+On the trusted packaging/handoff station, `bundle prepare` verifies the exact
+tarball before transfer. That validates the S1 payload contract but does not
+complete publisher authentication. The customer receives the tarball plus its
+SHA256 checksum through the approved authenticated handoff channel, compares
+that external checksum before raw extraction, then follows
+`INSTALL-CUSTOMER.md` inside the bundle:
 
 ```bash
+shasum -a 256 lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ.tar.gz
+# Match the printed digest to the separately supplied handoff checksum.
 tar -xzf lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ.tar.gz
 cd lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ
-docker load -i images/lucairn-images.tar
 bin/lucairn bundle verify --bundle .
-bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --skip-image-check
-docker compose \
-  -f install/docker-compose.customer.yml \
-  -f install/docker-compose.self-hosted.yml \
-  --env-file install/customer.env \
-  --profile "${MODEL_RUNTIME_PROFILE:-custom-runtime}" \
-  up -d
+# Follow the generated mode-specific command in INSTALL-CUSTOMER.md.
 ```
+
+The in-archive CLI cannot authenticate an unverified archive. After the
+external checksum and extracted-bundle checks, do not substitute a fixed
+Compose command: split bundles exclude self-hosted files and managed-BYOK
+requires its additional overlay. Archive delivery names its actual image
+archive; registry delivery skips `docker load`; directory delivery follows the
+authenticated handoff instructions for the files provided. The generated note
+also requires a provider key before doctor for BYOK. For S1 bundles it uses
+`bin/lucairn up|status|logs|pull|down --env install/customer.env --compose install/docker-compose.customer.yml` so the
+recorded overlays/profile, rather than a copied Compose command, control every
+lifecycle action. A split bundle must have been initialized with the
+Lucairn-issued remote credential file; endpoint plus license alone is not a
+usable remote-auth configuration.
 
 For registry-based delivery, they skip `docker load` and pull directly from `ghcr.io/declade/*` after authenticating with a GitHub PAT (`read:packages` scope) — Lucairn-default GHCR images are currently private; see `INSTALL.md` § "Registry Authentication". Lucairn does not provision per-customer GHCR credentials; the customer's own GitHub account or service-account PAT is sufficient. Customer-side private mirrors need their own mirror credentials.
 

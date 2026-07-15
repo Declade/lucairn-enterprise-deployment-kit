@@ -3,7 +3,7 @@
 # lucairn-init — one-command customer.env writer.
 #
 # Replaces the ~5 minutes of manual placeholder-filling in
-# customer.env.example with ~30 seconds of './bin/lucairn-init --dev'.
+# customer.env.example with an explicit runtime-mode init invocation.
 #
 # Generates:
 #   - 5 Ed25519 keypairs (one private + matching public for each LCR_*
@@ -27,8 +27,9 @@
 #                   LUCAIRN_LICENSE_PUBLIC_KEY / LUCAIRN_LICENSE_GRACE_DAYS.
 #                   Bundles without the entitlement fields still parse (those
 #                   vars stay empty = unregistered/INERT).
-#   --byok          modifier on either mode; sets LUCAIRN_LLM_EGRESS_ALLOWLIST and
-#                   prints the FQDN-enforcement-is-your-responsibility warning
+#   --runtime-mode  required inference topology: split-remote, managed-byok, or
+#                   local-runtime (the latter also requires --local-runtime)
+#   --byok          compatibility alias for --runtime-mode managed-byok
 #
 # After writing the file, runs `bin/lucairn doctor --env <output> --offline`
 # (--offline skips DNS + image-pull checks that aren't relevant pre-deploy).
@@ -50,22 +51,147 @@ readonly DEFAULT_OUTPUT="${KIT_ROOT}/customer.env"
 # Temp files that hold plaintext keypair material during derivation. The
 # trap below removes them on every exit path (success, failure, signal).
 TMP_FILES=()
+LOCK_DIR=""
+LOCK_OWNER_FILE=""
+LOCK_TOKEN=""
+TX_STATE=""
+PUBLISHED_ENV_PATH=""
+PUBLISHED_ENV_INODE=""
+PUBLISHED_PROFILE_PATH=""
+PUBLISHED_PROFILE_INODE=""
+PUBLISHED_SNAPSHOT_PATH=""
+PUBLISHED_SNAPSHOT_INODE=""
+ADOPTION_BACKUP=""
+ADOPTION_ORIGINAL_INODE=""
+ADOPTION_ORIGINAL_HASH=""
+CLEANUP_STATE="pending"
+
+file_inode() {
+  local file="$1"
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  ls -di "$file" 2>/dev/null | awk '{print $1}'
+}
+
+unlink_if_transaction_owned() {
+  local target="$1" expected_inode="$2" actual_inode
+  [ -n "$target" ] && [ -n "$expected_inode" ] || return 0
+  actual_inode="$(file_inode "$target" 2>/dev/null || true)"
+  [ "$actual_inode" = "$expected_inode" ] || return 0
+  # The directory lock serializes supported Lucairn writers. These identity
+  # rechecks detect an already-observable replacement, but are not an atomic
+  # CAS against an untrusted same-directory writer; the output directory is a
+  # trusted operator boundary.
+  [ "$(file_inode "$target" 2>/dev/null || true)" = "$expected_inode" ] || return 0
+  rm -f "$target" 2>/dev/null || true
+}
+
+rollback_transaction() {
+  local actual_inode
+  case "$TX_STATE" in
+    fresh)
+      unlink_if_transaction_owned "$PUBLISHED_ENV_PATH" "$PUBLISHED_ENV_INODE"
+      unlink_if_transaction_owned "$PUBLISHED_PROFILE_PATH" "$PUBLISHED_PROFILE_INODE"
+      unlink_if_transaction_owned "$PUBLISHED_SNAPSHOT_PATH" "$PUBLISHED_SNAPSHOT_INODE"
+      ;;
+    adoption)
+      # Restore only over the env inode this transaction published.  A replaced
+      # destination is attacker-owned state and must never be unlinked/masked.
+      actual_inode="$(file_inode "$PUBLISHED_ENV_PATH" 2>/dev/null || true)"
+      if [ -n "$ADOPTION_BACKUP" ] && [ -f "$ADOPTION_BACKUP" ] && [ ! -L "$ADOPTION_BACKUP" ] \
+        && [ "$actual_inode" = "$PUBLISHED_ENV_INODE" ]; then
+        atomic_replace_if_expected "$ADOPTION_BACKUP" "$PUBLISHED_ENV_PATH" "$PUBLISHED_ENV_INODE" "$ADOPTION_ENV_HASH" "" \
+          >/dev/null 2>&1 || true
+      fi
+      unlink_if_transaction_owned "$PUBLISHED_PROFILE_PATH" "$PUBLISHED_PROFILE_INODE"
+      unlink_if_transaction_owned "$PUBLISHED_SNAPSHOT_PATH" "$PUBLISHED_SNAPSHOT_INODE"
+      ;;
+  esac
+}
+
+record_publication_inode() {
+  # This runs in the parent shell before a publication primitive can make its
+  # final name visible.  Capturing an inode from a private staged file is safe
+  # in command substitution; no destination mutation occurs until after this
+  # parent-owned transaction state has been assigned.
+  local artifact="$1" staged="$2" inode
+  inode="$(file_inode "$staged")" || return 1
+  case "$artifact" in
+    env) PUBLISHED_ENV_INODE="$inode" ;;
+    profile) PUBLISHED_PROFILE_INODE="$inode" ;;
+    snapshot) PUBLISHED_SNAPSHOT_INODE="$inode" ;;
+    *) return 1 ;;
+  esac
+}
+
+release_install_lock() {
+  [ -n "$LOCK_DIR" ] || return 0
+  # Only the process that can still prove its PID+unguessable token may remove
+  # its owner file.  The output directory is a documented trusted operator
+  # boundary; this is ownership/liveness coordination, not hostile-writer CAS.
+  if [ -d "$LOCK_DIR" ] && [ ! -L "$LOCK_DIR" ] \
+    && lock_owner_matches_current; then
+    rm -f "$LOCK_OWNER_FILE" 2>/dev/null || true
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+  fi
+  LOCK_DIR=""
+  LOCK_OWNER_FILE=""
+  LOCK_TOKEN=""
+}
 
 cleanup() {
-  local f
+  local status=$? f
+  # Ignore follow-up termination signals before removing EXIT: resetting their
+  # handlers first creates a window where a second signal can abandon rollback
+  # and the directory lock. Keep them ignored until this process exits.
+  trap '' INT TERM
+  trap - EXIT
+  # A signal handler explicitly calls cleanup before exit. Advance state before
+  # rollback and lock release so cleanup remains single-run.
+  case "$CLEANUP_STATE" in
+    running|done) return "$status" ;;
+  esac
+  CLEANUP_STATE="running"
+  # Test-only: deliver a deterministic second signal after it is masked and
+  # before any rollback or lock cleanup work begins.
+  [ "${LUCAIRN_TEST_CLEANUP_HOOK:-}" != "second-term" ] || kill -TERM "$$"
+  if [ -n "$TX_STATE" ]; then
+    rollback_transaction
+    TX_STATE=""
+  fi
   for f in "${TMP_FILES[@]:-}"; do
     [ -n "$f" ] && [ -e "$f" ] && rm -f "$f" 2>/dev/null || true
   done
+  release_install_lock
+  CLEANUP_STATE="done"
+  return "$status"
 }
-trap cleanup EXIT INT TERM
+
+on_signal() {
+  local signal="$1" status
+  case "$signal" in
+    INT) status=130 ;;
+    TERM) status=143 ;;
+    *) status=128 ;;
+  esac
+  # Mask follow-up signals before removing EXIT so there is no default-signal
+  # window between signal delivery and cleanup's own masking.
+  trap '' INT TERM
+  trap - EXIT
+  cleanup
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
 
 usage() {
   cat <<'USAGE'
 Usage:
-  bin/lucairn-init --dev [options]
-  bin/lucairn-init --production --license <path> [options]
+  bin/lucairn-init --dev --runtime-mode <mode> [mode-compatible required flags] [options]
+  bin/lucairn-init --production --runtime-mode <mode> --license <path> [mode-compatible required flags] [options]
 
-Writes a fully-populated, doctor-passing customer.env in one command.
+Writes a fully-populated customer.env in one command. BYOK installs still need
+their operator-managed provider credentials before doctor can prove inference.
 
 Modes (exactly one required):
   --dev                    Dev-mode customer.env. Empty DSA_LICENSE_KEY (the gateway
@@ -93,6 +219,28 @@ Options:
                            FQDN-enforcement responsibility.
   --byok-allowlist <list>  Override the BYOK FQDN allowlist (comma-separated, no scheme).
                            Implies --byok.
+  --runtime-mode <mode>    Required inference topology. Accepted values:
+                             split-remote (alias: split/remote)
+                             managed-byok (alias: byok)
+                             local-runtime (requires --local-runtime)
+  --local-runtime <name>   Named local runtime for local-runtime mode: llama-cpp,
+                           vllm, tgi, ollama, onnxruntime, triton, or custom-runtime.
+  --model-name <name>      Optional local-runtime inventory name. Supply together
+                           with --model-file and --model-path to record the real model.
+  --model-file <path>      Local-runtime manifest file name (relative to --model-path).
+  --model-path <path>      Local-runtime model directory recorded for regeneration.
+  --remote-endpoint <url>  Required HTTPS Sandbox B endpoint for split-remote mode.
+  --remote-credentials <path>
+                         Required for split-remote mode in dev and production.
+                         A Lucairn-issued regular file containing exactly:
+                           sandbox_b_api_key=<non-placeholder API key>
+                           sandbox_b_public_key=<64 lowercase/uppercase hex>
+                         The remote signing seed never belongs in this file or
+                         on the customer host.
+  --adopt-runtime-profile  For an existing matching pre-WP4 customer.env, atomically
+                           append exactly LUCAIRN_RUNTIME_PROFILE_REQUIRED=1 while
+                           preserving all existing content and permissions, then
+                           publish the runtime-profile manifest.
   --output <path>          Where to write the file (default: ./customer.env).
   --image-tag <tag>        LUCAIRN_IMAGE_TAG value (default: 0.5.4). Must match
                            image-manifest.yaml default_lucairn_image_tag; doctor
@@ -108,15 +256,17 @@ Options:
 
 Examples:
   # Dev-mode laptop install (~30 sec from clone to ready)
-  ./bin/lucairn-init --dev
-  docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml \
-    --env-file customer.env up -d
+  ./bin/lucairn-init --dev --runtime-mode split-remote \
+    --remote-endpoint https://inference.customer.example \
+    --remote-credentials ~/lucairn-remote-credentials.env
+  ./bin/lucairn up --env customer.env
 
   # Dev-mode + BYOK Anthropic
-  ./bin/lucairn-init --dev --byok
+  ./bin/lucairn-init --dev --runtime-mode managed-byok
 
   # Production install with a Lucairn-issued license
-  ./bin/lucairn-init --production --license ~/lucairn-license.json
+  ./bin/lucairn-init --production --license ~/lucairn-license.json \
+    --runtime-mode local-runtime --local-runtime llama-cpp
 
 Exit codes:
   0  success
@@ -136,12 +286,33 @@ have() {
   command -v "$1" >/dev/null 2>&1
 }
 
+. "$KIT_ROOT/bin/runtime-profile-lib.sh"
+
 # Arg parse ----------------------------------------------------------------
 
 MODE=""
 LICENSE_PATH=""
 BYOK="false"
 BYOK_ALLOWLIST="api.anthropic.com,api.openai.com"
+RUNTIME_MODE=""
+LOCAL_RUNTIME=""
+REMOTE_ENDPOINT=""
+REMOTE_CREDENTIALS=""
+REMOTE_CREDENTIALS_COUNT=0
+REMOTE_API_KEY=""
+REMOTE_PUBLIC_KEY=""
+MODEL_NAME_INPUT=""
+MODEL_FILE_INPUT=""
+MODEL_PATH_INPUT=""
+RUNTIME_MODE_COUNT=0
+LOCAL_RUNTIME_COUNT=0
+REMOTE_ENDPOINT_COUNT=0
+MODEL_NAME_COUNT=0
+MODEL_FILE_COUNT=0
+MODEL_PATH_COUNT=0
+BYOK_ALLOWLIST_COUNT=0
+BYOK_EGRESS_ALLOWLIST="none"
+ADOPT_RUNTIME_PROFILE="false"
 OUTPUT="$DEFAULT_OUTPUT"
 IMAGE_TAG="$DEFAULT_IMAGE_TAG"
 GATEWAY_BASE_URL_OVERRIDE=""
@@ -154,7 +325,47 @@ while [ $# -gt 0 ]; do
     --production)      [ -z "$MODE" ] || fail "--dev and --production are mutually exclusive"; MODE="production"; shift ;;
     --license)         LICENSE_PATH="${2:?--license requires a path}"; shift 2 ;;
     --byok)            BYOK="true"; shift ;;
-    --byok-allowlist)  BYOK="true"; BYOK_ALLOWLIST="${2:?--byok-allowlist requires a value}"; shift 2 ;;
+    --byok-allowlist)
+      BYOK_ALLOWLIST_COUNT=$((BYOK_ALLOWLIST_COUNT + 1))
+      [ "$BYOK_ALLOWLIST_COUNT" -eq 1 ] || fail "--byok-allowlist may only be supplied once"
+      BYOK="true"; BYOK_ALLOWLIST="${2:?--byok-allowlist requires a value}"; shift 2
+      ;;
+    --runtime-mode)
+      RUNTIME_MODE_COUNT=$((RUNTIME_MODE_COUNT + 1))
+      [ "$RUNTIME_MODE_COUNT" -eq 1 ] || fail "--runtime-mode may only be supplied once"
+      RUNTIME_MODE="${2:?--runtime-mode requires a value}"; shift 2
+      ;;
+    --local-runtime)
+      LOCAL_RUNTIME_COUNT=$((LOCAL_RUNTIME_COUNT + 1))
+      [ "$LOCAL_RUNTIME_COUNT" -eq 1 ] || fail "--local-runtime may only be supplied once"
+      LOCAL_RUNTIME="${2:?--local-runtime requires a value}"; shift 2
+      ;;
+    --remote-endpoint)
+      REMOTE_ENDPOINT_COUNT=$((REMOTE_ENDPOINT_COUNT + 1))
+      [ "$REMOTE_ENDPOINT_COUNT" -eq 1 ] || fail "--remote-endpoint may only be supplied once"
+      REMOTE_ENDPOINT="${2:?--remote-endpoint requires a value}"; shift 2
+      ;;
+    --remote-credentials)
+      REMOTE_CREDENTIALS_COUNT=$((REMOTE_CREDENTIALS_COUNT + 1))
+      [ "$REMOTE_CREDENTIALS_COUNT" -eq 1 ] || fail "--remote-credentials may only be supplied once"
+      REMOTE_CREDENTIALS="${2:?--remote-credentials requires a path}"; shift 2
+      ;;
+    --model-name)
+      MODEL_NAME_COUNT=$((MODEL_NAME_COUNT + 1))
+      [ "$MODEL_NAME_COUNT" -eq 1 ] || fail "--model-name may only be supplied once"
+      MODEL_NAME_INPUT="${2:?--model-name requires a value}"; shift 2
+      ;;
+    --model-file)
+      MODEL_FILE_COUNT=$((MODEL_FILE_COUNT + 1))
+      [ "$MODEL_FILE_COUNT" -eq 1 ] || fail "--model-file may only be supplied once"
+      MODEL_FILE_INPUT="${2:?--model-file requires a value}"; shift 2
+      ;;
+    --model-path)
+      MODEL_PATH_COUNT=$((MODEL_PATH_COUNT + 1))
+      [ "$MODEL_PATH_COUNT" -eq 1 ] || fail "--model-path may only be supplied once"
+      MODEL_PATH_INPUT="${2:?--model-path requires a value}"; shift 2
+      ;;
+    --adopt-runtime-profile) ADOPT_RUNTIME_PROFILE="true"; shift ;;
     --output)          OUTPUT="${2:?--output requires a path}"; shift 2 ;;
     --image-tag)       IMAGE_TAG="${2:?--image-tag requires a value}"; shift 2 ;;
     --gateway-base-url) GATEWAY_BASE_URL_OVERRIDE="${2:?--gateway-base-url requires a value}"; shift 2 ;;
@@ -180,8 +391,481 @@ if [ "$MODE" = "dev" ] && [ -n "$LICENSE_PATH" ]; then
   fail "--license is only valid with --production (use --dev for the no-license bypass)"
 fi
 
+# Preserve the documented BYOK shorthand while canonicalizing it in state.
+if [ -z "$RUNTIME_MODE" ] && [ "$BYOK" = "true" ]; then
+  RUNTIME_MODE="managed-byok"
+fi
+
+case "$RUNTIME_MODE" in
+  split/remote) RUNTIME_MODE="split-remote" ;;
+  byok) RUNTIME_MODE="managed-byok" ;;
+  split-remote|managed-byok|local-runtime) ;;
+  "") fail "--runtime-mode is required: choose split-remote, managed-byok, or local-runtime" ;;
+  *) fail "unsupported --runtime-mode '$RUNTIME_MODE' (choose split-remote, managed-byok, or local-runtime)" ;;
+esac
+
+local_model_inventory_valid() {
+  runtime_profile_model_name_valid "$1" \
+    && runtime_profile_model_file_valid "$2" \
+    && runtime_profile_model_path_valid "$3"
+}
+
+# Strict, single-purpose remote credential file parser. It deliberately accepts
+# only two key=value lines, so no secret is ever passed on argv, interpolated
+# into a regeneration comment, or interpreted as shell syntax.
+remote_api_key_valid() {
+  local value="$1"
+  [ -n "$value" ] && [ "${#value}" -le 512 ] || return 1
+  printf '%s' "$value" | grep -Eq '^[A-Za-z0-9._-]+$' || return 1
+  case "$value" in
+    REPLACE_*|replace_*|PLACEHOLDER*|placeholder*|EXAMPLE*|example*|CHANGE_ME|change_me|YOUR_*|your_*) return 1 ;;
+  esac
+}
+
+remote_public_key_valid() {
+  local value="$1" normalized_value first_byte
+  printf '%s' "$value" | grep -Eq '^[0-9a-fA-F]{64}$' || return 1
+  normalized_value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  first_byte="${normalized_value:0:2}"
+  [ -n "${normalized_value//"$first_byte"/}" ]
+}
+
+read_remote_credentials() {
+  local file="$1" api public parsed
+  [ -f "$file" ] && [ ! -L "$file" ] || fail "--remote-credentials must be a regular non-symlink file"
+  [ -r "$file" ] || fail "--remote-credentials is not readable: $file"
+  # Exactly two non-empty lines, exact key names, no duplicate keys, and no
+  # control/whitespace or implicit multiline material. API grammar is bounded
+  # to .env-safe opaque tokens; public key is checked again below for clarity.
+  parsed="$(LC_ALL=C awk '
+    BEGIN { bad=0 }
+    $0 !~ /^(sandbox_b_api_key|sandbox_b_public_key)=[A-Za-z0-9._-]+$/ { bad=1; next }
+    {
+      key=$0; sub(/=.*/, "", key)
+      value=$0; sub(/^[^=]*=/, "", value)
+      if (seen[key]++) bad=1
+      if (key == "sandbox_b_api_key") api=value
+      if (key == "sandbox_b_public_key") public=value
+    }
+    END {
+      if (NR != 2 || bad || seen["sandbox_b_api_key"] != 1 || seen["sandbox_b_public_key"] != 1) exit 1
+      print api "\t" public
+    }
+  ' "$file" 2>/dev/null)" || {
+    fail "--remote-credentials must contain exactly one non-empty sandbox_b_api_key and one sandbox_b_public_key in strict key=value form"
+  }
+  api="${parsed%%$'\t'*}"
+  public="${parsed#*$'\t'}"
+  [ "$api" != "$parsed" ] || fail "--remote-credentials parser did not return both required fields"
+  remote_api_key_valid "$api" \
+    || fail "--remote-credentials sandbox_b_api_key must be non-placeholder .env-safe API material"
+  remote_public_key_valid "$public" \
+    || fail "--remote-credentials sandbox_b_public_key must be exactly 64 hex characters and not a repeated-byte sentinel"
+  REMOTE_API_KEY="$api"
+  REMOTE_PUBLIC_KEY="$public"
+}
+
+if [ $((MODEL_NAME_COUNT + MODEL_FILE_COUNT + MODEL_PATH_COUNT)) -gt 0 ] \
+  && [ $((MODEL_NAME_COUNT + MODEL_FILE_COUNT + MODEL_PATH_COUNT)) -ne 3 ]; then
+  fail "--model-name, --model-file, and --model-path must be supplied together"
+fi
+
+case "$RUNTIME_MODE" in
+  split-remote)
+    [ "$BYOK" = "false" ] || fail "--byok/--byok-allowlist is only compatible with --runtime-mode managed-byok"
+    [ -z "$LOCAL_RUNTIME" ] || fail "--local-runtime is only compatible with --runtime-mode local-runtime"
+    runtime_profile_endpoint_valid "$REMOTE_ENDPOINT" \
+      || fail "--runtime-mode split-remote requires a valid HTTPS DNS endpoint with an optional legal port and path"
+    [ -n "$REMOTE_CREDENTIALS" ] \
+      || fail "--runtime-mode split-remote requires --remote-credentials <Lucairn-issued file>"
+    read_remote_credentials "$REMOTE_CREDENTIALS"
+    ;;
+  managed-byok)
+    [ -z "$LOCAL_RUNTIME" ] || fail "--local-runtime is only compatible with --runtime-mode local-runtime"
+    [ -z "$REMOTE_ENDPOINT" ] || fail "--remote-endpoint is only compatible with --runtime-mode split-remote"
+    [ -z "$REMOTE_CREDENTIALS" ] || fail "--remote-credentials is only compatible with --runtime-mode split-remote"
+    runtime_profile_byok_allowlist_valid "$BYOK_ALLOWLIST" \
+      || fail "--byok-allowlist must be a non-empty comma-separated list of DNS hostnames"
+    BYOK="true"
+    BYOK_EGRESS_ALLOWLIST="$BYOK_ALLOWLIST"
+    ;;
+  local-runtime)
+    [ "$BYOK" = "false" ] || fail "--byok/--byok-allowlist conflicts with --runtime-mode local-runtime"
+    [ -z "$REMOTE_ENDPOINT" ] || fail "--remote-endpoint is only compatible with --runtime-mode split-remote"
+    [ -z "$REMOTE_CREDENTIALS" ] || fail "--remote-credentials is only compatible with --runtime-mode split-remote"
+    case "$LOCAL_RUNTIME" in
+      llama-cpp|vllm|tgi|ollama|onnxruntime|triton|custom-runtime) ;;
+      "") fail "--runtime-mode local-runtime requires --local-runtime <llama-cpp|vllm|tgi|ollama|onnxruntime|triton|custom-runtime>" ;;
+      *) fail "unsupported --local-runtime '$LOCAL_RUNTIME' (choose llama-cpp, vllm, tgi, ollama, onnxruntime, triton, or custom-runtime)" ;;
+    esac
+    if [ "$MODEL_NAME_COUNT" -eq 1 ]; then
+      local_model_inventory_valid "$MODEL_NAME_INPUT" "$MODEL_FILE_INPUT" "$MODEL_PATH_INPUT" \
+        || fail "--model-name, --model-file, and --model-path must be non-empty single-line values"
+    fi
+    ;;
+esac
+
+if [ "$RUNTIME_MODE" != "local-runtime" ] && [ "$MODEL_NAME_COUNT" -gt 0 ]; then
+  fail "--model-name, --model-file, and --model-path are only compatible with --runtime-mode local-runtime"
+fi
+
+runtime_profile_image_tag_valid "$IMAGE_TAG" \
+  || fail "--image-tag must match the bounded S1 image-tag grammar"
+
+RUNTIME_PROFILE_MANIFEST="${OUTPUT}.runtime-profile.yaml"
+RUNTIME_IMAGE_MANIFEST_SNAPSHOT="$(runtime_profile_image_manifest_snapshot_path "$OUTPUT")"
+
 if ! have openssl; then
   fail "openssl not found. Install: brew install openssl (macOS) or apt-get install openssl (Linux)" 3
+fi
+
+env_field() {
+  local env="$1" key="$2" count value
+  count="$(grep -c "^${key}=" "$env" 2>/dev/null || true)"
+  [ "$count" = "1" ] || return 1
+  value="$(sed -n "s/^${key}=//p" "$env")"
+  printf '%s' "$value"
+}
+
+# Runtime fields that are optional in older customer.env files may be absent,
+# but they must never be ambiguous.  A missing field is equivalent to an empty
+# value; duplicate fields are rejected before an adoption can publish state.
+optional_env_field() {
+  local env="$1" key="$2" count value
+  count="$(grep -c "^${key}=" "$env" 2>/dev/null || true)"
+  case "$count" in
+    0) printf '%s' "" ;;
+    1)
+      value="$(sed -n "s/^${key}=//p" "$env")"
+      printf '%s' "$value"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+set_model_inventory_from_env() {
+  MODEL_NAME="$(env_field "$OUTPUT" MODEL_NAME)" || return 1
+  MODEL_FILE="$(env_field "$OUTPUT" MODEL_FILE)" || return 1
+  MODEL_PATH="$(env_field "$OUTPUT" MODEL_PATH)" || return 1
+  local_model_inventory_valid "$MODEL_NAME" "$MODEL_FILE" "$MODEL_PATH"
+}
+
+set_default_model_inventory() {
+  MODEL_NAME="customer-model"
+  MODEL_FILE="customer-model-q4.gguf"
+  MODEL_PATH="."
+}
+
+set_model_inventory_from_inputs() {
+  MODEL_NAME="$MODEL_NAME_INPUT"
+  MODEL_FILE="$MODEL_FILE_INPUT"
+  MODEL_PATH="$MODEL_PATH_INPUT"
+}
+
+render_runtime_profile() {
+  local image_manifest_sha
+  image_manifest_sha="$(openssl dgst -sha256 "$KIT_ROOT/image-manifest.yaml" | awk '{print $NF}')"
+  cat <<PROFILE
+# Lucairn runtime profile -- generated by bin/lucairn-init. Contains no secrets.
+schema_version: 1
+runtime_mode: $RUNTIME_MODE
+deployment_profile: $RUNTIME_MODE
+local_runtime: ${LOCAL_RUNTIME:-none}
+remote_endpoint: ${REMOTE_ENDPOINT:-none}
+byok_egress_allowlist: $BYOK_EGRESS_ALLOWLIST
+image_tag: $IMAGE_TAG
+overlays:
+  - docker-compose.customer.yml
+PROFILE
+  case "$RUNTIME_MODE" in
+    managed-byok)
+      cat <<'PROFILE'
+  - docker-compose.self-hosted.yml
+  - docker-compose.self-hosted-byok.yml
+PROFILE
+      ;;
+    local-runtime)
+      cat <<'PROFILE'
+  - docker-compose.self-hosted.yml
+PROFILE
+      ;;
+  esac
+  cat <<PROFILE
+image_manifest:
+  path: $(runtime_profile_image_manifest_path_contract)
+  sha256: $image_manifest_sha
+  registry: ghcr.io/declade
+  recorded_images:
+PROFILE
+  awk '
+    /^[[:space:]]*ref:[[:space:]]*/ {
+      ref=$0; sub(/^[[:space:]]*ref:[[:space:]]*/, "", ref); gsub(/"/, "", ref)
+    }
+    /^[[:space:]]*digest:[[:space:]]*/ && ref != "" {
+      digest=$0; sub(/^[[:space:]]*digest:[[:space:]]*/, "", digest); gsub(/"/, "", digest)
+      print "    - ref: " ref "\n      digest: " digest
+      ref=""
+    }
+  ' "$KIT_ROOT/image-manifest.yaml"
+  if [ "$RUNTIME_MODE" = "local-runtime" ]; then
+    cat <<PROFILE
+model_inventory:
+  provenance: operator-declared
+  availability: required-not-verified
+  model_name: $MODEL_NAME
+  model_file: $MODEL_FILE
+  model_path: $MODEL_PATH
+  runtime: $LOCAL_RUNTIME
+PROFILE
+  else
+    cat <<'PROFILE'
+model_inventory:
+  provenance: not-applicable
+  local_model: none
+PROFILE
+  fi
+}
+
+runtime_profile_matches_inputs() {
+  # Do not re-render from the mutable kit-root manifest here.  A normal kit
+  # image repin must leave an existing S1 install idempotent for its recorded
+  # image tag.  The lifecycle reader proves the saved env/profile/snapshot
+  # triplet instead.
+  runtime_env_matches_inputs "$OUTPUT" \
+    && "$KIT_ROOT/bin/lucairn" __validate-runtime-profile \
+      --env "$OUTPUT" \
+      --profile "$RUNTIME_PROFILE_MANIFEST" \
+      --manifest "$RUNTIME_IMAGE_MANIFEST_SNAPSHOT" \
+      --lib "$KIT_ROOT/bin/runtime-profile-lib.sh" >/dev/null
+}
+
+runtime_env_matches_inputs() {
+  local env="$1" remote byok profile image deployment marker expected_deployment remote_api remote_public_lcr remote_public_legacy
+  remote="$(optional_env_field "$env" SANDBOX_B_REMOTE_ENDPOINT)" || return 1
+  byok="$(optional_env_field "$env" LUCAIRN_LLM_EGRESS_ALLOWLIST)" || return 1
+  profile="$(optional_env_field "$env" MODEL_RUNTIME_PROFILE)" || return 1
+  marker="$(optional_env_field "$env" LUCAIRN_RUNTIME_PROFILE_REQUIRED)" || return 1
+  image="$(env_field "$env" LUCAIRN_IMAGE_TAG)" || return 1
+  deployment="$(env_field "$env" DSA_ENV)" || return 1
+  case "$MODE" in
+    dev) expected_deployment="development" ;;
+    production) expected_deployment="production" ;;
+  esac
+  [ "$image" = "$IMAGE_TAG" ] && [ "$deployment" = "$expected_deployment" ] \
+    && { [ -z "$marker" ] || [ "$marker" = "1" ]; } || return 1
+  case "$RUNTIME_MODE" in
+    split-remote)
+      remote_api="$(optional_env_field "$env" SANDBOX_B_API_KEY)" || return 1
+      remote_public_lcr="$(optional_env_field "$env" LCR_SANDBOX_B_PUBLIC_KEY)" || return 1
+      remote_public_legacy="$(optional_env_field "$env" VEIL_SANDBOX_B_PUBLIC_KEY)" || return 1
+      [ "$remote" = "$REMOTE_ENDPOINT" ] && [ -z "$byok" ] && [ -z "$profile" ] \
+        && [ "$remote_api" = "$REMOTE_API_KEY" ] \
+        && { [ -n "$remote_public_lcr" ] || [ -n "$remote_public_legacy" ]; } \
+        && { [ -z "$remote_public_lcr" ] || [ "$remote_public_lcr" = "$REMOTE_PUBLIC_KEY" ]; } \
+        && { [ -z "$remote_public_legacy" ] || [ "$remote_public_legacy" = "$REMOTE_PUBLIC_KEY" ]; }
+      ;;
+    managed-byok) [ -z "$remote" ] && [ "$byok" = "$BYOK_ALLOWLIST" ] && [ -z "$profile" ] ;;
+    local-runtime)
+      [ -z "$remote" ] && [ -z "$byok" ] && [ "$profile" = "$LOCAL_RUNTIME" ] \
+        && [ "$(env_field "$env" MODEL_NAME)" = "$MODEL_NAME" ] \
+        && [ "$(env_field "$env" MODEL_FILE)" = "$MODEL_FILE" ] \
+        && [ "$(env_field "$env" MODEL_PATH)" = "$MODEL_PATH" ]
+      ;;
+  esac
+}
+
+path_exists_or_symlink() {
+  [ -e "$1" ] || [ -L "$1" ]
+}
+
+lock_owner_details() {
+  local owner="$1" pid token lines
+  [ -f "$owner" ] && [ ! -L "$owner" ] || return 1
+  lines="$(awk 'END { print NR }' "$owner" 2>/dev/null || true)"
+  [ "$lines" = "2" ] || return 1
+  pid="$(sed -n 's/^pid=//p' "$owner")"
+  token="$(sed -n 's/^token=//p' "$owner")"
+  [ "$(grep -c '^pid=' "$owner" 2>/dev/null || true)" = "1" ] \
+    && [ "$(grep -c '^token=' "$owner" 2>/dev/null || true)" = "1" ] \
+    && printf '%s' "$pid" | grep -Eq '^[1-9][0-9]*$' \
+    && printf '%s' "$token" | grep -Eq '^[0-9a-f]{48}$' \
+    || return 1
+  printf '%s|%s' "$pid" "$token"
+}
+
+lock_owner_matches_current() {
+  local details pid token
+  details="$(lock_owner_details "$LOCK_OWNER_FILE" 2>/dev/null || true)"
+  pid="${details%%|*}"
+  token="${details#*|}"
+  [ "$pid" = "$$" ] && [ "$token" = "$LOCK_TOKEN" ]
+}
+
+lock_pid_is_provably_dead() {
+  local pid="$1"
+  # Shell does not expose errno from kill(2), and ps failures/visibility are
+  # ambiguous.  Use Python's errno-aware os.kill(pid, 0) instead: only ESRCH
+  # proves that a recorded owner cannot exist.  Every other result, including
+  # EPERM, missing Python, or a verifier failure, retains the lock.
+  command -v python3 >/dev/null 2>&1 || return 1
+  if python3 - "$pid" <<'PY'
+import errno
+import os
+import sys
+
+try:
+    pid = int(sys.argv[1])
+    if pid <= 0:
+        raise ValueError
+except (IndexError, ValueError):
+    raise SystemExit(1)
+
+try:
+    os.kill(pid, 0)
+except ProcessLookupError:
+    raise SystemExit(0)
+except PermissionError:
+    raise SystemExit(1)
+except OSError as error:
+    raise SystemExit(0 if error.errno == errno.ESRCH else 1)
+else:
+    raise SystemExit(1)
+PY
+  then
+    return 0
+  fi
+  return 1
+}
+
+lock_mtime_epoch() {
+  local path="$1"
+  case "$(uname -s)" in
+    Darwin|FreeBSD|OpenBSD|NetBSD) stat -f '%m' "$path" 2>/dev/null ;;
+    *) stat -c '%Y' "$path" 2>/dev/null ;;
+  esac
+}
+
+lock_ownerless_grace_elapsed() {
+  local modified now age grace
+  grace="${LUCAIRN_INIT_LOCK_GRACE_SECONDS:-30}"
+  printf '%s' "$grace" | grep -Eq '^[0-9]+$' || grace=30
+  modified="$(lock_mtime_epoch "$LOCK_DIR" 2>/dev/null || true)"
+  now="$(date -u +%s)"
+  printf '%s' "$modified" | grep -Eq '^[0-9]+$' || return 1
+  age=$(( now - modified ))
+  [ "$age" -ge "$grace" ]
+}
+
+write_lock_owner() {
+  local old_umask
+  LOCK_OWNER_FILE="$LOCK_DIR/owner"
+  old_umask="$(umask)"
+  umask 077
+  printf 'pid=%s\ntoken=%s\n' "$$" "$LOCK_TOKEN" > "$LOCK_OWNER_FILE" || {
+    umask "$old_umask"
+    return 1
+  }
+  umask "$old_umask"
+  chmod 0600 "$LOCK_OWNER_FILE" || return 1
+  lock_owner_matches_current
+}
+
+reclaim_stale_install_lock() {
+  local details pid quarantine
+  details="$(lock_owner_details "$LOCK_DIR/owner" 2>/dev/null || true)"
+  if [ -n "$details" ]; then
+    pid="${details%%|*}"
+    lock_pid_is_provably_dead "$pid" \
+      || fail "another lucairn-init transaction holds $LOCK_DIR (owner PID $pid is alive or cannot be proven dead)"
+  else
+    lock_ownerless_grace_elapsed \
+      || fail "another lucairn-init transaction holds $LOCK_DIR with no valid owner; wait ${LUCAIRN_INIT_LOCK_GRACE_SECONDS:-30}s before stale-lock recovery"
+  fi
+  # rename is atomic within OUTPUT_DIR: only one contender can move this stale
+  # directory aside.  Cleanup below relies on the trusted output-directory
+  # boundary and intentionally does not claim hostile-writer CAS semantics.
+  quarantine="${LOCK_DIR}.recovered.${LOCK_TOKEN}"
+  if mv "$LOCK_DIR" "$quarantine" 2>/dev/null; then
+    rm -rf "$quarantine"
+    return 0
+  fi
+  return 1
+}
+
+acquire_install_lock() {
+  OUTPUT_DIR="$(dirname "$OUTPUT")"
+  mkdir -p "$OUTPUT_DIR"
+  [ -d "$OUTPUT_DIR" ] && [ ! -L "$OUTPUT_DIR" ] \
+    || fail "output directory is not a real directory: $OUTPUT_DIR"
+  LOCK_DIR="$OUTPUT_DIR/.lucairn-init.lock"
+  LOCK_TOKEN="$(openssl rand -hex 24 2>/dev/null || true)"
+  printf '%s' "$LOCK_TOKEN" | grep -Eq '^[0-9a-f]{48}$' \
+    || fail "could not create init lock owner token"
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    [ -d "$LOCK_DIR" ] && [ ! -L "$LOCK_DIR" ] \
+      || fail "init lock is unsafe (must be a real directory): $LOCK_DIR"
+    reclaim_stale_install_lock || fail "another lucairn-init transaction is recovering $LOCK_DIR; retry"
+    mkdir "$LOCK_DIR" 2>/dev/null \
+      || fail "another lucairn-init transaction holds $LOCK_DIR; wait for it to finish"
+  fi
+  if ! write_lock_owner; then
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+    LOCK_DIR=""
+    fail "could not record init lock ownership"
+  fi
+}
+
+# All state/adoption decisions below are made while holding this directory
+# mutex.  The trap releases it on normal errors and TERM/INT.
+acquire_install_lock
+
+if path_exists_or_symlink "$OUTPUT"; then
+  runtime_profile_regular_file "$OUTPUT" \
+    || fail "existing customer.env is not a regular non-symlink file (no customer state was changed)"
+  if [ "$RUNTIME_MODE" = "local-runtime" ]; then
+    if [ "$MODEL_NAME_COUNT" -eq 1 ]; then
+      set_model_inventory_from_inputs
+    else
+      set_model_inventory_from_env || fail "existing customer.env has invalid local model inventory (no customer state was changed)"
+    fi
+  else
+    set_default_model_inventory
+  fi
+  existing_marker="$(optional_env_field "$OUTPUT" LUCAIRN_RUNTIME_PROFILE_REQUIRED)" \
+    || fail "existing customer.env has duplicate runtime-profile marker (no customer state was changed)"
+  [ -z "$existing_marker" ] || [ "$existing_marker" = "1" ] \
+    || fail "existing customer.env has invalid runtime-profile marker (no customer state was changed)"
+  if path_exists_or_symlink "$RUNTIME_PROFILE_MANIFEST"; then
+    runtime_profile_regular_file "$RUNTIME_PROFILE_MANIFEST" \
+      || fail "existing runtime profile is not a regular non-symlink file (no customer state was changed)"
+    runtime_profile_regular_file "$RUNTIME_IMAGE_MANIFEST_SNAPSHOT" \
+      || fail "existing S1 image-manifest snapshot is not a regular non-symlink file (no customer state was changed)"
+    [ "$existing_marker" = "1" ] \
+      || fail "runtime profile sidecar requires LUCAIRN_RUNTIME_PROFILE_REQUIRED=1 (no customer state was changed)"
+    if runtime_profile_matches_inputs && runtime_env_matches_inputs "$OUTPUT"; then
+      echo "already initialized: $OUTPUT and $RUNTIME_PROFILE_MANIFEST match the requested runtime profile" >&2
+      exit 0
+    fi
+    fail "existing runtime profile or customer.env conflicts with requested inputs; inspect both files (no customer state was changed)"
+  fi
+  [ -z "$existing_marker" ] \
+    || fail "existing S1 customer.env requires its runtime profile sidecar (no customer state was changed)"
+  path_exists_or_symlink "$RUNTIME_IMAGE_MANIFEST_SNAPSHOT" \
+    && fail "image-manifest snapshot requires the S1 runtime profile sidecar (no customer state was changed)"
+  if [ "$ADOPT_RUNTIME_PROFILE" != "true" ]; then
+    fail "existing customer.env has no runtime profile manifest; preserve it with --adopt-runtime-profile plus an explicit matching --runtime-mode (no customer state was changed)"
+  fi
+  if ! runtime_env_matches_inputs "$OUTPUT"; then
+    fail "existing customer.env does not agree with the requested runtime inputs; update it deliberately, then re-run --adopt-runtime-profile (no customer state was changed)"
+  fi
+elif [ "$ADOPT_RUNTIME_PROFILE" = "true" ]; then
+  fail "--adopt-runtime-profile requires an existing customer.env at $OUTPUT"
+else
+  if [ "$RUNTIME_MODE" = "local-runtime" ] && [ "$MODEL_NAME_COUNT" -eq 1 ]; then
+    set_model_inventory_from_inputs
+  else
+    set_default_model_inventory
+  fi
 fi
 
 if [ ! -f "$KIT_ROOT/docker-compose.customer.yml" ]; then
@@ -320,7 +1004,9 @@ PY
 #
 # Why these specific 5 slots: BRIDGE / WITNESS / AUDIT / SANITIZER are the
 # four claim-emitting service identities that the witness verifier checks
-# against per-claim signatures. SANDBOX_B is the inference-side identity.
+# against per-claim signatures. SANDBOX_B is a customer-held inference-side
+# identity only for self-hosted modes; split mode receives the remote public
+# key and never generates or claims the remote signing seed.
 # GATEWAY / MANIFEST stay as standalone signing-only keys (no derived-pubkey
 # slot in customer.env) — they sign things the witness reads via different
 # verification paths and don't need a public-key env var on the customer side.
@@ -365,12 +1051,21 @@ set_kv() {
 
 # Pair generation
 for slot in "${VEIL_PAIRED_SLOTS[@]}"; do
+  [ "$RUNTIME_MODE" != "split-remote" ] || [ "$slot" != "SANDBOX_B" ] || continue
   pair="$(gen_ed25519_pair)" || fail "Ed25519 derivation failed for $slot — install python3-cryptography (>=2.6, the Ubuntu 22.04 apt package 3.4.8 works) or 'pip install pynacl'" 3
   seed="${pair%%:*}"
   pub="${pair##*:}"
   set_kv "VEIL_${slot}_SIGNING_KEY" "$seed"
   set_kv "VEIL_${slot}_PUBLIC_KEY" "$pub"
 done
+
+if [ "$RUNTIME_MODE" = "split-remote" ]; then
+  set_kv SANDBOX_B_API_KEY "$REMOTE_API_KEY"
+  set_kv VEIL_SANDBOX_B_PUBLIC_KEY "$REMOTE_PUBLIC_KEY"
+  set_kv VEIL_SANDBOX_B_SIGNING_KEY ""
+else
+  set_kv SANDBOX_B_API_KEY ""
+fi
 
 # Signing-only slots
 for slot in "${VEIL_SIGNING_ONLY[@]}"; do
@@ -434,6 +1129,14 @@ get_val() {
   return 1
 }
 
+shell_quote() {
+  # Single-quote every operator-supplied value so the recorded command can be
+  # copied into a POSIX shell without changing its topology or output path.
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
 # Render --------------------------------------------------------------------
 #
 # Output structure mirrors customer.env.example so a side-by-side diff makes
@@ -441,19 +1144,37 @@ get_val() {
 # records mode + timestamp + the regeneration command.
 
 render_env() {
-  local ts now byok_block
+  local ts now regen_cmd
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   ts="$now"
-  local regen_cmd="./bin/lucairn-init --$MODE"
+  regen_cmd="./bin/lucairn-init --$MODE"
   if [ "$MODE" = "production" ]; then
-    regen_cmd="$regen_cmd --license $LICENSE_PATH"
+    regen_cmd="$regen_cmd --license $(shell_quote "$LICENSE_PATH")"
   fi
-  if [ "$BYOK" = "true" ]; then
-    regen_cmd="$regen_cmd --byok"
-  fi
+  regen_cmd="$regen_cmd --runtime-mode $RUNTIME_MODE"
+  case "$RUNTIME_MODE" in
+    split-remote)
+      regen_cmd="$regen_cmd --remote-endpoint $(shell_quote "$REMOTE_ENDPOINT")"
+      # Record only the path, shell-quoted. The issued credential contents
+      # must never enter a comment, argv transcript, or support artifact.
+      regen_cmd="$regen_cmd --remote-credentials $(shell_quote "$REMOTE_CREDENTIALS")"
+      ;;
+    managed-byok) regen_cmd="$regen_cmd --byok-allowlist $(shell_quote "$BYOK_ALLOWLIST")" ;;
+    local-runtime)
+      regen_cmd="$regen_cmd --local-runtime $(shell_quote "$LOCAL_RUNTIME")"
+      regen_cmd="$regen_cmd --model-name $(shell_quote "$MODEL_NAME") --model-file $(shell_quote "$MODEL_FILE") --model-path $(shell_quote "$MODEL_PATH")"
+      ;;
+  esac
   if [ "$IMAGE_TAG" != "$DEFAULT_IMAGE_TAG" ]; then
-    regen_cmd="$regen_cmd --image-tag $IMAGE_TAG"
+    regen_cmd="$regen_cmd --image-tag $(shell_quote "$IMAGE_TAG")"
   fi
+  if [ "$OUTPUT" != "$DEFAULT_OUTPUT" ]; then
+    regen_cmd="$regen_cmd --output $(shell_quote "$OUTPUT")"
+  fi
+  case "$MODE:$GATEWAY_BASE_URL_OVERRIDE" in
+    dev:http://localhost:8080|production:https://lucairn.customer.example) ;;
+    *) regen_cmd="$regen_cmd --gateway-base-url $(shell_quote "$GATEWAY_BASE_URL_OVERRIDE")" ;;
+  esac
 
   cat <<HEADER
 # Lucairn customer environment — generated by bin/lucairn-init
@@ -469,6 +1190,9 @@ render_env() {
 LUCAIRN_IMAGE_REGISTRY=ghcr.io/declade
 LUCAIRN_IMAGE_TAG=$IMAGE_TAG
 LUCAIRN_MODEL_DIR=../models
+# Non-secret S1 state discriminator. Its sidecar is required by every
+# lifecycle command; only marker-absent pre-S1 environments may use legacy mode.
+LUCAIRN_RUNTIME_PROFILE_REQUIRED=1
 
 DSA_ENV=$(get_val DSA_ENV)
 GRPC_TLS_ENABLED=$(get_val GRPC_TLS_ENABLED)
@@ -492,11 +1216,11 @@ LUCAIRN_LICENSE_KEY=$(get_val LUCAIRN_LICENSE_KEY)
 LUCAIRN_LICENSE_PUBLIC_KEY=$(get_val LUCAIRN_LICENSE_PUBLIC_KEY)
 LUCAIRN_LICENSE_GRACE_DAYS=$(get_val LUCAIRN_LICENSE_GRACE_DAYS)
 
-# Sandbox B (self-hosted mode — local container generates its own keypair;
-# split deployments override SANDBOX_B_REMOTE_ENDPOINT + SANDBOX_B_API_KEY
-# with Lucairn-provisioned values).
-SANDBOX_B_REMOTE_ENDPOINT=
-SANDBOX_B_API_KEY=
+# Sandbox B. Split deployments receive API/public-key material from the
+# Lucairn-issued remote credentials file; the remote signing seed remains
+# remote. Self-hosted deployments generate and retain their local pair.
+SANDBOX_B_REMOTE_ENDPOINT=$REMOTE_ENDPOINT
+SANDBOX_B_API_KEY=$(get_val SANDBOX_B_API_KEY)
 LCR_SANDBOX_B_PUBLIC_KEY=$(get_val VEIL_SANDBOX_B_PUBLIC_KEY)
 LCR_SANDBOX_B_SIGNING_KEY=$(get_val VEIL_SANDBOX_B_SIGNING_KEY)
 LOCAL_SANDBOX_B_API_KEY=local-sandbox-b-key
@@ -616,10 +1340,10 @@ PROBER_URL=
 # try to pull a model-runtime image. Set to one of llama-cpp / vllm / tgi /
 # ollama / onnxruntime / triton / custom-runtime only when you intend to
 # spin up a local model runtime alongside Sandbox B.
-MODEL_RUNTIME_PROFILE=
-MODEL_NAME=customer-model
-MODEL_FILE=customer-model-q4.gguf
-MODEL_PATH=.
+MODEL_RUNTIME_PROFILE=$LOCAL_RUNTIME
+MODEL_NAME=$MODEL_NAME
+MODEL_FILE=$MODEL_FILE
+MODEL_PATH=$MODEL_PATH
 MODEL_CONTEXT_WINDOW=8192
 MODEL_RUNTIME_URL=http://model-runtime:8000/v1
 MODEL_RUNTIME_API_KEY=local-model-runtime
@@ -653,6 +1377,176 @@ BYOK_BLOCK
   fi
 }
 
+file_mode() {
+  local file="$1"
+  case "$(uname -s)" in
+    Darwin|FreeBSD|OpenBSD|NetBSD) stat -f '%Lp' "$file" 2>/dev/null ;;
+    *) stat -c '%a' "$file" 2>/dev/null ;;
+  esac
+}
+
+file_sha256() {
+  openssl dgst -sha256 "$1" | awk '{print $NF}'
+}
+
+hard_link_noreplace() {
+  # Unlike `ln SOURCE DEST`, os.link never treats an attacker-created DEST
+  # directory as a directory in which to create SOURCE's basename.  That
+  # distinction matters for the private staged customer.env, which contains
+  # customer secrets.  A pre-existing path (including a symlink or directory)
+  # is an unconditional publication failure.
+  python3 - "$1" "$2" <<'PY'
+import os
+import sys
+
+try:
+    os.link(sys.argv[1], sys.argv[2])
+except OSError:
+    raise SystemExit(1)
+PY
+}
+
+atomic_replace_if_expected() {
+  # `mv SOURCE DEST` moves SOURCE *into* DEST when DEST is swapped for a
+  # directory.  os.replace has file-replacement semantics instead.  The
+  # install-directory lock serializes Lucairn writers; the identity checks
+  # detect an already-observable replacement, but are not a compare-and-swap
+  # guarantee against an untrusted concurrent writer.  Post-publication and
+  # rollback checks therefore only touch a path while it still proves to be
+  # this transaction's staged inode.
+  python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
+import hashlib
+import os
+import signal
+import stat
+import sys
+
+source, target, expected, expected_hash, visible_phase = sys.argv[1:]
+
+def regular_lstat(path):
+    value = os.lstat(path)
+    if not stat.S_ISREG(value.st_mode):
+        raise OSError("not a regular file")
+    return value
+
+def regular_digest(path):
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        value = os.fstat(descriptor)
+        if not stat.S_ISREG(value.st_mode):
+            raise OSError("not a regular file")
+        digest = hashlib.sha256()
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+        return value, digest.hexdigest()
+    finally:
+        os.close(descriptor)
+
+try:
+    source_stat = regular_lstat(source)
+    target_stat = regular_lstat(target)
+    if str(target_stat.st_ino) != expected:
+        raise OSError("unexpected target identity")
+    digest_stat, digest = regular_digest(target)
+    if digest_stat.st_ino != target_stat.st_ino or digest != expected_hash:
+        raise OSError("unexpected target content")
+    # Re-read immediately before rename so ordinary concurrent replacement is
+    # detected before any write is attempted.
+    target_stat = regular_lstat(target)
+    if str(target_stat.st_ino) != expected:
+        raise OSError("target identity changed")
+    digest_stat, digest = regular_digest(target)
+    if digest_stat.st_ino != target_stat.st_ino or digest != expected_hash:
+        raise OSError("target content changed")
+    os.replace(source, target)
+    # This hook deliberately runs in the same primitive as os.replace so the
+    # parent is signalled in the visible-but-not-returned interval.  It is
+    # inert unless an explicitly named test hook is set.
+    if os.environ.get("LUCAIRN_TEST_TRANSACTION_HOOK") == f"{visible_phase}:signal":
+        os.kill(os.getppid(), signal.SIGTERM)
+    published = regular_lstat(target)
+    if published.st_ino != source_stat.st_ino:
+        raise OSError("replacement identity mismatch")
+except OSError:
+    raise SystemExit(1)
+PY
+}
+
+publish_new_artifact() {
+  # Link creation gives no-overwrite publication for an absent final name.
+  # The caller retains the private temp until the final pair proof succeeds.
+  local tmp="$1" target="$2" expected_inode="$3" expected_mode="$4" visible_phase="$5" actual_inode
+  path_exists_or_symlink "$target" && return 1
+  [ "$(file_inode "$tmp")" = "$expected_inode" ] || return 1
+  [ "$(file_mode "$tmp")" = "$expected_mode" ] || return 1
+  hard_link_noreplace "$tmp" "$target" || return 1
+  # This is intentionally before any normal post-link return path.  The
+  # parent recorded expected_inode before hard_link_noreplace made target
+  # visible, so signal cleanup can identify this artifact immediately.
+  test_transaction_hook "$visible_phase" "$target"
+  actual_inode="$(file_inode "$target" 2>/dev/null || true)"
+  [ "$actual_inode" = "$expected_inode" ] \
+    && cmp -s "$tmp" "$target" \
+    && [ "$(file_mode "$target")" = "$expected_mode" ] \
+    || return 1
+}
+
+publish_adopted_env() {
+  local tmp="$1" target="$2" expected_old_inode="$3" expected_old_hash="$4" expected_inode="$5" expected_mode="$6" visible_phase="$7" actual_inode
+  [ "$(file_inode "$target" 2>/dev/null || true)" = "$expected_old_inode" ] || return 1
+  [ "$(file_sha256 "$target" 2>/dev/null || true)" = "$expected_old_hash" ] || return 1
+  [ "$(file_inode "$tmp")" = "$expected_inode" ] || return 1
+  [ "$(file_mode "$tmp")" = "$expected_mode" ] || return 1
+  # The replacement primitive fires visible_phase at os.replace itself, before
+  # this publication function can return to normal shell code.
+  atomic_replace_if_expected "$tmp" "$target" "$expected_old_inode" "$expected_old_hash" "$visible_phase" || return 1
+  actual_inode="$(file_inode "$target" 2>/dev/null || true)"
+  [ "$actual_inode" = "$expected_inode" ] && [ "$(file_mode "$target")" = "$expected_mode" ] || return 1
+}
+
+verify_published_artifact() {
+  local target="$1" expected_inode="$2" expected_hash="$3" expected_mode="$4"
+  [ "$(file_inode "$target" 2>/dev/null || true)" = "$expected_inode" ] \
+    && [ "$(file_mode "$target" 2>/dev/null || true)" = "$expected_mode" ] \
+    && [ "$(file_sha256 "$target" 2>/dev/null || true)" = "$expected_hash" ]
+}
+
+append_required_marker() {
+  local input="$1" output="$2" last_byte
+  cp -p "$input" "$output" || return 1
+  last_byte="$(tail -c 1 "$output" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')"
+  [ -z "$last_byte" ] || [ "$last_byte" = "0a" ] || printf '\n' >> "$output"
+  printf 'LUCAIRN_RUNTIME_PROFILE_REQUIRED=1\n' >> "$output"
+}
+
+validate_private_runtime_pair() {
+  local env_file="$1" profile_file="$2" snapshot_file="$3"
+  runtime_env_matches_inputs "$env_file" || return 1
+  "$KIT_ROOT/bin/lucairn" __validate-runtime-profile \
+    --env "$env_file" \
+    --profile "$profile_file" \
+    --manifest "$snapshot_file" \
+    --lib "$KIT_ROOT/bin/runtime-profile-lib.sh" >/dev/null
+}
+
+# Test-only fault hooks are disabled by default and can only force this
+# transaction to fail; they cannot turn an inconsistent publication into
+# success.  They make replacement/deletion and signal cleanup deterministic.
+test_transaction_hook() {
+  local phase="$1" target="$2"
+  case "${LUCAIRN_TEST_TRANSACTION_HOOK:-}" in
+    "${phase}:delete") rm -f "$target" ;;
+    "${phase}:replace") rm -f "$target"; printf 'attacker replacement\n' > "$target"; chmod 0644 "$target" ;;
+    "${phase}:signal") kill -TERM "$$" ;;
+    "") ;;
+    *) ;;
+  esac
+}
+
 # Final assembly ------------------------------------------------------------
 
 if [ "$DRY_RUN" = "true" ]; then
@@ -661,28 +1555,130 @@ if [ "$DRY_RUN" = "true" ]; then
   exit 0
 fi
 
-# Backup existing file before overwriting
-if [ -e "$OUTPUT" ]; then
-  backup_ts="$(date -u +%Y%m%dT%H%M%SZ)"
-  backup_path="${OUTPUT}.bak-${backup_ts}"
-  cp -p "$OUTPUT" "$backup_path"
-  chmod 0600 "$backup_path" 2>/dev/null || true
-  echo "backup: existing customer.env -> $backup_path" >&2
+if [ "$ADOPT_RUNTIME_PROFILE" = "true" ]; then
+  path_exists_or_symlink "$RUNTIME_PROFILE_MANIFEST" \
+    && fail "runtime profile path already exists; refusing adoption without changing customer.env"
+  path_exists_or_symlink "$RUNTIME_IMAGE_MANIFEST_SNAPSHOT" \
+    && fail "image-manifest snapshot path already exists; refusing adoption without changing customer.env"
+  runtime_profile_regular_file "$OUTPUT" \
+    || fail "existing customer.env is not a regular non-symlink file (no customer state was changed)"
+  ADOPTION_ORIGINAL_INODE="$(file_inode "$OUTPUT")" || fail "could not identify existing customer.env"
+  ADOPTION_MODE="$(file_mode "$OUTPUT")" || fail "could not read existing customer.env permissions"
+  ADOPTION_ORIGINAL_HASH="$(file_sha256 "$OUTPUT")" || fail "could not hash existing customer.env"
+  TMP_OUT="$(mktemp "${OUTPUT_DIR}/.lucairn-adopt-env.XXXXXX")"
+  TMP_PROFILE="$(mktemp "${OUTPUT_DIR}/.lucairn-runtime-profile.XXXXXX")"
+  TMP_SNAPSHOT="$(mktemp "${OUTPUT_DIR}/.lucairn-image-manifest.XXXXXX")"
+  TMP_FILES+=("$TMP_OUT" "$TMP_PROFILE" "$TMP_SNAPSHOT")
+  append_required_marker "$OUTPUT" "$TMP_OUT" || fail "could not stage adoption customer.env"
+  chmod "$ADOPTION_MODE" "$TMP_OUT"
+  chmod 0644 "$TMP_PROFILE"
+  chmod 0644 "$TMP_SNAPSHOT"
+  cp "$KIT_ROOT/image-manifest.yaml" "$TMP_SNAPSHOT" \
+    || fail "could not stage image-manifest snapshot"
+  render_runtime_profile > "$TMP_PROFILE"
+  validate_private_runtime_pair "$TMP_OUT" "$TMP_PROFILE" "$TMP_SNAPSHOT" \
+    || fail "staged adoption runtime state did not pass complete validation"
+  [ "$(file_inode "$OUTPUT" 2>/dev/null || true)" = "$ADOPTION_ORIGINAL_INODE" ] \
+    && [ "$(file_sha256 "$OUTPUT" 2>/dev/null || true)" = "$ADOPTION_ORIGINAL_HASH" ] \
+    || fail "existing customer.env changed during adoption staging"
+  ADOPTION_ENV_HASH="$(file_sha256 "$TMP_OUT")"
+  ADOPTION_BACKUP="$(mktemp "${OUTPUT_DIR}/.lucairn-adopt-backup.XXXXXX")"
+  TMP_FILES+=("$ADOPTION_BACKUP")
+  cp -p "$OUTPUT" "$ADOPTION_BACKUP" && cmp -s "$OUTPUT" "$ADOPTION_BACKUP" \
+    && [ "$(file_sha256 "$ADOPTION_BACKUP")" = "$ADOPTION_ORIGINAL_HASH" ] \
+    || fail "could not create exact same-filesystem adoption backup"
+  TX_STATE="adoption"
+  PUBLISHED_ENV_PATH="$OUTPUT"
+  PUBLISHED_PROFILE_PATH="$RUNTIME_PROFILE_MANIFEST"
+  PUBLISHED_SNAPSHOT_PATH="$RUNTIME_IMAGE_MANIFEST_SNAPSHOT"
+  if [ "${LUCAIRN_TEST_FAIL_RUNTIME_PROFILE_PUBLISH:-}" = "1" ]; then
+    fail "runtime profile publication failed"
+  fi
+  record_publication_inode snapshot "$TMP_SNAPSHOT" \
+    || fail "could not identify staged image-manifest snapshot"
+  publish_new_artifact "$TMP_SNAPSHOT" "$RUNTIME_IMAGE_MANIFEST_SNAPSHOT" "$PUBLISHED_SNAPSHOT_INODE" 644 adoption-snapshot-visible \
+    || fail "image-manifest snapshot publication failed"
+  test_transaction_hook adoption-after-snapshot "$RUNTIME_IMAGE_MANIFEST_SNAPSHOT"
+  record_publication_inode profile "$TMP_PROFILE" \
+    || fail "could not identify staged runtime profile"
+  publish_new_artifact "$TMP_PROFILE" "$RUNTIME_PROFILE_MANIFEST" "$PUBLISHED_PROFILE_INODE" 644 adoption-profile-visible \
+    || fail "runtime profile publication failed"
+  test_transaction_hook adoption-after-profile "$RUNTIME_PROFILE_MANIFEST"
+  record_publication_inode env "$TMP_OUT" \
+    || fail "could not identify staged adoption customer.env"
+  publish_adopted_env "$TMP_OUT" "$OUTPUT" "$ADOPTION_ORIGINAL_INODE" "$ADOPTION_ORIGINAL_HASH" "$PUBLISHED_ENV_INODE" "$ADOPTION_MODE" adoption-env-visible \
+    || fail "customer.env adoption publication failed; restored prior state"
+  test_transaction_hook adoption-after-env "$RUNTIME_PROFILE_MANIFEST"
+  if [ "${LUCAIRN_TEST_FAIL_ADOPTION_AFTER_ENV_PUBLISH:-}" = "1" ]; then
+    fail "customer.env adoption publication failed; restored prior state"
+  fi
+  verify_published_artifact "$OUTPUT" "$PUBLISHED_ENV_INODE" "$ADOPTION_ENV_HASH" "$ADOPTION_MODE" \
+    && verify_published_artifact "$RUNTIME_PROFILE_MANIFEST" "$PUBLISHED_PROFILE_INODE" "$(file_sha256 "$TMP_PROFILE")" 644 \
+    && verify_published_artifact "$RUNTIME_IMAGE_MANIFEST_SNAPSHOT" "$PUBLISHED_SNAPSHOT_INODE" "$(file_sha256 "$TMP_SNAPSHOT")" 644 \
+    && validate_private_runtime_pair "$OUTPUT" "$RUNTIME_PROFILE_MANIFEST" "$RUNTIME_IMAGE_MANIFEST_SNAPSHOT" \
+    || fail "adoption publication consistency proof failed; restored prior state"
+  rm -f "$ADOPTION_BACKUP"
+  ADOPTION_BACKUP=""
+  TX_STATE=""
+  echo "adopted: existing customer.env values and secrets were preserved; added LUCAIRN_RUNTIME_PROFILE_REQUIRED=1 atomically" >&2
+  echo "wrote: $RUNTIME_PROFILE_MANIFEST (mode 0644; no secrets)" >&2
+  echo "wrote: $RUNTIME_IMAGE_MANIFEST_SNAPSHOT (mode 0644; recorded init-time image manifest)" >&2
+else
+  # Render both final-byte artifacts in the destination filesystem, validate
+  # the exact private pair with the lifecycle reader, then publish under the
+  # lock.  A two-name commit cannot be atomically visible; intermediate states
+  # are deliberately fail-closed and ownership-aware cleanup repairs them.
+  path_exists_or_symlink "$OUTPUT" && fail "customer.env path already exists; refusing fresh publication"
+  path_exists_or_symlink "$RUNTIME_PROFILE_MANIFEST" && fail "runtime profile path already exists; refusing fresh publication"
+  path_exists_or_symlink "$RUNTIME_IMAGE_MANIFEST_SNAPSHOT" && fail "image-manifest snapshot path already exists; refusing fresh publication"
+  TMP_OUT="$(mktemp "${OUTPUT_DIR}/.lucairn-init.XXXXXX")"
+  TMP_PROFILE="$(mktemp "${OUTPUT_DIR}/.lucairn-runtime-profile.XXXXXX")"
+  TMP_SNAPSHOT="$(mktemp "${OUTPUT_DIR}/.lucairn-image-manifest.XXXXXX")"
+  TMP_FILES+=("$TMP_OUT" "$TMP_PROFILE" "$TMP_SNAPSHOT")
+  chmod 0600 "$TMP_OUT"
+  chmod 0644 "$TMP_PROFILE"
+  chmod 0644 "$TMP_SNAPSHOT"
+  render_env > "$TMP_OUT"
+  cp "$KIT_ROOT/image-manifest.yaml" "$TMP_SNAPSHOT" \
+    || fail "could not stage image-manifest snapshot"
+  render_runtime_profile > "$TMP_PROFILE"
+  validate_private_runtime_pair "$TMP_OUT" "$TMP_PROFILE" "$TMP_SNAPSHOT" \
+    || fail "generated runtime state did not pass complete validation"
+  TX_STATE="fresh"
+  PUBLISHED_ENV_PATH="$OUTPUT"
+  PUBLISHED_PROFILE_PATH="$RUNTIME_PROFILE_MANIFEST"
+  PUBLISHED_SNAPSHOT_PATH="$RUNTIME_IMAGE_MANIFEST_SNAPSHOT"
+  if [ "${LUCAIRN_TEST_FAIL_RUNTIME_PROFILE_PUBLISH:-}" = "1" ]; then
+    fail "runtime profile publication failed"
+  fi
+  record_publication_inode snapshot "$TMP_SNAPSHOT" \
+    || fail "could not identify staged image-manifest snapshot"
+  publish_new_artifact "$TMP_SNAPSHOT" "$RUNTIME_IMAGE_MANIFEST_SNAPSHOT" "$PUBLISHED_SNAPSHOT_INODE" 644 fresh-snapshot-visible \
+    || fail "image-manifest snapshot publication failed"
+  test_transaction_hook fresh-after-snapshot "$RUNTIME_IMAGE_MANIFEST_SNAPSHOT"
+  record_publication_inode profile "$TMP_PROFILE" \
+    || fail "could not identify staged runtime profile"
+  publish_new_artifact "$TMP_PROFILE" "$RUNTIME_PROFILE_MANIFEST" "$PUBLISHED_PROFILE_INODE" 644 fresh-profile-visible \
+    || fail "runtime profile publication failed"
+  test_transaction_hook fresh-after-profile "$RUNTIME_PROFILE_MANIFEST"
+  if [ "${LUCAIRN_TEST_FAIL_ENV_PUBLISH:-}" = "1" ]; then
+    fail "customer.env publication failed; rolled back fresh runtime profile"
+  fi
+  record_publication_inode env "$TMP_OUT" \
+    || fail "could not identify staged customer.env"
+  publish_new_artifact "$TMP_OUT" "$OUTPUT" "$PUBLISHED_ENV_INODE" 600 fresh-env-visible \
+    || fail "customer.env publication failed; rolled back fresh runtime profile"
+  test_transaction_hook fresh-after-env "$RUNTIME_PROFILE_MANIFEST"
+  verify_published_artifact "$OUTPUT" "$PUBLISHED_ENV_INODE" "$(file_sha256 "$TMP_OUT")" 600 \
+    && verify_published_artifact "$RUNTIME_PROFILE_MANIFEST" "$PUBLISHED_PROFILE_INODE" "$(file_sha256 "$TMP_PROFILE")" 644 \
+    && verify_published_artifact "$RUNTIME_IMAGE_MANIFEST_SNAPSHOT" "$PUBLISHED_SNAPSHOT_INODE" "$(file_sha256 "$TMP_SNAPSHOT")" 644 \
+    && validate_private_runtime_pair "$OUTPUT" "$RUNTIME_PROFILE_MANIFEST" "$RUNTIME_IMAGE_MANIFEST_SNAPSHOT" \
+    || fail "fresh publication consistency proof failed; rolled back transaction artifacts"
+  TX_STATE=""
+  echo "wrote: $OUTPUT (mode 0600)" >&2
+  echo "wrote: $RUNTIME_PROFILE_MANIFEST (mode 0644; no secrets)" >&2
+  echo "wrote: $RUNTIME_IMAGE_MANIFEST_SNAPSHOT (mode 0644; recorded init-time image manifest)" >&2
 fi
-
-# Write atomically: render to temp file in same dir, set mode 0600, then mv.
-OUTPUT_DIR="$(dirname "$OUTPUT")"
-mkdir -p "$OUTPUT_DIR"
-TMP_OUT="$(mktemp "${OUTPUT_DIR}/.lucairn-init.XXXXXX")"
-TMP_FILES+=("$TMP_OUT")
-chmod 0600 "$TMP_OUT"
-render_env > "$TMP_OUT"
-mv "$TMP_OUT" "$OUTPUT"
-chmod 0600 "$OUTPUT"
-# Remove tmp tracking — file has been moved into place.
-TMP_FILES=()
-
-echo "wrote: $OUTPUT (mode 0600)" >&2
 
 # BYOK banner
 if [ "$BYOK" = "true" ]; then
@@ -732,16 +1728,10 @@ fi
 
 # Next-step block
 echo >&2
-echo "Next: bring up the stack" >&2
+echo "Next: bring up the recorded runtime topology" >&2
 echo >&2
-echo "  docker compose \\" >&2
-echo "    -f docker-compose.customer.yml \\" >&2
-echo "    -f docker-compose.self-hosted.yml \\" >&2
-if [ "$BYOK" = "true" ]; then
-  echo "    -f docker-compose.self-hosted-byok.yml \\" >&2
-fi
-echo "    --env-file $OUTPUT \\" >&2
-echo "    up -d" >&2
+echo "  bin/lucairn up --env $(shell_quote "$OUTPUT")" >&2
+echo "  bin/lucairn status --env $(shell_quote "$OUTPUT")" >&2
 echo >&2
 echo "Mint your first customer + API key (after stack is healthy):" >&2
 echo >&2

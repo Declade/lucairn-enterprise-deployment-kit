@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# When sourced, $0 names the calling shell; BASH_SOURCE still names this CLI.
+# Keep the fallback for normal execution environments where it is unavailable.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || printf 'unknown')"
 
 # Version-awareness (selfhosted-update-advisory-infra). `check-updates` fetches +
@@ -14,6 +16,11 @@ usage() {
   cat <<'USAGE'
 Usage:
   lucairn doctor --env customer.env --compose docker-compose.customer.yml [--values values.yaml]... [--offline] [--check-images] [--skip-image-check] [--strict-runtime] [--strict]
+  lucairn up --env customer.env [--compose docker-compose.customer.yml]
+  lucairn down --env customer.env [--compose docker-compose.customer.yml]
+  lucairn status --env customer.env [--compose docker-compose.customer.yml]
+  lucairn logs --env customer.env [--compose docker-compose.customer.yml] [--tail 200] [--service service-name]
+  lucairn pull --env customer.env [--compose docker-compose.customer.yml]
   lucairn doctor --values values.yaml [--values customer-overlay.yaml]... [--offline]
   lucairn support-bundle --env customer.env --compose docker-compose.customer.yml [--output bundles] [--offline]
   lucairn bundle create --customer-slug acme --models-dir ./models --model-manifest model-manifest.yaml --env customer.env --image-tar images.tar [--customer-data-dir ./customer-data]
@@ -49,6 +56,11 @@ Commands:
                   requires a digest resolver on PATH (docker buildx imagetools /
                   crane / skopeo) and is incompatible with --offline (both hard
                   errors); pending manifest entries are always skipped.
+  up              Start the recorded runtime topology (`up -d`).
+  down            Stop the recorded runtime topology without deleting volumes.
+  status          Show `ps` for the recorded runtime topology.
+  logs            Show a bounded tail of logs for the recorded runtime topology.
+  pull            Pull images for the recorded runtime topology.
   support-bundle  Generate a redacted support archive for customer review.
   bundle          Create, prepare, or verify per-customer delivery bundles.
   backup          pg_dump -> age-encrypt -> upload the 3 compliance DBs to S3,
@@ -89,6 +101,29 @@ have() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# Runtime-profile parsing is intentionally loaded from this verifier's trusted
+# sibling helper. A genuine pre-S1 customer bundle predates the helper and its
+# marker/sidecar, so validation returns its documented legacy branch before it
+# needs the helper. Never source a helper supplied inside a bundle: S1 hashes
+# detect corruption, not publisher authenticity.
+RUNTIME_PROFILE_LIB_PATH=""
+
+load_runtime_profile_lib() {
+  local lib="$1"
+  [ "$RUNTIME_PROFILE_LIB_PATH" = "$lib" ] && return 0
+  [ -f "$lib" ] && [ ! -L "$lib" ] || return 1
+  # shellcheck disable=SC1090 -- callers provide a trusted local kit helper.
+  . "$lib" || return 1
+  RUNTIME_PROFILE_LIB_PATH="$lib"
+}
+
+# The installed CLI exposes only its local validator helpers to its doctor and
+# bundle-verifier subchecks. A bundled helper remains payload that must be
+# present and checksum-covered, but it is never verifier input.
+if [ -f "$ROOT/bin/runtime-profile-lib.sh" ] && [ ! -L "$ROOT/bin/runtime-profile-lib.sh" ]; then
+  load_runtime_profile_lib "$ROOT/bin/runtime-profile-lib.sh"
+fi
+
 dir_has_payload_files() {
   local dir="$1"
   [ -d "$dir" ] || return 1
@@ -113,6 +148,306 @@ env_value() {
   else
     printf '%s' "${line#*=}" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
   fi
+}
+
+# Read only the state discriminator needed to decide whether the S1 helper is
+# relevant.  The complete duplicate-aware env parser lives in that helper, but
+# invoking it before the decision would break historical bundles that lack it.
+# Returns 2 for duplicate markers, 1 for an unreadable/non-regular env, and
+# prints an empty value when the marker is absent.
+runtime_profile_marker_value() {
+  local env="$1" count value
+  [ -f "$env" ] && [ ! -L "$env" ] || return 1
+  count="$(grep -c '^LUCAIRN_RUNTIME_PROFILE_REQUIRED=' "$env" 2>/dev/null || true)"
+  [ "$count" -le 1 ] || return 2
+  if [ "$count" = "1" ]; then
+    value="$(sed -n 's/^LUCAIRN_RUNTIME_PROFILE_REQUIRED=//p' "$env")"
+    printf '%s' "$value"
+  fi
+}
+
+# WP4 S1 runtime-profile state ------------------------------------------------
+#
+# New installations place this non-secret manifest beside customer.env.  It is
+# the single source of truth for runtime selection and ordered Compose overlays.
+# Older installs intentionally have no such file: retain their documented
+# one-file Compose behavior rather than guessing a topology from legacy env
+# values.  A malformed *present* manifest is an error, never a fallback.
+runtime_profile_path() {
+  printf '%s.runtime-profile.yaml' "$1"
+}
+
+# Return 0 for an accepted S1 profile, 2 for a legacy install with no profile,
+# and 1 for corrupt or env-inconsistent S1 state.
+validate_runtime_profile() {
+  local env_file="$1" manifest_path="${2:-}" lib_path="${3:-$ROOT/bin/runtime-profile-lib.sh}" profile_override="${4:-}" profile mode deployment local_runtime remote_endpoint image_tag allowlist marker overlays expected provenance availability profile_hash actual_hash profile_pairs manifest_pairs marker_rc
+  profile="${profile_override:-$(runtime_profile_path "$env_file")}"
+  if marker="$(runtime_profile_marker_value "$env_file")"; then
+    marker_rc=0
+  else
+    marker_rc=$?
+  fi
+  [ "$marker_rc" -ne 2 ] \
+    || { echo "runtime profile: failed (duplicate runtime-profile marker)"; return 1; }
+  [ "$marker_rc" -eq 0 ] \
+    || { echo "runtime profile: failed ($env_file is not a regular non-symlink file)"; return 1; }
+  if [ ! -e "$profile" ] && [ ! -L "$profile" ]; then
+    [ -z "$marker" ] \
+      || { load_runtime_profile_lib "$lib_path" || { echo "runtime profile: failed (S1 helper missing or unsafe: $lib_path)"; return 1; }; echo "runtime profile: failed (LUCAIRN_RUNTIME_PROFILE_REQUIRED=1 requires $(basename "$profile"))"; return 1; }
+    echo "runtime profile: legacy install (no $(basename "$profile"); retain existing documented Compose command)"
+    return 2
+  fi
+  load_runtime_profile_lib "$lib_path" \
+    || { echo "runtime profile: failed (S1 helper missing or unsafe: $lib_path)"; return 1; }
+  [ "$marker" = "1" ] \
+    || { echo "runtime profile: failed ($(basename "$profile") requires LUCAIRN_RUNTIME_PROFILE_REQUIRED=1)"; return 1; }
+  runtime_profile_regular_file "$profile" || { echo "runtime profile: failed ($profile is not a regular non-symlink file)"; return 1; }
+  manifest_path="${manifest_path:-$(runtime_profile_image_manifest_snapshot_path "$env_file")}"
+  runtime_profile_regular_file "$manifest_path" || { echo "runtime profile: failed ($manifest_path is not a regular non-symlink file)"; return 1; }
+  runtime_profile_validate_semantics "$profile" || { echo "runtime profile: failed (profile does not match the strict generated v1 grammar)"; return 1; }
+  [ "$(runtime_profile_field "$profile" schema_version)" = "1" ] \
+    || { echo "runtime profile: failed (unsupported or missing schema_version in $profile)"; return 1; }
+  mode="$(runtime_profile_field "$profile" runtime_mode)" || { echo "runtime profile: failed (ambiguous or missing runtime_mode)"; return 1; }
+  deployment="$(runtime_profile_field "$profile" deployment_profile)" || { echo "runtime profile: failed (ambiguous or missing deployment_profile)"; return 1; }
+  local_runtime="$(runtime_profile_field "$profile" local_runtime)" || { echo "runtime profile: failed (ambiguous or missing local_runtime)"; return 1; }
+  remote_endpoint="$(runtime_profile_field "$profile" remote_endpoint)" || { echo "runtime profile: failed (ambiguous or missing remote_endpoint)"; return 1; }
+  image_tag="$(runtime_profile_field "$profile" image_tag)" || { echo "runtime profile: failed (ambiguous or missing image_tag)"; return 1; }
+  allowlist="$(runtime_profile_field "$profile" byok_egress_allowlist)" || { echo "runtime profile: failed (ambiguous or missing byok_egress_allowlist)"; return 1; }
+  overlays="$(runtime_profile_overlays "$profile" | paste -sd '|' -)"
+  [ -n "$overlays" ] && ! runtime_profile_overlays "$profile" | sort | uniq -d | grep -q . \
+    || { echo "runtime profile: failed (missing or duplicate overlay declaration)"; return 1; }
+  local runtime_key
+  for runtime_key in LUCAIRN_RUNTIME_PROFILE_REQUIRED SANDBOX_B_REMOTE_ENDPOINT LUCAIRN_LLM_EGRESS_ALLOWLIST MODEL_RUNTIME_PROFILE LUCAIRN_IMAGE_TAG MODEL_NAME MODEL_FILE MODEL_PATH; do
+    runtime_profile_env_value "$env_file" "$runtime_key" >/dev/null \
+      || { echo "runtime profile: failed (duplicate runtime-relevant env key: $runtime_key)"; return 1; }
+  done
+  case "$mode" in
+    split-remote)
+      expected="docker-compose.customer.yml"
+      [ "$local_runtime" = "none" ] && [ -n "$remote_endpoint" ] && [ "$remote_endpoint" != "none" ] \
+        || { echo "runtime profile: failed (split-remote requires remote_endpoint and local_runtime=none)"; return 1; }
+      runtime_profile_endpoint_valid "$remote_endpoint" \
+        || { echo "runtime profile: failed (split-remote endpoint is invalid)"; return 1; }
+      [ "$(runtime_profile_env_value "$env_file" SANDBOX_B_REMOTE_ENDPOINT)" = "$remote_endpoint" ] \
+        && [ -z "$(runtime_profile_env_value "$env_file" MODEL_RUNTIME_PROFILE)" ] \
+        && [ -z "$(runtime_profile_env_value "$env_file" LUCAIRN_LLM_EGRESS_ALLOWLIST)" ] \
+        && [ "$allowlist" = "none" ] \
+        || { echo "runtime profile: failed (customer.env no longer matches split-remote state)"; return 1; }
+      ;;
+    managed-byok)
+      expected="docker-compose.customer.yml|docker-compose.self-hosted.yml|docker-compose.self-hosted-byok.yml"
+      [ "$local_runtime" = "none" ] && [ "$remote_endpoint" = "none" ] \
+        || { echo "runtime profile: failed (managed-byok cannot name a remote endpoint or local runtime)"; return 1; }
+      runtime_profile_byok_allowlist_valid "$allowlist" \
+        || { echo "runtime profile: failed (managed-byok allowlist is not a DNS FQDN list)"; return 1; }
+      [ -n "$(runtime_profile_env_value "$env_file" LUCAIRN_LLM_EGRESS_ALLOWLIST)" ] \
+        && [ "$allowlist" = "$(runtime_profile_env_value "$env_file" LUCAIRN_LLM_EGRESS_ALLOWLIST)" ] \
+        && [ -z "$(runtime_profile_env_value "$env_file" SANDBOX_B_REMOTE_ENDPOINT)" ] \
+        && [ -z "$(runtime_profile_env_value "$env_file" MODEL_RUNTIME_PROFILE)" ] \
+        || { echo "runtime profile: failed (customer.env no longer matches managed-byok state)"; return 1; }
+      ;;
+    local-runtime)
+      expected="docker-compose.customer.yml|docker-compose.self-hosted.yml"
+      case "$local_runtime" in llama-cpp|vllm|tgi|ollama|onnxruntime|triton|custom-runtime) ;; *) echo "runtime profile: failed (unsupported local_runtime '$local_runtime')"; return 1 ;; esac
+      [ "$remote_endpoint" = "none" ] \
+        && [ -z "$(runtime_profile_env_value "$env_file" SANDBOX_B_REMOTE_ENDPOINT)" ] \
+        && [ "$(runtime_profile_env_value "$env_file" MODEL_RUNTIME_PROFILE)" = "$local_runtime" ] \
+        && [ -z "$(runtime_profile_env_value "$env_file" LUCAIRN_LLM_EGRESS_ALLOWLIST)" ] \
+        && [ "$allowlist" = "none" ] \
+        || { echo "runtime profile: failed (customer.env no longer matches local-runtime state)"; return 1; }
+      ;;
+    *) echo "runtime profile: failed (unsupported runtime_mode '$mode')"; return 1 ;;
+  esac
+  [ "$deployment" = "$mode" ] || { echo "runtime profile: failed (deployment_profile must equal runtime_mode)"; return 1; }
+  [ "$overlays" = "$expected" ] || { echo "runtime profile: failed (overlay order does not match $mode)"; return 1; }
+  [ "$image_tag" = "$(runtime_profile_env_value_required "$env_file" LUCAIRN_IMAGE_TAG)" ] \
+    || { echo "runtime profile: failed (image_tag does not match customer.env)"; return 1; }
+  [ "$(runtime_profile_image_manifest_value "$profile" path)" = "$(runtime_profile_image_manifest_path_contract)" ] \
+    && [ "$(runtime_profile_image_manifest_value "$profile" registry)" = "ghcr.io/declade" ] \
+    || { echo "runtime profile: failed (image manifest path or registry is invalid)"; return 1; }
+  profile_hash="$(runtime_profile_image_manifest_value "$profile" sha256)"
+  printf '%s' "$profile_hash" | grep -Eq '^[0-9a-f]{64}$' \
+    || { echo "runtime profile: failed (image manifest sha256 is invalid)"; return 1; }
+  actual_hash="$(sha256_file "$manifest_path")"
+  [ "$profile_hash" = "$actual_hash" ] \
+    || { echo "runtime profile: failed (image manifest sha256 does not match $manifest_path)"; return 1; }
+  profile_pairs="$(runtime_profile_recorded_images "$profile")"
+  manifest_pairs="$(runtime_profile_manifest_images "$manifest_path")"
+  runtime_profile_images_valid "$profile_pairs" \
+    && runtime_profile_images_valid "$manifest_pairs" \
+    && [ "$profile_pairs" = "$manifest_pairs" ] \
+    || { echo "runtime profile: failed (recorded image refs/digests do not exactly match the recorded image-manifest snapshot)"; return 1; }
+  case "$mode" in
+    local-runtime)
+      provenance="$(runtime_profile_field "$profile" provenance)" || { echo "runtime profile: failed (ambiguous or missing provenance)"; return 1; }
+      availability="$(runtime_profile_field "$profile" availability)" || { echo "runtime profile: failed (ambiguous or missing availability)"; return 1; }
+      [ "$provenance" = "operator-declared" ] && [ "$availability" = "required-not-verified" ] \
+        && [ "$(runtime_profile_field "$profile" model_name)" = "$(runtime_profile_env_value_required "$env_file" MODEL_NAME)" ] \
+        && [ "$(runtime_profile_field "$profile" model_file)" = "$(runtime_profile_env_value_required "$env_file" MODEL_FILE)" ] \
+        && [ "$(runtime_profile_field "$profile" model_path)" = "$(runtime_profile_env_value_required "$env_file" MODEL_PATH)" ] \
+        && [ "$(runtime_profile_field "$profile" runtime)" = "$local_runtime" ] \
+        && runtime_profile_field_absent "$profile" local_model \
+        || { echo "runtime profile: failed (local model inventory does not match customer.env)"; return 1; }
+      ;;
+    *)
+      [ "$(runtime_profile_field "$profile" provenance)" = "not-applicable" ] \
+        && [ "$(runtime_profile_field "$profile" local_model)" = "none" ] \
+        && runtime_profile_field_absent "$profile" model_name \
+        && runtime_profile_field_absent "$profile" model_file \
+        && runtime_profile_field_absent "$profile" model_path \
+        && runtime_profile_field_absent "$profile" availability \
+        && runtime_profile_field_absent "$profile" runtime \
+        || { echo "runtime profile: failed (non-local model inventory must be not-applicable)"; return 1; }
+      ;;
+  esac
+  if grep -Eq '(^|[_-])(API_KEY|PASSWORD|SECRET|TOKEN|PRIVATE|SIGNING|LICENSE)([_:-]|$)' "$profile"; then
+    echo "runtime profile: failed (profile must not contain secret fields)"
+    return 1
+  fi
+  echo "runtime profile: ok ($mode; overlays=$overlays)"
+  return 0
+}
+
+# Populates RUNTIME_COMPOSE_ARGS in canonical manifest order. The caller's
+# first --compose path is retained as the base so bundles can carry the same
+# state file without requiring an installed kit at a fixed absolute path.
+runtime_profile_compose_args() {
+  local env_file="$1" base_compose="$2" profile overlay base_dir mode local_runtime rc
+  RUNTIME_COMPOSE_ARGS=()
+  validate_runtime_profile "$env_file"; rc=$?
+  if [ "$rc" -eq 2 ]; then
+    RUNTIME_COMPOSE_ARGS=(-f "$base_compose")
+    return 0
+  fi
+  [ "$rc" -eq 0 ] || return 1
+  profile="$(runtime_profile_path "$env_file")"
+  mode="$(runtime_profile_field "$profile" runtime_mode)"
+  local_runtime="$(runtime_profile_field "$profile" local_runtime)"
+  base_dir="$(dirname "$base_compose")"
+  while IFS= read -r overlay; do
+    [ -n "$overlay" ] || continue
+    if [ "$overlay" = "docker-compose.customer.yml" ]; then
+      RUNTIME_COMPOSE_ARGS+=(-f "$base_compose")
+    else
+      [ -f "$base_dir/$overlay" ] || { echo "runtime profile: failed (recorded overlay missing: $base_dir/$overlay)"; return 1; }
+      RUNTIME_COMPOSE_ARGS+=(-f "$base_dir/$overlay")
+    fi
+  done < <(runtime_profile_overlays "$profile")
+  if [ "$mode" = "local-runtime" ]; then
+    RUNTIME_COMPOSE_ARGS+=(--profile "$local_runtime")
+  fi
+}
+
+# Return the exact Compose file selected by the already-resolved canonical
+# argument set. This keeps topology checks bundle-relative: an extracted kit
+# uses install/docker-compose.self-hosted-byok.yml, not this verifier's ROOT.
+runtime_profile_selected_compose_file() {
+  local wanted_basename="$1" index=0 arg candidate
+  while [ "$index" -lt "${#RUNTIME_COMPOSE_ARGS[@]}" ]; do
+    arg="${RUNTIME_COMPOSE_ARGS[$index]}"
+    if [ "$arg" = "-f" ]; then
+      index=$((index + 1))
+      [ "$index" -lt "${#RUNTIME_COMPOSE_ARGS[@]}" ] || return 1
+      candidate="${RUNTIME_COMPOSE_ARGS[$index]}"
+      if [ "$(basename "$candidate")" = "$wanted_basename" ]; then
+        runtime_profile_regular_file "$candidate" || return 1
+        printf '%s' "$candidate"
+        return 0
+      fi
+    fi
+    index=$((index + 1))
+  done
+  return 1
+}
+
+# Internal init-to-reader contract probe.  It deliberately invokes the exact
+# lifecycle validator against private, same-filesystem staged artifacts before
+# either public name is published.  It is not advertised as a user command.
+runtime_profile_check_command() {
+  local env_file="" manifest_path="" lib_path="$ROOT/bin/runtime-profile-lib.sh" profile_path="" rc
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --env) env_file="$2"; shift 2 ;;
+      --manifest) manifest_path="$2"; shift 2 ;;
+      --lib) lib_path="$2"; shift 2 ;;
+      --profile) profile_path="$2"; shift 2 ;;
+      *) fail "invalid internal runtime-profile validation argument" ;;
+    esac
+  done
+  [ -n "$env_file" ] && [ -n "$profile_path" ] || fail "internal runtime-profile validation requires env and profile"
+  if validate_runtime_profile "$env_file" "$manifest_path" "$lib_path" "$profile_path"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 0 ] || fail "runtime profile validation failed"
+}
+
+# S1 lifecycle wrappers deliberately accept a fixed, tiny input language. They
+# always resolve the saved profile before discovering Docker, so malformed S1
+# state cannot fall through to a default topology and no arbitrary Compose flag
+# (notably `down -v`) can be smuggled through this CLI.
+lifecycle_command() {
+  local verb="$1"
+  shift
+  local env_file="" compose_file="" tail="200" service="" compose
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --env)
+        [ "$#" -ge 2 ] || fail "--env requires a file path"
+        [ -z "$env_file" ] || fail "--env may only be supplied once"
+        env_file="$2"; shift 2
+        ;;
+      --compose)
+        [ "$#" -ge 2 ] || fail "--compose requires a file path"
+        [ -z "$compose_file" ] || fail "--compose may only be supplied once"
+        compose_file="$2"; shift 2
+        ;;
+      --tail)
+        [ "$verb" = "logs" ] || fail "--tail is only valid with logs"
+        [ "$#" -ge 2 ] || fail "--tail requires a numeric value"
+        tail="$2"; shift 2
+        ;;
+      --service)
+        [ "$verb" = "logs" ] || fail "--service is only valid with logs"
+        [ "$#" -ge 2 ] || fail "--service requires a service name"
+        service="$2"; shift 2
+        ;;
+      -h|--help) usage; return 0 ;;
+      *) fail "unknown $verb argument: $1" ;;
+    esac
+  done
+  [ -n "$env_file" ] || fail "$verb requires --env customer.env"
+  compose_file="${compose_file:-$ROOT/docker-compose.customer.yml}"
+  require_file "$env_file" "env file"
+  require_file "$compose_file" "compose file"
+  if [ "$verb" = "logs" ]; then
+    printf '%s' "$tail" | grep -Eq '^[0-9]+$' \
+      || fail "--tail must be a bounded positive integer"
+    [ "$tail" -ge 1 ] 2>/dev/null && [ "$tail" -le 10000 ] 2>/dev/null \
+      || fail "--tail must be between 1 and 10000"
+    if [ -n "$service" ]; then
+      printf '%s' "$service" | grep -Eq '^[a-z0-9][a-z0-9_-]{0,63}$' \
+        || fail "--service must be a safe Compose service name"
+    fi
+  fi
+  runtime_profile_compose_args "$env_file" "$compose_file" || return 1
+  compose="$(compose_cmd)"
+  [ -n "$compose" ] || fail "docker compose is required for $verb"
+  case "$verb" in
+    up) $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" up -d ;;
+    down) $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" down ;;
+    status) $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" ps ;;
+    pull) $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" pull ;;
+    logs)
+      if [ -n "$service" ]; then
+        $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" logs --no-color --tail "$tail" "$service"
+      else
+        $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" logs --no-color --tail "$tail"
+      fi
+      ;;
+    *) fail "unsupported lifecycle command: $verb" ;;
+  esac
 }
 
 # env_value_with_legacy reads the canonical LCR_X key first, then falls back
@@ -362,7 +697,7 @@ require_env_values() {
   elif [ -z "$ent_key" ] && [ -z "$ent_pub" ]; then
     echo "entitlement: empty LUCAIRN_LICENSE_KEY / LUCAIRN_LICENSE_PUBLIC_KEY -> unregistered (Enterprise features locked in production; core pipeline runs)"
   else
-    warn "entitlement: LUCAIRN_LICENSE_KEY and LUCAIRN_LICENSE_PUBLIC_KEY should be both set or both empty (one is set, the other is not — the gateway cannot verify the entitlement). Re-run bin/lucairn-init --production with a complete --license bundle (entitlement_token + entitlement_public_key)."
+    warn "entitlement: LUCAIRN_LICENSE_KEY and LUCAIRN_LICENSE_PUBLIC_KEY should be both set or both empty (one is set, the other is not — the gateway cannot verify the entitlement). Re-run bin/lucairn-init --production --runtime-mode <mode> --license <path> with the selected mode's compatible required flags and a complete license bundle (entitlement_token + entitlement_public_key)."
   fi
 
   # Gap 2 (A9 fixup): LUCAIRN_LICENSE_GRACE_DAYS range check. When set, the
@@ -1460,7 +1795,7 @@ except Exception:
 # and (c) the BYOK compose overlay sits beside the env file.
 check_byok_overlay() {
   local env_file="$1"
-  local allowlist anthropic openai mistral gemini
+  local allowlist anthropic openai mistral gemini byok_compose
   allowlist="$(env_value "$env_file" LUCAIRN_LLM_EGRESS_ALLOWLIST)"
   if [ -z "$allowlist" ]; then
     echo "byok overlay: not in use (LUCAIRN_LLM_EGRESS_ALLOWLIST empty)"
@@ -1482,13 +1817,13 @@ check_byok_overlay() {
     return 1
   fi
 
-  local byok_compose="$ROOT/docker-compose.self-hosted-byok.yml"
-  if [ ! -f "$byok_compose" ]; then
-    echo "byok overlay: failed (LUCAIRN_LLM_EGRESS_ALLOWLIST is set but docker-compose.self-hosted-byok.yml is missing from $ROOT)"
+  byok_compose="$(runtime_profile_selected_compose_file docker-compose.self-hosted-byok.yml 2>/dev/null || true)"
+  if [ -z "$byok_compose" ]; then
+    echo "byok overlay: failed (LUCAIRN_LLM_EGRESS_ALLOWLIST is set but the canonical Compose arguments do not include docker-compose.self-hosted-byok.yml)"
     return 1
   fi
 
-  echo "byok overlay: ok (allowlist=$allowlist; providers=${providers[*]})"
+  echo "byok overlay: ok (allowlist=$allowlist; providers=${providers[*]}; compose=$byok_compose)"
   echo "  NOTE: FQDN enforcement is the operator's responsibility. The kit"
   echo "  declares the topology + intent; enforcement belongs in your host"
   echo "  firewall, Cilium NetworkPolicy, or transparent forward proxy."
@@ -1644,8 +1979,24 @@ check_container_images() {
 # real images 0.3.1; sanitizer config 0.4.x recognizers in 0.3.1 image;
 # gateway BYOK adapter shape change between releases). The kit needs a
 # single artifact that records which combination was actually tested.
+runtime_image_manifest_for_env() {
+  local env_file="$1" marker marker_rc
+  if marker="$(runtime_profile_marker_value "$env_file" 2>/dev/null)"; then
+    marker_rc=0
+  else
+    marker_rc=$?
+  fi
+  if [ "$marker_rc" -eq 0 ] && [ "$marker" = "1" ] \
+    && [ -n "${RUNTIME_PROFILE_LIB_PATH:-}" ]; then
+    runtime_profile_image_manifest_snapshot_path "$env_file"
+  else
+    printf '%s' "$ROOT/image-manifest.yaml"
+  fi
+}
+
 check_image_manifest() {
-  local env_file="$1" manifest_file="${ROOT}/image-manifest.yaml"
+  local env_file="$1" manifest_file
+  manifest_file="$(runtime_image_manifest_for_env "$env_file")"
 
   if [ ! -f "$manifest_file" ]; then
     # Manifest is optional. Older kit versions may not ship one.
@@ -1678,7 +2029,7 @@ check_image_manifest() {
     info "LUCAIRN_IMAGE_REGISTRY=$env_registry differs from manifest default $manifest_registry (expected if using a customer mirror)"
   fi
 
-  echo "image manifest: read from image-manifest.yaml (kit_version=$manifest_kit_version, pinned_tag=$manifest_tag)"
+  echo "image manifest: read from $manifest_file (kit_version=$manifest_kit_version, pinned_tag=$manifest_tag)"
   return 0
 }
 
@@ -1919,7 +2270,8 @@ digest_resolve_env_ref() {
 # always returns 0.
 check_image_digests() {
   local env_file="$1" strict="${2:-0}" offline="${3:-0}"
-  local manifest_file="${ROOT}/image-manifest.yaml"
+  local manifest_file
+  manifest_file="$(runtime_image_manifest_for_env "$env_file")"
 
   if [ ! -f "$manifest_file" ]; then
     if [ "$strict" -eq 1 ]; then
@@ -2103,7 +2455,7 @@ check_render_migrations_safe() {
   # G1: prep-migrations rejects empty / single-quote / backslash values.
   # Catch the same conditions at pre-flight time instead of letting the
   # render-migrations.sh service error halfway through compose-up.
-  local env_file="$1" key val ok=0
+  local env_file="$1" compose_file="${2:-}" key val ok=0 migration_renderer
   for key in AUDIT_APP_PASSWORD VEIL_APP_PASSWORD; do
     val="$(env_value "$env_file" "$key")"
     if [ -z "$val" ]; then
@@ -2117,8 +2469,12 @@ check_render_migrations_safe() {
       ok=1
     fi
   done
-  if [ ! -f "$ROOT/scripts/render-migrations.sh" ]; then
-    echo "migration prep: scripts/render-migrations.sh missing — prep-migrations service will fail"
+  migration_renderer="$ROOT/scripts/render-migrations.sh"
+  if [ -n "$compose_file" ] && [ -f "$(dirname "$compose_file")/scripts/render-migrations.sh" ]; then
+    migration_renderer="$(dirname "$compose_file")/scripts/render-migrations.sh"
+  fi
+  if [ ! -f "$migration_renderer" ]; then
+    echo "migration prep: scripts/render-migrations.sh missing beside the selected Compose file — prep-migrations service will fail"
     ok=1
   fi
   return "$ok"
@@ -2143,8 +2499,12 @@ check_byok_egress_open() {
   local env_file="$1" allowlist
   allowlist="$(env_value "$env_file" LUCAIRN_LLM_EGRESS_ALLOWLIST)"
   [ -z "$allowlist" ] && return 0
-  local overlay="$ROOT/docker-compose.self-hosted-byok.yml"
-  [ -f "$overlay" ] || return 0
+  local overlay
+  overlay="$(runtime_profile_selected_compose_file docker-compose.self-hosted-byok.yml 2>/dev/null || true)"
+  if [ -z "$overlay" ]; then
+    echo "byok overlay: canonical Compose arguments do not include docker-compose.self-hosted-byok.yml"
+    return 1
+  fi
   if awk '/^  dsa-egress:/,/^  [a-z]|^[^ ]/ { if (/^    internal:[[:space:]]+true/) print; }' "$overlay" | grep -q internal; then
     echo "byok overlay: dsa-egress is internal:true — sandbox-b cannot reach the upstream LLM"
     return 1
@@ -2341,17 +2701,20 @@ validate_ed25519_pair() {
 }
 
 check_veil_keypairs() {
-  # Wrap validate_ed25519_pair over all paired slots. Sandbox-B is
-  # included because the operator generates the pair locally (per
-  # INSTALL.md step 4a self-hosted instructions).
-  local env_file="$1" slot failed=0
+  # Wrap validate_ed25519_pair over all customer-held paired slots. A split
+  # deployment deliberately has no customer Sandbox-B signing seed; its public
+  # key belongs to the remote service, so an old unused local signing field
+  # must not make a genuine split environment fail pair-coherence.
+  local env_file="$1" slot failed=0 remote_endpoint
   if [ ! -x "$ROOT/scripts/derive-veil-pubkey.sh" ]; then
     warn "veil keypair: scripts/derive-veil-pubkey.sh missing or non-executable; pair coherence not verified"
     return 0
   fi
-  for slot in AUDIT BRIDGE SANITIZER WITNESS GATEWAY SANDBOX_B; do
+  remote_endpoint="$(env_value "$env_file" SANDBOX_B_REMOTE_ENDPOINT)"
+  for slot in AUDIT BRIDGE SANITIZER WITNESS GATEWAY; do
     validate_ed25519_pair "$env_file" "$slot" || failed=1
   done
+  [ -n "$remote_endpoint" ] || validate_ed25519_pair "$env_file" SANDBOX_B || failed=1
   return "$failed"
 }
 
@@ -2364,7 +2727,8 @@ check_sanitizer_config_image_compat() {
   # against the operator's LUCAIRN_IMAGE_TAG. A customer who pins a tag
   # outside the compat window (e.g. 0.5.0 against compat 0.4.x) would
   # get a sanitizer crash-loop on `Unknown recognizer 'X'` at boot.
-  local env_file="$1" manifest="$ROOT/image-manifest.yaml"
+  local env_file="$1" manifest
+  manifest="$(runtime_image_manifest_for_env "$env_file")"
   [ -f "$manifest" ] || return 0
   local compat tag major_minor
   # Extract sanitizer_config_compat value: strip key+colon prefix, strip
@@ -2930,6 +3294,43 @@ check_sandbox_b_remote_coherent() {
   ca="$(env_value "$env_file"   SANDBOX_B_CA_CERT)"
   if [ -z "$cert" ] || [ -z "$key" ] || [ -z "$ca" ]; then
     echo "sandbox-b remote: production requires SANDBOX_B_CLIENT_CERT + SANDBOX_B_CLIENT_KEY + SANDBOX_B_CA_CERT (one or more missing)"
+    return 1
+  fi
+  return 0
+}
+
+split_remote_api_key_valid() {
+  local value="$1"
+  [ -n "$value" ] && [ "${#value}" -le 512 ] || return 1
+  printf '%s' "$value" | grep -Eq '^[A-Za-z0-9._-]+$' || return 1
+  case "$value" in
+    REPLACE_*|replace_*|PLACEHOLDER*|placeholder*|EXAMPLE*|example*|CHANGE_ME|change_me|YOUR_*|your_*) return 1 ;;
+  esac
+}
+
+split_remote_public_key_valid() {
+  local value="$1" normalized_value first_byte
+  printf '%s' "$value" | grep -Eq '^[0-9a-fA-F]{64}$' || return 1
+  normalized_value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  first_byte="${normalized_value:0:2}"
+  [ -n "${normalized_value//"$first_byte"/}" ]
+}
+
+check_split_remote_credentials() {
+  # Remote API material is required for every split deployment. The remote
+  # Sandbox-B signing seed stays on Lucairn infrastructure; only its API key
+  # and public key are customer configuration.
+  local env_file="$1" endpoint api_key public_key
+  endpoint="$(env_value "$env_file" SANDBOX_B_REMOTE_ENDPOINT)"
+  [ -n "$endpoint" ] || return 0
+  api_key="$(env_value "$env_file" SANDBOX_B_API_KEY)"
+  public_key="$(env_value_with_legacy "$env_file" LCR_SANDBOX_B_PUBLIC_KEY VEIL_SANDBOX_B_PUBLIC_KEY)"
+  if ! split_remote_api_key_valid "$api_key"; then
+    echo "sandbox-b remote: SANDBOX_B_API_KEY must be a non-empty Lucairn-issued remote credential, not a placeholder"
+    return 1
+  fi
+  if ! split_remote_public_key_valid "$public_key"; then
+    echo "sandbox-b remote: LCR_SANDBOX_B_PUBLIC_KEY (or legacy VEIL_SANDBOX_B_PUBLIC_KEY) must be a non-sentinel Lucairn-issued 64-hex remote public key"
     return 1
   fi
   return 0
@@ -4357,6 +4758,112 @@ manifest_checksum_policy() {
   fi
 }
 
+# The delivery manifest is not general-purpose YAML.  It is a bounded
+# line-oriented contract parsed below, so reject any material the accessors
+# would otherwise skip or first-select.  This prevents duplicate singleton
+# declarations and "helpful" nested YAML from changing the meaning of a
+# bundle after validation.
+validate_model_manifest_syntax() {
+  local manifest="$1"
+  [ -f "$manifest" ] && [ ! -L "$manifest" ] \
+    || { echo "model manifest: not a regular non-symlink file"; return 1; }
+  awk '
+    function fail(message) { if (!bad) detail=message; bad=1 }
+    function scalar(value) { return value ~ /^[^[:space:]#][^[:space:]]*$/ && value !~ /[&*!|>{}\[\]#]/ }
+    function top_field(key, value) {
+      if (key !~ /^(name|format|runtime|checksum_policy|context_window|gpu_required|min_vram_gb|license|endpoint|provenance)$/) { fail("unknown model field " key); return }
+      if (++seen[key] != 1) { fail("duplicate model field " key); return }
+      if (!scalar(value)) fail("invalid scalar for " key)
+    }
+    function flush_entry() {
+      if (!entry) return
+      if (entry_path == "") fail("file entry missing path")
+      if (entry_path != "" && ++paths[entry_path] != 1) fail("duplicate file path " entry_path)
+      entry=0; entry_path=""
+      for (entry_key in entry_seen) delete entry_seen[entry_key]
+    }
+    BEGIN { in_model=0; in_files=0; entry=0 }
+    /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
+    {
+      if ($0 ~ /\r/) { fail("CR is not permitted"); next }
+      if ($0 == "model:") {
+        if (in_model) fail("duplicate or nested model mapping")
+        in_model=1; next
+      }
+      if (!in_model) { fail("expected top-level model mapping"); next }
+      if ($0 ~ /^  files:$/) {
+        if (in_files || ++seen["files"] != 1) fail("duplicate files declaration")
+        flush_entry(); in_files=1; next
+      }
+      if ($0 ~ /^  [A-Za-z0-9_-]+: /) {
+        flush_entry(); in_files=0
+        line=$0; sub(/^  /, "", line); split(line, pair, /: /)
+        key=pair[1]; value=substr(line, length(key)+3)
+        top_field(key, value); next
+      }
+      if (in_files && $0 ~ /^    - path: /) {
+        flush_entry(); entry=1
+        value=$0; sub(/^    - path: /, "", value)
+        if (!scalar(value)) fail("invalid file path")
+        entry_path=value; entry_seen["path"]=1; next
+      }
+      if (in_files && $0 ~ /^    - /) {
+        flush_entry(); entry=1
+        value=$0; sub(/^    - /, "", value)
+        if (!scalar(value)) fail("invalid legacy file path")
+        entry_path=value; entry_seen["path"]=1; next
+      }
+      if (in_files && entry && $0 ~ /^      [A-Za-z0-9_-]+: /) {
+        line=$0; sub(/^      /, "", line); split(line, pair, /: /)
+        key=pair[1]; value=substr(line, length(key)+3)
+        if (key !~ /^(sha256|size|source|license|notes|provenance)$/) { fail("unknown file field " key); next }
+        if (++entry_seen[key] != 1) { fail("duplicate file field " key); next }
+        # sha256/provenance become part of validation semantics; optional
+        # descriptive metadata (notably notes) remains bounded by structure
+        # but may contain ordinary spaces for compatibility with existing
+        # operator manifests.
+        if ((key == "sha256" || key == "provenance") && !scalar(value)) fail("invalid scalar for file " key)
+        if (value == "" || value ~ /\r/) fail("invalid scalar for file " key)
+        next
+      }
+      fail("unknown or malformed structural material")
+    }
+    END {
+      flush_entry()
+      if (!in_model) fail("missing top-level model mapping")
+      if (seen["name"] != 1) fail("missing model name")
+      if (seen["format"] != 1) fail("missing model format")
+      if (seen["runtime"] != 1) fail("missing model runtime")
+      if (bad) { print "model manifest: " detail > "/dev/stderr"; exit 1 }
+    }
+  ' "$manifest"
+}
+
+model_file_regular_direct() {
+  local models_dir="$1" file="$2" candidate
+  [ -d "$models_dir" ] && [ ! -L "$models_dir" ] || return 1
+  model_manifest_file_valid "$file" || return 1
+  candidate="$models_dir/$file"
+  [ -f "$candidate" ] && [ ! -L "$candidate" ]
+}
+
+# Bundle verification predates S1 profiles.  Keep its name/file grammar in a
+# tiny bootstrap-safe form so an exact historical archive can verify without
+# loading a helper it never shipped.  S1 profile validation uses the identical
+# shared implementation after the marker/sidecar decision.
+model_manifest_name_valid() {
+  local value="$1"
+  [ -n "$value" ] && [ "${#value}" -le 128 ] \
+    && printf '%s' "$value" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
+}
+
+model_manifest_file_valid() {
+  local value="$1"
+  [ -n "$value" ] && [ "${#value}" -le 128 ] \
+    && [ "$value" != "." ] && [ "$value" != ".." ] \
+    && printf '%s' "$value" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+}
+
 validate_model_manifest() {
   # Args:
   #   $1 manifest path
@@ -4366,9 +4873,10 @@ validate_model_manifest() {
   #      `bundle verify --require-sha256` (B2) to defend against a manifest
   #      that has been tampered to declare a weaker policy.
   local manifest="$1" models_dir="$2" force_mode="${3:-}"
-  local name format runtime policy file sha actual missing=0
-  require_file "$manifest" "model manifest"
-  [ -d "$models_dir" ] || fail "models dir not found: $models_dir"
+  local name format runtime policy file sha actual missing=0 seen_files=""
+  validate_model_manifest_syntax "$manifest" || return 1
+  [ -d "$models_dir" ] && [ ! -L "$models_dir" ] \
+    || fail "models dir not found or unsafe: $models_dir"
 
   name="$(manifest_value "$manifest" name)"
   format="$(manifest_value "$manifest" format)"
@@ -4378,6 +4886,8 @@ validate_model_manifest() {
   [ -n "$name" ] || { echo "model manifest: missing model.name"; return 1; }
   [ -n "$format" ] || { echo "model manifest: missing model.format"; return 1; }
   [ -n "$runtime" ] || { echo "model manifest: missing model.runtime"; return 1; }
+  model_manifest_name_valid "$name" \
+    || { echo "model manifest: model.name must match the S1 bounded name grammar"; return 1; }
 
   case "$format" in
     gguf|safetensors|pytorch|onnx|tensorrt-llm|ollama|openai-compatible|custom) ;;
@@ -4426,8 +4936,19 @@ validate_model_manifest() {
 
   while IFS=$'\t' read -r file sha; do
     [ -z "$file" ] && continue
-    if [ ! -f "$models_dir/$file" ]; then
-      echo "model manifest: missing model file $file"
+    if printf '%s\n' "$seen_files" | grep -Fqx "$file"; then
+      echo "model manifest: duplicate model file $file"
+      missing=1
+      continue
+    fi
+    seen_files="${seen_files}${file}"$'\n'
+    if ! model_manifest_file_valid "$file"; then
+      echo "model manifest: model file must be a safe single basename: $file"
+      missing=1
+      continue
+    fi
+    if ! model_file_regular_direct "$models_dir" "$file"; then
+      echo "model manifest: model file is missing, unsafe, or not directly under models dir: $file"
       missing=1
       continue
     fi
@@ -4475,8 +4996,69 @@ validate_model_manifest() {
   [ "$missing" -eq 0 ]
 }
 
+# A local-runtime profile is an inventory declaration, not a hint.  The
+# delivered manifest must describe the exact selected runtime and name, and
+# must contain the profile's one model_file exactly once.  Bundle layout mounts
+# models/ at /models, so its sole canonical relative MODEL_PATH is `.`; direct
+# non-bundle installs retain the wider safe path grammar in the shared profile
+# reader.  This runs before any bundle staging/output mutation.
+validate_local_profile_model_manifest() {
+  local env_file="$1" manifest="$2" profile model_name runtime model_file model_path matches
+  profile="$(runtime_profile_path "$env_file")"
+  model_name="$(runtime_profile_field "$profile" model_name)" || return 1
+  runtime="$(runtime_profile_field "$profile" runtime)" || return 1
+  model_file="$(runtime_profile_field "$profile" model_file)" || return 1
+  model_path="$(runtime_profile_field "$profile" model_path)" || return 1
+  [ "$model_name" = "$(manifest_value "$manifest" name)" ] \
+    || { echo "bundle model inventory: profile model_name does not match model manifest"; return 1; }
+  [ "$runtime" = "$(manifest_value "$manifest" runtime)" ] \
+    || { echo "bundle model inventory: profile runtime does not match model manifest"; return 1; }
+  [ "$model_path" = "." ] \
+    || { echo "bundle model inventory: MODEL_PATH must be '.' for the canonical bundle models/ mount"; return 1; }
+  matches="$(manifest_files_entries "$manifest" | awk -F '\t' -v file="$model_file" '$1 == file { count++ } END { print count+0 }')"
+  [ "$matches" = "1" ] \
+    || { echo "bundle model inventory: profile model_file must be declared exactly once in model manifest"; return 1; }
+}
+
 write_bundle_install_note() {
-  local file="$1" slug="$2"
+  local file="$1" slug="$2" env_file="$3" image_delivery="$4" mode local_runtime compose_lines image_lines remote_credentials_note
+  mode="$(runtime_profile_field "$(runtime_profile_path "$env_file")" runtime_mode 2>/dev/null || true)"
+  local_runtime="$(runtime_profile_field "$(runtime_profile_path "$env_file")" local_runtime 2>/dev/null || true)"
+  remote_credentials_note=""
+  case "$mode" in
+    split-remote)
+      compose_lines='bin/lucairn up --env install/customer.env --compose install/docker-compose.customer.yml'
+      remote_credentials_note='For split-remote, endpoint plus license is not usable by itself. Obtain the Lucairn-issued remote credential file and initialize with `--remote-credentials <path>`; it supplies the remote API/public-key pair while the remote signing seed stays with Lucairn.'
+      ;;
+    managed-byok)
+      compose_lines='bin/lucairn up --env install/customer.env --compose install/docker-compose.customer.yml'
+      ;;
+    local-runtime)
+      compose_lines='bin/lucairn up --env install/customer.env --compose install/docker-compose.customer.yml'
+      ;;
+    *)
+      # Legacy bundles retain the old documented self-hosted invocation.
+      compose_lines='bin/lucairn up --env install/customer.env --compose install/docker-compose.customer.yml'
+      ;;
+  esac
+  case "$image_delivery" in
+    archive)
+      image_lines='Load the verified archive included with this bundle:
+
+```bash
+docker load -i images/lucairn-images.tar
+```'
+      ;;
+    registry)
+      image_lines='This handoff uses registry delivery. Authenticate to the configured registry, keep `LUCAIRN_IMAGE_REGISTRY` and `LUCAIRN_IMAGE_TAG` aligned with the authenticated handoff note, and do not run `docker load`.'
+      ;;
+    directory)
+      image_lines='This handoff contains directory image delivery. Follow the authenticated handoff instructions for the files under `images/`; do not invent an archive path or run `docker load` unless those instructions name a real archive.'
+      ;;
+    *)
+      fail "bundle create: unsupported image delivery mode: $image_delivery"
+      ;;
+  esac
   cat > "$file" <<EOF
 # Lucairn Customer Install: $slug
 
@@ -4484,16 +5066,27 @@ This bundle is prepared for one customer environment. Do not reuse it across cus
 
 ## Offline Install
 
+Before extraction, compare this tarball's SHA256 checksum with the checksum
+supplied through the approved authenticated handoff channel. The CLI inside an
+unverified archive cannot authenticate that archive. S1 provides integrity
+checks, not completed publisher authentication.
+
+After that checksum gate and extraction, verify the bundle before executing
+any bundled payload:
+
 \`\`\`bash
-docker load -i images/lucairn-images.tar
 bin/lucairn bundle verify --bundle .
+\`\`\`
+
+$remote_credentials_note
+
+$image_lines
+
+Then run the pre-flight and recorded Compose command:
+
+\`\`\`bash
 bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --skip-image-check
-docker compose \\
-  -f install/docker-compose.customer.yml \\
-  -f install/docker-compose.self-hosted.yml \\
-  --env-file install/customer.env \\
-  --profile "\${MODEL_RUNTIME_PROFILE:-custom-runtime}" \\
-  up -d
+$compose_lines
 \`\`\`
 
 ## Model Runtime
@@ -4520,8 +5113,73 @@ Review the generated archive before sending it to Lucairn support.
 EOF
 }
 
+bundle_relative_path_valid() {
+  local path="$1" component old_ifs
+  [ -n "$path" ] && [ "${#path}" -le 512 ] || return 1
+  case "$path" in /*|*//*|*\\*) return 1 ;; esac
+  printf '%s' "$path" | grep -Eq '^[A-Za-z0-9.][A-Za-z0-9._/-]*$' || return 1
+  old_ifs="$IFS"; IFS=/
+  for component in $path; do
+    case "$component" in ""|.|..) IFS="$old_ifs"; return 1 ;; esac
+  done
+  IFS="$old_ifs"
+}
+
+# Every packaged tree uses a deliberately tiny filesystem grammar.  lstat is
+# used for every entry so a symlink is rejected rather than followed; this is
+# also what makes checksum paths unambiguous and archive creation predictable.
+validate_safe_bundle_tree() {
+  local dir="$1" label="$2"
+  python3 - "$dir" "$label" <<'PY'
+import os
+import re
+import stat
+import sys
+
+root = os.path.abspath(sys.argv[1])
+label = sys.argv[2]
+path_re = re.compile(r"^[A-Za-z0-9.][A-Za-z0-9._/-]{0,511}$")
+
+def fail(message):
+    print(f"bundle safety: {label} {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+try:
+    root_stat = os.lstat(root)
+except OSError:
+    fail("is missing")
+if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(root_stat.st_mode):
+    fail("must be a real non-symlink directory")
+
+def safe_rel(path):
+    rel = os.path.relpath(path, root)
+    if rel == ".":
+        return True
+    return bool(path_re.fullmatch(rel)) and all(part not in ("", ".", "..") for part in rel.split("/"))
+
+def walk_error(error):
+    fail(f"cannot be read: {error}")
+
+for current, dirs, files in os.walk(root, topdown=True, followlinks=False, onerror=walk_error):
+    if not safe_rel(current):
+        fail(f"has an unsafe relative path: {os.path.relpath(current, root)}")
+    for name in list(dirs) + list(files):
+        candidate = os.path.join(current, name)
+        rel = os.path.relpath(candidate, root)
+        try:
+            value = os.lstat(candidate)
+        except OSError as error:
+            fail(f"cannot stat {rel}: {error}")
+        if not safe_rel(candidate):
+            fail(f"has an unsafe relative path: {rel}")
+        if not (stat.S_ISDIR(value.st_mode) or stat.S_ISREG(value.st_mode)):
+            fail(f"contains a symlink or special object: {rel}")
+PY
+}
+
 write_checksums() {
   local dir="$1"
+  validate_safe_bundle_tree "$dir" "staging tree" || return 1
   mkdir -p "$dir/checksums"
   : > "$dir/checksums/SHA256SUMS"
   (
@@ -4533,27 +5191,57 @@ write_checksums() {
 }
 
 verify_checksums() {
-  local dir="$1" sums expected path actual failed=0
+  local dir="$1" sums line expected path actual failed=0 seen="" expected_normalized file rel
+  validate_safe_bundle_tree "$dir" "bundle tree" || return 1
   sums="$dir/checksums/SHA256SUMS"
-  require_file "$sums" "checksum file"
-  while read -r expected path; do
-    [ -z "${expected:-}" ] && continue
-    if [ ! -f "$dir/$path" ]; then
-      echo "checksum verification failed: missing $path"
+  [ -f "$sums" ] && [ ! -L "$sums" ] \
+    || { echo "checksum verification failed: checksum file is missing, unsafe, or not regular"; return 1; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Keep the regex portable to BSD grep (whose repetition bound is 255);
+    # bundle_relative_path_valid below enforces the 512-byte path limit.
+    if ! printf '%s' "$line" | grep -Eq '^[0-9A-Fa-f]{64}  [A-Za-z0-9.][A-Za-z0-9._/-]*$'; then
+      echo "checksum verification failed: malformed checksum entry"
+      failed=1
+      continue
+    fi
+    expected="${line%%  *}"
+    path="${line#*  }"
+    if ! bundle_relative_path_valid "$path" || [ "$path" = "checksums/SHA256SUMS" ]; then
+      echo "checksum verification failed: unsafe checksum path $path"
+      failed=1
+      continue
+    fi
+    if printf '%s\n' "$seen" | grep -Fqx "$path"; then
+      echo "checksum verification failed: duplicate checksum path $path"
+      failed=1
+      continue
+    fi
+    seen="${seen}${path}"$'\n'
+    if [ ! -f "$dir/$path" ] || [ -L "$dir/$path" ]; then
+      echo "checksum verification failed: missing or unsafe $path"
       failed=1
       continue
     fi
     actual="$(sha256_file "$dir/$path")"
-    if [ "$actual" != "$expected" ]; then
+    expected_normalized="$(printf '%s' "$expected" | tr 'A-F' 'a-f')"
+    if [ "$actual" != "$expected_normalized" ]; then
       echo "checksum verification failed: $path"
       failed=1
     fi
   done < "$sums"
+  while IFS= read -r file; do
+    rel="${file#./}"
+    [ "$rel" = "checksums/SHA256SUMS" ] && continue
+    if ! printf '%s\n' "$seen" | grep -Fqx "$rel"; then
+      echo "checksum verification failed: unchecked bundle file $rel"
+      failed=1
+    fi
+  done < <(cd "$dir" && find . -type f | sort)
   [ "$failed" -eq 0 ]
 }
 
 bundle_create() {
-  local slug="" models_dir="" manifest="" env_file="" output_dir="$ROOT/dist/customer-bundles"
+  local slug="" models_dir="" manifest="" env_file="" output_dir="$ROOT/dist/customer-bundles" runtime_rc
   local image_tar="" images_dir="" data_dir="" base_compose="$ROOT/docker-compose.customer.yml" self_compose="$ROOT/docker-compose.self-hosted.yml"
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -4577,36 +5265,106 @@ bundle_create() {
   [ -n "$models_dir" ] || fail "--models-dir is required"
   [ -n "$manifest" ] || fail "--model-manifest is required"
   [ -n "$env_file" ] || fail "--env is required"
+  validate_safe_bundle_tree "$models_dir" "models source" \
+    || fail "bundle create: models source tree is unsafe"
   validate_model_manifest "$manifest" "$models_dir"
   require_file "$env_file" "env file"
+  if validate_runtime_profile "$env_file"; then runtime_rc=0; else runtime_rc=$?; fi
+  [ "$runtime_rc" -eq 0 ] || [ "$runtime_rc" -eq 2 ] \
+    || fail "bundle create: customer.env/runtime profile state is invalid"
+  if [ "$runtime_rc" -eq 0 ] \
+    && [ "$(runtime_profile_field "$(runtime_profile_path "$env_file")" runtime_mode)" = "local-runtime" ]; then
+    validate_local_profile_model_manifest "$env_file" "$manifest" \
+      || fail "bundle create: local runtime profile and model manifest disagree"
+  fi
   require_file "$base_compose" "base compose"
-  require_file "$self_compose" "self-hosted compose"
-  [ -z "$image_tar" ] || require_file "$image_tar" "image tar"
-  [ -z "$images_dir" ] || [ -d "$images_dir" ] || fail "images dir not found: $images_dir"
-  [ -z "$data_dir" ] || [ -d "$data_dir" ] || fail "customer data dir not found: $data_dir"
+  if [ "$runtime_rc" -eq 2 ] || runtime_profile_overlays "$(runtime_profile_path "$env_file")" | grep -qx 'docker-compose.self-hosted.yml'; then
+    require_file "$self_compose" "self-hosted compose"
+  fi
+  if [ -n "$image_tar" ]; then
+    [ -f "$image_tar" ] && [ ! -L "$image_tar" ] \
+      || fail "image tar is missing, unsafe, or not regular: $image_tar"
+  fi
+  if [ -n "$images_dir" ]; then
+    validate_safe_bundle_tree "$images_dir" "images source" \
+      || fail "bundle create: images source tree is unsafe"
+  fi
+  if [ -n "$data_dir" ]; then
+    validate_safe_bundle_tree "$data_dir" "customer data source" \
+      || fail "bundle create: customer data source tree is unsafe"
+  fi
 
-  local ts bundle_name staging archive
+  local ts bundle_name staging archive image_delivery
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   bundle_name="lucairn-customer-bundle-${slug}-${ts}"
   mkdir -p "$output_dir"
   staging="$output_dir/$bundle_name"
   archive="$output_dir/$bundle_name.tar.gz"
+  if [ -n "$image_tar" ]; then
+    image_delivery="archive"
+  elif [ -n "$images_dir" ]; then
+    image_delivery="directory"
+  else
+    image_delivery="registry"
+  fi
   rm -rf "$staging" "$archive"
   mkdir -p "$staging"/{bin,install,models,images,customer-data,checksums,docs,config,migrations,starter-templates}
+  # install/docker-compose.customer.yml mounts these bundle-relative assets.
+  # Carry the one required renderer so an extracted bundle's offline doctor
+  # and subsequent Compose topology describe the same executable payload.
+  mkdir -p "$staging/install"/{scripts,config,migrations}
 
   cp "$ROOT/bin/lucairn" "$staging/bin/lucairn"
+  cp "$ROOT/bin/runtime-profile-lib.sh" "$staging/bin/runtime-profile-lib.sh"
+  cp "$ROOT/VERSION" "$staging/VERSION"
+  cp "$ROOT/RELEASE_DATE" "$staging/RELEASE_DATE"
+  mkdir -p "$staging/scripts"
+  cp "$ROOT/scripts/derive-veil-pubkey.sh" "$staging/scripts/derive-veil-pubkey.sh"
+  chmod 0755 "$staging/scripts/derive-veil-pubkey.sh"
   cp "$base_compose" "$staging/install/docker-compose.customer.yml"
-  cp "$self_compose" "$staging/install/docker-compose.self-hosted.yml"
   cp "$env_file" "$staging/install/customer.env"
+  local runtime_profile
+  runtime_profile="$(runtime_profile_path "$env_file")"
+  if [ "$runtime_rc" -eq 0 ]; then
+    local recorded_image_manifest
+    recorded_image_manifest="$(runtime_profile_image_manifest_snapshot_path "$env_file")"
+    require_file "$recorded_image_manifest" "recorded S1 image-manifest snapshot"
+    cp "$runtime_profile" "$staging/install/customer.env.runtime-profile.yaml"
+    cp "$recorded_image_manifest" "$staging/install/customer.env.image-manifest.yaml"
+    # Retain the root copy for existing bundle-local CLI paths, but bind it to
+    # the recorded adjacent snapshot rather than to this mutable kit checkout.
+    cp "$recorded_image_manifest" "$staging/image-manifest.yaml"
+    local recorded_overlay byok_compose
+    while IFS= read -r recorded_overlay; do
+      case "$recorded_overlay" in
+        docker-compose.customer.yml) ;;
+        docker-compose.self-hosted.yml) cp "$self_compose" "$staging/install/docker-compose.self-hosted.yml" ;;
+        docker-compose.self-hosted-byok.yml)
+          byok_compose="$(dirname "$self_compose")/docker-compose.self-hosted-byok.yml"
+          require_file "$byok_compose" "BYOK compose overlay recorded in runtime profile"
+          cp "$byok_compose" "$staging/install/docker-compose.self-hosted-byok.yml"
+          ;;
+        *) fail "bundle create: runtime profile records unsupported overlay: $recorded_overlay" ;;
+      esac
+    done < <(runtime_profile_overlays "$runtime_profile")
+  else
+    # Legacy bundles retain their documented customer + self-hosted topology.
+    cp "$self_compose" "$staging/install/docker-compose.self-hosted.yml"
+  fi
   cp "$manifest" "$staging/models/model-manifest.yaml"
   cp -R "$models_dir"/. "$staging/models/"
   cp "$manifest" "$staging/models/model-manifest.yaml"
   cp -R "$ROOT/config"/. "$staging/config/"
   cp -R "$ROOT/migrations"/. "$staging/migrations/"
+  cp -R "$ROOT/config"/. "$staging/install/config/"
+  cp -R "$ROOT/migrations"/. "$staging/install/migrations/"
+  require_file "$ROOT/scripts/render-migrations.sh" "bundle migration renderer"
+  cp "$ROOT/scripts/render-migrations.sh" "$staging/install/scripts/render-migrations.sh"
+  chmod 0755 "$staging/install/scripts/render-migrations.sh"
   cp -R "$ROOT/starter-templates"/. "$staging/starter-templates/"
   cp "$ROOT/OPS.md" "$ROOT/TROUBLESHOOTING.md" "$ROOT/README.md" "$staging/docs/"
   [ -f "$ROOT/docs/CUSTOMER_BUNDLE.md" ] && cp "$ROOT/docs/CUSTOMER_BUNDLE.md" "$staging/docs/"
-  write_bundle_install_note "$staging/INSTALL-CUSTOMER.md" "$slug"
+  write_bundle_install_note "$staging/INSTALL-CUSTOMER.md" "$slug" "$env_file" "$image_delivery"
 
   if [ -n "$image_tar" ]; then
     cp "$image_tar" "$staging/images/lucairn-images.tar"
@@ -4637,7 +5395,13 @@ bundle_create() {
   } > "$staging/bundle-manifest.txt"
 
   write_checksums "$staging"
-  tar -czf "$archive" -C "$output_dir" "$bundle_name"
+  validate_safe_bundle_tree "$staging" "staging tree before archive" \
+    || fail "bundle create: staging tree is unsafe before archive creation"
+  # BSD tar otherwise synthesizes AppleDouble (._*) members for extended
+  # attributes.  Those are not part of the declared regular-file payload and
+  # would correctly fail the receiver's exact-set validator.
+  COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=true \
+    tar -czf "$archive" -C "$output_dir" "$bundle_name"
   echo "bundle: $archive"
 }
 
@@ -4647,14 +5411,74 @@ bundle_root_from_path() {
     printf '%s' "$bundle"
     return 0
   fi
-  require_file "$bundle" "bundle"
+  [ -f "$bundle" ] && [ ! -L "$bundle" ] || { echo "bundle archive is missing, unsafe, or not regular" >&2; return 1; }
   mkdir -p "$tmp"
-  tar -xzf "$bundle" -C "$tmp"
-  find "$tmp" -maxdepth 1 -type d -name 'lucairn-customer-bundle-*' -print -quit
+  python3 - "$bundle" "$tmp" <<'PY'
+import os
+import re
+import shutil
+import tarfile
+import sys
+
+archive, destination = sys.argv[1:]
+root_pattern = re.compile(r"^lucairn-customer-bundle-[a-z0-9][a-z0-9-]{1,62}-[0-9]{8}T[0-9]{6}Z$")
+
+def fail(message):
+    print(f"bundle archive verification failed: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+try:
+    with tarfile.open(archive, "r:*") as tf:
+        members = tf.getmembers()
+        seen = set()
+        top = None
+        top_is_directory = False
+        for member in members:
+            name = member.name
+            if not name or name.startswith("/") or "\\" in name:
+                fail(f"unsafe member name: {name!r}")
+            parts = name.split("/")
+            if any(part in ("", ".", "..") for part in parts):
+                fail(f"unsafe member name: {name!r}")
+            normalized = "/".join(parts)
+            if normalized in seen:
+                fail(f"duplicate member name: {normalized}")
+            seen.add(normalized)
+            if not (member.isdir() or member.isreg()):
+                fail(f"non-regular archive member: {normalized}")
+            if top is None:
+                top = parts[0]
+            elif parts[0] != top:
+                fail("archive contains multiple top-level roots")
+            if len(parts) == 1 and member.isdir():
+                top_is_directory = True
+        if not members or top is None or not root_pattern.fullmatch(top) or not top_is_directory:
+            fail("archive must contain one canonical customer-bundle root directory")
+
+        base = os.path.realpath(destination)
+        os.makedirs(base, exist_ok=True)
+        for member in members:
+            target = os.path.realpath(os.path.join(base, member.name))
+            if os.path.commonpath((base, target)) != base:
+                fail(f"member escapes extraction root: {member.name}")
+            if member.isdir():
+                os.makedirs(target, exist_ok=True)
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            source = tf.extractfile(member)
+            if source is None:
+                fail(f"cannot read regular member: {member.name}")
+            with source, open(target, "wb") as output:
+                shutil.copyfileobj(source, output)
+            os.chmod(target, member.mode & 0o777)
+        print(os.path.join(destination, top))
+except (tarfile.TarError, OSError) as error:
+    fail(str(error))
+PY
 }
 
 bundle_verify() {
-  local bundle="" expect_slug="" max_age_days="" require_sha256=0
+  local bundle="" expect_slug="" max_age_days="" require_sha256=0 runtime_rc
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --bundle) bundle="$2"; shift 2 ;;
@@ -4677,23 +5501,80 @@ bundle_verify() {
       || fail "--customer-slug must be lowercase letters, numbers, and hyphens"
   fi
 
-  local tmp root
-  tmp="$(mktemp -d)"
-  root="$(bundle_root_from_path "$bundle" "$tmp")"
+  # A directory bundle is already available for validation.  Do not create an
+  # unrelated extraction temp before checking its S1 state: that hides the
+  # actual profile failure and breaks constrained/offline verification hosts.
+  local tmp="" root
+  if [ -d "$bundle" ]; then
+    root="$bundle"
+  else
+    tmp="$(mktemp -d)"
+    if ! root="$(bundle_root_from_path "$bundle" "$tmp")"; then
+      rm -rf "$tmp"
+      fail "bundle archive failed safe pre-extraction validation"
+    fi
+  fi
   if [ -z "$root" ]; then
     rm -rf "$tmp"
     fail "bundle root not found"
   fi
+  validate_safe_bundle_tree "$root" "bundle tree" \
+    || { rm -rf "$tmp"; fail "bundle contains unsafe filesystem objects"; }
 
-  require_file "$root/install/docker-compose.customer.yml" "bundle base compose"
-  require_file "$root/install/docker-compose.self-hosted.yml" "bundle self-hosted compose"
   require_file "$root/install/customer.env" "bundle customer env"
+  # Never execute bundle-controlled code during verification. The archive's
+  # helper is delivered data (and must be checked below), but SHA256SUMS is
+  # integrity only: an attacker can rewrite both it and that helper. The
+  # verifier uses its own trusted sibling validator for the S1 grammar.
+  if validate_runtime_profile "$root/install/customer.env" "$root/install/customer.env.image-manifest.yaml" "$ROOT/bin/runtime-profile-lib.sh"; then runtime_rc=0; else runtime_rc=$?; fi
+  [ "$runtime_rc" -eq 0 ] || [ "$runtime_rc" -eq 2 ] \
+    || { rm -rf "$tmp"; fail "bundle runtime profile/customer.env state is invalid"; }
+  require_file "$root/install/docker-compose.customer.yml" "bundle base compose"
   require_file "$root/models/model-manifest.yaml" "bundle model manifest"
   require_file "$root/bin/lucairn" "bundle CLI"
   if [ "$require_sha256" -eq 1 ]; then
     validate_model_manifest "$root/models/model-manifest.yaml" "$root/models" "require-sha256"
   else
     validate_model_manifest "$root/models/model-manifest.yaml" "$root/models"
+  fi
+  if [ "$runtime_rc" -eq 0 ] \
+    && [ "$(runtime_profile_field "$(runtime_profile_path "$root/install/customer.env")" runtime_mode)" = "local-runtime" ]; then
+    validate_local_profile_model_manifest "$root/install/customer.env" "$root/models/model-manifest.yaml" \
+      || { rm -rf "$tmp"; fail "bundle local runtime profile and model manifest disagree"; }
+  fi
+  if [ "$runtime_rc" -eq 0 ]; then
+    require_file "$root/VERSION" "bundle kit VERSION"
+    require_file "$root/RELEASE_DATE" "bundle kit RELEASE_DATE"
+    require_file "$root/scripts/derive-veil-pubkey.sh" "bundle key-derivation helper"
+    [ -x "$root/scripts/derive-veil-pubkey.sh" ] \
+      || { rm -rf "$tmp"; fail "bundle key-derivation helper is not executable"; }
+    require_file "$root/bin/runtime-profile-lib.sh" "bundle runtime-profile helper"
+    require_file "$root/install/customer.env.image-manifest.yaml" "bundle recorded image-manifest snapshot"
+    require_file "$root/image-manifest.yaml" "bundle image-manifest copy"
+    cmp -s "$root/install/customer.env.image-manifest.yaml" "$root/image-manifest.yaml" \
+      || { rm -rf "$tmp"; fail "bundle image-manifest copy does not exactly match recorded snapshot"; }
+    local recorded_overlay
+    while IFS= read -r recorded_overlay; do
+      case "$recorded_overlay" in
+        docker-compose.customer.yml|docker-compose.self-hosted.yml|docker-compose.self-hosted-byok.yml)
+          require_file "$root/install/$recorded_overlay" "bundle overlay recorded in runtime profile"
+          ;;
+        *) rm -rf "$tmp"; fail "bundle runtime profile records unsupported overlay: $recorded_overlay" ;;
+      esac
+    done < <(runtime_profile_overlays "$(runtime_profile_path "$root/install/customer.env")")
+    case "$(runtime_profile_field "$(runtime_profile_path "$root/install/customer.env")" runtime_mode)" in
+      split-remote)
+        [ ! -e "$root/install/docker-compose.self-hosted.yml" ] && [ ! -L "$root/install/docker-compose.self-hosted.yml" ] \
+          && [ ! -e "$root/install/docker-compose.self-hosted-byok.yml" ] && [ ! -L "$root/install/docker-compose.self-hosted-byok.yml" ] \
+          || { rm -rf "$tmp"; fail "bundle contains excluded self-hosted topology for split-remote profile"; }
+        ;;
+      local-runtime)
+        [ ! -e "$root/install/docker-compose.self-hosted-byok.yml" ] && [ ! -L "$root/install/docker-compose.self-hosted-byok.yml" ] \
+          || { rm -rf "$tmp"; fail "bundle contains excluded BYOK topology for local-runtime profile"; }
+        ;;
+    esac
+  else
+    require_file "$root/install/docker-compose.self-hosted.yml" "bundle self-hosted compose"
   fi
   verify_checksums "$root"
 
@@ -4808,7 +5689,8 @@ bundle_prepare() {
 
   [ -n "$slug" ] || fail "--customer-slug is required"
   [ -n "$staging_dir" ] || fail "--staging-dir is required"
-  [ -d "$staging_dir" ] || fail "staging dir not found: $staging_dir"
+  [ -d "$staging_dir" ] && [ ! -L "$staging_dir" ] \
+    || fail "staging dir is missing or unsafe: $staging_dir"
 
   local env_file models_dir manifest image_tar images_dir data_dir image_delivery customer_data base_compose self_compose
   env_file="$staging_dir/customer.env"
@@ -4875,10 +5757,18 @@ bundle_prepare() {
   fi
 
   require_file "$env_file" "staged customer env"
+  local runtime_rc
+  if validate_runtime_profile "$env_file"; then runtime_rc=0; else runtime_rc=$?; fi
+  [ "$runtime_rc" -eq 0 ] || [ "$runtime_rc" -eq 2 ] \
+    || fail "bundle prepare: customer.env/runtime profile state is invalid"
   require_file "$manifest" "staged model manifest"
   validate_model_manifest "$manifest" "$models_dir"
+  if [ "$runtime_rc" -eq 0 ] \
+    && [ "$(runtime_profile_field "$(runtime_profile_path "$env_file")" runtime_mode)" = "local-runtime" ]; then
+    validate_local_profile_model_manifest "$env_file" "$manifest" \
+      || fail "bundle prepare: local runtime profile and model manifest disagree"
+  fi
 
-  mkdir -p "$output_dir"
   report_file="${report_file:-$output_dir/lucairn-customer-bundle-${slug}-report.txt}"
 
   local create_args create_output archive verify_output
@@ -4990,6 +5880,7 @@ doctor() {
 
   require_file "$env_file" "env file"
   require_file "$compose_file" "compose file"
+  runtime_profile_compose_args "$env_file" "$compose_file" || return 1
   # Values files are optional; validate every supplied path before any checks.
   if [ "$values_count" -gt 0 ]; then
     for values_file in "${values_files[@]}"; do
@@ -5226,7 +6117,7 @@ doctor() {
 
   # Sim 3 G1: pre-flight render-migrations.sh input contract.
   local migration_failed=0
-  check_render_migrations_safe "$env_file" || migration_failed=1
+  check_render_migrations_safe "$env_file" "$compose_file" || migration_failed=1
   [ "$migration_failed" -eq 0 ] || return 1
 
   # MEDIUM (overnight 2026-06-14): Compose migrate path renders ONLY the kit's
@@ -5342,6 +6233,12 @@ doctor() {
   [ "$tsa_failed" -eq 0 ] || return 1
 
   # Sim 3 round-2 NEW-3: Sandbox-B remote scheme + cert-triple coherence.
+  # This runs before any Compose rendering/inference probes so a split install
+  # cannot look healthy while its remote authentication is blank or fake.
+  local split_credentials_failed=0
+  check_split_remote_credentials "$env_file" || split_credentials_failed=1
+  [ "$split_credentials_failed" -eq 0 ] || return 1
+
   local sb_remote_failed=0
   check_sandbox_b_remote_coherent "$env_file" || sb_remote_failed=1
   [ "$sb_remote_failed" -eq 0 ] || return 1
@@ -5447,7 +6344,7 @@ doctor() {
   local compose
   compose="$(compose_cmd)"
   if [ -n "$compose" ]; then
-    if $compose -f "$compose_file" --env-file "$env_file" config --quiet; then
+    if $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" config --quiet; then
       echo "docker compose: ok"
     else
       echo "docker compose: config failed"
@@ -5622,6 +6519,7 @@ support_bundle() {
 
   require_file "$env_file" "env file"
   require_file "$compose_file" "compose file"
+  runtime_profile_compose_args "$env_file" "$compose_file" || return 1
   mkdir -p "$output_dir"
 
   local ts bundle_dir archive compose
@@ -5647,6 +6545,11 @@ support_bundle() {
 
   redact_stream < "$env_file" > "$bundle_dir/redacted/customer.env"
   redact_stream < "$compose_file" > "$bundle_dir/redacted/docker-compose.customer.yml"
+  local runtime_profile
+  runtime_profile="$(runtime_profile_path "$env_file")"
+  if [ -f "$runtime_profile" ]; then
+    cp "$runtime_profile" "$bundle_dir/redacted/runtime-profile.yaml"
+  fi
   write_cert_report "$env_file" "$bundle_dir/certs/cert-validity.txt"
 
   if [ "$offline" -eq 1 ]; then
@@ -5656,10 +6559,10 @@ support_bundle() {
   else
     compose="$(compose_cmd)"
     if [ -n "$compose" ]; then
-      ($compose -f "$compose_file" --env-file "$env_file" ps 2>&1 || true) | redact_stream > "$bundle_dir/docker/compose-ps.txt"
+      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" ps 2>&1 || true) | redact_stream > "$bundle_dir/docker/compose-ps.txt"
       (docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>&1 || true) | redact_stream > "$bundle_dir/docker/status.txt"
-      ($compose -f "$compose_file" --env-file "$env_file" logs --tail 300 --no-color 2>&1 || true) | redact_stream > "$bundle_dir/logs/compose.log"
-      ($compose -f "$compose_file" --env-file "$env_file" config 2>&1 || true) | redact_stream > "$bundle_dir/redacted/compose-resolved.yml"
+      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" logs --tail 300 --no-color 2>&1 || true) | redact_stream > "$bundle_dir/logs/compose.log"
+      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" config 2>&1 || true) | redact_stream > "$bundle_dir/redacted/compose-resolved.yml"
     else
       echo "docker compose unavailable" > "$bundle_dir/docker/status.txt"
       echo "docker compose unavailable" > "$bundle_dir/logs/compose.log"
@@ -5725,6 +6628,8 @@ backup() {
   done
   [ -n "$env_file" ] || fail "backup: --env customer.env is required"
   require_file "$env_file" "env file"
+  require_file "$compose_file" "compose file"
+  runtime_profile_compose_args "$env_file" "$compose_file" || return 1
   backup_require_tools
 
   local dc; dc="$(compose_cmd)"
@@ -5762,7 +6667,7 @@ backup() {
 
     info "backup($db): pg_dump -Fc via $svc ..."
     # shellcheck disable=SC2086
-    $dc -f "$compose_file" --env-file "$env_file" exec -T "$svc" \
+    $dc "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" exec -T "$svc" \
       pg_dump -U "$usr" -d "$db" -Fc > "$dump"
     [ -s "$dump" ] || fail "backup($db): EMPTY DUMP from $svc"
 
@@ -5884,6 +6789,8 @@ restore() {
   [ -n "$env_file" ] || fail "restore: --env customer.env is required"
   [ -n "$stamp" ] || fail "restore: --stamp YYYYMMDDTHHMMSSZ is required (the backup timestamp to restore)"
   require_file "$env_file" "env file"
+  require_file "$compose_file" "compose file"
+  runtime_profile_compose_args "$env_file" "$compose_file" || return 1
   backup_require_tools
 
   local dc; dc="$(compose_cmd)"
@@ -5922,7 +6829,7 @@ restore() {
 
     info "restore($db): pg_restore --clean --if-exists into LIVE $svc ..."
     # shellcheck disable=SC2086
-    $dc -f "$compose_file" --env-file "$env_file" exec -T "$svc" \
+    $dc "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" exec -T "$svc" \
       pg_restore -U "$usr" -d "$db" --no-owner --clean --if-exists < "$plain" \
       || fail "restore($db): pg_restore failed"
     info "restore($db): OK"
@@ -6934,12 +7841,18 @@ _check_updates_online() {
 main() {
   local cmd="${1:-}"
   case "$cmd" in
-    doctor) shift; doctor "$@" ;;
+  doctor) shift; doctor "$@" ;;
+    up) shift; lifecycle_command up "$@" ;;
+    down) shift; lifecycle_command down "$@" ;;
+    status) shift; lifecycle_command status "$@" ;;
+    logs) shift; lifecycle_command logs "$@" ;;
+    pull) shift; lifecycle_command pull "$@" ;;
     check-updates) shift; check_updates "$@" ;;
     support-bundle) shift; support_bundle "$@" ;;
     bundle) shift; bundle_command "$@" ;;
     backup) shift; backup "$@" ;;
     restore) shift; restore "$@" ;;
+    __validate-runtime-profile) shift; runtime_profile_check_command "$@" ;;
     license) shift; license_command "$@" ;;
     verify-images) shift; verify_images "$@" ;;
     sbom) shift; sbom "$@" ;;
