@@ -38,10 +38,16 @@ jobs:
       # and test_sbom.sh assertion 7 each use a local shim/stub that does not
       # require the real binary.  The full fetch+verify path (real cosign +
       # GHCR) is covered by the post-merge edge-verify, not the unit harness.
-      - name: Install CI tools (helm v3.16.4, kubeconform v0.7.0)
+      - name: Install CI tools (helm v3.16.4, kubeconform v0.7.0, strace)
         run: |
           TOOL_DIR="$RUNNER_TEMP/bin"
           mkdir -p "$TOOL_DIR"
+
+          # The full-doctor custody test requires Linux execve/open tracing;
+          # do not allow a green CI run to silently skip that proof.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends strace
+          command -v strace
 
           # helm v3.16.4 — linux-amd64
           curl -fsSL https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz \

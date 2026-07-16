@@ -44,7 +44,6 @@ bin/lucairn-init --production --runtime-mode split-remote \
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
 # Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)
 docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
-bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 bin/lucairn up --env customer.env
 ```
 
@@ -105,6 +104,22 @@ binary needs the admin key from `customer.env` — export it first:
 export LUCAIRN_ADMIN_KEY="$(grep '^DSA_ADMIN_KEY=' customer.env | cut -d= -f2-)"
 ./bin/lucairn-mint-customer --name "Acme GmbH" --email "ops@acme.de" --tier enterprise
 ```
+
+Store the printed key in an existing mode-0600 file (for example
+`/secure/lucairn-customer.key`) and then run the post-start full doctor. For
+`split-remote` and `managed-byok`, supply the exact operator-selected model;
+`local-runtime` uses only the one recorded model name from the S1 inventory.
+
+```bash
+# Add --model <selected-model> for split-remote or managed-byok only.
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml \
+  --customer-key-file /secure/lucairn-customer.key
+```
+
+`doctor --offline` is configuration-only and ends with `doctor: preflight ok
+(offline)`. Health/readiness remain diagnostics; `doctor: ok` means the
+authenticated inference, certificate, and limited witness-verification journey
+completed (anchors are not checked).
 
 If you intend to use `X-Upstream-Key` (BYOK to managed cloud LLM) for
 inference, also load `-f docker-compose.self-hosted-byok.yml` on the

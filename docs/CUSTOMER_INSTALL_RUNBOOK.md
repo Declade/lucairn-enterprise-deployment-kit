@@ -200,7 +200,7 @@ If any container is `unhealthy` or `restarting`, see § Troubleshooting.
 > **To re-enable L3 later:** pre-stage the `qwen2.5:7b` model into the
 > `ollama-identity` volume (the air-gap-preserving throwaway-container procedure
 > is in INSTALL.md, the "Pre-stage the L3 deep PII-shield model" section), then set
-> `LUCAIRN_L3_REQUIRED=true` in `customer.env`, re-run `bin/lucairn doctor`, and
+> `LUCAIRN_L3_REQUIRED=true` in `customer.env`, re-run `bin/lucairn doctor --offline`, and
 > restart the stack. Provision the full 16 GB RAM (§ 1) when you do.
 
 ---
@@ -227,110 +227,55 @@ printf '%s' 'lcr_live_…paste_here…' > ~/.lucairn-customer-key
 
 ---
 
-## 8. Verify end-to-end (a real PII round-trip)
+## 8. Verify end-to-end (authenticated customer journey)
 
-This sends a German clinical payload through the full sanitize → sandbox → managed-LLM → witness → audit pipeline, then fetches the cryptographic verification certificate.
-
-```bash
-CUSTOMER_KEY=$(cat ~/.lucairn-customer-key)
-ANTHROPIC_KEY=$(grep '^ANTHROPIC_API_KEY=' customer.env | cut -d= -f2-)
-
-RESP=$(curl -sS -X POST http://localhost:8080/v1/messages \
-  -H "x-api-key: $CUSTOMER_KEY" \
-  -H "X-Upstream-Key: $ANTHROPIC_KEY" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-haiku-4-5-20251001",
-    "max_tokens": 150,
-    "messages": [{"role": "user", "content": "Bitte fasse zusammen: Anna Schmidt, geboren am 12.03.1978, Versicherungsnummer A4501289-DE, wohnhaft Münchner Straße 42, klagt über Brustschmerzen seit gestern. Telefon 089-12345678, Email anna.schmidt@example.de. Antworte auf Deutsch in einem Satz."}]
-  }')
-
-echo "$RESP" | python3 -c 'import sys, json; d=json.loads(sys.stdin.read()); m=d["metadata"]["dsa_compliance"]; print("pii_in_ai:", m["pii_in_ai"]); print("redaction_count:", m["redaction_count"]); print("cert_url:", m["veil_certificate_url"])'
-```
-
-Expected output:
-
-```
-pii_in_ai: False
-redaction_count: 6
-cert_url: http://localhost:8080/api/v1/veil/certificate/<request_id>
-```
-
-`pii_in_ai: False` is the headline invariant: the managed LLM never saw the patient's name, DOB, insurance number, address, phone, or email. The Sandbox B prompt contained only opaque placeholders.
-
-Fetch the verification certificate (this is the cryptographic proof you can hand to compliance / auditors):
+Use the keyed doctor after the stack is healthy. Its helper alone opens the
+mode-0600 key file, keeps the key bytes out of Bash, argv, and environment,
+submits the authenticated journey, receives the certificate, and verifies the
+witness signature.
 
 ```bash
-CERT_URL=$(echo "$RESP" | python3 -c 'import sys, json; print(json.loads(sys.stdin.read())["metadata"]["dsa_compliance"]["veil_certificate_url"])')
-
-curl -sS "$CERT_URL" -H "x-api-key: $CUSTOMER_KEY" | python3 -c '
-import sys, json
-d = json.loads(sys.stdin.read())
-v = d["verification"]
-print("signatures_valid: ", v["signatures_valid"])
-print("completeness:     ", v["completeness"])
-print("overall_verdict:  ", v["overall_verdict"])
-print("byok_exempt:      ", v["byok_exempt"])
-print("claims_signed:    ", len(d["claims"]))
-'
+bin/lucairn doctor \
+  --env customer.env \
+  --compose docker-compose.customer.yml \
+  --customer-key-file ~/.lucairn-customer-key
 ```
 
-Expected output (default L3-off install):
+For `split-remote` or `managed-byok`, append `--model <selected-model>`.
+Successful output includes authenticated inference, certificate receipt, and
+`witness signature: verified`; anchors are explicitly not checked.
 
-```
-signatures_valid:  True
-completeness:      COMPLETENESS_PARTIAL
-overall_verdict:   VERDICT_VERIFIED
-byok_exempt:       True
-claims_signed:     4
-```
+Do not read the customer key into a shell variable or place it in a `curl`
+header. The helper-owned `--customer-key-file` route is the supported custody
+boundary for this validation.
 
-**PASS gate:** `signatures_valid: True` and `overall_verdict: VERDICT_VERIFIED`
-are the mandatory signals. `completeness: COMPLETENESS_PARTIAL` is **correct and
-expected** with the default `LUCAIRN_L3_REQUIRED=false` config — it means the
-L1+L2 PII layers are active and the chain is fully signed; the L3 deep PII
-shield is simply not loaded, so `llm_pii_scan` is absent from `layers_active`.
-This is NOT a failure. Do not confuse PARTIAL completeness with a broken stack.
-
-`completeness: COMPLETENESS_FULL` is expected ONLY if you have re-enabled L3:
-pre-staged the `qwen2.5:7b` model into the `ollama-identity` volume AND set
-`LUCAIRN_L3_REQUIRED=true` in `customer.env` (see INSTALL.md §
-"Pre-stage the L3 deep PII-shield model"). If you see FULL without having done
-both of those steps, open a support ticket.
-
-Four services (bridge, sanitizer, AI, audit) each signed their own claim. The
-witness assembled and signed the chain. Every signature verifies against the
-deployed Ed25519 keypairs.
+**PASS gate:** `doctor: ok` confirms the authenticated request and certificate
+verification journey completed.
 
 ---
 
-## 9. Repeat-shape verification (recommended: 10 sequential requests)
+## 9. Repeat customer-journey verification (recommended: 10 sequential runs)
 
-To confirm the stack is stable, not just first-request-lucky:
+To confirm the stack is stable, not just first-request-lucky, repeat the
+helper-owned journey. The key remains in its file for every run.
 
 ```bash
 for i in 1 2 3 4 5 6 7 8 9 10; do
-  CODE=$(curl -sS -X POST http://localhost:8080/v1/messages \
-    -H "x-api-key: $CUSTOMER_KEY" \
-    -H "X-Upstream-Key: $ANTHROPIC_KEY" \
-    -H "anthropic-version: 2023-06-01" \
-    -H "Content-Type: application/json" \
-    -o /tmp/lucairn-req-$i.json \
-    -w "%{http_code}" \
-    -d '{"model":"claude-haiku-4-5-20251001","max_tokens":150,"messages":[{"role":"user","content":"Bitte fasse zusammen: Anna Schmidt, geboren am 12.03.1978, Versicherungsnummer A4501289-DE, wohnhaft Münchner Straße 42, klagt über Brustschmerzen seit gestern. Telefon 089-12345678, Email anna.schmidt@example.de. Antworte auf Deutsch in einem Satz."}]}')
-  RC=$(python3 -c "import json; print(json.load(open('/tmp/lucairn-req-$i.json'))['metadata']['dsa_compliance']['redaction_count'])" 2>/dev/null)
-  echo "req $i: HTTP=$CODE redaction_count=$RC"
+  bin/lucairn doctor \
+    --env customer.env \
+    --compose docker-compose.customer.yml \
+    --customer-key-file ~/.lucairn-customer-key
+  echo "journey $i: ok"
 done
 ```
 
-Expected: 10/10 `HTTP=200 redaction_count=6` (or higher; varies by payload).
+Expected: 10/10 `journey <n>: ok`.
 
 ---
 
 ## 10. (Production) Put the gateway behind TLS
 
-For production, terminate HTTPS at the customer's reverse proxy (Caddy / Nginx / Traefik / enterprise ingress) and forward to `127.0.0.1:8080`. Set `GATEWAY_TRUSTED_PROXY_CIDRS` in `customer.env` to the proxy source CIDRs, then re-run `bin/lucairn doctor`.
+For production, terminate HTTPS at the customer's reverse proxy (Caddy / Nginx / Traefik / enterprise ingress) and forward to `127.0.0.1:8080`. Set `GATEWAY_TRUSTED_PROXY_CIDRS` in `customer.env` to the proxy source CIDRs, then re-run `bin/lucairn doctor --offline`.
 
 This runbook intentionally stops at `http://localhost:8080` for the dev / pilot install. Add the TLS step before exposing the gateway to anyone outside the host.
 

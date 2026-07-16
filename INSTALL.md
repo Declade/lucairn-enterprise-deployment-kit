@@ -2,6 +2,18 @@
 
 Goal: a competent platform engineer should complete a standard install in about 3 hours without a vendor call.
 
+## Doctor lifecycle
+
+Use `doctor --offline` only as the configuration preflight; it requires no
+customer key, model, listener, runtime, or network and ends with `doctor:
+preflight ok (offline)`. For Helm values-only preflight, the terminal line is
+`doctor: preflight ok (values-only)`. Then start the recorded topology, wait
+for health/readiness, mint the first customer key to a regular mode-0600 file,
+and run online doctor with `--customer-key-file`. Supply `--model` for
+split-remote or managed-BYOK; local-runtime uses only its single recorded S1
+inventory name. Online `doctor: ok` proves authenticated inference, certificate
+receipt, and witness-signature verification; anchors are explicitly not checked.
+
 ## Release notes
 
 > The canonical changelog is [`CHANGELOG.md`](CHANGELOG.md). Security advisories
@@ -169,8 +181,8 @@ This path is runnable only after the required model is staged. Lucairn does
 not distribute model weights. `bin/lucairn-init --dev --runtime-mode local-runtime --local-runtime llama-cpp` writes a fully-populated `customer.env` and its non-secret
 `customer.env.runtime-profile.yaml` sidecar plus the recorded non-secret
 `customer.env.image-manifest.yaml` snapshot (5 Ed25519 keypairs, hex32 service
-secrets, postgres passwords, sensible dev-mode defaults) and runs
-`bin/lucairn doctor` against them before exiting. Keep all three artifacts
+secrets, postgres passwords, sensible dev-mode defaults) and runs its offline
+doctor preflight against them before exiting. Keep all three artifacts
 together: `customer.env` and its two sidecars.
 Use `bin/lucairn-mint-customer` once the stack is healthy to provision your
 first customer.
@@ -464,7 +476,7 @@ sed -i -E 's/^VEIL_(ENABLED|ISSUER|MANIFEST_SIGNING_KEY_ID|WITNESS_KEY_ID|WITNES
 helm upgrade lucairn charts/lucairn -f customer-values.yaml -n lucairn
 ```
 
-After the optional migration, run `./bin/lucairn doctor` (Docker Compose) to
+After the optional migration, run `./bin/lucairn doctor --offline` (Docker Compose) to
 confirm the rename did not break any required-key check. On Kubernetes the chart
 ships no test hook that validates the env rename (`helm test lucairn` only runs
 the optional dashboard `/healthz` probe, and only when the dashboard subchart is
@@ -501,6 +513,11 @@ For Docker Compose:
   package (3.4.8) is sufficient: `sudo apt install python3-cryptography`.
   Newer distros come with it preinstalled. If neither package is available,
   `pip install pynacl` is the smallest alternative.
+- **Online keyed doctor additionally requires Python 3.8 or later.** Its
+  shipped helper uses only the Python standard library, so it needs neither
+  `cryptography` nor network/PyPI access. This requirement applies only to
+  post-start `doctor --customer-key-file`; offline and values-only doctor do
+  not invoke Python and remain usable on air-gapped preflight hosts.
 
 For Kubernetes:
 
@@ -1015,15 +1032,13 @@ docker run --rm \
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
 ```
 
-6. Run live validation.
-
-```bash
-bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
-```
-
-The live validation checks whether the configured Lucairn images are pullable. If it fails with `container images: failed`, fix registry access before continuing.
-
-7. Start the stack.
+6. Start the stack. The online full doctor is a post-start customer-path
+validation: mint a customer key into an existing regular mode-0600 file and
+run it only after health and readiness. For `split-remote` and
+`managed-byok`, include `--model <selected-model>`; local-runtime uses its
+recorded model and must not receive `--model`. It requires Python 3.8+; if it
+is unavailable, online doctor fails closed with its prerequisite message while
+the offline preflight remains available.
 
 For **split deployment**:
 
@@ -1260,22 +1275,49 @@ curl -fsS http://127.0.0.1:8085/readyz
 
 9. Put the gateway behind TLS.
 
-Terminate HTTPS at the customer reverse proxy and forward to `127.0.0.1:8080`. If the proxy is local or containerized, set `GATEWAY_TRUSTED_PROXY_CIDRS` to the proxy source CIDRs and rerun `bin/lucairn doctor`.
+Terminate HTTPS at the customer reverse proxy and forward to `127.0.0.1:8080`. If the proxy is local or containerized, set `GATEWAY_TRUSTED_PROXY_CIDRS` to the proxy source CIDRs and rerun `bin/lucairn doctor --offline`.
 
-10. Mint your first customer.
-
-Once `bin/lucairn doctor` reports `ok`, mint your first Lucairn customer + API key:
+10. Mint your first customer, save the one-time key to a mode-0600 file, then
+run the online full doctor.
 
 ```bash
 export LUCAIRN_ADMIN_KEY="$(grep '^DSA_ADMIN_KEY=' customer.env | cut -d= -f2-)"
 
+umask 077
 ./bin/lucairn-mint-customer \
+  --raw-key-only \
   --name "Acme GmbH" \
   --email "ops@acme.de" \
-  --tier enterprise
+  --tier enterprise > customer.key
+chmod 600 customer.key
+
+bin/lucairn doctor \
+  --env customer.env \
+  --compose docker-compose.customer.yml \
+  --customer-key-file customer.key
 ```
 
-The script prints the raw API key **once** — capture it to a 0600 file. Smoke with `curl -H "x-api-key: <raw_key>" $GATEWAY_BASE_URL/api/v1/usage`. See `./bin/lucairn-mint-customer --help` for all flags including `--byok-per-request`, `--managed-ai`, `--provider-key`, `--dry-run`, `--verbose`, and `--tool-scope`.
+`--raw-key-only` prints exactly the one-time raw API key plus a final newline
+to stdout; its status/banner output goes to stderr, so the redirect above is
+the canonical capture path and keeps the key out of argv. For `split-remote` or
+`managed-byok`, append `--model <selected-model>` to the online doctor command;
+local-runtime uses its recorded model and must not receive `--model`. See
+`./bin/lucairn-mint-customer --help` for all flags including `--byok-per-request`,
+`--managed-ai`, `--provider-key`, `--dry-run`, `--verbose`, and `--tool-scope`.
+
+### Online doctor enterprise network settings
+
+The keyed doctor helper starts with an empty environment and deliberately does
+not inherit `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `SSL_CERT_FILE`, or curl
+configuration. For an enterprise forward proxy, pass the explicit
+`--customer-key-proxy http://proxy.example:8080` flag. For a private-CA HTTPS
+gateway, additionally pass `--customer-key-ca-file /secure/pki/gateway-ca.pem`.
+These map only to the helper's explicit `--proxy` and `--ca-file` inputs; do
+not invoke the helper directly as an operator workflow.
+The proxy must be an unauthenticated `http://` forward/CONNECT proxy; keep any
+proxy credentials in the proxy's host-level authentication mechanism rather
+than in doctor arguments. These flags are used only for the online keyed
+journey and do not change offline/values-only doctor.
 
 ## Scoping MCP tools per engagement
 
@@ -2203,7 +2245,7 @@ actual files under `images/`; it must not assume an archive exists.
 4. Run pre-flight checks.
 
 ```bash
-bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --skip-image-check
+bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --offline --skip-image-check
 ```
 
 5. Start the mode recorded for this bundle.
@@ -2246,7 +2288,7 @@ The v1.0-dashboard arc is feature-complete.
    `LUCAIRN_DASHBOARD_*` block at the end of `customer.env.example` and
    populate `LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD` with a 12+ character
    secret you generated locally via `openssl rand -base64 24`).
-2. Run `bin/lucairn doctor` — the dashboard pre-flight check exits with a
+2. Run `bin/lucairn doctor --offline` — the dashboard pre-flight check exits with a
    clear error if the bootstrap password is missing or too short.
 3. Start the dashboard container alongside the core stack:
 
@@ -2449,7 +2491,7 @@ GRANT SELECT ON veil_certificates TO lucairn_dashboard_ro;
    LUCAIRN_DASHBOARD_WITNESS_ENDPOINT=veil-witness:50058
    ```
 
-2. Run `bin/lucairn doctor` — the new `dashboard certs:` pre-flight
+2. Run `bin/lucairn doctor --offline` — the new `dashboard certs:` pre-flight
    check exits with a clear error if the DB URL scheme is wrong, the
    witness endpoint is missing a port, or only one of the pair is set.
 
@@ -2573,7 +2615,7 @@ The SAME shared secret is consumed by both the dashboard pod
    Mount the same shared secret as a single-line file at
    `/etc/grafana/jwt/shared-secret`.
 
-3. Run `bin/lucairn doctor` — the new `dashboard grafana:` pre-flight
+3. Run `bin/lucairn doctor --offline` — the new `dashboard grafana:` pre-flight
    surfaces invalid URL schemes, sub-32-character secrets, and
    reachability problems.
 
@@ -2685,7 +2727,7 @@ gateway listener as the data plane (mounted under
    The dashboard container resolves `http://gateway:8080` via the
    compose DNS network — no host-side ingress is required.
 
-2. Run `bin/lucairn doctor` — the new `dashboard keys:` pre-flight
+2. Run `bin/lucairn doctor --offline` — the new `dashboard keys:` pre-flight
    surfaces invalid URL schemes, placeholder tokens, gateway
    unreachability, and admin-token rejection (`401`).
 
@@ -2830,10 +2872,10 @@ Restart the dashboard container:
 docker compose -f docker-compose.customer.yml --env-file customer.env --profile dashboard up -d --force-recreate lucairn-dashboard
 ```
 
-Verify `bin/lucairn doctor` returns green for `dashboard audit-log`:
+Verify `bin/lucairn doctor --offline` returns green for `dashboard audit-log`:
 
 ```bash
-./bin/lucairn doctor
+./bin/lucairn doctor --offline
 ```
 
 #### Kubernetes path
@@ -3159,7 +3201,7 @@ Leave the line commented-out (or unset) to use gateway defaults.
 
 ### Pre-flight validation
 
-Run `lucairn doctor` before `docker compose up` (or `helm upgrade`) to catch
+Run `lucairn doctor --offline` before `docker compose up` (or `helm upgrade`) to catch
 policy errors before they reach the gateway:
 
 - **Invalid zone value** (typo, e.g. `full_scna`) → `FAIL` — doctor names the

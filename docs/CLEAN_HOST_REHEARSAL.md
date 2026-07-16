@@ -45,13 +45,8 @@ bin/lucairn bundle verify --bundle .
 bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --offline
 ```
 
-6. Run the live doctor only after registry/network access is intentionally configured.
-
-```bash
-bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml
-```
-
-7. Start the stack.
+6. Start the stack and wait for health and readiness. The offline doctor is
+configuration-only; do not run online doctor before this point.
 
 Run the exact mode-specific command in the generated `INSTALL-CUSTOMER.md`.
 Do not replace it with a fixed overlay command: split bundles exclude
@@ -59,13 +54,28 @@ self-hosted files and managed-BYOK requires its own overlay. Confirm that
 `install/customer.env.runtime-profile.yaml` and
 `install/customer.env.image-manifest.yaml` remain beside `install/customer.env`;
 a marker-bearing env without either sidecar must fail closed. For managed-BYOK,
-set at least one provider key before running either doctor gate.
+set at least one provider key before starting the stack.
 
 For S1, start and inspect with `bin/lucairn up --env install/customer.env --compose install/docker-compose.customer.yml` and
 `bin/lucairn status --env install/customer.env --compose install/docker-compose.customer.yml`; use `pull`, bounded `logs`,
 and non-destructive `down` with the same `--compose install/docker-compose.customer.yml`
 path rather than recreating Compose flags. Split-remote rehearsal also requires the Lucairn-issued remote
 credential file—endpoint and license alone are insufficient.
+
+7. Mint the first customer key, save it as an existing regular mode-0600 file,
+and run the online full doctor. It consumes the key only; never put it in an
+env file or support bundle. Split-remote and managed-BYOK also require the
+operator-selected model; local-runtime uses its recorded inventory name.
+
+```bash
+# local-runtime: after minting /secure/lucairn-customer.key (chmod 600)
+bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml \
+  --customer-key-file /secure/lucairn-customer.key
+
+# split-remote or managed-byok only: add the operator-selected model
+bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml \
+  --customer-key-file /secure/lucairn-customer.key --model <selected-model>
+```
 
 8. Confirm health.
 

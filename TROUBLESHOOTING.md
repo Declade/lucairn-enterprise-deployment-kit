@@ -6,8 +6,15 @@ Run:
 
 ```bash
 docker compose -f docker-compose.customer.yml --env-file customer.env config --quiet
-bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
 ```
+
+This is only a configuration preflight. Start and wait for the stack, mint an
+existing customer key to a mode-0600 file, then run online doctor with
+`--customer-key-file` (and `--model` for split-remote/managed-BYOK). A healthy
+listener or `/readyz` alone does not prove the customer path; online doctor
+also requires authenticated inference, certificate receipt, and witness
+signature verification with anchors explicitly not checked.
 
 Common causes:
 
@@ -298,7 +305,7 @@ for the both-gates-off recipe.
 Run:
 
 ```bash
-bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
 # Production Helm uses the names-and-paths-only External Secrets profile.
 SITE_OVERLAY=/secure/operator/lucairn-production-site.yaml
 bin/lucairn doctor \

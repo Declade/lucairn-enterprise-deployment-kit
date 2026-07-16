@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+unset DOCTOR_CUSTOMER_KEY
 set -euo pipefail
 
 # When sourced, $0 names the calling shell; BASH_SOURCE still names this CLI.
@@ -15,7 +16,8 @@ LUCAIRN_STALENESS_DAYS="${LUCAIRN_STALENESS_DAYS:-90}"
 usage() {
   cat <<'USAGE'
 Usage:
-  lucairn doctor --env customer.env --compose docker-compose.customer.yml [--values values.yaml]... [--offline] [--check-images] [--skip-image-check] [--strict-runtime] [--strict]
+  lucairn doctor --env customer.env --compose docker-compose.customer.yml --customer-key-file PATH [--model NAME] [--customer-key-proxy http://proxy:port] [--customer-key-ca-file PATH] [--values values.yaml]... [--check-images] [--skip-image-check] [--strict-runtime] [--strict]
+  lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline [--values values.yaml]... [--check-images] [--skip-image-check] [--strict-runtime] [--strict]
   lucairn up --env customer.env [--compose docker-compose.customer.yml]
   lucairn down --env customer.env [--compose docker-compose.customer.yml]
   lucairn status --env customer.env [--compose docker-compose.customer.yml]
@@ -38,7 +40,11 @@ Usage:
   lucairn check-updates [--offline] [--feed-url URL]
 
 Commands:
-  doctor          Validate customer deployment prerequisites. --values is
+  doctor          --offline is a configuration-only preflight. With a running
+                  gateway, --customer-key-file consumes an existing mode-0600
+                  customer key to prove authenticated inference, evidence, and
+                  limited witness verification; split-remote and managed-byok
+                  also require --model. --values is
                   repeatable; files are rendered in the supplied order, as
                   repeated Helm -f arguments. With --values alone, validate
                   the Helm production contract without
@@ -843,6 +849,97 @@ check_local_port_available() {
     return 0
   fi
   return 1
+}
+
+# A caller may enable Bash tracing (including BASH_XTRACEFD) before invoking
+# this CLI. The key only ever exists in the helper, but keep helper invocation
+# untraced so its sensitive file-path boundary stays deliberately small.
+doctor_with_xtrace_suspended() {
+  local xtrace_enabled=0 status
+  case "$-" in
+    *x*) xtrace_enabled=1; set +x ;;
+  esac
+  if "$@"; then
+    status=0
+  else
+    status=$?
+  fi
+  [ "$xtrace_enabled" -eq 0 ] || set -x
+  return "$status"
+}
+
+# Online keyed doctor has a deliberately narrow Python dependency.  The
+# helper is stdlib-only and receives an empty environment below; `python3` is
+# not required for offline or values-only doctor paths.
+doctor_python3_path() {
+  local python
+  python="$(command -v python3 2>/dev/null || true)"
+  [ -n "$python" ] || {
+    echo "configuration: failed (online doctor requires Python 3.8+; install python3)" >&2
+    return 1
+  }
+  if ! (exec -c "$python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)'); then
+    echo "configuration: failed (online doctor requires Python 3.8+; install or upgrade python3)" >&2
+    return 1
+  fi
+  printf '%s' "$python"
+}
+
+doctor_selected_model() {
+  local env_file="$1" supplied_model="$2" profile mode model mode_count model_count
+  profile="$(runtime_profile_path "$env_file")"
+  [ -f "$profile" ] && [ ! -L "$profile" ] \
+    || { echo "configuration: failed (runtime profile is required for online doctor)" >&2; return 1; }
+  # This small read is intentionally independent of the full S1 validator so
+  # an absent or duplicated local model gets its required actionable error
+  # rather than a generic YAML failure later in the configuration preflight.
+  mode_count="$(grep -c '^runtime_mode: ' "$profile" 2>/dev/null || true)"
+  mode="$(sed -n 's/^runtime_mode: //p' "$profile" 2>/dev/null)"
+  [ "$mode_count" = "1" ] || mode=""
+  case "$mode" in
+    split-remote|managed-byok)
+      [ -n "$supplied_model" ] \
+        || { echo "configuration: failed (--model is required for $mode)" >&2; return 1; }
+      printf '%s' "$supplied_model"
+      ;;
+    local-runtime)
+      model_count="$(grep -c '^  model_name: ' "$profile" 2>/dev/null || true)"
+      model="$(sed -n 's/^  model_name: //p' "$profile" 2>/dev/null)"
+      [ "$model_count" = "1" ] && [ -n "$model" ] \
+        || { echo "configuration: failed (local-runtime model name is absent or ambiguous)" >&2; return 1; }
+      printf '%s' "$model"
+      ;;
+    *)
+      echo "configuration: failed (runtime mode is absent or ambiguous)" >&2
+      return 1
+      ;;
+  esac
+}
+
+# Bash deliberately does not open, read, or validate the key file.  It passes
+# only its path plus non-secret request configuration into the helper.  The
+# subshell's `exec -c` is a Bash builtin: no `env -i` executable first receives
+# an inherited environment, and the helper starts with no environment at all.
+doctor_full_customer_journey() {
+  local env_file="$1" supplied_model="$2" customer_key_file="$3" customer_key_proxy="$4" customer_key_ca_file="$5"
+  local model gateway_url python helper
+  model="$(doctor_selected_model "$env_file" "$supplied_model")" || return 1
+  gateway_url="$(env_value "$env_file" GATEWAY_BASE_URL)"
+  [ -n "$gateway_url" ] || { echo "configuration: failed (GATEWAY_BASE_URL is empty)"; return 1; }
+  python="$(doctor_python3_path)" || return 1
+  helper="$ROOT/bin/lucairn-doctor-keyed.py"
+  [ -f "$helper" ] && [ ! -L "$helper" ] || {
+    echo "configuration: failed (online doctor helper is missing or unsafe)" >&2
+    return 1
+  }
+
+  local helper_args
+  helper_args=(--key-file "$customer_key_file" --gateway-url "$gateway_url" --model "$model")
+  [ -z "$customer_key_proxy" ] || helper_args+=(--proxy "$customer_key_proxy")
+  [ -z "$customer_key_ca_file" ] || helper_args+=(--ca-file "$customer_key_ca_file")
+  (
+    exec -c "$python" "$helper" "${helper_args[@]}"
+  )
 }
 
 check_dev_mode_consistency() {
@@ -5021,7 +5118,7 @@ validate_local_profile_model_manifest() {
 }
 
 write_bundle_install_note() {
-  local file="$1" slug="$2" env_file="$3" image_delivery="$4" mode local_runtime compose_lines image_lines remote_credentials_note
+  local file="$1" slug="$2" env_file="$3" image_delivery="$4" mode local_runtime compose_lines image_lines remote_credentials_note online_doctor_lines
   mode="$(runtime_profile_field "$(runtime_profile_path "$env_file")" runtime_mode 2>/dev/null || true)"
   local_runtime="$(runtime_profile_field "$(runtime_profile_path "$env_file")" local_runtime 2>/dev/null || true)"
   remote_credentials_note=""
@@ -5040,6 +5137,11 @@ write_bundle_install_note() {
       # Legacy bundles retain the old documented self-hosted invocation.
       compose_lines='bin/lucairn up --env install/customer.env --compose install/docker-compose.customer.yml'
       ;;
+  esac
+  case "$mode" in
+    split-remote|managed-byok) online_doctor_lines='bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --customer-key-file /secure/lucairn-customer.key --model <selected-model>' ;;
+    local-runtime) online_doctor_lines='bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --customer-key-file /secure/lucairn-customer.key' ;;
+    *) online_doctor_lines='bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --customer-key-file /secure/lucairn-customer.key --model <selected-model>' ;;
   esac
   case "$image_delivery" in
     archive)
@@ -5082,11 +5184,16 @@ $remote_credentials_note
 
 $image_lines
 
-Then run the pre-flight and recorded Compose command:
+Run the configuration-only preflight, start and wait for the recorded topology,
+then mint an existing customer key to a regular mode-0600 file. Do not put the
+key in an env file, command line, or support bundle. Only then run the online
+full doctor:
 
 \`\`\`bash
-bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --skip-image-check
+bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --offline --skip-image-check
 $compose_lines
+# Wait for health and readiness, then mint /secure/lucairn-customer.key (0600).
+$online_doctor_lines
 \`\`\`
 
 ## Model Runtime
@@ -5315,6 +5422,9 @@ bundle_create() {
   mkdir -p "$staging/install"/{scripts,config,migrations}
 
   cp "$ROOT/bin/lucairn" "$staging/bin/lucairn"
+  require_file "$ROOT/bin/lucairn-doctor-keyed.py" "online doctor helper"
+  cp "$ROOT/bin/lucairn-doctor-keyed.py" "$staging/bin/lucairn-doctor-keyed.py"
+  chmod 0755 "$staging/bin/lucairn-doctor-keyed.py"
   cp "$ROOT/bin/runtime-profile-lib.sh" "$staging/bin/runtime-profile-lib.sh"
   cp "$ROOT/VERSION" "$staging/VERSION"
   cp "$ROOT/RELEASE_DATE" "$staging/RELEASE_DATE"
@@ -5545,6 +5655,9 @@ bundle_verify() {
   if [ "$runtime_rc" -eq 0 ]; then
     require_file "$root/VERSION" "bundle kit VERSION"
     require_file "$root/RELEASE_DATE" "bundle kit RELEASE_DATE"
+    require_file "$root/bin/lucairn-doctor-keyed.py" "bundle online doctor helper"
+    [ -x "$root/bin/lucairn-doctor-keyed.py" ] \
+      || { rm -rf "$tmp"; fail "bundle online doctor helper is not executable"; }
     require_file "$root/scripts/derive-veil-pubkey.sh" "bundle key-derivation helper"
     [ -x "$root/scripts/derive-veil-pubkey.sh" ] \
       || { rm -rf "$tmp"; fail "bundle key-derivation helper is not executable"; }
@@ -5819,7 +5932,7 @@ bundle_command() {
 }
 
 doctor() {
-  local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-edge" check_images=1 strict_runtime=0 strict_digest=0 values_only=0 values_count=0 values_file
+  local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-edge" check_images=1 strict_runtime=0 strict_digest=0 values_only=0 values_count=0 values_file customer_key_file="" customer_key_proxy="" customer_key_ca_file="" supplied_model=""
   # Indexed arrays are supported by the Bash 3.2 baseline; do not use
   # associative arrays or other Bash-4-only features in this customer CLI.
   local values_files
@@ -5841,6 +5954,10 @@ doctor() {
         shift 2
         ;;
       --offline) offline=1; check_images=0; shift ;;
+      --customer-key-file) [ "$#" -ge 2 ] || fail "--customer-key-file requires a path"; customer_key_file="$2"; shift 2 ;;
+      --customer-key-proxy) [ "$#" -ge 2 ] || fail "--customer-key-proxy requires an http:// URL"; customer_key_proxy="$2"; shift 2 ;;
+      --customer-key-ca-file) [ "$#" -ge 2 ] || fail "--customer-key-ca-file requires a path"; customer_key_ca_file="$2"; shift 2 ;;
+      --model) [ "$#" -ge 2 ] || fail "--model requires a name"; supplied_model="$2"; shift 2 ;;
       --check-images) check_images=1; shift ;;
       --skip-image-check) check_images=0; shift ;;
       --postgres-url) postgres_url="$2"; shift 2 ;;
@@ -5871,7 +5988,10 @@ doctor() {
     local values_mtls_failed=0
     check_enterprise_mtls_helm "$ROOT/charts/lucairn" "${values_files[@]}" || values_mtls_failed=1
     [ "$values_mtls_failed" -eq 0 ] || return 1
+    # Keep the historical success token for older automation, but make the
+    # configuration-only terminal state unambiguous.
     echo "doctor: ok"
+    echo "doctor: preflight ok (values-only)"
     return 0
   fi
 
@@ -5880,6 +6000,17 @@ doctor() {
 
   require_file "$env_file" "env file"
   require_file "$compose_file" "compose file"
+  # Reject missing/mode-incompatible full-journey inputs before any online
+  # diagnostic. Key-file safety and byte validation are intentionally deferred
+  # to the isolated helper, which is its only reader.
+  if [ "$offline" -eq 0 ]; then
+    [ -n "$customer_key_file" ] || {
+      echo "configuration: failed (--customer-key-file is required for online doctor)" >&2
+      return 1
+    }
+    doctor_python3_path >/dev/null || return 1
+    doctor_selected_model "$env_file" "$supplied_model" >/dev/null || return 1
+  fi
   runtime_profile_compose_args "$env_file" "$compose_file" || return 1
   # Values files are optional; validate every supplied path before any checks.
   if [ "$values_count" -gt 0 ]; then
@@ -6316,7 +6447,10 @@ doctor() {
     echo "docker compose: skipped (--offline)"
     echo "postgres: skipped (--offline)"
     echo "network policies: skipped (--offline)"
+    # Keep the historical success token for older automation, but make the
+    # configuration-only terminal state unambiguous.
     echo "doctor: ok"
+    echo "doctor: preflight ok (offline)"
     return 0
   fi
 
@@ -6331,15 +6465,8 @@ doctor() {
     return 1
   fi
 
-  local gateway_port
-  gateway_port="$(env_value "$env_file" GATEWAY_PORT)"
-  gateway_port="${gateway_port:-8080}"
-  if check_local_port_available "$gateway_port"; then
-    echo "ports: ok (host port $gateway_port available)"
-  else
-    echo "ports: failed (host port $gateway_port already has a listener)"
-    return 1
-  fi
+  # This is a post-start journey.  A listener is expected now, so the old
+  # pre-start host-port availability check would be a false failure.
 
   local compose
   compose="$(compose_cmd)"
@@ -6476,7 +6603,7 @@ doctor() {
     fail "runtime probes failed and --strict-runtime is set"
   fi
 
-  echo "doctor: ok"
+  doctor_with_xtrace_suspended doctor_full_customer_journey "$env_file" "$supplied_model" "$customer_key_file" "$customer_key_proxy" "$customer_key_ca_file"
 }
 
 write_cert_report() {

@@ -78,6 +78,33 @@ if grep -R "lcr_enterprise_test_secret\\|sk-test-sandbox-b-secret\\|postgres-aud
   exit 1
 fi
 
+# The mint banner retains its one-time raw-key reveal, but it must never hand
+# operators a copyable command that puts that key back into argv.
+MINT_BIN="$TMPDIR/mint-bin"
+mkdir -p "$MINT_BIN"
+cat > "$MINT_BIN/curl" <<'MINT_CURL'
+#!/usr/bin/env bash
+set -euo pipefail
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -w|-X|-H|--data-binary|--max-time) shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '%s' '{"dsa_api_key":"lcr_live_mint_output_sentinel"}' > "$out"
+printf '201'
+MINT_CURL
+chmod +x "$MINT_BIN/curl"
+MINT_KEY='lcr_live_mint_output_sentinel'
+MINT_OUTPUT="$(LUCAIRN_ADMIN_KEY='admin-fixture-key' PATH="$MINT_BIN:$PATH" "$ROOT/bin/lucairn-mint-customer" --name 'Mint Fixture' --email mint@example.test)"
+grep -Fq "raw_key:     $MINT_KEY     <- capture this; will not be shown again" <<< "$MINT_OUTPUT"
+test "$(grep -Fo "$MINT_KEY" <<< "$MINT_OUTPUT" | wc -l | tr -d ' ')" = 1 || { echo 'mint output changed the one-time raw-key reveal' >&2; exit 1; }
+! grep -Fq 'Smoke (real inference' <<< "$MINT_OUTPUT" || { echo 'mint output still recommends raw-key inference smoke' >&2; exit 1; }
+! grep -Fq 'x-api-key:' <<< "$MINT_OUTPUT" || { echo 'mint output still exposes raw-key header guidance' >&2; exit 1; }
+grep -Fq -- '--customer-key-file /secure/lucairn-customer.key' <<< "$MINT_OUTPUT" || { echo 'mint output lacks safe key-file doctor guidance' >&2; exit 1; }
+
 echo "lucairn cli tests: ok"
 
 # S1 strict runtime-profile grammar: no ambiguous YAML state can reach a
@@ -552,6 +579,21 @@ test -f "$BASE_DIR/images/lucairn-images.tar"
 test -f "$BASE_DIR/checksums/SHA256SUMS"
 grep -Fq 'bin/lucairn up --env install/customer.env --compose install/docker-compose.customer.yml' "$BASE_DIR/INSTALL-CUSTOMER.md"
 ARCHIVE_NOTE="$BASE_DIR/INSTALL-CUSTOMER.md"
+assert_generated_note_lifecycle() {
+  local note="$1" full_doctor_line="$2" verify_line preflight_line up_line full_doctor_note_line
+  verify_line="$(grep -n -F -x 'bin/lucairn bundle verify --bundle .' "$note" | cut -d: -f1)"
+  preflight_line="$(grep -n -F -x 'bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --offline --skip-image-check' "$note" | cut -d: -f1)"
+  up_line="$(grep -n -F -x 'bin/lucairn up --env install/customer.env --compose install/docker-compose.customer.yml' "$note" | cut -d: -f1)"
+  full_doctor_note_line="$(grep -n -F -x "$full_doctor_line" "$note" | cut -d: -f1)"
+  for line in "$verify_line" "$preflight_line" "$up_line" "$full_doctor_note_line"; do
+    [ -n "$line" ] && [ "${line#*$'\n'}" = "$line" ] || {
+      echo "generated handoff note must contain each lifecycle command exactly once: $note" >&2; exit 1;
+    }
+  done
+  [ "$verify_line" -lt "$preflight_line" ] && [ "$preflight_line" -lt "$up_line" ] && [ "$up_line" -lt "$full_doctor_note_line" ] || {
+    echo "generated handoff note has an invalid lifecycle order: $note" >&2; exit 1;
+  }
+}
 grep -Fqx 'docker load -i images/lucairn-images.tar' "$ARCHIVE_NOTE"
 grep -Fq 'S1 provides integrity' "$ARCHIVE_NOTE"
 grep -Fq 'checks, not completed publisher authentication.' "$ARCHIVE_NOTE"
@@ -560,6 +602,7 @@ archive_load_line="$(grep -n -F 'docker load -i images/lucairn-images.tar' "$ARC
 [ "${archive_verify_line#*$'\n'}" = "$archive_verify_line" ]
 [ "${archive_load_line#*$'\n'}" = "$archive_load_line" ]
 [ "$archive_verify_line" -lt "$archive_load_line" ]
+assert_generated_note_lifecycle "$ARCHIVE_NOTE" 'bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --customer-key-file /secure/lucairn-customer.key'
 
 refresh_bundle_sums() {
   local bundle_root="$1"
@@ -831,6 +874,7 @@ SPLIT_BASE_DIR="$(dirname "$SPLIT_NOTE")"
 test ! -e "$SPLIT_BASE_DIR/install/docker-compose.self-hosted.yml"
 test ! -e "$SPLIT_BASE_DIR/install/docker-compose.self-hosted-byok.yml"
 test -f "$SPLIT_BASE_DIR/image-manifest.yaml"
+assert_generated_note_lifecycle "$SPLIT_NOTE" 'bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --customer-key-file /secure/lucairn-customer.key --model <selected-model>'
 
 BYOK_ENV="$TMPDIR/byok-bundle.env"
 "$ROOT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$BYOK_ENV" --skip-doctor >/dev/null 2>&1
@@ -844,6 +888,7 @@ grep -Fq 'bin/lucairn up --env install/customer.env --compose install/docker-com
 BYOK_BASE_DIR="$(dirname "$BYOK_NOTE")"
 test -f "$BYOK_BASE_DIR/install/docker-compose.self-hosted.yml"
 test -f "$BYOK_BASE_DIR/install/docker-compose.self-hosted-byok.yml"
+assert_generated_note_lifecycle "$BYOK_NOTE" 'bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --customer-key-file /secure/lucairn-customer.key --model <selected-model>'
 
 # Bundled provenance is required before checksum verification; a symlinked or
 # missing manifest cannot be substituted after bundle creation.
@@ -1005,11 +1050,7 @@ test -n "$REGISTRY_NOTE"
 grep -Fq 'This handoff uses registry delivery.' "$REGISTRY_NOTE"
 ! grep -Fqx 'docker load -i images/lucairn-images.tar' "$REGISTRY_NOTE"
 ! grep -Fq 'images/lucairn-images.tar' "$REGISTRY_NOTE"
-registry_verify_line="$(grep -n -F 'bin/lucairn bundle verify --bundle .' "$REGISTRY_NOTE" | cut -d: -f1)"
-registry_doctor_line="$(grep -n -F 'bin/lucairn doctor --env install/customer.env' "$REGISTRY_NOTE" | cut -d: -f1)"
-[ "${registry_verify_line#*$'\n'}" = "$registry_verify_line" ]
-[ "${registry_doctor_line#*$'\n'}" = "$registry_doctor_line" ]
-[ "$registry_verify_line" -lt "$registry_doctor_line" ]
+assert_generated_note_lifecycle "$REGISTRY_NOTE" 'bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --customer-key-file /secure/lucairn-customer.key --model <selected-model>'
 
 echo "lucairn agent prepare tests: ok"
 

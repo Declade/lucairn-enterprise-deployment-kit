@@ -83,17 +83,26 @@ bin/lucairn doctor \
   --offline
 ```
 
-For registry delivery, run the non-offline doctor check from a host that has the same registry access the customer will use (Lucairn-default GHCR is currently private — a GitHub PAT with `read:packages` scope is required via `docker login ghcr.io`; see `INSTALL.md` § "Registry Authentication". A private mirror requires the matching mirror credentials):
+After registry authentication, start the recorded topology, wait for health and
+readiness, then mint the first customer key into a regular mode-0600 file. Run
+the online full doctor only after those steps (Lucairn-default GHCR is private;
+see `INSTALL.md` § "Registry Authentication"). It consumes the existing key
+and never stores it; split-remote and managed-BYOK also require an explicit
+operator-selected model.
 
 ```bash
-bin/lucairn doctor \
-  --env install/customer.env \
-  --compose install/docker-compose.customer.yml
+bin/lucairn up --env install/customer.env --compose install/docker-compose.customer.yml
+# wait for readiness; mint /secure/lucairn-customer.key and chmod 600
+# local-runtime uses its recorded model and does not receive --model:
+bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml \
+  --customer-key-file /secure/lucairn-customer.key
+# split-remote or managed-byok only: add the operator-selected model:
+bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml \
+  --customer-key-file /secure/lucairn-customer.key --model <selected-model>
 ```
 
-For managed-BYOK, set at least one provider key in the staged env before this
-doctor gate; init deliberately leaves provider keys empty and skips its own
-doctor run.
+For managed-BYOK, set at least one provider key in the staged env before start;
+init deliberately leaves provider keys empty and skips its own doctor run.
 
 For split-remote, record that the Lucairn-issued remote credentials file was
 used at init (without recording its contents). Endpoint plus license alone is
