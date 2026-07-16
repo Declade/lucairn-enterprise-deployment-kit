@@ -5,6 +5,7 @@
 
 test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-helm-required test-enterprise-mtls-production-values
 	bash tests/test_lucairn_cli.sh
+	bash tests/test_full_doctor.sh
 	bash tests/test_runtime_profile.sh
 	bash tests/test_check_updates.sh
 	bash tests/test_redact_stream.sh

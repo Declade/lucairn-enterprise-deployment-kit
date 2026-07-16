@@ -486,5 +486,5 @@ SIGN MANIFEST: run §6.2's INSTALL-linked canonical command (umask 077,
                mode-0600 temporary seed file + cleanup trap, read-only
                /run/secrets mount, digest-pinned image, in-container read)
 CHECK SETUP:   curl -s http://gateway:8080/.well-known/veil-keys.json | jq '.keys | length'
-TEST E2E:      bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
+PRE-FLIGHT:    bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
 ```

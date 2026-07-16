@@ -20,8 +20,10 @@
 # "create customer without a key" endpoint — the gateway treats first-key-mint
 # as the customer-creation event.
 #
-# Output: writes the raw key (shown ONCE per gateway contract) to stdout. The
-# caller is responsible for capturing it and writing to a 0600 file or env var.
+# Output: normal mode writes the one-time raw-key banner to stdout. The
+# --raw-key-only mode writes exactly the raw key plus one newline to stdout;
+# all status/banner output remains on stderr so it is safe to redirect to a
+# dedicated mode-0600 key file.
 #
 # Auth: admin key via X-Admin-Key header. The admin key may be supplied as
 # --admin-key <value>, --admin-key-file <path> (read first line), or the
@@ -43,6 +45,18 @@
 #     the gateway's ApplyTierDefaults applies tier defaults server-side.
 
 set -euo pipefail
+
+# This CLI handles both the administrator credential and the one-time minted
+# customer key. Do not let inherited `bash -x` / BASH_XTRACEFD record either.
+# Restore tracing on exit so a sourced/instrumented caller keeps its state.
+MINT_XTRACE_WAS_ENABLED=0
+case "$-" in
+  *x*) MINT_XTRACE_WAS_ENABLED=1; set +x ;;
+esac
+restore_mint_xtrace() {
+  [ "$MINT_XTRACE_WAS_ENABLED" -eq 0 ] || set -x
+}
+trap 'restore_mint_xtrace' EXIT
 
 KIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 readonly KIT_ROOT
@@ -122,6 +136,9 @@ Gateway:
 Modes:
   --dry-run                      Print the planned request (URL + JSON body) and exit.
                                  Admin key is NOT printed.
+  --raw-key-only                  On a successful mint, print exactly the raw customer key
+                                 plus one newline to stdout. Status and banner go to stderr;
+                                 use only to redirect into a mode-0600 key file.
   --verbose                      Print HTTP status + raw response body.
   --help                         Show this usage and exit.
 
@@ -132,6 +149,11 @@ Examples:
       --name "Jonas Köhler / Example Insurance EE" \\
       --email "jonas.koehler@example-insurance.de" \\
       --tier enterprise
+
+  # Capture only the one-time raw key for online doctor
+  umask 077
+  LUCAIRN_ADMIN_KEY=... lucairn-mint-customer --raw-key-only \\
+    --name "Acme Corp" --email "ops@acme.example" --tier enterprise > customer.key
 
   # Dry-run to inspect the payload before firing
   lucairn-mint-customer --dry-run \\
@@ -178,6 +200,7 @@ ADMIN_KEY=""
 ADMIN_KEY_FILE=""
 GATEWAY_URL=""
 DRY_RUN="false"
+RAW_KEY_ONLY="false"
 VERBOSE="false"
 
 while [ $# -gt 0 ]; do
@@ -199,6 +222,7 @@ while [ $# -gt 0 ]; do
     --admin-key-file)    ADMIN_KEY_FILE="${2:?--admin-key-file requires a path}"; shift 2 ;;
     --gateway-url)       GATEWAY_URL="${2:?--gateway-url requires a value}"; shift 2 ;;
     --dry-run)           DRY_RUN="true"; shift ;;
+    --raw-key-only)      RAW_KEY_ONLY="true"; shift ;;
     --verbose|-v)        VERBOSE="true"; shift ;;
     --help|-h)           usage; exit 0 ;;
     --) shift; break ;;
@@ -210,6 +234,9 @@ done
 
 if [ -z "${NAME}" ]; then fail "--name is required" 2; fi
 if [ -z "${EMAIL}" ]; then fail "--email is required" 2; fi
+if [ "${DRY_RUN}" = "true" ] && [ "${RAW_KEY_ONLY}" = "true" ]; then
+  fail "--raw-key-only cannot be used with --dry-run" 2
+fi
 
 case "${TIER}" in
   free|pro|enterprise) : ;;
@@ -406,7 +433,7 @@ fi
 
 # Use a tmpfile so we can capture body AND status without spawning two requests.
 RESP_BODY="$(mktemp -t lucairn-mint-XXXXXX)"
-trap 'rm -f "${RESP_BODY}"' EXIT
+trap 'rm -f "${RESP_BODY}"; restore_mint_xtrace' EXIT
 
 HTTP_STATUS="$(curl -sS -o "${RESP_BODY}" -w '%{http_code}' \
   -X POST "${MINT_URL}" \
@@ -485,6 +512,13 @@ if [ "${VERBOSE}" = "true" ]; then
   echo >&2
 fi
 
+# Keep raw-key-only stdout byte-exact so the documented redirection path yields
+# a helper-valid key file. All non-key reporting above already uses stderr.
+if [ "${RAW_KEY_ONLY}" = "true" ]; then
+  printf '%s\n' "${RAW_KEY}"
+  exit 0
+fi
+
 # Derive prefix for the "shown once" banner (mirrors mint-lucairn-key skill output).
 KEY_PREFIX="${RAW_KEY:0:9}"  # "lcr_live_" prefix anchor
 KEY_PREFIX_FULL="$(printf '%s' "${RAW_KEY}" | cut -c1-17)"  # first 8 random chars after underscore
@@ -498,15 +532,14 @@ Minted Lucairn customer + API key.
   gateway:     ${GATEWAY_URL}
 
 Next steps:
-  1. Persist the raw_key to a 0600 .env file (NEVER commit).
+  1. Persist the raw_key to a dedicated existing mode-0600 file such as
+     /secure/lucairn-customer.key (NEVER put it in .env or commit it).
   2. Smoke (unauthenticated health, no key needed):
        curl -fsS ${GATEWAY_URL%:*}:8085/healthz | jq   (expect status: healthy)
-  3. Smoke (real inference; replace sk-ant-… with your Anthropic key):
-       curl -fsS -X POST ${GATEWAY_URL}/v1/messages \\
-         -H "x-api-key: ${RAW_KEY}" \\
-         -H "X-Upstream-Key: sk-ant-…" \\
-         -H "anthropic-version: 2023-06-01" -H "Content-Type: application/json" \\
-         -d '{"model":"claude-haiku-4-5-20251001","max_tokens":80,"messages":[{"role":"user","content":"Reply with the single word OK."}]}' | jq
+  3. Prove the authenticated customer path without putting the key in argv:
+       bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml \\
+         --customer-key-file /secure/lucairn-customer.key
+       # Add --model NAME for split-remote or managed-byok.
   4. (Optional) Confirm customer listed:
        curl -H "x-admin-key: \$LUCAIRN_ADMIN_KEY" ${GATEWAY_URL}/api/v1/admin/customers | jq
 BANNER

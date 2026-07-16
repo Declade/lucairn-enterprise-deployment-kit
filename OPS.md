@@ -2,7 +2,18 @@
 
 ## Customer Lifecycle
 
-Mint a new customer + first API key with `bin/lucairn-mint-customer` (run after `bin/lucairn doctor` reports `ok`). The script targets the gateway's `POST /api/v1/admin/keys` endpoint, applies tier defaults (Developer / Pro / Enterprise) server-side, and prints the raw key once. See `bin/lucairn-mint-customer --help` for flag reference, env-var auth precedence (`LUCAIRN_ADMIN_KEY` preferred), and `--dry-run` to inspect the resolved payload before firing.
+Run `bin/lucairn doctor --offline` as a configuration-only preflight, then
+start/wait for the gateway before minting a new customer + first API key with
+`bin/lucairn-mint-customer`. Save the printed key once to an existing regular
+mode-0600 file and run the online full doctor with `--customer-key-file` (and
+an explicit `--model` for split-remote/managed-BYOK). Never place the key in an
+env file, command line, or support bundle. The online result verifies the
+authenticated inference/certificate journey and a witness signature only;
+anchors are not checked. The mint script targets the gateway's
+`POST /api/v1/admin/keys` endpoint, applies tier defaults (Developer / Pro /
+Enterprise) server-side, and prints the raw key once. See
+`bin/lucairn-mint-customer --help` for flag reference, env-var auth precedence
+(`LUCAIRN_ADMIN_KEY` preferred), and `--dry-run` to inspect the resolved payload before firing.
 
 Tier promotion and key revocation are exposed by the gateway as `PATCH /api/v1/admin/keys/tier` and `DELETE /api/v1/admin/customers/{cid}/keys/{key_id}`. A future v2 of `bin/lucairn-mint-customer` will surface these as `--promote-tier` and `--revoke` subcommands.
 
@@ -860,7 +871,7 @@ verifiable certificates again**:
 
 ```bash
 # Pre-flight wiring.
-bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
 
 # Confirm the published key roster carries every expected key_id. A fully
 # configured deployment publishes the five service keys PLUS the two manifest
@@ -1324,8 +1335,11 @@ compose/Helm refs to `@sha256:`, so your `LUCAIRN_IMAGE_TAG` /
 
 ```bash
 # Warn-only (default): a tag whose current registry digest differs from the
-# recorded one prints a warning but does NOT fail the doctor run.
-bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
+# recorded one prints a warning but does NOT fail the post-start full-doctor
+# journey. Mint the key into the existing mode-0600 file first; add --model
+# only for split-remote or managed-byok.
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml \
+  --customer-key-file /secure/lucairn-customer.key
 
 # Fail-closed (verify-or-fail): --strict is a hard gate. A green --strict ALWAYS
 # means "every enforceable ref was actually resolved and matched, with at least
@@ -1342,7 +1356,8 @@ bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
 #     confirmed nothing.
 # --strict is distinct from --strict-runtime (which fail-closes on the gateway
 # /healthz + /readyz probes); you can pass both, they are independent.
-bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --strict
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml \
+  --customer-key-file /secure/lucairn-customer.key --strict
 ```
 
 **Resolver + offline.** `--strict` enforces LIVE registry digests, so it needs a
@@ -1548,10 +1563,13 @@ single-replica are the v1.0 SLA.
 
 1. Read release notes.
 2. Take database backups.
-3. Run `bin/lucairn doctor`.
+3. Run `bin/lucairn doctor --offline`.
 4. Pull images or update Helm values.
 5. Apply the release.
-6. Confirm `/healthz`, `/readyz`, and one synthetic inference request.
+6. Confirm `/healthz` and `/readyz`, then prove the customer path with the
+   keyed full doctor (add `--model NAME` for split-remote/managed-BYOK):
+   `bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --customer-key-file /secure/lucairn-customer.key`.
+   This performs limited witness-signature verification only; anchors are not checked.
 7. Generate a support bundle and archive it internally as upgrade evidence.
 
 For every S1 Compose install, the profile-bound upgrade sequence is:
@@ -1716,8 +1734,13 @@ sed -i 's/^LUCAIRN_IMAGE_TAG=.*/LUCAIRN_IMAGE_TAG=<previous-known-good-tag>/' cu
 docker compose -f docker-compose.customer.yml --env-file customer.env pull
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 
-# 3) Confirm the manifest matches what is now running, then health-check.
-bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
+# 3) Confirm configuration after rollback before health-check.
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
+
+# 4) After the gateway is ready, prove the customer path without placing the
+#    key in argv. Add --model NAME for split-remote or managed-byok.
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml \
+  --customer-key-file /secure/lucairn-customer.key
 ```
 
 If the upgrade ran database migrations, restore the pre-upgrade database
@@ -1737,6 +1760,16 @@ helm rollback lucairn -n lucairn          # previous revision
 # the dsa-edge namespace (see INSTALL.md § "Kubernetes Install").
 kubectl rollout status deployment/gateway -n dsa-edge
 kubectl get pods -A -l app.kubernetes.io/part-of=dsa
+```
+
+After readiness, run the same keyed full doctor from the operator host holding
+the existing mode-0600 customer key (add `--model NAME` for split-remote or
+managed-BYOK). It proves authenticated inference, evidence retrieval, and
+limited witness-signature verification; it does not verify anchors:
+
+```bash
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml \
+  --customer-key-file /secure/lucairn-customer.key
 ```
 
 `helm rollback` re-applies the chart manifests (including image tags) from the
@@ -2028,8 +2061,8 @@ docker compose -f docker-compose.customer.yml \
   --env-file customer.env --profile dashboard \
   up -d --force-recreate lucairn-dashboard
 
-# 3) Verify doctor sees the new token end-to-end.
-bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
+# 3) Verify the configuration sees the new token.
+bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
 ```
 
 ### Kubernetes path
@@ -2052,9 +2085,9 @@ kubectl -n lucairn create secret generic lucairn-dashboard-gateway-admin \
 kubectl -n lucairn rollout restart deploy/gateway
 kubectl -n lucairn rollout restart deploy/lucairn-dashboard
 
-# 4) Verify the dashboard's pre-flight passes.
+# 4) Verify the dashboard's configuration pre-flight passes.
 DOCTOR_INCLUDE_DASHBOARD=1 bin/lucairn doctor --env customer.env \
-  --compose docker-compose.customer.yml
+  --compose docker-compose.customer.yml --offline
 ```
 
 When to rotate:
@@ -2125,11 +2158,11 @@ docker compose -f docker-compose.customer.yml --env-file customer.env --profile 
 kubectl -n lucairn rollout restart deploy/lucairn-dashboard
 ```
 
-Step 4 — verify `bin/lucairn doctor` returns green for the
+Step 4 — verify `bin/lucairn doctor --offline` returns green for the
 `dashboard audit-log` section:
 
 ```bash
-./bin/lucairn doctor
+./bin/lucairn doctor --offline
 ```
 
 If saved filters share the same role (the default), the rotation

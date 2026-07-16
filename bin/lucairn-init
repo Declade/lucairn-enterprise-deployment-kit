@@ -1721,7 +1721,7 @@ else
     echo "" >&2
     echo "doctor FAILED. The customer.env was written to $OUTPUT but did not pass validation." >&2
     echo "Inspect the file, fix the issue, and re-run:" >&2
-    echo "  bin/lucairn doctor --env $OUTPUT --compose $KIT_ROOT/docker-compose.customer.yml" >&2
+    echo "  bin/lucairn doctor --env $OUTPUT --compose $KIT_ROOT/docker-compose.customer.yml --offline --skip-image-check" >&2
     exit 4
   fi
 fi
