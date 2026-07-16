@@ -275,6 +275,7 @@ POSTGRES_SANDBOX_A_PASSWORD=test-postgres-sandbox-a-password
 POSTGRES_VEIL_PASSWORD=test-postgres-veil-password
 VEIL_APP_PASSWORD=test-veil-app-password
 LCR_GATEWAY_SIGNING_KEY=test-gateway-signing-key
+VEIL_GATEWAY_SIGNING_KEY=test-legacy-gateway-signing-key
 DSA_LICENSE_KEY=
 DSA_LICENSE_SIGNING_KEY=
 LUCAIRN_LICENSE_KEY=
