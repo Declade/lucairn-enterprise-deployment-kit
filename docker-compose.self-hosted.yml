@@ -157,7 +157,7 @@ services:
       # SANITIZER_CONFIG_PATH) — there is NO env->config override for them. To
       # route L3 through the vllm-l3 profile the operator (a) adds `vllm-l3` to
       # COMPOSE_PROFILES AND (b) uncomments `l3_runtime: vllm` + `l3_base_url:
-      # http://vllm-l3:8000/v1` in config/default-sanitizer.yaml. The default
+      # http://vllm-l3:8000` in config/default-sanitizer.yaml. The default
       # (profile OFF, YAML unchanged) keeps the ollama-identity L3 path,
       # byte-identical. See docs/L3_VLLM_RUNTIME.md.
       #
@@ -392,7 +392,7 @@ services:
   # operator MUST also point the sanitizer at it (PRD A's config contract) by
   # uncommenting in `config/default-sanitizer.yaml` (the YAML is the ONLY switch —
   # there is NO LUCAIRN_L3_RUNTIME/LUCAIRN_L3_BASE_URL env override):
-  #   l3_runtime: vllm  +  l3_base_url: http://vllm-l3:8000/v1
+  #   l3_runtime: vllm  +  l3_base_url: http://vllm-l3:8000
   # With the profile OFF and those YAML lines commented the kit boots
   # byte-identically on the `ollama-identity` path — no default drift.
   #
@@ -431,6 +431,20 @@ services:
       TRANSFORMERS_OFFLINE: "1"
     command:
       - "--model"
+      - "Qwen/Qwen2.5-7B-Instruct-AWQ"
+      # Bug-fix (2026-07-23): the sanitizer sends the SHARED config `model:`
+      # value in the OpenAI request body — config/default-sanitizer.yaml
+      # llm_scan.model = "qwen2.5:7b" (the ollama-identity default). Without an
+      # alias, vLLM answers ONLY to "Qwen/Qwen2.5-7B-Instruct-AWQ" → 404 model
+      # not found → the sanitizer fail-closes 503 on EVERY request. Serve the
+      # SAME name the config sends so ollama-identity + vllm-l3 both work off
+      # `model: qwen2.5:7b` (no per-runtime model field needed). BOTH names are
+      # served — `--served-model-name` REPLACES the default API id, so we also
+      # list the HF repo id so the throughput benchmark (tools/l3_throughput_bench.py,
+      # default --model Qwen/Qwen2.5-7B-Instruct-AWQ) and any direct caller keep
+      # working. Still loads the ONE pinned `--model` + `--revision` below.
+      - "--served-model-name"
+      - "qwen2.5:7b"
       - "Qwen/Qwen2.5-7B-Instruct-AWQ"
       # B-E2: pin the MODEL revision. The image digest does NOT pin the weights
       # vLLM pulls from HF at boot — an upstream re-upload of the AWQ repo would
@@ -478,7 +492,7 @@ services:
     networks:
       dsa-model-runtime-identity:
         aliases:
-          # The sanitizer dials l3_base_url: http://vllm-l3:8000/v1 (set in
+          # The sanitizer dials l3_base_url: http://vllm-l3:8000 (set in
           # config/default-sanitizer.yaml when the profile is active). On the
           # identity-only net that alias resolves HERE — NOT to `ollama` (the
           # ollama-identity L3 default) and NOT to the AI-plane inference runtimes.

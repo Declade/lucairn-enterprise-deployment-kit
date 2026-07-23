@@ -104,7 +104,7 @@ vLLM backend):
 
 ```yaml
     l3_runtime: vllm
-    l3_base_url: http://vllm-l3:8000/v1
+    l3_base_url: http://vllm-l3:8000
 ```
 
 `vllm-l3` is the network alias of the `model-runtime-vllm-l3` service on the
