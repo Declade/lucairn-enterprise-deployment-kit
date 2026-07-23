@@ -241,6 +241,30 @@ image_digests:
     qwen2.5-7b-model:
       ref: "ollama://qwen2.5:7b"
       pending: true   # Ollama model digest — fill via `ollama pull qwen2.5:7b` at the digest-pin ceremony
+    # PRD B — FAST L3 runtime (docker-compose.self-hosted.yml
+    # model-runtime-vllm-l3, profiles: ["vllm-l3"]). OPT-IN native-Linux-GPU
+    # alternative to ollama-identity for the sanitizer's L3 shield. Pinned by
+    # DIGEST (official vLLM image bundles matched CUDA/torch/kernels). Unlike the
+    # AI-plane `runtime.vllm` entry below (mutable :latest, operator-selected
+    # inference model), this identity-plane entry is a KNOWN, digest-pinned L3
+    # shield image. The MODEL is a Hugging Face repo pinned by revision, NOT an
+    # OCI image, so the digest-checker treats its `hf://` entry as informational/
+    # pending. Instead, `bin/lucairn doctor --strict` asserts (B-E2) that the
+    # `revision:` below byte-equals the compose `--revision` on the
+    # model-runtime-vllm-l3 service — a static compose↔manifest consistency check
+    # that fails closed on drift (the served revision can't be probed; the
+    # endpoint is on the internal net).
+    vllm-l3:
+      ref: "vllm/vllm-openai:v0.10.2"
+      digest: "sha256:607442e407b0fea97f8a132a78b787c121a996dd4de181fa08e8da06e71ec2db"
+    qwen2.5-7b-awq-model:
+      ref: "hf://Qwen/Qwen2.5-7B-Instruct-AWQ"
+      # HF commit revision the vllm-l3 runtime pulls (--revision). Resolved
+      # 2026-07-23 via the HF API. MUST byte-equal the compose `--revision` on
+      # model-runtime-vllm-l3 (doctor --strict B-E2 enforces this). Re-pin BOTH
+      # together at the digest-pin ceremony if the recall gate is re-run against a
+      # newer revision. Pinned to an exact commit, not a floating branch.
+      revision: "b25037543e9394b818fdfca67ab2a00ecc7dd641"
   # --- Enterprise Kind default-topology dependencies. These are the exact
   # third-party OCI index digests used by the disposable Helm mTLS acceptance
   # render; the preloader verifies each resolved tag against this release

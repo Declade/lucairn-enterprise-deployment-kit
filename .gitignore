@@ -38,3 +38,7 @@ keys/*
 !apps/dashboard/internal/views/templates/keys/
 !apps/dashboard/internal/views/templates/keys/**
 .DS_Store
+
+# Python bytecode caches (e.g. tools/)
+__pycache__/
+*.pyc
