@@ -77,6 +77,18 @@ bin/lucairn doctor --env install/customer.env --compose install/docker-compose.c
   --customer-key-file /secure/lucairn-customer.key --model <selected-model>
 ```
 
+> **Fast L3 runtime (vllm-l3):** if the customer opts into the native-Linux-GPU
+> vLLM L3 shield (`COMPOSE_PROFILES=...,vllm-l3` **plus** uncommenting
+> `l3_runtime: vllm` + `l3_base_url: http://vllm-l3:8000/v1` in
+> `config/default-sanitizer.yaml` — the runtime switch is YAML, not an env var),
+> add `--profile vllm-l3` and run `bin/lucairn doctor` first — it pre-flights
+> GPU / WSL2 / driver and fails loud with the Ollama-fallback instruction. It
+> does NOT probe the vllm-l3 endpoint from the host (no host port by design) — it
+> prints the `docker compose --profile vllm-l3 exec model-runtime-vllm-l3 curl
+> -fsS http://localhost:8000/v1/models` command you run post-up to verify
+> `/v1/models`. See `docs/L3_VLLM_RUNTIME.md`. The kit default (no vllm-l3
+> profile, YAML lines commented) runs the Ollama L3 path unchanged.
+
 8. Confirm health.
 
 ```bash

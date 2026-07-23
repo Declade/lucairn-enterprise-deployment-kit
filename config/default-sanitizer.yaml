@@ -105,6 +105,14 @@ sanitizer:
     enabled: true
     ollama_url: http://ollama:11434
     model: qwen2.5:7b
+    # ── Fast vLLM L3 runtime (OPT-IN, native-Linux GPU only — see docs/L3_VLLM_RUNTIME.md) ──
+    # Ollama above stays the default + universal fallback. To route L3 through the
+    # pinned `vllm-l3` compose profile instead:
+    #   1. activate the profile:  COMPOSE_PROFILES=<existing>,vllm-l3
+    #   2. uncomment the two lines below. `vllm-l3` is a single-label internal alias
+    #      (no dot) so it classifies as internal — no l3_allow_external_base_url opt-in needed.
+    # l3_runtime: vllm
+    # l3_base_url: http://vllm-l3:8000/v1
     timeout_seconds: 30
     # FAIL-01 (PRD prd-2026-05-29-fail-safe-scrubber): fail-CLOSED — block the
     # request with a 503 l3_scrubber_unavailable when the L3 deep PII shield is

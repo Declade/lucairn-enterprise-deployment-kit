@@ -517,6 +517,79 @@ dashboard_opted_in() {
   return 1
 }
 
+# vllm_l3_opted_in returns 0 when the operator has selected the FAST L3 runtime
+# (the model-runtime-vllm-l3 service, profiles: ["vllm-l3"]), 1 otherwise. Mirrors
+# dashboard_opted_in's COMPOSE_PROFILES heuristic. The vllm-l3 preflight (GPU /
+# WSL2 / driver / base_url — NOT a host-side endpoint probe; the service has no
+# host port) only runs when this returns 0, so a stock Ollama-L3 install is never
+# bothered by GPU checks it doesn't need.
+#
+# The runtime switch is YAML config, NOT an env var: PRD A's `l3_runtime` /
+# `l3_base_url` are read only from the sanitizer YAML (config/default-sanitizer.yaml
+# via SANITIZER_CONFIG_FILE); there is NO LUCAIRN_L3_RUNTIME env override.
+#
+# Channels (any one opts in):
+#   1. the ACTIVE (uncommented) sanitizer YAML declares `l3_runtime: vllm`
+#      (the real switch — read via _sanitizer_config_declares), OR
+#   2. COMPOSE_PROFILES contains "vllm-l3" (env file OR live shell) AND the
+#      self-hosted overlay declares the vllm-l3 profile (catches the case where
+#      the operator added the profile but hasn't yet uncommented the YAML — the
+#      preflight then surfaces the missing base_url as a misconfig).
+#
+# Args: $1=env_file.
+vllm_l3_opted_in() {
+  local env_file="$1"
+
+  local yaml_runtime
+  yaml_runtime="$(_sanitizer_config_declares l3_runtime "$env_file")"
+  # Case-insensitive: the sanitizer normalizes runtime case, so accept VLLM/vLLM.
+  case "$(printf '%s' "$yaml_runtime" | tr '[:upper:]' '[:lower:]')" in
+    vllm) return 0 ;;
+  esac
+
+  local overlay="$ROOT/docker-compose.self-hosted.yml"
+  if [ -f "$overlay" ] && grep -q 'profiles:.*vllm-l3' "$overlay" 2>/dev/null; then
+    local compose_profiles_env compose_profiles_live
+    compose_profiles_env="$(env_value "$env_file" COMPOSE_PROFILES)"
+    compose_profiles_live="${COMPOSE_PROFILES:-}"
+    case ",${compose_profiles_env},${compose_profiles_live}," in
+      *,vllm-l3,*) return 0 ;;
+    esac
+  fi
+
+  return 1
+}
+
+# _vllm_l3_profile_active ENV_FILE — return 0 iff the vllm-l3 compose profile is
+# selected (COMPOSE_PROFILES in the env file OR the live shell contains vllm-l3)
+# AND the overlay declares that profile. This is channel 2 of vllm_l3_opted_in,
+# factored out so check_vllm_l3_preflight can detect a channel MISMATCH.
+_vllm_l3_profile_active() {
+  local env_file="$1"
+  local overlay="$ROOT/docker-compose.self-hosted.yml"
+  [ -f "$overlay" ] && grep -q 'profiles:.*vllm-l3' "$overlay" 2>/dev/null || return 1
+  local compose_profiles_env compose_profiles_live
+  compose_profiles_env="$(env_value "$env_file" COMPOSE_PROFILES)"
+  compose_profiles_live="${COMPOSE_PROFILES:-}"
+  case ",${compose_profiles_env},${compose_profiles_live}," in
+    *,vllm-l3,*) return 0 ;;
+  esac
+  return 1
+}
+
+# _vllm_l3_yaml_selected ENV_FILE — return 0 iff the ACTIVE (uncommented)
+# sanitizer YAML declares `l3_runtime: vllm` (channel 1 of vllm_l3_opted_in,
+# case-insensitive). The real runtime switch — this is what actually routes the
+# sanitizer's L3 to the vLLM endpoint.
+_vllm_l3_yaml_selected() {
+  local env_file="$1" yaml_runtime
+  yaml_runtime="$(_sanitizer_config_declares l3_runtime "$env_file")"
+  case "$(printf '%s' "$yaml_runtime" | tr '[:upper:]' '[:lower:]')" in
+    vllm) return 0 ;;
+  esac
+  return 1
+}
+
 is_secret_key() {
   local key="$1"
   case "$key" in
@@ -1169,6 +1242,268 @@ check_l3_required_wired() {
   if [ "$l3_wired" -eq 0 ]; then
     warn "L3 shield: warn (LUCAIRN_L3_REQUIRED=true but no L3 shield appears wired — the base docker-compose.customer.yml has no 'ollama-identity' service, and the env sets no OLLAMA_URL/LUCAIRN_L3_ADDR and no MODEL_RUNTIME_PROFILE=ollama). The stock install runs L1+L2 only; with L3 required but absent the sanitizer /readyz fails liveness and the gateway fail-closes 503 on EVERY request. Set LUCAIRN_L3_REQUIRED=false for an L1+L2 install, or wire the GPU Ollama/Qwen shield (Enterprise self-hosted overlay) before requiring it."
   fi
+  return 0
+}
+
+check_vllm_l3_preflight() {
+  # PRD B (Slice B2): FAST L3 runtime (model-runtime-vllm-l3) preflight. The
+  # vLLM L3 runtime is native-Linux-GPU-only, WSL2-DEAD (RuntimeError: UVA is
+  # not available), and env-fragile. When the operator opts into it (sanitizer
+  # YAML declares `l3_runtime: vllm`, OR COMPOSE_PROFILES contains vllm-l3), fail
+  # LOUD on the runtime failure modes BEFORE any container serves traffic — every
+  # fail names the Ollama-fallback escape hatch (docs/L3_VLLM_RUNTIME.md). When
+  # the operator has NOT opted in this is a no-op (stock Ollama-L3 installs never
+  # see a GPU check they don't need).
+  #
+  # Failure modes gated (in silence-of-failure order):
+  #   - YAML l3_runtime: vllm BUT vllm-l3 NOT in COMPOSE_PROFILES              -> FAIL (503-on-every-request)
+  #   - vllm-l3 in COMPOSE_PROFILES BUT YAML l3_runtime != vllm                -> WARN (vLLM runs unused)
+  #   - WSL2 detected (silent: vLLM won't start, hard-to-diagnose UVA error)   -> FAIL
+  #   - no NVIDIA GPU (nvidia-smi absent/fails)                                 -> FAIL
+  #   - l3_base_url (YAML) set but non-internal (A-E2 egress-shaped)            -> FAIL
+  #   - l3_base_url (YAML) unset while l3_runtime: vllm                         -> FAIL (misconfig)
+  #   - driver CUDA below the image's CUDA (12.8)                               -> WARN
+  #
+  # Endpoint reachability is NOT probed from the host: the vllm-l3 service is on
+  # the internal:true identity net with no published port, so a host-side curl
+  # structurally cannot reach it. Instead this prints the exact `docker compose
+  # exec` command the operator runs post-up to verify /v1/models.
+  #
+  # Args: $1=env_file, $2=offline (accepted for signature parity with other
+  #       checks; the file/GPU checks always run, and there is no host-side live
+  #       probe to skip).
+  local env_file="$1" offline="${2:-0}"
+
+  vllm_l3_opted_in "$env_file" || return 0
+
+  local failed=0
+
+  # Channel-mismatch detection. The runtime switch (YAML l3_runtime: vllm) and
+  # the service activation (vllm-l3 in COMPOSE_PROFILES) are INDEPENDENT — setting
+  # one without the other is a real deployment fault, so catch it explicitly.
+  local yaml_vllm=0 profile_vllm=0
+  _vllm_l3_yaml_selected "$env_file" && yaml_vllm=1
+  _vllm_l3_profile_active "$env_file" && profile_vllm=1
+  if [ "$yaml_vllm" -eq 1 ] && [ "$profile_vllm" -eq 0 ]; then
+    # BROKEN: sanitizer routes L3 to http://vllm-l3:8000 but Compose never starts
+    # the service -> the alias has no DNS -> fail-closed 503 on EVERY request.
+    echo "vllm-l3: FAIL — config/default-sanitizer.yaml sets l3_runtime: vllm but the vllm-l3 profile is not in COMPOSE_PROFILES."
+    echo "vllm-l3:   The L3 endpoint (model-runtime-vllm-l3) will NOT be started → the sanitizer"
+    echo "vllm-l3:   dials http://vllm-l3:8000 with no DNS → fail-closed 503 on EVERY request."
+    echo "vllm-l3:   Add vllm-l3 to COMPOSE_PROFILES (and pre-stage the model — see docs/L3_VLLM_RUNTIME.md),"
+    echo "vllm-l3:   or re-comment l3_runtime in config/default-sanitizer.yaml to use the ollama-identity default."
+    failed=1
+    # The missing profile is the fix-first issue; the GPU/WSL/base_url checks
+    # below are moot for a deploy that will 503 anyway. Return now.
+    return 1
+  elif [ "$yaml_vllm" -eq 0 ] && [ "$profile_vllm" -eq 1 ]; then
+    # WASTEFUL, not broken: the vLLM service runs but the sanitizer still routes
+    # L3 to ollama-identity. WARN-only — and RETURN so the GPU/WSL checks below
+    # (which fatal on a CPU host) don't fail a deploy whose L3 correctly uses
+    # ollama-identity. The unused vLLM service's own GPU need is its concern
+    # (visible in `docker ps`), not an L3-correctness failure.
+    warn "vllm-l3: the vllm-l3 profile is active but the sanitizer still routes L3 to ollama-identity (l3_runtime not set to vllm in config/default-sanitizer.yaml) — the vLLM service will run unused; uncomment 'l3_runtime: vllm' (+ 'l3_base_url: http://vllm-l3:8000/v1') to use it."
+    return 0
+  fi
+  # Reaching here means BOTH channels are set (yaml_vllm=1 AND profile_vllm=1):
+  # the sanitizer will route L3 to vLLM, so the GPU/WSL/base_url preflight below
+  # is load-bearing and its failures are fatal.
+
+  # WSL2 is DEAD for vLLM's V1 engine (needs native-Linux CUDA UVA). Check first
+  # — it is the silent, hardest-to-diagnose failure.
+  if grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
+    echo "vllm-l3: FAIL — WSL2 detected (/proc/version reports Microsoft/WSL)."
+    echo "vllm-l3:   vLLM's V1 engine needs native-Linux CUDA UVA and dies on WSL2"
+    echo "vllm-l3:   with 'RuntimeError: UVA is not available'. There is no workaround."
+    echo "vllm-l3:   Use the Ollama L3 default instead: re-comment l3_runtime/l3_base_url in"
+    echo "vllm-l3:   config/default-sanitizer.yaml and drop 'vllm-l3' from COMPOSE_PROFILES. See docs/L3_VLLM_RUNTIME.md."
+    failed=1
+  fi
+
+  # NVIDIA GPU present? vLLM is GPU-only.
+  if have nvidia-smi; then
+    if ! nvidia-smi >/dev/null 2>&1; then
+      echo "vllm-l3: FAIL — nvidia-smi is present but failed to run (no working NVIDIA GPU / driver)."
+      echo "vllm-l3:   The vllm-l3 runtime is native-Linux-GPU-only. Fix the driver, or use"
+      echo "vllm-l3:   the Ollama L3 default (re-comment l3_runtime/l3_base_url in the sanitizer YAML + drop the vllm-l3 profile)."
+      failed=1
+    else
+      # Driver CUDA version vs the image's CUDA (12.8). A newer driver runs the
+      # cu128 image fine (CUDA is backward-compatible); an OLDER driver-CUDA than
+      # the image surfaces as 'libcudart.so.NN not found' at boot. WARN only.
+      local drv_cuda
+      drv_cuda="$(nvidia-smi 2>/dev/null | grep -oE 'CUDA Version: [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+      if [ -n "$drv_cuda" ]; then
+        # Compare drv_cuda >= 12.8. Integer-compare major*100+minor.
+        local drv_major drv_minor drv_num
+        drv_major="${drv_cuda%%.*}"; drv_minor="${drv_cuda#*.}"
+        drv_num=$(( drv_major * 100 + drv_minor ))
+        if [ "$drv_num" -lt 1208 ]; then
+          warn "vllm-l3: driver CUDA $drv_cuda is below the image's CUDA 12.8 — the cu128 image may fail at boot with 'libcudart.so.NN not found'. Upgrade the NVIDIA driver (a CUDA-13-capable driver runs the cu128 image fine), or use the Ollama L3 default. See docs/L3_VLLM_RUNTIME.md."
+        else
+          echo "vllm-l3: driver CUDA $drv_cuda >= image CUDA 12.8: ok"
+        fi
+      fi
+      echo "vllm-l3: NVIDIA GPU: ok"
+    fi
+  else
+    echo "vllm-l3: FAIL — no NVIDIA GPU detected (nvidia-smi not on PATH)."
+    echo "vllm-l3:   The vllm-l3 fast L3 runtime is native-Linux-GPU-only (needs the"
+    echo "vllm-l3:   NVIDIA Container Toolkit). Install a GPU + driver, or use the Ollama"
+    echo "vllm-l3:   L3 default: re-comment l3_runtime/l3_base_url in the sanitizer YAML + drop the vllm-l3 profile."
+    echo "vllm-l3:   See docs/L3_VLLM_RUNTIME.md."
+    failed=1
+  fi
+
+  # l3_base_url sanity. The runtime switch is YAML config, not env: read
+  # `l3_runtime` / `l3_base_url` from the ACTIVE (uncommented) sanitizer YAML
+  # (config/default-sanitizer.yaml). When YAML declares l3_runtime: vllm the
+  # operator must also declare l3_base_url, and (A-E2) it must be INTERNAL. This
+  # also catches the half-enabled case (profile added, YAML still commented):
+  # then yaml_runtime is empty, this block is skipped, and only the GPU/WSL2
+  # checks above run — the operator sees no false base_url failure.
+  local base_url yaml_runtime
+  yaml_runtime="$(_sanitizer_config_declares l3_runtime "$env_file")"
+  base_url="$(_sanitizer_config_declares l3_base_url "$env_file")"
+  case "$(printf '%s' "$yaml_runtime" | tr '[:upper:]' '[:lower:]')" in
+    vllm)
+      if [ -z "$base_url" ]; then
+        echo "vllm-l3: FAIL — sanitizer config declares 'l3_runtime: vllm' but 'l3_base_url' is unset/commented."
+        echo "vllm-l3:   Uncomment 'l3_base_url: http://vllm-l3:8000/v1' in config/default-sanitizer.yaml"
+        echo "vllm-l3:   (the identity-net alias of the model-runtime-vllm-l3 service). See docs/L3_VLLM_RUNTIME.md."
+        failed=1
+      else
+        # A-E2 egress guard (defense-in-depth mirror of the sanitizer's boot
+        # check): reject a base_url that carries userinfo (Basic-auth leak) or
+        # is obviously NON-internal (public scheme//host). The sanitizer image
+        # is the authoritative block; this surfaces it at doctor time.
+        case "$base_url" in
+          *@*)
+            echo "vllm-l3: FAIL — l3_base_url (config/default-sanitizer.yaml) contains userinfo (user:pass@host)."
+            echo "vllm-l3:   The vLLM L3 backend must send NO credential. Remove the userinfo;"
+            echo "vllm-l3:   use a bare internal URL like http://vllm-l3:8000/v1."
+            failed=1
+            ;;
+        esac
+        # Internal-address heuristic: allow the vllm-l3 alias, localhost/loopback,
+        # RFC1918 / .internal / .local / .svc / bare docker service names. Flag a
+        # public FQDN or public IP (has a dot AND not a private range/suffix).
+        local host_only
+        host_only="$(printf '%s' "$base_url" | sed -e 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##' -e 's#[:/].*$##' -e 's#^.*@##')"
+        case "$host_only" in
+          vllm-l3|localhost|127.*|10.*|192.168.*|*.internal|*.local|*.svc|*.svc.cluster.local) : ;;
+          172.1[6-9].*|172.2[0-9].*|172.3[01].*) : ;;
+          *.*)
+            echo "vllm-l3: FAIL — l3_base_url host '$host_only' looks NON-internal (public FQDN/IP)."
+            echo "vllm-l3:   A non-internal L3 endpoint ships raw pre-redaction text off the"
+            echo "vllm-l3:   identity plane (A-E2 egress). Point it at the internal vllm-l3 alias"
+            echo "vllm-l3:   (http://vllm-l3:8000/v1). The sanitizer image blocks this at boot"
+            echo "vllm-l3:   unless the operator explicitly sets the external-base-url override."
+            failed=1
+            ;;
+        esac
+      fi
+      ;;
+  esac
+
+  # Endpoint reachability is NOT probed from here: the vllm-l3 service lives ONLY
+  # on the internal:true identity net and publishes NO host port, so a host-side
+  # curl can never reach it (it would always report "not started" and mislead).
+  # The honest post-up check runs INSIDE the container/net — print the exact
+  # command the operator runs after `docker compose up -d`.
+  info "vllm-l3 endpoint: verify post-up from inside the identity net (no host port by design):"
+  info "  docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml \\"
+  info "    --profile vllm-l3 exec model-runtime-vllm-l3 curl -fsS http://localhost:8000/v1/models"
+
+  if [ "$failed" -eq 1 ]; then
+    return 1
+  fi
+  return 0
+}
+
+# _extract_vllm_l3_compose_revision — echo the --revision value from the
+# model-runtime-vllm-l3 service `command:` in docker-compose.self-hosted.yml, or
+# empty if the service/flag is absent. Host-runnable static read (no network, no
+# YAML lib): find the "--revision" list item and print the VALUE on the next
+# `- "<val>"` line. Scoped to the model-runtime-vllm-l3 service block so it can
+# never pick up an unrelated --revision (e.g. a future tgi/vllm arg).
+_extract_vllm_l3_compose_revision() {
+  local compose="$ROOT/docker-compose.self-hosted.yml"
+  [ -f "$compose" ] || { printf ''; return 0; }
+  awk '
+    # Track service-block boundaries: a 2-space-indented "  <name>:" header.
+    /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+      insvc = ($0 ~ /^  model-runtime-vllm-l3:[[:space:]]*$/) ? 1 : 0
+    }
+    insvc && want {
+      # The value line right after the "--revision" item: - "<val>" (or - <val>).
+      line=$0
+      sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+      gsub(/^"|"$/, "", line)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+      print line; exit
+    }
+    insvc && /^[[:space:]]*-[[:space:]]*"--revision"[[:space:]]*$/ { want=1 }
+    insvc && /^[[:space:]]*-[[:space:]]*--revision[[:space:]]*$/   { want=1 }
+  ' "$compose"
+}
+
+# check_vllm_l3_revision_consistency STRICT — STATIC compose↔manifest revision
+# consistency for the fast L3 model (B-E2 "doctor asserts the model revision").
+# The served revision cannot be probed (the endpoint is internal), so this
+# asserts the two host-side pins agree: the compose `--revision` (what vLLM
+# loads) MUST byte-equal image-manifest.yaml pii_plane.qwen2.5-7b-awq-model
+# `revision:` (what the recall gate blessed). A drift between them means the
+# runtime would load weights the manifest did NOT bless — the exact silent gap
+# the digest-pin ceremony exists to prevent.
+#
+#   both present + equal      -> ok
+#   both present + differ     -> FAIL-CLOSED under --strict (fatal, like an
+#                                unpinned image override); WARN otherwise
+#   one/both absent           -> WARN (not fatal) — no false pass, but a kit
+#                                that doesn't ship the vllm-l3 pins isn't broken
+#
+# Returns non-zero ONLY under STRICT=1 on a real mismatch. Host-runnable,
+# offline-safe (pure file reads).
+check_vllm_l3_revision_consistency() {
+  local strict="${1:-0}"
+  local manifest="$ROOT/image-manifest.yaml"
+  local compose="$ROOT/docker-compose.self-hosted.yml"
+  [ -f "$manifest" ] && [ -f "$compose" ] || return 0
+
+  local compose_rev manifest_rev
+  compose_rev="$(_extract_vllm_l3_compose_revision)"
+  # Manifest revision: the `revision:` leaf under the vllm-l3 model entry. Reuse
+  # the same value-extraction shape as _sanitizer_config_declares. Scope to after
+  # the qwen2.5-7b-awq-model: header so a future `revision:` elsewhere can't leak.
+  manifest_rev="$(awk '
+    /^[[:space:]]*qwen2\.5-7b-awq-model:[[:space:]]*$/ { inentry=1; next }
+    inentry && /^[[:space:]]*[A-Za-z0-9._-]+:[[:space:]]*$/ { inentry=0 }
+    inentry && /^[[:space:]]*revision:[[:space:]]/ {
+      sub(/^[[:space:]]*revision:[[:space:]]*/, "");
+      sub(/[[:space:]]+#.*$/, "");
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "");
+      gsub(/^"|"$/, "");
+      print; exit
+    }' "$manifest")"
+
+  if [ -z "$compose_rev" ] && [ -z "$manifest_rev" ]; then
+    return 0
+  fi
+  if [ -z "$compose_rev" ] || [ -z "$manifest_rev" ]; then
+    warn "vllm-l3 revision: only one of compose --revision ('${compose_rev:-<unset>}') / image-manifest.yaml revision ('${manifest_rev:-<unset>}') is set — cannot assert the B-E2 revision pin. Set both to the recall-gated HF commit sha (docker-compose.self-hosted.yml model-runtime-vllm-l3 --revision + image-manifest.yaml pii_plane.qwen2.5-7b-awq-model.revision)."
+    return 0
+  fi
+  if [ "$compose_rev" = "$manifest_rev" ]; then
+    echo "vllm-l3 revision: ok (compose --revision == image-manifest.yaml revision: $compose_rev)"
+    return 0
+  fi
+
+  if [ "$strict" -eq 1 ]; then
+    echo "vllm-l3 revision: MISMATCH — compose --revision ($compose_rev) does not match image-manifest.yaml revision ($manifest_rev); the vllm-l3 runtime would load weights the recall gate did not bless — re-pin at the digest-pin ceremony so both agree — failing closed under --strict" >&2
+    return 1
+  fi
+  warn "vllm-l3 revision: compose --revision ($compose_rev) does not match image-manifest.yaml revision ($manifest_rev) — the runtime would load un-blessed weights; re-pin both to the recall-gated HF sha; run 'doctor --strict' to fail-closed"
   return 0
 }
 
@@ -2304,10 +2639,13 @@ parse_image_digests() {
 # __UNPINNED_OVERRIDE__:<ref> sentinel, or empty for an ollama:// model
 # pseudo-ref (not an OCI image).
 digest_resolve_env_ref() {
-  local rref="$1" env_tag="$2" env_reg="$3" env_dash_tag="$4" env_ollama="${5:-}" env_pii_ml_tag="${6:-0.5.1}"
+  local rref="$1" env_tag="$2" env_reg="$3" env_dash_tag="$4" env_ollama="${5:-}" env_pii_ml_tag="${6:-0.5.1}" env_vllm_l3="${7:-}"
   # Ollama model pseudo-refs are not OCI images — caller skips them.
+  # HF model pseudo-refs (the vllm-l3 weights, hf://...) are likewise not OCI
+  # images — the caller skips them (revision-pinned + doctor B-E2 assert them).
   case "$rref" in
     ollama://*) printf ''; return 0 ;;
+    hf://*) printf ''; return 0 ;;
   esac
   case "$rref" in
     # The pii-ml sidecar: SAME registry override, but its OWN distinct tag env
@@ -2347,8 +2685,26 @@ digest_resolve_env_ref() {
         printf '%s' "$env_ollama"
       else
         # Unpinned override (a mutable :latest etc.): --strict cannot durably
-        # verify a floating tag. Route to fail-CLOSED via the sentinel.
-        printf '__UNPINNED_OVERRIDE__:%s' "$env_ollama"
+        # verify a floating tag. Route to fail-CLOSED via the sentinel. The
+        # sentinel carries the ENV VAR NAME (before the '|') so the caller's
+        # message names the right knob (OLLAMA_IMAGE vs VLLM_L3_IMAGE).
+        printf '__UNPINNED_OVERRIDE__:OLLAMA_IMAGE|%s' "$env_ollama"
+      fi
+      ;;
+    # vllm-l3 (self-hosted FAST L3 runtime): honor the VLLM_L3_IMAGE override
+    # (docker-compose.self-hosted.yml model-runtime-vllm-l3). The recorded ref is
+    # "vllm/vllm-openai:<ver>". Same verify-or-fail contract as ollama-identity:
+    # a digest-pinned override is resolved+compared; an UNPINNED override
+    # (attacker/vllm:latest) routes to fail-CLOSED via the sentinel so --strict
+    # never green-lights a mutable tag while the canonical ref quietly verifies.
+    # This is the B-E2 "doctor asserts the image" guarantee.
+    vllm/vllm-openai:*)
+      if [ -z "$env_vllm_l3" ]; then
+        printf '%s' "$rref"
+      elif printf '%s' "$env_vllm_l3" | grep -q '@sha256:'; then
+        printf '%s' "$env_vllm_l3"
+      else
+        printf '__UNPINNED_OVERRIDE__:VLLM_L3_IMAGE|%s' "$env_vllm_l3"
       fi
       ;;
     *) printf '%s' "$rref" ;;
@@ -2431,6 +2787,13 @@ check_image_digests() {
   # NO fallback default: an EMPTY value means "no override", which the resolver
   # treats as the canonical immutable recorded tag (verified honestly).
   env_ollama="$(env_value "$env_file" OLLAMA_IMAGE)"
+  # The self-hosted FAST L3 runtime (model-runtime-vllm-l3) rides VLLM_L3_IMAGE
+  # (docker-compose.self-hosted.yml). Same rationale as OLLAMA_IMAGE above:
+  # without this, a VLLM_L3_IMAGE=attacker/vllm:latest override escapes --strict
+  # while the canonical vllm/vllm-openai ref verifies green (the B-E2 hole this
+  # closes). EMPTY = no override -> resolver verifies the canonical recorded ref.
+  local env_vllm_l3
+  env_vllm_l3="$(env_value "$env_file" VLLM_L3_IMAGE)"
 
   local mismatched=0 verified=0 pending=0 unresolved=0 invalid=0 informational=0
   local rref recorded eff_ref current override_ref
@@ -2458,11 +2821,12 @@ check_image_digests() {
       continue
     fi
 
-    eff_ref="$(digest_resolve_env_ref "$rref" "$env_tag" "$env_reg" "$env_dash_tag" "$env_ollama" "$env_pii_ml_tag")"
+    eff_ref="$(digest_resolve_env_ref "$rref" "$env_tag" "$env_reg" "$env_dash_tag" "$env_ollama" "$env_pii_ml_tag" "$env_vllm_l3")"
     if [ -z "$eff_ref" ]; then
-      # ollama:// model pseudo-ref with a recorded digest is informational only:
-      # not OCI-resolvable, so neither verifiable nor a dangerous skip. It does
-      # NOT count toward the cardinality floor and never fails --strict.
+      # ollama:// / hf:// model pseudo-ref with a recorded digest/revision is
+      # informational only: not OCI-resolvable, so neither verifiable nor a
+      # dangerous skip. It does NOT count toward the cardinality floor and never
+      # fails --strict.
       informational=$((informational + 1))
       echo "image digest: $rref recorded $recorded (model manifest — not OCI-resolvable; informational)"
       continue
@@ -2470,17 +2834,23 @@ check_image_digests() {
 
     case "$eff_ref" in
       __UNPINNED_OVERRIDE__:*)
-        # An UNPINNED OLLAMA_IMAGE override (a mutable :latest etc.) is in
-        # effect: --strict cannot durably verify a floating tag, so this is the
-        # SAME verify-or-fail hole the dsa-* MISMATCH path closes. Count it as a
+        # An UNPINNED image override (a mutable :latest etc.) is in effect:
+        # --strict cannot durably verify a floating tag, so this is the SAME
+        # verify-or-fail hole the dsa-* MISMATCH path closes. Count it as a
         # mismatch and fail closed under --strict — NEVER silently pass the
-        # canonical recorded ref while an override is in force.
-        override_ref="${eff_ref#__UNPINNED_OVERRIDE__:}"
+        # canonical recorded ref while an override is in force. The sentinel
+        # carries "<ENVVAR>|<ref>" so the message names the right knob.
+        local sentinel_body override_env
+        sentinel_body="${eff_ref#__UNPINNED_OVERRIDE__:}"
+        override_env="${sentinel_body%%|*}"
+        override_ref="${sentinel_body#*|}"
+        # Suggest the exact pinned form for the recorded repo (strip its :tag).
+        local pin_repo; pin_repo="${rref%:*}"
         mismatched=$((mismatched + 1))
         if [ "$strict" -eq 1 ]; then
-          echo "image digest: MISMATCH (OLLAMA_IMAGE override ($override_ref) is unpinned and does not match the recorded digest $recorded — a mutable tag cannot be digest-verified; pin OLLAMA_IMAGE to a recorded digest (ollama/ollama:0.6.2@$recorded), or use the digest-pinned Helm path) — failing closed under --strict" >&2
+          echo "image digest: MISMATCH (${override_env} override ($override_ref) is unpinned and does not match the recorded digest $recorded — a mutable tag cannot be digest-verified; pin ${override_env} to a recorded digest (${pin_repo}@$recorded), or use the digest-pinned Helm path) — failing closed under --strict" >&2
         else
-          warn "image digest: OLLAMA_IMAGE override ($override_ref) is unpinned; --strict cannot verify a mutable tag against the recorded digest $recorded — pin OLLAMA_IMAGE to a recorded digest to enable enforcement; run 'doctor --strict' to fail-closed"
+          warn "image digest: ${override_env} override ($override_ref) is unpinned; --strict cannot verify a mutable tag against the recorded digest $recorded — pin ${override_env} to a recorded digest to enable enforcement; run 'doctor --strict' to fail-closed"
         fi
         continue
         ;;
@@ -2515,12 +2885,26 @@ check_image_digests() {
 
   echo "image digests: verified=$verified mismatched=$mismatched unresolved=$unresolved invalid=$invalid pending=$pending informational=$informational"
 
+  # B-E2 revision assertion: the fast-L3 model's `hf://` entry is PENDING for the
+  # digest-checker (a model manifest, not an OCI image), so it cannot enforce the
+  # served weights. Instead assert the two HOST-SIDE pins agree — compose
+  # `--revision` == image-manifest.yaml revision — which IS host-runnable and
+  # makes the "doctor asserts the model revision" claim true. Fatal under --strict
+  # on a real mismatch; warn-only otherwise. Runs regardless of the digest gate's
+  # own verdicts so an operator always sees the consistency result.
+  local rev_consistency_rc=0
+  check_vllm_l3_revision_consistency "$strict" || rev_consistency_rc=1
+
   if [ "$strict" -ne 1 ]; then
     return 0
   fi
 
   # --strict verify-or-fail gate. Any of the following is a fail-closed.
   local rc=0
+  if [ "$rev_consistency_rc" -ne 0 ]; then
+    echo "doctor --strict: vllm-l3 compose↔manifest model revision mismatch — failing closed" >&2
+    rc=1
+  fi
   if [ "$mismatched" -gt 0 ]; then
     echo "doctor --strict: $mismatched image digest(s) did not match the pinned manifest — failing closed" >&2
     rc=1
@@ -6264,6 +6648,18 @@ doctor() {
   # wired fail-closes 503 on every request. Warn-only (an Enterprise operator
   # may wire an external L3 this doctor can't see).
   check_l3_required_wired "$env_file"
+
+  # PRD B (Slice B2): FAST L3 runtime (vllm-l3) preflight. Runs ONLY when the
+  # operator opts into the vLLM L3 backend (sanitizer YAML l3_runtime: vllm OR
+  # COMPOSE_PROFILES contains vllm-l3); a no-op otherwise. Fails loud on
+  # WSL2 / no-GPU / non-internal base_url / missing base_url (each names the
+  # Ollama fallback). Driver-CUDA is WARN-level. There is NO host-side endpoint
+  # probe: the vllm-l3 service has no host port by design (identity-net only), so
+  # doctor prints the `docker compose --profile vllm-l3 exec model-runtime-vllm-l3
+  # curl -fsS http://localhost:8000/v1/models` command to run post-up instead.
+  local vllm_l3_failed=0
+  check_vllm_l3_preflight "$env_file" "$offline" || vllm_l3_failed=1
+  [ "$vllm_l3_failed" -eq 0 ] || return 1
 
   # Sim 3 G3: LUCAIRN_IMAGE_TAG must be set explicitly.
   local tag_failed=0

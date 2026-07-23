@@ -61,6 +61,19 @@ volumes:
   # separate from ollama-model-store (the AI-plane inference ollama) so the
   # two model instances never share state — split-knowledge isolation.
   ollama-identity-model-store:
+  # HF weight cache for the identity-plane FAST L3 runtime (model-runtime-vllm-l3).
+  # vLLM reads pre-staged weights from here in HF_HUB_OFFLINE mode. Like
+  # ollama-identity-model-store, it MUST be pre-populated ONCE via a throwaway
+  # egress-enabled step BEFORE the isolated vllm-l3 profile runs — the identity
+  # net is internal:true (no container egress), so vLLM cannot pull from HF at
+  # boot. See docs/L3_VLLM_RUNTIME.md § "Pre-staging the model".
+  vllm-l3-model-store:
+    # EXPLICIT name (NOT project-prefixed). The one-time pre-stage ceremony in
+    # docs/L3_VLLM_RUNTIME.md runs a throwaway `docker run -v vllm-l3-model-store …`
+    # to populate this volume with egress; pinning the name makes that command
+    # target the SAME volume vLLM mounts here (a project-prefixed name would leave
+    # the operator staging weights into a different volume → HF_HUB_OFFLINE boot fail).
+    name: vllm-l3-model-store
 
 services:
   gateway:
@@ -138,6 +151,27 @@ services:
       # ollama-identity runs. See INSTALL.md § self-hosted "Pre-stage the L3
       # deep PII-shield model" + customer.env.example LUCAIRN_L3_REQUIRED.
       LUCAIRN_L3_REQUIRED: "${LUCAIRN_L3_REQUIRED:-true}"
+      # PRD B — FAST L3 runtime (vllm-l3). The RUNTIME SWITCH is NOT an env var:
+      # PRD A's `l3_runtime` / `l3_base_url` are YAML-only dataclass fields on
+      # LlmScanConfig, read from config/default-sanitizer.yaml (via
+      # SANITIZER_CONFIG_PATH) — there is NO env->config override for them. To
+      # route L3 through the vllm-l3 profile the operator (a) adds `vllm-l3` to
+      # COMPOSE_PROFILES AND (b) uncomments `l3_runtime: vllm` + `l3_base_url:
+      # http://vllm-l3:8000/v1` in config/default-sanitizer.yaml. The default
+      # (profile OFF, YAML unchanged) keeps the ollama-identity L3 path,
+      # byte-identical. See docs/L3_VLLM_RUNTIME.md.
+      #
+      # TOB-407-04 (Slice-1 ToB review) is a DOCUMENTED RECOMMENDATION, NOT an
+      # auto-injected env here: the sanitizer's /v1/config runs UNAUTHENTICATED by
+      # default and its asdict includes `l3_base_url` (internal topology, NON-secret
+      # per the A-E2 invariant — same disclosure class as `ollama_url`). An operator
+      # MAY set DSA_ADMIN_KEY on the sanitizer for defense-in-depth, but the kit does
+      # NOT inject it — doing so would flip an operator who already sets DSA_ADMIN_KEY
+      # (e.g. for Sandbox B) from unauthenticated → authenticated /v1/config on
+      # upgrade, a behavior change from a profile that must stay inert when off. The
+      # PRIMARY control is the identity-plane network boundary
+      # (dsa-model-runtime-identity is internal:true; NetworkPolicy/mTLS in Helm).
+      # See docs/L3_VLLM_RUNTIME.md § "Egress / trust-boundary guardrails".
     networks:
       - dsa-model-runtime-identity
 
@@ -334,6 +368,121 @@ services:
           # config). On the identity-only net that alias resolves HERE — to
           # the L3 identity model — NOT to the AI-plane inference ollama.
           - ollama
+    restart: on-failure
+
+  # ── Identity-plane FAST L3 PII-shield runtime (vllm-l3) ─────────────
+  # OPT-IN, native-Linux-GPU-only alternative to `ollama-identity` for the
+  # sanitizer's level-3 deep PII shield. Ollama time-slices concurrent L3
+  # requests (hard ~5 rec/s ceiling on one 4090); vLLM's continuous batching
+  # multiplies throughput 7.4× @ width-8 / 13× @ width-16 on the same GPU
+  # (measured 2026-07-23, RTX 4090, 40-chunk doc — see
+  # docs/L3_VLLM_RUNTIME.md). This is the enterprise throughput axis.
+  #
+  # SPLIT-KNOWLEDGE INVARIANT (non-negotiable): this service is attached ONLY
+  # to the identity-plane net `dsa-model-runtime-identity` — NEVER the AI-plane
+  # `dsa-model-runtime` that sandbox-b + the AI-plane `model-runtime-vllm`
+  # (`:232`, profiles: ["vllm"]) use. The L3 shield scans RAW identity data, so
+  # its runtime is air-gapped from the AI plane exactly like `ollama-identity`.
+  # This service is a DIFFERENT trust plane from the `:232` AI-plane vllm; the
+  # two must never share a net.
+  #
+  # OPT-IN via `COMPOSE_PROFILES=...,vllm-l3` (kit default stays Ollama — vLLM
+  # is native-Linux-GPU-only, WSL2-dead [RuntimeError: UVA is not available],
+  # and env-fragile; force it on nobody). When this profile is ACTIVE the
+  # operator MUST also point the sanitizer at it (PRD A's config contract) by
+  # uncommenting in `config/default-sanitizer.yaml` (the YAML is the ONLY switch —
+  # there is NO LUCAIRN_L3_RUNTIME/LUCAIRN_L3_BASE_URL env override):
+  #   l3_runtime: vllm  +  l3_base_url: http://vllm-l3:8000/v1
+  # With the profile OFF and those YAML lines commented the kit boots
+  # byte-identically on the `ollama-identity` path — no default drift.
+  #
+  # Serves the STOCK `Qwen/Qwen2.5-7B-Instruct-AWQ` (the AWQ equivalent of the
+  # DSA-default `qwen2.5:7b`). It does NOT yet serve the custom-trained
+  # Enterprise "level-3 PII shield" (that is a LoRA fine-tune deliverable TODAY
+  # on Ollama only; the custom→vLLM conversion is a filed follow-up). See
+  # docs/L3_VLLM_RUNTIME.md § "What this runtime does NOT serve yet".
+  #
+  # Uses the network alias `vllm-l3` so the sanitizer's l3_base_url resolves
+  # here on the identity-only net. PRE-STAGE note (MANDATORY, mirrors
+  # ollama-identity): the identity net is internal:true → this container has NO
+  # egress REGARDLESS of whether the HOST has internet. So vLLM CANNOT pull the
+  # weights from Hugging Face at boot. The weights MUST be pre-staged ONCE into
+  # the `vllm-l3-model-store` volume (a throwaway egress-enabled download step),
+  # exactly like ollama-identity stages qwen2.5:7b into ollama-identity-model-store.
+  # This service then runs with HF_HUB_OFFLINE=1 + TRANSFORMERS_OFFLINE=1 and
+  # loads the pinned revision from that cache — it never dials HF. See
+  # docs/L3_VLLM_RUNTIME.md § "Pre-staging the model" for the exact command.
+  model-runtime-vllm-l3:
+    profiles: ["vllm-l3"]
+    # Image pinned by DIGEST to the tested vLLM release (official image bundles
+    # matched CUDA/torch/kernels → sidesteps the three-pin pip version-hell:
+    # vllm==0.10.2 + torch==2.8.0+cu128 + transformers==4.55.4). Recorded in
+    # image-manifest.yaml (pii_plane.vllm-l3). Overridable via VLLM_L3_IMAGE.
+    image: "${VLLM_L3_IMAGE:-vllm/vllm-openai:v0.10.2@sha256:607442e407b0fea97f8a132a78b787c121a996dd4de181fa08e8da06e71ec2db}"
+    logging: *default-logging
+    environment:
+      # Force vLLM/transformers to load the pre-staged weights from the mounted
+      # HF cache and NEVER dial Hugging Face at boot. Required because this
+      # service is on the internal:true identity net (no egress) — a boot-time HF
+      # pull would fail and the profile would never start. The weights are
+      # pre-staged into vllm-l3-model-store (see the block comment above +
+      # docs/L3_VLLM_RUNTIME.md § "Pre-staging the model").
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    command:
+      - "--model"
+      - "Qwen/Qwen2.5-7B-Instruct-AWQ"
+      # B-E2: pin the MODEL revision. The image digest does NOT pin the weights
+      # vLLM pulls from HF at boot — an upstream re-upload of the AWQ repo would
+      # silently change the artifact the recall gate blessed. This HF commit sha
+      # was resolved 2026-07-23 (HF API). Re-pin at the digest-pin ceremony if
+      # the recall gate is re-run against a newer revision.
+      - "--revision"
+      - "b25037543e9394b818fdfca67ab2a00ecc7dd641"
+      - "--quantization"
+      - "awq"
+      - "--dtype"
+      - "float16"
+      - "--gpu-memory-utilization"
+      - "0.85"
+      - "--max-model-len"
+      - "8192"
+      - "--enforce-eager"
+      # B-E1 (top leak pick): the vllm-openai server logs request CONTENT by
+      # default → raw PRE-REDACTION PII at rest in this container's logs on the
+      # customer host (log shippers / backups pick it up — the L3-cache
+      # PII-at-rest lesson replayed on the ops plane). Disable request-content
+      # logging. Acceptance: after a redaction round-trip, grepping this
+      # container's logs for the raw fixture PII = ZERO hits.
+      - "--disable-log-requests"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8000"
+    # GPU reservation. vLLM is native-Linux-GPU-only; the host needs the NVIDIA
+    # Container Toolkit. `bin/lucairn doctor` pre-flights GPU/driver/WSL2 before
+    # this ever serves traffic (fails loud with the Ollama-fallback instruction).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: ["gpu"]
+    volumes:
+      # Pre-staged HF weight cache (populated ONCE via the throwaway
+      # egress-enabled step — see docs/L3_VLLM_RUNTIME.md). With
+      # HF_HUB_OFFLINE=1 above, vLLM reads the pinned revision from here and
+      # never needs egress — which the internal:true identity net forbids anyway.
+      - vllm-l3-model-store:/root/.cache/huggingface
+    networks:
+      dsa-model-runtime-identity:
+        aliases:
+          # The sanitizer dials l3_base_url: http://vllm-l3:8000/v1 (set in
+          # config/default-sanitizer.yaml when the profile is active). On the
+          # identity-only net that alias resolves HERE — NOT to `ollama` (the
+          # ollama-identity L3 default) and NOT to the AI-plane inference runtimes.
+          - vllm-l3
     restart: on-failure
 
   model-runtime-onnxruntime:
