@@ -79,7 +79,7 @@ bin/lucairn doctor --env install/customer.env --compose install/docker-compose.c
 
 > **Fast L3 runtime (vllm-l3):** if the customer opts into the native-Linux-GPU
 > vLLM L3 shield (`COMPOSE_PROFILES=...,vllm-l3` **plus** uncommenting
-> `l3_runtime: vllm` + `l3_base_url: http://vllm-l3:8000/v1` in
+> `l3_runtime: vllm` + `l3_base_url: http://vllm-l3:8000` in
 > `config/default-sanitizer.yaml` — the runtime switch is YAML, not an env var),
 > add `--profile vllm-l3` and run `bin/lucairn doctor` first — it pre-flights
 > GPU / WSL2 / driver and fails loud with the Ollama-fallback instruction. It

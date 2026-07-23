@@ -1302,7 +1302,7 @@ check_vllm_l3_preflight() {
     # (which fatal on a CPU host) don't fail a deploy whose L3 correctly uses
     # ollama-identity. The unused vLLM service's own GPU need is its concern
     # (visible in `docker ps`), not an L3-correctness failure.
-    warn "vllm-l3: the vllm-l3 profile is active but the sanitizer still routes L3 to ollama-identity (l3_runtime not set to vllm in config/default-sanitizer.yaml) — the vLLM service will run unused; uncomment 'l3_runtime: vllm' (+ 'l3_base_url: http://vllm-l3:8000/v1') to use it."
+    warn "vllm-l3: the vllm-l3 profile is active but the sanitizer still routes L3 to ollama-identity (l3_runtime not set to vllm in config/default-sanitizer.yaml) — the vLLM service will run unused; uncomment 'l3_runtime: vllm' (+ 'l3_base_url: http://vllm-l3:8000') to use it."
     return 0
   fi
   # Reaching here means BOTH channels are set (yaml_vllm=1 AND profile_vllm=1):
@@ -1369,7 +1369,7 @@ check_vllm_l3_preflight() {
     vllm)
       if [ -z "$base_url" ]; then
         echo "vllm-l3: FAIL — sanitizer config declares 'l3_runtime: vllm' but 'l3_base_url' is unset/commented."
-        echo "vllm-l3:   Uncomment 'l3_base_url: http://vllm-l3:8000/v1' in config/default-sanitizer.yaml"
+        echo "vllm-l3:   Uncomment 'l3_base_url: http://vllm-l3:8000' in config/default-sanitizer.yaml"
         echo "vllm-l3:   (the identity-net alias of the model-runtime-vllm-l3 service). See docs/L3_VLLM_RUNTIME.md."
         failed=1
       else
@@ -1381,7 +1381,7 @@ check_vllm_l3_preflight() {
           *@*)
             echo "vllm-l3: FAIL — l3_base_url (config/default-sanitizer.yaml) contains userinfo (user:pass@host)."
             echo "vllm-l3:   The vLLM L3 backend must send NO credential. Remove the userinfo;"
-            echo "vllm-l3:   use a bare internal URL like http://vllm-l3:8000/v1."
+            echo "vllm-l3:   use a bare internal URL like http://vllm-l3:8000."
             failed=1
             ;;
         esac
@@ -1397,7 +1397,7 @@ check_vllm_l3_preflight() {
             echo "vllm-l3: FAIL — l3_base_url host '$host_only' looks NON-internal (public FQDN/IP)."
             echo "vllm-l3:   A non-internal L3 endpoint ships raw pre-redaction text off the"
             echo "vllm-l3:   identity plane (A-E2 egress). Point it at the internal vllm-l3 alias"
-            echo "vllm-l3:   (http://vllm-l3:8000/v1). The sanitizer image blocks this at boot"
+            echo "vllm-l3:   (http://vllm-l3:8000). The sanitizer image blocks this at boot"
             echo "vllm-l3:   unless the operator explicitly sets the external-base-url override."
             failed=1
             ;;

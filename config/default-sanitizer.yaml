@@ -112,7 +112,7 @@ sanitizer:
     #   2. uncomment the two lines below. `vllm-l3` is a single-label internal alias
     #      (no dot) so it classifies as internal — no l3_allow_external_base_url opt-in needed.
     # l3_runtime: vllm
-    # l3_base_url: http://vllm-l3:8000/v1
+    # l3_base_url: http://vllm-l3:8000
     timeout_seconds: 30
     # FAIL-01 (PRD prd-2026-05-29-fail-safe-scrubber): fail-CLOSED — block the
     # request with a 503 l3_scrubber_unavailable when the L3 deep PII shield is
