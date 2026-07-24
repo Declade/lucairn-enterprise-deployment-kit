@@ -1487,8 +1487,15 @@ check_vllm_l3_preflight() {
             docker_info_out="$(docker info 2>/dev/null)" && docker_info_ok=1
           fi
         fi
-        if [ "$docker_info_ok" -eq 1 ] && printf '%s\n' "$docker_info_out" | grep -qiE '^[[:space:]]*Runtimes:'; then
-          if printf '%s\n' "$docker_info_out" | grep -iE '^[[:space:]]*Runtimes:' | grep -qw nvidia; then
+        # SIGPIPE-safe under `set -o pipefail`: extract the Runtimes line via
+        # awk on a here-string first (no producer|grep -q pipeline — grep -q's
+        # early exit can SIGPIPE the producer and read as "docker info unusable").
+        docker_runtimes_line=""
+        if [ "$docker_info_ok" -eq 1 ]; then
+          docker_runtimes_line="$(awk 'tolower($0) ~ /^[[:space:]]*runtimes:/ {print; exit}' <<<"$docker_info_out")"
+        fi
+        if [ "$docker_info_ok" -eq 1 ] && [ -n "$docker_runtimes_line" ]; then
+          if grep -qw nvidia <<<"$docker_runtimes_line"; then
             echo "vllm-l3: NVIDIA Container Toolkit: ok (registered with Docker)"
           else
             echo "vllm-l3: FAIL — NVIDIA Container Toolkit is not registered with Docker (\`docker info\` Runtimes list has no 'nvidia' runtime)."
