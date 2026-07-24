@@ -220,7 +220,21 @@ services:
       DSA_ADMIN_KEY: "${DSA_ADMIN_KEY:?DSA_ADMIN_KEY is required}"
       SANDBOX_B_API_KEYS: "${LOCAL_SANDBOX_B_API_KEY:-local-sandbox-b-key}"
       LCR_ENABLED: "${LCR_ENABLED:-${VEIL_ENABLED:-true}}"
-      LCR_SIGNING_KEY: "${LCR_SANDBOX_B_SIGNING_KEY:-${VEIL_SANDBOX_B_SIGNING_KEY:?LCR_SANDBOX_B_SIGNING_KEY (or legacy VEIL_SANDBOX_B_SIGNING_KEY) is required for self-hosted Sandbox B}}"
+      # Compose-v2 eager-nested-interpolation sharp edge (see the matching
+      # comment on LCR_GATEWAY_SIGNING_KEY in docker-compose.customer.yml).
+      # The `:?` marker on the legacy inner slot stays — it is load-bearing:
+      # sandbox-b's own fail-closed gate (services/sandbox-b/boot_safety.py:
+      # fail_closed_if_veil_enabled_raw_but_keys_missing, dual-sandbox-architecture)
+      # is SKIPPED when DSA_ENV is `development` or `test`, so an operator
+      # running the self-hosted overlay with either of those values would
+      # otherwise boot sandbox-b with a silently-empty signing key. Compose
+      # v2 DOES eagerly interpolate this nested `:?` even when
+      # LCR_SANDBOX_B_SIGNING_KEY IS already set, so a canonical-LCR-only
+      # customer.env can still hit the raw interpolation error. Fix here:
+      # name the CANONICAL var first. `lucairn doctor` also catches the
+      # neither-set case pre-compose with a clearer message
+      # (check_signing_key_compose_preflight in bin/lucairn).
+      LCR_SIGNING_KEY: "${LCR_SANDBOX_B_SIGNING_KEY:-${VEIL_SANDBOX_B_SIGNING_KEY:?set LCR_SANDBOX_B_SIGNING_KEY in customer.env -- see: lucairn doctor}}"
       LCR_WITNESS_ADDR: "veil-witness:50057"
       OLLAMA_URL: "${OLLAMA_URL:-http://ollama:11434}"
       OPENAI_API_KEY: "${MODEL_RUNTIME_API_KEY:-local-model-runtime}"

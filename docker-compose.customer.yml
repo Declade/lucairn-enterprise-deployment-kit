@@ -752,10 +752,28 @@ services:
       LCR_WITNESS_CERT_ADDR: "veil-witness:50058"
       LCR_WITNESS_ADDR: "veil-witness:50057"
       # Stage 3 dual-name: canonical LCR_X first, legacy VEIL_X fallback.
-      # For the gateway signing key the strict-required marker `:?` lives on
-      # the legacy slot so the variable is REQUIRED (either name must be set)
-      # but pre-Stage-3 customer.env files keep booting unchanged.
-      LCR_GATEWAY_SIGNING_KEY: "${LCR_GATEWAY_SIGNING_KEY:-${VEIL_GATEWAY_SIGNING_KEY:?required (set LCR_GATEWAY_SIGNING_KEY or legacy VEIL_GATEWAY_SIGNING_KEY)}}"
+      # The strict-required marker `:?` stays on the legacy inner slot
+      # (either name must be set) — it is load-bearing: the gateway's own
+      # fail-closed gate (services/gateway/cmd/server/main.go:794,816-818,
+      # dual-sandbox-architecture) ONLY fires when DSA_ENV=production AND
+      # LCR_DEV_MODE/VEIL_DEV_MODE!=true, so an operator running any other
+      # DSA_ENV value (or the dev-mode escape hatch) would otherwise boot
+      # the gateway with a silently-empty signing key. Relaxing this `:?`
+      # to a bare default would remove the ONLY fail-closed layer for those
+      # configurations. Compose v2 DOES eagerly interpolate this nested
+      # `:?` even on the branch where LCR_GATEWAY_SIGNING_KEY IS already
+      # set (unlike bash's short-circuit `${A:-${B:?err}}`), so a
+      # canonical-LCR-only customer.env — the documented, preferred config
+      # shape — can still hit this at `docker compose config`/`up` time.
+      # Pre-existing operator sharp edge, carried from the WP1 S4 Fable
+      # verdict (specs/2026-07/fable-verdict-2026-07-16-lucairn-wp1-s4-compose-v2-publication.md)
+      # into WP4 S2/S7 doctor. Fix here: name the CANONICAL var first in the
+      # error text (an operator who only ever touches LCR_* should not be
+      # told to set VEIL_*). `lucairn doctor` ALSO catches the neither-set
+      # case with a clearer pre-compose message naming the exact variable
+      # (check_signing_key_compose_preflight in bin/lucairn) before the
+      # operator ever sees this raw Compose interpolation error.
+      LCR_GATEWAY_SIGNING_KEY: "${LCR_GATEWAY_SIGNING_KEY:-${VEIL_GATEWAY_SIGNING_KEY:?set LCR_GATEWAY_SIGNING_KEY in customer.env -- see: lucairn doctor}}"
       LCR_MANIFEST_SIGNING_KEY: "${LCR_MANIFEST_SIGNING_KEY:-${VEIL_MANIFEST_SIGNING_KEY:-}}"
       GATEWAY_BASE_URL: ${GATEWAY_BASE_URL:-http://localhost:8080}
       SUPABASE_URL: "${SUPABASE_URL:-}"
