@@ -465,11 +465,13 @@ else
 fi
 
 if docker compose version >/dev/null 2>&1; then
-  # Some compose versions interpolate the nested legacy fallbacks
-  # (${LCR_X:-${VEIL_X:?required}}) eagerly even when LCR_X is supplied by the
-  # env file, so provide benign legacy values for this config-only check.
-  VEIL_GATEWAY_SIGNING_KEY="${VEIL_GATEWAY_SIGNING_KEY:-0000000000000000000000000000000000000000000000000000000000000000}" \
-  VEIL_SANDBOX_B_SIGNING_KEY="${VEIL_SANDBOX_B_SIGNING_KEY:-0000000000000000000000000000000000000000000000000000000000000000}" \
+  # Regression guard for the Compose-v2 eager nested-legacy interpolation
+  # sharp edge (WP1 S4 Fable verdict): customer.env.example sets ONLY the
+  # canonical LCR_* signing-key names, so this render used to need benign
+  # VEIL_* values injected here. The compose files now default the legacy
+  # inner slot (${LCR_X:-${VEIL_X:-}}), so a canonical-only render must
+  # succeed with NO legacy vars supplied — if this fails again, the `:?`
+  # sharp edge has been reintroduced.
   docker compose \
     -f "$ROOT/docker-compose.customer.yml" \
     -f "$ROOT/docker-compose.self-hosted.yml" \
