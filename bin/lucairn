@@ -732,6 +732,28 @@ require_env_values() {
     val="$(env_value_with_legacy "$env_file" "$canonical" "$legacy")"
     if [ -z "$val" ]; then
       echo "required secrets: missing $canonical (or legacy $legacy)"
+      # Gate-aware enrichment for the gateway signing key (the Compose-v2
+      # eager-legacy sharp-edge slot, WP1 S4 Fable verdict → WP4 S2 doctor).
+      # require_env_values fires BEFORE check_signing_key_compose_preflight
+      # and short-circuits doctor, so the actionable canonical-var-first
+      # diagnostic must be printed HERE for the neither-name-set case —
+      # otherwise the operator only sees the bare "missing" line and never
+      # reaches the preflight's explanation.
+      if [ "$canonical" = "LCR_GATEWAY_SIGNING_KEY" ]; then
+        local _gw_dsa_env _gw_dev_mode
+        _gw_dsa_env="$(env_value "$env_file" DSA_ENV)"
+        _gw_dev_mode="$(env_value_with_legacy "$env_file" LCR_DEV_MODE VEIL_DEV_MODE)"
+        if [ "$_gw_dsa_env" = "production" ] && [ "$_gw_dev_mode" != "true" ]; then
+          echo "required secrets:   Under DSA_ENV=production the gateway refuses to boot on an empty signing key"
+          echo "required secrets:   (fail-closed at startup) — fix it here instead of at container boot."
+        else
+          echo "required secrets:   With DSA_ENV=${_gw_dsa_env:-<unset>} (or the dev-mode override) the gateway's own"
+          echo "required secrets:   fail-closed startup gate is UNARMED — it would boot with a silently-EMPTY"
+          echo "required secrets:   signing key and nothing downstream catches it. This doctor check is the only layer."
+        fi
+        echo "required secrets:   Set LCR_GATEWAY_SIGNING_KEY in customer.env — run bin/lucairn-init to generate"
+        echo "required secrets:   one, or \`openssl rand -hex 32\`."
+      fi
       missing=1
     fi
   done
@@ -1245,6 +1267,93 @@ check_l3_required_wired() {
   return 0
 }
 
+# check_signing_key_compose_preflight — the required-var AUTHORITY for the
+# two nested-legacy signing-key slots, now that the compose files no longer
+# carry `:?` on the legacy inner slot (the Compose-v2 eager-interpolation
+# sharp edge fix: `${LCR_X:-${VEIL_X:-}}` — WP1 S4 Fable verdict, carried
+# to WP4 S2/S7 doctor).
+#
+# Layering after the fix:
+#   - gateway: services/gateway/cmd/server/main.go:794,816-818
+#     (dual-sandbox-architecture) fails closed on an empty resolved key
+#     when DSA_ENV=production AND LCR_DEV_MODE/VEIL_DEV_MODE != true. The
+#     kit's compose files ship `DSA_ENV: "${DSA_ENV:-production}"`, so
+#     that gate is ARMED BY DEFAULT — but an operator override to a
+#     non-production DSA_ENV (or the dev-mode hatch) unarms it, and then
+#     NOTHING else catches an empty key: doctor is the only layer.
+#     => missing gateway key = FAIL in every posture; the message explains
+#        which layer would (or would not) have caught it.
+#   - sandbox-b: services/sandbox-b/boot_safety.py
+#     (fail_closed_if_veil_enabled_raw_but_keys_missing) fails closed
+#     (SystemExit 1) whenever the veil emitter is enabled (LCR_ENABLED
+#     defaults true in compose) EXCEPT when DSA_ENV is the literal
+#     `development` or `test`. Local sandbox-b applies only when
+#     SANDBOX_B_REMOTE_ENDPOINT is empty (INSTALL.md deployment-mode
+#     table; mirrors check_veil_keypairs' split-mode carve-out).
+#     => missing local sandbox-b key = FAIL when the runtime gate is armed
+#        (non-dev/test), informative note in dev/test (an empty key is a
+#        bootable dev posture, but compose no longer hard-stops it, so
+#        doctor says so out loud instead of staying silent).
+#
+# Messages always name the CANONICAL LCR_* variable first — the legacy
+# VEIL_* name is Stage-3 history an LCR-only operator has never seen.
+#
+# Args: $1=env_file.
+check_signing_key_compose_preflight() {
+  local env_file="$1" failed=0
+  local dsa_env dev_mode non_prod_dsa_env=0
+
+  dsa_env="$(env_value "$env_file" DSA_ENV)"
+  dev_mode="$(env_value_with_legacy "$env_file" LCR_DEV_MODE VEIL_DEV_MODE)"
+  case "$dsa_env" in
+    development|test) non_prod_dsa_env=1 ;;
+  esac
+
+  local gw_key sb_key remote_endpoint veil_enabled
+  gw_key="$(env_value_with_legacy "$env_file" LCR_GATEWAY_SIGNING_KEY VEIL_GATEWAY_SIGNING_KEY)"
+  sb_key="$(env_value_with_legacy "$env_file" LCR_SANDBOX_B_SIGNING_KEY VEIL_SANDBOX_B_SIGNING_KEY)"
+  remote_endpoint="$(env_value "$env_file" SANDBOX_B_REMOTE_ENDPOINT)"
+  # sandbox-b's fail-closed boot gate only arms when the veil emitter is
+  # opted in (boot_safety.py gates on LCR_ENABLED/VEIL_ENABLED == "true");
+  # an explicit opt-out means a missing key is a note, not a failure.
+  veil_enabled="$(env_value_with_legacy "$env_file" LCR_ENABLED VEIL_ENABLED)"
+
+  if [ -z "$gw_key" ]; then
+    echo "signing keys: FAIL — neither LCR_GATEWAY_SIGNING_KEY nor legacy VEIL_GATEWAY_SIGNING_KEY is set in $env_file."
+    if [ "$dsa_env" = "production" ] && [ "$dev_mode" != "true" ]; then
+      echo "signing keys:   Under DSA_ENV=production the gateway refuses to boot on an empty signing key"
+      echo "signing keys:   (fail-closed at startup) — fix it here instead of at container boot."
+    else
+      echo "signing keys:   With DSA_ENV=${dsa_env:-<unset>} (or the dev-mode override) the gateway's own"
+      echo "signing keys:   fail-closed startup gate is UNARMED — it would boot with a silently-EMPTY"
+      echo "signing keys:   signing key and nothing downstream catches it. This doctor check is the only layer."
+    fi
+    echo "signing keys:   Set LCR_GATEWAY_SIGNING_KEY in customer.env — run bin/lucairn-init to generate"
+    echo "signing keys:   one, or \`openssl rand -hex 32\`."
+    failed=1
+  fi
+
+  # Local sandbox-b (self-hosted overlay) only: split mode
+  # (SANDBOX_B_REMOTE_ENDPOINT set) has no local signing key by design.
+  if [ -z "$sb_key" ] && [ -z "$remote_endpoint" ]; then
+    if [ "$veil_enabled" = "false" ]; then
+      info "signing keys: note — LCR_SANDBOX_B_SIGNING_KEY is unset but LCR_ENABLED/VEIL_ENABLED=false: the veil emitter is explicitly opted out, so sandbox-b's fail-closed boot gate is unarmed by design (boot_safety.py only enforces when enabled=true). No key needed until you re-enable veil emission."
+    elif [ "$non_prod_dsa_env" -eq 1 ]; then
+      info "signing keys: note — LCR_SANDBOX_B_SIGNING_KEY (or legacy VEIL_SANDBOX_B_SIGNING_KEY) is unset. With DSA_ENV=$dsa_env sandbox-b's fail-closed boot gate is skipped, so a local self-hosted Sandbox B would boot with an EMPTY signing key (veil claim emitter disabled). Acceptable for dev/test; set LCR_SANDBOX_B_SIGNING_KEY before switching to production."
+    else
+      echo "signing keys: FAIL — neither LCR_SANDBOX_B_SIGNING_KEY nor legacy VEIL_SANDBOX_B_SIGNING_KEY is set in $env_file (and SANDBOX_B_REMOTE_ENDPOINT is empty = local self-hosted Sandbox B)."
+      echo "signing keys:   Outside DSA_ENV development/test, sandbox-b refuses to boot on an empty signing"
+      echo "signing keys:   key while the veil emitter is enabled (fail-closed at startup) — fix it here"
+      echo "signing keys:   instead of at container boot. Set LCR_SANDBOX_B_SIGNING_KEY in customer.env —"
+      echo "signing keys:   run bin/lucairn-init, or \`openssl rand -hex 32\`. (Split-mode deployments set"
+      echo "signing keys:   SANDBOX_B_REMOTE_ENDPOINT instead; no local key needed.)"
+      failed=1
+    fi
+  fi
+
+  return "$failed"
+}
+
 check_vllm_l3_preflight() {
   # PRD B (Slice B2): FAST L3 runtime (model-runtime-vllm-l3) preflight. The
   # vLLM L3 runtime is native-Linux-GPU-only, WSL2-DEAD (RuntimeError: UVA is
@@ -1260,6 +1369,11 @@ check_vllm_l3_preflight() {
   #   - vllm-l3 in COMPOSE_PROFILES BUT YAML l3_runtime != vllm                -> WARN (vLLM runs unused)
   #   - WSL2 detected (silent: vLLM won't start, hard-to-diagnose UVA error)   -> FAIL
   #   - no NVIDIA GPU (nvidia-smi absent/fails)                                 -> FAIL
+  #   - NVIDIA Container Toolkit not registered (docker info Runtimes line     -> FAIL
+  #     lacks 'nvidia' [definitive], or neither docker info nor nvidia-ctk
+  #     is usable [unconfirmable])
+  #   - nvidia-ctk on PATH but docker info unusable/unanchorable               -> WARN (inconclusive:
+  #     installed is not registered)
   #   - l3_base_url (YAML) set but non-internal (A-E2 egress-shaped)            -> FAIL
   #   - l3_base_url (YAML) unset while l3_runtime: vllm                         -> FAIL (misconfig)
   #   - driver CUDA below the image's CUDA (12.8)                               -> WARN
@@ -1269,9 +1383,11 @@ check_vllm_l3_preflight() {
   # structurally cannot reach it. Instead this prints the exact `docker compose
   # exec` command the operator runs post-up to verify /v1/models.
   #
-  # Args: $1=env_file, $2=offline (accepted for signature parity with other
-  #       checks; the file/GPU checks always run, and there is no host-side live
-  #       probe to skip).
+  # Args: $1=env_file, $2=offline. Under --offline the docker-daemon probe
+  #       (the Container Toolkit registration check) is SKIPPED with an
+  #       explicit note — --offline is a configuration-only preflight and
+  #       must not touch the daemon. The file/GPU(nvidia-smi) checks still
+  #       run (local, no daemon).
   local env_file="$1" offline="${2:-0}"
 
   vllm_l3_opted_in "$env_file" || return 0
@@ -1345,6 +1461,75 @@ check_vllm_l3_preflight() {
         fi
       fi
       echo "vllm-l3: NVIDIA GPU: ok"
+
+      # Host driver present and working is necessary but NOT sufficient: Docker
+      # itself must also have the NVIDIA Container Toolkit registered as a
+      # runtime, or `docker run --gpus all` (what Compose issues under the hood
+      # via `deploy.resources.reservations.devices`) fails at container-create
+      # time with "could not select device driver... does not support GPU
+      # capabilities" — a DIFFERENT, harder-to-diagnose error than the driver
+      # checks above, and one `nvidia-smi` on the host can't catch (banked
+      # Fable follow-up from kit PR #96: doctor checked the driver but not the
+      # toolkit's Docker registration). Detect via the `Runtimes:` line of
+      # `docker info` containing the word `nvidia` (anchored to that line so an
+      # incidental "nvidia" elsewhere in docker info can't false-green).
+      # `nvidia-ctk` on PATH withOUT a usable `docker info` is INCONCLUSIVE
+      # (the toolkit may be installed but never registered / docker never
+      # restarted) — WARN, never ok. Under --offline this probe is SKIPPED
+      # entirely (air-gap contract: --offline is a configuration-only
+      # preflight; it must not touch the docker daemon).
+      if [ "$offline" -eq 1 ]; then
+        info "vllm-l3: NVIDIA Container Toolkit: skipped (--offline — docker daemon not probed; re-run doctor without --offline on the deploy host to verify the 'nvidia' runtime is registered)"
+      else
+        local docker_info_out="" docker_info_ok=0
+        if have docker; then
+          # Bound the daemon probe: a wedged docker daemon can hang `docker
+          # info` indefinitely and doctor must never hang with it. `timeout`
+          # is coreutils (present on the Linux deploy hosts); if absent
+          # (e.g. stock macOS), probe unbounded as before.
+          if have timeout; then
+            docker_info_out="$(timeout 10 docker info 2>/dev/null)" && docker_info_ok=1
+          else
+            docker_info_out="$(docker info 2>/dev/null)" && docker_info_ok=1
+          fi
+        fi
+        # SIGPIPE-safe under `set -o pipefail`: extract the Runtimes line via
+        # awk on a here-string first (no producer|grep -q pipeline — grep -q's
+        # early exit can SIGPIPE the producer and read as "docker info unusable").
+        docker_runtimes_line=""
+        if [ "$docker_info_ok" -eq 1 ]; then
+          docker_runtimes_line="$(awk 'tolower($0) ~ /^[[:space:]]*runtimes:/ {print; exit}' <<<"$docker_info_out")"
+        fi
+        if [ "$docker_info_ok" -eq 1 ] && [ -n "$docker_runtimes_line" ]; then
+          if grep -qw nvidia <<<"$docker_runtimes_line"; then
+            echo "vllm-l3: NVIDIA Container Toolkit: ok (registered with Docker)"
+          else
+            echo "vllm-l3: FAIL — NVIDIA Container Toolkit is not registered with Docker (\`docker info\` Runtimes list has no 'nvidia' runtime)."
+            echo "vllm-l3:   The host GPU/driver is present, but Docker itself cannot yet hand a GPU to a"
+            echo "vllm-l3:   container — Compose's up will fail at container-create with 'could not select"
+            echo "vllm-l3:   device driver ... does not support GPU capabilities'. Install/register the NVIDIA"
+            echo "vllm-l3:   Container Toolkit (https://github.com/NVIDIA/nvidia-container-toolkit) and run"
+            echo "vllm-l3:   'sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker',"
+            echo "vllm-l3:   or use the Ollama L3 default (re-comment l3_runtime/l3_base_url + drop the vllm-l3"
+            echo "vllm-l3:   profile). See docs/L3_VLLM_RUNTIME.md."
+            failed=1
+          fi
+        elif have nvidia-ctk; then
+          # docker info unusable (remote DOCKER_HOST, permissions, hung/absent
+          # daemon) or its output had no Runtimes line to anchor on. The
+          # toolkit CLI being on PATH proves installation, NOT registration —
+          # `nvidia-ctk runtime configure` may never have run, or docker may
+          # not have been restarted since. Inconclusive => WARN, never ok.
+          warn "vllm-l3: NVIDIA Container Toolkit: INCONCLUSIVE — nvidia-ctk is on PATH but \`docker info\` could not confirm an 'nvidia' runtime registration (docker info unusable or no Runtimes line). The toolkit may be installed but not registered with Docker. Verify with 'docker info | grep -i runtimes'; if 'nvidia' is absent, run 'sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker'. See docs/L3_VLLM_RUNTIME.md."
+        else
+          echo "vllm-l3: FAIL — cannot confirm the NVIDIA Container Toolkit is installed (\`docker info\` unusable and \`nvidia-ctk\` not on PATH)."
+          echo "vllm-l3:   Install/register the NVIDIA Container Toolkit"
+          echo "vllm-l3:   (https://github.com/NVIDIA/nvidia-container-toolkit) and run"
+          echo "vllm-l3:   'sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker',"
+          echo "vllm-l3:   or use the Ollama L3 default. See docs/L3_VLLM_RUNTIME.md."
+          failed=1
+        fi
+      fi
     fi
   else
     echo "vllm-l3: FAIL — no NVIDIA GPU detected (nvidia-smi not on PATH)."
@@ -6648,6 +6833,21 @@ doctor() {
   # wired fail-closes 503 on every request. Warn-only (an Enterprise operator
   # may wire an external L3 this doctor can't see).
   check_l3_required_wired "$env_file"
+
+  # Nested-legacy signing-key authority (WP1 S4 Fable verdict, carried to
+  # WP4 S2 doctor / S7 acceptance): the compose files no longer carry `:?`
+  # on the legacy inner slot (the Compose-v2 eager-interpolation sharp
+  # edge), so this doctor check + require_env_values are the layers that
+  # name the CANONICAL var with an actionable, gate-aware message. Gateway
+  # key missing = FAIL in every posture (armed gate → boot would fail
+  # closed anyway; unarmed → doctor is the ONLY layer). Local sandbox-b
+  # key missing = FAIL outside dev/test, informative note inside dev/test
+  # (see the function's header comment). Note: for the gateway slot,
+  # require_env_values above already fails first with the same enriched
+  # message — this preflight is the sandbox-b authority + defense-in-depth.
+  local signing_key_failed=0
+  check_signing_key_compose_preflight "$env_file" || signing_key_failed=1
+  [ "$signing_key_failed" -eq 0 ] || return 1
 
   # PRD B (Slice B2): FAST L3 runtime (vllm-l3) preflight. Runs ONLY when the
   # operator opts into the vLLM L3 backend (sanitizer YAML l3_runtime: vllm OR

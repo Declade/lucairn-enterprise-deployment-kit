@@ -752,10 +752,27 @@ services:
       LCR_WITNESS_CERT_ADDR: "veil-witness:50058"
       LCR_WITNESS_ADDR: "veil-witness:50057"
       # Stage 3 dual-name: canonical LCR_X first, legacy VEIL_X fallback.
-      # For the gateway signing key the strict-required marker `:?` lives on
-      # the legacy slot so the variable is REQUIRED (either name must be set)
-      # but pre-Stage-3 customer.env files keep booting unchanged.
-      LCR_GATEWAY_SIGNING_KEY: "${LCR_GATEWAY_SIGNING_KEY:-${VEIL_GATEWAY_SIGNING_KEY:?required (set LCR_GATEWAY_SIGNING_KEY or legacy VEIL_GATEWAY_SIGNING_KEY)}}"
+      # Historically the strict-required marker `:?` lived on the legacy
+      # inner slot. Compose v2 eagerly interpolates that nested `:?` even
+      # on the branch where LCR_GATEWAY_SIGNING_KEY IS already set (unlike
+      # bash's short-circuit `${A:-${B:?err}}`), so a canonical-LCR-only
+      # customer.env — the documented, preferred config shape — hit a raw
+      # "variable is not set: VEIL_GATEWAY_SIGNING_KEY" at `docker compose
+      # config`/`up` time (pre-existing operator sharp edge, WP1 S4 Fable
+      # verdict specs/2026-07/fable-verdict-2026-07-16-lucairn-wp1-s4-compose-v2-publication.md,
+      # carried to WP4 S2/S7 doctor). The inner slot now carries a safe
+      # empty default. Fail-closed is preserved WITHOUT the `:?`: this
+      # file ships `DSA_ENV: "${DSA_ENV:-production}"`, and under
+      # DSA_ENV=production (without the LCR_DEV_MODE/VEIL_DEV_MODE=true
+      # escape hatch) the gateway itself refuses to boot on an empty
+      # resolved key (dual-sandbox-architecture
+      # services/gateway/cmd/server/main.go:794,816-818 — log.Fatal
+      # "DSA_ENV=production requires VEIL_GATEWAY_SIGNING_KEY").
+      # `lucairn doctor` is the required-var authority for EVERY posture,
+      # including the non-production/dev-mode ones where the runtime gate
+      # is unarmed (require_env_values + check_signing_key_compose_preflight
+      # in bin/lucairn — both name the canonical variable and the fix).
+      LCR_GATEWAY_SIGNING_KEY: "${LCR_GATEWAY_SIGNING_KEY:-${VEIL_GATEWAY_SIGNING_KEY:-}}"
       LCR_MANIFEST_SIGNING_KEY: "${LCR_MANIFEST_SIGNING_KEY:-${VEIL_MANIFEST_SIGNING_KEY:-}}"
       GATEWAY_BASE_URL: ${GATEWAY_BASE_URL:-http://localhost:8080}
       SUPABASE_URL: "${SUPABASE_URL:-}"

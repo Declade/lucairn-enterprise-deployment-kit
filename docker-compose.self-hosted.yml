@@ -220,7 +220,22 @@ services:
       DSA_ADMIN_KEY: "${DSA_ADMIN_KEY:?DSA_ADMIN_KEY is required}"
       SANDBOX_B_API_KEYS: "${LOCAL_SANDBOX_B_API_KEY:-local-sandbox-b-key}"
       LCR_ENABLED: "${LCR_ENABLED:-${VEIL_ENABLED:-true}}"
-      LCR_SIGNING_KEY: "${LCR_SANDBOX_B_SIGNING_KEY:-${VEIL_SANDBOX_B_SIGNING_KEY:?LCR_SANDBOX_B_SIGNING_KEY (or legacy VEIL_SANDBOX_B_SIGNING_KEY) is required for self-hosted Sandbox B}}"
+      # Compose-v2 eager-nested-interpolation sharp edge (see the matching
+      # comment on LCR_GATEWAY_SIGNING_KEY in docker-compose.customer.yml):
+      # the historical `:?` on the legacy inner slot fired even when the
+      # canonical LCR_SANDBOX_B_SIGNING_KEY WAS set, so a canonical-LCR-only
+      # customer.env hit a raw "variable is not set" error. The inner slot
+      # now carries a safe empty default. Fail-closed is preserved WITHOUT
+      # the `:?`: the base compose ships `DSA_ENV: "${DSA_ENV:-production}"`,
+      # and outside DSA_ENV development/test sandbox-b itself refuses to
+      # boot on an empty resolved key when the veil emitter is enabled
+      # (LCR_ENABLED defaults true above) — dual-sandbox-architecture
+      # services/sandbox-b/boot_safety.py
+      # fail_closed_if_veil_enabled_raw_but_keys_missing, SystemExit(1).
+      # `lucairn doctor` is the required-var authority for EVERY posture,
+      # including development/test where that gate is skipped
+      # (check_signing_key_compose_preflight in bin/lucairn).
+      LCR_SIGNING_KEY: "${LCR_SANDBOX_B_SIGNING_KEY:-${VEIL_SANDBOX_B_SIGNING_KEY:-}}"
       LCR_WITNESS_ADDR: "veil-witness:50057"
       OLLAMA_URL: "${OLLAMA_URL:-http://ollama:11434}"
       OPENAI_API_KEY: "${MODEL_RUNTIME_API_KEY:-local-model-runtime}"
