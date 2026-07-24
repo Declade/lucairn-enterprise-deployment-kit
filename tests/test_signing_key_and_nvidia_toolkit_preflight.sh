@@ -129,6 +129,23 @@ assert_case "sandbox_b_key_missing_local_prod_fails" \
 LCR_GATEWAY_SIGNING_KEY=gw-fixture-key' \
   1 "LCR_SANDBOX_B_SIGNING_KEY"
 
+# Veil emitter explicitly opted OUT (LCR_ENABLED=false): sandbox-b's boot
+# gate (boot_safety.py, enforces only when enabled == "true") is UNARMED by
+# design -> missing key is an informational note, rc=0, no FAIL (Codex r3).
+N=$((N + 1))
+f="$WK/sandbox_b_veil_optout_note.env"
+printf '%s\n' 'DSA_ENV=production
+LCR_GATEWAY_SIGNING_KEY=gw-fixture-key
+LCR_ENABLED=false' > "$f"
+out="$(check_signing_key_compose_preflight "$f" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF "opted out" && ! printf '%s' "$out" | grep -qF "FAIL"; then
+  echo "ok   [sandbox_b_veil_optout_note] (rc=$rc)"
+else
+  echo "FAIL [sandbox_b_veil_optout_note]: expected rc=0 + opt-out note + no FAIL, got rc=$rc, out=$out"
+  FAILS=$((FAILS + 1))
+fi
+
 # Split mode: SANDBOX_B_REMOTE_ENDPOINT set -> no local sandbox-b -> the
 # missing local signing key is by design; no FAIL, no mention.
 N=$((N + 1))

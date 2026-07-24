@@ -1309,10 +1309,14 @@ check_signing_key_compose_preflight() {
     development|test) non_prod_dsa_env=1 ;;
   esac
 
-  local gw_key sb_key remote_endpoint
+  local gw_key sb_key remote_endpoint veil_enabled
   gw_key="$(env_value_with_legacy "$env_file" LCR_GATEWAY_SIGNING_KEY VEIL_GATEWAY_SIGNING_KEY)"
   sb_key="$(env_value_with_legacy "$env_file" LCR_SANDBOX_B_SIGNING_KEY VEIL_SANDBOX_B_SIGNING_KEY)"
   remote_endpoint="$(env_value "$env_file" SANDBOX_B_REMOTE_ENDPOINT)"
+  # sandbox-b's fail-closed boot gate only arms when the veil emitter is
+  # opted in (boot_safety.py gates on LCR_ENABLED/VEIL_ENABLED == "true");
+  # an explicit opt-out means a missing key is a note, not a failure.
+  veil_enabled="$(env_value_with_legacy "$env_file" LCR_ENABLED VEIL_ENABLED)"
 
   if [ -z "$gw_key" ]; then
     echo "signing keys: FAIL — neither LCR_GATEWAY_SIGNING_KEY nor legacy VEIL_GATEWAY_SIGNING_KEY is set in $env_file."
@@ -1332,7 +1336,9 @@ check_signing_key_compose_preflight() {
   # Local sandbox-b (self-hosted overlay) only: split mode
   # (SANDBOX_B_REMOTE_ENDPOINT set) has no local signing key by design.
   if [ -z "$sb_key" ] && [ -z "$remote_endpoint" ]; then
-    if [ "$non_prod_dsa_env" -eq 1 ]; then
+    if [ "$veil_enabled" = "false" ]; then
+      info "signing keys: note — LCR_SANDBOX_B_SIGNING_KEY is unset but LCR_ENABLED/VEIL_ENABLED=false: the veil emitter is explicitly opted out, so sandbox-b's fail-closed boot gate is unarmed by design (boot_safety.py only enforces when enabled=true). No key needed until you re-enable veil emission."
+    elif [ "$non_prod_dsa_env" -eq 1 ]; then
       info "signing keys: note — LCR_SANDBOX_B_SIGNING_KEY (or legacy VEIL_SANDBOX_B_SIGNING_KEY) is unset. With DSA_ENV=$dsa_env sandbox-b's fail-closed boot gate is skipped, so a local self-hosted Sandbox B would boot with an EMPTY signing key (veil claim emitter disabled). Acceptable for dev/test; set LCR_SANDBOX_B_SIGNING_KEY before switching to production."
     else
       echo "signing keys: FAIL — neither LCR_SANDBOX_B_SIGNING_KEY nor legacy VEIL_SANDBOX_B_SIGNING_KEY is set in $env_file (and SANDBOX_B_REMOTE_ENDPOINT is empty = local self-hosted Sandbox B)."
