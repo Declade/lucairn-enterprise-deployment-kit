@@ -596,14 +596,19 @@ customer bundle (with `images/lucairn-images.tar` for `docker load`); see
 Every published Lucairn image is cosign-signed (by digest) and logged to the
 Sigstore Rekor public transparency log. Before deploying **and before every
 upgrade** (see OPS.md § "Upgrade", step 3 — verification is a mandatory step
-in the documented upgrade runbook, not optional), verify the 13-image release
+in the documented upgrade runbook, not optional), verify the release image
 set against the kit-bundled public key (`keys/lucairn-cosign.pub`) and the
-per-release signed-digest record (`keys/image-digests-<tag>.txt`): the 12
-`dsa-*` services plus `lucairn-dashboard`. **This does NOT include
-`dsa-pii-ml`** (the Phase 7 ML PII sidecar) — it has no digest record in this
-kit and ships on an independent cadence; see OPS.md § "Verify image
-signatures" for the full disclosure. You need `cosign` (>= v2.0) and a digest
-resolver (`docker buildx`, `crane`, or `skopeo`) on PATH:
+per-release signed-digest record (`keys/image-digests-<tag>.txt`).
+**Coverage is not uniform — read this before treating a PASS as
+"everything":** the 12 `dsa-*` services are fully verified at your chosen
+`--tag`; `lucairn-dashboard` is verified ONLY at its hardcoded pinned
+default tag (currently `0.8.2`) — if you have overridden
+`LUCAIRN_DASHBOARD_IMAGE_TAG`, a PASS says nothing about the tag you
+actually deploy; **`dsa-pii-ml`** (the Phase 7 ML PII sidecar) has no digest
+record in this kit at all and is never checked, at any tag or option — it
+ships on an independent cadence. See OPS.md § "Verify image signatures" for
+the full breakdown. You need `cosign` (>= v2.0) and a digest resolver
+(`docker buildx`, `crane`, or `skopeo`) on PATH:
 
 ```bash
 bin/lucairn verify-images --tag 0.5.4

@@ -1260,15 +1260,33 @@ published"; the cert chain proves "this request was sanitized, isolated, and
 attested." Both are independently checkable.
 
 **What `bin/lucairn verify-images` actually checks (read this before treating
-a PASS as "everything"):** it verifies exactly the 13 images recorded in
-`keys/image-digests-<tag>.txt` — the 12 `dsa-*` release services plus
-`lucairn-dashboard` (its own independent tag/cadence). **`dsa-pii-ml` (the
-Phase 7 ML PII-detection sidecar) has no digest record in this kit and is
-NOT checked by `verify-images` at any tag** — it ships on an independent
-release cadence (currently `0.5.1`) with no committed `keys/image-digests-*`
-entry for it. A PASS from `verify-images` gives you no cryptographic
-assurance about `dsa-pii-ml` bytes, even if you have Phase 7 (Piiranha/GLiNER)
-enabled.
+a PASS as "everything"):**
+
+- **Fully covered — the 12 `dsa-*` release services**, checked at whatever
+  `--tag`/`--registry` you pass, against `keys/image-digests-<tag>.txt`.
+- **Partially covered — `lucairn-dashboard`.** It IS checked, but only at
+  its **hardcoded pinned default tag** (currently `0.8.2` — see
+  `verify_images()`'s `dashboard_tag="0.8.2"` line in `bin/lucairn`) —
+  `verify-images` does **not** read
+  `LUCAIRN_DASHBOARD_IMAGE_TAG`. If you have overridden that env var (Compose
+  reads it directly — `docker-compose.customer.yml:888` —
+  `${LUCAIRN_IMAGE_REGISTRY:-...}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.8.2}`)
+  to pull a different dashboard tag, `verify-images` PASSing still only
+  proves the *pinned default* bytes were signed — it says nothing about the
+  overridden tag you actually deploy. If you override
+  `LUCAIRN_DASHBOARD_IMAGE_TAG`, treat the dashboard as effectively
+  unverified until a dedicated `--dashboard-tag` (or equivalent) flag ships
+  — see the CLI follow-up ticket referenced below.
+- **Not covered at all — `dsa-pii-ml`** (the Phase 7 ML PII-detection
+  sidecar). It has no digest record in this kit and is NOT checked by
+  `verify-images` at any tag or option — it ships on an independent release
+  cadence (currently `0.5.1`) with no committed `keys/image-digests-*` entry
+  for it.
+
+A PASS from `verify-images` therefore gives you: full assurance for the 12
+`dsa-*` images; assurance ONLY at the pinned default tag for
+`lucairn-dashboard`; and zero assurance for `dsa-pii-ml`, even if you have
+Phase 7 (Piiranha/GLiNER) enabled.
 
 The public key ships with this kit at `keys/lucairn-cosign.pub`, and the exact
 **signed digests** for each release ship at `keys/image-digests-<tag>.txt`.
@@ -1297,9 +1315,10 @@ chmod +x cosign-linux-amd64 && sudo mv cosign-linux-amd64 /usr/local/bin/cosign
 cosign version   # must report v2.x
 ```
 
-**Verify the 13-image release set covered by `keys/image-digests-<tag>.txt`
-(recommended — see the `dsa-pii-ml` exclusion note above; this does NOT
-cover `dsa-pii-ml`):**
+**Verify the image set covered by `keys/image-digests-<tag>.txt`
+(recommended — see the coverage breakdown above: full for the 12 `dsa-*`
+images, pinned-default-tag-only for `lucairn-dashboard`, and this does NOT
+cover `dsa-pii-ml` at all):**
 
 ```bash
 # Reads keys/image-digests-<tag>.txt as the authoritative signed set, resolves
@@ -1577,19 +1596,36 @@ single-replica are the v1.0 SLA.
 1. Read release notes.
 2. Take database backups.
 3. **Verify the target release's image signatures before pulling anything —
-   bind verification to the SAME registry/tag the deploy is about to pull**
-   (needs `cosign` >= v2.0 plus a registry digest resolver — `docker buildx
-   imagetools`, `crane`, or `skopeo` — on PATH; see INSTALL.md § "Verify
-   image signatures" and OPS.md § "Verify image signatures" for the full
-   recipe, including pinning `cosign` itself by checksum):
+   verification targets the refs read FROM `customer.env`** (needs `cosign`
+   >= v2.0 plus a registry digest resolver — `docker buildx imagetools`,
+   `crane`, or `skopeo` — on PATH; see INSTALL.md § "Verify image signatures"
+   and OPS.md § "Verify image signatures" for the full recipe, including
+   pinning `cosign` itself by checksum):
+
+   > **Guard first — exported shell vars silently win over `customer.env`.**
+   > Docker Compose documents that a variable already set in the calling
+   > shell environment takes precedence over the SAME key in an `--env-file`
+   > — `bin/lucairn pull`/`up` invoke `docker compose --env-file customer.env
+   > ... pull`, so if `LUCAIRN_IMAGE_REGISTRY` or `LUCAIRN_IMAGE_TAG` is
+   > exported in your shell, Compose pulls THAT value regardless of what
+   > `customer.env` says — but the one-liner below always reads
+   > `customer.env`, so a stale/different exported value would make this
+   > step verify refs that are NOT what step 5 actually pulls. Run this
+   > BEFORE the one-liner and confirm it prints nothing (unset the two vars
+   > if it does):
+   > ```bash
+   > env | grep -E 'LUCAIRN_IMAGE_(REGISTRY|TAG)='   # must be empty
+   > ```
 
    ```bash
-   # Read the exact registry + tag this install is about to pull from
+   # Read the registry + tag this install is about to pull FROM
    # customer.env (the same file bin/lucairn pull/up read via --env-file) —
    # do NOT hand-type a registry/tag that might differ from what step 5
-   # actually pulls. A mismatch here is exactly the mirror-deployment gap
-   # this step exists to close: verifying GHCR while pulling different bytes
-   # from an internal mirror proves nothing about what you deploy.
+   # actually pulls. This closes the mirror-deployment gap (verifying GHCR
+   # while pulling different bytes from an internal mirror) PROVIDED the
+   # guard above is clean — an exported LUCAIRN_IMAGE_REGISTRY/TAG in your
+   # shell overrides customer.env for the actual `pull`, in which case this
+   # verifies refs that are not what gets deployed. See the guard above.
    #
    # `| tail -1` + the quote-strip mirrors bin/lucairn's OWN env_value()
    # parser (bin/lucairn:148-156: last-matching-line wins, surrounding
@@ -1622,18 +1658,19 @@ single-replica are the v1.0 SLA.
    endpoint. Set the value before running `helm upgrade`, not after.
 
    **Coverage — read this before treating a PASS as "everything is verified":**
-   `verify-images` checks exactly the 13 images recorded in
-   `keys/image-digests-<TAG>.txt` — the 12 `dsa-*` services plus
-   `lucairn-dashboard` (on its own independent tag/cadence — the recorded
-   entry there is not necessarily `TARGET_TAG`). **`dsa-pii-ml` (the Phase 7
-   ML PII-detection sidecar) is explicitly OUTSIDE this verification
-   record** (independent release cadence, currently pinned `0.5.1`; see the
-   header comment in `keys/image-digests-0.5.4.txt`) — a PASS here gives you
-   no cryptographic assurance about the `dsa-pii-ml` image bytes. This is
-   the ONLY step in this runbook that gives cryptographic assurance for the
-   images it DOES cover — `doctor --offline` (next step) and plain `doctor`
-   do not call `cosign` and do not check any of this. `verify-images` FAILS
-   if any covered image's tag was re-pointed away from its signed digest
+   see § "Verify image signatures" above for the full breakdown. Summary:
+   `verify-images` fully covers the 12 `dsa-*` services at `TARGET_TAG`;
+   covers `lucairn-dashboard` ONLY at its hardcoded pinned default tag
+   (`0.8.2` as of this release) — if you have overridden
+   `LUCAIRN_DASHBOARD_IMAGE_TAG`, a PASS says nothing about the tag you
+   actually deploy; and does **not cover `dsa-pii-ml` at all** (independent
+   release cadence, currently pinned `0.5.1`, no digest record exists for it
+   in this kit — a PASS here gives you no cryptographic assurance about the
+   `dsa-pii-ml` image bytes, even with Phase 7 enabled). This is the ONLY
+   step in this runbook that gives cryptographic assurance for the images it
+   DOES cover — `doctor --offline` (next step) and plain `doctor` do not
+   call `cosign` and do not check any of this. `verify-images` FAILS if any
+   covered image's tag was re-pointed away from its signed digest
    (downgrade/substitution); do not proceed to step 5 on a failure.
 4. Run `bin/lucairn doctor --offline`.
 5. Pull images or update Helm values.
@@ -1665,6 +1702,9 @@ single-replica are the v1.0 SLA.
 For every S1 Compose install, the profile-bound upgrade sequence is:
 
 ```bash
+# GUARD FIRST (step 3 above) — must print nothing before you run any of this:
+env | grep -E 'LUCAIRN_IMAGE_(REGISTRY|TAG)='
+
 # Same env_value()-mirroring extraction as step 3 above (last-entry-wins,
 # quote-stripped — see the comment there for why a plain grep|cut diverges
 # from how bin/lucairn itself reads customer.env).
@@ -1681,9 +1721,16 @@ bin/lucairn status --env customer.env
 `bin/lucairn pull` itself is a bare `docker compose pull` — it does not call
 `cosign` and will happily pull a re-pointed tag, or (on a mirror deployment)
 different bytes than whatever registry you verified against if you don't
-source both commands from the same `customer.env`. `verify-images` is a
-separate, deliberate step for exactly that reason; do not skip it, and do
-not let its registry/tag drift from the `pull` step's.
+source both commands from the same `customer.env` — AND provided the shell
+guard above is clean. Docker Compose gives an exported shell variable
+precedence over the same key in `--env-file`, so an exported
+`LUCAIRN_IMAGE_REGISTRY`/`LUCAIRN_IMAGE_TAG` makes `pull` use a DIFFERENT ref
+than the one this `verify-images` call just checked, even though both read
+from "the same `customer.env`" by file path. `verify-images` targets the
+refs FROM `customer.env`, not whatever Compose will ultimately resolve —
+that's why the guard matters. It's a separate, deliberate step regardless;
+do not skip it, and do not let its registry/tag drift from the `pull`
+step's.
 
 Use `bin/lucairn logs --env customer.env --tail 200 --service gateway` for
 inspection and `bin/lucairn down --env customer.env` for a non-destructive
