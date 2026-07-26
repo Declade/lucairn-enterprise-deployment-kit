@@ -328,13 +328,23 @@ spec:
             # falsely declared in-box and then REFUSED by that branch's own
             # tailnet-literal-vs-in_box_plaintext contradiction gate
             # (pii_ml_client.py ~line 1841 on that branch).
+            #
+            # ROUND 3 (Sol xhigh MEDIUM, 2026-07-26): "overridden" means the
+            # rendered endpoint DIFFERS from the stock in-cluster default —
+            # NOT "the key is non-empty". An operator who writes .endpoint
+            # to the EXACT stock DNS name (e.g. to pin it explicitly, or a
+            # values file that always sets it) is not actually moving the
+            # dial target, so that must still auto-derive, not fail an
+            # upgrade that changed nothing about where the bytes go.
             {{- $piiMl := .Values.sanitizer.piiMlClient }}
-            {{- $piiMlEndpointOverridden := and $piiMl (ne ($piiMl.endpoint | default "") "") }}
+            {{- $piiMlStockEndpoint := printf "pii-ml.%s.svc.cluster.local:50056" .Values.namespace }}
+            {{- $piiMlEndpointValue := ($piiMl.endpoint | default "") }}
+            {{- $piiMlEndpointOverridden := and $piiMl (ne $piiMlEndpointValue "") (ne $piiMlEndpointValue $piiMlStockEndpoint) }}
             {{- $piiMlTransportDeclared := ($piiMl.transport | default "") }}
             {{- $piiMlTransport := $piiMlTransportDeclared }}
             {{- if eq $piiMlTransportDeclared "" }}
             {{- if $piiMlEndpointOverridden }}
-            {{- fail (printf "sanitizer.piiMlClient.endpoint is overridden to %q away from the stock in-cluster pii-ml Service, but sanitizer.piiMlClient.transport was not set. The chart cannot guess whether that address is in-box or off-box — set sanitizer.piiMlClient.transport to exactly \"tailnet\" or \"in_box_plaintext\" alongside the custom endpoint. See values.yaml sanitizer.piiMlClient.transport and T-64." $piiMl.endpoint) -}}
+            {{- fail (printf "sanitizer.piiMlClient.endpoint is overridden to %q — a different address than the stock in-cluster default (%q) — but sanitizer.piiMlClient.transport was not set. The chart cannot guess whether that address is in-box or off-box — set it to exactly \"tailnet\" or \"in_box_plaintext\" alongside the custom endpoint. Set BOTH via: for a values file inside this subchart, sanitizer.piiMlClient.transport; from the top-level umbrella chart (--set / a top-level values file), sandbox-a.sanitizer.piiMlClient.transport. See values.yaml sanitizer.piiMlClient.transport, OPS.md § \"Upgrade\" (migration note), and T-64. UPGRADE NOTE: an EXISTING install that already overrides .endpoint will start failing this render on upgrade until .transport is also set — this is intentional fail-loud, not a regression; see OPS.md." $piiMl.endpoint $piiMlStockEndpoint) -}}
             {{- else }}
             {{- $piiMlTransport = "in_box_plaintext" }}
             {{- end }}

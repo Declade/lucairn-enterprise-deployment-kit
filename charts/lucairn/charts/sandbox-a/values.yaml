@@ -201,22 +201,37 @@ sanitizer:
     # DECLARATION, not a behavior change today.
     #
     # LEAVE THIS EMPTY unless you are also overriding `endpoint` above to a
-    # non-stock address. Empty means "derive from the endpoint": the chart
-    # template (deployment.yaml) auto-declares "in_box_plaintext" ONLY when
-    # `endpoint` is unset, i.e. this deployment dials the stock in-cluster
-    # pii-ml Service — the one case where "in-box" is true by construction.
+    # NON-STOCK address. Empty means "derive from the endpoint": the chart
+    # template (deployment.yaml) auto-declares "in_box_plaintext" whenever
+    # the RENDERED `endpoint` equals the stock in-cluster default — either
+    # because you left `endpoint` empty, OR because you explicitly wrote it
+    # to the exact stock value `pii-ml.<namespace>.svc.cluster.local:50056`
+    # (writing the stock address explicitly doesn't move the dial target, so
+    # it is treated the same as leaving it empty — Sol xhigh round 3, 2026-07-26).
+    # That's the one case where "in-box" is true by construction.
     #
-    # The moment you override `endpoint` to anything else (external
+    # The moment `endpoint` resolves to anything ELSE (a real external
     # endpoint, or a future tailnet address once that topology exists), the
     # chart REFUSES to guess and the render FAILS unless you also set this
-    # key explicitly to exactly "tailnet" or "in_box_plaintext". Guessing
-    # from address shape is exactly the unsound pattern the DSA side deleted
-    # (`services/sanitizer/pii_ml_client.py` — Sol: "unsound",
-    # `is_local_endpoint()` removed) — an endpoint-only override that
-    # silently inherited "in_box_plaintext" would, once the
+    # key explicitly to exactly "tailnet" or "in_box_plaintext" — set it at
+    # BOTH this subchart-local path (`sanitizer.piiMlClient.transport`) and,
+    # if you're setting values from the top-level umbrella chart, the
+    # umbrella path `sandbox-a.sanitizer.piiMlClient.transport` (that's the
+    # one that actually takes effect for a `helm upgrade --set` on the
+    # umbrella release — see the render-time error message, which states
+    # both). Guessing from address shape is exactly the unsound pattern the
+    # DSA side deleted (`services/sanitizer/pii_ml_client.py` — Sol:
+    # "unsound", `is_local_endpoint()` removed) — an endpoint-only override
+    # that silently inherited "in_box_plaintext" would, once the
     # feat/gliner-remote-fallback vocabulary ships in a kit release, get a
     # genuinely off-box (tailnet) address falsely declared in-box and then
     # REFUSED by that branch's own contradiction gate.
+    #
+    # UPGRADE NOTE: this is a fail-loud change for any EXISTING install that
+    # already overrides `endpoint` to a non-stock address — its next
+    # `helm upgrade` will fail this render until `.transport` is also set.
+    # That is intentional (derive-don't-guess), not a regression. See OPS.md
+    # § "Upgrade".
     #
     # This key is currently INERT either way: main's sanitizer
     # config.py/pii_ml_client.py (as of this PR) has no declared-transport

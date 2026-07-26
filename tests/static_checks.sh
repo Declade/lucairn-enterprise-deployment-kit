@@ -605,6 +605,26 @@ if command -v helm >/dev/null 2>&1; then
     || { echo "T-64: endpoint override with explicit transport=tailnet should render tailnet, got $T64_OVERRIDE_VALUE" >&2; exit 1; }
   echo "T-64: override render — explicit transport declaration carries through unchanged"
 
+  # 2b) Explicit-stock render (Sol xhigh round 3, 2026-07-26): an operator who
+  #     writes .endpoint to the EXACT stock DNS name (not just leaves it
+  #     empty) is not moving the dial target, so this must still auto-derive
+  #     "in_box_plaintext" rather than being treated as an "override" that
+  #     requires an explicit .transport. This is the failure mode Sol caught:
+  #     the first fix-round's "any non-empty endpoint = overridden" logic
+  #     would have broken an upgrade for anyone who happened to pin the stock
+  #     address explicitly.
+  T64_STOCK_FILE="$(mktemp)"
+  helm template lucairn "$T64_CHART" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    --set sandbox-a.sanitizer.piiMlClient.endpoint=pii-ml.dsa-identity.svc.cluster.local:50056 \
+    >"$T64_STOCK_FILE"
+  T64_STOCK_VALUE="$(grep -A1 '^            - name: LUCAIRN_PII_ML_TRANSPORT$' "$T64_STOCK_FILE" | tail -1 | sed 's/^ *value: *//')"
+  rm -f "$T64_STOCK_FILE"
+  [ "$T64_STOCK_VALUE" = '"in_box_plaintext"' ] \
+    || { echo "T-64: explicitly writing the STOCK endpoint value should still auto-derive in_box_plaintext (not require .transport), got $T64_STOCK_VALUE" >&2; exit 1; }
+  echo "T-64: explicit-stock endpoint write auto-derives in_box_plaintext (does not require .transport)"
+
   # 3) Reject: custom endpoint WITHOUT an explicit transport must FAIL the
   #    render (derive, don't guess) rather than silently defaulting.
   T64_REJECT_STDERR="$(mktemp)"

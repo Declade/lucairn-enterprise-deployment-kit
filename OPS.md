@@ -1259,6 +1259,17 @@ Veil certificate chain: image signing proves "this binary is the one Lucairn
 published"; the cert chain proves "this request was sanitized, isolated, and
 attested." Both are independently checkable.
 
+**What `bin/lucairn verify-images` actually checks (read this before treating
+a PASS as "everything"):** it verifies exactly the 13 images recorded in
+`keys/image-digests-<tag>.txt` — the 12 `dsa-*` release services plus
+`lucairn-dashboard` (its own independent tag/cadence). **`dsa-pii-ml` (the
+Phase 7 ML PII-detection sidecar) has no digest record in this kit and is
+NOT checked by `verify-images` at any tag** — it ships on an independent
+release cadence (currently `0.5.1`) with no committed `keys/image-digests-*`
+entry for it. A PASS from `verify-images` gives you no cryptographic
+assurance about `dsa-pii-ml` bytes, even if you have Phase 7 (Piiranha/GLiNER)
+enabled.
+
 The public key ships with this kit at `keys/lucairn-cosign.pub`, and the exact
 **signed digests** for each release ship at `keys/image-digests-<tag>.txt`.
 Verification needs `cosign` (>= v2.0) plus a registry digest resolver
@@ -1286,7 +1297,9 @@ chmod +x cosign-linux-amd64 && sudo mv cosign-linux-amd64 /usr/local/bin/cosign
 cosign version   # must report v2.x
 ```
 
-**Verify the whole published set (recommended):**
+**Verify the 13-image release set covered by `keys/image-digests-<tag>.txt`
+(recommended — see the `dsa-pii-ml` exclusion note above; this does NOT
+cover `dsa-pii-ml`):**
 
 ```bash
 # Reads keys/image-digests-<tag>.txt as the authoritative signed set, resolves
@@ -1577,13 +1590,36 @@ single-replica are the v1.0 SLA.
    # actually pulls. A mismatch here is exactly the mirror-deployment gap
    # this step exists to close: verifying GHCR while pulling different bytes
    # from an internal mirror proves nothing about what you deploy.
-   TARGET_TAG="$(grep -E '^LUCAIRN_IMAGE_TAG=' customer.env | cut -d= -f2-)"
-   TARGET_REGISTRY="$(grep -E '^LUCAIRN_IMAGE_REGISTRY=' customer.env | cut -d= -f2-)"
+   #
+   # `| tail -1` + the quote-strip mirrors bin/lucairn's OWN env_value()
+   # parser (bin/lucairn:148-156: last-matching-line wins, surrounding
+   # single/double quotes are stripped) — a plain `grep | cut` would instead
+   # print EVERY matching line on a duplicate-definition customer.env (most
+   # shells then fail this assignment or take the wrong one), and would keep
+   # literal quote characters in the value on a quoted customer.env entry.
+   # If your customer.env has a key defined more than once or quoted, this
+   # one-liner now reads it exactly as bin/lucairn itself would.
+   TARGET_TAG="$(grep -E '^LUCAIRN_IMAGE_TAG=' customer.env | tail -1 \
+     | sed -e 's/^[^=]*=//' -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//")"
+   TARGET_REGISTRY="$(grep -E '^LUCAIRN_IMAGE_REGISTRY=' customer.env | tail -1 \
+     | sed -e 's/^[^=]*=//' -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//")"
    bin/lucairn verify-images --tag "$TARGET_TAG" --registry "$TARGET_REGISTRY"
    ```
 
    For a Helm install, use the tag/registry you are about to set in your
    Helm values instead of `customer.env`.
+
+   **Upgrade migration note (sandbox-a endpoint overrides):** unrelated to
+   image verification, but the same "derive, don't guess" fail-loud
+   philosophy applies elsewhere in this upgrade: if your Helm values override
+   `sandbox-a.sanitizer.piiMlClient.endpoint` away from the stock in-cluster
+   pii-ml Service, this kit version's chart now REQUIRES you to also set
+   `sandbox-a.sanitizer.piiMlClient.transport` (`"tailnet"` or
+   `"in_box_plaintext"`) — the render will fail otherwise. This is new as of
+   T-64 (see `charts/lucairn/charts/sandbox-a/values.yaml` §
+   `sanitizer.piiMlClient.transport`); it is intentional fail-loud, not a
+   regression, and only affects installs that already override that
+   endpoint. Set the value before running `helm upgrade`, not after.
 
    **Coverage — read this before treating a PASS as "everything is verified":**
    `verify-images` checks exactly the 13 images recorded in
@@ -1629,8 +1665,13 @@ single-replica are the v1.0 SLA.
 For every S1 Compose install, the profile-bound upgrade sequence is:
 
 ```bash
-TARGET_TAG="$(grep -E '^LUCAIRN_IMAGE_TAG=' customer.env | cut -d= -f2-)"
-TARGET_REGISTRY="$(grep -E '^LUCAIRN_IMAGE_REGISTRY=' customer.env | cut -d= -f2-)"
+# Same env_value()-mirroring extraction as step 3 above (last-entry-wins,
+# quote-stripped — see the comment there for why a plain grep|cut diverges
+# from how bin/lucairn itself reads customer.env).
+TARGET_TAG="$(grep -E '^LUCAIRN_IMAGE_TAG=' customer.env | tail -1 \
+  | sed -e 's/^[^=]*=//' -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//")"
+TARGET_REGISTRY="$(grep -E '^LUCAIRN_IMAGE_REGISTRY=' customer.env | tail -1 \
+  | sed -e 's/^[^=]*=//' -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//")"
 bin/lucairn verify-images --tag "$TARGET_TAG" --registry "$TARGET_REGISTRY"   # step 3 above — do this first
 bin/lucairn pull --env customer.env
 bin/lucairn up --env customer.env
