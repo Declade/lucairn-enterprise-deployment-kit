@@ -197,6 +197,29 @@ sanitizer:
     # in the sanitizer-configmap.yaml template. Override only if pii-ml is
     # deployed to a non-default namespace OR an external endpoint.
     endpoint: ""
+    # T-64 (2026-07-27) — HONESTY DECLARATION, not a behavior change today.
+    # The chart-default endpoint above is always the pii-ml subchart's
+    # in-cluster Service on this namespace's container network — never a
+    # remote/Tailscale hop (the kit ships no tailnet transport at all: no
+    # config surface, no docs, no code path). "in_box_plaintext" is the only
+    # value that has ever been true for a stock kit install.
+    #
+    # This key is currently INERT: main's sanitizer config.py/pii_ml_client.py
+    # (as of this PR) has no declared-transport vocabulary and never reads
+    # LUCAIRN_PII_ML_TRANSPORT — only the not-yet-merged
+    # feat/gliner-remote-fallback branch introduces that read (env-var
+    # fallback when no `transport` key is present in the rendered
+    # pii_ml_client config block). Declaring it now means a future kit
+    # release built from that branch's merged code inherits a correct
+    # declaration automatically, instead of shipping silently UNDECLARED
+    # (which that branch's code treats as legacy/unchecked, not as
+    # "same as in_box_plaintext").
+    #
+    # If a future kit release adds a genuine remote/tailnet pii-ml topology,
+    # this default must NOT change silently — the operator enabling that
+    # topology must set this to "tailnet" explicitly alongside the tailnet
+    # address/config that topology requires.
+    transport: "in_box_plaintext"
     # Per-scan gRPC deadline (seconds). Sanitizer's config.py reads this as
     # the flat `deadline_seconds` field on `pii_ml_client`; missing → 5.0.
     deadlineSeconds: 5

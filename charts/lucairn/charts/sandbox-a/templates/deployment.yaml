@@ -300,6 +300,17 @@ spec:
             # Phase-7-disabled topology.
             - name: LUCAIRN_PII_ML_ADDR
               value: "{{ .Values.sanitizer.piiMlClient.endpoint | default (printf "pii-ml.%s.svc.cluster.local:50056" .Values.namespace) }}"
+            # T-64 (2026-07-27): honestly declare the transport of the
+            # LUCAIRN_PII_ML_ADDR hop above. See values.yaml
+            # sanitizer.piiMlClient.transport for the full rationale — this
+            # is a forward-compatible declaration, INERT against the
+            # sanitizer code currently on main (which does not read this
+            # var). It is only consumed once the not-yet-merged
+            # feat/gliner-remote-fallback branch's declared-transport
+            # vocabulary (LUCAIRN_PII_ML_TRANSPORT env-var fallback,
+            # services/sanitizer/config.py) ships in a kit release.
+            - name: LUCAIRN_PII_ML_TRANSPORT
+              value: {{ .Values.sanitizer.piiMlClient.transport | default "in_box_plaintext" | quote }}
             # Sanitizer content-address cache — see INSTALL.md § "Sanitizer
             # content cache (Redis — default ON)" for the operator runbook.
             # Default "redis" uses the bundled redis-sanitizer-cache StatefulSet

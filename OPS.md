@@ -1563,22 +1563,51 @@ single-replica are the v1.0 SLA.
 
 1. Read release notes.
 2. Take database backups.
-3. Run `bin/lucairn doctor --offline`.
-4. Pull images or update Helm values.
-5. Apply the release.
-6. Confirm `/healthz` and `/readyz`, then prove the customer path with the
+3. **Verify the target release's image signatures before pulling anything:**
+   `bin/lucairn verify-images --tag <TARGET_TAG>` (needs `cosign` >= v2.0 plus
+   a registry digest resolver — `docker`, `crane`, or `skopeo` — on PATH; see
+   INSTALL.md § "Verify image signatures" and OPS.md § "Verify image
+   signatures" for the full recipe, including pinning `cosign` itself by
+   checksum). This is the ONLY step in this runbook that gives cryptographic
+   assurance the bytes you are about to deploy are the exact ones Lucairn
+   signed — `doctor --offline` (next step) and plain `doctor` do not call
+   `cosign` and do not check this. `verify-images` FAILS if any image tag
+   was re-pointed away from its signed digest (downgrade/substitution); do
+   not proceed to step 5 on a failure.
+4. Run `bin/lucairn doctor --offline`.
+5. Pull images or update Helm values.
+6. Apply the release.
+7. Confirm `/healthz` and `/readyz`, then prove the customer path with the
    keyed full doctor (add `--model NAME` for split-remote/managed-BYOK):
    `bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --customer-key-file /secure/lucairn-customer.key`.
    This performs limited witness-signature verification only; anchors are not checked.
-7. Generate a support bundle and archive it internally as upgrade evidence.
+8. Generate a support bundle and archive it internally as upgrade evidence.
+
+> **Why this wasn't already here (T-61):** `verify-images` existed only as a
+> stand-alone CLI subcommand — documented under "Verify image signatures" as
+> something you *can* run, never wired into this runbook as something you
+> *must* run before an upgrade. `doctor --strict` also does not call `cosign`;
+> it only compares the currently-installed registry digest against
+> `image-manifest.yaml` and is warn-only unless `--strict` is passed, which no
+> documented upgrade step did. A customer following steps 1-2-4-5-6-7 (the
+> pre-T-61 sequence) got zero cryptographic assurance the pulled bytes were
+> the signed artifact. This docs fix closes that gap for the documented path;
+> wiring `verify-images` as an enforced (non-skippable) preflight inside the
+> `bin/lucairn pull`/`upgrade` CLI subcommands themselves is a separate,
+> code-level follow-up (banked, not in this change).
 
 For every S1 Compose install, the profile-bound upgrade sequence is:
 
 ```bash
+bin/lucairn verify-images --tag <TARGET_TAG>   # step 3 above — do this first
 bin/lucairn pull --env customer.env
 bin/lucairn up --env customer.env
 bin/lucairn status --env customer.env
 ```
+
+`bin/lucairn pull` itself is a bare `docker compose pull` — it does not call
+`cosign` and will happily pull a re-pointed tag. `verify-images` is a
+separate, deliberate step for exactly that reason; do not skip it.
 
 Use `bin/lucairn logs --env customer.env --tail 200 --service gateway` for
 inspection and `bin/lucairn down --env customer.env` for a non-destructive
