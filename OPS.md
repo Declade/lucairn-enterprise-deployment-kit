@@ -1563,17 +1563,42 @@ single-replica are the v1.0 SLA.
 
 1. Read release notes.
 2. Take database backups.
-3. **Verify the target release's image signatures before pulling anything:**
-   `bin/lucairn verify-images --tag <TARGET_TAG>` (needs `cosign` >= v2.0 plus
-   a registry digest resolver — `docker`, `crane`, or `skopeo` — on PATH; see
-   INSTALL.md § "Verify image signatures" and OPS.md § "Verify image
-   signatures" for the full recipe, including pinning `cosign` itself by
-   checksum). This is the ONLY step in this runbook that gives cryptographic
-   assurance the bytes you are about to deploy are the exact ones Lucairn
-   signed — `doctor --offline` (next step) and plain `doctor` do not call
-   `cosign` and do not check this. `verify-images` FAILS if any image tag
-   was re-pointed away from its signed digest (downgrade/substitution); do
-   not proceed to step 5 on a failure.
+3. **Verify the target release's image signatures before pulling anything —
+   bind verification to the SAME registry/tag the deploy is about to pull**
+   (needs `cosign` >= v2.0 plus a registry digest resolver — `docker buildx
+   imagetools`, `crane`, or `skopeo` — on PATH; see INSTALL.md § "Verify
+   image signatures" and OPS.md § "Verify image signatures" for the full
+   recipe, including pinning `cosign` itself by checksum):
+
+   ```bash
+   # Read the exact registry + tag this install is about to pull from
+   # customer.env (the same file bin/lucairn pull/up read via --env-file) —
+   # do NOT hand-type a registry/tag that might differ from what step 5
+   # actually pulls. A mismatch here is exactly the mirror-deployment gap
+   # this step exists to close: verifying GHCR while pulling different bytes
+   # from an internal mirror proves nothing about what you deploy.
+   TARGET_TAG="$(grep -E '^LUCAIRN_IMAGE_TAG=' customer.env | cut -d= -f2-)"
+   TARGET_REGISTRY="$(grep -E '^LUCAIRN_IMAGE_REGISTRY=' customer.env | cut -d= -f2-)"
+   bin/lucairn verify-images --tag "$TARGET_TAG" --registry "$TARGET_REGISTRY"
+   ```
+
+   For a Helm install, use the tag/registry you are about to set in your
+   Helm values instead of `customer.env`.
+
+   **Coverage — read this before treating a PASS as "everything is verified":**
+   `verify-images` checks exactly the 13 images recorded in
+   `keys/image-digests-<TAG>.txt` — the 12 `dsa-*` services plus
+   `lucairn-dashboard` (on its own independent tag/cadence — the recorded
+   entry there is not necessarily `TARGET_TAG`). **`dsa-pii-ml` (the Phase 7
+   ML PII-detection sidecar) is explicitly OUTSIDE this verification
+   record** (independent release cadence, currently pinned `0.5.1`; see the
+   header comment in `keys/image-digests-0.5.4.txt`) — a PASS here gives you
+   no cryptographic assurance about the `dsa-pii-ml` image bytes. This is
+   the ONLY step in this runbook that gives cryptographic assurance for the
+   images it DOES cover — `doctor --offline` (next step) and plain `doctor`
+   do not call `cosign` and do not check any of this. `verify-images` FAILS
+   if any covered image's tag was re-pointed away from its signed digest
+   (downgrade/substitution); do not proceed to step 5 on a failure.
 4. Run `bin/lucairn doctor --offline`.
 5. Pull images or update Helm values.
 6. Apply the release.
@@ -1594,20 +1619,30 @@ single-replica are the v1.0 SLA.
 > the signed artifact. This docs fix closes that gap for the documented path;
 > wiring `verify-images` as an enforced (non-skippable) preflight inside the
 > `bin/lucairn pull`/`upgrade` CLI subcommands themselves is a separate,
-> code-level follow-up (banked, not in this change).
+> code-level follow-up (banked, not in this change). **Sol xhigh review
+> (2026-07-26) additionally caught: (a) the first draft of this step let the
+> registry/tag drift from what step 5 actually pulls on a mirror deployment
+> — fixed above by sourcing both from `customer.env`; (b) the coverage claim
+> was unqualified — fixed above to name the 13 covered images and call out
+> `dsa-pii-ml` as explicitly uncovered.**
 
 For every S1 Compose install, the profile-bound upgrade sequence is:
 
 ```bash
-bin/lucairn verify-images --tag <TARGET_TAG>   # step 3 above — do this first
+TARGET_TAG="$(grep -E '^LUCAIRN_IMAGE_TAG=' customer.env | cut -d= -f2-)"
+TARGET_REGISTRY="$(grep -E '^LUCAIRN_IMAGE_REGISTRY=' customer.env | cut -d= -f2-)"
+bin/lucairn verify-images --tag "$TARGET_TAG" --registry "$TARGET_REGISTRY"   # step 3 above — do this first
 bin/lucairn pull --env customer.env
 bin/lucairn up --env customer.env
 bin/lucairn status --env customer.env
 ```
 
 `bin/lucairn pull` itself is a bare `docker compose pull` — it does not call
-`cosign` and will happily pull a re-pointed tag. `verify-images` is a
-separate, deliberate step for exactly that reason; do not skip it.
+`cosign` and will happily pull a re-pointed tag, or (on a mirror deployment)
+different bytes than whatever registry you verified against if you don't
+source both commands from the same `customer.env`. `verify-images` is a
+separate, deliberate step for exactly that reason; do not skip it, and do
+not let its registry/tag drift from the `pull` step's.
 
 Use `bin/lucairn logs --env customer.env --tail 200 --service gateway` for
 inspection and `bin/lucairn down --env customer.env` for a non-destructive

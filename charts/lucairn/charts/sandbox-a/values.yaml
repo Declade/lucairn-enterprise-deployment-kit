@@ -197,29 +197,36 @@ sanitizer:
     # in the sanitizer-configmap.yaml template. Override only if pii-ml is
     # deployed to a non-default namespace OR an external endpoint.
     endpoint: ""
-    # T-64 (2026-07-27) — HONESTY DECLARATION, not a behavior change today.
-    # The chart-default endpoint above is always the pii-ml subchart's
-    # in-cluster Service on this namespace's container network — never a
-    # remote/Tailscale hop (the kit ships no tailnet transport at all: no
-    # config surface, no docs, no code path). "in_box_plaintext" is the only
-    # value that has ever been true for a stock kit install.
+    # T-64 (2026-07-27, amended after Sol xhigh HIGH-1) — HONESTY
+    # DECLARATION, not a behavior change today.
     #
-    # This key is currently INERT: main's sanitizer config.py/pii_ml_client.py
-    # (as of this PR) has no declared-transport vocabulary and never reads
-    # LUCAIRN_PII_ML_TRANSPORT — only the not-yet-merged
-    # feat/gliner-remote-fallback branch introduces that read (env-var
-    # fallback when no `transport` key is present in the rendered
-    # pii_ml_client config block). Declaring it now means a future kit
-    # release built from that branch's merged code inherits a correct
-    # declaration automatically, instead of shipping silently UNDECLARED
-    # (which that branch's code treats as legacy/unchecked, not as
-    # "same as in_box_plaintext").
+    # LEAVE THIS EMPTY unless you are also overriding `endpoint` above to a
+    # non-stock address. Empty means "derive from the endpoint": the chart
+    # template (deployment.yaml) auto-declares "in_box_plaintext" ONLY when
+    # `endpoint` is unset, i.e. this deployment dials the stock in-cluster
+    # pii-ml Service — the one case where "in-box" is true by construction.
     #
-    # If a future kit release adds a genuine remote/tailnet pii-ml topology,
-    # this default must NOT change silently — the operator enabling that
-    # topology must set this to "tailnet" explicitly alongside the tailnet
-    # address/config that topology requires.
-    transport: "in_box_plaintext"
+    # The moment you override `endpoint` to anything else (external
+    # endpoint, or a future tailnet address once that topology exists), the
+    # chart REFUSES to guess and the render FAILS unless you also set this
+    # key explicitly to exactly "tailnet" or "in_box_plaintext". Guessing
+    # from address shape is exactly the unsound pattern the DSA side deleted
+    # (`services/sanitizer/pii_ml_client.py` — Sol: "unsound",
+    # `is_local_endpoint()` removed) — an endpoint-only override that
+    # silently inherited "in_box_plaintext" would, once the
+    # feat/gliner-remote-fallback vocabulary ships in a kit release, get a
+    # genuinely off-box (tailnet) address falsely declared in-box and then
+    # REFUSED by that branch's own contradiction gate.
+    #
+    # This key is currently INERT either way: main's sanitizer
+    # config.py/pii_ml_client.py (as of this PR) has no declared-transport
+    # vocabulary and never reads LUCAIRN_PII_ML_TRANSPORT — only the
+    # not-yet-merged feat/gliner-remote-fallback branch introduces that read
+    # (env-var fallback when no `transport` key is present in the rendered
+    # pii_ml_client config block). The kit ships no tailnet transport at all
+    # today (no config surface, no docs, no code path), so for every stock
+    # install this resolves to "in_box_plaintext" automatically.
+    transport: ""
     # Per-scan gRPC deadline (seconds). Sanitizer's config.py reads this as
     # the flat `deadline_seconds` field on `pii_ml_client`; missing → 5.0.
     deadlineSeconds: 5

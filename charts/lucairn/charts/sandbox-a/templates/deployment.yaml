@@ -300,8 +300,8 @@ spec:
             # Phase-7-disabled topology.
             - name: LUCAIRN_PII_ML_ADDR
               value: "{{ .Values.sanitizer.piiMlClient.endpoint | default (printf "pii-ml.%s.svc.cluster.local:50056" .Values.namespace) }}"
-            # T-64 (2026-07-27): honestly declare the transport of the
-            # LUCAIRN_PII_ML_ADDR hop above. See values.yaml
+            # T-64 (2026-07-27, Sol xhigh HIGH-1 fix): honestly declare the
+            # transport of the LUCAIRN_PII_ML_ADDR hop above. See values.yaml
             # sanitizer.piiMlClient.transport for the full rationale — this
             # is a forward-compatible declaration, INERT against the
             # sanitizer code currently on main (which does not read this
@@ -309,8 +309,38 @@ spec:
             # feat/gliner-remote-fallback branch's declared-transport
             # vocabulary (LUCAIRN_PII_ML_TRANSPORT env-var fallback,
             # services/sanitizer/config.py) ships in a kit release.
+            #
+            # DERIVE, DON'T GUESS: "in_box_plaintext" is only auto-derived
+            # when .endpoint is UNSET, i.e. this deployment is dialling the
+            # stock in-cluster pii-ml Service above — the only case where
+            # "in-box" is actually true by construction. The moment an
+            # operator overrides .endpoint to anything else (an external
+            # endpoint, or a future tailnet address once that topology
+            # exists), the chart REFUSES to guess a transport for an
+            # address it does not control the shape of — the exact mistake
+            # the deleted address-shape-inference code made on the DSA side
+            # (services/sanitizer/pii_ml_client.py — Sol: "unsound", is_local_endpoint()
+            # removed). The operator must set .transport explicitly
+            # ("tailnet" or "in_box_plaintext") alongside a custom endpoint.
+            # Sol's failure mode this closes: an endpoint-only override
+            # silently inheriting "in_box_plaintext" would, once the
+            # gliner-remote-fallback vocabulary ships, get a tailnet address
+            # falsely declared in-box and then REFUSED by that branch's own
+            # tailnet-literal-vs-in_box_plaintext contradiction gate
+            # (pii_ml_client.py ~line 1841 on that branch).
+            {{- $piiMl := .Values.sanitizer.piiMlClient }}
+            {{- $piiMlEndpointOverridden := and $piiMl (ne ($piiMl.endpoint | default "") "") }}
+            {{- $piiMlTransportDeclared := ($piiMl.transport | default "") }}
+            {{- $piiMlTransport := $piiMlTransportDeclared }}
+            {{- if eq $piiMlTransportDeclared "" }}
+            {{- if $piiMlEndpointOverridden }}
+            {{- fail (printf "sanitizer.piiMlClient.endpoint is overridden to %q away from the stock in-cluster pii-ml Service, but sanitizer.piiMlClient.transport was not set. The chart cannot guess whether that address is in-box or off-box — set sanitizer.piiMlClient.transport to exactly \"tailnet\" or \"in_box_plaintext\" alongside the custom endpoint. See values.yaml sanitizer.piiMlClient.transport and T-64." $piiMl.endpoint) -}}
+            {{- else }}
+            {{- $piiMlTransport = "in_box_plaintext" }}
+            {{- end }}
+            {{- end }}
             - name: LUCAIRN_PII_ML_TRANSPORT
-              value: {{ .Values.sanitizer.piiMlClient.transport | default "in_box_plaintext" | quote }}
+              value: {{ $piiMlTransport | quote }}
             # Sanitizer content-address cache — see INSTALL.md § "Sanitizer
             # content cache (Redis — default ON)" for the operator runbook.
             # Default "redis" uses the bundled redis-sanitizer-cache StatefulSet

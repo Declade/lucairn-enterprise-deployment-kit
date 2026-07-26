@@ -547,4 +547,99 @@ if [ -f "$ROOT/apps/dashboard/image-manifest.yaml" ]; then
 fi
 echo "B1-S3: image_digests block in lockstep with keys/image-digests-0.5.4.txt (via parser) + dashboard manifest synced"
 
+# T-64: sanitizer.piiMlClient.transport derive/require/reject contract
+# (Sol xhigh HIGH-1 fix, 2026-07-26). Covers: default render (stock endpoint
+# auto-derives in_box_plaintext), override render (custom endpoint + explicit
+# transport succeeds and carries the explicit value through), sanitizer-only
+# ownership (LUCAIRN_PII_ML_TRANSPORT renders exactly once, only in
+# sandbox-a's sanitizer container), and invalid-vocabulary rejection (the
+# values.schema.json enum catches a typo like "tailnett" at render/lint time,
+# not at sanitizer boot).
+if command -v helm >/dev/null 2>&1; then
+  T64_CHART="$ROOT/charts/lucairn"
+
+  # 1) Default render: stock endpoint -> auto-derived in_box_plaintext, and
+  #    it renders exactly ONCE, sourced only from sandbox-a's deployment.yaml
+  #    (sanitizer-only ownership — no other subchart emits this env name).
+  #
+  #    NOTE: render to a FILE and grep the file, never pipe a captured
+  #    multi-thousand-line render through `echo "$VAR" | grep -q ...` — under
+  #    `set -o pipefail` (this script), `grep -q` exits on its first match
+  #    and closes the pipe, sending SIGPIPE to the upstream `echo`; pipefail
+  #    then reports the whole pipeline as failed even though the pattern DID
+  #    match. This is the exact HA-03/HA-09 hazard already documented above
+  #    in this file (search "SIGPIPE") — hit live while writing this block.
+  T64_DEFAULT_FILE="$(mktemp)"
+  helm template lucairn "$T64_CHART" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    >"$T64_DEFAULT_FILE"
+  grep -q '^            - name: LUCAIRN_PII_ML_TRANSPORT$' "$T64_DEFAULT_FILE" \
+    || { echo "T-64: LUCAIRN_PII_ML_TRANSPORT did not render on the default (stock-endpoint) render" >&2; rm -f "$T64_DEFAULT_FILE"; exit 1; }
+  T64_COUNT="$(grep -c '^            - name: LUCAIRN_PII_ML_TRANSPORT$' "$T64_DEFAULT_FILE" || true)"
+  [ "$T64_COUNT" -eq 1 ] \
+    || { echo "T-64: expected LUCAIRN_PII_ML_TRANSPORT to render exactly once (sanitizer-only ownership), got $T64_COUNT" >&2; rm -f "$T64_DEFAULT_FILE"; exit 1; }
+  T64_SOURCES="$(grep -B400 '^            - name: LUCAIRN_PII_ML_TRANSPORT$' "$T64_DEFAULT_FILE" | grep '^# Source:' | tail -1)"
+  case "$T64_SOURCES" in
+    *"sandbox-a/templates/deployment.yaml"*) ;;
+    *) echo "T-64: LUCAIRN_PII_ML_TRANSPORT rendered from an unexpected source: $T64_SOURCES" >&2; rm -f "$T64_DEFAULT_FILE"; exit 1 ;;
+  esac
+  T64_DEFAULT_VALUE="$(grep -A1 '^            - name: LUCAIRN_PII_ML_TRANSPORT$' "$T64_DEFAULT_FILE" | tail -1 | sed 's/^ *value: *//')"
+  rm -f "$T64_DEFAULT_FILE"
+  [ "$T64_DEFAULT_VALUE" = '"in_box_plaintext"' ] \
+    || { echo "T-64: default (stock-endpoint) render should auto-derive \"in_box_plaintext\", got $T64_DEFAULT_VALUE" >&2; exit 1; }
+  echo "T-64: default render — LUCAIRN_PII_ML_TRANSPORT auto-derives in_box_plaintext, renders once, sanitizer-only ownership ok"
+
+  # 2) Override render: custom endpoint + explicit transport declared ->
+  #    succeeds and carries the EXPLICIT value through (not silently coerced).
+  T64_OVERRIDE_FILE="$(mktemp)"
+  helm template lucairn "$T64_CHART" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    --set sandbox-a.sanitizer.piiMlClient.endpoint=pii-ml-external.example.com:50056 \
+    --set sandbox-a.sanitizer.piiMlClient.transport=tailnet \
+    >"$T64_OVERRIDE_FILE"
+  T64_OVERRIDE_VALUE="$(grep -A1 '^            - name: LUCAIRN_PII_ML_TRANSPORT$' "$T64_OVERRIDE_FILE" | tail -1 | sed 's/^ *value: *//')"
+  rm -f "$T64_OVERRIDE_FILE"
+  [ "$T64_OVERRIDE_VALUE" = '"tailnet"' ] \
+    || { echo "T-64: endpoint override with explicit transport=tailnet should render tailnet, got $T64_OVERRIDE_VALUE" >&2; exit 1; }
+  echo "T-64: override render — explicit transport declaration carries through unchanged"
+
+  # 3) Reject: custom endpoint WITHOUT an explicit transport must FAIL the
+  #    render (derive, don't guess) rather than silently defaulting.
+  T64_REJECT_STDERR="$(mktemp)"
+  if helm template lucairn "$T64_CHART" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    --set sandbox-a.sanitizer.piiMlClient.endpoint=pii-ml-external.example.com:50056 \
+    >/dev/null 2>"$T64_REJECT_STDERR"; then
+    echo "T-64: endpoint override with NO transport declared should have FAILED the render but succeeded" >&2
+    rm -f "$T64_REJECT_STDERR"
+    exit 1
+  fi
+  grep -q "sanitizer.piiMlClient.transport was not set" "$T64_REJECT_STDERR" \
+    || { echo "T-64: endpoint-override-without-transport failure had the wrong message" >&2; cat "$T64_REJECT_STDERR" >&2; rm -f "$T64_REJECT_STDERR"; exit 1; }
+  rm -f "$T64_REJECT_STDERR"
+  echo "T-64: endpoint override without explicit transport correctly FAILS the render (derive, don't guess)"
+
+  # 4) Invalid vocabulary: values.schema.json enum rejects a typo before it
+  #    ever reaches the sanitizer.
+  T64_SCHEMA_STDERR="$(mktemp)"
+  if helm template lucairn "$T64_CHART" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    --set sandbox-a.sanitizer.piiMlClient.transport=tailnett \
+    >/dev/null 2>"$T64_SCHEMA_STDERR"; then
+    echo "T-64: transport=tailnett (typo, not in the closed vocabulary) should have FAILED schema validation but succeeded" >&2
+    rm -f "$T64_SCHEMA_STDERR"
+    exit 1
+  fi
+  grep -q "must be one of" "$T64_SCHEMA_STDERR" \
+    || { echo "T-64: transport=tailnett failure was not the expected schema-enum rejection" >&2; cat "$T64_SCHEMA_STDERR" >&2; rm -f "$T64_SCHEMA_STDERR"; exit 1; }
+  rm -f "$T64_SCHEMA_STDERR"
+  echo "T-64: invalid transport vocabulary (typo) correctly rejected by values.schema.json enum"
+else
+  echo "T-64: piiMlClient.transport render assertions skipped (helm not installed)"
+fi
+
 echo "static checks: ok"

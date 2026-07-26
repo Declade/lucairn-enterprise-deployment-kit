@@ -13,6 +13,25 @@
         "false"
       ],
       "description": "Required exact Sandbox A startup contract. Use the YAML strings \"true\" or \"false\"; YAML booleans and all other shapes are invalid."
+    },
+    "sanitizer": {
+      "type": "object",
+      "properties": {
+        "piiMlClient": {
+          "type": "object",
+          "properties": {
+            "transport": {
+              "type": "string",
+              "enum": [
+                "",
+                "tailnet",
+                "in_box_plaintext"
+              ],
+              "description": "T-64: closed vocabulary matching the DSA sanitizer's declared-transport contract (services/sanitizer/config.py on the feat/gliner-remote-fallback branch). Empty string means 'derive from sanitizer.piiMlClient.endpoint' (deployment.yaml auto-declares in_box_plaintext only when endpoint is the stock in-cluster default; an overridden endpoint with this left empty fails the Helm render). A typo here (e.g. \"tailnett\") is caught at `helm template`/`lint` time instead of silently reaching the sanitizer as an unrecognized value."
+            }
+          }
+        }
+      }
     }
   }
 }
