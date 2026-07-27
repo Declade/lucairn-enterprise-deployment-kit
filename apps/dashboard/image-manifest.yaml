@@ -275,7 +275,16 @@ image_digests:
       digest: "sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
     redis:
       ref: "redis:7-alpine"
-      digest: "sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99"
+      # RE-PINNED 2026-07-27: upstream re-pointed the moving `7-alpine` tag
+      # (previous index digest sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99).
+      # This is a RE-PIN to what upstream publishes today, NOT a re-validation:
+      # the kit's acceptance suite has not been re-run against these bytes.
+      # Resolved independently from two places that agreed — CI's own resolver
+      # and a local `docker buildx imagetools inspect redis:7-alpine`.
+      # NOTE: `7-alpine` is a moving tag by design, so this pin WILL drift again
+      # on the next upstream patch and redden CI until re-pinned (postgres:16-alpine
+      # has the same shape; migrate is version-pinned and stable). See board T-159.
+      digest: "sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2"
     migrate:
       ref: "migrate/migrate:v4.17.0"
       digest: "sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa"
