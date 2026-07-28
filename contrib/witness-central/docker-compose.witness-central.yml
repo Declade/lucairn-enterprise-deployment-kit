@@ -114,17 +114,30 @@ services:
       LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "/etc/lucairn/witness-client/client.pem"
       LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "/etc/lucairn/witness-client/client.key"
       # Certificate RETRIEVAL (:50058) is a separate port with its own
-      # credential family (WITNESS_MTLS_*, per-method ACL) — it is NOT governed
-      # by LCR_WITNESS_REQUIRE_MTLS. Two supported shapes:
+      # credential family (WITNESS_MTLS_*) and its own per-method CN ACL.
+      #
+      # ⚠️ That ACL is NOT ON BY DEFAULT. When WITNESS_MTLS_* is unset the cert
+      # server degrades: it logs a warning and serves with no client
+      # authentication and no ACL. GetCertificate/ExportCertificates return
+      # certificates carrying redaction_manifest_body — the placeholder→original
+      # map — so an exposed, unconfigured :50058 is a bulk PII read. Do not
+      # assume this port is authenticated because it looks administrative; it is
+      # authenticated only once its server triple is provisioned.
+      #
+      # The witness now refuses to start :50058 unconfigured when
+      # LCR_WITNESS_REQUIRE_MTLS=true, so the central witness cannot come up in
+      # that state. See docs/WITNESS_CENTRAL_RUNBOOK.md §4.
+      #
+      # Two supported shapes:
       #
       #   a) Leave this pointing at the local veil-witness (the default below).
-      #      The local witness then serves only as a cert retrieval/verify surface
-      #      and signs nothing that matters; operators read their certificates
-      #      from the central store's web surface instead.
-      #   b) Point it at the central witness's :50058 and provision the
-      #      WITNESS_MTLS_* client triple. Only do this if the central witness
-      #      publishes that port to you — it is an authenticated admin-shaped
-      #      surface, not a public one.
+      #      The local witness then serves only as a cert retrieval/verify
+      #      surface and signs nothing that matters; operators read their
+      #      certificates from the central store's web surface instead.
+      #   b) Point it at the central witness's :50058 AND provision the
+      #      WITNESS_MTLS_* CLIENT triple here. Only do this if the central
+      #      witness publishes that port to this device specifically — the
+      #      runbook's ingress guidance is to publish :50057 only.
       #
       # (a) is the Slice-1 default because it changes nothing about cert
       # retrieval while the claim hop moves. Set LUCAIRN_CENTRAL_WITNESS_CERT_ADDR
