@@ -791,6 +791,14 @@ Per-device claim attribution is a Slice-2 item (it becomes strictly more
 important once an offline outbox replays claims, not less). Do not describe the
 current state to a customer as per-device evidence provenance.
 
+**Partially amended by the device countersignature (§10).** When a claim carries
+`device_countersign`, that one field IS bound to a specific device key, and the
+witness records at intake whether that key was the authenticated mTLS peer. It
+does not repair this section: the binding covers the request commitment on the
+sanitizer claim only, the other three claims remain role-attributed, and any
+party that declines to produce a countersignature falls straight back into
+everything above. Read §10.6 before quoting either section at a customer.
+
 ### 5.2 Mechanisms available today
 
 Phase 1 has no CRL. In order of preference:
@@ -1087,8 +1095,9 @@ Stated plainly so nobody deploys past them:
   the CA key can mint a leaf with any CN or SAN, including `dsa-gateway` — which
   would place it on the export allowlist. Protect the CA key accordingly; the
   authorization layer is exactly as strong as the issuance policy behind it.
-- **Phase-1 revocation is re-issuance** (§5.2), and there is **no per-device
-  claim attribution** (§5.1).
+- **Phase-1 revocation is re-issuance** (§5.2), and there is **no general
+  per-device claim attribution** (§5.1) — the device countersignature (§10)
+  binds one field on one claim to a device key and does not generalise past it.
 - **No rate limiting on `:50057`.** The claim server has message-size caps and
   keepalive policy but no per-peer rate limit or concurrency bound. On a LAN with
   four known emitters that is fine; as a fleet-facing WAN endpoint, any
@@ -1163,3 +1172,168 @@ Also: do **not** combine the `certification` profile with this overlay.
 `cert-builder` declares `depends_on: veil-witness: condition: service_healthy`,
 and recent Compose versions auto-activate a dependency's profile — which would
 silently start the very witness you just removed.
+
+---
+
+## 10. Customer-device countersignature
+
+*PRD: Opus Advisor `specs/2026-07/prd-2026-07-28-cert-anchor-hardening-wave1.md`
+(Slice 4). Requires the matching DSA change (`pkg/devicesign`).*
+
+### 10.1 What it is
+
+Splitting the witness off the device (§1) removes the operator of a machine as
+the notary of their own conduct. It does not, by itself, put anything in a
+certificate that the **central** operator could not have written alone: every
+claim is signed with a fleet-shared service key, the certificate is signed with
+the witness key, and under this topology both of those live on the central side.
+
+The countersignature closes that. At the gateway's ingress — before parsing,
+before classification, before any sanitizer hop — the device hashes the **exact
+raw request bytes** it received and signs a commitment to them with its own
+private key. The signature travels on the `dsa-sanitizer` claim and ends up in
+the certificate.
+
+What that buys, stated exactly: **the central witness operator, alone, can no
+longer manufacture or alter the record of what you sent.** They never held the
+device's private key, so they cannot produce a countersignature for a request
+your device never made, and they cannot change a commitment without the
+signature failing.
+
+What it does **not** buy, stated just as exactly:
+
+- It says nothing about whether the device is honest. A compromised device
+  signs whatever it is told to sign.
+- It is not custody proof. Your CA ceremony machine (§3.3) generates the device
+  key before distributing it, so whoever runs that ceremony can retain a copy.
+  Under this topology that party is **you**, not Lucairn — which is the whole
+  reason the guarantee holds.
+- It covers the **request**. The response, and everything the model did with
+  the request, are not countersigned by anything.
+
+### 10.2 Setup: none
+
+This is deliberate, and it is the reason the design was chosen over a dedicated
+signing key. The signer reads the credential §3.3 already provisions:
+
+```
+LCR_WITNESS_MTLS_CLIENT_CERT_PATH  /etc/lucairn/witness-client/client.pem
+LCR_WITNESS_MTLS_CLIENT_KEY_PATH   /etc/lucairn/witness-client/client.key
+```
+
+No new key, no new ceremony step, no new variable. If §3.3 was performed and
+the overlay is applied, the gateway countersigns. Confirm from the gateway's
+startup log:
+
+```sh
+docker compose ... logs gateway | grep -i 'device countersignature'
+# ACTIVE:      device countersignature ACTIVE: LCR_WITNESS_MTLS_* key <hex> (alg ecdsa-p256-sha256) ...
+# not enabled: no credential configured — expected on a stock install
+# FAILED:      credential configured but unusable — read the reason on the line
+```
+
+`FAILED` does **not** stop the gateway. Requests are protected exactly as
+before; only the extra evidence is missing. That is intentional: refusing to
+serve would trade the guarantee that protects the customer for the one that
+merely records it.
+
+Key types: the §3.3 ceremony issues `prime256v1`, which is supported
+(`ecdsa-p256-sha256`), as is Ed25519 (what the DSA `bootstrap-mtls-ca.sh`
+issues). An **RSA** device leaf is not part of the wire contract and logs
+`FAILED` at boot.
+
+### 10.3 What lands in the certificate
+
+Inside the `dsa-sanitizer` claim's signed `canonical_payload`, under
+`device_countersign`:
+
+| Field | Meaning |
+| --- | --- |
+| `v` | Wire version (`1`). |
+| `commitment_alg` / `request_commitment` | `sha256`, hex, over the raw request bytes as received. |
+| `signature_alg` / `signature` | `ecdsa-p256-sha256` or `ed25519`; base64 (ECDSA is ASN.1 DER). |
+| `device_key_id` | `sha256` over the DER SPKI of the device public key. |
+| `device_public_key` | Base64 DER SPKI — makes verification self-contained. |
+
+The signed bytes are a domain-separated, length-framed message binding the
+`request_id` to the commitment, so a genuine countersignature cannot be moved
+onto a different request.
+
+Two things this does **not** change, and both are load-bearing:
+
+- **No signable bytes move.** The witness signable map stays v2 = 7 keys and
+  v3 = 13 keys. This is claim-scoped additive metadata, exactly like
+  `redaction_manifest_hash` and `tms_manifest_hash`. Every SDK verifier in the
+  field keeps verifying certificates issued before and after this change.
+- **The device CN is not published.** `device_key_id` is a hash, not your
+  machine name. The CN you chose in §3.3 stays out of the claim.
+
+### 10.4 Honest absence — read before filing a bug
+
+**A request without a countersignature proceeds normally, and its certificate
+simply lacks the fields. It never blocks a request, and neither does an invalid
+one.** Absence is a rendered state, not a failure:
+
+- A **stock** install (no witness-central ceremony) has no device identity and
+  never countersigns. Its certificates are the same shape as every certificate
+  issued before this feature existed.
+- The hosted lane has no device identity either.
+- A certificate that predates this change has no fields to show.
+
+Three outcomes, three distinct meanings — do not let a reader collapse them:
+
+| In the certificate | Means |
+| --- | --- |
+| no `device_countersign` key | This device did not countersign. Normal. |
+| present, verifies | The device that holds that key committed to those exact bytes. |
+| present, does not verify | **Something is wrong.** The claim is still accepted and stored verbatim so the discrepancy survives — investigate; do not treat it as absence. |
+
+### 10.5 Verifying one yourself
+
+The central witness checks each countersignature at claim intake and logs the
+outcome (`witness_device_countersign_total`, labels `status` and
+`peer_binding`). Do not stop there: **that verdict comes from the party the
+countersignature exists to constrain.** Its value to you is operational, not
+evidentiary.
+
+The evidentiary property is that the claim carries the commitment, the
+signature and the public key verbatim, so you can re-run the check yourself,
+offline, at any time, without asking the operator for anything:
+
+1. Take `device_public_key` from the claim, base64-decode it, and confirm
+   `sha256` of those bytes equals `device_key_id`.
+2. Confirm that public key is one you issued — compare against the leaves from
+   your §3.3 ceremony:
+   `openssl x509 -in client-<device>.pem -pubkey -noout | openssl pkey -pubin -outform DER | shasum -a 256`
+3. Rebuild the signed message: the ASCII prefix `lucairn-device-countersign-v1`,
+   then a big-endian `uint32` length followed by the claim's `request_id`, then
+   a big-endian `uint32` length followed by the 32 raw bytes of
+   `request_commitment`.
+4. Verify `signature` over that message (ECDSA-P256 verifies over its `sha256`;
+   Ed25519 verifies over the message directly).
+5. If you still hold the original request bytes, confirm `sha256` of them equals
+   `request_commitment`. This is the step that makes it evidence about *content*
+   rather than about a hash — Lucairn cannot perform it for you, because Lucairn
+   does not hold your raw request.
+
+The one check that is **not** reproducible later is the peer binding: at intake
+the witness could see which mTLS-authenticated device opened the connection and
+confirm it was the same key. Once the connection closes that fact exists only in
+the witness log line.
+
+### 10.6 Effect on §5.1
+
+§5.1 says the claim hop authenticates "a device in the fleet, never *which*
+device", and that the per-device TLS identity is not bound to the claim it
+carries. That remains true of the **transport**, and it remains true of every
+claim that carries no countersignature — which a hostile device can always
+choose.
+
+What changed is narrower and worth stating without inflation: when a
+countersignature IS present, the claim carries a device-bound signature over the
+request commitment, and the witness additionally records whether that key was
+the mTLS peer on the connection. That is per-device attribution **of the
+request commitment on the sanitizer claim**, opt-out-able by any party that
+declines to produce one. It is not general per-device claim provenance, it does
+not make the other three claims attributable, and it is not a revocation
+mechanism (§5.2 is still re-issuance).
