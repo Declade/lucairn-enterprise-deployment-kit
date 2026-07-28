@@ -27,6 +27,18 @@ PII still never leaves it *for the model path* — while claims travel to a
 witness the operator does not control, which signs and anchors the
 certificates.
 
+**The device runs no witness at all** (ratified 2026-07-28). An earlier revision
+of this overlay left the local witness container up as a "retrieval-only"
+surface whose signing key became inert rather than absent. That was reversed:
+inert is not absent. A witness on the operator's machine cannot deliver
+"evidence the operator cannot forge" by construction, and a key that is present
+is a key that can be used. The device is a protection plane and a claim emitter.
+It is not a notary.
+
+One consequence you must action: `bin/lucairn init` still writes a witness
+signing key into `customer.env` for every topology, and this overlay cannot
+reach into that generator. Deleting it is a manual step — §9.
+
 ### What crosses the network that did not before
 
 Be explicit about this with anyone reviewing the deployment, because it is the
@@ -237,6 +249,95 @@ LCR_WITNESS_REQUIRE_MTLS=true
 
 Point 3 is the one that is easy to get wrong, and it is why this section lists
 seven variables rather than four.
+
+### 4.1 Authorization — who may do what once the handshake succeeds
+
+**The seven variables above are AUTHENTICATION. They are not authorization.**
+
+`LCR_WITNESS_REQUIRE_MTLS` proves a caller holds a key whose leaf chains to your
+CA. It says nothing about *which* caller. Every device you issue a leaf to, and
+every service on the witness host that holds one, satisfies it equally — so
+without the settings below, any device credential can call
+`ExportCertificates` and stream out *any* customer's certificates, manifest
+bodies included, by naming their `customer_id` in the request. The
+`customer_id` is caller-supplied; before this it was the only thing scoping the
+response.
+
+Add these to the witness process:
+
+```sh
+# Who may submit claims. Setting this REPLACES the default — list every
+# identity, not just the ones you are adding.
+#
+# Two granularities meet here and it is worth understanding why. The DSA mesh
+# identifies a SERVICE (dsa-sanitizer, dsa-gateway, ...). §3.3 above issues one
+# credential per DEVICE (lucairn-device-laptop-01), shared by that device's four
+# emitter containers. Both are listed because both dial this port: the mesh SANs
+# for any services co-located with the witness, the device CNs for your fleet.
+#
+# The device-level grain means a device's four emitters cannot be told apart by
+# this control. That is a real limitation, not an oversight — see §8.
+LCR_WITNESS_CLAIM_ALLOWED_PEERS=dsa-gateway,dsa-id-bridge,dsa-sanitizer,dsa-sandbox-b,dsa-reid-guard,dsa-audit,lucairn-device-laptop-01,lucairn-device-laptop-02
+
+# Who may bulk-read certificates. LEAVE THIS ALONE unless you have a specific
+# reason.
+#
+# The default under the latch is the gateway identity and nothing else — in
+# particular NOT your device CNs. That is the property that matters: a laptop
+# credential cannot read certificates, its own or anyone else's, because it is
+# not on this list. Adding a device CN here hands that device a bulk-export
+# primitive over the whole store.
+#
+# Note "admin" is allowed OFF-latch (the legacy ACL) and NOT under the latch. If
+# you have tooling that exports as "admin", name it here deliberately.
+# LCR_WITNESS_EXPORT_ALLOWED_PEERS=gateway,dsa-gateway
+
+# Bind exporters to the tenants they may export. Format: peer=cust1|cust2,peer2=cust3
+# A peer WITH an entry is refused any customer_id outside it. A peer WITHOUT one
+# is governed by the binding mode below.
+# LCR_WITNESS_EXPORT_CUSTOMER_MAP=gateway=cust_acme|cust_globex
+
+# What happens to an exporter that has NO map entry:
+#   audit    (default under the latch) allow, log it, count it
+#   enforce  refuse
+#   off      no customer check at all
+#
+# The default is `audit` rather than `enforce` because a multi-tenant hosted
+# gateway legitimately serves every tenant from one identity, and defaulting to
+# refuse would take such a deployment offline on day one. If your central
+# witness serves a fixed set of exporters you have mapped, set `enforce`.
+# LCR_WITNESS_EXPORT_CUSTOMER_BINDING=enforce
+
+# Cap on one export stream. Default under the latch: 10000. 0 disables.
+# Exceeding it FAILS the stream rather than truncating it — a truncated export
+# that returned OK could not be told apart from a complete one.
+# LCR_WITNESS_EXPORT_MAX_CERTS=10000
+```
+
+A malformed value in any of these stops the witness at boot with a message
+naming the variable. That is deliberate: silently falling back to the default
+would leave you believing a narrower list is in force than actually is.
+
+**Every `ExportCertificates` call is now logged**, whether it succeeded or was
+refused:
+
+```
+[witness-export-audit] ts=... peer="gateway" customer_id="cust_acme" returned=42 capped=false outcome=ok duration_ms=118
+```
+
+Caller, tenant, count, outcome, timing — and deliberately nothing else. No
+certificate body, no placeholder, no original value: an audit trail that copies
+the thing it audits is a second breach surface. Counters for the same events are
+on the Prometheus surface (`witness_export_*`, `witness_claim_intake_denied_total`).
+
+Read the startup log once after enabling. The witness prints its resolved
+posture, and prints a loud warning when claim-intake authorization is NOT
+enforced:
+
+```
+[witness-authz] latch=true export_peers=dsa-gateway,gateway export_customer_binding=audit export_max_certs=10000 identity=cn+dns-sans
+[witness-authz] claim_peers=...
+```
 
 `:50058` is the certificate-**retrieval** port. It has its own credential family
 and its own per-method CN ACL, and when `WITNESS_MTLS_*` is unset it *degrades
@@ -454,10 +555,27 @@ Stated plainly so nobody deploys past them:
 - **The witness rejects claims outside a ±30s timestamp skew window.** Any
   meaningful offline queueing would be rejected on reconnect today. Slice 3 has
   to solve that server-side before offline operation is real.
-- **The local witness still holds a signing key**, inert but present, because
-  certificate retrieval has not been decoupled from it yet. The PRD's "laptop
-  holds no signing key in the witness role" criterion is not met by this slice
-  alone.
+- **The generated witness signing key is still in `customer.env`** until you
+  delete it (§9). The container no longer starts, so nothing uses the key — but
+  "unused" is not "absent", and the PRD's criterion is absence. Making
+  `bin/lucairn init` topology-aware so the key is never generated is a
+  follow-up; today it is a documented manual step, which means it is a step
+  someone will skip.
+- **Claim-intake authorization is per DEVICE, not per service** (§4.1). One
+  device credential is shared by that device's four emitter containers, so the
+  allowlist cannot distinguish the sanitizer from the gateway on the same
+  laptop. A compromised container on a device can submit claims as any of that
+  device's emitters. Narrowing this needs per-service credentials on the device,
+  which is Slice-4 PKI work.
+- **`customer_id` binding is advisory by default.** Under the latch an exporter
+  with no `LCR_WITNESS_EXPORT_CUSTOMER_MAP` entry is allowed and recorded, not
+  refused, because a multi-tenant gateway legitimately exports for every tenant.
+  Set `LCR_WITNESS_EXPORT_CUSTOMER_BINDING=enforce` once you have mapped your
+  exporters, or the binding is a log line rather than a control.
+- **The device CN is not verified against anything but your CA.** Whoever holds
+  the CA key can mint a leaf with any CN or SAN, including `dsa-gateway` — which
+  would place it on the export allowlist. Protect the CA key accordingly; the
+  authorization layer is exactly as strong as the issuance policy behind it.
 - **Phase-1 revocation is re-issuance** (§5.2), and there is **no per-device
   claim attribution** (§5.1).
 - **No rate limiting on `:50057`.** The claim server has message-size caps and
@@ -467,3 +585,70 @@ Stated plainly so nobody deploys past them:
   ingress you place in front of it (§4 Ingress).
 - **Failure is asymmetric across services** (§5.4): Go emitters exit at boot, the
   Python ones degrade silently to PARTIAL.
+
+---
+
+## 9. Retire the local signing key
+
+Do this after your first successful witness-central turn is verified (§7), not
+before — if you delete the key and the central path is not actually working, you
+have removed your fallback and your evidence at the same time.
+
+The overlay stops the witness container. It cannot stop `bin/lucairn init` from
+having already written the key, because that generator runs before any topology
+choice exists and this overlay has no reach into it.
+
+**1. Confirm the central path is live.** §7 — the witness key id on a freshly
+issued certificate must be the CENTRAL witness's. Do not proceed on "no errors
+in the log"; a device that is silently sealing PARTIAL also has no errors.
+
+**2. Confirm nothing local is signing.** The service must be absent from the
+rendered configuration, not merely stopped:
+
+```sh
+docker compose -f docker-compose.customer.yml \
+  -f contrib/witness-central/docker-compose.witness-central.yml \
+  --env-file customer.env \
+  --env-file contrib/witness-central/witness-central.env \
+  config --services | grep -c '^veil-witness$'
+# expect exactly: 0
+```
+
+**3. Delete the private key lines from `customer.env`:**
+
+```
+LCR_WITNESS_SIGNING_KEY=...
+VEIL_WITNESS_SIGNING_KEY=...
+```
+
+**4. Repoint the PUBLIC key — do not delete it.** `LCR_WITNESS_PUBLIC_KEY` is
+published by the gateway at `/.well-known/veil-keys.json`, where external SDK
+verifiers fetch it to validate certificates. Set its value to the **central**
+witness's public key. Leaving the old value there advertises a key that signed
+nothing, and a verifier that trusts the discovery surface will reject every
+certificate you now issue.
+
+**5. Recreate the stack** and run one more turn through §7.
+
+**6. Destroy the old key material** wherever else it exists — your secret
+manager, any backup of `customer.env`, the terminal scrollback from the original
+`init`. A retired signing key that still exists somewhere is a key that can
+still sign a certificate that will verify.
+
+### What you have NOT removed
+
+`postgres-veil` and `migrate-veil` keep running. They hold no key and sign
+nothing; they are left in place because `lucairn-dashboard` (profile
+`dashboard`) reads the local certificate log through them, and removing them
+would turn an honest empty result into a connection error.
+
+Under witness-central that local certificate log is **empty** — certificates
+live in the central store. Point the dashboard at the central witness
+(`LUCAIRN_DASHBOARD_WITNESS_ENDPOINT`) or read certificates from the central
+store's own surface. An empty cert browser here is not evidence of an empty
+cert log.
+
+Also: do **not** combine the `certification` profile with this overlay.
+`cert-builder` declares `depends_on: veil-witness: condition: service_healthy`,
+and recent Compose versions auto-activate a dependency's profile — which would
+silently start the very witness you just removed.

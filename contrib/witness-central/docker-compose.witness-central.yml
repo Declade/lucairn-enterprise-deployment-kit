@@ -16,6 +16,18 @@
 # control receives the claims and signs the certificates. The claim hop is
 # authenticated mutual TLS with a per-device client credential.
 #
+# The local witness is NOT STARTED (ratified 2026-07-28). The laptop is a
+# protection plane and a claim emitter; it is not a notary. See the
+# `veil-witness` block at the end of this file for what that costs and for the
+# one operator step this overlay cannot perform for you (retiring the generated
+# witness signing key from customer.env).
+#
+# The claim hop is now AUTHORIZED as well as authenticated: the central witness
+# accepts claims only from the emitter identities and answers ExportCertificates
+# only to the gateway. A laptop credential cannot bulk-read certificates, its
+# own or anyone else's. Those controls are configured on the CENTRAL witness,
+# not here — see docs/WITNESS_CENTRAL_RUNBOOK.md §7.
+#
 # ADDITIVE ONLY. This file overrides nothing that exists in a default install —
 # it is applied explicitly, on top of the stock compose:
 #
@@ -48,8 +60,10 @@ services:
 
   # ── Claim emitters ────────────────────────────────────────────────
   #
-  # All four emitters read LCR_WITNESS_ADDR and dial the witness claim-intake
-  # port. Each gets the same three things: the central address, the mTLS latch,
+  # All four kit emitters (audit, id-bridge, sanitizer, gateway) read
+  # LCR_WITNESS_ADDR and dial the witness claim-intake port. The DSA repo has
+  # two more — sandbox-b and reid-guard — which this compose file does not
+  # define; a kit install reaches sandbox-b remotely. Each gets the same three things: the central address, the mTLS latch,
   # and a read-only mount of this device's client credential.
   #
   # The credential uses the WITNESS-SCOPED LCR_WITNESS_MTLS_* family, not the
@@ -114,60 +128,104 @@ services:
       LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "/etc/lucairn/witness-client/client.pem"
       LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "/etc/lucairn/witness-client/client.key"
       # Certificate RETRIEVAL (:50058) is a separate port with its own
-      # credential family (WITNESS_MTLS_*) and its own per-method CN ACL.
+      # credential family (WITNESS_MTLS_*) and its own per-method peer ACL.
       #
-      # ⚠️ That ACL is NOT ON BY DEFAULT. When WITNESS_MTLS_* is unset the cert
-      # server degrades: it logs a warning and serves with no client
-      # authentication and no ACL. GetCertificate/ExportCertificates return
-      # certificates carrying redaction_manifest_body — the placeholder→original
-      # map — so an exposed, unconfigured :50058 is a bulk PII read. Do not
-      # assume this port is authenticated because it looks administrative; it is
-      # authenticated only once its server triple is provisioned.
+      # This address is MANDATORY under the ratified witness-less topology.
+      # An earlier revision of this overlay defaulted it to the local
+      # `veil-witness:50058` and left that container running as a "retrieval
+      # only" surface. That is no longer available: the local witness is not
+      # started at all (see the veil-witness block at the end of this file), so
+      # a default pointing at it would resolve to nothing and the gateway's
+      # /verify and /summary surfaces would fail with a connection error
+      # instead of a configuration error. Failing at config-load time with a
+      # sentence naming the variable is the better of the two.
       #
-      # The witness now refuses to start :50058 unconfigured when
-      # LCR_WITNESS_REQUIRE_MTLS=true, so the central witness cannot come up in
-      # that state. See docs/WITNESS_CENTRAL_RUNBOOK.md §4.
+      # ⚠️ The cert port's ACL is NOT ON BY DEFAULT on an arbitrary witness.
+      # When WITNESS_MTLS_* is unset the cert server degrades: it logs a
+      # warning and serves with no client authentication and no ACL.
+      # GetCertificate/ExportCertificates return certificates carrying
+      # redaction_manifest_body — the placeholder→original map — so an exposed,
+      # unconfigured :50058 is a bulk PII read. Do not assume this port is
+      # authenticated because it looks administrative.
       #
-      # Two supported shapes:
+      # The witness refuses to start :50058 unconfigured when
+      # LCR_WITNESS_REQUIRE_MTLS=true, and it now additionally restricts
+      # ExportCertificates to the GATEWAY identity and binds the caller-supplied
+      # customer_id to the authenticated peer. See docs/WITNESS_CENTRAL_RUNBOOK.md
+      # §4 and §7.
+      LCR_WITNESS_CERT_ADDR: "${LUCAIRN_CENTRAL_WITNESS_CERT_ADDR:?set LUCAIRN_CENTRAL_WITNESS_CERT_ADDR (host:port of the central witness certificate port, e.g. witness.example.eu:50058) — the laptop no longer runs a witness to fall back to; see docs/WITNESS_CENTRAL_RUNBOOK.md}"
+      # The :50058 hop has its OWN credential family (WITNESS_MTLS_*, no LCR_
+      # prefix — services/gateway/internal/clients/veil.go:97-99). It is not the
+      # claim-hop family and not the mesh family; three families, three hops,
+      # deliberately not interchangeable.
       #
-      #   a) Leave this pointing at the local veil-witness (the default below).
-      #      The local witness then serves only as a cert retrieval/verify
-      #      surface and signs nothing that matters; operators read their
-      #      certificates from the central store's web surface instead.
-      #   b) Point it at the central witness's :50058 AND provision the
-      #      WITNESS_MTLS_* CLIENT triple here. Only do this if the central
-      #      witness publishes that port to this device specifically — the
-      #      runbook's ingress guidance is to publish :50057 only.
-      #
-      # (a) is the Slice-1 default because it changes nothing about cert
-      # retrieval while the claim hop moves. Set LUCAIRN_CENTRAL_WITNESS_CERT_ADDR
-      # to choose (b).
-      LCR_WITNESS_CERT_ADDR: "${LUCAIRN_CENTRAL_WITNESS_CERT_ADDR:-veil-witness:50058}"
+      # Without this triple the gateway dials :50058 with no client certificate,
+      # and a central witness under the latch will refuse the handshake — which
+      # presents to the operator as "certificates never load" long after the
+      # deploy that caused it.
+      WITNESS_MTLS_CA_BUNDLE_PATH: "/etc/lucairn/witness-client/ca.pem"
+      WITNESS_MTLS_CLIENT_CERT_PATH: "/etc/lucairn/witness-client/client.pem"
+      WITNESS_MTLS_CLIENT_KEY_PATH: "/etc/lucairn/witness-client/client.key"
+      # The central witness's server leaf will not carry the laptop's idea of
+      # its hostname unless the CA ceremony issued it that way. Override when
+      # the published address and the certificate SAN differ.
+      WITNESS_MTLS_SERVER_NAME: "${LUCAIRN_CENTRAL_WITNESS_SERVER_NAME:-}"
     volumes:
       - ${LUCAIRN_WITNESS_CLIENT_CERT_DIR:?set LUCAIRN_WITNESS_CLIENT_CERT_DIR — see docs/WITNESS_CENTRAL_RUNBOOK.md}:/etc/lucairn/witness-client:ro
 
-# ── Local witness: deliberately left alone ──────────────────────────
-#
-# This overlay does NOT stop or reconfigure the `veil-witness` service, and that
-# is the part to understand before rolling further than a pilot.
-#
-# Slice 1 moves claim SUBMISSION, not certificate RETRIEVAL. The gateway's
-# /verify and /summary surfaces still resolve certificates through
-# LCR_WITNESS_CERT_ADDR, which defaults above to the local service. Stopping it
-# here would break those surfaces for reasons unrelated to the trust question
-# this overlay exists to fix.
-#
-# What it no longer does is receive claims: every emitter above now dials the
-# central address, so nothing arrives at this instance and it signs nothing.
-# Its signing key becomes inert rather than absent.
-#
-# "Inert" is weaker than "absent", and the PRD's success criterion is that the
-# laptop holds no signing key in the witness role. Reaching that requires
-# decoupling cert retrieval from the local witness — a later slice. Until then,
-# verify centrality by checking the KEY ID on an issued certificate, never by
-# assuming a container's state:
-#
-#   the cert's witness key id must be the CENTRAL witness's, never this host's.
-#
-# Operators who want the local witness down today can add
-# `--scale veil-witness=0` and accept that local /verify stops resolving.
+  # ── Local witness: NOT STARTED ────────────────────────────────────
+  #
+  # RATIFIED 2026-07-28 (PRD § "Ratified architecture change"): the laptop runs
+  # NO witness.
+  #
+  # An earlier revision of this overlay left the container up as a
+  # "retrieval-only surface" whose signing key became inert rather than absent.
+  # Marc ratified the Fable finding that inert is not absent: a witness on the
+  # operator's machine cannot deliver "evidence the operator cannot forge" by
+  # construction, and every hour the key sits on the laptop is an hour the
+  # security story depends on nobody using it. The laptop is a protection plane
+  # and a claim emitter. It is not a notary.
+  #
+  # `profiles:` is how a compose OVERLAY removes a service from the default
+  # set — the service definition is inherited from docker-compose.customer.yml
+  # and cannot be deleted from here, but a profile that nobody activates means
+  # nothing starts. `docker compose ... config --services` will not list it and
+  # `up` will not create it.
+  #
+  # WHAT THIS BREAKS, STATED PLAINLY (all of it profile-gated already, none of
+  # it in the default laptop run):
+  #
+  #   - `cert-builder` (profile "certification") declares
+  #     `depends_on: veil-witness: condition: service_healthy`. Do NOT combine
+  #     the certification profile with this overlay: recent Compose versions
+  #     auto-activate a dependency's profile, which would silently start the
+  #     very witness this overlay exists to remove.
+  #   - `lucairn-dashboard` (profile "dashboard") reads the LOCAL cert log at
+  #     postgres-veil and defaults LUCAIRN_DASHBOARD_WITNESS_ENDPOINT to
+  #     veil-witness:50058. Under witness-central that database is EMPTY —
+  #     certificates live in the central store. Point the dashboard at the
+  #     central witness, or read certificates from the central store's own
+  #     surface. An empty cert browser is not evidence of an empty cert log.
+  #
+  # postgres-veil and migrate-veil are deliberately LEFT RUNNING. They hold no
+  # key and sign nothing; removing them would break the dashboard profile with
+  # a connection error rather than the honest empty result above.
+  #
+  # ⚠️ THE SIGNING KEY IS STILL PROVISIONED. `bin/lucairn init` generates
+  # LCR_WITNESS_SIGNING_KEY into customer.env regardless of topology, and this
+  # overlay cannot reach into that generator. Removing that line from
+  # customer.env is a MANDATORY operator step — see
+  # docs/WITNESS_CENTRAL_RUNBOOK.md § "Retire the local signing key". Until it
+  # is done, the laptop holds a witness signing key that nothing uses, which is
+  # exactly the state the ratified change exists to end. Making the generator
+  # topology-aware is tracked as a follow-up against bin/lucairn.
+  veil-witness:
+    # Any profile name nobody activates would do; this one is named so that an
+    # operator who sees it in `docker compose config` understands both that the
+    # omission is deliberate and what the escape hatch is for.
+    #
+    # DEV/DEMO ESCAPE HATCH: `--profile witness-local-dev-only` starts it again.
+    # That is a self-signed-evidence topology — the operator signs certificates
+    # about their own conduct — and is acceptable only for offline demos where
+    # nobody will rely on the signature. It is never the pilot default.
+    profiles: ["witness-local-dev-only"]

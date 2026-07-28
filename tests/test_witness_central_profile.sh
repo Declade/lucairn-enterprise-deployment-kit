@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+#
+# Rendered-compose differential for the `witness-central` topology overlay.
+#
+# PRD: Opus Advisor specs/2026-07/prd-2026-07-28-split-evidence-plane.md
+# Board: #206 (topology) / #223 (authorization) / #225 (PKI operations)
+#
+# WHY A RENDER, NOT A GREP
+# ------------------------
+# The claim this file exists to hold is "the laptop runs no witness". You cannot
+# check that by grepping the overlay: the `veil-witness` service is DEFINED in
+# docker-compose.customer.yml and a compose overlay cannot delete a service, only
+# add keys to it. What the overlay does is assign a `profiles:` value that nobody
+# activates, and the only thing that proves that works is asking Compose itself
+# what it would start.
+#
+# It is also a DIFFERENTIAL: the same render without the overlay must still list
+# the witness. A test that only asserts the absence would keep passing if the
+# service name were renamed, if the base file dropped it, or if the env fixture
+# silently failed to render at all — three ways to get a green light for the
+# wrong reason. Asserting the before-state as well makes the absence mean
+# something.
+#
+# `docker compose config` is client-side only; no daemon, no network, no images.
+
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+BASE="docker-compose.customer.yml"
+OVERLAY="contrib/witness-central/docker-compose.witness-central.yml"
+ENV_EXAMPLE="contrib/witness-central/witness-central.env.example"
+RUNBOOK="docs/WITNESS_CENTRAL_RUNBOOK.md"
+
+FAILS=0
+N=0
+
+ok()   { N=$((N+1)); printf '  ok   %s\n' "$1"; }
+fail() { N=$((N+1)); FAILS=$((FAILS+1)); printf '  FAIL %s\n' "$1"; }
+check() { if [ "$1" = "$2" ]; then ok "$3"; else fail "$3 (want=$1 got=$2)"; fi; }
+
+if ! docker compose version >/dev/null 2>&1; then
+  echo "SKIP: docker compose not available — this test renders config only, but needs the CLI"
+  exit 0
+fi
+
+for f in "$BASE" "$OVERLAY" "$ENV_EXAMPLE" "$RUNBOOK"; do
+  [ -f "$f" ] || { echo "FAIL: missing $f"; exit 1; }
+done
+
+# ── Synthetic env ───────────────────────────────────────────────────
+#
+# Only the ${VAR:?...} variables need real values; everything else may default.
+# Values are obvious placeholders — this fixture never reaches a container.
+WK="$(mktemp -d)"
+trap 'rm -rf "$WK"' EXIT
+ENVFILE="$WK/render.env"
+cat > "$ENVFILE" <<'EOF'
+AUDIT_APP_PASSWORD=render-only
+BUILD_AUTH_TOKEN=render-only
+CANARY_HMAC_KEY=render-only
+CUSTOMER_KEY_ID=render-only
+DSA_BRIDGE_ENCRYPTION_KEY=render-only
+DSA_SERVICE_TOKEN=render-only
+GATEWAY_KEYSTORE_KEY=render-only
+PORTAL_API_KEY=render-only
+POSTGRES_AUDIT_PASSWORD=render-only
+POSTGRES_BRIDGE_PASSWORD=render-only
+POSTGRES_SANDBOX_A_PASSWORD=render-only
+POSTGRES_VEIL_PASSWORD=render-only
+VEIL_APP_PASSWORD=render-only
+VEIL_WITNESS_SIGNING_KEY=00
+VEIL_WITNESS_PUBLIC_KEY=00
+VEIL_BRIDGE_PUBLIC_KEY=00
+VEIL_SANITIZER_PUBLIC_KEY=00
+VEIL_AUDIT_PUBLIC_KEY=00
+VEIL_GATEWAY_PUBLIC_KEY=00
+VEIL_SANDBOX_B_PUBLIC_KEY=00
+VEIL_AUDIT_SIGNING_KEY=00
+VEIL_BRIDGE_SIGNING_KEY=00
+VEIL_SANITIZER_SIGNING_KEY=00
+LUCAIRN_CENTRAL_WITNESS_ADDR=witness.render.invalid:50057
+LUCAIRN_CENTRAL_WITNESS_CERT_ADDR=witness.render.invalid:50058
+LUCAIRN_WITNESS_CLIENT_CERT_DIR=/tmp/render-only-certs
+EOF
+
+render_services() { docker compose "$@" --env-file "$ENVFILE" config --services 2>/dev/null; }
+render_full()     { docker compose "$@" --env-file "$ENVFILE" config          2>/dev/null; }
+
+echo "== witness-central rendered-compose differential =="
+
+# ── 1. The differential ─────────────────────────────────────────────
+
+BASE_SERVICES="$(render_services -f "$BASE")"
+OVER_SERVICES="$(render_services -f "$BASE" -f "$OVERLAY")"
+
+if [ -z "$BASE_SERVICES" ] || [ -z "$OVER_SERVICES" ]; then
+  echo "FAIL: a render produced no services at all — the env fixture is incomplete, so every"
+  echo "      assertion below would pass vacuously. Re-check the \${VAR:?} set in $BASE."
+  exit 1
+fi
+
+check 1 "$(printf '%s\n' "$BASE_SERVICES" | grep -c '^veil-witness$' || true)" \
+  "baseline (no overlay) DOES start a local witness"
+
+check 0 "$(printf '%s\n' "$OVER_SERVICES" | grep -c '^veil-witness$' || true)" \
+  "witness-central does NOT start a local witness (ratified 2026-07-28)"
+
+# The overlay must remove the witness and NOTHING else. A profile typo on the
+# wrong service would show up here as a second disappearance.
+MISSING="$(comm -23 <(printf '%s\n' "$BASE_SERVICES" | sort) <(printf '%s\n' "$OVER_SERVICES" | sort) | tr '\n' ' ' | sed 's/ *$//')"
+check "veil-witness" "$MISSING" "the overlay removes veil-witness and nothing else"
+
+# ── 2. The escape hatch still exists, and is opt-in ─────────────────
+
+DEV_SERVICES="$(render_services -f "$BASE" -f "$OVERLAY" --profile witness-local-dev-only)"
+check 1 "$(printf '%s\n' "$DEV_SERVICES" | grep -c '^veil-witness$' || true)" \
+  "the dev-only profile can still start it deliberately"
+
+# ── 3. Emitters point at the central witness ────────────────────────
+
+FULL="$(render_full -f "$BASE" -f "$OVERLAY")"
+
+check 0 "$(printf '%s\n' "$FULL" | grep -c 'LCR_WITNESS_ADDR: veil-witness' || true)" \
+  "no emitter still dials the local claim port"
+check 0 "$(printf '%s\n' "$FULL" | grep -c 'LCR_WITNESS_CERT_ADDR: veil-witness' || true)" \
+  "the gateway no longer reads certificates from the local witness"
+
+# All four kit emitters (audit, id-bridge, sanitizer, gateway) must be repointed.
+check 4 "$(printf '%s\n' "$FULL" | grep -c 'LCR_WITNESS_ADDR: witness.render.invalid:50057' || true)" \
+  "all four kit emitters dial the central claim port"
+check 4 "$(printf '%s\n' "$FULL" | grep -c 'LCR_WITNESS_REQUIRE_MTLS: "true"' || true)" \
+  "all four kit emitters have the fail-closed mTLS latch engaged"
+
+# The :50058 hop has its OWN credential family (no LCR_ prefix). Without it the
+# gateway dials the cert port anonymously and a latched witness refuses the
+# handshake — which surfaces much later as "certificates never load".
+#
+# ⚠️ ANCHORED, not a substring match. `WITNESS_MTLS_CLIENT_CERT_PATH` is a
+# suffix of `LCR_WITNESS_MTLS_CLIENT_CERT_PATH`, the claim-hop family that all
+# four emitters carry — a bare grep counts 5 and would have passed with the
+# gateway's cert-port credential entirely absent. The two families are
+# deliberately distinct and a test that cannot tell them apart is testing
+# neither.
+check 1 "$(printf '%s\n' "$FULL" | grep -cE '^[[:space:]]+WITNESS_MTLS_CLIENT_CERT_PATH: /etc/lucairn/witness-client/client\.pem$' || true)" \
+  "the gateway carries a client credential for the certificate port (:50058 family)"
+check 4 "$(printf '%s\n' "$FULL" | grep -cE '^[[:space:]]+LCR_WITNESS_MTLS_CLIENT_CERT_PATH: /etc/lucairn/witness-client/client\.pem$' || true)" \
+  "all four emitters carry the witness-scoped claim-hop credential (:50057 family)"
+
+# ── 4. The cert address is REQUIRED, not defaulted ──────────────────
+#
+# Its old default was the local witness. With no local witness that default
+# would resolve to a service that does not exist, and the failure would arrive
+# at request time as a connection error rather than at config time as a
+# configuration error.
+STRIPPED="$WK/no-cert-addr.env"
+grep -v '^LUCAIRN_CENTRAL_WITNESS_CERT_ADDR=' "$ENVFILE" > "$STRIPPED"
+if docker compose -f "$BASE" -f "$OVERLAY" --env-file "$STRIPPED" config >/dev/null 2>&1; then
+  fail "omitting LUCAIRN_CENTRAL_WITNESS_CERT_ADDR still renders — it must fail closed"
+else
+  ok "omitting LUCAIRN_CENTRAL_WITNESS_CERT_ADDR fails the render"
+fi
+
+# ── 5. The signing-key retirement step is documented ────────────────
+#
+# bin/lucairn init generates LCR_WITNESS_SIGNING_KEY for every topology and this
+# overlay cannot reach into that generator, so removing it is a manual step. A
+# manual step that is not written down is a step that does not happen, and the
+# PRD's success criterion is that the laptop holds NO witness signing key.
+if grep -q 'Retire the local signing key' "$RUNBOOK"; then
+  ok "runbook documents retiring the local signing key"
+else
+  fail "runbook has no 'Retire the local signing key' section"
+fi
+if grep -q 'LCR_WITNESS_SIGNING_KEY' "$ENV_EXAMPLE"; then
+  ok "env example names the signing key the operator must delete"
+else
+  fail "env example does not tell the operator to delete LCR_WITNESS_SIGNING_KEY"
+fi
+# The public key must be REPOINTED, not deleted: the gateway publishes it at
+# /.well-known/veil-keys.json and verifiers fetch it. Deleting it breaks
+# verification; leaving the old value advertises a key that signed nothing.
+if grep -q 'LCR_WITNESS_PUBLIC_KEY' "$RUNBOOK"; then
+  ok "runbook distinguishes the public key (repoint) from the private key (delete)"
+else
+  fail "runbook does not say what happens to LCR_WITNESS_PUBLIC_KEY"
+fi
+
+# ── 6. The authorization layer is documented ────────────────────────
+#
+# The mTLS latch is authentication. Without these, any device credential can
+# call ExportCertificates for any customer_id.
+for var in LCR_WITNESS_CLAIM_ALLOWED_PEERS LCR_WITNESS_EXPORT_ALLOWED_PEERS \
+           LCR_WITNESS_EXPORT_CUSTOMER_MAP LCR_WITNESS_EXPORT_CUSTOMER_BINDING; do
+  if grep -q "$var" "$RUNBOOK"; then
+    ok "runbook documents $var"
+  else
+    fail "runbook does not document $var"
+  fi
+done
+
+# The load-bearing sentence: a device credential must not be on the export list.
+if grep -q 'not.*your device CNs' "$RUNBOOK" || grep -q 'NOT your device CNs' "$RUNBOOK"; then
+  ok "runbook states device credentials are NOT on the export allowlist"
+else
+  fail "runbook does not state that device credentials cannot bulk-read certificates"
+fi
+
+# ── 7. The overlay warns about the profile-activation trap ──────────
+#
+# cert-builder declares depends_on: veil-witness (condition: service_healthy),
+# and recent Compose versions auto-activate a dependency's profile — which would
+# silently restart the witness this overlay exists to remove.
+if grep -q 'cert-builder' "$OVERLAY"; then
+  ok "overlay warns that the certification profile would re-activate the witness"
+else
+  fail "overlay does not warn about cert-builder's depends_on re-activating the witness"
+fi
+
+echo
+echo "== $((N-FAILS))/$N passed =="
+[ "$FAILS" -eq 0 ] || exit 1
