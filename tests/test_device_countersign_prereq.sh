@@ -160,6 +160,8 @@ while IFS='|' read -r name flags; do
 
   cert_env="$(printf '%s' "$J" | jq -r '.services.gateway.environment.LCR_WITNESS_MTLS_CLIENT_CERT_PATH // ""')"
   key_env="$(printf '%s' "$J" | jq -r '.services.gateway.environment.LCR_WITNESS_MTLS_CLIENT_KEY_PATH // ""')"
+  ca_env="$(printf '%s' "$J" | jq -r '.services.gateway.environment.LCR_WITNESS_MTLS_CA_BUNDLE_PATH // ""')"
+  check "$CLAIM_MOUNT/ca.pem" "$ca_env" "$name: gateway reads the witness-scoped CA bundle (the signer refuses a partial triple)"
   check "$CLAIM_MOUNT/client.pem" "$cert_env" "$name: gateway reads the device CLAIM cert (signer input)"
   check "$CLAIM_MOUNT/client.key" "$key_env"  "$name: gateway reads the device CLAIM key (signer input)"
 
@@ -183,6 +185,16 @@ while IFS='|' read -r name flags; do
     "$GATEWAY_MOUNT"/*) fail "$name: the signer would use the fleet-wide cert-hop leaf, not the per-device claim leaf" ;;
     *) ok "$name: the signer uses the per-device claim leaf, not the cert-hop leaf" ;;
   esac
+
+  # The witness binds the countersigning key to the peer that SUBMITS the claim,
+  # and the submitter is the sanitizer, not the gateway. So the binding is only
+  # meaningful while both mount the SAME leaf — which is a property of this
+  # overlay, not of the code, and nothing else asserts it (bug-hunter H1). If a
+  # future edit gives the sanitizer its own witness credential, every healthy
+  # request starts reporting the binding as unverified and the runbook's §10.5
+  # claim quietly stops being true here.
+  san_cert="$(printf '%s' "$J" | jq -r '.services.sanitizer.environment.LCR_WITNESS_MTLS_CLIENT_CERT_PATH // ""')"
+  check "$cert_env" "$san_cert" "$name: sanitizer submits claims under the SAME leaf the gateway countersigns with"
 done <<EOF
 $OVERLAY_CELLS
 EOF
@@ -206,6 +218,10 @@ else
     ok "stock: gateway service present"
     stock_cert="$(printf '%s' "$J" | jq -r '.services.gateway.environment.LCR_WITNESS_MTLS_CLIENT_CERT_PATH // ""')"
     check "" "$stock_cert" "stock: no device credential → honest absence, no countersignature"
+    # The signer gates on the COMPLETE witness-scoped triple and refuses the
+    # mesh-wide DSA_MTLS_* fallback outright, so the CA bundle matters too.
+    stock_ca="$(printf '%s' "$J" | jq -r '.services.gateway.environment.LCR_WITNESS_MTLS_CA_BUNDLE_PATH // ""')"
+    check "" "$stock_ca" "stock: no witness-scoped CA bundle either (the signer needs the full triple)"
     stock_mounted="$(printf '%s' "$J" | jq -r --arg t "$CLAIM_MOUNT" \
       '[.services.gateway.volumes // [] | .[] | select(.target == $t)] | length')"
     check "0" "$stock_mounted" "stock: no device claim credential mounted"
@@ -233,6 +249,21 @@ if grep -qiE "never (blocks|block) (a |the )?(request|turn)" "$RUNBOOK"; then
   ok "runbook states the countersignature never blocks a request"
 else
   fail "runbook does not state that the countersignature never blocks a request"
+fi
+# The mesh-credential refusal is the fix for a blocker that would have signed
+# customer evidence with an operator-held key. If the runbook stops documenting
+# it, the next person to "simplify" the boot gate has nothing telling them why
+# it is there.
+if grep -q "DSA_MTLS_" "$RUNBOOK"; then
+  ok "runbook documents why the mesh-wide DSA_MTLS_* credential is refused for countersigning"
+else
+  fail "runbook does not explain that DSA_MTLS_* is deliberately NOT accepted as a countersigning credential"
+fi
+# The headline claim must stay narrowed to request CONTENT.
+if grep -qi "content, not context" "$RUNBOOK"; then
+  ok "runbook scopes the guarantee to request content, not context"
+else
+  fail "runbook does not scope the guarantee to content — the unqualified 'cannot fabricate the record' claim is overclaimed (TOB-S4-001)"
 fi
 
 echo

@@ -1195,19 +1195,44 @@ private key. The signature travels on the `dsa-sanitizer` claim and ends up in
 the certificate.
 
 What that buys, stated exactly: **the central witness operator, alone, can no
-longer manufacture or alter the record of what you sent.** They never held the
-device's private key, so they cannot produce a countersignature for a request
-your device never made, and they cannot change a commitment without the
-signature failing.
+longer manufacture or alter the request CONTENT recorded in a certificate.**
+They never held the device's private key, so they cannot produce a
+countersignature for bytes your device never sent, and they cannot change a
+commitment without the signature failing.
 
-What it does **not** buy, stated just as exactly:
+What it does **not** buy, stated just as exactly — and read this list before
+repeating the sentence above to anyone:
 
+- **CONTENT, NOT CONTEXT.** The signature covers the request id and the hash of
+  the raw bytes, and nothing else — no timestamp, no certificate id, no
+  conversation, and none of the sanitizer's own outputs. So a countersignature
+  can be lifted verbatim out of one certificate and attached to another: the
+  link between it and the rest of the certificate is the sanitizer's own
+  signature, whose verifying key the witness operator configures. **When** you
+  sent it, in which conversation, under which certificate, and with what
+  redaction outcome are not protected. Binding those is a follow-up change to
+  the signed message; it is not in this slice.
+- **No time, no revocation.** Nothing checks the device leaf's validity dates,
+  and the signed message carries no timestamp, so a countersignature made with
+  an expired or since-re-issued credential still verifies forever. Revocation
+  (§5.2) stops the credential from opening new connections; it cannot reach
+  back into signatures already made.
 - It says nothing about whether the device is honest. A compromised device
   signs whatever it is told to sign.
-- It is not custody proof. Your CA ceremony machine (§3.3) generates the device
-  key before distributing it, so whoever runs that ceremony can retain a copy.
-  Under this topology that party is **you**, not Lucairn — which is the whole
-  reason the guarantee holds.
+- It is not custody proof, in two senses. Your CA ceremony machine (§3.3)
+  generates the device key before distributing it, so whoever runs that ceremony
+  can retain a copy — under this topology that party is **you**, not Lucairn,
+  which is the whole reason the guarantee holds. And on the device itself the
+  overlay mounts this credential into **four** containers (gateway, sanitizer,
+  id-bridge, audit), so code execution in any one of them — including the
+  sanitizer, which handles raw PII — can produce countersignatures in your name.
+- **The commitment is an unsalted hash of your raw request.** Anyone who obtains
+  a certificate obtains an offline oracle for that request's exact bytes. For a
+  templated automation with one variable field (a case id, a patient number),
+  holding the certificate and the template makes that field a dictionary attack.
+  Salting cannot fix this without destroying the third-party verifiability in
+  §10.5. Accepted residual — and *not* the same exposure class as the existing
+  `token_hash`, which hashes a random secret no dictionary can reach.
 - It covers the **request**. The response, and everything the model did with
   the request, are not countersigned by anything.
 
@@ -1217,13 +1242,26 @@ This is deliberate, and it is the reason the design was chosen over a dedicated
 signing key. The signer reads the credential §3.3 already provisions:
 
 ```
+LCR_WITNESS_MTLS_CA_BUNDLE_PATH    /etc/lucairn/witness-client/ca.pem
 LCR_WITNESS_MTLS_CLIENT_CERT_PATH  /etc/lucairn/witness-client/client.pem
 LCR_WITNESS_MTLS_CLIENT_KEY_PATH   /etc/lucairn/witness-client/client.key
 ```
 
-No new key, no new ceremony step, no new variable. If §3.3 was performed and
-the overlay is applied, the gateway countersigns. Confirm from the gateway's
-startup log:
+No new key, no new ceremony step, no new variable.
+
+⚠️ **The witness-scoped family is REQUIRED — the mesh-wide `DSA_MTLS_*` triple
+is deliberately not accepted here**, even though it is a perfectly good
+credential for the claim *dial*. `DSA_MTLS_*` is a per-**service** key issued by
+whoever operates the deployment. Signing with it would attribute the operator's
+own key to your device and the witness would then record that at maximum
+confidence — the exact inverse of what this feature is for. So a deployment with
+only `DSA_MTLS_*` set logs `not enabled` and issues certificates with no
+countersignature, which is the honest outcome. A **partial** `LCR_WITNESS_MTLS_*`
+triple is also refused, for the same reason the claim dial refuses it.
+
+If §3.3 was performed and the overlay is applied, the gateway countersigns —
+subject to the `FAILED` case below. Confirm from the gateway's startup log
+rather than assuming; the three states are distinguishable on purpose:
 
 ```sh
 docker compose ... logs gateway | grep -i 'device countersignature'
@@ -1279,6 +1317,19 @@ one.** Absence is a rendered state, not a failure:
   issued before this feature existed.
 - The hosted lane has no device identity either.
 - A certificate that predates this change has no fields to show.
+- **Some request paths are out of scope in this slice** and produce
+  uncountersigned claims even on a fully-provisioned device: Sensitive Mode's
+  `/seal-cert` input-shield flow, the sanitizer's cumulative *streaming*
+  claim, and the anonymous `/api/v1/scan` preview (which carries no pipeline
+  request id, so a countersignature could not be bound to anything). The four
+  chat transports — `/v1/messages`, `/v1/chat/completions`, the MCP endpoint
+  and `/api/v1/proxy/messages` — are covered.
+- A **malformed** countersignature (wrong wire version, undefined algorithm,
+  over-long field) is dropped by the sanitizer and therefore also renders as
+  absent. The reason is written to the sanitizer log — grep
+  `device_countersign dropped` before concluding a device never countersigned.
+  This is the one place where absence and "something was wrong" overlap; a
+  wrong *signature* is not affected and still renders as the third state below.
 
 Three outcomes, three distinct meanings — do not let a reader collapse them:
 
@@ -1316,10 +1367,22 @@ offline, at any time, without asking the operator for anything:
    rather than about a hash — Lucairn cannot perform it for you, because Lucairn
    does not hold your raw request.
 
+No SDK implements this recipe yet. "Anyone can re-check it" today means by hand,
+from the steps above — the bytes are all present in the certificate, but no
+shipped tool walks them for you.
+
 The one check that is **not** reproducible later is the peer binding: at intake
 the witness could see which mTLS-authenticated device opened the connection and
 confirm it was the same key. Once the connection closes that fact exists only in
-the witness log line.
+the witness log line — which is **operator-held and therefore not evidence you
+can rely on**; treat it as triage, not proof.
+
+⚠️ A peer binding that is *not* `verified` is also not an accusation. It only
+verifies where the countersigning service and the claim-submitting service
+present the same leaf — the gateway signs and the sanitizer submits, which is
+one shared credential under this overlay but two different ones under any
+per-service mTLS mesh. On such a deployment every healthy request reports the
+binding as unverified, which is why it is not reported as invalid.
 
 ### 10.6 Effect on §5.1
 
