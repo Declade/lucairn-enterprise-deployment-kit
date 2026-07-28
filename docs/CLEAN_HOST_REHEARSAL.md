@@ -6,7 +6,14 @@ A clean-host rehearsal proves the enterprise bundle can be installed from the cu
 
 Use a fresh Linux host or VM with:
 
-- Docker Engine and Docker Compose v2 installed
+- Docker Engine and **Docker Compose v2.20.0 or newer** installed (plain
+  "Docker Compose v2" is not enough — `docker-compose.self-hosted.yml`
+  declares `depends_on.veil-witness.required: false`, and `required:` needs
+  v2.20.0+; older clients refuse the whole file with
+  `services.sandbox-b.depends_on.veil-witness Additional property required is
+  not allowed`. Measured on real binaries: v2.19.1 fails, v2.20.0/v2.20.3/v5.1.0
+  pass. Verify with `./scripts/check-compose-version.sh` before starting the
+  rehearsal — board T-243.)
 - no Lucairn repo checkout
 - no pre-pulled Lucairn images unless the customer will also receive them that way
 - no copied secrets except the exact bundle, customer-approved env values, and the GitHub PAT used to authenticate against ghcr.io (Lucairn-default GHCR images are currently private; the rehearser MUST exercise the `docker login ghcr.io` flow the customer will use. If the customer mirrors the images into a private registry, use the mirror's credentials instead.)

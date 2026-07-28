@@ -931,6 +931,59 @@ has "$INSTALL_PROSE" "Additional property required is not allowed" \
 has "$SELFHOSTED_PROSE" "v2.20.0" \
   "docker-compose.self-hosted.yml records the Compose floor beside the required: key"
 
+# T-243 (board): the same v2.20.0 floor was documented in INSTALL.md but left
+# STALE — "Docker Compose v2" with no number — in the two other operator-facing
+# entry points that also run `-f docker-compose.self-hosted.yml`. A guard that
+# only checked INSTALL.md would keep passing while an operator following either
+# runbook hit the raw schema error with no warning. This is the differential
+# that closes that gap: assert the SAME floor + SAME error text in both.
+CUSTOMER_RUNBOOK_PROSE="$(prose docs/CUSTOMER_INSTALL_RUNBOOK.md)"
+CLEAN_HOST_PROSE="$(prose docs/CLEAN_HOST_REHEARSAL.md)"
+for pair in "CUSTOMER_RUNBOOK_PROSE:docs/CUSTOMER_INSTALL_RUNBOOK.md" "CLEAN_HOST_PROSE:docs/CLEAN_HOST_REHEARSAL.md"; do
+  varname="${pair%%:*}"
+  fname="${pair#*:}"
+  hay="$(eval echo "\$$varname")"
+  has "$hay" "Docker Compose v2.20.0 or newer" \
+    "$fname states the v2.20.0 Compose floor (not just \"Docker Compose v2\")"
+  has "$hay" "Additional property required is not allowed" \
+    "$fname shows the exact error an older Compose client produces"
+  hasnt "$hay" "Docker Compose v2 (" \
+    "$fname no longer states the stale unversioned \"Docker Compose v2\" floor"
+done
+
+# The preflight script this floor is enforced by. Must exist, be executable,
+# and — this is the part a doc-only check cannot prove — actually get the
+# comparison right. COMPOSE_VERSION_CMD lets the script be exercised against
+# synthetic version strings with no network access and no real old Compose
+# binary required, so this runs in any CI. (It was ALSO run by hand in this
+# slice against real v2.19.1/v2.20.0/v2.20.3/v5.1.0 binaries — see the PR body
+# for that evidence; that part isn't repeatable here without network access.)
+CVCHECK="scripts/check-compose-version.sh"
+if [ -x "$CVCHECK" ]; then
+  ok "$CVCHECK exists and is executable"
+else
+  fail "$CVCHECK is missing or not executable"
+fi
+
+compose_version_case() { # version want_rc label
+  # ⚠️ SAME SHARP EDGE AS THE CELL LOOP ABOVE: `cmd; rc=$?` EXITS under
+  # `set -e` the moment cmd fails, before the next line ever assigns rc. Half
+  # of these cases are SUPPOSED to fail (that's what "REJECTS" is asserting),
+  # so written the naive way this function dies on the first rejection case
+  # and the run ends with the rest silently unchecked. `&& rc=0 || rc=$?`
+  # makes it one compound command, which `set -e` does not act on.
+  local ver="$1" want_rc="$2" label="$3" rc
+  COMPOSE_VERSION_CMD="echo $ver" "$CVCHECK" >/dev/null 2>&1 && rc=0 || rc=$?
+  check "$want_rc" "$rc" "$label"
+}
+compose_version_case "2.19.1" 1 "check-compose-version.sh REJECTS v2.19.1 (the measured-failing version)"
+compose_version_case "2.19.9" 1 "check-compose-version.sh REJECTS v2.19.9 (just under the floor)"
+compose_version_case "2.20.0" 0 "check-compose-version.sh ACCEPTS v2.20.0 (exactly the floor)"
+compose_version_case "2.20.3" 0 "check-compose-version.sh ACCEPTS v2.20.3 (measured-passing version)"
+compose_version_case "5.1.0"  0 "check-compose-version.sh ACCEPTS v5.1.0 (measured-passing version, current major)"
+compose_version_case "2.9.0"  1 "check-compose-version.sh REJECTS v2.9.0 (naive string-sort trap: \"2.9\" > \"2.20\" as text, < as a version)"
+compose_version_case "garbage" 1 "check-compose-version.sh fails closed on an unparseable version string"
+
 # --- the sandbox-b credential operator step (HIGH 3 residual) --------
 #
 # The overlay cannot mount a credential into a service it must not define, so
