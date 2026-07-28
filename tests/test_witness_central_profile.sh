@@ -471,7 +471,6 @@ OVER_SERVICES="$(docker compose -f "$BASE" -f "$OVERLAY" --env-file "$ENVFILE" c
 MISSING="$(comm -23 <(printf '%s\n' "$BASE_SERVICES" | sort) <(printf '%s\n' "$OVER_SERVICES" | sort) | tr '\n' ' ' | sed 's/ *$//' || true)"
 check "veil-witness" "$MISSING" "the overlay removes veil-witness and nothing else"
 
-FULL="$(docker compose -f "$BASE" -f "$OVERLAY" --env-file "$ENVFILE" config 2>/dev/null || true)"
 JSON="$(docker compose -f "$BASE" -f "$OVERLAY" --env-file "$ENVFILE" config --format json 2>/dev/null || true)"
 
 # The gateway must not still be reading certificates from a witness that is not
@@ -669,20 +668,60 @@ done
 # sandbox-b is included because docker-compose.self-hosted.yml gives it the same
 # LCR_WITNESS_MTLS_SANDBOX_B_* override slot, and that slot is the mechanism the
 # runbook's § 7b operator step tells the customer to use.
+#
+# ⚠️ ROUND 5, LOW 1 — WHY ALL THREE SOURCES AND NOT JUST THE CERTIFICATE. This
+# block used to set and assert only *_CLIENT_CERT_PATH. Every emitter reads a
+# TRIPLE (CA + leaf + key), each with its own `${PER_SERVICE:-${GLOBAL:-}}`
+# chain in compose, and the fallback is what makes a partial override invisible:
+# misspell LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_KEY_PATH and the destination
+# variable is still populated — from the DEVICE-WIDE key. The container starts,
+# the render looks correct, and sandbox-b presents its own leaf with somebody
+# else's key. That handshake fails, and (per the Python half of this slice) an
+# unusable credential used to mean "serve normally, submit zero claims" rather
+# than a visible error. A one-of-three assertion cannot see any of it. Assert
+# the whole triple, per source, on both the override and the fallback path.
 PSENV="$WK/perservice.env"
 cat "$STOCK_ENV" > "$PSENV"
+# The three device-wide slots, all distinguishable from the per-service values
+# so a silent fallback is a VISIBLE prefix change rather than an empty string.
+echo 'LCR_WITNESS_MTLS_CA_BUNDLE_PATH=/global/ca.pem' >> "$PSENV"
 echo 'LCR_WITNESS_MTLS_CLIENT_CERT_PATH=/global/client.pem' >> "$PSENV"
+echo 'LCR_WITNESS_MTLS_CLIENT_KEY_PATH=/global/client.key' >> "$PSENV"
 for svc in audit id-bridge sanitizer gateway sandbox-b; do
   upper="$(printf '%s' "$svc" | tr 'a-z-' 'A-Z_')"
+  echo "LCR_WITNESS_MTLS_${upper}_CA_BUNDLE_PATH=/per/${svc}-ca.pem" >> "$PSENV"
   echo "LCR_WITNESS_MTLS_${upper}_CLIENT_CERT_PATH=/per/${svc}.pem" >> "$PSENV"
+  echo "LCR_WITNESS_MTLS_${upper}_CLIENT_KEY_PATH=/per/${svc}.key" >> "$PSENV"
 done
 PS_JSON="$(docker compose -f "$BASE" -f "$SELFHOSTED" --env-file "$PSENV" config --format json 2>/dev/null || true)"
-check 5 "$(printf '%s' "$PS_JSON" | jq -r '
-  [.services[] | select((((.environment // {}).LCR_WITNESS_MTLS_CLIENT_CERT_PATH) // "") | startswith("/per/"))] | length')" \
-  "each emitter incl. sandbox-b can be given its own witness client leaf (per-service override wins)"
+
+# Count services whose <var> starts with <prefix>. Positive-count by
+# construction (see the VACUOUS PASSES note at the top): an empty render yields
+# 0 and fails every check below rather than passing one of them.
+svc_env_prefix_count() {
+  printf '%s' "$1" | jq -r --arg v "$2" --arg p "$3" '
+    [.services[] | select((((.environment // {})[$v]) // "") | startswith($p))] | length'
+}
+
+for var in LCR_WITNESS_MTLS_CA_BUNDLE_PATH \
+           LCR_WITNESS_MTLS_CLIENT_CERT_PATH \
+           LCR_WITNESS_MTLS_CLIENT_KEY_PATH; do
+  check 5 "$(svc_env_prefix_count "$PS_JSON" "$var" /per/)" \
+    "each emitter incl. sandbox-b can be given its own $var (per-service override wins)"
+  # THE MUTATION THIS CLOSES, stated as its own assertion so the failure names
+  # the cause rather than an off-by-one count: not one emitter may still be
+  # carrying the device-wide value once every per-service slot is set.
+  check 0 "$(svc_env_prefix_count "$PS_JSON" "$var" /global/)" \
+    "no emitter silently falls back to the device-wide $var when its own is set"
+done
+
 FALLBACK_JSON="$(docker compose -f "$BASE" -f "$SELFHOSTED" --env-file "$STOCK_ENV" config --format json 2>/dev/null || true)"
-check 5 "$(svc_env_count "$FALLBACK_JSON" LCR_WITNESS_MTLS_CLIENT_CERT_PATH)" \
-  "the device-wide fallback slot is still wired when no per-service leaf is set"
+for var in LCR_WITNESS_MTLS_CA_BUNDLE_PATH \
+           LCR_WITNESS_MTLS_CLIENT_CERT_PATH \
+           LCR_WITNESS_MTLS_CLIENT_KEY_PATH; do
+  check 5 "$(svc_env_count "$FALLBACK_JSON" "$var")" \
+    "the device-wide $var slot is still wired when no per-service leaf is set"
+done
 
 echo
 echo "-- documentation assertions"
@@ -819,6 +858,15 @@ has "$RUNBOOK_PROSE" "every MAPPED identity on the leaf must allow" \
   "runbook documents the intersection rule (every mapped identity must allow)"
 has "$RUNBOOK_PROSE" "NARROWEST mapping wins" \
   "runbook states the narrowest mapping wins"
+# ⚠️ §3.4 EXPLAINS THE SAME MECHANISM AND MUST NOT CONTRADICT §4.1. It described
+# the pre-round-4 first-match rule ("stops at the FIRST identity that has a map
+# entry") long after the code stopped doing that — two sections of one runbook
+# giving opposite accounts of the control that decides who reads a tenant's PII.
+# A doc-vs-doc contradiction has no compiler; this is its compiler.
+hasnt "$RUNBOOK_PROSE" "stops at the FIRST identity that has a map entry" \
+  "runbook §3.4 no longer describes the superseded first-match binding rule"
+has "$RUNBOOK_PROSE" "requires EVERY identity that has a map entry to allow" \
+  "runbook §3.4 describes the same intersection rule as §4.1"
 
 # ROUND 4: CertTransportError widened from the two allowlists to any FAIL-OPEN
 # :50058 control. Five variables now refuse boot; the HMAC key still only warns.
@@ -826,6 +874,7 @@ has "$RUNBOOK_PROSE" "NARROWEST mapping wins" \
 # on a variable the docs called safe.
 for f in RUNBOOK_PROSE CUSTOMER_PROSE; do
   eval "hay=\"\$$f\""
+  # shellcheck disable=SC2154  # hay is assigned by the eval directly above
   case "$hay" in
     *"LCR_WITNESS_EXPORT_MAX_CERTS"*)
       case "$hay" in
@@ -865,6 +914,7 @@ for pair in \
   "ENV_PROSE|LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_KEY_PATH|witness-central.env.example names the sandbox-b credential step" \
   "RUNBOOK_PROSE|LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_CERT_PATH|the runbook names the sandbox-b credential step"; do
   var="${pair%%|*}"; rest="${pair#*|}"; needle="${rest%%|*}"; desc="${rest#*|}"
+  # shellcheck disable=SC2154  # assigned by the eval on the line above
   eval "hay=\"\$$var\""
   has "$hay" "$needle" "$desc"
 done
@@ -888,7 +938,7 @@ has "$RUNBOOK_PROSE" "profile certification"       "runbook names the certificat
 has "$RUNBOOK_PROSE" "witness-local-dev-only"      "runbook names the dev-only profile"
 has "$ENV_PROSE"     "witness-local-dev-only"      "env example names the dev-only profile"
 case "$RUNBOOK_PROSE" in
-  *"self-signed evidence"*|*"SELF-SIGNED EVIDENCE"*|*"self-signed evidence"*)
+  *"self-signed evidence"*|*"SELF-SIGNED EVIDENCE"*)
     ok "runbook states the dev-only profile restores self-signed evidence" ;;
   *) fail "runbook does not say the dev-only profile restores self-signed evidence" ;;
 esac

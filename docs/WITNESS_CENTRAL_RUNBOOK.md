@@ -207,10 +207,13 @@ openssl x509 -req -in "client-${DEVICE}.csr" -CA ca.pem -CAkey ca.key \
 #     CommonName is still first in that slice, so the shared
 #     LCR_WITNESS_CERT_ALLOWED_PEERS / LCR_WITNESS_EXPORT_ALLOWED_PEERS entry
 #     `gateway` keeps admitting every device. Adding a SAN grants nothing new.
-#   - authorizeCustomer() walks the SAME slice and stops at the FIRST identity
-#     that has a map entry. That ordering is why §4.1 must key the map on the
-#     per-device SAN and NEVER on the bare `gateway` — see the bold warning
-#     there before you edit the map.
+#   - authorizeCustomer() walks the SAME slice and requires EVERY identity that
+#     has a map entry to allow the requested customer_id — an intersection, so
+#     the narrowest mapping on the leaf wins. That is what makes the SAN the
+#     effective binding key: map it, and the device's own entry governs. (Until
+#     2026-07-28 this returned on the FIRST mapped identity, and since the CN is
+#     shared its entry could only ever be the fleet-wide union — mapping
+#     `gateway` then silently re-granted everything. See §4.1.)
 #
 # Use a name that cannot collide with a mesh service SAN. `lucairn-gateway-`
 # prefixed with the device is the documented form.
