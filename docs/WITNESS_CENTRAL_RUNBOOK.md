@@ -234,6 +234,11 @@ WITNESS_MTLS_SERVER_CERT_PATH=/etc/lucairn/witness-server/server.pem
 WITNESS_MTLS_SERVER_KEY_PATH=/etc/lucairn/witness-server/server.key
 
 LCR_WITNESS_REQUIRE_MTLS=true
+# ⚠️ STRICT VALUE GRAMMAR: `true` engages it, `false` (or empty) disengages it,
+# and ANY OTHER VALUE STOPS THE PROCESS naming this variable. It is not a
+# truthiness test — "1", "yes" and "ture" are configuration errors, not "off".
+# Before 2026-07-28 they parsed as off, so a typo here put the claim hop in
+# cleartext while your config file said the boundary was engaged.
 ```
 
 `LCR_WITNESS_REQUIRE_MTLS=true` does three things on the witness:
@@ -298,15 +303,24 @@ LCR_WITNESS_CLAIM_ALLOWED_PEERS=dsa-gateway,dsa-id-bridge,dsa-sanitizer,dsa-sand
 # LCR_WITNESS_EXPORT_CUSTOMER_MAP=gateway=cust_acme|cust_globex
 
 # What happens to an exporter that has NO map entry:
-#   audit    (default under the latch) allow, log it, count it
 #   enforce  refuse
+#   audit    allow, log it, count it
 #   off      no customer check at all
 #
-# The default is `audit` rather than `enforce` because a multi-tenant hosted
-# gateway legitimately serves every tenant from one identity, and defaulting to
-# refuse would take such a deployment offline on day one. If your central
-# witness serves a fixed set of exporters you have mapped, set `enforce`.
-# LCR_WITNESS_EXPORT_CUSTOMER_BINDING=enforce
+# ⚠️ MANDATORY when the latch is on and LCR_WITNESS_EXPORT_CUSTOMER_MAP is
+# empty. The witness REFUSES TO START until you state it, naming this variable.
+#
+# There used to be a default (`audit`) and it was wrong in the worst way: an
+# authorised exporter could name ANY customer_id and receive that tenant's
+# certificates, manifest bodies and all, with a log line as the only trace. The
+# opposite default is also wrong — silently enforcing takes a multi-tenant
+# hosted gateway offline on day one. So the choice is yours, explicitly:
+#
+#   - map every exporter above and set `enforce`  <- the witness-central answer
+#   - `enforce` with no map, which denies every unmapped exporter
+#   - `audit` or `off`, meaning "I accept that this credential can read every
+#     tenant" — legitimate for a hosted multi-tenant gateway, nowhere else
+LCR_WITNESS_EXPORT_CUSTOMER_BINDING=enforce
 
 # Cap on one export stream. Default under the latch: 10000. 0 disables.
 # Exceeding it FAILS the stream rather than truncating it — a truncated export
@@ -567,11 +581,15 @@ Stated plainly so nobody deploys past them:
   laptop. A compromised container on a device can submit claims as any of that
   device's emitters. Narrowing this needs per-service credentials on the device,
   which is Slice-4 PKI work.
-- **`customer_id` binding is advisory by default.** Under the latch an exporter
-  with no `LCR_WITNESS_EXPORT_CUSTOMER_MAP` entry is allowed and recorded, not
-  refused, because a multi-tenant gateway legitimately exports for every tenant.
-  Set `LCR_WITNESS_EXPORT_CUSTOMER_BINDING=enforce` once you have mapped your
-  exporters, or the binding is a log line rather than a control.
+- **`customer_id` binding has no default under the latch** (changed 2026-07-28
+  after an adversarial review). It used to default to `audit`, meaning an
+  exporter with no `LCR_WITNESS_EXPORT_CUSTOMER_MAP` entry was allowed and
+  merely recorded — so the shipped default of the control whose purpose is
+  "customer_id bound to authenticated identity" authorised every tenant. The
+  witness now refuses to start with the latch on, no map, and no explicit
+  `LCR_WITNESS_EXPORT_CUSTOMER_BINDING`. `audit` and `off` remain available and
+  remain a real exposure; choosing one is now a statement rather than an
+  inheritance.
 - **The device CN is not verified against anything but your CA.** Whoever holds
   the CA key can mint a leaf with any CN or SAN, including `dsa-gateway` — which
   would place it on the export allowlist. Protect the CA key accordingly; the

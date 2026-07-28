@@ -280,6 +280,32 @@ services:
       # keep working with this compose file.
       LCR_SIGNING_KEY: "${LCR_AUDIT_SIGNING_KEY:-${VEIL_AUDIT_SIGNING_KEY}}"
       LCR_WITNESS_ADDR: "veil-witness:50057"
+      # ── Witness claim hop: transport latch + scoped client credential ──────
+      # PRD prd-2026-07-28-split-evidence-plane.md Slice 1 (board #206 / #223).
+      #
+      # THESE MUST BE LISTED HERE. This repo has no `env_file:` directive
+      # anywhere, so a service's `environment:` block is the ONLY channel from
+      # config.env into the container, and a Go/Python env read with no compose
+      # entry is dead configuration. The 2026-07-28 adversarial review found
+      # exactly that: the entire latch + peer-authorization layer shipped with
+      # zero compose wiring, so an operator could set every variable in
+      # config.env, read them back, and have none of it reach any process.
+      #
+      # Rendering an explicit "false" rather than "" is deliberate. The latch is
+      # a strict enum (absent/empty/false = off, true = on, ANYTHING ELSE
+      # refuses to start), and a rendered `false` answers "is this deployment
+      # latched?" for an operator who does not know the default.
+      #
+      # The credential FILES are a deployment concern, not a base-compose one:
+      # set the three paths in config.env and mount them per service — the kit's
+      # contrib/witness-central overlay does exactly this, and
+      # docker-compose.mtls.yml is the in-repo precedent for the mesh family.
+      # Under the latch, paths that are unset or fail to load are a hard refusal
+      # to dial, never a silent plaintext fallback.
+      LCR_WITNESS_REQUIRE_MTLS: "${LCR_WITNESS_REQUIRE_MTLS:-false}"
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "${LCR_WITNESS_MTLS_CA_BUNDLE_PATH:-}"
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "${LCR_WITNESS_MTLS_CLIENT_CERT_PATH:-}"
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "${LCR_WITNESS_MTLS_CLIENT_KEY_PATH:-}"
     networks:
       - dsa-audit
       - dsa-audit-identity
@@ -311,6 +337,13 @@ services:
       # VEIL_BRIDGE_SIGNING_KEY fallback.
       LCR_SIGNING_KEY: "${LCR_BRIDGE_SIGNING_KEY:-${VEIL_BRIDGE_SIGNING_KEY}}"
       LCR_WITNESS_ADDR: "veil-witness:50057"
+      # Witness claim hop: transport latch + scoped client credential. See the
+      # `audit` service for why every emitter needs these four listed here
+      # (PRD prd-2026-07-28-split-evidence-plane.md Slice 1).
+      LCR_WITNESS_REQUIRE_MTLS: "${LCR_WITNESS_REQUIRE_MTLS:-false}"
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "${LCR_WITNESS_MTLS_CA_BUNDLE_PATH:-}"
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "${LCR_WITNESS_MTLS_CLIENT_CERT_PATH:-}"
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "${LCR_WITNESS_MTLS_CLIENT_KEY_PATH:-}"
     networks:
       - dsa-bridge
       - dsa-witness-bridge
@@ -526,6 +559,13 @@ services:
       LCR_SIGNING_KEY: "${LCR_SANITIZER_SIGNING_KEY:-${VEIL_SANITIZER_SIGNING_KEY}}"
       # All emitters use the witness's plain gRPC port (50057).
       LCR_WITNESS_ADDR: "veil-witness:50057"
+      # Witness claim hop: transport latch + scoped client credential. See the
+      # `audit` service for why every emitter needs these four listed here
+      # (PRD prd-2026-07-28-split-evidence-plane.md Slice 1).
+      LCR_WITNESS_REQUIRE_MTLS: "${LCR_WITNESS_REQUIRE_MTLS:-false}"
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "${LCR_WITNESS_MTLS_CA_BUNDLE_PATH:-}"
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "${LCR_WITNESS_MTLS_CLIENT_CERT_PATH:-}"
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "${LCR_WITNESS_MTLS_CLIENT_KEY_PATH:-}"
       QI_ENGINE_ENABLED: "${QI_ENGINE_ENABLED:-true}"
       # FIX-B (full-stack-test-results-2026-05-29): wire the L3 fail-mode knob
       # into the sanitizer container. "true" = fail-CLOSED (503
@@ -631,6 +671,35 @@ services:
       WITNESS_MTLS_CA_BUNDLE_PATH: "${WITNESS_MTLS_CA_BUNDLE_PATH:-}"
       WITNESS_MTLS_SERVER_CERT_PATH: "${WITNESS_MTLS_SERVER_CERT_PATH:-}"
       WITNESS_MTLS_SERVER_KEY_PATH: "${WITNESS_MTLS_SERVER_KEY_PATH:-}"
+      # ── Witness transport latch + peer AUTHORIZATION ───────────────────────
+      # PRD prd-2026-07-28-split-evidence-plane.md Slice 1 (board #206 / #223).
+      #
+      # ⚠️ THE LATCH AND THE ALLOWLISTS ARE DIFFERENT THINGS. The latch is
+      # AUTHENTICATION — it proves the caller holds a leaf this witness's CA
+      # signed, and every mesh service holds one. The allowlists are what decide
+      # WHICH of them may bulk-export certificates carrying
+      # SanitizerClaim.redaction_manifest_body (the placeholder->original PII
+      # map). See services/veil-witness/internal/server/authz.go.
+      #
+      # Every one of these is optional and defaults from the latch, EXCEPT under
+      # `LCR_WITNESS_REQUIRE_MTLS=true` with no customer map, where the witness
+      # refuses to start until LCR_WITNESS_EXPORT_CUSTOMER_BINDING is stated
+      # explicitly (the old default silently authorised every tenant).
+      # A malformed value in ANY of them stops the boot naming the variable.
+      LCR_WITNESS_REQUIRE_MTLS: "${LCR_WITNESS_REQUIRE_MTLS:-false}"
+      LCR_WITNESS_EXPORT_ALLOWED_PEERS: "${LCR_WITNESS_EXPORT_ALLOWED_PEERS:-}"
+      LCR_WITNESS_CERT_ALLOWED_PEERS: "${LCR_WITNESS_CERT_ALLOWED_PEERS:-}"
+      LCR_WITNESS_CLAIM_ALLOWED_PEERS: "${LCR_WITNESS_CLAIM_ALLOWED_PEERS:-}"
+      LCR_WITNESS_EXPORT_CUSTOMER_MAP: "${LCR_WITNESS_EXPORT_CUSTOMER_MAP:-}"
+      LCR_WITNESS_EXPORT_CUSTOMER_BINDING: "${LCR_WITNESS_EXPORT_CUSTOMER_BINDING:-}"
+      LCR_WITNESS_EXPORT_MAX_CERTS: "${LCR_WITNESS_EXPORT_MAX_CERTS:-}"
+      LCR_WITNESS_PEER_IDENTITY: "${LCR_WITNESS_PEER_IDENTITY:-}"
+      # Keys the HMAC that pseudonymises customer_id in the export audit log.
+      # Unset = a fresh random key per witness process, which is safe with zero
+      # configuration but makes the pseudonym unstable across restarts. Set it
+      # to correlate a tenant across restarts and replicas — and store it
+      # somewhere your log readers cannot reach, or the pseudonym is decorative.
+      LCR_WITNESS_AUDIT_LOG_HMAC_KEY: "${LCR_WITNESS_AUDIT_LOG_HMAC_KEY:-}"
     volumes:
       # TOB-S009 mTLS cert dir (read-only). Default empty-string mount
       # is intentionally an explicit `${LCR_WITNESS_MTLS_HOST_DIR:-…}`
@@ -751,6 +820,13 @@ services:
       LCR_ENABLED: "${LCR_ENABLED:-${VEIL_ENABLED:-true}}"
       LCR_WITNESS_CERT_ADDR: "veil-witness:50058"
       LCR_WITNESS_ADDR: "veil-witness:50057"
+      # Witness claim hop: transport latch + scoped client credential. See the
+      # `audit` service for why every emitter needs these four listed here
+      # (PRD prd-2026-07-28-split-evidence-plane.md Slice 1).
+      LCR_WITNESS_REQUIRE_MTLS: "${LCR_WITNESS_REQUIRE_MTLS:-false}"
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "${LCR_WITNESS_MTLS_CA_BUNDLE_PATH:-}"
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "${LCR_WITNESS_MTLS_CLIENT_CERT_PATH:-}"
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "${LCR_WITNESS_MTLS_CLIENT_KEY_PATH:-}"
       # Stage 3 dual-name: canonical LCR_X first, legacy VEIL_X fallback.
       # Historically the strict-required marker `:?` lived on the legacy
       # inner slot. Compose v2 eagerly interpolates that nested `:?` even

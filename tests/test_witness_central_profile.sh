@@ -40,8 +40,13 @@ fail() { N=$((N+1)); FAILS=$((FAILS+1)); printf '  FAIL %s\n' "$1"; }
 check() { if [ "$1" = "$2" ]; then ok "$3"; else fail "$3 (want=$1 got=$2)"; fi; }
 
 if ! docker compose version >/dev/null 2>&1; then
-  echo "SKIP: docker compose not available — this test renders config only, but needs the CLI"
-  exit 0
+  # NOT a skip. A rendered-config differential is the only oracle for the
+  # "control exists but reaches no container" class (2026-07-28 review,
+  # BLOCKER 1), and a guard that silently disappears when a tool is absent was
+  # absent on every run nobody checked. `docker compose config` is client-side
+  # only: no daemon, no network, no images.
+  echo "FATAL: 'docker compose' is required to render the compose files." >&2
+  exit 1
 fi
 
 for f in "$BASE" "$OVERLAY" "$ENV_EXAMPLE" "$RUNBOOK"; do
@@ -204,6 +209,64 @@ if grep -q 'not.*your device CNs' "$RUNBOOK" || grep -q 'NOT your device CNs' "$
   ok "runbook states device credentials are NOT on the export allowlist"
 else
   fail "runbook does not state that device credentials cannot bulk-read certificates"
+fi
+
+# ── 6b. The STOCK topology carries the wiring too ───────────────────
+#
+# 2026-07-28 review, BLOCKER 1. Everything above tests the OVERLAY, and the
+# overlay was fine. What was not fine is that a kit customer running the stock
+# witness-local topology — the default install — could set every one of these
+# variables in customer.env and have none of them reach a container, because
+# `docker-compose.customer.yml` listed none of them and the kit has no
+# `env_file:` channel either. The security layer was configurable and inert.
+#
+# Rendered without the overlay, so this is the default install's answer.
+BASE_FULL="$(render_full -f "$BASE")"
+
+for var in LCR_WITNESS_REQUIRE_MTLS LCR_WITNESS_MTLS_CA_BUNDLE_PATH \
+           LCR_WITNESS_MTLS_CLIENT_CERT_PATH LCR_WITNESS_MTLS_CLIENT_KEY_PATH; do
+  # Four emitters (audit, id-bridge, sanitizer, gateway) plus the witness for
+  # the latch itself; the credential triple is emitters-only.
+  want=4
+  [ "$var" = "LCR_WITNESS_REQUIRE_MTLS" ] && want=5
+  got="$(printf '%s\n' "$BASE_FULL" | grep -cE "^[[:space:]]+${var}: " || true)"
+  check "$want" "$got" "stock topology wires $var into every service that reads it"
+done
+
+for var in LCR_WITNESS_EXPORT_ALLOWED_PEERS LCR_WITNESS_CERT_ALLOWED_PEERS \
+           LCR_WITNESS_CLAIM_ALLOWED_PEERS LCR_WITNESS_EXPORT_CUSTOMER_MAP \
+           LCR_WITNESS_EXPORT_CUSTOMER_BINDING LCR_WITNESS_EXPORT_MAX_CERTS \
+           LCR_WITNESS_PEER_IDENTITY LCR_WITNESS_AUDIT_LOG_HMAC_KEY; do
+  got="$(printf '%s\n' "$BASE_FULL" | grep -cE "^[[:space:]]+${var}: " || true)"
+  check 1 "$got" "stock topology wires $var into the witness"
+done
+
+# The latch must render as an explicit, legible `false` on an unconfigured
+# install — not "", which is also off but leaves an operator unable to answer
+# "is this latched?" from the rendered config.
+check 5 "$(printf '%s\n' "$BASE_FULL" | grep -c 'LCR_WITNESS_REQUIRE_MTLS: "false"' || true)" \
+  "an unconfigured stock install renders the latch as an explicit false"
+
+# ── 6c. The mandatory binding is stated where the operator sets it ──
+#
+# Under the latch with no customer map the witness now REFUSES TO START until
+# LCR_WITNESS_EXPORT_CUSTOMER_BINDING is explicit (2026-07-28 review, HIGH 1).
+# An operator who follows this runbook must not meet that refusal as a surprise.
+if grep -qE '^LCR_WITNESS_EXPORT_CUSTOMER_BINDING=' "$RUNBOOK"; then
+  ok "runbook's central-witness config sets the binding rather than commenting it out"
+else
+  fail "runbook still leaves LCR_WITNESS_EXPORT_CUSTOMER_BINDING commented out — the witness will refuse to start"
+fi
+if grep -q 'REFUSES TO START' "$RUNBOOK"; then
+  ok "runbook says the witness refuses to start without an explicit binding"
+else
+  fail "runbook does not warn that the binding is mandatory under the latch"
+fi
+# The latch's strict grammar, where the operator types the value.
+if grep -q 'STRICT VALUE GRAMMAR' "$ENV_EXAMPLE"; then
+  ok "env example states the strict true/false grammar"
+else
+  fail "env example does not state that a mistyped latch stops the process"
 fi
 
 # ── 7. The overlay warns about the profile-activation trap ──────────
