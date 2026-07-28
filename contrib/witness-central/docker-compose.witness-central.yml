@@ -26,7 +26,23 @@
 # accepts claims only from the emitter identities and answers ExportCertificates
 # only to the gateway. A laptop credential cannot bulk-read certificates, its
 # own or anyone else's. Those controls are configured on the CENTRAL witness,
-# not here — see docs/WITNESS_CENTRAL_RUNBOOK.md §7.
+# not here — see docs/WITNESS_CENTRAL_RUNBOOK.md §4.1.
+#
+# TWO CLIENT CREDENTIALS, NOT ONE. That authorization is only enforceable if the
+# gateway is distinguishable from the containers beside it, so this overlay
+# mounts two separate directories:
+#
+#   LUCAIRN_WITNESS_CLIENT_CERT_DIR          per-device claim leaf
+#                                            CN=lucairn-device-<name>
+#                                            → audit, id-bridge, sanitizer, gateway
+#                                            → :50057, LCR_WITNESS_MTLS_*
+#
+#   LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR  certificate-hop leaf, CN=gateway
+#                                            → gateway ONLY
+#                                            → :50058, WITNESS_MTLS_*
+#
+# Do not point them at the same directory. See the gateway block below for what
+# that costs.
 #
 # ADDITIVE ONLY. This file overrides nothing that exists in a default install —
 # it is applied explicitly, on top of the stock compose:
@@ -83,6 +99,9 @@ services:
   #
   # LCR_WITNESS_REQUIRE_MTLS then makes a verified credential MANDATORY for that
   # one dial: without it, a missing mount silently degrades to a cleartext dial.
+  #
+  # The gateway gets a SECOND, different credential on top of this one, for the
+  # certificate port. Everything in this block is the claim hop only.
 
   audit:
     environment:
@@ -163,15 +182,66 @@ services:
       # and a central witness under the latch will refuse the handshake — which
       # presents to the operator as "certificates never load" long after the
       # deploy that caused it.
-      WITNESS_MTLS_CA_BUNDLE_PATH: "/etc/lucairn/witness-client/ca.pem"
-      WITNESS_MTLS_CLIENT_CERT_PATH: "/etc/lucairn/witness-client/client.pem"
-      WITNESS_MTLS_CLIENT_KEY_PATH: "/etc/lucairn/witness-client/client.key"
+      #
+      # ⚠️⚠️ A SEPARATE LEAF, IN A SEPARATE DIRECTORY, MOUNTED ONLY HERE.
+      #
+      # An earlier revision of this overlay pointed these three at
+      # /etc/lucairn/witness-client — the SAME files the claim hop uses, the
+      # same files audit, id-bridge and sanitizer also mount. A 2026-07-28
+      # adversarial review showed that is not a wiring shortcut, it is a hole,
+      # and it defeats the per-method authorization this slice exists to add:
+      #
+      #   1. It does not work. The witness's latched :50058 ACL
+      #      (LCR_WITNESS_CERT_ALLOWED_PEERS, default
+      #      services/veil-witness/internal/server/authz.go
+      #      `defaultLatchedCertPeers = []string{"gateway"}`) admits the CN
+      #      `gateway` and nothing else. The device leaf issued by the runbook
+      #      is CN=lucairn-device-<name>, so certificate retrieval and /verify
+      #      break with PermissionDenied.
+      #   2. The obvious fix makes it worse. An operator who repairs the outage
+      #      by adding their device CN to LCR_WITNESS_CERT_ALLOWED_PEERS /
+      #      LCR_WITNESS_EXPORT_ALLOWED_PEERS has just granted that CN to every
+      #      container holding the same private key — audit, id-bridge and,
+      #      most of all, the sanitizer, which holds raw PII. Any one of them
+      #      could then call ExportCertificates, GetCertificate and
+      #      VerifyCertificate directly, WITH the latch on. Shared identity
+      #      makes per-method authorization unenforceable: the witness can only
+      #      distinguish callers it can tell apart.
+      #
+      # So the certificate hop gets its own leaf, whose CN is exactly `gateway`,
+      # in its own host directory, mounted into THIS service only. The claim hop
+      # above keeps the device credential — that is the correct claim identity
+      # and it is deliberately unchanged.
+      WITNESS_MTLS_CA_BUNDLE_PATH: "/etc/lucairn/witness-gateway-client/ca.pem"
+      WITNESS_MTLS_CLIENT_CERT_PATH: "/etc/lucairn/witness-gateway-client/client.pem"
+      WITNESS_MTLS_CLIENT_KEY_PATH: "/etc/lucairn/witness-gateway-client/client.key"
       # The central witness's server leaf will not carry the laptop's idea of
       # its hostname unless the CA ceremony issued it that way. Override when
       # the published address and the certificate SAN differ.
+      #
+      # Unset, the gateway falls back to the literal `witness`
+      # (services/gateway/internal/clients/veil.go — `if serverName == ""`), so
+      # the ceremony in the runbook issues the central witness's server leaf
+      # with DNS:witness alongside DNS:dsa-veil-witness. One leaf, two SANs, two
+      # ports — the SERVER identity is genuinely one identity, which is why
+      # reusing it there is correct and reusing a CLIENT identity above is not.
       WITNESS_MTLS_SERVER_NAME: "${LUCAIRN_CENTRAL_WITNESS_SERVER_NAME:-}"
     volumes:
       - ${LUCAIRN_WITNESS_CLIENT_CERT_DIR:?set LUCAIRN_WITNESS_CLIENT_CERT_DIR — see docs/WITNESS_CENTRAL_RUNBOOK.md}:/etc/lucairn/witness-client:ro
+      # REQUIRED, deliberately, and not defaulted — same reasoning as
+      # LUCAIRN_CENTRAL_WITNESS_CERT_ADDR above.
+      #
+      # Every candidate default is worse than a failed render. Defaulting to
+      # LUCAIRN_WITNESS_CLIENT_CERT_DIR silently restores the shared-identity
+      # state this variable exists to end, and does so invisibly — the render
+      # succeeds, the containers start, and the only symptom is that a security
+      # property the runbook claims is not true. Defaulting to a fixed path like
+      # /opt/lucairn/certs/witness-gateway-client produces a bind mount of a
+      # directory Docker creates EMPTY on demand, so the gateway exits at boot
+      # with a file-not-found on a path nobody configured. A `:?` costs the
+      # operator one line in an env file, at config-load time, with the variable
+      # named in the message — which beats both by a wide margin.
+      - ${LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR:?set LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR (host dir holding ca.pem + client.pem + client.key for the CERTIFICATE port :50058, whose client.pem CN must be exactly `gateway`) — it MUST NOT be the same directory as LUCAIRN_WITNESS_CLIENT_CERT_DIR; see docs/WITNESS_CENTRAL_RUNBOOK.md §3.4}:/etc/lucairn/witness-gateway-client:ro
 
   # ── Local witness: NOT STARTED ────────────────────────────────────
   #

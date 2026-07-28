@@ -85,12 +85,37 @@ and the LLM still receives only sanitized text.
 
 Phase 1 uses one CA, created once, kept offline, issuing:
 
-- **one server leaf** for the central witness, and
-- **one client leaf per device** that submits claims.
+- **one server leaf** for the central witness (both ports),
+- **one claim client leaf per device** that submits claims (§3.3), and
+- **one certificate-hop client leaf per device**, `CN=gateway`, for that
+  device's gateway container only (§3.4).
 
 Per-device — not one shared client cert. A shared credential cannot be revoked
 for one laptop without re-issuing for all of them, which in practice means it
 never gets revoked at all.
+
+**Two client leaves per device, not one, and they are not interchangeable.**
+This is the single easiest thing to get wrong in this ceremony, so it is worth
+stating before you run any of it:
+
+| | claim hop | certificate hop |
+|---|---|---|
+| Port | `:50057` | `:50058` |
+| Env family | `LCR_WITNESS_MTLS_*` | `WITNESS_MTLS_*` |
+| Directory var | `LUCAIRN_WITNESS_CLIENT_CERT_DIR` | `LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR` |
+| Mounted into | audit, id-bridge, sanitizer, gateway | **gateway only** |
+| Subject CN | `lucairn-device-<name>` | `gateway` |
+| Witness allowlist | `LCR_WITNESS_CLAIM_ALLOWED_PEERS` | `LCR_WITNESS_CERT_ALLOWED_PEERS` / `LCR_WITNESS_EXPORT_ALLOWED_PEERS` |
+
+The reason they are separate is the whole point of §4.1. The witness authorises
+per method — claim intake to the emitters, certificate reads and bulk export to
+the gateway alone — and it can only distinguish callers that present different
+certificates. Mount one key into four containers and those four containers are
+one identity: whatever you grant the gateway you have granted the sanitizer,
+which holds raw PII, and the export RPC returns placeholder→original maps. A
+2026-07-28 review found exactly that shape in an earlier revision of this
+runbook, where the device leaf served both hops; do not reintroduce it by
+"simplifying" the two directories back into one.
 
 Perform this on a machine that is **not** one of the claim-submitting devices.
 The CA key must never be copied onto a laptop.
@@ -106,22 +131,35 @@ openssl req -x509 -new -key ca.key -sha256 -days 1825 \
   -out ca.pem
 
 # --- 3.2 The central witness's SERVER leaf --------------------------
-# The SAN must be exactly dsa-veil-witness. The emitters pin that name and
-# verify it against this CA; they do NOT verify the dialed hostname, which is
-# what lets the same certificate work regardless of the address each device
-# reaches the witness on.
+# TWO SANs, because the two hops pin two different names and both are served by
+# the same witness process:
+#
+#   dsa-veil-witness  the claim emitters (:50057) pin this.
+#   witness           the gateway's certificate hop (:50058) pins this whenever
+#                     WITNESS_MTLS_SERVER_NAME is unset — the gateway falls back
+#                     to the literal "witness"
+#                     (services/gateway/internal/clients/veil.go). Omit it and
+#                     certificate retrieval fails a hostname check that reads
+#                     like a broken certificate.
+#
+# Neither is a hostname check against the address you dial: the peer is verified
+# by "holds a key for a leaf this CA issued bearing that SAN", which is what lets
+# one certificate work regardless of the address each device reaches it on.
+#
+# One SERVER leaf for both ports is correct — they are one process and one
+# identity. Do not generalise that to the CLIENT side (§3.3/§3.4).
 openssl ecparam -name prime256v1 -genkey -noout -out witness-server.key
 openssl req -new -key witness-server.key \
   -subj "/O=Lucairn/CN=dsa-veil-witness" \
   -out witness-server.csr
 openssl x509 -req -in witness-server.csr -CA ca.pem -CAkey ca.key \
   -CAcreateserial -days 825 -sha256 \
-  -extfile <(printf 'subjectAltName=DNS:dsa-veil-witness\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature,keyEncipherment\nbasicConstraints=CA:FALSE\n') \
+  -extfile <(printf 'subjectAltName=DNS:dsa-veil-witness,DNS:witness\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature,keyEncipherment\nbasicConstraints=CA:FALSE\n') \
   -out witness-server.pem
 
-# --- 3.3 A CLIENT leaf, once per device -----------------------------
-# Use a CN that identifies the device. It is what you will look for when you
-# need to revoke, and what the witness's logs will show.
+# --- 3.3 A CLAIM client leaf, once per device -----------------------
+# This is the :50057 identity. Use a CN that identifies the device. It is what
+# you will look for when you need to revoke.
 # NOTE ON THE CN: pick something that identifies the device, but do NOT rely on
 # it for attribution today — see §5.1. The claim port verifies the certificate
 # CHAIN, not the CN, and nothing records which device submitted a claim.
@@ -134,10 +172,38 @@ openssl x509 -req -in "client-${DEVICE}.csr" -CA ca.pem -CAkey ca.key \
   -CAcreateserial -days 365 -sha256 \
   -extfile <(printf 'extendedKeyUsage=clientAuth\nkeyUsage=digitalSignature\nbasicConstraints=CA:FALSE\n') \
   -out "client-${DEVICE}.pem"
+
+# --- 3.4 A CERTIFICATE-HOP client leaf, once per device -------------
+# This is the :50058 identity, and it is a DIFFERENT key from §3.3. It goes into
+# a DIFFERENT directory and is mounted into the gateway container only.
+#
+# The CN must be exactly `gateway`. That string is not a convention you may
+# rename: it is the witness's latched default certificate-RPC allowlist
+# (services/veil-witness/internal/server/authz.go,
+# `defaultLatchedCertPeers = []string{"gateway"}`), and it is the same CN the
+# stock kit's own bootstrap-mtls-ca.sh mints for this hop. Under
+# LCR_WITNESS_PEER_IDENTITY=cn+sans a DNS SAN of `gateway` would also match, but
+# the CN is the documented form — keep to it.
+#
+# The KEY is per device even though the CN is not: the CN says "this caller is a
+# gateway", the key says "this one". Never copy one device's gateway key to
+# another device; §5.2's re-issuance is your only revocation and it is only
+# tractable if each key exists in exactly one place.
+openssl ecparam -name prime256v1 -genkey -noout -out "gateway-${DEVICE}.key"
+openssl req -new -key "gateway-${DEVICE}.key" \
+  -subj "/O=Lucairn/CN=gateway" \
+  -out "gateway-${DEVICE}.csr"
+openssl x509 -req -in "gateway-${DEVICE}.csr" -CA ca.pem -CAkey ca.key \
+  -CAcreateserial -days 365 -sha256 \
+  -extfile <(printf 'extendedKeyUsage=clientAuth\nkeyUsage=digitalSignature\nbasicConstraints=CA:FALSE\n') \
+  -out "gateway-${DEVICE}.pem"
 ```
 
-Distribute to each device, mode `0600`, into the directory named by
-`LUCAIRN_WITNESS_CLIENT_CERT_DIR`:
+Distribute to each device, mode `0600` on the keys and `0700` on the
+directories, into **two** directories:
+
+`LUCAIRN_WITNESS_CLIENT_CERT_DIR` — the claim hop, readable by audit,
+id-bridge, sanitizer and gateway:
 
 | File on the device | From the ceremony |
 |---|---|
@@ -145,8 +211,29 @@ Distribute to each device, mode `0600`, into the directory named by
 | `client.pem` | `client-<device>.pem` |
 | `client.key` | `client-<device>.key` |
 
-The overlay wires these through the **witness-scoped** variables
-`LCR_WITNESS_MTLS_CA_BUNDLE_PATH` / `_CLIENT_CERT_PATH` / `_CLIENT_KEY_PATH`.
+`LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR` — the certificate hop, mounted into
+the gateway and nothing else:
+
+| File on the device | From the ceremony |
+|---|---|
+| `ca.pem` | `ca.pem` (the same CA bundle; one CA, two leaves) |
+| `client.pem` | `gateway-<device>.pem` |
+| `client.key` | `gateway-<device>.key` |
+
+The overlay wires the first through the **witness-scoped** variables
+`LCR_WITNESS_MTLS_CA_BUNDLE_PATH` / `_CLIENT_CERT_PATH` / `_CLIENT_KEY_PATH`,
+and the second through `WITNESS_MTLS_CA_BUNDLE_PATH` / `_CLIENT_CERT_PATH` /
+`_CLIENT_KEY_PATH`. Both are set for you; the directories are not.
+
+**Do not point both variables at one directory.** It is the shortcut this
+ceremony exists to prevent. With one directory the gateway presents
+`CN=lucairn-device-<name>` to `:50058`, which the witness's default allowlist
+refuses — and the natural repair, adding that device CN to
+`LCR_WITNESS_CERT_ALLOWED_PEERS` / `LCR_WITNESS_EXPORT_ALLOWED_PEERS`, hands the
+same authority to every other container mounting that key, sanitizer included.
+`tests/test_witness_central_profile.sh` asserts the rendered separation on both
+the environment and the mounts, so a regression here fails the kit test suite
+rather than a customer's audit.
 
 Do **not** substitute the mesh-wide `DSA_MTLS_*` variables here. Two independent
 reasons, and under `LCR_WITNESS_REQUIRE_MTLS=true` the code now refuses the
@@ -282,16 +369,36 @@ Add these to the witness process:
 #
 # The device-level grain means a device's four emitters cannot be told apart by
 # this control. That is a real limitation, not an oversight — see §8.
+#
+# The bare identity `gateway` does NOT belong on this list. That is the §3.4
+# certificate-hop CN; it never dials :50057, and listing it here would let the
+# cert-hop leaf submit claims as well as read them, collapsing the separation
+# §3.4 exists to create. The gateway's claim identity is its device CN, already
+# above.
 LCR_WITNESS_CLAIM_ALLOWED_PEERS=dsa-gateway,dsa-id-bridge,dsa-sanitizer,dsa-sandbox-b,dsa-reid-guard,dsa-audit,lucairn-device-laptop-01,lucairn-device-laptop-02
 
-# Who may bulk-read certificates. LEAVE THIS ALONE unless you have a specific
-# reason.
+# Who may bulk-read certificates. LEAVE THIS ALONE. There is no supported
+# reason to widen it in a witness-central deployment.
 #
-# The default under the latch is the gateway identity and nothing else — in
-# particular NOT your device CNs. That is the property that matters: a laptop
-# credential cannot read certificates, its own or anyone else's, because it is
-# not on this list. Adding a device CN here hands that device a bulk-export
-# primitive over the whole store.
+# The default under the latch is the identity `gateway` and nothing else — in
+# particular NOT your device CNs. That is the property that matters: a laptop's
+# CLAIM credential cannot read certificates, its own or anyone else's, because
+# it is not on this list.
+#
+# 🛑 NEVER ADD A DEVICE CN HERE. If certificate retrieval or /verify is failing
+# with PermissionDenied, the cause is a mis-provisioned device, not a too-narrow
+# allowlist: the gateway is dialling :50058 with the §3.3 claim leaf instead of
+# the §3.4 `CN=gateway` leaf. Fix it at the device by populating
+# LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR. Adding `lucairn-device-laptop-01`
+# here would appear to fix it and would in fact grant bulk export over the whole
+# store to every container on that laptop that mounts the claim credential —
+# audit, id-bridge and the sanitizer, which holds raw PII — because they all
+# present the same certificate. The witness cannot tell them apart; that is what
+# a shared credential means. See §3.4.
+#
+# The same applies to LCR_WITNESS_CERT_ALLOWED_PEERS (GetCertificate /
+# VerifyCertificate), which shares this default set deliberately so the
+# single-read RPCs are never wider than the bulk one.
 #
 # Note "admin" is allowed OFF-latch (the legacy ACL) and NOT under the latch. If
 # you have tooling that exports as "admin", name it here deliberately.
@@ -355,13 +462,49 @@ would leave you believing a narrower list is in force than actually is.
 refused:
 
 ```
-[witness-export-audit] ts=... peer="gateway" customer_id="cust_acme" returned=42 capped=false outcome=ok duration_ms=118
+[witness-export-audit] ts=... peer="gateway" customer_ref=h:9f3c1ab27de40518 returned=42 capped=false outcome=ok duration_ms=118
 ```
 
 Caller, tenant, count, outcome, timing — and deliberately nothing else. No
 certificate body, no placeholder, no original value: an audit trail that copies
 the thing it audits is a second breach surface. Counters for the same events are
 on the Prometheus surface (`witness_export_*`, `witness_claim_intake_denied_total`).
+
+**`customer_ref` is a keyed pseudonym, not the `customer_id`.** Earlier builds
+printed the caller-supplied tenant id verbatim; container logs are shipped to
+whoever collects stdout, and those readers are not the people with witness-database
+access, so the control meant to protect tenant identifiers was creating a second,
+wider-read copy of them. It is now
+`"h:" + HMAC-SHA256(key, customer_id)` truncated to 16 hex characters. An unkeyed
+digest would not have helped — `cust_`-prefixed ids are enumerable and reverse in
+minutes — so the key is what makes it one-way in practice.
+
+To read the log you need to be able to correlate, and that has a configuration
+consequence:
+
+- **By default the key is random per witness process.** The pseudonym is safe with
+  zero configuration, and the same tenant appears under a *different* `customer_ref`
+  after every witness restart or on a second replica. Do not build alerting on the
+  value's stability, and do not read two restarts' logs as two tenants.
+- **Set `LCR_WITNESS_AUDIT_LOG_HMAC_KEY`** when you want a stable ref across
+  restarts and replicas. The witness *enforces* a 16-byte minimum and refuses to
+  start below it; 32 bytes or more is what you should actually use, and
+  `openssl rand -hex 32` produces a suitable value. The value is used as RAW
+  BYTES and is NOT hex-decoded — a 64-character hex string is therefore a
+  64-byte key, not a 32-byte one. Store it somewhere your log readers
+  cannot reach — anyone holding both the key and the log can re-derive the tenant
+  ids, which is exactly the exposure the pseudonym removes.
+- **To resolve one ref to one tenant**, recompute the HMAC over the candidate id
+  with your configured key and compare. There is no reverse lookup, by design:
+
+  ```sh
+  printf '%s' 'cust_acme' | openssl dgst -sha256 -mac HMAC \
+    -macopt "key:$LCR_WITNESS_AUDIT_LOG_HMAC_KEY" -r | cut -c1-16
+  # compare against the h: value in the log line
+  ```
+
+The same `customer_ref` form appears on the DENY and UNBOUND lines, so a refused
+export is correlatable to an allowed one without either line naming a tenant.
 
 Read the startup log once after enabling. The witness prints its resolved
 posture, and prints a loud warning when claim-intake authorization is NOT
@@ -395,15 +538,29 @@ unauthenticated, so anything able to intercept the hop can terminate it.
 
 ### Ingress
 
-Publish **`:50057` only.** Close `:50058` (certificate retrieval — see above),
-`:50059` (unauthenticated health HTTP) and `:50060` at the firewall or by not
-mapping them. Devices need the claim port and nothing else; certificates are read
-from the central store's web surface.
+Publish **`:50057` broadly** and **`:50058` per device**. Close `:50059`
+(unauthenticated health HTTP) and `:50060` at the firewall or by not mapping
+them.
 
-If a device genuinely needs `:50058` (the option-(b) shape in the overlay), open
-it to that device only and provision the `WITNESS_MTLS_*` **client** triple on it
-— the CN ACL is what makes that port safe to expose, and it is only active when
-the server triple above is set.
+`:50058` is not optional under this overlay: `LUCAIRN_CENTRAL_WITNESS_CERT_ADDR`
+is required, because the device runs no local witness for the gateway's
+`/verify` and `/summary` surfaces to fall back to. So the guidance is *narrow*,
+not *closed* — allow it from the device addresses you have issued §3.4 leaves
+to, and to nothing else. If your fleet reads certificates only from the central
+store's own web surface and never through the local gateway, you may close it
+entirely, but then the overlay's cert address points at a port your firewall
+drops and `/verify` fails at request time; decide that deliberately rather than
+discovering it.
+
+Two controls make that port safe to expose at all, and both must hold:
+
+1. The `WITNESS_MTLS_*` **server** triple in §4 above — without it the port
+   serves with no client authentication and no ACL.
+2. A `CN=gateway` **client** leaf on the device (§3.4) — the CN ACL is what
+   distinguishes the gateway from every other container on that laptop, and it
+   is the reason a laptop's claim credential cannot reach this port.
+
+Neither is a substitute for the other.
 
 ### Verifying the window before you leave it
 
@@ -533,17 +690,50 @@ the rest of this document describes.
 Pre-flight before enabling the latch on a device, which catches the common cause:
 
 ```bash
+# 1. The claim-hop credential, in all four emitters.
 for svc in gateway audit id-bridge sanitizer; do
   docker compose exec "$svc" sh -c \
     'ls -l /etc/lucairn/witness-client/ca.pem \
            /etc/lucairn/witness-client/client.pem \
            /etc/lucairn/witness-client/client.key' \
-    >/dev/null 2>&1 && echo "$svc OK" || echo "$svc MISSING CREDENTIAL FILES"
+    >/dev/null 2>&1 && echo "$svc claim-hop OK" || echo "$svc MISSING CLAIM CREDENTIAL FILES"
+done
+
+# 2. The certificate-hop credential, gateway only.
+docker compose exec gateway sh -c \
+  'ls -l /etc/lucairn/witness-gateway-client/ca.pem \
+         /etc/lucairn/witness-gateway-client/client.pem \
+         /etc/lucairn/witness-gateway-client/client.key' \
+  >/dev/null 2>&1 && echo "gateway cert-hop OK" || echo "gateway MISSING CERT-HOP CREDENTIAL FILES"
+
+# 3. It is the RIGHT leaf — CN=gateway, not the device CN. A device leaf here
+#    renders as PermissionDenied on every certificate read, and the tempting
+#    "fix" is the one §4.1 forbids.
+docker compose exec gateway sh -c \
+  'openssl x509 -noout -subject -in /etc/lucairn/witness-gateway-client/client.pem'
+# expect a subject whose CN is exactly: gateway
+
+# 4. The two hops are NOT the same key. Identical fingerprints mean the two
+#    directories were pointed at one place, which is the shared-identity state
+#    §3.4 exists to prevent.
+docker compose exec gateway sh -c \
+  'openssl x509 -noout -fingerprint -sha256 -in /etc/lucairn/witness-client/client.pem;
+   openssl x509 -noout -fingerprint -sha256 -in /etc/lucairn/witness-gateway-client/client.pem'
+# expect two DIFFERENT fingerprints
+
+# 5. No non-gateway container can see the cert-hop leaf.
+for svc in audit id-bridge sanitizer; do
+  docker compose exec "$svc" sh -c 'ls /etc/lucairn/witness-gateway-client' >/dev/null 2>&1 \
+    && echo "$svc FAIL — holds the gateway's cert-hop credential" \
+    || echo "$svc OK — no cert-hop credential"
 done
 ```
 
 The compose `:?` guards catch an *unset variable*. They do not catch a variable
-pointing at an empty or wrong directory, which is the failure this loop finds.
+pointing at an empty or wrong directory, nor two variables pointing at the same
+directory — which is what checks 3, 4 and 5 find. Check 5 is the one that
+matters most: it is the difference between "the gateway is authorised" and
+"everything on this laptop is authorised".
 
 ## 6. Deployment posture
 
@@ -600,6 +790,22 @@ Stated plainly so nobody deploys past them:
   laptop. A compromised container on a device can submit claims as any of that
   device's emitters. Narrowing this needs per-service credentials on the device,
   which is Slice-4 PKI work.
+
+  This limit is bounded to the CLAIM hop on purpose. The certificate hop —
+  the one that reads certificates and bulk-exports placeholder→original maps —
+  is separated today (§3.4): its `CN=gateway` leaf lives in its own directory
+  and is mounted into the gateway alone, so the RPCs that *disclose* PII are
+  authorised at per-service grain even though the RPCs that *submit* claims are
+  not. The asymmetry is deliberate: submitting a claim as the wrong emitter on
+  your own device forges evidence about that device, while reading certificates
+  as the gateway discloses every tenant's originals. Do not "simplify" the two
+  credential directories back into one; the kit test suite asserts they are
+  distinct and that only the gateway mounts the second.
+- **The certificate-hop CN is a role, not a device.** Every device's gateway
+  leaf carries `CN=gateway`, because that is what the witness's ACL matches, so
+  the ACL cannot tell one laptop's gateway from another's. Per-device
+  distinction on that hop exists only in the key and the certificate serial,
+  which nothing on the read path records. Revocation is still §5.2 re-issuance.
 - **`customer_id` binding has no default under the latch** (changed 2026-07-28
   after an adversarial review). It used to default to `audit`, meaning an
   exporter with no `LCR_WITNESS_EXPORT_CUSTOMER_MAP` entry was allowed and

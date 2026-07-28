@@ -51,6 +51,17 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v jq >/dev/null 2>&1; then
+  # Same reasoning as above, and for the same class of assertion. The
+  # credential-separation checks in §3b read the rendered `volumes:` of every
+  # service, which needs structure rather than a line grep — a `source:` line in
+  # the YAML render carries no indication of which service owns it, so a grep
+  # cannot answer "does any NON-gateway service mount this". Skipping would make
+  # the check disappear exactly where it is load-bearing.
+  echo "FATAL: 'jq' is required to inspect the rendered per-service volumes." >&2
+  exit 1
+fi
+
 for f in "$BASE" "$SELFHOSTED" "$ENV_EXAMPLE" "$RUNBOOK" "$OVERLAY"; do
   [ -f "$f" ] || { echo "FAIL: missing $f"; exit 1; }
 done
@@ -89,11 +100,13 @@ VEIL_SANITIZER_SIGNING_KEY=00
 LUCAIRN_CENTRAL_WITNESS_ADDR=witness.render.invalid:50057
 LUCAIRN_CENTRAL_WITNESS_CERT_ADDR=witness.render.invalid:50058
 LUCAIRN_WITNESS_CLIENT_CERT_DIR=/tmp/render-only-certs
+LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR=/tmp/render-only-gateway-certs
 DSA_ADMIN_KEY=render-only
 EOF
 
 render_services() { docker compose "$@" --env-file "$ENVFILE" config --services 2>/dev/null; }
 render_full()     { docker compose "$@" --env-file "$ENVFILE" config          2>/dev/null; }
+render_json()     { docker compose "$@" --env-file "$ENVFILE" config --format json 2>/dev/null; }
 
 echo "== witness-central rendered-compose differential =="
 
@@ -150,10 +163,208 @@ check 4 "$(printf '%s\n' "$FULL" | grep -c 'LCR_WITNESS_REQUIRE_MTLS: "true"' ||
 # gateway's cert-port credential entirely absent. The two families are
 # deliberately distinct and a test that cannot tell them apart is testing
 # neither.
-check 1 "$(printf '%s\n' "$FULL" | grep -cE '^[[:space:]]+WITNESS_MTLS_CLIENT_CERT_PATH: /etc/lucairn/witness-client/client\.pem$' || true)" \
+check 1 "$(printf '%s\n' "$FULL" | grep -cE '^[[:space:]]+WITNESS_MTLS_CLIENT_CERT_PATH: /etc/lucairn/witness-gateway-client/client\.pem$' || true)" \
   "the gateway carries a client credential for the certificate port (:50058 family)"
 check 4 "$(printf '%s\n' "$FULL" | grep -cE '^[[:space:]]+LCR_WITNESS_MTLS_CLIENT_CERT_PATH: /etc/lucairn/witness-client/client\.pem$' || true)" \
   "all four emitters carry the witness-scoped claim-hop credential (:50057 family)"
+
+# ── 3b. The two hops use DIFFERENT credentials ──────────────────────
+#
+# 2026-07-28 adversarial review, BLOCKER B. The overlay used to point the
+# gateway's WITNESS_MTLS_* triple at /etc/lucairn/witness-client — the same
+# three files the claim hop mounts into audit, id-bridge and sanitizer. That is
+# not a wiring shortcut, it defeats the per-method authorization this whole
+# slice adds:
+#
+#   - The witness's latched :50058 ACL admits CN `gateway` and nothing else
+#     (authz.go defaultLatchedCertPeers), and the device leaf is
+#     CN=lucairn-device-<name> — so certificate reads break.
+#   - Repairing that by allowlisting the device CN grants ExportCertificates,
+#     GetCertificate and VerifyCertificate to EVERY container holding that same
+#     private key, sanitizer included. A shared identity is one identity; the
+#     witness cannot authorise what it cannot distinguish.
+#
+# These assertions are computed from the render, not hardcoded against the
+# literal paths above, so they keep meaning if the paths are renamed.
+
+GW_CERT="$(printf '%s\n' "$FULL" | sed -nE 's/^[[:space:]]+WITNESS_MTLS_CLIENT_CERT_PATH: (.*)$/\1/p' | head -1)"
+GW_KEY="$(printf '%s\n'  "$FULL" | sed -nE 's/^[[:space:]]+WITNESS_MTLS_CLIENT_KEY_PATH: (.*)$/\1/p'  | head -1)"
+GW_CA="$(printf '%s\n'   "$FULL" | sed -nE 's/^[[:space:]]+WITNESS_MTLS_CA_BUNDLE_PATH: (.*)$/\1/p'   | head -1)"
+
+# ⚠️ NOT a non-emptiness check. The BASE compose already declares all three of
+# these as `${WITNESS_MTLS_...:-}`, so deleting the overlay's override leaves
+# the key present in the render with the value `""` — a mutation run proved a
+# `[ -n "$GW_CA" ]` test SURVIVES exactly that. Under the latch an empty CA
+# bundle is a gateway boot failure, so the deployment is broken rather than
+# insecure, but a test that cannot see it is not testing the wiring.
+#
+# Assert the CONCLUSION instead: all three paths resolve INTO one directory, and
+# that directory is the certificate-hop mount — which is false for an empty
+# value, for a partially-reverted triple, and for a triple split across two
+# directories.
+#
+# An empty value maps to the literal <empty> rather than being skipped: dropping
+# empties is how the FIRST version of this check let the same mutant through a
+# second time. A missing member must widen the set, not silently leave it.
+GW_DIRS="$(printf '%s\n%s\n%s\n' "$GW_CA" "$GW_CERT" "$GW_KEY" \
+  | sed 's/^"//; s/"$//' \
+  | while IFS= read -r p; do
+      if [ -z "$p" ]; then printf '<empty>\n'; else dirname "$p"; fi
+    done \
+  | sort -u | tr '\n' ' ' | sed 's/ *$//')"
+check "/etc/lucairn/witness-gateway-client" "$GW_DIRS" \
+  "the gateway's :50058 triple (CA + cert + key) all resolve into the cert-hop directory"
+
+# Not one of the claim-hop paths, on ANY service. Counting collisions rather
+# than comparing to a literal means a future edit that repoints the claim hop
+# INTO the gateway directory fails here too.
+check 0 "$(printf '%s\n' "$FULL" | grep -cE "^[[:space:]]+LCR_WITNESS_MTLS_CLIENT_CERT_PATH: ${GW_CERT}\$" || true)" \
+  "no service's claim-hop cert path equals the gateway's :50058 cert path"
+check 0 "$(printf '%s\n' "$FULL" | grep -cE "^[[:space:]]+LCR_WITNESS_MTLS_CLIENT_KEY_PATH: ${GW_KEY}\$" || true)" \
+  "no service's claim-hop KEY path equals the gateway's :50058 key path"
+
+# The private key is the identity. Same directory ⇒ same key ⇒ same identity,
+# even if the filenames were made to differ.
+GW_KEY_DIR="$(dirname "$GW_KEY")"
+check 0 "$(printf '%s\n' "$FULL" | grep -cE "^[[:space:]]+LCR_WITNESS_MTLS_CLIENT_KEY_PATH: ${GW_KEY_DIR}/" || true)" \
+  "no service's claim-hop key lives in the gateway's :50058 credential directory"
+
+# And the gateway's own claim hop is STILL the device credential — the fix must
+# separate the cert hop, not move the claim hop.
+check 4 "$(printf '%s\n' "$FULL" | grep -cE '^[[:space:]]+LCR_WITNESS_MTLS_CLIENT_KEY_PATH: /etc/lucairn/witness-client/client\.key$' || true)" \
+  "the gateway's CLAIM hop still uses the shared per-device credential"
+
+# ── 3b-ii. Mounts, not just env ─────────────────────────────────────
+#
+# Env paths and volume mounts are independent failure modes: a service can be
+# given the path without the mount (file-not-found at boot) or the mount without
+# the path (the credential is present in a container that should not hold it,
+# which is the security-relevant half). Assert the mounts directly.
+JSON="$(render_json -f "$BASE" -f "$OVERLAY")"
+if [ -z "$JSON" ]; then
+  fail "the JSON render produced nothing — the per-service mount assertions cannot run"
+else
+  GW_TARGET="$GW_KEY_DIR"
+  # Every service whose rendered volumes contain a mount at the gateway
+  # credential's container directory.
+  MOUNTERS="$(printf '%s' "$JSON" | jq -r --arg t "$GW_TARGET" '
+    .services | to_entries[]
+    | select((.value.volumes // []) | any(.target == $t))
+    | .key' | sort | tr '\n' ' ' | sed 's/ *$//')"
+  check "gateway" "$MOUNTERS" "ONLY the gateway mounts the :50058 credential directory"
+
+  # Read-only, because a writable mount of a credential directory lets a
+  # compromised gateway replace the leaf it authenticates with.
+  #
+  # `all` over an EMPTY list is true, so the emptiness is asserted separately —
+  # otherwise deleting the mount would satisfy this check rather than fail it,
+  # and a vacuous pass is the failure mode this whole file was written against.
+  RO="$(printf '%s' "$JSON" | jq -r --arg t "$GW_TARGET" '
+    [.services.gateway.volumes[] | select(.target == $t) | (.read_only // false)]
+    | (length > 0) and all')"
+  check "true" "$RO" "the gateway's :50058 credential directory is mounted, and read-only"
+
+  # The claim-hop directory is mounted by exactly the four emitters and nobody
+  # else — the before-state of the differential, so "only the gateway mounts the
+  # cert dir" cannot pass by the claim mounts having silently vanished.
+  CLAIM_MOUNTERS="$(printf '%s' "$JSON" | jq -r --arg t /etc/lucairn/witness-client '
+    .services | to_entries[]
+    | select((.value.volumes // []) | any(.target == $t))
+    | .key' | sort | tr '\n' ' ' | sed 's/ *$//')"
+  check "audit gateway id-bridge sanitizer" "$CLAIM_MOUNTERS" \
+    "exactly the four emitters mount the claim-hop credential directory"
+
+  # The two directories are distinct on the HOST as well. Pointing both env vars
+  # at one host path would satisfy every container-path assertion above while
+  # putting the identical key behind both mounts.
+  GW_SRC="$(printf '%s' "$JSON" | jq -r --arg t "$GW_TARGET" '
+    .services.gateway.volumes[] | select(.target == $t) | .source')"
+  CLAIM_SRC="$(printf '%s' "$JSON" | jq -r --arg t /etc/lucairn/witness-client '
+    .services.gateway.volumes[] | select(.target == $t) | .source')"
+  if [ -n "$GW_SRC" ] && [ "$GW_SRC" != "$CLAIM_SRC" ]; then
+    ok "the two hops resolve to different HOST directories ($CLAIM_SRC vs $GW_SRC)"
+  else
+    fail "both hops resolve to the same host directory ($GW_SRC) — one key, one identity"
+  fi
+fi
+
+# ── 3b-iii. The gateway cert dir is REQUIRED, not defaulted ─────────
+#
+# Every candidate default is worse than a failed render: defaulting to the
+# claim-hop directory silently restores the shared-identity state (render
+# succeeds, containers start, the security property is quietly false), and a
+# fixed path default becomes a bind mount of a directory Docker creates EMPTY,
+# so the gateway dies at boot on a path nobody configured.
+STRIPPED_GW="$WK/no-gateway-cert-dir.env"
+grep -v '^LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR=' "$ENVFILE" > "$STRIPPED_GW"
+if docker compose -f "$BASE" -f "$OVERLAY" --env-file "$STRIPPED_GW" config >/dev/null 2>&1; then
+  fail "omitting LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR still renders — it must fail closed"
+else
+  ok "omitting LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR fails the render"
+fi
+
+# ── 3b-iv. The docs say what the credential must be ─────────────────
+#
+# The compose file can enforce SEPARATE. It cannot enforce CORRECT: the leaf in
+# that directory must carry CN=gateway, because that is the witness's latched
+# certificate-RPC allowlist. A separate directory holding another device leaf
+# fails closed but wastes the operator's evening, and the tempting repair is the
+# one that reopens the hole.
+# ⚠️ NORMALISED, not a line grep — see the note under the "both hops" check
+# below for the mutation run that proved a line grep insufficient here.
+prose() { sed 's/^[[:space:]]*#[[:space:]]\{0,1\}//' "$1" | tr '\n' ' ' | tr -s '[:space:]' ' '; }
+ENV_PROSE="$(prose "$ENV_EXAMPLE")"
+RUNBOOK_PROSE="$(prose "$RUNBOOK")"
+
+case "$ENV_PROSE" in
+  *LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR*)
+    ok "env example declares the gateway credential directory" ;;
+  *)
+    fail "env example does not declare LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR" ;;
+esac
+case "$RUNBOOK_PROSE" in
+  *LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR*)
+    ok "runbook's ceremony provisions the gateway credential directory" ;;
+  *)
+    fail "runbook does not tell the operator to provision LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR" ;;
+esac
+case "$RUNBOOK_PROSE" in
+  *"CN=gateway"*|*'CN is EXACTLY `gateway`'*|*'CN must be exactly `gateway`'*)
+    ok "runbook states the certificate-hop CN must be gateway" ;;
+  *)
+    fail "runbook does not state that the :50058 leaf must carry CN=gateway" ;;
+esac
+# The instruction that reproduced the flaw must be gone, and its replacement
+# must not be a paraphrase of it.
+#
+# ⚠️ NORMALISED, not a line grep. These files are comment prose wrapped at ~78
+# columns, so the sentence that caused the BLOCKER — "the same three files serve
+# both hops" — spans a newline and a leading "# ". A line-oriented `grep -q`
+# does not see it: this exact check was written as a plain grep first and a
+# mutation run proved it SURVIVED restoring the offending paragraph verbatim.
+# Strip comment markers, fold to one line, collapse whitespace, then match
+# (prose()/ENV_PROSE/RUNBOOK_PROSE are defined just above).
+case "$ENV_PROSE" in
+  *"same three files serve both hops"*|*"serve both hops"*|*"same three files"*)
+    fail "env example still tells the operator one credential serves both hops" ;;
+  *)
+    ok "env example no longer claims one credential serves both hops" ;;
+esac
+# The runbook must forbid the repair that turns the outage into the breach.
+case "$RUNBOOK_PROSE" in
+  *"NEVER ADD A DEVICE CN"*)
+    ok "runbook forbids allowlisting a device CN for certificate reads" ;;
+  *)
+    fail "runbook does not forbid adding a device CN to the export/cert allowlists" ;;
+esac
+# ...and so does the file the customer actually edits. An operator hitting
+# PermissionDenied reaches for customer.env, not the runbook.
+case "$(prose "$CUSTOMER_ENV_EXAMPLE")" in
+  *"NEVER add a per-device CN here"*)
+    ok "customer.env.example warns against adding a device CN to the export allowlist" ;;
+  *)
+    fail "customer.env.example does not warn against adding a device CN to LCR_WITNESS_EXPORT_ALLOWED_PEERS" ;;
+esac
 
 # ── 4. The cert address is REQUIRED, not defaulted ──────────────────
 #
@@ -206,6 +417,28 @@ for var in LCR_WITNESS_CLAIM_ALLOWED_PEERS LCR_WITNESS_EXPORT_ALLOWED_PEERS \
     fail "runbook does not document $var"
   fi
 done
+
+# The documented audit-log line must match what the witness actually prints.
+# authz.go logs `customer_ref=h:<hmac>`, a keyed pseudonym; the runbook used to
+# show `customer_id="cust_acme"`. A worked example that does not match reality
+# teaches the operator to grep for a string that never appears, and — worse
+# here — advertises that the log contains raw tenant identifiers when the whole
+# point of the change was that it does not.
+if grep -q 'customer_id="cust_acme"' "$RUNBOOK"; then
+  fail "runbook still shows the obsolete raw customer_id in the export-audit log line"
+else
+  ok "runbook does not show a raw customer_id in the export-audit log line"
+fi
+if grep -q 'customer_ref=h:' "$RUNBOOK"; then
+  ok "runbook shows the keyed customer_ref pseudonym the witness actually emits"
+else
+  fail "runbook does not show the customer_ref=h:... form"
+fi
+if grep -q 'LCR_WITNESS_AUDIT_LOG_HMAC_KEY' "$RUNBOOK"; then
+  ok "runbook explains how to make the pseudonym stable/correlatable"
+else
+  fail "runbook does not tell the operator how to correlate customer_ref values"
+fi
 
 # The load-bearing sentence: a device credential must not be on the export list.
 if grep -q 'not.*your device CNs' "$RUNBOOK" || grep -q 'NOT your device CNs' "$RUNBOOK"; then
