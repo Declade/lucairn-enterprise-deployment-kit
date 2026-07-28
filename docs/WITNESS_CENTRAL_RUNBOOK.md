@@ -465,11 +465,24 @@ LCR_WITNESS_CLAIM_ALLOWED_PEERS=dsa-gateway,dsa-id-bridge,dsa-sanitizer,dsa-sand
 # the quieter of the two until now. A control the operator wrote down and the
 # process cannot apply is worse than one they never wrote: it is believed.
 #
-# There is NO carve-out for writing the permissive value — `..._BINDING=off`
-# over an ungated port still refuses to start. An INHERITED default still
-# degrades with a warning; only an explicit value stops boot, and unsetting the
-# variable is the one-line escape. LCR_WITNESS_AUDIT_LOG_HMAC_KEY is the
-# exception and merely warns: it affects a log field, not an access decision.
+# ✅ THE ONE EXCEPTION, and it is a neutral-value exception, not a name-based
+# one: a control whose configured value is semantically IDENTICAL to leaving the
+# variable unset still boots, because failing to attach it removes nothing.
+# `..._BINDING=off` (no customer check at all), `..._MAX_CERTS=0` (no cap at
+# all), and `..._CUSTOMER_MAP` while the binding is off (the witness never reads
+# the map in that mode) are all exempt. The exception exists so this gate cannot
+# BRICK a deployment that deliberately disabled a control — an operator who
+# states their defaults must not be the one whose witness stops starting.
+# `=audit`, `=enforce`, a positive cap, a map under either binding mode, and
+# either allowlist all still refuse. The exemption reads the PARSED value, never
+# the raw text, so `OFF` and ` off ` behave exactly like `off` and no future
+# spelling widens it by accident.
+#
+# An INHERITED default still degrades with a warning; only an explicit value
+# that asks for something stops boot, and unsetting the variable is the one-line
+# escape. LCR_WITNESS_AUDIT_LOG_HMAC_KEY is the exception of a different kind
+# and merely warns whatever you set it to: it affects a log field, not an access
+# decision.
 #
 # §4's seven-variable server set satisfies this. If you are following that
 # section you are already fine; this warning is for the deployment that copies

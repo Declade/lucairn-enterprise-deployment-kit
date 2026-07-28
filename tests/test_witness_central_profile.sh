@@ -872,6 +872,21 @@ has "$RUNBOOK_PROSE" "requires EVERY identity that has a map entry to allow" \
 # :50058 control. Five variables now refuse boot; the HMAC key still only warns.
 # Documenting the narrow version would leave an operator surprised by a refusal
 # on a variable the docs called safe.
+#
+# ⚠️ ROUND 5 — THIS GUARD WAS SATISFIED BY A FALSE CLAIM, and that is the reason
+# the second half below exists. The refusal is NOT absolute: round 5 exempted
+# values that are semantically identical to leaving the variable unset
+# (BINDING=off, MAX_CERTS=0, and the customer map while the binding is off),
+# because refusing there BRICKS a deployment that deliberately disabled a
+# control rather than protecting one. Both documents went on asserting the
+# opposite — "there is deliberately no carve-out for writing the permissive
+# value" — and this guard could not see it, because that very sentence CONTAINS
+# "refuses to start". A substring check for the rule was being satisfied by the
+# sentence that contradicted it.
+#
+# So the assertion is now a conjunction: the refusal rule AND its exception must
+# both appear, and the superseded absolute claim must not. Reverting either
+# document to the round-4 wording fails here rather than in a customer's config.
 for f in RUNBOOK_PROSE CUSTOMER_PROSE; do
   eval "hay=\"\$$f\""
   # shellcheck disable=SC2154  # hay is assigned by the eval directly above
@@ -884,6 +899,21 @@ for f in RUNBOOK_PROSE CUSTOMER_PROSE; do
       esac ;;
     *) fail "$f does not name LCR_WITNESS_EXPORT_MAX_CERTS among the :50058 controls" ;;
   esac
+
+  # HALF 2 — the exception, stated and made concrete. "Concrete" is the point:
+  # a document may not gesture at "some exceptions" and leave the operator to
+  # discover which, so a neutral VALUE has to be spelled out.
+  has "$hay" "semantically IDENTICAL to leaving the variable unset" \
+    "$f documents the neutral-value exception to the :50058 boot refusal"
+  has "$hay" "MAX_CERTS=0" \
+    "$f names a concrete neutral value that is exempt from the refusal"
+
+  # HALF 3 — the superseded absolute claim must be gone. Without this, a doc
+  # could carry both the new exception and the old "no carve-out" sentence and
+  # satisfy every positive check above while still telling the operator that
+  # BINDING=off stops the boot.
+  hasnt "$hay" "carve-out for writing the permissive value" \
+    "$f no longer claims the :50058 refusal has no permissive-value carve-out"
 done
 has "$RUNBOOK_PROSE" "LCR_WITNESS_AUDIT_LOG_HMAC_KEY is the exception" \
   "runbook records that the audit HMAC key warns rather than refusing boot"
