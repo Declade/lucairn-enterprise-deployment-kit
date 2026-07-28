@@ -295,20 +295,30 @@ LCR_WITNESS_CLAIM_ALLOWED_PEERS=dsa-gateway,dsa-id-bridge,dsa-sanitizer,dsa-sand
 #
 # Note "admin" is allowed OFF-latch (the legacy ACL) and NOT under the latch. If
 # you have tooling that exports as "admin", name it here deliberately.
+#
+# ⚠️ NAMING THIS ON A WITNESS WHOSE WITNESS_MTLS_* DOES NOT RESOLVE IS A BOOT
+# FAILURE, with or without the latch. The :50058 ACL interceptors attach only
+# inside the mTLS branch, so on an unconfigured cert port your allowlist would
+# govern nothing while the port answered every caller — the permissive twin of
+# the claim-port refusal, and the quieter of the two until now. An inherited
+# default still degrades with a warning; only an explicit allowlist stops boot.
 # LCR_WITNESS_EXPORT_ALLOWED_PEERS=gateway,dsa-gateway
 
 # Bind exporters to the tenants they may export. Format: peer=cust1|cust2,peer2=cust3
 # A peer WITH an entry is refused any customer_id outside it. A peer WITHOUT one
 # is governed by the binding mode below.
-# LCR_WITNESS_EXPORT_CUSTOMER_MAP=gateway=cust_acme|cust_globex
+#
+# ⚠️ REPLACE THE TENANT IDS WITH YOURS. This line and the binding below are a
+# PAIR and must be edited together — see the warning under the binding.
+LCR_WITNESS_EXPORT_CUSTOMER_MAP=gateway=cust_acme|cust_globex
 
 # What happens to an exporter that has NO map entry:
 #   enforce  refuse
 #   audit    allow, log it, count it
 #   off      no customer check at all
 #
-# ⚠️ MANDATORY when the latch is on and LCR_WITNESS_EXPORT_CUSTOMER_MAP is
-# empty. The witness REFUSES TO START until you state it, naming this variable.
+# ⚠️ MANDATORY whenever the latch is on, or whenever you set a customer map.
+# The witness REFUSES TO START until you state it, naming this variable.
 #
 # There used to be a default (`audit`) and it was wrong in the worst way: an
 # authorised exporter could name ANY customer_id and receive that tenant's
@@ -320,6 +330,15 @@ LCR_WITNESS_CLAIM_ALLOWED_PEERS=dsa-gateway,dsa-id-bridge,dsa-sanitizer,dsa-sand
 #   - `enforce` with no map, which denies every unmapped exporter
 #   - `audit` or `off`, meaning "I accept that this credential can read every
 #     tenant" — legitimate for a hosted multi-tenant gateway, nowhere else
+#
+# 🛑 `enforce` WITH THE MAP LEFT COMMENTED OUT BREAKS EVERY EXPORT, AND IT DOES
+# NOT LOOK LIKE A CONFIGURATION ERROR. An earlier revision of this runbook did
+# exactly that. The latched default export allowlist is the `gateway` identity;
+# with no map entry the gateway is unmapped, `enforce` refuses it, and the
+# refusal travels PermissionDenied -> ErrVeilUnavailable -> **HTTP 503
+# "Lucairn Witness is temporarily unavailable", Retry-After: 30** — permanently,
+# on a config mistake, labelled transient. Whoever debugs it will look at the
+# witness process, which is healthy. Set both lines or neither.
 LCR_WITNESS_EXPORT_CUSTOMER_BINDING=enforce
 
 # Cap on one export stream. Default under the latch: 10000. 0 disables.

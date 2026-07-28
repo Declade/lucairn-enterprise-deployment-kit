@@ -237,6 +237,30 @@ services:
       # (check_signing_key_compose_preflight in bin/lucairn).
       LCR_SIGNING_KEY: "${LCR_SANDBOX_B_SIGNING_KEY:-${VEIL_SANDBOX_B_SIGNING_KEY:-}}"
       LCR_WITNESS_ADDR: "veil-witness:50057"
+      # ── Witness claim hop: transport latch + scoped client credential ──────
+      # PRD prd-2026-07-28-split-evidence-plane.md Slice 1 (board #206 / #223).
+      #
+      # ⚠️ THIS BLOCK IS HERE BECAUSE IT WAS MISSED ONCE, AND THE MISS IS THE
+      # WHOLE FINDING. The Slice-1 wiring went into docker-compose.customer.yml.
+      # `sandbox-b` is defined ONLY in this overlay, so there was no merge source
+      # for it — and INSTALL.md/OPS.md document
+      # `-f docker-compose.customer.yml -f docker-compose.self-hosted.yml` as the
+      # mandatory full on-prem set. The result: an operator sets
+      # LCR_WITNESS_REQUIRE_MTLS=true in customer.env, every other emitter is
+      # mTLS-gated, and the AI-plane emitter — the one the witness's own
+      # authorization warning calls "the untrusted AI plane" — keeps a CLEARTEXT
+      # claim dial, because require_witness_mtls() reads an absent variable and
+      # assert_witness_transport_allowed() is a no-op. Once :50057 actually
+      # requires client certificates its claims fail outright and certificates
+      # seal PARTIAL, with no signal at config time.
+      #
+      # That is the shipped-deployments-never-see-the-setting blocker, one
+      # topology over. The kit's rendered-compose test now renders
+      # customer + self-hosted together for exactly this reason.
+      LCR_WITNESS_REQUIRE_MTLS: "${LCR_WITNESS_REQUIRE_MTLS:-false}"
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "${LCR_WITNESS_MTLS_SANDBOX_B_CA_BUNDLE_PATH:-${LCR_WITNESS_MTLS_CA_BUNDLE_PATH:-}}"
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "${LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_CERT_PATH:-${LCR_WITNESS_MTLS_CLIENT_CERT_PATH:-}}"
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "${LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_KEY_PATH:-${LCR_WITNESS_MTLS_CLIENT_KEY_PATH:-}}"
       OLLAMA_URL: "${OLLAMA_URL:-http://ollama:11434}"
       OPENAI_API_KEY: "${MODEL_RUNTIME_API_KEY:-local-model-runtime}"
       OPENAI_BASE_URL: "${MODEL_RUNTIME_URL:-http://model-runtime:8000/v1}"

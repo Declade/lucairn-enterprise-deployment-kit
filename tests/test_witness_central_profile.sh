@@ -28,6 +28,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 BASE="docker-compose.customer.yml"
+SELFHOSTED="docker-compose.self-hosted.yml"
+CUSTOMER_ENV_EXAMPLE="customer.env.example"
 OVERLAY="contrib/witness-central/docker-compose.witness-central.yml"
 ENV_EXAMPLE="contrib/witness-central/witness-central.env.example"
 RUNBOOK="docs/WITNESS_CENTRAL_RUNBOOK.md"
@@ -49,7 +51,7 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
-for f in "$BASE" "$OVERLAY" "$ENV_EXAMPLE" "$RUNBOOK"; do
+for f in "$BASE" "$SELFHOSTED" "$ENV_EXAMPLE" "$RUNBOOK" "$OVERLAY"; do
   [ -f "$f" ] || { echo "FAIL: missing $f"; exit 1; }
 done
 
@@ -87,6 +89,7 @@ VEIL_SANITIZER_SIGNING_KEY=00
 LUCAIRN_CENTRAL_WITNESS_ADDR=witness.render.invalid:50057
 LUCAIRN_CENTRAL_WITNESS_CERT_ADDR=witness.render.invalid:50058
 LUCAIRN_WITNESS_CLIENT_CERT_DIR=/tmp/render-only-certs
+DSA_ADMIN_KEY=render-only
 EOF
 
 render_services() { docker compose "$@" --env-file "$ENVFILE" config --services 2>/dev/null; }
@@ -247,6 +250,68 @@ done
 check 5 "$(printf '%s\n' "$BASE_FULL" | grep -c 'LCR_WITNESS_REQUIRE_MTLS: "false"' || true)" \
   "an unconfigured stock install renders the latch as an explicit false"
 
+# ── 6b-ii. Per-service credentials must be EXPRESSIBLE ──────────────
+#
+# Round 2, TOB-003. One shared client leaf across every emitter collapses the
+# per-emitter claim allowlist to a single identity: any container on the host
+# can then submit claims as any allowlisted emitter. The device-wide triple
+# stays as the fallback (a genuine one-credential laptop still works); what this
+# asserts is that an operator CAN bind each emitter to its own leaf without
+# editing compose, mirroring what the :50058 hop has always done with
+# WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH.
+PSENV="$WK/perservice.env"
+cat "$ENVFILE" > "$PSENV"
+echo 'LCR_WITNESS_MTLS_CLIENT_CERT_PATH=/global/client.pem' >> "$PSENV"
+for svc in audit id-bridge sanitizer gateway; do
+  upper="$(printf '%s' "$svc" | tr 'a-z-' 'A-Z_')"
+  echo "LCR_WITNESS_MTLS_${upper}_CLIENT_CERT_PATH=/per/${svc}.pem" >> "$PSENV"
+done
+PS_FULL="$(docker compose -f "$BASE" --env-file "$PSENV" config)"
+check 4 "$(printf '%s\n' "$PS_FULL" | grep -cE '^[[:space:]]+LCR_WITNESS_MTLS_CLIENT_CERT_PATH: /per/' || true)" \
+  "each emitter can be given its own witness client leaf (per-service override wins)"
+check 4 "$(printf '%s\n' "$BASE_FULL" | grep -cE '^[[:space:]]+LCR_WITNESS_MTLS_CLIENT_CERT_PATH: ' || true)" \
+  "the device-wide fallback is still wired when no per-service leaf is set"
+
+# ── 6b-iii. The SELF-HOSTED overlay carries it too ──────────────────
+#
+# ⚠️ THIS EXISTS BECAUSE IT WAS MISSED. The Slice-1 wiring went into
+# docker-compose.customer.yml, and `sandbox-b` is defined ONLY in
+# docker-compose.self-hosted.yml — so there was no merge source for it, while
+# INSTALL.md and OPS.md document `customer + self-hosted` as the mandatory full
+# on-prem set. An operator latching that install got every emitter gated except
+# the AI plane, whose claim dial stayed cleartext.
+#
+# Rendering only $BASE cannot see that. This renders the documented pair.
+FULLSET="$(render_full -f "$BASE" -f "$SELFHOSTED")"
+
+for var in LCR_WITNESS_REQUIRE_MTLS LCR_WITNESS_MTLS_CA_BUNDLE_PATH \
+           LCR_WITNESS_MTLS_CLIENT_CERT_PATH LCR_WITNESS_MTLS_CLIENT_KEY_PATH; do
+  # audit + id-bridge + sanitizer + gateway + sandbox-b = 5 emitters, plus the
+  # witness itself for the latch.
+  want=5
+  [ "$var" = "LCR_WITNESS_REQUIRE_MTLS" ] && want=6
+  got="$(printf '%s\n' "$FULLSET" | grep -cE "^[[:space:]]+${var}: " || true)"
+  check "$want" "$got" "customer+self-hosted wires $var into every emitter incl. sandbox-b"
+done
+
+# ── 6d. customer.env.example is the file customers actually edit ────
+#
+# The DSA repo's guard enforces the config.env.template counterpart. The kit had
+# no equivalent, so all twelve controls were wired into compose and discoverable
+# nowhere.
+for var in LCR_WITNESS_REQUIRE_MTLS LCR_WITNESS_MTLS_CA_BUNDLE_PATH \
+           LCR_WITNESS_MTLS_CLIENT_CERT_PATH LCR_WITNESS_MTLS_CLIENT_KEY_PATH \
+           LCR_WITNESS_EXPORT_ALLOWED_PEERS LCR_WITNESS_CERT_ALLOWED_PEERS \
+           LCR_WITNESS_CLAIM_ALLOWED_PEERS LCR_WITNESS_EXPORT_CUSTOMER_MAP \
+           LCR_WITNESS_EXPORT_CUSTOMER_BINDING LCR_WITNESS_EXPORT_MAX_CERTS \
+           LCR_WITNESS_PEER_IDENTITY LCR_WITNESS_AUDIT_LOG_HMAC_KEY; do
+  if grep -qE "^#?${var}=" "$CUSTOMER_ENV_EXAMPLE"; then
+    ok "customer.env.example declares $var"
+  else
+    fail "customer.env.example does not declare $var — customers configure from this file"
+  fi
+done
+
 # ── 6c. The mandatory binding is stated where the operator sets it ──
 #
 # Under the latch with no customer map the witness now REFUSES TO START until
@@ -261,6 +326,28 @@ if grep -q 'REFUSES TO START' "$RUNBOOK"; then
   ok "runbook says the witness refuses to start without an explicit binding"
 else
   fail "runbook does not warn that the binding is mandatory under the latch"
+fi
+
+# 🛑 THE MAP AND THE BINDING ARE A PAIR, and the runbook must ship them as one.
+# `enforce` with the map left commented out denies EVERY export: the latched
+# default allowlist is the `gateway` identity, an unmapped gateway is refused,
+# and the refusal surfaces as a PERMANENT HTTP 503 "Witness temporarily
+# unavailable, Retry-After: 30". A config error wearing an outage's clothes. An
+# earlier revision of this runbook shipped exactly that, and the check that was
+# supposed to cover it only asserted the binding line was uncommented.
+if grep -qE '^LCR_WITNESS_EXPORT_CUSTOMER_BINDING=enforce' "$RUNBOOK"; then
+  if grep -qE '^LCR_WITNESS_EXPORT_CUSTOMER_MAP=' "$RUNBOOK"; then
+    ok "runbook ships the customer map alongside enforce (they are a pair)"
+  else
+    fail "runbook sets LCR_WITNESS_EXPORT_CUSTOMER_BINDING=enforce with the customer map commented out — that denies EVERY export and surfaces as a permanent HTTP 503"
+  fi
+else
+  ok "runbook does not ship a bare enforce"
+fi
+if grep -q 'Retry-After' "$RUNBOOK"; then
+  ok "runbook warns what a bare enforce looks like from the outside"
+else
+  fail "runbook does not describe the 503-that-is-really-a-config-error symptom"
 fi
 # The latch's strict grammar, where the operator types the value.
 if grep -q 'STRICT VALUE GRAMMAR' "$ENV_EXAMPLE"; then
