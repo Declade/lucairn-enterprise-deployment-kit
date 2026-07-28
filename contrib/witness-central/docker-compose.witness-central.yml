@@ -64,6 +64,41 @@
 # missing or incomplete credential stops the claim from being submitted rather
 # than sending it in cleartext.
 #
+# ⚠️ FULL ON-PREM (customer + self-hosted + THIS OVERLAY): ONE MANUAL STEP
+# -------------------------------------------------------------------------
+# `sandbox-b`, the AI plane's claim emitter, is defined ONLY in
+# docker-compose.self-hosted.yml. This overlay CANNOT add a `sandbox-b:` block:
+# it is also applied WITHOUT that file, and an override block for a service the
+# project does not define creates a new imageless service and breaks that cell.
+#
+# Its ADDRESS is handled — docker-compose.self-hosted.yml now reads
+# `${LUCAIRN_CENTRAL_WITNESS_ADDR:-veil-witness:50057}`, so sandbox-b repoints
+# with the other emitters and nothing is needed from you.
+#
+# Its CREDENTIAL is not. `LCR_WITNESS_MTLS_SANDBOX_B_*` and the device-wide
+# fallback both resolve EMPTY by default, and no witness client-credential
+# directory is mounted into that container — this overlay mounts it into audit,
+# id-bridge, sanitizer and gateway only, and cannot reach sandbox-b. So
+#
+#     customer + self-hosted + witness-central + LCR_WITNESS_REQUIRE_MTLS=true
+#
+# leaves sandbox-b with the latch on and no credential. That state MUST fail
+# loud at boot rather than fall back to a cleartext dial or seal PARTIAL
+# certificates in silence.
+#
+# YOU must, in Slice 1: mount the §3.3 claim-credential directory into
+# sandbox-b read-only, and set
+#   LCR_WITNESS_MTLS_SANDBOX_B_CA_BUNDLE_PATH
+#   LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_CERT_PATH
+#   LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_KEY_PATH
+# Full step, with the render command that verifies both halves:
+# docs/WITNESS_CENTRAL_RUNBOOK.md § 7b.
+#
+# No default bind mount is shipped for it, deliberately: a bind mount of a
+# non-existent host path is materialised by Docker as an EMPTY DIRECTORY, not
+# an error, so a default would hide the missing credential rather than surface
+# it.
+#
 # WHAT IS NOT IN THIS SLICE
 # -------------------------
 # There is no local outbox (Slice 2) and no offline journal (Slice 3) yet. While
@@ -299,3 +334,32 @@ services:
     # about their own conduct — and is acceptable only for offline demos where
     # nobody will rely on the signature. It is never the pilot default.
     profiles: ["witness-local-dev-only"]
+    # ── LOUDNESS, IN THE RENDER ───────────────────────────────────────
+    #
+    # 2026-07-28 review. A comment in this file is read by whoever opens this
+    # file; the operator who activates the profile is, by construction, someone
+    # who did not. They hit a compose error, searched for a flag that makes it
+    # go away, and found `--profile witness-local-dev-only` — which does make it
+    # go away, by restoring the local witness this whole topology exists to
+    # delete. The regression is invisible from the command line.
+    #
+    # A `${VAR:?...}` acknowledgement gate is NOT available here: Compose
+    # interpolates every service in the file regardless of profile, so a `:?`
+    # on this block fails EVERY cell, including the ones that never start it.
+    # That was measured, not assumed.
+    #
+    # A label is the one channel that is inert at render time and still visible
+    # in `docker compose config`, `docker inspect` and `docker ps --filter
+    # label=...`. It costs nothing when the profile is off and states the cost
+    # plainly when it is on.
+    labels:
+      eu.lucairn.witness.local-profile: "witness-local-dev-only"
+      eu.lucairn.witness.local-profile.warning: >-
+        ACTIVATING THE witness-local-dev-only PROFILE RESTORES SELF-SIGNED
+        EVIDENCE: this host runs the witness that signs certificates about its
+        own operator's conduct, with the signing key on this machine, and it
+        reaches no TSA and no Rekor (anchor_status stays pending forever). It is
+        for OFFLINE DEMOS ONLY and is never a pilot or production topology. If
+        you reached this flag while trying to make a compose error go away, the
+        error is the point — see docs/WITNESS_CENTRAL_RUNBOOK.md § "The dev-only
+        profile" for the fix that does not reintroduce self-signed evidence.

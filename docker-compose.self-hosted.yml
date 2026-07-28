@@ -200,8 +200,58 @@ services:
         condition: service_healthy
       audit:
         condition: service_healthy
+      # ── OPTIONAL DEPENDENCY, DELIBERATELY ─────────────────────────────────
+      # PRD prd-2026-07-28-split-evidence-plane.md (board #206), 2026-07-28
+      # review BLOCKER 1.
+      #
+      # WHY NOT `required: true` (the Compose default):
+      #   sandbox-b is a CLAIM EMITTER. It DIALS a witness at
+      #   LCR_WITNESS_ADDR below; it does not need one CO-LOCATED. The other
+      #   four emitters in this stack — audit, id-bridge, sanitizer, gateway —
+      #   declare no such edge at all, and they submit claims perfectly well.
+      #   sandbox-b's edge was a LAN-topology artefact, not a requirement.
+      #
+      #   Under the witness-central overlay the local `veil-witness` service is
+      #   parked behind a profile nobody activates, and a profiled-out service
+      #   is UNDEFINED to Compose, not merely not-started. A hard edge onto it
+      #   therefore does not degrade — it fails the whole project:
+      #     `service "sandbox-b" depends on undefined service "veil-witness":
+      #      invalid compose project`
+      #   so `customer + self-hosted + witness-central` — the full on-prem set
+      #   INSTALL.md documents, plus the pilot topology — would not render at
+      #   all. And the workaround an operator finds first,
+      #   `--profile witness-local-dev-only`, RESTORES the local witness this
+      #   topology exists to delete. That is not a workaround, it is the
+      #   security regression: self-signed evidence, back on by accident.
+      #
+      # WHAT `required: false` DOES NOT COST:
+      #   the health CONDITION still applies whenever the witness IS in the
+      #   project. Rendered without the overlay this edge is
+      #   `{condition: service_healthy, required: false}`, so on the stock LAN
+      #   topology sandbox-b still waits for a healthy witness exactly as
+      #   before. Only the "the service must exist" half is relaxed.
+      #
+      # ⚠️ COMPOSE FLOOR: `required:` NEEDS v2.20.0+, AND OLDER CLIENTS ERROR.
+      #   They do NOT ignore the unknown key — the Compose Spec schema is
+      #   additionalProperties:false here, so v2.19.1 refuses the whole file:
+      #     validating docker-compose.self-hosted.yml:
+      #       services.sandbox-b.depends_on.veil-witness
+      #       Additional property required is not allowed
+      #   Measured 2026-07-28: v2.19.1 fails, v2.20.0 and v2.20.3 pass. That is
+      #   loud and at config time rather than silent, but it affects the STOCK
+      #   full on-prem set too, not just witness-central — so INSTALL.md's
+      #   prerequisite was raised from "Docker Compose v2" to "v2.20.0+".
+      #   `lucairn doctor` does not yet enforce that floor (follow-up).
+      #
+      # WHY `cert-builder` KEEPS A HARD EDGE (docker-compose.customer.yml,
+      # profile "certification"): it does not dial a witness, it drives one —
+      # it genuinely cannot do its job without a witness process in the same
+      # project. `certification` + witness-central is therefore a
+      # SHOULD-NOT-RENDER cell and is asserted as such in
+      # tests/test_witness_central_profile.sh. Do not "fix" it here.
       veil-witness:
         condition: service_healthy
+        required: false
     environment:
       DSA_ENV: "${DSA_ENV:-production}"
       DSA_SERVICE_TOKEN: "${DSA_SERVICE_TOKEN:?DSA_SERVICE_TOKEN is required}"
@@ -236,7 +286,24 @@ services:
       # including development/test where that gate is skipped
       # (check_signing_key_compose_preflight in bin/lucairn).
       LCR_SIGNING_KEY: "${LCR_SANDBOX_B_SIGNING_KEY:-${VEIL_SANDBOX_B_SIGNING_KEY:-}}"
-      LCR_WITNESS_ADDR: "veil-witness:50057"
+      # ⚠️ INTERPOLATED, NOT HARDCODED — 2026-07-28 review, HIGH 3.
+      #
+      # This was the literal `veil-witness:50057`. The witness-central overlay
+      # repoints the other four emitters by declaring an `audit:` /
+      # `id-bridge:` / `sanitizer:` / `gateway:` block, but it CANNOT declare a
+      # `sandbox-b:` block: that overlay is also applied WITHOUT this file, and
+      # an override block for a service the project does not define creates a
+      # new service with no image, breaking that cell. So the repoint has to
+      # happen HERE, from the same variable the overlay reads.
+      #
+      # Left hardcoded, `customer + self-hosted + witness-central` would start
+      # a sandbox-b dialling a container that is not in the project. Every
+      # AI-plane claim fails, and it fails QUIETLY: the turn still completes,
+      # the user is still protected, and the certificate seals PARTIAL. An
+      # operator sees "certificates are missing the AI plane", months later.
+      #
+      # The default keeps the stock LAN topology byte-identical.
+      LCR_WITNESS_ADDR: "${LUCAIRN_CENTRAL_WITNESS_ADDR:-veil-witness:50057}"
       # ── Witness claim hop: transport latch + scoped client credential ──────
       # PRD prd-2026-07-28-split-evidence-plane.md Slice 1 (board #206 / #223).
       #
@@ -257,6 +324,40 @@ services:
       # That is the shipped-deployments-never-see-the-setting blocker, one
       # topology over. The kit's rendered-compose test now renders
       # customer + self-hosted together for exactly this reason.
+      #
+      # ⚠️⚠️ NAMED OPERATOR STEP — SANDBOX-B CREDENTIAL PROVISIONING, SLICE 1.
+      #
+      # These three paths resolve to the EMPTY STRING by default, and this
+      # service has NO mount of the witness client-credential directory. The
+      # witness-central overlay mounts that directory into audit, id-bridge,
+      # sanitizer and gateway — it cannot add a mount here, because it must not
+      # define a `sandbox-b:` block at all (see LCR_WITNESS_ADDR above).
+      #
+      # So the combination
+      #     customer + self-hosted + witness-central, LCR_WITNESS_REQUIRE_MTLS=true
+      # leaves sandbox-b with the latch ON and no credential to satisfy it.
+      # That MUST fail loud at boot, not degrade to a cleartext dial or to
+      # silent PARTIAL certificates — the DSA-side boot gate is being widened
+      # to make exactly this state fatal.
+      #
+      # If you run the full on-prem set with a central witness, YOU must:
+      #   1. issue this device a claim leaf per
+      #      docs/WITNESS_CENTRAL_RUNBOOK.md §3.3 (the same leaf the other four
+      #      emitters use is correct — one device, one claim identity);
+      #   2. add a read-only bind mount of that host directory into THIS
+      #      service, e.g.
+      #        volumes:
+      #          - /opt/lucairn/certs/witness-client:/etc/lucairn/witness-client:ro
+      #   3. set the sandbox-b-scoped triple in customer.env:
+      #        LCR_WITNESS_MTLS_SANDBOX_B_CA_BUNDLE_PATH=/etc/lucairn/witness-client/ca.pem
+      #        LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_CERT_PATH=/etc/lucairn/witness-client/client.pem
+      #        LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_KEY_PATH=/etc/lucairn/witness-client/client.key
+      #
+      # NO DEFAULT BIND MOUNT IS SHIPPED HERE, DELIBERATELY. A bind mount of a
+      # host path that does not exist is materialised by Docker as an EMPTY
+      # DIRECTORY, not an error — which is the precise trap the :50058
+      # transport gate was rewritten to catch. A shipped default would turn a
+      # missing credential into a mount that looks present and reads empty.
       LCR_WITNESS_REQUIRE_MTLS: "${LCR_WITNESS_REQUIRE_MTLS:-false}"
       LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "${LCR_WITNESS_MTLS_SANDBOX_B_CA_BUNDLE_PATH:-${LCR_WITNESS_MTLS_CA_BUNDLE_PATH:-}}"
       LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "${LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_CERT_PATH:-${LCR_WITNESS_MTLS_CLIENT_CERT_PATH:-}}"

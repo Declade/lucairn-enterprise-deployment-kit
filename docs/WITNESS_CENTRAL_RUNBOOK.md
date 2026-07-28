@@ -181,23 +181,69 @@ openssl x509 -req -in "client-${DEVICE}.csr" -CA ca.pem -CAkey ca.key \
 # rename: it is the witness's latched default certificate-RPC allowlist
 # (services/veil-witness/internal/server/authz.go,
 # `defaultLatchedCertPeers = []string{"gateway"}`), and it is the same CN the
-# stock kit's own bootstrap-mtls-ca.sh mints for this hop. Under
-# LCR_WITNESS_PEER_IDENTITY=cn+sans a DNS SAN of `gateway` would also match, but
-# the CN is the documented form — keep to it.
+# stock kit's own bootstrap-mtls-ca.sh mints for this hop.
+#
+# ⚠️⚠️ AND A PER-DEVICE subjectAltName ON TOP OF IT — TOB-002, 2026-07-28.
+#
+# The CN alone is FLEET-WIDE. Every device's cert-hop leaf carries the same
+# `/O=Lucairn/CN=gateway`, so the witness's peerIdentities() returns exactly
+# {"gateway"} for all of them (authz.go peerIdentities: CommonName, then the
+# leaf's DNSNames). One identity for the whole fleet means
+# LCR_WITNESS_EXPORT_CUSTOMER_MAP has exactly one possible key — and a map with
+# one key cannot separate two tenants. At two devices or more (the pilot shape)
+# any laptop operator can call ExportCertificates naming another consultant's
+# customer_id and receive up to LCR_WITNESS_EXPORT_MAX_CERTS certificates, each
+# carrying RedactionManifestBody, the placeholder->original PII map.
+#
+# The SAN is what makes each device distinguishable WITHOUT breaking the shared
+# allowlist entry. Verified against the witness code, not assumed:
+#
+#   - peerIdentities() appends leaf.DNSNames only when MatchSANs is true, and
+#     MatchSANs is LATCH-DERIVED: parsePeerIdentity("", latched) returns
+#     `latched` (authz.go). With LCR_WITNESS_REQUIRE_MTLS=true — which §4
+#     requires — SANs count. Setting LCR_WITNESS_PEER_IDENTITY=cn explicitly
+#     turns them off again; do not.
+#   - authorizePeer() admits the caller if ANY identity is on the list, and the
+#     CommonName is still first in that slice, so the shared
+#     LCR_WITNESS_CERT_ALLOWED_PEERS / LCR_WITNESS_EXPORT_ALLOWED_PEERS entry
+#     `gateway` keeps admitting every device. Adding a SAN grants nothing new.
+#   - authorizeCustomer() walks the SAME slice and stops at the FIRST identity
+#     that has a map entry. That ordering is why §4.1 must key the map on the
+#     per-device SAN and NEVER on the bare `gateway` — see the bold warning
+#     there before you edit the map.
+#
+# Use a name that cannot collide with a mesh service SAN. `lucairn-gateway-`
+# prefixed with the device is the documented form.
 #
 # The KEY is per device even though the CN is not: the CN says "this caller is a
-# gateway", the key says "this one". Never copy one device's gateway key to
-# another device; §5.2's re-issuance is your only revocation and it is only
-# tractable if each key exists in exactly one place.
+# gateway", the key says "this one", and the SAN says "this one" in a form the
+# witness can act on. Never copy one device's gateway key to another device;
+# §5.2's re-issuance is your only revocation and it is only tractable if each
+# key exists in exactly one place.
 openssl ecparam -name prime256v1 -genkey -noout -out "gateway-${DEVICE}.key"
 openssl req -new -key "gateway-${DEVICE}.key" \
   -subj "/O=Lucairn/CN=gateway" \
   -out "gateway-${DEVICE}.csr"
 openssl x509 -req -in "gateway-${DEVICE}.csr" -CA ca.pem -CAkey ca.key \
   -CAcreateserial -days 365 -sha256 \
-  -extfile <(printf 'extendedKeyUsage=clientAuth\nkeyUsage=digitalSignature\nbasicConstraints=CA:FALSE\n') \
+  -extfile <(printf "subjectAltName=DNS:lucairn-gateway-${DEVICE}\nextendedKeyUsage=clientAuth\nkeyUsage=digitalSignature\nbasicConstraints=CA:FALSE\n") \
   -out "gateway-${DEVICE}.pem"
+
+# Confirm the leaf carries BOTH identities before you distribute it. A missing
+# SAN here is silent: the device works, exports succeed, and the per-tenant
+# separation you configured in §4.1 simply is not there.
+openssl x509 -in "gateway-${DEVICE}.pem" -noout -subject -ext subjectAltName
+# subject=O=Lucairn, CN=gateway            <- OpenSSL 3.x; 1.1.1 prints "O = Lucairn"
+# X509v3 Subject Alternative Name:
+#     DNS:lucairn-gateway-laptop-01
 ```
+
+> **Note the `printf` quoting change.** The `-extfile` here is double-quoted so
+> `${DEVICE}` expands; §3.2 and §3.3 use single quotes because they have nothing
+> to expand. Single-quoting this one produces a leaf whose SAN is the literal
+> `lucairn-gateway-${DEVICE}` — identical on every device, which is exactly the
+> fleet-wide identity this step exists to end. The `openssl x509 ... -ext
+> subjectAltName` check above catches it.
 
 Distribute to each device, mode `0600` on the keys and `0700` on the
 directories, into **two** directories:
@@ -403,12 +449,28 @@ LCR_WITNESS_CLAIM_ALLOWED_PEERS=dsa-gateway,dsa-id-bridge,dsa-sanitizer,dsa-sand
 # Note "admin" is allowed OFF-latch (the legacy ACL) and NOT under the latch. If
 # you have tooling that exports as "admin", name it here deliberately.
 #
-# ⚠️ NAMING THIS ON A WITNESS WHOSE WITNESS_MTLS_* DOES NOT RESOLVE IS A BOOT
-# FAILURE, with or without the latch. The :50058 ACL interceptors attach only
-# inside the mTLS branch, so on an unconfigured cert port your allowlist would
-# govern nothing while the port answered every caller — the permissive twin of
-# the claim-port refusal, and the quieter of the two until now. An inherited
-# default still degrades with a warning; only an explicit allowlist stops boot.
+# ⚠️⚠️ SETTING THIS — OR ANY OF THE OTHER FOUR :50058 CONTROLS — ON A WITNESS
+# WHOSE WITNESS_MTLS_* DOES NOT RESOLVE IS A BOOT FAILURE, with or without the
+# latch. The five are LCR_WITNESS_EXPORT_ALLOWED_PEERS,
+# LCR_WITNESS_CERT_ALLOWED_PEERS, LCR_WITNESS_EXPORT_CUSTOMER_MAP,
+# LCR_WITNESS_EXPORT_CUSTOMER_BINDING and LCR_WITNESS_EXPORT_MAX_CERTS
+# (widened 2026-07-28; it used to fire only for the two allowlists).
+#
+# They all FAIL OPEN: the :50058 interceptors attach only inside the mTLS
+# branch, so on an unconfigured cert port your control governs nothing while the
+# port answers every caller — the permissive twin of the claim-port refusal, and
+# the quieter of the two until now. A control the operator wrote down and the
+# process cannot apply is worse than one they never wrote: it is believed.
+#
+# There is NO carve-out for writing the permissive value — `..._BINDING=off`
+# over an ungated port still refuses to start. An INHERITED default still
+# degrades with a warning; only an explicit value stops boot, and unsetting the
+# variable is the one-line escape. LCR_WITNESS_AUDIT_LOG_HMAC_KEY is the
+# exception and merely warns: it affects a log field, not an access decision.
+#
+# §4's seven-variable server set satisfies this. If you are following that
+# section you are already fine; this warning is for the deployment that copies
+# §4.1 without §4.
 # LCR_WITNESS_EXPORT_ALLOWED_PEERS=gateway,dsa-gateway
 
 # Bind exporters to the tenants they may export. Format: peer=cust1|cust2,peer2=cust3
@@ -417,7 +479,42 @@ LCR_WITNESS_CLAIM_ALLOWED_PEERS=dsa-gateway,dsa-id-bridge,dsa-sanitizer,dsa-sand
 #
 # ⚠️ REPLACE THE TENANT IDS WITH YOURS. This line and the binding below are a
 # PAIR and must be edited together — see the warning under the binding.
-LCR_WITNESS_EXPORT_CUSTOMER_MAP=gateway=cust_acme|cust_globex
+#
+# 🛑🛑 THE KEYS ARE THE PER-DEVICE SANs FROM §3.4, ONE ENTRY PER DEVICE.
+# 🛑🛑 MAPPING THE BARE `gateway` CN IS AT BEST REDUNDANT, AND BEFORE
+# 🛑🛑 2026-07-28 IT WAS A SILENT FLEET-WIDE GRANT.
+#
+# Why, mechanically (authz.go authorizeCustomer). A verified leaf carries
+# several identities: under the latch the witness reads [CommonName, ...DNS
+# SANs], which for a §3.4 leaf is `gateway` plus `lucairn-gateway-<device>`.
+#
+#   BEFORE round 4 the witness returned on the FIRST mapped identity. The CN is
+#   shared fleet-wide, so its entry can only ever be the UNION of every device's
+#   tenants — and a `gateway=...` line matched first for EVERY device, so the
+#   per-device entries underneath it were never consulted. No error, no warning,
+#   no log line: exports simply succeeded for tenants that device should not see.
+#   The belt-and-braces config (map both) was the one that broke it.
+#
+#   NOW every MAPPED identity on the leaf must allow the requested customer_id —
+#   an intersection, so the NARROWEST mapping wins and mapping the shared CN can
+#   only ever tighten, never widen. Mapping `gateway` is therefore redundant
+#   rather than dangerous. Map the SANs; leave the CN out.
+#
+# A peer with NO mapped identity at all still falls through to the binding mode
+# below — unchanged, and it is the hosted-gateway case.
+#
+# The shared `gateway` entry in LCR_WITNESS_EXPORT_ALLOWED_PEERS above is
+# unaffected either way: authorizePeer admits on ANY matching identity, so
+# ADMISSION stays fleet-wide while TENANT SCOPE is per device. Two controls, two
+# grains, deliberately.
+#
+# Two preconditions, both of which fail CLOSED rather than open:
+#   - LCR_WITNESS_REQUIRE_MTLS=true (§4). SAN matching is latch-derived; off the
+#     latch only the CN is read and every device is unmapped again.
+#   - Do NOT set LCR_WITNESS_PEER_IDENTITY=cn. That forces CN-only matching, so
+#     with the map below every device becomes unmapped and — under
+#     BINDING=enforce — every export is refused. Loud, but a full outage.
+LCR_WITNESS_EXPORT_CUSTOMER_MAP=lucairn-gateway-laptop-01=cust_acme,lucairn-gateway-laptop-02=cust_globex
 
 # What happens to an exporter that has NO map entry:
 #   enforce  refuse
@@ -462,13 +559,33 @@ would leave you believing a narrower list is in force than actually is.
 refused:
 
 ```
-[witness-export-audit] ts=... peer="gateway" customer_ref=h:9f3c1ab27de40518 returned=42 capped=false outcome=ok duration_ms=118
+[witness-export-audit] ts=... peer="gateway" peer_ids=gateway+lucairn-gateway-laptop-01 customer_ref=h:9f3c1ab27de40518 returned=42 capped=false outcome=ok duration_ms=118
 ```
+
+**`peer=` is the CommonName; `peer_ids=` is every identity on the verified
+leaf**, joined with `+`. The two are not redundant. `peer=` stays the stable
+first-wins key you grep and aggregate on, and the §3.4 ceremony makes it
+`gateway` on every device — so on its own the record could say an export
+happened and not say which machine did it. `peer_ids=` is the per-device half,
+and it is the reason §3.4 mints a `subjectAltName`.
+
+> **A device whose leaf was minted the OLD way renders `peer_ids=gateway`, with
+> nothing after it.** That is how you discover a device was provisioned before
+> the 2026-07-28 §3.4 change — re-issue its certificate-hop leaf with the SAN.
+> It is also the state in which that device's `LCR_WITNESS_EXPORT_CUSTOMER_MAP`
+> entry can never match, so under `enforce` its exports are refused: loud, but a
+> full outage for that device until it is re-issued.
 
 Caller, tenant, count, outcome, timing — and deliberately nothing else. No
 certificate body, no placeholder, no original value: an audit trail that copies
 the thing it audits is a second breach surface. Counters for the same events are
 on the Prometheus surface (`witness_export_*`, `witness_claim_intake_denied_total`).
+
+> ⚠️ **This is export attribution only.** The CLAIM path still records no
+> device identity at all (§5.1) — `peer_ids=` exists on the `:50058` records
+> because that port authenticates per method, and adding it to claim intake is
+> separate work. Do not describe the product as having per-device evidence
+> provenance on the strength of this line.
 
 **`customer_ref` is a keyed pseudonym, not the `customer_id`.** Earlier builds
 printed the caller-supplied tenant id verbatim; container logs are shipped to
@@ -504,7 +621,32 @@ consequence:
   ```
 
 The same `customer_ref` form appears on the DENY and UNBOUND lines, so a refused
-export is correlatable to an allowed one without either line naming a tenant.
+export is correlatable to an allowed one **within the witness log** without
+either line naming a tenant.
+
+> 🛑 **`customer_ref` is LOG-ONLY. Do not grep a caller-side error for it** —
+> it is not there, and looking for it is how an operator concludes the logs are
+> broken. The gRPC `PermissionDenied` the caller receives carries a
+> request-scoped **random** token instead:
+>
+> ```
+> caller "gateway" is not authorised to export the requested customer_id —
+>   correlate this refusal with the witness export-audit log using corr=4f1c8ab902de7761
+> ```
+>
+> and the matching `[witness-export-audit] DENY ...` line prints the identical
+> `corr=`. **To correlate a gateway-side refusal to the witness audit trail,
+> grep `corr=`.**
+>
+> Why not the pseudonym: the status crosses a trust boundary — the gateway logs
+> what it receives, and renders it to its own caller. Echoing
+> `HMAC(auditKey, caller-supplied id)` there is a chosen-plaintext oracle that
+> rebuilds the raw→pseudonym table the key exists to prevent, and it got worse
+> once this runbook started recommending a *stable* key (below) and every device
+> presents a `CN=gateway` leaf. The random token gives the operator the same
+> single string to grep and gives the caller nothing about any id it did not
+> already supply. `UNBOUND` is an allow, not a refusal, so no token is minted
+> for it.
 
 Read the startup log once after enabling. The witness prints its resolved
 posture, and prints a loud warning when claim-intake authorization is NOT
@@ -766,6 +908,108 @@ centrally" from "certified by the machine under test".
 
 ---
 
+## 7b. Full on-prem: provisioning the sandbox-b credential yourself
+
+**Read this if you run `-f docker-compose.customer.yml -f
+docker-compose.self-hosted.yml` — the full on-prem set INSTALL.md documents —
+together with this overlay.** If you run the customer compose alone, skip it:
+`sandbox-b` is not in your project.
+
+`sandbox-b` is the AI plane's claim emitter and it is defined **only** in
+`docker-compose.self-hosted.yml`. This overlay cannot reach it. It cannot add a
+`sandbox-b:` block either, because the overlay is also applied *without*
+`docker-compose.self-hosted.yml`, and an override block for a service the
+project does not define would create a new imageless service and break that
+topology outright.
+
+Two consequences, and the second is the one that bites:
+
+1. **Its address is already handled.** `LCR_WITNESS_ADDR` in
+   `docker-compose.self-hosted.yml` reads `${LUCAIRN_CENTRAL_WITNESS_ADDR:-veil-witness:50057}`,
+   so setting `LUCAIRN_CENTRAL_WITNESS_ADDR` repoints sandbox-b along with the
+   other four emitters. Nothing for you to do.
+2. **Its mTLS credential is not.** `LCR_WITNESS_MTLS_SANDBOX_B_*` and the
+   device-wide `LCR_WITNESS_MTLS_*` fallback both resolve to the **empty
+   string** by default, and no witness client-credential directory is mounted
+   into the container. With `LCR_WITNESS_REQUIRE_MTLS=true` this leaves
+   sandbox-b holding the latch with nothing to satisfy it. **That must fail
+   loud at boot** — not degrade to a cleartext dial, and not seal `PARTIAL`
+   certificates quietly. Provision it, or do not latch that install.
+
+**The named operator step.** Using the §3.3 claim leaf already issued for this
+device (one device, one claim identity — do not mint a second):
+
+1. Add a read-only bind mount of the claim-credential directory to the
+   `sandbox-b` service in `docker-compose.self-hosted.yml`, or in an overlay of
+   your own applied after it:
+
+   ```yaml
+   services:
+     sandbox-b:
+       volumes:
+         - /opt/lucairn/certs/witness-client:/etc/lucairn/witness-client:ro
+   ```
+
+2. Set the sandbox-b-scoped triple in `customer.env`:
+
+   ```sh
+   LCR_WITNESS_MTLS_SANDBOX_B_CA_BUNDLE_PATH=/etc/lucairn/witness-client/ca.pem
+   LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_CERT_PATH=/etc/lucairn/witness-client/client.pem
+   LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_KEY_PATH=/etc/lucairn/witness-client/client.key
+   ```
+
+3. Verify with a render before you start anything:
+
+   ```sh
+   docker compose -f docker-compose.customer.yml \
+     -f docker-compose.self-hosted.yml \
+     -f contrib/witness-central/docker-compose.witness-central.yml \
+     --env-file customer.env \
+     --env-file contrib/witness-central/witness-central.env \
+     config --format json \
+   | jq '.services["sandbox-b"] | {env: .environment, vols: .volumes}'
+   ```
+
+   All three paths must be non-empty **and** the mount must be present. Either
+   half alone is a broken deployment: paths without the mount is a
+   file-not-found at boot; the mount without the paths is a credential sitting
+   in a container that does not use it.
+
+> 🛑 **The kit ships no default bind mount here, deliberately.** A bind mount of
+> a host path that does not exist is materialised by Docker as an **empty
+> directory**, not an error. A shipped default would convert "no credential"
+> into "a mount that looks present and reads empty" — which is the exact class
+> of failure the `:50058` transport gate was rewritten to catch. You provision
+> the directory; the compose file does not guess at it.
+
+---
+
+## 7c. The dev-only profile — what activating it costs
+
+`--profile witness-local-dev-only` starts the local `veil-witness` container
+again. **It restores self-signed evidence**: the operator's own machine signs
+the certificates that attest to that operator's conduct, the signing key sits on
+that machine, and the certificates reach no TSA and no Rekor, so
+`anchor_status` stays `pending` forever. It is for **offline demos only** and is
+never a pilot or production topology.
+
+The same warning is attached to the service as a label so it appears in
+`docker compose config` and `docker inspect` for anyone who activates the
+profile — see `eu.lucairn.witness.local-profile.warning` in
+`contrib/witness-central/docker-compose.witness-central.yml`. (Compose omits
+profiled-out services from the default render entirely, so the label is visible
+exactly when the profile is on, which is when it matters.)
+
+**If you reached this flag while trying to make a compose error go away, stop.**
+The two errors it "fixes" both have a correct repair:
+
+| Symptom | Correct fix |
+|---|---|
+| `service "cert-builder" depends on undefined service "veil-witness"` — you combined `--profile certification` with this overlay | Do not. `cert-builder` drives a witness rather than dialling one, so it genuinely needs a local witness process. Run the certification profile on the stock topology, without this overlay. |
+| `service "sandbox-b" depends on undefined service "veil-witness"` | Already fixed: `sandbox-b`'s edge is `required: false` in `docker-compose.self-hosted.yml`. If you still see this, your `docker-compose.self-hosted.yml` predates 2026-07-28 — update the kit rather than activating the profile. |
+
+---
+
 ## 8. Known limits of this slice
 
 Stated plainly so nobody deploys past them:
@@ -801,11 +1045,19 @@ Stated plainly so nobody deploys past them:
   as the gateway discloses every tenant's originals. Do not "simplify" the two
   credential directories back into one; the kit test suite asserts they are
   distinct and that only the gateway mounts the second.
-- **The certificate-hop CN is a role, not a device.** Every device's gateway
-  leaf carries `CN=gateway`, because that is what the witness's ACL matches, so
-  the ACL cannot tell one laptop's gateway from another's. Per-device
-  distinction on that hop exists only in the key and the certificate serial,
-  which nothing on the read path records. Revocation is still §5.2 re-issuance.
+- **The certificate-hop CN is a role, not a device — the SAN is the device.**
+  Every device's gateway leaf carries `CN=gateway`, because that is what the
+  ACL matches, so the ACL alone cannot tell one laptop's gateway from another's.
+  §3.4 therefore adds a per-device `subjectAltName`, which the witness reads
+  under the latch and which `LCR_WITNESS_EXPORT_CUSTOMER_MAP` keys on (§4.1) —
+  that is what makes the tenant binding per device rather than fleet-wide.
+  Export records DO carry it: `peer_ids=` on every `[witness-export-audit]`
+  line lists the full identity set (§4). What it still does **not** buy you:
+  the CLAIM path records no device identity at all (§5.1), and revocation is
+  still §5.2 re-issuance. A device with no SAN
+  — because it predates this change, or because `-extfile` was single-quoted —
+  falls back to the fleet-wide identity **silently**; re-check it with the
+  `openssl x509 -ext subjectAltName` command in §3.4 rather than assuming.
 - **`customer_id` binding has no default under the latch** (changed 2026-07-28
   after an adversarial review). It used to default to `audit`, meaning an
   exporter with no `LCR_WITNESS_EXPORT_CUSTOMER_MAP` entry was allowed and

@@ -488,7 +488,23 @@ required key.
 
 For Docker Compose:
 
-- Linux host with Docker Engine and Docker Compose v2.
+- Linux host with Docker Engine and **Docker Compose v2.20.0 or newer**.
+
+  > ⚠️ **v2.20.0 is a hard floor, not a recommendation** (raised 2026-07-28;
+  > this line previously said only "Docker Compose v2"). `docker-compose.self-hosted.yml`
+  > declares `depends_on.veil-witness.required: false` on `sandbox-b`, and
+  > `required:` was added to the Compose Spec in v2.20.0. Older clients do **not**
+  > ignore the unknown key — they refuse the file outright:
+  >
+  > ```
+  > validating docker-compose.self-hosted.yml:
+  >   services.sandbox-b.depends_on.veil-witness Additional property required is not allowed
+  > ```
+  >
+  > Measured on v2.19.1 (fails) vs v2.20.0 and v2.20.3 (both fine). It fails
+  > loudly and at config time, and it affects the **stock** full on-prem set —
+  > not only the `witness-central` topology. Check with `docker compose version`
+  > before installing; `lucairn doctor` does not yet enforce this floor.
 - **16 GB RAM recommended** for the default topology with the L3 deep PII
   shield enabled (Phase 7 ML PII scanners **disabled by default** as of chart
   v1.7.1 — see § "Phase 7 ML PII scanners"). This covers the deterministic
