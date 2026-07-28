@@ -12,7 +12,24 @@
 You will need:
 
 - Ubuntu 22.04+ x86_64 (Debian 12, RHEL 9, AL2023 also tested) with `sudo`.
-- Docker Engine 24+ and Docker Compose v2 (`docker compose version` reports `v2.x`).
+- Docker Engine 24+ and **Docker Compose v2.20.0 or newer** (`docker compose version --short` reports `2.20.0` or higher — plain "Docker Compose v2" is NOT enough; see below).
+
+  > ⚠️ **v2.20.0 is a hard floor, not a recommendation** (raised 2026-07-28,
+  > board T-243). Step 6 below adds `-f docker-compose.self-hosted.yml`, which
+  > declares `depends_on.veil-witness.required: false` on `sandbox-b`. The
+  > `required:` key was added to the Compose Spec in v2.20.0 — older clients do
+  > **not** ignore the unknown key, they refuse the whole file:
+  >
+  > ```
+  > validating docker-compose.self-hosted.yml:
+  >   services.sandbox-b.depends_on.veil-witness Additional property required is not allowed
+  > ```
+  >
+  > Measured on real binaries: v2.19.1 fails with exactly that message; v2.20.0,
+  > v2.20.3, and v5.1.0 all pass. It fails loudly and at config time, and it
+  > affects this runbook's STOCK step 6 command — not a special topology.
+  > `scripts/check-compose-version.sh` runs this check for you (not yet wired
+  > into `bin/lucairn doctor`).
 - 16 GB RAM recommended (4 vCPUs, 50 GB disk free). ~8 GB is feasible for this pilot topology **because the L3 deep PII shield is off by default** (`LUCAIRN_L3_REQUIRED=false`) — the `ollama-identity` container runs but loads no `qwen2.5:7b` model, so it idles at a few hundred MB instead of the ~5 GB resident a loaded model needs. If you later stage the L3 model and set `LUCAIRN_L3_REQUIRED=true`, provision the full 16 GB. (INSTALL.md states 16 GB recommended for the L3-on default; the two figures are reconciled by whether the L3 model is loaded.)
 - Outbound HTTPS to:
   - `ghcr.io` — the 12 Lucairn `dsa-*` images (`dsa-gateway`, `dsa-sandbox-a`, `dsa-sandbox-b`, `dsa-sanitizer`, `dsa-veil-witness`, `dsa-audit`, `dsa-id-bridge`, `dsa-reid-guard`, `dsa-admin`, `dsa-demo`, `dsa-ingest`, `dsa-llm-auditor`) are pulled from the private `ghcr.io/declade/*` namespace. **Lucairn must grant your GitHub account package-pull access BEFORE running `docker login`** — contact support@lucairn.eu with your GitHub username and wait for confirmation before attempting any docker pull step.
@@ -25,7 +42,7 @@ You will need:
 Verify in one command:
 
 ```bash
-docker --version && docker compose version && \
+docker --version && ./scripts/check-compose-version.sh && \
   python3 -c 'import cryptography; print("cryptography OK")' && \
   echo "PREREQS OK"
 ```

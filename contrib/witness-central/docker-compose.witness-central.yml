@@ -1,0 +1,365 @@
+# Lucairn kit — `witness-central` topology overlay
+#
+# PRD: Opus Advisor specs/2026-07/prd-2026-07-28-split-evidence-plane.md (Slice 1)
+# Board: #206
+#
+# WHAT THIS CHANGES
+# -----------------
+# The stock kit runs the protection plane AND the Veil Witness on the same host.
+# That makes the machine's operator the trust anchor for their own evidence:
+# whoever runs the stack holds the witness signing key, so certificates about
+# their own conduct are signed by a key they control, and a laptop witness never
+# reaches a TSA or Rekor (`anchor_status: pending`, permanently).
+#
+# This overlay splits the two. The local stack keeps protecting (gateway,
+# sanitizer L1/L2/L3, id-bridge, audit); a CENTRAL witness the operator does not
+# control receives the claims and signs the certificates. The claim hop is
+# authenticated mutual TLS with a per-device client credential.
+#
+# The local witness is NOT STARTED (ratified 2026-07-28). The laptop is a
+# protection plane and a claim emitter; it is not a notary. See the
+# `veil-witness` block at the end of this file for what that costs and for the
+# one operator step this overlay cannot perform for you (retiring the generated
+# witness signing key from customer.env).
+#
+# The claim hop is now AUTHORIZED as well as authenticated: the central witness
+# accepts claims only from the emitter identities and answers ExportCertificates
+# only to the gateway. A laptop credential cannot bulk-read certificates, its
+# own or anyone else's. Those controls are configured on the CENTRAL witness,
+# not here — see docs/WITNESS_CENTRAL_RUNBOOK.md §4.1.
+#
+# TWO CLIENT CREDENTIALS, NOT ONE. That authorization is only enforceable if the
+# gateway is distinguishable from the containers beside it, so this overlay
+# mounts two separate directories:
+#
+#   LUCAIRN_WITNESS_CLIENT_CERT_DIR          per-device claim leaf
+#                                            CN=lucairn-device-<name>
+#                                            → audit, id-bridge, sanitizer, gateway
+#                                            → :50057, LCR_WITNESS_MTLS_*
+#
+#   LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR  certificate-hop leaf, CN=gateway
+#                                            → gateway ONLY
+#                                            → :50058, WITNESS_MTLS_*
+#
+# Do not point them at the same directory. See the gateway block below for what
+# that costs.
+#
+# ADDITIVE ONLY. This file overrides nothing that exists in a default install —
+# it is applied explicitly, on top of the stock compose:
+#
+#   docker compose \
+#     -f docker-compose.customer.yml \
+#     -f contrib/witness-central/docker-compose.witness-central.yml \
+#     --env-file customer.env \
+#     --env-file contrib/witness-central/witness-central.env \
+#     up -d
+#
+# Omit the second `-f` and the install behaves exactly as before.
+#
+# BEFORE YOU RUN IT
+# -----------------
+# Read docs/WITNESS_CENTRAL_RUNBOOK.md. The certificates this overlay mounts do
+# not exist until the CA ceremony in that runbook has been performed, and the
+# overlay is deliberately fail-closed: with LCR_WITNESS_REQUIRE_MTLS=true a
+# missing or incomplete credential stops the claim from being submitted rather
+# than sending it in cleartext.
+#
+# ⚠️ FULL ON-PREM (customer + self-hosted + THIS OVERLAY): ONE MANUAL STEP
+# -------------------------------------------------------------------------
+# `sandbox-b`, the AI plane's claim emitter, is defined ONLY in
+# docker-compose.self-hosted.yml. This overlay CANNOT add a `sandbox-b:` block:
+# it is also applied WITHOUT that file, and an override block for a service the
+# project does not define creates a new imageless service and breaks that cell.
+#
+# Its ADDRESS is handled — docker-compose.self-hosted.yml now reads
+# `${LUCAIRN_CENTRAL_WITNESS_ADDR:-veil-witness:50057}`, so sandbox-b repoints
+# with the other emitters and nothing is needed from you.
+#
+# Its CREDENTIAL is not. `LCR_WITNESS_MTLS_SANDBOX_B_*` and the device-wide
+# fallback both resolve EMPTY by default, and no witness client-credential
+# directory is mounted into that container — this overlay mounts it into audit,
+# id-bridge, sanitizer and gateway only, and cannot reach sandbox-b. So
+#
+#     customer + self-hosted + witness-central + LCR_WITNESS_REQUIRE_MTLS=true
+#
+# leaves sandbox-b with the latch on and no credential. That state MUST fail
+# loud at boot rather than fall back to a cleartext dial or seal PARTIAL
+# certificates in silence.
+#
+# YOU must, in Slice 1: mount the §3.3 claim-credential directory into
+# sandbox-b read-only, and set
+#   LCR_WITNESS_MTLS_SANDBOX_B_CA_BUNDLE_PATH
+#   LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_CERT_PATH
+#   LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_KEY_PATH
+# Full step, with the render command that verifies both halves:
+# docs/WITNESS_CENTRAL_RUNBOOK.md § 7b.
+#
+# No default bind mount is shipped for it, deliberately: a bind mount of a
+# non-existent host path is materialised by Docker as an EMPTY DIRECTORY, not
+# an error, so a default would hide the missing credential rather than surface
+# it.
+#
+# WHAT IS NOT IN THIS SLICE
+# -------------------------
+# There is no local outbox (Slice 2) and no offline journal (Slice 3) yet. While
+# the central witness is unreachable, claims are NOT queued: the turn still
+# completes and the user is still protected, but the certificate for that turn
+# seals PARTIAL. Do not deploy this to a machine with intermittent connectivity
+# and expect complete evidence — that is exactly what Slices 2 and 3 add.
+
+services:
+
+  # ── Claim emitters ────────────────────────────────────────────────
+  #
+  # All four kit emitters (audit, id-bridge, sanitizer, gateway) read
+  # LCR_WITNESS_ADDR and dial the witness claim-intake port. The DSA repo has
+  # two more — sandbox-b and reid-guard — which this compose file does not
+  # define; a kit install reaches sandbox-b remotely. Each gets the same three things: the central address, the mTLS latch,
+  # and a read-only mount of this device's client credential.
+  #
+  # The credential uses the WITNESS-SCOPED LCR_WITNESS_MTLS_* family, not the
+  # mesh-wide DSA_MTLS_* one, and that distinction is load-bearing rather than
+  # stylistic. DSA_MTLS_* is process-wide: setting it on the gateway so it can
+  # reach a remote witness would ALSO switch the gateway's dials to audit,
+  # id-bridge and inference to verified mTLS — peers that are still local and
+  # still speaking the base install's transport. Every one of those handshakes
+  # would fail, and the stack would stop talking to itself for reasons that look
+  # nothing like "we changed the witness address".
+  #
+  # LCR_WITNESS_MTLS_* is consulted only for the witness claim dial, so local
+  # hops keep whatever transport they already had. Adopting a central witness
+  # therefore does not drag a full local CA ceremony in behind it. If you HAVE
+  # run the full-mesh ceremony, leave these unset and the mesh-wide triple is
+  # used for this hop too.
+  #
+  # LCR_WITNESS_REQUIRE_MTLS then makes a verified credential MANDATORY for that
+  # one dial: without it, a missing mount silently degrades to a cleartext dial.
+  #
+  # The gateway gets a SECOND, different credential on top of this one, for the
+  # certificate port. Everything in this block is the claim hop only.
+
+  audit:
+    environment:
+      LCR_WITNESS_ADDR: "${LUCAIRN_CENTRAL_WITNESS_ADDR:?set LUCAIRN_CENTRAL_WITNESS_ADDR (host:port of the central witness claim port, e.g. witness.example.eu:50057) — see contrib/witness-central/witness-central.env.example}"
+      LCR_WITNESS_REQUIRE_MTLS: "${LCR_WITNESS_REQUIRE_MTLS:-true}"
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "/etc/lucairn/witness-client/ca.pem"
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "/etc/lucairn/witness-client/client.pem"
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "/etc/lucairn/witness-client/client.key"
+    volumes:
+      - ${LUCAIRN_WITNESS_CLIENT_CERT_DIR:?set LUCAIRN_WITNESS_CLIENT_CERT_DIR (host dir holding ca.pem + client.pem + client.key for this device) — see docs/WITNESS_CENTRAL_RUNBOOK.md}:/etc/lucairn/witness-client:ro
+
+  id-bridge:
+    environment:
+      LCR_WITNESS_ADDR: "${LUCAIRN_CENTRAL_WITNESS_ADDR:?set LUCAIRN_CENTRAL_WITNESS_ADDR — see contrib/witness-central/witness-central.env.example}"
+      LCR_WITNESS_REQUIRE_MTLS: "${LCR_WITNESS_REQUIRE_MTLS:-true}"
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "/etc/lucairn/witness-client/ca.pem"
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "/etc/lucairn/witness-client/client.pem"
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "/etc/lucairn/witness-client/client.key"
+    volumes:
+      - ${LUCAIRN_WITNESS_CLIENT_CERT_DIR:?set LUCAIRN_WITNESS_CLIENT_CERT_DIR — see docs/WITNESS_CENTRAL_RUNBOOK.md}:/etc/lucairn/witness-client:ro
+
+  # The sanitizer's claim is the one that matters most here: PII_SANITIZED
+  # carries redaction_manifest_body, the placeholder→original map. That is the
+  # single most sensitive payload the product produces, and under this overlay
+  # it crosses a WAN. Hence the latch, and hence the runbook's insistence that
+  # the central witness endpoint be pinned to a CA you issued rather than a
+  # public trust store.
+  sanitizer:
+    environment:
+      LCR_WITNESS_ADDR: "${LUCAIRN_CENTRAL_WITNESS_ADDR:?set LUCAIRN_CENTRAL_WITNESS_ADDR — see contrib/witness-central/witness-central.env.example}"
+      LCR_WITNESS_REQUIRE_MTLS: "${LCR_WITNESS_REQUIRE_MTLS:-true}"
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "/etc/lucairn/witness-client/ca.pem"
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "/etc/lucairn/witness-client/client.pem"
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "/etc/lucairn/witness-client/client.key"
+    volumes:
+      - ${LUCAIRN_WITNESS_CLIENT_CERT_DIR:?set LUCAIRN_WITNESS_CLIENT_CERT_DIR — see docs/WITNESS_CENTRAL_RUNBOOK.md}:/etc/lucairn/witness-client:ro
+
+  gateway:
+    environment:
+      LCR_WITNESS_ADDR: "${LUCAIRN_CENTRAL_WITNESS_ADDR:?set LUCAIRN_CENTRAL_WITNESS_ADDR — see contrib/witness-central/witness-central.env.example}"
+      LCR_WITNESS_REQUIRE_MTLS: "${LCR_WITNESS_REQUIRE_MTLS:-true}"
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "/etc/lucairn/witness-client/ca.pem"
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "/etc/lucairn/witness-client/client.pem"
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "/etc/lucairn/witness-client/client.key"
+      # Certificate RETRIEVAL (:50058) is a separate port with its own
+      # credential family (WITNESS_MTLS_*) and its own per-method peer ACL.
+      #
+      # This address is MANDATORY under the ratified witness-less topology.
+      # An earlier revision of this overlay defaulted it to the local
+      # `veil-witness:50058` and left that container running as a "retrieval
+      # only" surface. That is no longer available: the local witness is not
+      # started at all (see the veil-witness block at the end of this file), so
+      # a default pointing at it would resolve to nothing and the gateway's
+      # /verify and /summary surfaces would fail with a connection error
+      # instead of a configuration error. Failing at config-load time with a
+      # sentence naming the variable is the better of the two.
+      #
+      # ⚠️ The cert port's ACL is NOT ON BY DEFAULT on an arbitrary witness.
+      # When WITNESS_MTLS_* is unset the cert server degrades: it logs a
+      # warning and serves with no client authentication and no ACL.
+      # GetCertificate/ExportCertificates return certificates carrying
+      # redaction_manifest_body — the placeholder→original map — so an exposed,
+      # unconfigured :50058 is a bulk PII read. Do not assume this port is
+      # authenticated because it looks administrative.
+      #
+      # The witness refuses to start :50058 unconfigured when
+      # LCR_WITNESS_REQUIRE_MTLS=true, and it now additionally restricts
+      # ExportCertificates to the GATEWAY identity and binds the caller-supplied
+      # customer_id to the authenticated peer. See docs/WITNESS_CENTRAL_RUNBOOK.md
+      # §4 and §7.
+      LCR_WITNESS_CERT_ADDR: "${LUCAIRN_CENTRAL_WITNESS_CERT_ADDR:?set LUCAIRN_CENTRAL_WITNESS_CERT_ADDR (host:port of the central witness certificate port, e.g. witness.example.eu:50058) — the laptop no longer runs a witness to fall back to; see docs/WITNESS_CENTRAL_RUNBOOK.md}"
+      # The :50058 hop has its OWN credential family (WITNESS_MTLS_*, no LCR_
+      # prefix — services/gateway/internal/clients/veil.go:97-99). It is not the
+      # claim-hop family and not the mesh family; three families, three hops,
+      # deliberately not interchangeable.
+      #
+      # Without this triple the gateway dials :50058 with no client certificate,
+      # and a central witness under the latch will refuse the handshake — which
+      # presents to the operator as "certificates never load" long after the
+      # deploy that caused it.
+      #
+      # ⚠️⚠️ A SEPARATE LEAF, IN A SEPARATE DIRECTORY, MOUNTED ONLY HERE.
+      #
+      # An earlier revision of this overlay pointed these three at
+      # /etc/lucairn/witness-client — the SAME files the claim hop uses, the
+      # same files audit, id-bridge and sanitizer also mount. A 2026-07-28
+      # adversarial review showed that is not a wiring shortcut, it is a hole,
+      # and it defeats the per-method authorization this slice exists to add:
+      #
+      #   1. It does not work. The witness's latched :50058 ACL
+      #      (LCR_WITNESS_CERT_ALLOWED_PEERS, default
+      #      services/veil-witness/internal/server/authz.go
+      #      `defaultLatchedCertPeers = []string{"gateway"}`) admits the CN
+      #      `gateway` and nothing else. The device leaf issued by the runbook
+      #      is CN=lucairn-device-<name>, so certificate retrieval and /verify
+      #      break with PermissionDenied.
+      #   2. The obvious fix makes it worse. An operator who repairs the outage
+      #      by adding their device CN to LCR_WITNESS_CERT_ALLOWED_PEERS /
+      #      LCR_WITNESS_EXPORT_ALLOWED_PEERS has just granted that CN to every
+      #      container holding the same private key — audit, id-bridge and,
+      #      most of all, the sanitizer, which holds raw PII. Any one of them
+      #      could then call ExportCertificates, GetCertificate and
+      #      VerifyCertificate directly, WITH the latch on. Shared identity
+      #      makes per-method authorization unenforceable: the witness can only
+      #      distinguish callers it can tell apart.
+      #
+      # So the certificate hop gets its own leaf, whose CN is exactly `gateway`,
+      # in its own host directory, mounted into THIS service only. The claim hop
+      # above keeps the device credential — that is the correct claim identity
+      # and it is deliberately unchanged.
+      WITNESS_MTLS_CA_BUNDLE_PATH: "/etc/lucairn/witness-gateway-client/ca.pem"
+      WITNESS_MTLS_CLIENT_CERT_PATH: "/etc/lucairn/witness-gateway-client/client.pem"
+      WITNESS_MTLS_CLIENT_KEY_PATH: "/etc/lucairn/witness-gateway-client/client.key"
+      # The central witness's server leaf will not carry the laptop's idea of
+      # its hostname unless the CA ceremony issued it that way. Override when
+      # the published address and the certificate SAN differ.
+      #
+      # Unset, the gateway falls back to the literal `witness`
+      # (services/gateway/internal/clients/veil.go — `if serverName == ""`), so
+      # the ceremony in the runbook issues the central witness's server leaf
+      # with DNS:witness alongside DNS:dsa-veil-witness. One leaf, two SANs, two
+      # ports — the SERVER identity is genuinely one identity, which is why
+      # reusing it there is correct and reusing a CLIENT identity above is not.
+      WITNESS_MTLS_SERVER_NAME: "${LUCAIRN_CENTRAL_WITNESS_SERVER_NAME:-}"
+    volumes:
+      - ${LUCAIRN_WITNESS_CLIENT_CERT_DIR:?set LUCAIRN_WITNESS_CLIENT_CERT_DIR — see docs/WITNESS_CENTRAL_RUNBOOK.md}:/etc/lucairn/witness-client:ro
+      # REQUIRED, deliberately, and not defaulted — same reasoning as
+      # LUCAIRN_CENTRAL_WITNESS_CERT_ADDR above.
+      #
+      # Every candidate default is worse than a failed render. Defaulting to
+      # LUCAIRN_WITNESS_CLIENT_CERT_DIR silently restores the shared-identity
+      # state this variable exists to end, and does so invisibly — the render
+      # succeeds, the containers start, and the only symptom is that a security
+      # property the runbook claims is not true. Defaulting to a fixed path like
+      # /opt/lucairn/certs/witness-gateway-client produces a bind mount of a
+      # directory Docker creates EMPTY on demand, so the gateway exits at boot
+      # with a file-not-found on a path nobody configured. A `:?` costs the
+      # operator one line in an env file, at config-load time, with the variable
+      # named in the message — which beats both by a wide margin.
+      - ${LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR:?set LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR (host dir holding ca.pem + client.pem + client.key for the CERTIFICATE port :50058, whose client.pem CN must be exactly `gateway`) — it MUST NOT be the same directory as LUCAIRN_WITNESS_CLIENT_CERT_DIR; see docs/WITNESS_CENTRAL_RUNBOOK.md §3.4}:/etc/lucairn/witness-gateway-client:ro
+
+  # ── Local witness: NOT STARTED ────────────────────────────────────
+  #
+  # RATIFIED 2026-07-28 (PRD § "Ratified architecture change"): the laptop runs
+  # NO witness.
+  #
+  # An earlier revision of this overlay left the container up as a
+  # "retrieval-only surface" whose signing key became inert rather than absent.
+  # Marc ratified the Fable finding that inert is not absent: a witness on the
+  # operator's machine cannot deliver "evidence the operator cannot forge" by
+  # construction, and every hour the key sits on the laptop is an hour the
+  # security story depends on nobody using it. The laptop is a protection plane
+  # and a claim emitter. It is not a notary.
+  #
+  # `profiles:` is how a compose OVERLAY removes a service from the default
+  # set — the service definition is inherited from docker-compose.customer.yml
+  # and cannot be deleted from here, but a profile that nobody activates means
+  # nothing starts. `docker compose ... config --services` will not list it and
+  # `up` will not create it.
+  #
+  # WHAT THIS BREAKS, STATED PLAINLY (all of it profile-gated already, none of
+  # it in the default laptop run):
+  #
+  #   - `cert-builder` (profile "certification") declares
+  #     `depends_on: veil-witness: condition: service_healthy`. Do NOT combine
+  #     the certification profile with this overlay: recent Compose versions
+  #     auto-activate a dependency's profile, which would silently start the
+  #     very witness this overlay exists to remove.
+  #   - `lucairn-dashboard` (profile "dashboard") reads the LOCAL cert log at
+  #     postgres-veil and defaults LUCAIRN_DASHBOARD_WITNESS_ENDPOINT to
+  #     veil-witness:50058. Under witness-central that database is EMPTY —
+  #     certificates live in the central store. Point the dashboard at the
+  #     central witness, or read certificates from the central store's own
+  #     surface. An empty cert browser is not evidence of an empty cert log.
+  #
+  # postgres-veil and migrate-veil are deliberately LEFT RUNNING. They hold no
+  # key and sign nothing; removing them would break the dashboard profile with
+  # a connection error rather than the honest empty result above.
+  #
+  # ⚠️ THE SIGNING KEY IS STILL PROVISIONED. `bin/lucairn init` generates
+  # LCR_WITNESS_SIGNING_KEY into customer.env regardless of topology, and this
+  # overlay cannot reach into that generator. Removing that line from
+  # customer.env is a MANDATORY operator step — see
+  # docs/WITNESS_CENTRAL_RUNBOOK.md § "Retire the local signing key". Until it
+  # is done, the laptop holds a witness signing key that nothing uses, which is
+  # exactly the state the ratified change exists to end. Making the generator
+  # topology-aware is tracked as a follow-up against bin/lucairn.
+  veil-witness:
+    # Any profile name nobody activates would do; this one is named so that an
+    # operator who sees it in `docker compose config` understands both that the
+    # omission is deliberate and what the escape hatch is for.
+    #
+    # DEV/DEMO ESCAPE HATCH: `--profile witness-local-dev-only` starts it again.
+    # That is a self-signed-evidence topology — the operator signs certificates
+    # about their own conduct — and is acceptable only for offline demos where
+    # nobody will rely on the signature. It is never the pilot default.
+    profiles: ["witness-local-dev-only"]
+    # ── LOUDNESS, IN THE RENDER ───────────────────────────────────────
+    #
+    # 2026-07-28 review. A comment in this file is read by whoever opens this
+    # file; the operator who activates the profile is, by construction, someone
+    # who did not. They hit a compose error, searched for a flag that makes it
+    # go away, and found `--profile witness-local-dev-only` — which does make it
+    # go away, by restoring the local witness this whole topology exists to
+    # delete. The regression is invisible from the command line.
+    #
+    # A `${VAR:?...}` acknowledgement gate is NOT available here: Compose
+    # interpolates every service in the file regardless of profile, so a `:?`
+    # on this block fails EVERY cell, including the ones that never start it.
+    # That was measured, not assumed.
+    #
+    # A label is the one channel that is inert at render time and still visible
+    # in `docker compose config`, `docker inspect` and `docker ps --filter
+    # label=...`. It costs nothing when the profile is off and states the cost
+    # plainly when it is on.
+    labels:
+      eu.lucairn.witness.local-profile: "witness-local-dev-only"
+      eu.lucairn.witness.local-profile.warning: >-
+        ACTIVATING THE witness-local-dev-only PROFILE RESTORES SELF-SIGNED
+        EVIDENCE: this host runs the witness that signs certificates about its
+        own operator's conduct, with the signing key on this machine, and it
+        reaches no TSA and no Rekor (anchor_status stays pending forever). It is
+        for OFFLINE DEMOS ONLY and is never a pilot or production topology. If
+        you reached this flag while trying to make a compose error go away, the
+        error is the point — see docs/WITNESS_CENTRAL_RUNBOOK.md § "The dev-only
+        profile" for the fix that does not reintroduce self-signed evidence.
