@@ -249,7 +249,63 @@ openssl x509 -in "gateway-${DEVICE}.pem" -noout -subject -ext subjectAltName
 > subjectAltName` check above catches it.
 
 Distribute to each device, mode `0600` on the keys and `0700` on the
-directories, into **two** directories:
+directories, **owned by UID/GID 10001**, into **two** directories:
+
+> ⚠️ **Ownership is not optional, and modes alone will brick the install.**
+> Every consumer (gateway, sanitizer, audit, id-bridge) runs as UID 10001 in
+> its container, and these are bind mounts — the host's ownership is what the
+> container sees, so a root-owned `0700` directory with a `0600` key inside is
+> unreadable to all four. The witness-mTLS latch treats an unreadable
+> credential as fatal, so the stack fails to boot rather than degrading. After
+> copying the files to each device:
+>
+> ```bash
+> sudo chown -R 10001:10001 "$LUCAIRN_WITNESS_CLIENT_CERT_DIR" \
+>                           "$LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR"
+> sudo chmod 0700 "$LUCAIRN_WITNESS_CLIENT_CERT_DIR" \
+>                 "$LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR"
+> sudo chmod 0600 "$LUCAIRN_WITNESS_CLIENT_CERT_DIR"/client.key \
+>                 "$LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR"/client.key
+> # verify the container's view, not the host's. The service is `gateway`
+> # (as rendered in contrib/witness-central/docker-compose.witness-central.yml):
+> docker compose -f docker-compose.customer.yml \
+>   -f docker-compose.self-hosted.yml \
+>   -f contrib/witness-central/docker-compose.witness-central.yml \
+>   --env-file customer.env \
+>   --env-file contrib/witness-central/witness-central.env \
+>   run --rm --no-deps --entrypoint sh gateway -c \
+>   'cat /etc/lucairn/witness-client/client.key >/dev/null && echo READABLE'
+> ```
+>
+> `--no-deps` is load-bearing, not tidiness: without it `run` starts the
+> gateway's dependencies (sandbox-b among them), and those services will fail
+> their own witness-credential check before this one-line `cat` ever executes.
+> The check would then "fail" for a reason that has nothing to do with the file
+> you are testing. This is a single isolated file read; it needs no other
+> service running.
+>
+> (The witness-central file is an ADDITIVE OVERLAY — loading it alone fails with
+> `service "audit" has neither an image nor a build context specified`. The full
+> stack of base + self-hosted + overlay + both env files is the same incantation
+> §7 uses; an earlier revision of this check named only the overlay and could
+> not run at all.)
+>
+> On a Kubernetes install with a `runAsUser` override, chown to THAT id instead
+> — the rule is "owned by the uid the container actually runs as", not the
+> literal 10001.
+>
+> Rootless Docker and `userns-remap` are a different case, and conflating them
+> with the above will send you chasing the wrong number: the UID *inside* the
+> container is still 10001, but the engine maps it to a different UID on the
+> HOST. Chown to the mapped host UID — for `userns-remap` that is the subordinate
+> range's base (see `/etc/subuid` for the remap user) plus 10001; for rootless
+> Docker it is derived from your own subuid range. `docker compose run --rm
+> --entrypoint sh gateway -c 'id -u'` reports the container-side id and will
+> always say 10001, so it cannot answer this question — check ownership on the
+> host with `ls -n` after a first run instead.
+>
+> This applies to §10 device countersigning too, which signs with the first of
+> these two credentials.
 
 `LUCAIRN_WITNESS_CLIENT_CERT_DIR` — the claim hop, readable by audit,
 id-bridge, sanitizer and gateway:
@@ -791,6 +847,14 @@ Per-device claim attribution is a Slice-2 item (it becomes strictly more
 important once an offline outbox replays claims, not less). Do not describe the
 current state to a customer as per-device evidence provenance.
 
+**Partially amended by the device countersignature (§10).** When a claim carries
+`device_countersign`, that one field IS bound to a specific device key, and the
+witness records at intake whether that key was the authenticated mTLS peer. It
+does not repair this section: the binding covers the request commitment on the
+sanitizer claim only, the other three claims remain role-attributed, and any
+party that declines to produce a countersignature falls straight back into
+everything above. Read §10.6 before quoting either section at a customer.
+
 ### 5.2 Mechanisms available today
 
 Phase 1 has no CRL. In order of preference:
@@ -828,22 +892,33 @@ host firewall** to the central witness host and port. If the sanitizer is ever
 compromised, the network layer is otherwise not stopping exfiltration to an
 arbitrary destination.
 
-## 5.4 What a missing credential actually does — it differs by service
+## 5.4 What a missing credential actually does — every service stops
 
-The failure modes are asymmetric, and knowing which is which is the difference
-between a five-minute diagnosis and an hour:
+Under the latch, a missing or unreadable credential stops the service, in both
+languages. The mechanism differs (Go refuses the dial at boot; the Python
+services invoke a fail-closed transport gate) and the log line differs, so the
+table below is still worth reading — but the outcome does not differ, and an
+earlier revision of this section that promised otherwise is corrected below:
 
 | Service | Language | Behaviour when the credential is missing under the latch |
 |---|---|---|
 | gateway, audit, id-bridge | Go | **The process exits at startup.** The dial is constructed during boot and the refusal is fatal. |
-| sanitizer, sandbox-b, reid-guard | Python | **The service keeps serving** and drops claims; the stub stays `None`. Certificates seal PARTIAL. |
+| sanitizer, sandbox-b, reid-guard | Python | **The process also fails at startup**, under the latch. Each invokes the fail-closed transport gate during boot (`sanitizer/app.py` `fail_closed_if_witness_transport_unusable`, `sandbox-b/main.py`, `reid-guard/server.py`); the sanitizer and sandbox-b raise, reid-guard exits explicitly. |
 
-So a laptop with a bad bind-mount does not degrade uniformly: the gateway dies —
-which the consultant experiences as "Claude Code stopped working", with no
-obvious connection to a witness credential — while the sanitizer silently
-downgrades the evidence. Both are fail-closed in the sense that matters (nothing
-is sent in cleartext), but only the Python half is the honest-PARTIAL behaviour
-the rest of this document describes.
+> ⚠️ **Corrected 2026-07-29 (Sol S4 r2 MAJOR-7).** Earlier revisions of this
+> table, and a matching bullet in §8, said the Python services keep serving and
+> degrade to PARTIAL. That stopped being true when the transport gate was
+> widened to assert the RESOLVED posture through the same resolver the dial uses
+> — the change that closed the empty-bind-mount hole, where Docker materialises
+> a missing mount as an empty directory and the service served its whole
+> lifetime submitting zero claims. **Under the latch, a bad credential now stops
+> every service, in both languages.** Off-latch the gate remains a total no-op.
+
+So a laptop with a bad bind-mount fails uniformly and loudly rather than half-
+silently: the consultant experiences "Claude Code stopped working" with no
+obvious connection to a witness credential. That is the intended trade — a
+silent evidence downgrade is worse than a visible outage — but it makes §3.3's
+ownership rule the first thing to check on any boot failure.
 
 Pre-flight before enabling the latch on a device, which catches the common cause:
 
@@ -1087,15 +1162,18 @@ Stated plainly so nobody deploys past them:
   the CA key can mint a leaf with any CN or SAN, including `dsa-gateway` — which
   would place it on the export allowlist. Protect the CA key accordingly; the
   authorization layer is exactly as strong as the issuance policy behind it.
-- **Phase-1 revocation is re-issuance** (§5.2), and there is **no per-device
-  claim attribution** (§5.1).
+- **Phase-1 revocation is re-issuance** (§5.2), and there is **no general
+  per-device claim attribution** (§5.1) — the device countersignature (§10)
+  binds one field on one claim to a device key and does not generalise past it.
 - **No rate limiting on `:50057`.** The claim server has message-size caps and
   keepalive policy but no per-peer rate limit or concurrency bound. On a LAN with
   four known emitters that is fine; as a fleet-facing WAN endpoint, any
   credential holder can drive unbounded claim writes. Put rate limiting in the
   ingress you place in front of it (§4 Ingress).
-- **Failure is asymmetric across services** (§5.4): Go emitters exit at boot, the
-  Python ones degrade silently to PARTIAL.
+- **Under the latch, a bad credential stops every service in both languages**
+  (§5.4) — Go emitters exit at boot and the Python ones now fail at boot too.
+  The older "Python degrades silently to PARTIAL" behaviour was removed when the
+  transport gate was widened; check credential ownership (§3.3) first.
 
 ---
 
@@ -1163,3 +1241,281 @@ Also: do **not** combine the `certification` profile with this overlay.
 `cert-builder` declares `depends_on: veil-witness: condition: service_healthy`,
 and recent Compose versions auto-activate a dependency's profile — which would
 silently start the very witness you just removed.
+
+---
+
+## 10. Customer-device countersignature
+
+*PRD: Opus Advisor `specs/2026-07/prd-2026-07-28-cert-anchor-hardening-wave1.md`
+(Slice 4). Requires the matching DSA change (`pkg/devicesign`).*
+
+### 10.1 What it is
+
+Splitting the witness off the device (§1) removes the operator of a machine as
+the notary of their own conduct. It does not, by itself, put anything in a
+certificate that the **central** operator could not have written alone: every
+claim is signed with a fleet-shared service key, the certificate is signed with
+the witness key, and under this topology both of those live on the central side.
+
+The countersignature closes that. The device hashes the **exact raw request
+bytes** it received — the untouched `io.ReadAll` slice, retained across parsing
+so the commitment covers what arrived rather than a re-serialisation of it — and
+signs a commitment to them with its own private key, before any sanitizer hop.
+(Earlier revisions said "before parsing". The signing call sits *after* the
+handler parses, because it needs the request id; what matters, and what the
+regression test pins, is that the bytes signed are the original ones.) The signature travels on the `dsa-sanitizer` claim and ends up in
+the certificate.
+
+What that buys, stated exactly: **for a certificate that carries a
+countersignature whose key you independently recognise as your own device's,
+the central witness operator, alone, can no longer manufacture or alter the
+request CONTENT that certificate records.** They never held the device's
+private key, so they cannot produce a countersignature for bytes your device
+never sent, and they cannot change a commitment without the signature failing.
+
+Both qualifiers in that sentence are doing work, and neither is a formality:
+
+- **"that carries a countersignature"** — the operator can still issue a
+  certificate with the field simply absent. Absence is recorded honestly (§10.4)
+  and a presented-but-unusable object is recorded as malformed rather than
+  vanishing, so you can *detect* this; nothing *prevents* it. A device that
+  should be countersigning and produces a run of uncountersigned certificates is
+  the signal to investigate.
+- **"whose key you independently recognise"** — the certificate carries the
+  signing key, not a proof that the key is yours. An operator could insert a
+  self-consistent key of their own and every internal check would pass. Peer
+  binding at the witness (matching the signing key to the mTLS peer) is
+  currently **log-only and does not appear in the certificate**. Verification
+  therefore depends on you comparing the SPKI in the certificate against the
+  device leaf your own CA ceremony issued — the recipe in §10.5. Skip that
+  comparison and this guarantee is not established.
+
+What it does **not** buy, stated just as exactly — and read this list before
+repeating the sentence above to anyone:
+
+- **CONTENT, NOT CONTEXT.** The signature covers the request id and the hash of
+  the raw bytes, and nothing else — no timestamp, no certificate id, no
+  conversation, and none of the sanitizer's own outputs. So a countersignature
+  can be lifted verbatim out of one certificate and attached to another: the
+  link between it and the rest of the certificate is the sanitizer's own
+  signature, whose verifying key the witness operator configures. **When** you
+  sent it, in which conversation, under which certificate, and with what
+  redaction outcome are not protected. Binding those is a follow-up change to
+  the signed message; it is not in this slice.
+- **No time, no revocation.** Nothing checks the device leaf's validity dates,
+  and the signed message carries no timestamp, so a countersignature made with
+  an expired or since-re-issued credential still verifies forever. Revocation
+  (§5.2) stops the credential from opening new connections; it cannot reach
+  back into signatures already made.
+- It says nothing about whether the device is honest. A compromised device
+  signs whatever it is told to sign.
+- It is not custody proof, in two senses. Your CA ceremony machine (§3.3)
+  generates the device key before distributing it, so whoever runs that ceremony
+  can retain a copy — under this topology that party is **you**, not Lucairn,
+  which is the whole reason the guarantee holds. And on the device itself the
+  overlay mounts this credential into **four** containers (gateway, sanitizer,
+  id-bridge, audit), so code execution in any one of them — including the
+  sanitizer, which handles raw PII — can produce countersignatures in your name.
+- **The commitment is an unsalted hash of your raw request.** Anyone who obtains
+  a certificate obtains an offline oracle for that request's exact bytes. For a
+  templated automation with one variable field (a case id, a patient number),
+  holding the certificate and the template makes that field a dictionary attack.
+  Salting cannot fix this without destroying the third-party verifiability in
+  §10.5. Accepted residual — and *not* the same exposure class as the existing
+  `token_hash`, which hashes a random secret no dictionary can reach.
+- It covers the **request**. The response, and everything the model did with
+  the request, are not countersigned by anything.
+
+### 10.2 Setup: no NEW step — but §3.3's ownership rule is load-bearing here
+
+No new key, ceremony step or variable is added. That is the reason the design
+was chosen over a dedicated signing key. It does mean this feature inherits
+§3.3's ownership requirement completely: the credential must be owned by the
+UID the containers run as (10001 by default), or the signer has nothing to read
+and the stack does not boot. Verify with the in-container `cat` check in §3.3
+before assuming a device is countersigning.
+
+The signer reads the credential §3.3 already provisions:
+
+```
+LCR_WITNESS_MTLS_CA_BUNDLE_PATH    /etc/lucairn/witness-client/ca.pem
+LCR_WITNESS_MTLS_CLIENT_CERT_PATH  /etc/lucairn/witness-client/client.pem
+LCR_WITNESS_MTLS_CLIENT_KEY_PATH   /etc/lucairn/witness-client/client.key
+```
+
+No new key, no new ceremony step, no new variable.
+
+⚠️ **The witness-scoped family is REQUIRED — the mesh-wide `DSA_MTLS_*` triple
+is deliberately not accepted here**, even though it is a perfectly good
+credential for the claim *dial*. `DSA_MTLS_*` is a per-**service** key issued by
+whoever operates the deployment. Signing with it would attribute the operator's
+own key to your device and the witness would then record that at maximum
+confidence — the exact inverse of what this feature is for. So a deployment with
+only `DSA_MTLS_*` set logs `not enabled` and issues certificates with no
+countersignature, which is the honest outcome. A **partial** `LCR_WITNESS_MTLS_*`
+triple is also refused, for the same reason the claim dial refuses it.
+
+If §3.3 was performed and the overlay is applied, the gateway countersigns —
+subject to the `FAILED` case below. Confirm from the gateway's startup log
+rather than assuming; the three states are distinguishable on purpose:
+
+```sh
+docker compose ... logs gateway | grep -i 'device countersignature'
+# ACTIVE:      device countersignature ACTIVE: LCR_WITNESS_MTLS_* key <hex> (alg ecdsa-p256-sha256) ...
+# not enabled: no credential configured — expected on a stock install
+# FAILED:      credential configured but unusable — read the reason on the line
+```
+
+`FAILED` does **not** stop the gateway. Requests are protected exactly as
+before; only the extra evidence is missing. That is intentional: refusing to
+serve would trade the guarantee that protects the customer for the one that
+merely records it.
+
+⚠️ **`FAILED` is a narrow state — do not read it as "any bad credential lands
+here."** Most ways a credential can be wrong (a partial `LCR_WITNESS_MTLS_*`
+triple, an unreadable file, bad CA material, a cert and key that do not match)
+are caught earlier, when the witness emitter initialises, and those **stop
+gateway boot** instead. In practice only a credential that loads fine for TLS
+but cannot sign a countersignature — an RSA leaf, today — reaches this state.
+So: stack up but `FAILED` in the log means "usable for the dial, unusable for
+signing"; stack refusing to boot is the more common credential symptom, and
+§3.3's ownership rule is the most common cause of it.
+
+Key types: the §3.3 ceremony issues `prime256v1`, which is supported
+(`ecdsa-p256-sha256`), as is Ed25519 (what the DSA `bootstrap-mtls-ca.sh`
+issues). An **RSA** device leaf is not part of the wire contract and logs
+`FAILED` at boot.
+
+### 10.3 What lands in the certificate
+
+Inside the `dsa-sanitizer` claim's signed `canonical_payload`, under
+`device_countersign`:
+
+| Field | Meaning |
+| --- | --- |
+| `v` | Wire version (`1`). |
+| `commitment_alg` / `request_commitment` | `sha256`, hex, over the raw request bytes as received. |
+| `signature_alg` / `signature` | `ecdsa-p256-sha256` or `ed25519`; base64 (ECDSA is ASN.1 DER). |
+| `device_key_id` | `sha256` over the DER SPKI of the device public key. |
+| `device_public_key` | Base64 DER SPKI — makes verification self-contained. |
+
+The signed bytes are a domain-separated, length-framed message binding the
+`request_id` to the commitment, so a genuine countersignature cannot be moved
+onto a different request.
+
+Two things this does **not** change, and both are load-bearing:
+
+- **No signable bytes move.** The witness signable map stays v2 = 7 keys and
+  v3 = 13 keys. This is claim-scoped additive metadata, exactly like
+  `redaction_manifest_hash` and `tms_manifest_hash`. Every SDK verifier in the
+  field keeps verifying certificates issued before and after this change.
+- **The device CN is not published.** `device_key_id` is a hash, not your
+  machine name. The CN you chose in §3.3 stays out of the claim.
+
+### 10.4 Honest absence — read before filing a bug
+
+**A request without a countersignature proceeds normally, and its certificate
+simply lacks the fields. It never blocks a request, and neither does an invalid
+one.** Absence is a rendered state, not a failure:
+
+- A **stock** install (no witness-central ceremony) has no device identity and
+  never countersigns. Its certificates are the same shape as every certificate
+  issued before this feature existed.
+- The hosted lane has no device identity either.
+- A certificate that predates this change has no fields to show.
+- **Some request paths are out of scope in this slice** and produce
+  uncountersigned claims even on a fully-provisioned device: Sensitive Mode's
+  `/seal-cert` input-shield flow, the sanitizer's cumulative *streaming*
+  claim, and the anonymous `/api/v1/scan` preview (which carries no pipeline
+  request id, so a countersignature could not be bound to anything). The five
+  chat transports — `/v1/messages`, `/v1/chat/completions`,
+  `/api/v1/mcp/messages`, `/api/v1/proxy/messages` and the native streamable
+  `POST /mcp` — are covered. The streamable route is called out separately
+  because it is the one that dispatches through a reconstructed inner request:
+  it signs the OUTER bytes, and the regression test enforces that.
+- A **malformed** countersignature (wrong wire version, undefined algorithm,
+  over-long or over-large field, explicit `null`, or no caller request id to
+  bind to) cannot be carried — the object violates the wire contract, so there
+  is nothing well-formed to forward. It does **not** render as absence: the
+  sanitizer records `device_countersign_malformed` in its own SIGNED claim
+  payload, so the fact survives and cannot be added or removed without breaking
+  that claim's signature. Grep `device_countersign unusable` in the sanitizer
+  log for the offending field.
+
+Four outcomes, four distinct meanings — do not let a reader collapse them:
+
+| In the certificate | Means |
+| --- | --- |
+| no `device_countersign` key, no marker | This device did not countersign. Normal, and shape-identical to a stock install. |
+| present, verifies | The device that holds that key committed to those exact bytes. |
+| present, does not verify | **Something is wrong.** The claim is still accepted and stored verbatim so the discrepancy survives — investigate; do not treat it as absence. |
+| `device_countersign_malformed: true` | Something **was** presented and violated the wire contract. Most often a version skew — a gateway newer than its sanitizer. Deploy the sanitizer first. Never read this as "the device does not countersign". |
+
+> The fourth row is the reason the marker exists. Without it, a tampered or
+> version-skewed request produced a certificate byte-identical to an honest
+> stock one, so the two could not be told apart after the fact.
+
+### 10.5 Verifying one yourself
+
+The central witness checks each countersignature at claim intake and logs the
+outcome (`witness_device_countersign_total`, labels `status` and
+`peer_binding`; `status=malformed` is the fourth-row case, counted with
+`peer_binding=absent` because there is no object to bind). Claims with no
+countersignature at all are not counted — absence is the normal state and
+metering it would drown the signal. Do not stop at the witness verdict either
+way: **it comes from the party the countersignature exists to constrain.** Its
+value to you is operational, not evidentiary.
+
+The evidentiary property is that the claim carries the commitment, the
+signature and the public key verbatim, so you can re-run the check yourself,
+offline, at any time, without asking the operator for anything:
+
+1. Take `device_public_key` from the claim, base64-decode it, and confirm
+   `sha256` of those bytes equals `device_key_id`.
+2. Confirm that public key is one you issued — compare against the leaves from
+   your §3.3 ceremony:
+   `openssl x509 -in client-<device>.pem -pubkey -noout | openssl pkey -pubin -outform DER | shasum -a 256`
+3. Rebuild the signed message: the ASCII prefix `lucairn-device-countersign-v1`,
+   then a big-endian `uint32` length followed by the claim's `request_id`, then
+   a big-endian `uint32` length followed by the 32 raw bytes of
+   `request_commitment`.
+4. Verify `signature` over that message (ECDSA-P256 verifies over its `sha256`;
+   Ed25519 verifies over the message directly).
+5. If you still hold the original request bytes, confirm `sha256` of them equals
+   `request_commitment`. This is the step that makes it evidence about *content*
+   rather than about a hash — Lucairn cannot perform it for you, because Lucairn
+   does not hold your raw request.
+
+No SDK implements this recipe yet. "Anyone can re-check it" today means by hand,
+from the steps above — the bytes are all present in the certificate, but no
+shipped tool walks them for you.
+
+The one check that is **not** reproducible later is the peer binding: at intake
+the witness could see which mTLS-authenticated device opened the connection and
+confirm it was the same key. Once the connection closes that fact exists only in
+the witness log line — which is **operator-held and therefore not evidence you
+can rely on**; treat it as triage, not proof.
+
+⚠️ A peer binding that is *not* `verified` is also not an accusation. It only
+verifies where the countersigning service and the claim-submitting service
+present the same leaf — the gateway signs and the sanitizer submits, which is
+one shared credential under this overlay but two different ones under any
+per-service mTLS mesh. On such a deployment every healthy request reports the
+binding as unverified, which is why it is not reported as invalid.
+
+### 10.6 Effect on §5.1
+
+§5.1 says the claim hop authenticates "a device in the fleet, never *which*
+device", and that the per-device TLS identity is not bound to the claim it
+carries. That remains true of the **transport**, and it remains true of every
+claim that carries no countersignature — which a hostile device can always
+choose.
+
+What changed is narrower and worth stating without inflation: when a
+countersignature IS present, the claim carries a device-bound signature over the
+request commitment, and the witness additionally records whether that key was
+the mTLS peer on the connection. That is per-device attribution **of the
+request commitment on the sanitizer claim**, opt-out-able by any party that
+declines to produce one. It is not general per-device claim provenance, it does
+not make the other three claims attributable, and it is not a revocation
+mechanism (§5.2 is still re-issuance).
