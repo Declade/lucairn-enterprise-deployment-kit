@@ -249,7 +249,33 @@ openssl x509 -in "gateway-${DEVICE}.pem" -noout -subject -ext subjectAltName
 > subjectAltName` check above catches it.
 
 Distribute to each device, mode `0600` on the keys and `0700` on the
-directories, into **two** directories:
+directories, **owned by UID/GID 10001**, into **two** directories:
+
+> ⚠️ **Ownership is not optional, and modes alone will brick the install.**
+> Every consumer (gateway, sanitizer, audit, id-bridge) runs as UID 10001 in
+> its container, and these are bind mounts — the host's ownership is what the
+> container sees, so a root-owned `0700` directory with a `0600` key inside is
+> unreadable to all four. The witness-mTLS latch treats an unreadable
+> credential as fatal, so the stack fails to boot rather than degrading. After
+> copying the files to each device:
+>
+> ```bash
+> sudo chown -R 10001:10001 "$LUCAIRN_WITNESS_CLIENT_CERT_DIR" \
+>                           "$LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR"
+> sudo chmod 0700 "$LUCAIRN_WITNESS_CLIENT_CERT_DIR" \
+>                 "$LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR"
+> sudo chmod 0600 "$LUCAIRN_WITNESS_CLIENT_CERT_DIR"/client.key \
+>                 "$LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR"/client.key
+> # verify the container's view, not the host's:
+> docker compose run --rm --entrypoint sh lucairn-gateway -c \
+>   'cat /etc/lucairn/witness-client/client.key >/dev/null && echo READABLE'
+> ```
+>
+> If your platform pins a different container UID (rootless Docker with
+> `userns-remap`, or a Kubernetes `runAsUser` override), chown to THAT id — the
+> rule is "owned by the uid the containers actually run as", not the literal
+> 10001. This applies to §10 device countersigning too, which signs with the
+> first of these two credentials.
 
 `LUCAIRN_WITNESS_CLIENT_CERT_DIR` — the claim hop, readable by audit,
 id-bridge, sanitizer and gateway:
@@ -1194,11 +1220,29 @@ raw request bytes** it received and signs a commitment to them with its own
 private key. The signature travels on the `dsa-sanitizer` claim and ends up in
 the certificate.
 
-What that buys, stated exactly: **the central witness operator, alone, can no
-longer manufacture or alter the request CONTENT recorded in a certificate.**
-They never held the device's private key, so they cannot produce a
-countersignature for bytes your device never sent, and they cannot change a
-commitment without the signature failing.
+What that buys, stated exactly: **for a certificate that carries a
+countersignature whose key you independently recognise as your own device's,
+the central witness operator, alone, can no longer manufacture or alter the
+request CONTENT that certificate records.** They never held the device's
+private key, so they cannot produce a countersignature for bytes your device
+never sent, and they cannot change a commitment without the signature failing.
+
+Both qualifiers in that sentence are doing work, and neither is a formality:
+
+- **"that carries a countersignature"** — the operator can still issue a
+  certificate with the field simply absent. Absence is recorded honestly (§10.4)
+  and a presented-but-unusable object is recorded as malformed rather than
+  vanishing, so you can *detect* this; nothing *prevents* it. A device that
+  should be countersigning and produces a run of uncountersigned certificates is
+  the signal to investigate.
+- **"whose key you independently recognise"** — the certificate carries the
+  signing key, not a proof that the key is yours. An operator could insert a
+  self-consistent key of their own and every internal check would pass. Peer
+  binding at the witness (matching the signing key to the mTLS peer) is
+  currently **log-only and does not appear in the certificate**. Verification
+  therefore depends on you comparing the SPKI in the certificate against the
+  device leaf your own CA ceremony issued — the recipe in §10.5. Skip that
+  comparison and this guarantee is not established.
 
 What it does **not** buy, stated just as exactly — and read this list before
 repeating the sentence above to anyone:
@@ -1236,10 +1280,16 @@ repeating the sentence above to anyone:
 - It covers the **request**. The response, and everything the model did with
   the request, are not countersigned by anything.
 
-### 10.2 Setup: none
+### 10.2 Setup: no NEW step — but §3.3's ownership rule is load-bearing here
 
-This is deliberate, and it is the reason the design was chosen over a dedicated
-signing key. The signer reads the credential §3.3 already provisions:
+No new key, ceremony step or variable is added. That is the reason the design
+was chosen over a dedicated signing key. It does mean this feature inherits
+§3.3's ownership requirement completely: the credential must be owned by the
+UID the containers run as (10001 by default), or the signer has nothing to read
+and the stack does not boot. Verify with the in-container `cat` check in §3.3
+before assuming a device is countersigning.
+
+The signer reads the credential §3.3 already provisions:
 
 ```
 LCR_WITNESS_MTLS_CA_BUNDLE_PATH    /etc/lucairn/witness-client/ca.pem
@@ -1274,6 +1324,16 @@ docker compose ... logs gateway | grep -i 'device countersignature'
 before; only the extra evidence is missing. That is intentional: refusing to
 serve would trade the guarantee that protects the customer for the one that
 merely records it.
+
+⚠️ **`FAILED` is a narrow state — do not read it as "any bad credential lands
+here."** Most ways a credential can be wrong (a partial `LCR_WITNESS_MTLS_*`
+triple, an unreadable file, bad CA material, a cert and key that do not match)
+are caught earlier, when the witness emitter initialises, and those **stop
+gateway boot** instead. In practice only a credential that loads fine for TLS
+but cannot sign a countersignature — an RSA leaf, today — reaches this state.
+So: stack up but `FAILED` in the log means "usable for the dial, unusable for
+signing"; stack refusing to boot is the more common credential symptom, and
+§3.3's ownership rule is the most common cause of it.
 
 Key types: the §3.3 ceremony issues `prime256v1`, which is supported
 (`ecdsa-p256-sha256`), as is Ed25519 (what the DSA `bootstrap-mtls-ca.sh`
