@@ -273,9 +273,16 @@ directories, **owned by UID/GID 10001**, into **two** directories:
 >   -f contrib/witness-central/docker-compose.witness-central.yml \
 >   --env-file customer.env \
 >   --env-file contrib/witness-central/witness-central.env \
->   run --rm --entrypoint sh gateway -c \
+>   run --rm --no-deps --entrypoint sh gateway -c \
 >   'cat /etc/lucairn/witness-client/client.key >/dev/null && echo READABLE'
 > ```
+>
+> `--no-deps` is load-bearing, not tidiness: without it `run` starts the
+> gateway's dependencies (sandbox-b among them), and those services will fail
+> their own witness-credential check before this one-line `cat` ever executes.
+> The check would then "fail" for a reason that has nothing to do with the file
+> you are testing. This is a single isolated file read; it needs no other
+> service running.
 >
 > (The witness-central file is an ADDITIVE OVERLAY — loading it alone fails with
 > `service "audit" has neither an image nor a build context specified`. The full
@@ -1250,10 +1257,13 @@ certificate that the **central** operator could not have written alone: every
 claim is signed with a fleet-shared service key, the certificate is signed with
 the witness key, and under this topology both of those live on the central side.
 
-The countersignature closes that. At the gateway's ingress — before parsing,
-before classification, before any sanitizer hop — the device hashes the **exact
-raw request bytes** it received and signs a commitment to them with its own
-private key. The signature travels on the `dsa-sanitizer` claim and ends up in
+The countersignature closes that. The device hashes the **exact raw request
+bytes** it received — the untouched `io.ReadAll` slice, retained across parsing
+so the commitment covers what arrived rather than a re-serialisation of it — and
+signs a commitment to them with its own private key, before any sanitizer hop.
+(Earlier revisions said "before parsing". The signing call sits *after* the
+handler parses, because it needs the request id; what matters, and what the
+regression test pins, is that the bytes signed are the original ones.) The signature travels on the `dsa-sanitizer` claim and ends up in
 the certificate.
 
 What that buys, stated exactly: **for a certificate that carries a
@@ -1417,9 +1427,12 @@ one.** Absence is a rendered state, not a failure:
   uncountersigned claims even on a fully-provisioned device: Sensitive Mode's
   `/seal-cert` input-shield flow, the sanitizer's cumulative *streaming*
   claim, and the anonymous `/api/v1/scan` preview (which carries no pipeline
-  request id, so a countersignature could not be bound to anything). The four
-  chat transports — `/v1/messages`, `/v1/chat/completions`, the MCP endpoint
-  and `/api/v1/proxy/messages` — are covered.
+  request id, so a countersignature could not be bound to anything). The five
+  chat transports — `/v1/messages`, `/v1/chat/completions`,
+  `/api/v1/mcp/messages`, `/api/v1/proxy/messages` and the native streamable
+  `POST /mcp` — are covered. The streamable route is called out separately
+  because it is the one that dispatches through a reconstructed inner request:
+  it signs the OUTER bytes, and the regression test enforces that.
 - A **malformed** countersignature (wrong wire version, undefined algorithm,
   over-long or over-large field, explicit `null`, or no caller request id to
   bind to) cannot be carried — the object violates the wire contract, so there
