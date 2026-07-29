@@ -268,10 +268,20 @@ directories, **owned by UID/GID 10001**, into **two** directories:
 >                 "$LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR"/client.key
 > # verify the container's view, not the host's. The service is `gateway`
 > # (as rendered in contrib/witness-central/docker-compose.witness-central.yml):
-> docker compose -f contrib/witness-central/docker-compose.witness-central.yml \
+> docker compose -f docker-compose.customer.yml \
+>   -f docker-compose.self-hosted.yml \
+>   -f contrib/witness-central/docker-compose.witness-central.yml \
+>   --env-file customer.env \
+>   --env-file contrib/witness-central/witness-central.env \
 >   run --rm --entrypoint sh gateway -c \
 >   'cat /etc/lucairn/witness-client/client.key >/dev/null && echo READABLE'
 > ```
+>
+> (The witness-central file is an ADDITIVE OVERLAY — loading it alone fails with
+> `service "audit" has neither an image nor a build context specified`. The full
+> stack of base + self-hosted + overlay + both env files is the same incantation
+> §7 uses; an earlier revision of this check named only the overlay and could
+> not run at all.)
 >
 > On a Kubernetes install with a `runAsUser` override, chown to THAT id instead
 > — the rule is "owned by the uid the container actually runs as", not the
@@ -875,10 +885,13 @@ host firewall** to the central witness host and port. If the sanitizer is ever
 compromised, the network layer is otherwise not stopping exfiltration to an
 arbitrary destination.
 
-## 5.4 What a missing credential actually does — it differs by service
+## 5.4 What a missing credential actually does — every service stops
 
-The failure modes are asymmetric, and knowing which is which is the difference
-between a five-minute diagnosis and an hour:
+Under the latch, a missing or unreadable credential stops the service, in both
+languages. The mechanism differs (Go refuses the dial at boot; the Python
+services invoke a fail-closed transport gate) and the log line differs, so the
+table below is still worth reading — but the outcome does not differ, and an
+earlier revision of this section that promised otherwise is corrected below:
 
 | Service | Language | Behaviour when the credential is missing under the latch |
 |---|---|---|
