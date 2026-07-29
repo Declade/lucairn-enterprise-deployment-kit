@@ -230,11 +230,14 @@ fi
 
 # ── The runbook must say what an operator will otherwise ask support ──
 echo "-- runbook"
-# The three outcomes must all be documented BY NAME. An operator who reads only
-# two of them collapses the third into one of the others, and the collapse that
-# matters — reading "present but does not verify" as "absent" — is the exact
-# confusion this feature exists to prevent.
-for phrase in "countersign" "device_countersign" "did not countersign" "does not verify"; do
+# All FOUR outcomes must be documented BY NAME. An operator who reads only some
+# of them collapses the rest into one another, and both collapses that matter —
+# reading "present but does not verify" as "absent", and reading "presented but
+# malformed" as "absent" — are the exact confusions this feature exists to
+# prevent. `device_countersign_malformed` is included because a runbook that
+# omits it sends an operator hunting a device that was in fact countersigning
+# (Sol S4 r2 MAJOR-5).
+for phrase in "countersign" "device_countersign" "did not countersign" "does not verify" "device_countersign_malformed"; do
   if grep -qi -- "$phrase" "$RUNBOOK"; then
     ok "runbook documents '$phrase'"
   else

@@ -266,16 +266,29 @@ directories, **owned by UID/GID 10001**, into **two** directories:
 >                 "$LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR"
 > sudo chmod 0600 "$LUCAIRN_WITNESS_CLIENT_CERT_DIR"/client.key \
 >                 "$LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR"/client.key
-> # verify the container's view, not the host's:
-> docker compose run --rm --entrypoint sh lucairn-gateway -c \
+> # verify the container's view, not the host's. The service is `gateway`
+> # (as rendered in contrib/witness-central/docker-compose.witness-central.yml):
+> docker compose -f contrib/witness-central/docker-compose.witness-central.yml \
+>   run --rm --entrypoint sh gateway -c \
 >   'cat /etc/lucairn/witness-client/client.key >/dev/null && echo READABLE'
 > ```
 >
-> If your platform pins a different container UID (rootless Docker with
-> `userns-remap`, or a Kubernetes `runAsUser` override), chown to THAT id — the
-> rule is "owned by the uid the containers actually run as", not the literal
-> 10001. This applies to §10 device countersigning too, which signs with the
-> first of these two credentials.
+> On a Kubernetes install with a `runAsUser` override, chown to THAT id instead
+> — the rule is "owned by the uid the container actually runs as", not the
+> literal 10001.
+>
+> Rootless Docker and `userns-remap` are a different case, and conflating them
+> with the above will send you chasing the wrong number: the UID *inside* the
+> container is still 10001, but the engine maps it to a different UID on the
+> HOST. Chown to the mapped host UID — for `userns-remap` that is the subordinate
+> range's base (see `/etc/subuid` for the remap user) plus 10001; for rootless
+> Docker it is derived from your own subuid range. `docker compose run --rm
+> --entrypoint sh gateway -c 'id -u'` reports the container-side id and will
+> always say 10001, so it cannot answer this question — check ownership on the
+> host with `ls -n` after a first run instead.
+>
+> This applies to §10 device countersigning too, which signs with the first of
+> these two credentials.
 
 `LUCAIRN_WITNESS_CLIENT_CERT_DIR` — the claim hop, readable by audit,
 id-bridge, sanitizer and gateway:
@@ -870,14 +883,22 @@ between a five-minute diagnosis and an hour:
 | Service | Language | Behaviour when the credential is missing under the latch |
 |---|---|---|
 | gateway, audit, id-bridge | Go | **The process exits at startup.** The dial is constructed during boot and the refusal is fatal. |
-| sanitizer, sandbox-b, reid-guard | Python | **The service keeps serving** and drops claims; the stub stays `None`. Certificates seal PARTIAL. |
+| sanitizer, sandbox-b, reid-guard | Python | **The process also fails at startup**, under the latch. Each invokes the fail-closed transport gate during boot (`sanitizer/app.py` `fail_closed_if_witness_transport_unusable`, `sandbox-b/main.py`, `reid-guard/server.py`); the sanitizer and sandbox-b raise, reid-guard exits explicitly. |
 
-So a laptop with a bad bind-mount does not degrade uniformly: the gateway dies —
-which the consultant experiences as "Claude Code stopped working", with no
-obvious connection to a witness credential — while the sanitizer silently
-downgrades the evidence. Both are fail-closed in the sense that matters (nothing
-is sent in cleartext), but only the Python half is the honest-PARTIAL behaviour
-the rest of this document describes.
+> ⚠️ **Corrected 2026-07-29 (Sol S4 r2 MAJOR-7).** Earlier revisions of this
+> table, and a matching bullet in §8, said the Python services keep serving and
+> degrade to PARTIAL. That stopped being true when the transport gate was
+> widened to assert the RESOLVED posture through the same resolver the dial uses
+> — the change that closed the empty-bind-mount hole, where Docker materialises
+> a missing mount as an empty directory and the service served its whole
+> lifetime submitting zero claims. **Under the latch, a bad credential now stops
+> every service, in both languages.** Off-latch the gate remains a total no-op.
+
+So a laptop with a bad bind-mount fails uniformly and loudly rather than half-
+silently: the consultant experiences "Claude Code stopped working" with no
+obvious connection to a witness credential. That is the intended trade — a
+silent evidence downgrade is worse than a visible outage — but it makes §3.3's
+ownership rule the first thing to check on any boot failure.
 
 Pre-flight before enabling the latch on a device, which catches the common cause:
 
@@ -1129,8 +1150,10 @@ Stated plainly so nobody deploys past them:
   four known emitters that is fine; as a fleet-facing WAN endpoint, any
   credential holder can drive unbounded claim writes. Put rate limiting in the
   ingress you place in front of it (§4 Ingress).
-- **Failure is asymmetric across services** (§5.4): Go emitters exit at boot, the
-  Python ones degrade silently to PARTIAL.
+- **Under the latch, a bad credential stops every service in both languages**
+  (§5.4) — Go emitters exit at boot and the Python ones now fail at boot too.
+  The older "Python degrades silently to PARTIAL" behaviour was removed when the
+  transport gate was widened; check credential ownership (§3.3) first.
 
 ---
 
@@ -1385,27 +1408,37 @@ one.** Absence is a rendered state, not a failure:
   chat transports — `/v1/messages`, `/v1/chat/completions`, the MCP endpoint
   and `/api/v1/proxy/messages` — are covered.
 - A **malformed** countersignature (wrong wire version, undefined algorithm,
-  over-long field) is dropped by the sanitizer and therefore also renders as
-  absent. The reason is written to the sanitizer log — grep
-  `device_countersign dropped` before concluding a device never countersigned.
-  This is the one place where absence and "something was wrong" overlap; a
-  wrong *signature* is not affected and still renders as the third state below.
+  over-long or over-large field, explicit `null`, or no caller request id to
+  bind to) cannot be carried — the object violates the wire contract, so there
+  is nothing well-formed to forward. It does **not** render as absence: the
+  sanitizer records `device_countersign_malformed` in its own SIGNED claim
+  payload, so the fact survives and cannot be added or removed without breaking
+  that claim's signature. Grep `device_countersign unusable` in the sanitizer
+  log for the offending field.
 
-Three outcomes, three distinct meanings — do not let a reader collapse them:
+Four outcomes, four distinct meanings — do not let a reader collapse them:
 
 | In the certificate | Means |
 | --- | --- |
-| no `device_countersign` key | This device did not countersign. Normal. |
+| no `device_countersign` key, no marker | This device did not countersign. Normal, and shape-identical to a stock install. |
 | present, verifies | The device that holds that key committed to those exact bytes. |
 | present, does not verify | **Something is wrong.** The claim is still accepted and stored verbatim so the discrepancy survives — investigate; do not treat it as absence. |
+| `device_countersign_malformed: true` | Something **was** presented and violated the wire contract. Most often a version skew — a gateway newer than its sanitizer. Deploy the sanitizer first. Never read this as "the device does not countersign". |
+
+> The fourth row is the reason the marker exists. Without it, a tampered or
+> version-skewed request produced a certificate byte-identical to an honest
+> stock one, so the two could not be told apart after the fact.
 
 ### 10.5 Verifying one yourself
 
 The central witness checks each countersignature at claim intake and logs the
 outcome (`witness_device_countersign_total`, labels `status` and
-`peer_binding`). Do not stop there: **that verdict comes from the party the
-countersignature exists to constrain.** Its value to you is operational, not
-evidentiary.
+`peer_binding`; `status=malformed` is the fourth-row case, counted with
+`peer_binding=absent` because there is no object to bind). Claims with no
+countersignature at all are not counted — absence is the normal state and
+metering it would drown the signal. Do not stop at the witness verdict either
+way: **it comes from the party the countersignature exists to constrain.** Its
+value to you is operational, not evidentiary.
 
 The evidentiary property is that the claim carries the commitment, the
 signature and the public key verbatim, so you can re-run the check yourself,
