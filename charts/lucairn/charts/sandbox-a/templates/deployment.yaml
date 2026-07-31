@@ -300,6 +300,83 @@ spec:
             # Phase-7-disabled topology.
             - name: LUCAIRN_PII_ML_ADDR
               value: "{{ .Values.sanitizer.piiMlClient.endpoint | default (printf "pii-ml.%s.svc.cluster.local:50056" .Values.namespace) }}"
+            # T-64 (2026-07-27): honestly declare the transport of the
+            # LUCAIRN_PII_ML_ADDR hop above. See values.yaml
+            # sanitizer.piiMlClient.transport for the full rationale — this
+            # is a forward-compatible declaration, INERT against the
+            # sanitizer code currently on main (which does not read this
+            # var). It is only consumed once the not-yet-merged
+            # feat/gliner-remote-fallback branch's declared-transport
+            # vocabulary (LUCAIRN_PII_ML_TRANSPORT env-var fallback,
+            # services/sanitizer/config.py) ships in a kit release.
+            #
+            # DERIVE, DON'T GUESS — three cases, none of which can break an
+            # existing install (round 5, review-driven, 2026-07-30):
+            #
+            #   1. Stock endpoint (unset, or written to the EXACT stock
+            #      in-cluster DNS name) and no .transport declared ->
+            #      auto-derive "in_box_plaintext". This is the only case
+            #      where "in-box" is true by construction. Writing the stock
+            #      address explicitly doesn't move the dial target, so it is
+            #      treated the same as leaving it empty.
+            #
+            #   2. .transport declared explicitly -> emit it verbatim. The
+            #      operator owns the claim.
+            #
+            #   3. Endpoint overridden to a NON-stock address and no
+            #      .transport declared -> emit NOTHING. The chart will not
+            #      guess a transport for an address whose topology it does
+            #      not know (address-shape inference is the exact unsound
+            #      pattern the DSA side deleted:
+            #      services/sanitizer/pii_ml_client.py, is_local_endpoint()
+            #      removed). Omitting the var leaves the hop UNDECLARED,
+            #      which is byte-identical to every kit release shipped so
+            #      far and to what main's sanitizer sees today.
+            #
+            #      ⚠️ This case deliberately does NOT `fail` the render.
+            #      A cross-namespace in-cluster pii-ml Service is a
+            #      documented, supported override (values.yaml:
+            #      "Override only if pii-ml is deployed to a non-default
+            #      namespace OR an external endpoint"), so failing here
+            #      would hard-break `helm upgrade` for existing installs
+            #      that did nothing wrong. T-64 asked for a declaration,
+            #      not a fail-closed gate.
+            {{- $piiMl := .Values.sanitizer.piiMlClient }}
+            {{- $piiMlStockEndpoint := printf "pii-ml.%s.svc.cluster.local:50056" .Values.namespace }}
+            {{- $piiMlEndpointValue := ($piiMl.endpoint | default "") }}
+            {{- $piiMlEndpointOverridden := and $piiMl (ne $piiMlEndpointValue "") (ne $piiMlEndpointValue $piiMlStockEndpoint) }}
+            {{- $piiMlTransportDeclared := ($piiMl.transport | default "") }}
+            {{- /*
+                 Inverse-contradiction guard (round 5): declaring
+                 transport="tailnet" while the endpoint is the stock
+                 in-cluster Service DNS name is self-contradictory — the
+                 chart itself renders that address as an in-box
+                 *.svc.cluster.local hop, so "tailnet" would be a false
+                 declaration on the very evidence surface this key exists to
+                 keep honest. Reject it. This CANNOT break any existing
+                 install: `transport` is a brand-new key introduced by this
+                 change, so no deployed values file can already carry it.
+            */}}
+            {{- if and (eq $piiMlTransportDeclared "tailnet") (not $piiMlEndpointOverridden) }}
+            {{- fail (printf "sanitizer.piiMlClient.transport is set to \"tailnet\" but sanitizer.piiMlClient.endpoint resolves to the stock in-cluster pii-ml Service (%q) — that hop is in-box by construction, so \"tailnet\" would be a false transport declaration. Either set sanitizer.piiMlClient.endpoint to the actual off-box/tailnet address, or set sanitizer.piiMlClient.transport to \"in_box_plaintext\" (or leave it empty to auto-derive). From the top-level umbrella chart these paths are sandbox-a.sanitizer.piiMlClient.{transport,endpoint}. See values.yaml sanitizer.piiMlClient.transport and T-64." $piiMlStockEndpoint) -}}
+            {{- end }}
+            {{- $piiMlTransport := $piiMlTransportDeclared }}
+            {{- if and (eq $piiMlTransportDeclared "") (not $piiMlEndpointOverridden) }}
+            {{- $piiMlTransport = "in_box_plaintext" }}
+            {{- end }}
+            {{- if ne $piiMlTransport "" }}
+            - name: LUCAIRN_PII_ML_TRANSPORT
+              value: {{ $piiMlTransport | quote }}
+            {{- else }}
+            # LUCAIRN_PII_ML_TRANSPORT intentionally NOT emitted: case 3
+            # above — sanitizer.piiMlClient.endpoint is overridden to a
+            # non-stock address ({{ $piiMlEndpointValue }}) and
+            # sanitizer.piiMlClient.transport was not declared, so the chart
+            # has no sound basis for a transport claim and leaves the hop
+            # undeclared (same as every prior kit release). Set
+            # sanitizer.piiMlClient.transport to "tailnet" or
+            # "in_box_plaintext" to declare it.
+            {{- end }}
             # Sanitizer content-address cache — see INSTALL.md § "Sanitizer
             # content cache (Redis — default ON)" for the operator runbook.
             # Default "redis" uses the bundled redis-sanitizer-cache StatefulSet

@@ -197,6 +197,62 @@ sanitizer:
     # in the sanitizer-configmap.yaml template. Override only if pii-ml is
     # deployed to a non-default namespace OR an external endpoint.
     endpoint: ""
+    # T-64 (2026-07-27; behavior narrowed 2026-07-30 after review) — HONESTY
+    # DECLARATION, not a behavior change today.
+    #
+    # ✅ NO UPGRADE ACTION REQUIRED. Every existing install — including one
+    # that already overrides `endpoint` above (e.g. a cross-namespace
+    # in-cluster pii-ml Service, which the `endpoint` doc directly above
+    # calls a normal supported override) — renders exactly as it did before
+    # this key existed. Nothing here can fail a `helm upgrade` that used to
+    # succeed.
+    #
+    # LEAVE THIS EMPTY unless you know the topology of a NON-STOCK
+    # `endpoint`. Empty means "derive from the endpoint", with three cases:
+    #
+    #   1. `endpoint` resolves to the stock in-cluster default — either
+    #      because you left it empty, OR because you explicitly wrote it to
+    #      the exact stock value `pii-ml.<namespace>.svc.cluster.local:50056`
+    #      (writing the stock address explicitly doesn't move the dial
+    #      target, so it is treated the same as leaving it empty) — the
+    #      chart auto-declares "in_box_plaintext". That's the one case where
+    #      "in-box" is true by construction.
+    #
+    #   2. You set this key explicitly to "tailnet" or "in_box_plaintext" —
+    #      the chart emits your declaration verbatim. Set it at this
+    #      subchart-local path (`sanitizer.piiMlClient.transport`) or, if
+    #      you set values from the top-level umbrella chart, at the umbrella
+    #      path `sandbox-a.sanitizer.piiMlClient.transport` (that's the one
+    #      that takes effect for a `helm upgrade --set` on the umbrella
+    #      release).
+    #
+    #   3. `endpoint` resolves to something ELSE and this key is empty — the
+    #      chart emits NO `LUCAIRN_PII_ML_TRANSPORT` env var at all and
+    #      leaves a comment in the rendered manifest saying so. It will not
+    #      GUESS a transport from address shape; that is exactly the unsound
+    #      pattern the DSA side deleted
+    #      (`services/sanitizer/pii_ml_client.py`, `is_local_endpoint()`
+    #      removed). An undeclared hop is byte-identical to every kit
+    #      release shipped so far, so this is a no-op, not a failure. Set
+    #      this key if you want the hop declared.
+    #
+    # ONE render-time rejection exists, and it can only trip on a value that
+    # did not exist before this change: setting `transport: "tailnet"` while
+    # `endpoint` resolves to the STOCK in-cluster Service is a
+    # self-contradiction (the chart itself renders that address as an in-box
+    # *.svc.cluster.local hop), so it is refused rather than emitted as a
+    # false declaration. Fix it by pointing `endpoint` at the real off-box
+    # address, or by declaring "in_box_plaintext".
+    #
+    # This key is currently INERT either way: main's sanitizer
+    # config.py/pii_ml_client.py (as of this PR) has no declared-transport
+    # vocabulary and never reads LUCAIRN_PII_ML_TRANSPORT — only the
+    # not-yet-merged feat/gliner-remote-fallback branch introduces that read
+    # (env-var fallback when no `transport` key is present in the rendered
+    # pii_ml_client config block). The kit ships no tailnet transport at all
+    # today (no config surface, no docs, no code path), so for every stock
+    # install this resolves to "in_box_plaintext" automatically.
+    transport: ""
     # Per-scan gRPC deadline (seconds). Sanitizer's config.py reads this as
     # the flat `deadline_seconds` field on `pii_ml_client`; missing → 5.0.
     deadlineSeconds: 5

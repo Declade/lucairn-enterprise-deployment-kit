@@ -35,7 +35,7 @@ Usage:
   lucairn license verify --license TOKEN --public-key-hex HEX
   lucairn license gen-key
 
-  lucairn verify-images [--registry REG] [--tag TAG] [--dashboard-tag TAG] [--key PATH] [--no-dashboard]
+  lucairn verify-images [--registry REG] [--tag TAG] [--key PATH]
   lucairn sbom <image-ref> [--key PATH] [--registry REG] [--download PATH]
   lucairn check-updates [--offline] [--feed-url URL]
 
@@ -7594,19 +7594,29 @@ verify_images_usage() {
 Usage:
   lucairn verify-images [--tag TAG] [--registry REG] [--key PATH]
 
-Verifies every published Lucairn image's cosign signature BY DIGEST against the
-bundled public key (keys/lucairn-cosign.pub) and the Sigstore Rekor public
-transparency log.
+Verifies the 13 images recorded in keys/image-digests-<tag>.txt — the 12
+dsa-* release services (at --tag) plus lucairn-dashboard (its own pinned
+tag, hardcoded here, currently 0.8.2 — NOT read from LUCAIRN_DASHBOARD_IMAGE_TAG,
+so if you have overridden that env var for Compose/Helm, the dashboard bytes
+you actually deploy are UNVERIFIED by this command; verification here only
+covers the pinned default). dsa-pii-ml (the Phase 7 ML PII sidecar) has NO
+digest record in this kit at all and is never checked by this command, at
+any tag or option — see OPS.md § "Verify image signatures" for the full
+disclosure.
 
-For each image recorded in keys/image-digests-<tag>.txt it:
+Each image's cosign signature is verified BY DIGEST against the bundled
+public key (keys/lucairn-cosign.pub), with a Sigstore Rekor public
+transparency log entry required.
+
+For each of the 13 recorded images it:
   1. resolves the tag's CURRENT registry digest and asserts it EQUALS the
      recorded (signed) digest — a mismatch means the tag was re-pointed to
      other bytes (downgrade/substitution) and is a hard FAIL;
   2. runs `cosign verify --key <pubkey> <repo>@<recorded-digest>` and requires
      a transparency-log (Rekor) entry in the output before printing PASS.
 
-Exits non-zero if any image's digest drifted, signature is missing/invalid, or
-no transparency-log entry is present.
+Exits non-zero if any of the 13 covered images' digest drifted, signature is
+missing/invalid, or no transparency-log entry is present.
 
 Requires `cosign` (>= v2.0) on PATH (https://github.com/sigstore/cosign) and a
 tool to resolve tag->digest (`docker buildx imagetools`, `crane`, or `skopeo`).

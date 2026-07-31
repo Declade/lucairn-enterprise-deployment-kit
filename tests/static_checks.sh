@@ -547,4 +547,185 @@ if [ -f "$ROOT/apps/dashboard/image-manifest.yaml" ]; then
 fi
 echo "B1-S3: image_digests block in lockstep with keys/image-digests-0.5.4.txt (via parser) + dashboard manifest synced"
 
+# T-64: sanitizer.piiMlClient.transport derive/omit/reject contract
+# (round 5, review-driven, 2026-07-30). Covers:
+#   1) default render — stock endpoint auto-derives in_box_plaintext, renders
+#      exactly once, sanitizer-only ownership;
+#   2) override render — custom endpoint + explicit transport carries through;
+#   2b) explicitly-written stock endpoint still auto-derives;
+#   3) NON-BREAKING omission — custom endpoint with NO transport declared
+#      renders SUCCESSFULLY and emits no LUCAIRN_PII_ML_TRANSPORT at all (the
+#      chart refuses to guess a topology from an address shape, but must NOT
+#      hard-fail an upgrade for the documented cross-namespace in-cluster
+#      override case);
+#   4) invalid-vocabulary rejection — the values.schema.json enum catches a
+#      typo like "tailnett" at render/lint time, not at sanitizer boot;
+#   5) inverse-contradiction rejection — transport="tailnet" declared while
+#      the endpoint is the stock in-cluster Service is refused (that hop is
+#      in-box by construction, so "tailnet" would be a false declaration).
+if command -v helm >/dev/null 2>&1; then
+  T64_CHART="$ROOT/charts/lucairn"
+
+  # 1) Default render: stock endpoint -> auto-derived in_box_plaintext, and
+  #    it renders exactly ONCE, sourced only from sandbox-a's deployment.yaml
+  #    (sanitizer-only ownership — no other subchart emits this env name).
+  #
+  #    NOTE: render to a FILE and grep the file, never pipe a captured
+  #    multi-thousand-line render through `echo "$VAR" | grep -q ...` — under
+  #    `set -o pipefail` (this script), `grep -q` exits on its first match
+  #    and closes the pipe, sending SIGPIPE to the upstream `echo`; pipefail
+  #    then reports the whole pipeline as failed even though the pattern DID
+  #    match. This is the exact HA-03/HA-09 hazard already documented above
+  #    in this file (search "SIGPIPE") — hit live while writing this block.
+  T64_DEFAULT_FILE="$(mktemp)"
+  helm template lucairn "$T64_CHART" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    >"$T64_DEFAULT_FILE"
+  grep -q '^            - name: LUCAIRN_PII_ML_TRANSPORT$' "$T64_DEFAULT_FILE" \
+    || { echo "T-64: LUCAIRN_PII_ML_TRANSPORT did not render on the default (stock-endpoint) render" >&2; rm -f "$T64_DEFAULT_FILE"; exit 1; }
+  T64_COUNT="$(grep -c '^            - name: LUCAIRN_PII_ML_TRANSPORT$' "$T64_DEFAULT_FILE" || true)"
+  [ "$T64_COUNT" -eq 1 ] \
+    || { echo "T-64: expected LUCAIRN_PII_ML_TRANSPORT to render exactly once (sanitizer-only ownership), got $T64_COUNT" >&2; rm -f "$T64_DEFAULT_FILE"; exit 1; }
+  T64_SOURCES="$(grep -B400 '^            - name: LUCAIRN_PII_ML_TRANSPORT$' "$T64_DEFAULT_FILE" | grep '^# Source:' | tail -1)"
+  case "$T64_SOURCES" in
+    *"sandbox-a/templates/deployment.yaml"*) ;;
+    *) echo "T-64: LUCAIRN_PII_ML_TRANSPORT rendered from an unexpected source: $T64_SOURCES" >&2; rm -f "$T64_DEFAULT_FILE"; exit 1 ;;
+  esac
+  T64_DEFAULT_VALUE="$(grep -A1 '^            - name: LUCAIRN_PII_ML_TRANSPORT$' "$T64_DEFAULT_FILE" | tail -1 | sed 's/^ *value: *//')"
+  rm -f "$T64_DEFAULT_FILE"
+  [ "$T64_DEFAULT_VALUE" = '"in_box_plaintext"' ] \
+    || { echo "T-64: default (stock-endpoint) render should auto-derive \"in_box_plaintext\", got $T64_DEFAULT_VALUE" >&2; exit 1; }
+  echo "T-64: default render — LUCAIRN_PII_ML_TRANSPORT auto-derives in_box_plaintext, renders once, sanitizer-only ownership ok"
+
+  # 2) Override render: custom endpoint + explicit transport declared ->
+  #    succeeds and carries the EXPLICIT value through (not silently coerced).
+  T64_OVERRIDE_FILE="$(mktemp)"
+  helm template lucairn "$T64_CHART" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    --set sandbox-a.sanitizer.piiMlClient.endpoint=pii-ml-external.example.com:50056 \
+    --set sandbox-a.sanitizer.piiMlClient.transport=tailnet \
+    >"$T64_OVERRIDE_FILE"
+  T64_OVERRIDE_VALUE="$(grep -A1 '^            - name: LUCAIRN_PII_ML_TRANSPORT$' "$T64_OVERRIDE_FILE" | tail -1 | sed 's/^ *value: *//')"
+  rm -f "$T64_OVERRIDE_FILE"
+  [ "$T64_OVERRIDE_VALUE" = '"tailnet"' ] \
+    || { echo "T-64: endpoint override with explicit transport=tailnet should render tailnet, got $T64_OVERRIDE_VALUE" >&2; exit 1; }
+  echo "T-64: override render — explicit transport declaration carries through unchanged"
+
+  # 2b) Explicit-stock render (Sol xhigh round 3, 2026-07-26): an operator who
+  #     writes .endpoint to the EXACT stock DNS name (not just leaves it
+  #     empty) is not moving the dial target, so this must still auto-derive
+  #     "in_box_plaintext" rather than being treated as an "override" that
+  #     requires an explicit .transport. This is the failure mode Sol caught:
+  #     the first fix-round's "any non-empty endpoint = overridden" logic
+  #     would have broken an upgrade for anyone who happened to pin the stock
+  #     address explicitly.
+  T64_STOCK_FILE="$(mktemp)"
+  helm template lucairn "$T64_CHART" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    --set sandbox-a.sanitizer.piiMlClient.endpoint=pii-ml.dsa-identity.svc.cluster.local:50056 \
+    >"$T64_STOCK_FILE"
+  T64_STOCK_VALUE="$(grep -A1 '^            - name: LUCAIRN_PII_ML_TRANSPORT$' "$T64_STOCK_FILE" | tail -1 | sed 's/^ *value: *//')"
+  rm -f "$T64_STOCK_FILE"
+  [ "$T64_STOCK_VALUE" = '"in_box_plaintext"' ] \
+    || { echo "T-64: explicitly writing the STOCK endpoint value should still auto-derive in_box_plaintext (not require .transport), got $T64_STOCK_VALUE" >&2; exit 1; }
+  echo "T-64: explicit-stock endpoint write auto-derives in_box_plaintext (does not require .transport)"
+
+  # 3) NON-BREAKING omission (round 5, review-driven 2026-07-30): a custom
+  #    endpoint WITHOUT an explicit transport must still render SUCCESSFULLY
+  #    and simply omit LUCAIRN_PII_ML_TRANSPORT. The chart declines to guess a
+  #    transport from an address shape, but it must NOT hard-fail the render —
+  #    a cross-namespace in-cluster pii-ml Service is a documented, supported
+  #    override (see values.yaml `endpoint`), so failing here would break
+  #    `helm upgrade` for existing installs that did nothing wrong. An earlier
+  #    revision of this branch DID `fail` here; that was the review's BLOCKING
+  #    finding #1. This assertion is the regression guard against re-adding it.
+  T64_OMIT_FILE="$(mktemp)"
+  T64_OMIT_STDERR="$(mktemp)"
+  if ! helm template lucairn "$T64_CHART" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    --set sandbox-a.sanitizer.piiMlClient.endpoint=pii-ml.other-ns.svc.cluster.local:50056 \
+    >"$T64_OMIT_FILE" 2>"$T64_OMIT_STDERR"; then
+    echo "T-64: endpoint override with NO transport declared must still RENDER (no fail-closed gate), but the render failed:" >&2
+    cat "$T64_OMIT_STDERR" >&2
+    rm -f "$T64_OMIT_FILE" "$T64_OMIT_STDERR"
+    exit 1
+  fi
+  T64_OMIT_COUNT="$(grep -c '^            - name: LUCAIRN_PII_ML_TRANSPORT$' "$T64_OMIT_FILE" || true)"
+  rm -f "$T64_OMIT_FILE" "$T64_OMIT_STDERR"
+  [ "$T64_OMIT_COUNT" -eq 0 ] \
+    || { echo "T-64: endpoint override with NO transport declared must emit NO LUCAIRN_PII_ML_TRANSPORT (chart must not guess), got $T64_OMIT_COUNT occurrence(s)" >&2; exit 1; }
+  echo "T-64: endpoint override without explicit transport renders OK and omits the transport declaration (no fail-closed gate, no guess)"
+
+  # 3b) Same, for a genuinely off-cluster endpoint — also non-fatal, also
+  #     undeclared.
+  T64_EXT_FILE="$(mktemp)"
+  if ! helm template lucairn "$T64_CHART" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    --set sandbox-a.sanitizer.piiMlClient.endpoint=pii-ml-external.example.com:50056 \
+    >"$T64_EXT_FILE" 2>/dev/null; then
+    echo "T-64: external endpoint override with NO transport declared must still render, but the render failed" >&2
+    rm -f "$T64_EXT_FILE"
+    exit 1
+  fi
+  T64_EXT_COUNT="$(grep -c '^            - name: LUCAIRN_PII_ML_TRANSPORT$' "$T64_EXT_FILE" || true)"
+  rm -f "$T64_EXT_FILE"
+  [ "$T64_EXT_COUNT" -eq 0 ] \
+    || { echo "T-64: external endpoint override with NO transport must emit NO LUCAIRN_PII_ML_TRANSPORT, got $T64_EXT_COUNT" >&2; exit 1; }
+  echo "T-64: external endpoint override without transport also renders OK and stays undeclared"
+
+  # 4) Invalid vocabulary: values.schema.json enum rejects a typo before it
+  #    ever reaches the sanitizer.
+  T64_SCHEMA_STDERR="$(mktemp)"
+  if helm template lucairn "$T64_CHART" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    --set sandbox-a.sanitizer.piiMlClient.transport=tailnett \
+    >/dev/null 2>"$T64_SCHEMA_STDERR"; then
+    echo "T-64: transport=tailnett (typo, not in the closed vocabulary) should have FAILED schema validation but succeeded" >&2
+    rm -f "$T64_SCHEMA_STDERR"
+    exit 1
+  fi
+  grep -q "must be one of" "$T64_SCHEMA_STDERR" \
+    || { echo "T-64: transport=tailnett failure was not the expected schema-enum rejection" >&2; cat "$T64_SCHEMA_STDERR" >&2; rm -f "$T64_SCHEMA_STDERR"; exit 1; }
+  rm -f "$T64_SCHEMA_STDERR"
+  echo "T-64: invalid transport vocabulary (typo) correctly rejected by values.schema.json enum"
+
+  # 5) Inverse contradiction (round 5, review-driven 2026-07-30 — the review's
+  #    BLOCKING finding #4): declaring transport="tailnet" while the endpoint
+  #    resolves to the STOCK in-cluster pii-ml Service is self-contradictory —
+  #    the chart itself renders that address as an in-box *.svc.cluster.local
+  #    hop, so "tailnet" would be a false declaration on the very evidence
+  #    surface this key exists to keep honest. Must be refused, both when the
+  #    endpoint is left empty and when it is written to the exact stock value.
+  #    This CANNOT break an existing install: `transport` is a new key, so no
+  #    deployed values file can already carry it.
+  for T64_STOCK_EP in "" "pii-ml.dsa-identity.svc.cluster.local:50056"; do
+    T64_CONTRA_STDERR="$(mktemp)"
+    T64_CONTRA_ARGS=(--set sandbox-a.sanitizer.piiMlClient.transport=tailnet)
+    if [ -n "$T64_STOCK_EP" ]; then
+      T64_CONTRA_ARGS+=(--set "sandbox-a.sanitizer.piiMlClient.endpoint=$T64_STOCK_EP")
+    fi
+    if helm template lucairn "$T64_CHART" \
+      --set global.skipPullSecretGuard=true \
+      --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+      "${T64_CONTRA_ARGS[@]}" \
+      >/dev/null 2>"$T64_CONTRA_STDERR"; then
+      echo "T-64: transport=tailnet with a stock in-cluster endpoint ('${T64_STOCK_EP:-<empty>}') should have FAILED the render but succeeded" >&2
+      rm -f "$T64_CONTRA_STDERR"
+      exit 1
+    fi
+    grep -q 'would be a false transport declaration' "$T64_CONTRA_STDERR" \
+      || { echo "T-64: transport=tailnet + stock endpoint ('${T64_STOCK_EP:-<empty>}') failed for the wrong reason" >&2; cat "$T64_CONTRA_STDERR" >&2; rm -f "$T64_CONTRA_STDERR"; exit 1; }
+    rm -f "$T64_CONTRA_STDERR"
+  done
+  echo "T-64: transport=tailnet with a stock in-cluster endpoint correctly REJECTED (inverse contradiction guard)"
+else
+  echo "T-64: piiMlClient.transport render assertions skipped (helm not installed)"
+fi
+
 echo "static checks: ok"
