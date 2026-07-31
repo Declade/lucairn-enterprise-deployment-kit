@@ -1278,13 +1278,15 @@ a PASS as "everything"):**
   unverified — see the CLI follow-up ticket referenced below.
 
   > **Why there is no `--dashboard-tag` flag (and why the top-level usage
-  > banner used to imply there was).** `verify-images` shipped with
-  > `--dashboard-tag TAG` and `--no-dashboard` flags in kit 1.8.x. Both were
-  > **deliberately removed on 2026-05-29** (`38714b1`, review fixes TOB-001 /
-  > TOB-005) when `verify-images` was rewritten to verify **by signed
+  > banner used to imply there was).** `--dashboard-tag TAG` and
+  > `--no-dashboard` existed for exactly one commit during the original
+  > cosign work (`c856d35`, 2026-05-29) and were **deliberately removed by
+  > its immediate successor the same day** (`38714b1`, review fixes TOB-001 /
+  > TOB-005), when `verify-images` was rewritten to verify **by signed
   > digest** instead of by mutable tag: the old flags fed a
   > tag→`cosign verify` path with a silent `0.8.2` fallback, which is exactly
-  > the substitution hazard the by-digest rewrite closed. Since that rewrite,
+  > the substitution hazard the by-digest rewrite closed. **Neither flag was
+  > ever functional in a released kit version.** Since that rewrite,
   > `verify_images()`'s argument parser accepts only `--registry`, `--tag`,
   > `--key`, and `-h/--help`, and rejects anything else with
   > `verify-images: unknown argument`. The **top-level `lucairn --help`
