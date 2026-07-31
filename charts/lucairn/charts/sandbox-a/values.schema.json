@@ -27,7 +27,7 @@
                 "tailnet",
                 "in_box_plaintext"
               ],
-              "description": "T-64: closed vocabulary matching the DSA sanitizer's declared-transport contract (services/sanitizer/config.py on the feat/gliner-remote-fallback branch). Empty string means 'derive from sanitizer.piiMlClient.endpoint' (deployment.yaml auto-declares in_box_plaintext only when endpoint is the stock in-cluster default; an overridden endpoint with this left empty fails the Helm render). A typo here (e.g. \"tailnett\") is caught at `helm template`/`lint` time instead of silently reaching the sanitizer as an unrecognized value."
+              "description": "T-64: closed vocabulary matching the DSA sanitizer's declared-transport contract (services/sanitizer/config.py on the feat/gliner-remote-fallback branch). Empty string (the default) means 'derive from sanitizer.piiMlClient.endpoint': deployment.yaml auto-declares in_box_plaintext when endpoint resolves to the stock in-cluster default, and emits NO LUCAIRN_PII_ML_TRANSPORT env var at all when endpoint is overridden to a non-stock address (it will not guess from address shape — an undeclared hop matches every prior kit release, so no existing install's render can break). The one render-time rejection is the inverse contradiction: transport=\"tailnet\" together with a stock in-cluster endpoint. A typo here (e.g. \"tailnett\") is caught at `helm template`/`lint` time instead of silently reaching the sanitizer as an unrecognized value."
             }
           }
         }
