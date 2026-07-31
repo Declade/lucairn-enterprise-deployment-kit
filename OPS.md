@@ -1669,14 +1669,21 @@ single-replica are the v1.0 SLA.
    # customer.env: docker-compose.customer.yml references them as
    # ${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade} and ${LUCAIRN_IMAGE_TAG:-...},
    # so a perfectly valid customer.env can omit either one and rely on the
-   # Compose default. If that happens, the extraction above yields an EMPTY
-   # string, and `verify-images --tag "" --registry ""` does NOT error on the
-   # empty value — it silently falls back to the CLI's own defaults (the sole
-   # committed keys/image-digests-*.txt tag, and the manifest/env registry).
-   # You would then get a green PASS for a tag/registry that is not
-   # necessarily what step 5 pulls: a silent wrong-target verification on the
-   # ONE step in this runbook that is supposed to give cryptographic
-   # assurance. Fail loudly instead.
+   # Compose default. If that happens the extraction above yields an EMPTY
+   # string — and `verify-images` treats an empty --tag/--registry as "not
+   # supplied", NOT as an error:
+   #   * --registry "" is silently discarded and the CLI substitutes
+   #     $LUCAIRN_IMAGE_REGISTRY, else image-manifest.yaml's registry, else
+   #     the canonical host recorded in the digests file. With none of those
+   #     set you get a fully GREEN PASS against ghcr.io/declade even though
+   #     your install may pull from an internal mirror.
+   #   * --tag "" is silently replaced by the sole committed
+   #     keys/image-digests-*.txt record when exactly one is present (the
+   #     single-release customer-bundle case); it errors only when several
+   #     records ship.
+   # Either way a PASS would not mean "I verified what customer.env says" —
+   # a silent wrong-target verification on the ONE step in this runbook that
+   # is supposed to give cryptographic assurance. Fail loudly instead.
    if [ -z "$TARGET_TAG" ] || [ -z "$TARGET_REGISTRY" ]; then
      echo "ABORT: could not read LUCAIRN_IMAGE_TAG and/or LUCAIRN_IMAGE_REGISTRY from customer.env" >&2
      echo "       (TAG='$TARGET_TAG' REGISTRY='$TARGET_REGISTRY'). This install is relying on a" >&2
@@ -1778,10 +1785,13 @@ TARGET_REGISTRY="$(grep -E '^LUCAIRN_IMAGE_REGISTRY=' customer.env | tail -1 \
 
 # NON-EMPTY ASSERTION (step 3 above) — both keys are OPTIONAL in customer.env
 # (docker-compose.customer.yml supplies ${LUCAIRN_IMAGE_REGISTRY:-...} /
-# ${LUCAIRN_IMAGE_TAG:-...} defaults), and `verify-images --tag "" --registry ""`
-# does not error on empty — it silently falls back to the CLI's own defaults and
-# would hand you a green PASS for refs that are not what `pull` fetches. Refuse
-# to run the whole sequence rather than verify the wrong target.
+# ${LUCAIRN_IMAGE_TAG:-...} defaults), and verify-images treats an empty
+# --tag/--registry as "not supplied" rather than as an error: --registry "" is
+# discarded in favour of $LUCAIRN_IMAGE_REGISTRY / image-manifest.yaml / the
+# canonical recorded host, and --tag "" falls back to the sole committed
+# keys/image-digests-*.txt record when only one ships. Either way you would get
+# a green PASS for refs that need not be what `pull` fetches. Refuse to run the
+# whole sequence rather than verify the wrong target.
 if [ -z "$TARGET_TAG" ] || [ -z "$TARGET_REGISTRY" ]; then
   echo "ABORT: LUCAIRN_IMAGE_TAG and/or LUCAIRN_IMAGE_REGISTRY missing from customer.env" >&2
   echo "       (TAG='$TARGET_TAG' REGISTRY='$TARGET_REGISTRY'). Set both explicitly, then re-run." >&2
