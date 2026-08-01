@@ -1,15 +1,40 @@
-{{- if .Values.sanitizer.llmScanEnabled }}
+{{- /*
+  Model-pull Job for the L3 PII-plane runtime.
+
+  REVISION-SUFFIXED NAME (bug-hunter F1 / ToB TOB-008). Kubernetes treats
+  Job spec.template as IMMUTABLE for an existing resource, so a fixed-name
+  Job makes `helm upgrade` fail outright on any install that already ran it,
+  AND the Job can never re-run when `sanitizer.llmScanModel` changes — the
+  chart would claim a new model while the cluster kept serving the old one.
+  The `-r{{ .Release.Revision }}` suffix is the convention this chart already
+  uses for exactly this reason; see migration-job.yaml:2-11.
+
+  RENDER GATE (bug-hunter F3): also gated on the model-registry egress flag.
+  `ollama pull` ALWAYS performs a registry round-trip, so with
+  `global.identityModelRegistryEgress: false` (the documented air-gap path)
+  this Job could only ever fail. It is omitted instead, and the offline model
+  must be pre-seeded into the ollama-identity PVC (see values.yaml). An
+  absent key resolves to ENABLED — only an explicit `false` suppresses the
+  Job, so a standalone subchart install never silently loses its model pull.
+*/ -}}
+{{- if and .Values.sanitizer.llmScanEnabled (ne .Values.global.identityModelRegistryEgress false) }}
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: ollama-identity-model-pull
+  name: ollama-identity-model-pull-r{{ .Release.Revision }}
   namespace: {{ .Values.namespace }}
   labels:
     app.kubernetes.io/name: ollama-identity-model-pull
     app.kubernetes.io/part-of: dsa
 spec:
   backoffLimit: 3
+  # HARD WALL-CLOCK BOUND (bug-hunter F4). The readiness cap below bounds only
+  # the WAIT for ollama-identity; the multi-GB `ollama pull` itself is
+  # unbounded, so a stalled registry connection leaves the Job Running forever
+  # — the exact hang the readiness cap was added to prevent. activeDeadlineSeconds
+  # fails the Job for real. Sized generously for a multi-GB pull on a slow link.
+  activeDeadlineSeconds: {{ default 3600 .Values.sanitizer.llmScanModelPullDeadlineSeconds }}
   template:
     metadata:
       labels:
@@ -81,8 +106,8 @@ spec:
                 fi;
                 sleep 2;
               done;
-              echo "Pulling {{ .Values.sanitizer.llmScanModel }} from the official registry over HTTPS...";
-              ollama pull {{ .Values.sanitizer.llmScanModel }};
+              echo "Pulling {{ .Values.sanitizer.llmScanModel | default "qwen2.5:7b" | quote }} from the official registry over HTTPS...";
+              ollama pull {{ .Values.sanitizer.llmScanModel | default "qwen2.5:7b" | quote }};
               echo "Model pull complete.";
               ollama list
           resources:

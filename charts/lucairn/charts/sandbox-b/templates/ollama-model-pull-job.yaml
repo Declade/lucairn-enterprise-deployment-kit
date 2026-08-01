@@ -39,7 +39,11 @@ spec:
                 sleep 2
               done
               echo "Pulling model {{ .Values.ollama.model }}..."
-              ollama pull {{ .Values.ollama.model }}
+              # T-375 item 5 (ToB TOB-003): quoted so a model name carrying
+              # shell metacharacters cannot break out of the pull command.
+              # (No `default` needed here — the whole template is gated on
+              # `.Values.ollama.model` being truthy at line 1.)
+              ollama pull {{ .Values.ollama.model | quote }}
               echo "Model pull complete. Stopping server..."
               kill $SERVE_PID
               wait $SERVE_PID 2>/dev/null || true

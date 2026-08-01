@@ -66,22 +66,47 @@ native-Linux CUDA-12.8 host.
 
 ---
 
-## What this runtime does NOT serve yet (be honest with the customer)
+## What this runtime does NOT serve (be honest with the customer)
 
 This runtime serves the **STOCK `Qwen2.5-7B-Instruct-AWQ`** (the AWQ equivalent
 of the DSA-default `qwen2.5:7b`).
 
-**It does NOT yet serve the custom-trained Enterprise "level-3 PII shield."**
-That shield is real and **deliverable today on Ollama only** — it is a LoRA
-fine-tune of Qwen2.5-7B, packaged as GGUF for Ollama. It is **not** vLLM-servable
-as-is: an Ollama GGUF is not a vLLM artifact. Converting it (merge LoRA → HF →
-AWQ/GPTQ quant, or vLLM native `--enable-lora`) plus **re-validating recall on
-the quant** (AWQ ≠ GGUF Q4_K_M → detection must be re-checked) is a **filed
-follow-up workstream**, not a shipped capability of this runtime.
+**It does NOT serve the custom-trained Enterprise "level-3 PII shield."**
+Neither does the Ollama lane any more — see the note below. The custom shield
+is a **separately-priced Enterprise add-on**, not part of any default install.
 
-Do not tell a customer the fast path serves their custom-trained shield. On this
-runtime, the fast path serves the stock model; the custom shield stays on Ollama
-until its conversion+recall workstream ships.
+Do not tell a customer that either runtime serves their custom-trained shield.
+Both fast path and Ollama path serve the **stock** model today.
+
+### 2026-08-01 correction — the Ollama lane serves the STOCK model too (T-375)
+
+This section previously said the custom shield was "deliverable today on Ollama
+only". That is **no longer true of anything this kit installs**, and the change
+was deliberate.
+
+Until T-375, the sandbox-a Helm chart built an Ollama model named
+`pii-scanner-v2` from a GGUF it downloaded over **plaintext HTTP with basic auth
+from a hardcoded bare IP**. That artifact was a LoRA fine-tune of Qwen2.5-7B —
+so swapping it for stock `qwen2.5:7b` **is a capability change, not merely a
+transport change**. It was made anyway because:
+
+1. **The source is dead and the provenance is unverifiable.** The host is
+   neither current Lucairn box and was last touched ~2026-03. An unauthenticated
+   plaintext channel into the weights of the component whose entire job is
+   finding PII is a supply-chain injection vector: poisoned weights that
+   selectively miss one entity class still produce certificates reporting a
+   clean L3 pass.
+2. **It matches the locked product decision.** The custom-trained level-3 PII
+   shield is Enterprise-only and separately priced; the **stock** model is the
+   default lane. Shipping a fine-tune inside the default install contradicted
+   that.
+3. **Recall of the replacement lane is gated separately.** Per-artifact recall
+   for any L3 model change is gated by **T-370**. No recall number for the
+   stock lane is asserted here — that gate owns it.
+
+If and when the custom shield ships again, it must arrive through a channel with
+verifiable provenance (signed artifact, pinned digest), and its recall must clear
+the T-370 gate for the exact artifact served.
 
 ---
 

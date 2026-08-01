@@ -145,6 +145,11 @@ sanitizer:
   # `registry.internal.example/library/qwen2.5:7b`) or pre-seed the
   # ollama-identity PVC and set `global.identityModelRegistryEgress: false`.
   llmScanModel: "qwen2.5:7b"
+  # Hard wall-clock bound for the model-pull Job (bug-hunter F4). The pull is
+  # multi-GB; a stalled registry connection would otherwise leave the Job
+  # Running forever. Generous by design — raise it on a slow link rather than
+  # letting a real pull get killed.
+  llmScanModelPullDeadlineSeconds: 3600
   # FIX-B (full-stack-test-results-2026-05-29): L3 fail-mode for the sanitizer.
   # true = fail-CLOSED (503 l3_scrubber_unavailable when the L3 deep PII shield
   # is unavailable). false = continue-mode (proceed L1+L2, cert honestly
