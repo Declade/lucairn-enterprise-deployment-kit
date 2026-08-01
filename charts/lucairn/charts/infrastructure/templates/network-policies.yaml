@@ -562,6 +562,44 @@ spec:
         - podSelector: {}
 {{- if .Values.global.llmEgressEnabled }}
     # → External LLM providers (hosted only)
+    #
+    # T-390 DOCUMENTED EXCEPTION — this except-list deliberately does NOT carry
+    # 100.64.0.0/10 (RFC 6598 CGNAT) or 127.0.0.0/8, unlike the model-registry
+    # rules in model-pull-netpol.yaml and the sandbox-b / veil-witness policies.
+    #
+    # THE TRADE. Those other rules reach a fixed, genuinely public destination
+    # (a model registry; the TSA and Rekor transparency log), so excluding CGNAT
+    # costs nothing and closes a real path into other namespaces' Pods on
+    # managed Kubernetes. This rule reaches an OPERATOR-CONFIGURED LLM endpoint,
+    # and a CGNAT address is a legitimate deployment there: Tailscale hands out
+    # 100.64.0.0/10, and a self-hosted or tunnelled model gateway on a tailnet
+    # is a supported topology. Adding the exclusion here would silently break
+    # those installs — a functional regression dressed as hardening.
+    #
+    # THE RESIDUAL RISK, STATED PLAINLY. On a managed cluster whose Pod/Service
+    # CIDR is inside 100.64.0.0/10, this rule can reach other namespaces' Pods
+    # on 443. It is gated behind `global.llmEgressEnabled` (default false) and
+    # the AI plane holds post-redaction data, which is why the trade lands this
+    # way rather than fail-closed. Operators who do NOT need a CGNAT-hosted
+    # endpoint should add both ranges to this except-list.
+    #
+    # UNION CONSEQUENCE — measured, not assumed. `sandbox-b-egress` (the
+    # sub-chart's own policy) DOES carry the CGNAT exclusion, and it selects the
+    # same sandbox-b pods this rule does. Kubernetes UNIONS policies, so while
+    # `llmEgressEnabled` is true THIS rule is the permissive one and the
+    # sandbox-b exclusion does not bind: sandbox-b -> 100.64.0.0/10:443 is
+    # ALLOWED. With `llmEgressEnabled` at its default false this rule is not
+    # rendered and the exclusion DOES bind (verified both ways).
+    #
+    # So the CGNAT exclusion on sandbox-b-egress protects the DEFAULT
+    # configuration only. Enabling hosted LLM egress is what re-opens CGNAT for
+    # the AI plane, which is the trade stated above — not an oversight, but it
+    # must not be read as "sandbox-b can never reach CGNAT".
+    #
+    # tests/invariant/lib/netpol_assert.py (DSA) and tests/test_netpol_hardening.sh
+    # (kit) assert the CGNAT property over EVERY 0.0.0.0/0 ipBlock in the render
+    # and name this policy in an explicit exception list, so the exception stays
+    # visible and cannot silently spread to a new rule.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -850,6 +888,24 @@ spec:
           protocol: TCP
 {{- if .Values.global.ingestEgressEnabled }}
     # → External data sources (customer systems)
+    #
+    # T-390 DOCUMENTED EXCEPTION — same trade as ai-egress above, and for a
+    # stronger reason: the destination here is a CUSTOMER's own system reached
+    # over their network. On-prem data sources behind CGNAT, or reached across a
+    # Tailscale/WireGuard overlay in 100.64.0.0/10, are an ordinary topology for
+    # exactly this rule. Excluding that range would break real ingest
+    # deployments, so it is left out deliberately rather than by oversight.
+    #
+    # RESIDUAL RISK: on a managed cluster with a CGNAT Pod/Service CIDR this
+    # rule can reach other namespaces' Pods on 443 and 5432. Gated behind
+    # `global.ingestEgressEnabled` (default false); the ingest service is not
+    # yet deployed. Operators whose data sources are all publicly routable
+    # should add 100.64.0.0/10 and 127.0.0.0/8 here.
+    #
+    # Union consequence: this rule is the only 443/5432 ipBlock in dsa-ingest,
+    # so nothing else re-opens or re-closes the range here.
+    #
+    # Named in the exception list of the CGNAT assertion — see ai-egress above.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

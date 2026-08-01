@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# T-388 / T-389 / T-390 — NetworkPolicy hardening.
+# T-388 / T-389 / T-390 + ToB-002/003/006 — NetworkPolicy hardening.
 #
 # Every case here is a POSITIVE CONTROL: it fails against the pre-change tree,
 # or against a tree where the specific guard it names has been removed. A case
@@ -28,31 +28,61 @@
 #          11434 is now restricted to `infrastructure.identityOllamaClients`
 #          on BOTH the egress and the ingress side.
 #
-#   T-390  The `identity-model-registry-egress` ipBlock claimed "public
-#          registries only" while its except-list omitted 100.64.0.0/10 (RFC
-#          6598 CGNAT — where managed-Kubernetes Pod/Service CIDRs and overlay
-#          networks commonly live) and 127.0.0.0/8 (loopback).
+#   T-390  0.0.0.0/0 ipBlocks claimed "public registries only" while their
+#          except-lists omitted 100.64.0.0/10 (RFC 6598 CGNAT — where
+#          managed-Kubernetes Pod/Service CIDRs and overlay networks commonly
+#          live) and 127.0.0.0/8 (loopback). Asserted across the WHOLE render,
+#          not a list of policy names: the first version checked two policies
+#          and four others escaped the property entirely (ToB-001).
+#
+#   ToB-002  The T-388 fix moved each CiliumNetworkPolicy to the overridden
+#          namespace but left its DNS `matchPattern` suffixes naming the OLD
+#          one, so pods could resolve the vacated namespace and not their own.
+#          The fix CREATED that inversion, so it gets its own control.
+#
+#   ToB-003  `--set infrastructure.namespaces[N].name=...` builds a SPARSE list
+#          (Helm nils every other index). That used to produce a raw template
+#          panic naming an unrelated label; it must produce the actionable
+#          "use a values file" message instead.
+#
+#   ToB-006  `infrastructure.enabled=false` deletes every policy in the chart,
+#          default-deny-all included, while the data plane still deploys.
 #
 # The reachability cases evaluate the UNION of all policies in the namespace,
 # which is the only semantics that means anything here: Kubernetes unions
 # NetworkPolicies, so an added restrictive policy cannot subtract a permission
 # an existing blanket rule already granted. A test that inspected only the new
 # policy would pass even if the blanket rules still opened 11434 to everyone.
+#
+# The selector/CIDR logic lives in tests/lib/netpol_assert.py, which is
+# BYTE-IDENTICAL to dual-sandbox-architecture's tests/invariant/lib/netpol_assert.py.
+# Keeping one implementation is deliberate: two hand-maintained copies of a
+# security evaluator drift, and the drift is invisible until it matters.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHART="$ROOT/charts/lucairn"
+ASSERT="$ROOT/tests/lib/netpol_assert.py"
 
 # shellcheck source=lib/test-helpers.sh
 source "$ROOT/tests/lib/test-helpers.sh"
 
+# BH-F3: these are security controls, so they FAIL CLOSED on a missing
+# dependency rather than exiting 0. A skipped guard reads as a pass in CI, which
+# is the failure mode the whole file exists to prevent. CI installs helm
+# explicitly and provisions PyYAML alongside it (.github/workflows/ci.yml).
 if ! command -v helm >/dev/null 2>&1; then
-  echo "SKIP: helm not installed"; exit 0
+  echo "FAIL: helm is required for the netpol hardening checks (not skippable)" >&2
+  exit 1
 fi
 if ! python3 -c "import yaml" >/dev/null 2>&1; then
-  echo "SKIP: python3 pyyaml not available"; exit 0
+  echo "FAIL: python3 with PyYAML is required for the netpol hardening checks." >&2
+  echo "      Install it (pip install pyyaml) — these checks are not skippable:" >&2
+  echo "      silently skipping a security control is worse than a red build." >&2
+  exit 1
 fi
+[ -r "$ASSERT" ] || { echo "FAIL: missing $ASSERT" >&2; exit 1; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -80,18 +110,21 @@ if ! helm template lucairn "$CHART" "${COMMON[@]}" >"$WORK/default.yaml" 2>"$WOR
 fi
 
 # ===========================================================================
-# T-388 case 1 — divergent namespace override must FAIL the render.
+# T-388 case 1 — divergent namespace override must FAIL the render, for EVERY
+# workload sub-chart (BH-F4), not just the one that surfaced the bug.
 # Pre-change this rendered at exit 0 with six identity workloads (sanitizer,
 # ollama-identity, postgres, redis cache, migrate Job, model-pull Job) in a
 # namespace holding zero NetworkPolicies.
 # ===========================================================================
-if helm template lucairn "$CHART" "${COMMON[@]}" \
-     --set sandbox-a.namespace=acme-identity >"$WORK/diverge.yaml" 2>"$WORK/diverge.err"; then
-  fail "T-388: divergent sandbox-a.namespace override still renders (guard absent). Workloads would deploy unpoliced."
-fi
-grep -q "namespace/NetworkPolicy split-brain" "$WORK/diverge.err" \
-  || fail "T-388: render refused, but not by validators.namespaceNetpolAlignment. Got: $(head -2 "$WORK/diverge.err")"
-echo "ok  T-388: divergent namespace override is refused at render time"
+for sub in sandbox-a gateway sandbox-b veil-witness; do
+  if helm template lucairn "$CHART" "${COMMON[@]}" \
+       --set "${sub}.namespace=acme-drift" >/dev/null 2>"$WORK/diverge-$sub.err"; then
+    fail "T-388: divergent ${sub}.namespace override still renders (guard absent). Workloads would deploy unpoliced."
+  fi
+  grep -q "namespace/NetworkPolicy split-brain" "$WORK/diverge-$sub.err" \
+    || fail "T-388: ${sub} render refused, but not by validators.namespaceNetpolAlignment. Got: $(head -2 "$WORK/diverge-$sub.err")"
+done
+echo "ok  T-388: divergent namespace override refused for sandbox-a, gateway, sandbox-b, veil-witness"
 
 # ===========================================================================
 # T-388 case 2 — CONSISTENT override renders, and the policies MOVE WITH the
@@ -113,31 +146,15 @@ infrastructure:
     - {name: dsa-demo, label: demo}
 sandbox-a:
   namespace: acme-identity
+pii-ml:
+  namespace: acme-identity
 YAML
 if ! helm template lucairn "$CHART" "${COMMON[@]}" -f "$WORK/ns-override.yaml" \
      >"$WORK/moved.yaml" 2>"$WORK/moved.err"; then
   echo "T-388: consistent override render FAILED:" >&2; cat "$WORK/moved.err" >&2; exit 1
 fi
-python3 - "$WORK/moved.yaml" <<'PY' || exit 1
-import sys, yaml
-docs=[d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
-pods={}; nps={}
-for d in docs:
-    ns=(d.get('metadata') or {}).get('namespace')
-    if not ns: continue
-    if d.get('kind') in ('Deployment','StatefulSet','Job','DaemonSet'):
-        pods[ns]=pods.get(ns,0)+1
-    if d.get('kind')=='NetworkPolicy':
-        nps[ns]=nps.get(ns,0)+1
-bad=[ns for ns in pods if nps.get(ns,0)==0]
-if bad:
-    print("FAIL: T-388: namespaces with workloads but ZERO NetworkPolicies: %s"%bad, file=sys.stderr); sys.exit(1)
-if pods.get('acme-identity',0)==0 or nps.get('acme-identity',0)==0:
-    print("FAIL: T-388: consistent override did not move workloads+policies to acme-identity "
-          "(workloads=%d policies=%d)"%(pods.get('acme-identity',0),nps.get('acme-identity',0)), file=sys.stderr); sys.exit(1)
-if nps.get('dsa-identity',0)!=0:
-    print("FAIL: T-388: %d policies stranded on the vacated dsa-identity"%nps['dsa-identity'], file=sys.stderr); sys.exit(1)
-PY
+python3 "$ASSERT" moved "$WORK/moved.yaml" \
+  || fail "T-388: consistent override left workloads unpoliced or policies stranded"
 echo "ok  T-388: consistent override moves workloads AND policies together, none stranded"
 
 # ===========================================================================
@@ -160,74 +177,31 @@ grep -q "has no entry with label" "$WORK/nolabel.err" \
 echo "ok  T-388: namespaceFor helper fails closed on a missing label"
 
 # ===========================================================================
+# ToB-003 — a sparse list from `--set ...namespaces[N].name=` must produce the
+# actionable message, not a nil-deref panic blaming an unrelated label.
+# ===========================================================================
+if helm template lucairn "$CHART" "${COMMON[@]}" \
+     --set 'infrastructure.namespaces[1].name=acme-identity' \
+     >/dev/null 2>"$WORK/sparse.err"; then
+  fail "ToB-003: sparse namespaces list rendered — the nil entries were not caught"
+fi
+grep -q "is null. This is what" "$WORK/sparse.err" \
+  || fail "ToB-003: sparse list refused, but without the actionable values-file guidance. Got: $(head -2 "$WORK/sparse.err")"
+grep -q "values FILE" "$WORK/sparse.err" \
+  || fail "ToB-003: message does not prescribe the values-file remediation"
+echo "ok  ToB-003: sparse --set list yields the actionable values-file message"
+
+# The split-brain message must ALSO prescribe a values file rather than the
+# --set form that cannot work.
+grep -q "values FILE" "$WORK/diverge-sandbox-a.err" \
+  || fail "ToB-003: the split-brain message still prescribes an unexecutable --set remediation"
+echo "ok  ToB-003: split-brain message prescribes an executable remediation"
+
+# ===========================================================================
 # T-389 — union reachability of ollama-identity:11434 in the identity namespace.
 # ===========================================================================
-python3 - "$WORK/default.yaml" <<'PY' || exit 1
-import sys, yaml
-pols=[d for d in yaml.safe_load_all(open(sys.argv[1]))
-      if d and d.get('kind')=='NetworkPolicy'
-      and (d.get('metadata') or {}).get('namespace')=='dsa-identity']
-
-def sel_match(sel, labels):
-    if sel is None: return False
-    if sel == {}: return True
-    for k,v in (sel.get('matchLabels') or {}).items():
-        if labels.get(k)!=v: return False
-    for e in (sel.get('matchExpressions') or []):
-        k,op,vals=e['key'],e['operator'],e.get('values',[])
-        lv=labels.get(k)
-        if op=='In' and lv not in vals: return False
-        if op=='NotIn' and lv in vals: return False
-        if op=='Exists' and k not in labels: return False
-        if op=='DoesNotExist' and k in labels: return False
-    return True
-
-def port_allowed(rule, port):
-    ps=rule.get('ports')
-    if ps is None: return True          # no ports key = EVERY port
-    return any(p.get('port')==port for p in ps)
-
-OLLAMA={'app.kubernetes.io/name':'ollama-identity','app.kubernetes.io/part-of':'dsa'}
-PORT=11434
-
-def reaches(labels):
-    eg=ing=False
-    for p in pols:
-        s=p['spec']; t=s.get('policyTypes',[])
-        if 'Egress' in t and sel_match(s.get('podSelector'),labels):
-            for r in (s.get('egress') or []):
-                if not port_allowed(r,PORT): continue
-                for to in (r.get('to') or []):
-                    if 'ipBlock' in to or 'namespaceSelector' in to: continue
-                    if sel_match(to.get('podSelector'),OLLAMA): eg=True
-        if 'Ingress' in t and sel_match(s.get('podSelector'),OLLAMA):
-            for r in (s.get('ingress') or []):
-                if not port_allowed(r,PORT): continue
-                for fr in (r.get('from') or []):
-                    if 'ipBlock' in fr or 'namespaceSelector' in fr: continue
-                    if sel_match(fr.get('podSelector'),labels): ing=True
-    return eg and ing
-
-ALLOWED={
-  'sanitizer (sandbox-a)': {'app.kubernetes.io/name':'sandbox-a','app.kubernetes.io/part-of':'dsa'},
-  'model-pull Job':        {'app.kubernetes.io/name':'ollama-identity-model-pull','dsa.io/model-pull':'true'},
-}
-DENIED={
-  'generic/compromised pod': {'app.kubernetes.io/name':'attacker','app.kubernetes.io/part-of':'dsa'},
-  'postgresql':              {'app.kubernetes.io/name':'sandbox-a-postgresql'},
-  'pii-ml':                  {'app.kubernetes.io/name':'pii-ml'},
-  'redis sanitizer-cache':   {'app.kubernetes.io/name':'sandbox-a-sanitizer-cache'},
-}
-rc=0
-for n,l in ALLOWED.items():
-    if not reaches(l):
-        print("FAIL: T-389: legitimate client %s can NOT reach 11434 — this breaks %s"%(
-              n, "L3 scanning" if 'sandbox-a'==l['app.kubernetes.io/name'] else "model staging"), file=sys.stderr); rc=1
-for n,l in DENIED.items():
-    if reaches(l):
-        print("FAIL: T-389: %s CAN still reach ollama-identity:11434"%n, file=sys.stderr); rc=1
-sys.exit(rc)
-PY
+python3 "$ASSERT" ollama "$WORK/default.yaml" \
+  || fail "T-389: 11434 reachability is wrong — see message above"
 echo "ok  T-389: 11434 reachable only by sanitizer + model-pull Job (union of all policies)"
 
 # T-389 — the client list is the single source for BOTH directions, so a client
@@ -252,33 +226,63 @@ PY
 echo "ok  T-389: egress and ingress read the same client list"
 
 # ===========================================================================
-# T-390 — model-registry except-list covers CGNAT + loopback.
+# T-390 — EVERY 0.0.0.0/0 ipBlock in the render, not a name allowlist.
 # ===========================================================================
-python3 - "$WORK/default.yaml" <<'PY' || exit 1
-import sys, yaml
-REQ={'10.0.0.0/8','172.16.0.0/12','192.168.0.0/16','169.254.0.0/16','100.64.0.0/10','127.0.0.0/8'}
-pols=[d for d in yaml.safe_load_all(open(sys.argv[1]))
-      if d and d.get('kind')=='NetworkPolicy'
-      and d['metadata']['name'] in ('identity-model-registry-egress','model-pull-egress')]
-if not pols:
-    print("FAIL: T-390: no model-registry egress policy rendered", file=sys.stderr); sys.exit(1)
-rc=0
-for p in pols:
-    for r in p['spec'].get('egress') or []:
-        for to in (r.get('to') or []):
-            ib=to.get('ipBlock')
-            if not ib or ib.get('cidr')!='0.0.0.0/0': continue
-            missing=REQ-set(ib.get('except') or [])
-            if missing:
-                print("FAIL: T-390: %s ipBlock except-list missing %s"%(
-                      p['metadata']['name'], sorted(missing)), file=sys.stderr); rc=1
-sys.exit(rc)
-PY
-echo "ok  T-390: model-registry except-lists cover RFC1918 + CGNAT + loopback + metadata"
+python3 "$ASSERT" cgnat "$WORK/default.yaml" \
+  || fail "T-390: an 0.0.0.0/0 except-list is incomplete — see message above"
+echo "ok  T-390: every 0.0.0.0/0 ipBlock covers RFC1918 + CGNAT + loopback + metadata"
+
+# The exception must stay VISIBLE: ai-egress / ingest-egress are excused only
+# because their rationale is written at the rule. Render them and confirm the
+# sweep still passes with them present.
+if ! helm template lucairn "$CHART" "${COMMON[@]}" \
+       --set global.llmEgressEnabled=true --set global.ingestEgressEnabled=true \
+       >"$WORK/egress-on.yaml" 2>"$WORK/egress-on.err"; then
+  echo "T-390: llm/ingest-egress render FAILED:" >&2; cat "$WORK/egress-on.err" >&2; exit 1
+fi
+grep -q "name: ai-egress" "$WORK/egress-on.yaml" \
+  || fail "T-390: ai-egress did not render — the exception arm proved nothing"
+python3 "$ASSERT" cgnat "$WORK/egress-on.yaml" \
+  || fail "T-390: sweep failed with the documented exceptions rendered"
+echo "ok  T-390: documented ai-egress/ingest-egress exceptions are honoured by the sweep"
 
 # T-390 — the IPv4-only caveat must stay documented for dual-stack operators.
 grep -q "IPv4-ONLY" "$ROOT/charts/lucairn/values.yaml" \
   || fail "T-390: the IPv4-only dual-stack caveat was removed from values.yaml"
 echo "ok  T-390: IPv4-only dual-stack caveat documented"
+
+# ===========================================================================
+# ToB-002 — CiliumNetworkPolicy DNS suffixes follow a namespace override.
+# ===========================================================================
+if ! helm template lucairn "$CHART" "${COMMON[@]}" --set global.dnsRestriction=true \
+       -f "$WORK/ns-override.yaml" >"$WORK/cnp.yaml" 2>"$WORK/cnp.err"; then
+  echo "ToB-002: dnsRestriction override render FAILED:" >&2; cat "$WORK/cnp.err" >&2; exit 1
+fi
+python3 "$ASSERT" dnsnames "$WORK/cnp.yaml" \
+  || fail "ToB-002: CNP DNS patterns did not follow the namespace override"
+echo "ok  ToB-002: CNP permits its own NEW namespace, no stale suffixes remain"
+
+# ===========================================================================
+# ToB-006 — infrastructure.enabled=false cannot silently strip the policy layer.
+# ===========================================================================
+if helm template lucairn "$CHART" "${COMMON[@]}" --set infrastructure.enabled=false \
+     >/dev/null 2>"$WORK/infra-off.err"; then
+  fail "ToB-006: infrastructure.enabled=false rendered with the data plane up — every policy silently absent"
+fi
+grep -q "infrastructure.enabled=false but these data-plane sub-charts" "$WORK/infra-off.err" \
+  || fail "ToB-006: render refused, but not by the infrastructure guard: $(head -2 "$WORK/infra-off.err")"
+echo "ok  ToB-006: infrastructure.enabled=false with a live data plane is refused"
+
+# Negative arm: the guard must NOT fire when the data plane is off too.
+if ! helm template lucairn "$CHART" \
+       --set global.skipPullSecretGuard=true \
+       --set infrastructure.enabled=false \
+       --set sandbox-a.enabled=false --set gateway.enabled=false \
+       --set id-bridge.enabled=false --set veil-witness.enabled=false \
+       >/dev/null 2>"$WORK/infra-off2.err"; then
+  grep -q "infrastructure.enabled=false but these data-plane sub-charts" "$WORK/infra-off2.err" \
+    && fail "ToB-006: guard over-fires — refused even with the data plane disabled"
+fi
+echo "ok  ToB-006: policy-free render still allowed when the data plane is off too"
 
 echo "PASS: tests/test_netpol_hardening.sh"

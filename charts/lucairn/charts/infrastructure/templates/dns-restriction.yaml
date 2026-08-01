@@ -35,11 +35,11 @@ spec:
           rules:
             dns:
               # Own namespace
-              - matchPattern: "*.dsa-ai.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "ai") }}.svc.cluster.local"
               # Audit (all services need this)
-              - matchPattern: "*.dsa-audit.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "audit") }}.svc.cluster.local"
               # Bridge (rotation consumer needs to reach Bridge)
-              - matchPattern: "*.dsa-bridge.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "bridge") }}.svc.cluster.local"
 {{- if .Values.global.llmEgressEnabled }}
               # External LLM provider DNS (when hosted LLMs are enabled)
               - matchPattern: "api.anthropic.com"
@@ -70,11 +70,11 @@ spec:
           rules:
             dns:
               # Own namespace
-              - matchPattern: "*.dsa-identity.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}.svc.cluster.local"
               # Bridge (token revocation)
-              - matchPattern: "*.dsa-bridge.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "bridge") }}.svc.cluster.local"
               # Audit
-              - matchPattern: "*.dsa-audit.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "audit") }}.svc.cluster.local"
 ---
 # --- dsa-bridge: can resolve own namespace + identity + ai + audit ---
 apiVersion: cilium.io/v2
@@ -98,10 +98,10 @@ spec:
               protocol: ANY
           rules:
             dns:
-              - matchPattern: "*.dsa-bridge.svc.cluster.local"
-              - matchPattern: "*.dsa-identity.svc.cluster.local"
-              - matchPattern: "*.dsa-ai.svc.cluster.local"
-              - matchPattern: "*.dsa-audit.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "bridge") }}.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "ai") }}.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "audit") }}.svc.cluster.local"
 ---
 # --- dsa-edge (Gateway): can resolve all DSA namespaces ---
 apiVersion: cilium.io/v2
@@ -125,11 +125,11 @@ spec:
               protocol: ANY
           rules:
             dns:
-              - matchPattern: "*.dsa-edge.svc.cluster.local"
-              - matchPattern: "*.dsa-identity.svc.cluster.local"
-              - matchPattern: "*.dsa-bridge.svc.cluster.local"
-              - matchPattern: "*.dsa-ai.svc.cluster.local"
-              - matchPattern: "*.dsa-audit.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "edge") }}.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "bridge") }}.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "ai") }}.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "audit") }}.svc.cluster.local"
 ---
 # --- dsa-audit: can only resolve own namespace (no egress) ---
 apiVersion: cilium.io/v2
@@ -153,5 +153,5 @@ spec:
               protocol: ANY
           rules:
             dns:
-              - matchPattern: "*.dsa-audit.svc.cluster.local"
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "audit") }}.svc.cluster.local"
 {{- end }}

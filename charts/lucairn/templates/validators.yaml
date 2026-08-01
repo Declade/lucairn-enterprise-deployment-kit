@@ -24,3 +24,4 @@
 {{- include "validators.l3ShieldFlagCoherence" $ -}}
 {{- include "validators.l3AirGapWithoutFailClosed" $ -}}
 {{- include "validators.namespaceNetpolAlignment" $ -}}
+{{- include "validators.infrastructureDisabledWithPIIPlane" $ -}}

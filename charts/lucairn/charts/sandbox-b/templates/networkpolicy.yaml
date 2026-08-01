@@ -51,6 +51,14 @@ spec:
         - port: 53
           protocol: TCP
     # External LLM providers (HTTPS) — block private IP ranges
+    # T-390: 100.64.0.0/10 (RFC 6598 CGNAT) and 127.0.0.0/8 excluded here.
+    # SCOPE: this binds in the DEFAULT configuration. With
+    # `global.llmEgressEnabled=true` the infrastructure sub-chart's `ai-egress`
+    # rule selects these same pods WITHOUT the CGNAT exclusion, and Kubernetes
+    # unions policies, so the permissive rule wins and CGNAT becomes reachable
+    # again. That is a documented trade at ai-egress (operators may host a model
+    # gateway on a tailnet), not a gap here — but this exclusion must not be
+    # read as an unconditional guarantee.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -58,6 +66,8 @@ spec:
               - 10.0.0.0/8
               - 172.16.0.0/12
               - 192.168.0.0/16
+              - 100.64.0.0/10   # T-390: RFC 6598 CGNAT — managed-k8s Pod/Service CIDRs, overlay networks
+              - 127.0.0.0/8     # T-390: loopback
               - 169.254.0.0/16
       ports:
         - port: 443

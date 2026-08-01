@@ -38,7 +38,7 @@ jobs:
       # and test_sbom.sh assertion 7 each use a local shim/stub that does not
       # require the real binary.  The full fetch+verify path (real cosign +
       # GHCR) is covered by the post-merge edge-verify, not the unit harness.
-      - name: Install CI tools (helm v3.16.4, kubeconform v0.7.0, strace)
+      - name: Install CI tools (helm v3.16.4, kubeconform v0.7.0, strace, pyyaml)
         run: |
           TOOL_DIR="$RUNNER_TEMP/bin"
           mkdir -p "$TOOL_DIR"
@@ -48,6 +48,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends strace
           command -v strace
+
+          # tests/test_netpol_hardening.sh evaluates NetworkPolicy label
+          # selectors and CIDR sets, which grep cannot do correctly. It FAILS
+          # CLOSED without PyYAML rather than skipping (a skipped security
+          # control reads as a pass), so the dependency is provisioned here
+          # instead of being assumed from the runner image.
+          sudo apt-get install -y --no-install-recommends python3-yaml
+          python3 -c 'import yaml; print("pyyaml", yaml.__version__)'
 
           # helm v3.16.4 — linux-amd64
           curl -fsSL https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz \

@@ -16,8 +16,23 @@
   exit 0.
 
   Routing every policy namespace through this helper makes
-  `infrastructure.namespaces` the one place a namespace name is written, so an
-  operator override moves the policies WITH the pods.
+  `infrastructure.namespaces` the one place a namespace name is written IN THIS
+  SUB-CHART's rendered output, so an operator override moves the policies WITH
+  the pods.
+
+  SCOPE OF THAT CLAIM (ToB-002 — the first version of this comment overstated
+  it). It is NOT true that a namespace name is written in only one place
+  repo-wide. Two other classes of literal exist and are deliberately in scope
+  here or explicitly out of it:
+    - CiliumNetworkPolicy DNS suffixes in dns-restriction.yaml embed the
+      namespace inside a match pattern (`*.<ns>.svc.cluster.local`) rather than
+      in `metadata.namespace`. Those are ALSO routed through this helper. They
+      had to be: with an override, the CNP correctly moved to the new namespace
+      and then permitted only the OLD namespace's DNS names, so the sanitizer
+      could not resolve its own postgres or ollama — an availability inversion
+      that the metadata-only fix CREATED.
+    - Each workload sub-chart's own `.Values.namespace`, which this helper
+      cannot see (below).
 
   Sub-charts cannot read each other's values, so this helper cannot see
   `sandbox-a.namespace` directly. The remaining half of the invariant — that
@@ -36,9 +51,17 @@
 {{- define "infrastructure.namespaceFor" -}}
 {{- $label := .label -}}
 {{- $found := "" -}}
-{{- range .root.Values.namespaces -}}
-{{- if eq (toString .label) $label -}}
-{{- $found = (toString .name) -}}
+{{- range $i, $entry := .root.Values.namespaces -}}
+{{- /* ToB-003: `--set infrastructure.namespaces[1].name=x` builds a SPARSE
+       list — Helm fills the untouched indices with nil. Without this guard the
+       range dereferences nil and Helm raises a raw template panic naming
+       whichever label happened to be looked up first, which tells the operator
+       nothing about what they actually did wrong. Fail with the real cause. */ -}}
+{{- if not $entry -}}
+{{- fail (printf "infrastructure.namespaces[%d] is null. This is what `--set infrastructure.namespaces[N].name=...` produces: Helm rebuilds the list with only index N populated and every other entry nil. Namespace overrides must be supplied as a values FILE containing the COMPLETE list (every entry keeping both `name` and `label`), e.g.\n\n  infrastructure:\n    namespaces:\n      - {name: dsa-edge, label: edge}\n      - {name: my-identity, label: identity}\n      - ... all remaining entries ...\n\nthen `helm ... -f my-namespaces.yaml`. Remember to set the matching workload sub-chart namespace too (e.g. sandbox-a.namespace), or validators.namespaceNetpolAlignment will refuse the render." $i) -}}
+{{- end -}}
+{{- if eq (toString $entry.label) $label -}}
+{{- $found = (toString $entry.name) -}}
 {{- end -}}
 {{- end -}}
 {{- if eq $found "" -}}
