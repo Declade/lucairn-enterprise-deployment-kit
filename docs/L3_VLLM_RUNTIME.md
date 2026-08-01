@@ -16,6 +16,15 @@ This kit ships an **opt-in `vllm-l3` profile** that serves the same L3 model on
 > recommended operating point (max win with output matched to sequential). See
 > the throughput benchmark findings for the full table.
 
+> **Changing the L3 MODEL is a different exercise from changing the L3
+> RUNTIME.** This document covers the runtime (Ollama → vLLM, same weights).
+> Swapping the *weights* — on either lane — is gated on a per-artifact recall
+> gate and on runtime version floors this kit does not currently meet:
+> [`L3_MODEL_UPGRADE.md`](L3_MODEL_UPGRADE.md). In particular, the vLLM image
+> pinned below (v0.10.2) cannot load the gemma-4-31B-it family at all (that
+> family's official vLLM recipe requires ≥ 0.19.1), and the 24 GB-card artifact
+> candidates are researched in that document's § 3.
+
 ---
 
 ## ⛔ Hard requirements (read before enabling)

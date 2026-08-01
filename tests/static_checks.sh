@@ -56,6 +56,7 @@ assert_no_executable_rg() {
     "$ROOT/tests/test_enterprise_mtls_kind_cleanup.sh" \
     "$ROOT/tests/static_checks.sh" \
     "$ROOT/tests/test_l3_split_pool_preflight.sh" \
+    "$ROOT/tests/test_l3_model_upgrade_gate.sh" \
     "$ROOT/tests/test_enterprise_mtls_helm.sh" \
     "$ROOT/tests/test_enterprise_mtls_helm_required.sh" \
     "$ROOT/tests/test_enterprise_mtls_production_values.sh"; do
@@ -138,6 +139,7 @@ if grep -Eq 'Quickstart \(30 seconds|30-second.*llama\.cpp|llama\.cpp.*30-second
   exit 1
 fi
 bash -n "$ROOT/tests/test_l3_split_pool_preflight.sh"
+bash -n "$ROOT/tests/test_l3_model_upgrade_gate.sh"
 bash -n "$ROOT/tests/test_backup_helm.sh"
 bash -n "$ROOT/tests/test_sec_hardening.sh"
 bash -n "$ROOT/tests/test_sbom.sh"

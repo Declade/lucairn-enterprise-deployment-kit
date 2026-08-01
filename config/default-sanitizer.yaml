@@ -104,6 +104,24 @@ sanitizer:
   llm_scan:
     enabled: true
     ollama_url: http://ollama:11434
+    # ⛔ DO NOT BUMP WITHOUT THE PER-ARTIFACT RECALL GATE (T-370).
+    #
+    #   gemma4:31b requires the per-artifact recall gate (T-370 / PRD
+    #   prd-2026-07-31-l3-rebuild-recoverable-truncation-gemma4.md Slice 3) to
+    #   pass on YOUR runtime's artifact before flipping this value; the
+    #   2026-07-31 validation covered the Ollama Q4_K_M lane at ceiling on a
+    #   saturated corpus — it is not transferable.
+    #
+    # Quantization is part of the artifact: the Ollama Q4_K_M GGUF and a vLLM
+    # AWQ / W4A16 / FP8 build of the same upstream weights are DIFFERENT
+    # artifacts. Nothing enforces this gate — read docs/L3_MODEL_UPGRADE.md
+    # before changing this line (§ 1 lists the kit-side runtime blockers, § 4
+    # the upgrade + rollback procedure and the fail-closed pull window).
+    #
+    # This key is also load-bearing in a way that is easy to miss: the
+    # sanitizer IMAGE's own default for llm_scan.model is no longer
+    # qwen2.5:7b, so it is THIS explicit pin that keeps a newer sanitizer
+    # image serving the model the kit actually stages. Do not delete it.
     model: qwen2.5:7b
     # ── Fast vLLM L3 runtime (OPT-IN, native-Linux GPU only — see docs/L3_VLLM_RUNTIME.md) ──
     # Ollama above stays the default + universal fallback. To route L3 through the

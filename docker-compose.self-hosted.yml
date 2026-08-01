@@ -493,6 +493,19 @@ services:
   # (ollama-identity-model-store) via a one-time throwaway egress-enabled
   # ollama, then restart this service to load it. See INSTALL.md
   # § "Pre-stage the L3 deep PII-shield model" for the exact procedure.
+  #
+  # ⛔ CHANGING THE L3 MODEL (T-370): the model name lives in
+  # config/default-sanitizer.yaml (`llm_scan.model`), not here, and changing it
+  # is gated on a per-artifact recall gate that has NOT been run for any other
+  # model. The image pin below is a second, independent blocker: ollama 0.6.2
+  # predates both Gemma-4 support (0.22.0) and the `think` request field the
+  # sanitizer uses to suppress reasoning — and Go's encoding/json silently
+  # DROPS unknown request fields, so an old build accepts the request, returns
+  # 200, keeps reasoning, and L3 fail-closes on 100% of calls with nothing
+  # pointing at this pin. The model store is an unbounded named volume, so the
+  # constraint on this lane is HOST DISK (~20 GB for a 31B-class model, ~25 GB
+  # during a changeover while the old blob is still staged). Read
+  # docs/L3_MODEL_UPGRADE.md before touching any of it.
   ollama-identity:
     # Default pinned to the recorded manifest digest (see the AI-plane `ollama`
     # service above) so the deployed image matches the pinned-and-verified
@@ -554,7 +567,20 @@ services:
   # `LUCAIRN_L3_SPLIT_POOL=true` in customer.env for `bin/lucairn doctor`.
   #
   # Serves the STOCK `Qwen/Qwen2.5-7B-Instruct-AWQ` (the AWQ equivalent of the
-  # DSA-default `qwen2.5:7b`). It does NOT yet serve the custom-trained
+  # DSA-default `qwen2.5:7b`).
+  #
+  # ⛔ MODEL BUMP ON THIS LANE (T-370) is blocked twice over. (1) The image is
+  # pinned at vLLM v0.10.2; the official vLLM recipe for the gemma-4-31B-it
+  # family requires vLLM >= 0.19.1, so the artifact cannot even load here
+  # today. (2) The per-artifact recall gate has not been run on ANY vLLM
+  # artifact for that family — Q4_K_M Ollama numbers do not transfer to an
+  # AWQ / W4A16 / FP8 build. docs/L3_MODEL_UPGRADE.md § 3 records the
+  # researched candidates (only 4-bit W4A16/AWQ is even a candidate on a 24 GB
+  # card, and marginally: the recipe's own FP8 pick does not fit and its NVFP4
+  # pick requires Blackwell) and § 3 "What a vLLM-lane bump would touch" lists
+  # the flags + the image-manifest revision pin that must move together.
+  #
+  # It does NOT yet serve the custom-trained
   # Enterprise "level-3 PII shield" (that is a LoRA fine-tune deliverable TODAY
   # on Ollama only; the custom→vLLM conversion is a filed follow-up). See
   # docs/L3_VLLM_RUNTIME.md § "What this runtime does NOT serve yet".

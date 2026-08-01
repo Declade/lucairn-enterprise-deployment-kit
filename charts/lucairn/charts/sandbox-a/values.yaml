@@ -138,8 +138,25 @@ sanitizer:
   #
   # qwen2.5:7b is the model this chart's sanitizer config already requested, so
   # this change moves the TRANSPORT and PROVENANCE, not the detection
-  # behaviour. Moving to gemma4 is T-370 and is gated on its own recall gate —
-  # do not bump this value ahead of that gate.
+  # behaviour.
+  #
+  # ⛔ DO NOT BUMP THIS VALUE WITHOUT THE PER-ARTIFACT RECALL GATE (T-370).
+  #
+  #   gemma4:31b requires the per-artifact recall gate (T-370 / PRD
+  #   prd-2026-07-31-l3-rebuild-recoverable-truncation-gemma4.md Slice 3) to
+  #   pass on YOUR runtime's artifact before flipping this value; the
+  #   2026-07-31 validation covered the Ollama Q4_K_M lane at ceiling on a
+  #   saturated corpus — it is not transferable.
+  #
+  # Quantization is part of the artifact: the Ollama Q4_K_M GGUF and a vLLM
+  # AWQ / W4A16 / FP8 build of the same upstream weights are DIFFERENT
+  # artifacts and recall does not carry across them. Nothing in this chart
+  # enforces the gate — no validator, no doctor check. Read
+  # docs/L3_MODEL_UPGRADE.md BEFORE changing this value: § 1 lists four
+  # further kit-side blockers that make a naive bump a silent 100% L3 outage
+  # (the pinned ollama image is too old both to run the model AND to honour
+  # the reasoning-suppression field), and § 2 gives the storage / memory /
+  # deadline sizing that a 20GB model needs.
   #
   # Air-gapped installs: point this at an internal mirror reference (e.g.
   # `registry.internal.example/library/qwen2.5:7b`) or pre-seed the
@@ -149,6 +166,15 @@ sanitizer:
   # multi-GB; a stalled registry connection would otherwise leave the Job
   # Running forever. Generous by design — raise it on a slow link rather than
   # letting a real pull get killed.
+  #
+  # SIZED FOR THE SHIPPED MODEL. qwen2.5:7b is ~4.7 GB, so 3600 s covers any
+  # link sustaining ~11.4 Mbit/s. The Job also spends up to 300 s of this same
+  # budget waiting for ollama-identity to answer
+  # (templates/ollama-identity-model-job.yaml:100-108), and the deadline bounds
+  # the WHOLE Job across all `backoffLimit: 3` retries — a retry does not reset
+  # the clock. A 20 GB model would need ~48.5 Mbit/s sustained to fit 3600 s;
+  # raise this to 10800 alongside any large-model bump on a slower link. Full
+  # table: docs/L3_MODEL_UPGRADE.md § 2.5.
   llmScanModelPullDeadlineSeconds: 3600
   # FIX-B (full-stack-test-results-2026-05-29): L3 fail-mode for the sanitizer.
   # true = fail-CLOSED (503 l3_scrubber_unavailable when the L3 deep PII shield
@@ -377,6 +403,33 @@ ollamaIdentity:
     # digest-verified. Leave empty to pin by tag only.
     digest: "sha256:74a0929e1e082a09e4fdeef8594b8f4537f661366a04080e600c90ea9f712721"
     pullPolicy: IfNotPresent
+    # ⛔ VERSION FLOOR FOR ANY LARGE-MODEL BUMP (T-370). 0.6.2 predates BOTH
+    # Gemma-4 model support (landed in ollama 0.22.0, April 2026) AND the
+    # top-level `think` request field the sanitizer uses to suppress reasoning.
+    # The second is the dangerous one: ollama's server is Go, encoding/json
+    # SILENTLY DROPS unknown request fields, so an old build returns 200 while
+    # the model keeps reasoning — a thinking model then returns EMPTY content,
+    # the sanitizer's verdict decoder refuses to read that as "no PII found",
+    # and L3 fail-closes on 100% of calls with nothing pointing at this pin.
+    # Bumping sanitizer.llmScanModel to a thinking model REQUIRES bumping this
+    # image (tag AND digest here, the compose default, and image-manifest.yaml
+    # pii_plane.ollama-identity) first. See docs/L3_MODEL_UPGRADE.md § 1 B1.
+  # Persistent model store for the L3 shield, mounted at /root/.ollama.
+  #
+  # DEFAULT UNCHANGED: 10Gi is exactly what this chart has always rendered for
+  # the volumeClaimTemplates entry; exposing it as a value changes no install.
+  # It exists because the size was previously hardcoded, which made a larger L3
+  # model unreachable from values alone.
+  #
+  # SIZING: qwen2.5:7b (~4.4 GiB) fits 10Gi. A 20 GB model does NOT — and a
+  # model CHANGE needs room for BOTH blobs at once, because `ollama pull` adds
+  # and nothing evicts (the old blob is also the fast rollback path). Guidance
+  # for a 20 GB model is 40Gi. ⚠️ volumeClaimTemplates is IMMUTABLE on an
+  # existing StatefulSet — changing this on a live install renders a spec
+  # Kubernetes rejects, so size it at INSTALL time or follow the
+  # orphan-delete/PVC-expand procedure in docs/L3_MODEL_UPGRADE.md § 2.1.
+  persistence:
+    size: 10Gi
   # FAIL-01 demo warmth (PRD prd-2026-05-29-fail-safe-scrubber, §6): keep the
   # L3 scan model resident so the new fail-CLOSED block can never fire from a
   # cold-start hiccup mid-demo. "-1" pins loaded models indefinitely; set a
@@ -389,6 +442,19 @@ ollamaIdentity:
   # the qwen2.5:7b model resident; lower it only if you mirror a smaller L3
   # model. (The OOMKill BLOCKER from the full-stack test was on sandbox-b's
   # bundled ollama at 2Gi, fixed in that subchart too.)
+  #
+  # ⚠️ THIS CHART REQUESTS NO GPU (T-370). There is no `nvidia.com/gpu`
+  # resource and no runtimeClassName anywhere under charts/lucairn/charts/
+  # sandbox-a/, so on a stock cluster ollama-identity runs CPU-only and the
+  # model's weights are resident in HOST RAM, not VRAM. That is survivable for
+  # a ~4.4 GiB model under this 10Gi limit and is NOT survivable for a ~18.6
+  # GiB one: the container is OOMKilled during load, `ollama list` stops
+  # answering, the readiness probe fails, and with global.l3Required=true the
+  # gateway fail-closes on every request. A large-model bump needs GPU
+  # scheduling added to this chart, or a CPU-sized limit above the resident
+  # model size. The kit has NO measured host-RAM figure for a 31B-class model
+  # on either path — measure it under load as part of the T-370 gate rather
+  # than copying a number. docs/L3_MODEL_UPGRADE.md § 2.2-2.3.
   resources:
     requests:
       cpu: 500m
