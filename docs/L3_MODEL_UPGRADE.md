@@ -55,9 +55,9 @@ The kit pins `ollama/ollama:0.6.2` by tag **and** digest in both lanes:
 
 - Helm: `charts/lucairn/charts/sandbox-a/values.yaml` → `ollamaIdentity.image.tag`
   / `.digest` (rendered at
-  `charts/lucairn/charts/sandbox-a/templates/ollama-identity-statefulset.yaml:32`,
+  `charts/lucairn/charts/sandbox-a/templates/ollama-identity-statefulset.yaml:30`,
   and re-used as the model-pull CLI client at
-  `charts/lucairn/charts/sandbox-a/templates/ollama-identity-model-job.yaml:81`)
+  `charts/lucairn/charts/sandbox-a/templates/ollama-identity-model-job.yaml:101`)
 - Compose: `docker-compose.self-hosted.yml` `ollama-identity.image`
   (`${OLLAMA_IMAGE:-ollama/ollama:0.6.2@sha256:74a0929e…}`)
 - Release record: `image-manifest.yaml` → `pii_plane.ollama-identity`
@@ -190,7 +190,7 @@ weights are resident in **host RAM**, not VRAM.
 This is survivable for a ~4.4 GiB model under a 10Gi limit. It is not
 survivable for a ~18.6 GiB one: the container is OOMKilled during load,
 `ollama list` stops answering, the readiness probe
-(`ollama-identity-statefulset.yaml:66-70`) fails, and — with `global.l3Required:
+(`ollama-identity-statefulset.yaml:65-69`) fails, and — with `global.l3Required:
 true` — the sanitizer fail-closes on every request.
 
 The compose lane is different: `model-runtime-vllm-l3` reserves an NVIDIA
@@ -205,7 +205,7 @@ out of scope here and neither is shipped.
 
 The current limit is `10Gi`
 (`charts/lucairn/charts/sandbox-a/values.yaml`, rendered at
-`ollama-identity-statefulset.yaml:76-79`). A 24GB-card-class deployment keeps
+`ollama-identity-statefulset.yaml:78-80`). A 24GB-card-class deployment keeps
 the weights in VRAM and needs far less host RAM than the CPU path — but **the
 kit has no measured host-RAM figure for this model under Ollama, on either
 path.** Stating one would be a guess.
@@ -249,12 +249,12 @@ defective budget.
 ### 2.5 Model-pull deadline
 
 The model-pull Job is bounded by `activeDeadlineSeconds`
-(`ollama-identity-model-job.yaml:37`, value
+(`ollama-identity-model-job.yaml:44`, value
 `sanitizer.llmScanModelPullDeadlineSeconds`, default `3600`). Two facts make the
 default marginal for a 20GB pull:
 
 - the Job first waits up to **300 s** for `ollama-identity` to answer
-  (`ollama-identity-model-job.yaml:100-108`, 150 iterations × 2 s), and that
+  (`ollama-identity-model-job.yaml:119-128`, 150 iterations × 2 s), and that
   wait is inside the same deadline;
 - `activeDeadlineSeconds` bounds the **whole Job**, across all `backoffLimit: 3`
   retries (`:31`) — a retry does not reset the clock.
@@ -275,7 +275,11 @@ gemma4 option raises the required sustained link by ~4.3×.
 **Operator knob:** set
 `sandbox-a.sanitizer.llmScanModelPullDeadlineSeconds: 10800` (3 h) alongside the
 model bump on any link that cannot be *shown* to sustain ~50 Mbit/s. 10800 s
-covers ~14.8 Mbit/s. Raising it is free — the deadline exists to stop a *stalled*
+covers **~15.24 Mbit/s** — apply the same 300 s deduction the table above uses:
+the transfer budget is 10800 − 300 = 10,500 s, and 160,000 / 10,500 ≈ 15.24. (A
+14.8 Mbit/s link would need 10,811 s of transfer + 300 s of wait = 11,111 s and
+the Job would be **killed** 311 s short. Deduct the wait, every time.) Raising
+the value is free — the deadline exists to stop a *stalled*
 pull hanging forever, not to enforce a service level.
 
 Air-gapped installs are unaffected: with
@@ -343,9 +347,22 @@ this now.**
   `--max-model-len`, `--gpu-memory-utilization`, and the vLLM image pin (B2).
 - `image-manifest.yaml` → `pii_plane`: the vLLM image digest, plus a model
   entry whose `revision:` must byte-equal the compose `--revision`.
-  `bin/lucairn doctor --strict` enforces that equality (check B-E2, implemented
-  at `bin/lucairn:1937-1980`) — a bump that touches only one side fails closed
-  there.
+  `bin/lucairn doctor --strict` compares the two (check B-E2, implemented at
+  `bin/lucairn:1937-1980`).
+
+  **⚠️ That check does NOT survive renaming the manifest entry.** Its extractor
+  anchors on the **literal entry name** `qwen2.5-7b-awq-model:`
+  (`bin/lucairn:1962`). Rename that key as part of a model bump — the obvious
+  thing to do — and the extraction returns empty, which the check reports as a
+  **warn and returns 0, even under `--strict`**. So it is *not* a fail-closed
+  backstop for a one-sided bump; it silently stops checking.
+
+  **The manifest key name is load-bearing.** Either keep the existing
+  `qwen2.5-7b-awq-model:` key when swapping the artifact underneath it, or
+  update the anchor at `bin/lucairn:1962` **in the same change** as the rename.
+  Doing neither loses the only compose↔manifest revision check without any
+  signal. (Not fixed here — this document is docs-only; filed as a follow-up on
+  T-370.)
 - The AWQ builds' cards pin an exact HF commit; pin the **gated** revision, not
   a branch.
 
@@ -373,7 +390,7 @@ The model-pull Job is named `ollama-identity-model-pull-r{{ .Release.Revision }}
 (`ollama-identity-model-job.yaml:25`). Every `helm upgrade` increments the
 release revision, so each upgrade creates a **new** Job that re-runs
 `ollama pull` for whatever `sanitizer.llmScanModel` now says
-(`:109-110`). That is deliberate: a fixed-name Job would be rejected as
+(`:129-130`). That is deliberate: a fixed-name Job would be rejected as
 immutable and the chart could claim a new model while the cluster kept serving
 the old one.
 
@@ -384,6 +401,13 @@ helm upgrade lucairn charts/lucairn \
   --set sandbox-a.ollamaIdentity.persistence.size=40Gi \
   ... (your existing values)
 ```
+
+**Air-gapped installs (`global.identityModelRegistryEgress: false`) have no
+pull Job at all** — it is not rendered (`ollama-identity-model-job.yaml:20`), so
+`helm upgrade` flips the ConfigMap to the new model name and **nothing ever
+fetches it**. The window in § 4.3 is then unbounded until a human pre-seeds the
+PVC. Pre-seed *before* the upgrade on that path; it is not optional sequencing,
+it is the only sequencing that terminates.
 
 The L3 shield itself is enabled by a **pair** of values that the umbrella
 validator requires to move together: `sandbox-a.sanitizer.llmScanEnabled=true`
@@ -397,7 +421,7 @@ never load a model. `values-test.yaml` sets both.
 immutability warning in § 2.1. Size it at install time or do the orphan-delete
 dance before this upgrade, not during it.
 
-The same value drives two objects that must agree: the pull Job (`:109-110`)
+The same value drives two objects that must agree: the pull Job (`:129-130`)
 and the sanitizer's config (`sanitizer-configmap.yaml:119`,
 `llm_scan.model`). They read the same key, so they cannot drift — but that is
 also precisely what creates the window in § 4.3.
@@ -417,9 +441,26 @@ duration of that pull:
   certificate minted in the window is honestly downgraded (`llm_pii_scan`
   dropped from `layers_active`).
 
-Neither is data loss; both are visible. **Expected duration = the pull time**,
-i.e. § 2.5's table: minutes on a 1 Gbit link, ~27 minutes at 100 Mbit/s,
-and *longer than the Job's own deadline* below ~48 Mbit/s.
+Neither is data loss; both are visible. **Expected duration = the pull time**:
+
+| Path | Window duration | Symptom |
+|---|---|---|
+| Egress-enabled, 1 Gbit/s | ~160 s | 503s (or downgraded certs) for that long |
+| Egress-enabled, 100 Mbit/s | ~27 min | as above |
+| Egress-enabled, < ~48 Mbit/s | longer than the Job's own deadline — the Job is **killed**, the model never lands, and the window does not end on its own | as above, until the deadline is raised and the upgrade re-run |
+| **Air-gapped** (`identityModelRegistryEgress: false`) | **unbounded — until a human pre-seeds the PVC** | **hard 503 on every request**, never a downgrade |
+
+The air-gap row is the sharp one, and it is sharper than it looks. On that path
+the pull Job is not rendered at all
+(`ollama-identity-model-job.yaml:20`), so nothing fetches the new model — and
+`validators.l3AirGapWithoutFailClosed`
+(`charts/lucairn/templates/_validators.tpl:855-870`, invoked from
+`validators.yaml:25`) **refuses to render** the air-gap path unless
+`global.l3Required=true`. That guard is correct and deliberate — it exists so a
+missed pre-seed cannot silently run shield-less — but it means the air-gap
+upgrade window is **always** the hard-503 variant. Mitigation 3 below (flip
+`l3Required` false for the window) is **not available** there: the render fails.
+Pre-staging is the only option on the air-gap path.
 
 Mitigations, in order of preference:
 
@@ -434,7 +475,8 @@ Mitigations, in order of preference:
 3. Temporarily set `global.l3Required: false` for the window — this trades a
    hard outage for honestly-downgraded certificates. It is a **deliberate
    posture change**: it must be agreed with the customer, and flipped back
-   immediately afterwards.
+   immediately afterwards. **Unavailable on the air-gapped path** — the
+   umbrella validator fails the render for that combination (see above).
 
 ### 4.4 Verifying the pull completed
 
@@ -541,3 +583,18 @@ document. Sanitizer (`services/sanitizer/**`) line numbers are against
 `dual-sandbox-architecture` `origin/main` @ `b9b6ccdbd`, re-grepped 2026-08-01;
 they move on every sanitizer merge, so re-derive rather than trusting them if a
 citation does not resolve.
+
+**⚑ SAME-REPO citations rot from the very commit that writes them.** This is
+not a cross-repo hazard only. Measured twice on this change set: (1) the ten
+`llm_scan.py:*` references PR #104 shipped had already drifted by the time
+T-370 read them; (2) eight of the kit-local citations *in this document and in
+the Job template* were invalidated by **this PR's own comment insertions** —
+adding a 6-line comment above `activeDeadlineSeconds` moved it 37 → 44 and
+pushed every line below it down, including citations written minutes earlier in
+the same editing session. Three of those eight were not caught by review and
+turned up only on re-derivation.
+
+Practical rule: after any edit that inserts lines, **re-grep every citation
+into the edited file, including your own** — write the citation last, or verify
+it last. A citation is a claim about the current tree, and inserting a comment
+is enough to falsify it.

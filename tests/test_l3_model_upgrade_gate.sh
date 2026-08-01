@@ -6,11 +6,21 @@
 # they hold:
 #
 #   A. THE DEFAULT DID NOT MOVE. The kit's L3 model is `qwen2.5:7b` on every
-#      surface — Helm values, the rendered sanitizer ConfigMap, the rendered
-#      model-pull Job, the Compose sanitizer config, and the Compose vLLM
-#      lane. T-370 PREPARES a model bump; it must not perform one, and no
-#      later edit may quietly perform one either. A gemma4 model name may
-#      appear only inside COMMENTS/docs, never as an active value.
+#      surface — child-chart values, the rendered sanitizer ConfigMap, the
+#      rendered model-pull Job, the Compose sanitizer config, the Compose vLLM
+#      lane, AND every umbrella values file. T-370 PREPARES a model bump; it
+#      must not perform one, and no later edit may quietly perform one either.
+#      A gemma4 model name may appear only inside COMMENTS/docs, never as an
+#      active value.
+#
+#      SCOPE NOTE (review F1, and the reason this suite's first version was
+#      falsifiable): the renders below use the CHILD chart in isolation, which
+#      by construction CANNOT see an override written at the umbrella level.
+#      `sandbox-a.sanitizer.llmScanModel` in charts/lucairn/values*.yaml flips
+#      both consumers on a real install while every child-chart assertion stays
+#      green, so the umbrella files are asserted directly (unset-or-shipped)
+#      and are in the gemma-scan list. A suite that renders one chart must say
+#      which chart, or its header is a claim it does not test.
 #
 #   B. THE STORE SIZE IS REACHABLE FROM VALUES, AT AN UNCHANGED DEFAULT.
 #      `ollama-identity`'s volumeClaimTemplates size used to be hardcoded
@@ -136,6 +146,24 @@ check_eq "chart values sanitizer.llmScanModel" \
   "$SHIPPED_OLLAMA_MODEL" \
   "$(yq '.sanitizer.llmScanModel' "$CHILD_CHART/values.yaml")"
 
+# UMBRELLA OVERRIDE PATH (review F1). Everything else in this section renders
+# the CHILD chart in isolation, which cannot see an override written at the
+# UMBRELLA level. `sandbox-a.sanitizer.llmScanModel` in charts/lucairn/values.yaml
+# or any values-*.yaml flips BOTH consumers (the pull Job and the sanitizer
+# ConfigMap) on a real umbrella install while every child-chart assertion above
+# stays green. Assert the key is unset-or-shipped in every umbrella values file.
+# Unset is the shipped state (the child default supplies the model), so an
+# explicit value is only acceptable when it IS the shipped model.
+for f in "$ROOT"/charts/lucairn/values*.yaml; do
+  rel="${f#"$ROOT"/}"
+  got="$(yq '.["sandbox-a"].sanitizer.llmScanModel // "«unset»"' "$f")"
+  if [ "$got" = "«unset»" ] || [ "$got" = "$SHIPPED_OLLAMA_MODEL" ]; then
+    pass "umbrella $rel sandbox-a.sanitizer.llmScanModel is $got"
+  else
+    fail "umbrella $rel overrides sandbox-a.sanitizer.llmScanModel to '$got'"
+  fi
+done
+
 check_eq "Compose sanitizer config llm_scan.model" \
   "$SHIPPED_OLLAMA_MODEL" \
   "$(yq '.sanitizer.llm_scan.model' "$ROOT/config/default-sanitizer.yaml")"
@@ -174,7 +202,8 @@ active_gemma_hits=""
 for f in "$CHILD_CHART/values.yaml" \
          "$ROOT/config/default-sanitizer.yaml" \
          "$ROOT/docker-compose.self-hosted.yml" \
-         "$ROOT/image-manifest.yaml"; do
+         "$ROOT/image-manifest.yaml" \
+         "$ROOT"/charts/lucairn/values*.yaml; do
   hits="$(sed -e 's/[[:space:]]#.*$//' -e 's/^[[:space:]]*#.*$//' "$f" \
     | grep -in "gemma" || true)"
   if [ -n "$hits" ]; then
@@ -214,6 +243,51 @@ for section in "The gate" "vLLM-lane artifact candidates" \
     fail "runbook missing section: $section"
   fi
 done
+
+echo ""
+echo "Kit-local citations in the runbook still resolve"
+
+# Review F4, mechanized. The runbook's `file:line` citations rotted THREE times
+# during this change set — twice from comment insertions in the very commits
+# that wrote them. A prose "re-derive these" warning demonstrably does not hold;
+# this does. Each row pins a cited line to a token that must appear ON it, so
+# any edit that shifts the line turns the suite red instead of leaving a
+# confidently-wrong citation in a customer-facing document.
+#
+# Add a row whenever the runbook gains a kit-local citation.
+JOB="$CHILD_CHART/templates/ollama-identity-model-job.yaml"
+STS="$CHILD_CHART/templates/ollama-identity-statefulset.yaml"
+VAL="$ROOT/charts/lucairn/templates/_validators.tpl"
+VALY="$ROOT/charts/lucairn/templates/validators.yaml"
+
+check_citation() {
+  local file="$1" line="$2" needle="$3" label="$4" got
+  got="$(sed -n "${line}p" "$file")"
+  if printf '%s' "$got" | grep -qF -- "$needle"; then
+    pass "$label -> ${file##*/}:$line"
+  else
+    fail "$label: ${file##*/}:$line no longer contains '$needle' (line reads: $(printf '%s' "$got" | head -c 90))"
+  fi
+}
+
+check_citation "$JOB"  20  "identityModelRegistryEgress"           "air-gap render gate"
+check_citation "$JOB"  25  "ollama-identity-model-pull-r"          "revision-suffixed Job name"
+check_citation "$JOB"  44  "activeDeadlineSeconds:"                "pull deadline"
+check_citation "$JOB" 101  "Values.ollamaIdentity.image.repository" "model-pull CLI image"
+check_citation "$JOB" 119  "Waiting for ollama-identity"           "readiness wait (start)"
+check_citation "$JOB" 128  "done;"                                 "readiness wait (end)"
+check_citation "$JOB" 129  "echo \"Pulling"                        "pull echo"
+check_citation "$JOB" 130  "ollama pull"                           "pull command"
+check_citation "$STS"  30  "Values.ollamaIdentity.image.repository" "ollama-identity image"
+check_citation "$STS"  65  "readinessProbe:"                       "readiness probe"
+check_citation "$STS"  80  "limits.memory"                         "memory limit"
+check_citation "$VAL" 855  "validators.l3AirGapWithoutFailClosed"  "air-gap fail-closed validator"
+check_citation "$VALY" 25  "l3AirGapWithoutFailClosed"             "validator invocation"
+# Needle is the entry-name fragment, NOT "qwen2.5": the awk pattern escapes the
+# dot (`qwen2\.5-7b-awq-model:`), so a literal "qwen2.5" does not appear on the
+# line. This is also exactly the F2 finding in miniature — the check anchors on
+# a literal name, so renaming the manifest entry breaks it silently.
+check_citation "$ROOT/bin/lucairn" 1962 "-7b-awq-model:" "doctor B-E2 manifest-entry anchor"
 
 # The licence re-confirmation is a PRD locked constraint, not advice.
 if grep -qF -- "ai.google.dev/gemma/terms" "$ROOT/docs/L3_MODEL_UPGRADE.md"; then
