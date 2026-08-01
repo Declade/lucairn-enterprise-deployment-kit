@@ -34,6 +34,13 @@ spec:
   # unbounded, so a stalled registry connection leaves the Job Running forever
   # — the exact hang the readiness cap was added to prevent. activeDeadlineSeconds
   # fails the Job for real. Sized generously for a multi-GB pull on a slow link.
+  #
+  # SCOPE OF "generously" (T-370): this deadline bounds the WHOLE Job — the
+  # readiness wait below (up to 300 s) AND every `backoffLimit: 3` retry, which
+  # does NOT reset the clock. The transfer budget is therefore 3300 s of the
+  # 3600 s default, i.e. ~11.4 Mbit/s sustained for the shipped ~4.7 GB model
+  # but ~48.5 Mbit/s for a 20 GB one. Raise this value alongside any large-model
+  # bump on a slow link; docs/L3_MODEL_UPGRADE.md § 2.5 has the table.
   activeDeadlineSeconds: {{ default 3600 .Values.sanitizer.llmScanModelPullDeadlineSeconds }}
   template:
     metadata:
@@ -65,18 +72,23 @@ spec:
         #
         # The baked Modelfile is GONE and nothing regressed: the sanitizer sends
         # its own complete system prompt and its own decode parameters on every
-        # request — `_SYSTEM_PROMPT` (services/sanitizer/llm_scan.py:1453) is
+        # request — `_SYSTEM_PROMPT` (services/sanitizer/llm_scan.py:2008) is
         # concatenated with the delimiter-wrapped chunk in `_seq_prompt`
-        # (llm_scan.py:3741, base at llm_scan.py:3610) / `_ENSEMBLE_PROMPT`
-        # (llm_scan.py:1489, assembled at llm_scan.py:3513) and passed as the
-        # `prompt` body field (llm_scan.py:676), while `OllamaBackend.generate`
-        # (llm_scan.py:650, payload at llm_scan.py:674) sets
-        # `options.num_predict` (llm_scan.py:686, default `_L3_NUM_PREDICT`
-        # =2200 at llm_scan.py:185) / `temperature` / `num_ctx` / `seed`
-        # explicitly per call. A registry model ships its own chat template, so
-        # the hand-written TEMPLATE block is no longer needed, and the
-        # Modelfile's `PARAMETER num_predict 512` was already being overridden
-        # by the per-request value.
+        # (llm_scan.py:4550) / `_ENSEMBLE_PROMPT` (llm_scan.py:2044) and passed
+        # as the `prompt` body field (llm_scan.py:1211), while
+        # `OllamaBackend.generate` (llm_scan.py:1185, payload dict at
+        # llm_scan.py:1209) sets `options.num_predict` (llm_scan.py:1221,
+        # default `_L3_NUM_PREDICT` = 2200 at llm_scan.py:236) / `temperature`
+        # / `num_ctx` / `seed` explicitly per call. A registry model ships its
+        # own chat template, so the hand-written TEMPLATE block is no longer
+        # needed, and the Modelfile's `PARAMETER num_predict 512` was already
+        # being overridden by the per-request value.
+        #
+        # ⚑ CITATION BASIS (T-370 re-grep 2026-08-01): the line numbers above
+        # are against dual-sandbox-architecture origin/main @ b9b6ccdbd. Every
+        # one of them was STALE as first written on 2026-08-01 (the file has
+        # grown ~600 lines since) — they move on each sanitizer merge, so
+        # re-derive with `git grep` rather than trusting them.
         - name: model-pull
           image: "{{ .Values.ollamaIdentity.image.repository }}:{{ .Values.ollamaIdentity.image.tag }}{{ if .Values.ollamaIdentity.image.digest }}@{{ .Values.ollamaIdentity.image.digest }}{{ end }}"
           imagePullPolicy: {{ .Values.ollamaIdentity.image.pullPolicy }}

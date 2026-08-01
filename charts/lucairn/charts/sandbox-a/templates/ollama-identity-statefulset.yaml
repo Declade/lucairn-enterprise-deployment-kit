@@ -86,5 +86,13 @@ spec:
           - ReadWriteOnce
         resources:
           requests:
-            storage: 10Gi
+            # T-370: was a hardcoded 10Gi. The default is UNCHANGED — the
+            # `| default "10Gi"` keeps every existing install byte-identical —
+            # but the size is now reachable from values, because a larger L3
+            # model needs a larger store than the hardcode allowed and there
+            # was no way to ask for one. Sizing guidance (and the
+            # volumeClaimTemplates immutability warning that makes this an
+            # INSTALL-time decision) live in values.yaml
+            # `ollamaIdentity.persistence` and docs/L3_MODEL_UPGRADE.md § 2.1.
+            storage: {{ (.Values.ollamaIdentity.persistence).size | default "10Gi" }}
 {{- end }}
