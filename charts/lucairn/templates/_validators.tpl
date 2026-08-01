@@ -978,11 +978,40 @@ the chart's supported paths are development and production only.
   genuinely wants no policy layer (a Kind smoke test, a chart-only lint) can
   disable the PII-plane sub-charts too, which is the honest way to express it.
 
+  DEVELOPMENT IS EXEMPT — and this is the chart's existing semantic line, not a
+  new escape hatch. `global.dsaEnv` is a closed enum of exactly
+  {development, production} (enforced above in validators.enterpriseFullMeshMTLS),
+  and the two environments already differ on precisely this question:
+    - production: `infrastructure.enabled` is in that validator's
+      $mandatoryProfiles list, so infrastructure-off is HARD-REJECTED there with
+      "infrastructure.enabled must be true when global.dsaEnv=production".
+    - development: infrastructure-off is a supported, exercised render. The
+      repo's own suite does it twice in
+      tests/test_enterprise_mtls_production_values.sh — once to check the
+      k8s-native no-password Redis path and once for the
+      development-infrastructure-disabled render — and that same suite asserts
+      the production rejection, so the two halves of the line are already
+      pinned by tests.
+  The first version of this guard ignored that line, fired unconditionally, and
+  turned those two legitimate development renders red in CI.
+
+  ⚠️ SCOPE HONESTLY: THIS GUARD IS A BACKSTOP, NOT THE ACTIVE CONTROL.
+  Because the enum has only two values and development is exempt, the only state
+  that reaches this code is production -- where validators.enterpriseFullMeshMTLS
+  (included at validators.yaml:11, ahead of this one at :27) has ALREADY failed
+  the render via $mandatoryProfiles. So as the chart stands today this guard
+  cannot fire. It is kept as a backstop that becomes live if
+  `infrastructure.enabled` is ever dropped from $mandatoryProfiles or that
+  validator is restructured. Do NOT cite it as the thing protecting production:
+  the active control is $mandatoryProfiles, and the test that pins the property
+  asserts the PRE-EXISTING message, not this one.
+
   Invoked from charts/lucairn/templates/validators.yaml.
 */ -}}
 {{- define "validators.infrastructureDisabledWithPIIPlane" -}}
 {{- $infra := (default dict .Values.infrastructure) -}}
-{{- if and (hasKey $infra "enabled") (not $infra.enabled) -}}
+{{- $dsaEnv := toString (default "" (default dict .Values.global).dsaEnv) -}}
+{{- if and (ne $dsaEnv "development") (and (hasKey $infra "enabled") (not $infra.enabled)) -}}
 {{- $offenders := list -}}
 {{- range $sub := (list "sandbox-a" "pii-ml" "gateway" "id-bridge" "veil-witness") -}}
 {{- if hasKey $.Values $sub -}}
