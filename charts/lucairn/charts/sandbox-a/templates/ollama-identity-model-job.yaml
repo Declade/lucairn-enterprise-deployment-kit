@@ -72,7 +72,15 @@ spec:
             - >-
               set -e;
               echo "Waiting for ollama-identity to accept requests...";
-              until ollama list >/dev/null 2>&1; do sleep 2; done;
+              i=0;
+              until ollama list >/dev/null 2>&1; do
+                i=$((i+1));
+                if [ "$i" -ge 150 ]; then
+                  echo "ollama-identity did not become reachable within 300s" >&2;
+                  exit 1;
+                fi;
+                sleep 2;
+              done;
               echo "Pulling {{ .Values.sanitizer.llmScanModel }} from the official registry over HTTPS...";
               ollama pull {{ .Values.sanitizer.llmScanModel }};
               echo "Model pull complete.";
