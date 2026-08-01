@@ -48,6 +48,15 @@ global:
   llmEgressEnabled: false
   ingestEgressEnabled: false
   ollamaEnabled: true
+  # MUST track `sandbox-a.sanitizer.llmScanEnabled` (ToB TOB-002). This flag
+  # is what the infrastructure sub-chart gates the L3 NetworkPolicies on —
+  # sub-charts cannot read each other's values, which is why the L3 enable
+  # state has to be mirrored here. Previously it was UNDEFINED, so enabling L3
+  # the documented way (`sandbox-a.sanitizer.llmScanEnabled=true`) deployed the
+  # runtime with NO registry egress: the pull failed and the stack came up
+  # without L3. A render-time validator now fails the install when the two
+  # disagree in that direction, so this can no longer drift silently.
+  llmShieldEnabled: false
   demoEnabled: false
   # T-375. Allow the ollama-identity pod (the L3 PII-plane runtime) to reach
   # public model registries over HTTPS so the model-pull Job can fetch

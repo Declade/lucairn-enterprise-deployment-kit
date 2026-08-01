@@ -110,6 +110,12 @@ data:
         # created a differently-named model is exactly how this chart ended up
         # asking ollama-identity for `qwen2.5:7b` that nothing ever pulled.
         # Bumping to gemma4 is T-370 (gated on its own recall gate).
+        #
+        # If this model is absent from ollama-identity, the effective behaviour
+        # is set by LUCAIRN_L3_REQUIRED, not by `fallback_on_error` below. This
+        # chart defaults `global.l3Required: false`, so the shipped default is
+        # DEGRADE-HONESTLY (L1+L2 served, llm_pii_scan dropped from the cert),
+        # NOT fail-closed. Set `global.l3Required: true` to fail closed.
         model: {{ .Values.sanitizer.llmScanModel | default "qwen2.5:7b" | quote }}
         timeout_seconds: {{ .Values.sanitizer.llmScanTimeout | default 30 }}
         # FAIL-01 (PRD prd-2026-05-29-fail-safe-scrubber): fail-CLOSED. When the

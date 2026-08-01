@@ -55,9 +55,19 @@ spec:
 # false` and pre-seed the ollama-identity PVC (or point
 # `sandbox-a.sanitizer.llmScanModel` at a mirrored registry reference, e.g.
 # `registry.internal.example/library/qwen2.5:7b` — the model name is a chart
-# value, so a mirror needs no template change). With this policy absent the
-# pull Job fails and the sanitizer fails CLOSED at /readyz rather than scanning
-# without L3.
+# value, so a mirror needs no template change).
+#
+# WHAT HAPPENS IF THE MODEL IS MISSING (ToB TOB-001 — do not overclaim here).
+# It depends on `global.l3Required`, NOT on this policy. This chart defaults
+# `global.l3Required: false` (values.yaml), which renders
+# LUCAIRN_L3_REQUIRED="false" into the sanitizer pod (sandbox-a
+# deployment.yaml:286-287) and OVERRIDES the sanitizer binary's own fail-closed
+# default of "true" (services/sanitizer/config.py:760). So with stock values a
+# missing model DEGRADES HONESTLY: the sanitizer serves L1+L2 and drops
+# llm_pii_scan from the certificate — it does NOT fail closed. Set
+# `global.l3Required: true` to get the 503 l3_scrubber_unavailable behaviour.
+# The air-gap combination (L3 on, egress off, l3Required false) is refused at
+# render time by validators.l3AirGapWithoutFailClosed.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

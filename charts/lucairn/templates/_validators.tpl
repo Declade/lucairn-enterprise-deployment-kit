@@ -789,3 +789,82 @@ the chart's supported paths are development and production only.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{- /*
+  validators.l3ShieldFlagCoherence  (T-375 item 3, ToB TOB-002)
+
+  Fails fast when:
+    - sandbox-a.sanitizer.llmScanEnabled = true   (the DOCUMENTED L3 enable knob;
+      it gates the ollama-identity StatefulSet, the model-pull Job and the
+      sanitizer's llm_scan config)
+    - global.llmShieldEnabled is NOT also true    (it gates the L3 NetworkPolicies
+      in the infrastructure sub-chart)
+
+  Symptom this prevents: the L3 runtime and its model-pull Job deploy, but the
+  namespace has no egress for the registry pull. The pull Job fails, no model is
+  ever loaded, and — depending on global.l3Required — the stack either 503s every
+  request or serves L1+L2 silently. Sub-charts cannot read each other's values,
+  so the enable state MUST be mirrored into `global`; this guard is what keeps
+  the mirror honest.
+
+  Only the DANGEROUS direction fires. llmShieldEnabled=true with llmScanEnabled
+  =false merely leaves an unused NetworkPolicy, which is harmless.
+
+  Every level is nil-guarded: absent sub-chart values short-circuit.
+
+  Invoked from charts/lucairn/templates/validators.yaml.
+*/ -}}
+{{- define "validators.l3ShieldFlagCoherence" -}}
+{{- if hasKey .Values "sandbox-a" -}}
+{{- $sa := (index .Values "sandbox-a") -}}
+{{- if $sa -}}
+{{- $san := (default dict $sa.sanitizer) -}}
+{{- if $san.llmScanEnabled -}}
+{{- if not (default dict .Values.global).llmShieldEnabled -}}
+{{- fail "sandbox-a.sanitizer.llmScanEnabled=true but global.llmShieldEnabled is false (or unset). The L3 PII shield would deploy WITHOUT the NetworkPolicies that let it reach the model registry: the model-pull Job fails, no model is ever loaded, and the shield never runs. Sub-charts cannot read each other's values, so the L3 enable state must be mirrored into `global`. Set global.llmShieldEnabled=true alongside sandbox-a.sanitizer.llmScanEnabled=true (values-test.yaml sets both), or disable both." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
+  validators.l3AirGapWithoutFailClosed  (T-375 item 2b, ToB TOB-001)
+
+  Fails fast when ALL THREE hold:
+    - sandbox-a.sanitizer.llmScanEnabled = true         (operator wants L3)
+    - global.identityModelRegistryEgress = false        (documented air-gap path:
+      the model-pull Job is suppressed and the model must be pre-seeded)
+    - global.l3Required is falsey                       (this chart renders
+      LUCAIRN_L3_REQUIRED="false" into the sanitizer pod — deployment.yaml:286-287
+      — which OVERRIDES the sanitizer binary's own fail-closed default of "true",
+      services/sanitizer/config.py:760)
+
+  Symptom this prevents: on the air-gap path, if the PVC pre-seed was missed the
+  model simply is not there. With LUCAIRN_L3_REQUIRED="false" the sanitizer
+  DEGRADES — it serves L1+L2 and drops llm_pii_scan from the certificate —
+  instead of refusing. The operator believes the deep PII shield is running when
+  it never loaded. The air-gap path must not be able to silently run shield-less.
+
+  This chart's `global.l3Required` default is FALSE, so this combination is
+  reachable with stock values; that is precisely why it is guarded rather than
+  documented.
+
+  Invoked from charts/lucairn/templates/validators.yaml.
+*/ -}}
+{{- define "validators.l3AirGapWithoutFailClosed" -}}
+{{- if hasKey .Values "sandbox-a" -}}
+{{- $sa := (index .Values "sandbox-a") -}}
+{{- if $sa -}}
+{{- $san := (default dict $sa.sanitizer) -}}
+{{- if $san.llmScanEnabled -}}
+{{- $g := (default dict .Values.global) -}}
+{{- if eq (toString (dig "identityModelRegistryEgress" true $g)) "false" -}}
+{{- if not (dig "l3Required" false $g) -}}
+{{- fail "sandbox-a.sanitizer.llmScanEnabled=true with global.identityModelRegistryEgress=false (the air-gapped path, which suppresses the model-pull Job) AND global.l3Required=false. The sanitizer would then render LUCAIRN_L3_REQUIRED=\"false\" and DEGRADE silently to L1+L2 — dropping llm_pii_scan from every certificate — if the ollama-identity PVC pre-seed was missed. Set global.l3Required=true so a missing model fails visibly at /readyz, or re-enable global.identityModelRegistryEgress so the model is pulled." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

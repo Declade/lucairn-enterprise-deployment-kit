@@ -297,10 +297,25 @@ ruby -e '
 # promtail SA is the only ServiceAccount WITHOUT the disable.
 if command -v helm >/dev/null 2>&1; then
   RENDER_FILE="$(mktemp)"
-  helm template lucairn "$ROOT/charts/lucairn" \
+  # T-375: global.llmShieldEnabled must accompany llmScanEnabled — it gates the
+  # L3 NetworkPolicies in the infrastructure sub-chart, and
+  # validators.l3ShieldFlagCoherence now refuses the half-enabled combination.
+  # This invocation was itself the half-enabled case: it enabled L3 the
+  # documented way and rendered the runtime with NO registry egress.
+  #
+  # stderr is NOT suppressed: a failed render leaves RENDER_FILE empty, and the
+  # grep below would then report the ABSENCE of a string as the finding while
+  # hiding the real error.
+  RENDER_ERR="$(mktemp)"
+  if ! helm template lucairn "$ROOT/charts/lucairn" \
     --set global.skipPullSecretGuard=true \
     --set sandbox-a.sanitizer.llmScanEnabled=true \
-    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" >"$RENDER_FILE" 2>/dev/null
+    --set global.llmShieldEnabled=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" >"$RENDER_FILE" 2>"$RENDER_ERR"; then
+    echo "NET-05: helm render FAILED:" >&2; cat "$RENDER_ERR" >&2
+    rm -f "$RENDER_FILE" "$RENDER_ERR"; exit 1
+  fi
+  rm -f "$RENDER_ERR"
   grep -q "automountServiceAccountToken: false" "$RENDER_FILE" \
     || { echo "NET-05: no automountServiceAccountToken:false rendered" >&2; rm -f "$RENDER_FILE"; exit 1; }
   # promtail SA must NOT have the disable (it needs the K8s API).
