@@ -1,3 +1,18 @@
+# T-388 — SINGLE SOURCE OF TRUTH for every dsa-* namespace NAME.
+#
+# This list drives namespaces.yaml, default-deny.yaml, dns-egress.yaml,
+# pull-secrets.yaml AND (since T-388) every NetworkPolicy / CiliumNetworkPolicy
+# in this sub-chart, via the `infrastructure.namespaceFor` helper keyed on
+# `label`. Rename `name` to move a namespace; NEVER drop or rename `label` —
+# it is the join key, and the helper fails the render if a label goes missing.
+#
+# ⚠️ Workload sub-charts carry their OWN `namespace` value (e.g.
+# `sandbox-a.namespace`) because Helm sub-charts cannot read each other's
+# values. If you override a namespace you MUST change it in BOTH places. The
+# umbrella validator `validators.namespaceNetpolAlignment` fails the render when
+# the two disagree — before T-388 that mismatch rendered at exit 0 and left the
+# workloads in a namespace with no policy selecting them, i.e. default-ALLOW
+# egress for the PII plane.
 namespaces:
   - name: dsa-edge
     label: edge
@@ -19,3 +34,41 @@ namespaces:
     label: witness
   - name: dsa-demo
     label: demo
+
+# T-389 — the ONLY workloads allowed to reach the ollama-identity API (11434).
+#
+# The Ollama HTTP API is unauthenticated, and `POST /api/pull` accepts an
+# arbitrary registry host with `insecure: true`. Paired with the TCP/443 egress
+# the L3 runtime holds (identity-model-registry-egress), an unrestricted 11434
+# would let ANY compromised identity-plane pod drive the model server as a
+# confused deputy and exfiltrate out of the namespace that holds pre-redaction
+# text. Both the egress and the ingress policy read this one list, so a client
+# can never end up half-authorised.
+#
+# Values are `app.kubernetes.io/name` pod labels. Enumerated from the charts —
+# every consumer of port 11434 in the identity namespace is listed here:
+#
+#   sandbox-a                  the sanitizer. Dials the L3 scrubber at
+#                              http://ollama-identity:11434
+#                              (sandbox-a/templates/sanitizer-configmap.yaml,
+#                              `ollama_url`). Pod label set in
+#                              sandbox-a/templates/deployment.yaml
+#                              (app.kubernetes.io/name: {{ .Chart.Name }},
+#                              Chart.Name = sandbox-a).
+#
+#   ollama-identity-model-pull the model-staging Job. Since the pull moved
+#                              server-side it drives the pull THROUGH the
+#                              server via OLLAMA_HOST=ollama-identity:11434
+#                              (sandbox-a/templates/ollama-identity-model-job.yaml).
+#                              Dropping it here breaks model staging: the Job
+#                              cannot reach the server, no model is ever loaded,
+#                              and L3 never runs.
+#
+# ollama-identity itself is NOT listed — the server does not dial its own API;
+# its outbound need is TCP/443 to the registry, granted separately.
+#
+# Renaming the sandbox-a sub-chart, or the model-pull Job, requires updating
+# this list in lock-step.
+identityOllamaClients:
+  - sandbox-a
+  - ollama-identity-model-pull

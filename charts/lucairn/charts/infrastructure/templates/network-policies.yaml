@@ -8,7 +8,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: edge-egress
-  namespace: dsa-edge
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "edge") }}
 spec:
   podSelector: {}
   policyTypes:
@@ -76,7 +76,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: edge-witness-egress
-  namespace: dsa-edge
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "edge") }}
 spec:
   # Keep the witness allowance separate from the namespace's general egress
   # policy. Kubernetes unions matching policies, so only the named gateway Pod
@@ -106,7 +106,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: edge-ingress
-  namespace: dsa-edge
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "edge") }}
 spec:
   podSelector: {}
   policyTypes:
@@ -140,7 +140,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: identity-egress
-  namespace: dsa-identity
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}
 spec:
   podSelector: {}
   policyTypes:
@@ -170,17 +170,25 @@ spec:
       ports:
         - port: 50057
           protocol: TCP
-    # Intra-namespace (app → PostgreSQL, sanitizer → ollama-identity,
-    # sanitizer → pii-ml gRPC sidecar on 50056). Closes bug-hunter
-    # BLOCKER-4: Phase 7 (Piiranha + GLiNER) dials pii-ml.dsa-identity.svc
-    # on port 50056; without it the default-deny applies and every Phase 7
-    # scan times out at the gRPC deadline, opening the circuit breaker.
+    # Intra-namespace (app → PostgreSQL, sanitizer → pii-ml gRPC sidecar on
+    # 50056). Closes bug-hunter BLOCKER-4: Phase 7 (Piiranha + GLiNER) dials
+    # pii-ml.<identity-ns>.svc on port 50056; without it the default-deny
+    # applies and every Phase 7 scan times out at the gRPC deadline, opening
+    # the circuit breaker.
+    #
+    # T-389: port 11434 (the ollama-identity L3 runtime) was REMOVED from this
+    # namespace-wide rule. This policy's podSelector is `{}`, so 11434 here
+    # meant EVERY pod in the identity namespace could dial the Ollama API —
+    # which is unauthenticated and whose POST /api/pull accepts an arbitrary
+    # registry host with `insecure: true`. Combined with the 443 egress the L3
+    # runtime now holds (identity-model-registry-egress), any compromised
+    # identity-plane pod could drive the Ollama server as a confused deputy and
+    # exfiltrate over that 443 allowance. 11434 is now granted only to the
+    # enumerated clients by `identity-ollama-client-egress` below.
     - to:
         - podSelector: {}
       ports:
         - port: 5432
-          protocol: TCP
-        - port: 11434
           protocol: TCP
         - port: 50056
           protocol: TCP
@@ -202,12 +210,89 @@ spec:
     # ollama-identity server; that egress is granted by the dedicated,
     # pod-scoped `identity-model-registry-egress` policy in
     # model-pull-netpol.yaml, not here.
+{{- if .Values.global.llmShieldEnabled }}
+---
+# T-389 — the ollama-identity API (11434) is reachable ONLY from its
+# enumerated clients, on BOTH the egress and the ingress side.
+#
+# THREAT. The Ollama HTTP API has no authentication. `POST /api/pull` takes an
+# arbitrary registry host and honours `insecure: true`, so a caller can make the
+# server fetch from — and talk to — a host of the caller's choosing. Since
+# `identity-model-registry-egress` grants the ollama-identity pod TCP/443 to the
+# public internet, an attacker on ANY identity-plane pod could previously use
+# the L3 runtime as a confused deputy: a clean exfiltration primitive out of the
+# namespace that holds pre-redaction text.
+#
+# WHY TWO POLICIES. Kubernetes unions NetworkPolicies — an added policy can only
+# ADD permission, never subtract it. So restricting 11434 required editing the
+# two blanket rules that already granted it (the namespace-wide `podSelector: {}`
+# egress rule above, and the all-ports intra-namespace ingress rule in
+# identity-ingress below) and then re-granting the port narrowly here. Adding
+# these two policies WITHOUT those two edits would have changed nothing.
+#
+# CLIENT LIST. `infrastructure.identityOllamaClients` — see that value for the
+# enumeration and the evidence for each entry. Both directions read the SAME
+# list, so a client can never be half-authorised.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-ollama-client-egress
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+{{- range .Values.identityOllamaClients }}
+          - {{ . | quote }}
+{{- end }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ollama-identity
+      ports:
+        - port: 11434
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-ollama-ingress
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ollama-identity
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+{{- range .Values.identityOllamaClients }}
+                  - {{ . | quote }}
+{{- end }}
+      ports:
+        - port: 11434
+          protocol: TCP
+{{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: identity-ingress
-  namespace: dsa-identity
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}
 spec:
   podSelector: {}
   policyTypes:
@@ -264,9 +349,34 @@ spec:
         - port: 5432
           protocol: TCP
 {{- end }}
-    # Intra-namespace (PostgreSQL ← app, migrations)
+    # Intra-namespace (PostgreSQL ← app, migrations; pii-ml gRPC ← sanitizer).
+    #
+    # T-389: this rule used to carry NO `ports:` key, which in NetworkPolicy
+    # means EVERY port — including 11434 on ollama-identity. Because policies
+    # are unioned, that blanket allowance would have silently re-opened the
+    # Ollama API to every identity-plane pod no matter how tightly the dedicated
+    # `identity-ollama-ingress` policy above was written. The port list is now
+    # explicit.
+    #
+    # This is behaviour-preserving for every flow that actually works today:
+    # `identity-egress` already restricts intra-namespace EGRESS to
+    # {5432, 50056} (11434 now being client-scoped), and a connection needs BOTH
+    # sides to allow it. So no intra-namespace flow on any other port was
+    # reachable before this change either.
+    #
+    # NOTE (pre-existing, deliberately NOT widened here): the sanitizer content
+    # cache Redis (`sandbox-a-sanitizer-cache`, port 6379) ships enabled by
+    # default but 6379 appears in NO identity-namespace policy on either side,
+    # so that connection is already blocked and the sanitizer falls back to its
+    # in-process LRU (fail-OPEN). Adding 6379 is an egress WIDENING and belongs
+    # to its own change, not to this hardening pass.
     - from:
         - podSelector: {}
+      ports:
+        - port: 5432
+          protocol: TCP
+        - port: 50056
+          protocol: TCP
 
 # ============================================================
 # dsa-bridge (ID Bridge) — can reach identity, audit, ai (event-only)
@@ -276,7 +386,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: bridge-egress
-  namespace: dsa-bridge
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "bridge") }}
 spec:
   podSelector: {}
   policyTypes:
@@ -327,7 +437,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: bridge-ingress
-  namespace: dsa-bridge
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "bridge") }}
 spec:
   podSelector: {}
   policyTypes:
@@ -417,7 +527,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: ai-egress
-  namespace: dsa-ai
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "ai") }}
 spec:
   podSelector: {}
   policyTypes:
@@ -469,7 +579,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: ai-ingress
-  namespace: dsa-ai
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "ai") }}
 spec:
   podSelector: {}
   policyTypes:
@@ -536,7 +646,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: audit-ingress
-  namespace: dsa-audit
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "audit") }}
 spec:
   podSelector: {}
   policyTypes:
@@ -579,7 +689,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: audit-egress
-  namespace: dsa-audit
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "audit") }}
 spec:
   podSelector: {}
   policyTypes:
@@ -608,7 +718,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: observability-egress
-  namespace: dsa-observability
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "observability") }}
 spec:
   podSelector: {}
   policyTypes:
@@ -661,7 +771,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: observability-ingress
-  namespace: dsa-observability
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "observability") }}
 spec:
   podSelector: {}
   policyTypes:
@@ -700,7 +810,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: ingest-egress
-  namespace: dsa-ingest
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "ingest") }}
 spec:
   podSelector: {}
   policyTypes:

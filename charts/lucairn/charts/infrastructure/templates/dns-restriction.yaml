@@ -16,7 +16,7 @@ apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: dns-restrict-ai
-  namespace: dsa-ai
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "ai") }}
   labels:
     app.kubernetes.io/part-of: dsa
     dsa.io/purpose: dns-restriction
@@ -52,7 +52,7 @@ apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: dns-restrict-identity
-  namespace: dsa-identity
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}
   labels:
     app.kubernetes.io/part-of: dsa
     dsa.io/purpose: dns-restriction
@@ -81,7 +81,7 @@ apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: dns-restrict-bridge
-  namespace: dsa-bridge
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "bridge") }}
   labels:
     app.kubernetes.io/part-of: dsa
     dsa.io/purpose: dns-restriction
@@ -108,7 +108,7 @@ apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: dns-restrict-edge
-  namespace: dsa-edge
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "edge") }}
   labels:
     app.kubernetes.io/part-of: dsa
     dsa.io/purpose: dns-restriction
@@ -136,7 +136,7 @@ apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: dns-restrict-audit
-  namespace: dsa-audit
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "audit") }}
   labels:
     app.kubernetes.io/part-of: dsa
     dsa.io/purpose: dns-restriction
