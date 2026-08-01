@@ -161,6 +161,15 @@ services:
       # (profile OFF, YAML unchanged) keeps the ollama-identity L3 path,
       # byte-identical. See docs/L3_VLLM_RUNTIME.md.
       #
+      # SPLIT L3 POOL (docs/L3_SPLIT_POOL.md): the same `l3_runtime: vllm` switch
+      # can point l3_base_url at a REMOTE shared-GPU vLLM host on the customer's
+      # private network (`http://10.0.0.10:8000`) so several small gateway boxes
+      # share one GPU. That variant adds NO compose service here — the pool is a
+      # separate host the customer runs — and a pool CLIENT box does NOT activate
+      # the vllm-l3 profile below. It is declared with `LUCAIRN_L3_SPLIT_POOL=true`
+      # in customer.env, which is read by `bin/lucairn doctor` ONLY (no service
+      # reads it) to run the split-pool preflight instead of the in-box GPU checks.
+      #
       # TOB-407-04 (Slice-1 ToB review) is a DOCUMENTED RECOMMENDATION, NOT an
       # auto-injected env here: the sanitizer's /v1/config runs UNAUTHENTICATED by
       # default and its asdict includes `l3_base_url` (internal topology, NON-secret
@@ -535,6 +544,14 @@ services:
   #   l3_runtime: vllm  +  l3_base_url: http://vllm-l3:8000
   # With the profile OFF and those YAML lines commented the kit boots
   # byte-identically on the `ollama-identity` path — no default drift.
+  #
+  # NOT THE ONLY vLLM SHAPE: for a fleet, the SPLIT L3 POOL variant
+  # (docs/L3_SPLIT_POOL.md) leaves this profile OFF and points l3_base_url at ONE
+  # shared GPU host on the customer's private network instead, so many gateway
+  # boxes share one GPU. The kit ships NO compose service for that pool — it is a
+  # separate host the customer operates — so nothing below changes; a pool client
+  # box just sets `l3_runtime: vllm` + a private `l3_base_url` and declares
+  # `LUCAIRN_L3_SPLIT_POOL=true` in customer.env for `bin/lucairn doctor`.
   #
   # Serves the STOCK `Qwen/Qwen2.5-7B-Instruct-AWQ` (the AWQ equivalent of the
   # DSA-default `qwen2.5:7b`). It does NOT yet serve the custom-trained

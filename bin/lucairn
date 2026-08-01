@@ -590,6 +590,134 @@ _vllm_l3_yaml_selected() {
   return 1
 }
 
+# _l3_base_url_host BASE_URL — echo the lowercased host of an L3 base_url,
+# brackets stripped from an IPv6 literal, userinfo and port removed. Empty
+# output means "no parseable host" (the caller treats that as a failure).
+#
+# Mirrors urlparse(...).hostname, which is what the sanitizer uses
+# (dual-sandbox-architecture services/sanitizer/llm_scan.py:468). Written as a
+# parser rather than a `sed 's#[:/].*$##'` truncation because that truncation
+# mangles an IPv6 literal (`http://[fd00::1]:8000` -> `[fd00`) and then
+# classifies the mangled remnant.
+_l3_base_url_host() {
+  local url="${1:-}" host
+  host="$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')"
+  host="${host#*://}"          # drop scheme
+  host="${host%%/*}"           # drop path
+  host="${host##*@}"           # drop userinfo
+  case "$host" in
+    \[*\]*)                    # bracketed IPv6 literal, optional :port
+      host="${host#\[}"
+      host="${host%%\]*}"
+      ;;
+    *)
+      host="${host%%:*}"       # drop :port
+      ;;
+  esac
+  host="${host%.}"             # tolerate a trailing FQDN root dot
+  printf '%s' "$host"
+}
+
+# _l3_host_is_internal HOST — return 0 iff HOST classifies as INTERNAL.
+#
+# CONSERVATIVE MIRROR of the sanitizer's authoritative allowlist
+# `_is_internal_l3_base_url`
+# (dual-sandbox-architecture services/sanitizer/llm_scan.py:431-492, allowlist
+# suffix tuple at :422-428). The sanitizer BLOCKS a non-internal l3_base_url at
+# boot unless the operator explicitly sets `l3_allow_external_base_url`
+# (services/sanitizer/config.py:1518-1533) — this host-side classifier exists so
+# doctor surfaces that block BEFORE the container starts.
+#
+# Accepted here: IPv4 loopback / RFC1918 / unspecified; IPv6 loopback,
+# unspecified and RFC4193 ULA (fc00::/7); single-label service names; the
+# private-DNS suffixes `.internal`, `.svc`, `.local`, `.cluster.local`,
+# `.svc.cluster.local`. Everything else -> not internal.
+#
+# The accepted set is deliberately a SUBSET of the sanitizer's (the sanitizer
+# additionally accepts a few ranges Python's `ipaddress.is_private` folds in but
+# nobody deploys a pool on — verified example: 2001:db8::/32, the documentation
+# range, which the sanitizer classifies INTERNAL and this classifier rejects).
+# The subset DIRECTION is what matters: doctor may report a FAIL the sanitizer
+# would have tolerated, but it can never green-light a base_url the sanitizer
+# would BLOCK at boot.
+#
+# The pre-2026-08 shape of this check was a `case` glob list
+# (`10.*|192.168.*|172.1[6-9].*|...`). Those globs match HOSTNAMES too, so
+# `10.evil.com` classified as internal here while the sanitizer — which only
+# takes the private-IP branch for a real IP literal — treats it as a dotted
+# public hostname and BLOCKS it. Leading-zero octets (`010.0.0.1`) are likewise
+# rejected here because Python's `ipaddress` rejects them, so they reach the
+# sanitizer's hostname branch and are NOT internal.
+_l3_host_is_internal() {
+  local host="${1:-}"
+  [ -n "$host" ] || return 1
+  host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+
+  # IPv4 literal in the exact form Python's ipaddress accepts (no leading zeros).
+  if [[ "$host" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$ ]]; then
+    local o1="${BASH_REMATCH[1]}" o2="${BASH_REMATCH[2]}" o3="${BASH_REMATCH[3]}" o4="${BASH_REMATCH[4]}"
+    # Out-of-range octets are not an IP at all; the sanitizer would treat the
+    # string as a dotted hostname -> not internal.
+    [ "$o1" -le 255 ] && [ "$o2" -le 255 ] && [ "$o3" -le 255 ] && [ "$o4" -le 255 ] || return 1
+    # Link-local FIRST: 169.254.0.0/16 carries the cloud IMDS endpoint
+    # 169.254.169.254 and is explicitly NOT internal (llm_scan.py:484-492).
+    [ "$o1" -eq 169 ] && [ "$o2" -eq 254 ] && return 1
+    [ "$o1" -eq 127 ] && return 0                                     # loopback
+    [ "$o1" -eq 10 ] && return 0                                      # RFC1918
+    [ "$o1" -eq 192 ] && [ "$o2" -eq 168 ] && return 0                # RFC1918
+    [ "$o1" -eq 172 ] && [ "$o2" -ge 16 ] && [ "$o2" -le 31 ] && return 0  # RFC1918
+    [ "$o1" -eq 0 ] && [ "$o2" -eq 0 ] && [ "$o3" -eq 0 ] && [ "$o4" -eq 0 ] && return 0  # unspecified
+    return 1
+  fi
+
+  # IPv6 literal (brackets already stripped by _l3_base_url_host).
+  case "$host" in
+    *:*)
+      case "$host" in
+        ::1|::) return 0 ;;
+        fe8*|fe9*|fea*|feb*) return 1 ;;   # fe80::/10 link-local -> NOT internal
+        fc*|fd*) return 0 ;;               # fc00::/7 unique-local
+        *) return 1 ;;
+      esac
+      ;;
+  esac
+
+  # Hostname.
+  case "$host" in
+    *.*) ;;
+    *) return 0 ;;                          # single-label service DNS name
+  esac
+  case "$host" in
+    *.internal|*.svc|*.local|*.cluster.local|*.svc.cluster.local) return 0 ;;
+  esac
+  return 1
+}
+
+# l3_split_pool_declared ENV_FILE — return 0 iff the operator has DECLARED the
+# split L3-pool topology via `LUCAIRN_L3_SPLIT_POOL` in the compose env file.
+#
+# This marker is read by `bin/lucairn doctor` ONLY. No service reads it: the
+# actual runtime switch stays YAML (`l3_runtime` / `l3_base_url` in
+# config/default-sanitizer.yaml) exactly as for the in-box vllm-l3 lane — there
+# is no env override for those (docker-compose.self-hosted.yml:154-162). The
+# marker exists because the split shape (YAML `l3_runtime: vllm` + NO local
+# `vllm-l3` compose profile) is byte-identical to the BROKEN half-enabled shape
+# doctor must keep failing; declaring intent is what tells the two apart.
+#
+# An unrecognized value is a hard error (rc=2), never a silent OFF: a typo'd
+# marker would disable the split-pool checks while the operator believes they
+# run ("configured but unenforced").
+l3_split_pool_declared() {
+  local env_file="$1" raw
+  raw="$(env_value "$env_file" LUCAIRN_L3_SPLIT_POOL)"
+  case "$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')" in
+    "") return 1 ;;
+    true|1|yes) return 0 ;;
+    false|0|no) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
 is_secret_key() {
   local key="$1"
   case "$key" in
@@ -1354,6 +1482,126 @@ check_signing_key_compose_preflight() {
   return "$failed"
 }
 
+# check_l3_split_pool_preflight ENV_FILE — preflight for the SPLIT L3-POOL
+# topology (PRD prd-2026-07-31-l3-rebuild-recoverable-truncation-gemma4.md,
+# Slice 4; operator guide docs/L3_SPLIT_POOL.md).
+#
+# Shape: small gateway boxes (no GPU) + ONE shared GPU host running vLLM, dialed
+# over the customer's PRIVATE network. On such a box:
+#   l3_runtime: vllm            (config/default-sanitizer.yaml — YAML is the only switch)
+#   l3_base_url: http://<private-address>:8000
+#   LUCAIRN_L3_SPLIT_POOL=true  (customer.env — this doctor marker)
+#   NO `vllm-l3` in COMPOSE_PROFILES (there is no local vLLM container here)
+#
+# Checks (fail-closed; every FAIL returns rc=1 so `doctor` exits non-zero):
+#   - YAML l3_runtime is not vllm            -> FAIL (L3 still goes to ollama-identity)
+#   - l3_base_url unset                       -> FAIL (misconfig)
+#   - l3_base_url carries userinfo            -> FAIL (A-E2: synthesizes Authorization)
+#   - l3_base_url host unparseable            -> FAIL
+#   - host is a LOCAL target (vllm-l3 alias / -> FAIL (nothing local serves L3 here
+#     localhost / loopback)                          => fail-closed 503 on every request)
+#   - host is NOT internal (public FQDN/IP)   -> FAIL (raw pre-redaction text off-net)
+#   - vllm-l3 profile ALSO active             -> WARN (a local GPU service would run unused)
+#
+# Offline-safe by construction: this reads only the env file and the sanitizer
+# YAML — no docker daemon, no network — so it behaves identically under
+# `doctor --offline` and needs no offline parameter.
+#
+# NOT checked, deliberately: endpoint reachability. Doctor runs on the HOST; the
+# sanitizer dials the pool from INSIDE its container, so a host-side probe can
+# pass or fail for reasons that do not apply to the container. The honest check
+# is the post-up `docker compose exec sanitizer …` command this prints — the
+# same pattern the in-box lane uses for its no-host-port service.
+check_l3_split_pool_preflight() {
+  local env_file="$1"
+  local failed=0 yaml_runtime base_url host
+
+  yaml_runtime="$(_sanitizer_config_declares l3_runtime "$env_file")"
+  base_url="$(_sanitizer_config_declares l3_base_url "$env_file")"
+
+  case "$(printf '%s' "$yaml_runtime" | tr '[:upper:]' '[:lower:]')" in
+    vllm) : ;;
+    *)
+      echo "l3-split-pool: FAIL — LUCAIRN_L3_SPLIT_POOL is declared but the sanitizer config does not set 'l3_runtime: vllm'."
+      echo "l3-split-pool:   The runtime switch is YAML-only (there is no LUCAIRN_L3_RUNTIME env var):"
+      echo "l3-split-pool:   uncomment 'l3_runtime: vllm' + 'l3_base_url: http://<pool>:8000' in"
+      echo "l3-split-pool:   config/default-sanitizer.yaml, or drop LUCAIRN_L3_SPLIT_POOL to keep the"
+      echo "l3-split-pool:   in-box ollama-identity L3 default. See docs/L3_SPLIT_POOL.md."
+      failed=1
+      ;;
+  esac
+
+  if [ -z "$base_url" ]; then
+    echo "l3-split-pool: FAIL — 'l3_base_url' is unset/commented in the sanitizer config."
+    echo "l3-split-pool:   Set it to the pool's PRIVATE-network address, e.g."
+    echo "l3-split-pool:   'l3_base_url: http://10.0.0.10:8000'. See docs/L3_SPLIT_POOL.md."
+    return 1
+  fi
+
+  case "$base_url" in
+    *@*)
+      echo "l3-split-pool: FAIL — l3_base_url (config/default-sanitizer.yaml) contains userinfo (user:pass@host)."
+      echo "l3-split-pool:   The vLLM L3 backend is credential-free by construction; a user:pass@ URL"
+      echo "l3-split-pool:   makes the HTTP client synthesize an Authorization header and leaks the"
+      echo "l3-split-pool:   secret via /v1/config. Remove the userinfo. The sanitizer rejects this at boot."
+      failed=1
+      ;;
+  esac
+
+  host="$(_l3_base_url_host "$base_url")"
+  if [ -z "$host" ]; then
+    echo "l3-split-pool: FAIL — could not parse a host out of l3_base_url."
+    echo "l3-split-pool:   Expected a URL like http://10.0.0.10:8000. See docs/L3_SPLIT_POOL.md."
+    return 1
+  fi
+
+  # A split pool is REMOTE by definition. The in-box compose alias, localhost,
+  # loopback and the unspecified address all resolve to something on THIS box
+  # that serves no L3 here -> fail-closed 503 on every request. They are
+  # "internal" to `_l3_host_is_internal` (correctly — the sanitizer allows them
+  # for the in-box lane), so the split lane rejects them explicitly first.
+  case "$host" in
+    vllm-l3|localhost|127.*|::1|0.0.0.0|::)
+      echo "l3-split-pool: FAIL — l3_base_url host '$host' is a LOCAL target, but a split L3 pool is a REMOTE host."
+      echo "l3-split-pool:   'vllm-l3' is the in-box compose alias; localhost/loopback/0.0.0.0 resolve"
+      echo "l3-split-pool:   inside the sanitizer container. Nothing serves L3 there on a split-pool box,"
+      echo "l3-split-pool:   so every request would fail closed with a 503. Point l3_base_url at the"
+      echo "l3-split-pool:   pool's private address, or drop LUCAIRN_L3_SPLIT_POOL and run the in-box"
+      echo "l3-split-pool:   lane (docs/L3_VLLM_RUNTIME.md)."
+      failed=1
+      ;;
+    *)
+      if ! _l3_host_is_internal "$host"; then
+        echo "l3-split-pool: FAIL — l3_base_url host '$host' is NOT internal (public FQDN/IP)."
+        echo "l3-split-pool:   The L3 backend sends L1/L2-redacted residual text plus the L3 prompt to"
+        echo "l3-split-pool:   this endpoint; a public destination would carry it off the customer's"
+        echo "l3-split-pool:   private network. The sanitizer BLOCKS a non-internal l3_base_url at boot"
+        echo "l3-split-pool:   unless l3_allow_external_base_url is explicitly set — the kit's split-pool"
+        echo "l3-split-pool:   option does NOT use that override. Use an RFC1918 address (10.x / 172.16-31.x"
+        echo "l3-split-pool:   / 192.168.x) or a private-DNS name. See docs/L3_SPLIT_POOL.md."
+        failed=1
+      fi
+      ;;
+  esac
+
+  local profile_note="no local vllm-l3 profile"
+  if _vllm_l3_profile_active "$env_file"; then
+    profile_note="local vllm-l3 profile ALSO active — see warning"
+    warn "l3-split-pool: the 'vllm-l3' compose profile is ALSO active on this box while the sanitizer dials the remote pool ($host) — the local model-runtime-vllm-l3 container would start and sit unused (and it needs a GPU this box may not have). Remove 'vllm-l3' from COMPOSE_PROFILES for a split-pool box. See docs/L3_SPLIT_POOL.md."
+  fi
+
+  if [ "$failed" -eq 0 ]; then
+    echo "l3-split-pool: config ok (l3_runtime: vllm, remote internal l3_base_url, $profile_note)"
+    info "l3-split-pool: GPU / NVIDIA-toolkit / WSL2 checks SKIPPED — the GPU lives on the pool host, not this box."
+    info "l3-split-pool: verify reachability post-up FROM THE SANITIZER CONTAINER (a host-side probe proves nothing about the container's routing):"
+    info "  docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml \\"
+    info "    exec sanitizer python3 -c \"import urllib.request,os;print(urllib.request.urlopen(os.environ['U']).status)\" \\"
+    info "    # with U=<l3_base_url>/v1/models"
+  fi
+
+  return "$failed"
+}
+
 check_vllm_l3_preflight() {
   # PRD B (Slice B2): FAST L3 runtime (model-runtime-vllm-l3) preflight. The
   # vLLM L3 runtime is native-Linux-GPU-only, WSL2-DEAD (RuntimeError: UVA is
@@ -1389,6 +1637,26 @@ check_vllm_l3_preflight() {
   #       must not touch the daemon. The file/GPU(nvidia-smi) checks still
   #       run (local, no daemon).
   local env_file="$1" offline="${2:-0}"
+
+  # SPLIT L3-POOL topology (docs/L3_SPLIT_POOL.md): the L3 endpoint is a REMOTE
+  # shared-GPU pool on the customer's private network, not an in-box service.
+  # This box then has no GPU, no vllm-l3 profile, and no local vLLM container —
+  # so the GPU/WSL2/toolkit/profile checks below are all WRONG for it. Declaring
+  # the marker routes the whole L3-runtime preflight to the split-pool checks.
+  # Undeclared (the default) leaves everything below byte-identical.
+  local _split_rc=0
+  l3_split_pool_declared "$env_file" || _split_rc=$?
+  if [ "$_split_rc" -eq 0 ]; then
+    check_l3_split_pool_preflight "$env_file"
+    return $?
+  fi
+  if [ "$_split_rc" -eq 2 ]; then
+    echo "l3-split-pool: FAIL — LUCAIRN_L3_SPLIT_POOL is set to an unrecognized value."
+    echo "l3-split-pool:   Use true/1/yes to declare the split L3-pool topology, or false/0/no"
+    echo "l3-split-pool:   (or remove the line) for the in-box L3 default. A typo would silently"
+    echo "l3-split-pool:   skip the split-pool preflight. See docs/L3_SPLIT_POOL.md."
+    return 1
+  fi
 
   vllm_l3_opted_in "$env_file" || return 0
 
@@ -1570,23 +1838,21 @@ check_vllm_l3_preflight() {
             failed=1
             ;;
         esac
-        # Internal-address heuristic: allow the vllm-l3 alias, localhost/loopback,
-        # RFC1918 / .internal / .local / .svc / bare docker service names. Flag a
-        # public FQDN or public IP (has a dot AND not a private range/suffix).
+        # Internal-address classification, single-sourced with the split-pool
+        # lane in `_l3_host_is_internal` (a conservative mirror of the
+        # sanitizer's `_is_internal_l3_base_url`). Replaces the earlier glob
+        # list, which matched HOSTNAMES as if they were IPs — `10.evil.com`
+        # passed doctor and was then BLOCKED by the sanitizer at boot.
         local host_only
-        host_only="$(printf '%s' "$base_url" | sed -e 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##' -e 's#[:/].*$##' -e 's#^.*@##')"
-        case "$host_only" in
-          vllm-l3|localhost|127.*|10.*|192.168.*|*.internal|*.local|*.svc|*.svc.cluster.local) : ;;
-          172.1[6-9].*|172.2[0-9].*|172.3[01].*) : ;;
-          *.*)
+        host_only="$(_l3_base_url_host "$base_url")"
+        if ! _l3_host_is_internal "$host_only"; then
             echo "vllm-l3: FAIL — l3_base_url host '$host_only' looks NON-internal (public FQDN/IP)."
             echo "vllm-l3:   A non-internal L3 endpoint ships raw pre-redaction text off the"
             echo "vllm-l3:   identity plane (A-E2 egress). Point it at the internal vllm-l3 alias"
             echo "vllm-l3:   (http://vllm-l3:8000). The sanitizer image blocks this at boot"
             echo "vllm-l3:   unless the operator explicitly sets the external-base-url override."
             failed=1
-            ;;
-        esac
+        fi
       fi
       ;;
   esac
