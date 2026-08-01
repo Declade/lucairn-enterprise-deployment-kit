@@ -945,12 +945,61 @@ the chart's supported paths are development and production only.
 {{- if $want -}}
 {{- $got := toString $vals.namespace -}}
 {{- if ne $got $want -}}
-{{- fail (printf "namespace/NetworkPolicy split-brain: %s.namespace=%q but infrastructure.namespaces entry labelled %q is %q. The %s workloads would deploy into %q while every NetworkPolicy for them — including default-deny-all — is created in %q. A namespace with no NetworkPolicy is default-ALLOW, so this silently removes all egress restriction from those pods. Set BOTH to the same value: --set %s.namespace=<ns> AND the matching infrastructure.namespaces entry's name (the entry whose label is %q)." $sub $got $label $want $sub $got $want $sub $label) -}}
+{{- fail (printf "namespace/NetworkPolicy split-brain: %s.namespace=%q but the infrastructure.namespaces entry labelled %q is %q. The %s workloads would deploy into %q while every NetworkPolicy for them — including default-deny-all — is created in %q. A namespace with no NetworkPolicy is default-ALLOW, so this silently removes all egress restriction from those pods.\n\nTO FIX, move BOTH. Use a values FILE, not --set: `--set infrastructure.namespaces[N].name=...` makes Helm rebuild the list with every other entry nil, which fails the render for an unrelated-looking reason (ToB-003). Write:\n\n  infrastructure:\n    namespaces:\n      - {name: dsa-edge, label: edge}\n      - {name: %s, label: %s}\n      - ... every remaining entry, each keeping BOTH name and label ...\n  %s:\n    namespace: %s\n\nand pass it with -f. The list must be COMPLETE — it replaces the chart default wholesale." $sub $got $label $want $sub $got $want $got $label $sub $got) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+
+{{- /*
+  validators.infrastructureDisabledWithPIIPlane  (ToB-006)
+
+  Fails fast when `infrastructure.enabled=false` while a PII-plane sub-chart is
+  still enabled.
+
+  THE BUG THIS CLOSES. Every NetworkPolicy in this chart -- default-deny-all,
+  the per-namespace egress/ingress rules, the DNS restrictions and the T-389
+  ollama policies -- is rendered by the infrastructure sub-chart. It also
+  renders the Namespace objects themselves. Turning that ONE flag off therefore
+  deletes the entire network policy layer while the sanitizer, the L3 runtime
+  and their datastores still deploy. Nothing else in the chart notices: the
+  render succeeds, the workloads come up, and every pod in the identity plane
+  has unrestricted egress because no policy selects it.
+
+  That is the same end state as the T-388 split-brain, reached by a different
+  route, so it gets the same treatment: refuse the render and say why.
+
+  Only sub-charts that carry pre-redaction data are listed. A deployment that
+  genuinely wants no policy layer (a Kind smoke test, a chart-only lint) can
+  disable the PII-plane sub-charts too, which is the honest way to express it.
+
+  Invoked from charts/lucairn/templates/validators.yaml.
+*/ -}}
+{{- define "validators.infrastructureDisabledWithPIIPlane" -}}
+{{- $infra := (default dict .Values.infrastructure) -}}
+{{- if and (hasKey $infra "enabled") (not $infra.enabled) -}}
+{{- $offenders := list -}}
+{{- range $sub := (list "sandbox-a" "pii-ml" "gateway" "id-bridge" "veil-witness") -}}
+{{- if hasKey $.Values $sub -}}
+{{- $vals := index $.Values $sub -}}
+{{- if $vals -}}
+{{- $enabled := true -}}
+{{- if hasKey $vals "enabled" -}}
+{{- $enabled = $vals.enabled -}}
+{{- end -}}
+{{- if $enabled -}}
+{{- $offenders = append $offenders $sub -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if $offenders -}}
+{{- fail (printf "infrastructure.enabled=false but these data-plane sub-charts are still enabled: %s. The infrastructure sub-chart renders EVERY NetworkPolicy in this chart (default-deny-all, the per-namespace egress/ingress rules, the DNS restrictions, the T-389 ollama-identity policies) and the Namespace objects themselves. Disabling it deploys those workloads with NO policy selecting them, which is default-ALLOW egress for pods that handle pre-redaction text -- and the render would otherwise succeed silently. Either re-enable infrastructure, or disable the listed sub-charts too if you genuinely want a policy-free render." (join ", " $offenders)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
