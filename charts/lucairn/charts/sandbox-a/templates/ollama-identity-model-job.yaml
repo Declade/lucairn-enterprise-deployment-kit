@@ -89,6 +89,14 @@ spec:
         # one of them was STALE as first written on 2026-08-01 (the file has
         # grown ~600 lines since) — they move on each sanitizer merge, so
         # re-derive with `git grep` rather than trusting them.
+        #
+        # ⚑⚑ AND THE SAME APPLIES WITHIN THIS REPO — citations rot from the
+        # COMMIT THAT WRITES THEM. The T-370 comment inserted above
+        # `activeDeadlineSeconds` moved it 37 -> 44 and shifted every line
+        # below it, invalidating eight kit-local citations written in that same
+        # editing session (three of which review did not catch; they surfaced
+        # only on re-derivation). After any line-inserting edit, re-grep every
+        # citation INTO the edited file, including your own.
         - name: model-pull
           image: "{{ .Values.ollamaIdentity.image.repository }}:{{ .Values.ollamaIdentity.image.tag }}{{ if .Values.ollamaIdentity.image.digest }}@{{ .Values.ollamaIdentity.image.digest }}{{ end }}"
           imagePullPolicy: {{ .Values.ollamaIdentity.image.pullPolicy }}
