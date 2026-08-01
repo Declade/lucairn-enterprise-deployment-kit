@@ -46,7 +46,13 @@
 #          "use a values file" message instead.
 #
 #   ToB-006  `infrastructure.enabled=false` deletes every policy in the chart,
-#          default-deny-all included, while the data plane still deploys.
+#          default-deny-all included, while the data plane still deploys. The
+#          chart already draws this line by `global.dsaEnv`: production
+#          hard-rejects it via validators.enterpriseFullMeshMTLS's
+#          $mandatoryProfiles, development supports it (the repo's own mTLS
+#          suite renders it twice). The cases below pin BOTH halves, and pin the
+#          production half against the message of the guard that actually
+#          enforces it rather than our own backstop's.
 #
 # The reachability cases evaluate the UNION of all policies in the namespace,
 # which is the only semantics that means anything here: Kubernetes unions
@@ -263,26 +269,52 @@ python3 "$ASSERT" dnsnames "$WORK/cnp.yaml" \
 echo "ok  ToB-002: CNP permits its own NEW namespace, no stale suffixes remain"
 
 # ===========================================================================
-# ToB-006 — infrastructure.enabled=false cannot silently strip the policy layer.
+# ToB-006 — infrastructure-off must not silently strip the policy layer WHERE
+# THAT MATTERS, and must stay legal where the chart supports it.
+#
+# `global.dsaEnv` is a closed enum {development, production} and the chart
+# already draws the line on exactly this question. These cases pin BOTH halves,
+# and they pin the half that actually protects users against the message of the
+# guard that really enforces it.
 # ===========================================================================
-if helm template lucairn "$CHART" "${COMMON[@]}" --set infrastructure.enabled=false \
-     >/dev/null 2>"$WORK/infra-off.err"; then
-  fail "ToB-006: infrastructure.enabled=false rendered with the data plane up — every policy silently absent"
-fi
-grep -q "infrastructure.enabled=false but these data-plane sub-charts" "$WORK/infra-off.err" \
-  || fail "ToB-006: render refused, but not by the infrastructure guard: $(head -2 "$WORK/infra-off.err")"
-echo "ok  ToB-006: infrastructure.enabled=false with a live data plane is refused"
 
-# Negative arm: the guard must NOT fire when the data plane is off too.
+# The ACTIVE control: production hard-rejects infrastructure-off via
+# validators.enterpriseFullMeshMTLS's $mandatoryProfiles. Asserting the
+# PRE-EXISTING message is deliberate — see the note below on why asserting our
+# own ToB-006 message here would be a test that cannot fail for its stated
+# reason.
+if helm template lucairn "$CHART" \
+     -f "$CHART/values-prod.yaml" -f "$CHART/values-prod-site.example.yaml" \
+     --set infrastructure.enabled=false >/dev/null 2>"$WORK/prod-infra-off.err"; then
+  fail "ToB-006: production render ACCEPTED infrastructure.enabled=false — the PII plane would deploy with no policy at all"
+fi
+grep -q "infrastructure.enabled must be true when global.dsaEnv=production" "$WORK/prod-infra-off.err" \
+  || fail "ToB-006: production refused infrastructure-off, but not via \$mandatoryProfiles: $(head -2 "$WORK/prod-infra-off.err")"
+echo "ok  ToB-006: production hard-rejects infrastructure.enabled=false (active control: \$mandatoryProfiles)"
+
+# Development is EXEMPT, and must stay renderable: the repo's own
+# tests/test_enterprise_mtls_production_values.sh performs this exact render
+# twice. The first version of the ToB-006 guard fired here and turned CI red.
 if ! helm template lucairn "$CHART" \
+       --set global.dsaEnv=development \
        --set global.skipPullSecretGuard=true \
        --set infrastructure.enabled=false \
-       --set sandbox-a.enabled=false --set gateway.enabled=false \
-       --set id-bridge.enabled=false --set veil-witness.enabled=false \
-       >/dev/null 2>"$WORK/infra-off2.err"; then
-  grep -q "infrastructure.enabled=false but these data-plane sub-charts" "$WORK/infra-off2.err" \
-    && fail "ToB-006: guard over-fires — refused even with the data plane disabled"
+       --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+       >/dev/null 2>"$WORK/dev-infra-off.err"; then
+  echo "ToB-006: development render with infrastructure off FAILED:" >&2
+  cat "$WORK/dev-infra-off.err" >&2
+  fail "ToB-006: guard over-fires into the supported development path"
 fi
-echo "ok  ToB-006: policy-free render still allowed when the data plane is off too"
+echo "ok  ToB-006: development render with infrastructure off still succeeds (supported path)"
+
+# The ToB-006 guard itself is a BACKSTOP: with development exempt and production
+# already rejected earlier by $mandatoryProfiles, no reachable state hits it
+# today. That is asserted here rather than left implicit, so that if someone
+# later drops infrastructure.enabled from $mandatoryProfiles this line flips and
+# the backstop's message starts appearing — a signal, not a silent handover.
+if grep -q "infrastructure.enabled=false but these data-plane sub-charts" "$WORK/prod-infra-off.err"; then
+  fail "ToB-006: the backstop guard fired instead of \$mandatoryProfiles — the active control moved; re-read both guards before trusting either"
+fi
+echo "ok  ToB-006: backstop guard is correctly shadowed by the active production control"
 
 echo "PASS: tests/test_netpol_hardening.sh"
