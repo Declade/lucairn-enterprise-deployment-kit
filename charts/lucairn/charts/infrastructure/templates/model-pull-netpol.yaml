@@ -37,3 +37,61 @@ spec:
         - port: 443
           protocol: TCP
 {{- end }}
+{{- if and .Values.global.llmShieldEnabled .Values.global.identityModelRegistryEgress }}
+---
+# T-375. The L3 PII-plane model used to arrive over PLAINTEXT HTTP from a
+# hardcoded bare IP, reachable by EVERY pod in dsa-identity (the rule lived on
+# the namespace-wide `identity-egress` policy). It is now pulled by name from
+# the official Ollama registry over HTTPS.
+#
+# `ollama pull` is issued against the ollama-identity server, so the SERVER
+# makes the outbound connection — this policy grants that egress and nothing
+# else. It is scoped to the ollama-identity pod alone (NOT the namespace), is
+# restricted to TCP/443, and excludes every private range plus the cloud
+# metadata endpoint. NetworkPolicies are additive, so the sanitizer and the
+# other dsa-identity pods keep exactly the egress `identity-egress` gives them.
+#
+# AIR-GAPPED / NO-EGRESS INSTALLS: set `global.identityModelRegistryEgress:
+# false` and pre-seed the ollama-identity PVC (or point
+# `sandbox-a.sanitizer.llmScanModel` at a mirrored registry reference, e.g.
+# `registry.internal.example/library/qwen2.5:7b` — the model name is a chart
+# value, so a mirror needs no template change). With this policy absent the
+# pull Job fails and the sanitizer fails CLOSED at /readyz rather than scanning
+# without L3.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-model-registry-egress
+  namespace: dsa-identity
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ollama-identity
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution (required to resolve the registry hostname)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # HTTPS to public model registries only (no private/cluster networks)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16  # Block cloud metadata endpoint
+      ports:
+        - port: 443
+          protocol: TCP
+{{- end }}

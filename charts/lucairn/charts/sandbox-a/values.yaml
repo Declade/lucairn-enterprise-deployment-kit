@@ -130,6 +130,21 @@ sanitizer:
   qiEngineAction: "generalize"
   llmScanEnabled: false
   llmScanTimeout: 30
+  # T-375 — model PROVENANCE. This name is what the model-pull Job pulls from
+  # the official Ollama registry over HTTPS AND what the sanitizer asks for in
+  # sanitizer-configmap.yaml (`llm_scan.model`); the two MUST agree or every L3
+  # call 404s. It replaces the custom `pii-scanner-v2.gguf` that was fetched
+  # over plaintext HTTP from a hardcoded bare IP.
+  #
+  # qwen2.5:7b is the model this chart's sanitizer config already requested, so
+  # this change moves the TRANSPORT and PROVENANCE, not the detection
+  # behaviour. Moving to gemma4 is T-370 and is gated on its own recall gate —
+  # do not bump this value ahead of that gate.
+  #
+  # Air-gapped installs: point this at an internal mirror reference (e.g.
+  # `registry.internal.example/library/qwen2.5:7b`) or pre-seed the
+  # ollama-identity PVC and set `global.identityModelRegistryEgress: false`.
+  llmScanModel: "qwen2.5:7b"
   # FIX-B (full-stack-test-results-2026-05-29): L3 fail-mode for the sanitizer.
   # true = fail-CLOSED (503 l3_scrubber_unavailable when the L3 deep PII shield
   # is unavailable). false = continue-mode (proceed L1+L2, cert honestly
@@ -345,8 +360,9 @@ sanitizerStreamState:
 # released tag + sha256 digest (NET-02 supply-chain hardening) so the
 # PII-plane runtime cannot silently float to a mutable `:latest`. Override
 # repository/tag/digest per environment if you mirror images into a private
-# registry. The model-pull init container uses a pinned curl image to fetch
-# the GGUF weights.
+# registry. The model-pull Job reuses this same pinned image as a thin CLI
+# client; the pinned curl image it used to need is gone with the GGUF download
+# (T-375).
 ollamaIdentity:
   image:
     repository: ollama/ollama
@@ -355,12 +371,6 @@ ollamaIdentity:
     # the image ref renders as repository:tag@sha256:... so the pull is
     # digest-verified. Leave empty to pin by tag only.
     digest: "sha256:74a0929e1e082a09e4fdeef8594b8f4537f661366a04080e600c90ea9f712721"
-    pullPolicy: IfNotPresent
-  # Image used by the model-pull init container to download the GGUF weights.
-  curlImage:
-    repository: curlimages/curl
-    tag: "8.11.1"
-    digest: "sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69"
     pullPolicy: IfNotPresent
   # FAIL-01 demo warmth (PRD prd-2026-05-29-fail-safe-scrubber, §6): keep the
   # L3 scan model resident so the new fail-CLOSED block can never fire from a
@@ -391,7 +401,6 @@ secrets:
     adminKey: ""
     veilSigningKey: ""
     dsaServiceToken: ""  # PRODUCTION: set via existingSecret or --set; dev: inline value
-    modelAuthSecret: ""  # set when sanitizer.llmScanEnabled=true
     # PRODUCTION: must be set to a ≥32-char unique random secret. Sanitizer
     # canary-token detector uses it to sign canary tokens; without it, leaked
     # canary tokens cannot be authenticated as ours and silently disable the

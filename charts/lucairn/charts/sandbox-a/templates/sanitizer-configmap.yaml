@@ -105,7 +105,12 @@ data:
       llm_scan:
         enabled: {{ .Values.sanitizer.llmScanEnabled | default false }}
         ollama_url: "http://ollama-identity:11434"
-        model: "qwen2.5:7b"
+        # T-375: SAME value the model-pull Job pulls
+        # (ollama-identity-model-job.yaml). Hardcoding it here while the Job
+        # created a differently-named model is exactly how this chart ended up
+        # asking ollama-identity for `qwen2.5:7b` that nothing ever pulled.
+        # Bumping to gemma4 is T-370 (gated on its own recall gate).
+        model: {{ .Values.sanitizer.llmScanModel | default "qwen2.5:7b" | quote }}
         timeout_seconds: {{ .Values.sanitizer.llmScanTimeout | default 30 }}
         # FAIL-01 (PRD prd-2026-05-29-fail-safe-scrubber): fail-CLOSED. When the
         # L3 deep PII shield (on-device Qwen via Ollama) is unavailable, the

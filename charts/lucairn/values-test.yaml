@@ -86,7 +86,6 @@ sandbox-a:
         cpu: "1"
     llmScanEnabled: true
     llmScanMode: "ensemble"
-    modelAuthSecret: "e6nOIYTX01uk7oq6"  # password for model download (user hardcoded as dsa in job)
   secrets:
     values:
       encryptionKey: "dev-encryption-key-min-32-chars00"

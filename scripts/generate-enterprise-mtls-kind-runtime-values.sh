@@ -129,8 +129,7 @@ write_env sandbox-a \
   "DSA_ADMIN_KEY=$admin_key" \
   "LCR_SIGNING_KEY=$sanitizer_seed" \
   "DSA_SERVICE_TOKEN=$service_token" \
-  "CANARY_HMAC_KEY=$canary_hmac_key" \
-  "MODEL_AUTH_SECRET=$(random_hex)"
+  "CANARY_HMAC_KEY=$canary_hmac_key"
 
 write_env sandbox-b \
   "SANDBOX_B_REDIS_URL=redis://:$sandbox_b_redis_password@sandbox-b-redis:6379" \
