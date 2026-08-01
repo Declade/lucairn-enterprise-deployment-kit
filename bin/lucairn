@@ -599,8 +599,21 @@ _vllm_l3_yaml_selected() {
 # parser rather than a `sed 's#[:/].*$##'` truncation because that truncation
 # mangles an IPv6 literal (`http://[fd00::1]:8000` -> `[fd00`) and then
 # classifies the mangled remnant.
+#
+# A SCHEME IS REQUIRED. `urlparse("10.0.0.10:8000").hostname` is None — Python
+# reads `10.0.0.10` as the scheme — so the sanitizer's
+# `_is_internal_l3_base_url` returns False for a schemeless value and BLOCKS at
+# boot. Without this gate `${url#*://}` is a silent no-op on such a value and
+# doctor would classify `10.0.0.10` INTERNAL and pass, breaking the subset
+# guarantee below in exactly the direction that matters (doctor green, runtime
+# blocked). Same for the one-slash typo `http:/10.0.0.10:8000`. Emit nothing so
+# the caller raises its "could not parse a host" FAIL.
 _l3_base_url_host() {
   local url="${1:-}" host
+  case "$url" in
+    *://*) ;;
+    *) printf ''; return 0 ;;
+  esac
   host="$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')"
   host="${host#*://}"          # drop scheme
   host="${host%%/*}"           # drop path
@@ -1584,14 +1597,26 @@ check_l3_split_pool_preflight() {
       ;;
   esac
 
-  local profile_note="no local vllm-l3 profile"
+  # A split-pool box must NOT carry the local vllm-l3 profile. This is a FAIL,
+  # not a warning: declaring the marker routes this preflight AWAY from the
+  # in-box GPU/NVIDIA-toolkit/WSL2 checks, so a box that still has the profile
+  # selected gets those fatal checks silently downgraded — while Compose WILL
+  # start model-runtime-vllm-l3 and die at container-create on a GPU-less host
+  # ("could not select device driver ... does not support GPU capabilities").
+  # Failing here keeps the marker from becoming a way to mute the GPU preflight.
   if _vllm_l3_profile_active "$env_file"; then
-    profile_note="local vllm-l3 profile ALSO active — see warning"
-    warn "l3-split-pool: the 'vllm-l3' compose profile is ALSO active on this box while the sanitizer dials the remote pool ($host) — the local model-runtime-vllm-l3 container would start and sit unused (and it needs a GPU this box may not have). Remove 'vllm-l3' from COMPOSE_PROFILES for a split-pool box. See docs/L3_SPLIT_POOL.md."
+    echo "l3-split-pool: FAIL — LUCAIRN_L3_SPLIT_POOL is declared but 'vllm-l3' is still in COMPOSE_PROFILES."
+    echo "l3-split-pool:   A split-pool box runs NO local L3 container — the GPU is on the pool host ($host)."
+    echo "l3-split-pool:   Compose would still start model-runtime-vllm-l3 here and fail at container-create"
+    echo "l3-split-pool:   on a GPU-less box, and declaring the marker has already routed this preflight away"
+    echo "l3-split-pool:   from the GPU / NVIDIA-toolkit / WSL2 checks that would have caught it."
+    echo "l3-split-pool:   Remove 'vllm-l3' from COMPOSE_PROFILES, or drop LUCAIRN_L3_SPLIT_POOL and run the"
+    echo "l3-split-pool:   in-box lane (docs/L3_VLLM_RUNTIME.md). See docs/L3_SPLIT_POOL.md."
+    failed=1
   fi
 
   if [ "$failed" -eq 0 ]; then
-    echo "l3-split-pool: config ok (l3_runtime: vllm, remote internal l3_base_url, $profile_note)"
+    echo "l3-split-pool: config ok (l3_runtime: vllm, remote internal l3_base_url, no local vllm-l3 profile)"
     info "l3-split-pool: GPU / NVIDIA-toolkit / WSL2 checks SKIPPED — the GPU lives on the pool host, not this box."
     info "l3-split-pool: verify reachability post-up FROM THE SANITIZER CONTAINER (a host-side probe proves nothing about the container's routing):"
     info "  docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml \\"
@@ -1676,6 +1701,12 @@ check_vllm_l3_preflight() {
     echo "vllm-l3:   dials http://vllm-l3:8000 with no DNS → fail-closed 503 on EVERY request."
     echo "vllm-l3:   Add vllm-l3 to COMPOSE_PROFILES (and pre-stage the model — see docs/L3_VLLM_RUNTIME.md),"
     echo "vllm-l3:   or re-comment l3_runtime in config/default-sanitizer.yaml to use the ollama-identity default."
+    # This shape is ALSO exactly a split-L3-pool box that forgot its marker: a
+    # remote pool needs no local profile, so "add the GPU profile" would be the
+    # wrong fix there. Name the other possibility instead of assuming in-box.
+    echo "vllm-l3:   If this box is a SPLIT L3 POOL client (l3_base_url points at a remote GPU host on your"
+    echo "vllm-l3:   private network), the fix is NEITHER of those: set LUCAIRN_L3_SPLIT_POOL=true in"
+    echo "vllm-l3:   customer.env so doctor runs the split-pool preflight. See docs/L3_SPLIT_POOL.md."
     failed=1
     # The missing profile is the fix-first issue; the GPU/WSL/base_url checks
     # below are moot for a deploy that will 503 anyway. Return now.

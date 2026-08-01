@@ -184,6 +184,33 @@ l3_base_url: http://${local_host}:8000" 'LUCAIRN_L3_SPLIT_POOL=true')"
   assert_case "split_rejects_local_target_${local_host//./-}" "$ENVF" 1 "is a LOCAL target"
 done
 
+# A schemeless value (or the one-slash typo) has NO hostname to urlparse — the
+# sanitizer's _is_internal_l3_base_url gets hostname=None -> False -> BLOCK at
+# boot. Doctor previously classified `10.0.0.10` INTERNAL here and passed, which
+# is the one direction the subset guarantee forbids (doctor green, runtime
+# blocked). Cross-repo class, not a one-off: the DSA sanitizer carried the
+# mirror-image schemeless bug in its userinfo check (DSA PR #464).
+for bad_url in "10.0.0.10:8000" "http:/10.0.0.10:8000"; do
+  ENVF="$(mk_case "schemeless-$(printf '%s' "$bad_url" | tr -c 'a-z0-9' '-')" "l3_runtime: vllm
+l3_base_url: ${bad_url}" 'LUCAIRN_L3_SPLIT_POOL=true')"
+  assert_case "split_rejects_schemeless_${bad_url//[^a-z0-9]/_}" "$ENVF" 1 "could not parse a host"
+done
+
+# A split-pool box must NOT carry the local vllm-l3 profile. This is a FAIL, not
+# a warning: declaring the marker routes the preflight away from the GPU /
+# NVIDIA-toolkit / WSL2 checks, while Compose still starts the local container.
+PROFILE_STILL_ON="$(mk_case profile-still-on "$SPLIT_YAML" 'LUCAIRN_L3_SPLIT_POOL=true
+COMPOSE_PROFILES=vllm-l3')"
+assert_case "split_with_local_profile_fails" "$PROFILE_STILL_ON" 1 "still in COMPOSE_PROFILES"
+
+# The channel-mismatch FAIL (split shape MINUS the marker) must name the marker
+# and its doc — otherwise a split operator who forgot it is told to add a GPU
+# profile, which is the wrong fix for that topology.
+SPLIT_NO_MARKER="$(mk_case split-no-marker 'l3_runtime: vllm
+l3_base_url: http://10.0.0.10:8000' '')"
+assert_case "inbox_mismatch_names_split_marker" "$SPLIT_NO_MARKER" 1 "LUCAIRN_L3_SPLIT_POOL=true"
+assert_case "inbox_mismatch_names_split_doc" "$SPLIT_NO_MARKER" 1 "docs/L3_SPLIT_POOL.md"
+
 # Declared split but the YAML runtime switch was never flipped -> L3 still goes
 # to ollama-identity while the operator believes it goes to the pool.
 NO_RUNTIME="$(mk_case no-runtime 'l3_base_url: http://10.0.0.10:8000' 'LUCAIRN_L3_SPLIT_POOL=true')"
@@ -214,12 +241,12 @@ l3_base_url: http://vllm-l3:8000' '')"
 assert_case "inbox_half_enabled_still_fails" "$HALF" 1 "the vllm-l3 profile is not in COMPOSE_PROFILES"
 assert_absent "inbox_half_enabled_says_nothing_about_split" "$HALF" "l3-split-pool:"
 
-# The "config ok" line must not claim "no local vllm-l3 profile" when the
-# profile IS active — the WARN path and the summary line have to agree.
+# The "config ok" summary claims "no local vllm-l3 profile", so it must never be
+# printed on a box that still has the profile — a comment/summary describing a
+# state the config does not have is the exact class this suite exists to stop.
 PROFILE_TOO="$(mk_case profile-too "$SPLIT_YAML" 'LUCAIRN_L3_SPLIT_POOL=true
 COMPOSE_PROFILES=vllm-l3')"
-assert_case "split_with_active_profile_warns" "$PROFILE_TOO" 0 "compose profile is ALSO active"
-assert_absent "split_ok_line_does_not_claim_absent_profile" "$PROFILE_TOO" "no local vllm-l3 profile"
+assert_absent "split_ok_line_never_printed_with_active_profile" "$PROFILE_TOO" "l3-split-pool: config ok"
 
 # Stock install (no L3 runtime override at all) stays silent.
 STOCK="$(mk_case stock 'model: qwen2.5:7b' '')"
@@ -270,6 +297,134 @@ classifier_case "http://169.254.169.254:8000"      external
 classifier_case "http://[2001:4860:4860::8888]:8000" external
 classifier_case "http://[fe80::1]:8000"            external
 classifier_case "http://999.0.0.1:8000"            external
+# Schemeless / malformed: urlparse yields NO hostname, so the sanitizer treats
+# these as non-internal and BLOCKS at boot. Doctor must not call them internal.
+classifier_case "10.0.0.10:8000"                   external
+classifier_case "http:/10.0.0.10:8000"             external
+classifier_case "10.0.0.10"                        external
+
+# ---------------------------------------------------------------------------
+# The shipped sanitizer config must survive its OWN instructions.
+#
+# config/default-sanitizer.yaml documents two opt-in L3 options as commented
+# key lines and tells the operator to uncomment them. If a snippet's indentation
+# does not match its sibling active keys, following that instruction yields a
+# YAML the sanitizer cannot parse: load_sanitizer_config (DSA
+# services/sanitizer/config.py) is called unguarded at app start, so the
+# container never boots — while doctor's _sanitizer_config_declares is
+# indentation-agnostic and still reports "config ok". Shipped that way once
+# (Option B at 6 spaces vs Option A / ollama_url at 4).
+#
+# Positive control for the class: mechanically uncomment each documented option
+# (strip exactly the leading "# ") and (a) assert the resulting key indentation
+# equals the sibling active key's, always; (b) YAML-parse the result when a
+# parser is available.
+# ---------------------------------------------------------------------------
+
+SAN_CFG="$ROOT/config/default-sanitizer.yaml"
+
+# Sibling indentation = the active `ollama_url:` key inside the same llm_scan block.
+SIBLING_INDENT="$(awk '/^[[:space:]]*ollama_url:/ {match($0, /^[[:space:]]*/); print RLENGTH; exit}' "$SAN_CFG")"
+N=$((N + 1))
+if [ "${SIBLING_INDENT:-0}" -gt 0 ]; then
+  echo "ok   [sanitizer_cfg_sibling_indent_found] (${SIBLING_INDENT} spaces)"
+else
+  echo "FAIL [sanitizer_cfg_sibling_indent_found]: could not locate an active ollama_url: key"
+  FAILS=$((FAILS + 1))
+fi
+
+# Every commented `# <key>:` line for the two opt-in keys must uncomment to the
+# sibling indentation. Checks EVERY occurrence, so a third option added later is
+# covered automatically.
+N=$((N + 1))
+# NOTE: awk sub() has no capture-group backreferences, so the strip is done by
+# splicing around the first '#' — the same edit an operator makes by hand.
+BAD_INDENT="$(awk -v want="$SIBLING_INDENT" '
+  /^[[:space:]]*#[[:space:]]*(l3_runtime|l3_base_url):/ {
+    i = index($0, "#")
+    pre = substr($0, 1, i - 1)
+    rest = substr($0, i + 1)
+    sub(/^ /, "", rest)                # strip exactly one space after "#"
+    line = pre rest
+    match(line, /^[[:space:]]*/)
+    if (RLENGTH != want) printf "line %d: indent %d (want %d): %s\n", NR, RLENGTH, want, $0
+  }' "$SAN_CFG")"
+if [ -z "$BAD_INDENT" ]; then
+  echo "ok   [sanitizer_cfg_options_uncomment_to_sibling_indent]"
+else
+  echo "FAIL [sanitizer_cfg_options_uncomment_to_sibling_indent]: uncommenting these yields a broken key indent"
+  printf '%s\n' "$BAD_INDENT"
+  FAILS=$((FAILS + 1))
+fi
+
+# Real parse per option block. Blocks are delimited by their header markers, so
+# exactly one option is uncommented at a time (uncommenting both would duplicate
+# keys, which is not what the instructions say to do).
+uncomment_option() {
+  # uncomment_option OPTION_INDEX -> prints the YAML with that option's key lines active
+  awk -v idx="$1" '
+    /^[[:space:]]*#[[:space:]]*(l3_runtime|l3_base_url):/ {
+      block++
+      if (int((block + 1) / 2) == idx) {
+        i = index($0, "#")
+        pre = substr($0, 1, i - 1)
+        rest = substr($0, i + 1)
+        sub(/^ /, "", rest)
+        print pre rest; next
+      }
+      print; next
+    }
+    { print }' "$SAN_CFG"
+}
+
+OPTION_COUNT="$(grep -cE '^[[:space:]]*#[[:space:]]*l3_runtime:' "$SAN_CFG")"
+N=$((N + 1))
+if [ "$OPTION_COUNT" -ge 2 ]; then
+  echo "ok   [sanitizer_cfg_documents_both_l3_options] ($OPTION_COUNT)"
+else
+  echo "FAIL [sanitizer_cfg_documents_both_l3_options]: expected >=2 commented l3_runtime options, found $OPTION_COUNT"
+  FAILS=$((FAILS + 1))
+fi
+
+YAML_PARSER=""
+if python3 -c 'import yaml' 2>/dev/null; then
+  YAML_PARSER="python"
+elif command -v ruby >/dev/null 2>&1; then
+  YAML_PARSER="ruby"
+fi
+
+opt=1
+while [ "$opt" -le "$OPTION_COUNT" ]; do
+  N=$((N + 1))
+  CAND="$WK/sanitizer-option-$opt.yaml"
+  uncomment_option "$opt" > "$CAND"
+  # The uncomment must actually have happened, else the case proves nothing.
+  if ! grep -qE '^[[:space:]]*l3_runtime:' "$CAND"; then
+    echo "FAIL [sanitizer_cfg_option_${opt}_uncommented]: no active l3_runtime after uncommenting option $opt"
+    FAILS=$((FAILS + 1))
+  elif [ -z "$YAML_PARSER" ]; then
+    echo "skip [sanitizer_cfg_option_${opt}_parses] (no python3+yaml, no ruby — indent assertion above still ran)"
+  elif { [ "$YAML_PARSER" = "python" ] && python3 -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' "$CAND" 2>/dev/null; } \
+    || { [ "$YAML_PARSER" = "ruby" ] && ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$CAND" 2>/dev/null; }; then
+    echo "ok   [sanitizer_cfg_option_${opt}_parses] ($YAML_PARSER)"
+  else
+    echo "FAIL [sanitizer_cfg_option_${opt}_parses]: uncommenting documented option $opt yields unparseable YAML"
+    FAILS=$((FAILS + 1))
+  fi
+  opt=$((opt + 1))
+done
+
+# The shipped file itself (nothing uncommented) must of course parse.
+N=$((N + 1))
+if [ -z "$YAML_PARSER" ]; then
+  echo "skip [sanitizer_cfg_shipped_parses] (no parser)"
+elif { [ "$YAML_PARSER" = "python" ] && python3 -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' "$SAN_CFG" 2>/dev/null; } \
+  || { [ "$YAML_PARSER" = "ruby" ] && ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$SAN_CFG" 2>/dev/null; }; then
+  echo "ok   [sanitizer_cfg_shipped_parses] ($YAML_PARSER)"
+else
+  echo "FAIL [sanitizer_cfg_shipped_parses]: config/default-sanitizer.yaml does not parse as shipped"
+  FAILS=$((FAILS + 1))
+fi
 
 echo
 if [ "$FAILS" -ne 0 ]; then

@@ -121,8 +121,12 @@ sanitizer:
     # profile (there is no local vLLM container here) and you DO set
     # LUCAIRN_L3_SPLIT_POOL=true in customer.env so `bin/lucairn doctor` runs the
     # split-pool preflight instead of the in-box GPU checks.
-    #   l3_runtime: vllm
-    #   l3_base_url: http://10.0.0.10:8000     # RFC1918 / private-DNS ONLY
+    # Uncomment EXACTLY ONE option's two lines (A or B), never both. These sit at
+    # the same indentation as Option A / `ollama_url` above: uncommenting strips
+    # only the leading "# " and must leave the key at 4 spaces, or the sanitizer
+    # fails to parse its config at boot.
+    # l3_runtime: vllm
+    # l3_base_url: http://10.0.0.10:8000     # RFC1918 / private-DNS ONLY
     # An RFC1918 address classifies as INTERNAL in the sanitizer's own allowlist
     # (dual-sandbox-architecture services/sanitizer/llm_scan.py:431-492, IP branch
     # at :484-492), so no l3_allow_external_base_url opt-in is needed or used. A

@@ -50,10 +50,10 @@ runs**.
 ## ⛔ Hard requirements
 
 - **Private network only.** `l3_base_url` must be an RFC1918 address
-  (`10.x` / `172.16-31.x` / `192.168.x`), an IPv6 ULA (`fd00::/8`), or a
+  (`10.x` / `172.16-31.x` / `192.168.x`), an IPv6 ULA (`fc00::/7`), or a
   private-DNS name. A public FQDN/IP is **blocked by the sanitizer at boot**
   (`dual-sandbox-architecture services/sanitizer/config.py:1507-1533`) and
-  **failed by `bin/lucairn doctor`** (`bin/lucairn:1573-1584`).
+  **failed by `bin/lucairn doctor`** (`bin/lucairn:1586-1597`).
 - **The pool binds on the private interface and publishes NO public port.** The
   endpoint is unauthenticated by construction — see *Data flow* below.
 - **The pool is inside the customer environment.** This option does not send
@@ -62,11 +62,15 @@ runs**.
   driver, NVIDIA Container Toolkit; WSL2 is dead for vLLM's V1 engine. Those
   constraints are unchanged — they just apply to the pool host now, not to every
   gateway box. See `docs/L3_VLLM_RUNTIME.md` § *Hard requirements*.
-- **The pool serves the model the recall gate blessed.** The kit's in-box vLLM
-  service pins `--served-model-name qwen2.5:7b` + `Qwen/Qwen2.5-7B-Instruct-AWQ`
-  at a fixed `--revision` (`docker-compose.self-hosted.yml:603-612`). A pool
-  serving a different model or quantization is a different artifact and needs
-  its own recall evidence.
+- **The pool serves the same pinned artifact as the in-box lane.** The kit's
+  in-box vLLM service pins `--served-model-name qwen2.5:7b` +
+  `Qwen/Qwen2.5-7B-Instruct-AWQ` at a fixed `--revision`
+  (`docker-compose.self-hosted.yml:603-612`); point your pool at the same repo
+  and revision. **Recall evidence for this vLLM/AWQ artifact is pending its own
+  per-artifact gate** — the 2026-07-31 recall gate covered the Ollama `Q4_K_M`
+  lane (at ceiling on a saturated corpus), and results do **not** transfer
+  across quantization formats. A pool serving a different model or quantization
+  is a different artifact again and needs its own gate.
 - **Run the pool with request-content logging OFF.** The kit's in-box service
   passes `--disable-log-requests` (`docker-compose.self-hosted.yml:622-628`)
   precisely so PII does not land in container logs. Your pool must do the same —
@@ -79,7 +83,7 @@ runs**.
 ### 1. Sanitizer YAML — the runtime switch
 
 `config/default-sanitizer.yaml`, in the `llm_scan:` block
-(`config/default-sanitizer.yaml:104-129`):
+(`config/default-sanitizer.yaml:104-133`):
 
 ```yaml
   llm_scan:
@@ -89,6 +93,13 @@ runs**.
     l3_runtime: vllm
     l3_base_url: http://10.0.0.10:8000      # your pool's PRIVATE address
 ```
+
+`l3_base_url` **must carry a scheme** (`http://`). `urlparse("10.0.0.10:8000")`
+yields no hostname — Python reads `10.0.0.10` as the scheme — so a schemeless
+value is not internal to the sanitizer and is blocked at boot; doctor FAILs it
+the same way (`bin/lucairn:611-632`).
+
+Uncomment **exactly one** option's two lines in that block, A or B, never both.
 
 `l3_runtime` / `l3_base_url` are **YAML-only** fields. There is no
 `LUCAIRN_L3_RUNTIME` / `LUCAIRN_L3_BASE_URL` env override — the compose overlay
@@ -101,20 +112,22 @@ LUCAIRN_L3_SPLIT_POOL=true
 ```
 
 **No service reads this variable.** It is read by `bin/lucairn doctor` only
-(`bin/lucairn:710-719`). It exists because, from configuration alone, a
+(`bin/lucairn:723-732`). It exists because, from configuration alone, a
 split-pool box (`l3_runtime: vllm`, no `vllm-l3` profile) is **indistinguishable**
 from the broken half-enabled in-box box (`l3_runtime: vllm`, profile forgotten →
 the sanitizer dials a compose alias that was never started → fail-closed 503 on
 every request). Doctor must keep failing the second one, so the first one
 declares itself. A typo'd value is a hard doctor failure, never a silent skip
-(`bin/lucairn:710-719`, `bin/lucairn:1651-1656`).
+(`bin/lucairn:723-732`, `bin/lucairn:1678-1683`).
 
 ### 3. `COMPOSE_PROFILES` — do **not** add `vllm-l3`
 
-There is no local vLLM container on a pool client. If the profile is active
-anyway, doctor warns (`bin/lucairn:1587-1589`): the local
-`model-runtime-vllm-l3` service would start, demand a GPU this box may not have,
-and sit unused while the sanitizer dials the pool.
+There is no local vLLM container on a pool client, and doctor **FAILs** if the
+profile is still selected — Compose would start `model-runtime-vllm-l3` here and
+die at container-create on a GPU-less host, and declaring the marker has already
+routed this preflight away from the GPU / NVIDIA-toolkit / WSL2 checks that
+would otherwise have caught it. The marker must not become a way to mute the GPU
+preflight.
 
 ### 4. The pool host
 
@@ -152,7 +165,7 @@ Also crossing: **nothing else.** The vLLM L3 backend sends **no
 credential surface at all (`services/sanitizer/llm_scan.py:400-412`), and a
 `user:pass@` URL is rejected outright
 (`services/sanitizer/llm_scan.py:495-510`, doctor mirror at
-`bin/lucairn:1541-1549`).
+`bin/lucairn:1554-1562`).
 
 Not crossing: certificates, the pseudonym registry, audit records, and the
 witness chain. Those stay on the gateway box exactly as before — this option
@@ -170,7 +183,7 @@ The sanitizer classifies `l3_base_url` with an **allowlist**,
 `_is_internal_l3_base_url`
 (`dual-sandbox-architecture services/sanitizer/llm_scan.py:431-492`):
 
-- an **IP literal** is internal **iff** it is loopback, RFC1918/RFC4193 private,
+- an **IP literal** is internal **iff** it is loopback, RFC1918 / RFC4193 (`fc00::/7`) private,
   or the unspecified address — and **never** link-local, so the cloud metadata
   endpoint `169.254.169.254` is excluded (`llm_scan.py:484-492`);
 - a **hostname** is internal iff it is single-label (no dot) or ends with
@@ -184,7 +197,7 @@ non-internal endpoint over HTTPS with a loud audit log,
 doctor fails a non-internal host regardless.
 
 `bin/lucairn doctor` mirrors that classifier host-side in `_l3_host_is_internal`
-(`bin/lucairn:651-694`). The mirror is deliberately a **subset**: every address
+(`bin/lucairn:664-707`). The mirror is deliberately a **subset**: every address
 doctor calls internal is also internal to the sanitizer, but not the reverse — so
 doctor can never green-light a `base_url` the sanitizer would block at boot.
 Verified 2026-08-01 by running the sanitizer's own function over the exact case
@@ -202,17 +215,18 @@ list pinned in `tests/test_l3_split_pool_preflight.sh`.
 ## What `bin/lucairn doctor` checks
 
 With `LUCAIRN_L3_SPLIT_POOL=true`, `check_l3_split_pool_preflight`
-(`bin/lucairn:1515-1601`) replaces the in-box L3 preflight:
+(`bin/lucairn:1528-1628`) replaces the in-box L3 preflight:
 
 | Condition | Result |
 |---|---|
 | `l3_runtime` is not `vllm` in the active YAML | **FAIL** — L3 still routes to `ollama-identity` |
 | `l3_base_url` unset/commented | **FAIL** |
 | `l3_base_url` carries userinfo (`user:pass@`) | **FAIL** — would synthesize an `Authorization` header |
+| `l3_base_url` has no scheme (`10.0.0.10:8000`, `http:/…`) | **FAIL** — `urlparse` yields no hostname, so the sanitizer blocks it at boot |
 | host is `vllm-l3` / `localhost` / loopback / `0.0.0.0` | **FAIL** — a pool is remote; nothing local serves L3 here |
 | host is a public FQDN or public IP | **FAIL** — the sanitizer blocks it at boot anyway |
 | host is RFC1918 / ULA / private-DNS | **pass** |
-| `vllm-l3` profile also active | **WARN** — local GPU service would run unused |
+| `vllm-l3` profile also active | **FAIL** — Compose would still start the local GPU container, and the marker has already routed the GPU/WSL2 checks away |
 | GPU / NVIDIA toolkit / WSL2 | **skipped** — the GPU is on the pool host |
 
 Undeclared (the default), the split branch is inert and every in-box check
@@ -223,7 +237,7 @@ behaves exactly as before — pinned by the no-regression cases in
 the pool from inside its container, so a host-side probe can pass or fail for
 reasons that do not apply to the container. Doctor prints the post-up command
 instead — the same honesty rule the in-box lane already follows for its
-no-host-port service (`bin/lucairn:1863-1865`).
+no-host-port service (`bin/lucairn:1896-1898`).
 
 ---
 
@@ -268,17 +282,17 @@ stay off the AI plane (`docker-compose.self-hosted.yml:530-537`).
 
 | Failure mode | Caught by |
 |---|---|
-| Split declared, YAML runtime never flipped | `doctor` FAIL (`bin/lucairn:1522-1532`) |
+| Split declared, YAML runtime never flipped | `doctor` FAIL (`bin/lucairn:1535-1545`) |
 | `l3_base_url` unset | `doctor` FAIL |
 | Pool address is public | `doctor` FAIL + sanitizer boot block (`config.py:1507-1533`) |
 | Hostname that looks RFC1918 (`10.evil.com`) | `doctor` FAIL (`_l3_host_is_internal`) + sanitizer boot block |
 | Credentials in the URL | `doctor` FAIL + sanitizer boot rejection (`llm_scan.py:495-510`) |
 | Pointed at the local `vllm-l3` alias with no local service | `doctor` FAIL (would otherwise be 503-on-every-request) |
-| Local `vllm-l3` profile left active on a pool client | `doctor` WARN |
+| Local `vllm-l3` profile left active on a pool client | `doctor` FAIL |
 | Marker typo (`LUCAIRN_L3_SPLIT_POOL=ture`) | `doctor` FAIL — never a silent skip |
 | Pool unreachable from the sanitizer container | post-up `exec` probe above; then fail-closed 503s (`config/default-sanitizer.yaml:135`) |
 | Pool logs request content | **not caught by the kit** — you operate the pool; pass `--disable-log-requests` |
-| Pool serves a different model/quantization | **not caught by the kit** — pin the model and re-run your recall gate |
+| Pool serves a different model/quantization | **not caught by the kit** — pin the model + revision and run a recall gate on that artifact |
 
 The last two are honest gaps, not oversights: the kit does not deploy the pool
 host, so it cannot assert anything about it.
