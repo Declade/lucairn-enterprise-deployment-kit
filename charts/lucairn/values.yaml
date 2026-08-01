@@ -49,6 +49,14 @@ global:
   ingestEgressEnabled: false
   ollamaEnabled: true
   demoEnabled: false
+  # T-375. Allow the ollama-identity pod (the L3 PII-plane runtime) to reach
+  # public model registries over HTTPS so the model-pull Job can fetch
+  # `sandbox-a.sanitizer.llmScanModel` by name. Rendered only when
+  # `llmShieldEnabled` is also true, and scoped to that one pod by
+  # infrastructure/templates/model-pull-netpol.yaml — no other dsa-identity pod
+  # gains egress. Set false for air-gapped installs and pre-seed the
+  # ollama-identity PVC (or point the model value at an internal mirror).
+  identityModelRegistryEgress: true
   # L3 deep-PII-shield required flag — SINGLE SOURCE OF TRUTH for BOTH the
   # sanitizer (sandbox-a) AND the veil-witness. The witness binary reads
   # LUCAIRN_L3_REQUIRED (services/veil-witness/internal/verifier/verifier.go:171)

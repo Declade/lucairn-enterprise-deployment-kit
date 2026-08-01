@@ -194,18 +194,14 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
-{{- if .Values.global.llmShieldEnabled }}
-    # Model pull job: download GGUF from DSA model server (port 8443)
-    # Scoped to model-pull pods only via podSelector in model-pull-netpol-identity.
-    # The rule here allows the namespace-level egress; the per-pod NetworkPolicy
-    # in ollama-identity-model-job further restricts it to labeled pods.
-    - to:
-        - ipBlock:
-            cidr: 157.90.171.30/32
-      ports:
-        - port: 8443
-          protocol: TCP
-{{- end }}
+    # T-375: the plaintext-HTTP egress hole to a hardcoded bare-IP GGUF server
+    # (157.90.171.30:8443) that used to sit here is DELETED. It was granted
+    # namespace-wide (this policy's podSelector is `{}`), so every pod in
+    # dsa-identity — the sanitizer included — could reach it. The model is now
+    # pulled by name from the official registry over HTTPS by the
+    # ollama-identity server; that egress is granted by the dedicated,
+    # pod-scoped `identity-model-registry-egress` policy in
+    # model-pull-netpol.yaml, not here.
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
