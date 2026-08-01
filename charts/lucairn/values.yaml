@@ -65,6 +65,20 @@ global:
   # infrastructure/templates/model-pull-netpol.yaml — no other dsa-identity pod
   # gains egress. Set false for air-gapped installs and pre-seed the
   # ollama-identity PVC (or point the model value at an internal mirror).
+  #
+  # T-390 — SCOPE OF THE "PUBLIC REGISTRIES ONLY" GUARANTEE. The rule is an
+  # ipBlock 0.0.0.0/0 with an except-list covering RFC 1918 (10/8, 172.16/12,
+  # 192.168/16), RFC 6598 CGNAT (100.64/10 — where managed-Kubernetes Pod and
+  # Service CIDRs and Tailscale/WireGuard overlays commonly live), loopback
+  # (127/8) and the cloud metadata endpoint (169.254/16).
+  #
+  # ⚠️ This except-list is IPv4-ONLY — ipBlock except entries are per-address-
+  # family. On a DUAL-STACK cluster the IPv6 equivalents (fc00::/7, ::1/128, and
+  # your provider's IPv6 Pod/Service CIDR) are NOT excluded by it. The failure
+  # direction is FAIL-CLOSED, not leaky: there is no IPv6 allow rule at all, so
+  # default-deny applies and the model PULL BREAKS rather than reaching further
+  # than intended. If you need the pull over IPv6, add an explicit ipBlock with
+  # your cluster's IPv6 except-list — do not widen the IPv4 rule.
   identityModelRegistryEgress: true
   # L3 deep-PII-shield required flag — SINGLE SOURCE OF TRUTH for BOTH the
   # sanitizer (sandbox-a) AND the veil-witness. The witness binary reads

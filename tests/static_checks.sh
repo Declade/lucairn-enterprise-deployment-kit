@@ -47,6 +47,7 @@ assert_no_executable_rg() {
     "$ROOT/tests/test_redact_stream.sh" \
     "$ROOT/tests/test_tms_trust_zones.sh" \
     "$ROOT/tests/test_sec_hardening.sh" \
+    "$ROOT/tests/test_netpol_hardening.sh" \
     "$ROOT/tests/test_enterprise_mtls_cert_contract.sh" \
     "$ROOT/tests/test_enterprise_mtls_kind_custody.sh" \
     "$ROOT/tests/test_enterprise_mtls_kind_image_preload.sh" \

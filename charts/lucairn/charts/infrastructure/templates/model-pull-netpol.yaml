@@ -4,7 +4,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: model-pull-egress
-  namespace: dsa-ai
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "ai") }}
   labels:
     app.kubernetes.io/part-of: dsa
 spec:
@@ -24,7 +24,28 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
-    # HTTPS to public model registries only (no private/cluster networks)
+    # HTTPS to public model registries only (no private/cluster networks).
+    #
+    # T-390: the except-list is what makes "public registries ONLY" true. It was
+    # missing two ranges that are routinely NOT public:
+    #   100.64.0.0/10  RFC 6598 carrier-grade NAT. Managed Kubernetes providers
+    #                  (GKE, EKS, AKS and others) commonly allocate Pod and
+    #                  Service CIDRs out of this range, and Tailscale/WireGuard
+    #                  overlays live here too. Without this line a rule that
+    #                  reads as "public internet only" would in fact reach other
+    #                  namespaces' Pods on those clusters — crossing the very
+    #                  namespace isolation the rest of this file establishes.
+    #   127.0.0.0/8    loopback. Never a legitimate registry destination.
+    #
+    # ⚠️ IPv4-ONLY LIMITATION (dual-stack operators). ipBlock except-lists are
+    # per-family: these entries constrain IPv4 only. On a dual-stack cluster the
+    # equivalent IPv6 ranges (fc00::/7 unique-local, ::1/128 loopback, and the
+    # provider's Pod/Service CIDR) are NOT covered by this rule. The failure
+    # direction is SAFE rather than leaky: an IPv6-only egress path has no
+    # matching allow rule at all, so the default-deny applies and the model pull
+    # simply FAILS — it does not silently gain a wider reach. Dual-stack
+    # operators who need the pull to work over IPv6 must add an explicit ipBlock
+    # with the IPv6 except-list for their cluster.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -32,6 +53,8 @@ spec:
               - 10.0.0.0/8
               - 172.16.0.0/12
               - 192.168.0.0/16
+              - 100.64.0.0/10   # T-390: RFC 6598 CGNAT — managed-k8s Pod/Service CIDRs, overlay networks
+              - 127.0.0.0/8     # T-390: loopback
               - 169.254.0.0/16  # Block cloud metadata endpoint
       ports:
         - port: 443
@@ -72,7 +95,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: identity-model-registry-egress
-  namespace: dsa-identity
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}
   labels:
     app.kubernetes.io/part-of: dsa
 spec:
@@ -92,7 +115,28 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
-    # HTTPS to public model registries only (no private/cluster networks)
+    # HTTPS to public model registries only (no private/cluster networks).
+    #
+    # T-390: the except-list is what makes "public registries ONLY" true. It was
+    # missing two ranges that are routinely NOT public:
+    #   100.64.0.0/10  RFC 6598 carrier-grade NAT. Managed Kubernetes providers
+    #                  (GKE, EKS, AKS and others) commonly allocate Pod and
+    #                  Service CIDRs out of this range, and Tailscale/WireGuard
+    #                  overlays live here too. Without this line a rule that
+    #                  reads as "public internet only" would in fact reach other
+    #                  namespaces' Pods on those clusters — crossing the very
+    #                  namespace isolation the rest of this file establishes.
+    #   127.0.0.0/8    loopback. Never a legitimate registry destination.
+    #
+    # ⚠️ IPv4-ONLY LIMITATION (dual-stack operators). ipBlock except-lists are
+    # per-family: these entries constrain IPv4 only. On a dual-stack cluster the
+    # equivalent IPv6 ranges (fc00::/7 unique-local, ::1/128 loopback, and the
+    # provider's Pod/Service CIDR) are NOT covered by this rule. The failure
+    # direction is SAFE rather than leaky: an IPv6-only egress path has no
+    # matching allow rule at all, so the default-deny applies and the model pull
+    # simply FAILS — it does not silently gain a wider reach. Dual-stack
+    # operators who need the pull to work over IPv6 must add an explicit ipBlock
+    # with the IPv6 except-list for their cluster.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -100,6 +144,8 @@ spec:
               - 10.0.0.0/8
               - 172.16.0.0/12
               - 192.168.0.0/16
+              - 100.64.0.0/10   # T-390: RFC 6598 CGNAT — managed-k8s Pod/Service CIDRs, overlay networks
+              - 127.0.0.0/8     # T-390: loopback
               - 169.254.0.0/16  # Block cloud metadata endpoint
       ports:
         - port: 443

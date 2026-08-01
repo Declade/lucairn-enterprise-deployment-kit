@@ -868,3 +868,89 @@ the chart's supported paths are development and production only.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{- /*
+  validators.namespaceNetpolAlignment  (T-388)
+
+  Fails fast when a workload sub-chart's `namespace` value disagrees with the
+  `infrastructure.namespaces` entry carrying the same label.
+
+  THE BUG THIS CLOSES. Workloads template their namespace from their OWN
+  sub-chart (`sandbox-a.namespace`, `gateway.namespace`, …). Every NetworkPolicy
+  in the infrastructure sub-chart — including `default-deny-all` — resolves its
+  namespace from `infrastructure.namespaces`. Helm sub-charts cannot read each
+  other's values, so nothing tied the two together: overriding
+  `sandbox-a.namespace` moved the sanitizer, ollama-identity, Postgres and both
+  Jobs into a namespace with ZERO policies selecting them, while five policies
+  stayed behind on the now-empty original.
+
+  A namespace with no NetworkPolicy is default-ALLOW under Kubernetes
+  semantics. So the single most security-relevant override an operator can make
+  silently removed all egress restriction from the PII plane, and `helm
+  template` reported success (exit 0).
+
+  Templating alone cannot fix this — the infrastructure sub-chart genuinely
+  cannot see a sibling's values. This validator supplies the other half: it runs
+  at the UMBRELLA level, where every sub-chart's values ARE visible, and refuses
+  the render when the two sources of truth disagree.
+
+  Only ENABLED sub-charts are checked: a disabled sub-chart renders no workloads,
+  so a stale namespace value on it cannot strand pods.
+
+  `dashboard` is deliberately absent from the map. It ships in namespace
+  `lucairn` (not a dsa-* namespace), has no entry in `infrastructure.namespaces`
+  and no policy in the infrastructure sub-chart, so there is no divergence to
+  detect. That it therefore runs unpoliced is a separate, pre-existing question
+  and is NOT what this validator claims to cover.
+
+  Invoked from charts/lucairn/templates/validators.yaml.
+*/ -}}
+{{- define "validators.namespaceNetpolAlignment" -}}
+{{- $infra := (default dict .Values.infrastructure) -}}
+{{- $nsList := $infra.namespaces -}}
+{{- if $nsList -}}
+{{- $byLabel := dict -}}
+{{- range $nsList -}}
+{{- if and (hasKey . "label") (hasKey . "name") -}}
+{{- $_ := set $byLabel (toString .label) (toString .name) -}}
+{{- end -}}
+{{- end -}}
+{{- /* sub-chart name -> infrastructure.namespaces label */ -}}
+{{- $map := dict
+      "gateway"          "edge"
+      "postgres-gateway" "edge"
+      "sandbox-a"        "identity"
+      "pii-ml"           "identity"
+      "id-bridge"        "bridge"
+      "sandbox-b"        "ai"
+      "audit"            "audit"
+      "observability"    "observability"
+      "ingest"           "ingest"
+      "admin"            "admin"
+      "veil-witness"     "witness"
+      "demo"             "demo" -}}
+{{- range $sub, $label := $map -}}
+{{- if hasKey $.Values $sub -}}
+{{- $vals := index $.Values $sub -}}
+{{- if $vals -}}
+{{- /* Skip disabled sub-charts: no workloads render, so nothing can be
+       stranded. `enabled` absent is treated as enabled, matching Helm's
+       behaviour for a `condition:` whose key is missing. */ -}}
+{{- $enabled := true -}}
+{{- if hasKey $vals "enabled" -}}
+{{- $enabled = $vals.enabled -}}
+{{- end -}}
+{{- if and $enabled (hasKey $vals "namespace") -}}
+{{- $want := index $byLabel $label -}}
+{{- if $want -}}
+{{- $got := toString $vals.namespace -}}
+{{- if ne $got $want -}}
+{{- fail (printf "namespace/NetworkPolicy split-brain: %s.namespace=%q but infrastructure.namespaces entry labelled %q is %q. The %s workloads would deploy into %q while every NetworkPolicy for them — including default-deny-all — is created in %q. A namespace with no NetworkPolicy is default-ALLOW, so this silently removes all egress restriction from those pods. Set BOTH to the same value: --set %s.namespace=<ns> AND the matching infrastructure.namespaces entry's name (the entry whose label is %q)." $sub $got $label $want $sub $got $want $sub $label) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
