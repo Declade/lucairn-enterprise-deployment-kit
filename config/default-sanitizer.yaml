@@ -113,6 +113,20 @@ sanitizer:
     #      (no dot) so it classifies as internal — no l3_allow_external_base_url opt-in needed.
     # l3_runtime: vllm
     # l3_base_url: http://vllm-l3:8000
+    #
+    # ── OPTION B: SPLIT L3 POOL (remote shared GPU — see docs/L3_SPLIT_POOL.md) ──
+    # Same `l3_runtime: vllm` switch, but l3_base_url points at ONE shared GPU host
+    # on YOUR PRIVATE NETWORK instead of an in-box container, so several small
+    # gateway boxes share one GPU. On a split-pool box you do NOT add the vllm-l3
+    # profile (there is no local vLLM container here) and you DO set
+    # LUCAIRN_L3_SPLIT_POOL=true in customer.env so `bin/lucairn doctor` runs the
+    # split-pool preflight instead of the in-box GPU checks.
+    #   l3_runtime: vllm
+    #   l3_base_url: http://10.0.0.10:8000     # RFC1918 / private-DNS ONLY
+    # An RFC1918 address classifies as INTERNAL in the sanitizer's own allowlist
+    # (dual-sandbox-architecture services/sanitizer/llm_scan.py:431-492, IP branch
+    # at :484-492), so no l3_allow_external_base_url opt-in is needed or used. A
+    # PUBLIC host would be BLOCKED at boot (services/sanitizer/config.py:1507-1533).
     timeout_seconds: 30
     # FAIL-01 (PRD prd-2026-05-29-fail-safe-scrubber): fail-CLOSED — block the
     # request with a 503 l3_scrubber_unavailable when the L3 deep PII shield is
