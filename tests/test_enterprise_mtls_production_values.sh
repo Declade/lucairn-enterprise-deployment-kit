@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=tests/lib/test-helpers.sh
+source "$ROOT/tests/lib/test-helpers.sh"
 CHART="$ROOT/charts/lucairn"
 VALUES="$CHART/values-prod.yaml"
 SITE_VALUES="$CHART/values-prod-site.example.yaml"
@@ -219,7 +221,11 @@ if grep -n -E 'dockerconfigjson|imagePullDockerConfigJson' "$RENDER"; then
 fi
 
 DEV_REDIS_RENDER="$TMPDIR/development-redis-no-password.yaml"
+# HELM_TEST_SECRET_ARGS: this is the only render in this file that leaves the
+# production overlay behind, so it lands on the k8s-native default backend
+# whose password defaults are empty since T-10 (tests/lib/test-helpers.sh).
 helm template lucairn "$CHART" \
+  "${HELM_TEST_SECRET_ARGS[@]}" \
   --set global.dsaEnv=development \
   --set global.skipPullSecretGuard=true \
   --set infrastructure.enabled=false \
@@ -343,7 +349,10 @@ fi
 grep -Fq 'gateway.secrets.values.dsaServiceToken must be exactly the empty string when global.dsaEnv=production and External Secrets owns credentials. Helm persists supplied credential bytes in release history' "$TMPDIR/inline-overlay.err" \
   || { echo "production overlay credential rejection was not actionable" >&2; cat "$TMPDIR/inline-overlay.err" >&2; exit 1; }
 
+# HELM_TEST_SECRET_ARGS: development render on the k8s-native default backend
+# (T-10 — no working password defaults; see tests/lib/test-helpers.sh).
 helm template lucairn "$CHART" \
+  "${HELM_TEST_SECRET_ARGS[@]}" \
   --set global.dsaEnv=development \
   --set global.skipPullSecretGuard=true \
   --set infrastructure.enabled=false \

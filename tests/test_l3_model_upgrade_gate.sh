@@ -47,6 +47,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=tests/lib/test-helpers.sh
+source "$ROOT/tests/lib/test-helpers.sh"
 CHILD_CHART="$ROOT/charts/lucairn/charts/sandbox-a"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -92,8 +94,13 @@ require_command yq
 # `direct-valid.yaml` fixture in tests/test_wp1_s4_helm_boundary.sh). Nothing
 # here touches the L3 model or the store size — those come from the chart's
 # own defaults, which is the point.
-cat >"$TMPDIR/base.yaml" <<'YAML'
+cat >"$TMPDIR/base.yaml" <<YAML
 ephemeral: "true"
+# T-10: sandbox-a's bundled-Postgres password has no working default any more;
+# a direct child render must supply it or templates/_validate.tpl aborts.
+secrets:
+  values:
+    postgresPassword: "${TEST_SECRET_VALUE}"
 global:
   imageRegistry: ""
   imageTag: "0.5.4"

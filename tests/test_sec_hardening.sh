@@ -551,6 +551,48 @@ else
 # Combines stdout+stderr into <out_file> (doctor emits FAILs on stdout, WARNs on
 # stderr; tests grep the merged stream). The base ENV_FILE drives the Compose
 # checks; the values file drives the Helm-path render checks.
+# T-10: chart-managed passwords have no working default any more (six
+# sub-charts used to ship a `CHANGE-ME…` placeholder as a functioning
+# password; see tests/test_default_password_guard.sh). Every fixture below
+# exercises the k8s-native default backend, so without these the doctor's
+# internal `helm template` aborts on the password guard and the H10 cases
+# would report a chart-render failure instead of the mTLS/canary verdict they
+# are actually asserting.
+#
+# Supplied as a separate overlay appended LAST rather than merged into each
+# fixture heredoc: the fixtures set `gateway`/`sandbox-a`/`veil-witness` keys
+# of their own, and re-declaring those top-level keys inside one document
+# would silently drop the earlier block (last YAML key wins).
+T10_SECRET_VALS="$TMPDIR/t10-chart-passwords.yaml"
+cat > "$T10_SECRET_VALS" <<'YAML'
+admin:
+  secrets:
+    values:
+      adminPassword: "sec-hardening-harness-not-a-real-secret"
+audit:
+  secrets:
+    values:
+      postgresPassword: "sec-hardening-harness-not-a-real-secret"
+      auditAppPassword: "sec-hardening-harness-not-a-real-secret"
+id-bridge:
+  secrets:
+    values:
+      postgresPassword: "sec-hardening-harness-not-a-real-secret"
+observability:
+  secrets:
+    values:
+      grafanaAdminPassword: "sec-hardening-harness-not-a-real-secret"
+sandbox-a:
+  secrets:
+    values:
+      postgresPassword: "sec-hardening-harness-not-a-real-secret"
+veil-witness:
+  secrets:
+    values:
+      postgresPassword: "sec-hardening-harness-not-a-real-secret"
+      veilAppPassword: "sec-hardening-harness-not-a-real-secret"
+YAML
+
 run_doctor_with_values() {
   local out="$1"
   shift
@@ -558,6 +600,26 @@ run_doctor_with_values() {
   for vals in "$@"; do
     doctor_args+=(--values "$vals")
   done
+  # Appended last so it cannot mask a fixture's own assertion: it only sets
+  # password slots no fixture in this file touches.
+  #
+  # EXCEPT on the production overlay. values-prod.yaml selects
+  # `secrets.backend: vault`, and the umbrella's OWN production validator
+  # (charts/lucairn/templates/_validators.tpl) requires every inline
+  # `secrets.values.*` slot to be EXACTLY the empty string there — Helm would
+  # otherwise persist credential bytes in release history. That validator and
+  # the T-10 guard are complementary, not in conflict: production must be
+  # empty (External Secrets owns it), k8s-native must be set. Injecting
+  # passwords into a production render would trip the production validator and
+  # replace the verdict these cases assert.
+  # `${PROD_VALUES:-}` because this helper is defined above that assignment;
+  # every call site is below it, but `set -u` would abort on a future one that
+  # is not.
+  local uses_prod_overlay=""
+  for vals in "$@"; do
+    [ "$vals" = "${PROD_VALUES:-}" ] && uses_prod_overlay=1
+  done
+  [ -n "$uses_prod_overlay" ] || doctor_args+=(--values "$T10_SECRET_VALS")
   doctor_args+=(--offline)
   set +e
   "$ROOT/bin/lucairn" "${doctor_args[@]}" > "$out" 2>&1

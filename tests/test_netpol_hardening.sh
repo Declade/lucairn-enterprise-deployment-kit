@@ -96,6 +96,8 @@ trap 'rm -rf "$WORK"' EXIT
 # L3 on: ollama-identity, the model-pull Job and the registry-egress policy all
 # render only in this combination.
 COMMON=(
+  # T-10: the k8s-native default backend ships no working password defaults.
+  "${HELM_TEST_SECRET_ARGS[@]}"
   --set global.skipPullSecretGuard=true
   --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}"
   --set sandbox-a.sanitizer.llmScanEnabled=true
@@ -296,6 +298,7 @@ echo "ok  ToB-006: production hard-rejects infrastructure.enabled=false (active 
 # tests/test_enterprise_mtls_production_values.sh performs this exact render
 # twice. The first version of the ToB-006 guard fired here and turned CI red.
 if ! helm template lucairn "$CHART" \
+       "${HELM_TEST_SECRET_ARGS[@]}" \
        --set global.dsaEnv=development \
        --set global.skipPullSecretGuard=true \
        --set infrastructure.enabled=false \

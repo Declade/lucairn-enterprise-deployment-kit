@@ -313,6 +313,7 @@ if command -v helm >/dev/null 2>&1; then
   # hiding the real error.
   RENDER_ERR="$(mktemp)"
   if ! helm template lucairn "$ROOT/charts/lucairn" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
     --set global.skipPullSecretGuard=true \
     --set sandbox-a.sanitizer.llmScanEnabled=true \
     --set global.llmShieldEnabled=true \
@@ -426,7 +427,7 @@ if command -v helm >/dev/null 2>&1; then
   # HA-03 guard: at the v1.0 single-replica lock, no PodDisruptionBudget
   # may render — a PDB with minAvailable:1 on a one-pod workload blocks
   # `kubectl drain` forever. PDBs auto-render only at replicaCount >= 2.
-  DEFAULT_RENDER="$(helm template lucairn "$CHART" --set global.skipPullSecretGuard=true --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}")"
+  DEFAULT_RENDER="$(helm template lucairn "$CHART" "${HELM_TEST_SECRET_ARGS[@]}" --set global.skipPullSecretGuard=true --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}")"
   # NOTE: use `grep -c` (count the whole stream) rather than `grep -q` for the
   # checks against $DEFAULT_RENDER. Under `set -o pipefail`, `grep -q` exits 0
   # on the FIRST match and closes the pipe, which sends SIGPIPE (exit 141) to
@@ -468,6 +469,7 @@ if command -v helm >/dev/null 2>&1; then
   # OBS-02 guard: ServiceMonitors scrape ONLY the services that expose
   # /metrics (gateway + veil-witness), with correct namespace mapping.
   SM_RENDER="$(helm template lucairn "$CHART" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
     --set global.skipPullSecretGuard=true \
     --set observability.serviceMonitors.enabled=true \
     --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}")"
@@ -599,6 +601,7 @@ if command -v helm >/dev/null 2>&1; then
   #    in this file (search "SIGPIPE") — hit live while writing this block.
   T64_DEFAULT_FILE="$(mktemp)"
   helm template lucairn "$T64_CHART" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
     --set global.skipPullSecretGuard=true \
     --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
     >"$T64_DEFAULT_FILE"
@@ -622,6 +625,7 @@ if command -v helm >/dev/null 2>&1; then
   #    succeeds and carries the EXPLICIT value through (not silently coerced).
   T64_OVERRIDE_FILE="$(mktemp)"
   helm template lucairn "$T64_CHART" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
     --set global.skipPullSecretGuard=true \
     --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
     --set sandbox-a.sanitizer.piiMlClient.endpoint=pii-ml-external.example.com:50056 \
@@ -643,6 +647,7 @@ if command -v helm >/dev/null 2>&1; then
   #     address explicitly.
   T64_STOCK_FILE="$(mktemp)"
   helm template lucairn "$T64_CHART" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
     --set global.skipPullSecretGuard=true \
     --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
     --set sandbox-a.sanitizer.piiMlClient.endpoint=pii-ml.dsa-identity.svc.cluster.local:50056 \
@@ -665,6 +670,7 @@ if command -v helm >/dev/null 2>&1; then
   T64_OMIT_FILE="$(mktemp)"
   T64_OMIT_STDERR="$(mktemp)"
   if ! helm template lucairn "$T64_CHART" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
     --set global.skipPullSecretGuard=true \
     --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
     --set sandbox-a.sanitizer.piiMlClient.endpoint=pii-ml.other-ns.svc.cluster.local:50056 \
@@ -684,6 +690,7 @@ if command -v helm >/dev/null 2>&1; then
   #     undeclared.
   T64_EXT_FILE="$(mktemp)"
   if ! helm template lucairn "$T64_CHART" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
     --set global.skipPullSecretGuard=true \
     --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
     --set sandbox-a.sanitizer.piiMlClient.endpoint=pii-ml-external.example.com:50056 \
@@ -702,6 +709,7 @@ if command -v helm >/dev/null 2>&1; then
   #    ever reaches the sanitizer.
   T64_SCHEMA_STDERR="$(mktemp)"
   if helm template lucairn "$T64_CHART" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
     --set global.skipPullSecretGuard=true \
     --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
     --set sandbox-a.sanitizer.piiMlClient.transport=tailnett \
@@ -731,6 +739,7 @@ if command -v helm >/dev/null 2>&1; then
       T64_CONTRA_ARGS+=(--set "sandbox-a.sanitizer.piiMlClient.endpoint=$T64_STOCK_EP")
     fi
     if helm template lucairn "$T64_CHART" \
+      "${HELM_TEST_SECRET_ARGS[@]}" \
       --set global.skipPullSecretGuard=true \
       --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
       "${T64_CONTRA_ARGS[@]}" \
