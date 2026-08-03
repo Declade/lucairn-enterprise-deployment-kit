@@ -113,14 +113,22 @@ external:
 secrets:
   backend: k8s-native  # k8s-native | vault | aws | azure
   values:
-    # PRODUCTION: MUST override with a strong, unique password (dsa superuser).
-    postgresPassword: "CHANGE-ME-IN-PRODUCTION"
-    # PRODUCTION: MUST override. Password for the least-privilege `audit_app`
-    # role that the audit service connects as at runtime. Baked into the
-    # 000003_least_privilege_role migration via the render init container.
-    # Compose-path equivalent: AUDIT_APP_PASSWORD in customer.env. Refuses to
-    # render with empty value, single-quote, or backslash (SQL-injection guard).
-    auditAppPassword: "CHANGE-ME-IN-PRODUCTION"
+    # REQUIRED when postgresql.enabled — ships EMPTY on purpose (T-10). This is
+    # the `dsa` superuser of the bundled audit Postgres. There is no working
+    # default: templates/_validate.tpl hard-fails the render when this is empty
+    # or is still a CHANGE-ME…-shaped placeholder, at every global.dsaEnv.
+    #   --set "audit.secrets.values.postgresPassword=$(openssl rand -base64 24)"
+    # Or leave empty and set audit.secrets.backend to vault | aws | azure.
+    postgresPassword: ""
+    # REQUIRED when postgresql.enabled — ships EMPTY on purpose (T-10).
+    # Password for the least-privilege `audit_app` role that the audit service
+    # connects as at runtime. Baked into the 000003_least_privilege_role
+    # migration via the render init container. Compose-path equivalent:
+    # AUDIT_APP_PASSWORD in customer.env. Refuses to render with an empty
+    # value, a CHANGE-ME…-shaped placeholder, a single-quote, or a backslash
+    # (SQL-injection guard).
+    #   --set "audit.secrets.values.auditAppPassword=$(openssl rand -base64 24)"
+    auditAppPassword: ""
     veilSigningKey: ""
     dsaServiceToken: ""  # PRODUCTION: set via existingSecret or --set; dev: inline value
   vault:

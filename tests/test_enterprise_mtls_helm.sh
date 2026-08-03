@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=tests/lib/test-helpers.sh
+source "$ROOT/tests/lib/test-helpers.sh"
 CHART="$ROOT/charts/lucairn"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -161,7 +163,11 @@ PY
 # probes remain the original plaintext HTTP endpoints and no mTLS probe helper
 # or mount is rendered.
 PLAIN_RENDER="$TMPDIR/plain.yaml"
+# HELM_TEST_SECRET_ARGS: the k8s-native default backend has no working
+# password defaults any more (T-10) — see tests/lib/test-helpers.sh. The
+# values-prod renders above do not need them (backend: vault).
 helm template lucairn "$CHART" \
+  "${HELM_TEST_SECRET_ARGS[@]}" \
   --set global.skipPullSecretGuard=true \
   --set veil-witness.secrets.values.signingKey=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
   > "$PLAIN_RENDER"
@@ -483,6 +489,7 @@ fi
 # is the only supported verified transport profile.
 DEV_RENDER="$TMPDIR/development.yaml"
 helm template lucairn "$CHART" \
+  "${HELM_TEST_SECRET_ARGS[@]}" \
   --set global.skipPullSecretGuard=true \
   --set veil-witness.secrets.values.signingKey=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
   --set global.dsaEnv=development \
@@ -539,6 +546,22 @@ for workload in gateway audit id-bridge sandbox-a sandbox-b veil-witness; do
   if [[ "$workload" == "veil-witness" ]]; then
     backend_args+=(--set-string veil-witness.secrets.values.signingKey=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef)
   fi
+  # Same reason as the sandbox-b Redis case above: flipping a child back to
+  # k8s-native re-arms that child's own T-10 password guard (empty value =>
+  # render abort), which would mask the umbrella production-backend rejection
+  # this loop is asserting. Supply disposable values solely to reach it.
+  case "$workload" in
+    audit)
+      backend_args+=(--set-string "audit.secrets.values.postgresPassword=${TEST_SECRET_VALUE}"
+                     --set-string "audit.secrets.values.auditAppPassword=${TEST_SECRET_VALUE}") ;;
+    id-bridge)
+      backend_args+=(--set-string "id-bridge.secrets.values.postgresPassword=${TEST_SECRET_VALUE}") ;;
+    sandbox-a)
+      backend_args+=(--set-string "sandbox-a.secrets.values.postgresPassword=${TEST_SECRET_VALUE}") ;;
+    veil-witness)
+      backend_args+=(--set-string "veil-witness.secrets.values.postgresPassword=${TEST_SECRET_VALUE}"
+                     --set-string "veil-witness.secrets.values.veilAppPassword=${TEST_SECRET_VALUE}") ;;
+  esac
   if render "${backend_args[@]}" >"$backend_file" 2>&1; then
     echo "production render accepted ${workload}.secrets.backend=k8s-native" >&2
     exit 1
@@ -559,6 +582,16 @@ for optional_path in pii-ml.enabled postgres-gateway.enabled demo.enabled ingest
   if [[ "$optional_path" == "postgres-gateway.enabled" ]]; then
     optional_args+=(--set-string postgres-gateway.secrets.values.postgresPassword=validator-test-only)
   fi
+  # Admin and Observability keep the k8s-native default backend even under the
+  # production overlay, so enabling them re-arms their own T-10 password guards
+  # (empty value => render abort) before the umbrella surface validator runs.
+  # Same disposable-value rationale as postgres-gateway above.
+  case "$optional_path" in
+    admin.enabled)
+      optional_args+=(--set-string "admin.secrets.values.adminPassword=${TEST_SECRET_VALUE}") ;;
+    observability.enabled)
+      optional_args+=(--set-string "observability.secrets.values.grafanaAdminPassword=${TEST_SECRET_VALUE}") ;;
+  esac
   if render "${optional_args[@]}" >"$optional_file" 2>&1; then
     echo "production render accepted ${optional_path}=true" >&2
     exit 1

@@ -112,8 +112,13 @@ external:
 secrets:
   backend: k8s-native
   values:
-    # PRODUCTION: MUST override with a strong, unique password.
-    postgresPassword: "CHANGE-ME-IN-PRODUCTION"
+    # REQUIRED when postgresql.enabled — ships EMPTY on purpose (T-10). There
+    # is no working default: templates/_validate.tpl hard-fails the render when
+    # this is empty or is still a CHANGE-ME…-shaped placeholder, at every
+    # global.dsaEnv.
+    #   --set "id-bridge.secrets.values.postgresPassword=$(openssl rand -base64 24)"
+    # Or leave empty and set id-bridge.secrets.backend to vault | aws | azure.
+    postgresPassword: ""
     masterKey: ""
     veilSigningKey: ""
     bridgeEncryptionKey: ""

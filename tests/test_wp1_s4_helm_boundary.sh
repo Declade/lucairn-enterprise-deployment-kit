@@ -11,7 +11,10 @@ CHART="$ROOT/charts/lucairn"
 CHILD_CHART="$CHART/charts/sandbox-a"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
-TEST_SIGNING_KEY="1111111111111111111111111111111111111111111111111111111111111111"
+# TEST_SIGNING_KEY + HELM_TEST_SECRET_ARGS (T-10: the k8s-native default
+# backend no longer ships working password defaults).
+# shellcheck source=tests/lib/test-helpers.sh
+source "$ROOT/tests/lib/test-helpers.sh"
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -23,8 +26,13 @@ require_command() {
 require_command helm
 require_command ruby
 
-cat >"$TMPDIR/direct-valid.yaml" <<'YAML'
+cat >"$TMPDIR/direct-valid.yaml" <<YAML
 ephemeral: "true"
+# T-10: sandbox-a's bundled-Postgres password has no working default any more;
+# a direct child render must supply it or templates/_validate.tpl aborts.
+secrets:
+  values:
+    postgresPassword: "${TEST_SECRET_VALUE}"
 global:
   imageRegistry: ""
   imageTag: "0.5.4"
@@ -67,10 +75,12 @@ render_nonproduction_profile() {
   local name="$1"
   shift
   helm lint "$CHART" "$@" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
     --set global.skipPullSecretGuard=true \
     --set-string "veil-witness.secrets.values.signingKey=$TEST_SIGNING_KEY" \
     >"$TMPDIR/lint-$name.out"
   helm template lucairn "$CHART" "$@" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
     --set global.skipPullSecretGuard=true \
     --set-string "veil-witness.secrets.values.signingKey=$TEST_SIGNING_KEY" \
     >"$TMPDIR/render-$name.yaml"

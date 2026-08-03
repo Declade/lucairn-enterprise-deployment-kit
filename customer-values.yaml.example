@@ -440,6 +440,21 @@ backup:
 
 observability:
   enabled: true
+  secrets:
+    values:
+      # Grafana admin login password (GF_SECURITY_ADMIN_PASSWORD). REQUIRED
+      # whenever observability.enabled is true — the chart ships no default and
+      # hard-fails the render on an empty or CHANGE-ME…-shaped value (T-10).
+      grafanaAdminPassword: "REPLACE_WITH_GRAFANA_ADMIN_PASSWORD"
+
+# The admin surface renders by default. Its login password is REQUIRED — the
+# chart ships no default and hard-fails the render on an empty or
+# CHANGE-ME…-shaped value (T-10). Set admin.enabled: false if you do not
+# deploy it.
+admin:
+  secrets:
+    values:
+      adminPassword: "REPLACE_WITH_ADMIN_PASSWORD"
 
 demo:
   enabled: false

@@ -12,6 +12,61 @@ Security advisories are published at <https://lucairn.eu/security>; the
 disclosure process and contact are in [`SECURITY.md`](SECURITY.md). Entries that
 carry a security fix are tagged **[Security]**.
 
+## [Unreleased]
+
+### Changed
+- **[Security] Chart-managed passwords no longer ship a working default (T-10).**
+  Six sub-charts shipped the literal placeholder `CHANGE-ME…` as a *functioning*
+  password in this public repository — nothing rejected it (not the chart, not
+  Postgres, not the services), so `helm install` with untouched values produced a
+  running system whose credentials are readable on GitHub. All nine slots now
+  ship **empty**, and each sub-chart's `templates/_validate.tpl` hard-fails the
+  render on an empty value **or** on any `CHANGE-ME…`-shaped placeholder:
+  `admin.secrets.values.adminPassword`,
+  `audit.secrets.values.{postgresPassword,auditAppPassword}`,
+  `id-bridge.secrets.values.postgresPassword`,
+  `observability.secrets.values.grafanaAdminPassword`,
+  `sandbox-a.secrets.values.postgresPassword`,
+  `veil-witness.secrets.values.{postgresPassword,veilAppPassword}`.
+  The value is trimmed before both checks, so neither a whitespace-only value nor
+  a space-prefixed placeholder slips through (only the *check* is trimmed — the
+  Secret still renders the operator's value byte-for-byte).
+
+  The guards are **not** gated on `global.dsaEnv` (the umbrella default is
+  `development`, so a production-only guard would never fire on the install path
+  that actually shipped the weak credential). They apply where the value is
+  really rendered into a Secret: the `k8s-native` secrets backend, and — for the
+  bundled-database passwords — only when that sub-chart's `postgresql.enabled` is
+  true. External-Secrets installs of `audit` / `id-bridge` / `sandbox-a` /
+  `veil-witness` (`values-prod.yaml`, `secrets.backend: vault`) and
+  external-Postgres installs are unaffected.
+
+  `admin` and `observability` are the two exceptions, and their guards are
+  unconditional: neither sub-chart ships an `externalsecret.yaml`, so no
+  `secrets.backend` value supplies those credentials from anywhere. Set
+  `admin.enabled: false` / `observability.enabled: false` if you do not deploy
+  those surfaces.
+
+### Removed
+- **`observability.grafana.adminPassword` (dead key).** No template ever read it,
+  so setting it never protected the Grafana admin account — the Grafana pod reads
+  the `grafana-admin` Secret, which is rendered from
+  `observability.secrets.values.grafanaAdminPassword`. Rather than drop it
+  silently, `observability/templates/_validate.tpl` now fails the render with a
+  migration message if a values file still sets it.
+
+### Notes
+- **Upgrade:** a `helm upgrade` that previously relied on the shipped defaults
+  will now fail to render until each slot above is supplied, e.g.
+  `--set "audit.secrets.values.postgresPassword=$(openssl rand -base64 24)"`, or
+  moved onto an External Secrets backend. `customer-values.yaml.example` gained
+  the two slots it never listed (`admin.secrets.values.adminPassword`,
+  `observability.secrets.values.grafanaAdminPassword`) in the existing
+  `REPLACE_WITH_*` convention. **Changing a database password on an existing
+  install does not change the password inside the already-initialised Postgres
+  volume** — supply the value the cluster is currently using, or rotate it in
+  the database first.
+
 ## [1.9.4] — 2026-06-19 — images `0.5.4`
 
 Per-key MCP tool-scope enforcement + control-plane `tool_allowlist`.
