@@ -749,6 +749,11 @@ They fail before Docker for missing or invalid marker-bearing state. Pre-S1
 state retains its documented one-base-file legacy path. Exact release rollback,
 rollback history, and restore proof are WP4 S4 scope and are not provided by S1.
 
+Before minting your first customer, complete the witness mTLS bootstrap in
+§ "Witness mTLS" below (`scripts/bootstrap-mtls-ca.sh`). As of the T-12
+witness image, certificate reads on `:50058` — including `bin/lucairn
+doctor`'s certificate-receipt check — refuse every caller until you do.
+
 ### Init lock recovery
 
 `lucairn-init` serializes writes in `.lucairn-init.lock` beside the selected
@@ -1302,6 +1307,15 @@ curl -fsS http://127.0.0.1:8085/readyz
 9. Put the gateway behind TLS.
 
 Terminate HTTPS at the customer reverse proxy and forward to `127.0.0.1:8080`. If the proxy is local or containerized, set `GATEWAY_TRUSTED_PROXY_CIDRS` to the proxy source CIDRs and rerun `bin/lucairn doctor --offline`.
+
+> **Before you continue: provision witness mTLS.** As of the T-12 witness
+> image, `:50058` certificate reads — including the gateway's own
+> retrieval and the online doctor certificate-receipt check in the next
+> step — refuse every caller with `Unauthenticated` until you complete the
+> Compose bootstrap in § "Witness mTLS" above (`scripts/bootstrap-mtls-ca.sh`).
+> Skipping it does not stop the stack from starting or from passing
+> `/healthz`/`/readyz` in step 8 — it surfaces here, as a refused
+> certificate read.
 
 10. Mint your first customer, save the one-time key to a mode-0600 file, then
 run the online full doctor.
@@ -2018,9 +2032,23 @@ separately proves an expired leaf is rejected.
 
 ## Witness mTLS (legacy Compose compatibility)
 
-By default the veil-witness cert RPC port (:50058) accepts unauthenticated
-callers. For production deployments Lucairn recommends enabling mutual-TLS
-so only the gateway (and, optionally, the dashboard) can query certificates.
+> **Required for working certificate reads (T-12, 2026-08-03).** The
+> veil-witness cert RPC port (:50058) now attaches its ACL on every code
+> path, including the default no-mTLS Compose posture. With no client
+> certificate presented, `GetCertificate`/`ExportCertificates` refuse every
+> caller — **including the gateway itself** — with `Unauthenticated`. A kit
+> install that skips the bootstrap below will boot and pass
+> `/healthz`/`/readyz` normally, but every certificate lookup (the
+> gateway's own retrieval, the dashboard's certs surface, and `bin/lucairn
+> doctor`'s certificate-receipt check) will refuse until you complete it.
+> This is deliberate hardening — a caller-supplied `customer_id` was the
+> only scoping on `redaction_manifest_body`, the placeholder→original PII
+> map, so an unauthenticated port was a disclosure — **not** a broken
+> install. Kit installs inherit it automatically on the next
+> `dsa-veil-witness` image pull, so run the bootstrap below BEFORE minting
+> your first customer / running online doctor (§ "Advanced / pre-S1 manual
+> Docker Compose install" step 10, or before `bin/lucairn up` on an S1
+> install).
 
 ### Compose path
 
@@ -2049,9 +2077,13 @@ so only the gateway (and, optionally, the dashboard) can query certificates.
    docker compose -f docker-compose.customer.yml up -d --no-deps --force-recreate veil-witness gateway
    ```
 
-The witness logs a warning and degrades gracefully to unauthenticated when
-any of the three server-side paths are unset — claims from bridge, sanitizer,
-and audit continue flowing while the operator provisions the CA.
+If any of the three server-side paths (`WITNESS_MTLS_CA_BUNDLE_PATH`,
+`WITNESS_MTLS_SERVER_CERT_PATH`, `WITNESS_MTLS_SERVER_KEY_PATH`) are unset,
+the witness logs a warning and its transport degrades — but the per-method
+ACL is attached regardless and does not degrade with it. Claim intake
+(`:50057`, from bridge, sanitizer, and audit) is a separate port and keeps
+flowing unaffected; only certificate **reads** on `:50058` refuse while the
+operator completes the CA bootstrap above.
 
 ### Kubernetes (Helm) compatibility path
 

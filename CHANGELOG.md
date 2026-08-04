@@ -15,6 +15,19 @@ carry a security fix are tagged **[Security]**.
 ## [Unreleased]
 
 ### Changed
+- **[Security] Docs corrected for the veil-witness `:50058` ACL hoist (T-12 / T-507).**
+  `INSTALL.md` and `OPS.md` stated that the veil-witness certificate RPC port
+  (`:50058`) accepts unauthenticated callers by default on the legacy Compose
+  compatibility path. As of the `dsa-veil-witness` T-12 fix (upstream
+  `dual-sandbox-architecture` commit `2efc3dd6b`), that is no longer true: the
+  per-method ACL now attaches on every code path, including every transport
+  degradation exit, so `GetCertificate`/`ExportCertificates` refuse every
+  caller — **including the gateway itself** — with `Unauthenticated` unless
+  the operator has completed the mTLS bootstrap (`scripts/bootstrap-mtls-ca.sh`,
+  documented in `INSTALL.md` § "Witness mTLS"). Both docs now state the
+  post-fix posture and both point operators at the bootstrap step before
+  minting a customer / running online doctor. Claim intake on `:50057` is a
+  separate port and is unaffected.
 - **[Security] Chart-managed passwords no longer ship a working default (T-10).**
   Six sub-charts shipped the literal placeholder `CHANGE-ME…` as a *functioning*
   password in this public repository — nothing rejected it (not the chart, not
@@ -56,6 +69,15 @@ carry a security fix are tagged **[Security]**.
   migration message if a values file still sets it.
 
 ### Notes
+- **Upgrade (witness `:50058` ACL, T-12):** kit installs inherit this on the
+  next `dsa-veil-witness` image pull — no kit-side action is required for the
+  fix itself. An install that has **not** run the Compose mTLS bootstrap
+  (`scripts/bootstrap-mtls-ca.sh`) will see certificate reads refuse
+  (`Unauthenticated`) starting with that pull: the gateway's own certificate
+  retrieval, the dashboard's certs surface, and `bin/lucairn doctor`'s
+  certificate-receipt check. This is expected behavior, not a regression —
+  see `INSTALL.md` § "Witness mTLS" for the bootstrap steps. Production Helm
+  installs (`global.mtls.enabled=true`, required topology) are unaffected.
 - **Upgrade:** a `helm upgrade` that previously relied on the shipped defaults
   will now fail to render until each slot above is supplied, e.g.
   `--set "audit.secrets.values.postgresPassword=$(openssl rand -base64 24)"`, or
