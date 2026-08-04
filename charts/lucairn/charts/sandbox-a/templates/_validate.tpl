@@ -53,9 +53,33 @@ NOTE on the coercion below, both halves of which are load-bearing:
     " CHANGE-ME…" passes the placeholder check. One leading space would
     otherwise defeat the whole guard. Only the CHECK is trimmed — the
     Secret still renders the operator's value byte-for-byte.
+
+T-490 (2026-08-04): the coercion above has its own hole — `toString` cannot
+tell "the operator wrote a real secret" apart from "Helm parsed --set into a
+non-string YAML type". `--set sandbox-a.secrets.values.postgresPassword=true`
+is parsed by Helm as the BOOLEAN `true`, not the string "true"; `toString`
+turns it into the string "true" all the same, which is non-empty and does
+not match the placeholder regex, so the guard PASSED and rendered a
+4-character password. The same happens for a bare `--set ...=12345678`
+(int64) or an unquoted YAML-timestamp-shaped value. The type check below
+runs BEFORE the coercion and rejects every non-string kind by name, so the
+operator sees why their `--set` was silently the wrong type instead of
+inheriting a low-entropy secret. `kindIs "invalid"` carves out the
+genuinely-unset case (a missing values key resolves to Go's untyped nil,
+kind `invalid`) so that path still falls through to the ordinary "is empty"
+message below — only an explicitly-set NON-STRING value is rejected here.
+A string stays a string regardless of what it looks like: a values file
+that quotes a numeric-looking password (`postgresPassword: "12345678"`) is
+unaffected, because YAML string quoting already makes it a string before
+Helm ever sees it. (Same shape as the `sandbox-a.validateEphemeral` type
+guard above, which already rejected non-string `ephemeral` values.)
 */}}
 {{- define "sandbox-a.requireSecretValue" -}}
-{{- $value := (default "" .value | toString | trim) -}}
+{{- $raw := .value -}}
+{{- if and (not (kindIs "invalid" $raw)) (not (typeIs "string" $raw)) -}}
+{{- fail (printf "[sandbox-a] %s must be a YAML string, but a %s was given. %s Helm's --set infers a YAML type from the literal you pass (--set \"%s=true\" becomes a boolean, --set \"%s=123\" becomes a number), so an unquoted boolean/numeric/date-shaped value would silently become a low-entropy secret instead of failing this guard. Quote it explicitly — --set-string \"%s=...\" — or wrap the value in quotes in your values file." .path (kindOf $raw) .why .path .path .path) -}}
+{{- end -}}
+{{- $value := (default "" $raw | toString | trim) -}}
 {{- if not $value -}}
 {{- fail (printf "[sandbox-a] %s is empty. %s There is no safe default — generate one (openssl rand -base64 24) and pass it with --set \"%s=...\" or in your values file, or move this subchart onto an external secrets backend with sandbox-a.secrets.backend=vault|aws|azure." .path .why .path) -}}
 {{- end -}}

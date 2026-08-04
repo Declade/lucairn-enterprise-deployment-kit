@@ -405,6 +405,72 @@ ruby -e 'require "yaml"; ARGV.each { |f| (begin; YAML.load_file(f, aliases: true
   "$ROOT/model-manifest.example.yaml" \
   "$ROOT/charts/lucairn/values.yaml"
 
+# T-489 (2026-08-04): charts/lucairn/values.yaml declared a top-level
+# `observability:` key TWICE (once at line 353 with just `enabled: true`,
+# again at line 548 with the real grafana.auth.jwt config). YAML mappings —
+# including the ruby YAML.load_file call directly above — silently keep only
+# the LAST occurrence of a duplicate key and discard the rest with no
+# warning, so the first block quietly rendered dead. Both blocks looked
+# individually correct, which is exactly why a human diff/review pass missed
+# it. tests/lib/check_duplicate_yaml_keys.py closes the gap generally: it
+# walks the *composed* YAML Node tree (yaml.compose, not yaml.safe_load —
+# safe_load has already thrown the duplicate away by the time you can
+# inspect it) and fails on ANY duplicate key at ANY mapping depth, not just
+# the top level.
+#
+# FAIL-CLOSED on a missing PyYAML, same posture as the NET-05/T-64 render
+# checks below and tests/test_netpol_hardening.sh — a silently skipped
+# duplicate-key check reads as a pass, which is worse than no check at all.
+if ! python3 -c "import yaml" >/dev/null 2>&1; then
+  echo "FAIL: python3 with PyYAML is required for the T-489 duplicate-key guard." >&2
+  exit 1
+fi
+DUPKEY_CHECK="$ROOT/tests/lib/check_duplicate_yaml_keys.py"
+
+# Self-test FIRST: prove the checker actually detects a constructed
+# duplicate — one at the top level (the T-489 shape) and one nested inside a
+# mapping value — before trusting it to guard the real files below. A guard
+# that always exits 0 would pass silently and give false confidence; a guard
+# that rejects a legitimately clean file would break every future PR.
+DUPKEY_DIRTY_TOP="$(mktemp)"
+printf '%s\n' 'a: 1' 'b: 2' 'a: 3' > "$DUPKEY_DIRTY_TOP"
+if python3 "$DUPKEY_CHECK" "$DUPKEY_DIRTY_TOP" >/dev/null 2>&1; then
+  echo "T-489 self-test FAILED: duplicate-key checker did not flag a constructed top-level duplicate (the exact T-489 shape)" >&2
+  rm -f "$DUPKEY_DIRTY_TOP"
+  exit 1
+fi
+rm -f "$DUPKEY_DIRTY_TOP"
+echo "T-489 self-test: duplicate-key checker correctly flags a constructed top-level duplicate"
+
+DUPKEY_DIRTY_NESTED="$(mktemp)"
+printf '%s\n' 'observability:' '  enabled: true' '  grafana:' '    enabled: true' '    enabled: false' \
+  > "$DUPKEY_DIRTY_NESTED"
+if python3 "$DUPKEY_CHECK" "$DUPKEY_DIRTY_NESTED" >/dev/null 2>&1; then
+  echo "T-489 self-test FAILED: duplicate-key checker did not flag a constructed nested duplicate" >&2
+  rm -f "$DUPKEY_DIRTY_NESTED"
+  exit 1
+fi
+rm -f "$DUPKEY_DIRTY_NESTED"
+echo "T-489 self-test: duplicate-key checker correctly flags a constructed nested duplicate"
+
+DUPKEY_CLEAN="$(mktemp)"
+printf '%s\n' 'a: 1' 'b:' '  c: 2' '  d: 3' > "$DUPKEY_CLEAN"
+python3 "$DUPKEY_CHECK" "$DUPKEY_CLEAN" >/dev/null \
+  || { echo "T-489 self-test FAILED: duplicate-key checker rejected a clean file (false positive)" >&2; rm -f "$DUPKEY_CLEAN"; exit 1; }
+rm -f "$DUPKEY_CLEAN"
+echo "T-489 self-test: duplicate-key checker accepts a clean file"
+
+# The real gate: every umbrella + subchart values file, plus the
+# customer-facing example overlay, must have zero duplicate keys at any
+# nesting depth.
+DUPKEY_TARGETS=()
+while IFS= read -r -d '' f; do
+  DUPKEY_TARGETS+=("$f")
+done < <(find "$ROOT/charts/lucairn" -iname 'values*.yaml' -print0 | sort -z)
+DUPKEY_TARGETS+=("$ROOT/customer-values.yaml.example")
+python3 "$DUPKEY_CHECK" "${DUPKEY_TARGETS[@]}" \
+  || { echo "T-489: duplicate top-level/nested key(s) found in a values file — see above" >&2; exit 1; }
+
 if command -v helm >/dev/null 2>&1; then
   helm lint "$ROOT/charts/lucairn" -f "$ROOT/customer-values.yaml.example" \
     --set global.skipPullSecretGuard=true \
