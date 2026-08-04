@@ -45,6 +45,16 @@
 #      admin-credentials (not the k8s-native Secret). Before this fix, admin
 #      had no externalsecret.yaml, so a vault-backend install rendered
 #      "clean" with nothing to ever populate admin-credentials.
+#   8. T-490b (2026-08-04): each of the 8 live slots, set to the EXACT
+#      `REPLACE_WITH_*` literal customer-values.yaml.example ships for that
+#      slot -> render aborts. The old placeholder regex only matched the
+#      `CHANGE-ME…` FINDING's literal, not the guard's own RATIONALE ("is
+#      this value published in a public repo?") — customer-values.yaml.example
+#      ships ~46 REPLACE_WITH_* slots, several of them these same passwords.
+#      Positive control, equally load-bearing: a real-looking string that
+#      merely CONTAINS "replace" (but is not shaped like `REPLACE[-_ ]?WITH`
+#      at the start) still renders — the fix rejects the SHAPE, not the
+#      substring.
 #
 # NOTE ON THE LITERAL. This file must never contain the placeholder string
 # contiguously: the T-10 acceptance gate is
@@ -238,6 +248,57 @@ for slot in "${GUARDED_SLOTS[@]}"; do
     "${HELM_TEST_SECRET_ARGS[@]}" "${BASE[@]}" \
     --set-string "${slot}=12345678"
 done
+
+# ---------------------------------------------------------------------------
+# 8 (T-490b, 2026-08-04): the placeholder regex now also rejects the kit's
+# OWN published REPLACE_WITH_* shape, not just the CHANGE-ME… shape T-10
+# closed. Each case below uses the EXACT literal customer-values.yaml.example
+# ships for that slot — the truest regression test, since it directly pins
+# "copy the example, miss this slot" rather than a synthetic value.
+# ---------------------------------------------------------------------------
+replace_with_literal_for_slot() {
+  case "$1" in
+    admin.secrets.values.adminPassword) echo "REPLACE_WITH_ADMIN_PASSWORD" ;;
+    audit.secrets.values.postgresPassword) echo "REPLACE_WITH_AUDIT_POSTGRES_PASSWORD" ;;
+    audit.secrets.values.auditAppPassword) echo "REPLACE_WITH_AUDIT_APP_PASSWORD" ;;
+    id-bridge.secrets.values.postgresPassword) echo "REPLACE_WITH_BRIDGE_POSTGRES_PASSWORD" ;;
+    observability.secrets.values.grafanaAdminPassword) echo "REPLACE_WITH_GRAFANA_ADMIN_PASSWORD" ;;
+    sandbox-a.secrets.values.postgresPassword) echo "REPLACE_WITH_SANDBOX_A_POSTGRES_PASSWORD" ;;
+    veil-witness.secrets.values.postgresPassword) echo "REPLACE_WITH_VEIL_POSTGRES_PASSWORD" ;;
+    veil-witness.secrets.values.veilAppPassword) echo "REPLACE_WITH_VEIL_APP_PASSWORD" ;;
+    *) echo "unmapped slot: $1" >&2; return 1 ;;
+  esac
+}
+
+for slot in "${GUARDED_SLOTS[@]}"; do
+  literal="$(replace_with_literal_for_slot "$slot")" || { fail "no REPLACE_WITH_* literal mapped for $slot"; continue; }
+
+  assert_render_refused "published REPLACE_WITH_* literal $slot" "$slot is still a shipped" \
+    "${HELM_TEST_SECRET_ARGS[@]}" "${BASE[@]}" \
+    --set-string "${slot}=${literal}"
+done
+
+# Separator + case tolerance, same idiom as the "lowercase changeme variant"
+# case above — the regex is `replace[-_ ]?with`, matching the SAME
+# hyphen/underscore/none tolerance as `change[-_ ]?me`.
+assert_render_refused "lowercase replace_with variant" "adminPassword is still a shipped" \
+  "${HELM_TEST_SECRET_ARGS[@]}" "${BASE[@]}" \
+  --set-string "admin.secrets.values.adminPassword=replace_with_something"
+
+assert_render_refused "hyphenated REPLACE-WITH variant" "adminPassword is still a shipped" \
+  "${HELM_TEST_SECRET_ARGS[@]}" "${BASE[@]}" \
+  --set-string "admin.secrets.values.adminPassword=REPLACE-WITH-SOMETHING"
+
+assert_render_refused "no-separator REPLACEWITH variant" "adminPassword is still a shipped" \
+  "${HELM_TEST_SECRET_ARGS[@]}" "${BASE[@]}" \
+  --set-string "admin.secrets.values.adminPassword=REPLACEWITH_SOMETHING"
+
+# Positive control: a real-looking string that CONTAINS "replace" but is not
+# shaped like `REPLACE[-_ ]?WITH` at the start must still render — the fix
+# rejects the SHAPE, not the substring "replace".
+assert_render_ok "string containing but not starting with replace-with renders (positive control)" \
+  "${HELM_TEST_SECRET_ARGS[@]}" "${BASE[@]}" \
+  --set-string "admin.secrets.values.adminPassword=ReplacementToken-8f3a2b91-not-a-placeholder"
 
 # ---------------------------------------------------------------------------
 # 7 (T-488, 2026-08-04): admin used to be the one credential-bearing subchart

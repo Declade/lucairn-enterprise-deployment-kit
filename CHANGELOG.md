@@ -99,6 +99,17 @@ carry a security fix are tagged **[Security]**.
   rendered a 4-character password with no complaint. Every guard now rejects
   any non-string YAML type by name before that coercion runs; a quoted
   numeric-looking password (`--set-string ...=12345678`) is unaffected.
+- **[Security] Kit password guards reject the kit's own `REPLACE_WITH_*`
+  placeholder shape (T-490 second half).** The same six guards rejected the
+  `CHANGE-ME…` shape (T-10) but not the shape `customer-values.yaml.example`
+  itself ships for every unset credential: ~46 `REPLACE_WITH_*` slots,
+  several of them these exact password fields. An operator who copies that
+  example and misses one slot got a Secret whose password was, literally,
+  the published string `REPLACE_WITH_ADMIN_PASSWORD` — the same class of
+  defect T-10 closed for `CHANGE-ME…`. All six guards now also reject
+  `replace[-_ ]?with…` (case-insensitive, same separator tolerance as the
+  `change[-_ ]?me` pattern beside it); a real-looking value, including one
+  that merely contains the substring "replace", is unaffected.
 
 ### Removed
 - **`observability.grafana.adminPassword` (dead key).** No template ever read it,

@@ -32,9 +32,22 @@ fi
 # pull-secret guard. TEST_SIGNING_KEY satisfies the veil-witness all-zeroes
 # signing-key guard (customer-values.yaml.example has a placeholder value that
 # fails the hex validation; we override it here for test renders only).
+#
+# T-490b (2026-08-04) fixture fix: HELM_TEST_SECRET_ARGS overrides the 8
+# guarded password slots. Before T-490b closed the REPLACE_WITH_* guard gap,
+# this fixture rendered "clean" using customer-values.yaml.example's own
+# REPLACE_WITH_* literals UNCHANGED for those 8 slots — the exact defect
+# T-490b fixes. Once the guard also rejects that shape, every `render()` call
+# in this file aborts on the first guarded slot unless a real-looking value
+# is supplied, same as every other suite that renders the umbrella chart
+# with real secrets (tests/test_default_password_guard.sh, static_checks.sh
+# HA-02/HA-03/HA-04/HA-09/OBS-02). This is an isolated, revertible one-hunk
+# addition — no assertion in this file changes; only the previously-silent
+# reliance on the guard gap for the 8 password slots is removed.
 COMMON=(
   --set "global.imagePullDockerConfigJson=x"
   --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}"
+  "${HELM_TEST_SECRET_ARGS[@]}"
 )
 
 render() {
