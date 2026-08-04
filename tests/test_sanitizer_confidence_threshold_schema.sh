@@ -106,7 +106,13 @@ global:
   postgresqlSslmode: disable
   dsaServiceToken: ""
   dsaEnv: development
-  l3Required: false
+  # T-393: the retired \`l3Required\` is deliberately ABSENT. Leaving BOTH L3
+  # keys unset is the supported shipping default, and it is what this fixture
+  # wants — a plain valid render whose only variable is confidenceThreshold.
+  # Setting the retired flag here made the render hit the migration guard in
+  # sandbox-a/templates/deployment.yaml, so the VALID-threshold case failed
+  # for a reason that had nothing to do with T-517. (Backticks escaped: this
+  # is an UNQUOTED heredoc, needed for the \${TEST_SECRET_VALUE} above.)
   nodeIsolation: false
   mtls:
     enabled: false
