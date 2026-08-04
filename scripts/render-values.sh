@@ -237,6 +237,20 @@ done
 
 sed -i.bak "s|REPLACE_WITH_AUDIT_APP_PASSWORD|$(openssl rand -hex 16)|" "$OUTPUT"
 sed -i.bak "s|REPLACE_WITH_VEIL_APP_PASSWORD|$(openssl rand -hex 16)|" "$OUTPUT"
+# T-490b-E2E (2026-08-04): admin.secrets.values.adminPassword and
+# observability.secrets.values.grafanaAdminPassword were the two guarded
+# password slots this renderer never filled. Both render by DEFAULT — the
+# admin sub-chart has no enabled flag gating it off, and
+# observability.enabled defaults to true (charts/lucairn/values.yaml) — so
+# this was not the opt-in-feature gap the self-check message below used to
+# claim. Pre-fix (before the T-490b guard change in the same PR as this
+# fix) that silently shipped the published REPLACE_WITH_ADMIN_PASSWORD /
+# REPLACE_WITH_GRAFANA_ADMIN_PASSWORD string as a REAL credential on every
+# default install; post-guard-fix it hard-failed the recommended install
+# path (`scripts/render-values.sh` per INSTALL.md "Option A — automated")
+# instead. Filled here, same style as the adjacent app-role passwords.
+sed -i.bak "s|REPLACE_WITH_ADMIN_PASSWORD|$(openssl rand -hex 16)|" "$OUTPUT"
+sed -i.bak "s|REPLACE_WITH_GRAFANA_ADMIN_PASSWORD|$(openssl rand -hex 16)|" "$OUTPUT"
 sed -i.bak "s|REPLACE_WITH_REDIS_PASSWORD|$(openssl rand -hex 16)|" "$OUTPUT"
 sed -i.bak "s|REPLACE_WITH_CANARY_HMAC_KEY|$(openssl rand -hex 32)|" "$OUTPUT"
 # Sandbox-B inter-service auth token. The gateway sends this as the
@@ -305,10 +319,28 @@ if [ -n "$REMAINING" ]; then
   echo "WARNING — unfilled REPLACE_* tokens remain in $OUTPUT:" >&2
   echo "$REMAINING" >&2
   echo "" >&2
-  echo "These are opt-in feature placeholders the renderer doesn't know" >&2
-  echo "about (e.g. cert-prober keyID when certification.enabled=true)." >&2
-  echo "Operator must fill them manually if they enable the corresponding" >&2
-  echo "feature before running \`helm install\`." >&2
+  # T-490b-E2E (2026-08-04) correction: this warning used to assert every
+  # remaining token was an "opt-in feature placeholder the renderer doesn't
+  # know about" -- that was FALSE for REPLACE_WITH_ADMIN_PASSWORD and
+  # REPLACE_WITH_GRAFANA_ADMIN_PASSWORD, both of which render into a live
+  # Secret on the DEFAULT install (admin has no enabled gate; observability
+  # defaults to enabled: true) and are now filled above instead. Do not
+  # trust this list at face value: the renderer enumerates every
+  # placeholder it DOES know how to fill (step 6 above + the paired-key /
+  # catch-all loops) and only reaches this warning for what's left over --
+  # it has no registry of which slots are genuinely feature-gated, so a
+  # future template change that adds a new default-render slot without a
+  # matching sed line above would land here looking identical to a
+  # legitimate opt-in placeholder.
+  echo "Most of these are opt-in feature placeholders (e.g. backup.s3.bucket" >&2
+  echo "when backup.enabled=true, the cert-prober keyID when" >&2
+  echo "certification.enabled=true) -- but this renderer does not verify" >&2
+  echo "that. Before running \`helm install\`, confirm EACH token above by" >&2
+  echo "checking whether its corresponding feature is actually enabled in" >&2
+  echo "$OUTPUT: if the feature is on, fill the value yourself; if a token" >&2
+  echo "you believe is default-render remains here, treat it as a bug in" >&2
+  echo "this script, not an operator action item -- \`helm template\` will" >&2
+  echo "fail closed on it either way (T-10 / T-490b), never ship it silently." >&2
   echo "" >&2
 fi
 

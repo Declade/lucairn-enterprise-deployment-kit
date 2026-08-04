@@ -78,6 +78,26 @@ carry a security fix are tagged **[Security]**.
   `change[-_ ]?me` pattern beside it); a real-looking value, including one
   that merely contains the substring "replace", is unaffected.
 
+  **The recommended install path is fixed to match.** `scripts/render-
+  values.sh` (`INSTALL.md` § "Option A — automated") never filled
+  `admin.secrets.values.adminPassword` or `observability.secrets.values.
+  grafanaAdminPassword` — both render into a live Secret on a **default**
+  install (`admin` has no enable gate; `observability.enabled` defaults to
+  `true`) — and its own self-check warning mischaracterized both as
+  "opt-in feature placeholders", masking the gap. Before the guard fix
+  above this silently shipped the published placeholder string as a real
+  Grafana/admin credential on every default install; with the guard fix
+  alone (and this script unchanged) it would instead have hard-failed the
+  recommended install path outright. The renderer now generates both
+  credentials the same way it already generates the adjacent
+  `auditAppPassword` / `veilAppPassword` slots, and the self-check warning
+  text no longer asserts every leftover token is safely opt-in — it tells
+  the operator to verify each one instead. A new end-to-end test
+  (`tests/test_sec_hardening.sh`, "T-490b-E2E") runs the renderer and then
+  `helm template`s its own output against default umbrella values,
+  asserting a clean render with zero `REPLACE_WITH_*` tokens surviving into
+  any rendered Secret — the control whose absence hid this gap.
+
 ### Removed
 - **`observability.grafana.adminPassword` (dead key).** No template ever read it,
   so setting it never protected the Grafana admin account — the Grafana pod reads

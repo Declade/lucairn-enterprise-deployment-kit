@@ -1098,6 +1098,46 @@ echo "H10-canary: mixed backend (gateway native + sandbox-a vault) → INFO-skip
 
 echo "H10 render-based canary two-consumer detection: ok"
 
+# ---------------------------------------------------------------------------
+# T-490b-E2E (2026-08-04): the recommended install path (scripts/render-
+# values.sh, INSTALL.md "Option A — automated") must produce output that
+# ACTUALLY RENDERS with `helm template` against DEFAULT umbrella values --
+# no extra --set overrides beyond the pull-secret guard every other render
+# check in this suite already skips.
+#
+# This is the control whose absence hid the T-490b regression: the T-490b
+# placeholder-shape guard fix (same PR) revealed render-values.sh never
+# filled 2 of the 8 guarded password slots -- admin.secrets.values.
+# adminPassword and observability.secrets.values.grafanaAdminPassword --
+# and its own self-check mischaracterized both as "opt-in feature
+# placeholders" even though both render by DEFAULT (admin has no enabled
+# gate; observability.enabled defaults to true, charts/lucairn/values.yaml).
+# Pre-T-490b that silently shipped the published REPLACE_WITH_* string as a
+# REAL credential on every default install; post-T-490b-guard-fix it would
+# have hard-failed the recommended install path outright. Both failure
+# modes are closed by filling the two slots in render-values.sh (this PR);
+# this test is the regression guard that a FUTURE unfilled default-render
+# slot cannot silently repeat either failure mode again.
+# ---------------------------------------------------------------------------
+RV_E2E_OUT="$TMPDIR/t490b-e2e-customer-values.yaml"
+"$ROOT/scripts/render-values.sh" "$RV_E2E_OUT" > "$TMPDIR/t490b-e2e-render.out" 2>&1
+E2E_RENDER="$TMPDIR/t490b-e2e-helm-template.out"
+E2E_ERR="$TMPDIR/t490b-e2e-helm-template.err"
+if ! helm template lucairn "$ROOT/charts/lucairn" -f "$RV_E2E_OUT" \
+     --set global.skipPullSecretGuard=true \
+     >"$E2E_RENDER" 2>"$E2E_ERR"; then
+  echo "FAIL: T-490b-E2E — render-values.sh output must helm-template cleanly against DEFAULT umbrella values (the recommended install path). The renderer left a default-render guarded slot unfilled:" >&2
+  cat "$E2E_ERR" >&2
+  exit 1
+fi
+E2E_LEFTOVER="$(grep -c "REPLACE_WITH_" "$E2E_RENDER" || true)"
+if [ "$E2E_LEFTOVER" -ne 0 ]; then
+  echo "FAIL: T-490b-E2E — rendered manifest still contains $E2E_LEFTOVER REPLACE_WITH_* token(s) — a published placeholder reached a live Secret" >&2
+  grep "REPLACE_WITH_" "$E2E_RENDER" >&2
+  exit 1
+fi
+echo "T-490b-E2E: render-values.sh output helm-templates cleanly against default values, zero REPLACE_WITH_ tokens in the render: ok"
+
 fi  # end helm-present guard
 
 echo "all sec-hardening tests: ok"
