@@ -6,7 +6,7 @@
 
 **Expected wall-clock:** ~10-15 minutes from `git clone` to first successful inference.
 
-**Proven on:** Vast.ai Ubuntu 22.04.5 + Kind v0.24.0 + kubectl v1.31 + helm v3.21 on 2026-05-26 (cert chain `COMPLETENESS_FULL + VERDICT_VERIFIED + 4 claims, 10/10 consistency`).
+**Proven on:** Vast.ai Ubuntu 22.04.5 + Kind v0.24.0 + kubectl v1.31 + helm v3.21 on 2026-05-26 (cert chain `COMPLETENESS_FULL + VERDICT_VERIFIED + 4 claims, 10/10 consistency`). That run predates T-393/T-385: the chart then rendered `LUCAIRN_L3_REQUIRED=false` onto the veil-witness, which suppressed the coverage downgrade and printed `COMPLETENESS_FULL` on an L3-off install. The same run today reports `COMPLETENESS_PARTIAL + VERDICT_PARTIAL` — the coverage is identical and every signature still verifies; the certificate stopped over-claiming.
 
 ---
 
@@ -379,7 +379,9 @@ pin does not add a signature-verification step.
 
 ## Step 8.5 — Warmup sandbox-b's Ollama runtime (~35s)
 
-On a fresh install, sandbox-b's local Ollama runtime cold-starts on the first inference, which makes that very first request sometimes land with `COMPLETENESS_PARTIAL` (the `dsa-ai` claim arrives outside the witness's 30s accumulator window). Send one warmup request first; the customer-observable request afterwards reliably produces FULL.
+On a fresh install, sandbox-b's local Ollama runtime cold-starts on the first inference, which makes that very first request land with `COMPLETENESS_PARTIAL` for a reason that has nothing to do with coverage: the `dsa-ai` claim arrives outside the witness's 30s accumulator window. Send one warmup request first so the customer-observable request afterwards is not measuring a cold runtime.
+
+> **This alone no longer yields `COMPLETENESS_FULL` on a stock install (T-393 / T-385).** The chart ships the L3 deep PII shield OFF (`sandbox-a.sanitizer.llmScanEnabled: false`), so `llm_pii_scan` is genuinely absent from `layers_active`, and the veil-witness now certifies `COMPLETENESS_PARTIAL` to say so. Earlier charts rendered `LUCAIRN_L3_REQUIRED=false` onto the witness, which suppressed that downgrade and printed FULL for a request the deep PII shield never saw. **To demo a FULL chain you must actually run all four layers** — enable the L3 shield (`--set sandbox-a.sanitizer.llmScanEnabled=true --set global.llmShieldEnabled=true`) and stage the model — or set `--set global.l3CompletenessPosture=full` to reproduce the old wording, which over-claims by construction.
 
 Port-forward the gateway first (kept open through Step 10):
 
@@ -403,28 +405,33 @@ curl -s -o /dev/null \
 sleep 35
 ```
 
-Now your demo's first customer-observable request will produce a FULL cert chain.
+Now your demo's first customer-observable request is measured on a warm runtime. Its completeness verdict will be `COMPLETENESS_FULL` only if the L3 shield is enabled and warm (see the box above and the next section); on a stock L3-off install it is `COMPLETENESS_PARTIAL`, correctly.
 
-### L3 deep PII shield must be warm before a demo (fail-CLOSED)
+### L3 deep PII shield must be warm before a demo
 
-When the L3 deep PII shield is enabled (`sanitizer.llmScanEnabled=true`), Lucairn is **fail-CLOSED**: if the L3 model (`qwen2.5:7b` on the `ollama-identity` StatefulSet in `dsa-identity`) is unavailable, the gateway returns `503 l3_scrubber_unavailable` (with a `Retry-After` header) instead of silently shipping a request with only L1+L2 scrubbing. This is governed by the `LUCAIRN_L3_REQUIRED` env var (default `true`).
+When the L3 deep PII shield is enabled (`sanitizer.llmScanEnabled=true`) **and you have selected the fail-CLOSED availability posture** (`--set global.l3AvailabilityPosture=reject`): if the L3 model (`qwen2.5:7b` on the `ollama-identity` StatefulSet in `dsa-identity`) is unavailable, the gateway returns `503 l3_scrubber_unavailable` (with a `Retry-After` header) instead of silently shipping a request with only L1+L2 scrubbing.
 
-To keep the block from firing because of a cold start mid-demo:
+**That is not the chart default.** The chart sets no posture, so the sanitizer image's own default applies — `degrade`, which serves the request on L1+L2 and lets the veil-witness certify `COMPLETENESS_PARTIAL`. A cold L3 shield therefore does not block a stock demo; it silently produces PARTIAL certificates instead, which is the thing to notice before you present.
+
+To keep a cold start from costing you the FULL cert chain mid-demo (a 503 under
+`reject`, a PARTIAL certificate under the default `degrade`):
 
 1. The chart pins the model resident via `OLLAMA_KEEP_ALIVE=-1` on the `ollama-identity` pod (`sandboxA` chart value `ollamaIdentity.keepAlive`, default `"-1"`). Leave it at the default for demos.
-2. Confirm L3 is warm before the demo — the sanitizer's readiness probe gates on it:
+2. Confirm L3 is warm before the demo:
 
 ```bash
 # ollama-identity must list qwen2.5:7b (the L3 model)
 kubectl exec -n dsa-identity statefulset/ollama-identity -- ollama list
 
-# Sanitizer /readyz returns 200 only when L3 is live (when L3 is required).
-# A 503 with reason "l3_scrubber_unavailable" means the shield is not warm yet.
+# Sanitizer /readyz gates on L3 liveness only under the `reject` availability
+# posture. A 503 with reason "l3_scrubber_unavailable" means the shield is not
+# warm yet. Under the default `degrade` /readyz stays 200 with L3 cold, so use
+# the `ollama list` check above as the real warm test.
 kubectl exec -n dsa-identity deploy/sandbox-a -c sanitizer -- \
   sh -c 'curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8086/readyz'
 ```
 
-If you must demo without the L3 shield (not recommended), set `LUCAIRN_L3_REQUIRED=false` on the sanitizer — the request then proceeds with L1+L2 only and the **certificate is honestly downgraded to PARTIAL** (the witness omits `llm_pii_scan` from `layers_active`), and `gateway_fail_open_total` / `sanitizer_l3_unavailable_total` increment so the degradation is observable.
+If you must demo without the L3 shield (not recommended), set `--set global.l3AvailabilityPosture=degrade` (or simply leave it unset — that is the default) — the request then proceeds with L1+L2 only and the **certificate is downgraded to PARTIAL** (the witness omits `llm_pii_scan` from `layers_active`), and `gateway_fail_open_total` / `sanitizer_l3_unavailable_total` increment so the degradation is observable. The PARTIAL verdict is the veil-witness's own, decided by `global.l3CompletenessPosture` (default `partial`); it does not follow from the sanitizer's posture, so a demo cannot be made to certify FULL by relaxing availability.
 
 ---
 
@@ -504,7 +511,7 @@ echo "$CERT" | jq '{
 
 The verification verdict fields (`signatures_valid`, `completeness`, `overall_verdict`, `missing_services`) live under `.verification`. The claim list is the top-level `.claims` array (NOT `.signed_claims` — that key doesn't exist).
 
-Expected:
+Expected **on an L3-enabled, warm topology**. A stock install ships the L3 shield OFF, so it reports `"completeness": "COMPLETENESS_PARTIAL"` and the derived `"overall_verdict": "VERDICT_PARTIAL"` instead, with the same 4 claims and `signatures_valid: true` — see the field notes below:
 ```json
 {
   "signatures_valid": true,
@@ -523,8 +530,8 @@ Expected:
 
 This is the cryptographic proof your compliance team needs:
 - **signatures_valid: true** — every claim's Ed25519 signature checks out against the published public keys
-- **completeness: COMPLETENESS_FULL** — all 4 expected services participated
-- **overall_verdict: VERDICT_VERIFIED** — the whole chain is verified
+- **completeness: COMPLETENESS_FULL** — all 4 expected services participated AND the deep PII shield (L3) actually ran. On a stock L3-off install this field reads `COMPLETENESS_PARTIAL` instead, with the 4 claims still present and `signatures_valid: true` — that is the certificate honestly reporting which layers ran, not a failure (T-385). The `COMPLETENESS_FULL` sample above is the L3-enabled topology.
+- **overall_verdict: VERDICT_VERIFIED** — the whole chain is verified. Note this field is DERIVED: a `COMPLETENESS_PARTIAL` certificate is reported as `VERDICT_PARTIAL` even when every signature checks out, so on a stock L3-off install read `signatures_valid` and `missing_services` for the integrity answer and `completeness` for the coverage answer. `VERDICT_FAILED` is the only value that means something is wrong with the keys or the isolation.
 - **claims_count: 4** — TOKEN_GENERATED (bridge) + PII_SANITIZED (sanitizer) + INFERENCE_COMPLETED (ai) + EVENTS_RECORDED (audit)
 
 ---
@@ -653,7 +660,8 @@ Walk these checks after Step 10 — all should be ✓ for a successful install:
 - [ ] Customer mint returned `lcr_live_*` key
 - [ ] First inference returned HTTP 200 with `pii_in_ai: false`
 - [ ] `redaction_count` ≥ 4 on a payload with realistic PII (≥6 on the documented German clinical payload)
-- [ ] Cert chain reports `signatures_valid: true`, `completeness: COMPLETENESS_FULL`, `overall_verdict: VERDICT_VERIFIED`
+- [ ] Cert chain reports `signatures_valid: true` and an `overall_verdict` that is **not** `VERDICT_FAILED`
+- [ ] `completeness` matches the topology you installed: `COMPLETENESS_FULL` + `VERDICT_VERIFIED` with the L3 shield enabled and warm; `COMPLETENESS_PARTIAL` + `VERDICT_PARTIAL` on a stock L3-off install (both are correct outcomes — a PARTIAL completeness forces a PARTIAL verdict; see § "L3 deep PII shield must be warm before a demo")
 - [ ] 4 claims with types `TOKEN_GENERATED + PII_SANITIZED + INFERENCE_COMPLETED + EVENTS_RECORDED`
 - [ ] No `missing_services` in the cert verdict
 

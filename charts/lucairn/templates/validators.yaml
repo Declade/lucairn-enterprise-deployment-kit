@@ -21,6 +21,8 @@
 {{- include "validators.backupHalfConfig" $ -}}
 {{- include "validators.privateRegistryPullSecrets" $ -}}
 {{- include "validators.deprecatedL3RequiredKeys" $ -}}
+{{- include "validators.l3LegacyFlagWithoutPosture" $ -}}
+{{- include "validators.l3PostureValues" $ -}}
 {{- include "validators.l3ShieldFlagCoherence" $ -}}
 {{- include "validators.l3AirGapWithoutFailClosed" $ -}}
 {{- include "validators.namespaceNetpolAlignment" $ -}}

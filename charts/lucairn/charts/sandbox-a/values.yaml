@@ -176,30 +176,29 @@ sanitizer:
   # raise this to 10800 alongside any large-model bump on a slower link. Full
   # table: docs/L3_MODEL_UPGRADE.md § 2.5.
   llmScanModelPullDeadlineSeconds: 3600
-  # FIX-B (full-stack-test-results-2026-05-29): L3 fail-mode for the sanitizer.
-  # true = fail-CLOSED (503 l3_scrubber_unavailable when the L3 deep PII shield
-  # is unavailable). false = continue-mode (proceed L1+L2, cert honestly
-  # downgraded to PARTIAL with llm_pii_scan omitted from layers_active). Wired
-  # into the sanitizer container env as LUCAIRN_L3_REQUIRED.
+  # L3 fail-mode for the sanitizer — now `global.l3AvailabilityPosture`
+  # (T-393). "reject" = fail-CLOSED (503 l3_scrubber_unavailable when the L3
+  # deep PII shield is unavailable). "degrade" = continue on L1+L2. Wired into
+  # the sanitizer container env as LUCAIRN_L3_AVAILABILITY_POSTURE, and ONLY
+  # when the operator sets the key — otherwise the image's own default
+  # ("degrade") applies.
   #
-  # DEFAULT (overnight follow-up 2026-06-15 — the Helm side of #73's Compose
-  # fix): the L3 shield is the GPU `ollama-identity` StatefulSet, which renders
-  # ONLY when sanitizer.llmScanEnabled=true (ollama-identity-statefulset.yaml:1).
-  # With the stock default llmScanEnabled=false, a `true` here required L3 but
-  # deployed no L3 service → the sanitizer /readyz fails liveness and the gateway
-  # fail-closes 503 on EVERY request (same trap #73 fixed for Compose). Keep
-  # L3-required PAIRED with llmScanEnabled. Enterprise operators who enable the
-  # L3 shield (set sanitizer.llmScanEnabled=true to deploy the GPU ollama-identity
-  # sidecar) flip L3-required true to restore fail-closed L3.
+  # PAIR IT WITH llmScanEnabled (overnight follow-up 2026-06-15 — the Helm side
+  # of #73's Compose fix): the L3 shield is the GPU `ollama-identity`
+  # StatefulSet, which renders ONLY when sanitizer.llmScanEnabled=true
+  # (ollama-identity-statefulset.yaml:1). With the stock default
+  # llmScanEnabled=false, `reject` requires an L3 service that was never
+  # deployed → the sanitizer /readyz fails liveness and the gateway fail-closes
+  # 503 on EVERY request (the trap #73 fixed for Compose). Enterprise operators
+  # who enable the L3 shield (sanitizer.llmScanEnabled=true, deploying the GPU
+  # ollama-identity sidecar) set `global.l3AvailabilityPosture: reject`.
   #
-  # SINGLE SOURCE OF TRUTH (rehearsal fix 2026-06-19, collapsed 2026-06-19
-  # fix-up): there is NO per-subchart sanitizer.l3Required override. The ONE L3
-  # knob is global.l3Required (charts/lucairn/values.yaml, default false). The
-  # sanitizer container AND the veil-witness pod resolve LUCAIRN_L3_REQUIRED from
-  # that single global with the SAME fallback ("false"), so they can never drift
-  # (drift ⇒ witness downgrades every cert to COMPLETENESS_PARTIAL —
-  # verifier.go:170-172,503). To require L3, set global.l3Required=true (pair it
-  # with sanitizer.llmScanEnabled=true so the GPU L3 shield is actually deployed).
+  # NO PER-SUBCHART OVERRIDE (rehearsal fix 2026-06-19, still true): there is no
+  # sanitizer.l3Required key and no sanitizer-level posture key. Availability is
+  # a global. It no longer has to agree with anything on the witness — the
+  # witness owns a DIFFERENT question (what the certificate claims, via
+  # global.l3CompletenessPosture), and the two cannot contradict each other.
+  # See charts/lucairn/values.yaml § L3 DEEP-PII-SHIELD POSTURES.
   # TOB-003 fix (2026-05-09): default "sequential" — Pro/Enterprise overlays
   # MUST explicitly set "ensemble" to opt into L3 reversal path.
   llmScanMode: "sequential"
@@ -449,7 +448,8 @@ ollamaIdentity:
   # model's weights are resident in HOST RAM, not VRAM. That is survivable for
   # a ~4.4 GiB model under this 10Gi limit and is NOT survivable for a ~18.6
   # GiB one: the container is OOMKilled during load, `ollama list` stops
-  # answering, the readiness probe fails, and with global.l3Required=true the
+  # answering, the readiness probe fails, and with
+  # global.l3AvailabilityPosture=reject the
   # gateway fail-closes on every request. A large-model bump needs GPU
   # scheduling added to this chart, or a CPU-sized limit above the resident
   # model size. The kit has NO measured host-RAM figure for a 31B-class model

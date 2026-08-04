@@ -511,9 +511,9 @@ For Docker Compose:
   L1+L2 layers plus the sandbox-a + sanitizer + ollama-identity + gateway +
   witness + audit + id-bridge baseline **with the `qwen2.5:7b` L3 model
   resident in `ollama-identity` (~5 GB)**. **~8 GB is feasible with L3 disabled**
-  (`LUCAIRN_L3_REQUIRED=false`, the kit default for all install paths): the
-  `ollama-identity` container still runs but loads no model, so it idles at a
-  few hundred MB and the L1+L2 stack fits in ~8 GB. **20 GB RAM** is required
+  (`LUCAIRN_L3_AVAILABILITY_POSTURE=degrade`, the kit default for all install
+  paths): the `ollama-identity` container still runs but loads no model, so it
+  idles at a few hundred MB and the L1+L2 stack fits in ~8 GB. **20 GB RAM** is required
   only when Phase 7 is explicitly re-enabled — the `pii-ml` sidecar runs
   Piiranha + GLiNER and reserves up to 4 GB for the container on top of the
   L3-on baseline. 4 vCPU is sufficient for any of these topologies at
@@ -1161,13 +1161,14 @@ The running `ollama-identity` keeps **no egress** (`internal: true`); only the
 one-time throwaway staging container in step 2 has egress, and it exits as soon
 as the pull completes. This procedure is validated on a fresh install.
 
-**Out-of-the-box default — continue-mode (L1+L2 only).** Both `lucairn-init`
-and the bare `customer.env.example` (manual `cp customer.env.example customer.env`
-path) set `LUCAIRN_L3_REQUIRED=false` for every deployment path. With this
+**Out-of-the-box default — continue-mode (L1+L2 only), honest certificate.**
+Both `lucairn-init` and the bare `customer.env.example` (manual
+`cp customer.env.example customer.env` path) set
+`LUCAIRN_L3_AVAILABILITY_POSTURE=degrade` for every deployment path. With this
 default the stack runs continue-mode: the sanitizer applies the
 L1 (deterministic regex/dictionary) + L2 (sandbox-a) PII layers, the L3 shield
-is treated as optional, and the verification certificate is honestly downgraded
-to **`COMPLETENESS_PARTIAL`** (the witness omits `llm_pii_scan` from
+is treated as optional, and the verification certificate is downgraded to
+**`COMPLETENESS_PARTIAL`** (the witness omits `llm_pii_scan` from
 `layers_active`). The gateway does **not** return `503 l3_scrubber_unavailable`
 — requests complete immediately even though the `qwen2.5:7b` model has not yet
 been staged.
@@ -1176,47 +1177,87 @@ The pre-stage procedure above is the **optional** path to **re-enable L3
 fail-closed** mode. To activate it after staging the model:
 
 1. Complete the throwaway-pull staging procedure above.
-2. Set `LUCAIRN_L3_REQUIRED=true` in `customer.env`.
+2. Set `LUCAIRN_L3_AVAILABILITY_POSTURE=reject` in `customer.env`.
 3. Restart the stack (`docker compose … up -d`).
 
-With `LUCAIRN_L3_REQUIRED=true` the sanitizer is fail-CLOSED: the gateway
-returns `503 l3_scrubber_unavailable` if the L3 shield is unreachable rather
-than degrading to L1+L2 silently. The certificate completeness becomes
+With `LUCAIRN_L3_AVAILABILITY_POSTURE=reject` the sanitizer is fail-CLOSED: the
+gateway returns `503 l3_scrubber_unavailable` if the L3 shield is unreachable
+rather than degrading to L1+L2 silently. The certificate completeness becomes
 `COMPLETENESS_FULL` once the model is loaded and all four claim layers are
 active. Provision the full 16 GB RAM before enabling this mode (see
 § Pre-Requisites).
 
-> **`LUCAIRN_L3_REQUIRED` governs TWO services — they MUST agree.** The
-> veil-witness reads the SAME flag as the sanitizer and "mirrors
-> `config.l3_required()` in the sanitizer so the two sides agree"
-> (`services/veil-witness/internal/verifier/verifier.go:170-172`). If the witness
-> demands L3 (`LUCAIRN_L3_REQUIRED=true`) while the sanitizer skips the L3
-> `llm_pii_scan` layer (L3 off), the witness **downgrades every certificate to
-> `COMPLETENESS_PARTIAL`** (`verifier.go:503`) — even on an otherwise-healthy
-> stack. Set the flag the SAME on both sides.
+> **`LUCAIRN_L3_REQUIRED` IS RETIRED — it is now two independent flags, and
+> they do NOT have to agree (board T-393 / T-385).**
 >
-> **Helm:** this is wired as the SINGLE `global.l3Required` value
-> (`charts/lucairn/values.yaml`, default `false`) — there is no per-subchart
-> override. Both the `sandbox-a` sanitizer container AND the `veil-witness` pod
-> resolve `LUCAIRN_L3_REQUIRED` from this one key with the SAME fallback
-> (`false`), so the two sides resolve identically in every case and can never
-> split. The default (`false`) yields `LUCAIRN_L3_REQUIRED="false"` on both ⇒
-> `COMPLETENESS_FULL` with L3 absent. To require L3, flip it once with
-> `--set global.l3Required=true` (after staging the GPU L3 shield, i.e.
-> `--set sandbox-a.sanitizer.llmScanEnabled=true`) so an absent L3 layer
-> correctly downgrades the cert to `PARTIAL`. (Before this single-knob wiring the
-> Helm witness defaulted to L3-required ⇒ every fresh L3-off install's certs
-> silently downgraded to `PARTIAL`.)
+> The retired flag welded together two unrelated questions that are answered by
+> two different services, so no single value could express the combination most
+> installs actually want. Each question now has its own flag:
 >
-> **Migration (chart 1.9.4+):** the old per-subchart overrides
+> | Question | Service | Flag | Values | Default |
+> |---|---|---|---|---|
+> | What happens to a **request** when L3 is unavailable? | sanitizer | `LUCAIRN_L3_AVAILABILITY_POSTURE` | `degrade` \| `reject` | `degrade` |
+> | What does the **certificate** claim when L3 did not run? | veil-witness | `LUCAIRN_L3_COMPLETENESS_POSTURE` | `partial` \| `full` | `partial` |
+>
+> Neither service reads the other's flag, and neither can downgrade the other's
+> answer, so there is no "both sides must agree" rule any more — that rule was
+> the retired flag's defect, not a property of the system.
+>
+> **⚑ On HELM, certificates change from `COMPLETENESS_FULL` to
+> `COMPLETENESS_PARTIAL` on upgrade, on purpose.** Nothing about the scrubbing
+> changed. The chart shipped `global.l3Required: false` and rendered it onto the
+> veil-witness pod, so Helm installs certified `COMPLETENESS_FULL` for requests
+> the deep PII shield never saw. The certificate now states which layers
+> actually ran. An operator who needs the old wording can set
+> `LUCAIRN_L3_COMPLETENESS_POSTURE=full`; the service calls that the legacy
+> posture and it over-claims by construction.
+>
+> **Compose installs are unaffected on this point** — the Compose files never
+> set the variable on the `veil-witness` service, only on the sanitizer, so the
+> witness already downgraded and those certificates already read
+> `COMPLETENESS_PARTIAL`.
+>
+> **⚠️ SELF-HOSTED COMPOSE: the overlay's fail-closed default is gone.**
+> `docker-compose.self-hosted.yml` used to default `LUCAIRN_L3_REQUIRED=true`,
+> so a hand-rolled `customer.env` with no L3 line inherited fail-closed. It now
+> supplies **no** posture, so that env inherits the sanitizer image's `degrade`
+> instead. This is deliberate: the obvious migration (defaulting the new key to
+> `reject`) would have overridden the `LUCAIRN_L3_REQUIRED=false` that
+> `lucairn-init` and `customer.env.example` have written **for all install
+> paths** since 2026-06 — skipping the boot refusal and fail-closing against a
+> `qwen2.5:7b` model this kit does not stage by default, i.e. `503` on every
+> request after nothing but an upgrade. **If you want fail-closed on a
+> self-hosted install, set `LUCAIRN_L3_AVAILABILITY_POSTURE=reject` in
+> `customer.env` explicitly**, after staging the model. Coverage loss stays
+> visible either way: the veil-witness certifies `COMPLETENESS_PARTIAL` when L3
+> did not run, and no availability posture can suppress that.
+>
+> On the split Compose path and on Helm, request availability is unchanged.
+>
+> **Helm:** the chart sets **neither** flag, so both service images apply their
+> own defaults (`degrade` + `partial`). To change one, set
+> `global.l3AvailabilityPosture` (rendered onto the `sandbox-a` sanitizer
+> container) or `global.l3CompletenessPosture` (rendered onto the `veil-witness`
+> pod). Each variable is rendered **only** when its key is present — an unset
+> key is how you say "use the image default", and it is why a stock
+> `helm template` shows no `LUCAIRN_L3_*` env at all. To require L3, set
+> `--set global.l3AvailabilityPosture=reject` after staging the GPU L3 shield
+> (`--set sandbox-a.sanitizer.llmScanEnabled=true`).
+>
+> **Migration — delete the retired flag, do not leave it set.** Both services
+> REFUSE TO START when they see `LUCAIRN_L3_REQUIRED` beside an unset
+> replacement, rather than silently resolving to a posture you did not choose.
+> On Compose, set the posture in `customer.env` and delete the old line
+> (`bin/lucairn doctor` warns while it is still there). On Helm, the chart
+> `fail`s the render with the same migration message if `global.l3Required` is
+> present without both replacements — set both, then delete `global.l3Required`.
+> One key cannot express `degrade` + `partial` anyway: the two services derive
+> **opposite** postures from the same retired value.
+>
+> **Migration (chart 1.9.4+, still enforced):** the older per-subchart overrides
 > `sandbox-a.sanitizer.l3Required` and `veil-witness.config.l3Required` are
-> **REMOVED**. They are no longer read by the pod templates, so leaving them in a
-> values file would *silently* fall back to `LUCAIRN_L3_REQUIRED="false"` — a
-> silent fail-closed→continue-mode security downgrade on upgrade. To prevent that,
-> the chart now **`fail`s the `helm template`/`helm install`** when either
-> deprecated key is present, with a message pointing you at `global.l3Required`.
-> Delete those keys from your values file and set `global.l3Required=true` (or
-> `false`) instead.
+> **REMOVED** and the chart `fail`s the render when either is present. Delete
+> them from your values file.
 
 ### Self-hosted with managed LLM (BYOK Anthropic, OpenAI, etc.)
 

@@ -130,32 +130,92 @@ spec:
                 secretKeyRef:
                   name: {{ .Chart.Name }}-credentials
                   key: LCR_WITNESS_KEY_ID
-            # L3-required flag — MUST agree with the sanitizer (sandbox-a) or the
-            # witness downgrades every cert to COMPLETENESS_PARTIAL. The witness
-            # binary reads this (verifier.go:170-172,503) and "mirrors
-            # config.l3_required() in the sanitizer so the two sides agree".
+            # ── L3 CERTIFICATE-HONESTY POSTURE (T-393 / T-385) ────────────────
             #
-            # FIX A (Codex r1 P2, 2026-06-19): this env lives in the POD SPEC,
-            # NOT the ConfigMap consumed via envFrom. An envFrom-sourced value
-            # does NOT update in-place when `helm upgrade` changes the ConfigMap
-            # (no pod-template change ⇒ no rollout), so the witness would keep
-            # the OLD L3 value while the sanitizer — whose value is already in
-            # its pod spec — rolls to the NEW one, leaving the two sides in
-            # disagreement until a manual restart. Putting the value here makes
-            # a change to global.l3Required change the pod template, triggering a
-            # rollout in lockstep with the sanitizer.
+            # The witness owns ONE L3 question and only one: what the CERTIFICATE
+            # claims when the deep PII shield did not run. It has no 503 path —
+            # whether a REQUEST survives an L3 outage is the sanitizer's
+            # (sandbox-a's) concern, and the two are now separate flags. See
+            # PRD prd-2026-08-01-l3-availability-vs-certificate-honesty-split.md.
             #
-            # RESOLUTION (collapsed to ONE knob, 2026-06-19 fix-up): resolve
-            # from global.l3Required (default false) — the SINGLE shared knob.
-            # The sanitizer (sandbox-a) pod template uses this IDENTICAL
-            # expression with the SAME fallback ("false"), so the two sides
-            # resolve byte-identically in EVERY case (including null/absent
-            # global) and CANNOT split. There is no per-subchart override and no
-            # render-time split-guard needed — the split is structurally
-            # impossible. hasKey (NOT `| default`) so an explicit global false is
-            # honored (Sprig's `default` treats boolean false as empty).
+            # ⚠️ WHY BOTH ENTRIES BELOW ARE CONDITIONAL — THIS IS THE T-393 FIX.
+            # LUCAIRN_L3_REQUIRED used to render UNCONDITIONALLY here (an `else`
+            # branch emitted "false" when global.l3Required was absent, and the
+            # umbrella's own values.yaml supplied the key anyway, so the `else`
+            # was unreachable and the env was ALWAYS present). The witness image
+            # that carries the posture split treats a set legacy flag beside an
+            # unset LUCAIRN_L3_COMPLETENESS_POSTURE as an un-migrated deployment
+            # and REFUSES TO START with a migration message
+            # (services/veil-witness/internal/verifier/l3_posture.go, the
+            # `posture == ""` branch). Rendering the retired flag on every
+            # install therefore CrashLooped the witness on 100% of kit installs
+            # from an image bump alone. Neither variable is emitted now unless
+            # the operator actually chose it, so a stock render hands the image
+            # NOTHING and the image's own default applies: "partial" — an
+            # L3-absent chain certifies COMPLETENESS_PARTIAL.
+            #
+            # FIX A (Codex r1 P2, 2026-06-19) still applies to both entries: they
+            # live in the POD SPEC, NOT the ConfigMap consumed via envFrom. An
+            # envFrom-sourced value does NOT update in-place when `helm upgrade`
+            # changes the ConfigMap (no pod-template change ⇒ no rollout), so the
+            # witness would keep the OLD posture until a manual restart. In the
+            # pod spec, a posture change rolls the pod.
+            #
+            # hasKey (NOT `| default`) so an explicit `false` is honored —
+            # Sprig's `default` treats boolean false as empty.
+            {{- $g := (default dict .Values.global) }}
+            {{- /*
+                 MIRROR of validators.l3LegacyFlagWithoutPosture, deliberately
+                 duplicated here rather than trusted to the umbrella (T-393
+                 review, MEDIUM-5). The umbrella validator reads `.Values.global`
+                 at UMBRELLA scope; this template reads the SUBCHART's coalesced
+                 `.Values.global`, and the two are not the same map — Helm
+                 propagates `global` asymmetrically, and a values file that sets
+                 `veil-witness.global.l3Required` reaches THIS map without ever
+                 passing the umbrella guard. Verified reachable:
+                 `--set veil-witness.global.l3Required=true` rendered the retired
+                 flag with no posture, i.e. the exact CrashLoop state T-393
+                 exists to prevent. A guard has to live where the render happens.
+            */}}
+            {{- /*
+                 The ENUM half of the same mirror. `validators.l3PostureValues`
+                 also reads umbrella scope, so `--set
+                 veil-witness.global.l3CompletenessPosture=PARTIALLY` rendered
+                 straight through to a pod the image refuses to boot. Both
+                 halves have to be mirrored or the bypass just moves from one
+                 guard to the other.
+                 Empty/null is ABSENCE (the image applies its default);
+                 whitespace-only is a value and is refused, exactly as
+                 services/veil-witness/internal/verifier/l3_posture.go
+                 `parseL3CompletenessPosture` does.
+            */}}
+            {{- if hasKey $g "l3CompletenessPosture" }}
+            {{- $raw := toString (default "" $g.l3CompletenessPosture) }}
+            {{- if and (ne $raw "") (not (has (lower (trim $raw)) (list "partial" "full"))) }}
+            {{- fail "veil-witness: global.l3CompletenessPosture must be \"partial\" or \"full\" (value withheld). The veil-witness refuses to start on an off-allowlist posture, so this render would CrashLoopBackOff. \"partial\" is the image default and the honest posture; \"full\" reproduces the retired global.l3Required=false over-claim (board T-385). Omit the key entirely to take the image default. NOTE: if you set this under a subchart key (veil-witness.global.*) rather than the umbrella global, set the umbrella key instead — a subchart-scoped global bypasses the chart's umbrella validators." }}
+            {{- end }}
+            {{- end }}
+            {{- if and (hasKey $g "l3Required") (not (hasKey $g "l3CompletenessPosture")) }}
+            {{- fail "veil-witness: l3Required is set in this pod's resolved `global` without l3CompletenessPosture. LUCAIRN_L3_REQUIRED is RETIRED (T-393) and the witness image REFUSES TO START when it sees the retired flag beside an unset LUCAIRN_L3_COMPLETENESS_POSTURE — this render would produce a CrashLoopBackOff. Set global.l3CompletenessPosture=partial|full (what the CERTIFICATE claims when L3 did not run; `partial` is the default and the honest posture, `full` reproduces the retired false behaviour of claiming COMPLETENESS_FULL for a request the deep PII shield never saw — board T-385), then delete l3Required. Leaving both unset is supported and is what the kit ships. NOTE: if you set this under a subchart key (veil-witness.global.*) rather than the umbrella global, set the umbrella key instead — a subchart-scoped global bypasses the chart's other L3 guards." }}
+            {{- end }}
+            {{- if hasKey $g "l3CompletenessPosture" }}
+            # "partial" (image default) — a chain that only ran L1+L2 certifies
+            # COMPLETENESS_PARTIAL. "full" reproduces the retired
+            # LUCAIRN_L3_REQUIRED=false behaviour, which claims COMPLETENESS_FULL
+            # for a request the deep PII shield never saw (board T-385).
+            - name: LUCAIRN_L3_COMPLETENESS_POSTURE
+              value: {{ $g.l3CompletenessPosture | quote }}
+            {{- end }}
+            {{- if hasKey $g "l3Required" }}
+            # RETIRED. Emitted only because the operator still sets
+            # global.l3Required, so an image that still reads it keeps behaving
+            # as before. On the posture-split image this is a migration
+            # tripwire, and validators.l3LegacyFlagWithoutPosture
+            # (charts/lucairn/templates/_validators.tpl) refuses the render
+            # unless both replacement postures are set alongside it.
             - name: LUCAIRN_L3_REQUIRED
-              value: {{ if hasKey .Values.global "l3Required" }}{{ .Values.global.l3Required | quote }}{{ else }}{{ "false" | quote }}{{ end }}
+              value: {{ $g.l3Required | quote }}
+            {{- end }}
             {{- if and (not $mtlsEnabled) .Values.witnessMtls.serverSecret }}
             # TOB-S009 / fable HIGH (2026-06-10): opt-in witness server-side mTLS.
             # When witnessMtls.serverSecret is set the witness reads these three

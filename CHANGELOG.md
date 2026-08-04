@@ -28,6 +28,83 @@ carry a security fix are tagged **[Security]**.
   `refuse_high_confidence` does and does not relax.
 
 ### Changed
+- **⚑ BREAKING — `LUCAIRN_L3_REQUIRED` is retired; certificates now say
+  `COMPLETENESS_PARTIAL` when the L3 deep PII shield did not run (T-393 /
+  T-385).** The retired variable welded together two unrelated questions that
+  are answered by two different services, so no single value could express the
+  combination most installs want. Each question now has its own flag, and they
+  do **not** have to agree:
+
+  | Question | Service | Flag / Helm value | Values | Default |
+  |---|---|---|---|---|
+  | What happens to a **request** when L3 is unavailable? | sanitizer | `LUCAIRN_L3_AVAILABILITY_POSTURE` / `global.l3AvailabilityPosture` | `degrade` \| `reject` | `degrade` |
+  | What does the **certificate** claim when L3 did not run? | veil-witness | `LUCAIRN_L3_COMPLETENESS_POSTURE` / `global.l3CompletenessPosture` | `partial` \| `full` | `partial` |
+
+  **What you will notice — HELM INSTALLS ONLY.** On Helm, verification
+  certificates for L1+L2-only requests change from `COMPLETENESS_FULL` to
+  `COMPLETENESS_PARTIAL`. **Nothing about the scrubbing changed.** The chart
+  shipped `global.l3Required: false` and rendered it onto the veil-witness pod,
+  which made the witness certify FULL for requests the deep PII shield never
+  saw — while `docs/CUSTOMER_HELM_RUNBOOK.md` described that same state as
+  "honestly downgraded to PARTIAL". The documentation was describing the
+  behaviour operators were entitled to expect; the certificate now matches it.
+
+  **Compose installs are unaffected on this point.** The Compose files never set
+  the variable on the `veil-witness` service — only on the sanitizer — so the
+  witness already defaulted to downgrading, and those installs already certified
+  `COMPLETENESS_PARTIAL`. An operator who needs the old Helm certificate wording
+  can set `global.l3CompletenessPosture: full` — the service calls that the
+  legacy posture, and it over-claims by construction.
+
+  **⚠️ One availability default DID move: `docker-compose.self-hosted.yml` no
+  longer defaults to fail-closed.** It used to supply
+  `LUCAIRN_L3_REQUIRED=true`, so a hand-rolled `customer.env` carrying no L3
+  line inherited fail-closed; it now supplies no posture, and that env inherits
+  the image default `degrade`. Migrating the default instead (to
+  `LUCAIRN_L3_AVAILABILITY_POSTURE=reject`) would have been an outage: it would
+  have overridden the `LUCAIRN_L3_REQUIRED=false` that `lucairn-init` and
+  `customer.env.example` have written **for all install paths** since 2026-06,
+  skipping the boot refusal and fail-closing against a `qwen2.5:7b` model the
+  kit does not stage by default — `503` on every request from an upgrade alone.
+  **Self-hosted operators who want fail-closed must now set
+  `LUCAIRN_L3_AVAILABILITY_POSTURE=reject` explicitly.** Everywhere else request
+  availability is unchanged: `degrade` is behaviour-identical to the retired
+  `false`, and the certificate still reports coverage loss regardless of
+  posture.
+
+  **Why it is breaking beyond the certificate:** both service images REFUSE TO
+  START when they see `LUCAIRN_L3_REQUIRED` beside an unset replacement, rather
+  than silently resolving to a posture the operator never chose. Until this
+  release the kit set that variable **unconditionally** — the chart's
+  `values.yaml` shipped `global.l3Required: false` and both pod templates
+  rendered the env with an `else` branch, and the Compose files supplied a
+  `:-false` / `:-true` default. A kit install picking up the newer images would
+  therefore have CrashLooped — **both** pods on Helm (the chart rendered the
+  variable onto each), the **sanitizer** on Compose (only that service ever
+  received it) — on 100% of installs, from an image bump alone. Nothing now sets
+  either variable unless an operator does.
+
+  **Migration (delete the retired flag; do not leave it set):**
+  - *Helm* — the chart sets no posture at all; a stock `helm template` renders
+    **no** `LUCAIRN_L3_*` env and the images apply their own defaults. If your
+    values file still carries `global.l3Required`, the render now `fail`s with a
+    migration message unless both `global.l3AvailabilityPosture` and
+    `global.l3CompletenessPosture` are set alongside it
+    (`validators.l3LegacyFlagWithoutPosture`). Set both, then delete
+    `global.l3Required`.
+  - *Compose* — set `LUCAIRN_L3_AVAILABILITY_POSTURE` in `customer.env`
+    (`lucairn-init` and `customer.env.example` now write `degrade`) and delete
+    `LUCAIRN_L3_REQUIRED`. `bin/lucairn doctor` warns while the retired line is
+    still present — and a leftover line is a boot refusal on **every** compose
+    path, split and self-hosted alike, because neither file supplies a posture
+    on your behalf (see the ⚠️ note above about the overlay's removed
+    fail-closed default).
+  - One key cannot express `degrade` + `partial` in any case: the two services
+    derive **opposite** postures from the same retired value.
+
+  `validators.l3AirGapWithoutFailClosed` now accepts either fail-closed
+  spelling, so a correctly-migrated air-gapped install renders.
+  Upstream design: `prd-2026-08-01-l3-availability-vs-certificate-honesty-split.md`.
 - **[Security] `sandbox-a.sanitizer.confidenceThreshold` is now schema-bounded to
   a number in `[0, 1]` (T-517).** The value is rendered straight into the
   sanitizer ConfigMap as `presidio.confidence_threshold`, and an unusable value

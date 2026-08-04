@@ -18,15 +18,19 @@ data:
   LCR_PROOF_OUTPUT_PATH: {{ .Values.config.proofOutputPath | quote }}
   LCR_PROOF_MODEL_VERSION: {{ .Values.config.proofModelVersion | quote }}
   INSECURE_DEV_MODE: {{ .Values.config.insecureDevMode | quote }}
-  # NOTE: LUCAIRN_L3_REQUIRED is intentionally NOT in this ConfigMap.
-  # FIX A (Codex r1 P2, 2026-06-19): it now lives DIRECTLY in the witness
-  # Deployment pod spec env (veil-witness/templates/deployment.yaml) — the same
-  # way the sanitizer (sandbox-a) wires it. A ConfigMap value consumed via
+  # NOTE: the L3 certificate-honesty posture is intentionally NOT in this
+  # ConfigMap. LUCAIRN_L3_COMPLETENESS_POSTURE (and the retired
+  # LUCAIRN_L3_REQUIRED, when an operator still sets it) live DIRECTLY in the
+  # witness Deployment pod spec env (veil-witness/templates/deployment.yaml).
+  #
+  # FIX A (Codex r1 P2, 2026-06-19): a ConfigMap value consumed via
   # `envFrom: configMapRef` does NOT roll the pod on `helm upgrade` when the
-  # value changes (no pod-template change), so the witness would have kept the
-  # OLD L3 setting while the sanitizer rolled to the NEW one → the two sides
-  # disagree → every cert silently downgrades to COMPLETENESS_PARTIAL until a
-  # manual restart. Sourcing it from the pod spec makes an L3 change roll BOTH
-  # pods together. Both the witness and the sanitizer (sandbox-a) resolve it
-  # from the SINGLE knob global.l3Required with the SAME fallback ("false"), so
-  # the two sides can never split — there is no per-subchart override.
+  # value changes (no pod-template change), so the witness would keep the OLD
+  # posture until someone restarted it by hand — a certificate posture change
+  # that silently does not take effect. In the pod spec, changing it rolls the
+  # pod.
+  #
+  # T-393: neither variable is rendered at all unless the operator sets the
+  # matching key (global.l3CompletenessPosture / global.l3Required). The
+  # witness image refuses to start when it sees the retired flag beside an
+  # unset posture, so an unconditional render CrashLooped every kit install.

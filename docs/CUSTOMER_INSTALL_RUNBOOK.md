@@ -30,7 +30,7 @@ You will need:
   > affects this runbook's STOCK step 6 command — not a special topology.
   > `scripts/check-compose-version.sh` runs this check for you (not yet wired
   > into `bin/lucairn doctor`).
-- 16 GB RAM recommended (4 vCPUs, 50 GB disk free). ~8 GB is feasible for this pilot topology **because the L3 deep PII shield is off by default** (`LUCAIRN_L3_REQUIRED=false`) — the `ollama-identity` container runs but loads no `qwen2.5:7b` model, so it idles at a few hundred MB instead of the ~5 GB resident a loaded model needs. If you later stage the L3 model and set `LUCAIRN_L3_REQUIRED=true`, provision the full 16 GB. (INSTALL.md states 16 GB recommended for the L3-on default; the two figures are reconciled by whether the L3 model is loaded.)
+- 16 GB RAM recommended (4 vCPUs, 50 GB disk free). ~8 GB is feasible for this pilot topology **because the L3 deep PII shield is off by default** (`LUCAIRN_L3_AVAILABILITY_POSTURE=degrade`) — the `ollama-identity` container runs but loads no `qwen2.5:7b` model, so it idles at a few hundred MB instead of the ~5 GB resident a loaded model needs. If you later stage the L3 model and set `LUCAIRN_L3_AVAILABILITY_POSTURE=reject`, provision the full 16 GB. (INSTALL.md states 16 GB recommended for the L3-on default; the two figures are reconciled by whether the L3 model is loaded.)
 - Outbound HTTPS to:
   - `ghcr.io` — the 12 Lucairn `dsa-*` images (`dsa-gateway`, `dsa-sandbox-a`, `dsa-sandbox-b`, `dsa-sanitizer`, `dsa-veil-witness`, `dsa-audit`, `dsa-id-bridge`, `dsa-reid-guard`, `dsa-admin`, `dsa-demo`, `dsa-ingest`, `dsa-llm-auditor`) are pulled from the private `ghcr.io/declade/*` namespace. **Lucairn must grant your GitHub account package-pull access BEFORE running `docker login`** — contact support@lucairn.eu with your GitHub username and wait for confirmation before attempting any docker pull step.
   - `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com` — the public base images (`postgres:16-alpine`, `redis:7-alpine`, `alpine:3.20`, `migrate/migrate:v4.17.0`, `ollama/ollama`) are pulled from Docker Hub. A host that allowlists only `ghcr.io` will authenticate to GHCR successfully but fail `docker compose up` when Docker attempts to pull these base images. **`LUCAIRN_IMAGE_REGISTRY` does not redirect these pulls** — it only prefixes the Lucairn `dsa-*` images (`dsa-gateway`, `dsa-sandbox-a`, `dsa-audit`, and the other `ghcr.io/declade/*` images). The base images are hardcoded in the compose files and are not registry-templated. If your policy prohibits direct Docker Hub access, configure a **registry pull-through mirror / cache** for `registry-1.docker.io` (the standard approach); alternatively, mirror those specific image tags and edit the `image:` lines in the compose files.
@@ -199,26 +199,32 @@ compose-demo-veil-witness-1           Up (healthy)
 (The one-shot `prep-migrations` + `migrate-*` jobs run once and exit, so they
 do not appear in steady-state `ps`. `ollama-identity` is the always-on L3
 PII-shield runtime: it runs but holds no model until you stage one — with
-`LUCAIRN_L3_REQUIRED=false` (the kit default) the stack runs L1+L2 and does not
-block on it.)
+`LUCAIRN_L3_AVAILABILITY_POSTURE=degrade` (the kit default) the stack runs
+L1+L2 and does not block on it.)
 
 If any container is `unhealthy` or `restarting`, see § Troubleshooting.
 
 > **L3 deep PII shield is OFF by default for now.** Both `lucairn-init` and
 > the bare `customer.env.example` (manual `cp customer.env.example customer.env`
-> path) set `LUCAIRN_L3_REQUIRED=false`, so the stack runs the
+> path) set `LUCAIRN_L3_AVAILABILITY_POSTURE=degrade`, so the stack runs the
 > L1 (deterministic regex/dictionary) + L2 (sandbox-a) PII layers and does **not**
 > require the optional L3 model (`qwen2.5:7b`) to be staged before your first
 > inference. With L3 off, the request proceeds on L1+L2 and the verification
-> certificate is honestly downgraded to **PARTIAL** (the witness omits
+> certificate is downgraded to **PARTIAL** (the witness omits
 > `llm_pii_scan` from `layers_active`); you do **not** get a `503
 > l3_scrubber_unavailable` on the first request.
+>
+> This PARTIAL verdict is unchanged by the L3 posture split: the Compose files
+> never set the L3 variable on the `veil-witness` service, so the witness always
+> downgraded here. (Helm installs did certify FULL in this state and change with
+> this release — see INSTALL.md § "`LUCAIRN_L3_REQUIRED` IS RETIRED".)
 >
 > **To re-enable L3 later:** pre-stage the `qwen2.5:7b` model into the
 > `ollama-identity` volume (the air-gap-preserving throwaway-container procedure
 > is in INSTALL.md, the "Pre-stage the L3 deep PII-shield model" section), then set
-> `LUCAIRN_L3_REQUIRED=true` in `customer.env`, re-run `bin/lucairn doctor --offline`, and
-> restart the stack. Provision the full 16 GB RAM (§ 1) when you do.
+> `LUCAIRN_L3_AVAILABILITY_POSTURE=reject` in `customer.env`, re-run
+> `bin/lucairn doctor --offline`, and restart the stack. Provision the full
+> 16 GB RAM (§ 1) when you do.
 
 ---
 
