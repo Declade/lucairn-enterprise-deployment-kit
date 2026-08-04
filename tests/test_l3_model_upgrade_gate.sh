@@ -327,7 +327,34 @@ check_citation "$JOB" 130  "ollama pull"                           "pull command
 check_citation "$STS"  30  "Values.ollamaIdentity.image.repository" "ollama-identity image"
 check_citation "$STS"  65  "readinessProbe:"                       "readiness probe"
 check_citation "$STS"  80  "limits.memory"                         "memory limit"
-check_citation "$VAL" 976  "validators.l3AirGapWithoutFailClosed"  "air-gap fail-closed validator"
+# CONTENT-anchored (was `check_citation "$VAL" 976 …`, converted 2026-08-04
+# under the G2/G3 kit release-gates PR). The G3 edit inserted ~13 lines of
+# prose into the l3PostureValues validator earlier in this same file, which
+# shifted this line-numbered citation to 989 on that PR alone — the third
+# unrelated PR this file's line-976 anchor has broken under (T-498's doctor
+# subcommand and PR #116's own predecessor citation being the first two), and
+# the class check_anchor exists to close (see its doc comment above and the
+# `bin/lucairn` conversion below).
+#
+# The needle is the FULL `{{- define "…" -}}` directive, not the bare
+# validator name: the bare name `validators.l3AirGapWithoutFailClosed` also
+# appears two lines into this validator's own doc comment (`_validators.tpl`
+# "validators.l3AirGapWithoutFailClosed  (T-375 item 2b, ToB TOB-001)"), so a
+# needle of just the name would still pass with the `{{- define }}` block
+# deleted entirely and only the comment left behind — the exact failure mode
+# PR #116's first draft hit on `bin/lucairn`. Wrapping the needle in the
+# template define syntax rules that out: the comment prose is never valid Go
+# template syntax, so it can never contain this exact string.
+#
+# CONTEXT_NEEDLE pins a fragment of the guard's own fail() message so a
+# gutted-but-still-defined stub (an empty `{{- define … -}}{{- end -}}`, which
+# would still satisfy the needle above) also fails this check — the point of
+# T-375 item 2b / ToB TOB-001 is the fail-closed BEHAVIOUR, not merely that a
+# template block by this name still exists.
+check_anchor "$VAL" \
+  '{{- define "validators.l3AirGapWithoutFailClosed" -}}' \
+  "air-gap fail-closed validator" \
+  'l3AvailabilityPosture=reject so a missing model fails visibly at /readyz'
 check_citation "$VALY" 27  "l3AirGapWithoutFailClosed"             "validator invocation"
 # CONTENT-anchored (was `check_citation … 1962 …`, converted 2026-08-04 under
 # T-498). `bin/lucairn` is an 8.9k-line file that nearly every kit PR edits, so
