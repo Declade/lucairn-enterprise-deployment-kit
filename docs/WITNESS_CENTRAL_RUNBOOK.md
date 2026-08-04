@@ -740,9 +740,11 @@ enforced:
 `:50058` is the certificate-**retrieval** port. It has its own credential family
 and its own per-method CN ACL. **As of T-12 (2026-08-03,
 `dual-sandbox-architecture` commit `2efc3dd6b`)**, when `WITNESS_MTLS_*` is
-unset the *transport* still degrades gracefully — it logs a warning and
-serves plaintext — but the ACL no longer degrades with it: with no client
-certificate there is no verified peer, so every call is refused
+unset the *transport* still degrades gracefully — it logs a warning and its
+transport degrades to whatever `GRPC_TLS_ENABLED` resolves — self-signed TLS
+if true (the kit default), plaintext if false — but the ACL no longer
+degrades with it: with no client certificate there is no verified peer, so
+every call is refused
 `Unauthenticated`. Before T-12 the degraded state served with **no client
 authentication and no ACL**, which was a defensible policy on a single box —
 the local service chain must keep working if the CA bootstrap has not run —
