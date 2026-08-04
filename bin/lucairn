@@ -24,6 +24,7 @@ Usage:
   lucairn logs --env customer.env [--compose docker-compose.customer.yml] [--tail 200] [--service service-name]
   lucairn pull --env customer.env [--compose docker-compose.customer.yml]
   lucairn doctor --values values.yaml [--values customer-overlay.yaml]... [--offline]
+  lucairn doctor --tools --tools-file tools.json [--env customer.env] [--tools-mode log|refuse|refuse_high_confidence] [--reveal-pointers]
   lucairn support-bundle --env customer.env --compose docker-compose.customer.yml [--output bundles] [--offline]
   lucairn bundle create --customer-slug acme --models-dir ./models --model-manifest model-manifest.yaml --env customer.env --image-tar images.tar [--customer-data-dir ./customer-data]
   lucairn bundle prepare --customer-slug acme --staging-dir /secure/staging/acme [--output dist/customer-bundles]
@@ -62,6 +63,18 @@ Commands:
                   requires a digest resolver on PATH (docker buildx imagetools /
                   crane / skopeo) and is incompatible with --offline (both hard
                   errors); pending manifest entries are always skipped.
+                  --tools is a STANDALONE, zero-network preflight for the
+                  gateway's tool-schema PII guard: run it BEFORE the first
+                  routed turn. It replays the shipped guard over the tool
+                  declarations in --tools-file (a bare JSON array, a request
+                  body with a "tools" member, or an MCP tools/list response;
+                  "-" reads stdin) and reports what WOULD be refused, per
+                  finding and per mode, without printing any matched value.
+                  The kit default is `refuse`, so a finding is a day-one 400.
+                  Mode comes from --tools-mode, else GATEWAY_TOOL_SCHEMA_GUARD
+                  in --env, else the gateway's own `refuse` default. Exits
+                  non-zero when the effective mode would reject the payload.
+                  Requires python3. See OPS.md § "Tool-schema PII guard".
   up              Start the recorded runtime topology (`up -d`).
   down            Stop the recorded runtime topology without deleting volumes.
   status          Show `ps` for the recorded runtime topology.
@@ -1119,6 +1132,67 @@ doctor_python3_path() {
     return 1
   fi
   printf '%s' "$python"
+}
+
+# T-498 (PRD prd-2026-08-04-kit-release-readiness-t14-residuals.md, Slice B4).
+#
+# `doctor --tools` is the PRE-FLIGHT for the decision recorded as T-493: the
+# kit ships GATEWAY_TOOL_SCHEMA_GUARD=refuse, so the gateway's tool-schema PII
+# guard enforces from the FIRST routed turn with no observation window. That
+# posture was chosen on an ARITHMETIC false-positive estimate over random hex,
+# not on a MEASUREMENT over real tool schemas. This check is what turns the
+# estimate into a fact for one install, offline, before any request is routed.
+#
+# ⚑ WHY THERE IS NO LIVE CAPTURE, and it is not an omission. The tools array is
+# authored by the CLIENT (Claude Code, an MCP host, any SDK caller) and arrives
+# on the request; no kit component holds one, and none may — storing customer
+# tool declarations would make the kit a new copy of exactly the content this
+# guard exists to keep out of logs. The gateway is also, by design, the first
+# component that ever sees one, and only on a routed turn — which is the event
+# this check must PRECEDE. So the payload is supplied as a file, and the three
+# accepted shapes cover how one is actually obtained (see OPS.md for recipes).
+
+# Resolve the mode the gateway would run in, mirroring toolSchemaGuardMode()
+# (dual-sandbox-architecture services/gateway/internal/api/tool_schema_pii_guard.go).
+# UNSET and SET-BUT-EMPTY both mean "not configured" and fail toward the SAFE
+# value; an operator typo must never silently disable a security control.
+doctor_tool_schema_guard_mode() {
+  local env_file="$1" raw normalized
+  [ -n "$env_file" ] && [ -f "$env_file" ] || { printf 'refuse'; return 0; }
+  raw="$(env_value "$env_file" GATEWAY_TOOL_SCHEMA_GUARD)"
+  normalized="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$normalized" in
+    "") printf 'refuse' ;;
+    log|refuse|refuse_high_confidence) printf '%s' "$normalized" ;;
+    *)
+      warn "GATEWAY_TOOL_SCHEMA_GUARD=$raw in $env_file is not one of log|refuse|refuse_high_confidence; the gateway fails toward the safe value (refuse) and so does this preflight"
+      printf 'refuse'
+      ;;
+  esac
+}
+
+# doctor_tools_preflight <tools_file> <mode> <reveal>
+#
+# Exit 0 when the effective mode would forward the payload, 1 when it would
+# reject it with a 400. Matches doctor's existing return convention (0 ok /
+# 1 fail); the helper's own 2 (unreadable / unrecognised input) is folded to 1
+# because a preflight that could not read its input has not cleared anything.
+doctor_tools_preflight() {
+  local tools_file="$1" mode="$2" reveal="$3" python helper rc=0
+  # "-" reads the payload from stdin, so it is deliberately not a path check.
+  [ "$tools_file" = "-" ] || require_readable_file "$tools_file" "tools payload"
+  python="$(doctor_python3_path)" || return 1
+  helper="$ROOT/bin/lucairn-tool-schema-guard.py"
+  [ -f "$helper" ] || { echo "tool-schema guard: failed (helper not found: $helper)" >&2; return 1; }
+  # Empty environment, exactly as the keyed doctor helper is invoked: the
+  # helper is stdlib-only and every input it needs arrives on argv.
+  if [ "$reveal" -eq 1 ]; then
+    (exec -c "$python" "$helper" --tools-file "$tools_file" --mode "$mode" --reveal-pointers) || rc=$?
+  else
+    (exec -c "$python" "$helper" --tools-file "$tools_file" --mode "$mode") || rc=$?
+  fi
+  [ "$rc" -eq 0 ] || return 1
+  return 0
 }
 
 doctor_selected_model() {
@@ -6856,6 +6930,7 @@ bundle_command() {
 
 doctor() {
   local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-edge" check_images=1 strict_runtime=0 strict_digest=0 values_only=0 values_count=0 values_file customer_key_file="" customer_key_proxy="" customer_key_ca_file="" supplied_model=""
+  local tools_only=0 tools_file="" tools_mode="" tools_reveal=0
   # Indexed arrays are supported by the Bash 3.2 baseline; do not use
   # associative arrays or other Bash-4-only features in this customer CLI.
   local values_files
@@ -6876,6 +6951,19 @@ doctor() {
         values_count=$((values_count + 1))
         shift 2
         ;;
+      # T-498: tool-schema guard preflight. Selects a standalone, zero-network
+      # mode; --env is optional and read ONLY for GATEWAY_TOOL_SCHEMA_GUARD.
+      --tools) tools_only=1; shift ;;
+      --tools-file) [ "$#" -ge 2 ] || fail "--tools-file requires a path (or - for stdin)"; tools_file="$2"; tools_only=1; shift 2 ;;
+      --tools-mode)
+        [ "$#" -ge 2 ] || fail "--tools-mode requires log|refuse|refuse_high_confidence"
+        case "$2" in
+          log|refuse|refuse_high_confidence) tools_mode="$2" ;;
+          *) fail "--tools-mode must be log, refuse, or refuse_high_confidence (got: $2)" ;;
+        esac
+        tools_only=1; shift 2
+        ;;
+      --reveal-pointers) tools_reveal=1; shift ;;
       --offline) offline=1; check_images=0; shift ;;
       --customer-key-file) [ "$#" -ge 2 ] || fail "--customer-key-file requires a path"; customer_key_file="$2"; shift 2 ;;
       --customer-key-proxy) [ "$#" -ge 2 ] || fail "--customer-key-proxy requires an http:// URL"; customer_key_proxy="$2"; shift 2 ;;
@@ -6895,6 +6983,36 @@ doctor() {
       *) fail "unknown doctor argument: $1" ;;
     esac
   done
+
+  # T-498 tool-schema guard preflight. Deliberately a STANDALONE mode with the
+  # same shape as --values: it needs neither customer.env nor a compose file
+  # nor a running stack, because its whole purpose is to run BEFORE the first
+  # routed turn — including before the stack is up.
+  if [ "$tools_only" -eq 1 ]; then
+    [ -n "$tools_file" ] || fail "doctor --tools requires --tools-file PATH (or --tools-file - to read the payload from stdin)"
+    # Reject rather than silently ignore. This mode short-circuits before the
+    # Compose/Helm batteries run, so accepting their flags and doing nothing
+    # with them would report "preflight ok" for checks that never executed.
+    [ -z "$compose_file" ] || fail "doctor --tools does not run the Compose battery; drop --compose (it reads no compose file)"
+    [ "$values_count" -eq 0 ] || fail "doctor --tools does not run the Helm battery; drop --values (run 'doctor --values ...' separately)"
+    echo "lucairn doctor --tools $VERSION"
+    if [ -z "$tools_mode" ]; then
+      if [ -n "$env_file" ]; then
+        require_readable_file "$env_file" "env file"
+        tools_mode="$(doctor_tool_schema_guard_mode "$env_file")"
+      else
+        # No --env: report the code default the gateway falls toward when
+        # GATEWAY_TOOL_SCHEMA_GUARD is unset. Pass --env customer.env to score
+        # the payload against what THIS install is actually configured to do.
+        tools_mode="refuse"
+        echo "tool-schema guard mode source: gateway code default (no --env given, no --tools-mode override)"
+      fi
+    fi
+    doctor_tools_preflight "$tools_file" "$tools_mode" "$tools_reveal" || return 1
+    echo "doctor: ok"
+    echo "doctor: preflight ok (tool-schema guard)"
+    return 0
+  fi
 
   if [ "$values_count" -gt 0 ] && [ -z "$env_file" ] && [ -z "$compose_file" ]; then
     values_only=1

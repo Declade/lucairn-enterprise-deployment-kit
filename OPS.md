@@ -1347,12 +1347,124 @@ Setting it to anything other than `log` / `refuse` / `refuse_high_confidence`
 fails the Helm render loudly at install/upgrade time (never silently reaches
 the gateway's own runtime WARN-and-degrade-to-refuse fallback).
 
-`bin/lucairn doctor --tools` (T-498, follow-up slice) will report what the
-guard *would* refuse against your install's actual tool payload before the
-first routed turn — the intended way to size the false-positive risk without
-running `log` mode in production. Until that ships, treat any `log`-mode
-window as temporary and monitor the gateway logs for
-`tool_schema_guard` findings directly.
+### Dry-run it BEFORE the first routed turn: `bin/lucairn doctor --tools`
+
+The guard described above refuses a request whose tool declarations carry a
+PII-shaped literal baked into the schema itself. Tool declarations are
+semantic — the model picks a tool by name and fills parameters from the
+schema — so they cannot be redacted the way request content is; the only safe
+action is to refuse the request, which the gateway does with a `400` and a JSON
+pointer to the offending node.
+
+Two coverage facts worth having straight before you read a report, because a
+clean report means only "the guard would forward this", never "there is no
+personal data here":
+
+- **IBAN and email are matched everywhere**, including inside `description`
+  and the other prose keywords.
+- **The 10+-digit-run matcher is NOT applied to prose.** A digit run inside
+  `description`/`title`/`summary`/`$comment` *text* is an accepted residual
+  (real MCP descriptions carry 13-digit millisecond epochs and 32-hex ids, and
+  refusing those would push every operator to `log`, which is worse). It IS
+  applied to `enum`, `default`, `const`, `example(s)`, property names, and any
+  other identifier position — and, since a bare JSON number in a prose-typed
+  slot is not prose, to numbers there too.
+
+**The kit ships that guard ON** — `GATEWAY_TOOL_SCHEMA_GUARD` defaults to
+`refuse`, and the gateway falls toward `refuse` when the variable is unset,
+empty or misspelled. There is no built-in observation window: the very first
+routed turn is enforced. That default was chosen deliberately (it caught a real
+leak on day one), but it means a tool schema that trips the guard produces a
+`400` in production rather than a warning.
+
+**So measure first.** `bin/lucairn doctor --tools` replays the shipped guard
+over your own tool declarations, offline, with no gateway running and no
+request routed:
+
+```bash
+# Score the payload against what THIS install is configured to do.
+bin/lucairn doctor --tools --tools-file tools.json --env customer.env
+
+# Or ask a what-if question, ignoring customer.env:
+bin/lucairn doctor --tools --tools-file tools.json --tools-mode refuse_high_confidence
+```
+
+It prints one line per finding — matcher class, the kind of node, a pointer to
+where it sits, and which modes would refuse it — then a summary
+(`N finding(s); M would 400 under 'refuse', K under 'refuse_high_confidence'`)
+and a verdict. **It exits non-zero when the effective mode would reject the
+payload**, so it drops straight into a pre-deploy pipeline. It needs `python3`
+(already a `doctor` dependency) and nothing else.
+
+The matched value is NEVER printed, and by default neither are your property
+names: locations render as a pointer *skeleton* with client-authored key
+segments replaced by a `<k:…>` fingerprint, so the output is safe to paste into
+a ticket. Add `--reveal-pointers` for the caller-facing pointers while you are
+fixing the schema — that output names your own properties, so keep it local and
+out of support bundles.
+
+#### Producing `tools.json`
+
+The tools array is authored by the CLIENT (Claude Code, an MCP host, any SDK
+caller) and arrives on the request, so no Lucairn component holds a copy to
+capture — and none should, since storing customer tool declarations would
+recreate exactly the content this guard exists to keep out of logs. Supply it
+from the client side instead. Three shapes are accepted:
+
+| Shape | Where it comes from |
+| --- | --- |
+| a bare JSON array `[ {...}, ... ]` | the `tools` value exactly as sent — this is what the gateway guards |
+| `{"tools": [ ... ]}` | an Anthropic or OpenAI request body (`jq '{tools}' body.json`) |
+| `{"result": {"tools": [ ... ]}}` | an MCP server's `tools/list` JSON-RPC response, verbatim |
+
+`--tools-file -` reads the payload from stdin, so any of these can be piped:
+
+```bash
+# From an MCP server that speaks stdio JSON-RPC:
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"lucairn-doctor","version":"1"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  | <your-mcp-server-command> \
+  | grep '"tools"' \
+  | bin/lucairn doctor --tools --tools-file - --env customer.env
+```
+
+Run it once per distinct client configuration you intend to route. A schema
+that changes (a new MCP server, a new tool version) is a new payload to check.
+
+#### Acting on a finding
+
+1. **Fix the declaration.** This is almost always right, and it is the only
+   option that leaves the guard at full strength. The pointer tells you where;
+   `--reveal-pointers` names the property. A literal IBAN, email address or
+   national ID inside a tool's own schema is a leak by construction — it is
+   sent on every request that declares the tool, whether or not the tool is
+   ever called.
+
+2. **If the finding is a `10plus_digit_run` you believe is a false positive**
+   (a 13-digit millisecond epoch and a 13-digit MSISDN are the same string, so
+   no pattern can tell them apart), consider `refuse_high_confidence` rather
+   than `log`. It downgrades the digit-run matcher to an observation and keeps
+   IBAN, email and every fail-closed malformed/bounds refusal at full strength.
+   Read the exact guarantee in § "Tool-schema PII guard" before choosing it.
+
+3. **`log` is a BOUNDED window, not a setting.** It relaxes every check —
+   IBAN and email included — so anything the guard would have caught is
+   forwarded. Use it only to get a running install past an unexpected refusal
+   while you do (1), keep the window to days rather than weeks, watch the
+   gateway log for `T-14 tool_schema_guard` lines throughout, and flip back:
+
+```bash
+# Helm
+helm upgrade lucairn charts/lucairn -f customer-values.yaml --set gateway.toolSchemaGuard=log
+# Compose
+echo 'GATEWAY_TOOL_SCHEMA_GUARD=log' >> customer.env && bin/lucairn up --env customer.env
+```
+
+A clean `doctor --tools` report means "the guard as shipped would forward this
+payload". It does not mean the payload is free of personal data — the guard is
+a high-confidence pattern check, not a proof of absence.
 
 ---
 

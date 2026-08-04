@@ -26,6 +26,41 @@ carry a security fix are tagged **[Security]**.
   The kit's shipped default stays `refuse` (T-493) — see `OPS.md` §
   "Tool-schema PII guard" for the three modes and exactly what
   `refuse_high_confidence` does and does not relax.
+- **`bin/lucairn doctor --tools` — dry-run the gateway's tool-schema PII guard
+  before the first routed turn (T-498).** The kit ships
+  `GATEWAY_TOOL_SCHEMA_GUARD=refuse` (T-493), so the gateway enforces from the
+  very first request with no observation window. That default was chosen on an
+  *arithmetic* false-positive estimate over random hex, not on a *measurement*
+  over real tool schemas — this command is what converts the estimate into a
+  fact for one install. It replays the shipped guard offline over a tool payload
+  you supply (`--tools-file`, or `-` for stdin; a bare `tools` array, an
+  Anthropic/OpenAI request body, or an MCP `tools/list` response) and reports
+  every finding with its matcher class, its location, and which modes would
+  refuse it, plus a summary (`N finding(s); M would 400 under 'refuse', K under
+  'refuse_high_confidence'`). It exits non-zero when the effective mode would
+  reject the payload, so it drops into a pre-deploy pipeline. The mode comes
+  from `--tools-mode`, else `GATEWAY_TOOL_SCHEMA_GUARD` in `--env`, else the
+  gateway's own `refuse` default — with the same fail-safe parsing the gateway
+  uses (unset, empty and misspelled all resolve to `refuse`, loudly for the
+  last). No network, no running stack, no cluster; `python3` only.
+  The matched value is never printed, and by default neither are your property
+  names: locations render as a pointer skeleton with client-authored key
+  segments replaced by a `<k:…>` fingerprint, mirroring what the gateway is
+  allowed to write to a log sink. `--reveal-pointers` opts into the
+  caller-facing pointers for the local fix loop.
+  The guard logic in `bin/lucairn-tool-schema-guard.py` is a port of
+  `dual-sandbox-architecture` `services/gateway/internal/api/{tool_schema_pii_guard,
+  iban_checksum,tool_name_pii_guard}.go` at `08e1afb6b`. It runs BOTH gateway
+  walks (permissive, and the strict re-walk with the digit-run matcher off) so
+  each mode's verdict comes from the walk that actually decides it — modelling
+  `refuse_high_confidence` as a filter over the permissive findings is wrong,
+  because a numeric literal can be a low-confidence digit-run hit permissively
+  and a fail-closed `bounds_exceeded` refusal strictly. Verified against the Go
+  implementation over 57 adversarial cases and 7000 randomised payloads: zero
+  disagreements on kind, matcher class, detail or pointer skeleton, on either
+  walk. A clean report means "the guard as shipped would forward this payload",
+  never "this payload is free of personal data". See OPS.md §
+  "Tool-schema PII guard" → "Dry-run it BEFORE the first routed turn".
 
 ### Changed
 - **⚑ BREAKING — `LUCAIRN_L3_REQUIRED` is retired; certificates now say
