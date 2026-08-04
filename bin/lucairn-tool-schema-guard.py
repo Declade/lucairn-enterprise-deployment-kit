@@ -1128,13 +1128,33 @@ def refusing_modes(finding, permissive_ids, strict_ids):
 
 
 def extract_tools(root):
-    """Locate the tools array.  Returns (node, provenance) or (None, reason).
+    """Locate the tools value.  Returns (node, provenance) or (None, reason).
 
     Accepted shapes, in order:
       1. a bare JSON array — the `tools` value exactly as the client sends it,
          which is what the gateway guards;
       2. {"tools": [...]}          — an Anthropic / OpenAI request body;
       3. {"result": {"tools": []}} — an MCP `tools/list` JSON-RPC response.
+
+    ⚑ THE FALL-THROUGH IS A GUARD VERDICT, NOT AN OPERATOR ERROR, and the
+    distinction is the whole point of this function's shape.
+
+    A payload that is neither an array nor a recognised wrapper — a bare JSON
+    object, a string, a number, a boolean — is still a perfectly good answer to
+    the question this tool asks, because those bytes ARE the tools value and
+    the gateway's own verdict on them is known: `json.Decode` into `[]any`
+    fails, so it reports `malformed_tools` and REFUSES (fail-closed,
+    mode-governed; tool_schema_pii_guard.go:1826-1837).  Reporting that as "I
+    could not find a tools array" would answer a different question and, worse,
+    would exit as an input error rather than as the refusal it predicts.  So
+    those shapes are returned AS the tools value and fall into the caller's
+    existing non-array branch, which produces exactly the gateway's finding.
+
+    What stays a genuine operator error is the one case where the payload
+    announces a shape and then does not carry it: a `result` OBJECT with no
+    `tools` member inside it.  There the operator plainly meant the MCP
+    response shape, and the honest answer is "that response contains no tools
+    array", not a refusal for a payload the gateway would never see.
     """
     # scanDeclaredToolSchemasWithPolicy returns nil for "", "null" and "[]"
     # BEFORE it decodes anything: a request that declares no tools has nothing
@@ -1155,9 +1175,13 @@ def extract_tools(root):
             if "tools" in rm:
                 t = rm["tools"]
                 return (no_tools if t[0] == "null" else t), 'MCP "result.tools" member'
-    return None, (
-        "no tools array found: give a bare JSON array of tool declarations, "
-        'an object with a "tools" member, or an MCP tools/list response'
+            return None, (
+                'the payload has a "result" object but no "tools" member inside it, '
+                "so it carries no tool declarations to check — supply an MCP "
+                "tools/list response that actually lists tools"
+            )
+    return root, (
+        'payload itself, read as the tools value — it is not an array and carries no "tools" member'
     )
 
 
@@ -1236,7 +1260,16 @@ def main(argv=None) -> int:
             print("tools payload: failed (%s)" % provenance, file=sys.stderr)
             return 2
         if tools[0] != "arr":
-            pre.append(root_finding("not a decodable JSON array of tool declarations"))
+            # A tools value the gateway cannot decode as an array is a
+            # fail-CLOSED guard finding, not an input error — it refuses in
+            # every refusing mode. The hint names WHICH bytes were read as the
+            # tools value, because that is the part an operator has to act on.
+            pre.append(
+                root_finding(
+                    "not a decodable JSON array of tool declarations",
+                    "read from the %s" % provenance,
+                )
+            )
         elif trailing.strip() != "" and root is tools:
             # json.Unmarshal rejects trailing content; a streaming decoder does
             # not. `[{...}]{"smuggled":"…"}` would decode cleanly here while the
