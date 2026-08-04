@@ -45,11 +45,34 @@ NOTE on the coercion below, both halves of which are load-bearing:
     " CHANGE-ME…" passes the placeholder check. One leading space would
     otherwise defeat the whole guard. Only the CHECK is trimmed — the
     Secret still renders the operator's value byte-for-byte.
+
+T-490 (2026-08-04): the coercion above has its own hole — `toString` cannot
+tell "the operator wrote a real secret" apart from "Helm parsed --set into a
+non-string YAML type". `--set admin.secrets.values.adminPassword=true` is
+parsed by Helm as the BOOLEAN `true`, not the string "true"; `toString`
+turns it into the string "true" all the same, which is non-empty and does
+not match the placeholder regex, so the guard PASSED and rendered a
+4-character password. The same happens for a bare `--set ...=12345678`
+(int64) or an unquoted YAML-timestamp-shaped value. The type check below
+runs BEFORE the coercion and rejects every non-string kind by name, so the
+operator sees why their `--set` was silently the wrong type instead of
+inheriting a low-entropy secret. `kindIs "invalid"` carves out the
+genuinely-unset case (a missing values key resolves to Go's untyped nil,
+kind `invalid`) so that path still falls through to the ordinary "is empty"
+message below — only an explicitly-set NON-STRING value is rejected here.
+A string stays a string regardless of what it looks like: a values file
+that quotes a numeric-looking password (`adminPassword: "12345678"`) is
+unaffected, because YAML string quoting already makes it a string before
+Helm ever sees it.
 */}}
 {{- define "admin.requireSecretValue" -}}
-{{- $value := (default "" .value | toString | trim) -}}
+{{- $raw := .value -}}
+{{- if and (not (kindIs "invalid" $raw)) (not (typeIs "string" $raw)) -}}
+{{- fail (printf "[admin] %s must be a YAML string, but a %s was given. %s Helm's --set infers a YAML type from the literal you pass (--set \"%s=true\" becomes a boolean, --set \"%s=123\" becomes a number), so an unquoted boolean/numeric/date-shaped value would silently become a low-entropy secret instead of failing this guard. Quote it explicitly — --set-string \"%s=...\" — or wrap the value in quotes in your values file." .path (kindOf $raw) .why .path .path .path) -}}
+{{- end -}}
+{{- $value := (default "" $raw | toString | trim) -}}
 {{- if not $value -}}
-{{- fail (printf "[admin] %s is empty. %s There is no safe default — generate one (openssl rand -base64 24) and pass it with --set \"%s=...\" or in your values file. If you do not deploy the admin surface at all, set admin.enabled=false." .path .why .path) -}}
+{{- fail (printf "[admin] %s is empty. %s There is no safe default — generate one (openssl rand -base64 24) and pass it with --set \"%s=...\" or in your values file, or move this subchart onto an external secrets backend with admin.secrets.backend=vault|aws|azure. If you do not deploy the admin surface at all, set admin.enabled=false." .path .why .path) -}}
 {{- end -}}
 {{- if mustRegexMatch "(?i)^(change[-_ ]?me|placeholder|todo)" $value -}}
 {{- fail (printf "[admin] %s is still a shipped CHANGE-ME… placeholder, not a real secret. %s This value is published in the kit repository, so anyone can read it. Generate a real one (openssl rand -base64 24) and pass it with --set \"%s=...\" or in your values file." .path .why .path) -}}
@@ -61,23 +84,25 @@ admin.validateSecretValues
 ──────────────────────────
 Entry point invoked from templates/secret.yaml.
 
-Unlike audit / id-bridge / sandbox-a / veil-witness, this guard is NOT
-gated on `secrets.backend`, and the remediation text above does NOT offer
-an external-secrets escape hatch — because this chart HAS NO
-`templates/externalsecret.yaml`. `secrets.backend` values other than
-`k8s-native` do not move the credential anywhere; they only suppress the
-`admin-credentials` Secret, while templates/deployment.yaml still mounts
-it unconditionally via `envFrom.secretRef` — a pre-existing footgun that
-lands as CreateContainerConfigError at pod start. An unconditional guard
-therefore surfaces the SAME broken install at render time with an
-actionable message instead, and closes the hole a backend-gated guard
-would leave (a `backend: vault` install skipping the placeholder check).
-
-Fixing that footgun properly — either an ExternalSecret for admin or a
-backend gate on the Deployment's secretRef — is a separate change and is
-deliberately NOT attempted here (T-10 is a password-default fix).
+T-488 (2026-08-04): this guard USED TO be unconditional — unlike audit /
+id-bridge / sandbox-a / veil-witness, it ignored `secrets.backend` entirely,
+because this chart had NO `templates/externalsecret.yaml`: a `backend:
+vault` install still rendered the same empty-by-default inline value with
+nowhere for a real secret to come from, so the unconditional guard was the
+only thing standing between that install and a silently broken
+`admin-credentials` Secret (CreateContainerConfigError at pod start). Now
+that templates/externalsecret.yaml exists (added the same change as this
+comment), a `backend: vault|aws|azure` install gets its ADMIN_PASSWORD /
+DSA_SERVICE_TOKEN from the ExternalSecret instead, so the inline
+`secrets.values.adminPassword` slot is legitimately expected to be empty on
+that path — exactly the same shape as every sibling chart. Gating this
+guard on `secrets.backend == k8s-native` closes the CreateContainerConfigError
+footgun (the ExternalSecret now supplies the Secret) without re-opening the
+k8s-native hole this guard exists to close.
 */}}
 {{- define "admin.validateSecretValues" -}}
+{{- if eq .Values.secrets.backend "k8s-native" -}}
 {{- $sv := (default (dict) .Values.secrets.values) -}}
 {{- include "admin.requireSecretValue" (dict "path" "admin.secrets.values.adminPassword" "value" $sv.adminPassword "why" "It is the admin-service login password, rendered into the admin-credentials Secret as ADMIN_PASSWORD.") -}}
+{{- end -}}
 {{- end -}}

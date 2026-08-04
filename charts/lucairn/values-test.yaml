@@ -21,38 +21,17 @@ global:
   # guard (it exists for real private-registry installs, not local Kind).
   skipPullSecretGuard: true
 
-gateway:
-  replicaCount: 1
-  resources:
-    limits:
-      memory: 256Mi
-      cpu: 500m
-
-sandbox-a:
-  ephemeral: "true"
-  replicaCount: 1
-  resources:
-    limits:
-      memory: 256Mi
-      cpu: 500m
-  sanitizer:
-    resources:
-      limits:
-        memory: 1Gi
-        cpu: "1"
-
-sandbox-b:
-  replicaCount: 1
-  resources:
-    limits:
-      memory: 512Mi
-      cpu: "1"
-
-id-bridge:
-  replicaCount: 1
-
-audit:
-  replicaCount: 1
+# NOTE (T-489 follow-on dedup, 2026-08-04): gateway / sandbox-a / sandbox-b /
+# id-bridge / audit each used to be declared TWICE in this file — once here
+# as a bare resources-only stub, and again below as the complete block
+# (same resources, plus secrets.values). YAML mappings keep only the LAST
+# occurrence of a duplicate top-level key, so the bare stubs above were
+# always dead weight; the effective values already came from the blocks
+# below. Removed rather than merged-in-place — no behavior change, since
+# "last occurrence wins" was already what rendered — so this file has
+# exactly one declaration per key, as
+# tests/lib/check_duplicate_yaml_keys.py (wired into tests/static_checks.sh)
+# now requires.
 
 # Dev secrets for ephemeral test clusters.
 # These are NOT production values — they exist so make test-k8s works without

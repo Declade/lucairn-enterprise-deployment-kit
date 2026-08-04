@@ -350,8 +350,14 @@ postgres-gateway:
   # INSTALL.md § "Lucairn Enterprise v1.0 deployment topology".
   enabled: false
 
-observability:
-  enabled: true
+# NOTE (T-489, 2026-08-04): `observability:` used to appear a SECOND time
+# right here (`enabled: true`, nothing else). YAML mappings silently keep
+# the LAST occurrence of a duplicate key, so that block was dead — the
+# effective config always came from the surviving `observability:` block
+# further down (Slice 4 fold-in, grafana.auth.jwt), which already sets
+# `enabled: true` too. Removed rather than merged-in-place so there is
+# exactly one `observability:` block in this file, per
+# tests/lib/check_duplicate_yaml_keys.py (wired into tests/static_checks.sh).
 
 demo:
   enabled: false
