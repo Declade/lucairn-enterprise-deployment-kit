@@ -946,17 +946,49 @@ one of these holds on the fresh certificate:
 | `missing_services` | `[]` (empty) |
 | `completeness` | matches the topology you restored — `COMPLETENESS_PARTIAL` on a stock L3-off kit, `COMPLETENESS_FULL` with the L3 shield enabled and warm |
 
-If all six hold, the `PARTIAL` is fully accounted for by coverage and the
-restore is good.
+If all six hold, the `PARTIAL` is accounted for by coverage **as far as the
+certificate can tell you** — which is not far enough on its own. Do the log check
+below before signing anything off.
 
-⚠️ **If all six hold and the verdict is STILL `PARTIAL`, that is an UNEXPLAINED
-PARTIAL — escalate, do not sign the drill off.** The only remaining cause is the
-claim-ordering tripwire, and it is **not exposed as a certificate field**: the
-witness keeps it internally and emits the detail only to its own log. Check the
-veil-witness container log for `temporal ordering violation`
-(`kubectl logs -n dsa-witness deploy/veil-witness` / `docker compose logs
-veil-witness`). Do **not** "fix" this table by adding a `temporal_order_valid`
-key — no such field exists in the certificate.
+#### Then check the witness log — UNCONDITIONAL, every drill, every topology
+
+```bash
+# Helm
+kubectl logs -n dsa-witness deploy/veil-witness --since=1h \
+  | grep "temporal ordering violation"
+
+# Compose
+docker compose -f docker-compose.customer.yml --env-file customer.env \
+  logs veil-witness | grep "temporal ordering violation"
+```
+
+**Required result: ZERO hits across the drill window.** Any hit fails the drill —
+investigate before declaring the restore good.
+
+⚠️ **Why this cannot be folded into the table above, and why it is not
+conditional on anything.** On a stock L3-off kit `completeness` is *already*
+`COMPLETENESS_PARTIAL`, and that alone forces `VERDICT_PARTIAL`
+(`services/veil-witness/internal/verifier/verifier.go`, the overall-verdict
+block: `completeness == PARTIAL || !temporal_consistent || !temporal_order_valid`).
+A claim-ordering violation happening *at the same time* — clock skew inside the
+span budget after a botched restore is the realistic case — sets an internal flag
+that is **serialised nowhere**. The resulting certificate is **byte-identical on
+every field** to an honest coverage-PARTIAL: same `completeness`, same
+`temporal_consistent: true`, same everything. The log is the ONLY observable
+difference. A version of this step gated on "the table is green but the verdict
+is still PARTIAL" would therefore never fire on the modal install, which is
+exactly the install a restore drill is usually run on.
+
+⚠️ **On a `COMPLETENESS_FULL` topology only** (L3 shield enabled and warm), the
+certificate *can* discriminate: if the whole table is green and the verdict is
+still `PARTIAL`, that is an unexplained PARTIAL and the ordering tripwire is the
+only remaining cause — escalate. On a stock L3-off kit that state is
+indistinguishable from honest coverage-PARTIAL, which is why the log check above
+is unconditional rather than a fallback.
+
+Do **not** "fix" the table by adding a `temporal_order_valid` key — no such field
+exists in the certificate (it is a verifier-internal struct field, present in no
+`.proto` and no JSON).
 
 ### Restore-drill evidence
 
