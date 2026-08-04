@@ -1126,12 +1126,23 @@ Step 1 to bring a rebuilt deployment back to a signing, verifying state.
 
 ## Witness mTLS
 
-The veil-witness cert RPC port (:50058) accepts unauthenticated callers by
-default on the legacy Compose compatibility path. For production Helm, see
-INSTALL.md § "Enterprise full-mesh mTLS"; the older INSTALL.md § "Witness
-mTLS" procedure is not a production Helm substitute. The legacy Witness
-server degrades gracefully when its server-side paths are unset, but the
-production Helm contract must fail closed instead.
+**As of the T-12 witness image (2026-08-03), the veil-witness cert RPC
+port (:50058) refuses every unauthenticated caller — including the
+gateway itself — with `Unauthenticated` by default on the legacy Compose
+compatibility path.** Before T-12 this path accepted unauthenticated
+callers by default; that was a stop-ship (`GetCertificate`/
+`ExportCertificates` return `SanitizerClaim.redaction_manifest_body`, the
+placeholder→original PII map, scoped only by a caller-supplied
+`customer_id`), because the per-method ACL was attached only on the
+mTLS-success branch. It now attaches on every transport-degradation exit
+too, so a kit install that has not completed the Compose bootstrap in
+INSTALL.md § "Witness mTLS" will see every certificate read refuse — claim
+intake on `:50057` is a separate port and is unaffected. For production
+Helm, see INSTALL.md § "Enterprise full-mesh mTLS"; the older INSTALL.md §
+"Witness mTLS" procedure is not a production Helm substitute. The legacy
+Witness server's transport still degrades gracefully when its server-side
+paths are unset, but — since T-12 — the ACL does not degrade with it, so
+nothing is served over the degraded transport either.
 
 For a production Helm deployment, this legacy Witness-only procedure is not
 the accepted transport posture. Follow INSTALL.md § "Enterprise full-mesh

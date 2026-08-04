@@ -515,11 +515,19 @@ LCR_WITNESS_CLAIM_ALLOWED_PEERS=dsa-gateway,dsa-id-bridge,dsa-sanitizer,dsa-sand
 # LCR_WITNESS_EXPORT_CUSTOMER_BINDING and LCR_WITNESS_EXPORT_MAX_CERTS
 # (widened 2026-07-28; it used to fire only for the two allowlists).
 #
-# They all FAIL OPEN: the :50058 interceptors attach only inside the mTLS
-# branch, so on an unconfigured cert port your control governs nothing while the
-# port answers every caller — the permissive twin of the claim-port refusal, and
-# the quieter of the two until now. A control the operator wrote down and the
-# process cannot apply is worse than one they never wrote: it is believed.
+# ⚠️ CORRECTED 2026-08-03 (T-12). This used to read: "They all FAIL OPEN: the
+# :50058 interceptors attach only inside the mTLS branch, so on an
+# unconfigured cert port your control governs nothing while the port answers
+# every caller — the permissive twin of the claim-port refusal, and the
+# quieter of the two until now." That was the exposure T-12 closed
+# (dual-sandbox-architecture commit 2efc3dd6b): the ACL interceptors now
+# attach on EVERY exit path, including an unconfigured cert port. Your
+# control still governs nothing there — with no client certificate there is
+# no verified peer for any of these five to filter on — but the port now
+# FAILS CLOSED instead of open: it refuses every caller, not just the ones
+# your allowlist would have excluded. A control that governs nothing is
+# still worth naming correctly: it is silently inert, not silently
+# permissive.
 #
 # ✅ THE ONE EXCEPTION, and it is a neutral-value exception, not a name-based
 # one: a control whose configured value is semantically IDENTICAL to leaving the
@@ -730,11 +738,16 @@ enforced:
 ```
 
 `:50058` is the certificate-**retrieval** port. It has its own credential family
-and its own per-method CN ACL, and when `WITNESS_MTLS_*` is unset it *degrades
-gracefully*: it logs a warning and serves with **no client authentication and no
-ACL**. That is a defensible policy on a single box — the local service chain must
-keep working if the CA bootstrap has not run — and a serious exposure on a
-WAN-reachable fleet witness, because `GetCertificate` and `ExportCertificates`
+and its own per-method CN ACL. **As of T-12 (2026-08-03,
+`dual-sandbox-architecture` commit `2efc3dd6b`)**, when `WITNESS_MTLS_*` is
+unset the *transport* still degrades gracefully — it logs a warning and
+serves plaintext — but the ACL no longer degrades with it: with no client
+certificate there is no verified peer, so every call is refused
+`Unauthenticated`. Before T-12 the degraded state served with **no client
+authentication and no ACL**, which was a defensible policy on a single box —
+the local service chain must keep working if the CA bootstrap has not run —
+but a serious exposure on a WAN-reachable fleet witness, because
+`GetCertificate` and `ExportCertificates`
 return `VeilCertificate` protos carrying `SanitizerClaim.redaction_manifest_body`:
 the placeholder→original map, for every device and every customer.
 `ExportCertificates` gates only on a caller-supplied `customer_id` string, so
@@ -766,10 +779,18 @@ entirely, but then the overlay's cert address points at a port your firewall
 drops and `/verify` fails at request time; decide that deliberately rather than
 discovering it.
 
-Two controls make that port safe to expose at all, and both must hold:
+Two controls make that port usable and safe to expose at all, and both must
+hold:
 
-1. The `WITNESS_MTLS_*` **server** triple in §4 above — without it the port
-   serves with no client authentication and no ACL.
+1. The `WITNESS_MTLS_*` **server** triple in §4 above. **Corrected
+   2026-08-03 (T-12), `dual-sandbox-architecture` commit `2efc3dd6b`:** this
+   used to read "without it the port serves with no client authentication
+   and no ACL." That was the pre-T-12 exposure. As of T-12, without this
+   triple the port refuses every caller with `Unauthenticated` instead —
+   safe, but also completely non-functional, including for the legitimate
+   gateway. You still need it, just for the opposite reason now: to make
+   the port work for the caller in step 2 below, not to keep it from
+   leaking to callers who are not.
 2. A `CN=gateway` **client** leaf on the device (§3.4) — the CN ACL is what
    distinguishes the gateway from every other container on that laptop, and it
    is the reason a laptop's claim credential cannot reach this port.
