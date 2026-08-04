@@ -191,18 +191,23 @@ spec:
             */}}
             {{- if hasKey $g "l3CompletenessPosture" }}
             {{- $raw := toString (default "" $g.l3CompletenessPosture) }}
-            {{- if and (ne $raw "") (not (has (lower (trim $raw)) (list "partial" "full"))) }}
-            {{- fail "veil-witness: global.l3CompletenessPosture must be \"partial\" or \"full\" (value withheld). The veil-witness refuses to start on an off-allowlist posture, so this render would CrashLoopBackOff. \"partial\" is the image default and the honest posture; \"full\" reproduces the retired global.l3Required=false over-claim (board T-385). Omit the key entirely to take the image default. NOTE: if you set this under a subchart key (veil-witness.global.*) rather than the umbrella global, set the umbrella key instead — a subchart-scoped global bypasses the chart's umbrella validators." }}
+            {{- if and (ne $raw "") (not (has (lower (trim $raw)) (list "partial"))) }}
+            {{- fail "veil-witness: global.l3CompletenessPosture must be \"partial\" (value withheld). \"partial\" is the image default and the only value this chart accepts — a chain that only ran L1+L2 certifies COMPLETENESS_PARTIAL. \"full\" is NOT accepted here: as of 2026-08-04 the kit no longer offers the option of certifying COMPLETENESS_FULL for a request the deep PII shield never saw (board T-385) — a certificate must never be configurable to claim a scan ran when it did not. Omit the key entirely to take the image default. NOTE: if you set this under a subchart key (veil-witness.global.*) rather than the umbrella global, set the umbrella key instead — a subchart-scoped global bypasses the chart's umbrella validators." }}
             {{- end }}
             {{- end }}
             {{- if and (hasKey $g "l3Required") (not (hasKey $g "l3CompletenessPosture")) }}
-            {{- fail "veil-witness: l3Required is set in this pod's resolved `global` without l3CompletenessPosture. LUCAIRN_L3_REQUIRED is RETIRED (T-393) and the witness image REFUSES TO START when it sees the retired flag beside an unset LUCAIRN_L3_COMPLETENESS_POSTURE — this render would produce a CrashLoopBackOff. Set global.l3CompletenessPosture=partial|full (what the CERTIFICATE claims when L3 did not run; `partial` is the default and the honest posture, `full` reproduces the retired false behaviour of claiming COMPLETENESS_FULL for a request the deep PII shield never saw — board T-385), then delete l3Required. Leaving both unset is supported and is what the kit ships. NOTE: if you set this under a subchart key (veil-witness.global.*) rather than the umbrella global, set the umbrella key instead — a subchart-scoped global bypasses the chart's other L3 guards." }}
+            {{- fail "veil-witness: l3Required is set in this pod's resolved `global` without l3CompletenessPosture. LUCAIRN_L3_REQUIRED is RETIRED (T-393) and the witness image REFUSES TO START when it sees the retired flag beside an unset LUCAIRN_L3_COMPLETENESS_POSTURE — this render would produce a CrashLoopBackOff. Set global.l3CompletenessPosture=partial (what the CERTIFICATE claims when L3 did not run; `partial` is the default, the honest posture, and the only value this chart accepts — the retired false behaviour of claiming COMPLETENESS_FULL for a request the deep PII shield never saw is no longer selectable, board T-385), then delete l3Required. Leaving both unset is supported and is what the kit ships. NOTE: if you set this under a subchart key (veil-witness.global.*) rather than the umbrella global, set the umbrella key instead — a subchart-scoped global bypasses the chart's other L3 guards." }}
             {{- end }}
             {{- if hasKey $g "l3CompletenessPosture" }}
-            # "partial" (image default) — a chain that only ran L1+L2 certifies
-            # COMPLETENESS_PARTIAL. "full" reproduces the retired
-            # LUCAIRN_L3_REQUIRED=false behaviour, which claims COMPLETENESS_FULL
-            # for a request the deep PII shield never saw (board T-385).
+            # "partial" (image default, and the only value this chart accepts) —
+            # a chain that only ran L1+L2 certifies COMPLETENESS_PARTIAL. The
+            # kit no longer offers "full" (board T-385, 2026-08-04): it
+            # reproduced the retired LUCAIRN_L3_REQUIRED=false behaviour of
+            # claiming COMPLETENESS_FULL for a request the deep PII shield
+            # never saw. The veil-witness image itself still parses "full" —
+            # that Go-side mapping is a separate, not-yet-scheduled
+            # retirement — but this chart's render-time allowlist above
+            # refuses it before it ever reaches the pod.
             - name: LUCAIRN_L3_COMPLETENESS_POSTURE
               value: {{ $g.l3CompletenessPosture | quote }}
             {{- end }}

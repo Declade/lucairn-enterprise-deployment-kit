@@ -97,7 +97,8 @@ global:
   #                             retired LUCAIRN_L3_REQUIRED=true selected.
   #
   #   l3CompletenessPosture   → LUCAIRN_L3_COMPLETENESS_POSTURE on the
-  #                             VEIL-WITNESS. "partial" | "full".
+  #                             VEIL-WITNESS. "partial" is the ONLY value this
+  #                             chart accepts (board T-385, 2026-08-04).
   #                             What the CERTIFICATE claims when L3 did not run.
   #                             Image default: "partial" — a chain that only ran
   #                             L1+L2 certifies COMPLETENESS_PARTIAL.
@@ -109,8 +110,20 @@ global:
   # docs/CUSTOMER_HELM_RUNBOOK.md described that same state as "honestly
   # downgraded to PARTIAL". Helm certificates now say PARTIAL on an L3-absent
   # chain. Nothing about the scrubbing changed; the certificate stopped
-  # over-claiming. An operator who genuinely wants the old wording can set
-  # `l3CompletenessPosture: full` — the image calls it the legacy posture.
+  # over-claiming.
+  #
+  # ⛔ `l3CompletenessPosture: full` is NOT AVAILABLE (Marc decision,
+  # 2026-08-04). It was briefly offered as an explicit opt-in to reproduce the
+  # old over-claiming wording; the kit no longer offers it, on principle: a
+  # signed certificate must never be configurable to state that a scan ran
+  # when it did not. `helm template --set global.l3CompletenessPosture=full`
+  # now fails the render (validators.l3PostureValues /
+  # charts/veil-witness/templates/deployment.yaml). The veil-witness image's
+  # own Go-side mapping for "full" is untouched — that is a separate,
+  # not-yet-scheduled retirement — but this chart refuses the value before it
+  # ever reaches the pod. There is no supported way to make a Helm-installed
+  # kit certify COMPLETENESS_FULL for a request the deep PII shield never saw;
+  # the only way to earn a FULL certificate is to actually run the L3 shield.
   #
   # Compose installs are unaffected on this point: the Compose files never set
   # the variable on the veil-witness service, so those certificates already read

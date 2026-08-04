@@ -73,7 +73,7 @@ carry a security fix are tagged **[Security]**.
   | Question | Service | Flag / Helm value | Values | Default |
   |---|---|---|---|---|
   | What happens to a **request** when L3 is unavailable? | sanitizer | `LUCAIRN_L3_AVAILABILITY_POSTURE` / `global.l3AvailabilityPosture` | `degrade` \| `reject` | `degrade` |
-  | What does the **certificate** claim when L3 did not run? | veil-witness | `LUCAIRN_L3_COMPLETENESS_POSTURE` / `global.l3CompletenessPosture` | `partial` \| `full` | `partial` |
+  | What does the **certificate** claim when L3 did not run? | veil-witness | `LUCAIRN_L3_COMPLETENESS_POSTURE` / `global.l3CompletenessPosture` | `partial` (only — see below) | `partial` |
 
   **What you will notice — HELM INSTALLS ONLY.** On Helm, verification
   certificates for L1+L2-only requests change from `COMPLETENESS_FULL` to
@@ -87,9 +87,12 @@ carry a security fix are tagged **[Security]**.
   **Compose installs are unaffected on this point.** The Compose files never set
   the variable on the `veil-witness` service — only on the sanitizer — so the
   witness already defaulted to downgrading, and those installs already certified
-  `COMPLETENESS_PARTIAL`. An operator who needs the old Helm certificate wording
-  can set `global.l3CompletenessPosture: full` — the service calls that the
-  legacy posture, and it over-claims by construction.
+  `COMPLETENESS_PARTIAL`.
+
+  **`global.l3CompletenessPosture: full` is not available (board T-385,
+  2026-08-04) — see the dedicated entry below.** An earlier draft of this
+  release briefly offered `full` as an explicit opt-in to reproduce the old
+  over-claiming wording; that offer is withdrawn before shipping.
 
   **⚠️ One availability default DID move: `docker-compose.self-hosted.yml` no
   longer defaults to fail-closed.** It used to supply
@@ -148,6 +151,20 @@ carry a security fix are tagged **[Security]**.
   install the guard exists to prevent. Air-gapped operators must therefore state
   the posture explicitly.
   Upstream design: `prd-2026-08-01-l3-availability-vs-certificate-honesty-split.md`.
+- **[Security] `global.l3CompletenessPosture=full` is no longer an available
+  value (board T-385, 2026-08-04).** This is an honesty guarantee, not a
+  feature removal: `full` let an operator configure the veil-witness to
+  certify `COMPLETENESS_FULL` / `VERDICT_VERIFIED` for a request the deep PII
+  shield (L3) never scanned — `llm_pii_scan` absent from `layers_active`
+  while the certificate said otherwise. `partial` is now the only value this
+  chart's render-time allowlist accepts (`validators.l3PostureValues` and its
+  per-pod mirror in `charts/veil-witness/templates/deployment.yaml`); setting
+  `full` fails `helm template` / `helm install` / `helm upgrade` rather than
+  producing a certificate that over-claims. The veil-witness image's own
+  Go-side parsing of `full` is untouched by this change — that is a separate,
+  not-yet-scheduled retirement — this entry closes only the path a Helm
+  install used to configure it through. A certificate can only ever say FULL
+  now by a request genuinely having run L3.
 - **[Security] `sandbox-a.sanitizer.confidenceThreshold` is now schema-bounded to
   a number in `[0, 1]` (T-517).** The value is rendered straight into the
   sanitizer ConfigMap as `presidio.confidence_threshold`, and an unusable value
