@@ -1209,6 +1209,51 @@ openssl s_client -connect <witness-host>:50058 \
 
 ---
 
+## Tool-schema PII guard
+
+The gateway refuses (by default) any tool/function-calling declaration on an
+incoming request whose JSON Schema carries a PII-shaped literal baked into
+`description`/`enum`/`default`/etc. instead of a real user-supplied value —
+an IBAN, an email address, or a high-confidence digit run hardcoded into a
+tool's own spec. `GATEWAY_TOOL_SCHEMA_GUARD` controls how strict that check
+is: `refuse` (kit default — do not change this permanently), `log` (detect
+and allow, emitting a finding to the gateway log instead of a 400), and
+`refuse_high_confidence` (relaxes only the IBAN/email family; the fail-closed
+composition-depth and prose-number checks still refuse). T-493 (Marc,
+2026-08-04): the kit ships with the guard **on** (`refuse`) because it caught
+a real leak on day one — `log` exists as a bounded operator escape hatch, not
+a supported steady state.
+
+If the guard false-positives on your own tool schemas, set it to `log` for a
+short observation window while you adjust the offending tool declarations,
+then flip it back:
+
+```bash
+# Helm
+helm upgrade lucairn charts/lucairn -f customer-values.yaml \
+  --set gateway.toolSchemaGuard=log ...
+
+# Compose
+echo 'GATEWAY_TOOL_SCHEMA_GUARD=log' >> customer.env
+bin/lucairn up --env customer.env
+```
+
+Leaving `toolSchemaGuard` unset renders no env var at all, so a pinned
+gateway image always falls back to its own compiled-in `refuse` default —
+the chart never asserts an opinion an older image might not recognize.
+Setting it to anything other than `log` / `refuse` / `refuse_high_confidence`
+fails the Helm render loudly at install/upgrade time (never silently reaches
+the gateway's own runtime WARN-and-degrade-to-refuse fallback).
+
+`bin/lucairn doctor --tools` (T-498, follow-up slice) will report what the
+guard *would* refuse against your install's actual tool payload before the
+first routed turn — the intended way to size the false-positive risk without
+running `log` mode in production. Until that ships, treat any `log`-mode
+window as temporary and monitor the gateway logs for
+`tool_schema_guard` findings directly.
+
+---
+
 ## Sanitizer content cache (Redis)
 
 The sanitizer ships with a dedicated Redis content-cache

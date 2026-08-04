@@ -823,4 +823,104 @@ else
   echo "T-64: piiMlClient.transport render assertions skipped (helm not installed)"
 fi
 
+# T-487: GATEWAY_TOOL_SCHEMA_GUARD kit-chart knob (PRD specs/2026-08/
+# prd-2026-08-04-kit-release-readiness-t14-residuals.md Slice B3). Covers the
+# 3-case render matrix from the PRD's B3 Success criteria:
+#   (a) unset  -> no GATEWAY_TOOL_SCHEMA_GUARD in the render at all (the
+#       gateway binary's own compiled-in "refuse" default applies — T-393
+#       lesson: never render a default into the pod for a flag the image may
+#       not know);
+#   (b) --set gateway.toolSchemaGuard=log -> renders exactly that value;
+#   (c) an invalid value (e.g. "off") -> the render FAILS loudly rather than
+#       silently reaching the gateway's own runtime WARN-and-degrade fallback.
+# Plus two hardening cases: case-insensitive acceptance (matches the
+# gateway's own strings.ToLower/TrimSpace parse — dual-sandbox-architecture
+# services/gateway/internal/api/tool_schema_pii_guard.go toolSchemaGuardMode)
+# and non-string-type rejection (Helm's --set turns `true`/bare numbers into
+# bool/int, not the literal string "true").
+if command -v helm >/dev/null 2>&1; then
+  T487_CHART="$ROOT/charts/lucairn"
+
+  # (a) unset -> absent from render.
+  T487_UNSET_FILE="$(mktemp)"
+  helm template lucairn "$T487_CHART" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    >"$T487_UNSET_FILE"
+  T487_UNSET_COUNT="$(grep -c "GATEWAY_TOOL_SCHEMA_GUARD" "$T487_UNSET_FILE" || true)"
+  rm -f "$T487_UNSET_FILE"
+  [ "$T487_UNSET_COUNT" -eq 0 ] \
+    || { echo "T-487: unset gateway.toolSchemaGuard must render NO GATEWAY_TOOL_SCHEMA_GUARD, got $T487_UNSET_COUNT occurrence(s)" >&2; exit 1; }
+  echo "T-487: (a) unset -> no GATEWAY_TOOL_SCHEMA_GUARD in render (gateway binary default applies)"
+
+  # (b) explicit "log" -> renders "log".
+  T487_LOG_FILE="$(mktemp)"
+  helm template lucairn "$T487_CHART" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    --set gateway.toolSchemaGuard=log \
+    >"$T487_LOG_FILE"
+  T487_LOG_VALUE="$(grep '^  GATEWAY_TOOL_SCHEMA_GUARD:' "$T487_LOG_FILE" | sed 's/^  GATEWAY_TOOL_SCHEMA_GUARD: *//')"
+  rm -f "$T487_LOG_FILE"
+  [ "$T487_LOG_VALUE" = '"log"' ] \
+    || { echo "T-487: --set gateway.toolSchemaGuard=log should render \"log\", got $T487_LOG_VALUE" >&2; exit 1; }
+  echo "T-487: (b) --set gateway.toolSchemaGuard=log -> renders \"log\""
+
+  # (b2) case-insensitive acceptance, matching the gateway's own parse.
+  T487_MIXED_FILE="$(mktemp)"
+  helm template lucairn "$T487_CHART" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    --set-string gateway.toolSchemaGuard=Refuse_High_Confidence \
+    >"$T487_MIXED_FILE"
+  T487_MIXED_VALUE="$(grep '^  GATEWAY_TOOL_SCHEMA_GUARD:' "$T487_MIXED_FILE" | sed 's/^  GATEWAY_TOOL_SCHEMA_GUARD: *//')"
+  rm -f "$T487_MIXED_FILE"
+  [ "$T487_MIXED_VALUE" = '"refuse_high_confidence"' ] \
+    || { echo "T-487: mixed-case Refuse_High_Confidence should normalize to \"refuse_high_confidence\", got $T487_MIXED_VALUE" >&2; exit 1; }
+  echo "T-487: (b2) mixed-case value normalizes to lowercase canonical form"
+
+  # (c) invalid value -> render FAILS loudly.
+  T487_INVALID_STDERR="$(mktemp)"
+  if helm template lucairn "$T487_CHART" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    --set gateway.toolSchemaGuard=off \
+    >/dev/null 2>"$T487_INVALID_STDERR"; then
+    echo "T-487: gateway.toolSchemaGuard=off (invalid) should have FAILED the render but succeeded" >&2
+    cat "$T487_INVALID_STDERR" >&2
+    rm -f "$T487_INVALID_STDERR"
+    exit 1
+  fi
+  grep -q "is not one of: log | refuse | refuse_high_confidence" "$T487_INVALID_STDERR" \
+    || { echo "T-487: gateway.toolSchemaGuard=off failed for the wrong reason" >&2; cat "$T487_INVALID_STDERR" >&2; rm -f "$T487_INVALID_STDERR"; exit 1; }
+  rm -f "$T487_INVALID_STDERR"
+  echo "T-487: (c) invalid value \"off\" correctly REJECTED (render fails loudly)"
+
+  # (c2) non-string type (Helm --set parses bare true/false/numbers as
+  # bool/int, not the literal string) -> render FAILS loudly with a distinct,
+  # actionable message rather than silently coercing.
+  T487_BOOL_STDERR="$(mktemp)"
+  if helm template lucairn "$T487_CHART" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
+    --set global.skipPullSecretGuard=true \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    --set gateway.toolSchemaGuard=true \
+    >/dev/null 2>"$T487_BOOL_STDERR"; then
+    echo "T-487: gateway.toolSchemaGuard=true (bool, not string) should have FAILED the render but succeeded" >&2
+    cat "$T487_BOOL_STDERR" >&2
+    rm -f "$T487_BOOL_STDERR"
+    exit 1
+  fi
+  grep -q "must be a string" "$T487_BOOL_STDERR" \
+    || { echo "T-487: gateway.toolSchemaGuard=true failed for the wrong reason" >&2; cat "$T487_BOOL_STDERR" >&2; rm -f "$T487_BOOL_STDERR"; exit 1; }
+  rm -f "$T487_BOOL_STDERR"
+  echo "T-487: (c2) non-string value (bool true) correctly REJECTED (render fails loudly)"
+else
+  echo "T-487: GATEWAY_TOOL_SCHEMA_GUARD render assertions skipped (helm not installed)"
+fi
+
 echo "static checks: ok"
