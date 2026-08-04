@@ -175,6 +175,28 @@ for f in "$CHART/values.yaml" "$CHART"/values-*.yaml "$CHART"/charts/*/values.ya
   fi
 done
 
+# ⚠️ REPO-WIDE SWEEP, NOT JUST THE SHIPPED VALUES FILES.
+#
+# The guard refuses any render whose resolved `global` carries the retired key,
+# and a TEST FIXTURE is a render like any other. This assertion exists because
+# the values-file-only version of it was not enough: T-517 landed
+# tests/test_sanitizer_confidence_threshold_schema.sh on main with
+# `l3Required: false` hardcoded in its child-values fixture, and the two PRs
+# were individually green and textually merged clean — the conflict was
+# BEHAVIOURAL and only appeared in CI on the merged tree. A fixture written
+# against the pre-T-393 world now fails HERE, on the branch that introduces the
+# guard, instead of in someone else's CI run.
+#
+# The scan is for the YAML-ASSIGNMENT shape (`l3Required: <value>`), which is
+# what a fixture writes. `--set global.l3Required=...` args are deliberate
+# negative controls in THIS file and are excluded by path.
+sweep_hits="$(cd "$ROOT" && git grep -nE '^[[:space:]]*l3Required:[[:space:]]*(true|false|"|'"'"')' -- . 2>/dev/null || true)"
+if [ -z "$sweep_hits" ]; then
+  pass "no file in the repo assigns the retired l3Required key (fixtures included)"
+else
+  fail "no file in the repo assigns the retired l3Required key (fixtures included) — found: $(printf '%s' "$sweep_hits" | head -3 | tr '\n' ' ')"
+fi
+
 if render >"$TMPDIR/stock.yaml" 2>"$TMPDIR/stock.err"; then
   check_eq "sanitizer carries no LUCAIRN_L3_* env" "" "$(sanitizer_l3_env "$TMPDIR/stock.yaml")"
   check_eq "veil-witness carries no LUCAIRN_L3_* env" "" "$(witness_l3_env "$TMPDIR/stock.yaml")"
