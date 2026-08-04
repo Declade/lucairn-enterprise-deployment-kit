@@ -14,6 +14,19 @@ carry a security fix are tagged **[Security]**.
 
 ## [Unreleased]
 
+### Added
+- **Gateway tool-schema PII guard mode knob (T-487).** The gateway's
+  recursive tool-declaration schema PII guard (`GATEWAY_TOOL_SCHEMA_GUARD`;
+  upstream `dual-sandbox-architecture` T-14) is now wired into the kit: a new
+  `gateway.toolSchemaGuard` Helm value (unset by default, so a pinned image's
+  own compiled-in `refuse` default governs) and a `GATEWAY_TOOL_SCHEMA_GUARD`
+  compose entry (`docker-compose.customer.yml`, `docker-compose.self-hosted.yml`
+  overlay; defaults to `refuse`) let an operator flip to `log` for a bounded
+  observation window if the guard false-positives on their own tool schemas.
+  The kit's shipped default stays `refuse` (T-493) — see `OPS.md` §
+  "Tool-schema PII guard" for the three modes and exactly what
+  `refuse_high_confidence` does and does not relax.
+
 ### Changed
 - **[Security] Docs corrected for the veil-witness `:50058` ACL hoist (T-12 / T-507).**
   `INSTALL.md` and `OPS.md` stated that the veil-witness certificate RPC port

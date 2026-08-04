@@ -869,6 +869,22 @@ services:
       # Default empty = gateway uses its built-in defaults (unset = identity, no change).
       # Requires gateway image >= 0.5.1. See INSTALL.md § "Phase 8" + customer.env.example.
       GATEWAY_TMS_TRUST_ZONES: "${GATEWAY_TMS_TRUST_ZONES:-}"
+      # T-14 recursive tool-declaration schema PII guard (T-487, T-493). MUST
+      # be listed here — this repo has no `env_file:` directive, so a
+      # service's `environment:` block is the ONLY channel from customer.env
+      # into the container, and a Go env read with no compose entry is dead
+      # configuration (see the split-evidence-plane note above this block).
+      # Baking "refuse" as the compose-side default (not empty) matches
+      # Marc's T-493 decision — the kit ships with the guard on — and keeps
+      # this line's own unset case byte-identical to the gateway binary's own
+      # compiled-in default (dual-sandbox-architecture
+      # services/gateway/internal/api/tool_schema_pii_guard.go
+      # toolSchemaGuardMode(): unset/empty/unrecognised all resolve to
+      # "refuse" too, so this default cannot silently relax the guard even if
+      # someone read it in isolation). log | refuse | refuse_high_confidence
+      # — see OPS.md § "Tool-schema PII guard" for exactly what
+      # refuse_high_confidence does and does not relax.
+      GATEWAY_TOOL_SCHEMA_GUARD: "${GATEWAY_TOOL_SCHEMA_GUARD:-refuse}"
     volumes:
       - ./starter-templates:/etc/dsa/starter-templates:ro
       - gateway-data:/data

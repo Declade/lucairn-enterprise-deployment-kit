@@ -272,6 +272,19 @@ tms:
 # Any other value fails the Helm render loudly rather than reaching the
 # gateway's own runtime WARN-and-degrade-to-refuse fallback silently.
 #
+# ⚑ EXACTLY WHAT refuse_high_confidence GUARANTEES, because the name promises
+# more than it delivers: it refuses what the IBAN and email MATCHERS
+# RECOGNISE, not "every IBAN and every email address". Replace an IBAN's
+# two-letter country code with any two non-letter characters and the IBAN
+# matcher declines; what is left is a long digit run, and a long digit run is
+# what this mode forwards. The default "refuse" does reject that string. It
+# still refuses every fail-closed malformed/bounds finding (composition-depth
+# overflow included) — only the digit-run matcher is relaxed. Choose this
+# knowing it is the better of the two RELAXED postures, not a strict one.
+# Mirrors the exact operator-facing guarantee text DSA carries on its own
+# compose/Helm/config.env surfaces (dual-sandbox-architecture commit
+# 9b5bf7184).
+#
 # Helm install/upgrade: --set gateway.toolSchemaGuard=log
 toolSchemaGuard: ""
 
