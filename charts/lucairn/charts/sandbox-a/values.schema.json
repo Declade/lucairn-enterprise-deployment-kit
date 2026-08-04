@@ -17,6 +17,12 @@
     "sanitizer": {
       "type": "object",
       "properties": {
+        "confidenceThreshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "T-517: Presidio (L2) confidence floor, rendered into the sanitizer ConfigMap as `presidio.confidence_threshold` (templates/sanitizer-configmap.yaml). Bounded to a finite [0, 1] because a value the sanitizer cannot use is INVISIBLE at runtime: detector scores never exceed 1.0, so `2.0` keeps ZERO detections, and a YAML `.nan` makes every confidence comparison false, which also keeps zero — in both cases the request still returns 200 and the certificate still lists `presidio_ner` in layers_active. That is a false attestation, not a degraded scan, so it is rejected at `helm template`/`helm lint` time instead of reaching the pod. NaN is caught by these bounds (every comparison against NaN is false, so it satisfies neither minimum nor maximum); a string or boolean is caught by the type. 0 and 1 are legitimate operating points and remain accepted. The sanitizer enforces the same bounds independently at boot (services/sanitizer/config.py, PresidioConfig.__post_init__) so Compose and hosted installs are covered too — this schema is the render-time half. NOTE: `helm --set` cannot express a float (strvals parses integers as int64 and leaves everything else a string), so an override must come from a values file or `--set-json sandbox-a.sanitizer.confidenceThreshold=0.35`; a plain `--set …=0.35` is now refused as a string instead of silently reaching the pod."
+        },
         "piiMlClient": {
           "type": "object",
           "properties": {
