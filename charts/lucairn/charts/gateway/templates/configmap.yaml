@@ -138,3 +138,20 @@ data:
   # Requires gateway image >= 0.5.1. See INSTALL.md § "Phase 8".
   GATEWAY_TMS_TRUST_ZONES: {{ .Values.tms.trustZones | toJson | quote }}
   {{- end }}
+  {{- if .Values.toolSchemaGuard }}
+  {{- if not (kindIs "string" .Values.toolSchemaGuard) }}
+  {{- fail (printf "[gateway] gateway.toolSchemaGuard must be a string (log | refuse | refuse_high_confidence); got %s. --set values like \"true\" or a bare number are parsed as non-string types by Helm — quote it, e.g. --set-string gateway.toolSchemaGuard=log." (kindOf .Values.toolSchemaGuard)) }}
+  {{- end }}
+  {{- $tsgMode := .Values.toolSchemaGuard | lower | trim }}
+  {{- if not (has $tsgMode (list "log" "refuse" "refuse_high_confidence")) }}
+  {{- fail (printf "[gateway] gateway.toolSchemaGuard=%q is not one of: log | refuse | refuse_high_confidence. An operator typo here must not silently reach the gateway's own runtime WARN-and-degrade-to-refuse fallback." .Values.toolSchemaGuard) }}
+  {{- end }}
+  # T-14 recursive tool-declaration schema PII guard (T-487). Rendered ONLY
+  # when gateway.toolSchemaGuard is explicitly set — see the values.yaml
+  # comment above this key for why there is no chart-side default and no
+  # image-version gate. "log" and "refuse_high_confidence" relax the "refuse"
+  # posture (T-493); pair "log" with `bin/lucairn doctor --tools` for a
+  # bounded observation window rather than leaving it on permanently. See
+  # OPS.md § "Tool-schema PII guard".
+  GATEWAY_TOOL_SCHEMA_GUARD: {{ $tsgMode | quote }}
+  {{- end }}

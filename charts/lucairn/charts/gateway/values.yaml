@@ -241,6 +241,40 @@ tms:
   # Empty map = identity (use gateway built-in defaults for all segments).
   trustZones: {}
 
+# T-14 recursive tool-declaration schema PII guard (PRD specs/2026-08/
+# prd-2026-08-04-kit-release-readiness-t14-residuals.md Slice B3). Operator
+# override for GATEWAY_TOOL_SCHEMA_GUARD — governs how the gateway reacts when
+# a tool/function-calling declaration on an incoming request carries a
+# PII-shaped literal (IBAN, email, high-confidence digit run) baked into its
+# JSON Schema instead of a real user value.
+#
+# Empty (default, "") renders NO env var at all — not even the string
+# "refuse" — so the gateway binary's own built-in default applies. This is
+# deliberately NOT the `default "refuse"` pattern used elsewhere in this
+# chart: unlike a chart-owned knob, this flag may be READ DIFFERENTLY (or not
+# at all) by gateway images the kit has not yet validated against, and a kit
+# install can run any pinned tag an operator chooses. Rendering nothing lets
+# the pinned binary's own compiled-in fail-closed posture (refuse) govern,
+# matching the T-393 lesson: never render a default into the pod for a flag
+# the image may not know. No version gate is needed for this reason too — an
+# older image that pre-dates the guard simply ignores the env var either way,
+# unlike GATEWAY_TMS_TRUST_ZONES above (whose silent-no-op risk is a
+# DIFFERENT hazard: an operator believing a scan-policy override is active
+# when it is not).
+#
+# T-493 (Marc, 2026-08-04): the kit's shipped default stays "refuse" — do NOT
+# set this permanently to relax the guard. "log" is for a bounded observation
+# window only if the guard false-positives on your tool schemas; pair it with
+# `bin/lucairn doctor --tools` rather than leaving it enabled. See OPS.md §
+# "Tool-schema PII guard".
+#
+# Valid values: log | refuse | refuse_high_confidence (case-insensitive).
+# Any other value fails the Helm render loudly rather than reaching the
+# gateway's own runtime WARN-and-degrade-to-refuse fallback silently.
+#
+# Helm install/upgrade: --set gateway.toolSchemaGuard=log
+toolSchemaGuard: ""
+
 # PR-C1 fix-up round 1 (FIX-6): gateway-side sanitize cache. Default OFF —
 # operators flip enabled=true per environment after the cert-chain integration
 # follow-up PR ships. Override maxEntries / ttlSeconds per-environment if needed.
