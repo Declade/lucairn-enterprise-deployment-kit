@@ -1217,12 +1217,33 @@ incoming request whose JSON Schema carries a PII-shaped literal baked into
 an IBAN, an email address, or a high-confidence digit run hardcoded into a
 tool's own spec. `GATEWAY_TOOL_SCHEMA_GUARD` controls how strict that check
 is: `refuse` (kit default — do not change this permanently), `log` (detect
-and allow, emitting a finding to the gateway log instead of a 400), and
-`refuse_high_confidence` (relaxes only the IBAN/email family; the fail-closed
-composition-depth and prose-number checks still refuse). T-493 (Marc,
-2026-08-04): the kit ships with the guard **on** (`refuse`) because it caught
-a real leak on day one — `log` exists as a bounded operator escape hatch, not
-a supported steady state.
+and allow, emitting a finding to the gateway log instead of a 400 — relaxes
+every check, IBAN/email/digit-run alike), and `refuse_high_confidence`
+(refuses everything `refuse` refuses EXCEPT the digit-run matcher — see the
+exact guarantee below). T-493 (Marc, 2026-08-04): the kit ships with the
+guard **on** (`refuse`) because it caught a real leak on day one — `log`
+exists as a bounded operator escape hatch, not a supported steady state.
+
+⚑ **Exactly what `refuse_high_confidence` guarantees**, because the name
+promises more than it delivers: it refuses what the IBAN and email MATCHERS
+RECOGNISE, not "every IBAN and every email address". Replace an IBAN's
+two-letter country code with any two non-letter characters and the IBAN
+matcher declines; what is left is a long digit run, and a long digit run is
+what this mode forwards (logged, not refused). The default (`refuse`) does
+reject that string. Every fail-closed malformed/bounds finding — an
+undecodable tools array, a duplicate object key, trailing content, a depth or
+node-budget overrun, composition-depth overflow included — still REFUSES in
+this mode too; a declaration the guard could not finish reading is still a
+declaration it cannot clear. It relaxes ONLY the digit-run matcher, the
+low-confidence member of the set (a 13-digit millisecond epoch and a
+13-digit MSISDN are the same string, so no pattern can clear one without
+clearing the other). Choose this mode knowing it is the better of the two
+RELAXED postures, not a strict one — the comparison that matters is against
+`log`, under which that same string is ALSO forwarded, together with every
+genuine IBAN and email address (`dual-sandbox-architecture`
+`services/gateway/internal/api/tool_schema_pii_guard.go`, and mirrored
+verbatim onto DSA's own compose/Helm/config.env operator surfaces in commit
+`9b5bf7184`).
 
 If the guard false-positives on your own tool schemas, set it to `log` for a
 short observation window while you adjust the offending tool declarations,
@@ -1233,7 +1254,9 @@ then flip it back:
 helm upgrade lucairn charts/lucairn -f customer-values.yaml \
   --set gateway.toolSchemaGuard=log ...
 
-# Compose
+# Compose — GATEWAY_TOOL_SCHEMA_GUARD is mapped in the gateway service's
+# environment block (docker-compose.customer.yml), defaulting to "refuse"
+# when unset, so setting it in customer.env genuinely takes effect:
 echo 'GATEWAY_TOOL_SCHEMA_GUARD=log' >> customer.env
 bin/lucairn up --env customer.env
 ```
