@@ -6984,6 +6984,16 @@ doctor() {
     esac
   done
 
+  # --reveal-pointers belongs to the tools preflight and to nothing else, but
+  # it is parsed here with the other doctor flags, so on its own it would be
+  # accepted and do nothing. That is the SAME defect as accepting --compose
+  # inside tools mode (rejected below), just pointing the other way: a flag
+  # that changes what a security diagnostic prints must never be silently
+  # inert. Reject, matching the sibling.
+  if [ "$tools_reveal" -eq 1 ] && [ "$tools_only" -eq 0 ]; then
+    fail "--reveal-pointers only applies to 'doctor --tools'; it controls how the tool-schema guard preflight renders pointers. Add --tools --tools-file PATH, or drop the flag."
+  fi
+
   # T-498 tool-schema guard preflight. Deliberately a STANDALONE mode with the
   # same shape as --values: it needs neither customer.env nor a compose file
   # nor a running stack, because its whole purpose is to run BEFORE the first

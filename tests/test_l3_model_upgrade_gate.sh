@@ -283,6 +283,39 @@ check_citation() {
   fi
 }
 
+# check_anchor FILE NEEDLE LABEL [CONTEXT_NEEDLE]
+#
+# CONTENT-based citation: asserts the file still contains the construct, with
+# no reference to WHERE in the file it sits.
+#
+# ⚑ WHY THIS EXISTS (citation rot — the class kit commit c5695e2 already lists
+# as fixed once).  check_citation above pins a LINE NUMBER, and a line number is
+# never the thing under test: it is a property of every OTHER edit to the file.
+# The `bin/lucairn` anchor below broke on an unrelated PR (T-498, which inserted
+# a new doctor subcommand ~900 lines above it) and reported "the manifest-entry
+# anchor is gone" when the manifest-entry parser was untouched. A test that goes
+# red for reasons unrelated to what it asserts teaches people to re-point it
+# without reading it, which is how a real regression eventually slips through.
+#
+# CONTEXT_NEEDLE is optional and keeps the assertion SPECIFIC where the bare
+# needle would be too weak on its own: it names the enclosing construct, so
+# "the string still appears somewhere in the file" cannot pass for "the string
+# still appears in the parser that needs it".
+check_anchor() {
+  local file="$1" needle="$2" label="$3" ctx="${4:-}" n
+  n="$(grep -cF -- "$needle" "$file" 2>/dev/null || true)"
+  [ -n "$n" ] || n=0
+  if [ "$n" -eq 0 ]; then
+    fail "$label: ${file##*/} no longer contains '$needle' anywhere"
+    return
+  fi
+  if [ -n "$ctx" ] && ! grep -qF -- "$ctx" "$file"; then
+    fail "$label: ${file##*/} contains '$needle' but its enclosing construct '$ctx' is gone"
+    return
+  fi
+  pass "$label -> ${file##*/} (content anchor, $n occurrence(s))"
+}
+
 check_citation "$JOB"  20  "identityModelRegistryEgress"           "air-gap render gate"
 check_citation "$JOB"  25  "ollama-identity-model-pull-r"          "revision-suffixed Job name"
 check_citation "$JOB"  44  "activeDeadlineSeconds:"                "pull deadline"
@@ -296,11 +329,31 @@ check_citation "$STS"  65  "readinessProbe:"                       "readiness pr
 check_citation "$STS"  80  "limits.memory"                         "memory limit"
 check_citation "$VAL" 976  "validators.l3AirGapWithoutFailClosed"  "air-gap fail-closed validator"
 check_citation "$VALY" 27  "l3AirGapWithoutFailClosed"             "validator invocation"
-# Needle is the entry-name fragment, NOT "qwen2.5": the awk pattern escapes the
-# dot (`qwen2\.5-7b-awq-model:`), so a literal "qwen2.5" does not appear on the
-# line. This is also exactly the F2 finding in miniature — the check anchors on
-# a literal name, so renaming the manifest entry breaks it silently.
-check_citation "$ROOT/bin/lucairn" 2019 "-7b-awq-model:" "doctor B-E2 manifest-entry anchor"
+# CONTENT-anchored (was `check_citation … 1962 …`, converted 2026-08-04 under
+# T-498). `bin/lucairn` is an 8.9k-line file that nearly every kit PR edits, so
+# a line number into it is a tripwire for unrelated work rather than a check on
+# this parser: the T-498 doctor subcommand landed ~900 lines above it and turned
+# this assertion red while the manifest-entry parser was untouched.
+#
+# ⚑ THE NEEDLE IS THE WHOLE AWK PATTERN, and the first draft of this conversion
+# got that wrong in a way worth recording. It reused the old line-scoped needle
+# `-7b-awq-model:` — which was safe when `sed -n 1962p` had already narrowed the
+# haystack to one line, and is NOT safe against the whole file, because the
+# comment two lines above the parser also says "qwen2.5-7b-awq-model:". Renaming
+# the model in the awk pattern left the comment behind, so the anchor still
+# passed: a control that could not fail. Escaping the dot is what separates the
+# two — prose writes `qwen2.5-…`, the awk regex writes `qwen2\.5-…` — and
+# pinning the full pattern also asserts the anchor is still an anchor (matched
+# at line start, whole line) rather than a mention.
+#
+# The context needle names the enclosing function, so "the pattern is somewhere
+# in bin/lucairn" cannot pass for "the vllm-l3 revision parser still keys off
+# the manifest entry name". Renaming the manifest entry still breaks this
+# deliberately (the F2 finding in miniature) — that is the point of the check.
+check_anchor "$ROOT/bin/lucairn" \
+  '/^[[:space:]]*qwen2\.5-7b-awq-model:[[:space:]]*$/' \
+  "doctor B-E2 manifest-entry anchor" \
+  "check_vllm_l3_revision_consistency()"
 
 # The licence re-confirmation is a PRD locked constraint, not advice.
 if grep -qF -- "ai.google.dev/gemma/terms" "$ROOT/docs/L3_MODEL_UPGRADE.md"; then

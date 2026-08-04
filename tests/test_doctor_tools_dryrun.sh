@@ -298,6 +298,21 @@ pin trailing_content \
 pin undecodable_array \
   '[{"name":' \
   1 "kind=malformed_tools"
+# ⚑ A payload that is a bare OBJECT (or any non-array scalar) is not an input
+# error — those bytes ARE the tools value, and the gateway's verdict on them is
+# known: json.Decode into []any fails, so it reports malformed_tools and
+# REFUSES. Reporting "no tools array found" and exiting as an operator error
+# would answer a different question, and would look like a clean bill from a
+# direct invocation. Verdict measured against the Go guard.
+pin bare_object_is_a_refusal_not_an_input_error \
+  '{"name":"lookup","description":"account DE36000000000000000000"}' \
+  1 "kind=malformed_tools"
+pin bare_scalar_is_a_refusal_not_an_input_error \
+  '"not a tools array"' \
+  1 "kind=malformed_tools"
+pin bare_number_is_a_refusal_not_an_input_error \
+  '7' \
+  1 "kind=malformed_tools"
 # An email in prose IS refused: the prose exemption is digit-run only.
 pin email_in_prose \
   '[{"description":"contact ops@example.com for access"}]' \
@@ -440,10 +455,42 @@ rc=0
 OUT="$("$LUCAIRN" doctor --tools --tools-file "$FIX/clean.json" --tools-mode nonsense 2>&1)" || rc=$?
 if [ "$rc" -ne 0 ]; then pass "invalid --tools-mode is an error"; else bad "invalid --tools-mode" "exited 0"; fi
 
-printf '{"not":"a tools payload"}' > "$WK/unrecognised.json"
+# A payload that ANNOUNCES the MCP shape and then does not carry it is the one
+# genuine "I could not find a tools array" case: the operator plainly meant
+# result.tools, and the honest answer is that the response lists no tools —
+# NOT a refusal for a payload the gateway would never be handed.
+printf '{"jsonrpc":"2.0","id":1,"result":{"nextCursor":"abc"}}' > "$WK/mcp_no_tools.json"
 rc=0
-OUT="$("$LUCAIRN" doctor --tools --tools-file "$WK/unrecognised.json" 2>&1)" || rc=$?
-if [ "$rc" -ne 0 ]; then pass "unrecognised shape is an error, not a clean bill"; else bad "unrecognised shape" "exited 0 — a payload the tool could not find is not a payload it cleared"; fi
+OUT="$("$LUCAIRN" doctor --tools --tools-file "$WK/mcp_no_tools.json" 2>&1)" || rc=$?
+if [ "$rc" -ne 0 ]; then pass "MCP result with no tools member is an error, not a clean bill"; else bad "MCP result with no tools member" "exited 0 — a payload the tool could not read is not a payload it cleared"; fi
+expect_out "MCP result with no tools member says why" 'no "tools" member inside it'
+expect_not_out "MCP result with no tools member is NOT reported as a guard refusal" "kind=malformed_tools"
+
+# ⚑ LOW 2 CONTROL. --reveal-pointers changes what a security diagnostic PRINTS.
+# It is parsed with the other doctor flags, so on its own it would be accepted
+# and do nothing — the exact mirror of --compose being ignored INSIDE tools
+# mode, which is rejected above. A silently inert flag on this command is a
+# quiet promise that the caller-facing pointers were shown when they were not.
+#
+# ⚑ "IT EXITED NON-ZERO" IS NOT THE ASSERTION HERE, and writing it that way
+# would have been green with the guard deleted: the ordinary offline battery
+# also exits non-zero against customer.env.example (placeholder secrets). The
+# discriminating facts are that the SPECIFIC rejection is printed and that it
+# fires BEFORE any battery output — so the two assertions below are on the
+# message and on the ABSENCE of the battery's first success line.
+rc=0
+OUT="$("$LUCAIRN" doctor --reveal-pointers --offline --env "$ROOT/customer.env.example" 2>&1)" || rc=$?
+if [ "$rc" -ne 0 ]; then
+  pass "--reveal-pointers without --tools exits non-zero (necessary, not sufficient — see below)"
+else
+  bad "--reveal-pointers without --tools" "exited 0 — the flag was silently accepted and did nothing"
+fi
+expect_out "--reveal-pointers rejection is actionable" "only applies to 'doctor --tools'"
+expect_not_out "--reveal-pointers rejected BEFORE the ordinary battery runs" "env file: ok"
+# ...and it must still WORK inside tools mode, or the guard above is just a ban.
+if run_tools 1 "reveal-pointers/still-works-in-tools-mode" --tools-file "$FIX/iban-in-default.json" --tools-mode refuse --reveal-pointers; then
+  expect_out "reveal-pointers still reveals in tools mode" "/properties/creditor_account/default"
+fi
 
 # Flags belonging to the OTHER doctor batteries must be rejected, not ignored:
 # this mode short-circuits before those batteries run, so accepting them would
