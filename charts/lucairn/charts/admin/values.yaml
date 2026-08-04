@@ -58,11 +58,9 @@ secrets:
   values:
     # REQUIRED — ships EMPTY on purpose (T-10). There is no working default:
     # templates/_validate.tpl hard-fails the render when this is empty or is
-    # still a CHANGE-ME…-shaped placeholder, at every global.dsaEnv AND at
-    # every secrets.backend (this chart ships no ExternalSecret template, so a
-    # non-k8s-native backend does not supply this value from anywhere — see
-    # templates/_validate.tpl).
+    # still a CHANGE-ME…-shaped placeholder, at every global.dsaEnv.
     #   --set "admin.secrets.values.adminPassword=$(openssl rand -base64 24)"
+    # Or leave empty and set admin.secrets.backend to vault | aws | azure.
     # If you do not deploy the admin surface at all, set admin.enabled=false.
     adminPassword: ""
     dsaServiceToken: ""  # PRODUCTION: set via existingSecret or --set; dev: inline value
