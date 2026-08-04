@@ -46,6 +46,13 @@ carry a security fix are tagged **[Security]**.
   `secrets.backend` value supplies those credentials from anywhere. Set
   `admin.enabled: false` / `observability.enabled: false` if you do not deploy
   those surfaces.
+- **[Security] Kit password guards reject a non-string `--set` value (T-490).**
+  `admin` / `audit` / `id-bridge` / `observability` / `sandbox-a` /
+  `veil-witness` coerced every value through `toString` before checking it, so
+  `--set adminPassword=true` (parsed by Helm as a **boolean**, not a string)
+  rendered a 4-character password with no complaint. Every guard now rejects
+  any non-string YAML type by name before that coercion runs; a quoted
+  numeric-looking password (`--set-string ...=12345678`) is unaffected.
 
 ### Removed
 - **`observability.grafana.adminPassword` (dead key).** No template ever read it,
@@ -54,6 +61,22 @@ carry a security fix are tagged **[Security]**.
   `observability.secrets.values.grafanaAdminPassword`. Rather than drop it
   silently, `observability/templates/_validate.tpl` now fails the render with a
   migration message if a values file still sets it.
+
+### Fixed
+- **`admin` sub-chart gained an `ExternalSecret` template (T-488).**
+  `--set admin.secrets.backend=vault` used to render "clean" with nothing to
+  ever populate the `admin-credentials` Secret that `deployment.yaml` mounts
+  unconditionally, so the pod hit `CreateContainerConfigError` at start.
+  `admin` now ships `templates/externalsecret.yaml` (parity with the other
+  credential-bearing sub-charts) and its password guard is gated on
+  `secrets.backend == k8s-native` to match.
+- **`values.yaml` declared `observability:` twice (T-489).** A duplicate
+  top-level key silently discarded the first block — YAML keeps only the
+  last occurrence. The surviving block already carried the intended config,
+  so this is a no-op for rendered output; the fix is closing the hole so a
+  future edit to the wrong block doesn't silently vanish. A duplicate-key
+  static check (`tests/lib/check_duplicate_yaml_keys.py`) now runs in
+  `tests/static_checks.sh` against every chart values file.
 
 ### Notes
 - **Upgrade:** a `helm upgrade` that previously relied on the shipped defaults
