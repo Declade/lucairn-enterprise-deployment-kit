@@ -531,7 +531,7 @@ Expected **on an L3-enabled, warm topology**. A stock install ships the L3 shiel
 This is the cryptographic proof your compliance team needs:
 - **signatures_valid: true** — every claim's Ed25519 signature checks out against the published public keys
 - **completeness: COMPLETENESS_FULL** — all 4 expected services participated AND the deep PII shield (L3) actually ran. On a stock L3-off install this field reads `COMPLETENESS_PARTIAL` instead, with the 4 claims still present and `signatures_valid: true` — that is the certificate honestly reporting which layers ran, not a failure (T-385). The `COMPLETENESS_FULL` sample above is the L3-enabled topology.
-- **overall_verdict: VERDICT_VERIFIED** — the whole chain is verified. Note this field is DERIVED: a `COMPLETENESS_PARTIAL` certificate is reported as `VERDICT_PARTIAL` even when every signature checks out, so on a stock L3-off install read `signatures_valid` and `missing_services` for the integrity answer and `completeness` for the coverage answer. `VERDICT_FAILED` is the only value that means something is wrong with the keys or the isolation.
+- **overall_verdict: VERDICT_VERIFIED** — the whole chain is verified. Note this field is DERIVED from three independent conditions: partial completeness, a temporal inconsistency, **or a claim-ordering violation**. So a `COMPLETENESS_PARTIAL` certificate reports `VERDICT_PARTIAL` even when every signature checks out — expected on a stock L3-off install — but `PARTIAL` is **not** proof that coverage is the only thing missing. Accept a `PARTIAL` only when it is fully explained: `signatures_valid`, `data_visibility_consistent`, `isolation_verified` and `temporal_consistent` all `true`, `missing_services` empty, and `completeness` matching your topology. If all of that holds and the verdict is still `PARTIAL`, the cause is the claim-ordering tripwire — which is **not** a certificate field; look for `temporal ordering violation` in the veil-witness log (`kubectl logs -n dsa-witness deploy/veil-witness`) and escalate.
 - **claims_count: 4** — TOKEN_GENERATED (bridge) + PII_SANITIZED (sanitizer) + INFERENCE_COMPLETED (ai) + EVENTS_RECORDED (audit)
 
 ---
@@ -660,7 +660,7 @@ Walk these checks after Step 10 — all should be ✓ for a successful install:
 - [ ] Customer mint returned `lcr_live_*` key
 - [ ] First inference returned HTTP 200 with `pii_in_ai: false`
 - [ ] `redaction_count` ≥ 4 on a payload with realistic PII (≥6 on the documented German clinical payload)
-- [ ] Cert chain reports `signatures_valid: true` and an `overall_verdict` that is **not** `VERDICT_FAILED`
+- [ ] Cert chain reports `signatures_valid: true`, `data_visibility_consistent: true`, `isolation_verified: true`, `temporal_consistent: true`, and an empty `missing_services`
 - [ ] `completeness` matches the topology you installed: `COMPLETENESS_FULL` + `VERDICT_VERIFIED` with the L3 shield enabled and warm; `COMPLETENESS_PARTIAL` + `VERDICT_PARTIAL` on a stock L3-off install (both are correct outcomes — a PARTIAL completeness forces a PARTIAL verdict; see § "L3 deep PII shield must be warm before a demo")
 - [ ] 4 claims with types `TOKEN_GENERATED + PII_SANITIZED + INFERENCE_COMPLETED + EVENTS_RECORDED`
 - [ ] No `missing_services` in the cert verdict

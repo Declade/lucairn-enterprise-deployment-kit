@@ -329,16 +329,44 @@ curl -s "http://localhost:8080/api/v1/veil/certificate/$REQUEST_ID" \
   -H "x-api-key: $API_KEY" | jq '.verification'
 ```
 
-Expected: `"signatures_valid": true`, and `"overall_verdict"` **not**
-`"VERDICT_FAILED"`.
+Expected — **every** one of these:
 
-⚠️ Do not gate the ceremony on `VERDICT_VERIFIED`. The witness reserves
-`VERDICT_FAILED` for signature / data-visibility / isolation problems — the
-class this step is testing — and uses `VERDICT_PARTIAL` for missing COVERAGE. A
-stock kit runs the L3 deep PII shield OFF, so `llm_pii_scan` is absent from
-`layers_active`, the certificate honestly reports `COMPLETENESS_PARTIAL`, and
-that forces `VERDICT_PARTIAL` regardless of how correct your keys are. You get
+| Field | Required |
+|---|---|
+| `signatures_valid` | `true` |
+| `data_visibility_consistent` | `true` |
+| `isolation_verified` | `true` |
+| `temporal_consistent` | `true` |
+| `missing_services` | `[]` (empty) |
+| `completeness` | matches the topology you installed — `COMPLETENESS_PARTIAL` on a stock L3-off kit, `COMPLETENESS_FULL` with the L3 shield enabled and warm |
+
+⚠️ **Do not gate the ceremony on `VERDICT_VERIFIED` — and do not wave `PARTIAL`
+through either.**
+
+Gating on `VERDICT_VERIFIED` fails a correct ceremony: a stock kit runs the L3
+deep PII shield OFF, so `llm_pii_scan` is genuinely absent from `layers_active`,
+the certificate honestly reports `COMPLETENESS_PARTIAL`, and that alone forces
+`VERDICT_PARTIAL` no matter how correct your keys are. You see
 `VERDICT_VERIFIED` here only on an L3-enabled, warm topology.
+
+But `PARTIAL` is **not** only a coverage signal. The witness derives it from
+three independent conditions — partial completeness, a temporal inconsistency,
+**or a claim-ordering violation** (`services/veil-witness/internal/verifier/`
+`verifier.go`, the overall-verdict block). The last two are splice/replay
+tripwires. Treating every `PARTIAL` as "just coverage" would sign off a ceremony
+on a spliced evidence chain, which is the opposite of what this step is for.
+
+So: a `PARTIAL` verdict passes this step only when the table above **fully
+explains it** — i.e. the only non-ideal value is `completeness`, and it matches
+your topology.
+
+⚠️ **If the whole table holds and the verdict is STILL `PARTIAL`, escalate.**
+The only remaining cause is the claim-ordering tripwire, which is **not exposed
+as a certificate field** — the witness keeps it internally and logs the detail.
+Check the veil-witness log for `temporal ordering violation`
+(`kubectl logs -n dsa-witness deploy/veil-witness` / `docker compose logs
+veil-witness`). Do **not** add a `temporal_order_valid` key to this table; no
+such field exists in the certificate.
 
 ### 7.3 Verify a specific key pair matches
 
