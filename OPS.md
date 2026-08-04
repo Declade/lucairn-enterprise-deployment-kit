@@ -1340,12 +1340,48 @@ echo 'GATEWAY_TOOL_SCHEMA_GUARD=log' >> customer.env
 bin/lucairn up --env customer.env
 ```
 
-Leaving `toolSchemaGuard` unset renders no env var at all, so a pinned
-gateway image always falls back to its own compiled-in `refuse` default —
-the chart never asserts an opinion an older image might not recognize.
-Setting it to anything other than `log` / `refuse` / `refuse_high_confidence`
-fails the Helm render loudly at install/upgrade time (never silently reaches
-the gateway's own runtime WARN-and-degrade-to-refuse fallback).
+Leaving `toolSchemaGuard` unset renders no env var at all, so the chart never
+asserts an opinion an older image might not recognize — but "no opinion
+asserted" only degrades gracefully to `refuse` on a gateway image that
+actually **contains** the guard. **A gateway image built before the guard
+existed does not fall back to anything.** It never reads
+`GATEWAY_TOOL_SCHEMA_GUARD`, and it has no compiled-in `refuse` default to
+fall back to, because the guard's code is not in that binary at all — such
+an image performs no schema-level scan of tool/function-calling declarations
+in ANY mode, regardless of what this Helm value or `GATEWAY_TOOL_SCHEMA_GUARD`
+is set to. "Falls back to `refuse`" is accurate only for an image new enough
+to carry the guard (see MINIMUM IMAGE VERSION below) — do not read it as a
+property of every pinned gateway image.
+
+Setting `toolSchemaGuard` to anything other than `log` / `refuse` /
+`refuse_high_confidence` fails the Helm render loudly at install/upgrade
+time (never silently reaches the gateway's own runtime WARN-and-degrade-to-
+refuse fallback) — again, that description presumes an image new enough to
+have that runtime fallback to reach.
+
+**MINIMUM IMAGE VERSION.** `GATEWAY_TOOL_SCHEMA_GUARD` and the guard logic
+behind it were introduced in `dual-sandbox-architecture` on 2026-08-03
+(T-14, `feat(gateway): recursive tool-schema PII walk — close the second
+unsanitized egress`, commit `a0fb5bde4`; exposed as a Helm value in the same
+slice, commit `d5f9486dd`). **As of this writing, no published `dsa-gateway`
+image contains it.** The kit's own currently pinned default —
+`image-manifest.yaml` → `default_lucairn_image_tag: "0.5.4"`, republished
+2026-06-19 per `CHANGELOG.md` `[1.9.4]` — predates the guard by about six
+weeks, and `dual-sandbox-architecture` has not cut a numbered image release
+since: its highest `v*` git tag is `v0.4.1`, and the `0.5.x` image series is
+published through a process independent of those tags. **Treat every
+`dsa-gateway` image you can pull today as guard-ABSENT** — setting
+`GATEWAY_TOOL_SCHEMA_GUARD` (or `gateway.toolSchemaGuard`) to any value on
+one of them is a no-op, not a stricter or looser posture.
+
+The gateway image carries no OCI revision label tying its tag to a source
+commit, so there is currently no mechanical way to check "does my pinned tag
+include T-14" against an arbitrary tag. The check, once it exists: compare
+your pinned `LUCAIRN_IMAGE_TAG` (`customer.env`) / `default_lucairn_image_tag`
+(`image-manifest.yaml`) against the `dsa-gateway` tag this section names —
+this note will be updated with the exact tag the first time a kit release
+pins a gateway image built after 2026-08-03. Until this note names a tag,
+assume none qualifies.
 
 ### Dry-run it BEFORE the first routed turn: `bin/lucairn doctor --tools`
 
@@ -1369,6 +1405,29 @@ personal data here":
   applied to `enum`, `default`, `const`, `example(s)`, property names, and any
   other identifier position — and, since a bare JSON number in a prose-typed
   slot is not prose, to numbers there too.
+- **An arbitrary-name map outside JSON Schema's own name-keyed keywords is
+  NOT recognized as one, so a colliding child name is read as prose.** JSON
+  Schema itself only treats `properties` / `patternProperties` / `$defs` /
+  `definitions` / `dependentSchemas` / `dependentRequired` / `dependencies` /
+  `$vocabulary` as maps of arbitrary developer-chosen names; every other map
+  position is walked as ordinary schema keywords. An OpenAPI-style extension
+  such as a `discriminator.mapping` object is not part of that list (it is
+  not JSON Schema vocabulary at all), so a mapping entry whose key happens to
+  be `description`, `title`, `summary` or `$comment` is misread as the prose
+  keyword, and the digit-run matcher is disabled over that entry's value even
+  though the map is not documentation (`dual-sandbox-architecture`
+  `services/gateway/internal/api/tool_schema_pii_guard.go`
+  `isNameKeyedSchemaMap`).
+- **A structural numeric keyword (`minimum`, `maximum`, and the other
+  size/count keywords) with no applicable `type` anywhere is not scanned.**
+  If the schema object carrying the keyword declares no `type`, and none of
+  its `allOf`/`anyOf`/`oneOf` branches declares one either, the guard cannot
+  tell whether the keyword is a genuine numeric bound or a client-authored
+  value smuggled under a bound-shaped key — and it grants the exemption
+  rather than refuse every untyped schema (`tool_schema_pii_guard.go`
+  `structuralKeywordAppliesTo`'s `!decl.present` branch). A declaration like
+  `{"minimum": 4915112345678}`, with nothing establishing it is a bound,
+  forwards clean.
 
 **The kit ships that guard ON** — `GATEWAY_TOOL_SCHEMA_GUARD` defaults to
 `refuse`, and the gateway falls toward `refuse` when the variable is unset,

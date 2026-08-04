@@ -53,8 +53,16 @@
 #     fail-close against an unstaged model — 503 on every request.
 #   - completeness-posture-reachable-on-compose: this repo has no `env_file:`
 #     directive, so a service's `environment:` block is the only channel from
-#     customer.env into the container. Without the veil-witness entry, T-385's
-#     documented `full` opt-in is dead configuration.
+#     customer.env into the container. Without the veil-witness entry, the
+#     completeness posture is dead configuration on Compose. (G3, 2026-08-04:
+#     the Helm chart no longer accepts `full` and kit docs no longer offer it,
+#     but this control only checks that Compose forwards the variable at
+#     all — the veil-witness image's own parsing of `full` is a separate,
+#     untouched, not-yet-scheduled retirement.)
+#   - completeness-full-refused (G3, 2026-08-04): `global.l3CompletenessPosture
+#     =full` used to render successfully; it must now fail the Helm render.
+#     Re-adding "full" to either allowlist (the umbrella validator or its
+#     per-pod mirror) turns this red — this is the mandatory RED-PROOF for G3.
 #   - airgap-legacy-is-not-a-bypass (§6): `l3Required` truthy must NOT satisfy
 #     the air-gap fail-closed guard. It can only ever be reached alongside a
 #     posture that overrides it, so accepting it merely suppresses the guard.
@@ -215,9 +223,24 @@ check_eq "completeness posture lands on the veil-witness" \
 check_eq "completeness posture does NOT leak onto the sanitizer" \
   "" "$(sanitizer_l3_env "$TMPDIR/completeness.yaml")"
 
-render --set global.l3CompletenessPosture=full >"$TMPDIR/completeness-full.yaml"
-check_eq "the legacy over-claiming posture is still selectable (T-385)" \
-  "LUCAIRN_L3_COMPLETENESS_POSTURE=full" "$(witness_l3_env "$TMPDIR/completeness-full.yaml")"
+
+# G3 (board T-385, 2026-08-04): `full` was briefly a selectable escape hatch
+# to reproduce the legacy over-claiming posture; that offer is withdrawn
+# before shipping. A signed certificate must never be configurable to state
+# that a scan ran when it did not, so this must now be a render-time refusal,
+# not a rendered env var. This is the RED-PROOF for G3: on the pre-fix tree
+# (or with either allowlist reverted) this render SUCCEEDS and sets
+# LUCAIRN_L3_COMPLETENESS_POSTURE=full — restoring `"full"` to either `has $v
+# (list ...)` call in charts/lucairn/templates/_validators.tpl or
+# charts/lucairn/charts/veil-witness/templates/deployment.yaml turns this
+# case green again.
+if render --set global.l3CompletenessPosture=full >/dev/null 2>"$TMPDIR/completeness-full.err"; then
+  fail "global.l3CompletenessPosture=full is refused at render time (G3 — full deleted from the kit allowlist)"
+elif grep -q 'must be "partial"' "$TMPDIR/completeness-full.err"; then
+  pass "global.l3CompletenessPosture=full is refused at render time (G3 — full deleted from the kit allowlist)"
+else
+  fail "global.l3CompletenessPosture=full failed for the WRONG reason: $(head -1 "$TMPDIR/completeness-full.err")"
+fi
 
 render --set global.l3AvailabilityPosture=reject >"$TMPDIR/availability.yaml"
 check_eq "availability posture lands on the sanitizer" \
@@ -340,10 +363,15 @@ if grep -Eq '^[[:space:]]*LUCAIRN_L3_(AVAILABILITY_POSTURE|COMPLETENESS_POSTURE)
 else
   pass "no compose file supplies a posture default"
 fi
-# T-385's escape hatch has to be REACHABLE. This repo has no `env_file:`
-# directive, so a service's `environment:` block is the only channel from
-# customer.env into the container: without this entry the variable is dead
-# config and the documented `full` opt-in cannot be exercised on Compose.
+# The completeness posture has to be REACHABLE on Compose regardless of what
+# value an operator sets. This repo has no `env_file:` directive, so a
+# service's `environment:` block is the only channel from customer.env into
+# the container: without this entry the variable is dead config. (G3,
+# 2026-08-04: the Helm chart's allowlist no longer accepts `full`, and kit
+# docs no longer offer it — but this is a Compose passthrough test, and the
+# veil-witness image's own Go-side parsing of `full` is untouched; that is a
+# separate, not-yet-scheduled retirement. This assertion only checks that
+# `partial`, the supported value, actually reaches the container.)
 if grep -Eq '^[[:space:]]*LUCAIRN_L3_COMPLETENESS_POSTURE:[[:space:]]*"\$\{LUCAIRN_L3_COMPLETENESS_POSTURE:-\}"' \
      "$ROOT/docker-compose.customer.yml"; then
   pass "the veil-witness service forwards the completeness posture (T-385 opt-in reachable)"
@@ -444,9 +472,11 @@ else
   fail "a VALID subchart-scoped posture still renders: $(head -1 "$TMPDIR/sub-ok.err")"
 fi
 
-# ...but a value the IMAGE would accept must still render (no over-firing).
+# ...but a still-valid value the IMAGE would accept must still render (no
+# over-firing). Uses "Partial" (not "Full" — G3 removed full from this
+# chart's allowlist, so it is no longer a valid probe for this case).
 if render --set-string global.l3AvailabilityPosture=Reject \
-     --set-string global.l3CompletenessPosture=" Full " >/dev/null 2>"$TMPDIR/enum-ok.err"; then
+     --set-string global.l3CompletenessPosture=" Partial " >/dev/null 2>"$TMPDIR/enum-ok.err"; then
   pass "enum guard trims+lowercases like the services do (no false-fail)"
 else
   fail "enum guard trims+lowercases like the services do: $(head -1 "$TMPDIR/enum-ok.err")"

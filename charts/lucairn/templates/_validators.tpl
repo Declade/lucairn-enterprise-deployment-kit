@@ -776,7 +776,7 @@ the chart's supported paths are development and production only.
 {{- with (index .Values "sandbox-a") -}}
 {{- if .sanitizer -}}
 {{- if hasKey .sanitizer "l3Required" -}}
-{{- fail "sandbox-a.sanitizer.l3Required is REMOVED (chart 1.9.4), and its replacement global.l3Required has since been RETIRED too (T-393). Do NOT set global.l3Required — the render refuses it. L3 is now TWO independent keys: global.l3AvailabilityPosture=degrade|reject (SANITIZER — what happens to a REQUEST when L3 is unavailable; the old l3Required=true meant `reject`) and global.l3CompletenessPosture=partial|full (VEIL-WITNESS — what the CERTIFICATE claims when L3 did not run; `partial` is the default and the honest posture). Set the one you mean — or neither, which is what the kit ships — and delete sandbox-a.sanitizer.l3Required from your values file." -}}
+{{- fail "sandbox-a.sanitizer.l3Required is REMOVED (chart 1.9.4), and its replacement global.l3Required has since been RETIRED too (T-393). Do NOT set global.l3Required — the render refuses it. L3 is now TWO independent keys: global.l3AvailabilityPosture=degrade|reject (SANITIZER — what happens to a REQUEST when L3 is unavailable; the old l3Required=true meant `reject`) and global.l3CompletenessPosture=partial (VEIL-WITNESS — what the CERTIFICATE claims when L3 did not run; `partial` is the default, the honest posture, and the only value this chart accepts). Set the one you mean — or neither, which is what the kit ships — and delete sandbox-a.sanitizer.l3Required from your values file." -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -785,7 +785,7 @@ the chart's supported paths are development and production only.
 {{- with (index .Values "veil-witness") -}}
 {{- if .config -}}
 {{- if hasKey .config "l3Required" -}}
-{{- fail "veil-witness.config.l3Required is REMOVED (chart 1.9.4), and its replacement global.l3Required has since been RETIRED too (T-393). Do NOT set global.l3Required — the render refuses it. The witness now reads global.l3CompletenessPosture=partial|full (what the CERTIFICATE claims when L3 did not run; `partial` is the default and the honest posture, `full` reproduces the old l3Required=false over-claim — board T-385). Request availability is a separate key on the sanitizer, global.l3AvailabilityPosture=degrade|reject. Set the one you mean — or neither, which is what the kit ships — and delete veil-witness.config.l3Required from your values file." -}}
+{{- fail "veil-witness.config.l3Required is REMOVED (chart 1.9.4), and its replacement global.l3Required has since been RETIRED too (T-393). Do NOT set global.l3Required — the render refuses it. The witness now reads global.l3CompletenessPosture=partial (what the CERTIFICATE claims when L3 did not run; `partial` is the default, the honest posture, and the only value this chart accepts — the old l3Required=false over-claim is no longer selectable, board T-385). Request availability is a separate key on the sanitizer, global.l3AvailabilityPosture=degrade|reject. Set the one you mean — or neither, which is what the kit ships — and delete veil-witness.config.l3Required from your values file." -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -829,7 +829,7 @@ the chart's supported paths are development and production only.
 {{- $g := (default dict .Values.global) -}}
 {{- if hasKey $g "l3Required" -}}
 {{- if not (and (hasKey $g "l3AvailabilityPosture") (hasKey $g "l3CompletenessPosture")) -}}
-{{- fail "global.l3Required is RETIRED (T-393) and is set without both replacements. It welded together two unrelated concerns that live in two different services, and both service images now refuse to start when they see it beside an unset replacement — so this render would install a stack whose sanitizer and/or veil-witness CrashLoopBackOff. Set BOTH: global.l3AvailabilityPosture=degrade|reject (SANITIZER — what happens to a REQUEST when L3 is unavailable; the retired true meant `reject`, false meant `degrade`) and global.l3CompletenessPosture=partial|full (VEIL-WITNESS — what the CERTIFICATE claims when L3 did not run; `partial` is the default and the honest posture, `full` reproduces the retired false behaviour of claiming COMPLETENESS_FULL for a request the deep PII shield never saw — board T-385). Then DELETE global.l3Required: neither image reads it for posture any more, and because one key feeds both pods while they derive OPPOSITE postures from it, a leftover value cannot express degrade+partial. Leaving all three unset is supported and is what the kit now ships." -}}
+{{- fail "global.l3Required is RETIRED (T-393) and is set without both replacements. It welded together two unrelated concerns that live in two different services, and both service images now refuse to start when they see it beside an unset replacement — so this render would install a stack whose sanitizer and/or veil-witness CrashLoopBackOff. Set BOTH: global.l3AvailabilityPosture=degrade|reject (SANITIZER — what happens to a REQUEST when L3 is unavailable; the retired true meant `reject`, false meant `degrade`) and global.l3CompletenessPosture=partial (VEIL-WITNESS — what the CERTIFICATE claims when L3 did not run; `partial` is the default, the honest posture, and the only value this chart accepts — the retired false behaviour of claiming COMPLETENESS_FULL for a request the deep PII shield never saw is no longer selectable, board T-385). Then DELETE global.l3Required: neither image reads it for posture any more, and because one key feeds both pods while they derive OPPOSITE postures from it, a leftover value cannot express degrade+partial. Leaving all three unset is supported and is what the kit now ships." -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -850,8 +850,20 @@ the chart's supported paths are development and production only.
   and keeping its value (`l3AvailabilityPosture: true`). The message says what
   the old values map onto so that operator is not left guessing.
 
-  ⚠️ THE ACCEPT/REJECT SET MIRRORS THE SERVICES EXACTLY, including two edges that
-  look like sloppiness and are not:
+  ⚠️ THE ACCEPT/REJECT SET MIRRORS THE SERVICES EXACTLY FOR
+  `l3AvailabilityPosture`, WITH ONE DELIBERATE EXCEPTION FOR
+  `l3CompletenessPosture` (Marc decision, 2026-08-04): the veil-witness image
+  itself still parses `full` — that Go-side mapping is a separate,
+  not-yet-scheduled retirement — but this chart's allowlist accepts only
+  `partial`. A signed certificate must never be configurable to claim a scan
+  ran when it did not; `full` reproduces exactly that claim
+  (COMPLETENESS_FULL / VERDICT_VERIFIED with `llm_pii_scan` absent). This is
+  the one place in this file where "preview of the image" is deliberately
+  NOT the goal — the kit refuses a value the image would still accept.
+  `l3AvailabilityPosture` carries no such exception: it governs REQUEST
+  handling (a 503 decision), not what the certificate states, so it still
+  mirrors the image exactly. Two further edges apply to BOTH postures' empty/
+  whitespace handling and look like sloppiness and are not:
     - A TRULY EMPTY value (`l3CompletenessPosture: ""`, or a null `key:`) is
       ABSENCE and takes the image default. Both services say so explicitly —
       config.py `_parse_strict_enum` returns the default for `""`, and
@@ -859,7 +871,8 @@ the chart's supported paths are development and production only.
       because `"${VAR:-}"` is this repo's wire representation of "operator did
       not choose". Refusing it here would false-fail a values file the image
       accepts, and the whole point of a render-time guard is to be a preview of
-      the image, not a second opinion.
+      the image, not a second opinion — except for the `full` exclusion above,
+      which is deliberately NOT a preview of the image.
     - A WHITESPACE-ONLY value IS refused. Compose's `${VAR:-}` renders the empty
       string and never a padded one, so `"   "` is something an operator typed —
       a paste accident or a quoting bug — and both services refuse it rather
@@ -885,8 +898,8 @@ the chart's supported paths are development and production only.
 {{- if hasKey $g "l3CompletenessPosture" -}}
 {{- $raw := toString (default "" $g.l3CompletenessPosture) -}}
 {{- $v := lower (trim $raw) -}}
-{{- if and (ne $raw "") (not (has $v (list "partial" "full"))) -}}
-{{- fail "global.l3CompletenessPosture must be \"partial\" or \"full\" (value withheld). The veil-witness refuses to start on an off-allowlist posture, so this render would CrashLoopBackOff. \"partial\" is the image default and the honest posture — a chain that only ran L1+L2 certifies COMPLETENESS_PARTIAL. \"full\" reproduces the retired global.l3Required=false behaviour of claiming COMPLETENESS_FULL for a request the deep PII shield never saw (board T-385). Omit the key entirely to take the image default." -}}
+{{- if and (ne $raw "") (not (has $v (list "partial"))) -}}
+{{- fail "global.l3CompletenessPosture must be \"partial\" (value withheld). \"partial\" is the image default and the only value this chart accepts — a chain that only ran L1+L2 certifies COMPLETENESS_PARTIAL. \"full\" is NOT accepted here: as of 2026-08-04 the kit no longer offers the option of certifying COMPLETENESS_FULL for a request the deep PII shield never saw (board T-385) — a certificate must never be configurable to claim a scan ran when it did not. Omit the key entirely to take the image default." -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

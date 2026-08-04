@@ -46,8 +46,10 @@ global:
   #                                    #   GPU L3 shield.
   #   l3CompletenessPosture: partial   # VEIL-WITNESS — a chain that only ran
   #                                    #   L1+L2 certifies COMPLETENESS_PARTIAL.
-  #                                    #   `full` reproduces the retired
-  #                                    #   over-claim (board T-385).
+  #                                    #   "partial" is the ONLY value this
+  #                                    #   chart accepts — the retired
+  #                                    #   over-claim (`full`) is no longer
+  #                                    #   selectable (board T-385, 2026-08-04).
   # They are INDEPENDENT and do not have to agree; they answer different
   # questions in different services.
   #

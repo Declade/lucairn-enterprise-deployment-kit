@@ -1197,7 +1197,7 @@ active. Provision the full 16 GB RAM before enabling this mode (see
 > | Question | Service | Flag | Values | Default |
 > |---|---|---|---|---|
 > | What happens to a **request** when L3 is unavailable? | sanitizer | `LUCAIRN_L3_AVAILABILITY_POSTURE` | `degrade` \| `reject` | `degrade` |
-> | What does the **certificate** claim when L3 did not run? | veil-witness | `LUCAIRN_L3_COMPLETENESS_POSTURE` | `partial` \| `full` | `partial` |
+> | What does the **certificate** claim when L3 did not run? | veil-witness | `LUCAIRN_L3_COMPLETENESS_POSTURE` | `partial` (only on Helm — see below) | `partial` |
 >
 > Neither service reads the other's flag, and neither can downgrade the other's
 > answer, so there is no "both sides must agree" rule any more — that rule was
@@ -1208,9 +1208,20 @@ active. Provision the full 16 GB RAM before enabling this mode (see
 > changed. The chart shipped `global.l3Required: false` and rendered it onto the
 > veil-witness pod, so Helm installs certified `COMPLETENESS_FULL` for requests
 > the deep PII shield never saw. The certificate now states which layers
-> actually ran. An operator who needs the old wording can set
-> `LUCAIRN_L3_COMPLETENESS_POSTURE=full`; the service calls that the legacy
-> posture and it over-claims by construction.
+> actually ran.
+>
+> **⛔ `LUCAIRN_L3_COMPLETENESS_POSTURE=full` is not available on Helm (board
+> T-385, 2026-08-04).** It was briefly offered as an explicit opt-in to
+> reproduce the old over-claiming wording; the kit no longer offers it, on
+> principle — a signed certificate must never be configurable to state that a
+> scan ran when it did not. `helm template --set
+> global.l3CompletenessPosture=full` now fails the render. The veil-witness
+> image's own parsing of `full` is untouched (a separate, not-yet-scheduled
+> retirement), so setting the raw `LUCAIRN_L3_COMPLETENESS_POSTURE=full`
+> environment variable directly on a non-Helm path is not itself blocked by
+> this change — but the kit no longer documents or offers that as a supported
+> path on any install method. The only way to earn a FULL certificate is to
+> actually run the L3 shield.
 >
 > **Compose installs are unaffected on this point** — the Compose files never
 > set the variable on the `veil-witness` service, only on the sanitizer, so the
