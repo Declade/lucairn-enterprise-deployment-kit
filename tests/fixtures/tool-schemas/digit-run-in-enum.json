@@ -1,0 +1,17 @@
+[
+  {
+    "name": "device_msisdn_lookup",
+    "description": "Look up a managed device by its subscriber number.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "msisdn": {
+          "type": "string",
+          "description": "Subscriber number of the managed device.",
+          "enum": ["1234567890123", "unknown"]
+        }
+      },
+      "required": ["msisdn"]
+    }
+  }
+]

@@ -1,0 +1,19 @@
+[
+  {
+    "name": "record_fetch",
+    "description": "Fetch a single record by its 32-character hexadecimal sys_id, e.g. ab12cd34ef56ab78cd90ef12ab34cd56.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "sys_id": {
+          "type": "string",
+          "description": "The record sys_id, for example ab12cd34ef56ab78cd90ef12ab34cd56 — 32 hex characters, no personal data.",
+          "minLength": 32,
+          "maxLength": 32,
+          "pattern": "^[0-9a-f]{32}$"
+        }
+      },
+      "required": ["sys_id"]
+    }
+  }
+]

@@ -1,0 +1,17 @@
+[
+  {
+    "name": "payment_reference_lookup",
+    "description": "Look up a payment by reference.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "creditor_account": {
+          "type": "string",
+          "description": "Creditor account in IBAN form.",
+          "default": "DE36000000000000000000"
+        }
+      },
+      "required": ["creditor_account"]
+    }
+  }
+]

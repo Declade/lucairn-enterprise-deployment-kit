@@ -1,0 +1,48 @@
+[
+  {
+    "name": "incident_lookup",
+    "description": "Look up an incident by its number. Incident numbers are 7 digits (INC0012345) and are not personal data.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "string",
+          "pattern": "^INC[0-9]{7}$",
+          "description": "The incident number, e.g. INC0012345.",
+          "maxLength": 10
+        },
+        "include_worknotes": {
+          "type": "boolean",
+          "default": false
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 25
+        },
+        "state": {
+          "type": "string",
+          "enum": ["new", "in_progress", "on_hold", "resolved", "closed"]
+        }
+      },
+      "required": ["number"]
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "table_read",
+      "description": "Read rows from a table. Timestamps are seconds since the epoch.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "table": { "type": "string", "enum": ["incident", "change_request", "problem"] },
+          "updated_after": { "type": "integer", "minimum": 0, "maximum": 4102444800 },
+          "fields": { "type": "array", "items": { "type": "string" }, "maxItems": 50 }
+        },
+        "required": ["table"]
+      }
+    }
+  }
+]
