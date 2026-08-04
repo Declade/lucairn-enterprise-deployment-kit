@@ -458,6 +458,103 @@ else
 fi
 
 echo ""
+echo "7. bin/lucairn doctor WARN branches (offline, no docker/network)"
+
+# Pure unit test, matching tests/test_manifest_blob.sh and
+# tests/test_l3_split_pool_preflight.sh: source bin/lucairn with EMPTY args (so
+# the trailing `main "$@"` degrades to a harmless usage print) and call
+# check_l3_required_wired directly against hand-built env files. The function is
+# warn-only and always returns 0, so every assertion is on the WARN TEXT — a
+# check that returns 0 either way is only a control if you read what it said.
+run_doctor_l3() {
+  local env_file="$1"
+  bash -c '
+    set +e
+    source "'"$ROOT"'/bin/lucairn" >/dev/null 2>&1
+    set +e +u +o pipefail
+    check_l3_required_wired "'"$env_file"'"
+    printf "RC=%s\n" "$?"
+  ' 2>&1
+}
+
+# assert_doctor NAME ENV_BODY EXPECT_SUBSTRING|"" [FORBID_SUBSTRING]
+assert_doctor() {
+  local name="$1" body="$2" needle="$3" forbid="${4:-}" out
+  printf '%s\n' "$body" >"$TMPDIR/doctor.env"
+  out="$(run_doctor_l3 "$TMPDIR/doctor.env")"
+  if ! printf '%s' "$out" | grep -q "RC=0"; then
+    fail "$name (function did not return 0 — it is warn-only by contract)"
+    return
+  fi
+  if [ -n "$needle" ] && ! printf '%s' "$out" | grep -qF -- "$needle"; then
+    fail "$name (expected WARN containing [$needle]; got: $(printf '%s' "$out" | head -c 130))"
+    return
+  fi
+  if [ -n "$forbid" ] && printf '%s' "$out" | grep -qF -- "$forbid"; then
+    fail "$name (WARN unexpectedly contained [$forbid])"
+    return
+  fi
+  pass "$name"
+}
+
+# A leftover retired flag is a boot refusal, so the doctor must name it offline.
+assert_doctor "doctor warns on a leftover LUCAIRN_L3_REQUIRED" \
+  "LUCAIRN_L3_REQUIRED=false" \
+  "LUCAIRN_L3_REQUIRED is RETIRED but still set"
+
+# The likeliest migration typo: rename the variable, keep the old value. Both
+# services refuse to boot on it, so an offline pre-flight has to catch it.
+assert_doctor "doctor warns on an off-allowlist availability posture" \
+  "LUCAIRN_L3_AVAILABILITY_POSTURE=true" \
+  "is not one of degrade|reject"
+assert_doctor "doctor warns on an off-allowlist completeness posture" \
+  "LUCAIRN_L3_COMPLETENESS_POSTURE=false" \
+  "is not one of partial|full"
+
+# Whitespace-only is a VALUE, not an absence — both services refuse it.
+assert_doctor "doctor warns on a whitespace-only posture" \
+  'LUCAIRN_L3_AVAILABILITY_POSTURE="   "' \
+  "is not one of degrade|reject"
+
+# ⚠️ REGRESSION CONTROL for the normaliser. This check used to squeeze the value
+# with `tr -d "[:space:]"`, which deletes INTERNAL whitespace: "re ject" became
+# "reject" and passed silently, while the sanitizer's own `.strip()` leaves
+# "re ject", finds it off-allowlist and refuses to boot — an offline pre-flight
+# that green-lights a stack which cannot start. Trimming ends only is what makes
+# this case red against that bug. (bin/lucairn carries the same lesson as a
+# security fix on the image-digest gate.)
+assert_doctor "doctor rejects internal whitespace (not just leading/trailing)" \
+  'LUCAIRN_L3_AVAILABILITY_POSTURE="re ject"' \
+  "is not one of degrade|reject"
+
+# ...but a value the SERVICES would accept must not be flagged as off-allowlist.
+# " Reject " normalises to reject, so the only warn here is the shield-wiring
+# one — which is exactly what the next case asserts.
+assert_doctor "doctor accepts a padded/capitalised valid posture" \
+  'LUCAIRN_L3_AVAILABILITY_POSTURE=" Reject "' \
+  "" \
+  "is not one of degrade|reject"
+
+# Fail-closed posture with no L3 shield wired: the silent-503 trap. This warn is
+# SPLIT-INSTALL-ONLY by design — a non-empty SANDBOX_B_REMOTE_ENDPOINT is what
+# tells the offline heuristic that the self-hosted overlay (which DOES define
+# ollama-identity) is not in play. Writing the fixture without it produced a
+# green assertion for the wrong reason, so both shapes are pinned.
+assert_doctor "doctor warns on reject + no shield on a SPLIT install" \
+  "$(printf 'LUCAIRN_L3_AVAILABILITY_POSTURE=reject\nSANDBOX_B_REMOTE_ENDPOINT=https://sandbox-b.example:8443\n')" \
+  "no L3 shield appears wired"
+assert_doctor "doctor stays quiet on reject when self-hosted wires the shield" \
+  "LUCAIRN_L3_AVAILABILITY_POSTURE=reject" \
+  "" \
+  "no L3 shield appears wired"
+
+# The shipped default must be silent on all three branches.
+assert_doctor "doctor is silent on the shipped degrade default" \
+  "LUCAIRN_L3_AVAILABILITY_POSTURE=degrade" \
+  "" \
+  "L3"
+
+echo ""
 if [ "$FAILS" -eq 0 ]; then
   echo "T-393 / T-385 L3 posture flag gate: PASS ($N assertions)"
 else
