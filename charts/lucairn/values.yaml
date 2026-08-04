@@ -80,33 +80,62 @@ global:
   # than intended. If you need the pull over IPv6, add an explicit ipBlock with
   # your cluster's IPv6 except-list — do not widen the IPv4 rule.
   identityModelRegistryEgress: true
-  # L3 deep-PII-shield required flag — SINGLE SOURCE OF TRUTH for BOTH the
-  # sanitizer (sandbox-a) AND the veil-witness. The witness binary reads
-  # LUCAIRN_L3_REQUIRED (services/veil-witness/internal/verifier/verifier.go:171)
-  # and "mirrors config.l3_required() in the sanitizer so the two sides agree"
-  # (verifier.go:170). When the two sides DISAGREE — witness L3-required=true but
-  # the sanitizer skips the L3 `llm_pii_scan` layer because L3 is off — the
-  # witness downgrades every cert to COMPLETENESS_PARTIAL (verifier.go:503).
+  # ── L3 DEEP-PII-SHIELD POSTURES (T-393 / T-385) ───────────────────────────
   #
-  # The kit ships L3 OFF (no GPU ollama-identity sidecar — sandbox-a/values.yaml
-  # llmScanEnabled=false). Before this knob existed the witness subchart wired
-  # LUCAIRN_L3_REQUIRED NOWHERE → the witness defaulted to L3-required=true while
-  # the sanitizer skipped L3 → every fresh install's certs silently downgraded to
-  # PARTIAL (Helm-AKS rehearsal had to hand-patch the witness configmap to get
-  # FULL). This single global makes flipping L3 ONE value both sides consume.
+  # TWO independent knobs replace the retired single `l3Required`. Each is
+  # UNSET by default — deliberately. The two service images carry the same
+  # defaults this chart would otherwise have to repeat, and an unset key is the
+  # only way to say "use the image's default" (see the ⚠️ note below for why
+  # shipping a value here is not free).
   #
-  # Default false ⇒ LUCAIRN_L3_REQUIRED="false" on BOTH the sanitizer container
-  # AND the witness pod (they agree → COMPLETENESS_FULL with L3 absent).
-  # Enterprise operators who enable the GPU L3 shield
-  # (sandbox-a sanitizer.llmScanEnabled=true) set this true so BOTH sides require
-  # L3 (fail-closed sanitizer + the witness demanding the L3 layer).
+  #   l3AvailabilityPosture   → LUCAIRN_L3_AVAILABILITY_POSTURE on the SANITIZER
+  #                             (sandbox-a). "degrade" | "reject".
+  #                             What happens to a REQUEST when L3 is
+  #                             unavailable. Image default: "degrade" — serve
+  #                             the request on L1+L2. "reject" restores the
+  #                             fail-CLOSED 503 l3_scrubber_unavailable that the
+  #                             retired LUCAIRN_L3_REQUIRED=true selected.
   #
-  # SINGLE KNOB (2026-06-19 fix-up): this is the ONLY L3-required knob. The
-  # sanitizer (sandbox-a) and the veil-witness pod templates resolve
-  # LUCAIRN_L3_REQUIRED from this exact key with the SAME fallback ("false"), so
-  # the two sides resolve byte-identically in EVERY case (including null/absent)
-  # and can never split. There is no per-subchart sanitizer.l3Required override.
-  l3Required: false
+  #   l3CompletenessPosture   → LUCAIRN_L3_COMPLETENESS_POSTURE on the
+  #                             VEIL-WITNESS. "partial" | "full".
+  #                             What the CERTIFICATE claims when L3 did not run.
+  #                             Image default: "partial" — a chain that only ran
+  #                             L1+L2 certifies COMPLETENESS_PARTIAL.
+  #
+  # ⚑ THIS IS A BEHAVIOUR CHANGE FOR EVERY EXISTING HELM INSTALL, AND IT IS THE
+  # POINT (board T-385). This chart used to ship `l3Required: false` and render
+  # it onto the veil-witness pod, which made the witness certify
+  # COMPLETENESS_FULL for requests the deep PII shield never saw — while
+  # docs/CUSTOMER_HELM_RUNBOOK.md described that same state as "honestly
+  # downgraded to PARTIAL". Helm certificates now say PARTIAL on an L3-absent
+  # chain. Nothing about the scrubbing changed; the certificate stopped
+  # over-claiming. An operator who genuinely wants the old wording can set
+  # `l3CompletenessPosture: full` — the image calls it the legacy posture.
+  #
+  # Compose installs are unaffected on this point: the Compose files never set
+  # the variable on the veil-witness service, so those certificates already read
+  # COMPLETENESS_PARTIAL.
+  #
+  # ⚠️ DO NOT re-add a shipped default here, and do NOT set `l3Required`.
+  # Both service images treat a set LUCAIRN_L3_REQUIRED beside an unset
+  # replacement posture as an un-migrated deployment and REFUSE TO START
+  # (services/sanitizer/config.py `l3_availability_posture`;
+  # services/veil-witness/internal/verifier/l3_posture.go). Because this file's
+  # values are merged into every render, a key shipped HERE is set on EVERY
+  # install whether the operator asked for it or not — which is exactly how the
+  # retired `l3Required: false` CrashLooped both pods on 100% of kit installs
+  # from an image bump alone (T-393). The pod templates now emit each variable
+  # ONLY when its key is present, and validators.l3LegacyFlagWithoutPosture
+  # refuses the render if `l3Required` is present without both replacements.
+  #
+  # The two knobs are INDEPENDENT and do not have to "agree" — that was the
+  # retired flag's defect. They answer different questions in different
+  # services (a 503 decision vs a certificate verdict) and no combination of
+  # them is incoherent. The combination this chart now ships by default —
+  # degrade + partial — was unreachable before the split.
+  #
+  # l3AvailabilityPosture: degrade
+  # l3CompletenessPosture: partial
   # Node pool isolation: when true, Sandbox A and Sandbox B are scheduled
   # on separate node pools (dsa.io/zone=identity vs dsa.io/zone=ai) with
   # hard anti-affinity. Requires labeled + tainted nodes (managed-K8s

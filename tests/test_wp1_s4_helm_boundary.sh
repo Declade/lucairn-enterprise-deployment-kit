@@ -40,7 +40,10 @@ global:
   postgresqlSslmode: disable
   dsaServiceToken: ""
   dsaEnv: development
-  l3Required: false
+  # T-393: `l3Required` is RETIRED. It is deliberately ABSENT here — the
+  # service images refuse to start when they see the retired flag beside an
+  # unset replacement posture, so a fixture that sets it describes an install
+  # that would CrashLoop. See tests/test_l3_posture_flags.sh.
   nodeIsolation: false
   mtls:
     enabled: false

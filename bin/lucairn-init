@@ -1314,17 +1314,33 @@ QI_ENGINE_ENABLED=true
 SANITIZER_CONFIG_FILE=./config/default-sanitizer.yaml
 SANITIZER_SAFE_TERMS_FILE=./config/medical-terms.txt
 
-# L3 deep PII shield NOT required (L1+L2 active). Re-enable: pre-stage the ollama model (see runbook) then set LUCAIRN_L3_REQUIRED=true.
-# Emitted explicitly so the value wins over BOTH compose fallbacks: the
-# self-hosted overlay (docker-compose.self-hosted.yml) defaults this to "true"
-# (fail-CLOSED) because it wires the always-on ollama-identity service, but on a
-# fresh install the qwen2.5:7b L3 model is NOT yet staged into that service's
-# egress-less volume — so "true" + unstaged model => the sanitizer /readyz fails
-# liveness and the gateway fail-closes 503 l3_scrubber_unavailable on the FIRST
-# (and every) request. Setting "false" runs L1+L2 (deterministic + sandbox-a
-# regex/dictionary) and honestly downgrades the cert to PARTIAL (llm_pii_scan
-# omitted from layers_active) instead of hard-failing.
-LUCAIRN_L3_REQUIRED=false
+# L3 deep PII shield NOT required for the REQUEST (L1+L2 active). Re-enable:
+# pre-stage the ollama model (see runbook) then set
+# LUCAIRN_L3_AVAILABILITY_POSTURE=reject.
+#
+# T-393: this replaces the retired LUCAIRN_L3_REQUIRED, which the kit used to
+# write here as "false". Do not re-add that variable — both services refuse to
+# start when they see it beside an unset replacement posture, so a generated
+# customer.env that still carried it CrashLooped the sanitizer on the first
+# image bump.
+#
+# Emitted EXPLICITLY rather than left to a compose fallback, because there is no
+# longer a compose fallback to rely on: neither docker-compose.customer.yml nor
+# the self-hosted overlay supplies a posture (T-393 — the overlay's old
+# fail-CLOSED default was removed because it would have silently overridden a
+# leftover LUCAIRN_L3_REQUIRED=false). Stating it here means a generated install
+# has a posture the operator can see and change in one place.
+#
+# "degrade" is right for a FRESH install on either topology: the self-hosted
+# overlay wires the always-on ollama-identity service, but the qwen2.5:7b L3
+# model is NOT yet staged into that service's egress-less volume, so "reject" +
+# unstaged model => the sanitizer /readyz fails liveness and the gateway
+# fail-closes 503 l3_scrubber_unavailable on the FIRST (and every) request.
+# "degrade" runs L1+L2 (deterministic + sandbox-a regex/dictionary) instead of
+# hard-failing; the veil-witness independently certifies COMPLETENESS_PARTIAL,
+# so the certificate still says exactly which layers ran. Switch to "reject"
+# after staging the model.
+LUCAIRN_L3_AVAILABILITY_POSTURE=degrade
 
 # Certification profile (opt-in; only used with --profile certification).
 # Non-empty placeholders so docker compose's :? interpolation succeeds even

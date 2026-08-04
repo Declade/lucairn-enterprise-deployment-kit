@@ -190,8 +190,9 @@ weights are resident in **host RAM**, not VRAM.
 This is survivable for a ~4.4 GiB model under a 10Gi limit. It is not
 survivable for a ~18.6 GiB one: the container is OOMKilled during load,
 `ollama list` stops answering, the readiness probe
-(`ollama-identity-statefulset.yaml:65-69`) fails, and — with `global.l3Required:
-true` — the sanitizer fail-closes on every request.
+(`ollama-identity-statefulset.yaml:65-69`) fails, and — with
+`global.l3AvailabilityPosture: reject` — the sanitizer fail-closes on every
+request.
 
 The compose lane is different: `model-runtime-vllm-l3` reserves an NVIDIA
 device (`docker-compose.self-hosted.yml`, `deploy.resources.reservations.devices`),
@@ -381,7 +382,7 @@ additionally requires everything in § 1.
    image ≥ 0.19.1, sanitizer image carrying S1-S3, storage sized).
 3. Storage headroom checked for **old + new** blobs (§ 2.1 / § 2.6).
 4. A maintenance window agreed — § 4.3 is a *visible outage* with
-   `l3Required: true`.
+   `l3AvailabilityPosture: reject`.
 5. Rollback value written down (§ 4.6).
 
 ### 4.2 Helm — what `helm upgrade` actually does
@@ -435,11 +436,11 @@ duration of that pull:
 - the sanitizer asks `ollama-identity` for a model that is **not staged yet**;
 - Ollama answers **404 model not found**;
 - the sanitizer's L3 path treats that as unavailable;
-- with `global.l3Required: true` (fail-closed, the recommended posture) the
-  gateway returns **503 on every request**;
-- with `global.l3Required: false` requests continue on L1+L2 and every
-  certificate minted in the window is honestly downgraded (`llm_pii_scan`
-  dropped from `layers_active`).
+- with `global.l3AvailabilityPosture: reject` (fail-closed, the recommended
+  posture when L3 is wired) the gateway returns **503 on every request**;
+- with `global.l3AvailabilityPosture: degrade` (the image default) requests
+  continue on L1+L2 and every certificate minted in the window is downgraded
+  (`llm_pii_scan` dropped from `layers_active`, `COMPLETENESS_PARTIAL`).
 
 Neither is data loss; both are visible. **Expected duration = the pull time**:
 
@@ -454,12 +455,17 @@ The air-gap row is the sharp one, and it is sharper than it looks. On that path
 the pull Job is not rendered at all
 (`ollama-identity-model-job.yaml:20`), so nothing fetches the new model — and
 `validators.l3AirGapWithoutFailClosed`
-(`charts/lucairn/templates/_validators.tpl:855-870`, invoked from
-`validators.yaml:25`) **refuses to render** the air-gap path unless
-`global.l3Required=true`. That guard is correct and deliberate — it exists so a
+(`charts/lucairn/templates/_validators.tpl:976-989`, invoked from
+`validators.yaml:27`) **refuses to render** the air-gap path unless
+`global.l3AvailabilityPosture=reject` is stated. The retired `global.l3Required`
+does **not** satisfy it — a legacy arm was drafted and removed before merge,
+because the sibling migration guard means it could only ever be reached
+alongside a posture that overrides it, making its one real effect the
+suppression of this guard. That guard is correct and deliberate — it exists so a
 missed pre-seed cannot silently run shield-less — but it means the air-gap
-upgrade window is **always** the hard-503 variant. Mitigation 3 below (flip
-`l3Required` false for the window) is **not available** there: the render fails.
+upgrade window is **always** the hard-503 variant. Mitigation 3 below (flip the
+posture to `degrade` for the window) is **not available** there: the render
+fails.
 Pre-staging is the only option on the air-gap path.
 
 Mitigations, in order of preference:
@@ -472,8 +478,8 @@ Mitigations, in order of preference:
    the window collapses to the next request. **This is the recommended path for
    any production install.**
 2. Schedule the upgrade inside an agreed maintenance window and accept the 503s.
-3. Temporarily set `global.l3Required: false` for the window — this trades a
-   hard outage for honestly-downgraded certificates. It is a **deliberate
+3. Temporarily set `global.l3AvailabilityPosture: degrade` for the window —
+   this trades a hard outage for downgraded certificates. It is a **deliberate
    posture change**: it must be agreed with the customer, and flipped back
    immediately afterwards. **Unavailable on the air-gapped path** — the
    umbrella validator fails the render for that combination (see above).
@@ -499,8 +505,8 @@ kubectl -n dsa-identity exec deploy/sandbox-a -c sanitizer -- \
 Compose equivalents: `docker compose exec ollama-identity ollama list`, and the
 sanitizer's `/readyz`.
 
-A green `/readyz` with `l3Required: true` is the load-bearing check — it is what
-was failing during § 4.3's window.
+A green `/readyz` with `l3AvailabilityPosture: reject` is the load-bearing
+check — it is what was failing during § 4.3's window.
 
 ### 4.5 Cleaning up the old blob
 

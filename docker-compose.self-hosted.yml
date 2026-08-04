@@ -139,22 +139,50 @@ services:
   # dsa-model-runtime-identity here. No sanitizer config change is needed.
   sanitizer:
     environment:
-      # L3 fail-mode default is DEPLOYMENT-AWARE. The base
-      # docker-compose.customer.yml (split deployment) defaults
-      # LUCAIRN_L3_REQUIRED to "false" because it starts NO L3 service —
-      # requiring L3 there would 503 every request. This self-hosted overlay
-      # DOES wire the always-on L3 shield (the `ollama-identity` service +
-      # `dsa-model-runtime-identity` net below), so it RESTORES the
-      # fail-CLOSED-by-default contract: when L3 is wired, a request must not
-      # silently degrade to L1+L2 if the shield is down — it fail-closes (503
-      # l3_scrubber_unavailable). Compose's per-key environment merge means
-      # this value REPLACES the base "false" default on the self-hosted path.
-      # An operator can still override (set LUCAIRN_L3_REQUIRED=false in
-      # customer.env) for a deliberate continue-mode self-hosted install.
-      # Mirrors the Helm chart, which fail-closes L3 by default when
-      # ollama-identity runs. See INSTALL.md § self-hosted "Pre-stage the L3
-      # deep PII-shield model" + customer.env.example LUCAIRN_L3_REQUIRED.
-      LUCAIRN_L3_REQUIRED: "${LUCAIRN_L3_REQUIRED:-true}"
+      # L3 AVAILABILITY POSTURE (T-393). Replaces the retired
+      # LUCAIRN_L3_REQUIRED: "${LUCAIRN_L3_REQUIRED:-true}" this line carried.
+      #
+      # ⚠️ THE OVERLAY'S FAIL-CLOSED DEFAULT IS DELIBERATELY GONE, AND THAT IS A
+      # POSTURE CHANGE — read this before "restoring" it.
+      #
+      # The obvious migration was `"${LUCAIRN_L3_AVAILABILITY_POSTURE:-reject}"`,
+      # preserving the retired `:-true`. It was drafted, and it is an OUTAGE on
+      # the modal install. Since 2026-06 BOTH `bin/lucairn-init` AND
+      # `customer.env.example` wrote `LUCAIRN_L3_REQUIRED=false` "for ALL install
+      # paths" — so essentially every existing self-hosted `customer.env` carries
+      # that line, and pre-upgrade it OVERRODE this overlay's `:-true` and the
+      # stack ran continue-mode. With a posture defaulted here, the sanitizer's
+      # migration refusal never trips (a posture IS set), the image merely warns
+      # about the retired flag, and `reject` wins — against a `qwen2.5:7b` model
+      # this kit's own docs say is NOT staged by default. /readyz then fails
+      # liveness and the gateway 503s EVERY request. A whole-stack outage from an
+      # image + compose bump alone, on the exact state the kit's own generator
+      # produced.
+      #
+      # With NO default here, that same env instead meets the sanitizer's boot
+      # refusal naming both replacements — loud, safe, and it forces the operator
+      # to state the posture they actually want. The cost is honest and smaller:
+      # a HAND-ROLLED self-hosted env that carries no L3 variable at all used to
+      # inherit fail-closed and now inherits the image default `degrade`. That
+      # population is the one the retired `:-true` was written for; the
+      # generator-written population is everyone else. Coverage loss stays
+      # visible either way — the veil-witness independently certifies
+      # COMPLETENESS_PARTIAL when L3 did not run, which no availability posture
+      # can suppress.
+      #
+      # ⇒ SELF-HOSTED OPERATORS WHO WANT FAIL-CLOSED MUST NOW SAY SO:
+      #   LUCAIRN_L3_AVAILABILITY_POSTURE=reject   in customer.env,
+      # after staging the model (INSTALL.md § "Pre-stage the L3 deep PII-shield
+      # model"). `bin/lucairn doctor` warns if you set it without a wired shield.
+      # `bin/lucairn-init` writes `degrade` explicitly on a fresh install,
+      # because the model is not staged yet.
+      #
+      # This line is now identical to the base file's and exists only to keep the
+      # variable documented on the path where the L3 shield actually runs; the
+      # base `docker-compose.customer.yml` entry already forwards it. Matches the
+      # Helm chart, which also states no posture (charts/lucairn/values.yaml § L3
+      # DEEP-PII-SHIELD POSTURES). See customer.env.example § L3 postures.
+      LUCAIRN_L3_AVAILABILITY_POSTURE: "${LUCAIRN_L3_AVAILABILITY_POSTURE:-}"
       # PRD B — FAST L3 runtime (vllm-l3). The RUNTIME SWITCH is NOT an env var:
       # PRD A's `l3_runtime` / `l3_base_url` are YAML-only dataclass fields on
       # LlmScanConfig, read from config/default-sanitizer.yaml (via
@@ -485,9 +513,12 @@ services:
   # (charts/lucairn/charts/sandbox-a/templates/ollama-identity-statefulset.yaml).
   #
   # ALWAYS-ON in the self-hosted overlay (NOT behind `profiles: ["ollama"]`):
-  # the sanitizer's L3 is fail-CLOSED-required (LUCAIRN_L3_REQUIRED defaults
-  # to "true"), so it must reach a model regardless of which inference runtime
-  # profile (ollama / vllm / tgi / ...) the operator picks for sandbox-b.
+  # this is the L3 shield the whole overlay exists to wire, so it must reach a
+  # model regardless of which inference runtime profile (ollama / vllm / tgi /
+  # ...) the operator picks for sandbox-b. Whether a missing model 503s the
+  # request or degrades to L1+L2 is now the operator's stated
+  # LUCAIRN_L3_AVAILABILITY_POSTURE (T-393); this overlay no longer defaults it
+  # to fail-closed — see the sanitizer block above for why.
   #
   # PRE-STAGE the L3 model (qwen2.5:7b) ONCE after the stack is up. This
   # service is on the internal-only `dsa-model-runtime-identity` net (no

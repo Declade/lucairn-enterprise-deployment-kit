@@ -108,7 +108,10 @@ global:
   postgresqlSslmode: disable
   dsaServiceToken: ""
   dsaEnv: development
-  l3Required: false
+  # T-393: `l3Required` is RETIRED. It is deliberately ABSENT here — the
+  # service images refuse to start when they see the retired flag beside an
+  # unset replacement posture, so a fixture that sets it describes an install
+  # that would CrashLoop. See tests/test_l3_posture_flags.sh.
   nodeIsolation: false
   mtls:
     enabled: false
@@ -288,13 +291,13 @@ check_citation "$JOB" 130  "ollama pull"                           "pull command
 check_citation "$STS"  30  "Values.ollamaIdentity.image.repository" "ollama-identity image"
 check_citation "$STS"  65  "readinessProbe:"                       "readiness probe"
 check_citation "$STS"  80  "limits.memory"                         "memory limit"
-check_citation "$VAL" 855  "validators.l3AirGapWithoutFailClosed"  "air-gap fail-closed validator"
-check_citation "$VALY" 25  "l3AirGapWithoutFailClosed"             "validator invocation"
+check_citation "$VAL" 976  "validators.l3AirGapWithoutFailClosed"  "air-gap fail-closed validator"
+check_citation "$VALY" 27  "l3AirGapWithoutFailClosed"             "validator invocation"
 # Needle is the entry-name fragment, NOT "qwen2.5": the awk pattern escapes the
 # dot (`qwen2\.5-7b-awq-model:`), so a literal "qwen2.5" does not appear on the
 # line. This is also exactly the F2 finding in miniature — the check anchors on
 # a literal name, so renaming the manifest entry breaks it silently.
-check_citation "$ROOT/bin/lucairn" 1962 "-7b-awq-model:" "doctor B-E2 manifest-entry anchor"
+check_citation "$ROOT/bin/lucairn" 2019 "-7b-awq-model:" "doctor B-E2 manifest-entry anchor"
 
 # The licence re-confirmation is a PRD locked constraint, not advice.
 if grep -qF -- "ai.google.dev/gemma/terms" "$ROOT/docs/L3_MODEL_UPGRADE.md"; then

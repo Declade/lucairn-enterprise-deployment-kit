@@ -733,14 +733,16 @@ the chart's supported paths are development and production only.
 
 {{- /*
   NOTE: the former validators.witnessSanitizerL3Split guard was REMOVED
-  (2026-06-19 fix-up). A witness↔sanitizer LUCAIRN_L3_REQUIRED split is now
-  STRUCTURALLY IMPOSSIBLE — both pod templates resolve the env from the SAME
-  single key global.l3Required with the SAME fallback ("false"), and there is
-  no per-subchart sanitizer.l3Required override anymore. With one knob read
-  identically by both sides, the guard was dead code; it also false-failed a
-  valid install when global.l3Required was null (Helm propagates a top-level nil
-  global asymmetrically — hasKey is false at umbrella scope but true at subchart
-  scope — so the old guard's fallbacks diverged into a phantom split).
+  (2026-06-19 fix-up) and has NOT come back. It policed agreement between the
+  witness's and the sanitizer's LUCAIRN_L3_REQUIRED. As of T-393 there is
+  nothing left to agree about: the two services own DIFFERENT questions on
+  DIFFERENT keys (global.l3AvailabilityPosture on the sanitizer,
+  global.l3CompletenessPosture on the witness) and no combination of them is
+  incoherent. The guard also false-failed a valid install when the resolved key
+  was null — ⚠️ Helm propagates a top-level nil `global` ASYMMETRICALLY, hasKey
+  being false at umbrella scope but true at subchart scope, which is exactly why
+  validators.l3LegacyFlagWithoutPosture is MIRRORED into each pod template
+  rather than trusted to fire once at umbrella scope.
 */ -}}
 
 {{- /*
@@ -774,7 +776,7 @@ the chart's supported paths are development and production only.
 {{- with (index .Values "sandbox-a") -}}
 {{- if .sanitizer -}}
 {{- if hasKey .sanitizer "l3Required" -}}
-{{- fail "sandbox-a.sanitizer.l3Required is REMOVED in chart 1.9.4 — L3-required is now the single knob global.l3Required (read by BOTH the sanitizer and the veil-witness so they cannot drift). Set global.l3Required=true (or false) instead, and delete sandbox-a.sanitizer.l3Required from your values file." -}}
+{{- fail "sandbox-a.sanitizer.l3Required is REMOVED (chart 1.9.4), and its replacement global.l3Required has since been RETIRED too (T-393). Do NOT set global.l3Required — the render refuses it. L3 is now TWO independent keys: global.l3AvailabilityPosture=degrade|reject (SANITIZER — what happens to a REQUEST when L3 is unavailable; the old l3Required=true meant `reject`) and global.l3CompletenessPosture=partial|full (VEIL-WITNESS — what the CERTIFICATE claims when L3 did not run; `partial` is the default and the honest posture). Set the one you mean — or neither, which is what the kit ships — and delete sandbox-a.sanitizer.l3Required from your values file." -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -783,9 +785,108 @@ the chart's supported paths are development and production only.
 {{- with (index .Values "veil-witness") -}}
 {{- if .config -}}
 {{- if hasKey .config "l3Required" -}}
-{{- fail "veil-witness.config.l3Required is REMOVED in chart 1.9.4 — L3-required is now the single knob global.l3Required (read by BOTH the sanitizer and the veil-witness so they cannot drift). Set global.l3Required=true (or false) instead, and delete veil-witness.config.l3Required from your values file." -}}
+{{- fail "veil-witness.config.l3Required is REMOVED (chart 1.9.4), and its replacement global.l3Required has since been RETIRED too (T-393). Do NOT set global.l3Required — the render refuses it. The witness now reads global.l3CompletenessPosture=partial|full (what the CERTIFICATE claims when L3 did not run; `partial` is the default and the honest posture, `full` reproduces the old l3Required=false over-claim — board T-385). Request availability is a separate key on the sanitizer, global.l3AvailabilityPosture=degrade|reject. Set the one you mean — or neither, which is what the kit ships — and delete veil-witness.config.l3Required from your values file." -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
+  validators.l3LegacyFlagWithoutPosture  (T-393, PRD prd-2026-08-01-l3-
+  availability-vs-certificate-honesty-split.md Slice 3)
+
+  Fails the render when `global.l3Required` is PRESENT while either replacement
+  posture key is absent.
+
+  This is a render-time mirror of a guard both service images already enforce at
+  boot. `LUCAIRN_L3_REQUIRED` was split into two independent flags; each image
+  treats "legacy flag set, my replacement unset" as an un-migrated deployment
+  and REFUSES TO START rather than silently resolving to a posture the operator
+  never chose (services/sanitizer/config.py `l3_availability_posture`, the
+  `not _env_present(L3_AVAILABILITY_POSTURE_ENV)` raise;
+  services/veil-witness/internal/verifier/l3_posture.go, the `posture == ""`
+  branch). Silently ignoring the flag would strip fail-closed from every
+  deployment that deliberately opted into it.
+
+  WITHOUT this guard the operator meets that refusal as a CrashLoopBackOff after
+  `helm upgrade` succeeds — two containers restarting with a migration message
+  buried in `kubectl logs`. With it, `helm template`/`helm upgrade` stops with
+  the same message before anything is applied.
+
+  BOTH replacements are required, not just the one for the service that would
+  refuse first. One `global.l3Required` feeds BOTH pods, so a half-migration
+  leaves the other container refusing to boot — the failure this guard exists to
+  turn into a render error would simply move next door.
+
+  PRESENCE check only (hasKey), matching validators.deprecatedL3RequiredKeys
+  above: a value comparison here would re-introduce the null-propagation
+  fragility that false-failed valid installs (see the REMOVED guard NOTE).
+
+  Invoked from charts/lucairn/templates/validators.yaml.
+*/ -}}
+{{- define "validators.l3LegacyFlagWithoutPosture" -}}
+{{- $g := (default dict .Values.global) -}}
+{{- if hasKey $g "l3Required" -}}
+{{- if not (and (hasKey $g "l3AvailabilityPosture") (hasKey $g "l3CompletenessPosture")) -}}
+{{- fail "global.l3Required is RETIRED (T-393) and is set without both replacements. It welded together two unrelated concerns that live in two different services, and both service images now refuse to start when they see it beside an unset replacement — so this render would install a stack whose sanitizer and/or veil-witness CrashLoopBackOff. Set BOTH: global.l3AvailabilityPosture=degrade|reject (SANITIZER — what happens to a REQUEST when L3 is unavailable; the retired true meant `reject`, false meant `degrade`) and global.l3CompletenessPosture=partial|full (VEIL-WITNESS — what the CERTIFICATE claims when L3 did not run; `partial` is the default and the honest posture, `full` reproduces the retired false behaviour of claiming COMPLETENESS_FULL for a request the deep PII shield never saw — board T-385). Then DELETE global.l3Required: neither image reads it for posture any more, and because one key feeds both pods while they derive OPPOSITE postures from it, a leftover value cannot express degrade+partial. Leaving all three unset is supported and is what the kit now ships." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
+  validators.l3PostureValues  (T-393 review, MEDIUM-6)
+
+  Rejects an off-allowlist value for either posture at RENDER time.
+
+  Both service images parse these strictly — an unrecognised value raises at
+  config load rather than silently selecting the weaker posture
+  (services/sanitizer/config.py `_parse_strict_enum`;
+  services/veil-witness/internal/verifier/l3_posture.go). So a typo does not
+  degrade quietly, it CrashLoops the pod — the same failure class this whole
+  change set exists to move out of `kubectl logs` and into the render.
+
+  The most likely typo is not a misspelling: it is renaming the retired variable
+  and keeping its value (`l3AvailabilityPosture: true`). The message says what
+  the old values map onto so that operator is not left guessing.
+
+  ⚠️ THE ACCEPT/REJECT SET MIRRORS THE SERVICES EXACTLY, including two edges that
+  look like sloppiness and are not:
+    - A TRULY EMPTY value (`l3CompletenessPosture: ""`, or a null `key:`) is
+      ABSENCE and takes the image default. Both services say so explicitly —
+      config.py `_parse_strict_enum` returns the default for `""`, and
+      l3_posture.go `parseL3CompletenessPosture` returns the default for `""` —
+      because `"${VAR:-}"` is this repo's wire representation of "operator did
+      not choose". Refusing it here would false-fail a values file the image
+      accepts, and the whole point of a render-time guard is to be a preview of
+      the image, not a second opinion.
+    - A WHITESPACE-ONLY value IS refused. Compose's `${VAR:-}` renders the empty
+      string and never a padded one, so `"   "` is something an operator typed —
+      a paste accident or a quoting bug — and both services refuse it rather
+      than guess (Sol gate TOB-362R-02). It trims to `""`, which is not in the
+      allowlist, so it falls through to the refusal below.
+  Comparison values are trimmed + lowercased, exactly as both services do, so
+  `"  Reject "` is accepted here iff the image would accept it. `toString` keeps
+  a non-string (`true`, `1`) from blowing up the comparison — it lands
+  off-allowlist and is reported, which is the correct answer for a YAML boolean
+  in an enum slot.
+
+  Invoked from charts/lucairn/templates/validators.yaml.
+*/ -}}
+{{- define "validators.l3PostureValues" -}}
+{{- $g := (default dict .Values.global) -}}
+{{- if hasKey $g "l3AvailabilityPosture" -}}
+{{- $raw := toString (default "" $g.l3AvailabilityPosture) -}}
+{{- $v := lower (trim $raw) -}}
+{{- if and (ne $raw "") (not (has $v (list "degrade" "reject"))) -}}
+{{- fail "global.l3AvailabilityPosture must be \"degrade\" or \"reject\" (value withheld). The sanitizer refuses to start on an off-allowlist posture rather than guessing the weaker one, so this render would CrashLoopBackOff. If you renamed the retired global.l3Required and kept its value: true becomes \"reject\" (503 l3_scrubber_unavailable when L3 is unavailable), false becomes \"degrade\" (continue on L1+L2). Omit the key entirely to take the image default, \"degrade\"." -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $g "l3CompletenessPosture" -}}
+{{- $raw := toString (default "" $g.l3CompletenessPosture) -}}
+{{- $v := lower (trim $raw) -}}
+{{- if and (ne $raw "") (not (has $v (list "partial" "full"))) -}}
+{{- fail "global.l3CompletenessPosture must be \"partial\" or \"full\" (value withheld). The veil-witness refuses to start on an off-allowlist posture, so this render would CrashLoopBackOff. \"partial\" is the image default and the honest posture — a chain that only ran L1+L2 certifies COMPLETENESS_PARTIAL. \"full\" reproduces the retired global.l3Required=false behaviour of claiming COMPLETENESS_FULL for a request the deep PII shield never saw (board T-385). Omit the key entirely to take the image default." -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -802,8 +903,8 @@ the chart's supported paths are development and production only.
 
   Symptom this prevents: the L3 runtime and its model-pull Job deploy, but the
   namespace has no egress for the registry pull. The pull Job fails, no model is
-  ever loaded, and — depending on global.l3Required — the stack either 503s every
-  request or serves L1+L2 silently. Sub-charts cannot read each other's values,
+  ever loaded, and — depending on global.l3AvailabilityPosture — the stack either
+  503s every request or serves L1+L2 silently. Sub-charts cannot read each other's values,
   so the enable state MUST be mirrored into `global`; this guard is what keeps
   the mirror honest.
 
@@ -835,20 +936,40 @@ the chart's supported paths are development and production only.
     - sandbox-a.sanitizer.llmScanEnabled = true         (operator wants L3)
     - global.identityModelRegistryEgress = false        (documented air-gap path:
       the model-pull Job is suppressed and the model must be pre-seeded)
-    - global.l3Required is falsey                       (this chart renders
-      LUCAIRN_L3_REQUIRED="false" into the sanitizer pod — deployment.yaml:286-287
-      — which OVERRIDES the sanitizer binary's own fail-closed default of "true",
-      services/sanitizer/config.py:760)
+    - NEITHER fail-closed knob selects "reject"          (see below)
+
+  ⚠️ THE FAIL-CLOSED TEST MOVED (T-393), AND IT MOVED COMPLETELY. It used to be
+  `global.l3Required` truthy. That key is retired, and the sanitizer image's own
+  default is no longer "true"/fail-closed — it is `degrade` (PRD
+  prd-2026-08-01-l3-availability-vs-certificate-honesty-split.md). The ONLY
+  fail-closed statement this guard accepts is now
+  `global.l3AvailabilityPosture = "reject"`.
+
+  ⚠️ A LEGACY ARM WAS DRAFTED HERE AND REMOVED BEFORE MERGE, because it could
+  only ever SUPPRESS this guard, never satisfy it. `or (dig "l3Required" ...)`
+  looks like a courtesy to un-migrated values files, but
+  validators.l3LegacyFlagWithoutPosture (invoked two lines earlier in
+  validators.yaml) already refuses any render where `l3Required` is present
+  without BOTH postures. So the arm is only ever REACHED when a posture is also
+  set — and when a posture is set, the sanitizer image resolves the posture and
+  merely warns about the retired flag (services/sanitizer/config.py, the
+  `posture != equivalent` arm). Its one reachable effect was therefore
+  `l3Required: true` + `l3AvailabilityPosture: degrade` + air-gap rendering
+  clean while the pod actually runs `degrade`: the exact TOB-001 symptom this
+  guard exists to prevent, re-opened by the guard's own escape hatch. A guard
+  clause that can only fire in company with a value that overrides it is not a
+  fallback. (`dig` truthiness made it worse: a string `"false"` is truthy in Go
+  templates, so even a quoted legacy false suppressed it.)
 
   Symptom this prevents: on the air-gap path, if the PVC pre-seed was missed the
-  model simply is not there. With LUCAIRN_L3_REQUIRED="false" the sanitizer
-  DEGRADES — it serves L1+L2 and drops llm_pii_scan from the certificate —
-  instead of refusing. The operator believes the deep PII shield is running when
-  it never loaded. The air-gap path must not be able to silently run shield-less.
+  model simply is not there. Under the `degrade` posture the sanitizer serves
+  L1+L2 and drops llm_pii_scan instead of refusing. The operator believes the
+  deep PII shield is running when it never loaded. The air-gap path must not be
+  able to silently run shield-less.
 
-  This chart's `global.l3Required` default is FALSE, so this combination is
-  reachable with stock values; that is precisely why it is guarded rather than
-  documented.
+  With no L3 keys set at all — what the kit now ships — the image default is
+  `degrade`, so this combination is still reachable with stock values; that is
+  precisely why it is guarded rather than documented.
 
   Invoked from charts/lucairn/templates/validators.yaml.
 */ -}}
@@ -860,8 +981,11 @@ the chart's supported paths are development and production only.
 {{- if $san.llmScanEnabled -}}
 {{- $g := (default dict .Values.global) -}}
 {{- if eq (toString (dig "identityModelRegistryEgress" true $g)) "false" -}}
-{{- if not (dig "l3Required" false $g) -}}
-{{- fail "sandbox-a.sanitizer.llmScanEnabled=true with global.identityModelRegistryEgress=false (the air-gapped path, which suppresses the model-pull Job) AND global.l3Required=false. The sanitizer would then render LUCAIRN_L3_REQUIRED=\"false\" and DEGRADE silently to L1+L2 — dropping llm_pii_scan from every certificate — if the ollama-identity PVC pre-seed was missed. Set global.l3Required=true so a missing model fails visibly at /readyz, or re-enable global.identityModelRegistryEgress so the model is pulled." -}}
+{{- /* trim+lower mirrors the sanitizer's own parser (config.py `_parse_strict_enum`
+       does `value.strip().lower()`), so a value the service WOULD accept as
+       fail-closed is not false-failed here on capitalisation alone. */ -}}
+{{- if ne (lower (trim (toString (dig "l3AvailabilityPosture" "" $g)))) "reject" -}}
+{{- fail "sandbox-a.sanitizer.llmScanEnabled=true with global.identityModelRegistryEgress=false (the air-gapped path, which suppresses the model-pull Job) AND no fail-closed L3 posture. The sanitizer would then run under the `degrade` availability posture and silently serve L1+L2 — dropping llm_pii_scan from every certificate — if the ollama-identity PVC pre-seed was missed. Set global.l3AvailabilityPosture=reject so a missing model fails visibly at /readyz, or re-enable global.identityModelRegistryEgress so the model is pulled." -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

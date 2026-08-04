@@ -899,24 +899,36 @@ echo "all 7 key_ids present"
 # veilGatewayPublicKey is consumed by the WITNESS, not the roster: it is the key
 # the witness uses to verify the gateway's per-request CLAIM signature
 # (services/veil-witness/cmd/server/main.go:49,114 — CC-017 P2). Its correctness
-# is therefore confirmed by the fresh-cert end-to-end check below (a
-# VERDICT_VERIFIED cert with the gateway claim verifying), NOT by this roster
+# is therefore confirmed by the fresh-cert end-to-end check below (a fresh cert
+# whose gateway claim verifies and whose verdict is NOT `VERDICT_FAILED`), NOT by this roster
 # gate. Do NOT add gateway_v1 to the expected-id list above — it would make this
 # gate fail against a correctly configured deployment.
 # Then submit a proxy request and GET /api/v1/veil/certificate/<request_id> —
-# the verification block must show overall_verdict = VERDICT_VERIFIED with a
-# valid witness signature (see the Key Ceremony Runbook § 7 Verification at docs/KEY_CEREMONY_RUNBOOK.md).
+# the verification block must show signatures_valid = true and an
+# overall_verdict that is NOT VERDICT_FAILED, with a valid witness signature
+# (see the Key Ceremony Runbook § 7 Verification at docs/KEY_CEREMONY_RUNBOOK.md).
 ```
 
-A `VERDICT_VERIFIED` on a freshly issued certificate is the cold-restore
-success condition: the seeds, the restored evidence, and the manifest are all
-coherent again.
+`signatures_valid: true` with a verdict that is **not** `VERDICT_FAILED` on a
+freshly issued certificate is the cold-restore success condition: the seeds, the
+restored evidence, and the manifest are all coherent again.
+
+⚠️ **Do not gate this drill on `VERDICT_VERIFIED`.** The witness sets
+`VERDICT_FAILED` for key/signature/isolation problems — the failure class a
+restore drill is actually testing — but it sets `VERDICT_PARTIAL` merely for
+missing COVERAGE. A stock kit runs the L3 deep PII shield OFF, so `llm_pii_scan`
+is absent from `layers_active` and the certificate honestly reports
+`COMPLETENESS_PARTIAL`, which forces `VERDICT_PARTIAL`
+(`verifier.go`, the overall-verdict block). That says nothing about your keys.
+Read `signatures_valid`, `isolation_verified` and `missing_services` for the
+restore verdict.
 
 ### Restore-drill evidence
 
 > **Run your own restore drill — see the cold-restore procedure above.** Execute
 > it verbatim on a fresh throwaway cluster (empty → re-provided seeds → restored
-> DBs → manifest → a `VERDICT_VERIFIED` fresh cert), and record the date and the
+> DBs → manifest → a fresh cert with `signatures_valid: true` and no
+> `VERDICT_FAILED`), and record the date and the
 > measured RTO in your own change-management system. Treat the cold-restore path
 > as verified for your environment only once you have run it there: RTO is
 > environment-specific evidence, not a committed or guaranteed figure.

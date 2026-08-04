@@ -329,7 +329,16 @@ curl -s "http://localhost:8080/api/v1/veil/certificate/$REQUEST_ID" \
   -H "x-api-key: $API_KEY" | jq '.verification'
 ```
 
-Expected: `"overall_verdict": "VERDICT_VERIFIED"`.
+Expected: `"signatures_valid": true`, and `"overall_verdict"` **not**
+`"VERDICT_FAILED"`.
+
+⚠️ Do not gate the ceremony on `VERDICT_VERIFIED`. The witness reserves
+`VERDICT_FAILED` for signature / data-visibility / isolation problems — the
+class this step is testing — and uses `VERDICT_PARTIAL` for missing COVERAGE. A
+stock kit runs the L3 deep PII shield OFF, so `llm_pii_scan` is absent from
+`layers_active`, the certificate honestly reports `COMPLETENESS_PARTIAL`, and
+that forces `VERDICT_PARTIAL` regardless of how correct your keys are. You get
+`VERDICT_VERIFIED` here only on an L3-enabled, warm topology.
 
 ### 7.3 Verify a specific key pair matches
 

@@ -112,18 +112,21 @@ data:
         # Bumping to gemma4 is T-370 (gated on its own recall gate).
         #
         # If this model is absent from ollama-identity, the effective behaviour
-        # is set by LUCAIRN_L3_REQUIRED, not by `fallback_on_error` below. This
-        # chart defaults `global.l3Required: false`, so the shipped default is
-        # DEGRADE-HONESTLY (L1+L2 served, llm_pii_scan dropped from the cert),
-        # NOT fail-closed. Set `global.l3Required: true` to fail closed.
+        # is set by the AVAILABILITY POSTURE, not by `fallback_on_error` below
+        # (T-393; the retired LUCAIRN_L3_REQUIRED used to decide it). The chart
+        # sets no posture, so the sanitizer image's default applies: `degrade`
+        # — L1+L2 served, llm_pii_scan dropped, and the witness independently
+        # certifies COMPLETENESS_PARTIAL. Set
+        # `global.l3AvailabilityPosture: reject` to fail closed.
         model: {{ .Values.sanitizer.llmScanModel | default "qwen2.5:7b" | quote }}
         timeout_seconds: {{ .Values.sanitizer.llmScanTimeout | default 30 }}
         # FAIL-01 (PRD prd-2026-05-29-fail-safe-scrubber): fail-CLOSED. When the
         # L3 deep PII shield (on-device Qwen via Ollama) is unavailable, the
         # sanitizer returns a 503 l3_scrubber_unavailable rather than silently
         # shipping a request with only L1+L2 coverage. The effective fail-mode
-        # is governed by the LUCAIRN_L3_REQUIRED env var (default true → reject);
-        # operators set it to "false" per deployment to restore continue-mode.
+        # is governed by the LUCAIRN_L3_AVAILABILITY_POSTURE env var (T-393;
+        # image default `degrade` → continue on L1+L2). Operators set
+        # `global.l3AvailabilityPosture: reject` to restore this 503.
         fallback_on_error: "reject"
         # Default sequential (TOB-003 fix, 2026-05-09): "ensemble" silently
         # changes cert payload shape across ALL customers regardless of the

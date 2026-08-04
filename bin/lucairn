@@ -1340,18 +1340,30 @@ check_manifest_blob() {
 check_l3_required_wired() {
   # HIGH-1 (overnight fix 2026-06-14): the L3 deep PII shield is the GPU
   # Ollama/Qwen service (`ollama-identity`), Enterprise-only and NOT started by
-  # the stock docker-compose.customer.yml install. With LUCAIRN_L3_REQUIRED=true
-  # but no reachable L3 service, the sanitizer /readyz fails liveness and the
-  # gateway fail-closes 503 on EVERY request (sanitizer app.py:1709-1720). Warn
-  # (not fail) — an Enterprise operator may legitimately wire an external L3
-  # shield this doctor can't see — but make the silent-503 trap loud.
+  # the stock docker-compose.customer.yml install. With a fail-CLOSED L3
+  # availability posture but no reachable L3 service, the sanitizer /readyz
+  # fails liveness and the gateway fail-closes 503 on EVERY request (sanitizer
+  # app.py:1709-1720). Warn (not fail) — an Enterprise operator may legitimately
+  # wire an external L3 shield this doctor can't see — but make the silent-503
+  # trap loud.
+  #
+  # T-393: the ONLY fail-closed signal is
+  # LUCAIRN_L3_AVAILABILITY_POSTURE=reject. The retired LUCAIRN_L3_REQUIRED is
+  # deliberately NOT treated as one: the posture-split images refuse to start on
+  # it rather than honouring it, so reading `=true` as "this deployment requires
+  # L3" would describe a stack that never boots. A leftover legacy flag gets its
+  # own warning below, and an off-allowlist posture value gets another — both
+  # are boot refusals this offline check exists to catch before `up`.
   #
   # "Wired" heuristic (offline-safe, file-stat / grep only). The L3 shield is the
   # always-on `ollama-identity` service, which lives ONLY in the opt-in
   # self-hosted overlay (docker-compose.self-hosted.yml) — never in the base
   # docker-compose.customer.yml that every install uses. The self-hosted overlay
-  # ALSO restores LUCAIRN_L3_REQUIRED's fail-CLOSED default (true), so requiring
-  # L3 there is correct, not a trap. Because the doctor sees only the single
+  # is where an L3 shield genuinely exists, so a fail-closed posture there is
+  # correct rather than a trap. (The overlay no longer DEFAULTS to fail-closed —
+  # T-393 — so a posture only reaches the sanitizer when the operator writes it
+  # in the env file, which is exactly what this check reads.) Because the doctor
+  # sees only the single
   # `--compose` file (the base, per the usage examples), treat L3 as "wired"
   # ONLY when the operator gives a positive signal:
   #   - the base docker-compose.customer.yml itself defines `ollama-identity`
@@ -1366,13 +1378,58 @@ check_l3_required_wired() {
   #   - the env file opts into the self-hosted ollama runtime (MODEL_RUNTIME_PROFILE=ollama).
   # Otherwise warn (not fail — the operator may wire something this offline check
   # can't observe). The dangerous case the warn still catches: an explicit
-  # LUCAIRN_L3_REQUIRED=true on a SPLIT install (remote Sandbox B, no L3 service).
-  local env_file="$1" l3_req
-  l3_req="$(env_value "$env_file" LUCAIRN_L3_REQUIRED)"
-  # Compose fallback default is now deployment-aware (split=false, self-hosted=
-  # true); only an explicit "true" in the env file is potentially risky (it can
-  # only mislead on the split path — self-hosted already defaults true).
-  [ "$l3_req" = "true" ] || return 0
+  # fail-closed posture (LUCAIRN_L3_AVAILABILITY_POSTURE=reject) on a SPLIT
+  # install (remote Sandbox B, no L3 service).
+  local env_file="$1" l3_posture l3_posture_norm l3_completeness l3_completeness_norm l3_req_legacy
+  l3_posture="$(env_value "$env_file" LUCAIRN_L3_AVAILABILITY_POSTURE)"
+  l3_completeness="$(env_value "$env_file" LUCAIRN_L3_COMPLETENESS_POSTURE)"
+  l3_req_legacy="$(env_value "$env_file" LUCAIRN_L3_REQUIRED)"
+
+  # Normalise the SAME way the services do (config.py `_parse_strict_enum` /
+  # l3_posture.go both `.strip()` then lowercase) so " Reject " is not read as
+  # an off-allowlist value here while the image accepts it.
+  #
+  # ⚠️ TRIM ENDS ONLY — NEVER `tr -d '[:space:]'`. This file already carries
+  # that lesson as a security fix on the digest gate (see FIX-2 in
+  # check_image_digests): deleting ALL whitespace makes a value the service
+  # would REJECT look acceptable here. `" re ject "` would collapse to
+  # `reject` and pass this check silently, while the sanitizer's `.strip()`
+  # leaves `re ject`, finds it off-allowlist, and refuses to boot — inverting
+  # the purpose of an offline pre-flight.
+  trim_ends() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+  l3_posture_norm="$(trim_ends "$l3_posture" | tr '[:upper:]' '[:lower:]')"
+  l3_completeness_norm="$(trim_ends "$l3_completeness" | tr '[:upper:]' '[:lower:]')"
+
+  # OFF-ALLOWLIST VALUE = A BOOT REFUSAL THIS DOCTOR EXISTS TO CATCH OFFLINE.
+  # The most likely migration typo is renaming the variable and keeping the old
+  # value (`=true` / `=false`). Both services raise on an unrecognised enum
+  # rather than guessing a posture, so the stack simply will not start.
+  if [ -n "$l3_posture" ] \
+     && [ "$l3_posture_norm" != "degrade" ] && [ "$l3_posture_norm" != "reject" ]; then
+    warn "L3 posture: warn (LUCAIRN_L3_AVAILABILITY_POSTURE in $env_file is not one of degrade|reject; value withheld). The sanitizer refuses to start on an off-allowlist posture rather than guessing the weaker one. If you renamed LUCAIRN_L3_REQUIRED and kept its value: true became 'reject', false became 'degrade'."
+  fi
+  if [ -n "$l3_completeness" ] \
+     && [ "$l3_completeness_norm" != "partial" ] && [ "$l3_completeness_norm" != "full" ]; then
+    warn "L3 posture: warn (LUCAIRN_L3_COMPLETENESS_POSTURE in $env_file is not one of partial|full; value withheld). The veil-witness refuses to start on an off-allowlist posture. 'partial' is the default and the honest posture; 'full' reproduces the retired LUCAIRN_L3_REQUIRED=false over-claim."
+  fi
+
+  # A leftover retired flag is a boot-refusal regardless of whether an L3 shield
+  # is wired, so report it before the wiring heuristic.
+  if [ -n "$l3_req_legacy" ]; then
+    warn "L3 posture: warn (LUCAIRN_L3_REQUIRED is RETIRED but still set in $env_file). It was split into LUCAIRN_L3_AVAILABILITY_POSTURE (sanitizer: degrade|reject — what happens to a REQUEST when L3 is unavailable; the retired true meant reject, false meant degrade) and LUCAIRN_L3_COMPLETENESS_POSTURE (veil-witness: partial|full — what the CERTIFICATE claims when L3 did not run). The current service images REFUSE TO START when they see the retired flag beside an unset replacement, rather than silently picking a posture for you — so with the retired line still present and no LUCAIRN_L3_AVAILABILITY_POSTURE set, the sanitizer will not boot. Set the posture you want, then delete LUCAIRN_L3_REQUIRED from $env_file."
+  fi
+
+  # Only an explicit fail-closed posture is potentially risky here. Neither
+  # compose file supplies a posture default any more (T-393), so an env file
+  # that says nothing gets the sanitizer's own "degrade" on EVERY path,
+  # including self-hosted — the overlay's old fail-CLOSED default is gone
+  # precisely because it would have overridden a leftover LUCAIRN_L3_REQUIRED=
+  # false (what this kit's own generator wrote for all paths) and 503'd every
+  # request. Self-hosted operators who want fail-closed must now set
+  # LUCAIRN_L3_AVAILABILITY_POSTURE=reject explicitly, which lands here.
+  if [ "$l3_posture_norm" != "reject" ]; then
+    return 0
+  fi
 
   local l3_wired=0
   # Only the BASE customer compose counts as an always-applied definition.
@@ -1403,7 +1460,7 @@ check_l3_required_wired() {
   fi
 
   if [ "$l3_wired" -eq 0 ]; then
-    warn "L3 shield: warn (LUCAIRN_L3_REQUIRED=true but no L3 shield appears wired — the base docker-compose.customer.yml has no 'ollama-identity' service, and the env sets no OLLAMA_URL/LUCAIRN_L3_ADDR and no MODEL_RUNTIME_PROFILE=ollama). The stock install runs L1+L2 only; with L3 required but absent the sanitizer /readyz fails liveness and the gateway fail-closes 503 on EVERY request. Set LUCAIRN_L3_REQUIRED=false for an L1+L2 install, or wire the GPU Ollama/Qwen shield (Enterprise self-hosted overlay) before requiring it."
+    warn "L3 shield: warn (a fail-CLOSED L3 availability posture is set but no L3 shield appears wired — the base docker-compose.customer.yml has no 'ollama-identity' service, and the env sets no OLLAMA_URL/LUCAIRN_L3_ADDR and no MODEL_RUNTIME_PROFILE=ollama). The stock install runs L1+L2 only; with L3 required but absent the sanitizer /readyz fails liveness and the gateway fail-closes 503 on EVERY request. Set LUCAIRN_L3_AVAILABILITY_POSTURE=degrade for an L1+L2 install, or wire the GPU Ollama/Qwen shield (Enterprise self-hosted overlay) before requiring it."
   fi
   return 0
 }
@@ -7126,9 +7183,11 @@ doctor() {
   check_migration_set_floor "$env_file" || migration_floor_failed=1
   [ "$migration_floor_failed" -eq 0 ] || return 1
 
-  # HIGH-1 (overnight 2026-06-14): LUCAIRN_L3_REQUIRED=true with no L3 service
-  # wired fail-closes 503 on every request. Warn-only (an Enterprise operator
-  # may wire an external L3 this doctor can't see).
+  # HIGH-1 (overnight 2026-06-14): a fail-closed L3 availability posture with no
+  # L3 service wired fail-closes 503 on every request. Warn-only (an Enterprise
+  # operator may wire an external L3 this doctor can't see). Also warns on a
+  # leftover retired LUCAIRN_L3_REQUIRED, which the current images refuse to
+  # boot on (T-393).
   check_l3_required_wired "$env_file"
 
   # Nested-legacy signing-key authority (WP1 S4 Fable verdict, carried to
