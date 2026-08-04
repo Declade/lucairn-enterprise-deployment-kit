@@ -74,8 +74,19 @@ Helm ever sees it.
 {{- if not $value -}}
 {{- fail (printf "[id-bridge] %s is empty. %s There is no safe default — generate one (openssl rand -base64 24) and pass it with --set \"%s=...\" or in your values file, or move this subchart onto an external secrets backend with id-bridge.secrets.backend=vault|aws|azure." .path .why .path) -}}
 {{- end -}}
-{{- if mustRegexMatch "(?i)^(change[-_ ]?me|placeholder|todo)" $value -}}
-{{- fail (printf "[id-bridge] %s is still a shipped CHANGE-ME… placeholder, not a real secret. %s This value is published in the kit repository, so anyone can read it. Generate a real one (openssl rand -base64 24) and pass it with --set \"%s=...\" or in your values file." .path .why .path) -}}
+{{/*
+T-490b (2026-08-04): the placeholder regex above matched the ORIGINAL
+FINDING's literal (`CHANGE-ME…`) but not the guard's own RATIONALE — "is
+this value published in a public repo?" `customer-values.yaml.example`
+ships ~46 `REPLACE_WITH_*` slots, several of them password fields; an
+operator who copies that example and misses one slot gets a Secret whose
+password IS the published string `REPLACE_WITH_ADMIN_PASSWORD` — exactly
+the class this guard exists to close. The pattern below now also rejects
+that shape (case-insensitive, tolerant of `-`/`_`/space separators, same
+as the `change[-_ ]?me` alternative it sits next to).
+*/}}
+{{- if mustRegexMatch "(?i)^(change[-_ ]?me|placeholder|todo|replace[-_ ]?with)" $value -}}
+{{- fail (printf "[id-bridge] %s is still a shipped placeholder (a CHANGE-ME… or REPLACE_WITH_… value), not a real secret. %s This value is published in the kit repository, so anyone can read it. Generate a real one (openssl rand -base64 24) and pass it with --set \"%s=...\" or in your values file." .path .why .path) -}}
 {{- end -}}
 {{- end -}}
 
