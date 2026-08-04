@@ -10,6 +10,7 @@ test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-h
 	bash tests/test_check_updates.sh
 	bash tests/test_redact_stream.sh
 	bash tests/test_tms_trust_zones.sh
+	bash tests/test_sanitizer_confidence_threshold_schema.sh
 	bash tests/test_signing_key_and_nvidia_toolkit_preflight.sh
 	bash tests/test_l3_split_pool_preflight.sh
 	bash tests/test_l3_model_upgrade_gate.sh

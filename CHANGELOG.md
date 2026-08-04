@@ -28,6 +28,26 @@ carry a security fix are tagged **[Security]**.
   `refuse_high_confidence` does and does not relax.
 
 ### Changed
+- **[Security] `sandbox-a.sanitizer.confidenceThreshold` is now schema-bounded to
+  a number in `[0, 1]` (T-517).** The value is rendered straight into the
+  sanitizer ConfigMap as `presidio.confidence_threshold`, and an unusable value
+  was invisible at runtime: Presidio scores never exceed 1.0, so
+  `confidenceThreshold: 2.0` kept **zero** detections while every request still
+  returned 200 and the certificate still listed `presidio_ner` in
+  `layers_active` — a false attestation, not a degraded scan. A YAML `.nan` had
+  the identical effect (every confidence comparison against NaN is false).
+  `charts/lucairn/charts/sandbox-a/values.schema.json` now rejects both, plus
+  strings, booleans, lists and maps, at `helm template` / `helm lint` time.
+  Covered by `tests/test_sanitizer_confidence_threshold_schema.sh` (wired into
+  `make test`). The sanitizer enforces the same bounds independently at boot,
+  so Compose and hosted installs are covered as well.
+  **Upgrade note:** installs that expressed this value as a *quoted string*
+  (`confidenceThreshold: "0.35"`) must unquote it — the contract is a number.
+  `helm --set` cannot express a float at all (Helm parses integers as int64 and
+  leaves everything else a string), so use a values file or
+  `--set-json sandbox-a.sanitizer.confidenceThreshold=0.35`. Untouched installs
+  are unaffected: the shipped default is `0.35` and omitting the key still
+  falls back to `0.35`.
 - **[Security] Docs corrected for the veil-witness `:50058` ACL hoist (T-12 / T-507).**
   `INSTALL.md` and `OPS.md` stated that the veil-witness certificate RPC port
   (`:50058`) accepts unauthenticated callers by default on the legacy Compose
