@@ -358,15 +358,41 @@ on a spliced evidence chain, which is the opposite of what this step is for.
 
 So: a `PARTIAL` verdict passes this step only when the table above **fully
 explains it** — i.e. the only non-ideal value is `completeness`, and it matches
-your topology.
+your topology — **and** the log check below is clean.
 
-⚠️ **If the whole table holds and the verdict is STILL `PARTIAL`, escalate.**
-The only remaining cause is the claim-ordering tripwire, which is **not exposed
-as a certificate field** — the witness keeps it internally and logs the detail.
-Check the veil-witness log for `temporal ordering violation`
-(`kubectl logs -n dsa-witness deploy/veil-witness` / `docker compose logs
-veil-witness`). Do **not** add a `temporal_order_valid` key to this table; no
-such field exists in the certificate.
+#### 7.2a Witness-log check — UNCONDITIONAL, run it every ceremony
+
+```bash
+# Helm
+kubectl logs -n dsa-witness deploy/veil-witness --since=1h \
+  | grep "temporal ordering violation"
+
+# Compose
+docker compose -f docker-compose.customer.yml --env-file customer.env \
+  logs veil-witness | grep "temporal ordering violation"
+```
+
+**Required result: ZERO hits.** Any hit fails the ceremony.
+
+⚠️ **Why this is a separate, unconditional step rather than a fallback.** On a
+stock L3-off kit `completeness` is *already* `COMPLETENESS_PARTIAL`, and that
+alone forces `VERDICT_PARTIAL` (`verifier.go`, the overall-verdict block:
+`completeness == PARTIAL || !temporal_consistent || !temporal_order_valid`). A
+claim-ordering violation occurring at the same time sets an internal flag that is
+**serialised nowhere**, so the certificate comes out **byte-identical on every
+field** to an honest coverage-PARTIAL. The log is the only observable difference,
+so a check gated on "table green but still PARTIAL" would never fire on the
+modal install.
+
+⚠️ **On a `COMPLETENESS_FULL` topology only** (L3 enabled and warm): if the whole
+table holds and the verdict is still `PARTIAL`, that is unexplained — the
+ordering tripwire is the only remaining cause — escalate. On a stock L3-off kit
+that state cannot be distinguished from honest coverage-PARTIAL, which is why the
+log check is unconditional.
+
+Do **not** add a `temporal_order_valid` key to the table; no such field exists in
+the certificate (it is a verifier-internal struct field, present in no `.proto`
+and no JSON).
 
 ### 7.3 Verify a specific key pair matches
 

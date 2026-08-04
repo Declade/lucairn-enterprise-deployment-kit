@@ -102,8 +102,16 @@ carry a security fix are tagged **[Security]**.
   - One key cannot express `degrade` + `partial` in any case: the two services
     derive **opposite** postures from the same retired value.
 
-  `validators.l3AirGapWithoutFailClosed` now accepts either fail-closed
-  spelling, so a correctly-migrated air-gapped install renders.
+  `validators.l3AirGapWithoutFailClosed`'s fail-closed test moved with the flag,
+  and moved COMPLETELY: it now accepts **only**
+  `global.l3AvailabilityPosture=reject` (trimmed + lowercased, matching the
+  sanitizer's own parser). The retired `global.l3Required` does **not** satisfy
+  it in any value. A legacy arm was drafted and removed before merge — the
+  sibling migration guard means it could only ever be reached alongside a
+  posture that overrides it, so its one reachable effect would have been to let
+  `degrade` through the air-gap guard, re-opening the exact silent-shield-less
+  install the guard exists to prevent. Air-gapped operators must therefore state
+  the posture explicitly.
   Upstream design: `prd-2026-08-01-l3-availability-vs-certificate-honesty-split.md`.
 - **[Security] `sandbox-a.sanitizer.confidenceThreshold` is now schema-bounded to
   a number in `[0, 1]` (T-517).** The value is rendered straight into the
