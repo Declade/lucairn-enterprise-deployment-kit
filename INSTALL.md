@@ -1237,11 +1237,15 @@ active. Provision the full 16 GB RAM before enabling this mode (see
 > (code blocks handled by the dedicated shallow scanners, platform-trusted
 > fields, and empty fields) is covered by its own scanning layers and does
 > not need an L3 verdict for FULL. Identical values can reuse a single
-> verdict instead of being rescanned — this kit currently pins sanitizer
-> `0.5.4` (`image-manifest.yaml`), and sanitizer releases after `0.5.4`
-> additionally dedupe identical values *within* a single request; check your
-> installed sanitizer release for which reuse mechanisms are active. That is
-> a coverage guarantee, not a per-byte-freshly-scanned guarantee.
+> verdict instead of being rescanned, through two separate mechanisms —
+> within a request via duplicate-leaf dedupe, and across requests via the
+> sanitize cache (`SANITIZE_CACHE_ENABLED`). Both are version-scoped: this
+> kit currently pins sanitizer `0.5.4` (`image-manifest.yaml`), which
+> predates within-request dedupe entirely, and predates the fix that makes
+> cache-replay reuse fully reflected in certificate coverage. On `0.5.4`,
+> enabling `SANITIZE_CACHE_ENABLED` is not recommended; check your installed
+> sanitizer release for which reuse mechanisms are safe to enable. That is a
+> coverage guarantee, not a per-byte-freshly-scanned guarantee.
 
 > **`LUCAIRN_L3_REQUIRED` IS RETIRED — it is now two independent flags, and
 > they do NOT have to agree (board T-393 / T-385).**

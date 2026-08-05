@@ -355,9 +355,12 @@ scanning received an L3 verdict. Content exempt from L3 by design (code
 blocks handled by the dedicated shallow scanners, platform-trusted fields,
 and empty fields) is covered by its own scanning layers and does not need an
 L3 verdict for FULL. Identical values can reuse a single verdict instead of
-being rescanned — this kit pins sanitizer `0.5.4` (`image-manifest.yaml`),
-and sanitizer releases after `0.5.4` additionally dedupe identical values
-within a single request.
+being rescanned, within a request via duplicate-leaf dedupe and across
+requests via the sanitize cache (`SANITIZE_CACHE_ENABLED`) — this kit pins
+sanitizer `0.5.4` (`image-manifest.yaml`), which predates both: dedupe and
+fully-reflected cache-replay coverage are sanitizer capabilities from
+releases after `0.5.4`. On `0.5.4`, enabling `SANITIZE_CACHE_ENABLED` is not
+recommended.
 
 But `PARTIAL` is **not** only a coverage signal. The witness derives it from
 three independent conditions — partial completeness, a temporal inconsistency,
