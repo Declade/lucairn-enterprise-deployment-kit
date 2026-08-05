@@ -2,10 +2,10 @@
 #
 # Kit release gates T-554 / T-555 / T-472.
 #
-# Every case here comes from the 2026-08-04 CLEAN-ROOM REHEARSAL
-# (specs/2026-08/rehearsal-2026-08-04-kit-clean-room.md) — the first time the
-# kit was actually RUN rather than rendered. Ten PRs of render + unit tests had
-# gone green; running the artifact found what none of them could.
+# Every case here comes from a CLEAN-ROOM INSTALL REHEARSAL run on 2026-08-04
+# — the first time the kit was actually RUN rather than rendered. Ten PRs of
+# render + unit tests had gone green; running the artifact found what none of
+# them could.
 #
 # ── WHAT EACH GATE STOPS ──────────────────────────────────────────────────────
 #
