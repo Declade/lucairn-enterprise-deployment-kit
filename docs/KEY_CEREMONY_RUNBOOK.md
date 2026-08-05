@@ -349,6 +349,11 @@ the certificate honestly reports `COMPLETENESS_PARTIAL`, and that alone forces
 `VERDICT_PARTIAL` no matter how correct your keys are. You see
 `VERDICT_VERIFIED` here only on an L3-enabled, warm topology.
 
+**What `COMPLETENESS_FULL` certifies:** every byte of the request received an
+L3 verdict. Identical bytes are scanned once and the verdict applies to every
+occurrence — across requests via the content cache, and within a request via
+duplicate-leaf dedupe.
+
 But `PARTIAL` is **not** only a coverage signal. The witness derives it from
 three independent conditions — partial completeness, a temporal inconsistency,
 **or a claim-ordering violation** (`services/veil-witness/internal/verifier/`

@@ -77,7 +77,11 @@ and the LLM still receives only sanitized text.
   on a laptop that sleeps and resumes, a drifted clock silently produces PARTIAL
   certificates for every turn — with no error an operator could connect to the
   cause. Verify with `timedatectl status` / `sntp -sS time.apple.com` before
-  enabling.
+  enabling. (This is a transport-availability cause of PARTIAL, distinct from
+  L3-coverage PARTIAL: a FULL certificate means every byte of the request
+  received an L3 verdict, with identical bytes scanned once and the verdict
+  reused across requests via the content cache and within a request via
+  duplicate-leaf dedupe.)
 
 ---
 
@@ -996,7 +1000,12 @@ matters most: it is the difference between "the gateway is authorised" and
 - **The central-witness enable step (§4) is a supervised window**, not an
   unattended change. It alters the transport contract for every device at once:
   a mistake in the server triple takes claim submission down fleet-wide, and
-  every certificate issued during the gap seals `PARTIAL`.
+  every certificate issued during the gap seals `PARTIAL`. (A `FULL`
+  certificate means every byte of the request received an L3 verdict —
+  identical bytes are scanned once and the verdict applies to every
+  occurrence, across requests via the content cache and within a request via
+  duplicate-leaf dedupe; the outage-window `PARTIAL` above is a separate,
+  transport-availability cause, not a coverage gap.)
 - **Record a rollback tag for the witness image before the window** and know
   how to unset the four variables in §4. Unsetting them restores the previous
   behaviour exactly — the latch is inert when unset.

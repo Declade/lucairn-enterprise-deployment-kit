@@ -383,6 +383,8 @@ On a fresh install, sandbox-b's local Ollama runtime cold-starts on the first in
 
 > **This alone no longer yields `COMPLETENESS_FULL` on a stock install (T-393 / T-385).** The chart ships the L3 deep PII shield OFF (`sandbox-a.sanitizer.llmScanEnabled: false`), so `llm_pii_scan` is genuinely absent from `layers_active`, and the veil-witness now certifies `COMPLETENESS_PARTIAL` to say so. Earlier charts rendered `LUCAIRN_L3_REQUIRED=false` onto the witness, which suppressed that downgrade and printed FULL for a request the deep PII shield never saw. **To demo a FULL chain you must actually run all four layers** — enable the L3 shield (`--set sandbox-a.sanitizer.llmScanEnabled=true --set global.llmShieldEnabled=true`) and stage the model. **There is no shortcut to a FULL certificate any more.** The kit previously offered `--set global.l3CompletenessPosture=full` to reproduce the old over-claiming wording without running the shield; as of 2026-08-04 (board T-385) that value is refused at render time — a certificate must never be configurable to state that a scan ran when it did not.
 
+> **What `COMPLETENESS_FULL` certifies:** every byte of the request received an L3 verdict. Identical bytes are scanned once and the verdict applies to every occurrence — across requests via the content cache, and within a request via duplicate-leaf dedupe.
+
 Port-forward the gateway first (kept open through Step 10):
 
 ```bash
