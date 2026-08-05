@@ -146,7 +146,11 @@ sanitizer:
   # and EMIT THE SANITIZER CLAIM. A worker SIGKILLed inside that tail produces
   # a certificate with no dsa-sanitizer claim: content that WAS sanitized,
   # evidence that says it was not. Raise this and GUNICORN_TIMEOUT together.
-  # A non-finite or non-positive value fails the boot loudly.
+  #
+  # A non-finite or non-positive value fails the boot loudly — and the chart
+  # passes such a value THROUGH rather than quietly substituting the default,
+  # so an explicit 0 reaches the image and is rejected there with a real error
+  # instead of booting a budget you never asked for.
   llmScanRequestBudgetSeconds: 90
   # T-375 — model PROVENANCE. This name is what the model-pull Job pulls from
   # the official Ollama registry over HTTPS AND what the sanitizer asks for in
