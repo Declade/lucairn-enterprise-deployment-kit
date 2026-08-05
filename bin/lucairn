@@ -3049,9 +3049,9 @@ runtime_image_manifest_for_env() {
 #
 # ONE drift oracle, TWO install paths (T-554). Historically this ran only from
 # the Compose branch, so a Kubernetes operator bumping `global.imageTag` got
-# zero warning before an upgrade — which is exactly how the 2026-08-04
-# clean-room rehearsal (`rehearsal-2026-08-04-kit-clean-room.md` F1/F2)
-# CrashLooped the witness on `:latest`. The Helm path now calls THIS function,
+# zero warning before an upgrade — which is exactly how a clean-room install
+# rehearsal (2026-08-04) CrashLooped the witness on an unpinned `:latest`.
+# The Helm path now calls THIS function,
 # not a twin: a forked checker would drift from the Compose one, which is the
 # same class of bug image-manifest.yaml exists to document.
 #

@@ -118,8 +118,8 @@ spec:
                   key: DATABASE_URL_APP
             # T-555 — DUAL-EMIT, and the direction of the compatibility matters.
             #
-            # WHAT THE IMAGE ACTUALLY DOES (services/veil-witness/cmd/server/
-            # main.go:44 on dual-sandbox-architecture origin/main):
+            # WHAT THE IMAGE ACTUALLY DOES — the witness image's server
+            # entrypoint (main.go) resolves the DSN as:
             #   dbURL := requireEnvCompat("LCR_DB_URL", "VEIL_DB_URL")
             # envcompat (pkg/envcompat/envcompat.go) reads the CANONICAL name
             # first and falls back to the LEGACY name. That protects an OLD
@@ -128,8 +128,8 @@ spec:
             # 2026-06-02 Stage 3 rename (commit 5eaabf8d9) calls plain
             # requireEnv("VEIL_DB_URL") and has never heard of LCR_DB_URL.
             #
-            # MEASURED, not assumed (clean-room rehearsal 2026-08-04,
-            # specs/2026-08/rehearsal-2026-08-04-kit-clean-room.md F1):
+            # MEASURED, not assumed — found in a clean-room install
+            # rehearsal, 2026-08-04:
             # `helm upgrade --set global.imageTag=latest` CrashLooped this pod
             # with `required environment variable VEIL_DB_URL is not set` — the
             # requireEnv error string, NOT requireEnvCompat's
