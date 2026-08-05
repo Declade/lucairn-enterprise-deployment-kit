@@ -348,6 +348,13 @@ Symptoms of drift:
 - Witness rejects every claim with `canonical_payload mismatch`. Signing
   keys are correct but the canonical-payload byte order changed between
   image versions (rare, only after a major-version bump).
+- **Witness crash-loops at boot on `required environment variable
+  VEIL_DB_URL is not set` (or any other `VEIL_*` name).** The deployed image
+  predates the Stage 3 `VEIL_* → LCR_*` env rename (2026-06-02) and does not
+  read the `LCR_*` names this chart emits. Seen on `:latest`, which is NOT a
+  manifest-listed tag. Roll `global.imageTag` back to
+  `default_lucairn_image_tag` and `helm rollback` — see INSTALL.md
+  § "The fallback is ONE-DIRECTIONAL".
 
 Diagnose:
 
@@ -363,10 +370,21 @@ cat image-manifest.yaml
 docker compose -f docker-compose.customer.yml --env-file customer.env images gateway sanitizer
 ```
 
+On the **Helm** path the same check reads the merged values instead — run it
+before every upgrade:
+
+```bash
+bin/lucairn doctor --values customer-values.yaml
+```
+
+It warns when `global.imageTag` differs from the manifest's
+`default_lucairn_image_tag`. (Before 2026-08-05 this check ran only on the
+Compose path, so a Kubernetes operator bumping the tag got no warning at all.)
+
 `bin/lucairn doctor` warns when `LUCAIRN_IMAGE_TAG` in `customer.env` differs
-from the manifest's `default_lucairn_image_tag`. The warning is non-blocking:
-operators can intentionally roll images forward or back, but the warning
-ensures they know they are off the tested combination.
+from the manifest's `default_lucairn_image_tag`. Both warnings are
+non-blocking: operators can intentionally roll images forward or back, but the
+warning ensures they know they are off the tested combination.
 
 ## Mint Rejects `byok_per_request` On Pre-0.4.x Gateway Images
 

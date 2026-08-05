@@ -120,6 +120,14 @@ data:
         # `global.l3AvailabilityPosture: reject` to fail closed.
         model: {{ .Values.sanitizer.llmScanModel | default "qwen2.5:7b" | quote }}
         timeout_seconds: {{ .Values.sanitizer.llmScanTimeout | default 30 }}
+        # T-472 — TOTAL request budget across every L3 call in one request.
+        # `timeout_seconds` above bounds ONE call; without this a request that
+        # makes many calls stays inside the per-call timeout while blowing far
+        # past the worker timeout. Wired the same way as its sibling knobs; the
+        # default matches the sanitizer image default (config.py:1784) so a
+        # stock render is behaviour-neutral. Bound: <= GUNICORN_TIMEOUT - 25s,
+        # enforced at image boot (config.py:2143).
+        request_budget_seconds: {{ .Values.sanitizer.llmScanRequestBudgetSeconds | default 90 }}
         # FAIL-01 (PRD prd-2026-05-29-fail-safe-scrubber): fail-CLOSED. When the
         # L3 deep PII shield (on-device Qwen via Ollama) is unavailable, the
         # sanitizer returns a 503 l3_scrubber_unavailable rather than silently

@@ -116,10 +116,48 @@ spec:
                   # INT-001 least-privilege: runtime connects as the restricted
                   # veil_app role, NOT the migrate-only superuser DATABASE_URL.
                   key: DATABASE_URL_APP
+            # T-555 — DUAL-EMIT, and the direction of the compatibility matters.
+            #
+            # WHAT THE IMAGE ACTUALLY DOES (services/veil-witness/cmd/server/
+            # main.go:44 on dual-sandbox-architecture origin/main):
+            #   dbURL := requireEnvCompat("LCR_DB_URL", "VEIL_DB_URL")
+            # envcompat (pkg/envcompat/envcompat.go) reads the CANONICAL name
+            # first and falls back to the LEGACY name. That protects an OLD
+            # VEIL_-named Secret against a NEW image. It does NOT protect a NEW
+            # LCR_-only render against an OLD image: an image built before the
+            # 2026-06-02 Stage 3 rename (commit 5eaabf8d9) calls plain
+            # requireEnv("VEIL_DB_URL") and has never heard of LCR_DB_URL.
+            #
+            # MEASURED, not assumed (clean-room rehearsal 2026-08-04,
+            # specs/2026-08/rehearsal-2026-08-04-kit-clean-room.md F1):
+            # `helm upgrade --set global.imageTag=latest` CrashLooped this pod
+            # with `required environment variable VEIL_DB_URL is not set` — the
+            # requireEnv error string, NOT requireEnvCompat's
+            # "LCR_DB_URL (or legacy VEIL_DB_URL)". That error string is the
+            # proof `:latest` is a pre-rename build.
+            #
+            # So the chart emits BOTH names, same secret key. On any pinned
+            # (manifest-listed) image this is inert — envcompat takes the
+            # canonical LCR_ value and never consults the legacy one.
+            #
+            # ⚠️ This does NOT make `:latest` a supported tag. A pre-rename
+            # image ALSO requires VEIL_BRIDGE_PUBLIC_KEY / VEIL_SANITIZER_
+            # PUBLIC_KEY, which arrive here via `envFrom` from
+            # {{ .Chart.Name }}-config whose keys are LCR_-named (configmap.yaml
+            # :13-14). Only tags recorded in image-manifest.yaml are validated
+            # against this chart; `bin/lucairn doctor --values` warns when
+            # global.imageTag drifts off that pin (T-554).
+            - name: VEIL_DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Chart.Name }}-credentials
+                  key: DATABASE_URL_APP
             # Stage 3 gateway rebrand: env-var names renamed VEIL_ → LCR_.
-            # The veil-witness image (v0.5.0+) accepts both forms via envcompat
-            # fallback at boot, so legacy operator-managed Secrets with VEIL_
-            # keys are still readable; new chart-rendered Secrets emit LCR_.
+            # The veil-witness image reads each setting under its LCR_ name and
+            # falls back to the legacy VEIL_ name (envcompat), so legacy
+            # operator-managed Secrets with VEIL_ keys are still readable by a
+            # current image. See the direction caveat above — the fallback runs
+            # inside the image, so it cannot help an image that predates it.
             - name: LCR_WITNESS_SIGNING_KEY
               valueFrom:
                 secretKeyRef:
