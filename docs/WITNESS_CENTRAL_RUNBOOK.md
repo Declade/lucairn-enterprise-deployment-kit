@@ -82,7 +82,11 @@ and the LLM still receives only sanitized text.
   requires an L3 verdict received one — content exempt from L3 by design
   (code blocks, platform-trusted fields, empty fields) is covered by its own
   scanning layers, and identical values can reuse a single verdict instead of
-  being rescanned. Both PARTIAL causes write the same `COMPLETENESS_PARTIAL`
+  being rescanned: within a request via duplicate-leaf dedupe, across
+  requests via the sanitize cache once cache-replay reuse is fully reflected
+  in certificate coverage (both are sanitizer releases after `0.5.4`
+  capabilities; on `0.5.4`, enabling `SANITIZE_CACHE_ENABLED` is not
+  recommended). Both PARTIAL causes write the same `COMPLETENESS_PARTIAL`
   value on the cert — an operator tells them apart via the witness result's
   `MissingServices` list (a service's claim never arrived, e.g. this
   clock-drift case) vs its `Warnings` list (an L3-coverage note, e.g. the
@@ -1010,10 +1014,12 @@ matters most: it is the difference between "the gateway is authorised" and
   certificate means every text segment that requires an L3 verdict received
   one — content exempt from L3 by design is covered by its own scanning
   layers, and identical values can reuse a single verdict instead of being
-  rescanned; the outage-window `PARTIAL` above is a separate,
-  transport-availability cause, not a coverage gap. Same completeness value
-  either way — see § "NTP running on every device" above for how
-  `MissingServices` vs `Warnings` tells the two PARTIAL causes apart.)
+  rescanned (dedupe and cache-replay reuse are each version-scoped — see
+  § "NTP running on every device" above for the cache-replay caveat); the
+  outage-window `PARTIAL` above is a separate, transport-availability cause,
+  not a coverage gap. Same completeness value either way — see § "NTP
+  running on every device" above for how `MissingServices` vs `Warnings`
+  tells the two PARTIAL causes apart.)
 - **Record a rollback tag for the witness image before the window** and know
   how to unset the four variables in §4. Unsetting them restores the previous
   behaviour exactly — the latch is inert when unset.

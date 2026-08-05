@@ -223,9 +223,10 @@ If any container is `unhealthy` or `restarting`, see § Troubleshooting.
 > L3 scanning received an L3 verdict — code blocks (handled by the dedicated
 > shallow scanners), platform-trusted fields, and empty fields are exempt by
 > design and covered by their own layers instead. Identical values can reuse
-> a single verdict rather than being rescanned; within-request dedupe is a
-> sanitizer capability shipped after `0.5.4` (this kit pins `0.5.4`, see
-> `image-manifest.yaml`).
+> a single verdict rather than being rescanned; within-request dedupe and
+> cache-replay coverage both mature in sanitizer releases after `0.5.4`
+> (this kit pins `0.5.4`, see `image-manifest.yaml`) — on `0.5.4`, enabling
+> `SANITIZE_CACHE_ENABLED` is not recommended.
 >
 > **To re-enable L3 later:** pre-stage the `qwen2.5:7b` model into the
 > `ollama-identity` volume (the air-gap-preserving throwaway-container procedure
@@ -367,7 +368,7 @@ After login, these surfaces work out of the box on a default Compose install:
 
 - `/dashboard` — operator home with KPI tiles + 30-day sparkline + sanitizer bars
 - `/health` — server health pills for every kit service (polled every 10s)
-- `/certs` — **cert browser + inspector + audit-grade validator**. The Compose stack wires `LUCAIRN_DASHBOARD_AUDIT_DB_URL` to the bundled `postgres-veil` cert log automatically (dashboard 0.8.2+), so the compliance team can browse the cert chain immediately after login. Each cert detail page surfaces the 4 signed claims (`TOKEN_GENERATED` + `PII_SANITIZED` + `INFERENCE_COMPLETED` + `EVENTS_RECORDED`), the witness verdict (`VERIFIED` / `PARTIAL` / `FAILED`), completeness (`FULL` / `PARTIAL` — FULL means every text segment that requires an L3 verdict received one, with content exempt from L3 by design (code blocks, trusted fields, empty fields) covered by its own layers and identical values able to reuse a single verdict instead of being rescanned; within-request dedupe requires a sanitizer release after `0.5.4`, this kit pins `0.5.4`), and `signatures_valid` / `byok_exempt` / `isolation_verified` flags.
+- `/certs` — **cert browser + inspector + audit-grade validator**. The Compose stack wires `LUCAIRN_DASHBOARD_AUDIT_DB_URL` to the bundled `postgres-veil` cert log automatically (dashboard 0.8.2+), so the compliance team can browse the cert chain immediately after login. Each cert detail page surfaces the 4 signed claims (`TOKEN_GENERATED` + `PII_SANITIZED` + `INFERENCE_COMPLETED` + `EVENTS_RECORDED`), the witness verdict (`VERIFIED` / `PARTIAL` / `FAILED`), completeness (`FULL` / `PARTIAL` — FULL means every text segment that requires an L3 verdict received one, with content exempt from L3 by design (code blocks, trusted fields, empty fields) covered by its own layers and identical values able to reuse a single verdict instead of being rescanned; within-request dedupe and cache-replay coverage both require a sanitizer release after `0.5.4`, this kit pins `0.5.4`, so enabling `SANITIZE_CACHE_ENABLED` is not recommended here), and `signatures_valid` / `byok_exempt` / `isolation_verified` flags.
 - `/compliance` — admin-only signed-claim summary PDF export (cover + image manifest + cert window)
 - `/audit` — renders the "not configured" explainer until you wire `LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL` against the `postgres-audit` database (see customer.env.example for the wiring template)
 - `/keys` — renders the "not configured" explainer until you wire `LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL` + `LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN`
