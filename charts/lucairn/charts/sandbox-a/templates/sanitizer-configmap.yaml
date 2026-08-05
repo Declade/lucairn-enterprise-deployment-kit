@@ -123,11 +123,23 @@ data:
         # T-472 — TOTAL request budget across every L3 call in one request.
         # `timeout_seconds` above bounds ONE call; without this a request that
         # makes many calls stays inside the per-call timeout while blowing far
-        # past the worker timeout. Wired the same way as its sibling knobs; the
-        # default matches the sanitizer image default (config.py:1784) so a
-        # stock render is behaviour-neutral. Bound: <= GUNICORN_TIMEOUT - 25s,
-        # enforced at image boot (config.py:2143).
-        request_budget_seconds: {{ .Values.sanitizer.llmScanRequestBudgetSeconds | default 90 }}
+        # past the worker timeout. The default matches the sanitizer image
+        # default so a stock render is behaviour-neutral. Bound: the image
+        # refuses to boot unless the value is finite, positive, and
+        # <= GUNICORN_TIMEOUT - 25s.
+        #
+        # ⚠️ hasKey, NOT `| default 90` — Sprig's `default` treats an explicit
+        # 0 as EMPTY, so `--set sandbox-a.sanitizer.llmScanRequestBudgetSeconds=0`
+        # would silently render 90: the chart would swallow an invalid operator
+        # input and boot a budget the operator never asked for, instead of
+        # letting the sanitizer's boot validation reject it loudly. A rendered
+        # 0 MUST reach the image. Same trap the veil-witness posture flags
+        # document for boolean false.
+        {{- if hasKey (default dict .Values.sanitizer) "llmScanRequestBudgetSeconds" }}
+        request_budget_seconds: {{ .Values.sanitizer.llmScanRequestBudgetSeconds }}
+        {{- else }}
+        request_budget_seconds: 90
+        {{- end }}
         # FAIL-01 (PRD prd-2026-05-29-fail-safe-scrubber): fail-CLOSED. When the
         # L3 deep PII shield (on-device Qwen via Ollama) is unavailable, the
         # sanitizer returns a 503 l3_scrubber_unavailable rather than silently

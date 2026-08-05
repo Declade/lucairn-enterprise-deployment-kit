@@ -334,14 +334,40 @@ sys.exit("no sanitizer ConfigMap carried llm_scan.request_budget_seconds")
 PY
 check "budget-knob-rendered: parsed from the sanitizer ConfigMap, per-call timeout intact" $?
 
+# render_budget VALUE — render the umbrella with the knob overridden, print
+# the rendered request_budget_seconds line.
+render_budget() {
+  helm template lucairn "$ROOT/charts/lucairn" \
+    "${HELM_TEST_SECRET_ARGS[@]}" \
+    --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
+    --set global.skipPullSecretGuard=true \
+    --set "sandbox-a.sanitizer.llmScanRequestBudgetSeconds=$1" 2>/dev/null \
+    | grep "request_budget_seconds:"
+}
+
 # The knob must be PLUMBED, not a hardcoded literal that happens to read 90.
 OVERRIDE="$WK/override.yaml"
-helm template lucairn "$ROOT/charts/lucairn" \
-  "${HELM_TEST_SECRET_ARGS[@]}" \
-  --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
-  --set global.skipPullSecretGuard=true \
-  --set "sandbox-a.sanitizer.llmScanRequestBudgetSeconds=137" > "$OVERRIDE" 2>/dev/null
+render_budget 137 > "$OVERRIDE"
 want "budget-knob-is-plumbed: an operator override reaches the sanitizer config" grep -q "request_budget_seconds: 137" "$OVERRIDE"
+
+# ── The Sprig `default` trap — an explicit 0 must NOT become 90. ─────────────
+#
+# `{{ .Values… | default 90 }}` looks right and is wrong: Sprig's `default`
+# treats 0 as EMPTY, so `--set …llmScanRequestBudgetSeconds=0` renders 90. The
+# chart would silently swallow an invalid operator input and boot a budget the
+# operator never asked for — while values.yaml claims a non-positive value
+# fails the boot loudly. 0 is inside the legal INPUT space (it is the image's
+# job to reject it, loudly, at boot), so the chart must pass it through.
+#
+# POSITIVE CONTROL: reverting the template to `| default 90` turns this red.
+# It went red against the pre-fix tree (measured: rendered 90).
+ZERO="$WK/zero.yaml"
+render_budget 0 > "$ZERO"
+want "budget-knob-honours-explicit-zero: an explicit 0 renders 0, not the default" \
+  grep -q "request_budget_seconds: 0$" "$ZERO"
+
+reject "budget-knob-honours-explicit-zero: an explicit 0 is never rewritten to 90" \
+  grep -q "request_budget_seconds: 90" "$ZERO"
 
 # And the values key must be documented where an operator will look for it.
 want "budget-knob-is-plumbed: the key ships in the subchart values.yaml" grep -q "llmScanRequestBudgetSeconds" "$ROOT/charts/lucairn/charts/sandbox-a/values.yaml"
