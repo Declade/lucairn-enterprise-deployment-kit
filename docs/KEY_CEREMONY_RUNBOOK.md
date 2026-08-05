@@ -349,10 +349,15 @@ the certificate honestly reports `COMPLETENESS_PARTIAL`, and that alone forces
 `VERDICT_PARTIAL` no matter how correct your keys are. You see
 `VERDICT_VERIFIED` here only on an L3-enabled, warm topology.
 
-**What `COMPLETENESS_FULL` certifies:** every byte of the request received an
-L3 verdict. Identical bytes are scanned once and the verdict applies to every
-occurrence — across requests via the content cache, and within a request via
-duplicate-leaf dedupe.
+**What `COMPLETENESS_FULL` certifies:** the L3 (AI-based) scan covered
+everything it is required to cover — every text segment subject to L3
+scanning received an L3 verdict. Content exempt from L3 by design (code
+blocks handled by the dedicated shallow scanners, platform-trusted fields,
+and empty fields) is covered by its own scanning layers and does not need an
+L3 verdict for FULL. Identical values can reuse a single verdict instead of
+being rescanned — this kit pins sanitizer `0.5.4` (`image-manifest.yaml`),
+and sanitizer releases after `0.5.4` additionally dedupe identical values
+within a single request.
 
 But `PARTIAL` is **not** only a coverage signal. The witness derives it from
 three independent conditions — partial completeness, a temporal inconsistency,
