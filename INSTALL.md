@@ -419,13 +419,57 @@ example, `VEIL_WITNESS_SIGNING_KEY` is now `LCR_WITNESS_SIGNING_KEY`).
 `bin/lucairn-init` emits the new canonical names; `bin/lucairn doctor`
 accepts either form during the deprecation window.
 
-**The DSA gateway / sanitizer / veil-witness images (v0.5.0+) read each
-setting under its `LCR_*` name first and fall back to the legacy `VEIL_*`
-name when `LCR_*` is unset.** The doctor and the kit's
-`docker-compose.customer.yml` BOTH apply the same dual-name fallback, so
-pre-Stage-3 customer.env files keep validating and keep booting against
-the new kit without modification — provided you upgrade the kit (compose +
-doctor) and the images together.
+**The DSA gateway / sanitizer / veil-witness images built on or after the
+Stage 3 rename (2026-06-02) read each setting under its `LCR_*` name first
+and fall back to the legacy `VEIL_*` name when `LCR_*` is unset.** The
+doctor and the kit's `docker-compose.customer.yml` BOTH apply the same
+dual-name fallback, so pre-Stage-3 customer.env files keep validating and
+keep booting against the new kit without modification — provided you
+upgrade the kit (compose + doctor) and the images together.
+
+### ⚠️ The fallback is ONE-DIRECTIONAL — read this before bumping an image tag
+
+The `VEIL_*` fallback lives **inside the image**. That means it protects
+exactly one direction:
+
+| You have | Against | Result |
+|---|---|---|
+| Old `VEIL_*` names in customer.env / operator Secrets | A **current** image | ✅ Works — the image falls back to the legacy name. |
+| New `LCR_*` names from a current kit | An **image built before 2026-06-02** | ❌ **Does not work** — that image has never heard of `LCR_*`. |
+
+An image that predates the rename reads `VEIL_DB_URL` directly and aborts
+at boot if it is unset. A rename-aware image cannot be conjured by a chart;
+the fallback code has to already be in the binary.
+
+**Measured, not assumed.** In the 2026-08-04 clean-room rehearsal,
+`helm upgrade --set global.imageTag=latest` CrashLooped the `veil-witness`
+pod with:
+
+```
+required environment variable VEIL_DB_URL is not set
+```
+
+That exact string is the pre-rename error message. A rename-aware image
+fails with `required environment variable LCR_DB_URL (or legacy
+VEIL_DB_URL) is not set` instead — so the message itself proves the
+`:latest` tag was an image built before the rename.
+
+**What the kit does about it:**
+
+1. The Helm chart now emits **both** `LCR_DB_URL` and `VEIL_DB_URL` on the
+   witness pod, from the same secret key. On a pinned image this is inert
+   (envcompat takes the canonical name and never consults the legacy one).
+2. `bin/lucairn doctor --values <your-values.yaml>` now warns when
+   `global.imageTag` differs from the tag pinned in `image-manifest.yaml`
+   — run it **before** every `helm upgrade`.
+
+**What the kit does NOT claim.** Emitting both DB-URL names does not make
+an arbitrary tag installable. A pre-rename image also requires
+`VEIL_BRIDGE_PUBLIC_KEY` and `VEIL_SANITIZER_PUBLIC_KEY`, which this chart
+supplies through an `envFrom` ConfigMap whose keys are `LCR_*`-named. **Only
+the tags recorded in `image-manifest.yaml` are validated against this chart.
+`:latest` is not one of them — do not deploy it.** Pin `global.imageTag` to
+the manifest value and bump it only together with a kit release.
 
 **You must NOT mix a new-kit compose with a customer.env that still uses
 VEIL_X names AND a docker-compose override that strict-substitutes the
@@ -1508,33 +1552,88 @@ chmod 600 ~/.ghcr-token   # belt-and-suspenders
    every install + upgrade, so the previous two-phase manual
    `kubectl create secret` loop is no longer needed.
 
-Kubernetes pull Secrets require a `dockerconfigjson` payload with a
+Kubernetes pull Secrets require a `dockerconfigjson` payload containing a
 base64 `auth` entry. On hosts where Docker uses `credsStore`/`credHelpers`
 (Docker Desktop, hardened workstations), `docker login` writes the
 credential to the OS keychain and stores only helper metadata in
-`~/.docker/config.json` — that metadata is not usable by Kubernetes
-(pods would fail with `ImagePullBackOff`). Use an isolated
-`DOCKER_CONFIG` set to a freshly-`mktemp`'d directory for the login,
-so the resulting `config.json` has a direct `auth` entry the chart can
-render into the per-namespace Secret. The PAT only ever appears via
-stdin (and then via the `--set-file` flag read at install time).
+`config.json` — that metadata is not usable by Kubernetes (pods fail with
+`ImagePullBackOff`).
+
+> **⚠️ Corrected 2026-08-05 — `DOCKER_CONFIG=$(mktemp -d)` alone is NOT
+> enough.** This guide previously told you to point `DOCKER_CONFIG` at a
+> fresh temp dir and run `docker login`, on the theory that a brand-new
+> config would have no credential helper. The 2026-08-04 clean-room
+> rehearsal disproved that: on Docker Desktop 29.6.1 / macOS, `docker login`
+> **still wrote `"credsStore": "osxkeychain"` into the fresh config**,
+> producing `{"auths":{"ghcr.io":{}}}` — an entry with no `auth` field, i.e.
+> exactly the unusable payload the trick was supposed to prevent. (The likely
+> mechanism is helper auto-selection from `PATH`, but the observation — not
+> the explanation — is what this correction rests on.)
+
+Build the `dockerconfigjson` payload **explicitly** instead. This does not
+depend on Docker CLI behaviour at all, so it works identically on Docker
+Desktop, on a hardened workstation, and in CI:
 
 ```bash
-# 1. Create an isolated Docker config for the install (avoids credsStore /
-#    credHelpers on Docker Desktop / hardened workstations that store
-#    credentials outside config.json).
+# 1. Isolated config dir — never touch the operator's ~/.docker/config.json.
 DOCKER_CONFIG=$(mktemp -d)
 export DOCKER_CONFIG
+chmod 700 "$DOCKER_CONFIG"
 
-# 2. Log Docker into ghcr.io (or your private mirror).
-docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
+# 2. Write the auth entry directly. `base64 | tr -d '\n'` is required:
+#    GNU base64 wraps at 76 columns and a wrapped value corrupts the token.
+#    The PAT is read from the 0600 file, never from argv or shell history.
+GHCR_USER=<your-github-username>
+printf '{"auths":{"ghcr.io":{"auth":"%s"}}}\n' \
+  "$(printf '%s:%s' "$GHCR_USER" "$(tr -d '\n' < ~/.ghcr-token)" \
+     | base64 | tr -d '\n')" \
+  > "$DOCKER_CONFIG/config.json"
+chmod 600 "$DOCKER_CONFIG/config.json"
 
-# The resulting $DOCKER_CONFIG/config.json now contains a real `auth`
-# entry usable by Kubernetes imagePullSecrets. KEEP the path — the
-# `helm install` step below reads it via --set-file. Do NOT copy the
-# file contents into customer-values.yaml; that would leak the registry
-# PAT into version control.
+# 3. VERIFY before you install — this is the step whose absence let the old
+#    recipe fail silently all the way to ImagePullBackOff. It must print
+#    "pull secret: ok".
+python3 - "$DOCKER_CONFIG/config.json" <<'PY'
+import base64, json, sys
+cfg = json.load(open(sys.argv[1]))
+if "credsStore" in cfg or "credHelpers" in cfg:
+    sys.exit("FAIL: config.json still references a credential helper; "
+             "Kubernetes cannot use it.")
+auth = cfg.get("auths", {}).get("ghcr.io", {}).get("auth")
+if not auth:
+    sys.exit("FAIL: no base64 auth entry for ghcr.io.")
+if ":" not in base64.b64decode(auth).decode():
+    sys.exit("FAIL: auth entry is not a base64 'user:token' pair.")
+print("pull secret: ok")
+PY
 ```
+
+KEEP the path — the `helm install` step below reads it via `--set-file`.
+Do NOT copy the file contents into `customer-values.yaml`; that would leak
+the registry PAT into version control. Delete the directory when the
+install finishes (step 6 already does this).
+
+<details>
+<summary>If you prefer <code>docker login</code></summary>
+
+You may still use `docker login`, but you **must** disable the credential
+helper for the isolated config *before* logging in, and you must keep the
+verification step above — it is what turns a silent failure into a loud one:
+
+```bash
+DOCKER_CONFIG=$(mktemp -d)
+export DOCKER_CONFIG
+# Pre-seed an explicitly empty credsStore as a hint to the CLI. Whether it
+# suppresses helper auto-selection is version-dependent and UNVERIFIED here,
+# so the verification in step 3 above is what you actually rely on.
+printf '{"auths":{},"credsStore":""}\n' > "$DOCKER_CONFIG/config.json"
+docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
+```
+
+If the verification step reports a helper is still referenced, fall back to
+the explicit construction above — it has no such dependency.
+
+</details>
 
 If the customer mirrors the images into a private registry, swap
 `docker login ghcr.io` for `docker login <your-mirror-host>` against

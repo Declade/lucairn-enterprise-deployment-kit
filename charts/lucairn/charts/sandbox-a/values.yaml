@@ -130,6 +130,24 @@ sanitizer:
   qiEngineAction: "generalize"
   llmScanEnabled: false
   llmScanTimeout: 30
+  # T-472 — TOTAL wall-clock budget for ALL of one request's L3 inference,
+  # rendered to `llm_scan.request_budget_seconds`. Distinct from
+  # llmScanTimeout, which bounds a SINGLE L3 call: a request that makes 20 L3
+  # calls of 29s each satisfies llmScanTimeout and still runs for ~580s.
+  #
+  # Default 90 is the sanitizer image's own shipped default
+  # (services/sanitizer/config.py:1784, `request_budget_seconds: float = 90.0`),
+  # so rendering it changes NOTHING about a stock install — it only makes the
+  # knob reachable from Helm, which it was not before (zero chart references).
+  #
+  # ⚠️ Bound, enforced at sanitizer boot (config.py:2143): the value must be
+  # <= GUNICORN_TIMEOUT - 25s. The headroom is not slack — after the last L3
+  # call the worker still has to reassemble fields, run the remaining scanners
+  # and EMIT THE SANITIZER CLAIM. A worker SIGKILLed inside that tail produces
+  # a certificate with no dsa-sanitizer claim: content that WAS sanitized,
+  # evidence that says it was not. Raise this and GUNICORN_TIMEOUT together.
+  # A non-finite or non-positive value fails the boot loudly.
+  llmScanRequestBudgetSeconds: 90
   # T-375 — model PROVENANCE. This name is what the model-pull Job pulls from
   # the official Ollama registry over HTTPS AND what the sanitizer asks for in
   # sanitizer-configmap.yaml (`llm_scan.model`); the two MUST agree or every L3

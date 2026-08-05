@@ -3026,6 +3026,12 @@ check_container_images() {
 # single artifact that records which combination was actually tested.
 runtime_image_manifest_for_env() {
   local env_file="$1" marker marker_rc
+  # Helm callers have no customer.env. The runtime-profile snapshot lookup is
+  # an env-file concept, so with no env file the repo manifest IS the manifest.
+  if [ -z "$env_file" ]; then
+    printf '%s' "$ROOT/image-manifest.yaml"
+    return 0
+  fi
   if marker="$(runtime_profile_marker_value "$env_file" 2>/dev/null)"; then
     marker_rc=0
   else
@@ -3039,8 +3045,28 @@ runtime_image_manifest_for_env() {
   fi
 }
 
+# check_image_manifest ENV_FILE [RESOLVED_TAG RESOLVED_REGISTRY SOURCE_KIND]
+#
+# ONE drift oracle, TWO install paths (T-554). Historically this ran only from
+# the Compose branch, so a Kubernetes operator bumping `global.imageTag` got
+# zero warning before an upgrade — which is exactly how the 2026-08-04
+# clean-room rehearsal (`rehearsal-2026-08-04-kit-clean-room.md` F1/F2)
+# CrashLooped the witness on `:latest`. The Helm path now calls THIS function,
+# not a twin: a forked checker would drift from the Compose one, which is the
+# same class of bug image-manifest.yaml exists to document.
+#
+# With only ENV_FILE the behaviour is byte-identical to before: tag/registry
+# are resolved from customer.env. When RESOLVED_TAG/RESOLVED_REGISTRY are
+# supplied the caller has already resolved them (Helm merges chart defaults
+# with the operator's ordered -f files), and SOURCE_KIND selects the wording so
+# a Kubernetes operator is told to look at `global.imageTag`, not at an env var
+# that does not exist on their install.
+#
+# WARN-ONLY in both paths — never changes doctor's exit code (unchanged
+# posture; the manifest is advisory, `--strict` digest pinning is the gate).
 check_image_manifest() {
-  local env_file="$1" manifest_file
+  local env_file="$1" resolved_tag="${2-}" resolved_registry="${3-}" source_kind="${4-env}"
+  local manifest_file
   manifest_file="$(runtime_image_manifest_for_env "$env_file")"
 
   if [ ! -f "$manifest_file" ]; then
@@ -3058,24 +3084,102 @@ check_image_manifest() {
     warn "image-manifest.yaml kit_version ($manifest_kit_version) does not match repo VERSION ($VERSION); the kit may be in a half-updated state"
   fi
 
-  # Env-resolved tag vs manifest pinned tag.
-  local env_tag env_registry
-  env_tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)"
-  env_tag="${env_tag:-0.5.1}"
-  env_registry="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)"
-  env_registry="${env_registry:-ghcr.io/declade}"
-
-  if [ -n "$manifest_tag" ] && [ "$manifest_tag" != "$env_tag" ]; then
-    warn "LUCAIRN_IMAGE_TAG=$env_tag in env, but image-manifest.yaml pins $manifest_tag for this kit release"
-    warn "  bumping LUCAIRN_IMAGE_TAG without updating the kit's config tree can crash-loop services (see TROUBLESHOOTING.md § Image / Config Version Drift)"
+  # Deployer-resolved tag vs manifest pinned tag.
+  local env_tag env_registry tag_label registry_label source_phrase
+  if [ "$source_kind" = "helm" ]; then
+    tag_label="global.imageTag"
+    registry_label="global.imageRegistry"
+    source_phrase="in the merged Helm values"
+    env_tag="$resolved_tag"
+    env_registry="$resolved_registry"
+  else
+    tag_label="LUCAIRN_IMAGE_TAG"
+    registry_label="LUCAIRN_IMAGE_REGISTRY"
+    source_phrase="in env"
+    env_tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)"
+    env_tag="${env_tag:-0.5.1}"
+    env_registry="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)"
+    env_registry="${env_registry:-ghcr.io/declade}"
   fi
 
-  if [ -n "$manifest_registry" ] && [ "$manifest_registry" != "$env_registry" ]; then
-    info "LUCAIRN_IMAGE_REGISTRY=$env_registry differs from manifest default $manifest_registry (expected if using a customer mirror)"
+  if [ -n "$manifest_tag" ] && [ -n "$env_tag" ] && [ "$manifest_tag" != "$env_tag" ]; then
+    warn "$tag_label=$env_tag $source_phrase, but image-manifest.yaml pins $manifest_tag for this kit release"
+    warn "  bumping $tag_label without updating the kit's config tree can crash-loop services (see TROUBLESHOOTING.md § Image / Config Version Drift)"
+    if [ "$source_kind" = "helm" ]; then
+      # The rehearsal's actual failure, named so the operator recognises it.
+      warn "  a tag outside image-manifest.yaml is UNVALIDATED against this chart: the chart↔image env-var contract is only tested for the pinned tag, and an untested image can abort at boot on a variable this chart does not emit"
+    fi
   fi
 
-  echo "image manifest: read from $manifest_file (kit_version=$manifest_kit_version, pinned_tag=$manifest_tag)"
+  if [ -n "$manifest_registry" ] && [ -n "$env_registry" ] && [ "$manifest_registry" != "$env_registry" ]; then
+    info "$registry_label=$env_registry differs from manifest default $manifest_registry (expected if using a customer mirror)"
+  fi
+
+  if [ "$source_kind" = "helm" ]; then
+    echo "image manifest (Helm): read from $manifest_file (kit_version=$manifest_kit_version, pinned_tag=$manifest_tag, values_tag=$env_tag)"
+  else
+    echo "image manifest: read from $manifest_file (kit_version=$manifest_kit_version, pinned_tag=$manifest_tag)"
+  fi
   return 0
+}
+
+# helm_values_image_coordinates CHART_DIR VALUES_FILE [...]
+#
+# Resolve the image coordinates a `helm install -f ...` would actually deploy:
+# the chart's own values.yaml deep-merged under the operator's ordered values
+# files, exactly as Helm merges repeated `-f` flags (later file wins; maps
+# merge recursively, scalars/lists replace). Prints "<tag>\t<registry>".
+#
+# Reuses the ruby+YAML deep-merge already relied on by
+# doctor_helm_render_custody_mode rather than shelling out to a full
+# `helm template` — this reads the SAME `global` block the subcharts consume,
+# and a render is not needed to answer "which tag was asked for".
+#
+# Returns 1 (caller INFO-skips) when ruby is unavailable or a values document
+# is not a mapping. Drift reporting is advisory; it must never break doctor.
+helm_values_image_coordinates() {
+  local chart_dir="$1"
+  shift
+  command -v ruby >/dev/null 2>&1 || return 1
+  ruby -ryaml - "$chart_dir/values.yaml" "$@" <<'RUBY' 2>/dev/null
+def deep_merge(left, right)
+  left.merge(right) do |_key, a, b|
+    a.is_a?(Hash) && b.is_a?(Hash) ? deep_merge(a, b) : b
+  end
+end
+
+values = ARGV.reduce({}) do |merged, path|
+  next merged unless File.file?(path)
+  parsed = YAML.safe_load(File.read(path), aliases: true)
+  exit 1 unless parsed.is_a?(Hash)
+  deep_merge(merged, parsed)
+end
+tag = values.dig("global", "imageTag")
+registry = values.dig("global", "imageRegistry")
+puts "#{tag}\t#{registry}"
+RUBY
+}
+
+# check_image_manifest_helm CHART_DIR VALUES_FILE [...]
+#
+# The T-554 wiring: resolve what Helm would deploy, then hand it to the SAME
+# check_image_manifest the Compose branch uses. WARN-only, never non-zero.
+check_image_manifest_helm() {
+  local chart_dir="$1"
+  shift
+  [ "$#" -gt 0 ] || return 0   # Compose-only run; nothing to inspect.
+  local coordinates helm_tag helm_registry
+  if ! coordinates="$(helm_values_image_coordinates "$chart_dir" "$@")"; then
+    info "image manifest (Helm): skipped — could not merge the supplied values files (ruby unavailable or a values document is not a mapping)"
+    return 0
+  fi
+  helm_tag="${coordinates%%$'\t'*}"
+  helm_registry="${coordinates#*$'\t'}"
+  if [ -z "$helm_tag" ]; then
+    info "image manifest (Helm): skipped — no global.imageTag resolved from the chart defaults or the supplied values files"
+    return 0
+  fi
+  check_image_manifest "" "$helm_tag" "$helm_registry" helm
 }
 
 # -----------------------------------------------------------------------------
@@ -7036,6 +7140,10 @@ doctor() {
     for values_file in "${values_files[@]}"; do
       echo "values file: ok ($values_file)"
     done
+    # T-554: the Helm operator's image-manifest drift warning. WARN-only, so it
+    # runs BEFORE the mTLS gate's early return — a values-only run that fails
+    # the mTLS check should still have told the operator its tag is unvalidated.
+    check_image_manifest_helm "$ROOT/charts/lucairn" "${values_files[@]}"
     local values_mtls_failed=0
     check_enterprise_mtls_helm "$ROOT/charts/lucairn" "${values_files[@]}" || values_mtls_failed=1
     [ "$values_mtls_failed" -eq 0 ] || return 1
@@ -7492,6 +7600,13 @@ doctor() {
   # Image-manifest drift warning. Runs in --offline mode as well so customers
   # without network egress still get the warning.
   check_image_manifest "$env_file"
+  # T-554: same oracle, Helm coordinates. A mixed `doctor --env ... --values ...`
+  # run inspects TWO independent tag surfaces — customer.env's LUCAIRN_IMAGE_TAG
+  # (Compose) and the merged values' global.imageTag (Kubernetes). Checking only
+  # the first is how a drifted chart tag reached a `helm upgrade` unwarned.
+  if [ "$values_count" -gt 0 ]; then
+    check_image_manifest_helm "$ROOT/charts/lucairn" "${values_files[@]}"
+  fi
 
   # B1 Slice 3: digest-pin verification (verify-or-fail under --strict). Warn-
   # only in normal mode (never changes the exit code); --strict is a fail-closed
