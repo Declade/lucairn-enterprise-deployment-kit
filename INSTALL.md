@@ -1187,6 +1187,12 @@ rather than degrading to L1+L2 silently. The certificate completeness becomes
 active. Provision the full 16 GB RAM before enabling this mode (see
 § Pre-Requisites).
 
+> **What `COMPLETENESS_FULL` certifies:** every byte of the request received
+> an L3 verdict. Identical bytes are scanned once and the verdict applies to
+> every occurrence — across requests via the content cache, and within a
+> request via duplicate-leaf dedupe. That is a coverage guarantee, not a
+> per-byte-freshly-scanned guarantee.
+
 > **`LUCAIRN_L3_REQUIRED` IS RETIRED — it is now two independent flags, and
 > they do NOT have to agree (board T-393 / T-385).**
 >
