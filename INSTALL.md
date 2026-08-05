@@ -1231,11 +1231,17 @@ rather than degrading to L1+L2 silently. The certificate completeness becomes
 active. Provision the full 16 GB RAM before enabling this mode (see
 § Pre-Requisites).
 
-> **What `COMPLETENESS_FULL` certifies:** every byte of the request received
-> an L3 verdict. Identical bytes are scanned once and the verdict applies to
-> every occurrence — across requests via the content cache, and within a
-> request via duplicate-leaf dedupe. That is a coverage guarantee, not a
-> per-byte-freshly-scanned guarantee.
+> **What `COMPLETENESS_FULL` certifies:** the L3 (AI-based) scan covered
+> everything it is required to cover — every text segment subject to L3
+> scanning received an L3 verdict. Content that is exempt from L3 by design
+> (code blocks handled by the dedicated shallow scanners, platform-trusted
+> fields, and empty fields) is covered by its own scanning layers and does
+> not need an L3 verdict for FULL. Identical values can reuse a single
+> verdict instead of being rescanned — this kit currently pins sanitizer
+> `0.5.4` (`image-manifest.yaml`), and sanitizer releases after `0.5.4`
+> additionally dedupe identical values *within* a single request; check your
+> installed sanitizer release for which reuse mechanisms are active. That is
+> a coverage guarantee, not a per-byte-freshly-scanned guarantee.
 
 > **`LUCAIRN_L3_REQUIRED` IS RETIRED — it is now two independent flags, and
 > they do NOT have to agree (board T-393 / T-385).**

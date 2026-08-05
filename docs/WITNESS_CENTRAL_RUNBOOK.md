@@ -78,10 +78,16 @@ and the LLM still receives only sanitized text.
   certificates for every turn — with no error an operator could connect to the
   cause. Verify with `timedatectl status` / `sntp -sS time.apple.com` before
   enabling. (This is a transport-availability cause of PARTIAL, distinct from
-  L3-coverage PARTIAL: a FULL certificate means every byte of the request
-  received an L3 verdict, with identical bytes scanned once and the verdict
-  reused across requests via the content cache and within a request via
-  duplicate-leaf dedupe.)
+  L3-coverage PARTIAL: a FULL certificate means every text segment that
+  requires an L3 verdict received one — content exempt from L3 by design
+  (code blocks, platform-trusted fields, empty fields) is covered by its own
+  scanning layers, and identical values can reuse a single verdict instead of
+  being rescanned. Both PARTIAL causes write the same `COMPLETENESS_PARTIAL`
+  value on the cert — an operator tells them apart via the witness result's
+  `MissingServices` list (a service's claim never arrived, e.g. this
+  clock-drift case) vs its `Warnings` list (an L3-coverage note, e.g. the
+  deep PII shield being off), not a separate completeness value
+  (`services/veil-witness/internal/verifier/verifier.go` `Result` struct).)
 
 ---
 
@@ -1001,11 +1007,13 @@ matters most: it is the difference between "the gateway is authorised" and
   unattended change. It alters the transport contract for every device at once:
   a mistake in the server triple takes claim submission down fleet-wide, and
   every certificate issued during the gap seals `PARTIAL`. (A `FULL`
-  certificate means every byte of the request received an L3 verdict —
-  identical bytes are scanned once and the verdict applies to every
-  occurrence, across requests via the content cache and within a request via
-  duplicate-leaf dedupe; the outage-window `PARTIAL` above is a separate,
-  transport-availability cause, not a coverage gap.)
+  certificate means every text segment that requires an L3 verdict received
+  one — content exempt from L3 by design is covered by its own scanning
+  layers, and identical values can reuse a single verdict instead of being
+  rescanned; the outage-window `PARTIAL` above is a separate,
+  transport-availability cause, not a coverage gap. Same completeness value
+  either way — see § "NTP running on every device" above for how
+  `MissingServices` vs `Warnings` tells the two PARTIAL causes apart.)
 - **Record a rollback tag for the witness image before the window** and know
   how to unset the four variables in §4. Unsetting them restores the previous
   behaviour exactly — the latch is inert when unset.
