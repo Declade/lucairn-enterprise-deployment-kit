@@ -293,6 +293,17 @@ carry a security fix are tagged **[Security]**.
   `tests/static_checks.sh` against every chart values file.
 
 ### Notes
+- **Gateway-cache replay cert-honesty fix (T-409) has not shipped in any kit
+  release.** Upstream `dual-sandbox-architecture` closed a gateway-cache hole
+  where a turn whose certificate was honestly `COMPLETENESS_PARTIAL` (L3
+  skipped by policy, tier, customer-allowlist, or zone policy) could still be
+  written to the sanitize cache — a later cache-replay of that turn then
+  rendered `COMPLETENESS_FULL` / `VERDICT_VERIFIED` with L3 never having run
+  (merged 2026-08-02, `6d535775f`, PR #470). This kit's pinned sanitizer
+  `0.5.4` predates the fix by about six weeks. Consistent with the wording
+  landed in #118: cache-replay reuse is only fully reflected in certificate
+  coverage in sanitizer releases after `0.5.4` — **on `0.5.4`, enabling
+  `SANITIZE_CACHE_ENABLED` is not recommended.**
 - **Upgrade (witness `:50058` ACL, T-12):** kit installs inherit this on the
   next `dsa-veil-witness` image pull — no kit-side action is required for the
   fix itself. An install that has **not** run the Compose mTLS bootstrap
