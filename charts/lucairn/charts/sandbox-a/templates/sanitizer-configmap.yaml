@@ -29,7 +29,16 @@ data:
         language_detection: auto
         default_language: de
         supported_languages: [de, en]
-        confidence_threshold: {{ .Values.sanitizer.confidenceThreshold | default 0.35 }}
+        # T-562 sweep — hasKey (NOT `| default`), same Sprig-0 trap as T-472
+        # above: an explicit 0 is a schema-legitimate confidence floor (see
+        # values.schema.json), but `default` would silently rewrite it to
+        # 0.35. Pinned pre-fix by test_sanitizer_confidence_threshold_schema.sh
+        # (T-517); that suite's 0-boundary assertion is updated in lockstep.
+        {{- if hasKey (default dict .Values.sanitizer) "confidenceThreshold" }}
+        confidence_threshold: {{ .Values.sanitizer.confidenceThreshold }}
+        {{- else }}
+        confidence_threshold: 0.35
+        {{- end }}
         custom_recognizers:
           - sozialversicherungsnummer
           - us_ssn
@@ -119,7 +128,14 @@ data:
         # certifies COMPLETENESS_PARTIAL. Set
         # `global.l3AvailabilityPosture: reject` to fail closed.
         model: {{ .Values.sanitizer.llmScanModel | default "qwen2.5:7b" | quote }}
-        timeout_seconds: {{ .Values.sanitizer.llmScanTimeout | default 30 }}
+        # T-562 sweep — hasKey (NOT `| default`), same Sprig-0 trap as T-472
+        # below: an explicit 0 must reach the sanitizer, which refuses it
+        # loudly at boot (config.py: timeout_seconds must be > 0).
+        {{- if hasKey (default dict .Values.sanitizer) "llmScanTimeout" }}
+        timeout_seconds: {{ .Values.sanitizer.llmScanTimeout }}
+        {{- else }}
+        timeout_seconds: 30
+        {{- end }}
         # T-472 — TOTAL request budget across every L3 call in one request.
         # `timeout_seconds` above bounds ONE call; without this a request that
         # makes many calls stays inside the per-call timeout while blowing far
@@ -155,7 +171,17 @@ data:
         mode: {{ .Values.sanitizer.llmScanMode | default "sequential" | quote }}
         # Calibrated against the 12-corpus domain bench to hit news-journalism
         # FP < 9% without leaking patient names.
-        restore_threshold: {{ .Values.sanitizer.llmScanRestoreThreshold | default 0.85 }}
+        #
+        # T-562 sweep — hasKey (NOT `| default`): an explicit 0 must reach the
+        # sanitizer. In `mode: ensemble` config.py rejects it at boot
+        # (restore_threshold must be in [0.5, 1.0]); in the default
+        # `sequential` mode it is accepted with a log warning, not an error —
+        # preserve-zero regardless, per the consuming-service-decides default.
+        {{- if hasKey (default dict .Values.sanitizer) "llmScanRestoreThreshold" }}
+        restore_threshold: {{ .Values.sanitizer.llmScanRestoreThreshold }}
+        {{- else }}
+        restore_threshold: 0.85
+        {{- end }}
 
       # ──────────────────────────────────────────────────────────────────
       # Phase 7 — ML PII scanners (Piiranha + GLiNER) extracted into the
@@ -192,23 +218,58 @@ data:
         enabled: {{ .Values.sanitizer.piiranha.enabled | default false }}
         # gRPC deadline per scan call (seconds). The sidecar's eager-load
         # pre-warms inference; first-call latency should be < 5s.
-        grpc_deadline_seconds: {{ .Values.sanitizer.piiranha.grpcDeadlineSeconds | default 5 }}
+        #
+        # T-562 sweep — hasKey (NOT `| default`), same Sprig-0 trap as T-472.
+        # NOTE: currently INERT — main's sanitizer config.py loader reads only
+        # `piiranha.enabled`/`confidence_threshold` into PiiranhaConfig; this
+        # key parses but has zero behavioural effect until a consumer reads
+        # it (verified against origin/main 2026-08-06; own ticket, not this
+        # sweep). Fixed anyway so the render is correct the day it IS wired up.
+        {{- if hasKey (default dict .Values.sanitizer.piiranha) "grpcDeadlineSeconds" }}
+        grpc_deadline_seconds: {{ .Values.sanitizer.piiranha.grpcDeadlineSeconds }}
+        {{- else }}
+        grpc_deadline_seconds: 5
+        {{- end }}
 
       gliner:
         enabled: {{ .Values.sanitizer.gliner.enabled | default false }}
-        grpc_deadline_seconds: {{ .Values.sanitizer.gliner.grpcDeadlineSeconds | default 5 }}
+        # T-562 sweep — hasKey (NOT `| default`). Same INERT-today caveat as
+        # piiranha.grpcDeadlineSeconds above applies to all three gliner knobs
+        # below (skip_min_text_len / skip_max_entity_density likewise unread
+        # by main's GlinerConfig loader).
+        {{- if hasKey (default dict .Values.sanitizer.gliner) "grpcDeadlineSeconds" }}
+        grpc_deadline_seconds: {{ .Values.sanitizer.gliner.grpcDeadlineSeconds }}
+        {{- else }}
+        grpc_deadline_seconds: 5
+        {{- end }}
         # Adaptive-skip thresholds. Sanitizer passes l1_l2_entity_count +
         # text_len to the sidecar; the sidecar applies these to decide
         # whether to run GLiNER inference at all (skipped_short / skipped_dense).
-        skip_min_text_len: {{ .Values.sanitizer.gliner.skipMinTextLen | default 32 }}
-        skip_max_entity_density: {{ .Values.sanitizer.gliner.skipMaxEntityDensity | default 0.30 }}
+        {{- if hasKey (default dict .Values.sanitizer.gliner) "skipMinTextLen" }}
+        skip_min_text_len: {{ .Values.sanitizer.gliner.skipMinTextLen }}
+        {{- else }}
+        skip_min_text_len: 32
+        {{- end }}
+        {{- if hasKey (default dict .Values.sanitizer.gliner) "skipMaxEntityDensity" }}
+        skip_max_entity_density: {{ .Values.sanitizer.gliner.skipMaxEntityDensity }}
+        {{- else }}
+        skip_max_entity_density: 0.30
+        {{- end }}
 
       k_anonymity:
         # k-anonymity is pure math — stays in-process in sanitizer (NOT in
         # the pii-ml sidecar). Default OFF for Helm operators; flip on via
         # `.Values.sanitizer.kAnonymity.enabled`. See PRD § Out of scope.
         enabled: {{ .Values.sanitizer.kAnonymity.enabled | default false }}
-        k: {{ .Values.sanitizer.kAnonymity.k | default 5 }}
+        # T-562 sweep — hasKey (NOT `| default`). NOTE: currently INERT — main's
+        # KAnonymityConfig loader reads only `enabled`/`threshold`, never `k`
+        # (verified against origin/main 2026-08-06; own ticket, not this
+        # sweep). Fixed anyway so the render is correct the day it IS wired up.
+        {{- if hasKey (default dict .Values.sanitizer.kAnonymity) "k" }}
+        k: {{ .Values.sanitizer.kAnonymity.k }}
+        {{- else }}
+        k: 5
+        {{- end }}
 
       pii_ml_client:
         # gRPC endpoint for the pii-ml sidecar. The default resolves to the
@@ -217,6 +278,20 @@ data:
         endpoint: "{{ .Values.sanitizer.piiMlClient.endpoint | default (printf "pii-ml.%s.svc.cluster.local:50056" .Values.namespace) }}"
         # Per-scan gRPC deadline. Sanitizer's config.py reads `deadline_seconds`
         # (flat field, NOT nested). Missing → defaults to 5.0 silently.
+        #
+        # T-562 sweep — SCHEMA-REJECT, not hasKey (values.schema.json requires
+        # > 0). This is a raw wall-clock gRPC transport timeout, the same
+        # knob class as `llm_scan.timeout_seconds` above — and DSA's
+        # config.py already refuses THAT one at 0 for exactly this reason
+        # (config.py:2208, T-474). `PiiMlClientConfig` has no boot validation
+        # at all, so an explicit 0 passed through would boot clean and then
+        # fail every Piiranha/GLiNER gRPC call at runtime (`timeout=0` is a
+        # doomed deadline, not "no timeout") — a config error wearing an
+        # infrastructure fault's clothes, the exact shape T-474 was written to
+        # prevent. Rejecting it before it ever reaches this line is cheaper
+        # than waiting for DSA to grow the same boot guard. preserve-zero
+        # remains the default for the other 10 knobs in this sweep; this is
+        # the one deliberate exception (see PR body for the full table).
         deadline_seconds: {{ .Values.sanitizer.piiMlClient.deadlineSeconds | default 5 }}
         # Circuit breaker: open after N consecutive failures, half-open after
         # half_open_seconds. r1 kit-config-image-drift BLOCKER-2: sanitizer's
@@ -225,8 +300,21 @@ data:
         # (NOT nested under a `circuit_breaker:` sub-mapping). Helm operators
         # tune via `.sanitizer.piiMlClient.circuitBreaker.{...}` (camelCase
         # values-tree convention preserved); the template flattens at render.
-        circuit_breaker_open_after: {{ .Values.sanitizer.piiMlClient.circuitBreaker.consecutiveFailures | default 3 }}
-        circuit_breaker_half_open_seconds: {{ .Values.sanitizer.piiMlClient.circuitBreaker.halfOpenSeconds | default 30 }}
+        #
+        # T-562 sweep — hasKey (NOT `| default`) for both: a circuit-breaker
+        # trip count / backoff of 0 is an unusual but coherent operator
+        # choice ("open on the first failure" / "retry immediately"), not a
+        # doomed transport timeout, so preserve-zero applies.
+        {{- if hasKey (default dict .Values.sanitizer.piiMlClient.circuitBreaker) "consecutiveFailures" }}
+        circuit_breaker_open_after: {{ .Values.sanitizer.piiMlClient.circuitBreaker.consecutiveFailures }}
+        {{- else }}
+        circuit_breaker_open_after: 3
+        {{- end }}
+        {{- if hasKey (default dict .Values.sanitizer.piiMlClient.circuitBreaker) "halfOpenSeconds" }}
+        circuit_breaker_half_open_seconds: {{ .Values.sanitizer.piiMlClient.circuitBreaker.halfOpenSeconds }}
+        {{- else }}
+        circuit_breaker_half_open_seconds: 30
+        {{- end }}
 
     qi_engine:
       # Controlled at runtime via QI_ENGINE_ENABLED, QI_ENGINE_THRESHOLD,
