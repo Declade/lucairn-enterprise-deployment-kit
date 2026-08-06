@@ -200,22 +200,28 @@ assert_child_accepted typical         '0.3'  '0.3'
 # [0, 1] and a chart that refused a value the service accepts would be a
 # divergence, not a guard.
 #
-# ⚠️ PRE-EXISTING, OUT OF SCOPE HERE (found while writing this suite, reported
-# with the PR): the template renders `{{ .Values.sanitizer.confidenceThreshold
-# | default 0.35 }}`, and Go templates treat 0 as EMPTY, so `0` is silently
-# rewritten to the 0.35 default instead of reaching the sanitizer. An operator
-# asking for "keep every detection" quietly gets the shipped default. That is a
-# TEMPLATE defect (`default` vs `hasKey`), not a schema one, and fixing it
-# touches the render path this PR deliberately does not. Pinned here so the
-# behaviour is recorded and a later fix has a test that must be updated
-# ON PURPOSE rather than a silent change.
+# T-562 (Sprig-0 sweep, PRD prd-2026-08-06-residuals-stream.md) FIXED the
+# template defect this block used to pin: `{{ .Values.sanitizer.
+# confidenceThreshold | default 0.35 }}` treated Go-template-empty 0 as
+# absent and silently substituted 0.35 — an operator asking for "keep every
+# detection" quietly got the shipped default instead. The template now uses
+# the hasKey presence pattern (charts/lucairn/charts/sandbox-a/templates/
+# sanitizer-configmap.yaml), so an explicit 0 reaches the ConfigMap verbatim.
+# This assertion was updated ON PURPOSE, per the instruction the old comment
+# left for whoever fixed it.
 write_child_values '0'
 render_child >"$TMPDIR/render-boundary-zero.yaml" 2>"$TMPDIR/render-boundary-zero.err" || {
   cat "$TMPDIR/render-boundary-zero.err" >&2
   fail "schema rejected the VALID 0 boundary"
 }
-grep -q "confidence_threshold: 0.35" "$TMPDIR/render-boundary-zero.yaml" \
-  || fail "the documented \`default\` truthiness quirk for 0 changed — re-read the comment above and update this assertion deliberately"
+grep -q "confidence_threshold: 0$" "$TMPDIR/render-boundary-zero.yaml" \
+  || fail "explicit confidenceThreshold=0 was not honoured — the T-562 hasKey fix regressed"
+
+# POSITIVE CONTROL for the T-562 fix: reverting the template to `| default
+# 0.35` must turn the assertion above red. Verified in a scratch copy
+# (2026-08-06, not committed): reinstating `| default 0.35` renders
+# `confidence_threshold: 0.35` for this exact 0-override fixture, failing the
+# `grep -q "confidence_threshold: 0$"` check above.
 
 # Omitting the key entirely must keep working — the template's `| default 0.35`
 # is the pre-existing contract and this schema entry does not make the key

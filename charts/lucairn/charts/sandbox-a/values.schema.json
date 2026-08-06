@@ -34,6 +34,11 @@
                 "in_box_plaintext"
               ],
               "description": "T-64: closed vocabulary matching the DSA sanitizer's declared-transport contract (services/sanitizer/config.py on the feat/gliner-remote-fallback branch). Empty string (the default) means 'derive from sanitizer.piiMlClient.endpoint': deployment.yaml auto-declares in_box_plaintext when endpoint resolves to the stock in-cluster default, and emits NO LUCAIRN_PII_ML_TRANSPORT env var at all when endpoint is overridden to a non-stock address (it will not guess from address shape — an undeclared hop matches every prior kit release, so no existing install's render can break). The one render-time rejection is the inverse contradiction: transport=\"tailnet\" together with a stock in-cluster endpoint. A typo here (e.g. \"tailnett\") is caught at `helm template`/`lint` time instead of silently reaching the sanitizer as an unrecognized value."
+            },
+            "deadlineSeconds": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "T-562 (Sprig-0 sweep, PRD prd-2026-08-06-residuals-stream.md): per-scan gRPC wall-clock timeout to the pii-ml sidecar, rendered into the sanitizer ConfigMap as `pii_ml_client.deadline_seconds` (templates/sanitizer-configmap.yaml). This is the ONE knob in the sweep that is SCHEMA-rejected rather than preserve-zero: `PiiMlClientConfig` (services/sanitizer/config.py) has no boot validation for this field at all, so an explicit 0 or negative value would pass boot silently and then fail EVERY Piiranha/GLiNER gRPC call at runtime (`timeout=0` is a doomed deadline, not 'no timeout') — a config error wearing an infrastructure fault's clothes, the same class DSA's config.py:2208 already refuses at boot for the sibling `llm_scan.timeout_seconds` knob (T-474). Rejecting a non-positive value here at `helm template`/`helm lint` time is cheaper than waiting for DSA to grow the equivalent boot guard. NaN is caught by the same comparison (every NaN comparison is false, so it satisfies neither `exclusiveMinimum` nor a real Helm/json NaN conversion, depending on validator version); a string or boolean is caught by the type."
             }
           }
         }
