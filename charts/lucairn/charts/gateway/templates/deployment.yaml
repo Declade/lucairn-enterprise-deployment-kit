@@ -106,6 +106,29 @@ spec:
               value: {{ .Values.streaming.enabled | quote }}
             - name: STREAM_TIMEOUT
               value: {{ .Values.streaming.timeoutSeconds | quote }}
+            # T-573 evidence gap store (upstream dual-sandbox-architecture
+            # T-571; PRD prd-2026-08-06-evidence-pipeline-fail-closed.md).
+            #
+            # ⚑ The gateway opens this path at startup and its admission gate
+            # treats an unwritable store as a degraded evidence path. This
+            # container runs with containerSecurityContext.readOnlyRootFilesystem
+            # =true, so WITHOUT the volume mounted below the path is unopenable
+            # and the pod comes up 1/1 Ready anyway: under the LOG posture every
+            # request is admitted and NOTHING is recorded (silent), under
+            # ENFORCE all healthy traffic is refused.
+            #
+            # This value and the volumeMount's mountPath are BOTH derived from
+            # .Values.evidenceGap.* so they cannot drift apart;
+            # tests/test_gateway_evidence_gap_volume.sh asserts that on the
+            # rendered manifest.
+            - name: GATEWAY_EVIDENCE_GAP_PATH
+              value: {{ printf "%s/%s" (trimSuffix "/" .Values.evidenceGap.mountPath) .Values.evidenceGap.fileName | quote }}
+            - name: GATEWAY_EVIDENCE_ADMISSION_POSTURE
+              value: {{ .Values.evidenceGap.posture | quote }}
+            {{- if .Values.evidenceGap.bootMode }}
+            - name: GATEWAY_EVIDENCE_BOOT_MODE
+              value: {{ .Values.evidenceGap.bootMode | quote }}
+            {{- end }}
             {{- if .Values.postgresKeystore.enabled }}
             - name: GATEWAY_KEYSTORE_DSN
               valueFrom:
@@ -194,6 +217,13 @@ spec:
             - name: keystore
               mountPath: {{ .Values.keystorePath | dir }}
             {{- end }}
+            # T-573 evidence gap store. Deliberately NOT readOnly (that is the
+            # defect being fixed) and deliberately mounted at the PARENT
+            # DIRECTORY of the gap file, because the gateway creates the file
+            # inside it — the same reason the keystore mount above is the
+            # parent dir rather than the file path.
+            - name: evidence-gap
+              mountPath: {{ .Values.evidenceGap.mountPath | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
@@ -240,6 +270,31 @@ spec:
           persistentVolumeClaim:
             claimName: {{ .Chart.Name }}-keystore
         {{- end }}
+        # T-573 evidence gap store backing volume.
+        #
+        # ⚠️ HONEST DEFAULT: emptyDir. It is WRITABLE — which is the whole
+        # point, the store could not be opened AT ALL before — and it survives
+        # a container CRASH-RESTART, but NOT pod rescheduling. Gap records are
+        # ENRICHMENT by design: the guarantee is the certificate sealing
+        # PARTIAL against the witness-side anchor, which lives in the witness
+        # database and is unaffected. So the emptyDir default trades some
+        # explanations for not forcing every install to provision storage. Set
+        # evidenceGap.persistence.enabled=true for a PVC-backed store that
+        # survives rescheduling.
+        #
+        # ⛔ A PVC with the default ReadWriteOnce access mode does NOT work
+        # with replicaCount>1 or the HPA — evidence-gap-pvc.yaml aborts the
+        # render on that combination rather than letting pods sit Pending, or
+        # (worse) letting two writers destroy each other's records on a shared
+        # volume.
+        - name: evidence-gap
+          {{- if .Values.evidenceGap.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.evidenceGap.persistence.existingClaim | default (printf "%s-evidence-gap" .Chart.Name) }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.evidenceGap.sizeLimit | quote }}
+          {{- end }}
         {{- if .Values.witnessMtls.clientSecret }}
         {{- if not $mtlsEnabled }}
         - name: witness-mtls-certs

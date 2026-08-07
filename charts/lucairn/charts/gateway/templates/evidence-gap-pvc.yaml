@@ -1,0 +1,40 @@
+{{- if .Values.evidenceGap.persistence.enabled }}
+{{- if or .Values.hpa.enabled (gt (int .Values.replicaCount) 1) }}
+{{- fail "EVIDENCE-GAP-MULTI-REPLICA: a persistent evidence gap store cannot be shared by more than one gateway replica, and ReadWriteMany is UNSUPPORTED for this store. Set gateway.hpa.enabled=false and gateway.replicaCount=1, or run multiple replicas with gateway.evidenceGap.persistence.enabled=false so each pod gets its own emptyDir (the supported multi-replica shape). WHY RWX IS NOT AN ESCAPE HATCH: the store compacts by rebuilding the whole file from ONE pod's in-memory map and renaming it over the shared path, so a second replica's records are destroyed on every compaction; and the temp-file name is keyed on the process PID, which is 1 in EVERY container, so the collision-avoidance the code appears to have does not exist across pods. Sharing the file loses evidence silently, which is the exact failure this store exists to remove. Per-pod stores keep single-instance locality as a known residual instead of a corruption bug." }}
+{{- end }}
+{{- end }}
+{{- if and .Values.evidenceGap.persistence.enabled (not .Values.evidenceGap.persistence.existingClaim) }}
+# T-573 evidence gap store PVC (upstream dual-sandbox-architecture T-571).
+#
+# OPT-IN — the chart default is emptyDir. See the volume definition in
+# deployment.yaml for the honest statement of what each option does and does
+# not survive. This claim is only rendered when persistence is enabled AND the
+# operator did not supply their own existingClaim.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Chart.Name }}-evidence-gap
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+    app.kubernetes.io/component: evidence-gap
+  annotations:
+    # Survive `helm uninstall` — the gap store is the record of evidence that
+    # should have been emitted and was not, so dropping it on an upgrade/
+    # reinstall would destroy exactly the explanations an auditor asks for.
+    # Mirrors the keystore PVC's reclaim posture. Operator drops it explicitly
+    # via `kubectl delete pvc {{ .Chart.Name }}-evidence-gap -n {{ .Values.namespace }}`.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    # ReadWriteOnce, not configurable. One writer per file is a property of the
+    # store, not a deployment preference — see the abort message above.
+    - ReadWriteOnce
+  {{- with .Values.evidenceGap.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.evidenceGap.persistence.size | default "1Gi" | quote }}
+{{- end }}
