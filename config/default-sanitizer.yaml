@@ -22,8 +22,47 @@ sanitizer:
   # `documented_placeholder_suppression_enabled` was removed because the
   # filter created an exploitable real-credential-leak path. The yaml loader
   # silently ignores any leftover key in customer config files.
+  #
+  # ⚠️ "the loader silently ignores leftover keys" is NOT universally true, and
+  # believing it is what shipped T-576. Keys the sanitizer deliberately RETIRED
+  # are a BOOT REFUSAL, not a no-op — see the redaction_policy note below.
   detect_secrets_enabled: true
   adversarial_normalization_enabled: true
+  # ── Consolidated never-redact surface (T-576) ───────────────────────────
+  # Until kit 1.9.4 the strict whole-span-exact safe list rode
+  # `presidio.strict_safe_terms_file: /config/safe-terms-strict.txt`. DSA
+  # RETIRED that key (services/sanitizer/config.py:3181-3204, commit 811ef43b0
+  # 2026-07-25) and the sanitizer now REFUSES BOOT when it is present, with the
+  # migration named in the error text: move the terms to
+  # `redaction_policy.stop_terms` with `surface: l1_strict`. Left in place the
+  # key CrashLoopBackOffs the sanitizer on every sanitizer image built after
+  # that commit — the whole stack then fails to come up.
+  #
+  # `enabled` is deliberately UNSET (loader default false): the l1_strict list
+  # is consumed unconditionally by the scanner (presidio_scan.py:1598), while
+  # `enabled: true` would additionally activate the per-zone layer policy — a
+  # behaviour change the kit has never shipped.
+  #
+  # Semantics are byte-identical to the retired file: a Presidio/spaCy
+  # detection is suppressed ONLY when the ENTIRE detected span (lowercased +
+  # stripped) equals a term. "Claude" alone → suppressed; "Claude Müller" →
+  # still redacted.
+  #
+  # ⛔ NEVER add a real given name or surname here — that is an under-redaction
+  # and would leak real identity data. ("marc" and "grep" are deliberately
+  # absent for exactly this reason.)
+  redaction_policy:
+    stop_terms:
+      - {term: "Claude", surface: l1_strict}
+      - {term: "Opus", surface: l1_strict}
+      - {term: "Sonnet", surface: l1_strict}
+      - {term: "Haiku", surface: l1_strict}
+      - {term: "Anthropic", surface: l1_strict}
+      - {term: "Lucairn", surface: l1_strict}
+      - {term: "Codex", surface: l1_strict}
+      - {term: "Veil", surface: l1_strict}
+      - {term: "signable", surface: l1_strict}
+      - {term: "Remedy", surface: l1_strict}
   known_entity_matching:
     enabled: true
     strategies: [exact, cologne_phonetics, levenshtein]
@@ -83,12 +122,15 @@ sanitizer:
       - dutch_bsn
       - order_number
     safe_terms_file: /config/medical-terms.txt
-    # Strict whole-span-exact safe list (v0.5.1). Suppresses Presidio/spaCy
-    # PERSON false positives on product vocabulary (Claude/signable/…) where
-    # the ENTIRE detected span exactly equals the safe term. Does NOT suppress
-    # multi-token spans like "Claude Müller" — those still redact the surname.
-    # See config/safe-terms-strict.txt for the term list and semantics.
-    strict_safe_terms_file: /config/safe-terms-strict.txt
+    # ⛔ NO `strict_safe_terms_file` HERE (T-576) — the sanitizer refuses to
+    # boot on it. The strict whole-span-exact safe list now rides
+    # `sanitizer.redaction_policy.stop_terms` (surface: l1_strict) above.
+    #
+    # `safe_terms_file` above and `spacy_location_stop_terms_file` below are
+    # NOT retired: config.py:3196-3198 names exactly those two as the file-based
+    # keys that stay VALID. Only strict_safe_terms_file and gliner_stop_terms_file
+    # were consolidated into redaction_policy.stop_terms.
+    #
     # A6 (over-redaction tuning, v0.5.2): drop spaCy-NER LOCATION false positives
     # on a curated stop-list of common English words ("West"/"Loop"/…) that the
     # `en` SpacyRecognizer mis-tags as LOCATION in messy agentic/ITSM prose. A

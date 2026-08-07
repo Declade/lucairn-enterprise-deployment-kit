@@ -11,11 +11,69 @@ data:
     sanitizer:
       freetext_fields: []
       # W5+ Phase 1 (2026-05-09) toggles — credential-class + adversarial-input
-      # hardening. Both default ON. Yaml loader ignores any unrecognised key,
-      # so legacy `documented_placeholder_suppression_enabled` (removed in
-      # TOB-160-001 to close a real-credential-leak path) is silently ignored.
+      # hardening. Both default ON. An unrecognised key is generally ignored by
+      # the loader, so legacy `documented_placeholder_suppression_enabled`
+      # (removed in TOB-160-001 to close a real-credential-leak path) is
+      # silently dropped.
+      #
+      # ⚠️ "unrecognised keys are ignored" is NOT universally true, and
+      # believing it is what shipped T-576. A key the sanitizer deliberately
+      # RETIRED can be a boot REFUSAL rather than a no-op: config.py's
+      # `_reject_retired_presidio_keys` raises on `presidio.strict_safe_terms_file`
+      # and `presidio.gliner_stop_terms_file` so a still-set file cannot be
+      # silently dropped into over-redaction. Never add a sanitizer key to this
+      # ConfigMap without checking it against the image's config.py loader —
+      # tests/test_sanitizer_retired_config_keys.sh guards the two known ones.
       detect_secrets_enabled: true
       adversarial_normalization_enabled: true
+      # ── Consolidated never-redact surface ──────────────────────────────
+      # T-576. Until kit 1.9.4 the strict whole-span-exact safe list rode
+      # `presidio.strict_safe_terms_file: /config/safe-terms-strict.txt`. DSA
+      # RETIRED that key (services/sanitizer/config.py:3181-3204, commit
+      # 811ef43b0 2026-07-25, "consolidate 3 FP never-redact surfaces into
+      # redaction_policy") and now REFUSES BOOT on it, with the migration
+      # spelled out in the error text: move the terms to
+      # `redaction_policy.stop_terms` with `surface: l1_strict`. The old key
+      # therefore CrashLoopBackOffs the sanitizer sidecar on any sanitizer
+      # image built after that commit → sandbox-a never Ready → the gateway's
+      # isolation-invariant poller never verifies → the gateway restart-loops
+      # on its own startup probe. A whole clean install fails to come up.
+      #
+      # `enabled` is deliberately LEFT UNSET (loader default false). The
+      # l1_strict list is consumed unconditionally by the scanner
+      # (presidio_scan.py:1598 unions `redaction_policy.l1_strict_terms` into
+      # `_strict_safe_terms`, no `enabled` check), while `enabled: true` would
+      # additionally activate the per-zone layer policy — a behaviour change
+      # this chart has never shipped. Terms below are the verbatim contents of
+      # the retired kit file: semantics are byte-identical (whole detected
+      # span, lowercased + stripped, exact match, ANY entity type), so
+      # "Claude" alone is suppressed while "Claude Müller" still redacts.
+      #
+      # ⛔ DO NOT add real given names or surnames here — that is an
+      # under-redaction (a real identity would stop being redacted). DSA's
+      # test_shipped_strict_safe_list_has_no_real_names enforces the same rule
+      # upstream.
+      redaction_policy:
+        stop_terms:
+          - {term: "Claude", surface: l1_strict}
+          - {term: "Opus", surface: l1_strict}
+          - {term: "Sonnet", surface: l1_strict}
+          - {term: "Haiku", surface: l1_strict}
+          - {term: "Anthropic", surface: l1_strict}
+          - {term: "Lucairn", surface: l1_strict}
+          - {term: "Codex", surface: l1_strict}
+          - {term: "Veil", surface: l1_strict}
+          - {term: "signable", surface: l1_strict}
+          - {term: "Remedy", surface: l1_strict}
+          {{- /*
+            Operator extension point. The retired file was operator-editable
+            (a replacement ConfigMap, or SANITIZER_STRICT_SAFE_TERMS_FILE on
+            the Compose lane); this list is the replacement for that
+            capability. Same shape as .Values.sanitizer.safePatterns below.
+          */}}
+          {{- range .Values.sanitizer.strictSafeTerms | default (list) }}
+          - {term: {{ . | quote }}, surface: l1_strict}
+          {{- end }}
       known_entity_matching:
         enabled: true
         strategies: [exact, cologne_phonetics, levenshtein]
@@ -88,13 +146,16 @@ data:
         # default kit ConfigMap intentionally omits this to avoid a
         # missing-file warning on a clean install.
         # safe_terms_file: /config/medical-terms.txt
-        # Strict whole-span-exact safe list (v0.5.1). Suppresses
-        # Presidio/spaCy PERSON false positives on product vocabulary
-        # (Claude/signable/…) without touching recall on real names.
-        # Delivered as the `safe-terms-strict.txt` key in this ConfigMap
-        # (mounted at /config/safe-terms-strict.txt by the sanitizer
-        # volumeMount → /config directory binding).
-        strict_safe_terms_file: /config/safe-terms-strict.txt
+        # ⛔ NO `strict_safe_terms_file` HERE (T-576). The strict whole-span-
+        # exact safe list now rides `sanitizer.redaction_policy.stop_terms`
+        # (surface: l1_strict) above — see the note there. Re-adding this key
+        # is a sanitizer BOOT REFUSAL, not a no-op.
+        #
+        # `spacy_location_stop_terms_file` below is NOT retired: config.py's
+        # docstring at :3196-3198 names it and `safe_terms_file` as the two
+        # file-based keys that stay VALID. Only strict_safe_terms_file and
+        # gliner_stop_terms_file were consolidated away.
+        #
         # A6 strict LOCATION stop-list (v0.5.2). Drops spaCy-NER LOCATION false
         # positives on common English words ("West"/"Loop"/…) mis-tagged in
         # messy ITSM/ServiceNow prose. Dropped ONLY when entity_type == LOCATION
@@ -322,49 +383,12 @@ data:
       enabled: false
       threshold: 0.25
       action: generalize
-  # Strict whole-span-exact safe list (v0.5.1). Mounted alongside config.yaml
-  # in the /config directory (sanitizer volumeMount: mountPath: /config).
-  # Referenced by strict_safe_terms_file: /config/safe-terms-strict.txt above.
-  # Terms: product vocab (Claude/Opus/Sonnet/Haiku/Anthropic/Lucairn/Codex/
-  # Veil/signable/Remedy) — spaCy PERSON@0.85 false positives on ITSM/
-  # ServiceNow payloads. Whole-span-exact semantics only; multi-token spans
-  # like "Claude Müller" are NOT suppressed — the surname still redacts.
-  safe-terms-strict.txt: |
-    # Strict whole-span-exact safe list for the Lucairn sanitizer.
-    #
-    # SEMANTICS (different from config/medical-terms.txt):
-    #   A Presidio/spaCy NER detection is suppressed ONLY when the ENTIRE detected
-    #   span (lowercased + stripped) exactly equals a term here. No first-word
-    #   match, no any-word match. This prevents under-redaction of real names whose
-    #   first token happens to be a safe term:
-    #
-    #     "claude"         alone → suppressed  (product vocabulary FP)
-    #     "claude müller"  → NOT suppressed    (real person's full name; span
-    #                                           differs from "claude")
-    #
-    # DO NOT add real given names here. "marc" is a real given name tagged
-    # PERSON@0.85 by spaCy — safe-listing it would be an under-redaction that
-    # leaks real identity data. (See Slice 1 findings and the "claude müller"
-    # adversarial test in test_overredaction_recall_fixture.py.)
-    #
-    # "grep" was considered (it is tagged PERSON@0.85 in the conv-3cde524c run)
-    # but intentionally dropped: it is also a real-world surname. Errs toward
-    # over-redaction by design.
-    #
-    # Source: Slice 2 of PRD prd-2026-06-14-overredaction-tuning.md.
-    # Verified against conv-3cde524c manifest (root cause: SpacyRecognizer en
-    # tags these as PERSON@0.85 on English-prose ITSM/ServiceNow payloads).
-    #
-    Claude
-    Opus
-    Sonnet
-    Haiku
-    Anthropic
-    Lucairn
-    Codex
-    Veil
-    signable
-    Remedy
+  # T-576: the `safe-terms-strict.txt` data key was DELETED here. It existed
+  # only to back `presidio.strict_safe_terms_file`, which the sanitizer
+  # retired (boot refusal). Its ten terms now live inline in config.yaml
+  # under sanitizer.redaction_policy.stop_terms (surface: l1_strict), which
+  # is where the current sanitizer reads them from. Leaving the key behind
+  # would have mounted a file nothing reads.
   # A6 strict LOCATION stop-list (v0.5.2). Mounted alongside config.yaml in the
   # /config directory (sanitizer volumeMount: mountPath: /config). Referenced by
   # spacy_location_stop_terms_file: /config/safe-terms-strict-location.txt above.

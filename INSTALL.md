@@ -128,10 +128,19 @@ step.
   recognizer (`de_places`) no longer fires on English-language input. Baked
   into the sanitizer image; no config change required.
 
-Both fixes are delivered in the `0.5.1` sanitizer image. The strict safe list
-is also bundled in the kit (`config/safe-terms-strict.txt`), mounted into the
-sanitizer container, and wired in `config/default-sanitizer.yaml` and the ITSM
-starter template (`starter-templates/itsm/config.yaml`).
+Both fixes are delivered in the `0.5.1` sanitizer image.
+
+> **Where the strict safe list lives now (T-576).** It used to be wired through
+> `presidio.strict_safe_terms_file: /config/safe-terms-strict.txt`. The
+> sanitizer **retired that key on 2026-07-25 and now refuses to boot on it** —
+> leaving it set CrashLoopBackOffs the sanitizer, `sandbox-a` never becomes
+> Ready, and the gateway restart-loops behind it. The same ten terms now live
+> inline under `sanitizer.redaction_policy.stop_terms` with `surface:
+> l1_strict` in `config/default-sanitizer.yaml`, `starter-templates/itsm/config.yaml`
+> and the Helm `sanitizer-config` ConfigMap. Semantics are unchanged. To add
+> your own strict terms: edit that block, or set the Helm value
+> `sandbox-a.sanitizer.strictSafeTerms`. **Never put a real given name or
+> surname on that list — it would stop being redacted.**
 
 ## Step 0 — Registry access (REQUIRED before any docker pull)
 
