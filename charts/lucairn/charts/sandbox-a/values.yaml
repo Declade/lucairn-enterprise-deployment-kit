@@ -124,6 +124,20 @@ sanitizer:
   # 12-corpus domain bench). Override per environment if needed.
   confidenceThreshold: 0.35
   safePatterns: []
+  # T-576 — EXTRA strict whole-span-exact never-redact terms, appended to the
+  # ten shipped product-vocabulary terms rendered into
+  # `sanitizer.redaction_policy.stop_terms` (surface: l1_strict). This is the
+  # replacement for the retired `strict_safe_terms_file` ConfigMap/bind-mount:
+  # the sanitizer refuses to boot on that key, so an operator's own strict
+  # terms must arrive through this list instead.
+  #
+  # Semantics: a Presidio/spaCy detection is suppressed ONLY when the ENTIRE
+  # detected span (lowercased + stripped) equals the term. "Claude" alone is
+  # suppressed; "Claude Müller" still redacts.
+  #
+  # ⛔ NEVER put a real given name or surname here — that is an under-redaction
+  # and would leak real identity data.
+  strictSafeTerms: []
   llmAuditEnabled: false
   qiEngineEnabled: "true"
   qiEngineThreshold: "0.25"

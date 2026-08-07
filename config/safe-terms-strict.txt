@@ -1,5 +1,22 @@
 # Strict whole-span-exact safe list for the Lucairn sanitizer.
 #
+# ⚠️ NO LONGER WIRED BY THE SHIPPED CONFIGS (T-576, kit > 1.9.4).
+#   The `presidio.strict_safe_terms_file:` directive that used to point here was
+#   RETIRED by the sanitizer (services/sanitizer/config.py, commit 811ef43b0
+#   2026-07-25) and is now a BOOT REFUSAL, not a no-op — leaving it set
+#   CrashLoopBackOffs the sanitizer and the whole stack fails to come up.
+#   The ten terms below now live inline in config/default-sanitizer.yaml under
+#   `sanitizer.redaction_policy.stop_terms` with `surface: l1_strict`, which is
+#   where the current sanitizer reads them from. EDIT THEM THERE — editing this
+#   file changes nothing on a shipped config.
+#
+#   This file and its Compose bind-mount are retained only so an operator still
+#   pinned to a PRE-2026-07-25 sanitizer image, running their own config that
+#   still sets the old directive, keeps a real host-side source for the mount
+#   (a missing bind-mount source would materialize as an empty directory).
+#   Everything below documents the semantics, which the l1_strict surface
+#   reproduces byte-for-byte.
+#
 # SEMANTICS (different from config/medical-terms.txt):
 #   A Presidio/spaCy NER detection is suppressed ONLY when the ENTIRE detected
 #   span (lowercased + stripped) exactly equals a term here. No first-word

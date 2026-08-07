@@ -314,6 +314,40 @@ carry a security fix are tagged **[Security]**.
     feature, so these env vars are inert on the currently pinned image. This
     change makes the chart correct for the gateway that has it; it does not
     make the pinned binary record anything.
+- **Every shipped sanitizer config set a RETIRED key that stops a clean install
+  from coming up (T-576).** `charts/lucairn/charts/sandbox-a/templates/sanitizer-configmap.yaml`,
+  `config/default-sanitizer.yaml` and `starter-templates/itsm/config.yaml` all
+  set `presidio.strict_safe_terms_file: /config/safe-terms-strict.txt`. The
+  sanitizer RETIRED that key on 2026-07-25 (upstream `dual-sandbox-architecture`
+  commit `811ef43b0`, "consolidate 3 FP never-redact surfaces into
+  redaction_policy") and deliberately made it a **boot refusal** rather than a
+  silent no-op, because ignoring a still-set never-redact file would silently
+  become over-redaction. Measured consequence on a sanitizer image built after
+  that date: the sanitizer sidecar `CrashLoopBackOff`s → `sandbox-a` never
+  becomes Ready → the gateway's isolation-invariant poller never verifies → the
+  gateway restart-loops on its own startup probe, and the whole stack fails to
+  come up. The ten product-vocabulary terms now ride
+  `sanitizer.redaction_policy.stop_terms` with `surface: l1_strict`, which the
+  current sanitizer reads and which reproduces the old semantics byte-for-byte
+  (whole detected span, lowercased + stripped, exact match, any entity type —
+  so `Claude` alone is suppressed while `Claude Müller` still redacts).
+  `redaction_policy.enabled` is deliberately left unset: the `l1_strict` list
+  applies regardless, while enabling the block would additionally activate the
+  per-zone layer policy, which the kit has never shipped.
+  - Helm operators get a new `sandbox-a.sanitizer.strictSafeTerms` list value to
+    append their own strict terms — the replacement for editing the retired
+    file. The now-dead `safe-terms-strict.txt` ConfigMap data key was removed.
+  - `config/safe-terms-strict.txt` and its Compose bind-mount are RETAINED but
+    no longer wired by any shipped config; they exist so an operator still on a
+    pre-retirement image with a hand-written config keeps a real host-side mount
+    source. Edit the `redaction_policy.stop_terms` block, not that file.
+  - Pinned by `tests/test_sanitizer_retired_config_keys.sh` (in `make test`),
+    and `bin/lucairn doctor` now warns when an operator-authored config declares
+    `strict_safe_terms_file` or `gliner_stop_terms_file`.
+  - Note on the pinned images: kit 1.9.4 pins `dsa-*:0.5.4` (built 2026-06-19),
+    which PREDATES the retirement, so the shipped tag itself boots either way.
+    The defect bites the moment the kit tracks a newer sanitizer — which is the
+    exact `sanitizer_config_compat` drift `image-manifest.yaml` warns about.
 - **`admin` sub-chart gained an `ExternalSecret` template (T-488).**
   `--set admin.secrets.backend=vault` used to render "clean" with nothing to
   ever populate the `admin-credentials` Secret that `deployment.yaml` mounts

@@ -2263,9 +2263,19 @@ Schema change: none. No database migration required.
 Sanitizer-only image change: the `0.5.1` sanitizer image includes two
 L1+L2 false-positive-reduction fixes. Operators get fewer PERSON redactions
 on product vocabulary (Claude/signable/…) with no change to recall on real
-PII. The strict safe list is bundled in `config/safe-terms-strict.txt` and
-auto-mounted by `docker-compose.customer.yml`; Helm operators get it via the
-`sanitizer-config` ConfigMap key `safe-terms-strict.txt`.
+PII.
+
+> **Superseded delivery (T-576).** The strict safe list used to be a file
+> (`config/safe-terms-strict.txt`) referenced by
+> `presidio.strict_safe_terms_file`. The sanitizer retired that key on
+> 2026-07-25 and now **refuses to boot** on it (sanitizer CrashLoopBackOff →
+> `sandbox-a` never Ready → gateway restart-loop). The same terms are now
+> inline under `sanitizer.redaction_policy.stop_terms` (`surface: l1_strict`)
+> in `config/default-sanitizer.yaml` and in the `sanitizer-config` ConfigMap;
+> the `safe-terms-strict.txt` ConfigMap key was removed. Add your own strict
+> terms in that block, or via the Helm value
+> `sandbox-a.sanitizer.strictSafeTerms`. `bin/lucairn doctor` warns if an
+> operator-authored config still declares the retired key.
 
 **Compose:** set `LUCAIRN_IMAGE_TAG=0.5.1` in `customer.env`, then:
 ```bash

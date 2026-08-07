@@ -633,10 +633,13 @@ services:
       # empty safe-terms set, causing false-positive PII redactions on
       # clinical content. Caught by Sim 3 config-vs-image drift sweep 2026-05-15.
       - ${SANITIZER_SAFE_TERMS_FILE:-./config/medical-terms.txt}:/config/medical-terms.txt:ro
-      # Strict whole-span-exact safe list (v0.5.1) referenced by
-      # default-sanitizer.yaml's `strict_safe_terms_file`. Suppresses
-      # Presidio/spaCy PERSON false positives on product vocabulary
-      # (Claude/signable/…) without touching recall on real names.
+      # Strict whole-span-exact safe list. ⚠️ NO LONGER REFERENCED by the
+      # shipped default-sanitizer.yaml (T-576): the `strict_safe_terms_file`
+      # directive became a sanitizer BOOT REFUSAL on 2026-07-25, and the ten
+      # terms moved inline to `sanitizer.redaction_policy.stop_terms`
+      # (surface: l1_strict). The mount is retained ONLY so an operator on a
+      # pre-retirement image with their own legacy config keeps a real
+      # host-side source (a missing source would become an empty directory).
       # See config/safe-terms-strict.txt for the term list and semantics.
       - ${SANITIZER_STRICT_SAFE_TERMS_FILE:-./config/safe-terms-strict.txt}:/config/safe-terms-strict.txt:ro
       # A6 strict LOCATION stop-list (v0.5.2) referenced by default-sanitizer.yaml's

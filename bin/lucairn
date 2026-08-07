@@ -4031,6 +4031,47 @@ check_strict_safe_terms_file() {
   return 0
 }
 
+# check_retired_sanitizer_config_keys ENV_FILE — refuse to bless a sanitizer
+# config that declares a key the sanitizer has RETIRED.
+#
+# T-576. `strict_safe_terms_file` and `gliner_stop_terms_file` were absorbed
+# into the authoritative `redaction_policy.stop_terms` surface. The sanitizer
+# does NOT ignore a leftover setting — it REFUSES TO BOOT on it, deliberately,
+# because silently dropping a still-set never-redact file would silently turn
+# into over-redaction. The observed failure is not a log line: the sanitizer
+# sidecar CrashLoopBackOffs, sandbox-a never becomes Ready, the gateway's
+# isolation-invariant poller never verifies, and the gateway restart-loops on
+# its own startup probe — a clean install that never comes up.
+#
+# The kit's own shipped configs are pinned clean by
+# tests/test_sanitizer_retired_config_keys.sh. This check exists for the case
+# that suite CANNOT see: an operator-authored config pointed at by
+# SANITIZER_CONFIG_FILE, or a stale copy carried across a kit upgrade.
+#
+# Warn-level, not fatal. Whether the key is fatal depends on how recent the
+# operator's sanitizer image is (the retirement landed 2026-07-25), and doctor
+# cannot read a build date out of a tag. A warn is the honest level: loud
+# enough to fix before it bites, non-blocking for an operator still pinned to
+# a pre-retirement image. Local grep only, so --offline-safe.
+check_retired_sanitizer_config_keys() {
+  local env_file="$1" key declared found=0
+  for key in strict_safe_terms_file gliner_stop_terms_file; do
+    declared="$(_sanitizer_config_declares "$key" "$env_file")"
+    [ -n "$declared" ] || continue
+    found=1
+    case "$key" in
+      strict_safe_terms_file)
+        warn "retired sanitizer config key: the active sanitizer config sets ${key}=${declared}, which the sanitizer REFUSES TO BOOT on (it was consolidated into redaction_policy). Symptom: sanitizer CrashLoopBackOff -> sandbox-a never Ready -> gateway restart-loop. Fix: delete the key and move its terms to sanitizer.redaction_policy.stop_terms as '- {term: \"<TERM>\", surface: l1_strict}' (see config/default-sanitizer.yaml for the shipped example)."
+        ;;
+      gliner_stop_terms_file)
+        warn "retired sanitizer config key: the active sanitizer config sets ${key}=${declared}, which the sanitizer REFUSES TO BOOT on (it was consolidated into redaction_policy). Fix: delete the key and move its terms to sanitizer.redaction_policy.stop_terms as '- {term: \"<TERM>\", surface: gliner, category: <CATEGORY>}'."
+        ;;
+    esac
+  done
+  [ "$found" -eq 1 ] || echo "retired sanitizer config keys: none declared (ok)"
+  return 0
+}
+
 # check_safe_terms_files_deliverable ENV_FILE — for EVERY safe-terms directive
 # (safe_terms_file + strict_safe_terms_file + spacy_location_stop_terms_file)
 # the active sanitizer config references, assert the referenced /config/<file>
@@ -7499,6 +7540,9 @@ doctor() {
   # never under-redaction) + --offline-safe (local file-stat / grep only).
   check_strict_safe_terms_file "$env_file"
   check_safe_terms_files_deliverable "$env_file"
+  # T-576: a RETIRED sanitizer key is a boot refusal, not a silent no-op.
+  # Covers operator-authored configs that the kit's own CI guard cannot see.
+  check_retired_sanitizer_config_keys "$env_file"
 
   # Phase 7 pii-ml sidecar suite (PR #240). Five orthogonal checks:
   # paired toggles, HF revision shape, prod-mode lazy-not-ready, HF

@@ -41,13 +41,12 @@ sanitizer:
     # so uncommenting the line below on the Helm path is a silent no-op until
     # you supply your own ConfigMap + mount. Left commented intentionally.
     # safe_terms_file: /config/medical-terms.txt
-    # Strict whole-span-exact safe list (v0.5.1). Stops product vocabulary
-    # (Claude/Opus/Sonnet/Haiku/Anthropic/Lucairn/Codex/Veil/signable/Remedy)
-    # from being mis-tagged as PERSON by spaCy on ITSM/ServiceNow payloads.
-    # Whole-span-exact semantics: "Claude" alone → suppressed; "Claude Müller"
-    # → NOT suppressed (surname still redacts). Delivered by both the Compose
-    # bind-mount and the Helm sanitizer ConfigMap. See config/safe-terms-strict.txt.
-    strict_safe_terms_file: /config/safe-terms-strict.txt
+    # ⛔ NO `strict_safe_terms_file` HERE (T-576) — the sanitizer REFUSES TO
+    # BOOT on that key (config.py:3181-3204). The strict whole-span-exact safe
+    # list that stops product vocabulary from being mis-tagged as PERSON now
+    # rides `sanitizer.redaction_policy.stop_terms` (surface: l1_strict) — see
+    # the block at the bottom of this sanitizer section.
+    #
     # A6 strict LOCATION stop-list (v0.5.2). Drops spaCy-NER LOCATION false
     # positives on common English words (West/Loop/…) the en SpacyRecognizer
     # mis-tags as LOCATION in messy ITSM/ServiceNow prose. Whole-token-exact
@@ -55,6 +54,25 @@ sanitizer:
     # surnames stay redacted (recall-safe). Delivered by both the Compose
     # bind-mount and the Helm sanitizer ConfigMap. See config/safe-terms-strict-location.txt.
     spacy_location_stop_terms_file: /config/safe-terms-strict-location.txt
+  # ── Consolidated never-redact surface (T-576) ─────────────────────────────
+  # Replaces the retired `presidio.strict_safe_terms_file`. Whole-span-exact:
+  # "Claude" alone → suppressed; "Claude Müller" → NOT suppressed (the surname
+  # still redacts). `enabled` deliberately unset — the l1_strict list applies
+  # regardless, while `enabled: true` would also activate the per-zone layer
+  # policy, which this template has never shipped.
+  # ⛔ NEVER add a real given name or surname here (under-redaction / PII leak).
+  redaction_policy:
+    stop_terms:
+      - {term: "Claude", surface: l1_strict}
+      - {term: "Opus", surface: l1_strict}
+      - {term: "Sonnet", surface: l1_strict}
+      - {term: "Haiku", surface: l1_strict}
+      - {term: "Anthropic", surface: l1_strict}
+      - {term: "Lucairn", surface: l1_strict}
+      - {term: "Codex", surface: l1_strict}
+      - {term: "Veil", surface: l1_strict}
+      - {term: "signable", surface: l1_strict}
+      - {term: "Remedy", surface: l1_strict}
   llm_audit:
     enabled: false
 
