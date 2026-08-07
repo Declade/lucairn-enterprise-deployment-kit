@@ -162,9 +162,70 @@ securityContext:
 
 containerSecurityContext:
   allowPrivilegeEscalation: false
+  # ⚑ T-573: this is WHY the evidenceGap volume below exists. With a read-only
+  # root filesystem the gateway cannot open its durable evidence gap store
+  # anywhere except an explicitly mounted writable volume, and before this fix
+  # the chart mounted none at that path — so every kit install ran with the
+  # store unopenable while the pod still reported 1/1 Ready.
   readOnlyRootFilesystem: true
   capabilities:
     drop: ["ALL"]
+
+# ─── Evidence gap store (T-573; upstream dual-sandbox-architecture T-571) ────
+#
+# PRD: specs/2026-08/prd-2026-08-06-evidence-pipeline-fail-closed.md
+#
+# The gateway records "evidence that should have been emitted and was not"
+# here, and its admission gate consults the store's writability as one conjunct
+# of the evidence-path predicate.
+#
+# THE DEFECT THIS CLOSES (measured live on a kit install, 2026-08-07): the
+# gateway pod reached 1/1 Ready while logging
+#     evidence gap store at /data/evidence-gaps.jsonl is not writable...
+#     read-only file system
+# and then degraded SILENTLY — permissive boot mode plus the LOG posture admit
+# every request while recording nothing durably, and `kubectl get pods` stays
+# green. Under the ENFORCE posture the same chart would refuse ALL healthy
+# traffic instead. Do not flip `posture: enforce` on any install until the
+# mount below is confirmed present.
+#
+# The env var handed to the process and the volumeMount are BOTH derived from
+# the two values below, so they cannot drift apart;
+# tests/test_gateway_evidence_gap_volume.sh asserts the relationship on the
+# RENDERED manifest (a mount that is a parent dir of the path, not readOnly, of
+# a writable kind, and openable by the container UID).
+evidenceGap:
+  mountPath: /data
+  fileName: evidence-gaps.jsonl
+  # "log" records a gap and proceeds; "enforce" refuses before any response
+  # byte is written. DEFAULT log — the ENFORCE flip is a separate, measured
+  # decision per install, never a chart default.
+  posture: log
+  # "" defers to the gateway's own default (strict under enforce, permissive
+  # under log). Set "strict" to make an unwritable store a BOOT FAILURE rather
+  # than a logged degradation — i.e. loud instead of silent.
+  bootMode: ""
+  # Bounds the emptyDir so a gap flood cannot consume node ephemeral storage.
+  # The store itself is bounded at 10k records.
+  sizeLimit: 64Mi
+  persistence:
+    # false ⇒ emptyDir: writable, survives a container CRASH-RESTART, NOT pod
+    # rescheduling. This is also the ONLY supported MULTI-REPLICA shape — one
+    # private store per pod.
+    # true ⇒ PVC: survives rescheduling, SINGLE REPLICA ONLY. The chart ABORTS
+    # the render when it is combined with replicaCount>1 or hpa.enabled.
+    enabled: false
+    # ⛔ A ReadWriteMany volume is NOT a way around that abort, and supplying
+    # one here will not silence it. This store supports exactly ONE WRITER per
+    # file: compaction rebuilds the whole file from a single pod's in-memory
+    # map and renames it over the shared path — destroying the other pods'
+    # records — and the temp-file name is keyed on the PID, which is 1 in every
+    # container, so the collision avoidance the code appears to have does not
+    # exist across pods. Use this only to point a SINGLE-replica gateway at a
+    # pre-provisioned claim.
+    existingClaim: ""
+    size: 1Gi
+    storageClass: ""
 
 streaming:
   enabled: false

@@ -277,6 +277,43 @@ carry a security fix are tagged **[Security]**.
   migration message if a values file still sets it.
 
 ### Fixed
+- **The gateway could not persist its evidence gap store — silently (T-573).**
+  `charts/lucairn/charts/gateway/values.yaml` sets
+  `containerSecurityContext.readOnlyRootFilesystem: true`, and the deployment
+  mounted nothing at the evidence-gap path. Measured on a kit install: the
+  gateway pod reached **1/1 Ready** while its own log said
+  `evidence gap store at /data/evidence-gaps.jsonl is not writable... read-only
+  file system`, then degraded silently — permissive boot mode plus the LOG
+  posture admit every request while recording nothing durably, and
+  `kubectl get pods` stays green. Under the ENFORCE posture the same chart would
+  refuse ALL healthy traffic. Upstream twin: `dual-sandbox-architecture` T-571
+  HIGH-1.
+  - The gateway now gets a writable `evidence-gap` volume mounted at
+    `evidenceGap.mountPath` (default `/data`), plus
+    `GATEWAY_EVIDENCE_GAP_PATH` / `GATEWAY_EVIDENCE_ADMISSION_POSTURE` /
+    `GATEWAY_EVIDENCE_BOOT_MODE`. The env var and the mountPath are derived from
+    the SAME values, so they cannot drift apart.
+  - Default backing is an `emptyDir` bounded by `evidenceGap.sizeLimit`
+    (64Mi): writable, survives a container crash-restart, **not** pod
+    rescheduling. `evidenceGap.persistence.enabled=true` opts into a
+    ReadWriteOnce PVC that survives rescheduling — **single replica only**. The
+    chart ABORTS the render when persistence is combined with
+    `replicaCount > 1` or `hpa.enabled`, including when an `existingClaim` is
+    supplied: a ReadWriteMany volume is **not** an escape hatch, because
+    compaction rebuilds the whole file from one pod's in-memory map and renames
+    it over the shared path, destroying the other replicas' records.
+  - Posture default stays `log`. **Do not flip `evidenceGap.posture: enforce`
+    on any install until the mount is confirmed present** — that is what turns
+    the silent degradation into refused traffic.
+  - Pinned by `tests/test_gateway_evidence_gap_volume.sh` (in `make test`),
+    which asserts on the RENDERED manifest that a mount covers the configured
+    path, is not readOnly, is a writable volume kind, and is openable by the
+    container UID (`fsGroup`), with positive controls for the mount and for
+    `fsGroup`.
+  - Scope note: the kit pins `dsa-gateway:0.5.4`, which predates the upstream
+    feature, so these env vars are inert on the currently pinned image. This
+    change makes the chart correct for the gateway that has it; it does not
+    make the pinned binary record anything.
 - **`admin` sub-chart gained an `ExternalSecret` template (T-488).**
   `--set admin.secrets.backend=vault` used to render "clean" with nothing to
   ever populate the `admin-credentials` Secret that `deployment.yaml` mounts

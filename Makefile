@@ -16,6 +16,7 @@ test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-h
 	bash tests/test_l3_split_pool_preflight.sh
 	bash tests/test_l3_model_upgrade_gate.sh
 	bash tests/test_l3_posture_flags.sh
+	bash tests/test_gateway_evidence_gap_volume.sh
 	bash tests/test_kit_release_gates.sh
 	bash tests/test_sec_hardening.sh
 	bash tests/test_default_password_guard.sh

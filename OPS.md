@@ -2586,6 +2586,53 @@ When to rotate:
 - Whenever an operator with cluster Secret read access leaves the team.
 - After any Grafana-side incident response that suspects key compromise.
 
+## Evidence gap store (gateway)
+
+The gateway records *evidence that should have been emitted and was not* to a
+local append-only file, and its admission gate consults that store's
+writability as part of deciding whether the evidence path is healthy. The store
+is **enrichment**: the guarantee an auditor relies on is the certificate sealing
+`PARTIAL` against the witness-side anchor, which lives in the witness database
+and is unaffected by anything below.
+
+| Value | Default | What it does |
+|---|---|---|
+| `gateway.evidenceGap.mountPath` | `/data` | Directory mounted read-write into the gateway. The file is created inside it. |
+| `gateway.evidenceGap.fileName` | `evidence-gaps.jsonl` | Store filename. `mountPath` + `fileName` is what the process is given, so the two cannot drift from the mount. |
+| `gateway.evidenceGap.posture` | `log` | `log` records a gap and proceeds; `enforce` refuses the request before any response byte is written. |
+| `gateway.evidenceGap.bootMode` | `""` (process default) | `strict` makes an unwritable store a **boot failure** instead of a logged degradation. |
+| `gateway.evidenceGap.sizeLimit` | `64Mi` | Bounds the default `emptyDir` so a gap flood cannot fill node ephemeral storage. |
+| `gateway.evidenceGap.persistence.enabled` | `false` | `false` ⇒ `emptyDir`. `true` ⇒ ReadWriteOnce PVC. |
+| `gateway.evidenceGap.persistence.existingClaim` | `""` | Point a **single-replica** gateway at a pre-provisioned claim. |
+
+**Why this exists (T-573).** Before this fix the gateway ran with
+`readOnlyRootFilesystem: true` and no writable mount at that path. The pod came
+up `1/1 Ready` while logging `evidence gap store at ... is not writable...
+read-only file system`, and then admitted every request while recording
+nothing — a green cluster with a defeated control. Under `enforce` the same
+shape refuses all healthy traffic instead.
+
+**Durability, honestly.** The default `emptyDir` is writable and survives a
+container *crash-restart*; it does **not** survive pod rescheduling. Set
+`persistence.enabled=true` for a PVC that does.
+
+**One writer per file — not negotiable.** A persistent store combined with
+`replicaCount > 1` or `hpa.enabled` **aborts the Helm render**
+(`EVIDENCE-GAP-MULTI-REPLICA`). Supplying a ReadWriteMany `existingClaim` does
+not lift that abort and must not be attempted: compaction rebuilds the whole
+file from one pod's in-memory map and renames it over the shared path,
+destroying the other replicas' records, and the temp-file name is keyed on the
+PID — which is `1` in every container. The supported multi-replica shape is one
+private `emptyDir` per pod.
+
+**Before flipping `posture: enforce`,** confirm the mount is actually there —
+`enforce` on an unwritable store refuses all traffic:
+
+```bash
+kubectl -n dsa-edge get deploy gateway -o jsonpath='{.spec.template.spec.containers[0].volumeMounts}' | tr ',' '\n' | grep -A1 data
+kubectl -n dsa-edge logs deploy/gateway | grep -i "evidence gap"
+```
+
 ## Rotating the gateway admin token
 
 The dashboard's `/keys` surface authenticates against the gateway
