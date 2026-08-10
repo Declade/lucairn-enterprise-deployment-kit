@@ -362,6 +362,12 @@ carry a security fix are tagged **[Security]**.
   future edit to the wrong block doesn't silently vanish. A duplicate-key
   static check (`tests/lib/check_duplicate_yaml_keys.py`) now runs in
   `tests/static_checks.sh` against every chart values file.
+- **`docker-compose.customer.yml` sanitizer memory cap SIGKILLed workers on
+  real Claude Code payloads (T-210).** The shipped `deploy.resources.limits.memory`
+  was `2G`; idle RSS with models loaded is already ~1.3G, leaving little
+  headroom before a real-sized turn pushes a worker over the cgroup cap and
+  it gets SIGKILLed mid-scan. Raised to `4G`. `INSTALL.md` § "Memory
+  requirements" updated to match.
 
 ### Notes
 - **Gateway-cache replay cert-honesty fix (T-409) has not shipped in any kit

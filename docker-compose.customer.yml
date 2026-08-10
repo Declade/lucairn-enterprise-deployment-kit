@@ -655,7 +655,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          # T-210: 2G SIGKILLs sanitizer workers on real Claude Code
+          # payloads (idle RSS with models loaded is already ~1.3G; a
+          # real-sized turn pushes a worker over the 2G cgroup cap).
+          # 4G is the field-validated ceiling.
+          memory: 4G
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8086/healthz')\" || exit 1"]
       interval: 10s
