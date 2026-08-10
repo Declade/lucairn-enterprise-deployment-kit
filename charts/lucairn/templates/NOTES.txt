@@ -87,7 +87,9 @@ Prerequisites:
 {{- if ne .Values.global.secrets.backend "k8s-native" }}
   ⚠ External Secrets Operator must be installed
 {{- end }}
+{{- if $gatewayIngress.enabled }}
   ⚠ Ingress controller ({{ $gatewayIngress.className }}) must be installed
+{{- end }}
 {{- if (index .Values "sandbox-b").ollama.gpu.enabled }}
   ⚠ NVIDIA GPU driver and device plugin must be installed
 {{- end }}
