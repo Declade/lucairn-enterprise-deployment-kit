@@ -383,6 +383,26 @@ carry a security fix are tagged **[Security]**.
   (matches upstream `dual-sandbox-architecture`'s current default),
   pinning the kit's behavior independent of image vintage. Documented in
   `customer.env.example`.
+- **`charts/lucairn/templates/NOTES.txt` nil-derefed when `gateway.ingress`
+  was unset (T-421).** The two `.Values.gateway.ingress.enabled` /
+  `.Values.gateway.ingress.className` references assumed `gateway.ingress`
+  is always a populated map; when it resolves to nil (reproduced by
+  `--set gateway.ingress=null`, and equally reachable from any values
+  override that leaves the key unset), rendering panics with `nil pointer
+  evaluating interface {}.enabled`. Both references are now nil-safe: `{{- $gatewayIngress
+  := default dict .Values.gateway.ingress }}`, then `$gatewayIngress.enabled`
+  / `$gatewayIngress.host` / `$gatewayIngress.className`.
+  Verified with an isolated Go-template fixture reproducing the two
+  expressions standalone: the bare form panics on an unset `gateway.ingress`
+  and the nil-safe form renders cleanly with empty fallbacks, while a
+  populated `gateway.ingress` renders identically either way.
+  `helm template charts/lucairn` (default values, all required secrets
+  supplied) renders byte-identical NOTES output before and after this
+  change; `helm lint charts/lucairn` passes. A full end-to-end
+  `gateway.ingress: null` render of the whole umbrella chart still fails —
+  earlier, at the unrelated pre-existing `.Values.ingress.enabled` nil-deref
+  in `charts/lucairn/charts/gateway/templates/ingress.yaml`'s own template,
+  which is out of this fix's scope.
 
 ### Notes
 - **Gateway-cache replay cert-honesty fix (T-409) has not shipped in any kit

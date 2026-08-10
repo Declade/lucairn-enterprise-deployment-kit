@@ -11,10 +11,11 @@ Namespaces created:
   - dsa-observability (Grafana, Loki, Tempo)
   - dsa-ingest        (Reserved — Future)
 
-{{- if .Values.gateway.ingress.enabled }}
+{{- $gatewayIngress := default dict .Values.gateway.ingress }}
+{{- if $gatewayIngress.enabled }}
 
 Gateway API:
-  https://{{ .Values.gateway.ingress.host }}
+  https://{{ $gatewayIngress.host }}
 {{- end }}
 
 {{- if .Values.observability.enabled }}
@@ -86,7 +87,7 @@ Prerequisites:
 {{- if ne .Values.global.secrets.backend "k8s-native" }}
   ⚠ External Secrets Operator must be installed
 {{- end }}
-  ⚠ Ingress controller ({{ .Values.gateway.ingress.className }}) must be installed
+  ⚠ Ingress controller ({{ $gatewayIngress.className }}) must be installed
 {{- if (index .Values "sandbox-b").ollama.gpu.enabled }}
   ⚠ NVIDIA GPU driver and device plugin must be installed
 {{- end }}
