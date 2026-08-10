@@ -374,6 +374,15 @@ carry a security fix are tagged **[Security]**.
   got rejected. The sandbox-b service block now sets
   `MAX_PROMPT_CHARS: "${MAX_PROMPT_CHARS:-400000}"`. Documented in
   `customer.env.example`.
+- **`docker-compose.customer.yml` sanitizer had no explicit
+  `SANITIZER_MAX_FIELD_CHARS` (T-212).** Left unset, the effective ceiling is
+  whatever the pinned image's compiled-in default happens to be, so a kit
+  install's behavior silently shifts across image vintages. The sanitizer
+  service block now sets
+  `SANITIZER_MAX_FIELD_CHARS: "${SANITIZER_MAX_FIELD_CHARS:-262144}"`
+  (matches upstream `dual-sandbox-architecture`'s current default),
+  pinning the kit's behavior independent of image vintage. Documented in
+  `customer.env.example`.
 
 ### Notes
 - **Gateway-cache replay cert-honesty fix (T-409) has not shipped in any kit
