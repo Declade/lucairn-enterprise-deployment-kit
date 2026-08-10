@@ -547,6 +547,11 @@ services:
       SANITIZER_CONFIG_PATH: "${SANITIZER_CONFIG_PATH:-/config/config.yaml}"
       SANITIZER_PORT: "8086"
       GUNICORN_TIMEOUT: "120"
+      # T-212: pin explicitly rather than inherit whatever the pinned
+      # image's compiled-in default happens to be. 262144 matches upstream
+      # dual-sandbox-architecture's current default, so the kit's behavior
+      # stays independent of image vintage.
+      SANITIZER_MAX_FIELD_CHARS: "${SANITIZER_MAX_FIELD_CHARS:-262144}"
       DSA_ENV: "${DSA_ENV:-production}"
       # Canary HMAC key — both sanitizer (issues canaries) and gateway
       # (verifies them on outbound to LLM) MUST share this. Required when
