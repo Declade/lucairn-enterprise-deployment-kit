@@ -393,10 +393,12 @@ EITHER:
 ### Memory requirements
 
 The sidecar's resource limits default to `4Gi` memory + `2 CPU`. Plan
-your node sizing accordingly. The sanitizer's memory ceiling is back to
-the compose-default `2Gi` post-extraction (the 6Gi box-local override
+your node sizing accordingly. The sanitizer's own compose-default memory
+ceiling is `4Gi` (T-210, raised from `2Gi`: idle RSS with models loaded
+is already ~1.3Gi, and a real-sized Claude Code payload pushed a worker
+past the 2Gi cgroup cap and got it SIGKILLed). The 6Gi box-local override
 needed pre-PR #240 to fit both models in the sanitizer container is no
-longer required).
+longer required.
 
 ### Dev / debug knob: `LUCAIRN_PII_ML_ALLOW_LAZY_NOT_READY`
 
