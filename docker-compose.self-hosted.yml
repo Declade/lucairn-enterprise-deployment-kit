@@ -409,6 +409,11 @@ services:
       PROOFLOG_ENABLED: "${PROOFLOG_ENABLED:-false}"
       PROOFLOG_SIGNING_KEY: "${PROOFLOG_SIGNING_KEY:-}"
       PROOFLOG_POLICIES: "${PROOFLOG_POLICIES:-model-allowlist}"
+      # T-211: the image's built-in default (100000 chars) rejects a real
+      # Claude Code first turn — one measured turn was 141,767 chars. Raised
+      # to 400000 so a normal-sized real turn isn't rejected out of the box.
+      # See customer.env.example for the operator-facing knob.
+      MAX_PROMPT_CHARS: "${MAX_PROMPT_CHARS:-400000}"
     volumes:
       - ../starter-templates:/app/verticals:ro
     networks:
