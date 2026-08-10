@@ -368,6 +368,12 @@ carry a security fix are tagged **[Security]**.
   headroom before a real-sized turn pushes a worker over the cgroup cap and
   it gets SIGKILLed mid-scan. Raised to `4G`. `INSTALL.md` § "Memory
   requirements" updated to match.
+- **`docker-compose.self-hosted.yml` sandbox-b rejected a real Claude Code
+  first turn (T-211).** The image's built-in `MAX_PROMPT_CHARS` default is
+  100000; a measured real Claude Code first turn was 141,767 characters and
+  got rejected. The sandbox-b service block now sets
+  `MAX_PROMPT_CHARS: "${MAX_PROMPT_CHARS:-400000}"`. Documented in
+  `customer.env.example`.
 
 ### Notes
 - **Gateway-cache replay cert-honesty fix (T-409) has not shipped in any kit
