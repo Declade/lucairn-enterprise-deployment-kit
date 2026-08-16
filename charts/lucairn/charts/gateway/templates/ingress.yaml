@@ -1,4 +1,18 @@
-{{- if .Values.ingress.enabled }}
+{{- /*
+  T-421: `.Values.ingress.enabled` was read bare. An operator who turns the
+  Ingress off by nulling the whole block — `--set gateway.ingress=null`, or a
+  values overlay that writes `ingress:` with nothing under it — makes
+  `.Values.ingress` untyped nil, and Go templates panic on a field access
+  against nil ("nil pointer evaluating interface {}.enabled") instead of
+  taking the obvious meaning, "no Ingress". The umbrella NOTES.txt half of this
+  ticket was fixed in 9b88fc7, whose own commit message recorded that the
+  end-to-end render still died HERE, one template later, and left it out of
+  scope. This is that residual. `default dict` costs nothing and makes the
+  disable-by-nulling path render an empty Ingress-less manifest, which is what
+  the operator asked for.
+*/ -}}
+{{- $ingress := default dict .Values.ingress }}
+{{- if $ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -7,20 +21,20 @@ metadata:
   labels:
     app.kubernetes.io/name: {{ .Chart.Name }}
     app.kubernetes.io/part-of: dsa
-  {{- with .Values.ingress.annotations }}
+  {{- with $ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  ingressClassName: {{ .Values.ingress.className }}
-  {{- if .Values.ingress.tlsSecret }}
+  ingressClassName: {{ $ingress.className }}
+  {{- if $ingress.tlsSecret }}
   tls:
     - hosts:
-        - {{ .Values.ingress.host }}
-      secretName: {{ .Values.ingress.tlsSecret }}
+        - {{ $ingress.host }}
+      secretName: {{ $ingress.tlsSecret }}
   {{- end }}
   rules:
-    - host: {{ .Values.ingress.host }}
+    - host: {{ $ingress.host }}
       http:
         paths:
           - path: /

@@ -472,6 +472,84 @@ else
   fail "a VALID subchart-scoped posture still renders: $(head -1 "$TMPDIR/sub-ok.err")"
 fi
 
+# ─────────────────────────────────────────────────────────────────────────────
+# T-548 — THE ENUM GUARD MUST SEE YAML-TYPED false AND 0, NOT JUST STRINGS.
+#
+# Every enum case ABOVE uses --set-string, so it only ever hands the guard a
+# STRING. That is exactly why this hole survived both review and this suite:
+# the guard coerced with `toString (default "" <value>)`, and Sprig's `default`
+# decides emptiness with its own empty(), which counts the BOOLEAN false and the
+# NUMBER 0 as empty alongside nil and "". A bare `--set global.l3Availability
+# Posture=false` is inferred by Helm as a YAML boolean, coerced to "", and
+# swallowed by the `ne $raw ""` absence short-circuit — while hasKey stayed TRUE,
+# so the pod template rendered LUCAIRN_L3_AVAILABILITY_POSTURE: "false" into the
+# container and the image refused it at boot. CrashLoopBackOff: the precise
+# outcome these guards exist to move into the render.
+#
+# `false` is not an arbitrary probe. It is the guard's OWN documented
+# most-likely operator error — renaming the retired global.l3Required and
+# keeping its value — named in the failure message the guard prints. `true` and
+# `1` were caught all along (non-empty to Sprig), so only the false/0 half of
+# each enum was open, on all four sites.
+#
+# RED-PROOF: reverting any of the four coercions to `toString (default "" ...)`
+# turns the matching case below red. --set (not --set-string) is load-bearing
+# here; swapping it back to --set-string makes every case pass against the
+# BROKEN tree, which is the whole reason this needs its own block.
+# Sites: charts/lucairn/templates/_validators.tpl (umbrella, both postures),
+# charts/lucairn/charts/sandbox-a/templates/deployment.yaml (availability
+# mirror), charts/lucairn/charts/veil-witness/templates/deployment.yaml
+# (completeness mirror).
+for bad in "global.l3AvailabilityPosture=false" "global.l3AvailabilityPosture=0" \
+           "global.l3CompletenessPosture=false" "global.l3CompletenessPosture=0" \
+           "sandbox-a.global.l3AvailabilityPosture=false" \
+           "sandbox-a.global.l3AvailabilityPosture=0" \
+           "veil-witness.global.l3CompletenessPosture=false" \
+           "veil-witness.global.l3CompletenessPosture=0"; do
+  if render --set "$bad" >"$TMPDIR/typed.out" 2>"$TMPDIR/typed.err"; then
+    fail "T-548: YAML-typed --set $bad is refused (rendered instead: $(grep -A1 -E 'name: LUCAIRN_L3_(AVAILABILITY|COMPLETENESS)_POSTURE' "$TMPDIR/typed.out" | grep 'value:' | head -1 | tr -d ' '))"
+  elif grep -qE 'must be "(degrade|partial)"' "$TMPDIR/typed.err"; then
+    pass "T-548: YAML-typed --set $bad is refused"
+  else
+    fail "T-548: YAML-typed --set $bad failed for the WRONG reason: $(head -1 "$TMPDIR/typed.err")"
+  fi
+done
+
+# …and the class is WIDER than the two scalars above. Sprig's empty() also calls
+# an empty LIST and an empty MAP empty, and those hit a worse version of the same
+# bug: the pod templates render the env var's value from the RAW field
+# (`{{ $g.l3AvailabilityPosture | quote }}`), never from the guard's coerced
+# variable. So on the pre-fix tree these rendered a literal Go-formatted value
+# into the container —
+#     --set-json 'global.l3AvailabilityPosture=[]'  ->  value: "[]"
+#     --set-json 'global.l3AvailabilityPosture={}'  ->  value: "map[]"
+# — same CrashLoopBackOff shape as false/0, and `map[]` is `fmt.Sprint` of an
+# empty map leaking into a pod spec. The kind-based carve-out closes these for
+# the same reason it closes false/0: only untyped nil is treated as absence, and
+# a list/map is not untyped nil. Pinned here so a future "simplification" back to
+# a Sprig-emptiness test cannot quietly reopen the wider class.
+for bad in "global.l3AvailabilityPosture=[]" "global.l3AvailabilityPosture={}" \
+           "global.l3CompletenessPosture=[]" "global.l3CompletenessPosture={}"; do
+  if render --set-json "$bad" >"$TMPDIR/json.out" 2>"$TMPDIR/json.err"; then
+    fail "T-548: --set-json $bad is refused (rendered instead: $(grep -A1 -E 'name: LUCAIRN_L3_(AVAILABILITY|COMPLETENESS)_POSTURE' "$TMPDIR/json.out" | grep 'value:' | head -1 | tr -d ' '))"
+  elif grep -qE 'must be "(degrade|partial)"' "$TMPDIR/json.err"; then
+    pass "T-548: --set-json $bad is refused"
+  else
+    fail "T-548: --set-json $bad failed for the WRONG reason: $(head -1 "$TMPDIR/json.err")"
+  fi
+done
+
+# The T-548 fix carves out untyped nil BY KIND (kindIs "invalid") instead of by
+# Sprig emptiness. These two cases pin the boundary it must not move: a valid
+# posture and a genuinely-absent one still render. (The ""/null absence and
+# whitespace-only cases below cover the rest of the boundary.)
+if render --set global.l3AvailabilityPosture=reject \
+     --set global.l3CompletenessPosture=partial >/dev/null 2>"$TMPDIR/typed-ok.err"; then
+  pass "T-548: valid postures set via bare --set still render (fix does not over-fire)"
+else
+  fail "T-548: valid postures set via bare --set still render: $(head -1 "$TMPDIR/typed-ok.err")"
+fi
+
 # ...but a still-valid value the IMAGE would accept must still render (no
 # over-firing). Uses "Partial" (not "Full" — G3 removed full from this
 # chart's allowlist, so it is no longer a valid probe for this case).

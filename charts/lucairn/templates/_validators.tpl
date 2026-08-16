@@ -884,19 +884,57 @@ the chart's supported paths are development and production only.
   off-allowlist and is reported, which is the correct answer for a YAML boolean
   in an enum slot.
 
+  ⚠️ T-548 (2026-08-17): THE COERCION BELOW USED TO BE
+  `toString (default "" $g.<posture>)`, AND THAT MADE THIS GUARD VACUOUS FOR
+  EVERY VALUE SPRIG CALLS EMPTY — INCLUDING THE TWO AN OPERATOR IS MOST LIKELY
+  TO TYPE. Sprig's `default` decides "is this empty?" with its own `empty()`,
+  which counts the BOOLEAN `false`, the NUMBER `0`, an empty LIST and an empty
+  MAP as empty alongside nil and `""`. So
+  `--set global.l3AvailabilityPosture=false` (Helm infers a YAML boolean from
+  the bare literal) coerced to `""`, the `ne $raw ""` absence short-circuit
+  swallowed it, and the allowlist was never consulted — while `hasKey` above
+  stayed TRUE, so the pod template happily rendered
+  `LUCAIRN_L3_AVAILABILITY_POSTURE: "false"` into the container. The image then
+  refuses that value at boot: CrashLoopBackOff, i.e. precisely the outcome this
+  guard exists to move into the render. `true` and `1` were caught all along
+  (non-empty to Sprig), which is why the hole survived review and the existing
+  suite — tests/test_l3_posture_flags.sh probes the enum with `--set-string`,
+  so it only ever saw the STRING "false", never the boolean.
+
+  This is the same Sprig-`empty()` trap swept for the sanitizer knobs in T-562
+  and for llmScanRequestBudgetSeconds in T-472; the enum validators were not in
+  either sweep's blast radius.
+
+  The replacement carves out ONLY the genuinely-unset case by KIND rather than
+  by emptiness: `kindIs "invalid"` is Go's untyped nil, which is what a null
+  `key:` (or a key absent from a partially-populated map) resolves to. Every
+  other kind — string, bool, float64, int64, slice, map — goes through
+  `toString` verbatim, so `false` becomes `"false"` and `0` becomes `"0"`, both
+  land off-allowlist, and both are reported. The list/map half mattered more
+  than it looks: the pod templates render the env var's `value:` from the RAW
+  field, never from `$raw`, so pre-fix `--set-json '…Posture=[]'` shipped
+  `value: "[]"` — and `{}` shipped `value: "map[]"`, Go's `fmt.Sprint` of an
+  empty map — straight into the container. `""` still coerces to `""` and is still ABSENCE,
+  because it is a STRING that is empty rather than a value Sprig decided to
+  call empty. Same `kindIs "invalid"` carve-out the T-490 secret guards use
+  (each subchart's own templates/_validate.tpl).
+
   Invoked from charts/lucairn/templates/validators.yaml.
 */ -}}
 {{- define "validators.l3PostureValues" -}}
 {{- $g := (default dict .Values.global) -}}
 {{- if hasKey $g "l3AvailabilityPosture" -}}
-{{- $raw := toString (default "" $g.l3AvailabilityPosture) -}}
+{{- $rawVal := $g.l3AvailabilityPosture -}}
+{{- $raw := ternary "" (toString $rawVal) (kindIs "invalid" $rawVal) -}}
 {{- $v := lower (trim $raw) -}}
 {{- if and (ne $raw "") (not (has $v (list "degrade" "reject"))) -}}
 {{- fail "global.l3AvailabilityPosture must be \"degrade\" or \"reject\" (value withheld). The sanitizer refuses to start on an off-allowlist posture rather than guessing the weaker one, so this render would CrashLoopBackOff. If you renamed the retired global.l3Required and kept its value: true becomes \"reject\" (503 l3_scrubber_unavailable when L3 is unavailable), false becomes \"degrade\" (continue on L1+L2). Omit the key entirely to take the image default, \"degrade\"." -}}
 {{- end -}}
 {{- end -}}
 {{- if hasKey $g "l3CompletenessPosture" -}}
-{{- $raw := toString (default "" $g.l3CompletenessPosture) -}}
+{{- /* T-548: kind-based nil carve-out, not Sprig `default` — see the block comment above. */ -}}
+{{- $rawVal := $g.l3CompletenessPosture -}}
+{{- $raw := ternary "" (toString $rawVal) (kindIs "invalid" $rawVal) -}}
 {{- $v := lower (trim $raw) -}}
 {{- if and (ne $raw "") (not (has $v (list "partial"))) -}}
 {{- fail "global.l3CompletenessPosture must be \"partial\" (value withheld). \"partial\" is the image default and the only value this chart accepts — a chain that only ran L1+L2 certifies COMPLETENESS_PARTIAL. \"full\" is NOT accepted here: as of 2026-08-04 the kit no longer offers the option of certifying COMPLETENESS_FULL for a request the deep PII shield never saw (board T-385) — a certificate must never be configurable to claim a scan ran when it did not. Omit the key entirely to take the image default." -}}
