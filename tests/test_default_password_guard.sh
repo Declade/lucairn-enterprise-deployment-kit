@@ -183,7 +183,7 @@ assert_render_refused "lowercase changeme variant" "adminPassword is still a shi
 
 # ---------------------------------------------------------------------------
 # 1b + 2b: WHITESPACE. Both of these rendered CLEANLY against the first revision of
-# this branch (found by the pre-merge bug-hunter pass), and both defeat the
+# this branch (found by the pre-merge review pass), and both defeat the
 # guard with a single character:
 #
 #   * Go template truthiness treats ANY non-empty string as true, so an

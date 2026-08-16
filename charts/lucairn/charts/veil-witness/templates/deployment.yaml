@@ -192,7 +192,7 @@ spec:
             # NOTHING and the image's own default applies: "partial" — an
             # L3-absent chain certifies COMPLETENESS_PARTIAL.
             #
-            # FIX A (Codex r1 P2, 2026-06-19) still applies to both entries: they
+            # FIX A (review round 1 P2, 2026-06-19) still applies to both entries: they
             # live in the POD SPEC, NOT the ConfigMap consumed via envFrom. An
             # envFrom-sourced value does NOT update in-place when `helm upgrade`
             # changes the ConfigMap (no pod-template change ⇒ no rollout), so the
@@ -279,7 +279,7 @@ spec:
               value: {{ $g.l3Required | quote }}
             {{- end }}
             {{- if and (not $mtlsEnabled) .Values.witnessMtls.serverSecret }}
-            # TOB-S009 / fable HIGH (2026-06-10): opt-in witness server-side mTLS.
+            # SEC-S009 (HIGH) (2026-06-10): opt-in witness server-side mTLS.
             # When witnessMtls.serverSecret is set the witness reads these three
             # paths to enable mutual-TLS on the cert RPC port (:50058).
             # When unset the witness degrades gracefully to unauthenticated

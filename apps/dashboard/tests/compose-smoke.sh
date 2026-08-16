@@ -82,7 +82,7 @@ if ! echo "$LOGIN_BODY" | grep -qE 'name="csrf"'; then
 fi
 echo "compose-smoke: /login ok"
 
-# Slash-variant routes (Codex r1 #9). The auth-middleware allowlist (FX-17)
+# Slash-variant routes (review round 1 #9). The auth-middleware allowlist (FX-17)
 # accepts /healthz/ and /login/ trailing-slash forms, and the mux now registers
 # 308 redirects to the canonical paths. Verify both behave as expected so a
 # regression that drops either the allowlist entry OR the mux handler is

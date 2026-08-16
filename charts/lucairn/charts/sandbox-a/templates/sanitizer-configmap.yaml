@@ -13,7 +13,7 @@ data:
       # W5+ Phase 1 (2026-05-09) toggles — credential-class + adversarial-input
       # hardening. Both default ON. An unrecognised key is generally ignored by
       # the loader, so legacy `documented_placeholder_suppression_enabled`
-      # (removed in TOB-160-001 to close a real-credential-leak path) is
+      # (removed in SEC-160-001 to close a real-credential-leak path) is
       # silently dropped.
       #
       # ⚠️ "unrecognised keys are ignored" is NOT universally true, and
@@ -225,7 +225,7 @@ data:
         # image default `degrade` → continue on L1+L2). Operators set
         # `global.l3AvailabilityPosture: reject` to restore this 503.
         fallback_on_error: "reject"
-        # Default sequential (TOB-003 fix, 2026-05-09): "ensemble" silently
+        # Default sequential (SEC-003 fix, 2026-05-09): "ensemble" silently
         # changes cert payload shape across ALL customers regardless of the
         # per-request enable_l3_reversals flag. Pro/Enterprise overlays opt in
         # explicitly via .Values.sanitizer.llmScanMode = "ensemble".
@@ -251,7 +251,7 @@ data:
       # CRITICAL: these blocks MUST nest UNDER `sanitizer:` (NOT at the
       # top of config.yaml). Sanitizer's config.py:506-522 reads them via
       # `sanitizer_data.get("piiranha", {})`, `sanitizer_data.get("gliner", {})`,
-      # etc. — top-level keys are silently ignored. r1 bug-hunter BLOCKER-3
+      # etc. — top-level keys are silently ignored. r1 review BLOCKER-3
       # caught this rendering at the wrong indentation; DO NOT outdent.
       #
       # The blocks have TWO independent enable gates:

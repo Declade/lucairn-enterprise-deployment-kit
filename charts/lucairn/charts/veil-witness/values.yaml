@@ -140,7 +140,7 @@ dashboardIngress:
   namespace: lucairn
   podName: lucairn-dashboard
 
-# TOB-S009 / fable HIGH (2026-06-10): opt-in mutual-TLS for the witness cert
+# SEC-S009 (HIGH) (2026-06-10): opt-in mutual-TLS for the witness cert
 # RPC port (:50058). Default OFF (empty strings) preserves the pre-mTLS
 # behaviour for operators who have not run bootstrap-mtls-ca.sh.
 #

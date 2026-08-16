@@ -24,7 +24,7 @@ if ! command -v kubeconform >/dev/null 2>&1; then
   fi
 fi
 
-# Codex r2 LOW fix: the umbrella chart now enforces a pull-secret guard at
+# review round 2 LOW fix: the umbrella chart now enforces a pull-secret guard at
 # render time (--set-file global.imagePullDockerConfigJson=... is required
 # in real installs). For the snapshot test we materialize a throwaway
 # Docker config with a dummy `test:test` ghcr.io credential so the render

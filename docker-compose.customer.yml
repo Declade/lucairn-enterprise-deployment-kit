@@ -472,8 +472,8 @@ services:
       # Hard-exit on load failure. Production default true so a corrupted
       # HF cache cannot produce a silently-degraded sidecar.
       LUCAIRN_PII_ML_EXIT_ON_LOAD_FAILURE: "${LUCAIRN_PII_ML_EXIT_ON_LOAD_FAILURE:-true}"
-      # HF revision SHAs — load-bearing supply-chain pins (PR #241 Codex r1
-      # fix-up CODEX-HIGH closure). DO NOT override unless you mirror HF
+      # HF revision SHAs — load-bearing supply-chain pins (PR #241 review round 1
+      # fix-up HIGH finding closure). DO NOT override unless you mirror HF
       # weights into a private bucket AND verify the same SHAs.
       LUCAIRN_PII_ML_PIIRANHA_REVISION: "${LUCAIRN_PII_ML_PIIRANHA_REVISION:-255acde67a2f34cf452eb42e365b24d2957352fc}"
       LUCAIRN_PII_ML_GLINER_REVISION: "${LUCAIRN_PII_ML_GLINER_REVISION:-443d26d654e0324125a96bebd8e796c14ff2efe6}"
@@ -717,7 +717,7 @@ services:
       LCR_AUDIT_PUBLIC_KEY: "${LCR_AUDIT_PUBLIC_KEY:-${VEIL_AUDIT_PUBLIC_KEY}}"
       # Sandbox B public key still needed — Witness verifies claims from the remote Sandbox B
       LCR_SANDBOX_B_PUBLIC_KEY: "${LCR_SANDBOX_B_PUBLIC_KEY:-${VEIL_SANDBOX_B_PUBLIC_KEY}}"
-      # TOB-S009: opt-in mTLS for the cert RPCs (:50058). See base
+      # SEC-S009: opt-in mTLS for the cert RPCs (:50058). See base
       # docker-compose.yml veil-witness service for the full operator
       # runbook + the graceful-degradation rationale.
       WITNESS_MTLS_CA_BUNDLE_PATH: "${WITNESS_MTLS_CA_BUNDLE_PATH:-}"
@@ -753,7 +753,7 @@ services:
       # somewhere your log readers cannot reach, or the pseudonym is decorative.
       LCR_WITNESS_AUDIT_LOG_HMAC_KEY: "${LCR_WITNESS_AUDIT_LOG_HMAC_KEY:-}"
     volumes:
-      # TOB-S009 mTLS cert dir (read-only). Default empty-string mount
+      # SEC-S009 mTLS cert dir (read-only). Default empty-string mount
       # is intentionally an explicit `${LCR_WITNESS_MTLS_HOST_DIR:-…}`
       # — operators set this to /opt/dsa/certs/witness-mtls in
       # customer.env after their TLS bootstrap (e.g. an init run with
@@ -886,9 +886,8 @@ services:
       # bash's short-circuit `${A:-${B:?err}}`), so a canonical-LCR-only
       # customer.env — the documented, preferred config shape — hit a raw
       # "variable is not set: VEIL_GATEWAY_SIGNING_KEY" at `docker compose
-      # config`/`up` time (pre-existing operator sharp edge, WP1 S4 Fable
-      # verdict specs/2026-07/fable-verdict-2026-07-16-lucairn-wp1-s4-compose-v2-publication.md,
-      # carried to WP4 S2/S7 doctor). The inner slot now carries a safe
+      # config`/`up` time (pre-existing operator sharp edge, identified in
+      # WP1 S4 design review, carried to WP4 S2/S7 doctor). The inner slot now carries a safe
       # empty default. Fail-closed is preserved WITHOUT the `:?`: this
       # file ships `DSA_ENV: "${DSA_ENV:-production}"`, and under
       # DSA_ENV=production (without the LCR_DEV_MODE/VEIL_DEV_MODE=true
@@ -905,11 +904,11 @@ services:
       GATEWAY_BASE_URL: ${GATEWAY_BASE_URL:-http://localhost:8080}
       SUPABASE_URL: "${SUPABASE_URL:-}"
       LUCAIRN_RESOURCE_BASE_URL: "${LUCAIRN_RESOURCE_BASE_URL:-}"
-      # TOB-G005 trusted-proxy CIDR for X-Real-IP plumbing. Empty → no
+      # SEC-G005 trusted-proxy CIDR for X-Real-IP plumbing. Empty → no
       # trusted proxies (default — RemoteAddr only). Behind Caddy on
       # loopback set to "127.0.0.1/32".
       GATEWAY_TRUSTED_PROXY_CIDRS: "${GATEWAY_TRUSTED_PROXY_CIDRS:-}"
-      # TOB-S009: gateway-side mTLS for the witness :50058 dial. See
+      # SEC-S009: gateway-side mTLS for the witness :50058 dial. See
       # base docker-compose.yml gateway service for the full operator
       # runbook.
       WITNESS_MTLS_CA_BUNDLE_PATH: "${WITNESS_MTLS_CA_BUNDLE_PATH:-}"
@@ -927,7 +926,7 @@ services:
       # into the container, and a Go env read with no compose entry is dead
       # configuration (see the split-evidence-plane note above this block).
       # Baking "refuse" as the compose-side default (not empty) matches
-      # Marc's T-493 decision — the kit ships with the guard on — and keeps
+      # T-493's decision — the kit ships with the guard on — and keeps
       # this line's own unset case byte-identical to the gateway binary's own
       # compiled-in default (dual-sandbox-architecture
       # services/gateway/internal/api/tool_schema_pii_guard.go
@@ -942,7 +941,7 @@ services:
       - gateway-data:/data
       # Mount mTLS certificates if provided (set SANDBOX_B_CERT_DIR in config.env)
       - ${SANDBOX_B_CERT_DIR:-./.certs}:/certs:ro
-      # TOB-S009: deploy-local CA + gateway client cert for mTLS to the
+      # SEC-S009: deploy-local CA + gateway client cert for mTLS to the
       # witness. Same default as the witness service above. Stage 3 dual-name:
       # canonical LCR_WITNESS_MTLS_HOST_DIR first, legacy VEIL_WITNESS_MTLS_HOST_DIR
       # fallback.

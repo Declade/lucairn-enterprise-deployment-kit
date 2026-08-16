@@ -105,7 +105,7 @@ func (d *Deps) DashboardHome(w http.ResponseWriter, r *http.Request) {
 // CSRF validated per request — the server does NOT carry a global
 // CSRF middleware; every POST handler in the package (LoginPost /
 // LogoutPost / MintKey / RevokeKey / RevealRaw / ExportPDF / ...)
-// calls auth.VerifyToken explicitly. Bug-hunter r1 BLOCKER closure:
+// calls auth.VerifyToken explicitly. Review r1 BLOCKER closure:
 // the prior comment claiming "CSRF token already validated by the
 // auth-chain middleware" was false — there is no such middleware in
 // the chain (server.go:583-587 = SecurityHeaders → LoadSession →

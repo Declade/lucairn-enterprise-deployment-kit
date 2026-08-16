@@ -2,7 +2,7 @@
 #
 # Rendered-compose differential for the `witness-central` topology overlay.
 #
-# PRD: Opus Advisor specs/2026-07/prd-2026-07-28-split-evidence-plane.md
+# PRD: prd-2026-07-28-split-evidence-plane
 # Board: #206 (topology) / #223 (authorization) / #225 (PKI operations)
 #
 # WHY A RENDER, NOT A GREP
@@ -658,7 +658,7 @@ done
 
 # ── Per-service credentials must be EXPRESSIBLE ─────────────────────
 #
-# Round 2, TOB-003. One shared client leaf across every emitter collapses the
+# Round 2, SEC-003. One shared client leaf across every emitter collapses the
 # per-emitter claim allowlist to a single identity: any container on the host
 # can then submit claims as any allowlisted emitter. The device-wide triple
 # stays as the fallback (a genuine one-credential laptop still works); what this
@@ -774,7 +774,7 @@ esac
 has "$RUNBOOK_PROSE"  "NEVER ADD A DEVICE CN"        "runbook forbids allowlisting a device CN for certificate reads"
 has "$CUSTOMER_PROSE" "NEVER add a per-device CN here" "customer.env.example warns against adding a device CN to the export allowlist"
 
-# --- TOB-002: per-device identity on the certificate hop -------------
+# --- SEC-002: per-device identity on the certificate hop -------------
 #
 # 2026-07-28, HIGH 1. §3.4 used to mint every device's cert-hop leaf as
 # /O=Lucairn/CN=gateway with NO subjectAltName, so the witness's
@@ -792,7 +792,7 @@ has "$CUSTOMER_PROSE" "NEVER add a per-device CN here" "customer.env.example war
 case "$RUNBOOK_PROSE" in
   *"subjectAltName=DNS:lucairn-gateway-"*)
     ok "runbook §3.4 mints the cert-hop leaf with a per-device subjectAltName" ;;
-  *) fail "runbook §3.4 has no per-device subjectAltName on the certificate-hop leaf (TOB-002)" ;;
+  *) fail "runbook §3.4 has no per-device subjectAltName on the certificate-hop leaf (SEC-002)" ;;
 esac
 # The verification step, without which a missing SAN is silent.
 has "$RUNBOOK_PROSE" "-ext subjectAltName" \
@@ -800,7 +800,7 @@ has "$RUNBOOK_PROSE" "-ext subjectAltName" \
 # ⚠️ AND THE QUOTING. §3.2 and §3.3 single-quote their printf because they have
 # nothing to expand; §3.4 MUST double-quote, or ${DEVICE} does not expand and
 # every device is issued the literal SAN `lucairn-gateway-${DEVICE}` — identical
-# fleet-wide, which is precisely the state TOB-002 exists to end, reached by a
+# fleet-wide, which is precisely the state SEC-002 exists to end, reached by a
 # one-character edit that looks like a consistency cleanup. Asserted on the raw
 # file rather than the prose: the quote characters are the whole content of the
 # check, and prose() would keep them but the surrounding line context is what
@@ -814,7 +814,7 @@ fi
 case "$RUNBOOK_PROSE" in
   *"LCR_WITNESS_EXPORT_CUSTOMER_MAP=lucairn-gateway-"*)
     ok "runbook §4.1's customer map is keyed on per-device identities" ;;
-  *) fail "runbook §4.1's customer map example is not keyed on a per-device identity (TOB-002)" ;;
+  *) fail "runbook §4.1's customer map example is not keyed on a per-device identity (SEC-002)" ;;
 esac
 hasnt "$RUNBOOK_PROSE" "LCR_WITNESS_EXPORT_CUSTOMER_MAP=gateway=" \
   "runbook §4.1 no longer keys the customer map on the fleet-wide gateway CN"
@@ -839,7 +839,7 @@ has "$RUNBOOK_PROSE" "renders \`peer_ids=gateway\`, with nothing after it" \
 has "$RUNBOOK_PROSE" "CLAIM path still records no device identity at all" \
   "runbook is honest that per-device attribution covers export only, not claims"
 
-# ROUND 4, TOB-003: the pseudonym is LOG-ONLY and the caller-side status carries
+# ROUND 4, SEC-003: the pseudonym is LOG-ONLY and the caller-side status carries
 # a request-scoped random `corr=` token instead. Telling an operator to grep a
 # caller-side error for customer_ref sends them looking for a string that is not
 # there — and the old behaviour was a chosen-plaintext oracle over the audit key.
@@ -848,7 +848,7 @@ has "$RUNBOOK_PROSE" "grep \`corr=\`" \
 has "$RUNBOOK_PROSE" "customer_ref\` is LOG-ONLY" \
   "runbook states customer_ref never appears in the status returned to the caller"
 
-# ROUND 4, TOB-002 tail: authorizeCustomer now requires EVERY mapped identity on
+# ROUND 4, SEC-002 tail: authorizeCustomer now requires EVERY mapped identity on
 # the leaf to allow the customer_id (intersection), so the narrowest mapping
 # wins. Mapping the shared CN went from silent fleet-wide grant to redundant —
 # the advice is unchanged (map the SAN) but the REASON changed, and a runbook

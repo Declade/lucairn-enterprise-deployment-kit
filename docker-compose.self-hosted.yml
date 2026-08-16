@@ -202,7 +202,7 @@ services:
       # in customer.env, which is read by `bin/lucairn doctor` ONLY (no service
       # reads it) to run the split-pool preflight instead of the in-box GPU checks.
       #
-      # TOB-407-04 (Slice-1 ToB review) is a DOCUMENTED RECOMMENDATION, NOT an
+      # SEC-407-04 (Slice-1 security review) is a DOCUMENTED RECOMMENDATION, NOT an
       # auto-injected env here: the sanitizer's /v1/config runs UNAUTHENTICATED by
       # default and its asdict includes `l3_base_url` (internal topology, NON-secret
       # per the A-E2 invariant — same disclosure class as `ollama_url`). An operator

@@ -26,7 +26,7 @@ import (
 )
 
 // grafanaPanelUIDPattern locks the legal shape of operator-supplied
-// Grafana panel UIDs (Slice 4 fix-up r1, closes bug-hunter M4).
+// Grafana panel UIDs (Slice 4 fix-up r1, closes review M4).
 //
 // Grafana's own UID alphabet is alphanumeric plus `-` / `_`, capped at
 // 40 characters. We allow up to 64 to leave headroom and reject

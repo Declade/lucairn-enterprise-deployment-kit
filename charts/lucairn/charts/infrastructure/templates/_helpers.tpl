@@ -20,7 +20,7 @@
   SUB-CHART's rendered output, so an operator override moves the policies WITH
   the pods.
 
-  SCOPE OF THAT CLAIM (ToB-002 — the first version of this comment overstated
+  SCOPE OF THAT CLAIM (SEC-002 — the first version of this comment overstated
   it). It is NOT true that a namespace name is written in only one place
   repo-wide. Two other classes of literal exist and are deliberately in scope
   here or explicitly out of it:
@@ -52,7 +52,7 @@
 {{- $label := .label -}}
 {{- $found := "" -}}
 {{- range $i, $entry := .root.Values.namespaces -}}
-{{- /* ToB-003: `--set infrastructure.namespaces[1].name=x` builds a SPARSE
+{{- /* SEC-003: `--set infrastructure.namespaces[1].name=x` builds a SPARSE
        list — Helm fills the untouched indices with nil. Without this guard the
        range dereferences nil and Helm raises a raw template panic naming
        whichever label happened to be looked up first, which tells the operator

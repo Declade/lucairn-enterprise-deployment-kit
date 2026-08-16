@@ -29,7 +29,7 @@ postgresql:
   # If you swap the bundled StatefulSet for an external TLS-enabled keystore
   # via secrets.backend != "k8s-native" (roadmap, not yet implemented),
   # override `postgres-gateway.postgresql.sslmode: require` for that path.
-  # Closes Sim 5 Codex r1 HIGH (bundled gateway server does not speak TLS).
+  # Closes Sim 5 review round 1 HIGH (bundled gateway server does not speak TLS).
   sslmode: disable
 
 resources:
@@ -56,7 +56,7 @@ containerSecurityContext:
 # (workstream-C-doctor-extension). Non-k8s-native renders fail-fast in
 # templates/secret.yaml with a clear error rather than silently rendering
 # an install that references a non-existent gateway-keystore-db-credentials
-# Secret (Sim 5 Codex r1 MED).
+# Secret (Sim 5 review round 1 MED).
 secrets:
   backend: k8s-native
   values:

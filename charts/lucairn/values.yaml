@@ -8,7 +8,7 @@ global:
   # time via `--set-file global.imagePullDockerConfigJson=$DOCKER_CONFIG/config.json`
   # — NEVER write the value into customer-values.yaml (would leak the
   # registry PAT into git). Empty value fails-closed at template time with a
-  # clear error (closes bug-hunter M2 / doctor-coverage GAP-1). Set
+  # clear error (closes review M2 / doctor-coverage GAP-1). Set
   # `global.skipPullSecretGuard: true` below to suppress the guard for
   # mirrored public-registry deploys. (Closes Sim 5 Helm Gap #1.)
   imagePullDockerConfigJson: ""
@@ -48,7 +48,7 @@ global:
   llmEgressEnabled: false
   ingestEgressEnabled: false
   ollamaEnabled: true
-  # MUST track `sandbox-a.sanitizer.llmScanEnabled` (ToB TOB-002). This flag
+  # MUST track `sandbox-a.sanitizer.llmScanEnabled` (SEC-002). This flag
   # is what the infrastructure sub-chart gates the L3 NetworkPolicies on —
   # sub-charts cannot read each other's values, which is why the L3 enable
   # state has to be mirrored here. Previously it was UNDEFINED, so enabling L3
@@ -112,7 +112,7 @@ global:
   # chain. Nothing about the scrubbing changed; the certificate stopped
   # over-claiming.
   #
-  # ⛔ `l3CompletenessPosture: full` is NOT AVAILABLE (Marc decision,
+  # ⛔ `l3CompletenessPosture: full` is NOT AVAILABLE (product decision,
   # 2026-08-04). It was briefly offered as an explicit opt-in to reproduce the
   # old over-claiming wording; the kit no longer offers it, on principle: a
   # signed certificate must never be configurable to state that a scan ran

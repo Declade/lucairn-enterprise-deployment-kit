@@ -12,7 +12,7 @@
 # gateway tolerates a missing blob and falls back to the legacy single-sig
 # path), so a local/sandbox install is never blocked.
 #
-# Codex r1 BLOCKER + HIGH (fix-up r1): the configured path is the CONTAINER
+# review round 1 BLOCKER + HIGH (fix-up r1): the configured path is the CONTAINER
 # path the gateway reads (/certs/...), bind-mounted from the host dir
 # ${SANDBOX_B_CERT_DIR:-./.certs} (docker-compose.customer.yml:766). The doctor
 # runs on the HOST, so it must stat the host-side bind-mount source — not /certs
@@ -65,7 +65,7 @@ COMPOSE="$TMP/docker-compose.customer.yml"
 : > "$COMPOSE"
 
 # ===========================================================================
-# CONTAINER -> HOST bind-mount mapping (the Codex r1 BLOCKER cases).
+# CONTAINER -> HOST bind-mount mapping (the review round 1 BLOCKER cases).
 # In a real prod install LCR_WITNESS_SIGNED_MANIFEST_PATH is the CONTAINER path
 # (/certs/...); the file lives on the host at ${SANDBOX_B_CERT_DIR:-./.certs}/.
 # ===========================================================================
@@ -130,7 +130,7 @@ echo "manifest-blob: prod + /certs default + host blob MISSING -> FAIL (names ho
 
 # ---------------------------------------------------------------------------
 # D. prod + a DIRECTORY at the resolved host path -> FAIL (the gateway needs a
-#    regular readable file; -e/-s alone would pass a directory). Codex r1 HIGH.
+#    regular readable file; -e/-s alone would pass a directory). review round 1 HIGH.
 # ---------------------------------------------------------------------------
 HOST_CERTS_DIRBLOB="$TMP/dirblob-certs"
 mkdir -p "$HOST_CERTS_DIRBLOB/witness-signed-manifest.json"   # a DIRECTORY at the blob path

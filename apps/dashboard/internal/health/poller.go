@@ -256,7 +256,7 @@ func (p *Poller) probeTCP(ctx context.Context, svc Service) (Status, string) {
 // "…" is a 3-byte UTF-8 sequence; account for that in the slice bound so
 // the returned string never exceeds the documented cap.
 //
-// UTF-8 safety (Slice 4 fix-up r1, closes bug-hunter M2): a naive byte
+// UTF-8 safety (Slice 4 fix-up r1, closes review M2): a naive byte
 // slice can chop a multi-byte rune in half (e.g. inside a German "ü" or
 // any non-ASCII PII echoed from a probe target). Walk back from the
 // initial cut point until we land on a rune boundary so the returned

@@ -52,7 +52,7 @@ COPY --from=builder /out/lucairn-dashboard /lucairn-dashboard
 
 # OCI image labels — Slice 4 fold-in. Locks GHCR package metadata to the
 # kit repo so the auto-generated GHCR package page links back to source
-# (closes the carry-forward Marc-action of "Make the package public" via
+# (closes the carry-forward action item "Make the package public" via
 # making the package self-documenting + the visibility toggle a one-time
 # step rather than per-release). org.opencontainers.image.source MUST
 # match the kit's HTTPS clone URL byte-for-byte for GHCR's auto-link to

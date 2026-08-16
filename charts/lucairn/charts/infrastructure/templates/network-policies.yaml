@@ -60,7 +60,7 @@ spec:
         - port: 50051
           protocol: TCP
     # Intra-namespace (gateway → postgres-gateway for the PostgresKeyStore).
-    # Closes bug-hunter M4: named podSelector scopes the rule to the
+    # Closes review M4: named podSelector scopes the rule to the
     # postgres-gateway StatefulSet pods (labelled app.kubernetes.io/name=
     # postgres-gateway in templates/statefulset.yaml) instead of allowing
     # all dsa-edge pods to dial each other on 5432.
@@ -119,7 +119,7 @@ spec:
         - port: 8085
           protocol: TCP
     # Intra-namespace (postgres-gateway ← gateway for the PostgresKeyStore).
-    # Closes bug-hunter M4: named podSelector scopes the rule to the
+    # Closes review M4: named podSelector scopes the rule to the
     # gateway Deployment pods (labelled app.kubernetes.io/name=gateway in
     # gateway/templates/deployment.yaml) instead of allowing any dsa-edge
     # pod to dial 5432.
@@ -171,7 +171,7 @@ spec:
         - port: 50057
           protocol: TCP
     # Intra-namespace (app → PostgreSQL, sanitizer → pii-ml gRPC sidecar on
-    # 50056). Closes bug-hunter BLOCKER-4: Phase 7 (Piiranha + GLiNER) dials
+    # 50056). Closes review BLOCKER-4: Phase 7 (Piiranha + GLiNER) dials
     # pii-ml.<identity-ns>.svc on port 50056; without it the default-deny
     # applies and every Phase 7 scan times out at the gRPC deadline, opening
     # the circuit breaker.

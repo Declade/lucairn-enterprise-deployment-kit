@@ -80,7 +80,7 @@ spec:
 # `registry.internal.example/library/qwen2.5:7b` — the model name is a chart
 # value, so a mirror needs no template change).
 #
-# WHAT HAPPENS IF THE MODEL IS MISSING (ToB TOB-001 — do not overclaim here).
+# WHAT HAPPENS IF THE MODEL IS MISSING (SEC-001 — do not overclaim here).
 # It depends on `global.l3AvailabilityPosture`, NOT on this policy. This chart
 # sets NO posture (T-393), so the sanitizer image's own default applies:
 # `degrade`. With stock values a missing model DEGRADES: the sanitizer serves

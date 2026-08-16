@@ -339,7 +339,7 @@ check_citation "$STS"  80  "limits.memory"                         "memory limit
 # The needle is the FULL `{{- define "…" -}}` directive, not the bare
 # validator name: the bare name `validators.l3AirGapWithoutFailClosed` also
 # appears two lines into this validator's own doc comment (`_validators.tpl`
-# "validators.l3AirGapWithoutFailClosed  (T-375 item 2b, ToB TOB-001)"), so a
+# "validators.l3AirGapWithoutFailClosed  (T-375 item 2b, SEC-001)"), so a
 # needle of just the name would still pass with the `{{- define }}` block
 # deleted entirely and only the comment left behind — the exact failure mode
 # PR #116's first draft hit on `bin/lucairn`. Wrapping the needle in the
@@ -349,7 +349,7 @@ check_citation "$STS"  80  "limits.memory"                         "memory limit
 # CONTEXT_NEEDLE pins a fragment of the guard's own fail() message so a
 # gutted-but-still-defined stub (an empty `{{- define … -}}{{- end -}}`, which
 # would still satisfy the needle above) also fails this check — the point of
-# T-375 item 2b / ToB TOB-001 is the fail-closed BEHAVIOUR, not merely that a
+# T-375 item 2b / SEC-001 is the fail-closed BEHAVIOUR, not merely that a
 # template block by this name still exists.
 check_anchor "$VAL" \
   '{{- define "validators.l3AirGapWithoutFailClosed" -}}' \

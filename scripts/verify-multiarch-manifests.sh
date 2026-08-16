@@ -11,13 +11,13 @@
 # - Sim 4 (2026-05-25) found `ghcr.io/declade/dsa-*:0.4.0` were arm64-only
 #   single-arch manifests. Every x86_64 customer hit `exec /bin/sh: exec format
 #   error` at healthcheck time. See
-#   `Opus Advisor/specs/sim4-enterprise-end-to-end-2026-05-25.md` § Gap 5.
+#   internal design record `sim4-enterprise-end-to-end-2026-05-25` § Gap 5.
 #   Closed by `dual-sandbox-architecture` PR #196.
 # - Sim 5 (2026-05-25) found the same defect class re-surfaced on
 #   `ghcr.io/declade/lucairn-dashboard:0.8.1` (also arm64-only). This kit-side
 #   copy of the verifier was vendored alongside the
 #   `dashboard-multiarch-build` Makefile target. See
-#   `Opus Advisor/specs/sim5-compose-x86-2026-05-25.md` § Gap #3.
+#   internal design record `sim5-compose-x86-2026-05-25` § Gap #3.
 # - This script enforces "multi-arch or fail loudly" for every future publish.
 #
 # Vendored from `dual-sandbox-architecture/scripts/verify-multiarch-manifests.sh`

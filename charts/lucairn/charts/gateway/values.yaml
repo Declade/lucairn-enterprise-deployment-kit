@@ -323,7 +323,7 @@ tms:
 # DIFFERENT hazard: an operator believing a scan-policy override is active
 # when it is not).
 #
-# T-493 (Marc, 2026-08-04): the kit's shipped default stays "refuse" — do NOT
+# T-493 (2026-08-04): the kit's shipped default stays "refuse" — do NOT
 # set this permanently to relax the guard. "log" is for a bounded observation
 # window only if the guard false-positives on your tool schemas; pair it with
 # `bin/lucairn doctor --tools` rather than leaving it enabled. See OPS.md §
@@ -357,7 +357,7 @@ sanitizeCache:
   maxEntries: 10000
   ttlSeconds: 3600
 
-# TOB-S009 / fable HIGH (2026-06-10): opt-in gateway-side mTLS for the
+# SEC-S009 (HIGH) (2026-06-10): opt-in gateway-side mTLS for the
 # witness cert RPC dial (:50058). Default OFF (empty secretName) preserves
 # the pre-mTLS behaviour.
 #

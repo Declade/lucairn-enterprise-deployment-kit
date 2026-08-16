@@ -887,7 +887,7 @@ require_env_values() {
     if [ -z "$val" ]; then
       echo "required secrets: missing $canonical (or legacy $legacy)"
       # Gate-aware enrichment for the gateway signing key (the Compose-v2
-      # eager-legacy sharp-edge slot, WP1 S4 Fable verdict → WP4 S2 doctor).
+      # eager-legacy sharp-edge slot, WP1 S4 design review → WP4 S2 doctor).
       # require_env_values fires BEFORE check_signing_key_compose_preflight
       # and short-circuits doctor, so the actionable canonical-var-first
       # diagnostic must be printed HERE for the neither-name-set case —
@@ -1323,7 +1323,7 @@ check_manifest_blob() {
   # local/sandbox install must NOT be blocked here. Mirrors the prod-gating of the
   # ~15 production guards below (each `[ "$dsa_env" = production ] || return 0`).
   #
-  # CONTAINER-vs-HOST path mapping (Codex r1 BLOCKER): the configured
+  # CONTAINER-vs-HOST path mapping (review round 1 BLOCKER): the configured
   # LCR_WITNESS_SIGNED_MANIFEST_PATH (default /certs/witness-signed-manifest.json)
   # is the CONTAINER path the gateway reads — NOT a host path. The gateway service
   # bind-mounts the host dir ${SANDBOX_B_CERT_DIR:-./.certs} -> /certs:ro
@@ -1542,7 +1542,7 @@ check_l3_required_wired() {
 # check_signing_key_compose_preflight — the required-var AUTHORITY for the
 # two nested-legacy signing-key slots, now that the compose files no longer
 # carry `:?` on the legacy inner slot (the Compose-v2 eager-interpolation
-# sharp edge fix: `${LCR_X:-${VEIL_X:-}}` — WP1 S4 Fable verdict, carried
+# sharp edge fix: `${LCR_X:-${VEIL_X:-}}` — WP1 S4 design review, carried
 # to WP4 S2/S7 doctor).
 #
 # Layering after the fix:
@@ -1899,7 +1899,7 @@ check_vllm_l3_preflight() {
       # time with "could not select device driver... does not support GPU
       # capabilities" — a DIFFERENT, harder-to-diagnose error than the driver
       # checks above, and one `nvidia-smi` on the host can't catch (banked
-      # Fable follow-up from kit PR #96: doctor checked the driver but not the
+      # follow-up from kit PR #96: doctor checked the driver but not the
       # toolkit's Docker registration). Detect via the `Runtimes:` line of
       # `docker info` containing the word `nvidia` (anchored to that line so an
       # incidental "nvidia" elsewhere in docker info can't false-green).
@@ -2186,7 +2186,7 @@ check_mtls_partial_config() {
 # H10 (2026-06-26): render-based Helm-path doctor checks.
 #
 # The prior text-parser approach (check_mtls_partial_config_helm) was reverted
-# (commit 195cc58, Codex r1+r2) because a raw values.yaml parser cannot:
+# (commit 195cc58, review round 1+r2) because a raw values.yaml parser cannot:
 #   (a) merge Helm chart DEFAULTS — it false-FAILs a valid config where
 #       caBundle/clientCert/clientKey come from chart defaults, not the
 #       customer's values file; and
@@ -2946,7 +2946,7 @@ check_container_images() {
   # the lucairn-dashboard handling). Default 0.5.1; override via the env
   # var LUCAIRN_PII_ML_IMAGE_TAG.
   #
-  # SYNC LOCK (Codex r1 FINDING-1 closure, kit PR #65): the default 0.5.1
+  # SYNC LOCK (review round 1 FINDING-1 closure, kit PR #65): the default 0.5.1
   # here MUST stay in sync with:
   #   1. docker-compose.customer.yml:370 pii-ml image expression
   #      `${LUCAIRN_PII_ML_IMAGE_TAG:-0.5.1}` (no fall-through to
@@ -3195,7 +3195,7 @@ check_image_manifest_helm() {
 # "every non-pending recorded ref was actually resolved and matched, with at
 # least one ref confirmed and no dangerous skip". The fail-OPEN class this
 # closes: an attacker who induces an empty/error resolution for the ONE ref they
-# swap must NOT get a green --strict (TOB HIGH). Per-verdict semantics:
+# swap must NOT get a green --strict (security review, HIGH). Per-verdict semantics:
 #
 #   verdict / condition         normal doctor          doctor --strict
 #   --------------------------  ---------------------  -----------------------
@@ -4197,7 +4197,7 @@ check_pii_ml_paired_toggles() {
   #      Helm path: rendered via the sandbox-a sanitizer-configmap from
   #      `sandbox-a.sanitizer.{piiranha,gliner}.enabled`).
   #
-  # r2 bug-hunter NEW-1 + kit-doctor W1 convergence: the prior version of
+  # r2 review NEW-1 + kit-doctor W1 convergence: the prior version of
   # this check read synthetic env vars `LUCAIRN_SANITIZER_PIIRANHA_ENABLED` +
   # `LUCAIRN_SANITIZER_GLINER_ENABLED` that exist nowhere in the codebase.
   # Phase 7 toggles are YAML-config controlled, not env-controlled, on both
@@ -4222,7 +4222,7 @@ check_pii_ml_paired_toggles() {
   # never spuriously warns about an idle sidecar.
   sidecar_enabled="${sidecar_enabled:-false}"
 
-  # r2 Codex HIGH: the sidecar-on signal is NOT only the Helm pii-ml.enabled
+  # r2 review HIGH: the sidecar-on signal is NOT only the Helm pii-ml.enabled
   # value. On the Compose path the 4GB pii-ml sidecar deploys via
   # `COMPOSE_PROFILES=phase7` (env file OR live shell) WITHOUT flipping any
   # Helm/YAML value. Without this channel, profile-on + scanners-off printed
@@ -4277,8 +4277,8 @@ check_pii_ml_paired_toggles() {
 }
 
 check_pii_ml_hf_revisions() {
-  # HuggingFace revision SHAs are LOAD-BEARING (PR #241 Codex r1 fix-up
-  # CODEX-HIGH closure). The image at ghcr.io/declade/dsa-pii-ml:0.5.1
+  # HuggingFace revision SHAs are LOAD-BEARING (PR #241 review round 1 fix-up
+  # HIGH finding closure). The image at ghcr.io/declade/dsa-pii-ml:0.5.1
   # was built against specific 40-char-hex SHAs; mismatched env overrides
   # silently re-download weights at a DIFFERENT revision on first cold-cache
   # boot, which can cascade into per-layer F1 / over-redaction regressions.
@@ -4300,7 +4300,7 @@ check_pii_ml_hf_revisions() {
 }
 
 check_pii_ml_lazy_not_ready_off_in_prod() {
-  # Production fail-CLOSED ready gate (PR #240 Codex r1 HIGH-3): the
+  # Production fail-CLOSED ready gate (PR #240 review round 1 HIGH-3): the
   # sidecar's /readyz returns 200 ONLY when both Piiranha + GLiNER are
   # loaded. `LUCAIRN_PII_ML_ALLOW_LAZY_NOT_READY=true` is a dev-loop debug
   # opt-in that lets gRPC scans run BEFORE models load (returns
@@ -4343,7 +4343,7 @@ check_pii_ml_hf_cache_writable() {
   # Compose-path warning; the Helm subchart uses an emptyDir by default
   # and PVC requires explicit storageClass.
   #
-  # r2 bug-hunter NEW-2 + kit-doctor W2 convergence: the prior version
+  # r2 review NEW-2 + kit-doctor W2 convergence: the prior version
   # checked only `[ -e "$override" ] && [ ! -w "$override" ]`. A
   # nonexistent override path falls through silently — sidecar's first-boot
   # `eager_load()` hits `OSError: [Errno 2] No such file or directory`
@@ -7467,7 +7467,7 @@ doctor() {
   # boot on (T-393).
   check_l3_required_wired "$env_file"
 
-  # Nested-legacy signing-key authority (WP1 S4 Fable verdict, carried to
+  # Nested-legacy signing-key authority (WP1 S4 design review, carried to
   # WP4 S2 doctor / S7 acceptance): the compose files no longer carry `:?`
   # on the legacy inner slot (the Compose-v2 eager-interpolation sharp
   # edge), so this doctor check + require_env_values are the layers that
@@ -7570,7 +7570,7 @@ doctor() {
   check_pii_ml_hf_cache_writable "$env_file"
   check_pii_ml_node_memory "$env_file"
 
-  # PR #65 Codex r2: Compose healthcheck budget vs Helm startupProbe parity.
+  # PR #65 review round 2: Compose healthcheck budget vs Helm startupProbe parity.
   # Under-budgeted healthcheck can mark the pii-ml SIDECAR unhealthy before its
   # models finish cold-loading, leaving Phase 7 degraded on slow networks (the
   # sanitizer does NOT depend on pii-ml, so it is never stalled). Gated on

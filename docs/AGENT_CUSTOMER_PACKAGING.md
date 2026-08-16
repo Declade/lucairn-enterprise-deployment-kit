@@ -147,4 +147,4 @@ If `bundle prepare` fails:
 - rerun `bundle prepare`,
 - do not manually patch the tarball,
 - do not weaken `bundle verify`,
-- record the failure and fix in the Obsidian project log.
+- record the failure and fix in the project's internal tracking log.

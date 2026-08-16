@@ -262,7 +262,7 @@ func TestHealthGrafanaJWT_Viewer_MintsViewerRole(t *testing.T) {
 	}
 }
 
-// TestHealthGrafanaJWT_Unauthenticated_RedirectsToLogin closes Codex r1
+// TestHealthGrafanaJWT_Unauthenticated_RedirectsToLogin closes review round 1
 // C33: the prior test invoked HealthGrafanaJWTHandler directly without the
 // auth middleware chain, so it observed the handler's defense-in-depth 401
 // path. In production the auth.RequireSession middleware intercepts FIRST

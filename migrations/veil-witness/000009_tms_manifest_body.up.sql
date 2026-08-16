@@ -1,6 +1,6 @@
--- TMS Slice 5 cert-manifest enrichment (PRD prd-2026-06-08-typed-message-
--- schema-sanitizer-rewrite § Slice 5 + prd-2026-06-10-overnight-bhatia-
--- usability-and-fable-queue WS3). Adds a NULLABLE BYTEA column to
+-- TMS Slice 5 cert-manifest enrichment (design record: typed-message-
+-- schema-sanitizer-rewrite § Slice 5 + overnight usability workstream
+-- WS3). Adds a NULLABLE BYTEA column to
 -- veil_certificates that stores the canonical-JSON bytes of the per-segment
 -- Typed-Message-Schema manifest — which TMS trust-zone each request segment
 -- landed in (trusted_platform / full_scan / value_only / shallow) and the

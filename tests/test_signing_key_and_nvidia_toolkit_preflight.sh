@@ -3,7 +3,7 @@
 # Focused unit tests for two banked doctor follow-ups:
 #
 #   1. check_signing_key_compose_preflight — the Compose-v2 eager
-#      nested-legacy-signing-key sharp edge (WP1 S4 Fable verdict, carried to
+#      nested-legacy-signing-key sharp edge (WP1 S4 design review, carried to
 #      WP4 S2 doctor / S7 acceptance: "Docker Compose v2's eager evaluation of
 #      the nested legacy signing-key requirement is a pre-existing operator
 #      sharp edge; canonical-LCR-only configuration can hit it"). Verifies
@@ -13,7 +13,7 @@
 #      gate is actually armed for the given DSA_ENV/dev-mode combination.
 #
 #   2. the NVIDIA Container Toolkit registration check inside
-#      check_vllm_l3_preflight (banked Fable follow-up from kit PR #96: doctor
+#      check_vllm_l3_preflight (banked follow-up from kit PR #96: doctor
 #      verified the host driver via nvidia-smi but not that the toolkit is
 #      registered with Docker — a DIFFERENT failure mode Compose surfaces only
 #      at container-create time). Verifies default-OFF silence (vllm-l3 not
@@ -131,7 +131,7 @@ LCR_GATEWAY_SIGNING_KEY=gw-fixture-key' \
 
 # Veil emitter explicitly opted OUT (LCR_ENABLED=false): sandbox-b's boot
 # gate (boot_safety.py, enforces only when enabled == "true") is UNARMED by
-# design -> missing key is an informational note, rc=0, no FAIL (Codex r3).
+# design -> missing key is an informational note, rc=0, no FAIL (review round 3).
 N=$((N + 1))
 f="$WK/sandbox_b_veil_optout_note.env"
 printf '%s\n' 'DSA_ENV=production
@@ -294,7 +294,7 @@ exit 0'
 assert_vllm_case "gpu_present_toolkit_missing_fails" "$GPU_NO_TOOLKIT" "$VLLM_ENV" 1 "NVIDIA Container Toolkit is not registered with Docker"
 assert_vllm_case "gpu_present_toolkit_missing_names_fix" "$GPU_NO_TOOLKIT" "$VLLM_ENV" 1 "nvidia-ctk runtime configure --runtime=docker"
 
-# --- Anchoring guard (Codex LOW): "nvidia" appearing OUTSIDE the Runtimes
+# --- Anchoring guard (review LOW): "nvidia" appearing OUTSIDE the Runtimes
 # line (e.g. a kernel-version string) must NOT green the check — the Runtimes
 # line itself has no nvidia runtime here, so this is a definitive FAIL.
 NVIDIA_ELSEWHERE="$WK/nvidia-elsewhere"

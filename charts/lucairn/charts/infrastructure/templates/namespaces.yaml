@@ -4,7 +4,7 @@
 # hook for ordering. See https://helm.sh/docs/topics/charts_hooks/ for the
 # default install order.
 #
-# WHY NOT HOOKS (Sim 5 Codex r1 + r2 BLOCKER):
+# WHY NOT HOOKS (Sim 5 review round 1 + r2 BLOCKER):
 # Helm applies `helm.sh/hook-delete-policy: before-hook-creation` AS THE
 # DEFAULT when no delete policy is specified. That means every `helm upgrade`
 # would DELETE the previous Namespace hook resource before recreating it,

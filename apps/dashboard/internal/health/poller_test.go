@@ -262,7 +262,7 @@ func TestPoller_DetailTruncated(t *testing.T) {
 	}
 }
 
-// TestPoller_DetailTruncated_UTF8 regression-locks bug-hunter M2 fix:
+// TestPoller_DetailTruncated_UTF8 regression-locks review M2 fix:
 // a 2-byte UTF-8 rune (ü = 0xC3 0xBC) must NOT be sliced in the middle,
 // or the returned string will be invalid UTF-8 and render as "U+FFFD" in
 // the browser. The walk-back to a rune boundary keeps the output valid.
@@ -285,7 +285,7 @@ func TestPoller_DetailTruncated_UTF8(t *testing.T) {
 // not a single global goroutine sweeping all services. Without this, a slow
 // /healthz on service A would pile up against service B in the same loop.
 //
-// Closes Codex r1 C31: prior tests only asserted clean shutdown + idempotent
+// Closes review round 1 C31: prior tests only asserted clean shutdown + idempotent
 // Start. Neither asserted the actual per-service goroutine count, so a
 // regression to single-loop architecture would have shipped silently.
 //
@@ -336,7 +336,7 @@ func TestPoller_OneGoroutinePerService(t *testing.T) {
 // loop with its own HTTP client + ctx, so a stuck request on service A
 // has zero coupling to service B's poll cadence.
 //
-// Closes Codex r1 C31: a regression to single-loop architecture would
+// Closes review round 1 C31: a regression to single-loop architecture would
 // have made the fast service starve behind the slow service's hang.
 func TestPoller_SlowServiceDoesNotBlockOthers(t *testing.T) {
 	t.Parallel()

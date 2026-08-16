@@ -234,7 +234,7 @@ echo "digest-pin: tampered digest -> normal rc=0 (warn) + strict BLOCKS (non-zer
 #                    without a resolver, so it must NOT report a green run.
 #       plain     -> SKIP (rc=0, warn-only): a fresh install on a host without
 #                    docker/crane/skopeo is never blocked by a PLAIN doctor.
-#     (HIGH [trailofbits]: distinguish "verified nothing" from "verified all".)
+#     (HIGH [security review]: distinguish "verified nothing" from "verified all".)
 # ---------------------------------------------------------------------------
 NORES="$TMP/nores"
 mkdir -p "$NORES"
@@ -447,7 +447,7 @@ printf '%s\n' "$ORPHAN_PARSE" | grep -q "^<no-ref>	INVALID$" \
 echo "digest-pin: orphan digest (no ref) -> surfaced as <no-ref> INVALID ok"
 
 # ---------------------------------------------------------------------------
-# 5k. Dashboard enforcement under --strict (Codex r1 BLOCKER fix). The dashboard
+# 5k. Dashboard enforcement under --strict (review round 1 BLOCKER fix). The dashboard
 #     deploys via LUCAIRN_IMAGE_REGISTRY + its OWN tag var
 #     LUCAIRN_DASHBOARD_IMAGE_TAG (docker-compose.customer.yml:630), DISTINCT
 #     from the dsa-* LUCAIRN_IMAGE_TAG. digest_resolve_env_ref must apply those

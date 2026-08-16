@@ -3,8 +3,8 @@ set -euo pipefail
 
 # Unit + behavioral tests for the version-awareness helpers in bin/lucairn:
 #   * ver_lt  — SemVer-correct "<" with numeric core comparison + prerelease
-#               precedence (1.0.0-rc1 < 1.0.0). Regression shield for the Codex
-#               r1 HIGH: the old impl stripped the -prerelease suffix before
+#               precedence (1.0.0-rc1 < 1.0.0). Regression shield for a
+#               review round 1 HIGH finding: the old impl stripped the -prerelease suffix before
 #               comparing, so a prerelease at/below minimum-secure was reported
 #               "ahead of the feed" instead of triggering the SECURITY path.
 #   * check-updates — the consuming behavior: a current=1.0.0-rc1 against a feed
@@ -44,7 +44,7 @@ check_ver_lt() {
 }
 
 echo "ver_lt unit tests:"
-# The 8 prompt-specified cases (the Codex r1 HIGH bug cases + ordering checks).
+# The 8 prompt-specified cases (the review round 1 HIGH bug cases + ordering checks).
 check_ver_lt "1.0.0-rc1" "1.0.0"      true    # prerelease < release (the bug)
 check_ver_lt "1.0.0"     "1.0.0-rc1"  false   # release > prerelease
 check_ver_lt "1.0.0-rc1" "1.0.0-rc2"  true    # rc1 < rc2 (numeric prerelease)
@@ -66,7 +66,7 @@ check_ver_lt "1.0.0-1"   "1.0.0-alpha" true   # numeric ident < alphanumeric
 check_ver_lt "1.0.0+a"   "1.0.0+b"     false  # build metadata: equal precedence
 check_ver_lt "1.0.0-rc1+x" "1.0.0"    true    # +build stripped, then -pre < rel
 
-# Codex r2 MEDIUM x2 — crash/overflow safety of the numeric comparisons. Each of
+# review round 2 MEDIUM x2 — crash/overflow safety of the numeric comparisons. Each of
 # these previously fed an empty/non-numeric/overflowing operand to `[ -lt ]`/`-gt`,
 # which errors ("integer expression expected" / "number truncated after N digits")
 # under `set -e` on bash 3.2. The fix routes both compares through _num_lt, which

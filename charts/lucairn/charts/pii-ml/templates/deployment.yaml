@@ -67,7 +67,7 @@ spec:
           # operator sets `pii-ml.image.tag: ""` to override, the chart
           # falls back to Chart.AppVersion (currently 0.5.1) — NEVER to
           # global.imageTag. Mirrors the docker-compose.customer.yml:370
-          # discipline + closes Codex r1 FINDING-3 (kit PR #65).
+          # discipline + closes review round 1 FINDING-3 (kit PR #65).
           image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ end }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
@@ -100,7 +100,7 @@ spec:
               value: "0.0.0.0:{{ .Values.service.httpPort }}"
             # Eager-load policy. Production default true → boot blocks until
             # both models load; /readyz reflects accurately. Mirrors PR #240
-            # Codex r1 HIGH-3 fail-CLOSED discipline.
+            # review round 1 HIGH-3 fail-CLOSED discipline.
             - name: LUCAIRN_PII_ML_EAGER_LOAD
               value: {{ .Values.eagerLoad | quote }}
             # Hard-exit on load failure (sys.exit(2) Piiranha / sys.exit(3)
@@ -108,8 +108,8 @@ spec:
             # produce a silently-degraded sidecar.
             - name: LUCAIRN_PII_ML_EXIT_ON_LOAD_FAILURE
               value: {{ .Values.exitOnLoadFailure | quote }}
-            # HF revision SHAs — load-bearing supply-chain pins (PR #241 Codex
-            # r1 fix-up CODEX-HIGH closure). The image bakes the same SHAs
+            # HF revision SHAs — load-bearing supply-chain pins (PR #241 review
+            # round 1 fix-up HIGH finding closure). The image bakes the same SHAs
             # into its image-manifest.yaml entry; these env vars provide an
             # operator-visible verification surface and a runtime override
             # path for emergency rollback.
@@ -172,7 +172,7 @@ spec:
             timeoutSeconds: 5
           readinessProbe:
             # /readyz returns 200 ONLY when both Piiranha + GLiNER models are
-            # loaded. PR #240 Codex r1 HIGH-3 discipline: the readyz gate
+            # loaded. PR #240 review round 1 HIGH-3 discipline: the readyz gate
             # MUST fail-CLOSED; Kubernetes uses this to NOT route traffic
             # to an unhealthy sidecar.
             httpGet:
