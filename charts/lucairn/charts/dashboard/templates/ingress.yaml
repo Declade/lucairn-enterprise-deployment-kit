@@ -1,4 +1,15 @@
-{{- if .Values.ingress.enabled }}
+{{- /*
+  T-421 (same shape as charts/lucairn/charts/gateway/templates/ingress.yaml):
+  `.Values.ingress.enabled` read bare panics with "nil pointer evaluating
+  interface {}.enabled" when an operator disables the Ingress by nulling the
+  whole block (`--set dashboard.ingress=null`, or a values overlay writing
+  `ingress:` with nothing under it). Reachable today on a DIRECT child render
+  (`helm template charts/lucairn/charts/dashboard --set ingress=null`); at
+  umbrella scope it is masked only because dashboard.enabled defaults to false,
+  which is a coincidence of the default profile rather than a guard.
+*/ -}}
+{{- $ingress := default dict .Values.ingress }}
+{{- if $ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -6,18 +17,18 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "dashboard.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
+  {{- with $ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  ingressClassName: {{ .Values.ingress.className }}
+  ingressClassName: {{ $ingress.className }}
   tls:
     - hosts:
-        - {{ .Values.ingress.host | quote }}
-      secretName: {{ .Values.ingress.tlsSecret }}
+        - {{ $ingress.host | quote }}
+      secretName: {{ $ingress.tlsSecret }}
   rules:
-    - host: {{ .Values.ingress.host | quote }}
+    - host: {{ $ingress.host | quote }}
       http:
         paths:
           - path: /

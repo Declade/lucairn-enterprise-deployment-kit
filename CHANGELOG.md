@@ -277,6 +277,56 @@ carry a security fix are tagged **[Security]**.
   migration message if a values file still sets it.
 
 ### Fixed
+- **The L3 posture allowlists were blind to every value Sprig calls empty —
+  including `false` and `0`, the two an operator is most likely to type
+  (T-548).** All four posture guards coerced with `toString (default ""
+  <value>)`, and Sprig's `default` decides emptiness with its own `empty()`,
+  which counts the YAML boolean `false`, the number `0`, an empty list and an
+  empty map as empty alongside `nil` and `""`. So `--set
+  global.l3AvailabilityPosture=false` — a bare literal Helm infers as a boolean,
+  and the guards' OWN documented most-likely error (renaming the retired
+  `global.l3Required` and keeping its value) — coerced to `""`, hit the
+  "absence" short-circuit, and never reached the allowlist. `hasKey` stayed
+  true, so the pod template rendered `LUCAIRN_L3_AVAILABILITY_POSTURE: "false"`
+  into the container and the sanitizer refused it at boot: CrashLoopBackOff,
+  the exact outcome these render-time guards exist to prevent. The same held
+  for `global.l3CompletenessPosture=false`, which is the wire form of the
+  certificate posture T-385 deleted. `true` and `1` were caught all along
+  (non-empty to Sprig), so only the `false`/`0` half of each enum was open.
+  - The list/map half was worse than the scalars: the pod templates render the
+    env var's `value:` from the RAW field, never from the guard's coerced
+    variable, so `--set-json 'global.l3AvailabilityPosture=[]'` shipped
+    `value: "[]"` into the container — and `{}` shipped `value: "map[]"`, Go's
+    `fmt.Sprint` of an empty map.
+  - The coercion now carves out untyped nil BY KIND (`kindIs "invalid"`, the
+    same carve-out the T-490 secret guards use) instead of by Sprig emptiness,
+    so every real value — including `false`, `0`, `[]` and `{}` — is compared
+    verbatim. An
+    empty *string* and a null `key:` are still ABSENCE and still take the image
+    default; whitespace-only is still refused. Fixed at all four sites:
+    `charts/lucairn/templates/_validators.tpl` (umbrella, both postures),
+    `charts/lucairn/charts/sandbox-a/templates/deployment.yaml` and
+    `charts/lucairn/charts/veil-witness/templates/deployment.yaml` (the
+    pod-local mirrors that a subchart-scoped `global` reaches without passing
+    the umbrella validator).
+  - Same Sprig-`empty()` trap as the T-562 sanitizer-knob sweep and T-472; the
+    enum validators were in neither sweep's blast radius. `tests/test_l3_posture_flags.sh`
+    now probes the enums with bare `--set` (YAML-typed) as well as
+    `--set-string` — the string-only probes are why this survived review.
+- **`helm template` panicked when an Ingress was disabled by nulling its block
+  (T-421 residual).** `charts/lucairn/charts/gateway/templates/ingress.yaml`
+  and `charts/lucairn/charts/dashboard/templates/ingress.yaml` read
+  `.Values.ingress.enabled` bare, and Go templates abort on a field access
+  against untyped nil rather than treating it as false. So `--set
+  gateway.ingress=null`, or a values overlay writing `ingress:` with nothing
+  under it, killed the render with `nil pointer evaluating interface
+  {}.enabled` — naming a pointer instead of the thing the operator turned off.
+  `ingress.enabled: false` was the only spelling that worked and nothing said
+  so. Both templates now bind `{{ $ingress := default dict .Values.ingress }}`
+  and read through it, the same nil-safe shape the umbrella `NOTES.txt` half of
+  this ticket already used. (That earlier fix's own commit message recorded
+  this residual one template later and scoped it out.) New regression suite
+  `tests/test_helm_ingress_nil_safety.sh`, wired into `make test`.
 - **The gateway could not persist its evidence gap store — silently (T-573).**
   `charts/lucairn/charts/gateway/values.yaml` sets
   `containerSecurityContext.readOnlyRootFilesystem: true`, and the deployment

@@ -59,6 +59,7 @@ assert_no_executable_rg() {
     "$ROOT/tests/test_l3_split_pool_preflight.sh" \
     "$ROOT/tests/test_l3_model_upgrade_gate.sh" \
     "$ROOT/tests/test_l3_posture_flags.sh" \
+    "$ROOT/tests/test_helm_ingress_nil_safety.sh" \
     "$ROOT/tests/test_enterprise_mtls_helm.sh" \
     "$ROOT/tests/test_enterprise_mtls_helm_required.sh" \
     "$ROOT/tests/test_enterprise_mtls_production_values.sh"; do

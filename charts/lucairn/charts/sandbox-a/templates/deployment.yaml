@@ -313,8 +313,26 @@ spec:
                  whitespace-only is a value and is refused, exactly as
                  services/sanitizer/config.py `_parse_strict_enum` does.
             */}}
+            {{- /*
+                 T-548 (2026-08-17): this coercion was
+                 `toString (default "" ...)`, and Sprig's `default` calls the
+                 BOOLEAN `false` and the NUMBER `0` empty. So
+                 `--set global.l3AvailabilityPosture=false` — a bare literal
+                 Helm infers as a YAML boolean, and the guard's OWN documented
+                 most-likely typo (renaming retired l3Required and keeping its
+                 value) — coerced to "", the absence short-circuit below
+                 swallowed it, and this allowlist never ran. `hasKey` stayed
+                 true, so LUCAIRN_L3_AVAILABILITY_POSTURE: "false" rendered into
+                 the pod and the sanitizer refused it at boot. `true`/`1` were
+                 always caught (non-empty to Sprig), which is why only the
+                 false/0 half of the enum was open. `kindIs "invalid"` carves
+                 out ONLY untyped nil (a null `key:`), so every real value —
+                 including false and 0 — is compared verbatim. An empty STRING
+                 is still absence. Same carve-out as the T-490 secret guards.
+            */}}
             {{- if hasKey $g "l3AvailabilityPosture" }}
-            {{- $raw := toString (default "" $g.l3AvailabilityPosture) }}
+            {{- $rawVal := $g.l3AvailabilityPosture }}
+            {{- $raw := ternary "" (toString $rawVal) (kindIs "invalid" $rawVal) }}
             {{- if and (ne $raw "") (not (has (lower (trim $raw)) (list "degrade" "reject"))) }}
             {{- fail "sandbox-a: global.l3AvailabilityPosture must be \"degrade\" or \"reject\" (value withheld). The sanitizer refuses to start on an off-allowlist posture rather than guessing the weaker one, so this render would CrashLoopBackOff. If you renamed the retired global.l3Required and kept its value: true becomes \"reject\", false becomes \"degrade\". Omit the key entirely to take the image default, \"degrade\". NOTE: if you set this under a subchart key (sandbox-a.global.*) rather than the umbrella global, set the umbrella key instead — a subchart-scoped global bypasses the chart's umbrella validators." }}
             {{- end }}
