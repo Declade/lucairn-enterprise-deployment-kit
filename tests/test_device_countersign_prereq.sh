@@ -2,7 +2,7 @@
 #
 # Rendered-compose guard for the customer-device countersignature prerequisite.
 #
-# PRD: Opus Advisor specs/2026-07/prd-2026-07-28-cert-anchor-hardening-wave1.md
+# PRD: prd-2026-07-28-cert-anchor-hardening-wave1
 # (Slice 4) · research base findings-2026-07-28-cert-hardening-deep-research.md
 # §B row 1.
 #
@@ -178,7 +178,7 @@ while IFS='|' read -r name flags; do
 
   # The countersigning identity must be the CLAIM leaf (CN=lucairn-device-<name>),
   # not the certificate-hop leaf (CN=gateway, fleet-wide by design — runbook
-  # §3.4 / TOB-002). The signer reads LCR_WITNESS_MTLS_*, so pointing that
+  # §3.4 / SEC-002). The signer reads LCR_WITNESS_MTLS_*, so pointing that
   # family at the gateway leaf's directory would silently countersign with an
   # identity the witness cannot bind to the claim connection.
   case "$cert_env" in
@@ -189,7 +189,7 @@ while IFS='|' read -r name flags; do
   # The witness binds the countersigning key to the peer that SUBMITS the claim,
   # and the submitter is the sanitizer, not the gateway. So the binding is only
   # meaningful while both mount the SAME leaf — which is a property of this
-  # overlay, not of the code, and nothing else asserts it (bug-hunter H1). If a
+  # overlay, not of the code, and nothing else asserts it (review H1). If a
   # future edit gives the sanitizer its own witness credential, every healthy
   # request starts reporting the binding as unverified and the runbook's §10.5
   # claim quietly stops being true here.
@@ -236,7 +236,7 @@ echo "-- runbook"
 # malformed" as "absent" — are the exact confusions this feature exists to
 # prevent. `device_countersign_malformed` is included because a runbook that
 # omits it sends an operator hunting a device that was in fact countersigning
-# (Sol S4 r2 MAJOR-5).
+# (review S4 r2 MAJOR-5).
 for phrase in "countersign" "device_countersign" "did not countersign" "does not verify" "device_countersign_malformed"; do
   if grep -qi -- "$phrase" "$RUNBOOK"; then
     ok "runbook documents '$phrase'"
@@ -266,7 +266,7 @@ fi
 if grep -qi "content, not context" "$RUNBOOK"; then
   ok "runbook scopes the guarantee to request content, not context"
 else
-  fail "runbook does not scope the guarantee to content — the unqualified 'cannot fabricate the record' claim is overclaimed (TOB-S4-001)"
+  fail "runbook does not scope the guarantee to content — the unqualified 'cannot fabricate the record' claim is overclaimed (SEC-S4-001)"
 fi
 
 echo

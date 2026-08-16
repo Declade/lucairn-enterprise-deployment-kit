@@ -1,7 +1,7 @@
 {{- /*
   Model-pull Job for the L3 PII-plane runtime.
 
-  REVISION-SUFFIXED NAME (bug-hunter F1 / ToB TOB-008). Kubernetes treats
+  REVISION-SUFFIXED NAME (review F1 / SEC-008). Kubernetes treats
   Job spec.template as IMMUTABLE for an existing resource, so a fixed-name
   Job makes `helm upgrade` fail outright on any install that already ran it,
   AND the Job can never re-run when `sanitizer.llmScanModel` changes — the
@@ -9,7 +9,7 @@
   The `-r{{ .Release.Revision }}` suffix is the convention this chart already
   uses for exactly this reason; see migration-job.yaml:2-11.
 
-  RENDER GATE (bug-hunter F3): also gated on the model-registry egress flag.
+  RENDER GATE (review F3): also gated on the model-registry egress flag.
   `ollama pull` ALWAYS performs a registry round-trip, so with
   `global.identityModelRegistryEgress: false` (the documented air-gap path)
   this Job could only ever fail. It is omitted instead, and the offline model
@@ -29,7 +29,7 @@ metadata:
     app.kubernetes.io/part-of: dsa
 spec:
   backoffLimit: 3
-  # HARD WALL-CLOCK BOUND (bug-hunter F4). The readiness cap below bounds only
+  # HARD WALL-CLOCK BOUND (review F4). The readiness cap below bounds only
   # the WAIT for ollama-identity; the multi-GB `ollama pull` itself is
   # unbounded, so a stalled registry connection leaves the Job Running forever
   # — the exact hang the readiness cap was added to prevent. activeDeadlineSeconds

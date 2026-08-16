@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bootstrap-mtls-ca.sh — deploy-local CA + witness server cert + per-caller
-# client certs for TOB-S009 witness mTLS.
+# client certs for SEC-S009 witness mTLS.
 #
 # Generates a per-deploy CA, signs a server cert for the witness, and signs
 # one client cert per authorised caller (gateway, sandbox-a by default). The

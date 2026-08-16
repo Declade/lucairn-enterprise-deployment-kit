@@ -285,7 +285,7 @@ id-bridge:
 # a PVC + pre-stage weights via initContainer — see OPS.md § "pii-ml
 # sidecar — HF cache PVC".
 #
-# HF revision SHAs are LOAD-BEARING (PR #241 Codex r1 fix-up CODEX-HIGH
+# HF revision SHAs are LOAD-BEARING (PR #241 review round 1 fix-up HIGH finding
 # closure). Override only if you mirror HF weights into a private bucket
 # AND verify the same SHAs.
 #
@@ -329,7 +329,7 @@ id-bridge:
 #   # Dev / debug opt-in: when true, gRPC scans before models finish loading
 #   # return scan_status=inference_error (per call) rather than blocking OR
 #   # fail-OPEN. DO NOT set true in production — defeats the fail-CLOSED
-#   # /readyz gate that PR #240 Codex r1 review locked in.
+#   # /readyz gate that PR #240 review round 1 locked in.
 #   allowLazyNotReady: false
 #   # Per-scanner sidecar enable flags. Default both on. To run ONLY one
 #   # scanner inside the sidecar, flip the matching half false here AND

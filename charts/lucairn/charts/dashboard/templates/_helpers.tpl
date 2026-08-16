@@ -25,7 +25,7 @@ Helper templates for the dashboard sub-chart.
   path). TODO(slice-2 design review): decide whether to passthrough
   global.imageTag here when dashboard releases are aligned with kit
   releases, or keep the independent cadence forever.
-  TODO(bug-hunter F-14): add a chart test asserting that
+  TODO(review F-14): add a chart test asserting that
   .Values.bootstrapAdmin.passwordSecretName override path renders the
   Secret-less code path correctly.
 */ -}}

@@ -80,7 +80,7 @@ customer-bundle:
 # so the kit gets its own dedicated target rather than sharing DSA's
 # `PUBLISH_SERVICES` matrix.
 #
-# TWO-PHASE PUBLISH (Codex r1 BLOCKER on PR #34 — fix-up r1):
+# TWO-PHASE PUBLISH (review round 1 BLOCKER on PR #34 — fix-up r1):
 #
 #   Phase 1 — `dashboard-multiarch-build`: builds + pushes ONLY the exact
 #     `:$(VERSION)` tag. Does NOT touch `:$(MINOR_TAG)` or `:latest`. Safe to
@@ -118,7 +118,7 @@ customer-bundle:
 # Sim 5 (2026-05-25) found `ghcr.io/declade/lucairn-dashboard:0.8.1` was
 # arm64-only — same `exec format error` failure mode that closed Sim 4 Gap 5
 # for the 8 dual-sandbox-architecture core services. See
-# `Opus Advisor/specs/sim5-compose-x86-2026-05-25.md` § Gap #3.
+# internal design record `sim5-compose-x86-2026-05-25` § Gap #3.
 
 REGISTRY ?= ghcr.io/declade
 VERSION  ?= 0.8.1
@@ -174,7 +174,7 @@ dashboard-buildx-bootstrap:
 #
 # Does NOT touch `:$(MINOR_TAG)` or `:latest`. Rolling alias promotion is a
 # SEPARATE target (`dashboard-multiarch-promote-aliases`) so bisect and -rc
-# publishes can never advance the rolling aliases. Closes Codex r1 BLOCKER on
+# publishes can never advance the rolling aliases. Closes review round 1 BLOCKER on
 # PR #34 (mirrors DSA PR #196 r5/r6).
 dashboard-multiarch-build: dashboard-buildx-bootstrap
 	@echo "Pre-flight: copy kit-root image-manifest.yaml into apps/dashboard/ ..."

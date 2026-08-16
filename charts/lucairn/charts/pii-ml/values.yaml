@@ -58,7 +58,7 @@ service:
 # `/readyz` accurately reflects model-ready state and the first customer
 # request hits a warm inference path. Set false ONLY for dev-loop debug
 # (the sidecar boots fast but the first scan request pays the load cost).
-# Mirrors PR #240 Codex r1 HIGH-3 fail-CLOSED discipline.
+# Mirrors PR #240 review round 1 HIGH-3 fail-CLOSED discipline.
 eagerLoad: true
 
 # Hard exit (sys.exit(2/3)) on eager-load failure. Production default
@@ -68,7 +68,7 @@ eagerLoad: true
 exitOnLoadFailure: true
 
 # HuggingFace model revision pins. SHAs lifted verbatim from PR #241
-# Codex r1 fix-up `3c561030` (closed CODEX-HIGH on supply-chain) — the
+# review round 1 fix-up `3c561030` (closed HIGH finding on supply-chain) — the
 # image at ghcr.io/declade/dsa-pii-ml:0.5.1 was built against THESE exact
 # 40-char hex revisions. The kit MUST propagate them verbatim; a mismatch
 # silently re-downloads weights at a different revision (or fails the

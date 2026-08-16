@@ -406,8 +406,8 @@ longer required.
 on lets the sidecar accept gRPC scans before models finish loading (it
 returns `scan_status=inference_error` per call instead of blocking OR
 fail-OPEN). This is a dev-loop debug aid — NEVER set it on in
-production: it disables the fail-CLOSED readyz gate that PR #240's Codex
-r1 review locked in.
+production: it disables the fail-CLOSED readyz gate that PR #240's review
+round 1 locked in.
 
 ### Verifying Phase 7 is active
 

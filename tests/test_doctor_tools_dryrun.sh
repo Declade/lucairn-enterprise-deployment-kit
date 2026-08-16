@@ -222,7 +222,7 @@ pin() {
   fi
 }
 
-# TOB-004: a bare number under a vendor extension is DATA, in every context.
+# SEC-004: a bare number under a vendor extension is DATA, in every context.
 pin numbers_outside_value_ctx \
   '[{"input_schema":{"type":"object","x_customer_msisdn":4915112345678}}]' \
   1 "matcher=10plus_digit_run"
@@ -274,7 +274,7 @@ pin zero_width_split \
 pin hangul_filler_split \
   '[{"default":"49151'$'ㅤ''12345678"}]' \
   1 "matcher=10plus_digit_run"
-# Arabic-Indic digits carry no compatibility decomposition (TOB-003).
+# Arabic-Indic digits carry no compatibility decomposition (SEC-003).
 pin arabic_indic_digits \
   '[{"default":"'$'٤٩١٥١١٢٣٤٥٦٧٨''"}]' \
   1 "matcher=10plus_digit_run"

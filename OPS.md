@@ -157,7 +157,7 @@ default. On a corrupted HF cache, missing weights, or a load-time
 exception, the process hard-exits (`sys.exit(2)` for Piiranha,
 `sys.exit(3)` for GLiNER) and Kubernetes restarts the container per the
 `restartPolicy: Always` semantics on the Deployment. This is intentional
-fail-CLOSED behavior locked at PR #240 Codex r1 review.
+fail-CLOSED behavior locked at PR #240 review round 1.
 
 If the restart loop persists:
 
@@ -405,7 +405,7 @@ Confirm the counts match the live system's order of magnitude and the
 newest timestamp is within your RPO window. Record the validation date as
 backup evidence (see the Upgrade runbook step 7).
 
-> **Deferred (Tier-B, needs Marc decision + live Vast verify):** automated
+> **Deferred (Tier-B; pending vendor evaluation):** automated
 > scheduling of these dumps. The Helm path will get a `CronJob` running
 > `pg_dump` per compliance DB on a retention policy, and the Compose path a
 > `bin/lucairn backup` / `bin/lucairn restore` wrapper, with documented
@@ -1299,7 +1299,7 @@ is: `refuse` (kit default — do not change this permanently), `log` (detect
 and allow, emitting a finding to the gateway log instead of a 400 — relaxes
 every check, IBAN/email/digit-run alike), and `refuse_high_confidence`
 (refuses everything `refuse` refuses EXCEPT the digit-run matcher — see the
-exact guarantee below). T-493 (Marc, 2026-08-04): the kit ships with the
+exact guarantee below). T-493 (2026-08-04): the kit ships with the
 guard **on** (`refuse`) because it caught a real leak on day one — `log`
 exists as a bounded operator escape hatch, not a supported steady state.
 
@@ -1610,8 +1610,8 @@ a PASS as "everything"):**
   > banner used to imply there was).** `--dashboard-tag TAG` and
   > `--no-dashboard` existed for exactly one commit during the original
   > cosign work (`c856d35`, 2026-05-29) and were **deliberately removed by
-  > its immediate successor the same day** (`38714b1`, review fixes TOB-001 /
-  > TOB-005), when `verify-images` was rewritten to verify **by signed
+  > its immediate successor the same day** (`38714b1`, review fixes SEC-001 /
+  > SEC-005), when `verify-images` was rewritten to verify **by signed
   > digest** instead of by mutable tag: the old flags fed a
   > tag→`cosign verify` path with a silent `0.8.2` fallback, which is exactly
   > the substitution hazard the by-digest rewrite closed. **Neither flag was
@@ -2085,7 +2085,7 @@ single-replica are the v1.0 SLA.
 > the signed artifact. This docs fix closes that gap for the documented path;
 > wiring `verify-images` as an enforced (non-skippable) preflight inside the
 > `bin/lucairn pull`/`upgrade` CLI subcommands themselves is a separate,
-> code-level follow-up (banked, not in this change). **Sol xhigh review
+> code-level follow-up (banked, not in this change). **Adversarial review
 > (2026-07-26) additionally caught: (a) the first draft of this step let the
 > registry/tag drift from what step 5 actually pulls on a mirror deployment
 > — fixed above by sourcing both from `customer.env`; (b) the coverage claim

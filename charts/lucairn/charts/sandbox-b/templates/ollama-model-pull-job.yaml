@@ -39,7 +39,7 @@ spec:
                 sleep 2
               done
               echo "Pulling model {{ .Values.ollama.model }}..."
-              # T-375 item 5 (ToB TOB-003): quoted so a model name carrying
+              # T-375 item 5 (SEC-003): quoted so a model name carrying
               # shell metacharacters cannot break out of the pull command.
               # (No `default` needed here — the whole template is gated on
               # `.Values.ollama.model` being truthy at line 1.)

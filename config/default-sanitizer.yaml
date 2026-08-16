@@ -18,7 +18,7 @@ sanitizer:
   freetext_fields: []
   # W5+ Phase 1 (2026-05-09) toggles — credential-class + adversarial-input
   # hardening. Both default ON; operators can flip to false per environment.
-  # NOTE (r1 fix, TOB-160-001): the third toggle
+  # NOTE (r1 fix, SEC-160-001): the third toggle
   # `documented_placeholder_suppression_enabled` was removed because the
   # filter created an exploitable real-credential-leak path. The yaml loader
   # silently ignores any leftover key in customer config files.
@@ -201,7 +201,7 @@ sanitizer:
     fallback_on_error: reject
     # Phase 3 (2026-05-09) added "ensemble" mode for L3 reversals. Default
     # stays "sequential" so existing customers see ZERO behavior drift on
-    # this PR's deploy. (TOB-003 fix, 2026-05-09 — earlier draft flipped the
+    # this PR's deploy. (SEC-003 fix, 2026-05-09 — earlier draft flipped the
     # default to ensemble, which silently changed cert payload shape and
     # invoked a different code path / timeout / fallback profile across
     # ALL customers regardless of their per-request `enable_l3_reversals`

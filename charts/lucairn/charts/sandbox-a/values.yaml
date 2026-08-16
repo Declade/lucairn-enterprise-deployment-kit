@@ -198,7 +198,7 @@ sanitizer:
   # `registry.internal.example/library/qwen2.5:7b`) or pre-seed the
   # ollama-identity PVC and set `global.identityModelRegistryEgress: false`.
   llmScanModel: "qwen2.5:7b"
-  # Hard wall-clock bound for the model-pull Job (bug-hunter F4). The pull is
+  # Hard wall-clock bound for the model-pull Job (review F4). The pull is
   # multi-GB; a stalled registry connection would otherwise leave the Job
   # Running forever. Generous by design — raise it on a slow link rather than
   # letting a real pull get killed.
@@ -235,7 +235,7 @@ sanitizer:
   # witness owns a DIFFERENT question (what the certificate claims, via
   # global.l3CompletenessPosture), and the two cannot contradict each other.
   # See charts/lucairn/values.yaml § L3 DEEP-PII-SHIELD POSTURES.
-  # TOB-003 fix (2026-05-09): default "sequential" — Pro/Enterprise overlays
+  # SEC-003 fix (2026-05-09): default "sequential" — Pro/Enterprise overlays
   # MUST explicitly set "ensemble" to opt into L3 reversal path.
   llmScanMode: "sequential"
   llmScanRestoreThreshold: 0.85

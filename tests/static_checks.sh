@@ -556,7 +556,7 @@ fi
 
 if docker compose version >/dev/null 2>&1; then
   # Regression guard for the Compose-v2 eager nested-legacy interpolation
-  # sharp edge (WP1 S4 Fable verdict): customer.env.example sets ONLY the
+  # sharp edge (WP1 S4 design review): customer.env.example sets ONLY the
   # canonical LCR_* signing-key names, so this render used to need benign
   # VEIL_* values injected here. The compose files now default the legacy
   # inner slot (${LCR_X:-${VEIL_X:-}}), so a canonical-only render must
@@ -599,7 +599,7 @@ bash "$ROOT/tests/test_manifest_blob.sh"
 grep -q '^image_digests:[[:space:]]*$' "$ROOT/image-manifest.yaml" \
   || { echo "B1-S3: image-manifest.yaml is missing the image_digests: block" >&2; exit 1; }
 
-# Strengthened (MED [trailofbits]): assert via the ACTUAL parser, not a textual
+# Strengthened (MED [security review]): assert via the ACTUAL parser, not a textual
 # grep. A grep for `ref:`/`digest:` substrings cannot catch a future careless
 # edit that DOWNGRADES a signed ref to PENDING (drops the digest line) or to
 # INVALID (truncates the digest, or adds a stray `pending: true`) — the textual
@@ -705,11 +705,11 @@ if command -v helm >/dev/null 2>&1; then
     || { echo "T-64: endpoint override with explicit transport=tailnet should render tailnet, got $T64_OVERRIDE_VALUE" >&2; exit 1; }
   echo "T-64: override render — explicit transport declaration carries through unchanged"
 
-  # 2b) Explicit-stock render (Sol xhigh round 3, 2026-07-26): an operator who
+  # 2b) Explicit-stock render (review round 3, 2026-07-26): an operator who
   #     writes .endpoint to the EXACT stock DNS name (not just leaves it
   #     empty) is not moving the dial target, so this must still auto-derive
   #     "in_box_plaintext" rather than being treated as an "override" that
-  #     requires an explicit .transport. This is the failure mode Sol caught:
+  #     requires an explicit .transport. This is the failure mode caught in review:
   #     the first fix-round's "any non-empty endpoint = overridden" logic
   #     would have broken an upgrade for anyone who happened to pin the stock
   #     address explicitly.

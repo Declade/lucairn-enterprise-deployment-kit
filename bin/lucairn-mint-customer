@@ -5,7 +5,7 @@
 #
 # This is the operator-side mirror of the production `mint-lucairn-key` skill
 # (which targets gateway.lucairn.eu over SSH). Self-hosted customers do NOT
-# have SSH to Marc's production box; they run their own gateway with their
+# have SSH to the hosted production box; they run their own gateway with their
 # own DSA_ADMIN_KEY. This script hits THEIR gateway's admin endpoint locally.
 #
 # Two-step flow:
@@ -363,7 +363,7 @@ if [ -n "${TOOL_SCOPE}" ]; then
     _arr="["
     _first="true"
     # Split on comma using IFS. set -f disables pathname (glob) expansion so a
-    # value like 'servicenow,*' is NOT expanded against the CWD (TOB-79-01).
+    # value like 'servicenow,*' is NOT expanded against the CWD (SEC-79-01).
     _IFS_SAVE="${IFS}"
     set -f
     IFS=","

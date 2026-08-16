@@ -23,7 +23,7 @@ data:
   # LUCAIRN_L3_REQUIRED, when an operator still sets it) live DIRECTLY in the
   # witness Deployment pod spec env (veil-witness/templates/deployment.yaml).
   #
-  # FIX A (Codex r1 P2, 2026-06-19): a ConfigMap value consumed via
+  # FIX A (review round 1 P2, 2026-06-19): a ConfigMap value consumed via
   # `envFrom: configMapRef` does NOT roll the pod on `helm upgrade` when the
   # value changes (no pod-template change), so the witness would keep the OLD
   # posture until someone restarted it by hand — a certificate posture change

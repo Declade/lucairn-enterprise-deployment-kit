@@ -93,7 +93,7 @@ defect class as Sim 4 Gap 5 (closed by `dual-sandbox-architecture` PR #196 for
 the 8 dsa-* services).
 
 The kit guards this regression with TWO dedicated Makefile targets +
-verifier script (split into build + promote-aliases phases — closes Codex r1
+verifier script (split into build + promote-aliases phases — closes review round 1
 BLOCKER on PR #34, mirrors DSA PR #196 r5/r6):
 
 - **`dashboard-multiarch-build`** — builds + pushes ONLY the exact
@@ -227,8 +227,8 @@ Phase 2 promote) is the only audit-clean path for production releases.
    release is breaking-change for customers. Otherwise leave the pinned tag
    alone and let the `:0.8` minor alias roll forward.
 2. Open a PR with the manifest bump + run the full reviewer chain
-   (bug-hunter-reviewer, kit-config-image-drift, claim-enforcement-guard,
-   personal-info-leak-detector) + Codex round 1.
+   (implementation review, config/image-drift check, claim-enforcement
+   guard, personal-info-leak detector) + a cross-model review pass.
 3. On merge, re-run BOTH publish phases from the release host if the
    manifest version changed — the embedded `//go:embed` image-manifest.yaml
    needs to match what the cover-page PDF will render at runtime:

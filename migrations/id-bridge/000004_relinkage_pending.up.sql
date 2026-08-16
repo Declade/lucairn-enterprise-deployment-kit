@@ -1,6 +1,6 @@
 -- 000004_relinkage_pending.up.sql
 -- Adds postgres-backed persistence for four-eyes relinkage pending requests.
--- TOB-S001 closure: in-memory loss on bridge restart = silent four-eyes
+-- SEC-S001 closure: in-memory loss on bridge restart = silent four-eyes
 -- bypass. Every pending request must survive restarts so that the second
 -- principal's ApproveRelinkage call can find and resolve it.
 --

@@ -121,7 +121,7 @@ data:
   SANITIZE_CACHE_MAX_ENTRIES: {{ default 10000 .Values.sanitizeCache.maxEntries | quote }}
   SANITIZE_CACHE_TTL_SECONDS: {{ default 3600 .Values.sanitizeCache.ttlSeconds | quote }}
   {{- if .Values.witnessMtls.clientSecret }}
-  # TOB-S009 / fable HIGH (2026-06-10): gateway-side mTLS for the witness
+  # SEC-S009 (HIGH) (2026-06-10): gateway-side mTLS for the witness
   # cert RPC dial (:50058). Emitted only when witnessMtls.clientSecret is set.
   # When unset the gateway connects without mTLS (graceful degradation —
   # mirrors docker-compose.customer.yml:730-736).

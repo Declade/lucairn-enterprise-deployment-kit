@@ -1,6 +1,6 @@
 # Lucairn kit — `witness-central` topology overlay
 #
-# PRD: Opus Advisor specs/2026-07/prd-2026-07-28-split-evidence-plane.md (Slice 1)
+# PRD: prd-2026-07-28-split-evidence-plane (Slice 1)
 # Board: #206
 #
 # WHAT THIS CHANGES
@@ -285,7 +285,7 @@ services:
   #
   # An earlier revision of this overlay left the container up as a
   # "retrieval-only surface" whose signing key became inert rather than absent.
-  # Marc ratified the Fable finding that inert is not absent: a witness on the
+  # Design review confirmed that inert is not absent: a witness on the
   # operator's machine cannot deliver "evidence the operator cannot forge" by
   # construction, and every hour the key sits on the laptop is an hour the
   # security story depends on nobody using it. The laptop is a protection plane

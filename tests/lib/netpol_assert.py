@@ -73,7 +73,7 @@ REQUIRED_EXCEPT = {
 
 # T-390 assertion scope: EVERY 0.0.0.0/0 ipBlock in the render must carry the
 # full except-list -- asserting over a two-name allowlist let four rules escape
-# the property (ToB-001). Rules that legitimately differ are named here, so the
+# the property (SEC-001). Rules that legitimately differ are named here, so the
 # exception is visible in the test rather than implied by the test's silence.
 #
 # Both entries reach an OPERATOR-CONFIGURED endpoint where a CGNAT address is a
@@ -143,7 +143,7 @@ def port_allowed(rule, port):
 
     An absent `ports` key means EVERY port -- the T-389 root cause.
 
-    ToB-005: a `ports` entry may declare a RANGE via `endPort`, in which case
+    SEC-005: a `ports` entry may declare a RANGE via `endPort`, in which case
     `port` is the range's lower bound. Comparing only against `port` would miss
     a rule that covers 11434 as part of e.g. 11000-12000, and the check would
     report BLOCKED for traffic the cluster actually allows.
@@ -167,7 +167,7 @@ def port_allowed(rule, port):
 def peer_matches_pod(peer, pod_labels, pod_namespace):
     """Does a NetworkPolicy peer select the pod (`pod_labels` in `pod_namespace`)?
 
-    ToB-005: the original evaluator skipped every peer carrying a
+    SEC-005: the original evaluator skipped every peer carrying a
     namespaceSelector, which silently under-counted reachability. The three
     forms that matter:
 
@@ -234,7 +234,7 @@ def check_moved(docs):
     its own, and is excluded from validators.namespaceNetpolAlignment for that
     reason (tracked as T-417). Enabling it would legitimately trip this check.
 
-    CiliumNetworkPolicy counts alongside NetworkPolicy (ToB-002): with
+    CiliumNetworkPolicy counts alongside NetworkPolicy (SEC-002): with
     `global.dnsRestriction` on -- the DEFAULT in dual-sandbox-architecture --
     the CNPs are part of what must follow the pods, and counting only
     NetworkPolicy would call a namespace policed while its DNS restrictions
@@ -331,7 +331,7 @@ def check_cgnat(docs):
 
 
 def check_dnsnames(docs):
-    """ToB-002: CiliumNetworkPolicy DNS patterns follow the namespace override.
+    """SEC-002: CiliumNetworkPolicy DNS patterns follow the namespace override.
 
     The T-388 metadata fix moved each CNP to the overridden namespace but left
     its `matchPattern` suffixes naming the OLD one, so a pod in the new

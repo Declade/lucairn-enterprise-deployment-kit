@@ -131,7 +131,7 @@ echo "SEC hardening happy-path: ok"
 # Builds the same fixture but renames ALL 12 dual-name keys to their legacy
 # VEIL_ form (6 signing + 6 public). Doctor must still PASS via
 # env_value_with_legacy. This exercises the full Stage-3 deprecation surface
-# (was 5 keys pre-fix-up-#3; bug-hunter proved the missing 7 broke the
+# (was 5 keys pre-fix-up-#3; review proved the missing 7 broke the
 # customer migration path — bin/lucairn:243-260 + docker-compose.customer.yml
 # lines 425-489/544).
 LEGACY_ENV="$TMPDIR/legacy-veil.env"

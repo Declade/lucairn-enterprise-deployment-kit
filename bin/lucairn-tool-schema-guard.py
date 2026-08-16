@@ -274,7 +274,7 @@ def _fold_for_matching(s: str) -> str:
         if unicodedata.category(ch) == "Nd":
             # NFKC does NOT fold Arabic-Indic / Extended Arabic-Indic /
             # Devanagari digits — they carry no compatibility decomposition
-            # (TOB-003). unicodedata.decimal() is the direct equivalent of Go's
+            # (SEC-003). unicodedata.decimal() is the direct equivalent of Go's
             # offset arithmetic over unicode.Nd, and was verified to agree on
             # every codepoint Go folds.
             try:
@@ -462,7 +462,7 @@ def expand_json_number(lit: str):
         if not ("0" <= ch <= "9"):
             return "", EXPAND_NOT_A_NUMBER
 
-    # TOB-005: zero times any power of ten is zero, so 0e999999999 expands to
+    # SEC-005: zero times any power of ten is zero, so 0e999999999 expands to
     # "0" and must not trip the clamp below.
     if digits.strip("0") == "":
         return "0", EXPAND_OK
@@ -1018,7 +1018,7 @@ class Walker:
                 self.findings.append(make_finding(KIND_PII, mc, "string value", self.path))
 
         elif kind == "num":
-            # TOB-004: scanned everywhere the POSITION says this number is data,
+            # SEC-004: scanned everywhere the POSITION says this number is data,
             # not only in value context. The literal source text is preserved,
             # so a 13-digit MSISDN is seen as written rather than via a lossy
             # float round-trip — and the literal alone is not enough, because

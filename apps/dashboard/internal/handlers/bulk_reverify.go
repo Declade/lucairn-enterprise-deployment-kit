@@ -28,7 +28,7 @@ type BulkCertResolver interface {
 
 // Process-wide bulk-job concurrency + rate budget.
 //
-// bug-hunter F-4: the previous per-job pool + per-job tick meant N
+// review F-4: the previous per-job pool + per-job tick meant N
 // concurrent bulk jobs could slam the witness with N × bulkWorkerPool
 // in-flight calls and N × bulkRateLimit RPC/s. Both knobs now live at
 // package scope so the dashboard's witness blast radius is bounded
@@ -181,7 +181,7 @@ func (b *BulkReverifyDeps) BulkReverifyHandler(w http.ResponseWriter, r *http.Re
 // call also flows through the Verifier.Invalidate path so the cached
 // snapshot is bypassed. Per-cert audit log lines emit `cert.verify_requested`
 // so a post-hoc forensic grep matches both single-cert and bulk paths
-// against the same event name (bug-hunter F-5).
+// against the same event name (review F-5).
 //
 // Identifier handling: the bulk POST carries cert_id values (the browser
 // checkboxes). The witness RPC keys off request_id (upstream
@@ -261,7 +261,7 @@ func (b *BulkReverifyDeps) runJob(job *bulkJob, ids []string) {
 
 			// Per-cert audit log: matches the single-cert event name at
 			// certs.go ReverifyHandler so post-hoc forensic grep parity
-			// holds (bug-hunter F-5).
+			// holds (review F-5).
 			log.Printf("cert.verify_requested user_id=%s cert_id=%s request_id=%s bulk_job_id=%s", job.user, certID, requestID, job.id)
 
 			b.Verifier.Invalidate(requestID)

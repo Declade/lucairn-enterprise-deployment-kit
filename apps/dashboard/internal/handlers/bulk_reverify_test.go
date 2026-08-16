@@ -351,7 +351,7 @@ func TestBulkReverify_ProgressJSONIncludesAllCounters(t *testing.T) {
 // idCaptureVerifier records the IDs Verify was called with so a test
 // can assert the bulk worker passed request_id values (not cert_ids)
 // into the witness RPC. The lookup-key mismatch was a real BLOCKER
-// caught by Codex r1: the witness RPC keys off request_id (upstream
+// caught by review round 1: the witness RPC keys off request_id (upstream
 // cert_server.go:44-53) but the bulk POST carries cert_ids.
 type idCaptureVerifier struct {
 	mu            sync.Mutex

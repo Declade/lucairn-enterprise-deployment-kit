@@ -197,7 +197,7 @@ openssl x509 -req -in "client-${DEVICE}.csr" -CA ca.pem -CAkey ca.key \
 # `defaultLatchedCertPeers = []string{"gateway"}`), and it is the same CN the
 # stock kit's own bootstrap-mtls-ca.sh mints for this hop.
 #
-# ⚠️⚠️ AND A PER-DEVICE subjectAltName ON TOP OF IT — TOB-002, 2026-07-28.
+# ⚠️⚠️ AND A PER-DEVICE subjectAltName ON TOP OF IT — SEC-002, 2026-07-28.
 #
 # The CN alone is FLEET-WIDE. Every device's cert-hop leaf carries the same
 # `/O=Lucairn/CN=gateway`, so the witness's peerIdentities() returns exactly
@@ -942,7 +942,7 @@ earlier revision of this section that promised otherwise is corrected below:
 | gateway, audit, id-bridge | Go | **The process exits at startup.** The dial is constructed during boot and the refusal is fatal. |
 | sanitizer, sandbox-b, reid-guard | Python | **The process also fails at startup**, under the latch. Each invokes the fail-closed transport gate during boot (`sanitizer/app.py` `fail_closed_if_witness_transport_unusable`, `sandbox-b/main.py`, `reid-guard/server.py`); the sanitizer and sandbox-b raise, reid-guard exits explicitly. |
 
-> ⚠️ **Corrected 2026-07-29 (Sol S4 r2 MAJOR-7).** Earlier revisions of this
+> ⚠️ **Corrected 2026-07-29 (review S4 r2 MAJOR-7).** Earlier revisions of this
 > table, and a matching bullet in §8, said the Python services keep serving and
 > degrade to PARTIAL. That stopped being true when the transport gate was
 > widened to assert the RESOLVED posture through the same resolver the dial uses
@@ -1292,7 +1292,7 @@ silently start the very witness you just removed.
 
 ## 10. Customer-device countersignature
 
-*PRD: Opus Advisor `specs/2026-07/prd-2026-07-28-cert-anchor-hardening-wave1.md`
+*PRD: `prd-2026-07-28-cert-anchor-hardening-wave1`
 (Slice 4). Requires the matching DSA change (`pkg/devicesign`).*
 
 ### 10.1 What it is

@@ -173,7 +173,7 @@ func (d *HealthDeps) HealthGrafanaJWTHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Slice 4 fix-up r1 (bug-hunter L5): resolve the panel slug BEFORE
+	// Slice 4 fix-up r1 (review L5): resolve the panel slug BEFORE
 	// minting the JWT. An unknown / unconfigured panel returns 200 with
 	// an empty URL so the drawer can render the "panel not configured"
 	// placeholder — but minting a 60s harvestable JWT for an unknown
@@ -201,7 +201,7 @@ func (d *HealthDeps) HealthGrafanaJWTHandler(w http.ResponseWriter, r *http.Requ
 	}
 	urlOut := d.panelURL(panelSlug, signed)
 	w.Header().Set("Cache-Control", "no-store")
-	// Bug-hunter L4: Pragma is the HTTP/1.0-era no-cache directive that
+	// Review L4: Pragma is the HTTP/1.0-era no-cache directive that
 	// some intermediaries still honor. Pair it with Cache-Control:no-store
 	// for defense-in-depth against caching the bearer token.
 	w.Header().Set("Pragma", "no-cache")

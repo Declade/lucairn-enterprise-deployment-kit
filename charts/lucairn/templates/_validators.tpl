@@ -6,7 +6,7 @@
   degradation. The `_` prefix excludes them from manifest output;
   they are invoked from sub-chart templates that need them.
 
-  Pattern reference: Slice 4 fix-up r1 closed bug-hunter H-2 by
+  Pattern reference: Slice 4 fix-up r1 closed review H-2 by
   introducing this guard for the cross-sub-chart half-config Grafana
   embed case.
 */ -}}
@@ -405,7 +405,7 @@ the chart's supported paths are development and production only.
 {{- /*
   validators.gatewayPostgresKeystoreSubchartMismatch
 
-  Closes bug-hunter H1 (original) + Option C pivot (2026-05-26):
+  Closes review H1 (original) + Option C pivot (2026-05-26):
   v1.0 ships single-replica + file-keystore on PVC (both flags OFF).
   The postgres-gateway subchart is the v2.0 opt-in HA path (both flags
   ON). Anything in between is a misconfiguration we must fail-fast on.
@@ -462,12 +462,12 @@ the chart's supported paths are development and production only.
     - gateway.hpa.enabled = true
       (HPA scaling beyond 1 replica breaks ReadWriteOnce PVC sharing)
     - gateway.keystorePath = ""
-      (Codex r2 MED: empty path causes the gateway ConfigMap to omit
+      (review round 2 MED: empty path causes the gateway ConfigMap to omit
       GATEWAY_KEYSTORE_PATH; the gateway binary then silently falls
       back to in-memory keystore, violating Decision 9's v1.0
       persistence guarantee)
     - gateway.keystore.persistence.enabled != true
-      (Codex r2 MED: PVC must be enabled so the file keystore survives
+      (review round 2 MED: PVC must be enabled so the file keystore survives
       pod restarts; without it the keystore lives on the pod's emptyDir
       and is wiped on every restart)
 
@@ -480,7 +480,7 @@ the chart's supported paths are development and production only.
 {{- $gateway := (default dict .Values.gateway) -}}
 {{- $pk := (default dict $gateway.postgresKeystore) -}}
 {{- if not $pk.enabled -}}
-{{- /* Codex r2 LOW: use `hasKey` + explicit nil check rather than
+{{- /* review round 2 LOW: use `hasKey` + explicit nil check rather than
        `default 1 ...` — Helm/Sprig's `default` treats 0 as falsy, so
        `default 1 0` would silently coerce replicaCount=0 to 1 and mask
        the bug. We want replicaCount=0 to fail loudly because the chart,
@@ -748,7 +748,7 @@ the chart's supported paths are development and production only.
 {{- /*
   validators.deprecatedL3RequiredKeys
 
-  Codex P1 (2026-06-19 fix-up). When chart 1.9.4 collapsed L3-required to the
+  Review finding P1 (2026-06-19 fix-up). When chart 1.9.4 collapsed L3-required to the
   single global.l3Required knob it DROPPED the per-subchart overrides
   sandbox-a.sanitizer.l3Required AND veil-witness.config.l3Required. An operator
   upgrading with an OLD values file that still sets one of those deprecated keys
@@ -852,7 +852,7 @@ the chart's supported paths are development and production only.
 
   ⚠️ THE ACCEPT/REJECT SET MIRRORS THE SERVICES EXACTLY FOR
   `l3AvailabilityPosture`, WITH ONE DELIBERATE EXCEPTION FOR
-  `l3CompletenessPosture` (Marc decision, 2026-08-04): the veil-witness image
+  `l3CompletenessPosture` (product decision, 2026-08-04): the veil-witness image
   itself still parses `full` — that Go-side mapping is a separate,
   not-yet-scheduled retirement — but this chart's allowlist accepts only
   `partial`. A signed certificate must never be configurable to claim a scan
@@ -876,7 +876,7 @@ the chart's supported paths are development and production only.
     - A WHITESPACE-ONLY value IS refused. Compose's `${VAR:-}` renders the empty
       string and never a padded one, so `"   "` is something an operator typed —
       a paste accident or a quoting bug — and both services refuse it rather
-      than guess (Sol gate TOB-362R-02). It trims to `""`, which is not in the
+      than guess (review gate SEC-362R-02). It trims to `""`, which is not in the
       allowlist, so it falls through to the refusal below.
   Comparison values are trimmed + lowercased, exactly as both services do, so
   `"  Reject "` is accepted here iff the image would accept it. `toString` keeps
@@ -943,7 +943,7 @@ the chart's supported paths are development and production only.
 {{- end -}}
 
 {{- /*
-  validators.l3ShieldFlagCoherence  (T-375 item 3, ToB TOB-002)
+  validators.l3ShieldFlagCoherence  (T-375 item 3, SEC-002)
 
   Fails fast when:
     - sandbox-a.sanitizer.llmScanEnabled = true   (the DOCUMENTED L3 enable knob;
@@ -981,7 +981,7 @@ the chart's supported paths are development and production only.
 {{- end -}}
 
 {{- /*
-  validators.l3AirGapWithoutFailClosed  (T-375 item 2b, ToB TOB-001)
+  validators.l3AirGapWithoutFailClosed  (T-375 item 2b, SEC-001)
 
   Fails fast when ALL THREE hold:
     - sandbox-a.sanitizer.llmScanEnabled = true         (operator wants L3)
@@ -1006,7 +1006,7 @@ the chart's supported paths are development and production only.
   merely warns about the retired flag (services/sanitizer/config.py, the
   `posture != equivalent` arm). Its one reachable effect was therefore
   `l3Required: true` + `l3AvailabilityPosture: degrade` + air-gap rendering
-  clean while the pod actually runs `degrade`: the exact TOB-001 symptom this
+  clean while the pod actually runs `degrade`: the exact SEC-001 symptom this
   guard exists to prevent, re-opened by the guard's own escape hatch. A guard
   clause that can only fire in company with a value that overrides it is not a
   fallback. (`dig` truthiness made it worse: a string `"false"` is truthy in Go
@@ -1120,7 +1120,7 @@ the chart's supported paths are development and production only.
 {{- if $want -}}
 {{- $got := toString $vals.namespace -}}
 {{- if ne $got $want -}}
-{{- fail (printf "namespace/NetworkPolicy split-brain: %s.namespace=%q but the infrastructure.namespaces entry labelled %q is %q. The %s workloads would deploy into %q while every NetworkPolicy for them — including default-deny-all — is created in %q. A namespace with no NetworkPolicy is default-ALLOW, so this silently removes all egress restriction from those pods.\n\nTO FIX, move BOTH. Use a values FILE, not --set: `--set infrastructure.namespaces[N].name=...` makes Helm rebuild the list with every other entry nil, which fails the render for an unrelated-looking reason (ToB-003). Write:\n\n  infrastructure:\n    namespaces:\n      - {name: dsa-edge, label: edge}\n      - {name: %s, label: %s}\n      - ... every remaining entry, each keeping BOTH name and label ...\n  %s:\n    namespace: %s\n\nand pass it with -f. The list must be COMPLETE — it replaces the chart default wholesale." $sub $got $label $want $sub $got $want $got $label $sub $got) -}}
+{{- fail (printf "namespace/NetworkPolicy split-brain: %s.namespace=%q but the infrastructure.namespaces entry labelled %q is %q. The %s workloads would deploy into %q while every NetworkPolicy for them — including default-deny-all — is created in %q. A namespace with no NetworkPolicy is default-ALLOW, so this silently removes all egress restriction from those pods.\n\nTO FIX, move BOTH. Use a values FILE, not --set: `--set infrastructure.namespaces[N].name=...` makes Helm rebuild the list with every other entry nil, which fails the render for an unrelated-looking reason (SEC-003). Write:\n\n  infrastructure:\n    namespaces:\n      - {name: dsa-edge, label: edge}\n      - {name: %s, label: %s}\n      - ... every remaining entry, each keeping BOTH name and label ...\n  %s:\n    namespace: %s\n\nand pass it with -f. The list must be COMPLETE — it replaces the chart default wholesale." $sub $got $label $want $sub $got $want $got $label $sub $got) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -1132,7 +1132,7 @@ the chart's supported paths are development and production only.
 
 
 {{- /*
-  validators.infrastructureDisabledWithPIIPlane  (ToB-006)
+  validators.infrastructureDisabledWithPIIPlane  (SEC-006)
 
   Fails fast when `infrastructure.enabled=false` while a PII-plane sub-chart is
   still enabled.

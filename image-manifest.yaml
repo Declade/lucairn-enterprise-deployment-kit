@@ -201,7 +201,7 @@ image_digests:
       digest: "sha256:8aad459fc04a03de849cb2cc6ae812146b46d89bc023e171e232cf7ee7d09aef"
     dsa-pii-ml:
       # Multi-arch manifest list (linux/amd64 + linux/arm64) published from
-      # PR #241's final state (commit 0cb627c, Codex r1 fix-ups). Built on
+      # PR #241's final state (commit 0cb627c, review round 1 fix-ups). Built on
       # the Hetzner pilot builder (lucairn-multiarch) 2026-06-07. Per-arch
       # manifest digests: amd64=sha256:7201de66279104328a8458478575ea603c00f5de35279be2f782544d41f7fce3,
       # arm64=sha256:6ef424e6ca467c240df622fa37b39bcee7b2aa2a602e2de8e10a405c07e2f09e.

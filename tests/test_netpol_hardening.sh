@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# T-388 / T-389 / T-390 + ToB-002/003/006 — NetworkPolicy hardening.
+# T-388 / T-389 / T-390 + SEC-002/003/006 — NetworkPolicy hardening.
 #
 # Every case here is a POSITIVE CONTROL: it fails against the pre-change tree,
 # or against a tree where the specific guard it names has been removed. A case
@@ -33,19 +33,19 @@
 #          managed-Kubernetes Pod/Service CIDRs and overlay networks commonly
 #          live) and 127.0.0.0/8 (loopback). Asserted across the WHOLE render,
 #          not a list of policy names: the first version checked two policies
-#          and four others escaped the property entirely (ToB-001).
+#          and four others escaped the property entirely (SEC-001).
 #
-#   ToB-002  The T-388 fix moved each CiliumNetworkPolicy to the overridden
+#   SEC-002  The T-388 fix moved each CiliumNetworkPolicy to the overridden
 #          namespace but left its DNS `matchPattern` suffixes naming the OLD
 #          one, so pods could resolve the vacated namespace and not their own.
 #          The fix CREATED that inversion, so it gets its own control.
 #
-#   ToB-003  `--set infrastructure.namespaces[N].name=...` builds a SPARSE list
+#   SEC-003  `--set infrastructure.namespaces[N].name=...` builds a SPARSE list
 #          (Helm nils every other index). That used to produce a raw template
 #          panic naming an unrelated label; it must produce the actionable
 #          "use a values file" message instead.
 #
-#   ToB-006  `infrastructure.enabled=false` deletes every policy in the chart,
+#   SEC-006  `infrastructure.enabled=false` deletes every policy in the chart,
 #          default-deny-all included, while the data plane still deploys. The
 #          chart already draws this line by `global.dsaEnv`: production
 #          hard-rejects it via validators.enterpriseFullMeshMTLS's
@@ -185,25 +185,25 @@ grep -q "has no entry with label" "$WORK/nolabel.err" \
 echo "ok  T-388: namespaceFor helper fails closed on a missing label"
 
 # ===========================================================================
-# ToB-003 — a sparse list from `--set ...namespaces[N].name=` must produce the
+# SEC-003 — a sparse list from `--set ...namespaces[N].name=` must produce the
 # actionable message, not a nil-deref panic blaming an unrelated label.
 # ===========================================================================
 if helm template lucairn "$CHART" "${COMMON[@]}" \
      --set 'infrastructure.namespaces[1].name=acme-identity' \
      >/dev/null 2>"$WORK/sparse.err"; then
-  fail "ToB-003: sparse namespaces list rendered — the nil entries were not caught"
+  fail "SEC-003: sparse namespaces list rendered — the nil entries were not caught"
 fi
 grep -q "is null. This is what" "$WORK/sparse.err" \
-  || fail "ToB-003: sparse list refused, but without the actionable values-file guidance. Got: $(head -2 "$WORK/sparse.err")"
+  || fail "SEC-003: sparse list refused, but without the actionable values-file guidance. Got: $(head -2 "$WORK/sparse.err")"
 grep -q "values FILE" "$WORK/sparse.err" \
-  || fail "ToB-003: message does not prescribe the values-file remediation"
-echo "ok  ToB-003: sparse --set list yields the actionable values-file message"
+  || fail "SEC-003: message does not prescribe the values-file remediation"
+echo "ok  SEC-003: sparse --set list yields the actionable values-file message"
 
 # The split-brain message must ALSO prescribe a values file rather than the
 # --set form that cannot work.
 grep -q "values FILE" "$WORK/diverge-sandbox-a.err" \
-  || fail "ToB-003: the split-brain message still prescribes an unexecutable --set remediation"
-echo "ok  ToB-003: split-brain message prescribes an executable remediation"
+  || fail "SEC-003: the split-brain message still prescribes an unexecutable --set remediation"
+echo "ok  SEC-003: split-brain message prescribes an executable remediation"
 
 # ===========================================================================
 # T-389 — union reachability of ollama-identity:11434 in the identity namespace.
@@ -260,18 +260,18 @@ grep -q "IPv4-ONLY" "$ROOT/charts/lucairn/values.yaml" \
 echo "ok  T-390: IPv4-only dual-stack caveat documented"
 
 # ===========================================================================
-# ToB-002 — CiliumNetworkPolicy DNS suffixes follow a namespace override.
+# SEC-002 — CiliumNetworkPolicy DNS suffixes follow a namespace override.
 # ===========================================================================
 if ! helm template lucairn "$CHART" "${COMMON[@]}" --set global.dnsRestriction=true \
        -f "$WORK/ns-override.yaml" >"$WORK/cnp.yaml" 2>"$WORK/cnp.err"; then
-  echo "ToB-002: dnsRestriction override render FAILED:" >&2; cat "$WORK/cnp.err" >&2; exit 1
+  echo "SEC-002: dnsRestriction override render FAILED:" >&2; cat "$WORK/cnp.err" >&2; exit 1
 fi
 python3 "$ASSERT" dnsnames "$WORK/cnp.yaml" \
-  || fail "ToB-002: CNP DNS patterns did not follow the namespace override"
-echo "ok  ToB-002: CNP permits its own NEW namespace, no stale suffixes remain"
+  || fail "SEC-002: CNP DNS patterns did not follow the namespace override"
+echo "ok  SEC-002: CNP permits its own NEW namespace, no stale suffixes remain"
 
 # ===========================================================================
-# ToB-006 — infrastructure-off must not silently strip the policy layer WHERE
+# SEC-006 — infrastructure-off must not silently strip the policy layer WHERE
 # THAT MATTERS, and must stay legal where the chart supports it.
 #
 # `global.dsaEnv` is a closed enum {development, production} and the chart
@@ -283,20 +283,20 @@ echo "ok  ToB-002: CNP permits its own NEW namespace, no stale suffixes remain"
 # The ACTIVE control: production hard-rejects infrastructure-off via
 # validators.enterpriseFullMeshMTLS's $mandatoryProfiles. Asserting the
 # PRE-EXISTING message is deliberate — see the note below on why asserting our
-# own ToB-006 message here would be a test that cannot fail for its stated
+# own SEC-006 message here would be a test that cannot fail for its stated
 # reason.
 if helm template lucairn "$CHART" \
      -f "$CHART/values-prod.yaml" -f "$CHART/values-prod-site.example.yaml" \
      --set infrastructure.enabled=false >/dev/null 2>"$WORK/prod-infra-off.err"; then
-  fail "ToB-006: production render ACCEPTED infrastructure.enabled=false — the PII plane would deploy with no policy at all"
+  fail "SEC-006: production render ACCEPTED infrastructure.enabled=false — the PII plane would deploy with no policy at all"
 fi
 grep -q "infrastructure.enabled must be true when global.dsaEnv=production" "$WORK/prod-infra-off.err" \
-  || fail "ToB-006: production refused infrastructure-off, but not via \$mandatoryProfiles: $(head -2 "$WORK/prod-infra-off.err")"
-echo "ok  ToB-006: production hard-rejects infrastructure.enabled=false (active control: \$mandatoryProfiles)"
+  || fail "SEC-006: production refused infrastructure-off, but not via \$mandatoryProfiles: $(head -2 "$WORK/prod-infra-off.err")"
+echo "ok  SEC-006: production hard-rejects infrastructure.enabled=false (active control: \$mandatoryProfiles)"
 
 # Development is EXEMPT, and must stay renderable: the repo's own
 # tests/test_enterprise_mtls_production_values.sh performs this exact render
-# twice. The first version of the ToB-006 guard fired here and turned CI red.
+# twice. The first version of the SEC-006 guard fired here and turned CI red.
 if ! helm template lucairn "$CHART" \
        "${HELM_TEST_SECRET_ARGS[@]}" \
        --set global.dsaEnv=development \
@@ -304,20 +304,20 @@ if ! helm template lucairn "$CHART" \
        --set infrastructure.enabled=false \
        --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
        >/dev/null 2>"$WORK/dev-infra-off.err"; then
-  echo "ToB-006: development render with infrastructure off FAILED:" >&2
+  echo "SEC-006: development render with infrastructure off FAILED:" >&2
   cat "$WORK/dev-infra-off.err" >&2
-  fail "ToB-006: guard over-fires into the supported development path"
+  fail "SEC-006: guard over-fires into the supported development path"
 fi
-echo "ok  ToB-006: development render with infrastructure off still succeeds (supported path)"
+echo "ok  SEC-006: development render with infrastructure off still succeeds (supported path)"
 
-# The ToB-006 guard itself is a BACKSTOP: with development exempt and production
+# The SEC-006 guard itself is a BACKSTOP: with development exempt and production
 # already rejected earlier by $mandatoryProfiles, no reachable state hits it
 # today. That is asserted here rather than left implicit, so that if someone
 # later drops infrastructure.enabled from $mandatoryProfiles this line flips and
 # the backstop's message starts appearing — a signal, not a silent handover.
 if grep -q "infrastructure.enabled=false but these data-plane sub-charts" "$WORK/prod-infra-off.err"; then
-  fail "ToB-006: the backstop guard fired instead of \$mandatoryProfiles — the active control moved; re-read both guards before trusting either"
+  fail "SEC-006: the backstop guard fired instead of \$mandatoryProfiles — the active control moved; re-read both guards before trusting either"
 fi
-echo "ok  ToB-006: backstop guard is correctly shadowed by the active production control"
+echo "ok  SEC-006: backstop guard is correctly shadowed by the active production control"
 
 echo "PASS: tests/test_netpol_hardening.sh"
