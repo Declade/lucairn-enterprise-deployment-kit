@@ -106,7 +106,7 @@ containerSecurityContext:
 # customer install creates — including migrations this kit release has never
 # reviewed for personal-data retention impact. Full rationale (and the
 # veil-witness 000011/000012 case that prompted it) is in
-# charts/lucairn/templates/_migration-cap.tpl.
+# charts/lucairn/charts/sandbox-a/templates/_migration-cap.tpl.
 #
 # targetVersion is a migration VERSION (as in `migrate goto N`), not a count.
 # The Job reads the current schema version first and exits 0 without doing

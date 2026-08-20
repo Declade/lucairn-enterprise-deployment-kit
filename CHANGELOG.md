@@ -23,10 +23,15 @@ carry a security fix are tagged **[Security]**.
   finds. On the Helm path those files come from the **service image**
   (`cp -r /migrations /shared/migrations`), not from this repository — so which
   tables a customer install created was decided by whichever image tag happened
-  to be pinned. Concretely: the veil-witness image carries
-  `000011_certificate_persistence_outbox` and `000012_claim_receipts`,
-  both of which hold un-redacted personal data and for which **this kit ships
-  no deletion path**. A routine image-tag bump was sufficient to start creating
+  to be pinned. Concretely: the veil-witness **source tree** carries
+  `000011_certificate_persistence_outbox`, `000012_claim_receipts` (table
+  `witness_claim_receipts`) and `000013_decoder_expiry`. The first two hold
+  un-redacted personal data and **this kit ships no deletion path** for either.
+  The tag pinned today (`0.5.4`) carries none of them — measured, its
+  `/migrations` stops at `000010` — so the exposure is the *next* image bump,
+  which an uncapped `up` would have taken silently. `000013` is the decoder
+  retention machinery, but `goto 13` applies 011 and 012 on the way, so it
+  cannot be taken without them. A routine image-tag bump was sufficient to start creating
   them at a customer site, silently.
 
   Both install paths now migrate to a pinned target version and stop:
@@ -37,15 +42,22 @@ carry a security fix are tagged **[Security]**.
   ceiling is not operator configuration: on Helm it is a template literal that
   `--set` and `-f` cannot reach (over-ceiling fails the render), and on Compose
   it lives in the release-shipped, read-only-mounted
-  `scripts/migration-ceilings.env` rather than in a `environment:` value that a
-  second `-f` overlay or `docker compose run -e` could raise. Fail-closed: an
+  `scripts/migration-ceilings.conf` rather than in an `environment:` value that a
+  second `-f` overlay or `docker compose run -e` could raise. Three env-side
+  routes to a higher cap are refused: a disagreeing `MIGRATE_KNOWN_SAFE_MAX`, a
+  `MIGRATE_CEILING_FILE` that does not sit beside the runner, and a
+  `MIGRATE_CEILING_KEY` naming another database's (higher) ceiling. This is not
+  claimed as a privilege boundary — anyone who can pass `-e` can also edit their
+  own install files — but every route now needs a deliberate edit to a shipped
+  file, and the job logs the ceiling *and its source file* so a raised run is
+  distinguishable after the fact. Fail-closed: an
   unset, zero, non-numeric, or over-ceiling target applies **nothing** and
   exits loudly rather than falling back to `up`; so does a dirty
   `schema_migrations` ledger. The job also reads the current version first and
   exits 0 without acting when the database is already at or beyond the target,
   so it can never migrate **down** (`migrate goto` would otherwise run
   `.down.sql`). Mechanism:
-  `charts/lucairn/templates/_migration-cap.tpl` + `scripts/migrate-capped.sh`;
+  `charts/lucairn/charts/<subchart>/templates/_migration-cap.tpl` + `scripts/migrate-capped.sh`;
   guard suite `tests/test_migration_version_cap.sh`.
 
   Escape hatch, for operators who have reviewed their own migrations and accept

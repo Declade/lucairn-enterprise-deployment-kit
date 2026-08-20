@@ -112,6 +112,20 @@
 {{- if kindIs "invalid" $raw -}}
 {{- fail (printf "[%s] %s.migrations.targetVersion is not set. This chart refuses to run an open-ended `migrate up`: the set of tables an install creates would be decided by whichever service image tag is pinned, including migrations this kit release has never reviewed for personal-data retention impact (board T-350). Set it to the highest migration version this release reviewed (this chart's ceiling is %d), or — if you have genuinely reviewed and accepted every migration in your image — set %s.migrations.unsafeAcknowledgeOpenEndedMigrateUp=true. See docs/RELEASING.md § \"Migration review\"." .path .path (.knownSafeMax | int) .path) -}}
 {{- end -}}
+{{- /*
+  Validate the RAW value BEFORE `int` touches it. sprig's `int` uses base-0
+  parsing, so a zero-padded version is read as OCTAL — measured on this chart,
+  `targetVersion: 000010` rendered `MIGRATE_TARGET_VERSION='8'` and `010`
+  rendered `'8'`. Zero-padding is exactly how an operator copies the number out
+  of a migration FILENAME (`000010_conversation_id`), and the result is a
+  silently LOWER cap, i.e. silent under-migration — the failure mode
+  docs/RELEASING.md § "Migration review" step 3b calls the T-182 shape.
+  `int` also coerces booleans (`true` rendered `'1'`) and hex (`0x10` -> 16,
+  caught only because it happened to exceed the ceiling).
+*/ -}}
+{{- if not (regexMatch "^[1-9][0-9]*$" (toString $raw)) -}}
+{{- fail (printf "[%s] %s.migrations.targetVersion must be a positive integer migration version written in plain decimal with no leading zeros, got %v (%s). Leading zeros are read as OCTAL by the template engine — `000010` would silently become 8 — and booleans/hex are silently coerced, so the raw value is checked before any conversion. Write it the way `migrate goto N` takes it: %s.migrations.targetVersion=10 (board T-350)." .path .path $raw (kindOf $raw) .path) -}}
+{{- end -}}
 {{- $target := $raw | int -}}
 {{- if lt $target 1 -}}
 {{- fail (printf "[%s] %s.migrations.targetVersion must be a positive integer migration version, got %v. It is a target VERSION (as in `migrate goto N`), not a count and not a boolean. A zero/negative/non-numeric value applies NOTHING and fails the render rather than silently degrading to an open-ended `migrate up` (board T-350)." .path .path $raw) -}}
@@ -136,6 +150,19 @@
 */ -}}
 {{- define "lucairn.migrationCap.script" -}}
 {{- $mig := .migrations | default dict -}}
+{{/*
+  `eq $unsafe true` rather than bare truthiness: $unsafe has already passed the
+  kindIs "bool" check, so this is behaviourally identical today, but it states
+  the contract and cannot drift if the guard above is ever relaxed.
+
+  Note what this deliberately does NOT do: it does not refuse `yes` / `on` /
+  `True`. Those are YAML 1.1 booleans and Helm parses them to real bools before
+  the template ever runs (measured: all four fire the hatch), so refusing them
+  would mean rejecting a value the operator correctly wrote as a boolean. The
+  Compose twin is stricter only because env vars are plain strings there with no
+  YAML parser to consult. That asymmetry is real, so it is documented in
+  customer.env.example rather than papered over.
+*/}}
 {{- $unsafe := $mig.unsafeAcknowledgeOpenEndedMigrateUp | default false -}}
 {{- $target := $mig.targetVersion | default 0 | int -}}
 set -eu
@@ -154,7 +181,7 @@ echo "PostgreSQL ready."
 MIGRATE_PATH="${MIGRATE_PATH:-/shared/migrations}"
 highest_on_disk="$(ls "$MIGRATE_PATH" 2>/dev/null | grep -E '^[0-9]{6}_.*\.up\.sql$' | cut -c1-6 | sort -n | tail -1 | sed 's/^0*//')"
 [ -n "$highest_on_disk" ] || highest_on_disk=0
-{{ if $unsafe -}}
+{{ if eq $unsafe true -}}
 # ⚠️ OPEN-ENDED BRANCH — rendered ONLY because
 # {{ .path }}.migrations.unsafeAcknowledgeOpenEndedMigrateUp=true.
 # Without that value this block does not exist in the manifest at all: the
@@ -196,7 +223,7 @@ ver_out="$(migrate -path="$MIGRATE_PATH" -database="$DATABASE_URL" version 2>&1 
 # password and all (e.g. `parse "postgres://veil:SUPER SECRET PW@host:5432/db":
 # net/url: invalid userinfo`). Every branch below quotes $ver_out into a log
 # line, so scrub any `scheme://user:pass@` credential before it can be printed.
-ver_out="$(printf '%s' "$ver_out" | sed 's#://[^@]*@#://***:***@#g')"
+ver_out="$(printf '%s' "$ver_out" | sed 's#://[^/]*@#://***:***@#g')"
 
 # Match the LEDGER STATE, not a substring. golang-migrate renders a dirty
 # ledger as `<N> (dirty)`; a query-level failure renders as

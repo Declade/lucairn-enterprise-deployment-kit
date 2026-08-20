@@ -1,6 +1,6 @@
 {{- if .Values.postgresql.enabled }}
 {{- /*
-  T-350 migration version cap — see charts/lucairn/templates/_migration-cap.tpl.
+  T-350 migration version cap — see the _migration-cap.tpl beside this file.
   8 = 000008_add_org_id, the last version in this repo's own
   migrations/sandbox-a/ mirror. Raising this ceiling is a code change gated by
   docs/RELEASING.md § "Migration review".

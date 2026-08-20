@@ -3653,7 +3653,7 @@ check_render_migrations_safe() {
   # G1: prep-migrations rejects empty / single-quote / backslash values.
   # Catch the same conditions at pre-flight time instead of letting the
   # render-migrations.sh service error halfway through compose-up.
-  local env_file="$1" compose_file="${2:-}" key val ok=0 migration_renderer migration_runner migration_ceilings _hatch_line
+  local env_file="$1" compose_file="${2:-}" key val ok=0 migration_renderer migration_runner migration_ceilings _hatch_line _hatch_key _hatch_val
   for key in AUDIT_APP_PASSWORD VEIL_APP_PASSWORD; do
     val="$(env_value "$env_file" "$key")"
     if [ -z "$val" ]; then
@@ -3689,21 +3689,31 @@ check_render_migrations_safe() {
   fi
   # The ceiling file is the control itself; without it the runner fails closed,
   # but the operator should hear about it before compose-up, not during.
-  migration_ceilings="$ROOT/scripts/migration-ceilings.env"
-  if [ -n "$compose_file" ] && [ -f "$(dirname "$compose_file")/scripts/migration-ceilings.env" ]; then
-    migration_ceilings="$(dirname "$compose_file")/scripts/migration-ceilings.env"
+  migration_ceilings="$ROOT/scripts/migration-ceilings.conf"
+  if [ -n "$compose_file" ] && [ -f "$(dirname "$compose_file")/scripts/migration-ceilings.conf" ]; then
+    migration_ceilings="$(dirname "$compose_file")/scripts/migration-ceilings.conf"
   fi
   if [ ! -f "$migration_ceilings" ]; then
-    echo "migration cap: scripts/migration-ceilings.env missing beside the selected Compose file — migrate-* services will refuse to run without the release's reviewed ceilings (T-350)"
+    echo "migration cap: scripts/migration-ceilings.conf missing beside the selected Compose file — migrate-* services will refuse to run without the release's reviewed ceilings (T-350)"
     ok=1
   fi
   # And warn when the retention escape hatch has been left on. It is legitimate
   # to set for one run; it is not something to ship in a customer.env.
   if [ -n "$env_file" ] && [ -f "$env_file" ]; then
     while IFS= read -r _hatch_line; do
-      case "$_hatch_line" in
-        LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_*=true)
-          echo "migration cap: ${_hatch_line%%=*}=true in the env file — this service will run an OPEN-ENDED 'migrate up', applying migrations this kit release has not reviewed for personal-data retention impact (T-350)"
+      # Normalise before matching. Trailing whitespace, surrounding quotes and
+      # case variants are exactly how a hurried operator writes this line, and a
+      # pattern anchored on a bare `=true` reports `=true `, `=TRUE` and
+      # `="true"` as a CLOSED hatch — the one direction this warning must never
+      # get wrong.
+      _hatch_key="${_hatch_line%%=*}"
+      _hatch_val="${_hatch_line#*=}"
+      _hatch_val="${_hatch_val%%[[:space:]]*}"
+      _hatch_val="${_hatch_val//\"/}"
+      _hatch_val="${_hatch_val//\'/}"
+      case "${_hatch_key}=${_hatch_val}" in
+        LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_*=[tT][rR][uU][eE])
+          echo "migration cap: ${_hatch_key}=${_hatch_val} in the env file — this service will run an OPEN-ENDED 'migrate up', applying migrations this kit release has not reviewed for personal-data retention impact (T-350)"
           ok=1
           ;;
       esac
@@ -6654,7 +6664,7 @@ bundle_create() {
   # (T-350 added scripts/migrate-capped.sh as the second such mount; the
   # hand-maintained list had exactly one entry and was not updated.)
   bundle_compose_src="$ROOT/docker-compose.customer.yml"
-  bundle_mounted_scripts="$(grep -oE '\./scripts/[A-Za-z0-9._-]+\.sh' "$bundle_compose_src" 2>/dev/null | sed 's#^\./scripts/##' | sort -u)"
+  bundle_mounted_scripts="$(grep -oE '\./scripts/[A-Za-z0-9._-]+' "$bundle_compose_src" 2>/dev/null | sed 's#^\./scripts/##' | sort -u)"
   if [ -z "$bundle_mounted_scripts" ]; then
     echo "bundle create: found no ./scripts/* mounts in $bundle_compose_src — refusing to stage an install that cannot be verified" >&2
     return 1

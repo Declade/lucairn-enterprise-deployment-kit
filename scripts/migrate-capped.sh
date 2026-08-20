@@ -3,7 +3,7 @@
 # migrate-capped.sh — Compose-path migration runner with a pinned version cap.
 #
 # Board T-350. This is the Compose twin of the Helm mechanism in
-# charts/lucairn/templates/_migration-cap.tpl; the two must stay behaviourally
+# charts/lucairn/charts/<subchart>/templates/_migration-cap.tpl; the two must stay behaviourally
 # identical (tests/test_migration_version_cap.sh pins both).
 #
 # ── THE DEFECT THIS CLOSES ────────────────────────────────────────────────────
@@ -27,7 +27,7 @@
 #   MIGRATE_CEILING_KEY      which ceiling to read (VEIL_WITNESS / AUDIT /
 #                            ID_BRIDGE / SANDBOX_A).
 #   MIGRATE_CEILING_FILE     the shipped ceiling file, default
-#                            /scripts/migration-ceilings.env. The ceiling this
+#                            /scripts/migration-ceilings.conf. The ceiling this
 #                            kit release reviewed lives THERE, not in the
 #                            environment — a Compose `environment:` value is
 #                            overridable by an extra `-f` overlay or
@@ -62,13 +62,49 @@ MIGRATE_PATH="${MIGRATE_PATH:?MIGRATE_PATH must be set (e.g. /migrations/veil-wi
 DATABASE_URL="${DATABASE_URL:?DATABASE_URL must be set}"
 TARGET="${MIGRATE_TARGET_VERSION:-}"
 CEILING_KEY="${MIGRATE_CEILING_KEY:?MIGRATE_CEILING_KEY must be set (e.g. VEIL_WITNESS)}"
-CEILING_FILE="${MIGRATE_CEILING_FILE:-/scripts/migration-ceilings.env}"
-UNSAFE_ACK="${MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP:-false}"
+CEILING_FILE="${MIGRATE_CEILING_FILE:-/scripts/migration-ceilings.conf}"
 
 fatal() {
   echo "[$LABEL] FATAL: $1 Applying NO migrations. See docs/RELEASING.md § \"Migration review\" (board T-350)." >&2
   exit "$2"
 }
+
+# ── H2: moving the ceiling VALUE out of the environment was not enough ───────
+# The environment still named WHICH file and WHICH key were authoritative, so
+# `docker compose run -e MIGRATE_CEILING_FILE=/tmp/mine.conf` or
+# `-e MIGRATE_CEILING_KEY=VEIL_WITNESS` on migrate-audit raised the effective
+# cap — and the success line then reported the raised ceiling as authoritative.
+# Both are proven bypasses, so both pointers are constrained here.
+#
+# 1. The file must live under /scripts/, i.e. it must be something the compose
+#    file mounted. Redirecting it then requires editing the compose file, which
+#    is a deliberate, reviewable act rather than a one-off `-e`.
+# The ceiling file must sit BESIDE this script. In the container both are in
+# /scripts/ (mounted read-only from the release); in the harness both are in the
+# repo's scripts/. Anchoring to the runner's own directory rather than a literal
+# /scripts/ keeps the rule identical in both, so the test path is the shipped
+# path and not a special case.
+case "$CEILING_FILE" in
+  *..*) fatal "MIGRATE_CEILING_FILE=${CEILING_FILE} contains '..'." 91 ;;
+esac
+# Compare RESOLVED directories: $0 may be relative ("scripts/migrate-capped.sh")
+# while the value is absolute, and a raw string compare would reject the very
+# layout the kit ships.
+_self_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _self_dir=""
+_ceil_dir="$(cd "$(dirname "$CEILING_FILE")" 2>/dev/null && pwd)" || _ceil_dir=""
+if [ -z "$_self_dir" ] || [ -z "$_ceil_dir" ] || [ "$_ceil_dir" != "$_self_dir" ]; then
+  fatal "MIGRATE_CEILING_FILE=${CEILING_FILE} is not beside this script (${_self_dir:-unresolved}). The ceiling must come from the file this kit mounted next to the runner, not an arbitrary path — otherwise the environment raises the cap just by pointing somewhere else." 91
+fi
+
+# 2. The key must match the migrations tree this job is actually applying.
+#    /migrations/veil-witness => VEIL_WITNESS. Naming another service's key
+#    borrowed its (higher) ceiling; now the two have to agree.
+_tree="${MIGRATE_PATH##*/}"
+EXPECTED_KEY="$(printf '%s' "$_tree" | tr '[:lower:]-' '[:upper:]_')"
+if [ "$CEILING_KEY" != "$EXPECTED_KEY" ]; then
+  fatal "MIGRATE_CEILING_KEY=${CEILING_KEY} does not match the migrations tree being applied (${MIGRATE_PATH} implies ${EXPECTED_KEY}). Borrowing another database's ceiling is how a low-ceiling service acquires a high one." 91
+fi
+UNSAFE_ACK="${MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP:-false}"
 
 highest_on_disk="$(ls "$MIGRATE_PATH" 2>/dev/null | grep -E '^[0-9]{6}_.*\.up\.sql$' | cut -c1-6 | sort -n | tail -1 | sed 's/^0*//')"
 [ -n "$highest_on_disk" ] || highest_on_disk=0
@@ -106,7 +142,7 @@ esac
 # `docker compose run -e`. Reading the ceiling from there made it a convention,
 # not a control: MIGRATE_KNOWN_SAFE_MAX=99 applied migrations 11 and 12 while
 # this script still logged "capped". The authoritative value is now
-# scripts/migration-ceilings.env, mounted read-only beside the compose file and
+# scripts/migration-ceilings.conf, mounted read-only beside the compose file and
 # shipped as part of the kit release.
 [ -f "$CEILING_FILE" ] || fatal "the release ceiling file ${CEILING_FILE} is missing. It ships with the kit and is mounted read-only by docker-compose.customer.yml; without it this script cannot know which migrations this release reviewed." 91
 
@@ -138,7 +174,7 @@ ver_out="$(migrate -path="$MIGRATE_PATH" -database="$DATABASE_URL" version 2>&1 
 # password and all (e.g. `parse "postgres://veil:SUPER SECRET PW@host:5432/db":
 # net/url: invalid userinfo`). Every branch below quotes $ver_out into a log
 # line, so scrub any `scheme://user:pass@` credential before it can be printed.
-ver_out="$(printf '%s' "$ver_out" | sed 's#://[^@]*@#://***:***@#g')"
+ver_out="$(printf '%s' "$ver_out" | sed 's#://[^/]*@#://***:***@#g')"
 
 # Match the LEDGER STATE, not a substring — see the note in
 # charts/lucairn/charts/veil-witness/templates/_migration-cap.tpl. golang-migrate
