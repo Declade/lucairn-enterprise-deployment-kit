@@ -201,12 +201,12 @@ services:
     volumes:
       - rendered-migrations:/migrations:ro
       - ./scripts/migrate-capped.sh:/scripts/migrate-capped.sh:ro
-      - ./scripts/migration-ceilings.env:/scripts/migration-ceilings.env:ro
+      - ./scripts/migration-ceilings.conf:/scripts/migration-ceilings.conf:ro
     networks:
       - dsa-audit
     # T-350: migrate to a PINNED TARGET VERSION, never open-ended `up`.
     # The ceiling is NOT passed through this environment block — it is read from
-    # the mounted, release-shipped scripts/migration-ceilings.env. An
+    # the mounted, release-shipped scripts/migration-ceilings.conf. An
     # `environment:` value would be overridable by a second `-f` overlay or by
     # `docker compose run -e`, which would make the cap a convention rather than
     # a control. The ceiling is the highest
@@ -224,6 +224,7 @@ services:
       DATABASE_URL: "postgres://dsa:${POSTGRES_AUDIT_PASSWORD:?POSTGRES_AUDIT_PASSWORD must be set (no weak default; see customer.env)}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
       MIGRATE_TARGET_VERSION: "${LUCAIRN_MIGRATE_TARGET_AUDIT:-6}"
       MIGRATE_CEILING_KEY: "AUDIT"
+      MIGRATE_CEILING_FILE: "/scripts/migration-ceilings.conf"
       MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_AUDIT:-false}"
     restart: "no"
 
@@ -238,12 +239,12 @@ services:
     volumes:
       - rendered-migrations:/migrations:ro
       - ./scripts/migrate-capped.sh:/scripts/migrate-capped.sh:ro
-      - ./scripts/migration-ceilings.env:/scripts/migration-ceilings.env:ro
+      - ./scripts/migration-ceilings.conf:/scripts/migration-ceilings.conf:ro
     networks:
       - dsa-bridge
     # T-350: migrate to a PINNED TARGET VERSION, never open-ended `up`.
     # The ceiling is NOT passed through this environment block — it is read from
-    # the mounted, release-shipped scripts/migration-ceilings.env. An
+    # the mounted, release-shipped scripts/migration-ceilings.conf. An
     # `environment:` value would be overridable by a second `-f` overlay or by
     # `docker compose run -e`, which would make the cap a convention rather than
     # a control. The ceiling is the highest
@@ -261,6 +262,7 @@ services:
       DATABASE_URL: "postgres://dsa:${POSTGRES_BRIDGE_PASSWORD:?POSTGRES_BRIDGE_PASSWORD must be set (no weak default; see customer.env)}@postgres-bridge:5432/bridge?sslmode=${POSTGRES_SSLMODE:-disable}"
       MIGRATE_TARGET_VERSION: "${LUCAIRN_MIGRATE_TARGET_ID_BRIDGE:-4}"
       MIGRATE_CEILING_KEY: "ID_BRIDGE"
+      MIGRATE_CEILING_FILE: "/scripts/migration-ceilings.conf"
       MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_ID_BRIDGE:-false}"
     restart: "no"
 
@@ -275,12 +277,12 @@ services:
     volumes:
       - rendered-migrations:/migrations:ro
       - ./scripts/migrate-capped.sh:/scripts/migrate-capped.sh:ro
-      - ./scripts/migration-ceilings.env:/scripts/migration-ceilings.env:ro
+      - ./scripts/migration-ceilings.conf:/scripts/migration-ceilings.conf:ro
     networks:
       - dsa-identity
     # T-350: migrate to a PINNED TARGET VERSION, never open-ended `up`.
     # The ceiling is NOT passed through this environment block — it is read from
-    # the mounted, release-shipped scripts/migration-ceilings.env. An
+    # the mounted, release-shipped scripts/migration-ceilings.conf. An
     # `environment:` value would be overridable by a second `-f` overlay or by
     # `docker compose run -e`, which would make the cap a convention rather than
     # a control. The ceiling is the highest
@@ -298,6 +300,7 @@ services:
       DATABASE_URL: "postgres://dsa:${POSTGRES_SANDBOX_A_PASSWORD:?POSTGRES_SANDBOX_A_PASSWORD must be set (no weak default; see customer.env)}@postgres-sandbox-a:5432/sandbox_a?sslmode=${POSTGRES_SSLMODE:-disable}"
       MIGRATE_TARGET_VERSION: "${LUCAIRN_MIGRATE_TARGET_SANDBOX_A:-8}"
       MIGRATE_CEILING_KEY: "SANDBOX_A"
+      MIGRATE_CEILING_FILE: "/scripts/migration-ceilings.conf"
       MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_SANDBOX_A:-false}"
     restart: "no"
 
@@ -312,12 +315,12 @@ services:
     volumes:
       - rendered-migrations:/migrations:ro
       - ./scripts/migrate-capped.sh:/scripts/migrate-capped.sh:ro
-      - ./scripts/migration-ceilings.env:/scripts/migration-ceilings.env:ro
+      - ./scripts/migration-ceilings.conf:/scripts/migration-ceilings.conf:ro
     networks:
       - dsa-witness
     # T-350: migrate to a PINNED TARGET VERSION, never open-ended `up`.
     # The ceiling is NOT passed through this environment block — it is read from
-    # the mounted, release-shipped scripts/migration-ceilings.env. An
+    # the mounted, release-shipped scripts/migration-ceilings.conf. An
     # `environment:` value would be overridable by a second `-f` overlay or by
     # `docker compose run -e`, which would make the cap a convention rather than
     # a control. The ceiling is the highest
@@ -335,6 +338,7 @@ services:
       DATABASE_URL: "postgres://veil:${POSTGRES_VEIL_PASSWORD:?POSTGRES_VEIL_PASSWORD must be set (no weak default; see customer.env)}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}"
       MIGRATE_TARGET_VERSION: "${LUCAIRN_MIGRATE_TARGET_VEIL_WITNESS:-10}"
       MIGRATE_CEILING_KEY: "VEIL_WITNESS"
+      MIGRATE_CEILING_FILE: "/scripts/migration-ceilings.conf"
       MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_VEIL_WITNESS:-false}"
     restart: "no"
 

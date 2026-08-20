@@ -11,12 +11,15 @@
 #   /shared/migrations`), not from this repository — so which tables a customer
 #   install creates was decided by whichever image tag happened to be pinned.
 #
-#   The veil-witness image carries 000011_certificate_persistence_outbox and
-#   000012_claim_receipts. Both create tables holding un-redacted
-#   personal data, and this kit ships NO deletion path for either. A routine
-#   image-tag bump was therefore sufficient to start creating them at a customer
-#   site, silently, with nothing in the chart or the release checklist
-#   positioned to notice.
+#   The veil-witness SOURCE TREE carries 000011_certificate_persistence_outbox,
+#   000012_claim_receipts (table witness_claim_receipts) and
+#   000013_decoder_expiry. The first two create tables holding un-redacted
+#   personal data and this kit ships NO deletion path for either. The tag pinned
+#   today (0.5.4) carries none of them — measured, its /migrations stops at
+#   000010 — so the exposure is the NEXT image bump, which an uncapped `up`
+#   would have taken silently, with nothing in the chart or the release
+#   checklist positioned to notice. 000013 is the retention machinery, but
+#   `goto 13` applies 011+012 on the way, so it cannot be taken without them.
 #
 # POSITIVE CONTROLS (none of these is a tautology — each goes red against the
 # pre-fix tree, or against a tree where the specific guard it names has been
@@ -205,6 +208,19 @@ expect_render_fail "helm-zero-target-refused" \
   "must be a positive integer" --set "veil-witness.migrations.targetVersion=0"
 expect_render_fail "helm-non-numeric-target-refused" \
   "must be a positive integer" --set-string "veil-witness.migrations.targetVersion=abc"
+# ── H1: sprig `int` is base-0 and coerces booleans. Measured on this chart
+#    BEFORE the guard: targetVersion 000010 -> '8', 010 -> '8', true -> '1',
+#    0x10 -> 16. Zero-padding is how an operator copies the number out of a
+#    migration FILENAME, so the silent result was a LOWER cap = silent
+#    under-migration, the T-182 shape RELEASING.md step 3b warns about.
+expect_render_fail "helm-leading-zero-target-refused (000010 rendered '8' via octal)" \
+  "no leading zeros" --set "veil-witness.migrations.targetVersion=000010"
+expect_render_fail "helm-octal-short-target-refused (010 rendered '8')" \
+  "no leading zeros" --set "veil-witness.migrations.targetVersion=010"
+expect_render_fail "helm-boolean-target-refused (true rendered '1')" \
+  "no leading zeros" --set "veil-witness.migrations.targetVersion=true"
+expect_render_fail "helm-hex-target-refused (0x10 became 16)" \
+  "no leading zeros" --set "veil-witness.migrations.targetVersion=0x10"
 expect_render_fail "helm-non-bool-override-refused" \
   "must be a YAML boolean" --set-string "veil-witness.migrations.unsafeAcknowledgeOpenEndedMigrateUp=yes-please"
 
@@ -288,7 +304,7 @@ for c in "${CHARTS[@]}"; do
   fi
   ckey="$(compose_svc_field "$svc" environment.MIGRATE_CEILING_KEY)"
   check_eq "compose-ceiling-file-value ($svc)" "$cl" \
-    "$(sed -n "s/^CEILING_${ckey}=\([0-9]*\)$/\1/p" "$ROOT/scripts/migration-ceilings.env")"
+    "$(sed -n "s/^CEILING_${ckey}=\([0-9]*\)$/\1/p" "$ROOT/scripts/migration-ceilings.conf")"
   # Real parity: read the CHART's baked literal, not the test's own table.
   # The previous version of this check compared the compose value to
   # ceiling_of() twice under two names and could not fail for a chart reason.
@@ -296,7 +312,7 @@ for c in "${CHARTS[@]}"; do
     "$CHART/charts/$c/templates/migration-job.yaml")"
   check_eq "parity-ceilings-match ($c: chart \$knownSafeMax vs ceiling file)" \
     "$chart_ceiling" \
-    "$(sed -n "s/^CEILING_${ckey}=\([0-9]*\)$/\1/p" "$ROOT/scripts/migration-ceilings.env")"
+    "$(sed -n "s/^CEILING_${ckey}=\([0-9]*\)$/\1/p" "$ROOT/scripts/migration-ceilings.conf")"
   check_eq "compose-default-target-is-ceiling ($svc)" "$cl" \
     "$(compose_svc_field "$svc" environment.MIGRATE_TARGET_VERSION)"
   check_eq "compose-override-defaults-false ($svc)" "false" \
@@ -339,9 +355,9 @@ chmod +x "$STUB_DIR/migrate"
 
 # The ceiling now comes from a release-shipped file, not the environment. Use
 # the REAL shipped file so the fixture cannot drift from what customers get.
-CEILING_FIXTURE="$ROOT/scripts/migration-ceilings.env"
+CEILING_FIXTURE="$ROOT/scripts/migration-ceilings.conf"
 
-MIGDIR="$TMP/migrations/veil-witness"
+MIGDIR="$TMP/migrations/veil-witness"  # basename drives the H2 ceiling-key derivation
 mkdir -p "$MIGDIR"
 for n in 000001 000002 000003 000004 000005 000006 000007 000008 000009 000010 000011 000012; do
   : > "$MIGDIR/${n}_x.up.sql"
@@ -423,12 +439,25 @@ run_case "runtime-env-agreeing-with-file-is-accepted" 0 'goto 10' \
   MIGRATE_TARGET_VERSION=10 MIGRATE_KNOWN_SAFE_MAX=10 \
   STUB_VERSION_OUT="no migration" STUB_VERSION_RC=1
 
+# ── H2: moving the ceiling VALUE out of the environment left the environment
+#    naming WHICH file and WHICH key were authoritative. Both were proven
+#    bypasses: MIGRATE_CEILING_FILE=<attacker file> applied `goto 12` reporting
+#    "ceiling 99", and migrate-audit naming VEIL_WITNESS's key applied `goto 10`
+#    against a real ceiling of 6.
+CEIL_EVIL="$TMP/evil-ceilings.conf"
+printf 'CEILING_VEIL_WITNESS=99\n' > "$CEIL_EVIL"
+run_case "runtime-ceiling-file-must-sit-beside-runner" 91 '-' \
+  MIGRATE_TARGET_VERSION=12 MIGRATE_CEILING_FILE="$CEIL_EVIL"
+run_case "runtime-ceiling-key-must-match-migrations-tree" 91 '-' \
+  MIGRATE_TARGET_VERSION=10 MIGRATE_CEILING_KEY=AUDIT
+run_case "runtime-ceiling-file-rejects-dotdot" 91 '-' \
+  MIGRATE_TARGET_VERSION=10 MIGRATE_CEILING_FILE="$ROOT/scripts/../scripts/migration-ceilings.conf"
 # L2: an ambiguous hatch value must be refused, not silently read as "off".
 run_case "runtime-ambiguous-hatch-value-refused" 95 '-' \
   MIGRATE_TARGET_VERSION=10 MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP=True
 
 # Cap beyond what the mounted tree actually holds: chart/image disagreement.
-EMPTYDIR="$TMP/migrations/empty"; mkdir -p "$EMPTYDIR"
+EMPTYDIR="$TMP/empty-tree/veil-witness"; mkdir -p "$EMPTYDIR"  # basename must stay veil-witness: the H2 key check runs first
 log="$TMP/argv.log"; : > "$log"
 out="$(env STUB_ARGV_LOG="$log" PATH="$STUB_DIR:$PATH" MIGRATE_LABEL=t350 \
       MIGRATE_PATH="$EMPTYDIR" DATABASE_URL="postgres://stub" \
@@ -587,17 +616,49 @@ if [ -z "$mounted" ]; then
 else
   pass "compose-mounts-enumerable"
   for m in $mounted; do
-    if [ -f "$ROOT/scripts/$m" ]; then
-      pass "compose-mount-exists ($m)"
-    else
+    if [ ! -f "$ROOT/scripts/$m" ]; then
       fail "compose-mount-exists ($m) — bind-mount source missing from the repo"
+      continue
+    fi
+    pass "compose-mount-exists ($m)"
+    # Present-on-disk is NOT enough, and this is the check that would have
+    # caught the shipped defect: `.gitignore` line 2 is `*.env`, so the ceiling
+    # file was silently skipped by `git add -A`, `git status` reported a clean
+    # tree, every local gate passed against the untracked working copy, and the
+    # PUSHED commit had no such file. The release tarball is built with
+    # `git archive HEAD` (scripts/package-release.sh), so an untracked mount
+    # source is absent from the artifact too.
+    if git -C "$ROOT" ls-files --error-unmatch "scripts/$m" >/dev/null 2>&1; then
+      pass "compose-mount-tracked ($m)"
+    else
+      fail "compose-mount-tracked ($m) — present on disk but NOT tracked by git; it will be missing from the commit and from \`git archive\` release tarballs"
     fi
   done
-  # And the bundler must stage them from the compose file, not from a list.
-  if grep -q 'bundle_mounted_scripts=' "$ROOT/bin/lucairn"; then
-    pass "bundler-derives-mounts-from-compose"
+  # The previous version of this check grepped for the variable NAME
+  # `bundle_mounted_scripts=`, which a hardcoded one-entry list satisfies —
+  # mutation-proven vacuous (the suite stayed 96/96 green with the derivation
+  # replaced by a literal list). Run the bundler's OWN derivation pipeline and
+  # compare the resulting SET against the mounted set.
+  bundler_pipeline="$(sed -n 's/.*bundle_mounted_scripts="\$(\(.*\))"$/\1/p' "$ROOT/bin/lucairn")"
+  if [ -z "$bundler_pipeline" ]; then
+    fail "bundler-derivation-extractable — could not find the staging derivation in bin/lucairn"
   else
-    fail "bundler-derives-mounts-from-compose — bundle create still uses a hand-maintained list (TOB-001)"
+    staged="$(bundle_compose_src="$COMPOSE" ROOT="$ROOT" sh -c "$bundler_pipeline" 2>/dev/null | sort -u)"
+    mounted_sorted="$(printf '%s\n' $mounted | sort -u)"
+    if [ "$staged" = "$mounted_sorted" ]; then
+      pass "bundler-stages-exactly-the-mounted-set"
+    else
+      fail "bundler-stages-exactly-the-mounted-set — staged=[$(printf '%s' "$staged" | tr '\n' ' ')] mounted=[$(printf '%s' "$mounted_sorted" | tr '\n' ' ')]"
+    fi
+  fi
+  # A literal per-file cp into the staging scripts dir would re-introduce the
+  # hand-maintained list alongside the loop.
+  # A LITERAL filename (no shell variable) is the hand-maintained-list shape.
+  # The derived loop's own `cp "$ROOT/scripts/$_script" ...` must not trip it.
+  if grep -qE 'cp "\$ROOT/scripts/[A-Za-z0-9._-]+" "\$staging/install/scripts/' "$ROOT/bin/lucairn"; then
+    fail "bundler-has-no-hardcoded-script-cp — a literal cp into \$staging/install/scripts/ survives beside the derived loop"
+  else
+    pass "bundler-has-no-hardcoded-script-cp"
   fi
   if grep -q 'migrate-capped.sh missing beside the selected Compose file' "$ROOT/bin/lucairn"; then
     pass "doctor-preflights-migrate-runner"

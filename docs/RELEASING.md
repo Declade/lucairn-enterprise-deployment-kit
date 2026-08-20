@@ -120,7 +120,15 @@ Both install paths now migrate to a **pinned target version** instead:
 | Path | Target | Ceiling — where the authority actually lives |
 |---|---|---|
 | Helm | `<subchart>.migrations.targetVersion` | `$knownSafeMax`, a Go-template literal in `charts/lucairn/charts/<subchart>/templates/migration-job.yaml`. `--set` and `-f` cannot reach it; over-ceiling fails the render. |
-| Compose | `LUCAIRN_MIGRATE_TARGET_<SERVICE>` in `customer.env` | `CEILING_<SERVICE>` in `scripts/migration-ceilings.env`, mounted read-only. Deliberately **not** a Compose `environment:` value — those are overridable by a second `-f` overlay or `docker compose run -e`, which made the cap a convention rather than a control. A disagreeing `MIGRATE_KNOWN_SAFE_MAX` in the environment is refused, not preferred. |
+| Compose | `LUCAIRN_MIGRATE_TARGET_<SERVICE>` in `customer.env` | `CEILING_<SERVICE>` in `scripts/migration-ceilings.conf`, mounted read-only. Deliberately **not** a Compose `environment:` value — those are overridable by a second `-f` overlay or `docker compose run -e`, which made the cap a convention rather than a control. Three env-side bypasses are refused: a disagreeing `MIGRATE_KNOWN_SAFE_MAX`, a `MIGRATE_CEILING_FILE` that does not sit beside the runner, and a `MIGRATE_CEILING_KEY` that does not match the migrations tree being applied (borrowing another database's higher ceiling). |
+
+**What that does and does not guarantee — precisely.** Anyone who can add a
+Compose overlay or run `docker compose run -e` can also edit the files in their
+own install directory, so this is not a privilege boundary and is not claimed as
+one. What it buys is that every route to a higher cap now requires a deliberate,
+reviewable edit to a shipped file rather than a one-off flag, and that the job's
+log line names the ceiling *and the file it came from* so an auditor reading
+`compose.log` afterwards can tell a capped run from a raised one.
 
 Both escape hatches are **per service**, so unblocking one database can never
 silently open the others.
@@ -142,7 +150,7 @@ silently open the others.
 
 Current ceilings: **veil-witness 10 · audit 6 · id-bridge 4 · sandbox-a 8** —
 the last version in each `migrations/<tree>/` mirror in this repo. Mechanism:
-`charts/lucairn/templates/_migration-cap.tpl` and `scripts/migrate-capped.sh`.
+`charts/lucairn/charts/<subchart>/templates/_migration-cap.tpl` and `scripts/migrate-capped.sh`.
 Guard suite: `tests/test_migration_version_cap.sh`.
 
 ### The checklist
@@ -203,15 +211,19 @@ anything under `migrations/`.
    a problem. A ceiling that is *safe* for the data can still be *wrong* for the
    code. Check the service's degraded-schema handling at the tag you are pinning.
 
-4. **Only if steps 2–3b clear**, raise the ceiling — in **both** places, or the
-   two install paths silently review different migration sets:
-   - `$knownSafeMax` in that subchart's `templates/migration-job.yaml`
-   - the subchart's `values.yaml` `migrations.targetVersion` default
-   - `CEILING_<SERVICE>` in `scripts/migration-ceilings.env` **and** the
-     default target in `docker-compose.customer.yml`
+4. **Only if steps 2–3b clear**, raise the ceiling. It lives in **six** places,
+   not two — miss one and the install paths silently review different migration
+   sets, or the guard suite contradicts the chart:
+   1. `$knownSafeMax` in that subchart's `templates/migration-job.yaml`
+   2. the subchart's `values.yaml` `migrations.targetVersion` default
+   3. `CEILING_<SERVICE>` in `scripts/migration-ceilings.conf`
+   4. the `MIGRATE_TARGET_VERSION` default in `docker-compose.customer.yml`
+   5. `ceiling_of()` in `tests/test_migration_version_cap.sh`
+   6. the expected `goto <N>` literals in that suite's runtime cases
 
-   Then `bash tests/test_migration_version_cap.sh` — it pins chart/compose
-   parity and will fail if only one side moved.
+   Then `bash tests/test_migration_version_cap.sh` — it parses `$knownSafeMax`
+   out of the template and compares it against the ceiling file, so it fails if
+   the chart and the Compose path disagree.
 
 5. **Sync the mirror.** If the new migrations should also ship to the Compose
    path, copy them into `migrations/<tree>/` in the same commit. A ceiling
