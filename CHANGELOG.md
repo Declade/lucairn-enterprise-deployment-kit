@@ -15,6 +15,52 @@ carry a security fix are tagged **[Security]**.
 ## [Unreleased]
 
 ### Added
+- **Database migrations are capped at a pinned version; an open-ended
+  `migrate up` now requires an explicit operator opt-in (T-350).** No kit
+  install runs one by default, and no drift can cause one; only the
+  `unsafeAcknowledge…` flag below can. Every migration Job used to run
+  `migrate -path=… -database=… up`, which applies every migration file it
+  finds. On the Helm path those files come from the **service image**
+  (`cp -r /migrations /shared/migrations`), not from this repository — so which
+  tables a customer install created was decided by whichever image tag happened
+  to be pinned. Concretely: the veil-witness image carries
+  `000011_certificate_persistence_outbox` and `000012_witness_claim_receipts`,
+  both of which hold un-redacted personal data and for which **this kit ships
+  no deletion path**. A routine image-tag bump was sufficient to start creating
+  them at a customer site, silently.
+
+  Both install paths now migrate to a pinned target version and stop:
+  `<subchart>.migrations.targetVersion` (Helm) and
+  `LUCAIRN_MIGRATE_TARGET_<SERVICE>` (Compose), defaulting to the highest
+  version this release reviewed — **veil-witness 10 · audit 6 · id-bridge 4 ·
+  sandbox-a 8**, the last version in each `migrations/<tree>/` mirror. A
+  per-chart ceiling lives in code, not values, so raising the target past what
+  the release reviewed is refused at `helm template` time. Fail-closed: an
+  unset, zero, non-numeric, or over-ceiling target applies **nothing** and
+  exits loudly rather than falling back to `up`; so does a dirty
+  `schema_migrations` ledger. The job also reads the current version first and
+  exits 0 without acting when the database is already at or beyond the target,
+  so it can never migrate **down** (`migrate goto` would otherwise run
+  `.down.sql`). Mechanism:
+  `charts/lucairn/templates/_migration-cap.tpl` + `scripts/migrate-capped.sh`;
+  guard suite `tests/test_migration_version_cap.sh`.
+
+  Escape hatch, for operators who have reviewed their own migrations and accept
+  the consequences: `<subchart>.migrations.unsafeAcknowledgeOpenEndedMigrateUp=true`
+  (Helm) / `LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP=true`
+  (Compose). It restores the old behaviour and prints a loud banner. Nothing
+  else reaches an open-ended `up`.
+
+  **Known gap, unchanged by this release:** there is still no deletion or
+  retention path for `witness_certificate_persistence_outbox` /
+  `witness_claim_receipts`. The cap keeps the kit from creating them by drift;
+  it does not delete them where they already exist, and the offsite backup
+  CronJob `pg_dump`s whole databases without pruning. Tracked on T-350.
+- **Release-blocking migration review (T-350).** `docs/RELEASING.md` gains a
+  "Migration review" section: every kit release that bumps a pinned image tag
+  or touches `migrations/` must enumerate the new migrations, state the
+  data-retention impact of each, and **block on the absence of a deletion path**
+  for any table holding personal data before the version ceiling may be raised.
 - **Gateway tool-schema PII guard mode knob (T-487).** The gateway's
   recursive tool-declaration schema PII guard (`GATEWAY_TOOL_SCHEMA_GUARD`;
   upstream `dual-sandbox-architecture` T-14) is now wired into the kit: a new

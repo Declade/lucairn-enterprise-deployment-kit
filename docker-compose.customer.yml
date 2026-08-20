@@ -200,12 +200,24 @@ services:
         condition: service_completed_successfully
     volumes:
       - rendered-migrations:/migrations:ro
+      - ./scripts/migrate-capped.sh:/scripts/migrate-capped.sh:ro
     networks:
       - dsa-audit
-    command:
-      - "-path=/migrations/audit"
-      - "-database=postgres://dsa:${POSTGRES_AUDIT_PASSWORD:?POSTGRES_AUDIT_PASSWORD must be set (no weak default; see customer.env)}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
-      - "up"
+    # T-350: migrate to a PINNED TARGET VERSION, never open-ended `up`.
+    # MIGRATE_KNOWN_SAFE_MAX is a literal on purpose — it is the highest
+    # audit migration THIS kit release reviewed for personal-data
+    # retention impact, and raising it is a code change gated by
+    # docs/RELEASING.md § "Migration review". The only way to run an
+    # open-ended `up` is
+    # LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP=true.
+    entrypoint: ["/bin/sh", "/scripts/migrate-capped.sh"]
+    environment:
+      MIGRATE_LABEL: "migrate-audit"
+      MIGRATE_PATH: "/migrations/audit"
+      DATABASE_URL: "postgres://dsa:${POSTGRES_AUDIT_PASSWORD:?POSTGRES_AUDIT_PASSWORD must be set (no weak default; see customer.env)}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
+      MIGRATE_TARGET_VERSION: "${LUCAIRN_MIGRATE_TARGET_AUDIT:-6}"
+      MIGRATE_KNOWN_SAFE_MAX: "6"
+      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP:-false}"
     restart: "no"
 
   migrate-bridge:
@@ -218,12 +230,24 @@ services:
         condition: service_completed_successfully
     volumes:
       - rendered-migrations:/migrations:ro
+      - ./scripts/migrate-capped.sh:/scripts/migrate-capped.sh:ro
     networks:
       - dsa-bridge
-    command:
-      - "-path=/migrations/id-bridge"
-      - "-database=postgres://dsa:${POSTGRES_BRIDGE_PASSWORD:?POSTGRES_BRIDGE_PASSWORD must be set (no weak default; see customer.env)}@postgres-bridge:5432/bridge?sslmode=${POSTGRES_SSLMODE:-disable}"
-      - "up"
+    # T-350: migrate to a PINNED TARGET VERSION, never open-ended `up`.
+    # MIGRATE_KNOWN_SAFE_MAX is a literal on purpose — it is the highest
+    # id-bridge migration THIS kit release reviewed for personal-data
+    # retention impact, and raising it is a code change gated by
+    # docs/RELEASING.md § "Migration review". The only way to run an
+    # open-ended `up` is
+    # LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP=true.
+    entrypoint: ["/bin/sh", "/scripts/migrate-capped.sh"]
+    environment:
+      MIGRATE_LABEL: "migrate-bridge"
+      MIGRATE_PATH: "/migrations/id-bridge"
+      DATABASE_URL: "postgres://dsa:${POSTGRES_BRIDGE_PASSWORD:?POSTGRES_BRIDGE_PASSWORD must be set (no weak default; see customer.env)}@postgres-bridge:5432/bridge?sslmode=${POSTGRES_SSLMODE:-disable}"
+      MIGRATE_TARGET_VERSION: "${LUCAIRN_MIGRATE_TARGET_ID_BRIDGE:-4}"
+      MIGRATE_KNOWN_SAFE_MAX: "4"
+      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP:-false}"
     restart: "no"
 
   migrate-sandbox-a:
@@ -236,12 +260,24 @@ services:
         condition: service_completed_successfully
     volumes:
       - rendered-migrations:/migrations:ro
+      - ./scripts/migrate-capped.sh:/scripts/migrate-capped.sh:ro
     networks:
       - dsa-identity
-    command:
-      - "-path=/migrations/sandbox-a"
-      - "-database=postgres://dsa:${POSTGRES_SANDBOX_A_PASSWORD:?POSTGRES_SANDBOX_A_PASSWORD must be set (no weak default; see customer.env)}@postgres-sandbox-a:5432/sandbox_a?sslmode=${POSTGRES_SSLMODE:-disable}"
-      - "up"
+    # T-350: migrate to a PINNED TARGET VERSION, never open-ended `up`.
+    # MIGRATE_KNOWN_SAFE_MAX is a literal on purpose — it is the highest
+    # sandbox-a migration THIS kit release reviewed for personal-data
+    # retention impact, and raising it is a code change gated by
+    # docs/RELEASING.md § "Migration review". The only way to run an
+    # open-ended `up` is
+    # LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP=true.
+    entrypoint: ["/bin/sh", "/scripts/migrate-capped.sh"]
+    environment:
+      MIGRATE_LABEL: "migrate-sandbox-a"
+      MIGRATE_PATH: "/migrations/sandbox-a"
+      DATABASE_URL: "postgres://dsa:${POSTGRES_SANDBOX_A_PASSWORD:?POSTGRES_SANDBOX_A_PASSWORD must be set (no weak default; see customer.env)}@postgres-sandbox-a:5432/sandbox_a?sslmode=${POSTGRES_SSLMODE:-disable}"
+      MIGRATE_TARGET_VERSION: "${LUCAIRN_MIGRATE_TARGET_SANDBOX_A:-8}"
+      MIGRATE_KNOWN_SAFE_MAX: "8"
+      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP:-false}"
     restart: "no"
 
   migrate-veil:
@@ -254,12 +290,24 @@ services:
         condition: service_completed_successfully
     volumes:
       - rendered-migrations:/migrations:ro
+      - ./scripts/migrate-capped.sh:/scripts/migrate-capped.sh:ro
     networks:
       - dsa-witness
-    command:
-      - "-path=/migrations/veil-witness"
-      - "-database=postgres://veil:${POSTGRES_VEIL_PASSWORD:?POSTGRES_VEIL_PASSWORD must be set (no weak default; see customer.env)}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}"
-      - "up"
+    # T-350: migrate to a PINNED TARGET VERSION, never open-ended `up`.
+    # MIGRATE_KNOWN_SAFE_MAX is a literal on purpose — it is the highest
+    # veil-witness migration THIS kit release reviewed for personal-data
+    # retention impact, and raising it is a code change gated by
+    # docs/RELEASING.md § "Migration review". The only way to run an
+    # open-ended `up` is
+    # LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP=true.
+    entrypoint: ["/bin/sh", "/scripts/migrate-capped.sh"]
+    environment:
+      MIGRATE_LABEL: "migrate-veil"
+      MIGRATE_PATH: "/migrations/veil-witness"
+      DATABASE_URL: "postgres://veil:${POSTGRES_VEIL_PASSWORD:?POSTGRES_VEIL_PASSWORD must be set (no weak default; see customer.env)}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}"
+      MIGRATE_TARGET_VERSION: "${LUCAIRN_MIGRATE_TARGET_VEIL_WITNESS:-10}"
+      MIGRATE_KNOWN_SAFE_MAX: "10"
+      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP:-false}"
     restart: "no"
 
   # ── Application Services ────────────────────────────────────────
