@@ -32,12 +32,27 @@
   kit install creates is decided by whatever image tag the operator happens to
   pin, and the kit has no say in it at all.
 
-  That is the T-350 finding: the veil-witness image carries migrations
-  `000011_certificate_persistence_outbox` and `000012_witness_claim_receipts`,
-  which create tables holding un-redacted personal data, and for which NO
-  deletion / retention path exists in this kit. A routine image-tag bump was
-  sufficient to start creating those tables at a customer site, silently, with
-  nothing in the chart or the release process positioned to notice.
+  That is the T-350 finding. The veil-witness SOURCE TREE carries three
+  migrations above this ceiling:
+
+    000011_certificate_persistence_outbox
+    000012_claim_receipts                 (creates table witness_claim_receipts)
+    000013_decoder_expiry
+
+  000011 and 000012 create tables holding un-redacted personal data for which NO
+  deletion / retention path exists in this kit.
+
+  ⚑ Be precise about WHEN: the image tag this kit currently pins (0.5.4) does NOT
+  carry them — measured, its /migrations stops at 000010_conversation_id. The
+  exposure is the NEXT image bump, not today's install. That is exactly the
+  window this cap exists to hold open, and exactly why the release checklist,
+  not the chart, is where the decision belongs.
+
+  ⚑ And note the trap in 000013: it is the decoder-expiry retention machinery —
+  the thing you would WANT. But `goto 13` applies 11 and 12 on the way, so the
+  retention migration cannot be taken without also taking the two tables that
+  have no retention path. Raising this ceiling to 13 is therefore not a
+  free win; it is the 011/012 decision wearing a different hat.
 
   ── THE MECHANISM ──────────────────────────────────────────────────────────
 
@@ -132,7 +147,11 @@ echo "PostgreSQL ready."
 
 # ── T-350 migration version cap ────────────────────────────────────────────
 # Rendered from {{ .path }}.migrations (chart ceiling: {{ .knownSafeMax | int }}).
-MIGRATE_PATH=/shared/migrations
+# The Job spec sets no MIGRATE_PATH env, so in a cluster this is always the
+# literal below. The indirection exists so the guard suite can execute THIS
+# rendered body verbatim against a fixture directory — the Helm body is a second
+# hand-maintained copy of the algorithm and a grep cannot prove it runs.
+MIGRATE_PATH="${MIGRATE_PATH:-/shared/migrations}"
 highest_on_disk="$(ls "$MIGRATE_PATH" 2>/dev/null | grep -E '^[0-9]{6}_.*\.up\.sql$' | cut -c1-6 | sort -n | tail -1 | sed 's/^0*//')"
 [ -n "$highest_on_disk" ] || highest_on_disk=0
 {{ if $unsafe -}}
@@ -160,10 +179,14 @@ case "$MIGRATE_TARGET_VERSION" in
     echo "FATAL: {{ .path }}.migrations.targetVersion is not a positive integer (got '${MIGRATE_TARGET_VERSION}'). Applying NO migrations. See docs/RELEASING.md § Migration review (T-350)." >&2
     exit 90 ;;
 esac
-if [ "$MIGRATE_TARGET_VERSION" -lt 1 ]; then
+# `|| fatal` rather than `if [ ... -lt 1 ]`: an errored `[` (a value the shell
+# cannot compare) makes the `if` FALSE and falls THROUGH to the migrate call,
+# whereas the `||` form fires. The Compose twin already used this shape; the two
+# are supposed to be behaviourally identical and were not.
+[ "$MIGRATE_TARGET_VERSION" -ge 1 ] || {
   echo "FATAL: {{ .path }}.migrations.targetVersion must be >= 1 (got '${MIGRATE_TARGET_VERSION}'). Applying NO migrations. See docs/RELEASING.md § Migration review (T-350)." >&2
   exit 90
-fi
+}
 
 # `migrate version` writes to stdout or stderr depending on build/verbosity and
 # exits non-zero on a fresh database, so capture both streams and never let it
@@ -175,8 +198,16 @@ ver_out="$(migrate -path="$MIGRATE_PATH" -database="$DATABASE_URL" version 2>&1 
 # line, so scrub any `scheme://user:pass@` credential before it can be printed.
 ver_out="$(printf '%s' "$ver_out" | sed 's#://[^@]*@#://***:***@#g')"
 
+# Match the LEDGER STATE, not a substring. golang-migrate renders a dirty
+# ledger as `<N> (dirty)`; a query-level failure renders as
+# `<err> in line 0: <sql>` and that SQL contains the column name `dirty`
+# (measured: `pq: permission denied ... (version bigint ..., dirty boolean ...)`).
+# A substring match therefore reported every permission/timeout/reset error as a
+# dirty ledger and told the operator to run `migrate force`, which rewrites the
+# ledger without running anything. Query errors now fall through to the
+# unparseable branch below and exit 93 instead.
 case "$ver_out" in
-  *dirty*|*Dirty*|*DIRTY*)
+  *[0-9]" (dirty)"*|*[0-9]" (Dirty)"*|*[0-9]" (DIRTY)"*)
     echo "FATAL: schema_migrations is DIRTY ('${ver_out}'). A previous migration failed half-way. Applying NO migrations — resolve the dirty state deliberately (migrate force <version>) before re-running. (T-350)" >&2
     exit 92 ;;
 esac

@@ -24,7 +24,7 @@ carry a security fix are tagged **[Security]**.
   (`cp -r /migrations /shared/migrations`), not from this repository — so which
   tables a customer install created was decided by whichever image tag happened
   to be pinned. Concretely: the veil-witness image carries
-  `000011_certificate_persistence_outbox` and `000012_witness_claim_receipts`,
+  `000011_certificate_persistence_outbox` and `000012_claim_receipts`,
   both of which hold un-redacted personal data and for which **this kit ships
   no deletion path**. A routine image-tag bump was sufficient to start creating
   them at a customer site, silently.
@@ -33,9 +33,12 @@ carry a security fix are tagged **[Security]**.
   `<subchart>.migrations.targetVersion` (Helm) and
   `LUCAIRN_MIGRATE_TARGET_<SERVICE>` (Compose), defaulting to the highest
   version this release reviewed — **veil-witness 10 · audit 6 · id-bridge 4 ·
-  sandbox-a 8**, the last version in each `migrations/<tree>/` mirror. A
-  per-chart ceiling lives in code, not values, so raising the target past what
-  the release reviewed is refused at `helm template` time. Fail-closed: an
+  sandbox-a 8**, the last version in each `migrations/<tree>/` mirror. The
+  ceiling is not operator configuration: on Helm it is a template literal that
+  `--set` and `-f` cannot reach (over-ceiling fails the render), and on Compose
+  it lives in the release-shipped, read-only-mounted
+  `scripts/migration-ceilings.env` rather than in a `environment:` value that a
+  second `-f` overlay or `docker compose run -e` could raise. Fail-closed: an
   unset, zero, non-numeric, or over-ceiling target applies **nothing** and
   exits loudly rather than falling back to `up`; so does a dirty
   `schema_migrations` ledger. The job also reads the current version first and
@@ -47,13 +50,23 @@ carry a security fix are tagged **[Security]**.
 
   Escape hatch, for operators who have reviewed their own migrations and accept
   the consequences: `<subchart>.migrations.unsafeAcknowledgeOpenEndedMigrateUp=true`
-  (Helm) / `LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP=true`
-  (Compose). It restores the old behaviour and prints a loud banner. Nothing
-  else reaches an open-ended `up`.
+  (Helm) / `LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_<SERVICE>=true`
+  (Compose). It is **per service**, so unblocking one database cannot silently
+  open the others; it restores the old behaviour, prints a loud banner, and
+  `bin/lucairn doctor` reports it. Nothing else reaches an open-ended `up`.
 
-  **Known gap, unchanged by this release:** there is still no deletion or
+  Two install shapes the cap does not cover, stated rather than implied: an
+  external-Postgres install (`postgresql.enabled=false`) renders no migration Job
+  at all, and a migration left *below* the ceiling is silent-green — the service
+  starts against a schema older than its code after a stderr NOTICE. Both are in
+  `docs/RELEASING.md` § "Migration review".
+
+  **Known gaps, unchanged by this release:** there is still no deletion or
   retention path for `witness_certificate_persistence_outbox` /
-  `witness_claim_receipts`. The cap keeps the kit from creating them by drift;
+  `witness_claim_receipts`. Note also that `000013_decoder_expiry` — the decoder
+  retention machinery — sits above the ceiling, and `goto 13` applies 011 and 012
+  on the way, so the retention migration cannot be taken without also taking the
+  two tables that have no retention path. The cap keeps the kit from creating them by drift;
   it does not delete them where they already exist, and the offsite backup
   CronJob `pg_dump`s whole databases without pruning. Tracked on T-350.
 - **Release-blocking migration review (T-350).** `docs/RELEASING.md` gains a

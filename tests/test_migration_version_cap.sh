@@ -12,7 +12,7 @@
 #   install creates was decided by whichever image tag happened to be pinned.
 #
 #   The veil-witness image carries 000011_certificate_persistence_outbox and
-#   000012_witness_claim_receipts. Both create tables holding un-redacted
+#   000012_claim_receipts. Both create tables holding un-redacted
 #   personal data, and this kit ships NO deletion path for either. A routine
 #   image-tag bump was therefore sufficient to start creating them at a customer
 #   site, silently, with nothing in the chart or the release checklist
@@ -163,13 +163,11 @@ else
     fi
     got="$(printf '%s' "$body" | sed -n "s/^MIGRATE_TARGET_VERSION='\([0-9]*\)'$/\1/p")"
     check_eq "helm-default-target-is-ceiling ($c)" "$(ceiling_of "$c")" "$got"
-    # The guard that makes `goto` safe: current >= target must short-circuit,
-    # because `goto` runs .down.sql when the DB is ahead of the target.
-    if printf '%s' "$body" | grep -q 'NEVER migrates down'; then
-      pass "helm-never-migrates-down-guard ($c)"
-    else
-      fail "helm-never-migrates-down-guard ($c) — no current>=target short-circuit before \`goto\`"
-    fi
+    # NOTE: a grep for "NEVER migrates down" here would be a tautology — that
+    # string lives INSIDE the block it would claim to prove runs. Disabling the
+    # guard while keeping the echo left such a check green. The Helm body is a
+    # second, hand-maintained copy of the algorithm, and it is the copy guarding
+    # the exact scenario this commit exists for, so section 5b EXECUTES it.
   done
 fi
 
@@ -273,23 +271,55 @@ fi
 for c in "${CHARTS[@]}"; do
   svc="$(compose_svc_of "$c")"
   cl="$(ceiling_of "$c")"
+  ckey=""; chart_ceiling=""
   ep="$(compose_svc_field "$svc" entrypoint)"
   case "$ep" in
     *migrate-capped.sh*) pass "compose-uses-capped-entrypoint ($svc)" ;;
     *) fail "compose-uses-capped-entrypoint ($svc) — entrypoint is '$ep'" ;;
   esac
-  check_eq "compose-ceiling-is-literal ($svc)" "$cl" \
-    "$(compose_svc_field "$svc" environment.MIGRATE_KNOWN_SAFE_MAX)"
-  check_eq "parity-ceilings-match ($c: chart vs compose)" "$cl" \
-    "$(compose_svc_field "$svc" environment.MIGRATE_KNOWN_SAFE_MAX)"
+  # The ceiling is NOT in the compose environment any more — an `environment:`
+  # value is overridable by a second `-f` overlay or `docker compose run -e`,
+  # which made the cap a convention rather than a control (proven: a run with
+  # MIGRATE_KNOWN_SAFE_MAX=99 applied `goto 12` and still logged "capped").
+  if [ -n "$(compose_svc_field "$svc" environment.MIGRATE_KNOWN_SAFE_MAX)" ]; then
+    fail "compose-ceiling-not-env-settable ($svc) — MIGRATE_KNOWN_SAFE_MAX is back in the environment block"
+  else
+    pass "compose-ceiling-not-env-settable ($svc)"
+  fi
+  ckey="$(compose_svc_field "$svc" environment.MIGRATE_CEILING_KEY)"
+  check_eq "compose-ceiling-file-value ($svc)" "$cl" \
+    "$(sed -n "s/^CEILING_${ckey}=\([0-9]*\)$/\1/p" "$ROOT/scripts/migration-ceilings.env")"
+  # Real parity: read the CHART's baked literal, not the test's own table.
+  # The previous version of this check compared the compose value to
+  # ceiling_of() twice under two names and could not fail for a chart reason.
+  chart_ceiling="$(sed -n 's/^{{- \$knownSafeMax := \([0-9]*\) }}$/\1/p' \
+    "$CHART/charts/$c/templates/migration-job.yaml")"
+  check_eq "parity-ceilings-match ($c: chart \$knownSafeMax vs ceiling file)" \
+    "$chart_ceiling" \
+    "$(sed -n "s/^CEILING_${ckey}=\([0-9]*\)$/\1/p" "$ROOT/scripts/migration-ceilings.env")"
   check_eq "compose-default-target-is-ceiling ($svc)" "$cl" \
     "$(compose_svc_field "$svc" environment.MIGRATE_TARGET_VERSION)"
   check_eq "compose-override-defaults-false ($svc)" "false" \
     "$(compose_svc_field "$svc" environment.MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP)"
+  # The hatch must be PER SERVICE. One global variable would mean unblocking
+  # id-bridge silently also opened veil-witness — the exact class the cap exists
+  # to stop. Helm's hatch is per-subchart and had a positive control; Compose
+  # did not, and was global.
+  if grep -qE "LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_[A-Z_]+:-false" \
+       <(sed -n "/^  $svc:/,/^    restart/p" "$COMPOSE"); then
+    pass "compose-hatch-is-per-service ($svc)"
+  else
+    fail "compose-hatch-is-per-service ($svc) — hatch is not service-scoped"
+  fi
 done
 
 echo ""
 echo "5. Runtime: scripts/migrate-capped.sh against a stub \`migrate\` (records argv)"
+
+# The exact string golang-migrate emits when the Version() query itself fails —
+# note it contains the column name `dirty`, which is why a substring match
+# misreported every permission/timeout error as a dirty ledger (H1).
+QUERY_ERR='error: pq: permission denied for schema public in line 0: CREATE TABLE IF NOT EXISTS "public"."schema_migrations" (version bigint not null primary key, dirty boolean not null)'
 
 STUB_DIR="$TMP/bin"
 mkdir -p "$STUB_DIR"
@@ -307,6 +337,10 @@ exit 0
 STUB
 chmod +x "$STUB_DIR/migrate"
 
+# The ceiling now comes from a release-shipped file, not the environment. Use
+# the REAL shipped file so the fixture cannot drift from what customers get.
+CEILING_FIXTURE="$ROOT/scripts/migration-ceilings.env"
+
 MIGDIR="$TMP/migrations/veil-witness"
 mkdir -p "$MIGDIR"
 for n in 000001 000002 000003 000004 000005 000006 000007 000008 000009 000010 000011 000012; do
@@ -321,6 +355,7 @@ run_case() {
   local out rc
   out="$(env STUB_ARGV_LOG="$log" PATH="$STUB_DIR:$PATH" \
         MIGRATE_LABEL=t350 MIGRATE_PATH="$MIGDIR" DATABASE_URL="postgres://stub" \
+        MIGRATE_CEILING_KEY=VEIL_WITNESS MIGRATE_CEILING_FILE="$CEILING_FIXTURE" \
         "$@" /bin/sh "$SCRIPT" 2>&1)"
   rc=$?
   if [ "$rc" != "$want_rc" ]; then
@@ -344,43 +379,61 @@ run_case() {
 
 # Fresh database, default cap: applies exactly `goto 10`, never `up`.
 run_case "runtime-fresh-db-applies-goto-cap" 0 'goto 10' \
-  MIGRATE_TARGET_VERSION=10 MIGRATE_KNOWN_SAFE_MAX=10 STUB_VERSION_OUT="no migration" STUB_VERSION_RC=1
+  MIGRATE_TARGET_VERSION=10 STUB_VERSION_OUT="no migration" STUB_VERSION_RC=1
 
 # Database already AHEAD of the cap (a site that ran an older, uncapped kit):
 # exit 0 having called nothing. `goto 10` here would run 000012+000011 DOWN.
 run_case "runtime-db-ahead-never-migrates-down" 0 '-' \
-  MIGRATE_TARGET_VERSION=10 MIGRATE_KNOWN_SAFE_MAX=10 STUB_VERSION_OUT="12" STUB_VERSION_RC=0
+  MIGRATE_TARGET_VERSION=10 STUB_VERSION_OUT="12" STUB_VERSION_RC=0
 
 # Database exactly at the cap: nothing to do.
 run_case "runtime-db-at-cap-noop" 0 '-' \
-  MIGRATE_TARGET_VERSION=10 MIGRATE_KNOWN_SAFE_MAX=10 STUB_VERSION_OUT="10" STUB_VERSION_RC=0
+  MIGRATE_TARGET_VERSION=10 STUB_VERSION_OUT="10" STUB_VERSION_RC=0
 
 # Behind the cap: upward only, to the cap, not to the 12 on disk.
 run_case "runtime-partial-db-goes-to-cap-not-disk-max" 0 'goto 10' \
-  MIGRATE_TARGET_VERSION=10 MIGRATE_KNOWN_SAFE_MAX=10 STUB_VERSION_OUT="7" STUB_VERSION_RC=0
+  MIGRATE_TARGET_VERSION=10 STUB_VERSION_OUT="7" STUB_VERSION_RC=0
 
 # Fail-closed cases: all apply NOTHING.
 run_case "runtime-empty-target-applies-nothing" 90 '-' \
-  MIGRATE_TARGET_VERSION= MIGRATE_KNOWN_SAFE_MAX=10 STUB_VERSION_OUT="no migration" STUB_VERSION_RC=1
+  MIGRATE_TARGET_VERSION= STUB_VERSION_OUT="no migration" STUB_VERSION_RC=1
 run_case "runtime-non-numeric-target-applies-nothing" 90 '-' \
-  MIGRATE_TARGET_VERSION=abc MIGRATE_KNOWN_SAFE_MAX=10
+  MIGRATE_TARGET_VERSION=abc
 run_case "runtime-zero-target-applies-nothing" 90 '-' \
-  MIGRATE_TARGET_VERSION=0 MIGRATE_KNOWN_SAFE_MAX=10
+  MIGRATE_TARGET_VERSION=0
 run_case "runtime-over-ceiling-applies-nothing" 91 '-' \
-  MIGRATE_TARGET_VERSION=12 MIGRATE_KNOWN_SAFE_MAX=10
-run_case "runtime-missing-ceiling-applies-nothing" 91 '-' \
-  MIGRATE_TARGET_VERSION=10 MIGRATE_KNOWN_SAFE_MAX=
+  MIGRATE_TARGET_VERSION=12
+run_case "runtime-missing-ceiling-file-applies-nothing" 91 '-' \
+  MIGRATE_TARGET_VERSION=10 MIGRATE_CEILING_FILE=/nonexistent/ceilings.env
 run_case "runtime-dirty-ledger-applies-nothing" 92 '-' \
-  MIGRATE_TARGET_VERSION=10 MIGRATE_KNOWN_SAFE_MAX=10 STUB_VERSION_OUT="11 (dirty)" STUB_VERSION_RC=1
+  MIGRATE_TARGET_VERSION=10 STUB_VERSION_OUT="11 (dirty)" STUB_VERSION_RC=1
+run_case "runtime-query-error-is-not-dirty" 93 '-' \
+  MIGRATE_TARGET_VERSION=10 \
+  STUB_VERSION_OUT="$QUERY_ERR" STUB_VERSION_RC=1
 run_case "runtime-unparseable-version-applies-nothing" 93 '-' \
-  MIGRATE_TARGET_VERSION=10 MIGRATE_KNOWN_SAFE_MAX=10 STUB_VERSION_OUT="dial tcp: connection refused" STUB_VERSION_RC=1
+  MIGRATE_TARGET_VERSION=10 STUB_VERSION_OUT="dial tcp: connection refused" STUB_VERSION_RC=1
+
+# TOB-002 regression, proven before the fix: MIGRATE_KNOWN_SAFE_MAX=99 in the
+# environment applied `goto 12` (creating 000011 + 000012) while the log line
+# still said "capped". The file is now authoritative and a disagreeing env value
+# is refused outright rather than silently ignored.
+run_case "runtime-env-cannot-raise-ceiling" 91 '-' \
+  MIGRATE_TARGET_VERSION=12 MIGRATE_KNOWN_SAFE_MAX=99
+run_case "runtime-env-agreeing-with-file-is-accepted" 0 'goto 10' \
+  MIGRATE_TARGET_VERSION=10 MIGRATE_KNOWN_SAFE_MAX=10 \
+  STUB_VERSION_OUT="no migration" STUB_VERSION_RC=1
+
+# L2: an ambiguous hatch value must be refused, not silently read as "off".
+run_case "runtime-ambiguous-hatch-value-refused" 95 '-' \
+  MIGRATE_TARGET_VERSION=10 MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP=True
 
 # Cap beyond what the mounted tree actually holds: chart/image disagreement.
 EMPTYDIR="$TMP/migrations/empty"; mkdir -p "$EMPTYDIR"
 log="$TMP/argv.log"; : > "$log"
 out="$(env STUB_ARGV_LOG="$log" PATH="$STUB_DIR:$PATH" MIGRATE_LABEL=t350 \
       MIGRATE_PATH="$EMPTYDIR" DATABASE_URL="postgres://stub" \
-      MIGRATE_TARGET_VERSION=10 MIGRATE_KNOWN_SAFE_MAX=10 \
+      MIGRATE_CEILING_KEY=VEIL_WITNESS MIGRATE_CEILING_FILE="$CEILING_FIXTURE" \
+      MIGRATE_TARGET_VERSION=10 \
       STUB_VERSION_OUT="no migration" STUB_VERSION_RC=1 /bin/sh "$SCRIPT" 2>&1)"
 rc=$?
 if [ "$rc" = "94" ] && ! grep -qE '(^| )(up|goto)( |$)' "$log"; then
@@ -391,8 +444,81 @@ fi
 
 # The escape hatch, at runtime: open-ended `up`, and it ignores the ceiling.
 run_case "runtime-escape-hatch-runs-open-ended-up" 0 '(^| )up$' \
-  MIGRATE_TARGET_VERSION=99 MIGRATE_KNOWN_SAFE_MAX=10 \
+  MIGRATE_TARGET_VERSION=99 \
   MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP=true
+
+echo ""
+echo "5b. Runtime: the RENDERED HELM BODY, executed (not grepped)"
+
+# The Helm container body is a second, hand-maintained copy of the same ~80-line
+# algorithm as scripts/migrate-capped.sh; section 5 covers only the Compose copy.
+# Without this section, deleting the Helm copy's `current >= target`
+# short-circuit — the guard stopping `migrate goto` from running .down.sql on a
+# site already at 12/13 under an older uncapped kit — left the whole suite green
+# (mutation-proven).
+#
+# The rendered body runs verbatim. Two stubs stand in for the cluster: `nc` (the
+# Postgres wait) and `migrate` (records argv). MIGRATE_PATH is honoured by the
+# rendered script for exactly this purpose; the Job spec sets no such env, so in
+# a cluster it is always the /shared/migrations literal.
+HELM_BODY="$TMP/helm-body.sh"
+migrate_command "$STOCK" "veil-witness-migrate" > "$HELM_BODY"
+
+cat > "$STUB_DIR/nc" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
+chmod +x "$STUB_DIR/nc"
+
+helm_case() {
+  local name="$1" want_rc="$2" want_argv="$3"; shift 3
+  local log="$TMP/argv.log"; : > "$log"
+  local out rc
+  out="$(env STUB_ARGV_LOG="$log" PATH="$STUB_DIR:$PATH" \
+        MIGRATE_PATH="$MIGDIR" DATABASE_URL="postgres://stub" \
+        "$@" /bin/sh "$HELM_BODY" 2>&1)"
+  rc=$?
+  if [ "$rc" != "$want_rc" ]; then
+    fail "$name (exit want $want_rc, got $rc)"
+    printf '        %s\n' "$out" | head -3
+    return
+  fi
+  if [ "$want_argv" = "-" ]; then
+    if grep -qE '(^| )(up|goto)( |$)' "$log"; then
+      fail "$name — applied something: $(tr '\n' '|' < "$log")"
+    else
+      pass "$name"
+    fi
+  elif grep -qE "$want_argv" "$log"; then
+    pass "$name"
+  else
+    fail "$name — argv log did not match /$want_argv/: $(tr '\n' '|' < "$log")"
+  fi
+}
+
+if [ ! -s "$HELM_BODY" ]; then
+  fail "helm-body-extracted"
+else
+  pass "helm-body-extracted"
+  helm_case "helm-runtime-fresh-db-applies-goto-cap" 0 'goto 10' \
+    STUB_VERSION_OUT="no migration" STUB_VERSION_RC=1
+  # THE ONE THAT MATTERS: DB ahead of the cap. `goto 10` here would run
+  # 000012.down + 000011.down and drop the two personal-data tables.
+  helm_case "helm-runtime-db-ahead-never-migrates-down" 0 '-' \
+    STUB_VERSION_OUT="12" STUB_VERSION_RC=0
+  helm_case "helm-runtime-db-at-cap-noop" 0 '-' \
+    STUB_VERSION_OUT="10" STUB_VERSION_RC=0
+  helm_case "helm-runtime-partial-db-goes-to-cap" 0 'goto 10' \
+    STUB_VERSION_OUT="7" STUB_VERSION_RC=0
+  helm_case "helm-runtime-dirty-ledger-applies-nothing" 92 '-' \
+    STUB_VERSION_OUT="11 (dirty)" STUB_VERSION_RC=1
+  # H1 regression: golang-migrate echoes its own SQL on a query failure and that
+  # SQL contains the column name `dirty`. A substring match reported this as a
+  # dirty ledger and recommended `migrate force`, which rewrites the ledger
+  # blind. It must be an unparseable-version refusal (93), not 92.
+  helm_case "helm-runtime-query-error-is-not-dirty" 93 '-' \
+    STUB_VERSION_OUT="$QUERY_ERR" STUB_VERSION_RC=1
+fi
 
 echo ""
 echo "6. The helper is per-subchart and the four copies are byte-identical"
@@ -449,7 +575,39 @@ else
 fi
 
 echo ""
-echo "7. docs/RELEASING.md carries the migration-review gate"
+echo "7. Every ./scripts/* the Compose file mounts actually exists"
+
+# TOB-001: `bundle create` staged a HAND-MAINTAINED list of one script. T-350
+# added a second mount (and then a third, the ceiling file). A missing mount is
+# not a soft failure — Docker materialises the absent source as a DIRECTORY and
+# the service dies, so an air-gapped bundle install would never start.
+mounted="$(grep -oE '\./scripts/[A-Za-z0-9._-]+' "$COMPOSE" | sed 's#^\./scripts/##' | sort -u)"
+if [ -z "$mounted" ]; then
+  fail "compose-mounts-enumerable"
+else
+  pass "compose-mounts-enumerable"
+  for m in $mounted; do
+    if [ -f "$ROOT/scripts/$m" ]; then
+      pass "compose-mount-exists ($m)"
+    else
+      fail "compose-mount-exists ($m) — bind-mount source missing from the repo"
+    fi
+  done
+  # And the bundler must stage them from the compose file, not from a list.
+  if grep -q 'bundle_mounted_scripts=' "$ROOT/bin/lucairn"; then
+    pass "bundler-derives-mounts-from-compose"
+  else
+    fail "bundler-derives-mounts-from-compose — bundle create still uses a hand-maintained list (TOB-001)"
+  fi
+  if grep -q 'migrate-capped.sh missing beside the selected Compose file' "$ROOT/bin/lucairn"; then
+    pass "doctor-preflights-migrate-runner"
+  else
+    fail "doctor-preflights-migrate-runner — doctor has no check for the new mount"
+  fi
+fi
+
+echo ""
+echo "8. docs/RELEASING.md carries the migration-review gate"
 
 REL="$ROOT/docs/RELEASING.md"
 for needle in "Migration review" "targetVersion" "deletion path" "release-blocking"; do

@@ -201,23 +201,30 @@ services:
     volumes:
       - rendered-migrations:/migrations:ro
       - ./scripts/migrate-capped.sh:/scripts/migrate-capped.sh:ro
+      - ./scripts/migration-ceilings.env:/scripts/migration-ceilings.env:ro
     networks:
       - dsa-audit
     # T-350: migrate to a PINNED TARGET VERSION, never open-ended `up`.
-    # MIGRATE_KNOWN_SAFE_MAX is a literal on purpose — it is the highest
+    # The ceiling is NOT passed through this environment block — it is read from
+    # the mounted, release-shipped scripts/migration-ceilings.env. An
+    # `environment:` value would be overridable by a second `-f` overlay or by
+    # `docker compose run -e`, which would make the cap a convention rather than
+    # a control. The ceiling is the highest
     # audit migration THIS kit release reviewed for personal-data
-    # retention impact, and raising it is a code change gated by
+    # retention impact; raising it is a kit-release change gated by
     # docs/RELEASING.md § "Migration review". The only way to run an
-    # open-ended `up` is
-    # LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP=true.
+    # open-ended `up` is this service's OWN
+    # LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_<SERVICE>=true
+    # — the hatch is per-service on purpose, so unblocking one database can
+    # never silently open the others (Helm's hatch is per-subchart too).
     entrypoint: ["/bin/sh", "/scripts/migrate-capped.sh"]
     environment:
       MIGRATE_LABEL: "migrate-audit"
       MIGRATE_PATH: "/migrations/audit"
       DATABASE_URL: "postgres://dsa:${POSTGRES_AUDIT_PASSWORD:?POSTGRES_AUDIT_PASSWORD must be set (no weak default; see customer.env)}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
       MIGRATE_TARGET_VERSION: "${LUCAIRN_MIGRATE_TARGET_AUDIT:-6}"
-      MIGRATE_KNOWN_SAFE_MAX: "6"
-      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP:-false}"
+      MIGRATE_CEILING_KEY: "AUDIT"
+      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_AUDIT:-false}"
     restart: "no"
 
   migrate-bridge:
@@ -231,23 +238,30 @@ services:
     volumes:
       - rendered-migrations:/migrations:ro
       - ./scripts/migrate-capped.sh:/scripts/migrate-capped.sh:ro
+      - ./scripts/migration-ceilings.env:/scripts/migration-ceilings.env:ro
     networks:
       - dsa-bridge
     # T-350: migrate to a PINNED TARGET VERSION, never open-ended `up`.
-    # MIGRATE_KNOWN_SAFE_MAX is a literal on purpose — it is the highest
+    # The ceiling is NOT passed through this environment block — it is read from
+    # the mounted, release-shipped scripts/migration-ceilings.env. An
+    # `environment:` value would be overridable by a second `-f` overlay or by
+    # `docker compose run -e`, which would make the cap a convention rather than
+    # a control. The ceiling is the highest
     # id-bridge migration THIS kit release reviewed for personal-data
-    # retention impact, and raising it is a code change gated by
+    # retention impact; raising it is a kit-release change gated by
     # docs/RELEASING.md § "Migration review". The only way to run an
-    # open-ended `up` is
-    # LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP=true.
+    # open-ended `up` is this service's OWN
+    # LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_<SERVICE>=true
+    # — the hatch is per-service on purpose, so unblocking one database can
+    # never silently open the others (Helm's hatch is per-subchart too).
     entrypoint: ["/bin/sh", "/scripts/migrate-capped.sh"]
     environment:
       MIGRATE_LABEL: "migrate-bridge"
       MIGRATE_PATH: "/migrations/id-bridge"
       DATABASE_URL: "postgres://dsa:${POSTGRES_BRIDGE_PASSWORD:?POSTGRES_BRIDGE_PASSWORD must be set (no weak default; see customer.env)}@postgres-bridge:5432/bridge?sslmode=${POSTGRES_SSLMODE:-disable}"
       MIGRATE_TARGET_VERSION: "${LUCAIRN_MIGRATE_TARGET_ID_BRIDGE:-4}"
-      MIGRATE_KNOWN_SAFE_MAX: "4"
-      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP:-false}"
+      MIGRATE_CEILING_KEY: "ID_BRIDGE"
+      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_ID_BRIDGE:-false}"
     restart: "no"
 
   migrate-sandbox-a:
@@ -261,23 +275,30 @@ services:
     volumes:
       - rendered-migrations:/migrations:ro
       - ./scripts/migrate-capped.sh:/scripts/migrate-capped.sh:ro
+      - ./scripts/migration-ceilings.env:/scripts/migration-ceilings.env:ro
     networks:
       - dsa-identity
     # T-350: migrate to a PINNED TARGET VERSION, never open-ended `up`.
-    # MIGRATE_KNOWN_SAFE_MAX is a literal on purpose — it is the highest
+    # The ceiling is NOT passed through this environment block — it is read from
+    # the mounted, release-shipped scripts/migration-ceilings.env. An
+    # `environment:` value would be overridable by a second `-f` overlay or by
+    # `docker compose run -e`, which would make the cap a convention rather than
+    # a control. The ceiling is the highest
     # sandbox-a migration THIS kit release reviewed for personal-data
-    # retention impact, and raising it is a code change gated by
+    # retention impact; raising it is a kit-release change gated by
     # docs/RELEASING.md § "Migration review". The only way to run an
-    # open-ended `up` is
-    # LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP=true.
+    # open-ended `up` is this service's OWN
+    # LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_<SERVICE>=true
+    # — the hatch is per-service on purpose, so unblocking one database can
+    # never silently open the others (Helm's hatch is per-subchart too).
     entrypoint: ["/bin/sh", "/scripts/migrate-capped.sh"]
     environment:
       MIGRATE_LABEL: "migrate-sandbox-a"
       MIGRATE_PATH: "/migrations/sandbox-a"
       DATABASE_URL: "postgres://dsa:${POSTGRES_SANDBOX_A_PASSWORD:?POSTGRES_SANDBOX_A_PASSWORD must be set (no weak default; see customer.env)}@postgres-sandbox-a:5432/sandbox_a?sslmode=${POSTGRES_SSLMODE:-disable}"
       MIGRATE_TARGET_VERSION: "${LUCAIRN_MIGRATE_TARGET_SANDBOX_A:-8}"
-      MIGRATE_KNOWN_SAFE_MAX: "8"
-      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP:-false}"
+      MIGRATE_CEILING_KEY: "SANDBOX_A"
+      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_SANDBOX_A:-false}"
     restart: "no"
 
   migrate-veil:
@@ -291,23 +312,30 @@ services:
     volumes:
       - rendered-migrations:/migrations:ro
       - ./scripts/migrate-capped.sh:/scripts/migrate-capped.sh:ro
+      - ./scripts/migration-ceilings.env:/scripts/migration-ceilings.env:ro
     networks:
       - dsa-witness
     # T-350: migrate to a PINNED TARGET VERSION, never open-ended `up`.
-    # MIGRATE_KNOWN_SAFE_MAX is a literal on purpose — it is the highest
+    # The ceiling is NOT passed through this environment block — it is read from
+    # the mounted, release-shipped scripts/migration-ceilings.env. An
+    # `environment:` value would be overridable by a second `-f` overlay or by
+    # `docker compose run -e`, which would make the cap a convention rather than
+    # a control. The ceiling is the highest
     # veil-witness migration THIS kit release reviewed for personal-data
-    # retention impact, and raising it is a code change gated by
+    # retention impact; raising it is a kit-release change gated by
     # docs/RELEASING.md § "Migration review". The only way to run an
-    # open-ended `up` is
-    # LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP=true.
+    # open-ended `up` is this service's OWN
+    # LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_<SERVICE>=true
+    # — the hatch is per-service on purpose, so unblocking one database can
+    # never silently open the others (Helm's hatch is per-subchart too).
     entrypoint: ["/bin/sh", "/scripts/migrate-capped.sh"]
     environment:
       MIGRATE_LABEL: "migrate-veil"
       MIGRATE_PATH: "/migrations/veil-witness"
       DATABASE_URL: "postgres://veil:${POSTGRES_VEIL_PASSWORD:?POSTGRES_VEIL_PASSWORD must be set (no weak default; see customer.env)}@postgres-veil:5432/veil?sslmode=${POSTGRES_SSLMODE:-disable}"
       MIGRATE_TARGET_VERSION: "${LUCAIRN_MIGRATE_TARGET_VEIL_WITNESS:-10}"
-      MIGRATE_KNOWN_SAFE_MAX: "10"
-      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP:-false}"
+      MIGRATE_CEILING_KEY: "VEIL_WITNESS"
+      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_VEIL_WITNESS:-false}"
     restart: "no"
 
   # ── Application Services ────────────────────────────────────────
