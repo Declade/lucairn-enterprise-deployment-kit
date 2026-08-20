@@ -86,6 +86,37 @@ containerSecurityContext:
   capabilities:
     drop: ["ALL"]
 
+# T-350: the migration Job applies migrations up to a PINNED TARGET VERSION and
+# never further. It does not run an open-ended `migrate up`.
+#
+# Why this exists: the Job's migration files come from the veil-witness IMAGE
+# (`cp -r /migrations /shared/migrations`), not from this repository. With a
+# bare `up`, the set of tables a customer install creates was decided entirely
+# by whichever image tag happened to be pinned. The veil-witness image carries
+# 000011_certificate_persistence_outbox and 000012_witness_claim_receipts, which
+# create tables holding un-redacted personal data and for which this kit ships
+# NO deletion path — so an image-tag bump alone was enough to start creating
+# them at a customer site, silently.
+#
+# targetVersion is a migration VERSION (as in `migrate goto N`), not a count.
+# The Job reads the current schema version first and exits 0 without doing
+# anything when the database is already at or beyond the target: it NEVER
+# migrates down.
+#
+# 10 = 000010_conversation_id. The chart also carries a hard ceiling of 10
+# (charts/veil-witness/templates/migration-job.yaml); a targetVersion above it
+# is refused at render time. Raising both is a deliberate code change gated by
+# docs/RELEASING.md § "Migration review".
+#
+# unsafeAcknowledgeOpenEndedMigrateUp is the only escape hatch. true restores
+# the pre-T-350 open-ended `migrate up` AND bypasses the ceiling. It is named
+# the way it is on purpose: you are asserting you have reviewed every migration
+# in your image and accept that some create personal-data tables this kit
+# cannot delete.
+migrations:
+  targetVersion: 10
+  unsafeAcknowledgeOpenEndedMigrateUp: false
+
 postgresql:
   enabled: true
   image:

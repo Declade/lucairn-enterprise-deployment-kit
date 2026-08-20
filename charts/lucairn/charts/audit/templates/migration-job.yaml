@@ -1,4 +1,12 @@
 {{- if .Values.postgresql.enabled }}
+{{- /*
+  T-350 migration version cap — see charts/lucairn/templates/_migration-cap.tpl.
+  6 = 000006_token_usage_columns, the last version in this repo's own
+  migrations/audit/ mirror. Raising this ceiling is a code change gated by
+  docs/RELEASING.md § "Migration review".
+*/ -}}
+{{- $knownSafeMax := 6 }}
+{{- include "lucairn.migrationCap.validate" (dict "path" "audit" "migrations" .Values.migrations "knownSafeMax" $knownSafeMax) }}
 # Migration Job uses .Release.Revision-suffixed name so each helm release
 # creates a NEW Job resource. Kubernetes treats Job spec.template as
 # immutable for existing resources; versioned names sidestep the
@@ -78,12 +86,7 @@ spec:
             - sh
             - -c
             - |
-              echo "Waiting for PostgreSQL..."
-              until nc -z {{ .Chart.Name }}-postgresql 5432; do
-                sleep 2
-              done
-              echo "PostgreSQL ready. Running migrations..."
-              migrate -path=/shared/migrations -database="$DATABASE_URL" up
+              {{- include "lucairn.migrationCap.script" (dict "path" "audit" "waitHost" (printf "%s-postgresql" .Chart.Name) "migrations" .Values.migrations "knownSafeMax" $knownSafeMax) | nindent 14 }}
           env:
             - name: DATABASE_URL
               valueFrom:

@@ -32,6 +32,11 @@ GitHub Release until you pass `--publish`.
 
 ### Steps
 
+0. **Run the [migration review](#migration-review)** if this release changes any
+   pinned service image tag or any file under `migrations/`. It is a
+   release-blocking check enforced by this checklist rather than by CI, and it
+   is the only step that decides whether the release creates new personal-data
+   tables at a customer site.
 1. **Bump the version identity together** (the [equality checklist](#pre-release-equality-checklist)
    must pass): `VERSION`, `README.md` "Target release", `image-manifest.yaml`
    `kit_version`, `charts/lucairn/Chart.yaml` `version` — and **`RELEASE_DATE`**
@@ -68,6 +73,114 @@ Clean SemVer `vX.Y.Z` matching `VERSION` (e.g. `v1.9.4`) — no suffixes. (Older
 suffixed tags such as `v1.6.0-stage-3-rebrand` and the `*-dashboard` tags predate
 this scheme.) The Rekor transparency log is used by default, matching the
 image-signing ceremony; `--no-tlog` is offline/test only.
+
+## Migration review
+
+**Release-blocking — by discipline, not by automation.** No kit release should
+ship without this section being worked through and its outcome written into
+`CHANGELOG.md`. Be clear about what enforces what: nothing in CI checks that a
+human performed this review. What IS mechanical is narrower, and it is what
+makes skipping the review non-catastrophic rather than harmless — the version
+ceiling lives in code, so an unreviewed migration cannot be applied by drift;
+raising a ceiling requires editing the chart and the compose file, and
+`tests/test_migration_version_cap.sh` fails if only one of the two moves.
+
+### Why this exists
+
+The migration Jobs used to run an open-ended `migrate ... up`, which applies
+every migration file it finds. On the Helm path those files come from the
+**service image** (`cp -r /migrations /shared/migrations`), not from this
+repository — so the set of tables a customer install creates was decided by
+whichever image tag happened to be pinned, and a routine tag bump was enough to
+create new personal-data tables at a customer site with nothing positioned to
+notice.
+
+Concretely (board T-350): the veil-witness image carries
+`000011_certificate_persistence_outbox` and `000012_witness_claim_receipts`.
+Both hold un-redacted personal data. **This kit ships no deletion path for
+either.** They sit one version above the current ceiling for exactly that
+reason.
+
+Both install paths now migrate to a **pinned target version** instead:
+
+| Path | Target | Ceiling (code, not values) |
+|---|---|---|
+| Helm | `<subchart>.migrations.targetVersion` | `$knownSafeMax` in `charts/lucairn/charts/<subchart>/templates/migration-job.yaml` |
+| Compose | `LUCAIRN_MIGRATE_TARGET_<SERVICE>` in `customer.env` | `MIGRATE_KNOWN_SAFE_MAX` literal in `docker-compose.customer.yml` |
+
+Current ceilings: **veil-witness 10 · audit 6 · id-bridge 4 · sandbox-a 8** —
+the last version in each `migrations/<tree>/` mirror in this repo. Mechanism:
+`charts/lucairn/templates/_migration-cap.tpl` and `scripts/migrate-capped.sh`.
+Guard suite: `tests/test_migration_version_cap.sh`.
+
+### The checklist
+
+Run it whenever a release bumps a pinned service image tag **or** changes
+anything under `migrations/`.
+
+1. **Enumerate the new migrations.** For each service, diff the migration set
+   the new image carries against the ceiling this release ships:
+
+   ```bash
+   # What the kit's own mirror holds (= the current ceiling per tree):
+   for t in veil-witness audit id-bridge sandbox-a; do
+     echo "$t -> $(ls migrations/$t/*.up.sql | sed 's#.*/##' | cut -c1-6 | sort -n | tail -1)"
+   done
+
+   # What the image about to be pinned actually carries:
+   docker run --rm --entrypoint sh "ghcr.io/declade/dsa-veil-witness:<tag>" \
+     -c 'ls /migrations | grep "\.up\.sql$"'
+   ```
+
+   List every version above the ceiling in the release notes, by filename.
+   "No new migrations" is a valid outcome — but it must be one you *checked*,
+   not one you assumed. An image tag that cannot be traced to a commit is
+   itself a release-blocking finding.
+
+2. **State the data-retention impact of each one**, in one line each:
+   - What does it create or alter?
+   - Does it store personal data — directly, or as an un-redacted payload,
+     token map, receipt, or outbox row?
+   - What is the retention period, and **what deletes it**?
+
+3. **Release-blocking check — is there a deletion path?**
+   If a new migration creates or extends a table that holds personal data and
+   **no shipped mechanism deletes from it** (no retention sweep, no TTL, no
+   documented operator procedure), then:
+   - **do NOT raise the ceiling for it**, and
+   - record it in `CHANGELOG.md` as a known gap with its board ticket.
+
+   A migration with no deletion path may only ship behind a raised ceiling once
+   a deletion path ships with it. This is the check that would have caught
+   000011/000012.
+
+   Note that the offsite backup CronJob (`charts/lucairn/templates/backup-cronjobs.yaml`)
+   `pg_dump`s whole databases and prunes nothing — so an un-deletable table is
+   also replicated offsite. Factor that into the answer.
+
+4. **Only if steps 2–3 clear**, raise the ceiling — in **both** places, or the
+   two install paths silently review different migration sets:
+   - `$knownSafeMax` in that subchart's `templates/migration-job.yaml`
+   - the subchart's `values.yaml` `migrations.targetVersion` default
+   - the `MIGRATE_KNOWN_SAFE_MAX` **and** default target in
+     `docker-compose.customer.yml`
+
+   Then `bash tests/test_migration_version_cap.sh` — it pins chart/compose
+   parity and will fail if only one side moved.
+
+5. **Sync the mirror.** If the new migrations should also ship to the Compose
+   path, copy them into `migrations/<tree>/` in the same commit. A ceiling
+   above what the mounted tree holds makes the job exit non-zero (code 94)
+   rather than guess.
+
+### Emergency override
+
+`<subchart>.migrations.unsafeAcknowledgeOpenEndedMigrateUp=true` (Helm) /
+`LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP=true` (Compose)
+restores the old open-ended `migrate up` and bypasses the ceiling. It exists so
+a customer can unblock themselves without a kit release; it is not a substitute
+for this review, and the job prints a loud banner whenever it is set. **Never
+ship a release, values file, or `customer.env.example` with it enabled.**
 
 ## When to publish a new image
 

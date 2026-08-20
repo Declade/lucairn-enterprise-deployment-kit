@@ -1,4 +1,21 @@
 {{- if .Values.postgresql.enabled }}
+{{- /*
+  T-350 migration version cap. `knownSafeMax` is the highest veil-witness
+  migration version THIS kit release has reviewed for personal-data retention
+  impact — deliberately baked into the template, not into values, so raising it
+  is a code change gated by docs/RELEASING.md § "Migration review".
+
+  10 = 000010_conversation_id, the last version in this repo's own
+  migrations/veil-witness/ mirror. The next two versions in the service image
+  are exactly the ones T-350 is about:
+    000011_certificate_persistence_outbox
+    000012_witness_claim_receipts
+  Both create tables holding un-redacted personal data for which this kit ships
+  NO deletion path. They are unreachable from this Job unless an operator sets
+  veil-witness.migrations.unsafeAcknowledgeOpenEndedMigrateUp=true.
+*/ -}}
+{{- $knownSafeMax := 10 }}
+{{- include "lucairn.migrationCap.validate" (dict "path" "veil-witness" "migrations" .Values.migrations "knownSafeMax" $knownSafeMax) }}
 # Migration Job uses .Release.Revision-suffixed name so each helm release
 # creates a NEW Job resource. Kubernetes treats Job spec.template as
 # immutable for existing resources; versioned names sidestep the
@@ -76,12 +93,7 @@ spec:
             - sh
             - -c
             - |
-              echo "Waiting for PostgreSQL..."
-              until nc -z {{ .Chart.Name }}-postgresql 5432; do
-                sleep 2
-              done
-              echo "PostgreSQL ready. Running migrations..."
-              migrate -path=/shared/migrations -database="$DATABASE_URL" up
+              {{- include "lucairn.migrationCap.script" (dict "path" "veil-witness" "waitHost" (printf "%s-postgresql" .Chart.Name) "migrations" .Values.migrations "knownSafeMax" $knownSafeMax) | nindent 14 }}
           env:
             - name: DATABASE_URL
               valueFrom:
