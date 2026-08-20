@@ -95,18 +95,50 @@ whichever image tag happened to be pinned, and a routine tag bump was enough to
 create new personal-data tables at a customer site with nothing positioned to
 notice.
 
-Concretely (board T-350): the veil-witness image carries
-`000011_certificate_persistence_outbox` and `000012_witness_claim_receipts`.
-Both hold un-redacted personal data. **This kit ships no deletion path for
-either.** They sit one version above the current ceiling for exactly that
-reason.
+Concretely (board T-350): the veil-witness **source tree** carries three
+migrations above the current ceiling —
+
+| Version | What it is |
+|---|---|
+| `000011_certificate_persistence_outbox` | un-redacted personal data · **no deletion path** |
+| `000012_claim_receipts` (table `witness_claim_receipts`) | un-redacted personal data · **no deletion path** |
+| `000013_decoder_expiry` | the decoder-expiry retention machinery |
+
+Be precise about the timing, because the honest version is narrower than it
+sounds: the image tag this kit pins today (`0.5.4`) does **not** carry them — its
+`/migrations` stops at `000010`. The exposure is the *next* image bump, which an
+uncapped `up` would have taken silently. That is the window this cap holds open.
+
+And note the trap in `000013`. It is the retention machinery — the migration you
+would *want* — but `goto 13` applies `000011` and `000012` on the way. **The
+retention migration cannot be taken without also taking the two tables that have
+no retention path.** Raising this ceiling to 13 is not a free win; it is the
+011/012 decision wearing a different hat.
 
 Both install paths now migrate to a **pinned target version** instead:
 
-| Path | Target | Ceiling (code, not values) |
+| Path | Target | Ceiling — where the authority actually lives |
 |---|---|---|
-| Helm | `<subchart>.migrations.targetVersion` | `$knownSafeMax` in `charts/lucairn/charts/<subchart>/templates/migration-job.yaml` |
-| Compose | `LUCAIRN_MIGRATE_TARGET_<SERVICE>` in `customer.env` | `MIGRATE_KNOWN_SAFE_MAX` literal in `docker-compose.customer.yml` |
+| Helm | `<subchart>.migrations.targetVersion` | `$knownSafeMax`, a Go-template literal in `charts/lucairn/charts/<subchart>/templates/migration-job.yaml`. `--set` and `-f` cannot reach it; over-ceiling fails the render. |
+| Compose | `LUCAIRN_MIGRATE_TARGET_<SERVICE>` in `customer.env` | `CEILING_<SERVICE>` in `scripts/migration-ceilings.env`, mounted read-only. Deliberately **not** a Compose `environment:` value — those are overridable by a second `-f` overlay or `docker compose run -e`, which made the cap a convention rather than a control. A disagreeing `MIGRATE_KNOWN_SAFE_MAX` in the environment is refused, not preferred. |
+
+Both escape hatches are **per service**, so unblocking one database can never
+silently open the others.
+
+**Two install shapes the cap does not cover — say so rather than imply otherwise:**
+
+- **External Postgres** (`<subchart>.postgresql.enabled=false`): no migration Job
+  renders at all. The operator runs migrations by hand with whatever command they
+  choose, and nothing in this kit caps them. If a release's migration review
+  matters to such a customer, it has to reach them as release-note prose.
+- **A migration left below the ceiling is silent-green.** When the image ships
+  more versions than the ceiling allows, the job prints a NOTICE on stderr and
+  exits 0 — the service then starts against a schema older than its code. That is
+  the intended direction (fail toward not-creating-tables), but it means step 3b
+  above is the only thing standing between you and a T-182 repeat.
+- **Downgrades now fail loudly.** Pinning an image *older* than the ceiling makes
+  the job exit 94 rather than apply whatever it finds. Lower the ceiling
+  deliberately if you mean to downgrade.
 
 Current ceilings: **veil-witness 10 · audit 6 · id-bridge 4 · sandbox-a 8** —
 the last version in each `migrations/<tree>/` mirror in this repo. Mechanism:
@@ -158,12 +190,25 @@ anything under `migrations/`.
    `pg_dump`s whole databases and prunes nothing — so an un-deletable table is
    also replicated offsite. Factor that into the answer.
 
-4. **Only if steps 2–3 clear**, raise the ceiling — in **both** places, or the
+3b. **The inverse question — is the pinned image still correct AT this ceiling?**
+   Steps 1–3 ask whether a new migration is safe to *apply*. This step asks the
+   opposite, and it is the one that bites: for each version left **below** the
+   ceiling, state what the pinned image does when that table is absent.
+
+   This is not hypothetical. Production incident **T-182** (2026-07-27→31) was
+   exactly this shape: a witness running against a v10 schema raised `42P01` on
+   every certificate-outbox enqueue, parked certificates in a process-local map,
+   returned early without finalising, still acked the claim submitter, and the
+   certificate table simply stopped growing for four days with nothing reporting
+   a problem. A ceiling that is *safe* for the data can still be *wrong* for the
+   code. Check the service's degraded-schema handling at the tag you are pinning.
+
+4. **Only if steps 2–3b clear**, raise the ceiling — in **both** places, or the
    two install paths silently review different migration sets:
    - `$knownSafeMax` in that subchart's `templates/migration-job.yaml`
    - the subchart's `values.yaml` `migrations.targetVersion` default
-   - the `MIGRATE_KNOWN_SAFE_MAX` **and** default target in
-     `docker-compose.customer.yml`
+   - `CEILING_<SERVICE>` in `scripts/migration-ceilings.env` **and** the
+     default target in `docker-compose.customer.yml`
 
    Then `bash tests/test_migration_version_cap.sh` — it pins chart/compose
    parity and will fail if only one side moved.
@@ -176,7 +221,7 @@ anything under `migrations/`.
 ### Emergency override
 
 `<subchart>.migrations.unsafeAcknowledgeOpenEndedMigrateUp=true` (Helm) /
-`LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP=true` (Compose)
+`LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_<SERVICE>=true` (Compose)
 restores the old open-ended `migrate up` and bypasses the ceiling. It exists so
 a customer can unblock themselves without a kit release; it is not a substitute
 for this review, and the job prints a loud banner whenever it is set. **Never

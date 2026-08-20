@@ -3653,7 +3653,7 @@ check_render_migrations_safe() {
   # G1: prep-migrations rejects empty / single-quote / backslash values.
   # Catch the same conditions at pre-flight time instead of letting the
   # render-migrations.sh service error halfway through compose-up.
-  local env_file="$1" compose_file="${2:-}" key val ok=0 migration_renderer
+  local env_file="$1" compose_file="${2:-}" key val ok=0 migration_renderer migration_runner migration_ceilings _hatch_line
   for key in AUDIT_APP_PASSWORD VEIL_APP_PASSWORD; do
     val="$(env_value "$env_file" "$key")"
     if [ -z "$val" ]; then
@@ -3674,6 +3674,42 @@ check_render_migrations_safe() {
   if [ ! -f "$migration_renderer" ]; then
     echo "migration prep: scripts/render-migrations.sh missing beside the selected Compose file — prep-migrations service will fail"
     ok=1
+  fi
+  # T-350: the migrate-* services bind-mount scripts/migrate-capped.sh as their
+  # entrypoint. If it is absent Docker creates an empty DIRECTORY at the mount
+  # path and all four migrate services die, taking every dependent service with
+  # them. Same shape as the renderer check above.
+  migration_runner="$ROOT/scripts/migrate-capped.sh"
+  if [ -n "$compose_file" ] && [ -f "$(dirname "$compose_file")/scripts/migrate-capped.sh" ]; then
+    migration_runner="$(dirname "$compose_file")/scripts/migrate-capped.sh"
+  fi
+  if [ ! -f "$migration_runner" ]; then
+    echo "migration cap: scripts/migrate-capped.sh missing beside the selected Compose file — all four migrate-* services will fail to start (T-350)"
+    ok=1
+  fi
+  # The ceiling file is the control itself; without it the runner fails closed,
+  # but the operator should hear about it before compose-up, not during.
+  migration_ceilings="$ROOT/scripts/migration-ceilings.env"
+  if [ -n "$compose_file" ] && [ -f "$(dirname "$compose_file")/scripts/migration-ceilings.env" ]; then
+    migration_ceilings="$(dirname "$compose_file")/scripts/migration-ceilings.env"
+  fi
+  if [ ! -f "$migration_ceilings" ]; then
+    echo "migration cap: scripts/migration-ceilings.env missing beside the selected Compose file — migrate-* services will refuse to run without the release's reviewed ceilings (T-350)"
+    ok=1
+  fi
+  # And warn when the retention escape hatch has been left on. It is legitimate
+  # to set for one run; it is not something to ship in a customer.env.
+  if [ -n "$env_file" ] && [ -f "$env_file" ]; then
+    while IFS= read -r _hatch_line; do
+      case "$_hatch_line" in
+        LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_*=true)
+          echo "migration cap: ${_hatch_line%%=*}=true in the env file — this service will run an OPEN-ENDED 'migrate up', applying migrations this kit release has not reviewed for personal-data retention impact (T-350)"
+          ok=1
+          ;;
+      esac
+    done <<EOF_HATCH
+$(grep -E '^LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_[A-Z_]+=' "$env_file" 2>/dev/null || true)
+EOF_HATCH
   fi
   return "$ok"
 }
@@ -6559,8 +6595,9 @@ bundle_create() {
   rm -rf "$staging" "$archive"
   mkdir -p "$staging"/{bin,install,models,images,customer-data,checksums,docs,config,migrations,starter-templates}
   # install/docker-compose.customer.yml mounts these bundle-relative assets.
-  # Carry the one required renderer so an extracted bundle's offline doctor
-  # and subsequent Compose topology describe the same executable payload.
+  # Every ./scripts/*.sh it mounts is carried (the list is derived from the
+  # compose file below, not maintained by hand) so an extracted bundle's offline
+  # doctor and subsequent Compose topology describe the same executable payload.
   mkdir -p "$staging/install"/{scripts,config,migrations}
 
   cp "$ROOT/bin/lucairn" "$staging/bin/lucairn"
@@ -6610,9 +6647,23 @@ bundle_create() {
   cp -R "$ROOT/migrations"/. "$staging/migrations/"
   cp -R "$ROOT/config"/. "$staging/install/config/"
   cp -R "$ROOT/migrations"/. "$staging/install/migrations/"
-  require_file "$ROOT/scripts/render-migrations.sh" "bundle migration renderer"
-  cp "$ROOT/scripts/render-migrations.sh" "$staging/install/scripts/render-migrations.sh"
-  chmod 0755 "$staging/install/scripts/render-migrations.sh"
+  # Stage EVERY ./scripts/* path install/docker-compose.customer.yml bind-mounts.
+  # Derived from the compose file rather than listed by hand: a missing mount is
+  # not a soft failure — Docker materialises the absent source as a DIRECTORY and
+  # the service dies, so one forgotten script breaks the whole offline install.
+  # (T-350 added scripts/migrate-capped.sh as the second such mount; the
+  # hand-maintained list had exactly one entry and was not updated.)
+  bundle_compose_src="$ROOT/docker-compose.customer.yml"
+  bundle_mounted_scripts="$(grep -oE '\./scripts/[A-Za-z0-9._-]+\.sh' "$bundle_compose_src" 2>/dev/null | sed 's#^\./scripts/##' | sort -u)"
+  if [ -z "$bundle_mounted_scripts" ]; then
+    echo "bundle create: found no ./scripts/* mounts in $bundle_compose_src — refusing to stage an install that cannot be verified" >&2
+    return 1
+  fi
+  for _script in $bundle_mounted_scripts; do
+    require_file "$ROOT/scripts/$_script" "bundle-mounted asset $_script"
+    cp "$ROOT/scripts/$_script" "$staging/install/scripts/$_script"
+    chmod 0755 "$staging/install/scripts/$_script"
+  done
   cp -R "$ROOT/starter-templates"/. "$staging/starter-templates/"
   cp "$ROOT/OPS.md" "$ROOT/TROUBLESHOOTING.md" "$ROOT/README.md" "$staging/docs/"
   [ -f "$ROOT/docs/CUSTOMER_BUNDLE.md" ] && cp "$ROOT/docs/CUSTOMER_BUNDLE.md" "$staging/docs/"

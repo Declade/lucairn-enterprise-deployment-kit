@@ -6,12 +6,14 @@
   is a code change gated by docs/RELEASING.md § "Migration review".
 
   10 = 000010_conversation_id, the last version in this repo's own
-  migrations/veil-witness/ mirror. The next two versions in the service image
-  are exactly the ones T-350 is about:
-    000011_certificate_persistence_outbox
-    000012_witness_claim_receipts
-  Both create tables holding un-redacted personal data for which this kit ships
-  NO deletion path. They are unreachable from this Job unless an operator sets
+  migrations/veil-witness/ mirror. The three versions above it in the service
+  SOURCE tree are what T-350 is about:
+    000011_certificate_persistence_outbox   un-redacted personal data, no deletion path
+    000012_claim_receipts                   un-redacted personal data, no deletion path
+    000013_decoder_expiry                   the retention machinery — but goto 13
+                                            applies 011+012 on the way
+  The tag pinned today (0.5.4) carries none of them; the exposure is the next
+  image bump. They are unreachable from this Job unless an operator sets
   veil-witness.migrations.unsafeAcknowledgeOpenEndedMigrateUp=true.
 */ -}}
 {{- $knownSafeMax := 10 }}
