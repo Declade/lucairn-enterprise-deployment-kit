@@ -746,8 +746,13 @@ l3_split_pool_declared() {
 
 is_secret_key() {
   local key="$1"
+  # DATABASE_URL / *_DB_URL / *DSN are secret-bearing NAMES: their values are
+  # libpq/AMQP DSNs that carry the Postgres password in the URL userinfo
+  # (T-675). Deliberately NOT a blanket `*_URL*` — GATEWAY_BASE_URL,
+  # MODEL_RUNTIME_URL and friends are credential-free and must stay readable
+  # or the support bundle stops being diagnosable.
   case "$key" in
-    *KEY*|*TOKEN*|*SECRET*|*PASSWORD*|*PRIVATE*|*SIGNING*|*CERT*|*CREDENTIAL*|*API_KEY*|*LICENSE*)
+    *KEY*|*TOKEN*|*SECRET*|*PASSWORD*|*PRIVATE*|*SIGNING*|*CERT*|*CREDENTIAL*|*API_KEY*|*LICENSE*|*DATABASE_URL*|*DB_URL*|*DSN*)
       return 0
       ;;
     *)
@@ -763,7 +768,41 @@ redact_stream() {
       return s
     }
     function secret_key(k) {
-      return k ~ /(KEY|TOKEN|SECRET|PASSWORD|PRIVATE|SIGNING|CERT|CREDENTIAL|API_KEY|LICENSE)/
+      return k ~ /(KEY|TOKEN|SECRET|PASSWORD|PRIVATE|SIGNING|CERT|CREDENTIAL|API_KEY|LICENSE|DATABASE_URL|DB_URL|DSN)/
+    }
+    # scrub_url_credentials masks the password in URL userinfo —
+    # "scheme://user:password@host" -> "scheme://user:<redacted>@host" — while
+    # keeping scheme/user/host/port/path so the bundle stays diagnosable.
+    #
+    # T-675: `docker compose config` resolves the customer Postgres DSNs into
+    # redacted/compose-resolved.yml, e.g.
+    #   DATABASE_URL: postgres://veil:PASS@postgres-veil:5432/veil?sslmode=disable
+    # and NOTHING caught them. That line contains "=" (from `sslmode=`), so the
+    # structural KEY=value branch below derived a "key" ending in `sslmode`,
+    # which matched no secret-key name, and the line printed verbatim — inside
+    # a directory literally named redacted/.
+    #
+    # Implemented as a match()/substr() loop rather than a gsub: POSIX awk
+    # gsub() has no capture-group backreference (only "&"), and the support
+    # bundle is generated on arbitrary customer hosts with varied awks
+    # (verified identical on onetrue-awk, busybox awk, gawk and mawk).
+    #
+    # The password class excludes "/" — RFC 3986 forbids it unencoded in
+    # userinfo — so a match can never run across a following "scheme://".
+    function scrub_url_credentials(line,   out, rest, hit, p, q, prefix) {
+      out = ""
+      rest = line
+      while (match(rest, /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^:\/@"[:space:]]+:[^@\/"[:space:]]+@/)) {
+        hit = substr(rest, RSTART, RLENGTH)
+        p = index(hit, "://")
+        q = index(substr(hit, p + 3), ":")
+        # Fail CLOSED: if the prefix cannot be located, drop it entirely rather
+        # than echo any part of the userinfo back out.
+        prefix = (p > 0 && q > 0) ? substr(hit, 1, p + 2 + q) : ""
+        out = out substr(rest, 1, RSTART - 1) prefix "<redacted>@"
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+      return out rest
     }
     # scrub_inline masks high-confidence secret tokens that can appear ANYWHERE
     # on a line (compose logs, config dumps, prose), not just on KEY=value /
@@ -786,6 +825,11 @@ redact_stream() {
       # E.164 phone numbers: leading "+" then 8 or more digits (written
       # without an interval quantifier for the same portability reason).
       gsub(/\+[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*/, "<redacted>", line)
+      # Credentials in URL userinfo (Postgres/Redis/AMQP DSNs, proxy URLs).
+      # Runs LAST: on a DSN whose host carries a dotted TLD the email rule
+      # above has already consumed the password, and running after it keeps
+      # this rule from re-mangling that output.
+      line = scrub_url_credentials(line)
       return line
     }
     /^[[:space:]]*#/ || /^[[:space:]]*$/ { print; next }
@@ -796,14 +840,20 @@ redact_stream() {
       split(line, _kv, "=")
       k = trim(_kv[1])
       if (secret_key(k)) {
-        print k "=<redacted>"
+        # Re-emit the original leading whitespace: DSN keys now reach this
+        # branch from `compose config` YAML (indented two levels under
+        # environment:), and dropping the indent would leave
+        # redacted/compose-resolved.yml unparseable (T-675).
+        indent = line
+        sub(/[^[:space:]].*/, "", indent)
+        print indent k "=<redacted>"
       } else {
         print line
       }
       next
     }
     {
-      if (line ~ /(KEY|TOKEN|SECRET|PASSWORD|PRIVATE|SIGNING|CERT|CREDENTIAL|API_KEY|LICENSE):/) {
+      if (line ~ /(KEY|TOKEN|SECRET|PASSWORD|PRIVATE|SIGNING|CERT|CREDENTIAL|API_KEY|LICENSE|DATABASE_URL|DB_URL|DSN):/) {
         sub(/:.*/, ": <redacted>", line)
       }
       print line
