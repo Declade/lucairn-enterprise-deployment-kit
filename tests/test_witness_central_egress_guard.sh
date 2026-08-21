@@ -23,9 +23,21 @@
 #   cp tests/test_witness_central_egress_guard.sh /tmp/wg-main/tests/
 #   bash /tmp/wg-main/tests/test_witness_central_egress_guard.sh
 #
-#   Every section fails on origin/main: the script does not exist, the compose
-#   service does not exist, the Helm validator does not exist. There is no
-#   version of this file that passes against a tree without the guard.
+# WHAT THAT RUN ACTUALLY MEASURES — stated precisely, because the earlier
+# wording here ("every section fails on origin/main") was a claim this file
+# cannot make. Section 0 asserts the guard script exists and, finding it does
+# not, prints one FAIL and calls `exit 1` on the spot. Sections 1-3 therefore
+# never execute against a tree without the guard: they are not measured there,
+# and "not measured" is not "failed".
+#
+# What IS measured, and is the real anti-tautology evidence:
+#   - section 0 goes red on any tree lacking the script (that run, first line);
+#   - sections 1-3 are proven non-vacuous by MUTATION rather than by absence —
+#     deleting the `is_plausible_host` call, widening the domain matcher to a
+#     substring test, dropping the CERT_ADDR variable from the sweep, and
+#     downgrading the compose `depends_on` condition to `service_started` each
+#     turn this suite red on a tree that HAS the guard. That is the property
+#     worth asserting; a suite is only as good as the mutations it catches.
 #
 # POSITIVE CONTROLS — no assertion here is a tautology:
 #   - the near-miss host `notlucairn.eu.example.com` must PASS. A guard written
@@ -146,12 +158,40 @@ assert_guard "refuses-grpc-dns-target-form" 96 "REFUSING TO START" \
 assert_guard "passes-grpc-dns-target-form-on-customer-host" 0 "OK" \
   LUCAIRN_CENTRAL_WITNESS_ADDR=dns:///witness.customer.example:50057
 
+# gRPC's FULL target syntax is `scheme://authority/endpoint`, and for the dns
+# resolver the authority is the NAME SERVER while the endpoint is the host
+# actually dialled. Measured on the previous revision, which kept only the text
+# before the first "/": this exact value extracted `resolver.example.com`,
+# discarded the Lucairn endpoint, and printed "OK: checked 1 ..." with exit 0 —
+# the same fail-open-with-an-OK-line shape as the `ADDR=":"` defect below, one
+# syntax variant over. Both halves are checked now, and both directions are
+# pinned here.
+assert_guard "refuses-dns-authority-form-with-lucairn-ENDPOINT" 96 "REFUSING TO START" \
+  LUCAIRN_CENTRAL_WITNESS_ADDR=dns://resolver.example.com/witness.lucairn.eu:50057
+assert_guard "refuses-dns-authority-form-with-lucairn-AUTHORITY" 96 "REFUSING TO START" \
+  LUCAIRN_CENTRAL_WITNESS_ADDR=dns://witness.lucairn.eu/safe.example.com:50057
+# POSITIVE CONTROL for the same rule: a legitimate `dns://resolver/endpoint`
+# target where neither half is Lucairn must still install. A fix that simply
+# refused every value containing a "/" would pass the two assertions above and
+# fail this one.
+assert_guard "passes-dns-authority-form-when-neither-half-is-lucairn" 0 "OK" \
+  LUCAIRN_CENTRAL_WITNESS_ADDR=dns://8.8.8.8/safe.example.com:50057
+
 # The CERTIFICATE port serves certificates that carry redaction_manifest_body
 # back out (GetCertificate / ExportCertificates), so it is guarded too. A guard
 # that only read the claim variable passes every other case in this file.
 assert_guard "refuses-lucairn-host-on-the-CERT-address-alone" 96 "LUCAIRN_CENTRAL_WITNESS_CERT_ADDR" \
   LUCAIRN_CENTRAL_WITNESS_ADDR=witness.customer.example:50057 \
   LUCAIRN_CENTRAL_WITNESS_CERT_ADDR=witness.lucairn.eu:50058
+
+# The THIRD operator-facing witness address. docs/WITNESS_CENTRAL_RUNBOOK.md § 9
+# tells operators to repoint the dashboard at the central witness under this
+# overlay, so it is a route to a Lucairn-operated evidence plane that our own
+# runbook names — and it went unchecked until this was added.
+assert_guard "refuses-lucairn-host-on-the-DASHBOARD-endpoint-alone" 96 "LUCAIRN_DASHBOARD_WITNESS_ENDPOINT" \
+  LUCAIRN_DASHBOARD_WITNESS_ENDPOINT=witness.lucairn.eu:50058
+assert_guard "passes-the-stock-local-dashboard-endpoint" 0 "OK: checked 1" \
+  LUCAIRN_DASHBOARD_WITNESS_ENDPOINT=veil-witness:50058
 
 # ── Fail-closed on garbage ──────────────────────────────────────────────────
 # Measured before the fix: ":" survived extraction as the "host" ':', matched
@@ -162,6 +202,40 @@ assert_guard "refuses-unparseable-addr-colon-only" 90 "no hostname could be extr
   LUCAIRN_CENTRAL_WITNESS_ADDR=:
 assert_guard "refuses-unparseable-addr-port-only" 90 "no hostname could be extracted" \
   LUCAIRN_CENTRAL_WITNESS_ADDR=:50057
+# ":::" is not an IPv6 literal. It is pinned because the IPv6 arm of
+# looks_like_ip() is what decides whether a colon-bearing token counts as a
+# host at all, and a character-class implementation of that arm ("hex digits
+# and colons") classifies both ":::" and a bare ":" as addresses. MEASURED
+# while writing this round's colon fix: it did exactly that, printed the bare-IP
+# NOTICE, and exited 0 — reintroducing the ADDR=":" fail-open from the other
+# side. The Helm twin refuses ":::" too.
+assert_guard "refuses-unparseable-addr-triple-colon" 90 "no hostname could be extracted" \
+  LUCAIRN_CENTRAL_WITNESS_ADDR=:::
+
+# A name-shaped value with a colon left over after the port strip is garbage,
+# not a host. MEASURED before this rule: `witness.lucairn.eu:50057:50057`
+# reduced to the "host" `witness.lucairn.eu:50057`, which matched no blocked
+# domain (the suffix test is anchored on the whole string) and passed with a
+# clean OK line — a LUCAIRN host waved through.
+assert_guard "refuses-residual-colon-after-port-strip" 90 "no hostname could be extracted" \
+  LUCAIRN_CENTRAL_WITNESS_ADDR=witness.lucairn.eu:50057:50057
+
+# `grep` is LINE-oriented, so a plausibility check answers about SOME line of a
+# multi-line value rather than about the value. MEASURED before this rule:
+# a two-line value whose FIRST line was a Lucairn host passed with exit 0
+# because the second line satisfied the hostname regex. No witness address
+# contains a newline, so the value is refused rather than parsed.
+assert_guard "refuses-a-value-containing-a-newline" 90 "contains a newline" \
+  "LUCAIRN_CENTRAL_WITNESS_ADDR=witness.lucairn.eu:50057
+safe.example.com:50057"
+
+# A bracketed IPv6 literal is a legitimate dial target and the extractor's own
+# comment claimed it was handled. MEASURED before this fix: the brackets came
+# off, the port regex then ate the `:1` of `::1`, and the guard exited 90 on a
+# valid address. It now reaches the bare-IP notice like any other IP literal —
+# which is the honest outcome, since a name-based guard cannot check it.
+assert_guard "bracketed-ipv6-literal-is-treated-as-an-IP-not-as-garbage" 0 "NAME-based" \
+  LUCAIRN_CENTRAL_WITNESS_ADDR='[::1]:50057'
 
 # ── The hatch ───────────────────────────────────────────────────────────────
 # It must OPEN the path (exit 0), not merely be accepted, and it must say what
@@ -238,13 +312,14 @@ EOF
   cat >> "$OVERLAY_ENV" <<'EOF'
 LUCAIRN_CENTRAL_WITNESS_ADDR=witness.render.invalid:50057
 LUCAIRN_CENTRAL_WITNESS_CERT_ADDR=witness.render.invalid:50058
+LUCAIRN_DASHBOARD_WITNESS_ENDPOINT=witness.render.invalid:50058
 LUCAIRN_WITNESS_CLIENT_CERT_DIR=/tmp/render-only-certs
 LUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR=/tmp/render-only-gateway-certs
 EOF
 
   render() { # $1 = env file; rest = -f files
     local ef="$1"; shift
-    docker compose "$@" --env-file "$ef" -p wgtest config --format json 2>"$WK/err"
+    docker compose "$@" --env-file "$ef" -p wgtest --profile dashboard config --format json 2>"$WK/err"
   }
 
   # Cell: stock customer install.
@@ -255,7 +330,26 @@ EOF
     else
       fail "stock-cell-defines-the-guard-service"
     fi
-    for svc in audit id-bridge sanitizer gateway; do
+    # The guard is only checking what the emitters are actually handed if the
+    # variable reaches its own environment. A variable named in the script's
+    # sweep but never passed through to the guard SERVICE is a check that reads
+    # an unset value and reports OK — the fail-open shape, one layer out.
+    for v in LUCAIRN_CENTRAL_WITNESS_ADDR LUCAIRN_CENTRAL_WITNESS_CERT_ADDR LUCAIRN_DASHBOARD_WITNESS_ENDPOINT; do
+      if printf '%s' "$J" | python3 -c '
+import json,sys
+v=sys.argv[1]
+d=json.load(sys.stdin)
+sys.exit(0 if v in d["services"]["witness-egress-guard"]["environment"] else 1)' "$v"; then
+        pass "guard-service-is-passed ($v)"
+      else
+        fail "guard-service-is-passed ($v) — the script sweeps it but the service never receives it, so the check reads an unset value"
+      fi
+    done
+    # lucairn-dashboard dials LUCAIRN_DASHBOARD_WITNESS_ENDPOINT at the cert
+    # port. Without this edge the guard would CHECK that variable while nothing
+    # acted on the refusal — an advisory guard, which is the shape this whole
+    # service exists to not be.
+    for svc in audit id-bridge sanitizer gateway lucairn-dashboard; do
       if printf '%s' "$J" | python3 -c '
 import json,sys
 svc=sys.argv[1]
@@ -298,6 +392,18 @@ sys.exit(0 if g.get("LUCAIRN_CENTRAL_WITNESS_ADDR")==s.get("LCR_WITNESS_ADDR") e
       pass "guard-checks-the-same-address-the-sanitizer-is-given"
     else
       fail "guard-checks-the-same-address-the-sanitizer-is-given — the guard and the emitter disagree about the target"
+    fi
+    # Same property for the third address: the guard must see the endpoint the
+    # dashboard is handed, not a default of its own.
+    if printf '%s' "$J" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+g=d["services"]["witness-egress-guard"]["environment"]
+b=d["services"]["lucairn-dashboard"]["environment"]
+sys.exit(0 if g.get("LUCAIRN_DASHBOARD_WITNESS_ENDPOINT")==b.get("LUCAIRN_DASHBOARD_WITNESS_ENDPOINT") else 1)'; then
+      pass "guard-checks-the-same-endpoint-the-dashboard-is-given"
+    else
+      fail "guard-checks-the-same-endpoint-the-dashboard-is-given — the guard and the dashboard disagree about the target"
     fi
   else
     fail "full-onprem+overlay-cell-renders :: $(head -1 "$WK/err")"
@@ -343,6 +449,85 @@ else
   else
     fail "helm-allows-a-customer-host :: $(printf '%s' "$OUT" | head -1)"
   fi
+
+  # ── The other two witness addresses the chart exposes ──────────────────────
+  #
+  # gateway.veilWitnessCertAddr is a REAL, separately-settable value
+  # (charts/lucairn/charts/gateway/values.yaml, rendered into
+  # LCR_WITNESS_CERT_ADDR at port 50058) and GetCertificate /
+  # ExportCertificates serve certificates carrying redaction_manifest_body over
+  # it. MEASURED on the previous revision: this render SUCCEEDED and emitted
+  #   LCR_WITNESS_CERT_ADDR: "witness.lucairn.eu:50058"
+  # while the Compose twin refused the identical configuration and the CHANGELOG
+  # claimed both surfaces checked the certificate port. Twin drift at exactly
+  # the place the twins exist to agree.
+  #
+  # dashboard.witness.endpoint is the third; docs/WITNESS_CENTRAL_RUNBOOK.md § 9
+  # instructs operators to repoint it at the central witness.
+  for pair in "gateway.veilWitnessCertAddr=witness.lucairn.eu:50058" \
+              "dashboard.witness.endpoint=witness.lucairn.eu:50058"; do
+    if OUT="$("${HB[@]}" --set "$pair" 2>&1)"; then
+      fail "helm-refuses-lucairn-host (${pair%%=*}) — rendered anyway"
+    elif grep -q "REFUSING TO RENDER" <<<"$OUT"; then
+      pass "helm-refuses-lucairn-host (${pair%%=*})"
+    else
+      fail "helm-refuses-lucairn-host (${pair%%=*}) — failed for another reason: $(printf '%s' "$OUT" | head -1)"
+    fi
+  done
+  # POSITIVE CONTROLS: a customer host on either of those two values installs.
+  for pair in "gateway.veilWitnessCertAddr=witness.customer.example:50058" \
+              "dashboard.witness.endpoint=witness.customer.example:50058"; do
+    if OUT="$("${HB[@]}" --set "$pair" 2>&1)"; then
+      pass "helm-allows-a-customer-host (${pair%%=*})"
+    else
+      fail "helm-allows-a-customer-host (${pair%%=*}) :: $(printf '%s' "$OUT" | head -1)"
+    fi
+  done
+
+  # ── TWIN PARITY, asserted directly rather than eyeballed ───────────────────
+  #
+  # Every finding in this round that was not a missing check was a DRIFT: the
+  # two implementations disagreeing about one input. So the property is stated
+  # as a table and both twins are run against it. `refuse` means "does not
+  # install" on either surface — exit 96 (Lucairn host) or 90 (unparseable) for
+  # the script, a failed render for the chart — because from an operator's seat
+  # those are the same outcome and the reason is asserted separately above.
+  while IFS='|' read -r want addr; do
+    [ -n "$want" ] || continue
+    env -i PATH="$PATH" "LUCAIRN_CENTRAL_WITNESS_ADDR=$addr" sh "$GUARD" >/dev/null 2>&1
+    src_rc=$?
+    "${HB[@]}" --set "gateway.veilWitnessAddr=$addr" >/dev/null 2>&1
+    helm_rc=$?
+    if [ "$want" = refuse ]; then
+      src_ok=$([ "$src_rc" -ne 0 ] && echo y || echo n)
+      helm_ok=$([ "$helm_rc" -ne 0 ] && echo y || echo n)
+    else
+      src_ok=$([ "$src_rc" -eq 0 ] && echo y || echo n)
+      helm_ok=$([ "$helm_rc" -eq 0 ] && echo y || echo n)
+    fi
+    if [ "$src_ok$helm_ok" = "yy" ]; then
+      pass "twin-parity [$want] $addr"
+    else
+      fail "twin-parity [$want] $addr — script exit $src_rc, helm exit $helm_rc (they must agree)"
+    fi
+  done <<'PARITY'
+refuse|witness.lucairn.eu:50057
+refuse|dns:///witness.lucairn.eu:50057
+refuse|dns://resolver.example.com/witness.lucairn.eu:50057
+refuse|dns://witness.lucairn.eu/safe.example.com:50057
+refuse|WITNESS.LUCAIRN.EU:50057
+refuse|witness.lucairn.eu.:50057
+refuse|gateway.dsaveil.io:50057
+refuse|witness.lucairn.eu:50057:50057
+refuse|:
+refuse|:::
+refuse|https://evil.example/redirect?url=http://lucairn.eu:50057
+allow|witness.customer.example:50057
+allow|dns:///witness.customer.example:50057
+allow|dns://8.8.8.8/safe.example.com:50057
+allow|notlucairn.eu.example.com:50057
+allow|[::1]:50057
+PARITY
 
   if OUT="$("${HB[@]}" --set "gateway.veilWitnessAddr=witness.lucairn.eu:50057" \
               --set "witnessEgress.unsafeAcknowledgeLucairnOperatedWitness=true" 2>&1)"; then
@@ -410,6 +595,40 @@ if grep -qi "name-based" "$RUNBOOK"; then
   pass "runbook-states-the-name-based-limitation"
 else
   fail "runbook-states-the-name-based-limitation — the docs would imply a check the guard does not perform"
+fi
+
+# CLAIM HONESTY. The CHANGELOG and the runbook both say the two surfaces check
+# the certificate port. That sentence was FALSE for Helm when it was written —
+# the chart read only veilWitnessAddr. A documented claim about coverage is only
+# worth what a mechanism can count, so each address the docs name is asserted to
+# be present in BOTH implementations rather than in prose alone.
+VALIDATORS="$ROOT/charts/lucairn/templates/_validators.tpl"
+while IFS='|' read -r envvar helmvalue; do
+  [ -n "$envvar" ] || continue
+  if grep -q "$envvar" "$GUARD"; then
+    pass "compose-guard-checks ($envvar)"
+  else
+    fail "compose-guard-checks ($envvar) — named in the docs, absent from the script"
+  fi
+  if grep -q "$helmvalue" "$VALIDATORS"; then
+    pass "helm-validator-checks ($helmvalue)"
+  else
+    fail "helm-validator-checks ($helmvalue) — named in the docs, absent from the chart (this is exactly the CHANGELOG's 'both surfaces' claim going false)"
+  fi
+done <<'ADDRS'
+LUCAIRN_CENTRAL_WITNESS_ADDR|veilWitnessAddr
+LUCAIRN_CENTRAL_WITNESS_CERT_ADDR|veilWitnessCertAddr
+LUCAIRN_DASHBOARD_WITNESS_ENDPOINT|dashboard.witness.endpoint
+ADDRS
+
+# The guard is a run-once job: it exits and disappears from `ps`. An install
+# runbook whose steady-state container list does not say so turns a healthy
+# guard into a support ticket.
+INSTALL_RUNBOOK="$ROOT/docs/CUSTOMER_INSTALL_RUNBOOK.md"
+if grep -q "witness-egress-guard" "$INSTALL_RUNBOOK"; then
+  pass "install-runbook-lists-the-guard-among-the-run-once-jobs"
+else
+  fail "install-runbook-lists-the-guard-among-the-run-once-jobs — an operator would read its absence from \`ps\` as a missing container"
 fi
 
 echo ""

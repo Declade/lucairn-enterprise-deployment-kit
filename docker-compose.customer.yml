@@ -391,6 +391,15 @@ services:
       # passing state.
       LUCAIRN_CENTRAL_WITNESS_ADDR: "${LUCAIRN_CENTRAL_WITNESS_ADDR:-}"
       LUCAIRN_CENTRAL_WITNESS_CERT_ADDR: "${LUCAIRN_CENTRAL_WITNESS_CERT_ADDR:-}"
+      # The dashboard's own witness dial, at the same certificate port.
+      # docs/WITNESS_CENTRAL_RUNBOOK.md § 9 tells operators to repoint it at the
+      # central witness under this topology ("Point the dashboard at the central
+      # witness (LUCAIRN_DASHBOARD_WITNESS_ENDPOINT)"), which makes it a third
+      # route — named in our own runbook — to a Lucairn-operated evidence plane.
+      # Passed UNDEFAULTED on purpose: the service definitions below default it
+      # to the local `veil-witness:50058`, and repeating that default here would
+      # make the guard check the fallback rather than what the operator set.
+      LUCAIRN_DASHBOARD_WITNESS_ENDPOINT: "${LUCAIRN_DASHBOARD_WITNESS_ENDPOINT:-}"
       LUCAIRN_WITNESS_UNSAFE_ACKNOWLEDGE_LUCAIRN_OPERATED_WITNESS: "${LUCAIRN_WITNESS_UNSAFE_ACKNOWLEDGE_LUCAIRN_OPERATED_WITNESS:-false}"
     volumes:
       - ./scripts/witness-egress-guard.sh:/scripts/witness-egress-guard.sh:ro
@@ -1182,6 +1191,16 @@ services:
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-dashboard:${LUCAIRN_DASHBOARD_IMAGE_TAG:-0.8.2}"
     logging: *default-logging
     restart: unless-stopped
+    depends_on:
+      # T-682: the dashboard dials LUCAIRN_DASHBOARD_WITNESS_ENDPOINT at the
+      # certificate port, and GetCertificate / ExportCertificates serve
+      # certificates carrying redaction_manifest_body. Without this edge the
+      # guard would CHECK that variable while nothing acted on the refusal —
+      # a check whose result is advisory is the failure shape this whole
+      # service exists to avoid. The guard is defined above in this same file,
+      # so the reference resolves in every shipped topology.
+      witness-egress-guard:
+        condition: service_completed_successfully
     environment:
       LUCAIRN_DASHBOARD_LISTEN_ADDR: "${LUCAIRN_DASHBOARD_LISTEN_ADDR:-0.0.0.0:8443}"
       LUCAIRN_DASHBOARD_BOOTSTRAP_EMAIL: "${LUCAIRN_DASHBOARD_BOOTSTRAP_EMAIL:-admin@lucairn.local}"

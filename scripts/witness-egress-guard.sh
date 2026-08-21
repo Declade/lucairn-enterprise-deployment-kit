@@ -42,6 +42,12 @@
 #                                      / ExportCertificates return certificates
 #                                      that carry redaction_manifest_body, so
 #                                      this address is checked too
+#   LUCAIRN_DASHBOARD_WITNESS_ENDPOINT the dashboard's own dial at the same cert
+#                                      port. docs/WITNESS_CENTRAL_RUNBOOK.md § 9
+#                                      instructs operators to repoint it at the
+#                                      central witness under this overlay, which
+#                                      makes it a third named route to a
+#                                      Lucairn-operated evidence plane.
 #
 #   LUCAIRN_WITNESS_UNSAFE_ACKNOWLEDGE_LUCAIRN_OPERATED_WITNESS
 #                                      the single escape hatch. Exactly "true"
@@ -102,35 +108,74 @@ fatal() {
   exit "$2"
 }
 
-# Extract a comparable hostname from a gRPC dial target.
+# Split a gRPC dial target into the host-bearing tokens it contains.
 #
-# Handles: bare `host:port`, a scheme prefix (`dns:///host:port`,
-# `https://host:port` — gRPC targets legitimately carry one), a trailing path,
-# an IPv6 literal in brackets, a trailing root dot, and mixed case.
-# Echoes the lowercased hostname, or nothing when none can be extracted.
-extract_host() {
-  _v="$1"
+# ── WHY THIS RETURNS TWO TOKENS AND NOT ONE ───────────────────────────────────
+#
+# gRPC's target syntax is `scheme://authority/endpoint`, and for the `dns`
+# resolver the AUTHORITY is the name server while the ENDPOINT is the host
+# actually dialled (grpc-go `internal/resolver/dns`). All three of these are
+# legitimate spellings of the same dial:
+#
+#   witness.lucairn.eu:50057                       bare  — endpoint only
+#   dns:///witness.lucairn.eu:50057                empty authority
+#   dns://resolver.example.com/witness.lucairn.eu:50057   authority + endpoint
+#
+# An earlier revision of this function returned ONE token: whatever sat before
+# the first "/". Measured on that revision, the third spelling extracted
+# `resolver.example.com` — the DNS SERVER — discarded the Lucairn endpoint
+# entirely, and printed
+#
+#   [witness-egress-guard] OK: checked 1 configured witness address(es); none
+#   resolves by name to a Lucairn-operated domain
+#
+# with exit 0. That is the same fail-open-with-an-OK-line shape as the
+# `ADDR=":"` defect this file already fixed once, one syntax variant over: the
+# log asserted a check that had been performed on the wrong string.
+#
+# So both tokens are returned and BOTH are checked, which collapses all three
+# spellings above into one rule and removes the question of which half of a
+# `dns://a/b` target "counts".
+#
+# Sets TARGET_AUTHORITY and TARGET_ENDPOINT; either may be the empty string,
+# which the caller treats as "not present" rather than as "empty host".
+split_target() {
+  _t="$1"
   # Strip a scheme, if any: everything up to and including the LAST "://".
-  case "$_v" in
-    *://*) _v="${_v##*://}" ;;
+  # (Deliberately the LAST — see the parity note above is_plausible_host.)
+  case "$_t" in
+    *://*) _t="${_t##*://}" ;;
   esac
-  # gRPC's own target syntax puts the authority after a THIRD slash —
-  # `dns:///witness.example.eu:50057` — so the strip above leaves a leading
-  # "/" and the path-strip below would then reduce the whole value to the empty
-  # string. Measured against this script before the fix: a `dns:///` target on a
-  # Lucairn host was refused as UNPARSEABLE rather than as Lucairn-operated,
-  # i.e. the right outcome for the wrong reason, and a customer host written the
-  # same legitimate way was refused outright.
+  # `dns:///host:port` puts the authority after a THIRD slash, i.e. the strip
+  # above leaves a leading "/" and an EMPTY authority. Measured before this was
+  # handled: the whole value reduced to "" and a `dns:///` target on a Lucairn
+  # host was refused as UNPARSEABLE rather than as Lucairn-operated — the right
+  # outcome for the wrong reason — while the same legitimate spelling on a
+  # customer host was refused outright.
   while :; do
-    case "$_v" in
-      /*) _v="${_v#/}" ;;
+    case "$_t" in
+      /*) _t="${_t#/}" ;;
       *) break ;;
     esac
   done
-  # Strip anything from the first "/" (path) or "?" (query).
-  _v="${_v%%/*}"
+  TARGET_AUTHORITY="${_t%%/*}"
+  case "$_t" in
+    */*)
+      TARGET_ENDPOINT="${_t#*/}"
+      TARGET_ENDPOINT="${TARGET_ENDPOINT%%/*}"
+      ;;
+    *) TARGET_ENDPOINT="" ;;
+  esac
+}
+
+# Reduce ONE host-bearing token to a comparable hostname.
+#
+# Handles: a trailing :port, a trailing ?query, an IPv6 literal in brackets
+# (`[::1]:50057` -> `::1`), a trailing root dot, and mixed case. Echoes the
+# lowercased host, or the empty string when the token reduces to nothing.
+normalize_host() {
+  _v="$1"
   _v="${_v%%\?*}"
-  # IPv6 literal: [::1]:50057 -> ::1
   case "$_v" in
     \[*\]*)
       _v="${_v#\[}"
@@ -168,24 +213,34 @@ is_lucairn_operated() {
   return 1
 }
 
-# Is this a plausible hostname or IP literal at all?
-#
-# This exists because the extractor is deliberately forgiving and a forgiving
-# extractor fails OPEN on garbage. Measured before this check existed:
-# LUCAIRN_CENTRAL_WITNESS_ADDR=":" survived extraction as the host ":", matched
-# nothing in the blocked list, and the guard printed OK — a value that cannot
-# name any host was treated as "checked and fine". A value this script cannot
-# recognise as a host must be refused, not waved through.
-is_plausible_host() {
-  printf '%s' "$1" | grep -qE '^[a-z0-9]([a-z0-9._:-]*[a-z0-9])?$'
-}
-
 # Purely syntactic: does this look like a bare IPv4/IPv6 literal?
+#
+# ── WHY THE IPv6 ARM IS A GRAMMAR AND NOT A CHARACTER CLASS ───────────────────
+#
+# This predicate now decides whether a colon-bearing token is a host at all
+# (see is_plausible_host), so "anything made of hex digits and colons" is no
+# longer a safe answer. MEASURED while writing this round's MED-1 fix: with the
+# old `^[0-9a-f:]+$` class, LUCAIRN_CENTRAL_WITNESS_ADDR=":" was classified as
+# an IPv6 literal, printed the bare-IP NOTICE, and exited 0 — reintroducing the
+# very fail-open-on-garbage defect this file was written to close, from the
+# opposite side. So the arm below is an actual IPv6 grammar: a full eight-group
+# form, or exactly one "::" compression, and at least one hex digit present.
+# ":" and ":::" are not IPv6 literals and are refused as unparseable, which is
+# also what the Helm twin does with them.
+#
+# NOT accepted (fail-closed, same as before this round): IPv4-mapped forms such
+# as `::ffff:192.0.2.1`, which carry dots. They exit 90 rather than pass — an
+# operator who needs one can write the plain IPv4 address or a name.
 looks_like_ip() {
   case "$1" in
     *:*)
-      # Hex groups and colons only — an IPv6 literal, not a mangled host:port.
-      printf '%s' "$1" | grep -qE '^[0-9a-f:]+$' && return 0
+      # A token of pure punctuation names nothing.
+      case "$1" in
+        *[0-9a-f]*) : ;;
+        *) return 1 ;;
+      esac
+      printf '%s' "$1" | grep -qE '^[0-9a-f]{1,4}(:[0-9a-f]{1,4}){7}$' && return 0
+      printf '%s' "$1" | grep -qE '^([0-9a-f]{1,4}(:[0-9a-f]{1,4})*)?::([0-9a-f]{1,4}(:[0-9a-f]{1,4})*)?$' && return 0
       return 1 ;;
     [0-9]*.[0-9]*.[0-9]*.[0-9]*)
       # Reject 1.2.3.4.example.com — only 4 all-numeric labels count.
@@ -194,6 +249,59 @@ looks_like_ip() {
   esac
   return 1
 }
+
+# Is this a plausible hostname or IP literal at all?
+#
+# This exists because the extractor is deliberately forgiving and a forgiving
+# extractor fails OPEN on garbage. Measured before this check existed:
+# LUCAIRN_CENTRAL_WITNESS_ADDR=":" survived extraction as the host ":", matched
+# nothing in the blocked list, and the guard printed OK — a value that cannot
+# name any host was treated as "checked and fine". A value this script cannot
+# recognise as a host must be refused, not waved through.
+#
+# ── WHY A RESIDUAL COLON IS AN IPv6 QUESTION, NOT A CHARSET ONE ───────────────
+#
+# normalize_host() strips exactly ONE trailing `:<digits>`. Anything with a
+# colon still in it afterwards is therefore one of two things and nothing else:
+# a real IPv6 literal, or a value the parser could not reduce to a host.
+# Measured when this predicate merely listed `:` in its charset:
+#
+#   LUCAIRN_CENTRAL_WITNESS_ADDR=witness.lucairn.eu:50057:50057
+#     -> host `witness.lucairn.eu:50057` -> matched no blocked domain (the
+#        suffix test is anchored on the whole string) -> "OK: checked 1", exit 0
+#
+# i.e. a Lucairn host waved through with a clean OK line. So a name-shaped token
+# with a leftover colon is refused (exit 90), and only a token that is ITSELF an
+# IP literal is allowed to carry colons. That also repairs the mirror defect —
+# `[::1]:50057` extracts to `::1`, which the old first-char `[a-z0-9]` class
+# rejected as implausible, so a bracketed IPv6 literal exited 90 while the
+# comment above split_target claimed brackets were handled.
+is_plausible_host() {
+  case "$1" in
+    *:*)
+      looks_like_ip "$1" && return 0
+      return 1 ;;
+  esac
+  printf '%s' "$1" | grep -qE '^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$'
+}
+
+# ── PARITY NOTE: scheme-strip direction (deliberate, documented) ──────────────
+#
+# This script strips up to and including the LAST "://"; the Helm twin
+# (charts/lucairn/templates/_validators.tpl :: validators.witnessHosts) does the
+# same, via a greedy `^.*://+`. They were NOT the same before this round: the
+# Helm regex was anchored non-greedily at the FIRST "://", so a pathological
+# value carrying two schemes —
+#
+#   https://evil.example/redirect?url=http://lucairn.eu:50057
+#
+# — reduced to `lucairn.eu` here (refuse) and to `evil.example` there (render).
+# Both are defensible readings of a string that is not a valid gRPC target
+# either way, but "defensible on each side" is exactly the twin-drift this
+# guard exists to not have: a value refused by Compose must not install under
+# Helm. Aligned on the LAST "://" because that is the over-blocking direction,
+# and an over-block on a malformed target costs an operator one edit while an
+# under-block costs them the manifest bodies.
 
 # ── The hatch. Strict boolean, no guessing. ──────────────────────────────────
 #
@@ -213,30 +321,81 @@ esac
 blocked=""
 checked=0
 
-for _var in LUCAIRN_CENTRAL_WITNESS_ADDR LUCAIRN_CENTRAL_WITNESS_CERT_ADDR; do
+NL='
+'
+
+# The three operator-facing addresses that name a witness this install talks to.
+#
+#   LUCAIRN_CENTRAL_WITNESS_ADDR        claim hop (:50057) — carries
+#                                       redaction_manifest_body outbound.
+#   LUCAIRN_CENTRAL_WITNESS_CERT_ADDR   certificate hop (:50058) — GetCertificate
+#                                       / ExportCertificates serve the same
+#                                       payload back.
+#   LUCAIRN_DASHBOARD_WITNESS_ENDPOINT  the dashboard's own cert-port dial.
+#                                       docs/WITNESS_CENTRAL_RUNBOOK.md § 9
+#                                       tells operators to repoint it at the
+#                                       central witness under this overlay
+#                                       ("Point the dashboard at the central
+#                                       witness (LUCAIRN_DASHBOARD_WITNESS_ENDPOINT)"),
+#                                       so it is a third route by which an
+#                                       install's evidence plane becomes a
+#                                       Lucairn-operated one — named in the
+#                                       runbook, and unchecked until this round.
+for _var in LUCAIRN_CENTRAL_WITNESS_ADDR LUCAIRN_CENTRAL_WITNESS_CERT_ADDR LUCAIRN_DASHBOARD_WITNESS_ENDPOINT; do
   eval "_val=\${$_var:-}"
   [ -n "$_val" ] || continue
   checked=$((checked + 1))
 
-  _host="$(extract_host "$_val")"
-  if [ -z "$_host" ] || ! is_plausible_host "$_host"; then
-    fatal "${_var}='${_val}' is set but no hostname could be extracted from it (got '${_host}'). Refusing to start rather than guessing which witness the claims would go to — a value this guard cannot parse is a value it cannot check, and passing it would report a check that did not happen. Expected host:port, e.g. witness.example.eu:50057." 90
-  fi
+  # A newline in the value is refused outright rather than parsed. `grep` is
+  # LINE-oriented, so is_plausible_host() answers about SOME line of a
+  # multi-line value, not about the value. Measured before this check:
+  #
+  #   LUCAIRN_CENTRAL_WITNESS_ADDR='witness.lucairn.eu:50057<LF>safe.example.com:50057'
+  #     -> the port-strip left `witness.lucairn.eu:50057<LF>safe.example.com`,
+  #        grep matched the SECOND line, the whole-string suffix test matched no
+  #        blocked domain, and the guard printed OK and exited 0.
+  #
+  # No witness address has a newline in it, so there is nothing to parse and
+  # everything to lose by trying.
+  case "$_val" in
+    *"$NL"*)
+      fatal "${_var} contains a newline. A witness address is a single host:port token; a multi-line value cannot be checked line-safely and is refused rather than parsed. Fix the value in your env file (a stray line continuation or a pasted block is the usual cause)." 90
+      ;;
+  esac
 
-  if is_lucairn_operated "$_host"; then
-    # NEWLINE-separated, deliberately: each entry contains spaces, so a
-    # space-separated accumulator would word-split into unreadable fragments
-    # exactly when the operator most needs to read it.
-    blocked="${blocked}${blocked:+
-}${_var}=${_val} (host ${_host})"
-  elif looks_like_ip "$_host"; then
-    echo "[$LABEL] NOTICE: ${_var} is a bare IP address (${_host}). This guard is NAME-based and performs no DNS or ownership lookup, so it cannot tell whether that address belongs to Lucairn. Verify it yourself — docs/WITNESS_CENTRAL_RUNBOOK.md § 1 requires a witness the operator of this device does not administer." >&2
+  split_target "$_val"
+
+  # Check the authority AND the endpoint. See split_target's header: for a
+  # `dns://authority/endpoint` target the endpoint is the host actually dialled,
+  # and checking only one of the two is how `dns://resolver.example.com/witness.lucairn.eu:50057`
+  # used to earn a clean OK line.
+  _seen=0
+  for _cand in "$TARGET_AUTHORITY" "$TARGET_ENDPOINT"; do
+    [ -n "$_cand" ] || continue
+    _seen=$((_seen + 1))
+    _host="$(normalize_host "$_cand")"
+    if [ -z "$_host" ] || ! is_plausible_host "$_host"; then
+      fatal "${_var}='${_val}' is set but no hostname could be extracted from it (the token '${_cand}' reduced to '${_host}'). Refusing to start rather than guessing which witness the claims would go to — a value this guard cannot parse is a value it cannot check, and passing it would report a check that did not happen. Expected host:port, e.g. witness.example.eu:50057." 90
+    fi
+
+    if is_lucairn_operated "$_host"; then
+      # NEWLINE-separated, deliberately: each entry contains spaces, so a
+      # space-separated accumulator would word-split into unreadable fragments
+      # exactly when the operator most needs to read it.
+      blocked="${blocked}${blocked:+$NL}${_var}=${_val} (host ${_host})"
+    elif looks_like_ip "$_host"; then
+      echo "[$LABEL] NOTICE: ${_var} names a bare IP address (${_host}). This guard is NAME-based and performs no DNS or ownership lookup, so it cannot tell whether that address belongs to Lucairn. Verify it yourself — docs/WITNESS_CENTRAL_RUNBOOK.md § 1 requires a witness the operator of this device does not administer." >&2
+    fi
+  done
+
+  if [ "$_seen" -eq 0 ]; then
+    fatal "${_var}='${_val}' is set but contains no host token at all. Refusing to start rather than guessing which witness the claims would go to. Expected host:port, e.g. witness.example.eu:50057." 90
   fi
 done
 
 if [ -z "$blocked" ]; then
   if [ "$checked" -eq 0 ]; then
-    echo "[$LABEL] OK: no central witness configured (LUCAIRN_CENTRAL_WITNESS_ADDR / LUCAIRN_CENTRAL_WITNESS_CERT_ADDR unset). Claims stay on this host."
+    echo "[$LABEL] OK: no central witness configured (LUCAIRN_CENTRAL_WITNESS_ADDR / LUCAIRN_CENTRAL_WITNESS_CERT_ADDR / LUCAIRN_DASHBOARD_WITNESS_ENDPOINT unset). Claims stay on this host."
   else
     echo "[$LABEL] OK: checked ${checked} configured witness address(es); none resolves by name to a Lucairn-operated domain (${LUCAIRN_OPERATED_DOMAINS})."
   fi

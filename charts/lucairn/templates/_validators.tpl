@@ -1215,8 +1215,13 @@ the chart's supported paths are development and production only.
   Fable review 2026-08-21 § 2c (HIGH): the witness-central topology was
   prose-guarded, not code-guarded.
 
-  Fails the render when any claim emitter's `veilWitnessAddr` names a
-  LUCAIRN-OPERATED host. The sanitizer's PII_SANITIZED claim carries
+  Fails the render when ANY of the witness addresses this install can be
+  pointed at names a LUCAIRN-OPERATED host — each emitter's `veilWitnessAddr`
+  (claim hop), `gateway.veilWitnessCertAddr` (certificate hop) and
+  `dashboard.witness.endpoint`. The exact set, and the measurement behind each
+  entry, lives in validators.witnessTargets below; both this check and the
+  acknowledgement ConfigMap read it, so they cannot name different sets.
+  The sanitizer's PII_SANITIZED claim carries
   `redaction_manifest_body` — the placeholder->original map — so pointing an
   emitter at a Lucairn witness sends every value the deployment redacted out of
   the customer's environment in resolvable form. That is the direct negation of
@@ -1257,50 +1262,180 @@ the chart's supported paths are development and production only.
 {{- end -}}
 {{- if not $unsafe -}}
 {{- $offenders := list -}}
-{{- range $sub := (list "audit" "id-bridge" "sandbox-a" "sandbox-b" "gateway") -}}
-{{- $vals := (default dict (index $.Values $sub)) -}}
-{{- $addr := toString (default "" $vals.veilWitnessAddr) -}}
-{{- if $addr -}}
-{{- $host := include "validators.witnessHost" $addr -}}
-{{- if not $host -}}
-{{- fail (printf "%s.veilWitnessAddr=%q is set but no hostname can be extracted from it. Refusing to render rather than guessing which witness the claims would go to: a value this guard cannot parse is a value it cannot check, and rendering it would report a check that never happened. Expected host:port, e.g. veil-witness.dsa-witness.svc.cluster.local:50057 (board T-682)." $sub $addr) -}}
+{{- range $line := (splitList "\n" (include "validators.witnessTargets" $)) -}}
+{{- if $line -}}
+{{- $f := splitn " " 2 $line -}}
+{{- $label := $f._0 -}}
+{{- $addr := $f._1 -}}
+{{- $hosts := splitList " " (include "validators.witnessHosts" $addr) -}}
+{{- if or (eq (join "" $hosts) "") (has "!unparseable" $hosts) -}}
+{{- fail (printf "%s=%q is set but no hostname can be extracted from it. Refusing to render rather than guessing which witness the claims would go to: a value this guard cannot parse is a value it cannot check, and rendering it would report a check that never happened. Expected host:port, e.g. veil-witness.dsa-witness.svc.cluster.local:50057 (board T-682)." $label $addr) -}}
 {{- end -}}
+{{- range $host := $hosts -}}
 {{- range $d := (list "lucairn.eu" "lucairn.com" "dsaveil.io") -}}
 {{- if or (eq $host $d) (hasSuffix (printf ".%s" $d) $host) -}}
-{{- $offenders = append $offenders (printf "%s.veilWitnessAddr=%s (host %s)" $sub $addr $host) -}}
+{{- $offenders = append $offenders (printf "%s=%s (host %s)" $label $addr $host) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 {{- if $offenders -}}
-{{- fail (printf "REFUSING TO RENDER — a claim emitter is pointed at a LUCAIRN-OPERATED witness: %s.\n\nClaims submitted to that witness include the sanitizer's PII_SANITIZED claim, which carries redaction_manifest_body — the placeholder->original map. Sending it to a witness Lucairn operates means every value this deployment redacts leaves your environment in resolvable form, which is the opposite of what the witness-central topology exists to do. docs/WITNESS_CENTRAL_RUNBOOK.md § 1 requires a witness \"on a server the consultant does not administer\" — one YOU or YOUR CUSTOMER run.\n\nFIX: point <subchart>.veilWitnessAddr at your own witness host.\n\nIf you are Lucairn staff running an internal pilot on Lucairn infrastructure, and a data-processing agreement covers the manifest bodies, set witnessEgress.unsafeAcknowledgeLucairnOperatedWitness=true. It is spelled that way on purpose, and it renders a ConfigMap that says so. Blocked domains (exact or subdomain): lucairn.eu, lucairn.com, dsaveil.io. (board T-682)" (join "; " $offenders)) -}}
+{{- fail (printf "REFUSING TO RENDER — this install is pointed at a LUCAIRN-OPERATED witness: %s.\n\nClaims submitted to that witness include the sanitizer's PII_SANITIZED claim, which carries redaction_manifest_body — the placeholder->original map. Sending it to a witness Lucairn operates means every value this deployment redacts leaves your environment in resolvable form, which is the opposite of what the witness-central topology exists to do. The certificate ports serve the same payload back via GetCertificate / ExportCertificates. docs/WITNESS_CENTRAL_RUNBOOK.md § 1 requires a witness \"on a server the consultant does not administer\" — one YOU or YOUR CUSTOMER run.\n\nFIX: point the named value at your own witness host.\n\nIf you are Lucairn staff running an internal pilot on Lucairn infrastructure, and a data-processing agreement covers the manifest bodies, set witnessEgress.unsafeAcknowledgeLucairnOperatedWitness=true. It is spelled that way on purpose, and it renders a ConfigMap that says so. Blocked domains (exact or subdomain): lucairn.eu, lucairn.com, dsaveil.io. (board T-682)" (join "; " $offenders)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 
 {{- /*
+  validators.witnessTargets
+
+  THE SINGLE SOURCE OF TRUTH for "which values name a witness this install
+  talks to". Emits one `<label> <address>` line per configured value, and is
+  consumed by BOTH validators.witnessCentralLucairnEgress (the refusal) and
+  templates/witness-egress-acknowledgement.yaml (the audit record). It exists as
+  one template precisely because those two lists drifted apart before: the
+  ConfigMap could name a different set of offenders than the check that
+  refused, and neither would look wrong on its own.
+
+  THE SET, and why each entry is in it:
+
+    <sub>.veilWitnessAddr          the claim hop (:50057) for each emitting
+                                   subchart. Carries redaction_manifest_body
+                                   outbound.
+    gateway.veilWitnessCertAddr    the certificate hop (:50058) — a REAL,
+                                   separately-settable value (see
+                                   charts/lucairn/charts/gateway/values.yaml,
+                                   rendered into LCR_WITNESS_CERT_ADDR).
+                                   GetCertificate / ExportCertificates serve
+                                   certificates that carry the same manifest
+                                   bodies. MEASURED on the previous revision of
+                                   this file: `--set
+                                   gateway.veilWitnessCertAddr=witness.lucairn.eu:50058`
+                                   rendered clean, emitting
+                                   `LCR_WITNESS_CERT_ADDR: "witness.lucairn.eu:50058"`,
+                                   while the Compose twin refused the identical
+                                   configuration and the CHANGELOG claimed both
+                                   surfaces checked the certificate port. That
+                                   is twin drift at exactly the place the twins
+                                   exist to agree.
+    dashboard.witness.endpoint     the dashboard's own cert-port dial.
+                                   docs/WITNESS_CENTRAL_RUNBOOK.md § 9 tells
+                                   operators to repoint it at the central
+                                   witness under this topology, so it is a
+                                   third route — named in our own runbook — by
+                                   which an install's evidence plane becomes a
+                                   Lucairn-operated one.
+
+  NOT in the set, deliberately: `dsa-certification.witness.address`. That
+  subchart is a vendored placeholder with no templates
+  (charts/lucairn/charts/dsa-certification/ has values only), so the value is
+  consumed by nothing and dials nowhere. If that subchart ever grows a
+  template, it belongs here.
+*/ -}}
+{{- define "validators.witnessTargets" -}}
+{{- $out := list -}}
+{{- range $sub := (list "audit" "id-bridge" "sandbox-a" "sandbox-b" "gateway") -}}
+{{- $vals := (default dict (index $.Values $sub)) -}}
+{{- $addr := toString (default "" $vals.veilWitnessAddr) -}}
+{{- if $addr -}}
+{{- $out = append $out (printf "%s.veilWitnessAddr %s" $sub $addr) -}}
+{{- end -}}
+{{- end -}}
+{{- $gw := (default dict $.Values.gateway) -}}
+{{- $gwCert := toString (default "" $gw.veilWitnessCertAddr) -}}
+{{- if $gwCert -}}
+{{- $out = append $out (printf "gateway.veilWitnessCertAddr %s" $gwCert) -}}
+{{- end -}}
+{{- $dash := (default dict $.Values.dashboard) -}}
+{{- $dashWitness := (default dict $dash.witness) -}}
+{{- $dashEndpoint := toString (default "" $dashWitness.endpoint) -}}
+{{- if $dashEndpoint -}}
+{{- $out = append $out (printf "dashboard.witness.endpoint %s" $dashEndpoint) -}}
+{{- end -}}
+{{- join "\n" $out -}}
+{{- end -}}
+
+{{- /*
+  validators.witnessHosts
+
+  Splits a gRPC dial target into the host-bearing tokens it contains and emits
+  them space-separated, or the sentinel `!unparseable` for a token that names
+  no host. Takes the raw address STRING as its context.
+
+  TWO tokens, not one, for the same reason the Compose twin's split_target()
+  returns two: gRPC's target syntax is `scheme://authority/endpoint`, and for
+  the dns resolver the authority is the NAME SERVER while the endpoint is the
+  host actually dialled. MEASURED on the previous revision, which took only the
+  text before the first "/":
+
+    --set gateway.veilWitnessAddr=dns://resolver.example.com/witness.lucairn.eu:50057
+
+  rendered clean — the check ran against `resolver.example.com` and the Lucairn
+  endpoint was never looked at. Checking both collapses `host:port`,
+  `dns:///host:port` and `dns://authority/host:port` into one rule.
+
+  The scheme strip is greedy (`^.*://+`, i.e. up to the LAST "://") to match
+  scripts/witness-egress-guard.sh exactly. It was non-greedy here and greedy
+  there, which meant a two-scheme value could be refused by Compose and
+  accepted by Helm — see the parity note in that script for why the
+  over-blocking direction is the one both twins take.
+*/ -}}
+{{- define "validators.witnessHosts" -}}
+{{- $t := lower (toString .) -}}
+{{- $t = regexReplaceAll "^.*://+" $t "" -}}
+{{- $t = regexReplaceAll "^/+" $t "" -}}
+{{- $parts := splitList "/" $t -}}
+{{- $auth := index $parts 0 -}}
+{{- $ep := "" -}}
+{{- if gt (len $parts) 1 -}}
+{{- $ep = index $parts 1 -}}
+{{- end -}}
+{{- $out := list -}}
+{{- range $c := (list $auth $ep) -}}
+{{- if $c -}}
+{{- $out = append $out (default "!unparseable" (include "validators.witnessHost" $c)) -}}
+{{- end -}}
+{{- end -}}
+{{- join " " $out -}}
+{{- end -}}
+
+{{- /*
   validators.witnessHost
 
-  Extracts a comparable, lowercased hostname from a gRPC dial target. Takes the
-  raw address STRING as its context (not a dict) and emits the host, or the
-  empty string when none can be extracted.
+  Reduces ONE host-bearing token to a comparable, lowercased hostname. Takes the
+  token STRING as its context and emits the host, or the empty string when the
+  token names no host, so the caller can fail closed rather than compare
+  against garbage.
 
-  Handles a scheme prefix including gRPC's three-slash form (`dns:///host:port`,
-  measured: the naive `://` strip leaves a leading slash and a path-strip then
-  reduces the whole value to ""), a trailing path, a trailing :port, a trailing
-  root dot, and mixed case. Emits "" for anything that does not look like a
-  host, so the caller can fail closed rather than compare against garbage.
+  Handles a trailing ?query, a bracketed IPv6 literal, a trailing :port, a
+  trailing root dot, and mixed case.
+
+  A RESIDUAL COLON IS AN IPv6 QUESTION, NOT A CHARSET ONE — the same rule the
+  Compose twin's is_plausible_host() applies. The previous revision listed ":"
+  in its hostname character class, so a name-shaped token with leftover colons
+  was accepted as a host; MEASURED on the Compose side, `witness.lucairn.eu:50057:50057`
+  reduced to the "host" `witness.lucairn.eu:50057`, matched no blocked domain
+  (the suffix test is anchored on the whole string) and passed with a clean OK.
+  Now a colon-bearing token must BE an IPv6 literal — a full eight-group form
+  or exactly one "::" compression, with at least one hex digit — which also
+  repairs the mirror defect: `[::1]:50057` used to have its brackets stripped
+  and then its `:1` eaten by the port regex, leaving ":" and failing closed on
+  a perfectly valid literal.
 */ -}}
 {{- define "validators.witnessHost" -}}
 {{- $h := lower (toString .) -}}
-{{- $h = regexReplaceAll "^[a-z0-9+.-]*://+" $h "" -}}
-{{- $h = trimPrefix "/" $h -}}
-{{- $h = first (splitList "/" $h) | toString -}}
 {{- $h = first (splitList "?" $h) | toString -}}
+{{- if regexMatch "^\\[[0-9a-f:]+\\](:[0-9]+)?$" $h -}}
 {{- $h = regexReplaceAll "^\\[([0-9a-f:]+)\\](:[0-9]+)?$" $h "${1}" -}}
+{{- else -}}
 {{- $h = regexReplaceAll ":[0-9]+$" $h "" -}}
+{{- end -}}
 {{- $h = trimSuffix "." $h -}}
-{{- if regexMatch "^[a-z0-9]([a-z0-9._:-]*[a-z0-9])?$" $h -}}
+{{- if contains ":" $h -}}
+{{- if and (regexMatch "[0-9a-f]" $h) (or (regexMatch "^[0-9a-f]{1,4}(:[0-9a-f]{1,4}){7}$" $h) (regexMatch "^([0-9a-f]{1,4}(:[0-9a-f]{1,4})*)?::([0-9a-f]{1,4}(:[0-9a-f]{1,4})*)?$" $h)) -}}
+{{- $h -}}
+{{- end -}}
+{{- else if regexMatch "^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$" $h -}}
 {{- $h -}}
 {{- end -}}
 {{- end -}}

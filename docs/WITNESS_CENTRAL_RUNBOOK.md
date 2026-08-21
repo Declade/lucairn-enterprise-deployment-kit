@@ -118,7 +118,8 @@ It is now enforced in code, on both deployment surfaces.
 `docker-compose.customer.yml` defines a run-once preflight service,
 `witness-egress-guard` (script: `scripts/witness-egress-guard.sh`). Every claim
 emitter — `audit`, `id-bridge`, `sanitizer`, `gateway`, and `sandbox-b` from
-`docker-compose.self-hosted.yml` — declares
+`docker-compose.self-hosted.yml` — plus `lucairn-dashboard`, which dials the
+certificate port, declares
 
 ```yaml
 depends_on:
@@ -128,11 +129,22 @@ depends_on:
 
 so a non-zero exit means `docker compose up` fails and **no emitter starts**.
 
-The guard reads `LUCAIRN_CENTRAL_WITNESS_ADDR` and
-`LUCAIRN_CENTRAL_WITNESS_CERT_ADDR` — the certificate port is included because
-`GetCertificate` / `ExportCertificates` serve the same manifest bodies back out
-— extracts the hostname from each, and refuses when it is, or is a subdomain of,
-`lucairn.eu`, `lucairn.com` or `dsaveil.io`.
+The guard reads all three operator-facing witness addresses, extracts the
+hostname(s) from each, and refuses when one is, or is a subdomain of,
+`lucairn.eu`, `lucairn.com` or `dsaveil.io`:
+
+| Variable | Port | Why it is in scope |
+|---|---|---|
+| `LUCAIRN_CENTRAL_WITNESS_ADDR` | 50057 | the claim hop; carries `redaction_manifest_body` outbound |
+| `LUCAIRN_CENTRAL_WITNESS_CERT_ADDR` | 50058 | `GetCertificate` / `ExportCertificates` serve the same manifest bodies back out |
+| `LUCAIRN_DASHBOARD_WITNESS_ENDPOINT` | 50058 | §9 below tells you to repoint the dashboard at the central witness under this overlay |
+
+Host extraction handles a bare `host:port`, a scheme prefix, gRPC's
+`dns:///host:port`, a trailing root dot, mixed case, and a bracketed IPv6
+literal. For the full `dns://authority/endpoint` form **both halves are
+checked** — the authority is the name server and the endpoint is the host
+actually dialled, so checking only one of them lets the other name a Lucairn
+host unexamined.
 
 It lives in the BASE compose file rather than in this overlay for a mechanical
 reason: `LUCAIRN_CENTRAL_WITNESS_ADDR` is consumed in two different overlays
@@ -141,19 +153,35 @@ refuses a `depends_on` naming a service the merged project does not define, and
 `docker-compose.self-hosted.yml` is routinely applied *without* this overlay. A
 guard in either overlay could therefore gate only half the emitters.
 
-On a stock install both variables are unset, the guard prints one OK line and
-exits.
+On a stock install all three variables are unset, the guard prints one OK line
+and exits. It is a run-once job, so it will **not** appear in a steady-state
+`docker compose ps` — read it with `docker compose logs witness-egress-guard`.
 
-Exit codes: `90` unparseable address · `95` malformed hatch value · `96`
+Exit codes: `90` unparseable address (including a value containing a newline, or
+a name-shaped value with a leftover colon) · `95` malformed hatch value · `96`
 refusal.
 
 ### Helm
 
 The umbrella chart carries the twin as a render-time validator
-(`validators.witnessCentralLucairnEgress`). It scans
-`audit`/`id-bridge`/`sandbox-a`/`sandbox-b`/`gateway`.`veilWitnessAddr` and
-fails the render on the same domain set. `helm template` and `helm install` both
-stop; there is no way to get the manifests out.
+(`validators.witnessCentralLucairnEgress`), and it covers the same three
+addresses in chart form:
+
+| Value | Compose counterpart |
+|---|---|
+| `audit` / `id-bridge` / `sandbox-a` / `sandbox-b` / `gateway`.`veilWitnessAddr` | `LUCAIRN_CENTRAL_WITNESS_ADDR` |
+| `gateway.veilWitnessCertAddr` | `LUCAIRN_CENTRAL_WITNESS_CERT_ADDR` |
+| `dashboard.witness.endpoint` | `LUCAIRN_DASHBOARD_WITNESS_ENDPOINT` |
+
+The set is defined once (`validators.witnessTargets`) and read by both the
+refusal and the acknowledgement ConfigMap, so those two cannot come to name
+different addresses. Host extraction is the same algorithm as the script's,
+including the two-halves rule for `dns://authority/endpoint`. `helm template`
+and `helm install` both stop; there is no way to get the manifests out.
+
+`dsa-certification.witness.address` is deliberately **not** in the set: that
+subchart is a vendored placeholder with no templates, so the value is consumed
+by nothing and dials nowhere. If it ever grows a template, it joins the list.
 
 ### The escape hatch
 
@@ -1388,6 +1416,10 @@ live in the central store. Point the dashboard at the central witness
 (`LUCAIRN_DASHBOARD_WITNESS_ENDPOINT`) or read certificates from the central
 store's own surface. An empty cert browser here is not evidence of an empty
 cert log.
+
+That variable is covered by the §2b guard on both surfaces (Helm:
+`dashboard.witness.endpoint`) — pointing it at a Lucairn-operated host refuses
+the start / the render exactly as the claim and certificate addresses do.
 
 Also: do **not** combine the `certification` profile with this overlay.
 `cert-builder` declares `depends_on: veil-witness: condition: service_healthy`,

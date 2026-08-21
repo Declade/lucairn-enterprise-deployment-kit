@@ -29,19 +29,25 @@ carry a security fix are tagged **[Security]**.
 
   - **Compose** — a run-once preflight service `witness-egress-guard`
     (`scripts/witness-egress-guard.sh`) that `audit`, `id-bridge`, `sanitizer`,
-    `gateway` and `sandbox-b` all declare
+    `gateway`, `sandbox-b` and `lucairn-dashboard` all declare
     `depends_on: condition: service_completed_successfully`. A refusal fails
     `docker compose up`; no emitter starts. It is defined in
     `docker-compose.customer.yml` because that is the only file both the
     witness-central overlay and `docker-compose.self-hosted.yml` are applied on
     top of.
   - **Helm** — the umbrella validator `validators.witnessCentralLucairnEgress`
-    fails the render on the same domain set across
-    `audit`/`id-bridge`/`sandbox-a`/`sandbox-b`/`gateway`.`veilWitnessAddr`.
+    fails the render on the same domain set.
 
-  Both check the claim port *and* the certificate port
-  (`LUCAIRN_CENTRAL_WITNESS_CERT_ADDR`), because `GetCertificate` /
-  `ExportCertificates` serve the same manifest bodies back out.
+  Both surfaces check all three operator-facing witness addresses — the claim
+  port (`LUCAIRN_CENTRAL_WITNESS_ADDR` / `<sub>.veilWitnessAddr`), the
+  certificate port (`LUCAIRN_CENTRAL_WITNESS_CERT_ADDR` /
+  `gateway.veilWitnessCertAddr`) because `GetCertificate` /
+  `ExportCertificates` serve the same manifest bodies back out, and the
+  dashboard's own cert-port dial (`LUCAIRN_DASHBOARD_WITNESS_ENDPOINT` /
+  `dashboard.witness.endpoint`), which the witness-central runbook § 9 tells
+  operators to repoint at the central witness. For a full
+  `dns://authority/endpoint` target both halves are checked, since the
+  authority is the name server and the endpoint is the host actually dialled.
 
   The single escape hatch is
   `LUCAIRN_WITNESS_UNSAFE_ACKNOWLEDGE_LUCAIRN_OPERATED_WITNESS=true` (Compose,
@@ -59,8 +65,10 @@ carry a security fix are tagged **[Security]**.
   deliberate choice is named and recorded. Suite:
   `tests/test_witness_central_egress_guard.sh`.
 
-  **No change to a stock install:** both variables are unset there, the guard
-  prints one line and exits 0.
+  **No change to a stock install:** all three variables are unset there, the
+  guard prints one line and exits 0. It is a run-once job, so it does not appear
+  in a steady-state `docker compose ps` — read it with
+  `docker compose logs witness-egress-guard`.
 - **Database migrations are capped at a pinned version; an open-ended
   `migrate up` now requires an explicit operator opt-in (T-350).** No kit
   install runs one by default, and no drift can cause one; only the
