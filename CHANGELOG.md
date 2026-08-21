@@ -15,6 +15,52 @@ carry a security fix are tagged **[Security]**.
 ## [Unreleased]
 
 ### Added
+- **[Security] The `witness-central` topology now refuses to start when the
+  central witness is a Lucairn-operated host (T-682).** The overlay repoints
+  every claim emitter at `LUCAIRN_CENTRAL_WITNESS_ADDR`, and one of those claims
+  — the sanitizer's `PII_SANITIZED` — carries `redaction_manifest_body`, the
+  placeholder→original map. Until now nothing in code stopped an operator from
+  pointing that at `lucairn.eu` / `dsaveil.io`: the requirement that the central
+  witness be "a server the consultant does not administer" existed only as a
+  sentence in `docs/WITNESS_CENTRAL_RUNBOOK.md` § 1. A 2026-08-21 review named
+  it: the overlay was *prose-guarded, not code-guarded*.
+
+  Enforcement now lives at both points that actually consume the address:
+
+  - **Compose** — a run-once preflight service `witness-egress-guard`
+    (`scripts/witness-egress-guard.sh`) that `audit`, `id-bridge`, `sanitizer`,
+    `gateway` and `sandbox-b` all declare
+    `depends_on: condition: service_completed_successfully`. A refusal fails
+    `docker compose up`; no emitter starts. It is defined in
+    `docker-compose.customer.yml` because that is the only file both the
+    witness-central overlay and `docker-compose.self-hosted.yml` are applied on
+    top of.
+  - **Helm** — the umbrella validator `validators.witnessCentralLucairnEgress`
+    fails the render on the same domain set across
+    `audit`/`id-bridge`/`sandbox-a`/`sandbox-b`/`gateway`.`veilWitnessAddr`.
+
+  Both check the claim port *and* the certificate port
+  (`LUCAIRN_CENTRAL_WITNESS_CERT_ADDR`), because `GetCertificate` /
+  `ExportCertificates` serve the same manifest bodies back out.
+
+  The single escape hatch is
+  `LUCAIRN_WITNESS_UNSAFE_ACKNOWLEDGE_LUCAIRN_OPERATED_WITNESS=true` (Compose,
+  exactly `true`/`false`, no other spelling accepted) or
+  `witnessEgress.unsafeAcknowledgeLucairnOperatedWitness=true` (Helm, a real
+  YAML boolean). It is recorded rather than silently honoured: Compose prints a
+  banner naming the host and the payload into the container log on every start,
+  Helm renders a `lucairn-unsafe-lucairn-operated-witness` ConfigMap carrying
+  the same text.
+
+  Stated limits, in the runbook as well as here: the check is **name-based**
+  (a bare IP pointing at Lucairn is not caught) and it is **not a privilege
+  boundary** (anyone who can edit the install files or pass `--set` bypasses
+  it). What it buys is that the egress cannot happen by accident and that the
+  deliberate choice is named and recorded. Suite:
+  `tests/test_witness_central_egress_guard.sh`.
+
+  **No change to a stock install:** both variables are unset there, the guard
+  prints one line and exits 0.
 - **Database migrations are capped at a pinned version; an open-ended
   `migrate up` now requires an explicit operator opt-in (T-350).** No kit
   install runs one by default, and no drift can cause one; only the

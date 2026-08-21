@@ -1,0 +1,64 @@
+{{- /*
+  Board T-682. The LOUD half of the Lucairn-operated-witness guard.
+
+  The Compose twin prints a banner into the container log every time the stack
+  starts. Helm has no stderr to write to at render time, so the equivalent is an
+  object: this ConfigMap exists ONLY while
+  `witnessEgress.unsafeAcknowledgeLucairnOperatedWitness=true`, and only when an
+  emitter is actually pointed at a Lucairn-operated host. It shows up in
+  `helm template` output, in a GitOps diff, and in `kubectl get configmap -A`,
+  so the state is discoverable by someone who did not run the install.
+
+  Nothing consumes it. It is a record, deliberately — a flag that leaves no
+  trace is a flag nobody can audit afterwards.
+*/ -}}
+{{- $we := (default dict .Values.witnessEgress) -}}
+{{- $unsafe := $we.unsafeAcknowledgeLucairnOperatedWitness | default false -}}
+{{- if and (kindIs "bool" $unsafe) $unsafe -}}
+{{- $offenders := list -}}
+{{- range $sub := (list "audit" "id-bridge" "sandbox-a" "sandbox-b" "gateway") -}}
+{{- $vals := (default dict (index $.Values $sub)) -}}
+{{- $addr := toString (default "" $vals.veilWitnessAddr) -}}
+{{- if $addr -}}
+{{- $host := include "validators.witnessHost" $addr -}}
+{{- range $d := (list "lucairn.eu" "lucairn.com" "dsaveil.io") -}}
+{{- if or (eq $host $d) (hasSuffix (printf ".%s" $d) $host) -}}
+{{- $offenders = append $offenders (printf "%s -> %s" $sub $addr) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if $offenders }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lucairn-unsafe-lucairn-operated-witness
+  labels:
+    app.kubernetes.io/name: lucairn
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    eu.lucairn.witness.egress: "lucairn-operated"
+data:
+  WARNING: |
+    UNSAFE OVERRIDE ACTIVE —
+    witnessEgress.unsafeAcknowledgeLucairnOperatedWitness=true
+
+    This deployment ships its evidence claims to a LUCAIRN-OPERATED witness:
+{{- range $o := $offenders }}
+      {{ $o }}
+{{- end }}
+
+    WHAT THAT SENDS. The sanitizer's PII_SANITIZED claim carries
+    redaction_manifest_body — the placeholder->original map. Everything this
+    deployment redacts can be resolved back to the real value by whoever holds
+    those claims. The certificate port serves the same payload back via
+    GetCertificate / ExportCertificates.
+
+    For as long as this value is set, the sentence "no raw identity data leaves
+    your environment" is NOT TRUE of this install, and Lucairn is a processor of
+    every identity value it redacts. If a data-processing agreement covering
+    that is not in place, unset it.
+
+    See docs/WITNESS_CENTRAL_RUNBOOK.md § "The Lucairn-operated-witness guard"
+    (board T-682).
+{{- end -}}
+{{- end -}}

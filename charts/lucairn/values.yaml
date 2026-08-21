@@ -363,6 +363,26 @@ infrastructure:
 pii-ml:
   enabled: false
 
+# ── Claim-egress guard (board T-682) ────────────────────────────────────────
+# The chart refuses to render when any emitter's `veilWitnessAddr` names a
+# Lucairn-operated host (lucairn.eu / lucairn.com / dsaveil.io, exact or
+# subdomain). The sanitizer's PII_SANITIZED claim carries
+# redaction_manifest_body — the placeholder→original map — so that
+# configuration would ship every redacted value out of your environment in
+# resolvable form.
+#
+# Setting this to `true` re-permits it AND renders a ConfigMap
+# (lucairn-unsafe-lucairn-operated-witness) that states what is being sent and
+# to whom. It must be a real YAML boolean.
+#
+# This is not a privilege boundary: anyone who can pass --set can pass this. It
+# exists so the egress cannot happen by accident, and so the deliberate choice
+# is named and recorded. The check is NAME-based — a bare IP, or a CNAME of
+# yours pointing at Lucairn infrastructure, is not caught. See
+# docs/WITNESS_CENTRAL_RUNBOOK.md § "The Lucairn-operated-witness guard".
+witnessEgress:
+  unsafeAcknowledgeLucairnOperatedWitness: false
+
 audit:
   enabled: true
 

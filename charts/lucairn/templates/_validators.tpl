@@ -1207,3 +1207,100 @@ the chart's supported paths are development and production only.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{- /*
+  validators.witnessCentralLucairnEgress
+
+  Board T-682. Helm twin of scripts/witness-egress-guard.sh (the Compose path).
+  Fable review 2026-08-21 § 2c (HIGH): the witness-central topology was
+  prose-guarded, not code-guarded.
+
+  Fails the render when any claim emitter's `veilWitnessAddr` names a
+  LUCAIRN-OPERATED host. The sanitizer's PII_SANITIZED claim carries
+  `redaction_manifest_body` — the placeholder->original map — so pointing an
+  emitter at a Lucairn witness sends every value the deployment redacted out of
+  the customer's environment in resolvable form. That is the direct negation of
+  "no raw identity data leaves your environment", and nothing in the chart
+  noticed it happening.
+
+  THE HATCH: `witnessEgress.unsafeAcknowledgeLucairnOperatedWitness=true`. It
+  must be a real YAML boolean, and the deliberate asymmetry with the Compose
+  twin (which refuses `True` / `yes` / `on` / `1` outright) is the same one
+  T-350 documented for the migration hatch. MEASURED on this chart, both
+  channels:
+
+    values FILE:  yes / on / True / TRUE / true  -> all parsed to boolean true,
+                  all fire the hatch. Refusing them would mean rejecting a
+                  value the operator correctly wrote as a YAML boolean.
+    --set:        `--set ...=yes` arrives as the STRING "yes" and is refused by
+                  the kindIs check below, as is `--set-string ...=true`.
+
+  Compose has no parser to consult at all, so its twin is strict-string.
+
+  When the hatch IS set, templates/witness-egress-acknowledgement.yaml renders a
+  ConfigMap stating what is being sent and to whom — the render-time equivalent
+  of the Compose guard's log banner, visible in `helm template`, in a GitOps
+  diff, and in `kubectl get configmap`.
+
+  NAME-BASED, like the Compose twin: no DNS lookup, no ownership lookup. A bare
+  IP or a customer CNAME that happens to point at Lucairn infrastructure is not
+  caught, and this is stated in docs/WITNESS_CENTRAL_RUNBOOK.md rather than
+  implied away. It is not a privilege boundary either — anyone who can pass
+  `--set` can pass the hatch. What it buys is that the egress cannot happen by
+  accident and that the deliberate choice is named and recorded.
+*/ -}}
+{{- define "validators.witnessCentralLucairnEgress" -}}
+{{- $we := (default dict .Values.witnessEgress) -}}
+{{- $unsafe := $we.unsafeAcknowledgeLucairnOperatedWitness | default false -}}
+{{- if not (kindIs "bool" $unsafe) -}}
+{{- fail (printf "witnessEgress.unsafeAcknowledgeLucairnOperatedWitness must be a YAML boolean, but a %s was given (%v). Use --set witnessEgress.unsafeAcknowledgeLucairnOperatedWitness=true (Helm parses that as a boolean) — a quoted string is truthy in some template contexts and falsy in others, which is exactly the ambiguity an egress escape hatch must not have." (kindOf $unsafe) $unsafe) -}}
+{{- end -}}
+{{- if not $unsafe -}}
+{{- $offenders := list -}}
+{{- range $sub := (list "audit" "id-bridge" "sandbox-a" "sandbox-b" "gateway") -}}
+{{- $vals := (default dict (index $.Values $sub)) -}}
+{{- $addr := toString (default "" $vals.veilWitnessAddr) -}}
+{{- if $addr -}}
+{{- $host := include "validators.witnessHost" $addr -}}
+{{- if not $host -}}
+{{- fail (printf "%s.veilWitnessAddr=%q is set but no hostname can be extracted from it. Refusing to render rather than guessing which witness the claims would go to: a value this guard cannot parse is a value it cannot check, and rendering it would report a check that never happened. Expected host:port, e.g. veil-witness.dsa-witness.svc.cluster.local:50057 (board T-682)." $sub $addr) -}}
+{{- end -}}
+{{- range $d := (list "lucairn.eu" "lucairn.com" "dsaveil.io") -}}
+{{- if or (eq $host $d) (hasSuffix (printf ".%s" $d) $host) -}}
+{{- $offenders = append $offenders (printf "%s.veilWitnessAddr=%s (host %s)" $sub $addr $host) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if $offenders -}}
+{{- fail (printf "REFUSING TO RENDER — a claim emitter is pointed at a LUCAIRN-OPERATED witness: %s.\n\nClaims submitted to that witness include the sanitizer's PII_SANITIZED claim, which carries redaction_manifest_body — the placeholder->original map. Sending it to a witness Lucairn operates means every value this deployment redacts leaves your environment in resolvable form, which is the opposite of what the witness-central topology exists to do. docs/WITNESS_CENTRAL_RUNBOOK.md § 1 requires a witness \"on a server the consultant does not administer\" — one YOU or YOUR CUSTOMER run.\n\nFIX: point <subchart>.veilWitnessAddr at your own witness host.\n\nIf you are Lucairn staff running an internal pilot on Lucairn infrastructure, and a data-processing agreement covers the manifest bodies, set witnessEgress.unsafeAcknowledgeLucairnOperatedWitness=true. It is spelled that way on purpose, and it renders a ConfigMap that says so. Blocked domains (exact or subdomain): lucairn.eu, lucairn.com, dsaveil.io. (board T-682)" (join "; " $offenders)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
+  validators.witnessHost
+
+  Extracts a comparable, lowercased hostname from a gRPC dial target. Takes the
+  raw address STRING as its context (not a dict) and emits the host, or the
+  empty string when none can be extracted.
+
+  Handles a scheme prefix including gRPC's three-slash form (`dns:///host:port`,
+  measured: the naive `://` strip leaves a leading slash and a path-strip then
+  reduces the whole value to ""), a trailing path, a trailing :port, a trailing
+  root dot, and mixed case. Emits "" for anything that does not look like a
+  host, so the caller can fail closed rather than compare against garbage.
+*/ -}}
+{{- define "validators.witnessHost" -}}
+{{- $h := lower (toString .) -}}
+{{- $h = regexReplaceAll "^[a-z0-9+.-]*://+" $h "" -}}
+{{- $h = trimPrefix "/" $h -}}
+{{- $h = first (splitList "/" $h) | toString -}}
+{{- $h = first (splitList "?" $h) | toString -}}
+{{- $h = regexReplaceAll "^\\[([0-9a-f:]+)\\](:[0-9]+)?$" $h "${1}" -}}
+{{- $h = regexReplaceAll ":[0-9]+$" $h "" -}}
+{{- $h = trimSuffix "." $h -}}
+{{- if regexMatch "^[a-z0-9]([a-z0-9._:-]*[a-z0-9])?$" $h -}}
+{{- $h -}}
+{{- end -}}
+{{- end -}}
