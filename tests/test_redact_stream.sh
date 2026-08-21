@@ -9,6 +9,14 @@ set -euo pipefail
 # appear free-form in compose logs, AND sk-/lcr- keys that sit on a
 # NON-secret-named "KEY=value" line (the pre-hardening bug: the
 # `index($0,"=")>0` early-return bypassed the inline key scrub).
+#
+# T-675: it must ALSO scrub credentials embedded in URLs. `docker compose
+# config` resolves the customer's Postgres DSNs into the bundle
+# (redacted/compose-resolved.yml), e.g.
+#   DATABASE_URL: postgres://veil:<password>@postgres-veil:5432/veil?sslmode=disable
+# Pre-fix this printed VERBATIM: the line contains "=" (from `sslmode=`), so
+# the structural KEY=value branch derived a "key" ending in `sslmode`, which
+# matched no secret-key name, and no inline rule looked at URL userinfo.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -36,6 +44,14 @@ support contact admin@customer.example reached out
 escalation phone +14155552671 on call
 plain_value=keep-this-visible
 GATEWAY_BASE_URL=https://lucairn.customer.example
+      DATABASE_URL: postgres://veil:PgVeilPassLEAK001@postgres-veil:5432/veil?sslmode=disable
+      AUDIT_DATABASE_URL: postgres://audit_app:PgAuditPassLEAK002@postgres-audit:5432/audit?sslmode=disable
+      BRIDGE_DATABASE_URL: postgres://dsa:PgBridgePassLEAK003@postgres-bridge:5432/bridge?sslmode=disable
+      SANDBOX_A_DATABASE_URL: postgres://dsa:PgSandboxAPassLEAK004@postgres-sandbox-a:5432/sandbox_a?sslmode=disable
+LUCAIRN_DASHBOARD_AUDIT_DB_URL=postgres://lucairn_dashboard_ro:PgDashPassLEAK005@postgres-veil:5432/veil?sslmode=require
+SANITIZER_STREAM_STATE_REDIS_URL=redis://default:RedisPassLEAK006@redis-sanitizer-cache:6379/0
+MODEL_RUNTIME_URL=http://model-runtime:8000/v1
+docs link https://docs.lucairn.eu/install#step-3 stays readable
 LOG
 
 OUT="$TMPDIR/out.log"
@@ -62,6 +78,13 @@ declare -a LEAKS=(
   "eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjoiYm9iIn0.abcSIGNATURExyz"
   "admin@customer.example"
   "+14155552671"
+  # T-675: Postgres/Redis DSN passwords resolved into the bundle.
+  "PgVeilPassLEAK001"
+  "PgAuditPassLEAK002"
+  "PgBridgePassLEAK003"
+  "PgSandboxAPassLEAK004"
+  "PgDashPassLEAK005"
+  "RedisPassLEAK006"
 )
 for leak in "${LEAKS[@]}"; do
   if grep -Fq -- "$leak" "$OUT"; then
@@ -77,5 +100,25 @@ grep -q "Authorization: Bearer <redacted>" "$OUT" || fail "Bearer token not reda
 grep -q "raw jwt: <redacted>" "$OUT" || fail "bare JWT not redacted"
 grep -q "support contact <redacted> reached out" "$OUT" || fail "email not redacted"
 grep -q "escalation phone <redacted> on call" "$OUT" || fail "E.164 phone not redacted"
+
+# 4. T-675 — URL userinfo: the PASSWORD goes, the host/port/db stay so the
+#    bundle is still diagnosable. Covers the four DSN sites `compose config`
+#    resolves into the bundle plus the dashboard/redis URLs.
+grep -q "postgres://veil:<redacted>@postgres-veil:5432" "$OUT" || fail "DATABASE_URL DSN password not redacted"
+grep -q "postgres://audit_app:<redacted>@postgres-audit:5432" "$OUT" || fail "AUDIT_DATABASE_URL DSN password not redacted"
+grep -q "postgres://dsa:<redacted>@postgres-bridge:5432" "$OUT" || fail "BRIDGE_DATABASE_URL DSN password not redacted"
+grep -q "postgres://dsa:<redacted>@postgres-sandbox-a:5432" "$OUT" || fail "SANDBOX_A_DATABASE_URL DSN password not redacted"
+grep -q "redis://default:<redacted>@redis-sanitizer-cache:6379" "$OUT" || fail "redis DSN password not redacted"
+# Defense-in-depth: a *DB_URL-named KEY=value line is redacted whole by the
+# secret-key-name matcher, not only by the inline URL rule.
+grep -q "^LUCAIRN_DASHBOARD_AUDIT_DB_URL=<redacted>$" "$OUT" || fail "DB_URL-named key not redacted by name matcher"
+# The DSN lines arrive as INDENTED `compose config` YAML; the secret-key branch
+# must re-emit that indent or redacted/compose-resolved.yml stops parsing.
+grep -q "^      DATABASE_URL: " "$OUT" || fail "YAML indent lost on a redacted DSN line (compose-resolved.yml would not parse)"
+
+# 5. T-675 negative cases — URLs WITHOUT userinfo must survive verbatim, or the
+#    bundle stops being diagnosable (a host:port is not a credential).
+grep -q "^MODEL_RUNTIME_URL=http://model-runtime:8000/v1$" "$OUT" || fail "credential-free host:port URL was redacted"
+grep -q "^docs link https://docs.lucairn.eu/install#step-3 stays readable$" "$OUT" || fail "plain https URL was redacted"
 
 echo "redact_stream tests: ok"
