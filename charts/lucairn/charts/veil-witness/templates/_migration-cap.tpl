@@ -80,6 +80,29 @@
   having applied nothing. The same is true of a dirty `schema_migrations`
   ledger and of an unparseable `migrate version` output.
 
+  ⚑ "Unset" means unset AS THE TEMPLATE SEES IT, after Helm has coalesced the
+  operator's values with this sub-chart's own values.yaml — and that coalescing
+  is NOT the same across Helm majors (board T-691, measured on this chart with
+  helm v3.16.4 vs v4.1.3):
+
+      helm template lucairn charts/lucairn \
+        --set veil-witness.migrations.targetVersion=null
+
+        helm 3.16.4 -> .Values.migrations.targetVersion is float64 10
+        helm 4.1.3  -> .Values.migrations.targetVersion is nil (key deleted)
+
+  Helm 3's parent->sub-chart coalescing reads a nil in the PARENT's values as
+  "absent" and restores this sub-chart's own default; Helm 4 propagates the null
+  and removes the key. Both outcomes are SAFE — helm 3 hands the validator the
+  reviewed ceiling and renders a capped `goto 10`, never `up` — but only Helm 4
+  reaches the "is not set" refusal by that route. There is no template-visible
+  signal telling these two apart, so the validator cannot and does not try to.
+  The refusal is reachable under BOTH majors on the paths where a null actually
+  survives to the template: a direct sub-chart render, or a `values.yaml` that
+  genuinely omits the key. `tests/test_migration_version_cap.sh` § 2 pins both
+  halves — the refusal on the direct-child path, and the never-degrades-to-`up`
+  property on the umbrella path.
+
   ── NEVER MIGRATES DOWN ────────────────────────────────────────────────────
 
   `migrate goto <V>` migrates in EITHER direction — it will run `.down.sql`
