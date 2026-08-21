@@ -196,8 +196,13 @@ compose-demo-sanitizer-1              Up (healthy)
 compose-demo-veil-witness-1           Up (healthy)
 ```
 
-(The one-shot `prep-migrations` + `migrate-*` jobs run once and exit, so they
-do not appear in steady-state `ps`. `ollama-identity` is the always-on L3
+(The one-shot `prep-migrations`, `migrate-*` and `witness-egress-guard` jobs run
+once and exit, so they do not appear in steady-state `ps`. `witness-egress-guard`
+is the claim-egress preflight: on a stock install it prints one `OK` line and
+exits 0 in about a second — check it with
+`docker compose logs witness-egress-guard` rather than expecting it in `ps`, and
+see docs/WITNESS_CENTRAL_RUNBOOK.md § "The Lucairn-operated-witness guard" if it
+refused. `ollama-identity` is the always-on L3
 PII-shield runtime: it runs but holds no model until you stage one — with
 `LUCAIRN_L3_AVAILABILITY_POSTURE=degrade` (the kit default) the stack runs
 L1+L2 and does not block on it.)

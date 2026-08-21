@@ -11,24 +11,52 @@
 
   Nothing consumes it. It is a record, deliberately — a flag that leaves no
   trace is a flag nobody can audit afterwards.
+
+  THE ADDRESS SET IS NOT RESTATED HERE. It comes from
+  validators.witnessTargets, the same template the refusal reads, because this
+  record and that check listing different sets is a defect neither side would
+  look wrong committing: the ConfigMap would understate what is being sent
+  while the validator understated what it refuses.
+
+  WHEN AN ADDRESS CANNOT BE PARSED. The hatch skips the validator, so an
+  unparseable address that would have exited 90 on a closed hatch reaches this
+  template instead. The previous revision simply appended no offender for it,
+  so the audit record came out SHORT: a value nobody could check was recorded
+  as if it were fine. It is now listed verbatim under its own heading, marked
+  as not-checked rather than omitted.
+
+  AND THE RECORD DOES NOT OVERCLAIM EITHER. The `eu.lucairn.witness.egress`
+  label reads "lucairn-operated" only when an address actually resolved BY NAME
+  to a Lucairn domain; when the only entries are unparseable ones it reads
+  "unverified", and the closing paragraph says the promise is NOT VERIFIED
+  rather than NOT TRUE. An audit record that asserts an egress nobody observed
+  is the same overclaim this guard exists to prevent, pointed the other way.
 */ -}}
 {{- $we := (default dict .Values.witnessEgress) -}}
 {{- $unsafe := $we.unsafeAcknowledgeLucairnOperatedWitness | default false -}}
 {{- if and (kindIs "bool" $unsafe) $unsafe -}}
 {{- $offenders := list -}}
-{{- range $sub := (list "audit" "id-bridge" "sandbox-a" "sandbox-b" "gateway") -}}
-{{- $vals := (default dict (index $.Values $sub)) -}}
-{{- $addr := toString (default "" $vals.veilWitnessAddr) -}}
-{{- if $addr -}}
-{{- $host := include "validators.witnessHost" $addr -}}
+{{- $unparseable := list -}}
+{{- range $line := (splitList "\n" (include "validators.witnessTargets" $)) -}}
+{{- if $line -}}
+{{- $f := splitn " " 2 $line -}}
+{{- $label := $f._0 -}}
+{{- $addr := $f._1 -}}
+{{- $hosts := splitList " " (include "validators.witnessHosts" $addr) -}}
+{{- if or (eq (join "" $hosts) "") (has "!unparseable" $hosts) -}}
+{{- $unparseable = append $unparseable (printf "%s -> %s" $label $addr) -}}
+{{- else -}}
+{{- range $host := $hosts -}}
 {{- range $d := (list "lucairn.eu" "lucairn.com" "dsaveil.io") -}}
 {{- if or (eq $host $d) (hasSuffix (printf ".%s" $d) $host) -}}
-{{- $offenders = append $offenders (printf "%s -> %s" $sub $addr) -}}
+{{- $offenders = append $offenders (printf "%s -> %s" $label $addr) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- if $offenders }}
+{{- end -}}
+{{- end -}}
+{{- if or $offenders $unparseable }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -36,27 +64,45 @@ metadata:
   labels:
     app.kubernetes.io/name: lucairn
     app.kubernetes.io/managed-by: {{ .Release.Service }}
-    eu.lucairn.witness.egress: "lucairn-operated"
+    eu.lucairn.witness.egress: {{ if $offenders }}"lucairn-operated"{{ else }}"unverified"{{ end }}
 data:
   WARNING: |
     UNSAFE OVERRIDE ACTIVE —
     witnessEgress.unsafeAcknowledgeLucairnOperatedWitness=true
+{{- if $offenders }}
 
     This deployment ships its evidence claims to a LUCAIRN-OPERATED witness:
 {{- range $o := $offenders }}
       {{ $o }}
 {{- end }}
+{{- end }}
+{{- if $unparseable }}
 
-    WHAT THAT SENDS. The sanitizer's PII_SANITIZED claim carries
+    NOT CHECKED — these witness addresses are set but no hostname could be
+    extracted from them, so this guard could not tell whose host they name.
+    They are recorded verbatim rather than omitted; with the hatch closed each
+    one would have refused the render outright:
+{{- range $u := $unparseable }}
+      {{ $u }}
+{{- end }}
+{{- end }}
+
+    WHAT THIS FLAG PERMITS. The sanitizer's PII_SANITIZED claim carries
     redaction_manifest_body — the placeholder->original map. Everything this
     deployment redacts can be resolved back to the real value by whoever holds
-    those claims. The certificate port serves the same payload back via
+    those claims. The certificate ports serve the same payload back via
     GetCertificate / ExportCertificates.
-
+{{ if $offenders }}
     For as long as this value is set, the sentence "no raw identity data leaves
     your environment" is NOT TRUE of this install, and Lucairn is a processor of
     every identity value it redacts. If a data-processing agreement covering
     that is not in place, unset it.
+{{- else }}
+    For as long as this value is set, nothing checks where those claims go, so
+    the sentence "no raw identity data leaves your environment" is NOT VERIFIED
+    for this install. Unset the flag and fix the unparseable address above to
+    get the check back.
+{{- end }}
 
     See docs/WITNESS_CENTRAL_RUNBOOK.md § "The Lucairn-operated-witness guard"
     (board T-682).
