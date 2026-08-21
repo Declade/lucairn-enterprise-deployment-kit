@@ -33,7 +33,9 @@
 #     exact forbidden class (000011/000012). Deleting the ceiling check in
 #     lucairn.migrationCap.validate turns this red.
 #   - helm-unset/zero/non-numeric-refused: fail-CLOSED. If any of them started
-#     defaulting to `up`, this goes red.
+#     defaulting to `up`, this goes red. The UNSET case runs against a direct
+#     sub-chart render, not the umbrella, because `--set <sub>.k=null` does not
+#     mean the same thing on both Helm majors — see the T-691 block in § 2.
 #   - helm-escape-hatch-still-works: the ceiling must not be a blanket ban — an
 #     operator who explicitly acknowledges the retention consequences can still
 #     get the old behaviour. If the guard over-fires, this goes red.
@@ -202,8 +204,106 @@ done
 expect_render_fail "helm-ceiling-refuses-forbidden-000012 (veil-witness targetVersion=12)" \
   "000012" --set "veil-witness.migrations.targetVersion=12"
 
-expect_render_fail "helm-unset-target-refused" \
-  "is not set" --set "veil-witness.migrations.targetVersion=null"
+# ── T-691: `--set <subchart>.key=null` is NOT version-agnostic ─────────────
+# This case used to be a single umbrella render with
+# `--set veil-witness.migrations.targetVersion=null`. It passed under the
+# maintainer's helm v4.1.3 and went RED under the v3.16.4 this repo's CI pins
+# (1 of 109) — "render SUCCEEDED; it must refuse".
+#
+# Measured on this chart, same chart, same flag:
+#
+#   helm 3.16.4 -> .Values.migrations.targetVersion is float64 10, hasKey true
+#   helm 4.1.3  -> .Values.migrations.targetVersion is nil,        hasKey false
+#
+# Helm 3's parent->sub-chart value coalescing treats a nil in the PARENT's
+# values as "absent" and restores the sub-chart's own values.yaml default;
+# Helm 4 propagates the null and deletes the key. (Same divergence via `-f` —
+# it is the coalescing, not `--set` parsing.) So under helm 3 the validator is
+# handed the reviewed ceiling and correctly renders: there is no unset value
+# for it to refuse, and no template-visible signal that the operator wrote
+# `null`. The GUARD is identical under both majors; the old case simply could
+# not create the state it claimed to test on the pinned CI helm.
+#
+# The guard is therefore NOT relaxed here. Instead the refusal is pinned on the
+# path where a null means the same thing under both majors — a DIRECT sub-chart
+# render, which is exactly why this helper ships per-subchart (see section 6)
+# and which a customer packaging one sub-chart uses — and the umbrella path is
+# pinned separately as the property that is true under BOTH majors: a nulled
+# target never degrades to an open-ended `up`.
+
+VW_CHILD_VALUES="$TMP/veil-witness-child.yaml"
+cat > "$VW_CHILD_VALUES" <<YAML
+ephemeral: "true"
+secrets:
+  values:
+    postgresPassword: "${TEST_SECRET_VALUE}"
+    veilAppPassword: "${TEST_SECRET_VALUE}"
+    signingKey: "${TEST_SIGNING_KEY}"
+global:
+  imageRegistry: ""
+  imageTag: "0.5.4"
+  imagePullSecrets: []
+  postgresqlSslmode: disable
+  dsaServiceToken: ""
+  dsaEnv: development
+  nodeIsolation: false
+  skipPullSecretGuard: true
+  mtls:
+    enabled: false
+YAML
+
+render_vw_child() {
+  helm template veil-witness "$CHART/charts/veil-witness" -f "$VW_CHILD_VALUES" "$@"
+}
+
+# Sanity anchor: without the null this fixture must render CLEANLY at the
+# reviewed ceiling. Without it, a refusal below could be for any unrelated
+# reason (a missing secret, a guard elsewhere) and the case would be vacuous.
+if render_vw_child > "$TMP/child-base.yaml" 2>"$TMP/child-base.err"; then
+  check_eq "helm-child-fixture-renders-at-ceiling" "$(ceiling_of veil-witness)" \
+    "$(migrate_command "$TMP/child-base.yaml" "veil-witness-migrate" \
+       | sed -n "s/^MIGRATE_TARGET_VERSION='\([0-9]*\)'$/\1/p")"
+else
+  fail "helm-child-fixture-renders-at-ceiling — the direct-child fixture does not render"
+  sed -n '1,4p' "$TMP/child-base.err"
+fi
+
+# The refusal itself. Positive control: deleting the `kindIs "invalid"` branch
+# from lucairn.migrationCap.validate does not make this green — the render still
+# refuses, but on the regex branch, whose message says "no leading zeros" and
+# not "is not set", so the grep below goes red. Deleting BOTH branches renders
+# and goes red on the "render SUCCEEDED" arm.
+if render_vw_child --set "migrations.targetVersion=null" \
+     > "$TMP/child-null.yaml" 2>"$TMP/child-null.err"; then
+  fail "helm-unset-target-refused (direct child render) — render SUCCEEDED; it must refuse"
+elif grep -qF "is not set" "$TMP/child-null.err"; then
+  pass "helm-unset-target-refused (direct child render)"
+else
+  fail "helm-unset-target-refused (direct child render) — refused, but the message did not mention 'is not set'"
+  sed -n '1,4p' "$TMP/child-null.err"
+fi
+
+# The umbrella path, stated as the invariant that holds under both majors.
+# Helm >=4 refuses outright. Helm 3 restores the sub-chart's reviewed default
+# and renders a capped `goto 10`. Anything else — a bare `up`, or a target that
+# is not the reviewed ceiling — is the T-350 defect and goes red on either.
+if render --set "veil-witness.migrations.targetVersion=null" \
+     > "$TMP/umb-null.yaml" 2>"$TMP/umb-null.err"; then
+  body="$(migrate_command "$TMP/umb-null.yaml" "veil-witness-migrate")"
+  if printf '%s' "$body" | grep -qE 'migrate .*-database=("\$DATABASE_URL"|\$DATABASE_URL) up([[:space:]]|$)'; then
+    fail "helm-umbrella-null-target-never-degrades-to-up — rendered an open-ended \`migrate up\`"
+  else
+    check_eq "helm-umbrella-null-target-never-degrades-to-up (restored the reviewed ceiling)" \
+      "$(ceiling_of veil-witness)" \
+      "$(printf '%s' "$body" | sed -n "s/^MIGRATE_TARGET_VERSION='\([0-9]*\)'$/\1/p")"
+  fi
+elif grep -qF "is not set" "$TMP/umb-null.err"; then
+  pass "helm-umbrella-null-target-never-degrades-to-up (refused outright)"
+else
+  fail "helm-umbrella-null-target-never-degrades-to-up — refused, but not with the unset message"
+  sed -n '1,4p' "$TMP/umb-null.err"
+fi
+
 expect_render_fail "helm-zero-target-refused" \
   "must be a positive integer" --set "veil-witness.migrations.targetVersion=0"
 expect_render_fail "helm-non-numeric-target-refused" \
