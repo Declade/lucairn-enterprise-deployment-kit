@@ -95,6 +95,112 @@ and the LLM still receives only sanitized text.
 
 ---
 
+## 2b. The Lucairn-operated-witness guard (board T-682)
+
+§1 says the central witness must be "their own instance on a server the
+consultant does not administer". Until 2026-08-21 that was the *only* thing
+saying it — a sentence in this file. A 2026-08-21 review put it plainly: the
+overlay was **prose-guarded, not code-guarded**. Nothing stopped an operator
+from setting
+
+```
+LUCAIRN_CENTRAL_WITNESS_ADDR=witness.lucairn.eu:50057
+```
+
+and getting a working install that streamed `redaction_manifest_body` — the
+placeholder→original map, the most sensitive artifact the product produces — to
+Lucairn. No error, no warning, no line in any log.
+
+It is now enforced in code, on both deployment surfaces.
+
+### Compose
+
+`docker-compose.customer.yml` defines a run-once preflight service,
+`witness-egress-guard` (script: `scripts/witness-egress-guard.sh`). Every claim
+emitter — `audit`, `id-bridge`, `sanitizer`, `gateway`, and `sandbox-b` from
+`docker-compose.self-hosted.yml` — declares
+
+```yaml
+depends_on:
+  witness-egress-guard:
+    condition: service_completed_successfully
+```
+
+so a non-zero exit means `docker compose up` fails and **no emitter starts**.
+
+The guard reads `LUCAIRN_CENTRAL_WITNESS_ADDR` and
+`LUCAIRN_CENTRAL_WITNESS_CERT_ADDR` — the certificate port is included because
+`GetCertificate` / `ExportCertificates` serve the same manifest bodies back out
+— extracts the hostname from each, and refuses when it is, or is a subdomain of,
+`lucairn.eu`, `lucairn.com` or `dsaveil.io`.
+
+It lives in the BASE compose file rather than in this overlay for a mechanical
+reason: `LUCAIRN_CENTRAL_WITNESS_ADDR` is consumed in two different overlays
+(this one, and `docker-compose.self-hosted.yml` for `sandbox-b`), Compose
+refuses a `depends_on` naming a service the merged project does not define, and
+`docker-compose.self-hosted.yml` is routinely applied *without* this overlay. A
+guard in either overlay could therefore gate only half the emitters.
+
+On a stock install both variables are unset, the guard prints one OK line and
+exits.
+
+Exit codes: `90` unparseable address · `95` malformed hatch value · `96`
+refusal.
+
+### Helm
+
+The umbrella chart carries the twin as a render-time validator
+(`validators.witnessCentralLucairnEgress`). It scans
+`audit`/`id-bridge`/`sandbox-a`/`sandbox-b`/`gateway`.`veilWitnessAddr` and
+fails the render on the same domain set. `helm template` and `helm install` both
+stop; there is no way to get the manifests out.
+
+### The escape hatch
+
+For Lucairn staff running an internal pilot on Lucairn infrastructure, under a
+data-processing agreement that covers manifest bodies:
+
+| Surface | Value |
+|---|---|
+| Compose | `LUCAIRN_WITNESS_UNSAFE_ACKNOWLEDGE_LUCAIRN_OPERATED_WITNESS=true` |
+| Helm | `witnessEgress.unsafeAcknowledgeLucairnOperatedWitness=true` |
+
+It is spelled that way on purpose, and it is **recorded loudly** rather than
+silently honoured: Compose prints a banner naming the blocked host and what is
+being sent into the container log on every start; Helm renders a ConfigMap
+`lucairn-unsafe-lucairn-operated-witness` carrying the same text, so the state
+is visible in `helm template`, in a GitOps diff, and in `kubectl get configmap`.
+
+**Value grammar differs between the two surfaces, deliberately.** On Compose it
+must be exactly `true` or exactly `false`, lowercase — `True`, `TRUE`, `yes`,
+`on` and `1` are refused, because a Compose env var is a plain string and a
+guessed meaning would leave you believing the hatch is in a state it is not. On
+Helm the value must be a real YAML boolean; measured on this chart, a values
+FILE parses `yes` / `on` / `True` / `TRUE` / `true` all into boolean true (so
+all five open it), while `--set …=yes` and `--set-string …=true` arrive as
+strings and are refused. Same asymmetry, and the same reasoning, as the T-350
+migration hatch.
+
+### What this does NOT buy you
+
+Stated plainly, because a guard that is trusted beyond its reach is worse than
+no guard:
+
+- **It is NAME-based.** No DNS lookup and no ownership lookup are performed — a
+  preflight must work on an air-gapped install, and a resolver answer is not
+  evidence of who operates a host anyway. A **bare IP address** pointing at
+  Lucairn infrastructure is **not caught** (the guard prints a NOTICE saying so
+  rather than a clean OK), and neither is a CNAME of yours that resolves there.
+- **It is not a privilege boundary.** Anyone who can edit the install's compose
+  files, pass `--set`, or run `docker compose up --no-deps sanitizer` bypasses
+  it. What it buys is that the egress cannot happen by *accident*, that every
+  route to it needs a deliberate, differently-named, screaming acknowledgement,
+  and that the acknowledgement is written somewhere a reviewer can find later.
+
+Suite: `tests/test_witness_central_egress_guard.sh`.
+
+---
+
 ## 3. Phase-1 CA ceremony (manual)
 
 Phase 1 uses one CA, created once, kept offline, issuing:

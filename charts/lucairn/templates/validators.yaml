@@ -27,3 +27,4 @@
 {{- include "validators.l3AirGapWithoutFailClosed" $ -}}
 {{- include "validators.namespaceNetpolAlignment" $ -}}
 {{- include "validators.infrastructureDisabledWithPIIPlane" $ -}}
+{{- include "validators.witnessCentralLucairnEgress" $ -}}

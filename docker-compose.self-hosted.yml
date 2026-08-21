@@ -241,6 +241,16 @@ services:
         condition: service_healthy
       audit:
         condition: service_healthy
+      # T-682 claim-egress preflight. sandbox-b is the ONE emitter whose
+      # LCR_WITNESS_ADDR is repointed from THIS file
+      # (`${LUCAIRN_CENTRAL_WITNESS_ADDR:-veil-witness:50057}` below) rather
+      # than from the witness-central overlay, so without this edge it would be
+      # the one emitter that could still dial a Lucairn-operated witness. The
+      # guard service is defined in docker-compose.customer.yml — the common
+      # base both this file and the overlay are applied on top of — which is
+      # what makes this reference resolvable in every shipped topology.
+      witness-egress-guard:
+        condition: service_completed_successfully
       # ── OPTIONAL DEPENDENCY, DELIBERATELY ─────────────────────────────────
       # PRD prd-2026-07-28-split-evidence-plane.md (board #206), 2026-07-28
       # review BLOCKER 1.

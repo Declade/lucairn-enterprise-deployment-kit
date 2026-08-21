@@ -342,6 +342,62 @@ services:
       MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_VEIL_WITNESS:-false}"
     restart: "no"
 
+  # ── Claim-egress preflight ──────────────────────────────────────
+  #
+  # T-682 / Fable review 2026-08-21 § 2c. Refuses to let the claim emitters
+  # start when the central witness they would ship claims to is a
+  # LUCAIRN-OPERATED host. The sanitizer's PII_SANITIZED claim carries
+  # redaction_manifest_body — the placeholder→original map — so that
+  # configuration would send every redacted value out of the customer's
+  # environment, which is precisely what invariant 5 ("no raw identity data
+  # leaves your environment") forbids. Until this service existed, the only
+  # thing stopping it was a sentence in docs/WITNESS_CENTRAL_RUNBOOK.md.
+  #
+  # ⚠️ WHY IT LIVES IN THE BASE FILE AND NOT IN THE OVERLAY THAT NEEDS IT.
+  # LUCAIRN_CENTRAL_WITNESS_ADDR is consumed in two places, and neither of them
+  # is here:
+  #
+  #   contrib/witness-central/docker-compose.witness-central.yml  audit,
+  #                                    id-bridge, sanitizer, gateway
+  #   docker-compose.self-hosted.yml   sandbox-b
+  #
+  # Both are OVERLAYS on this file, and Compose refuses a `depends_on` naming a
+  # service the merged project does not define. A guard defined in the
+  # witness-central overlay could therefore never be depended on by sandbox-b
+  # (self-hosted is routinely applied WITHOUT the overlay), and a guard defined
+  # in self-hosted could never be depended on by the four emitters here. One
+  # definition in the common base is the only placement under which every
+  # consumer of the variable is actually gated.
+  #
+  # On a stock install both variables are unset, the guard prints one OK line
+  # and exits 0 in about a second. It is the same alpine:3.20 image
+  # prep-migrations already requires, so it adds nothing to an air-gapped
+  # bundle's image set, and `bin/lucairn bundle create` stages its script
+  # automatically (the staging list is DERIVED from the `./scripts/*` mounts in
+  # this file — T-350 B1/B2).
+  #
+  # It is NOT a privilege boundary: anyone who can edit these files or run
+  # `docker compose up --no-deps sanitizer` bypasses it. What it buys is that
+  # the egress cannot happen by accident, and that the deliberate override is
+  # named LUCAIRN_WITNESS_UNSAFE_ACKNOWLEDGE_LUCAIRN_OPERATED_WITNESS and is
+  # printed into the container log on every start.
+  witness-egress-guard:
+    image: alpine:3.20
+    logging: *default-logging
+    command: ["/bin/sh", "/scripts/witness-egress-guard.sh"]
+    environment:
+      # Defaulted EMPTY rather than `:?`-required: on the stock single-host
+      # topology there is no central witness and an unset value is the correct,
+      # passing state.
+      LUCAIRN_CENTRAL_WITNESS_ADDR: "${LUCAIRN_CENTRAL_WITNESS_ADDR:-}"
+      LUCAIRN_CENTRAL_WITNESS_CERT_ADDR: "${LUCAIRN_CENTRAL_WITNESS_CERT_ADDR:-}"
+      LUCAIRN_WITNESS_UNSAFE_ACKNOWLEDGE_LUCAIRN_OPERATED_WITNESS: "${LUCAIRN_WITNESS_UNSAFE_ACKNOWLEDGE_LUCAIRN_OPERATED_WITNESS:-false}"
+    volumes:
+      - ./scripts/witness-egress-guard.sh:/scripts/witness-egress-guard.sh:ro
+    # No `networks:` — the guard performs no lookup and needs no reachability.
+    # It is a name check on configuration, not a probe of the remote host.
+    restart: "no"
+
   # ── Application Services ────────────────────────────────────────
 
   audit:
@@ -349,6 +405,9 @@ services:
     logging: *default-logging
     depends_on:
       migrate-audit:
+        condition: service_completed_successfully
+      # T-682: claims may not be shipped to a Lucairn-operated witness.
+      witness-egress-guard:
         condition: service_completed_successfully
     environment:
       <<: *dsa-prod-auth
@@ -405,6 +464,9 @@ services:
         condition: service_completed_successfully
       audit:
         condition: service_healthy
+      # T-682: claims may not be shipped to a Lucairn-operated witness.
+      witness-egress-guard:
+        condition: service_completed_successfully
     environment:
       <<: *dsa-prod-auth
       BRIDGE_DATABASE_URL: "postgres://dsa:${POSTGRES_BRIDGE_PASSWORD:?POSTGRES_BRIDGE_PASSWORD must be set (no weak default; see customer.env)}@postgres-bridge:5432/bridge?sslmode=${POSTGRES_SSLMODE:-disable}"
@@ -623,6 +685,10 @@ services:
       # circuit-open degrade rather than a half-loaded scan.
       sandbox-a:
         condition: service_healthy
+      # T-682: the sanitizer's PII_SANITIZED claim carries
+      # redaction_manifest_body. This is the emitter the guard exists for.
+      witness-egress-guard:
+        condition: service_completed_successfully
     environment:
       SANITIZER_CONFIG_PATH: "${SANITIZER_CONFIG_PATH:-/config/config.yaml}"
       SANITIZER_PORT: "8086"
@@ -864,6 +930,11 @@ services:
         condition: service_healthy
       id-bridge:
         condition: service_healthy
+      # T-682: the gateway emits claims AND retrieves certificates (which carry
+      # redaction_manifest_body) over LCR_WITNESS_CERT_ADDR, so both of its
+      # witness hops are covered by the guard.
+      witness-egress-guard:
+        condition: service_completed_successfully
     environment:
       # Stage 3 dual-name: canonical LCR_X first, legacy VEIL_X fallback so
       # pre-Stage-3 customer.env files keep working with this compose file.
