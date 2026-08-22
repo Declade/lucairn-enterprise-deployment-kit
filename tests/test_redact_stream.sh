@@ -220,4 +220,21 @@ else
   echo "compose-resolved.yml YAML-parse assertion: NOT RUN (no PyYAML) — structural assertion above still ran" >&2
 fi
 
+# --- KNOWN LEAK (T-675 successor slice) — NOT a pass criterion ---------------
+# URL-form DSN passwords containing whitespace or an unencoded "@", on a
+# NON-secret-named key, still leak: the userinfo regex ends the match at the
+# first space or "@". This is documented as NOT-COVERED (the redact_stream
+# header comment + docs/CLEAN_HOST_REHEARSAL.md) and deferred to the successor
+# DSN-shape matcher slice. It is surfaced here LOUD but is DELIBERATELY NOT
+# asserted either way: asserting the leak survives would green-assert bad
+# behaviour, and asserting it is gone would fail a defect we have chosen to
+# defer. The successor slice turns these two lines into RED-first fixtures.
+{
+  echo "KNOWN-LEAK (T-675 successor slice, excluded from pass criteria):"
+  printf '%s\n' \
+    'SANITIZER_STREAM_STATE_REDIS_URL=redis://default:Pw With Space@redis-sanitizer-cache:6379/0' \
+    'SANITIZER_STREAM_STATE_REDIS_URL=redis://default:PwHead@TailLeak@redis-sanitizer-cache:6379/0' \
+  | redact_stream | sed 's/^/  KNOWN-LEAK: /'
+} >&2
+
 echo "redact_stream tests: ok"

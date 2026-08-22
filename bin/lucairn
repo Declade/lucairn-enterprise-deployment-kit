@@ -767,18 +767,23 @@ is_secret_key() {
 
 # redact_stream — MEASURED COVERAGE (state it here so no caller over-promises):
 #
-#   COVERED: URL-form DSNs (scheme://user:password@host, including an empty
-#            user), secret-named env keys (KEY/TOKEN/SECRET/PASSWORD/PRIVATE/
-#            SIGNING/CERT/CREDENTIAL/API_KEY/LICENSE/DATABASE_URL/DB_URL/DSN,
-#            case-insensitive), named password fields, sk-/lcr- keys, Bearer
-#            tokens, JWTs, emails, E.164 numbers.
+#   COVERED: URL-form DSNs with percent-encoded (RFC 3986) credentials —
+#            scheme://user:password@host, including an empty user; secret-named
+#            env keys (KEY/TOKEN/SECRET/PASSWORD/PRIVATE/SIGNING/CERT/
+#            CREDENTIAL/API_KEY/LICENSE/DATABASE_URL/DB_URL/DSN,
+#            case-insensitive); named password fields; sk-/lcr- keys; Bearer
+#            tokens; JWTs; emails; E.164 numbers.
 #
-#   NOT COVERED (T-675, tracked): keyword-form connection strings —
-#            JDBC `...?user=x&password=y`, libpq `password=y host=z`, and
-#            .NET `Password=y;`. These carry the credential as a key/value pair
-#            inside a larger string with no userinfo `@` to anchor on, and no
-#            rule here models them. A bundle reviewer must still read the
-#            bundle before it leaves the customer boundary.
+#   NOT COVERED (T-675, tracked; a bundle reviewer must still read the bundle
+#   before it leaves the customer boundary):
+#     - keyword-form connection strings — JDBC `...?user=x&password=y`, libpq
+#       `password=y host=z`, and .NET `Password=y;`. These carry the credential
+#       as a key/value pair inside a larger string with no userinfo `@` to
+#       anchor on, and no rule here models them.
+#     - URL-form DSN passwords containing whitespace or an unencoded `@`, on a
+#       non-secret-named key: the whitespace ends the match early (whole
+#       password verbatim) and an extra `@` leaves the tail after the first one.
+#       Percent-encode them (%20, %40) or the reviewer must hand-redact.
 redact_stream() {
   # LC_ALL=C: the bundle captures docker logs, which can spill binary or
   # invalid-UTF-8 bytes. Under a UTF-8 locale some awks abort or silently
