@@ -765,32 +765,74 @@ is_secret_key() {
   esac
 }
 
-# redact_stream — MEASURED COVERAGE (state it here so no caller over-promises):
+# redact_stream — MEASURED COVERAGE (state it here so no caller over-promises).
+# "Measured" means: exercised as a fixture in tests/test_redact_stream.sh, or
+# executed through the differential probe corpus recorded on PR #131, on four
+# awk implementations (onetrue-awk 20200816, busybox awk, GNU awk 5.3.0, mawk
+# 1.3.4) with byte-identical output. Anything not on the COVERED list is either
+# on the NOT-COVERED list or was never measured — do not infer it.
 #
-#   COVERED: URL-form DSNs — scheme://user:password@host, including an empty
-#            user, an UNENCODED SPACE in the password, and an UNENCODED `@`
-#            inside the password (T-675 successor slice: the userinfo/host
-#            boundary is the LAST `@` before the next scheme on the same line
-#            or end of line, not the first); secret-named env keys (KEY/TOKEN/
-#            SECRET/PASSWORD/PRIVATE/SIGNING/CERT/CREDENTIAL/API_KEY/LICENSE/
-#            DATABASE_URL/DB_URL/DSN, case-insensitive); named password
-#            fields; sk-/lcr- keys; Bearer tokens; JWTs; emails; E.164
-#            numbers; keyword-form connection-string credentials — JDBC
-#            `?user=x&password=y`, libpq `password=y host=z`, and .NET
-#            `Password=y;` (T-675 successor slice: matched on the literal
-#            token `password` or `pwd`, case-insensitive, value bounded by
-#            `&`, `;`, a quote, whitespace, or end of line).
+#   COVERED:
+#     - URL-form DSNs, scheme://user:password@host, where the USERNAME carries
+#       no unencoded `@` (see NOT COVERED). The password may be empty, may hold
+#       an unencoded SPACE, an unencoded `@`, or even a `://`. The
+#       userinfo/host boundary is chosen in three tiers (see the function
+#       comment): the rightmost `@` followed by an authority-shaped remainder
+#       (host plus `:port` or a `/`|`?` path); else the last `@` inside the
+#       whitespace/quote-delimited token; else — only when nothing but
+#       non-whitespace precedes it — the first `@`, which is what the rule this
+#       slice replaced did.
+#     - secret-named env keys (KEY/TOKEN/SECRET/PASSWORD/PRIVATE/SIGNING/CERT/
+#       CREDENTIAL/API_KEY/LICENSE/DATABASE_URL/DB_URL/DSN, case-insensitive).
+#     - named password fields; sk-/lcr- keys; Bearer tokens; JWTs; emails;
+#       E.164 numbers.
+#     - keyword-form connection-string credentials — JDBC `?user=x&password=y`,
+#       libpq `password=y host=z`, .NET `Password=y;` — matched on the literal
+#       token `password` or `pwd` (case-insensitive; `pwd` only at a word
+#       boundary). The value may be double- or single-QUOTED, in which case it
+#       runs to its matching closing quote (an UNCLOSED quote falls back to the
+#       unquoted scan); otherwise it is bounded by `&`, `;`, a quote,
+#       whitespace, or end of line.
 #
-#   NOT COVERED (T-675, tracked; a bundle reviewer must still read the bundle
-#   before it leaves the customer boundary):
-#     - TWO unencoded-`@`-bearing DSNs on the SAME line with no scheme://
-#       marker between them (no quote, comma, or second "scheme://" to anchor
-#       the split): the last-`@` rule can misattribute the boundary and merge
-#       them. Not a shape `docker compose config` or lucairn's own logs
-#       produce — every carrier confirmed in this kit has zero or one DSN per
-#       line.
+#   NOT COVERED — a bundle reviewer must still read the bundle before it leaves
+#   the customer boundary. These LEAK:
+#     - a USERNAME containing an unencoded `@`. The Azure Database for
+#       PostgreSQL "user@server" form —
+#         postgres://veil@pgsrv:PASSWORD@pgsrv.postgres.database.azure.com/db
+#       — prints VERBATIM, password included: the username pattern stops at the
+#       first `@`, so nothing anchors the rule. This has been true of every
+#       version of this function, and it is NOT closed by the tier work above.
+#       Percent-encode the username (`veil%40pgsrv`, which IS covered) or
+#       hand-redact the line.
+#     - JSON-shaped credentials with no `=`, e.g. {"password":"secret"} or
+#       {"password": "secret"} in a structured log line, and the CLI flag form
+#       `--password secret` / `psql --password secret`. The keyword rule keys
+#       off `=`; neither shape has one.
 #     - a keyword-form password field spelled with a vendor abbreviation other
 #       than `password`/`pwd` (e.g. ODBC `PSWD=`) — untested, likely uncaught.
+#     - an UNQUOTED keyword-form value containing a space
+#       (`password=Has Space host=...`): redacted up to the first space, the
+#       remainder of the value survives. Quote it and it is covered.
+#     - a URL-form password containing whitespace when the host that follows
+#       has NEITHER a port NOR a path (`postgres://u:Pw With Space@dbhost`):
+#       no tier will reach across the space. With a port or a path it IS
+#       covered.
+#
+#   NOT COVERED, but FAILING SAFE (over-redaction / lost diagnostics, never a
+#   leak — listed so nobody reads a mangled bundle as a bug):
+#     - TWO `@`-bearing DSNs on the SAME line with no `scheme://` between them
+#       (`postgres://a:pw1@h1:5432/x and second dsn b:pw2@h2:5432/y`): the two
+#       merge into one redaction. BOTH secrets are removed; the FIRST host is
+#       lost. Not a shape `docker compose config` or the lucairn services emit —
+#       every carrier confirmed in this kit has zero or one DSN per line.
+#     - a bare shell `PWD=` in an `env` dump is redacted as if it were a
+#       credential field (`OLDPWD=` is not, since this slice added the word
+#       boundary). Same for `password = <word>` appearing in prose.
+#     - a URL followed, INSIDE THE SAME whitespace-delimited token, by an
+#       unrelated `@` — e.g. `["--url=http://localhost:8080","--user=a@b.example"]`
+#       — over-redacts from the port to that `@`. Pre-existing behaviour,
+#       unchanged by this slice; a SPACE before the address (the normal log and
+#       YAML-comment shape) is what makes it safe, and that case is a fixture.
 redact_stream() {
   # LC_ALL=C: the bundle captures docker logs, which can spill binary or
   # invalid-UTF-8 bytes. Under a UTF-8 locale some awks abort or silently
@@ -845,13 +887,42 @@ redact_stream() {
     # point, up to the true boundary, in cleartext.
     #
     # So this loop finds the "scheme://user:" prefix with match(), then walks
-    # the REMAINDER of the line by hand to find the LAST "@" before either the
-    # next "scheme://" on the same line or end of line — that "@" is the
-    # userinfo/host boundary. Bounding at the next "scheme://" (rather than
-    # searching the whole remainder) is what keeps two quoted DSNs on one line
-    # redacting independently instead of one match swallowing the other:
-    # nothing in the covered fixtures puts "://" inside a real password.
-    function scrub_url_credentials(line,   out, rest, m_start, m_len, hit, tail, window, search, lastat, scanpos) {
+    # the REMAINDER of the line by hand to pick the userinfo/host boundary "@".
+    # Bounding the search at the next "scheme://" (rather than searching the
+    # whole remainder) is what keeps two quoted DSNs on one line redacting
+    # independently instead of one match swallowing the other: nothing in the
+    # covered fixtures puts "://" inside a real password.
+    #
+    # THE BOUNDARY IS CHOSEN IN THREE TIERS, most specific first. A bare
+    # "last @ in the window" rule (the first cut of this slice) was WRONG in the
+    # over-redaction direction and destroyed real bundle content: on
+    #   GATEWAY_CORS: "http://localhost:3000"   # owner ops@lucairn.local
+    # it took the "@" of the trailing COMMENT address as the boundary and
+    # emitted `"http://localhost:<redacted>@lucairn.local`, i.e. it deleted the
+    # port, the closing quote and the comment marker — a YAML line that no
+    # longer parses. Same class on any log line that carries a URL and, later, an
+    # actor email, and on `sha256:ab@cd` digests. So:
+    #
+    #   TIER 1 (authoritative): the rightmost "@" whose REMAINDER is shaped like
+    #           a URL authority — host chars, then a ":port" or a "/"|"?" path.
+    #           This is what a DSN actually looks like, and neither a comment
+    #           address nor a digest satisfies it.
+    #   TIER 2 (conservative): no authority-shaped "@" in the window, so fall
+    #           back to the last "@" inside the WHITESPACE/QUOTE-DELIMITED TOKEN
+    #           that starts at the password. Keeps `postgres://u:pw@dbhost`
+    #           (host with neither port nor path) covered without ever reaching
+    #           across a space into prose.
+    #   TIER 3 (never-worse-than-before): still nothing, but the pre-slice rule
+    #           WOULD have matched here — i.e. the remainder up to its FIRST "@"
+    #           contains no whitespace. Redact to that first "@", exactly as the
+    #           shipped code did before this slice. Without this tier the
+    #           fall-through emitted the credential UNTOUCHED, which is strictly
+    #           worse than the code being replaced (carrier: a password holding
+    #           "://", e.g. `postgres://u:pw://x@host`). Tier 3 deliberately
+    #           scans the FULL remainder rather than the window, because that is
+    #           the scope the old regex used; the no-whitespace guard is what
+    #           keeps it from re-introducing the comment/log over-redaction.
+    function scrub_url_credentials(line,   out, rest, m_start, m_len, hit, tail, window, search, lastat, scanpos, cand, tokend, token, firstat, head) {
       out = ""
       rest = line
       while (match(rest, /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^:\/@"[:space:]]*:/)) {
@@ -866,20 +937,47 @@ redact_stream() {
           window = tail
         }
 
+        # TIER 1 — rightmost "@" followed by an authority-shaped remainder.
         lastat = 0
         scanpos = 0
         search = window
         while (match(search, /@/)) {
-          lastat = scanpos + RSTART
-          scanpos = lastat
+          cand = scanpos + RSTART
+          scanpos = cand
           search = substr(search, RSTART + 1)
+          if (substr(window, cand + 1) ~ /^[A-Za-z0-9._-]+(:[0-9]+([\/?].*)?|[\/?].*)$/) lastat = cand
+        }
+
+        # TIER 2 — last "@" inside the whitespace/quote-delimited token.
+        if (lastat == 0) {
+          tokend = length(window) + 1
+          if (match(window, /["[:space:]]/)) tokend = RSTART
+          token = substr(window, 1, tokend - 1)
+          scanpos = 0
+          search = token
+          while (match(search, /@/)) {
+            lastat = scanpos + RSTART
+            scanpos = lastat
+            search = substr(search, RSTART + 1)
+          }
+        }
+
+        # TIER 3 — pre-slice parity: first "@" of the FULL remainder, only when
+        # nothing but non-whitespace precedes it (what the old regex required).
+        if (lastat == 0) {
+          firstat = index(tail, "@")
+          if (firstat > 1) {
+            head = substr(tail, 1, firstat - 1)
+            if (head !~ /[[:space:]]/) lastat = firstat
+          }
         }
 
         if (lastat == 0) {
-          # No "@" before the next DSN (or end of line) — this is not a
-          # credentialed URL at this position (e.g. a bare host:port with a
-          # stray trailing colon). Emit the literal match untouched and keep
-          # scanning so a LATER real DSN on the same line is still found.
+          # No boundary any tier will accept — this is not a credentialed URL at
+          # this position (a bare host:port with a stray trailing colon, a
+          # digest, a URL followed by an unrelated address). Emit the literal
+          # match untouched and keep scanning so a LATER real DSN on the same
+          # line is still found.
           out = out substr(rest, 1, m_start - 1) hit
           rest = tail
           continue
@@ -900,14 +998,74 @@ redact_stream() {
     # whitespace, or end of line — the same delimiter set the three
     # documented shapes actually use, so "host="/"port="/"dbname=" siblings on
     # the same line stay untouched and diagnosable.
-    function scrub_keyword_credentials(line,   out, rest, rest_upper, before, val, tail) {
-      out = ""
+    #
+    # Three bounds keep the rule from destroying the fields around it:
+    #
+    #   QUOTED VALUE. `Password="Quo;ted secret"` (and the single-quoted libpq
+    #   form) used to leave the whole quoted value in cleartext — it STARTS with
+    #   a delimiter, so the scan bounded at offset 0 and redacted nothing. A
+    #   value opening with a quote now runs to its matching closing quote, and
+    #   the quotes themselves are re-emitted so the string still parses. If the
+    #   quote is never closed (a truncated log line), the value is scanned with
+    #   the normal delimiter set from just after the quote — at worst one token
+    #   is over-redacted, which beats emitting the credential in the clear.
+    #
+    #   EMPTY VALUE. `password= host=postgres-veil port=5432` used to skip the
+    #   whitespace after "=" and then swallow `host=postgres-veil` as the value —
+    #   deleting the one field a support engineer needs. Whitespace between "="
+    #   and the value is still allowed (libpq writes `password = secret`), but if
+    #   what follows that whitespace is itself a `key=` field, the value is empty
+    #   and the line is emitted unchanged.
+    #
+    #   `PWD` WORD BOUNDARY. Bare `PWD`/`pwd` is a real .NET/ODBC abbreviation,
+    #   but it is also a substring of the shell variable `OLDPWD`, so an `env`
+    #   dump in the bundle had `OLDPWD=/root` redacted. It now only counts
+    #   at a word boundary. (`sslpassword=` is deliberately NOT bounded this way:
+    #   vendor prefixes on the FULL word `password` are real credential fields.)
+    function scrub_keyword_credentials(line,   out, rest, rest_upper, kwstart, kwlen, prevch, before, gap, val, tail, q, closing, SQ) {
+      SQ = sprintf("%c", 39)          # single quote — cannot be written literally
+      out = ""                        # inside this single-quoted awk program
       rest = line
       rest_upper = toupper(rest)
-      while (match(rest_upper, /(PASSWORD|PWD)[[:space:]]*=[[:space:]]*/)) {
-        before = substr(rest, 1, RSTART + RLENGTH - 1)
-        rest = substr(rest, RSTART + RLENGTH)
-        rest_upper = substr(rest_upper, RSTART + RLENGTH)
+      while (match(rest_upper, /(PASSWORD|PWD)[[:space:]]*=/)) {
+        kwstart = RSTART
+        kwlen = RLENGTH
+        prevch = (kwstart > 1) ? substr(rest, kwstart - 1, 1) : ""
+        before = substr(rest, 1, kwstart + kwlen - 1)   # ...up to and incl. "="
+        rest = substr(rest, kwstart + kwlen)            # value + tail
+        if (substr(rest_upper, kwstart, 3) == "PWD" && prevch ~ /[A-Za-z0-9_]/) {
+          out = out before                              # OLDPWD= and friends
+          rest_upper = toupper(rest)
+          continue
+        }
+        gap = ""
+        if (match(rest, /^[[:space:]]+/)) {
+          gap = substr(rest, 1, RLENGTH)
+          rest = substr(rest, RLENGTH + 1)
+        }
+        if (rest == "" || (gap != "" && rest ~ /^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/)) {
+          out = out before gap                          # empty value
+          rest_upper = toupper(rest)
+          continue
+        }
+        q = substr(rest, 1, 1)
+        if (q == "\"" || q == SQ) {
+          closing = index(substr(rest, 2), q)
+          if (closing > 0) {
+            out = out before gap q "<redacted>" q
+            rest = substr(rest, closing + 2)
+            rest_upper = toupper(rest)
+            continue
+          }
+          # Unterminated quote (a truncated log line). Do NOT let the opening
+          # quote bound the scan at offset zero — that is the bug above, and it
+          # redacts nothing. Keep the quote, then scan the value after it with
+          # the normal delimiter set, so at worst one token is over-redacted.
+          out = out before gap q
+          before = ""
+          gap = ""
+          rest = substr(rest, 2)
+        }
         if (match(rest, /[&;"[:space:]]/)) {
           val = substr(rest, 1, RSTART - 1)
           tail = substr(rest, RSTART)
@@ -915,7 +1073,7 @@ redact_stream() {
           val = rest
           tail = ""
         }
-        out = out before (val == "" ? "" : "<redacted>")
+        out = out before gap (val == "" ? "" : "<redacted>")
         rest = tail
         rest_upper = toupper(rest)
       }

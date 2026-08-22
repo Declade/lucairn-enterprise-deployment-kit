@@ -68,6 +68,16 @@ JAVA_TOOL_OPTIONS: -Dspring.datasource.url=jdbc:postgresql://postgres-veil:5432/
 postgres://veil@postgres-veil:5432/veil?sslpassword=SslQueryParamLEAK013&sslmode=verify-full
 Host=postgres-veil;Username=veil;Password=DotNetConnStrLEAK014;Ssl Mode=Require
 CONNSTR=user=veil password=LibpqKeywordLEAK015 host=postgres-veil port=5432
+X_URL=postgres://u:Tier3PwLEAK016://x@postgres-veil:5432/db
+Host=postgres-veil;Password="Quo;ted KwQuotedLEAK017";Ssl Mode=Require
+CONNSTR=user=veil password='SingleQuoted KwSqLEAK018' host=postgres-veil
+CONNSTR=user=veil password= host=postgres-veil port=5432
+env: PWD=/opt/dsa OLDPWD=/root SHLVL=1
+      GATEWAY_CORS: "http://localhost:3000"   # owner ops@lucairn.local
+gateway  | time=2026-08-22T09:04:09Z level=INFO msg="proxying to http://sandbox-b:8000/v1/messages" tenant=acme actor=ops@acme.example
+witness  | 2026/08/22 09:04:09 dial veil-witness:50058 ok; anchored at https://rekor.sigstore.dev:443/api/v1/log entry sha256:ab@cd
+image: registry.example.com:5000/lucairn/gateway@sha256:abcdef0123
+truncated log: user=veil password="KwUntermLEAK019 host=postgres-veil
 LOG
 
 OUT="$TMPDIR/out.log"
@@ -136,6 +146,20 @@ declare -a LEAKS=(
   "SslQueryParamLEAK013"
   "DotNetConnStrLEAK014"
   "LibpqKeywordLEAK015"
+  # T-675 successor slice, fix-up round — a URL password containing "://".
+  # The window that bounds the userinfo search is EMPTY here (the next
+  # "scheme://" is inside the password itself), so tiers 1 and 2 find no
+  # boundary. Without the tier-3 pre-slice-parity fallback this printed the
+  # whole credential VERBATIM — strictly worse than the code being replaced,
+  # which redacted to the first "@".
+  "Tier3PwLEAK016"
+  # Keyword-form value that OPENS with a quote: the value starts with the very
+  # delimiter the scan bounds on, so pre-fix it redacted nothing at all.
+  "KwQuotedLEAK017"
+  "KwSqLEAK018"
+  # Unterminated quote (truncated log line): the opening quote used to bound
+  # the value scan at offset zero, so nothing was redacted at all.
+  "KwUntermLEAK019"
 )
 for leak in "${LEAKS[@]}"; do
   if grep -Fq -- "$leak" "$OUT"; then
@@ -207,6 +231,7 @@ services:
       DATABASE_URL: postgres://veil:YamlProbePw@postgres-veil:5432/veil?sslmode=disable
       GATEWAY_KEYSTORE_KEY: aGFyZGNvZGVkS2V5c3RvcmVCb2R5Rk9SVEVTVA==
       GATEWAY_BASE_URL: https://lucairn.customer.example
+      GATEWAY_CORS: "http://localhost:3000"   # owner yamlprobe@lucairn.local
       password: YamlProbeLower
 YAML
 YOUT="$TMPDIR/compose-resolved.redacted.yml"
@@ -237,6 +262,11 @@ env = doc["services"]["veil-witness"]["environment"]
 assert env["DATABASE_URL"] == "<redacted>", env["DATABASE_URL"]
 assert env["GATEWAY_KEYSTORE_KEY"] == "<redacted>", env["GATEWAY_KEYSTORE_KEY"]
 assert env["GATEWAY_BASE_URL"] == "https://lucairn.customer.example", env["GATEWAY_BASE_URL"]
+# Fix-up round: a commented URL line must survive with its VALUE intact (only
+# the trailing address is redacted). The first cut of this slice rewrote it to
+# `"http://localhost:<redacted>@lucairn.local` — an unterminated quote, i.e. a
+# compose-resolved.yml that no longer parses.
+assert env["GATEWAY_CORS"] == "http://localhost:3000", env["GATEWAY_CORS"]
 assert env["password"] == "<redacted>", env["password"]
 print("compose-resolved.yml still parses after redaction: ok")
 PY
@@ -273,5 +303,57 @@ grep -q "^Host=postgres-veil;Username=veil;Password=<redacted>;Ssl Mode=Require$
   || fail ".NET connection-string Password not redacted / Ssl Mode field lost"
 grep -q "^CONNSTR=user=veil password=<redacted> host=postgres-veil port=5432$" "$OUT" \
   || fail "libpq keyword-form password not redacted / host+port fields lost"
+
+# 12. T-675 successor slice, FIX-UP ROUND — the two blocking regressions the
+#     independent reviewers found in the first cut of this slice. Every
+#     assertion below FAILS on the pre-fix head `d10bc5a` and passes here.
+#
+#     (a) LEAK, tier-3 fallback. `postgres://u:pw://x@host` — the password
+#         contains "://", so the window that bounds the userinfo search is
+#         EMPTY and no boundary "@" is found. Pre-fix that fell through and
+#         printed the credential untouched; the shipped code being replaced
+#         redacted to the first "@". The literal is in the LEAKS array above;
+#         this asserts the DSN also keeps its diagnosable shape.
+grep -q "^X_URL=postgres://u:<redacted>@postgres-veil:5432/db$" "$OUT" \
+  || fail "tier-3 fallback: password containing '://' not redacted or DSN shape lost"
+#
+#     (b) OVER-REDACTION, the "last @ wins" rule. A bundle carries log lines and
+#         commented YAML where a URL and an unrelated address share a line. The
+#         first cut took the ADDRESS's "@" as the userinfo boundary and deleted
+#         everything between — port, path, closing quote, comment marker, log
+#         fields. These lines must survive intact EXCEPT the address itself.
+grep -q '^      GATEWAY_CORS: "http://localhost:3000"   # owner <redacted>$' "$OUT" \
+  || fail "commented YAML URL line was destroyed by the URL rule (over-redaction regression)"
+grep -q '^gateway  | time=2026-08-22T09:04:09Z level=INFO msg="proxying to http://sandbox-b:8000/v1/messages" tenant=acme actor=<redacted>$' "$OUT" \
+  || fail "log line with a URL and a later actor email was destroyed (over-redaction regression)"
+grep -q '^witness  | 2026/08/22 09:04:09 dial veil-witness:50058 ok; anchored at https://rekor.sigstore.dev:443/api/v1/log entry sha256:ab@cd$' "$OUT" \
+  || fail "digest-bearing witness log line was destroyed by the URL rule (over-redaction regression)"
+grep -q "^image: registry.example.com:5000/lucairn/gateway@sha256:abcdef0123$" "$OUT" \
+  || fail "image digest line was altered"
+#
+#     (c) KEYWORD-FORM value that opens with a quote — pre-fix it redacted
+#         nothing (the value starts with the delimiter the scan bounds on).
+#         The quotes are re-emitted so the connection string still parses.
+grep -q '^Host=postgres-veil;Password="<redacted>";Ssl Mode=Require$' "$OUT" \
+  || fail "double-quoted keyword-form password not redacted / quotes lost"
+grep -q "^CONNSTR=user=veil password='<redacted>' host=postgres-veil\$" "$OUT" \
+  || fail "single-quoted keyword-form password not redacted / quotes lost"
+#
+#     (d) EMPTY keyword value must not swallow the sibling field. Pre-fix
+#         `password= host=postgres-veil port=5432` printed
+#         `password= <redacted> port=5432` — the host, the one field a support
+#         engineer needs, was deleted to redact nothing.
+grep -q "^CONNSTR=user=veil password= host=postgres-veil port=5432$" "$OUT" \
+  || fail "empty keyword-form value swallowed the sibling host= field"
+#
+#     (d2) An UNTERMINATED quote must not bound the scan at offset zero. At
+#          worst one token is over-redacted; nothing may be emitted in the clear.
+grep -q '^truncated log: user=veil password="<redacted> host=postgres-veil$' "$OUT" \
+  || fail "unterminated-quote keyword value not redacted"
+#
+#     (e) `PWD` counts only at a word boundary: an `env` dump in the bundle had
+#         `OLDPWD=` redacted as if it were a credential field.
+grep -q "^env: PWD=<redacted> OLDPWD=/root SHLVL=1$" "$OUT" \
+  || fail "OLDPWD= was treated as a credential field (PWD word-boundary regression)"
 
 echo "redact_stream tests: ok"
