@@ -34,6 +34,15 @@
 #     populated case would pass §1 and fail here.
 #   - notes-nil-safe (§3): pins the ALREADY-FIXED umbrella NOTES.txt half
 #     (9b88fc7) so a future edit cannot silently reintroduce the bare access.
+#   - umbrella-real-consequence (§4, T-697): the umbrella-level
+#     `gateway.ingress=null` check is NOT this ticket's positive control (§1
+#     is — see below) because Helm 3.16.4, the version CI pins, coalesces a
+#     nulled PARENT value back to the sub-chart's own default before the
+#     template ever sees it, so the nil-pointer path is unreachable from here
+#     under CI's Helm. §4 instead asserts the real, falsifiable, version-
+#     agnostic consequence — zero Ingress OR exactly the reviewed default,
+#     never a duplicate or malformed one — closing the vacuity where the old
+#     check only asked "did the process exit 0", true either way.
 #
 # ISOLATION: §1 and §2 render each Ingress template inside a throwaway chart
 # containing ONLY that template (plus _helpers.tpl where it is referenced).
@@ -135,14 +144,52 @@ else
   pass "NOTES.txt reads gateway.ingress only through the nil-safe \$gatewayIngress binding"
 fi
 
+# ── §4 The umbrella path checks a REAL consequence, not just "did it render"
+# (T-697). `--set gateway.ingress=null` at the UMBRELLA is not this ticket's
+# positive control for the nil-pointer panic — §1's isolated renders are, and
+# stay so. It CANNOT be: Helm 3.16.4, the version .github/workflows/ci.yml
+# pins, treats a nil in the PARENT's values as absent and restores gateway's
+# OWN values.yaml default (ingress.enabled: true, confirmed by direct probe
+# under helm 3.16.4 in a container — exit 0, one Ingress emitted), so a null
+# written at the umbrella never reaches `$ingress.enabled` as nil under the
+# pinned CI Helm at all. The OLD check here (`if helm template ...; then pass;
+# else fail`, stdout discarded) was therefore true regardless of whether the
+# T-421 guard exists — a render succeeding is not evidence the guard ran.
+#
+# What this check verifies instead, true on every Helm major: an explicit
+# `gateway.ingress=null` never produces anything other than (a) zero Ingress
+# objects — the nil-safe outcome, on a major that propagates the null all the
+# way to `$ingress.enabled` — or (b) exactly the ONE Ingress the reviewed
+# default renders, never a duplicate or a malformed one missing its
+# className/host. Both arms are real, falsifiable consequences a regression
+# can break; "did the process exit 0" was not.
 if helm template lucairn "$CHART" \
   "${HELM_TEST_SECRET_ARGS[@]}" \
   --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}" \
   --set global.skipPullSecretGuard=true \
-  --set gateway.ingress=null >/dev/null 2>"$TMPDIR/umbrella.err"; then
-  pass "umbrella chart renders end-to-end with gateway.ingress nulled"
+  --set gateway.ingress=null >"$TMPDIR/umbrella.out" 2>"$TMPDIR/umbrella.err"; then
+  count="$(grep -c 'kind: Ingress' "$TMPDIR/umbrella.out" || true)"
+  case "$count" in
+    0)
+      pass "umbrella: gateway.ingress=null renders zero Ingress (this Helm major propagates the null — nil-safe path)"
+      ;;
+    1)
+      if grep -q 'ingressClassName: nginx' "$TMPDIR/umbrella.out" && grep -q 'host: dsa.local' "$TMPDIR/umbrella.out"; then
+        pass "umbrella: gateway.ingress=null renders exactly the reviewed default Ingress (this Helm major coalesces the null away to gateway's own default — known, documented)"
+      else
+        fail "umbrella: gateway.ingress=null rendered one Ingress that does NOT match the reviewed default (className/host missing)"
+      fi
+      ;;
+    *)
+      fail "umbrella: gateway.ingress=null rendered $count Ingress objects (expected 0 or 1)"
+      ;;
+  esac
 else
-  fail "umbrella chart renders end-to-end with gateway.ingress nulled: $(head -2 "$TMPDIR/umbrella.err" | tr '\n' ' ')"
+  if grep -q 'nil pointer' "$TMPDIR/umbrella.err"; then
+    fail "umbrella chart renders end-to-end with gateway.ingress nulled (nil-pointer panic — the T-421 defect, reachable on this Helm major)"
+  else
+    fail "umbrella chart renders end-to-end with gateway.ingress nulled: $(head -2 "$TMPDIR/umbrella.err" | tr '\n' ' ')"
+  fi
 fi
 
 echo
