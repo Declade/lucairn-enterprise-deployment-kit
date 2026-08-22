@@ -118,13 +118,15 @@ bin/lucairn support-bundle \
 - doctor passes in the expected mode
 - stack reaches healthy and ready
 - support bundle is generated, and the redaction covers the shapes it claims:
-  URL-form DSNs with percent-encoded (RFC 3986) credentials
-  (`scheme://user:password@host`), secret-named env keys, and named password
-  fields. NOT covered (T-675), so the reviewer must scan the bundle for these by
-  hand before it leaves the customer boundary: keyword-form connection strings
-  — JDBC `?password=`, libpq `password=... host=...`, and `Password=...;`; and
-  URL-form DSN passwords containing whitespace or an unencoded `@` on a
-  non-secret-named key (percent-encode them — %20, %40 — or hand-redact)
+  URL-form DSNs (`scheme://user:password@host`, including a password with an
+  unencoded space or `@`), secret-named env keys, named password fields, and
+  keyword-form connection-string credentials — JDBC `?password=`, libpq
+  `password=... host=...`, and `Password=...;` (T-675 successor slice closed
+  both). NOT covered (T-675, tracked), so the reviewer must scan the bundle
+  for these by hand before it leaves the customer boundary: two unencoded-`@`
+  DSNs on the same line with no `scheme://` marker between them, and a
+  keyword-form password field spelled with a vendor abbreviation other than
+  `password`/`pwd` (e.g. ODBC `PSWD=`)
 - every discovered edge case is added to `INSTALL.md`, `OPS.md`, `TROUBLESHOOTING.md`, `bin/lucairn doctor`, or this document before the customer receives the package
 
 ## Transcript
