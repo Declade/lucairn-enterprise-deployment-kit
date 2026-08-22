@@ -117,16 +117,33 @@ bin/lucairn support-bundle \
 - bundle verification passes
 - doctor passes in the expected mode
 - stack reaches healthy and ready
-- support bundle is generated, and the redaction covers the shapes it claims:
-  URL-form DSNs (`scheme://user:password@host`, including a password with an
-  unencoded space or `@`), secret-named env keys, named password fields, and
-  keyword-form connection-string credentials — JDBC `?password=`, libpq
-  `password=... host=...`, and `Password=...;` (T-675 successor slice closed
-  both). NOT covered (T-675, tracked), so the reviewer must scan the bundle
-  for these by hand before it leaves the customer boundary: two unencoded-`@`
-  DSNs on the same line with no `scheme://` marker between them, and a
-  keyword-form password field spelled with a vendor abbreviation other than
-  `password`/`pwd` (e.g. ODBC `PSWD=`)
+- support bundle is generated, and the redaction covers the shapes it claims.
+  The authoritative, measured list is the `redact_stream` header comment in
+  `bin/lucairn`; in summary:
+  - **Covered:** URL-form DSNs `scheme://user:password@host` **when the
+    username carries no unencoded `@`** — the password may hold a space, an
+    `@`, or a `://`; secret-named env keys; named password fields; and
+    keyword-form connection-string credentials (JDBC `?password=`, libpq
+    `password=... host=...`, `Password=...;`, including quoted values).
+  - **NOT covered — these LEAK, so the reviewer must scan the bundle for them
+    by hand before it leaves the customer boundary (T-675, tracked):**
+    - a username containing an unencoded `@` — the Azure
+      `postgres://veil@pgsrv:PASSWORD@pgsrv.postgres.database.azure.com/db`
+      form prints **verbatim**. Percent-encode the username as `veil%40pgsrv`
+      (which is covered) or hand-redact the line.
+    - JSON-shaped credentials with no `=`, e.g. `{"password":"secret"}` in a
+      structured log line, and the CLI flag form `--password secret`.
+    - a keyword-form password field spelled with a vendor abbreviation other
+      than `password`/`pwd` (e.g. ODBC `PSWD=`).
+    - an unquoted keyword-form value containing a space
+      (`password=Has Space host=...`) — redacted only up to the first space.
+    - a URL-form password containing whitespace when the host that follows has
+      neither a port nor a path (`postgres://u:Pw With Space@dbhost`).
+  - **Fails safe (over-redaction, not a leak):** two `@`-bearing DSNs on the
+    same line with no `scheme://` between them merge into one redaction — both
+    secrets are removed, the first host is lost; a bare shell `PWD=` in an
+    `env` dump is redacted; a URL followed by an unrelated `@` inside the same
+    whitespace-delimited token over-redacts to that `@`.
 - every discovered edge case is added to `INSTALL.md`, `OPS.md`, `TROUBLESHOOTING.md`, `bin/lucairn doctor`, or this document before the customer receives the package
 
 ## Transcript
