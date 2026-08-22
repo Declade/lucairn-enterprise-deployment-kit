@@ -8125,10 +8125,19 @@ support_bundle() {
 
   redact_stream < "$env_file" > "$bundle_dir/redacted/customer.env"
   redact_stream < "$compose_file" > "$bundle_dir/redacted/docker-compose.customer.yml"
+  # Routed through redact_stream like every other bundle file (T-698). The
+  # profile is validated by validate_runtime_profile() against a strict,
+  # non-secret v1 grammar before support_bundle() ever reaches this line
+  # (runtime_profile_compose_args() above calls it and returns 1 on failure),
+  # so today's carrier is low-risk — but the copy itself performed no check of
+  # its own, so any future relaxation of that grammar (or a hand-edited
+  # profile on a legacy install) would have shipped verbatim. redact_stream is
+  # a no-op on a genuinely secret-free file; it is not a no-op on one that
+  # isn't.
   local runtime_profile
   runtime_profile="$(runtime_profile_path "$env_file")"
   if [ -f "$runtime_profile" ]; then
-    cp "$runtime_profile" "$bundle_dir/redacted/runtime-profile.yaml"
+    redact_stream < "$runtime_profile" > "$bundle_dir/redacted/runtime-profile.yaml"
   fi
   # cert-validity.txt embeds env-file VALUES (`$key=$path`) and openssl subject/
   # issuer DNs, which carry operator names and emails. It was the one bundle
