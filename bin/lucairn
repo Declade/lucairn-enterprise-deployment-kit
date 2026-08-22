@@ -767,23 +767,30 @@ is_secret_key() {
 
 # redact_stream — MEASURED COVERAGE (state it here so no caller over-promises):
 #
-#   COVERED: URL-form DSNs with percent-encoded (RFC 3986) credentials —
-#            scheme://user:password@host, including an empty user; secret-named
-#            env keys (KEY/TOKEN/SECRET/PASSWORD/PRIVATE/SIGNING/CERT/
-#            CREDENTIAL/API_KEY/LICENSE/DATABASE_URL/DB_URL/DSN,
-#            case-insensitive); named password fields; sk-/lcr- keys; Bearer
-#            tokens; JWTs; emails; E.164 numbers.
+#   COVERED: URL-form DSNs — scheme://user:password@host, including an empty
+#            user, an UNENCODED SPACE in the password, and an UNENCODED `@`
+#            inside the password (T-675 successor slice: the userinfo/host
+#            boundary is the LAST `@` before the next scheme on the same line
+#            or end of line, not the first); secret-named env keys (KEY/TOKEN/
+#            SECRET/PASSWORD/PRIVATE/SIGNING/CERT/CREDENTIAL/API_KEY/LICENSE/
+#            DATABASE_URL/DB_URL/DSN, case-insensitive); named password
+#            fields; sk-/lcr- keys; Bearer tokens; JWTs; emails; E.164
+#            numbers; keyword-form connection-string credentials — JDBC
+#            `?user=x&password=y`, libpq `password=y host=z`, and .NET
+#            `Password=y;` (T-675 successor slice: matched on the literal
+#            token `password` or `pwd`, case-insensitive, value bounded by
+#            `&`, `;`, a quote, whitespace, or end of line).
 #
 #   NOT COVERED (T-675, tracked; a bundle reviewer must still read the bundle
 #   before it leaves the customer boundary):
-#     - keyword-form connection strings — JDBC `...?user=x&password=y`, libpq
-#       `password=y host=z`, and .NET `Password=y;`. These carry the credential
-#       as a key/value pair inside a larger string with no userinfo `@` to
-#       anchor on, and no rule here models them.
-#     - URL-form DSN passwords containing whitespace or an unencoded `@`, on a
-#       non-secret-named key: the whitespace ends the match early (whole
-#       password verbatim) and an extra `@` leaves the tail after the first one.
-#       Percent-encode them (%20, %40) or the reviewer must hand-redact.
+#     - TWO unencoded-`@`-bearing DSNs on the SAME line with no scheme://
+#       marker between them (no quote, comma, or second "scheme://" to anchor
+#       the split): the last-`@` rule can misattribute the boundary and merge
+#       them. Not a shape `docker compose config` or lucairn's own logs
+#       produce — every carrier confirmed in this kit has zero or one DSN per
+#       line.
+#     - a keyword-form password field spelled with a vendor abbreviation other
+#       than `password`/`pwd` (e.g. ODBC `PSWD=`) — untested, likely uncaught.
 redact_stream() {
   # LC_ALL=C: the bundle captures docker logs, which can spill binary or
   # invalid-UTF-8 bytes. Under a UTF-8 locale some awks abort or silently
@@ -827,31 +834,90 @@ redact_stream() {
     #                                  "scheme://" — the user must sit
     #                                  immediately after "://" and be followed
     #                                  by ":", so no "/" can be crossed.
-    #   password [^@[:space:]]+      — "/" and the double-quote are BOTH
-    #                                  allowed: real generated passwords
-    #                                  (openssl rand -base64) contain "/", and
-    #                                  excluding either silently left such a
-    #                                  password unredacted on any line whose key
-    #                                  name is not itself secret-shaped. "@" is
-    #                                  the only bound needed — it terminates the
-    #                                  match at the userinfo delimiter, so two
-    #                                  quoted DSNs on one line still redact
-    #                                  independently rather than as one run.
     #
-    # p and q are always >= 1: the regex that produced `hit` already required a
-    # literal "://" and a ":" after the user, so index() cannot miss them.
-    # There is deliberately no "if not found" branch here — it would be
-    # unreachable code masquerading as a safety net.
-    function scrub_url_credentials(line,   out, rest, hit, p, q, prefix) {
+    # T-675 successor slice: the password itself is NOT matched by a character
+    # class at all any more. Round 2 already had to allow "/" and "\"" in it
+    # (real openssl-rand passwords, and a quoted fixture), which means every
+    # character except a LITERAL "@" is potentially password content —
+    # including whitespace and an unencoded "@" (the two residuals this round
+    # closes). Stopping the match at the FIRST "@" or first whitespace was
+    # exactly the round-1/round-2 bug: it silently left everything after that
+    # point, up to the true boundary, in cleartext.
+    #
+    # So this loop finds the "scheme://user:" prefix with match(), then walks
+    # the REMAINDER of the line by hand to find the LAST "@" before either the
+    # next "scheme://" on the same line or end of line — that "@" is the
+    # userinfo/host boundary. Bounding at the next "scheme://" (rather than
+    # searching the whole remainder) is what keeps two quoted DSNs on one line
+    # redacting independently instead of one match swallowing the other:
+    # nothing in the covered fixtures puts "://" inside a real password.
+    function scrub_url_credentials(line,   out, rest, m_start, m_len, hit, tail, window, search, lastat, scanpos) {
       out = ""
       rest = line
-      while (match(rest, /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^:\/@"[:space:]]*:[^@[:space:]]+@/)) {
-        hit = substr(rest, RSTART, RLENGTH)
-        p = index(hit, "://")
-        q = index(substr(hit, p + 3), ":")
-        prefix = substr(hit, 1, p + 2 + q)
-        out = out substr(rest, 1, RSTART - 1) prefix "<redacted>@"
+      while (match(rest, /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^:\/@"[:space:]]*:/)) {
+        m_start = RSTART
+        m_len = RLENGTH
+        hit = substr(rest, m_start, m_len)      # "scheme://user:"
+        tail = substr(rest, m_start + m_len)    # candidate password + "@" + host...
+
+        if (match(tail, /[A-Za-z][A-Za-z0-9+.-]*:\/\//)) {
+          window = substr(tail, 1, RSTART - 1)
+        } else {
+          window = tail
+        }
+
+        lastat = 0
+        scanpos = 0
+        search = window
+        while (match(search, /@/)) {
+          lastat = scanpos + RSTART
+          scanpos = lastat
+          search = substr(search, RSTART + 1)
+        }
+
+        if (lastat == 0) {
+          # No "@" before the next DSN (or end of line) — this is not a
+          # credentialed URL at this position (e.g. a bare host:port with a
+          # stray trailing colon). Emit the literal match untouched and keep
+          # scanning so a LATER real DSN on the same line is still found.
+          out = out substr(rest, 1, m_start - 1) hit
+          rest = tail
+          continue
+        }
+
+        out = out substr(rest, 1, m_start - 1) hit "<redacted>@"
+        rest = substr(tail, lastat + 1)
+      }
+      return out rest
+    }
+    # scrub_keyword_credentials masks keyword-form connection-string
+    # credentials that carry no userinfo "@" for scrub_url_credentials to
+    # anchor on (T-675 successor slice): JDBC `?user=x&password=y`, libpq
+    # `password=y host=z`, and .NET `Password=y;`. Matched on the literal
+    # token `password` or `pwd` (case-insensitive, via toupper() rather than a
+    # gawk-only /i flag — portability), because these forms have no other
+    # structural marker. The value runs to the next `&`, `;`, quote,
+    # whitespace, or end of line — the same delimiter set the three
+    # documented shapes actually use, so "host="/"port="/"dbname=" siblings on
+    # the same line stay untouched and diagnosable.
+    function scrub_keyword_credentials(line,   out, rest, rest_upper, before, val, tail) {
+      out = ""
+      rest = line
+      rest_upper = toupper(rest)
+      while (match(rest_upper, /(PASSWORD|PWD)[[:space:]]*=[[:space:]]*/)) {
+        before = substr(rest, 1, RSTART + RLENGTH - 1)
         rest = substr(rest, RSTART + RLENGTH)
+        rest_upper = substr(rest_upper, RSTART + RLENGTH)
+        if (match(rest, /[&;"[:space:]]/)) {
+          val = substr(rest, 1, RSTART - 1)
+          tail = substr(rest, RSTART)
+        } else {
+          val = rest
+          tail = ""
+        }
+        out = out before (val == "" ? "" : "<redacted>")
+        rest = tail
+        rest_upper = toupper(rest)
       }
       return out rest
     }
@@ -893,6 +959,12 @@ redact_stream() {
       # Runs FIRST: every rule below can consume the "@" or the host that this
       # one needs intact to find the userinfo boundary.
       line = scrub_url_credentials(line)
+      # Keyword-form connection-string credentials (JDBC/libpq/.NET) — T-675
+      # successor slice. No userinfo "@" to anchor on, so this is independent
+      # of the URL rule above; order relative to it does not matter since the
+      # two act on disjoint patterns (a JDBC/libpq/.NET keyword string has no
+      # "user:password@" shape for the URL rule to match).
+      line = scrub_keyword_credentials(line)
       # Provider API keys (sk-ant-, sk-, etc.) and Lucairn keys (lcr_live_, ...).
       gsub(/sk-[A-Za-z0-9._-]+/, "<redacted>", line)
       gsub(/lcr_[A-Za-z0-9._-]+/, "<redacted>", line)

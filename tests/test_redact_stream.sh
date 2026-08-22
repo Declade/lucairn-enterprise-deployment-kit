@@ -60,6 +60,14 @@ error: dial postgres://veil:RdsHostPw99@lucairn-db.abc123.eu-central-1.rds.amazo
       password: LowerCaseYamlPw11
       postgres_password: LowerCaseYamlPw22
       - DATABASE_URL=postgres://veil:ListFormPw33@postgres-veil:5432/veil?sslmode=disable
+SANITIZER_STREAM_STATE_REDIS_URL=redis://default:Pw With SpaceLEAK007@redis-sanitizer-cache:6379/0
+SANITIZER_STREAM_STATE_REDIS_URL=redis://default:PwHeadLEAK008@TailLeak008@redis-sanitizer-cache:6379/0
+pair "postgres://a:QuotedPairPw009@h1:5432/x","postgres://c:QuotedPairPw010@h2:5432/y" end
+jdbc:postgresql://postgres-veil:5432/veil?user=veil&password=JdbcQueryParamLEAK011
+JAVA_TOOL_OPTIONS: -Dspring.datasource.url=jdbc:postgresql://postgres-veil:5432/veil?password=JavaOptsLEAK012
+postgres://veil@postgres-veil:5432/veil?sslpassword=SslQueryParamLEAK013&sslmode=verify-full
+Host=postgres-veil;Username=veil;Password=DotNetConnStrLEAK014;Ssl Mode=Require
+CONNSTR=user=veil password=LibpqKeywordLEAK015 host=postgres-veil port=5432
 LOG
 
 OUT="$TMPDIR/out.log"
@@ -112,6 +120,22 @@ declare -a LEAKS=(
   "LowerCaseYamlPw22"
   # compose list form "- KEY=value" must not lose its key to truncation.
   "ListFormPw33"
+  # T-675 successor slice — URL-form password containing whitespace or an
+  # unencoded "@" on a non-secret-named key (formerly the documented
+  # KNOWN-LEAK; now closed).
+  "Pw With SpaceLEAK007"
+  "PwHeadLEAK008"
+  "TailLeak008"
+  # Two quoted DSNs on one line must still redact independently.
+  "QuotedPairPw009"
+  "QuotedPairPw010"
+  # T-675 successor slice — keyword-form connection-string credentials
+  # (JDBC query-param, libpq space-delimited, .NET semicolon-delimited).
+  "JdbcQueryParamLEAK011"
+  "JavaOptsLEAK012"
+  "SslQueryParamLEAK013"
+  "DotNetConnStrLEAK014"
+  "LibpqKeywordLEAK015"
 )
 for leak in "${LEAKS[@]}"; do
   if grep -Fq -- "$leak" "$OUT"; then
@@ -220,21 +244,34 @@ else
   echo "compose-resolved.yml YAML-parse assertion: NOT RUN (no PyYAML) — structural assertion above still ran" >&2
 fi
 
-# --- KNOWN LEAK (T-675 successor slice) — NOT a pass criterion ---------------
-# URL-form DSN passwords containing whitespace or an unencoded "@", on a
-# NON-secret-named key, still leak: the userinfo regex ends the match at the
-# first space or "@". This is documented as NOT-COVERED (the redact_stream
-# header comment + docs/CLEAN_HOST_REHEARSAL.md) and deferred to the successor
-# DSN-shape matcher slice. It is surfaced here LOUD but is DELIBERATELY NOT
-# asserted either way: asserting the leak survives would green-assert bad
-# behaviour, and asserting it is gone would fail a defect we have chosen to
-# defer. The successor slice turns these two lines into RED-first fixtures.
-{
-  echo "KNOWN-LEAK (T-675 successor slice, excluded from pass criteria):"
-  printf '%s\n' \
-    'SANITIZER_STREAM_STATE_REDIS_URL=redis://default:Pw With Space@redis-sanitizer-cache:6379/0' \
-    'SANITIZER_STREAM_STATE_REDIS_URL=redis://default:PwHead@TailLeak@redis-sanitizer-cache:6379/0' \
-  | redact_stream | sed 's/^/  KNOWN-LEAK: /'
-} >&2
+# 9. T-675 successor slice — URL-form DSN passwords with an unencoded space
+#    or "@", on a NON-secret-named key, now redact with the DSN shape intact.
+#    (Formerly the documented KNOWN-LEAK block; closed this round.)
+grep -q "^SANITIZER_STREAM_STATE_REDIS_URL=redis://default:<redacted>@redis-sanitizer-cache:6379/0$" "$OUT" \
+  || fail "URL-form password containing whitespace was not redacted / DSN shape lost"
+grep -c "^SANITIZER_STREAM_STATE_REDIS_URL=redis://default:<redacted>@redis-sanitizer-cache:6379/0$" "$OUT" \
+  | grep -q "^3$" \
+  || fail "expected exactly 3 redacted SANITIZER_STREAM_STATE_REDIS_URL lines (original round-1 fixture + space case + unencoded-@ case)"
+
+# 10. T-675 successor slice — two quoted DSNs on one line redact
+#     independently: the second scheme:// on the line bounds the search for
+#     the first DSN's userinfo/host "@", so one match cannot swallow the other.
+grep -q 'pair "postgres://a:<redacted>@h1:5432/x","postgres://c:<redacted>@h2:5432/y" end' "$OUT" \
+  || fail "two quoted DSNs on one line did not redact independently"
+
+# 11. T-675 successor slice — keyword-form connection-string credentials
+#     (JDBC query-param, libpq space-delimited, .NET semicolon-delimited).
+#     Non-secret fields on the same line (user=, host=, port=, dbname=,
+#     sslmode=, Ssl Mode=) must survive so the bundle stays diagnosable.
+grep -q "^jdbc:postgresql://postgres-veil:5432/veil?user=veil&password=<redacted>$" "$OUT" \
+  || fail "JDBC query-param password not redacted / non-secret params lost"
+grep -q "url=jdbc:postgresql://postgres-veil:5432/veil?password=<redacted>$" "$OUT" \
+  || fail "JDBC password on a JAVA_TOOL_OPTIONS line not redacted"
+grep -q "^postgres://veil@postgres-veil:5432/veil?sslpassword=<redacted>&sslmode=verify-full$" "$OUT" \
+  || fail "sslpassword query-param not redacted / sslmode param lost"
+grep -q "^Host=postgres-veil;Username=veil;Password=<redacted>;Ssl Mode=Require$" "$OUT" \
+  || fail ".NET connection-string Password not redacted / Ssl Mode field lost"
+grep -q "^CONNSTR=user=veil password=<redacted> host=postgres-veil port=5432$" "$OUT" \
+  || fail "libpq keyword-form password not redacted / host+port fields lost"
 
 echo "redact_stream tests: ok"
