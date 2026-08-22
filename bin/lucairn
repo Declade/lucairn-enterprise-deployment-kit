@@ -751,6 +751,10 @@ is_secret_key() {
   # (T-675). Deliberately NOT a blanket `*_URL*` — GATEWAY_BASE_URL,
   # MODEL_RUNTIME_URL and friends are credential-free and must stay readable
   # or the support bundle stops being diagnosable.
+  #
+  # Matched case-INSENSITIVELY: `compose config` and application logs emit
+  # lowercase keys (`password:`, `postgres_password:`) for the same secrets.
+  key="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
   case "$key" in
     *KEY*|*TOKEN*|*SECRET*|*PASSWORD*|*PRIVATE*|*SIGNING*|*CERT*|*CREDENTIAL*|*API_KEY*|*LICENSE*|*DATABASE_URL*|*DB_URL*|*DSN*)
       return 0
@@ -761,14 +765,37 @@ is_secret_key() {
   esac
 }
 
+# redact_stream — MEASURED COVERAGE (state it here so no caller over-promises):
+#
+#   COVERED: URL-form DSNs (scheme://user:password@host, including an empty
+#            user), secret-named env keys (KEY/TOKEN/SECRET/PASSWORD/PRIVATE/
+#            SIGNING/CERT/CREDENTIAL/API_KEY/LICENSE/DATABASE_URL/DB_URL/DSN,
+#            case-insensitive), named password fields, sk-/lcr- keys, Bearer
+#            tokens, JWTs, emails, E.164 numbers.
+#
+#   NOT COVERED (T-675, tracked): keyword-form connection strings —
+#            JDBC `...?user=x&password=y`, libpq `password=y host=z`, and
+#            .NET `Password=y;`. These carry the credential as a key/value pair
+#            inside a larger string with no userinfo `@` to anchor on, and no
+#            rule here models them. A bundle reviewer must still read the
+#            bundle before it leaves the customer boundary.
 redact_stream() {
-  awk -F= '
+  # LC_ALL=C: the bundle captures docker logs, which can spill binary or
+  # invalid-UTF-8 bytes. Under a UTF-8 locale some awks abort or silently
+  # truncate on an invalid sequence — which would drop redaction mid-stream.
+  # Byte semantics also make length() below a byte count, as the guard intends.
+  LC_ALL=C awk -F= '
     function trim(s) {
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
       return s
     }
+    # Matched case-INSENSITIVELY: `compose config` and application logs emit
+    # lowercase keys (`password:`, `postgres_password:`) for the same secrets.
+    # The cost is accepted over-redaction on prose that merely contains a
+    # secret word (a log line with "monkey:" now truncates at its first colon);
+    # over-redacting a diagnostic artifact is the safe direction.
     function secret_key(k) {
-      return k ~ /(KEY|TOKEN|SECRET|PASSWORD|PRIVATE|SIGNING|CERT|CREDENTIAL|API_KEY|LICENSE|DATABASE_URL|DB_URL|DSN)/
+      return toupper(k) ~ /(KEY|TOKEN|SECRET|PASSWORD|PRIVATE|SIGNING|CERT|CREDENTIAL|API_KEY|LICENSE|DATABASE_URL|DB_URL|DSN)/
     }
     # scrub_url_credentials masks the password in URL userinfo —
     # "scheme://user:password@host" -> "scheme://user:<redacted>@host" — while
@@ -787,19 +814,66 @@ redact_stream() {
     # bundle is generated on arbitrary customer hosts with varied awks
     # (verified identical on onetrue-awk, busybox awk, gawk and mawk).
     #
-    # The password class excludes "/" — RFC 3986 forbids it unencoded in
-    # userinfo — so a match can never run across a following "scheme://".
+    # Character classes, and why each exclusion is where it is:
+    #   user     [^:\/@"[:space:]]*  — MAY BE EMPTY: `redis://:password@host`
+    #                                  is the shape the sandbox-b Helm chart
+    #                                  emits. Excluding "/" here is what stops
+    #                                  a match running across a later
+    #                                  "scheme://" — the user must sit
+    #                                  immediately after "://" and be followed
+    #                                  by ":", so no "/" can be crossed.
+    #   password [^@[:space:]]+      — "/" and the double-quote are BOTH
+    #                                  allowed: real generated passwords
+    #                                  (openssl rand -base64) contain "/", and
+    #                                  excluding either silently left such a
+    #                                  password unredacted on any line whose key
+    #                                  name is not itself secret-shaped. "@" is
+    #                                  the only bound needed — it terminates the
+    #                                  match at the userinfo delimiter, so two
+    #                                  quoted DSNs on one line still redact
+    #                                  independently rather than as one run.
+    #
+    # p and q are always >= 1: the regex that produced `hit` already required a
+    # literal "://" and a ":" after the user, so index() cannot miss them.
+    # There is deliberately no "if not found" branch here — it would be
+    # unreachable code masquerading as a safety net.
     function scrub_url_credentials(line,   out, rest, hit, p, q, prefix) {
       out = ""
       rest = line
-      while (match(rest, /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^:\/@"[:space:]]+:[^@\/"[:space:]]+@/)) {
+      while (match(rest, /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^:\/@"[:space:]]*:[^@[:space:]]+@/)) {
         hit = substr(rest, RSTART, RLENGTH)
         p = index(hit, "://")
         q = index(substr(hit, p + 3), ":")
-        # Fail CLOSED: if the prefix cannot be located, drop it entirely rather
-        # than echo any part of the userinfo back out.
-        prefix = (p > 0 && q > 0) ? substr(hit, 1, p + 2 + q) : ""
+        prefix = substr(hit, 1, p + 2 + q)
         out = out substr(rest, 1, RSTART - 1) prefix "<redacted>@"
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+      return out rest
+    }
+    # scrub_emails redacts free-standing email addresses but NOT an address-
+    # shaped substring inside a URL authority. Anchoring matters both ways:
+    # on `postgres://veil:<redacted>@db.customer.example:5432/veil` the naive
+    # gsub matched `redacted@db.customer.example` and ate the HOST, destroying
+    # the one part of the DSN a support engineer needs; and when it ran before
+    # the URL rule it consumed the "@" that anchors userinfo, leaving the
+    # password behind. A candidate is skipped when the whitespace/quote-
+    # delimited token containing it holds "://".
+    function scrub_emails(line,   out, rest, start, tok, c) {
+      out = ""
+      rest = line
+      while (match(rest, /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z][A-Za-z]+/)) {
+        start = RSTART
+        while (start > 1) {
+          c = substr(rest, start - 1, 1)
+          if (c ~ /[[:space:]"]/) break
+          start--
+        }
+        tok = substr(rest, start, RSTART + RLENGTH - start)
+        if (index(tok, "://") > 0) {
+          out = out substr(rest, 1, RSTART + RLENGTH - 1)
+        } else {
+          out = out substr(rest, 1, RSTART - 1) "<redacted>"
+        }
         rest = substr(rest, RSTART + RLENGTH)
       }
       return out rest
@@ -810,6 +884,10 @@ redact_stream() {
     # KEY=value early-return so an sk-/lcr- key on a non-secret-named "=" line
     # (e.g. "note=please use sk-ant-...") is still scrubbed (OBS-06).
     function scrub_inline(line) {
+      # Credentials in URL userinfo (Postgres/Redis/AMQP DSNs, proxy URLs).
+      # Runs FIRST: every rule below can consume the "@" or the host that this
+      # one needs intact to find the userinfo boundary.
+      line = scrub_url_credentials(line)
       # Provider API keys (sk-ant-, sk-, etc.) and Lucairn keys (lcr_live_, ...).
       gsub(/sk-[A-Za-z0-9._-]+/, "<redacted>", line)
       gsub(/lcr_[A-Za-z0-9._-]+/, "<redacted>", line)
@@ -818,42 +896,58 @@ redact_stream() {
       # JWTs: three base64url segments separated by dots, starting with the
       # standard "eyJ" header prefix (handles tokens NOT preceded by "Bearer").
       gsub(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/, "<redacted>", line)
-      # Email addresses. (TLD written as [A-Za-z][A-Za-z]+ rather than {2,}
-      # so it does not depend on awk interval-quantifier support — the support
-      # bundle is generated on arbitrary customer hosts with varied awks.)
-      gsub(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z][A-Za-z]+/, "<redacted>", line)
+      # Email addresses, anchored so they cannot start inside a URL authority.
+      # (TLD written as [A-Za-z][A-Za-z]+ rather than {2,} so it does not depend
+      # on awk interval-quantifier support — the support bundle is generated on
+      # arbitrary customer hosts with varied awks.)
+      line = scrub_emails(line)
       # E.164 phone numbers: leading "+" then 8 or more digits (written
       # without an interval quantifier for the same portability reason).
       gsub(/\+[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*/, "<redacted>", line)
-      # Credentials in URL userinfo (Postgres/Redis/AMQP DSNs, proxy URLs).
-      # Runs LAST: on a DSN whose host carries a dotted TLD the email rule
-      # above has already consumed the password, and running after it keeps
-      # this rule from re-mangling that output.
-      line = scrub_url_credentials(line)
       return line
     }
+    # Oversized lines are redacted whole rather than scanned. A single docker
+    # log line can be megabytes (a stack trace, a base64 blob, a binary spill);
+    # the per-match loops above are superlinear on such a line, and a line that
+    # long is not diagnosable prose anyway. Bounds both runtime and the risk of
+    # a novel credential shape hiding in a blob no rule models.
+    length($0) > 8192 { print "<redacted: line exceeds 8192 bytes>"; next }
     /^[[:space:]]*#/ || /^[[:space:]]*$/ { print; next }
     {
       line = scrub_inline($0)
     }
     index(line, "=") > 0 {
+      # The derived key must be the KEY NAME ALONE. Splitting on the first "="
+      # and re-emitting everything before it leaked secret material whenever the
+      # VALUE contained an "=": on `GATEWAY_KEYSTORE_KEY: dGVzdA==` the prefix
+      # is `GATEWAY_KEYSTORE_KEY: dGVzdA`, so the old code printed the entire
+      # base64 body and appended `<redacted>` to its padding (T-675).
+      #
+      # Truncating at the first ":" or space fixes that, and makes this branch
+      # INDEPENDENT of scrub_inline: it now emits only the key name and the
+      # marker, never a fragment of the value. It is not, however, a superset of
+      # the inline rules — a DSN under a non-secret key name (e.g.
+      # SANITIZER_STREAM_STATE_REDIS_URL) is caught only by
+      # scrub_url_credentials. The two paths are complementary, not layered.
       split(line, _kv, "=")
-      k = trim(_kv[1])
-      if (secret_key(k)) {
-        # Re-emit the original leading whitespace: DSN keys now reach this
-        # branch from `compose config` YAML (indented two levels under
-        # environment:), and dropping the indent would leave
-        # redacted/compose-resolved.yml unparseable (T-675).
-        indent = line
-        sub(/[^[:space:]].*/, "", indent)
-        print indent k "=<redacted>"
+      pre = _kv[1]
+      k = trim(pre)
+      sub(/^-[[:space:]]+/, "", k)          # compose list form: "- KEY=value"
+      # Re-emit the ORIGINAL separator. Rewriting a YAML "KEY: value" line as
+      # "KEY=<redacted>" would leave redacted/compose-resolved.yml unparseable —
+      # trading a leak for a broken bundle is not a fix.
+      sep = (index(k, ":") > 0) ? ": " : "="
+      sub(/[[:space:]:].*/, "", k)
+      kpos = (k == "") ? 0 : index(pre, k)
+      if (kpos > 0 && secret_key(k)) {
+        print substr(pre, 1, kpos - 1) k sep "<redacted>"
       } else {
         print line
       }
       next
     }
     {
-      if (line ~ /(KEY|TOKEN|SECRET|PASSWORD|PRIVATE|SIGNING|CERT|CREDENTIAL|API_KEY|LICENSE|DATABASE_URL|DB_URL|DSN):/) {
+      if (toupper(line) ~ /(KEY|TOKEN|SECRET|PASSWORD|PRIVATE|SIGNING|CERT|CREDENTIAL|API_KEY|LICENSE|DATABASE_URL|DB_URL|DSN):/) {
         sub(/:.*/, ": <redacted>", line)
       }
       print line
@@ -7999,12 +8093,16 @@ support_bundle() {
   runtime_profile_compose_args "$env_file" "$compose_file" || return 1
   mkdir -p "$output_dir"
 
-  local ts bundle_dir archive compose
+  local ts bundle_dir archive compose cert_raw
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   bundle_dir="$output_dir/lucairn-support-bundle-$ts"
   archive="$bundle_dir.tar.gz"
   mkdir -p "$bundle_dir"/{redacted,docker,logs,certs,postgres}
 
+  # Routed through redact_stream like every other bundle file: `hostname` and
+  # `uname -a` are customer-controlled strings, and a host named after an
+  # operator (or a kernel banner carrying a build user) is exactly the personal
+  # data the bundle is supposed to leave behind (T-675).
   {
     echo "Lucairn support bundle"
     echo "Generated: $ts"
@@ -8013,7 +8111,7 @@ support_bundle() {
     echo "Kernel: $(uname -a 2>/dev/null || echo unknown)"
     echo
     echo "Customer review required before sending this bundle to Lucairn support."
-  } > "$bundle_dir/README.txt"
+  } | redact_stream > "$bundle_dir/README.txt"
 
   {
     echo "version=$VERSION"
@@ -8027,7 +8125,14 @@ support_bundle() {
   if [ -f "$runtime_profile" ]; then
     cp "$runtime_profile" "$bundle_dir/redacted/runtime-profile.yaml"
   fi
-  write_cert_report "$env_file" "$bundle_dir/certs/cert-validity.txt"
+  # cert-validity.txt embeds env-file VALUES (`$key=$path`) and openssl subject/
+  # issuer DNs, which carry operator names and emails. It was the one bundle
+  # file written straight to disk without passing redact_stream (T-675); the
+  # raw form is staged outside the bundle so it can never be archived.
+  cert_raw="$(mktemp)"
+  write_cert_report "$env_file" "$cert_raw"
+  redact_stream < "$cert_raw" > "$bundle_dir/certs/cert-validity.txt"
+  rm -f "$cert_raw"
 
   if [ "$offline" -eq 1 ]; then
     echo "offline mode: docker status not collected" > "$bundle_dir/docker/status.txt"

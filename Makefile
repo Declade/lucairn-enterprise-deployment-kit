@@ -9,6 +9,7 @@ test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-h
 	bash tests/test_runtime_profile.sh
 	bash tests/test_check_updates.sh
 	bash tests/test_redact_stream.sh
+	bash tests/test_support_bundle_routing.sh
 	bash tests/test_tms_trust_zones.sh
 	bash tests/test_sanitizer_confidence_threshold_schema.sh
 	bash tests/test_sanitizer_sprig_zero_knobs.sh

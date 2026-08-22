@@ -117,7 +117,12 @@ bin/lucairn support-bundle \
 - bundle verification passes
 - doctor passes in the expected mode
 - stack reaches healthy and ready
-- support bundle is generated and does not expose secrets
+- support bundle is generated, and the redaction covers the shapes it claims:
+  URL-form DSNs (`scheme://user:password@host`), secret-named env keys, and
+  named password fields. Keyword-form connection strings — JDBC
+  `?password=`, libpq `password=... host=...`, and `Password=...;` — are NOT
+  covered (T-675); the reviewer must scan the bundle for those by hand before
+  it leaves the customer boundary
 - every discovered edge case is added to `INSTALL.md`, `OPS.md`, `TROUBLESHOOTING.md`, `bin/lucairn doctor`, or this document before the customer receives the package
 
 ## Transcript
