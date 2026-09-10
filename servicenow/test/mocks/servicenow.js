@@ -1,0 +1,209 @@
+'use strict';
+
+/*
+ * Minimal ServiceNow runtime shims so the Script Include sources in
+ * servicenow/src/script_includes/ can be loaded and exercised under Node.
+ *
+ * This is a HARNESS, not a simulator. It provides only the globals the sources
+ * touch at load time (`Class`) plus fakes the tests inject explicitly. Anything
+ * a source reaches for that is not shimmed here should fail loudly rather than
+ * quietly return undefined — that is how we find out we depended on a platform
+ * API without noticing.
+ */
+
+/* ---- global shims ------------------------------------------------------- */
+
+if (typeof global.Class === 'undefined') {
+    global.Class = {
+        create: function () {
+            return function () {
+                if (typeof this.initialize === 'function') {
+                    this.initialize.apply(this, arguments);
+                }
+            };
+        }
+    };
+}
+
+if (typeof global.gs === 'undefined') {
+    global.gs = {
+        warn: function () { /* silenced in tests; assert on injected log spies */ },
+        info: function () {},
+        error: function () {},
+        getProperty: function () {
+            throw new Error('gs.getProperty called without an injected getProperty seam');
+        },
+        generateGUID: function () {
+            throw new Error('gs.generateGUID called without an injected guid seam');
+        }
+    };
+}
+
+if (typeof global.GlideRecord === 'undefined') {
+    global.GlideRecord = function () {
+        throw new Error('GlideRecord constructed without an injected glideRecord seam');
+    };
+}
+
+if (typeof global.GlideDateTime === 'undefined') {
+    global.GlideDateTime = function () {
+        throw new Error('GlideDateTime constructed without an injected now seam');
+    };
+}
+
+if (typeof global.sn_ws === 'undefined') {
+    global.sn_ws = {
+        RESTMessageV2: function () {
+            throw new Error('sn_ws.RESTMessageV2 constructed without an injected message seam');
+        }
+    };
+}
+
+/* ---- fakes -------------------------------------------------------------- */
+
+/**
+ * In-memory GlideRecord stand-in.
+ *
+ * Supports the narrow surface the sources use: initialize / setValue /
+ * getValue / addQuery / setLimit / query / next / get / insert / update.
+ */
+function FakeTable(name) {
+    this.name = name;
+    this.rows = [];
+    this._seq = 0;
+    this.insertShouldFail = false;
+    this.queryShouldThrow = false;
+}
+
+FakeTable.prototype.seed = function (row) {
+    var copy = Object.assign({}, row);
+    if (!copy.sys_id) {
+        copy.sys_id = 'seed' + (++this._seq);
+    }
+    this.rows.push(copy);
+    return copy;
+};
+
+FakeTable.prototype.newRecord = function () {
+    var table = this;
+    var pending = {};
+    var queries = [];
+    var cursor = -1;
+    var matches = [];
+    var limit = 0;
+    var bound = null;
+
+    return {
+        initialize: function () { pending = {}; bound = null; },
+        setValue: function (field, value) {
+            if (bound) { bound[field] = value; } else { pending[field] = value; }
+        },
+        getValue: function (field) {
+            var src = bound || (matches[cursor] || {});
+            return Object.prototype.hasOwnProperty.call(src, field) ? src[field] : null;
+        },
+        addQuery: function (field, value) { queries.push([field, value]); },
+        setLimit: function (n) { limit = n; },
+        query: function () {
+            if (table.queryShouldThrow) {
+                throw new Error('simulated query failure on ' + table.name);
+            }
+            matches = table.rows.filter(function (row) {
+                return queries.every(function (q) {
+                    /* Compare loosely: the fake stores booleans as booleans while
+                     * the platform stores '1'/'0'. Both must match a query. */
+                    var actual = row[q[0]];
+                    if (typeof q[1] === 'boolean') {
+                        return actual === q[1] || actual === (q[1] ? '1' : '0');
+                    }
+                    return String(actual) === String(q[1]);
+                });
+            });
+            if (limit > 0) { matches = matches.slice(0, limit); }
+            cursor = -1;
+        },
+        next: function () {
+            cursor += 1;
+            return cursor < matches.length;
+        },
+        get: function (sysId) {
+            var found = table.rows.filter(function (r) { return r.sys_id === sysId; })[0];
+            if (!found) { return false; }
+            bound = found;
+            return true;
+        },
+        insert: function () {
+            if (table.insertShouldFail) { return null; }
+            var row = Object.assign({}, pending);
+            row.sys_id = 'row' + (++table._seq);
+            table.rows.push(row);
+            return row.sys_id;
+        },
+        update: function () {
+            return bound ? bound.sys_id : null;
+        }
+    };
+};
+
+/**
+ * @param {object} tables map of table name -> FakeTable
+ * @returns {function(string): object} a `glideRecord` seam
+ */
+function glideRecordSeam(tables) {
+    return function (name) {
+        if (!tables[name]) {
+            throw new Error('unexpected table access: ' + name);
+        }
+        return tables[name].newRecord();
+    };
+}
+
+/**
+ * Scripted RESTMessageV2 stand-in.
+ *
+ * @param {object} script
+ * @param {number} [script.status]
+ * @param {string} [script.body]
+ * @param {Error}  [script.throwOnExecute] thrown from execute()
+ * @param {string} [script.transportError]  makes haveError() true
+ * @param {boolean} [script.omitErrorApi]   drop haveError/getErrorMessage entirely
+ */
+function fakeRestMessage(script) {
+    var calls = {
+        headers: {},
+        body: null,
+        endpoint: null,
+        method: null,
+        timeout: null,
+        constructedWith: null
+    };
+
+    var msg = {
+        calls: calls,
+        setHttpMethod: function (m) { calls.method = m; },
+        setEndpoint: function (e) { calls.endpoint = e; },
+        setRequestHeader: function (k, v) { calls.headers[k] = v; },
+        setHttpTimeout: function (t) { calls.timeout = t; },
+        setRequestBody: function (b) { calls.body = b; },
+        execute: function () {
+            if (script.throwOnExecute) { throw script.throwOnExecute; }
+            var resp = {
+                getStatusCode: function () { return script.status; },
+                getBody: function () { return script.body; }
+            };
+            if (!script.omitErrorApi) {
+                resp.haveError = function () { return !!script.transportError; };
+                resp.getErrorMessage = function () { return script.transportError || ''; };
+                resp.getErrorCode = function () { return script.transportError ? '1' : '0'; };
+            }
+            return resp;
+        }
+    };
+    return msg;
+}
+
+module.exports = {
+    FakeTable: FakeTable,
+    glideRecordSeam: glideRecordSeam,
+    fakeRestMessage: fakeRestMessage
+};

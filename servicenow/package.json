@@ -1,0 +1,13 @@
+{
+  "name": "lucairn-for-now-assist",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local unit-test harness for the Lucairn for Now Assist scoped application. The shipped artefact is the ServiceNow update set, not this package.",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
