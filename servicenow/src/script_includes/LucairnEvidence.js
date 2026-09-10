@@ -150,7 +150,7 @@ LucairnEvidence.prototype = {
             var schema = this._schemaProblem(gr, LucairnEvidence.REQUIRED_FIELDS);
             if (schema) {
                 result.error = schema;
-                this._log('evidence table is not usable as an audit record (' + schema +
+                this._safeLog('evidence table is not usable as an audit record (' + schema +
                     '); treating the write as failed');
                 return result;
             }
@@ -175,7 +175,7 @@ LucairnEvidence.prototype = {
             var sysId = gr.insert();
             if (!sysId) {
                 result.error = 'insert returned no sys_id';
-                this._log('evidence insert returned no sys_id for skill "' + rec.skill + '"');
+                this._safeLog('evidence insert returned no sys_id for skill "' + rec.skill + '"');
                 return result;
             }
             result.stored = true;
@@ -186,7 +186,7 @@ LucairnEvidence.prototype = {
              * quote the value it choked on, and the caller writes this string
              * into a log line. See LucairnClient rule 4. */
             result.error = 'evidence insert raised';
-            this._log('evidence insert failed for skill "' + String(rec.skill || '') + '"');
+            this._safeLog('evidence insert failed for skill "' + String(rec.skill || '') + '"');
             return result;
         }
     },
@@ -232,7 +232,7 @@ LucairnEvidence.prototype = {
             var schema = this._schemaProblem(gr, LucairnEvidence.SEAL_REQUIRED_FIELDS);
             if (schema) {
                 result.error = schema;
-                this._log('evidence table cannot record a seal outcome (' + schema + ')');
+                this._safeLog('evidence table cannot record a seal outcome (' + schema + ')');
                 return result;
             }
 
@@ -257,7 +257,7 @@ LucairnEvidence.prototype = {
             var updatedId = gr.update();
             if (!updatedId) {
                 result.error = 'update returned no sys_id';
-                this._log('evidence seal outcome was not written for ' + id +
+                this._safeLog('evidence seal outcome was not written for ' + id +
                     ' (update returned no sys_id)');
                 return result;
             }
@@ -265,7 +265,7 @@ LucairnEvidence.prototype = {
             return result;
         } catch (e) {
             result.error = 'seal outcome could not be recorded';
-            this._log('evidence seal outcome could not be recorded for ' + id);
+            this._safeLog('evidence seal outcome could not be recorded for ' + id);
             return result;
         }
     },
@@ -299,6 +299,24 @@ LucairnEvidence.prototype = {
             }
         }
         return '';
+    },
+
+    /**
+     * Log, and never be the reason a caller's outcome changes.
+     *
+     * write() and recordSeal() both promise "never throws", and both used to
+     * break that promise in the one place it matters: the log line INSIDE their
+     * catch blocks. An injected logger that throws — a platform `gs.warn` under
+     * an ACL, a caller's own logger with a bug — made the recovery path raise,
+     * so the exception escaped into the adapter and, one frame up, turned a
+     * MINTED certificate into "no certificate exists" (round-3 advisory).
+     *
+     * A diagnostic is not allowed to have that power.
+     */
+    _safeLog: function (msg) {
+        try {
+            this._log(msg);
+        } catch (e) { /* a diagnostic must never be the reason an outcome changes */ }
     },
 
     _truncate: function (s, max) {

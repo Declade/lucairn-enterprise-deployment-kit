@@ -41,6 +41,37 @@
  * in `node:vm` — both paths, with and without a pre-declared `output` — rather
  * than grepping it for the right-looking words.
  *
+ * WHY THE FALLBACK IS NOT A `try { output = … } catch { global.output = … }`
+ * -------------------------------------------------------------------------
+ * That is what round 2 shipped, and round 3 found it fail-open. A catch-all
+ * around the assignment does not only catch "there is no such binding". It also
+ * catches an assignment the binding REJECTED — a read-only accessor, a
+ * non-writable property, a setter that throws — and in that case the recovery
+ * is a lie: the sanitized text is published onto the global scope, the hook
+ * returns normally, and the binding the platform actually reads back still
+ * holds the ORIGINAL text. Raw content proceeds under a covered verdict, with
+ * no error and no annotation. Round-3 gate finding P1.
+ *
+ * So the two questions are asked separately:
+ *
+ *   1. DOES the binding exist? Answered by a READ probe before any write.
+ *      Reading an unresolvable identifier is a ReferenceError; reading a
+ *      declared one is not. (`typeof` cannot answer this — it says 'undefined'
+ *      for a declared-but-undefined binding and for an absent one alike.)
+ *   2. Did the WRITE succeed? Not asked at all — the assignment is unguarded,
+ *      so a rejected write propagates out of the hook. On the allowed path a
+ *      propagated error is fail-CLOSED at the platform layer and honest: the
+ *      run stops, and Leg 6's "distinguishing (b) from a crash" step is what
+ *      tells that apart from a decision. Silent raw continuation is not an
+ *      option this file is allowed to have.
+ *
+ * If the binding is absent AND the script's global scope is unreachable (an
+ * enclosing strict ES5 wrapper with no `globalThis` and no `Function`
+ * constructor — round-3 advisory), there is nowhere to publish to and the hook
+ * raises a DISTINCT, content-free error. It deliberately does NOT reuse
+ * LucairnSkillGuard.ERROR_PREFIX: a Leg 6 observer reading "skill run blocked"
+ * for what is really a wiring failure would score outcome (a) on a broken hook.
+ *
  * NONE of 1-4 may be asserted in packaging, a deck or customer copy until the
  * gate record for README § Verify on the PDI, Leg 6 says which way each went.
  *
@@ -105,22 +136,67 @@
      * not covered and no certificate exists. Either way the skill runs on
      * verdict.text and never on the original. */
     // ADJUST-ON-PDI: assign to whatever the extension point reads back.
+
+    /* STEP 1 — does an `output` binding exist? A READ, not a write. This is the
+     * ONLY question the catch below is allowed to answer; see the header. */
+    var outputBindingExists = true;
     try {
-        /* The declared binding, whatever scope the extension point declared it
-         * in. This is the path that runs when the platform pre-declares
-         * `output`, and it is the one that reaches a function-scoped binding. */
+        /* eslint-disable-next-line no-undef, no-unused-expressions */
+        output;
+    } catch (probeError) {
+        if (!(probeError instanceof ReferenceError)) {
+            /* Not "no such binding" — a throwing getter, or a host object
+             * refusing the read. Whatever it is, it is not a case this hook
+             * knows how to recover from, and guessing would be the round-2
+             * mistake again. Fail closed. */
+            throw probeError;
+        }
+        outputBindingExists = false;
+    }
+
+    if (outputBindingExists) {
+        /* STEP 2 — the declared binding, whatever scope the extension point
+         * declared it in. DELIBERATELY UNGUARDED: a rejected assignment must
+         * propagate, because the alternative is publishing sanitized text
+         * somewhere the platform does not read while the binding it DOES read
+         * still holds the raw submission. Do not wrap this line. */
         // eslint-disable-next-line no-undef
         output = verdict.text;
-    } catch (unresolvableOutputBinding) {
-        /* Strict mode + no declared `output` ⇒ ReferenceError, which used to
-         * abort the whole protected run (finding N-1). Publish onto the script's
-         * global scope instead, which is where a sloppy-mode `output = …` would
-         * have landed the value anyway.
+    } else if (globalScope) {
+        /* No declared `output` (finding N-1: this used to abort every protected
+         * run). Publish onto the script's global scope instead, which is where
+         * a sloppy-mode `output = …` would have landed the value anyway.
          *
          * If the extension point reads a binding that is neither pre-declared
          * nor global, NEITHER path reaches it — record that in Leg 6 as outcome
          * (c)-adjacent and change the two ADJUST-ON-PDI lines rather than
          * assuming this fallback covered it. */
         globalScope.output = verdict.text;
+    } else {
+        /* No binding and no reachable global scope. There is nowhere to put the
+         * sanitized text, so the one thing that must not happen is returning
+         * normally and letting the run continue on whatever the extension point
+         * already held. Raise, content-free, under its OWN prefix. */
+        throw new Error('[Lucairn for Now Assist] hook could not publish its ' +
+            'output: no `output` binding and no reachable global scope ' +
+            '(correlation ' + verdict.correlationId + ')');
     }
-}(typeof globalThis !== 'undefined' ? globalThis : (function () { return this; }())));
+}(function () {
+    /* The script's global scope, in decreasing order of reliability.
+     *
+     * `globalThis` is ES2020 and absent on Rhino. The classic ES5 substitute,
+     * an indirect `this`, is `undefined` when an enclosing wrapper is strict —
+     * round-3 advisory. The `Function` constructor builds a NON-strict function
+     * regardless of the calling code's strictness, so its `this` is the global
+     * object even inside a strict wrapper; a runtime that withholds `Function`
+     * (or a scoped-app sandbox that blocks it) lands on null, and the branch
+     * above raises rather than pretending it published anything. */
+    if (typeof globalThis !== 'undefined') { return globalThis; }
+    var indirectThis = (function () { return this; }());
+    if (indirectThis) { return indirectThis; }
+    try {
+        return Function('return this')();
+    } catch (noFunctionConstructor) {
+        return null;
+    }
+}()));

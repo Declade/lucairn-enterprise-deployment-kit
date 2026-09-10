@@ -403,11 +403,17 @@ var s = adapter.seal({
     responseText: 'Summary: a laptop fails to boot after a patch window.'
 });
 gs.info('seal -> sealed=' + s.sealed + ' cert=' + s.certUrl + ' ms=' + s.durationMs);
+/* Two outcomes, not one. `sealed` = a certificate was minted. `sealRecorded` =
+ * the evidence row was told about it. A row the application can insert but not
+ * update (the common ACL shape) gives sealed=true, sealRecorded=false — a real
+ * certificate with no instance-side record. Round-3 gate advisory. */
+gs.info('seal recorded=' + s.sealRecorded + ' recordingError=' + s.recordingError);
 gs.info('total wall clock ms: ' + (new Date().getTime() - t0));
 ```
 
 **Expect:** `allowed=true`, `coverage=covered`, a sanitized string with no
-fixture name/email/phone left in it, `sealed=true`, a resolvable `cert_url`.
+fixture name/email/phone left in it, `sealed=true`, `sealRecorded=true`, a
+resolvable `cert_url`.
 **Record the total wall clock.** For reference, the comparable Lucairn demo path
 measures 4–7 s, and about 9.6 s with the heaviest sanitizer layer on.
 
@@ -588,17 +594,49 @@ and **a `blocked` evidence row** with a matching `correlation_id`.
      was), so a total outage presents as a perfect block. Round 2 found that
      defect live in this file; assume the class, not the instance.
 
+     Round 3 kept the class alive on purpose. The hook now propagates two
+     wiring failures on the ALLOWED path rather than papering over them: an
+     `output` binding that **rejects** the assignment, and an absent binding
+     with **no reachable global scope** (a strict ES5 wrapper on a runtime with
+     neither `globalThis` nor `Function`). Both are fail-closed and both look
+     like a block at the UI. **Tell them apart by the error text:** a real block
+     says `skill run blocked:`; a publish failure says `hook could not publish
+     its output:`; anything else is a third crash and outcome (a) may not be
+     recorded for it. If the message is unavailable to you, use the
+     sanitizer-REACHABLE re-run below — that is what the step is for.
+
   A third, narrower one: an evidence row proves the *adapter* ran, not that the
   *platform* honoured its raise.
 
 **Falsifier for the stronger claim — do this before saying anything about
 dispatch.** Non-dispatch has to be observed independently of the UI:
 
-- **Lucairn side:** the absence of any request for that `correlation_id` in the
-  Lucairn service's own request log across the whole window of the run. Absence is
-  only meaningful if the log is known to be recording — prove that with a
-  positive control (a successful Leg 1 round trip in the same window) before
-  reading any absence as evidence.
+- **Lucairn side — correlate by TIME WINDOW, not by `correlation_id`.** The
+  adapter's `correlation_id` is generated on the instance and **never leaves
+  it**: `/api/v1/sanitize-only` has no field for it (`text`, `tier_hint`,
+  `categories`, `client_id` — dual-sandbox-architecture
+  `sensitive_mode.go:392-397`), and the client does
+  not send one. Searching the Lucairn request log for that id therefore returns
+  nothing *whatever happened*, which is not evidence of anything. Round-3 gate
+  advisory. (The handler tolerates unknown JSON fields, so a `correlation_id`
+  could be *sent* — but nothing on the service side records or indexes it, so
+  sending one would buy a false sense of correlation, not a real one.)
+
+  Do this instead:
+
+  1. Note the wall-clock start and end of the UI-triggered run, and the
+     instance's clock offset against the Lucairn host. That window, plus the
+     `client_id` the instance is configured with, is your query.
+  2. **Positive control first, in the same window:** run a successful Leg 1
+     round trip and confirm it *does* appear in the request log. Match it by the
+     `cert_id_partial` it returned — that value IS minted and recorded
+     service-side and the client holds it, so the control is matchable by id
+     even though the negative case is only matchable by window.
+  3. Only then read the absence of any request in that window for that
+     `client_id` as evidence — and record it as **window-scoped**: it shows no
+     request arrived in the window, not that no request could exist. Without
+     step 2 an empty result is indistinguishable from a log that was not
+     recording.
 - **ServiceNow side, where observable:** outbound/inference telemetry for the
   run — instance node logs, the skill's own execution record, or an outbound
   HTTP log entry at a level the customer permits. On a hosted Now Assist
