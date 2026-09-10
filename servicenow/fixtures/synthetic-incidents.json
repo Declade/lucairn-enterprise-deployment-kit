@@ -1,0 +1,53 @@
+{
+  "_comment": [
+    "SYNTHETIC FIXTURES ONLY. Every name, address, email, phone number, IBAN,",
+    "sys_id and record number below is invented for testing. Nothing here comes",
+    "from a real person, a real customer, or a real ServiceNow instance.",
+    "",
+    "These fixtures are the payloads used by the local unit tests and by the",
+    "PDI verification runbook in servicenow/README.md. Do not replace them with",
+    "production data on any instance, including a personal developer instance."
+  ],
+  "incidents": [
+    {
+      "id": "fixture-basic-contact",
+      "number": "INC0090001",
+      "sys_id": "aaaa1111bbbb2222cccc3333dddd4444",
+      "short_description": "Laptop will not boot after the overnight patch window",
+      "description": "Reported by Brannagh Oduya-Kestrel (brannagh.oduya-kestrel@northmarrow-example.test, +49 151 0000 1234). Her ThinkPad in office 4.12 shows a firmware error after last night's patch. Callback preferred before 10:00. Cost centre CC-88231.",
+      "caller_display": "Brannagh Oduya-Kestrel",
+      "expected_categories_hint": ["person_name", "email", "phone"]
+    },
+    {
+      "id": "fixture-financial-detail",
+      "number": "INC0090002",
+      "sys_id": "eeee5555ffff6666aaaa7777bbbb8888",
+      "short_description": "Expense reimbursement failed twice",
+      "description": "Tomasz Wielgorski-Ferrand asked us to re-check the payout account DE02 1203 0000 0000 2020 51 held at Musterbank. He can be reached at t.wielgorski-ferrand@vantablu-example.test or on 030 000000. Employee number 4471902, birth date 1988-02-29.",
+      "caller_display": "Tomasz Wielgorski-Ferrand",
+      "expected_categories_hint": ["person_name", "email", "iban", "phone"]
+    },
+    {
+      "id": "fixture-no-obvious-pii",
+      "number": "INC0090003",
+      "sys_id": "cccc9999dddd0000eeee1111ffff2222",
+      "short_description": "Batch job LOAD_NIGHTLY exits with code 137",
+      "description": "The nightly load container is killed by the OOM reaper at roughly 02:15 every night since the memory limit was lowered to 512Mi. No user data involved; needs a limit increase and a rerun.",
+      "caller_display": "",
+      "expected_categories_hint": []
+    },
+    {
+      "id": "fixture-multibyte",
+      "number": "INC0090004",
+      "sys_id": "1111aaaa2222bbbb3333cccc4444dddd",
+      "short_description": "Drucker im Großraumbüro reagiert nicht",
+      "description": "Kollegin Ólöf Þorsteinsdóttir-Weiß (oloef.thorsteinsdottir@gruenhain-example.test) meldet, dass der Drucker im Großraumbüro seit Montag keine Aufträge annimmt. Rückruf unter 0911 0000000 möglich. 日本語のテスト文字列も含む。",
+      "caller_display": "Ólöf Þorsteinsdóttir-Weiß",
+      "expected_categories_hint": ["person_name", "email", "phone"]
+    }
+  ],
+  "skill_names": {
+    "protected": "Incident summarization",
+    "unlisted": "Change risk explainer"
+  }
+}
