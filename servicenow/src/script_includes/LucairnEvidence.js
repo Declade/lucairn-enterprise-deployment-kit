@@ -44,6 +44,16 @@ LucairnEvidence.FAILURE = {
     UNKNOWN: 'unknown'
 };
 
+/* Certificate-sealing outcome, recorded separately from the coverage outcome.
+ * A run can be covered and unsealed: the submitted fields were sanitized, and
+ * the certificate that would have attested it does not exist. Those are two
+ * different facts and the row states both. */
+LucairnEvidence.SEAL = {
+    NOT_ATTEMPTED: 'not_attempted',
+    SEALED: 'sealed',
+    FAILED: 'failed'
+};
+
 LucairnEvidence.prototype = {
 
     /**
@@ -102,6 +112,8 @@ LucairnEvidence.prototype = {
             gr.setValue('redaction_total', this._int(rec.redactionTotal));
             gr.setValue('layers_active', (rec.layersActive || []).join(','));
             gr.setValue('fail_open_override', rec.failOpenOverride === true);
+            gr.setValue('seal_outcome', LucairnEvidence.SEAL.NOT_ATTEMPTED);
+            gr.setValue('seal_failure_class', LucairnEvidence.FAILURE.NONE);
             gr.setValue('recorded_at', this._now());
 
             var sysId = gr.insert();
@@ -114,26 +126,46 @@ LucairnEvidence.prototype = {
             result.sysId = String(sysId);
             return result;
         } catch (e) {
-            result.error = e.message;
-            this._log('evidence insert failed for skill "' + rec.skill + '": ' + e.message);
+            /* Typed, not forwarded. A platform exception raised mid-insert can
+             * quote the value it choked on, and the caller writes this string
+             * into a log line. See LucairnClient rule 4. */
+            result.error = 'evidence insert raised';
+            this._log('evidence insert failed for skill "' + String(rec.skill || '') + '"');
             return result;
         }
     },
 
     /**
-     * Attach certificate identifiers to an already-written evidence row.
+     * Record the outcome of the certificate-sealing step on an already-written
+     * evidence row.
      *
-     * Separate from write() because the certificate only exists after the
-     * skill has produced a response and the seal call has returned — by which
-     * point the covered/blocked decision is long made. Never throws.
+     * Separate from write() because the sealing step only happens after the
+     * skill has produced a response — by which point the covered/blocked
+     * decision is long made. Never throws.
+     *
+     * BOTH outcomes are recorded, not just the happy one. A covered run whose
+     * seal failed leaves a row saying so; silence would be indistinguishable
+     * from "nobody ever called seal()".
+     *
+     * There is NO retry. `cert_id_partial` is consumed by the first seal call
+     * that reaches the service, so a second attempt with the same value returns
+     * 404 and would overwrite an accurate diagnostic with a misleading one.
+     * Recovery is a fresh sanitize-only + seal flow, not a retry.
      *
      * @param {string} sysId  sys_id returned by write()
-     * @param {object} cert   `{ certId, certUrl, sealDurationMs }`
+     * @param {object} seal
+     * @param {string} seal.outcome        one of LucairnEvidence.SEAL
+     * @param {string} [seal.certId]
+     * @param {string} [seal.certUrl]
+     * @param {string} [seal.failureClass]
+     * @param {string} [seal.message]      bounded, typed diagnostic; no content
+     * @param {number} [seal.sealDurationMs]
      * @returns {{updated: boolean, error: string}}
      */
-    attachCert: function (sysId, cert) {
+    recordSeal: function (sysId, seal) {
         var result = { updated: false, error: '' };
         var id = String(sysId || '');
+        var s = seal || {};
         if (!id) {
             result.error = 'no evidence sys_id';
             return result;
@@ -144,17 +176,20 @@ LucairnEvidence.prototype = {
                 result.error = 'evidence row not found';
                 return result;
             }
-            gr.setValue('cert_id', String(cert.certId || ''));
-            gr.setValue('cert_url', String(cert.certUrl || ''));
-            if (cert.sealDurationMs !== undefined) {
-                gr.setValue('seal_duration_ms', this._int(cert.sealDurationMs));
+            gr.setValue('seal_outcome', s.outcome || LucairnEvidence.SEAL.FAILED);
+            gr.setValue('cert_id', String(s.certId || ''));
+            gr.setValue('cert_url', String(s.certUrl || ''));
+            gr.setValue('seal_failure_class', s.failureClass || LucairnEvidence.FAILURE.NONE);
+            gr.setValue('seal_message', this._truncate(s.message, 500));
+            if (s.sealDurationMs !== undefined) {
+                gr.setValue('seal_duration_ms', this._int(s.sealDurationMs));
             }
             gr.update();
             result.updated = true;
             return result;
         } catch (e) {
-            result.error = e.message;
-            this._log('evidence cert attach failed for ' + id + ': ' + e.message);
+            result.error = 'seal outcome could not be recorded';
+            this._log('evidence seal outcome could not be recorded for ' + id);
             return result;
         }
     },

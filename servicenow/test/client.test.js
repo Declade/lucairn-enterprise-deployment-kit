@@ -80,7 +80,7 @@ test('seal-cert sends the documented request shape including the vendor', () => 
     const cap = {};
     const body = JSON.stringify({
         cert_id: 'cert_synthetic1',
-        cert_url: 'https://lucairn.example.test/api/v1/veil/certificate/req_synthetic1',
+        cert_url: 'https://lucairn.example.test/verify?id=req_synthetic1',
         cert_tier: 'input-shield'
     });
     const client = clientWith(REST_CFG, { status: 200, body }, cap);
@@ -124,7 +124,12 @@ test('connection refused thrown from execute() is a non-ok result, classified', 
     assert.strictEqual(res.ok, false);
     assert.strictEqual(res.failureClass, 'connection_refused');
     assert.strictEqual(res.status, 0);
-    assert.match(res.message, /Connection refused/);
+    assert.strictEqual(res.stage, 'request_execute');
+    // The diagnostic is CONSTRUCTED from this file's own literals. The Java
+    // exception text that produced the label is not part of it — assert on the
+    // canonical reason, and assert the upstream text is absent.
+    assert.match(res.message, /reason=the connection was refused/);
+    assert.ok(!res.message.includes('HttpHostConnectException'), res.message);
 });
 
 test('connection refused surfaced via haveError() is a non-ok result, classified', () => {
@@ -207,6 +212,48 @@ test('a status of 0 without an error API is still treated as unreachable', () =>
     assert.strictEqual(res.failureClass, 'unknown');
 });
 
+/* ---- round-1 gate finding 4: a failed diagnostic is itself a failure ----- */
+
+test('haveError() true + a throwing getErrorMessage() stays a FAILURE, not a success', () => {
+    // The old code reset hadTransportError inside the catch, so a 200 body
+    // arriving alongside a known transport failure was returned as ok.
+    const client = clientWith(REST_CFG, {
+        status: 200,
+        body: OK_SANITIZE_BODY,
+        errorMessageThrows: new Error('getErrorMessage is not a function on this release')
+    });
+    const res = client.sanitizeOnly('anything');
+
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(res.stage, 'transport');
+    // We know the transport failed; we cannot say why, so the class degrades
+    // rather than the verdict.
+    assert.strictEqual(res.failureClass, 'unknown');
+});
+
+test('a throwing haveError() fails the call closed', () => {
+    const client = clientWith(REST_CFG, {
+        status: 200,
+        body: OK_SANITIZE_BODY,
+        haveErrorThrows: new Error('haveError blew up')
+    });
+    assert.strictEqual(client.sanitizeOnly('anything').ok, false);
+});
+
+test('a throwing getBody() is a failure, and no exception text is carried', () => {
+    const client = clientWith(REST_CFG, {
+        status: 200,
+        getBodyThrows: new Error('stream closed while reading Brannagh Oduya-Kestrel')
+    });
+    const res = client.sanitizeOnly('anything');
+
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(res.stage, 'response_read');
+    assert.ok(!JSON.stringify(res).includes('Brannagh'), res.message);
+});
+
+/* ---- round-1 gate finding 5: diagnostics are constructed, not forwarded --- */
+
 test('the result never carries the api key or the submitted text', () => {
     const client = clientWith(ENDPOINT_CFG, {
         throwOnExecute: new Error('Connection refused')
@@ -217,6 +264,109 @@ test('the result never carries the api key or the submitted text', () => {
     assert.ok(!serialised.includes('lcr_live_'), serialised);
     assert.ok(!serialised.includes('Brannagh'), serialised);
     assert.ok(!serialised.includes('northmarrow-example.test'), serialised);
+});
+
+test('CANARY: an exception carrying content and a credential leaks neither', () => {
+    // The old test threw a bare 'Connection refused' — an exception with
+    // nothing in it to leak, so it could not fail. This one is loaded.
+    const CONTENT_CANARY = 'Brannagh Oduya-Kestrel, brannagh.oduya-kestrel@northmarrow-example.test';
+    const KEY_CANARY = 'lcr_live_synthetic_canary_0000';
+    const client = clientWith(REST_CFG, {
+        throwOnExecute: new Error(
+            `POST failed: Connection refused; request body was {"text":"${CONTENT_CANARY}"}; ` +
+            `headers: Authorization: Bearer ${KEY_CANARY}`
+        )
+    });
+    const res = client.sanitizeOnly(CONTENT_CANARY);
+    const serialised = JSON.stringify(res);
+
+    assert.ok(!serialised.includes('Brannagh'), serialised);
+    assert.ok(!serialised.includes('northmarrow-example.test'), serialised);
+    assert.ok(!serialised.includes('lcr_live_'), serialised);
+    assert.ok(!serialised.includes('Bearer'), serialised);
+    // The classification still happened — the text was read, then discarded.
+    assert.strictEqual(res.failureClass, 'connection_refused');
+});
+
+test('CANARY: an upstream error body cannot push its message into the diagnostic', () => {
+    const client = clientWith(REST_CFG, {
+        status: 400,
+        body: JSON.stringify({
+            error: 'invalid_field',
+            message: 'field text rejected: "Brannagh Oduya-Kestrel" with key lcr_live_synthetic_leak_canary'
+        })
+    });
+    const res = client.sanitizeOnly('anything');
+    const serialised = JSON.stringify(res.message) + JSON.stringify(res.apiCode);
+
+    assert.strictEqual(res.ok, false);
+    // The error CODE is allow-listed, so it survives; the message never does.
+    assert.strictEqual(res.apiCode, 'invalid_field');
+    assert.ok(!serialised.includes('Brannagh'), serialised);
+    assert.ok(!serialised.includes('lcr_live_'), serialised);
+});
+
+test('an error code outside the allow-list is replaced, not truncated', () => {
+    const client = clientWith(REST_CFG, {
+        status: 500,
+        body: JSON.stringify({ error: 'Brannagh Oduya-Kestrel', message: 'x' })
+    });
+    const res = client.sanitizeOnly('anything');
+
+    assert.strictEqual(res.apiCode, 'unrecognised_error_code');
+    assert.ok(!res.message.includes('Brannagh'), res.message);
+});
+
+test('every diagnostic this client produces stays inside the length cap', () => {
+    const long = 'x'.repeat(50000);
+    const client = clientWith(REST_CFG, { throwOnExecute: new Error(long) });
+    const res = client.sanitizeOnly('anything');
+
+    assert.ok(res.message.length <= LucairnClient.MAX_DIAGNOSTIC_CHARS,
+        `diagnostic was ${res.message.length} chars`);
+});
+
+/* ---- round-1 gate fold-in L-1: the service caps BYTES, not characters ---- */
+
+test('tool_name is capped on UTF-8 bytes, and never splits a character', () => {
+    const cap = {};
+    const client = clientWith(REST_CFG, { status: 200, body: '{}' }, cap);
+    // 200 × 'ä' is 200 UTF-16 units and 400 UTF-8 bytes. The service rejects
+    // anything over 256 bytes with HTTP 400, so the old substring(0, 256) cap
+    // shipped a request that could only fail.
+    client.sealCert({ certIdPartial: 'p', toolName: 'ä'.repeat(200) });
+
+    const sent = JSON.parse(cap.msg.calls.body);
+    assert.strictEqual(LucairnClient.utf8ByteLength(sent.tool_name), 256);
+    assert.strictEqual(sent.tool_name.length, 128); // whole characters only
+});
+
+test('tool_name capping keeps surrogate pairs intact at the boundary', () => {
+    const cap = {};
+    const client = clientWith(REST_CFG, { status: 200, body: '{}' }, cap);
+    // 63 ASCII bytes then astral characters: the cap lands mid-pair unless the
+    // pair is treated as one code point.
+    const name = 'a'.repeat(63) + '\u{1F600}'.repeat(100);
+    client.sealCert({ certIdPartial: 'p', toolName: name });
+
+    const sent = JSON.parse(cap.msg.calls.body);
+    assert.ok(LucairnClient.utf8ByteLength(sent.tool_name) <= 256);
+    assert.strictEqual(LucairnClient.utf8ByteLength(sent.tool_name), 63 + 48 * 4);
+    // A lone surrogate would round-trip through JSON as U+FFFD.
+    assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(sent.tool_name));
+    assert.ok(!/(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(sent.tool_name));
+});
+
+test('utf8ByteLength boundary cases', () => {
+    assert.strictEqual(LucairnClient.utf8ByteLength(''), 0);
+    assert.strictEqual(LucairnClient.utf8ByteLength('a'), 1);
+    assert.strictEqual(LucairnClient.utf8ByteLength('ä'), 2);
+    assert.strictEqual(LucairnClient.utf8ByteLength('€'), 3);
+    assert.strictEqual(LucairnClient.utf8ByteLength('\u{1F600}'), 4);
+    assert.strictEqual(LucairnClient.capUtf8Bytes('äää', 5), 'ää');
+    assert.strictEqual(LucairnClient.capUtf8Bytes('äää', 6), 'äää');
+    assert.strictEqual(LucairnClient.capUtf8Bytes('\u{1F600}', 3), '');
+    assert.strictEqual(LucairnClient.capUtf8Bytes('\u{1F600}', 4), '\u{1F600}');
 });
 
 test('the client never throws, whatever execute() does', () => {

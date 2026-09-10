@@ -11,6 +11,37 @@ record; the platform injects it, and no application code ever reads it.
 > `lucairn.now_assist.transport` to `endpoint`, prove the round trip that way,
 > and record what actually happened here.
 
+> ### 🔴 UNRESOLVED: does a RESTMessage even carry API-key authentication?
+>
+> This is a sharper doubt than the general banner above, and it was raised
+> against a specific claim in this file: that setting a REST Message's
+> *Authentication type* to a Connection & Credential alias makes the platform
+> inject an `Authorization: Bearer …` header from an API Key credential.
+>
+> **The published documentation does not support that.** ServiceNow's outbound
+> REST authentication page describes custom/API-key authentication in terms of
+> **Flow Designer REST steps**, not the `sn_ws.RESTMessageV2` API this
+> application uses. So the recipe in § 4 may be one of:
+>
+>   1. correct on the target release and simply under-documented;
+>   2. correct only with an API Key authentication profile attached (§ "If the
+>      alias does not supply an Authorization header" below);
+>   3. **not supported at all** for `RESTMessageV2`, in which case the shipping
+>      transport for this application is `endpoint` mode, or a Flow-based
+>      carrier, and the design changes.
+>
+> Outcome 3 is a design change, not a configuration tweak — treat it that way
+> and open a design pass rather than working around it. Do not describe the
+> alias transport as "the shipping mode" in any customer-facing material until
+> Leg 1 has returned HTTP 200 through it on a named instance family and patch
+> level, and the gate record says so.
+>
+> Reference: ServiceNow outbound REST authentication documentation
+> (`https://www.servicenow.com/docs/r/api-reference/web-services/c_OutboundRESTAuth.html`)
+> and the scoped GlideRecord API reference
+> (`https://www.servicenow.com/docs/r/api-reference/server-api-reference/c_GlideRecordScopedAPI.html`).
+> Raised by the round-1 gate (astra advisory, `connection-and-credential-alias.md:73`).
+
 ---
 
 ## 1. Credential — the customer's API key
@@ -70,7 +101,7 @@ the application, and the credential stays out of every exported artefact.
 | Field | Value |
 |---|---|
 | Name | `Lucairn Service` |
-| Authentication type | **Connection & Credential alias** |
+| Authentication type | **Connection & Credential alias** — ⚠️ unresolved, see the red banner above |
 | Connection alias | `Lucairn service` (step 3) |
 | Application | Lucairn for Now Assist |
 
@@ -120,7 +151,12 @@ record either way — this is one of the things the PDI run exists to settle.
 
 | Role | Grants |
 |---|---|
-| `x_lcrn_now_assist_admin` | Write on the skill policy table (i.e. the ability to turn a skill fail-open), read on evidence, read on the application's properties |
-| `x_lcrn_now_assist_auditor` | Read-only on the evidence table |
+| `x_lcrn_now_assist_admin` | Read/create/write/delete on the skill policy table (i.e. the ability to turn a skill fail-open), read on evidence, read on the application's properties |
+| `x_lcrn_now_assist_auditor` | Read-only on the evidence table and the skill policy table |
+
+Neither role gets create, write or delete on the evidence table — those rows are
+written by application code only. The full per-operation ACL specification is in
+`tables.md` § "Access control"; create it as specified rather than treating the
+table's default access as sufficient.
 
 Nobody needs read access to the credential record for the application to work.

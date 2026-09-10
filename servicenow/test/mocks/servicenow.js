@@ -73,6 +73,32 @@ function FakeTable(name) {
     this._seq = 0;
     this.insertShouldFail = false;
     this.queryShouldThrow = false;
+
+    /* --- states the round-1 gate found the old mock could not express ------
+     *
+     * A mock that can only produce well-behaved platform responses cannot
+     * falsify a claim about misbehaving ones. Each flag below reproduces a
+     * documented ServiceNow behaviour the sources now have to survive.
+     */
+
+    /* The table does not exist in this scope: isValid() is false. */
+    this.tableInvalid = false;
+
+    /* Field names the table does NOT have. isValidField() returns false for
+     * these, and — the point — a query condition naming one is DROPPED rather
+     * than matching nothing (see dropInvalidPredicates). */
+    this.missingFields = [];
+
+    /* Model the documented drop: conditions on a field in missingFields are
+     * discarded from the filter, so the query returns rows it never asked for.
+     * On by default because that is what the platform does. */
+    this.dropInvalidPredicates = true;
+
+    /* Ignore setLimit(), so more rows come back than were requested. */
+    this.ignoreLimit = false;
+
+    /* isValid() itself raises. */
+    this.isValidShouldThrow = false;
 }
 
 FakeTable.prototype.seed = function (row) {
@@ -93,6 +119,10 @@ FakeTable.prototype.newRecord = function () {
     var limit = 0;
     var bound = null;
 
+    function fieldExists(field) {
+        return table.missingFields.indexOf(field) === -1;
+    }
+
     return {
         initialize: function () { pending = {}; bound = null; },
         setValue: function (field, value) {
@@ -102,14 +132,28 @@ FakeTable.prototype.newRecord = function () {
             var src = bound || (matches[cursor] || {});
             return Object.prototype.hasOwnProperty.call(src, field) ? src[field] : null;
         },
+        isValid: function () {
+            if (table.isValidShouldThrow) {
+                throw new Error('simulated isValid() failure on ' + table.name);
+            }
+            return !table.tableInvalid;
+        },
+        isValidField: function (field) { return fieldExists(field); },
         addQuery: function (field, value) { queries.push([field, value]); },
         setLimit: function (n) { limit = n; },
         query: function () {
             if (table.queryShouldThrow) {
                 throw new Error('simulated query failure on ' + table.name);
             }
+            /* THE DROP. A scoped GlideRecord discards a condition naming a field
+             * the table does not have — it does not error and it does not match
+             * nothing. A query whose only filters were dropped therefore selects
+             * the whole table. */
+            var effective = queries.filter(function (q) {
+                return fieldExists(q[0]) || !table.dropInvalidPredicates;
+            });
             matches = table.rows.filter(function (row) {
-                return queries.every(function (q) {
+                return effective.every(function (q) {
                     /* Compare loosely: the fake stores booleans as booleans while
                      * the platform stores '1'/'0'. Both must match a query. */
                     var actual = row[q[0]];
@@ -119,7 +163,7 @@ FakeTable.prototype.newRecord = function () {
                     return String(actual) === String(q[1]);
                 });
             });
-            if (limit > 0) { matches = matches.slice(0, limit); }
+            if (limit > 0 && !table.ignoreLimit) { matches = matches.slice(0, limit); }
             cursor = -1;
         },
         next: function () {
@@ -167,6 +211,11 @@ function glideRecordSeam(tables) {
  * @param {Error}  [script.throwOnExecute] thrown from execute()
  * @param {string} [script.transportError]  makes haveError() true
  * @param {boolean} [script.omitErrorApi]   drop haveError/getErrorMessage entirely
+ * @param {Error}  [script.haveErrorThrows] haveError() raises
+ * @param {Error}  [script.errorMessageThrows] getErrorMessage() raises while
+ *   haveError() still reports true — the round-1 gate finding-4 state, which the
+ *   old mock had no way to produce
+ * @param {Error}  [script.getBodyThrows]  getBody() raises
  */
 function fakeRestMessage(script) {
     var calls = {
@@ -189,11 +238,20 @@ function fakeRestMessage(script) {
             if (script.throwOnExecute) { throw script.throwOnExecute; }
             var resp = {
                 getStatusCode: function () { return script.status; },
-                getBody: function () { return script.body; }
+                getBody: function () {
+                    if (script.getBodyThrows) { throw script.getBodyThrows; }
+                    return script.body;
+                }
             };
             if (!script.omitErrorApi) {
-                resp.haveError = function () { return !!script.transportError; };
-                resp.getErrorMessage = function () { return script.transportError || ''; };
+                resp.haveError = function () {
+                    if (script.haveErrorThrows) { throw script.haveErrorThrows; }
+                    return !!script.transportError || !!script.errorMessageThrows;
+                };
+                resp.getErrorMessage = function () {
+                    if (script.errorMessageThrows) { throw script.errorMessageThrows; }
+                    return script.transportError || '';
+                };
                 resp.getErrorCode = function () { return script.transportError ? '1' : '0'; };
             }
             return resp;

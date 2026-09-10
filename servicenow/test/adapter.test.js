@@ -34,12 +34,13 @@ function sanitizeOkBody() {
     });
 }
 
-function sealOkBody() {
-    return JSON.stringify({
+function sealOkBody(overrides) {
+    return JSON.stringify(Object.assign({
         cert_id: 'cert_synthetic1',
-        cert_url: 'https://lucairn.example.test/api/v1/veil/certificate/req_synthetic1',
+        // The shape the service actually returns: <base>/verify?id=<request_id>.
+        cert_url: 'https://lucairn.example.test/verify?id=req_synthetic1',
         cert_tier: 'input-shield'
-    });
+    }, overrides || {}));
 }
 
 /**
@@ -77,8 +78,12 @@ function harness(opts) {
     const now = () => (clock += 20);
 
     const config = new LucairnConfig({
-        getProperty: (name, fallback) =>
-            (Object.prototype.hasOwnProperty.call(props, name) ? props[name] : fallback),
+        getProperty: (name, fallback) => {
+            if (opts.getPropertyThrows) {
+                throw new Error('gs.getProperty raised: ' + String(opts.getPropertyThrows));
+            }
+            return Object.prototype.hasOwnProperty.call(props, name) ? props[name] : fallback;
+        },
         glideRecord: gr,
         log
     });
@@ -188,7 +193,8 @@ test('seal(): hashes cover the forwarded and response bytes and the cert lands o
     assert.strictEqual(sent.tool_name, 'ServiceNow Now Assist — ' + SKILL);
 
     assert.strictEqual(h.evidenceTable.rows[0].cert_id, 'cert_synthetic1');
-    assert.match(h.evidenceTable.rows[0].cert_url, /veil\/certificate/);
+    assert.match(h.evidenceTable.rows[0].cert_url, /\/verify\?id=/);
+    assert.strictEqual(h.evidenceTable.rows[0].seal_outcome, 'sealed');
 });
 
 test('seal(): an explicit forwardedText is hashed instead of the assumed one', () => {
@@ -317,7 +323,8 @@ test('FAIL-OPEN override: the configured skill runs raw and an uncovered_run row
     assert.strictEqual(row.outcome, 'uncovered_run');
     assert.strictEqual(row.fail_open_override, true);
     assert.strictEqual(row.failure_class, 'connection_refused');
-    assert.ok(h.logs.some((l) => l.includes('unsanitized content')), h.logs.join('|'));
+    assert.ok(h.logs.some((l) => l.includes('without sanitizer coverage')), h.logs.join('|'));
+    assert.strictEqual(res.forwardedSanitized, false);
 });
 
 test('FAIL-OPEN override applies to timeouts too, and only to the listed skill', () => {
@@ -384,4 +391,449 @@ test('a seal failure does not retract coverage — the row keeps its covered out
 test('protect() never throws, whatever the platform does', () => {
     const h = harness({ scripts: [{ throwOnExecute: new Error('kaboom') }] });
     assert.doesNotThrow(() => h.adapter.protect({ skill: SKILL, text: INCIDENT.description }));
+});
+
+/* ======================================================================== *
+ * Round-1 gate findings (specs/2026-09/gate-2026-09-10-kit-pr133-s1.md).
+ * Each test below reproduces a state the shipped adapter got wrong, and each
+ * one fails against the pre-fix code — that is the point of writing them.
+ * ======================================================================== */
+
+/* ---- finding 1: the evidence row is the precondition for fail-open ------ */
+
+test('FINDING 1: fail-open + a failed evidence insert BLOCKS the run', () => {
+    const h = harness({
+        policyRows: [{ skill_name: SKILL, active: '1', fail_open: '1' }],
+        scripts: [{ throwOnExecute: new Error('Connection refused') }],
+        evidenceInsertFails: true
+    });
+    const res = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+
+    // An override authorises an AUDITED unprotected run. With no row there is
+    // no audit, so what the administrator authorised is not on offer.
+    assert.strictEqual(res.allowed, false);
+    assert.strictEqual(res.textForSkill, '');
+    assert.strictEqual(res.error.code, LucairnNowAssistAdapter.ERROR.UNAUDITABLE);
+    assert.strictEqual(res.evidenceStored, false);
+    assert.strictEqual(h.evidenceTable.rows.length, 0);
+    assert.ok(h.logs.some((l) => l.includes('unauditable')), h.logs.join('|'));
+});
+
+test('FINDING 1: the same hole on the timeout class', () => {
+    const h = harness({
+        policyRows: [{ skill_name: SKILL, active: '1', fail_open: '1' }],
+        scripts: [{ throwOnExecute: new Error('Read timed out') }],
+        evidenceInsertFails: true
+    });
+    const res = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+
+    assert.strictEqual(res.allowed, false);
+    assert.strictEqual(res.textForSkill, '');
+});
+
+test('FINDING 1: a transient insert failure still lets the blocked row land', () => {
+    const h = harness({
+        policyRows: [{ skill_name: SKILL, active: '1', fail_open: '1' }],
+        scripts: [{ throwOnExecute: new Error('Connection refused') }],
+        evidenceInsertFails: true
+    });
+    // The uncovered_run insert fails; storage recovers before the block is
+    // recorded. The run is still blocked, and the row explains why.
+    const originalWrite = h.evidenceTable.insertShouldFail;
+    assert.strictEqual(originalWrite, true);
+    const res = (() => {
+        let first = true;
+        Object.defineProperty(h.evidenceTable, 'insertShouldFail', {
+            get() { if (first) { first = false; return true; } return false; }
+        });
+        return h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+    })();
+
+    assert.strictEqual(res.allowed, false);
+    assert.strictEqual(h.evidenceTable.rows.length, 1);
+    assert.strictEqual(h.evidenceTable.rows[0].outcome, 'blocked');
+    assert.ok(String(h.evidenceTable.rows[0].message).includes('NOT honoured'),
+        h.evidenceTable.rows[0].message);
+});
+
+/* ---- finding 2: a dropped predicate cannot widen fail-open -------------- */
+
+test('FINDING 2: a policy table with a dropped predicate does not fail the run open', () => {
+    const h = harness({
+        // A row exists that WOULD fail this skill open, on a table whose
+        // skill_name column is missing — so the filter is discarded.
+        policyRows: [{ active: '1', fail_open: '1' }],
+        scripts: [{ throwOnExecute: new Error('Connection refused') }]
+    });
+    h.policyTable.missingFields = ['skill_name'];
+
+    const res = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+
+    assert.strictEqual(res.allowed, false);
+    assert.strictEqual(res.textForSkill, '');
+    assert.strictEqual(h.evidenceTable.rows[0].outcome, 'blocked');
+});
+
+test("FINDING 2: another skill's fail-open row cannot be borrowed", () => {
+    const h = harness({
+        policyRows: [{ skill_name: fixtures.skill_names.unlisted, active: '1', fail_open: '1' }],
+        scripts: [{ throwOnExecute: new Error('Connection refused') }]
+    });
+    h.policyTable.ignoreLimit = true;
+
+    assert.strictEqual(h.adapter.protect({ skill: SKILL, text: 'x' }).allowed, false);
+});
+
+/* ---- finding 3: malformed success bodies are not coverage --------------- */
+
+test('FINDING 3: the malformed-body matrix is fail-closed, not "covered"', () => {
+    const RAW = INCIDENT.description;
+    const cases = [
+        {
+            name: 'placeholder_map_id is a boolean',
+            body: { sanitized_text: SANITIZED, placeholder_map_id: true,
+                    cert_id_partial: 'cert_partial_x', expires_at: 'z', manifest: {} }
+        },
+        {
+            name: 'cert_id_partial is an object',
+            body: { sanitized_text: SANITIZED, placeholder_map_id: 'pmap_x',
+                    cert_id_partial: {}, expires_at: 'z', manifest: {} }
+        },
+        {
+            name: 'the whole gate-probe body: truthy non-strings, no manifest, no expiry',
+            body: { sanitized_text: RAW, placeholder_map_id: true, cert_id_partial: {} }
+        },
+        {
+            name: 'placeholder_map_id is an empty string',
+            body: { sanitized_text: SANITIZED, placeholder_map_id: '',
+                    cert_id_partial: 'cert_partial_x', expires_at: 'z', manifest: {} }
+        },
+        {
+            name: 'cert_id_partial is an empty string',
+            body: { sanitized_text: SANITIZED, placeholder_map_id: 'pmap_x',
+                    cert_id_partial: '', expires_at: 'z', manifest: {} }
+        },
+        {
+            name: 'sanitized_text is empty for a non-empty submission',
+            body: { sanitized_text: '', placeholder_map_id: 'pmap_x',
+                    cert_id_partial: 'cert_partial_x', expires_at: 'z', manifest: {} }
+        },
+        {
+            name: 'expires_at is missing',
+            body: { sanitized_text: SANITIZED, placeholder_map_id: 'pmap_x',
+                    cert_id_partial: 'cert_partial_x', manifest: {} }
+        },
+        {
+            name: 'manifest is an array',
+            body: { sanitized_text: SANITIZED, placeholder_map_id: 'pmap_x',
+                    cert_id_partial: 'cert_partial_x', expires_at: 'z', manifest: [] }
+        },
+        {
+            name: 'sanitized_text is a number',
+            body: { sanitized_text: 42, placeholder_map_id: 'pmap_x',
+                    cert_id_partial: 'cert_partial_x', expires_at: 'z', manifest: {} }
+        }
+    ];
+
+    for (const c of cases) {
+        const h = harness({ scripts: [{ status: 200, body: JSON.stringify(c.body) }] });
+        const res = h.adapter.protect({ skill: SKILL, text: RAW });
+
+        assert.strictEqual(res.allowed, false, c.name);
+        assert.strictEqual(res.coverage, 'uncovered', c.name);
+        assert.strictEqual(res.textForSkill, '', c.name);
+        assert.strictEqual(res.error.code, LucairnNowAssistAdapter.ERROR.CONTRACT, c.name);
+        assert.strictEqual(h.evidenceTable.rows[0].outcome, 'blocked', c.name);
+    }
+});
+
+test('FINDING 3: a seal response carrying the wrong cert_tier is a contract error', () => {
+    // "full-chain" asserts an isolated inference path this integration does not
+    // have. Accepting it would let the adapter report a claim it cannot make.
+    for (const tier of ['full-chain', '', undefined, 'INPUT-SHIELD', 42]) {
+        const h = harness({
+            scripts: [
+                { status: 200, body: sanitizeOkBody() },
+                { status: 200, body: sealOkBody({ cert_tier: tier }) }
+            ]
+        });
+        const pr = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+        const sealRes = h.adapter.seal({ protectResult: pr, responseText: 'a summary' });
+
+        assert.strictEqual(sealRes.sealed, false, String(tier));
+        assert.strictEqual(sealRes.certId, '', String(tier));
+        assert.strictEqual(sealRes.certTier, '', String(tier));
+        assert.strictEqual(sealRes.error.code, LucairnNowAssistAdapter.ERROR.CONTRACT, String(tier));
+        // No certificate reference may land on the row.
+        assert.strictEqual(h.evidenceTable.rows[0].cert_id, '', String(tier));
+        assert.strictEqual(h.evidenceTable.rows[0].seal_outcome, 'failed', String(tier));
+    }
+});
+
+test('FINDING 3: seal rejects non-string cert identifiers', () => {
+    for (const bad of [{ cert_id: true }, { cert_id: {} }, { cert_url: 42 }, { cert_url: '' }]) {
+        const h = harness({
+            scripts: [
+                { status: 200, body: sanitizeOkBody() },
+                { status: 200, body: sealOkBody(bad) }
+            ]
+        });
+        const pr = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+        const sealRes = h.adapter.seal({ protectResult: pr, responseText: 'a summary' });
+
+        assert.strictEqual(sealRes.sealed, false, JSON.stringify(bad));
+    }
+});
+
+test('the sealed result reports the locked tier, not whatever came back', () => {
+    const h = harness({
+        scripts: [
+            { status: 200, body: sanitizeOkBody() },
+            { status: 200, body: sealOkBody() }
+        ]
+    });
+    const pr = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+    const sealRes = h.adapter.seal({ protectResult: pr, responseText: 'a summary' });
+    assert.strictEqual(sealRes.certTier, LucairnNowAssistAdapter.CERT_TIER);
+});
+
+/* ---- finding 5: no exception text or credential reaches an evidence row -- */
+
+test('FINDING 5 CANARY: a loaded exception leaks neither content nor credential into evidence', () => {
+    const CONTENT_CANARY = 'Brannagh Oduya-Kestrel, brannagh.oduya-kestrel@northmarrow-example.test';
+    const KEY_CANARY = 'lcr_live_synthetic_canary_0000';
+    const h = harness({
+        scripts: [{
+            throwOnExecute: new Error(
+                `Connection refused while POSTing {"text":"${CONTENT_CANARY}"} ` +
+                `with header Authorization: Bearer ${KEY_CANARY}`
+            )
+        }]
+    });
+    h.adapter.protect({ skill: SKILL, text: CONTENT_CANARY });
+
+    // Assert on what was STORED, not on what the function returned.
+    assert.strictEqual(h.evidenceTable.rows.length, 1);
+    const stored = JSON.stringify(h.evidenceTable.rows[0]);
+    assert.ok(!stored.includes('Brannagh'), stored);
+    assert.ok(!stored.includes('northmarrow-example.test'), stored);
+    assert.ok(!stored.includes('lcr_live_'), stored);
+    assert.ok(!stored.includes('Bearer'), stored);
+    // The classification survived, so the row is still diagnostic.
+    assert.strictEqual(h.evidenceTable.rows[0].failure_class, 'connection_refused');
+});
+
+test('FINDING 5 CANARY: an upstream 4xx body cannot push its message into evidence', () => {
+    const h = harness({
+        scripts: [{
+            status: 400,
+            body: JSON.stringify({
+                error: 'invalid_field',
+                message: 'rejected "Brannagh Oduya-Kestrel" (key lcr_live_synthetic_leak_canary)'
+            })
+        }]
+    });
+    h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+
+    const stored = JSON.stringify(h.evidenceTable.rows[0]);
+    assert.ok(!stored.includes('Brannagh'), stored);
+    assert.ok(!stored.includes('lcr_live_'), stored);
+    assert.ok(stored.includes('invalid_field'), stored); // allow-listed code survives
+});
+
+test('FINDING 5 CANARY: a seal failure records a diagnostic with nothing borrowed from upstream', () => {
+    const h = harness({
+        scripts: [
+            { status: 200, body: sanitizeOkBody() },
+            {
+                status: 503,
+                body: JSON.stringify({
+                    error: 'veil_evidence_unavailable',
+                    message: 'claim failed for "Brannagh Oduya-Kestrel"; key lcr_live_synthetic_leak_canary'
+                })
+            }
+        ]
+    });
+    const pr = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+    const sealRes = h.adapter.seal({ protectResult: pr, responseText: 'a summary' });
+
+    assert.strictEqual(sealRes.sealed, false);
+    const stored = JSON.stringify(h.evidenceTable.rows[0]);
+    assert.ok(!stored.includes('Brannagh'), stored);
+    assert.ok(!stored.includes('lcr_live_'), stored);
+});
+
+/* ---- seal-failure recording + no retry ---------------------------------- */
+
+test('a seal failure is RECORDED on the row, not left silent', () => {
+    const h = harness({
+        scripts: [
+            { status: 200, body: sanitizeOkBody() },
+            { throwOnExecute: new Error('Read timed out') }
+        ]
+    });
+    const pr = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+    h.adapter.seal({ protectResult: pr, responseText: 'a summary' });
+
+    const row = h.evidenceTable.rows[0];
+    assert.strictEqual(row.outcome, 'covered');          // coverage is not retracted
+    assert.strictEqual(row.seal_outcome, 'failed');      // and the seal failure is on the record
+    assert.strictEqual(row.seal_failure_class, 'timeout');
+    assert.strictEqual(row.cert_id, '');
+});
+
+test('a run that was never sealed is distinguishable from one whose seal failed', () => {
+    const h = harness({ scripts: [{ status: 200, body: sanitizeOkBody() }] });
+    h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+    assert.strictEqual(h.evidenceTable.rows[0].seal_outcome, 'not_attempted');
+});
+
+test('seal() makes exactly one call and never retries a consumed partial', () => {
+    const h = harness({
+        scripts: [
+            { status: 200, body: sanitizeOkBody() },
+            { status: 503, body: JSON.stringify({ error: 'veil_evidence_unavailable', message: 'consumed' }) }
+        ]
+    });
+    const pr = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+    h.adapter.seal({ protectResult: pr, responseText: 'a summary' });
+
+    // One sanitize call + one seal call. A retry would be a third message and
+    // would draw a 404 on an already-claimed cert_id_partial.
+    assert.strictEqual(h.messages.length, 2);
+});
+
+/* ---- M-1: fail-open forwards the least content available ---------------- */
+
+test('M-1: a fail-open run forwards the sanitized text when the response carries one', () => {
+    const h = harness({
+        policyRows: [{ skill_name: SKILL, active: '1', fail_open: '1' }],
+        scripts: [{
+            status: 200,
+            // A 200 that is not the documented shape — but it does carry a
+            // distinct sanitized_text.
+            body: JSON.stringify({ sanitized_text: SANITIZED, placeholder_map_id: 'pmap_x' })
+        }]
+    });
+    const res = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+
+    assert.strictEqual(res.allowed, true);
+    assert.strictEqual(res.coverage, 'uncovered');   // still NOT a coverage claim
+    assert.strictEqual(res.forwardedSanitized, true);
+    assert.strictEqual(res.textForSkill, SANITIZED);
+    assert.ok(!res.textForSkill.includes('Brannagh'));
+    assert.strictEqual(h.evidenceTable.rows[0].outcome, 'uncovered_run');
+    assert.ok(String(h.evidenceTable.rows[0].message).includes('forwarded the sanitized_text'),
+        h.evidenceTable.rows[0].message);
+    // And it still cannot be sealed.
+    assert.strictEqual(h.adapter.seal({ protectResult: res, responseText: 'x' }).sealed, false);
+});
+
+test('M-1: a response whose "sanitized" text IS the raw submission is recorded as raw', () => {
+    const h = harness({
+        policyRows: [{ skill_name: SKILL, active: '1', fail_open: '1' }],
+        scripts: [{
+            status: 200,
+            body: JSON.stringify({ sanitized_text: INCIDENT.description, placeholder_map_id: 'p' })
+        }]
+    });
+    const res = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+
+    assert.strictEqual(res.forwardedSanitized, false);
+    assert.ok(String(h.evidenceTable.rows[0].message).includes('forwarded the RAW submission'),
+        h.evidenceTable.rows[0].message);
+});
+
+/* ---- M-2: a platform throw at the entry point is a block, not an escape -- */
+
+test('M-2: a throwing gs.getProperty returns a BLOCKED result instead of raising', () => {
+    const h = harness({ getPropertyThrows: 'property store offline' });
+
+    let res;
+    assert.doesNotThrow(() => {
+        res = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+    });
+    assert.strictEqual(res.allowed, false);
+    assert.strictEqual(res.textForSkill, '');
+    assert.strictEqual(res.error.code, LucairnNowAssistAdapter.ERROR.PLATFORM);
+    // The block is on the record too.
+    assert.strictEqual(h.evidenceTable.rows.length, 1);
+    assert.strictEqual(h.evidenceTable.rows[0].outcome, 'blocked');
+    // …and the exception text did not ride along into it.
+    assert.ok(!JSON.stringify(h.evidenceTable.rows[0]).includes('property store offline'));
+});
+
+test('M-2: a fail-open policy cannot rescue a platform throw either', () => {
+    const h = harness({
+        getPropertyThrows: 'property store offline',
+        policyRows: [{ skill_name: SKILL, active: '1', fail_open: '1' }]
+    });
+    // The override is resolved from the same platform that just failed. An
+    // adapter that cannot read its own configuration cannot conclude it was
+    // told to run unprotected.
+    assert.strictEqual(h.adapter.protect({ skill: SKILL, text: 'x' }).allowed, false);
+});
+
+test('M-2: seal() survives a platform throw with a typed not-sealed result', () => {
+    const h = harness({ scripts: [{ status: 200, body: sanitizeOkBody() }] });
+    const pr = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+
+    const broken = new LucairnNowAssistAdapter({
+        config: { resolve: () => { throw new Error('property store offline'); }, validate: () => [] },
+        evidence: { write: () => ({ stored: true, sysId: 'x', error: '' }), recordSeal: () => ({}) },
+        sha256: LucairnSha256,
+        makeClient: () => { throw new Error('unreachable'); },
+        guid: () => 'corr_synthetic1',
+        now: () => 1,
+        log: () => {}
+    });
+
+    let sealRes;
+    assert.doesNotThrow(() => {
+        sealRes = broken.seal({ protectResult: pr, responseText: 'a summary' });
+    });
+    assert.strictEqual(sealRes.sealed, false);
+    assert.strictEqual(sealRes.error.code, LucairnNowAssistAdapter.ERROR.PLATFORM);
+});
+
+/* ---- the covered path still tells the truth about its own audit row ------ */
+
+test('a manifest with the wrong inner shapes cannot fail an otherwise-good run', () => {
+    // The manifest is diagnostic. A string where an array belongs used to throw
+    // inside the evidence write, which lost the audit row for a run that was
+    // fine — a malformed manifest must degrade the diagnostics, not the run.
+    const h = harness({
+        scripts: [{
+            status: 200,
+            body: JSON.stringify({
+                sanitized_text: SANITIZED,
+                placeholder_map_id: 'pmap_x',
+                cert_id_partial: 'cert_partial_x',
+                expires_at: 'z',
+                manifest: { redaction_count: 'lots', layers_active: 'regex_pii' }
+            })
+        }]
+    });
+    const res = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+
+    assert.strictEqual(res.allowed, true);
+    assert.strictEqual(res.coverage, 'covered');
+    assert.strictEqual(res.evidenceStored, true);
+    assert.strictEqual(h.evidenceTable.rows[0].redaction_total, 0);
+    assert.strictEqual(h.evidenceTable.rows[0].layers_active, '');
+});
+
+test('a covered run whose evidence row failed to store says so, and stays allowed', () => {
+    const h = harness({
+        scripts: [{ status: 200, body: sanitizeOkBody() }],
+        evidenceInsertFails: true
+    });
+    const res = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+
+    // The content WAS protected, so blocking here would turn a lost audit row
+    // into an outage on a run that was fine.
+    assert.strictEqual(res.allowed, true);
+    assert.strictEqual(res.coverage, 'covered');
+    assert.strictEqual(res.evidenceStored, false);
+    assert.strictEqual(res.evidenceId, '');
 });
