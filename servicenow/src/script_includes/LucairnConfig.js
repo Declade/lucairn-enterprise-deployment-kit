@@ -261,7 +261,17 @@ LucairnConfig.prototype = {
             /* --- the query ------------------------------------------------- */
             gr.addQuery('skill_name', name);
             gr.addQuery('active', true);
-            gr.setLimit(1);
+            /* TWO, not one. The ambiguity check below needs a second candidate
+             * to exist before it can see one: with setLimit(1) HONOURED — the
+             * normal case — two conflicting active rows for the same skill are
+             * indistinguishable from one, and whichever row the platform
+             * happened to order first silently became the policy. The check only
+             * ever fired when the limit was DROPPED, i.e. when the table was
+             * already broken. Round-2 advisory fold-in.
+             *
+             * The limit stays because it bounds the read; it just has to be one
+             * higher than the number of rows an unambiguous answer allows. */
+            gr.setLimit(2);
             gr.query();
             if (!gr.next()) {
                 return closed;
@@ -288,9 +298,14 @@ LucairnConfig.prototype = {
                 return { failOpen: false, source: 'row-inactive-fail-closed' };
             }
 
-            /* setLimit(1) can be dropped by the same mechanism the predicates
-             * can. More than one candidate means we cannot say which row is the
-             * policy, and an ambiguous policy is not an override. */
+            /* More than one active row for this skill means we cannot say which
+             * one is the policy, and an ambiguous policy is not an override —
+             * whichever row sorted first would otherwise decide, which is not a
+             * decision anybody made. Duplicate rows are also how a reviewed
+             * `fail_open = false` row gets quietly overtaken by an unreviewed
+             * `true` one. Mark `skill_name` unique (see src/records/tables.md)
+             * so the platform refuses the second row in the first place; this is
+             * the check for the instance where that was not done. */
             if (gr.next() === true) {
                 this._log('skill policy lookup for "' + name +
                     '" returned more than one row; ambiguous policy, staying fail-closed');

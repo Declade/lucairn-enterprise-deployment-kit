@@ -5,7 +5,7 @@
   "description": "Local unit-test harness for the Lucairn for Now Assist scoped application. The shipped artefact is the ServiceNow update set, not this package.",
   "license": "SEE LICENSE IN ../LICENSE",
   "scripts": {
-    "test": "node --test \"test/*.test.js\""
+    "test": "bash run-tests.sh"
   },
   "engines": {
     "node": ">=18"

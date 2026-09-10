@@ -19,17 +19,27 @@
  * observable that settles it:
  *
  *   Claim under test: "a GenAI Preprocessor script that raises stops the skill
- *   run before inference, and the caller sees an error rather than a summary."
+ *   run, and the caller sees an error rather than a summary."
+ *
+ *   Note what that claim does NOT say: nothing about whether inference was
+ *   dispatched. The observable is a suppressed OUTPUT. "before inference" is a
+ *   second claim needing its own evidence — README § Leg 6 states the
+ *   falsifier for it, and round-2 finding astra-B2 is the record of this file
+ *   having asserted it for free.
  *
  *   Falsifier (README § Verify on the PDI, Leg 6): run the OOTB skill from its
  *   own product UI with the hook wired and the service unreachable. If a
  *   summary comes back, the claim is FALSE — whatever this file returns.
  *
  * Three outcomes are possible on the instance and all three are handled:
- *   a) the raise aborts the run           -> blocking works; claim holds
- *   b) the raise is swallowed, run proceeds -> blocking does NOT work; the
- *      annotation is the only surviving control, and no blocking claim may be
- *      made anywhere (packaging, deck, docs)
+ *   a) the raise aborts the run           -> output suppression works; the
+ *      suppression claim holds at the scope Leg 6 measured
+ *   b) the raise is swallowed, run proceeds -> blocking does NOT work. ⚠️ The
+ *      annotation does NOT survive as a control on this path: the hook raises
+ *      BEFORE it assigns its output, so a swallowed raise leaves the skill
+ *      running on the original text, unannotated. The evidence row is the only
+ *      surviving control, and no blocking claim may be made anywhere
+ *      (packaging, deck, docs)
  *   c) the hook is never invoked at all   -> the preprocessor lane is dead for
  *      this skill and the P2 clone lane is the remaining path
  * Record which one happened in the gate record. Do not infer (a) from a green

@@ -176,6 +176,35 @@ test('a dropped setLimit that yields two candidate rows is an ambiguous policy',
     assert.strictEqual(policy.source, 'ambiguous-policy-fail-closed');
 });
 
+test('duplicate active rows are ambiguous even when setLimit IS honoured', () => {
+    // Round-2 advisory fold-in. The test above proves the check works when the
+    // limit is DROPPED — i.e. on an already-broken table. This is the ordinary
+    // instance: the limit is honoured, and two conflicting rows exist because
+    // `skill_name` was not marked unique. With setLimit(1) the second row was
+    // invisible and whichever row sorted first silently became the policy.
+    const table = new FakeTable(LucairnConfig.TABLE_SKILL_POLICY);
+    table.ignoreLimit = false;
+    table.seed({ skill_name: 'Incident summarization', active: '1', fail_open: '1' });
+    table.seed({ skill_name: 'Incident summarization', active: '1', fail_open: '0' });
+    const c = makeConfig({}, { [LucairnConfig.TABLE_SKILL_POLICY]: table });
+
+    const policy = c.skillPolicy('Incident summarization');
+    assert.strictEqual(policy.failOpen, false);
+    assert.strictEqual(policy.source, 'ambiguous-policy-fail-closed');
+});
+
+test('one active row is still an unambiguous policy — the limit fix does not break the override', () => {
+    const table = new FakeTable(LucairnConfig.TABLE_SKILL_POLICY);
+    table.seed({ skill_name: 'Incident summarization', active: '1', fail_open: '1' });
+    // An INACTIVE duplicate is filtered by the query, so it is not ambiguity.
+    table.seed({ skill_name: 'Incident summarization', active: '0', fail_open: '0' });
+    const c = makeConfig({}, { [LucairnConfig.TABLE_SKILL_POLICY]: table });
+
+    const policy = c.skillPolicy('Incident summarization');
+    assert.strictEqual(policy.failOpen, true);
+    assert.strictEqual(policy.source, 'policy-row-fail-open');
+});
+
 test('a missing policy table is fail-closed', () => {
     const table = new FakeTable(LucairnConfig.TABLE_SKILL_POLICY);
     table.tableInvalid = true;

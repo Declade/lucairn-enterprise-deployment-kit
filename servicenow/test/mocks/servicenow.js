@@ -99,6 +99,10 @@ function FakeTable(name) {
 
     /* isValid() itself raises. */
     this.isValidShouldThrow = false;
+
+    /* update() returns null — the platform's way of saying the write did not
+     * happen (an ACL denial is the common cause). It does NOT raise. */
+    this.updateShouldFail = false;
 }
 
 FakeTable.prototype.seed = function (row) {
@@ -117,14 +121,19 @@ FakeTable.prototype.newRecord = function () {
     var cursor = -1;
     var matches = [];
     var limit = 0;
+    /* `bound` is the in-memory working copy the script mutates; `boundRow` is
+     * the stored row. The platform only merges one into the other on a
+     * SUCCESSFUL update(), so a mock that let setValue() write straight through
+     * to storage could not express a failed update at all. */
     var bound = null;
+    var boundRow = null;
 
     function fieldExists(field) {
         return table.missingFields.indexOf(field) === -1;
     }
 
     return {
-        initialize: function () { pending = {}; bound = null; },
+        initialize: function () { pending = {}; bound = null; boundRow = null; },
         setValue: function (field, value) {
             if (bound) { bound[field] = value; } else { pending[field] = value; }
         },
@@ -173,7 +182,8 @@ FakeTable.prototype.newRecord = function () {
         get: function (sysId) {
             var found = table.rows.filter(function (r) { return r.sys_id === sysId; })[0];
             if (!found) { return false; }
-            bound = found;
+            boundRow = found;
+            bound = Object.assign({}, found);
             return true;
         },
         insert: function () {
@@ -184,7 +194,9 @@ FakeTable.prototype.newRecord = function () {
             return row.sys_id;
         },
         update: function () {
-            return bound ? bound.sys_id : null;
+            if (table.updateShouldFail || !boundRow) { return null; }
+            Object.assign(boundRow, bound);
+            return boundRow.sys_id;
         }
     };
 };

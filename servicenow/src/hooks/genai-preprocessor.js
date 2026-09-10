@@ -24,6 +24,23 @@
  * variable names below are the documented-model guess; the PDI run replaces
  * them with what the record actually exposes, and the change is two lines.
  *
+ * WHY THE OUTPUT ASSIGNMENT IS NOT A BARE `output = …`
+ * ----------------------------------------------------
+ * This body is strict-mode, and in strict mode an assignment to an unresolvable
+ * reference is a ReferenceError rather than an implicit global. If the
+ * extension point does not pre-declare `output`, a bare `output = verdict.text`
+ * therefore THROWS on the ALLOWED path — every protected run aborts.
+ *
+ * That failure is invisible in the acceptance leg, which is what makes it
+ * dangerous rather than merely broken: an aborted hook produces no summary and
+ * an error, i.e. exactly the observables Leg 6 lists for "blocked". A total
+ * outage would have been scored as "blocking works". Round-2 gate finding N-1.
+ *
+ * The assignment below therefore tries the declared binding first and falls
+ * back to the script's global scope, and test/hook.test.js executes this file
+ * in `node:vm` — both paths, with and without a pre-declared `output` — rather
+ * than grepping it for the right-looking words.
+ *
  * NONE of 1-4 may be asserted in packaging, a deck or customer copy until the
  * gate record for README § Verify on the PDI, Leg 6 says which way each went.
  *
@@ -51,7 +68,7 @@
  *
  * ES5 only (Rhino-compatible).
  */
-(function () {
+(function (globalScope) {
     'use strict';
 
     /* ADJUST-ON-PDI (1/2): the name the extension point uses for the submitted
@@ -71,7 +88,13 @@
          *
          * If the raise turns out to be swallowed — outcome (b) — this is the
          * line whose behaviour proves it, and the blocking claim dies here
-         * rather than in a customer's instance. */
+         * rather than in a customer's instance.
+         *
+         * NOTE, and say this out loud in the Leg 6 record: raising exits the
+         * hook HERE. The assignment below never runs, so on outcome (b) the
+         * skill proceeds on whatever the extension point already held — the
+         * ORIGINAL submitted text, with no annotation. A swallowed raise is not
+         * a degraded-but-labelled run; it is an unlabelled unprotected one. */
         throw new Error(LucairnSkillGuard.ERROR_PREFIX + verdict.reason +
             ' (correlation ' + verdict.correlationId + ')');
     }
@@ -82,6 +105,22 @@
      * not covered and no certificate exists. Either way the skill runs on
      * verdict.text and never on the original. */
     // ADJUST-ON-PDI: assign to whatever the extension point reads back.
-    // eslint-disable-next-line no-undef
-    output = verdict.text;
-})();
+    try {
+        /* The declared binding, whatever scope the extension point declared it
+         * in. This is the path that runs when the platform pre-declares
+         * `output`, and it is the one that reaches a function-scoped binding. */
+        // eslint-disable-next-line no-undef
+        output = verdict.text;
+    } catch (unresolvableOutputBinding) {
+        /* Strict mode + no declared `output` ⇒ ReferenceError, which used to
+         * abort the whole protected run (finding N-1). Publish onto the script's
+         * global scope instead, which is where a sloppy-mode `output = …` would
+         * have landed the value anyway.
+         *
+         * If the extension point reads a binding that is neither pre-declared
+         * nor global, NEITHER path reaches it — record that in Leg 6 as outcome
+         * (c)-adjacent and change the two ADJUST-ON-PDI lines rather than
+         * assuming this fallback covered it. */
+        globalScope.output = verdict.text;
+    }
+}(typeof globalThis !== 'undefined' ? globalThis : (function () { return this; }())));

@@ -54,6 +54,47 @@ LucairnEvidence.SEAL = {
     FAILED: 'failed'
 };
 
+/* The fields that MAKE a row an audit record.
+ *
+ * A sys_id from insert() is proof that a ROW exists, not that an audit exists.
+ * A partially imported table — system columns present, application columns
+ * missing — accepts the insert and silently discards every setValue() naming a
+ * field it does not have, so the row that comes back has an id and no outcome,
+ * no skill, no correlation id and no fail-open marker. The adapter then treats
+ * that content-less row as the audit trail the fail-open override depends on,
+ * and an unprotected run proceeds "audited" by a row that records nothing.
+ * Round-2 gate finding astra-B1.
+ *
+ * So the schema is checked BEFORE the insert may count as stored. Missing
+ * schema ⇒ stored:false ⇒ the caller blocks, exactly as it does for a failed
+ * insert.
+ *
+ * Scope: the fields an auditor needs to answer "what happened, to which skill,
+ * when, and was an override in play". The certificate/diagnostic columns
+ * (cert_*, duration_ms, redaction_total, layers_active, seal_*) are NOT in this
+ * set on purpose — a missing one loses detail from a row that still records the
+ * decision, and turning that into a blocked run would be a fail-closed posture
+ * the finding does not call for. A missing one is visible in the row itself. */
+LucairnEvidence.REQUIRED_FIELDS = [
+    'outcome',
+    'skill',
+    'failure_class',
+    'message',
+    'correlation_id',
+    'fail_open_override',
+    'recorded_at'
+];
+
+/* The fields recordSeal() needs in order for a seal outcome to be recoverable
+ * from the row rather than inferred from an empty cert_id. */
+LucairnEvidence.SEAL_REQUIRED_FIELDS = [
+    'seal_outcome',
+    'seal_failure_class',
+    'seal_message',
+    'cert_id',
+    'cert_url'
+];
+
 LucairnEvidence.prototype = {
 
     /**
@@ -94,11 +135,26 @@ LucairnEvidence.prototype = {
      * @param {string[]} [rec.layersActive]
      * @param {boolean} [rec.failOpenOverride]
      * @returns {{stored: boolean, sysId: string, error: string}}
+     *   `stored: true` means an audit record exists — the table can hold every
+     *   field in LucairnEvidence.REQUIRED_FIELDS AND the insert returned an id.
+     *   An insert into a table that cannot hold those fields is NOT stored,
+     *   however well it went (astra-B1).
      */
     write: function (rec) {
         var result = { stored: false, sysId: '', error: '' };
         try {
             var gr = this._glideRecord(LucairnEvidence.TABLE);
+
+            /* astra-B1: schema first. An insert into a table that cannot hold
+             * the audit fields produces a sys_id and no audit. */
+            var schema = this._schemaProblem(gr, LucairnEvidence.REQUIRED_FIELDS);
+            if (schema) {
+                result.error = schema;
+                this._log('evidence table is not usable as an audit record (' + schema +
+                    '); treating the write as failed');
+                return result;
+            }
+
             gr.initialize();
             gr.setValue('outcome', rec.outcome || LucairnEvidence.OUTCOME.BLOCKED);
             gr.setValue('skill', String(rec.skill || ''));
@@ -172,6 +228,14 @@ LucairnEvidence.prototype = {
         }
         try {
             var gr = this._glideRecord(LucairnEvidence.TABLE);
+
+            var schema = this._schemaProblem(gr, LucairnEvidence.SEAL_REQUIRED_FIELDS);
+            if (schema) {
+                result.error = schema;
+                this._log('evidence table cannot record a seal outcome (' + schema + ')');
+                return result;
+            }
+
             if (!gr.get(id)) {
                 result.error = 'evidence row not found';
                 return result;
@@ -184,7 +248,19 @@ LucairnEvidence.prototype = {
             if (s.sealDurationMs !== undefined) {
                 gr.setValue('seal_duration_ms', this._int(s.sealDurationMs));
             }
-            gr.update();
+            /* update() returns the sys_id it wrote, or null when the write did
+             * not happen (an ACL denial is the common one — the application can
+             * insert evidence and cannot update it). Reporting `updated: true`
+             * for a null return would report a seal outcome the row does not
+             * carry, which is the same class of defect as astra-B1 one step
+             * later in the flow. Round-2 advisory fold-in. */
+            var updatedId = gr.update();
+            if (!updatedId) {
+                result.error = 'update returned no sys_id';
+                this._log('evidence seal outcome was not written for ' + id +
+                    ' (update returned no sys_id)');
+                return result;
+            }
             result.updated = true;
             return result;
         } catch (e) {
@@ -192,6 +268,37 @@ LucairnEvidence.prototype = {
             this._log('evidence seal outcome could not be recorded for ' + id);
             return result;
         }
+    },
+
+    /**
+     * Is this GlideRecord usable as an audit record?
+     *
+     * Mirrors LucairnConfig.skillPolicy()'s schema check, and for the same
+     * reason: the platform does not error on an operation naming a field the
+     * table does not have — a query condition is dropped, a setValue() is
+     * discarded. Both turn "the table is wrong" into a plausible-looking
+     * success. The check is fail-closed: a runtime that cannot answer
+     * isValid()/isValidField() is treated as an unusable table, not as a
+     * usable one.
+     *
+     * @param {object} gr
+     * @param {string[]} fields
+     * @returns {string} '' when usable, otherwise a short typed problem string
+     *   (no submitted content — this value reaches a caller's log line).
+     */
+    _schemaProblem: function (gr, fields) {
+        if (typeof gr.isValid !== 'function' || gr.isValid() !== true) {
+            return 'evidence table missing or unverifiable';
+        }
+        if (typeof gr.isValidField !== 'function') {
+            return 'evidence field validation unavailable';
+        }
+        for (var i = 0; i < fields.length; i++) {
+            if (gr.isValidField(fields[i]) !== true) {
+                return 'evidence table is missing field "' + fields[i] + '"';
+            }
+        }
+        return '';
     },
 
     _truncate: function (s, max) {

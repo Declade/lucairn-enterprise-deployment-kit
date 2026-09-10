@@ -288,22 +288,54 @@ test('CANARY: an exception carrying content and a credential leaks neither', () 
     assert.strictEqual(res.failureClass, 'connection_refused');
 });
 
-test('CANARY: an upstream error body cannot push its message into the diagnostic', () => {
+test('CANARY: an upstream error body cannot reach ANY field of the result', () => {
+    // Round-2 finding N-2: this assertion used to narrow to `message` +
+    // `apiCode`, and the raw parsed body was riding along on `res.body` the
+    // whole time — content canary, bearer canary and all. Narrowing the canary
+    // to the fields you already believed were safe is how the hole survived a
+    // gate. The assertion is now the WHOLE result object.
     const client = clientWith(REST_CFG, {
         status: 400,
         body: JSON.stringify({
             error: 'invalid_field',
-            message: 'field text rejected: "Brannagh Oduya-Kestrel" with key lcr_live_synthetic_leak_canary'
+            message: 'field text rejected: "Brannagh Oduya-Kestrel" with key lcr_live_synthetic_leak_canary',
+            echoed_request: { text: 'Brannagh Oduya-Kestrel, brannagh@northmarrow-example.test' },
+            headers: { Authorization: 'Bearer lcr_live_synthetic_leak_canary' }
         })
     });
     const res = client.sanitizeOnly('anything');
-    const serialised = JSON.stringify(res.message) + JSON.stringify(res.apiCode);
+    const serialised = JSON.stringify(res);
 
     assert.strictEqual(res.ok, false);
-    // The error CODE is allow-listed, so it survives; the message never does.
+    // The error CODE is allow-listed, so it survives; nothing else does.
     assert.strictEqual(res.apiCode, 'invalid_field');
+    assert.strictEqual(res.body, null);
     assert.ok(!serialised.includes('Brannagh'), serialised);
+    assert.ok(!serialised.includes('northmarrow-example.test'), serialised);
     assert.ok(!serialised.includes('lcr_live_'), serialised);
+    assert.ok(!serialised.includes('Bearer'), serialised);
+    // The length of what came back is not content, and is the one debugging
+    // handle that survives.
+    assert.ok(res.rawLength > 0);
+});
+
+test('N-2: no failure path returns an upstream body, whatever the failure was', () => {
+    const CANARY = 'Brannagh Oduya-Kestrel';
+    const cases = {
+        'http error': { status: 500, body: JSON.stringify({ error: 'sanitizer_unavailable', detail: CANARY }) },
+        'transport error on a 200': { status: 200, body: JSON.stringify({ detail: CANARY }), transportError: 'connection refused' },
+        'unparseable body': { status: 200, body: 'not json ' + CANARY },
+        'diagnostic call throws': {
+            status: 200, body: JSON.stringify({ detail: CANARY }),
+            errorMessageThrows: new Error(CANARY)
+        }
+    };
+    for (const [label, script] of Object.entries(cases)) {
+        const res = clientWith(REST_CFG, script).sanitizeOnly('anything');
+        assert.strictEqual(res.ok, false, label);
+        assert.strictEqual(res.body, null, label);
+        assert.ok(!JSON.stringify(res).includes(CANARY), label + ': ' + JSON.stringify(res));
+    }
 });
 
 test('an error code outside the allow-list is replaced, not truncated', () => {

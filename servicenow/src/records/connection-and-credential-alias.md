@@ -36,6 +36,14 @@ record; the platform injects it, and no application code ever reads it.
 > Leg 1 has returned HTTP 200 through it on a named instance family and patch
 > level, and the gate record says so.
 >
+> **Status: UNRESOLVED PROTOTYPE ITEM, and it gates deployment.** This is
+> tracked as an open item on the S1 workstream ticket (T-750) rather than fixed
+> in this repository, because only an instance can settle it. Carrying it as a
+> ticket is acceptable; carrying it silently is not. No customer deployment of
+> the alias transport happens before it is closed with a recorded Leg 1 result.
+> If the answer is outcome 3, `endpoint` mode ships instead and this file is
+> rewritten, not annotated.
+>
 > Reference: ServiceNow outbound REST authentication documentation
 > (`https://www.servicenow.com/docs/r/api-reference/web-services/c_OutboundRESTAuth.html`)
 > and the scoped GlideRecord API reference
