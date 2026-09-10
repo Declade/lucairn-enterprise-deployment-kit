@@ -36,11 +36,39 @@ That is the safe direction (a near-miss row never turns protection off by
 accident) but it is a real way to be confused while debugging: the row is
 visibly there and visibly ignored. Copy the skill name rather than retyping it.
 
-### Access control — specified, not suggested
+### Access control — specified, not suggested, and NOT yet verified
 
 A user who can insert a row here can turn protection off for a skill. That makes
 this table a privacy control, and "suggested ACL" is not a specification for one.
 Create all of the following (round-1 gate advisory: ACL/outbound-log spec gaps).
+
+> **⚠️ HYPOTHESIS — these rows are a specification to verify on the PDI, not a
+> containment property this application has.** Two reasons they are not the same
+> thing:
+>
+> 1. **Server-side script does not go through ACLs.** `GlideRecord` — which is
+>    what `LucairnConfig` and `LucairnEvidence` use — is the *non-secure* API:
+>    it does not evaluate ACLs. `GlideRecordSecure` does. So the "no role —
+>    application code only" rows below describe what a *user* can do through the
+>    UI, list, import set and Table API; they say nothing about what any other
+>    scoped script running on the instance can do, and they are not what stops
+>    this application's own code from writing.
+> 2. Nothing here has been executed. No instance has had these ACLs created and
+>    then had them tested against a user who should be refused.
+>
+> **PDI-time verification items** (record the result of each in the gate record;
+> an unverified row is not a control):
+>
+> | # | Verify | How | Expected |
+> |---|---|---|---|
+> | V1 | The `create` ACL on the policy table refuses a user without `x_lcrn_now_assist_admin` | Impersonate a plain `itil` user, try to insert a `fail_open = true` row from the list view | Refused |
+> | V2 | The same refusal holds over the **Table API** | Same user, `POST /api/now/table/x_lcrn_now_assist_skill_policy` | Refused (and refused again with web-service access unchecked) |
+> | V3 | The evidence table refuses a hand-written `covered` row to every role | Impersonate the admin role, try to insert directly | Refused |
+> | V4 | The application's own code can still insert evidence with those ACLs in place | Re-run Leg 1 | An evidence row lands |
+> | V5 | Another scoped application cannot read the evidence table | A second scope's background script does a `GlideRecord` read | Refused by *Application Access*, which is the setting that actually carries this — not the ACLs |
+>
+> V5 is the one to run first if time is short: it is the containment claim most
+> likely to be assumed and least likely to be tested.
 
 | Operation | Required role | Why |
 |---|---|---|
@@ -147,6 +175,13 @@ sanitizer processed the submitted fields before the skill ran.
 
 Application access: **This application scope only**; all cross-scope
 read/create/update/delete **unchecked**; web-service access **unchecked**.
+
+The same ⚠️ applies here as to the policy table above: these rows are a
+specification awaiting PDI verification (items V3–V5), and "no role" constrains
+users, not server-side script — `GlideRecord` is the non-secure API and does not
+evaluate ACLs. Until V3–V5 have been run and recorded, do not describe the
+evidence table as tamper-proof in any customer-facing material; describe it as
+"insert-only by the application, with ACLs specified".
 
 ### ⚠️ Outbound HTTP logging can defeat all of the above
 

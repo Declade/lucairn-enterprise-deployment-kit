@@ -37,4 +37,18 @@ if [ "$NODE_MAJOR" -lt 18 ]; then
 fi
 
 echo "    node $(node --version)"
-node --test "test/*.test.js"
+
+# Expand the glob in bash, not in Node. `node --test "test/*.test.js"` makes
+# Node do the globbing, which it only learned to do in 21 — on the Node 18 this
+# script says it supports, the quoted pattern is passed through as a literal
+# path and the run fails with a confusing ENOENT. Node has taken a list of test
+# FILES since 18, so hand it one.
+shopt -s nullglob
+TEST_FILES=(test/*.test.js)
+if [ ${#TEST_FILES[@]} -eq 0 ]; then
+    echo "FAIL: NOT RUN — no test files matched test/*.test.js."
+    echo "      An empty test lane is not a passing one."
+    exit 1
+fi
+
+node --test "${TEST_FILES[@]}"

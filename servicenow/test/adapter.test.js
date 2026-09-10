@@ -53,6 +53,12 @@ function sealOkBody(overrides) {
  * @param {Array}  [opts.policyRows]   rows seeded into the skill policy table
  * @param {Array}  [opts.scripts]      per-call RESTMessageV2 scripts, in order
  * @param {boolean}[opts.evidenceInsertFails]
+ * @param {string[]}[opts.evidenceMissingFields] columns the evidence table does
+ *   NOT have — a partially imported table. setValue() on one is discarded and
+ *   the insert still returns a sys_id (round-2 finding astra-B1).
+ * @param {boolean}[opts.evidenceUpdateFails] update() returns null, the way an
+ *   ACL denial surfaces
+ * @param {*}[opts.logThrows] make every log call raise
  */
 function harness(opts) {
     opts = opts || {};
@@ -63,6 +69,8 @@ function harness(opts) {
 
     const evidenceTable = new FakeTable(LucairnEvidence.TABLE);
     evidenceTable.insertShouldFail = opts.evidenceInsertFails === true;
+    evidenceTable.updateShouldFail = opts.evidenceUpdateFails === true;
+    evidenceTable.missingFields = opts.evidenceMissingFields || [];
 
     const tables = {
         [LucairnConfig.TABLE_SKILL_POLICY]: policyTable,
@@ -70,7 +78,10 @@ function harness(opts) {
     };
     const gr = glideRecordSeam(tables);
     const logs = [];
-    const log = (m) => logs.push(m);
+    const log = (m) => {
+        logs.push(m);
+        if (opts.logThrows) { throw new Error('gs.warn raised'); }
+    };
 
     const scripts = (opts.scripts || []).slice();
     const messages = [];
@@ -836,4 +847,144 @@ test('a covered run whose evidence row failed to store says so, and stays allowe
     assert.strictEqual(res.coverage, 'covered');
     assert.strictEqual(res.evidenceStored, false);
     assert.strictEqual(res.evidenceId, '');
+});
+
+/* ---- round-2 gate findings ---------------------------------------------- */
+
+test('astra-B1: an insert into a table that cannot hold the audit fields is NOT stored', () => {
+    // A partially imported table — system columns present, application columns
+    // missing — accepts the insert and discards every setValue() naming a field
+    // it does not have. The old code read the returned sys_id as proof of an
+    // audit record, so a content-less row authorised a fail-open run as
+    // "audited".
+    const h = harness({
+        policyRows: [{ skill_name: SKILL, active: '1', fail_open: '1' }],
+        evidenceMissingFields: ['fail_open_override'],
+        scripts: [{ transportError: 'connection refused' }]
+    });
+    const res = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+
+    assert.strictEqual(res.allowed, false);
+    assert.strictEqual(res.error.code, 'lucairn_uncovered_run_unauditable');
+    assert.strictEqual(res.textForSkill, '');
+    // And no row pretends otherwise: the same schema failure stops the blocked
+    // insert too, which is the safe end of a broken evidence table.
+    assert.strictEqual(res.evidenceStored, false);
+    assert.ok(h.logs.some((l) => l.includes('missing field "fail_open_override"')), h.logs.join('|'));
+});
+
+test('astra-B1: every required audit field is load-bearing, one at a time', () => {
+    for (const field of LucairnEvidence.REQUIRED_FIELDS) {
+        const h = harness({
+            policyRows: [{ skill_name: SKILL, active: '1', fail_open: '1' }],
+            evidenceMissingFields: [field],
+            scripts: [{ transportError: 'connection refused' }]
+        });
+        const res = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+        assert.strictEqual(res.allowed, false, `a table missing "${field}" must not authorise a fail-open run`);
+    }
+});
+
+test('astra-B1: a covered run over an unusable evidence table reports evidenceStored:false', () => {
+    const h = harness({
+        evidenceMissingFields: ['correlation_id'],
+        scripts: [{ status: 200, body: sanitizeOkBody() }]
+    });
+    const res = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+
+    // The content really was sanitized, so the run proceeds — but nothing
+    // records it, and that is stated rather than implied.
+    assert.strictEqual(res.allowed, true);
+    assert.strictEqual(res.coverage, 'covered');
+    assert.strictEqual(res.evidenceStored, false);
+    assert.strictEqual(res.evidenceId, '');
+});
+
+test('N-3: a covered run with no evidence row cannot be sealed', () => {
+    const h = harness({
+        scripts: [{ status: 200, body: sanitizeOkBody() }, { status: 200, body: sealOkBody() }],
+        evidenceInsertFails: true
+    });
+    const pr = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+    assert.strictEqual(pr.allowed, true);
+    assert.strictEqual(pr.evidenceStored, false);
+
+    const sealRes = h.adapter.seal({ protectResult: pr, responseText: 'a summary' });
+
+    assert.strictEqual(sealRes.sealed, false);
+    assert.strictEqual(sealRes.error.code, 'lucairn_evidence_row_missing');
+    assert.strictEqual(sealRes.certId, '');
+    // And the refusal is real, not cosmetic: no seal call was made at all, so
+    // no cert_id_partial was consumed on a run nothing records.
+    assert.strictEqual(h.messages.length, 1);
+});
+
+test('N-3: a covered run WITH an evidence row still seals normally', () => {
+    const h = harness({
+        scripts: [{ status: 200, body: sanitizeOkBody() }, { status: 200, body: sealOkBody() }]
+    });
+    const pr = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+    const sealRes = h.adapter.seal({ protectResult: pr, responseText: 'a summary' });
+
+    assert.strictEqual(sealRes.sealed, true);
+    assert.strictEqual(h.messages.length, 2);
+});
+
+test('a silent update() failure is reported, not read as a recorded seal', () => {
+    const h = harness({
+        scripts: [{ status: 200, body: sanitizeOkBody() }, { status: 200, body: sealOkBody() }],
+        evidenceUpdateFails: true
+    });
+    const pr = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+    h.adapter.seal({ protectResult: pr, responseText: 'a summary' });
+
+    // The row never took the certificate...
+    assert.strictEqual(h.evidenceTable.rows[0].seal_outcome, 'not_attempted');
+    // ...and that is said out loud rather than left to look like "nobody sealed".
+    assert.ok(h.logs.some((l) => l.includes('could not be recorded on evidence row')), h.logs.join('|'));
+});
+
+test('a failed seal whose recording also fails does not pass unremarked', () => {
+    const h = harness({
+        scripts: [
+            { status: 200, body: sanitizeOkBody() },
+            { status: 503, body: JSON.stringify({ error: 'cert_signing_unavailable' }) }
+        ],
+        evidenceUpdateFails: true
+    });
+    const pr = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+    const sealRes = h.adapter.seal({ protectResult: pr, responseText: 'a summary' });
+
+    assert.strictEqual(sealRes.sealed, false);
+    assert.ok(h.logs.some((l) => l.includes('seal failure for skill')), h.logs.join('|'));
+});
+
+test('a throwing logger cannot turn one decided run into two evidence rows', () => {
+    // Round-2 advisory fold-in. gs.warn() raising on the fail-open path used to
+    // unwind into protect()'s outer catch AFTER the uncovered_run row had
+    // landed: one run, two rows, and different correlation ids on them.
+    const h = harness({
+        policyRows: [{ skill_name: SKILL, active: '1', fail_open: '1' }],
+        scripts: [{ transportError: 'connection refused' }],
+        logThrows: true
+    });
+    const res = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+
+    assert.strictEqual(res.allowed, true);
+    assert.strictEqual(res.coverage, 'uncovered');
+    assert.strictEqual(h.evidenceTable.rows.length, 1);
+    assert.strictEqual(h.evidenceTable.rows[0].outcome, 'uncovered_run');
+    assert.strictEqual(h.evidenceTable.rows[0].correlation_id, 'corr_synthetic1');
+});
+
+test('a platform throw is correlated with the id the run actually used', () => {
+    // The caller passed no correlationId, so protect() generated one. A blocked
+    // row written from `args` alone carried an empty id and could not be joined
+    // to anything.
+    const h = harness({ getPropertyThrows: 'boom' });
+    const res = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+
+    assert.strictEqual(res.allowed, false);
+    assert.strictEqual(res.correlationId, 'corr_synthetic1');
+    assert.strictEqual(h.evidenceTable.rows[0].correlation_id, 'corr_synthetic1');
 });

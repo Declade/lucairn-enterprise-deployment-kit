@@ -40,6 +40,11 @@
  *      Authorization value. Round-1 gate probe (specs/2026-09/
  *      gate-2026-09-10-kit-pr133-s1.md, finding 5) persisted both verbatim.
  *      There is no sanitizer for arbitrary upstream text — so none is carried.
+ *   5. A NON-OK RESULT CARRIES NO UPSTREAM BODY AT ALL. `body` is null on every
+ *      failure path. Rule 4 kept upstream text out of `message` while leaving
+ *      the parsed body itself hanging off the result object, one
+ *      JSON.stringify() away from a log line — a containment property that held
+ *      only as long as nobody read the field. Round-2 gate finding N-2.
  *
  * TRANSPORT MODES (both are HYPOTHESES until the PDI run — see README
  * § Verification runbook, which is the falsifier):
@@ -418,7 +423,19 @@ LucairnClient.prototype = {
         return {
             ok: isOk,
             status: status,
-            body: body,
+            /* CONTAINMENT IS STRUCTURAL, not a matter of what callers happen to
+             * read. On a failure the parsed upstream body is dropped here, after
+             * classification has taken the one thing it may take — an
+             * allow-listed error code. An upstream error body can quote the
+             * request it rejected and the Authorization header it rejected it
+             * with; while it rode along on the result object, every caller,
+             * logger and future edit was one JSON.stringify away from persisting
+             * both. Rule 4 said diagnostics are never forwarded; this makes the
+             * whole result obey it. Round-2 gate finding N-2.
+             *
+             * `rawLength` survives because a length is not content and is the
+             * only thing anyone actually debugged with. */
+            body: isOk ? body : null,
             rawLength: String(raw || '').length,
             failureClass: isOk ? 'none' : failureClass,
             durationMs: durationMs,

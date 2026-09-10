@@ -56,7 +56,11 @@ LucairnNowAssistAdapter.ERROR = {
     PLATFORM: 'lucairn_platform_error',
     /* An override was configured, protection failed, and the audit row that the
      * override depends on could not be written. */
-    UNAUDITABLE: 'lucairn_uncovered_run_unauditable'
+    UNAUDITABLE: 'lucairn_uncovered_run_unauditable',
+    /* A run really was covered, but its evidence row is missing, so there is
+     * nothing to attach a certificate to and nothing that could later be read
+     * back to say the certificate belongs to this run. Round-2 finding N-3. */
+    NO_EVIDENCE_ROW: 'lucairn_evidence_row_missing'
 };
 
 /* The ONLY certificate tier this adapter may report.
@@ -113,18 +117,28 @@ LucairnNowAssistAdapter.prototype = {
          * an exception rather than a blocked run — a failure mode with no
          * decision and no evidence row. Now it is a block, like every other
          * failure. Round-1 gate fold-in M-2. */
+        /* The state object exists so that a throw AFTER a decision has been
+         * taken does not lose what already happened. Without it, _hardBlock()
+         * could only read `args` — so a run whose correlation id had been
+         * GENERATED here (the caller passed none) produced a blocked row with an
+         * empty correlation id, sitting next to the uncovered_run row that the
+         * same call had already written under the real id: two rows, one run, no
+         * way to join them. Round-2 advisory fold-in. */
+        var state = { correlationId: '', evidenceId: '', outcomeRecorded: '' };
         try {
-            return this._protect(args);
+            return this._protect(args, state);
         } catch (e) {
-            return this._hardBlock(args);
+            return this._hardBlock(args, state);
         }
     },
 
-    _protect: function (args) {
+    _protect: function (args, state) {
         args = args || {};
+        state = state || {};
         var skill = String(args.skill || '');
         var text = (args.text === null || args.text === undefined) ? '' : String(args.text);
         var correlationId = String(args.correlationId || this._guid());
+        state.correlationId = correlationId;
         var started = this._now();
 
         if (!skill) {
@@ -138,7 +152,7 @@ LucairnNowAssistAdapter.prototype = {
                 message: 'protect() called without a skill name',
                 durationMs: this._now() - started,
                 text: text
-            });
+            }, state);
         }
 
         var cfg = this._config.resolve();
@@ -152,7 +166,7 @@ LucairnNowAssistAdapter.prototype = {
                 message: 'configuration incomplete: ' + problems.join('; '),
                 durationMs: this._now() - started,
                 text: text
-            });
+            }, state);
         }
 
         var client = this._makeClient(cfg);
@@ -167,7 +181,7 @@ LucairnNowAssistAdapter.prototype = {
                 message: res.message,
                 durationMs: res.durationMs,
                 text: text
-            });
+            }, state);
         }
 
         var body = this._isPlainObject(res.body) ? res.body : {};
@@ -181,14 +195,14 @@ LucairnNowAssistAdapter.prototype = {
          * round-1 gate probe walked them straight through the old `!body.x`
          * checks into a "covered" verdict (finding 3). Types and emptiness are
          * checked here, not assumed. */
-        var problems = this._validateSanitizeBody(body, text);
-        if (problems.length > 0) {
+        var bodyProblems = this._validateSanitizeBody(body, text);
+        if (bodyProblems.length > 0) {
             var fields = {
                 skill: skill,
                 correlationId: correlationId,
                 code: LucairnNowAssistAdapter.ERROR.CONTRACT,
                 failureClass: 'contract_error',
-                message: 'Lucairn service response failed validation: ' + problems.join('; '),
+                message: 'Lucairn service response failed validation: ' + bodyProblems.join('; '),
                 durationMs: res.durationMs,
                 text: text
             };
@@ -202,7 +216,7 @@ LucairnNowAssistAdapter.prototype = {
                 body.sanitized_text !== text) {
                 fields.sanitizedText = body.sanitized_text;
             }
-            return this._decide(fields);
+            return this._decide(fields, state);
         }
 
         var manifest = body.manifest || {};
@@ -228,10 +242,18 @@ LucairnNowAssistAdapter.prototype = {
              * submitted fields really were sanitized, so blocking here would
              * turn a lost audit row into an outage on a protected run. The
              * caller is told the row is missing rather than left to infer it
-             * from an empty evidenceId, and seal() will decline to attach a
-             * certificate to a row that does not exist. */
-            this._log('the covered-run evidence row could not be stored for skill "' + skill +
-                '"; the run was protected but is not recorded');
+             * from an empty evidenceId.
+             *
+             * seal() then DECLINES on `evidenceStored !== true` — see _seal().
+             * This comment used to assert that behaviour while nothing
+             * implemented it: the round-2 probe sealed a run with
+             * `evidenceId: ''` and got a certificate whose existence no row
+             * records. Finding N-3. */
+            this._safeLog('the covered-run evidence row could not be stored for skill "' + skill +
+                '"; the run was protected but is not recorded, and it cannot be sealed');
+        } else {
+            state.evidenceId = evidenceWrite.sysId;
+            state.outcomeRecorded = 'covered';
         }
 
         return {
@@ -258,6 +280,11 @@ LucairnNowAssistAdapter.prototype = {
      * Refuses to seal a run that was not covered. A certificate minted for a
      * fail-open run would assert that the submitted fields were sanitized when
      * they were not — the exact overclaim the evidence row exists to prevent.
+     *
+     * Refuses equally to seal a covered run whose evidence row is missing
+     * (finding N-3): the row is where the certificate is recorded, so without
+     * one the certificate exists and nothing on the instance says which run it
+     * belongs to.
      *
      * @param {object} args
      * @param {object} args.protectResult   the object returned by protect()
@@ -289,6 +316,23 @@ LucairnNowAssistAdapter.prototype = {
         if (pr.coverage !== 'covered' || !pr.certIdPartial) {
             return this._sealError(LucairnNowAssistAdapter.ERROR.NOT_COVERED,
                 'refusing to seal a certificate for a run that was not covered by the sanitizer',
+                'contract_error', pr.correlationId);
+        }
+        if (pr.evidenceStored !== true || !pr.evidenceId) {
+            /* FINDING N-3. The evidence row is the precondition for a fail-open
+             * run; it is the precondition for a certificate too, and for the
+             * same reason. A certificate whose run has no row is an artefact
+             * with no instance-side record: recordSeal() has nothing to write
+             * to, so `seal_outcome` never says `sealed`, and an auditor reading
+             * the evidence table cannot find the run the certificate attests.
+             *
+             * Declining costs a certificate on a run that was genuinely
+             * protected. That is the cheaper side: the content was sanitized
+             * either way, and an unrecorded certificate is a claim nobody can
+             * tie back to anything. */
+            return this._sealError(LucairnNowAssistAdapter.ERROR.NO_EVIDENCE_ROW,
+                'refusing to seal a certificate for a run with no evidence row; ' +
+                'a certificate that no row records cannot be tied back to the run it attests',
                 'contract_error', pr.correlationId);
         }
         if (typeof args.responseText !== 'string' || args.responseText.length === 0) {
@@ -331,7 +375,7 @@ LucairnNowAssistAdapter.prototype = {
              * findAndClaimByCertIDPartial), so a second attempt with the same
              * value returns 404 — replacing an accurate diagnostic with a
              * misleading one. Recovery is a fresh sanitize-only + seal flow. */
-            this._log('certificate sealing failed for skill "' + pr.skill + '": ' + res.message);
+            this._safeLog('certificate sealing failed for skill "' + pr.skill + '": ' + res.message);
             return this._sealFailed(pr, LucairnNowAssistAdapter.ERROR.UNREACHABLE,
                 res.message, res.failureClass, res.durationMs);
         }
@@ -344,7 +388,7 @@ LucairnNowAssistAdapter.prototype = {
                 'contract_error', res.durationMs);
         }
 
-        this._evidence.recordSeal(pr.evidenceId, {
+        var recorded = this._evidence.recordSeal(pr.evidenceId, {
             outcome: 'sealed',
             certId: String(body.cert_id),
             certUrl: String(body.cert_url),
@@ -352,6 +396,14 @@ LucairnNowAssistAdapter.prototype = {
             message: '',
             sealDurationMs: res.durationMs
         });
+        if (recorded.updated !== true) {
+            /* The certificate exists; the row that should say so does not. Say
+             * it in the log rather than letting a silent update failure make an
+             * unrecorded certificate look like an unsealed run. */
+            this._safeLog('the certificate for skill "' + pr.skill +
+                '" could not be recorded on evidence row ' + pr.evidenceId +
+                ' (' + recorded.error + ')');
+        }
 
         return {
             sealed: true,
@@ -388,10 +440,11 @@ LucairnNowAssistAdapter.prototype = {
      *     error: null | { code, message, failure_class, evidence_id, correlation_id }
      *   }
      */
-    _decide: function (f) {
+    _decide: function (f, state) {
+        state = state || {};
         var policy = this._config.skillPolicy(f.skill);
         if (policy.failOpen !== true) {
-            return this._block(f);
+            return this._block(f, state);
         }
 
         /* M-1: forward the least content that is available. On a malformed-but-
@@ -425,7 +478,7 @@ LucairnNowAssistAdapter.prototype = {
              * outright that one fails too and the run is still blocked, which is
              * the safe end of the failure; if the failure was transient, the
              * `blocked` row lands and says why. */
-            this._log('skill "' + f.skill + '" is configured fail-open, but the uncovered_run ' +
+            this._safeLog('skill "' + f.skill + '" is configured fail-open, but the uncovered_run ' +
                 'evidence row could not be stored; blocking the run instead — an unauditable ' +
                 'fail-open is not the override that was authorised');
 
@@ -438,10 +491,18 @@ LucairnNowAssistAdapter.prototype = {
                     ' | fail-open override NOT honoured: the uncovered_run evidence row could not be stored',
                 durationMs: f.durationMs,
                 text: f.text
-            });
+            }, state);
         }
 
-        this._log('skill "' + f.skill + '" is configured fail-open; the run proceeded ' +
+        state.evidenceId = write.sysId;
+        state.outcomeRecorded = 'uncovered_run';
+
+        /* Logging is deliberately NOT allowed to change this outcome. A throwing
+         * gs.warn() used to unwind into protect()'s outer catch AFTER the
+         * uncovered_run row had landed, so one run produced two evidence rows —
+         * an uncovered_run under the generated correlation id and a blocked one
+         * under an empty id. Round-2 advisory fold-in. */
+        this._safeLog('skill "' + f.skill + '" is configured fail-open; the run proceeded ' +
             'without sanitizer coverage (' + f.failureClass + '). Evidence: ' + write.sysId);
 
         return {
@@ -468,7 +529,8 @@ LucairnNowAssistAdapter.prototype = {
         };
     },
 
-    _block: function (f) {
+    _block: function (f, state) {
+        state = state || {};
         var write = this._evidence.write({
             outcome: 'blocked',
             skill: f.skill,
@@ -478,6 +540,11 @@ LucairnNowAssistAdapter.prototype = {
             durationMs: f.durationMs,
             failOpenOverride: false
         });
+
+        if (write.stored === true) {
+            state.evidenceId = write.sysId;
+            state.outcomeRecorded = 'blocked';
+        }
 
         return {
             allowed: false,
@@ -510,23 +577,36 @@ LucairnNowAssistAdapter.prototype = {
      * write is attempted but not depended on, and neither config nor the client
      * is consulted — any of them could be the thing that just threw.
      */
-    _hardBlock: function (args) {
+    _hardBlock: function (args, state) {
+        state = state || {};
         var skill = '';
         var correlationId = '';
         try {
             skill = String((args && args.skill) || '');
         } catch (e) { skill = ''; }
         try {
-            correlationId = String((args && args.correlationId) || '');
+            /* The id the run actually used, not just the one the caller passed.
+             * When protect() generated the id, `args` never had it — so a
+             * blocked row written from `args` alone could not be joined to the
+             * row the same run had already written. */
+            correlationId = String(state.correlationId || (args && args.correlationId) || '');
         } catch (e) { correlationId = ''; }
 
         var message = 'the adapter could not complete a protection decision ' +
             '(a platform call raised); the run is blocked';
 
-        try {
-            this._log('protect() raised before a decision could be made for skill "' +
-                skill + '"; blocking the run');
-        } catch (e) { /* logging must not be the reason a block fails */ }
+        if (state.outcomeRecorded) {
+            /* A decision had already been recorded when the throw happened.
+             * Name that row here rather than leaving two rows for one run with
+             * nothing linking them; the shared correlation id does the joining,
+             * and this says which way round they go. */
+            message += ' | a prior "' + state.outcomeRecorded + '" evidence row (' +
+                state.evidenceId + ') was already written for this run and is superseded ' +
+                'by this block';
+        }
+
+        this._safeLog('protect() raised before a decision could be made for skill "' +
+            skill + '"; blocking the run');
 
         var evidenceId = '';
         var stored = false;
@@ -577,7 +657,7 @@ LucairnNowAssistAdapter.prototype = {
     _sealFailed: function (pr, code, message, failureClass, durationMs) {
         try {
             if (pr && pr.evidenceId) {
-                this._evidence.recordSeal(pr.evidenceId, {
+                var recorded = this._evidence.recordSeal(pr.evidenceId, {
                     outcome: 'failed',
                     certId: '',
                     certUrl: '',
@@ -585,6 +665,16 @@ LucairnNowAssistAdapter.prototype = {
                     message: message,
                     sealDurationMs: durationMs || 0
                 });
+                if (recorded.updated !== true) {
+                    /* The catch below exists so that recording cannot throw over
+                     * an already-failed seal. It must not double as a way for a
+                     * QUIET recording failure to pass unremarked — a `failed`
+                     * seal that was never written to the row is indistinguishable
+                     * from a seal nobody attempted. Round-2 advisory fold-in. */
+                    this._safeLog('the seal failure for skill "' +
+                        String((pr && pr.skill) || '') + '" could not be recorded on evidence row ' +
+                        pr.evidenceId + ' (' + recorded.error + ')');
+                }
             }
         } catch (e) { /* the seal already failed; recording must not throw over it */ }
         return this._sealError(code, message, failureClass,
@@ -605,6 +695,20 @@ LucairnNowAssistAdapter.prototype = {
                 correlation_id: String(correlationId || '')
             }
         };
+    },
+
+    /**
+     * Log without letting logging change a decision.
+     *
+     * Every call site in this file is on a path that has ALREADY decided what
+     * happens to the run. A throwing gs.warn() on such a path used to unwind
+     * into protect()'s outer catch and convert a completed decision into a hard
+     * block — after the evidence row for the original decision had landed.
+     */
+    _safeLog: function (msg) {
+        try {
+            this._log(msg);
+        } catch (e) { /* a diagnostic must never be the reason an outcome changes */ }
     },
 
     /* ---- response validation -------------------------------------------- */

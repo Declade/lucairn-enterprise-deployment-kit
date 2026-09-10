@@ -46,6 +46,11 @@ authorises is an *audited* unprotected run. If the `uncovered_run` row cannot be
 stored, the run is **blocked** instead — an unprotected run that nobody can find
 afterwards is not the thing that was authorised. Leg 4b below measures this.
 
+Two consequences of the same rule, both added in round 2: a row that *exists* on
+a table that cannot hold the audit fields does not count as stored, and a
+covered run whose row is missing is **not sealed** — a certificate nothing
+records cannot be tied back to the run it attests.
+
 Why the default is this way round: in Lucairn's other integrations, a client-side
 failure is backstopped by the Lucairn service, which still sanitizes before any
 model sees the text. That backstop does not exist here — on this path the
@@ -84,6 +89,7 @@ servicenow/
 │       ├── properties.md            every system property
 │       └── connection-and-credential-alias.md   alias, connection, credential, REST message
 └── test/                            Node unit tests + platform fakes
+    └── hook.test.js                 executes the paste-in hook in node:vm
 ```
 
 ### The decision and the outcome are two different files
@@ -95,9 +101,10 @@ raising when the answer is no, annotating when an override is in force.
 They are separate because the first is proven and the second is not. The
 adapter's behaviour is exercised by unit tests against faked platform objects.
 Whether a raise from a preprocessor hook actually stops a Now Assist skill run
-is a **hypothesis** that only an instance can settle: see Leg 6 below, and the
-header of `src/script_includes/LucairnSkillGuard.js` for the three possible
-outcomes and what each one means for the claim.
+is a **hypothesis** that only an instance can settle — and even then only as
+far as "the user got no summary": see Leg 6 below, and the header of
+`src/script_includes/LucairnSkillGuard.js` for the three possible outcomes and
+what each one means for the claim.
 
 ### Why the source is `.js` files and not an update-set XML
 
@@ -216,9 +223,9 @@ The seal call accepts exactly three vendor values: `anthropic`, `openai`,
 `google`. **None of them names the model behind a Now Assist deployment.**
 
 The application does not guess. `lucairn.now_assist.vendor` has no default, and
-**it must be set** — validation runs before the sanitize call, not before the
-seal call, so an unset vendor does not mean "sanitize without a certificate". It
-means every protected run is blocked; and for any skill an administrator has
+**it must be set** — configuration is validated before the sanitize call as well
+as before the seal call, so an unset vendor does not mean "sanitize without a
+certificate". It means every protected run is blocked; and for any skill an administrator has
 flipped fail-open, it means the run proceeds on **raw** content with an
 `uncovered_run` evidence row. Neither configuration sanitizes anything. The full
 table is in [`src/records/properties.md`](src/records/properties.md).
@@ -227,8 +234,16 @@ For the PDI plumbing test below, set it to `openai` so the round trip can be
 proven end to end, and treat that as a provenance placeholder for the plumbing —
 not as a statement about which vendor runs the inference.
 
-Extending the accepted vendor set is a change to the Lucairn service's own
-contract and is out of scope here; it needs its own design pass.
+**Status: UNRESOLVED PROTOTYPE ITEM, and it gates deployment.** Extending the
+accepted vendor set is a change to the Lucairn service's own contract and is out
+of scope here; it needs its own design pass. It is tracked as an open item on
+the S1 workstream ticket (T-750) — acceptable as a ticket, not acceptable as
+silence. Until it is closed, every certificate this integration mints carries a
+vendor value that is a provenance PLACEHOLDER rather than a statement about
+which vendor ran the inference, and no customer-facing material may present the
+`vendor` field on a Now Assist certificate as identifying the model. The same
+applies to the transport question in
+[`src/records/connection-and-credential-alias.md`](src/records/connection-and-credential-alias.md).
 
 ---
 
@@ -308,9 +323,12 @@ the actual outputs in the gate record.
 
 Legs 0–5 exercise the **adapter**: does the round trip work, and does a failure
 block. **Leg 6 is the one that settles the PRD's fail-closed acceptance
-criterion**, because it is the only leg that measures a blocked *skill run*
-rather than a blocked adapter return. Do not treat Legs 2–4 passing as evidence
-that a skill run can be stopped — they are evidence about a different thing.
+criterion**, because it is the only leg that measures a *skill run* rather than
+an adapter return. Do not treat Legs 2–4 passing as evidence that a skill run
+can be stopped — they are evidence about a different thing. And do not treat
+Leg 6 passing as evidence that inference never ran: it measures OUTPUT
+SUPPRESSION, and the separate falsifier for the non-dispatch claim is stated
+inside that leg.
 
 Set up a shell first. `LUCAIRN_BASE_URL` is the base URL for the Lucairn account
 you are testing against; `LUCAIRN_API_KEY` is that account's own `lcr_live_` key.
@@ -501,6 +519,23 @@ audit, so what the administrator authorised is not what would have happened.
 Restore the ACL/column afterwards and re-run Leg 4 to confirm the override works
 again.
 
+Two things to check while the evidence table is broken, because they are the
+same rule applied one step later (round-2 finding astra-B1 and N-3):
+
+1. **A partially imported table must not count as an audit.** Instead of denying
+   insert, DELETE one application column from the evidence table — `outcome` or
+   `correlation_id` — and leave insert permitted. ServiceNow accepts the insert
+   and discards the `setValue()` for the missing column, so a row with an id and
+   no content comes back. **Expect the same
+   `lucairn_uncovered_run_unauditable` block**: a row is not an audit record.
+2. **A covered run with no evidence row cannot be sealed.** Restore the column,
+   deny insert again, remove the fail-open policy row, and run Leg 1 with the
+   service REACHABLE. **Expect** `allowed=true`, `coverage=covered`,
+   `evidenceStored=false`, and then `s.sealed=false` with
+   `error.code = lucairn_evidence_row_missing`. The content was protected; the
+   certificate is declined because nothing on the instance would record which
+   run it belongs to.
+
 ### Leg 5 — no submitted content in the evidence table
 
 Query the evidence table for the fixture name, the fixture email, and a
@@ -514,13 +549,14 @@ evidence table again for the fixture name. **Expect zero rows.** The `message`
 and `seal_message` fields are built from a fixed vocabulary, never from upstream
 text — this leg is what proves that on the instance rather than in a unit test.
 
-### Leg 6 — ⚠️ a blocked SKILL RUN, measured (not a blocked adapter return)
+### Leg 6 — ⚠️ output suppression, measured (and what it does NOT prove)
 
-**This is the leg that settles the PRD's S1 fail-closed acceptance criterion.**
-Legs 2–4 prove the *adapter* returns `allowed: false`. That is not the
-acceptance criterion. The criterion is that the *skill run* is blocked, and
-nothing proves that until a hook consumes the decision inside a real skill
-execution.
+**This is the leg that settles the PRD's S1 fail-closed acceptance criterion —
+at the scope it can actually settle it.** Legs 2–4 prove the *adapter* returns
+`allowed: false`. That is not the acceptance criterion. But neither is the
+opposite overclaim: what an operator sitting at the product UI can observe is
+that **no summary reaches the user**, and that is a claim about OUTPUT, not
+about whether ServiceNow's inference was ever dispatched.
 
 **Prerequisite:** `LucairnSkillGuard` created (Build step 3) and the preprocessor
 hook wired per `src/hooks/genai-preprocessor.js` § WIRING.
@@ -531,23 +567,66 @@ hook wired per `src/hooks/genai-preprocessor.js` § WIRING.
    skill on a synthetic incident from `fixtures/synthetic-incidents.json`.
 3. Observe what the *user* gets.
 
+#### The acceptance rule, stated honestly
+
+Three observables are available at the UI: **no summary**, **a visible error**,
+and **a `blocked` evidence row** with a matching `correlation_id`.
+
+- **What they support:** *output suppression.* With the sanitizer unreachable,
+  the protected skill produced no summary for the user and the refusal is
+  recorded. That is the claim this leg licenses, and it is the claim to write in
+  packaging: **"an unprotected run does not return a summary, and the refusal is
+  auditable."**
+- **What they do NOT support:** *"raw content never reached the model."* All
+  three observables are satisfied by at least two countermodels in which
+  inference DID run:
+  1. **provider-called-before-hook** — the extension point runs after the
+     platform has already dispatched the prompt (or dispatches in parallel), and
+     the raise only discards the result. Every observable above is unchanged.
+  2. **hook crash** — the hook aborts for a reason unrelated to the decision (a
+     ReferenceError on its own success path is exactly what round-2 finding N-1
+     was), so a total outage presents as a perfect block. Round 2 found that
+     defect live in this file; assume the class, not the instance.
+
+  A third, narrower one: an evidence row proves the *adapter* ran, not that the
+  *platform* honoured its raise.
+
+**Falsifier for the stronger claim — do this before saying anything about
+dispatch.** Non-dispatch has to be observed independently of the UI:
+
+- **Lucairn side:** the absence of any request for that `correlation_id` in the
+  Lucairn service's own request log across the whole window of the run. Absence is
+  only meaningful if the log is known to be recording — prove that with a
+  positive control (a successful Leg 1 round trip in the same window) before
+  reading any absence as evidence.
+- **ServiceNow side, where observable:** outbound/inference telemetry for the
+  run — instance node logs, the skill's own execution record, or an outbound
+  HTTP log entry at a level the customer permits. On a hosted Now Assist
+  deployment inference may not be observable at all; when it is not, the
+  non-dispatch claim stays **unproven**, and nothing in the packaging may imply
+  it.
+- **Distinguishing (b) from a crash:** re-run with the sanitizer REACHABLE. If a
+  summary comes back, the hook runs and the block is a decision; if it still
+  errors, the hook is broken and every "blocked" observation in this leg is
+  uninterpretable.
+
 **Record which of these actually happened. All three are real outcomes.**
 
 | Outcome | What you observe | What it means |
 |---|---|---|
-| **(a) blocked** | No summary. An error surfaces to the user, and a `blocked` evidence row exists with a matching `correlation_id`. | The preprocessor lane can enforce. The blocking claim is supported *for this skill, on this instance family and patch level* — say exactly that, and nothing broader. |
-| **(b) not blocked** | A summary comes back anyway; the raise was logged and ignored, or swallowed. | **The blocking claim is dead.** The annotation path is the only surviving control. No packaging, deck or customer material may say the preprocessor blocks anything. |
+| **(a) output suppressed** | No summary. An error surfaces to the user, and a `blocked` evidence row exists with a matching `correlation_id`. | The preprocessor lane can suppress the output *for this skill, on this instance family and patch level* — say exactly that, and nothing broader. Whether inference was dispatched is a **separate** question answered only by the falsifier above. |
+| **(b) not suppressed** | A summary comes back anyway; the raise was logged and ignored, or swallowed. | **The blocking claim is dead.** ⚠️ And the annotation is *not* the surviving control here: the hook raises before it assigns its output, so a swallowed raise leaves the skill running on the ORIGINAL text with **no annotation at all**. What survives is the evidence row and nothing else. No packaging, deck or customer material may say the preprocessor blocks anything. |
 | **(c) never invoked** | No evidence row appears at all for the UI-triggered run. | The hook is not on this skill's execution path. The preprocessor lane does not apply here; the P2 clone lane is the remaining option. |
 
 Also record: the instance family and patch level, the extension-point table that
-accepted the script, and which candidate tables did not exist. The mechanism is
-release-sensitive and none of this transfers between releases by assumption.
+accepted the script, which candidate tables did not exist, and — separately from
+the outcome letter — whether dispatch absence was independently observed,
+observed to be present, or **not observable**. "Not observable" is a legitimate
+and common answer; recording it as an outcome (a) is not.
 
-**Falsifier, stated plainly:** if a summary comes back in step 3, the claim
-"Lucairn blocks an unprotected Now Assist skill run" is FALSE, regardless of
-what the unit tests say. The unit tests prove what this code does with a
-decision; they cannot prove what ServiceNow does with this code. Only Leg 6 can,
-and only for the skill and release it was run on.
+The unit tests prove what this code does with a decision; they cannot prove what
+ServiceNow does with this code. Leg 6 can, for the skill and release it was run
+on, and only to the depth its observables reach.
 
 **Then run the coverage half.** Restore the URL, re-run step 2, and check whether
 the summary reflects sanitized input. If the model's output contains a fixture
@@ -565,8 +644,14 @@ No dependencies, no install step. Node 18 or newer:
 
 ```bash
 cd servicenow
-node --test "test/*.test.js"
+bash run-tests.sh
 ```
+
+`run-tests.sh` expands the test glob in bash and hands Node a file list. Do not
+substitute `node --test "test/*.test.js"`: quoting the pattern makes NODE do the
+globbing, which it only learned in version 21, so on the Node 18 this
+application supports the pattern is read as a literal filename and the lane
+dies with an ENOENT rather than a test result.
 
 They also run inside the kit's own gate:
 
@@ -597,14 +682,38 @@ the refusal to seal an uncovered run, the refusal to invent a response hash, and
 - **platform throws at the entry point** — `gs.getProperty` raising returns a
   blocked result rather than escaping.
 
-Each of those was written against a defect the round-1 review gate found, and
-each fails against the code as it was before the fix — a test that cannot fail
-is not evidence.
+Round 2 added, against defects that gate found:
+
+- **the hook, EXECUTED** (`test/hook.test.js`) — the paste-in body is run in
+  `node:vm` with a stubbed guard, on the allowed and the blocked path, with and
+  without a pre-declared `output` binding. The test it replaced read the file's
+  source text for the right-looking words, and while it did, the hook's own
+  success path carried a `ReferenceError` that aborted every protected run;
+- **the evidence row must be an evidence ROW** — an insert into a partially
+  imported table returns a sys_id and stores nothing, and that does not count as
+  stored;
+- **no upstream body on a failure result** — the canary now asserts on the whole
+  result object, which is where the parsed error body had been riding along
+  while the assertion looked only at the two fields already believed safe;
+- **a covered run with no evidence row cannot be sealed** — and makes no seal
+  call at all;
+- **duplicate active policy rows are ambiguous** even when `setLimit` is
+  honoured, which is the ordinary instance rather than the broken one;
+- **a throwing logger cannot change an outcome**, or turn one run into two
+  evidence rows;
+- **a silent `update()` failure is a failure** — a seal outcome the row never
+  took is not a recorded seal.
+
+Each of those was written against a defect a review gate found, and each fails
+against the code as it was before the fix — a test that cannot fail is not
+evidence.
 
 These are unit tests against faked platform objects. They constrain the
 adapter's own logic; they say nothing about ServiceNow's behaviour. That is what
 the PDI runbook above is for — and Leg 6 in particular, which is the only thing
-that can tell you whether a decision to block becomes a blocked skill run.
+that can tell you whether a decision to block becomes a suppressed skill
+output. Not even Leg 6 can tell you, on its own, whether inference was
+dispatched; that needs the independent observation its § falsifier describes.
 
 ---
 

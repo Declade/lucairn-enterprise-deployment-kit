@@ -2,8 +2,6 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const fs = require('node:fs');
-const path = require('node:path');
 
 require('./mocks/servicenow');
 const LucairnSkillGuard = require('../src/script_includes/LucairnSkillGuard');
@@ -94,16 +92,12 @@ test('every decision carries the ids needed to find the run in the evidence tabl
     }
 });
 
-test('the preprocessor hook stub consumes allowed:false and is labelled a hypothesis', () => {
-    // The hook is a paste-in for an extension point that has never run, so it
-    // cannot be executed here. What CAN be checked is that it did not quietly
-    // become an unlabelled claim, and that it still consumes the block.
-    const hook = fs.readFileSync(
-        path.join(__dirname, '..', 'src', 'hooks', 'genai-preprocessor.js'), 'utf8');
+/*
+ * The preprocessor hook itself is covered by test/hook.test.js, which EXECUTES
+ * it in `node:vm`. A source-text grep used to stand in for that here, above a
+ * comment asserting the hook "cannot be executed" — and while it was only being
+ * grepped, its success path carried a ReferenceError that aborted every allowed
+ * run (round-2 gate finding N-1). A test that reads code for the right-looking
+ * words cannot fail on the code being wrong.
+ */
 
-    assert.ok(/HYPOTHESIS/.test(hook), 'the hook must carry its hypothesis label');
-    assert.ok(/verdict\.block/.test(hook), 'the hook must consume the block decision');
-    assert.ok(/throw new Error/.test(hook), 'the hook must act on a block, not just report it');
-    assert.ok(/ADJUST-ON-PDI/.test(hook), 'the unproven bindings must stay marked');
-    assert.ok(/Leg 6/.test(hook), 'the hook must point at its falsifier');
-});

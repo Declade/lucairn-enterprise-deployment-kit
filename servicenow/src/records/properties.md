@@ -23,8 +23,9 @@ behind a Now Assist deployment, so the application cannot pick one for you and
 does not try.
 
 **You must set this property. It is not optional.** Configuration validation
-runs before the sanitize call, not before the seal call, so an unset or
-out-of-list vendor stops the whole flow:
+runs on BOTH calls — before the sanitize call in `protect()` and again in
+`seal()` — so an unset or out-of-list vendor stops the whole flow at the first
+step rather than merely costing you a certificate at the last one:
 
 | Skill's policy | With `vendor` unset | What the operator sees |
 |---|---|---|
