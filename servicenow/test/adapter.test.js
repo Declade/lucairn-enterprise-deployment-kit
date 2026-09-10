@@ -133,7 +133,7 @@ function harness(opts) {
         log
     });
 
-    return { adapter, evidenceTable, policyTable, messages, logs };
+    return { adapter, evidence, evidenceTable, policyTable, messages, logs };
 }
 
 /* ---- happy path --------------------------------------------------------- */
@@ -936,12 +936,74 @@ test('a silent update() failure is reported, not read as a recorded seal', () =>
         evidenceUpdateFails: true
     });
     const pr = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
-    h.adapter.seal({ protectResult: pr, responseText: 'a summary' });
+    const sealRes = h.adapter.seal({ protectResult: pr, responseText: 'a summary' });
 
     // The row never took the certificate...
     assert.strictEqual(h.evidenceTable.rows[0].seal_outcome, 'not_attempted');
     // ...and that is said out loud rather than left to look like "nobody sealed".
     assert.ok(h.logs.some((l) => l.includes('could not be recorded on evidence row')), h.logs.join('|'));
+    // ...and it is a RETURNED outcome, not only a log line: the certificate was
+    // minted, the record of it was not.
+    assert.strictEqual(sealRes.sealed, true);
+    assert.strictEqual(sealRes.certId, 'cert_synthetic1');
+    assert.strictEqual(sealRes.sealRecorded, false);
+    assert.ok(sealRes.recordingError.length > 0);
+});
+
+test('round-3 advisory: a null update() plus a throwing logger does not unmint the certificate', () => {
+    // The exact reproduced case. update() returns null (an ACL denial), so
+    // recordSeal() logs — and the logger raises. recordSeal()'s own catch logged
+    // again, raised again, and the exception escaped through _seal() into
+    // seal()'s outer catch, which answered `sealed: false` with "no certificate
+    // exists" about a certificate the service had ALREADY issued. An operator
+    // acting on that would re-run a flow whose cert_id_partial is consumed.
+    const h = harness({
+        scripts: [{ status: 200, body: sanitizeOkBody() }, { status: 200, body: sealOkBody() }],
+        evidenceUpdateFails: true,
+        logThrows: true
+    });
+    const pr = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+    const sealRes = h.adapter.seal({ protectResult: pr, responseText: 'a summary' });
+
+    // The certificate survives the recording failure.
+    assert.strictEqual(sealRes.sealed, true, JSON.stringify(sealRes.error || {}));
+    assert.strictEqual(sealRes.certId, 'cert_synthetic1');
+    assert.strictEqual(sealRes.certUrl, 'https://lucairn.example.test/verify?id=req_synthetic1');
+    assert.strictEqual(sealRes.error, null);
+    // And the recording failure is visible as its own outcome, not hidden.
+    assert.strictEqual(sealRes.sealRecorded, false);
+    assert.ok(sealRes.recordingError.length > 0, 'the recording failure must be named');
+    // The seal call really was made — this is not "we never tried".
+    assert.strictEqual(h.messages.length, 2);
+});
+
+test('round-3 advisory: LucairnEvidence keeps its never-throws contract under a throwing logger', () => {
+    // recordSeal() and write() both document "never throws". The one place that
+    // was untrue was the log line inside their own catch blocks.
+    const h = harness({
+        scripts: [{ status: 200, body: sanitizeOkBody() }, { status: 200, body: sealOkBody() }],
+        evidenceUpdateFails: true,
+        logThrows: true
+    });
+    const pr = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+
+    assert.doesNotThrow(() => h.evidence.recordSeal(pr.evidenceId, { outcome: 'sealed' }));
+    const recorded = h.evidence.recordSeal(pr.evidenceId, { outcome: 'sealed' });
+    assert.strictEqual(recorded.updated, false);
+    assert.ok(recorded.error.length > 0);
+});
+
+test('round-3 advisory: a genuinely recorded seal says so', () => {
+    const h = harness({
+        scripts: [{ status: 200, body: sanitizeOkBody() }, { status: 200, body: sealOkBody() }]
+    });
+    const pr = h.adapter.protect({ skill: SKILL, text: INCIDENT.description });
+    const sealRes = h.adapter.seal({ protectResult: pr, responseText: 'a summary' });
+
+    assert.strictEqual(sealRes.sealed, true);
+    assert.strictEqual(sealRes.sealRecorded, true);
+    assert.strictEqual(sealRes.recordingError, '');
+    assert.strictEqual(h.evidenceTable.rows[0].seal_outcome, 'sealed');
 });
 
 test('a failed seal whose recording also fails does not pass unremarked', () => {

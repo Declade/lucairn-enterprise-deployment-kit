@@ -294,12 +294,24 @@ LucairnNowAssistAdapter.prototype = {
      *   the caller wrapped or trimmed the sanitized text — the hash must cover
      *   what was really forwarded, not what we assume was.
      * @param {string} [args.toolName]      provenance display string
+     * TWO OUTCOMES, NOT ONE. `sealed` answers "was a certificate minted?".
+     * `sealRecorded` answers "did the evidence row get told?". They are
+     * independent, and collapsing them is a round-3 advisory: a recording
+     * failure used to be able to report `sealed: false, "no certificate
+     * exists"` about a certificate the service had already issued.
+     *
      * @returns {{sealed: boolean, certId: string, certUrl: string, certTier: string,
-     *            durationMs: number, error: object|null}}
+     *            durationMs: number, sealRecorded: boolean, recordingError: string,
+     *            error: object|null}}
      */
     seal: function (args) {
         /* Same reasoning as protect(): a platform throw must become a typed
-         * "not sealed", never an exception escaping into the skill run. */
+         * "not sealed", never an exception escaping into the skill run.
+         *
+         * This catch can only fire BEFORE the certificate is minted. Everything
+         * after the mint in _seal() is wrapped there, precisely so that this
+         * handler's "no certificate exists" can never be said about one that
+         * does. Do not move recording work outside that inner guard. */
         try {
             return this._seal(args);
         } catch (e) {
@@ -388,21 +400,45 @@ LucairnNowAssistAdapter.prototype = {
                 'contract_error', res.durationMs);
         }
 
-        var recorded = this._evidence.recordSeal(pr.evidenceId, {
-            outcome: 'sealed',
-            certId: String(body.cert_id),
-            certUrl: String(body.cert_url),
-            failureClass: 'none',
-            message: '',
-            sealDurationMs: res.durationMs
-        });
-        if (recorded.updated !== true) {
-            /* The certificate exists; the row that should say so does not. Say
-             * it in the log rather than letting a silent update failure make an
-             * unrecorded certificate look like an unsealed run. */
+        /* ---- THE CERTIFICATE NOW EXISTS ---------------------------------
+         *
+         * Everything below this line is RECORDING, and no recording failure may
+         * change the answer to "was a certificate minted?". Round-3 advisory:
+         * the reproduced case was a null `update()` plus a logger that threw —
+         * recordSeal()'s own catch called the same throwing logger again, the
+         * exception escaped, seal()'s outer catch caught it, and the caller was
+         * told `sealed: false, "no certificate exists"` about a certificate the
+         * service had already issued. An operator acting on that answer would
+         * re-run a flow whose `cert_id_partial` is already claimed.
+         *
+         * Two independent guards, because one of them is a contract someone
+         * else has to keep:
+         *   1. recordSeal() is contracted never to throw (and its diagnostics
+         *      now go through LucairnEvidence._safeLog so that is true). This
+         *      try/catch does not trust that from across a Script Include
+         *      boundary a customer can replace.
+         *   2. The outcome is REPORTED, not logged away: `sealRecorded` and
+         *      `recordingError` travel with the success result. A caller that
+         *      needs "sealed AND auditable" can ask for it; one that only needs
+         *      the certificate is not lied to. */
+        var recorded = { updated: false, error: 'seal outcome recording raised' };
+        try {
+            recorded = this._evidence.recordSeal(pr.evidenceId, {
+                outcome: 'sealed',
+                certId: String(body.cert_id),
+                certUrl: String(body.cert_url),
+                failureClass: 'none',
+                message: '',
+                sealDurationMs: res.durationMs
+            });
+        } catch (e) { /* keep the typed default; the certificate stands */ }
+
+        var sealRecorded = !!(recorded && recorded.updated === true);
+        if (!sealRecorded) {
+            /* The certificate exists; the row that should say so does not. */
             this._safeLog('the certificate for skill "' + pr.skill +
                 '" could not be recorded on evidence row ' + pr.evidenceId +
-                ' (' + recorded.error + ')');
+                ' (' + String((recorded && recorded.error) || 'unknown') + ')');
         }
 
         return {
@@ -411,6 +447,10 @@ LucairnNowAssistAdapter.prototype = {
             certUrl: String(body.cert_url),
             certTier: LucairnNowAssistAdapter.CERT_TIER,
             durationMs: res.durationMs,
+            /* The certificate was minted. Was the instance-side record of it
+             * written? A separate question with a separate answer. */
+            sealRecorded: sealRecorded,
+            recordingError: sealRecorded ? '' : String((recorded && recorded.error) || 'unknown'),
             error: null
         };
     },
@@ -655,6 +695,8 @@ LucairnNowAssistAdapter.prototype = {
      * typed error.
      */
     _sealFailed: function (pr, code, message, failureClass, durationMs) {
+        var sealRecorded = false;
+        var recordingError = 'no evidence row to record on';
         try {
             if (pr && pr.evidenceId) {
                 var recorded = this._evidence.recordSeal(pr.evidenceId, {
@@ -665,7 +707,10 @@ LucairnNowAssistAdapter.prototype = {
                     message: message,
                     sealDurationMs: durationMs || 0
                 });
-                if (recorded.updated !== true) {
+                sealRecorded = !!(recorded && recorded.updated === true);
+                recordingError = sealRecorded
+                    ? '' : String((recorded && recorded.error) || 'unknown');
+                if (!sealRecorded) {
                     /* The catch below exists so that recording cannot throw over
                      * an already-failed seal. It must not double as a way for a
                      * QUIET recording failure to pass unremarked — a `failed`
@@ -673,12 +718,19 @@ LucairnNowAssistAdapter.prototype = {
                      * from a seal nobody attempted. Round-2 advisory fold-in. */
                     this._safeLog('the seal failure for skill "' +
                         String((pr && pr.skill) || '') + '" could not be recorded on evidence row ' +
-                        pr.evidenceId + ' (' + recorded.error + ')');
+                        pr.evidenceId + ' (' + recordingError + ')');
                 }
             }
-        } catch (e) { /* the seal already failed; recording must not throw over it */ }
-        return this._sealError(code, message, failureClass,
+        } catch (e) {
+            /* the seal already failed; recording must not throw over it */
+            sealRecorded = false;
+            recordingError = 'seal outcome recording raised';
+        }
+        var out = this._sealError(code, message, failureClass,
             pr ? pr.correlationId : '', durationMs);
+        out.sealRecorded = sealRecorded;
+        out.recordingError = recordingError;
+        return out;
     },
 
     _sealError: function (code, message, failureClass, correlationId, durationMs) {
@@ -688,6 +740,13 @@ LucairnNowAssistAdapter.prototype = {
             certUrl: '',
             certTier: '',
             durationMs: durationMs || 0,
+            /* Same two fields as the success shape, so a caller never has to
+             * branch on `sealed` before it can ask whether the instance-side
+             * record was written. Nothing was minted here, so nothing was
+             * recorded as sealed either; `_sealFailed` overwrites both with the
+             * outcome of its own `failed` write. */
+            sealRecorded: false,
+            recordingError: '',
             error: {
                 code: code,
                 message: message,
