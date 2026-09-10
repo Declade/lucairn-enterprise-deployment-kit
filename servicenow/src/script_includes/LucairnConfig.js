@@ -53,6 +53,17 @@ LucairnConfig.PROP = {
 
 LucairnConfig.TABLE_SKILL_POLICY = 'x_lcrn_now_assist_skill_policy';
 
+/* Every field skillPolicy() depends on. If any one of them is missing from the
+ * table, the lookup is not trustworthy and the policy stays fail-closed.
+ *
+ * Why this list exists: a scoped GlideRecord DROPS a query condition that names
+ * a field the table does not have, rather than returning nothing. A policy
+ * table missing `skill_name` therefore turns `addQuery('skill_name', name)`
+ * into no filter at all, and the first row of the table — any skill's row,
+ * possibly an inactive one — becomes the answer. Round-1 gate finding 2
+ * (specs/2026-09/gate-2026-09-10-kit-pr133-s1.md) reproduced exactly that. */
+LucairnConfig.POLICY_REQUIRED_FIELDS = ['skill_name', 'active', 'fail_open'];
+
 /* The Lucairn service accepts exactly these three vendor values on the
  * certificate-sealing call. Mirrors the server-side allow-list; a value outside
  * the set is rejected with HTTP 400, so we catch it locally first. */
@@ -63,7 +74,13 @@ LucairnConfig.DEFAULTS = {
     restMessage: 'Lucairn Service',
     fnSanitize: 'sanitizeOnly',
     fnSeal: 'sealCert',
-    timeoutMs: 30000,
+    /* The Lucairn service's own request budget is 90 s and a sanitize call on
+     * the heaviest layer has been measured at ~9.6 s end to end. A 30 s client
+     * timeout could therefore abandon a call the service was still going to
+     * answer — the adapter would block a run that protection would have
+     * covered. 45 s sits above the observed worst case and well inside the
+     * service budget. Round-1 gate fold-in L-2. */
+    timeoutMs: 45000,
     clientId: 'lucairn-for-now-assist'
 };
 
@@ -124,11 +141,23 @@ LucairnConfig.prototype = {
      * @returns {string[]} human-readable problems. Empty array = usable config.
      *   The API key value itself is never included in a message.
      */
+    /**
+     * Cap an operator-set value that is quoted back inside a problem string.
+     * These values are administrator configuration, never request content — but
+     * a validation problem ends up in an evidence row's `message`, so nothing
+     * unbounded goes in there on principle.
+     */
+    _short: function (v) {
+        var s = String(v === null || v === undefined ? '' : v);
+        return s.length > 40 ? s.substring(0, 40) + '…' : s;
+    },
+
     validate: function (cfg) {
         var problems = [];
 
         if (cfg.transport !== 'rest_message' && cfg.transport !== 'endpoint') {
-            problems.push('transport must be "rest_message" or "endpoint" (got "' + cfg.transport + '")');
+            problems.push('transport must be "rest_message" or "endpoint" (got "' +
+                this._short(cfg.transport) + '")');
         }
 
         if (cfg.transport === 'rest_message') {
@@ -157,19 +186,43 @@ LucairnConfig.prototype = {
         if (!cfg.vendor) {
             problems.push('vendor is not set (allowed: ' + LucairnConfig.ALLOWED_VENDORS.join(', ') + ')');
         } else if (LucairnConfig.ALLOWED_VENDORS.indexOf(cfg.vendor) === -1) {
-            problems.push('vendor "' + cfg.vendor + '" is not one of: ' + LucairnConfig.ALLOWED_VENDORS.join(', '));
+            problems.push('vendor "' + this._short(cfg.vendor) + '" is not one of: ' +
+                LucairnConfig.ALLOWED_VENDORS.join(', '));
         }
 
         return problems;
     },
 
     /**
+     * Is a GlideRecord boolean truthy? Platform booleans surface as '1'/'0'
+     * strings; the fakes and some APIs hand back real booleans. Anything that
+     * is not an explicit truthy marker is FALSE — never "probably yes".
+     *
+     * @param {*} raw
+     * @returns {boolean}
+     */
+    _isTrue: function (raw) {
+        return raw === '1' || raw === 1 || raw === true || raw === 'true';
+    },
+
+    /**
      * Per-skill protection policy.
      *
      * Fail-closed is the default and is what an unknown skill, an unreadable
-     * table, or a thrown exception all resolve to. Only an explicitly present
-     * policy row with fail_open = true (and active = true) flips a skill to
-     * fail-open.
+     * table, a table with the wrong shape, an ambiguous result, or a thrown
+     * exception all resolve to. Only an explicitly present policy row whose
+     * OWN field values say `skill_name = <the skill asked for>`, `active` and
+     * `fail_open` flips a skill to fail-open.
+     *
+     * TWO independent checks, deliberately:
+     *   1. SCHEMA — the table exists and carries every field the query names.
+     *      A scoped GlideRecord silently DROPS a condition on a field that does
+     *      not exist, so an unvalidated query can return a row it never asked
+     *      for. See LucairnConfig.POLICY_REQUIRED_FIELDS.
+     *   2. ROW IDENTITY — the values on the row that came back are re-read and
+     *      compared in code. The query predicate is treated as an optimisation,
+     *      never as the guarantee. If the predicate was honoured this check is
+     *      free; if it was dropped, this is the check that catches it.
      *
      * @param {string} skillName
      * @returns {{failOpen: boolean, source: string}}
@@ -183,6 +236,29 @@ LucairnConfig.prototype = {
 
         try {
             var gr = this._glideRecord(LucairnConfig.TABLE_SKILL_POLICY);
+
+            /* --- check 1: schema ------------------------------------------ */
+            if (typeof gr.isValid !== 'function' || gr.isValid() !== true) {
+                /* Either the table is missing, or this runtime cannot tell us
+                 * whether it is. Both are "we cannot trust the lookup". */
+                this._log('skill policy table ' + LucairnConfig.TABLE_SKILL_POLICY +
+                    ' is missing or unverifiable; staying fail-closed');
+                return { failOpen: false, source: 'schema-invalid-fail-closed' };
+            }
+            if (typeof gr.isValidField !== 'function') {
+                this._log('skill policy field validation is unavailable on this runtime; staying fail-closed');
+                return { failOpen: false, source: 'schema-invalid-fail-closed' };
+            }
+            for (var f = 0; f < LucairnConfig.POLICY_REQUIRED_FIELDS.length; f++) {
+                var field = LucairnConfig.POLICY_REQUIRED_FIELDS[f];
+                if (gr.isValidField(field) !== true) {
+                    this._log('skill policy table is missing field "' + field +
+                        '"; a query on it would be dropped, so staying fail-closed');
+                    return { failOpen: false, source: 'schema-invalid-fail-closed' };
+                }
+            }
+
+            /* --- the query ------------------------------------------------- */
             gr.addQuery('skill_name', name);
             gr.addQuery('active', true);
             gr.setLimit(1);
@@ -190,16 +266,44 @@ LucairnConfig.prototype = {
             if (!gr.next()) {
                 return closed;
             }
-            var raw = gr.getValue('fail_open');
-            /* GlideRecord booleans surface as '1'/'0' strings. Anything that is
-             * not an explicit truthy marker stays fail-closed. */
-            var failOpen = (raw === '1' || raw === 1 || raw === true || raw === 'true');
+
+            /* --- check 2: row identity ------------------------------------- */
+            /* Read every value off the row BEFORE advancing the cursor for the
+             * ambiguity check below — after next() the cursor no longer points
+             * at this row. */
+            var rowNameRaw = gr.getValue('skill_name');
+            var rowActive = gr.getValue('active');
+            var rowFailOpen = gr.getValue('fail_open');
+
+            var rowName = String(rowNameRaw === null || rowNameRaw === undefined ? '' : rowNameRaw)
+                .replace(/^\s+|\s+$/g, '');
+            if (rowName !== name) {
+                this._log('skill policy lookup for "' + name + '" returned a row for "' +
+                    rowName + '"; the query predicate was not honoured, so staying fail-closed');
+                return { failOpen: false, source: 'row-identity-mismatch-fail-closed' };
+            }
+            if (!this._isTrue(rowActive)) {
+                this._log('skill policy lookup for "' + name +
+                    '" returned an inactive row; staying fail-closed');
+                return { failOpen: false, source: 'row-inactive-fail-closed' };
+            }
+
+            /* setLimit(1) can be dropped by the same mechanism the predicates
+             * can. More than one candidate means we cannot say which row is the
+             * policy, and an ambiguous policy is not an override. */
+            if (gr.next() === true) {
+                this._log('skill policy lookup for "' + name +
+                    '" returned more than one row; ambiguous policy, staying fail-closed');
+                return { failOpen: false, source: 'ambiguous-policy-fail-closed' };
+            }
+
+            var failOpen = this._isTrue(rowFailOpen);
             return {
                 failOpen: failOpen,
                 source: failOpen ? 'policy-row-fail-open' : 'policy-row-fail-closed'
             };
         } catch (e) {
-            this._log('skill policy lookup failed for "' + name + '", staying fail-closed: ' + e.message);
+            this._log('skill policy lookup failed for "' + name + '", staying fail-closed');
             return { failOpen: false, source: 'lookup-error-fail-closed' };
         }
     },

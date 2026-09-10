@@ -30,6 +30,7 @@ test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-h
 	bash tests/test_doctor_tools_dryrun.sh
 	bash tests/test_witness_central_profile.sh
 	bash tests/test_device_countersign_prereq.sh
+	bash servicenow/run-tests.sh
 	bash tests/static_checks.sh
 
 test-wp1-s4-helm-boundary:

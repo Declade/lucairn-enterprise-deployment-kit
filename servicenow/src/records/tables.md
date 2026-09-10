@@ -18,18 +18,47 @@ fail-closed**, so the table is an override list, not an enrolment list.
 
 | Column label | Column name | Type | Max len | Default | Notes |
 |---|---|---|---|---|---|
-| Skill name | `skill_name` | String | 200 | — | Must match the skill name the caller passes to `protect()`. Mark **unique**. |
+| Skill name | `skill_name` | String | 200 | — | Must match the skill name the caller passes to `protect()` **exactly, including case**. Mark **unique**. |
 | Active | `active` | True/False | — | `true` | An inactive row is ignored entirely, including its fail-open flag. |
 | Fail open | `fail_open` | True/False | — | `false` | `true` = if protection fails, run the skill on **raw** content and write an `uncovered_run` evidence row. |
 | Justification | `justification` | String | 1000 | — | Why this skill is allowed to run unprotected. Required by process, not by the platform. |
 | Approved by | `approved_by` | Reference → `sys_user` | — | — | Who signed off on the fail-open. |
 
-Application access: **not** accessible from other scopes for write. Only the
-application's own code and an administrator should change a policy row.
+### Why `skill_name` is compared case-sensitively
 
-Suggested ACL: write restricted to a dedicated `x_lcrn_now_assist_admin` role.
-A user who can flip `fail_open` can turn protection off for a skill, so treat
-that role the way you would treat any other privacy control.
+A ServiceNow query on a string field is case-insensitive, so a row reading
+`incident summarization` would be *selected* by a lookup for
+`Incident summarization`. The application re-reads the value off the returned
+row and compares it exactly, so that row does **not** apply — the skill stays
+fail-closed and a line lands in the system log naming both strings.
+
+That is the safe direction (a near-miss row never turns protection off by
+accident) but it is a real way to be confused while debugging: the row is
+visibly there and visibly ignored. Copy the skill name rather than retyping it.
+
+### Access control — specified, not suggested
+
+A user who can insert a row here can turn protection off for a skill. That makes
+this table a privacy control, and "suggested ACL" is not a specification for one.
+Create all of the following (round-1 gate advisory: ACL/outbound-log spec gaps).
+
+| Operation | Required role | Why |
+|---|---|---|
+| `read` | `x_lcrn_now_assist_admin`, `x_lcrn_now_assist_auditor` | An auditor must be able to see which skills are fail-open without being able to change it. |
+| `create` | `x_lcrn_now_assist_admin` | Inserting a `fail_open = true` row IS turning protection off. Creating must be as restricted as writing — an unspecified create ACL is the most common way a "write-protected" table turns out not to be. |
+| `write` | `x_lcrn_now_assist_admin` | Flipping `fail_open` on an existing row. |
+| `delete` | `x_lcrn_now_assist_admin` | Deleting a row returns the skill to fail-closed — safe in direction, but it erases the `justification` and `approved_by` that recorded the decision. |
+
+Application access (the *Application Access* tab on the table record):
+
+- **Accessible from:** *This application scope only*.
+- **Can read / Can create / Can update / Can delete from other scopes:** all
+  **unchecked**. No other scope has business writing a Lucairn policy row.
+- **Allow access to this table via web services:** **unchecked** — a policy row
+  should not be flippable over the Table API.
+
+Grant `x_lcrn_now_assist_admin` the way you would grant any other privacy
+control: named individuals, recorded, reviewed.
 
 ---
 
@@ -51,6 +80,9 @@ the skill has responded.
 | Partial certificate ID | `cert_id_partial` | String | 100 | Returned by the sanitize call; consumed by the seal call |
 | Duration (ms) | `duration_ms` | Integer | — | Wall clock of the sanitize call |
 | Seal duration (ms) | `seal_duration_ms` | Integer | — | Wall clock of the seal call |
+| Seal outcome | `seal_outcome` | Choice | 40 | `not_attempted` · `sealed` · `failed` (see below) |
+| Seal failure class | `seal_failure_class` | Choice | 40 | Same value set as `failure_class`. `none` unless `seal_outcome = failed`. |
+| Seal message | `seal_message` | String | 500 | Typed diagnostic for a failed seal. Never contains submitted content — see "What never lands here". |
 | Redactions | `redaction_total` | Integer | — | Sum across all categories in the manifest |
 | Layers active | `layers_active` | String | 255 | Comma-joined list reported by the sanitizer |
 | Fail-open override | `fail_open_override` | True/False | — | `true` only on an `uncovered_run` row |
@@ -64,9 +96,38 @@ the skill has responded.
 | `blocked` | Protection could not be completed and the run was stopped. Nothing was sent to the skill. |
 | `uncovered_run` | Protection could not be completed, the skill is configured fail-open, and **the run proceeded on raw content**. This row is the audit trail for that decision. |
 
+### Seal outcome values
+
+| Value | Meaning |
+|---|---|
+| `not_attempted` | `seal()` was never called for this run, or the run was never eligible (blocked / uncovered). |
+| `sealed` | An input-shield certificate exists; `cert_id` and `cert_url` are populated. |
+| `failed` | `seal()` was called and did not produce a certificate. `seal_failure_class` and `seal_message` say what happened. |
+
 A `covered` row with an empty `cert_id` means the sanitize step succeeded but
 the certificate was not sealed — the content was still protected; only the
-certificate is missing.
+certificate is missing. `seal_outcome` is what distinguishes "nobody ever tried
+to seal this" from "sealing was tried and failed"; without it the two are the
+same empty `cert_id`.
+
+**There is no retry.** `cert_id_partial` is claimed atomically by the first seal
+call that reaches the service, so a second attempt with the same value returns
+404. Recovering a certificate means a fresh sanitize-only + seal flow over the
+same content — and if the skill has already run, that flow certifies a new
+submission, not the one that went uncertified. The `failed` row is the durable
+record of the gap.
+
+### What never lands here
+
+`message` and `seal_message` are built from a fixed vocabulary in
+`../script_includes/LucairnClient.js` (`REASON`, `STAGE`, `API_ERROR_CODES`)
+plus an HTTP status code. Exception text, transport-error text and upstream
+response bodies are read to *classify* a failure and then discarded — they are
+never interpolated into a stored value. That is deliberate: the round-1 gate
+probe fed the adapter an exception containing both a request body and a bearer
+token, and both were persisted verbatim into an evidence row. The canary tests
+in `../../test/client.test.js` and `../../test/adapter.test.js` assert on the
+stored value, not on the returned one.
 
 ### What an evidence row is not
 
@@ -74,6 +135,37 @@ An evidence row is an instance-local record of what this application did. It is
 not a certificate, and it is not an attestation about ServiceNow's own
 inference. The certificate — when there is one — attests exactly one thing: the
 sanitizer processed the submitted fields before the skill ran.
+
+### Access control — evidence table
+
+| Operation | Required role | Why |
+|---|---|---|
+| `read` | `x_lcrn_now_assist_admin`, `x_lcrn_now_assist_auditor` | An auditor reads evidence; that is the role's entire purpose. |
+| `create` | *(no role — application code only)* | Rows are written by `LucairnEvidence` running in the application scope. Nobody should be able to hand-write an evidence row: a forged `covered` row is a forged claim that content was sanitized. |
+| `write` | *(no role — application code only)* | The application updates a row exactly once, to record the seal outcome. |
+| `delete` | *(no role)* | Deleting evidence removes the record of an unprotected run. If a retention rule is needed, implement it as a scheduled job under the application's own identity — not as a delete permission on a role. |
+
+Application access: **This application scope only**; all cross-scope
+read/create/update/delete **unchecked**; web-service access **unchecked**.
+
+### ⚠️ Outbound HTTP logging can defeat all of the above
+
+ServiceNow's own outbound-request logging is independent of anything this
+application does. At log level **`all`**, the platform records outbound request
+and response **bodies** — which for this integration means the submitted text on
+its way to the sanitizer, in a platform log table with its own ACLs, retention
+and export paths. The evidence table can be spotless while the payload sits in
+an HTTP log.
+
+- Keep outbound HTTP logging at **`elevated`** or lower for the Lucairn REST
+  Message in any instance carrying real data.
+- If you raise it to `all` to debug the round trip, do it on a non-production
+  instance with synthetic fixtures only, and lower it again afterwards.
+- Record the level you ran at in the gate record — a run at `all` is not
+  evidence that the pipeline keeps content out of the instance.
+
+Reference: ServiceNow's outbound HTTP request logging documentation
+(`https://developer.servicenow.com/blog.do?p=/post/outbound-http-request-logging-in-detail/`).
 
 ### Retention
 

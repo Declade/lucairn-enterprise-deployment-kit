@@ -23,6 +23,22 @@ function walk(dir, out) {
     return out;
 }
 
+/**
+ * Every file the naming guard scans. Defined once so the guard and the test
+ * that checks the guard's coverage cannot drift apart — the round-1 gate found
+ * the guard reading src/ only while the README, the record specifications and
+ * the runbook went unchecked (D-4).
+ *
+ * @returns {string[]} absolute paths
+ */
+function guardedFiles() {
+    return walk(SRC_DIR).concat([
+        path.join(ROOT, 'fixtures', 'synthetic-incidents.json'),
+        path.join(ROOT, 'README.md'),
+        path.join(ROOT, 'run-tests.sh')
+    ]);
+}
+
 test('every fixture email and domain is a reserved .test domain', () => {
     // RFC 2606 reserves .test; a fixture that ever resolved would be a way for
     // synthetic data to leave the instance.
@@ -48,18 +64,48 @@ test('fixtures cover the cases the adapter has to survive', () => {
     }
 });
 
-test('no source or fixture file names this application a "gateway"', () => {
+test('no shipped file names this application a "gateway"', () => {
     // ServiceNow ships its own product with that name for the opposite
     // direction of travel. Every surface in this application says
     // "Lucairn service" instead.
-    const files = walk(SRC_DIR)
-        .concat([path.join(ROOT, 'fixtures', 'synthetic-incidents.json')]);
-    for (const f of files) {
+    //
+    // The guard is a blunt substring check on purpose, and it covers the DOCS
+    // as well as the code — the round-1 gate found it scanning src/ only, which
+    // left the README, the record specifications and the runbook (the surfaces a
+    // customer's administrator actually reads) unguarded. D-4.
+    //
+    // Consequence worth knowing: an upstream file path containing the segment
+    // trips this too. Cite upstream handlers by repository plus file and line
+    // (`dual-sandbox-architecture sensitive_mode.go:1541`) rather than by full
+    // path — still greppable, and it keeps the guard blunt.
+    for (const f of guardedFiles()) {
         const text = fs.readFileSync(f, 'utf8');
         assert.ok(
             !/gateway/i.test(text),
             `"gateway" appears in ${path.relative(ROOT, f)} — use "Lucairn service"`
         );
+    }
+});
+
+test('the naming guard actually scans the docs, not just the code', () => {
+    // A guard whose file list quietly stopped matching reality is worse than no
+    // guard, so the LIST ITSELF is asserted — not merely that the files exist.
+    // Shrinking guardedFiles() back to src/ only, which is what the round-1
+    // gate found (D-4), fails here rather than passing silently.
+    const scanned = guardedFiles().map((f) => path.relative(ROOT, f));
+
+    for (const required of [
+        'README.md',                                      // the doc a customer's admin reads
+        'run-tests.sh',
+        'fixtures/synthetic-incidents.json',
+        'src/records/tables.md',
+        'src/records/properties.md',
+        'src/records/connection-and-credential-alias.md',
+        'src/hooks/genai-preprocessor.js',
+        'src/script_includes/LucairnNowAssistAdapter.js'
+    ]) {
+        assert.ok(scanned.includes(required),
+            `the naming guard no longer scans ${required} — coverage shrank. Scanned: ${scanned.join(', ')}`);
     }
 });
 
