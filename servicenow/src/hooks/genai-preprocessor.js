@@ -18,11 +18,11 @@
  *      context appended after the hook would never reach the sanitizer, and the
  *      certificate would then attest a fragment. (PRD § Failure modes.)
  *   3. That raising here ABORTS the run rather than being logged and ignored.
- *   4. The names of the input and output the platform hands the script.
+ *   4. The names of the input and output the platform hands the script, and
+ *      WHICH of the four destination shapes below the platform consumes.
  *
- * Item 4 is why the first two lines of run() are marked ADJUST-ON-PDI. The
- * variable names below are the documented-model guess; the PDI run replaces
- * them with what the record actually exposes, and the change is two lines.
+ * Item 4 is why the first two lines of run() are marked ADJUST-ON-PDI, and why
+ * the destination is a CONFIGURED value rather than a search — see below.
  *
  * HOW THE SANITIZED TEXT IS PUBLISHED — THE ONE INVARIANT
  * -------------------------------------------------------
@@ -39,8 +39,82 @@
  * have: raw content, forwarded to the model, under a covered verdict, with no
  * error and no annotation.
  *
- * THREE ROUNDS OF GETTING THIS WRONG, AND WHY THE FIX LOOKS LIKE IT DOES
- * ----------------------------------------------------------------------
+ * EXACTLY ONE DESTINATION PER EXECUTION — AND WHY THE TIERS ARE GONE
+ * ------------------------------------------------------------------
+ * Rounds 2, 3 and 4 each fixed one destination and left a LADDER: try shape 1,
+ * and on failure try shape 2, then 3, then 4. Round 5 found the ladder itself
+ * to be the defect, independently of how well any single rung was verified.
+ *
+ * A ladder can verify ONE destination while the platform consumes a DIFFERENT
+ * one that still holds the raw submission. Both directions were reproduced:
+ *
+ *   - a consumed `outputs.text` frozen on the RAW submission REFUSES the write,
+ *     the ladder falls through to a perfectly writable bare `output`, verifies
+ *     THAT, and returns normally — while the platform reads `outputs.text`,
+ *     which is still raw;
+ *   - and the mirror image: a host `api` that accepts and reads back the
+ *     sanitized text is verified first, so a REJECTING bare `output` — the
+ *     binding the platform actually consumes — is never even written.
+ *
+ * Neither destination lied. Neither rung was wrong about itself. The FALLING
+ * THROUGH is the flaw: a hook cannot discover which slot a platform reads by
+ * writing to slots until one of them answers. So this version does not search.
+ *
+ * **The destination is declared, in configuration, and only that destination is
+ * ever touched.** It is written, read back and compared; a mismatch, an
+ * unreadable destination, an absent one, or an unrecognised configuration value
+ * all RAISE. No other destination is attempted, written, or consulted — which
+ * is also why no undo path is needed for destinations we never wrote to.
+ *
+ * The configuration value lives in the system property
+ * `lucairn.now_assist.output_destination` (registered as
+ * `LucairnConfig.PROP.OUTPUT_DESTINATION`; documented in
+ * ../records/properties.md), and takes exactly one of:
+ *
+ *   | value             | the hook writes and reads back                       |
+ *   |-------------------|------------------------------------------------------|
+ *   | `bare_output`     | the bare `output` identifier, in whatever scope it    |
+ *   |   (DEFAULT)       | resolves. The most likely contract, so it is what an  |
+ *   |                   | unset property means.                                 |
+ *   | `outputs_text`    | `outputs.text` on an output container object.         |
+ *   | `api_set_output`  | `api.setOutput(v)` written, `api.getOutput()` read.   |
+ *   | `global_output`   | `globalScope.output`, VERIFIED by re-reading the bare |
+ *   |                   | identifier — see its own note below.                  |
+ *
+ * ⚠️ **ALL FOUR ARE ADJUST-ON-PDI HYPOTHESES.** Not one of them has been
+ * observed on an instance. The default is a guess about which guess is most
+ * likely, nothing more; Leg 6 step 7 is where it gets replaced by an
+ * observation. If the PDI shows the real contract is a fifth shape, the fix is
+ * a new destination that can be verified — never a fallback to one that cannot.
+ *
+ * Two consequences of deleting the ladder, stated plainly rather than
+ * discovered later:
+ *
+ *   - Under the DEFAULT `bare_output`, an extension point that pre-declares no
+ *     `output` binding at all now RAISES, where the old tier 4 would silently
+ *     have created a global. That case is a CONFIGURATION answer
+ *     (`global_output`), not a fallback. Fail-closed and visible beats
+ *     fail-quiet: round-2 finding N-1 was a total outage that Leg 6 would have
+ *     scored as "blocking works", and the cure for it is the error text below,
+ *     which says wiring rather than block.
+ *   - A misconfigured destination is discovered AFTER the sanitize round trip,
+ *     because the block decision must win the race for the error text: a
+ *     blocked run has to raise the BLOCK error, not a wiring one. The cost is a
+ *     discarded service call on a misconfigured instance; the benefit is that
+ *     Leg 6 never reads a wiring failure as outcome (a).
+ *
+ * `global_output` deserves its own sentence, because its verification is not
+ * the obvious one. After writing `globalScope.output`, this file re-reads the
+ * BARE IDENTIFIER `output`, not `globalScope.output`. If `output` was genuinely
+ * undeclared, the bare identifier now resolves to the global property and reads
+ * back the sanitized text — verified. If `output` was a declared binding that
+ * shadows the global (a lexical `const`, a `with`-scoped accessor), the bare
+ * identifier still resolves to THAT binding, reads back something else, and the
+ * hook raises. Verifying the global slot we just wrote would only ever confirm
+ * our own write.
+ *
+ * THREE ROUNDS OF GETTING THE *WRITE* WRONG, AND ONE OF GETTING THE SHAPE WRONG
+ * -----------------------------------------------------------------------------
  * Round 2 shipped a bare `output = verdict.text`. This body is strict-mode, so
  * an assignment to an unresolvable reference is a ReferenceError, not an
  * implicit global: if the extension point does not pre-declare `output`, EVERY
@@ -62,42 +136,24 @@
  * ReferenceError on its first read (then returns the raw text) and whose setter
  * rejects walked straight through it into the global fallback. Round-4 finding.
  *
- * The lesson the three rounds share: **no exception type can establish where a
- * value ended up.** Any of them can be produced deliberately by a hostile or
- * merely odd scope object. So this version classifies by exception type
- * nowhere. It writes, then READS BACK and compares to the exact string it
- * meant to publish, and only a successful comparison counts as published.
+ * Round 5 removed the ladder, above.
  *
- * THE DESTINATION TIERS (all four hypotheses, in preference order)
- * ---------------------------------------------------------------
- *   1. `outputs.text` — an output container object handed to the script.
- *   2. `api.setOutput(value)` / `api.getOutput()` — a host API pair.
- *   3. the bare `output` identifier, in whatever scope it is declared.
- *   4. `globalScope.output` — where a sloppy-mode assignment would have landed
- *      had `output` never been declared.
+ * The lesson rounds 2-4 share: **no exception type can establish where a value
+ * ended up.** Any of them can be produced deliberately by a hostile or merely
+ * odd scope object. So this version classifies by exception type nowhere. It
+ * writes, then READS BACK and compares to the exact string it meant to publish,
+ * and only a successful comparison counts as published.
  *
- * Tiers 1 and 2 are UNVERIFIED SHAPE HYPOTHESES exactly like the `input` and
- * `output` names themselves; none has been observed on an instance, and the PDI
- * run replaces them (ADJUST-ON-PDI). They are tried FIRST because an explicitly
- * provided container is a far better answer than a bare identifier — but being
- * provided earns no trust here either: each is written, read back and compared,
- * and a tier that cannot be verified is skipped, not believed.
- *
- * Tier 4's verification deserves its own sentence, because it is the round-4
- * fix. After writing `globalScope.output`, this file re-reads the BARE
- * IDENTIFIER `output`, not `globalScope.output`. If `output` was genuinely
- * undeclared, the bare identifier now resolves to the global property and reads
- * back the sanitized text — verified. If `output` was a declared binding that
- * merely rejected the write (a lexical `const`, a `with`-scoped accessor), the
- * bare identifier still resolves to THAT binding, still reads back the raw
- * text, and the write is undone and the hook raises. Verifying the global slot
- * we just wrote would only ever confirm our own write.
+ * The lesson round 5 adds: **no sequence of writes can establish which slot a
+ * platform reads.** Verifying a destination answers "did my write land HERE",
+ * never "is HERE what gets consumed". Only configuration — ultimately, only the
+ * PDI observation behind the configuration — answers the second question.
  *
  * A return-value convention is NOT implemented. This body is pasted INTO the
  * extension point, so a `return` here returns from the IIFE and reaches no
  * platform. If the PDI shows the real contract is a return value, the wrapper
- * goes and the two ADJUST-ON-PDI lines change — record that in Leg 6 rather
- * than assuming any tier below covered it.
+ * goes and the ADJUST-ON-PDI lines change — record that in Leg 6 rather than
+ * assuming any destination above covered it.
  *
  * ANTI-SPOOF BOUNDARY — SAY THIS PLAINLY
  * --------------------------------------
@@ -111,14 +167,20 @@
  *
  * The publish-failure error is content-free AND carries no engine text. A
  * hostile destination controls the message of the exception it throws, so
- * forwarding it would hand an untrusted string to whatever reads the error.
- * It also deliberately does NOT reuse LucairnSkillGuard.ERROR_PREFIX: a Leg 6
- * observer reading "skill run blocked" for what is really a wiring failure
- * would score outcome (a) on a broken hook.
+ * forwarding it would hand an untrusted string to whatever reads the error. It
+ * quotes the DECLARED destination and, on a configuration error, the
+ * configured value capped to 40 characters — administrator configuration, never
+ * request content. It also deliberately does NOT reuse
+ * LucairnSkillGuard.ERROR_PREFIX: a Leg 6 observer reading "skill run blocked"
+ * for what is really a wiring failure would score outcome (a) on a broken hook.
+ * Every wiring failure — unreadable configuration, unrecognised value,
+ * unverified destination — says `hook could not publish its output:`, so Leg 6
+ * needs exactly one discriminator.
  *
  * test/hook.test.js executes this file in `node:vm` against every shape named
- * above — including the round-4 `with`-scope reproducer verbatim — rather than
- * grepping it for the right-looking words.
+ * above — including the round-4 `with`-scope reproducer and both round-5
+ * competing-destination countermodels verbatim — rather than grepping it for
+ * the right-looking words.
  *
  * NONE of 1-4 may be asserted in packaging, a deck or customer copy until the
  * gate record for README § Verify on the PDI, Leg 6 says which way each went.
@@ -144,11 +206,14 @@
  *      which is fail-closed — safe, but confusing to debug.
  *   6. Run Leg 6. Record outcome (a), (b) or (c) from the LucairnSkillGuard
  *      header.
- *   7. RECORD WHICH DESTINATION THE INSTANCE ACTUALLY EXPOSES. If an allowed
- *      run raises `hook could not publish its output`, none of the four tiers
- *      above matched — that is a wiring finding, not a product one, and the
- *      fix is the two ADJUST-ON-PDI lines plus a tier that can verify whatever
- *      the record does expose. Do not "fix" it by removing the verification.
+ *   7. RECORD WHICH DESTINATION THE INSTANCE ACTUALLY EXPOSES, and set
+ *      `lucairn.now_assist.output_destination` to it. If an allowed run raises
+ *      `hook could not publish its output`, the declared destination is not the
+ *      one this extension point exposes — that is a wiring finding, not a
+ *      product one, and the fix is the property plus, if needed, the
+ *      ADJUST-ON-PDI lines. Do NOT "fix" it by trying another destination in
+ *      code on failure: that ladder is the round-5 defect, and it can verify a
+ *      slot nobody reads while the consumed one stays raw.
  *
  * ES5 only (Rhino-compatible).
  */
@@ -162,6 +227,15 @@
 
     /* ADJUST-ON-PDI (2/2): must match `skill_name` on the policy row exactly. */
     var SKILL_NAME = 'Incident summarization';
+
+    /* The declared-destination configuration. The property name is duplicated
+     * from LucairnConfig.PROP.OUTPUT_DESTINATION on purpose — this body is
+     * PASTED into an extension point and cannot require a Script Include just to
+     * read one string — and test/hook.test.js asserts the two literals match, so
+     * the duplication cannot drift silently. */
+    var DESTINATION_PROPERTY = 'lucairn.now_assist.output_destination';
+    var DESTINATION_DEFAULT = 'bare_output';
+    var DESTINATIONS = ['bare_output', 'outputs_text', 'api_set_output', 'global_output'];
 
     var guard = new LucairnSkillGuard();
     var verdict = guard.evaluate({ skill: SKILL_NAME, text: submittedText });
@@ -188,7 +262,70 @@
      * least content available, carrying a visible annotation saying the run is
      * not covered and no certificate exists. Either way the skill runs on
      * verdict.text and never on the original. */
-    // ADJUST-ON-PDI: publish to whatever the extension point reads back.
+
+    /* Every wiring failure carries this one prefix and this one phrase, so a
+     * Leg 6 observer has a single discriminator to apply and never has to
+     * decide whether an unfamiliar message counts. */
+    function publishFailure(reason) {
+        return new Error('[Lucairn for Now Assist] hook could not publish its ' +
+            'output: ' + reason + ' (correlation ' + verdict.correlationId + ')');
+    }
+
+    /* Administrator configuration quoted back into an error message. Never
+     * request content — but bounded on principle, exactly as LucairnConfig
+     * bounds the values it quotes into validation problems. */
+    function shortValue(v) {
+        var s = String(v === null || v === undefined ? '' : v);
+        return s.length > 40 ? s.substring(0, 40) + '…' : s;
+    }
+
+    /* ---- which destination, and only that one --------------------------- */
+
+    /* Read the declared destination. Returns whether it could be READ at all
+     * alongside the value, because "the property service could not answer" and
+     * "the property is unset" are different answers with different outcomes:
+     * unset means the documented default, unreadable means RAISE. Guessing a
+     * destination when the configured one is unknowable is the round-5 defect
+     * wearing a different hat — it is exactly how a hook comes to verify a slot
+     * the operator did not choose. */
+    function readDeclaredDestination() {
+        var service = null;
+        try {
+            /* eslint-disable-next-line no-undef */
+            service = (typeof gs !== 'undefined' && gs !== null) ? gs : null;
+        } catch (noPropertyService) {
+            service = null;
+        }
+        if (!service || typeof service.getProperty !== 'function') {
+            return { read: false, value: '' };
+        }
+        try {
+            var raw = service.getProperty(DESTINATION_PROPERTY, '');
+            return { read: true, value: (raw === null || raw === undefined) ? '' : String(raw) };
+        } catch (propertyUnreadable) {
+            return { read: false, value: '' };
+        }
+    }
+
+    var declared = readDeclaredDestination();
+    if (!declared.read) {
+        throw publishFailure('the output-destination property ' +
+            DESTINATION_PROPERTY + ' could not be read');
+    }
+
+    var destination = declared.value.replace(/^\s+|\s+$/g, '').toLowerCase();
+    if (!destination) {
+        destination = DESTINATION_DEFAULT;
+    }
+    if (DESTINATIONS.indexOf(destination) === -1) {
+        /* Fail closed on a typo. The tempting alternative — "unrecognised, so
+         * use the default" — silently publishes somewhere the operator did not
+         * choose, which is the whole class this round deleted. */
+        throw publishFailure('output destination "' + shortValue(destination) +
+            '" is not one of: ' + DESTINATIONS.join(', '));
+    }
+
+    /* ---- write, read back, compare; nothing else counts ------------------ */
 
     /* Read the bare `output` identifier — whatever scope it resolves in — and
      * report WHETHER it could be read alongside what it read. It returns a
@@ -228,12 +365,33 @@
         }
     }
 
-    /* The same contract for a setter/getter API pair. A host that offers a
-     * setter but NO reader cannot be verified, so it is not used — this file
-     * does not have a tier that assumes. If the PDI shows that IS the real
-     * shape, Leg 6 records it and this function gains a way to read it. */
-    function publishViaApi(host, value) {
+    /* DESTINATION `outputs_text` (HYPOTHESIS, ADJUST-ON-PDI) — an output
+     * container object the extension point hands the script. Detection is
+     * wrapped because `typeof` on a scope accessor can itself throw; a container
+     * that cannot even be detected is not a destination, and because it is the
+     * DECLARED one there is nowhere else to go. */
+    function publishToOutputsText(value) {
         try {
+            /* eslint-disable-next-line no-undef */
+            if (typeof outputs === 'undefined' || outputs === null) { return false; }
+            /* eslint-disable-next-line no-undef */
+            return publishToField(outputs, 'text', value);
+        } catch (noOutputsContainer) {
+            return false;
+        }
+    }
+
+    /* DESTINATION `api_set_output` (HYPOTHESIS, ADJUST-ON-PDI) — a host API
+     * pair. A host that offers a setter but NO reader cannot be verified, so it
+     * is not used: this file does not have a destination that assumes. If the
+     * PDI shows that IS the real shape, Leg 6 records it and this function gains
+     * a way to read it — it does not gain a way to skip the reading. */
+    function publishViaApi(value) {
+        try {
+            /* eslint-disable-next-line no-undef */
+            if (typeof api === 'undefined' || api === null) { return false; }
+            /* eslint-disable-next-line no-undef */
+            var host = api;
             if (typeof host.setOutput !== 'function' ||
                 typeof host.getOutput !== 'function') { return false; }
             try {
@@ -245,58 +403,41 @@
         }
     }
 
-    var published = false;
-
-    /* TIER 1 (HYPOTHESIS, ADJUST-ON-PDI) — an output container object the
-     * extension point hands the script. Detection is wrapped because `typeof`
-     * on a scope accessor can itself throw; a container that cannot even be
-     * detected is simply not a destination. */
-    try {
-        /* eslint-disable-next-line no-undef */
-        if (typeof outputs !== 'undefined' && outputs !== null) {
-            /* eslint-disable-next-line no-undef */
-            published = publishToField(outputs, 'text', verdict.text);
-        }
-    } catch (noOutputsContainer) {
-        published = false;
-    }
-
-    /* TIER 2 (HYPOTHESIS, ADJUST-ON-PDI) — a host API pair. */
-    if (!published) {
+    /* DESTINATION `bare_output` (DEFAULT) — the bare `output` identifier,
+     * write-then-verify. The write is attempted blind and its outcome is
+     * ignored; only the read-back counts. This is where a rejecting binding
+     * (lexical `const`, throwing setter, frozen property) stops being able to
+     * produce a false success — and, with the ladder gone, stops being able to
+     * hand the run to some other slot instead. */
+    function publishToBareOutput(value) {
         try {
             /* eslint-disable-next-line no-undef */
-            if (typeof api !== 'undefined' && api !== null) {
-                /* eslint-disable-next-line no-undef */
-                published = publishViaApi(api, verdict.text);
-            }
-        } catch (noHostApi) {
-            published = false;
-        }
-    }
-
-    /* TIER 3 — the bare `output` identifier, write-then-verify. The write is
-     * attempted blind and its outcome is ignored; only the read-back counts.
-     * This is where a rejecting binding (lexical `const`, throwing setter,
-     * frozen property) stops being able to produce a false success. */
-    if (!published) {
-        try {
-            /* eslint-disable-next-line no-undef */
-            output = verdict.text;
+            output = value;
         } catch (bareWriteRejected) { /* the read-back decides */ }
-        published = bareOutputHolds(verdict.text);
+        return bareOutputHolds(value);
     }
 
-    /* TIER 4 — the script's global scope: where a sloppy-mode `output = …`
-     * would have landed had `output` never been declared (finding N-1, the
-     * abort-every-protected-run case).
+    /* DESTINATION `global_output` — the script's global scope: where a
+     * sloppy-mode `output = …` would have landed had `output` never been
+     * declared. Declare this one when the extension point pre-declares no
+     * `output` binding at all.
      *
-     * The verification afterwards re-reads the BARE IDENTIFIER, not the global
-     * property we just wrote. That is the round-4 fix: if `output` was a real
-     * binding that merely refused us, the identifier still resolves to IT, the
-     * comparison fails, and this write is UNDONE before the raise — so nothing
-     * downstream can mistake a leftover global value for a successful publish,
-     * and Leg 6 sees a clean failure rather than a half-written state. */
-    if (!published && globalScope) {
+     * The verification re-reads the BARE IDENTIFIER, not the global property we
+     * just wrote: if `output` is a real binding that shadows the global, the
+     * identifier resolves to IT, the comparison fails, and the hook raises.
+     *
+     * The write is then undone on a BEST-EFFORT basis — restored if there was a
+     * prior own value we could read, deleted otherwise — so that a failed
+     * publish does not leave sanitized text sitting in a slot something
+     * downstream might read as a success. It is best-effort and not more than
+     * that: if the global slot ALSO refuses the restore, or its prior value
+     * could not be read, the sanitized text can remain there. The raise still
+     * stops the run, the publish error is still the one that surfaces, and the
+     * residual is this sentence rather than a claim of unconditional cleanup.
+     * Round-5 advisory; test/hook.test.js exercises the failed restoration. */
+    function publishToGlobalOutput(value) {
+        if (!globalScope) { return false; }
+
         var hadOwnOutput = false;
         var priorOutput;
         try {
@@ -310,41 +451,53 @@
         }
 
         try {
-            globalScope.output = verdict.text;
+            globalScope.output = value;
         } catch (globalWriteRejected) { /* the read-back decides */ }
 
-        published = bareOutputHolds(verdict.text);
+        if (bareOutputHolds(value)) { return true; }
 
-        if (!published) {
-            try {
-                if (hadOwnOutput) { globalScope.output = priorOutput; }
-                else { delete globalScope.output; }
-            } catch (undoFailed) {
-                /* Nothing further to try. The raise below still stops the run,
-                 * which is the property that matters. */
-            }
+        try {
+            if (hadOwnOutput) { globalScope.output = priorOutput; }
+            else { delete globalScope.output; }
+        } catch (undoFailed) {
+            /* Best-effort, as documented above: nothing further to try, and the
+             * publish failure — not this exception — is what must surface. */
         }
+        return false;
+    }
+
+    var published = false;
+    if (destination === 'outputs_text') {
+        published = publishToOutputsText(verdict.text);
+    } else if (destination === 'api_set_output') {
+        published = publishViaApi(verdict.text);
+    } else if (destination === 'bare_output') {
+        published = publishToBareOutput(verdict.text);
+    } else if (destination === 'global_output') {
+        published = publishToGlobalOutput(verdict.text);
     }
 
     if (!published) {
-        /* No destination read back the sanitized text. Content-free, no engine
-         * text, and under its OWN prefix — a Leg 6 observer must not read this
-         * as "skill run blocked". */
-        throw new Error('[Lucairn for Now Assist] hook could not publish its ' +
-            'output: no destination read back the sanitized text ' +
-            '(correlation ' + verdict.correlationId + ')');
+        /* The declared destination did not read back the sanitized text. No
+         * other destination was tried, and none will be: see § EXACTLY ONE
+         * DESTINATION. Content-free, no engine text, and under its OWN prefix —
+         * a Leg 6 observer must not read this as "skill run blocked". */
+        throw publishFailure('the declared destination "' + destination +
+            '" did not read back the sanitized text');
     }
 }(function () {
-    /* The script's global scope, in decreasing order of reliability.
+    /* The script's global scope, in decreasing order of reliability. Only the
+     * `global_output` destination uses it; every other destination ignores it
+     * entirely, including when it is null.
      *
      * `globalThis` is ES2020 and absent on Rhino. The classic ES5 substitute,
      * an indirect `this`, is `undefined` when an enclosing wrapper is strict —
      * round-3 advisory. The `Function` constructor builds a NON-strict function
      * regardless of the calling code's strictness, so its `this` is the global
      * object even inside a strict wrapper; a runtime that withholds `Function`
-     * (or a scoped-app sandbox that blocks it) lands on null, the last
-     * destination tier is skipped, and the publish check raises rather than
-     * pretending anything was published. */
+     * (or a scoped-app sandbox that blocks it) lands on null, and a declared
+     * `global_output` destination then raises rather than pretending anything
+     * was published. */
     if (typeof globalThis !== 'undefined') { return globalThis; }
     var indirectThis = (function () { return this; }());
     if (indirectThis) { return indirectThis; }
