@@ -594,16 +594,25 @@ and **a `blocked` evidence row** with a matching `correlation_id`.
      was), so a total outage presents as a perfect block. Round 2 found that
      defect live in this file; assume the class, not the instance.
 
-     Round 3 kept the class alive on purpose. The hook now propagates two
-     wiring failures on the ALLOWED path rather than papering over them: an
-     `output` binding that **rejects** the assignment, and an absent binding
-     with **no reachable global scope** (a strict ES5 wrapper on a runtime with
-     neither `globalThis` nor `Function`). Both are fail-closed and both look
-     like a block at the UI. **Tell them apart by the error text:** a real block
-     says `skill run blocked:`; a publish failure says `hook could not publish
-     its output:`; anything else is a third crash and outcome (a) may not be
-     recorded for it. If the message is unavailable to you, use the
-     sanitizer-REACHABLE re-run below — that is what the step is for.
+     Round 3 kept the class alive on purpose, and rounds 4 and 5 widened it.
+     The hook writes its sanitized text, **reads the destination back, and
+     compares** — and anything short of an exact match raises on the ALLOWED
+     path rather than being papered over. That covers a destination that
+     **rejects** the write (a lexical `const`, a throwing setter, a frozen
+     property), one that **cannot be read back**, one that reads back
+     **something else**, and **no reachable destination at all** (a strict ES5
+     wrapper on a runtime with neither `globalThis` nor `Function`). All are
+     fail-closed and all look like a block at the UI. **Tell them apart by the
+     error text:** a real block says `skill run blocked:`; a publish failure
+     says `hook could not publish its output:`; anything else is a third crash
+     and outcome (a) may not be recorded for it. If the message is unavailable
+     to you, use the sanitizer-REACHABLE re-run below — that is what the step
+     is for.
+
+     A publish failure at this leg is a **wiring** result, not a product one:
+     it says the two `ADJUST-ON-PDI` lines name the wrong destination, and the
+     hook's § destination tiers lists the four shapes it does know how to
+     verify. Record which one the instance actually exposes.
 
   A third, narrower one: an evidence row proves the *adapter* ran, not that the
   *platform* honoured its raise.
@@ -627,13 +636,34 @@ dispatch.** Non-dispatch has to be observed independently of the UI:
   1. Note the wall-clock start and end of the UI-triggered run, and the
      instance's clock offset against the Lucairn host. That window, plus the
      `client_id` the instance is configured with, is your query.
-  2. **Positive control first, in the same window:** run a successful Leg 1
-     round trip and confirm it *does* appear in the request log. Match it by the
+  2. **Positive control, in its OWN window:** run a successful Leg 1 round trip
+     and confirm it *does* appear in the request log. Match it by the
      `cert_id_partial` it returned — that value IS minted and recorded
      service-side and the client holds it, so the control is matchable by id
      even though the negative case is only matchable by window.
-  3. Only then read the absence of any request in that window for that
-     `client_id` as evidence — and record it as **window-scoped**: it shows no
+
+     ⚠️ **The control emits a request, so it cannot share a window with a
+     check for the absence of requests.** Running it inside the UI-run window
+     and then asserting "no request arrived" contradicts itself: the control's
+     own row is in the window, and either you see it (and the absence claim is
+     false on its face) or you have silently excluded something. Round-4 gate
+     advisory. Do one of these, and write down which:
+
+     - **Two windows (preferred).** Run the control in a window that does not
+       overlap the UI run at all — before it, or after it — and note both
+       windows' bounds. The control then proves the log was recording *around*
+       the UI run; the UI window is queried for absence with nothing of ours in
+       it. State the gap between the windows: a log that stopped recording
+       inside the gap is the residual this option does not exclude.
+     - **One window, control excluded BY ID.** Run both in the same window and
+       assert absence over *every request for that `client_id` in the window
+       except the one whose `cert_id_partial` matches the control*. This is
+       only sound because the control is matchable by id; it may exclude that
+       ONE row and no other. If more than one row remains unaccounted for, the
+       absence claim fails — do not widen the exclusion to make it pass.
+  3. Only then read the absence — of any request in that window for that
+     `client_id`, less the identified control if you took the one-window
+     option — as evidence, and record it as **window-scoped**: it shows no
      request arrived in the window, not that no request could exist. Without
      step 2 an empty result is indistinguishable from a log that was not
      recording.

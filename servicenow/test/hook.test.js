@@ -80,6 +80,25 @@ const BLOCKED = {
  *   substitute is then `undefined` (round-3 advisory).
  * @param {boolean} [opts.withholdFunctionConstructor] additionally remove
  *   `Function`, leaving the script NO way to reach its own global scope.
+ * @param {string} [opts.withScope] run the hook inside `with (scope) { … }`,
+ *   the shape a Rhino extension point can genuinely have. The value names the
+ *   scope object's `output` accessor:
+ *     'reference-error-then-raw' — round-4 gate finding, astra's reproducer
+ *        VERBATIM: the getter throws a same-realm ReferenceError on its FIRST
+ *        read and returns the raw text afterwards; the setter rejects. Round
+ *        4 classified that first ReferenceError as "no such binding" and fell
+ *        through to the global scope, returning normally while the binding the
+ *        platform consumes still held RAW.
+ *     'raw-with-throwing-setter' — reads fine, refuses writes, and the global
+ *        fallback lands in a DIFFERENT slot.
+ *     'always-throwing-getter' — never readable, setter accepts. The write may
+ *        well have landed; it cannot be verified, so it does not count.
+ * @param {string} [opts.container] provide an explicit output destination:
+ *     'outputs'        — an `outputs` object with a writable `text` field.
+ *     'api'            — an `api` object with setOutput/getOutput.
+ *     'api-write-only' — an `api` object with setOutput and NO reader.
+ *     'lying-outputs'  — an `outputs` object that accepts writes to `text` and
+ *                        reads back the old value regardless.
  */
 function runHook(opts) {
     const seen = [];
@@ -117,7 +136,50 @@ function runHook(opts) {
             set: function () { throw new TypeError('this binding rejects assignment'); }
         });
     }
+    if (opts.container === 'outputs') {
+        context.outputs = { text: '__untouched__' };
+    }
+    if (opts.container === 'lying-outputs') {
+        /* Accepts the write, reads back the old value. The read-back
+         * comparison is the ONLY thing that can catch this. */
+        const held = { text: '__untouched__' };
+        context.outputs = Object.defineProperty({}, 'text', {
+            configurable: true, enumerable: true,
+            get: function () { return '__untouched__'; },
+            set: function (v) { held.text = v; }
+        });
+        context.outputsHeld = held;
+    }
+    if (opts.container === 'api' || opts.container === 'api-write-only') {
+        const slot = { value: '__untouched__' };
+        context.apiSlot = slot;
+        context.api = { setOutput: function (v) { slot.value = v; } };
+        if (opts.container === 'api') {
+            context.api.getOutput = function () { return slot.value; };
+        }
+    }
+
     vm.createContext(context);
+
+    if (opts.withScope) {
+        /* The scope object is built INSIDE the realm so that the accessors and
+         * their counters are realm-native, exactly as in the gate reproducer. */
+        const accessors = {
+            'reference-error-then-raw':
+                'get output(){ if (++reads === 1) { throw new ReferenceError("getter dependency unavailable"); } return "RAW"; },\n' +
+                'set output(v){ writes++; throw new TypeError("setter rejected"); }',
+            'raw-with-throwing-setter':
+                'get output(){ reads++; return "RAW"; },\n' +
+                'set output(v){ writes++; throw new TypeError("setter rejected"); }',
+            'always-throwing-getter':
+                'get output(){ reads++; throw new Error("read failed"); },\n' +
+                'set output(v){ writes++; }'
+        };
+        const accessor = accessors[opts.withScope];
+        if (!accessor) { throw new Error('unknown withScope shape: ' + opts.withScope); }
+        vm.runInContext(
+            'var writes = 0, reads = 0; var scope = {\n' + accessor + '\n};', context);
+    }
 
     if (opts.strictEs5Wrapper) {
         /* Sloppy-mode host script, so the deletes are legal; the HOOK is then
@@ -137,7 +199,13 @@ function runHook(opts) {
         prologue += "'use strict';\n" +
             (opts.constOutputBinding ? 'const' : 'let') + " output = '__untouched__';\n";
     }
-    const source = prologue + HOOK_SOURCE;
+    let source = prologue + HOOK_SOURCE;
+    if (opts.withScope) {
+        /* `with` is a SyntaxError under a strict wrapper, so this shape and
+         * `strictEs5Wrapper` are mutually exclusive by construction. The hook's
+         * own body is strict regardless — its 'use strict' is inside the IIFE. */
+        source = prologue + 'with (scope) {\n' + HOOK_SOURCE + '\n}';
+    }
 
     let raised = null;
     try {
@@ -156,7 +224,32 @@ function runHook(opts) {
         "(typeof globalThis === 'undefined' || globalThis.output === undefined) " +
         "? null : String(globalThis.output)", context);
 
-    return { context, raised, seen, outputInRealm, globalPropInRealm };
+    /* What a `with`-scoped extension point would consume, plus how often the
+     * accessors were touched — the gate reproducer's own observables. */
+    let scopeConsumed = null;
+    let scopeWrites = null;
+    let scopeReads = null;
+    if (opts.withScope) {
+        const probe = vm.runInContext(
+            '({ consumed: (function () { try { return String(scope.output); } ' +
+            'catch (e) { return "<unreadable>"; } }()), writes: writes, reads: reads })',
+            context);
+        scopeConsumed = probe.consumed;
+        scopeWrites = probe.writes;
+        scopeReads = probe.reads;
+    }
+
+    let containerHolds = null;
+    if (opts.container === 'outputs') { containerHolds = context.outputs.text; }
+    if (opts.container === 'lying-outputs') { containerHolds = context.outputsHeld.text; }
+    if (opts.container === 'api' || opts.container === 'api-write-only') {
+        containerHolds = context.apiSlot.value;
+    }
+
+    return {
+        context, raised, seen, outputInRealm, globalPropInRealm,
+        scopeConsumed, scopeWrites, scopeReads, containerHolds
+    };
 }
 
 /* ---- N-1: the allowed path must not abort ------------------------------- */
@@ -193,9 +286,37 @@ test('N-1: an uncovered (fail-open) run assigns the annotated text, and does not
     assert.ok(String(context.output).includes('Brannagh'));
 });
 
-/* ---- P1: a REJECTED assignment is not a missing binding ----------------- */
+/* ---- P1: only a READ-BACK counts as published --------------------------- */
 
-test('P1: a REJECTED assignment propagates — and nothing is published behind its back', () => {
+/**
+ * Every unverifiable-destination test asserts the same four things, because
+ * "the hook raised" on its own is not the property under test — a hook that
+ * raises AFTER littering the global scope with a value nobody reads, or one
+ * that raises with the BLOCK message, would pass a bare `assert.ok(raised)`
+ * and still be wrong in Leg 6.
+ */
+function assertPublishFailure(result, expectedConsumed) {
+    const { raised, outputInRealm, globalPropInRealm } = result;
+
+    assert.ok(raised, 'an unverifiable destination must not be a silent success');
+    assert.match(String(raised.message), /could not publish its output/, raised.message);
+    // Not the block error: Leg 6 must not score a wiring failure as outcome (a).
+    assert.ok(!String(raised.message).includes(LucairnSkillGuard.ERROR_PREFIX),
+        'a wiring failure must not present as "skill run blocked": ' + raised.message);
+    // Content-free, and no engine text a hostile destination could have authored.
+    assert.ok(!String(raised.message).includes('Brannagh'), raised.message);
+
+    if (expectedConsumed !== undefined) {
+        assert.strictEqual(outputInRealm, expectedConsumed,
+            'the consumed binding must be exactly what it was before the hook ran');
+    }
+    // The global fallback must never be LEFT holding a value that reads as a
+    // successful publish when the hook in fact failed to publish.
+    assert.notStrictEqual(globalPropInRealm, SANITIZED,
+        'a failed publish may not leave sanitized text in the global slot');
+}
+
+test('P1: a REJECTED assignment raises — and nothing is published behind its back', () => {
     // Round-3 gate finding, in astra's repro shape. A lexical `const output`
     // resolves, so this is not the "no such binding" case, and assigning to it
     // is a TypeError. Under the round-2 catch-all that TypeError was recovered
@@ -204,43 +325,83 @@ test('P1: a REJECTED assignment propagates — and nothing is published behind i
     // the binding the platform actually reads back still held the ORIGINAL
     // text. A covered verdict over raw content, with no error and no
     // annotation. That is the fail-open this test exists to keep dead.
-    const { raised, outputInRealm, globalPropInRealm } = runHook({
-        protectResult: COVERED, constOutputBinding: true
-    });
+    const result = runHook({ protectResult: COVERED, constOutputBinding: true });
 
-    assert.ok(raised, 'a rejected assignment must not be swallowed');
-    // The wording is the engine's ("Assignment to constant variable" on V8), so
-    // match loosely — what matters is that the rejection reached the caller.
-    assert.match(String(raised.message), /constant|assignment/i, raised.message);
-
-    // The consumed binding is untouched — no silent raw continuation...
-    assert.strictEqual(outputInRealm, '__untouched__');
-    // ...and the fallback did NOT fire behind its back.
-    assert.strictEqual(globalPropInRealm, null,
-        'nothing may be published to the global scope when a real binding rejected the write');
+    assertPublishFailure(result, '__untouched__');
+    // The global slot is not merely "not sanitized" here — the speculative
+    // tier-4 write was UNDONE, so the realm is exactly as it was.
+    assert.strictEqual(result.globalPropInRealm, null,
+        'a fallback write that did not reach the consumed binding must be undone');
 });
 
 test('P1: the same holds for a global binding whose setter throws', () => {
     // The other shape of the class: `output` is a global accessor that refuses
-    // the write. Here the fallback would hit the same slot and re-throw anyway,
-    // so this shape alone cannot falsify the catch-all — it is here because the
-    // fix must cover the class, not just the repro.
-    const { raised, outputInRealm } = runHook({
-        protectResult: COVERED, rejectOutputAssignment: true
-    });
+    // the write. Here the fallback hits the SAME slot, so the read-back — not
+    // the exception — is what shows the write never took.
+    const result = runHook({ protectResult: COVERED, rejectOutputAssignment: true });
 
-    assert.ok(raised, 'a rejected assignment must not be swallowed');
-    assert.match(String(raised.message), /rejects assignment/);
-    assert.strictEqual(outputInRealm, '__untouched__');
+    assertPublishFailure(result, '__untouched__');
 });
 
-test('P1: the propagated error is not the block error — Leg 6 must not score it as (a)', () => {
-    const { raised } = runHook({ protectResult: COVERED, constOutputBinding: true });
+/* ---- the round-4 blocker: exception type cannot establish absence -------- */
 
-    assert.ok(raised);
-    assert.ok(!String(raised.message).includes(LucairnSkillGuard.ERROR_PREFIX),
-        'a wiring failure must not present as "skill run blocked": ' + raised.message);
-    assert.ok(!String(raised.message).includes('Brannagh'), raised.message);
+test('P1 (round 4): a with-scoped getter that throws ReferenceError does NOT read as an absent binding', () => {
+    // THE REPRODUCER, verbatim from the round-4 gate finding. A Rhino extension
+    // point can genuinely be `with`-scoped. The scope object's `output` getter
+    // throws a same-realm ReferenceError on its FIRST read and returns the raw
+    // text on every read after; its setter rejects.
+    //
+    // Round 4 answered "does the binding exist?" with a READ PROBE and
+    // classified by exception type: ReferenceError meant absent. So it took
+    // that first throw as absence, wrote SANITIZED to globalThis.output — a
+    // slot the `with` scope shadows — and RETURNED NORMALLY. The model then ran
+    // on the scope binding, which still held RAW, under a covered verdict.
+    //
+    // No exception type can establish where a value ended up; only reading the
+    // destination back can. This test is the one that says so.
+    const result = runHook({
+        protectResult: COVERED, withScope: 'reference-error-then-raw'
+    });
+
+    assertPublishFailure(result);
+
+    // The binding the platform consumes was never changed, and — the part that
+    // makes this a fail-OPEN rather than a mere failure — the hook did not
+    // return as though it had succeeded.
+    assert.strictEqual(result.scopeConsumed, 'RAW');
+    assert.strictEqual(result.globalPropInRealm, null,
+        'globalThis.output must not be left holding a "success" the scope shadows');
+
+    // The shape really was exercised: the setter was called and refused, and
+    // the getter was read back after the write rather than probed before it.
+    assert.strictEqual(result.scopeWrites, 1, 'the write must have been attempted');
+    assert.ok(result.scopeReads >= 2,
+        'the destination must be read back after each write attempt, not probed once');
+});
+
+test('P1 (round 4): a with-scoped binding that reads fine and refuses writes raises too', () => {
+    const result = runHook({
+        protectResult: COVERED, withScope: 'raw-with-throwing-setter'
+    });
+
+    assertPublishFailure(result);
+    assert.strictEqual(result.scopeConsumed, 'RAW');
+    assert.strictEqual(result.globalPropInRealm, null);
+    assert.strictEqual(result.scopeWrites, 1);
+});
+
+test('P1 (round 4): a destination that cannot be READ BACK is not a destination', () => {
+    // The setter here ACCEPTS the write — the sanitized text may well have
+    // landed. It cannot be verified, so it does not count. Fail closed: an
+    // unverifiable publish and a failed one are the same answer, which is the
+    // whole point of not branching on exception types.
+    const result = runHook({
+        protectResult: COVERED, withScope: 'always-throwing-getter'
+    });
+
+    assertPublishFailure(result);
+    assert.strictEqual(result.scopeConsumed, '<unreadable>');
+    assert.strictEqual(result.globalPropInRealm, null);
 });
 
 test('P1: a plain declared binding is still assigned — the fix did not break the normal path', () => {
@@ -254,6 +415,57 @@ test('P1: a plain declared binding is still assigned — the fix did not break t
     assert.strictEqual(raised, null, raised && raised.message);
     assert.strictEqual(outputInRealm, SANITIZED);
     assert.strictEqual(globalPropInRealm, null, 'the fallback must not have fired');
+});
+
+/* ---- explicitly provided destinations (hypothesis tiers 1 and 2) --------- */
+
+test('an `outputs` container is preferred over the bare identifier — and verified', () => {
+    const { raised, containerHolds, outputInRealm, globalPropInRealm } = runHook({
+        protectResult: COVERED, container: 'outputs'
+    });
+
+    assert.strictEqual(raised, null, raised && raised.message);
+    assert.strictEqual(containerHolds, SANITIZED);
+    // An explicitly provided destination ends the search: no bare identifier is
+    // written, so nothing is published to a slot the platform may not read.
+    assert.strictEqual(outputInRealm, null);
+    assert.strictEqual(globalPropInRealm, null);
+});
+
+test('an `api.setOutput` / `api.getOutput` pair is used and verified', () => {
+    const { raised, containerHolds, globalPropInRealm } = runHook({
+        protectResult: COVERED, container: 'api'
+    });
+
+    assert.strictEqual(raised, null, raised && raised.message);
+    assert.strictEqual(containerHolds, SANITIZED);
+    assert.strictEqual(globalPropInRealm, null);
+});
+
+test('an `api` with a setter but NO reader is SKIPPED, not believed', () => {
+    // Being handed a destination earns no trust: a tier that cannot be read
+    // back cannot be verified, so the search continues past it. Here it lands
+    // on the global scope, which CAN be verified.
+    const { raised, globalPropInRealm } = runHook({
+        protectResult: COVERED, container: 'api-write-only'
+    });
+
+    assert.strictEqual(raised, null, raised && raised.message);
+    assert.strictEqual(globalPropInRealm, SANITIZED,
+        'the unverifiable tier must be passed over, not treated as published');
+});
+
+test('a container that LIES on read-back is not accepted as published', () => {
+    // It takes the write and reads back the old value. With no other reachable
+    // destination — a strict ES5 wrapper on a runtime without `Function` — the
+    // hook has nowhere it can verify, so it raises rather than returning over a
+    // destination it only HOPES it wrote.
+    const result = runHook({
+        protectResult: COVERED, container: 'lying-outputs',
+        strictEs5Wrapper: true, withholdFunctionConstructor: true
+    });
+
+    assertPublishFailure(result);
 });
 
 /* ---- the strict ES5 wrapper with no globalThis (round-3 advisory) -------- */
