@@ -48,7 +48,23 @@ LucairnConfig.PROP = {
      * There is NO default on purpose — see servicenow/README.md
      * § "Known gap: the vendor field". An unset value fails validation, which
      * fails closed. */
-    VENDOR: 'lucairn.now_assist.vendor'
+    VENDOR: 'lucairn.now_assist.vendor',
+
+    /* Which destination the GenAI preprocessor hook publishes its sanitized
+     * text to. Read by ../hooks/genai-preprocessor.js, NOT by this Script
+     * Include — the hook is pasted into an extension point and cannot require a
+     * Script Include just to read one string, so it carries the literal and
+     * test/hook.test.js asserts the two agree. Registered here so the name has
+     * one canonical home alongside every other property.
+     *
+     * Deliberately NOT part of resolve()/validate(): it governs the hook, not
+     * the service round trip, and an adapter that refused to run because a
+     * hook-only property was unset would fail closed for the wrong reason. The
+     * hook does its own validation, and its unset value means the documented
+     * default (`bare_output`). Round-5 gate finding: a destination LADDER can
+     * verify one slot while the platform consumes another, so the destination
+     * is declared rather than discovered. */
+    OUTPUT_DESTINATION: 'lucairn.now_assist.output_destination'
 };
 
 LucairnConfig.TABLE_SKILL_POLICY = 'x_lcrn_now_assist_skill_policy';

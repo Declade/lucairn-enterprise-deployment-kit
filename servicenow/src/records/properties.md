@@ -14,6 +14,51 @@ application. Names are read by `LucairnConfig` (`../script_includes/LucairnConfi
 | `lucairn.now_assist.timeout_ms` | integer | `45000` | no | Per-call HTTP timeout. Non-numeric or non-positive values fall back to the default. |
 | `lucairn.now_assist.client_id` | string | `lucairn-for-now-assist` | no | Provenance string echoed into the certificate |
 | `lucairn.now_assist.vendor` | string | *(none — see below)* | **yes** | Vendor family recorded on the certificate |
+| `lucairn.now_assist.output_destination` | string | `bare_output` | only if the hook is wired | Which destination the GenAI preprocessor hook publishes its sanitized text to. One of `bare_output`, `outputs_text`, `api_set_output`, `global_output`. See below. |
+
+## `lucairn.now_assist.output_destination` — one destination, declared
+
+Only the paste-in hook (`../hooks/genai-preprocessor.js`) reads this property;
+the Script Includes ignore it. If you have not wired the hook, leave it unset.
+
+The hook publishes the sanitized text to **exactly one** destination — the one
+this property names — then reads that destination back and compares. Anything
+short of an exact match raises, and **no other destination is written,
+attempted, or consulted**.
+
+| Value | The hook writes and reads back |
+|---|---|
+| `bare_output` *(default)* | the bare `output` identifier, in whatever scope the extension point declares it |
+| `outputs_text` | `outputs.text` on an output container object |
+| `api_set_output` | `api.setOutput(v)`, read back with `api.getOutput()` |
+| `global_output` | `globalScope.output` — for an extension point that pre-declares no `output` binding at all. Verified by re-reading the bare identifier. |
+
+**All four are unproven hypotheses.** None has been observed on an instance, and
+the default is only a guess about which guess is likeliest. Leg 6 step 7 of
+`../../README.md` § Verify on the PDI is where an observation replaces it.
+
+Why it is a property and not a search: an earlier version tried the four shapes
+in order and used the first that verified. That can verify one destination while
+the platform consumes a *different* one that still holds the raw submission —
+reproduced in both directions (a frozen `outputs.text` refusing the write while
+a writable bare `output` "succeeded"; and a working `api` pair being used while
+the consumed bare binding rejected the write and kept the raw text). Verifying a
+write answers *"did my write land here"*, never *"is here what gets consumed"*.
+Only this property answers the second question. Round-5 gate finding
+(`Opus Advisor/specs/2026-09/gate-2026-09-10-kit-pr133-s1.md`).
+
+Consequences worth knowing before you set it:
+
+- An unrecognised value — a typo — **raises**. It does not fall back to the
+  default, because publishing somewhere the operator did not choose is the whole
+  class this design removes.
+- If the property cannot be read at all, the hook **raises** rather than
+  assuming the default.
+- Under the default `bare_output`, an extension point that pre-declares no
+  `output` binding raises with `hook could not publish its output`. That is a
+  wiring finding: set `global_output` if the instance really works that way.
+- Every wiring failure says `hook could not publish its output:`; only a real
+  block says `skill run blocked:`. Leg 6 needs exactly one discriminator.
 
 ## `lucairn.now_assist.vendor` has no default, on purpose
 

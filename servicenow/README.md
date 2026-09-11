@@ -595,24 +595,29 @@ and **a `blocked` evidence row** with a matching `correlation_id`.
      defect live in this file; assume the class, not the instance.
 
      Round 3 kept the class alive on purpose, and rounds 4 and 5 widened it.
-     The hook writes its sanitized text, **reads the destination back, and
-     compares** — and anything short of an exact match raises on the ALLOWED
-     path rather than being papered over. That covers a destination that
-     **rejects** the write (a lexical `const`, a throwing setter, a frozen
-     property), one that **cannot be read back**, one that reads back
-     **something else**, and **no reachable destination at all** (a strict ES5
-     wrapper on a runtime with neither `globalThis` nor `Function`). All are
+     The hook publishes to **exactly one destination** — the one
+     `lucairn.now_assist.output_destination` names — then **reads that
+     destination back and compares**, and anything short of an exact match
+     raises on the ALLOWED path rather than being papered over. That covers a
+     destination that **rejects** the write (a lexical `const`, a throwing
+     setter, a frozen property), one that **cannot be read back**, one that
+     reads back **something else**, **no reachable destination at all** (a
+     strict ES5 wrapper on a runtime with neither `globalThis` nor `Function`),
+     and a **misconfigured or unreadable** destination property. All are
      fail-closed and all look like a block at the UI. **Tell them apart by the
-     error text:** a real block says `skill run blocked:`; a publish failure
+     error text:** a real block says `skill run blocked:`; every wiring failure
      says `hook could not publish its output:`; anything else is a third crash
      and outcome (a) may not be recorded for it. If the message is unavailable
      to you, use the sanitizer-REACHABLE re-run below — that is what the step
      is for.
 
      A publish failure at this leg is a **wiring** result, not a product one:
-     it says the two `ADJUST-ON-PDI` lines name the wrong destination, and the
-     hook's § destination tiers lists the four shapes it does know how to
-     verify. Record which one the instance actually exposes.
+     it says the declared destination is not the one this extension point
+     exposes (or the `ADJUST-ON-PDI` input name is wrong). Record which
+     destination the instance actually exposes and set the property to it. Do
+     NOT make the hook try a second destination on failure — round 5 found that
+     a destination ladder can verify one slot while the platform consumes a
+     different one that still holds the raw submission, in both directions.
 
   A third, narrower one: an evidence row proves the *adapter* ran, not that the
   *platform* honoured its raise.
@@ -659,8 +664,9 @@ dispatch.** Non-dispatch has to be observed independently of the UI:
        assert absence over *every request for that `client_id` in the window
        except the one whose `cert_id_partial` matches the control*. This is
        only sound because the control is matchable by id; it may exclude that
-       ONE row and no other. If more than one row remains unaccounted for, the
-       absence claim fails — do not widen the exclusion to make it pass.
+       ONE row and no other. If **any** row remains unaccounted for, the
+       absence claim fails — one unexplained request already defeats absence.
+       Do not widen the exclusion to make it pass.
   3. Only then read the absence — of any request in that window for that
      `client_id`, less the identified control if you took the one-window
      option — as evidence, and record it as **window-scoped**: it shows no
@@ -771,6 +777,23 @@ Round 2 added, against defects that gate found:
   evidence rows;
 - **a silent `update()` failure is a failure** — a seal outcome the row never
   took is not a recorded seal.
+
+Round 5 added, against the defect class rounds 2-4 kept reproducing:
+
+- **competing destinations, in both directions** (`test/hook.test.js`) — a
+  consumed `outputs.text` frozen on the raw submission alongside a writable bare
+  `output`, and a working `api` pair alongside a bare binding that rejects the
+  write. Under the old destination ladder each of those returned normally having
+  verified a slot the platform does not read. Both must now raise, and the
+  destination that was not declared must not be written **at all**;
+- **the read-back follows the write** — a scope object that records how many
+  writes had happened when it was read. A probe-first implementation reads at
+  zero and the test goes red;
+- **the destination configuration itself** — an unset property means the
+  documented default, an unrecognised value raises rather than falling back, and
+  an unreadable property raises rather than guessing;
+- **a failed `global_output` restoration does not mask the publish error** — and
+  the residual it leaves is asserted, not claimed away.
 
 Each of those was written against a defect a review gate found, and each fails
 against the code as it was before the fix — a test that cannot fail is not
