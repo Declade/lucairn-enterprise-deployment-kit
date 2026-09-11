@@ -133,6 +133,15 @@ const BLOCKED = {
  *                        reads back the old value regardless.
  *     'api'            — an `api` object with setOutput/getOutput.
  *     'api-write-only' — an `api` object with setOutput and NO reader.
+ * @param {string} [opts.detachedWrapper] run the hook inside `with (scope) { … }`
+ *   where the scope hands out a FRESH wrapper object on EVERY read of the
+ *   destination's root identifier — astra's round-6 countermodel, verbatim in
+ *   shape. Nothing lies: each wrapper honestly reports what was written to IT.
+ *   The defect is that a hook holding the first wrapper verifies a container the
+ *   platform never reads again.
+ *     'outputs' — `scope.outputs` is a getter returning `{ text: backing.text }`.
+ *     'api'     — `scope.api` is a getter returning a fresh setOutput/getOutput
+ *                 pair over a fresh slot seeded from the same backing store.
  */
 function runHook(opts) {
     const seen = [];
@@ -172,6 +181,19 @@ function runHook(opts) {
                 return fallback;
             }
         };
+    }
+
+    if (opts.gsAccessorThrows) {
+        /* `gs.getProperty` is an ACCESSOR that throws on LOOKUP — not a function
+         * that throws when called. Round-6 gate advisory: an unwrapped
+         * `typeof service.getProperty` let that exception escape with its own
+         * engine-authored message, which both leaks untrusted text and destroys
+         * the single `hook could not publish its output:` discriminator. */
+        context.gs = Object.defineProperty({}, 'getProperty', {
+            configurable: true,
+            enumerable: true,
+            get: function () { throw new Error('ENGINE_TEXT_accessor_exploded'); }
+        });
     }
 
     if (!opts.omitInput) {
@@ -265,6 +287,30 @@ function runHook(opts) {
             accessor + '\n};', context);
     }
 
+    if (opts.detachedWrapper) {
+        /* Round-6 countermodel. `backing` is what the PLATFORM would read on its
+         * next lookup; every wrapper the scope hands out is a detached copy of
+         * it. Built inside the realm so the accessors are realm-native, as in
+         * the gate reproducer. */
+        const wrappers = {
+            outputs:
+                'var scope = { get outputs() { wrapperReads++; ' +
+                'return { text: backing.text }; } };',
+            api:
+                'var scope = { get api() { wrapperReads++; ' +
+                'var slot = { value: backing.text }; return { ' +
+                'setOutput: function (v) { slot.value = v; }, ' +
+                'getOutput: function () { return slot.value; } }; } };'
+        };
+        const wrapper = wrappers[opts.detachedWrapper];
+        if (!wrapper) {
+            throw new Error('unknown detachedWrapper shape: ' + opts.detachedWrapper);
+        }
+        vm.runInContext(
+            'var wrapperReads = 0; var backing = { text: ' + JSON.stringify(RAW) + ' };\n' +
+            wrapper, context);
+    }
+
     if (opts.strictEs5Wrapper) {
         /* Sloppy-mode host script, so the deletes are legal; the HOOK is then
          * run under an explicit strict wrapper below. */
@@ -284,6 +330,9 @@ function runHook(opts) {
             (opts.constOutputBinding ? 'const' : 'let') + " output = '__untouched__';\n";
     }
     let source = prologue + HOOK_SOURCE;
+    if (opts.detachedWrapper) {
+        source = prologue + 'with (scope) {\n' + HOOK_SOURCE + '\n}';
+    }
     if (opts.withScope) {
         /* `with` is a SyntaxError under a strict wrapper, so this shape and
          * `strictEs5Wrapper` are mutually exclusive by construction. The hook's
@@ -337,9 +386,26 @@ function runHook(opts) {
         containerHolds = context.apiSlot.value;
     }
 
+    /* What the PLATFORM would consume on its NEXT lookup through the detached
+     * wrapper — a fresh wrapper over the same backing store, which is exactly
+     * the read the hook's own captured copy could not speak for. */
+    let wrapperConsumed = null;
+    let wrapperReads = null;
+    if (opts.detachedWrapper) {
+        /* Snapshot the counter BEFORE consuming, because consuming is itself a
+         * wrapper read — an observation that would change what it observes. */
+        wrapperReads = vm.runInContext('wrapperReads', context);
+        const consume = opts.detachedWrapper === 'outputs'
+            ? 'scope.outputs.text' : 'scope.api.getOutput()';
+        wrapperConsumed = vm.runInContext(
+            '(function () { try { return String(' + consume + '); } ' +
+            'catch (e) { return "<unreadable>"; } }())', context);
+    }
+
     return {
         context, raised, seen, propertiesRead, outputInRealm, globalPropInRealm,
-        scopeConsumed, scopeWrites, scopeReads, scopeReadAfterWrites, containerHolds
+        scopeConsumed, scopeWrites, scopeReads, scopeReadAfterWrites, containerHolds,
+        wrapperConsumed, wrapperReads
     };
 }
 
@@ -447,6 +513,81 @@ test('R5: the declared destination is read back AFTER the write, never probed be
 });
 
 /* ======================================================================== */
+/* ROUND 6 — DETACHED WRAPPERS. The read-back must re-evaluate, not reuse.  */
+/* ======================================================================== */
+
+/*
+ * astra's round-6 countermodel. The declared destination is right, the shape is
+ * right, nothing lies — and a hook that verifies through the object it captured
+ * before the write still returns normally on RAW.
+ *
+ * `scope.outputs` is a getter returning a FRESH `{ text: backing.text }` on
+ * every read. The hook writes SANITIZED into wrapper #1; wrapper #1 honestly
+ * reads back SANITIZED; the platform's next `outputs.text` lookup builds wrapper
+ * #2 from `backing`, which is still RAW. The lesson rounds 2-5 keep re-teaching,
+ * one level down: an artifact the hook is HOLDING — an exception type, a probe
+ * read, now an object reference — cannot say what the platform will read.
+ *
+ * The fix is to re-evaluate the configured expression from scratch for the
+ * read-back, through the same binding path the platform would use. Re-read
+ * wrapper #2, compare, mismatch, RAISE.
+ *
+ * Restore the captured-reference read-back in the hook and both of these go red.
+ */
+
+test('R6 countermodel: an `outputs` wrapper handed out FRESH per read cannot verify itself', () => {
+    const result = runHook({
+        protectResult: COVERED,
+        destination: 'outputs_text',
+        detachedWrapper: 'outputs'
+    });
+
+    // No `output` binding exists under this scope, so nothing to compare there;
+    // the publish-failure invariants still all apply.
+    assertPublishFailure(result, null);
+    assert.match(String(result.raised.message), /outputs_text/, result.raised.message);
+    // The whole point: what the platform reads NEXT is still the raw submission,
+    // and the hook did not return normally over it.
+    assert.strictEqual(result.wrapperConsumed, RAW,
+        'the platform still consumes RAW — which is why returning normally would be the defect');
+    // Supporting observation, not the discriminator: the scope was consulted
+    // more than once, so a lookup happened that a captured reference would have
+    // skipped. The assertion that actually fails a captured-reference
+    // implementation is the raise above — verified by mutation, not by counting.
+    assert.ok(result.wrapperReads >= 3,
+        'detect, write and read-back are three separate `outputs` lookups; saw ' +
+        result.wrapperReads);
+});
+
+test('R6 countermodel: an `api` wrapper handed out FRESH per read cannot verify itself either', () => {
+    const result = runHook({
+        protectResult: COVERED,
+        destination: 'api_set_output',
+        detachedWrapper: 'api'
+    });
+
+    assertPublishFailure(result, null);
+    assert.match(String(result.raised.message), /api_set_output/, result.raised.message);
+    assert.strictEqual(result.wrapperConsumed, RAW,
+        'the platform still consumes RAW — which is why returning normally would be the defect');
+    // Same supporting observation as above; the raise is the discriminator.
+    assert.ok(result.wrapperReads >= 4,
+        'the verifying getOutput() goes through an `api` lookup of its own; saw ' +
+        result.wrapperReads);
+});
+
+test('R6: the boundary is stated honestly — this closes refresh-per-read, not lying readers', () => {
+    // A destination that returns SANITIZED to the hook's re-read and RAW to the
+    // platform's later read is a LYING READER, and no in-process check can tell
+    // it from a working destination. That adversary is out of scope and the file
+    // must keep saying so, in the same breath as the thing it does close.
+    assert.ok(/REFRESHES PER READ/.test(HOOK_SOURCE),
+        'the hook must say that refresh-per-read wrappers are now defeated');
+    assert.ok(/does not defeat a destination that LIES on read-back/.test(HOOK_SOURCE),
+        'the hook must keep the lying-reader exclusion explicit');
+});
+
+/* ======================================================================== */
 /* The destination configuration itself                                     */
 /* ======================================================================== */
 
@@ -511,6 +652,22 @@ test('an UNREADABLE destination property raises rather than guessing', () => {
 
     assertPublishFailure(result, '__untouched__');
     assert.match(String(result.raised.message), /could not be read/, result.raised.message);
+});
+
+test('a THROWING `getProperty` ACCESSOR keeps the discriminator and leaks no engine text', () => {
+    // Round-6 gate advisory. The exception happens on the LOOKUP of
+    // `gs.getProperty`, before any call — the shape an unwrapped
+    // `typeof service.getProperty` walks straight into. Unwrapped, the hook
+    // exits with the accessor's OWN message: Leg 6 then sees a third crash it
+    // cannot classify, carrying text the accessor authored.
+    const result = runHook({
+        protectResult: COVERED, gsAccessorThrows: true, declareOutput: true
+    });
+
+    assertPublishFailure(result, '__untouched__');
+    assert.match(String(result.raised.message), /could not be read/, result.raised.message);
+    assert.ok(!String(result.raised.message).includes('ENGINE_TEXT'),
+        'the raised message must carry no text the accessor authored: ' + result.raised.message);
 });
 
 test('no property service at all raises for the same reason', () => {

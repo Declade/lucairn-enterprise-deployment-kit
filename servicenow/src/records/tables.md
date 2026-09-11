@@ -66,9 +66,18 @@ Create all of the following (round-1 gate advisory: ACL/outbound-log spec gaps).
 > | V3 | The evidence table refuses a hand-written `covered` row to every role | Impersonate the admin role, try to insert directly | Refused |
 > | V4 | The application's own code can still insert evidence with those ACLs in place | Re-run Leg 1 | An evidence row lands |
 > | V5 | Another scoped application cannot read the evidence table | A second scope's background script does a `GlideRecord` read | Refused by *Application Access*, which is the setting that actually carries this — not the ACLs |
+> | V6 | The `lucairn.now_assist.output_destination` property refuses a write from a user without `x_lcrn_now_assist_admin` | Impersonate a plain `itil` user (and separately an `admin` without the application role); try to change the value from the System Properties list AND over `PUT /api/now/table/sys_properties/<sys_id>` | Refused in both surfaces |
 >
 > V5 is the one to run first if time is short: it is the containment claim most
 > likely to be assumed and least likely to be tested.
+>
+> V6 is the one whose failure is SILENT. A wrong-but-recognised destination value
+> does not raise: the hook verifies the destination it was declared, returns
+> normally, and the platform consumes a slot that still holds the raw
+> submission — no error, no annotation, no differing evidence row. Every other
+> row on this list fails loudly; this one fails by publishing un-redacted content
+> under a covered verdict. Rationale and the full value table:
+> [`properties.md`](properties.md) § "`output_destination` — write authority".
 
 | Operation | Required role | Why |
 |---|---|---|

@@ -288,6 +288,13 @@ applies to the transport question in
    tables. A user who can insert a skill-policy row can turn protection off; a
    user who can insert an evidence row can forge the record of a run.
 
+   Restrict **`lucairn.now_assist.output_destination`** to administrator writes
+   at the same time ([`src/records/properties.md`](src/records/properties.md)
+   § "`output_destination` — write authority"). A wrong-but-recognised value
+   there un-protects every run *silently* — the hook verifies its declared
+   destination, returns normally, and the platform consumes raw text. It is the
+   one access item on this list whose failure produces no error at all.
+
 8. **Check outbound HTTP logging** before any instance carries real data. At log
    level `all` the platform records outbound request and response bodies —
    including the submitted text on its way to the sanitizer — into a platform log
@@ -596,20 +603,49 @@ and **a `blocked` evidence row** with a matching `correlation_id`.
 
      Round 3 kept the class alive on purpose, and rounds 4 and 5 widened it.
      The hook publishes to **exactly one destination** — the one
-     `lucairn.now_assist.output_destination` names — then **reads that
-     destination back and compares**, and anything short of an exact match
-     raises on the ALLOWED path rather than being papered over. That covers a
-     destination that **rejects** the write (a lexical `const`, a throwing
-     setter, a frozen property), one that **cannot be read back**, one that
-     reads back **something else**, **no reachable destination at all** (a
-     strict ES5 wrapper on a runtime with neither `globalThis` nor `Function`),
-     and a **misconfigured or unreadable** destination property. All are
-     fail-closed and all look like a block at the UI. **Tell them apart by the
-     error text:** a real block says `skill run blocked:`; every wiring failure
-     says `hook could not publish its output:`; anything else is a third crash
-     and outcome (a) may not be recorded for it. If the message is unavailable
-     to you, use the sanitizer-REACHABLE re-run below — that is what the step
-     is for.
+     `lucairn.now_assist.output_destination` names — then **re-evaluates that
+     destination's configured expression and compares**, and anything short of
+     an exact match raises on the ALLOWED path rather than being papered over.
+     That covers a destination that **rejects** the write (a lexical `const`, a
+     throwing setter, a frozen property), one that **cannot be read back**, one
+     that reads back **something else**, one that hands out a **fresh wrapper
+     object per read** (round 6: a captured reference verifies itself while the
+     platform's next lookup still returns raw), **no reachable destination at
+     all** (a strict ES5 wrapper on a runtime with neither `globalThis` nor
+     `Function`), an **unreadable** destination property, and an
+     **unrecognised** property value. Those are fail-closed and all look like a
+     block at the UI. **Tell them apart by the error text:** a real block says
+     `skill run blocked:`; every wiring failure says `hook could not publish its
+     output:`; anything else is a third crash and outcome (a) may not be
+     recorded for it. If the message is unavailable to you, use the
+     sanitizer-REACHABLE re-run below — that is what the step is for.
+
+     **⚠️ One misconfiguration is NOT fail-closed, and it is the one to check
+     for by hand.** A *recognised but wrong* property value — say
+     `outputs_text` on an extension point whose real contract is the bare
+     `output` binding — is not a fail-closed case. The hook verifies the
+     destination it was *declared*, does it perfectly, and returns normally,
+     while the destination the platform actually *consumes* still holds the raw
+     submission: no error, no annotation, sanitized text published where nobody
+     reads it. Nothing inside the script can close that gap — "which slot does
+     this platform read" is not observable from in-process; verifying a write
+     answers *"did my write land here"*, never *"is here what gets consumed"*.
+     Two things close it instead, and neither is code:
+
+     1. **Observation** — `src/hooks/genai-preprocessor.js` § WIRING step 7, and
+        the coverage half of this leg. Until an ALLOWED run has been observed
+        producing a summary that is visibly sanitized, the destination value is
+        an unverified guess and **no production claim may rest on it**. A run
+        that raises tells you the destination is wrong; a run that returns
+        normally does **not**, on its own, tell you it is right — only the
+        sanitized summary does.
+     2. **Write authority on the property.** Whoever can set
+        `lucairn.now_assist.output_destination` can silently un-protect every
+        run of every protected skill on the instance, with no observable other
+        than the model's output going un-redacted. That makes it a privacy
+        control, not a tuning knob — administrator-only writes, specified and
+        verified alongside the other ACL items
+        (`src/records/tables.md`, item V6).
 
      A publish failure at this leg is a **wiring** result, not a product one:
      it says the declared destination is not the one this extension point
@@ -709,6 +745,21 @@ would never reach the sanitizer, and a certificate would then attest a fragment.
 Note that a summary *omitting* a canary is **not** proof the model never received
 it (PRD § Canary methodology); only the seeded-input matrix in Slice 3 can
 address that, and it is out of scope for this leg.
+
+**The coverage half is also the only check on the destination value.** A fixture
+name in the summary of an ALLOWED run that raised nothing has three candidate
+causes, and they are not distinguishable from the summary alone: a *recognised
+but wrong* `lucairn.now_assist.output_destination` (the hook verified the
+destination it was declared, the platform consumed a different one, and the raw
+submission went to the model under a covered verdict); a wrong `ADJUST-ON-PDI`
+input name; or context appended after the hook ran. Work through them in that
+order — the destination is the cheapest to change and the only one of the three
+that is silent by design.
+
+Record the destination value you ran with, next to the outcome letter. **A Leg 6
+record that does not name the destination value has not verified it**, and the
+hook's publishing behaviour remains a hypothesis regardless of which letter it
+scored.
 
 ---
 
