@@ -14,7 +14,7 @@ application. Names are read by `LucairnConfig` (`../script_includes/LucairnConfi
 | `lucairn.now_assist.timeout_ms` | integer | `45000` | no | Per-call HTTP timeout. Non-numeric or non-positive values fall back to the default. |
 | `lucairn.now_assist.client_id` | string | `lucairn-for-now-assist` | no | Provenance string echoed into the certificate |
 | `lucairn.now_assist.vendor` | string | *(none — see below)* | **yes** | Vendor family recorded on the certificate |
-| `lucairn.now_assist.output_destination` | string | `bare_output` | only if the hook is wired | Which destination the GenAI preprocessor hook publishes its sanitized text to. One of `bare_output`, `outputs_text`, `api_set_output`, `global_output`. See below. |
+| `lucairn.now_assist.output_destination` | string | `bare_output` | only if the hook is wired | Which destination the GenAI preprocessor hook publishes its sanitized text to. One of `bare_output`, `outputs_text`, `api_set_output`, `global_output`. **Administrator-only writes — see § write authority below.** |
 
 ## `lucairn.now_assist.output_destination` — one destination, declared
 
@@ -59,6 +59,44 @@ Consequences worth knowing before you set it:
   wiring finding: set `global_output` if the instance really works that way.
 - Every wiring failure says `hook could not publish its output:`; only a real
   block says `skill run blocked:`. Leg 6 needs exactly one discriminator.
+- A *recognised but wrong* value does **not** raise. See the next section — it
+  is the one case here that is not fail-closed.
+
+### `output_destination` — write authority
+
+**Administrator-only writes.** Restrict `write` (and `create`) on this
+`sys_properties` record to `x_lcrn_now_assist_admin`, the same role that governs
+the skill-policy table, and grant it the way you would grant any other privacy
+control: named individuals, recorded, reviewed.
+
+This is not tidiness. Setting this property to a *recognised but wrong* value
+silently un-protects every run of every protected skill on the instance: the
+hook verifies the destination it was declared, does it perfectly, returns
+normally — and the destination the platform actually consumes still holds the
+raw submission. There is no error, no annotation, and no evidence row that looks
+any different. Round-6 gate finding
+(`Opus Advisor/specs/2026-09/gate-2026-09-10-kit-pr133-s1.md`).
+
+Unrecognised values and an unreadable property both raise, so a *typo* is
+fail-closed and visible. A wrong-but-valid value is not, which is exactly why
+write access is a control and not a preference:
+
+| | What happens | Observable |
+|---|---|---|
+| Unset | documented default `bare_output` | — |
+| Unrecognised (typo) | **raises**, no publish | `hook could not publish its output:` |
+| Unreadable property | **raises**, no publish | `hook could not publish its output:` |
+| Recognised, and the one this extension point exposes | sanitized text published and verified | a sanitized summary |
+| **Recognised, but NOT the one consumed** | **returns normally; the model runs on RAW** | **none from the hook — only a summary containing un-redacted content** |
+
+Two consequences to act on, not just to know:
+
+- **Verify it on the PDI before any production claim.** `../../README.md`
+  § Leg 6, coverage half, is the only check that distinguishes the last two rows
+  — and the Leg 6 record must name the destination value it ran with.
+- **Track the ACL like the others.** Verification item **V6** in
+  [`tables.md`](tables.md) § "PDI-time verification items"; an unverified row is
+  not a control.
 
 ## `lucairn.now_assist.vendor` has no default, on purpose
 

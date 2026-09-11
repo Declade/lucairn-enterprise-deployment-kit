@@ -26,10 +26,23 @@
  *
  * HOW THE SANITIZED TEXT IS PUBLISHED — THE ONE INVARIANT
  * -------------------------------------------------------
- * **This hook may not return normally unless the destination the platform
- * CONSUMES positively reads back the sanitized text.** Every other outcome —
- * a destination that refused the write, one that cannot be read, one that
- * reads back something else, or no destination at all — RAISES.
+ * **This hook may not return normally unless the DECLARED destination positively
+ * reads back the sanitized text, on a fresh evaluation of the configured
+ * expression.** Every other outcome — a destination that refused the write, one
+ * that cannot be read, one that reads back something else, one that hands out a
+ * fresh wrapper per read, or no destination at all — RAISES.
+ *
+ * Say the gap in that sentence out loud: DECLARED, not consumed. The hook
+ * verifies the destination it was configured with. If an administrator declares
+ * a RECOGNISED destination that is not the one this extension point exposes to
+ * the platform, the hook can verify its own destination perfectly and return
+ * normally while the consumed one still holds the raw submission — no error, no
+ * annotation. Nothing in-process can close that gap: which slot a platform reads
+ * is not observable from inside the script (§ EXACTLY ONE DESTINATION). It is
+ * closed by OBSERVATION — § WIRING step 7 below, run as part of Leg 6, whose
+ * coverage half is the only check that can tell a right destination from a
+ * wrong-but-recognised one — and by restricting who may write the property
+ * (../records/properties.md § "output_destination — write authority").
  *
  * Raising is the safe half of the trade. A raised hook is fail-closed at the
  * platform layer: the run stops, Leg 6 sees "no summary + an error", and its
@@ -76,8 +89,10 @@
  *   | `bare_output`     | the bare `output` identifier, in whatever scope it    |
  *   |   (DEFAULT)       | resolves. The most likely contract, so it is what an  |
  *   |                   | unset property means.                                 |
- *   | `outputs_text`    | `outputs.text` on an output container object.         |
- *   | `api_set_output`  | `api.setOutput(v)` written, `api.getOutput()` read.   |
+ *   | `outputs_text`    | `outputs.text` on an output container object, with    |
+ *   |                   | `outputs` resolved AFRESH for the read-back.          |
+ *   | `api_set_output`  | `api.setOutput(v)` written, then `api` resolved       |
+ *   |                   | AFRESH and `api.getOutput()` called to read back.     |
  *   | `global_output`   | `globalScope.output`, VERIFIED by re-reading the bare |
  *   |                   | identifier — see its own note below.                  |
  *
@@ -138,6 +153,15 @@
  *
  * Round 5 removed the ladder, above.
  *
+ * Round 6 found the same family one level down, in the read-back itself. The
+ * `outputs_text` and `api_set_output` destinations resolved their root
+ * identifier ONCE and then wrote and verified through that captured object. A
+ * `with`-scoped `outputs` accessor that hands out a FRESH object per read
+ * defeats it without lying: our copy honestly holds the sanitized text, the
+ * comparison passes, the hook returns normally — and the platform's next
+ * `outputs.text` lookup returns a different object still holding RAW. A
+ * per-read `api` wrapper reproduces it identically. Round-6 finding.
+ *
  * The lesson rounds 2-4 share: **no exception type can establish where a value
  * ended up.** Any of them can be produced deliberately by a hostile or merely
  * odd scope object. So this version classifies by exception type nowhere. It
@@ -149,6 +173,14 @@
  * never "is HERE what gets consumed". Only configuration — ultimately, only the
  * PDI observation behind the configuration — answers the second question.
  *
+ * The lesson round 6 adds, and it is the one that generalises all of them:
+ * **a read-back through an artifact the hook is holding proves nothing about
+ * what the platform will read.** Every destination below therefore verifies by
+ * RE-EVALUATING its configured expression from scratch — a fresh `outputs`
+ * lookup, a fresh `api` lookup and reader call, a fresh read of the bare
+ * `output` identifier — through the same binding path the platform would use.
+ * Nothing captured before the write is allowed to answer for it.
+ *
  * A return-value convention is NOT implemented. This body is pasted INTO the
  * extension point, so a `return` here returns from the IIFE and reaches no
  * platform. If the PDI shows the real contract is a return value, the wrapper
@@ -158,12 +190,22 @@
  * ANTI-SPOOF BOUNDARY — SAY THIS PLAINLY
  * --------------------------------------
  * A read-back comparison defeats a destination that REFUSES or MISDIRECTS a
- * write. It does not defeat a destination that LIES on read-back — an accessor
- * that returns the sanitized text while retaining the raw text for the platform
- * is indistinguishable from a working one, from inside this script. That
- * adversary is out of scope, and nothing here should be read as excluding it.
+ * write. Re-evaluating the configured expression (round 6) additionally defeats
+ * a destination that REFRESHES PER READ — a wrapper handed out anew on every
+ * lookup, which would otherwise verify itself while the platform reads a
+ * different instance.
+ *
+ * It does not defeat a destination that LIES on read-back — an accessor that
+ * returns the sanitized text to US while retaining the raw text for the
+ * platform's later read is indistinguishable from a working one, from inside
+ * this script. That adversary is out of scope, and nothing here should be read
+ * as excluding it. The line between the two is worth stating precisely: a
+ * refresh-per-read wrapper answers the SAME question honestly from a different
+ * object, and re-reading catches it; a lying reader answers the same question
+ * differently depending on who asks, and nothing in-process can catch that.
  * The guarantee this file offers is the weaker, honest one: no SILENT path
- * exists where the hook returns normally having only been REFUSED.
+ * exists where the hook returns normally having only been REFUSED, MISDIRECTED,
+ * or verified against an object the platform does not read.
  *
  * The publish-failure error is content-free AND carries no engine text. A
  * hostile destination controls the message of the exception it throws, so
@@ -214,6 +256,12 @@
  *      ADJUST-ON-PDI lines. Do NOT "fix" it by trying another destination in
  *      code on failure: that ladder is the round-5 defect, and it can verify a
  *      slot nobody reads while the consumed one stays raw.
+ *
+ *      ⚠️ A run that does NOT raise is not yet proof the destination is right —
+ *      a recognised-but-wrong value verifies itself and returns normally. The
+ *      proof is Leg 6's COVERAGE half: an allowed run whose summary is visibly
+ *      sanitized. Record the destination value alongside the outcome letter; a
+ *      Leg 6 record that does not name it has not verified it.
  *
  * ES5 only (Rhino-compatible).
  */
@@ -296,7 +344,19 @@
         } catch (noPropertyService) {
             service = null;
         }
-        if (!service || typeof service.getProperty !== 'function') {
+        if (!service) { return { read: false, value: '' }; }
+        /* Round-6 gate advisory: LOOKING UP `getProperty` can itself throw — it
+         * may be an accessor, and a scope object controls what its accessors do.
+         * Unwrapped, that exception escaped this function with ITS OWN message,
+         * which both leaks engine text and destroys the single
+         * `hook could not publish its output:` discriminator Leg 6 relies on. */
+        var accessor;
+        try {
+            accessor = service.getProperty;
+        } catch (accessorThrew) {
+            return { read: false, value: '' };
+        }
+        if (typeof accessor !== 'function') {
             return { read: false, value: '' };
         }
         try {
@@ -348,35 +408,41 @@
         return seen.read && seen.value === value;
     }
 
-    /* Write `value` into `holder[field]`, then read it back. TRUE only on an
-     * exact match. A refused write and a lying-by-omission one are both FALSE,
-     * and neither is distinguished by the exception it did or did not throw. */
-    function publishToField(holder, field, value) {
-        try {
-            holder[field] = value;
-        } catch (writeRejected) {
-            /* Deliberately swallowed: the read-back below is the only thing
-             * allowed to decide, and it is about to run either way. */
-        }
-        try {
-            return holder[field] === value;
-        } catch (readBackFailed) {
-            return false;
-        }
-    }
-
     /* DESTINATION `outputs_text` (HYPOTHESIS, ADJUST-ON-PDI) — an output
-     * container object the extension point hands the script. Detection is
-     * wrapped because `typeof` on a scope accessor can itself throw; a container
-     * that cannot even be detected is not a destination, and because it is the
-     * DECLARED one there is nowhere else to go. */
+     * container object the extension point hands the script.
+     *
+     * ROUND-6 GATE FINDING — WHY THE WRITE AND THE READ-BACK ARE SEPARATE
+     * LOOKUPS. The previous version resolved `outputs` once, handed that OBJECT
+     * to a helper, and had the helper write and verify through the reference it
+     * was given. That is rounds 2-4's mistake in a new costume: it trusts a
+     * CAPTURED artifact. A `with`-scoped `outputs` accessor that returns a FRESH
+     * object on every read then verifies TRUTHFULLY — the copy we wrote really
+     * does hold the sanitized text — while the platform's own next `outputs.text`
+     * lookup gets a different, still-raw object. Nobody lied; we verified a
+     * container the platform never sees.
+     *
+     * So the read-back RE-EVALUATES the configured expression from scratch,
+     * through the same binding path the platform would use. It must not reuse
+     * anything the write touched. */
     function publishToOutputsText(value) {
         try {
+            /* Detection is wrapped because `typeof` on a scope accessor can
+             * itself throw; a container that cannot even be detected is not a
+             * destination, and because it is the DECLARED one there is nowhere
+             * else to go. */
             /* eslint-disable-next-line no-undef */
             if (typeof outputs === 'undefined' || outputs === null) { return false; }
             /* eslint-disable-next-line no-undef */
-            return publishToField(outputs, 'text', value);
-        } catch (noOutputsContainer) {
+            outputs.text = value;
+        } catch (writeUnavailableOrRejected) {
+            /* Deliberately swallowed: the fresh read-back below is the only
+             * thing allowed to decide, and it is about to run either way. */
+        }
+        try {
+            /* A FRESH `outputs` lookup — NOT the object the write used. */
+            /* eslint-disable-next-line no-undef */
+            return outputs.text === value;
+        } catch (readBackFailed) {
             return false;
         }
     }
@@ -385,20 +451,29 @@
      * pair. A host that offers a setter but NO reader cannot be verified, so it
      * is not used: this file does not have a destination that assumes. If the
      * PDI shows that IS the real shape, Leg 6 records it and this function gains
-     * a way to read it — it does not gain a way to skip the reading. */
+     * a way to read it — it does not gain a way to skip the reading.
+     *
+     * Same round-6 rule as `outputs_text`: the verifying `api.getOutput()` call
+     * goes through a FRESH `api` lookup, never a host object captured before the
+     * write. A wrapper handed out per-read would otherwise answer for itself. */
     function publishViaApi(value) {
         try {
             /* eslint-disable-next-line no-undef */
             if (typeof api === 'undefined' || api === null) { return false; }
             /* eslint-disable-next-line no-undef */
-            var host = api;
-            if (typeof host.setOutput !== 'function' ||
-                typeof host.getOutput !== 'function') { return false; }
-            try {
-                host.setOutput(value);
-            } catch (callRejected) { /* the read-back decides */ }
-            return host.getOutput() === value;
-        } catch (apiUnusable) {
+            if (typeof api.setOutput !== 'function' ||
+                /* eslint-disable-next-line no-undef */
+                typeof api.getOutput !== 'function') { return false; }
+            /* eslint-disable-next-line no-undef */
+            api.setOutput(value);
+        } catch (apiUnusableOrRejected) {
+            /* the fresh read-back below decides */
+        }
+        try {
+            /* A FRESH `api` lookup and a FRESH reader call. */
+            /* eslint-disable-next-line no-undef */
+            return api.getOutput() === value;
+        } catch (readBackFailed) {
             return false;
         }
     }
