@@ -121,9 +121,15 @@ inventory (`app-manifest.json`) that `test/packaging.test.js` checks against the
 source tree, `LucairnConfig` and the record specifications, so the four cannot
 drift apart; and `release.json`, which pins the contract references that WERE
 read — Lucairn handler lines with the commit they were verified at, and the
-ServiceNow documentation URLs with their release scope — while recording the
-target ServiceNow release as **NOT PINNED**, because nobody has had an instance
-and a plausible-looking family name would later read as a tested target.
+ServiceNow documentation URLs with their release scope.
+
+`release.json` keeps three release facts apart, because they are constantly
+mistaken for each other: the family this candidate is **built for**
+(`intended_release_family`, **Zurich** — sourced to the newest family our own
+pinned references name, and enforced as sourced by the packaging test), the
+family something actually **ran on** (`observed_on`, still null — nothing has
+run anywhere), and where a mechanism first **appears** (an availability floor,
+which is neither of the other two).
 
 ### Why the source is `.js` files and not an update-set XML
 

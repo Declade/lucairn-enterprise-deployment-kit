@@ -48,22 +48,38 @@ hand across four places:
 That is the whole claim. It is an inventory-consistency check, not a validation
 of anything ServiceNow does.
 
-## The target release
+## The target release — three facts, kept apart
 
-`release.json` records `release_family: null` with `status: "NOT PINNED"`.
+A release candidate has to be built *for* something. `release.json` therefore
+pins an intended target, and keeps it strictly separate from two things it is
+constantly mistaken for.
 
-This is deliberate and it is not an omission. No instance with Now Assist skills
-has been available, and the evaluation-instance request asks the vendor for the
-instance's release family and patch level precisely because it cannot be known
-in advance. Every mechanism this application depends on is release-sensitive, so
-naming a family here would be a guess that later reads as a tested target.
+| Field | Value | What it means |
+|---|---|---|
+| `intended_release_family` | **Zurich** | the family this candidate is **built for** |
+| `observed_on` | `null` | the family something actually **ran on** — nothing has run anywhere |
+| `documented_availability_floors` | Washington DC / Zurich P4 | where a mechanism first **appears** |
 
-What *is* pinned is a documented **availability floor** for the Custom-LLM lane
-(`Washington DC`, guided BYOLLM UI since `Zurich P4`), sourced to the feasibility
-findings. A floor says where a mechanism appears. It does not say which release
-this application was built for, and it says nothing at all about the
-preprocessor lane this directory implements — which has no published floor of
-its own.
+**The intended target is sourced, not chosen.** Zurich is the newest release
+family named anywhere in the authoritative references pinned in the same file:
+the Build Agent documentation is served under `/docs/r/zurich/`, and the
+feasibility pass records the guided BYOLLM UI as available since Zurich P4.
+Building for the newest family our own sourced references document is the
+choice the record supports. `../test/packaging.test.js` enforces both halves —
+the pin may not be null, and at least one of its sources must actually name the
+family it is offered as evidence for.
+
+`release.json` also carries an `intended_family_is_not` list, and it is
+load-bearing rather than throat-clearing. The pin is **not** a claim that Zurich
+is the current GA family (not verified here), **not** a claim that anything has
+been built or tested on it, and **not** a claim that the preprocessor lane this
+directory implements exists there — that is
+`contracts/instance-contracts.json` → `H1-extension-point-exists`, still
+`instance-pending`.
+
+If the instance that eventually lands is a different family, **that difference
+is itself a finding.** Record it in `observed_on`; do not quietly restate the
+intended target as the tested one.
 
 ## Versioning
 
