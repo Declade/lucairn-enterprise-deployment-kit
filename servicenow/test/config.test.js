@@ -40,6 +40,27 @@ test('a vendor outside the service allow-list fails validation', () => {
     assert.ok(problems.some((p) => p.includes('not one of')), problems.join('|'));
 });
 
+test('validation problems stay bounded and carry no operator-supplied text unbounded', () => {
+    // Every problem string lands in an evidence row's `message`, which
+    // LucairnEvidence truncates at 1000 characters. An unbounded problem could
+    // therefore push the OTHER problems out of the row — so a message that got
+    // more actionable must not have got unbounded with it. The one
+    // operator-supplied value that is quoted goes through _short().
+    const c = makeConfig({
+        [P.TRANSPORT]: 'x'.repeat(500),
+        [P.VENDOR]: 'y'.repeat(500)
+    });
+    const problems = c.validate(c.resolve());
+    assert.ok(problems.length > 0);
+    for (const p of problems) {
+        assert.ok(p.length < 400, `a validation problem is ${p.length} chars: ${p.slice(0, 80)}…`);
+    }
+    assert.ok(problems.join(' | ').length < 1000,
+        'the whole problem list must fit the evidence row budget, or a problem is lost in truncation');
+    assert.ok(!problems.join(' ').includes('y'.repeat(100)),
+        'an operator-supplied value was quoted back unbounded');
+});
+
 test('endpoint mode requires https and an api key', () => {
     const c = makeConfig({
         [P.TRANSPORT]: 'endpoint',
