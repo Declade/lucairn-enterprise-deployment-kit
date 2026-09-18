@@ -95,12 +95,24 @@ function startServiceStub(opts) {
              * BOTH halves while a real seal invocation had gone through. An
              * absent measurement is not a measurement of absence. So it throws,
              * the probe's verdict becomes FAIL, and nobody reads a fabricated
-             * zero as evidence. */
+             * zero as evidence.
+             *
+             * ROUND-2b: `ok` IS NOT A STATUS CHECK. The transport reports `ok`
+             * for any response that COMPLETED — a 503 with `{"requests":[]}` is
+             * a perfectly successful round trip, and the first version of this
+             * guard read it as "zero traffic observed". The same fabricated
+             * zero, one layer further in. So the status is checked too, and only
+             * a 2xx may be read as a measurement. */
             const readRequests = () => {
                 const res = syncRequest({ url: url + '/__probe/requests', method: 'GET', timeoutMs: 5000 });
                 if (!res.ok) {
                     throw new Error('probe telemetry unavailable (' + (res.kind || 'unknown') + '): ' +
                         (res.error || 'no error text') + ' — a probe cannot assert absence without it');
+                }
+                const status = parseInt(res.status, 10);
+                if (!(status >= 200 && status <= 299)) {
+                    throw new Error('probe telemetry answered HTTP ' + res.status +
+                        ' — a non-2xx body is not a measurement, and an empty one is not a measurement of absence');
                 }
                 let parsed;
                 try {

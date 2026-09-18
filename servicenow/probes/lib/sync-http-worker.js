@@ -37,11 +37,19 @@
  * even made, `code` carries the runtime's own errno, and `timedOut` is set only
  * by the timeout path. The probes assert on those.
  *
+ * `ok` MEANS "THE ROUND TRIP COMPLETED", NOT "THE PEER AGREED. A 503 is a
+ * successful round trip carrying a refusal, and the adapter needs exactly that
+ * distinction — its own http_error path depends on seeing the status. So the
+ * status always travels with the result, and any caller that needs agreement
+ * rather than completion must check it. (The probe kit's telemetry reads do;
+ * the round-2b gate found them treating a 503 with an empty body as a measured
+ * zero.)
+ *
  * Input  (stdin, JSON): { url, method, headers, body, timeoutMs }
  * Output (stdout, JSON):
- *   { ok: true,  kind: 'transport', status, body }
+ *   { ok: true,  kind: 'transport', status, body }   — completed; `status` decides what it means
  *   { ok: false, kind: 'transport', error, code, timedOut }
- *   { ok: false, kind: 'worker',    error }        — the harness broke, not the peer
+ *   { ok: false, kind: 'worker',    error }          — the harness broke, not the peer
  */
 
 const fs = require('node:fs');

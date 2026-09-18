@@ -111,11 +111,20 @@ Two boundaries worth stating outright:
      the runtime's own errno (`code`), and whether the timeout path fired — and
      a harness failure can never score as a caught fault.
 
-   The same rule governs absence. A failed telemetry read used to return an
-   empty list, so `P5b`'s "no seal call was made" was a subtraction of
-   fabricated zeros — it passed while a real seal invocation had gone through.
-   Telemetry unavailability is now a loud probe FAILURE, and `P5c` exists so
-   that the detector behind every absence claim is itself falsifiable.
+   The same rule governs absence, and it took two passes to get right. A failed
+   telemetry read used to return an empty list, so `P5b`'s "no seal call was
+   made" was a subtraction of fabricated zeros — it passed while a real seal
+   invocation had gone through. Telemetry unavailability is now a loud probe
+   FAILURE, and `P5c` exists so that the detector behind every absence claim is
+   itself falsifiable.
+
+   The second pass found the same zero one layer in. The transport reports `ok`
+   for any round trip that COMPLETED — which is the right contract, because the
+   adapter's own `http_error` path needs to see a 503 rather than have it
+   swallowed. But the telemetry read was checking only `ok`, so a `503` carrying
+   `{"requests": []}` read as "zero traffic observed". Telemetry reads now
+   require a **2xx**: a non-2xx body is not a measurement, and an empty one is
+   certainly not a measurement of absence.
 2. **There is no `--live` mode, deliberately.** The on-instance work is the
    runbook, executed by hand, with its observables written into a gate record. A
    flag that pretended to run these probes against an instance would be the

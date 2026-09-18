@@ -2,16 +2,26 @@
   "_comment": [
     "WHAT THIS RELEASE CANDIDATE IS PINNED TO.",
     "",
-    "Two kinds of pin, and conflating them is how an unsourced number becomes a",
-    "fact three documents later:",
-    "",
     "  authoritative_contract_references — things that were READ and can be cited",
     "    by file and line, or by a published documentation URL. Each carries what",
     "    it was verified against.",
     "",
-    "  target_platform — the ServiceNow release this application is built FOR.",
-    "    It is NOT PINNED, and the reason is written out below rather than filled",
-    "    in with a plausible-looking family name. Nobody has had an instance.",
+    "  target_platform — THREE facts about ServiceNow releases, deliberately kept",
+    "    apart, because conflating any two of them is how a build target becomes",
+    "    a tested one in somebody's summary:",
+    "      intended_release_family  the family this candidate is BUILT FOR.",
+    "                               PINNED (Zurich) and SOURCED — bound to a",
+    "                               release-scoped documentation URL, not chosen.",
+    "      observed_on              the family something actually RAN on. NULL.",
+    "                               Nothing has run anywhere.",
+    "      availability floors      where a mechanism first APPEARS. Neither of",
+    "                               the above, and not evidence of a test.",
+    "",
+    "An earlier revision of this file left the intended target null and said so",
+    "here. That was not caution — a release candidate has to be built for",
+    "something, and an unanswered question wearing caution's clothes is still",
+    "unanswered. It is pinned now, and the pin's own limits are enumerated in",
+    "target_platform.intended_family_is_not.",
     "",
     "INSTANCE VALIDATION PENDING."
   ],
@@ -41,9 +51,34 @@
     "status": "INTENDED TARGET PINNED — NO OBSERVED VALIDATION",
 
     "intended_family_basis": "Zurich is the newest ServiceNow release family named anywhere in the authoritative references pinned in this file: the Build Agent documentation cited below is served under /docs/r/zurich/, and the feasibility pass records the guided BYOLLM UI as available since Zurich P4. Building for the newest family our own sourced references document is the defensible choice, and it is the one the record supports.",
-    "intended_family_source": [
-      "https://www.servicenow.com/docs/r/zurich/application-development/install-build-agent.html (release-scoped URL: Zurich)",
-      "specs/2026-09/findings-2026-09-10-servicenow-addon-feasibility.md:4 — 'guided BYOLLM UI since Zurich P4'"
+
+    "_source_comment": [
+      "TWO TIERS, because only one of them can be checked from inside this",
+      "repository — and a check that cannot run must not be the one the pin",
+      "rests on.",
+      "",
+      "  binding — a RELEASE-SCOPED documentation URL. The family is not",
+      "    matched as a substring of the citation text (which would let 'Zur'",
+      "    match a Zurich URL); it is PARSED out of the /docs/r/<family>/ path",
+      "    segment and compared for equality. Fully verifiable by the test.",
+      "",
+      "  corroborating — a cited line in the workspace record. Those files live",
+      "    outside this repository, so the test cannot open them; `in_repo`",
+      "    says so, and such an entry may never be the binding evidence. The",
+      "    quoted excerpt is recorded so the claim is at least legible and",
+      "    falsifiable by hand against the named file and line."
+    ],
+
+    "intended_family_binding_source": [
+      "https://www.servicenow.com/docs/r/zurich/application-development/install-build-agent.html"
+    ],
+
+    "intended_family_corroborating_source": [
+      {
+        "ref": "specs/2026-09/findings-2026-09-10-servicenow-addon-feasibility.md:4",
+        "in_repo": false,
+        "quoted": "guided BYOLLM UI since Zurich P4"
+      }
     ],
     "intended_family_is_not": [
       "a claim that Zurich is the current GA family — that was not verified here, and nothing in this repository establishes it",

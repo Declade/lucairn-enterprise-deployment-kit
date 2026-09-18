@@ -74,7 +74,7 @@ servicenow/
 ├── app/                             packaging, in SOURCE form — no update set, on purpose
 │   ├── PACKAGING.md                 what these artefacts are, and what they are not
 │   ├── app-manifest.json            every record the application is made of
-│   └── release.json                 pinned contract references; target release NOT PINNED
+│   └── release.json                 pinned contract refs; intended target Zurich, nothing observed
 ├── contracts/
 │   └── instance-contracts.json      every platform hypothesis, with what will settle it
 ├── probes/                          the falsification probe kit (dry-run, local stubs)
