@@ -53,10 +53,11 @@ what makes "the probes catch these faults" a measured statement.
 | `P0-good-path` | — (the good path itself) | covered run on all four destinations, sanitized text in the consumed slot, `input-shield` certificate minted and recorded | Leg 0, Leg 1, Leg 6 coverage half |
 | `P1-missing-vendor` | missing vendor | blocked run, `lucairn_config_error`, a `blocked` row, **no request made at all**, and a message that names the property to set | Leg 1 |
 | `P2-unsupported-vendor` | unsupported vendor | blocked run, `lucairn_config_error`, and a message that lists the three accepted values instead of mapping onto one | Leg 1 |
-| `P3-connection-refused` | connection refusal | blocked run in **both** transport-error modes, empty `textForSkill`, a `blocked` row | Leg 2a / 2b |
-| `P4-timeout` | timeout | blocked run in both modes, **with the connection confirmed accepted** — which is what separates a timeout from a refusal | Leg 3a |
+| `P3-connection-refused` | connection refusal | blocked run in **both** transport-error modes, empty `textForSkill`, a `blocked` row — and, per mode, every attempt reaching the socket layer with the kernel's own `ECONNREFUSED` and **zero arrivals** | Leg 2a / 2b |
+| `P4-timeout` | timeout | blocked run in both modes — and, per mode, the request genuinely **arriving** (delta exactly 1) with the worker's timeout path firing, which is what separates a timeout from a refusal | Leg 3a |
 | `P5-evidence-write-failure` | evidence-write failure | a fail-open override that BLOCKS with `lucairn_uncovered_run_unauditable`, and writes no row at all | Leg 4b |
 | `P5b-covered-run-without-evidence-row` | evidence-write failure, certificate half | `sealed: false`, `lucairn_evidence_row_missing`, **and no seal call made** — the one-shot `cert_id_partial` is not spent on a refusal | Leg 4b, check 2 |
+| `P5c-premature-seal-detection` | a seal request reaching the service anyway | the same detector P5b trusts must **see** an injected seal call | Leg 4b, check 2 |
 | `P6-wrong-but-recognised-destination` | wrong-but-recognized output destination | the hook returns **normally**, its declared slot holds the sanitized text, and the **consumed** slot still holds the raw submission with the canary intact | Leg 6 coverage half |
 | `P7-blocked-run-raises-and-publishes-nothing` | — | the raise carries `skill run blocked:` and **not** `hook could not publish its output:`, and the destination was never written | Leg 6, outcome (a) vs a wiring failure |
 
@@ -91,6 +92,30 @@ Two boundaries worth stating outright:
    and § Leg 3 state for the instance: classification is diagnostic and never
    gates the decision, and an unrecognised marker is a gate-record item, not a
    failure.
+
+   What the probes *do* assert, and what they deliberately do not, is worth
+   being exact about. A review gate produced two counterexamples against the
+   first version of this kit, and both came from asking the wrong witness:
+
+   - **Aggregates cannot attribute.** "Was the connection accepted?" was a
+     cumulative arrival count against a stub shared by both transport-error
+     modes, so one mode's arrival credited the other — an accepted timeout plus
+     a refusal that never arrived scored as a clean timeout catch in both. Every
+     arrival is now a **per-attempt delta**.
+   - **A classifier is not evidence.** The adapter's failure class is a
+     substring match that degrades to `unknown`, which is right for a decision
+     that blocks either way and useless as proof. A probe worker that failed to
+     *start* produced a blocked run and a transport-looking label, and scored as
+     a caught connection refusal. Fault provenance is now **structural**: the
+     transport layer reports whether a socket attempt happened at all (`kind`),
+     the runtime's own errno (`code`), and whether the timeout path fired — and
+     a harness failure can never score as a caught fault.
+
+   The same rule governs absence. A failed telemetry read used to return an
+   empty list, so `P5b`'s "no seal call was made" was a subtraction of
+   fabricated zeros — it passed while a real seal invocation had gone through.
+   Telemetry unavailability is now a loud probe FAILURE, and `P5c` exists so
+   that the detector behind every absence claim is itself falsifiable.
 2. **There is no `--live` mode, deliberately.** The on-instance work is the
    runbook, executed by hand, with its observables written into a gate record. A
    flag that pretended to run these probes against an instance would be the

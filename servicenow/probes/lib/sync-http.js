@@ -47,12 +47,26 @@ function syncRequest(req) {
             maxBuffer: 8 * 1024 * 1024
         });
     } catch (workerFailed) {
-        return { ok: false, error: 'probe transport worker failed: ' + String((workerFailed && workerFailed.message) || workerFailed) };
+        /* kind: 'worker' — THE HARNESS BROKE, not the peer. The astra gate
+         * reproduced a worker-startup failure being counted as a caught
+         * connection refusal: the adapter classified the resulting text as a
+         * transport failure and blocked, which is what the probe was looking
+         * for. A broken harness must never be able to score as a caught fault,
+         * so the distinction is structural and the probes assert on it. */
+        return {
+            ok: false,
+            kind: 'worker',
+            error: 'probe transport worker failed: ' + String((workerFailed && workerFailed.message) || workerFailed)
+        };
     }
     try {
-        return JSON.parse(stdout);
+        const parsed = JSON.parse(stdout);
+        if (!parsed || typeof parsed !== 'object' || typeof parsed.kind !== 'string') {
+            return { ok: false, kind: 'worker', error: 'probe transport worker returned a result with no provenance' };
+        }
+        return parsed;
     } catch (unparsable) {
-        return { ok: false, error: 'probe transport worker returned an unparsable result' };
+        return { ok: false, kind: 'worker', error: 'probe transport worker returned an unparsable result' };
     }
 }
 

@@ -23,8 +23,25 @@
  * instance. A probe that asserted a classification would be asserting a
  * property of this file.
  *
+ * FAULT PROVENANCE — why the failure shape is structured, not just a string
+ * -------------------------------------------------------------------------
+ * The adapter's failure CLASSIFICATION is diagnostic and deliberately fuzzy: it
+ * matches substrings and degrades to "unknown" rather than gating a decision on
+ * a guess. That is right for the adapter and useless for a probe. A probe that
+ * accepted the adapter's label would call anything that failed a "refusal" —
+ * including this worker failing to start, which is a broken harness rather than
+ * a caught fault. The astra gate reproduced exactly that.
+ *
+ * So the worker reports WHAT HAPPENED AT THE SOCKET, structurally and
+ * independently of any classifier: `kind` says whether a transport attempt was
+ * even made, `code` carries the runtime's own errno, and `timedOut` is set only
+ * by the timeout path. The probes assert on those.
+ *
  * Input  (stdin, JSON): { url, method, headers, body, timeoutMs }
- * Output (stdout, JSON): { ok: true, status, body } | { ok: false, error }
+ * Output (stdout, JSON):
+ *   { ok: true,  kind: 'transport', status, body }
+ *   { ok: false, kind: 'transport', error, code, timedOut }
+ *   { ok: false, kind: 'worker',    error }        — the harness broke, not the peer
  */
 
 const fs = require('node:fs');
@@ -35,7 +52,9 @@ let request;
 try {
     request = JSON.parse(fs.readFileSync(0, 'utf8'));
 } catch (parseFailed) {
-    process.stdout.write(JSON.stringify({ ok: false, error: 'probe worker could not read its request' }));
+    process.stdout.write(JSON.stringify({
+        ok: false, kind: 'worker', error: 'probe worker could not read its request'
+    }));
     process.exit(0);
 }
 
@@ -48,6 +67,23 @@ function finish(payload) {
     settled = true;
     process.stdout.write(JSON.stringify(payload));
     process.exit(0);
+}
+
+/* Set by the timeout handler ONLY. A socket error that arrives after we have
+ * destroyed the request must not be able to overwrite the reason. */
+let timedOut = false;
+
+function transportError(e) {
+    return {
+        ok: false,
+        kind: 'transport',
+        error: String((e && e.message) || e),
+        /* The runtime's own errno — ECONNREFUSED, ENOTFOUND, ECONNRESET. This
+         * is the evidence a probe asserts on; the adapter's substring
+         * classification is diagnostic and must never stand in for it. */
+        code: (e && e.code) ? String(e.code) : '',
+        timedOut: timedOut
+    };
 }
 
 let req;
@@ -63,20 +99,31 @@ try {
         let body = '';
         res.setEncoding('utf8');
         res.on('data', (chunk) => { body += chunk; });
-        res.on('end', () => finish({ ok: true, status: res.statusCode, body: body }));
-        res.on('error', (e) => finish({ ok: false, error: String((e && e.message) || e) }));
+        res.on('end', () => finish({
+            ok: true, kind: 'transport', status: res.statusCode, body: body
+        }));
+        res.on('error', (e) => finish(transportError(e)));
     });
 } catch (buildFailed) {
-    finish({ ok: false, error: String((buildFailed && buildFailed.message) || buildFailed) });
+    /* The request could not even be constructed — a malformed URL, say. That is
+     * the harness, not the peer. */
+    finish({ ok: false, kind: 'worker', error: String((buildFailed && buildFailed.message) || buildFailed) });
 }
 
 if (req) {
     req.setTimeout(timeoutMs, () => {
         /* A real read timeout: the socket was accepted and the peer never
          * answered inside the budget. */
+        timedOut = true;
         req.destroy();
-        finish({ ok: false, error: 'the request timed out after ' + timeoutMs + ' ms' });
+        finish({
+            ok: false,
+            kind: 'transport',
+            error: 'the request timed out after ' + timeoutMs + ' ms',
+            code: 'ETIMEDOUT',
+            timedOut: true
+        });
     });
-    req.on('error', (e) => finish({ ok: false, error: String((e && e.message) || e) }));
+    req.on('error', (e) => finish(transportError(e)));
     req.end(request.body === undefined || request.body === null ? '' : String(request.body));
 }
