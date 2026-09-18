@@ -168,22 +168,56 @@ test('PACKAGING the intended target release is pinned AND sourced', () => {
         target.intended_release_family.length > 0,
         'no intended target release family — a release candidate must say what it is built for');
 
-    assert.ok(Array.isArray(target.intended_family_source) && target.intended_family_source.length > 0,
-        'the intended target release is unsourced');
-
-    // Every source must be reachable evidence: a release-scoped documentation
-    // URL, or a cited line in the workspace record. Not an assertion.
-    for (const src of target.intended_family_source) {
-        assert.ok(/^https:\/\/www\.servicenow\.com\/docs\//.test(src) || /\.md:\d+/.test(src),
-            `intended-target source is neither a documentation URL nor a cited line: ${src}`);
-    }
-
-    // And the source must actually NAME the family it is offered as evidence
-    // for, case-insensitively. A citation that does not mention the thing it
-    // cites is decoration.
+    // THE BINDING EVIDENCE IS PARSED, NOT SUBSTRING-MATCHED.
+    //
+    // The first version asked whether any citation string CONTAINED the family
+    // name, which is not a binding at all: astra's counterexample pinned the
+    // family as "Zur" and every Zurich citation happily matched it. So the
+    // family is now parsed out of the release-scoped path segment
+    // (/docs/r/<family>/) and compared for EQUALITY.
     const family = target.intended_release_family.toLowerCase();
-    assert.ok(target.intended_family_source.some((s) => s.toLowerCase().includes(family)),
-        `none of the intended-target sources mentions "${target.intended_release_family}"`);
+    const binding = target.intended_family_binding_source;
+
+    assert.ok(Array.isArray(binding) && binding.length > 0,
+        'the intended target release has no binding source — and a corroborating one may not stand in for it');
+
+    const boundFamilies = [];
+    for (const url of binding) {
+        const m = /^https:\/\/www\.servicenow\.com\/docs\/r\/([a-z0-9-]+)\//.exec(String(url));
+        assert.ok(m,
+            `binding source is not a release-scoped documentation URL (https://www.servicenow.com/docs/r/<family>/…): ${url}`);
+        boundFamilies.push(m[1]);
+    }
+    assert.ok(boundFamilies.includes(family),
+        `no binding source is scoped to "${target.intended_release_family}" — the URLs are scoped to: ${boundFamilies.join(', ')}. A citation that does not document the pinned family does not bind it.`);
+
+    // Corroborating citations are labelled as such, and are held to naming the
+    // family at a WORD BOUNDARY — never as a loose substring.
+    for (const c of (target.intended_family_corroborating_source || [])) {
+        assert.ok(/\.md:\d+$/.test(String(c.ref)),
+            `corroborating citation is not a <file>.md:<line> reference: ${c.ref}`);
+        assert.strictEqual(typeof c.in_repo, 'boolean',
+            `${c.ref}: must say whether it can be opened from this repository`);
+
+        const wordBoundary = new RegExp('(^|[^a-z0-9])' + family + '([^a-z0-9]|$)', 'i');
+
+        if (c.in_repo) {
+            // Verifiable: open it and read the cited line.
+            const p = path.join(ROOT, c.ref.replace(/:\d+$/, ''));
+            assert.ok(fs.existsSync(p), `${c.ref}: cited file does not exist`);
+            const lineNo = parseInt(/:(\d+)$/.exec(c.ref)[1], 10);
+            const line = fs.readFileSync(p, 'utf8').split('\n')[lineNo - 1] || '';
+            assert.ok(wordBoundary.test(line),
+                `${c.ref}: the cited line does not name "${target.intended_release_family}"`);
+        } else {
+            // Not openable from here. It may never be load-bearing, and it must
+            // at least carry the excerpt that makes it checkable by hand.
+            assert.ok(typeof c.quoted === 'string' && c.quoted.length > 0,
+                `${c.ref}: lives outside this repository, so it must quote the text it relies on or nobody can check it`);
+            assert.ok(wordBoundary.test(c.quoted),
+                `${c.ref}: the quoted excerpt does not name "${target.intended_release_family}"`);
+        }
+    }
 
     assert.ok(typeof target.intended_family_basis === 'string' && target.intended_family_basis.length > 60,
         'the intended target must say on what basis it was chosen');
@@ -206,6 +240,17 @@ test('PACKAGING an intended target is never mistaken for an observed one', () =>
     assert.deepStrictEqual(RELEASE.gate_records, []);
     assert.ok(/NO OBSERVED VALIDATION/i.test(target.status),
         'the status line must carry the absence of observed validation, next to the pinned intent');
+
+    // INTERNAL CONSISTENCY. A file that pins a target in one field and says
+    // "NOT PINNED" in a comment three lines up has not documented a decision —
+    // it has left both answers lying around for a reader to pick from, and the
+    // reader will pick the wrong one. The round-2b gate found exactly that
+    // residue after the pin landed.
+    for (const rel of ['app/release.json', 'app/PACKAGING.md']) {
+        const raw = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+        assert.ok(!/NOT PINNED/i.test(raw),
+            `${rel} still says "NOT PINNED" while a target IS pinned — reconcile it rather than leaving both readings in the file for a reader to pick from`);
+    }
 
     // Availability floors stay a THIRD thing: sourced, and labelled as floors.
     for (const floor of target.documented_availability_floors) {

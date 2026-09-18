@@ -5,7 +5,7 @@ Two machine-readable files and one rule.
 | File | What it holds |
 |---|---|
 | [`app-manifest.json`](app-manifest.json) | Every record the scoped application is made of — Script Includes, the hook, the two tables, the ten properties, the roles, the credential/connection/alias/REST-Message set, the ACL set, the fixtures. |
-| [`release.json`](release.json) | What this release candidate is pinned to: the Store app version, the authoritative contract references, and the target ServiceNow release — which is **NOT PINNED**, with the reason written out. |
+| [`release.json`](release.json) | What this release candidate is pinned to: the Store app version, the authoritative contract references, and the intended target ServiceNow release (**Zurich**, bound to a release-scoped documentation URL) — kept separate from the family anything has been *observed* on, which is still none. |
 
 **The rule: this directory contains no installable artefact, and that is the
 point.**

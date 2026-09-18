@@ -583,11 +583,16 @@ const probes = [
                     url: svc.url + SEAL_PATH,
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    /* No `vendor` field, deliberately. This request exists to
+                     * put one POST on the seal path so the detector has
+                     * something to see; the stub does not validate a vendor,
+                     * and naming one here would put a vendor literal in a file
+                     * for no reason at all. The allow-list has exactly one home
+                     * (LucairnConfig), and it stays that way. */
                     body: JSON.stringify({
                         cert_id_partial: String(protectResult.certIdPartial || 'cert_partial_injected'),
                         request_content_hash: 'sha256:' + '0'.repeat(64),
                         response_content_hash: 'sha256:' + '0'.repeat(64),
-                        vendor: 'openai',
                         tool_name: 'probe kit — injected premature seal'
                     }),
                     timeoutMs: 5000
