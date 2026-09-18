@@ -1,0 +1,110 @@
+{
+  "_comment": [
+    "WHAT THIS RELEASE CANDIDATE IS PINNED TO.",
+    "",
+    "Two kinds of pin, and conflating them is how an unsourced number becomes a",
+    "fact three documents later:",
+    "",
+    "  authoritative_contract_references — things that were READ and can be cited",
+    "    by file and line, or by a published documentation URL. Each carries what",
+    "    it was verified against.",
+    "",
+    "  target_platform — the ServiceNow release this application is built FOR.",
+    "    It is NOT PINNED, and the reason is written out below rather than filled",
+    "    in with a plausible-looking family name. Nobody has had an instance.",
+    "",
+    "INSTANCE VALIDATION PENDING."
+  ],
+
+  "schema_version": 1,
+  "instance_validation": "pending",
+
+  "store_app_version": "0.1.0",
+  "store_version_moves_independently_of_kit_version": true,
+
+  "target_platform": {
+    "release_family": null,
+    "patch_level": null,
+    "status": "NOT PINNED",
+    "why": "No ServiceNow instance with Now Assist skills has been available. The evaluation-instance request asks the vendor for 'the instance's release family/patch level' precisely because it is not knowable in advance (specs/2026-09/request-2026-09-10-servicenow-eval-instance.md). Naming a family here would be a guess, and every mechanism this application depends on is release-sensitive.",
+    "recorded_when": "README.md § Versioning — when a Store version is cut, record the instance family and patch level it was built and tested on. README.md § Leg 6 records them again per verification run.",
+    "documented_availability_floors": [
+      {
+        "mechanism": "Custom LLM / Generic LLM Connector provider type (the P2 clone lane)",
+        "available_since": "Washington DC",
+        "guided_byollm_ui_since": "Zurich P4",
+        "source": "specs/2026-09/findings-2026-09-10-servicenow-addon-feasibility.md:4 (from specs/2026-09/evidence-2026-09-10-astra-servicenow-capture.log:21)",
+        "note": "A FLOOR, not a target. It says where the mechanism appears, not which release this application was built for or tested on. The P1 preprocessor lane — the one this directory implements — has no published floor of its own."
+      }
+    ]
+  },
+
+  "authoritative_contract_references": {
+    "lucairn_service": {
+      "repository": "dual-sandbox-architecture",
+      "file": "sensitive_mode.go",
+      "_file_note": "cited by repository plus file and line rather than by full path: the naming guard in test/fixtures.test.js is a blunt substring check, and an upstream path segment trips it. Still one grep away in that repository.",
+      "verified_at_commit": "8b8c6f2b",
+      "verified_on": "2026-09-18",
+      "how_verified": "each cited line was read at that commit; the citations below are the lines as they stood there",
+      "citations": [
+        { "ref": "sensitive_mode.go:20", "pins": "the seal-cert route — POST /api/v1/sensitive-mode/seal-cert" },
+        { "ref": "sensitive_mode.go:344-352", "pins": "the documented ONE-SHOT guarantee: findAndClaimByCertIDPartial claims cert_id_partial atomically, so a second seal returns 404 and there is no retry" },
+        { "ref": "sensitive_mode.go:392-397", "pins": "the sanitize-only request fields — text, tier_hint, categories, client_id. There is no correlation_id field, which is why README § Leg 6 correlates by TIME WINDOW and not by id" },
+        { "ref": "sensitive_mode.go:621", "pins": "HandleSanitizeOnly — the sanitize-only handler" },
+        { "ref": "sensitive_mode.go:146-161", "pins": "the validated vendor enum and its allow-list: exactly anthropic, openai, google" },
+        { "ref": "sensitive_mode.go:1291", "pins": "the rejection: HTTP 400 invalid_field vendor 'must be one of: anthropic, openai, google'" },
+        { "ref": "sensitive_mode.go:1294", "pins": "the tool_name cap — 256 BYTES, which is why LucairnClient caps on UTF-8 bytes rather than string length" },
+        { "ref": "sensitive_mode.go:1541", "pins": "cert_url shape — base + '/verify?id=' + requestID, a public verification page and not a certificate-retrieval API path" }
+      ]
+    },
+    "servicenow_documentation": {
+      "note": "Published product documentation, cited as read during the feasibility pass (specs/2026-09/evidence-2026-09-10-astra-servicenow-capture.log). Pages whose URL carries a release family are version-scoped; the rest are unversioned product docs and can change under the same URL. NONE of them has been confirmed against a running instance.",
+      "citations": [
+        {
+          "url": "https://www.servicenow.com/docs/r/intelligent-experiences/generative-ai-controller/configure-a-generic-llm-connector.html",
+          "release_scope": "unversioned product docs",
+          "pins": "the Generic LLM Connector provider type (P2 lane)"
+        },
+        {
+          "url": "https://www.servicenow.com/docs/r/intelligent-experiences/now-assist-skill-kit/configure-skill-settings.html",
+          "release_scope": "unversioned product docs",
+          "pins": "Skill Kit skill settings — where a cloned skill's configuration lives"
+        },
+        {
+          "url": "https://www.servicenow.com/docs/r/customer-service-management/now-assist-for-csm/customizing-now-assist-skills.html",
+          "release_scope": "unversioned product docs",
+          "pins": "customising out-of-box skills — the clone-only editability this build procedure assumes"
+        },
+        {
+          "url": "https://www.servicenow.com/docs/r/source-to-pay-operations/accounts-payable-operations/exploring-now-assist-apo.html",
+          "release_scope": "unversioned product docs",
+          "pins": "the APO precedent — a shipped product whose preprocessor applies across supported models. A real example, NOT a statement of universal applicability"
+        },
+        {
+          "url": "https://www.servicenow.com/docs/r/api-reference/web-services/c_OutboundRESTAuth.html",
+          "release_scope": "unversioned product docs",
+          "pins": "outbound REST authentication — the page that does NOT support the alias-injects-Authorization claim for RESTMessageV2. See contract H6b-alias-supplies-authorization"
+        },
+        {
+          "url": "https://www.servicenow.com/docs/r/api-reference/server-api-reference/c_GlideRecordScopedAPI.html",
+          "release_scope": "unversioned product docs",
+          "pins": "the scoped GlideRecord API — including the dropped-predicate behaviour LucairnConfig.POLICY_REQUIRED_FIELDS defends against"
+        },
+        {
+          "url": "https://www.servicenow.com/docs/r/yokohama/application-development/business-rules-classic/c_BusinessRules.html",
+          "release_scope": "Yokohama",
+          "pins": "scope restrictions and retrieval paths that bypass business rules — why a global source-table shim was rejected"
+        },
+        {
+          "url": "https://www.servicenow.com/docs/r/zurich/application-development/install-build-agent.html",
+          "release_scope": "Zurich",
+          "pins": "the Build Agent instance exception — the documented route to an AI-entitled instance"
+        }
+      ]
+    }
+  },
+
+  "built_and_tested_on": null,
+  "gate_records": []
+}

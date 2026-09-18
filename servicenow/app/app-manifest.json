@@ -1,0 +1,228 @@
+{
+  "_comment": [
+    "THE ARTIFACT INVENTORY — every record the scoped application is made of,",
+    "in SOURCE FORM.",
+    "",
+    "WHAT THIS IS FOR. Until now the application's parts were enumerated across",
+    "three documents and a directory listing, and nothing checked that the four",
+    "agreed. test/packaging.test.js now does: a Script Include added to src/ and",
+    "not listed here fails, a property documented in records/properties.md and",
+    "not listed here fails, and a property listed here that LucairnConfig does",
+    "not know fails. The inventory and the code cannot drift apart quietly.",
+    "",
+    "WHAT THIS IS NOT. It is NOT an update set, and it is not an installer.",
+    "There is no sys_remote_update_set_*.xml in this repository and there will",
+    "not be one until an instance produces it: an update-set XML that names one",
+    "field wrong imports silently wrong, so a hand-written one would be a guess",
+    "dressed up as an artefact. README.md § Export the update set is the path —",
+    "you BUILD the app once on an instance, from these sources and the record",
+    "specifications, and export the set from there.",
+    "",
+    "Nothing listed here has been created on a ServiceNow instance.",
+    "INSTANCE VALIDATION PENDING."
+  ],
+
+  "schema_version": 1,
+  "instance_validation": "pending",
+
+  "application": {
+    "name": "Lucairn for Now Assist",
+    "store_version_file": "VERSION",
+    "build_procedure": "README.md § Build on the PDI",
+    "export_procedure": "README.md § Export the update set",
+    "verification_runbook": "README.md § Verify on the PDI"
+  },
+
+  "scope": {
+    "placeholder_prefix": "x_lcrn_now_assist",
+    "assigned_on_instance": null,
+    "note": "ServiceNow assigns the scope prefix when the application is created; it will not be this one. Every scoped name below carries the placeholder and must be substituted.",
+    "substitution_sites": [
+      "src/script_includes/LucairnConfig.js",
+      "src/script_includes/LucairnEvidence.js",
+      "src/records/connection-and-credential-alias.md"
+    ]
+  },
+
+  "artifacts": [
+    {
+      "kind": "script_include",
+      "name": "LucairnSha256",
+      "source": "src/script_includes/LucairnSha256.js",
+      "spec": "README.md § Build on the PDI, step 3",
+      "client_callable": false
+    },
+    {
+      "kind": "script_include",
+      "name": "LucairnConfig",
+      "source": "src/script_includes/LucairnConfig.js",
+      "spec": "README.md § Build on the PDI, step 3",
+      "client_callable": false
+    },
+    {
+      "kind": "script_include",
+      "name": "LucairnEvidence",
+      "source": "src/script_includes/LucairnEvidence.js",
+      "spec": "README.md § Build on the PDI, step 3",
+      "client_callable": false
+    },
+    {
+      "kind": "script_include",
+      "name": "LucairnClient",
+      "source": "src/script_includes/LucairnClient.js",
+      "spec": "README.md § Build on the PDI, step 3",
+      "client_callable": false
+    },
+    {
+      "kind": "script_include",
+      "name": "LucairnNowAssistAdapter",
+      "source": "src/script_includes/LucairnNowAssistAdapter.js",
+      "spec": "README.md § Build on the PDI, step 3",
+      "client_callable": false
+    },
+    {
+      "kind": "script_include",
+      "name": "LucairnSkillGuard",
+      "source": "src/script_includes/LucairnSkillGuard.js",
+      "spec": "README.md § Build on the PDI, step 3",
+      "client_callable": false
+    },
+
+    {
+      "kind": "preprocessor_hook",
+      "name": "GenAI Preprocessor body",
+      "source": "src/hooks/genai-preprocessor.js",
+      "spec": "src/hooks/genai-preprocessor.js § WIRING",
+      "carrier_table": null,
+      "carrier_candidates": [
+        "sys_one_extend_capability_definition",
+        "sys_generative_ai_request_validator",
+        "sys_generative_ai_validator"
+      ],
+      "contracts": ["H1-extension-point-exists", "H2-input-binding", "H3-raise-aborts-run", "H4-output-destination"],
+      "note": "Wired LAST, after Leg 1 is green. Which carrier accepts the script — and which candidates do not exist on the instance family — is itself a finding to record."
+    },
+
+    {
+      "kind": "table",
+      "name": "x_lcrn_now_assist_skill_policy",
+      "spec": "src/records/tables.md § 1",
+      "declared_by": "LucairnConfig.TABLE_SKILL_POLICY"
+    },
+    {
+      "kind": "table",
+      "name": "x_lcrn_now_assist_evidence",
+      "spec": "src/records/tables.md § 2",
+      "declared_by": "LucairnEvidence.TABLE"
+    },
+
+    { "kind": "property", "name": "lucairn.now_assist.transport", "type": "string", "spec": "src/records/properties.md" },
+    { "kind": "property", "name": "lucairn.now_assist.rest_message_name", "type": "string", "spec": "src/records/properties.md" },
+    { "kind": "property", "name": "lucairn.now_assist.rest_fn_sanitize", "type": "string", "spec": "src/records/properties.md" },
+    { "kind": "property", "name": "lucairn.now_assist.rest_fn_seal", "type": "string", "spec": "src/records/properties.md" },
+    { "kind": "property", "name": "lucairn.now_assist.base_url", "type": "string", "spec": "src/records/properties.md" },
+    {
+      "kind": "property",
+      "name": "lucairn.now_assist.api_key",
+      "type": "password2",
+      "spec": "src/records/properties.md § lucairn.now_assist.api_key — handling",
+      "note": "Type must be password2, not string. Never travels inside an update set."
+    },
+    { "kind": "property", "name": "lucairn.now_assist.timeout_ms", "type": "integer", "spec": "src/records/properties.md" },
+    { "kind": "property", "name": "lucairn.now_assist.client_id", "type": "string", "spec": "src/records/properties.md" },
+    {
+      "kind": "property",
+      "name": "lucairn.now_assist.vendor",
+      "type": "string",
+      "required": true,
+      "default": null,
+      "spec": "src/records/properties.md § lucairn.now_assist.vendor has no default, on purpose",
+      "contracts": ["C-VENDOR-REQUIRED", "C-VENDOR-ALLOWLIST"],
+      "note": "No default, on purpose. Unset means every protected run is blocked. The accepted set is the Lucairn service's own contract — extending it is a separate design pass, not a configuration choice."
+    },
+    {
+      "kind": "property",
+      "name": "lucairn.now_assist.output_destination",
+      "type": "string",
+      "spec": "src/records/properties.md § lucairn.now_assist.output_destination — one destination, declared",
+      "contracts": ["H4-output-destination", "C-DESTINATION-NOT-FAIL-CLOSED"],
+      "write_authority": "x_lcrn_now_assist_admin only — a recognised-but-wrong value silently un-protects every run, so this is a privacy control, not a tuning knob (verification item V6)."
+    },
+
+    { "kind": "role", "name": "x_lcrn_now_assist_admin", "spec": "src/records/connection-and-credential-alias.md § 5" },
+    { "kind": "role", "name": "x_lcrn_now_assist_auditor", "spec": "src/records/connection-and-credential-alias.md § 5" },
+
+    {
+      "kind": "credential",
+      "name": "Lucairn API key",
+      "platform_table": "sys_auth_credential",
+      "spec": "src/records/connection-and-credential-alias.md § 1",
+      "travels_in_update_set": false
+    },
+    {
+      "kind": "connection",
+      "name": "Lucairn service",
+      "platform_table": "sys_http_connection",
+      "spec": "src/records/connection-and-credential-alias.md § 2",
+      "travels_in_update_set": false
+    },
+    {
+      "kind": "credential_alias",
+      "name": "Lucairn service",
+      "platform_table": "sys_alias",
+      "spec": "src/records/connection-and-credential-alias.md § 3",
+      "contracts": ["H6-rest-message-alias", "H6b-alias-supplies-authorization"]
+    },
+    {
+      "kind": "rest_message",
+      "name": "Lucairn Service",
+      "platform_table": "sys_rest_message",
+      "spec": "src/records/connection-and-credential-alias.md § 4",
+      "must_match_property": "lucairn.now_assist.rest_message_name",
+      "contracts": ["H6-rest-message-alias", "H6b-alias-supplies-authorization"]
+    },
+    {
+      "kind": "rest_message_function",
+      "name": "sanitizeOnly",
+      "platform_table": "sys_rest_message_fn",
+      "path": "/api/v1/sanitize-only",
+      "spec": "src/records/connection-and-credential-alias.md § 4",
+      "must_match_property": "lucairn.now_assist.rest_fn_sanitize"
+    },
+    {
+      "kind": "rest_message_function",
+      "name": "sealCert",
+      "platform_table": "sys_rest_message_fn",
+      "path": "/api/v1/sensitive-mode/seal-cert",
+      "spec": "src/records/connection-and-credential-alias.md § 4",
+      "must_match_property": "lucairn.now_assist.rest_fn_seal"
+    },
+
+    {
+      "kind": "acl_set",
+      "name": "skill policy + evidence table access control",
+      "spec": "src/records/tables.md § Access control",
+      "verification_items": ["V1", "V2", "V6"],
+      "note": "Specified, not suggested, and NOT yet verified. An unverified ACL row is not a control."
+    },
+
+    {
+      "kind": "fixture",
+      "name": "synthetic incidents",
+      "source": "fixtures/synthetic-incidents.json",
+      "spec": "README.md § Build on the PDI, step 6",
+      "note": "Synthetic only. Every fixture email sits on a reserved .test domain that cannot resolve, and a unit test asserts it."
+    }
+  ],
+
+  "not_included": [
+    {
+      "artifact": "sys_remote_update_set_*.xml",
+      "why": "Nothing here has executed on an instance. A hand-written update set that names one field wrong imports silently wrong — it would be a guess dressed up as an artefact. The set is EXPORTED from the first instance build (README.md § Export the update set) and committed then, with the instance family and patch level in the commit message."
+    },
+    {
+      "artifact": "an installer or automated deployment path",
+      "why": "The build procedure is a human one against an instance, and every mechanism it depends on is an unproven hypothesis (contracts/instance-contracts.json). Automating an unverified procedure would only make it fail faster."
+    }
+  ]
+}
