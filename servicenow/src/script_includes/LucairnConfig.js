@@ -199,11 +199,33 @@ LucairnConfig.prototype = {
             }
         }
 
+        /* THE DECISION IS UNCHANGED — only the error surface is actionable.
+         *
+         * Both branches below fail closed exactly as before: an unset vendor and
+         * an out-of-set vendor each stop the flow at the first step, no value is
+         * defaulted, nothing is mapped onto a neighbouring vendor, and the
+         * accepted set is still LucairnConfig.ALLOWED_VENDORS and nothing else.
+         * What changed is that the message now tells the operator WHICH property
+         * to set and WHY the application will not choose for them — an operator
+         * reading "vendor is not set" on an evidence row had no way to act on it
+         * without finding the README first.
+         *
+         * The property NAME is read from PROP rather than written out again, so
+         * the message cannot drift from the property it names. Both strings stay
+         * administrator configuration plus literals — no request content, and
+         * `_short()` bounds the one operator-supplied value that is quoted. */
         if (!cfg.vendor) {
-            problems.push('vendor is not set (allowed: ' + LucairnConfig.ALLOWED_VENDORS.join(', ') + ')');
+            problems.push('vendor is not set: set the property ' + LucairnConfig.PROP.VENDOR +
+                ' to one of ' + LucairnConfig.ALLOWED_VENDORS.join(', ') +
+                ' — there is no default on purpose, and every protected run stays blocked ' +
+                'until it is set (README § "Known gap: the vendor field")');
         } else if (LucairnConfig.ALLOWED_VENDORS.indexOf(cfg.vendor) === -1) {
             problems.push('vendor "' + this._short(cfg.vendor) + '" is not one of: ' +
-                LucairnConfig.ALLOWED_VENDORS.join(', '));
+                LucairnConfig.ALLOWED_VENDORS.join(', ') +
+                ' — the Lucairn service accepts exactly these three. Set ' +
+                LucairnConfig.PROP.VENDOR + ' to the one that is honest for this deployment; ' +
+                'if none of them is, that is a blocker to raise, not a value to map onto a ' +
+                'neighbour (README § "Known gap: the vendor field")');
         }
 
         return problems;
