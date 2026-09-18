@@ -32,11 +32,27 @@ function walk(dir, out) {
  * @returns {string[]} absolute paths
  */
 function guardedFiles() {
-    return walk(SRC_DIR).concat([
-        path.join(ROOT, 'fixtures', 'synthetic-incidents.json'),
-        path.join(ROOT, 'README.md'),
-        path.join(ROOT, 'run-tests.sh')
-    ]);
+    return walk(SRC_DIR)
+        // The source-form packaging artefacts, the contract registry and the
+        // probe kit are shipped surfaces too — an administrator and a reviewer
+        // both read them. Round-1 finding D-4 was the guard covering src/ only;
+        // adding directories without adding them here would repeat it.
+        .concat(walk(path.join(ROOT, 'app')))
+        .concat(walk(path.join(ROOT, 'contracts')))
+        .concat(walk(path.join(ROOT, 'probes')))
+        .concat([
+            path.join(ROOT, 'fixtures', 'synthetic-incidents.json'),
+            path.join(ROOT, 'README.md'),
+            path.join(ROOT, 'run-tests.sh')
+        ]);
+}
+
+/** Every directory the live-key guard scans. */
+function keyGuardedFiles() {
+    return walk(SRC_DIR)
+        .concat(walk(path.join(ROOT, 'probes')))
+        .concat(walk(path.join(ROOT, 'app')))
+        .concat(walk(path.join(ROOT, 'contracts')));
 }
 
 test('every fixture email and domain is a reserved .test domain', () => {
@@ -102,7 +118,13 @@ test('the naming guard actually scans the docs, not just the code', () => {
         'src/records/properties.md',
         'src/records/connection-and-credential-alias.md',
         'src/hooks/genai-preprocessor.js',
-        'src/script_includes/LucairnNowAssistAdapter.js'
+        'src/script_includes/LucairnNowAssistAdapter.js',
+        'app/app-manifest.json',                          // the artefact inventory
+        'app/release.json',                               // the pinned contract references
+        'app/PACKAGING.md',
+        'contracts/instance-contracts.json',              // the hypothesis registry
+        'probes/README.md',                               // the probe runbook
+        'probes/probes.js'
     ]) {
         assert.ok(scanned.includes(required),
             `the naming guard no longer scans ${required} — coverage shrank. Scanned: ${scanned.join(', ')}`);
@@ -110,7 +132,7 @@ test('the naming guard actually scans the docs, not just the code', () => {
 });
 
 test('no source file carries a live-looking API key', () => {
-    for (const f of walk(SRC_DIR)) {
+    for (const f of keyGuardedFiles()) {
         const text = fs.readFileSync(f, 'utf8');
         const hits = text.match(/lcr_live_[A-Za-z0-9_-]+/g) || [];
         for (const hit of hits) {
