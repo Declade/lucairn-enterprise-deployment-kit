@@ -71,6 +71,14 @@ servicenow/
 ├── README.md                        this file
 ├── VERSION                          Store-app version (independent of the kit's VERSION)
 ├── package.json                     local test harness only; not shipped to an instance
+├── app/                             packaging, in SOURCE form — no update set, on purpose
+│   ├── PACKAGING.md                 what these artefacts are, and what they are not
+│   ├── app-manifest.json            every record the application is made of
+│   └── release.json                 pinned contract references; target release NOT PINNED
+├── contracts/
+│   └── instance-contracts.json      every platform hypothesis, with what will settle it
+├── probes/                          the falsification probe kit (dry-run, local stubs)
+│   └── README.md                    probe -> runbook-leg map, and what green does NOT mean
 ├── fixtures/
 │   └── synthetic-incidents.json     invented incidents used by tests and the runbook
 ├── run-tests.sh                     runs the unit tests inside the kit's `make test`
@@ -105,6 +113,17 @@ is a **hypothesis** that only an instance can settle — and even then only as
 far as "the user got no summary": see Leg 6 below, and the header of
 `src/script_includes/LucairnSkillGuard.js` for the three possible outcomes and
 what each one means for the claim.
+
+### Where the packaging lives
+
+[`app/`](app/PACKAGING.md) holds the packaging in source form: an artefact
+inventory (`app-manifest.json`) that `test/packaging.test.js` checks against the
+source tree, `LucairnConfig` and the record specifications, so the four cannot
+drift apart; and `release.json`, which pins the contract references that WERE
+read — Lucairn handler lines with the commit they were verified at, and the
+ServiceNow documentation URLs with their release scope — while recording the
+target ServiceNow release as **NOT PINNED**, because nobody has had an instance
+and a plausible-looking family name would later read as a tested target.
 
 ### Why the source is `.js` files and not an update-set XML
 
@@ -222,7 +241,16 @@ character or a surrogate pair.
 The seal call accepts exactly three vendor values: `anthropic`, `openai`,
 `google`. **None of them names the model behind a Now Assist deployment.**
 
-The application does not guess. `lucairn.now_assist.vendor` has no default, and
+The application does not guess, and it does not map: no value outside the three
+is translated into one of them, because a mapped vendor would put a false
+provenance value on a real certificate. The validation message says so — it
+names the property to set, says the missing default is deliberate, and tells an
+operator with no honest option to raise the gap rather than pick a neighbour.
+(`test/contract.test.js` § `C-VENDOR` pins both the set and that wording, and
+asserts that no source file outside `LucairnConfig` names a vendor literal at
+all — a second place that knows a vendor name is a place a mapping can grow.)
+
+`lucairn.now_assist.vendor` has no default, and
 **it must be set** — configuration is validated before the sanitize call as well
 as before the seal call, so an unset vendor does not mean "sanitize without a
 certificate". It means every protected run is blocked; and for any skill an administrator has
@@ -321,6 +349,40 @@ Update Set**. Then redo step 4 (properties) and step 5 (credential) by hand:
 neither the API key nor the connection URL should travel inside an update set.
 
 ---
+
+## Before the PDI: the contract registry and the probe kit
+
+Two things exist so that "this is a hypothesis" stops being prose and starts
+being executable.
+
+**[`contracts/instance-contracts.json`](contracts/instance-contracts.json) — the
+hypothesis registry.** One row per thing this application depends on. A platform
+hypothesis (does the extension point exist? what is the input called? does a
+raise stop the run? which destination is consumed?) is `instance-pending`, names
+the runbook leg below that will settle it, and says what may NOT be claimed
+until it does. `test/contract.test.js` refuses to let a row leave
+`instance-pending` without an instance record — so a hypothesis cannot become a
+fact by an edit to one word. Where part of a hypothesis IS locally settleable —
+what the hook does with the binding it was given, rather than what the binding
+is called — that part is pinned as a contract test against a documented-shape
+stub.
+
+**[`probes/`](probes/README.md) — the falsification probe kit.** Executable
+probes that seed six faults and must demonstrably CATCH each one: missing
+vendor, unsupported vendor, connection refusal, timeout, evidence-write failure,
+and a wrong-but-recognised output destination. Every probe is a pair — with the
+fault unseeded it must report nothing, with it seeded it must fire — because a
+probe that cannot fail is not evidence.
+
+```bash
+node probes/run-probes.js
+```
+
+Run it before you start the legs below. It uses real sockets against local
+documented-shape stubs, so it will catch a broken transport shim, a regressed
+fail-closed path or a missing audit precondition before you spend instance time
+on them. **It settles nothing about an instance** — the stubs are the
+hypotheses, not observations of them. That is what the legs are for.
 
 ## Verify on the PDI
 
@@ -849,6 +911,21 @@ Round 5 added, against the defect class rounds 2-4 kept reproducing:
 Each of those was written against a defect a review gate found, and each fails
 against the code as it was before the fix — a test that cannot fail is not
 evidence.
+
+Three files were added alongside them, and they answer a different question —
+not "is this code correct" but "is what we are ASSUMING written down, and can
+the probes that will test it actually fail":
+
+- **`test/contract.test.js`** — the hypothesis registry's integrity (no
+  promotion without an instance record, every row names a leg that exists, every
+  referenced test and probe exists, the registry covers every destination the
+  hook actually declares) plus the locally-settleable half of each hypothesis.
+  It also pins `C-DESTINATION-NOT-FAIL-CLOSED` — a known GAP, held as a test so
+  that a future claim that the destination handling is fail-closed turns it red.
+- **`test/packaging.test.js`** — the artefact inventory against reality, in four
+  directions, and the refusal to carry an update-set XML.
+- **`test/probes.test.js`** — the probe kit's own RED-PROOF, run by the gate:
+  every probe must report nothing on the good path AND catch its seeded fault.
 
 These are unit tests against faked platform objects. They constrain the
 adapter's own logic; they say nothing about ServiceNow's behaviour. That is what
