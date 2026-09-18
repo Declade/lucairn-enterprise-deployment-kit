@@ -23,10 +23,42 @@
   "store_version_moves_independently_of_kit_version": true,
 
   "target_platform": {
-    "release_family": null,
-    "patch_level": null,
-    "status": "NOT PINNED",
-    "why": "No ServiceNow instance with Now Assist skills has been available. The evaluation-instance request asks the vendor for 'the instance's release family/patch level' precisely because it is not knowable in advance (specs/2026-09/request-2026-09-10-servicenow-eval-instance.md). Naming a family here would be a guess, and every mechanism this application depends on is release-sensitive.",
+    "_comment": [
+      "THREE DIFFERENT FACTS, kept apart on purpose. Conflating any two of them",
+      "is how a build target becomes a tested target in somebody's summary:",
+      "",
+      "  intended_release_family — the family this release candidate is BUILT",
+      "    FOR. Sourced, not invented: it is the newest family named in the",
+      "    authoritative references pinned in this same file.",
+      "  observed_on — the family something actually RAN on. Null. Nothing has",
+      "    run anywhere.",
+      "  documented_availability_floors — where a mechanism first APPEARS. A",
+      "    floor is not a target and is not evidence of a test."
+    ],
+
+    "intended_release_family": "Zurich",
+    "intended_patch_level": null,
+    "status": "INTENDED TARGET PINNED — NO OBSERVED VALIDATION",
+
+    "intended_family_basis": "Zurich is the newest ServiceNow release family named anywhere in the authoritative references pinned in this file: the Build Agent documentation cited below is served under /docs/r/zurich/, and the feasibility pass records the guided BYOLLM UI as available since Zurich P4. Building for the newest family our own sourced references document is the defensible choice, and it is the one the record supports.",
+    "intended_family_source": [
+      "https://www.servicenow.com/docs/r/zurich/application-development/install-build-agent.html (release-scoped URL: Zurich)",
+      "specs/2026-09/findings-2026-09-10-servicenow-addon-feasibility.md:4 — 'guided BYOLLM UI since Zurich P4'"
+    ],
+    "intended_family_is_not": [
+      "a claim that Zurich is the current GA family — that was not verified here, and nothing in this repository establishes it",
+      "a claim that anything has been built, run or tested on Zurich — see observed_on",
+      "a claim that the preprocessor lane this directory implements exists on Zurich — that is contracts/instance-contracts.json H1-extension-point-exists, instance-pending",
+      "a patch level — patch levels are release-sensitive and only an instance can name one"
+    ],
+
+    "observed_validation": "pending",
+    "observed_on": {
+      "release_family": null,
+      "patch_level": null,
+      "why": "No ServiceNow instance with Now Assist skills has been available. The evaluation-instance request asks the vendor for 'the instance's release family/patch level' precisely because it is not knowable in advance (specs/2026-09/request-2026-09-10-servicenow-eval-instance.md). If the instance that lands is NOT the intended family, that difference is itself a finding — record it here rather than quietly restating the intended target as the tested one."
+    },
+
     "recorded_when": "README.md § Versioning — when a Store version is cut, record the instance family and patch level it was built and tested on. README.md § Leg 6 records them again per verification run.",
     "documented_availability_floors": [
       {
