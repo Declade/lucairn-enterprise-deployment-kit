@@ -1,0 +1,394 @@
+{
+  "_comment": [
+    "THE CONTRACT REGISTRY — one row per thing this application depends on.",
+    "",
+    "Two kinds of row, and the difference is the whole point of the file:",
+    "",
+    "  platform-hypothesis — something about ServiceNow that NOBODY HAS OBSERVED.",
+    "    Every one of these is `instance-pending`. The deliverable for such a row",
+    "    is not a claim: it is the contract TEST that expresses the hypothesis",
+    "    against a documented-shape stub, plus the PROBE and the runbook leg that",
+    "    will settle it on an instance. A green test here says the application",
+    "    behaves as designed IF the hypothesis holds. It never says it holds.",
+    "",
+    "  service-contract — something about the Lucairn service that IS written",
+    "    down in README.md § Wire contract (which cites the live handlers by",
+    "    repository, file and line). These are `locally-pinned`: a local test can",
+    "    settle them, and does.",
+    "",
+    "PROMOTION RULE, enforced by test/contract.test.js: a row may only leave",
+    "`instance-pending` when `instance_record` points at a gate record naming the",
+    "instance family and patch level it was observed on. Editing the status alone",
+    "fails the suite. That is deliberate — the failure mode this file exists",
+    "against is a hypothesis quietly becoming a fact between two commits.",
+    "",
+    "Nothing in this file has been observed on a ServiceNow instance.",
+    "INSTANCE VALIDATION PENDING."
+  ],
+
+  "schema_version": 1,
+  "instance_validation": "pending",
+
+  "contracts": [
+    {
+      "id": "H1-extension-point-exists",
+      "kind": "platform-hypothesis",
+      "hook_header_item": 1,
+      "statement": "A pre-inference preprocessor extension point exists for the target skill on the target release, and a pasted script is invocable from it.",
+      "status": "instance-pending",
+      "locally_settleable": false,
+      "why_not_locally_settleable": "Nothing in a Node process can tell you which extension-point carrier tables exist on an instance, or which one accepts a script. A local test that asserted it would be asserting a property of the stub.",
+      "source": [
+        "servicenow/src/hooks/genai-preprocessor.js header, unproven item 1",
+        "servicenow/src/hooks/genai-preprocessor.js § WIRING step 4 — candidate carriers sys_one_extend_capability_definition, sys_generative_ai_request_validator, sys_generative_ai_validator",
+        "specs/2026-09/evidence-2026-09-10-astra-servicenow-capture.log:1135-1147"
+      ],
+      "expressed_by": { "tests": [], "probes": [] },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 6"],
+        "observable": "Which candidate carrier table accepted the script, and which ones do not exist on the instance family. Outcome (c) — no evidence row for a UI-triggered run — means the hook is not on this skill's execution path.",
+        "records": "the carrier table AND the list of candidates that did not exist"
+      },
+      "may_not_be_claimed": "That the preprocessor lane applies to any skill, or to Now Assist generally.",
+      "instance_record": null
+    },
+    {
+      "id": "H2-input-binding",
+      "kind": "platform-hypothesis",
+      "hook_header_item": 2,
+      "statement": "The extension point exposes the submitted text under the bare identifier `input`.",
+      "status": "instance-pending",
+      "locally_settleable": false,
+      "why_not_locally_settleable": "The binding NAME is the instance's choice. What IS locally settleable is what the hook does with the binding it was given, which is the contract test below.",
+      "locally_pinned_part": "The hook hands whatever `input` holds to the guard verbatim and in full, and hands the empty string on when `input` is absent.",
+      "source": [
+        "servicenow/src/hooks/genai-preprocessor.js ADJUST-ON-PDI (1/2) — `input`, `inputs.text` and `payload.prompt` all plausible"
+      ],
+      "expressed_by": {
+        "tests": [
+          "H2 the hook hands the platform-supplied input to the guard verbatim and in full",
+          "H2 an absent input binding yields an empty submission, not a guess at another binding"
+        ],
+        "probes": ["P0-good-path"]
+      },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 6"],
+        "observable": "The extension-point record's own field list names the input. A wrong ADJUST-ON-PDI name is one of the three candidate causes of a fixture name surviving into the summary on an allowed run (README § Leg 6, coverage half).",
+        "records": "the input binding name the instance exposes"
+      },
+      "may_not_be_claimed": "That `input` is the real binding on any release.",
+      "instance_record": null
+    },
+    {
+      "id": "H2b-input-completeness",
+      "kind": "platform-hypothesis",
+      "hook_header_item": 2,
+      "statement": "The script receives ALL of the text that eventually reaches the model — no context is appended after the hook runs.",
+      "status": "instance-pending",
+      "locally_settleable": false,
+      "why_not_locally_settleable": "Completeness is a property of the platform's prompt assembly. No stub can exhibit it, and a model answer omitting a canary is never proof the model did not receive it.",
+      "source": [
+        "servicenow/src/hooks/genai-preprocessor.js header, unproven item 2",
+        "specs/2026-09/plan-servicenow-eval-experiments.md § Canary seeding matrix, E1 step 5(b) and its kill condition"
+      ],
+      "expressed_by": { "tests": [], "probes": [] },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 6"],
+        "observable": "Per canary source, whether the text reaching the processor contains the canary — inspected at the processor INPUT, never inferred from the answer.",
+        "records": "the canary matrix, with a NON-COVERAGE line for every source not seeded"
+      },
+      "may_not_be_claimed": "Any whole-call or whole-interaction coverage claim. The certificate attests the submitted fields only.",
+      "instance_record": null
+    },
+    {
+      "id": "H3-raise-aborts-run",
+      "kind": "platform-hypothesis",
+      "hook_header_item": 3,
+      "statement": "Raising inside the hook suppresses the skill's OUTPUT — the user gets no summary and the refusal is auditable.",
+      "status": "instance-pending",
+      "locally_settleable": false,
+      "why_not_locally_settleable": "Whether the platform honours a raise is the platform's behaviour. A local test can only show that the hook raises, which is a different sentence.",
+      "locally_pinned_part": "On a block verdict the hook raises under LucairnSkillGuard.ERROR_PREFIX, writes no destination, and leaves the consumed slot holding what the extension point already had.",
+      "source": [
+        "servicenow/src/hooks/genai-preprocessor.js header, unproven item 3",
+        "servicenow/src/script_includes/LucairnSkillGuard.js header, outcomes (a)/(b)/(c)"
+      ],
+      "expressed_by": {
+        "tests": ["H3 a blocked verdict raises under the block prefix and publishes nothing"],
+        "probes": ["P7-blocked-run-raises-and-publishes-nothing"]
+      },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 6"],
+        "observable": "Outcome (a), (b) or (c) from the product UI, with the destination value recorded alongside the letter.",
+        "records": "outcome letter, destination value, instance family and patch level"
+      },
+      "may_not_be_claimed": "That the preprocessor 'blocks' anything, until Leg 6 scores (a). On outcome (b) the skill runs on the ORIGINAL text with no annotation — the evidence row is the only surviving control.",
+      "instance_record": null
+    },
+    {
+      "id": "H3b-non-dispatch",
+      "kind": "platform-hypothesis",
+      "statement": "SEPARATE AND WEAKER-SUPPORTED: that raw content never reached the model, i.e. inference was never dispatched.",
+      "status": "instance-pending",
+      "locally_settleable": false,
+      "why_not_locally_settleable": "Output suppression and non-dispatch are different claims. Two countermodels satisfy every UI observable while inference ran (provider-called-before-hook; hook crash).",
+      "source": [
+        "servicenow/README.md § Leg 6, 'What they do NOT support'",
+        "servicenow/src/script_includes/LucairnSkillGuard.js header, round-2 finding astra-B2"
+      ],
+      "expressed_by": { "tests": [], "probes": [] },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 6"],
+        "observable": "Independent observation only: a WINDOW-scoped absence in the Lucairn request log with its own positive control in a non-overlapping window, plus instance-side inference telemetry where it exists. 'Not observable' is a legitimate answer.",
+        "records": "whether dispatch absence was observed, observed to be present, or not observable"
+      },
+      "may_not_be_claimed": "Anything about dispatch, in packaging, a deck or customer copy, on the strength of Leg 6's UI observables.",
+      "instance_record": null
+    },
+    {
+      "id": "H4-output-destination",
+      "kind": "platform-hypothesis",
+      "hook_header_item": 4,
+      "statement": "The extension point consumes ONE of the four documented destination shapes, and the operator has declared that one in lucairn.now_assist.output_destination.",
+      "status": "instance-pending",
+      "locally_settleable": false,
+      "why_not_locally_settleable": "Which slot a platform READS is not observable from inside the script. Verifying a write answers 'did my write land here', never 'is here what gets consumed'.",
+      "locally_pinned_part": "For each of the four documented shapes, the hook writes the declared destination, re-evaluates the configured expression, compares, and raises on anything short of an exact match.",
+      "destinations": ["bare_output", "outputs_text", "api_set_output", "global_output"],
+      "source": [
+        "servicenow/src/hooks/genai-preprocessor.js header, unproven item 4 and § EXACTLY ONE DESTINATION",
+        "servicenow/src/records/properties.md § lucairn.now_assist.output_destination"
+      ],
+      "expressed_by": {
+        "tests": ["H4 every documented destination shape publishes and verifies through a fresh evaluation"],
+        "probes": ["P0-good-path", "P6-wrong-but-recognised-destination"]
+      },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 6"],
+        "observable": "An ALLOWED run whose summary is visibly sanitized. A run that merely does not raise proves nothing — see C-DESTINATION-NOT-FAIL-CLOSED.",
+        "records": "the destination value the run used, next to the outcome letter"
+      },
+      "may_not_be_claimed": "That the configured destination is the consumed one, on the strength of a run that returned normally.",
+      "instance_record": null
+    },
+    {
+      "id": "H5-module-guard-inert",
+      "kind": "platform-hypothesis",
+      "statement": "The server-side runtime has no `module` global, so the `typeof module !== 'undefined'` tail on each Script Include is inert there.",
+      "status": "instance-pending",
+      "locally_settleable": false,
+      "why_not_locally_settleable": "Under Node the guard is by definition active — that is what lets the same source run in the local harness.",
+      "source": ["servicenow/README.md § Build on the PDI, step 3"],
+      "expressed_by": { "tests": [], "probes": [] },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 1"],
+        "observable": "The Script Include loads and `new LucairnNowAssistAdapter()` constructs.",
+        "records": "that Leg 1 ran at all"
+      },
+      "may_not_be_claimed": "That the guard is inert on any release; the code tests for the global rather than assuming its absence.",
+      "instance_record": null
+    },
+    {
+      "id": "H6-rest-message-alias",
+      "kind": "platform-hypothesis",
+      "statement": "A named outbound REST Message authenticated by a Connection & Credential alias resolves the endpoint and injects the credential, so the script never handles a URL or a key.",
+      "status": "instance-pending",
+      "locally_settleable": false,
+      "why_not_locally_settleable": "Alias resolution is platform plumbing. The probe kit stands in for the REST Message record with a function-name-to-path map, which exercises the CLIENT's side of the contract and nothing else.",
+      "source": [
+        "servicenow/src/script_includes/LucairnClient.js header § TRANSPORT MODES",
+        "servicenow/src/records/connection-and-credential-alias.md"
+      ],
+      "expressed_by": { "tests": [], "probes": ["P0-good-path"] },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 1"],
+        "observable": "HTTP 200 through the named message on a recorded instance family and patch level.",
+        "records": "instance family, patch level, transport mode"
+      },
+      "may_not_be_claimed": "That the shipping transport works, until Leg 1 returns 200 through it.",
+      "instance_record": null
+    },
+    {
+      "id": "H6b-alias-supplies-authorization",
+      "kind": "platform-hypothesis",
+      "statement": "Setting a REST Message's authentication type to a Connection & Credential alias makes the platform inject an Authorization: Bearer header from an API Key credential, for the sn_ws.RESTMessageV2 API.",
+      "status": "instance-pending",
+      "locally_settleable": false,
+      "why_not_locally_settleable": "It is platform authentication plumbing. The probe kit's transport shim sets no Authorization header of its own in the named-message mode, so it stands in for the shape and settles nothing about whether the platform fills it.",
+      "sharper_than": "H6-rest-message-alias",
+      "unresolved": "The published outbound-REST authentication documentation describes API-key authentication in terms of Flow Designer REST steps, NOT RESTMessageV2. Three outcomes are live: correct but under-documented; correct only with an API Key authentication profile attached; or not supported at all — in which case the shipping transport is `endpoint` mode or a Flow-based carrier, and that is a DESIGN CHANGE, not a configuration tweak.",
+      "source": [
+        "servicenow/src/records/connection-and-credential-alias.md § 🔴 UNRESOLVED",
+        "servicenow/src/records/connection-and-credential-alias.md § If the alias does not supply an Authorization header"
+      ],
+      "expressed_by": { "tests": [], "probes": [] },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 1"],
+        "observable": "HTTP 200 through the named message (correct), HTTP 401 (needs an API Key authentication profile), or neither path working (design change).",
+        "records": "the outcome, the instance family and patch level, and any authentication profile that was needed"
+      },
+      "may_not_be_claimed": "That the alias transport is 'the shipping mode', in any customer-facing material, until Leg 1 returns 200 through it on a named instance family and patch level. It gates deployment and is tracked as T-750.",
+      "instance_record": null
+    },
+    {
+      "id": "H7-platform-digest-hex",
+      "kind": "platform-hypothesis",
+      "statement": "The digest helpers documented for scoped applications return base64, and hex availability differs by release — which is why the application ships its own SHA-256 rather than depending on one.",
+      "status": "instance-pending",
+      "locally_settleable": false,
+      "why_not_locally_settleable": "It is a statement about a platform API this application deliberately does not call.",
+      "source": ["servicenow/README.md § Why pure-JS SHA-256"],
+      "expressed_by": { "tests": [], "probes": [] },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 1"],
+        "observable": "If a hex-capable platform digest is confirmed, swapping one function body is the whole change.",
+        "records": "which digest helpers exist and what encoding they return"
+      },
+      "may_not_be_claimed": "Anything about any particular release's digest helpers. It is 'unverified, so not depended on', not a finding.",
+      "instance_record": null
+    },
+
+    {
+      "id": "C-VENDOR-REQUIRED",
+      "kind": "service-contract",
+      "statement": "lucairn.now_assist.vendor has no default. Unset means every protected run is blocked before any request is made, and the operator-facing message names the property to set.",
+      "status": "locally-pinned",
+      "locally_settleable": true,
+      "source": [
+        "servicenow/src/records/properties.md § lucairn.now_assist.vendor has no default, on purpose",
+        "servicenow/README.md § Known gap: the vendor field"
+      ],
+      "expressed_by": {
+        "tests": ["C-VENDOR the accepted set is exactly three literals and nothing supplies a default"],
+        "probes": ["P1-missing-vendor"]
+      },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 1"],
+        "observable": "blocked evidence rows with lucairn_config_error and no summaries"
+      },
+      "instance_record": null
+    },
+    {
+      "id": "C-VENDOR-ALLOWLIST",
+      "kind": "service-contract",
+      "statement": "The seal call accepts exactly anthropic, openai, google. A vendor outside the set blocks; it is never mapped onto a neighbouring value, and no new literal is introduced client-side.",
+      "status": "locally-pinned",
+      "locally_settleable": true,
+      "source": [
+        "servicenow/src/script_includes/LucairnConfig.js LucairnConfig.ALLOWED_VENDORS",
+        "servicenow/README.md § Known gap: the vendor field — extending the set is a change to the Lucairn service's own contract and out of scope here"
+      ],
+      "expressed_by": {
+        "tests": [
+          "C-VENDOR the accepted set is exactly three literals and nothing supplies a default",
+          "C-VENDOR no source file introduces a vendor literal or a provider mapping"
+        ],
+        "probes": ["P2-unsupported-vendor"]
+      },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 1"],
+        "observable": "HTTP 400 from the service for any value outside the set, which is why the check is local first"
+      },
+      "instance_record": null
+    },
+    {
+      "id": "C-FAIL-CLOSED-TRANSPORT",
+      "kind": "service-contract",
+      "statement": "Every transport failure — refusal, timeout, non-2xx, unrecognised 200 — blocks the run and writes a blocked evidence row. The failure CLASSIFICATION is diagnostic only and never gates the decision.",
+      "status": "locally-pinned",
+      "locally_settleable": true,
+      "source": [
+        "servicenow/src/script_includes/LucairnClient.js design rule 3",
+        "servicenow/README.md § Fail-closed by default"
+      ],
+      "expressed_by": { "tests": [], "probes": ["P3-connection-refused", "P4-timeout"] },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 2a", "Leg 2b", "Leg 3a", "Leg 3b"],
+        "observable": "a blocked run observed on the instance, with the error text recorded per fault so an unrecognised marker can be added to REFUSED_MARKERS / TIMEOUT_MARKERS"
+      },
+      "instance_record": null
+    },
+    {
+      "id": "C-EVIDENCE-PRECONDITION",
+      "kind": "service-contract",
+      "statement": "The evidence row is a precondition, not a side effect: a fail-open override whose uncovered_run row cannot be stored BLOCKS, and a covered run whose row is missing cannot be sealed.",
+      "status": "locally-pinned",
+      "locally_settleable": true,
+      "source": [
+        "servicenow/src/script_includes/LucairnNowAssistAdapter.js header § THE EVIDENCE ROW IS THE PRECONDITION",
+        "servicenow/README.md § Leg 4b"
+      ],
+      "expressed_by": { "tests": [], "probes": ["P5-evidence-write-failure", "P5b-covered-run-without-evidence-row"] },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 4b"],
+        "observable": "lucairn_uncovered_run_unauditable with an empty textForSkill, and lucairn_evidence_row_missing on the seal half"
+      },
+      "instance_record": null
+    },
+    {
+      "id": "C-CERT-TIER",
+      "kind": "service-contract",
+      "statement": "The seal endpoint returns cert_tier `input-shield`, and any other tier is a contract violation rather than a better certificate.",
+      "status": "locally-pinned",
+      "locally_settleable": true,
+      "source": [
+        "servicenow/src/script_includes/LucairnNowAssistAdapter.js LucairnNowAssistAdapter.CERT_TIER",
+        "servicenow/README.md § Wire contract"
+      ],
+      "expressed_by": {
+        "tests": ["C-CERT-TIER a tier other than input-shield is a contract violation, not an upgrade"],
+        "probes": ["P0-good-path"]
+      },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 0", "Leg 1"],
+        "observable": "cert_tier = input-shield and a cert_url that resolves"
+      },
+      "instance_record": null
+    },
+    {
+      "id": "C-ERROR-DISCRIMINATOR",
+      "kind": "service-contract",
+      "statement": "A real block says `skill run blocked:`; every wiring failure says `hook could not publish its output:`. Leg 6 needs exactly one discriminator, and a wiring failure scored as outcome (a) would read a broken hook as working protection.",
+      "status": "locally-pinned",
+      "locally_settleable": true,
+      "source": [
+        "servicenow/src/hooks/genai-preprocessor.js § ANTI-SPOOF BOUNDARY, last paragraph",
+        "servicenow/README.md § Leg 6, countermodel (b)"
+      ],
+      "expressed_by": {
+        "tests": [
+          "H3 a blocked verdict raises under the block prefix and publishes nothing",
+          "C-ERROR-DISCRIMINATOR a wiring failure never borrows the block prefix"
+        ],
+        "probes": ["P7-blocked-run-raises-and-publishes-nothing"]
+      },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 6"],
+        "observable": "which prefix the error carried"
+      },
+      "instance_record": null
+    },
+    {
+      "id": "C-DESTINATION-NOT-FAIL-CLOSED",
+      "kind": "service-contract",
+      "statement": "A RECOGNISED BUT WRONG destination is NOT fail-closed: the hook verifies the destination it was declared, returns normally, and the destination the platform consumes still holds the raw submission. There is no error, no annotation, and no evidence row that looks any different.",
+      "status": "locally-pinned",
+      "locally_settleable": true,
+      "why_it_is_registered": "It is a known GAP, pinned as a contract so that nobody can later claim the destination handling is fail-closed without this row going red. Its closers are observation (Leg 6 coverage half) and write authority on the property — neither of them code.",
+      "source": [
+        "servicenow/src/hooks/genai-preprocessor.js header, 'Say the gap in that sentence out loud'",
+        "servicenow/src/records/properties.md § output_destination — write authority"
+      ],
+      "expressed_by": {
+        "tests": ["C-DESTINATION a recognised-but-wrong destination returns normally and leaves the consumed slot raw"],
+        "probes": ["P6-wrong-but-recognised-destination"]
+      },
+      "settled_on_instance_by": {
+        "runbook_legs": ["Leg 6"],
+        "observable": "a fixture canary appearing in the summary of an ALLOWED run that raised nothing"
+      },
+      "may_not_be_claimed": "That the hook detects a wrong-but-recognised destination. It cannot, by construction.",
+      "instance_record": null
+    }
+  ]
+}
