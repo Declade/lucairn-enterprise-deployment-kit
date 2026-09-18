@@ -47,6 +47,58 @@ const HOOK_SOURCE = fs.readFileSync(
 const RAW = 'Reported by Brannagh Oduya-Kestrel (brannagh.oduya-kestrel@northmarrow-example.test). Tag CAN-DESC-CONTRACT.';
 const SANITIZED = 'Reported by [PERSON_1] ([EMAIL_1]). Tag [CANARY_1].';
 
+/* ------------------------------------------------------------------------ *
+ * THE FROZEN CLASSIFICATION — the registry does not get to classify itself.
+ *
+ * Two live counterexamples from the astra gate on this file's first version,
+ * and both worked because the guards read the row they were checking:
+ *
+ *   1. SELF-PROMOTION. The promotion guard skipped any row whose `kind` was not
+ *      "platform-hypothesis". So editing H3 to kind "service-contract",
+ *      status "locally-pinned", locally_settleable true classified it straight
+ *      OUT of its own check — 17/17 green, and a hypothesis had become a fact.
+ *   2. SILENT DELETION. The inventory only asserted that hook_header_items
+ *      1-4 were represented. Deleting H2b, H3b, H5, H6, H6b and H7 outright
+ *      left 17/17 green, because nothing said those rows had to exist.
+ *
+ * So the classification and the required set live HERE, in the test, as
+ * literals. A row's `kind` must match this map, and the registry's id set must
+ * equal this list exactly. Adding a genuinely new contract therefore requires
+ * editing this file — that friction is the point: it is the moment somebody
+ * has to decide, deliberately, which side of the line the new row is on.
+ * ------------------------------------------------------------------------ */
+
+/** Ids that are PLATFORM HYPOTHESES: unproven, and not promotable in a commit. */
+const HYPOTHESIS_IDS = [
+    'H1-extension-point-exists',
+    'H2-input-binding',
+    'H2b-input-completeness',
+    'H3-raise-aborts-run',
+    'H3b-non-dispatch',
+    'H4-output-destination',
+    'H5-module-guard-inert',
+    'H6-rest-message-alias',
+    'H6b-alias-supplies-authorization',
+    'H7-platform-digest-hex'
+];
+
+/** Ids that are SERVICE CONTRACTS: documented, and locally settleable. */
+const SERVICE_CONTRACT_IDS = [
+    'C-VENDOR-REQUIRED',
+    'C-VENDOR-ALLOWLIST',
+    'C-FAIL-CLOSED-TRANSPORT',
+    'C-EVIDENCE-PRECONDITION',
+    'C-CERT-TIER',
+    'C-ERROR-DISCRIMINATOR',
+    'C-DESTINATION-NOT-FAIL-CLOSED'
+];
+
+const REQUIRED_KIND = new Map(
+    HYPOTHESIS_IDS.map((id) => [id, 'platform-hypothesis'])
+        .concat(SERVICE_CONTRACT_IDS.map((id) => [id, 'service-contract'])));
+
+const byId = new Map(REGISTRY.contracts.map((c) => [c.id, c]));
+
 /* Every test name this file declares, so the registry cannot reference one that
  * does not exist and a test cannot quietly stop being a contract's expression. */
 const declaredTests = new Set();
@@ -109,22 +161,67 @@ test('REGISTRY every contract row is complete and well-formed', () => {
     }
 });
 
+test('REGISTRY the row inventory is an EXACT set — nothing may be deleted, nothing added unnoticed', () => {
+    // astra counterexample 2: deleting H2b/H3b/H5/H6/H6b/H7 left the suite green,
+    // because the old inventory only asked whether hook_header_items 1-4 were
+    // represented. A registry you can shrink in silence records nothing.
+    const present = REGISTRY.contracts.map((c) => c.id).sort();
+    const required = HYPOTHESIS_IDS.concat(SERVICE_CONTRACT_IDS).sort();
+    assert.deepStrictEqual(present, required,
+        'the registry\'s rows and this test\'s frozen list disagree. A DELETED row is a dependency that stopped being written down; a NEW row must be classified here deliberately, as a hypothesis or a contract.');
+});
+
+test('REGISTRY a row cannot classify itself out of its own check', () => {
+    // astra counterexample 1: flipping H3 to kind "service-contract" +
+    // status "locally-pinned" + locally_settleable true made the promotion guard
+    // SKIP it — the row reclassified itself, and a hypothesis became a fact in
+    // one edit. The kind is therefore asserted against the frozen map, not read
+    // off the row.
+    for (const [id, kind] of REQUIRED_KIND) {
+        const c = byId.get(id);
+        assert.ok(c, `${id}: required row is missing`);
+        assert.strictEqual(c.kind, kind,
+            `${id}: is classified "${c.kind}" but this test holds it to be a ${kind}. A row does not get to change which guard applies to it.`);
+    }
+});
+
 test('REGISTRY no hypothesis has been promoted without an instance record', () => {
     // The failure mode this guards: a hypothesis quietly becoming a fact between
     // two commits, by an edit to one word. Promotion needs evidence, and the
     // evidence is a gate record naming the instance family and patch level.
-    for (const c of REGISTRY.contracts) {
-        if (c.kind !== 'platform-hypothesis') { continue; }
+    //
+    // Iterates the FROZEN id list, not the registry — so neither deleting a row
+    // nor relabelling one can remove it from this check.
+    for (const id of HYPOTHESIS_IDS) {
+        const c = byId.get(id);
+        assert.ok(c, `${id}: required hypothesis row is missing entirely`);
         assert.strictEqual(c.status, 'instance-pending',
-            `${c.id}: a platform hypothesis may not be "${c.status}" while nothing has run on an instance`);
+            `${id}: a platform hypothesis may not be "${c.status}" while nothing has run on an instance`);
         assert.strictEqual(c.instance_record, null,
-            `${c.id}: carries an instance record — if that is real, the status must change WITH it and this test must be updated deliberately`);
+            `${id}: carries an instance record — if that is real, the status must change WITH it and this test must be updated deliberately`);
         assert.strictEqual(c.locally_settleable, false,
-            `${c.id}: a platform hypothesis is by definition not locally settleable`);
+            `${id}: a platform hypothesis is by definition not locally settleable`);
         assert.ok(typeof c.why_not_locally_settleable === 'string' &&
             c.why_not_locally_settleable.length > 20,
-            `${c.id}: must say WHY it cannot be settled locally, so the gap is legible`);
+            `${id}: must say WHY it cannot be settled locally, so the gap is legible`);
     }
+});
+
+test('REGISTRY every contract the manifest references resolves to a row', () => {
+    // The packaging manifest hangs contract ids off artefacts — the hook, the
+    // vendor property, the destination property, the alias and REST message. A
+    // deleted row would leave those pointing at nothing, which is how an
+    // artefact comes to look governed while its governance has gone.
+    const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'app', 'app-manifest.json'), 'utf8'));
+    let referenced = 0;
+    for (const a of manifest.artifacts) {
+        for (const id of (a.contracts || [])) {
+            referenced += 1;
+            assert.ok(byId.has(id),
+                `manifest artefact "${a.name}" references contract "${id}", which no registry row provides`);
+        }
+    }
+    assert.ok(referenced > 0, 'the manifest references no contracts at all — the link between artefacts and their governance is gone');
 });
 
 test('REGISTRY every row names a runbook leg that exists in the README', () => {
