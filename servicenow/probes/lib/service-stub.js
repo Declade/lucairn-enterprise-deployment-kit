@@ -86,16 +86,40 @@ function startServiceStub(opts) {
             settled = true;
             const url = 'http://127.0.0.1:' + m[1];
 
+            /* TELEMETRY UNAVAILABILITY IS A FAILURE, LOUDLY.
+             *
+             * This used to return [] when the control call failed or came back
+             * malformed. The astra gate showed what that buys: P5b asserts
+             * "no seal call was made" by subtracting two counts, and with the
+             * telemetry silently empty it subtracted fabricated zeros — passing
+             * BOTH halves while a real seal invocation had gone through. An
+             * absent measurement is not a measurement of absence. So it throws,
+             * the probe's verdict becomes FAIL, and nobody reads a fabricated
+             * zero as evidence. */
             const readRequests = () => {
                 const res = syncRequest({ url: url + '/__probe/requests', method: 'GET', timeoutMs: 5000 });
-                if (!res.ok) { return []; }
-                try { return JSON.parse(res.body).requests || []; } catch (e) { return []; }
+                if (!res.ok) {
+                    throw new Error('probe telemetry unavailable (' + (res.kind || 'unknown') + '): ' +
+                        (res.error || 'no error text') + ' — a probe cannot assert absence without it');
+                }
+                let parsed;
+                try {
+                    parsed = JSON.parse(res.body);
+                } catch (e) {
+                    throw new Error('probe telemetry returned an unparsable body — a probe cannot assert absence without it');
+                }
+                if (!parsed || !Array.isArray(parsed.requests)) {
+                    throw new Error('probe telemetry returned no request list — a probe cannot assert absence without it');
+                }
+                return parsed.requests;
             };
 
             resolve({
                 url: url,
                 requests: readRequests,
                 requestCount: () => readRequests().length,
+                /** How many requests reached one path. Absence per PATH, not in aggregate. */
+                countPath: (p) => readRequests().filter((r) => r.path === p).length,
                 close: () => new Promise((done) => {
                     child.on('exit', () => done());
                     try { child.kill('SIGKILL'); } catch (ignored) { done(); }

@@ -29,9 +29,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { startServiceStub, closedPort } = require('./lib/service-stub');
+const { syncRequest } = require('./lib/sync-http');
 const { makeInstance, runHookInExtensionPoint, DESTINATIONS } = require('./lib/instance-stub');
 const LucairnNowAssistAdapter = require('../src/script_includes/LucairnNowAssistAdapter');
 const LucairnSkillGuard = require('../src/script_includes/LucairnSkillGuard');
+const LucairnClient = require('../src/script_includes/LucairnClient');
 
 const fixtures = require('../fixtures/synthetic-incidents.json');
 const INCIDENT = fixtures.incidents.find((i) => i.id === 'fixture-basic-contact');
@@ -55,6 +57,10 @@ const REDACTIONS = [
 
 const ERROR_MODES = ['throw', 'flag'];
 
+/* Read from the client, not retyped: a path rename there must break the probes
+ * rather than quietly pointing them at a path nobody calls. */
+const SEAL_PATH = LucairnClient.PATH_SEAL;
+
 /** Run `fn` with a live service stub, closing it afterwards whatever happens. */
 async function withService(opts, fn) {
     const stub = await startServiceStub(Object.assign({ redactions: REDACTIONS }, opts || {}));
@@ -72,6 +78,57 @@ function coveredRun(instance) {
 function lastRow(instance) {
     const rows = instance.rows();
     return rows.length ? rows[rows.length - 1] : null;
+}
+
+/**
+ * FAULT PROVENANCE, PER ATTEMPT.
+ *
+ * Two astra counterexamples killed the previous accounting, and both came from
+ * asking the wrong witness:
+ *
+ *   1. CUMULATIVE ARRIVALS. "was the connection accepted?" was
+ *      `svc.requestCount() > 0` against a stub shared by both transport-error
+ *      modes. One mode's arrival therefore credited the other: a genuinely
+ *      accepted timeout under `throw` plus a refusal that never arrived under
+ *      `flag` scored as a clean timeout catch in both.
+ *   2. THE ADAPTER'S LABEL. The adapter's failure class is a substring match
+ *      that degrades to "unknown" — right for a decision that blocks either
+ *      way, useless as evidence. A worker that failed to START produced a
+ *      blocked run and a transport-looking label, and scored as a caught
+ *      connection refusal.
+ *
+ * So each attempt is measured on its own: the stub's arrival count is read
+ * before and after, and the transport records for THAT attempt are inspected
+ * for the runtime's own errno. Nothing is inferred from an aggregate, and
+ * nothing is taken from the classifier.
+ *
+ * @param {object} opts
+ * @param {object} opts.instance  a FRESH instance — its httpCalls must belong to this attempt alone
+ * @param {function(): number} [opts.arrivals] reads the stub's arrival count; omitted when no stub is addressed
+ * @param {function(): object} opts.run  performs the attempt
+ * @returns {object} the observation for this attempt
+ */
+function attempt(opts) {
+    const before = opts.arrivals ? opts.arrivals() : 0;
+    const result = opts.run();
+    const after = opts.arrivals ? opts.arrivals() : 0;
+
+    const calls = opts.instance.httpCalls;
+    return {
+        result: result,
+        /* Arrivals attributable to THIS attempt, not to the run as a whole. */
+        arrival_delta: after - before,
+        transport_attempts: calls.length,
+        /* Every attempt must have reached the socket layer. A 'worker' record
+         * means the harness broke; it may never count as a caught fault. */
+        all_transport: calls.length > 0 && calls.every((c) => c.result && c.result.kind === 'transport'),
+        harness_failures: calls.filter((c) => !c.result || c.result.kind !== 'transport')
+            .map((c) => (c.result && c.result.error) || 'unknown'),
+        /* The runtime's own errno per call, and whether the timeout path fired.
+         * Independent of the adapter's diagnostic classification. */
+        codes: calls.map((c) => (c.result && c.result.code) || ''),
+        timed_out: calls.map((c) => !!(c.result && c.result.timedOut))
+    };
 }
 
 /* ------------------------------------------------------------------------- */
@@ -255,35 +312,60 @@ const probes = [
         },
         async seeded() {
             /* A REAL refusal: a port that was bound long enough to learn its
-             * number and then released. Not a scripted exception. */
+             * number and then released. Not a scripted exception.
+             *
+             * A stub runs alongside it, addressed by nobody, so that "nothing
+             * arrived" is a MEASURED zero on a live telemetry endpoint rather
+             * than the absence of a measurement. */
             const port = await closedPort();
-            const out = {};
-            for (const errorMode of ERROR_MODES) {
-                const instance = makeInstance({
-                    baseUrl: 'http://127.0.0.1:' + port, errorMode, timeoutMs: 4000
-                });
-                const res = coveredRun(instance);
-                const row = lastRow(instance);
-                out[errorMode] = {
-                    allowed: res.allowed,
-                    error_code: res.error && res.error.code,
-                    /* RECORDED, NOT ASSERTED. The classification comes from Node's
-                     * error text, which is not the instance's — README § Leg 2
-                     * says the same about the instance, and adding an observed
-                     * marker there is a gate-record item, not a failure. */
-                    observed_failure_class: res.error && res.error.failure_class,
-                    evidence_outcome: row && row.outcome,
-                    text_for_skill_empty: res.textForSkill === ''
+            return withService({}, async (svc) => {
+                const out = {};
+                for (const errorMode of ERROR_MODES) {
+                    const instance = makeInstance({
+                        baseUrl: 'http://127.0.0.1:' + port, errorMode, timeoutMs: 4000
+                    });
+                    const a = attempt({
+                        instance,
+                        arrivals: () => svc.requestCount(),
+                        run: () => coveredRun(instance)
+                    });
+                    const res = a.result;
+                    const row = lastRow(instance);
+                    out[errorMode] = {
+                        allowed: res.allowed,
+                        error_code: res.error && res.error.code,
+                        /* RECORDED, NOT ASSERTED. The classification comes from Node's
+                         * error text, which is not the instance's — README § Leg 2
+                         * says the same about the instance, and adding an observed
+                         * marker there is a gate-record item, not a failure. */
+                        observed_failure_class: res.error && res.error.failure_class,
+                        evidence_outcome: row && row.outcome,
+                        text_for_skill_empty: res.textForSkill === '',
+                        /* PROVENANCE for THIS mode. */
+                        arrival_delta: a.arrival_delta,
+                        all_transport: a.all_transport,
+                        harness_failures: a.harness_failures,
+                        codes: a.codes,
+                        refused_by_kernel: a.codes.length > 0 && a.codes.every((c) => c === 'ECONNREFUSED')
+                    };
+                }
+                return {
+                    caught: ERROR_MODES.every((m) =>
+                        out[m].allowed === false &&
+                        out[m].error_code === LucairnNowAssistAdapter.ERROR.UNREACHABLE &&
+                        out[m].evidence_outcome === 'blocked' &&
+                        out[m].text_for_skill_empty === true &&
+                        /* The fault was a real refusal at the socket, in THIS
+                         * mode: the harness reached the transport layer, the
+                         * kernel refused every attempt, and nothing arrived
+                         * anywhere. A broken worker fails `all_transport`; a
+                         * timeout fails `refused_by_kernel`. */
+                        out[m].all_transport === true &&
+                        out[m].refused_by_kernel === true &&
+                        out[m].arrival_delta === 0),
+                    observed: out
                 };
-            }
-            return {
-                caught: ERROR_MODES.every((m) =>
-                    out[m].allowed === false &&
-                    out[m].error_code === LucairnNowAssistAdapter.ERROR.UNREACHABLE &&
-                    out[m].evidence_outcome === 'blocked' &&
-                    out[m].text_for_skill_empty === true),
-                observed: out
-            };
+            });
         }
     },
 
@@ -314,14 +396,26 @@ const probes = [
                     const instance = makeInstance({
                         baseUrl: svc.url, errorMode, timeoutMs: 400
                     });
-                    const res = coveredRun(instance);
+                    const a = attempt({
+                        instance,
+                        arrivals: () => svc.requestCount(),
+                        run: () => coveredRun(instance)
+                    });
+                    const res = a.result;
                     const row = lastRow(instance);
                     out[errorMode] = {
                         allowed: res.allowed,
                         error_code: res.error && res.error.code,
                         observed_failure_class: res.error && res.error.failure_class,
                         evidence_outcome: row && row.outcome,
-                        connection_was_accepted: svc.requestCount() > 0
+                        /* THIS attempt's arrival, not the run's running total.
+                         * The cumulative version let an accepted request under
+                         * one transport mode certify a refusal under the other. */
+                        arrival_delta: a.arrival_delta,
+                        all_transport: a.all_transport,
+                        harness_failures: a.harness_failures,
+                        timed_out: a.timed_out,
+                        timeout_path_fired: a.timed_out.length > 0 && a.timed_out.every(Boolean)
                     };
                 }
                 return {
@@ -329,7 +423,13 @@ const probes = [
                         out[m].allowed === false &&
                         out[m].error_code === LucairnNowAssistAdapter.ERROR.UNREACHABLE &&
                         out[m].evidence_outcome === 'blocked' &&
-                        out[m].connection_was_accepted === true),
+                        /* What makes this a TIMEOUT and not a refusal, per mode:
+                         * the harness reached the transport layer, the request
+                         * genuinely ARRIVED at the stub on this attempt, and the
+                         * worker's timeout path — not a socket error — ended it. */
+                        out[m].all_transport === true &&
+                        out[m].arrival_delta === 1 &&
+                        out[m].timeout_path_fired === true),
                     observed: out
                 };
             });
@@ -413,7 +513,14 @@ const probes = [
             return withService({}, async (svc) => {
                 const instance = makeInstance({ baseUrl: svc.url, evidenceInsertFails: true });
                 const protectResult = coveredRun(instance);
-                const before = svc.requestCount();
+                /* Counted on the SEAL PATH specifically, and read from live
+                 * telemetry that now throws rather than returning an empty list.
+                 * The astra gate passed both halves of this probe while a real
+                 * seal invocation had gone through, because a failed telemetry
+                 * read became [] and the subtraction produced a fabricated zero.
+                 * P5c below is the standing proof that this detector can see a
+                 * seal call at all. */
+                const before = svc.countPath(SEAL_PATH);
                 const sealed = instance.adapter.seal({
                     protectResult, responseText: 'Summary: synthetic.'
                 });
@@ -425,7 +532,7 @@ const probes = [
                     /* No seal call may be made at all: the refusal is a local
                      * decision, and spending the one-shot cert_id_partial on it
                      * would burn a value that cannot be reused. */
-                    seal_requests: svc.requestCount() - before
+                    seal_requests: svc.countPath(SEAL_PATH) - before
                 };
                 return {
                     caught: protectResult.allowed === true &&
@@ -433,6 +540,69 @@ const probes = [
                         observed.sealed === false &&
                         observed.error_code === LucairnNowAssistAdapter.ERROR.NO_EVIDENCE_ROW &&
                         observed.seal_requests === 0,
+                    observed
+                };
+            });
+        }
+    },
+
+    {
+        id: 'P5c-premature-seal-detection',
+        title: 'the seal-call detector can actually see a seal call',
+        fault: 'a seal request reaching the service despite a declined seal',
+        legs: ['Leg 4b, check 2'],
+        contracts: ['C-EVIDENCE-PRECONDITION'],
+        /* P5b asserts an ABSENCE — "no seal call was made". An absence is the
+         * easiest thing in the world to measure wrongly: every broken detector
+         * reports one. So this probe seeds the presence and requires the same
+         * detector to report it. Without this, P5b's zero is unfalsifiable. */
+        async good() {
+            return withService({}, async (svc) => {
+                const instance = makeInstance({ baseUrl: svc.url, evidenceInsertFails: true });
+                const protectResult = coveredRun(instance);
+                const before = svc.countPath(SEAL_PATH);
+                instance.adapter.seal({ protectResult, responseText: 'Summary: synthetic.' });
+                const delta = svc.countPath(SEAL_PATH) - before;
+                return {
+                    pass: delta === 0,
+                    observed: { seal_requests: delta }
+                };
+            });
+        },
+        async seeded() {
+            return withService({}, async (svc) => {
+                const instance = makeInstance({ baseUrl: svc.url, evidenceInsertFails: true });
+                const protectResult = coveredRun(instance);
+                const before = svc.countPath(SEAL_PATH);
+
+                instance.adapter.seal({ protectResult, responseText: 'Summary: synthetic.' });
+
+                /* A real seal request, put on the wire behind the adapter's
+                 * back — exactly the event P5b claims did not happen. */
+                const injected = syncRequest({
+                    url: svc.url + SEAL_PATH,
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        cert_id_partial: String(protectResult.certIdPartial || 'cert_partial_injected'),
+                        request_content_hash: 'sha256:' + '0'.repeat(64),
+                        response_content_hash: 'sha256:' + '0'.repeat(64),
+                        vendor: 'openai',
+                        tool_name: 'probe kit — injected premature seal'
+                    }),
+                    timeoutMs: 5000
+                });
+
+                const delta = svc.countPath(SEAL_PATH) - before;
+                const observed = {
+                    injected_reached_the_transport: injected.kind === 'transport',
+                    seal_requests: delta
+                };
+                return {
+                    /* The detector must SEE it. A detector that reports zero
+                     * here reports zero always, and P5b's absence claim is
+                     * worth nothing. */
+                    caught: observed.injected_reached_the_transport === true && delta >= 1,
                     observed
                 };
             });

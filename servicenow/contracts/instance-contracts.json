@@ -318,7 +318,7 @@
         "servicenow/src/script_includes/LucairnNowAssistAdapter.js header § THE EVIDENCE ROW IS THE PRECONDITION",
         "servicenow/README.md § Leg 4b"
       ],
-      "expressed_by": { "tests": [], "probes": ["P5-evidence-write-failure", "P5b-covered-run-without-evidence-row"] },
+      "expressed_by": { "tests": [], "probes": ["P5-evidence-write-failure", "P5b-covered-run-without-evidence-row", "P5c-premature-seal-detection"] },
       "settled_on_instance_by": {
         "runbook_legs": ["Leg 4b"],
         "observable": "lucairn_uncovered_run_unauditable with an empty textForSkill, and lucairn_evidence_row_missing on the seal half"
