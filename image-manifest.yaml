@@ -272,19 +272,39 @@ image_digests:
   enterprise_kind:
     postgres:
       ref: "postgres:16-alpine"
-      digest: "sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
-    redis:
-      ref: "redis:7-alpine"
-      # RE-PINNED 2026-07-27: upstream re-pointed the moving `7-alpine` tag
-      # (previous index digest sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99).
+      # RE-PINNED 2026-09-19 (T-791): upstream re-pointed the moving
+      # `16-alpine` tag (previous index digest
+      # sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777).
       # This is a RE-PIN to what upstream publishes today, NOT a re-validation:
       # the kit's acceptance suite has not been re-run against these bytes.
-      # Resolved independently from two places that agreed — CI's own resolver
-      # and a local `docker buildx imagetools inspect redis:7-alpine`.
-      # NOTE: `7-alpine` is a moving tag by design, so this pin WILL drift again
-      # on the next upstream patch and redden CI until re-pinned (postgres:16-alpine
-      # has the same shape; migrate is version-pinned and stable). See board T-159.
-      digest: "sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2"
+      # Resolved independently via the Docker Registry v2 API (anonymous pull
+      # token + Accept: application/vnd.oci.image.index.v1+json — the same
+      # multi-arch index digest `docker buildx imagetools inspect` reports) and
+      # cross-checked against the Docker Hub v2 tags API (identical digest,
+      # last_pushed 2026-09-18). Image config env PG_VERSION=16.15 confirms
+      # this is the genuine official PostgreSQL 16.15 minor release (upstream
+      # released 2026-08-13: https://www.postgresql.org/docs/16/release-16-15.html),
+      # repackaged onto the moving `16-alpine` Alpine base by Docker Official
+      # Images (`library/postgres` namespace).
+      digest: "sha256:3c5c8892d184f738f4fe282d14ddaa613a38f00f4189d2d94725ebe6f2909ddb"
+    redis:
+      ref: "redis:7-alpine"
+      # RE-PINNED 2026-09-19 (T-791): upstream re-pointed the moving `7-alpine`
+      # tag AGAIN (previous index digest
+      # sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2,
+      # itself the 2026-07-27 re-pin from board T-159). Resolved + cross-checked
+      # the same way as postgres above (Docker Registry v2 API + Docker Hub v2
+      # tags API agree; last_pushed 2026-09-18). Image config env
+      # REDIS_VERSION=7.4.11 confirms this is the genuine official Redis 7.4.11
+      # SECURITY release (upstream released 2026-08-17 — use-after-free / ACL
+      # bypass / RCE-class fixes:
+      # https://raw.githubusercontent.com/redis/redis/7.4/00-RELEASENOTES),
+      # repackaged onto the moving `7-alpine` Alpine base by Docker Official
+      # Images (`library/redis` namespace).
+      # NOTE: `7-alpine` and `16-alpine` are moving tags by design, so both
+      # pins WILL drift again on the next upstream patch and redden CI until
+      # re-pinned (migrate is version-pinned and stable). See board T-791.
+      digest: "sha256:520775a41a63e77e06c73e35d2fd9cc15921a609516818796b4ecbb813078bc7"
     migrate:
       ref: "migrate/migrate:v4.17.0"
       digest: "sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa"
