@@ -1821,7 +1821,9 @@ in `image-manifest.yaml` (drop the `pending: true` line). The
   test then fails — at its stub-call-count or `--strict` assertion — rather
   than passing). It
   tests the `doctor --strict` logic (mismatch, unresolved, invalid, pending,
-  cardinality floor, overrides); it never checks a pin against a registry.
+  cardinality floor, overrides) and does not depend on a live registry answer:
+  a shell-exported resolver function can still execute, but its answer cannot
+  make the test pass. It is not a drift signal.
 - `tests/live_digest_gate.sh` (CI job `live-digest-gate`) is the **live drift
   signal**. It reads every non-pending third-party pin from `image_digests:`
   (refs outside `ghcr.io/declade/`, excluding `ollama://` / `hf://` model URIs),
