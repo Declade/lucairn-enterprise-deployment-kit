@@ -33,8 +33,11 @@
 # is not reachable. A shell-exported function (e.g. `export -f docker`) would
 # bypass PATH; that case fails the test rather than passing it — at the 5a
 # stub-call-count assertion if the function answers the recorded digests, or
-# at a 5a --strict assertion if it answers anything else. It does NOT resolve any live registry digest and is NOT
-# a drift signal. Live upstream drift is detected by tests/live_digest_gate.sh
+# at a 5a --strict assertion if it answers anything else. So the test is
+# hermetic against PATH-found resolvers and does not depend on a live registry
+# answer; a shell-exported resolver function can still execute (and could even
+# do a live lookup), but its answer cannot make the test pass. It is NOT a
+# drift signal. Live upstream drift is detected by tests/live_digest_gate.sh
 # (CI job `live-digest-gate`), which has no fixture fallback.
 set -uo pipefail
 
