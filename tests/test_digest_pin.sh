@@ -23,9 +23,15 @@
 #
 # The "resolver" is a fake `crane` shim that, for any ref, echoes the digest the
 # manifest records for that ref (so a clean manifest => all match). The tamper
-# test edits a COPY of the manifest and asserts --strict flips to a block. A
-# real registry round-trip (`image_current_digest` over the network) is the
-# post-merge Vast edge-verify (PRD § Acceptance / Slice 3) — NOT covered here.
+# test edits a COPY of the manifest and asserts --strict flips to a block.
+#
+# FIXTURE-ONLY, HOST-INDEPENDENT (astra post-merge #137 M1): every doctor run
+# below uses PATH="<stub dir>:$TOOLBOX", where $TOOLBOX holds ONLY symlinks to
+# the coreutils the verify path needs — never a real docker/crane/skopeo. So
+# this test's answer is the same on a laptop without docker and on a CI runner
+# with /usr/bin/docker. It does NOT resolve any live registry digest and is NOT
+# a drift signal. Live upstream drift is detected by tests/live_digest_gate.sh
+# (CI job `live-digest-gate`), which has no fixture fallback.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -138,6 +144,7 @@ make_stub_crane() {
 #!/usr/bin/env bash
 # crane digest <ref>
 ref="\$2"
+printf '%s\n' "\$ref" >> "$shim/calls.log"   # call marker: proves the STUB answered
 rec="\$(awk -v want="\$ref" '
   /^[[:space:]]*ref:[[:space:]]*/ { r=\$0; sub(/^[[:space:]]*ref:[[:space:]]*/,"",r); gsub(/"/,"",r); cur=r; next }
   /^[[:space:]]*digest:[[:space:]]*/ { d=\$0; sub(/^[[:space:]]*digest:[[:space:]]*/,"",d); gsub(/"/,"",d); if (cur==want) { print d; exit } }
@@ -176,6 +183,25 @@ ENVF="$TMP/customer.env"
 printf 'LUCAIRN_IMAGE_TAG=0.5.4\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\n' > "$ENVF"
 
 # ---------------------------------------------------------------------------
+# Hermetic toolbox (astra post-merge #137 M1). The doctor runs below previously
+# used PATH="$SHIM:/usr/bin:/bin". On a Linux CI runner /usr/bin/docker is real,
+# and image_current_digest probes `have docker` FIRST — so the unit test was
+# silently doing a LIVE registry lookup, and when that lookup failed the stub
+# crane answered with the manifest's own recorded digest -> green without any
+# live resolution. Now PATH = stub dir + $TOOLBOX, and $TOOLBOX contains ONLY
+# the coreutils symlinked below. No real resolver is reachable.
+# ---------------------------------------------------------------------------
+TOOLBOX="$TMP/toolbox"
+mkdir -p "$TOOLBOX"
+for b in bash awk sed grep cat env mktemp tr head tail dirname rm; do
+  src="$(command -v "$b" 2>/dev/null)" || fail "toolbox: required utility '$b' not found on host PATH"
+  ln -sf "$src" "$TOOLBOX/$b"
+done
+for r in docker crane skopeo; do
+  [ ! -e "$TOOLBOX/$r" ] || fail "toolbox: real resolver '$r' leaked into the hermetic toolbox"
+done
+
+# ---------------------------------------------------------------------------
 # 5a. Clean manifest: stub resolves every ref to the recorded digest -> all
 #     match -> normal rc=0 AND strict rc=0.
 # ---------------------------------------------------------------------------
@@ -183,8 +209,9 @@ KROOT_OK="$(make_kit_root "$MANIFEST")"
 SHIM_OK="$(make_stub_crane "$MANIFEST")"
 
 set +e
-out_n="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_n=$?
-out_s="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_s=$?
+out_n="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_n=$?
+rm -f "$SHIM_OK/calls.log"   # count only the --strict run's resolver calls below
+out_s="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_s=$?
 set -e
 [ "$rc_n" -eq 0 ] || fail "clean manifest normal mode should rc=0, got $rc_n"
 [ "$rc_s" -eq 0 ] || { printf '%s\n' "$out_s" >&2; fail "clean manifest --strict should rc=0 (all match), got $rc_s"; }
@@ -197,7 +224,18 @@ printf '%s' "$out_s" | grep -q "ollama://qwen2.5:7b pending" \
   || fail "qwen2.5 model should be reported pending"
 printf '%s' "$out_s" | grep -q "pending=8" \
   || fail "--strict summary should report pending=8"
+# Stub-bound, not host-bound (astra post-merge #137 M1): EVERY verified ref must
+# have been answered by the stub crane — one logged call per verified entry. If a
+# real resolver (e.g. /usr/bin/docker on a CI runner) had answered instead, the
+# stub would log fewer calls than refs verified.
+strict_verified="$(printf '%s' "$out_s" | sed -n 's/.*verified=\([0-9][0-9]*\).*/\1/p' | head -n1)"
+stub_calls="$(grep -c . "$SHIM_OK/calls.log" 2>/dev/null || true)"
+[ "$strict_verified" = "19" ] \
+  || { printf '%s\n' "$out_s" >&2; fail "clean --strict should report verified=19, got '${strict_verified}'"; }
+[ "$stub_calls" = "$strict_verified" ] \
+  || fail "clean --strict: stub crane answered ${stub_calls:-0} resolver calls but ${strict_verified} refs were verified — a non-stub resolver answered (test is not hermetic)"
 echo "digest-pin: clean manifest -> normal rc=0 + strict rc=0, pending skipped ok"
+echo "digest-pin: all ${strict_verified} verified refs were answered by the stub crane (hermetic, host-independent) ok"
 
 # ---------------------------------------------------------------------------
 # 5b. Tampered manifest: flip ONE recorded digest. The stub still resolves the
@@ -215,8 +253,8 @@ KROOT_BAD="$(make_kit_root "$TAMPERED")"
 # Stub resolves against the ORIGINAL (true) manifest -> the true gateway digest,
 # which now differs from the tampered manifest value installed in KROOT_BAD.
 set +e
-out_bn="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_BAD/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_bn=$?
-out_bs="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_BAD/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_bs=$?
+out_bn="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_BAD/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_bn=$?
+out_bs="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_BAD/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_bs=$?
 set -e
 [ "$rc_bn" -eq 0 ] || fail "tampered manifest normal mode should still rc=0 (warn-only), got $rc_bn"
 [ "$rc_bs" -ne 0 ] || fail "tampered manifest --strict should BLOCK (non-zero), got $rc_bs"
@@ -259,8 +297,8 @@ echo "digest-pin: no-resolver host -> --strict HARD ERRORS, plain doctor SKIPS o
 #     it errors is the offline incompatibility.
 # ---------------------------------------------------------------------------
 set +e
-out_off="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF" 1 1 2>&1)"; rc_off=$?
-out_off_plain="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF" 0 1 2>&1)"; rc_off_plain=$?
+out_off="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF" 1 1 2>&1)"; rc_off=$?
+out_off_plain="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF" 0 1 2>&1)"; rc_off_plain=$?
 set -e
 [ "$rc_off" -ne 0 ] || { printf '%s\n' "$out_off" >&2; fail "--strict + --offline should HARD ERROR (non-zero), got $rc_off"; }
 printf '%s' "$out_off" | grep -qi "incompatible with --offline" \
@@ -321,8 +359,8 @@ awk '
 ' "$MANIFEST" > "$ALLPEND"
 KROOT_ALLPEND="$(make_kit_root "$ALLPEND")"
 set +e
-out_cf="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_ALLPEND/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_cf=$?
-out_cf_n="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_ALLPEND/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_cf_n=$?
+out_cf="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_ALLPEND/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_cf=$?
+out_cf_n="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_ALLPEND/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_cf_n=$?
 set -e
 [ "$rc_cf" -ne 0 ] || { printf '%s\n' "$out_cf" >&2; fail "cardinality-floor --strict (verified==0) should FAIL (non-zero), got $rc_cf"; }
 printf '%s' "$out_cf" | grep -qi "verified no recorded digests" \
@@ -354,8 +392,8 @@ printf '%s\n' "$INV_PARSE" | grep -q "^${GW_REF}	INVALID$" \
   || fail "parser should mark a malformed gateway digest as INVALID (got: $(printf '%s\n' "$INV_PARSE" | grep "$GW_REF"))"
 KROOT_MAL="$(make_kit_root "$MALFORMED")"
 set +e
-out_inv_s="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_MAL/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_inv_s=$?
-out_inv_n="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_MAL/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_inv_n=$?
+out_inv_s="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_MAL/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_inv_s=$?
+out_inv_n="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_MAL/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_inv_n=$?
 set -e
 [ "$rc_inv_s" -ne 0 ] || { printf '%s\n' "$out_inv_s" >&2; fail "malformed-digest --strict should FAIL-CLOSED (non-zero), got $rc_inv_s"; }
 printf '%s' "$out_inv_s" | grep -qi "INVALID manifest entry" \
@@ -388,8 +426,8 @@ printf '%s\n' "$CON_PARSE" | grep -q "^${GW_REF}	INVALID$" \
   || fail "parser should mark a digest+pending contradiction as INVALID (got: $(printf '%s\n' "$CON_PARSE" | grep "$GW_REF"))"
 KROOT_CON="$(make_kit_root "$CONTRA")"
 set +e
-out_con_s="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_CON/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_con_s=$?
-out_con_n="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_CON/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_con_n=$?
+out_con_s="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_CON/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_con_s=$?
+out_con_n="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_CON/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_con_n=$?
 set -e
 [ "$rc_con_s" -ne 0 ] || { printf '%s\n' "$out_con_s" >&2; fail "digest+pending --strict should FAIL-CLOSED (non-zero), got $rc_con_s"; }
 [ "$rc_con_n" -eq 0 ] || { printf '%s\n' "$out_con_n" >&2; fail "digest+pending plain doctor should stay rc=0 (warn), got $rc_con_n"; }
@@ -476,8 +514,8 @@ DASH_DIGEST="$(awk '
 ENVF_DASH_SWAP="$TMP/customer.dash-swap.env"
 printf 'LUCAIRN_IMAGE_TAG=0.5.4\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nLUCAIRN_DASHBOARD_IMAGE_TAG=9.9.9\n' > "$ENVF_DASH_SWAP"
 set +e
-out_dsw_s="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP" 1 2>&1)"; rc_dsw_s=$?
-out_dsw_n="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP" 0 2>&1)"; rc_dsw_n=$?
+out_dsw_s="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP" 1 2>&1)"; rc_dsw_s=$?
+out_dsw_n="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP" 0 2>&1)"; rc_dsw_n=$?
 set -e
 [ "$rc_dsw_s" -ne 0 ] || { printf '%s\n' "$out_dsw_s" >&2; fail "dashboard tag swap --strict should BLOCK (non-zero) — the dashboard must be enforced, got $rc_dsw_s"; }
 printf '%s' "$out_dsw_s" | grep -qi "lucairn-dashboard:9.9.9" \
@@ -507,7 +545,7 @@ if [ -n "\$rec" ]; then echo "\$rec"; else echo "sha256:000000000000000000000000
 CR
 chmod +x "$SHIM_DASH_OK/crane"
 set +e
-out_dok_s="$(PATH="$SHIM_DASH_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP" 1 2>&1)"; rc_dok_s=$?
+out_dok_s="$(PATH="$SHIM_DASH_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP" 1 2>&1)"; rc_dok_s=$?
 set -e
 [ "$rc_dok_s" -eq 0 ] || { printf '%s\n' "$out_dok_s" >&2; fail "matching dashboard override --strict should rc=0 (verified), got $rc_dok_s"; }
 printf '%s' "$out_dok_s" | grep -qi "image digest: ok (ghcr.io/declade/lucairn-dashboard:9.9.9" \
@@ -546,8 +584,8 @@ OLLAMA_DIGEST="$(awk '
 ENVF_OLLAMA_LATEST="$TMP/customer.ollama-latest.env"
 printf 'LUCAIRN_IMAGE_TAG=0.5.4\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nOLLAMA_IMAGE=ollama/ollama:latest\n' > "$ENVF_OLLAMA_LATEST"
 set +e
-out_ol_s="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_LATEST" 1 2>&1)"; rc_ol_s=$?
-out_ol_n="$(PATH="$SHIM_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_LATEST" 0 2>&1)"; rc_ol_n=$?
+out_ol_s="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_LATEST" 1 2>&1)"; rc_ol_s=$?
+out_ol_n="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_LATEST" 0 2>&1)"; rc_ol_n=$?
 set -e
 [ "$rc_ol_s" -ne 0 ] || { printf '%s\n' "$out_ol_s" >&2; fail "unpinned OLLAMA_IMAGE=ollama/ollama:latest --strict should FAIL-CLOSED (non-zero) — the false-green class is the C5 bug, got $rc_ol_s"; }
 printf '%s' "$out_ol_s" | grep -qi "OLLAMA_IMAGE override (ollama/ollama:latest) is unpinned" \
@@ -582,7 +620,7 @@ if [ -n "\$rec" ]; then echo "\$rec"; else echo "sha256:000000000000000000000000
 CR
 chmod +x "$SHIM_OLLAMA_OK/crane"
 set +e
-out_opin_s="$(PATH="$SHIM_OLLAMA_OK:/usr/bin:/bin" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_PIN" 1 2>&1)"; rc_opin_s=$?
+out_opin_s="$(PATH="$SHIM_OLLAMA_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_PIN" 1 2>&1)"; rc_opin_s=$?
 set -e
 [ "$rc_opin_s" -eq 0 ] || { printf '%s\n' "$out_opin_s" >&2; fail "recorded-digest-pinned OLLAMA_IMAGE --strict should rc=0 (verified), got $rc_opin_s"; }
 printf '%s' "$out_opin_s" | grep -qiF "image digest: ok ($OLLAMA_PIN @ $OLLAMA_DIGEST)" \
