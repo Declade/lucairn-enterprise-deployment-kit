@@ -1810,8 +1810,8 @@ in `image-manifest.yaml` (drop the `pending: true` line). The
 `image-manifest.yaml` and in the Helm chart
 (`charts/lucairn/charts/sandbox-a/values.yaml` → `ollamaIdentity.image.digest`).
 
-**Kit CI: fixture unit test vs live drift gate.** Two separate CI checks cover
-digest pinning, and only one of them talks to a registry:
+**Kit CI: fixture unit test vs live drift gate.** Two CI checks exercise the
+`image_digests:` pins; only the second one talks to a registry:
 
 - `tests/test_digest_pin.sh` (run by `make test`, CI job `Kit test harness`) is
   **fixture-only**. Its resolver is a stub `crane` that answers the manifest's

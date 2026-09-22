@@ -17,7 +17,8 @@
 #     uses). Nothing is hardcoded here.
 #   * Selects every NON-pending entry whose ref is a public third-party
 #     container image: a ref NOT under ghcr.io/declade/ (first-party images are
-#     covered by cosign verify-images) and not an ollama:// or hf:// model URI.
+#     out of scope here; `lucairn verify-images` checks them against their
+#     cosign-signed digests) and not an ollama:// or hf:// model URI.
 #   * Resolves each ref's CURRENT index digest with the real
 #     `docker buildx imagetools inspect <ref> --format '{{json .Manifest}}'`
 #     and takes the top-level `.digest` with jq.

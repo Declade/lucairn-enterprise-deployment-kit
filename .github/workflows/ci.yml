@@ -61,7 +61,7 @@ jobs:
   # ---------------------------------------------------------------------------
   #
   # tests/test_digest_pin.sh (run by `make test`) is FIXTURE-ONLY: a stub
-  # resolver on a hermetic PATH, identical on every host. It proves the
+  # resolver on a hermetic PATH, so its result does not depend on the host. It proves the
   # `doctor --strict` logic, never that a pin still matches its registry.
   # Before astra's post-merge review of #137 (finding M1), that unit test had the
   # runner's real /usr/bin/docker on its PATH, so it did a live lookup by
