@@ -1815,8 +1815,11 @@ in `image-manifest.yaml` (drop the `pending: true` line). The
 
 - `tests/test_digest_pin.sh` (run by `make test`, CI job `Kit test harness`) is
   **fixture-only**. Its resolver is a stub `crane` that answers the manifest's
-  own recorded digests, and it runs on a hermetic PATH with no real
-  `docker`/`crane`/`skopeo`, so its result does not depend on the host. It
+  own recorded digests, and it runs on a PATH with no real
+  `docker`/`crane`/`skopeo`, so a resolver installed on the host is not
+  reachable (a shell-exported `docker` function would bypass PATH, but the
+  test then fails — at its stub-call-count or `--strict` assertion — rather
+  than passing). It
   tests the `doctor --strict` logic (mismatch, unresolved, invalid, pending,
   cardinality floor, overrides); it never checks a pin against a registry.
 - `tests/live_digest_gate.sh` (CI job `live-digest-gate`) is the **live drift
