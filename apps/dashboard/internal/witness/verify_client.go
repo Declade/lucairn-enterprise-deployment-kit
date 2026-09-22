@@ -95,6 +95,22 @@ type VerifyResult struct {
 	CertURL           string
 	Error             string
 
+	// CompletenessDisplay is the completeness verdict word WITH the caveat
+	// that stops it being read as a detection claim (T-600 Marc lock 4).
+	// ⛔ The inspector renders this, never Completeness on its own — the bare
+	// enum was the reader-inference defect. Completeness stays on the struct
+	// as the raw machine token for callers that switch on it.
+	CompletenessDisplay string
+
+	// L3Coverage is the plain-language rendering of the certificate's L3
+	// coverage SCOPE (proto field 13) and recall EVIDENCE (proto field 14).
+	// Always populated by mapVerifyResult — including for certificates that
+	// carry neither field, which render as "unavailable", never as a clean
+	// bill of health. A zero-value L3Coverage (empty Ceiling) means no
+	// narrative was built at all, e.g. a zero-value VerifyResult on the
+	// witness-unreachable path.
+	L3Coverage L3CoverageNarrative
+
 	// CachedAt is when this snapshot was first computed. Zero when the
 	// caller is reading a fresh round-trip (Verify with a cache-miss).
 	CachedAt time.Time
@@ -320,14 +336,26 @@ func (c *Client) Invalidate(requestID string) {
 // Deriving per-claim status from these two fields is correct for v1; a
 // dedicated per-claim verdict slot in the upstream proto is a follow-up.
 func mapVerifyResult(certID string, cert *witnesspb.VeilCertificate, result *witnesspb.VerificationResult, now time.Time) VerifyResult {
+	completeness := completenessToLower(result.GetCompleteness())
 	out := VerifyResult{
 		CertID:            certID,
 		OverallVerdict:    verdictToLower(result.GetOverallVerdict()),
-		Completeness:      completenessToLower(result.GetCompleteness()),
+		Completeness:      completeness,
 		SignaturesValid:   result.GetSignaturesValid(),
 		ByokExempt:        result.GetByokExempt(),
 		IsolationVerified: result.GetIsolationVerified(),
 		CachedAt:          now,
+
+		// T-600 S3 / T-617 S3. Both getters return nil on a certificate
+		// minted before those fields existed — the COMMON case on a customer
+		// install today — and the builder renders that as "unavailable".
+		// Nothing here derives a verdict: the witness already did, and this
+		// package only puts its record into words.
+		CompletenessDisplay: L3CompletenessWithCaveat(completeness),
+		L3Coverage: BuildL3CoverageNarrative(
+			result.GetL3CoverageScope(),
+			result.GetL3CoverageEvidence(),
+		),
 	}
 	// TSA + Rekor read from the cert envelope's external attestation.
 	// Both fields are bytes/int on the wire; we render strings the UI

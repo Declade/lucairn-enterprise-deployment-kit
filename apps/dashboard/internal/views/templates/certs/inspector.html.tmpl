@@ -28,9 +28,25 @@
         {{ if .Result.ByokExempt }}<span class="lc-badge lc-badge-info" title="BYOK run — customer-supplied LLM key forwarded">BYOK_EXEMPT</span>{{ end }}
       </span>
     </div>
+    {{- /*
+      T-600 S3 / T-617 S3 — the CLAIM CEILING (PRD specs/2026-09/
+      prd-2026-09-21-t600-t617-coverage-attestation-stream.md § Slice D,
+      T-600 PRD Marc lock 4).
+
+      ⛔ NEVER render the raw .Result.Completeness token on its own again.
+      The bare enum was the reader-inference defect: "full" is true about the CLAIM
+      CHAIN and reads as "nothing was missed" about the SCAN. T-313 measured
+      a model returning parse_status="ok" over a complete coverage manifest
+      at ~19% recall. CompletenessDisplay carries the verdict word plus the
+      caveat; the coverage rows below carry the scope, the recall evidence
+      and the ceiling.
+    */ -}}
     <div class="lc-cert-summary-row">
       <span class="lc-text-muted">Completeness</span>
-      <span class="font-tabular">{{ .Result.Completeness }}</span>
+      <span>
+        {{- if .Result.CompletenessDisplay }}{{ .Result.CompletenessDisplay }}
+        {{- else }}<span class="lc-text-muted">unavailable</span>{{ end -}}
+      </span>
     </div>
     <div class="lc-cert-summary-row">
       <span class="lc-text-muted">Signatures valid</span>
@@ -65,6 +81,44 @@
     <div class="lc-cert-summary-row">
       <span class="lc-text-muted">Rekor entry</span>
       <a class="lc-link font-tabular" href="{{ .RekorURL }}" target="_blank" rel="noopener noreferrer"><code class="lc-mono">{{ .Result.RekorUUID }}</code></a>
+    </div>
+    {{ end }}
+    {{- /*
+      The L3 coverage block. Keyed on Ceiling: it is non-empty for every
+      narrative the verify client builds (including certificates that carry
+      NEITHER record — those render "unavailable"), and empty only when no
+      narrative was built at all, i.e. the witness-unreachable path where
+      .Result is the zero value and the banner above already says so.
+
+      ⛔ Absence is NOT innocence: "scope unavailable" / "recall evidence
+      unavailable" never mean "nothing was excluded" or "the scan was clean".
+      ⛔ No field keys, receipt ids, source claim ids or zone names appear
+      here — the narrative builder never produces them.
+    */ -}}
+    {{ if .Result.L3Coverage.Ceiling }}
+    <div class="lc-cert-summary-row">
+      <span class="lc-text-muted">Deep-shield coverage (scope)</span>
+      <span>{{ .Result.L3Coverage.Scope }}</span>
+    </div>
+    <div class="lc-cert-summary-row">
+      <span class="lc-text-muted">Recall evidence</span>
+      <span>{{ .Result.L3Coverage.Evidence }}</span>
+    </div>
+    {{ if .Result.L3Coverage.Composed }}
+    <div class="lc-cert-summary-row">
+      <span class="lc-text-muted">Composed completeness rule</span>
+      <span>{{ .Result.L3Coverage.Composed }}</span>
+    </div>
+    {{ end }}
+    {{ if .Result.L3Coverage.Diagnostic }}
+    <div class="lc-cert-summary-row">
+      <span class="lc-text-muted">Status of these lines</span>
+      <span>{{ .Result.L3Coverage.Diagnostic }}</span>
+    </div>
+    {{ end }}
+    <div class="lc-cert-summary-row">
+      <span class="lc-text-muted">What coverage does not say</span>
+      <span>{{ .Result.L3Coverage.Ceiling }}</span>
     </div>
     {{ end }}
     <form class="lc-cert-summary-actions" method="post" action="/certs/{{ .Cert.ID }}/reverify">

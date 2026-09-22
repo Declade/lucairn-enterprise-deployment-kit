@@ -1,6 +1,19 @@
 // Vendored from Declade/dual-sandbox-architecture:
-//   proto/veil/v1/veil.proto @ commit f24bf0d2565ff5d414c0ee13c3188675d8f67d3c
+//   proto/veil/v1/veil.proto @ commit 91941304fd3ba30779d81121c37c436a631f4089
 // + proto/common/v1/types.proto (only EntityCount inlined, for SanitizerClaim).
+//
+// PARTIAL VENDOR, BY DESIGN. This copy carries every message the dashboard
+// decodes, at the UPSTREAM field numbers. It deliberately does NOT carry
+// upstream messages the dashboard never reads (e.g. AnchorVerificationResult)
+// nor VerificationResult fields 10-12 — see the gap note inside that message.
+// Field numbers are never renumbered to close a gap; proto3 drops the unknown
+// fields on decode, which is the intended behaviour for this consumer.
+//
+// Last sync: 2026-09-22, T-600 S3 / T-617 S3 — added VerificationResult
+// fields 13 (`l3_coverage_scope`) and 14 (`l3_coverage_evidence`) plus the
+// five L3* messages they reference, verbatim from the commit above. Both are
+// UNSIGNED certificate metadata: they are outside the witness v2 (7-key) and
+// v3 (13-key) signable maps, so vendoring them changes no verification bytes.
 //
 // This file is the CANONICAL upstream `dsa.veil.v1` schema, vendored
 // verbatim so the dashboard speaks the real witness gRPC contract:
@@ -1240,9 +1253,131 @@ type VerificationResult struct {
 	// render as VERIFIED. Consumers SHOULD render a "BYOK exempt" badge
 	// alongside the verified state. Older verifiers without this field
 	// still see overall_verdict = VERIFIED and isolation_verified = true.
-	ByokExempt    bool `protobuf:"varint,9,opt,name=byok_exempt,json=byokExempt,proto3" json:"byok_exempt,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ByokExempt bool `protobuf:"varint,9,opt,name=byok_exempt,json=byokExempt,proto3" json:"byok_exempt,omitempty"`
+	// l3_coverage_scope surfaces, as DARK DIAGNOSTICS, the sanitizer's signed
+	// per-field L3 scope record for this request — which fields the deep PII
+	// shield actually covered, which were deliberately excluded and why, and
+	// which eligible field has no evidence at all (board T-617, PRD
+	// specs/2026-08/prd-2026-08-11-l3-coverage-scope-attestation.md, composition
+	// option (a) locked 2026-08-25).
+	//
+	// ⛔ SCOPE, NEVER RECALL — read this before rendering anything.
+	// `granted = true` means every field the zone policy said L3 should scan WAS
+	// scanned (or is covered by a named receipt from the claim that scanned it).
+	// It says NOTHING about whether the scanner FOUND the personal data inside
+	// those bytes; that is the recall half (board T-600) and it is NOT
+	// represented anywhere in this message. Coverage is NECESSARY for a green
+	// completeness claim and can never be SUFFICIENT
+	// (services/sanitizer/l3_coverage.py:13-14). A consumer that renders a
+	// granted scope record as "protected", "complete protection", "all PII
+	// removed" or any green badge is making the exact overclaim this product
+	// exists to prevent.
+	//
+	// ⛔ DARK. Nothing in the witness branches on this message. It moves no
+	// certificate from one verdict to another, it is not an input to
+	// `completeness` or `overall_verdict`, and `record_status` = "absent" on a
+	// certificate whose verdict says PARTIAL explains nothing about that PARTIAL.
+	// `L3CoverageScope.drives_claim` reports whether the SANITIZER deployment
+	// that minted the claim let the derivation decide its own `layers_active`
+	// roster — it is false during the dark period, and a granted scope record
+	// sitting next to an L3-less `layers_active` is the EXPECTED shape then,
+	// not a contradiction.
+	//
+	// ⛔ ABSENCE IS NOT INNOCENCE. A nil message, or `record_status` = "" /
+	// "absent" / "malformed" / "unsupported_derivation", means SCOPE UNAVAILABLE.
+	// It must be rendered as "scope unavailable" and NEVER as "nothing was
+	// excluded", "everything was covered", or any other statement about what
+	// happened. Every certificate minted before T-617 is in exactly this state.
+	//
+	// PROVENANCE. Derived by the witness from the `l3_coverage_scope` key inside
+	// the dsa-sanitizer PII_SANITIZED claim's SIGNED canonical_payload — the same
+	// signature-bound read path as `upstream_auth_mode`. It never leaves the
+	// signed bytes, so a post-signing proto mutation cannot reach it and it needs
+	// no VerifyTypedPayload counterpart of its own. (An earlier draft called this
+	// "stronger than byok_exempt". That overstated it: byok_exempt does read an
+	// unsigned typed oneof, but the /verify RPC cross-binds every typed oneof
+	// back to the signed payload via verifier.VerifyTypedPayload, so on that path
+	// the gap is already closed. The honest difference is that this field needs
+	// no such cross-bind, not that byok_exempt lacks one.)
+	//
+	// ONE shared derivation serves BOTH the seal-time assembler and the on-demand
+	// /verify RPC, so the two paths cannot report different scope records for the
+	// same claim chain (the T-18 discipline). ⚑ That includes chains that do NOT
+	// authenticate: the witness deliberately seals FAILED certificates, so the
+	// seal path gates the record on signature validity exactly as /verify does
+	// and both report "not_checked". A successful assembly is not an
+	// authenticated chain.
+	//
+	// UNSIGNED METADATA at the CERTIFICATE level. It is NOT in the witness v2
+	// signable map (locked at 7 keys — TestVeilCertificateSignableUnchanged) and
+	// NOT in the frozen 13-key v3 signable. ⚠️ `byok_exempt` is the precedent
+	// for the V2 half ONLY: byok_exempt WAS promoted into v3, and this field is
+	// outside BOTH maps. Adding it here changes no signable byte in either
+	// version, so every SDK verifier in the wild keeps verifying unchanged;
+	// pinned from both ends by the frozen v2 + v3 golden-byte tests
+	// (TestSignableV2GoldenBytesFrozen / TestSignableV3GoldenBytesFrozen) and by
+	// TestVeilCertificateSignable_L3CoverageScopeNotInSignable. A future
+	// promotion into a signable is a v4 decision, not a code default.
+	//
+	// Tamper-evidence for the CONTENT is unchanged and INDIRECT: the record lives
+	// inside the sanitizer-signed canonical_payload, which is bound into both
+	// signables via `claim_ids[]`. Editing this unsigned copy on a certificate
+	// body changes nothing a verifier trusts — and the /verify RPC recomputes the
+	// message from the signed claim rather than echoing the submitted one.
+	L3CoverageScope *L3CoverageScope `protobuf:"bytes,13,opt,name=l3_coverage_scope,json=l3CoverageScope,proto3" json:"l3_coverage_scope,omitempty"`
+	// l3_coverage_evidence is the RECALL half of the locked completeness
+	// composition (T-600), and the carrier for the COMPOSED verdict that joins it
+	// to the SCOPE half above.
+	//
+	// WHY BOTH HALVES EXIST. `l3_coverage_scope` answers "which fields did the
+	// deep shield RUN on". It cannot answer "did it FIND what was there" — and
+	// T-313 MEASURED a model returning parse_status="ok" over a COMPLETE coverage
+	// manifest at ~19% recall. A verdict built on scope alone certifies that run
+	// green. This message carries the per-request planted-canary recall evidence
+	// the sanitizer signs (services/sanitizer/l3_evidence_probe.py) plus the
+	// composed rule Marc locked on 2026-08-25:
+	//
+	//	green ⟺ (every ELIGIBLE field is COVERED)          ← l3_coverage_scope
+	//	      ∧ (every COVERED field's evidence PASSED)    ← this message
+	//	      ∧ (exclusions and receipts are NAMED)        ← C3
+	//
+	// ⛔ DARK. `drives_verdict` is hard-staged FALSE in this build. Nothing in the
+	// witness branches on `composed_green`: it is computed AFTER the verdict, it
+	// is not an input to `completeness` or `overall_verdict`, and deleting every
+	// line that produces it would change no certificate's verdict. The flip is
+	// Marc-gated and is a separate, rehearsed change.
+	//
+	// ⛔ NON-COVERAGE — no reader surface may imply otherwise. A `verified`
+	// rollup means the recall CHECK ran on every field that carried one and every
+	// planted canary came back. It does NOT mean the scanner found everything: a
+	// model that returns all K canaries and misses the real entities between them
+	// passes. Evidence raises confidence; it never proves recall. The
+	// claim-ceiling wording on the reader surfaces is the mitigation, not this
+	// field.
+	//
+	// ⛔ ABSENCE IS NOT INNOCENCE, same as the scope record. A nil message, or a
+	// `record_status` other than "present", means RECALL EVIDENCE UNAVAILABLE —
+	// never "the scan was clean". Every certificate minted before T-600, and
+	// every turn on a deployment with the probe off (the shipped default), is in
+	// exactly this state.
+	//
+	// PROVENANCE. Derived by the witness from the `l3_coverage_evidence` key
+	// inside the dsa-sanitizer PII_SANITIZED claim's SIGNED canonical_payload —
+	// the same signature-bound read path as `l3_coverage_scope`. ONE shared
+	// derivation (verifier.L3CoverageEvidenceFromClaims) serves BOTH the
+	// seal-time assembler and the on-demand /verify RPC, and both gate it on the
+	// chain having authenticated, so the two paths cannot report different
+	// evidence or a different composed verdict for the same claim chain (T-18).
+	//
+	// UNSIGNED METADATA at the CERTIFICATE level, outside BOTH signable maps —
+	// the 7-key v2 map (TestVeilCertificateSignableUnchanged) and the frozen
+	// 13-key v3 map. Adding it changes no signable byte in either version, so
+	// every SDK verifier in the wild keeps verifying unchanged; pinned by the
+	// frozen golden-byte tests and by
+	// TestVeilCertificateSignable_L3CoverageEvidenceNotInSignable.
+	L3CoverageEvidence *L3CoverageEvidence `protobuf:"bytes,14,opt,name=l3_coverage_evidence,json=l3CoverageEvidence,proto3" json:"l3_coverage_evidence,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *VerificationResult) Reset() {
@@ -1338,6 +1473,830 @@ func (x *VerificationResult) GetByokExempt() bool {
 	return false
 }
 
+func (x *VerificationResult) GetL3CoverageScope() *L3CoverageScope {
+	if x != nil {
+		return x.L3CoverageScope
+	}
+	return nil
+}
+
+func (x *VerificationResult) GetL3CoverageEvidence() *L3CoverageEvidence {
+	if x != nil {
+		return x.L3CoverageEvidence
+	}
+	return nil
+}
+
+// L3CoverageEvidence is the witness's typed rendering of the sanitizer's signed
+// `l3_coverage_evidence` claim payload (board T-600), plus the COMPOSED verdict
+// that joins it to L3CoverageScope. See
+// VerificationResult.l3_coverage_evidence for the normative scope/recall
+// boundary — everything said there binds every consumer of this message.
+//
+// THE PRODUCER'S RECORD is a per-field map: each field the L3 phase touched
+// carries its own verdict (passed / failed / absent-with-reason) plus the
+// canary counts behind it. This message reproduces that map verbatim in
+// `fields`, rolls it up into `rollup`, and states the composed result in
+// `composed_green` / `composed_reason`.
+type L3CoverageEvidence struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// record_status says whether an evidence record could be read AT ALL. Closed
+	// vocabulary, five values plus the empty string — the SAME vocabulary and the
+	// same meanings as L3CoverageScope.record_status, pinned across the two by
+	// TestL3Evidence_StatusVocabularyMatchesTheScopeRecord.
+	//
+	//	"present"                — a well-formed record was read from the signed
+	//	                           sanitizer claim and is reproduced below.
+	//	"absent"                 — no evidence record was carried: the chain has
+	//	                           no dsa-sanitizer claim, that claim carries no
+	//	                           canonical payload, or the payload has no
+	//	                           `l3_coverage_evidence` key. That is EVERY
+	//	                           pre-T-600 sanitizer AND every deployment
+	//	                           running the probe in its shipped `off` mode.
+	//	                           NOT "the recall check passed".
+	//	"malformed"              — a record was carried and the witness REFUSED
+	//	                           it: unparseable payload, wrong shape, an
+	//	                           out-of-vocabulary verdict or reason, entries
+	//	                           disagreeing on the derivation version, or a
+	//	                           per-field `drives_claim` of true (the sanitizer
+	//	                           asserts it false; verdict-driving is the
+	//	                           WITNESS-side flip). Also every count shape the
+	//	                           probe cannot produce: more recovered than
+	//	                           planted, more probed windows than windows, a
+	//	                           `passed` with nothing planted or probed, a
+	//	                           `passed` leaving a window unprobed, and a
+	//	                           `passed` recovering fewer canaries than it
+	//	                           probed windows (impossible under every
+	//	                           threshold the producer admits, since the
+	//	                           threshold is constrained to [1, k]).
+	//	                           Refused WHOLE rather than in part — a half-read
+	//	                           evidence map reads as a clean bill of health
+	//	                           for the fields that fell off it.
+	//
+	//	                           ⚑ EVERY REFUSAL IS A FUNCTION OF THE RECORD,
+	//	                           not of map iteration order: entries are walked
+	//	                           in sorted key order and the derivation-version
+	//	                           decision is taken over the SET of versions
+	//	                           present, so the same bytes always yield the
+	//	                           same status on both the seal and /verify paths.
+	//	"unsupported_derivation" — a well-formed record produced by a probe
+	//	                           derivation VERSION this witness build does not
+	//	                           know. What "recovered" MEANS is defined by that
+	//	                           version, so a witness that does not know the
+	//	                           rule cannot honestly reproduce a record built
+	//	                           under it. Distinct from "malformed" so an
+	//	                           operator can tell a deploy-ordering gap
+	//	                           (sanitizer ahead of witness) from a contract
+	//	                           violation.
+	//	"not_checked"            — the record was never examined, because the
+	//	                           chain's claim signatures did not verify, or
+	//	                           (on /verify only) because the chain splices
+	//	                           claims from different requests. The witness has
+	//	                           no opinion about the recall evidence of a chain
+	//	                           it could not authenticate. Deliberately NOT
+	//	                           collapsed into "absent".
+	//	""                       — unknown / legacy: minted or re-verified by a
+	//	                           witness build that predates T-600.
+	RecordStatus string `protobuf:"bytes,1,opt,name=record_status,json=recordStatus,proto3" json:"record_status,omitempty"`
+	// derivation_version identifies the PROBE RULE that produced this record
+	// (services/sanitizer/l3_evidence_probe.py L3_EVIDENCE_DERIVATION_VERSION).
+	// It is part of the sanitizer's cache-key fingerprint, so a bump
+	// deterministically orphans verdicts minted under the previous meaning of
+	// "recovered". Every per-field entry must agree on it; one that does not
+	// makes the whole record "malformed".
+	DerivationVersion string `protobuf:"bytes,2,opt,name=derivation_version,json=derivationVersion,proto3" json:"derivation_version,omitempty"`
+	// drives_verdict reports whether THIS WITNESS let the composed rule decide
+	// `completeness` / `overall_verdict`.
+	//
+	// ⛔ IT IS FALSE IN THIS BUILD, structurally — the composed verdict is
+	// computed after every verdict input is already final, and no code path reads
+	// it. A reader must check this field before treating `composed_green` as
+	// load-bearing: while it is false, a `composed_green` of true next to a
+	// PARTIAL `overall_verdict` is the designed shape of the dark period, not an
+	// inconsistency to reconcile. Pinned by
+	// TestL3Evidence_DrivesVerdictStaysFalse.
+	//
+	// It is NOT the same flag as L3CoverageScope.drives_claim: that one reports
+	// what the SANITIZER deployment did with its own scope derivation. This one
+	// reports what the WITNESS did with the composition. Both are false today and
+	// they flip in different workstreams.
+	DrivesVerdict bool `protobuf:"varint,3,opt,name=drives_verdict,json=drivesVerdict,proto3" json:"drives_verdict,omitempty"`
+	// rollup is the per-REQUEST evidence verdict, closed vocabulary. It describes
+	// the evidence only — not the composition (see composed_green):
+	//
+	//	"failed"     — at least one field's recall check MISSED its threshold.
+	//	               Positive evidence of a recall gap; it outranks everything,
+	//	               because a measured miss must not be averaged away against
+	//	               fields that were never probed.
+	//	"absent"     — no field carried evidence at all (the probe was off, or L3
+	//	               ran on nothing). Evidence that does not exist is not
+	//	               evidence of success.
+	//	"unverified" — some fields passed and at least one carries no evidence
+	//	               (below the probe's measured window floor, served from the
+	//	               L3 verdict cache, or no L3 window at all). A partially
+	//	               evidenced request can never read "verified".
+	//	"verified"   — every field carrying an evidence entry PASSED, and none is
+	//	               absent. Still only "the recall check ran and came back
+	//	               clean" — see the NON-COVERAGE note above.
+	//	""           — record_status is not "present"; the rollup says nothing.
+	Rollup string `protobuf:"bytes,4,opt,name=rollup,proto3" json:"rollup,omitempty"`
+	// composed_green is the output of the LOCKED composition rule (see
+	// VerificationResult.l3_coverage_evidence). It is TRUE only when the scope
+	// record GRANTED, every covered field carries a PASSED evidence entry, and
+	// the exclusions and receipts are named.
+	//
+	// ⛔ DARK: it drives nothing while drives_verdict is false. It is published so
+	// the LOG window can MEASURE how often the composed rule would grant, before
+	// anyone is asked to flip it.
+	ComposedGreen bool `protobuf:"varint,5,opt,name=composed_green,json=composedGreen,proto3" json:"composed_green,omitempty"`
+	// composed_reason is the closed-vocabulary explanation of composed_green:
+	//
+	//	"scope_and_recall_satisfied"          — the ONLY granting value.
+	//	"scope_unavailable"                   — the scope record is missing or
+	//	                                        was refused; the first conjunct
+	//	                                        cannot be evaluated.
+	//	"evidence_unavailable"                — the evidence record is missing or
+	//	                                        was refused (every pre-T-600
+	//	                                        sanitizer, and every probe-off
+	//	                                        deployment).
+	//	"evidence_failed"                     — a field's recall check MISSED.
+	//	                                        Checked first: a measured miss is
+	//	                                        the most informative thing a
+	//	                                        reader can be told.
+	//	"scope_not_granted"                   — the scope record itself denied
+	//	                                        (an eligible field was not
+	//	                                        covered, an unattributed
+	//	                                        degradation, or nothing was
+	//	                                        eligible). L3CoverageScope.reason
+	//	                                        says which.
+	//	"evidence_absent_for_covered_field"   — a field the scope record says was
+	//	                                        COVERED BY A FRESH SCAN carries no
+	//	                                        passing evidence entry. The
+	//	                                        positive-grant construction (C7):
+	//	                                        green is built from explicit
+	//	                                        per-field grants, never from the
+	//	                                        absence of a recorded failure.
+	//	"evidence_on_excluded_field"           — the two records DISAGREE about
+	//	                                        what class a field is in: the
+	//	                                        scope record names it as
+	//	                                        policy-EXCLUDED while the evidence
+	//	                                        record carries a non-absent
+	//	                                        verdict for it, i.e. evidence of a
+	//	                                        scan on a field the policy says
+	//	                                        was never scanned. Either the
+	//	                                        exclusion ledger is wrong (a C3
+	//	                                        overclaim) or the evidence is
+	//	                                        fabricated; the composition
+	//	                                        refuses rather than picking a
+	//	                                        winner. An `absent` entry on an
+	//	                                        excluded field asserts nothing
+	//	                                        about a scan and is tolerated.
+	//	"receipt_covered_evidence_not_in_chain" — a field was covered by a NAMED
+	//	                                        RECEIPT from an earlier claim. No
+	//	                                        L3 inference ran on it this turn,
+	//	                                        so this certificate carries no
+	//	                                        recall evidence for those bytes —
+	//	                                        the evidence lives on the source
+	//	                                        claim. ⚑ OPEN QUESTION FOR THE
+	//	                                        FLIP, deliberately surfaced rather
+	//	                                        than assumed away: under the rule
+	//	                                        as locked, a cache-replayed turn
+	//	                                        cannot compose green. The LOG
+	//	                                        window measures how often this
+	//	                                        fires; whether receipt-carried
+	//	                                        evidence should be admitted is a
+	//	                                        decision for that report, not for
+	//	                                        this code.
+	//	""                                    — nothing was composed.
+	ComposedReason string `protobuf:"bytes,6,opt,name=composed_reason,json=composedReason,proto3" json:"composed_reason,omitempty"`
+	// fields reproduces the producer's per-field evidence map, sorted by
+	// field_key, one entry per field. Empty is meaningful ONLY when record_status
+	// = "present": it then means the probe recorded no field this turn.
+	Fields []*L3FieldEvidence `protobuf:"bytes,7,rep,name=fields,proto3" json:"fields,omitempty"`
+	// canaries_planted / canaries_recovered are the request-level sums the
+	// WITNESS computes over `fields`. The producer emits no request-level total —
+	// its record is a per-field map — so these are a convenience for readers, not
+	// a second source of truth, and they can never disagree with `fields`.
+	//
+	// ⛔ THEY ARE NOT A SCORE. There is no threshold on these numbers and none
+	// may be introduced: the verdict is per-field and categorical (T-617 C4 — no
+	// threshold verdicts). They exist so an operator can see the probe's scale.
+	CanariesPlanted   uint32 `protobuf:"varint,8,opt,name=canaries_planted,json=canariesPlanted,proto3" json:"canaries_planted,omitempty"`
+	CanariesRecovered uint32 `protobuf:"varint,9,opt,name=canaries_recovered,json=canariesRecovered,proto3" json:"canaries_recovered,omitempty"`
+	// fields_passed / fields_failed / fields_absent count the per-field verdicts.
+	// Computed by the witness from `fields`, so they sum to len(fields) by
+	// construction — same standing as the canary sums above.
+	FieldsPassed  uint32 `protobuf:"varint,10,opt,name=fields_passed,json=fieldsPassed,proto3" json:"fields_passed,omitempty"`
+	FieldsFailed  uint32 `protobuf:"varint,11,opt,name=fields_failed,json=fieldsFailed,proto3" json:"fields_failed,omitempty"`
+	FieldsAbsent  uint32 `protobuf:"varint,12,opt,name=fields_absent,json=fieldsAbsent,proto3" json:"fields_absent,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *L3CoverageEvidence) Reset() {
+	*x = L3CoverageEvidence{}
+	mi := &file_witness_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *L3CoverageEvidence) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*L3CoverageEvidence) ProtoMessage() {}
+
+func (x *L3CoverageEvidence) ProtoReflect() protoreflect.Message {
+	mi := &file_witness_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use L3CoverageEvidence.ProtoReflect.Descriptor instead.
+func (*L3CoverageEvidence) Descriptor() ([]byte, []int) {
+	return file_witness_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *L3CoverageEvidence) GetRecordStatus() string {
+	if x != nil {
+		return x.RecordStatus
+	}
+	return ""
+}
+
+func (x *L3CoverageEvidence) GetDerivationVersion() string {
+	if x != nil {
+		return x.DerivationVersion
+	}
+	return ""
+}
+
+func (x *L3CoverageEvidence) GetDrivesVerdict() bool {
+	if x != nil {
+		return x.DrivesVerdict
+	}
+	return false
+}
+
+func (x *L3CoverageEvidence) GetRollup() string {
+	if x != nil {
+		return x.Rollup
+	}
+	return ""
+}
+
+func (x *L3CoverageEvidence) GetComposedGreen() bool {
+	if x != nil {
+		return x.ComposedGreen
+	}
+	return false
+}
+
+func (x *L3CoverageEvidence) GetComposedReason() string {
+	if x != nil {
+		return x.ComposedReason
+	}
+	return ""
+}
+
+func (x *L3CoverageEvidence) GetFields() []*L3FieldEvidence {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
+}
+
+func (x *L3CoverageEvidence) GetCanariesPlanted() uint32 {
+	if x != nil {
+		return x.CanariesPlanted
+	}
+	return 0
+}
+
+func (x *L3CoverageEvidence) GetCanariesRecovered() uint32 {
+	if x != nil {
+		return x.CanariesRecovered
+	}
+	return 0
+}
+
+func (x *L3CoverageEvidence) GetFieldsPassed() uint32 {
+	if x != nil {
+		return x.FieldsPassed
+	}
+	return 0
+}
+
+func (x *L3CoverageEvidence) GetFieldsFailed() uint32 {
+	if x != nil {
+		return x.FieldsFailed
+	}
+	return 0
+}
+
+func (x *L3CoverageEvidence) GetFieldsAbsent() uint32 {
+	if x != nil {
+		return x.FieldsAbsent
+	}
+	return 0
+}
+
+// L3FieldEvidence is one field's planted-canary recall result, reproduced from
+// the sanitizer's signed record.
+type L3FieldEvidence struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// field_key is the STRUCTURAL path the sanitizer assigned the field
+	// (e.g. "messages[3].content"). It carries no field text, no offsets and no
+	// digests; it is reproduced verbatim from the signed claim.
+	FieldKey string `protobuf:"bytes,1,opt,name=field_key,json=fieldKey,proto3" json:"field_key,omitempty"`
+	// verdict is the per-field recall result, closed vocabulary — the sanitizer's
+	// own lattice (services/sanitizer/l3_evidence_probe.py EVIDENCE_VERDICTS):
+	//
+	//	"passed" — every probed window met its threshold AND no window went
+	//	           unprobed.
+	//	"failed" — a probed window MISSED its threshold.
+	//	"absent" — no window carried a probe. `reason` says why.
+	Verdict string `protobuf:"bytes,2,opt,name=verdict,proto3" json:"verdict,omitempty"`
+	// reason names WHY a field carries no evidence. Non-empty only when
+	// verdict = "absent"; closed vocabulary mirroring the producer's
+	// ABSENT_REASONS:
+	//
+	//	"probe_off"                        — the probe is not armed on this
+	//	                                     deployment (the shipped default).
+	//	"no_l3_window"                     — L3 ran no window on this field.
+	//	"window_below_probe_floor"         — the window is shorter than the size
+	//	                                     the probe's overhead was measured
+	//	                                     at, so it is not probed rather than
+	//	                                     probed into an unmeasured budget.
+	//	"window_served_from_verdict_cache" — no inference ran, so there is no
+	//	                                     recall evidence to record.
+	//	"output_headroom_clipped"          — the model's output budget could not
+	//	                                     hold the probe's measured headroom
+	//	                                     on this window; probing anyway would
+	//	                                     have starved the real scan.
+	//	"no_prompt_assembly_seam"          — the code path that scanned this
+	//	                                     window has no seam at which a canary
+	//	                                     could be planted.
+	Reason string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	// canaries_planted / canaries_recovered are this field's totals across its
+	// leaf windows. ⛔ NOT A SCORE — see L3CoverageEvidence.canaries_planted.
+	CanariesPlanted   uint32 `protobuf:"varint,4,opt,name=canaries_planted,json=canariesPlanted,proto3" json:"canaries_planted,omitempty"`
+	CanariesRecovered uint32 `protobuf:"varint,5,opt,name=canaries_recovered,json=canariesRecovered,proto3" json:"canaries_recovered,omitempty"`
+	// windows is the number of L3 leaf windows recorded for this field;
+	// probed_windows is how many of them carried canaries. probed_windows <
+	// windows is exactly the condition that forces verdict = "absent" rather than
+	// "passed", and both are published so a reader can see that for themselves.
+	Windows       uint32 `protobuf:"varint,6,opt,name=windows,proto3" json:"windows,omitempty"`
+	ProbedWindows uint32 `protobuf:"varint,7,opt,name=probed_windows,json=probedWindows,proto3" json:"probed_windows,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *L3FieldEvidence) Reset() {
+	*x = L3FieldEvidence{}
+	mi := &file_witness_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *L3FieldEvidence) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*L3FieldEvidence) ProtoMessage() {}
+
+func (x *L3FieldEvidence) ProtoReflect() protoreflect.Message {
+	mi := &file_witness_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use L3FieldEvidence.ProtoReflect.Descriptor instead.
+func (*L3FieldEvidence) Descriptor() ([]byte, []int) {
+	return file_witness_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *L3FieldEvidence) GetFieldKey() string {
+	if x != nil {
+		return x.FieldKey
+	}
+	return ""
+}
+
+func (x *L3FieldEvidence) GetVerdict() string {
+	if x != nil {
+		return x.Verdict
+	}
+	return ""
+}
+
+func (x *L3FieldEvidence) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *L3FieldEvidence) GetCanariesPlanted() uint32 {
+	if x != nil {
+		return x.CanariesPlanted
+	}
+	return 0
+}
+
+func (x *L3FieldEvidence) GetCanariesRecovered() uint32 {
+	if x != nil {
+		return x.CanariesRecovered
+	}
+	return 0
+}
+
+func (x *L3FieldEvidence) GetWindows() uint32 {
+	if x != nil {
+		return x.Windows
+	}
+	return 0
+}
+
+func (x *L3FieldEvidence) GetProbedWindows() uint32 {
+	if x != nil {
+		return x.ProbedWindows
+	}
+	return 0
+}
+
+// L3CoverageScope is the witness's typed rendering of the sanitizer's signed
+// `l3_coverage_scope` claim payload (board T-617). See
+// VerificationResult.l3_coverage_scope for the normative scope/recall boundary
+// — everything said there binds every consumer of this message.
+//
+// FOUR EVIDENCE CLASSES, kept distinct on purpose:
+//   - FRESH SCAN            — a `covered` entry with via = "scan".
+//   - RECEIPT-BACKED REUSE  — a `covered` entry with via = "receipt", naming
+//     the receipt_id and the source_claim_id of the
+//     claim whose scan actually covered those bytes.
+//   - NAMED EXCLUSION       — an `excluded` entry, with its zone and reason.
+//   - MISSING / FAILED      — an `eligible_not_covered` entry (an eligible
+//     field with no evidence at all), and/or a denial
+//     `reason` such as "unattributed_degrade".
+//
+// Collapsing any two of them loses the distinction an auditor asks about.
+type L3CoverageScope struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// record_status says whether a scope record could be read AT ALL. Closed
+	// vocabulary, five values plus the empty string. Only "present" means the
+	// remaining fields carry meaning; every other value means SCOPE UNAVAILABLE
+	// and leaves every other field at its proto3 default.
+	//
+	//	"present"                — a well-formed record was read from the signed
+	//	                           sanitizer claim and is reproduced below.
+	//	"absent"                 — no scope record was carried. The chain has no
+	//	                           dsa-sanitizer claim, that claim carries no
+	//	                           canonical payload, or the payload has no
+	//	                           `l3_coverage_scope` key (every pre-T-617
+	//	                           sanitizer, and every turn on which L3 was not
+	//	                           configured at all). NOT "nothing was excluded".
+	//	"malformed"              — a record was carried and the witness REFUSED
+	//	                           it: unparseable payload, wrong shape, an
+	//	                           out-of-vocabulary token, a receipt missing its
+	//	                           receipt_id or source_claim_id, or an internal
+	//	                           inconsistency (granted alongside a non-empty
+	//	                           eligible_not_covered; counts that do not add
+	//	                           up; a field in both covered and excluded).
+	//	                           The record is dropped WHOLE rather than
+	//	                           rendered in part — a partially-read exclusion
+	//	                           list is precisely the C3 overclaim ("a green
+	//	                           claim must name what it excluded").
+	//	"unsupported_derivation" — a well-formed record produced by a derivation
+	//	                           VERSION this witness build does not know. The
+	//	                           rule that produced it is unknown here, so the
+	//	                           record is not reproduced. Distinct from
+	//	                           "malformed" so an operator can tell a
+	//	                           deploy-ordering gap (sanitizer ahead of
+	//	                           witness) from a contract violation.
+	//	"not_checked"            — the record was never examined, because the
+	//	                           chain's claim signatures did not verify (bad
+	//	                           signature, canonical-payload mismatch, unknown
+	//	                           service key, typed-payload mismatch). The
+	//	                           witness has no opinion about the scope of a
+	//	                           chain it could not authenticate. Emitted by
+	//	                           BOTH paths — the witness deliberately seals
+	//	                           FAILED certificates, so the seal path gates on
+	//	                           signature validity too. Deliberately NOT
+	//	                           collapsed into "absent": a record that was not
+	//	                           read must not read as a record that was not
+	//	                           there.
+	//	""                       — unknown / legacy: minted or re-verified by a
+	//	                           witness build that predates T-617. A witness
+	//	                           at or after T-617 NEVER emits "" — every
+	//	                           result carries one of the five values above.
+	RecordStatus string `protobuf:"bytes,1,opt,name=record_status,json=recordStatus,proto3" json:"record_status,omitempty"`
+	// derivation_version identifies the RULE that produced this record
+	// (services/sanitizer/l3_claim_scope.py L3_CLAIM_DERIVATION_VERSION). It is
+	// part of the sanitizer's cache-key fingerprint, so a bump deterministically
+	// orphans receipts minted under the previous meaning of "covered".
+	DerivationVersion string `protobuf:"bytes,2,opt,name=derivation_version,json=derivationVersion,proto3" json:"derivation_version,omitempty"`
+	// drives_claim reports whether the SANITIZER deployment that minted this
+	// record let the derivation decide the request-level `llm_pii_scan` claim
+	// (L3_CLAIM_DERIVATION=scope), rather than the pre-T-617 request-wide
+	// absence-of-degradation rule (legacy).
+	//
+	// FALSE IS THE EXPECTED VALUE TODAY. While it is false, a granted record
+	// next to a `layers_active` roster with no "llm_pii_scan" is the designed
+	// shape of the dark period, not an inconsistency to reconcile.
+	DrivesClaim bool `protobuf:"varint,3,opt,name=drives_claim,json=drivesClaim,proto3" json:"drives_claim,omitempty"`
+	// granted is the scope verdict: every ELIGIBLE field is COVERED, and the
+	// exclusions are named. ⛔ NOT a protection claim — see the message header.
+	Granted bool `protobuf:"varint,4,opt,name=granted,proto3" json:"granted,omitempty"`
+	// reason is the closed-vocabulary explanation of `granted`:
+	//
+	//	"all_eligible_fields_covered" (the only granting value)
+	//	"no_eligible_field"           — L3 was eligible for nothing this turn
+	//	"eligible_field_not_covered"  — see eligible_not_covered
+	//	"unattributed_degrade"        — an L3 degradation named no field, so it
+	//	                                poisons the whole request rather than
+	//	                                being narrowed to a field nobody named.
+	Reason string `protobuf:"bytes,5,opt,name=reason,proto3" json:"reason,omitempty"`
+	// eligible_count is the number of fields the zone policy made eligible for
+	// L3 on this request. It equals len(covered) + len(eligible_not_covered);
+	// a record where it does not is rejected as "malformed".
+	EligibleCount uint32 `protobuf:"varint,6,opt,name=eligible_count,json=eligibleCount,proto3" json:"eligible_count,omitempty"`
+	// covered names every eligible field that HAS evidence, and which kind.
+	// Sorted by field_key; one entry per field.
+	Covered []*L3CoveredField `protobuf:"bytes,7,rep,name=covered,proto3" json:"covered,omitempty"`
+	// eligible_not_covered names every eligible field with NO evidence at all —
+	// the MISSING/FAILED class. Non-empty is incompatible with granted = true.
+	// Sorted.
+	EligibleNotCovered []string `protobuf:"bytes,8,rep,name=eligible_not_covered,json=eligibleNotCovered,proto3" json:"eligible_not_covered,omitempty"`
+	// excluded names every field the policy kept OUT of L3, with its zone and
+	// reason (C3). Sorted by field_key. An empty list means "nothing was
+	// excluded" ONLY when record_status = "present".
+	Excluded      []*L3ExcludedField `protobuf:"bytes,9,rep,name=excluded,proto3" json:"excluded,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *L3CoverageScope) Reset() {
+	*x = L3CoverageScope{}
+	mi := &file_witness_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *L3CoverageScope) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*L3CoverageScope) ProtoMessage() {}
+
+func (x *L3CoverageScope) ProtoReflect() protoreflect.Message {
+	mi := &file_witness_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use L3CoverageScope.ProtoReflect.Descriptor instead.
+func (*L3CoverageScope) Descriptor() ([]byte, []int) {
+	return file_witness_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *L3CoverageScope) GetRecordStatus() string {
+	if x != nil {
+		return x.RecordStatus
+	}
+	return ""
+}
+
+func (x *L3CoverageScope) GetDerivationVersion() string {
+	if x != nil {
+		return x.DerivationVersion
+	}
+	return ""
+}
+
+func (x *L3CoverageScope) GetDrivesClaim() bool {
+	if x != nil {
+		return x.DrivesClaim
+	}
+	return false
+}
+
+func (x *L3CoverageScope) GetGranted() bool {
+	if x != nil {
+		return x.Granted
+	}
+	return false
+}
+
+func (x *L3CoverageScope) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *L3CoverageScope) GetEligibleCount() uint32 {
+	if x != nil {
+		return x.EligibleCount
+	}
+	return 0
+}
+
+func (x *L3CoverageScope) GetCovered() []*L3CoveredField {
+	if x != nil {
+		return x.Covered
+	}
+	return nil
+}
+
+func (x *L3CoverageScope) GetEligibleNotCovered() []string {
+	if x != nil {
+		return x.EligibleNotCovered
+	}
+	return nil
+}
+
+func (x *L3CoverageScope) GetExcluded() []*L3ExcludedField {
+	if x != nil {
+		return x.Excluded
+	}
+	return nil
+}
+
+// L3CoveredField is one eligible field that has L3 evidence.
+type L3CoveredField struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// field_key is the STRUCTURAL path the sanitizer assigned the field
+	// (e.g. "messages[3].content", "__vo_leaf_7"). It carries no field text, no
+	// offsets and no digests; it is reproduced verbatim from the signed claim.
+	FieldKey string `protobuf:"bytes,1,opt,name=field_key,json=fieldKey,proto3" json:"field_key,omitempty"`
+	// via is the evidence class, closed vocabulary:
+	//
+	//	"scan"    — THIS request's L3 scan covered the field (a fresh scan).
+	//	"receipt" — an EARLIER claim's scan covered these exact bytes; both
+	//	            receipt_id and source_claim_id below are then non-empty.
+	Via string `protobuf:"bytes,2,opt,name=via,proto3" json:"via,omitempty"`
+	// receipt_id is the truncated HMAC receipt naming the cached coverage.
+	// Empty iff via = "scan". A "receipt" entry missing it is REFUSED (the whole
+	// record becomes "malformed") — a receipt that points at nothing is the bare
+	// "some earlier scan covered these bytes" this category exists to replace.
+	ReceiptId string `protobuf:"bytes,3,opt,name=receipt_id,json=receiptId,proto3" json:"receipt_id,omitempty"`
+	// source_claim_id is the claim whose scan actually covered these bytes.
+	// Empty iff via = "scan"; same refusal rule as receipt_id.
+	SourceClaimId string `protobuf:"bytes,4,opt,name=source_claim_id,json=sourceClaimId,proto3" json:"source_claim_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *L3CoveredField) Reset() {
+	*x = L3CoveredField{}
+	mi := &file_witness_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *L3CoveredField) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*L3CoveredField) ProtoMessage() {}
+
+func (x *L3CoveredField) ProtoReflect() protoreflect.Message {
+	mi := &file_witness_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use L3CoveredField.ProtoReflect.Descriptor instead.
+func (*L3CoveredField) Descriptor() ([]byte, []int) {
+	return file_witness_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *L3CoveredField) GetFieldKey() string {
+	if x != nil {
+		return x.FieldKey
+	}
+	return ""
+}
+
+func (x *L3CoveredField) GetVia() string {
+	if x != nil {
+		return x.Via
+	}
+	return ""
+}
+
+func (x *L3CoveredField) GetReceiptId() string {
+	if x != nil {
+		return x.ReceiptId
+	}
+	return ""
+}
+
+func (x *L3CoveredField) GetSourceClaimId() string {
+	if x != nil {
+		return x.SourceClaimId
+	}
+	return ""
+}
+
+// L3ExcludedField is one field the zone policy kept out of L3, named with its
+// reason (C3: a green claim that hides its exclusions is an overclaim).
+type L3ExcludedField struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// field_key — see L3CoveredField.field_key.
+	FieldKey string `protobuf:"bytes,1,opt,name=field_key,json=fieldKey,proto3" json:"field_key,omitempty"`
+	// zone is the redaction policy's zone wire-name for the field. OPEN
+	// vocabulary by design: an operator's policy document may define zones this
+	// build has never heard of, and refusing them would misreport a correctly
+	// configured deployment. Required to be non-empty.
+	Zone string `protobuf:"bytes,2,opt,name=zone,proto3" json:"zone,omitempty"`
+	// reason is the closed-vocabulary exclusion cause:
+	//
+	//	"l3_not_configured"        — no L3 scanner is wired in this deployment
+	//	"caller_skipped"           — the caller asked for no L3 scan
+	//	"shallow_zone_bypasses_l3" — the typed-message contract's shallow bypass
+	//	"zone_policy_skip"         — the zone policy excludes L3 for this zone
+	Reason        string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *L3ExcludedField) Reset() {
+	*x = L3ExcludedField{}
+	mi := &file_witness_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *L3ExcludedField) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*L3ExcludedField) ProtoMessage() {}
+
+func (x *L3ExcludedField) ProtoReflect() protoreflect.Message {
+	mi := &file_witness_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use L3ExcludedField.ProtoReflect.Descriptor instead.
+func (*L3ExcludedField) Descriptor() ([]byte, []int) {
+	return file_witness_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *L3ExcludedField) GetFieldKey() string {
+	if x != nil {
+		return x.FieldKey
+	}
+	return ""
+}
+
+func (x *L3ExcludedField) GetZone() string {
+	if x != nil {
+		return x.Zone
+	}
+	return ""
+}
+
+func (x *L3ExcludedField) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
 type ExternalAttestation struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Timestamp       *TimestampAttestation  `protobuf:"bytes,1,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
@@ -1349,7 +2308,7 @@ type ExternalAttestation struct {
 
 func (x *ExternalAttestation) Reset() {
 	*x = ExternalAttestation{}
-	mi := &file_witness_proto_msgTypes[10]
+	mi := &file_witness_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1361,7 +2320,7 @@ func (x *ExternalAttestation) String() string {
 func (*ExternalAttestation) ProtoMessage() {}
 
 func (x *ExternalAttestation) ProtoReflect() protoreflect.Message {
-	mi := &file_witness_proto_msgTypes[10]
+	mi := &file_witness_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1374,7 +2333,7 @@ func (x *ExternalAttestation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExternalAttestation.ProtoReflect.Descriptor instead.
 func (*ExternalAttestation) Descriptor() ([]byte, []int) {
-	return file_witness_proto_rawDescGZIP(), []int{10}
+	return file_witness_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ExternalAttestation) GetTimestamp() *TimestampAttestation {
@@ -1410,7 +2369,7 @@ type TimestampAttestation struct {
 
 func (x *TimestampAttestation) Reset() {
 	*x = TimestampAttestation{}
-	mi := &file_witness_proto_msgTypes[11]
+	mi := &file_witness_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1422,7 +2381,7 @@ func (x *TimestampAttestation) String() string {
 func (*TimestampAttestation) ProtoMessage() {}
 
 func (x *TimestampAttestation) ProtoReflect() protoreflect.Message {
-	mi := &file_witness_proto_msgTypes[11]
+	mi := &file_witness_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1435,7 +2394,7 @@ func (x *TimestampAttestation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimestampAttestation.ProtoReflect.Descriptor instead.
 func (*TimestampAttestation) Descriptor() ([]byte, []int) {
-	return file_witness_proto_rawDescGZIP(), []int{11}
+	return file_witness_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *TimestampAttestation) GetProvider() string {
@@ -1479,7 +2438,7 @@ type TransparencyLogEntry struct {
 
 func (x *TransparencyLogEntry) Reset() {
 	*x = TransparencyLogEntry{}
-	mi := &file_witness_proto_msgTypes[12]
+	mi := &file_witness_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1491,7 +2450,7 @@ func (x *TransparencyLogEntry) String() string {
 func (*TransparencyLogEntry) ProtoMessage() {}
 
 func (x *TransparencyLogEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_witness_proto_msgTypes[12]
+	mi := &file_witness_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1504,7 +2463,7 @@ func (x *TransparencyLogEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TransparencyLogEntry.ProtoReflect.Descriptor instead.
 func (*TransparencyLogEntry) Descriptor() ([]byte, []int) {
-	return file_witness_proto_rawDescGZIP(), []int{12}
+	return file_witness_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *TransparencyLogEntry) GetProvider() string {
@@ -1555,7 +2514,7 @@ type NotaryAttestation struct {
 
 func (x *NotaryAttestation) Reset() {
 	*x = NotaryAttestation{}
-	mi := &file_witness_proto_msgTypes[13]
+	mi := &file_witness_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1567,7 +2526,7 @@ func (x *NotaryAttestation) String() string {
 func (*NotaryAttestation) ProtoMessage() {}
 
 func (x *NotaryAttestation) ProtoReflect() protoreflect.Message {
-	mi := &file_witness_proto_msgTypes[13]
+	mi := &file_witness_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1580,7 +2539,7 @@ func (x *NotaryAttestation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotaryAttestation.ProtoReflect.Descriptor instead.
 func (*NotaryAttestation) Descriptor() ([]byte, []int) {
-	return file_witness_proto_rawDescGZIP(), []int{13}
+	return file_witness_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *NotaryAttestation) GetProvider() string {
@@ -1630,7 +2589,7 @@ type FormalVerification struct {
 
 func (x *FormalVerification) Reset() {
 	*x = FormalVerification{}
-	mi := &file_witness_proto_msgTypes[14]
+	mi := &file_witness_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1642,7 +2601,7 @@ func (x *FormalVerification) String() string {
 func (*FormalVerification) ProtoMessage() {}
 
 func (x *FormalVerification) ProtoReflect() protoreflect.Message {
-	mi := &file_witness_proto_msgTypes[14]
+	mi := &file_witness_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1655,7 +2614,7 @@ func (x *FormalVerification) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FormalVerification.ProtoReflect.Descriptor instead.
 func (*FormalVerification) Descriptor() ([]byte, []int) {
-	return file_witness_proto_rawDescGZIP(), []int{14}
+	return file_witness_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *FormalVerification) GetSpecHash() string {
@@ -1700,7 +2659,7 @@ type MerkleInclusionProof struct {
 
 func (x *MerkleInclusionProof) Reset() {
 	*x = MerkleInclusionProof{}
-	mi := &file_witness_proto_msgTypes[15]
+	mi := &file_witness_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1712,7 +2671,7 @@ func (x *MerkleInclusionProof) String() string {
 func (*MerkleInclusionProof) ProtoMessage() {}
 
 func (x *MerkleInclusionProof) ProtoReflect() protoreflect.Message {
-	mi := &file_witness_proto_msgTypes[15]
+	mi := &file_witness_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1725,7 +2684,7 @@ func (x *MerkleInclusionProof) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MerkleInclusionProof.ProtoReflect.Descriptor instead.
 func (*MerkleInclusionProof) Descriptor() ([]byte, []int) {
-	return file_witness_proto_rawDescGZIP(), []int{15}
+	return file_witness_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *MerkleInclusionProof) GetTreeSize() uint64 {
@@ -1781,7 +2740,7 @@ type TransparencyLogProof struct {
 
 func (x *TransparencyLogProof) Reset() {
 	*x = TransparencyLogProof{}
-	mi := &file_witness_proto_msgTypes[16]
+	mi := &file_witness_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1793,7 +2752,7 @@ func (x *TransparencyLogProof) String() string {
 func (*TransparencyLogProof) ProtoMessage() {}
 
 func (x *TransparencyLogProof) ProtoReflect() protoreflect.Message {
-	mi := &file_witness_proto_msgTypes[16]
+	mi := &file_witness_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1806,7 +2765,7 @@ func (x *TransparencyLogProof) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TransparencyLogProof.ProtoReflect.Descriptor instead.
 func (*TransparencyLogProof) Descriptor() ([]byte, []int) {
-	return file_witness_proto_rawDescGZIP(), []int{16}
+	return file_witness_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *TransparencyLogProof) GetLogName() string {
@@ -1842,7 +2801,7 @@ type AuditIntegrity struct {
 
 func (x *AuditIntegrity) Reset() {
 	*x = AuditIntegrity{}
-	mi := &file_witness_proto_msgTypes[17]
+	mi := &file_witness_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1854,7 +2813,7 @@ func (x *AuditIntegrity) String() string {
 func (*AuditIntegrity) ProtoMessage() {}
 
 func (x *AuditIntegrity) ProtoReflect() protoreflect.Message {
-	mi := &file_witness_proto_msgTypes[17]
+	mi := &file_witness_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1867,7 +2826,7 @@ func (x *AuditIntegrity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuditIntegrity.ProtoReflect.Descriptor instead.
 func (*AuditIntegrity) Descriptor() ([]byte, []int) {
-	return file_witness_proto_rawDescGZIP(), []int{17}
+	return file_witness_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *AuditIntegrity) GetMerkleRoot() []byte {
@@ -1911,7 +2870,7 @@ type PrivacyBudget struct {
 
 func (x *PrivacyBudget) Reset() {
 	*x = PrivacyBudget{}
-	mi := &file_witness_proto_msgTypes[18]
+	mi := &file_witness_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1923,7 +2882,7 @@ func (x *PrivacyBudget) String() string {
 func (*PrivacyBudget) ProtoMessage() {}
 
 func (x *PrivacyBudget) ProtoReflect() protoreflect.Message {
-	mi := &file_witness_proto_msgTypes[18]
+	mi := &file_witness_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1936,7 +2895,7 @@ func (x *PrivacyBudget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrivacyBudget.ProtoReflect.Descriptor instead.
 func (*PrivacyBudget) Descriptor() ([]byte, []int) {
-	return file_witness_proto_rawDescGZIP(), []int{18}
+	return file_witness_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *PrivacyBudget) GetEpsilonConsumed() float64 {
@@ -1984,7 +2943,7 @@ type GetCertificateRequest struct {
 
 func (x *GetCertificateRequest) Reset() {
 	*x = GetCertificateRequest{}
-	mi := &file_witness_proto_msgTypes[19]
+	mi := &file_witness_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1996,7 +2955,7 @@ func (x *GetCertificateRequest) String() string {
 func (*GetCertificateRequest) ProtoMessage() {}
 
 func (x *GetCertificateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_witness_proto_msgTypes[19]
+	mi := &file_witness_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2009,7 +2968,7 @@ func (x *GetCertificateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCertificateRequest.ProtoReflect.Descriptor instead.
 func (*GetCertificateRequest) Descriptor() ([]byte, []int) {
-	return file_witness_proto_rawDescGZIP(), []int{19}
+	return file_witness_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *GetCertificateRequest) GetRequestId() string {
@@ -2037,7 +2996,7 @@ type ExportRequest struct {
 
 func (x *ExportRequest) Reset() {
 	*x = ExportRequest{}
-	mi := &file_witness_proto_msgTypes[20]
+	mi := &file_witness_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2049,7 +3008,7 @@ func (x *ExportRequest) String() string {
 func (*ExportRequest) ProtoMessage() {}
 
 func (x *ExportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_witness_proto_msgTypes[20]
+	mi := &file_witness_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2062,7 +3021,7 @@ func (x *ExportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExportRequest.ProtoReflect.Descriptor instead.
 func (*ExportRequest) Descriptor() ([]byte, []int) {
-	return file_witness_proto_rawDescGZIP(), []int{20}
+	return file_witness_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ExportRequest) GetCustomerId() string {
@@ -2172,7 +3131,7 @@ const file_witness_proto_rawDesc = "" +
 	"\n" +
 	"last_error\x18\x03 \x01(\tR\tlastError\x12\x1d\n" +
 	"\n" +
-	"human_note\x18\x04 \x01(\tR\thumanNote\"\xd8\x03\n" +
+	"human_note\x18\x04 \x01(\tR\thumanNote\"\xf5\x04\n" +
 	"\x12VerificationResult\x12)\n" +
 	"\x10signatures_valid\x18\x01 \x01(\bR\x0fsignaturesValid\x12=\n" +
 	"\fcompleteness\x18\x02 \x01(\x0e2\x19.dsa.veil.v1.CompletenessR\fcompleteness\x12)\n" +
@@ -2183,7 +3142,51 @@ const file_witness_proto_rawDesc = "" +
 	"\bqi_score\x18\a \x01(\v2\x14.dsa.veil.v1.QIScoreR\aqiScore\x12=\n" +
 	"\x0foverall_verdict\x18\b \x01(\x0e2\x14.dsa.veil.v1.VerdictR\x0eoverallVerdict\x12\x1f\n" +
 	"\vbyok_exempt\x18\t \x01(\bR\n" +
-	"byokExempt\"\xdc\x01\n" +
+	"byokExempt\x12H\n" +
+	"\x11l3_coverage_scope\x18\r \x01(\v2\x1c.dsa.veil.v1.L3CoverageScopeR\x0fl3CoverageScope\x12Q\n" +
+	"\x14l3_coverage_evidence\x18\x0e \x01(\v2\x1f.dsa.veil.v1.L3CoverageEvidenceR\x12l3CoverageEvidence\"\xf6\x03\n" +
+	"\x12L3CoverageEvidence\x12#\n" +
+	"\rrecord_status\x18\x01 \x01(\tR\frecordStatus\x12-\n" +
+	"\x12derivation_version\x18\x02 \x01(\tR\x11derivationVersion\x12%\n" +
+	"\x0edrives_verdict\x18\x03 \x01(\bR\rdrivesVerdict\x12\x16\n" +
+	"\x06rollup\x18\x04 \x01(\tR\x06rollup\x12%\n" +
+	"\x0ecomposed_green\x18\x05 \x01(\bR\rcomposedGreen\x12'\n" +
+	"\x0fcomposed_reason\x18\x06 \x01(\tR\x0ecomposedReason\x124\n" +
+	"\x06fields\x18\a \x03(\v2\x1c.dsa.veil.v1.L3FieldEvidenceR\x06fields\x12)\n" +
+	"\x10canaries_planted\x18\b \x01(\rR\x0fcanariesPlanted\x12-\n" +
+	"\x12canaries_recovered\x18\t \x01(\rR\x11canariesRecovered\x12#\n" +
+	"\rfields_passed\x18\n" +
+	" \x01(\rR\ffieldsPassed\x12#\n" +
+	"\rfields_failed\x18\v \x01(\rR\ffieldsFailed\x12#\n" +
+	"\rfields_absent\x18\f \x01(\rR\ffieldsAbsent\"\xfb\x01\n" +
+	"\x0fL3FieldEvidence\x12\x1b\n" +
+	"\tfield_key\x18\x01 \x01(\tR\bfieldKey\x12\x18\n" +
+	"\averdict\x18\x02 \x01(\tR\averdict\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\x12)\n" +
+	"\x10canaries_planted\x18\x04 \x01(\rR\x0fcanariesPlanted\x12-\n" +
+	"\x12canaries_recovered\x18\x05 \x01(\rR\x11canariesRecovered\x12\x18\n" +
+	"\awindows\x18\x06 \x01(\rR\awindows\x12%\n" +
+	"\x0eprobed_windows\x18\a \x01(\rR\rprobedWindows\"\x84\x03\n" +
+	"\x0fL3CoverageScope\x12#\n" +
+	"\rrecord_status\x18\x01 \x01(\tR\frecordStatus\x12-\n" +
+	"\x12derivation_version\x18\x02 \x01(\tR\x11derivationVersion\x12!\n" +
+	"\fdrives_claim\x18\x03 \x01(\bR\vdrivesClaim\x12\x18\n" +
+	"\agranted\x18\x04 \x01(\bR\agranted\x12\x16\n" +
+	"\x06reason\x18\x05 \x01(\tR\x06reason\x12%\n" +
+	"\x0eeligible_count\x18\x06 \x01(\rR\religibleCount\x125\n" +
+	"\acovered\x18\a \x03(\v2\x1b.dsa.veil.v1.L3CoveredFieldR\acovered\x120\n" +
+	"\x14eligible_not_covered\x18\b \x03(\tR\x12eligibleNotCovered\x128\n" +
+	"\bexcluded\x18\t \x03(\v2\x1c.dsa.veil.v1.L3ExcludedFieldR\bexcluded\"\x86\x01\n" +
+	"\x0eL3CoveredField\x12\x1b\n" +
+	"\tfield_key\x18\x01 \x01(\tR\bfieldKey\x12\x10\n" +
+	"\x03via\x18\x02 \x01(\tR\x03via\x12\x1d\n" +
+	"\n" +
+	"receipt_id\x18\x03 \x01(\tR\treceiptId\x12&\n" +
+	"\x0fsource_claim_id\x18\x04 \x01(\tR\rsourceClaimId\"Z\n" +
+	"\x0fL3ExcludedField\x12\x1b\n" +
+	"\tfield_key\x18\x01 \x01(\tR\bfieldKey\x12\x12\n" +
+	"\x04zone\x18\x02 \x01(\tR\x04zone\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"\xdc\x01\n" +
 	"\x13ExternalAttestation\x12?\n" +
 	"\ttimestamp\x18\x01 \x01(\v2!.dsa.veil.v1.TimestampAttestationR\ttimestamp\x12L\n" +
 	"\x10transparency_log\x18\x02 \x01(\v2!.dsa.veil.v1.TransparencyLogEntryR\x0ftransparencyLog\x126\n" +
@@ -2297,7 +3300,7 @@ func file_witness_proto_rawDescGZIP() []byte {
 }
 
 var file_witness_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_witness_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_witness_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_witness_proto_goTypes = []any{
 	(ClaimType)(0),                // 0: dsa.veil.v1.ClaimType
 	(IsolationProbeStatus)(0),     // 1: dsa.veil.v1.IsolationProbeStatus
@@ -2315,19 +3318,24 @@ var file_witness_proto_goTypes = []any{
 	(*VeilCertificate)(nil),       // 13: dsa.veil.v1.VeilCertificate
 	(*AnchorStatusInfo)(nil),      // 14: dsa.veil.v1.AnchorStatusInfo
 	(*VerificationResult)(nil),    // 15: dsa.veil.v1.VerificationResult
-	(*ExternalAttestation)(nil),   // 16: dsa.veil.v1.ExternalAttestation
-	(*TimestampAttestation)(nil),  // 17: dsa.veil.v1.TimestampAttestation
-	(*TransparencyLogEntry)(nil),  // 18: dsa.veil.v1.TransparencyLogEntry
-	(*NotaryAttestation)(nil),     // 19: dsa.veil.v1.NotaryAttestation
-	(*FormalVerification)(nil),    // 20: dsa.veil.v1.FormalVerification
-	(*MerkleInclusionProof)(nil),  // 21: dsa.veil.v1.MerkleInclusionProof
-	(*TransparencyLogProof)(nil),  // 22: dsa.veil.v1.TransparencyLogProof
-	(*AuditIntegrity)(nil),        // 23: dsa.veil.v1.AuditIntegrity
-	(*PrivacyBudget)(nil),         // 24: dsa.veil.v1.PrivacyBudget
-	(*GetCertificateRequest)(nil), // 25: dsa.veil.v1.GetCertificateRequest
-	(*ExportRequest)(nil),         // 26: dsa.veil.v1.ExportRequest
-	(*timestamppb.Timestamp)(nil), // 27: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),   // 28: google.protobuf.Duration
+	(*L3CoverageEvidence)(nil),    // 16: dsa.veil.v1.L3CoverageEvidence
+	(*L3FieldEvidence)(nil),       // 17: dsa.veil.v1.L3FieldEvidence
+	(*L3CoverageScope)(nil),       // 18: dsa.veil.v1.L3CoverageScope
+	(*L3CoveredField)(nil),        // 19: dsa.veil.v1.L3CoveredField
+	(*L3ExcludedField)(nil),       // 20: dsa.veil.v1.L3ExcludedField
+	(*ExternalAttestation)(nil),   // 21: dsa.veil.v1.ExternalAttestation
+	(*TimestampAttestation)(nil),  // 22: dsa.veil.v1.TimestampAttestation
+	(*TransparencyLogEntry)(nil),  // 23: dsa.veil.v1.TransparencyLogEntry
+	(*NotaryAttestation)(nil),     // 24: dsa.veil.v1.NotaryAttestation
+	(*FormalVerification)(nil),    // 25: dsa.veil.v1.FormalVerification
+	(*MerkleInclusionProof)(nil),  // 26: dsa.veil.v1.MerkleInclusionProof
+	(*TransparencyLogProof)(nil),  // 27: dsa.veil.v1.TransparencyLogProof
+	(*AuditIntegrity)(nil),        // 28: dsa.veil.v1.AuditIntegrity
+	(*PrivacyBudget)(nil),         // 29: dsa.veil.v1.PrivacyBudget
+	(*GetCertificateRequest)(nil), // 30: dsa.veil.v1.GetCertificateRequest
+	(*ExportRequest)(nil),         // 31: dsa.veil.v1.ExportRequest
+	(*timestamppb.Timestamp)(nil), // 32: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),   // 33: google.protobuf.Duration
 }
 var file_witness_proto_depIdxs = []int32{
 	0,  // 0: dsa.veil.v1.VeilClaim.claim_type:type_name -> dsa.veil.v1.ClaimType
@@ -2335,44 +3343,49 @@ var file_witness_proto_depIdxs = []int32{
 	9,  // 2: dsa.veil.v1.VeilClaim.sanitizer:type_name -> dsa.veil.v1.SanitizerClaim
 	11, // 3: dsa.veil.v1.VeilClaim.inference:type_name -> dsa.veil.v1.InferenceClaim
 	12, // 4: dsa.veil.v1.VeilClaim.audit:type_name -> dsa.veil.v1.AuditClaim
-	27, // 5: dsa.veil.v1.VeilClaim.timestamp:type_name -> google.protobuf.Timestamp
+	32, // 5: dsa.veil.v1.VeilClaim.timestamp:type_name -> google.protobuf.Timestamp
 	10, // 6: dsa.veil.v1.SanitizerClaim.qi_score:type_name -> dsa.veil.v1.QIScore
 	6,  // 7: dsa.veil.v1.SanitizerClaim.entity_counts:type_name -> dsa.veil.v1.EntityCount
 	2,  // 8: dsa.veil.v1.QIScore.verdict:type_name -> dsa.veil.v1.QIVerdict
 	1,  // 9: dsa.veil.v1.InferenceClaim.isolation_probe:type_name -> dsa.veil.v1.IsolationProbeStatus
 	7,  // 10: dsa.veil.v1.VeilCertificate.claims:type_name -> dsa.veil.v1.VeilClaim
 	15, // 11: dsa.veil.v1.VeilCertificate.verification:type_name -> dsa.veil.v1.VerificationResult
-	16, // 12: dsa.veil.v1.VeilCertificate.attestation:type_name -> dsa.veil.v1.ExternalAttestation
-	27, // 13: dsa.veil.v1.VeilCertificate.issued_at:type_name -> google.protobuf.Timestamp
-	20, // 14: dsa.veil.v1.VeilCertificate.formal_verification:type_name -> dsa.veil.v1.FormalVerification
-	23, // 15: dsa.veil.v1.VeilCertificate.audit_integrity:type_name -> dsa.veil.v1.AuditIntegrity
-	24, // 16: dsa.veil.v1.VeilCertificate.privacy_budget:type_name -> dsa.veil.v1.PrivacyBudget
+	21, // 12: dsa.veil.v1.VeilCertificate.attestation:type_name -> dsa.veil.v1.ExternalAttestation
+	32, // 13: dsa.veil.v1.VeilCertificate.issued_at:type_name -> google.protobuf.Timestamp
+	25, // 14: dsa.veil.v1.VeilCertificate.formal_verification:type_name -> dsa.veil.v1.FormalVerification
+	28, // 15: dsa.veil.v1.VeilCertificate.audit_integrity:type_name -> dsa.veil.v1.AuditIntegrity
+	29, // 16: dsa.veil.v1.VeilCertificate.privacy_budget:type_name -> dsa.veil.v1.PrivacyBudget
 	14, // 17: dsa.veil.v1.VeilCertificate.anchor_status:type_name -> dsa.veil.v1.AnchorStatusInfo
 	5,  // 18: dsa.veil.v1.AnchorStatusInfo.status:type_name -> dsa.veil.v1.AnchorStatus
 	3,  // 19: dsa.veil.v1.VerificationResult.completeness:type_name -> dsa.veil.v1.Completeness
 	10, // 20: dsa.veil.v1.VerificationResult.qi_score:type_name -> dsa.veil.v1.QIScore
 	4,  // 21: dsa.veil.v1.VerificationResult.overall_verdict:type_name -> dsa.veil.v1.Verdict
-	17, // 22: dsa.veil.v1.ExternalAttestation.timestamp:type_name -> dsa.veil.v1.TimestampAttestation
-	18, // 23: dsa.veil.v1.ExternalAttestation.transparency_log:type_name -> dsa.veil.v1.TransparencyLogEntry
-	19, // 24: dsa.veil.v1.ExternalAttestation.notary:type_name -> dsa.veil.v1.NotaryAttestation
-	27, // 25: dsa.veil.v1.NotaryAttestation.attested_at:type_name -> google.protobuf.Timestamp
-	27, // 26: dsa.veil.v1.FormalVerification.verified_at:type_name -> google.protobuf.Timestamp
-	21, // 27: dsa.veil.v1.AuditIntegrity.inclusion_proof:type_name -> dsa.veil.v1.MerkleInclusionProof
-	22, // 28: dsa.veil.v1.AuditIntegrity.log_proofs:type_name -> dsa.veil.v1.TransparencyLogProof
-	28, // 29: dsa.veil.v1.GetCertificateRequest.wait_timeout:type_name -> google.protobuf.Duration
-	27, // 30: dsa.veil.v1.ExportRequest.from:type_name -> google.protobuf.Timestamp
-	27, // 31: dsa.veil.v1.ExportRequest.to:type_name -> google.protobuf.Timestamp
-	25, // 32: dsa.veil.v1.VeilCertificateService.GetCertificate:input_type -> dsa.veil.v1.GetCertificateRequest
-	26, // 33: dsa.veil.v1.VeilCertificateService.ExportCertificates:input_type -> dsa.veil.v1.ExportRequest
-	13, // 34: dsa.veil.v1.VeilCertificateService.VerifyCertificate:input_type -> dsa.veil.v1.VeilCertificate
-	13, // 35: dsa.veil.v1.VeilCertificateService.GetCertificate:output_type -> dsa.veil.v1.VeilCertificate
-	13, // 36: dsa.veil.v1.VeilCertificateService.ExportCertificates:output_type -> dsa.veil.v1.VeilCertificate
-	15, // 37: dsa.veil.v1.VeilCertificateService.VerifyCertificate:output_type -> dsa.veil.v1.VerificationResult
-	35, // [35:38] is the sub-list for method output_type
-	32, // [32:35] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	18, // 22: dsa.veil.v1.VerificationResult.l3_coverage_scope:type_name -> dsa.veil.v1.L3CoverageScope
+	16, // 23: dsa.veil.v1.VerificationResult.l3_coverage_evidence:type_name -> dsa.veil.v1.L3CoverageEvidence
+	17, // 24: dsa.veil.v1.L3CoverageEvidence.fields:type_name -> dsa.veil.v1.L3FieldEvidence
+	19, // 25: dsa.veil.v1.L3CoverageScope.covered:type_name -> dsa.veil.v1.L3CoveredField
+	20, // 26: dsa.veil.v1.L3CoverageScope.excluded:type_name -> dsa.veil.v1.L3ExcludedField
+	22, // 27: dsa.veil.v1.ExternalAttestation.timestamp:type_name -> dsa.veil.v1.TimestampAttestation
+	23, // 28: dsa.veil.v1.ExternalAttestation.transparency_log:type_name -> dsa.veil.v1.TransparencyLogEntry
+	24, // 29: dsa.veil.v1.ExternalAttestation.notary:type_name -> dsa.veil.v1.NotaryAttestation
+	32, // 30: dsa.veil.v1.NotaryAttestation.attested_at:type_name -> google.protobuf.Timestamp
+	32, // 31: dsa.veil.v1.FormalVerification.verified_at:type_name -> google.protobuf.Timestamp
+	26, // 32: dsa.veil.v1.AuditIntegrity.inclusion_proof:type_name -> dsa.veil.v1.MerkleInclusionProof
+	27, // 33: dsa.veil.v1.AuditIntegrity.log_proofs:type_name -> dsa.veil.v1.TransparencyLogProof
+	33, // 34: dsa.veil.v1.GetCertificateRequest.wait_timeout:type_name -> google.protobuf.Duration
+	32, // 35: dsa.veil.v1.ExportRequest.from:type_name -> google.protobuf.Timestamp
+	32, // 36: dsa.veil.v1.ExportRequest.to:type_name -> google.protobuf.Timestamp
+	30, // 37: dsa.veil.v1.VeilCertificateService.GetCertificate:input_type -> dsa.veil.v1.GetCertificateRequest
+	31, // 38: dsa.veil.v1.VeilCertificateService.ExportCertificates:input_type -> dsa.veil.v1.ExportRequest
+	13, // 39: dsa.veil.v1.VeilCertificateService.VerifyCertificate:input_type -> dsa.veil.v1.VeilCertificate
+	13, // 40: dsa.veil.v1.VeilCertificateService.GetCertificate:output_type -> dsa.veil.v1.VeilCertificate
+	13, // 41: dsa.veil.v1.VeilCertificateService.ExportCertificates:output_type -> dsa.veil.v1.VeilCertificate
+	15, // 42: dsa.veil.v1.VeilCertificateService.VerifyCertificate:output_type -> dsa.veil.v1.VerificationResult
+	40, // [40:43] is the sub-list for method output_type
+	37, // [37:40] is the sub-list for method input_type
+	37, // [37:37] is the sub-list for extension type_name
+	37, // [37:37] is the sub-list for extension extendee
+	0,  // [0:37] is the sub-list for field type_name
 }
 
 func init() { file_witness_proto_init() }
@@ -2393,7 +3406,7 @@ func file_witness_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_witness_proto_rawDesc), len(file_witness_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   21,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
