@@ -1,6 +1,19 @@
 // Vendored from Declade/dual-sandbox-architecture:
-//   proto/veil/v1/veil.proto @ commit f24bf0d2565ff5d414c0ee13c3188675d8f67d3c
+//   proto/veil/v1/veil.proto @ commit 91941304fd3ba30779d81121c37c436a631f4089
 // + proto/common/v1/types.proto (only EntityCount inlined, for SanitizerClaim).
+//
+// PARTIAL VENDOR, BY DESIGN. This copy carries every message the dashboard
+// decodes, at the UPSTREAM field numbers. It deliberately does NOT carry
+// upstream messages the dashboard never reads (e.g. AnchorVerificationResult)
+// nor VerificationResult fields 10-12 — see the gap note inside that message.
+// Field numbers are never renumbered to close a gap; proto3 drops the unknown
+// fields on decode, which is the intended behaviour for this consumer.
+//
+// Last sync: 2026-09-22, T-600 S3 / T-617 S3 — added VerificationResult
+// fields 13 (`l3_coverage_scope`) and 14 (`l3_coverage_evidence`) plus the
+// five L3* messages they reference, verbatim from the commit above. Both are
+// UNSIGNED certificate metadata: they are outside the witness v2 (7-key) and
+// v3 (13-key) signable maps, so vendoring them changes no verification bytes.
 //
 // This file is the CANONICAL upstream `dsa.veil.v1` schema, vendored
 // verbatim so the dashboard speaks the real witness gRPC contract:
@@ -244,6 +257,560 @@ message VerificationResult {
   // alongside the verified state. Older verifiers without this field
   // still see overall_verdict = VERIFIED and isolation_verified = true.
   bool byok_exempt = 9;
+
+  // ⚑ FIELD-NUMBER GAP 10-12 IS DELIBERATE. Upstream VerificationResult also
+  // carries `anchor_verifications` (10), `upstream_auth_mode` (11) and
+  // `temporal_order_status` (12). The dashboard renders none of them, so they
+  // are not vendored here — proto3 decodes their wire bytes as unknown fields
+  // and drops them, which is exactly what this consumer wants. Field numbers
+  // 13 and 14 below are the UPSTREAM numbers, unchanged; a vendored copy that
+  // renumbered to close the gap would decode a live witness's bytes into the
+  // wrong fields. If the dashboard ever needs 10-12, vendor them at their own
+  // upstream numbers — never by shifting these.
+
+  // l3_coverage_scope surfaces, as DARK DIAGNOSTICS, the sanitizer's signed
+  // per-field L3 scope record for this request — which fields the deep PII
+  // shield actually covered, which were deliberately excluded and why, and
+  // which eligible field has no evidence at all (board T-617, PRD
+  // specs/2026-08/prd-2026-08-11-l3-coverage-scope-attestation.md, composition
+  // option (a) locked 2026-08-25).
+  //
+  // ⛔ SCOPE, NEVER RECALL — read this before rendering anything.
+  // `granted = true` means every field the zone policy said L3 should scan WAS
+  // scanned (or is covered by a named receipt from the claim that scanned it).
+  // It says NOTHING about whether the scanner FOUND the personal data inside
+  // those bytes; that is the recall half (board T-600) and it is NOT
+  // represented anywhere in this message. Coverage is NECESSARY for a green
+  // completeness claim and can never be SUFFICIENT
+  // (services/sanitizer/l3_coverage.py:13-14). A consumer that renders a
+  // granted scope record as "protected", "complete protection", "all PII
+  // removed" or any green badge is making the exact overclaim this product
+  // exists to prevent.
+  //
+  // ⛔ DARK. Nothing in the witness branches on this message. It moves no
+  // certificate from one verdict to another, it is not an input to
+  // `completeness` or `overall_verdict`, and `record_status` = "absent" on a
+  // certificate whose verdict says PARTIAL explains nothing about that PARTIAL.
+  // `L3CoverageScope.drives_claim` reports whether the SANITIZER deployment
+  // that minted the claim let the derivation decide its own `layers_active`
+  // roster — it is false during the dark period, and a granted scope record
+  // sitting next to an L3-less `layers_active` is the EXPECTED shape then,
+  // not a contradiction.
+  //
+  // ⛔ ABSENCE IS NOT INNOCENCE. A nil message, or `record_status` = "" /
+  // "absent" / "malformed" / "unsupported_derivation", means SCOPE UNAVAILABLE.
+  // It must be rendered as "scope unavailable" and NEVER as "nothing was
+  // excluded", "everything was covered", or any other statement about what
+  // happened. Every certificate minted before T-617 is in exactly this state.
+  //
+  // PROVENANCE. Derived by the witness from the `l3_coverage_scope` key inside
+  // the dsa-sanitizer PII_SANITIZED claim's SIGNED canonical_payload — the same
+  // signature-bound read path as `upstream_auth_mode`. It never leaves the
+  // signed bytes, so a post-signing proto mutation cannot reach it and it needs
+  // no VerifyTypedPayload counterpart of its own. (An earlier draft called this
+  // "stronger than byok_exempt". That overstated it: byok_exempt does read an
+  // unsigned typed oneof, but the /verify RPC cross-binds every typed oneof
+  // back to the signed payload via verifier.VerifyTypedPayload, so on that path
+  // the gap is already closed. The honest difference is that this field needs
+  // no such cross-bind, not that byok_exempt lacks one.)
+  //
+  // ONE shared derivation serves BOTH the seal-time assembler and the on-demand
+  // /verify RPC, so the two paths cannot report different scope records for the
+  // same claim chain (the T-18 discipline). ⚑ That includes chains that do NOT
+  // authenticate: the witness deliberately seals FAILED certificates, so the
+  // seal path gates the record on signature validity exactly as /verify does
+  // and both report "not_checked". A successful assembly is not an
+  // authenticated chain.
+  //
+  // UNSIGNED METADATA at the CERTIFICATE level. It is NOT in the witness v2
+  // signable map (locked at 7 keys — TestVeilCertificateSignableUnchanged) and
+  // NOT in the frozen 13-key v3 signable. ⚠️ `byok_exempt` is the precedent
+  // for the V2 half ONLY: byok_exempt WAS promoted into v3, and this field is
+  // outside BOTH maps. Adding it here changes no signable byte in either
+  // version, so every SDK verifier in the wild keeps verifying unchanged;
+  // pinned from both ends by the frozen v2 + v3 golden-byte tests
+  // (TestSignableV2GoldenBytesFrozen / TestSignableV3GoldenBytesFrozen) and by
+  // TestVeilCertificateSignable_L3CoverageScopeNotInSignable. A future
+  // promotion into a signable is a v4 decision, not a code default.
+  //
+  // Tamper-evidence for the CONTENT is unchanged and INDIRECT: the record lives
+  // inside the sanitizer-signed canonical_payload, which is bound into both
+  // signables via `claim_ids[]`. Editing this unsigned copy on a certificate
+  // body changes nothing a verifier trusts — and the /verify RPC recomputes the
+  // message from the signed claim rather than echoing the submitted one.
+  L3CoverageScope l3_coverage_scope = 13;
+
+  // l3_coverage_evidence is the RECALL half of the locked completeness
+  // composition (T-600), and the carrier for the COMPOSED verdict that joins it
+  // to the SCOPE half above.
+  //
+  // WHY BOTH HALVES EXIST. `l3_coverage_scope` answers "which fields did the
+  // deep shield RUN on". It cannot answer "did it FIND what was there" — and
+  // T-313 MEASURED a model returning parse_status="ok" over a COMPLETE coverage
+  // manifest at ~19% recall. A verdict built on scope alone certifies that run
+  // green. This message carries the per-request planted-canary recall evidence
+  // the sanitizer signs (services/sanitizer/l3_evidence_probe.py) plus the
+  // composed rule Marc locked on 2026-08-25:
+  //
+  //   green ⟺ (every ELIGIBLE field is COVERED)          ← l3_coverage_scope
+  //         ∧ (every COVERED field's evidence PASSED)    ← this message
+  //         ∧ (exclusions and receipts are NAMED)        ← C3
+  //
+  // ⛔ DARK. `drives_verdict` is hard-staged FALSE in this build. Nothing in the
+  // witness branches on `composed_green`: it is computed AFTER the verdict, it
+  // is not an input to `completeness` or `overall_verdict`, and deleting every
+  // line that produces it would change no certificate's verdict. The flip is
+  // Marc-gated and is a separate, rehearsed change.
+  //
+  // ⛔ NON-COVERAGE — no reader surface may imply otherwise. A `verified`
+  // rollup means the recall CHECK ran on every field that carried one and every
+  // planted canary came back. It does NOT mean the scanner found everything: a
+  // model that returns all K canaries and misses the real entities between them
+  // passes. Evidence raises confidence; it never proves recall. The
+  // claim-ceiling wording on the reader surfaces is the mitigation, not this
+  // field.
+  //
+  // ⛔ ABSENCE IS NOT INNOCENCE, same as the scope record. A nil message, or a
+  // `record_status` other than "present", means RECALL EVIDENCE UNAVAILABLE —
+  // never "the scan was clean". Every certificate minted before T-600, and
+  // every turn on a deployment with the probe off (the shipped default), is in
+  // exactly this state.
+  //
+  // PROVENANCE. Derived by the witness from the `l3_coverage_evidence` key
+  // inside the dsa-sanitizer PII_SANITIZED claim's SIGNED canonical_payload —
+  // the same signature-bound read path as `l3_coverage_scope`. ONE shared
+  // derivation (verifier.L3CoverageEvidenceFromClaims) serves BOTH the
+  // seal-time assembler and the on-demand /verify RPC, and both gate it on the
+  // chain having authenticated, so the two paths cannot report different
+  // evidence or a different composed verdict for the same claim chain (T-18).
+  //
+  // UNSIGNED METADATA at the CERTIFICATE level, outside BOTH signable maps —
+  // the 7-key v2 map (TestVeilCertificateSignableUnchanged) and the frozen
+  // 13-key v3 map. Adding it changes no signable byte in either version, so
+  // every SDK verifier in the wild keeps verifying unchanged; pinned by the
+  // frozen golden-byte tests and by
+  // TestVeilCertificateSignable_L3CoverageEvidenceNotInSignable.
+  L3CoverageEvidence l3_coverage_evidence = 14;
+}
+
+
+// L3CoverageEvidence is the witness's typed rendering of the sanitizer's signed
+// `l3_coverage_evidence` claim payload (board T-600), plus the COMPOSED verdict
+// that joins it to L3CoverageScope. See
+// VerificationResult.l3_coverage_evidence for the normative scope/recall
+// boundary — everything said there binds every consumer of this message.
+//
+// THE PRODUCER'S RECORD is a per-field map: each field the L3 phase touched
+// carries its own verdict (passed / failed / absent-with-reason) plus the
+// canary counts behind it. This message reproduces that map verbatim in
+// `fields`, rolls it up into `rollup`, and states the composed result in
+// `composed_green` / `composed_reason`.
+message L3CoverageEvidence {
+  // record_status says whether an evidence record could be read AT ALL. Closed
+  // vocabulary, five values plus the empty string — the SAME vocabulary and the
+  // same meanings as L3CoverageScope.record_status, pinned across the two by
+  // TestL3Evidence_StatusVocabularyMatchesTheScopeRecord.
+  //
+  //   "present"                — a well-formed record was read from the signed
+  //                              sanitizer claim and is reproduced below.
+  //   "absent"                 — no evidence record was carried: the chain has
+  //                              no dsa-sanitizer claim, that claim carries no
+  //                              canonical payload, or the payload has no
+  //                              `l3_coverage_evidence` key. That is EVERY
+  //                              pre-T-600 sanitizer AND every deployment
+  //                              running the probe in its shipped `off` mode.
+  //                              NOT "the recall check passed".
+  //   "malformed"              — a record was carried and the witness REFUSED
+  //                              it: unparseable payload, wrong shape, an
+  //                              out-of-vocabulary verdict or reason, entries
+  //                              disagreeing on the derivation version, or a
+  //                              per-field `drives_claim` of true (the sanitizer
+  //                              asserts it false; verdict-driving is the
+  //                              WITNESS-side flip). Also every count shape the
+  //                              probe cannot produce: more recovered than
+  //                              planted, more probed windows than windows, a
+  //                              `passed` with nothing planted or probed, a
+  //                              `passed` leaving a window unprobed, and a
+  //                              `passed` recovering fewer canaries than it
+  //                              probed windows (impossible under every
+  //                              threshold the producer admits, since the
+  //                              threshold is constrained to [1, k]).
+  //                              Refused WHOLE rather than in part — a half-read
+  //                              evidence map reads as a clean bill of health
+  //                              for the fields that fell off it.
+  //
+  //                              ⚑ EVERY REFUSAL IS A FUNCTION OF THE RECORD,
+  //                              not of map iteration order: entries are walked
+  //                              in sorted key order and the derivation-version
+  //                              decision is taken over the SET of versions
+  //                              present, so the same bytes always yield the
+  //                              same status on both the seal and /verify paths.
+  //   "unsupported_derivation" — a well-formed record produced by a probe
+  //                              derivation VERSION this witness build does not
+  //                              know. What "recovered" MEANS is defined by that
+  //                              version, so a witness that does not know the
+  //                              rule cannot honestly reproduce a record built
+  //                              under it. Distinct from "malformed" so an
+  //                              operator can tell a deploy-ordering gap
+  //                              (sanitizer ahead of witness) from a contract
+  //                              violation.
+  //   "not_checked"            — the record was never examined, because the
+  //                              chain's claim signatures did not verify, or
+  //                              (on /verify only) because the chain splices
+  //                              claims from different requests. The witness has
+  //                              no opinion about the recall evidence of a chain
+  //                              it could not authenticate. Deliberately NOT
+  //                              collapsed into "absent".
+  //   ""                       — unknown / legacy: minted or re-verified by a
+  //                              witness build that predates T-600.
+  string record_status = 1;
+
+  // derivation_version identifies the PROBE RULE that produced this record
+  // (services/sanitizer/l3_evidence_probe.py L3_EVIDENCE_DERIVATION_VERSION).
+  // It is part of the sanitizer's cache-key fingerprint, so a bump
+  // deterministically orphans verdicts minted under the previous meaning of
+  // "recovered". Every per-field entry must agree on it; one that does not
+  // makes the whole record "malformed".
+  string derivation_version = 2;
+
+  // drives_verdict reports whether THIS WITNESS let the composed rule decide
+  // `completeness` / `overall_verdict`.
+  //
+  // ⛔ IT IS FALSE IN THIS BUILD, structurally — the composed verdict is
+  // computed after every verdict input is already final, and no code path reads
+  // it. A reader must check this field before treating `composed_green` as
+  // load-bearing: while it is false, a `composed_green` of true next to a
+  // PARTIAL `overall_verdict` is the designed shape of the dark period, not an
+  // inconsistency to reconcile. Pinned by
+  // TestL3Evidence_DrivesVerdictStaysFalse.
+  //
+  // It is NOT the same flag as L3CoverageScope.drives_claim: that one reports
+  // what the SANITIZER deployment did with its own scope derivation. This one
+  // reports what the WITNESS did with the composition. Both are false today and
+  // they flip in different workstreams.
+  bool drives_verdict = 3;
+
+  // rollup is the per-REQUEST evidence verdict, closed vocabulary. It describes
+  // the evidence only — not the composition (see composed_green):
+  //
+  //   "failed"     — at least one field's recall check MISSED its threshold.
+  //                  Positive evidence of a recall gap; it outranks everything,
+  //                  because a measured miss must not be averaged away against
+  //                  fields that were never probed.
+  //   "absent"     — no field carried evidence at all (the probe was off, or L3
+  //                  ran on nothing). Evidence that does not exist is not
+  //                  evidence of success.
+  //   "unverified" — some fields passed and at least one carries no evidence
+  //                  (below the probe's measured window floor, served from the
+  //                  L3 verdict cache, or no L3 window at all). A partially
+  //                  evidenced request can never read "verified".
+  //   "verified"   — every field carrying an evidence entry PASSED, and none is
+  //                  absent. Still only "the recall check ran and came back
+  //                  clean" — see the NON-COVERAGE note above.
+  //   ""           — record_status is not "present"; the rollup says nothing.
+  string rollup = 4;
+
+  // composed_green is the output of the LOCKED composition rule (see
+  // VerificationResult.l3_coverage_evidence). It is TRUE only when the scope
+  // record GRANTED, every covered field carries a PASSED evidence entry, and
+  // the exclusions and receipts are named.
+  //
+  // ⛔ DARK: it drives nothing while drives_verdict is false. It is published so
+  // the LOG window can MEASURE how often the composed rule would grant, before
+  // anyone is asked to flip it.
+  bool composed_green = 5;
+
+  // composed_reason is the closed-vocabulary explanation of composed_green:
+  //
+  //   "scope_and_recall_satisfied"          — the ONLY granting value.
+  //   "scope_unavailable"                   — the scope record is missing or
+  //                                           was refused; the first conjunct
+  //                                           cannot be evaluated.
+  //   "evidence_unavailable"                — the evidence record is missing or
+  //                                           was refused (every pre-T-600
+  //                                           sanitizer, and every probe-off
+  //                                           deployment).
+  //   "evidence_failed"                     — a field's recall check MISSED.
+  //                                           Checked first: a measured miss is
+  //                                           the most informative thing a
+  //                                           reader can be told.
+  //   "scope_not_granted"                   — the scope record itself denied
+  //                                           (an eligible field was not
+  //                                           covered, an unattributed
+  //                                           degradation, or nothing was
+  //                                           eligible). L3CoverageScope.reason
+  //                                           says which.
+  //   "evidence_absent_for_covered_field"   — a field the scope record says was
+  //                                           COVERED BY A FRESH SCAN carries no
+  //                                           passing evidence entry. The
+  //                                           positive-grant construction (C7):
+  //                                           green is built from explicit
+  //                                           per-field grants, never from the
+  //                                           absence of a recorded failure.
+  //   "evidence_on_excluded_field"           — the two records DISAGREE about
+  //                                           what class a field is in: the
+  //                                           scope record names it as
+  //                                           policy-EXCLUDED while the evidence
+  //                                           record carries a non-absent
+  //                                           verdict for it, i.e. evidence of a
+  //                                           scan on a field the policy says
+  //                                           was never scanned. Either the
+  //                                           exclusion ledger is wrong (a C3
+  //                                           overclaim) or the evidence is
+  //                                           fabricated; the composition
+  //                                           refuses rather than picking a
+  //                                           winner. An `absent` entry on an
+  //                                           excluded field asserts nothing
+  //                                           about a scan and is tolerated.
+  //   "receipt_covered_evidence_not_in_chain" — a field was covered by a NAMED
+  //                                           RECEIPT from an earlier claim. No
+  //                                           L3 inference ran on it this turn,
+  //                                           so this certificate carries no
+  //                                           recall evidence for those bytes —
+  //                                           the evidence lives on the source
+  //                                           claim. ⚑ OPEN QUESTION FOR THE
+  //                                           FLIP, deliberately surfaced rather
+  //                                           than assumed away: under the rule
+  //                                           as locked, a cache-replayed turn
+  //                                           cannot compose green. The LOG
+  //                                           window measures how often this
+  //                                           fires; whether receipt-carried
+  //                                           evidence should be admitted is a
+  //                                           decision for that report, not for
+  //                                           this code.
+  //   ""                                    — nothing was composed.
+  string composed_reason = 6;
+
+  // fields reproduces the producer's per-field evidence map, sorted by
+  // field_key, one entry per field. Empty is meaningful ONLY when record_status
+  // = "present": it then means the probe recorded no field this turn.
+  repeated L3FieldEvidence fields = 7;
+
+  // canaries_planted / canaries_recovered are the request-level sums the
+  // WITNESS computes over `fields`. The producer emits no request-level total —
+  // its record is a per-field map — so these are a convenience for readers, not
+  // a second source of truth, and they can never disagree with `fields`.
+  //
+  // ⛔ THEY ARE NOT A SCORE. There is no threshold on these numbers and none
+  // may be introduced: the verdict is per-field and categorical (T-617 C4 — no
+  // threshold verdicts). They exist so an operator can see the probe's scale.
+  uint32 canaries_planted = 8;
+  uint32 canaries_recovered = 9;
+
+  // fields_passed / fields_failed / fields_absent count the per-field verdicts.
+  // Computed by the witness from `fields`, so they sum to len(fields) by
+  // construction — same standing as the canary sums above.
+  uint32 fields_passed = 10;
+  uint32 fields_failed = 11;
+  uint32 fields_absent = 12;
+}
+
+// L3FieldEvidence is one field's planted-canary recall result, reproduced from
+// the sanitizer's signed record.
+message L3FieldEvidence {
+  // field_key is the STRUCTURAL path the sanitizer assigned the field
+  // (e.g. "messages[3].content"). It carries no field text, no offsets and no
+  // digests; it is reproduced verbatim from the signed claim.
+  string field_key = 1;
+
+  // verdict is the per-field recall result, closed vocabulary — the sanitizer's
+  // own lattice (services/sanitizer/l3_evidence_probe.py EVIDENCE_VERDICTS):
+  //   "passed" — every probed window met its threshold AND no window went
+  //              unprobed.
+  //   "failed" — a probed window MISSED its threshold.
+  //   "absent" — no window carried a probe. `reason` says why.
+  string verdict = 2;
+
+  // reason names WHY a field carries no evidence. Non-empty only when
+  // verdict = "absent"; closed vocabulary mirroring the producer's
+  // ABSENT_REASONS:
+  //   "probe_off"                        — the probe is not armed on this
+  //                                        deployment (the shipped default).
+  //   "no_l3_window"                     — L3 ran no window on this field.
+  //   "window_below_probe_floor"         — the window is shorter than the size
+  //                                        the probe's overhead was measured
+  //                                        at, so it is not probed rather than
+  //                                        probed into an unmeasured budget.
+  //   "window_served_from_verdict_cache" — no inference ran, so there is no
+  //                                        recall evidence to record.
+  //   "output_headroom_clipped"          — the model's output budget could not
+  //                                        hold the probe's measured headroom
+  //                                        on this window; probing anyway would
+  //                                        have starved the real scan.
+  //   "no_prompt_assembly_seam"          — the code path that scanned this
+  //                                        window has no seam at which a canary
+  //                                        could be planted.
+  string reason = 3;
+
+  // canaries_planted / canaries_recovered are this field's totals across its
+  // leaf windows. ⛔ NOT A SCORE — see L3CoverageEvidence.canaries_planted.
+  uint32 canaries_planted = 4;
+  uint32 canaries_recovered = 5;
+
+  // windows is the number of L3 leaf windows recorded for this field;
+  // probed_windows is how many of them carried canaries. probed_windows <
+  // windows is exactly the condition that forces verdict = "absent" rather than
+  // "passed", and both are published so a reader can see that for themselves.
+  uint32 windows = 6;
+  uint32 probed_windows = 7;
+}
+
+// L3CoverageScope is the witness's typed rendering of the sanitizer's signed
+// `l3_coverage_scope` claim payload (board T-617). See
+// VerificationResult.l3_coverage_scope for the normative scope/recall boundary
+// — everything said there binds every consumer of this message.
+//
+// FOUR EVIDENCE CLASSES, kept distinct on purpose:
+//   * FRESH SCAN            — a `covered` entry with via = "scan".
+//   * RECEIPT-BACKED REUSE  — a `covered` entry with via = "receipt", naming
+//                             the receipt_id and the source_claim_id of the
+//                             claim whose scan actually covered those bytes.
+//   * NAMED EXCLUSION       — an `excluded` entry, with its zone and reason.
+//   * MISSING / FAILED      — an `eligible_not_covered` entry (an eligible
+//                             field with no evidence at all), and/or a denial
+//                             `reason` such as "unattributed_degrade".
+// Collapsing any two of them loses the distinction an auditor asks about.
+message L3CoverageScope {
+  // record_status says whether a scope record could be read AT ALL. Closed
+  // vocabulary, five values plus the empty string. Only "present" means the
+  // remaining fields carry meaning; every other value means SCOPE UNAVAILABLE
+  // and leaves every other field at its proto3 default.
+  //
+  //   "present"                — a well-formed record was read from the signed
+  //                              sanitizer claim and is reproduced below.
+  //   "absent"                 — no scope record was carried. The chain has no
+  //                              dsa-sanitizer claim, that claim carries no
+  //                              canonical payload, or the payload has no
+  //                              `l3_coverage_scope` key (every pre-T-617
+  //                              sanitizer, and every turn on which L3 was not
+  //                              configured at all). NOT "nothing was excluded".
+  //   "malformed"              — a record was carried and the witness REFUSED
+  //                              it: unparseable payload, wrong shape, an
+  //                              out-of-vocabulary token, a receipt missing its
+  //                              receipt_id or source_claim_id, or an internal
+  //                              inconsistency (granted alongside a non-empty
+  //                              eligible_not_covered; counts that do not add
+  //                              up; a field in both covered and excluded).
+  //                              The record is dropped WHOLE rather than
+  //                              rendered in part — a partially-read exclusion
+  //                              list is precisely the C3 overclaim ("a green
+  //                              claim must name what it excluded").
+  //   "unsupported_derivation" — a well-formed record produced by a derivation
+  //                              VERSION this witness build does not know. The
+  //                              rule that produced it is unknown here, so the
+  //                              record is not reproduced. Distinct from
+  //                              "malformed" so an operator can tell a
+  //                              deploy-ordering gap (sanitizer ahead of
+  //                              witness) from a contract violation.
+  //   "not_checked"            — the record was never examined, because the
+  //                              chain's claim signatures did not verify (bad
+  //                              signature, canonical-payload mismatch, unknown
+  //                              service key, typed-payload mismatch). The
+  //                              witness has no opinion about the scope of a
+  //                              chain it could not authenticate. Emitted by
+  //                              BOTH paths — the witness deliberately seals
+  //                              FAILED certificates, so the seal path gates on
+  //                              signature validity too. Deliberately NOT
+  //                              collapsed into "absent": a record that was not
+  //                              read must not read as a record that was not
+  //                              there.
+  //   ""                       — unknown / legacy: minted or re-verified by a
+  //                              witness build that predates T-617. A witness
+  //                              at or after T-617 NEVER emits "" — every
+  //                              result carries one of the five values above.
+  string record_status = 1;
+
+  // derivation_version identifies the RULE that produced this record
+  // (services/sanitizer/l3_claim_scope.py L3_CLAIM_DERIVATION_VERSION). It is
+  // part of the sanitizer's cache-key fingerprint, so a bump deterministically
+  // orphans receipts minted under the previous meaning of "covered".
+  string derivation_version = 2;
+
+  // drives_claim reports whether the SANITIZER deployment that minted this
+  // record let the derivation decide the request-level `llm_pii_scan` claim
+  // (L3_CLAIM_DERIVATION=scope), rather than the pre-T-617 request-wide
+  // absence-of-degradation rule (legacy).
+  //
+  // FALSE IS THE EXPECTED VALUE TODAY. While it is false, a granted record
+  // next to a `layers_active` roster with no "llm_pii_scan" is the designed
+  // shape of the dark period, not an inconsistency to reconcile.
+  bool drives_claim = 3;
+
+  // granted is the scope verdict: every ELIGIBLE field is COVERED, and the
+  // exclusions are named. ⛔ NOT a protection claim — see the message header.
+  bool granted = 4;
+
+  // reason is the closed-vocabulary explanation of `granted`:
+  //   "all_eligible_fields_covered" (the only granting value)
+  //   "no_eligible_field"           — L3 was eligible for nothing this turn
+  //   "eligible_field_not_covered"  — see eligible_not_covered
+  //   "unattributed_degrade"        — an L3 degradation named no field, so it
+  //                                   poisons the whole request rather than
+  //                                   being narrowed to a field nobody named.
+  string reason = 5;
+
+  // eligible_count is the number of fields the zone policy made eligible for
+  // L3 on this request. It equals len(covered) + len(eligible_not_covered);
+  // a record where it does not is rejected as "malformed".
+  uint32 eligible_count = 6;
+
+  // covered names every eligible field that HAS evidence, and which kind.
+  // Sorted by field_key; one entry per field.
+  repeated L3CoveredField covered = 7;
+
+  // eligible_not_covered names every eligible field with NO evidence at all —
+  // the MISSING/FAILED class. Non-empty is incompatible with granted = true.
+  // Sorted.
+  repeated string eligible_not_covered = 8;
+
+  // excluded names every field the policy kept OUT of L3, with its zone and
+  // reason (C3). Sorted by field_key. An empty list means "nothing was
+  // excluded" ONLY when record_status = "present".
+  repeated L3ExcludedField excluded = 9;
+}
+
+// L3CoveredField is one eligible field that has L3 evidence.
+message L3CoveredField {
+  // field_key is the STRUCTURAL path the sanitizer assigned the field
+  // (e.g. "messages[3].content", "__vo_leaf_7"). It carries no field text, no
+  // offsets and no digests; it is reproduced verbatim from the signed claim.
+  string field_key = 1;
+
+  // via is the evidence class, closed vocabulary:
+  //   "scan"    — THIS request's L3 scan covered the field (a fresh scan).
+  //   "receipt" — an EARLIER claim's scan covered these exact bytes; both
+  //               receipt_id and source_claim_id below are then non-empty.
+  string via = 2;
+
+  // receipt_id is the truncated HMAC receipt naming the cached coverage.
+  // Empty iff via = "scan". A "receipt" entry missing it is REFUSED (the whole
+  // record becomes "malformed") — a receipt that points at nothing is the bare
+  // "some earlier scan covered these bytes" this category exists to replace.
+  string receipt_id = 3;
+
+  // source_claim_id is the claim whose scan actually covered these bytes.
+  // Empty iff via = "scan"; same refusal rule as receipt_id.
+  string source_claim_id = 4;
+}
+
+// L3ExcludedField is one field the zone policy kept out of L3, named with its
+// reason (C3: a green claim that hides its exclusions is an overclaim).
+message L3ExcludedField {
+  // field_key — see L3CoveredField.field_key.
+  string field_key = 1;
+
+  // zone is the redaction policy's zone wire-name for the field. OPEN
+  // vocabulary by design: an operator's policy document may define zones this
+  // build has never heard of, and refusing them would misreport a correctly
+  // configured deployment. Required to be non-empty.
+  string zone = 2;
+
+  // reason is the closed-vocabulary exclusion cause:
+  //   "l3_not_configured"        — no L3 scanner is wired in this deployment
+  //   "caller_skipped"           — the caller asked for no L3 scan
+  //   "shallow_zone_bypasses_l3" — the typed-message contract's shallow bypass
+  //   "zone_policy_skip"         — the zone policy excludes L3 for this zone
+  string reason = 3;
 }
 
 message ExternalAttestation {

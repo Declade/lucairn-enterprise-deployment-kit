@@ -1,6 +1,19 @@
 // Vendored from Declade/dual-sandbox-architecture:
-//   proto/veil/v1/veil.proto @ commit f24bf0d2565ff5d414c0ee13c3188675d8f67d3c
+//   proto/veil/v1/veil.proto @ commit 91941304fd3ba30779d81121c37c436a631f4089
 // + proto/common/v1/types.proto (only EntityCount inlined, for SanitizerClaim).
+//
+// PARTIAL VENDOR, BY DESIGN. This copy carries every message the dashboard
+// decodes, at the UPSTREAM field numbers. It deliberately does NOT carry
+// upstream messages the dashboard never reads (e.g. AnchorVerificationResult)
+// nor VerificationResult fields 10-12 — see the gap note inside that message.
+// Field numbers are never renumbered to close a gap; proto3 drops the unknown
+// fields on decode, which is the intended behaviour for this consumer.
+//
+// Last sync: 2026-09-22, T-600 S3 / T-617 S3 — added VerificationResult
+// fields 13 (`l3_coverage_scope`) and 14 (`l3_coverage_evidence`) plus the
+// five L3* messages they reference, verbatim from the commit above. Both are
+// UNSIGNED certificate metadata: they are outside the witness v2 (7-key) and
+// v3 (13-key) signable maps, so vendoring them changes no verification bytes.
 //
 // This file is the CANONICAL upstream `dsa.veil.v1` schema, vendored
 // verbatim so the dashboard speaks the real witness gRPC contract:

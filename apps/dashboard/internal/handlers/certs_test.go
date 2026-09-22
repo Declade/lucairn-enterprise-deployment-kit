@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -151,13 +152,19 @@ func TestInspectorHandler_RendersAllSixClaimsAndBYOKBadge(t *testing.T) {
 		Verdict:    "verified",
 	}}
 	v := &stubVerifier{result: witness.VerifyResult{
-		OverallVerdict:    "verified",
-		Completeness:      "partial",
-		SignaturesValid:   true,
-		ByokExempt:        true,
-		IsolationVerified: true,
-		TSATimestamp:      "https://freetsa.org/tsr/123",
-		RekorUUID:         "rekor-uuid-xyz",
+		OverallVerdict: "verified",
+		Completeness:   "partial",
+		// T-600 S3 / T-617 S3: a real verify round-trip always carries these
+		// two (mapVerifyResult populates them unconditionally), so the stub
+		// does too — a fixture that omits them would quietly stop covering
+		// the claim-ceiling rows this page now owes the reader.
+		CompletenessDisplay: witness.L3CompletenessWithCaveat("partial"),
+		L3Coverage:          witness.BuildL3CoverageNarrative(nil, nil),
+		SignaturesValid:     true,
+		ByokExempt:          true,
+		IsolationVerified:   true,
+		TSATimestamp:        "https://freetsa.org/tsr/123",
+		RekorUUID:           "rekor-uuid-xyz",
 		PerClaim: []witness.ClaimVerdict{
 			{ClaimType: "gateway", Verdict: "ok", PubKeyFingerprint: "g-fp-aaaaaaaa", SignatureHex: "g-sig-aaaaaaaa"},
 			{ClaimType: "bridge", Verdict: "ok", PubKeyFingerprint: "b-fp-aaaaaaaa", SignatureHex: "b-sig-aaaaaaaa"},
@@ -196,6 +203,15 @@ func TestInspectorHandler_RendersAllSixClaimsAndBYOKBadge(t *testing.T) {
 	// it observed; assert it matches the audit-DB row's RequestID.
 	if got := v.lastVerifyID; got != "req_abcd-1234" {
 		t.Errorf("Verifier.Verify called with %q want %q (must use request_id, NOT cert_id)", got, "req_abcd-1234")
+	}
+	// T-600 S3 / T-617 S3: the claim ceiling and the completeness caveat ride
+	// on every inspector render, including this pre-existing BYOK fixture
+	// (whose certificate carries neither L3 record — the common case today).
+	if !strings.Contains(body, witness.L3CoverageCeiling) {
+		t.Errorf("the coverage ceiling must render on every inspector page")
+	}
+	if !strings.Contains(html.UnescapeString(body), "Partial — "+witness.L3CompletenessMeaning) {
+		t.Errorf("the completeness caveat must render; the bare enum was the T-600 defect")
 	}
 }
 

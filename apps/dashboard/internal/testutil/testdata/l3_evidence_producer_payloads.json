@@ -1,0 +1,178 @@
+{
+  "_canary_line_example": "Die Vorgangsnummer ZZ-PROBE-ABCDEF wurde im System gespeichert.",
+  "_derivation_version": "t600-evidence-v1",
+  "_generated_by": "services/veil-witness/internal/verifier/testdata/gen_l3_evidence_fixtures.py",
+  "_payload_key": "l3_coverage_evidence",
+  "_probe": {
+    "k": 4,
+    "min_window_chars": 3000,
+    "threshold": 4
+  },
+  "_producer": "services/sanitizer/l3_evidence_probe.py",
+  "scenarios": {
+    "absent_below_floor": {
+      "messages[0].content": {
+        "canaries_planted": 0,
+        "canaries_recovered": 0,
+        "derivation_version": "t600-evidence-v1",
+        "drives_claim": false,
+        "probed_windows": 0,
+        "reason": "window_below_probe_floor",
+        "verdict": "absent",
+        "windows": 1
+      }
+    },
+    "absent_cached": {
+      "messages[0].content": {
+        "canaries_planted": 0,
+        "canaries_recovered": 0,
+        "derivation_version": "t600-evidence-v1",
+        "drives_claim": false,
+        "probed_windows": 0,
+        "reason": "window_served_from_verdict_cache",
+        "verdict": "absent",
+        "windows": 1
+      }
+    },
+    "absent_headroom_clipped": {
+      "messages[0].content": {
+        "canaries_planted": 0,
+        "canaries_recovered": 0,
+        "derivation_version": "t600-evidence-v1",
+        "drives_claim": false,
+        "probed_windows": 0,
+        "reason": "output_headroom_clipped",
+        "verdict": "absent",
+        "windows": 1
+      }
+    },
+    "absent_no_prompt_seam": {
+      "messages[0].content": {
+        "canaries_planted": 0,
+        "canaries_recovered": 0,
+        "derivation_version": "t600-evidence-v1",
+        "drives_claim": false,
+        "probed_windows": 0,
+        "reason": "no_prompt_assembly_seam",
+        "verdict": "absent",
+        "windows": 1
+      }
+    },
+    "absent_no_window": {
+      "messages[0].content": {
+        "canaries_planted": 0,
+        "canaries_recovered": 0,
+        "derivation_version": "t600-evidence-v1",
+        "drives_claim": false,
+        "probed_windows": 0,
+        "reason": "no_l3_window",
+        "verdict": "absent",
+        "windows": 0
+      }
+    },
+    "empty": {},
+    "failed": {
+      "messages[0].content": {
+        "canaries_planted": 8,
+        "canaries_recovered": 8,
+        "derivation_version": "t600-evidence-v1",
+        "drives_claim": false,
+        "probed_windows": 2,
+        "verdict": "passed",
+        "windows": 2
+      },
+      "messages[1].content": {
+        "canaries_planted": 8,
+        "canaries_recovered": 5,
+        "derivation_version": "t600-evidence-v1",
+        "drives_claim": false,
+        "probed_windows": 2,
+        "verdict": "failed",
+        "windows": 2
+      }
+    },
+    "mixed": {
+      "messages[0].content": {
+        "canaries_planted": 8,
+        "canaries_recovered": 8,
+        "derivation_version": "t600-evidence-v1",
+        "drives_claim": false,
+        "probed_windows": 2,
+        "verdict": "passed",
+        "windows": 2
+      },
+      "messages[1].content": {
+        "canaries_planted": 8,
+        "canaries_recovered": 5,
+        "derivation_version": "t600-evidence-v1",
+        "drives_claim": false,
+        "probed_windows": 2,
+        "verdict": "failed",
+        "windows": 2
+      },
+      "messages[2].content": {
+        "canaries_planted": 0,
+        "canaries_recovered": 0,
+        "derivation_version": "t600-evidence-v1",
+        "drives_claim": false,
+        "probed_windows": 0,
+        "reason": "window_served_from_verdict_cache",
+        "verdict": "absent",
+        "windows": 1
+      }
+    },
+    "partial": {
+      "messages[0].content": {
+        "canaries_planted": 8,
+        "canaries_recovered": 8,
+        "derivation_version": "t600-evidence-v1",
+        "drives_claim": false,
+        "probed_windows": 2,
+        "verdict": "passed",
+        "windows": 2
+      },
+      "messages[1].content": {
+        "canaries_planted": 4,
+        "canaries_recovered": 4,
+        "derivation_version": "t600-evidence-v1",
+        "drives_claim": false,
+        "probed_windows": 1,
+        "reason": "window_below_probe_floor",
+        "verdict": "absent",
+        "windows": 2
+      }
+    },
+    "passed": {
+      "messages[0].content": {
+        "canaries_planted": 8,
+        "canaries_recovered": 8,
+        "derivation_version": "t600-evidence-v1",
+        "drives_claim": false,
+        "probed_windows": 2,
+        "verdict": "passed",
+        "windows": 2
+      },
+      "messages[1].content": {
+        "canaries_planted": 8,
+        "canaries_recovered": 8,
+        "derivation_version": "t600-evidence-v1",
+        "drives_claim": false,
+        "probed_windows": 2,
+        "verdict": "passed",
+        "windows": 2
+      }
+    },
+    "probe_off": {
+      "messages[0].content": {
+        "canaries_planted": 0,
+        "canaries_recovered": 0,
+        "derivation_version": "t600-evidence-v1",
+        "drives_claim": false,
+        "probed_windows": 0,
+        "reason": "probe_off",
+        "verdict": "absent",
+        "windows": 0
+      }
+    }
+  }
+}
