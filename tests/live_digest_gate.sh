@@ -16,9 +16,10 @@
 #     (parse_image_digests in bin/lucairn — the same parser `doctor --strict`
 #     uses). Nothing is hardcoded here.
 #   * Selects every NON-pending entry whose ref is a public third-party
-#     container image: a ref NOT under ghcr.io/declade/ (first-party images are
-#     out of scope here; `lucairn verify-images` checks them against their
-#     cosign-signed digests) and not an ollama:// or hf:// model URI.
+#     container image: a ref NOT under ghcr.io/declade/ and not an ollama:// or
+#     hf:// model URI. First-party ghcr.io/declade/ packages are private (an
+#     anonymous ghcr.io token + manifest request returns 401), so this gate
+#     cannot resolve them and they are NOT live-checked in CI.
 #   * Resolves each ref's CURRENT index digest with the real
 #     `docker buildx imagetools inspect <ref> --format '{{json .Manifest}}'`
 #     and takes the top-level `.digest` with jq.

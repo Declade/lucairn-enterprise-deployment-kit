@@ -25,11 +25,15 @@
 # manifest records for that ref (so a clean manifest => all match). The tamper
 # test edits a COPY of the manifest and asserts --strict flips to a block.
 #
-# FIXTURE-ONLY, HOST-INDEPENDENT (astra post-merge #137 M1): every doctor run
-# below uses a hermetic PATH — a stub dir plus $TOOLBOX (symlinks to the
-# coreutils the verify path needs), or in 5c/5e a dir of such symlinks alone —
-# and never a real docker/crane/skopeo. So this test's answer does not depend
-# on whether the host (laptop or CI runner) has docker installed. It does NOT resolve any live registry digest and is NOT
+# FIXTURE-ONLY (astra post-merge #137 M1): every doctor run below uses a
+# hermetic PATH — a stub dir plus $TOOLBOX (symlinks to the coreutils the
+# verify path needs), or in 5c/5e a dir of such symlinks alone — with no
+# docker/crane/skopeo binary on it. It is hermetic against PATH-found
+# resolvers: a docker/crane/skopeo installed on the host (laptop or CI runner)
+# is not reachable. A shell-exported function (e.g. `export -f docker`) would
+# bypass PATH; that case fails the test rather than passing it — at the 5a
+# stub-call-count assertion if the function answers the recorded digests, or
+# at a 5a --strict assertion if it answers anything else. It does NOT resolve any live registry digest and is NOT
 # a drift signal. Live upstream drift is detected by tests/live_digest_gate.sh
 # (CI job `live-digest-gate`), which has no fixture fallback.
 set -uo pipefail
