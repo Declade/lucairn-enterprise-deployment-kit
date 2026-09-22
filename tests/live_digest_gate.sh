@@ -95,7 +95,7 @@ while IFS=$'\t' read -r ref recorded; do
     echo "  RESULT: MALFORMED (observed value is not sha256:<64 hex>)"
     bad=$((bad + 1))
   elif [ "$observed" != "$recorded" ]; then
-    echo "  RESULT: MISMATCH (upstream re-pointed the tag — re-pin by hand after review; see OPS.md § Digest-pin enforcement)"
+    echo "  RESULT: MISMATCH (recorded != observed; usually upstream re-pointed a moving tag — review, then re-pin by hand; see OPS.md § Digest-pin enforcement)"
     bad=$((bad + 1))
   else
     echo "  RESULT: ok"
