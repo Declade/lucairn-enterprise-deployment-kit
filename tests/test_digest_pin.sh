@@ -26,10 +26,10 @@
 # test edits a COPY of the manifest and asserts --strict flips to a block.
 #
 # FIXTURE-ONLY, HOST-INDEPENDENT (astra post-merge #137 M1): every doctor run
-# below uses PATH="<stub dir>:$TOOLBOX", where $TOOLBOX holds ONLY symlinks to
-# the coreutils the verify path needs — never a real docker/crane/skopeo. So
-# this test's answer is the same on a laptop without docker and on a CI runner
-# with /usr/bin/docker. It does NOT resolve any live registry digest and is NOT
+# below uses a hermetic PATH — a stub dir plus $TOOLBOX (symlinks to the
+# coreutils the verify path needs), or in 5c/5e a dir of such symlinks alone —
+# and never a real docker/crane/skopeo. So this test's answer does not depend
+# on whether the host (laptop or CI runner) has docker installed. It does NOT resolve any live registry digest and is NOT
 # a drift signal. Live upstream drift is detected by tests/live_digest_gate.sh
 # (CI job `live-digest-gate`), which has no fixture fallback.
 set -uo pipefail
