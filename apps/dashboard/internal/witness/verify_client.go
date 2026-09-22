@@ -430,9 +430,16 @@ func verdictToLower(v witnesspb.Verdict) string {
 	}
 }
 
-// completenessToLower maps the proto enum to the dashboard-facing string
-// the inspector template's <span>{{ .Result.Completeness }}</span>
-// renders.
+// completenessToLower maps the proto enum to the dashboard-facing lowercase
+// token.
+//
+// ⚑ STALE-CITATION FIX (round 2): this used to say the inspector template
+// renders it directly. It no longer does — since T-600 S3 the template renders
+// CompletenessDisplay (the word PLUS its caveat), and this value survives only
+// as the raw machine token, fed to L3CompletenessWithCaveat and exposed on
+// VerifyResult.Completeness for callers that switch on it. A comment that
+// points at a render site which has moved is how the next person re-introduces
+// the bare enum.
 func completenessToLower(c witnesspb.Completeness) string {
 	switch c {
 	case witnesspb.Completeness_COMPLETENESS_FULL:

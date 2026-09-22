@@ -1,5 +1,5 @@
 // Vendored from Declade/dual-sandbox-architecture:
-//   proto/veil/v1/veil.proto @ commit 91941304fd3ba30779d81121c37c436a631f4089
+//   proto/veil/v1/veil.proto @ commit db096f5dcd681d56dfca3299337dfef76d6447c3
 // + proto/common/v1/types.proto (only EntityCount inlined, for SanitizerClaim).
 //
 // PARTIAL VENDOR, BY DESIGN. This copy carries every message the dashboard
@@ -14,6 +14,11 @@
 // five L3* messages they reference, verbatim from the commit above. Both are
 // UNSIGNED certificate metadata: they are outside the witness v2 (7-key) and
 // v3 (13-key) signable maps, so vendoring them changes no verification bytes.
+// Re-pointed from 91941304 to db096f5d in review round 2: a COMMENT-ONLY
+// upstream delta (verified — the field-number and type lines are byte-
+// identical between the two commits) that narrows L3CoverageEvidence's
+// `malformed` godoc to what the witness count floor actually catches. A stale
+// overclaim in a vendored comment is still a stale overclaim.
 //
 // This file is the CANONICAL upstream `dsa.veil.v1` schema, vendored
 // verbatim so the dashboard speaks the real witness gRPC contract:

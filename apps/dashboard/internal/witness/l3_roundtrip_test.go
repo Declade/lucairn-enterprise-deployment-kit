@@ -111,7 +111,7 @@ func TestVerify_L3CoverageFieldsRoundTripOverTheWire(t *testing.T) {
 	if !strings.Contains(got.L3Coverage.Scope, "covered 2 of 2 fields eligible for it") {
 		t.Errorf("scope line lost the counts: %q", got.L3Coverage.Scope)
 	}
-	if !strings.Contains(got.L3Coverage.Scope, "1 field(s) were excluded by policy: 1 × the zone policy excludes the deep shield for that zone") {
+	if !strings.Contains(got.L3Coverage.Scope, "1 field(s) were excluded by policy: 1 x the zone policy excludes the deep shield for that zone") {
 		t.Errorf("scope line lost the exclusion ledger: %q", got.L3Coverage.Scope)
 	}
 	if !strings.Contains(got.L3Coverage.Evidence, "Coverage evidence check passed (16/16 probes recovered)") {
@@ -126,7 +126,7 @@ func TestVerify_L3CoverageFieldsRoundTripOverTheWire(t *testing.T) {
 	if got.CompletenessDisplay == "Full" || got.CompletenessDisplay == "full" {
 		t.Errorf("completeness must never render as the bare word: %q", got.CompletenessDisplay)
 	}
-	if !strings.HasPrefix(got.CompletenessDisplay, "Full — ") {
+	if !strings.HasPrefix(got.CompletenessDisplay, "Full - ") {
 		t.Errorf("completeness display: got %q", got.CompletenessDisplay)
 	}
 }
@@ -154,10 +154,10 @@ func TestVerify_ToleratesCertificatesWithoutTheL3Fields(t *testing.T) {
 		t.Errorf("missing records must read absent; got scope=%q evidence=%q",
 			got.L3Coverage.ScopeStatus, got.L3Coverage.EvidenceStatus)
 	}
-	if !strings.HasPrefix(got.L3Coverage.Scope, "Coverage scope unavailable —") {
+	if !strings.HasPrefix(got.L3Coverage.Scope, "Coverage scope unavailable -") {
 		t.Errorf("scope line: got %q", got.L3Coverage.Scope)
 	}
-	if !strings.HasPrefix(got.L3Coverage.Evidence, "Recall evidence unavailable —") {
+	if !strings.HasPrefix(got.L3Coverage.Evidence, "Recall evidence unavailable -") {
 		t.Errorf("evidence line: got %q", got.L3Coverage.Evidence)
 	}
 	if got.L3Coverage.Composed != "" {

@@ -23,9 +23,8 @@ import (
 //
 // THE DEFECT THIS FILE CLOSES is not in the witness and not in the sanitizer:
 // both record the truth. It is in what a human reads. The inspector rendered a
-// bare completeness enum — `{{ .Result.Completeness }}` — over a record whose
-// own source file says (dual-sandbox-architecture services/sanitizer/
-// l3_coverage.py:13-14):
+// bare completeness enum over a record whose own source file says
+// (dual-sandbox-architecture services/sanitizer/l3_coverage.py:13-14):
 //
 //	"Coverage means 'these bytes were submitted to L3 in an untruncated
 //	 call', NOT 'L3 found everything'."
@@ -36,12 +35,35 @@ import (
 // the scan. So the words change here, and only here — no verdict moves, and
 // this package computes no verdict of its own.
 //
+// ⚑⚑ PORTED VERBATIM, AND THAT IS THE POINT. Every string below is the one
+// the gateway's own reader surfaces render:
+//
+//	Declade/dual-sandbox-architecture @ db096f5dcd681d56dfca3299337dfef76d6447c3
+//	services/gateway/internal/api/veil_l3_coverage_render.go
+//
+// transformed only mechanically (veilv1 -> witnesspb; three identifiers
+// exported for the template). Two surfaces phrasing the same record
+// differently is how a caveat quietly stops being carried on the one an
+// auditor actually reads — and the first cut of this file proved the failure
+// mode from the other direction: it was copied from a WORKING TREE minutes
+// before upstream fixed a render overclaim in it, so the kit re-inherited a
+// defect the gateway had already closed. Re-sync from a NAMED COMMIT when
+// upstream's wording moves; never from a working tree.
+//
+// ONE DELIBERATE OMISSION: upstream's l3CompletenessShortCaveat /
+// l3CompletenessWithShortCaveat pair exists for the gateway PDF's fixed-width
+// table cell. The kit dashboard has no such render, so it is not ported. If a
+// kit surface ever needs a width-constrained caveat, port that pair too rather
+// than inventing a shorter sentence here.
+//
 // ⛔ THE CEILING IS THE POINT (Marc lock 4, standing). Coverage is NECESSARY
 // for a completeness claim and can NEVER be SUFFICIENT. Every render that
 // mentions coverage or recall evidence carries L3CoverageCeiling, and the
-// phrases "all PII", "complete detection", "everything was scanned" and
-// "everything was found" are banned from every string this file can produce —
-// pinned by TestL3CoverageNarrative_NeverClaimsCompleteDetection.
+// overclaim phrases are banned from every string this file can produce —
+// pinned by TestL3CoverageNarrative_NeverClaimsCompleteDetection and, because
+// a phrase denylist cannot see an overclaim nobody thought of, by the
+// NEGATIVE-SHAPE property tests in TestL3EvidenceLine_* that require every
+// evidence line to carry the counts it is about.
 //
 // ⛔ ABSENCE IS NOT INNOCENCE. A missing scope or evidence record renders as
 // "scope unavailable" / "recall evidence unavailable", NEVER as "nothing was
@@ -63,13 +85,23 @@ import (
 // ("messages[3].content") and zones are open-vocabulary policy wire-names;
 // rendering either on an operator page leaks request shape and deployment
 // policy for no auditing gain. Reasons and COUNTS say everything C3 requires.
-// This mirrors the boundary the upstream public summary already holds.
+
+// ⚑ ASCII-ONLY IN ANY STRING THIS FILE RENDERS. Upstream's reason is its .pdf
+// render (gofpdf CORE fonts in WinAnsi turn an em dash into mojibake on the
+// artifact a customer hands a regulator). The kit dashboard has no such PDF
+// path today, so the kit's OWN reason is narrower and worth stating honestly:
+// byte-identity with the upstream wording. Keeping the rule means a future kit
+// PDF or CSV export inherits a safe corpus, and it makes an upstream re-sync a
+// diff of nothing. Enforced by TestL3CoverageNarrative_IsASCIIOnly.
 //
-// SAME WORDS AS UPSTREAM. The strings below are the ones the gateway's own
-// reader surfaces render (dual-sandbox-architecture services/gateway/internal/
-// api/veil_l3_coverage_render.go). Two surfaces phrasing the same record
-// differently is how a caveat quietly stops being carried on the one an
-// auditor actually reads.
+// ⚑ NO APOSTROPHES IN ANY STRING THIS FILE RENDERS. Every one of these lines
+// lands inside html/template, which escapes `'` to `&#39;` — so a caveat
+// written with an apostrophe is present on the page but INVISIBLE to the
+// grep-verifiable success criterion the T-600 PRD states, and to any operator
+// grepping the served HTML for it. Same for `"` (escaped to `&#34;`), which is
+// why l3Quote brackets an out-of-vocabulary token instead of quoting it. The
+// phrasing works around the characters rather than relying on everyone
+// downstream remembering to unescape.
 
 // L3CoverageCeiling is the one-line claim ceiling. It appears on EVERY surface
 // that renders coverage or recall evidence, verbatim.
@@ -78,18 +110,18 @@ const L3CoverageCeiling = "Coverage ceiling: this names which protection layers 
 
 // L3CoverageDiagnosticOnly is rendered while the records drive nothing.
 const L3CoverageDiagnosticOnly = "Diagnostic only: the coverage and recall-evidence lines above are recorded for " +
-	"measurement and do not yet change this certificate's verdict."
+	"measurement and do not yet change the verdict on this certificate."
 
 // L3CompletenessMeaning is the caveat pinned to the completeness verdict word
 // itself. `completeness` is a CHAIN property — "every claim the pipeline was
 // expected to file is present and verified" — and says nothing about detection
 // recall. Rendering the word alone is the reader-inference gap in one cell.
 const L3CompletenessMeaning = "completeness describes the CLAIM CHAIN (which pipeline claims are present and " +
-	"verified), not detection recall — see coverage below"
+	"verified), not detection recall - see coverage below"
 
 // L3CoverageNarrative is the rendered plain-language coverage story. Every
-// field is a complete sentence or empty; the template renders the non-empty
-// ones in order and is never required to compose text of its own.
+// field is a complete sentence or empty; a consumer renders the non-empty ones
+// in order and is never required to compose text of its own.
 type L3CoverageNarrative struct {
 	// Scope answers "which fields did the deep shield RUN on" (proto field 13).
 	// Never empty.
@@ -103,16 +135,14 @@ type L3CoverageNarrative struct {
 	// Diagnostic is L3CoverageDiagnosticOnly while either record drives
 	// nothing, empty after both flip.
 	Diagnostic string
-	// Ceiling is L3CoverageCeiling. Never empty — the template keys the whole
-	// coverage block on it, so an empty Ceiling means "no narrative was built"
-	// (a zero-value VerifyResult on the witness-unreachable path), never "the
-	// ceiling did not apply".
+	// Ceiling is L3CoverageCeiling. Never empty.
 	Ceiling string
 
 	// ScopeStatus / EvidenceStatus / EvidenceRollup are the raw closed-
-	// vocabulary tokens, so an operator can read the machine state without
-	// parsing prose. They carry no field keys, receipt ids, source claim ids
-	// or zone names.
+	// vocabulary tokens, so a machine consumer can switch without parsing
+	// prose. They carry no field keys, receipt ids, source claim ids or zone
+	// names — see buildPublicSummaryL3Coverage for why that matters on the
+	// unauthenticated surface.
 	ScopeStatus    string
 	EvidenceStatus string
 	EvidenceRollup string
@@ -121,73 +151,15 @@ type L3CoverageNarrative struct {
 	DrivesVerdict bool
 }
 
-// BuildL3CoverageNarrative renders the plain-language coverage story from the
-// two unsigned witness records. Both arguments may be nil — that IS the common
-// case on every pre-T-617 / pre-T-600 certificate, and it renders as
-// "unavailable", never as a clean bill of health.
-func BuildL3CoverageNarrative(scope *witnesspb.L3CoverageScope, ev *witnesspb.L3CoverageEvidence) L3CoverageNarrative {
-	n := L3CoverageNarrative{
-		Ceiling:        L3CoverageCeiling,
-		ScopeStatus:    scope.GetRecordStatus(),
-		EvidenceStatus: ev.GetRecordStatus(),
-		EvidenceRollup: ev.GetRollup(),
-		DrivesVerdict:  ev.GetDrivesVerdict(),
-	}
-	if scope == nil {
-		// A nil message and an explicit "absent" are the same fact to a
-		// reader; render them identically rather than inventing a third
-		// wording for "the proto field was not set".
-		n.ScopeStatus = "absent"
-	}
-	if ev == nil {
-		n.EvidenceStatus = "absent"
-	}
-
-	n.Scope = buildL3ScopeLine(scope, n.ScopeStatus)
-	n.Evidence = buildL3EvidenceLine(ev, n.EvidenceStatus)
-	n.Composed = buildL3ComposedLine(ev, n.EvidenceStatus)
-
-	// The dark note is keyed on the FLAGS, not on a build constant, so it
-	// disappears by itself on the day the flip lands rather than needing a
-	// second wording change nobody remembers to make.
-	if !scope.GetDrivesClaim() || !ev.GetDrivesVerdict() {
-		n.Diagnostic = L3CoverageDiagnosticOnly
-	}
-	return n
-}
-
-// L3CompletenessWithCaveat renders the completeness verdict word with the
-// caveat that stops it being read as a detection claim.
-//
-// ⛔ THE BARE WORD IS THE DEFECT. `{{ .Result.Completeness }}` alone was the
-// string in inspector.html.tmpl; the T-600 PRD's grep-verifiable success
-// criterion is that it is gone. The template renders THIS, never the raw
-// enum string on its own.
-func L3CompletenessWithCaveat(completeness string) string {
-	word := capitalizeFirst(completeness)
-	if word == "" {
-		word = "Unspecified"
-	}
-	return word + " — " + L3CompletenessMeaning
-}
-
-func capitalizeFirst(s string) string {
-	if s == "" {
-		return ""
-	}
-	r, size := utf8.DecodeRuneInString(s)
-	return string(unicode.ToUpper(r)) + s[size:]
-}
-
 // l3RecordStatusMeaning renders a record_status token in plain words. The
 // vocabulary is shared by L3CoverageScope and L3CoverageEvidence and pinned
-// equal across them upstream by
-// TestL3Evidence_StatusVocabularyMatchesTheScopeRecord.
+// equal across them by TestL3Evidence_StatusVocabularyMatchesTheScopeRecord in
+// the witness.
 func l3RecordStatusMeaning(status string) string {
 	switch status {
 	case "absent":
-		return "this certificate carries no such record — the sanitizer that minted it predates the feature, " +
-			"or the deployment has it switched off"
+		return "this certificate carries no such record (the sanitizer that minted it predates the feature, " +
+			"or the deployment has it switched off)"
 	case "malformed":
 		return "the witness was handed a record and REFUSED it, so none of it is reproduced"
 	case "unsupported_derivation":
@@ -195,15 +167,22 @@ func l3RecordStatusMeaning(status string) string {
 	case "not_checked":
 		return "the claim chain did not authenticate, so the record was never examined"
 	case "":
-		return "unknown — this certificate was minted or re-verified by a witness build that predates the record"
+		return "unknown provenance (this certificate was minted or re-verified by a witness build that predates the record)"
 	default:
 		return "unrecognised record state " + l3Quote(status)
 	}
 }
 
-// l3Quote quotes an out-of-vocabulary token so an unexpected value is visibly
-// a token rather than prose the reader might mistake for a finding.
-func l3Quote(s string) string { return "\"" + s + "\"" }
+// l3Quote marks an out-of-vocabulary token so an unexpected value is visibly a
+// token rather than prose the reader might mistake for a finding.
+//
+// ⚑ SQUARE BRACKETS, NOT QUOTE MARKS (bug-hunter M1). `"` is one of the five
+// characters html/template escapes (to &#34;), so a quoted token made its own
+// narrative line un-greppable in the served page — and the greppability test
+// never exercised this path, because every fixture used in-vocabulary tokens.
+// Brackets survive escaping untouched. The unknown-token fixture in
+// l3RenderCases now drives this function on the real render path.
+func l3Quote(s string) string { return "[" + s + "]" }
 
 // l3ExclusionReasonMeaning renders one L3ExcludedField.reason in plain words.
 // Closed vocabulary (proto L3ExcludedField.reason); an unknown token is
@@ -251,11 +230,11 @@ func l3EvidenceAbsentReasonMeaning(reason string) string {
 	case "no_l3_window":
 		return "the deep shield ran no window on that field"
 	case "window_below_probe_floor":
-		return "the text was shorter than the size the probe's overhead was measured at"
+		return "the text was shorter than the window size the probe overhead was measured at"
 	case "window_served_from_verdict_cache":
-		return "the result was served from the deep shield's verdict cache, so no inference ran"
+		return "the result was served from the deep shield verdict cache, so no inference ran"
 	case "output_headroom_clipped":
-		return "the model's output budget could not hold the probe without starving the real scan"
+		return "the model output budget could not hold the probe without starving the real scan"
 	case "no_prompt_assembly_seam":
 		return "that scan path has no seam at which a probe could be planted"
 	default:
@@ -268,20 +247,20 @@ func l3EvidenceAbsentReasonMeaning(reason string) string {
 func l3ComposedReasonMeaning(reason string) string {
 	switch reason {
 	case "scope_and_recall_satisfied":
-		return "every eligible field was covered, every covered field's recall check came back, " +
+		return "every eligible field was covered, every covered field had its recall check come back, " +
 			"and the exclusions and receipts are named"
 	case "scope_unavailable":
 		return "the scope record is missing or was refused, so the first half of the rule cannot be evaluated"
 	case "evidence_unavailable":
 		return "no recall evidence was carried on this certificate"
 	case "evidence_failed":
-		return "a field's recall check MISSED — the deep shield did not return the probes planted in it"
+		return "a recall check on one field MISSED: the deep shield did not return the probes planted in it"
 	case "scope_not_granted":
 		return "the scope record itself did not grant"
 	case "evidence_absent_for_covered_field":
 		return "a field the scope record says was freshly scanned carries no passing recall evidence"
 	case "evidence_on_excluded_field":
-		return "the two records disagree — the scope record calls a field policy-excluded while the " +
+		return "the two records disagree - the scope record calls a field policy-excluded while the " +
 			"evidence record carries a scan verdict for it"
 	case "receipt_covered_evidence_not_in_chain":
 		return "a field was covered by a NAMED RECEIPT from an earlier turn, so no inference ran on those " +
@@ -293,10 +272,45 @@ func l3ComposedReasonMeaning(reason string) string {
 	}
 }
 
+// BuildL3CoverageNarrative renders the plain-language coverage story from the
+// two unsigned witness records. Both arguments may be nil — that IS the common
+// case on every pre-T-617 / pre-T-600 certificate, and it renders as
+// "unavailable", never as a clean bill of health.
+func BuildL3CoverageNarrative(scope *witnesspb.L3CoverageScope, ev *witnesspb.L3CoverageEvidence) L3CoverageNarrative {
+	n := L3CoverageNarrative{
+		Ceiling:        L3CoverageCeiling,
+		ScopeStatus:    scope.GetRecordStatus(),
+		EvidenceStatus: ev.GetRecordStatus(),
+		EvidenceRollup: ev.GetRollup(),
+		DrivesVerdict:  ev.GetDrivesVerdict(),
+	}
+	if scope == nil {
+		// A nil message and an explicit "absent" are the same fact to a
+		// reader; render them identically rather than inventing a third
+		// wording for "the proto field was not set".
+		n.ScopeStatus = "absent"
+	}
+	if ev == nil {
+		n.EvidenceStatus = "absent"
+	}
+
+	n.Scope = buildL3ScopeLine(scope, n.ScopeStatus)
+	n.Evidence = buildL3EvidenceLine(ev, n.EvidenceStatus)
+	n.Composed = buildL3ComposedLine(ev, n.EvidenceStatus)
+
+	// The dark note is keyed on the FLAGS, not on a build constant, so it
+	// disappears by itself on the day the flip lands rather than needing a
+	// second wording change nobody remembers to make.
+	if !scope.GetDrivesClaim() || !ev.GetDrivesVerdict() {
+		n.Diagnostic = L3CoverageDiagnosticOnly
+	}
+	return n
+}
+
 // buildL3ScopeLine renders the SCOPE half (proto field 13).
 func buildL3ScopeLine(scope *witnesspb.L3CoverageScope, status string) string {
 	if status != "present" {
-		return "Coverage scope unavailable — " + l3RecordStatusMeaning(status) +
+		return "Coverage scope unavailable - " + l3RecordStatusMeaning(status) +
 			". This is NOT a statement that nothing was excluded or that every field was covered."
 	}
 
@@ -332,9 +346,9 @@ func buildL3ScopeLine(scope *witnesspb.L3CoverageScope, status string) string {
 	}
 
 	if scope.GetGranted() {
-		b.WriteString("Scope check: granted — " + l3ScopeReasonMeaning(scope.GetReason()) + ".")
+		b.WriteString("Scope check: granted - " + l3ScopeReasonMeaning(scope.GetReason()) + ".")
 	} else {
-		b.WriteString("Scope check: NOT granted — " + l3ScopeReasonMeaning(scope.GetReason()) + ".")
+		b.WriteString("Scope check: NOT granted - " + l3ScopeReasonMeaning(scope.GetReason()) + ".")
 	}
 	return b.String()
 }
@@ -342,8 +356,12 @@ func buildL3ScopeLine(scope *witnesspb.L3CoverageScope, status string) string {
 // l3ExclusionReasonPhrases renders the exclusion ledger as "<n> × <reason in
 // plain words>" phrases, sorted for stable output.
 //
-// It names REASONS and COUNTS and deliberately not field keys or zone names —
-// see the DISCLOSURE BOUNDARY note at the top of this file.
+// It names REASONS and COUNTS and deliberately not field keys or zone names.
+// field_key is a structural path into the customer's own request
+// ("messages[3].content") and `zone` is an OPEN-vocabulary policy wire-name; a
+// public, unauthenticated render of either leaks request shape and deployment
+// policy. The reason vocabulary is closed and says everything C3 requires — an
+// auditor asks WHY a field was excluded, not which array index it sat at.
 func l3ExclusionReasonPhrases(excluded []*witnesspb.L3ExcludedField) []string {
 	counts := map[string]int{}
 	for _, e := range excluded {
@@ -356,7 +374,7 @@ func l3ExclusionReasonPhrases(excluded []*witnesspb.L3ExcludedField) []string {
 	sort.Strings(reasons)
 	out := make([]string, 0, len(reasons))
 	for _, r := range reasons {
-		out = append(out, fmt.Sprintf("%d × %s", counts[r], l3ExclusionReasonMeaning(r)))
+		out = append(out, fmt.Sprintf("%d x %s", counts[r], l3ExclusionReasonMeaning(r)))
 	}
 	return out
 }
@@ -368,7 +386,7 @@ func l3ExclusionReasonPhrases(excluded []*witnesspb.L3ExcludedField) []string {
 // scan was complete.
 func buildL3EvidenceLine(ev *witnesspb.L3CoverageEvidence, status string) string {
 	if status != "present" {
-		return "Recall evidence unavailable — " + l3RecordStatusMeaning(status) +
+		return "Recall evidence unavailable - " + l3RecordStatusMeaning(status) +
 			". This is NOT a statement that the scan was clean."
 	}
 
@@ -380,26 +398,49 @@ func buildL3EvidenceLine(ev *witnesspb.L3CoverageEvidence, status string) string
 
 	switch ev.GetRollup() {
 	case "verified":
+		// ⚑⚑⚑ THE CLAUSE AFTER THE COUNTS IS GATED ON THE COUNTS (bug-hunter
+		// H1). A field passes at `recovered >= threshold`, and the threshold is
+		// a legal configuration anywhere in [1, K]
+		// (services/sanitizer/l3_evidence_probe.py ProbeConfig.armed). So an
+		// HONEST K=4 / threshold=3 record is `passed` at 3 of 4 recovered — and
+		// the unconditional wording rendered "passed (3/4 probes recovered) ...
+		// every planted probe came back": a false sentence standing next to its
+		// own contradicting numbers, which is the exact overclaim the proto
+		// comment on L3CoverageEvidence.record_status forbids a reader surface
+		// from making. Only `recovered == planted` earns the strong clause.
+		//
+		// The weak clause is deliberately the one that is true under EVERY
+		// configuration: a `passed` field means every probed window met the
+		// threshold in force. It does not name the threshold because the
+		// threshold is not in the signed record.
+		clause := "That means every probed window met the recall threshold in force."
+		if recovered == planted && planted > 0 {
+			clause = "That means the recall CHECK ran on every field carrying one and every planted probe came back."
+		}
 		return fmt.Sprintf(
-			"Coverage evidence check passed (%d/%d probes recovered) across %d field(s). "+
-				"That means the recall CHECK ran on every field carrying one and every planted probe came back.",
-			recovered, planted, passed)
+			"Coverage evidence check passed (%d/%d probes recovered) across %d field(s). %s",
+			recovered, planted, passed, clause)
 	case "failed":
 		return fmt.Sprintf(
-			"Coverage evidence check FAILED — %d field(s) returned fewer planted probes than required "+
+			"Coverage evidence check FAILED - %d field(s) returned fewer planted probes than required "+
 				"(%d/%d recovered across the request; %d field(s) passed, %d carry no evidence). "+
 				"A measured miss is positive evidence of a recall gap.",
 			failed, recovered, planted, passed, absent)
 	case "unverified":
 		return fmt.Sprintf(
-			"Coverage evidence check is INCOMPLETE — %d field(s) passed (%d/%d probes recovered) and "+
+			"Coverage evidence check is INCOMPLETE - %d field(s) passed (%d/%d probes recovered) and "+
 				"%d field(s) carry no evidence: %s. A partly evidenced request is not a verified one.",
 			passed, recovered, planted, absent, strings.Join(l3EvidenceAbsentPhrases(ev), "; "))
 	case "absent":
-		return "Coverage evidence check did not run on this request — no field carried a recall probe" +
+		// ⚑ "no field carried a recall probe" WAS FALSE for a real shape
+		// (bug-hunter L1): a field whose windows were only PARTLY probed is
+		// `absent` with canaries_planted > 0, so probes were planted and the
+		// old sentence denied it. The rollup means no field carries a USABLE
+		// verdict, which is what this says.
+		return "No field on this request carries a usable recall-evidence verdict" +
 			l3EvidenceAbsentSuffix(ev) + ". Evidence that does not exist is not evidence of success."
 	default:
-		return "Recall evidence unavailable — the evidence rollup is " + l3Quote(ev.GetRollup()) +
+		return "Recall evidence unavailable - the evidence rollup is " + l3Quote(ev.GetRollup()) +
 			", which this build does not recognise. This is NOT a statement that the scan was clean."
 	}
 }
@@ -422,7 +463,7 @@ func l3EvidenceAbsentPhrases(ev *witnesspb.L3CoverageEvidence) []string {
 	sort.Strings(reasons)
 	out := make([]string, 0, len(reasons))
 	for _, r := range reasons {
-		out = append(out, fmt.Sprintf("%d × %s", counts[r], l3EvidenceAbsentReasonMeaning(r)))
+		out = append(out, fmt.Sprintf("%d x %s", counts[r], l3EvidenceAbsentReasonMeaning(r)))
 	}
 	return out
 }
@@ -451,9 +492,35 @@ func buildL3ComposedLine(ev *witnesspb.L3CoverageEvidence, status string) string
 		return ""
 	}
 	if ev.GetComposedGreen() {
-		return "Composed completeness rule (scope AND recall AND named exclusions): GRANTED — " +
+		return "Composed completeness rule (scope AND recall AND named exclusions): GRANTED - " +
 			l3ComposedReasonMeaning(ev.GetComposedReason()) + "."
 	}
-	return "Composed completeness rule (scope AND recall AND named exclusions): NOT granted — " +
+	return "Composed completeness rule (scope AND recall AND named exclusions): NOT granted - " +
 		l3ComposedReasonMeaning(ev.GetComposedReason()) + "."
+}
+
+// L3CompletenessWithCaveat renders the completeness verdict word with the
+// caveat that stops it being read as a detection claim.
+//
+// ⛔ THE BARE WORD IS THE DEFECT. "Full" alone was the string on the public
+// summary, the PDF and (as COMPLETENESS_FULL) the DPO page; the T-600 PRD's
+// grep-verifiable success criterion is that it is gone. Every caller renders
+// THIS, never capitalizeFirst(completeness) on its own.
+func L3CompletenessWithCaveat(completeness string) string {
+	word := capitalizeFirst(completeness)
+	if word == "" {
+		word = "Unspecified"
+	}
+	return word + " - " + L3CompletenessMeaning
+}
+
+// capitalizeFirst upper-cases the first rune. Upstream has its own copy in
+// package api; kept here rather than exported from there so the two files stay
+// independently portable.
+func capitalizeFirst(s string) string {
+	if s == "" {
+		return ""
+	}
+	r, size := utf8.DecodeRuneInString(s)
+	return string(unicode.ToUpper(r)) + s[size:]
 }

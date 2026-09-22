@@ -32,6 +32,21 @@ import (
 // the rendered HTML with entities decoded, so assertions read the sentence the
 // operator reads rather than "&#39;".
 func inspectorBody(t *testing.T, res witness.VerifyResult) string {
+	raw, _ := inspectorBodies(t, res)
+	return raw
+}
+
+// inspectorBodies drives the inspector handler over one VerifyResult and
+// returns (rawHTML, unescapedHTML).
+//
+// ⚑ THE RAW BODY IS THE ONE THAT MATTERS (round-2 MED-5). The first cut of
+// this file html.UnescapeString()d the body before every assertion, so no test
+// could see what the page actually SERVES — an apostrophe silently became
+// &#39; and the T-600 PRD's grep-verifiable criterion was satisfied only after
+// a decoding step no operator performs. Assertions now run on the RAW bytes;
+// the unescaped copy exists only for the handful of checks about structure
+// (the completeness cell) rather than about served text.
+func inspectorBodies(t *testing.T, res witness.VerifyResult) (string, string) {
 	t.Helper()
 	st := &stubStore{getRow: store.CertSummary{
 		ID:         "veil_abcdef12-1234-5678-9abc-def012345678",
@@ -46,7 +61,7 @@ func inspectorBody(t *testing.T, res witness.VerifyResult) string {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200", rec.Code)
 	}
-	return html.UnescapeString(rec.Body.String())
+	return rec.Body.String(), html.UnescapeString(rec.Body.String())
 }
 
 // resultWith builds the VerifyResult the witness client would produce for the
@@ -75,8 +90,11 @@ func mustEvidence(t *testing.T, scenario string) *witnesspb.L3CoverageEvidence {
 // satisfy, whatever the records say.
 func assertCeilingAndNoOverclaim(t *testing.T, body string) {
 	t.Helper()
+	// ⛔ RAW BODY. `body` is what the handler SERVES, un-decoded. If a
+	// narrative string ever grows an apostrophe or a quote mark, it lands here
+	// as &#39; / &#34; and this Contains fails — which is the point.
 	if !strings.Contains(body, witness.L3CoverageCeiling) {
-		t.Errorf("the coverage ceiling is missing from the rendered page")
+		t.Errorf("the coverage ceiling is missing from the SERVED page (check for HTML-escaped characters)")
 	}
 	for _, banned := range []string{
 		"all PII", "complete detection", "everything was scanned",
@@ -92,7 +110,7 @@ func assertCeilingAndNoOverclaim(t *testing.T, body string) {
 	// the overall-verdict pill, where a bare word is correct — a page-wide
 	// substring ban would fail on an honest render and teach the next person
 	// to delete the assertion.
-	cell := completenessCell(t, body)
+	cell := completenessCell(t, html.UnescapeString(body))
 	for _, bare := range []string{"full", "Full", "partial", "Partial", "unspecified", "Unspecified"} {
 		if strings.TrimSpace(cell) == bare {
 			t.Errorf("the completeness cell is the bare word %q — that IS the defect", bare)
@@ -150,17 +168,22 @@ func TestInspectorHandler_RendersScopeAndPassingEvidence(t *testing.T) {
 	if !strings.Contains(body, "The deep shield covered 2 of 2 fields eligible for it") {
 		t.Errorf("scope row missing from the page")
 	}
-	if !strings.Contains(body, "1 field(s) were excluded by policy: 1 × the zone policy excludes the deep shield for that zone") {
+	if !strings.Contains(body, "1 field(s) were excluded by policy: 1 x the zone policy excludes the deep shield for that zone") {
 		t.Errorf("exclusion ledger missing from the page")
 	}
 	if !strings.Contains(body, "Coverage evidence check passed (16/16 probes recovered) across 2 field(s).") {
 		t.Errorf("lock-4 evidence wording missing from the page")
 	}
-	if !strings.Contains(body, "Full — "+witness.L3CompletenessMeaning) {
+	if !strings.Contains(body, "Full - "+witness.L3CompletenessMeaning) {
 		t.Errorf("completeness caveat missing from the page")
 	}
 	if !strings.Contains(body, witness.L3CoverageDiagnosticOnly) {
 		t.Errorf("the diagnostic-only note must render while the records drive nothing")
+	}
+	// The raw machine state the narrative struct promises an operator.
+	if !strings.Contains(body, "scope=present") || !strings.Contains(body, "evidence=present") ||
+		!strings.Contains(body, "rollup=verified") || !strings.Contains(body, "drives_verdict=false") {
+		t.Errorf("the raw record-state row is missing or incomplete on the page")
 	}
 	assertCeilingAndNoOverclaim(t, body)
 }
@@ -175,7 +198,7 @@ func TestInspectorHandler_RendersFailedEvidence(t *testing.T) {
 
 	body := inspectorBody(t, resultWith("full", scope, ev))
 
-	if !strings.Contains(body, "Coverage evidence check FAILED — 1 field(s) returned fewer planted probes than required") {
+	if !strings.Contains(body, "Coverage evidence check FAILED - 1 field(s) returned fewer planted probes than required") {
 		t.Errorf("failed-evidence wording missing from the page")
 	}
 	if !strings.Contains(body, "A measured miss is positive evidence of a recall gap.") {
@@ -187,7 +210,7 @@ func TestInspectorHandler_RendersFailedEvidence(t *testing.T) {
 	// ⚑ The verdict is untouched — a FAILED recall check next to a "Full"
 	// completeness word is the DESIGNED dark-period shape, and it is exactly
 	// why the caveat has to be on the page.
-	if !strings.Contains(body, "Full — "+witness.L3CompletenessMeaning) {
+	if !strings.Contains(body, "Full - "+witness.L3CompletenessMeaning) {
 		t.Errorf("completeness caveat missing on a failed-evidence render")
 	}
 	assertCeilingAndNoOverclaim(t, body)
@@ -198,13 +221,13 @@ func TestInspectorHandler_RendersBothRecordsAbsent(t *testing.T) {
 	t.Parallel()
 	body := inspectorBody(t, resultWith("partial", nil, nil))
 
-	if !strings.Contains(body, "Coverage scope unavailable —") {
+	if !strings.Contains(body, "Coverage scope unavailable -") {
 		t.Errorf("absent scope must render as unavailable")
 	}
 	if !strings.Contains(body, "This is NOT a statement that nothing was excluded or that every field was covered.") {
 		t.Errorf("absent scope must refuse the innocence reading on the page")
 	}
-	if !strings.Contains(body, "Recall evidence unavailable —") {
+	if !strings.Contains(body, "Recall evidence unavailable -") {
 		t.Errorf("absent evidence must render as unavailable")
 	}
 	if !strings.Contains(body, "This is NOT a statement that the scan was clean.") {
@@ -212,6 +235,11 @@ func TestInspectorHandler_RendersBothRecordsAbsent(t *testing.T) {
 	}
 	if strings.Contains(body, "Composed completeness rule") {
 		t.Errorf("nothing composes over an absent record — the row must not render")
+	}
+	// Absent is a TOKEN an operator can read, not just prose.
+	if !strings.Contains(body, "scope=absent") || !strings.Contains(body, "evidence=absent") ||
+		!strings.Contains(body, "rollup=unset") {
+		t.Errorf("the raw record-state row must name the absent state")
 	}
 	assertCeilingAndNoOverclaim(t, body)
 }

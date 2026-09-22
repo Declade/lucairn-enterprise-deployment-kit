@@ -114,7 +114,7 @@ func TestL3Narrative_EvidenceFailed(t *testing.T) {
 	if ev.GetRollup() != "failed" {
 		t.Fatalf("fixture rollup: got %q want failed", ev.GetRollup())
 	}
-	if !strings.Contains(n.Evidence, "Coverage evidence check FAILED — 1 field(s) returned fewer planted probes than required") {
+	if !strings.Contains(n.Evidence, "Coverage evidence check FAILED - 1 field(s) returned fewer planted probes than required") {
 		t.Errorf("evidence line must report the measured miss: %q", n.Evidence)
 	}
 	if !strings.Contains(n.Evidence, "(13/16 recovered across the request; 1 field(s) passed, 0 carry no evidence)") {
@@ -124,7 +124,7 @@ func TestL3Narrative_EvidenceFailed(t *testing.T) {
 		t.Errorf("evidence line must say what a miss means: %q", n.Evidence)
 	}
 	if !strings.Contains(n.Composed, "NOT granted") ||
-		!strings.Contains(n.Composed, "a field's recall check MISSED") {
+		!strings.Contains(n.Composed, "a recall check on one field MISSED") {
 		t.Errorf("composed line must refuse and say why: %q", n.Composed)
 	}
 	if n.Ceiling != L3CoverageCeiling {
@@ -143,13 +143,13 @@ func TestL3Narrative_BothRecordsAbsent(t *testing.T) {
 	t.Parallel()
 	n := BuildL3CoverageNarrative(nil, nil)
 
-	if !strings.HasPrefix(n.Scope, "Coverage scope unavailable —") {
+	if !strings.HasPrefix(n.Scope, "Coverage scope unavailable -") {
 		t.Errorf("absent scope must render as unavailable: %q", n.Scope)
 	}
 	if !strings.Contains(n.Scope, "This is NOT a statement that nothing was excluded or that every field was covered.") {
 		t.Errorf("absent scope must refuse the innocence reading: %q", n.Scope)
 	}
-	if !strings.HasPrefix(n.Evidence, "Recall evidence unavailable —") {
+	if !strings.HasPrefix(n.Evidence, "Recall evidence unavailable -") {
 		t.Errorf("absent evidence must render as unavailable: %q", n.Evidence)
 	}
 	if !strings.Contains(n.Evidence, "This is NOT a statement that the scan was clean.") {
@@ -390,8 +390,8 @@ func TestL3CompletenessWithCaveat_BareWordIsGone(t *testing.T) {
 		if got == c.wantWord || got == c.in {
 			t.Errorf("L3CompletenessWithCaveat(%q) = %q — the bare word is the defect", c.in, got)
 		}
-		if !strings.HasPrefix(got, c.wantWord+" — ") {
-			t.Errorf("L3CompletenessWithCaveat(%q) = %q, want prefix %q", c.in, got, c.wantWord+" — ")
+		if !strings.HasPrefix(got, c.wantWord+" - ") {
+			t.Errorf("L3CompletenessWithCaveat(%q) = %q, want prefix %q", c.in, got, c.wantWord+" - ")
 		}
 		if !strings.Contains(got, L3CompletenessMeaning) {
 			t.Errorf("L3CompletenessWithCaveat(%q) dropped the caveat: %q", c.in, got)

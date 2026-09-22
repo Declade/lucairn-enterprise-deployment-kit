@@ -7,6 +7,58 @@ on:
     branches: ["main"]
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # dashboard-go — the Go test suite for apps/dashboard.
+  # ---------------------------------------------------------------------------
+  #
+  # ⚑ WHY THIS IS A SEPARATE JOB, NOT A STEP IN `Kit test harness`.
+  #
+  # Until this job existed, NOTHING in CI ran `go test`: the harness job runs
+  # `make test`, the root Makefile has no Go target, and apps/dashboard/Makefile
+  # is only ever invoked by hand. Every Go assertion in apps/dashboard — the
+  # witness verify client, the cert inspector renders, the claim-ceiling wording
+  # guards — was unenforced on every PR and every push to main. A test suite
+  # nobody runs is documentation.
+  #
+  # It is a SEPARATE job because the harness job depends on the public container
+  # registry: `doctor --strict` resolves third-party image digests
+  # (postgres:16-alpine, redis:7-alpine) and fails closed when an upstream tag is
+  # re-pointed — which is a real supply-chain control, and also a red that has
+  # nothing to do with any given PR's diff (board T-831). Folding `go test` into
+  # that job would let an unrelated registry event mask a genuine Go failure, and
+  # would make a Go failure look like an infrastructure flake. Two jobs, two
+  # independent verdicts.
+  #
+  # No registry, no Docker, no Helm: this job needs a Go toolchain and nothing
+  # else, so it finishes in well under a minute.
+  dashboard-go:
+    name: Dashboard Go tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # go-version-file pins the toolchain to apps/dashboard/go.mod rather than
+      # a literal here, so a future `go` directive bump does not silently keep
+      # testing on the old toolchain.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/dashboard/go.mod
+          cache-dependency-path: apps/dashboard/go.sum
+
+      - name: go vet
+        working-directory: apps/dashboard
+        run: go vet ./...
+
+      # Matches `make -C apps/dashboard test`. Kept as an explicit `go test` so
+      # the CI verdict does not depend on a Makefile target continuing to mean
+      # what it means today.
+      - name: go test
+        working-directory: apps/dashboard
+        run: go test ./...
+
   test:
     name: Kit test harness
     runs-on: ubuntu-latest

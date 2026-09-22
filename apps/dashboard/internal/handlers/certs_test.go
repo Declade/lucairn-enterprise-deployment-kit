@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"errors"
-	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -207,10 +206,12 @@ func TestInspectorHandler_RendersAllSixClaimsAndBYOKBadge(t *testing.T) {
 	// T-600 S3 / T-617 S3: the claim ceiling and the completeness caveat ride
 	// on every inspector render, including this pre-existing BYOK fixture
 	// (whose certificate carries neither L3 record — the common case today).
+	// ⛔ Asserted on the RAW served body, NOT an unescaped copy: the wording is
+	// ASCII and apostrophe-free precisely so it survives html/template intact.
 	if !strings.Contains(body, witness.L3CoverageCeiling) {
 		t.Errorf("the coverage ceiling must render on every inspector page")
 	}
-	if !strings.Contains(html.UnescapeString(body), "Partial — "+witness.L3CompletenessMeaning) {
+	if !strings.Contains(body, "Partial - "+witness.L3CompletenessMeaning) {
 		t.Errorf("the completeness caveat must render; the bare enum was the T-600 defect")
 	}
 }
