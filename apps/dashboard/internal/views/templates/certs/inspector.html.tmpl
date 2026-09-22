@@ -116,6 +116,21 @@
       <span>{{ .Result.L3Coverage.Diagnostic }}</span>
     </div>
     {{ end }}
+    {{- /*
+      The raw closed-vocabulary tokens behind the prose above. The narrative
+      struct documents them as "so an operator can read the machine state
+      without parsing prose" — so they are rendered, not merely carried. An
+      operator diagnosing a deployment needs `absent` vs `not_checked` vs
+      `unsupported_derivation` as tokens, and drives_verdict is the flag that
+      decides whether `composed_green` is load-bearing at all.
+
+      Field keys, receipt ids and zone names are NOT in this row either — the
+      narrative struct carries none.
+    */ -}}
+    <div class="lc-cert-summary-row">
+      <span class="lc-text-muted">Record state (raw)</span>
+      <span class="font-tabular">scope={{ if .Result.L3Coverage.ScopeStatus }}{{ .Result.L3Coverage.ScopeStatus }}{{ else }}unset{{ end }} &middot; evidence={{ if .Result.L3Coverage.EvidenceStatus }}{{ .Result.L3Coverage.EvidenceStatus }}{{ else }}unset{{ end }} &middot; rollup={{ if .Result.L3Coverage.EvidenceRollup }}{{ .Result.L3Coverage.EvidenceRollup }}{{ else }}unset{{ end }} &middot; drives_verdict={{ if .Result.L3Coverage.DrivesVerdict }}true{{ else }}false{{ end }}</span>
+    </div>
     <div class="lc-cert-summary-row">
       <span class="lc-text-muted">What coverage does not say</span>
       <span>{{ .Result.L3Coverage.Ceiling }}</span>

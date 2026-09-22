@@ -1,5 +1,5 @@
 // Vendored from Declade/dual-sandbox-architecture:
-//   proto/veil/v1/veil.proto @ commit 91941304fd3ba30779d81121c37c436a631f4089
+//   proto/veil/v1/veil.proto @ commit db096f5dcd681d56dfca3299337dfef76d6447c3
 // + proto/common/v1/types.proto (only EntityCount inlined, for SanitizerClaim).
 //
 // PARTIAL VENDOR, BY DESIGN. This copy carries every message the dashboard
@@ -14,6 +14,11 @@
 // five L3* messages they reference, verbatim from the commit above. Both are
 // UNSIGNED certificate metadata: they are outside the witness v2 (7-key) and
 // v3 (13-key) signable maps, so vendoring them changes no verification bytes.
+// Re-pointed from 91941304 to db096f5d in review round 2: a COMMENT-ONLY
+// upstream delta (verified — the field-number and type lines are byte-
+// identical between the two commits) that narrows L3CoverageEvidence's
+// `malformed` godoc to what the witness count floor actually catches. A stale
+// overclaim in a vendored comment is still a stale overclaim.
 //
 // This file is the CANONICAL upstream `dsa.veil.v1` schema, vendored
 // verbatim so the dashboard speaks the real witness gRPC contract:
@@ -432,9 +437,20 @@ message L3CoverageEvidence {
   //                              `passed` with nothing planted or probed, a
   //                              `passed` leaving a window unprobed, and a
   //                              `passed` recovering fewer canaries than it
-  //                              probed windows (impossible under every
-  //                              threshold the producer admits, since the
-  //                              threshold is constrained to [1, k]).
+  //                              probed windows.
+  //
+  //                              ⚑ THAT LAST ONE IS A FLOOR, NOT A RE-RUN OF
+  //                              THE PROBE'S RULE. The threshold is not in
+  //                              the signed payload, so the witness cannot
+  //                              check it; `recovered >= probed_windows` is
+  //                              the most it can assert, and it holds under
+  //                              every threshold the producer admits (armed
+  //                              probes constrain it to [1, k]). A `passed`
+  //                              at or above that floor but BELOW the
+  //                              threshold that actually ran is
+  //                              indistinguishable from an honest one here.
+  //                              No reader surface may describe this refusal
+  //                              as catching every self-contradicting pass.
   //                              Refused WHOLE rather than in part — a half-read
   //                              evidence map reads as a clean bill of health
   //                              for the fields that fell off it.
