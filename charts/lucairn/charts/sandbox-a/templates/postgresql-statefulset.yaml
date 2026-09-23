@@ -1,4 +1,4 @@
-{{- if .Values.postgresql.enabled }}
+{{- if .Values.postgresql.enabled }}{{ include "sandbox-a.env.noExpansion" (dict "key" "postgresql.user" "value" .Values.postgresql.user) }}{{ include "sandbox-a.env.noExpansion" (dict "key" "postgresql.database" "value" .Values.postgresql.database) }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
