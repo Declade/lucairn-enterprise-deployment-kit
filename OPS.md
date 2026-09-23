@@ -2609,8 +2609,8 @@ and is unaffected by anything below.
 |---|---|---|
 | `gateway.evidenceGap.mountPath` | `/data` | Directory mounted read-write into the gateway. The file is created inside it. |
 | `gateway.evidenceGap.fileName` | `evidence-gaps.jsonl` | Store filename. `mountPath` + `fileName` is what the process is given, so the two cannot drift from the mount. |
-| `gateway.evidenceGap.posture` | `log` | `log` records a gap and proceeds; `enforce` refuses the request before any response byte is written. |
-| `gateway.evidenceGap.bootMode` | `""` (process default) | `strict` makes an unwritable store a **boot failure** instead of a logged degradation. |
+| `gateway.evidenceGap.posture` | `log` | `log` records a gap and proceeds; `enforce` refuses the request before any response byte is written. **Exactly** `log` or `enforce` — any other spelling (`ENFORCE`, ` enforce `, `""`, a `$(VAR)` reference) fails the render, because a gateway image at/after DSA `c3d2aa0d` refuses to boot on it (T-871). `null` renders no env var (gateway reads UNSET as LOG). |
+| `gateway.evidenceGap.bootMode` | `""` (process default) | `strict` makes an unwritable store a **boot failure** instead of a logged degradation. **Exactly** `""`, `strict` or `permissive`; anything else fails the render (T-871). |
 | `gateway.evidenceGap.sizeLimit` | `64Mi` | Bounds the default `emptyDir` so a gap flood cannot fill node ephemeral storage. |
 | `gateway.evidenceGap.persistence.enabled` | `false` | `false` ⇒ `emptyDir`. `true` ⇒ ReadWriteOnce PVC. |
 | `gateway.evidenceGap.persistence.existingClaim` | `""` | Point a **single-replica** gateway at a pre-provisioned claim. |

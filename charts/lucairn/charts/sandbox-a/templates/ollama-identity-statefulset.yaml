@@ -1,4 +1,4 @@
-{{- if .Values.sanitizer.llmScanEnabled }}
+{{- if .Values.sanitizer.llmScanEnabled }}{{ include "sandbox-a.env.noExpansion" (dict "key" "ollamaIdentity.keepAlive" "value" (.Values.ollamaIdentity).keepAlive) }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:

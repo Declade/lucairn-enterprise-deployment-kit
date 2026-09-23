@@ -200,10 +200,21 @@ evidenceGap:
   # "log" records a gap and proceeds; "enforce" refuses before any response
   # byte is written. DEFAULT log — the ENFORCE flip is a separate, measured
   # decision per install, never a chart default.
+  # ⚑ T-871: EXACTLY "log" or "enforce" (lowercase, no spaces). Anything else —
+  # "ENFORCE", "Enforce", " enforce ", "" (empty), a "$(VAR)" reference —
+  # REFUSES THE RENDER, because a gateway image at or after DSA main
+  # `c3d2aa0d` (#622) refuses to boot on it (older images silently read most
+  # of those spellings as LOG, and case-folded "ENFORCE" as enforce).
+  # null (`--set gateway.evidenceGap.posture=null`) ⇒ the env var is not
+  # rendered at all and the gateway reads UNSET as LOG.
   posture: log
-  # "" defers to the gateway's own default (strict under enforce, permissive
-  # under log). Set "strict" to make an unwritable store a BOOT FAILURE rather
-  # than a logged degradation — i.e. loud instead of silent.
+  # "" (or null) ⇒ not rendered; the gateway's own default applies (strict
+  # under enforce, permissive under log). Set "strict" to make an unwritable
+  # store a BOOT FAILURE rather than a logged degradation — i.e. loud instead
+  # of silent. ⚑ T-871: EXACTLY "", "strict" or "permissive" — "STRICT",
+  # "Permissive", padded spellings and "$(VAR)" references refuse the render
+  # (the gateway at/after `c3d2aa0d` refuses to boot on them; older images
+  # case-folded them or fell back to the posture default).
   bootMode: ""
   # Bounds the emptyDir so a gap flood cannot consume node ephemeral storage.
   # The store itself is bounded at 10k records.

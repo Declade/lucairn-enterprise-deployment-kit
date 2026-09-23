@@ -2,6 +2,32 @@
 {{- fail "gateway.readiness.required=true requires gateway.readiness.existingBundleSecret" -}}
 {{- end -}}
 {{- $mtlsEnabled := and (kindIs "bool" .Values.global.mtls.enabled) .Values.global.mtls.enabled -}}
+{{- /*
+  T-871: every literal the container env / args below render from .Values is
+  refused at render time when it contains "$" — Kubernetes expands `$(NAME)`
+  and reduces `$$` in env values and args at Pod creation, so the process would
+  read a different string from the one rendered. Helpers + rationale:
+  charts/lucairn/templates/_env_literals.tpl. The two evidence-admission enums
+  are checked where they render (exact enum, further down).
+*/ -}}
+{{- $gwMtls := .Values.global.mtls | default dict -}}
+{{- $gwLiterals := dict
+      "gateway.service.apiPort" .Values.service.apiPort
+      "gateway.service.healthPort" .Values.service.healthPort
+      "gateway.sessionTtl" .Values.sessionTtl
+      "gateway.waitTimeout" .Values.waitTimeout
+      "gateway.enableTestProvider" .Values.enableTestProvider
+      "gateway.streaming.enabled" .Values.streaming.enabled
+      "gateway.streaming.timeoutSeconds" .Values.streaming.timeoutSeconds
+      "gateway.evidenceGap.mountPath" .Values.evidenceGap.mountPath
+      "gateway.evidenceGap.fileName" .Values.evidenceGap.fileName
+      "global.mtls.mountPath" $gwMtls.mountPath
+      "global.mtls.caBundleKey" $gwMtls.caBundleKey
+      "global.mtls.certKey" $gwMtls.certKey
+      "global.mtls.keyKey" $gwMtls.keyKey -}}
+{{- range $key := keys $gwLiterals | sortAlpha -}}
+{{- include "lucairn.env.noExpansion" (dict "scope" "GATEWAY ENV" "key" $key "value" (get $gwLiterals $key)) -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -123,11 +149,34 @@ spec:
             # rendered manifest.
             - name: GATEWAY_EVIDENCE_GAP_PATH
               value: {{ printf "%s/%s" (trimSuffix "/" .Values.evidenceGap.mountPath) .Values.evidenceGap.fileName | quote }}
+            {{- /*
+              ⚑ T-871 (kit port of DSA T-846 / #622): EXACT enums, refused at
+              render on anything else — "ENFORCE", " enforce ", "", a
+              "$(DSA_ENV)" reference. Since DSA main `c3d2aa0d` the gateway
+              itself refuses to boot on an unrecognised SET value (it used to
+              read anything but a case-folded "enforce" as LOG), so without
+              this check a bad value renders green and CrashLoops after the
+              next image re-pin.
+
+              posture: null / omitted ⇒ the variable is NOT rendered at all;
+              the process sees UNSET, which it reads as LOG. An empty string
+              is SET-but-empty, which the gateway refuses — so it is refused
+              here too.
+              bootMode: null / "" ⇒ not rendered (the gateway's own default:
+              strict under enforce, permissive under log).
+            */}}
+            {{- $posture := .Values.evidenceGap.posture }}
+            {{- if not (kindIs "invalid" $posture) }}
             - name: GATEWAY_EVIDENCE_ADMISSION_POSTURE
-              value: {{ .Values.evidenceGap.posture | quote }}
-            {{- if .Values.evidenceGap.bootMode }}
+              value: {{ include "lucairn.env.enum" (dict "scope" "GATEWAY ENV" "key" "gateway.evidenceGap.posture" "value" $posture "allowed" (list "enforce" "log")) | quote }}
+            {{- end }}
+            {{- $bootMode := .Values.evidenceGap.bootMode }}
+            {{- if not (kindIs "invalid" $bootMode) }}
+            {{- $bootModeValue := include "lucairn.env.enum" (dict "scope" "GATEWAY ENV" "key" "gateway.evidenceGap.bootMode" "value" $bootMode "allowed" (list "" "strict" "permissive")) }}
+            {{- if ne $bootModeValue "" }}
             - name: GATEWAY_EVIDENCE_BOOT_MODE
-              value: {{ .Values.evidenceGap.bootMode | quote }}
+              value: {{ $bootModeValue | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.postgresKeystore.enabled }}
             - name: GATEWAY_KEYSTORE_DSN

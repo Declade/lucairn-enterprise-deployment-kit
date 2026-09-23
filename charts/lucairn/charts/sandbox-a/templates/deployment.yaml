@@ -1,4 +1,41 @@
 {{- $mtlsEnabled := and (kindIs "bool" .Values.global.mtls.enabled) .Values.global.mtls.enabled -}}
+{{- /*
+  T-871: every literal the container env / args below render from .Values is
+  refused at render time when it contains "$" — Kubernetes expands `$(NAME)`
+  and reduces `$$` in env values and args at Pod creation, so the sanitizer
+  would read a different string from the one rendered (upstream measurement:
+  DSA T-837, `streamingMaxChunkBytes: "$(SANITIZER_CACHE_MAX_BYTES)"` made the
+  sanitizer read chunk cap 0). Helper: templates/_env_literals.tpl.
+*/ -}}
+{{- $saMtls := .Values.global.mtls | default dict -}}
+{{- $saGlobal := .Values.global | default dict -}}
+{{- $saSanitizer := .Values.sanitizer | default dict -}}
+{{- $saPiiMl := $saSanitizer.piiMlClient | default dict -}}
+{{- $saCache := .Values.sanitizerCache | default dict -}}
+{{- $saStream := .Values.sanitizerStreamState | default dict -}}
+{{- $saLiterals := dict
+      "namespace" .Values.namespace
+      "service.grpcPort" (.Values.service).grpcPort
+      "service.healthPort" (.Values.service).healthPort
+      "global.mtls.mountPath" $saMtls.mountPath
+      "global.mtls.caBundleKey" $saMtls.caBundleKey
+      "global.mtls.certKey" $saMtls.certKey
+      "global.mtls.keyKey" $saMtls.keyKey
+      "global.l3AvailabilityPosture" $saGlobal.l3AvailabilityPosture
+      "global.l3Required" $saGlobal.l3Required
+      "sanitizer.gunicornTimeout" $saSanitizer.gunicornTimeout
+      "sanitizer.piiMlClient.endpoint" $saPiiMl.endpoint
+      "sanitizer.piiMlClient.transport" $saPiiMl.transport
+      "sanitizerCache.backend" $saCache.backend
+      "sanitizerCache.redisUrl" $saCache.redisUrl
+      "sanitizerCache.ttlSeconds" $saCache.ttlSeconds
+      "sanitizerStreamState.backend" $saStream.backend
+      "sanitizerStreamState.redisUrl" $saStream.redisUrl
+      "sanitizerStreamState.ttlSeconds" $saStream.ttlSeconds
+      "sanitizerStreamState.mutationMarkerTtlSeconds" $saStream.mutationMarkerTtlSeconds -}}
+{{- range $key := keys $saLiterals | sortAlpha -}}
+{{- include "sandbox-a.env.noExpansion" (dict "key" $key "value" (get $saLiterals $key)) -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

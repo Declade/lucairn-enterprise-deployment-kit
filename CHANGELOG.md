@@ -188,6 +188,35 @@ carry a security fix are tagged **[Security]**.
   "Tool-schema PII guard" → "Dry-run it BEFORE the first routed turn".
 
 ### Changed
+- **Upgrade note — gateway evidence-admission settings are now exact enums,
+  checked at render time (T-871).** A gateway image built from
+  dual-sandbox-architecture main `c3d2aa0d` or later (DSA #622) **refuses to
+  boot** on any SET `GATEWAY_EVIDENCE_ADMISSION_POSTURE` other than exactly
+  `enforce` or `log`, and on any SET `GATEWAY_EVIDENCE_BOOT_MODE` other than
+  exactly `` (empty), `strict` or `permissive`. Older images read `ENFORCE`,
+  `Enforce` and ` enforce ` as enforce and silently read every other value
+  (`""`, `production`, a `$(DSA_ENV)` reference) as LOG — so an install that
+  worked yesterday CrashLoops after the next gateway image re-pin, with no
+  chart-time error.
+  - **Helm:** `gateway.evidenceGap.posture` must be exactly `enforce` or `log`;
+    `ENFORCE`, `Enforce`, ` enforce `, `""` and any value containing `$` now
+    fail `helm template` / `helm upgrade` with a message that describes the
+    value's shape (it never echoes the value). `posture: null` renders no env
+    line at all (the gateway reads UNSET as LOG).
+    `gateway.evidenceGap.bootMode` must be exactly `""`, `strict` or
+    `permissive` (`""`/null render no env line).
+  - **Compose / plain env:** set exactly `enforce` or `log`. If you template
+    the value from your shell, write `${X:-log}`, not `${X}` — an unset `X`
+    expands to an empty-but-SET variable, which the new gateway refuses.
+  - **Also refused at render now:** any `$` in the other literal env values
+    and args the gateway and sandbox-a (sanitizer) sub-charts render from
+    Helm values (ports, session/wait timeouts, streaming knobs, the evidence
+    gap path, the mTLS mount path and key names, the sanitizer's L3 posture,
+    pii-ml endpoint/transport, cache/stream-state backend, Redis URLs and
+    TTLs, Ollama keep-alive, the sandbox-a Postgres user/database), because
+    Kubernetes expands `$(NAME)` and reduces `$$` in env values and args at
+    Pod creation. Renders of every shipped values file are byte-identical to
+    before. Regression: `tests/test_gateway_env_enum_guard.sh`.
 - **⚑ BREAKING — `LUCAIRN_L3_REQUIRED` is retired; certificates now say
   `COMPLETENESS_PARTIAL` when the L3 deep PII shield did not run (T-393 /
   T-385).** The retired variable welded together two unrelated questions that
