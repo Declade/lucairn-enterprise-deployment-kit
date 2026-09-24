@@ -1,0 +1,49 @@
+# Laptop-profile override (LIP Mac lane, validated 2026-07-27/28):
+# - gateway + sandbox-b built locally from DSA main (OAuth subscription
+#   passthrough + client-header forwarding are newer than the 0.5.4 kit images)
+# - Teams-subscription upstream: Authorization Bearer OAuth + X-DSA-Key,
+#   staged allowlist = the local sub-lane key prefix only (set
+#   LIP_SUB_KEY_PREFIX in your env/customer.env before starting the stack —
+#   NEVER hardcode a real key prefix into this file).
+#
+# UNTESTED beyond Marc's own MacBook — see contrib/laptop-profile/README.md for
+# the full disclaimer, sizing rationale, and the six kit defects this override
+# works around.
+services:
+  gateway:
+    image: local/dsa-gateway:main
+    environment:
+      GATEWAY_OAUTH_PASSTHROUGH_ENABLED: "true"
+      # Framework boilerplate (CLAUDE.md reminder spans + CC system prompt)
+      # gets the SHALLOW reduced-scan zone (secrets still scanned, NER skipped)
+      # — the hosted reduced-scan posture; without it every turn full-scans
+      # ~140KB and takes ~110s.
+      GATEWAY_TMS_TRUST_ZONES: '{"platform_reminder":"shallow","system_prompt":"shallow"}'
+      GATEWAY_OAUTH_PASSTHROUGH_ALLOWLIST: "${LIP_SUB_KEY_PREFIX:-}"
+  sandbox-b:
+    image: local/dsa-sandbox-b:main
+    environment:
+      SANDBOX_B_OAUTH_PASSTHROUGH_ENABLED: "true"
+      # Claude Code first turns render ~142K chars (system prompt + tools);
+      # the 100K default rejects every real session. Hosted runs higher.
+      MAX_PROMPT_CHARS: "400000"
+  sanitizer:
+    image: local/dsa-sanitizer:main
+    environment:
+      # Warm-cache posture matching the hosted box (content + whole-turn
+      # verdict + L3 per-chunk verdict). Secrets live in customer.env (0600),
+      # never in this file.
+      LUCAIRN_CONTENT_CACHE_HMAC_KEY: "${LUCAIRN_CONTENT_CACHE_HMAC_KEY}"
+      LUCAIRN_VERDICT_CACHE_ENABLED: "true"
+      LUCAIRN_VERDICT_CACHE_HMAC_KEY: "${LUCAIRN_VERDICT_CACHE_HMAC_KEY}"
+      LUCAIRN_L3_VERDICT_CACHE_ENABLED: "true"
+      LUCAIRN_L3_VERDICT_CACHE_HMAC_KEY: "${LUCAIRN_L3_VERDICT_CACHE_HMAC_KEY}"
+      # Claude Code ships CLAUDE.md as ONE ~140K platform-reminder field;
+      # the 48KiB default fail-closes every such session.
+      SANITIZER_MAX_FIELD_CHARS: "262144"
+    # Kit default 2g cgroup cap SIGKILLs workers on Claude-Code-sized payloads
+    # (idle RSS with models loaded is already ~1.3g). Laptop profile: 4g.
+    deploy:
+      resources:
+        limits:
+          memory: 4g
