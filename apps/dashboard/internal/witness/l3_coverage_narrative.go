@@ -50,6 +50,12 @@ import (
 // defect the gateway had already closed. Re-sync from a NAMED COMMIT when
 // upstream's wording moves; never from a working tree.
 //
+// ONE DELIBERATE DIVERGENCE (T-881, astra post-merge audit of kit #136,
+// finding 2): the `failed`, `unverified` and `absent` evidence branches no
+// longer say a partly probed field "carries no evidence". Upstream @ db096f5d
+// still does; this is a kit-side honesty fix ahead of upstream, not drift. On
+// the next re-sync, carry it upstream rather than re-importing the old wording.
+//
 // ONE DELIBERATE OMISSION: upstream's l3CompletenessShortCaveat /
 // l3CompletenessWithShortCaveat pair exists for the gateway PDF's fixed-width
 // table cell. The kit dashboard has no such render, so it is not ported. If a
@@ -421,22 +427,49 @@ func buildL3EvidenceLine(ev *witnesspb.L3CoverageEvidence, status string) string
 			"Coverage evidence check passed (%d/%d probes recovered) across %d field(s). %s",
 			recovered, planted, passed, clause)
 	case "failed":
+		// ⚑ T-881: "carry no evidence" was FALSE for a partly probed field
+		// (planted probes recovered, one window unprobed). The tail now says
+		// "no usable verdict" and, where probes were planted, names them.
 		return fmt.Sprintf(
 			"Coverage evidence check FAILED - %d field(s) returned fewer planted probes than required "+
-				"(%d/%d recovered across the request; %d field(s) passed, %d carry no evidence). "+
+				"(%d/%d recovered across the request; %d field(s) passed, %d field(s) carry no usable verdict%s). "+
 				"A measured miss is positive evidence of a recall gap.",
-			failed, recovered, planted, passed, absent)
+			failed, recovered, planted, passed, absent, l3NoVerdictDetailSuffix(ev))
 	case "unverified":
+		// ⚑ T-881 (astra post-merge audit of kit #136, finding 2). Two defects
+		// in the upstream-copied wording, both fixed here:
+		//   1. "%d field(s) carry no evidence" — a field whose windows were
+		//      only PARTLY probed is `absent` with its planted probes
+		//      recovered (producer corpus scenario `partial`: 4/4 recovered,
+		//      1 of 2 windows probed). It carries measured evidence; what it
+		//      lacks is a usable field-level VERDICT.
+		//   2. "%d field(s) passed (R/P probes recovered)" printed the
+		//      REQUEST totals, which include the partly probed field's
+		//      probes, so the passed fields were credited with 12/12 when they
+		//      carried 8/8.
+		tally := l3TallyEvidence(ev)
 		return fmt.Sprintf(
 			"Coverage evidence check is INCOMPLETE - %d field(s) passed (%d/%d probes recovered) and "+
-				"%d field(s) carry no evidence: %s. A partly evidenced request is not a verified one.",
-			passed, recovered, planted, absent, strings.Join(l3EvidenceAbsentPhrases(ev), "; "))
+				"%d field(s) carry no usable recall-evidence verdict%s; %d/%d probes recovered across the request. "+
+				"A partly evidenced request is not a verified one.",
+			passed, tally.passedRecovered, tally.passedPlanted, absent, l3NoVerdictDetailSuffix(ev),
+			recovered, planted)
 	case "absent":
 		// ⚑ "no field carried a recall probe" WAS FALSE for a real shape
 		// (bug-hunter L1): a field whose windows were only PARTLY probed is
 		// `absent` with canaries_planted > 0, so probes were planted and the
 		// old sentence denied it. The rollup means no field carries a USABLE
 		// verdict, which is what this says.
+		//
+		// ⚑ T-881: when such a field exists its measured numbers are named,
+		// and "Evidence that does not exist is not evidence of success" is
+		// reserved for the case where no probe was planted anywhere — beside
+		// a 4/4 recovery it would deny evidence the record carries.
+		if tally := l3TallyEvidence(ev); tally.partlyProbedFields > 0 {
+			return "No field on this request carries a usable recall-evidence verdict" +
+				l3NoVerdictDetailSuffix(ev) + ". Probes recovered on a partly probed field are measured " +
+				"evidence, not a usable verdict."
+		}
 		return "No field on this request carries a usable recall-evidence verdict" +
 			l3EvidenceAbsentSuffix(ev) + ". Evidence that does not exist is not evidence of success."
 	default:
@@ -464,6 +497,84 @@ func l3EvidenceAbsentPhrases(ev *witnesspb.L3CoverageEvidence) []string {
 	out := make([]string, 0, len(reasons))
 	for _, r := range reasons {
 		out = append(out, fmt.Sprintf("%d x %s", counts[r], l3EvidenceAbsentReasonMeaning(r)))
+	}
+	return out
+}
+
+// l3EvidenceTally splits the per-field map by what each field can honestly be
+// said to carry (T-881). The witness-computed request totals cannot make this
+// split: a partly probed field is `absent` yet contributes to them.
+type l3EvidenceTally struct {
+	passedPlanted, passedRecovered uint32
+
+	// partlyProbed* sum the `absent` fields on which at least one probe was
+	// planted or one window was probed — measured evidence without a usable
+	// field-level verdict (L3FieldEvidence: probed_windows < windows forces
+	// `absent` rather than `passed`).
+	partlyProbedFields                          uint32
+	partlyProbedPlanted, partlyProbedRecovered  uint32
+	partlyProbedWindows, partlyProbedWithProbes uint32
+
+	// unprobedFields counts the `absent` fields on which nothing was planted:
+	// the only fields that truly carry no evidence.
+	unprobedFields uint32
+}
+
+func l3TallyEvidence(ev *witnesspb.L3CoverageEvidence) l3EvidenceTally {
+	var t l3EvidenceTally
+	fields := ev.GetFields()
+	if len(fields) == 0 {
+		// Nothing to attribute: the request totals are all there is. The
+		// witness computes them FROM `fields`, so this is only reachable on a
+		// record with no per-field entry, where the totals are zero anyway.
+		t.passedPlanted = ev.GetCanariesPlanted()
+		t.passedRecovered = ev.GetCanariesRecovered()
+		t.unprobedFields = ev.GetFieldsAbsent()
+		return t
+	}
+	for _, f := range fields {
+		switch f.GetVerdict() {
+		case "passed":
+			t.passedPlanted += f.GetCanariesPlanted()
+			t.passedRecovered += f.GetCanariesRecovered()
+		case "absent":
+			if f.GetCanariesPlanted() > 0 || f.GetProbedWindows() > 0 {
+				t.partlyProbedFields++
+				t.partlyProbedPlanted += f.GetCanariesPlanted()
+				t.partlyProbedRecovered += f.GetCanariesRecovered()
+				t.partlyProbedWindows += f.GetWindows()
+				t.partlyProbedWithProbes += f.GetProbedWindows()
+			} else {
+				t.unprobedFields++
+			}
+		}
+	}
+	return t
+}
+
+// l3NoVerdictDetailSuffix explains the fields that carry no usable verdict,
+// separating the partly probed ones (named with their measured numbers) from
+// the unprobed ones (which truly carry no evidence), followed by the reason
+// ledger. Empty when there is no such field. Never names the probe threshold:
+// it is not in the signed record.
+func l3NoVerdictDetailSuffix(ev *witnesspb.L3CoverageEvidence) string {
+	t := l3TallyEvidence(ev)
+	var parts []string
+	if t.partlyProbedFields > 0 {
+		parts = append(parts, fmt.Sprintf(
+			"%d field(s) only partly probed (%d/%d planted probes recovered, %d of %d windows probed - not a usable verdict)",
+			t.partlyProbedFields, t.partlyProbedRecovered, t.partlyProbedPlanted,
+			t.partlyProbedWithProbes, t.partlyProbedWindows))
+	}
+	if t.unprobedFields > 0 {
+		parts = append(parts, fmt.Sprintf("%d field(s) carry no evidence at all", t.unprobedFields))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	out := ": " + strings.Join(parts, "; ")
+	if reasons := l3EvidenceAbsentPhrases(ev); len(reasons) > 0 {
+		out += "; why: " + strings.Join(reasons, "; ")
 	}
 	return out
 }

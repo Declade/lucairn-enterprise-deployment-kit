@@ -2,6 +2,7 @@ package witness
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // ---------------------------------------------------------------------------
@@ -206,6 +208,35 @@ func TestVerify_L3RecordsAreTwoDISTINCTFields(t *testing.T) {
 	}
 }
 
+// upstreamL3Field is one upstream field declaration: name, scalar kind,
+// cardinality and — for message fields — the target message's full name.
+type upstreamL3Field struct {
+	name    string
+	kind    protoreflect.Kind
+	card    protoreflect.Cardinality
+	message string // full name of the target message; "" for scalar fields
+}
+
+// Shorthands so the table below reads like the .proto it transcribes.
+func l3Str(name string) upstreamL3Field {
+	return upstreamL3Field{name, protoreflect.StringKind, protoreflect.Optional, ""}
+}
+func l3Bool(name string) upstreamL3Field {
+	return upstreamL3Field{name, protoreflect.BoolKind, protoreflect.Optional, ""}
+}
+func l3U32(name string) upstreamL3Field {
+	return upstreamL3Field{name, protoreflect.Uint32Kind, protoreflect.Optional, ""}
+}
+func l3Msg(name, msg string) upstreamL3Field {
+	return upstreamL3Field{name, protoreflect.MessageKind, protoreflect.Optional, msg}
+}
+func l3RepMsg(name, msg string) upstreamL3Field {
+	return upstreamL3Field{name, protoreflect.MessageKind, protoreflect.Repeated, msg}
+}
+func l3RepStr(name string) upstreamL3Field {
+	return upstreamL3Field{name, protoreflect.StringKind, protoreflect.Repeated, ""}
+}
+
 // upstreamL3Fields is the field table transcribed from the vendoring source:
 //
 //	Declade/dual-sandbox-architecture @ 91941304fd3ba30779d81121c37c436a631f4089
@@ -213,35 +244,68 @@ func TestVerify_L3RecordsAreTwoDISTINCTFields(t *testing.T) {
 //
 // It is the INDEPENDENT REFERENCE for the drift test below — a literal copy of
 // what upstream declares, not something read back out of the generated stubs.
-// Wire compatibility with a live witness rests entirely on these numbers, and
-// a vendored copy is exactly the artifact that drifts silently.
-var upstreamL3Fields = map[string]map[int32]string{
+// Wire compatibility with a live witness rests entirely on these numbers AND
+// their encodings, and a vendored copy is exactly the artifact that drifts
+// silently.
+//
+// ⚑ T-881 (astra post-merge audit of kit #136, finding 3): the table used to
+// carry names only, so `uint32` -> `fixed32` (same name, same number, same Go
+// type, DIFFERENT wire encoding) passed. It now pins kind, cardinality and
+// message target for every field; upstream is proto3 with no `optional`
+// keyword, so every singular field is protoreflect.Optional.
+var upstreamL3Fields = map[string]map[int32]upstreamL3Field{
 	"dsa.veil.v1.VerificationResult": {
-		13: "l3_coverage_scope",
-		14: "l3_coverage_evidence",
+		13: l3Msg("l3_coverage_scope", "dsa.veil.v1.L3CoverageScope"),
+		14: l3Msg("l3_coverage_evidence", "dsa.veil.v1.L3CoverageEvidence"),
 	},
 	"dsa.veil.v1.L3CoverageEvidence": {
-		1: "record_status", 2: "derivation_version", 3: "drives_verdict",
-		4: "rollup", 5: "composed_green", 6: "composed_reason", 7: "fields",
-		8: "canaries_planted", 9: "canaries_recovered",
-		10: "fields_passed", 11: "fields_failed", 12: "fields_absent",
+		1: l3Str("record_status"), 2: l3Str("derivation_version"), 3: l3Bool("drives_verdict"),
+		4: l3Str("rollup"), 5: l3Bool("composed_green"), 6: l3Str("composed_reason"),
+		7: l3RepMsg("fields", "dsa.veil.v1.L3FieldEvidence"),
+		8: l3U32("canaries_planted"), 9: l3U32("canaries_recovered"),
+		10: l3U32("fields_passed"), 11: l3U32("fields_failed"), 12: l3U32("fields_absent"),
 	},
 	"dsa.veil.v1.L3FieldEvidence": {
-		1: "field_key", 2: "verdict", 3: "reason",
-		4: "canaries_planted", 5: "canaries_recovered",
-		6: "windows", 7: "probed_windows",
+		1: l3Str("field_key"), 2: l3Str("verdict"), 3: l3Str("reason"),
+		4: l3U32("canaries_planted"), 5: l3U32("canaries_recovered"),
+		6: l3U32("windows"), 7: l3U32("probed_windows"),
 	},
 	"dsa.veil.v1.L3CoverageScope": {
-		1: "record_status", 2: "derivation_version", 3: "drives_claim",
-		4: "granted", 5: "reason", 6: "eligible_count", 7: "covered",
-		8: "eligible_not_covered", 9: "excluded",
+		1: l3Str("record_status"), 2: l3Str("derivation_version"), 3: l3Bool("drives_claim"),
+		4: l3Bool("granted"), 5: l3Str("reason"), 6: l3U32("eligible_count"),
+		7: l3RepMsg("covered", "dsa.veil.v1.L3CoveredField"),
+		8: l3RepStr("eligible_not_covered"),
+		9: l3RepMsg("excluded", "dsa.veil.v1.L3ExcludedField"),
 	},
 	"dsa.veil.v1.L3CoveredField": {
-		1: "field_key", 2: "via", 3: "receipt_id", 4: "source_claim_id",
+		1: l3Str("field_key"), 2: l3Str("via"), 3: l3Str("receipt_id"), 4: l3Str("source_claim_id"),
 	},
 	"dsa.veil.v1.L3ExcludedField": {
-		1: "field_key", 2: "zone", 3: "reason",
+		1: l3Str("field_key"), 2: l3Str("zone"), 3: l3Str("reason"),
 	},
+}
+
+// checkL3FieldAgainstUpstream returns every way fd disagrees with want.
+// Split out so the mutation control can prove each comparison bites.
+func checkL3FieldAgainstUpstream(fd protoreflect.FieldDescriptor, want upstreamL3Field) []string {
+	var errs []string
+	if string(fd.Name()) != want.name {
+		errs = append(errs, fmt.Sprintf("name %q, upstream %q", fd.Name(), want.name))
+	}
+	if fd.Kind() != want.kind {
+		errs = append(errs, fmt.Sprintf("kind %v, upstream %v", fd.Kind(), want.kind))
+	}
+	if fd.Cardinality() != want.card {
+		errs = append(errs, fmt.Sprintf("cardinality %v, upstream %v", fd.Cardinality(), want.card))
+	}
+	var gotMsg string
+	if fd.Message() != nil {
+		gotMsg = string(fd.Message().FullName())
+	}
+	if gotMsg != want.message {
+		errs = append(errs, fmt.Sprintf("message target %q, upstream %q", gotMsg, want.message))
+	}
+	return errs
 }
 
 // TestL3Descriptor_MatchesUpstreamFieldNumbers asserts the vendored schema
@@ -271,37 +335,28 @@ func TestL3Descriptor_MatchesUpstreamFieldNumbers(t *testing.T) {
 		if string(md.FullName()) != full {
 			t.Fatalf("vendored message full name: got %q want %q", md.FullName(), full)
 		}
-		for num, name := range want {
+		if got, wantN := md.Fields().Len(), len(want); full != "dsa.veil.v1.VerificationResult" && got != wantN {
+			t.Errorf("%s: vendored schema declares %d fields, upstream %d", full, got, wantN)
+		}
+		for num, spec := range want {
 			fd := md.Fields().ByNumber(protowire.Number(num))
 			if fd == nil {
-				t.Errorf("%s: field number %d is missing from the vendored schema (upstream calls it %q)", full, num, name)
+				t.Errorf("%s: field number %d is missing from the vendored schema (upstream calls it %q)", full, num, spec.name)
 				continue
 			}
-			if string(fd.Name()) != name {
-				t.Errorf("%s: field %d is %q in the vendored schema, %q upstream", full, num, fd.Name(), name)
+			for _, e := range checkL3FieldAgainstUpstream(fd, spec) {
+				t.Errorf("%s field %d: %s", full, num, e)
 			}
 			checked++
 		}
 	}
 	if checked != 37 {
-		t.Fatalf("checked %d field numbers, want 37 — the reference table changed shape", checked)
+		t.Fatalf("checked %d fields (name+kind+cardinality+message), want 37 — the reference table changed shape", checked)
 	}
 
-	// The two VerificationResult slots must point at the right MESSAGE types;
-	// matching numbers over the wrong type still decodes into garbage.
+	// The two VerificationResult slots' MESSAGE targets are now pinned by the
+	// table itself (matching numbers over the wrong type decodes into garbage).
 	vr := (*witnesspb.VerificationResult)(nil).ProtoReflect().Descriptor()
-	for num, wantType := range map[int32]string{
-		13: "dsa.veil.v1.L3CoverageScope",
-		14: "dsa.veil.v1.L3CoverageEvidence",
-	} {
-		fd := vr.Fields().ByNumber(protowire.Number(num))
-		if fd == nil {
-			t.Fatalf("VerificationResult field %d missing", num)
-		}
-		if fd.Message() == nil || string(fd.Message().FullName()) != wantType {
-			t.Errorf("VerificationResult field %d type: got %v want %s", num, fd.Message(), wantType)
-		}
-	}
 
 	// Fields 10-12 are deliberately NOT vendored (see the gap note in
 	// witness.proto). Pin that so a future partial sync is a conscious edit
@@ -310,5 +365,41 @@ func TestL3Descriptor_MatchesUpstreamFieldNumbers(t *testing.T) {
 		if fd := vr.Fields().ByNumber(protowire.Number(num)); fd != nil {
 			t.Errorf("VerificationResult field %d (%q) is now vendored — update the gap note in witness.proto", num, fd.Name())
 		}
+	}
+}
+
+// TestL3Descriptor_GuardCatchesEncodingDrift is the mutation control for the
+// guard above (T-881): the exact drift astra reproduced — `uint32` ->
+// `fixed32` on canaries_recovered, same name and number and Go type — must be
+// reported, as must a cardinality flip and a wrong message target.
+func TestL3Descriptor_GuardCatchesEncodingDrift(t *testing.T) {
+	t.Parallel()
+	ev := (*witnesspb.L3CoverageEvidence)(nil).ProtoReflect().Descriptor()
+	vr := (*witnesspb.VerificationResult)(nil).ProtoReflect().Descriptor()
+	cases := []struct {
+		name string
+		fd   protoreflect.FieldDescriptor
+		want upstreamL3Field
+	}{
+		{"uint32 declared fixed32 upstream", ev.Fields().ByNumber(9),
+			upstreamL3Field{"canaries_recovered", protoreflect.Fixed32Kind, protoreflect.Optional, ""}},
+		{"singular declared repeated upstream", ev.Fields().ByNumber(4),
+			upstreamL3Field{"rollup", protoreflect.StringKind, protoreflect.Repeated, ""}},
+		{"repeated declared singular upstream", ev.Fields().ByNumber(7),
+			upstreamL3Field{"fields", protoreflect.MessageKind, protoreflect.Optional, "dsa.veil.v1.L3FieldEvidence"}},
+		{"wrong message target", vr.Fields().ByNumber(13),
+			upstreamL3Field{"l3_coverage_scope", protoreflect.MessageKind, protoreflect.Optional, "dsa.veil.v1.L3CoverageEvidence"}},
+	}
+	for _, tc := range cases {
+		if tc.fd == nil {
+			t.Fatalf("%s: fixture field missing", tc.name)
+		}
+		if errs := checkL3FieldAgainstUpstream(tc.fd, tc.want); len(errs) == 0 {
+			t.Errorf("%s: guard accepted a drifted declaration", tc.name)
+		}
+	}
+	// And the real table is accepted field by field (control the other way).
+	if errs := checkL3FieldAgainstUpstream(ev.Fields().ByNumber(9), upstreamL3Fields["dsa.veil.v1.L3CoverageEvidence"][9]); len(errs) != 0 {
+		t.Errorf("guard rejects the true declaration: %v", errs)
 	}
 }
