@@ -117,7 +117,7 @@ func TestL3Narrative_EvidenceFailed(t *testing.T) {
 	if !strings.Contains(n.Evidence, "Coverage evidence check FAILED - 1 field(s) returned fewer planted probes than required") {
 		t.Errorf("evidence line must report the measured miss: %q", n.Evidence)
 	}
-	if !strings.Contains(n.Evidence, "(13/16 recovered across the request; 1 field(s) passed, 0 carry no evidence)") {
+	if !strings.Contains(n.Evidence, "(13/16 recovered across the request; 1 field(s) passed, 0 field(s) carry no usable verdict)") {
 		t.Errorf("evidence line must carry the producer's counts: %q", n.Evidence)
 	}
 	if !strings.Contains(n.Evidence, "A measured miss is positive evidence of a recall gap.") {
