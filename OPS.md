@@ -1719,6 +1719,13 @@ bytes this kit release was validated against — **without** rewriting your
 compose/Helm refs to `@sha256:`, so your `LUCAIRN_IMAGE_TAG` /
 `LUCAIRN_IMAGE_REGISTRY` overrides keep working.
 
+> **A re-pin is not a re-validation.** The third-party moving tags
+> (`postgres:16-alpine`, `redis:7-alpine`) are re-pinned by hand when upstream
+> re-points them (see the `RE-PINNED` comments in `image-manifest.yaml`); for a
+> re-pinned entry the recorded digest is what upstream published at re-pin
+> time, and the kit's acceptance suite has not necessarily been re-run against
+> those bytes.
+
 ```bash
 # Warn-only (default): a tag whose current registry digest differs from the
 # recorded one prints a warning but does NOT fail the post-start full-doctor
@@ -1802,6 +1809,30 @@ in `image-manifest.yaml` (drop the `pending: true` line). The
 `ollama-identity` runtime image is already digest-pinned — both in
 `image-manifest.yaml` and in the Helm chart
 (`charts/lucairn/charts/sandbox-a/values.yaml` → `ollamaIdentity.image.digest`).
+
+**Kit CI: fixture unit test vs live drift gate.** Two CI checks exercise the
+`image_digests:` pins; only the second one talks to a registry:
+
+- `tests/test_digest_pin.sh` (run by `make test`, CI job `Kit test harness`) is
+  **fixture-only**. Its resolver is a stub `crane` that answers the manifest's
+  own recorded digests, and it runs on a PATH with no real
+  `docker`/`crane`/`skopeo`, so a resolver installed on the host is not
+  reachable (a shell-exported `docker` function would bypass PATH, but the
+  test then fails — at its stub-call-count or `--strict` assertion — rather
+  than passing). It
+  tests the `doctor --strict` logic (mismatch, unresolved, invalid, pending,
+  cardinality floor, overrides) and does not depend on a live registry answer:
+  a shell-exported resolver function can still execute, but its answer cannot
+  make the test pass. It is not a drift signal.
+- `tests/live_digest_gate.sh` (CI job `live-digest-gate`) is the **live drift
+  signal**. It reads every non-pending third-party pin from `image_digests:`
+  (refs outside `ghcr.io/declade/`, excluding `ollama://` / `hf://` model URIs),
+  resolves each with `docker buildx imagetools inspect`, prints the recorded
+  and observed digests, and fails on an unresolved, malformed, or mismatched
+  digest. It has no stub and no fallback. When it goes red because upstream
+  re-pointed a moving tag, re-pin by hand after review (a re-pin is not a
+  re-validation — see above). Run it locally with
+  `bash tests/live_digest_gate.sh`.
 
 For the Image Signing Key's custody model, generation, and rotation procedure,
 see the Key Ceremony Runbook (`docs/KEY_CEREMONY_RUNBOOK.md` § 1 "Key Inventory" — Image

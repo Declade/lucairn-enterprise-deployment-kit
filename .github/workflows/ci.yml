@@ -20,14 +20,11 @@ jobs:
   # guards — was unenforced on every PR and every push to main. A test suite
   # nobody runs is documentation.
   #
-  # It is a SEPARATE job because the harness job depends on the public container
-  # registry: `doctor --strict` resolves third-party image digests
-  # (postgres:16-alpine, redis:7-alpine) and fails closed when an upstream tag is
-  # re-pointed — which is a real supply-chain control, and also a red that has
-  # nothing to do with any given PR's diff (board T-831). Folding `go test` into
-  # that job would let an unrelated registry event mask a genuine Go failure, and
-  # would make a Go failure look like an infrastructure flake. Two jobs, two
-  # independent verdicts.
+  # It is a SEPARATE job so that an unrelated registry or infrastructure event
+  # cannot mask a genuine Go failure, and a Go failure cannot look like an
+  # infrastructure flake. Two jobs, two independent verdicts. (The live
+  # third-party digest check that used to run by accident inside the harness —
+  # board T-831 — is now its own `live-digest-gate` job below.)
   #
   # No registry, no Docker, no Helm: this job needs a Go toolchain and nothing
   # else, so it finishes in well under a minute.
@@ -58,6 +55,44 @@ jobs:
       - name: go test
         working-directory: apps/dashboard
         run: go test ./...
+
+  # ---------------------------------------------------------------------------
+  # live-digest-gate — the LIVE upstream drift signal for third-party pins.
+  # ---------------------------------------------------------------------------
+  #
+  # tests/test_digest_pin.sh (run by `make test`) is FIXTURE-ONLY: a stub
+  # resolver on a PATH that is hermetic against PATH-found resolvers (a
+  # shell-exported `docker` function bypasses PATH, but then fails the test —
+  # stub-call-count or --strict assertion — rather than passing it). It proves the
+  # `doctor --strict` logic, never that a pin still matches its registry.
+  # Before astra's post-merge review of #137 (finding M1), that unit test had the
+  # runner's real /usr/bin/docker on its PATH, so it did a live lookup by
+  # accident — and fell back to the stub's fixture answers (green) whenever the
+  # lookup failed. This job replaces the accident with an explicit gate:
+  # tests/live_digest_gate.sh resolves every non-pending third-party pin in
+  # image-manifest.yaml with real `docker buildx imagetools inspect` and fails
+  # on unresolved, malformed, or mismatched digests. No stub, no fallback.
+  #
+  # It turns red when upstream re-points a moving tag (postgres:16-alpine,
+  # redis:7-alpine) even if the PR did not touch the pins — that is the drift
+  # signal; re-pin by hand per OPS.md § Digest-pin enforcement. Deliberately no
+  # `continue-on-error` and no `if:` — a skipped gate reads as a pass.
+  live-digest-gate:
+    name: Live digest gate (third-party pins)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Tool versions
+        run: |
+          docker version --format 'docker {{.Client.Version}}'
+          docker buildx version
+          jq --version
+
+      - name: Resolve third-party pins live
+        run: bash tests/live_digest_gate.sh
 
   test:
     name: Kit test harness
