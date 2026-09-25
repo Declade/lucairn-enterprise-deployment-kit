@@ -54,6 +54,40 @@ func caseFailedWithPartlyProbed() *witnesspb.L3CoverageEvidence {
 	}
 }
 
+// caseTwoPartlyProbedOneShort: one pass (8/8) beside TWO partly probed
+// fields — one at 4/4 (1 of 2 windows probed, below-floor reason), one at 3/4
+// (1 of 3 windows probed, cache reason on a field that recorded windows).
+func caseTwoPartlyProbedOneShort() *witnesspb.L3CoverageEvidence {
+	return &witnesspb.L3CoverageEvidence{
+		RecordStatus: "present",
+		Rollup:       "unverified",
+		Fields: []*witnesspb.L3FieldEvidence{
+			{FieldKey: "messages[0].content", Verdict: "passed", CanariesPlanted: 8, CanariesRecovered: 8, Windows: 2, ProbedWindows: 2},
+			{FieldKey: "messages[1].content", Verdict: "absent", Reason: "window_below_probe_floor",
+				CanariesPlanted: 4, CanariesRecovered: 4, Windows: 2, ProbedWindows: 1},
+			{FieldKey: "messages[2].content", Verdict: "absent", Reason: "window_served_from_verdict_cache",
+				CanariesPlanted: 4, CanariesRecovered: 3, Windows: 3, ProbedWindows: 1},
+		},
+		CanariesPlanted:   16,
+		CanariesRecovered: 15,
+		FieldsPassed:      1,
+		FieldsAbsent:      2,
+	}
+}
+
+// caseCachedNoWindow: the verdict cache served the whole field and no window
+// was recorded for it — the only shape where "no inference ran" is field-wide.
+func caseCachedNoWindow() *witnesspb.L3CoverageEvidence {
+	return &witnesspb.L3CoverageEvidence{
+		RecordStatus: "present",
+		Rollup:       "absent",
+		Fields: []*witnesspb.L3FieldEvidence{
+			{FieldKey: "messages[0].content", Verdict: "absent", Reason: "window_served_from_verdict_cache"},
+		},
+		FieldsAbsent: 1,
+	}
+}
+
 func TestL3EvidenceLine_AbsentVerdictIsNotAbsentEvidence(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -67,8 +101,8 @@ func TestL3EvidenceLine_AbsentVerdictIsNotAbsentEvidence(t *testing.T) {
 			want: "Coverage evidence check is INCOMPLETE - 1 field(s) passed (8/8 probes recovered) and " +
 				"1 field(s) carry no usable recall-evidence verdict: 1 field(s) only partly probed " +
 				"(4/4 planted probes recovered, 1 of 2 windows probed - not a usable verdict); " +
-				"why: 1 x the text was shorter than the window size the probe overhead was measured at; " +
-				"12/12 probes recovered across the request. A partly evidenced request is not a verified one.",
+				"why: 1 x the text was shorter than the window size the probe overhead was measured at. " +
+				"Across the request: 12/12 probes recovered. A partly evidenced request is not a verified one.",
 		},
 		{
 			name: "partly probed field beside a measured miss (failed)",
@@ -84,8 +118,32 @@ func TestL3EvidenceLine_AbsentVerdictIsNotAbsentEvidence(t *testing.T) {
 			ev:   mustEvidence(t, "mixed"),
 			want: "Coverage evidence check FAILED - 1 field(s) returned fewer planted probes than required " +
 				"(13/16 recovered across the request; 1 field(s) passed, 1 field(s) carry no usable verdict: " +
-				"1 field(s) carry no evidence at all; why: 1 x the result was served from the deep shield " +
-				"verdict cache, so no inference ran). A measured miss is positive evidence of a recall gap.",
+				"1 field(s) carry no evidence at all; why: 1 x at least one window was served from the deep shield " +
+				"verdict cache, so no inference ran on that window). A measured miss is positive evidence of a recall gap.",
+		},
+		{
+			// LOW-1: two partly probed fields, one of them at 3/4. Pins the
+			// field count (2, not 1) and that an unrecovered planted probe is
+			// never credited as recovered (7/8, not 8/8). MED-1: a partly
+			// probed field's cache reason is phrased per window, never "no
+			// inference ran" beside probes that came back.
+			name: "two partly probed fields, one at 3/4 (unverified)",
+			ev:   caseTwoPartlyProbedOneShort(),
+			want: "Coverage evidence check is INCOMPLETE - 1 field(s) passed (8/8 probes recovered) and " +
+				"2 field(s) carry no usable recall-evidence verdict: 2 field(s) only partly probed " +
+				"(7/8 planted probes recovered, 2 of 5 windows probed - not a usable verdict); " +
+				"why: 1 x the text was shorter than the window size the probe overhead was measured at; " +
+				"1 x at least one window was served from the deep shield verdict cache, so no inference ran on that window. " +
+				"Across the request: 15/16 probes recovered. A partly evidenced request is not a verified one.",
+		},
+		{
+			// MED-1: the field-wide cache wording survives ONLY where the
+			// field recorded no window.
+			name: "cached field with no recorded window keeps the field-wide wording (absent rollup)",
+			ev:   caseCachedNoWindow(),
+			want: "No field on this request carries a usable recall-evidence verdict " +
+				"(1 x the result was served from the deep shield verdict cache, so no inference ran). " +
+				"Evidence that does not exist is not evidence of success.",
 		},
 		{
 			name: "only field partly probed (absent rollup)",
@@ -135,6 +193,7 @@ func TestL3EvidenceLine_NeverSaysNoEvidenceBesidePlantedProbes(t *testing.T) {
 	grid := evidenceGrid(t)
 	grid["t881_partly_probed_only"] = casePartlyProbedOnly()
 	grid["t881_failed_with_partly_probed"] = caseFailedWithPartlyProbed()
+	grid["t881_two_partly_probed_one_short"] = caseTwoPartlyProbedOneShort()
 	sawPartly := 0
 	for name, ev := range grid {
 		line := buildL3EvidenceLine(ev, "present")

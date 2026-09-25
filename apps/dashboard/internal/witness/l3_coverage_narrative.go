@@ -52,9 +52,21 @@ import (
 //
 // ONE DELIBERATE DIVERGENCE (T-881, astra post-merge audit of kit #136,
 // finding 2): the `failed`, `unverified` and `absent` evidence branches no
-// longer say a partly probed field "carries no evidence". Upstream @ db096f5d
-// still does; this is a kit-side honesty fix ahead of upstream, not drift. On
-// the next re-sync, carry it upstream rather than re-importing the old wording.
+// longer say a partly probed field "carries no evidence", and the unverified
+// branch states the request total as its own sentence. Upstream @ db096f5d
+// (the commit this file was copied from) still has the old wording; this is a
+// kit-side honesty fix ahead of upstream, not drift.
+//
+// ⚑ UPSTREAM HAS SINCE MOVED: DSA main c66c7a1a rewrote the evidence
+// absent-reason wording (every window-level reason phrased "at least one
+// window ..." on a field that recorded a window) and the matching
+// L3FieldEvidence / cache-reason proto comments. This file ports ONLY the
+// cache-reason part of c66c7a1a (hunter MED-1). The next re-sync must merge
+// BOTH fixes — this T-881 divergence AND the whole of c66c7a1a — never pick
+// one over the other. The vendored proto comment for
+// `window_served_from_verdict_cache` in witness.proto is likewise stale
+// against main (field-wide wording); it is left untouched here because the
+// vendored proto is re-synced, not edited.
 //
 // ONE DELIBERATE OMISSION: upstream's l3CompletenessShortCaveat /
 // l3CompletenessWithShortCaveat pair exists for the gateway PDF's fixed-width
@@ -229,7 +241,20 @@ func l3ScopeReasonMeaning(reason string) string {
 
 // l3EvidenceAbsentReasonMeaning renders one L3FieldEvidence.reason in plain
 // words. Closed vocabulary (proto L3FieldEvidence.reason).
-func l3EvidenceAbsentReasonMeaning(reason string) string {
+//
+// ⚑ THE CACHE REASON IS A WINDOW FACT WHEN THE FIELD RECORDED A WINDOW (T-881
+// round 1, hunter MED-1; wording ported from upstream DSA c66c7a1a
+// veil_l3_coverage_render.go). The producer names the FIRST unprobed window's
+// reason for the whole field, while the field's other windows may have run
+// inference and had their probes come back. The field-wide wording "so no
+// inference ran" then sat in the same sentence as recovered probes, which
+// require inference. For a field that recorded at least one window
+// (`windowScoped`) the cache reason is phrased per window; the field-wide
+// wording is kept only where no window was recorded.
+func l3EvidenceAbsentReasonMeaning(reason string, windowScoped bool) string {
+	if windowScoped && reason == "window_served_from_verdict_cache" {
+		return "at least one window was served from the deep shield verdict cache, so no inference ran on that window"
+	}
 	switch reason {
 	case "probe_off":
 		return "the recall probe is not armed on this deployment"
@@ -447,10 +472,12 @@ func buildL3EvidenceLine(ev *witnesspb.L3CoverageEvidence, status string) string
 		//      REQUEST totals, which include the partly probed field's
 		//      probes, so the passed fields were credited with 12/12 when they
 		//      carried 8/8.
+		// The request total is its own sentence (T-881 round 1, hunter LOW-2):
+		// after "; " it read as one more entry in the why-ledger.
 		tally := l3TallyEvidence(ev)
 		return fmt.Sprintf(
 			"Coverage evidence check is INCOMPLETE - %d field(s) passed (%d/%d probes recovered) and "+
-				"%d field(s) carry no usable recall-evidence verdict%s; %d/%d probes recovered across the request. "+
+				"%d field(s) carry no usable recall-evidence verdict%s. Across the request: %d/%d probes recovered. "+
 				"A partly evidenced request is not a verified one.",
 			passed, tally.passedRecovered, tally.passedPlanted, absent, l3NoVerdictDetailSuffix(ev),
 			recovered, planted)
@@ -482,21 +509,30 @@ func buildL3EvidenceLine(ev *witnesspb.L3CoverageEvidence, status string) string
 // in plain words>" phrases, sorted. Field keys are deliberately not rendered —
 // same reasoning as l3ExclusionReasonPhrases.
 func l3EvidenceAbsentPhrases(ev *witnesspb.L3CoverageEvidence) []string {
-	counts := map[string]int{}
+	type group struct {
+		reason       string
+		windowScoped bool
+	}
+	counts := map[group]int{}
 	for _, f := range ev.GetFields() {
 		if f.GetVerdict() != "absent" {
 			continue
 		}
-		counts[f.GetReason()]++
+		counts[group{reason: f.GetReason(), windowScoped: f.GetWindows() > 0}]++
 	}
-	reasons := make([]string, 0, len(counts))
-	for r := range counts {
-		reasons = append(reasons, r)
+	groups := make([]group, 0, len(counts))
+	for g := range counts {
+		groups = append(groups, g)
 	}
-	sort.Strings(reasons)
-	out := make([]string, 0, len(reasons))
-	for _, r := range reasons {
-		out = append(out, fmt.Sprintf("%d x %s", counts[r], l3EvidenceAbsentReasonMeaning(r)))
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].reason != groups[j].reason {
+			return groups[i].reason < groups[j].reason
+		}
+		return !groups[i].windowScoped && groups[j].windowScoped
+	})
+	out := make([]string, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, fmt.Sprintf("%d x %s", counts[g], l3EvidenceAbsentReasonMeaning(g.reason, g.windowScoped)))
 	}
 	return out
 }
