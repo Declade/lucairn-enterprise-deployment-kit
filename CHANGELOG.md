@@ -201,9 +201,10 @@ carry a security fix are tagged **[Security]**.
     in `customer.env` equals `LCR_SANDBOX_B_SIGNING_KEY`. With an
     external-secret backend doctor cannot see the Secret and prints an INFO
     note instead. It never prints the key.
-  - **The chart no longer lets a secrets backend deliver the key:** the
+  - **The chart's own ExternalSecret no longer delivers the key:** the
     gateway ExternalSecret stops mapping `LCR_AI_SIGNING_KEY`, and the Kind
-    mTLS runtime-values generator and `values-test.yaml` leave it empty.
+    mTLS runtime-values generator and `values-test.yaml` leave it empty. A
+    Secret you create or extend yourself can still carry it — keep it out.
   - **Upgrade note:** gateway images built with T-1102 (not yet pinned by this
     kit) refuse to boot while any of `LCR_AI_SIGNING_KEY`,
     `VEIL_AI_SIGNING_KEY`, `LCR_SANDBOX_B_SIGNING_KEY` or
@@ -216,7 +217,8 @@ carry a security fix are tagged **[Security]**.
     the key does not revoke it.** Rotate sandbox B's key as described in
     [`docs/KEY_CEREMONY_RUNBOOK.md` § 9.4](docs/KEY_CEREMONY_RUNBOOK.md#94-sandbox-b-key-held-by-a-gateway-t-1102);
     note that after the rotation, older certificates whose `dsa-ai` claim was
-    signed with the old key fail a fresh witness check.
+    signed with the old key fail a fresh witness check, so the runbook
+    requires a witness release with key history before you rotate.
 - **Upgrade note — gateway evidence-admission settings are now exact enums,
   checked at render time (T-871).** A gateway image built from
   dual-sandbox-architecture main `c3d2aa0d` or later (DSA #622) **refuses to
