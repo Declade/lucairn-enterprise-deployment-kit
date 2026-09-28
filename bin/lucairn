@@ -2969,11 +2969,13 @@ check_canary_hmac_key_helm() {
 # it can mint claims the witness accepts as sandbox B's (split-knowledge
 # separation broken). Older chart comments told operators to copy the
 # sandbox-b chart's veilSigningKey here. Newer gateway images refuse to boot
-# on it; this check catches it before install for every image vintage.
+# on any non-blank value; this check catches it before install on the
+# native-Secret path whatever the image version.
 #
 # Render-based: FAIL when the rendered gateway-credentials Secret carries a
-# non-empty LCR_AI_SIGNING_KEY. External-secret backends INFO-note (doctor
-# cannot see the backend property). Never prints the key value.
+# non-empty LCR_AI_SIGNING_KEY. External-secret backends INFO-note: the
+# chart's ExternalSecret does not map LCR_AI_SIGNING_KEY, but doctor cannot
+# see a pre-created gateway-credentials Secret. Never prints the key value.
 check_gateway_ai_signing_key_helm() {
   local chart_dir="$1"
   shift
@@ -2991,7 +2993,8 @@ check_gateway_ai_signing_key_helm() {
   fi
   if ! grep -q "# Source: lucairn/charts/gateway/templates/secret.yaml" <<<"$render"; then
     info "gateway dsa-ai key (Helm): no native gateway Secret rendered (external-secret backend or gateway disabled)."
-    info "gateway dsa-ai key (Helm):   Keep the backend property veilAISigningKey EMPTY — never sandbox B's key (T-1102)."
+    info "gateway dsa-ai key (Helm):   The chart's ExternalSecret does not map LCR_AI_SIGNING_KEY (T-1102). If you pre-create"
+    info "gateway dsa-ai key (Helm):   gateway-credentials yourself, leave LCR_AI_SIGNING_KEY out or empty — never sandbox B's key."
     return 0
   fi
   local ai_key
