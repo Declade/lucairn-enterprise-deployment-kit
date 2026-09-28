@@ -155,6 +155,8 @@ Guard suite: `tests/test_migration_version_cap.sh`.
 
 ### The checklist
 
+⛔ Gateway tags built from DSA main after PR #681 (T-1102) require the CHANGELOG release-ordering note — see image-manifest.yaml comment.
+
 Run it whenever a release bumps a pinned service image tag **or** changes
 anything under `migrations/`.
 

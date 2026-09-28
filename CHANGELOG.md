@@ -213,6 +213,14 @@ carry a security fix are tagged **[Security]**.
     from the gateway's config before upgrading. Until the gateway has its own
     signing identity at the witness, Sensitive Mode certificates it seals read
     `overall_verdict: failed`.
+    ⚠ Release ordering: this kit version does NOT pin a T-1102 gateway image. The first kit
+    release that bumps `default_lucairn_image_tag` (image-manifest.yaml) to a gateway built
+    from dual-sandbox-architecture main after PR #681 MUST (a) carry this note at the top of
+    its release notes, (b) state that `LCR_AI_SIGNING_KEY` must be blank in the gateway
+    Secret/customer.env BEFORE `helm upgrade` / `docker compose up` (doctor checks the
+    value, not the order), and (c) name the desktop version whose certificate chip reads the
+    signed verdict, because Sensitive Mode certificates read `overall_verdict: failed`
+    from that image onward until the gateway has its own witness identity.
   - **If you ever followed the old "same seed as sandbox B" comment, removing
     the key does not revoke it.** Rotate sandbox B's key as described in
     [`docs/KEY_CEREMONY_RUNBOOK.md` § 9.4](docs/KEY_CEREMONY_RUNBOOK.md#94-sandbox-b-key-held-by-a-gateway-t-1102);
