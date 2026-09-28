@@ -188,6 +188,35 @@ carry a security fix are tagged **[Security]**.
   "Tool-schema PII guard" → "Dry-run it BEFORE the first routed turn".
 
 ### Changed
+- **[Security] The gateway must not hold a `dsa-ai` signing key (T-1102).**
+  The witness trusts exactly one `dsa-ai` public key — sandbox B's. A gateway
+  holding sandbox B's seed can sign claims the witness accepts as sandbox B's,
+  which breaks the separation between the two services. Older chart comments
+  told operators to give the gateway's `LCR_AI_SIGNING_KEY`
+  (`gateway.secrets.values.veilAISigningKey`) the same seed as sandbox B for
+  Sensitive Mode; that instruction is removed.
+  - **Doctor now fails** when the chart's own gateway Secret would carry a
+    non-empty `LCR_AI_SIGNING_KEY` (`veilAISigningKey` in your Helm values),
+    and on Compose when `LCR_AI_SIGNING_KEY` (or legacy `VEIL_AI_SIGNING_KEY`)
+    in `customer.env` equals `LCR_SANDBOX_B_SIGNING_KEY`. With an
+    external-secret backend doctor cannot see the Secret and prints an INFO
+    note instead. It never prints the key.
+  - **The chart no longer lets a secrets backend deliver the key:** the
+    gateway ExternalSecret stops mapping `LCR_AI_SIGNING_KEY`, and the Kind
+    mTLS runtime-values generator and `values-test.yaml` leave it empty.
+  - **Upgrade note:** gateway images built with T-1102 (not yet pinned by this
+    kit) refuse to boot while any of `LCR_AI_SIGNING_KEY`,
+    `VEIL_AI_SIGNING_KEY`, `LCR_SANDBOX_B_SIGNING_KEY` or
+    `VEIL_SANDBOX_B_SIGNING_KEY` has a non-blank value in the gateway's
+    environment. Remove them
+    from the gateway's config before upgrading. Until the gateway has its own
+    signing identity at the witness, Sensitive Mode certificates it seals read
+    `overall_verdict: failed`.
+  - **If you ever followed the old "same seed as sandbox B" comment, removing
+    the key does not revoke it.** Rotate sandbox B's key as described in
+    [`docs/KEY_CEREMONY_RUNBOOK.md` § 9.4](docs/KEY_CEREMONY_RUNBOOK.md#94-sandbox-b-key-held-by-a-gateway-t-1102);
+    note that after the rotation, older certificates whose `dsa-ai` claim was
+    signed with the old key fail a fresh witness check.
 - **Upgrade note — gateway evidence-admission settings are now exact enums,
   checked at render time (T-871).** A gateway image built from
   dual-sandbox-architecture main `c3d2aa0d` or later (DSA #622) **refuses to
