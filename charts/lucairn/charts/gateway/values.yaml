@@ -446,12 +446,13 @@ secrets:
     veilSandboxBPublicKey: ""
     veilAuditPublicKey: ""
     # LSM-001 / DRIFT-001: gateway-side dsa-ai signing key for the Sensitive
-    # Mode seal-cert flow. 64-char hex Ed25519 seed. In hybrid deploys
-    # (Sensitive Mode + sandbox B), set this to the SAME value as the
-    # sandbox-b chart's secrets.values.veilSigningKey. In Sensitive-Mode-only
-    # deploys, this is the standalone dsa-ai signing key. Empty value
+    # Mode seal-cert flow. Keep EMPTY. T-1102: NEVER set this to the
+    # sandbox-b chart's secrets.values.veilSigningKey — the witness trusts one
+    # dsa-ai key (sandbox B's) and the gateway must never hold it
+    # (split-knowledge separation). `lucairn doctor --values` FAILs when this
+    # is set; newer gateway images refuse to boot on sandbox B's key. Empty
     # disables the dsa-ai emitter; Sensitive Mode certs then render
-    # overall_verdict: failed on /verify (operator warning logged at boot).
+    # overall_verdict: failed on /verify.
     veilAISigningKey: ""
     dsaServiceToken: ""  # PRODUCTION: set via existingSecret or --set; dev: inline value
     # Required when secrets.backend == "k8s-native". Base64 32 bytes (AES-256)

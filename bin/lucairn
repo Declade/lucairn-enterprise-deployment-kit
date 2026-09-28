@@ -1984,6 +1984,19 @@ check_signing_key_compose_preflight() {
     failed=1
   fi
 
+  # T-1102: the gateway's Sensitive Mode dsa-ai key must never be sandbox B's
+  # seed (older docs said to copy it). The kit compose does not wire
+  # LCR_AI_SIGNING_KEY today, but a copied seed here is the exact mistake the
+  # gateway now refuses at boot — FAIL it early. Never prints the value.
+  local ai_key
+  ai_key="$(env_value_with_legacy "$env_file" LCR_AI_SIGNING_KEY VEIL_AI_SIGNING_KEY)"
+  if [ -n "$ai_key" ] && [ -n "$sb_key" ] && [ "$ai_key" = "$sb_key" ]; then
+    echo "signing keys: FAIL — LCR_AI_SIGNING_KEY (or legacy VEIL_AI_SIGNING_KEY) equals LCR_SANDBOX_B_SIGNING_KEY in $env_file."
+    echo "signing keys:   The gateway must never hold sandbox B's dsa-ai signing key (split-knowledge"
+    echo "signing keys:   separation, T-1102). Remove LCR_AI_SIGNING_KEY from customer.env."
+    failed=1
+  fi
+
   # Local sandbox-b (self-hosted overlay) only: split mode
   # (SANDBOX_B_REMOTE_ENDPOINT set) has no local signing key by design.
   if [ -z "$sb_key" ] && [ -z "$remote_endpoint" ]; then
@@ -2944,6 +2957,59 @@ check_canary_hmac_key_helm() {
   fi
 
   # Both set and equal → consistently wired → PASS.
+  return 0
+}
+
+# check_gateway_ai_signing_key_helm <chart_dir> <values_file> [...]
+#
+# T-1102: the gateway must never hold sandbox B's dsa-ai signing key. The
+# witness trusts exactly ONE dsa-ai public key (sandbox B's), so any
+# gateway.secrets.values.veilAISigningKey that could make Sensitive Mode
+# certs verify is, by construction, sandbox B's seed — and a gateway holding
+# it can mint claims the witness accepts as sandbox B's (split-knowledge
+# separation broken). Older chart comments told operators to copy the
+# sandbox-b chart's veilSigningKey here. Newer gateway images refuse to boot
+# on it; this check catches it before install for every image vintage.
+#
+# Render-based: FAIL when the rendered gateway-credentials Secret carries a
+# non-empty LCR_AI_SIGNING_KEY. External-secret backends INFO-note (doctor
+# cannot see the backend property). Never prints the key value.
+check_gateway_ai_signing_key_helm() {
+  local chart_dir="$1"
+  shift
+  [ "$#" -gt 0 ] || return 0   # Compose path; skip
+  if ! have helm; then
+    info "gateway dsa-ai key (Helm): skipped — helm not installed (render-based check requires helm)."
+    return 0
+  fi
+  [ -d "$chart_dir" ] || { info "gateway dsa-ai key (Helm): skipped — chart dir not found ($chart_dir)."; return 0; }
+
+  local render
+  if ! render="$(helm_render_values "$chart_dir" "$@")"; then
+    info "gateway dsa-ai key (Helm): skipped — chart render failed (see static_checks)."
+    return 0
+  fi
+  if ! grep -q "# Source: lucairn/charts/gateway/templates/secret.yaml" <<<"$render"; then
+    info "gateway dsa-ai key (Helm): no native gateway Secret rendered (external-secret backend or gateway disabled)."
+    info "gateway dsa-ai key (Helm):   Keep the backend property veilAISigningKey EMPTY — never sandbox B's key (T-1102)."
+    return 0
+  fi
+  local ai_key
+  ai_key="$(awk '
+    /^# Source: lucairn\/charts\/gateway\/templates\/secret\.yaml$/{in_blk=1; next}
+    in_blk && /^# Source:/{in_blk=0}
+    in_blk && /^[[:space:]]+LCR_AI_SIGNING_KEY:[[:space:]]*/{
+      sub(/^[[:space:]]+LCR_AI_SIGNING_KEY:[[:space:]]*/,"")
+      gsub(/^"|"$|^'"'"'|'"'"'$/,"")
+      print; exit}
+  ' <<<"$render")"
+  if [ -n "$ai_key" ]; then
+    echo "gateway dsa-ai key (Helm): FAIL — gateway.secrets.values.veilAISigningKey is set."
+    echo "gateway dsa-ai key (Helm):   The witness trusts one dsa-ai key and it is sandbox B's; the gateway must"
+    echo "gateway dsa-ai key (Helm):   never hold it (split-knowledge separation, T-1102). Set it to \"\" —"
+    echo "gateway dsa-ai key (Helm):   never copy sandbox-b.secrets.values.veilSigningKey into the gateway."
+    return 1
+  fi
   return 0
 }
 
@@ -7863,6 +7929,10 @@ doctor() {
     local helm_canary_failed=0
     check_canary_hmac_key_helm "$ROOT/charts/lucairn" "${values_files[@]}" || helm_canary_failed=1
     [ "$helm_canary_failed" -eq 0 ] || return 1
+    # T-1102: the gateway must never be handed sandbox B's dsa-ai signing key.
+    local helm_ai_key_failed=0
+    check_gateway_ai_signing_key_helm "$ROOT/charts/lucairn" "${values_files[@]}" || helm_ai_key_failed=1
+    [ "$helm_ai_key_failed" -eq 0 ] || return 1
   fi
 
   # M5 (deal-#1 hardening 2026-06-19): readiness-bundle boot-Fatal pre-flight.
