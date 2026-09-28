@@ -129,6 +129,38 @@ assert_case "sandbox_b_key_missing_local_prod_fails" \
 LCR_GATEWAY_SIGNING_KEY=gw-fixture-key' \
   1 "LCR_SANDBOX_B_SIGNING_KEY"
 
+# T-1102: the gateway's dsa-ai key copied from sandbox B's seed -> FAIL, and
+# the key value is never printed.
+assert_case "t1102_ai_key_equals_sandbox_b_key_fails" \
+  'DSA_ENV=production
+LCR_GATEWAY_SIGNING_KEY=gw-fixture-key
+LCR_SANDBOX_B_SIGNING_KEY=sb-fixture-key-t1102
+LCR_AI_SIGNING_KEY=sb-fixture-key-t1102' \
+  1 "must never hold sandbox B's dsa-ai signing key"
+N=$((N + 1))
+f="$WK/t1102_no_echo.env"
+printf '%s\n' 'DSA_ENV=production
+LCR_GATEWAY_SIGNING_KEY=gw-fixture-key
+LCR_SANDBOX_B_SIGNING_KEY=sb-fixture-key-t1102
+VEIL_AI_SIGNING_KEY=sb-fixture-key-t1102' > "$f"
+out="$(check_signing_key_compose_preflight "$f" 2>&1)"
+if printf '%s' "$out" | grep -qF "sb-fixture-key-t1102"; then
+  echo "FAIL [t1102_no_key_echo]: output echoes the key value"
+  FAILS=$((FAILS + 1))
+elif ! printf '%s' "$out" | grep -qF "equals LCR_SANDBOX_B_SIGNING_KEY"; then
+  echo "FAIL [t1102_legacy_ai_name_caught]: legacy VEIL_AI_SIGNING_KEY copy not caught: $out"
+  FAILS=$((FAILS + 1))
+else
+  echo "ok   [t1102_legacy_ai_name_caught_no_echo]"
+fi
+# A distinct AI key is not this check's concern (compose does not wire it).
+assert_case "t1102_distinct_ai_key_passes" \
+  'DSA_ENV=production
+LCR_GATEWAY_SIGNING_KEY=gw-fixture-key
+LCR_SANDBOX_B_SIGNING_KEY=sb-fixture-key-t1102
+LCR_AI_SIGNING_KEY=other-fixture-key' \
+  0
+
 # Veil emitter explicitly opted OUT (LCR_ENABLED=false): sandbox-b's boot
 # gate (boot_safety.py, enforces only when enabled == "true") is UNARMED by
 # design -> missing key is an informational note, rc=0, no FAIL (review round 3).

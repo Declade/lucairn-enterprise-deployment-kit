@@ -1099,6 +1099,46 @@ echo "H10-canary: mixed backend (gateway native + sandbox-a vault) → INFO-skip
 echo "H10 render-based canary two-consumer detection: ok"
 
 # ---------------------------------------------------------------------------
+# T-1102: gateway.secrets.values.veilAISigningKey must stay empty — the
+# witness trusts one dsa-ai key (sandbox B's) and the gateway must never hold
+# it. Render-based; FAIL on a non-empty value, never echo it.
+# ---------------------------------------------------------------------------
+T1102_KEY="$(openssl rand -hex 32)"
+T1102_SET_VALS="$TMPDIR/t1102-ai-key-set.yaml"
+cat > "$T1102_SET_VALS" <<YAML
+gateway:
+  secrets:
+    values:
+      veilAISigningKey: "$T1102_KEY"
+YAML
+if run_doctor_with_values "$TMPDIR/t1102-ai-key-set.out" "$T1102_SET_VALS"; then
+  echo "FAIL: T-1102 gateway veilAISigningKey set → doctor should FAIL" >&2
+  cat "$TMPDIR/t1102-ai-key-set.out" >&2; exit 1
+fi
+grep -q "gateway dsa-ai key (Helm): FAIL" "$TMPDIR/t1102-ai-key-set.out" \
+  || { echo "FAIL: T-1102 missing expected FAIL message" >&2; cat "$TMPDIR/t1102-ai-key-set.out" >&2; exit 1; }
+if grep -qF "$T1102_KEY" "$TMPDIR/t1102-ai-key-set.out"; then
+  echo "FAIL: T-1102 doctor output echoes the key value" >&2; exit 1
+fi
+echo "T-1102: gateway veilAISigningKey set → FAIL (no key echo): ok"
+
+T1102_EMPTY_VALS="$TMPDIR/t1102-ai-key-empty.yaml"
+cat > "$T1102_EMPTY_VALS" <<'YAML'
+gateway:
+  secrets:
+    values:
+      veilAISigningKey: ""
+YAML
+if ! run_doctor_with_values "$TMPDIR/t1102-ai-key-empty.out" "$T1102_EMPTY_VALS"; then
+  echo "FAIL: T-1102 empty veilAISigningKey → doctor should PASS" >&2
+  cat "$TMPDIR/t1102-ai-key-empty.out" >&2; exit 1
+fi
+if grep -q "gateway dsa-ai key (Helm): FAIL" "$TMPDIR/t1102-ai-key-empty.out"; then
+  echo "FAIL: T-1102 empty key must not FAIL" >&2; exit 1
+fi
+echo "T-1102: gateway veilAISigningKey empty → PASS: ok"
+
+# ---------------------------------------------------------------------------
 # T-490b-E2E (2026-08-04): the recommended install path (scripts/render-
 # values.sh, INSTALL.md "Option A — automated") must produce output that
 # ACTUALLY RENDERS with `helm template` against DEFAULT umbrella values --
