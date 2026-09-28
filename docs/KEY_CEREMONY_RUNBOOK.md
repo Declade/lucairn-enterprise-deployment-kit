@@ -504,6 +504,54 @@ If the Witness signing key is compromised, all certificates signed during the co
 5. Restart the Witness with the new key; redeploy the blob to the gateway (§ 6.3).
 6. Issue an advisory about affected certificates.
 
+### 9.4 Sandbox B key held by a gateway (T-1102)
+
+Older chart comments said to give the gateway's `LCR_AI_SIGNING_KEY`
+(`gateway.secrets.values.veilAISigningKey`) the same seed as sandbox B for
+Sensitive Mode. The witness trusts that key as sandbox B's (`dsa-ai`), so a
+gateway holding it can sign claims the witness accepts as sandbox B's. Gateway
+images built with T-1102 refuse to boot while `LCR_AI_SIGNING_KEY` or
+`LCR_SANDBOX_B_SIGNING_KEY` (or their `VEIL_*` legacy names) has a non-blank
+value in the gateway's environment. `bin/lucairn doctor` checks for it on
+the paths it can see (details in `CHANGELOG.md`).
+
+If your gateway ever held sandbox B's seed:
+
+1. **Remove the key from the gateway (can go first, on its own).** Delete
+   `LCR_AI_SIGNING_KEY` / `VEIL_AI_SIGNING_KEY` from `customer.env`, your
+   Helm values and your secrets backend, and make sure the gateway's
+   environment has no `LCR_SANDBOX_B_SIGNING_KEY` / `VEIL_SANDBOX_B_SIGNING_KEY`.
+   Compare hashes, never print the values. Recreate the gateway with the
+   canonical overlay set for your install (OPS.md § Deploy). This is required
+   before upgrading to a T-1102 gateway image, which otherwise refuses to
+   start. From then on the gateway signs no `dsa-ai` claims, so its Sensitive
+   Mode certificates read `overall_verdict: failed`.
+2. **Rotate sandbox B's key — removal is not revocation.** Anyone who copied
+   the seed while the gateway held it can sign claims the witness accepts as
+   sandbox B's until you rotate. Do it in ONE change window rather than
+   service by service (§ 8.1): between the witness public-key swap and sandbox
+   B's seed swap the witness rejects sandbox B's claims, and the gateway
+   refuses to boot if its `LCR_SANDBOX_B_PUBLIC_KEY` does not match the
+   witness-signed manifest.
+   - Before the window: generate the new seed and public key (§ 3.1 + § 3.2)
+     and re-sign the manifest blob (§ 6.1–6.2).
+   - Pause any scheduled jobs that act on certificate verdicts, and mark the
+     window in any measurement or reporting you keep.
+   - Drain traffic, then recreate veil-witness (new `LCR_SANDBOX_B_PUBLIC_KEY`),
+     sandbox-b (new `LCR_SANDBOX_B_SIGNING_KEY`) and the gateway (new
+     `LCR_SANDBOX_B_PUBLIC_KEY` + the new blob, § 6.3) together, each with the
+     full canonical overlay set for your install.
+   - Run the § 7 checks before resuming traffic.
+3. **Older certificates fail a fresh witness check after the rotation.** The
+   witness keeps exactly one public key per service. Once sandbox B's key is
+   rotated, every older certificate whose `dsa-ai` claim was signed with the
+   old key comes back `overall_verdict: failed` when it is re-verified at the
+   witness. The verdict signed into the certificate when it was issued does
+   not change. Plan for this before rotating: tell anyone who re-verifies
+   older certificates, and keep the verdicts recorded at issue time.
+4. **Review the exposure window** as in § 9.2: `dsa-ai` claims signed while the
+   gateway held the seed cannot be attributed to sandbox B alone.
+
 ---
 
 ## 10. Docker Compose path
