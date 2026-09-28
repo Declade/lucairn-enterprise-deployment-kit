@@ -44,6 +44,11 @@ kit_version: "1.9.4"
 # Default tag applied to every dsa-* image unless a per-service override
 # exists in `services:` below. Operators set LUCAIRN_IMAGE_TAG in customer.env
 # to use a different default; doctor warns when env != this manifest value.
+# ⛔ T-1102: do not bump this to a gateway tag whose source contains
+#    services/gateway/cmd/server/ai_key_separation.go (DSA main after PR #681)
+#    without the CHANGELOG release-ordering note (key removal BEFORE upgrade;
+#    Sensitive Mode certs read failed; desktop chip version). Check by content:
+#    `git grep -q checkNoAISigningKey services/gateway/cmd/server/main.go` at the tag's source.
 default_lucairn_image_tag: "0.5.4"
 
 # Registry the kit was validated against. doctor warns when env's
