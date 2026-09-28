@@ -90,7 +90,10 @@ for service in audit id-bridge sandbox-a sandbox-b; do [ "$token" = "$(value "$P
 [ "$(value "$PRIVATE/gateway.env" DSA_ADMIN_KEY)" = "$(value "$PRIVATE/sandbox-b.env" DSA_ADMIN_KEY)" ]
 [ "$(value "$PRIVATE/gateway.env" SANDBOX_B_API_KEY)" = "$(value "$PRIVATE/sandbox-b.env" SANDBOX_B_API_KEYS)" ]
 [ "$(value "$PRIVATE/gateway.env" CANARY_HMAC_KEY)" = "$(value "$PRIVATE/sandbox-a.env" CANARY_HMAC_KEY)" ]
-[ "$(value "$PRIVATE/gateway.env" LCR_AI_SIGNING_KEY)" = "$(value "$PRIVATE/sandbox-b.env" LCR_SIGNING_KEY)" ]
+# T-1102: the gateway gets NO dsa-ai key — empty, and never sandbox B's seed.
+[ -z "$(value "$PRIVATE/gateway.env" LCR_AI_SIGNING_KEY)" ] || { echo "gateway LCR_AI_SIGNING_KEY must be empty (T-1102)" >&2; exit 1; }
+[ -n "$(value "$PRIVATE/sandbox-b.env" LCR_SIGNING_KEY)" ] || { echo "sandbox-b LCR_SIGNING_KEY missing" >&2; exit 1; }
+if grep -qF -- "$(value "$PRIVATE/sandbox-b.env" LCR_SIGNING_KEY)" "$PRIVATE/gateway.env"; then echo "gateway.env carries sandbox B's seed (T-1102)" >&2; exit 1; fi
 
 # Signer receives public YAML and private files; its host Docker invocation
 # must contain only mounts/paths, never the witness seed.

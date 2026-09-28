@@ -449,10 +449,11 @@ secrets:
     # Mode seal-cert flow. Keep EMPTY. T-1102: NEVER set this to the
     # sandbox-b chart's secrets.values.veilSigningKey — the witness trusts one
     # dsa-ai key (sandbox B's) and the gateway must never hold it
-    # (split-knowledge separation). `lucairn doctor --values` FAILs when this
-    # is set; newer gateway images refuse to boot on sandbox B's key. Empty
-    # disables the dsa-ai emitter; Sensitive Mode certs then render
-    # overall_verdict: failed on /verify.
+    # (split-knowledge separation); any other key cannot verify. `lucairn
+    # doctor --values` FAILs when this is set; newer gateway images refuse to
+    # boot on any non-blank value. The ExternalSecret does not map it.
+    # Sensitive Mode certs render overall_verdict: failed on /verify until
+    # Sensitive Mode has its own signing identity.
     veilAISigningKey: ""
     dsaServiceToken: ""  # PRODUCTION: set via existingSecret or --set; dev: inline value
     # Required when secrets.backend == "k8s-native". Base64 32 bytes (AES-256)

@@ -84,6 +84,9 @@ sandbox_b_redis_password="$(random_hex)"
 # roster empty in Kind so Gateway takes its supported unregistered path; a
 # non-empty random value makes the pinned binary fail before the battery can
 # exercise the mTLS topology.
+# T-1102: LCR_AI_SIGNING_KEY stays EMPTY. The witness trusts one dsa-ai key
+# (sandbox B's) and the gateway must never hold it; newer gateway images
+# refuse to boot on any non-blank value.
 write_env gateway \
   "DSA_LICENSE_KEY=" \
   "DSA_LICENSE_SIGNING_KEY=" \
@@ -101,7 +104,7 @@ write_env gateway \
   "LCR_SANITIZER_PUBLIC_KEY=$sanitizer_public" \
   "LCR_SANDBOX_B_PUBLIC_KEY=$sandbox_b_public" \
   "LCR_AUDIT_PUBLIC_KEY=$audit_public" \
-  "LCR_AI_SIGNING_KEY=$sandbox_b_seed" \
+  "LCR_AI_SIGNING_KEY=" \
   "DSA_SERVICE_TOKEN=$service_token" \
   "GATEWAY_KEYSTORE_KEY=$gateway_keystore_key" \
   "CANARY_HMAC_KEY=$canary_hmac_key"

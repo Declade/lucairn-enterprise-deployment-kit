@@ -98,10 +98,11 @@ gateway:
       adminKey: "dev-admin-key-do-not-use-in-prod"
       licenseSigningKey: "dev-signing-key-change-in-production"
       dsaServiceToken: "dev-service-token-do-not-use-in-prod"
-      # LSM-001 / DRIFT-001: gateway-side dsa-ai signing key. Reuses the
-      # sandbox-b dev seed below so the witness verifier accepts the
-      # gateway-minted dsa-ai claims under the same trust root in test.
-      veilAISigningKey: "deadbeef00000000000000000000000000000000000000000000000000000000"
+      # LSM-001 / DRIFT-001: gateway-side dsa-ai signing key. EMPTY on
+      # purpose (T-1102): it used to reuse the sandbox-b dev seed, and the
+      # gateway must never hold sandbox B's dsa-ai key. Doctor FAILs on a
+      # non-empty value; newer gateway images refuse to boot on one.
+      veilAISigningKey: ""
 
 veil-witness:
   enabled: true
