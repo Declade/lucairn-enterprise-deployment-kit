@@ -1,0 +1,397 @@
+{
+  "_comment": "Shared parity corpus for the config pack renderers (kit render.py and the lucairn.eu render.ts). Accepted: each input, the normalised URL both tools get, and the SHA-256 of every rendered file. Refused: inputs both renderers must reject. Edit inputs/decisions by hand; regenerate hashes with `python3 config-pack/render.py --gateway https://gateway.lucairn.eu --print-corpus`. Rules: config-pack/README.md, 'Input rules'.",
+  "accepted": [
+    {
+      "why": "the default hosted gateway",
+      "input": "https://gateway.lucairn.eu",
+      "normalized": "https://gateway.lucairn.eu",
+      "files": {
+        "managed-settings.json": "733d63962e75e04ac00fc0c4dcd384691ea2daaa6166a63231790ecdb399e0d5",
+        "claude-desktop.mobileconfig": "3711101d75e5a745e4881c5898714567bcee9785230f9d1c26888c689fed7704",
+        "claude-desktop.reg": "f3bb440d0b1676607831a68f8f7e02fdffba00d12ccecb17cca2ca06cef4e498",
+        "SETUP.md": "bf7499175e1f62d5d60a68724559fdbc05d2cd3b501c2cb1a12de645e4c20ed6"
+      }
+    },
+    {
+      "why": "boundary spaces and a trailing slash are trimmed",
+      "input": "  https://gateway.lucairn.eu/  ",
+      "normalized": "https://gateway.lucairn.eu",
+      "files": {
+        "managed-settings.json": "733d63962e75e04ac00fc0c4dcd384691ea2daaa6166a63231790ecdb399e0d5",
+        "claude-desktop.mobileconfig": "3711101d75e5a745e4881c5898714567bcee9785230f9d1c26888c689fed7704",
+        "claude-desktop.reg": "f3bb440d0b1676607831a68f8f7e02fdffba00d12ccecb17cca2ca06cef4e498",
+        "SETUP.md": "bf7499175e1f62d5d60a68724559fdbc05d2cd3b501c2cb1a12de645e4c20ed6"
+      }
+    },
+    {
+      "why": "boundary tab/CR/LF trimmed; port and path kept; trailing slash dropped",
+      "input": "\thttps://llm.corp.example:8443/lucairn/\r\n",
+      "normalized": "https://llm.corp.example:8443/lucairn",
+      "files": {
+        "managed-settings.json": "21a15fcae49f6e80a382e2f3efcc598bf76a7c4142fa1639d60758ceb4ac332a",
+        "claude-desktop.mobileconfig": "ddcf33c2200208bf3b85e22a1d9172ff193c6fe5d5ab2a36315ed23256d65807",
+        "claude-desktop.reg": "56c605dc031cfa0db42f851034c09407dc8f8d270b924697469b6c996e156c76",
+        "SETUP.md": "e228c6e333bfc6c22b755b89969c3315ca7dd80e74482da081a8dcf35d6a809f"
+      }
+    },
+    {
+      "why": "punycode label accepted as written (not decoded)",
+      "input": "https://xn--bcher-kva.example",
+      "normalized": "https://xn--bcher-kva.example",
+      "files": {
+        "managed-settings.json": "bf61b759f99d646d787a40744062b7ffc389e61b6bd280e893b9a0c9c77fdc5a",
+        "claude-desktop.mobileconfig": "22da88198f24efb9518bde7201bb946d28a8507fe4ae2026bde01940531cfe81",
+        "claude-desktop.reg": "8d5d8cec60086ec119894efc683514f68d4fa5a9981f66613dbab567cfc1a3bc",
+        "SETUP.md": "8d547f3665747641fc57f417d2d511a2650dddb3c272578d175b1028340520db"
+      }
+    },
+    {
+      "why": "letter case kept as written",
+      "input": "https://Gateway.Example.COM:8443/X",
+      "normalized": "https://Gateway.Example.COM:8443/X",
+      "files": {
+        "managed-settings.json": "db616799fd19ca1e173d94201fdef5f2cc1054286816bdb69c21b32e58d0ae6f",
+        "claude-desktop.mobileconfig": "99ce078a4dbc35fd6fb3acbd89bb3bc79a43013732078a4e4e285cdcee09feca",
+        "claude-desktop.reg": "dd122e11371bb08d6026cbe4763a7fecb6fbef2f2fa3b0148d0afd02118d6474",
+        "SETUP.md": "64e4865b0ebe5c7ecc9c3ee5443b8cd5b3734a3377cdfad74794080eef4e1745"
+      }
+    },
+    {
+      "why": "explicit default port 443 dropped",
+      "input": "https://gw.example.com:443/",
+      "normalized": "https://gw.example.com",
+      "files": {
+        "managed-settings.json": "e123f2488324bc584561067f81bdb6e3c8d9e9c06f4a4debc387963b04576961",
+        "claude-desktop.mobileconfig": "e8e279360d4e30ef63d24676d1a121e4e89c4e57ec992ecebd93d2abbea7f2a2",
+        "claude-desktop.reg": "b748b88737a2a41597025b3be85a27dd512a58c7e61396906d395bd266d708b1",
+        "SETUP.md": "5cd9f1211816efa5061ec65c36431bbd8a80cab81bb1b9cc4bed2a0b29b4fb3d"
+      }
+    },
+    {
+      "why": "highest port; repeated trailing slashes dropped",
+      "input": "https://gw.example.com:65535/a/b///",
+      "normalized": "https://gw.example.com:65535/a/b",
+      "files": {
+        "managed-settings.json": "faad1c2a8fbf8896f9b1bab2625c89881b236ed2938e19afe5ca682b05f05125",
+        "claude-desktop.mobileconfig": "6147573bf9227cfebc5154f1b7ac1c63bb165e4a17ba36b17a248fbee57d0c81",
+        "claude-desktop.reg": "6adcea8d07ac17e8ca3feb1bb02f78d563b0393f92c7bf074ac25138c2bcb500",
+        "SETUP.md": "8b50bdb18ecd97cb008f7708be34400d261cfebb12ef0e72bcd35ec4407e0d8e"
+      }
+    },
+    {
+      "why": "lowest port",
+      "input": "https://gw.example.com:1",
+      "normalized": "https://gw.example.com:1",
+      "files": {
+        "managed-settings.json": "44937e72217b561b94c5a04604daa9ed45f70f46d38164d940d79527604d6f29",
+        "claude-desktop.mobileconfig": "34669d9aefd8fa603289d37176c655a3aa5ab66de2fec6c7d18b1c2683b66f87",
+        "claude-desktop.reg": "001da304a7aac61dcada4a53640500ebba0759b091cc22f1de0f8a93a8c75aef",
+        "SETUP.md": "55a665fe40591e811658a0864feaec30d94f675d9a1843e4d0f67371f2abde6e"
+      }
+    },
+    {
+      "why": "plain dotted-quad IPv4 host",
+      "input": "https://10.0.0.5:8443",
+      "normalized": "https://10.0.0.5:8443",
+      "files": {
+        "managed-settings.json": "885a793ebbe60184397e72979f2251960800bfe3fa9ed8926315f1929a9bc8ba",
+        "claude-desktop.mobileconfig": "cccb007aaa18ba98cbb87b831c9c8f152b2195969b08df6f7b2831270a6e611a",
+        "claude-desktop.reg": "333a1464b3eea610309559dc8ede6ad773a28d358cb6e0fa09b7d054df04d314",
+        "SETUP.md": "2a83265cd1529bc0fb2634c208b6867b0d8b0e154b289cb28b3e965dc87a6330"
+      }
+    },
+    {
+      "why": "single-label host",
+      "input": "https://gateway",
+      "normalized": "https://gateway",
+      "files": {
+        "managed-settings.json": "23fad74256109e02c14d92e3c09f74a5bb8714bd9758d493bc7f191675b55d18",
+        "claude-desktop.mobileconfig": "c98e7101bff58dc987e8b14479278a3412220bf4f15101ddf3bfa0c0c0220d8d",
+        "claude-desktop.reg": "5653d74e20780f007a082439a509d3727856818d118046c4a63f14c1f0fff2ea",
+        "SETUP.md": "cb617228eab4a2f92b10f8b72b6b4e35c7f900996bbad1e88d1bf4df8b5613a7"
+      }
+    },
+    {
+      "why": "numeric first label with a name as last label",
+      "input": "https://123.example.com",
+      "normalized": "https://123.example.com",
+      "files": {
+        "managed-settings.json": "136c8cd188d99575b5cfba12679a910294efa058d5dd6e6755ee271bd13652f6",
+        "claude-desktop.mobileconfig": "85029148a66f1f95278b7a5ffe95e34839156061fc1083ead0c45e1b531b6419",
+        "claude-desktop.reg": "f5d689119e01a3f1a60f6d58e88b6484e4a4351f357098c6e584544248292a4f",
+        "SETUP.md": "f146e37edf72b83d31f88e158ce0954ece8f75c5ba00a6a308a50cbea1cd82ae"
+      }
+    },
+    {
+      "why": "a segment that starts with a dot but is not . or ..",
+      "input": "https://gw.example.com/.well-known/x~y_z-1",
+      "normalized": "https://gw.example.com/.well-known/x~y_z-1",
+      "files": {
+        "managed-settings.json": "ab145168088f2bb39cec38bc45cef5b3e956ac46847ddb5305cba762b72f1c1f",
+        "claude-desktop.mobileconfig": "e111f13c8e9e7de836a4c00777b1efea2c4491bf4a768ea61ce524fa0f533c91",
+        "claude-desktop.reg": "46c16d728f0322de819d9605c4ca5b1ce54fbf4f1be5d4802f10ab9a3413c7f9",
+        "SETUP.md": "ff9f960a3076c84bd6293a57918db5d42fea8048a3a3a65560a94a1311740074"
+      }
+    },
+    {
+      "why": "path of slashes only",
+      "input": "https://gw.example.com//",
+      "normalized": "https://gw.example.com",
+      "files": {
+        "managed-settings.json": "e123f2488324bc584561067f81bdb6e3c8d9e9c06f4a4debc387963b04576961",
+        "claude-desktop.mobileconfig": "e8e279360d4e30ef63d24676d1a121e4e89c4e57ec992ecebd93d2abbea7f2a2",
+        "claude-desktop.reg": "b748b88737a2a41597025b3be85a27dd512a58c7e61396906d395bd266d708b1",
+        "SETUP.md": "5cd9f1211816efa5061ec65c36431bbd8a80cab81bb1b9cc4bed2a0b29b4fb3d"
+      }
+    },
+    {
+      "why": "host of exactly 253 characters",
+      "input": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "normalized": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "files": {
+        "managed-settings.json": "c17f216c48efa938d1a6b54a8b5f614d38b114112821ac2165eaf745f2917a01",
+        "claude-desktop.mobileconfig": "eac9a05d9738fa631a5c4bc594780e0a0a376898cbe91d8045e3923e4a8fcf03",
+        "claude-desktop.reg": "956090998e74b47d9612ea538d70a0411305e21ea6064f81860f19194a8ec968",
+        "SETUP.md": "b04a2339262f3628818a061c9b08da5e5a2d7a62619318c65371308f71a2a6ec"
+      }
+    }
+  ],
+  "refused": [
+    {
+      "why": "http, not https",
+      "input": "http://gateway.example.com"
+    },
+    {
+      "why": "scheme in capitals",
+      "input": "HTTPS://gateway.example.com"
+    },
+    {
+      "why": "no scheme",
+      "input": "gateway.example.com"
+    },
+    {
+      "why": "empty",
+      "input": ""
+    },
+    {
+      "why": "whitespace only",
+      "input": " \t "
+    },
+    {
+      "why": "empty host",
+      "input": "https://"
+    },
+    {
+      "why": "userinfo",
+      "input": "https://user@gateway.example.com"
+    },
+    {
+      "why": "userinfo with password",
+      "input": "https://user:pw@gateway.example.com"
+    },
+    {
+      "why": "@ after the host",
+      "input": "https://gateway.example.com@evil.example"
+    },
+    {
+      "why": "query",
+      "input": "https://gateway.example.com/?a=b"
+    },
+    {
+      "why": "bare question mark",
+      "input": "https://gateway.example.com?"
+    },
+    {
+      "why": "fragment",
+      "input": "https://gateway.example.com/#x"
+    },
+    {
+      "why": "double quote in the path",
+      "input": "https://gateway.example.com/\""
+    },
+    {
+      "why": "angle brackets",
+      "input": "https://gateway.example.com/<x>"
+    },
+    {
+      "why": "space in the host",
+      "input": "https://gate way.example.com"
+    },
+    {
+      "why": "empty label",
+      "input": "https://a..b"
+    },
+    {
+      "why": "leading dot",
+      "input": "https://.example.com"
+    },
+    {
+      "why": "trailing dot",
+      "input": "https://gateway.example.com."
+    },
+    {
+      "why": "trailing dot before a port",
+      "input": "https://gateway.example.com.:8443"
+    },
+    {
+      "why": "hyphen-only host",
+      "input": "https://-"
+    },
+    {
+      "why": "label ending in a hyphen",
+      "input": "https://a-.example.com"
+    },
+    {
+      "why": "label longer than 63",
+      "input": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com"
+    },
+    {
+      "why": "host longer than 253",
+      "input": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "why": "port 0",
+      "input": "https://gateway.example.com:0"
+    },
+    {
+      "why": "port above 65535",
+      "input": "https://gateway.example.com:65536"
+    },
+    {
+      "why": "port far above 65535",
+      "input": "https://gateway.example.com:99999"
+    },
+    {
+      "why": "zero-padded port",
+      "input": "https://gateway.example.com:0443"
+    },
+    {
+      "why": "port of zeros",
+      "input": "https://gateway.example.com:00"
+    },
+    {
+      "why": "empty port",
+      "input": "https://gateway.example.com:"
+    },
+    {
+      "why": "dot-dot segment",
+      "input": "https://gateway.example.com/a/../b"
+    },
+    {
+      "why": "dot segment",
+      "input": "https://gateway.example.com/./b"
+    },
+    {
+      "why": "path that is only ..",
+      "input": "https://gateway.example.com/.."
+    },
+    {
+      "why": "empty segment inside the path",
+      "input": "https://gateway.example.com/a//b"
+    },
+    {
+      "why": "backslash in the path",
+      "input": "https://gateway.example.com\\x"
+    },
+    {
+      "why": "backslashes after the scheme",
+      "input": "https:\\\\gateway.example.com"
+    },
+    {
+      "why": "percent-encoded dot segment",
+      "input": "https://gateway.example.com/%2e%2e/x"
+    },
+    {
+      "why": "percent-encoding in the host",
+      "input": "https://gateway%2eexample.com"
+    },
+    {
+      "why": "Unicode host name",
+      "input": "https://b\u00fccher.example"
+    },
+    {
+      "why": "Cyrillic look-alike letter in the host",
+      "input": "https://g\u0430teway.example.com"
+    },
+    {
+      "why": "IPv6 literal",
+      "input": "https://[::1]:8443"
+    },
+    {
+      "why": "three-part numeric host (read as IPv4 by URL parsers)",
+      "input": "https://1.2.3"
+    },
+    {
+      "why": "hex IPv4 label",
+      "input": "https://0x7f.1"
+    },
+    {
+      "why": "single decimal number host",
+      "input": "https://2130706433"
+    },
+    {
+      "why": "IPv4 part with a leading zero",
+      "input": "https://010.0.0.1"
+    },
+    {
+      "why": "IPv4 part above 255",
+      "input": "https://256.0.0.1"
+    },
+    {
+      "why": "five numeric parts",
+      "input": "https://1.2.3.4.5"
+    },
+    {
+      "why": "NUL in the path",
+      "input": "https://gateway.example.com/\u0000"
+    },
+    {
+      "why": "BEL in the host",
+      "input": "https://gateway.\u0007example.com"
+    },
+    {
+      "why": "line break inside",
+      "input": "https://gateway.example.com\n/x"
+    },
+    {
+      "why": "tab inside the path",
+      "input": "https://gateway.example.com/a\tb"
+    },
+    {
+      "why": "trailing NEL (U+0085)",
+      "input": "https://gateway.example.com\u0085"
+    },
+    {
+      "why": "leading no-break space",
+      "input": "\u00a0https://gateway.example.com"
+    },
+    {
+      "why": "leading byte-order mark",
+      "input": "\ufeffhttps://gateway.example.com"
+    },
+    {
+      "why": "leading file separator control (U+001C)",
+      "input": "\u001chttps://gateway.example.com"
+    },
+    {
+      "why": "trailing vertical tab",
+      "input": "https://gateway.example.com\u000b"
+    },
+    {
+      "why": "javascript URL",
+      "input": "javascript:alert(1)"
+    },
+    {
+      "why": "Lucairn key in the path",
+      "input": "https://gateway.example.com/lcr_live_abcdef"
+    },
+    {
+      "why": "provider key in the path",
+      "input": "https://gateway.example.com/sk-ant-api03-abc"
+    },
+    {
+      "why": "the pack's own placeholder in the path",
+      "input": "https://gateway.example.com/__LUCAIRN_GATEWAY_HOST__"
+    }
+  ]
+}
