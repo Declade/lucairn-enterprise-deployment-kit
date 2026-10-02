@@ -104,9 +104,11 @@ must show `__LUCAIRN_GATEWAY_URL__`.
 
 ### Credentials (Claude Code)
 
-The file sets `"apiKeyHelper": "REPLACE_WITH_YOUR_KEY_HELPER_COMMAND"`.
-Before you deploy it, replace the placeholder with a command that prints the
-user's Lucairn key, for example from your secrets manager. Claude Code runs
+As downloaded, the file sets
+`"apiKeyHelper": "REPLACE_WITH_YOUR_KEY_HELPER_COMMAND"` (a pack made with
+the kit's `--key-helper` option already names your command). Before you
+deploy it, replace the placeholder with a command that prints the user's
+Lucairn key, for example from your secrets manager. Claude Code runs
 the command through the system shell and sends its output as `X-Api-Key`
 (the header the gateway reads) and as `Authorization: Bearer`. While the
 placeholder is in place, the helper fails, and Claude Code sends its requests
@@ -139,9 +141,10 @@ fetch." Neither the pinned `ANTHROPIC_BASE_URL` nor
 - Users can still start a Claude account sign-in (`/login` or
   `claude auth login`); the pack doesn't block it. Model requests stay on the
   gateway: the base URL is pinned, and the vendor ranks `apiKeyHelper` above
-  a `/login` sign-in (measured with a sign-in started and cancelled; a
-  completed sign-in was not tested). Blocking `claude.ai`, `claude.com` and
-  `platform.claude.com` (section 3) stops the sign-in itself.
+  a `/login` sign-in (measured: after the sign-in was opened and cancelled,
+  the next request went to the gateway; a completed sign-in was not tested).
+  Blocking `claude.ai`, `claude.com` and `platform.claude.com` (section 3)
+  should stop the sign-in itself (not tested).
 - Don't add `forceLoginMethod`, `forceLoginOrgUUID` or
   `forceLoginGatewayUrl`: the vendor documents that they block gateway
   credentials at startup.
@@ -212,10 +215,14 @@ gateway through that proxy.
   credential, Claude Code reached no host but the gateway in our test
   (Claude Code 2.1.287 on Linux, against a stand-in gateway that logged every
   other host name). The block is the backstop for what the files can't
-  prevent: a user who exports a key or token in their own shell, and a
-  machine where the pack is missing or was removed. With the block in place,
-  a start that tries that request waits for it to fail, and an interactive
-  session shows "Remote managed settings failed to load".
+  prevent: a user who exports a key or token in their own shell, a machine
+  where the pack is missing or was removed, and possibly a completed Team or
+  Enterprise sign-in (the vendor lists it as a credential for that request;
+  not tested with the helper in place). With the block in place, a start
+  that tries that request waits for it to fail (about 17 seconds per start
+  when the firewall refuses the connection; one that silently drops packets
+  may make it wait longer), and an interactive session shows "Remote managed
+  settings failed to load".
 - **Keep** `downloads.claude.ai` reachable: Claude Desktop fetches its
   workspace bundle and the Claude Code engine from it when a session starts
   (unless you install the offline installer), and Claude Code's installer and
@@ -227,8 +234,9 @@ gateway through that proxy.
   `browser-intake-datadoghq.com` and its regional variants, `www.google.com`
   and `*.gstatic.com` (connector icons), `www.claudeusercontent.com` and
   `*.claudemcpcontent.com` (preview frames).
-- Blocking `claude.ai`, `claude.com` and `platform.claude.com` also stops
-  claude.ai sign-in inside Claude Code; the gateway credential replaces it.
+- Blocking `claude.ai`, `claude.com` and `platform.claude.com` should also
+  stop claude.ai sign-in inside Claude Code (not tested); the gateway
+  credential replaces it.
   Whether users may still reach claude.ai in a browser is your decision.
 
 ## 4. Requirements and limits

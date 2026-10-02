@@ -45,8 +45,10 @@ before deployment, for Claude Code through the helper command. The helper is
 Claude Code's only credential path in the pack: with a key in
 `ANTHROPIC_API_KEY` or a token in `CLAUDE_CODE_OAUTH_TOKEN`, Claude Code sends
 it to `api.anthropic.com` at every start (see "Left out on purpose"), so
-`check.py` refuses those two and `ANTHROPIC_AUTH_TOKEN` in the managed `env`,
-and refuses a file without a valid `apiKeyHelper`. Keys never go into a header
+`check.py` refuses those two in the managed `env`, and `ANTHROPIC_AUTH_TOKEN`
+too (a plain-text credential in a shared file; it did not trigger that
+request in the acceptance run), and refuses a file without a valid
+`apiKeyHelper`. Keys never go into a header
 map (`ANTHROPIC_CUSTOM_HEADERS` / `inferenceCustomHeaders`); `check.py`
 refuses a credential header there, and refuses a Claude Desktop credential
 helper or any other credential kind (see "Left out on purpose").
@@ -289,8 +291,10 @@ Verified:
   only credential, no case reached any host but the stand-in: shell, user,
   project and `--settings` overrides of the base URL and the require header,
   `--setting-sources user`, both permission-bypass flags, `claude auth login`
-  and `/login` (started, not completed), auto mode. Model requests carried
-  the require header `1`, no git status block and no `safeguards` field; a
+  and `/login` (opened and cancelled, then a prompt; not completed), auto
+  mode, and `claude --bare` with the helper passed in `--settings`. Model
+  requests carried the require header `1`, no git status block and no
+  `safeguards` field; a
   `CLAUDE_CODE_USE_BEDROCK` switch was refused with the `allowedProviders`
   message; `.env` in an `--add-dir` folder was denied; 2.1.284 was refused at
   startup. A key in `ANTHROPIC_API_KEY` or a token in
