@@ -105,8 +105,9 @@ must show `__LUCAIRN_GATEWAY_URL__`.
 ### Credentials (Claude Code)
 
 As downloaded, the file sets
-`"apiKeyHelper": "REPLACE_WITH_YOUR_KEY_HELPER_COMMAND"` (a pack made with
-the kit's `--key-helper` option already names your command). Before you
+`"apiKeyHelper": "REPLACE_WITH_YOUR_KEY_HELPER_COMMAND"` (files made with
+the `--key-helper` option of the Lucairn Enterprise deployment kit already
+name your command). Before you
 deploy it, replace the placeholder with a command that prints the user's
 Lucairn key, for example from your secrets manager. Claude Code runs
 the command through the system shell and sends its output as `X-Api-Key`
@@ -219,10 +220,10 @@ gateway through that proxy.
   where the pack is missing or was removed, and possibly a completed Team or
   Enterprise sign-in (the vendor lists it as a credential for that request;
   not tested with the helper in place). With the block in place, a start
-  that tries that request waits for it to fail (about 17 seconds per start
-  when the firewall refuses the connection; one that silently drops packets
-  may make it wait longer), and an interactive session shows "Remote managed
-  settings failed to load".
+  that tries that request waits for it to fail (in our test, about 17
+  seconds per `claude -p` start when the connection was closed; a firewall
+  that silently drops packets may make it wait longer), and an interactive
+  session shows "Remote managed settings failed to load".
 - **Keep** `downloads.claude.ai` reachable: Claude Desktop fetches its
   workspace bundle and the Claude Code engine from it when a session starts
   (unless you install the offline installer), and Claude Code's installer and
