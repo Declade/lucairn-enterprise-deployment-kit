@@ -18,12 +18,16 @@ Checks, for the files in --dir (or a fresh render when --dir is omitted):
      CLAUDE_CODE_POLICY / DESKTOP_POLICY below). These are written out here
      on purpose instead of being read from spec.json, so an edit to spec.json
      that weakens the pack fails this check.
-  4. Contract: the gateway URL is the same in both tools; the require header
-     is present exactly once with value 1 in both tools and nothing else sets
-     it; the .mobileconfig and .reg carry the same key/value set; no
-     credential sits in a header map; a credential helper sits under an
-     administrator-controlled root; no file contains a Lucairn or provider
-     key.
+  4. Contract: the gateway URL is the same in both tools; every custom header
+     has an RFC 7230 token as its name and a clean value, and the require
+     header is present exactly once with value 1 in both tools; the
+     .mobileconfig and .reg carry the same key/value set; no credential sits
+     in a header map; Claude Desktop's only credential source is the static
+     key slot (`inferenceCredentialKind` = `static`, no credential helper);
+     no file contains a Lucairn or provider key, as written or after decoding
+     escapes (JSON and backslash escapes, XML/HTML character references,
+     percent-encoding, nested JSON strings); the firewall note names the
+     gateway host and port on one complete line.
   5. --golden: the supplied files (or, without --dir, a default render) match
      config-pack/golden-sha256.json byte for byte (the website renderer pins
      the same hashes).
@@ -39,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import plistlib
 import re
@@ -64,6 +69,13 @@ REG_HEADER = "Windows Registry Editor Version 5.00"
 # .reg strings know two escapes only: \\ and \".
 REG_LINE = re.compile(r'"((?:[^"\\]|\\[\\"])*)"="((?:[^"\\]|\\[\\"])*)"')
 REQUIRE_HEADER = ("x-lucairn-require-added-parts-sanitized", "1")
+# RFC 7230 section 3.2.6 token: a header name, nothing around it.
+HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+# RFC 7230 field-value without obs-text: visible ASCII, inner spaces and tabs,
+# no leading or trailing whitespace (that is optional whitespace around it).
+HEADER_VALUE = re.compile(r"(?:[\x21-\x7e](?:[\x20\x21-\x7e\t]*[\x21-\x7e])?)?")
+# Claude Desktop's only credential source in this pack.
+STATIC_CREDENTIAL_KIND = "static"
 
 # --- Policy: what a deployable pack must say (independent of spec.json) -----
 
@@ -121,6 +133,7 @@ MODS_GUARD_OPTION = "allowManagedModsOnly"
 DESKTOP_POLICY = {
     "inferenceProvider": "gateway",
     "inferenceGatewayAuthScheme": "x-api-key",
+    "inferenceCredentialKind": STATIC_CREDENTIAL_KIND,
     "disableDeploymentModeChooser": "true",
     "autoModeEnabled": "false",
     "blockReadsOutsideWorkingDirectories": "true",
@@ -191,30 +204,40 @@ def _version_tuple(value) -> tuple[int, int, int] | None:
 
 
 def check_require_header_lines(rep: Report, where: str, raw) -> None:
-    """ANTHROPIC_CUSTOM_HEADERS: `Name: Value` lines. The require header must
-    be there exactly once, with value exactly 1; no credential header."""
+    """ANTHROPIC_CUSTOM_HEADERS: `Name: Value` lines. Every line must be a
+    header a client can send as written: the name an RFC 7230 token with
+    nothing around it, the value visible ASCII (optional whitespace after the
+    colon). Only then is the require header counted: exactly once, value 1;
+    no credential header."""
     if not isinstance(raw, str):
         rep.ok(False, f"{where}: ANTHROPIC_CUSTOM_HEADERS must be a string")
         return
     name_want, value_want = REQUIRE_HEADER
     hits = []
-    for line in raw.split("\n"):
-        if not line.strip():
+    for number, line in enumerate(raw.split("\n"), start=1):
+        if line == "":
             continue
-        rep.ok(":" in line, f"{where}: ANTHROPIC_CUSTOM_HEADERS has a line without `Name: Value`")
-        name, _, value = line.partition(":")
-        name = name.strip().lower()
-        rep.ok(name not in CREDENTIAL_HEADERS, f"{where}: credential header `{name}` in ANTHROPIC_CUSTOM_HEADERS")
-        if name == name_want:
-            hits.append(value.strip())
+        name, colon, value = line.partition(":")
+        value = value.strip(" \t")
+        well_formed = bool(colon) and bool(HEADER_NAME.fullmatch(name)) and bool(HEADER_VALUE.fullmatch(value))
+        rep.ok(
+            well_formed,
+            f"{where}: ANTHROPIC_CUSTOM_HEADERS line {number} is not `Name: Value` with an RFC 7230 header name and a visible-ASCII value",
+        )
+        if not well_formed:
+            continue
+        rep.ok(name.lower() not in CREDENTIAL_HEADERS, f"{where}: credential header `{name}` in ANTHROPIC_CUSTOM_HEADERS")
+        if name.lower() == name_want:
+            hits.append(value)
     rep.ok(len(hits) == 1, f"{where}: require header must appear exactly once in ANTHROPIC_CUSTOM_HEADERS (found {len(hits)})")
     rep.ok(all(v == value_want for v in hits), f"{where}: require header value must be exactly {value_want}")
 
 
 def check_require_header_map(rep: Report, where: str, raw) -> None:
     """Claude Desktop inferenceCustomHeaders: a JSON object string with no
-    duplicate key; the require header exactly once (names compared without
-    case) with value "1"; no credential header."""
+    duplicate key; every name an RFC 7230 token with nothing around it and
+    every value a visible-ASCII string; the require header exactly once (names
+    compared without case) with value "1"; no credential header."""
     try:
         headers = _strict_json(raw) if isinstance(raw, str) else None
     except ValueError:
@@ -223,12 +246,17 @@ def check_require_header_map(rep: Report, where: str, raw) -> None:
     if not isinstance(headers, dict):
         return
     name_want, value_want = REQUIRE_HEADER
-    hits = [v for k, v in headers.items() if k.strip().lower() == name_want]
+    valid = {}
+    for name, value in headers.items():
+        ok = bool(HEADER_NAME.fullmatch(name)) and isinstance(value, str) and bool(HEADER_VALUE.fullmatch(value))
+        rep.ok(ok, f"{where}: inferenceCustomHeaders entry `{name if HEADER_NAME.fullmatch(name) else '<invalid name>'}` is not an RFC 7230 header name with a visible-ASCII string value")
+        if ok:
+            valid[name] = value
+    hits = [v for k, v in valid.items() if k.lower() == name_want]
     rep.ok(len(hits) == 1, f"{where}: require header must appear exactly once in inferenceCustomHeaders (found {len(hits)})")
     rep.ok(all(v == value_want for v in hits), f"{where}: require header value must be exactly \"{value_want}\"")
-    for name, value in headers.items():
-        rep.ok(isinstance(value, str), f"{where}: inferenceCustomHeaders `{name}` must be a string")
-        rep.ok(name.strip().lower() not in CREDENTIAL_HEADERS, f"{where}: credential header `{name}` in inferenceCustomHeaders")
+    for name in valid:
+        rep.ok(name.lower() not in CREDENTIAL_HEADERS, f"{where}: credential header `{name}` in inferenceCustomHeaders")
 
 
 def check_claude_code(rep: Report, path: Path, keys: dict, gateway: str) -> dict:
@@ -414,24 +442,80 @@ def check_desktop_contract(rep: Report, prefs: dict, reg: dict, gateway: str, sp
         except R.PackError:
             ok = False
         rep.ok(ok, "Claude Desktop: egressProxyUrl must be http(s)://host[:port] with a valid host name and port")
-    has_static = "inferenceGatewayApiKey" in prefs
-    has_helper = "inferenceCredentialHelper" in prefs
-    rep.ok(has_static != has_helper, "Claude Desktop: exactly one credential source (static key slot or helper)")
-    if has_static:
-        rep.ok(prefs["inferenceGatewayApiKey"] == spec["placeholders"]["lucairn_key_slot"], "Claude Desktop: the static key slot must hold the placeholder, never a key")
-        rep.ok("inferenceCredentialHelperWindows" not in prefs, "Claude Desktop: a Windows helper without the main helper")
-    if has_helper:
-        rep.ok(prefs.get("inferenceCredentialKind") == "helper-script", "Claude Desktop: a helper needs inferenceCredentialKind helper-script")
-        rep.ok(R.posix_helper_problem(prefs["inferenceCredentialHelper"]) is None, "Claude Desktop: inferenceCredentialHelper must be an absolute path under /Library/, /usr/local/ or /opt/")
-        if "inferenceCredentialHelperWindows" in prefs:
-            rep.ok(R.windows_helper_problem(prefs["inferenceCredentialHelperWindows"]) is None, "Claude Desktop: inferenceCredentialHelperWindows must be an absolute path under C:\\Program Files\\")
+    # One credential source: the static key slot. A credential helper is
+    # refused outright: the vendor documents that the headers a helper prints
+    # are "merged over" inferenceCustomHeaders, "helper wins on conflict", so a
+    # helper could turn the require header off.
+    helpers = sorted(k for k in prefs if k.lower().startswith("inferencecredentialhelper"))
+    rep.ok(not helpers, f"Claude Desktop: credential helper keys are not allowed in the pack: {helpers}")
+    rep.ok("inferenceGatewayApiKey" in prefs, "Claude Desktop: the static key slot inferenceGatewayApiKey is missing")
+    rep.ok(
+        prefs.get("inferenceGatewayApiKey") == spec["placeholders"]["lucairn_key_slot"],
+        "Claude Desktop: the static key slot must hold the placeholder, never a key",
+    )
+    # DESKTOP_POLICY already pins inferenceCredentialKind to "static"; say it
+    # again in terms of the source so a policy edit can't loosen both at once.
+    rep.ok(
+        prefs.get("inferenceCredentialKind") == STATIC_CREDENTIAL_KIND,
+        "Claude Desktop: inferenceCredentialKind must be \"static\", the kind of the static key slot the pack configures",
+    )
+
+
+def _strings(value, depth: int = 0):
+    """Every string in a parsed document, keys included; for a string that is
+    itself a JSON document (inferenceCustomHeaders, inferenceModels), the
+    strings inside it as well."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        yield value
+        stripped = value.strip()
+        if depth < 4 and stripped[:1] in ("{", "[", '"'):
+            try:
+                inner = json.loads(stripped)
+            except ValueError:
+                return
+            if inner != value:
+                yield from _strings(inner, depth + 1)
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            yield from _strings(k, depth)
+            yield from _strings(v, depth)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            yield from _strings(v, depth)
+
+
+def _decoded_strings(name: str, data: bytes) -> list[str]:
+    """The strings a consumer of the file reads: the JSON or property-list
+    values after the format's own decoding (JSON escapes, XML character
+    references), the .reg values after unescaping, and the whole text."""
+    text = data.decode("utf-8", errors="replace")
+    out = [text, html.unescape(text)]
+    try:
+        if name.endswith(".json"):
+            out.extend(_strings(json.loads(text)))
+        elif name.endswith(".mobileconfig"):
+            out.extend(_strings(plistlib.loads(data)))
+        elif name.endswith(".reg"):
+            for ln in text.split("\r\n"):
+                m = REG_LINE.fullmatch(ln)
+                if m:
+                    out.extend((_reg_unescape(m.group(1)), _reg_unescape(m.group(2))))
+    except Exception:  # syntax is reported by the format checks
+        pass
+    return out
 
 
 def check_no_secrets(rep: Report, files: dict[str, bytes]) -> None:
+    """No file holds a key shape, as written or as any decoding reads it."""
     for name, data in files.items():
-        text = data.decode("utf-8", errors="replace")
-        for pat in SECRET_PATTERNS:
-            rep.ok(not pat.search(text), f"{name}: contains something shaped like a secret ({pat.pattern})")
+        found = None
+        for value in _decoded_strings(name, data):
+            found = R.secret_shape_in(value)
+            if found:
+                break
+        rep.ok(found is None, f"{name}: contains something shaped like a secret ({found}), as written or after decoding escapes")
 
 
 def read_dir(directory: Path, spec: dict) -> dict[str, bytes] | None:
@@ -462,7 +546,11 @@ def check_dir(directory: Path, gateway: str, spec: dict) -> Report:
         rep.ok(False, "SETUP.md must be UTF-8")
     rep.ok(all(b"__LUCAIRN_" not in data for data in files.values()), "a placeholder was left unsubstituted")
     rep.ok(url in setup, "SETUP.md does not name the gateway")
-    rep.ok(f"port {R.gateway_port(url)}" in setup, "SETUP.md firewall note does not name the gateway's port")
+    firewall_line = f"- **Allow** from user devices: `{R.gateway_host(url)}`, TCP port {R.gateway_port(url)} (HTTPS)."
+    rep.ok(
+        setup.splitlines().count(firewall_line) == 1,
+        "SETUP.md firewall note does not name the gateway's host and port on one complete line",
+    )
     check_no_secrets(rep, files)
     return rep
 

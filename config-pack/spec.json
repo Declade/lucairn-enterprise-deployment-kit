@@ -88,6 +88,7 @@
       ["inferenceProvider", "gateway"],
       ["inferenceGatewayBaseUrl", "__LUCAIRN_GATEWAY_URL__"],
       ["inferenceGatewayAuthScheme", "x-api-key"],
+      ["inferenceCredentialKind", "static"],
       ["inferenceGatewayApiKey", "REPLACE_WITH_YOUR_LUCAIRN_KEY"],
       ["inferenceCustomHeaders", {"x-lucairn-require-added-parts-sanitized": "1"}],
       ["disableDeploymentModeChooser", true],

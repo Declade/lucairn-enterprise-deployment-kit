@@ -10,8 +10,11 @@ value) and config-pack/SETUP.md.tmpl, substitutes the gateway URL, and writes:
   SETUP.md                     Install steps, credential options, firewall note
 
 No output ever contains a Lucairn key. The Claude Desktop files carry the
-placeholder REPLACE_WITH_YOUR_LUCAIRN_KEY in `inferenceGatewayApiKey` unless a
-credential helper path is given, in which case that slot is removed.
+placeholder REPLACE_WITH_YOUR_LUCAIRN_KEY in `inferenceGatewayApiKey`, with
+`inferenceCredentialKind` = `static`. The pack has no Claude Desktop credential
+helper option: the vendor documents that a helper's headers are "merged over"
+the profile's static headers, "helper wins on conflict", so a helper could
+switch the require header off (config-pack/README.md, "Left out on purpose").
 
 Every input is validated (shape, secret patterns, reserved placeholder text)
 before anything is rendered; the rendered files are then checked in a private
@@ -45,7 +48,7 @@ CORPUS_PATH = HERE / "parity-corpus.json"
 
 # ---------------------------------------------------------------------------
 # Input rules. config-pack/README.md ("Input rules") documents them once; the
-# website's TypeScript port (src/lib/configPack/render.ts) implements the same
+# website's TypeScript port (src/lib/configPack/gatewayUrl.ts) implements the same
 # rules, and config-pack/parity-corpus.json pins both renderers to the same
 # accept/refuse decision and the same output bytes for hostile-but-accepted
 # inputs.
@@ -71,18 +74,10 @@ _PORT_RE = re.compile(r"[1-9][0-9]{0,4}")
 _MAX_HOST_LEN = 253
 _MODEL_RE = re.compile(r"[A-Za-z0-9._:/@\[\]-]{1,200}")
 # Claude Code apiKeyHelper: a command line, printable ASCII without quotes, so
-# it survives JSON encoding unchanged in meaning.
+# it survives JSON encoding unchanged in meaning. The vendor documents that
+# Claude Code sends the helper's output "as both the `X-Api-Key` and
+# `Authorization: Bearer` headers": a key, never extra headers.
 _KEY_HELPER_RE = re.compile(r"[A-Za-z0-9 _./:\\~+=,@-]{1,400}")
-# Claude Desktop credential helper: an absolute path to an executable under a
-# root that only administrators can write. A helper may also print request
-# headers, and the vendor documents that those win over the profile's static
-# headers, so a user-writable helper could switch the require header off.
-_POSIX_HELPER_RE = re.compile(r"/[A-Za-z0-9 _./+@,=-]{1,399}")
-_POSIX_HELPER_ROOTS = ("/Library/", "/usr/local/", "/opt/")
-# Package-manager trees below those roots that are owned by a user account.
-_POSIX_HELPER_REFUSED = ("/opt/homebrew/", "/usr/local/Homebrew/", "/usr/local/Cellar/")
-_WINDOWS_HELPER_RE = re.compile(r"[Cc]:\\[A-Za-z0-9 _.\\()+@,=-]{1,397}")
-_WINDOWS_HELPER_ROOTS = ("c:\\program files\\", "c:\\program files (x86)\\")
 # Text that must never appear in an input: the renderer's own placeholders.
 _RESERVED_TEXT = ("__LUCAIRN_", "REPLACE_WITH_YOUR_LUCAIRN_KEY")
 # Shapes of real secrets. Inputs that match are refused before anything is
@@ -94,6 +89,86 @@ SECRET_PATTERNS = [
     re.compile(r"\bsk-[A-Za-z0-9]{20,}"),
 ]
 REQUIRED_MINIMUM_VERSION = "2.1.285"
+
+# Escapes a consumer of a pack file (or of a value inside it) may decode:
+# backslash escapes as JSON, JavaScript, Python and printf know them, HTML/XML
+# character references, and percent-encoding. A secret written in any of them
+# is still a secret, so every scan runs over each decoding as well.
+_BACKSLASH_ESCAPE_RE = re.compile(
+    r"\\(u\{[0-9A-Fa-f]{1,6}\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|.)", re.DOTALL
+)
+_CHAR_REF_RE = re.compile(r"&(#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});?")
+_PERCENT_RE = re.compile(r"%([0-9A-Fa-f]{2})")
+# The named references whose character can appear in a key shape, plus the five
+# XML ones. The website's TypeScript port decodes the same set.
+_NAMED_REFS = {
+    "amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'",
+    "lowbar": "_", "UnderBar": "_", "hyphen": "-", "dash": "-", "minus": "-",
+}
+_DECODE_ROUNDS = 4
+
+
+def _from_code_point(cp: int) -> str:
+    return chr(cp) if 0 <= cp <= 0x10FFFF and not 0xD800 <= cp <= 0xDFFF else "\ufffd"
+
+
+def _decode_backslashes(value: str) -> str:
+    def one(m: "re.Match[str]") -> str:
+        esc = m.group(1)
+        if esc.startswith("u{"):
+            return _from_code_point(int(esc[2:-1], 16))
+        if esc[0] in "uUx" and len(esc) > 1:
+            return _from_code_point(int(esc[1:], 16))
+        if esc[0] in "01234567":
+            return _from_code_point(int(esc, 8))
+        return esc
+
+    return _BACKSLASH_ESCAPE_RE.sub(one, value)
+
+
+def _decode_char_refs(value: str) -> str:
+    def one(m: "re.Match[str]") -> str:
+        ref = m.group(1)
+        if ref.startswith(("#x", "#X")):
+            return _from_code_point(int(ref[2:], 16))
+        if ref.startswith("#"):
+            return _from_code_point(int(ref[1:], 10))
+        return _NAMED_REFS.get(ref, m.group(0))
+
+    return _CHAR_REF_RE.sub(one, value)
+
+
+def _decode_percent(value: str) -> str:
+    return _PERCENT_RE.sub(lambda m: chr(int(m.group(1), 16)), value)
+
+
+def decoded_variants(value: str) -> list[str]:
+    """`value` as written, and as each decoder (and every combination of them,
+    up to four rounds) would read it. The website port computes the same set."""
+    seen = [value]
+    frontier = [value]
+    for _ in range(_DECODE_ROUNDS):
+        nxt = []
+        for v in frontier:
+            for decode in (_decode_backslashes, _decode_char_refs, _decode_percent):
+                d = decode(v)
+                if d not in seen:
+                    seen.append(d)
+                    nxt.append(d)
+        if not nxt:
+            break
+        frontier = nxt
+    return seen
+
+
+def secret_shape_in(value: str) -> str | None:
+    """The pattern of the first secret shape found in `value` or in any of its
+    decodings, or None. Callers name the pattern, never the value."""
+    for variant in decoded_variants(value):
+        for pat in SECRET_PATTERNS:
+            if pat.search(variant):
+                return pat.pattern
+    return None
 
 
 class PackError(ValueError):
@@ -114,14 +189,156 @@ def strip_boundary(raw: str | None) -> str:
     return (raw or "").strip(_BOUNDARY_WS)
 
 
+# --- Punycode (RFC 3492) -----------------------------------------------------
+# A label that starts with `xn--` (any letter case) is decoded the way a WHATWG
+# URL parser decodes it (UTS #46). Only a label that decodes cleanly, holds at
+# least one non-ASCII letter, re-encodes to exactly itself and decodes to
+# letters from a small fixed set (below) is accepted, so the pack never pins a
+# host that browsers, Node or Claude Desktop would refuse or rewrite. The
+# website port implements the same algorithm and the same set.
+_PUNY_BASE, _PUNY_TMIN, _PUNY_TMAX, _PUNY_SKEW, _PUNY_DAMP = 36, 1, 26, 38, 700
+_PUNY_INITIAL_BIAS, _PUNY_INITIAL_N, _PUNY_MAXINT = 72, 0x80, 0x7FFFFFFF
+
+
+def _puny_adapt(delta: int, numpoints: int, first: bool) -> int:
+    delta = delta // _PUNY_DAMP if first else delta // 2
+    delta += delta // numpoints
+    k = 0
+    while delta > ((_PUNY_BASE - _PUNY_TMIN) * _PUNY_TMAX) // 2:
+        delta //= _PUNY_BASE - _PUNY_TMIN
+        k += _PUNY_BASE
+    return k + ((_PUNY_BASE - _PUNY_TMIN + 1) * delta) // (delta + _PUNY_SKEW)
+
+
+def _puny_threshold(k: int, bias: int) -> int:
+    if k <= bias:
+        return _PUNY_TMIN
+    if k >= bias + _PUNY_TMAX:
+        return _PUNY_TMAX
+    return k - bias
+
+
+def punycode_decode(encoded: str) -> list[int] | None:
+    """RFC 3492 decoding of a lower-case ASCII string (the part after `xn--`).
+    Returns the code points, or None on any error (bad digit, overflow, a
+    basic or surrogate code point produced by the digits)."""
+    b = encoded.rfind("-")
+    output = [ord(c) for c in encoded[:b]] if b > 0 else []
+    if any(c >= 0x80 for c in output):
+        return None
+    pos = b + 1 if b > 0 else 0
+    n, i, bias = _PUNY_INITIAL_N, 0, _PUNY_INITIAL_BIAS
+    while pos < len(encoded):
+        oldi, w, k = i, 1, _PUNY_BASE
+        while True:
+            if pos >= len(encoded):
+                return None
+            c = encoded[pos]
+            pos += 1
+            if "a" <= c <= "z":
+                digit = ord(c) - 0x61
+            elif "0" <= c <= "9":
+                digit = ord(c) - 0x30 + 26
+            else:
+                return None
+            i += digit * w
+            if i > _PUNY_MAXINT:
+                return None
+            t = _puny_threshold(k, bias)
+            if digit < t:
+                break
+            w *= _PUNY_BASE - t
+            if w > _PUNY_MAXINT:
+                return None
+            k += _PUNY_BASE
+        size = len(output) + 1
+        bias = _puny_adapt(i - oldi, size, oldi == 0)
+        n += i // size
+        i %= size
+        if n > 0x10FFFF or n < 0x80 or 0xD800 <= n <= 0xDFFF:
+            return None
+        output.insert(i, n)
+        i += 1
+    return output
+
+
+def punycode_encode(code_points: list[int]) -> str:
+    """RFC 3492 encoding (lower-case digits), the inverse of punycode_decode."""
+    out = [chr(c) for c in code_points if c < 0x80]
+    b = h = len(out)
+    if b:
+        out.append("-")
+    n, delta, bias = _PUNY_INITIAL_N, 0, _PUNY_INITIAL_BIAS
+    while h < len(code_points):
+        m = min(c for c in code_points if c >= n)
+        delta += (m - n) * (h + 1)
+        n = m
+        for c in code_points:
+            if c < n:
+                delta += 1
+            elif c == n:
+                q, k = delta, _PUNY_BASE
+                while True:
+                    t = _puny_threshold(k, bias)
+                    if q < t:
+                        break
+                    d = t + (q - t) % (_PUNY_BASE - t)
+                    out.append(chr(d + 0x61) if d < 26 else chr(d - 26 + 0x30))
+                    q = (q - t) // (_PUNY_BASE - t)
+                    k += _PUNY_BASE
+                out.append(chr(q + 0x61) if q < 26 else chr(q - 26 + 0x30))
+                bias = _puny_adapt(delta, h + 1, h == b)
+                delta = 0
+                h += 1
+        delta += 1
+        n += 1
+    return "".join(out)
+
+
+def idn_letter_ok(cp: int) -> bool:
+    """Code points a decoded `xn--` label may hold: ASCII lower-case letters,
+    digits and hyphen, and the lower-case letters of Latin-1 Supplement and
+    Latin Extended-A that UTS #46 keeps as they are (so `ĳ`, `ŀ`, `ŉ`, `ſ` and
+    every upper-case letter are out; `ß` is in, as the WHATWG URL parser keeps
+    it). Everything else is refused, even where a URL parser would accept it:
+    a smaller set both renderers can agree on without Unicode tables."""
+    if 0x61 <= cp <= 0x7A or 0x30 <= cp <= 0x39 or cp == 0x2D:
+        return True
+    if 0xDF <= cp <= 0xF6 or 0xF8 <= cp <= 0xFF:
+        return True
+    if 0x101 <= cp <= 0x137:
+        return cp % 2 == 1 and cp != 0x133
+    if cp == 0x138:
+        return True
+    if 0x13A <= cp <= 0x148:
+        return cp % 2 == 0 and cp != 0x140
+    if 0x14B <= cp <= 0x177:
+        return cp % 2 == 1
+    return cp in (0x17A, 0x17C, 0x17E)
+
+
+def valid_ace_label(label: str) -> bool:
+    """An `xn--` label (any letter case) a WHATWG URL parser keeps unchanged
+    apart from letter case, within the letter set above."""
+    rest = label.lower()[4:]
+    decoded = punycode_decode(rest)
+    if not decoded or all(c < 0x80 for c in decoded):
+        return False
+    if not all(idn_letter_ok(c) for c in decoded):
+        return False
+    return punycode_encode(decoded) == rest
+
+
 def valid_host(host: str) -> bool:
     """A DNS host name of ASCII letters, digits and hyphens (punycode labels
-    included, Unicode not), or a plain dotted-quad IPv4 address. No trailing
-    dot, no empty label, at most 253 characters."""
+    included when they decode cleanly, Unicode not), or a plain dotted-quad
+    IPv4 address. No trailing dot, no empty label, at most 253 characters."""
     if not host or len(host) > _MAX_HOST_LEN:
         return False
     labels = host.split(".")
     if not all(_LABEL_RE.fullmatch(label) for label in labels):
+        return False
+    if any(label[:4].lower() == "xn--" and not valid_ace_label(label) for label in labels):
         return False
     if _NUMERIC_LABEL_RE.fullmatch(labels[-1]):
         return len(labels) == 4 and all(
@@ -189,37 +406,6 @@ def normalize_proxy_url(raw: str) -> str:
     return f"{m.group('scheme')}://{m.group('host')}{port_part}"
 
 
-def _path_segments_ok(segments: list[str]) -> bool:
-    return all(seg and seg not in (".", "..") for seg in segments)
-
-
-def posix_helper_problem(path: str) -> str | None:
-    """Why a macOS/Linux Claude Desktop credential helper path is refused, or
-    None when it is an absolute path under an administrator-controlled root."""
-    if not _POSIX_HELPER_RE.fullmatch(path):
-        return "must be an absolute path (no ~, quotes, backslashes or control characters)"
-    if not path.startswith(_POSIX_HELPER_ROOTS) or path.startswith(_POSIX_HELPER_REFUSED):
-        return "must sit under " + ", ".join(_POSIX_HELPER_ROOTS) + " (not a home folder or a user-owned package tree)"
-    if not _path_segments_ok(path[1:].split("/")):
-        return "must not contain empty, '.' or '..' segments"
-    return None
-
-
-def windows_helper_problem(path: str) -> str | None:
-    """Why a Windows Claude Desktop credential helper path is refused, or None
-    when it is an absolute path under C:\\Program Files."""
-    if not _WINDOWS_HELPER_RE.fullmatch(path):
-        return "must be an absolute C:\\ path with backslashes (no ~, quotes, forward slashes or control characters)"
-    if not path.lower().startswith(_WINDOWS_HELPER_ROOTS):
-        return "must sit under C:\\Program Files\\ or C:\\Program Files (x86)\\"
-    segments = path[3:].split("\\")
-    # Windows drops trailing dots and spaces from a path segment, so "..." or
-    # "x. " would not mean what it says.
-    if not _path_segments_ok(segments) or any(seg.endswith((".", " ")) for seg in segments):
-        return "must not contain empty segments or segments ending in a dot or space"
-    return None
-
-
 def _substitute(value, mapping: dict):
     if isinstance(value, str):
         for needle, repl in mapping.items():
@@ -273,21 +459,8 @@ def build_desktop_pairs(
     *,
     models: list[str] | None,
     egress_proxy: str | None,
-    desktop_key_helper: str | None,
-    desktop_key_helper_windows: str | None,
 ) -> list[tuple[str, str]]:
     pairs = [(k, _substitute(v, mapping)) for k, v in spec["claude_desktop"]["keys"]]
-    if desktop_key_helper_windows and not desktop_key_helper:
-        raise PackError("--desktop-key-helper-windows needs --desktop-key-helper (the macOS path) as well")
-    if desktop_key_helper:
-        # A helper replaces the static key slot; the vendor docs say the helper
-        # wins over static fields, and leaving a placeholder next to it only
-        # invites someone to fill it in.
-        pairs = [(k, v) for k, v in pairs if k != "inferenceGatewayApiKey"]
-        pairs.append(("inferenceCredentialKind", "helper-script"))
-        pairs.append(("inferenceCredentialHelper", desktop_key_helper))
-        if desktop_key_helper_windows:
-            pairs.append(("inferenceCredentialHelperWindows", desktop_key_helper_windows))
     if models:
         pairs.append(("inferenceModels", list(models)))
     if egress_proxy:
@@ -394,10 +567,11 @@ def _optional(value: str | None) -> str | None:
 
 
 def _refuse_secrets_and_placeholders(name: str, value: str) -> None:
-    for pat in SECRET_PATTERNS:
-        if pat.search(value):
-            raise PackError(f"{name} looks like it contains a key; keys never go into the pack ({_redacted(value)})")
-    if any(t in value for t in _RESERVED_TEXT):
+    """Refuse a key shape or the pack's own placeholder text, as written or in
+    any decoding (a helper command can print `\\u006ccr_live_...` as a key)."""
+    if secret_shape_in(value):
+        raise PackError(f"{name} looks like it contains a key; keys never go into the pack ({_redacted(value)})")
+    if any(t in variant for variant in decoded_variants(value) for t in _RESERVED_TEXT):
         raise PackError(f"{name} contains the pack's own placeholder text ({_redacted(value)})")
 
 
@@ -407,14 +581,11 @@ def validate_inputs(
     models: list[str] | None = None,
     egress_proxy: str | None = None,
     key_helper: str | None = None,
-    desktop_key_helper: str | None = None,
-    desktop_key_helper_windows: str | None = None,
 ) -> dict:
     """Check every input before anything is rendered or written. Raises
     PackError naming the input and the rule, never the rejected value."""
     url = normalize_gateway_url(gateway)
-    out: dict = {"gateway": url, "models": [], "egress_proxy": None, "key_helper": None,
-                 "desktop_key_helper": None, "desktop_key_helper_windows": None}
+    out: dict = {"gateway": url, "models": [], "egress_proxy": None, "key_helper": None}
     _refuse_secrets_and_placeholders("gateway URL", url)
 
     proxy = _optional(egress_proxy)
@@ -428,23 +599,6 @@ def validate_inputs(
             raise PackError(f"--key-helper contains characters the pack does not accept ({_redacted(helper)})")
         _refuse_secrets_and_placeholders("--key-helper", helper)
         out["key_helper"] = helper
-
-    dk = _optional(desktop_key_helper)
-    dkw = _optional(desktop_key_helper_windows)
-    if dkw is not None and dk is None:
-        raise PackError("--desktop-key-helper-windows needs --desktop-key-helper (the macOS/Linux path) as well")
-    if dk is not None:
-        problem = posix_helper_problem(dk)
-        if problem:
-            raise PackError(f"--desktop-key-helper {problem} ({_redacted(dk)})")
-        _refuse_secrets_and_placeholders("--desktop-key-helper", dk)
-        out["desktop_key_helper"] = dk
-    if dkw is not None:
-        problem = windows_helper_problem(dkw)
-        if problem:
-            raise PackError(f"--desktop-key-helper-windows {problem} ({_redacted(dkw)})")
-        _refuse_secrets_and_placeholders("--desktop-key-helper-windows", dkw)
-        out["desktop_key_helper_windows"] = dkw
 
     for raw in models or []:
         m = strip_boundary(raw)
@@ -464,18 +618,9 @@ def render(
     models: list[str] | None = None,
     egress_proxy: str | None = None,
     key_helper: str | None = None,
-    desktop_key_helper: str | None = None,
-    desktop_key_helper_windows: str | None = None,
 ) -> dict[str, bytes]:
     spec = spec or load_spec()
-    v = validate_inputs(
-        gateway,
-        models=models,
-        egress_proxy=egress_proxy,
-        key_helper=key_helper,
-        desktop_key_helper=desktop_key_helper,
-        desktop_key_helper_windows=desktop_key_helper_windows,
-    )
+    v = validate_inputs(gateway, models=models, egress_proxy=egress_proxy, key_helper=key_helper)
     url = v["gateway"]
     ph = spec["placeholders"]
     mapping = {
@@ -490,8 +635,6 @@ def render(
         mapping,
         models=v["models"] or None,
         egress_proxy=v["egress_proxy"],
-        desktop_key_helper=v["desktop_key_helper"],
-        desktop_key_helper_windows=v["desktop_key_helper_windows"],
     )
     files = {
         spec["claude_code"]["filename"]: json.dumps(cc, indent=2, ensure_ascii=True) + "\n",
@@ -542,18 +685,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--models", help="comma-separated full model IDs for Claude Desktop's picker (inferenceModels)")
     p.add_argument("--egress-proxy", help="HTTP proxy URL for Claude Desktop (egressProxyUrl, MDM only)")
     p.add_argument("--key-helper", help="Claude Code apiKeyHelper command that prints the user's Lucairn key")
-    p.add_argument(
-        "--desktop-key-helper",
-        help="absolute path of a Claude Desktop credential helper (macOS/Linux), under /Library/, /usr/local/ or /opt/",
-    )
-    p.add_argument(
-        "--desktop-key-helper-windows",
-        help="absolute path of the Claude Desktop credential helper on Windows, under C:\\Program Files\\",
-    )
     p.add_argument("--force", action="store_true", help="overwrite existing files in --output")
     p.add_argument("--print-golden", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--print-corpus", action="store_true", help=argparse.SUPPRESS)
-    return p.parse_args(argv)
+    args, unknown = p.parse_known_args(argv)
+    if unknown:
+        # Name the options only: argparse's own message would repeat their
+        # values, and errors never echo an input.
+        names = sorted({u.split("=", 1)[0] for u in unknown if u.startswith("-")})
+        hint = ""
+        if any(n.startswith("--desktop-key-helper") for n in names):
+            hint = (
+                "; Claude Desktop credential helpers are not part of the pack (a helper's headers "
+                "override the require header), see config-pack/README.md"
+            )
+        p.error(f"unknown option(s): {', '.join(names) or '<redacted positional argument>'}{hint}")
+    return args
 
 
 def golden_doc(spec: dict, gateway: str, files: dict[str, bytes]) -> dict:
@@ -612,8 +759,6 @@ def main(argv: list[str] | None = None) -> int:
             models=args.models.split(",") if args.models else None,
             egress_proxy=args.egress_proxy,
             key_helper=args.key_helper,
-            desktop_key_helper=args.desktop_key_helper,
-            desktop_key_helper_windows=args.desktop_key_helper_windows,
         )
         if args.print_golden:
             # Maintainer aid: the content of config-pack/golden-sha256.json for

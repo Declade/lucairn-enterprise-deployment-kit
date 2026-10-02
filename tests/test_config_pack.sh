@@ -64,45 +64,32 @@ expect_no_grep "SETUP firewall does not claim port 443 for a custom port" 'TCP p
 expect_ok "explicit :443 accepted" "$ROOT/bin/lucairn" config-pack --gateway "https://gw.example.com:443/" --output "$TMP/p443"
 expect_grep "explicit :443 dropped" '"ANTHROPIC_BASE_URL": "https://gw.example.com"' "$TMP/p443/managed-settings.json"
 
-# 3. Optional inputs: helpers replace the static key slot; models and proxy added.
+# 3. Optional inputs: Claude Code key helper, models and proxy added; Claude
+#    Desktop keeps its static key slot as the only credential source.
 expect_ok "render with options" "$ROOT/bin/lucairn" config-pack --gateway "$GW" --output "$TMP/opts" \
   --models "model-a,model-b" --egress-proxy "http://proxy.corp.example:3128" \
-  --key-helper "/usr/local/bin/lucairn-key" \
-  --desktop-key-helper "/usr/local/bin/lucairn-key" \
-  --desktop-key-helper-windows 'C:\Program Files\Lucairn\lucairn-key.exe'
+  --key-helper "/usr/local/bin/lucairn-key"
 expect_grep "CC apiKeyHelper set" '"apiKeyHelper": "/usr/local/bin/lucairn-key"' "$TMP/opts/managed-settings.json"
-expect_no_grep "helper removes the static key slot" 'inferenceGatewayApiKey' "$TMP/opts/claude-desktop.mobileconfig"
-expect_grep "helper kind" '"inferenceCredentialKind"="helper-script"' "$TMP/opts/claude-desktop.reg"
-expect_grep "windows helper escaped" '"inferenceCredentialHelperWindows"="C:\\\\Program Files\\\\Lucairn\\\\lucairn-key.exe"' "$TMP/opts/claude-desktop.reg"
+expect_grep "static key slot kept" '<key>inferenceGatewayApiKey</key>' "$TMP/opts/claude-desktop.mobileconfig"
+expect_grep "credential kind static (.reg)" '"inferenceCredentialKind"="static"' "$TMP/opts/claude-desktop.reg"
+expect_grep "credential kind static (default .reg)" '"inferenceCredentialKind"="static"' "$TMP/default/claude-desktop.reg"
+expect_no_grep "no Desktop credential helper" 'inferenceCredentialHelper' "$TMP/opts/claude-desktop.mobileconfig"
 expect_grep "models JSON string" '"inferenceModels"="\[\\"model-a\\",\\"model-b\\"\]"' "$TMP/opts/claude-desktop.reg"
 expect_grep "egress proxy" '<string>http://proxy.corp.example:3128</string>' "$TMP/opts/claude-desktop.mobileconfig"
 expect_ok "check accepts the options pack" python3 "$ROOT/config-pack/check.py" --dir "$TMP/opts" --gateway "$GW"
-expect_fail "windows helper alone is refused" "$ROOT/bin/lucairn" config-pack --gateway "$GW" --output "$TMP/opts2" \
-  --desktop-key-helper-windows 'C:\Program Files\Lucairn\k.exe'
-[ ! -e "$TMP/opts2" ] && ok || bad "a refused option still wrote files"
 
-# 3b. Claude Desktop helper paths: only absolute paths under roots that only
-#     administrators can write (a helper's headers win over the profile's).
-for bad_helper in "~/bin/lucairn-key" "bin/lucairn-key" "./lucairn-key" "/Users/alice/lucairn-key" \
-  "/home/alice/lucairn-key" "/tmp/lucairn-key" "/opt/../Users/alice/lucairn-key" "/opt/./lucairn-key" \
-  "/opt//lucairn-key" "/opt/" "/opt/homebrew/bin/lucairn-key" "/usr/local/Homebrew/bin/k" \
-  '/opt/lucairn"key' "/Library/Lucairn/key\\x" "$(printf '/opt/lucairn\nkey')"; do
-  expect_fail "refuses desktop helper [$bad_helper]" "$ROOT/bin/lucairn" config-pack --gateway "$GW" --output "$TMP/badhelper" \
-    --desktop-key-helper "$bad_helper"
+# 3b. The Claude Desktop credential-helper options are gone: a helper's headers
+#     win over the profile's require header (vendor docs), so the pack has no
+#     way to name one. The refusal names the option, never its value.
+for flag in --desktop-key-helper --desktop-key-helper-windows; do
+  rm -rf "$TMP/nohelper"
+  "$ROOT/bin/lucairn" config-pack --gateway "$GW" --output "$TMP/nohelper" "$flag" "/Library/very-private-helper-name" >"$TMP/helper.out" 2>&1 && bad "$flag accepted" || ok
+  [ ! -e "$TMP/nohelper" ] && ok || bad "$flag still wrote files"
+  expect_grep "$flag refusal says why" 'credential helpers are not part of the pack' "$TMP/helper.out"
+  expect_no_grep "$flag value is not echoed" 'very-private-helper-name' "$TMP/helper.out"
 done
-for bad_win in 'C:\Users\alice\lucairn-key.exe' 'C:/Program Files/Lucairn/k.exe' 'D:\Program Files\Lucairn\k.exe' \
-  'C:\Program Files\..\Users\alice\k.exe' 'C:\Program Files\Lucairn.\k.exe' 'C:\Program Files\Lucairn \k.exe' \
-  'C:\PROGRA~1\Lucairn\k.exe' 'C:\Program Files\Lucairn\k.exe::$DATA' 'Program Files\k.exe' 'C:\Program Files\\k.exe'; do
-  expect_fail "refuses windows helper [$bad_win]" "$ROOT/bin/lucairn" config-pack --gateway "$GW" --output "$TMP/badhelper" \
-    --desktop-key-helper "/Library/Lucairn/lucairn-key" --desktop-key-helper-windows "$bad_win"
-done
-expect_ok "accepts helpers under the admin roots" "$ROOT/bin/lucairn" config-pack --gateway "$GW" --output "$TMP/helperok" \
-  --desktop-key-helper "/Library/Application Support/Lucairn/lucairn-key" \
-  --desktop-key-helper-windows 'C:\Program Files (x86)\Lucairn\lucairn-key.exe'
-[ ! -e "$TMP/badhelper" ] && ok || bad "a refused helper still wrote files"
-"$ROOT/bin/lucairn" config-pack --gateway "$GW" --output "$TMP/badhelper" --desktop-key-helper "/Users/alice/very-private-helper-name" >"$TMP/helper.out" 2>&1 || true
-expect_no_grep "refused helper path is not echoed" 'very-private-helper-name' "$TMP/helper.out"
-expect_grep "refusal names the redacted length" '<redacted>, 37 characters' "$TMP/helper.out"
+"$ROOT/bin/lucairn" config-pack --gateway "$GW" --output "$TMP/nohelper" "--desktop-key-helper=/Library/very-private-helper-name" >"$TMP/helper.out" 2>&1 && bad "--desktop-key-helper=VALUE accepted" || ok
+expect_no_grep "--desktop-key-helper=VALUE is not echoed" 'very-private-helper-name' "$TMP/helper.out"
 
 # 3c. Proxy URLs: valid host name, port 1-65535, no user info or path.
 for bad_proxy in "http://a..b:99999" "http://proxy.corp.example:0" "http://proxy.corp.example:08080" \
@@ -117,7 +104,10 @@ done
 # 3d. Secret-shaped inputs are refused before anything is written, and the
 #     value is never echoed.
 for flag_value in "--key-helper=printf lcr_live_abcdefghij" "--models=sk-ant-api03-abcdefghij" \
-  "--gateway=https://gw.example.com/lcr_live_abcdefghij"; do
+  "--gateway=https://gw.example.com/lcr_live_abcdefghij" \
+  '--key-helper=printf \u006ccr_live_abcdefghij' '--key-helper=printf \x6ccr_live_abcdefghij' \
+  '--key-helper=printf \154cr_live_abcdefghij' '--key-helper=printf \u{6c}cr_live_abcdefghij' \
+  '--key-helper=printf sk\x2dant\x2dapi03abcdefghij'; do
   rm -rf "$TMP/secretin"
   if "$ROOT/bin/lucairn" config-pack --gateway "$GW" --output "$TMP/secretin" "$flag_value" >"$TMP/secret.out" 2>&1; then
     bad "secret-shaped input accepted [${flag_value%%=*}]"
@@ -238,6 +228,38 @@ elif mode == "desktop-chooser-removed":
     del keys[[k for k, _ in keys].index("disableDeploymentModeChooser")]
 elif mode == "desktop-skills-on":
     keys[[k for k, _ in keys].index("skillCreationEnabled")][1] = True
+elif mode == "cc-header-leading-space":
+    cc["env"]["ANTHROPIC_CUSTOM_HEADERS"] = " x-lucairn-require-added-parts-sanitized: 1"
+elif mode == "cc-header-space-before-colon":
+    cc["env"]["ANTHROPIC_CUSTOM_HEADERS"] = "x-lucairn-require-added-parts-sanitized : 1"
+elif mode == "cc-header-value-cr":
+    cc["env"]["ANTHROPIC_CUSTOM_HEADERS"] = "x-lucairn-require-added-parts-sanitized: 1\r"
+elif mode == "cc-header-whitespace-line":
+    cc["env"]["ANTHROPIC_CUSTOM_HEADERS"] = "x-lucairn-require-added-parts-sanitized: 1\n   "
+elif mode == "cc-header-bad-name":
+    cc["env"]["ANTHROPIC_CUSTOM_HEADERS"] = "x-lucairn-require-added-parts-sanitized: 1\nx(note): a"
+elif mode == "desktop-header-leading-space":
+    keys[[k for k, _ in keys].index("inferenceCustomHeaders")][1] = {" x-lucairn-require-added-parts-sanitized": "1"}
+elif mode == "desktop-header-bad-extra":
+    keys[[k for k, _ in keys].index("inferenceCustomHeaders")][1]["x note"] = "a"
+elif mode == "desktop-header-number":
+    keys[[k for k, _ in keys].index("inferenceCustomHeaders")][1] = {"x-lucairn-require-added-parts-sanitized": 1}
+elif mode == "desktop-kind-helper":
+    keys[[k for k, _ in keys].index("inferenceCredentialKind")][1] = "helper-script"
+elif mode == "desktop-kind-interactive":
+    keys[[k for k, _ in keys].index("inferenceCredentialKind")][1] = "interactive"
+elif mode == "desktop-kind-removed":
+    del keys[[k for k, _ in keys].index("inferenceCredentialKind")]
+elif mode == "desktop-helper-added":
+    keys.append(["inferenceCredentialHelper", "/Library/Lucairn/lucairn-key"])
+elif mode == "desktop-helper-windows-added":
+    keys.append(["inferenceCredentialHelperWindows", "C:\\Program Files\\Lucairn\\k.exe"])
+elif mode == "desktop-helper-args-added":
+    keys.append(["inferenceCredentialHelperArgs", ["--print"]])
+elif mode == "desktop-static-slot-removed":
+    del keys[[k for k, _ in keys].index("inferenceGatewayApiKey")]
+elif mode == "cc-encoded-secret":
+    cc["permissions"]["deny"].append("Read(//**/\\u006ccr_live_" + "a" * 24 + ")")
 else:
     raise SystemExit("unknown mode " + mode)
 json.dump(spec, open(path, "w"), indent=2)
@@ -254,6 +276,67 @@ for mode in cc-misspelled cc-env-misspelled cc-permissions-misspelled desktop-mi
   edit_spec "$dir/spec.json" "$mode"
   expect_fail "red-proof: $mode is caught" python3 "$dir/check.py"
 done
+
+# Header names and values are validated before the require header is counted
+# (sol r2 P2: a leading space used to pass), and Claude Desktop's only
+# credential source is the static key slot (sol r1+r2 P1, refuse by
+# construction). Each mutant must fail with the check's own message.
+red_spec() {
+  # red_spec MODE MESSAGE
+  local dir
+  dir="$(mutant "$1")"
+  edit_spec "$dir/spec.json" "$1"
+  expect_fail_msg "red-proof: $1 is caught" "$2" python3 "$dir/check.py"
+}
+for mode in cc-header-leading-space cc-header-space-before-colon cc-header-value-cr cc-header-whitespace-line cc-header-bad-name; do
+  red_spec "$mode" 'is not `Name: Value` with an RFC 7230 header name'
+done
+for mode in desktop-header-leading-space desktop-header-bad-extra desktop-header-number; do
+  red_spec "$mode" 'is not an RFC 7230 header name with a visible-ASCII string value'
+done
+for mode in desktop-kind-helper desktop-kind-interactive desktop-kind-removed; do
+  red_spec "$mode" 'inferenceCredentialKind must be "static"'
+done
+for mode in desktop-helper-added desktop-helper-windows-added desktop-helper-args-added; do
+  red_spec "$mode" 'credential helper keys are not allowed in the pack'
+done
+red_spec desktop-static-slot-removed 'the static key slot inferenceGatewayApiKey is missing'
+red_spec cc-encoded-secret 'shaped like a secret'
+
+# The renderer's pre-write gate decodes too: a spec value that is a key only
+# after decoding is refused and nothing is written.
+dir="$(mutant prewrite-encoded)"
+edit_spec "$dir/spec.json" cc-encoded-secret
+expect_fail_msg "pre-write gate refuses an encoded secret" "shaped like a secret" \
+  python3 "$dir/render.py" --gateway "$GW" --output "$TMP/prewrite-encoded"
+[ ! -e "$TMP/prewrite-encoded" ] && ok || bad "a pack with an encoded secret was still written"
+
+# Punycode: the corpus pins the refusals; with the label check switched off (in
+# a private copy) the corpus turns red, so the check is what refuses them.
+dir="$(mutant idna-off)"
+printf '\nvalid_ace_label = lambda label: True  # mutant: no punycode check\n' >> "$dir/render.py"
+expect_fail_msg "red-proof: invalid punycode is refused by the label check" "refused case is accepted: invalid punycode label" \
+  python3 "$dir/check.py" --corpus
+dir="$(mutant idna-letters-off)"
+printf '\nidn_letter_ok = lambda cp: True  # mutant: no letter set\n' >> "$dir/render.py"
+expect_fail_msg "red-proof: the letter set refuses an emoji label" "refused case is accepted: punycode label that decodes to an emoji" \
+  python3 "$dir/check.py" --corpus
+for host in xn--bcher-kva xn--zca xn--mller-kva XN--BCHER-KVA; do
+  python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import render as R; assert R.valid_host(sys.argv[2])' "$ROOT/config-pack" "$host.example" && ok || bad "valid punycode host refused: $host"
+done
+# The decoder against Python's own punycode codec on random inputs.
+python3 - "$ROOT/config-pack" <<'PY5' && ok || bad "punycode codec differs from the standard library"
+import random, sys
+sys.path.insert(0, sys.argv[1])
+import render as R
+rng = random.Random(7)
+alphabet = list(range(0x80, 0x250)) + [ord(c) for c in "abcxyz09-"]
+for _ in range(5000):
+    cps = [rng.choice(alphabet) for _ in range(rng.randint(1, 8))]
+    std = "".join(map(chr, cps)).encode("punycode").decode("ascii")
+    assert R.punycode_encode(cps) == std, cps
+    assert R.punycode_decode(std) == cps, std
+PY5
 
 # A pack that fails its own check is never written: render a weakened spec
 # through that copy's renderer and confirm nothing reached --output.
@@ -347,14 +430,7 @@ open(p, "wb").write(plistlib.dumps(d))' "$TMP/empty-$which/claude-desktop.mobile
     python3 "$ROOT/config-pack/check.py" --dir "$TMP/empty-$which" --gateway "$GW"
 done
 
-# A hand-edited pack: helper moved to a user folder, proxy port out of range,
-# firewall port changed.
-cp -R "$TMP/opts" "$TMP/userhelper"
-for f in claude-desktop.mobileconfig claude-desktop.reg; do
-  mutate_file "$TMP/userhelper/$f" 'd.replace("/usr/local/bin/lucairn-key", "/Users/alice/lucairn-key")'
-done
-expect_fail_msg "red-proof: user-writable helper in a pack is caught" "inferenceCredentialHelper must be an absolute path" \
-  python3 "$ROOT/config-pack/check.py" --dir "$TMP/userhelper" --gateway "$GW"
+# A hand-edited pack: proxy port out of range, firewall line changed.
 cp -R "$TMP/opts" "$TMP/badport"
 for f in claude-desktop.mobileconfig claude-desktop.reg; do
   mutate_file "$TMP/badport/$f" 'd.replace("proxy.corp.example:3128", "proxy.corp.example:99999")'
@@ -365,6 +441,64 @@ cp -R "$TMP/default" "$TMP/firewall"
 mutate_file "$TMP/firewall/SETUP.md" 'd.replace("TCP port 443", "TCP port 8443")'
 expect_fail_msg "red-proof: SETUP firewall port drift is caught" "firewall note does not name" \
   python3 "$ROOT/config-pack/check.py" --dir "$TMP/firewall" --gateway "$GW"
+# "port 443" is a prefix of "port 4430": the whole line must match (sol r2 P3).
+cp -R "$TMP/default" "$TMP/firewall4430"
+mutate_file "$TMP/firewall4430/SETUP.md" 'd.replace("TCP port 443 (HTTPS)", "TCP port 4430 (HTTPS)")'
+expect_grep "the 4430 copy still holds the old substring" 'port 443' "$TMP/firewall4430/SETUP.md"
+expect_fail_msg "red-proof: firewall port 4430 is not port 443" "firewall note does not name" \
+  python3 "$ROOT/config-pack/check.py" --dir "$TMP/firewall4430" --gateway "$GW"
+cp -R "$TMP/default" "$TMP/firewallhost"
+mutate_file "$TMP/firewallhost/SETUP.md" 'd.replace("`gateway.lucairn.eu`, TCP port 443", "`gateway.lucairn.eu.evil.example`, TCP port 443")'
+expect_fail_msg "red-proof: firewall line with another host is caught" "firewall note does not name" \
+  python3 "$ROOT/config-pack/check.py" --dir "$TMP/firewallhost" --gateway "$GW"
+
+# Encoded secrets (sol r2 P2): each file holds a key shape only after the
+# format's own decoding, so a raw-bytes scan misses it; check.py decodes.
+encoded_case() {
+  # encoded_case NAME FILE EXPR [FILE EXPR ...]: EXPR is Python over d (the
+  # file text). Every other check must still pass on the result, so only the
+  # secret scan can turn it red.
+  local name="$1"; shift
+  cp -R "$TMP/default" "$TMP/enc-$name"
+  while [ "$#" -gt 0 ]; do
+    mutate_file "$TMP/enc-$name/$1" "$2"
+    expect_no_grep "enc-$name: the raw bytes of $1 hold no key shape" 'lcr_live_' "$TMP/enc-$name/$1"
+    shift 2
+  done
+  expect_fail_msg "red-proof: encoded secret ($name) is caught" "shaped like a secret" \
+    python3 "$ROOT/config-pack/check.py" --dir "$TMP/enc-$name" --gateway "$GW"
+}
+K='"a" * 24'
+encoded_case json-escape managed-settings.json \
+  "d.replace('\"Read(//**/*.pfx)\"', '\"Read(//**/*.pfx)\",\n      \"Read(//**/\\\\u006ccr_live_' + $K + ')\"', 1)"
+encoded_case plist-charref claude-desktop.mobileconfig \
+  "d.replace('Lucairn gateway settings for Claude Desktop</string>', 'Lucairn gateway settings &#108;cr_live_' + $K + '</string>', 1)"
+encoded_case plist-hexref claude-desktop.mobileconfig \
+  "d.replace('Lucairn gateway settings for Claude Desktop</string>', 'Lucairn gateway settings &#x6C;cr&#x5f;live_' + $K + '</string>', 1)"
+encoded_case backslash-both claude-desktop.mobileconfig \
+  "d.replace('<key>inferenceProvider</key>', '<key>otlpEndpoint</key>\n\t\t\t\t\t\t\t\t<string>\\\\x6ccr_live_' + $K + '</string>\n\t\t\t\t\t\t\t\t<key>inferenceProvider</key>', 1)" \
+  claude-desktop.reg \
+  "d.replace('\"inferenceProvider\"=', '\"otlpEndpoint\"=\"\\\\\\\\x6ccr_live_' + $K + '\"\\r\\n\"inferenceProvider\"=', 1)"
+encoded_case setup-charref SETUP.md \
+  "d.replace('# Lucairn config pack: setup', '# Lucairn config pack: setup &#108;cr&lowbar;live_' + $K, 1)"
+encoded_case setup-percent SETUP.md \
+  "d.replace('# Lucairn config pack: setup', '# Lucairn config pack: setup %6Ccr%5Flive_' + $K, 1)"
+# Red-proof the decoders themselves: with decoding switched off (in a private
+# copy), the same encoded files pass, so the decoding is what catches them.
+dir="$(mutant nodecode)"
+printf '\ndecoded_variants = lambda value: [value]  # mutant: no decoding\n' >> "$dir/render.py"
+python3 - "$dir/check.py" <<'PY2'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = "    text = data.decode(\"utf-8\", errors=\"replace\")\n    out = [text, html.unescape(text)]\n"
+assert old in s
+s = s.replace(old, "    text = data.decode(\"utf-8\", errors=\"replace\")\n    return [text]  # mutant: no decoding\n    out = [text, html.unescape(text)]\n")
+open(p, "w").write(s)
+PY2
+for c in json-escape plist-charref plist-hexref backslash-both setup-charref setup-percent; do
+  expect_ok "red-proof: without decoding, enc-$c slips through" python3 "$dir/check.py" --dir "$TMP/enc-$c" --gateway "$GW"
+done
 
 echo "config-pack: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
