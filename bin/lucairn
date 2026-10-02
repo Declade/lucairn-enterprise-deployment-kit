@@ -39,7 +39,7 @@ Usage:
   lucairn verify-images [--registry REG] [--tag TAG] [--key PATH]
   lucairn sbom <image-ref> [--key PATH] [--registry REG] [--download PATH]
   lucairn check-updates [--offline] [--feed-url URL]
-  lucairn config-pack --gateway https://gateway.example.com --output DIR [--models ID,ID] [--egress-proxy URL] [--key-helper CMD] [--desktop-key-helper PATH] [--desktop-key-helper-windows PATH] [--force]
+  lucairn config-pack --gateway https://gateway.example.com --output DIR [--models ID,ID] [--egress-proxy URL] [--key-helper CMD] [--force]
 
 Commands:
   doctor          --offline is a configuration-only preflight. With a running

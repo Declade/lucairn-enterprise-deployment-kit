@@ -7,9 +7,9 @@
       "normalized": "https://gateway.lucairn.eu",
       "files": {
         "managed-settings.json": "733d63962e75e04ac00fc0c4dcd384691ea2daaa6166a63231790ecdb399e0d5",
-        "claude-desktop.mobileconfig": "3711101d75e5a745e4881c5898714567bcee9785230f9d1c26888c689fed7704",
-        "claude-desktop.reg": "f3bb440d0b1676607831a68f8f7e02fdffba00d12ccecb17cca2ca06cef4e498",
-        "SETUP.md": "4078d0e302b873c09a6578e16b84b01cfefaae9d454a29d6efc3d7134bc3ac7c"
+        "claude-desktop.mobileconfig": "34da07b84e90ab5856eb3636544108eee9daae4c23dde0cbca7963abffaefbb6",
+        "claude-desktop.reg": "7b089f22a5f989133522e6f52a63446d639397a20c9a5109aac9e143ed7ddffe",
+        "SETUP.md": "043eeb3bcbb890efb0c23eaaf894e85389b9bfb2f47fc00884df18670729189b"
       }
     },
     {
@@ -18,9 +18,9 @@
       "normalized": "https://gateway.lucairn.eu",
       "files": {
         "managed-settings.json": "733d63962e75e04ac00fc0c4dcd384691ea2daaa6166a63231790ecdb399e0d5",
-        "claude-desktop.mobileconfig": "3711101d75e5a745e4881c5898714567bcee9785230f9d1c26888c689fed7704",
-        "claude-desktop.reg": "f3bb440d0b1676607831a68f8f7e02fdffba00d12ccecb17cca2ca06cef4e498",
-        "SETUP.md": "4078d0e302b873c09a6578e16b84b01cfefaae9d454a29d6efc3d7134bc3ac7c"
+        "claude-desktop.mobileconfig": "34da07b84e90ab5856eb3636544108eee9daae4c23dde0cbca7963abffaefbb6",
+        "claude-desktop.reg": "7b089f22a5f989133522e6f52a63446d639397a20c9a5109aac9e143ed7ddffe",
+        "SETUP.md": "043eeb3bcbb890efb0c23eaaf894e85389b9bfb2f47fc00884df18670729189b"
       }
     },
     {
@@ -29,20 +29,42 @@
       "normalized": "https://llm.corp.example:8443/lucairn",
       "files": {
         "managed-settings.json": "21a15fcae49f6e80a382e2f3efcc598bf76a7c4142fa1639d60758ceb4ac332a",
-        "claude-desktop.mobileconfig": "ddcf33c2200208bf3b85e22a1d9172ff193c6fe5d5ab2a36315ed23256d65807",
-        "claude-desktop.reg": "56c605dc031cfa0db42f851034c09407dc8f8d270b924697469b6c996e156c76",
-        "SETUP.md": "7d10b97481be0e67dd1e729f51834013ec627fb1bed0576563ce51db4b529c2d"
+        "claude-desktop.mobileconfig": "a861aa989ae35a54539f33b6452a6b2f8b8dac85b5d50389bc7398e63c6669ca",
+        "claude-desktop.reg": "bd7dec0e01fbc33ad8f32135251ffb2eab02b6581f4d0acbb5d8fa2257dd172e",
+        "SETUP.md": "4d99579688a877f49ed6c3f4ba3425549abd632c3d4006fc822d025c811be35b"
       }
     },
     {
-      "why": "punycode label accepted as written (not decoded)",
+      "why": "punycode label that decodes cleanly, accepted as written",
       "input": "https://xn--bcher-kva.example",
       "normalized": "https://xn--bcher-kva.example",
       "files": {
         "managed-settings.json": "bf61b759f99d646d787a40744062b7ffc389e61b6bd280e893b9a0c9c77fdc5a",
-        "claude-desktop.mobileconfig": "22da88198f24efb9518bde7201bb946d28a8507fe4ae2026bde01940531cfe81",
-        "claude-desktop.reg": "8d5d8cec60086ec119894efc683514f68d4fa5a9981f66613dbab567cfc1a3bc",
-        "SETUP.md": "b7272fb046e4aa512f499e3e8fb4d77fa4d71ef0e56362c8b4880a0fd497a85b"
+        "claude-desktop.mobileconfig": "b15ec18c67d772c2fad11a700f5ef643cb1b53b72688dec4670d1b877b2a214a",
+        "claude-desktop.reg": "2937ba620dfedaeb5d419f16378cfe9e802b546537c5175c03a4b2e790b7fe6c",
+        "SETUP.md": "4b103e0bd3b55a2d0cfcc85ac4cffdcec2d1b629d2b94870a876164c4588055f"
+      }
+    },
+    {
+      "why": "upper-case punycode label: decoded without case, kept as written",
+      "input": "https://XN--BCHER-KVA.example",
+      "normalized": "https://XN--BCHER-KVA.example",
+      "files": {
+        "managed-settings.json": "8447a0226d5ea708afd292cfc33eb9b1a5494f14aa23a3affac3e11245d03243",
+        "claude-desktop.mobileconfig": "335e721e329c66129a5d675301e44d56fbffb05ff872b04eea12ca8e71aae175",
+        "claude-desktop.reg": "40ab2d371224c01f5f787c64406c3876eef7f04ea5446421436710edac86bfac",
+        "SETUP.md": "32a1bb5f8028f311eca68cf7fd10d811989cd4a469a27cb39e5a5d726968e4a7"
+      }
+    },
+    {
+      "why": "punycode label for sharp s, which the WHATWG URL parser keeps",
+      "input": "https://xn--zca.example:8443/x",
+      "normalized": "https://xn--zca.example:8443/x",
+      "files": {
+        "managed-settings.json": "0cbd8f002de2eb9408032b86de15e31f44bdc0bb333750cabe60d31df539f545",
+        "claude-desktop.mobileconfig": "2467b29c84f8565a5065a969bbd275a386d12e9609e999da6ae227381883fd1c",
+        "claude-desktop.reg": "d0a6e0ffa0f38bc99afbb126d71aa96de773fe577e60a4fb31fc369444a212bd",
+        "SETUP.md": "78cd7956af5b1b5728bace0ecdd1d962c8b2b1e07eff2c245d1a41ed4083f701"
       }
     },
     {
@@ -51,9 +73,9 @@
       "normalized": "https://Gateway.Example.COM:8443/X",
       "files": {
         "managed-settings.json": "db616799fd19ca1e173d94201fdef5f2cc1054286816bdb69c21b32e58d0ae6f",
-        "claude-desktop.mobileconfig": "99ce078a4dbc35fd6fb3acbd89bb3bc79a43013732078a4e4e285cdcee09feca",
-        "claude-desktop.reg": "dd122e11371bb08d6026cbe4763a7fecb6fbef2f2fa3b0148d0afd02118d6474",
-        "SETUP.md": "39e7471dd87b5689bb875e8594068d21a2075c29de73c8d9c89fa5058bc8ec43"
+        "claude-desktop.mobileconfig": "473a97cb38cfdfa22c5c4cb02188e209430c9dbc341d1e39bdaa294001fea767",
+        "claude-desktop.reg": "4ae78c2ad1b5908318a6bcd1244188d91d0cd2f3151e2f0141c38105b65b349d",
+        "SETUP.md": "d762f2e46c69da00c1390c6bcc52212eb1e509b84b6663758ed5272f9518b4fa"
       }
     },
     {
@@ -62,9 +84,9 @@
       "normalized": "https://gw.example.com",
       "files": {
         "managed-settings.json": "e123f2488324bc584561067f81bdb6e3c8d9e9c06f4a4debc387963b04576961",
-        "claude-desktop.mobileconfig": "e8e279360d4e30ef63d24676d1a121e4e89c4e57ec992ecebd93d2abbea7f2a2",
-        "claude-desktop.reg": "b748b88737a2a41597025b3be85a27dd512a58c7e61396906d395bd266d708b1",
-        "SETUP.md": "0780297ab04fbe8873c8694cb5c90dde2f83d96aeeec37474da931d32d46e481"
+        "claude-desktop.mobileconfig": "d29772d9c501e169fe307c9a4059f625ddbd27c5a2b4a4371f347dc1e0b03094",
+        "claude-desktop.reg": "6805923520c557dd4013dfec43da4ca8ee870dda465f21cb2321eb25685a8d7d",
+        "SETUP.md": "9451bacc9284e731028bcefe549b3a23a558f8549934e1e40dcfd6810b31b66c"
       }
     },
     {
@@ -73,9 +95,9 @@
       "normalized": "https://gw.example.com:65535/a/b",
       "files": {
         "managed-settings.json": "faad1c2a8fbf8896f9b1bab2625c89881b236ed2938e19afe5ca682b05f05125",
-        "claude-desktop.mobileconfig": "6147573bf9227cfebc5154f1b7ac1c63bb165e4a17ba36b17a248fbee57d0c81",
-        "claude-desktop.reg": "6adcea8d07ac17e8ca3feb1bb02f78d563b0393f92c7bf074ac25138c2bcb500",
-        "SETUP.md": "c087f7b9e0f0ed79e2d719e1f9122dd9328dcd3b89c46a0ec59729d3917afaef"
+        "claude-desktop.mobileconfig": "520f4bce3b6c23f4b33392151c4c4a2e589404e200ca89b92e871e35c5d33fb2",
+        "claude-desktop.reg": "6ccfa7642371e6def5e0188e337b0c68e982e3389a34d2af2c97e79f4e9ac7b8",
+        "SETUP.md": "17684c7eb3fea9028ace5133566e79ee55ed07cdd2bcada8472fb5a5f16490a9"
       }
     },
     {
@@ -84,9 +106,9 @@
       "normalized": "https://gw.example.com:1",
       "files": {
         "managed-settings.json": "44937e72217b561b94c5a04604daa9ed45f70f46d38164d940d79527604d6f29",
-        "claude-desktop.mobileconfig": "34669d9aefd8fa603289d37176c655a3aa5ab66de2fec6c7d18b1c2683b66f87",
-        "claude-desktop.reg": "001da304a7aac61dcada4a53640500ebba0759b091cc22f1de0f8a93a8c75aef",
-        "SETUP.md": "694d0e3ed1e4c7a867ec47e9433982a304f4ac5df30b64dbcdd62b666f07815a"
+        "claude-desktop.mobileconfig": "5bf9181a9a4a012c87f701002aec04e9f9fcabfbe7d496e9f068e2878433b2b8",
+        "claude-desktop.reg": "f52b9f4cb98348426d4667ea99f91a9104eb969e1c6bcdc548b0f85b0f183f57",
+        "SETUP.md": "e1ddcb8db77a2e3c0210a071e94ae8a46fbce46b383fcd8bcd07e9d9eac51149"
       }
     },
     {
@@ -95,9 +117,9 @@
       "normalized": "https://10.0.0.5:8443",
       "files": {
         "managed-settings.json": "885a793ebbe60184397e72979f2251960800bfe3fa9ed8926315f1929a9bc8ba",
-        "claude-desktop.mobileconfig": "cccb007aaa18ba98cbb87b831c9c8f152b2195969b08df6f7b2831270a6e611a",
-        "claude-desktop.reg": "333a1464b3eea610309559dc8ede6ad773a28d358cb6e0fa09b7d054df04d314",
-        "SETUP.md": "1effde9b3a146e53c18b3f4b306f4e762f605a6fac47be104b59dacf06542e4d"
+        "claude-desktop.mobileconfig": "92653631300e10f1d13f944006097066b9c48199f90db6acf339f49499ce9250",
+        "claude-desktop.reg": "0ca9932d1bde3882391b1425392eb0f1b6e00d10daea58dbce63e950cb5f336f",
+        "SETUP.md": "40718db0d7f53a981943a1583a5778702aa9b537eb5e9e03389c32dab7782404"
       }
     },
     {
@@ -106,9 +128,9 @@
       "normalized": "https://gateway",
       "files": {
         "managed-settings.json": "23fad74256109e02c14d92e3c09f74a5bb8714bd9758d493bc7f191675b55d18",
-        "claude-desktop.mobileconfig": "c98e7101bff58dc987e8b14479278a3412220bf4f15101ddf3bfa0c0c0220d8d",
-        "claude-desktop.reg": "5653d74e20780f007a082439a509d3727856818d118046c4a63f14c1f0fff2ea",
-        "SETUP.md": "747e649e82f993021cbd3d9a5b9227d7048d12e4b4d2dedc8028828fd2b58002"
+        "claude-desktop.mobileconfig": "02a484b08c70103fa8056cd6eb80f52c70e3dfb7bedb4531f6a711feda8fb84b",
+        "claude-desktop.reg": "f781c8ceac62cbdaf9b634d9fbcdc7e25a61df8a47883d41c3fc69a9d6287af4",
+        "SETUP.md": "c601564c61ee22a9cc5941185e0b0babec1f47a53711cb3fa83b1c38043e51c1"
       }
     },
     {
@@ -117,9 +139,9 @@
       "normalized": "https://123.example.com",
       "files": {
         "managed-settings.json": "136c8cd188d99575b5cfba12679a910294efa058d5dd6e6755ee271bd13652f6",
-        "claude-desktop.mobileconfig": "85029148a66f1f95278b7a5ffe95e34839156061fc1083ead0c45e1b531b6419",
-        "claude-desktop.reg": "f5d689119e01a3f1a60f6d58e88b6484e4a4351f357098c6e584544248292a4f",
-        "SETUP.md": "b656922a1f2b436fd3a4e15b18dfcaedd2e831a36a1d91486537b4d2a90557d1"
+        "claude-desktop.mobileconfig": "9b78ff3bb1eeafe2d36553b6de6fff7e1f7cc87127ac61495b8621efa78a457d",
+        "claude-desktop.reg": "de89fd0cdb3ecb7c197242f0170320b74d8b3689b7a78476f2eff132c8751930",
+        "SETUP.md": "8300b30ccbcc04dbaf0763f082fbc2c716ad21a16aab7f4323cd163b5b0fd272"
       }
     },
     {
@@ -128,9 +150,9 @@
       "normalized": "https://gw.example.com/.well-known/x~y_z-1",
       "files": {
         "managed-settings.json": "ab145168088f2bb39cec38bc45cef5b3e956ac46847ddb5305cba762b72f1c1f",
-        "claude-desktop.mobileconfig": "e111f13c8e9e7de836a4c00777b1efea2c4491bf4a768ea61ce524fa0f533c91",
-        "claude-desktop.reg": "46c16d728f0322de819d9605c4ca5b1ce54fbf4f1be5d4802f10ab9a3413c7f9",
-        "SETUP.md": "6641d3e38dcd39a2fca2c156c1d7ec2f8e4016b00b732117a2619e47d8610e62"
+        "claude-desktop.mobileconfig": "f46a456cf73f050e9785f09b19add904d573a63dbeeeae140eb7aa8f1eb4ec22",
+        "claude-desktop.reg": "bf58f99abe0c41f5181de222d7b84abee381a9423b4f611dd2483cd64db1e26c",
+        "SETUP.md": "641d909e295df59fbd7cc0bd9c98ace5b7812715ed8a4d7ecd498a4e254a46b3"
       }
     },
     {
@@ -139,9 +161,9 @@
       "normalized": "https://gw.example.com",
       "files": {
         "managed-settings.json": "e123f2488324bc584561067f81bdb6e3c8d9e9c06f4a4debc387963b04576961",
-        "claude-desktop.mobileconfig": "e8e279360d4e30ef63d24676d1a121e4e89c4e57ec992ecebd93d2abbea7f2a2",
-        "claude-desktop.reg": "b748b88737a2a41597025b3be85a27dd512a58c7e61396906d395bd266d708b1",
-        "SETUP.md": "0780297ab04fbe8873c8694cb5c90dde2f83d96aeeec37474da931d32d46e481"
+        "claude-desktop.mobileconfig": "d29772d9c501e169fe307c9a4059f625ddbd27c5a2b4a4371f347dc1e0b03094",
+        "claude-desktop.reg": "6805923520c557dd4013dfec43da4ca8ee870dda465f21cb2321eb25685a8d7d",
+        "SETUP.md": "9451bacc9284e731028bcefe549b3a23a558f8549934e1e40dcfd6810b31b66c"
       }
     },
     {
@@ -150,9 +172,9 @@
       "normalized": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "files": {
         "managed-settings.json": "c17f216c48efa938d1a6b54a8b5f614d38b114112821ac2165eaf745f2917a01",
-        "claude-desktop.mobileconfig": "eac9a05d9738fa631a5c4bc594780e0a0a376898cbe91d8045e3923e4a8fcf03",
-        "claude-desktop.reg": "956090998e74b47d9612ea538d70a0411305e21ea6064f81860f19194a8ec968",
-        "SETUP.md": "f9a21a9084c1e66a9072234d03a4e764fbf46e1ba6866c5d2dd26da6baa35c23"
+        "claude-desktop.mobileconfig": "00702185bff03680bb35033c0827054496ec66c21f029bcad76100488cc5e30d",
+        "claude-desktop.reg": "2bf1cee898406fe771aa5442d21caa4f91ba75b92a9b726aaf57af2446a54b49",
+        "SETUP.md": "d67d7243ae6b94f12be8fc03215cf1f0c3fc6fc4213d097a7273ab32794968c0"
       }
     }
   ],
@@ -312,6 +334,38 @@
     {
       "why": "Cyrillic look-alike letter in the host",
       "input": "https://g\u0430teway.example.com"
+    },
+    {
+      "why": "invalid punycode label (the WHATWG URL parser refuses it)",
+      "input": "https://xn--a.example"
+    },
+    {
+      "why": "empty punycode label",
+      "input": "https://xn--.example"
+    },
+    {
+      "why": "invalid punycode label behind an upper-case prefix",
+      "input": "https://XN--A.example"
+    },
+    {
+      "why": "punycode label that decodes to an upper-case letter (UTS 46 would rewrite the host)",
+      "input": "https://xn--cher-fna.example"
+    },
+    {
+      "why": "punycode label that decodes to a ligature UTS 46 maps (the host would change)",
+      "input": "https://xn--a-ika.example"
+    },
+    {
+      "why": "punycode label that decodes to an emoji (outside the accepted letter set)",
+      "input": "https://xn--ls8h.example"
+    },
+    {
+      "why": "punycode label that decodes to symbols (outside the accepted letter set)",
+      "input": "https://xn--bcher.example"
+    },
+    {
+      "why": "punycode label that decodes to CJK characters (outside the accepted letter set)",
+      "input": "https://xn--fiq228c.example"
     },
     {
       "why": "IPv6 literal",

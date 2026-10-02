@@ -14,9 +14,9 @@ and project settings.
 | `claude-desktop.mobileconfig` | Claude Desktop on macOS | Jamf, Kandji, Intune or any Apple MDM |
 | `claude-desktop.reg` | Claude Desktop on Windows | Group Policy, Intune or any tool that writes registry policy |
 
-**As downloaded, the files contain no Lucairn key.** IT adds each user's key
-(see "Credentials" below) or points the tools at a helper program that fetches
-it at runtime.
+**As downloaded, the files contain no Lucairn key.** IT supplies each user's
+key: in the Claude Desktop profile before deployment, and for Claude Code
+through a helper command or a per-user variable (see "Credentials" below).
 
 ## 1. Claude Code: `managed-settings.json`
 
@@ -120,24 +120,20 @@ credentials at startup.
 Before you deploy, fill in two things:
 
 1. **Credential.** Replace `REPLACE_WITH_YOUR_LUCAIRN_KEY` in
-   `inferenceGatewayApiKey` with the user's Lucairn key, or remove that key and
-   set `inferenceCredentialKind` = `helper-script` plus
-   `inferenceCredentialHelper` (and `inferenceCredentialHelperWindows` on
-   Windows) to a program that prints the key. Never put a key in
+   `inferenceGatewayApiKey` with the user's Lucairn key. The profile sets
+   `inferenceCredentialKind` to `static`; the vendor documents for that key:
+   "When set, only that source is used (no fallback)." Never put a key in
    `inferenceCustomHeaders`: that map is plain configuration.
    `inferenceGatewayAuthScheme` is `x-api-key`, the header the gateway reads.
 
-   **A helper program must be owned by root (Windows: Administrators) and
-   must not be writable by the user.** A helper can print request headers as
-   well as the key, and the vendor documents that those are "merged over these
-   static entries (helper wins on conflict)". A helper the user can edit could
-   therefore send `x-lucairn-require-added-parts-sanitized: 0` and switch off
-   the check described above. `lucairn config-pack` only accepts absolute
-   helper paths under `/Library/`, `/usr/local/` or `/opt/` (macOS and Linux)
-   and `C:\Program Files\` or `C:\Program Files (x86)\` (Windows); the
-   folder's ownership is still yours to set. Today the header is what asks the
-   gateway for this check; Lucairn plans to have the gateway enforce it by
-   itself, and until that ships, a user-writable helper is a way around it.
+   Claude Desktop can also run a credential helper program, set up as the
+   vendor describes at
+   https://claude.com/docs/third-party/claude-desktop/configuration#inferencecredentialhelper.
+   This pack doesn't use one: a helper can print request headers as well as
+   the key, and the vendor documents that those are "merged over these static
+   entries (helper wins on conflict)", so a helper could send
+   `x-lucairn-require-added-parts-sanitized: 0` and switch off the check
+   described above. The static key is the supported path.
 2. **Models.** The Lucairn gateway does not serve `GET /v1/models`, so Claude
    Desktop can't fill its model picker by itself. Add `inferenceModels` with
    the full model IDs your organisation uses, as a JSON array written as one
@@ -159,6 +155,8 @@ Deploy:
 - Users must quit and reopen Claude Desktop after a change.
 
 What the profile sets: gateway mode with the require header above; the
+static key as the credential source (`inferenceCredentialKind`, which the
+vendor documents as "no fallback"); the
 claude.ai sign-in option hidden (`disableDeploymentModeChooser`); auto mode
 off (`autoModeEnabled: false`); file tools kept to the working folders
 (`blockReadsOutsideWorkingDirectories`); the WebFetch host-name check skipped
@@ -166,7 +164,9 @@ off (`autoModeEnabled: false`); file tools kept to the working folders
 marketplaces, plugin uploads and user-created skills off; crash reports,
 analytics and non-essential third-party fetches off; app updates read from
 `releases.claude.com` instead of `api.anthropic.com` (`updateViaUpdatesHost`).
-Test the profile on one device before rolling it out.
+Each key needs a minimum Claude Desktop version, listed per key ("Added in")
+in the vendor's configuration reference; check it against the builds on your
+devices. Test the profile on one device before rolling it out.
 
 To pin a proxy, add `egressProxyUrl` (MDM only); model requests then reach the
 gateway through that proxy.
