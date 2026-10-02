@@ -1,12 +1,12 @@
 {
   "_comment": "Byte-for-byte pin of the default render. The lucairn.eu account area carries the same values; change both together.",
   "gateway": "https://gateway.lucairn.eu",
-  "spec_sha256": "4badd08a06610981a6f11c555ee0c0663eb9edd1c3bc9a425d8247c5cb640889",
-  "setup_template_sha256": "746ad2723a1839b10f5969b2832dc8dd4dfa574dafb95c9202bba98a16aae089",
+  "spec_sha256": "d9cb24dd75ce7e53c0c34d89c49ce20c93723b77e19b567559e2da2307895d53",
+  "setup_template_sha256": "df74dfd768bf4f1ab79ed6db9d01cdbc2ca999f93baf9ce022b7778ed921c98d",
   "files": {
-    "managed-settings.json": "733d63962e75e04ac00fc0c4dcd384691ea2daaa6166a63231790ecdb399e0d5",
+    "managed-settings.json": "6b95aef80727b5f017b1f8b129e3f99769d485c0cf9c4bc43ac991c948050e15",
     "claude-desktop.mobileconfig": "34da07b84e90ab5856eb3636544108eee9daae4c23dde0cbca7963abffaefbb6",
     "claude-desktop.reg": "7b089f22a5f989133522e6f52a63446d639397a20c9a5109aac9e143ed7ddffe",
-    "SETUP.md": "043eeb3bcbb890efb0c23eaaf894e85389b9bfb2f47fc00884df18670729189b"
+    "SETUP.md": "fd089c9ccd30949bd9d100cbb5f4e3a290166e8040b2e68dd4af2f8c709e880a"
   }
 }

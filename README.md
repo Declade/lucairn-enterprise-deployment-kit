@@ -201,8 +201,9 @@ bin/lucairn config-pack --gateway https://gateway.example.com --output ./config-
 Writes `managed-settings.json` (Claude Code), `claude-desktop.mobileconfig` and
 `claude-desktop.reg` (Claude Desktop, third-party mode) and `SETUP.md`. The
 inputs and the rendered files are checked offline before anything is written.
-As rendered, no file contains a Lucairn key; IT adds each user's key (Claude
-Code can also take an `apiKeyHelper` command). Details, input rules and key
+As rendered, no file contains a Lucairn key; IT adds each user's key (for
+Claude Code through the `apiKeyHelper` command the file names: a placeholder
+until IT replaces it, or `--key-helper CMD`). Details, input rules and key
 provenance: `config-pack/README.md`.
 
 ## Customer Handoff Gates

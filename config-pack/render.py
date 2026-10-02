@@ -16,6 +16,14 @@ helper option: the vendor documents that a helper's headers are "merged over"
 the profile's static headers, "helper wins on conflict", so a helper could
 switch the require header off (config-pack/README.md, "Left out on purpose").
 
+Claude Code's only credential source in the pack is `apiKeyHelper`: the
+placeholder REPLACE_WITH_YOUR_KEY_HELPER_COMMAND, or the command given with
+--key-helper. A key in ANTHROPIC_API_KEY or a token in CLAUDE_CODE_OAUTH_TOKEN
+makes Claude Code send it to api.anthropic.com at every start (the server-managed
+settings fetch); the vendor documents that "keys returned by an `apiKeyHelper`
+script" don't trigger that fetch. check.py refuses those variables (and
+ANTHROPIC_AUTH_TOKEN) in the managed `env`.
+
 Every input is validated (shape, secret patterns, reserved placeholder text)
 before anything is rendered; the rendered files are then checked in a private
 temporary directory, and only a pack that passes is written to --output.
@@ -77,9 +85,9 @@ _MODEL_RE = re.compile(r"[A-Za-z0-9._:/@\[\]-]{1,200}")
 # it survives JSON encoding unchanged in meaning. The vendor documents that
 # Claude Code sends the helper's output "as both the `X-Api-Key` and
 # `Authorization: Bearer` headers": a key, never extra headers.
-_KEY_HELPER_RE = re.compile(r"[A-Za-z0-9 _./:\\~+=,@-]{1,400}")
+KEY_HELPER_RE = re.compile(r"[A-Za-z0-9 _./:\\~+=,@-]{1,400}")
 # Text that must never appear in an input: the renderer's own placeholders.
-_RESERVED_TEXT = ("__LUCAIRN_", "REPLACE_WITH_YOUR_LUCAIRN_KEY")
+_RESERVED_TEXT = ("__LUCAIRN_", "REPLACE_WITH_YOUR_LUCAIRN_KEY", "REPLACE_WITH_YOUR_KEY_HELPER_COMMAND")
 # Shapes of real secrets. Inputs that match are refused before anything is
 # written; check.py refuses rendered files that match.
 SECRET_PATTERNS = [
@@ -449,6 +457,7 @@ def _reg_escape(value: str) -> str:
 def build_claude_code(spec: dict, mapping: dict, key_helper: str | None) -> dict:
     settings = _substitute(spec["claude_code"]["managed_settings"], mapping)
     if key_helper:
+        # Replaces the spec's placeholder in place, so the key keeps its position.
         settings["apiKeyHelper"] = key_helper
     return settings
 
@@ -595,7 +604,7 @@ def validate_inputs(
 
     helper = _optional(key_helper)
     if helper is not None:
-        if not _KEY_HELPER_RE.fullmatch(helper):
+        if not KEY_HELPER_RE.fullmatch(helper):
             raise PackError(f"--key-helper contains characters the pack does not accept ({_redacted(helper)})")
         _refuse_secrets_and_placeholders("--key-helper", helper)
         out["key_helper"] = helper
@@ -684,7 +693,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--output", help="directory to write the pack into (required unless --print-golden)")
     p.add_argument("--models", help="comma-separated full model IDs for Claude Desktop's picker (inferenceModels)")
     p.add_argument("--egress-proxy", help="HTTP proxy URL for Claude Desktop (egressProxyUrl, MDM only)")
-    p.add_argument("--key-helper", help="Claude Code apiKeyHelper command that prints the user's Lucairn key")
+    p.add_argument(
+        "--key-helper",
+        help="Claude Code apiKeyHelper command that prints the user's Lucairn key "
+        "(default: the placeholder REPLACE_WITH_YOUR_KEY_HELPER_COMMAND, which IT replaces)",
+    )
     p.add_argument("--force", action="store_true", help="overwrite existing files in --output")
     p.add_argument("--print-golden", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--print-corpus", action="store_true", help=argparse.SUPPRESS)
