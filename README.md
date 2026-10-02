@@ -17,6 +17,7 @@ This repository contains the customer-installable Lucairn deployment kit for fir
 - `bin/lucairn bundle create/prepare/verify` - per-customer bundle builder, agent package factory, and verifier.
 - `bin/lucairn-init` - one-command env and runtime-profile generator with Ed25519 pair derivation.
 - `bin/lucairn-mint-customer` - mints first customer + `lcr_live_*` API key against a running gateway.
+- `bin/lucairn config-pack` + `config-pack/` - managed Claude Code / Claude Desktop settings that point both tools at this gateway (see `config-pack/README.md`).
 - `migrations/`, `config/`, `starter-templates/` - runtime assets needed by the Compose path.
 - `INSTALL.md`, `OPS.md`, `TROUBLESHOOTING.md` - day-1 and day-2 runbooks.
 - `CHANGELOG.md` - per-release notes (kit version ↔ image tag).
@@ -190,6 +191,17 @@ bin/lucairn support-bundle --env customer.env --compose docker-compose.customer.
 ```
 
 The bundle is redacted, but the customer must review it before emailing it to Lucairn support.
+
+## Config Pack for Claude Code and Claude Desktop
+
+```bash
+bin/lucairn config-pack --gateway https://gateway.example.com --output ./config-pack-out
+```
+
+Writes `managed-settings.json` (Claude Code), `claude-desktop.mobileconfig` and
+`claude-desktop.reg` (Claude Desktop, third-party mode) and `SETUP.md`, then
+checks them offline. As rendered, no file contains a Lucairn key; IT adds each
+user's key or a helper. Details and key provenance: `config-pack/README.md`.
 
 ## Customer Handoff Gates
 

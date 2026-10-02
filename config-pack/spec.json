@@ -1,0 +1,116 @@
+{
+  "schema": "lucairn-config-pack/v1",
+  "pack_version": "1",
+  "keys_checked_against_docs_on": "2026-10-02",
+  "placeholders": {
+    "gateway_url": "__LUCAIRN_GATEWAY_URL__",
+    "gateway_host": "__LUCAIRN_GATEWAY_HOST__",
+    "lucairn_key_slot": "REPLACE_WITH_YOUR_LUCAIRN_KEY"
+  },
+  "default_gateway_url": "https://gateway.lucairn.eu",
+  "require_header": {
+    "name": "x-lucairn-require-added-parts-sanitized",
+    "value": "1"
+  },
+  "claude_code": {
+    "filename": "managed-settings.json",
+    "managed_settings": {
+      "env": {
+        "ANTHROPIC_BASE_URL": "__LUCAIRN_GATEWAY_URL__",
+        "ANTHROPIC_CUSTOM_HEADERS": "x-lucairn-require-added-parts-sanitized: 1",
+        "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS": "1",
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_FEEDBACK_COMMAND": "1"
+      },
+      "allowedProviders": ["customEndpoint"],
+      "includeGitInstructions": false,
+      "autoMemoryEnabled": false,
+      "skipWebFetchPreflight": true,
+      "disableClaudeAiConnectors": true,
+      "disableAutoMode": "disable",
+      "useAutoModeDuringPlan": false,
+      "permissions": {
+        "defaultMode": "default",
+        "blockReadsOutsideWorkingDirectories": true,
+        "deny": [
+          "Read(~/.ssh/**)",
+          "Read(~/.aws/**)",
+          "Read(~/.azure/**)",
+          "Read(~/.config/gcloud/**)",
+          "Read(~/.kube/**)",
+          "Read(~/.gnupg/**)",
+          "Read(~/.docker/config.json)",
+          "Read(~/.netrc)",
+          "Read(~/.git-credentials)",
+          "Read(~/.npmrc)",
+          "Read(~/.pypirc)",
+          "Read(**/.env)",
+          "Read(**/.env.*)",
+          "Read(**/*.pem)",
+          "Read(**/*.key)",
+          "Read(**/*.p12)",
+          "Read(**/*.pfx)"
+        ]
+      },
+      "allowManagedHooksOnly": true,
+      "allowManagedMcpServersOnly": true,
+      "allowedMcpServers": [],
+      "strictKnownMarketplaces": [],
+      "disableSideloadFlags": true,
+      "pluginConfigs": {
+        "cc-plugin-sec-default@builtin": {
+          "options": {
+            "allowManagedModsOnly": true
+          }
+        }
+      },
+      "parentSettingsBehavior": "merge"
+    }
+  },
+  "claude_desktop": {
+    "preference_domain": "com.anthropic.claudefordesktop",
+    "registry_key": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Claude",
+    "mobileconfig_filename": "claude-desktop.mobileconfig",
+    "reg_filename": "claude-desktop.reg",
+    "profile": {
+      "identifier": "eu.lucairn.configpack.claude-desktop",
+      "uuid": "6A1F0C3E-5B7D-4E2A-9C1B-2D8E4F6A0B13",
+      "payload_uuid": "B4C2E9D1-7F3A-4B6C-8E5D-1A9F2C7B3E64",
+      "display_name": "Lucairn gateway settings for Claude Desktop",
+      "description": "Routes Claude Desktop (third-party inference mode) through the Lucairn gateway at __LUCAIRN_GATEWAY_HOST__ and switches off the features listed in SETUP.md."
+    },
+    "keys": [
+      ["inferenceProvider", "gateway"],
+      ["inferenceGatewayBaseUrl", "__LUCAIRN_GATEWAY_URL__"],
+      ["inferenceGatewayAuthScheme", "x-api-key"],
+      ["inferenceGatewayApiKey", "REPLACE_WITH_YOUR_LUCAIRN_KEY"],
+      ["inferenceCustomHeaders", {"x-lucairn-require-added-parts-sanitized": "1"}],
+      ["disableDeploymentModeChooser", true],
+      ["autoModeEnabled", false],
+      ["blockReadsOutsideWorkingDirectories", true],
+      ["skipWebFetchPreflight", true],
+      ["isLocalDevMcpEnabled", false],
+      ["isDesktopExtensionEnabled", false],
+      ["userPluginMarketplacesEnabled", false],
+      ["userPluginUploadsEnabled", false],
+      ["skillCreationEnabled", false],
+      ["disableEssentialTelemetry", true],
+      ["disableNonessentialTelemetry", true],
+      ["disableNonessentialServices", true],
+      ["updateViaUpdatesHost", true]
+    ]
+  },
+  "setup": {
+    "template": "SETUP.md.tmpl",
+    "filename": "SETUP.md"
+  },
+  "output_order": [
+    "managed-settings.json",
+    "claude-desktop.mobileconfig",
+    "claude-desktop.reg",
+    "SETUP.md"
+  ]
+}

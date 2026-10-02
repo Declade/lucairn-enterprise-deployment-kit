@@ -1,0 +1,199 @@
+# Lucairn config pack: setup
+
+Gateway: `__LUCAIRN_GATEWAY_URL__`
+
+These files hold managed settings for Claude Code and Claude Desktop
+(third-party inference mode). They point both tools' model requests at your
+Lucairn gateway and switch off the features listed below. IT deploys them as
+managed settings, which the vendor documents as taking precedence over user
+and project settings.
+
+| File | For | Deploy with |
+| - | - | - |
+| `managed-settings.json` | Claude Code (terminal, VS Code / JetBrains extensions, the desktop app's Code tab) | file copy, or your MDM |
+| `claude-desktop.mobileconfig` | Claude Desktop on macOS | Jamf, Kandji, Intune or any Apple MDM |
+| `claude-desktop.reg` | Claude Desktop on Windows | Group Policy, Intune or any tool that writes registry policy |
+
+**As downloaded, the files contain no Lucairn key.** IT adds each user's key
+(see "Credentials" below) or points the tools at a helper program that fetches
+it at runtime.
+
+## 1. Claude Code: `managed-settings.json`
+
+Place the file, unchanged, at:
+
+- macOS: `/Library/Application Support/ClaudeCode/managed-settings.json`
+- Linux and WSL: `/etc/claude-code/managed-settings.json`
+- Windows: `C:\Program Files\ClaudeCode\managed-settings.json`
+
+Or deliver the same keys through MDM: the macOS preference domain
+`com.anthropic.claudecode`, or the `Settings` value (`REG_SZ`, the whole JSON
+document) under `HKLM\SOFTWARE\Policies\ClaudeCode`. Claude Code uses only the
+highest-ranked managed source that is present, so use one mechanism per machine.
+
+`allowedProviders` needs Claude Code 2.1.285 or later. To stop older versions
+from starting at all, you can add `"requiredMinimumVersion": "2.1.285"`; check
+first that the Claude Code engine inside Claude Desktop meets it, or Code-tab
+sessions won't start.
+
+What the settings do (as the vendor documents each key):
+
+- `env.ANTHROPIC_BASE_URL` + `allowedProviders: ["customEndpoint"]`: sessions
+  use `__LUCAIRN_GATEWAY_URL__`, and Claude Code refuses a session pointed
+  anywhere else, including the vendor's own API.
+- `env.ANTHROPIC_CUSTOM_HEADERS` adds `x-lucairn-require-added-parts-sanitized: 1`
+  to each request. A Lucairn gateway that supports this header answers HTTP
+  412 (`added_parts_sanitization_unavailable`) before forwarding anything when
+  it can't scan the text Claude Code adds on its own (pulled-in files,
+  `CLAUDE.md`, command and skill text). An older gateway that doesn't know
+  the header doesn't refuse on it.
+- `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1` + `includeGitInstructions: false`:
+  leaves out the git status block (branch names, commit subjects, git user
+  name) that Claude Code otherwise adds to the first message.
+- `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` + `autoMemoryEnabled: false`: auto memory
+  off.
+- `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_TELEMETRY`,
+  `DISABLE_ERROR_REPORTING`, `DISABLE_FEEDBACK_COMMAND`: telemetry, error
+  reporting, feedback uploads and automatic updates off. IT distributes
+  updates.
+- `skipWebFetchPreflight: true`: WebFetch skips its host-name check at
+  `api.anthropic.com`. Restrict domains with `WebFetch` permission rules if you
+  need to.
+- `disableClaudeAiConnectors: true`: claude.ai connectors off.
+- `disableAutoMode: "disable"`, `useAutoModeDuringPlan: false`,
+  `permissions.defaultMode: "default"`: auto mode off. In auto mode Claude Code
+  adds a separate field to each request, outside the messages, with the
+  working folder, home folder and user name.
+- `permissions.blockReadsOutsideWorkingDirectories: true` and the `Read(...)`
+  deny rules: Claude's file tools are kept to the opened folders and denied
+  common credential files (`~/.ssh`, cloud CLI folders, `.env*`, key files).
+  Deny rules cover Claude's file tools and the shell commands Claude Code
+  recognises; they are not an operating-system sandbox.
+- `allowManagedHooksOnly`, `allowManagedMcpServersOnly` + `allowedMcpServers: []`,
+  `strictKnownMarketplaces: []`, `disableSideloadFlags`, and the built-in
+  guard's `allowManagedModsOnly`: hooks and MCP servers are limited to the ones
+  your organisation deploys, and user-added marketplaces, plugins, mods, MCP
+  servers and side-loading command-line flags are blocked. With
+  `allowManagedHooksOnly` set in managed settings, mods inside plugins stop too,
+  your own included (mods built into Claude Code keep running). List your own
+  marketplaces or servers in these keys if you have any.
+- `parentSettingsBehavior: "merge"`: in the desktop app's Code tab, Claude
+  Desktop's restrictions apply on top of this file instead of being dropped.
+
+Check one machine: run `/status` in Claude Code and open the Status tab.
+"Setting sources" must list the managed settings, and "Anthropic base URL"
+must show `__LUCAIRN_GATEWAY_URL__`.
+
+### Credentials (Claude Code)
+
+Pick one:
+
+1. **Helper program (recommended).** Add `"apiKeyHelper": "<command>"` to the
+   file, where the command prints the user's Lucairn key, for example from
+   your secrets manager. Claude Code sends the output as `X-Api-Key` (the
+   header the gateway reads) and as `Authorization: Bearer`.
+2. **Per-user variable.** Each user sets `ANTHROPIC_API_KEY` to their Lucairn
+   key. Claude Code asks once to approve it.
+
+Don't put the key into `ANTHROPIC_CUSTOM_HEADERS` or any other `env` value:
+those are plain text in the file and are passed to every program Claude Code
+starts. Don't add `forceLoginMethod`, `forceLoginOrgUUID` or
+`forceLoginGatewayUrl`: the vendor documents that they block gateway
+credentials at startup.
+
+## 2. Claude Desktop: `.mobileconfig` (macOS) and `.reg` (Windows)
+
+Before you deploy, fill in two things:
+
+1. **Credential.** Replace `REPLACE_WITH_YOUR_LUCAIRN_KEY` in
+   `inferenceGatewayApiKey` with the user's Lucairn key, or remove that key and
+   set `inferenceCredentialKind` = `helper-script` plus
+   `inferenceCredentialHelper` (and `inferenceCredentialHelperWindows` on
+   Windows) to a program that prints the key. Never put a key in
+   `inferenceCustomHeaders`: that map is plain configuration.
+   `inferenceGatewayAuthScheme` is `x-api-key`, the header the gateway reads.
+2. **Models.** The Lucairn gateway does not serve `GET /v1/models`, so Claude
+   Desktop can't fill its model picker by itself. Add `inferenceModels` with
+   the full model IDs your organisation uses, as a JSON array written as one
+   string, for example `["model-id-1","model-id-2"]`. Without it the picker is
+   empty.
+
+Keep `inferenceGatewayBaseUrl` exactly equal to `ANTHROPIC_BASE_URL` in
+`managed-settings.json`: `allowedProviders` accepts only that exact value.
+
+Deploy:
+
+- macOS: upload `claude-desktop.mobileconfig` to your MDM (preference domain
+  `com.anthropic.claudefordesktop`).
+- Windows: import `claude-desktop.reg` (as administrator) or deploy the same
+  values with your tool. Every value is `REG_SZ`, directly under
+  `HKLM\SOFTWARE\Policies\Claude`. The app ignores `HKCU\SOFTWARE\Policies\Claude`
+  completely when machine policy is present, so keep the whole configuration
+  in one hive.
+- Users must quit and reopen Claude Desktop after a change.
+
+What the profile sets: gateway mode with the require header above; the
+claude.ai sign-in option hidden (`disableDeploymentModeChooser`); auto mode
+off (`autoModeEnabled: false`); file tools kept to the working folders
+(`blockReadsOutsideWorkingDirectories`); the WebFetch host-name check skipped
+(`skipWebFetchPreflight`); user-added MCP servers, desktop extensions, plugin
+marketplaces, plugin uploads and user-created skills off; crash reports,
+analytics and non-essential third-party fetches off; app updates read from
+`releases.claude.com` instead of `api.anthropic.com` (`updateViaUpdatesHost`).
+Test the profile on one device before rolling it out.
+
+To pin a proxy, add `egressProxyUrl` (MDM only); model requests then reach the
+gateway through that proxy.
+
+## 3. Firewall
+
+- **Allow** from user devices: `__LUCAIRN_GATEWAY_HOST__` (port 443).
+- **Block** from user devices: `api.anthropic.com` (the vendor's model API;
+  also WebFetch host-name checks, feature flags and telemetry) and
+  `mcp-proxy.anthropic.com` (claude.ai connectors). The pack sets the tools not
+  to use these hosts; the block also covers a machine where the pack is
+  missing or was removed.
+- **Keep** `downloads.claude.ai` reachable: Claude Desktop fetches its
+  workspace bundle and the Claude Code engine from it when a session starts
+  (unless you install the offline installer), and Claude Code's installer and
+  Claude Desktop's updates use it. Keep `releases.claude.com` too if Claude
+  Desktop should keep updating itself; set `disableAutoUpdates` instead if IT
+  pushes every version.
+- **Can be blocked**: hosts used by features these keys switch off, for
+  example `*.sentry.io`, `sentry.io`, `http-intake.logs.us5.datadoghq.com`,
+  `browser-intake-datadoghq.com` and its regional variants, `www.google.com`
+  and `*.gstatic.com` (connector icons), `www.claudeusercontent.com` and
+  `*.claudemcpcontent.com` (preview frames).
+- Blocking `claude.ai`, `claude.com` and `platform.claude.com` also stops
+  claude.ai sign-in inside Claude Code; the gateway credential replaces it.
+  Whether users may still reach claude.ai in a browser is your decision.
+
+## 4. Requirements and limits
+
+- The pack sends only the Lucairn key, so the gateway must hold the model
+  provider credential: a self-hosted Lucairn gateway, or a hosted Pro or
+  Enterprise account whose provider key is stored on the gateway (Keys page).
+  An account that sends its provider key with every request can't use this
+  pack for Claude Code.
+- A 412 with `added_parts_sanitization_unavailable` means the gateway refused
+  the request before forwarding it, because it couldn't confirm that the text
+  Claude Code adds would be scanned.
+- Codex and other tools are not covered by this pack.
+- The pack leaves your own audit export unset. To send activity to your own
+  OpenTelemetry collector, add `CLAUDE_CODE_ENABLE_TELEMETRY=1` and the
+  `OTEL_*` exporter variables (https://code.claude.com/docs/en/monitoring-usage)
+  to the Claude Code `env` block, and `otlpEndpoint` to the Claude Desktop
+  profile.
+
+Key names were checked on 2026-10-02 against the vendor's published
+references:
+
+- https://code.claude.com/docs/en/settings-reference
+- https://code.claude.com/docs/en/env-vars
+- https://code.claude.com/docs/en/managed-settings
+- https://code.claude.com/docs/en/llm-gateway-rollout
+- https://code.claude.com/docs/en/plugins/mods/admin
+- https://claude.com/docs/third-party/claude-desktop/configuration
+- https://claude.com/docs/third-party/claude-desktop/gateway
+- https://claude.com/docs/third-party/claude-desktop/code
+- https://claude.com/docs/third-party/claude-desktop/telemetry
