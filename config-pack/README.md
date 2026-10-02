@@ -4,8 +4,10 @@ Managed settings for Claude Code and Claude Desktop (third-party inference
 mode) that point both tools' model requests at your Lucairn gateway and switch
 off the features listed in `SETUP.md.tmpl`. Claude Code's `allowedProviders`
 key makes it refuse sessions pointed anywhere else, and `requiredMinimumVersion`
-stops Claude Code versions too old to know that key from starting (vendor docs;
-not yet exercised on a managed machine, see the end of this file).
+stops Claude Code 2.1.163 to 2.1.284 (too old for that key) from starting;
+versions before 2.1.163 ignore the floor, and a session already running
+continues until restarted (vendor docs; not yet exercised on a managed
+machine, see the end of this file).
 
 ```bash
 bin/lucairn config-pack --gateway https://gateway.example.com --output ./config-pack-out

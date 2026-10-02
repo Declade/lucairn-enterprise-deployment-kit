@@ -36,17 +36,21 @@ optional: `allowedProviders` needs Claude Code 2.1.285 or later, and an older
 version would start without that lock. The vendor documents that with this
 key "Claude Code exits at startup and tells the user to update" when the
 running version is older; `claude update`, `claude install` and
-`claude doctor` keep working so users can recover. The Code tab in Claude
-Desktop runs its own copy of Claude Code: update Claude Desktop on a test
-device first and check that Code-tab sessions still start.
+`claude doctor` keep working so users can recover. Two limits, both from the
+vendor's documentation: the key itself needs Claude Code 2.1.163 or later, so
+a version older than that ignores it and starts without either lock (remove
+such versions from your devices); and the check runs only at startup, so a
+session that was already running keeps going until it is restarted. The Code
+tab in Claude Desktop runs its own copy of Claude Code: update Claude Desktop
+on a test device first and check that Code-tab sessions still start.
 
 What the settings do (as the vendor documents each key):
 
 - `env.ANTHROPIC_BASE_URL` + `allowedProviders: ["customEndpoint"]`: sessions
   use `__LUCAIRN_GATEWAY_URL__`, and Claude Code refuses a session pointed
   anywhere else, including the vendor's own API.
-- `requiredMinimumVersion: "2.1.285"`: versions too old to know
-  `allowedProviders` don't start (see above).
+- `requiredMinimumVersion: "2.1.285"`: Claude Code 2.1.163 to 2.1.284 won't
+  start; versions before 2.1.163 ignore the key (see above).
 - `env.ANTHROPIC_CUSTOM_HEADERS` adds `x-lucairn-require-added-parts-sanitized: 1`
   to each request. A Lucairn gateway that supports this header answers HTTP
   412 (`added_parts_sanitization_unavailable`) before forwarding anything when
