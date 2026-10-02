@@ -3,23 +3,36 @@
 
 Checks, for the files in --dir (or a fresh render when --dir is omitted):
 
-  1. Syntax: managed-settings.json is JSON with no duplicate keys; the
-     .mobileconfig parses as a property list (and passes `plutil -lint` when
-     plutil exists); the .reg file has the version-5 header, CRLF line endings,
-     ASCII only, one policy key and well-formed "name"="value" lines.
+  1. Syntax: managed-settings.json is JSON with no duplicate keys at any
+     level; the .mobileconfig parses as a property list, has no duplicate key
+     in any <dict> (read from the raw XML, because plistlib and plutil keep
+     the last duplicate silently) and passes `plutil -lint` when plutil
+     exists; the .reg file has the version-5 header, CRLF line endings, ASCII
+     only, one policy key, strict escaping and no duplicate value name
+     (registry names are case-insensitive).
   2. Docs keys: every key the pack writes appears in
      config-pack/docs-keys-snapshot.json (the vendor docs key lists, with the
      URL and date they were fetched).
-  3. Contract: the gateway URL is the same in both tools; the require header is
-     present in both; Claude Desktop values are all strings; JSON-in-string
-     values parse; the .mobileconfig and .reg carry the same key/value set; no
-     credential sits in a header map; no file contains a Lucairn or provider
+  3. Policy values: the settings that make the pack worth deploying are
+     present, correctly nested and set to the right value and type (see
+     CLAUDE_CODE_POLICY / DESKTOP_POLICY below). These are written out here
+     on purpose instead of being read from spec.json, so an edit to spec.json
+     that weakens the pack fails this check.
+  4. Contract: the gateway URL is the same in both tools; the require header
+     is present exactly once with value 1 in both tools and nothing else sets
+     it; the .mobileconfig and .reg carry the same key/value set; no
+     credential sits in a header map; a credential helper sits under an
+     administrator-controlled root; no file contains a Lucairn or provider
      key.
-  4. --golden: a default render for the spec's default gateway matches
+  5. --golden: the supplied files (or, without --dir, a default render) match
      config-pack/golden-sha256.json byte for byte (the website renderer pins
      the same hashes).
+  6. --corpus: every gateway URL in config-pack/parity-corpus.json is still
+     accepted with the pinned normalised value and file hashes, or still
+     refused (the website renderer checks the same corpus).
 
-Exit code 0 when every check passes, 1 otherwise.
+Exit code 0 when every check passes, 1 otherwise. Failure messages name the
+file and the key, never a value that might be a secret.
 """
 
 from __future__ import annotations
@@ -33,6 +46,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -45,15 +59,83 @@ GOLDEN_PATH = HERE / "golden-sha256.json"
 
 # Header names that carry credentials. None may appear in a static header map.
 CREDENTIAL_HEADERS = {"authorization", "x-api-key", "x-dsa-key", "x-upstream-key", "proxy-authorization"}
-# Shapes of real secrets that must never be in a rendered file.
-SECRET_PATTERNS = [
-    re.compile(r"lcr_live_[A-Za-z0-9]"),
-    re.compile(r"\bdsa_[A-Za-z0-9]{8,}"),
-    re.compile(r"sk-ant-[A-Za-z0-9]"),
-    re.compile(r"\bsk-[A-Za-z0-9]{20,}"),
-]
+SECRET_PATTERNS = R.SECRET_PATTERNS
 REG_HEADER = "Windows Registry Editor Version 5.00"
-REG_LINE = re.compile(r'^"((?:[^"\\]|\\.)*)"="((?:[^"\\]|\\.)*)"$')
+# .reg strings know two escapes only: \\ and \".
+REG_LINE = re.compile(r'"((?:[^"\\]|\\[\\"])*)"="((?:[^"\\]|\\[\\"])*)"')
+REQUIRE_HEADER = ("x-lucairn-require-added-parts-sanitized", "1")
+
+# --- Policy: what a deployable pack must say (independent of spec.json) -----
+
+# Credential-file read denies. Root-anchored (`//`) or home-anchored (`~/`)
+# so they hold in every working directory, including folders added with
+# --add-dir; a plain `**/.env` only covers the primary working directory.
+REQUIRED_READ_DENIES = [
+    "Read(~/.ssh/**)",
+    "Read(~/.aws/**)",
+    "Read(~/.azure/**)",
+    "Read(~/.config/gcloud/**)",
+    "Read(~/.kube/**)",
+    "Read(~/.gnupg/**)",
+    "Read(~/.docker/config.json)",
+    "Read(~/.netrc)",
+    "Read(~/.git-credentials)",
+    "Read(~/.npmrc)",
+    "Read(~/.pypirc)",
+    "Read(//**/.env)",
+    "Read(//**/.env.*)",
+    "Read(//**/*.pem)",
+    "Read(//**/*.key)",
+    "Read(//**/*.p12)",
+    "Read(//**/*.pfx)",
+]
+REQUIRED_ENV = {
+    "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS": "1",
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1",
+    "DISABLE_FEEDBACK_COMMAND": "1",
+}
+# key -> exact JSON value (type included: True is not "true").
+CLAUDE_CODE_POLICY = {
+    "allowedProviders": ["customEndpoint"],
+    "includeGitInstructions": False,
+    "autoMemoryEnabled": False,
+    "skipWebFetchPreflight": True,
+    "disableClaudeAiConnectors": True,
+    "disableAutoMode": "disable",
+    "useAutoModeDuringPlan": False,
+    "allowManagedHooksOnly": True,
+    "allowManagedMcpServersOnly": True,
+    "disableSideloadFlags": True,
+    "parentSettingsBehavior": "merge",
+}
+PERMISSIONS_POLICY = {
+    "defaultMode": "default",
+    "blockReadsOutsideWorkingDirectories": True,
+}
+MODS_GUARD_PLUGIN = "cc-plugin-sec-default@builtin"
+MODS_GUARD_OPTION = "allowManagedModsOnly"
+# Claude Desktop reads every value as a string.
+DESKTOP_POLICY = {
+    "inferenceProvider": "gateway",
+    "inferenceGatewayAuthScheme": "x-api-key",
+    "disableDeploymentModeChooser": "true",
+    "autoModeEnabled": "false",
+    "blockReadsOutsideWorkingDirectories": "true",
+    "skipWebFetchPreflight": "true",
+    "isLocalDevMcpEnabled": "false",
+    "isDesktopExtensionEnabled": "false",
+    "userPluginMarketplacesEnabled": "false",
+    "userPluginUploadsEnabled": "false",
+    "skillCreationEnabled": "false",
+    "disableEssentialTelemetry": "true",
+    "disableNonessentialTelemetry": "true",
+    "disableNonessentialServices": "true",
+    "updateViaUpdatesHost": "true",
+}
+_VERSION_RE = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)")
 
 
 class Report:
@@ -77,8 +159,12 @@ def _no_dupes(pairs):
     return dict(pairs)
 
 
+def _strict_json(text: str):
+    return json.loads(text, object_pairs_hook=_no_dupes)
+
+
 def _reg_unescape(value: str) -> str:
-    return re.sub(r"\\(.)", r"\1", value)
+    return re.sub(r"\\([\\\"])", r"\1", value)
 
 
 def snapshot_keys() -> dict[str, set[str]]:
@@ -97,61 +183,178 @@ def claude_code_key_paths(settings: dict) -> list[str]:
     return paths
 
 
-def check_claude_code(rep: Report, path: Path, keys: dict, gateway: str, spec: dict) -> dict:
+def _version_tuple(value) -> tuple[int, int, int] | None:
+    if not isinstance(value, str):
+        return None
+    m = _VERSION_RE.fullmatch(value)
+    return tuple(int(g) for g in m.groups()) if m else None  # type: ignore[return-value]
+
+
+def check_require_header_lines(rep: Report, where: str, raw) -> None:
+    """ANTHROPIC_CUSTOM_HEADERS: `Name: Value` lines. The require header must
+    be there exactly once, with value exactly 1; no credential header."""
+    if not isinstance(raw, str):
+        rep.ok(False, f"{where}: ANTHROPIC_CUSTOM_HEADERS must be a string")
+        return
+    name_want, value_want = REQUIRE_HEADER
+    hits = []
+    for line in raw.split("\n"):
+        if not line.strip():
+            continue
+        rep.ok(":" in line, f"{where}: ANTHROPIC_CUSTOM_HEADERS has a line without `Name: Value`")
+        name, _, value = line.partition(":")
+        name = name.strip().lower()
+        rep.ok(name not in CREDENTIAL_HEADERS, f"{where}: credential header `{name}` in ANTHROPIC_CUSTOM_HEADERS")
+        if name == name_want:
+            hits.append(value.strip())
+    rep.ok(len(hits) == 1, f"{where}: require header must appear exactly once in ANTHROPIC_CUSTOM_HEADERS (found {len(hits)})")
+    rep.ok(all(v == value_want for v in hits), f"{where}: require header value must be exactly {value_want}")
+
+
+def check_require_header_map(rep: Report, where: str, raw) -> None:
+    """Claude Desktop inferenceCustomHeaders: a JSON object string with no
+    duplicate key; the require header exactly once (names compared without
+    case) with value "1"; no credential header."""
+    try:
+        headers = _strict_json(raw) if isinstance(raw, str) else None
+    except ValueError:
+        headers = None
+    rep.ok(isinstance(headers, dict), f"{where}: inferenceCustomHeaders must be a JSON object string without duplicate keys")
+    if not isinstance(headers, dict):
+        return
+    name_want, value_want = REQUIRE_HEADER
+    hits = [v for k, v in headers.items() if k.strip().lower() == name_want]
+    rep.ok(len(hits) == 1, f"{where}: require header must appear exactly once in inferenceCustomHeaders (found {len(hits)})")
+    rep.ok(all(v == value_want for v in hits), f"{where}: require header value must be exactly \"{value_want}\"")
+    for name, value in headers.items():
+        rep.ok(isinstance(value, str), f"{where}: inferenceCustomHeaders `{name}` must be a string")
+        rep.ok(name.strip().lower() not in CREDENTIAL_HEADERS, f"{where}: credential header `{name}` in inferenceCustomHeaders")
+
+
+def check_claude_code(rep: Report, path: Path, keys: dict, gateway: str) -> dict:
     raw = path.read_bytes()
     try:
-        settings = json.loads(raw.decode("utf-8"), object_pairs_hook=_no_dupes)
+        settings = _strict_json(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as exc:
-        rep.ok(False, f"{path.name}: not valid JSON ({exc})")
+        rep.ok(False, f"{path.name}: not valid JSON or has duplicate keys ({type(exc).__name__})")
         return {}
-    rep.ok(isinstance(settings, dict), f"{path.name}: top level is an object")
+    if not isinstance(settings, dict):
+        rep.ok(False, f"{path.name}: top level must be an object")
+        return {}
     for kp in claude_code_key_paths(settings):
         rep.ok(kp in keys["claude_code_settings"], f"{path.name}: key `{kp}` not in the settings-reference snapshot")
-    env = settings.get("env", {})
+
+    env = settings.get("env")
+    rep.ok(isinstance(env, dict), f"{path.name}: `env` must be an object")
+    env = env if isinstance(env, dict) else {}
     for var in env:
         rep.ok(var in keys["claude_code_env_vars"], f"{path.name}: env var `{var}` not in the env-vars snapshot")
         rep.ok(isinstance(env[var], str), f"{path.name}: env `{var}` must be a string")
-    for plugin_id, cfg in settings.get("pluginConfigs", {}).items():
+    rep.ok(env.get("ANTHROPIC_BASE_URL") == gateway, f"{path.name}: env.ANTHROPIC_BASE_URL is not {gateway}")
+    for var, want in REQUIRED_ENV.items():
+        rep.ok(env.get(var) == want, f"{path.name}: env.{var} must be \"{want}\"")
+    check_require_header_lines(rep, path.name, env.get("ANTHROPIC_CUSTOM_HEADERS"))
+
+    for key, want in CLAUDE_CODE_POLICY.items():
+        got = settings.get(key)
+        rep.ok(type(got) is type(want) and got == want, f"{path.name}: `{key}` must be {json.dumps(want)}")
+    floor = _version_tuple(R.REQUIRED_MINIMUM_VERSION)
+    got_version = _version_tuple(settings.get("requiredMinimumVersion"))
+    rep.ok(
+        got_version is not None and floor is not None and got_version >= floor,
+        f"{path.name}: `requiredMinimumVersion` must be a version string of at least {R.REQUIRED_MINIMUM_VERSION} "
+        "(allowedProviders needs it; Claude Code ignores an invalid value)",
+    )
+    for key in ("allowedMcpServers", "strictKnownMarketplaces"):
+        rep.ok(isinstance(settings.get(key), list), f"{path.name}: `{key}` must be a list (empty unless you list your own)")
+
+    perms = settings.get("permissions")
+    rep.ok(isinstance(perms, dict), f"{path.name}: `permissions` must be an object")
+    perms = perms if isinstance(perms, dict) else {}
+    for key, want in PERMISSIONS_POLICY.items():
+        got = perms.get(key)
+        rep.ok(type(got) is type(want) and got == want, f"{path.name}: `permissions.{key}` must be {json.dumps(want)}")
+    deny = perms.get("deny")
+    rep.ok(isinstance(deny, list) and all(isinstance(d, str) for d in deny), f"{path.name}: `permissions.deny` must be a list of rules")
+    deny = deny if isinstance(deny, list) else []
+    for rule in REQUIRED_READ_DENIES:
+        rep.ok(rule in deny, f"{path.name}: `permissions.deny` is missing {rule}")
+
+    plugin_configs = settings.get("pluginConfigs")
+    rep.ok(isinstance(plugin_configs, dict), f"{path.name}: `pluginConfigs` must be an object")
+    plugin_configs = plugin_configs if isinstance(plugin_configs, dict) else {}
+    for plugin_id, cfg in plugin_configs.items():
         rep.ok(plugin_id in keys["claude_code_mods_guard"], f"{path.name}: pluginConfigs id `{plugin_id}` not in the mods-admin snapshot")
-        for opt in (cfg.get("options") or {}):
+        options = cfg.get("options") if isinstance(cfg, dict) else None
+        for opt in (options if isinstance(options, dict) else {}):
             rep.ok(opt in keys["claude_code_mods_guard"], f"{path.name}: guard option `{opt}` not in the mods-admin snapshot")
-    rep.ok(env.get("ANTHROPIC_BASE_URL") == gateway, f"{path.name}: ANTHROPIC_BASE_URL is not {gateway}")
-    rep.ok(settings.get("allowedProviders") == ["customEndpoint"], f"{path.name}: allowedProviders must be exactly [\"customEndpoint\"]")
-    req = spec["require_header"]
-    headers = [h.strip() for h in env.get("ANTHROPIC_CUSTOM_HEADERS", "").split("\n") if h.strip()]
-    rep.ok(f"{req['name']}: {req['value']}" in headers, f"{path.name}: require header missing from ANTHROPIC_CUSTOM_HEADERS")
-    for h in headers:
-        name = h.split(":", 1)[0].strip().lower()
-        rep.ok(name not in CREDENTIAL_HEADERS, f"{path.name}: credential header `{name}` in ANTHROPIC_CUSTOM_HEADERS")
-    for forbidden in ("forceLoginMethod", "forceLoginOrgUUID", "forceLoginGatewayUrl", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
-        rep.ok(forbidden not in settings and forbidden not in env, f"{path.name}: `{forbidden}` must not be set")
-    rep.ok(settings.get("disableAutoMode") == "disable", f"{path.name}: disableAutoMode must be \"disable\"")
-    rep.ok(env.get("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS") == "1", f"{path.name}: CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS must be \"1\"")
+    guard = plugin_configs.get(MODS_GUARD_PLUGIN)
+    options = guard.get("options") if isinstance(guard, dict) else None
+    rep.ok(
+        isinstance(options, dict) and options.get(MODS_GUARD_OPTION) is True,
+        f"{path.name}: pluginConfigs.\"{MODS_GUARD_PLUGIN}\".options.{MODS_GUARD_OPTION} must be true (boolean)",
+    )
+
+    for forbidden in ("forceLoginMethod", "forceLoginOrgUUID", "forceLoginGatewayUrl"):
+        rep.ok(forbidden not in settings, f"{path.name}: `{forbidden}` must not be set")
+    for forbidden in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        rep.ok(forbidden not in env and forbidden not in settings, f"{path.name}: `{forbidden}` must not be set")
     return settings
+
+
+def _xml_dict_duplicates(raw: bytes) -> list[str]:
+    """Keys that appear twice in one <dict> of a property list, read from the
+    raw XML (plistlib and plutil keep the last one without a word)."""
+    root = ET.fromstring(raw)
+    dupes = []
+    for d in root.iter("dict"):
+        seen: set[str] = set()
+        for child in d:
+            if child.tag != "key":
+                continue
+            name = child.text or ""
+            if name in seen:
+                dupes.append(name)
+            seen.add(name)
+    return dupes
 
 
 def check_mobileconfig(rep: Report, path: Path, keys: dict, spec: dict) -> dict:
     raw = path.read_bytes()
+    rep.ok(b"<!ENTITY" not in raw, f"{path.name}: entity declarations are not allowed")
     try:
+        dupes = _xml_dict_duplicates(raw)
         plist = plistlib.loads(raw)
-    except Exception as exc:  # plistlib raises several exception types
-        rep.ok(False, f"{path.name}: not a valid property list ({exc})")
+    except Exception as exc:  # plistlib / ElementTree raise several exception types
+        rep.ok(False, f"{path.name}: not a valid property list ({type(exc).__name__})")
         return {}
+    rep.ok(not dupes, f"{path.name}: duplicate keys in one <dict>: {sorted(set(dupes))}")
     if shutil.which("plutil"):
         res = subprocess.run(["plutil", "-lint", str(path)], capture_output=True, text=True)
-        rep.ok(res.returncode == 0, f"{path.name}: plutil -lint failed: {res.stdout.strip()} {res.stderr.strip()}")
+        rep.ok(res.returncode == 0, f"{path.name}: plutil -lint failed")
+    if not isinstance(plist, dict):
+        rep.ok(False, f"{path.name}: top level must be a dictionary")
+        return {}
     rep.ok(plist.get("PayloadType") == "Configuration", f"{path.name}: outer PayloadType must be Configuration")
-    content = plist.get("PayloadContent") or []
-    rep.ok(len(content) == 1, f"{path.name}: expected exactly one payload")
-    if not content:
+    content = plist.get("PayloadContent")
+    if not (isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict)):
+        rep.ok(False, f"{path.name}: outer PayloadContent must hold exactly one payload dictionary")
         return {}
     payload = content[0]
     rep.ok(payload.get("PayloadType") == "com.apple.ManagedClient.preferences", f"{path.name}: payload type must be com.apple.ManagedClient.preferences")
     domain = spec["claude_desktop"]["preference_domain"]
-    forced = (payload.get("PayloadContent") or {}).get(domain, {}).get("Forced") or []
-    rep.ok(len(forced) == 1, f"{path.name}: expected one Forced entry under {domain}")
-    prefs = (forced[0] if forced else {}).get("mcx_preference_settings") or {}
-    rep.ok(bool(prefs), f"{path.name}: no preference settings found")
+    inner = payload.get("PayloadContent")
+    if not (isinstance(inner, dict) and list(inner) == [domain] and isinstance(inner[domain], dict)):
+        rep.ok(False, f"{path.name}: payload PayloadContent must hold exactly the {domain} domain")
+        return {}
+    forced = inner[domain].get("Forced")
+    if not (isinstance(forced, list) and len(forced) == 1 and isinstance(forced[0], dict)):
+        rep.ok(False, f"{path.name}: expected exactly one Forced entry under {domain}")
+        return {}
+    prefs = forced[0].get("mcx_preference_settings")
+    if not (isinstance(prefs, dict) and prefs):
+        rep.ok(False, f"{path.name}: mcx_preference_settings is missing or empty")
+        return {}
     for key, value in prefs.items():
         rep.ok(key in keys["claude_desktop_config"], f"{path.name}: key `{key}` not in the Claude Desktop configuration snapshot")
         rep.ok(isinstance(value, str), f"{path.name}: `{key}` must be written as a string")
@@ -165,25 +368,29 @@ def check_reg(rep: Report, path: Path, keys: dict, spec: dict) -> dict:
     except UnicodeDecodeError:
         rep.ok(False, f"{path.name}: must be ASCII")
         return {}
-    rep.ok("\n" not in text.replace("\r\n", ""), f"{path.name}: every line must end in CRLF")
+    rep.ok("\n" not in text.replace("\r\n", "") and "\r" not in text.replace("\r\n", ""), f"{path.name}: every line must end in CRLF")
     lines = text.split("\r\n")
     rep.ok(lines[0] == REG_HEADER, f"{path.name}: first line must be `{REG_HEADER}`")
     sections = [ln for ln in lines if ln.startswith("[")]
     rep.ok(sections == [f"[{spec['claude_desktop']['registry_key']}]"], f"{path.name}: expected exactly one key [{spec['claude_desktop']['registry_key']}]")
     values: dict[str, str] = {}
+    seen_lower: set[str] = set()
     in_section = False
-    for ln in lines[1:]:
+    for number, ln in enumerate(lines[1:], start=2):
         if not ln or ln.startswith(";"):
             continue
         if ln.startswith("["):
             in_section = True
             continue
-        m = REG_LINE.match(ln)
-        rep.ok(bool(m) and in_section, f"{path.name}: malformed line {ln!r}")
+        m = REG_LINE.fullmatch(ln)
+        rep.ok(bool(m) and in_section, f"{path.name}: malformed line {number}")
         if m:
             name, value = _reg_unescape(m.group(1)), _reg_unescape(m.group(2))
-            rep.ok(name not in values, f"{path.name}: duplicate value `{name}`")
+            rep.ok(name.lower() not in seen_lower, f"{path.name}: duplicate value `{name}` (registry names ignore case)")
+            seen_lower.add(name.lower())
             values[name] = value
+    if not values:
+        rep.ok(False, f"{path.name}: no values under the policy key")
     for name in values:
         rep.ok(name in keys["claude_desktop_config"], f"{path.name}: key `{name}` not in the Claude Desktop configuration snapshot")
     return values
@@ -191,33 +398,33 @@ def check_reg(rep: Report, path: Path, keys: dict, spec: dict) -> dict:
 
 def check_desktop_contract(rep: Report, prefs: dict, reg: dict, gateway: str, spec: dict) -> None:
     rep.ok(prefs == reg, ".mobileconfig and .reg must carry the same keys and values")
-    rep.ok(prefs.get("inferenceProvider") == "gateway", "Claude Desktop: inferenceProvider must be gateway")
+    for key, want in DESKTOP_POLICY.items():
+        rep.ok(prefs.get(key) == want, f"Claude Desktop: `{key}` must be \"{want}\"")
     rep.ok(prefs.get("inferenceGatewayBaseUrl") == gateway, f"Claude Desktop: inferenceGatewayBaseUrl is not {gateway}")
-    rep.ok(prefs.get("inferenceGatewayAuthScheme") == "x-api-key", "Claude Desktop: auth scheme must be x-api-key (the header the gateway reads)")
-    rep.ok(prefs.get("disableDeploymentModeChooser") == "true", "Claude Desktop: disableDeploymentModeChooser must be true")
-    try:
-        headers = json.loads(prefs.get("inferenceCustomHeaders", "null"))
-    except ValueError:
-        headers = None
-    rep.ok(isinstance(headers, dict), "Claude Desktop: inferenceCustomHeaders must be a JSON object string")
-    if isinstance(headers, dict):
-        req = spec["require_header"]
-        rep.ok(headers.get(req["name"]) == req["value"], "Claude Desktop: require header missing from inferenceCustomHeaders")
-        for name in headers:
-            rep.ok(name.lower() not in CREDENTIAL_HEADERS, f"Claude Desktop: credential header `{name}` in inferenceCustomHeaders")
+    check_require_header_map(rep, "Claude Desktop", prefs.get("inferenceCustomHeaders"))
     if "inferenceModels" in prefs:
         try:
-            models = json.loads(prefs["inferenceModels"])
+            models = _strict_json(prefs["inferenceModels"])
         except ValueError:
             models = None
         rep.ok(isinstance(models, list) and models and all(isinstance(m, str) for m in models), "Claude Desktop: inferenceModels must be a JSON array of model IDs")
+    if "egressProxyUrl" in prefs:
+        try:
+            ok = R.normalize_proxy_url(prefs["egressProxyUrl"]) == prefs["egressProxyUrl"]
+        except R.PackError:
+            ok = False
+        rep.ok(ok, "Claude Desktop: egressProxyUrl must be http(s)://host[:port] with a valid host name and port")
     has_static = "inferenceGatewayApiKey" in prefs
     has_helper = "inferenceCredentialHelper" in prefs
     rep.ok(has_static != has_helper, "Claude Desktop: exactly one credential source (static key slot or helper)")
     if has_static:
         rep.ok(prefs["inferenceGatewayApiKey"] == spec["placeholders"]["lucairn_key_slot"], "Claude Desktop: the static key slot must hold the placeholder, never a key")
-    for b in ("autoModeEnabled", "isLocalDevMcpEnabled", "isDesktopExtensionEnabled", "userPluginMarketplacesEnabled", "userPluginUploadsEnabled"):
-        rep.ok(prefs.get(b) == "false", f"Claude Desktop: {b} must be false")
+        rep.ok("inferenceCredentialHelperWindows" not in prefs, "Claude Desktop: a Windows helper without the main helper")
+    if has_helper:
+        rep.ok(prefs.get("inferenceCredentialKind") == "helper-script", "Claude Desktop: a helper needs inferenceCredentialKind helper-script")
+        rep.ok(R.posix_helper_problem(prefs["inferenceCredentialHelper"]) is None, "Claude Desktop: inferenceCredentialHelper must be an absolute path under /Library/, /usr/local/ or /opt/")
+        if "inferenceCredentialHelperWindows" in prefs:
+            rep.ok(R.windows_helper_problem(prefs["inferenceCredentialHelperWindows"]) is None, "Claude Desktop: inferenceCredentialHelperWindows must be an absolute path under C:\\Program Files\\")
 
 
 def check_no_secrets(rep: Report, files: dict[str, bytes]) -> None:
@@ -225,6 +432,13 @@ def check_no_secrets(rep: Report, files: dict[str, bytes]) -> None:
         text = data.decode("utf-8", errors="replace")
         for pat in SECRET_PATTERNS:
             rep.ok(not pat.search(text), f"{name}: contains something shaped like a secret ({pat.pattern})")
+
+
+def read_dir(directory: Path, spec: dict) -> dict[str, bytes] | None:
+    names = spec["output_order"]
+    if not all((directory / n).is_file() for n in names):
+        return None
+    return {n: (directory / n).read_bytes() for n in names}
 
 
 def check_dir(directory: Path, gateway: str, spec: dict) -> Report:
@@ -236,27 +450,63 @@ def check_dir(directory: Path, gateway: str, spec: dict) -> Report:
         rep.ok((directory / n).is_file(), f"missing {n}")
     if rep.failures:
         return rep
-    files = {n: (directory / n).read_bytes() for n in names}
-    check_claude_code(rep, directory / spec["claude_code"]["filename"], keys, url, spec)
+    files = read_dir(directory, spec) or {}
+    check_claude_code(rep, directory / spec["claude_code"]["filename"], keys, url)
     prefs = check_mobileconfig(rep, directory / spec["claude_desktop"]["mobileconfig_filename"], keys, spec)
     reg = check_reg(rep, directory / spec["claude_desktop"]["reg_filename"], keys, spec)
     check_desktop_contract(rep, prefs, reg, url, spec)
-    setup = files[spec["setup"]["filename"]].decode("utf-8")
-    rep.ok("__LUCAIRN_" not in b"".join(files.values()).decode("utf-8"), "a placeholder was left unsubstituted")
+    try:
+        setup = files[spec["setup"]["filename"]].decode("utf-8")
+    except UnicodeDecodeError:
+        setup = ""
+        rep.ok(False, "SETUP.md must be UTF-8")
+    rep.ok(all(b"__LUCAIRN_" not in data for data in files.values()), "a placeholder was left unsubstituted")
     rep.ok(url in setup, "SETUP.md does not name the gateway")
+    rep.ok(f"port {R.gateway_port(url)}" in setup, "SETUP.md firewall note does not name the gateway's port")
     check_no_secrets(rep, files)
     return rep
 
 
-def check_golden(spec: dict) -> Report:
+def check_golden(spec: dict, files: dict[str, bytes] | None = None) -> Report:
+    """Compare `files` (the supplied pack) or, when None, a fresh default
+    render with golden-sha256.json."""
     rep = Report()
     golden = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
     rep.ok(golden.get("gateway") == spec["default_gateway_url"], "golden-sha256.json is for a different gateway than the spec default")
     rep.ok(golden.get("spec_sha256") == hashlib.sha256((HERE / "spec.json").read_bytes()).hexdigest(), "spec.json changed: regenerate golden-sha256.json (render.py --print-golden) and update the website copy")
     rep.ok(golden.get("setup_template_sha256") == hashlib.sha256((HERE / spec["setup"]["template"]).read_bytes()).hexdigest(), "SETUP.md.tmpl changed: regenerate golden-sha256.json and update the website copy")
-    files = R.render(spec["default_gateway_url"], spec=spec)
-    for name, data in files.items():
-        rep.ok(golden.get("files", {}).get(name) == hashlib.sha256(data).hexdigest(), f"golden mismatch for {name}")
+    if files is None:
+        files = R.render(spec["default_gateway_url"], spec=spec)
+    for name in spec["output_order"]:
+        data = files.get(name)
+        rep.ok(data is not None and golden.get("files", {}).get(name) == hashlib.sha256(data).hexdigest(), f"golden mismatch for {name}")
+    return rep
+
+
+def check_corpus(spec: dict) -> Report:
+    """parity-corpus.json: accepted gateway URLs keep their normalised value
+    and file hashes; refused ones stay refused."""
+    rep = Report()
+    corpus = json.loads(R.CORPUS_PATH.read_text(encoding="utf-8"))
+    rep.ok(len(corpus.get("accepted", [])) >= 10 and len(corpus.get("refused", [])) >= 30, "parity-corpus.json looks truncated")
+    for case in corpus.get("accepted", []):
+        try:
+            normalized = R.normalize_gateway_url(case["input"])
+            files = R.render(case["input"], spec=spec)
+        except R.PackError:
+            rep.ok(False, f"corpus: accepted case is refused: {case['why']}")
+            continue
+        rep.ok(normalized == case["normalized"], f"corpus: normalised value changed: {case['why']}")
+        rep.ok(R.normalize_gateway_url(normalized) == normalized, f"corpus: normalising twice changes the value: {case['why']}")
+        for name, data in files.items():
+            rep.ok(case["files"].get(name) == hashlib.sha256(data).hexdigest(), f"corpus: {name} changed: {case['why']}")
+    for case in corpus.get("refused", []):
+        try:
+            R.render(case["input"], spec=spec)
+            accepted = True
+        except R.PackError:
+            accepted = False
+        rep.ok(not accepted, f"corpus: refused case is accepted: {case['why']}")
     return rep
 
 
@@ -264,19 +514,29 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Validate a rendered Lucairn config pack.")
     p.add_argument("--dir", help="rendered pack directory (default: render into a temp dir)")
     p.add_argument("--gateway", help="gateway URL the pack was rendered for (default: the spec default)")
-    p.add_argument("--golden", action="store_true", help="also compare a default render with golden-sha256.json")
+    p.add_argument("--golden", action="store_true", help="also compare the files with golden-sha256.json (the files in --dir when given)")
+    p.add_argument("--corpus", action="store_true", help="also check parity-corpus.json")
     args = p.parse_args(argv)
 
     spec = R.load_spec()
     gateway = args.gateway or spec["default_gateway_url"]
+    supplied = None
     if args.dir:
         rep = check_dir(Path(args.dir), gateway, spec)
+        supplied = read_dir(Path(args.dir), spec) or {}
     else:
         with tempfile.TemporaryDirectory() as tmp:
             R.write_pack(R.render(gateway, spec=spec), Path(tmp), force=True)
             rep = check_dir(Path(tmp), gateway, spec)
+    extra = []
     if args.golden:
-        g = check_golden(spec)
+        if args.dir and R.normalize_gateway_url(gateway) != spec["default_gateway_url"]:
+            rep.ok(False, "--golden pins the default gateway only; this pack is for another gateway")
+        else:
+            extra.append(check_golden(spec, supplied))
+    if args.corpus:
+        extra.append(check_corpus(spec))
+    for g in extra:
         rep.failures += g.failures
         rep.passes += g.passes
     if rep.failures:

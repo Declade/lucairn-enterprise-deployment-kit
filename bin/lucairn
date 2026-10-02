@@ -105,11 +105,12 @@ Commands:
                   Desktop (third-party mode) at this gateway:
                   managed-settings.json, a macOS .mobileconfig, a Windows .reg
                   and SETUP.md (credentials, models, firewall note). As
-                  rendered, no file contains a Lucairn key; IT adds it. The
-                  rendered files are then checked
-                  (syntax, every key against config-pack/docs-keys-snapshot.json,
-                  no secrets). Zero network. Requires python3. See
-                  config-pack/README.md.
+                  rendered, no file contains a Lucairn key; IT adds it.
+                  Inputs and rendered files are checked before anything is
+                  written (syntax, every key against
+                  config-pack/docs-keys-snapshot.json, policy values, no
+                  secrets); a refused input writes nothing. Zero network.
+                  Requires python3. See config-pack/README.md.
 USAGE
 }
 

@@ -5,6 +5,7 @@
   "placeholders": {
     "gateway_url": "__LUCAIRN_GATEWAY_URL__",
     "gateway_host": "__LUCAIRN_GATEWAY_HOST__",
+    "gateway_port": "__LUCAIRN_GATEWAY_PORT__",
     "lucairn_key_slot": "REPLACE_WITH_YOUR_LUCAIRN_KEY"
   },
   "default_gateway_url": "https://gateway.lucairn.eu",
@@ -26,6 +27,7 @@
         "DISABLE_FEEDBACK_COMMAND": "1"
       },
       "allowedProviders": ["customEndpoint"],
+      "requiredMinimumVersion": "2.1.285",
       "includeGitInstructions": false,
       "autoMemoryEnabled": false,
       "skipWebFetchPreflight": true,
@@ -47,12 +49,12 @@
           "Read(~/.git-credentials)",
           "Read(~/.npmrc)",
           "Read(~/.pypirc)",
-          "Read(**/.env)",
-          "Read(**/.env.*)",
-          "Read(**/*.pem)",
-          "Read(**/*.key)",
-          "Read(**/*.p12)",
-          "Read(**/*.pfx)"
+          "Read(//**/.env)",
+          "Read(//**/.env.*)",
+          "Read(//**/*.pem)",
+          "Read(//**/*.key)",
+          "Read(//**/*.p12)",
+          "Read(//**/*.pfx)"
         ]
       },
       "allowManagedHooksOnly": true,

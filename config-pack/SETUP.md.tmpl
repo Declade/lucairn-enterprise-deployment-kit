@@ -31,16 +31,22 @@ Or deliver the same keys through MDM: the macOS preference domain
 document) under `HKLM\SOFTWARE\Policies\ClaudeCode`. Claude Code uses only the
 highest-ranked managed source that is present, so use one mechanism per machine.
 
-`allowedProviders` needs Claude Code 2.1.285 or later. To stop older versions
-from starting at all, you can add `"requiredMinimumVersion": "2.1.285"`; check
-first that the Claude Code engine inside Claude Desktop meets it, or Code-tab
-sessions won't start.
+The file sets `"requiredMinimumVersion": "2.1.285"`, and this is not
+optional: `allowedProviders` needs Claude Code 2.1.285 or later, and an older
+version would start without that lock. The vendor documents that with this
+key "Claude Code exits at startup and tells the user to update" when the
+running version is older; `claude update`, `claude install` and
+`claude doctor` keep working so users can recover. The Code tab in Claude
+Desktop runs its own copy of Claude Code: update Claude Desktop on a test
+device first and check that Code-tab sessions still start.
 
 What the settings do (as the vendor documents each key):
 
 - `env.ANTHROPIC_BASE_URL` + `allowedProviders: ["customEndpoint"]`: sessions
   use `__LUCAIRN_GATEWAY_URL__`, and Claude Code refuses a session pointed
   anywhere else, including the vendor's own API.
+- `requiredMinimumVersion: "2.1.285"`: versions too old to know
+  `allowedProviders` don't start (see above).
 - `env.ANTHROPIC_CUSTOM_HEADERS` adds `x-lucairn-require-added-parts-sanitized: 1`
   to each request. A Lucairn gateway that supports this header answers HTTP
   412 (`added_parts_sanitization_unavailable`) before forwarding anything when
@@ -67,6 +73,10 @@ What the settings do (as the vendor documents each key):
 - `permissions.blockReadsOutsideWorkingDirectories: true` and the `Read(...)`
   deny rules: Claude's file tools are kept to the opened folders and denied
   common credential files (`~/.ssh`, cloud CLI folders, `.env*`, key files).
+  The file-name rules start with `//` (for example `Read(//**/.env)`), which
+  the vendor documents as "any `.env` anywhere on the filesystem", so they
+  also hold in folders added with `--add-dir`; a rule without the `//` would
+  only cover the folder the session started in.
   Deny rules cover Claude's file tools and the shell commands Claude Code
   recognises; they are not an operating-system sandbox.
 - `allowManagedHooksOnly`, `allowManagedMcpServersOnly` + `allowedMcpServers: []`,
@@ -112,6 +122,18 @@ Before you deploy, fill in two things:
    Windows) to a program that prints the key. Never put a key in
    `inferenceCustomHeaders`: that map is plain configuration.
    `inferenceGatewayAuthScheme` is `x-api-key`, the header the gateway reads.
+
+   **A helper program must be owned by root (Windows: Administrators) and
+   must not be writable by the user.** A helper can print request headers as
+   well as the key, and the vendor documents that those are "merged over these
+   static entries (helper wins on conflict)". A helper the user can edit could
+   therefore send `x-lucairn-require-added-parts-sanitized: 0` and switch off
+   the check described above. `lucairn config-pack` only accepts absolute
+   helper paths under `/Library/`, `/usr/local/` or `/opt/` (macOS and Linux)
+   and `C:\Program Files\` or `C:\Program Files (x86)\` (Windows); the
+   folder's ownership is still yours to set. Today the header is what asks the
+   gateway for this check; Lucairn plans to have the gateway enforce it by
+   itself, and until that ships, a user-writable helper is a way around it.
 2. **Models.** The Lucairn gateway does not serve `GET /v1/models`, so Claude
    Desktop can't fill its model picker by itself. Add `inferenceModels` with
    the full model IDs your organisation uses, as a JSON array written as one
@@ -147,7 +169,7 @@ gateway through that proxy.
 
 ## 3. Firewall
 
-- **Allow** from user devices: `__LUCAIRN_GATEWAY_HOST__` (port 443).
+- **Allow** from user devices: `__LUCAIRN_GATEWAY_HOST__`, TCP port __LUCAIRN_GATEWAY_PORT__ (HTTPS).
 - **Block** from user devices: `api.anthropic.com` (the vendor's model API;
   also WebFetch host-name checks, feature flags and telemetry) and
   `mcp-proxy.anthropic.com` (claude.ai connectors). The pack sets the tools not
