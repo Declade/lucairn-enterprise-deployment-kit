@@ -32,19 +32,24 @@ Optional flags:
 | Flag | Effect |
 | - | - |
 | `--models ID,ID` | Claude Desktop `inferenceModels`. The Lucairn gateway does not serve `GET /v1/models`, so without this the desktop model picker is empty until IT adds the list. |
-| `--key-helper CMD` | Claude Code `apiKeyHelper` (a command that prints the user's Lucairn key). The vendor documents that Claude Code "sends its output as both the `X-Api-Key` and `Authorization: Bearer` headers": as documented, the output is the key and nothing else, so it can't change the require header. |
+| `--key-helper CMD` | Claude Code `apiKeyHelper`: replaces the placeholder `REPLACE_WITH_YOUR_KEY_HELPER_COMMAND` with a command that prints the user's Lucairn key. The vendor documents that Claude Code "sends its output as both the `X-Api-Key` and `Authorization: Bearer` headers": as documented, the output is the key and nothing else, so it can't change the require header. |
 | `--egress-proxy URL` | Claude Desktop `egressProxyUrl` (MDM only): `http://` or `https://`, a valid host name, optional port 1-65535, nothing else. |
 | `--force` | Overwrite files in `--output`. |
 
 As rendered, no file contains a Lucairn key: Claude Desktop gets the
 placeholder `REPLACE_WITH_YOUR_LUCAIRN_KEY` with `inferenceCredentialKind` =
-`static` (the vendor documents "only that source is used (no fallback)"),
-Claude Code gets no credential unless `--key-helper` is given. IT supplies the
-key: in the Desktop profile before deployment, for Claude Code through the
-helper or a per-user variable. Keys never go into a header map (`ANTHROPIC_CUSTOM_HEADERS` /
-`inferenceCustomHeaders`); `check.py` refuses a credential header there, and
-refuses a Claude Desktop credential helper or any other credential kind (see
-"Left out on purpose").
+`static` (the vendor documents "only that source is used (no fallback)"), and
+Claude Code gets `"apiKeyHelper": "REPLACE_WITH_YOUR_KEY_HELPER_COMMAND"` (or
+the `--key-helper` command). IT supplies the key: in the Desktop profile
+before deployment, for Claude Code through the helper command. The helper is
+Claude Code's only credential path in the pack: with a key in
+`ANTHROPIC_API_KEY` or a token in `CLAUDE_CODE_OAUTH_TOKEN`, Claude Code sends
+it to `api.anthropic.com` at every start (see "Left out on purpose"), so
+`check.py` refuses those two and `ANTHROPIC_AUTH_TOKEN` in the managed `env`,
+and refuses a file without a valid `apiKeyHelper`. Keys never go into a header
+map (`ANTHROPIC_CUSTOM_HEADERS` / `inferenceCustomHeaders`); `check.py`
+refuses a credential header there, and refuses a Claude Desktop credential
+helper or any other credential kind (see "Left out on purpose").
 
 ## Files in this directory
 
@@ -147,6 +152,7 @@ Claude Code, `managed-settings.json`
 | Key | Value | Source |
 | - | - | - |
 | `env.ANTHROPIC_BASE_URL` | gateway URL | env-vars; pinned by `allowedProviders` (llm-gateway) |
+| `apiKeyHelper` | `REPLACE_WITH_YOUR_KEY_HELPER_COMMAND` (or `--key-helper`) | settings reference: output sent "as both the `X-Api-Key` and `Authorization: Bearer` headers"; server-managed settings ("Platform availability"): "Neither keys returned by an `apiKeyHelper` script nor Workload Identity Federation credentials trigger the settings fetch." |
 | `env.ANTHROPIC_CUSTOM_HEADERS` | `x-lucairn-require-added-parts-sanitized: 1` | env-vars (`Name: Value`); the header name the Lucairn gateway reads |
 | `env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS` | `1` | env-vars |
 | `env.CLAUDE_CODE_DISABLE_AUTO_MEMORY` | `1` | env-vars |
@@ -203,8 +209,23 @@ value is written as a string, as the reference requires:
 
 ## Left out on purpose
 
-- **A real key anywhere**, and `apiKeyHelper` by default: the credential is
-  per user and the helper command is site-specific.
+- **A real key anywhere**: the credential is per user. Claude Code's
+  `apiKeyHelper` ships as a placeholder because the helper command is
+  site-specific.
+- **`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`**
+  as a credential path (and `check.py` refuses them in the managed `env`).
+  Measured with Claude Code 2.1.287 (S5 acceptance run, 2026-10-02): with a
+  key in `ANTHROPIC_API_KEY` or a token in `CLAUDE_CODE_OAUTH_TOKEN`, every
+  start sends `GET https://api.anthropic.com/api/claude_code/settings` with
+  that credential, directly, even with the managed `ANTHROPIC_BASE_URL` and
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` in place. The vendor documents
+  that "Claude Code checks eligibility before it applies managed `env`
+  blocks", and that keys from `apiKeyHelper` don't trigger the fetch. A
+  lookup of the server-managed-settings page and the settings reference on
+  2026-10-02 found no documented managed key that turns the fetch off
+  (`forceRemoteSettingsRefresh` does the opposite), so the pack names none;
+  SETUP.md names the firewall block on `api.anthropic.com` as the backstop
+  for a credential a user exports in their own shell.
 - **A Claude Desktop credential helper** (`inferenceCredentialHelper`,
   `inferenceCredentialHelperWindows`, `inferenceCredentialKind` =
   `helper-script`): the vendor documents that a helper can print request
@@ -260,7 +281,23 @@ Verified:
   `--permission-mode auto` forced, no `safeguards` field (the baseline
   auto-mode run had it).
   Managed-only keys (`allowedProviders` and the locks) can't be exercised
-  without writing to a system path, so they were not run live.
+  without writing to a system path, so they were not run live here.
+- S5 acceptance run (2026-10-02, two rounds): Claude Code 2.1.287 and 2.1.284
+  in a Linux container with no network, the rendered file at
+  `/etc/claude-code/managed-settings.json`, a recording stand-in gateway, and
+  every other host name and connection logged. With `apiKeyHelper` as the
+  only credential, no case reached any host but the stand-in: shell, user,
+  project and `--settings` overrides of the base URL and the require header,
+  `--setting-sources user`, both permission-bypass flags, `claude auth login`
+  and `/login` (started, not completed), auto mode. Model requests carried
+  the require header `1`, no git status block and no `safeguards` field; a
+  `CLAUDE_CODE_USE_BEDROCK` switch was refused with the `allowedProviders`
+  message; `.env` in an `--add-dir` folder was denied; 2.1.284 was refused at
+  startup. A key in `ANTHROPIC_API_KEY` or a token in
+  `CLAUDE_CODE_OAUTH_TOKEN` exported in the user's shell made Claude Code
+  call `api.anthropic.com` (the settings fetch) at every start, which is why
+  SETUP.md names the firewall block as the backstop; `ANTHROPIC_AUTH_TOKEN`
+  did not. `claude --bare` does not use the managed helper ("Not logged in").
 
 Not yet verified (planned: a measurement on a separate macOS user account):
 
@@ -269,4 +306,5 @@ Not yet verified (planned: a measurement on a separate macOS user account):
   bare origin and a `/v1` form; the pack uses the bare origin so it equals
   Claude Code's `ANTHROPIC_BASE_URL`, which `allowedProviders` compares
   exactly in the desktop app's Code tab.
-- `allowedProviders` refusing a non-gateway session on a managed machine.
+- The same keys delivered by a macOS profile or the Windows registry (the
+  acceptance run used the Linux file path).

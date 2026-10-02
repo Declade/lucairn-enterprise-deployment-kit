@@ -22,8 +22,11 @@ Checks, for the files in --dir (or a fresh render when --dir is omitted):
      has an RFC 7230 token as its name and a clean value, and the require
      header is present exactly once with value 1 in both tools; the
      .mobileconfig and .reg carry the same key/value set; no credential sits
-     in a header map; Claude Desktop's only credential source is the static
-     key slot (`inferenceCredentialKind` = `static`, no credential helper);
+     in a header map; Claude Code's only credential source is `apiKeyHelper`
+     (present, a command line in the accepted alphabet; no ANTHROPIC_API_KEY,
+     ANTHROPIC_AUTH_TOKEN or CLAUDE_CODE_OAUTH_TOKEN in the managed `env`);
+     Claude Desktop's only credential source is the static key slot
+     (`inferenceCredentialKind` = `static`, no credential helper);
      no file contains a Lucairn or provider key, as written or after decoding
      escapes (JSON and backslash escapes, XML/HTML character references,
      percent-encoding, nested JSON strings); the firewall note names the
@@ -76,6 +79,15 @@ HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 HEADER_VALUE = re.compile(r"(?:[\x21-\x7e](?:[\x20\x21-\x7e\t]*[\x21-\x7e])?)?")
 # Claude Desktop's only credential source in this pack.
 STATIC_CREDENTIAL_KIND = "static"
+# Credentials that must never sit in Claude Code's managed `env`. Measured with
+# Claude Code 2.1.287 (S5 acceptance run, 2026-10-02): with a key in
+# ANTHROPIC_API_KEY or a token in CLAUDE_CODE_OAUTH_TOKEN, every start sends
+# GET https://api.anthropic.com/api/claude_code/settings with that credential,
+# directly, not through the gateway. The vendor documents that "keys returned by
+# an `apiKeyHelper` script" don't trigger that fetch, so `apiKeyHelper` is the
+# pack's only Claude Code credential source. ANTHROPIC_AUTH_TOKEN would also be
+# a plain-text credential in a shared file.
+FORBIDDEN_CC_CREDENTIAL_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
 
 # --- Policy: what a deployable pack must say (independent of spec.json) -----
 
@@ -325,8 +337,15 @@ def check_claude_code(rep: Report, path: Path, keys: dict, gateway: str) -> dict
 
     for forbidden in ("forceLoginMethod", "forceLoginOrgUUID", "forceLoginGatewayUrl"):
         rep.ok(forbidden not in settings, f"{path.name}: `{forbidden}` must not be set")
-    for forbidden in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+    for forbidden in FORBIDDEN_CC_CREDENTIAL_ENV:
         rep.ok(forbidden not in env and forbidden not in settings, f"{path.name}: `{forbidden}` must not be set")
+    # The credential source: a helper command (the placeholder IT replaces, or
+    # the command given with --key-helper), validated like the --key-helper input.
+    helper = settings.get("apiKeyHelper")
+    rep.ok(
+        isinstance(helper, str) and bool(R.KEY_HELPER_RE.fullmatch(helper)),
+        f"{path.name}: `apiKeyHelper` must be set to a command line (printable ASCII without quotes, at most 400 characters); it is the pack's only Claude Code credential source",
+    )
     return settings
 
 

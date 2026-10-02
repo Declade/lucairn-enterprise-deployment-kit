@@ -10,7 +10,11 @@
 # option nesting/type, telemetry, version floor, require header), credentials
 # in header maps, secret-shaped inputs and values, duplicate keys in every
 # format, broken .reg / .mobileconfig files, a tampered pack under --golden,
-# user-writable helper paths and bad proxy URLs all turn the check red.
+# user-writable helper paths and bad proxy URLs all turn the check red. Round 4
+# (S5 acceptance run): Claude Code's only credential path is apiKeyHelper (a
+# placeholder by default); a key or token variable in the managed env and a
+# missing or malformed apiKeyHelper turn the check red, and SETUP.md no longer
+# offers the variable or claims the tools avoid the blocked hosts.
 # Offline; needs python3 (plutil is used when present).
 set -euo pipefail
 
@@ -47,7 +51,21 @@ expect_grep "CC base URL pinned" '"ANTHROPIC_BASE_URL": "https://gateway.lucairn
 expect_grep "CC require header" 'x-lucairn-require-added-parts-sanitized: 1' "$TMP/default/managed-settings.json"
 expect_grep "CC git instructions off" '"CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS": "1"' "$TMP/default/managed-settings.json"
 expect_grep "CC auto mode off" '"disableAutoMode": "disable"' "$TMP/default/managed-settings.json"
-expect_no_grep "CC has no apiKeyHelper by default" 'apiKeyHelper' "$TMP/default/managed-settings.json"
+expect_grep "CC apiKeyHelper placeholder by default" '"apiKeyHelper": "REPLACE_WITH_YOUR_KEY_HELPER_COMMAND"' "$TMP/default/managed-settings.json"
+for var in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN; do
+  expect_no_grep "CC has no $var" "$var\"" "$TMP/default/managed-settings.json"
+done
+# SETUP (S5 acceptance run): the helper is the only credential path, with the
+# vendor sentence that says why; the firewall block is the backstop; the false
+# "the pack sets the tools not to use these hosts" sentence is gone.
+expect_no_grep "SETUP drops the per-user variable option" 'Per-user variable' "$TMP/default/SETUP.md"
+expect_no_grep "SETUP does not offer ANTHROPIC_API_KEY as a choice" 'Each user sets `ANTHROPIC_API_KEY`' "$TMP/default/SETUP.md"
+expect_no_grep "SETUP no longer claims the tools avoid the blocked hosts" 'The pack sets the tools not' "$TMP/default/SETUP.md"
+expect_grep "SETUP quotes the vendor's settings-fetch exception" 'Neither keys returned by an `apiKeyHelper`' "$TMP/default/SETUP.md"
+expect_grep "SETUP names the start-up request" 'GET https://api.anthropic.com/api/claude_code/settings' "$TMP/default/SETUP.md"
+expect_grep "SETUP names the firewall block as the backstop" 'The block is the backstop' "$TMP/default/SETUP.md"
+expect_grep "SETUP says users can still start a sign-in" 'Users can still start a Claude account sign-in' "$TMP/default/SETUP.md"
+expect_grep "SETUP names the helper placeholder" 'REPLACE_WITH_YOUR_KEY_HELPER_COMMAND' "$TMP/default/SETUP.md"
 expect_grep "Desktop key slot is a placeholder" 'REPLACE_WITH_YOUR_LUCAIRN_KEY' "$TMP/default/claude-desktop.mobileconfig"
 expect_no_grep "no Lucairn key in any file" 'lcr_live_' "$TMP/default/managed-settings.json"
 if command -v plutil >/dev/null 2>&1; then
@@ -70,6 +88,12 @@ expect_ok "render with options" "$ROOT/bin/lucairn" config-pack --gateway "$GW" 
   --models "model-a,model-b" --egress-proxy "http://proxy.corp.example:3128" \
   --key-helper "/usr/local/bin/lucairn-key"
 expect_grep "CC apiKeyHelper set" '"apiKeyHelper": "/usr/local/bin/lucairn-key"' "$TMP/opts/managed-settings.json"
+expect_no_grep "CC helper placeholder replaced" 'REPLACE_WITH_YOUR_KEY_HELPER_COMMAND' "$TMP/opts/managed-settings.json"
+python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); assert list(d).index("apiKeyHelper") == 1' "$TMP/opts/managed-settings.json" \
+  && ok || bad "--key-helper replaces the placeholder in place (same position)"
+expect_fail_msg "refuses the helper placeholder text as --key-helper" "placeholder text" \
+  "$ROOT/bin/lucairn" config-pack --gateway "$GW" --output "$TMP/phhelper" --key-helper "REPLACE_WITH_YOUR_KEY_HELPER_COMMAND"
+[ ! -e "$TMP/phhelper" ] && ok || bad "a refused --key-helper still wrote files"
 expect_grep "static key slot kept" '<key>inferenceGatewayApiKey</key>' "$TMP/opts/claude-desktop.mobileconfig"
 expect_grep "credential kind static (.reg)" '"inferenceCredentialKind"="static"' "$TMP/opts/claude-desktop.reg"
 expect_grep "credential kind static (default .reg)" '"inferenceCredentialKind"="static"' "$TMP/default/claude-desktop.reg"
@@ -258,6 +282,22 @@ elif mode == "desktop-helper-args-added":
     keys.append(["inferenceCredentialHelperArgs", ["--print"]])
 elif mode == "desktop-static-slot-removed":
     del keys[[k for k, _ in keys].index("inferenceGatewayApiKey")]
+elif mode == "cc-env-api-key":
+    cc["env"]["ANTHROPIC_API_KEY"] = "placeholder-value"
+elif mode == "cc-env-auth-token":
+    cc["env"]["ANTHROPIC_AUTH_TOKEN"] = "placeholder-value"
+elif mode == "cc-env-oauth-token":
+    cc["env"]["CLAUDE_CODE_OAUTH_TOKEN"] = "placeholder-value"
+elif mode == "cc-helper-removed":
+    del cc["apiKeyHelper"]
+elif mode == "cc-helper-empty":
+    cc["apiKeyHelper"] = ""
+elif mode == "cc-helper-quote":
+    cc["apiKeyHelper"] = 'printf "%s" x'
+elif mode == "cc-helper-newline":
+    cc["apiKeyHelper"] = "/usr/local/bin/k\n/usr/local/bin/other"
+elif mode == "cc-helper-list":
+    cc["apiKeyHelper"] = ["/usr/local/bin/k"]
 elif mode == "cc-encoded-secret":
     cc["permissions"]["deny"].append("Read(//**/\\u006ccr_live_" + "a" * 24 + ")")
 else:
@@ -302,6 +342,36 @@ for mode in desktop-helper-added desktop-helper-windows-added desktop-helper-arg
 done
 red_spec desktop-static-slot-removed 'the static key slot inferenceGatewayApiKey is missing'
 red_spec cc-encoded-secret 'shaped like a secret'
+
+# Claude Code's credential (S5 acceptance run, round 4): a key or token variable
+# in the managed env is refused, and apiKeyHelper must be a valid command line.
+for var in api-key:ANTHROPIC_API_KEY auth-token:ANTHROPIC_AUTH_TOKEN oauth-token:CLAUDE_CODE_OAUTH_TOKEN; do
+  red_spec "cc-env-${var%%:*}" "\`${var#*:}\` must not be set"
+done
+for mode in cc-helper-removed cc-helper-empty cc-helper-quote cc-helper-newline cc-helper-list; do
+  red_spec "$mode" '`apiKeyHelper` must be set to a command line'
+done
+# The new checks are what catch these: with them switched off in a private
+# copy, the same mutants pass the whole check.
+dir="$(mutant cred-checks-off)"
+python3 - "$dir/check.py" <<'PY3'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = 'FORBIDDEN_CC_CREDENTIAL_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")'
+assert old in s
+s = s.replace(old, 'FORBIDDEN_CC_CREDENTIAL_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")  # mutant: the round-3 list')
+old2 = '        isinstance(helper, str) and bool(R.KEY_HELPER_RE.fullmatch(helper)),'
+assert old2 in s
+s = s.replace(old2, '        True,  # mutant: no apiKeyHelper check')
+open(p, "w").write(s)
+PY3
+edit_spec "$dir/spec.json" cc-env-oauth-token
+expect_ok "red-proof: without the round-4 list, CLAUDE_CODE_OAUTH_TOKEN slips through" python3 "$dir/check.py"
+dir2="$(mutant cred-checks-off-helper)"
+cp "$dir/check.py" "$dir2/check.py"
+edit_spec "$dir2/spec.json" cc-helper-removed
+expect_ok "red-proof: without the apiKeyHelper check, a pack with no helper slips through" python3 "$dir2/check.py"
 
 # The renderer's pre-write gate decodes too: a spec value that is a key only
 # after decoding is refused and nothing is written.
