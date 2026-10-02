@@ -39,6 +39,7 @@ Usage:
   lucairn verify-images [--registry REG] [--tag TAG] [--key PATH]
   lucairn sbom <image-ref> [--key PATH] [--registry REG] [--download PATH]
   lucairn check-updates [--offline] [--feed-url URL]
+  lucairn config-pack --gateway https://gateway.example.com --output DIR [--models ID,ID] [--egress-proxy URL] [--key-helper CMD] [--desktop-key-helper PATH] [--desktop-key-helper-windows PATH] [--force]
 
 Commands:
   doctor          --offline is a configuration-only preflight. With a running
@@ -100,6 +101,15 @@ Commands:
                   nothing identifying (a plain GET, no credentials). FAILS CLOSED
                   on a bad/missing signature (never reports "up to date"
                   unverified). --offline exits cleanly. Requires cosign + curl + jq.
+  config-pack     Render managed settings that point Claude Code and Claude
+                  Desktop (third-party mode) at this gateway:
+                  managed-settings.json, a macOS .mobileconfig, a Windows .reg
+                  and SETUP.md (credentials, models, firewall note). As
+                  rendered, no file contains a Lucairn key; IT adds it. The
+                  rendered files are then checked
+                  (syntax, every key against config-pack/docs-keys-snapshot.json,
+                  no secrets). Zero network. Requires python3. See
+                  config-pack/README.md.
 USAGE
 }
 
@@ -9747,6 +9757,16 @@ _check_updates_online() {
   return 0
 }
 
+# config_pack: render + self-check the Claude Code / Claude Desktop config pack
+# (config-pack/render.py; the renderer validates its own output before it
+# reports success). Offline; python3 only.
+config_pack() {
+  have python3 || fail "config-pack: python3 not found on PATH (needed to render the pack)."
+  local renderer="$ROOT/config-pack/render.py"
+  [ -f "$renderer" ] || fail "config-pack: renderer not found at $renderer"
+  python3 "$renderer" "$@"
+}
+
 main() {
   local cmd="${1:-}"
   case "$cmd" in
@@ -9765,6 +9785,7 @@ main() {
     license) shift; license_command "$@" ;;
     verify-images) shift; verify_images "$@" ;;
     sbom) shift; sbom "$@" ;;
+    config-pack) shift; config_pack "$@" ;;
     -h|--help|"") usage ;;
     *) fail "unknown command: $cmd" ;;
   esac

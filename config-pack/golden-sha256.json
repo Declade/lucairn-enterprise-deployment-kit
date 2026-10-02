@@ -1,0 +1,12 @@
+{
+  "_comment": "Byte-for-byte pin of the default render. The lucairn.eu account area carries the same values; change both together.",
+  "gateway": "https://gateway.lucairn.eu",
+  "spec_sha256": "7087a03f1fe998867c61502b74c28f0b273d5e657244199a159aab7658e13f22",
+  "setup_template_sha256": "7c4b11a01668e6c64a3fd29026150d478efc140546ec923c88725cbebfeb05e2",
+  "files": {
+    "managed-settings.json": "e26c644af0700c55cf6b8a7c2028d42af1f0b87d5c6b435593926dcfddec21a4",
+    "claude-desktop.mobileconfig": "3711101d75e5a745e4881c5898714567bcee9785230f9d1c26888c689fed7704",
+    "claude-desktop.reg": "f3bb440d0b1676607831a68f8f7e02fdffba00d12ccecb17cca2ca06cef4e498",
+    "SETUP.md": "01f6414817fd0091d91f66a62113413f7dab17bdaa45bc515ebdbaf14e512716"
+  }
+}

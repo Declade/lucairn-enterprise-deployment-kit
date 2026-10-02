@@ -43,6 +43,7 @@ assert_no_executable_rg() {
 
   for script in \
     "$ROOT/tests/test_lucairn_cli.sh" \
+    "$ROOT/tests/test_config_pack.sh" \
     "$ROOT/tests/test_check_updates.sh" \
     "$ROOT/tests/test_redact_stream.sh" \
     "$ROOT/tests/test_tms_trust_zones.sh" \
@@ -119,6 +120,7 @@ bash -n "$ROOT/bin/lucairn-init"
 bash -n "$ROOT/bin/runtime-profile-lib.sh"
 bash -n "$ROOT/scripts/package-release.sh"
 bash -n "$ROOT/tests/test_lucairn_cli.sh"
+bash -n "$ROOT/tests/test_config_pack.sh"
 bash -n "$ROOT/tests/test_runtime_profile.sh"
 bash -n "$ROOT/tests/test_model_manifest_sha256.sh"
 bash -n "$ROOT/tests/test_bundle_verify_replay_guard.sh"
