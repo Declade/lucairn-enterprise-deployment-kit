@@ -15,6 +15,7 @@ test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-h
 	bash tests/test_sanitizer_sprig_zero_knobs.sh
 	bash tests/test_sanitizer_retired_config_keys.sh
 	bash tests/test_sanitizer_roster_must_have.sh
+	bash tests/test_sanitizer_roster_doctor_repros.sh
 	bash tests/test_signing_key_and_nvidia_toolkit_preflight.sh
 	bash tests/test_l3_split_pool_preflight.sh
 	bash tests/test_l3_model_upgrade_gate.sh

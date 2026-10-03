@@ -1,0 +1,11 @@
+sanitizer:
+  list_of_maps:
+    - name: a
+      pattern: "x: y"
+      nested:
+        - q
+    - name: b
+  presidio:
+    custom_recognizers:
+      - vin
+      - us_ssn

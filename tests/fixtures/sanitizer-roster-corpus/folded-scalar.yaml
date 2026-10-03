@@ -1,0 +1,8 @@
+sanitizer:
+  presidio:
+    custom_recognizers:
+      - vin
+    stop: >-
+      folded
+      text: here
+  x: 'it''s'

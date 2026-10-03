@@ -1,0 +1,5 @@
+sanitizer:
+  presidio:
+    custom_recognizers:
+      - vin
+  url: !!str http://x

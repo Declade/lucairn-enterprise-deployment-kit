@@ -475,12 +475,27 @@ carry a security fix are tagged **[Security]**.
   `sandbox-a` sanitizer ConfigMap both listed 33 recognizers under
   `sanitizer.presidio.custom_recognizers`; the upstream sanitizer default lists
   46. A recognizer that is not listed is never loaded, and the sanitizer boots
-  and answers normally, so the gap was silent. Both surfaces now carry 38:
-  - **Added (5):** `de_companies`, `drugs_and_diagnoses`, `de_places`,
-    `software_products` (deny-list gazetteers baked into the image) and
-    `medical_record_number` (the glued `MRN123456` form). All five are in the
-    recognizer registry of the pinned `dsa-sanitizer:0.5.4` image (verified by
-    resolving the full 38-name roster through that release's source registry).
+  and answers normally, so the gap was silent. Both surfaces now carry **34**.
+  Of the 13 upstream names:
+  - **Added (1):** `medical_record_number` (the glued `MRN123456` form:
+    `MRN`, an optional `-` or space, 6-10 digits). It is in the recognizer
+    registry of the pinned `dsa-sanitizer:0.5.4` image, and it is narrow: no
+    false-positive class was found.
+  - **Opt-in only, for healthcare / clinical installs (2):** `de_places` and
+    `drugs_and_diagnoses`. Both are in the `0.5.4` image, but on it they flag
+    ordinary words above the kit's 0.35 threshold: `de_places` (LOCATION,
+    score 0.40) tags the German "oder" and "buchen" and the English "worms";
+    `drugs_and_diagnoses` (MEDICAL_CONDITION, score 0.55) tags "pain" and
+    "fatigue". Add them under `sanitizer.presidio.custom_recognizers` only if
+    catching place, drug and diagnosis names is worth redacting those words
+    too. Compose: add them to your sanitizer config. Helm: the roster is not a
+    values knob, so this means carrying the change in your copy of the
+    `sandbox-a` sanitizer ConfigMap template.
+  - **No-ops on `0.5.4`, not listed (2):** `de_companies` (ORGANIZATION) and
+    `software_products` (PRODUCT). The `0.5.4` scanner discards both entity
+    types, so listing them redacts nothing; this release makes no company or
+    product coverage claim. They become useful only once a kit release pins a
+    sanitizer image that keeps those entity types.
   - **Not added, the pinned image does not have them (3):** `labeled_id`,
     `patientennummer_id_prefix`, `attribution_person`. `0.5.4` raises
     `Unknown recognizer` for each and the sanitizer refuses to boot. This means
@@ -495,27 +510,53 @@ carry a security fix are tagged **[Security]**.
     sanitizer keeps those intact with its two-lane zoner, which `0.5.4` does
     not have. Same decision the upstream Helm chart made for `format_ticket`.
   - **Fail-loud floor.** New `config/sanitizer-roster-must-have.txt` lists the
-    38 names. `tests/test_sanitizer_roster_must_have.sh` (in `make test`) fails
+    34 names. `tests/test_sanitizer_roster_must_have.sh` (in `make test`) fails
     when either shipped surface lacks one, when the two surfaces differ, or
-    when a held-back name reappears. `bin/lucairn doctor` now **fails** when
-    the active sanitizer config (`SANITIZER_CONFIG_FILE`) lacks a floor name,
-    and `doctor --values` checks the chart's ConfigMap the same way. A
-    deliberate removal can be acknowledged with
-    `LUCAIRN_SANITIZER_ROSTER_ACK_REMOVED=<name>[,<name>…]` in `customer.env`;
-    doctor then warns instead of failing.
+    when a held-back, opt-in or no-op name appears on a default surface.
+  - **`bin/lucairn doctor` checks the roster the sanitizer will actually
+    load, and fails closed.** It reads `sanitizer.presidio.custom_recognizers`
+    by YAML structure (the path the pinned sanitizer reads with PyYAML,
+    `services/sanitizer/config.py:717-753` at dual-sandbox-architecture
+    `51e5082f`), not by the first matching line, with a POSIX-awk reader so
+    offline doctor stays Python-free. YAML it cannot read exactly fails:
+    invalid indentation, unclosed brackets or quotes, tabs, tags, unknown
+    escapes, undefined or duplicate anchors, values spanning lines, several
+    documents, and on the roster path aliases, merge keys, flow-style
+    mappings, null or non-list rosters, entries that are not plain lowercase
+    names, and a duplicate `sanitizer`, `presidio` or `custom_recognizers`
+    key. Duplicate roster entries warn. The CI test holds the reader to
+    PyYAML on the shipped files and an adversarial corpus: every file is
+    either read exactly as PyYAML reads it or refused.
+    - **Compose:** doctor checks the file Compose will mount, resolving
+      `SANITIZER_CONFIG_FILE` the way Compose does (an exported shell value
+      beats `customer.env`, which beats the compose default; relative paths
+      resolve against the compose file's directory), prints the resolved path,
+      and fails when that file is missing or unreadable, or when
+      `SANITIZER_CONFIG_PATH` points the sanitizer at a different file.
+    - **Helm:** `doctor --values …` and a combined `doctor --env … --values …`
+      both check the sanitizer ConfigMap that `helm template` renders for the
+      given values; when those values disable `sandbox-a`, doctor says
+      "sandbox-a disabled — no sanitizer ConfigMap rendered" and skips. A chart
+      that renders `sandbox-a` without the ConfigMap fails. Without `helm` on
+      PATH doctor checks the raw template and says so.
+    - **Acknowledged removals:** `LUCAIRN_SANITIZER_ROSTER_ACK_REMOVED=<name>[,<name>…]`
+      in `customer.env` downgrades the named missing floor names to a warning
+      (an inline ` # comment` is not part of the value), and doctor then prints
+      "N of 34 floor recognizers present; acknowledged absent: …". It never
+      excuses a config file that is missing or cannot be parsed.
   - **Upgrade note:** Helm installs get the new ConfigMap on `helm upgrade`,
     but the `sandbox-a` Deployment carries no ConfigMap checksum, so the
     running sanitizer keeps the old roster until the pod restarts:
     `kubectl -n <namespace> rollout restart deployment/sandbox-a`. Cached
     sanitizer results do not mask the change: the cache key folds in the
-    roster. Compose installs that still
-    use the shipped `config/default-sanitizer.yaml` get it with the new kit
-    files; then `docker compose up -d --force-recreate sanitizer`. Compose
-    installs with their OWN sanitizer config (`SANITIZER_CONFIG_FILE` pointing
-    elsewhere) must add the five names under
+    roster. Compose installs that still use the shipped
+    `config/default-sanitizer.yaml` get it with the new kit files; then
+    `docker compose up -d --force-recreate sanitizer`. Compose installs with
+    their OWN sanitizer config (`SANITIZER_CONFIG_FILE` pointing elsewhere)
+    must add `medical_record_number` under
     `sanitizer.presidio.custom_recognizers` themselves; `lucairn doctor` names
-    any that are missing. Expect slightly more redaction (company, place,
-    drug/diagnosis names and `MRN…` numbers).
+    any floor recognizer that is missing. Expect slightly more redaction of
+    `MRN…` numbers, and nothing else new unless you opt in.
 - **The L3 posture allowlists were blind to every value Sprig calls empty —
   including `false` and `0`, the two an operator is most likely to type
   (T-548).** All four posture guards coerced with `toString (default ""

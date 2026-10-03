@@ -1,0 +1,7 @@
+sanitizer:
+  presidio:
+    custom_recognizers:
+      - vin
+  text: |
+        deep first line
+    shallower line
