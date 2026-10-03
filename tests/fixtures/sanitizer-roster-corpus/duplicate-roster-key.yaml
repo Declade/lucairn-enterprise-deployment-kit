@@ -1,0 +1,6 @@
+sanitizer:
+  presidio:
+    custom_recognizers:
+      - vin
+    custom_recognizers:
+      - us_ssn

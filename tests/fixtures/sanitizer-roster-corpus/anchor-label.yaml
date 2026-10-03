@@ -1,0 +1,5 @@
+sanitizer:
+  presidio: &p
+    custom_recognizers:
+      - vin
+other: *p

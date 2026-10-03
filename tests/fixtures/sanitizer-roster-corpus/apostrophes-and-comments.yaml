@@ -1,0 +1,6 @@
+sanitizer:
+  note: it's fine # don't
+  presidio:
+    custom_recognizers:
+      - vin   # comment with 'quote
+      - us_ssn

@@ -1,0 +1,12 @@
+sanitizer:
+  presidio:
+    custom_recognizers:
+      - vin
+    list:
+    - a
+    - b
+    key: v
+  k2:
+  - x
+  k3: y
+top: 1

@@ -121,15 +121,10 @@ sanitizer:
       - belgian_rnn
       - dutch_bsn
       - order_number
-      # T-768 (roster reconciliation with the upstream sanitizer default).
-      # Phase 1 gazetteers (deny lists baked into the sanitizer image) and the
-      # glued "MRN123456" medical-record-number shape. All five are in the
-      # recognizer registry of the pinned 0.5.4 sanitizer image. Each gazetteer
-      # registers a de + en pair; do NOT add the lang-suffixed names directly.
-      - de_companies
-      - drugs_and_diagnoses
-      - de_places
-      - software_products
+      # T-768 (roster reconciliation with the upstream sanitizer default):
+      # the glued "MRN123456" medical-record-number shape (`MRN`, optional
+      # `-`/space, 6-10 digits; pinned 0.5.4 image). Narrow: no false-positive
+      # class was found for it.
       - medical_record_number
       # ⛔ DELIBERATELY ABSENT (T-768) — keep this list in lockstep with the
       # Helm ConfigMap and with config/sanitizer-roster-must-have.txt.
@@ -149,6 +144,17 @@ sanitizer:
       #     shapes intact via its two-lane zoner, which 0.5.4 does not have.
       #     Re-adding them is gated on a pinned image with the zoner AND
       #     `sanitizer.two_lane_zoner.enabled: true` in this file.
+      # (c) OPT-IN ONLY, for healthcare / clinical installs: `de_places` and
+      #     `drugs_and_diagnoses`. Both are in the 0.5.4 image, but they flag
+      #     ordinary words above this file's 0.35 threshold: `de_places`
+      #     (LOCATION, 0.40) tags the German "oder" and "buchen" and the
+      #     English "worms"; `drugs_and_diagnoses` (MEDICAL_CONDITION, 0.55)
+      #     tags "pain" and "fatigue". Add them below only if catching place,
+      #     drug and diagnosis names is worth redacting those words too.
+      # (d) NO-OPS ON 0.5.4, so not listed: `de_companies` (ORGANIZATION) and
+      #     `software_products` (PRODUCT). The 0.5.4 scanner discards both
+      #     entity types, so listing them redacts nothing. Revisit when the
+      #     kit pins an image that keeps those types.
     safe_terms_file: /config/medical-terms.txt
     # ⛔ NO `strict_safe_terms_file` HERE (T-576) — the sanitizer refuses to
     # boot on it. The strict whole-span-exact safe list now rides

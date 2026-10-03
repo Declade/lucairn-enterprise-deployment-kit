@@ -1,0 +1,8 @@
+sanitizer:
+  presidio:
+    custom_recognizers:
+      - vin
+    custom_recognizers2:
+      - x
+  presidio2:
+    custom_recognizers: [y]

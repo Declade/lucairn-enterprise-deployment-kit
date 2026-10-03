@@ -1,0 +1,6 @@
+sanitizer:
+  presidio:
+    custom_recognizers:
+      - vin
+  safe: ["INC\\d+", 'a#b', "c # d"]
+  url: http://ollama:11434 # c

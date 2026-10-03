@@ -1,0 +1,3 @@
+sanitizer:
+  presidio:
+    custom_recognizers: *x
