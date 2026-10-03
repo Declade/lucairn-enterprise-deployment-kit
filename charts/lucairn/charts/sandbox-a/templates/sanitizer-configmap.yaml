@@ -140,6 +140,25 @@ data:
           - belgian_rnn
           - dutch_bsn
           - order_number
+          # T-768 (roster reconciliation with the upstream sanitizer default).
+          # Phase 1 gazetteers + the glued "MRN123456" shape; all five are in
+          # the pinned 0.5.4 sanitizer image's recognizer registry.
+          - de_companies
+          - drugs_and_diagnoses
+          - de_places
+          - software_products
+          - medical_record_number
+          # ⛔ DELIBERATELY ABSENT (T-768), identical to the Compose config
+          # (config/default-sanitizer.yaml has the measured detail); both
+          # surfaces are pinned against config/sanitizer-roster-must-have.txt
+          # by tests/test_sanitizer_roster_must_have.sh.
+          # (a) not in the pinned 0.5.4 image, which refuses to boot on them:
+          #     labeled_id, patientennummer_id_prefix, attribution_person.
+          # (b) held back for false positives until the pinned image has the
+          #     two-lane zoner and it is enabled: format_ticket,
+          #     format_numeric_run, format_hex_block, format_uuid, format_ulid
+          #     (on 0.5.4 they redact ServiceNow sys_ids, git SHAs, UUIDs and
+          #     INC numbers).
         # safe_terms_file: operators wanting any-word safe-terms suppression
         # must supply their own ConfigMap (e.g. medical-terms.txt) and mount
         # it at /config/medical-terms.txt, then uncomment the line below. The
