@@ -470,6 +470,52 @@ carry a security fix are tagged **[Security]**.
   migration message if a values file still sets it.
 
 ### Fixed
+- **The sanitizer recognizer roster was 13 entries behind the upstream default,
+  and nothing noticed (T-768).** `config/default-sanitizer.yaml` and the Helm
+  `sandbox-a` sanitizer ConfigMap both listed 33 recognizers under
+  `sanitizer.presidio.custom_recognizers`; the upstream sanitizer default lists
+  46. A recognizer that is not listed is never loaded, and the sanitizer boots
+  and answers normally, so the gap was silent. Both surfaces now carry 38:
+  - **Added (5):** `de_companies`, `drugs_and_diagnoses`, `de_places`,
+    `software_products` (deny-list gazetteers baked into the image) and
+    `medical_record_number` (the glued `MRN123456` form). All five are in the
+    recognizer registry of the pinned `dsa-sanitizer:0.5.4` image (verified by
+    resolving the full 38-name roster through that release's source registry).
+  - **Not added, the pinned image does not have them (3):** `labeled_id`,
+    `patientennummer_id_prefix`, `attribution_person`. `0.5.4` raises
+    `Unknown recognizer` for each and the sanitizer refuses to boot. This means
+    the ServiceNow attribution leak class (`"Reviewed by <Name>"` passing
+    unredacted, fixed upstream by `attribution_person`) **stays open on kit
+    installs** until a kit release pins a newer sanitizer image.
+  - **Held back for false positives (5):** `format_ticket`,
+    `format_numeric_run`, `format_hex_block`, `format_uuid`, `format_ulid`.
+    They fire on shape alone: on `0.5.4` at the kit's 0.35 threshold they
+    redact ServiceNow `sys_id`s and git SHAs, request UUIDs and `INC0010001`
+    / `ID-002882393`, which breaks agent and ServiceNow flows. The newer
+    sanitizer keeps those intact with its two-lane zoner, which `0.5.4` does
+    not have. Same decision the upstream Helm chart made for `format_ticket`.
+  - **Fail-loud floor.** New `config/sanitizer-roster-must-have.txt` lists the
+    38 names. `tests/test_sanitizer_roster_must_have.sh` (in `make test`) fails
+    when either shipped surface lacks one, when the two surfaces differ, or
+    when a held-back name reappears. `bin/lucairn doctor` now **fails** when
+    the active sanitizer config (`SANITIZER_CONFIG_FILE`) lacks a floor name,
+    and `doctor --values` checks the chart's ConfigMap the same way. A
+    deliberate removal can be acknowledged with
+    `LUCAIRN_SANITIZER_ROSTER_ACK_REMOVED=<name>[,<name>…]` in `customer.env`;
+    doctor then warns instead of failing.
+  - **Upgrade note:** Helm installs get the new ConfigMap on `helm upgrade`,
+    but the `sandbox-a` Deployment carries no ConfigMap checksum, so the
+    running sanitizer keeps the old roster until the pod restarts:
+    `kubectl -n <namespace> rollout restart deployment/sandbox-a`. Cached
+    sanitizer results do not mask the change: the cache key folds in the
+    roster. Compose installs that still
+    use the shipped `config/default-sanitizer.yaml` get it with the new kit
+    files; then `docker compose up -d --force-recreate sanitizer`. Compose
+    installs with their OWN sanitizer config (`SANITIZER_CONFIG_FILE` pointing
+    elsewhere) must add the five names under
+    `sanitizer.presidio.custom_recognizers` themselves; `lucairn doctor` names
+    any that are missing. Expect slightly more redaction (company, place,
+    drug/diagnosis names and `MRN…` numbers).
 - **The L3 posture allowlists were blind to every value Sprig calls empty —
   including `false` and `0`, the two an operator is most likely to type
   (T-548).** All four posture guards coerced with `toString (default ""

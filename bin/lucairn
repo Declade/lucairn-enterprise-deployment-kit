@@ -4577,6 +4577,138 @@ check_retired_sanitizer_config_keys() {
   return 0
 }
 
+# ----------------------------------------------------------------------------
+# Sanitizer recognizer floor (T-768).
+#
+# The kit's roster fell 13 recognizers behind the upstream sanitizer default
+# without any signal: a recognizer that is not listed under
+# `sanitizer.presidio.custom_recognizers` is simply never loaded, and the
+# sanitizer boots and answers normally. These checks compare a roster against
+# the checked-in floor config/sanitizer-roster-must-have.txt so a shrinking
+# roster fails loud. Extra recognizers beyond the floor are fine. Local file
+# reads only, so --offline-safe. The kit's own shipped surfaces are pinned in
+# CI by tests/test_sanitizer_roster_must_have.sh.
+# ----------------------------------------------------------------------------
+
+# _sanitizer_roster_names FILE — print the names of the FIRST active
+# `custom_recognizers:` list in FILE, one per line. Handles block style
+# (`- name`, with comment and blank lines in between) and flow style
+# (`custom_recognizers: [a, b]`). Prints nothing when the key is absent.
+_sanitizer_roster_names() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  awk '
+    function emit(s) {
+      sub(/[[:space:]]+#.*$/, "", s)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      gsub(/^["\047]|["\047]$/, "", s)
+      if (s != "") print s
+    }
+    !inlist && /^[[:space:]]*custom_recognizers:/ {
+      rest = $0
+      sub(/^[[:space:]]*custom_recognizers:[[:space:]]*/, "", rest)
+      sub(/[[:space:]]+#.*$/, "", rest)
+      if (rest ~ /^\[/) {
+        sub(/^\[/, "", rest)
+        sub(/\][[:space:]]*$/, "", rest)
+        n = split(rest, parts, ",")
+        for (i = 1; i <= n; i++) emit(parts[i])
+        exit
+      }
+      if (rest != "") exit
+      inlist = 1
+      next
+    }
+    inlist {
+      if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) next
+      if ($0 ~ /^[[:space:]]*-[[:space:]]/) {
+        line = $0
+        sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+        emit(line)
+        next
+      }
+      exit
+    }
+  ' "$file"
+}
+
+# _sanitizer_must_have_names [FILE] — print the floor, one name per line.
+_sanitizer_must_have_names() {
+  local file="${1:-${ROOT}/config/sanitizer-roster-must-have.txt}"
+  [ -f "$file" ] || return 0
+  sed -e 's/#.*$//' -e 's/[[:space:]]//g' "$file" | grep -v '^$' || true
+}
+
+# _sanitizer_roster_check_surface LABEL FILE [ACK] — compare FILE's roster with
+# the floor. Missing names listed in ACK (space-separated) are warnings;
+# any other missing name is a FAIL (return 1).
+_sanitizer_roster_check_surface() {
+  local label="$1" file="$2" ack="${3:-}"
+  local must_file="${ROOT}/config/sanitizer-roster-must-have.txt"
+  local must have name missing="" acked="" count=0
+  if [ ! -f "$must_file" ]; then
+    echo "sanitizer roster: FAIL — the floor list $must_file is missing, so $label cannot be checked. Restore it from the kit release."
+    return 1
+  fi
+  must="$(_sanitizer_must_have_names "$must_file")"
+  if [ -z "$must" ]; then
+    echo "sanitizer roster: FAIL — the floor list $must_file names no recognizers. Restore it from the kit release."
+    return 1
+  fi
+  have="$(_sanitizer_roster_names "$file")"
+  for name in $must; do
+    count=$((count + 1))
+    if printf '%s\n' "$have" | grep -qxF -- "$name"; then
+      continue
+    fi
+    case " $ack " in
+      *" $name "*) acked="$acked $name" ;;
+      *) missing="$missing $name" ;;
+    esac
+  done
+  if [ -n "$acked" ]; then
+    warn "sanitizer roster: $label lacks floor recognizer(s)${acked} — acknowledged via LUCAIRN_SANITIZER_ROSTER_ACK_REMOVED, so those patterns are NOT detected by this install's deterministic layer."
+  fi
+  if [ -n "$missing" ]; then
+    echo "sanitizer roster: FAIL — $label lacks floor recognizer(s):${missing}. Content of those types reaches the model unredacted by this layer. Fix: list them under sanitizer.presidio.custom_recognizers (see config/default-sanitizer.yaml and config/sanitizer-roster-must-have.txt); if the removal is deliberate, name them in LUCAIRN_SANITIZER_ROSTER_ACK_REMOVED."
+    return 1
+  fi
+  echo "sanitizer roster: ok ($label carries all $count floor recognizers)"
+  return 0
+}
+
+# check_sanitizer_roster_floor ENV_FILE — the ACTIVE Compose sanitizer config
+# (SANITIZER_CONFIG_FILE, default config/default-sanitizer.yaml) must carry
+# every floor recognizer. Fatal unless the gap is acknowledged.
+check_sanitizer_roster_floor() {
+  local env_file="$1" config_file ack
+  config_file="$(env_value "$env_file" SANITIZER_CONFIG_FILE)"
+  config_file="${config_file:-${ROOT}/config/default-sanitizer.yaml}"
+  case "$config_file" in
+    /*) ;;
+    *) config_file="${ROOT}/${config_file#./}" ;;
+  esac
+  if [ ! -f "$config_file" ]; then
+    echo "sanitizer roster: active sanitizer config $config_file not found (skip)"
+    return 0
+  fi
+  ack="$(env_value "$env_file" LUCAIRN_SANITIZER_ROSTER_ACK_REMOVED | tr ',' ' ')"
+  _sanitizer_roster_check_surface "the sanitizer config ($config_file)" "$config_file" "$ack"
+}
+
+# check_sanitizer_roster_floor_helm CHART_DIR — the sandbox-a sanitizer
+# ConfigMap template Helm will render must carry every floor recognizer. The
+# roster is not a values knob, so there is no acknowledgement path here.
+check_sanitizer_roster_floor_helm() {
+  local chart="$1"
+  local cm="${chart}/charts/sandbox-a/templates/sanitizer-configmap.yaml"
+  if [ ! -f "$cm" ]; then
+    echo "sanitizer roster: Helm sanitizer ConfigMap template not found at $cm (skip)"
+    return 0
+  fi
+  _sanitizer_roster_check_surface "the Helm sanitizer ConfigMap ($cm)" "$cm" ""
+}
+
 # check_safe_terms_files_deliverable ENV_FILE — for EVERY safe-terms directive
 # (safe_terms_file + strict_safe_terms_file + spacy_location_stop_terms_file)
 # the active sanitizer config references, assert the referenced /config/<file>
@@ -7705,6 +7837,10 @@ doctor() {
     # runs BEFORE the mTLS gate's early return — a values-only run that fails
     # the mTLS check should still have told the operator its tag is unvalidated.
     check_image_manifest_helm "$ROOT/charts/lucairn" "${values_files[@]}"
+    # T-768: the sanitizer ConfigMap this chart renders must carry the floor.
+    local values_roster_failed=0
+    check_sanitizer_roster_floor_helm "$ROOT/charts/lucairn" || values_roster_failed=1
+    [ "$values_roster_failed" -eq 0 ] || return 1
     local values_mtls_failed=0
     check_enterprise_mtls_helm "$ROOT/charts/lucairn" "${values_files[@]}" || values_mtls_failed=1
     [ "$values_mtls_failed" -eq 0 ] || return 1
@@ -8067,6 +8203,11 @@ doctor() {
   # T-576: a RETIRED sanitizer key is a boot refusal, not a silent no-op.
   # Covers operator-authored configs that the kit's own CI guard cannot see.
   check_retired_sanitizer_config_keys "$env_file"
+  # T-768: a roster that lost a floor recognizer boots fine and silently stops
+  # detecting that content type — fail loud instead.
+  local roster_failed=0
+  check_sanitizer_roster_floor "$env_file" || roster_failed=1
+  [ "$roster_failed" -eq 0 ] || return 1
 
   # Phase 7 pii-ml sidecar suite (PR #240). Five orthogonal checks:
   # paired toggles, HF revision shape, prod-mode lazy-not-ready, HF
