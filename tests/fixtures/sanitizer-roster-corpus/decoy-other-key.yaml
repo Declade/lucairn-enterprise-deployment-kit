@@ -1,5 +1,0 @@
-diagnostics:
-  custom_recognizers: [vin, us_ssn]
-sanitizer:
-  presidio:
-    custom_recognizers: []

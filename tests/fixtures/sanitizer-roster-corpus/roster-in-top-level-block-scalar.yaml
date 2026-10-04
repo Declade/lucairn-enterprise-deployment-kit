@@ -1,7 +1,0 @@
-notes: |
-  sanitizer:
-    presidio:
-      custom_recognizers: [vin]
-sanitizer:
-  presidio:
-    custom_recognizers: [us_ssn]

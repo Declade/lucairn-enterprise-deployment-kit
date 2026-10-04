@@ -1,4 +1,0 @@
-sanitizer:
-  presidio:
-    custom_recognizers:
-      - vin

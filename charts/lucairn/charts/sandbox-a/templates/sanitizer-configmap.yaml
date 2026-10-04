@@ -156,7 +156,7 @@ data:
           #     INC numbers).
           # (c) opt-in only (healthcare/clinical): de_places, drugs_and_diagnoses
           #     (on 0.5.4 at 0.35 they flag "oder", "buchen", "worms", "pain",
-          #     "fatigue"). The roster is not a values knob: opting in on Helm
+          #     "fatigue"). The chart has no supported values key for the roster: opting in on Helm
           #     means carrying this template change in your chart copy.
           # (d) no-ops on 0.5.4 (ORGANIZATION / PRODUCT are discarded by the
           #     scanner): de_companies, software_products.

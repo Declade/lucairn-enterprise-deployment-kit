@@ -1,5 +1,0 @@
-base: &b
-  custom_recognizers: [vin]
-sanitizer:
-  presidio:
-    <<: *b

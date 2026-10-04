@@ -1,6 +1,0 @@
-sanitizer:
-  presidio:
-    custom_recognizers:
-      - vin
-  kept: &k {a: 1}
-  reused: *k

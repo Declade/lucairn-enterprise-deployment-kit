@@ -1,4 +1,0 @@
-sanitizer:
-  presidio:
-    - vin
-    - us_ssn
