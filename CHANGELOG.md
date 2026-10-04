@@ -14,7 +14,7 @@ carry a security fix are tagged **[Security]**.
 
 ## [Unreleased]
 
-## [1.9.5] — TODO-0.5.5-release-date — images `0.5.5`
+## [1.9.5] — 2026-10-04 — images `0.5.5`
 
 ### Read first — upgrading to images `0.5.5`
 
@@ -50,9 +50,9 @@ earlier kit entries described as "not in the pinned `0.5.4` image".
   (`bin/lucairn verify-images --tag 0.5.5`; digests in
   `keys/image-digests-0.5.5.txt`). `dsa-pii-ml` stays `0.5.1`;
   `lucairn-dashboard` stays `0.8.2`.
-- **Migration review (docs/RELEASING.md § Migration review) — ceilings
-  unchanged: veil-witness 10 · audit 6 · id-bridge 4 · sandbox-a 8.** The
-  `0.5.5` source tree carries migrations above two ceilings (measured 2026-10-04
+- **Migration review (docs/RELEASING.md § Migration review) — audit ceiling
+  raised 6 → 7; the others unchanged: veil-witness 10 · id-bridge 4 ·
+  sandbox-a 8.** The `0.5.5` images carry migrations above two of the old ceilings (measured 2026-10-04
   in the published `0.5.5` images' `/migrations`: veil-witness up to `000014`,
   audit up to `000007`, id-bridge `000004`, sandbox-a `000008`):
   - **veil-witness `000011`–`000014`** (`certificate_persistence_outbox`,
@@ -65,18 +65,24 @@ earlier kit entries described as "not in the pinned `0.5.4` image".
     `ResolvePosture`; partition maintenance is a no-op on an unpartitioned
     table.
   - **audit `000007_claim_delivery_outbox`** (table `audit_claim_deliveries`).
-    ⛔ **Release-blocking, decision open: TODO-0.5.5-audit-ceiling-decision.**
-    The 0.5.5 audit service writes this table inside the same transaction as
-    every pipeline-completion audit event whenever its witness emitter is
-    enabled (the kit default, `LCR_ENABLED=true`), and has no degraded-schema
-    fallback. Capped at 6, that insert fails, `EmitEvent` returns an error, and
-    a production gateway (audit fail-closed) answers proxied requests with
-    `503 audit_evidence_unavailable`. Data held (per `proto/audit/v1/audit.proto`
-    `output_scan_body`): request id, delivery state, and hash/offset/count/
-    entity-type summaries plus the signed claim bytes — no raw flagged text;
-    no deletion path ships for it. Either raise the audit ceiling to 7 (six
-    places, docs/RELEASING.md step 4, plus mirroring the migration into
-    `migrations/audit/`) or do not ship 0.5.5 audit.
+    **Applied: the audit ceiling is now 7** (chart, Compose and the
+    `migrations/audit/` mirror). The 0.5.5 audit service writes this table
+    inside the same transaction as every pipeline-completion audit event
+    whenever its witness emitter is enabled (the kit default,
+    `LCR_ENABLED=true`), and has no degraded-schema fallback: capped at 6,
+    that insert would fail, `EmitEvent` would return an error, and a
+    production gateway (audit fail-closed) would answer proxied requests with
+    `503 audit_evidence_unavailable`.
+    Data held: request id, delivery state, the output-scan summary
+    (hashes, offsets, counts and entity types per `proto/audit/v1/audit.proto`
+    `output_scan_body`) and the signed claim bytes — no raw flagged text.
+    Hashes of personal values can still count as pseudonymous personal data.
+    ⚠ **Known gap — no deletion path yet (T-1219).** The service only inserts
+    and updates rows; nothing in this kit deletes them, and the offsite backup
+    CronJob (when enabled) copies the whole audit database. This is a
+    deliberate, recorded exception to RELEASING.md step 3, taken because the
+    alternative is an audit service that refuses every request. A retention
+    period and a deletion path are tracked in T-1219.
 
 ### Added
 - **[Security] The `witness-central` topology now refuses to start when the
@@ -156,7 +162,7 @@ earlier kit entries described as "not in the pinned `0.5.4` image".
   Both install paths now migrate to a pinned target version and stop:
   `<subchart>.migrations.targetVersion` (Helm) and
   `LUCAIRN_MIGRATE_TARGET_<SERVICE>` (Compose), defaulting to the highest
-  version this release reviewed — **veil-witness 10 · audit 6 · id-bridge 4 ·
+  version this release reviewed — **veil-witness 10 · audit 7 · id-bridge 4 ·
   sandbox-a 8**, the last version in each `migrations/<tree>/` mirror. The
   ceiling is not operator configuration: on Helm it is a template literal that
   `--set` and `-f` cannot reach (over-ceiling fails the render), and on Compose

@@ -222,7 +222,7 @@ services:
       MIGRATE_LABEL: "migrate-audit"
       MIGRATE_PATH: "/migrations/audit"
       DATABASE_URL: "postgres://dsa:${POSTGRES_AUDIT_PASSWORD:?POSTGRES_AUDIT_PASSWORD must be set (no weak default; see customer.env)}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
-      MIGRATE_TARGET_VERSION: "${LUCAIRN_MIGRATE_TARGET_AUDIT:-6}"
+      MIGRATE_TARGET_VERSION: "${LUCAIRN_MIGRATE_TARGET_AUDIT:-7}"
       MIGRATE_CEILING_KEY: "AUDIT"
       MIGRATE_CEILING_FILE: "/scripts/migration-ceilings.conf"
       MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_AUDIT:-false}"

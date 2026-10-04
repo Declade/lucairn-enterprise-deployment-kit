@@ -1,11 +1,11 @@
 {{- if .Values.postgresql.enabled }}
 {{- /*
   T-350 migration version cap — see the _migration-cap.tpl beside this file.
-  6 = 000006_token_usage_columns, the last version in this repo's own
+  7 = 000007_claim_delivery_outbox, the last version in this repo's own
   migrations/audit/ mirror. Raising this ceiling is a code change gated by
   docs/RELEASING.md § "Migration review".
 */ -}}
-{{- $knownSafeMax := 6 }}
+{{- $knownSafeMax := 7 }}
 {{- include "lucairn.migrationCap.validate" (dict "path" "audit" "migrations" .Values.migrations "knownSafeMax" $knownSafeMax) }}
 # Migration Job uses .Release.Revision-suffixed name so each helm release
 # creates a NEW Job resource. Kubernetes treats Job spec.template as
