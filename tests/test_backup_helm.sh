@@ -66,10 +66,20 @@ backup_docs() {
   ' "$1"
 }
 
-# 1. enabled=false -> zero CronJobs.
-n="$(render 2>/dev/null | grep -c "kind: CronJob" || true)"
-[ "$n" = "0" ] || { echo "FAIL: backup.enabled=false rendered $n CronJob(s), expected 0" >&2; exit 1; }
-echo "  ok: backup.enabled=false renders no CronJob"
+# Count only the BACKUP CronJobs. Since kit 1.9.6 (T-1219) the audit subchart
+# also renders a default-on claim-delivery retention CronJob, so a bare
+# `grep -c "kind: CronJob"` over the whole render no longer measures backups.
+backup_cronjob_count() {
+  backup_docs "$1" | grep -c "kind: CronJob" || true
+}
+
+# 1. enabled=false -> zero backup CronJobs.
+DISABLED_OUT="$(mktemp)"
+render 2>/dev/null > "$DISABLED_OUT"
+n="$(backup_cronjob_count "$DISABLED_OUT")"
+rm -f "$DISABLED_OUT"
+[ "$n" = "0" ] || { echo "FAIL: backup.enabled=false rendered $n backup CronJob(s), expected 0" >&2; exit 1; }
+echo "  ok: backup.enabled=false renders no backup CronJob"
 
 # 2. enabled=true full config -> exactly 3 CronJobs in the 3 compliance NSs.
 ENABLED=(
@@ -84,7 +94,7 @@ ENABLED=(
 RENDER_OUT="$(mktemp)"
 trap 'rm -f "$RENDER_OUT"' EXIT
 render "${ENABLED[@]}" 2>/dev/null > "$RENDER_OUT"
-n="$(grep -c "kind: CronJob" "$RENDER_OUT" || true)"
+n="$(backup_cronjob_count "$RENDER_OUT")"
 [ "$n" = "3" ] || { echo "FAIL: expected 3 CronJobs, got $n" >&2; exit 1; }
 grep -q "name: lucairn-backup-audit" "$RENDER_OUT" || { echo "FAIL: missing audit CronJob" >&2; exit 1; }
 grep -q "name: lucairn-backup-id-bridge" "$RENDER_OUT" || { echo "FAIL: missing id-bridge CronJob" >&2; exit 1; }
@@ -135,7 +145,7 @@ rm -f "$SSL_RENDER" "$SSL_BK_DOCS"
 EXTERNAL_RENDER="$(mktemp)"
 render "${ENABLED[@]}" --set audit.postgresql.enabled=false \
   --set global.postgresqlSslmode=require 2>/dev/null > "$EXTERNAL_RENDER"
-[ "$(grep -c 'kind: CronJob' "$EXTERNAL_RENDER" || true)" = 2 ] \
+[ "$(backup_cronjob_count "$EXTERNAL_RENDER")" = 2 ] \
   || { echo "FAIL: external PostgreSQL unexpectedly rendered a chart-managed backup job" >&2; rm -f "$EXTERNAL_RENDER"; exit 1; }
 if grep -A1 'name: BK_SSLMODE' "$EXTERNAL_RENDER" | grep -q 'value: require'; then
   echo "FAIL: external PostgreSQL TLS mode leaked into a bundled backup job" >&2; rm -f "$EXTERNAL_RENDER"; exit 1

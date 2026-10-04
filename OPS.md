@@ -613,6 +613,126 @@ Confirm the counts match the live system's order of magnitude and the newest
 timestamp is within your RPO window. Record the validation date as backup
 evidence.
 
+## Audit claim-delivery retention
+
+*Kit 1.9.6 (T-1219).* Audit migration `000007` creates
+`audit_claim_deliveries`: one row per completed request with the request id,
+witness-delivery bookkeeping, the output-scan summary (`output_scan_body` —
+hashes, offsets, counts, entity types; no raw flagged text) and the signed
+claim bytes (`claim_raw`). The audit service never removes anything from it.
+The kit ships a retention sweep that **blanks** those two payload columns once
+a row's witness delivery is older than the retention period.
+
+**What the sweep does** (as the migration role `dsa`, in batches of 10,000
+rows, one transaction per batch, 5-minute statement timeout):
+
+```sql
+UPDATE audit_claim_deliveries
+   SET claim_raw = NULL, output_scan_body = NULL, updated_at = NOW()
+ WHERE delivery_state = 'DELIVERED'
+   AND delivered_at < now() - interval '30 days'   -- the retention period
+   AND (claim_raw IS NOT NULL OR output_scan_body IS NOT NULL);
+```
+
+- **Blanked, not deleted.** The row stays as the record a late gateway replay
+  must find. The gateway's audit spill buffer can replay an already-delivered
+  completion event with no maximum age; with the row present, the audit
+  service's `INSERT … ON CONFLICT (event_id) DO NOTHING` is a no-op and no
+  claim is re-sent. If a row were deleted, the replay would queue the old claim
+  again. What stays is the event id, request id, state, counters and
+  timestamps. The request id is kept for good in `audit_events` anyway.
+- **Never touched:** `PENDING` and `DELIVERING` rows (in flight), `PARKED`
+  rows, and the append-only `audit_events` trail.
+- **Old `PARKED` rows are reported, not blanked.** A `PARKED` row is a claim
+  the witness kept refusing; re-queueing it (PARKED → PENDING) rebuilds the
+  claim from these columns, and a blanked scan summary would produce a
+  degraded claim. When the run finds `PARKED` rows older than the retention
+  period, its log line is a `WARN` with `parked_older_than_retention=<n>`.
+  Investigate them: fix the cause and re-queue, or accept the row as
+  undeliverable. Either way the decision is yours, not the sweep's.
+- **Log:** one line per run, for example
+  `audit-claim-delivery-retention: level=INFO cutoff=2026-09-04 03:17:00+00 retention_days=30 delivered_blanked=1520 batches=1 parked_older_than_retention=0 …`.
+  Never row contents, ids, or the connection string.
+- **Backups:** the offsite backup CronJob copies the whole audit database. With
+  both defaults at 30 days, a blanked value can still exist in a backup for up
+  to ~60 days in total. Lower both together if you need a shorter window.
+- **Cost:** `delivered_at` has no index (adding one would need a new
+  migration), so each batch scans the table. At the daily cadence a run is one
+  batch. The first run after upgrading to 1.9.6 blanks the whole backlog in
+  batches of 10,000 rows, at most 1,000 batches per run; anything left over is
+  taken by the next run.
+
+### Helm
+
+A CronJob `audit-claim-delivery-retention` in the audit namespace (default
+`dsa-audit`). It runs `psql` from the bundled audit Postgres image and connects
+with the `DATABASE_URL` key of the `audit-credentials` Secret, the same `dsa`
+DSN the migration Job uses. It renders only when the audit subchart uses its
+bundled Postgres (`audit.postgresql.enabled=true`, the default).
+
+```yaml
+audit:
+  claimDeliveryRetention:
+    enabled: true            # YAML boolean; false renders nothing
+    retentionDays: 30        # whole days, 1..36500
+    schedule: "17 3 * * *"   # daily; clear of the 02:30 backup default
+```
+
+`retentionDays` below 1 (and fractions, leading zeros, non-numbers) fails the
+render — to stop the sweep, set `enabled: false`. Run it once by hand:
+`kubectl -n dsa-audit create job --from=cronjob/audit-claim-delivery-retention audit-retention-manual`,
+then `kubectl -n dsa-audit logs job/audit-retention-manual`.
+
+### Compose
+
+A long-running service `audit-claim-delivery-retention` (same
+`postgres:16-alpine` image as `postgres-audit`, network `dsa-audit` only). It
+starts after `migrate-audit` completes, sweeps once, then sleeps a day. In
+`customer.env` (both optional):
+
+```bash
+LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS=30      # whole days, 1..36500
+LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=true # exactly true|false
+```
+
+A refused value makes the service exit with an error, and Docker keeps
+restarting it with back-off so the error stays in the logs. With `ENABLED=false`
+it logs one line and stays stopped. Check it with
+`docker compose logs audit-claim-delivery-retention`.
+
+### External Postgres
+
+With `audit.postgresql.enabled=false` (Helm) or your own audit database,
+nothing is scheduled for you. Schedule the statement above yourself, daily,
+as the role that owns `audit_claim_deliveries` (the runtime role `audit_app`
+may not blank these columns). In batches:
+
+```sql
+-- repeat until it reports 0 rows
+WITH batch AS (
+  SELECT event_id FROM audit_claim_deliveries
+   WHERE delivery_state = 'DELIVERED'
+     AND delivered_at < now() - interval '30 days'
+     AND (claim_raw IS NOT NULL OR output_scan_body IS NOT NULL)
+   ORDER BY delivered_at
+   LIMIT 10000
+   FOR UPDATE SKIP LOCKED)
+UPDATE audit_claim_deliveries d
+   SET claim_raw = NULL, output_scan_body = NULL, updated_at = NOW()
+  FROM batch
+ WHERE d.event_id = batch.event_id AND d.delivery_state = 'DELIVERED';
+
+-- PARKED rows older than the retention period, to investigate (not blanked):
+SELECT count(*) FROM audit_claim_deliveries
+ WHERE delivery_state = 'PARKED' AND parked_at < now() - interval '30 days';
+```
+
+Or run the kit's own script against your database:
+`DATABASE_URL=postgres://<owner>:<password>@<host>:5432/<db> sh scripts/audit-claim-delivery-retention.sh --once`.
+
+Never `DELETE` from this table: a deleted row lets a late gateway replay queue
+an old claim again.
+
 ## Disaster recovery: full cold-restore
 
 The per-DB restore procedures above (§ Backups → "Restore runbook") recover
@@ -2179,10 +2299,22 @@ they do not accept arbitrary Compose flags and `down` does not remove volumes.
 Exact release rollback history and restore proof remain WP4 S4 scope—do not
 interpret these S1 wrappers as completed rollback functionality.
 
+### kit 1.9.6 / chart 1.9.6 (images 0.5.5) — audit claim-delivery retention (2026-10-04)
+
+Kit-only release: images stay `0.5.5`, no schema change, no ceiling change.
+After the upgrade a retention sweep blanks the claim bytes and scan summary of
+`audit_claim_deliveries` rows delivered more than 30 days ago (T-1219; see
+§ "Audit claim-delivery retention"). Helm: a new CronJob in the audit
+namespace. Compose: a new service, started by `bin/lucairn up`. The first run
+blanks the backlog accumulated since 1.9.5. To keep the old behaviour, set
+`audit.claimDeliveryRetention.enabled=false` /
+`LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=false` before upgrading.
+
 ### v0.5.5 / chart 1.9.5 — sanitizer roster 36 + T-1102 gateway key separation (2026-10-04)
 
 Schema change: ONE — the audit ceiling rises 6 → 7, so the migration Job
-creates `audit_claim_deliveries` (no deletion path yet, T-1219). Other ceilings
+creates `audit_claim_deliveries` (no deletion path in 1.9.5; the retention
+sweep ships in 1.9.6, T-1219). Other ceilings
 unchanged (veil-witness 10 · id-bridge 4 · sandbox-a 8). Read the migration
 review in `CHANGELOG.md` `[1.9.5]` before upgrading.
 

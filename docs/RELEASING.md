@@ -202,6 +202,21 @@ anything under `migrations/`.
    `pg_dump`s whole databases and prunes nothing — so an un-deletable table is
    also replicated offsite. Factor that into the answer.
 
+   **Current state for audit `000007` (`audit_claim_deliveries`):** the
+   deletion path exists since kit 1.9.6 (T-1219), so the [1.9.5] exception is
+   closed. It is a retention sweep that **blanks** `claim_raw` +
+   `output_scan_body` on `DELIVERED` rows older than the retention period
+   (default 30 days). It does not delete rows, because a deleted row would let
+   a late gateway spill-buffer replay (no maximum age) queue an old claim again.
+   It ships as the Helm CronJob
+   `charts/lucairn/charts/audit/templates/claim-delivery-retention-cronjob.yaml`
+   and the Compose service `audit-claim-delivery-retention`, both running
+   `scripts/audit-claim-delivery-retention.sh` (chart copy in
+   `charts/lucairn/charts/audit/files/`, kept byte-identical). Suite:
+   `tests/test_audit_claim_delivery_retention.sh`; OPS.md § "Audit
+   claim-delivery retention". A future audit migration that adds payload
+   columns to this table must extend the sweep in the same release.
+
 3b. **The inverse question — is the pinned image still correct AT this ceiling?**
    Steps 1–3 ask whether a new migration is safe to *apply*. This step asks the
    opposite, and it is the one that bites: for each version left **below** the

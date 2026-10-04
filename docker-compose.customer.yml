@@ -228,6 +228,56 @@ services:
       MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "${LUCAIRN_MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP_AUDIT:-false}"
     restart: "no"
 
+  # T-1219 (kit 1.9.6): retention for audit_claim_deliveries, the table audit
+  # migration 000007 creates (one row per completed request: request id,
+  # delivery bookkeeping, output-scan summary, signed claim bytes). Long-running:
+  # it sweeps once at start, then once a day. Each sweep BLANKS claim_raw +
+  # output_scan_body on DELIVERED rows older than the retention period. It does
+  # not delete rows — the row is the idempotency record a late gateway replay
+  # must find (the gateway's spill buffer has no maximum replay age). PENDING /
+  # DELIVERING / PARKED rows and audit_events are never touched; old PARKED rows
+  # are counted in a WARN line. One result line per run in `docker compose logs
+  # audit-claim-delivery-retention`; never row contents.
+  #
+  # Like the migration ceiling above, the retention defaults live in this file,
+  # not in customer.env: LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS (whole days
+  # >= 1, default 30 — 0, negatives and leading zeros make the service exit with
+  # an error) and LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED (exactly
+  # true/false, default true; false = the service logs one line and stays
+  # stopped). Same image as postgres-audit (psql); connects as the migration
+  # role `dsa`. Script: scripts/audit-claim-delivery-retention.sh (the Helm
+  # CronJob runs a byte-identical copy). OPS.md § "Audit claim-delivery
+  # retention".
+  audit-claim-delivery-retention:
+    image: postgres:16-alpine
+    logging: *default-logging
+    depends_on:
+      migrate-audit:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "/scripts/audit-claim-delivery-retention.sh"]
+    user: "65534:65534"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./scripts/audit-claim-delivery-retention.sh:/scripts/audit-claim-delivery-retention.sh:ro
+    networks:
+      - dsa-audit
+    environment:
+      HOME: "/tmp"
+      DATABASE_URL: "postgres://dsa:${POSTGRES_AUDIT_PASSWORD:?POSTGRES_AUDIT_PASSWORD must be set (no weak default; see customer.env)}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
+      LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED: "${LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED:-true}"
+      LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS: "${LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS:-30}"
+      LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_INTERVAL_SECONDS: "86400"
+    # on-failure, not unless-stopped: ENABLED=false exits 0 and must stay
+    # stopped; a refused value exits non-zero and is restarted with Docker's
+    # back-off, so the error keeps showing in the logs until it is fixed.
+    restart: on-failure
+
   migrate-bridge:
     image: migrate/migrate:v4.17.0
     logging: *default-logging

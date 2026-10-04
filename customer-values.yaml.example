@@ -255,6 +255,14 @@ audit:
       veilSigningKey: "REPLACE_WITH_64_HEX_AUDIT_SIGNING_KEY"
       # dsaServiceToken lifted to global.dsaServiceToken (BLOCKER D).
       dsaServiceToken: ""
+  # T-1219 (kit 1.9.6): daily CronJob that blanks the claim bytes + scan summary
+  # of audit_claim_deliveries rows delivered more than retentionDays ago (rows
+  # are kept). Default ON with the bundled Postgres. retentionDays: whole days
+  # >= 1. OPS.md § "Audit claim-delivery retention".
+  # claimDeliveryRetention:
+  #   enabled: true
+  #   retentionDays: 30
+  #   schedule: "17 3 * * *"
 
 id-bridge:
   postgresql:

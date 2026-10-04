@@ -1,0 +1,125 @@
+{{- /*
+  T-1219 (kit 1.9.6) — retention sweep for audit_claim_deliveries.
+
+  Daily CronJob that BLANKS claim_raw + output_scan_body on DELIVERED rows whose
+  delivered_at is older than claimDeliveryRetention.retentionDays. It never
+  deletes a row (the row is the idempotency record a late gateway spill-buffer
+  replay must find — that buffer has no maximum replay age), never touches
+  PENDING / DELIVERING / PARKED rows, and never touches audit_events. The
+  script is files/audit-claim-delivery-retention.sh, byte-identical to the
+  Compose copy in scripts/ (tests/test_audit_claim_delivery_retention.sh).
+
+  Renders only when the bundled Postgres is used (postgresql.enabled) AND
+  claimDeliveryRetention.enabled. External Postgres: nothing renders; OPS.md
+  § "Audit claim-delivery retention" gives the SQL to schedule.
+
+  Network: the pod lives in the audit namespace and only talks to
+  <chart>-postgresql:5432 there. The infrastructure chart's audit-egress /
+  audit-ingress policies already allow intra-namespace 5432, so no new
+  NetworkPolicy is needed.
+*/ -}}
+{{- $r := (default dict .Values.claimDeliveryRetention) -}}
+{{- /* hasKey, not `default`: Sprig's `default true false` returns true, so
+       enabled=false would silently stay on. */ -}}
+{{- $enabled := true -}}
+{{- if hasKey $r "enabled" -}}{{- $enabled = $r.enabled -}}{{- end -}}
+{{- if not (kindIs "bool" $enabled) -}}
+{{- fail (printf "[audit] audit.claimDeliveryRetention.enabled must be a YAML boolean (true/false), but a %s was given (%v). A quoted string is ambiguous for a data-retention switch; use --set audit.claimDeliveryRetention.enabled=false (Helm parses that as a boolean)." (kindOf $enabled) $enabled) -}}
+{{- end -}}
+{{- if $enabled -}}
+{{- $rawDays := $r.retentionDays -}}
+{{- if kindIs "invalid" $rawDays -}}
+{{- fail "[audit] audit.claimDeliveryRetention.retentionDays is not set. Set a whole number of days >= 1 (default 30), or disable the sweep with audit.claimDeliveryRetention.enabled=false." -}}
+{{- end -}}
+{{- /* Check the RAW value before any int conversion: sprig `int` reads a
+       leading zero as octal and coerces booleans (see _migration-cap.tpl). */ -}}
+{{- if not (regexMatch "^[1-9][0-9]{0,4}$" (toString $rawDays)) -}}
+{{- fail (printf "[audit] audit.claimDeliveryRetention.retentionDays must be a whole number of days >= 1 written in plain decimal (no sign, fraction or leading zero), got %v (%s). 0 or a negative value would blank delivery records immediately; to stop the sweep set audit.claimDeliveryRetention.enabled=false instead (T-1219)." $rawDays (kindOf $rawDays)) -}}
+{{- end -}}
+{{- $days := $rawDays | int -}}
+{{- if or (lt $days 1) (gt $days 36500) -}}
+{{- fail (printf "[audit] audit.claimDeliveryRetention.retentionDays must be between 1 and 36500, got %d (T-1219)." $days) -}}
+{{- end -}}
+{{- $schedule := (default "" $r.schedule | toString | trim) -}}
+{{- if not $schedule -}}
+{{- fail "[audit] audit.claimDeliveryRetention.schedule is empty. Give a cron schedule (default \"17 3 * * *\") or disable the sweep with audit.claimDeliveryRetention.enabled=false." -}}
+{{- end -}}
+{{- if .Values.postgresql.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Chart.Name }}-claim-delivery-retention
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-claim-delivery-retention
+    app.kubernetes.io/component: claim-delivery-retention
+    app.kubernetes.io/part-of: dsa
+spec:
+  schedule: {{ $schedule | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: {{ .Chart.Name }}-claim-delivery-retention
+            app.kubernetes.io/component: claim-delivery-retention
+        spec:
+          restartPolicy: Never
+          # Never calls the Kubernetes API.
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          {{- with .Values.global.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: sweep
+              # The bundled audit Postgres image (psql client); no new image.
+              image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  {{- .Files.Get "files/audit-claim-delivery-retention.sh" | nindent 18 }}
+              env:
+                - name: HOME
+                  value: /tmp
+                # Migration-role (`dsa`) DSN of the bundled audit Postgres —
+                # the same Secret key the migration Job uses.
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Chart.Name }}-credentials
+                      key: DATABASE_URL
+                - name: LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED
+                  value: "true"
+                - name: LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS
+                  value: {{ $days | toString | quote }}
+              {{- with $r.resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}
+{{- end }}
+{{- end }}

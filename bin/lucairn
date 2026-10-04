@@ -4183,6 +4183,39 @@ EOF_HATCH
   return "$ok"
 }
 
+check_audit_claim_delivery_retention() {
+  # T-1219 (kit 1.9.6): the audit-claim-delivery-retention Compose service
+  # refuses a malformed retention setting (it exits non-zero and restarts with
+  # back-off) and, like the migrate-* services, bind-mounts its script — a
+  # missing script becomes an empty DIRECTORY at the mount path. Catch both
+  # before compose-up. Silent when the configuration is valid.
+  local env_file="$1" compose_file="${2:-}" ok=0 script enabled days
+  script="$ROOT/scripts/audit-claim-delivery-retention.sh"
+  if [ -n "$compose_file" ] && [ -f "$(dirname "$compose_file")/scripts/audit-claim-delivery-retention.sh" ]; then
+    script="$(dirname "$compose_file")/scripts/audit-claim-delivery-retention.sh"
+  fi
+  if [ ! -f "$script" ]; then
+    echo "audit retention: scripts/audit-claim-delivery-retention.sh missing beside the selected Compose file — the audit-claim-delivery-retention service will fail to start (T-1219)"
+    ok=1
+  fi
+  [ -n "$env_file" ] && [ -f "$env_file" ] || return "$ok"
+  enabled="$(env_value "$env_file" LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED)"
+  case "$enabled" in
+    ''|true|false) ;;
+    *)
+      echo "audit retention: LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED='${enabled}' — must be exactly true or false; the retention service will refuse to run (T-1219)"
+      ok=1 ;;
+  esac
+  days="$(env_value "$env_file" LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS)"
+  if [ -n "$days" ]; then
+    if ! printf '%s' "$days" | grep -Eq '^[1-9][0-9]{0,4}$' || [ "$days" -gt 36500 ]; then
+      echo "audit retention: LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS='${days}' — must be whole days from 1 to 36500 without leading zeros; the retention service will refuse to run. To stop the sweep set LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=false (T-1219)"
+      ok=1
+    fi
+  fi
+  return "$ok"
+}
+
 check_image_tag_set() {
   # G3: empty LUCAIRN_IMAGE_TAG silently falls back to the compose
   # default. Mixed defaults across env / compose / manifest are an
@@ -7974,6 +8007,12 @@ doctor() {
   local migration_failed=0
   check_render_migrations_safe "$env_file" "$compose_file" || migration_failed=1
   [ "$migration_failed" -eq 0 ] || return 1
+
+  # T-1219: audit claim-delivery retention service — script present, values
+  # in the shape the service accepts.
+  local retention_failed=0
+  check_audit_claim_delivery_retention "$env_file" "$compose_file" || retention_failed=1
+  [ "$retention_failed" -eq 0 ] || return 1
 
   # MEDIUM (overnight 2026-06-14): Compose migrate path renders ONLY the kit's
   # migrations/<tree>/ files. If the kit ships fewer than the pinned image
