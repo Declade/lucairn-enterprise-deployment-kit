@@ -229,8 +229,8 @@ If any container is `unhealthy` or `restarting`, see § Troubleshooting.
 > shallow scanners), platform-trusted fields, and empty fields are exempt by
 > design and covered by their own layers instead. Identical values can reuse
 > a single verdict rather than being rescanned; within-request dedupe and
-> cache-replay coverage both mature in sanitizer releases after `0.5.4`
-> (this kit pins `0.5.4`, see `image-manifest.yaml`) — on `0.5.4`, enabling
+> cache-replay coverage both ship in sanitizer `0.5.5` (the tag this kit pins,
+> see `image-manifest.yaml`) — on `0.5.4` and older, enabling
 > `SANITIZE_CACHE_ENABLED` is not recommended.
 >
 > **To re-enable L3 later:** pre-stage the `qwen2.5:7b` model into the

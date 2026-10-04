@@ -1,0 +1,43 @@
+# Lucairn signed-image digest record — release 0.5.5
+# 12 dsa-* @ 0.5.5 + lucairn-dashboard @ 0.8.2
+#
+# ⛔ DRAFT — DIGESTS PENDING. Every "TODO-0.5.5-digest-pending" value below is a
+# placeholder. The 0.5.5 images are built from dual-sandbox-architecture main
+# f70d0fe8 (or later) on the release host; replace each placeholder with the
+# digest from the release host's image-digests-0.5.5.txt (data lines must be
+# byte-identical to that record) and fill the build commit + date below.
+# tests/test_digest_pin.sh FAILS while any placeholder remains.
+#
+# AUTHORITATIVE record of which exact image bytes were published for the
+# 0.5.5 release (sanitizer recognizer roster: attribution_person + labeled_id
+# become loadable on kit installs, T-768; plus everything merged to DSA main
+# since 0.5.4 — see CHANGELOG.md [1.9.5]).
+# Build commit: TODO-0.5.5-build-commit (DSA main, >= f70d0fe8).
+# All 12 dsa-* services republished multi-arch at 0.5.5 and cosign-signed (GHCR +
+# Rekor-logged) on TODO-0.5.5-build-date. The lucairn-dashboard @ 0.8.2 entry is
+# UNCHANGED from 0.5.4 (same signed bytes; independent release cadence).
+# dsa-pii-ml stays pinned at 0.5.1 (independent release cadence; NOT in this record).
+#
+# `bin/lucairn verify-images` reads this file as the verify set: for each entry
+# it (1) resolves the tag's CURRENT digest and asserts it EQUALS the recorded
+# digest (a mismatch means the tag was re-pointed — downgrade/substitution —
+# and is a hard FAIL), then (2) runs
+# `cosign verify --key keys/lucairn-cosign.pub <repo>@<recorded-digest>`,
+# binding verification to the exact signed bytes (not the mutable tag).
+#
+# Format: <repo>:<tag> <sha256:digest>   (one per line; '#' starts a comment)
+#
+# Digests are PUBLIC.
+ghcr.io/declade/dsa-gateway:0.5.5 sha256:TODO-0.5.5-digest-pending
+ghcr.io/declade/dsa-sanitizer:0.5.5 sha256:TODO-0.5.5-digest-pending
+ghcr.io/declade/dsa-audit:0.5.5 sha256:TODO-0.5.5-digest-pending
+ghcr.io/declade/dsa-id-bridge:0.5.5 sha256:TODO-0.5.5-digest-pending
+ghcr.io/declade/dsa-sandbox-a:0.5.5 sha256:TODO-0.5.5-digest-pending
+ghcr.io/declade/dsa-sandbox-b:0.5.5 sha256:TODO-0.5.5-digest-pending
+ghcr.io/declade/dsa-veil-witness:0.5.5 sha256:TODO-0.5.5-digest-pending
+ghcr.io/declade/dsa-reid-guard:0.5.5 sha256:TODO-0.5.5-digest-pending
+ghcr.io/declade/dsa-admin:0.5.5 sha256:TODO-0.5.5-digest-pending
+ghcr.io/declade/dsa-demo:0.5.5 sha256:TODO-0.5.5-digest-pending
+ghcr.io/declade/dsa-ingest:0.5.5 sha256:TODO-0.5.5-digest-pending
+ghcr.io/declade/dsa-llm-auditor:0.5.5 sha256:TODO-0.5.5-digest-pending
+ghcr.io/declade/lucairn-dashboard:0.8.2 sha256:a586b88991ac5d71cf6523b833462648775b1e97a66cbee67876e9f992f0387e

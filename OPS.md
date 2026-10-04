@@ -1363,25 +1363,20 @@ have that runtime fallback to reach.
 behind it were introduced in `dual-sandbox-architecture` on 2026-08-03
 (T-14, `feat(gateway): recursive tool-schema PII walk — close the second
 unsanitized egress`, commit `a0fb5bde4`; exposed as a Helm value in the same
-slice, commit `d5f9486dd`). **As of this writing, no published `dsa-gateway`
-image contains it.** The kit's own currently pinned default —
-`image-manifest.yaml` → `default_lucairn_image_tag: "0.5.4"`, republished
-2026-06-19 per `CHANGELOG.md` `[1.9.4]` — predates the guard by about six
-weeks, and `dual-sandbox-architecture` has not cut a numbered image release
-since: its highest `v*` git tag is `v0.4.1`, and the `0.5.x` image series is
-published through a process independent of those tags. **Treat every
-`dsa-gateway` image you can pull today as guard-ABSENT** — setting
-`GATEWAY_TOOL_SCHEMA_GUARD` (or `gateway.toolSchemaGuard`) to any value on
-one of them is a no-op, not a stricter or looser posture.
+slice, commit `d5f9486dd`). **The first published `dsa-gateway` image that
+contains it is `0.5.5`**, the tag kit `1.9.5` pins (`image-manifest.yaml` →
+`default_lucairn_image_tag: "0.5.5"`), built from `dual-sandbox-architecture`
+main `f70d0fe8` or later — that source carries `GATEWAY_TOOL_SCHEMA_GUARD`
+(`services/gateway/internal/api/mcp_payload_schema.go`). **Treat every
+`dsa-gateway` tag at or below `0.5.4` as guard-ABSENT** — setting
+`GATEWAY_TOOL_SCHEMA_GUARD` (or `gateway.toolSchemaGuard`) on one of them is a
+no-op, not a stricter or looser posture.
 
 The gateway image carries no OCI revision label tying its tag to a source
-commit, so there is currently no mechanical way to check "does my pinned tag
-include T-14" against an arbitrary tag. The check, once it exists: compare
-your pinned `LUCAIRN_IMAGE_TAG` (`customer.env`) / `default_lucairn_image_tag`
-(`image-manifest.yaml`) against the `dsa-gateway` tag this section names —
-this note will be updated with the exact tag the first time a kit release
-pins a gateway image built after 2026-08-03. Until this note names a tag,
-assume none qualifies.
+commit, so there is no mechanical way to check "does my pinned tag include
+T-14" against an arbitrary tag. The check: your pinned `LUCAIRN_IMAGE_TAG`
+(`customer.env`) / `default_lucairn_image_tag` (`image-manifest.yaml`) must be
+`0.5.5` or later.
 
 ### Dry-run it BEFORE the first routed turn: `bin/lucairn doctor --tools`
 
@@ -1681,16 +1676,16 @@ cover `dsa-pii-ml` at all):**
 # each image BY DIGEST and requires a Rekor transparency-log entry. Prints
 # PASS/FAIL per image; exits non-zero if ANY image fails.
 # The kit retains prior-release digest records (keys/image-digests-0.5.0.txt,
-# -0.5.1.txt, -0.5.2.txt, -0.5.3.txt, -0.5.4.txt). With MORE THAN ONE record
-# present, verify-images requires an explicit --tag — pin the current release (0.5.4):
-bin/lucairn verify-images --tag 0.5.4
+# -0.5.1.txt, -0.5.2.txt, -0.5.3.txt, -0.5.4.txt, -0.5.5.txt). With MORE THAN ONE
+# record present, verify-images requires an explicit --tag — pin the current release (0.5.5):
+bin/lucairn verify-images --tag 0.5.5
 
 # Air-gapped mirror that re-hosts the SAME signed bytes:
-bin/lucairn verify-images --tag 0.5.4 --registry registry.internal/lucairn
+bin/lucairn verify-images --tag 0.5.5 --registry registry.internal/lucairn
 ```
 
 **Verify a single image with raw cosign (by digest).** Read the signed digest
-from `keys/image-digests-0.5.4.txt`, then:
+from `keys/image-digests-0.5.5.txt`, then:
 
 ```bash
 cosign verify --key keys/lucairn-cosign.pub \
@@ -1867,14 +1862,14 @@ richest summary.
 # Verifies the SPDX SBOM attestation against keys/lucairn-cosign.pub, requires a
 # Rekor transparency-log entry, then summarizes it (package count, SPDX version,
 # document name). Exits non-zero if the attestation is missing/invalid.
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.4
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.5
 
 # Also save the raw verified SPDX-JSON SBOM to a file:
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.4 \
-  --download dsa-gateway-0.5.4.spdx.json
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.5 \
+  --download dsa-gateway-0.5.5.spdx.json
 
 # Air-gapped mirror that re-hosts the SAME signed bytes:
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.4 \
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.5 \
   --registry registry.internal/lucairn
 ```
 
@@ -1884,13 +1879,13 @@ bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.4 \
 # Verify the SPDX attestation (prints the signed DSSE envelope + Rekor entry):
 cosign verify-attestation --type spdxjson \
   --key keys/lucairn-cosign.pub \
-  ghcr.io/declade/dsa-gateway:0.5.4
+  ghcr.io/declade/dsa-gateway:0.5.5
 
 # Extract just the SPDX-JSON SBOM predicate (the package list):
 cosign verify-attestation --type spdxjson \
   --key keys/lucairn-cosign.pub \
-  ghcr.io/declade/dsa-gateway:0.5.4 \
-  | jq -r '.payload' | base64 -d | jq '.predicate' > dsa-gateway-0.5.4.spdx.json
+  ghcr.io/declade/dsa-gateway:0.5.5 \
+  | jq -r '.payload' | base64 -d | jq '.predicate' > dsa-gateway-0.5.5.spdx.json
 ```
 
 A successful verification exits 0 and reports a Rekor transparency-log entry; a
@@ -2183,6 +2178,44 @@ stop. These wrappers replay the recorded overlays and local-runtime profile;
 they do not accept arbitrary Compose flags and `down` does not remove volumes.
 Exact release rollback history and restore proof remain WP4 S4 scope—do not
 interpret these S1 wrappers as completed rollback functionality.
+
+### v0.5.5 / chart 1.9.5 — sanitizer roster 36 + T-1102 gateway key separation (TODO-0.5.5-release-date)
+
+Schema change: none applied by this kit — migration ceilings unchanged
+(veil-witness 10 · audit 6 · id-bridge 4 · sandbox-a 8). Read the migration
+review in `CHANGELOG.md` `[1.9.5]` before upgrading.
+
+All 12 `dsa-*` images are republished + cosign-signed + Rekor-logged at `0.5.5`
+(`bin/lucairn verify-images --tag 0.5.5`). `dsa-pii-ml` stays `0.5.1`
+(independent cadence) and `lucairn-dashboard` stays `0.8.2`.
+
+- **Sanitizer roster 34 → 36:** `attribution_person` + `labeled_id` on both
+  shipped surfaces (T-768). Bare-shape ID recognizers (`format_*`,
+  `patientennummer_id_prefix`) stay held back: the two-lane zoner that keeps
+  sys_ids / UUIDs / INC ids intact ships in 0.5.5 but is off by default.
+- **T-1102:** the gateway refuses to boot with a `dsa-ai` / sandbox-B signing
+  key in its environment — blank `gateway.secrets.values.veilAISigningKey`
+  BEFORE `helm upgrade`.
+
+**Upgrade from v0.5.4:** pull the new images (`LUCAIRN_IMAGE_TAG=0.5.5`).
+
+**Compose:** set `LUCAIRN_IMAGE_TAG=0.5.5` in `customer.env`, then re-run with the SAME `-f` overlay set you normally use — a self-hosted (full on-prem) install MUST include `docker-compose.self-hosted.yml`, or the gateway is recreated with split-deployment settings and the local `sandbox-b` is orphaned:
+
+```bash
+# Split deployment (Sandbox B remote — the default):
+docker compose -f docker-compose.customer.yml --env-file customer.env pull
+docker compose -f docker-compose.customer.yml --env-file customer.env up -d
+
+# Self-hosted (full on-prem) — include the self-hosted overlay:
+docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env pull
+docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env up -d
+```
+
+**Helm:** set `global.imageTag: "0.5.5"` and `gateway.secrets.values.veilAISigningKey: ""`, then apply:
+```bash
+helm upgrade lucairn charts/lucairn -n lucairn -f your-values.yaml
+kubectl -n lucairn rollout restart deployment/sandbox-a   # load the new sanitizer roster
+```
 
 ### v0.5.4 / chart 1.9.4 — per-key MCP tool-scope enforcement + B2 website tool_allowlist (2026-06-19)
 

@@ -31,8 +31,8 @@ set -euo pipefail
 #
 # ─── WHAT THIS DOES NOT PROVE ────────────────────────────────────────────────
 #   * That the gateway image refuses to boot — that is DSA #622's own tests.
-#     The kit still pins dsa-gateway 0.5.4; this suite makes the chart safe for
-#     the re-pin, it does not perform it.
+#     The kit pins dsa-gateway 0.5.5 (built from DSA main >= f70d0fe8, which
+#     carries #622); this suite proves the chart side, not the image side.
 #   * Byte-identity of the shipped values-file renders was measured once when
 #     this landed (PR body); it is not re-asserted here.
 
@@ -206,7 +206,7 @@ secrets:
     postgresPassword: "${TEST_SECRET_VALUE}"
 global:
   imageRegistry: ""
-  imageTag: "0.5.4"
+  imageTag: "0.5.5"
   imagePullSecrets: []
   postgresqlSslmode: disable
   dsaServiceToken: ""

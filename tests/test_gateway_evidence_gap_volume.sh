@@ -42,10 +42,9 @@ set -euo pipefail
 #
 # ─── WHAT THIS DOES NOT PROVE ────────────────────────────────────────────────
 #   * That the gateway IMAGE actually honours GATEWAY_EVIDENCE_GAP_PATH. The
-#     kit pins dsa-gateway 0.5.4, which predates T-571; on that image these env
-#     vars are inert. This suite proves the chart is correct the day the kit
-#     tracks a gateway that has the feature — it cannot prove the running
-#     binary writes anything.
+#     kit pins dsa-gateway 0.5.5, built from DSA main >= f70d0fe8, whose source
+#     carries T-571 (services/gateway/internal/evidencegap). This suite proves
+#     the chart side only — it cannot prove the running binary writes anything.
 #   * That a gap record is ever WRITTEN, or that the admission gate consults
 #     the store. That is upstream Go-test territory.
 #   * ⚑ Most importantly: a render guard CANNOT catch a chart that lacks the

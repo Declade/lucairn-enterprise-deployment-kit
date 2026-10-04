@@ -69,7 +69,7 @@ GitHub Release until you pass `--publish`.
 
 ### Tag scheme
 
-Clean SemVer `vX.Y.Z` matching `VERSION` (e.g. `v1.9.4`) — no suffixes. (Older
+Clean SemVer `vX.Y.Z` matching `VERSION` (e.g. `v1.9.5`) — no suffixes. (Older
 suffixed tags such as `v1.6.0-stage-3-rebrand` and the `*-dashboard` tags predate
 this scheme.) The Rekor transparency log is used by default, matching the
 image-signing ceremony; `--no-tlog` is offline/test only.
@@ -104,10 +104,12 @@ migrations above the current ceiling —
 | `000012_claim_receipts` (table `witness_claim_receipts`) | un-redacted personal data · **no deletion path** |
 | `000013_decoder_expiry` | the decoder-expiry retention machinery |
 
-Be precise about the timing, because the honest version is narrower than it
-sounds: the image tag this kit pins today (`0.5.4`) does **not** carry them — its
-`/migrations` stops at `000010`. The exposure is the *next* image bump, which an
-uncapped `up` would have taken silently. That is the window this cap holds open.
+Be precise about the timing: up to `0.5.4` the pinned image did **not** carry
+them (its `/migrations` stopped at `000010`). `0.5.5` is built from DSA main
+`f70d0fe8` or later, whose source tree carries veil-witness `000011`–`000014`
+and audit `000007` — the bump an uncapped `up` would have taken silently. The
+cap is what holds them back on a 0.5.5 install; see `CHANGELOG.md` `[1.9.5]`
+for that release's migration review.
 
 And note the trap in `000013`. It is the retention machinery — the migration you
 would *want* — but `goto 13` applies `000011` and `000012` on the way. **The
