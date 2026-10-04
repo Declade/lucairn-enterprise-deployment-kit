@@ -7,8 +7,9 @@ set -euo pipefail
 # and the Helm sandbox-a sanitizer ConfigMap) sat at 33 recognizers while the
 # upstream sanitizer default grew to 46. Nothing noticed: a recognizer that is
 # not listed is simply never loaded, and the sanitizer boots and answers
-# normally. The kit now ships 34 (33 + medical_record_number) and the floor is
-# those 34.
+# normally. Kit 1.9.4 shipped 34 (33 + medical_record_number); kit 1.9.5 pins
+# the 0.5.5 sanitizer, which registers attribution_person and labeled_id, and
+# ships 36. The floor is those 36.
 #
 # WHAT THIS PROVES:
 #   1. Both shipped surfaces carry every name in
@@ -97,18 +98,19 @@ surfaces = {
 }
 
 # Names that must NOT be on any default surface or in the floor while the kit
-# pins the 0.5.4 sanitizer image: (a) not registered by 0.5.4 -> boot refusal;
-# (b) bare-shape ID recognizers held back for false positives (no zoner);
-# (c) opt-in only for healthcare/clinical installs (ordinary-word false
-# positives at 0.35); (d) no-ops on 0.5.4 (entity type discarded by the
-# scanner).
-NOT_IN_PINNED_IMAGE = {"labeled_id", "patientennummer_id_prefix", "attribution_person"}
+# pins the 0.5.5 sanitizer image: (b) bare-shape ID recognizers held back for
+# false positives (the two-lane zoner that keeps sys_ids/UUIDs/INC ids intact
+# is off by default and not enabled by the kit); (c) opt-in only for
+# healthcare/clinical installs (ordinary-word false positives at 0.35); (d)
+# no-ops on 0.5.5 (entity type discarded by the scanner). The former (a) set —
+# names 0.5.4 did not register — is empty on 0.5.5: attribution_person and
+# labeled_id are now in the floor, patientennummer_id_prefix moved to (b).
 HELD_BACK_FP = {"format_ticket", "format_numeric_run", "format_hex_block",
-                "format_uuid", "format_ulid"}
+                "format_uuid", "format_ulid", "patientennummer_id_prefix"}
 OPT_IN_ONLY = {"de_places", "drugs_and_diagnoses"}
 NO_OP_ON_PINNED = {"de_companies", "software_products"}
-ABSENT = NOT_IN_PINNED_IMAGE | HELD_BACK_FP | OPT_IN_ONLY | NO_OP_ON_PINNED
-EXPECTED_FLOOR_SIZE = 34
+ABSENT = HELD_BACK_FP | OPT_IN_ONLY | NO_OP_ON_PINNED
+EXPECTED_FLOOR_SIZE = 36
 
 rc = 0
 if len(floor) != EXPECTED_FLOOR_SIZE:

@@ -123,38 +123,50 @@ sanitizer:
       - order_number
       # T-768 (roster reconciliation with the upstream sanitizer default):
       # the glued "MRN123456" medical-record-number shape (`MRN`, optional
-      # `-`/space, 6-10 digits; pinned 0.5.4 image). Narrow: no false-positive
-      # class was found for it.
+      # `-`/space, 6-10 digits; in the 0.5.4 image and later). Narrow: no
+      # false-positive class was found for it.
       - medical_record_number
+      # T-768 (kit 1.9.5 / images 0.5.5): the two recognizers that were
+      # missing ONLY because the 0.5.4 image did not register them.
+      # `attribution_person` closes the ServiceNow attribution leak
+      # ("Reviewed by <Name>" passing raw) — the span is licensed by an
+      # explicit closed-list attribution verb, not by shape. `labeled_id`
+      # redacts a digit run only when an ID label ("Patientennummer",
+      # "customer number", "medical record", …) is present — label-gated, so
+      # the two-lane zoner does not need to protect technical IDs from it.
+      - attribution_person
+      - labeled_id
       # ⛔ DELIBERATELY ABSENT (T-768) — keep this list in lockstep with the
       # Helm ConfigMap and with config/sanitizer-roster-must-have.txt.
       #
-      # (a) NOT IN THE PINNED 0.5.4 IMAGE: `labeled_id`,
-      #     `patientennummer_id_prefix`, `attribution_person`. The 0.5.4
-      #     sanitizer raises "Unknown recognizer" for each and refuses to boot.
-      #     Add them together with the first kit release that pins a newer
-      #     sanitizer image (see CHANGELOG "Upgrade note" for T-768).
-      # (b) HELD BACK FOR FALSE POSITIVES: `format_ticket`, `format_numeric_run`,
-      #     `format_hex_block`, `format_uuid`, `format_ulid`. These fire on
-      #     shape alone. Measured on the 0.5.4 recognizers with this file's
-      #     0.35 threshold, they redact ServiceNow sys_ids and git SHAs
-      #     (format_hex_block 0.55), request UUIDs (format_uuid 0.85) and
-      #     INC0010001 / ID-002882393 (format_ticket 0.65), which breaks
-      #     agent and ServiceNow flows. The newer sanitizer only keeps these
-      #     shapes intact via its two-lane zoner, which 0.5.4 does not have.
-      #     Re-adding them is gated on a pinned image with the zoner AND
-      #     `sanitizer.two_lane_zoner.enabled: true` in this file.
+      # (b) HELD BACK FOR FALSE POSITIVES (bare-shape, zoner-gated):
+      #     `format_ticket`, `format_numeric_run`, `format_hex_block`,
+      #     `format_uuid`, `format_ulid`, `patientennummer_id_prefix`. These
+      #     fire on shape alone. Measured on the 0.5.4 recognizers with this
+      #     file's 0.35 threshold, the format_* group redacts ServiceNow
+      #     sys_ids and git SHAs (format_hex_block 0.55), request UUIDs
+      #     (format_uuid 0.85) and INC0010001 / ID-002882393 (format_ticket
+      #     0.65), which breaks agent and ServiceNow flows.
+      #     `patientennummer_id_prefix` (in the image from 0.5.5) is the same
+      #     class: the upstream sanitizer lists it with format_* in the zoner's
+      #     bare-shape set, and upstream measured that adding it with the
+      #     zoner OFF bricks `{"request_id":"ID-002882393"}`. The sanitizer
+      #     keeps these shapes intact only via its two-lane zoner, which ships
+      #     in 0.5.5 but is OFF unless `sanitizer.two_lane_zoner.enabled: true`
+      #     is set (default false). Re-adding them is gated on enabling the
+      #     zoner in this file AND measuring the result on this roster.
       # (c) OPT-IN ONLY, for healthcare / clinical installs: `de_places` and
-      #     `drugs_and_diagnoses`. Both are in the 0.5.4 image, but they flag
+      #     `drugs_and_diagnoses`. Measured on the 0.5.4 image, they flag
       #     ordinary words above this file's 0.35 threshold: `de_places`
       #     (LOCATION, 0.40) tags the German "oder" and "buchen" and the
       #     English "worms"; `drugs_and_diagnoses` (MEDICAL_CONDITION, 0.55)
       #     tags "pain" and "fatigue". Add them below only if catching place,
       #     drug and diagnosis names is worth redacting those words too.
-      # (d) NO-OPS ON 0.5.4, so not listed: `de_companies` (ORGANIZATION) and
-      #     `software_products` (PRODUCT). The 0.5.4 scanner discards both
-      #     entity types, so listing them redacts nothing. Revisit when the
-      #     kit pins an image that keeps those types.
+      # (d) NO-OPS, so not listed: `de_companies` (ORGANIZATION) and
+      #     `software_products` (PRODUCT). The scanner still discards both
+      #     entity types on 0.5.5 (`_SKIP_ENTITY_TYPES` in presidio_scan.py),
+      #     so listing them redacts nothing. Revisit when the kit pins an
+      #     image that keeps those types.
     safe_terms_file: /config/medical-terms.txt
     # ⛔ NO `strict_safe_terms_file` HERE (T-576) — the sanitizer refuses to
     # boot on it. The strict whole-span-exact safe list now rides

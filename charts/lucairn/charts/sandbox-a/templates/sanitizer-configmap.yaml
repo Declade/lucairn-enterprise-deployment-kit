@@ -141,24 +141,29 @@ data:
           - dutch_bsn
           - order_number
           # T-768 (roster reconciliation with the upstream sanitizer default):
-          # the glued "MRN123456" shape (pinned 0.5.4 image).
+          # the glued "MRN123456" shape (0.5.4 image and later).
           - medical_record_number
+          # T-768 (kit 1.9.5 / images 0.5.5): missing only because 0.5.4 did
+          # not register them. attribution_person closes the ServiceNow
+          # "Reviewed by <Name>" leak; labeled_id is label-gated (no bare-shape
+          # firing), so it needs no zoner. Detail: config/default-sanitizer.yaml.
+          - attribution_person
+          - labeled_id
           # ⛔ DELIBERATELY ABSENT (T-768), identical to the Compose config
           # (config/default-sanitizer.yaml has the measured detail); both
           # surfaces are pinned against config/sanitizer-roster-must-have.txt
           # by tests/test_sanitizer_roster_must_have.sh.
-          # (a) not in the pinned 0.5.4 image, which refuses to boot on them:
-          #     labeled_id, patientennummer_id_prefix, attribution_person.
-          # (b) held back for false positives until the pinned image has the
-          #     two-lane zoner and it is enabled: format_ticket,
-          #     format_numeric_run, format_hex_block, format_uuid, format_ulid
-          #     (on 0.5.4 they redact ServiceNow sys_ids, git SHAs, UUIDs and
-          #     INC numbers).
+          # (b) held back for false positives (bare-shape) until the two-lane
+          #     zoner is enabled (`two_lane_zoner.enabled`, default false; this
+          #     chart does not set it) and measured: format_ticket,
+          #     format_numeric_run, format_hex_block, format_uuid, format_ulid,
+          #     patientennummer_id_prefix (they redact ServiceNow sys_ids, git
+          #     SHAs, UUIDs, INC numbers and `{"request_id":"ID-…"}` values).
           # (c) opt-in only (healthcare/clinical): de_places, drugs_and_diagnoses
           #     (on 0.5.4 at 0.35 they flag "oder", "buchen", "worms", "pain",
           #     "fatigue"). The chart has no supported values key for the roster: opting in on Helm
           #     means carrying this template change in your chart copy.
-          # (d) no-ops on 0.5.4 (ORGANIZATION / PRODUCT are discarded by the
+          # (d) no-ops (ORGANIZATION / PRODUCT are still discarded by the 0.5.5
           #     scanner): de_companies, software_products.
         # safe_terms_file: operators wanting any-word safe-terms suppression
         # must supply their own ConfigMap (e.g. medical-terms.txt) and mount
