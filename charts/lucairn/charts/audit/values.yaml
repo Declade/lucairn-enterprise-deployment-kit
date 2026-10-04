@@ -106,7 +106,9 @@ containerSecurityContext:
 #
 # 7 = 000007_claim_delivery_outbox (raised from 6 in kit 1.9.5: the 0.5.5 audit
 # service writes that table on every completed request and has no fallback
-# without it; no deletion path ships for it yet, T-1219 — see CHANGELOG [1.9.5]).
+# without it). Its retention path ships from kit 1.9.6 (T-1219): the
+# claimDeliveryRetention CronJob below blanks the claim bytes and scan summary
+# of old delivered rows — see CHANGELOG [1.9.6].
 # The chart also carries a hard ceiling of 7
 # (charts/audit/templates/migration-job.yaml); a targetVersion above it is
 # refused at render time. Raising both is a deliberate code change gated by
@@ -117,6 +119,40 @@ containerSecurityContext:
 migrations:
   targetVersion: 7
   unsafeAcknowledgeOpenEndedMigrateUp: false
+
+# T-1219 (kit 1.9.6): retention for audit_claim_deliveries (audit migration
+# 000007). A daily CronJob (templates/claim-delivery-retention-cronjob.yaml)
+# BLANKS claim_raw + output_scan_body on DELIVERED rows whose delivered_at is
+# older than retentionDays. It does not delete rows: the row stays as the
+# idempotency record a late gateway replay must find (the gateway spill buffer
+# has no maximum replay age). PENDING / DELIVERING / PARKED rows and
+# audit_events are never touched; old PARKED rows are counted and logged as a
+# WARN. Script: files/audit-claim-delivery-retention.sh (byte-identical to
+# scripts/audit-claim-delivery-retention.sh). Details: OPS.md § "Audit
+# claim-delivery retention".
+#
+# Renders only when postgresql.enabled (bundled Postgres) AND enabled. With an
+# external Postgres nothing renders — OPS.md documents the SQL to schedule.
+# The job runs psql from the bundled postgresql.image as the `dsa` role
+# (DATABASE_URL from the audit-credentials Secret, as the migration Job does).
+claimDeliveryRetention:
+  # A YAML boolean. false renders nothing.
+  enabled: true
+  # Whole days >= 1 (at most 36500); 0, negative, fractional or leading-zero
+  # values are refused at render time. To stop the sweep set enabled=false.
+  # Default 30 = backup.retentionDays, so a blanked value can survive in
+  # offsite backups for up to ~60 days in total.
+  retentionDays: 30
+  # CronJob schedule (UTC on most clusters). Default 03:17 daily, clear of the
+  # 02:30 backup default.
+  schedule: "17 3 * * *"
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
 
 postgresql:
   enabled: true

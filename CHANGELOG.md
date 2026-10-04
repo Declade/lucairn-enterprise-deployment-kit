@@ -14,6 +14,79 @@ carry a security fix are tagged **[Security]**.
 
 ## [Unreleased]
 
+## [1.9.6] — 2026-10-04 — images `0.5.5`
+
+Kit-only release: the images stay `0.5.5` (same digests as 1.9.5), and no
+migration ceiling changes (veil-witness 10 · audit 7 · id-bridge 4 ·
+sandbox-a 8). It closes the [1.9.5] known gap for audit migration `000007`
+(T-1219).
+
+### Added
+- **Retention for `audit_claim_deliveries` (T-1219) — closes the [1.9.5]
+  known gap.** Audit migration `000007` (applied since 1.9.5) stores, per
+  completed request, the request id, delivery bookkeeping, the output-scan
+  summary (`output_scan_body`) and the signed claim bytes (`claim_raw`). The
+  0.5.5 audit service never removes anything from it. A new sweep now **blanks**
+  the two payload columns — the claim bytes and the scan summary are removed —
+  on `DELIVERED` rows whose `delivered_at` is older than the retention period
+  (default **30 days**):
+
+  ```sql
+  UPDATE audit_claim_deliveries
+     SET claim_raw = NULL, output_scan_body = NULL, updated_at = NOW()
+   WHERE delivery_state = 'DELIVERED'
+     AND delivered_at < now() - interval '30 days'
+     AND (claim_raw IS NOT NULL OR output_scan_body IS NOT NULL);
+  ```
+
+  run in batches of 10,000 rows (one transaction each) under a 5-minute
+  statement timeout, as the migration role `dsa`.
+  - **Rows are blanked, not deleted.** The gateway's audit spill buffer can
+    replay an already-delivered completion event with no maximum age (it is
+    count-capped and drains only on the next audit call). The audit service
+    records the outbox row with `INSERT … ON CONFLICT (event_id) DO NOTHING`;
+    a deleted row would let such a replay create a fresh `PENDING` row and
+    re-send an old claim to the witness. A kept `DELIVERED` row makes the
+    replay a no-op, and that path never reads the blanked columns. What stays
+    — event id, request id, state, counters, timestamps — is bookkeeping; the
+    request id is also kept for good in the append-only `audit_events`.
+  - **Never touched:** `PENDING` / `DELIVERING` rows (in flight), `PARKED`
+    rows, and `audit_events`. A `PARKED` row is the operator's to re-queue,
+    and a blanked scan summary would rebuild a degraded claim, so `PARKED`
+    rows older than the retention period are only **counted**: the run's log
+    line turns into a `WARN` (OPS.md § "Audit claim-delivery retention").
+  - **Helm:** a daily CronJob `audit-claim-delivery-retention` in the audit
+    namespace (`17 3 * * *`), using the bundled audit Postgres image and the
+    `DATABASE_URL` key of the `audit-credentials` Secret (the `dsa` DSN the
+    migration Job already uses). Values `audit.claimDeliveryRetention.{enabled,
+    retentionDays,schedule}`. Renders only with the bundled Postgres; with
+    `audit.postgresql.enabled=false` nothing renders and OPS.md gives the SQL
+    to schedule yourself. No new NetworkPolicy: the audit namespace already
+    allows intra-namespace 5432.
+  - **Compose:** a long-running service `audit-claim-delivery-retention`
+    (image `postgres:16-alpine`, same as `postgres-audit`; network `dsa-audit`
+    only; non-root, read-only rootfs). It starts after `migrate-audit`
+    completes, sweeps once, then once a day. Optional `customer.env` keys:
+    `LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS` (default 30) and
+    `LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED` (default `true`).
+  - **Refused values:** retention must be a whole number of days from 1 to
+    36500. `0`, negatives, fractions and leading zeros are refused (Helm: at
+    render time; Compose: the service exits with an error) instead of
+    blanking fresh rows. To stop the sweep set `enabled=false` /
+    `…_ENABLED=false`.
+  - **Backups:** the 30-day default equals `backup.retentionDays`, so a blanked
+    value can still exist in offsite backups for up to ~60 days in total.
+  - **Logging:** one line per run — cutoff, retention, rows blanked, old
+    `PARKED` rows — never row contents or the connection string.
+  - Suite: `tests/test_audit_claim_delivery_retention.sh` (Helm render and
+    refusals, Compose definition, and a real-Postgres run on the kit-pinned
+    `postgres:16-alpine` digest: migrations 1–7, synthetic rows in all four
+    states, replay idempotency as `audit_app`).
+
+### Changed
+- `tests/test_backup_helm.sh` counts only the backup CronJobs (the audit
+  subchart now renders a second, default-on CronJob).
+
 ## [1.9.5] — 2026-10-04 — images `0.5.5`
 
 ### Read first — upgrading to images `0.5.5`
@@ -85,7 +158,9 @@ earlier kit entries described as "not in the pinned `0.5.4` image".
     CronJob (when enabled) copies the whole audit database. This is a
     deliberate, recorded exception to RELEASING.md step 3, taken because the
     alternative is an audit service that refuses every request. A retention
-    period and a deletion path are tracked in T-1219.
+    period and a deletion path are tracked in T-1219. **Closed in
+    [1.9.6](#196--2026-10-04--images-055):** a default-on retention sweep blanks
+    the claim bytes and scan summary of delivered rows after 30 days.
 
 ### Added
 - **[Security] The `witness-central` topology now refuses to start when the

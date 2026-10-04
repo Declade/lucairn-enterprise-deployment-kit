@@ -20,6 +20,22 @@ receipt, and witness-signature verification; anchors are explicitly not checked.
 > are published at <https://lucairn.eu/security>; the disclosure process and
 > contact are in [`SECURITY.md`](SECURITY.md).
 
+### kit 1.9.6 / chart 1.9.6 (2026-10-04, images 0.5.5) — audit claim-delivery retention
+
+**Upgrade from 1.9.5:** no image, schema or ceiling change — keep
+`LUCAIRN_IMAGE_TAG=0.5.5` / `global.imageTag: "0.5.5"`. The upgrade adds a
+retention sweep for the audit table `audit_claim_deliveries` (T-1219; closes
+the 1.9.5 known gap). Once a day it blanks the signed claim bytes and the
+output-scan summary of rows whose witness delivery finished more than 30 days
+ago. Rows are kept, not deleted. Helm adds a CronJob in the audit namespace;
+Compose adds the service `audit-claim-delivery-retention`, which `bin/lucairn
+up` starts. Its first run clears the backlog accumulated since 1.9.5. Change
+the period with `audit.claimDeliveryRetention.retentionDays` /
+`LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS` (whole days, at least 1), or set
+`…enabled` / `…_ENABLED` to `false` **before upgrading** to keep the 1.9.5
+behaviour. With an external audit Postgres nothing is scheduled; OPS.md
+§ "Audit claim-delivery retention" has the SQL to run yourself.
+
 ### v0.5.5 / chart 1.9.5 (2026-10-04) — sanitizer roster 36 (attribution leak closed), T-1102 gateway key separation
 
 **Read `CHANGELOG.md` `[1.9.5]` → "Read first" before upgrading.** Two steps
@@ -32,7 +48,8 @@ are order-sensitive:
    `customer.env` — sandbox B needs it).
 2. **Database migrations:** the audit ceiling rises 6 → 7 — the migration Job
    creates one new table, `audit_claim_deliveries`, which the 0.5.5 audit
-   service needs (it holds no raw text; no deletion path yet, T-1219). Remove
+   service needs (it holds no raw text; no deletion path in 1.9.5 — the
+   retention sweep ships in 1.9.6, T-1219). Remove
    any `LUCAIRN_MIGRATE_TARGET_AUDIT=6` override from `customer.env` (Helm:
    any `audit.migrations.targetVersion: 6` in your values) — below 7 every
    completed request fails with 503. Other
@@ -960,7 +977,7 @@ matching profile with `--adopt-runtime-profile`.
 1. Unpack the release bundle.
 
 ```bash
-tar -xzf lucairn-enterprise-deployment-kit-1.9.5.tar.gz
+tar -xzf lucairn-enterprise-deployment-kit-1.9.6.tar.gz
 cd lucairn-enterprise-deployment-kit
 ```
 
@@ -3401,7 +3418,7 @@ included in support bundles.
 ### Prerequisite: gateway image >= 0.5.1
 
 This feature first shipped in the gateway image at `0.5.1` (the feature floor);
-the current published release is `0.5.5` (`appVersion: 0.5.5`, chart `v1.9.5`),
+the current published release is `0.5.5` (`appVersion: 0.5.5`, chart `v1.9.6`),
 also published to GHCR. The gateway binary that reads `GATEWAY_TMS_TRUST_ZONES`
 is present from `0.5.1` onward, so any `>= 0.5.1` pin (including `0.5.5`) works.
 Setting `GATEWAY_TMS_TRUST_ZONES` on an **older** image (e.g. `0.5.0`) is a
