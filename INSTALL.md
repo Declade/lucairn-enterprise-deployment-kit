@@ -30,8 +30,9 @@ output-scan summary of rows whose witness delivery finished more than 30 days
 ago. Rows are kept, not deleted. Helm adds a CronJob in the audit namespace;
 Compose adds the service `audit-claim-delivery-retention`, which `bin/lucairn
 up` starts. Its first run clears the backlog accumulated since 1.9.5. Change
-the period with `audit.claimDeliveryRetention.retentionDays` /
-`LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS` (whole days, at least 1), or set
+the period with `audit.claimDeliveryRetention.retention` (e.g. `30d` — whole
+days with a `d` suffix) / `LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS` (whole
+days, at least 1), or set
 `…enabled` / `…_ENABLED` to `false` **before upgrading** to keep the 1.9.5
 behaviour. With an external audit Postgres nothing is scheduled; OPS.md
 § "Audit claim-delivery retention" has the SQL to run yourself.

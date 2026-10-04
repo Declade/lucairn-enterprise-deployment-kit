@@ -665,29 +665,40 @@ UPDATE audit_claim_deliveries
 ### Helm
 
 A CronJob `audit-claim-delivery-retention` in the audit namespace (default
-`dsa-audit`). It runs `psql` from the bundled audit Postgres image and connects
-with the `DATABASE_URL` key of the `audit-credentials` Secret, the same `dsa`
-DSN the migration Job uses. It renders only when the audit subchart uses its
-bundled Postgres (`audit.postgresql.enabled=true`, the default).
+`dsa-audit`). It runs `psql` from `postgres:16-alpine`, pinned by the digest
+`image-manifest.yaml` records (`image_digests.enterprise_kind.postgres`;
+value `audit.claimDeliveryRetention.image`). It connects as the `dsa` role to
+`audit-postgresql:5432` with discrete `PGHOST` / `PGUSER` / `PGDATABASE`
+settings and the password in `PGPASSWORD`, taken from the `POSTGRES_PASSWORD`
+key of the `audit-credentials` Secret (the key the Postgres StatefulSet uses).
+No connection URL is used, and psql's own error text is never logged — a
+failure logs a fixed reason (`auth_failed`, `connection_refused`, …) and the
+psql exit code. It renders only when the audit subchart uses its bundled
+Postgres (`audit.postgresql.enabled=true`, the default).
 
 ```yaml
 audit:
   claimDeliveryRetention:
     enabled: true            # YAML boolean; false renders nothing
-    retentionDays: 30        # whole days, 1..36500
+    retention: 30d           # whole days with a d suffix, 1d..36500d
     schedule: "17 3 * * *"   # daily; clear of the 02:30 backup default
 ```
 
-`retentionDays` below 1 (and fractions, leading zeros, non-numbers) fails the
-render — to stop the sweep, set `enabled: false`. Run it once by hand:
+`retention` is a string on purpose. A bare YAML number in a values file is
+parsed before the chart sees it — `030` becomes 24 (octal), `0x1E` 30, `3e1` a
+float — so any non-string value fails the render, as do `0d`, negatives,
+fractions and leading zeros. To stop the sweep, set `enabled: false`. (The
+pre-release name `retentionDays` is refused with a pointer to `retention`.) Run it once by hand:
 `kubectl -n dsa-audit create job --from=cronjob/audit-claim-delivery-retention audit-retention-manual`,
 then `kubectl -n dsa-audit logs job/audit-retention-manual`.
 
 ### Compose
 
-A long-running service `audit-claim-delivery-retention` (same
-`postgres:16-alpine` image as `postgres-audit`, network `dsa-audit` only). It
-starts after `migrate-audit` completes, sweeps once, then sleeps a day. In
+A long-running service `audit-claim-delivery-retention` (the same
+`postgres:16-alpine` as `postgres-audit`, pinned by the `image-manifest.yaml`
+digest; network `dsa-audit` only). It starts after `migrate-audit` completes,
+sweeps once, then sleeps a day. It connects as `dsa` with `PGHOST` /
+`PGUSER` / `PGDATABASE` and `PGPASSWORD=$POSTGRES_AUDIT_PASSWORD` — no URL. In
 `customer.env` (both optional):
 
 ```bash
@@ -695,9 +706,13 @@ LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS=30      # whole days, 1..36500
 LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=true # exactly true|false
 ```
 
-A refused value makes the service exit with an error, and Docker keeps
-restarting it with back-off so the error stays in the logs. With `ENABLED=false`
-it logs one line and stays stopped. Check it with
+The service uses `restart: unless-stopped`, so it comes back after a Docker
+daemon or host restart. It never exits on its own: a failed sweep is retried
+after 5 minutes, and with `ENABLED=false` it logs one line and then idles
+without contacting the database (the `DAYS` value is not read then, and
+`bin/lucairn doctor` does not check it either). Only a refused value makes it
+exit with an error; Docker restarts it with back-off so the error stays in the
+logs until fixed (`bin/lucairn doctor` reports it before `up`). Check it with
 `docker compose logs audit-claim-delivery-retention`.
 
 ### External Postgres
@@ -727,8 +742,12 @@ SELECT count(*) FROM audit_claim_deliveries
  WHERE delivery_state = 'PARKED' AND parked_at < now() - interval '30 days';
 ```
 
-Or run the kit's own script against your database:
-`DATABASE_URL=postgres://<owner>:<password>@<host>:5432/<db> sh scripts/audit-claim-delivery-retention.sh --once`.
+Or run the kit's own script against your database, with discrete libpq
+settings (the script refuses `DATABASE_URL`: a URL puts the password into a
+string libpq quotes back in its errors):
+`PGHOST=<host> PGPORT=5432 PGUSER=<owner> PGDATABASE=<db> PGPASSWORD=<password> sh scripts/audit-claim-delivery-retention.sh --once`
+(prefer exporting `PGPASSWORD` from your secret store over typing it on the
+command line).
 
 Never `DELETE` from this table: a deleted row lets a late gateway replay queue
 an old claim again.

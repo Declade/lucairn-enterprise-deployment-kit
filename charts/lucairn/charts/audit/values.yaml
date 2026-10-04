@@ -123,7 +123,7 @@ migrations:
 # T-1219 (kit 1.9.6): retention for audit_claim_deliveries (audit migration
 # 000007). A daily CronJob (templates/claim-delivery-retention-cronjob.yaml)
 # BLANKS claim_raw + output_scan_body on DELIVERED rows whose delivered_at is
-# older than retentionDays. It does not delete rows: the row stays as the
+# older than `retention`. It does not delete rows: the row stays as the
 # idempotency record a late gateway replay must find (the gateway spill buffer
 # has no maximum replay age). PENDING / DELIVERING / PARKED rows and
 # audit_events are never touched; old PARKED rows are counted and logged as a
@@ -133,19 +133,33 @@ migrations:
 #
 # Renders only when postgresql.enabled (bundled Postgres) AND enabled. With an
 # external Postgres nothing renders — OPS.md documents the SQL to schedule.
-# The job runs psql from the bundled postgresql.image as the `dsa` role
-# (DATABASE_URL from the audit-credentials Secret, as the migration Job does).
+# The job runs psql as the `dsa` role against <chart>-postgresql with discrete
+# PGHOST/PGUSER/PGDATABASE settings and PGPASSWORD from the audit-credentials
+# Secret key POSTGRES_PASSWORD (never a connection URL).
 claimDeliveryRetention:
   # A YAML boolean. false renders nothing.
   enabled: true
-  # Whole days >= 1 (at most 36500); 0, negative, fractional or leading-zero
-  # values are refused at render time. To stop the sweep set enabled=false.
-  # Default 30 = backup.retentionDays, so a blanked value can survive in
+  # Whole days >= 1 (at most 36500) WITH a `d` suffix, e.g. 30d. A string on
+  # purpose: a bare YAML number in a values file is parsed before the chart
+  # sees it (030 -> octal 24, 0x1E -> 30, 3e1 -> float), so every non-string
+  # value is refused at render time, as are 0d, negatives, fractions and
+  # leading zeros. To stop the sweep set enabled=false.
+  # Default 30d = backup.retentionDays, so a blanked value can survive in
   # offsite backups for up to ~60 days in total.
-  retentionDays: 30
+  # (Renamed from retentionDays before release; setting retentionDays fails
+  # the render with a pointer here.)
+  retention: 30d
   # CronJob schedule (UTC on most clusters). Default 03:17 daily, clear of the
   # 02:30 backup default.
   schedule: "17 3 * * *"
+  # psql client image. Pinned by the digest image-manifest.yaml records for
+  # postgres:16-alpine (image_digests.enterprise_kind.postgres); re-pin both
+  # together. A private-registry mirror overrides repository and keeps the
+  # digest (a byte-identical mirror serves the same digest).
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    digest: "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea"
   resources:
     requests:
       cpu: 10m

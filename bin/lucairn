@@ -4188,20 +4188,33 @@ check_audit_claim_delivery_retention() {
   # refuses a malformed retention setting (it exits non-zero and restarts with
   # back-off) and, like the migrate-* services, bind-mounts its script — a
   # missing script becomes an empty DIRECTORY at the mount path. Catch both
-  # before compose-up. Silent when the configuration is valid.
+  # before compose-up. Silent when the configuration is valid and enabled; one
+  # informational line (rc 0) when the sweep is disabled.
+  #
+  # The script path checked is EXACTLY the one Compose will mount: the bind
+  # source `./scripts/…` resolves against the directory of the selected Compose
+  # file, so there is no fallback to this checkout's copy (sol r1: a fallback
+  # passed for an install directory that lacked the script). Only when no
+  # Compose file is given does the check look beside this CLI.
   local env_file="$1" compose_file="${2:-}" ok=0 script enabled days
-  script="$ROOT/scripts/audit-claim-delivery-retention.sh"
-  if [ -n "$compose_file" ] && [ -f "$(dirname "$compose_file")/scripts/audit-claim-delivery-retention.sh" ]; then
+  if [ -n "$compose_file" ]; then
     script="$(dirname "$compose_file")/scripts/audit-claim-delivery-retention.sh"
+  else
+    script="$ROOT/scripts/audit-claim-delivery-retention.sh"
   fi
   if [ ! -f "$script" ]; then
-    echo "audit retention: scripts/audit-claim-delivery-retention.sh missing beside the selected Compose file — the audit-claim-delivery-retention service will fail to start (T-1219)"
+    echo "audit retention: scripts/audit-claim-delivery-retention.sh missing beside the selected Compose file (${script}) — the audit-claim-delivery-retention service will fail to start (T-1219)"
     ok=1
   fi
   [ -n "$env_file" ] && [ -f "$env_file" ] || return "$ok"
   enabled="$(env_value "$env_file" LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED)"
   case "$enabled" in
-    ''|true|false) ;;
+    ''|true) ;;
+    false)
+      # Mirrors the service: disabled, it never reads the retention value, so
+      # a leftover DAYS (even 0) is not an error here either.
+      echo "audit retention: disabled (LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=false) — claim bytes and scan summaries in audit_claim_deliveries are kept indefinitely (T-1219)"
+      return "$ok" ;;
     *)
       echo "audit retention: LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED='${enabled}' — must be exactly true or false; the retention service will refuse to run (T-1219)"
       ok=1 ;;

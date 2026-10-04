@@ -50,10 +50,24 @@
 #
 # ── CONFIGURATION (environment) ───────────────────────────────────────────────
 #
-#   DATABASE_URL  required; the audit database as the migration role `dsa`
-#                 (the runtime role audit_app may not update these columns).
+#   Connection — discrete libpq variables, NEVER a URL (kit 1.9.6 sol r1):
+#   PGHOST        required; host name, IP or socket directory (letters, digits,
+#                 . _ : / - only).
+#   PGPORT        default 5432; 1..65535.
+#   PGUSER        required; the migration role `dsa` (the runtime role
+#                 audit_app may not update these columns).
+#   PGDATABASE    required; the audit database name.
+#   PGPASSWORD    required; read by libpq from the environment only. It is
+#                 never part of a connection string, so no libpq diagnostic can
+#                 quote it, and psql diagnostics are not logged anyway (below).
+#   PGSSLMODE     optional; passed through to libpq.
+#   DATABASE_URL  is REFUSED if set: a URL carries the password inside a string
+#                 libpq quotes back in its parse errors.
+#
 #   LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED   exactly `true` (default)
-#                 or `false`. Anything else is refused.
+#                 or `false`. Anything else is refused. false = nothing is
+#                 checked or blanked; in loop mode the process logs one line
+#                 and then idles (so a restart policy never restart-spams).
 #   LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS      whole days >= 1, default
 #                 30, at most 36500. 0, negatives and leading zeros are
 #                 refused — to stop the sweep, set ENABLED=false.
@@ -68,8 +82,10 @@
 #
 # Every run prints exactly one result line: cutoff timestamp, retention, number
 # of DELIVERED rows blanked, number of old PARKED rows left as they are. It never
-# prints row contents, ids, or the connection string. psql errors are printed
-# with any `user:password@` part of a URL masked.
+# prints row contents, ids, or connection settings. psql's own diagnostics are
+# NEVER printed (libpq quotes connection parameters back in them): a failure is
+# logged as a fixed reason word (auth_failed, connection_refused, …) plus the
+# psql exit code.
 
 set -eu
 
@@ -95,10 +111,44 @@ if [ "${1:-}" = "--once" ]; then
   ONCE=1
 fi
 
+case "$INTERVAL" in
+  ''|*[!0-9]*) fatal "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_INTERVAL_SECONDS must be a whole number of seconds (got '${INTERVAL}')" ;;
+esac
+[ "${#INTERVAL}" -le 7 ] \
+  || fatal "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_INTERVAL_SECONDS is out of range (got '${INTERVAL}')"
+LOOP=1
+if [ "$ONCE" -eq 1 ] || [ "$INTERVAL" -eq 0 ]; then
+  LOOP=0
+fi
+
+# Background sleep the signal trap must stop (a bare `sleep` in the foreground
+# would delay SIGTERM handling until it returns).
+SLEEP_PID=""
+on_signal() {
+  if [ -n "$SLEEP_PID" ]; then kill "$SLEEP_PID" 2>/dev/null || true; fi
+  log "level=INFO stopping on signal"
+  exit 0
+}
+# pause <seconds> — interruptible sleep.
+pause() {
+  sleep "$1" &
+  SLEEP_PID=$!
+  wait "$SLEEP_PID" || true
+  SLEEP_PID=""
+}
+
 case "$ENABLED" in
   true) ;;
   false)
+    # Disabled: the retention value is NOT checked (nothing will use it), the
+    # database is not contacted. Loop mode (the Compose service, restart
+    # policy unless-stopped) idles after this one line instead of exiting, so
+    # the container neither crash-loops nor restart-spams the log.
     log "level=INFO disabled (LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=false); nothing blanked"
+    if [ "$LOOP" -eq 1 ]; then
+      trap on_signal TERM INT
+      while :; do pause 86400; done
+    fi
     exit 0 ;;
   *) fatal "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED must be exactly true or false (got '${ENABLED}')" ;;
 esac
@@ -111,19 +161,30 @@ esac
 [ "${#DAYS}" -le 5 ] && [ "$DAYS" -le 36500 ] \
   || fatal "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS must be at most 36500 (got '${DAYS}')"
 
-case "$INTERVAL" in
-  ''|*[!0-9]*) fatal "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_INTERVAL_SECONDS must be a whole number of seconds (got '${INTERVAL}')" ;;
-esac
-[ "${#INTERVAL}" -le 7 ] \
-  || fatal "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_INTERVAL_SECONDS is out of range (got '${INTERVAL}')"
-
 case "$BATCH" in
   ''|*[!0-9]*|0*) fatal "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_BATCH_SIZE must be a whole number >= 1 (got '${BATCH}')" ;;
 esac
 [ "${#BATCH}" -le 6 ] && [ "$BATCH" -le 100000 ] \
   || fatal "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_BATCH_SIZE must be at most 100000 (got '${BATCH}')"
 
-[ -n "${DATABASE_URL:-}" ] || fatal "DATABASE_URL is not set"
+# ── connection settings ── never echo a value here: a mis-pasted URL in any of
+# these variables would carry the password.
+[ -z "${DATABASE_URL:-}" ] \
+  || fatal "DATABASE_URL is set; this sweep does not read connection URLs (a URL embeds the password, which libpq quotes back in its errors). Set PGHOST, PGPORT, PGUSER, PGDATABASE and PGPASSWORD instead, and unset DATABASE_URL."
+for _v in PGHOST PGUSER PGDATABASE; do
+  eval "_val=\${$_v:-}"
+  [ -n "$_val" ] || fatal "$_v is not set"
+  case "$_val" in
+    *[!A-Za-z0-9._:/-]*) fatal "$_v contains characters outside [A-Za-z0-9._:/-] (value not shown: it may be a mis-pasted connection string)" ;;
+  esac
+done
+PGPORT="${PGPORT:-5432}"
+case "$PGPORT" in
+  ''|*[!0-9]*|0*) fatal "PGPORT must be a port number 1..65535 (value not shown)" ;;
+esac
+[ "${#PGPORT}" -le 5 ] && [ "$PGPORT" -le 65535 ] || fatal "PGPORT must be a port number 1..65535 (value not shown)"
+[ -n "${PGPASSWORD:-}" ] || fatal "PGPASSWORD is not set"
+unset _v _val
 
 command -v psql >/dev/null 2>&1 || fatal "psql not found in this image"
 
@@ -133,19 +194,41 @@ PGTZ=UTC
 PGAPPNAME="$LOG_TAG"
 PGCONNECT_TIMEOUT=10
 PGOPTIONS="-c statement_timeout=300000 -c lock_timeout=10000"
-export PGTZ PGAPPNAME PGCONNECT_TIMEOUT PGOPTIONS
+export PGTZ PGAPPNAME PGCONNECT_TIMEOUT PGOPTIONS PGPORT
 
-scrub() {
-  sed -e 's#://[^/@ ]*@#://***:***@#g' -e 's#password=[^ ]*#password=***#g'
+# psql's stderr goes to a private file that is only ever CLASSIFIED, never
+# printed, and removed on exit.
+umask 077
+ERRDIR="$(mktemp -d "${TMPDIR:-/tmp}/t1219-retention.XXXXXX")" || fatal "cannot create a private temp directory"
+ERRF="$ERRDIR/psql.err"
+trap 'rm -rf "$ERRDIR"' EXIT
+
+# psql_reason — map the captured diagnostics to a fixed word.
+psql_reason() {
+  if grep -qi 'password authentication failed\|no password supplied\|authentication failed' "$ERRF" 2>/dev/null; then echo auth_failed
+  elif grep -qi 'could not translate host name\|name or service not known\|name does not resolve' "$ERRF" 2>/dev/null; then echo host_unresolvable
+  elif grep -qi 'connection refused' "$ERRF" 2>/dev/null; then echo connection_refused
+  elif grep -qi 'timeout expired' "$ERRF" 2>/dev/null; then echo connect_timeout
+  elif grep -qi 'statement timeout' "$ERRF" 2>/dev/null; then echo statement_timeout
+  elif grep -qi 'lock timeout' "$ERRF" 2>/dev/null; then echo lock_timeout
+  elif grep -qi 'permission denied' "$ERRF" 2>/dev/null; then echo permission_denied
+  elif grep -qi 'ssl' "$ERRF" 2>/dev/null; then echo tls_error
+  elif grep -qi 'does not exist' "$ERRF" 2>/dev/null; then echo object_missing
+  else echo unclassified
+  fi
 }
 
 # run_psql <psql args...> — SQL on stdin. Prints psql's stdout on success; on
-# failure prints the (scrubbed) output to stderr and returns 1.
+# failure logs a fixed reason (never psql's own text) and returns 1.
 run_psql() {
-  _out="$(psql -X -q -t -A -v ON_ERROR_STOP=1 -d "$DATABASE_URL" "$@" 2>&1)" || {
-    printf '%s\n' "$_out" | scrub >&2
+  _rc=0
+  _out="$(psql -X -w -q -t -A -v ON_ERROR_STOP=1 "$@" 2>"$ERRF")" || _rc=$?
+  if [ "$_rc" -ne 0 ]; then
+    err "level=ERROR psql failed: reason=$(psql_reason) psql_exit=${_rc} (psql diagnostics are not logged; they can quote connection settings)"
+    : > "$ERRF"
     return 1
-  }
+  fi
+  : > "$ERRF"
   printf '%s' "$_out"
 }
 
@@ -230,18 +313,17 @@ SQL
   return 0
 }
 
-if [ "$ONCE" -eq 1 ] || [ "$INTERVAL" -eq 0 ]; then
+if [ "$LOOP" -eq 0 ]; then
   sweep_once
   exit $?
 fi
 
-trap 'log "level=INFO stopping on signal"; exit 0' TERM INT
+trap on_signal TERM INT
 while :; do
   if sweep_once; then
-    sleep "$INTERVAL" &
+    pause "$INTERVAL"
   else
     err "level=ERROR run failed; retrying in ${RETRY_SECONDS}s"
-    sleep "$RETRY_SECONDS" &
+    pause "$RETRY_SECONDS"
   fi
-  wait $! || true
 done

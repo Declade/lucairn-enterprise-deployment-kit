@@ -2,7 +2,7 @@
   T-1219 (kit 1.9.6) — retention sweep for audit_claim_deliveries.
 
   Daily CronJob that BLANKS claim_raw + output_scan_body on DELIVERED rows whose
-  delivered_at is older than claimDeliveryRetention.retentionDays. It never
+  delivered_at is older than claimDeliveryRetention.retention ("<N>d"). It never
   deletes a row (the row is the idempotency record a late gateway spill-buffer
   replay must find — that buffer has no maximum replay age), never touches
   PENDING / DELIVERING / PARKED rows, and never touches audit_events. The
@@ -27,22 +27,36 @@
 {{- fail (printf "[audit] audit.claimDeliveryRetention.enabled must be a YAML boolean (true/false), but a %s was given (%v). A quoted string is ambiguous for a data-retention switch; use --set audit.claimDeliveryRetention.enabled=false (Helm parses that as a boolean)." (kindOf $enabled) $enabled) -}}
 {{- end -}}
 {{- if $enabled -}}
-{{- $rawDays := $r.retentionDays -}}
-{{- if kindIs "invalid" $rawDays -}}
-{{- fail "[audit] audit.claimDeliveryRetention.retentionDays is not set. Set a whole number of days >= 1 (default 30), or disable the sweep with audit.claimDeliveryRetention.enabled=false." -}}
+{{- /* sol r1 (kit 1.9.6): the retention period is a STRING "<N>d", never a
+       YAML number. A number in a values FILE is parsed by YAML 1.1 before any
+       template sees it — `030` arrives as 24 (octal), `0x1E` as 30, `3e1` /
+       `30.0` as floats — so a mistyped value could silently shorten the
+       period. "<N>d" is always a string, and every non-string value is
+       refused here; no number conversion happens before the regex. */ -}}
+{{- if hasKey $r "retentionDays" -}}
+{{- fail "[audit] audit.claimDeliveryRetention.retentionDays was renamed to audit.claimDeliveryRetention.retention and takes a string of whole days with a d suffix, e.g. retention: 30d (a bare YAML number such as 030 is read as octal 24 before the chart sees it). Remove retentionDays and set retention (T-1219)." -}}
 {{- end -}}
-{{- /* Check the RAW value before any int conversion: sprig `int` reads a
-       leading zero as octal and coerces booleans (see _migration-cap.tpl). */ -}}
-{{- if not (regexMatch "^[1-9][0-9]{0,4}$" (toString $rawDays)) -}}
-{{- fail (printf "[audit] audit.claimDeliveryRetention.retentionDays must be a whole number of days >= 1 written in plain decimal (no sign, fraction or leading zero), got %v (%s). 0 or a negative value would blank delivery records immediately; to stop the sweep set audit.claimDeliveryRetention.enabled=false instead (T-1219)." $rawDays (kindOf $rawDays)) -}}
+{{- $raw := $r.retention -}}
+{{- if kindIs "invalid" $raw -}}
+{{- fail "[audit] audit.claimDeliveryRetention.retention is not set. Set whole days >= 1 with a d suffix, e.g. retention: 30d (default), or disable the sweep with audit.claimDeliveryRetention.enabled=false." -}}
 {{- end -}}
-{{- $days := $rawDays | int -}}
+{{- if not (kindIs "string" $raw) -}}
+{{- fail (printf "[audit] audit.claimDeliveryRetention.retention must be a string of whole days with a d suffix, e.g. retention: 30d, but YAML parsed the given value as a %s (%v). A bare number is refused because YAML reads 030 as octal 24, 0x1E as 30 and 3e1 as a float before the chart sees it (T-1219)." (kindOf $raw) $raw) -}}
+{{- end -}}
+{{- if not (regexMatch "^[1-9][0-9]{0,4}d$" $raw) -}}
+{{- fail (printf "[audit] audit.claimDeliveryRetention.retention must be whole days >= 1 with a d suffix and no sign, fraction or leading zero (e.g. 30d), got %q. 0d or a negative value would blank delivery records immediately; to stop the sweep set audit.claimDeliveryRetention.enabled=false instead (T-1219)." $raw) -}}
+{{- end -}}
+{{- $days := ($raw | trimSuffix "d" | atoi) -}}
 {{- if or (lt $days 1) (gt $days 36500) -}}
-{{- fail (printf "[audit] audit.claimDeliveryRetention.retentionDays must be between 1 and 36500, got %d (T-1219)." $days) -}}
+{{- fail (printf "[audit] audit.claimDeliveryRetention.retention must be between 1d and 36500d, got %q (T-1219)." $raw) -}}
 {{- end -}}
 {{- $schedule := (default "" $r.schedule | toString | trim) -}}
 {{- if not $schedule -}}
 {{- fail "[audit] audit.claimDeliveryRetention.schedule is empty. Give a cron schedule (default \"17 3 * * *\") or disable the sweep with audit.claimDeliveryRetention.enabled=false." -}}
+{{- end -}}
+{{- $img := (default dict $r.image) -}}
+{{- if or (not $img.repository) (not $img.tag) -}}
+{{- fail "[audit] audit.claimDeliveryRetention.image.repository and .tag must be set (default postgres:16-alpine, digest-pinned)." -}}
 {{- end -}}
 {{- if .Values.postgresql.enabled }}
 apiVersion: batch/v1
@@ -85,8 +99,11 @@ spec:
           {{- end }}
           containers:
             - name: sweep
-              # The bundled audit Postgres image (psql client); no new image.
-              image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+              # postgres:16-alpine pinned by the digest the kit records in
+              # image-manifest.yaml (enterprise_kind.postgres) — psql client
+              # only; no new image (tests/test_audit_claim_delivery_retention.sh
+              # asserts the digest matches the manifest).
+              image: "{{ $img.repository }}:{{ $img.tag }}{{ if $img.digest }}@{{ $img.digest }}{{ end }}"
               imagePullPolicy: IfNotPresent
               command: ["/bin/sh", "-c"]
               args:
@@ -95,13 +112,26 @@ spec:
               env:
                 - name: HOME
                   value: /tmp
-                # Migration-role (`dsa`) DSN of the bundled audit Postgres —
-                # the same Secret key the migration Job uses.
-                - name: DATABASE_URL
+                # Discrete connection settings for the migration role (`dsa`)
+                # of the bundled audit Postgres — never a URL: libpq quotes a
+                # malformed URL (password included) back in its errors. The
+                # password comes from the same Secret key the Postgres
+                # StatefulSet itself uses.
+                - name: PGHOST
+                  value: "{{ .Chart.Name }}-postgresql"
+                - name: PGPORT
+                  value: "5432"
+                - name: PGUSER
+                  value: {{ .Values.postgresql.user | quote }}
+                - name: PGDATABASE
+                  value: {{ .Values.postgresql.database | quote }}
+                - name: PGSSLMODE
+                  value: {{ .Values.global.postgresqlSslmode | default "disable" | quote }}
+                - name: PGPASSWORD
                   valueFrom:
                     secretKeyRef:
                       name: {{ .Chart.Name }}-credentials
-                      key: DATABASE_URL
+                      key: POSTGRES_PASSWORD
                 - name: LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED
                   value: "true"
                 - name: LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS
