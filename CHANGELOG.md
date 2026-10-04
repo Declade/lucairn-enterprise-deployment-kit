@@ -19,8 +19,8 @@ carry a security fix are tagged **[Security]**.
 ### Read first — upgrading to images `0.5.5`
 
 `0.5.5` is the first image release since `0.5.4` (2026-06-19). It is built from
-`dual-sandbox-architecture` main `f70d0fe8` or later
-(build commit: TODO-0.5.5-build-commit), so it carries everything below that
+`dual-sandbox-architecture` main `168874d8`
+(build commit `168874d8161bb2d339d5bdc3440098cbd1311ff6`, built and signed 2026-10-04), so it carries everything below that
 earlier kit entries described as "not in the pinned `0.5.4` image".
 
 - **⚠ Release ordering — the gateway refuses to boot while it holds a `dsa-ai`
@@ -36,7 +36,8 @@ earlier kit entries described as "not in the pinned `0.5.4` image".
   needs. Doctor checks the value, not the order. From this image on, Sensitive Mode
   certificates the gateway seals read `overall_verdict: failed` until the
   gateway has its own witness identity; the Lucairn desktop app shows that
-  signed verdict from version TODO-0.5.5-desktop-version. Details: the T-1102
+  signed verdict in builds from desktop source `4087d586`
+  (2026-09-28, T-1114) onward — the app has no separate release number yet. Details: the T-1102
   entry under **Changed** below.
 - **Sanitizer roster: 34 → 36 (T-768).** `attribution_person` and
   `labeled_id` are now on both shipped surfaces. The ServiceNow attribution
@@ -51,8 +52,9 @@ earlier kit entries described as "not in the pinned `0.5.4` image".
   `lucairn-dashboard` stays `0.8.2`.
 - **Migration review (docs/RELEASING.md § Migration review) — ceilings
   unchanged: veil-witness 10 · audit 6 · id-bridge 4 · sandbox-a 8.** The
-  `0.5.5` source tree carries migrations above two ceilings (to be confirmed
-  against the published images' `/migrations`: TODO-0.5.5-image-migrations-measured):
+  `0.5.5` source tree carries migrations above two ceilings (measured 2026-10-04
+  in the published `0.5.5` images' `/migrations`: veil-witness up to `000014`,
+  audit up to `000007`, id-bridge `000004`, sandbox-a `000008`):
   - **veil-witness `000011`–`000014`** (`certificate_persistence_outbox`,
     `claim_receipts`, `decoder_expiry`, `partition_veil_certificates`). Not
     applied: `000011`/`000012` hold un-redacted claim data with no deletion
