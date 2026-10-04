@@ -1,7 +1,0 @@
-sanitizer:
-  presidio:
-    custom_recognizers:
-    - vin
-    - 'us_ssn'
-    - "steuer_id"   # c
-  other: x

@@ -1,5 +1,0 @@
-sanitizer:
-    presidio:
-          custom_recognizers:
-           - vin
-          default_language: de

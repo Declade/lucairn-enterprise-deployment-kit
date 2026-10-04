@@ -1,6 +1,0 @@
-sanitizer:
-  presidio:
-    custom_recognizers:
-      - vin
-  a: &x 1
-  b: &x 2

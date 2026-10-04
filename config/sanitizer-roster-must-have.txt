@@ -4,8 +4,9 @@
 #   - config/default-sanitizer.yaml (Compose), and
 #   - charts/lucairn/charts/sandbox-a/templates/sanitizer-configmap.yaml (Helm).
 # tests/test_sanitizer_roster_must_have.sh pins both shipped surfaces against
-# this list (and against each other); `bin/lucairn doctor` checks the ACTIVE
-# sanitizer config of an install against it and fails when a name is missing.
+# this list (and against each other). There is no runtime doctor check of an
+# install's ACTIVE config yet (follow-up: ask the pinned image's own loader);
+# operators with their own sanitizer config compare against this list by hand.
 #
 # Rules:
 #   - One recognizer name per line; `#` starts a comment.

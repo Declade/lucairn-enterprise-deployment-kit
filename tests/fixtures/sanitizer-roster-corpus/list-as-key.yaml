@@ -1,4 +1,0 @@
-sanitizer:
-  presidio:
-    custom_recognizers: []
-  extra: { [1, 2], b: "x"}
