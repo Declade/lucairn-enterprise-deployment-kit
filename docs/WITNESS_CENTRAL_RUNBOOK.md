@@ -84,8 +84,8 @@ and the LLM still receives only sanitized text.
   scanning layers, and identical values can reuse a single verdict instead of
   being rescanned: within a request via duplicate-leaf dedupe, across
   requests via the sanitize cache once cache-replay reuse is fully reflected
-  in certificate coverage (both are sanitizer releases after `0.5.4`
-  capabilities; on `0.5.4`, enabling `SANITIZE_CACHE_ENABLED` is not
+  in certificate coverage (both ship in sanitizer `0.5.5`, the tag this kit
+  pins; on `0.5.4` and older, enabling `SANITIZE_CACHE_ENABLED` is not
   recommended). Both PARTIAL causes write the same `COMPLETENESS_PARTIAL`
   value on the cert — an operator tells them apart via the witness result's
   `MissingServices` list (a service's claim never arrived, e.g. this

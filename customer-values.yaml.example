@@ -64,7 +64,7 @@ global:
   #
   # ⛔ Do NOT set `global.l3Required` — it is RETIRED and the render refuses it.
   imageRegistry: ghcr.io/declade
-  imageTag: "0.5.4"
+  imageTag: "0.5.5"
   imagePullSecrets:
     - name: lucairn-registry
   # imagePullDockerConfigJson is ALWAYS passed via `--set-file ...` at

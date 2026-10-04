@@ -98,9 +98,11 @@ containerSecurityContext:
 # The first two create tables holding un-redacted personal data for which this
 # kit ships NO deletion path.
 #
-# Timing matters and the honest version is: the tag pinned today (0.5.4) does
-# NOT carry them — its /migrations stops at 000010. The exposure is the next
-# image bump, which an uncapped `up` would have taken silently.
+# Timing matters: up to 0.5.4 the pinned tag did NOT carry them (its
+# /migrations stopped at 000010). The 0.5.5 tag pinned now is built from DSA
+# main >= f70d0fe8, which carries 000011-000014 — exactly the bump an uncapped
+# `up` would have taken silently. The witness at 0.5.5 runs on a v10 schema in
+# its documented reduced-durability posture (no outbox / claim-receipt table).
 #
 # 000013 is the decoder-expiry retention machinery — the migration you would
 # want — but `goto 13` applies 011 and 012 on the way, so it cannot be taken

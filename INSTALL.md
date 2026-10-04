@@ -20,6 +20,33 @@ receipt, and witness-signature verification; anchors are explicitly not checked.
 > are published at <https://lucairn.eu/security>; the disclosure process and
 > contact are in [`SECURITY.md`](SECURITY.md).
 
+### v0.5.5 / chart 1.9.5 (TODO-0.5.5-release-date) — sanitizer roster 36 (attribution leak closed), T-1102 gateway key separation
+
+**Read `CHANGELOG.md` `[1.9.5]` → "Read first" before upgrading.** Two steps
+are order-sensitive:
+
+1. **T-1102:** the 0.5.5 gateway refuses to boot while it holds a `dsa-ai` or
+   sandbox-B signing key. On Helm set `gateway.secrets.values.veilAISigningKey`
+   to `""` **before** `helm upgrade`. On Compose the shipped gateway service
+   receives none of those keys (keep `LCR_SANDBOX_B_SIGNING_KEY` in
+   `customer.env` — sandbox B needs it).
+2. **Database migrations:** ceilings are unchanged (veil-witness 10 · audit 6 ·
+   id-bridge 4 · sandbox-a 8); see the changelog's migration review.
+
+**Upgrade from v0.5.4:** pull the new images (`LUCAIRN_IMAGE_TAG=0.5.5` in
+`customer.env`; or `global.imageTag: "0.5.5"` in Helm values). The 12 `dsa-*`
+images are republished + cosign-signed + Rekor-logged at `0.5.5`
+(`bin/lucairn verify-images --tag 0.5.5`). `dsa-pii-ml` stays `0.5.1`
+(independent cadence) and `lucairn-dashboard` stays `0.8.2`.
+
+**What changed for the sanitizer:** the shipped roster grows from 34 to 36
+recognizers — `attribution_person` (closes the ServiceNow `"Reviewed by
+<Name>"` leak) and `labeled_id` (digit runs next to an ID label). Restart the
+sanitizer so it loads the new config (Helm: `kubectl -n <namespace> rollout
+restart deployment/sandbox-a`; Compose: `docker compose up -d
+--force-recreate sanitizer`). A Compose install with its OWN sanitizer config
+must add the two names itself.
+
 ### v0.5.4 / chart 1.9.4 (2026-06-19) — per-key MCP tool-scope enforcement + B2 website tool_allowlist
 
 **Upgrade from v0.5.3:** pull the new images (`LUCAIRN_IMAGE_TAG=0.5.4` in
@@ -682,8 +709,8 @@ the full breakdown. You need `cosign` (>= v2.0) and a digest resolver
 (`docker buildx`, `crane`, or `skopeo`) on PATH:
 
 ```bash
-bin/lucairn verify-images --tag 0.5.4
-# or a single image, by its signed digest (from keys/image-digests-0.5.4.txt):
+bin/lucairn verify-images --tag 0.5.5
+# or a single image, by its signed digest (from keys/image-digests-0.5.5.txt):
 cosign verify --key keys/lucairn-cosign.pub \
   ghcr.io/declade/dsa-gateway@sha256:<digest-from-the-record-file>
 ```
@@ -701,12 +728,12 @@ log (signed by the same Image Signing Key — no extra key or vendor). Fetch +
 verify it, and inspect exactly what is in each image:
 
 ```bash
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.4
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.5
 # save the raw verified SBOM:
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.4 --download dsa-gateway-0.5.4.spdx.json
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.5 --download dsa-gateway-0.5.5.spdx.json
 # or with raw cosign:
 cosign verify-attestation --type spdxjson \
-  --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.4
+  --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.5
 ```
 
 See **OPS.md → "Fetch + verify the Software Bill of Materials (SBOM)"** for the
@@ -927,7 +954,7 @@ matching profile with `--adopt-runtime-profile`.
 1. Unpack the release bundle.
 
 ```bash
-tar -xzf lucairn-enterprise-deployment-kit-1.9.4.tar.gz
+tar -xzf lucairn-enterprise-deployment-kit-1.9.5.tar.gz
 cd lucairn-enterprise-deployment-kit
 ```
 
@@ -1063,7 +1090,7 @@ the **Key Ceremony Runbook** (`docs/KEY_CEREMONY_RUNBOOK.md` § 6 "Producing the
 witness-signed manifest blob"). The invocation is:
 
 The `sign-manifest` tool ships **inside the pinned
-`dsa-veil-witness:0.5.4@sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523`
+`dsa-veil-witness:0.5.5@sha256:TODO-0.5.5-digest-pending`
 image** (`/usr/local/bin/sign-manifest`), so the ceremony is turnkey on the
 ceremony host — no Go toolchain, no build-from-source, no dev-mode fallback.
 Use this canonical command; it keeps the witness seed out of the host Docker
@@ -1084,7 +1111,7 @@ docker run --rm \
   --entrypoint /bin/sh \
   -v "$PWD/keys.json:/keys.json:ro" \
   -v "$seed_file:/run/secrets/witness-signing-key-hex:ro" \
-  ghcr.io/declade/dsa-veil-witness:0.5.4@sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523 \
+  ghcr.io/declade/dsa-veil-witness:0.5.5@sha256:TODO-0.5.5-digest-pending \
   -ec 'exec sign-manifest --keys-json /keys.json --issuer "$1" --witness-signing-key-hex "$(cat /run/secrets/witness-signing-key-hex)" --witness-key-id witness_manifest_v1' \
   sign-manifest "$LCR_ISSUER" \
   > witness-signed-manifest.json
@@ -1095,7 +1122,7 @@ docker run --rm \
 ```
 
 > **Flags** (run `docker run --rm --entrypoint sign-manifest
-> ghcr.io/declade/dsa-veil-witness:0.5.4@sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523 -h`
+> ghcr.io/declade/dsa-veil-witness:0.5.5@sha256:TODO-0.5.5-digest-pending -h`
 > to confirm against your pin):
 > `--keys-json` (required), `--issuer` (required; matches `LCR_ISSUER` / legacy
 > `VEIL_ISSUER` at the gateway), `--witness-signing-key-hex` (required; the
@@ -1251,11 +1278,11 @@ active. Provision the full 16 GB RAM before enabling this mode (see
 > verdict instead of being rescanned, through two separate mechanisms —
 > within a request via duplicate-leaf dedupe, and across requests via the
 > sanitize cache (`SANITIZE_CACHE_ENABLED`). Both are version-scoped: this
-> kit currently pins sanitizer `0.5.4` (`image-manifest.yaml`), which
-> predates within-request dedupe entirely, and predates the fix that makes
-> cache-replay reuse fully reflected in certificate coverage. On `0.5.4`,
-> enabling `SANITIZE_CACHE_ENABLED` is not recommended; check your installed
-> sanitizer release for which reuse mechanisms are safe to enable. That is a
+> kit pins sanitizer `0.5.5` (`image-manifest.yaml`), built from DSA main
+> `f70d0fe8` or later, whose source carries both within-request dedupe
+> (T-546) and the fix that makes cache-replay reuse fully reflected in
+> certificate coverage (T-409). Sanitizer `0.5.4` and older predate both; on
+> those, enabling `SANITIZE_CACHE_ENABLED` is not recommended. That is a
 > coverage guarantee, not a per-byte-freshly-scanned guarantee.
 
 > **`LUCAIRN_L3_REQUIRED` IS RETIRED — it is now two independent flags, and
@@ -3368,9 +3395,9 @@ included in support bundles.
 ### Prerequisite: gateway image >= 0.5.1
 
 This feature first shipped in the gateway image at `0.5.1` (the feature floor);
-the current published release is `0.5.4` (`appVersion: 0.5.4`, chart `v1.9.4`),
+the current published release is `0.5.5` (`appVersion: 0.5.5`, chart `v1.9.5`),
 also published to GHCR. The gateway binary that reads `GATEWAY_TMS_TRUST_ZONES`
-is present from `0.5.1` onward, so any `>= 0.5.1` pin (including `0.5.4`) works.
+is present from `0.5.1` onward, so any `>= 0.5.1` pin (including `0.5.5`) works.
 Setting `GATEWAY_TMS_TRUST_ZONES` on an **older** image (e.g. `0.5.0`) is a
 **silent no-op** — the var is present in the ConfigMap but that older gateway
 does not read it.
@@ -3388,8 +3415,8 @@ the image is new enough:
 tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES is set but LUCAIRN_IMAGE_TAG="latest" is not an exact semver pin; doctor cannot confirm the gateway image is >= 0.5.1. Pin an exact tag (e.g. 0.5.1) or unset the policy.
 ```
 
-Pin `LUCAIRN_IMAGE_TAG=0.5.4` in `customer.env` (Compose) or
-`--set global.imageTag=0.5.4` (Helm) — the current published release (any exact
+Pin `LUCAIRN_IMAGE_TAG=0.5.5` in `customer.env` (Compose) or
+`--set global.imageTag=0.5.5` (Helm) — the current published release (any exact
 `>= 0.5.1` pin satisfies the feature floor) — then apply the policy.
 
 ### Helm

@@ -31,7 +31,7 @@ WITNESS_IMAGE="$(ruby -ryaml -e '
   manifest = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
   entry = manifest.fetch("image_digests").fetch("signed_artifacts").fetch("dsa-veil-witness")
   ref, digest = entry.fetch("ref"), entry.fetch("digest")
-  abort "invalid witness image ref" unless ref == "ghcr.io/declade/dsa-veil-witness:0.5.4"
+  abort "invalid witness image ref" unless ref == "ghcr.io/declade/dsa-veil-witness:0.5.5"
   abort "invalid witness image digest" unless digest.match?(/\Asha256:[0-9a-f]{64}\z/)
   print "#{ref}@#{digest}"
 ' "$IMAGE_MANIFEST")"

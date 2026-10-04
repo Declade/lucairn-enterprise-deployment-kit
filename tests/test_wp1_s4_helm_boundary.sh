@@ -35,7 +35,7 @@ secrets:
     postgresPassword: "${TEST_SECRET_VALUE}"
 global:
   imageRegistry: ""
-  imageTag: "0.5.4"
+  imageTag: "0.5.5"
   imagePullSecrets: []
   postgresqlSslmode: disable
   dsaServiceToken: ""

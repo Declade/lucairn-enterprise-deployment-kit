@@ -14,10 +14,10 @@
 #   The veil-witness SOURCE TREE carries 000011_certificate_persistence_outbox,
 #   000012_claim_receipts (table witness_claim_receipts) and
 #   000013_decoder_expiry. The first two create tables holding un-redacted
-#   personal data and this kit ships NO deletion path for either. The tag pinned
-#   today (0.5.4) carries none of them — measured, its /migrations stops at
-#   000010 — so the exposure is the NEXT image bump, which an uncapped `up`
-#   would have taken silently, with nothing in the chart or the release
+#   personal data and this kit ships NO deletion path for either. Up to 0.5.4
+#   the pinned tag carried none of them (measured, its /migrations stopped at
+#   000010); 0.5.5 (built from DSA main >= f70d0fe8) carries them — the bump an
+#   uncapped `up` would have taken silently, with nothing in the chart or the release
 #   checklist positioned to notice. 000013 is the retention machinery, but
 #   `goto 13` applies 011+012 on the way, so it cannot be taken without them.
 #
@@ -241,7 +241,7 @@ secrets:
     signingKey: "${TEST_SIGNING_KEY}"
 global:
   imageRegistry: ""
-  imageTag: "0.5.4"
+  imageTag: "0.5.5"
   imagePullSecrets: []
   postgresqlSslmode: disable
   dsaServiceToken: ""
@@ -684,7 +684,7 @@ secrets:
     postgresPassword: "${TEST_SECRET_VALUE}"
 global:
   imageRegistry: ""
-  imageTag: "0.5.4"
+  imageTag: "0.5.5"
   imagePullSecrets: []
   postgresqlSslmode: disable
   dsaServiceToken: ""

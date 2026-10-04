@@ -42,11 +42,12 @@
   000011 and 000012 create tables holding un-redacted personal data for which NO
   deletion / retention path exists in this kit.
 
-  ⚑ Be precise about WHEN: the image tag this kit currently pins (0.5.4) does NOT
-  carry them — measured, its /migrations stops at 000010_conversation_id. The
-  exposure is the NEXT image bump, not today's install. That is exactly the
-  window this cap exists to hold open, and exactly why the release checklist,
-  not the chart, is where the decision belongs.
+  ⚑ Be precise about WHEN: up to 0.5.4 the pinned image did NOT carry them
+  (measured, its /migrations stopped at 000010_conversation_id). The 0.5.5 tag
+  this kit now pins is built from DSA main >= f70d0fe8, whose source tree DOES
+  carry them (veil-witness up to 000014, audit up to 000007) — this cap is what
+  keeps a routine 0.5.5 install from applying them. The release checklist, not
+  the chart, is where raising a ceiling is decided.
 
   ⚑ And note the trap in 000013: it is the decoder-expiry retention machinery —
   the thing you would WANT. But `goto 13` applies 11 and 12 on the way, so the

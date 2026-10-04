@@ -108,18 +108,20 @@ any artifact in § 3 can even load.
 
 ### B3 — the pinned sanitizer image predates the L3 rebuild
 
-`image-manifest.yaml` pins `ghcr.io/declade/dsa-sanitizer:0.5.4`. The model
+`image-manifest.yaml` pins `ghcr.io/declade/dsa-sanitizer:0.5.5`. The model
 swap only makes sense on a sanitizer that carries PRD Slices 1-3: reasoning
 control (S1), coverage-guaranteed bisection recovery (S2), and the paired
 sizing + verdict-cache revision bump (S3). Those merged to DSA `main` on
-2026-07-31; `0.5.4` predates them.
+2026-07-31. `0.5.4` predates them; `0.5.5` is built from DSA main `f70d0fe8`
+or later, whose `services/sanitizer/config.py` exposes `l3_reasoning_disabled`
+and `l3_chunk_overlap_chars` — so on 0.5.5 this blocker is expected to be
+cleared.
 
-**Provenance caveat (honest statement):** the `0.5.4` tag's build commit is not
-resolvable from the DSA repository, so "0.5.4 predates S1-S3" is an inference
-from the merge dates, not a verified fact about that image. Do not treat it as
-one. Confirm the sanitizer image actually carries S1-S3 before the flip — the
-cheapest check is that its shipped `LlmScanConfig` exposes
-`l3_reasoning_disabled` and `l3_chunk_overlap_chars`.
+**Provenance caveat (honest statement):** the source check above is about the
+commit 0.5.5 is built from, not a measurement of the published image. Confirm
+the sanitizer image actually carries S1-S3 before the flip — the cheapest check
+is that its shipped `LlmScanConfig` exposes `l3_reasoning_disabled` and
+`l3_chunk_overlap_chars`.
 
 ### B4 — the Ollama-lane storage is too small (Helm)
 

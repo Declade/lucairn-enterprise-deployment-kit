@@ -5,7 +5,7 @@
 **Scope:** Generation, distribution, rotation, and revocation of Ed25519 signing keys used by the Lucairn attestation protocol, for customers running the `lucairn-enterprise-deployment-kit`.
 
 > **No DSA source tree required.** Every tool referenced here ships inside the pinned
-> `dsa-veil-witness:0.5.4` image (`/usr/local/bin/sign-manifest`). The ceremony is
+> `dsa-veil-witness:0.5.5` image (`/usr/local/bin/sign-manifest`). The ceremony is
 > turnkey via `docker run --entrypoint sign-manifest` — no Go toolchain, no build-from-source.
 
 ---
@@ -245,7 +245,7 @@ The full roster for a standard install has **seven entries**: five claim-signing
 ### 6.2 Run sign-manifest (no Go toolchain needed)
 
 The `sign-manifest` tool is embedded in
-`dsa-veil-witness:0.5.4@sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523`
+`dsa-veil-witness:0.5.5@sha256:TODO-0.5.5-digest-pending`
 at `/usr/local/bin/sign-manifest`. Set `LCR_ISSUER` to the value in
 `customer.env`, then run the [canonical private-seed-file command in
 INSTALL.md](../INSTALL.md#4b-produce-the-witness-signed-manifest-production-only) exactly as
@@ -254,7 +254,7 @@ trap, a read-only `/run/secrets/witness-signing-key-hex` mount, and a
 single-quoted in-container `/bin/sh -ec` command. The host `docker run` argv
 must never contain `LCR_WITNESS_SIGNING_KEY` expansion or its value.
 
-**Flags** (run `docker run --rm --entrypoint sign-manifest ghcr.io/declade/dsa-veil-witness:0.5.4@sha256:edc110fd5f827604790cee2be4a963ad03ee7201cbfb1262d2b23ff95a500523 -h` to confirm against your pin):
+**Flags** (run `docker run --rm --entrypoint sign-manifest ghcr.io/declade/dsa-veil-witness:0.5.5@sha256:TODO-0.5.5-digest-pending -h` to confirm against your pin):
 - `--keys-json` (required) — path to the keys.json roster inside the container
 - `--issuer` (required) — must match `LCR_ISSUER` on the gateway
 - `--witness-signing-key-hex` (required) — Ed25519 witness seed, 64 hex chars
@@ -357,10 +357,10 @@ and empty fields) is covered by its own scanning layers and does not need an
 L3 verdict for FULL. Identical values can reuse a single verdict instead of
 being rescanned, within a request via duplicate-leaf dedupe and across
 requests via the sanitize cache (`SANITIZE_CACHE_ENABLED`) — this kit pins
-sanitizer `0.5.4` (`image-manifest.yaml`), which predates both: dedupe and
-fully-reflected cache-replay coverage are sanitizer capabilities from
-releases after `0.5.4`. On `0.5.4`, enabling `SANITIZE_CACHE_ENABLED` is not
-recommended.
+sanitizer `0.5.5` (`image-manifest.yaml`), built from DSA main `f70d0fe8` or
+later, whose source carries both dedupe and fully-reflected cache-replay
+coverage. Sanitizer `0.5.4` and older predate both; on those, enabling
+`SANITIZE_CACHE_ENABLED` is not recommended.
 
 But `PARTIAL` is **not** only a coverage signal. The witness derives it from
 three independent conditions — partial completeness, a temporal inconsistency,

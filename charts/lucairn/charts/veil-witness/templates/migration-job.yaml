@@ -12,8 +12,8 @@
     000012_claim_receipts                   un-redacted personal data, no deletion path
     000013_decoder_expiry                   the retention machinery — but goto 13
                                             applies 011+012 on the way
-  The tag pinned today (0.5.4) carries none of them; the exposure is the next
-  image bump. They are unreachable from this Job unless an operator sets
+  Up to 0.5.4 the pinned tag carried none of them; 0.5.5 (built from DSA main
+  >= f70d0fe8) carries 000011-000014, so from 0.5.5 on this cap is load-bearing. They are unreachable from this Job unless an operator sets
   veil-witness.migrations.unsafeAcknowledgeOpenEndedMigrateUp=true.
 */ -}}
 {{- $knownSafeMax := 10 }}

@@ -45,7 +45,7 @@ set -euo pipefail
 
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly KIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-readonly DEFAULT_IMAGE_TAG="0.5.4"
+readonly DEFAULT_IMAGE_TAG="0.5.5"
 readonly DEFAULT_OUTPUT="${KIT_ROOT}/customer.env"
 
 # Temp files that hold plaintext keypair material during derivation. The
@@ -242,7 +242,7 @@ Options:
                            preserving all existing content and permissions, then
                            publish the runtime-profile manifest.
   --output <path>          Where to write the file (default: ./customer.env).
-  --image-tag <tag>        LUCAIRN_IMAGE_TAG value (default: 0.5.4). Must match
+  --image-tag <tag>        LUCAIRN_IMAGE_TAG value (default: 0.5.5). Must match
                            image-manifest.yaml default_lucairn_image_tag; doctor
                            warns when they diverge.
   --gateway-base-url <url> Override GATEWAY_BASE_URL (default: dev=http://localhost:8080,

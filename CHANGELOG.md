@@ -14,6 +14,68 @@ carry a security fix are tagged **[Security]**.
 
 ## [Unreleased]
 
+## [1.9.5] — TODO-0.5.5-release-date — images `0.5.5`
+
+### Read first — upgrading to images `0.5.5`
+
+`0.5.5` is the first image release since `0.5.4` (2026-06-19). It is built from
+`dual-sandbox-architecture` main `f70d0fe8` or later
+(build commit: TODO-0.5.5-build-commit), so it carries everything below that
+earlier kit entries described as "not in the pinned `0.5.4` image".
+
+- **⚠ Release ordering — the gateway refuses to boot while it holds a `dsa-ai`
+  or sandbox-B signing key (T-1102).** `0.5.5` is the first pinned gateway
+  built with the T-1102 check (`checkNoAISigningKey`), which refuses to boot
+  while `LCR_AI_SIGNING_KEY`, `VEIL_AI_SIGNING_KEY`,
+  `LCR_SANDBOX_B_SIGNING_KEY` or `VEIL_SANDBOX_B_SIGNING_KEY` is non-blank in
+  the **gateway's** environment. **Before** `helm upgrade`, set
+  `gateway.secrets.values.veilAISigningKey` to `""` (or drop the key from a
+  Secret you manage yourself). On Compose the shipped gateway service passes
+  none of the four; check only overlays you added yourself — and do **not**
+  blank `LCR_SANDBOX_B_SIGNING_KEY` in `customer.env`, which sandbox B itself
+  needs. Doctor checks the value, not the order. From this image on, Sensitive Mode
+  certificates the gateway seals read `overall_verdict: failed` until the
+  gateway has its own witness identity; the Lucairn desktop app shows that
+  signed verdict from version TODO-0.5.5-desktop-version. Details: the T-1102
+  entry under **Changed** below.
+- **Sanitizer roster: 34 → 36 (T-768).** `attribution_person` and
+  `labeled_id` are now on both shipped surfaces. The ServiceNow attribution
+  leak (`"Reviewed by <Name>"` passing unredacted) is **closed on 0.5.5** for
+  installs that use the shipped sanitizer config. Details: the T-768 entry
+  under **Fixed** below.
+- **Upgrade from 1.9.4 / 0.5.4:** set `LUCAIRN_IMAGE_TAG=0.5.5` (Compose) or
+  `global.imageTag: "0.5.5"` (Helm), after the T-1102 step above. The 12
+  `dsa-*` images are republished, cosign-signed and Rekor-logged at `0.5.5`
+  (`bin/lucairn verify-images --tag 0.5.5`; digests in
+  `keys/image-digests-0.5.5.txt`). `dsa-pii-ml` stays `0.5.1`;
+  `lucairn-dashboard` stays `0.8.2`.
+- **Migration review (docs/RELEASING.md § Migration review) — ceilings
+  unchanged: veil-witness 10 · audit 6 · id-bridge 4 · sandbox-a 8.** The
+  `0.5.5` source tree carries migrations above two ceilings (to be confirmed
+  against the published images' `/migrations`: TODO-0.5.5-image-migrations-measured):
+  - **veil-witness `000011`–`000014`** (`certificate_persistence_outbox`,
+    `claim_receipts`, `decoder_expiry`, `partition_veil_certificates`). Not
+    applied: `000011`/`000012` hold un-redacted claim data with no deletion
+    path in this kit, and `goto 13`/`14` passes through them. At 0.5.5 the
+    witness detects the v10 schema and runs its documented reduced-durability
+    posture (direct certificate writes; legacy claim write-through) instead of
+    failing — `services/veil-witness/internal/durability/posture.go`
+    `ResolvePosture`; partition maintenance is a no-op on an unpartitioned
+    table.
+  - **audit `000007_claim_delivery_outbox`** (table `audit_claim_deliveries`).
+    ⛔ **Release-blocking, decision open: TODO-0.5.5-audit-ceiling-decision.**
+    The 0.5.5 audit service writes this table inside the same transaction as
+    every pipeline-completion audit event whenever its witness emitter is
+    enabled (the kit default, `LCR_ENABLED=true`), and has no degraded-schema
+    fallback. Capped at 6, that insert fails, `EmitEvent` returns an error, and
+    a production gateway (audit fail-closed) answers proxied requests with
+    `503 audit_evidence_unavailable`. Data held (per `proto/audit/v1/audit.proto`
+    `output_scan_body`): request id, delivery state, and hash/offset/count/
+    entity-type summaries plus the signed claim bytes — no raw flagged text;
+    no deletion path ships for it. Either raise the audit ceiling to 7 (six
+    places, docs/RELEASING.md step 4, plus mirroring the migration into
+    `migrations/audit/`) or do not ship 0.5.5 audit.
+
 ### Added
 - **[Security] The `witness-central` topology now refuses to start when the
   central witness is a Lucairn-operated host (T-682).** The overlay repoints
@@ -81,9 +143,10 @@ carry a security fix are tagged **[Security]**.
   `000011_certificate_persistence_outbox`, `000012_claim_receipts` (table
   `witness_claim_receipts`) and `000013_decoder_expiry`. The first two hold
   un-redacted personal data and **this kit ships no deletion path** for either.
-  The tag pinned today (`0.5.4`) carries none of them — measured, its
-  `/migrations` stops at `000010` — so the exposure is the *next* image bump,
-  which an uncapped `up` would have taken silently. `000013` is the decoder
+  The `0.5.4` tag carried none of them — measured, its `/migrations` stopped
+  at `000010` — so the exposure was the *next* image bump, which an uncapped
+  `up` would have taken silently. That bump is `0.5.5` (this release): see
+  **Read first** above for its migration review. `000013` is the decoder
   retention machinery, but `goto 13` applies 011 and 012 on the way, so it
   cannot be taken without them. A routine image-tag bump was sufficient to start creating
   them at a customer site, silently.
@@ -205,16 +268,17 @@ carry a security fix are tagged **[Security]**.
     gateway ExternalSecret stops mapping `LCR_AI_SIGNING_KEY`, and the Kind
     mTLS runtime-values generator and `values-test.yaml` leave it empty. A
     Secret you create or extend yourself can still carry it — keep it out.
-  - **Upgrade note:** gateway images built with T-1102 (not yet pinned by this
-    kit) refuse to boot while any of `LCR_AI_SIGNING_KEY`,
+  - **Upgrade note:** gateway images built with T-1102 (pinned from kit 1.9.5,
+    images `0.5.5`) refuse to boot while any of `LCR_AI_SIGNING_KEY`,
     `VEIL_AI_SIGNING_KEY`, `LCR_SANDBOX_B_SIGNING_KEY` or
     `VEIL_SANDBOX_B_SIGNING_KEY` has a non-blank value in the gateway's
     environment. Remove them
     from the gateway's config before upgrading. Until the gateway has its own
     signing identity at the witness, Sensitive Mode certificates it seals read
     `overall_verdict: failed`.
-    ⚠ Release ordering: this kit version does NOT pin a T-1102 gateway image. The first kit
-    release that bumps `default_lucairn_image_tag` (image-manifest.yaml) to a gateway built
+    ⚠ Release ordering: kit 1.9.5 is the first release that pins a T-1102 gateway image
+    (`0.5.5`); its **Read first** block above carries this note. Any kit release that bumps
+    `default_lucairn_image_tag` (image-manifest.yaml) to a gateway built
     from dual-sandbox-architecture main after PR #681 MUST (a) carry this note at the top of
     its release notes, (b) state that `LCR_AI_SIGNING_KEY` must be blank in the gateway
     Secret/customer.env BEFORE `helm upgrade` / `docker compose up` (doctor checks the
@@ -475,12 +539,19 @@ carry a security fix are tagged **[Security]**.
   `sandbox-a` sanitizer ConfigMap both listed 33 recognizers under
   `sanitizer.presidio.custom_recognizers`; the upstream sanitizer default lists
   46. A recognizer that is not listed is never loaded, and the sanitizer boots
-  and answers normally, so the gap was silent. Both surfaces now carry **34**.
+  and answers normally, so the gap was silent. Both surfaces now carry **36**
+  (34 on images `0.5.4`, plus 2 that only `0.5.5` registers).
   Of the 13 upstream names:
-  - **Added (1):** `medical_record_number` (the glued `MRN123456` form:
+  - **Added (3):** `medical_record_number` (the glued `MRN123456` form:
     `MRN`, an optional `-` or space, 6-10 digits). It is in the recognizer
-    registry of the pinned `dsa-sanitizer:0.5.4` image, and it is narrow: no
-    false-positive class was found.
+    registry of the `dsa-sanitizer:0.5.4` image, and it is narrow: no
+    false-positive class was found. Plus, on `0.5.5`: `attribution_person`
+    (registered at `services/sanitizer/recognizers.py:1761` on DSA main
+    `f70d0fe8`; licensed by a closed list of attribution verbs, not by shape)
+    and `labeled_id` (`recognizers.py:2030`; fires only when an ID label such
+    as "Patientennummer" or "customer number" is present). The ServiceNow
+    attribution leak class (`"Reviewed by <Name>"` passing unredacted, fixed
+    upstream by `attribution_person`) is **closed on 0.5.5**.
   - **Opt-in only, for healthcare / clinical installs (2):** `de_places` and
     `drugs_and_diagnoses`. Both are in the `0.5.4` image, but on it they flag
     ordinary words above the kit's 0.35 threshold: `de_places` (LOCATION,
@@ -491,26 +562,29 @@ carry a security fix are tagged **[Security]**.
     too. Compose: add them to your sanitizer config. Helm: the chart has no
     supported values key for the roster, so this means carrying the change in your copy of the
     `sandbox-a` sanitizer ConfigMap template.
-  - **No-ops on `0.5.4`, not listed (2):** `de_companies` (ORGANIZATION) and
-    `software_products` (PRODUCT). The `0.5.4` scanner discards both entity
-    types, so listing them redacts nothing; this release makes no company or
-    product coverage claim. They become useful only once a kit release pins a
-    sanitizer image that keeps those entity types.
-  - **Not added, the pinned image does not have them (3):** `labeled_id`,
-    `patientennummer_id_prefix`, `attribution_person`. `0.5.4` raises
-    `Unknown recognizer` for each and the sanitizer refuses to boot. This means
-    the ServiceNow attribution leak class (`"Reviewed by <Name>"` passing
-    unredacted, fixed upstream by `attribution_person`) **stays open on kit
-    installs** until a kit release pins a newer sanitizer image.
-  - **Held back for false positives (5):** `format_ticket`,
-    `format_numeric_run`, `format_hex_block`, `format_uuid`, `format_ulid`.
-    They fire on shape alone: on `0.5.4` at the kit's 0.35 threshold they
-    redact ServiceNow `sys_id`s and git SHAs, request UUIDs and `INC0010001`
-    / `ID-002882393`, which breaks agent and ServiceNow flows. The newer
-    sanitizer keeps those intact with its two-lane zoner, which `0.5.4` does
-    not have. Same decision the upstream Helm chart made for `format_ticket`.
+  - **No-ops, not listed (2):** `de_companies` (ORGANIZATION) and
+    `software_products` (PRODUCT). The scanner discards both entity types —
+    still true on `0.5.5` (`_SKIP_ENTITY_TYPES`,
+    `services/sanitizer/presidio_scan.py:516` on `f70d0fe8`) — so listing them
+    redacts nothing; this release makes no company or product coverage claim.
+    They become useful only once a kit release pins a sanitizer image that
+    keeps those entity types.
+  - **Held back for false positives (6):** `format_ticket`,
+    `format_numeric_run`, `format_hex_block`, `format_uuid`, `format_ulid`,
+    and `patientennummer_id_prefix` (registered from `0.5.5`). They fire on
+    shape alone: on `0.5.4` at the kit's 0.35 threshold the `format_*` group
+    redacts ServiceNow `sys_id`s and git SHAs, request UUIDs and `INC0010001`
+    / `ID-002882393`, which breaks agent and ServiceNow flows;
+    `patientennummer_id_prefix` is in the same bare-shape class
+    (`_BARE_SHAPE_ID_RECOGNIZER_PREFIXES`,
+    `services/sanitizer/two_lane_zoner.py:279`). The sanitizer keeps those
+    shapes intact only with its two-lane zoner. `0.5.5` has the zoner, but it
+    is OFF unless the config sets `sanitizer.two_lane_zoner.enabled: true`
+    (default `false`, `services/sanitizer/config.py:4677` and `:5507`), and this
+    kit does not set it. Same decision the upstream Helm chart made for
+    `format_ticket` and `patientennummer_id_prefix`.
   - **Fail-loud floor.** New `config/sanitizer-roster-must-have.txt` lists the
-    34 names. `tests/test_sanitizer_roster_must_have.sh` (in `make test`) fails
+    36 names. `tests/test_sanitizer_roster_must_have.sh` (in `make test`) fails
     when either shipped surface lacks one, when the two surfaces differ, or
     when a held-back, opt-in or no-op name appears on a default surface.
   - **No runtime doctor check yet.** `bin/lucairn doctor` does NOT check an
@@ -528,10 +602,12 @@ carry a security fix are tagged **[Security]**.
     `config/default-sanitizer.yaml` get it with the new kit files; then
     `docker compose up -d --force-recreate sanitizer`. Compose installs with
     their OWN sanitizer config (`SANITIZER_CONFIG_FILE` pointing elsewhere)
-    must add `medical_record_number` under
-    `sanitizer.presidio.custom_recognizers` themselves, and should check their
+    must add `medical_record_number`, `attribution_person` and `labeled_id`
+    under `sanitizer.presidio.custom_recognizers` themselves (the last two only
+    once they run images `0.5.5` — `0.5.4` refuses to boot on them), and should check their
     roster against `config/sanitizer-roster-must-have.txt`. Expect slightly more redaction of
-    `MRN…` numbers, and nothing else new unless you opt in.
+    `MRN…` numbers, of names after attribution verbs ("Reviewed by …"), and of
+    digit runs next to an ID label; nothing else new unless you opt in.
 - **The L3 posture allowlists were blind to every value Sprig calls empty —
   including `false` and `0`, the two an operator is most likely to type
   (T-548).** All four posture guards coerced with `toString (default ""
@@ -615,10 +691,9 @@ carry a security fix are tagged **[Security]**.
     path, is not readOnly, is a writable volume kind, and is openable by the
     container UID (`fsGroup`), with positive controls for the mount and for
     `fsGroup`.
-  - Scope note: the kit pins `dsa-gateway:0.5.4`, which predates the upstream
-    feature, so these env vars are inert on the currently pinned image. This
-    change makes the chart correct for the gateway that has it; it does not
-    make the pinned binary record anything.
+  - Scope note: `dsa-gateway:0.5.4` predates the upstream feature (these env
+    vars are inert on it); `0.5.5`, which this release pins, is built from a
+    source that carries it (`services/gateway/internal/evidencegap`).
 - **Every shipped sanitizer config set a RETIRED key that stops a clean install
   from coming up (T-576).** `charts/lucairn/charts/sandbox-a/templates/sanitizer-configmap.yaml`,
   `config/default-sanitizer.yaml` and `starter-templates/itsm/config.yaml` all
@@ -649,10 +724,10 @@ carry a security fix are tagged **[Security]**.
   - Pinned by `tests/test_sanitizer_retired_config_keys.sh` (in `make test`),
     and `bin/lucairn doctor` now warns when an operator-authored config declares
     `strict_safe_terms_file` or `gliner_stop_terms_file`.
-  - Note on the pinned images: kit 1.9.4 pins `dsa-*:0.5.4` (built 2026-06-19),
-    which PREDATES the retirement, so the shipped tag itself boots either way.
-    The defect bites the moment the kit tracks a newer sanitizer — which is the
-    exact `sanitizer_config_compat` drift `image-manifest.yaml` warns about.
+  - Note on the pinned images: kit 1.9.4 pinned `dsa-*:0.5.4` (built
+    2026-06-19), which PREDATES the retirement. Kit 1.9.5 pins `0.5.5`, which
+    refuses the retired key — so the shipped configs must stay free of it, and
+    so must any operator config carried forward from 1.9.4.
 - **`admin` sub-chart gained an `ExternalSecret` template (T-488).**
   `--set admin.secrets.backend=vault` used to render "clean" with nothing to
   ever populate the `admin-credentials` Secret that `deployment.yaml` mounts
@@ -716,11 +791,10 @@ carry a security fix are tagged **[Security]**.
   skipped by policy, tier, customer-allowlist, or zone policy) could still be
   written to the sanitize cache — a later cache-replay of that turn then
   rendered `COMPLETENESS_FULL` / `VERDICT_VERIFIED` with L3 never having run
-  (merged 2026-08-02, `6d535775f`, PR #470). This kit's pinned sanitizer
-  `0.5.4` predates the fix by about six weeks. Consistent with the wording
-  landed in #118: cache-replay reuse is only fully reflected in certificate
-  coverage in sanitizer releases after `0.5.4` — **on `0.5.4`, enabling
-  `SANITIZE_CACHE_ENABLED` is not recommended.**
+  (merged 2026-08-02, `6d535775f`, PR #470). Sanitizer `0.5.4` predates the
+  fix by about six weeks; `0.5.5`, which this release pins, is built from a
+  source that carries it (`cert_full_eligible`). **On `0.5.4` and older,
+  enabling `SANITIZE_CACHE_ENABLED` is not recommended.**
 - **Upgrade (witness `:50058` ACL, T-12):** kit installs inherit this on the
   next `dsa-veil-witness` image pull — no kit-side action is required for the
   fix itself. An install that has **not** run the Compose mTLS bootstrap
