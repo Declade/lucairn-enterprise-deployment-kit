@@ -2215,7 +2215,7 @@ docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml 
 **Helm:** set `global.imageTag: "0.5.5"` and `gateway.secrets.values.veilAISigningKey: ""`, then apply:
 ```bash
 helm upgrade lucairn charts/lucairn -n lucairn -f your-values.yaml
-kubectl -n lucairn rollout restart deployment/sandbox-a   # load the new sanitizer roster
+kubectl -n dsa-identity rollout restart deployment/sandbox-a   # load the new sanitizer roster
 ```
 
 ### v0.5.4 / chart 1.9.4 — per-key MCP tool-scope enforcement + B2 website tool_allowlist (2026-06-19)
