@@ -256,12 +256,14 @@ audit:
       # dsaServiceToken lifted to global.dsaServiceToken (BLOCKER D).
       dsaServiceToken: ""
   # T-1219 (kit 1.9.6): daily CronJob that blanks the claim bytes + scan summary
-  # of audit_claim_deliveries rows delivered more than retentionDays ago (rows
-  # are kept). Default ON with the bundled Postgres. retentionDays: whole days
-  # >= 1. OPS.md § "Audit claim-delivery retention".
+  # of audit_claim_deliveries rows delivered more than `retention` ago (rows
+  # are kept). Default ON with the bundled Postgres. retention: whole days
+  # >= 1 with a d suffix (30d) — a string, so YAML can never read it as an
+  # octal/hex/float number; bare numbers are refused. OPS.md § "Audit
+  # claim-delivery retention".
   # claimDeliveryRetention:
   #   enabled: true
-  #   retentionDays: 30
+  #   retention: 30d
   #   schedule: "17 3 * * *"
 
 id-bridge:

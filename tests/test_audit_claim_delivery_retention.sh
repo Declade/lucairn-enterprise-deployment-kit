@@ -7,12 +7,17 @@
 #   A. The sweep script on its own (no database): byte-identity between the
 #      Compose copy (scripts/) and the Helm copy (charts/.../audit/files/),
 #      shell syntax, and the refusals (bad ENABLED / DAYS / BATCH, missing
-#      DATABASE_URL) — each refused WITHOUT ever calling psql.
+#      PG* settings, any DATABASE_URL) — each refused WITHOUT ever calling psql;
+#      the synthetic password never appears in any output (stub AND real psql);
+#      loop mode + disabled idles instead of exiting; doctor agrees with the
+#      runtime and checks the script beside the SELECTED compose file.
 #   B. Helm (`helm template`): the CronJob renders with the defaults, embeds the
-#      script byte-for-byte, reads the `dsa` DSN from the audit Secret, and
+#      script byte-for-byte, connects as `dsa` via discrete PG* settings with
+#      PGPASSWORD from audit-credentials/POSTGRES_PASSWORD, and
 #      renders NOTHING when disabled, with external Postgres, or with the audit
-#      subchart off. retentionDays below 1 (and every malformed spelling) is
-#      refused at render time.
+#      subchart off. `retention` ("<N>d", a string) below 1d — and every
+#      malformed spelling, including YAML numbers from a values FILE (030 is
+#      octal 24) — is refused at render time. Image digest = image-manifest.yaml.
 #   C. Compose (`docker compose config`, client-side only — no daemon): the
 #      service exists, uses the postgres-audit image, waits for migrate-audit,
 #      sits on dsa-audit only, and carries the shipped env names + defaults.
@@ -84,6 +89,17 @@ fi
 # shellcheck source=lib/test-helpers.sh
 source "$ROOT/tests/lib/test-helpers.sh"
 
+# The postgres:16-alpine digest the kit records (image-manifest.yaml
+# image_digests.enterprise_kind.postgres) — the retention job's image must be
+# pinned to exactly this on both install paths (sol r1 P2).
+MANIFEST_PG="$(python3 - "$ROOT/image-manifest.yaml" <<'PY2'
+import sys, yaml
+pg = yaml.safe_load(open(sys.argv[1]))["image_digests"]["enterprise_kind"]["postgres"]
+print(pg["ref"] + "@" + pg["digest"])
+PY2
+)"
+case "$MANIFEST_PG" in postgres:16-alpine@sha256:*) ;; *) die "could not read image_digests.enterprise_kind.postgres from image-manifest.yaml (got '$MANIFEST_PG')" ;; esac
+
 # ═══════════════════════════════════════════════════════════════════════════
 echo "== A. sweep script (no database) =="
 # ═══════════════════════════════════════════════════════════════════════════
@@ -135,37 +151,128 @@ run_unit() {
   ok "$label (exit $rc, psql not called)"
   LAST_OUT="$out"
 }
-DSN="DATABASE_URL=postgres://dsa:synthetic-unit-pw@127.0.0.1:1/audit"
-run_unit 0 "ENABLED=false exits 0 without touching the database" "$DSN" LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=false
+# Discrete connection settings (the script refuses connection URLs). The
+# password is an obviously synthetic marker; no output may ever contain it.
+SECRET="syntheticSecret"
+CONN=(PGHOST=127.0.0.1 PGPORT=1 PGUSER=dsa PGDATABASE=audit "PGPASSWORD=${SECRET}")
+run_unit 0 "ENABLED=false exits 0 without touching the database" "${CONN[@]}" LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=false
 case "${LAST_OUT:-}" in *"level=INFO disabled"*) ok "disabled run logs one line" ;; *) bad "disabled run did not log the disabled line" ;; esac
+# Disabled means the retention value is never read (doctor mirrors this).
+run_unit 0 "ENABLED=false with DAYS=0 still exits 0 (value unused when disabled)" "${CONN[@]}" LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=false LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS=0
 # (An EMPTY value means "use the default", exactly as Compose's ${VAR:-default}.)
 for v in TRUE yes 1 " true"; do
-  run_unit 2 "ENABLED='$v' refused" "$DSN" "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=$v"
+  run_unit 2 "ENABLED='$v' refused" "${CONN[@]}" "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=$v"
 done
 for v in 0 -1 030 1.5 abc 36501 999999999999 " 30"; do
-  run_unit 2 "DAYS='$v' refused" "$DSN" "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS=$v"
+  run_unit 2 "DAYS='$v' refused" "${CONN[@]}" "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS=$v"
 done
 for v in 0 -5 abc 100001; do
-  run_unit 2 "BATCH_SIZE='$v' refused" "$DSN" "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_BATCH_SIZE=$v"
+  run_unit 2 "BATCH_SIZE='$v' refused" "${CONN[@]}" "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_BATCH_SIZE=$v"
 done
-run_unit 2 "INTERVAL_SECONDS='x' refused" "$DSN" "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_INTERVAL_SECONDS=x"
-run_unit 2 "missing DATABASE_URL refused"
-case "${LAST_OUT:-}" in *synthetic-unit-pw*) bad "a refusal printed the DSN password" ;; *) ok "refusals never print the DSN" ;; esac
-# psql failure output is scrubbed of the URL password.
+run_unit 2 "INTERVAL_SECONDS='x' refused" "${CONN[@]}" "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_INTERVAL_SECONDS=x"
+run_unit 2 "missing PGPASSWORD refused" PGHOST=127.0.0.1 PGUSER=dsa PGDATABASE=audit
+run_unit 2 "missing PGHOST refused" PGUSER=dsa PGDATABASE=audit "PGPASSWORD=${SECRET}"
+
+# ── sol r1 P1: the password never reaches the log ────────────────────────────
+# no_secret <label> <output> — the synthetic password must not appear.
+no_secret() {
+  case "$2" in
+    *"$SECRET"*) bad "$1: output contains the synthetic password: $2" ;;
+    *) ok "$1: password not in output" ;;
+  esac
+}
+# Malformed credential spellings that made libpq quote the password back on
+# a3cff3c (`invalid percent-encoded token: "syntheticSecret%GG"`, `invalid
+# integer value "syntheticSecret" for connection option "port"`). The script
+# must refuse each BEFORE psql, without echoing the value.
+MAL_URL1="postgres://dsa:${SECRET}%GG@127.0.0.1:1/audit"
+MAL_URL2="postgres://dsa@127.0.0.1:${SECRET}/audit"
+run_unit 2 "DATABASE_URL (malformed, carries the password) refused" "${CONN[@]}" "DATABASE_URL=$MAL_URL1"
+no_secret "DATABASE_URL refusal" "${LAST_OUT:-}"
+run_unit 2 "PGHOST holding a pasted URL refused" PGHOST="$MAL_URL1" PGUSER=dsa PGDATABASE=audit "PGPASSWORD=${SECRET}x"
+no_secret "PGHOST refusal" "${LAST_OUT:-}"
+run_unit 2 "PGPORT holding the password refused" PGHOST=127.0.0.1 "PGPORT=${SECRET}" PGUSER=dsa PGDATABASE=audit PGPASSWORD=x
+no_secret "PGPORT refusal" "${LAST_OUT:-}"
+# A psql that prints libpq-style diagnostics quoting the password: the script
+# must log a fixed reason, never psql's text.
 cat > "$STUBDIR/psql" <<'EOF'
 #!/bin/sh
-echo 'psql: error: connection to server at "postgres://dsa:synthetic-unit-pw@127.0.0.1:1/audit" failed' >&2
+echo "psql: error: invalid percent-encoded token: \"${PGPASSWORD}%GG\"" >&2
+echo "psql: error: connection to server at \"127.0.0.1\", port 1 failed: password authentication failed for user \"dsa\" (password ${PGPASSWORD})" >&2
 exit 2
 EOF
 chmod +x "$STUBDIR/psql"
-out="$(tmo 20 env -i PATH="$STUBDIR:/usr/bin:/bin" "$DSN" sh "$SCRIPT" 2>&1)" && rc=0 || rc=$?
+out="$(tmo 20 env -i PATH="$STUBDIR:/usr/bin:/bin" "${CONN[@]}" sh "$SCRIPT" 2>&1)" && rc=0 || rc=$?
 if [ "$rc" = 0 ]; then
   bad "a failing psql made the run exit 0"
-elif printf '%s' "$out" | grep -q "synthetic-unit-pw"; then
-  bad "psql error output leaked the DSN password"
 else
-  ok "psql failure: non-zero exit, password masked in the log"
+  ok "psql failure: non-zero exit ($rc)"
 fi
+no_secret "psql diagnostics quoting the password" "$out"
+case "$out" in *"reason=auth_failed psql_exit=2"*) ok "psql failure logged as a fixed reason (auth_failed, exit 2)" ;; *) bad "psql failure not mapped to a fixed reason: $out" ;; esac
+case "$out" in *"psql: error"*|*"percent-encoded"*) bad "raw psql stderr reached the log" ;; *) ok "raw psql stderr never logged" ;; esac
+
+# The same with the REAL libpq/psql client, when one is installed here (the
+# container run in D covers the shipped image's psql). Every case: non-zero
+# exit, password absent from all output.
+REAL_PSQL="$(command -v psql 2>/dev/null || true)"
+if [ -z "$REAL_PSQL" ]; then
+  skip "no psql client on this machine — real-libpq leak check in A NOT RUN (D repeats it inside the Postgres image)"
+else
+  REALBIN="$WK/realbin"; mkdir -p "$REALBIN"; ln -sf "$REAL_PSQL" "$REALBIN/psql"
+  real_leak() { # <label> <env assignments...>
+    local label="$1"; shift
+    local out rc
+    out="$(tmo 30 env -i PATH="$REALBIN:/usr/bin:/bin" HOME="$WK" "$@" sh "$SCRIPT" --once 2>&1)" && rc=0 || rc=$?
+    [ "$rc" != 0 ] && ok "real psql, $label: non-zero exit ($rc)" || bad "real psql, $label: exit 0"
+    no_secret "real psql, $label" "$out"
+  }
+  real_leak "malformed URL with %GG in the password" PGHOST=127.0.0.1 PGUSER=dsa PGDATABASE=audit "PGPASSWORD=${SECRET}" "DATABASE_URL=$MAL_URL1"
+  real_leak "password in the URL port slot" PGHOST=127.0.0.1 PGUSER=dsa PGDATABASE=audit "PGPASSWORD=${SECRET}" "DATABASE_URL=$MAL_URL2"
+  real_leak "%GG password, nothing listening" PGHOST=127.0.0.1 PGPORT=1 PGUSER=dsa PGDATABASE=audit "PGPASSWORD=${SECRET}%GG"
+  real_leak "unresolvable host" PGHOST=t1219-no-such-host.invalid PGUSER=dsa PGDATABASE=audit "PGPASSWORD=${SECRET}"
+fi
+
+# ── sol r1 P2: loop mode + disabled idles quietly (restart: unless-stopped) ──
+# The Compose service runs in loop mode. Disabled, it must log ONE line and
+# keep running (no exit -> no restart loop), touch no database, and stop
+# cleanly on SIGTERM, taking its sleep child with it.
+cat > "$STUBDIR/psql" <<EOF
+#!/bin/sh
+echo called >> "$WK/psql-called"
+exit 99
+EOF
+chmod +x "$STUBDIR/psql"
+rm -f "$WK/psql-called" "$WK/idle.out"
+# perl alarm + exec (not the tmo function): every step execs, so $! IS the
+# script's shell — a backgrounded shell function would be a subshell wrapper.
+perl -e 'alarm shift; exec @ARGV' 60 env -i PATH="$STUBDIR:/usr/bin:/bin" "${CONN[@]}" \
+  LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=false \
+  LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_INTERVAL_SECONDS=86400 \
+  sh "$SCRIPT" > "$WK/idle.out" 2>&1 &
+IDLE_PID=$!
+sleep 3
+if kill -0 "$IDLE_PID" 2>/dev/null; then
+  ok "loop mode + ENABLED=false: still running after 3 s (no exit, so no restart loop)"
+  IDLE_CHILD="$(pgrep -P "$IDLE_PID" 2>/dev/null | head -1 || true)"
+  kill -TERM "$IDLE_PID" 2>/dev/null || true
+  wait "$IDLE_PID" && IDLE_RC=0 || IDLE_RC=$?
+  [ "$IDLE_RC" = 0 ] && ok "idle process stops on SIGTERM with exit 0" || bad "idle process exit $IDLE_RC on SIGTERM"
+  if [ -n "$IDLE_CHILD" ]; then
+    sleep 1
+    if kill -0 "$IDLE_CHILD" 2>/dev/null; then
+      bad "idle sleep child $IDLE_CHILD survived SIGTERM"
+      kill "$IDLE_CHILD" 2>/dev/null || true
+    else
+      ok "idle sleep child stopped with it"
+    fi
+  fi
+else
+  wait "$IDLE_PID" 2>/dev/null && IDLE_RC=0 || IDLE_RC=$?
+  bad "loop mode + ENABLED=false exited (rc=$IDLE_RC) — under a restart policy that is a restart loop"
+fi
+[ "$(grep -c "level=INFO disabled" "$WK/idle.out")" = 1 ] && ok "idle: exactly one disabled line" || bad "idle: disabled line count $(grep -c "level=INFO disabled" "$WK/idle.out")"
+[ -f "$WK/psql-called" ] && bad "idle: psql was called" || ok "idle: database never contacted"
 
 # Doctor pre-flight (bin/lucairn check_audit_claim_delivery_retention): silent
 # on a valid env, fails on values the service would refuse or a missing script.
@@ -185,6 +292,18 @@ out="$(doctor_check "$WK/doctor.env" "$COMPOSE")" && rc=0 || rc=$?
 denv "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS=7" "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=false"
 out="$(doctor_check "$WK/doctor.env" "$COMPOSE")" && rc=0 || rc=$?
 [ "$rc" = 0 ] && ok "doctor: DAYS=7 ENABLED=false pass" || bad "doctor valid overrides: rc=$rc out=$out"
+# sol r1 P2: doctor must agree with the runtime — disabled, the service never
+# reads DAYS (A: ENABLED=false DAYS=0 exits 0), so doctor must not fail on it,
+# and must not tell the operator to set the flag that is already false.
+for v in 0 -3 030 abc; do
+  denv "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=false" "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS=$v"
+  out="$(doctor_check "$WK/doctor.env" "$COMPOSE")" && rc=0 || rc=$?
+  if [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "audit retention: disabled"; then
+    ok "doctor: ENABLED=false DAYS=$v passes and reports the sweep disabled (matches the runtime)"
+  else
+    bad "doctor: ENABLED=false DAYS=$v rc=$rc out=$out (the runtime accepts this)"
+  fi
+done
 for v in 0 -3 030 abc 36501; do
   denv "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS=$v"
   out="$(doctor_check "$WK/doctor.env" "$COMPOSE")" && rc=0 || rc=$?
@@ -193,19 +312,21 @@ done
 denv "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=yes"
 out="$(doctor_check "$WK/doctor.env" "$COMPOSE")" && rc=0 || rc=$?
 [ "$rc" != 0 ] && ok "doctor: ENABLED=yes flagged" || bad "doctor: ENABLED=yes not flagged"
+# sol r1 P2: the script checked must be the one Compose mounts — beside the
+# SELECTED compose file — with no fallback to this checkout's copy (which
+# exists: ROOT is the kit root and keeps its scripts/ here).
 mkdir -p "$WK/fake-install"
 cp "$COMPOSE" "$WK/fake-install/docker-compose.customer.yml"
 denv "POSTGRES_AUDIT_PASSWORD=x"
-# ROOT inside the sourced CLI is the kit root, which HAS the script — point the
-# check at a compose dir without one AND hide the kit copy by overriding ROOT.
-out="$(
-  set --
-  # shellcheck disable=SC1091
-  source "$ROOT/bin/lucairn" >/dev/null 2>&1
-  ROOT="$WK/fake-install"
-  check_audit_claim_delivery_retention "$WK/doctor.env" "$WK/fake-install/docker-compose.customer.yml" 2>&1
-)" && rc=0 || rc=$?
-[ "$rc" != 0 ] && printf '%s' "$out" | grep -q "missing beside" && ok "doctor: missing script flagged" || bad "doctor: missing script not flagged (rc=$rc)"
+[ -f "$ROOT/scripts/audit-claim-delivery-retention.sh" ] || die "kit copy of the script missing"
+out="$(doctor_check "$WK/doctor.env" "$WK/fake-install/docker-compose.customer.yml")" && rc=0 || rc=$?
+[ "$rc" != 0 ] && printf '%s' "$out" | grep -q "missing beside" \
+  && ok "doctor: script missing beside the selected compose file is flagged although the kit checkout has one" \
+  || bad "doctor: missing script not flagged (rc=$rc) — it fell back to the checkout copy"
+mkdir -p "$WK/fake-install/scripts"
+cp "$SCRIPT" "$WK/fake-install/scripts/"
+out="$(doctor_check "$WK/doctor.env" "$WK/fake-install/docker-compose.customer.yml")" && rc=0 || rc=$?
+[ "$rc" = 0 ] && [ -z "$out" ] && ok "doctor: script present beside the selected compose file passes" || bad "doctor with the script in place: rc=$rc out=$out"
 
 # ═══════════════════════════════════════════════════════════════════════════
 echo "== B. Helm CronJob (helm template) =="
@@ -248,7 +369,9 @@ out = {
   "command": c["command"],
   "days": env.get("LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS", {}).get("value"),
   "enabled": env.get("LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED", {}).get("value"),
-  "dsn_ref": env.get("DATABASE_URL", {}).get("valueFrom", {}).get("secretKeyRef"),
+  "has_database_url": "DATABASE_URL" in env,
+  "pg": {k: env.get(k, {}).get("value") for k in ("PGHOST", "PGPORT", "PGUSER", "PGDATABASE", "PGSSLMODE")},
+  "pw_ref": env.get("PGPASSWORD", {}).get("valueFrom", {}).get("secretKeyRef"),
   "run_as_non_root": pod["securityContext"].get("runAsNonRoot"),
   "automount": pod.get("automountServiceAccountToken"),
   "ro_rootfs": c["securityContext"].get("readOnlyRootFilesystem"),
@@ -268,13 +391,18 @@ PY
       [ "$(jget namespace)" = dsa-audit ] && ok "runs in the audit namespace (dsa-audit)" || bad "namespace $(jget namespace)"
       [ "$(jget schedule)" = "17 3 * * *" ] && ok "daily schedule 17 3 * * *" || bad "schedule $(jget schedule)"
       [ "$(jget concurrency)" = Forbid ] && ok "concurrencyPolicy Forbid" || bad "concurrencyPolicy $(jget concurrency)"
-      [ "$(jget image)" = "$(jget pg_image)" ] && ok "image = the bundled audit Postgres image ($(jget image)) — no new image" \
-        || bad "image $(jget image) != postgres StatefulSet image $(jget pg_image)"
+      [ "$(jget image)" = "$MANIFEST_PG" ] && ok "image = the manifest-pinned $(jget image)" \
+        || bad "image $(jget image) != the digest image-manifest.yaml records ($MANIFEST_PG)"
+      [ "$(jget image)" = "$(jget pg_image)@${MANIFEST_PG#*@}" ] && ok "same postgres:16-alpine as the bundled audit Postgres (no new image), plus the digest" \
+        || bad "image $(jget image) is not the bundled Postgres image $(jget pg_image) + digest"
       [ "$(jget script_identical)" = true ] && ok "CronJob embeds the sweep script byte-for-byte" || bad "embedded script differs from files/audit-claim-delivery-retention.sh"
       [ "$(jget days)" = 30 ] && ok "default retention 30 days" || bad "days $(jget days)"
       [ "$(jget enabled)" = true ] && ok "ENABLED=true in the pod" || bad "enabled $(jget enabled)"
-      [ "$(jget dsn_ref)" = '{"key": "DATABASE_URL", "name": "audit-credentials"}' ] \
-        && ok "DSN from audit-credentials/DATABASE_URL (the dsa role, as the migration Job)" || bad "dsn ref $(jget dsn_ref)"
+      [ "$(jget has_database_url)" = false ] && ok "no DATABASE_URL in the pod (no URL ever reaches libpq)" || bad "the pod still gets DATABASE_URL"
+      [ "$(jget pg)" = '{"PGDATABASE": "audit", "PGHOST": "audit-postgresql", "PGPORT": "5432", "PGSSLMODE": "disable", "PGUSER": "dsa"}' ] \
+        && ok "discrete PGHOST/PGPORT/PGUSER/PGDATABASE/PGSSLMODE = dsa@audit-postgresql:5432/audit" || bad "pg settings $(jget pg)"
+      [ "$(jget pw_ref)" = '{"key": "POSTGRES_PASSWORD", "name": "audit-credentials"}' ] \
+        && ok "PGPASSWORD from audit-credentials/POSTGRES_PASSWORD (the dsa password the StatefulSet uses)" || bad "password ref $(jget pw_ref)"
       [ "$(jget run_as_non_root)" = true ] && [ "$(jget automount)" = false ] && [ "$(jget ro_rootfs)" = true ] \
         && ok "non-root, no SA token, read-only rootfs" || bad "pod hardening missing"
     fi
@@ -302,14 +430,14 @@ PY
     if render "$@" > "$f" 2>"$WK/r-days.err"; then
       local got
       got="$(cj_query "$f" | python3 -c "import json,sys; print(json.load(sys.stdin)['days'])" 2>/dev/null)"
-      [ "$got" = "$want" ] && ok "retentionDays=$want accepted" || bad "retentionDays: got '$got', want '$want'"
+      [ "$got" = "$want" ] && ok "retention $want days accepted ($*)" || bad "retention ($*): got '$got', want '$want'"
     else
-      bad "retentionDays=$want refused: $(tail -3 "$WK/r-days.err")"
+      bad "retention $want refused ($*): $(tail -3 "$WK/r-days.err")"
     fi
   }
-  expect_days 1 --set audit.claimDeliveryRetention.retentionDays=1
-  expect_days 7 --set audit.claimDeliveryRetention.retentionDays=7
-  expect_days 36500 --set audit.claimDeliveryRetention.retentionDays=36500
+  expect_days 1 --set audit.claimDeliveryRetention.retention=1d
+  expect_days 7 --set audit.claimDeliveryRetention.retention=7d
+  expect_days 36500 --set audit.claimDeliveryRetention.retention=36500d
 
   expect_refused() { # <label> <helm args...>
     local label="$1"; shift
@@ -321,23 +449,51 @@ PY
       bad "$label failed for an unrelated reason: $(tail -2 "$WK/r-refused.err")"
     fi
   }
-  expect_refused "retentionDays=0" --set audit.claimDeliveryRetention.retentionDays=0
-  expect_refused "retentionDays=-1" --set audit.claimDeliveryRetention.retentionDays=-1
-  expect_refused "retentionDays=1.5" --set audit.claimDeliveryRetention.retentionDays=1.5
-  expect_refused "retentionDays=\"030\" (octal trap)" --set-string audit.claimDeliveryRetention.retentionDays=030
-  expect_refused "retentionDays=abc" --set-string audit.claimDeliveryRetention.retentionDays=abc
-  expect_refused "retentionDays=true" --set audit.claimDeliveryRetention.retentionDays=true
-  expect_refused "retentionDays=36501" --set audit.claimDeliveryRetention.retentionDays=36501
+  expect_refused "retention=0d" --set audit.claimDeliveryRetention.retention=0d
+  expect_refused "retention=-1d" --set-string audit.claimDeliveryRetention.retention=-1d
+  expect_refused "retention=1.5d" --set audit.claimDeliveryRetention.retention=1.5d
+  expect_refused "retention=030d (leading zero)" --set audit.claimDeliveryRetention.retention=030d
+  expect_refused "retention=abc" --set-string audit.claimDeliveryRetention.retention=abc
+  expect_refused "retention=36501d" --set audit.claimDeliveryRetention.retention=36501d
+  expect_refused "retention=30 (--set number)" --set audit.claimDeliveryRetention.retention=30
+  expect_refused "retention=030 (--set-string, no unit)" --set-string audit.claimDeliveryRetention.retention=030
+  expect_refused "retention=true" --set audit.claimDeliveryRetention.retention=true
+
+  # sol r1 P1 — values FILES. YAML 1.1 parses these before any template sees
+  # them (030 -> 24 octal, 0x1E -> 30 hex, 3e1 / 30.0 -> float, true -> bool):
+  # every one must be REFUSED, never rendered as some other number. On a3cff3c
+  # `retentionDays: 030` in a file rendered 24 days.
+  vfile() { # <yaml scalar line under claimDeliveryRetention>
+    printf 'audit:\n  claimDeliveryRetention:\n    %s\n' "$1" > "$WK/v-ret.yaml"
+    printf '%s' "$WK/v-ret.yaml"
+  }
+  for line in 'retention: 030' 'retention: 0x1E' 'retention: 3e1' 'retention: 30.0' 'retention: true' \
+              'retention: 30' 'retention: 0o36' 'retention: "030d"' 'retention: 0d' 'retention: "-1d"' \
+              'retention: 1.5d' 'retention: 30D' 'retention: "30 d"' 'retention: ""' 'retention: 36501d' \
+              'retentionDays: 030' 'retentionDays: 30'; do
+    f="$(vfile "$line")"
+    if render -f "$f" > "$WK/r-vfile.yaml" 2>"$WK/r-vfile.err"; then
+      got="$(cj_query "$WK/r-vfile.yaml" | python3 -c "import json,sys; print(json.load(sys.stdin)['days'])" 2>/dev/null)"
+      bad "values file '$line' was NOT refused (rendered days='$got')"
+    elif grep -q "claimDeliveryRetention" "$WK/r-vfile.err"; then
+      ok "values file '$line' refused at render time"
+    else
+      bad "values file '$line' failed for an unrelated reason: $(tail -2 "$WK/r-vfile.err")"
+    fi
+  done
+  expect_days 30 -f "$(vfile 'retention: 30d')"
+  expect_days 7 -f "$(vfile 'retention: "7d"')"
+  expect_days 36500 -f "$(vfile 'retention: 36500d')"
   # null: Helm 4 deletes the key (→ refused as "not set"); Helm 3 restores the
-  # sub-chart default 30 (see _migration-cap.tpl, T-691). Both are safe; what
+  # sub-chart default 30d (see _migration-cap.tpl, T-691). Both are safe; what
   # must never happen is a render with any other value.
-  if render --set audit.claimDeliveryRetention.retentionDays=null > "$WK/r-null.yaml" 2>"$WK/r-null.err"; then
+  if render --set audit.claimDeliveryRetention.retention=null > "$WK/r-null.yaml" 2>"$WK/r-null.err"; then
     got="$(cj_query "$WK/r-null.yaml" | python3 -c "import json,sys; print(json.load(sys.stdin)['days'])" 2>/dev/null)"
-    [ "$got" = 30 ] && ok "retentionDays=null falls back to the default 30 (this Helm major)" || bad "retentionDays=null rendered days='$got'"
-  elif grep -q "claimDeliveryRetention.retentionDays is not set" "$WK/r-null.err"; then
-    ok "retentionDays=null refused as not set (this Helm major)"
+    [ "$got" = 30 ] && ok "retention=null falls back to the default 30d (this Helm major)" || bad "retention=null rendered days='$got'"
+  elif grep -q "claimDeliveryRetention.retention is not set" "$WK/r-null.err"; then
+    ok "retention=null refused as not set (this Helm major)"
   else
-    bad "retentionDays=null failed for an unrelated reason: $(tail -2 "$WK/r-null.err")"
+    bad "retention=null failed for an unrelated reason: $(tail -2 "$WK/r-null.err")"
   fi
   expect_refused "enabled=\"false\" (string)" --set-string audit.claimDeliveryRetention.enabled=false
   expect_refused "schedule=\"\"" --set-string audit.claimDeliveryRetention.schedule=
@@ -360,15 +516,17 @@ if [ "$HAVE_COMPOSE" != 1 ]; then
 else
   CJ="$WK/compose.json"
   if compose_json "$ROOT/customer.env.example" > "$CJ" 2>"$WK/compose.err"; then
-    python3 - "$CJ" > "$WK/compose-check.txt" <<'PY'
+    EXPECTED_PW="$(sed -n 's/^POSTGRES_AUDIT_PASSWORD=//p' "$ROOT/customer.env.example" | tail -1)"
+    python3 - "$CJ" "$MANIFEST_PG" "$EXPECTED_PW" > "$WK/compose-check.txt" <<'PY'
 import json, sys
-from urllib.parse import urlsplit
 c = json.load(open(sys.argv[1]))["services"]
+manifest_pg, expected_pw = sys.argv[2], sys.argv[3]
 s = c.get("audit-claim-delivery-retention")
 def p(ok, msg): print(("ok " if ok else "FAIL ") + msg)
 if not s:
     p(False, "service audit-claim-delivery-retention missing"); sys.exit(0)
-p(s["image"] == c["postgres-audit"]["image"], "image = postgres-audit image (%s)" % s["image"])
+p(s["image"] == manifest_pg, "image pinned to the manifest digest (%s)" % s["image"])
+p(s["image"].split("@")[0] == c["postgres-audit"]["image"].split("@")[0], "same postgres:16-alpine as postgres-audit (no new image)")
 p(s.get("entrypoint") == ["/bin/sh", "/scripts/audit-claim-delivery-retention.sh"], "entrypoint runs the mounted script")
 vols = s.get("volumes", [])
 p(any(v.get("target") == "/scripts/audit-claim-delivery-retention.sh" and v.get("source", "").endswith("/scripts/audit-claim-delivery-retention.sh") and v.get("read_only") for v in vols), "script mounted read-only from scripts/")
@@ -379,9 +537,11 @@ env = s.get("environment", {})
 p(env.get("LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS") == "30", "default DAYS=30")
 p(env.get("LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED") == "true", "default ENABLED=true")
 p(env.get("LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_INTERVAL_SECONDS") == "86400", "loops daily (86400 s)")
-u = urlsplit(env.get("DATABASE_URL", ""))
-p(u.username == "dsa" and u.hostname == "postgres-audit" and u.port == 5432 and u.path == "/audit", "DATABASE_URL = dsa@postgres-audit:5432/audit")
-p(s.get("restart") == "on-failure", "restart on-failure (disabled run stays stopped)")
+p("DATABASE_URL" not in env, "no DATABASE_URL (no URL ever reaches libpq)")
+p((env.get("PGHOST"), env.get("PGPORT"), env.get("PGUSER"), env.get("PGDATABASE"), env.get("PGSSLMODE")) == ("postgres-audit", "5432", "dsa", "audit", "disable"),
+  "discrete PGHOST/PGPORT/PGUSER/PGDATABASE/PGSSLMODE = dsa@postgres-audit:5432/audit")
+p(bool(expected_pw) and env.get("PGPASSWORD") == expected_pw, "PGPASSWORD = POSTGRES_AUDIT_PASSWORD (same value postgres-audit uses)")
+p(s.get("restart") == "unless-stopped", "restart unless-stopped (survives a Docker daemon restart; disabled idles instead of exiting)")
 p(s.get("user") == "65534:65534" and s.get("read_only") is True, "non-root user + read-only rootfs")
 PY
     while IFS= read -r line; do
@@ -607,9 +767,9 @@ SQL
 
   # ── run 1: the sweep as dsa (batch size 4 → 3 batches over 11 rows) ────────
   dk exec -i "$PG" sh -c 'cat > /tmp/t1219-sweep.sh && chmod 644 /tmp/t1219-sweep.sh' < "$SCRIPT" || die "copying the sweep into the container failed"
-  DSN_LOCAL="postgres://dsa:${PGPW}@127.0.0.1:5432/audit?sslmode=disable"
   run_sweep_exec() {
-    dk exec -u 65534:65534 -e HOME=/tmp -e "DATABASE_URL=$DSN_LOCAL" -e LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_BATCH_SIZE=4 \
+    dk exec -u 65534:65534 -e HOME=/tmp -e PGHOST=127.0.0.1 -e PGPORT=5432 -e PGUSER=dsa -e PGDATABASE=audit \
+      -e PGSSLMODE=disable -e "PGPASSWORD=$PGPW" -e LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_BATCH_SIZE=4 \
       "$PG" sh /tmp/t1219-sweep.sh --once 2>&1
   }
   OUT1="$(run_sweep_exec)" && RC1=0 || RC1=$?
@@ -631,6 +791,32 @@ SQL
   OUT2="$(run_sweep_exec)" && RC2=0 || RC2=$?
   echo "  sweep run 2 (rc=$RC2): $OUT2"
   case "$OUT2" in *"delivered_blanked=0 batches=1 parked_older_than_retention=2"*) ok "run 2 blanks nothing (idempotent)" ;; *) bad "run 2 unexpected" ;; esac
+
+  # ── sol r1 P1 on the shipped image's own psql/libpq ─────────────────────
+  # Malformed / wrong synthetic credentials against the live throwaway server:
+  # non-zero exit, a fixed reason, and the synthetic password in NO output.
+  leak_exec() { # <label> <want reason or "refused"> <docker exec -e args...>
+    local label="$1" want="$2"; shift 2
+    local out rc
+    out="$(dk exec -u 65534:65534 -e HOME=/tmp "$@" "$PG" sh /tmp/t1219-sweep.sh --once 2>&1)" && rc=0 || rc=$?
+    [ "$rc" != 0 ] && ok "image psql, $label: non-zero exit ($rc)" || bad "image psql, $label: exit 0"
+    no_secret "image psql, $label" "$out"
+    case "$want" in
+      refused) case "$out" in *FATAL:*) ok "image psql, $label: refused before psql" ;; *) bad "image psql, $label: not refused: $out" ;; esac ;;
+      *) case "$out" in *"reason=$want "*) ok "image psql, $label: logged reason=$want" ;; *) bad "image psql, $label: expected reason=$want: $out" ;; esac ;;
+    esac
+  }
+  # The official image TRUSTS loopback (pg_hba), so the wrong-password case
+  # dials the container's own network address, where scram-sha-256 applies.
+  PG_IP="$(dk inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$PG" 2>/dev/null | tr -d '[:space:]')"
+  case "$PG_IP" in
+    *[!0-9.]*|'') bad "could not read the throwaway Postgres address ('$PG_IP')" ;;
+    *) leak_exec "wrong password containing %GG" auth_failed -e "PGHOST=$PG_IP" -e PGUSER=dsa -e PGDATABASE=audit -e "PGPASSWORD=${SECRET}%GG" ;;
+  esac
+  leak_exec "malformed DATABASE_URL" refused -e PGHOST=127.0.0.1 -e PGUSER=dsa -e PGDATABASE=audit -e "PGPASSWORD=$PGPW" -e "DATABASE_URL=postgres://dsa:${SECRET}%GG@127.0.0.1:5432/audit"
+  leak_exec "password in the port" refused -e PGHOST=127.0.0.1 -e "PGPORT=${SECRET}" -e PGUSER=dsa -e PGDATABASE=audit -e "PGPASSWORD=${SECRET}"
+  leak_exec "nothing listening" connection_refused -e PGHOST=127.0.0.1 -e PGPORT=1 -e PGUSER=dsa -e PGDATABASE=audit -e "PGPASSWORD=${SECRET}%GG"
+  [ "$(state_counts)" = "$STATES_BEFORE" ] && ok "failed runs changed nothing" || bad "state counts changed after the failing runs"
 
   # ── audit_app: still no DELETE ────────────────────────────────────────────
   BLANKED_ID="evt_completion_t1219_old_delivered_1"

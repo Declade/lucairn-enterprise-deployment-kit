@@ -56,28 +56,41 @@ sandbox-a 8). It closes the [1.9.5] known gap for audit migration `000007`
     rows older than the retention period are only **counted**: the run's log
     line turns into a `WARN` (OPS.md § "Audit claim-delivery retention").
   - **Helm:** a daily CronJob `audit-claim-delivery-retention` in the audit
-    namespace (`17 3 * * *`), using the bundled audit Postgres image and the
-    `DATABASE_URL` key of the `audit-credentials` Secret (the `dsa` DSN the
-    migration Job already uses). Values `audit.claimDeliveryRetention.{enabled,
-    retentionDays,schedule}`. Renders only with the bundled Postgres; with
+    namespace (`17 3 * * *`), image `postgres:16-alpine` pinned by the digest
+    `image-manifest.yaml` records. It connects as `dsa` with discrete
+    `PGHOST`/`PGUSER`/`PGDATABASE` and `PGPASSWORD` from the
+    `POSTGRES_PASSWORD` key of the `audit-credentials` Secret — never a
+    connection URL. Values `audit.claimDeliveryRetention.{enabled, retention,
+    schedule, image}`; `retention` is a string such as `30d`, because a bare
+    YAML number in a values file is parsed first (`030` would arrive as octal
+    24). Renders only with the bundled Postgres; with
     `audit.postgresql.enabled=false` nothing renders and OPS.md gives the SQL
     to schedule yourself. No new NetworkPolicy: the audit namespace already
     allows intra-namespace 5432.
   - **Compose:** a long-running service `audit-claim-delivery-retention`
-    (image `postgres:16-alpine`, same as `postgres-audit`; network `dsa-audit`
-    only; non-root, read-only rootfs). It starts after `migrate-audit`
-    completes, sweeps once, then once a day. Optional `customer.env` keys:
+    (`postgres:16-alpine` like `postgres-audit`, pinned by the manifest
+    digest; network `dsa-audit` only; non-root, read-only rootfs;
+    `restart: unless-stopped`, so it survives a Docker daemon restart). It
+    starts after `migrate-audit` completes, sweeps once, then once a day.
+    Disabled, it logs one line and idles (no restart loop). Connects as `dsa`
+    with `PGPASSWORD=$POSTGRES_AUDIT_PASSWORD`, no URL. Optional `customer.env` keys:
     `LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS` (default 30) and
     `LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED` (default `true`).
   - **Refused values:** retention must be a whole number of days from 1 to
     36500. `0`, negatives, fractions and leading zeros are refused (Helm: at
-    render time; Compose: the service exits with an error) instead of
-    blanking fresh rows. To stop the sweep set `enabled=false` /
-    `…_ENABLED=false`.
+    render time, and any non-string `retention`; Compose: the service exits
+    with an error) instead of blanking fresh rows. To stop the sweep set
+    `enabled=false` / `…_ENABLED=false` (the days value is then ignored, by
+    the service and by `doctor` alike).
   - **Backups:** the 30-day default equals `backup.retentionDays`, so a blanked
     value can still exist in offsite backups for up to ~60 days in total.
   - **Logging:** one line per run — cutoff, retention, rows blanked, old
-    `PARKED` rows — never row contents or the connection string.
+    `PARKED` rows — never row contents or connection settings. psql's own
+    error text is never logged (libpq quotes connection parameters back in
+    it); a failure logs a fixed reason and the psql exit code.
+  - **doctor:** checks the script exactly where Compose mounts it (beside the
+    selected Compose file) and the retention env values; reports the sweep as
+    disabled when `…_ENABLED=false`.
   - Suite: `tests/test_audit_claim_delivery_retention.sh` (Helm render and
     refusals, Compose definition, and a real-Postgres run on the kit-pinned
     `postgres:16-alpine` digest: migrations 1–7, synthetic rows in all four

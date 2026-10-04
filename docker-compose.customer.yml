@@ -243,13 +243,17 @@ services:
   # not in customer.env: LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS (whole days
   # >= 1, default 30 — 0, negatives and leading zeros make the service exit with
   # an error) and LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED (exactly
-  # true/false, default true; false = the service logs one line and stays
-  # stopped). Same image as postgres-audit (psql); connects as the migration
-  # role `dsa`. Script: scripts/audit-claim-delivery-retention.sh (the Helm
-  # CronJob runs a byte-identical copy). OPS.md § "Audit claim-delivery
-  # retention".
+  # true/false, default true; false = the service logs one line and then idles
+  # without touching the database). Image: postgres:16-alpine pinned by the
+  # digest image-manifest.yaml records (image_digests.enterprise_kind.postgres)
+  # — psql only, re-pin both together. Connects as the migration role `dsa`
+  # with discrete PGHOST/PGUSER/PGDATABASE settings and the password in
+  # PGPASSWORD — never a connection URL (libpq quotes a malformed URL, password
+  # included, in its errors). Script: scripts/audit-claim-delivery-retention.sh
+  # (the Helm CronJob runs a byte-identical copy). OPS.md § "Audit
+  # claim-delivery retention".
   audit-claim-delivery-retention:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     logging: *default-logging
     depends_on:
       migrate-audit:
@@ -269,14 +273,24 @@ services:
       - dsa-audit
     environment:
       HOME: "/tmp"
-      DATABASE_URL: "postgres://dsa:${POSTGRES_AUDIT_PASSWORD:?POSTGRES_AUDIT_PASSWORD must be set (no weak default; see customer.env)}@postgres-audit:5432/audit?sslmode=${POSTGRES_SSLMODE:-disable}"
+      PGHOST: "postgres-audit"
+      PGPORT: "5432"
+      PGUSER: "dsa"
+      PGDATABASE: "audit"
+      PGSSLMODE: "${POSTGRES_SSLMODE:-disable}"
+      PGPASSWORD: "${POSTGRES_AUDIT_PASSWORD:?POSTGRES_AUDIT_PASSWORD must be set (no weak default; see customer.env)}"
       LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED: "${LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED:-true}"
       LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS: "${LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS:-30}"
       LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_INTERVAL_SECONDS: "86400"
-    # on-failure, not unless-stopped: ENABLED=false exits 0 and must stay
-    # stopped; a refused value exits non-zero and is restarted with Docker's
-    # back-off, so the error keeps showing in the logs until it is fixed.
-    restart: on-failure
+    # unless-stopped: survives a Docker daemon / host restart (on-failure does
+    # not restart a container that was running when the daemon stopped). The
+    # script never exits on its own in this mode: enabled, it sleeps a day
+    # between sweeps and retries a failed sweep after 5 minutes; disabled, it
+    # logs one line and idles — so neither case crash-loops. Only a refused
+    # value exits (code 2) and is restarted with Docker's back-off, keeping the
+    # error in the logs until it is fixed (`bin/lucairn doctor` catches it
+    # before `up`).
+    restart: unless-stopped
 
   migrate-bridge:
     image: migrate/migrate:v4.17.0
