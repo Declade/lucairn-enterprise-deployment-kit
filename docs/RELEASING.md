@@ -150,7 +150,7 @@ silently open the others.
   the job exit 94 rather than apply whatever it finds. Lower the ceiling
   deliberately if you mean to downgrade.
 
-Current ceilings: **veil-witness 10 · audit 6 · id-bridge 4 · sandbox-a 8** —
+Current ceilings: **veil-witness 10 · audit 7 · id-bridge 4 · sandbox-a 8** —
 the last version in each `migrations/<tree>/` mirror in this repo. Mechanism:
 `charts/lucairn/charts/<subchart>/templates/_migration-cap.tpl` and `scripts/migrate-capped.sh`.
 Guard suite: `tests/test_migration_version_cap.sh`.

@@ -121,7 +121,7 @@ CHARTS=(veil-witness audit id-bridge sandbox-a)
 ceiling_of() {
   case "$1" in
     veil-witness) echo 10 ;;
-    audit)        echo 6 ;;
+    audit)        echo 7 ;;
     id-bridge)    echo 4 ;;
     sandbox-a)    echo 8 ;;
     *) echo "ceiling_of: unknown chart $1" >&2; exit 2 ;;

@@ -104,7 +104,10 @@ containerSecurityContext:
 # anything when the database is already at or beyond the target: it NEVER
 # migrates down.
 #
-# 6 = 000006_token_usage_columns. The chart also carries a hard ceiling of 6
+# 7 = 000007_claim_delivery_outbox (raised from 6 in kit 1.9.5: the 0.5.5 audit
+# service writes that table on every completed request and has no fallback
+# without it; no deletion path ships for it yet, T-1219 — see CHANGELOG [1.9.5]).
+# The chart also carries a hard ceiling of 7
 # (charts/audit/templates/migration-job.yaml); a targetVersion above it is
 # refused at render time. Raising both is a deliberate code change gated by
 # docs/RELEASING.md § "Migration review".
@@ -112,7 +115,7 @@ containerSecurityContext:
 # unsafeAcknowledgeOpenEndedMigrateUp is the only escape hatch. true restores
 # the pre-T-350 open-ended `migrate up` AND bypasses the ceiling.
 migrations:
-  targetVersion: 6
+  targetVersion: 7
   unsafeAcknowledgeOpenEndedMigrateUp: false
 
 postgresql:

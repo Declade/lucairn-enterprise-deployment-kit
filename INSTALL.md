@@ -20,7 +20,7 @@ receipt, and witness-signature verification; anchors are explicitly not checked.
 > are published at <https://lucairn.eu/security>; the disclosure process and
 > contact are in [`SECURITY.md`](SECURITY.md).
 
-### v0.5.5 / chart 1.9.5 (TODO-0.5.5-release-date) — sanitizer roster 36 (attribution leak closed), T-1102 gateway key separation
+### v0.5.5 / chart 1.9.5 (2026-10-04) — sanitizer roster 36 (attribution leak closed), T-1102 gateway key separation
 
 **Read `CHANGELOG.md` `[1.9.5]` → "Read first" before upgrading.** Two steps
 are order-sensitive:
@@ -30,8 +30,11 @@ are order-sensitive:
    to `""` **before** `helm upgrade`. On Compose the shipped gateway service
    receives none of those keys (keep `LCR_SANDBOX_B_SIGNING_KEY` in
    `customer.env` — sandbox B needs it).
-2. **Database migrations:** ceilings are unchanged (veil-witness 10 · audit 6 ·
-   id-bridge 4 · sandbox-a 8); see the changelog's migration review.
+2. **Database migrations:** the audit ceiling rises 6 → 7 — the migration Job
+   creates one new table, `audit_claim_deliveries`, which the 0.5.5 audit
+   service needs (it holds no raw text; no deletion path yet, T-1219). Other
+   ceilings unchanged (veil-witness 10 · id-bridge 4 · sandbox-a 8); see the
+   changelog's migration review.
 
 **Upgrade from v0.5.4:** pull the new images (`LUCAIRN_IMAGE_TAG=0.5.5` in
 `customer.env`; or `global.imageTag: "0.5.5"` in Helm values). The 12 `dsa-*`

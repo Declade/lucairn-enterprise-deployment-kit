@@ -2179,10 +2179,11 @@ they do not accept arbitrary Compose flags and `down` does not remove volumes.
 Exact release rollback history and restore proof remain WP4 S4 scope—do not
 interpret these S1 wrappers as completed rollback functionality.
 
-### v0.5.5 / chart 1.9.5 — sanitizer roster 36 + T-1102 gateway key separation (TODO-0.5.5-release-date)
+### v0.5.5 / chart 1.9.5 — sanitizer roster 36 + T-1102 gateway key separation (2026-10-04)
 
-Schema change: none applied by this kit — migration ceilings unchanged
-(veil-witness 10 · audit 6 · id-bridge 4 · sandbox-a 8). Read the migration
+Schema change: ONE — the audit ceiling rises 6 → 7, so the migration Job
+creates `audit_claim_deliveries` (no deletion path yet, T-1219). Other ceilings
+unchanged (veil-witness 10 · id-bridge 4 · sandbox-a 8). Read the migration
 review in `CHANGELOG.md` `[1.9.5]` before upgrading.
 
 All 12 `dsa-*` images are republished + cosign-signed + Rekor-logged at `0.5.5`
