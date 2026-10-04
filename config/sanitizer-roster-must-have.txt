@@ -57,6 +57,13 @@ order_number
 # T-768: medical record number (0.5.4 image registry). de_places and
 # drugs_and_diagnoses are deliberately NOT here: they are opt-in for
 # healthcare/clinical installs (false positives on ordinary words at 0.35).
-# de_companies and software_products are no-ops on 0.5.4 (the scanner discards
-# ORGANIZATION and PRODUCT). See the CHANGELOG entry for T-768.
+# de_companies and software_products are no-ops (the scanner discards
+# ORGANIZATION and PRODUCT, still true on 0.5.5). See the CHANGELOG entry for T-768.
 medical_record_number
+
+# T-768, kit 1.9.5 (images 0.5.5): registered from 0.5.5 on. attribution_person
+# closes the ServiceNow "Reviewed by <Name>" leak; labeled_id is label-gated.
+# patientennummer_id_prefix is NOT here: it is a bare-shape recognizer held back
+# with format_* until the two-lane zoner is enabled and measured.
+attribution_person
+labeled_id
