@@ -32,7 +32,10 @@ are order-sensitive:
    `customer.env` — sandbox B needs it).
 2. **Database migrations:** the audit ceiling rises 6 → 7 — the migration Job
    creates one new table, `audit_claim_deliveries`, which the 0.5.5 audit
-   service needs (it holds no raw text; no deletion path yet, T-1219). Other
+   service needs (it holds no raw text; no deletion path yet, T-1219). Remove
+   any `LUCAIRN_MIGRATE_TARGET_AUDIT=6` override from `customer.env` (Helm:
+   any `audit.migrations.targetVersion: 6` in your values) — below 7 every
+   completed request fails with 503. Other
    ceilings unchanged (veil-witness 10 · id-bridge 4 · sandbox-a 8); see the
    changelog's migration review.
 

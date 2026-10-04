@@ -72,7 +72,10 @@ earlier kit entries described as "not in the pinned `0.5.4` image".
     `LCR_ENABLED=true`), and has no degraded-schema fallback: capped at 6,
     that insert would fail, `EmitEvent` would return an error, and a
     production gateway (audit fail-closed) would answer proxied requests with
-    `503 audit_evidence_unavailable`.
+    `503 audit_evidence_unavailable`. **Upgrading: remove any
+    `LUCAIRN_MIGRATE_TARGET_AUDIT=6` (Compose) or
+    `audit.migrations.targetVersion: 6` (Helm) override you set earlier** —
+    it would hold the schema below 7 with the same 503 result.
     Data held: request id, delivery state, the output-scan summary
     (hashes, offsets, counts and entity types per `proto/audit/v1/audit.proto`
     `output_scan_body`) and the signed claim bytes — no raw flagged text.
