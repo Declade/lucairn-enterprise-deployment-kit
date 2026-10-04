@@ -185,31 +185,28 @@ image_digests:
   # --- ENFORCES these (resolve tag->digest, block on mismatch).
   signed_artifacts:
     # Full 0.5.5 umbrella — all 12 dsa-* rebuilt multi-arch + cosign-signed
-    # (GHCR + Rekor) from DSA main f70d0fe8 or later; digests mirror
+    # (GHCR + Rekor) from DSA main 168874d8 (2026-10-04); digests mirror
     # keys/image-digests-0.5.5.txt; verify with `lucairn verify-images --tag 0.5.5`.
     # (dsa-pii-ml stays pinned at 0.5.1 — independent release cadence;
     # lucairn-dashboard stays at 0.8.2.)
-    # ⛔ DRAFT: every "TODO-0.5.5-digest-pending" below is a placeholder until the
-    # 0.5.5 image ceremony supplies the real digests. tests/test_digest_pin.sh
-    # FAILS while any placeholder remains.
     dsa-gateway:
       ref: "ghcr.io/declade/dsa-gateway:0.5.5"
-      digest: "sha256:TODO-0.5.5-digest-pending"
+      digest: "sha256:b153d7582bfc3ffcfd88b8468b3d80236613aacac93a8bac4b4ce274fa641ae5"
     dsa-sanitizer:
       ref: "ghcr.io/declade/dsa-sanitizer:0.5.5"
-      digest: "sha256:TODO-0.5.5-digest-pending"
+      digest: "sha256:7a550230b2d47fbaec66d1066b25cc6c659c3a53d6ef19733d2c8970e63a8fb0"
     dsa-audit:
       ref: "ghcr.io/declade/dsa-audit:0.5.5"
-      digest: "sha256:TODO-0.5.5-digest-pending"
+      digest: "sha256:4e298c9a289ccd8e7ae8be07f70b97e842737e2599301f7acbe9630c067a2296"
     dsa-id-bridge:
       ref: "ghcr.io/declade/dsa-id-bridge:0.5.5"
-      digest: "sha256:TODO-0.5.5-digest-pending"
+      digest: "sha256:54127f714e2fdb864f266919da9f914fe155d2f0d131eea11857bed4112042cf"
     dsa-sandbox-a:
       ref: "ghcr.io/declade/dsa-sandbox-a:0.5.5"
-      digest: "sha256:TODO-0.5.5-digest-pending"
+      digest: "sha256:12224a7c1992e4d6170d9fb89212b3f5eefa0008a1b02445e92cbf8342daa66e"
     dsa-sandbox-b:
       ref: "ghcr.io/declade/dsa-sandbox-b:0.5.5"
-      digest: "sha256:TODO-0.5.5-digest-pending"
+      digest: "sha256:d50522bca7a60cced4da8514834892581cc0110ae88c98ed9b1bc8a9245926eb"
     dsa-pii-ml:
       # Multi-arch manifest list (linux/amd64 + linux/arm64) published from
       # PR #241's final state (commit 0cb627c, review round 1 fix-ups). Built on
@@ -220,22 +217,22 @@ image_digests:
       digest: "sha256:5cc46f58db9f0c84f6a8ed9428fe91a2a481ae0c6a3dfa3f02e4a607da80d1cc"
     dsa-veil-witness:
       ref: "ghcr.io/declade/dsa-veil-witness:0.5.5"
-      digest: "sha256:TODO-0.5.5-digest-pending"
+      digest: "sha256:2314d971d0cbccdbb63e6d5547a93c82ed634f8cafb0d5fd0bc55d6957d4f5ac"
     dsa-reid-guard:
       ref: "ghcr.io/declade/dsa-reid-guard:0.5.5"
-      digest: "sha256:TODO-0.5.5-digest-pending"
+      digest: "sha256:9f6525ef7c1eb643f286737c5c41ce7543062957ea8c3fe7f770999f8742b9c5"
     dsa-admin:
       ref: "ghcr.io/declade/dsa-admin:0.5.5"
-      digest: "sha256:TODO-0.5.5-digest-pending"
+      digest: "sha256:813d53a3aa2c35cb9fb7e08b1246f8d6deb15d8c543f682950a2805dc9cf7679"
     dsa-demo:
       ref: "ghcr.io/declade/dsa-demo:0.5.5"
-      digest: "sha256:TODO-0.5.5-digest-pending"
+      digest: "sha256:839250e15e86d83af4c8a9620c14c23309aec143d43c4a98356a55113c1f0773"
     dsa-ingest:
       ref: "ghcr.io/declade/dsa-ingest:0.5.5"
-      digest: "sha256:TODO-0.5.5-digest-pending"
+      digest: "sha256:a339a270150e6378029b3153567abcc5aee8ae26383d0c55f22d6938a485578b"
     dsa-llm-auditor:
       ref: "ghcr.io/declade/dsa-llm-auditor:0.5.5"
-      digest: "sha256:TODO-0.5.5-digest-pending"
+      digest: "sha256:ab97c803d10fd0957a25838f60ab80c15a42c818a1a740b92d5b291be80e7a9a"
     lucairn-dashboard:
       ref: "ghcr.io/declade/lucairn-dashboard:0.8.2"
       digest: "sha256:a586b88991ac5d71cf6523b833462648775b1e97a66cbee67876e9f992f0387e"

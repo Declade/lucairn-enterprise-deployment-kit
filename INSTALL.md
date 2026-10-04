@@ -1090,7 +1090,7 @@ the **Key Ceremony Runbook** (`docs/KEY_CEREMONY_RUNBOOK.md` § 6 "Producing the
 witness-signed manifest blob"). The invocation is:
 
 The `sign-manifest` tool ships **inside the pinned
-`dsa-veil-witness:0.5.5@sha256:TODO-0.5.5-digest-pending`
+`dsa-veil-witness:0.5.5@sha256:2314d971d0cbccdbb63e6d5547a93c82ed634f8cafb0d5fd0bc55d6957d4f5ac`
 image** (`/usr/local/bin/sign-manifest`), so the ceremony is turnkey on the
 ceremony host — no Go toolchain, no build-from-source, no dev-mode fallback.
 Use this canonical command; it keeps the witness seed out of the host Docker
@@ -1111,7 +1111,7 @@ docker run --rm \
   --entrypoint /bin/sh \
   -v "$PWD/keys.json:/keys.json:ro" \
   -v "$seed_file:/run/secrets/witness-signing-key-hex:ro" \
-  ghcr.io/declade/dsa-veil-witness:0.5.5@sha256:TODO-0.5.5-digest-pending \
+  ghcr.io/declade/dsa-veil-witness:0.5.5@sha256:2314d971d0cbccdbb63e6d5547a93c82ed634f8cafb0d5fd0bc55d6957d4f5ac \
   -ec 'exec sign-manifest --keys-json /keys.json --issuer "$1" --witness-signing-key-hex "$(cat /run/secrets/witness-signing-key-hex)" --witness-key-id witness_manifest_v1' \
   sign-manifest "$LCR_ISSUER" \
   > witness-signed-manifest.json
@@ -1122,7 +1122,7 @@ docker run --rm \
 ```
 
 > **Flags** (run `docker run --rm --entrypoint sign-manifest
-> ghcr.io/declade/dsa-veil-witness:0.5.5@sha256:TODO-0.5.5-digest-pending -h`
+> ghcr.io/declade/dsa-veil-witness:0.5.5@sha256:2314d971d0cbccdbb63e6d5547a93c82ed634f8cafb0d5fd0bc55d6957d4f5ac -h`
 > to confirm against your pin):
 > `--keys-json` (required), `--issuer` (required; matches `LCR_ISSUER` / legacy
 > `VEIL_ISSUER` at the gateway), `--witness-signing-key-hex` (required; the
