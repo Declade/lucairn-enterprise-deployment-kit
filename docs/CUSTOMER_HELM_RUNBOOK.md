@@ -12,10 +12,10 @@
 
 ## Prereqs (1-time)
 
-- Kubernetes 1.27+ cluster (Kind, EKS, GKE, AKS, vanilla — single node is fine for pilot scale)
+- Kubernetes 1.28+ cluster (any conformant distribution; proven on Kind — see above; single node is fine for pilot scale)
 - **A NetworkPolicy-enforcing CNI (Calico or Cilium) for the Veil isolation control — a separate production control from the Helm mTLS transport gate; see callout below**
 - `kubectl` configured for the cluster + access to create namespaces, ClusterRoles, NetworkPolicies
-- `helm` v3.12+ installed locally
+- `helm` v3.13+ installed locally
 - `docker` available locally (for ghcr.io PAT setup; no Docker required on the cluster itself)
 - A default StorageClass on the cluster (PVCs use it for keystore + Postgres)
 - 8 GB RAM, 4 cores, 50 GB storage available
