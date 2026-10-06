@@ -29,6 +29,9 @@ Usage:
   lucairn bundle create --customer-slug acme --models-dir ./models --model-manifest model-manifest.yaml --env customer.env --image-tar images.tar [--customer-data-dir ./customer-data]
   lucairn bundle prepare --customer-slug acme --staging-dir /secure/staging/acme [--output dist/customer-bundles]
   lucairn bundle verify --bundle dist/customer-bundles/lucairn-customer-bundle-acme-YYYYMMDDTHHMMSSZ.tar.gz
+  lucairn evidence verify bundle.zip --env customer.env [--tool PATH] [--json] [--require-anchors]
+  lucairn evidence list --env customer.env --customer-id ID --admin-key-file PATH [--since TIME] [--until TIME]
+  lucairn evidence export --env customer.env --customer-id ID --conversation ID --admin-key-file PATH --output DIR
   lucairn backup --env customer.env [--compose docker-compose.customer.yml] [--verify]
   lucairn restore --env customer.env --stamp YYYYMMDDTHHMMSSZ [--compose docker-compose.customer.yml] [--db audit|bridge|veil]
 
@@ -83,6 +86,19 @@ Commands:
   pull            Pull images for the recorded runtime topology.
   support-bundle  Generate a redacted support archive for customer review.
   bundle          Create, prepare, or verify per-customer delivery bundles.
+  evidence        EVIDENCE bundles - not the delivery bundles of `lucairn bundle`.
+                  An evidence bundle is one zip per conversation with that
+                  conversation's signed certificates, for an auditor to check
+                  offline; a delivery bundle is the tar archive of images and
+                  models that IT installs. `evidence verify` runs the
+                  separately released lucairn-bundle-verify tool with this
+                  deployment's own public keys from --env and returns the
+                  tool's output and exit code unchanged (0 VALID, 1 TAMPERED,
+                  2 INCOMPLETE; 3 = the tool was not run). The kit does not
+                  ship or download that tool. `evidence list` and `evidence
+                  export` need the exporter lucairn-bundle-export from a later
+                  release and stop with one sentence until it is installed.
+                  Details: `lucairn evidence --help`.
   backup          pg_dump -> age-encrypt -> upload the 3 compliance DBs to S3,
                   then prune per LUCAIRN_BACKUP_RETENTION_DAYS. --verify does a
                   restore-into-throwaway smoke. Compose-path peer of the Helm
@@ -9820,6 +9836,501 @@ config_pack() {
   python3 "$renderer" "$@"
 }
 
+# ---------------------------------------------------------------------------
+# lucairn evidence - EVIDENCE bundles (T-1231 Slice 3, PR F)
+# ---------------------------------------------------------------------------
+#
+# An EVIDENCE bundle is one zip per conversation holding that conversation's
+# signed certificates, for an auditor to check offline with the separately
+# released `lucairn-bundle-verify` tool. It is unrelated to
+# `lucairn bundle create|prepare|verify`, which handle customer DELIVERY
+# bundles (tar archives of images and models). The verb is `evidence` so the
+# two cannot be confused; nothing in this block calls or changes bundle_*.
+#
+#   verify  wraps the released verifier: finds the binary, turns this
+#           deployment's OWN public keys (hex lines in --env) into the tool's
+#           --witness-key / --service-key flags, and returns the tool's output
+#           and exit code unchanged. The kit neither ships nor downloads the
+#           binary.
+#   export  argument parsing, validation and the call into the exporter binary
+#   list    `lucairn-bundle-export`. That binary is not released yet; without
+#           it both verbs stop with one sentence and write nothing.
+#
+# This block makes no network call. Public keys only: no *_SIGNING_KEY value is
+# ever put on a command line or printed, no key is printed at all, and the
+# admin key is only ever handed on as a FILE PATH that this script never opens.
+LUCAIRN_EVIDENCE_VERIFY_TOOL="lucairn-bundle-verify"
+# Oldest verifier this wrapper runs. 1.0.0 is the first release and the first
+# with --witness-key / --service-key. Raise it in the change that starts to
+# rely on a newer check (kit-exported bundles carry no report and need the
+# release that makes the report optional for a custom witness key).
+LUCAIRN_EVIDENCE_VERIFY_MIN_VERSION="1.0.0"
+LUCAIRN_EVIDENCE_VERIFY_RELEASE_URL="https://github.com/Declade/lucairn-sdks/releases/tag/bundle-verify-v1.0.0"
+LUCAIRN_EVIDENCE_EXPORT_TOOL="lucairn-bundle-export"
+# The verifier owns exit codes 0 (VALID), 1 (TAMPERED) and 2 (INCOMPLETE).
+# Anything this wrapper stops on BEFORE the verifier runs exits 3, so a script
+# can never read a missing tool or a missing key as a verdict.
+LUCAIRN_EVIDENCE_NO_VERDICT_EXIT=3
+
+# claim service id -> the customer.env line that holds its public key (canonical
+# name, legacy name, then the matching private-seed names used ONLY to refuse a
+# seed pasted into a public slot). Same mapping the witness boots with
+# (dual-sandbox-architecture services/veil-witness/cmd/server/main.go, "Parse
+# service public keys"): the streaming claim is signed by the sanitizer key.
+# All six public keys are required by `lucairn doctor` (require_env_values).
+LUCAIRN_EVIDENCE_SERVICE_KEYS=(
+  "dsa-bridge LCR_BRIDGE_PUBLIC_KEY VEIL_BRIDGE_PUBLIC_KEY LCR_BRIDGE_SIGNING_KEY VEIL_BRIDGE_SIGNING_KEY"
+  "dsa-sanitizer LCR_SANITIZER_PUBLIC_KEY VEIL_SANITIZER_PUBLIC_KEY LCR_SANITIZER_SIGNING_KEY VEIL_SANITIZER_SIGNING_KEY"
+  "dsa-sanitizer-streaming LCR_SANITIZER_PUBLIC_KEY VEIL_SANITIZER_PUBLIC_KEY LCR_SANITIZER_SIGNING_KEY VEIL_SANITIZER_SIGNING_KEY"
+  "dsa-ai LCR_SANDBOX_B_PUBLIC_KEY VEIL_SANDBOX_B_PUBLIC_KEY LCR_SANDBOX_B_SIGNING_KEY VEIL_SANDBOX_B_SIGNING_KEY"
+  "dsa-audit LCR_AUDIT_PUBLIC_KEY VEIL_AUDIT_PUBLIC_KEY LCR_AUDIT_SIGNING_KEY VEIL_AUDIT_SIGNING_KEY"
+  "dsa-gateway LCR_GATEWAY_PUBLIC_KEY VEIL_GATEWAY_PUBLIC_KEY LCR_GATEWAY_SIGNING_KEY VEIL_GATEWAY_SIGNING_KEY"
+)
+
+evidence_usage() {
+  cat <<'USAGE'
+Usage:
+  lucairn evidence verify bundle.zip --env customer.env [--tool PATH] [--json] [--require-anchors] [--tsa-root PEM] [--rekor-key PEM] [--require-binding-after RFC3339] [--service-key SERVICE=BASE64]... [--allow-unversioned-tool]
+  lucairn evidence list --customer-id ID --admin-key-file PATH (--env customer.env | --gateway-url URL) [--since TIME] [--until TIME] [--exporter PATH]
+  lucairn evidence export --customer-id ID --conversation ID --admin-key-file PATH --output DIR (--env customer.env | --gateway-url URL) [--exporter PATH]
+
+Evidence bundles are NOT delivery bundles:
+  lucairn evidence ...  one zip per conversation with that conversation's
+                        signed certificates, for an auditor to check offline.
+  lucairn bundle ...    the customer DELIVERY bundle: a tar archive of images
+                        and models that IT installs.
+  `lucairn bundle verify` cannot check an evidence bundle, and
+  `lucairn evidence verify` cannot check a delivery bundle.
+
+verify
+  Runs the separately released lucairn-bundle-verify (1.0.0 or newer) on the
+  bundle. The kit does not ship or download that tool: download it from
+    https://github.com/Declade/lucairn-sdks/releases/tag/bundle-verify-v1.0.0
+  check it against the release's SHA256SUMS, and either put it on PATH as
+  lucairn-bundle-verify, set LUCAIRN_BUNDLE_VERIFY=PATH, or pass --tool PATH.
+
+  --env names the file with THIS deployment's public keys: customer.env, or a
+  file holding only its public lines (LCR_WITNESS_KEY_ID and the six
+  LCR_*_PUBLIC_KEY lines for WITNESS, BRIDGE, SANITIZER, SANDBOX_B, AUDIT and
+  GATEWAY). They are passed to the tool as --witness-key and one --service-key
+  per claim signer (dsa-bridge, dsa-sanitizer, dsa-sanitizer-streaming, dsa-ai,
+  dsa-audit, dsa-gateway). Public keys only: no signing key is read into a
+  command line, and no key is printed. A missing or malformed line stops the
+  run before the tool starts.
+
+  The tool's output and exit code come back unchanged:
+    0  VALID       every check that applies passed
+    1  TAMPERED    at least one check failed
+    2  INCOMPLETE  nothing failed, but something could not be checked
+    3  no verdict  this wrapper stopped before the tool ran (tool missing or
+                   too old, key line missing or malformed, bad arguments)
+  Anchors: a self-hosted deployment that does not timestamp or log its
+  certificates gets those steps as SKIPPED(not anchored), which does not block
+  VALID. Pass --require-anchors (with --tsa-root / --rekor-key for your own
+  trust roots) if your deployment does anchor.
+  --service-key adds the key of a claim signer that is not one of the six
+  above; a certificate with a claim from a signer whose key was not passed
+  reads TAMPERED (unknown_service).
+
+list, export
+  Both need the exporter lucairn-bundle-export, which ships with a later
+  release. Until it is installed (PATH, LUCAIRN_BUNDLE_EXPORT=PATH or
+  --exporter PATH) they check their arguments, then stop with one sentence and
+  write nothing. --admin-key-file must be a regular file readable only by its
+  owner; this command passes on the path and never opens the file. There is
+  no --admin-key VALUE form. --env is used only for GATEWAY_PORT (the gateway
+  on http://127.0.0.1:PORT); --gateway-url overrides it and must be https
+  unless it points at this host.
+USAGE
+}
+
+# verify only: a problem found before the verifier ran. Never exit 1 or 2 here.
+evidence_no_verdict() {
+  echo "lucairn evidence verify: $*" >&2
+  echo "lucairn evidence verify: no verdict - the verifier was not run (exit ${LUCAIRN_EVIDENCE_NO_VERDICT_EXIT})." >&2
+  exit "$LUCAIRN_EVIDENCE_NO_VERDICT_EXIT"
+}
+
+# evidence_locate_tool NAME FLAG_VALUE ENV_VALUE -> prints the path to run, or
+# nothing. Order: explicit flag, environment variable, PATH. An explicit value
+# is a FILE, never a name to look up: a bare "tool" means ./tool, so what gets
+# checked for existence is also what gets run.
+evidence_locate_tool() {
+  local name="$1" from_flag="$2" from_env="$3" explicit=""
+  if [ -n "$from_flag" ]; then
+    explicit="$from_flag"
+  elif [ -n "$from_env" ]; then
+    explicit="$from_env"
+  fi
+  if [ -n "$explicit" ]; then
+    case "$explicit" in
+      */*) printf '%s' "$explicit" ;;
+      *) printf './%s' "$explicit" ;;
+    esac
+  else
+    command -v "$name" 2>/dev/null || true
+  fi
+}
+
+# evidence_read_public_key ENV CANONICAL LEGACY SIGNING SIGNING_LEGACY
+# Sets EVIDENCE_KEY_B64 to the standard base64 of the 32-byte public key on the
+# CANONICAL (or LEGACY) line of ENV. Stops with "no verdict" when the line is
+# missing, is not 64 hex characters, or equals the matching private seed. The
+# value itself is never echoed.
+EVIDENCE_KEY_B64=""
+evidence_read_public_key() {
+  local LC_ALL=C
+  local env="$1" canonical="$2" legacy="$3" signing="$4" signing_legacy="$5"
+  local hex seed i esc=""
+  EVIDENCE_KEY_B64=""
+  hex="$(env_value_with_legacy "$env" "$canonical" "$legacy")"
+  hex="${hex%$'\r'}"
+  [ -n "$hex" ] || evidence_no_verdict "$canonical is not set in $env; the verifier needs it as a public key"
+  case "$hex" in
+    REPLACE_ME*) evidence_no_verdict "$canonical in $env is still the REPLACE_ME placeholder" ;;
+    *[!0-9a-fA-F]*) evidence_no_verdict "$canonical in $env is not a public key (expected 64 hex characters)" ;;
+  esac
+  [ "${#hex}" -eq 64 ] || evidence_no_verdict "$canonical in $env has ${#hex} characters; a public key is 64 hex characters"
+  seed="$(env_value_with_legacy "$env" "$signing" "$signing_legacy")"
+  seed="${seed%$'\r'}"
+  if [ -n "$seed" ] && [ "$(printf '%s' "$seed" | tr 'A-F' 'a-f')" = "$(printf '%s' "$hex" | tr 'A-F' 'a-f')" ]; then
+    seed=""
+    evidence_no_verdict "$canonical in $env holds the same value as $signing: that is a private signing seed, not a public key (derive the public key with scripts/derive-veil-pubkey.sh)"
+  fi
+  seed=""
+  for ((i = 0; i < 64; i += 2)); do
+    esc="${esc}\\x${hex:$i:2}"
+  done
+  # shellcheck disable=SC2059  # esc is \xHH pairs built from validated hex
+  if have base64; then
+    EVIDENCE_KEY_B64="$(printf "$esc" | base64 | tr -d '\r\n')"
+  elif have openssl; then
+    EVIDENCE_KEY_B64="$(printf "$esc" | openssl enc -A -base64 | tr -d '\r\n')"
+  else
+    evidence_no_verdict "neither base64 nor openssl is on PATH (needed to hand the public keys to the verifier)"
+  fi
+  [ "${#EVIDENCE_KEY_B64}" -eq 44 ] || evidence_no_verdict "could not encode $canonical for the verifier"
+}
+
+evidence_verify() {
+  local LC_ALL=C
+  local bundle="" bundle_set=0 env_file="" tool_flag="" allow_unversioned=0
+  local pass_count=0 extra_count=0 tool_count=0
+  local pass_args extra_keys tool_args
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --env) [ "$#" -ge 2 ] || evidence_no_verdict "--env requires a file path"; env_file="$2"; shift 2 ;;
+      --tool) [ "$#" -ge 2 ] || evidence_no_verdict "--tool requires the path of lucairn-bundle-verify"; tool_flag="$2"; shift 2 ;;
+      --json|--require-anchors) pass_args[pass_count]="$1"; pass_count=$((pass_count + 1)); shift ;;
+      --tsa-root|--rekor-key)
+        [ "$#" -ge 2 ] || evidence_no_verdict "$1 requires a PEM file path"
+        [ -f "$2" ] && [ -r "$2" ] || evidence_no_verdict "$1 file not found or not readable: $2"
+        pass_args[pass_count]="$1"; pass_args[pass_count + 1]="$2"; pass_count=$((pass_count + 2)); shift 2
+        ;;
+      --require-binding-after)
+        [ "$#" -ge 2 ] || evidence_no_verdict "--require-binding-after requires an RFC 3339 time, e.g. 2026-11-01T00:00:00Z"
+        pass_args[pass_count]="$1"; pass_args[pass_count + 1]="$2"; pass_count=$((pass_count + 2)); shift 2
+        ;;
+      --service-key)
+        [ "$#" -ge 2 ] || evidence_no_verdict "--service-key requires SERVICE=BASE64"
+        extra_keys[extra_count]="$2"; extra_count=$((extra_count + 1)); shift 2
+        ;;
+      --allow-unversioned-tool) allow_unversioned=1; shift ;;
+      --witness-key)
+        evidence_no_verdict "--witness-key is not taken here: the witness key comes from --env. To trust a different key, run lucairn-bundle-verify yourself"
+        ;;
+      --bundle)
+        evidence_no_verdict "--bundle is the delivery-bundle flag. For a customer delivery bundle (.tar.gz) run: lucairn bundle verify --bundle FILE. An evidence bundle is given as a plain path: lucairn evidence verify bundle.zip --env customer.env"
+        ;;
+      -h|--help) evidence_usage; exit 0 ;;
+      --)
+        shift
+        [ "$#" -eq 1 ] && [ "$bundle_set" -eq 0 ] || evidence_no_verdict "give exactly one evidence bundle (bundle.zip)"
+        bundle="$1"; bundle_set=1; shift
+        ;;
+      -*) evidence_no_verdict "unknown argument: $1 (see: lucairn evidence --help)" ;;
+      *)
+        [ "$bundle_set" -eq 0 ] || evidence_no_verdict "give exactly one evidence bundle (bundle.zip); got a second path: $1"
+        bundle="$1"; bundle_set=1; shift
+        ;;
+    esac
+  done
+
+  [ "$bundle_set" -eq 1 ] && [ -n "$bundle" ] || evidence_no_verdict "no evidence bundle given (usage: lucairn evidence verify bundle.zip --env customer.env)"
+  case "$bundle" in
+    *.tar.gz|*.tgz|*.tar)
+      evidence_no_verdict "$bundle looks like a customer delivery bundle. Check it with: lucairn bundle verify --bundle FILE. lucairn evidence verify checks evidence bundles (one .zip per conversation)"
+      ;;
+  esac
+  [ -f "$bundle" ] && [ -r "$bundle" ] || evidence_no_verdict "evidence bundle not found or not readable: $bundle"
+
+  [ -n "$env_file" ] || evidence_no_verdict "--env FILE is required: customer.env, or a file holding only its public-key lines (see: lucairn evidence --help)"
+  [ -f "$env_file" ] && [ -r "$env_file" ] || evidence_no_verdict "key file not found or not readable: $env_file"
+
+  # --- this deployment's own trust material: public keys only ---------------
+  local witness_key_id key_id_note="" entry service canonical legacy signing signing_legacy names=""
+  witness_key_id="$(env_value_with_legacy "$env_file" LCR_WITNESS_KEY_ID VEIL_WITNESS_KEY_ID)"
+  witness_key_id="${witness_key_id%$'\r'}"
+  if [ -z "$witness_key_id" ]; then
+    # Same default the witness and the Compose file use when the line is absent.
+    witness_key_id="witness_v1"
+    key_id_note=" (default; LCR_WITNESS_KEY_ID is not set)"
+  fi
+  case "$witness_key_id" in
+    *[!A-Za-z0-9._-]*) evidence_no_verdict "LCR_WITNESS_KEY_ID in $env_file has characters outside A-Z a-z 0-9 . _ -" ;;
+  esac
+  [ "${#witness_key_id}" -le 128 ] || evidence_no_verdict "LCR_WITNESS_KEY_ID in $env_file is longer than 128 characters"
+
+  evidence_read_public_key "$env_file" LCR_WITNESS_PUBLIC_KEY VEIL_WITNESS_PUBLIC_KEY LCR_WITNESS_SIGNING_KEY VEIL_WITNESS_SIGNING_KEY
+  tool_args[0]="--witness-key"
+  tool_args[1]="${witness_key_id}=${EVIDENCE_KEY_B64}"
+  tool_count=2
+  for entry in "${LUCAIRN_EVIDENCE_SERVICE_KEYS[@]}"; do
+    # shellcheck disable=SC2086  # the table rows are space-separated words
+    set -- $entry
+    service="$1"; canonical="$2"; legacy="$3"; signing="$4"; signing_legacy="$5"
+    evidence_read_public_key "$env_file" "$canonical" "$legacy" "$signing" "$signing_legacy"
+    tool_args[tool_count]="--service-key"
+    tool_args[tool_count + 1]="${service}=${EVIDENCE_KEY_B64}"
+    tool_count=$((tool_count + 2))
+    names="${names}${names:+, }${service} (${canonical})"
+  done
+  EVIDENCE_KEY_B64=""
+
+  # Extra claim signers named by the operator. The six above always come from
+  # --env, so an extra key can add a signer but never replace one of them.
+  local extra extra_id extra_value i
+  i=0
+  while [ "$i" -lt "$extra_count" ]; do
+    extra="${extra_keys[$i]}"
+    i=$((i + 1))
+    case "$extra" in
+      *=*) extra_id="${extra%%=*}"; extra_value="${extra#*=}" ;;
+      *) evidence_no_verdict "--service-key must be SERVICE=BASE64" ;;
+    esac
+    case "$extra_id" in
+      ""|*[!A-Za-z0-9._-]*) evidence_no_verdict "--service-key: the service id must be made of A-Z a-z 0-9 . _ -" ;;
+    esac
+    for entry in "${LUCAIRN_EVIDENCE_SERVICE_KEYS[@]}"; do
+      [ "${entry%% *}" != "$extra_id" ] || evidence_no_verdict "--service-key $extra_id: that key comes from --env and cannot be replaced here"
+    done
+    case "$extra_value" in
+      *[!A-Za-z0-9+/=]*) evidence_no_verdict "--service-key $extra_id: the key must be the standard base64 of 32 bytes" ;;
+    esac
+    [ "${#extra_value}" -eq 44 ] || evidence_no_verdict "--service-key $extra_id: the key must be the standard base64 of 32 bytes (44 characters)"
+    tool_args[tool_count]="--service-key"
+    tool_args[tool_count + 1]="${extra_id}=${extra_value}"
+    tool_count=$((tool_count + 2))
+    names="${names}, ${extra_id} (--service-key)"
+  done
+
+  i=0
+  while [ "$i" -lt "$pass_count" ]; do
+    tool_args[tool_count]="${pass_args[$i]}"
+    tool_count=$((tool_count + 1))
+    i=$((i + 1))
+  done
+
+  # --- the verifier: found, the right program, new enough -------------------
+  local tool version_line tool_version
+  tool="$(evidence_locate_tool "$LUCAIRN_EVIDENCE_VERIFY_TOOL" "$tool_flag" "${LUCAIRN_BUNDLE_VERIFY:-}")"
+  if [ -z "$tool" ]; then
+    evidence_no_verdict "$LUCAIRN_EVIDENCE_VERIFY_TOOL was not found (looked at --tool, LUCAIRN_BUNDLE_VERIFY and PATH). This kit does not ship or download it: get version $LUCAIRN_EVIDENCE_VERIFY_MIN_VERSION or newer from $LUCAIRN_EVIDENCE_VERIFY_RELEASE_URL, check it against the release's SHA256SUMS, then pass --tool PATH"
+  fi
+  [ -f "$tool" ] && [ -x "$tool" ] || evidence_no_verdict "$LUCAIRN_EVIDENCE_VERIFY_TOOL not found or not executable at: $tool"
+  version_line="$("$tool" --version 2>/dev/null </dev/null | head -n 1 || true)"
+  case "$version_line" in
+    "$LUCAIRN_EVIDENCE_VERIFY_TOOL "*) tool_version="${version_line#"$LUCAIRN_EVIDENCE_VERIFY_TOOL" }" ;;
+    *) evidence_no_verdict "$tool did not answer --version the way $LUCAIRN_EVIDENCE_VERIFY_TOOL does; check that --tool points at the verifier" ;;
+  esac
+  tool_version="${tool_version#v}"
+  case "$tool_version" in
+    ""|*[!A-Za-z0-9.+-]*) evidence_no_verdict "$tool reports a version this wrapper cannot read; it needs $LUCAIRN_EVIDENCE_VERIFY_TOOL $LUCAIRN_EVIDENCE_VERIFY_MIN_VERSION or newer" ;;
+    [0-9]*.[0-9]*.[0-9]*)
+      if ver_lt "$tool_version" "$LUCAIRN_EVIDENCE_VERIFY_MIN_VERSION"; then
+        evidence_no_verdict "$tool is version $tool_version; this wrapper needs $LUCAIRN_EVIDENCE_VERIFY_MIN_VERSION or newer (an older verifier lacks checks that newer bundles rely on). Get a current release from $LUCAIRN_EVIDENCE_VERIFY_RELEASE_URL"
+      fi
+      ;;
+    *)
+      if [ "$allow_unversioned" -eq 1 ]; then
+        echo "lucairn evidence verify: warning: $tool reports version '$tool_version' (a build without a release version); the minimum $LUCAIRN_EVIDENCE_VERIFY_MIN_VERSION could not be checked." >&2
+      else
+        evidence_no_verdict "$tool reports version '$tool_version', not a release version, so the minimum $LUCAIRN_EVIDENCE_VERIFY_MIN_VERSION cannot be checked. Use a released binary, or pass --allow-unversioned-tool if you built it yourself from a release tag"
+      fi
+      ;;
+  esac
+
+  # Wrapper notes go to stderr only, so stdout stays exactly the tool's (--json
+  # included). Names, never key values.
+  echo "lucairn evidence verify: tool $tool (version $tool_version)" >&2
+  echo "lucairn evidence verify: public keys from $env_file: witness key id ${witness_key_id}${key_id_note} (LCR_WITNESS_PUBLIC_KEY); service keys ${names}" >&2
+
+  local rc=0
+  "$tool" "${tool_args[@]}" -- "$bundle" || rc=$?
+  exit "$rc"
+}
+
+# evidence_remote export|list ARGS...  Shared by the two verbs that need the
+# gateway: validates, then hands over to the exporter binary. Without the
+# exporter it stops with one sentence; it never writes a bundle itself.
+evidence_remote() {
+  local LC_ALL=C
+  local verb="$1"; shift
+  local env_file="" customer_id="" conversation="" admin_key_file="" output="" gateway_url="" exporter_flag="" since="" until=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --env) [ "$#" -ge 2 ] || fail "evidence $verb: --env requires a file path"; env_file="$2"; shift 2 ;;
+      --customer-id) [ "$#" -ge 2 ] || fail "evidence $verb: --customer-id requires an id"; customer_id="$2"; shift 2 ;;
+      --admin-key-file) [ "$#" -ge 2 ] || fail "evidence $verb: --admin-key-file requires a path"; admin_key_file="$2"; shift 2 ;;
+      --gateway-url) [ "$#" -ge 2 ] || fail "evidence $verb: --gateway-url requires a URL"; gateway_url="$2"; shift 2 ;;
+      --exporter) [ "$#" -ge 2 ] || fail "evidence $verb: --exporter requires the path of $LUCAIRN_EVIDENCE_EXPORT_TOOL"; exporter_flag="$2"; shift 2 ;;
+      --admin-key|--admin-key=*)
+        fail "evidence $verb: there is no --admin-key VALUE form (a key on the command line lands in shell history and the process list); use --admin-key-file PATH"
+        ;;
+      --conversation)
+        [ "$verb" = "export" ] || fail "evidence list: --conversation belongs to evidence export"
+        [ "$#" -ge 2 ] || fail "evidence export: --conversation requires an id"; conversation="$2"; shift 2
+        ;;
+      --output)
+        [ "$verb" = "export" ] || fail "evidence list: --output belongs to evidence export"
+        [ "$#" -ge 2 ] || fail "evidence export: --output requires a directory"; output="$2"; shift 2
+        ;;
+      --since|--until)
+        [ "$verb" = "list" ] || fail "evidence export: $1 belongs to evidence list"
+        [ "$#" -ge 2 ] || fail "evidence list: $1 requires a time (YYYY-MM-DD or RFC 3339)"
+        if [ "$1" = "--since" ]; then since="$2"; else until="$2"; fi
+        shift 2
+        ;;
+      --bundle|--customer-slug|--staging-dir|--models-dir|--model-manifest)
+        fail "evidence $verb: $1 is a delivery-bundle flag (lucairn bundle create|prepare|verify). Evidence bundles are a different thing: see lucairn evidence --help"
+        ;;
+      -h|--help) evidence_usage; exit 0 ;;
+      *) fail "unknown evidence $verb argument: $1 (see: lucairn evidence --help)" ;;
+    esac
+  done
+
+  [ -n "$customer_id" ] || fail "evidence $verb: --customer-id is required"
+  case "$customer_id" in
+    *[!A-Za-z0-9._:-]*) fail "evidence $verb: --customer-id may only contain A-Z a-z 0-9 . _ : -" ;;
+  esac
+  [ "${#customer_id}" -le 200 ] || fail "evidence $verb: --customer-id is longer than 200 characters"
+
+  if [ "$verb" = "export" ]; then
+    [ -n "$conversation" ] || fail "evidence export: --conversation is required (lucairn evidence list shows the ids)"
+    case "$conversation" in
+      *[!A-Za-z0-9._:-]*) fail "evidence export: --conversation may only contain A-Z a-z 0-9 . _ : -" ;;
+    esac
+    [ "${#conversation}" -le 200 ] || fail "evidence export: --conversation is longer than 200 characters"
+    [ -n "$output" ] || fail "evidence export: --output DIR is required"
+    if [ -e "$output" ]; then
+      [ -d "$output" ] && [ -w "$output" ] || fail "evidence export: --output is not a writable directory: $output"
+    else
+      [ -d "$(dirname "$output")" ] && [ -w "$(dirname "$output")" ] \
+        || fail "evidence export: --output cannot be created (its parent is not a writable directory): $output"
+    fi
+  else
+    local when
+    for when in "$since" "$until"; do
+      [ -n "$when" ] || continue
+      printf '%s' "$when" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2}))?$' \
+        || fail "evidence list: --since/--until must be YYYY-MM-DD or an RFC 3339 time such as 2026-10-01T00:00:00Z"
+    done
+  fi
+
+  # The admin key: only its path travels. Existence, type and permissions are
+  # checked here; the file is never opened by this script.
+  [ -n "$admin_key_file" ] || fail "evidence $verb: --admin-key-file PATH is required"
+  [ ! -L "$admin_key_file" ] || fail "evidence $verb: --admin-key-file must be a regular file, not a symbolic link: $admin_key_file"
+  [ -f "$admin_key_file" ] && [ -r "$admin_key_file" ] || fail "evidence $verb: --admin-key-file not found or not readable: $admin_key_file"
+  [ -s "$admin_key_file" ] || fail "evidence $verb: --admin-key-file is empty: $admin_key_file"
+  # shellcheck disable=SC2012  # ls -ld is the portable way to read the mode string
+  case "$(ls -ld "$admin_key_file" | cut -c5-10)" in
+    ------) : ;;
+    *) fail "evidence $verb: --admin-key-file must be readable by its owner only (chmod 600): $admin_key_file" ;;
+  esac
+
+  if [ -z "$gateway_url" ]; then
+    [ -n "$env_file" ] || fail "evidence $verb: give --env customer.env (for the gateway port) or --gateway-url URL"
+    [ -f "$env_file" ] && [ -r "$env_file" ] || fail "evidence $verb: env file not found or not readable: $env_file"
+    local port
+    port="$(env_value "$env_file" GATEWAY_PORT)"
+    port="${port%$'\r'}"
+    port="${port:-8080}"
+    case "$port" in
+      *[!0-9]*) fail "evidence $verb: GATEWAY_PORT in $env_file is not a port number" ;;
+    esac
+    [ "${#port}" -le 5 ] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || fail "evidence $verb: GATEWAY_PORT in $env_file is not a port number"
+    # Compose publishes the gateway on the loopback address only.
+    gateway_url="http://127.0.0.1:${port}"
+  else
+    gateway_url="${gateway_url%/}"
+    local url_shape="evidence $verb: --gateway-url must be a plain http(s)://host[:port] URL (no path, query, user or spaces)"
+    case "$gateway_url" in
+      *[!]A-Za-z0-9._:/[-]*) fail "$url_shape" ;;
+      https://?*|http://?*) : ;;
+      *) fail "evidence $verb: --gateway-url must start with https:// or http://" ;;
+    esac
+    # Split host and port so "this host" is decided on the host alone.
+    local authority="${gateway_url#*://}" url_host url_port=""
+    case "$authority" in
+      */*) fail "$url_shape" ;;
+      \[*\]) url_host="$authority" ;;
+      \[*\]:*) url_host="${authority%:*}"; url_port="${authority##*:}"; [ -n "$url_port" ] || fail "$url_shape" ;;
+      *\[*|*\]*|*:*:*) fail "$url_shape" ;;
+      *:*) url_host="${authority%:*}"; url_port="${authority##*:}"; [ -n "$url_port" ] || fail "$url_shape" ;;
+      *) url_host="$authority" ;;
+    esac
+    [ -n "$url_host" ] || fail "$url_shape"
+    case "$url_port" in
+      *[!0-9]*) fail "$url_shape" ;;
+    esac
+    case "$gateway_url" in
+      http://*)
+        case "$url_host" in
+          127.0.0.1|localhost|"[::1]") : ;;
+          *) fail "evidence $verb: --gateway-url is plain http to another host; the admin key would cross the network unencrypted. Use https, or reach the gateway on this host" ;;
+        esac
+        ;;
+    esac
+  fi
+
+  local exporter
+  exporter="$(evidence_locate_tool "$LUCAIRN_EVIDENCE_EXPORT_TOOL" "$exporter_flag" "${LUCAIRN_BUNDLE_EXPORT:-}")"
+  if [ -z "$exporter" ]; then
+    fail "evidence $verb needs the exporter $LUCAIRN_EVIDENCE_EXPORT_TOOL, which ships with a later release; nothing was exported and nothing was written."
+  fi
+  [ -f "$exporter" ] && [ -x "$exporter" ] || fail "evidence $verb: $LUCAIRN_EVIDENCE_EXPORT_TOOL not found or not executable at: $exporter"
+
+  # Hand-over. The exporter is not released yet, so this argument set is the
+  # contract its first release has to meet (or this call changes with it); no
+  # minimum version can be stated before a version exists.
+  local rc=0
+  if [ "$verb" = "export" ]; then
+    "$exporter" export --gateway-url "$gateway_url" --customer-id "$customer_id" \
+      --conversation-id "$conversation" --admin-key-file "$admin_key_file" --output "$output" || rc=$?
+  else
+    local list_args
+    list_args=(list --gateway-url "$gateway_url" --customer-id "$customer_id" --admin-key-file "$admin_key_file")
+    [ -z "$since" ] || list_args[${#list_args[@]}]="--since"
+    [ -z "$since" ] || list_args[${#list_args[@]}]="$since"
+    [ -z "$until" ] || list_args[${#list_args[@]}]="--until"
+    [ -z "$until" ] || list_args[${#list_args[@]}]="$until"
+    "$exporter" "${list_args[@]}" || rc=$?
+  fi
+  exit "$rc"
+}
+
+evidence_command() {
+  local subcmd="${1:-}"
+  case "$subcmd" in
+    verify) shift; evidence_verify "$@" ;;
+    export) shift; evidence_remote export "$@" ;;
+    list) shift; evidence_remote list "$@" ;;
+    -h|--help|"") evidence_usage ;;
+    *) fail "unknown evidence subcommand: $subcmd (evidence bundles: verify, list, export; for customer delivery bundles use: lucairn bundle create|prepare|verify)" ;;
+  esac
+}
+
 main() {
   local cmd="${1:-}"
   case "$cmd" in
@@ -9832,6 +10343,7 @@ main() {
     check-updates) shift; check_updates "$@" ;;
     support-bundle) shift; support_bundle "$@" ;;
     bundle) shift; bundle_command "$@" ;;
+    evidence) shift; evidence_command "$@" ;;
     backup) shift; backup "$@" ;;
     restore) shift; restore "$@" ;;
     __validate-runtime-profile) shift; runtime_profile_check_command "$@" ;;

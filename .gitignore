@@ -1,5 +1,8 @@
 customer.env
 *.env
+# Dated backups of the env file (customer.env.bak-YYYYMMDD) carry the same
+# secrets as customer.env but do not end in .env, so `*.env` does not match.
+customer.env.bak-*
 # Kit-local customer_id state written by bin/lucairn-mint-customer (mode 0600);
 # consumed by `bin/lucairn license issue` to auto-fill --customer-id. Customer-
 # specific runtime state — never commit. (Also covered by the .* temp form.)
