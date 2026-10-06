@@ -2,6 +2,16 @@
 unset DOCTOR_CUSTOMER_KEY
 set -euo pipefail
 
+# `evidence verify` answers through its exit code (0 VALID, 1 TAMPERED,
+# 2 INCOMPLETE). No failure of this script may leave as one of those before
+# the verifier has run - not even one in the lines between here and the verb's
+# own function (a sibling helper that fails to load, a missing dirname).
+# evidence_verify replaces this trap with its own as its first act; 3 is
+# LUCAIRN_EVIDENCE_NO_VERDICT_EXIT, which is not defined yet at this point.
+if [ "${1:-}" = "evidence" ] && [ "${2:-}" = "verify" ]; then
+  trap 'exit 3' EXIT
+fi
+
 # When sourced, $0 names the calling shell; BASH_SOURCE still names this CLI.
 # Keep the fallback for normal execution environments where it is unavailable.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
@@ -9856,9 +9866,15 @@ config_pack() {
 #   list    `lucairn-bundle-export`. That binary is not released yet; without
 #           it both verbs stop with one sentence and write nothing.
 #
-# This block makes no network call. Public keys only: no *_SIGNING_KEY value is
-# ever put on a command line or printed, no key is printed at all, and the
-# admin key is only ever handed on as a FILE PATH that this script never opens.
+# This block makes no network call. No key is printed, and the admin key is only
+# ever handed on as a FILE PATH that this script never opens. What `verify`
+# guarantees about private seeds is exactly this: a value read from --env is
+# never passed to the verifier if the same file holds that value on a line
+# that sets (or comments out) a variable ending in _SIGNING_KEY. A file with
+# public lines only gives nothing to compare, and a seed has the same shape as
+# a public key (64 hex characters), so nothing else can be told. The public
+# keys that ARE passed sit on the verifier's command line and are visible in
+# the process list while it runs.
 LUCAIRN_EVIDENCE_VERIFY_TOOL="lucairn-bundle-verify"
 # Oldest verifier this wrapper runs. 1.0.0 is the first release and the first
 # with --witness-key / --service-key. Raise it in the change that starts to
@@ -9867,16 +9883,28 @@ LUCAIRN_EVIDENCE_VERIFY_TOOL="lucairn-bundle-verify"
 LUCAIRN_EVIDENCE_VERIFY_MIN_VERSION="1.0.0"
 LUCAIRN_EVIDENCE_VERIFY_RELEASE_URL="https://github.com/Declade/lucairn-sdks/releases/tag/bundle-verify-v1.0.0"
 LUCAIRN_EVIDENCE_EXPORT_TOOL="lucairn-bundle-export"
-# The verifier owns exit codes 0 (VALID), 1 (TAMPERED) and 2 (INCOMPLETE).
+# The verifier owns exit codes 0 (VALID), 1 (TAMPERED) and 2 (INCOMPLETE; it
+# also returns 2 when it rejects its own arguments).
 # Anything this wrapper stops on BEFORE the verifier runs exits 3, so a script
 # can never read a missing tool or a missing key as a verdict.
 LUCAIRN_EVIDENCE_NO_VERDICT_EXIT=3
+# Where one `evidence verify` call stands; read by the EXIT trap that
+# evidence_verify installs (evidence_verify_on_exit):
+#   pre      nothing has been handed to the verifier yet
+#   help     the usage text was the whole request
+#   started  the verifier has been started; its exit code is the answer
+EVIDENCE_VERIFY_STATE=""
 
 # claim service id -> the customer.env line that holds its public key (canonical
 # name, legacy name, then the matching private-seed names used ONLY to refuse a
-# seed pasted into a public slot). Same mapping the witness boots with
+# seed pasted into a public slot; since the seed check compares against every
+# *_SIGNING_KEY line of the file, they are documentation here). The first five
+# rows are the mapping the witness parses on the kit
 # (dual-sandbox-architecture services/veil-witness/cmd/server/main.go, "Parse
 # service public keys"): the streaming claim is signed by the sanitizer key.
+# The kit does not give its witness LCR_GATEWAY_PUBLIC_KEY; the dsa-gateway row
+# is passed because the verifier pins that signer and a custom --service-key
+# set replaces its built-in one.
 # All six public keys are required by `lucairn doctor` (require_env_values).
 LUCAIRN_EVIDENCE_SERVICE_KEYS=(
   "dsa-bridge LCR_BRIDGE_PUBLIC_KEY VEIL_BRIDGE_PUBLIC_KEY LCR_BRIDGE_SIGNING_KEY VEIL_BRIDGE_SIGNING_KEY"
@@ -9914,16 +9942,30 @@ verify
   LCR_*_PUBLIC_KEY lines for WITNESS, BRIDGE, SANITIZER, SANDBOX_B, AUDIT and
   GATEWAY). They are passed to the tool as --witness-key and one --service-key
   per claim signer (dsa-bridge, dsa-sanitizer, dsa-sanitizer-streaming, dsa-ai,
-  dsa-audit, dsa-gateway). Public keys only: no signing key is read into a
-  command line, and no key is printed. A missing or malformed line stops the
-  run before the tool starts.
+  dsa-audit, dsa-gateway). No key is printed. A value that the same file also
+  holds on a *_SIGNING_KEY line is a private seed in a public slot: it is
+  refused and never passed on. (A file with public lines only gives nothing
+  to compare.) The public keys that are passed are visible in the process
+  list while the tool runs. A missing or malformed line stops the run before
+  the tool starts.
 
   The tool's output and exit code come back unchanged:
     0  VALID       every check that applies passed
     1  TAMPERED    at least one check failed
-    2  INCOMPLETE  nothing failed, but something could not be checked
+    2  INCOMPLETE  nothing failed, but something could not be checked - or
+                   the tool rejected its arguments (then it prints no
+                   RESULT: line)
     3  no verdict  this wrapper stopped before the tool ran (tool missing or
-                   too old, key line missing or malformed, bad arguments)
+                   too old, key line missing or malformed, bad arguments,
+                   any failure of the wrapper itself)
+  --help is answered only when it is the sole argument; next to other
+  arguments it is a usage error (3), so a verification call cannot end in 0
+  without the tool having run.
+  --require-binding-after takes a UTC time such as 2026-11-01T00:00:00Z.
+  Only one witness key is passed (the one in --env). Certificates signed
+  with an earlier witness key read INCOMPLETE; --witness-key is not taken
+  here yet - run lucairn-bundle-verify directly with one --witness-key per
+  key.
   Anchors: a self-hosted deployment that does not timestamp or log its
   certificates gets those steps as SKIPPED(not anchored), which does not block
   VALID. Pass --require-anchors (with --tsa-root / --rekor-key for your own
@@ -9945,10 +9987,126 @@ USAGE
 }
 
 # verify only: a problem found before the verifier ran. Never exit 1 or 2 here.
+# The messages are best effort (stderr may be closed); the exit code is not.
 evidence_no_verdict() {
-  echo "lucairn evidence verify: $*" >&2
-  echo "lucairn evidence verify: no verdict - the verifier was not run (exit ${LUCAIRN_EVIDENCE_NO_VERDICT_EXIT})." >&2
+  echo "lucairn evidence verify: $*" >&2 || true
+  echo "lucairn evidence verify: no verdict - the verifier was not run (exit ${LUCAIRN_EVIDENCE_NO_VERDICT_EXIT})." >&2 || true
   exit "$LUCAIRN_EVIDENCE_NO_VERDICT_EXIT"
+}
+
+# EXIT trap of `evidence verify`. Until the verifier has been started, EVERY
+# way out of this script is "no verdict" (3): a failed write to a closed
+# stderr, a helper such as base64 failing under `set -e`, a `fail` in a shared
+# function, an exit 0 nobody intended. The only exit 0 without the verifier is
+# the usage text asked for on its own. Once the state is `started` the trap
+# does nothing and the verifier's exit code leaves unchanged.
+evidence_verify_on_exit() {
+  local rc="$1"
+  case "$EVIDENCE_VERIFY_STATE" in
+    started) return 0 ;;
+    help) [ "$rc" -ne 0 ] || return 0 ;;
+  esac
+  trap - EXIT
+  set +e
+  if [ "$rc" -ne "$LUCAIRN_EVIDENCE_NO_VERDICT_EXIT" ]; then
+    echo "lucairn evidence verify: no verdict - stopped before the verifier was run (exit ${LUCAIRN_EVIDENCE_NO_VERDICT_EXIT})." >&2
+  fi
+  exit "$LUCAIRN_EVIDENCE_NO_VERDICT_EXIT"
+}
+
+# evidence_valid_rfc3339_utc VALUE -> 0 when VALUE is
+# YYYY-MM-DDTHH:MM:SS[.fraction]Z with a real calendar date and clock time.
+# That is a subset of what the verifier parses (Go time.RFC3339), so a value
+# accepted here is not what makes the verifier answer 2 for a usage error.
+evidence_valid_rfc3339_utc() {
+  local LC_ALL=C
+  local v="$1" fraction year month day hour minute second days
+  case "$v" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].*Z)
+      fraction="${v:20}"
+      fraction="${fraction%Z}"
+      case "$fraction" in
+        ""|*[!0-9]*) return 1 ;;
+      esac
+      [ "${#fraction}" -le 9 ] || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  # 10# keeps a leading zero from being read as octal (08, 09).
+  year=$((10#${v:0:4})); month=$((10#${v:5:2})); day=$((10#${v:8:2}))
+  hour=$((10#${v:11:2})); minute=$((10#${v:14:2})); second=$((10#${v:17:2}))
+  [ "$month" -ge 1 ] && [ "$month" -le 12 ] || return 1
+  case "$month" in
+    4|6|9|11) days=30 ;;
+    2)
+      if [ $((year % 4)) -eq 0 ] && { [ $((year % 100)) -ne 0 ] || [ $((year % 400)) -eq 0 ]; }; then
+        days=29
+      else
+        days=28
+      fi
+      ;;
+    *) days=31 ;;
+  esac
+  [ "$day" -ge 1 ] && [ "$day" -le "$days" ] || return 1
+  [ "$hour" -le 23 ] && [ "$minute" -le 59 ] && [ "$second" -le 59 ] || return 1
+  return 0
+}
+
+# evidence_hex_lower VALUE -> EVIDENCE_LOWER (A-F folded to a-f, in the shell:
+# no value is handed to another program for this).
+EVIDENCE_LOWER=""
+evidence_hex_lower() {
+  local v="$1"
+  v="${v//A/a}"; v="${v//B/b}"; v="${v//C/c}"
+  v="${v//D/d}"; v="${v//E/e}"; v="${v//F/f}"
+  EVIDENCE_LOWER="$v"
+}
+
+# evidence_collect_signing_values ENV
+# Remembers what ENV holds on every line that sets - or comments out - a
+# variable whose name ends in _SIGNING_KEY (LCR_*, the legacy VEIL_*, any
+# other): EVIDENCE_SEED_NAMES[i] / EVIDENCE_SEED_VALUES[i]. The values are the
+# rest of the line after "=", hex case folded; they are compared by
+# containment, so quotes, spaces or a trailing comment around a seed do not
+# hide it. Read in the shell only; nothing here is printed or passed on.
+EVIDENCE_SEED_COUNT=0
+EVIDENCE_SEED_NAMES=()
+EVIDENCE_SEED_VALUES=()
+evidence_collect_signing_values() {
+  local LC_ALL=C
+  local env="$1" line name value pad
+  EVIDENCE_SEED_COUNT=0
+  EVIDENCE_SEED_NAMES=()
+  EVIDENCE_SEED_VALUES=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *_SIGNING_KEY*=*) : ;;
+      *) continue ;;
+    esac
+    name="${line%%=*}"
+    value="${line#*=}"
+    pad="${name%%[![:space:]#]*}"; name="${name#"$pad"}"
+    case "$name" in
+      export[[:space:]]*)
+        name="${name#export}"
+        pad="${name%%[![:space:]]*}"; name="${name#"$pad"}"
+        ;;
+    esac
+    pad="${name##*[![:space:]]}"; name="${name%"$pad"}"
+    case "$name" in
+      ""|*[!A-Za-z0-9_]*) continue ;;
+      *_SIGNING_KEY) : ;;
+      *) continue ;;
+    esac
+    # Shorter than a key: nothing a 64-character public value could equal.
+    [ "${#value}" -ge 64 ] || continue
+    evidence_hex_lower "$value"
+    EVIDENCE_SEED_NAMES[EVIDENCE_SEED_COUNT]="$name"
+    EVIDENCE_SEED_VALUES[EVIDENCE_SEED_COUNT]="$EVIDENCE_LOWER"
+    EVIDENCE_SEED_COUNT=$((EVIDENCE_SEED_COUNT + 1))
+  done < "$env"
+  EVIDENCE_LOWER=""
 }
 
 # evidence_locate_tool NAME FLAG_VALUE ENV_VALUE -> prints the path to run, or
@@ -9972,16 +10130,17 @@ evidence_locate_tool() {
   fi
 }
 
-# evidence_read_public_key ENV CANONICAL LEGACY SIGNING SIGNING_LEGACY
+# evidence_read_public_key ENV CANONICAL LEGACY
 # Sets EVIDENCE_KEY_B64 to the standard base64 of the 32-byte public key on the
 # CANONICAL (or LEGACY) line of ENV. Stops with "no verdict" when the line is
-# missing, is not 64 hex characters, or equals the matching private seed. The
-# value itself is never echoed.
+# missing, is not 64 hex characters, or holds a value that ANY *_SIGNING_KEY
+# line of the same file holds (evidence_collect_signing_values must have run
+# on ENV first). The value itself is never echoed.
 EVIDENCE_KEY_B64=""
 evidence_read_public_key() {
   local LC_ALL=C
-  local env="$1" canonical="$2" legacy="$3" signing="$4" signing_legacy="$5"
-  local hex seed i esc=""
+  local env="$1" canonical="$2" legacy="$3"
+  local hex hex_lower i esc=""
   EVIDENCE_KEY_B64=""
   hex="$(env_value_with_legacy "$env" "$canonical" "$legacy")"
   hex="${hex%$'\r'}"
@@ -9991,13 +10150,18 @@ evidence_read_public_key() {
     *[!0-9a-fA-F]*) evidence_no_verdict "$canonical in $env is not a public key (expected 64 hex characters)" ;;
   esac
   [ "${#hex}" -eq 64 ] || evidence_no_verdict "$canonical in $env has ${#hex} characters; a public key is 64 hex characters"
-  seed="$(env_value_with_legacy "$env" "$signing" "$signing_legacy")"
-  seed="${seed%$'\r'}"
-  if [ -n "$seed" ] && [ "$(printf '%s' "$seed" | tr 'A-F' 'a-f')" = "$(printf '%s' "$hex" | tr 'A-F' 'a-f')" ]; then
-    seed=""
-    evidence_no_verdict "$canonical in $env holds the same value as $signing: that is a private signing seed, not a public key (derive the public key with scripts/derive-veil-pubkey.sh)"
-  fi
-  seed=""
+  evidence_hex_lower "$hex"
+  hex_lower="$EVIDENCE_LOWER"
+  EVIDENCE_LOWER=""
+  i=0
+  while [ "$i" -lt "$EVIDENCE_SEED_COUNT" ]; do
+    case "${EVIDENCE_SEED_VALUES[$i]}" in
+      *"$hex_lower"*)
+        evidence_no_verdict "$canonical in $env holds the same value as ${EVIDENCE_SEED_NAMES[$i]}: that is a private signing seed, not a public key (derive the public key with scripts/derive-veil-pubkey.sh)"
+        ;;
+    esac
+    i=$((i + 1))
+  done
   for ((i = 0; i < 64; i += 2)); do
     esc="${esc}\\x${hex:$i:2}"
   done
@@ -10017,6 +10181,23 @@ evidence_verify() {
   local bundle="" bundle_set=0 env_file="" tool_flag="" allow_unversioned=0
   local pass_count=0 extra_count=0 tool_count=0
   local pass_args extra_keys tool_args
+
+  # From here until the verifier is started, every exit is "no verdict".
+  EVIDENCE_VERIFY_STATE="pre"
+  trap 'evidence_verify_on_exit "$?"' EXIT
+
+  # Help is its own request, never part of a verification call: a script that
+  # appends arguments must not be able to get exit 0 without a verdict.
+  if [ "$#" -eq 1 ]; then
+    case "$1" in
+      -h|--help)
+        EVIDENCE_VERIFY_STATE="help"
+        evidence_usage
+        exit 0
+        ;;
+    esac
+  fi
+
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --env) [ "$#" -ge 2 ] || evidence_no_verdict "--env requires a file path"; env_file="$2"; shift 2 ;;
@@ -10029,6 +10210,8 @@ evidence_verify() {
         ;;
       --require-binding-after)
         [ "$#" -ge 2 ] || evidence_no_verdict "--require-binding-after requires an RFC 3339 time, e.g. 2026-11-01T00:00:00Z"
+        evidence_valid_rfc3339_utc "$2" \
+          || evidence_no_verdict "--require-binding-after must be an RFC 3339 time in UTC with a real date, e.g. 2026-11-01T00:00:00Z"
         pass_args[pass_count]="$1"; pass_args[pass_count + 1]="$2"; pass_count=$((pass_count + 2)); shift 2
         ;;
       --service-key)
@@ -10037,12 +10220,14 @@ evidence_verify() {
         ;;
       --allow-unversioned-tool) allow_unversioned=1; shift ;;
       --witness-key)
-        evidence_no_verdict "--witness-key is not taken here: the witness key comes from --env. To trust a different key, run lucairn-bundle-verify yourself"
+        evidence_no_verdict "--witness-key is not taken here: the witness key comes from --env. To trust a different or an additional key, run lucairn-bundle-verify yourself"
         ;;
       --bundle)
         evidence_no_verdict "--bundle is the delivery-bundle flag. For a customer delivery bundle (.tar.gz) run: lucairn bundle verify --bundle FILE. An evidence bundle is given as a plain path: lucairn evidence verify bundle.zip --env customer.env"
         ;;
-      -h|--help) evidence_usage; exit 0 ;;
+      -h|--help)
+        evidence_no_verdict "$1 is only answered on its own (lucairn evidence verify --help); next to other arguments this is a verification call"
+        ;;
       --)
         shift
         [ "$#" -eq 1 ] && [ "$bundle_set" -eq 0 ] || evidence_no_verdict "give exactly one evidence bundle (bundle.zip)"
@@ -10067,8 +10252,18 @@ evidence_verify() {
   [ -n "$env_file" ] || evidence_no_verdict "--env FILE is required: customer.env, or a file holding only its public-key lines (see: lucairn evidence --help)"
   [ -f "$env_file" ] && [ -r "$env_file" ] || evidence_no_verdict "key file not found or not readable: $env_file"
 
-  # --- this deployment's own trust material: public keys only ---------------
-  local witness_key_id key_id_note="" entry service canonical legacy signing signing_legacy names=""
+  # --- this deployment's own trust material ---------------------------------
+  # A caller may have turned Bash tracing on (bash -x, set -x, SHELLOPTS). The
+  # env file can hold private seeds next to the public keys, and the trace
+  # would print every value read below. Tracing goes off here and stays off:
+  # this function only ends in an exit. Same idea as doctor_with_xtrace_suspended.
+  case "$-" in
+    *x*) set +x ;;
+  esac
+  # Every *_SIGNING_KEY value of the file, before any public value is read.
+  evidence_collect_signing_values "$env_file"
+
+  local witness_key_id key_id_note="" entry service canonical legacy names=""
   witness_key_id="$(env_value_with_legacy "$env_file" LCR_WITNESS_KEY_ID VEIL_WITNESS_KEY_ID)"
   witness_key_id="${witness_key_id%$'\r'}"
   if [ -z "$witness_key_id" ]; then
@@ -10081,21 +10276,24 @@ evidence_verify() {
   esac
   [ "${#witness_key_id}" -le 128 ] || evidence_no_verdict "LCR_WITNESS_KEY_ID in $env_file is longer than 128 characters"
 
-  evidence_read_public_key "$env_file" LCR_WITNESS_PUBLIC_KEY VEIL_WITNESS_PUBLIC_KEY LCR_WITNESS_SIGNING_KEY VEIL_WITNESS_SIGNING_KEY
+  evidence_read_public_key "$env_file" LCR_WITNESS_PUBLIC_KEY VEIL_WITNESS_PUBLIC_KEY
   tool_args[0]="--witness-key"
   tool_args[1]="${witness_key_id}=${EVIDENCE_KEY_B64}"
   tool_count=2
   for entry in "${LUCAIRN_EVIDENCE_SERVICE_KEYS[@]}"; do
     # shellcheck disable=SC2086  # the table rows are space-separated words
     set -- $entry
-    service="$1"; canonical="$2"; legacy="$3"; signing="$4"; signing_legacy="$5"
-    evidence_read_public_key "$env_file" "$canonical" "$legacy" "$signing" "$signing_legacy"
+    service="$1"; canonical="$2"; legacy="$3"
+    evidence_read_public_key "$env_file" "$canonical" "$legacy"
     tool_args[tool_count]="--service-key"
     tool_args[tool_count + 1]="${service}=${EVIDENCE_KEY_B64}"
     tool_count=$((tool_count + 2))
     names="${names}${names:+, }${service} (${canonical})"
   done
   EVIDENCE_KEY_B64=""
+  EVIDENCE_SEED_COUNT=0
+  EVIDENCE_SEED_NAMES=()
+  EVIDENCE_SEED_VALUES=()
 
   # Extra claim signers named by the operator. The six above always come from
   # --env, so an extra key can add a signer but never replace one of them.
@@ -10153,7 +10351,7 @@ evidence_verify() {
       ;;
     *)
       if [ "$allow_unversioned" -eq 1 ]; then
-        echo "lucairn evidence verify: warning: $tool reports version '$tool_version' (a build without a release version); the minimum $LUCAIRN_EVIDENCE_VERIFY_MIN_VERSION could not be checked." >&2
+        echo "lucairn evidence verify: warning: $tool reports version '$tool_version' (a build without a release version); the minimum $LUCAIRN_EVIDENCE_VERIFY_MIN_VERSION could not be checked." >&2 || true
       else
         evidence_no_verdict "$tool reports version '$tool_version', not a release version, so the minimum $LUCAIRN_EVIDENCE_VERIFY_MIN_VERSION cannot be checked. Use a released binary, or pass --allow-unversioned-tool if you built it yourself from a release tag"
       fi
@@ -10161,11 +10359,16 @@ evidence_verify() {
   esac
 
   # Wrapper notes go to stderr only, so stdout stays exactly the tool's (--json
-  # included). Names, never key values.
-  echo "lucairn evidence verify: tool $tool (version $tool_version)" >&2
-  echo "lucairn evidence verify: public keys from $env_file: witness key id ${witness_key_id}${key_id_note} (LCR_WITNESS_PUBLIC_KEY); service keys ${names}" >&2
+  # included). Names, never key values. Best effort: a closed stderr must not
+  # stop a run that is otherwise ready.
+  echo "lucairn evidence verify: tool $tool (version $tool_version)" >&2 || true
+  echo "lucairn evidence verify: public keys from $env_file: witness key id ${witness_key_id}${key_id_note} (LCR_WITNESS_PUBLIC_KEY); service keys ${names}" >&2 || true
 
+  # Nothing may come between this assignment and the call: from here on the
+  # exit code is the verifier's (or the shell's 126/127 if the file can no
+  # longer be executed), and the EXIT trap leaves it alone.
   local rc=0
+  EVIDENCE_VERIFY_STATE="started"
   "$tool" "${tool_args[@]}" -- "$bundle" || rc=$?
   exit "$rc"
 }
