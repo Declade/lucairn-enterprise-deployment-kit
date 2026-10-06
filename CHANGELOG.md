@@ -14,6 +14,25 @@ carry a security fix are tagged **[Security]**.
 
 ## [Unreleased]
 
+### Added
+- **`bin/lucairn evidence verify|list|export` (T-1231).** A new verb for
+  evidence bundles (one zip of signed certificates per conversation), kept
+  apart from `bin/lucairn bundle`, which handles delivery bundles of images
+  and models and is unchanged. `evidence verify bundle.zip --env customer.env`
+  wraps the separately released offline tool `lucairn-bundle-verify` (1.0.0 or
+  newer; the kit does not ship or download it): it passes this deployment's
+  own public keys as `--witness-key` plus one `--service-key` per claim
+  signer and returns the tool's output and exit code unchanged (`0` VALID,
+  `1` TAMPERED, `2` INCOMPLETE; `3` = the wrapper stopped before the tool
+  ran). `evidence list` and `evidence export` validate their arguments and
+  hand over to the exporter `lucairn-bundle-export`; that exporter ships with
+  a later release, and without it both stop with one sentence and write
+  nothing. See `OPS.md` § "Verify an evidence bundle (self-hosted)".
+
+### Changed
+- `.gitignore` now also ignores `customer.env.bak-*`: a dated backup of the
+  env file carries the same secrets but was not matched by `*.env`.
+
 ## [1.9.6] — 2026-10-04 — images `0.5.5`
 
 Kit-only release: the images stay `0.5.5` (same digests as 1.9.5), and no

@@ -2032,6 +2032,128 @@ missing or invalid attestation exits non-zero. The same procedure works for any
 published image (the 12 `dsa-*` services + `lucairn-dashboard`) — swap the
 image reference.
 
+## Verify an evidence bundle (self-hosted)
+
+An **evidence bundle** is one zip per conversation that holds the signed
+certificates of that conversation, so that an auditor can check them offline.
+It is **not** the customer delivery bundle: `bin/lucairn bundle
+create|prepare|verify` handles the tar archive of images and models that IT
+installs, and cannot check an evidence bundle. Evidence bundles have their own
+verb, `bin/lucairn evidence`.
+
+`bin/lucairn evidence verify` is a thin wrapper around the separately released
+offline tool `lucairn-bundle-verify`. The wrapper finds the tool, hands it
+**this deployment's own public keys**, and returns the tool's output and exit
+code unchanged. It makes no network call.
+
+**1. Get the tool (once).** The kit does not ship or download it. Download the
+binary for your platform plus `SHA256SUMS` and `SHA256SUMS.sig` from
+<https://github.com/Declade/lucairn-sdks/releases/tag/bundle-verify-v1.0.0>
+(or build it from the same tag), then check the download with the cosign
+public key that ships in this kit:
+
+```bash
+cosign verify-blob --key keys/lucairn-cosign.pub --signature SHA256SUMS.sig SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing   # macOS: shasum -a 256 -c SHA256SUMS --ignore-missing
+chmod +x lucairn-bundle-verify-1.0.0-linux-amd64
+```
+
+The wrapper needs version **1.0.0 or newer** and looks for the tool in this
+order: `--tool PATH`, the environment variable `LUCAIRN_BUNDLE_VERIFY`, then
+`lucairn-bundle-verify` on `PATH`. A tool that is missing, is older, or does
+not identify itself as `lucairn-bundle-verify` stops the run before anything
+is checked. A build from source reports the version `dev`; the wrapper refuses
+it unless you add `--allow-unversioned-tool`.
+
+**2. Run it.**
+
+```bash
+bin/lucairn evidence verify conversation-bundle.zip \
+  --env customer.env \
+  --tool ./lucairn-bundle-verify-1.0.0-linux-amd64
+```
+
+**Which keys are passed.** The tool's built-in keys belong to the
+Lucairn-hosted service, not to your install, so the wrapper reads your
+deployment's keys from the file named by `--env` and passes them as flags:
+
+| Line in `--env` | Passed to the tool as |
+|---|---|
+| `LCR_WITNESS_KEY_ID` (default `witness_v1`) + `LCR_WITNESS_PUBLIC_KEY` | `--witness-key` |
+| `LCR_BRIDGE_PUBLIC_KEY` | `--service-key dsa-bridge` |
+| `LCR_SANITIZER_PUBLIC_KEY` | `--service-key dsa-sanitizer` and `--service-key dsa-sanitizer-streaming` |
+| `LCR_SANDBOX_B_PUBLIC_KEY` | `--service-key dsa-ai` |
+| `LCR_AUDIT_PUBLIC_KEY` | `--service-key dsa-audit` |
+| `LCR_GATEWAY_PUBLIC_KEY` | `--service-key dsa-gateway` |
+
+All of them are required: with the witness key alone the tool cannot check the
+claim signatures and answers INCOMPLETE. Only public keys are used. No
+`*_SIGNING_KEY` value is put on a command line, and the wrapper prints the
+names of the lines it used, never a key. A missing line, a line that is not 64
+hex characters, a `REPLACE_ME` placeholder, or a public-key line that holds
+the same value as its signing key stops the run before the tool starts. The
+legacy `VEIL_*` names are accepted. Each of the six must be a real Ed25519
+public key, derived from its signing key as `customer.env.example` describes
+(`bin/lucairn-init` does this): the tool refuses a pinned key that is not a
+valid curve point, skips the claim checks and answers INCOMPLETE.
+
+To verify on a machine that should not hold `customer.env` (it contains
+secrets), copy only the public lines into their own file and pass that file
+with `--env`:
+
+```bash
+grep -E '^(LCR|VEIL)_(WITNESS_KEY_ID|(WITNESS|BRIDGE|SANITIZER|SANDBOX_B|AUDIT|GATEWAY)_PUBLIC_KEY)=' \
+  customer.env > evidence-public-keys.env
+```
+
+**Exit codes.**
+
+| Exit | Meaning |
+|---|---|
+| `0` | VALID: every check that applies passed (the tool's verdict) |
+| `1` | TAMPERED: at least one check failed (the tool's verdict) |
+| `2` | INCOMPLETE: nothing failed, but something could not be checked (the tool's verdict) |
+| `3` | No verdict: the wrapper stopped before the tool ran (tool missing or too old, key line missing or malformed, bad arguments) |
+
+**Anchors.** A self-hosted install does not timestamp its certificates or
+write them to a transparency log unless you configured that (`LCR_TSA_URL` and
+`LCR_REKOR_URL` are empty by default). The tool then reports those steps as
+`SKIPPED(not anchored)` with the reason (for example `SKIPPED(not anchored: no
+timestamp token)`), which does not block VALID, and says so in its output.
+If your deployment does anchor, add `--require-anchors`, with `--tsa-root PEM`
+and `--rekor-key PEM` when you use your own timestamp authority or log.
+
+**What VALID means.** The certificates in the bundle are intact, are signed by
+the keys in the file you passed, and belong to the conversation and account
+the bundle names. That is a statement about the integrity of the bundle:
+
+- It is only as trustworthy as the key file. An auditor should receive the
+  public keys through a channel they trust (for example your key-ceremony
+  record), not from the same hand that delivers the bundle.
+- It does not say that every turn was sanitized. Read each certificate's
+  `chain-verdict` and `user-unredacted` lines in the tool's output.
+- The tool prints its own limitations on every run, among them that the
+  bundle's manifest is unsigned, so files other than the certificates match
+  the manifest but are not covered by a signature.
+- It is a technical integrity check, not a certification or legal opinion.
+
+**Other flags.** `--json` prints the tool's machine-readable report (the
+wrapper writes its own two notes to stderr only). `--service-key
+SERVICE=BASE64` adds the key of a claim signer that is not in the table; a
+certificate that carries a claim from a signer whose key was not passed reads
+TAMPERED with the reason `unknown_service`, because the tool does not trust a
+signer it was not given. `--require-binding-after RFC3339` is passed through.
+For anything else, run `lucairn-bundle-verify` directly.
+
+**Producing a bundle on a self-hosted install.** `bin/lucairn evidence list`
+and `bin/lucairn evidence export` are the commands for it. Both need the
+exporter `lucairn-bundle-export`, which ships with a later release. Until it
+is installed they check their arguments, then stop with one sentence and write
+nothing. They take the gateway admin key as `--admin-key-file PATH` only (a
+regular file readable by its owner only) and never as a value on the command
+line. Bundles written by that exporter will also need the verifier release
+that ships with it; the wrapper's minimum version will be raised then.
+
 ## Deployment license
 
 The gateway enforces a self-hosted deployment entitlement license (Ed25519-signed, verified fully offline — no phone-home). It is separate from the platform tier license (`DSA_LICENSE_KEY`). It gates Enterprise-only FEATURES (e.g. the custom-trained L3 PII shield) and carries an expiry with a grace-then-degrade lifecycle. It does NOT enforce volume or seat caps (usage is metered elsewhere) and does NOT touch tier names.
