@@ -2087,15 +2087,56 @@ deployment's keys from the file named by `--env` and passes them as flags:
 | `LCR_GATEWAY_PUBLIC_KEY` | `--service-key dsa-gateway` |
 
 All of them are required: with the witness key alone the tool cannot check the
-claim signatures and answers INCOMPLETE. Only public keys are used. No
-`*_SIGNING_KEY` value is put on a command line, and the wrapper prints the
-names of the lines it used, never a key. A missing line, a line that is not 64
-hex characters, a `REPLACE_ME` placeholder, or a public-key line that holds
-the same value as its signing key stops the run before the tool starts. The
-legacy `VEIL_*` names are accepted. Each of the six must be a real Ed25519
-public key, derived from its signing key as `customer.env.example` describes
-(`bin/lucairn-init` does this): the tool refuses a pinned key that is not a
-valid curve point, skips the claim checks and answers INCOMPLETE.
+claim signatures and answers INCOMPLETE. The witness of a kit install is
+started with the bridge, sanitizer, sandbox-b and audit public keys. It is
+not given the gateway public key; the wrapper passes `LCR_GATEWAY_PUBLIC_KEY`
+all the same, because the tool pins the `dsa-gateway` signer and a custom key
+set replaces the tool's built-in one. The wrapper prints the names of the lines it used, never
+a key. A missing line, a line that is not 64 hex characters or a `REPLACE_ME`
+placeholder stops the run before the tool starts. The legacy `VEIL_*` names
+are accepted. Each of the six must be a real Ed25519 public key, derived from
+its signing key as `customer.env.example` describes (`bin/lucairn-init` does
+this): the tool refuses a pinned key that is not a valid curve point, skips
+the claim checks and answers INCOMPLETE.
+
+**What is guaranteed about private keys.** The wrapper never passes to the
+tool a value from the `--env` file that the same file also holds on a
+`*_SIGNING_KEY` line. Before it reads any public key it collects every line
+of the file that sets, or comments out, a variable whose name ends in
+`_SIGNING_KEY` (the `LCR_*` names, the legacy `VEIL_*` names and any other).
+If one of the six public-key lines holds a value found there, in whichever
+slot and in either hex case, the run stops with exit `3` before the tool
+starts, and the message names the two variables, not the value. The limits:
+
+- A file with public lines only (the extract below) gives the wrapper nothing
+  to compare. A signing seed pasted into such a file is passed on.
+- A signing seed and a public key have the same shape (64 hex characters), so
+  the wrapper cannot recognise a seed that is not also on a `*_SIGNING_KEY`
+  line of the same file.
+- A `--service-key` you add yourself is not compared; it is already on your
+  own command line.
+
+The public keys that are passed are command-line arguments of the tool, so
+they are visible in the process list of that machine while the tool runs.
+If the wrapper is run with Bash tracing on (`bash -x`), it switches tracing
+off before it reads the keys.
+
+**One witness key, and the key id.** The wrapper passes exactly one witness
+key: `LCR_WITNESS_PUBLIC_KEY` under the id in `LCR_WITNESS_KEY_ID`. When that
+line is absent it uses `witness_v1`, the Compose default.
+
+- **Helm installs:** the chart's default key id is `witness_dev_v1`
+  (`veil-witness.secrets.values.keyId`), not `witness_v1`. Put the line
+  `LCR_WITNESS_KEY_ID=<the keyId of your release>` into the file you pass
+  with `--env`. Without it the wrapper passes the key under the id
+  `witness_v1`, and a certificate that carries another key id reads
+  INCOMPLETE with the reason `no pinned key for witness key id "..."`.
+- **After a witness key rotation:** certificates signed with the earlier key
+  carry the earlier key id and read INCOMPLETE for the same reason. The
+  wrapper does not take `--witness-key` yet. To check a bundle that spans a
+  rotation, run `lucairn-bundle-verify` directly with one `--witness-key
+  ID=BASE64` per witness key and the six `--service-key SERVICE=BASE64` flags
+  from the table (base64 of the 32 key bytes, not the hex from the file).
 
 To verify on a machine that should not hold `customer.env` (it contains
 secrets), copy only the public lines into their own file and pass that file
@@ -2112,8 +2153,28 @@ grep -E '^(LCR|VEIL)_(WITNESS_KEY_ID|(WITNESS|BRIDGE|SANITIZER|SANDBOX_B|AUDIT|G
 |---|---|
 | `0` | VALID: every check that applies passed (the tool's verdict) |
 | `1` | TAMPERED: at least one check failed (the tool's verdict) |
-| `2` | INCOMPLETE: nothing failed, but something could not be checked (the tool's verdict) |
-| `3` | No verdict: the wrapper stopped before the tool ran (tool missing or too old, key line missing or malformed, bad arguments) |
+| `2` | INCOMPLETE: nothing failed, but something could not be checked (the tool's verdict) **or** the tool rejected its arguments. A verdict prints the line `RESULT: INCOMPLETE (exit 2)`; a rejected argument prints no `RESULT:` line |
+| `3` | No verdict: the wrapper stopped before the tool ran (tool missing or too old, key line missing or malformed, bad arguments, any failure inside the wrapper) |
+
+The tool itself returns `2` for its own usage errors, so `2` means
+"INCOMPLETE, or the tool rejected its arguments": look for the `RESULT:` line
+in the tool's text output (it is followed only by the tool's notes). When the
+tool rejected its arguments there is no `RESULT:` line, only its error or
+usage text on stderr. The wrapper checks what it
+can before it starts the tool and answers `3` instead: an unknown flag, a
+`--require-binding-after` value that is not a UTC time such as
+`2026-11-01T00:00:00Z`, a `--tsa-root` or `--rekor-key` file that does not
+exist or cannot be read. It does not look inside those files, so a PEM file
+without a usable certificate or key still comes back from the tool as `2`.
+
+Every way out of the wrapper before the tool has been started is `3`, also
+when its own messages cannot be written (stderr closed) or a helper program it
+needs fails. `--help` is answered with exit `0` only when it is the sole
+argument; next to other arguments it is a usage error (`3`), so a
+verification call cannot end in `0` without the tool having run. Once the
+tool has been started its exit code is returned unchanged, whatever it is;
+a code other than `0`, `1` or `2` (for example `126` when the tool file
+cannot be executed, or a signal code) is not a verdict.
 
 **Anchors.** A self-hosted install does not timestamp its certificates or
 write them to a transparency log unless you configured that (`LCR_TSA_URL` and
@@ -2142,8 +2203,10 @@ wrapper writes its own two notes to stderr only). `--service-key
 SERVICE=BASE64` adds the key of a claim signer that is not in the table; a
 certificate that carries a claim from a signer whose key was not passed reads
 TAMPERED with the reason `unknown_service`, because the tool does not trust a
-signer it was not given. `--require-binding-after RFC3339` is passed through.
-For anything else, run `lucairn-bundle-verify` directly.
+signer it was not given. `--require-binding-after TIME` is passed through
+after the wrapper has checked that it is a UTC time
+(`YYYY-MM-DDTHH:MM:SSZ`). For anything else, run `lucairn-bundle-verify`
+directly.
 
 **Producing a bundle on a self-hosted install.** `bin/lucairn evidence list`
 and `bin/lucairn evidence export` are the commands for it. Both need the

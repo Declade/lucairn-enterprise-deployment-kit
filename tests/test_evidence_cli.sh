@@ -9,9 +9,12 @@
 # that matter, and each has its own block below:
 #
 #   1. It can change the verdict. So the tool's exit code and stdout are
-#      compared byte for byte for 0, 1 and 2, and every stop BEFORE the tool
-#      runs must exit 3 - never 1 or 2, which a script would read as TAMPERED
-#      or INCOMPLETE - and must leave stdout empty.
+#      compared byte for byte for 0, 1, 2 and one other code, and every stop
+#      BEFORE the tool runs must exit 3 - never 0, 1 or 2, which a script
+#      would read as VALID, TAMPERED or INCOMPLETE - and must leave stdout
+#      empty. "Every stop" includes the ones nobody wrote a message for: a
+#      closed stderr, a helper program that fails, --help in the middle of a
+#      verification call.
 #   2. It can hand over the wrong keys. `--witness-key` alone makes the tool
 #      answer INCOMPLETE, so the full argument list (witness key plus one
 #      --service-key per claim signer, in a fixed order) is compared against
@@ -19,8 +22,9 @@
 #      base64.b64encode over the same bytes), including a key with NUL bytes.
 #   3. It can leak. The env file it reads holds private signing seeds next to
 #      the public keys. No seed value, no admin key value and no public key
-#      value may appear in anything the wrapper prints, and no seed or admin
-#      key value may reach the tool's argument list.
+#      value may appear in anything the wrapper prints - a Bash trace
+#      (bash -x) included - and no seed or admin key value may reach the
+#      tool's argument list, whichever public slot it was pasted into.
 #
 # `evidence list|export` have no exporter binary yet: the pins are that they
 # validate, stop with ONE sentence, write nothing, and - once a binary is
@@ -60,8 +64,10 @@ mkdir -p "$OUT" "$LOGS" "$ENVS" "$BIN/path-tool" "$BIN/tripwire" "$BIN/other"
 # Public keys (hex in the env file) and the standard base64 the tool must get.
 PUB_WITNESS="000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 B64_WITNESS="AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
-PUB_BRIDGE="1111111111111111111111111111111111111111111111111111111111111111"
-B64_BRIDGE="ERERERERERERERERERERERERERERERERERERERERERE="
+# Not 1111...: bin/lucairn itself carries that pattern as a test constant
+# (DOCTOR_HELM_RENDER_TEST_SIGNING_KEY), which a Bash trace prints.
+PUB_BRIDGE="1212121212121212121212121212121212121212121212121212121212121212"
+B64_BRIDGE="EhISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhI="
 PUB_SANITIZER="2222222222222222222222222222222222222222222222222222222222222222"
 B64_SANITIZER="IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI="
 PUB_SANDBOX_B="3333333333333333333333333333333333333333333333333333333333333333"
@@ -154,21 +160,45 @@ done
 # A PATH with the system tools the CLI needs and NO verifier or exporter on it.
 BASE_PATH="$BIN/tripwire:/usr/bin:/bin"
 
-# run NAME [VAR=VALUE ...] -- CLI-ARGS...
-# Runs the CLI with a clean tool environment; writes $OUT/NAME.{out,err,rc} and
-# the stub's call log to $LOGS/NAME.log.
-run() {
-  local name="$1"; shift
+# run_cmd NAME STDERR-MODE [VAR=VALUE ...] -- COMMAND...
+# Runs COMMAND with a clean tool environment; writes $OUT/NAME.{out,err,rc} and
+# the stub's call log to $LOGS/NAME.log. STDERR-MODE is "file" (captured) or
+# "closed" (the command is started with file descriptor 2 closed, as in
+# `lucairn ... 2>&-`; NAME.err is then an empty file).
+run_cmd() {
+  local name="$1" stderr_mode="$2"; shift 2
   local -a envs
   envs=("PATH=$BASE_PATH" "STUB_LOG=$LOGS/$name.log")
   while [ "$1" != "--" ]; do envs[${#envs[@]}]="$1"; shift; done
   shift
   : > "$LOGS/$name.log"
   local rc=0
-  env -u LUCAIRN_BUNDLE_VERIFY -u LUCAIRN_BUNDLE_EXPORT -u STUB_EXIT -u STUB_VERSION_LINE \
-    "${envs[@]}" "$LUCAIRN" "$@" > "$OUT/$name.out" 2> "$OUT/$name.err" || rc=$?
+  if [ "$stderr_mode" = "closed" ]; then
+    : > "$OUT/$name.err"
+    env -u LUCAIRN_BUNDLE_VERIFY -u LUCAIRN_BUNDLE_EXPORT -u STUB_EXIT -u STUB_VERSION_LINE \
+      "${envs[@]}" "$@" > "$OUT/$name.out" 2>&- || rc=$?
+  else
+    env -u LUCAIRN_BUNDLE_VERIFY -u LUCAIRN_BUNDLE_EXPORT -u STUB_EXIT -u STUB_VERSION_LINE \
+      "${envs[@]}" "$@" > "$OUT/$name.out" 2> "$OUT/$name.err" || rc=$?
+  fi
   printf '%s\n' "$rc" > "$OUT/$name.rc"
 }
+# run NAME [VAR=VALUE ...] -- CLI-ARGS...          the CLI, stderr captured
+# run_stderr_closed NAME [VAR=VALUE ...] -- CLI-ARGS...   the CLI with 2>&-
+# run_traced NAME [VAR=VALUE ...] -- CLI-ARGS...   the CLI under `bash -x`;
+#                                                  NAME.err holds the trace
+run_variant() { # run_variant STDERR-MODE PREFIX-WORDS NAME [VAR=VALUE ...] -- CLI-ARGS...
+  local stderr_mode="$1" prefix="$2" name="$3"; shift 3
+  local -a head
+  head=("$name" "$stderr_mode")
+  while [ "$1" != "--" ]; do head[${#head[@]}]="$1"; shift; done
+  shift
+  # shellcheck disable=SC2086  # prefix is a fixed word list ("" or "bash -x")
+  run_cmd "${head[@]}" -- $prefix "$LUCAIRN" "$@"
+}
+run() { run_variant file "" "$@"; }
+run_stderr_closed() { run_variant closed "" "$@"; }
+run_traced() { run_variant file "bash -x" "$@"; }
 rc_of() { cat "$OUT/$1.rc"; }
 err_has() { grep -qF -- "$2" "$OUT/$1.err"; }
 out_empty() { [ ! -s "$OUT/$1.out" ]; }
@@ -230,7 +260,7 @@ check "--tool with a bare file name means that file in the current directory" [ 
 check "... and never a same-named program on PATH" err_has find-bare "tool ./bare-tool"
 
 echo "evidence verify - exit code and output pass through unchanged"
-for code in 0 1 2; do
+for code in 0 1 2 7; do
   run "pass-$code" "STUB_EXIT=$code" -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL"
   check "tool exit $code comes back as $code" [ "$(rc_of "pass-$code")" = "$code" ]
   sed "s/@RC@/$code/" "$TMP/expected-stub-stdout-template" > "$TMP/expected-stdout-$code"
@@ -293,6 +323,88 @@ no_verdict extra-noequals "--service-key without = -> exit 3" "must be SERVICE=B
 run witness-flag -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL" --witness-key "x=$B64_EXTRA"
 no_verdict witness-flag "--witness-key is refused (the key comes from --env)" "comes from --env"
 
+echo "evidence verify - no way out before the tool starts can look like a verdict"
+# stderr closed (lucairn ... 2>&-): the wrapper's own messages cannot be
+# written. A stop must still be 3, and a good run must still reach the tool.
+run_stderr_closed closed-missing-bundle -- evidence verify "$TMP/nope.zip" --env "$GOOD_ENV" --tool "$STUB_TOOL"
+check "stderr closed, bundle missing -> exit 3 (1 would read as TAMPERED)" [ "$(rc_of closed-missing-bundle)" = "3" ]
+check "stderr closed, bundle missing -> tool not started, stdout empty" bash -c '[ ! -s "$1" ] && [ ! -s "$2" ]' _ "$LOGS/closed-missing-bundle.log" "$OUT/closed-missing-bundle.out"
+for code in 0 2; do
+  run_stderr_closed "closed-good-$code" "STUB_EXIT=$code" -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL"
+  check "stderr closed, good run -> the tool's exit code $code" [ "$(rc_of "closed-good-$code")" = "$code" ]
+  check "stderr closed, good run (exit $code) -> the tool WAS started, with the full argument list" cmp -s "$TMP/expected-argv" "$LOGS/closed-good-$code.log"
+  check "stderr closed, good run (exit $code) -> stdout is the tool's" cmp -s "$TMP/expected-stdout-$code" "$OUT/closed-good-$code.out"
+done
+run_stderr_closed closed-unversioned "STUB_VERSION_LINE=lucairn-bundle-verify dev" -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL" --allow-unversioned-tool
+check "stderr closed, the unversioned-tool warning cannot stop the run" bash -c '[ "$(cat "$1")" = "0" ] && grep -qx RUN "$2"' _ "$OUT/closed-unversioned.rc" "$LOGS/closed-unversioned.log"
+
+# A helper program the wrapper needs fails under `set -e`. No message was
+# written for this case on purpose: it pins the EXIT trap, which turns every
+# exit before the tool into 3.
+mkdir -p "$BIN/failing-base64"
+printf '#!/bin/sh\nexit 1\n' > "$BIN/failing-base64/base64"
+chmod +x "$BIN/failing-base64/base64"
+run helper-fails "PATH=$BIN/failing-base64:$BASE_PATH" -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL"
+no_verdict helper-fails "a failing base64 on PATH -> exit 3, tool not run" "stopped before the verifier was run"
+run_stderr_closed helper-fails-closed "PATH=$BIN/failing-base64:$BASE_PATH" -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL"
+check "a failing base64 with stderr closed -> exit 3" bash -c '[ "$(cat "$1")" = "3" ] && [ ! -s "$2" ]' _ "$OUT/helper-fails-closed.rc" "$LOGS/helper-fails-closed.log"
+
+# A failure in the lines of the CLI that run before the verb is even looked at
+# (here: a sibling helper that fails to load). The control run shows that this
+# kit copy really does fail that early, with 1, for another verb.
+BROKEN_KIT="$TMP/broken-kit"
+mkdir -p "$BROKEN_KIT/bin"
+cp "$LUCAIRN" "$BROKEN_KIT/bin/lucairn"
+printf 'return 1\n' > "$BROKEN_KIT/bin/runtime-profile-lib.sh"
+run_cmd early-failure file -- "$BROKEN_KIT/bin/lucairn" evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL"
+check "a failure before the verb is dispatched -> exit 3, tool not run" bash -c '[ "$(cat "$1")" = "3" ] && [ ! -s "$2" ] && [ ! -s "$3" ]' _ "$OUT/early-failure.rc" "$LOGS/early-failure.log" "$OUT/early-failure.out"
+run_cmd early-failure-control file -- "$BROKEN_KIT/bin/lucairn" evidence list
+check "control: the same broken kit exits 1 for another verb (the early guard is for evidence verify only)" [ "$(rc_of early-failure-control)" = "1" ]
+
+# --help is its own request. Inside a verification call it must not be a way
+# to exit 0 without the tool having run.
+run verify-help -- evidence verify --help
+check "evidence verify --help on its own exits 0" [ "$(rc_of verify-help)" = "0" ]
+check "evidence verify --help on its own prints the usage" grep -qF 'Evidence bundles are NOT delivery bundles' "$OUT/verify-help.out"
+run verify-help-short -- evidence verify -h
+check "evidence verify -h on its own exits 0" [ "$(rc_of verify-help-short)" = "0" ]
+run verify-help-last -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL" --help
+no_verdict verify-help-last "--help after a full verification call -> exit 3, tool not run" "only answered on its own"
+run verify-help-first -- evidence verify --help "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL"
+no_verdict verify-help-first "--help before a full verification call -> exit 3, tool not run" "only answered on its own"
+run verify-help-short-mixed -- evidence verify "$BUNDLE" -h
+no_verdict verify-help-short-mixed "-h next to a bundle path -> exit 3" "only answered on its own"
+
+echo "evidence verify - arguments the tool would answer 2 for are stopped here"
+n=0
+for bad in "yesterday" "2026-11-01" "2026-11-01 00:00:00Z" "2026-11-01T00:00:00" "2026-11-01T00:00:00+02:00" \
+  "2026-13-01T00:00:00Z" "2026-00-10T00:00:00Z" "2026-02-30T00:00:00Z" "2027-02-29T00:00:00Z" "2100-02-29T00:00:00Z" \
+  "2026-04-31T00:00:00Z" "2026-11-00T00:00:00Z" "2026-11-01T24:00:00Z" "2026-11-01T00:60:00Z" "2026-11-01T00:00:60Z" \
+  "2026-11-01t00:00:00z" "2026-11-01T00:00:00.Z" "2026-11-01T00:00:00.1234567890Z" "2026-11-01T00:00:00Z;x" " 2026-11-01T00:00:00Z" ""; do
+  n=$((n + 1))
+  run "binding-bad-$n" -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL" --require-binding-after "$bad"
+  no_verdict "binding-bad-$n" "--require-binding-after '$bad' -> exit 3, tool not run" "RFC 3339 time in UTC"
+done
+n=0
+for good in "2026-11-01T00:00:00Z" "2028-02-29T23:59:59.123456789Z" "2000-02-29T00:00:00Z" "2026-08-09T08:09:09Z" "2026-12-31T23:59:59.5Z"; do
+  n=$((n + 1))
+  run "binding-good-$n" -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL" --require-binding-after "$good"
+  check "--require-binding-after '$good' reaches the tool unchanged" bash -c '[ "$(cat "$1")" = "0" ] && grep -qxF -- "$3" "$2"' _ "$OUT/binding-good-$n.rc" "$LOGS/binding-good-$n.log" "$good"
+done
+run tsa-absent -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL" --tsa-root "$TMP/no-such-root.pem"
+no_verdict tsa-absent "--tsa-root file that does not exist -> exit 3, tool not run" "--tsa-root file not found or not readable"
+run rekor-absent -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL" --rekor-key "$TMP/no-such-key.pem"
+no_verdict rekor-absent "--rekor-key file that does not exist -> exit 3, tool not run" "--rekor-key file not found or not readable"
+run rekor-directory -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL" --rekor-key "$TMP"
+no_verdict rekor-directory "--rekor-key that is a directory -> exit 3, tool not run" "--rekor-key file not found or not readable"
+if [ "$(id -u)" != "0" ]; then
+  printf 'x\n' > "$TMP/unreadable.pem"
+  chmod 000 "$TMP/unreadable.pem"
+  run tsa-unreadable -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL" --tsa-root "$TMP/unreadable.pem"
+  no_verdict tsa-unreadable "--tsa-root file that cannot be read -> exit 3, tool not run" "--tsa-root file not found or not readable"
+  chmod 600 "$TMP/unreadable.pem"
+fi
+
 echo "evidence verify - the key file: missing, incomplete, malformed"
 run env-missing-flag -- evidence verify "$BUNDLE" --tool "$STUB_TOOL"
 no_verdict env-missing-flag "no --env -> exit 3" "--env FILE is required"
@@ -333,6 +445,67 @@ mutate seed-as-public-upper LCR_SANDBOX_B_PUBLIC_KEY "DDDDDDDDDDDDDDDDDDDDDDDDDD
 run key-seed-upper -- evidence verify "$BUNDLE" --env "$ENVS/seed-as-public-upper.env" --tool "$STUB_TOOL"
 no_verdict key-seed-upper "seed in the public slot is caught regardless of hex case" "private signing seed"
 
+# ... and the seed of ANOTHER key: every public slot is compared with every
+# *_SIGNING_KEY value of the file, not only with its own.
+seed_refused() { # seed_refused RUN-NAME LABEL PUBLIC-VAR SIGNING-VAR SEED-VALUE
+  if [ "$(rc_of "$1")" = "3" ] && out_empty "$1" && [ ! -s "$LOGS/$1.log" ] \
+    && err_has "$1" "private signing seed" && err_has "$1" "$3" && err_has "$1" "$4" \
+    && ! grep -qiF -- "$5" "$OUT/$1.out" "$OUT/$1.err" "$LOGS/$1.log"; then
+    pass "$2"
+  else
+    bad "$2" "rc=$(rc_of "$1") tool-log-bytes=$(wc -c < "$LOGS/$1.log" | tr -d ' ') stderr-lines=$(wc -l < "$OUT/$1.err" | tr -d ' ')"
+  fi
+}
+mutate seed-cross LCR_BRIDGE_PUBLIC_KEY "$SEED_AUDIT"
+run key-seed-cross -- evidence verify "$BUNDLE" --env "$ENVS/seed-cross.env" --tool "$STUB_TOOL"
+seed_refused key-seed-cross "LCR_BRIDGE_PUBLIC_KEY holding the value of LCR_AUDIT_SIGNING_KEY -> exit 3, tool never started, value nowhere" \
+  LCR_BRIDGE_PUBLIC_KEY LCR_AUDIT_SIGNING_KEY "$SEED_AUDIT"
+mutate seed-cross-witness LCR_WITNESS_PUBLIC_KEY "$SEED_GATEWAY"
+run key-seed-cross-witness -- evidence verify "$BUNDLE" --env "$ENVS/seed-cross-witness.env" --tool "$STUB_TOOL"
+seed_refused key-seed-cross-witness "the witness slot holding the gateway seed -> refused" \
+  LCR_WITNESS_PUBLIC_KEY LCR_GATEWAY_SIGNING_KEY "$SEED_GATEWAY"
+mutate seed-cross-upper LCR_GATEWAY_PUBLIC_KEY "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+run key-seed-cross-upper -- evidence verify "$BUNDLE" --env "$ENVS/seed-cross-upper.env" --tool "$STUB_TOOL"
+seed_refused key-seed-cross-upper "another key's seed in a public slot is caught regardless of hex case" \
+  LCR_GATEWAY_PUBLIC_KEY LCR_BRIDGE_SIGNING_KEY "$SEED_BRIDGE"
+# The legacy name of a signing key.
+SEED_LEGACY="5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c"
+{ sed -e '/^LCR_GATEWAY_SIGNING_KEY=/d' -e "s|^LCR_SANITIZER_PUBLIC_KEY=.*|LCR_SANITIZER_PUBLIC_KEY=$SEED_LEGACY|" "$GOOD_ENV"
+  printf 'VEIL_GATEWAY_SIGNING_KEY=%s\n' "$SEED_LEGACY"; } > "$ENVS/seed-legacy.env"
+run key-seed-legacy -- evidence verify "$BUNDLE" --env "$ENVS/seed-legacy.env" --tool "$STUB_TOOL"
+seed_refused key-seed-legacy "a legacy VEIL_*_SIGNING_KEY value in a public slot -> refused" \
+  LCR_SANITIZER_PUBLIC_KEY VEIL_GATEWAY_SIGNING_KEY "$SEED_LEGACY"
+# A signing key the wrapper has no table row for.
+SEED_OTHER="6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d"
+{ sed "s|^LCR_AUDIT_PUBLIC_KEY=.*|LCR_AUDIT_PUBLIC_KEY=$SEED_OTHER|" "$GOOD_ENV"
+  printf 'LCR_MANIFEST_SIGNING_KEY=%s\n' "$SEED_OTHER"; } > "$ENVS/seed-other.env"
+run key-seed-other -- evidence verify "$BUNDLE" --env "$ENVS/seed-other.env" --tool "$STUB_TOOL"
+seed_refused key-seed-other "a *_SIGNING_KEY the wrapper has no row for (manifest) in a public slot -> refused" \
+  LCR_AUDIT_PUBLIC_KEY LCR_MANIFEST_SIGNING_KEY "$SEED_OTHER"
+# The seed line written the ways an env file gets written by hand: export,
+# quotes, a trailing comment, upper-case hex, no newline at the end of the file.
+SEED_QUOTED="7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e"
+{ sed "s|^LCR_SANDBOX_B_PUBLIC_KEY=.*|LCR_SANDBOX_B_PUBLIC_KEY=$SEED_QUOTED|" "$GOOD_ENV"
+  printf 'export LCR_EXTRA_SIGNING_KEY = "%s"  # rotated in' "7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E7E"; } > "$ENVS/seed-quoted.env"
+run key-seed-quoted -- evidence verify "$BUNDLE" --env "$ENVS/seed-quoted.env" --tool "$STUB_TOOL"
+seed_refused key-seed-quoted "export / quotes / trailing comment / no final newline do not hide a seed" \
+  LCR_SANDBOX_B_PUBLIC_KEY LCR_EXTRA_SIGNING_KEY "$SEED_QUOTED"
+# A retired seed left in the file as a comment.
+SEED_RETIRED="8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f"
+{ sed "s|^LCR_BRIDGE_PUBLIC_KEY=.*|LCR_BRIDGE_PUBLIC_KEY=$SEED_RETIRED|" "$GOOD_ENV"
+  printf '# LCR_BRIDGE_SIGNING_KEY=%s\n' "$SEED_RETIRED"; } > "$ENVS/seed-retired.env"
+run key-seed-retired -- evidence verify "$BUNDLE" --env "$ENVS/seed-retired.env" --tool "$STUB_TOOL"
+seed_refused key-seed-retired "a commented-out *_SIGNING_KEY line still counts" \
+  LCR_BRIDGE_PUBLIC_KEY LCR_BRIDGE_SIGNING_KEY "$SEED_RETIRED"
+# Not over-eager: a public value that also sits on lines that are NOT signing
+# keys (a *_SIGNING_KEY_ID line, a note, a second public slot) is passed on.
+{ cat "$GOOD_ENV"
+  printf 'LCR_MANIFEST_SIGNING_KEY_ID=%s\n' "$PUB_AUDIT"
+  printf 'LCR_NOTE_ABOUT_SIGNING_KEYS=%s\n' "$PUB_BRIDGE"
+  printf '# the sanitizer public key is %s\n' "$PUB_SANITIZER"; } > "$ENVS/not-seeds.env"
+run key-not-seeds -- evidence verify "$BUNDLE" --env "$ENVS/not-seeds.env" --tool "$STUB_TOOL"
+check "a public value on a line that is not a *_SIGNING_KEY is still passed (same argument list)" cmp -s "$TMP/expected-argv" "$LOGS/key-not-seeds.log"
+
 # Accepted variants.
 grep -v '^LCR_WITNESS_KEY_ID=' "$GOOD_ENV" > "$ENVS/no-keyid.env"
 run keyid-default -- evidence verify "$BUNDLE" --env "$ENVS/no-keyid.env" --tool "$STUB_TOOL"
@@ -364,8 +537,6 @@ run delivery-flag -- evidence verify --bundle "$BUNDLE" --env "$GOOD_ENV" --tool
 no_verdict delivery-flag "--bundle (the delivery-bundle flag) is refused" "delivery-bundle flag"
 run unknown-flag -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL" --online
 no_verdict unknown-flag "unknown flag -> exit 3" "unknown argument: --online"
-run verify-help -- evidence verify --help
-check "evidence verify --help exits 0" [ "$(rc_of verify-help)" = "0" ]
 
 echo "evidence list / export - validation, no exporter, hand-over"
 KEYFILE="$TMP/admin.key"
@@ -512,11 +683,32 @@ check "lucairn bundle export does not exist (export lives under evidence)" grep 
 run bundle-verify-zip -- bundle verify --bundle "$BUNDLE"
 check "lucairn bundle verify does not accept an evidence zip as valid" [ "$(rc_of bundle-verify-zip)" != "0" ]
 
+echo "evidence verify - a Bash trace (bash -x) shows no key"
+run_traced traced -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL"
+check "bash -x: the run works and the tool gets the same argument list" bash -c '[ "$(cat "$1")" = "0" ] && cmp -s "$2" "$3"' _ "$OUT/traced.rc" "$TMP/expected-argv" "$LOGS/traced.log"
+check "bash -x: positive control, the trace is there up to the key handling" bash -c 'grep -q "^+* evidence_verify " "$1" && grep -q "^+* set +x\$" "$1"' _ "$OUT/traced.err"
+run_traced traced-seed -- evidence verify "$BUNDLE" --env "$ENVS/seed-cross.env" --tool "$STUB_TOOL"
+check "bash -x: the seed refusal is still exit 3" [ "$(rc_of traced-seed)" = "3" ]
+run_traced traced-helper "PATH=$BIN/failing-base64:$BASE_PATH" -- evidence verify "$BUNDLE" --env "$GOOD_ENV" --tool "$STUB_TOOL"
+check "bash -x: a failing helper is still exit 3" [ "$(rc_of traced-helper)" = "3" ]
+traced_shown=""
+for value in "$SEED_WITNESS" "$SEED_BRIDGE" "$SEED_SANITIZER" "$SEED_SANDBOX_B" "$SEED_AUDIT" "$SEED_GATEWAY" \
+  "$PUB_WITNESS" "$PUB_BRIDGE" "$PUB_SANITIZER" "$PUB_SANDBOX_B" "$PUB_AUDIT" "$PUB_GATEWAY" \
+  "$B64_WITNESS" "$B64_BRIDGE" "$B64_SANITIZER" "$B64_SANDBOX_B" "$B64_AUDIT" "$B64_GATEWAY" "$ADMIN_KEY_VALUE"; do
+  for traced_run in traced traced-seed traced-helper; do
+    if grep -qiF -- "$value" "$OUT/$traced_run.err" "$OUT/$traced_run.out"; then traced_shown="$traced_shown $traced_run"; fi
+  done
+done
+check "bash -x: no key value from the env file in any trace (seeds, public hex, base64)" [ -z "$traced_shown" ]
+# The escaped byte form the wrapper builds on the way to base64 (\x11\x11...).
+check "bash -x: no key in escaped-byte form in any trace" bash -c '! grep -qF "x12\\x12\\x12" "$1" && ! grep -qF "xaa\\xaa" "$1"' _ "$OUT/traced.err"
+
 echo "nothing private leaves the env file; no network"
 # Everything the CLI printed and everything a stub was called with, across all
 # runs above. The fixture env files are outside both directories.
 leaks=""
-for secret in "$SEED_WITNESS" "$SEED_BRIDGE" "$SEED_SANITIZER" "$SEED_SANDBOX_B" "$SEED_AUDIT" "$SEED_GATEWAY" "$ADMIN_KEY_VALUE"; do
+for secret in "$SEED_WITNESS" "$SEED_BRIDGE" "$SEED_SANITIZER" "$SEED_SANDBOX_B" "$SEED_AUDIT" "$SEED_GATEWAY" \
+  "$SEED_LEGACY" "$SEED_OTHER" "$SEED_QUOTED" "$SEED_RETIRED" "$ADMIN_KEY_VALUE"; do
   if grep -rqiF -- "$secret" "$OUT" "$LOGS"; then
     leaks="$leaks $(grep -rliF -- "$secret" "$OUT" "$LOGS" | head -3 | tr '\n' ' ')"
   fi
@@ -550,10 +742,16 @@ fi
 awk '/^## Verify an evidence bundle \(self-hosted\)/{on=1; next} /^## /{on=0} on' "$ROOT/OPS.md" > "$TMP/ops-section.md"
 check "OPS.md has the evidence section" [ "$(wc -l < "$TMP/ops-section.md" | tr -d ' ')" -gt 30 ]
 for phrase in 'SKIPPED(not anchored)' 'not a certification or legal opinion' 'LCR_SANDBOX_B_PUBLIC_KEY' \
-  '--service-key dsa-sanitizer-streaming' 'keys/lucairn-cosign.pub' 'which ships with a later release' 'No verdict'; do
+  '--service-key dsa-sanitizer-streaming' 'keys/lucairn-cosign.pub' 'which ships with a later release' 'No verdict' \
+  'a value from the `--env` file that the same file also holds on a' 'gives the wrapper nothing' \
+  'visible in the process list' 'the tool rejected its arguments' 'witness_dev_v1' \
+  'wrapper does not take `--witness-key` yet' 'not given the gateway public key' 'only when it is the sole'; do
   check "OPS.md evidence section states: $phrase" grep -qF -- "$phrase" "$TMP/ops-section.md"
 done
 check "OPS.md evidence section makes no assurance claim it cannot back" bash -c '! grep -Eiq "SOC ?2|ISO ?27001|ISO ?42001|HIPAA|PCI|end-to-end|E2E|encrypted at rest|penetration|red team|regular audits|court|legally binding|tamper-proof" "$1"' _ "$TMP/ops-section.md"
+# The sentence this PR first shipped claimed more than the code does.
+check "OPS.md no longer claims that no signing key can reach a command line" bash -c '! grep -qF "value is put on a command line" "$1" && ! grep -qF "Only public keys are used" "$1"' _ "$TMP/ops-section.md"
+check "the usage text states the same limit as OPS.md" grep -qF 'A file with public lines only gives nothing' "$OUT/evidence-bare.out"
 check "README points at the OPS.md section" grep -qF 'Verify an evidence bundle (self-hosted)' "$ROOT/README.md"
 
 # --- optional: one real run against the released tool -------------------------
