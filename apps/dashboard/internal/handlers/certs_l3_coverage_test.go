@@ -177,8 +177,9 @@ func TestInspectorHandler_RendersScopeAndPassingEvidence(t *testing.T) {
 	if !strings.Contains(body, "Full - "+witness.L3CompletenessMeaning) {
 		t.Errorf("completeness caveat missing from the page")
 	}
-	if !strings.Contains(body, witness.L3CoverageDiagnosticOnly) {
-		t.Errorf("the diagnostic-only note must render while the records drive nothing")
+	// T-617: a rendered recall-check result uses the label-specific separation sentence.
+	if !strings.Contains(body, "The recall-check result above is separate from the certificate verdict and does not change it.") {
+		t.Errorf("the verdict separation sentence must render")
 	}
 	// The raw machine state the narrative struct promises an operator.
 	if !strings.Contains(body, "scope=present") || !strings.Contains(body, "evidence=present") ||
@@ -204,7 +205,8 @@ func TestInspectorHandler_RendersFailedEvidence(t *testing.T) {
 	if !strings.Contains(body, "A measured miss is positive evidence of a recall gap.") {
 		t.Errorf("the page must say what a measured miss means")
 	}
-	if !strings.Contains(body, "Composed completeness rule (scope AND recall AND named exclusions): NOT granted") {
+	// T-617: the gateway calls the legacy denial a coverage rule.
+	if !strings.Contains(body, "Composed coverage rule (scope AND recall AND named exclusions): NOT granted") {
 		t.Errorf("composed rule must refuse on the page")
 	}
 	// ⚑ The verdict is untouched — a FAILED recall check next to a "Full"
@@ -303,5 +305,87 @@ func TestInspectorHandler_NoCoverageBlockWhenWitnessUnreachable(t *testing.T) {
 	}
 	if !strings.Contains(body, ">unavailable<") {
 		t.Errorf("the completeness cell must read 'unavailable', not an empty cell")
+	}
+}
+
+// RED-PROOF: unchanged reader/template failed all eight inspector shapes, including the D1 false passed sentence.
+func TestInspectorHandler_RecallV2Wording(t *testing.T) {
+	for _, shape := range []string{"passed", "plural", "scan_disabled", "failed-field", "legacy-grant", "unknown-outcome", "unknown-field", "early-refusal"} {
+		t.Run(shape, func(t *testing.T) {
+			ev := &witnesspb.L3CoverageEvidence{
+				RecordStatus: "present", DerivationVersion: "t600-evidence-v2", Rollup: "verified",
+				ComposedGreen: true, ComposedReason: "scope_and_recall_satisfied",
+				FieldsPassed: 1, CanariesPlanted: 4, CanariesRecovered: 4,
+				Fields: []*witnesspb.L3FieldEvidence{
+					{FieldKey: "synthetic.checked", Verdict: "passed", Windows: 1, ProbedWindows: 1, CanariesPlanted: 4, CanariesRecovered: 4},
+				},
+			}
+			want := "Recall check passed:"
+			switch shape {
+			case "plural":
+				ev.Fields[0].Windows, ev.Fields[0].ProbedWindows = 2, 2
+				ev.Fields[0].CanariesPlanted, ev.Fields[0].CanariesRecovered = 8, 8
+				ev.CanariesPlanted, ev.CanariesRecovered = 8, 8
+			case "scan_disabled":
+				ev.ComposedGreen, ev.ComposedReason = false, "scan_disabled"
+				want = "Recall check not passed - the deep scan was switched off for this request."
+			case "failed-field":
+				ev.Fields[0].Verdict = "failed"
+				want = "Recall check unavailable."
+			case "legacy-grant":
+				ev.DerivationVersion = "t600-evidence-v1"
+				want = "Recall check unavailable: this certificate carries an older record format."
+			case "unknown-outcome":
+				ev.ComposedReason = "synthetic-unknown-outcome"
+				want = "Recall check unavailable."
+			case "unknown-field":
+				ev.ComposedGreen, ev.ComposedReason = false, "blocking_absent"
+				ev.FieldsAbsent = 1
+				ev.Fields = append(ev.Fields, &witnesspb.L3FieldEvidence{
+					Verdict: "absent", Windows: 1, Reason: "synthetic verified all personal data found",
+				})
+				want = "Recall check not passed - some text lacks a required recall check."
+			case "early-refusal":
+				ev = &witnesspb.L3CoverageEvidence{RecordStatus: "not_checked", ComposedReason: "chain_not_authenticated"}
+				want = "Recall check not passed - the certificate's signed records could not be authenticated."
+			}
+			result := resultWith("full", nil, ev)
+			raw, body := inspectorBodies(t, result)
+			if !strings.Contains(body, want) {
+				t.Errorf("missing recall wording %q", want)
+			}
+			for _, line := range []string{result.L3Coverage.Evidence, result.L3Coverage.Composed, result.L3Coverage.Diagnostic, witness.L3CoverageCeiling} {
+				if !strings.Contains(raw, html.EscapeString(line)) || !strings.Contains(body, line) {
+					t.Errorf("missing safely escaped narrative %q", line)
+				}
+			}
+			if !strings.Contains(body, `>Recall check</span>`) {
+				t.Error("missing recall-check row label")
+			}
+			if shape == "passed" && !strings.Contains(body, "across 1 checked text window.") {
+				t.Error("missing singular checked-window count")
+			}
+			if shape == "plural" && !strings.Contains(body, "across 2 checked text windows.") {
+				t.Error("missing plural checked-window count")
+			}
+			if ev.GetDerivationVersion() == "t600-evidence-v2" && strings.Contains(body, "Coverage evidence check") {
+				t.Error("v2 page carries an old-format evidence sentence")
+			}
+			if shape != "passed" && shape != "plural" && strings.Contains(body, "Recall check passed:") {
+				t.Error("denied page carries a passed label")
+			}
+			if shape == "scan_disabled" && strings.Contains(body, "check passed") {
+				t.Error("D1: denied v2 page carries a passed sentence")
+			}
+			if shape == "unknown-field" && !strings.Contains(body, "for a reason this build does not recognise") {
+				t.Error("missing safe unknown field phrase")
+			}
+			for _, forbidden := range []string{"synthetic-unknown-outcome", "synthetic verified", "all personal data found", "Composed completeness rule", "Diagnostic only:", "signed by the witness"} {
+				if strings.Contains(body, forbidden) {
+					t.Errorf("page exposes %q", forbidden)
+				}
+			}
+			assertCeilingAndNoOverclaim(t, raw)
+		})
 	}
 }

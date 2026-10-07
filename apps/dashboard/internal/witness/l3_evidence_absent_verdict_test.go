@@ -88,6 +88,7 @@ func caseCachedNoWindow() *witnesspb.L3CoverageEvidence {
 	}
 }
 
+// T-617: reason phrases follow gateway 53cf109b; legacy partial-evidence counts stay unchanged.
 func TestL3EvidenceLine_AbsentVerdictIsNotAbsentEvidence(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -101,7 +102,7 @@ func TestL3EvidenceLine_AbsentVerdictIsNotAbsentEvidence(t *testing.T) {
 			want: "Coverage evidence check is INCOMPLETE - 1 field(s) passed (8/8 probes recovered) and " +
 				"1 field(s) carry no usable recall-evidence verdict: 1 field(s) only partly probed " +
 				"(4/4 planted probes recovered, 1 of 2 windows probed - not a usable verdict); " +
-				"why: 1 x the text was shorter than the window size the probe overhead was measured at. " +
+				"why: 1 x at least one window was shorter than the window size the probe overhead was measured at. " +
 				"Across the request: 12/12 probes recovered. A partly evidenced request is not a verified one.",
 		},
 		{
@@ -110,7 +111,7 @@ func TestL3EvidenceLine_AbsentVerdictIsNotAbsentEvidence(t *testing.T) {
 			want: "Coverage evidence check FAILED - 1 field(s) returned fewer planted probes than required " +
 				"(17/20 recovered across the request; 1 field(s) passed, 1 field(s) carry no usable verdict: " +
 				"1 field(s) only partly probed (4/4 planted probes recovered, 1 of 2 windows probed - not a usable verdict); " +
-				"why: 1 x the text was shorter than the window size the probe overhead was measured at). " +
+				"why: 1 x at least one window was shorter than the window size the probe overhead was measured at). " +
 				"A measured miss is positive evidence of a recall gap.",
 		},
 		{
@@ -132,7 +133,7 @@ func TestL3EvidenceLine_AbsentVerdictIsNotAbsentEvidence(t *testing.T) {
 			want: "Coverage evidence check is INCOMPLETE - 1 field(s) passed (8/8 probes recovered) and " +
 				"2 field(s) carry no usable recall-evidence verdict: 2 field(s) only partly probed " +
 				"(7/8 planted probes recovered, 2 of 5 windows probed - not a usable verdict); " +
-				"why: 1 x the text was shorter than the window size the probe overhead was measured at; " +
+				"why: 1 x at least one window was shorter than the window size the probe overhead was measured at; " +
 				"1 x at least one window was served from the deep shield verdict cache, so no inference ran on that window. " +
 				"Across the request: 15/16 probes recovered. A partly evidenced request is not a verified one.",
 		},
@@ -142,7 +143,7 @@ func TestL3EvidenceLine_AbsentVerdictIsNotAbsentEvidence(t *testing.T) {
 			name: "cached field with no recorded window keeps the field-wide wording (absent rollup)",
 			ev:   caseCachedNoWindow(),
 			want: "No field on this request carries a usable recall-evidence verdict " +
-				"(1 x the result was served from the deep shield verdict cache, so no inference ran). " +
+				"(1 x the verdict cache served that field and no window was recorded for it). " +
 				"Evidence that does not exist is not evidence of success.",
 		},
 		{
@@ -150,14 +151,14 @@ func TestL3EvidenceLine_AbsentVerdictIsNotAbsentEvidence(t *testing.T) {
 			ev:   casePartlyProbedOnly(),
 			want: "No field on this request carries a usable recall-evidence verdict: 1 field(s) only partly probed " +
 				"(4/4 planted probes recovered, 1 of 2 windows probed - not a usable verdict); " +
-				"why: 1 x the text was shorter than the window size the probe overhead was measured at. " +
+				"why: 1 x at least one window was shorter than the window size the probe overhead was measured at. " +
 				"Probes recovered on a partly probed field are measured evidence, not a usable verdict.",
 		},
 		{
 			name: "no probes anywhere (absent rollup) keeps the upstream sentence",
 			ev:   mustEvidence(t, "absent_below_floor"),
 			want: "No field on this request carries a usable recall-evidence verdict " +
-				"(1 x the text was shorter than the window size the probe overhead was measured at). " +
+				"(1 x at least one window was shorter than the window size the probe overhead was measured at). " +
 				"Evidence that does not exist is not evidence of success.",
 		},
 		{

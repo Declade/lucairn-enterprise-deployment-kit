@@ -1,0 +1,265 @@
+// Verbatim excerpts from services/gateway/internal/api/veil_l3_coverage_render.go.
+// Branch: feat/t617-s2-gateway-reader-wording; commit: 53cf109b.
+// Independent wording fixture: update only when the gateway contract changes.
+package api
+
+const l3CoverageDiagnosticOnly = "The coverage and recall-evidence lines above are separate from the certificate verdict and do not change it."
+const l3RecallDiagnosticOnly = "The recall-check result above is separate from the certificate verdict and does not change it."
+
+func l3RecallReasonMeaning(reason string) string {
+	switch reason {
+	case "sanitizer_claim_count":
+		return "the certificate does not contain exactly one sanitizer claim for this check"
+	case "chain_not_authenticated":
+		return "the certificate's signed records could not be authenticated"
+	case "request_binding_mismatch":
+		return "the signed request references do not match the request being checked"
+	case "conversation_binding_mismatch":
+		return "the signed conversation references are invalid or do not match"
+	case "evidence_missing":
+		return "the signed sanitizer record carries no recall evidence"
+	case "evidence_malformed":
+		return "the recall evidence could not be read as a valid record"
+	case "evidence_empty":
+		return "the recall evidence contains no fields"
+	case "evidence_version_missing":
+		return "the recall evidence is missing a readable version"
+	case "evidence_version_mixed":
+		return "the recall evidence mixes different record versions"
+	case "evidence_v1":
+		return "the recall evidence uses an older record format"
+	case "evidence_version_unknown":
+		return "the recall evidence uses an unsupported record version"
+	case "evidence_failed":
+		return "a recall check returned fewer planted test values than required"
+	case "scope_unavailable":
+		return "the coverage scope record is unavailable or could not be read"
+	case "evidence_on_excluded_field":
+		return "the recall evidence includes a field that the scope record excludes"
+	case "scope_not_granted":
+		return "the coverage scope record did not grant coverage"
+	case "evidence_scope_mismatch":
+		return "the recall evidence includes a field not listed as covered"
+	case "evidence_absent_for_covered_field":
+		return "a field listed as covered has no recall evidence entry"
+	case "scan_disabled":
+		return "the deep scan was switched off for this request"
+	case "probe_disabled":
+		return "the recall check was switched off for this request"
+	case "probe_not_label_eligible":
+		return "the scan settings used do not meet the conditions for this label"
+	case "inheritance_invalid":
+		return "the evidence does not meet the coverage or reuse conditions"
+	case "blocking_absent":
+		return "some text lacks a required recall check"
+	case "no_passed_field":
+		return "no field has a passing recall check on all its text windows"
+	case "scope_and_recall_satisfied":
+		return "the recorded scope and recall checks met the label rule"
+	default:
+		return "unavailable"
+	}
+}
+
+func l3EvidenceAbsentReasonMeaning(reason string, windowScoped bool) string {
+	if windowScoped {
+		switch reason {
+		case "scan_incomplete":
+			return "at least one window has no completed recall check"
+		case "scan_off":
+			return "at least one window was not scanned because the deep scan was switched off"
+		case "content_cache_without_evidence":
+			return "at least one window was reused from an earlier scan of identical text, without usable recall evidence"
+		case "probe_off":
+			return "at least one window carried no probe because the recall probe is not armed on this deployment"
+		case "no_l3_window":
+			return "at least one window carried no probe and recorded no reason"
+		case "window_below_probe_floor":
+			return "at least one window was shorter than the window size the probe overhead was measured at"
+		case "window_served_from_verdict_cache":
+			return "at least one window was served from the deep shield verdict cache, so no inference ran on that window"
+		case "output_headroom_clipped":
+			return "at least one window had a model output budget that could not hold the probe without starving the real scan"
+		case "no_prompt_assembly_seam":
+			return "at least one window ran on a scan path with no seam at which a probe could be planted"
+		default:
+			return "for a reason this build does not recognise"
+		}
+	}
+	switch reason {
+	case "scan_incomplete":
+		return "the field has no completed recall check for some of its text"
+	case "scan_off":
+		return "the deep scan was switched off for this field"
+	case "content_cache_without_evidence":
+		return "the field was reused from an earlier scan of identical text, without usable recall evidence"
+	case "probe_off":
+		return "the recall probe is not armed on this deployment"
+	case "no_l3_window":
+		return "the deep shield ran no window on that field"
+	case "window_below_probe_floor":
+		return "the text was shorter than the window size the probe overhead was measured at"
+	case "window_served_from_verdict_cache":
+		return "the verdict cache served that field and no window was recorded for it"
+	case "output_headroom_clipped":
+		return "the model output budget could not hold the probe without starving the real scan"
+	case "no_prompt_assembly_seam":
+		return "that scan path has no seam at which a probe could be planted"
+	default:
+		return "for a reason this build does not recognise"
+	}
+}
+
+func l3ComposedReasonMeaning(reason string) string {
+	switch reason {
+	case "scope_and_recall_satisfied":
+		return "every eligible field was covered and the recorded recall checks met the rule; unchecked text is outside this result"
+	case "evidence_v1":
+		return "the recall evidence uses an older record format"
+	case "scope_unavailable":
+		return "the scope record is missing or was refused, so the first half of the rule cannot be evaluated"
+	case "evidence_unavailable":
+		return "no recall evidence was carried on this certificate"
+	case "evidence_failed":
+		return "a recall check on one field MISSED: the deep shield did not return the probes planted in it"
+	case "scope_not_granted":
+		return "the scope record itself did not grant"
+	case "evidence_absent_for_covered_field":
+		return "a field the scope record lists as covered by this turn carries no passing recall evidence"
+	case "evidence_on_excluded_field":
+		// "scan evidence", not "a scan verdict": the witness (DSA #626) refuses
+		// ANY evidence-bearing entry on an excluded field - planted or
+		// recovered probes, or probed windows - not only one carrying a
+		// verdict, so the narrower wording under-described the refusal.
+		return "the two records disagree - the scope record calls a field policy-excluded while the " +
+			"evidence record carries scan evidence for it"
+	case "receipt_covered_evidence_not_in_chain":
+		return "a field was covered by a NAMED RECEIPT from an earlier turn, so no inference ran on those " +
+			"bytes this turn and the recall evidence for them lives on the source claim, not here"
+	case "":
+		return "nothing was composed"
+	default:
+		return l3RecallReasonMeaning(reason)
+	}
+}
+
+func l3CheckedWindowsPhrase(windows uint64) string {
+	if windows == 1 {
+		return "1 checked text window"
+	}
+	return fmt.Sprintf("%d checked text windows", windows)
+}
+
+func buildL3ComposedLine(ev *veilv1.L3CoverageEvidence, status string) string {
+	if ev.GetDerivationVersion() == "t600-evidence-v2" {
+		reason := l3RecallReasonMeaning(ev.GetComposedReason())
+		if reason == "unavailable" {
+			return "Recall check unavailable."
+		}
+		if ev.GetComposedReason() == "scope_and_recall_satisfied" {
+			windows := l3CheckedWindows(ev)
+			if status != "present" || !ev.GetComposedGreen() || !l3RecallFieldsConsistent(ev) ||
+				ev.GetCanariesPlanted() == 0 || ev.GetCanariesRecovered() != ev.GetCanariesPlanted() || windows == 0 {
+				return "Recall check unavailable."
+			}
+			return fmt.Sprintf("Recall check passed: the planted test values were all returned (%d of %d) across %s. "+
+				"The witness derived this result from the sanitizer's signed record. "+
+				"This does not say that all personal data in the request was found, and text that was not checked is outside this statement. "+
+				"Counts are per text window in the record; a window whose result was reused from an earlier checked scan of the identical text counts as checked, and this record does not say how many.",
+				ev.GetCanariesRecovered(), ev.GetCanariesPlanted(), l3CheckedWindowsPhrase(windows))
+		}
+		return "Recall check not passed - " + reason + "."
+	}
+
+	if ev.GetComposedGreen() {
+		return "Recall check unavailable: this certificate carries an older record format."
+	}
+	if status != "present" {
+		if l3EarlyRefusalReason(ev.GetComposedReason()) {
+			return "Recall check not passed - " + l3RecallReasonMeaning(ev.GetComposedReason()) + "."
+		}
+		return ""
+	}
+	if l3ComposedReasonMeaning(ev.GetComposedReason()) == "unavailable" {
+		return "Recall check unavailable."
+	}
+	return "Composed coverage rule (scope AND recall AND named exclusions): NOT granted - " +
+		l3ComposedReasonMeaning(ev.GetComposedReason()) + "."
+}
+
+func buildL3EvidenceLine(ev *veilv1.L3CoverageEvidence, status string) string {
+	if status != "present" {
+		meaning := l3RecordStatusMeaning(status)
+		if l3EarlyRefusalReason(ev.GetComposedReason()) {
+			meaning = l3RecallReasonMeaning(ev.GetComposedReason())
+		}
+		return "Recall evidence unavailable - " + meaning +
+			". This is NOT a statement that the scan was clean."
+	}
+
+	if ev.GetDerivationVersion() == "t600-evidence-v2" {
+		return fmt.Sprintf("Recall evidence records %d of %d planted test values returned across %s%s.",
+			ev.GetCanariesRecovered(), ev.GetCanariesPlanted(), l3CheckedWindowsPhrase(l3CheckedWindows(ev)),
+			l3EvidenceAbsentSuffix(ev))
+	}
+
+	planted := ev.GetCanariesPlanted()
+	recovered := ev.GetCanariesRecovered()
+	passed := ev.GetFieldsPassed()
+	failed := ev.GetFieldsFailed()
+	absent := ev.GetFieldsAbsent()
+
+	switch ev.GetRollup() {
+	case "verified":
+		// ⚑⚑⚑ THE CLAUSE AFTER THE COUNTS IS GATED ON THE COUNTS (bug-hunter
+		// H1). A field passes at `recovered >= threshold`, and the threshold is
+		// a legal configuration anywhere in [1, K]
+		// (services/sanitizer/l3_evidence_probe.py ProbeConfig.armed). So an
+		// HONEST K=4 / threshold=3 record is `passed` at 3 of 4 recovered — and
+		// the unconditional wording rendered "passed (3/4 probes recovered) ...
+		// every planted probe came back": a false sentence standing next to its
+		// own contradicting numbers, which is the exact overclaim the proto
+		// comment on L3CoverageEvidence.record_status forbids a reader surface
+		// from making. Only `recovered == planted` earns the strong clause.
+		//
+		// The weak clause is deliberately the one that is true under EVERY
+		// configuration: a `passed` field means every probed window met the
+		// threshold in force. It does not name the threshold because the
+		// threshold is not in the signed record.
+		clause := "That means every probed window met the recall threshold in force."
+		if recovered == planted && planted > 0 {
+			clause = "That means the recall CHECK ran on every field carrying one and every planted probe came back."
+		}
+		return fmt.Sprintf(
+			"Coverage evidence check passed (%d/%d probes recovered) across %d field(s). %s",
+			recovered, planted, passed, clause)
+	case "failed":
+		return fmt.Sprintf(
+			"Coverage evidence check FAILED - %d field(s) returned fewer planted probes than required "+
+				"(%d/%d recovered across the request; %d field(s) passed, %d carry no usable evidence). "+
+				"A measured miss is positive evidence of a recall gap.",
+			failed, recovered, planted, passed, absent)
+	case "unverified":
+		// The probe counts are REQUEST-wide (L3CoverageEvidence.canaries_*),
+		// so they are stated as such rather than parenthesised onto the passed
+		// fields: a partly probed absent field contributes planted/recovered
+		// probes too, and the pre-fix placement credited them to the passed
+		// field(s) (astra #609 post-merge, item-4 sweep).
+		return fmt.Sprintf(
+			"Coverage evidence check is INCOMPLETE - %d field(s) passed and %d field(s) carry no usable "+
+				"evidence (%d/%d probes recovered across the request): %s. A partly evidenced request is "+
+				"not a verified one.",
+			passed, absent, recovered, planted, strings.Join(l3EvidenceAbsentPhrases(ev), "; "))
+	case "absent":
+		// ⚑ "no field carried a recall probe" WAS FALSE for a real shape
+		// (bug-hunter L1): a field whose windows were only PARTLY probed is
+		// `absent` with canaries_planted > 0, so probes were planted and the
+		// old sentence denied it. The rollup means no field carries a USABLE
+		// verdict, which is what this says.
+		return "No field on this request carries a usable recall-evidence verdict" +
+			l3EvidenceAbsentSuffix(ev) + ". Evidence that does not exist is not evidence of success."
+	default:
+		return "Recall evidence unavailable - the evidence rollup is " + l3Quote(ev.GetRollup()) +
+			", which this build does not recognise. This is NOT a statement that the scan was clean."
+	}
+}
