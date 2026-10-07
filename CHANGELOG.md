@@ -14,6 +14,14 @@ carry a security fix are tagged **[Security]**.
 
 ## [Unreleased]
 
+### Fixed
+- **Kit test harness:** `make test` runs every recipe test file in order,
+  lists failures at the end, and exits non-zero if any failed; mandatory
+  prerequisite targets still run first.
+- **Gateway null posture (T-871):** keep the `log` default in the umbrella
+  values so Helm 3 does not restore it from the child chart after an explicit
+  `gateway.evidenceGap.posture=null`; null omits the env var as documented.
+
 ### Added
 - **`bin/lucairn evidence verify|list|export` (T-1231).** A new verb for
   evidence bundles (one zip of signed certificates per conversation), kept

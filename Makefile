@@ -4,44 +4,46 @@
         dashboard-verify-manifests
 
 test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-helm-required test-enterprise-mtls-production-values
-	bash tests/test_lucairn_cli.sh
-	bash tests/test_full_doctor.sh
-	bash tests/test_runtime_profile.sh
-	bash tests/test_check_updates.sh
-	bash tests/test_redact_stream.sh
-	bash tests/test_support_bundle_routing.sh
-	bash tests/test_tms_trust_zones.sh
-	bash tests/test_sanitizer_confidence_threshold_schema.sh
-	bash tests/test_sanitizer_sprig_zero_knobs.sh
-	bash tests/test_sanitizer_retired_config_keys.sh
-	bash tests/test_sanitizer_roster_must_have.sh
-	bash tests/test_signing_key_and_nvidia_toolkit_preflight.sh
-	bash tests/test_l3_split_pool_preflight.sh
-	bash tests/test_l3_model_upgrade_gate.sh
-	bash tests/test_l3_posture_flags.sh
-	bash tests/test_helm_ingress_nil_safety.sh
-	bash tests/test_gateway_evidence_gap_volume.sh
-	bash tests/test_gateway_env_enum_guard.sh
-	bash tests/test_kit_release_gates.sh
-	bash tests/test_sec_hardening.sh
-	bash tests/test_default_password_guard.sh
-	bash tests/test_netpol_hardening.sh
-	bash tests/test_enterprise_mtls_cert_contract.sh
-	bash tests/test_enterprise_mtls_kind_custody.sh
-	bash tests/test_enterprise_mtls_kind_image_preload.sh
-	bash tests/test_enterprise_mtls_kind_client_auth.sh
-	bash tests/test_enterprise_mtls_ceremony_docs.sh
-	bash tests/test_enterprise_mtls_kind_kubectl_resolver.sh
-	bash tests/test_enterprise_mtls_kind_cleanup.sh
-	bash tests/test_doctor_tools_dryrun.sh
-	bash tests/test_config_pack.sh
-	bash tests/test_evidence_cli.sh
-	bash tests/test_witness_central_profile.sh
-	bash tests/test_witness_central_egress_guard.sh
-	bash tests/test_migration_version_cap.sh
-	bash tests/test_device_countersign_prereq.sh
-	bash servicenow/run-tests.sh
-	bash tests/static_checks.sh
+	@bash scripts/run-tests.sh \
+		tests/test_harness_runner.sh \
+		tests/test_lucairn_cli.sh \
+		tests/test_full_doctor.sh \
+		tests/test_runtime_profile.sh \
+		tests/test_check_updates.sh \
+		tests/test_redact_stream.sh \
+		tests/test_support_bundle_routing.sh \
+		tests/test_tms_trust_zones.sh \
+		tests/test_sanitizer_confidence_threshold_schema.sh \
+		tests/test_sanitizer_sprig_zero_knobs.sh \
+		tests/test_sanitizer_retired_config_keys.sh \
+		tests/test_sanitizer_roster_must_have.sh \
+		tests/test_signing_key_and_nvidia_toolkit_preflight.sh \
+		tests/test_l3_split_pool_preflight.sh \
+		tests/test_l3_model_upgrade_gate.sh \
+		tests/test_l3_posture_flags.sh \
+		tests/test_helm_ingress_nil_safety.sh \
+		tests/test_gateway_evidence_gap_volume.sh \
+		tests/test_gateway_env_enum_guard.sh \
+		tests/test_kit_release_gates.sh \
+		tests/test_sec_hardening.sh \
+		tests/test_default_password_guard.sh \
+		tests/test_netpol_hardening.sh \
+		tests/test_enterprise_mtls_cert_contract.sh \
+		tests/test_enterprise_mtls_kind_custody.sh \
+		tests/test_enterprise_mtls_kind_image_preload.sh \
+		tests/test_enterprise_mtls_kind_client_auth.sh \
+		tests/test_enterprise_mtls_ceremony_docs.sh \
+		tests/test_enterprise_mtls_kind_kubectl_resolver.sh \
+		tests/test_enterprise_mtls_kind_cleanup.sh \
+		tests/test_doctor_tools_dryrun.sh \
+		tests/test_config_pack.sh \
+		tests/test_evidence_cli.sh \
+		tests/test_witness_central_profile.sh \
+		tests/test_witness_central_egress_guard.sh \
+		tests/test_migration_version_cap.sh \
+		tests/test_device_countersign_prereq.sh \
+		servicenow/run-tests.sh \
+		tests/static_checks.sh
 
 test-wp1-s4-helm-boundary:
 	bash tests/test_wp1_s4_helm_boundary.sh
