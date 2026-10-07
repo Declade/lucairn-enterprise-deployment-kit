@@ -57,16 +57,10 @@ import (
 // (the commit this file was copied from) still has the old wording; this is a
 // kit-side honesty fix ahead of upstream, not drift.
 //
-// ⚑ UPSTREAM HAS SINCE MOVED: DSA main c66c7a1a rewrote the evidence
-// absent-reason wording (every window-level reason phrased "at least one
-// window ..." on a field that recorded a window) and the matching
-// L3FieldEvidence / cache-reason proto comments. This file ports ONLY the
-// cache-reason part of c66c7a1a (hunter MED-1). The next re-sync must merge
-// BOTH fixes — this T-881 divergence AND the whole of c66c7a1a — never pick
-// one over the other. The vendored proto comment for
-// `window_served_from_verdict_cache` in witness.proto is likewise stale
-// against main (field-wide wording); it is left untouched here because the
-// vendored proto is re-synced, not edited.
+// T-617 Slice 2 ports the recall label, outcome and field-reason wording from
+// branch feat/t617-s2-gateway-reader-wording @ 53cf109b. The pinned fixture in
+// testdata/l3_gateway_53cf109b.go.txt guards parity. Legacy partial-evidence
+// counts retain the T-881 fixes above; the v2 ledger includes window counts.
 //
 // ONE DELIBERATE OMISSION: upstream's l3CompletenessShortCaveat /
 // l3CompletenessWithShortCaveat pair exists for the gateway PDF's fixed-width
@@ -90,12 +84,8 @@ import (
 // in exactly that state — which makes the absent case the COMMON case on a
 // customer install today, not the edge case.
 //
-// ⛔ DARK. `L3CoverageScope.drives_claim` (what the SANITIZER did with its
-// scope derivation) and `L3CoverageEvidence.drives_verdict` (what the WITNESS
-// did with the composition) are both false in every shipped build. While
-// either is false the narrative says so in as many words: these lines are
-// diagnostic and do not change the verdict. The line disappears on its own
-// when both flip — it is keyed on the flags, not on a build constant.
+// The separation sentence follows evidence.drives_verdict alone. It names
+// the recall-check result only when a composed line is actually rendered.
 //
 // ⛔ DISCLOSURE BOUNDARY. No string this file can produce carries a
 // `field_key`, a `receipt_id`, a `source_claim_id` or a `zone` name. Field
@@ -112,23 +102,18 @@ import (
 // PDF or CSV export inherits a safe corpus, and it makes an upstream re-sync a
 // diff of nothing. Enforced by TestL3CoverageNarrative_IsASCIIOnly.
 //
-// ⚑ NO APOSTROPHES IN ANY STRING THIS FILE RENDERS. Every one of these lines
-// lands inside html/template, which escapes `'` to `&#39;` — so a caveat
-// written with an apostrophe is present on the page but INVISIBLE to the
-// grep-verifiable success criterion the T-600 PRD states, and to any operator
-// grepping the served HTML for it. Same for `"` (escaped to `&#34;`), which is
-// why l3Quote brackets an out-of-vocabulary token instead of quoting it. The
-// phrasing works around the characters rather than relying on everyone
-// downstream remembering to unescape.
+// Gateway recall wording includes apostrophes. html/template escapes them;
+// the inspector tests check both safely escaped bytes and visible wording.
 
 // L3CoverageCeiling is the one-line claim ceiling. It appears on EVERY surface
 // that renders coverage or recall evidence, verbatim.
 const L3CoverageCeiling = "Coverage ceiling: this names which protection layers ran over which fields. " +
 	"It is never a claim that the scan detected every piece of personal data in the request."
 
-// L3CoverageDiagnosticOnly is rendered while the records drive nothing.
-const L3CoverageDiagnosticOnly = "Diagnostic only: the coverage and recall-evidence lines above are recorded for " +
-	"measurement and do not yet change the verdict on this certificate."
+// L3CoverageDiagnosticOnly states the separation from the certificate verdict.
+const L3CoverageDiagnosticOnly = "The coverage and recall-evidence lines above are separate from the certificate verdict and do not change it."
+
+const l3RecallDiagnosticOnly = "The recall-check result above is separate from the certificate verdict and does not change it."
 
 // L3CompletenessMeaning is the caveat pinned to the completeness verdict word
 // itself. `completeness` is a CHAIN property — "every claim the pipeline was
@@ -147,11 +132,11 @@ type L3CoverageNarrative struct {
 	// Evidence answers "did it FIND the planted probes" (proto field 14).
 	// Never empty.
 	Evidence string
-	// Composed states the locked composition rule's output. Empty when no
-	// evidence record was readable (there is nothing composed to report).
+	// Composed states the recall-check outcome. Early refusals remain readable;
+	// historical records with no composed outcome leave this empty.
 	Composed string
-	// Diagnostic is L3CoverageDiagnosticOnly while either record drives
-	// nothing, empty after both flip.
+	// Diagnostic separates the recall-check result from the certificate verdict
+	// when the evidence does not drive that verdict.
 	Diagnostic string
 	// Ceiling is L3CoverageCeiling. Never empty.
 	Ceiling string
@@ -242,20 +227,49 @@ func l3ScopeReasonMeaning(reason string) string {
 // l3EvidenceAbsentReasonMeaning renders one L3FieldEvidence.reason in plain
 // words. Closed vocabulary (proto L3FieldEvidence.reason).
 //
-// ⚑ THE CACHE REASON IS A WINDOW FACT WHEN THE FIELD RECORDED A WINDOW (T-881
-// round 1, hunter MED-1; wording ported from upstream DSA c66c7a1a
-// veil_l3_coverage_render.go). The producer names the FIRST unprobed window's
-// reason for the whole field, while the field's other windows may have run
-// inference and had their probes come back. The field-wide wording "so no
-// inference ran" then sat in the same sentence as recovered probes, which
-// require inference. For a field that recorded at least one window
-// (`windowScoped`) the cache reason is phrased per window; the field-wide
-// wording is kept only where no window was recorded.
+// ⚑ THE REASON IS A WINDOW FACT, NOT A FIELD FACT (astra post-merge #609
+// finding 2). The producer (services/sanitizer/l3_evidence_probe.py
+// derive_field_verdict) names the FIRST unprobed window's reason for the whole
+// field; the field's other windows may have run inference and had their probes
+// come back. So when the field recorded any window (`windowScoped`), every
+// window-level reason is phrased as "at least one window ...", and the caller
+// appends the recorded window counts for v2 evidence. The
+// pre-fix wording "the result was served from the deep shield verdict cache,
+// so no inference ran" read as field-wide on a field whose other window was
+// inferred. The field-level phrasings remain only where the record says the
+// field had no window at all.
 func l3EvidenceAbsentReasonMeaning(reason string, windowScoped bool) string {
-	if windowScoped && reason == "window_served_from_verdict_cache" {
-		return "at least one window was served from the deep shield verdict cache, so no inference ran on that window"
+	if windowScoped {
+		switch reason {
+		case "scan_incomplete":
+			return "at least one window has no completed recall check"
+		case "scan_off":
+			return "at least one window was not scanned because the deep scan was switched off"
+		case "content_cache_without_evidence":
+			return "at least one window was reused from an earlier scan of identical text, without usable recall evidence"
+		case "probe_off":
+			return "at least one window carried no probe because the recall probe is not armed on this deployment"
+		case "no_l3_window":
+			return "at least one window carried no probe and recorded no reason"
+		case "window_below_probe_floor":
+			return "at least one window was shorter than the window size the probe overhead was measured at"
+		case "window_served_from_verdict_cache":
+			return "at least one window was served from the deep shield verdict cache, so no inference ran on that window"
+		case "output_headroom_clipped":
+			return "at least one window had a model output budget that could not hold the probe without starving the real scan"
+		case "no_prompt_assembly_seam":
+			return "at least one window ran on a scan path with no seam at which a probe could be planted"
+		default:
+			return "for a reason this build does not recognise"
+		}
 	}
 	switch reason {
+	case "scan_incomplete":
+		return "the field has no completed recall check for some of its text"
+	case "scan_off":
+		return "the deep scan was switched off for this field"
+	case "content_cache_without_evidence":
+		return "the field was reused from an earlier scan of identical text, without usable recall evidence"
 	case "probe_off":
 		return "the recall probe is not armed on this deployment"
 	case "no_l3_window":
@@ -263,13 +277,13 @@ func l3EvidenceAbsentReasonMeaning(reason string, windowScoped bool) string {
 	case "window_below_probe_floor":
 		return "the text was shorter than the window size the probe overhead was measured at"
 	case "window_served_from_verdict_cache":
-		return "the result was served from the deep shield verdict cache, so no inference ran"
+		return "the verdict cache served that field and no window was recorded for it"
 	case "output_headroom_clipped":
 		return "the model output budget could not hold the probe without starving the real scan"
 	case "no_prompt_assembly_seam":
 		return "that scan path has no seam at which a probe could be planted"
 	default:
-		return l3Quote(reason)
+		return "for a reason this build does not recognise"
 	}
 }
 
@@ -278,8 +292,9 @@ func l3EvidenceAbsentReasonMeaning(reason string, windowScoped bool) string {
 func l3ComposedReasonMeaning(reason string) string {
 	switch reason {
 	case "scope_and_recall_satisfied":
-		return "every eligible field was covered, every covered field had its recall check come back, " +
-			"and the exclusions and receipts are named"
+		return "every eligible field was covered and the recorded recall checks met the rule; unchecked text is outside this result"
+	case "evidence_v1":
+		return "the recall evidence uses an older record format"
 	case "scope_unavailable":
 		return "the scope record is missing or was refused, so the first half of the rule cannot be evaluated"
 	case "evidence_unavailable":
@@ -289,17 +304,21 @@ func l3ComposedReasonMeaning(reason string) string {
 	case "scope_not_granted":
 		return "the scope record itself did not grant"
 	case "evidence_absent_for_covered_field":
-		return "a field the scope record says was freshly scanned carries no passing recall evidence"
+		return "a field the scope record lists as covered by this turn carries no passing recall evidence"
 	case "evidence_on_excluded_field":
+		// "scan evidence", not "a scan verdict": the witness (DSA #626) refuses
+		// ANY evidence-bearing entry on an excluded field - planted or
+		// recovered probes, or probed windows - not only one carrying a
+		// verdict, so the narrower wording under-described the refusal.
 		return "the two records disagree - the scope record calls a field policy-excluded while the " +
-			"evidence record carries a scan verdict for it"
+			"evidence record carries scan evidence for it"
 	case "receipt_covered_evidence_not_in_chain":
 		return "a field was covered by a NAMED RECEIPT from an earlier turn, so no inference ran on those " +
 			"bytes this turn and the recall evidence for them lives on the source claim, not here"
 	case "":
 		return "nothing was composed"
 	default:
-		return l3Quote(reason)
+		return l3RecallReasonMeaning(reason)
 	}
 }
 
@@ -329,11 +348,11 @@ func BuildL3CoverageNarrative(scope *witnesspb.L3CoverageScope, ev *witnesspb.L3
 	n.Evidence = buildL3EvidenceLine(ev, n.EvidenceStatus)
 	n.Composed = buildL3ComposedLine(ev, n.EvidenceStatus)
 
-	// The dark note is keyed on the FLAGS, not on a build constant, so it
-	// disappears by itself on the day the flip lands rather than needing a
-	// second wording change nobody remembers to make.
-	if !scope.GetDrivesClaim() || !ev.GetDrivesVerdict() {
+	if !ev.GetDrivesVerdict() {
 		n.Diagnostic = L3CoverageDiagnosticOnly
+		if n.Composed != "" {
+			n.Diagnostic = l3RecallDiagnosticOnly
+		}
 	}
 	return n
 }
@@ -412,13 +431,23 @@ func l3ExclusionReasonPhrases(excluded []*witnesspb.L3ExcludedField) []string {
 
 // buildL3EvidenceLine renders the RECALL EVIDENCE half (proto field 14).
 //
-// The granting wording is Marc lock 4, verbatim: "coverage evidence check
+// The legacy granting wording is Marc lock 4, verbatim: "coverage evidence check
 // passed (K/K probes recovered)". It says the CHECK passed — never that the
 // scan was complete.
 func buildL3EvidenceLine(ev *witnesspb.L3CoverageEvidence, status string) string {
 	if status != "present" {
-		return "Recall evidence unavailable - " + l3RecordStatusMeaning(status) +
+		meaning := l3RecordStatusMeaning(status)
+		if l3EarlyRefusalReason(ev.GetComposedReason()) {
+			meaning = l3RecallReasonMeaning(ev.GetComposedReason())
+		}
+		return "Recall evidence unavailable - " + meaning +
 			". This is NOT a statement that the scan was clean."
+	}
+
+	if ev.GetDerivationVersion() == "t600-evidence-v2" {
+		return fmt.Sprintf("Recall evidence records %d of %d planted test values returned across %s%s.",
+			ev.GetCanariesRecovered(), ev.GetCanariesPlanted(), l3CheckedWindowsPhrase(l3CheckedWindows(ev)),
+			l3EvidenceAbsentSuffix(ev))
 	}
 
 	planted := ev.GetCanariesPlanted()
@@ -513,15 +542,26 @@ func l3EvidenceAbsentPhrases(ev *witnesspb.L3CoverageEvidence) []string {
 		reason       string
 		windowScoped bool
 	}
-	counts := map[group]int{}
+	type tally struct {
+		fields, windows, probed uint64
+	}
+	tallies := map[group]*tally{}
 	for _, f := range ev.GetFields() {
 		if f.GetVerdict() != "absent" {
 			continue
 		}
-		counts[group{reason: f.GetReason(), windowScoped: f.GetWindows() > 0}]++
+		g := group{reason: f.GetReason(), windowScoped: f.GetWindows() > 0}
+		tl := tallies[g]
+		if tl == nil {
+			tl = &tally{}
+			tallies[g] = tl
+		}
+		tl.fields++
+		tl.windows += uint64(f.GetWindows())
+		tl.probed += uint64(f.GetProbedWindows())
 	}
-	groups := make([]group, 0, len(counts))
-	for g := range counts {
+	groups := make([]group, 0, len(tallies))
+	for g := range tallies {
 		groups = append(groups, g)
 	}
 	sort.Slice(groups, func(i, j int) bool {
@@ -532,7 +572,12 @@ func l3EvidenceAbsentPhrases(ev *witnesspb.L3CoverageEvidence) []string {
 	})
 	out := make([]string, 0, len(groups))
 	for _, g := range groups {
-		out = append(out, fmt.Sprintf("%d x %s", counts[g], l3EvidenceAbsentReasonMeaning(g.reason, g.windowScoped)))
+		tl := tallies[g]
+		phrase := fmt.Sprintf("%d x %s", tl.fields, l3EvidenceAbsentReasonMeaning(g.reason, g.windowScoped))
+		if g.windowScoped && ev.GetDerivationVersion() == "t600-evidence-v2" {
+			phrase += fmt.Sprintf(" - %d of %d windows on those fields carried a probe", tl.probed, tl.windows)
+		}
+		out = append(out, phrase)
 	}
 	return out
 }
@@ -625,24 +670,150 @@ func l3EvidenceAbsentSuffix(ev *witnesspb.L3CoverageEvidence) string {
 	return " (" + strings.Join(phrases, "; ") + ")"
 }
 
-// buildL3ComposedLine renders the locked composition rule's output.
-//
-//	green ⟺ (every ELIGIBLE field is COVERED)
-//	      ∧ (every COVERED field's evidence PASSED)
-//	      ∧ (exclusions and receipts are NAMED)
-//
-// Empty when no evidence record was readable: there is then nothing composed
-// to report, and printing "not green" over an absent record would read as a
-// finding about the scan rather than about the record.
+// l3RecallReasonMeaning renders the v2 outcomes from the locked rule, section 7.2.
+func l3RecallReasonMeaning(reason string) string {
+	switch reason {
+	case "sanitizer_claim_count":
+		return "the certificate does not contain exactly one sanitizer claim for this check"
+	case "chain_not_authenticated":
+		return "the certificate's signed records could not be authenticated"
+	case "request_binding_mismatch":
+		return "the signed request references do not match the request being checked"
+	case "conversation_binding_mismatch":
+		return "the signed conversation references are invalid or do not match"
+	case "evidence_missing":
+		return "the signed sanitizer record carries no recall evidence"
+	case "evidence_malformed":
+		return "the recall evidence could not be read as a valid record"
+	case "evidence_empty":
+		return "the recall evidence contains no fields"
+	case "evidence_version_missing":
+		return "the recall evidence is missing a readable version"
+	case "evidence_version_mixed":
+		return "the recall evidence mixes different record versions"
+	case "evidence_v1":
+		return "the recall evidence uses an older record format"
+	case "evidence_version_unknown":
+		return "the recall evidence uses an unsupported record version"
+	case "evidence_failed":
+		return "a recall check returned fewer planted test values than required"
+	case "scope_unavailable":
+		return "the coverage scope record is unavailable or could not be read"
+	case "evidence_on_excluded_field":
+		return "the recall evidence includes a field that the scope record excludes"
+	case "scope_not_granted":
+		return "the coverage scope record did not grant coverage"
+	case "evidence_scope_mismatch":
+		return "the recall evidence includes a field not listed as covered"
+	case "evidence_absent_for_covered_field":
+		return "a field listed as covered has no recall evidence entry"
+	case "scan_disabled":
+		return "the deep scan was switched off for this request"
+	case "probe_disabled":
+		return "the recall check was switched off for this request"
+	case "probe_not_label_eligible":
+		return "the scan settings used do not meet the conditions for this label"
+	case "inheritance_invalid":
+		return "the evidence does not meet the coverage or reuse conditions"
+	case "blocking_absent":
+		return "some text lacks a required recall check"
+	case "no_passed_field":
+		return "no field has a passing recall check on all its text windows"
+	case "scope_and_recall_satisfied":
+		return "the recorded scope and recall checks met the label rule"
+	default:
+		return "unavailable"
+	}
+}
+
+func l3CheckedWindows(ev *witnesspb.L3CoverageEvidence) uint64 {
+	var windows uint64
+	for _, field := range ev.GetFields() {
+		windows += uint64(field.GetProbedWindows())
+	}
+	return windows
+}
+
+func l3CheckedWindowsPhrase(windows uint64) string {
+	if windows == 1 {
+		return "1 checked text window"
+	}
+	return fmt.Sprintf("%d checked text windows", windows)
+}
+
+// l3EarlyRefusalReason identifies outcomes projected before a version is set.
+func l3EarlyRefusalReason(reason string) bool {
+	switch reason {
+	case "chain_not_authenticated", "request_binding_mismatch", "conversation_binding_mismatch",
+		"sanitizer_claim_count", "evidence_missing", "evidence_malformed",
+		"evidence_version_missing", "evidence_version_mixed", "evidence_version_unknown":
+		return true
+	default:
+		return false
+	}
+}
+
+// l3RecallFieldsConsistent checks the projected fields against the label counts.
+func l3RecallFieldsConsistent(ev *witnesspb.L3CoverageEvidence) bool {
+	if ev.GetFieldsFailed() != 0 || ev.GetFieldsPassed() == 0 {
+		return false
+	}
+	var planted, recovered, passed uint64
+	for _, field := range ev.GetFields() {
+		switch field.GetVerdict() {
+		case "passed":
+			passed++
+		case "absent":
+			if field.GetReason() != "window_below_probe_floor" || field.GetWindows() == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+		planted += uint64(field.GetCanariesPlanted())
+		recovered += uint64(field.GetCanariesRecovered())
+	}
+	// Checked windows have no separate record total; the sentence sums the fields.
+	return planted == uint64(ev.GetCanariesPlanted()) && recovered == uint64(ev.GetCanariesRecovered()) &&
+		passed == uint64(ev.GetFieldsPassed())
+}
+
+// buildL3ComposedLine renders the projected rule outcome, with the v2 label
+// gated on its version, readable status, granting reason and consistent fields.
 func buildL3ComposedLine(ev *witnesspb.L3CoverageEvidence, status string) string {
+	if ev.GetDerivationVersion() == "t600-evidence-v2" {
+		reason := l3RecallReasonMeaning(ev.GetComposedReason())
+		if reason == "unavailable" {
+			return "Recall check unavailable."
+		}
+		if ev.GetComposedReason() == "scope_and_recall_satisfied" {
+			windows := l3CheckedWindows(ev)
+			if status != "present" || !ev.GetComposedGreen() || !l3RecallFieldsConsistent(ev) ||
+				ev.GetCanariesPlanted() == 0 || ev.GetCanariesRecovered() != ev.GetCanariesPlanted() || windows == 0 {
+				return "Recall check unavailable."
+			}
+			return fmt.Sprintf("Recall check passed: the planted test values were all returned (%d of %d) across %s. "+
+				"The witness derived this result from the sanitizer's signed record. "+
+				"This does not say that all personal data in the request was found, and text that was not checked is outside this statement. "+
+				"Counts are per text window in the record; a window whose result was reused from an earlier checked scan of the identical text counts as checked, and this record does not say how many.",
+				ev.GetCanariesRecovered(), ev.GetCanariesPlanted(), l3CheckedWindowsPhrase(windows))
+		}
+		return "Recall check not passed - " + reason + "."
+	}
+
+	if ev.GetComposedGreen() {
+		return "Recall check unavailable: this certificate carries an older record format."
+	}
 	if status != "present" {
+		if l3EarlyRefusalReason(ev.GetComposedReason()) {
+			return "Recall check not passed - " + l3RecallReasonMeaning(ev.GetComposedReason()) + "."
+		}
 		return ""
 	}
-	if ev.GetComposedGreen() {
-		return "Composed completeness rule (scope AND recall AND named exclusions): GRANTED - " +
-			l3ComposedReasonMeaning(ev.GetComposedReason()) + "."
+	if l3ComposedReasonMeaning(ev.GetComposedReason()) == "unavailable" {
+		return "Recall check unavailable."
 	}
-	return "Composed completeness rule (scope AND recall AND named exclusions): NOT granted - " +
+	return "Composed coverage rule (scope AND recall AND named exclusions): NOT granted - " +
 		l3ComposedReasonMeaning(ev.GetComposedReason()) + "."
 }
 

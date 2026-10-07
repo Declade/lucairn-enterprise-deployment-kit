@@ -84,10 +84,11 @@ func TestL3Narrative_ScopeAndEvidencePassed(t *testing.T) {
 	if !strings.Contains(n.Evidence, "Coverage evidence check passed (16/16 probes recovered) across 2 field(s).") {
 		t.Errorf("evidence line is not the lock-4 wording: %q", n.Evidence)
 	}
-	if !strings.Contains(n.Composed, "GRANTED") {
-		t.Errorf("composed line should report GRANTED: %q", n.Composed)
+	// T-617: an older-format grant bit cannot earn the recall label.
+	if n.Composed != "Recall check unavailable: this certificate carries an older record format." {
+		t.Errorf("older-format grant must be unavailable: %q", n.Composed)
 	}
-	if n.Diagnostic != L3CoverageDiagnosticOnly {
+	if n.Diagnostic != l3RecallDiagnosticOnly {
 		t.Errorf("diagnostic note must be present while the records drive nothing; got %q", n.Diagnostic)
 	}
 	if n.Ceiling != L3CoverageCeiling {
