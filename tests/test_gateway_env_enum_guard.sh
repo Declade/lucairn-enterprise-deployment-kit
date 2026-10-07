@@ -92,7 +92,7 @@ expect_render() {
   local out="$TMPDIR_T871/$label.yaml"
   render "$@" >"$out" 2>"$out.err" || fail "$label: render failed unexpectedly: $(head -c 400 "$out.err")"
   lint "$@" >"$out.lint" 2>&1 || fail "$label: helm lint failed unexpectedly"
-  if grep -qF "funcMap fail" "$out.lint"; then fail "$label: helm lint reported a template refusal"; fi
+  if grep -qE 'funcMap fail|\[INFO\] Fail:' "$out.lint"; then fail "$label: helm lint reported a template refusal"; fi
   local got; got="$(gateway_env "$out" "$name")"
   [ "$got" = "$want" ] || fail "$label: $name rendered as '$got', expected '$want'"
   ok
@@ -114,12 +114,12 @@ expect_refusal() {
   for n in "${needles[@]}"; do
     grep -qF -- "$n" "$err" || fail "$label: refusal does not contain '$n': $(head -c 600 "$err")"
   done
-  # ⚑ MEASURED (Helm v4.1.3): `helm lint` — even with --strict — reports a
-  # template `fail` as `level=INFO msg="funcMap fail"` and still exits 0, so
+  # `helm lint` reports a template `fail` as `funcMap fail` (Helm 4) or
+  # `[INFO] Fail:` (Helm 3.16.4) and still exits 0, so
   # its exit status cannot be the gate (`helm template` / `helm install` do
   # fail). Assert lint SURFACES the same refusal text instead.
   lint "$@" >"$err.lint" 2>&1 || true
-  grep -qF "funcMap fail" "$err.lint" && grep -qF -- "${needles[0]}" "$err.lint" \
+  grep -qE 'funcMap fail|\[INFO\] Fail:' "$err.lint" && grep -qF -- "${needles[0]}" "$err.lint" \
     || fail "$label: helm lint did not surface the refusal: $(head -c 400 "$err.lint")"
   ok
 }

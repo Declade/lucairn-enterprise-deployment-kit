@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
+if [ "$#" -eq 0 ]; then
+  printf 'No test files were given.\n' >&2
+  exit 2
+fi
+
 passed=0
 failed=()
 for test_file in "$@"; do

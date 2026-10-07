@@ -29,7 +29,7 @@ chmod +x "$WORK/bin/bash"
 export RUNNER_CALLS="$WORK/calls" RUNNER_FAILURES=""
 run_make() {
   : >"$RUNNER_CALLS"
-  if PATH="$WORK/bin:$PATH" make --no-print-directory -s -C "$ROOT" test >"$WORK/output" 2>&1; then
+  if PATH="$WORK/bin:$PATH" env -u MAKEFLAGS -u MFLAGS make --no-print-directory -s -C "$ROOT" test >"$WORK/output" 2>&1; then
     result=0
   else
     result=$?
@@ -66,4 +66,15 @@ run_make
 [ "$result" -ne 0 ] || fail "prerequisite failure returned success"
 ! grep -Fxq tests/test_lucairn_cli.sh "$RUNNER_CALLS" || fail "recipe ran after failed prerequisite"
 
-echo "test runner: PASS (all green, ordered continuation, failure summary, prerequisites)"
+# An empty roster must fail instead of reporting a successful run.
+if bash "$ROOT/scripts/run-tests.sh" >"$WORK/empty.out" 2>"$WORK/empty.err"; then
+  result=0
+else
+  result=$?
+fi
+[ "$result" -eq 2 ] || fail "empty roster did not exit 2"
+[ ! -s "$WORK/empty.out" ] || fail "empty roster wrote to stdout"
+printf 'No test files were given.\n' >"$WORK/empty.expected"
+cmp -s "$WORK/empty.expected" "$WORK/empty.err" || fail "empty roster diagnostic changed"
+
+echo "test runner: PASS (all green, ordered continuation, failure summary, prerequisites, empty roster)"
