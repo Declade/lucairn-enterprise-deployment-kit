@@ -206,8 +206,11 @@ bin/lucairn evidence verify conversation-bundle.zip --env customer.env --tool ./
 This runs the separately released `lucairn-bundle-verify` tool (1.0.0 or
 newer; the kit does not ship or download it) with your deployment's own public
 keys from `customer.env`, and returns the tool's output and exit code
-unchanged: `0` VALID, `1` TAMPERED, `2` INCOMPLETE (or the tool rejected its
-arguments); `3` means the tool was not run. Helm installs: set
+unchanged: `0` VALID, `1` TAMPERED, `2` INCOMPLETE (or the tool stopped
+before a verdict, for example on arguments it rejects); `3` means there is no
+verdict: the wrapper stopped before the tool gave one (the tool itself never
+returns `3`; the shell's `126`/`127` for a tool that could not be started
+also come back as `3`). Helm installs: set
 `LCR_WITNESS_KEY_ID` in the key file (the chart default is `witness_dev_v1`,
 the wrapper assumes `witness_v1`). VALID is a technical integrity check of the
 bundle, not a certification or legal opinion. `bin/lucairn evidence list` and `bin/lucairn evidence export`
