@@ -207,7 +207,9 @@ evidenceGap:
   # of those spellings as LOG, and case-folded "ENFORCE" as enforce).
   # null (`--set gateway.evidenceGap.posture=null`) ⇒ the env var is not
   # rendered at all and the gateway reads UNSET as LOG.
-  posture: log
+  # The umbrella supplies log; a null child default prevents Helm 3 from
+  # restoring log after an operator explicitly sets the umbrella value null.
+  posture: null
   # "" (or null) ⇒ not rendered; the gateway's own default applies (strict
   # under enforce, permissive under log). Set "strict" to make an unwritable
   # store a BOOT FAILURE rather than a logged degradation — i.e. loud instead

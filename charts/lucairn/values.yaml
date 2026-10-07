@@ -401,6 +401,9 @@ sandbox-b:
 
 gateway:
   enabled: true
+  # Keep the default here so Helm 3 cannot restore a child default after null.
+  evidenceGap:
+    posture: log
   # WP1 S4: the supported default and production policy disable streaming.
   # This is intentionally separate from runtime-mode routing state.
   streaming:
