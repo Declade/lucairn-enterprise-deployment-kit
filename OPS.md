@@ -2044,7 +2044,8 @@ verb, `bin/lucairn evidence`.
 `bin/lucairn evidence verify` is a thin wrapper around the separately released
 offline tool `lucairn-bundle-verify`. The wrapper finds the tool, hands it
 **this deployment's own public keys**, and returns the tool's output and exit
-code unchanged. It makes no network call.
+code unchanged (the one exception is under *Exit codes* below). It makes no
+network call.
 
 **1. Get the tool (once).** The kit does not ship or download it. Download the
 binary for your platform plus `SHA256SUMS` and `SHA256SUMS.sig` from
@@ -2062,8 +2063,11 @@ The wrapper needs version **1.0.0 or newer** and looks for the tool in this
 order: `--tool PATH`, the environment variable `LUCAIRN_BUNDLE_VERIFY`, then
 `lucairn-bundle-verify` on `PATH`. A tool that is missing, is older, or does
 not identify itself as `lucairn-bundle-verify` stops the run before anything
-is checked. A build from source reports the version `dev`; the wrapper refuses
-it unless you add `--allow-unversioned-tool`.
+is checked. So does a version that starts with a digit but does not read as
+`MAJOR.MINOR.PATCH`: the tool runs only when the comparison with the minimum
+positively succeeded. A build from source reports the version `dev`; the
+wrapper refuses it unless you add `--allow-unversioned-tool` (that flag
+covers a version that does not start with a digit, never a numbered one).
 
 **2. Run it.**
 
@@ -2099,27 +2103,44 @@ its signing key as `customer.env.example` describes (`bin/lucairn-init` does
 this): the tool refuses a pinned key that is not a valid curve point, skips
 the claim checks and answers INCOMPLETE.
 
-**What is guaranteed about private keys.** The wrapper never passes to the
-tool a value from the `--env` file that the same file also holds on a
-`*_SIGNING_KEY` line. Before it reads any public key it collects every line
-of the file that sets, or comments out, a variable whose name ends in
-`_SIGNING_KEY` (the `LCR_*` names, the legacy `VEIL_*` names and any other).
-If one of the six public-key lines holds a value found there, in whichever
-slot and in either hex case, the run stops with exit `3` before the tool
-starts, and the message names the two variables, not the value. The limits:
+**What is guaranteed about private keys.** The wrapper never prints, and
+never passes to the tool,
+a value from the `--env` file that the same file also holds on a
+`*_SIGNING_KEY` line. Everything it takes out of the file (the key id and the
+six public keys; for `evidence list` and `evidence export` the gateway port)
+comes through one function. Before that function hands back any value it
+collects every line of the file that sets, or comments out, a variable whose
+name ends in `_SIGNING_KEY` (the `LCR_*` names, the legacy `VEIL_*` names and
+any other). If a line the wrapper reads holds a value found there, in
+whichever line and in either hex case, the run stops with exit `3` before the
+tool is even looked for (`evidence list` and `evidence export`: exit `1`,
+before the exporter is looked for), and the message names the two variables,
+not the value. The limits:
 
 - A file with public lines only (the extract below) gives the wrapper nothing
-  to compare. A signing seed pasted into such a file is passed on.
+  to compare. A signing seed pasted into a public-key line of such a file is
+  passed on.
 - A signing seed and a public key have the same shape (64 hex characters), so
-  the wrapper cannot recognise a seed that is not also on a `*_SIGNING_KEY`
-  line of the same file.
+  the wrapper cannot recognise a seed in a public-key line when it is not also
+  on a `*_SIGNING_KEY` line of the same file.
 - A `--service-key` you add yourself is not compared; it is already on your
   own command line.
 
+The key id is held to a stricter rule, because it is printed and is part of
+the tool's command line: it must be a label of `A-Z a-z 0-9 . _ -`, at most
+128 characters, and it must not contain 64 or more hex digits in a row. That
+is the shape of this kit's keys and seeds, so a seed pasted into
+`LCR_WITNESS_KEY_ID` is refused with exit `3` even in a file without any
+signing line. Neither the witness nor the tool restricts key ids; if your
+witness really signs under an id of that shape, run `lucairn-bundle-verify`
+directly. A key written as unpadded base64 cannot be told from a label and is
+not caught by its shape.
+
 The public keys that are passed are command-line arguments of the tool, so
 they are visible in the process list of that machine while the tool runs.
-If the wrapper is run with Bash tracing on (`bash -x`), it switches tracing
-off before it reads the keys.
+If the wrapper is run with Bash tracing on (`bash -x`), `evidence verify`
+switches tracing off before it reads the file, and tracing stays off until
+the wrapper exits; the call of the tool is not traced either.
 
 **One witness key, and the key id.** The wrapper passes exactly one witness
 key: `LCR_WITNESS_PUBLIC_KEY` under the id in `LCR_WITNESS_KEY_ID`. When that
@@ -2153,13 +2174,15 @@ grep -E '^(LCR|VEIL)_(WITNESS_KEY_ID|(WITNESS|BRIDGE|SANITIZER|SANDBOX_B|AUDIT|G
 |---|---|
 | `0` | VALID: every check that applies passed (the tool's verdict) |
 | `1` | TAMPERED: at least one check failed (the tool's verdict) |
-| `2` | INCOMPLETE: nothing failed, but something could not be checked (the tool's verdict) **or** the tool rejected its arguments. A verdict prints the line `RESULT: INCOMPLETE (exit 2)`; a rejected argument prints no `RESULT:` line |
-| `3` | No verdict: the wrapper stopped before the tool ran (tool missing or too old, key line missing or malformed, bad arguments, any failure inside the wrapper) |
+| `2` | INCOMPLETE: nothing failed, but something could not be checked (the tool's verdict) **or** the tool stopped before a verdict (it rejected its arguments, or could not read the bundle file). A verdict prints the line `RESULT: INCOMPLETE (exit 2)`; a stop before a verdict prints no `RESULT:` line |
+| `3` | No verdict: the wrapper stopped before the tool gave one (tool missing, too old or not startable; key line missing, malformed or refused; bad arguments; any failure inside the wrapper). `3` also comes back when the program behind `--tool` itself exits `3`, which `lucairn-bundle-verify` does not do for any outcome: its exit codes are `0`, `1` and `2` |
 
-The tool itself returns `2` for its own usage errors, so `2` means
-"INCOMPLETE, or the tool rejected its arguments": look for the `RESULT:` line
-in the tool's text output (it is followed only by the tool's notes). When the
-tool rejected its arguments there is no `RESULT:` line, only its error or
+The tool itself returns `2` when it stops before a verdict, so `2` means
+"INCOMPLETE, or the tool rejected its arguments or could not read the bundle
+file (for example a file above its size limit)": look for the `RESULT:` line
+in the tool's text output (it is followed only by the tool's notes; with
+`--json` look for the `verdict` field of the report). When the tool stopped
+before a verdict there is no `RESULT:` line and no report, only its error or
 usage text on stderr. The wrapper checks what it
 can before it starts the tool and answers `3` instead: an unknown flag, a
 `--require-binding-after` value that is not a UTC time such as
@@ -2172,9 +2195,13 @@ when its own messages cannot be written (stderr closed) or a helper program it
 needs fails. `--help` is answered with exit `0` only when it is the sole
 argument; next to other arguments it is a usage error (`3`), so a
 verification call cannot end in `0` without the tool having run. Once the
-tool has been started its exit code is returned unchanged, whatever it is;
-a code other than `0`, `1` or `2` (for example `126` when the tool file
-cannot be executed, or a signal code) is not a verdict.
+tool has been started its exit code is returned unchanged, with one
+exception: `126` and `127` are the shell's own codes for a file it could not
+start (removed or made non-executable after the version check, or not a
+program for this machine). The tool never returns them, so the wrapper
+answers `3`. Every other code comes back as it is; one that is not `0`, `1`
+or `2` (for example `137` after the tool was killed) is not a verdict. Read
+`3` as "there is no verdict", not as proof that no program ran.
 
 **Anchors.** A self-hosted install does not timestamp its certificates or
 write them to a transparency log unless you configured that (`LCR_TSA_URL` and
@@ -2214,7 +2241,10 @@ exporter `lucairn-bundle-export`, which ships with a later release. Until it
 is installed they check their arguments, then stop with one sentence and write
 nothing. They take the gateway admin key as `--admin-key-file PATH` only (a
 regular file readable by its owner only) and never as a value on the command
-line. Bundles written by that exporter will also need the verifier release
+line. `--help` is answered with exit `0` only when it is the sole argument;
+next to other arguments it is a usage error (exit `1`), for these two
+commands and for `bin/lucairn evidence --help` itself. Bundles written by
+that exporter will also need the verifier release
 that ships with it; the wrapper's minimum version will be raised then.
 
 ## Deployment license

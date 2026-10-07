@@ -23,11 +23,16 @@ carry a security fix are tagged **[Security]**.
   newer; the kit does not ship or download it): it passes this deployment's
   own public keys as `--witness-key` plus one `--service-key` per claim
   signer and returns the tool's output and exit code unchanged (`0` VALID,
-  `1` TAMPERED, `2` INCOMPLETE or the tool rejected its arguments; `3` = the
-  wrapper stopped before the tool ran, on every path, including a closed
-  stderr or a failing helper program). A value that the `--env` file also
-  holds on any `*_SIGNING_KEY` line is refused in every public-key slot and
-  never passed on; Bash tracing is switched off before keys are read.
+  `1` TAMPERED, `2` INCOMPLETE or the tool stopped before a verdict; `3` = no
+  verdict: the wrapper stopped before the tool gave one, on every path,
+  including a closed stderr, a failing helper program, a tool version it
+  cannot read and a tool file the shell could not start, whose `126`/`127`
+  are the one exit code the wrapper changes). A value that the `--env` file
+  also holds on any `*_SIGNING_KEY` line is refused in every line the wrapper
+  reads (the key id and the six public keys) and is never passed on or
+  printed; a key id with the shape of a key is refused as well. Bash tracing
+  is switched off before the file is read and stays off until the wrapper
+  exits. `--help` is answered with exit `0` only as the sole argument.
   `evidence list` and `evidence export` validate their arguments and
   hand over to the exporter `lucairn-bundle-export`; that exporter ships with
   a later release, and without it both stop with one sentence and write
