@@ -41,11 +41,15 @@ The command runs through the user's `$SHELL` (or `/bin/sh`) with its inherited
 environment plus all six uppercase/lowercase `HTTP_PROXY`, `HTTPS_PROXY` and
 `ALL_PROXY` variables set to a proxy on `127.0.0.1` and an ephemeral port. The
 proxy opens direct TCP connections to the requested targets. It does not chain
-through a previously configured upstream proxy. Existing `NO_PROXY`/`no_proxy`
-values remain inherited, so their exclusions can bypass observation. Clients
-that ignore proxy variables, direct connections, other applications, and
+through a previously configured upstream proxy. Both `NO_PROXY` and `no_proxy`
+are removed from the client's environment for the run, including loopback
+exclusions (the proxy handles loopback targets). If either was present, the
+human report includes a notice and JSON sets `no_proxy_was_set` to `true`;
+their values are never printed. Clients that ignore proxy variables, direct connections, and
 traffic before or after this run are outside the measured scope. It is not a
 machine-wide packet capture or an egress enforcement mechanism.
+Other local processes using this proxy during the run also appear in the
+inventory: the audit identifies requested hosts, not which local process asked.
 
 CONNECT traffic is relayed byte for byte without terminating TLS: there is no
 certificate, decryption, or inspection of encrypted content. Absolute-URL plain
@@ -65,15 +69,20 @@ allowed additional hosts, and unlisted other hosts appear under `unexpected`.
 Missing gateway contact takes priority over unexpected hosts when both occur.
 Either attention verdict exits 2. Invalid inputs, a missing or unsuccessful
 client, a timeout, or a proxy failure exit 1 with a single reason on stderr.
+Nonzero client exits and timeouts also print the inventory collected so far,
+with `client exited N` or `client timed out after S s` (JSON: `client_status`).
 `--json` prints one object on stdout for completed audits, with `command`,
 `gateway_host`, `hosts` (including `count`, `first_seen_ms` and `class`),
-`unexpected`, `verdict`, `duration_ms` and the measured `scope`.
+`unexpected`, `verdict`, `duration_ms`, `no_proxy_was_set` and the measured `scope`:
+hosts requested by the client process through the local forwarding proxy;
+encrypted content not inspected.
 
 The helper records no environment values, headers or bodies. Client stdout and
 stderr go to a private temporary file, are never read or printed, and are
 discarded after the run. Timeout or interruption terminates the client's process
 group and stops the proxy; remaining group members are also stopped when the
-command finishes normally. The only retained audit artifact is the report you
+command finishes normally; a grandchild starting its own session escapes this
+process-group stop. The only retained audit artifact is the report you
 choose to save. The report includes the supplied command text: use a synthetic
 prompt and inherited credentials, without putting secrets in `--command`.
 

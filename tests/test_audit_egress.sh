@@ -30,7 +30,7 @@ spec.loader.exec_module(audit)
 # These checks need no sockets and remain runnable in a bind-restricted sandbox.
 import contextlib
 import io
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 assert audit.endpoint("https://GATEWAY.example.test.:8443/base") == ("gateway.example.test", 8443)
 assert audit.endpoint("[::1]:443", connect=True) == ("::1", 443)
@@ -106,6 +106,24 @@ for method_target in (b"CONNECT gateway.example.test:443", b"GET http://other.ex
     assert bytes(client.output).startswith(b"HTTP/1.1 502")
     assert len(proxy.inventory) == 1
 
+# A malformed upstream reply must end only this request, not the audit.
+for reply in (b"HTTP/1.1\r\n", b"HTTP/1.1 SENTINEL\r\n", b"HTTP/1.1 99\r\n"):
+    proxy = memory_proxy()
+    with patch.object(audit.socket, "create_connection", return_value=MemorySocket(reply)):
+        audit.Handler(MemorySocket(request), ("127.0.0.1", 1), proxy)
+    assert proxy.inventory[("gateway.example.test", 80)]["count"] == 1
+    assert not proxy.failed.is_set()
+
+# EPERM and bounded waits must never prevent the KILL attempt or escape cleanup.
+for denied in (False, True):
+    process = Mock(pid=123)
+    process.wait.side_effect = [subprocess.TimeoutExpired("SENTINEL", 0.2),
+                                subprocess.TimeoutExpired("SENTINEL", 1)]
+    with patch.object(audit.os, "killpg", side_effect=PermissionError() if denied else None) as kill:
+        audit.stop_client(process)
+    assert kill.call_args_list == [call(123, signal.SIGTERM), call(123, signal.SIGKILL)]
+    assert process.wait.call_args_list == [call(timeout=0.2), call(timeout=1)]
+
 # Actual shell launch/output deletion/process-group cleanup with only the
 # listener mocked. End-to-end socket checks below remain independently required.
 class IdleProxy:
@@ -139,8 +157,42 @@ for rows, extra, expected, verdict in (
     result = json.loads(output.getvalue())
     assert result["verdict"] == verdict
     assert {r["host"] for r in result["hosts"]} == {r["host"] for r in rows}
-    assert set(result) == {"command", "gateway_host", "hosts", "unexpected", "verdict", "duration_ms", "scope"}
+    assert set(result) == {"command", "gateway_host", "hosts", "unexpected", "verdict", "duration_ms", "scope", "no_proxy_was_set"}
     assert "SENTINEL_ENV" not in output.getvalue()
+
+# Presence includes empty variables; neither spelling may reach the child.
+for inherited in ({}, {"NO_PROXY": "SENTINEL"}, {"no_proxy": "SENTINEL"},
+                  {"NO_PROXY": "", "no_proxy": "SENTINEL"}):
+    environment = {k: v for k, v in os.environ.items() if k not in ("NO_PROXY", "no_proxy")}
+    environment.update(inherited)
+    check_env = 'import os; assert "NO_PROXY" not in os.environ and "no_proxy" not in os.environ'
+    for json_mode in (False, True):
+        output = io.StringIO()
+        with patch.dict(os.environ, environment, clear=True), patch.object(audit, "Forwarder", IdleProxy), contextlib.redirect_stdout(output):
+            assert audit.main(["--gateway-url", "http://gateway.example.test", "--command",
+                               shlex.quote(sys.executable) + " -c " + shlex.quote(check_env)]
+                              + (["--json"] if json_mode else [])) == 0
+        assert "SENTINEL" not in output.getvalue()
+        if json_mode:
+            assert json.loads(output.getvalue())["no_proxy_was_set"] is bool(inherited)
+        else:
+            assert (audit.NO_PROXY_NOTICE in output.getvalue()) is bool(inherited)
+
+for code, status in (("import sys; sys.exit(7)", "client exited 7"),
+                     ("import time; time.sleep(30)", "client timed out after 0.1 s")):
+    for json_mode in (False, True):
+        output, error = io.StringIO(), io.StringIO()
+        with patch.object(audit, "Forwarder", IdleProxy), contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            assert audit.main(["--gateway-url", "http://gateway.example.test", "--timeout", "0.1", "--command",
+                               shlex.quote(sys.executable) + " -c " + shlex.quote(code)]
+                              + (["--json"] if json_mode else [])) == 1
+        assert status in error.getvalue()
+        if json_mode:
+            data = json.loads(output.getvalue())
+            assert data["client_status"] == status
+            assert {r["host"] for r in data["hosts"]} == {r["host"] for r in IdleProxy.rows}
+        else:
+            assert status in output.getvalue() and "other.example.test · 443 · 1 · other" in output.getvalue()
 
 with tempfile.TemporaryDirectory(prefix="test-audit-unit-") as directory:
     state = Path(directory) / "pid"
@@ -149,6 +201,12 @@ with tempfile.TemporaryDirectory(prefix="test-audit-unit-") as directory:
                    'open(' + repr(str(state)) + ',"w").write(str(p.pid)); time.sleep(30)')
     def temporary_output(**kwargs):
         return tempfile.NamedTemporaryFile(dir=directory, prefix="captured-output", mode="w+b")
+    original_stop = audit.stop_client
+    def repeated_interrupts(process):
+        if process is not None:
+            os.kill(os.getpid(), signal.SIGINT)
+            os.kill(os.getpid(), signal.SIGTERM)
+        original_stop(process)
     for mode in ("timeout", "interrupt", "leader-exit"):
         state.unlink(missing_ok=True)
         code = parent_code
@@ -161,7 +219,7 @@ with tempfile.TemporaryDirectory(prefix="test-audit-unit-") as directory:
                 timer = threading.Timer(0.4, lambda: os.kill(os.getpid(), signal.SIGTERM))
                 timer.start()
             started = time.monotonic()
-            with patch.object(audit, "Forwarder", IdleProxy), patch.object(audit.tempfile, "TemporaryFile", temporary_output), contextlib.redirect_stderr(error), contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(audit, "Forwarder", IdleProxy), patch.object(audit, "stop_client", repeated_interrupts), patch.object(audit.tempfile, "TemporaryFile", temporary_output), contextlib.redirect_stderr(error), contextlib.redirect_stdout(io.StringIO()):
                 assert audit.main(["--gateway-url", "http://localhost", "--timeout", "0.7", "--command",
                                    shlex.quote(sys.executable) + " -c " + shlex.quote(code)]) == (2 if mode == "leader-exit" else 1)
             assert time.monotonic() - started < 2
@@ -242,6 +300,8 @@ socket.socket.connect = connect
 ''')
     environment = dict(os.environ, PYTHONPATH=directory, TMPDIR=directory,
                        SENTINEL_ENV="visible", SHELL="/bin/sh")
+    for name in ("NO_PROXY", "no_proxy"):
+        environment.pop(name, None)
     # Deliberately dirty all six proxy variables; each must be replaced.
     for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
         environment[name] = "SENTINEL"
@@ -253,8 +313,10 @@ socket.socket.connect = connect
         args = [cli, "audit-egress", "--timeout", "5", "--command", command(code)]
         if gateway:
             args += ["--gateway-url", "http://gateway.example.test"]
+        started = time.monotonic()
         result = subprocess.run(args + list(options), env=environment, cwd=directory,
                                 capture_output=True, text=True, timeout=9)
+        assert time.monotonic() - started < 9
         assert result.returncode == expected, (result.returncode, result.stdout, result.stderr)
         # stdout/stderr of the synthetic client contain planted private text.
         # The command printed in the report refers to the env by a constructed
@@ -301,6 +363,93 @@ socket.socket.connect = connect
     repeated = json.loads(run(contacts("gateway.example.test", "gateway.example.test"), "--json").stdout)
     assert repeated["hosts"][0]["count"] == 2
     run(both, "--expect-host", "allowed.example.test", "--expect-host", "OTHER.EXAMPLE.TEST.")
+
+    # urllib honors inherited proxy exclusions: this request must reach the
+    # proxy and be inventoried even though its offline upstream is unreachable.
+    proxy_aware = contacts("gateway.example.test") + 'exec(' + repr('''
+import urllib.request, urllib.error
+try:
+    urllib.request.urlopen("http://other.example.test/", timeout=2)
+except urllib.error.URLError:
+    pass
+''') + ')'
+    for name in ("NO_PROXY", "no_proxy"):
+        for value in ("other.example.test", "other.example.test,SENTINEL"):
+            environment[name] = value
+            for json_mode in (False, True):
+                checked = run(proxy_aware, "--expect-host", "none.test",
+                              *(["--json"] if json_mode else []), expected=2)
+                # The requested hostname necessarily appears; the private
+                # exclusion-list suffix must not. Do not print env values.
+                if json_mode:
+                    data = json.loads(checked.stdout)
+                    assert "SENTINEL" not in json.dumps({k: v for k, v in data.items() if k != "command"}) + checked.stderr
+                    assert data["no_proxy_was_set"] is True
+                    assert data["verdict"] == "ATTENTION: unexpected hosts"
+                    assert {r["host"] for r in data["hosts"]} == {"gateway.example.test", "other.example.test"}
+                else:
+                    assert "SENTINEL" not in checked.stdout.replace(command(proxy_aware), "") + checked.stderr
+                    assert checked.stdout.count(audit.NO_PROXY_NOTICE) == 1
+                    assert "other.example.test · 80 · 1 · other" in checked.stdout
+                    assert checked.stdout.endswith("ATTENTION: unexpected hosts\n")
+            del environment[name]
+
+    for suffix, status in (("import sys; sys.exit(7)", "client exited 7"),
+                           ("import time; time.sleep(30)", "client timed out after 0.7 s")):
+        for json_mode in (False, True):
+            checked = run(both + suffix, "--timeout", "0.7",
+                          *(["--json"] if json_mode else []), expected=1)
+            if json_mode:
+                data = json.loads(checked.stdout)
+                assert data["client_status"] == status
+                assert {r["host"] for r in data["hosts"]} == {"gateway.example.test", "other.example.test"}
+            else:
+                assert status in checked.stdout and "other.example.test · 443 · 1 · other" in checked.stdout
+
+    # Socket-level malformed input must be bounded and must not poison later
+    # valid requests. Invalid targets never enter the inventory.
+    for raw in (b"GET http://other.example.test/" + b"SENTINEL" * 9000 + b" HTTP/1.1\r\n\r\n",
+                b"CONNECT other.example.test:443 HTTP/1.1\n\n",
+                b"CONNECT :443 HTTP/1.1\r\n\r\n"):
+        hostile = prefix + 'exec(' + repr('''
+with socket.create_connection((p.hostname, p.port), timeout=2) as s:
+    try:
+        s.sendall(%r)
+        assert s.recv(4096) == b""
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+''' % raw) + '); ' + contacts("gateway.example.test")
+        data = json.loads(run(hostile, "--json").stdout)
+        assert [(r["host"], r["count"]) for r in data["hosts"]] == [("gateway.example.test", 1)]
+
+    idle = contacts("gateway.example.test") + (
+        's=socket.create_connection((p.hostname,p.port),timeout=2); '
+        's.sendall(b"CONNECT "); import time; time.sleep(30)')
+    data = json.loads(run(idle, "--timeout", "0.7", "--json", expected=1).stdout)
+    assert data["client_status"] == "client timed out after 0.7 s"
+    assert [(r["host"], r["count"]) for r in data["hosts"]] == [("gateway.example.test", 1)]
+
+    concurrent = prefix + 'exec(' + repr('''
+import threading
+barrier = threading.Barrier(2, timeout=2)
+completed = []
+def request(host):
+    with socket.create_connection((p.hostname, p.port), timeout=2) as s:
+        barrier.wait()
+        s.sendall(("CONNECT " + host + ":443 HTTP/1.1\\r\\n\\r\\n").encode())
+        assert s.recv(4096).startswith(b"HTTP/1.1 502")
+        completed.append(host)
+workers = [threading.Thread(target=request, args=(host,), daemon=True)
+           for host in ("gateway.example.test", "other.example.test")]
+for worker in workers:
+    worker.start()
+for worker in workers:
+    worker.join(timeout=3)
+assert len(completed) == 2 and not any(worker.is_alive() for worker in workers)
+''') + ')'
+    data = json.loads(run(concurrent, "--json").stdout)
+    assert {(r["host"], r["count"]) for r in data["hosts"]} == {
+        ("gateway.example.test", 1), ("other.example.test", 1)}
     (scratch / "customer.env").write_text('GATEWAY_BASE_URL="http://gateway.example.test"\nSENTINEL_ENV=visible\n')
     run(both, "--env", str(scratch / "customer.env"), gateway=False)
     run(both, gateway=False)  # default customer.env
@@ -316,7 +465,7 @@ socket.socket.connect = connect
     missing_command = subprocess.run([cli, "audit-egress", "--gateway-url", "http://localhost",
                                       "--command", "lucairn_synthetic_missing_command", "--timeout", "1"],
                                      env=environment, capture_output=True, text=True, timeout=3)
-    assert missing_command.returncode == 1 and "not found" in missing_command.stderr
+    assert missing_command.returncode == 1 and "client exited 127" in missing_command.stderr
 
     # Lifecycle: a TERM-resistant child, including when its shell leader has
     # already exited. Record only synthetic PID/proxy address for assertions.
@@ -388,6 +537,31 @@ socket.socket.connect = connect
         sock.listen(5)
         sock.settimeout(3)
         return sock
+
+    # A real plain-HTTP target sends the formerly crashing status line.
+    upstream = listener()
+    malformed_port = upstream.getsockname()[1]
+    def malformed_reply(sock):
+        connection, _ = sock.accept()
+        with connection:
+            connection.settimeout(2)
+            with connection.makefile("rb") as stream:
+                assert stream.readline().startswith(b"GET http://127.0.0.1:")
+                assert stream.readline() == b"\r\n"
+            connection.sendall(b"HTTP/1.1\r\n\r\n")
+    worker = threading.Thread(target=server_job, args=(upstream, malformed_reply), daemon=True)
+    worker.start()
+    try:
+        code = prefix + ('s=socket.create_connection((p.hostname,p.port),timeout=2); '
+                         's.sendall(b"GET http://127.0.0.1:%d/ HTTP/1.1\\r\\n\\r\\n"); '
+                         'assert s.recv(4096)==b""; s.close(); ' % malformed_port)
+        data = json.loads(run(code + contacts("gateway.example.test"), "--json").stdout)
+        assert {(r["host"], r["port"], r["count"]) for r in data["hosts"]} == {
+            ("127.0.0.1", malformed_port, 1), ("gateway.example.test", 443, 1)}
+    finally:
+        worker.join(timeout=3)
+        upstream.close()
+    assert not worker.is_alive() and not failures, failures
 
     started = time.monotonic()
     proxy = audit.Forwarder(started, started + 5)
