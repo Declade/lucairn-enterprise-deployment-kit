@@ -377,7 +377,7 @@ except urllib.error.URLError:
         for value in ("other.example.test", "other.example.test,SENTINEL"):
             environment[name] = value
             for json_mode in (False, True):
-                checked = run(proxy_aware, "--expect-host", "none.test",
+                checked = run(proxy_aware, "--expect-host", "none.example.test",
                               *(["--json"] if json_mode else []), expected=2)
                 # The requested hostname necessarily appears; the private
                 # exclusion-list suffix must not. Do not print env values.
