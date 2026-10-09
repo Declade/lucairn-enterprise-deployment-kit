@@ -25,12 +25,13 @@ import time
 from urllib.parse import urlsplit
 
 
-SCOPE = "client process egress via local forwarding proxy; encrypted content not inspected"
+SCOPE = "hosts requested by the client process through the local forwarding proxy; encrypted content not inspected"
 OTHER_NOTE = (
-    "Hosts marked other were contacted by the client for reasons this audit cannot "
+    "Hosts marked other were requested through the proxy by the client for reasons this audit cannot "
     "see (for example account, update or telemetry traffic). Conversation routing "
     "is proven only by the gateway row and your certificates."
 )
+NO_PROXY_NOTICE = "NO_PROXY/no_proxy was set; both were removed from the client environment for this run."
 LIMIT = 65536
 
 
@@ -259,7 +260,12 @@ class Handler(socketserver.BaseRequestHandler):
                             pending_body = False
                         while True:
                             response_line = line(remote)
-                            status = int(response_line.split(b" ")[1])
+                            status_parts = response_line.rstrip(b"\r\n").split(b" ", 2)
+                            if (len(status_parts) < 2
+                                    or status_parts[0] not in (b"HTTP/1.0", b"HTTP/1.1")
+                                    or not re.fullmatch(b"[1-5][0-9]{2}", status_parts[1])):
+                                raise ValueError("invalid response status")
+                            status = int(status_parts[1])
                             response_headers, response_fields = head(remote)
                             self.request.sendall(response_line + response_headers)
                             if status == 100 and pending_body:
@@ -294,13 +300,19 @@ class Parser(argparse.ArgumentParser):
         raise AuditError("invalid arguments (see --help)")
 
 
+def ignore_interrupts():
+    # Cleanup must finish even if another interrupt arrives during a wait.
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, signal.SIG_IGN)
+
+
 def stop_client(process):
     if process is None:
         return
     # Kill the entire group even if the shell leader already exited.
     try:
         os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
+    except OSError:
         pass
     try:
         process.wait(timeout=0.2)
@@ -308,9 +320,12 @@ def stop_client(process):
         pass
     try:
         os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
+    except OSError:
         pass
-    process.wait(timeout=1)
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def run(args):
@@ -319,11 +334,15 @@ def run(args):
     proxy = None
     thread = None
     process = None
+    client_status = None
     try:
         proxy = Forwarder(started, deadline)
         thread = threading.Thread(target=proxy.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         thread.start()
         environment = os.environ.copy()
+        no_proxy_was_set = any(name in environment for name in ("NO_PROXY", "no_proxy"))
+        for name in ("NO_PROXY", "no_proxy"):
+            environment.pop(name, None)
         address = "http://127.0.0.1:{}".format(proxy.server_address[1])
         for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
             environment[name] = address
@@ -338,19 +357,20 @@ def run(args):
             try:
                 code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
-                raise AuditError("client timed out") from None
+                client_status = "client timed out after {:g} s".format(args.timeout)
+            else:
+                if code != 0:
+                    client_status = "client exited {}".format(code)
             finally:
+                ignore_interrupts()
                 stop_client(process)
                 process = None
         if proxy.failed.is_set() or not thread.is_alive():
             raise AuditError("local proxy failed")
-        if code in (126, 127):
-            raise AuditError("client command not found or not executable")
-        if code != 0:
-            raise AuditError("client command exited unsuccessfully")
     except (OSError, RuntimeError, subprocess.SubprocessError):
         raise AuditError("could not start or run client/local proxy") from None
     finally:
+        ignore_interrupts()
         try:
             stop_client(process)
         finally:
@@ -376,15 +396,20 @@ def run(args):
         verdict = "ATTENTION: unexpected hosts"
     else:
         verdict = "PASS"
-    return {
+    result = {
         "command": args.command, "gateway_host": args.gateway_host,
         "hosts": hosts, "unexpected": unexpected, "verdict": verdict,
         "duration_ms": int((time.monotonic() - started) * 1000), "scope": SCOPE,
+        "no_proxy_was_set": no_proxy_was_set,
     }
+    if client_status is not None:
+        result["client_status"] = client_status
+    return result
 
 
 def main(argv=None):
     def interrupted(signum, frame):
+        ignore_interrupts()
         raise AuditError("audit interrupted")
 
     handlers = {}
@@ -413,9 +438,11 @@ def main(argv=None):
         if args.json:
             print(json.dumps(result, ensure_ascii=True))
         else:
-            print("Egress audit — hosts contacted by `{}` during one synthetic turn, "
+            print("Egress audit — hosts requested through the proxy by `{}` during one synthetic turn, "
                   "as observed by a local forwarding proxy on this machine. "
                   "Encrypted content is not inspected.".format(result["command"]))
+            if result["no_proxy_was_set"]:
+                print(NO_PROXY_NOTICE)
             print("\nhost · port · requests · class")
             for row in result["hosts"]:
                 print("{host} · {port} · {count} · {class}".format(**row))
@@ -423,6 +450,11 @@ def main(argv=None):
             if result["unexpected"]:
                 print("\nunexpected: " + ", ".join(result["unexpected"]))
             print("\n" + result["verdict"])
+            if "client_status" in result:
+                print(result["client_status"])
+        if "client_status" in result:
+            print("error: audit-egress: " + result["client_status"], file=sys.stderr)
+            return 1
         return 0 if result["verdict"] == "PASS" else 2
     except AuditError as exc:
         print("error: audit-egress: " + str(exc), file=sys.stderr)
