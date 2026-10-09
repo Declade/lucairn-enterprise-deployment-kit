@@ -53,8 +53,12 @@ Usage:
   lucairn sbom <image-ref> [--key PATH] [--registry REG] [--download PATH]
   lucairn check-updates [--offline] [--feed-url URL]
   lucairn config-pack --gateway https://gateway.example.com --output DIR [--models ID,ID] [--egress-proxy URL] [--key-helper CMD] [--force]
+  lucairn audit-egress [--env customer.env] [--gateway-url URL] [--command "CMD"] [--timeout SECONDS] [--json] [--expect-host HOST]...
 
 Commands:
+  audit-egress    Observe one synthetic client turn through a local forwarding
+                  proxy. Reports requested hosts; encrypted content is not
+                  inspected. Requires python3 >= 3.8. See OPS.md § Egress audit.
   doctor          --offline is a configuration-only preflight. With a running
                   gateway, --customer-key-file consumes an existing mode-0600
                   customer key to prove authenticated inference, evidence, and
@@ -9846,6 +9850,38 @@ config_pack() {
   python3 "$renderer" "$@"
 }
 
+audit_egress() {
+  local env_file="customer.env" gateway_url="" env_explicit=0
+  local args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --env|--gateway-url|--command|--timeout|--expect-host)
+        [ "$#" -ge 2 ] && [ -n "$2" ] || fail "audit-egress: option requires a value"
+        case "$1" in
+          --env) env_file="$2"; env_explicit=1 ;;
+          --gateway-url) gateway_url="$2" ;;
+          *) args+=("$1" "$2") ;;
+        esac
+        shift 2
+        ;;
+      --json) args+=("$1"); shift ;;
+      -h|--help) usage; return 0 ;;
+      *) fail "audit-egress: unknown option" ;;
+    esac
+  done
+  have python3 || fail "audit-egress: python3 not found on PATH"
+  if [ "$env_explicit" -eq 1 ]; then
+    [ -f "$env_file" ] && [ -r "$env_file" ] || fail "audit-egress: env file not readable"
+  fi
+  if [ -z "$gateway_url" ] && [ -f "$env_file" ] && [ -r "$env_file" ]; then
+    gateway_url="$(env_value "$env_file" GATEWAY_BASE_URL)"
+  fi
+  [ -n "$gateway_url" ] || fail "audit-egress: provide --gateway-url or GATEWAY_BASE_URL in --env"
+  [ -f "$ROOT/bin/lucairn-audit-egress.py" ] || fail "audit-egress: proxy helper not found"
+  # Replace the wrapper so interrupts reach the helper's cleanup handler.
+  exec python3 "$ROOT/bin/lucairn-audit-egress.py" --gateway-url "$gateway_url" ${args[@]+"${args[@]}"}
+}
+
 # ---------------------------------------------------------------------------
 # lucairn evidence - EVIDENCE bundles (T-1231 Slice 3, PR F)
 # ---------------------------------------------------------------------------
@@ -10907,6 +10943,7 @@ main() {
     verify-images) shift; verify_images "$@" ;;
     sbom) shift; sbom "$@" ;;
     config-pack) shift; config_pack "$@" ;;
+    audit-egress) shift; audit_egress "$@" ;;
     -h|--help|"") usage ;;
     *) fail "unknown command: $cmd" ;;
   esac

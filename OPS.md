@@ -17,6 +17,66 @@ Enterprise) server-side, and prints the raw key once. See
 
 Tier promotion and key revocation are exposed by the gateway as `PATCH /api/v1/admin/keys/tier` and `DELETE /api/v1/admin/customers/{cid}/keys/{key_id}`. A future v2 of `bin/lucairn-mint-customer` will surface these as `--promote-tier` and `--revoke` subcommands.
 
+## Egress audit
+
+`bin/lucairn audit-egress` inventories the hosts requested by one client command
+through a local forwarding proxy. It requires Python 3.8 or newer and runs on
+the customer's machine. The default command is
+`claude -p "Reply with exactly: OK"`; the default timeout is 120 seconds.
+
+```bash
+bin/lucairn audit-egress --env customer.env
+bin/lucairn audit-egress --gateway-url https://gateway.example.test --json
+bin/lucairn audit-egress --env customer.env \
+  --command 'claude -p "Reply with exactly: OK"' --timeout 60 \
+  --expect-host account.example.test --expect-host updates.example.test
+```
+
+An explicit `--gateway-url` takes precedence. Otherwise the CLI reads
+`GATEWAY_BASE_URL` through its usual env-file loader, from `--env customer.env`
+or `customer.env` in the current directory. It does not source the file. If no
+gateway URL is available, supply `--gateway-url`.
+
+The command runs through the user's `$SHELL` (or `/bin/sh`) with its inherited
+environment plus all six uppercase/lowercase `HTTP_PROXY`, `HTTPS_PROXY` and
+`ALL_PROXY` variables set to a proxy on `127.0.0.1` and an ephemeral port. The
+proxy opens direct TCP connections to the requested targets. It does not chain
+through a previously configured upstream proxy. Existing `NO_PROXY`/`no_proxy`
+values remain inherited, so their exclusions can bypass observation. Clients
+that ignore proxy variables, direct connections, other applications, and
+traffic before or after this run are outside the measured scope. It is not a
+machine-wide packet capture or an egress enforcement mechanism.
+
+CONNECT traffic is relayed byte for byte without terminating TLS: there is no
+certificate, decryption, or inspection of encrypted content. Absolute-URL plain
+HTTP requests are forwarded unchanged, with only transient protocol buffers.
+The in-memory inventory contains only normalized host, port, request count and
+first-seen milliseconds since run start. A request is counted before connecting
+to its target, including attempts that fail DNS resolution or connection setup.
+Counts describe CONNECT/absolute HTTP requests, not requests inside a TLS
+tunnel. The gateway class matches the URL's host, irrespective of port.
+
+`PASS` (exit 0) means the gateway host appeared in that inventory; it does not
+establish successful inference, identify a conversation's contents, verify
+certificates, or prove that all client traffic used the gateway. Interpret the
+gateway row alongside your conversation certificates. Other hosts are
+informational unless `--expect-host` is supplied: that repeatable option lists
+allowed additional hosts, and unlisted other hosts appear under `unexpected`.
+Missing gateway contact takes priority over unexpected hosts when both occur.
+Either attention verdict exits 2. Invalid inputs, a missing or unsuccessful
+client, a timeout, or a proxy failure exit 1 with a single reason on stderr.
+`--json` prints one object on stdout for completed audits, with `command`,
+`gateway_host`, `hosts` (including `count`, `first_seen_ms` and `class`),
+`unexpected`, `verdict`, `duration_ms` and the measured `scope`.
+
+The helper records no environment values, headers or bodies. Client stdout and
+stderr go to a private temporary file, are never read or printed, and are
+discarded after the run. Timeout or interruption terminates the client's process
+group and stops the proxy; remaining group members are also stopped when the
+command finishes normally. The only retained audit artifact is the report you
+choose to save. The report includes the supplied command text: use a synthetic
+prompt and inherited credentials, without putting secrets in `--command`.
+
 ## Scoping MCP tools per engagement
 
 Operators can restrict which MCP data-source servers a key may call at mint

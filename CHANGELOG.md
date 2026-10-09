@@ -23,6 +23,13 @@ carry a security fix are tagged **[Security]**.
   `gateway.evidenceGap.posture=null`; null omits the env var as documented.
 
 ### Added
+- **`bin/lucairn audit-egress` (T-1273, S1).** Customer-runnable host inventory
+  for one synthetic client turn, observed through a loopback forwarding proxy
+  without inspecting encrypted content. Supports `GATEWAY_BASE_URL` from
+  `customer.env`, explicit gateway/command/timeout options, repeatable expected
+  hosts, and human or JSON reports. Counts attempted proxy requests, including
+  unreachable targets; traffic bypassing the proxy is outside its scope.
+  Discards client output and terminates the client process group on timeout.
 - **`bin/lucairn evidence verify|list|export` (T-1231).** A new verb for
   evidence bundles (one zip of signed certificates per conversation), kept
   apart from `bin/lucairn bundle`, which handles delivery bundles of images
