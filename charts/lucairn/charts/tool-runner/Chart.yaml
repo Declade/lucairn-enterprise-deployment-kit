@@ -1,0 +1,5 @@
+apiVersion: v2
+name: tool-runner
+description: Lucairn tool runner (Preview) — policy-governed ServiceNow access for AI agents over MCP
+version: 0.1.0
+appVersion: "0.1.0"

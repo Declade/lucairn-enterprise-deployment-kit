@@ -1,0 +1,6 @@
+# Build context allowlist for apps/tool-runner/Dockerfile (the context is the
+# kit root). Nothing else of the kit directory — in particular no customer.env
+# and no tool-runner/secrets/ — is sent to the build.
+*
+!apps/tool-runner/entrypoint.mjs
+!*.tar.gz

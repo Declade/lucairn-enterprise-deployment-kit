@@ -1,0 +1,27 @@
+{{- include "tool-runner.validate" . -}}
+# The tool runner's own namespace. A normal release-owned resource (not a
+# hook); `keep` so that `helm uninstall` does not delete the receipt store
+# with it. Remove it by hand for a full teardown.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+    dsa.io/namespace: tool-runner
+  annotations:
+    "helm.sh/resource-policy": keep
+{{- if .Values.global.imagePullDockerConfigJson }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: lucairn-registry
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+    dsa.io/namespace: tool-runner
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: {{ .Values.global.imagePullDockerConfigJson | b64enc | quote }}
+{{- end }}

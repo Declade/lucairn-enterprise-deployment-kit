@@ -464,6 +464,26 @@ dsa-certification:
 # Enterprise Dashboard sub-chart. OFF by default — customer opts in via
 # `--set dashboard.enabled=true` or by setting `dashboard.enabled: true` in
 # their customer-values.yaml. See INSTALL.md § "Enable the Lucairn dashboard".
+# Parent-level feature flag for the Lucairn tool runner (Preview): policy-
+# governed ServiceNow access for AI agents. OFF by default. Used by Chart.yaml
+# `condition: toolRunner.enabled`. See docs/TOOL_RUNNER.md.
+toolRunner:
+  enabled: false
+
+# Sub-chart values for the tool runner, passed under its chart name. Read only
+# when toolRunner.enabled is true; every required value fails the render with
+# a message that names it. Defaults: charts/tool-runner/values.yaml.
+tool-runner:
+  namespace: dsa-tool-runner
+  instanceUrl: ""        # https://<name>.service-now.com
+  instanceClass: ""      # dev | test | prod — REQUIRED, no default
+  principal: ""          # the identity the receipts name
+  policy:
+    json: ""             # --set-file tool-runner.policy.json=./policy.json
+    sha256: ""           # bin/lucairn tool-policy digest ./policy.json
+  secrets:
+    backend: k8s-native  # or vault | aws | azure (ExternalSecret)
+
 dashboard:
   enabled: false
 

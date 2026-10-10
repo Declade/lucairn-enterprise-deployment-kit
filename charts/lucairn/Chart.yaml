@@ -78,3 +78,10 @@ dependencies:
     # Enterprise Dashboard sub-chart. OFF by default; customer opts in via
     # --set dashboard.enabled=true (or via their customer-values.yaml).
     condition: dashboard.enabled
+  - name: tool-runner
+    version: 0.1.0
+    # Lucairn tool runner (Preview). OFF by default; opt in with
+    # --set toolRunner.enabled=true. The parent-level flag is `toolRunner`,
+    # the sub-chart's own values live under `tool-runner` (same split as
+    # certification / dsa-certification). See docs/TOOL_RUNNER.md.
+    condition: toolRunner.enabled

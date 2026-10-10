@@ -94,7 +94,7 @@ grep -qi "image DIGEST" "$TMP/help.out" \
 echo "digest-pin: usage advertises --strict (distinct from --strict-runtime) ok"
 
 # ---------------------------------------------------------------------------
-# 3. parse_image_digests parses the real manifest: 19 real digests + 8 pending.
+# 3. parse_image_digests parses the real manifest: 19 real digests + 9 pending.
 #    The 19 real-digest entries = 13 signed artifacts (the 12 dsa-* services +
 #    lucairn-dashboard, all in keys/image-digests-0.5.5.txt) + ollama/ollama
 #    + the dsa-pii-ml sidecar (digest-pinned in image-manifest.yaml at PR #240
@@ -113,13 +113,13 @@ real_count="$(printf '%s\n' "$PARSED" | grep -c $'\tsha256:' || true)"
 pending_count="$(printf '%s\n' "$PARSED" | grep -c $'\tPENDING' || true)"
 [ "$real_count" = "19" ] \
   || fail "expected 19 real-digest entries (13 signed + ollama + dsa-pii-ml sidecar + 3 Kind dependencies + vllm-l3 shield), got $real_count"
-[ "$pending_count" = "8" ] \
-  || fail "expected 8 pending entries (qwen ollama model + qwen-awq hf model + 6 runtime), got $pending_count"
+[ "$pending_count" = "9" ] \
+  || fail "expected 9 pending entries (qwen ollama model + qwen-awq hf model + 6 runtime + the unreleased Preview tool runner), got $pending_count"
 # Spot-check the gateway ref maps to its recorded digest.
 printf '%s\n' "$PARSED" \
   | grep -qF "$(printf '%s\t%s' "$GW_REC_REF" "$GW_DIGEST")" \
   || fail "parse_image_digests did not map the gateway ref to its recorded digest"
-echo "digest-pin: parse_image_digests reads 19 real + 8 pending entries ok"
+echo "digest-pin: parse_image_digests reads 19 real + 9 pending entries ok"
 
 # ---------------------------------------------------------------------------
 # 4. Lockstep: every signed artifact in keys/image-digests-0.5.5.txt must appear
@@ -255,8 +255,8 @@ printf '%s' "$out_s" | grep -q "mismatched=0" \
 # pending entries must be skipped (present + counted) even under --strict.
 printf '%s' "$out_s" | grep -q "ollama://qwen2.5:7b pending" \
   || fail "qwen2.5 model should be reported pending"
-printf '%s' "$out_s" | grep -q "pending=8" \
-  || fail "--strict summary should report pending=8"
+printf '%s' "$out_s" | grep -q "pending=9" \
+  || fail "--strict summary should report pending=9"
 # Stub-bound, not host-bound (astra post-merge #137 M1): EVERY verified ref must
 # have been answered by the stub crane — one logged call per verified entry. If a
 # real resolver (e.g. /usr/bin/docker on a CI runner) had answered instead, the

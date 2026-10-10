@@ -3354,6 +3354,23 @@ verify which path is active. The dashboard binary refuses to start
 demo mode silently — both env vars are independent + greppable in
 the pod logs.
 
+## Enable the tool runner (optional, Preview)
+
+The tool runner gives an AI agent policy-governed access to a ServiceNow
+instance over MCP: fields your policy marks `never` are never handed to the
+model, every write needs a human approval, and every call gets a signed
+receipt. It is **off by default** and not required to operate the kit.
+
+- Compose: `--profile tool-runner` on the self-hosted overlay.
+- Helm: `--set toolRunner.enabled=true` plus the `tool-runner.*` values.
+- `bin/lucairn doctor` runs the tool runner checks only when it is opted in,
+  and prints `tool runner: skipped` otherwise.
+
+The runner image is not published yet; you build it from
+`apps/tool-runner/Dockerfile`. Everything else — the exact promise and its
+limits, the ServiceNow service-account requirements, secrets, policy and
+network — is in [`docs/TOOL_RUNNER.md`](docs/TOOL_RUNNER.md).
+
 ## Phase 8 — Per-deployment trust-zone tuning (self-hosted Enterprise)
 
 > **Enterprise self-hosted only.** This feature has no effect on Lucairn-hosted

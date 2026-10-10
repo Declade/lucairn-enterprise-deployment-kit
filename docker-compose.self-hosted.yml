@@ -53,8 +53,29 @@ networks:
   dsa-model-runtime-identity:
     driver: bridge
     internal: true
+  # Tool runner (Preview, opt-in: `--profile tool-runner`). Two networks, both
+  # used by the tool-runner service only:
+  #   dsa-tool-runner         internal: true — tool runner <-> gateway, nothing
+  #                           else. The runner reaches text scrubbing ONLY
+  #                           through the gateway's /api/v1/sanitize-only; it is
+  #                           on no identity-plane, AI-plane or witness network
+  #                           and cannot dial the sanitizer or sandbox-a.
+  #   dsa-tool-runner-egress  outbound path to the customer's ServiceNow
+  #                           instance. Compose cannot restrict a bridge to one
+  #                           destination host: pin the egress of this bridge to
+  #                           the ServiceNow instance with a host firewall rule
+  #                           or an egress proxy (docs/TOOL_RUNNER.md § Network).
+  # With the profile off, no container joins the egress bridge; the gateway is
+  # attached to the (then otherwise empty) internal bridge.
+  dsa-tool-runner:
+    driver: bridge
+    internal: true
+  dsa-tool-runner-egress:
+    driver: bridge
 
 volumes:
+  # Tool runner receipt store (signed, hash-chained receipts + approval queue).
+  tool-runner-data:
   redis-ai-data:
   ollama-model-store:
   # Dedicated model store for the identity-plane L3 PII-shield ollama. Kept
@@ -99,6 +120,9 @@ services:
       GATEWAY_TOOL_SCHEMA_GUARD: "${GATEWAY_TOOL_SCHEMA_GUARD:-refuse}"
     networks:
       - dsa-ai
+      # Tool runner (Preview) -> gateway /api/v1/sanitize-only. See the network
+      # note at the top of this file.
+      - dsa-tool-runner
 
   audit:
     networks:
@@ -849,3 +873,83 @@ services:
       timeout: 5s
       retries: 3
 
+  # ── Lucairn tool runner (Preview, self-hosted) ──────────────────
+  # Policy-governed ServiceNow access for AI agents, served as an MCP endpoint.
+  # OPT-IN: `--profile tool-runner`. OFF by default. docs/TOOL_RUNNER.md.
+  #
+  # No published port. The MCP endpoint is a unix socket inside the container
+  # (/run/tool-runner/mcp.sock, owner-only, on a tmpfs). The agent host starts
+  # the secret-free bridge instead:
+  #   docker compose ... exec -T tool-runner \
+  #     lucairn-tool-runner connect --socket /run/tool-runner/mcp.sock
+  # A TCP listener was not chosen: the MCP endpoint has no authentication of
+  # its own, so reaching it must require the right to exec into this container.
+  #
+  # Secrets (ServiceNow credential, receipt signing key, Lucairn gateway key,
+  # approver secret) are Docker secrets — files, never environment variables.
+  # The entrypoint hands them to the runner on its stdin and writes none of
+  # them to disk. Every variable below is a NON-secret setting, and all use
+  # `:-` defaults because Compose interpolates every service at config-load
+  # time, profile or not (see the dashboard note above).
+  tool-runner:
+    profiles: ["tool-runner"]
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-tool-runner:${LUCAIRN_TOOL_RUNNER_IMAGE_TAG:-0.1.0}"
+    logging: *default-logging
+    restart: unless-stopped
+    init: true
+    # The secret files must be readable by this uid (docs/TOOL_RUNNER.md § Secrets).
+    user: "${LUCAIRN_TOOL_RUNNER_UID:-10001}:${LUCAIRN_TOOL_RUNNER_GID:-10001}"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - "/run/tool-runner:uid=${LUCAIRN_TOOL_RUNNER_UID:-10001},gid=${LUCAIRN_TOOL_RUNNER_GID:-10001},mode=0700"
+    environment:
+      # The runner refuses to start on an empty or invalid value of the first
+      # four; there is deliberately no working default for the instance class.
+      TOOL_RUNNER_INSTANCE_URL: "${LUCAIRN_TOOL_RUNNER_INSTANCE_URL:-}"
+      TOOL_RUNNER_INSTANCE_CLASS: "${LUCAIRN_TOOL_RUNNER_INSTANCE_CLASS:-}"
+      TOOL_RUNNER_PRINCIPAL: "${LUCAIRN_TOOL_RUNNER_PRINCIPAL:-}"
+      # sha256 of the policy file the admin approved (`lucairn tool-policy digest`).
+      # A policy file that no longer has this digest starts no tools.
+      TOOL_RUNNER_POLICY_SHA256: "${LUCAIRN_TOOL_RUNNER_POLICY_SHA256:-}"
+      # Empty = no gateway: fields at the `sanitize` tier are withheld.
+      TOOL_RUNNER_GATEWAY_URL: "${LUCAIRN_TOOL_RUNNER_GATEWAY_URL:-}"
+      TOOL_RUNNER_SCRUB_BUDGET: "${LUCAIRN_TOOL_RUNNER_SCRUB_BUDGET:-}"
+    secrets:
+      - tool_runner_servicenow_username
+      - tool_runner_servicenow_password
+      - tool_runner_signing_key
+      - tool_runner_gateway_key
+      - tool_runner_approver_secret
+    volumes:
+      - "${LUCAIRN_TOOL_RUNNER_POLICY_FILE:-./tool-runner/policy.json}:/etc/lucairn-tool-runner/policy.json:ro"
+      - tool-runner-data:/var/lib/lucairn-tool-runner
+    networks:
+      - dsa-tool-runner
+      - dsa-tool-runner-egress
+    healthcheck:
+      test: ["CMD", "node", "/opt/lucairn-kit/entrypoint.mjs", "--healthcheck"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+# Tool runner secrets (Preview). File-based Docker secrets, mounted read-only
+# under /run/secrets/ in the tool-runner container ONLY. The two optional ones
+# (gateway key, approver secret) must exist as files but may be EMPTY: an empty
+# gateway key means no text scrubbing (sanitize-tier fields are withheld), an
+# empty approver secret means no write tools.
+secrets:
+  tool_runner_servicenow_username:
+    file: "${LUCAIRN_TOOL_RUNNER_SECRETS_DIR:-./tool-runner/secrets}/servicenow_username"
+  tool_runner_servicenow_password:
+    file: "${LUCAIRN_TOOL_RUNNER_SECRETS_DIR:-./tool-runner/secrets}/servicenow_password"
+  tool_runner_signing_key:
+    file: "${LUCAIRN_TOOL_RUNNER_SECRETS_DIR:-./tool-runner/secrets}/signing_key"
+  tool_runner_gateway_key:
+    file: "${LUCAIRN_TOOL_RUNNER_SECRETS_DIR:-./tool-runner/secrets}/gateway_key"
+  tool_runner_approver_secret:
+    file: "${LUCAIRN_TOOL_RUNNER_SECRETS_DIR:-./tool-runner/secrets}/approver_secret"

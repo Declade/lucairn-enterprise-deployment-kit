@@ -1,0 +1,15 @@
+# The policy file, byte for byte (binaryData keeps the exact bytes, so the
+# sha256 the admin approved is the sha256 of the mounted file). It holds no
+# credential and no record data.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Chart.Name }}-policy
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+  annotations:
+    lucairn.eu/policy-sha256: {{ .Values.policy.sha256 | lower | quote }}
+binaryData:
+  policy.json: {{ .Values.policy.json | b64enc | quote }}

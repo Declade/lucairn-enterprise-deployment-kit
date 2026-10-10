@@ -136,6 +136,11 @@ optional_services:
     image_tag: ""
   lucairn-dashboard:
     image_tag: "0.8.2"
+  # Tool runner (Preview, `--profile tool-runner` / `toolRunner.enabled`).
+  # UNRELEASED: no image is published under this tag yet. Until it is, build
+  # the image yourself from apps/tool-runner/Dockerfile (docs/TOOL_RUNNER.md).
+  lucairn-tool-runner:
+    image_tag: "0.1.0"
 
 # -----------------------------------------------------------------------------
 # Digest pins (B1 Slice 3 — supply-chain provenance).
@@ -273,6 +278,14 @@ image_digests:
       # together at the digest-pin ceremony if the recall gate is re-run against a
       # newer revision. Pinned to an exact commit, not a floating branch.
       revision: "b25037543e9394b818fdfca67ab2a00ecc7dd641"
+  # --- Preview images (opt-in). `pending: true` = no recorded digest: doctor
+  # --- --strict SKIPS the entry (warn, never block). lucairn-tool-runner is
+  # --- UNRELEASED — not published, not cosign-signed, not part of
+  # --- `signed_artifacts`. It moves there, with a digest, at its first release.
+  preview:
+    lucairn-tool-runner:
+      ref: "ghcr.io/declade/lucairn-tool-runner:0.1.0"
+      pending: true   # UNRELEASED — placeholder slot, no published image or digest yet
   # --- Enterprise Kind default-topology dependencies. These are the exact
   # third-party OCI index digests used by the disposable Helm mTLS acceptance
   # render; the preloader verifies each resolved tag against this release
