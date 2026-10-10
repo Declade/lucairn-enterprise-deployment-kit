@@ -45,3 +45,6 @@ keys/*
 # Python bytecode caches (e.g. tools/)
 __pycache__/
 *.pyc
+# Tool runner (Preview): the operator's local policy file and secret files
+# live under ./tool-runner/ by default (docs/TOOL_RUNNER.md) — never commit.
+/tool-runner/

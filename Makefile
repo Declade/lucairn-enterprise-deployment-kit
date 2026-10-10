@@ -42,6 +42,7 @@ test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-h
 		tests/test_witness_central_egress_guard.sh \
 		tests/test_migration_version_cap.sh \
 		tests/test_device_countersign_prereq.sh \
+		tests/test_tool_runner.sh \
 		servicenow/run-tests.sh \
 		tests/static_checks.sh
 

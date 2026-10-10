@@ -1,0 +1,73 @@
+# Default deny, then exactly two destinations: the gateway (free-text
+# scrubbing) and the ServiceNow instance. Plus DNS. No ingress at all: the MCP
+# endpoint is a unix socket inside the pod, reached with `kubectl exec`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tool-runner-egress
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+  policyTypes:
+    - Egress
+  egress:
+    # 1. Gateway HTTP API (POST /api/v1/sanitize-only). Not the sanitizer, not
+    #    the identity plane: this is the only in-cluster destination.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: {{ .Values.gateway.namespaceLabel }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      ports:
+        - port: {{ .Values.gateway.port }}
+          protocol: TCP
+    # 2. The ServiceNow instance (TCP 443).
+    - to:
+        {{- if .Values.egress.servicenow.cidrs }}
+        {{- range .Values.egress.servicenow.cidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+        {{- else }}
+        # allowAnyHttps: any PUBLIC address — cluster and private ranges stay closed.
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+        {{- end }}
+      ports:
+        - port: 443
+          protocol: TCP
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

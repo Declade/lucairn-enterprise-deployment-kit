@@ -23,6 +23,22 @@ carry a security fix are tagged **[Security]**.
   `gateway.evidenceGap.posture=null`; null omits the env var as documented.
 
 ### Added
+- **Tool runner (Preview), opt-in, off by default.** Packaging for the Lucairn
+  tool runner — policy-governed ServiceNow access for AI agents over MCP:
+  a `tool-runner` service behind the `tool-runner` profile in the self-hosted
+  overlay (own networks, read-only root filesystem, non-root, no published
+  port; the MCP endpoint is a unix socket reached with `exec`), a `tool-runner`
+  Helm sub-chart behind `toolRunner.enabled` (own namespace, default-deny plus
+  two egress rules, file-mounted Secret or ExternalSecret, policy ConfigMap),
+  and `apps/tool-runner/` (Dockerfile + entrypoint that hands the secrets to
+  the runner on its standard input — never through the environment, a
+  command line or a file). `bin/lucairn doctor` gains tool runner checks that
+  run only when opted in (signing key present and not a development default,
+  no ServiceNow credential in any environment, policy digest equals the
+  approved digest, instance class set) and print `skipped` otherwise.
+  New `bin/lucairn tool-policy digest|validate`. The runner image is
+  **unreleased**: `image-manifest.yaml` carries a `pending` slot and operators
+  build the image themselves. See `docs/TOOL_RUNNER.md`.
 - **`bin/lucairn audit-egress` (T-1273, S1).** Customer-runnable host inventory
   for one synthetic client turn, observed through a loopback forwarding proxy
   without inspecting encrypted content. Supports `GATEWAY_BASE_URL` from

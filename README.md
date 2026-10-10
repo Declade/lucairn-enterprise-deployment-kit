@@ -13,7 +13,9 @@ This repository contains the customer-installable Lucairn deployment kit for fir
 - `customer.env.example` - annotated Compose env file.
 - `model-manifest.example.yaml` - runtime-neutral model manifest template.
 - `apps/dashboard/` - Lucairn Enterprise Dashboard (opt-in operator UI; local-admin sign-in + OIDC SSO + cert browser + cert inspector + audit-defensibility-grade live validator + bulk re-verify + server health overview with embedded Grafana panels + API key management: mint, rotate, revoke, bulk-revoke + audit log browser: filter, paginate, save filters, CSV export, admin-only raw-PII reveal with paired `audit.reveal_raw` event + compliance PDF export: AI Act 3-category structure, fail-closed banned-literal guard, per-generation audit emit).
+- `apps/tool-runner/` + `charts/lucairn/charts/tool-runner/` - tool runner (**Preview**, opt-in, off by default): policy-governed ServiceNow access for AI agents over MCP, with human-approved writes and signed receipts. Image is built by the operator; see `docs/TOOL_RUNNER.md`.
 - `bin/lucairn` - customer CLI with `doctor` and `support-bundle`.
+- `bin/lucairn tool-policy digest/validate` - local helpers for the tool runner policy file.
 - `bin/lucairn bundle create/prepare/verify` - per-customer bundle builder, agent package factory, and verifier.
 - `bin/lucairn evidence verify/list/export` - evidence bundles (one zip of signed certificates per conversation; not the delivery bundle): `verify` wraps the separately released offline `lucairn-bundle-verify` tool with this deployment's public keys; `list` and `export` need the exporter from a later release.
 - `bin/lucairn-init` - one-command env and runtime-profile generator with Ed25519 pair derivation.

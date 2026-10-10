@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+spec:
+  # One runner: the receipt store is a single-writer SQLite file, and one
+  # receipt chain needs one signer.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/part-of: dsa
+      annotations:
+        # A changed policy restarts the runner (it reads the policy at start).
+        lucairn.eu/policy-sha256: {{ .Values.policy.sha256 | lower | quote }}
+    spec:
+      serviceAccountName: {{ .Chart.Name }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # NON-secret settings only. The credential, the signing key, the
+          # Lucairn key and the approver secret are files (volume `secrets`).
+          env:
+            - name: TOOL_RUNNER_INSTANCE_URL
+              value: {{ .Values.instanceUrl | quote }}
+            - name: TOOL_RUNNER_INSTANCE_CLASS
+              value: {{ .Values.instanceClass | quote }}
+            - name: TOOL_RUNNER_PRINCIPAL
+              value: {{ .Values.principal | quote }}
+            - name: TOOL_RUNNER_POLICY_SHA256
+              value: {{ .Values.policy.sha256 | lower | quote }}
+            - name: TOOL_RUNNER_GATEWAY_URL
+              value: {{ default "" .Values.gateway.url | quote }}
+            {{- range $name, $value := (default (dict) .Values.extraEnv) }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+          startupProbe:
+            exec:
+              command: ["node", "/opt/lucairn-kit/entrypoint.mjs", "--healthcheck"]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            exec:
+              command: ["node", "/opt/lucairn-kit/entrypoint.mjs", "--healthcheck"]
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: secrets
+              mountPath: /run/secrets
+              readOnly: true
+            - name: policy
+              mountPath: /etc/lucairn-tool-runner
+              readOnly: true
+            - name: run
+              mountPath: /run/tool-runner
+            - name: data
+              mountPath: /var/lib/lucairn-tool-runner
+      volumes:
+        - name: secrets
+          secret:
+            secretName: {{ .Chart.Name }}-credentials
+            defaultMode: 0440
+        - name: policy
+          configMap:
+            name: {{ .Chart.Name }}-policy
+        - name: run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Mi
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Chart.Name }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -578,3 +578,30 @@ dashboard:
 #         secretRef:
 #           name: lucairn-dashboard-grafana-jwt
 #           key: shared-secret
+
+# ---------------------------------------------------------------------------
+# Tool runner (Preview) — OPT-IN, off by default. docs/TOOL_RUNNER.md
+#
+# Policy-governed ServiceNow access for AI agents. Uncomment to enable. The
+# policy file and the secrets are best passed at install time, not written
+# here:
+#   --set-file   tool-runner.policy.json=./tool-runner/policy.json
+#   --set-string tool-runner.secrets.values.servicenowPassword=...
+#   --set-string tool-runner.secrets.values.signingKey=...
+# or move the secrets to an external store with tool-runner.secrets.backend.
+# ---------------------------------------------------------------------------
+# toolRunner:
+#   enabled: true
+# tool-runner:
+#   instanceUrl: https://example-dev.service-now.com
+#   instanceClass: dev            # dev | test | prod — required, no default
+#   principal: servicenow-platform-team@example.test
+#   policy:
+#     sha256: ""                  # bin/lucairn tool-policy digest ./tool-runner/policy.json
+#   egress:
+#     servicenow:
+#       cidrs: []                 # address ranges of your ServiceNow instance (TCP 443)
+#   secrets:
+#     backend: k8s-native         # or vault | aws | azure
+#     values:
+#       servicenowUsername: ""

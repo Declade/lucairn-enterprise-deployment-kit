@@ -42,6 +42,8 @@ Usage:
   lucairn evidence verify bundle.zip --env customer.env [--tool PATH] [--json] [--require-anchors]
   lucairn evidence list --env customer.env --customer-id ID --admin-key-file PATH [--since TIME] [--until TIME]
   lucairn evidence export --env customer.env --customer-id ID --conversation ID --admin-key-file PATH --output DIR
+  lucairn tool-policy digest FILE
+  lucairn tool-policy validate FILE [--image REF] [--structure-only]
   lucairn backup --env customer.env [--compose docker-compose.customer.yml] [--verify]
   lucairn restore --env customer.env --stamp YYYYMMDDTHHMMSSZ [--compose docker-compose.customer.yml] [--db audit|bridge|veil]
 
@@ -131,6 +133,11 @@ Commands:
                   nothing identifying (a plain GET, no credentials). FAILS CLOSED
                   on a bad/missing signature (never reports "up to date"
                   unverified). --offline exits cleanly. Requires cosign + curl + jq.
+  tool-policy     Tool runner (Preview) policy helpers: print the sha256 of a
+                  policy file, or validate it (structure here; presets and
+                  levels with the runner's own validator from the runner image,
+                  no network). No policy data leaves this host. See
+                  docs/TOOL_RUNNER.md.
   config-pack     Render managed settings that point Claude Code and Claude
                   Desktop (third-party mode) at this gateway:
                   managed-settings.json, a macOS .mobileconfig, a Windows .reg
@@ -6463,6 +6470,447 @@ check_dashboard_cert_browser() {
   return "$fail"
 }
 
+# ---------------------------------------------------------------------------
+# Tool runner (Preview) — opt-in checks. docs/TOOL_RUNNER.md
+#
+# Every check below runs ONLY when the tool runner is opted in. Opted out, the
+# single line says "skipped", never "ok": nothing was checked.
+# ---------------------------------------------------------------------------
+
+# tool_runner_opted_in ENV_FILE — 0 when the operator opted in through any of:
+#   1. LUCAIRN_TOOL_RUNNER_ENABLED=true in the compose env file;
+#   2. DOCTOR_INCLUDE_TOOL_RUNNER=1 in the live shell;
+#   3. COMPOSE_PROFILES contains "tool-runner" (env file OR live shell).
+tool_runner_opted_in() {
+  local env_file="$1"
+  [ "$(env_value "$env_file" LUCAIRN_TOOL_RUNNER_ENABLED)" = "true" ] && return 0
+  [ "${DOCTOR_INCLUDE_TOOL_RUNNER:-0}" = "1" ] && return 0
+  case ",$(env_value "$env_file" COMPOSE_PROFILES),${COMPOSE_PROFILES:-}," in
+    *,tool-runner,*) return 0 ;;
+  esac
+  return 1
+}
+
+# Compose resolves a relative bind path against the project directory (the
+# directory of the first compose file); doctor resolves it the same way.
+tool_runner_resolve_path() {
+  local path="$1" base="$2"
+  case "$path" in
+    /*) printf '%s' "$path" ;;
+    *) printf '%s/%s' "$base" "${path#./}" ;;
+  esac
+}
+
+# tool_runner_signing_key_problem FILE — prints WHY the key must not be used
+# and returns 1; prints nothing and returns 0 for an acceptable key. Never
+# prints the key. A "development default" is a seed that is published or
+# trivially guessable: every byte equal, counting up or down, or the RFC 8032
+# test vector. The container entrypoint and the Helm chart apply the same rule.
+tool_runner_signing_key_problem() {
+  local file="$1" b64 hex seed first i prev cur up=1 down=1
+  b64="$(head -c 4096 "$file" 2>/dev/null | tr -d '\r\n')"
+  case "$b64" in
+    ''|*[!A-Za-z0-9+/=]*) echo "not base64 (expected: base64 of an Ed25519 private key in PKCS8 DER form)"; return 1 ;;
+  esac
+  hex="$(printf '%s' "$b64" | { base64 -d 2>/dev/null || base64 -D 2>/dev/null; } | od -An -v -tx1 | tr -d ' \n')"
+  if [ "${#hex}" -ne 96 ] || [ "${hex:0:32}" != "302e020100300506032b657004220420" ]; then
+    echo "not an Ed25519 private key in PKCS8 DER form"
+    return 1
+  fi
+  seed="${hex:32}"
+  first="${seed:0:2}"
+  prev=$((16#$first))
+  local same=1
+  for i in 2 4 6 8 10 12 14 16 18 20 22 24 26 28 30 32 34 36 38 40 42 44 46 48 50 52 54 56 58 60 62; do
+    cur=$((16#${seed:$i:2}))
+    [ "${seed:$i:2}" = "$first" ] || same=0
+    [ "$cur" -eq $(( (prev + 1) & 255 )) ] || up=0
+    [ "$cur" -eq $(( (prev + 255) & 255 )) ] || down=0
+    prev="$cur"
+  done
+  if [ "$same" -eq 1 ] || [ "$up" -eq 1 ] || [ "$down" -eq 1 ] \
+    || [ "$seed" = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60" ]; then
+    echo "a development default (a repeated-byte, counting or published test seed) — anyone can sign receipts with it"
+    return 1
+  fi
+  return 0
+}
+
+# check_tool_runner_env_clean ENV_FILE COMPOSE_FILE — no ServiceNow credential
+# and no Lucairn key may reach the runner or any model-facing service through
+# the environment. Compose builds every container environment from the compose
+# files and interpolates from the env file, so both are scanned. Names only are
+# printed, never values.
+check_tool_runner_env_clean() {
+  local env_file="$1" compose_file="$2" failed=0 names file dir
+  names="$(grep -E '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' "$env_file" 2>/dev/null \
+    | sed -E 's/^[[:space:]]*(export[[:space:]]+)?//; s/=.*$//' \
+    | grep -iE '^((SN|SNOW|SERVICENOW)_|LUCAIRN_TOOL_RUNNER_GATEWAY_KEY$|LUCAIRN_TOOL_RUNNER_.*(PASSWORD|SIGNING_KEY|APPROVER_SECRET|CREDENTIAL))' \
+    | sort -u | tr '\n' ' ' || true)"
+  if [ -n "${names// /}" ]; then
+    echo "tool runner environment: failed (${names% } set in $env_file — the ServiceNow credential, the signing key, the Lucairn key and the approver secret are files in LUCAIRN_TOOL_RUNNER_SECRETS_DIR, never variables; remove them)"
+    failed=1
+  fi
+  dir="$(dirname "$compose_file")"
+  for file in "$compose_file" "$dir/docker-compose.self-hosted.yml" "$dir/docker-compose.self-hosted-byok.yml"; do
+    [ -f "$file" ] || continue
+    names="$(grep -vE '^[[:space:]]*#' "$file" \
+      | grep -ioE '(^[[:space:]]*-?[[:space:]]*"?(SN|SNOW|SERVICENOW)_[A-Za-z0-9_]*"?[[:space:]]*[:=])|(\$\{?(SN|SNOW|SERVICENOW)_[A-Za-z0-9_]*)|(LUCAIRN_TOOL_RUNNER_GATEWAY_KEY)' \
+      | tr -d ' "${:=-' | sort -u | tr '\n' ' ' || true)"
+    if [ -n "${names// /}" ]; then
+      echo "tool runner environment: failed (${names% } appears in $file — a ServiceNow or Lucairn-key variable in a container environment is readable by that service; the runner also refuses to start with one)"
+      failed=1
+    fi
+  done
+  names="$(env | sed 's/=.*$//' | grep -iE '^((SN|SNOW|SERVICENOW)_|LUCAIRN_TOOL_RUNNER_GATEWAY_KEY$)' | sort -u | tr '\n' ' ' || true)"
+  if [ -n "${names// /}" ]; then
+    warn "tool runner environment: ${names% } is exported in this shell. Compose does not pass it on unless a compose file references it, but a ServiceNow credential should not live in a shell environment — unset it."
+  fi
+  [ "$failed" -eq 0 ] || return 1
+  echo "tool runner environment: ok (no ServiceNow or Lucairn-key variable in the env file or the compose files)"
+}
+
+# check_tool_runner ENV_FILE COMPOSE_FILE
+check_tool_runner() {
+  local env_file="$1" compose_file="$2"
+  if ! tool_runner_opted_in "$env_file"; then
+    echo "tool runner: skipped (not opted in — set LUCAIRN_TOOL_RUNNER_ENABLED=true, add tool-runner to COMPOSE_PROFILES, or DOCTOR_INCLUDE_TOOL_RUNNER=1)"
+    return 0
+  fi
+  echo "tool runner: opted in (Preview) — running the tool runner checks"
+  local failed=0 base
+  base="$(cd "$(dirname "$compose_file")" 2>/dev/null && pwd)"
+
+  # 1. Instance, instance class, principal.
+  local instance class principal
+  instance="$(env_value "$env_file" LUCAIRN_TOOL_RUNNER_INSTANCE_URL)"
+  if printf '%s' "${instance%/}" | grep -Eq '^https://[a-z0-9-]+\.service-now\.com$'; then
+    echo "tool runner instance: ok"
+  else
+    echo "tool runner instance: failed (LUCAIRN_TOOL_RUNNER_INSTANCE_URL must be an https://<name>.service-now.com URL)"
+    failed=1
+  fi
+  class="$(env_value "$env_file" LUCAIRN_TOOL_RUNNER_INSTANCE_CLASS)"
+  case "$class" in
+    dev|test) echo "tool runner instance class: ok ($class)" ;;
+    prod) echo "tool runner instance class: ok (prod — read-only: the runner refuses every write on a prod instance)" ;;
+    '') echo "tool runner instance class: failed (LUCAIRN_TOOL_RUNNER_INSTANCE_CLASS is not set — choose dev, test or prod; there is no default)"; failed=1 ;;
+    *) echo "tool runner instance class: failed (LUCAIRN_TOOL_RUNNER_INSTANCE_CLASS must be dev, test or prod)"; failed=1 ;;
+  esac
+  principal="$(env_value "$env_file" LUCAIRN_TOOL_RUNNER_PRINCIPAL)"
+  if [ -z "${principal// /}" ]; then
+    echo "tool runner principal: failed (LUCAIRN_TOOL_RUNNER_PRINCIPAL is not set — it is the identity every receipt names)"
+    failed=1
+  fi
+
+  # 2. Policy file present, and its digest is the one the admin approved.
+  local policy_file want got
+  policy_file="$(env_value "$env_file" LUCAIRN_TOOL_RUNNER_POLICY_FILE)"
+  policy_file="$(tool_runner_resolve_path "${policy_file:-./tool-runner/policy.json}" "$base")"
+  want="$(env_value "$env_file" LUCAIRN_TOOL_RUNNER_POLICY_SHA256 | tr 'A-F' 'a-f')"
+  if [ ! -f "$policy_file" ] || [ -L "$policy_file" ]; then
+    echo "tool runner policy: failed (no policy file at $policy_file — write one, see docs/TOOL_RUNNER.md § Policy)"
+    failed=1
+  elif ! printf '%s' "$want" | grep -Eq '^[0-9a-f]{64}$'; then
+    echo "tool runner policy: failed (LUCAIRN_TOOL_RUNNER_POLICY_SHA256 is not set to a sha256 — review the policy, then run: lucairn tool-policy digest $policy_file)"
+    failed=1
+  else
+    got="$(sha256_file "$policy_file")"
+    if [ "$got" != "$want" ]; then
+      echo "tool runner policy: failed (digest mismatch — $policy_file has sha256 $got but LUCAIRN_TOOL_RUNNER_POLICY_SHA256 is $want; the runner starts no tools on a policy that is not the approved one)"
+      failed=1
+    elif ! grep -q '"lucairn-tool-policy/1"' "$policy_file"; then
+      echo "tool runner policy: failed ($policy_file is not a lucairn-tool-policy/1 document)"
+      failed=1
+    else
+      echo "tool runner policy: ok (digest matches)"
+    fi
+  fi
+
+  # 3. Secret files. Contents are never printed.
+  local secrets_dir name file problem
+  secrets_dir="$(env_value "$env_file" LUCAIRN_TOOL_RUNNER_SECRETS_DIR)"
+  secrets_dir="$(tool_runner_resolve_path "${secrets_dir:-./tool-runner/secrets}" "$base")"
+  for name in servicenow_username servicenow_password signing_key; do
+    file="$secrets_dir/$name"
+    if [ ! -f "$file" ] || [ -L "$file" ] || [ ! -s "$file" ]; then
+      echo "tool runner secret $name: failed (missing, empty or not a regular file: $file)"
+      failed=1
+    elif [ -n "$(find "$file" -maxdepth 0 -perm -004 2>/dev/null)" ]; then
+      echo "tool runner secret $name: failed ($file is readable by every user of this host — chmod 0400 and chown it to the runner uid)"
+      failed=1
+    fi
+  done
+  for name in gateway_key approver_secret; do
+    file="$secrets_dir/$name"
+    if [ ! -f "$file" ] || [ -L "$file" ]; then
+      echo "tool runner secret $name: failed (missing: $file — Compose mounts it; create it EMPTY to leave the feature off: ': > $file')"
+      failed=1
+    elif [ -s "$file" ] && [ -n "$(find "$file" -maxdepth 0 -perm -004 2>/dev/null)" ]; then
+      echo "tool runner secret $name: failed ($file is readable by every user of this host — chmod 0400)"
+      failed=1
+    fi
+  done
+  file="$secrets_dir/signing_key"
+  if [ -f "$file" ] && [ ! -L "$file" ] && [ -s "$file" ]; then
+    if problem="$(doctor_with_xtrace_suspended tool_runner_signing_key_problem "$file")"; then
+      echo "tool runner signing key: ok (present, Ed25519, not a development default)"
+    else
+      echo "tool runner signing key: failed ($problem). Generate one: openssl genpkey -algorithm ed25519 -outform DER | base64 | tr -d '\\n' > $file"
+      failed=1
+    fi
+  fi
+  file="$secrets_dir/approver_secret"
+  if [ -s "$file" ] && [ ! -L "$file" ]; then
+    if doctor_with_xtrace_suspended grep -Eqx '[A-Za-z0-9_-]{43,128}' "$file"; then
+      if [ "$class" = "prod" ]; then
+        echo "tool runner write tools: off (an approver secret is present, but the instance class is prod: every write is refused)"
+      else
+        echo "tool runner write tools: on (approver secret present; every write waits for a human approval)"
+      fi
+    else
+      echo "tool runner approver secret: failed (must be one line of base64url, at least 43 characters, or an empty file)"
+      failed=1
+    fi
+  elif [ -f "$file" ]; then
+    echo "tool runner write tools: off (no approver secret)"
+  fi
+
+  # 4. Free-text scrubbing path.
+  local gateway_url
+  gateway_url="$(env_value "$env_file" LUCAIRN_TOOL_RUNNER_GATEWAY_URL)"
+  if [ -z "$gateway_url" ] || [ ! -s "$secrets_dir/gateway_key" ]; then
+    warn "tool runner: no gateway URL or no gateway key — fields at the 'sanitize' tier and free-text labels are WITHHELD (not passed raw). Set LUCAIRN_TOOL_RUNNER_GATEWAY_URL and the gateway_key secret to scrub them through the gateway."
+  else
+    case "${gateway_url%/}" in
+      https://gateway.lucairn.eu) : ;;
+      *) warn "tool runner: runner image 0.1.0 (Preview) accepts only its built-in Lucairn gateway origins and stops at start on any other LUCAIRN_TOOL_RUNNER_GATEWAY_URL. See docs/TOOL_RUNNER.md § Free-text scrubbing." ;;
+    esac
+  fi
+
+  # 5. No credential in any environment.
+  check_tool_runner_env_clean "$env_file" "$compose_file" || failed=1
+
+  [ "$failed" -eq 0 ] || return 1
+  return 0
+}
+
+# check_tool_runner_helm CHART_DIR VALUES_FILE [...] — the same questions for a
+# Helm install, answered from the merged values (chart defaults under the
+# operator's ordered -f files). Values passed only at install time
+# (--set-file / --set-string) are not visible here; the chart render itself
+# fails on them (charts/lucairn/charts/tool-runner/templates/_validate.tpl).
+check_tool_runner_helm() {
+  local chart_dir="$1"
+  shift
+  [ "$#" -gt 0 ] || return 0
+  if ! have ruby; then
+    info "tool runner (Helm): skipped — ruby unavailable (the chart render still enforces every tool runner guard)."
+    return 0
+  fi
+  doctor_with_xtrace_suspended ruby -ryaml -rdigest -rbase64 - "$chart_dir/values.yaml" "$@" <<'RUBY'
+def deep_merge(left, right)
+  left.merge(right) { |_k, a, b| a.is_a?(Hash) && b.is_a?(Hash) ? deep_merge(a, b) : b }
+end
+values = ARGV.reduce({}) do |merged, path|
+  next merged unless File.file?(path)
+  parsed = YAML.safe_load(File.read(path), aliases: true)
+  unless parsed.is_a?(Hash)
+    puts "tool runner (Helm): skipped — a values file is not a mapping."
+    exit 0
+  end
+  deep_merge(merged, parsed)
+end
+unless values.dig("toolRunner", "enabled") == true
+  puts "tool runner (Helm): skipped (not opted in — toolRunner.enabled is not true)"
+  exit 0
+end
+puts "tool runner (Helm): opted in (Preview) — running the tool runner checks"
+tr = values["tool-runner"].is_a?(Hash) ? values["tool-runner"] : {}
+failed = false
+bad = lambda { |msg| puts msg; failed = true }
+
+klass = tr["instanceClass"].to_s
+if %w[dev test prod].include?(klass)
+  puts "tool runner instance class (Helm): ok (#{klass}#{klass == 'prod' ? ' — read-only' : ''})"
+else
+  bad.call("tool runner instance class (Helm): failed (tool-runner.instanceClass must be set to dev, test or prod; there is no default)")
+end
+unless tr["instanceUrl"].to_s.sub(%r{/\z}, "") =~ %r{\Ahttps://[a-z0-9-]+\.service-now\.com\z}
+  bad.call("tool runner instance (Helm): failed (tool-runner.instanceUrl must be an https://<name>.service-now.com URL)")
+end
+
+policy = tr["policy"].is_a?(Hash) ? tr["policy"] : {}
+json = policy["json"].to_s
+want = policy["sha256"].to_s.downcase
+if json.strip.empty?
+  puts "tool runner policy (Helm): not in the values files (passed with --set-file at install) — the chart render checks its digest"
+elsif want !~ /\A[0-9a-f]{64}\z/
+  bad.call("tool runner policy (Helm): failed (tool-runner.policy.sha256 is not set to a sha256)")
+elsif Digest::SHA256.hexdigest(json) != want
+  bad.call("tool runner policy (Helm): failed (digest mismatch — tool-runner.policy.json is not the policy tool-runner.policy.sha256 names)")
+else
+  puts "tool runner policy (Helm): ok (digest matches)"
+end
+
+secrets = tr["secrets"].is_a?(Hash) ? tr["secrets"] : {}
+backend = (secrets["backend"] || "k8s-native").to_s
+key = (secrets["values"].is_a?(Hash) ? secrets["values"]["signingKey"] : nil).to_s.strip
+if backend != "k8s-native"
+  puts "tool runner signing key (Helm): not checked (external secrets backend '#{backend}' — the key never passes through the values; the runner refuses a development default at start)"
+elsif key.empty?
+  puts "tool runner signing key (Helm): not in the values files (passed with --set-string at install) — the chart render checks it"
+else
+  hex = (Base64.strict_decode64(key).unpack1("H*") rescue "")
+  if hex.length != 96 || !hex.start_with?("302e020100300506032b657004220420")
+    bad.call("tool runner signing key (Helm): failed (not an Ed25519 private key in PKCS8 DER form, base64)")
+  else
+    seed = [hex[32..-1]].pack("H*").bytes
+    step = lambda { |d| seed.each_cons(2).all? { |a, b| b == ((a + d) & 255) } }
+    if seed.uniq.length == 1 || step.call(1) || step.call(255) || hex[32..-1] == "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+      bad.call("tool runner signing key (Helm): failed (a development default — a repeated-byte, counting or published test seed; anyone can sign receipts with it)")
+    else
+      puts "tool runner signing key (Helm): ok (present, Ed25519, not a development default)"
+    end
+  end
+end
+
+# No ServiceNow or Lucairn-key variable anywhere in the values (names only).
+hits = []
+walk = lambda do |node, path|
+  if node.is_a?(Hash)
+    node.each do |k, v|
+      here = path.empty? ? k.to_s : "#{path}.#{k}"
+      hits << here if k.to_s =~ /\A(SN|SNOW|SERVICENOW)_/i || k.to_s.upcase == "LUCAIRN_TOOL_RUNNER_GATEWAY_KEY"
+      walk.call(v, here)
+    end
+  elsif node.is_a?(Array)
+    node.each_with_index do |v, i|
+      if v.is_a?(Hash) && v["name"].to_s =~ /\A(SN|SNOW|SERVICENOW)_/i
+        hits << "#{path}[#{i}].name=#{v['name']}"
+      end
+      walk.call(v, "#{path}[#{i}]")
+    end
+  end
+end
+walk.call(values, "")
+if hits.empty?
+  puts "tool runner environment (Helm): ok (no ServiceNow or Lucairn-key variable in the values)"
+else
+  bad.call("tool runner environment (Helm): failed (#{hits.uniq.join(', ')} — a ServiceNow credential or the Lucairn key never travels in an environment; use tool-runner.secrets)")
+end
+exit(failed ? 1 : 0)
+RUBY
+}
+
+tool_policy_usage() {
+  cat <<'USAGE'
+Usage:
+  lucairn tool-policy digest FILE
+  lucairn tool-policy validate FILE [--image REF] [--structure-only]
+
+Helpers for the tool runner policy file (Preview; docs/TOOL_RUNNER.md).
+Everything runs on this host: no policy data leaves your environment.
+
+  digest     Print the sha256 of FILE. After reviewing the policy, set it as
+             LUCAIRN_TOOL_RUNNER_POLICY_SHA256 (Compose) or
+             tool-runner.policy.sha256 (Helm). The runner starts no tools on a
+             policy file with any other digest.
+  validate   Check FILE. The structure check (JSON, schema, connector) runs
+             here and needs python3. The full check (presets, levels,
+             overrides) is the tool runner's own validator, run from the
+             runner image with no network, read-only, as an unprivileged user:
+             it needs docker and the image. --image REF selects the image
+             (default: the registry and tag of this kit). --structure-only
+             stops after the structure check and says so.
+             Exit 0 = valid, 1 = invalid, 2 = the full check was not run.
+USAGE
+}
+
+tool_policy_command() {
+  local sub="${1:-}"
+  [ "$#" -gt 0 ] && shift
+  case "$sub" in
+    digest)
+      [ "$#" -eq 1 ] || fail "usage: lucairn tool-policy digest FILE"
+      [ -f "$1" ] && [ -r "$1" ] || fail "policy file not found or not readable: $1"
+      sha256_file "$1"
+      ;;
+    validate)
+      local file="" image="" structure_only=0
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --image) [ "$#" -ge 2 ] || fail "--image requires an image reference"; image="$2"; shift 2 ;;
+          --structure-only) structure_only=1; shift ;;
+          -*) fail "unknown tool-policy argument: $1" ;;
+          *) [ -z "$file" ] || fail "usage: lucairn tool-policy validate FILE [--image REF] [--structure-only]"; file="$1"; shift ;;
+        esac
+      done
+      [ -n "$file" ] || fail "usage: lucairn tool-policy validate FILE [--image REF] [--structure-only]"
+      [ -f "$file" ] && [ -r "$file" ] || fail "policy file not found or not readable: $file"
+      have python3 || fail "tool-policy validate needs python3 for the structure check"
+      if ! python3 - "$file" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], "rb") as fh:
+        doc = json.loads(fh.read().decode("utf-8"))
+except Exception:
+    print("policy structure: invalid (not UTF-8 JSON)")
+    sys.exit(1)
+problems = []
+if not isinstance(doc, dict):
+    problems.append("the document is not an object")
+else:
+    if doc.get("schema") != "lucairn-tool-policy/1":
+        problems.append('schema must be "lucairn-tool-policy/1"')
+    if doc.get("connector") != "servicenow":
+        problems.append('connector must be "servicenow"')
+    if not isinstance(doc.get("presets"), dict):
+        problems.append("presets must be an object")
+    else:
+        for name, entry in doc["presets"].items():
+            if not isinstance(entry, dict) or entry.get("level") not in ("strict", "standard", "open"):
+                problems.append("preset %s needs a level: strict, standard or open" % name)
+    unknown = sorted(set(doc) - {"schema", "connector", "presets", "task_fallback", "aggregate", "comment"})
+    if unknown:
+        problems.append("unknown key(s): " + ", ".join(unknown))
+if problems:
+    print("policy structure: invalid (" + "; ".join(problems) + ")")
+    sys.exit(1)
+print("policy structure: ok")
+PY
+      then
+        return 1
+      fi
+      echo "sha256: $(sha256_file "$file")"
+      if [ "$structure_only" -eq 1 ]; then
+        echo "policy presets and levels: NOT CHECKED (--structure-only). The runner validates them at start and starts no tools on an invalid policy."
+        return 0
+      fi
+      if ! have docker; then
+        echo "policy presets and levels: NOT CHECKED (docker unavailable). Re-run on a host with docker and the runner image, or pass --structure-only." >&2
+        return 2
+      fi
+      if [ -z "$image" ]; then
+        local manifest_tag
+        manifest_tag="$(awk '/^  lucairn-tool-runner:/ { f=1; next } f && /image_tag:/ { gsub(/[" ]/, "", $2); print $2; exit }' "$ROOT/image-manifest.yaml" 2>/dev/null || true)"
+        image="${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/lucairn-tool-runner:${LUCAIRN_TOOL_RUNNER_IMAGE_TAG:-${manifest_tag:-0.1.0}}"
+      fi
+      local abs
+      abs="$(cd "$(dirname "$file")" && pwd)/$(basename "$file")"
+      if ! docker image inspect "$image" >/dev/null 2>&1; then
+        echo "policy presets and levels: NOT CHECKED (runner image $image is not on this host; build or pull it, or pass --image REF)." >&2
+        return 2
+      fi
+      docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+        --user 10001:10001 -v "$abs:/policy.json:ro" \
+        --entrypoint node "$image" /opt/lucairn-kit/entrypoint.mjs --validate-policy /policy.json
+      ;;
+    -h|--help|"") tool_policy_usage ;;
+    *) fail "unknown tool-policy command: $sub (see: lucairn tool-policy --help)" ;;
+  esac
+}
+
 sha256_file() {
   local file="$1"
   if have sha256sum; then
@@ -7783,7 +8231,11 @@ doctor() {
     check_image_manifest_helm "$ROOT/charts/lucairn" "${values_files[@]}"
     local values_mtls_failed=0
     check_enterprise_mtls_helm "$ROOT/charts/lucairn" "${values_files[@]}" || values_mtls_failed=1
+    # Tool runner (Preview): "skipped" unless toolRunner.enabled is true.
+    local values_tool_runner_failed=0
+    check_tool_runner_helm "$ROOT/charts/lucairn" "${values_files[@]}" || values_tool_runner_failed=1
     [ "$values_mtls_failed" -eq 0 ] || return 1
+    [ "$values_tool_runner_failed" -eq 0 ] || return 1
     # Keep the historical success token for older automation, but make the
     # configuration-only terminal state unambiguous.
     echo "doctor: ok"
@@ -8280,6 +8732,17 @@ doctor() {
   # fatal when the bootstrap secret is missing/short and the operator
   # has explicitly opted in.
   check_dashboard "$env_file" || return 1
+
+  # Tool runner (Preview) pre-flight. Like the dashboard: runs in BOTH
+  # --offline and live paths, says "skipped" when the tool runner is not
+  # opted in, and is fatal only when the operator HAS opted in (signing key
+  # missing or a development default, a ServiceNow credential in an
+  # environment, policy missing or not the approved digest, instance class
+  # unset). With --values the same questions are asked of the Helm values.
+  check_tool_runner "$env_file" "$compose_file" || return 1
+  if [ "$values_count" -gt 0 ]; then
+    check_tool_runner_helm "$ROOT/charts/lucairn" "${values_files[@]}" || return 1
+  fi
 
   # M9 (deal-#1 hardening 2026-06-19): backup pre-flight.
   # WARN (always) / FAIL (--strict) when DSA_ENV=production and NEITHER
@@ -10944,6 +11407,7 @@ main() {
     sbom) shift; sbom "$@" ;;
     config-pack) shift; config_pack "$@" ;;
     audit-egress) shift; audit_egress "$@" ;;
+    tool-policy) shift; tool_policy_command "$@" ;;
     -h|--help|"") usage ;;
     *) fail "unknown command: $cmd" ;;
   esac

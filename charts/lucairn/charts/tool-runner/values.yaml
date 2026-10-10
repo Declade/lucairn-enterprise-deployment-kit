@@ -1,0 +1,111 @@
+# Lucairn tool runner (Preview). OPT-IN: rendered only when the umbrella sets
+# `toolRunner.enabled: true`. See docs/TOOL_RUNNER.md.
+
+# The runner gets its OWN namespace, created by this sub-chart together with a
+# default-deny policy, so that enabling it changes nothing in any other
+# namespace.
+namespace: dsa-tool-runner
+
+image:
+  repository: lucairn-tool-runner
+  # UNRELEASED: no image is published under this tag yet. Build it from
+  # apps/tool-runner/Dockerfile and push it to your registry.
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+# The ServiceNow instance: https://<name>.service-now.com
+instanceUrl: ""
+# dev | test | prod. REQUIRED, no default. Write tools run on dev and test
+# only; a prod instance is read-only.
+instanceClass: ""
+# The identity the receipts name.
+principal: ""
+
+policy:
+  # The policy document (schema lucairn-tool-policy/1), passed as a file:
+  #   --set-file tool-runner.policy.json=./policy.json
+  json: ""
+  # sha256 of that file as approved by your admin
+  # (`bin/lucairn tool-policy digest ./policy.json`). The render fails when it
+  # is not the digest of policy.json, and the runner starts no tools when the
+  # mounted file does not have it.
+  sha256: ""
+
+gateway:
+  # Origin used for free-text scrubbing (the `sanitize` tier). Empty = no
+  # gateway: fields at that tier are withheld. See docs/TOOL_RUNNER.md
+  # § "Free-text scrubbing" for which origins this Preview accepts.
+  url: ""
+  # Where the in-cluster gateway lives (egress NetworkPolicy target).
+  namespaceLabel: edge
+  port: 8080
+
+egress:
+  servicenow:
+    # CIDR ranges of your ServiceNow instance (TCP 443). A Kubernetes
+    # NetworkPolicy cannot name a host, so the ranges have to be given. The
+    # render fails when this is empty, unless allowAnyHttps is set.
+    cidrs: []
+    # Explicit opt-out: allow TCP 443 to any public address. Use only when the
+    # instance's ranges are not known and another layer (an egress gateway or
+    # firewall) pins the destination.
+    allowAnyHttps: false
+
+# Extra NON-secret environment variables for the runner container (name: value).
+# A name starting with SN_, SNOW_ or SERVICENOW_ fails the render.
+extraEnv: {}
+
+persistence:
+  # Receipt store (signed, hash-chained receipts + the approval queue).
+  enabled: true
+  size: 1Gi
+  storageClass: ""
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 384Mi
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+secrets:
+  # k8s-native: this chart renders the Secret from `values` below.
+  # vault | aws | azure: an ExternalSecret reads the same five properties from
+  # your store (ClusterSecretStore `dsa-secret-store`), like the other
+  # sub-charts. The secret is mounted as FILES; it is never an environment
+  # variable of the pod.
+  backend: k8s-native
+  vault:
+    path: "tool-runner"
+  aws:
+    name: "dsa/tool-runner"
+  azure:
+    name: "dsa-tool-runner"
+  values:
+    # REQUIRED on k8s-native. No working defaults; the render fails on an
+    # empty value, a placeholder, or a development-default signing key.
+    servicenowUsername: ""
+    servicenowPassword: ""
+    # Ed25519 private key, base64 of PKCS8 DER:
+    #   openssl genpkey -algorithm ed25519 -outform DER | base64 | tr -d '\n'
+    signingKey: ""
+    # OPTIONAL. Lucairn key used for free-text scrubbing through the gateway.
+    gatewayKey: ""
+    # OPTIONAL. Without it there are no write tools.
+    #   openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n'
+    approverSecret: ""
