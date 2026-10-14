@@ -80,7 +80,7 @@ esac
 
 [ "$(uname -s)" = Darwin ] || lc_die "the desktop launcher is verified on macOS only"
 SRC="${OPENWORK_SRC:-}"
-[ -n "$SRC" ] && [ -f "$SRC/package.json" ] && [ -d "$SRC/apps/desktop" ] || lc_die "set OPENWORK_SRC to an OpenWork source clone at $TAG (see the header of this file)"
+if ! { [ -n "$SRC" ] && [ -f "$SRC/package.json" ] && [ -d "$SRC/apps/desktop" ]; }; then lc_die "set OPENWORK_SRC to an OpenWork source clone at $TAG (see the header of this file)"; fi
 SRC="$(cd "$SRC" && pwd -P)"
 if command -v git >/dev/null 2>&1; then
   GOT_TAG="$(git -C "$SRC" describe --tags --exact-match 2>/dev/null || true)"
@@ -90,9 +90,9 @@ fi
 NODE="${LUCAIRN_NODE:-$(command -v node 2>/dev/null || true)}"
 PNPM="${LUCAIRN_PNPM:-$(command -v pnpm 2>/dev/null || true)}"
 BUN="${LUCAIRN_BUN:-$(command -v bun 2>/dev/null || true)}"
-[ -n "$NODE" ] && [ -x "$NODE" ] || lc_die "node not found (set LUCAIRN_NODE)"
-[ -n "$PNPM" ] && [ -x "$PNPM" ] || lc_die "pnpm not found (set LUCAIRN_PNPM)"
-[ -n "$BUN" ] && [ -x "$BUN" ] || lc_die "bun not found (the app's build step needs it; set LUCAIRN_BUN)"
+if ! { [ -n "$NODE" ] && [ -x "$NODE" ]; }; then lc_die "node not found (set LUCAIRN_NODE)"; fi
+if ! { [ -n "$PNPM" ] && [ -x "$PNPM" ]; }; then lc_die "pnpm not found (set LUCAIRN_PNPM)"; fi
+if ! { [ -n "$BUN" ] && [ -x "$BUN" ]; }; then lc_die "bun not found (the app's build step needs it; set LUCAIRN_BUN)"; fi
 NODE_DIR="$(cd "$(dirname "$NODE")" && pwd)"; PNPM_DIR="$(cd "$(dirname "$PNPM")" && pwd)"; BUN_DIR="$(cd "$(dirname "$BUN")" && pwd)"
 
 if [ -s "$ST/desktop.pgid" ] && kill -0 "$(cat "$ST/desktop.pgid")" 2>/dev/null; then
