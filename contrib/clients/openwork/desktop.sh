@@ -26,7 +26,7 @@
 #     starting model, and a wiped storage would start on a hosted model
 #
 # Environment: as openwork.sh, plus OPENWORK_SRC (required), LUCAIRN_PNPM
-# (default: pnpm on PATH), LUCAIRN_OPENWORK_DEBUG_PORT (default 19823),
+# (default: pnpm on PATH), LUCAIRN_BUN (default: bun on PATH; the app's build needs it), LUCAIRN_OPENWORK_DEBUG_PORT (default 19823),
 # LUCAIRN_OPENWORK_DESKTOP_REBUILD=1 (run the app's build steps again).
 
 set -uo pipefail
@@ -89,9 +89,11 @@ fi
 [ -d "$SRC/node_modules" ] || lc_die "OPENWORK_SRC has no node_modules — run 'pnpm install --frozen-lockfile' in it once"
 NODE="${LUCAIRN_NODE:-$(command -v node 2>/dev/null || true)}"
 PNPM="${LUCAIRN_PNPM:-$(command -v pnpm 2>/dev/null || true)}"
+BUN="${LUCAIRN_BUN:-$(command -v bun 2>/dev/null || true)}"
 [ -n "$NODE" ] && [ -x "$NODE" ] || lc_die "node not found (set LUCAIRN_NODE)"
 [ -n "$PNPM" ] && [ -x "$PNPM" ] || lc_die "pnpm not found (set LUCAIRN_PNPM)"
-NODE_DIR="$(cd "$(dirname "$NODE")" && pwd)"; PNPM_DIR="$(cd "$(dirname "$PNPM")" && pwd)"
+[ -n "$BUN" ] && [ -x "$BUN" ] || lc_die "bun not found (the app's build step needs it; set LUCAIRN_BUN)"
+NODE_DIR="$(cd "$(dirname "$NODE")" && pwd)"; PNPM_DIR="$(cd "$(dirname "$PNPM")" && pwd)"; BUN_DIR="$(cd "$(dirname "$BUN")" && pwd)"
 
 if [ -s "$ST/desktop.pgid" ] && kill -0 "$(cat "$ST/desktop.pgid")" 2>/dev/null; then
   lc_die "already running — stop it first: $0 stop"
@@ -128,7 +130,7 @@ umask 077
 (
   cd "$SRC" || exit 3
   lc_scrub_env
-  export PATH="$NODE_DIR:$PNPM_DIR:$PATH"
+  export PATH="$NODE_DIR:$PNPM_DIR:$BUN_DIR:$PATH"
   export HOME="$ST/home" USERPROFILE="$ST/home" CFFIXED_USER_HOME="$ST/home" TMPDIR="$ST/tmp/"
   export XDG_CONFIG_HOME="$ST/xdg/config" XDG_DATA_HOME="$ST/xdg/data" XDG_CACHE_HOME="$ST/xdg/cache" XDG_STATE_HOME="$ST/xdg/state"
   export COREPACK_HOME="$ST/corepack" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 DO_NOT_TRACK=1
