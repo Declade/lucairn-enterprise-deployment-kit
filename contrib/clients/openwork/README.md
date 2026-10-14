@@ -58,7 +58,8 @@ and start with `LUCAIRN_OPENWORK_MCP=<file>`. Only the listed tools can run.
 ## Desktop app
 
 `desktop.sh` runs the dev build from a source clone (the signed installer was not
-verified):
+verified). It needs node, pnpm and bun (`LUCAIRN_NODE`, `LUCAIRN_PNPM`, `LUCAIRN_BUN`
+if they are not on your PATH):
 
 ```sh
 git clone --depth 1 --branch v0.18.58 https://github.com/different-ai/openwork.git <dir>
