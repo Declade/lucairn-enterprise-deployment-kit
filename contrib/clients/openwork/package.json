@@ -1,0 +1,8 @@
+{
+  "name": "lucairn-openwork-client",
+  "private": true,
+  "description": "Pinned openwork-server for the Lucairn client launcher (see README.md)",
+  "dependencies": {
+    "openwork-server": "0.18.58"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "lucairn-opencode-client",
+  "private": true,
+  "description": "Pinned opencode-ai for the Lucairn client launcher (see README.md)",
+  "dependencies": {
+    "opencode-ai": "1.19.0"
+  }
+}

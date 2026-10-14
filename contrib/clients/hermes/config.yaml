@@ -1,0 +1,60 @@
+# Lucairn recipe for Hermes Agent — verified with tag v2026.9.24 (commit f97608f1).
+# contrib/clients/hermes/config.yaml — copied into a FRESH Hermes profile by hermes.sh.
+#
+# No secret lives in this file. ${LUCAIRN_GATEWAY_URL}, ${LUCAIRN_API_KEY} and
+# ${LUCAIRN_UPSTREAM_KEY} are read by Hermes from the process environment;
+# hermes.sh fills them (environment or macOS Keychain). Never type a key into
+# the Hermes settings form: it stores typed keys in clear text in the profile's
+# .env file and its Save rewrites this file (see README, Limits).
+#
+# Every line below is load-bearing; hermes.sh refuses to start when one of the
+# guarded lines is missing or changed.
+model:
+  default: claude-haiku-4-5
+  provider: lucairn-anthropic
+
+providers:
+  lucairn-anthropic:
+    name: Lucairn (Anthropic)
+    api: ${LUCAIRN_GATEWAY_URL}
+    transport: anthropic_messages
+    key_env: LUCAIRN_API_KEY
+    default_model: claude-haiku-4-5
+    context_length: 200000            # stops most model-metadata probes
+    extra_headers:
+      X-Upstream-Key: ${LUCAIRN_UPSTREAM_KEY}
+
+auxiliary:
+  title_generation:
+    model_upgrade_enabled: false      # no hidden "name this chat" request: 1 message = 1 request = 1 certificate
+
+agent:
+  api_max_retries: 1                  # one model step = one gateway request
+  auto_recovery_cycles: 0             # no automatic recovery re-sends
+  max_turns: 25                       # hard stop for a task that keeps calling tools (Hermes default: unlimited)
+  # Subtracted LAST by Hermes, so web search stays off even if a toolset list
+  # elsewhere (a `-t` flag, the tools picker) names it.
+  disabled_toolsets: [web]
+
+# Web search OFF. Unconfigured, Hermes' web tools fall back to a "keyless ring"
+# of four public services (mcp.exa.ai, search.parallel.ai, api.firecrawl.dev,
+# api.keenable.ai) — search queries would leave your machine WITHOUT passing
+# the Lucairn gateway. Source (pinned install): src/plugins/web/keyless_mcp.py
+# :21-23 (exa, parallel, keenable addresses) and :318 (the ring), the firecrawl
+# address in src/plugins/web/firecrawl/provider.py:24.
+web:
+  keyless_fallback: false
+  keyless_rescue: false
+
+# No runtime package installs. Without this, the first start of a fresh install
+# fetches boto3/botocore/s3transfer/jmespath + pip from pypi.org into the venv
+# (the AWS Bedrock adapter is imported at start and lazy-installs its SDK —
+# measured 2026-10-14; src/agent/bedrock_adapter.py, src/tools/lazy_deps.py).
+security:
+  allow_lazy_installs: false
+
+# Tools on by default: file operations only (in the work folder hermes.sh
+# starts in). Other toolsets (terminal, browser, text-to-speech, image
+# generation, …) are NOT part of the verified setup — see README before adding.
+platform_toolsets:
+  cli: [file]
