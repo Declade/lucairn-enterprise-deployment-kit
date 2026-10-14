@@ -1,7 +1,9 @@
 # OpenCode through Lucairn
 
 Verified with **OpenCode 1.19.0** (npm `opencode-ai@1.19.0`; macOS arm64 binary
-sha256 `476151a6c8b56e084d223d71a9312479e3b95547f8d8649b3489577059f9c5b4`) on macOS,
+sha256 `476151a6c8b56e084d223d71a9312479e3b95547f8d8649b3489577059f9c5b4`; Windows
+x64 `opencode.exe` sha256 `bb731f311416df16691fa16763eb87657c4a5f5f3bcff5202718c416e8f7ab1a`,
+identical to the one in the GitHub release asset) on macOS and Windows 11,
 against `https://gateway.lucairn.eu`, 2026-10-14. Read [`../README.md`](../README.md)
 first (keys, work folder rule, shared limits).
 

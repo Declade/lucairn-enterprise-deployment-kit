@@ -23,8 +23,11 @@ LC_PROG="opencode/install.sh"
 . "$HERE/../lib/common.sh"
 
 VERSION="1.19.0"
-# Verified build (macOS arm64); other platforms print their hash for your records.
+# Verified builds (macOS arm64; Windows x64 = opencode.exe inside the v1.19.0 GitHub release asset
+# opencode-windows-x64.zip, whose GitHub digest is sha256:17108e94…806eb5); other platforms print
+# their hash for your records.
 SHA256_DARWIN_ARM64="476151a6c8b56e084d223d71a9312479e3b95547f8d8649b3489577059f9c5b4"
+SHA256_WINDOWS_X64="bb731f311416df16691fa16763eb87657c4a5f5f3bcff5202718c416e8f7ab1a"
 BASE="${LUCAIRN_OPENCODE_DIR:-$(lc_data_root)/opencode/$VERSION}"
 
 CHECK_ONLY=0
@@ -38,7 +41,7 @@ fail() { printf 'opencode/install.sh: %s\n' "$*" >&2; exit 1; }
 case "$BASE" in /*) : ;; *) fail "install folder must be an absolute path (got '$BASE')" ;; esac
 
 PLAT="$(lc_os_arch)"
-BIN="$BASE/node_modules/opencode-$PLAT/bin/opencode"
+BIN="$BASE/node_modules/opencode-$PLAT/bin/opencode$(lc_exe)"
 
 printf 'OpenCode install — %s (%s)\n  folder : %s\n' "$VERSION" "$PLAT" "$BASE"
 if [ ! -x "$BIN" ]; then
@@ -53,9 +56,14 @@ if [ ! -x "$BIN" ]; then
 fi
 [ -x "$BIN" ] || fail "no OpenCode binary for $PLAT at $BIN"
 
-SUM="$(shasum -a 256 "$BIN" 2>/dev/null | awk '{print $1}')"
-if [ "$PLAT" = darwin-arm64 ]; then
-  [ "$SUM" = "$SHA256_DARWIN_ARM64" ] || fail "binary sha256 $SUM does not match the verified build $SHA256_DARWIN_ARM64"
+SUM="$(lc_sha256 "$BIN" 2>/dev/null)"
+case "$PLAT" in
+  darwin-arm64) WANT="$SHA256_DARWIN_ARM64" ;;
+  windows-x64) WANT="$SHA256_WINDOWS_X64" ;;
+  *) WANT="" ;;
+esac
+if [ -n "$WANT" ]; then
+  [ "$SUM" = "$WANT" ] || fail "binary sha256 $SUM does not match the verified build $WANT"
   printf '  sha256 : %s (matches the verified build)\n' "$SUM"
 else
   printf '  sha256 : %s (no recorded hash for %s — not the verified platform)\n' "$SUM" "$PLAT"
@@ -63,7 +71,8 @@ fi
 
 # --version from a throwaway home: OpenCode creates folders in its home even for --version.
 CHK="$(mktemp -d "${TMPDIR:-/tmp}/opencode-check.XXXXXX")" || fail "cannot create a check folder"
-GOT="$(cd "$CHK" && env -i PATH=/usr/bin:/bin HOME="$CHK" XDG_CONFIG_HOME="$CHK/c" XDG_DATA_HOME="$CHK/d" \
+lc_windows_env "$CHK"
+GOT="$(cd "$CHK" && env -i PATH=/usr/bin:/bin ${LC_WIN_ENV[@]+"${LC_WIN_ENV[@]}"} HOME="$CHK" XDG_CONFIG_HOME="$CHK/c" XDG_DATA_HOME="$CHK/d" \
   XDG_CACHE_HOME="$CHK/k" XDG_STATE_HOME="$CHK/s" OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 \
   "$BIN" --version 2>/dev/null | tail -n 1)"
 rm -rf "$CHK"

@@ -42,8 +42,8 @@ DATA="$(lc_data_root)"
 BASE="${LUCAIRN_HERMES_DIR:-$DATA/hermes/$TAG}"
 PROFILE="${LUCAIRN_HERMES_PROFILE:-$DATA/hermes/profile}"
 RECIPE="$HERE/config.yaml"
-BIN="$BASE/.venv/bin/hermes"
-PY="$BASE/.venv/bin/python"
+BIN="$BASE/.venv/$(lc_venv_bin)/hermes$(lc_exe)"
+PY="$BASE/.venv/$(lc_venv_bin)/python$(lc_exe)"
 
 case "$PROFILE" in /*) : ;; *) lc_die "LUCAIRN_HERMES_PROFILE must be an absolute path" ;; esac
 case "$PROFILE" in "$HOME/.hermes"|"$HOME/.hermes/"*) lc_die "refusing to use ~/.hermes as the profile" ;; esac
@@ -99,7 +99,8 @@ fi
 SOUL="$HH/SOUL.md"
 if [ ! -f "$SOUL" ]; then  # let Hermes seed its own default SOUL.md first (no keys, no network call)
   # shellcheck disable=SC2030  # deliberately local to this subshell
-  ( lc_scrub_env; export HOME="$PROFILE/home" HERMES_HOME="$HH" TMPDIR="$PROFILE/tmp/"; "$BIN" --version >/dev/null 2>&1 )
+  ( lc_scrub_env; export HOME="$PROFILE/home" HERMES_HOME="$HH" TMPDIR="$PROFILE/tmp/"; lc_windows_homes "$PROFILE/home" "$PROFILE/tmp"
+    if lc_is_windows; then export PYTHONUTF8=1; fi; "$BIN" --version >/dev/null 2>&1 )
 fi
 if ! grep -q "Lucairn privacy placeholders" "$SOUL" 2>/dev/null; then
   { printf '\n'; cat "$HERE/../lib/placeholder-rule.md"; } >> "$SOUL" || lc_die "cannot write $SOUL"
@@ -113,6 +114,9 @@ cd "$WORK" || lc_die "cannot enter $WORK"
 lc_scrub_env
 # shellcheck disable=SC2031  # the subshell above did not change these here; set them now
 export HOME="$PROFILE/home" HERMES_HOME="$HH" TMPDIR="$PROFILE/tmp/"
+lc_windows_homes "$PROFILE/home" "$PROFILE/tmp"
+# shellcheck disable=SC2031  # UTF-8 console output on Windows
+if lc_is_windows; then export PYTHONUTF8=1; fi
 export LUCAIRN_GATEWAY_URL="$GW" LUCAIRN_API_KEY="$LC_LUCAIRN_KEY" LUCAIRN_UPSTREAM_KEY="$LC_UPSTREAM_KEY"
 unset LC_LUCAIRN_KEY LC_UPSTREAM_KEY
 exec "$BIN" "$@"

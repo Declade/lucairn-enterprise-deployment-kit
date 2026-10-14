@@ -9,6 +9,7 @@
 //                  (e.g. a ServiceNow MCP server); only the listed tools are allowed.
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const [out, pluginDir, ...rest] = process.argv.slice(2);
 if (!out || !pluginDir) {
@@ -43,7 +44,7 @@ const cfg = {
   autoupdate: false,
   permission: { "*": "deny" },
   agent: { title: { disable: true } },
-  plugin: ["file://" + pluginDir + "/lucairn-keys-from-env.js"],
+  plugin: [pathToFileURL(resolve(pluginDir, "lucairn-keys-from-env.js")).href],
   // Standing text in every system prompt: the engine's `skill` tool cannot be removed (lucairn-rules.md stops
   // the wasted calls, measured), and the gateway's placeholders must not make the model redo tool calls.
   instructions: [pluginDir + "/lucairn-rules.md", resolve(pluginDir, "..", "..", "lib", "placeholder-rule.md")],
