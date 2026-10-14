@@ -46,7 +46,7 @@ VERSION="1.19.0"
 DATA="$(lc_data_root)"
 BASE="${LUCAIRN_OPENCODE_DIR:-$DATA/opencode/$VERSION}"
 PROFILE="${LUCAIRN_OPENCODE_PROFILE:-$DATA/opencode/profile}"
-BIN="$BASE/node_modules/opencode-$(lc_os_arch)/bin/opencode"
+BIN="$BASE/node_modules/opencode-$(lc_os_arch)/bin/opencode$(lc_exe)"
 [ -x "$BIN" ] || lc_die "OpenCode is not installed at $BASE — run $HERE/install.sh first"
 case "$PROFILE" in /*) : ;; *) lc_die "LUCAIRN_OPENCODE_PROFILE must be an absolute path" ;; esac
 
@@ -75,6 +75,7 @@ cd "$WORK" || lc_die "cannot enter $WORK"
 lc_scrub_env
 export HOME="$PROFILE/home" XDG_CONFIG_HOME="$PROFILE/config" XDG_DATA_HOME="$PROFILE/data"
 export XDG_CACHE_HOME="$PROFILE/cache" XDG_STATE_HOME="$PROFILE/state" TMPDIR="$PROFILE/tmp/"
+lc_windows_homes "$PROFILE/home" "$PROFILE/tmp"
 export OPENCODE_CONFIG="$CFG"
 # Standing rule in every system prompt (configs reference it as {env:LUCAIRN_RULES_FILE}): the
 # gateway's placeholders in earlier tool calls/results must not make the model redo the call.

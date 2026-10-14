@@ -11,9 +11,11 @@ launcher, the client configuration, and a README with setup, start and limits.
 | OpenCode | [`opencode/`](opencode/README.md) | 1.19.0 | terminal chat, one question, file tools, local browser page |
 | OpenWork | [`openwork/`](openwork/README.md) | openwork-server 0.18.58 (OpenCode engine 1.18.30); desktop dev build v0.18.58 | host + one question / chat, file tools, local web page, desktop app (dev build) |
 
-Verified on macOS (Apple silicon) against `https://gateway.lucairn.eu` on
-2026-10-14 with synthetic content only. The launchers are bash scripts for macOS
-and Linux; Linux was not part of that run. A newer client version may behave
+Verified on macOS (Apple silicon) and on Windows 11 x64 (native Windows programs,
+launchers run from Git Bash) against `https://gateway.lucairn.eu` on 2026-10-14
+with synthetic content only. The launchers are bash scripts for macOS, Linux and
+Windows (Git Bash, part of Git for Windows); Linux was not part of that run. The
+OpenWork desktop app launcher is macOS only. A newer client version may behave
 differently — re-run your own checks before you move a pin.
 
 ## What every launcher does
@@ -61,6 +63,30 @@ security add-generic-password -a "$(id -un)" -s lucairn-upstream-key -w   # prom
 
 Or export `LUCAIRN_API_KEY` and `LUCAIRN_UPSTREAM_KEY` from your own secret store
 before you start a launcher.
+
+## Windows
+
+Run the same launchers from **Git Bash** (Git for Windows); the clients run as
+native Windows programs. Differences:
+
+- **Keys:** there is no Keychain lookup on Windows. Hand `LUCAIRN_API_KEY` and
+  `LUCAIRN_UPSTREAM_KEY` to the launcher through the environment of the session
+  that starts it (verified that way), from your own secret store — not as
+  permanent user variables and never in a file. Windows Credential Manager was
+  not verified.
+- **Paths:** use Git Bash paths (`/c/…`, `/e/…`) for `LUCAIRN_CLIENTS_HOME`,
+  `LUCAIRN_WORK_DIR` and the profile variables. Default work folder:
+  `/c/agent-work/<client>` (`C:\agent-work\<client>`). The work folder rule
+  applies, also to brand-like words in the path.
+- **Profile:** the launchers point `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`,
+  `TEMP` and `TMP` into the profile as well, so nothing lands in your real user
+  folder (measured: no client folder appeared there).
+- **Needs:** Git for Windows; node + npm (OpenCode, OpenWork); for Hermes `uv`,
+  `git` and Python 3.12 from python.org (found through the `py` launcher, or set
+  `LUCAIRN_HERMES_PYTHON`).
+- **First start of a profile:** OpenCode and the OpenWork engine download ripgrep
+  (about 1.8 MB, content-free) from github.com at start-up on Windows, once per
+  profile (on macOS only at the first file search).
 
 ## Common environment
 

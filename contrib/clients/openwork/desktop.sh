@@ -35,6 +35,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LC_PROG="openwork/desktop.sh"
 # shellcheck source=../lib/common.sh
 . "$HERE/../lib/common.sh"
+if lc_is_windows; then lc_die "the desktop app launcher is not verified on Windows (macOS only) — use openwork.sh"; fi
 
 TAG="v0.18.58"
 DATA="$(lc_data_root)"

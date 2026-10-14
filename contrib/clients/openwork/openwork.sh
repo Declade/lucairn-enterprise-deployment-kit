@@ -89,6 +89,7 @@ export PATH="$NODE_DIR:$PATH"
 export HOME="$PROFILE/home" USERPROFILE="$PROFILE/home" CFFIXED_USER_HOME="$PROFILE/home"
 export XDG_CONFIG_HOME="$PROFILE/xdg/config" XDG_DATA_HOME="$PROFILE/xdg/data"
 export XDG_CACHE_HOME="$PROFILE/xdg/cache" XDG_STATE_HOME="$PROFILE/xdg/state" TMPDIR="$PROFILE/tmp/"
+lc_windows_homes "$PROFILE/home" "$PROFILE/tmp"
 export npm_config_update_notifier=false npm_config_fund=false npm_config_audit=false OPENWORK_PACKAGE_ROOT=""
 export OPENWORK_DISABLE_FREE_INFERENCE=1 OPENWORK_NO_UPDATE_CHECK=1
 export OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_AUTOUPDATE=1

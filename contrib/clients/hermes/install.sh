@@ -32,6 +32,7 @@ REPO_URL="https://github.com/NousResearch/hermes-agent.git"
 EXTRAS="anthropic,mcp"
 RECIPE="$HERE/config.yaml"
 BASE="${LUCAIRN_HERMES_DIR:-$(lc_data_root)/hermes/$TAG}"
+HVBIN="$BASE/.venv/$(lc_venv_bin)/hermes$(lc_exe)"
 
 CHECK_ONLY=0
 case "${1:-}" in
@@ -58,10 +59,11 @@ run_hermes() {
   local hh="$BASE/setup-check/home" sh="$BASE/setup-check/sandbox-home" wd="$BASE/setup-check/work"
   mkdir -p "$hh" "$sh" "$wd" || fail "cannot create $BASE/setup-check"
   cp "$RECIPE" "$hh/config.yaml" || fail "cannot copy the recipe into the check home"
-  ( cd "$wd" && env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin USER="$(id -un)" LOGNAME="$(id -un)" \
+  lc_windows_env "$sh"
+  ( cd "$wd" && env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin ${LC_WIN_ENV[@]+"${LC_WIN_ENV[@]}"} USER="$(id -un)" LOGNAME="$(id -un)" \
       LANG=en_US.UTF-8 TMPDIR="${TMPDIR:-/tmp}" HOME="$sh" HERMES_HOME="$hh" \
       LUCAIRN_GATEWAY_URL="$(lc_gateway_url)" \
-      "$BASE/.venv/bin/hermes" "$@" )
+      "$HVBIN" "$@" )
 }
 
 printf 'Hermes install — tag %s\n  folder : %s\n' "$TAG" "$BASE"
@@ -78,19 +80,24 @@ HEAD_NOW="$(git -C "$BASE/src" rev-parse HEAD 2>/dev/null)"
 [ "$HEAD_NOW" = "$COMMIT" ] || fail "clone is at ${HEAD_NOW:-unknown}, pinned commit is $COMMIT (tag moved or wrong checkout) — refusing"
 printf '  commit : %s (matches the pin)\n' "$HEAD_NOW"
 
-if [ ! -x "$BASE/.venv/bin/hermes" ]; then
-  [ "$CHECK_ONLY" -eq 1 ] && fail "not installed: $BASE/.venv/bin/hermes is missing (run without --check)"
+if [ ! -x "$HVBIN" ]; then
+  [ "$CHECK_ONLY" -eq 1 ] && fail "not installed: $HVBIN is missing (run without --check)"
   lc_need uv
   PY="${LUCAIRN_HERMES_PYTHON:-$(command -v python3.12 2>/dev/null || true)}"
+  # Windows: the Python launcher knows the installed 3.12 (python.org installer)
+  if [ -z "$PY" ] && lc_is_windows && command -v py >/dev/null 2>&1; then
+    PY="$(py -3.12 -c 'import sys; print(sys.executable)' 2>/dev/null | tr -d '\r')"
+    if [ -n "$PY" ]; then PY="$(cygpath -u "$PY")"; fi
+  fi
   if ! { [ -n "$PY" ] && [ -x "$PY" ]; }; then printf 'hermes/install.sh: no python3.12 found (set LUCAIRN_HERMES_PYTHON; nothing is downloaded for you)\n' >&2; exit 2; fi
   CACHE="$(mktemp -d "${TMPDIR:-/tmp}/hermes-install.XXXXXX")" || fail "cannot create a temp cache folder"
   printf '  venv   : creating with %s\n' "$PY"
-  UV_CACHE_DIR="$CACHE/uv" UV_PYTHON_DOWNLOADS=never uv venv --quiet --python "$PY" "$BASE/.venv" || fail "uv venv failed"
+  UV_CACHE_DIR="$CACHE/uv" UV_PYTHON_DOWNLOADS=never uv venv --quiet --clear --python "$PY" "$BASE/.venv" || fail "uv venv failed"
   # Editable on purpose: Hermes refuses a wheel build.
-  UV_CACHE_DIR="$CACHE/uv" UV_PYTHON_DOWNLOADS=never uv pip install --quiet --python "$BASE/.venv/bin/python" \
-    -e "$BASE/src[$EXTRAS]" || fail "uv pip install failed"
+  UV_CACHE_DIR="$CACHE/uv" UV_PYTHON_DOWNLOADS=never uv pip install --quiet --python "$BASE/.venv/$(lc_venv_bin)/python$(lc_exe)" \
+    -e "$(lc_native_path "$BASE/src")[$EXTRAS]" || fail "uv pip install failed"
 fi
-[ -x "$BASE/.venv/bin/hermes" ] || fail "$BASE/.venv/bin/hermes is missing after install"
+[ -x "$HVBIN" ] || fail "$HVBIN is missing after install"
 
 VERSION_LINE="$(run_hermes --version 2>&1 | head -n 1)"
 case "$VERSION_LINE" in
