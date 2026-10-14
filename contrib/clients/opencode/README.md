@@ -7,11 +7,17 @@ identical to the one in the GitHub release asset) on macOS and Windows 11,
 against `https://gateway.lucairn.eu`, 2026-10-14. Read [`../README.md`](../README.md)
 first (keys, work folder rule, shared limits).
 
+`pins.sh` holds the sha256 of the OpenCode binary for every platform package in
+the lockfile (darwin-arm64/x64, linux-arm64/x64, windows-x64/arm64). `install.sh`
+moves an install into place only when its binary matches, and `opencode.sh`
+checks it again at every start: a binary that does not match never gets the keys.
+
 ## Set up
 
 ```sh
 ./install.sh            # npm ci against package-lock.json (sha512-checked), no install scripts,
-                        # into ~/.local/share/lucairn-clients/opencode/1.19.0 — nothing global
+                        # built in a temp folder, moved into ~/.local/share/lucairn-clients/opencode/1.19.0
+                        # only after the binary matched pins.sh — nothing global
 ./install.sh --check    # verify only (no network)
 ```
 
@@ -62,14 +68,15 @@ environment, never from the file.
 
 ## Limits
 
-- **6 hard-coded attempts** on a 429 or an unreachable gateway (about 69 s) before
-  the error shows; no setting lowers it. Each attempt that reaches the gateway
-  counts on your quota.
+- **Up to 6 requests per message (5 retries)** on a 429 or an unreachable gateway
+  (about 69 s) before the error shows; hard-coded, no setting lowers it. Each one
+  that reaches the gateway counts on your quota.
 - **No hard loop cap.** `agent.build.steps` is an instruction to the model, not a
   stop: a model that ignores it keeps calling tools (2026-10-13, offline: 220–371
   requests in 25 s). Watch long tool tasks; Ctrl+C stops them.
 - **Work folder rule:** no person's or account name and no brand-like word in the
-  path (the launcher refuses your login name). Measured 2026-10-14: in
+  path (the launcher refuses a path that contains your login name anywhere).
+  Measured 2026-10-14: in
   `/Users/Shared/lucairn-work/…` the gateway showed "lucairn" as a person's name
   inside the model's own file calls and the task looped; in the default
   `/Users/Shared/agent-work/opencode` with the placeholder rule it took 4 requests.

@@ -2,7 +2,8 @@
 
 Verified with **openwork-server 0.18.58** (npm), which runs the **OpenCode engine
 1.18.30**, and the OpenWork **desktop app as a dev build from tag v0.18.58**, on
-macOS, against `https://gateway.lucairn.eu`, 2026-10-14. Read
+macOS, against `https://gateway.lucairn.eu`, 2026-10-14 (the tag's commit
+`258218b9`; `desktop.sh` refuses any other). Read
 [`../README.md`](../README.md) first (keys, work folder rule, shared limits).
 
 ## Set up
@@ -37,7 +38,8 @@ OPENWORK_SRC=<clone at v0.18.58> ./desktop.sh        # desktop app (see below)
   models `claude-haiku-4-5` / `claude-sonnet-5-5`; `enabled_providers: ["lucairn"]`
 - **no key in the config** — the API key field holds a placeholder. The **key
   helper** `plugin/lucairn-keys-from-env.js` sets `x-api-key` and `x-upstream-key`
-  from the engine's environment on requests to the gateway origin only. Why: the
+  from the engine's environment on requests to the gateway origin only, and
+  never follows a redirect with them (a redirect answer fails the request). Why: the
   engine hands OpenWork's interface the provider list with `{env:…}` values filled
   in, and the interface saves it in its browser storage — measured 2026-10-13:
   without the helper, 8 key hits in 4 files while the desktop app ran
@@ -67,6 +69,12 @@ cd <dir> && pnpm install --frozen-lockfile        # about 3.5 GB
 OPENWORK_SRC=<dir> ./desktop.sh                   # first start builds the app (several minutes)
 ```
 
+It refuses to start unless `git` is installed and the clone is exactly commit
+`258218b9b69c91e3d5020488fe1d14ff767679e9` (tag v0.18.58 on 2026-10-14) with no
+changed tracked files — a moved tag is refused. It runs the app's build steps
+and its interface dev server without the keys; only the app itself gets them.
+`desktop.sh stop` signals only a process group it can prove is this app.
+
 On top of the settings above it: **wipes the app's browser storage on every
 start and every stop** (also when the window is closed), keeps the app's Electron
 profile in the Lucairn profile, uses the app's mock key store instead of the macOS
@@ -76,8 +84,9 @@ no cloud model), sets the workspace folder to the work folder, and preselects
 
 ## Limits
 
-- **6 automatic attempts** on a gateway error or an unreachable gateway (about
-  69 s), no cap; each one that reaches the gateway counts on your quota.
+- **Up to 6 requests per message (5 retries)** on a gateway error or an
+  unreachable gateway (about 69 s); hard-coded in the engine, no setting lowers it.
+  Each one that reaches the gateway counts on your quota.
 - **No hard loop cap** in the engine: a model that keeps calling tools is not
   stopped. Watch long tool tasks.
 - The `skill` tool cannot be switched off; the standing instructions ask the model

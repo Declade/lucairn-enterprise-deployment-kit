@@ -18,7 +18,9 @@
 #     (plugin/lucairn-keys-from-env.js) adds both keys from the engine's
 #     environment on gateway requests only, so they never reach the
 #     interface's storage
-#   - drops every inherited variable; all state lives in the profile folder
+#   - drops every inherited variable before it runs anything (the config writer
+#     and the chat helper never see the keys); all state lives in the profile
+#     folder; the keys go into the host's environment only
 #   - sets OPENWORK_DISABLE_FREE_INFERENCE / OPENWORK_NO_UPDATE_CHECK and the
 #     engine switches (no model-list fetch, no auto-update, no external skills)
 #   - runs in the work folder, refusing a folder whose path holds the account name
@@ -38,10 +40,11 @@
 
 set -uo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "${BASH_SOURCE[0]}" in */*) HERE="${BASH_SOURCE[0]%/*}" ;; *) HERE=. ;; esac
+HERE="$(cd "$HERE" && pwd)"
 LC_PROG="openwork.sh"
 # shellcheck source=../lib/common.sh
-. "$HERE/../lib/common.sh"
+. "$HERE/../lib/common.sh"   # takes both keys out of the environment at once
 
 VERSION="0.18.58"
 DATA="$(lc_data_root)"
@@ -72,19 +75,19 @@ MODEL="${LUCAIRN_OPENWORK_MODEL:-$([ "$FILES" = 1 ] && echo claude-sonnet-5-5 ||
 MCP="${LUCAIRN_OPENWORK_MCP:-}"
 [ -z "$MCP" ] || [ -f "$MCP" ] || lc_die "LUCAIRN_OPENWORK_MCP file not found: $MCP"
 
-WORK="$(lc_work_dir_check "${LUCAIRN_WORK_DIR:-$(lc_default_work_parent)/openwork}")" || exit 2
-GW="$(lc_gateway_url)"
-lc_load_keys
+NODE_DIR="$(cd "$(dirname "$NODE")" && pwd)"
+lc_gateway_url                                                                # sets LC_GW, or stops
+lc_work_dir_check "${LUCAIRN_WORK_DIR:-$(lc_default_work_parent)/openwork}"   # sets LC_WORK, or stops
+lc_load_keys                                                                  # shell variables only
+lc_scrub_env                    # from here on: no inherited variable reaches any program
 
 for d in home xdg/config/opencode xdg/data xdg/cache xdg/state tmp; do mkdir -p "$PROFILE/$d" || lc_die "cannot create $PROFILE/$d"; done
-CFG_ARGS=("model=$MODEL"); [ "$FILES" = 1 ] && CFG_ARGS+=(files); [ -n "$MCP" ] && CFG_ARGS+=("mcp=$MCP")
+CFG_ARGS=("model=$MODEL"); if [ "$FILES" = 1 ]; then CFG_ARGS+=(files); fi; if [ -n "$MCP" ]; then CFG_ARGS+=("mcp=$MCP"); fi
 "$NODE" "$HERE/lib/config.mjs" "$PROFILE/xdg/config/opencode/opencode.json" "$HERE/plugin" "${CFG_ARGS[@]}" \
   || lc_die "could not write the engine config"
 
-NODE_DIR="$(cd "$(dirname "$NODE")" && pwd)"
 LOG="$PROFILE/tmp/host-$$.log"
-cd "$WORK" || lc_die "cannot enter $WORK"
-lc_scrub_env
+cd "$LC_WORK" || lc_die "cannot enter $LC_WORK"
 export PATH="$NODE_DIR:$PATH"
 export HOME="$PROFILE/home" USERPROFILE="$PROFILE/home" CFFIXED_USER_HOME="$PROFILE/home"
 export XDG_CONFIG_HOME="$PROFILE/xdg/config" XDG_DATA_HOME="$PROFILE/xdg/data"
@@ -94,11 +97,10 @@ export npm_config_update_notifier=false npm_config_fund=false npm_config_audit=f
 export OPENWORK_DISABLE_FREE_INFERENCE=1 OPENWORK_NO_UPDATE_CHECK=1
 export OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_AUTOUPDATE=1
 export OPENCODE_DISABLE_EXTERNAL_SKILLS=1 OPENCODE_DISABLE_CLAUDE_CODE=1
-export LUCAIRN_BASE_URL="$GW/v1"
+export LUCAIRN_BASE_URL="$LC_GW/v1"
 
-start_host() {  # keys go into the host's environment only
-  LUCAIRN_API_KEY="$LC_LUCAIRN_KEY" LUCAIRN_UPSTREAM_KEY="$LC_UPSTREAM_KEY" \
-    exec "$NODE" "$OWS" web --port "$PORT" --host 127.0.0.1 --no-log-requests
+start_host() {  # the keys enter the environment here, for the host (and its engine) only
+  lc_exec_client "$NODE" "$OWS" web --port "$PORT" --host 127.0.0.1 --no-log-requests
 }
 
 if [ "$CMD" = web ]; then
