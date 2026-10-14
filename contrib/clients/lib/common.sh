@@ -5,17 +5,36 @@
 #
 # What lives here, and why it is shared:
 #   - key loading: environment first, then the macOS Keychain BY ITEM NAME.
-#     Keys are held in shell variables and handed to the client's process
-#     environment only — never written to a file, never put on a command line.
+#     SOURCING this file takes both keys out of the environment at once (into
+#     unexported shell variables), so no helper program the launcher runs ever
+#     sees them; lc_exec_client puts them back into the environment of the
+#     client only, at the moment the client replaces the launcher (exec).
+#     Never written to a file, never put on a command line.
 #   - the work-folder rule: a work folder whose full path holds the account
 #     name breaks file tasks through the gateway (the sanitizer replaces the
 #     name inside file paths and the model loses track of its own files).
-#   - one place for the gateway address (hosted default, or your own gateway).
+#   - one place for the gateway address (hosted default, or your own gateway),
+#     parsed and checked; a bad address stops the launch.
 #   - Windows: the launchers run under Git Bash (Git for Windows); the clients
 #     themselves run as native Windows programs. lc_is_windows and the
 #     lc_windows_* helpers hold every Windows difference.
 #
 # Nothing in this file contacts the network.
+
+# ── on sourcing: internal names and the two keys leave the environment ──────────
+# An inherited LC_* name of ours (e.g. an exported LC_LUCAIRN_KEY) would otherwise
+# be passed on to children or be removed by lc_scrub_env under `set -u`.
+for _lc_v in LC_LUCAIRN_KEY LC_UPSTREAM_KEY LC_ENV_LUCAIRN_KEY LC_ENV_UPSTREAM_KEY LC_USER LC_HOME \
+             LC_GW LC_WORK LC_WIN_ENV LC_DEFAULT_GATEWAY_URL; do
+  unset "$_lc_v"
+done
+unset _lc_v
+export -n LC_PROG 2>/dev/null || true
+LC_ENV_LUCAIRN_KEY="${LUCAIRN_API_KEY:-}"
+LC_ENV_UPSTREAM_KEY="${LUCAIRN_UPSTREAM_KEY:-}"
+unset LUCAIRN_API_KEY LUCAIRN_UPSTREAM_KEY
+LC_USER="$(id -un)"
+LC_HOME="${HOME:-}"
 
 LC_DEFAULT_GATEWAY_URL="https://gateway.lucairn.eu"
 
@@ -51,20 +70,69 @@ lc_os_arch() {
 
 # lc_data_root — where installs and profiles go unless overridden.
 lc_data_root() {
-  printf '%s\n' "${LUCAIRN_CLIENTS_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/lucairn-clients}"
+  printf '%s\n' "${LUCAIRN_CLIENTS_HOME:-${XDG_DATA_HOME:-$LC_HOME/.local/share}/lucairn-clients}"
 }
 
-# lc_gateway_url — the gateway address without a trailing slash, https only
-# (http only for a loopback address, e.g. a local test gateway).
+# lc_lower <text> — the text in lower case.
+lc_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# lc_gateway_url — checks LUCAIRN_GATEWAY_URL (default the hosted gateway) and
+# sets LC_GW to it without a trailing slash. Call it directly, never inside
+# $(…): a bad address stops the launch (exit 2) before anything starts.
+# Accepted, nothing else:
+#   https://<host>[:<port>][/<path>]
+#   http://127.0.0.1|localhost|[::1][:<port>][/<path>]   (a gateway on this computer)
+# No user name or password part ("…@…"), no query or fragment, no percent
+# escapes or backslashes; the host is checked as written.
 lc_gateway_url() {
-  local url="${LUCAIRN_GATEWAY_URL:-$LC_DEFAULT_GATEWAY_URL}"
+  local url="${LUCAIRN_GATEWAY_URL:-$LC_DEFAULT_GATEWAY_URL}" scheme rest auth path host port
+  local stop="Nothing was started."
   url="${url%/}"
   case "$url" in
-    https://?*) : ;;
-    http://127.0.0.1:*|http://localhost:*) : ;;
-    *) lc_die "LUCAIRN_GATEWAY_URL must start with https:// (got '$url')" ;;
+    https://*) scheme=https; rest="${url#https://}" ;;
+    http://*) scheme=http; rest="${url#http://}" ;;
+    *) lc_die "LUCAIRN_GATEWAY_URL must start with https:// (got '$url'). $stop" ;;
   esac
-  printf '%s\n' "$url"
+  auth="${rest%%/*}"; path="${rest#"$auth"}"
+  case "$auth" in
+    *@*) lc_die "LUCAIRN_GATEWAY_URL must not hold a user name or password ('…@…'): got '$url'. $stop" ;;
+  esac
+  case "$rest" in
+    *[!]A-Za-z0-9._~:/[-]*) lc_die "LUCAIRN_GATEWAY_URL holds a character a gateway address does not need (got '$url'). $stop" ;;
+  esac
+  case "$auth" in
+    \[*\]|\[*\]:*) host="${auth%%]*}]"; port="${auth#"$host"}" ;;
+    *) host="${auth%%:*}"; port="${auth#"$host"}" ;;
+  esac
+  [ -n "$host" ] || lc_die "LUCAIRN_GATEWAY_URL has no host (got '$url'). $stop"
+  if [ -n "$port" ]; then
+    port="${port#:}"
+    case "$port" in
+      ''|*[!0-9]*) lc_die "LUCAIRN_GATEWAY_URL has an invalid port (got '$url'). $stop" ;;
+    esac
+    if [ "${#port}" -gt 5 ] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+      lc_die "LUCAIRN_GATEWAY_URL has an invalid port (got '$url'). $stop"
+    fi
+  fi
+  host="$(lc_lower "$host")"
+  if [ "$scheme" = http ]; then
+    case "$host" in
+      127.0.0.1|localhost|\[::1\]) : ;;
+      *) lc_die "LUCAIRN_GATEWAY_URL: http:// only for a gateway on this computer (127.0.0.1, localhost, [::1]); use https:// (got '$url'). $stop" ;;
+    esac
+  else
+    case "$host" in
+      \[*\]) local inner="${host#[}"; inner="${inner%]}"
+        case "$inner" in ''|*[!0-9a-f:.]*) lc_die "LUCAIRN_GATEWAY_URL has an invalid address (got '$url'). $stop" ;; esac ;;
+      .*|*.|*..*|-*|*[!a-z0-9.-]*) lc_die "LUCAIRN_GATEWAY_URL has an invalid host name (got '$url'). $stop" ;;
+    esac
+  fi
+  case "$path" in
+    ''|/*) : ;;
+    *) lc_die "LUCAIRN_GATEWAY_URL has an invalid path (got '$url'). $stop" ;;
+  esac
+  # shellcheck disable=SC2034  # read by the launchers
+  LC_GW="$url"
 }
 
 # _lc_keychain <service> — prints the secret of a macOS Keychain generic
@@ -73,20 +141,21 @@ lc_gateway_url() {
 _lc_keychain() {
   [ "$(uname -s)" = Darwin ] || return 0
   [ -x /usr/bin/security ] || return 0
-  /usr/bin/security find-generic-password -s "$1" -a "${LUCAIRN_KEYCHAIN_ACCOUNT:-$(id -un)}" -w 2>/dev/null || true
+  /usr/bin/security find-generic-password -s "$1" -a "${LUCAIRN_KEYCHAIN_ACCOUNT:-$LC_USER}" -w 2>/dev/null || true
 }
 
-# lc_load_keys — sets LC_LUCAIRN_KEY and LC_UPSTREAM_KEY (shell variables, not
-# exported). Sources, in order:
-#   LUCAIRN_API_KEY      env, else Keychain item ${LUCAIRN_KEYCHAIN_ITEM:-lucairn-api-key}
-#   LUCAIRN_UPSTREAM_KEY env, else Keychain item ${LUCAIRN_UPSTREAM_KEYCHAIN_ITEM:-lucairn-upstream-key}
+# lc_load_keys — sets LC_LUCAIRN_KEY and LC_UPSTREAM_KEY (shell variables, NOT
+# exported: no program sees them until lc_exec_client). Sources, in order:
+#   LUCAIRN_API_KEY      env (taken when this file was sourced), else Keychain item ${LUCAIRN_KEYCHAIN_ITEM:-lucairn-api-key}
+#   LUCAIRN_UPSTREAM_KEY env (taken when this file was sourced), else Keychain item ${LUCAIRN_UPSTREAM_KEYCHAIN_ITEM:-lucairn-upstream-key}
 # The provider ("upstream") key travels to the gateway in the X-Upstream-Key
 # header. Both are required: the verified setup is the API-key lane.
 lc_load_keys() {
-  LC_LUCAIRN_KEY="${LUCAIRN_API_KEY:-}"
-  LC_UPSTREAM_KEY="${LUCAIRN_UPSTREAM_KEY:-}"
-  [ -n "$LC_LUCAIRN_KEY" ] || LC_LUCAIRN_KEY="$(_lc_keychain "${LUCAIRN_KEYCHAIN_ITEM:-lucairn-api-key}")"
-  [ -n "$LC_UPSTREAM_KEY" ] || LC_UPSTREAM_KEY="$(_lc_keychain "${LUCAIRN_UPSTREAM_KEYCHAIN_ITEM:-lucairn-upstream-key}")"
+  LC_LUCAIRN_KEY="${LC_ENV_LUCAIRN_KEY:-}"
+  LC_UPSTREAM_KEY="${LC_ENV_UPSTREAM_KEY:-}"
+  unset LC_ENV_LUCAIRN_KEY LC_ENV_UPSTREAM_KEY
+  if [ -z "$LC_LUCAIRN_KEY" ]; then LC_LUCAIRN_KEY="$(_lc_keychain "${LUCAIRN_KEYCHAIN_ITEM:-lucairn-api-key}")"; fi
+  if [ -z "$LC_UPSTREAM_KEY" ]; then LC_UPSTREAM_KEY="$(_lc_keychain "${LUCAIRN_UPSTREAM_KEYCHAIN_ITEM:-lucairn-upstream-key}")"; fi
   [ -n "$LC_LUCAIRN_KEY" ] || lc_die "no Lucairn API key: set LUCAIRN_API_KEY, or store it in the macOS Keychain as item '${LUCAIRN_KEYCHAIN_ITEM:-lucairn-api-key}' (see README)"
   [ -n "$LC_UPSTREAM_KEY" ] || lc_die "no provider key: set LUCAIRN_UPSTREAM_KEY, or store it in the macOS Keychain as item '${LUCAIRN_UPSTREAM_KEYCHAIN_ITEM:-lucairn-upstream-key}' (see README)"
   case "$LC_LUCAIRN_KEY$LC_UPSTREAM_KEY" in
@@ -94,29 +163,44 @@ lc_load_keys() {
   esac
 }
 
-# lc_work_dir_check <dir> — the work-folder rule. Creates the folder, prints its
-# physical path, refuses (exit 2) when the path holds the account name or the
-# home folder's name. Override at your own cost: LUCAIRN_ALLOW_NAMED_WORKDIR=1.
+# lc_exec_client <program> [args…] — the ONLY place the keys enter an
+# environment: exported here, and the program replaces this shell at once
+# (exec), so no other program ever has them. Run it as the last command of the
+# launcher, or inside a ( … ) / pipeline / & subshell that ends with it. The
+# values are never on a command line.
+lc_exec_client() {
+  export LUCAIRN_API_KEY="$LC_LUCAIRN_KEY" LUCAIRN_UPSTREAM_KEY="$LC_UPSTREAM_KEY"
+  unset LC_LUCAIRN_KEY LC_UPSTREAM_KEY
+  exec "$@"
+}
+
+# lc_work_dir_check <dir> — the work-folder rule. Creates the folder and sets
+# LC_WORK to its physical path; stops the launch (exit 2) when the path contains
+# the login name or the home folder's name ANYWHERE (case-insensitive: also
+# /var/tmp/alice-project for login alice). Call it directly, never inside $(…).
+# Override at your own cost: LUCAIRN_ALLOW_NAMED_WORKDIR=1.
 lc_work_dir_check() {
-  local w="$1" me home_name
+  local w="$1" me home_name low named=0
   [ -n "$w" ] || lc_die "internal: empty work folder"
   mkdir -p "$w" 2>/dev/null || lc_die "cannot create the work folder $w"
   w="$(cd "$w" && pwd -P)" || lc_die "cannot enter the work folder"
-  me="$(id -un | tr '[:upper:]' '[:lower:]')"; home_name="$(basename "$HOME" | tr '[:upper:]' '[:lower:]')"
   if [ "${LUCAIRN_ALLOW_NAMED_WORKDIR:-}" != 1 ]; then
     # compared in lower case: macOS and Windows file names ignore case
-    case "$(printf '%s/' "$w" | tr '[:upper:]' '[:lower:]')" in
-      *"/$me/"*|*"/$home_name/"*)
-        lc_say "the work folder path contains the account name: $w"
-        lc_die "file tools through Lucairn need a work folder whose full path holds no person's or account name (the gateway replaces such a path and file work can loop). Use e.g. LUCAIRN_WORK_DIR=$(lc_default_work_parent)/<project>. Nothing was started."
-        ;;
-    esac
+    me="$(lc_lower "$LC_USER")"; home_name="$(lc_lower "${LC_HOME##*/}")"; low="$(lc_lower "$w")"
+    if [ -n "$me" ]; then case "$low" in *"$me"*) named=1 ;; esac; fi
+    if [ -n "$home_name" ]; then case "$low" in *"$home_name"*) named=1 ;; esac; fi
+    if [ "$named" = 1 ]; then
+      lc_say "the work folder path contains the account name: $w"
+      lc_die "file tools through Lucairn need a work folder whose full path holds no person's or account name (the gateway replaces such a path and file work can loop). Use e.g. LUCAIRN_WORK_DIR=$(lc_default_work_parent)/<project>. Nothing was started."
+    fi
   fi
-  printf '%s\n' "$w"
+  # shellcheck disable=SC2034  # read by the launchers
+  LC_WORK="$w"
 }
 
 # lc_scrub_env — unset EVERY exported variable of this shell (stray provider
-# keys, a real HOME, …) except the proxy settings (HTTPS_PROXY, HTTP_PROXY,
+# keys, a real HOME, …; the two Lucairn keys already left the environment when
+# this file was sourced) except the proxy settings (HTTPS_PROXY, HTTP_PROXY,
 # NO_PROXY, NODE_USE_ENV_PROXY) and, on Windows, the system variables every
 # Windows program needs (SYSTEMROOT, WINDIR, …), so the client starts with
 # only what the launcher exports afterwards. Values are never put on a command
@@ -178,7 +262,6 @@ lc_sha256() {
   if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
   else sha256sum "$1" | awk '{print $1}'; fi
 }
-LC_USER="$(id -un)"
 
 # lc_default_work_parent — a shared folder outside the home folder.
 lc_default_work_parent() {

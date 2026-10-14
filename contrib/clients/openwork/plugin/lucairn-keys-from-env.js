@@ -6,9 +6,13 @@
 // clear text on disk (measured: 8 hits in 4 files while the desktop app runs).
 //
 // What it does: the generated config holds NO key, only a placeholder. On requests to the Lucairn
-// gateway origin ONLY (the origin of LUCAIRN_BASE_URL, set by the launcher), it sets the two
-// credential headers from the engine's process environment:
+// gateway origin ONLY (the origin of LUCAIRN_BASE_URL, set by the launcher; a URL with a user name
+// or password part never matches), it sets the two credential headers from the engine's process
+// environment:
 //   LUCAIRN_API_KEY -> x-api-key,  LUCAIRN_UPSTREAM_KEY -> x-upstream-key
+// and forbids redirects for that request (redirect: "error"): fetch drops only Authorization /
+// Cookie on a cross-origin redirect, these custom headers would be sent on to wherever the answer
+// points. A redirect therefore fails the request (fail closed) instead of carrying the keys.
 // Nothing else in any request is read or changed. No log, no file.
 let installed = false;
 
@@ -30,11 +34,12 @@ function install() {
     let nextInit = init;
     try {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (new URL(url).origin === origin) {
+      const target = new URL(url);
+      if (target.origin === origin && !target.username && !target.password) {
         const headers = new Headers(init?.headers ?? (typeof input === "object" && "headers" in input ? input.headers : undefined));
         if (process.env.LUCAIRN_API_KEY) headers.set("x-api-key", process.env.LUCAIRN_API_KEY);
         if (process.env.LUCAIRN_UPSTREAM_KEY) headers.set("x-upstream-key", process.env.LUCAIRN_UPSTREAM_KEY);
-        nextInit = { ...(init ?? {}), headers };
+        nextInit = { ...(init ?? {}), headers, redirect: "error" };
       }
     } catch {
       nextInit = init;

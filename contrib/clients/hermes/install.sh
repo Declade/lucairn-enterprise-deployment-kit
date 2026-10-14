@@ -14,8 +14,9 @@
 #
 # HERMES_HOME RULE: every `hermes` call — even `--version` — creates and writes
 # its home folder, ~/.hermes when HERMES_HOME is unset. This script starts
-# Hermes only from an EMPTY environment with HERMES_HOME and HOME inside the
-# install folder; it never reads, writes or deletes ~/.hermes.
+# Hermes only from an EMPTY environment with HERMES_HOME and HOME in a
+# throwaway temp folder (removed at exit); it never reads, writes or deletes
+# ~/.hermes, and --check leaves nothing behind.
 #
 # Exit: 0 usable · 1 not usable / verification failed · 2 a needed tool is missing.
 
@@ -48,21 +49,27 @@ case "$BASE" in /*) : ;; *) fail "install folder must be an absolute path (got '
 case "$BASE" in "$HOME/.hermes"|"$HOME/.hermes/"*) fail "refusing to use ~/.hermes as the install folder" ;; esac
 [ -f "$RECIPE" ] || fail "recipe missing: $RECIPE"
 
-CACHE=""
+CACHE=""; CHECK=""
 # shellcheck disable=SC2329  # invoked via the EXIT trap
-cleanup() { [ -n "$CACHE" ] && [ -d "$CACHE" ] && rm -rf "$CACHE"; return 0; }
+cleanup() {
+  if [ -n "$CACHE" ] && [ -d "$CACHE" ]; then rm -rf "$CACHE"; fi
+  if [ -n "$CHECK" ] && [ -d "$CHECK" ]; then rm -rf "$CHECK"; fi
+  return 0
+}
 trap cleanup EXIT
+lc_gateway_url   # sets LC_GW (only written into the check config; nothing is contacted)
 
-# run_hermes <args…> — empty environment, both homes inside the install folder,
-# no gateway key: only for --version / tools list.
+# run_hermes <args…> — empty environment, both homes in a throwaway temp folder
+# (removed at exit), no gateway key: only for --version / tools list.
 run_hermes() {
-  local hh="$BASE/setup-check/home" sh="$BASE/setup-check/sandbox-home" wd="$BASE/setup-check/work"
-  mkdir -p "$hh" "$sh" "$wd" || fail "cannot create $BASE/setup-check"
+  if [ -z "$CHECK" ]; then CHECK="$(mktemp -d "${TMPDIR:-/tmp}/hermes-check.XXXXXX")" || fail "cannot create a temp check folder"; fi
+  local hh="$CHECK/home" sh="$CHECK/sandbox-home" wd="$CHECK/work"
+  mkdir -p "$hh" "$sh" "$wd" || fail "cannot create $CHECK"
   cp "$RECIPE" "$hh/config.yaml" || fail "cannot copy the recipe into the check home"
   lc_windows_env "$sh"
-  ( cd "$wd" && env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin ${LC_WIN_ENV[@]+"${LC_WIN_ENV[@]}"} USER="$(id -un)" LOGNAME="$(id -un)" \
-      LANG=en_US.UTF-8 TMPDIR="${TMPDIR:-/tmp}" HOME="$sh" HERMES_HOME="$hh" \
-      LUCAIRN_GATEWAY_URL="$(lc_gateway_url)" \
+  ( cd "$wd" && env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin ${LC_WIN_ENV[@]+"${LC_WIN_ENV[@]}"} USER="$LC_USER" LOGNAME="$LC_USER" \
+      LANG=en_US.UTF-8 TMPDIR="$CHECK/" HOME="$sh" HERMES_HOME="$hh" \
+      LUCAIRN_GATEWAY_URL="$LC_GW" \
       "$HVBIN" "$@" )
 }
 

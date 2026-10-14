@@ -44,8 +44,11 @@ its file tools act there. The profile (`HERMES_HOME`) is
 | `security.allow_lazy_installs: false` | no packages fetched from pypi.org at run time (measured: a fresh install otherwise installs boto3 and friends on its first start) |
 | `platform_toolsets.cli: [file]` | file tools only |
 
-`hermes.sh` refuses to start when the guarded lines are missing or changed, and
-when the profile's `.env` holds a key.
+`hermes.sh` refuses to start when a guarded line of the profile's config is
+missing or changed — the gateway provider lines, title request, retries and
+recovery (`api_max_retries` 0 or 1, `auto_recovery_cycles` 0), `max_turns`, the
+web settings, `disabled_toolsets`, lazy installs and `platform_toolsets.cli` —
+and when the profile's `.env` holds a key.
 
 ### Why web search is off
 

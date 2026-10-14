@@ -11,10 +11,13 @@
 #
 # Setup once: ./install.sh (pinned OpenCode), then both keys in the macOS
 # Keychain or the environment (README "Keys"). This launcher:
+#   - refuses a binary whose sha256 is not the verified build for this platform
+#     (opencode/pins.sh), checked at every start before the keys are handed over
 #   - drops every inherited variable (no stray provider key, no real HOME) and
 #     keeps all OpenCode state in the profile folder
-#   - hands both keys to the OpenCode process environment only; the config
-#     files hold {env:…} references, never a key
+#   - hands both keys to the OpenCode process environment only (the helpers this
+#     launcher runs never see them); the config files hold {env:…} references,
+#     never a key
 #   - sets the safety switches that exist ONLY as environment variables
 #     (no model-list fetch, no auto-update, no sharing, no LSP download,
 #     no Claude Code / external skills, no project config from parent folders)
@@ -37,18 +40,29 @@
 
 set -uo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "${BASH_SOURCE[0]}" in */*) HERE="${BASH_SOURCE[0]%/*}" ;; *) HERE=. ;; esac
+HERE="$(cd "$HERE" && pwd)"
 LC_PROG="opencode.sh"
 # shellcheck source=../lib/common.sh
-. "$HERE/../lib/common.sh"
+. "$HERE/../lib/common.sh"   # takes both keys out of the environment at once
+# shellcheck source=pins.sh
+. "$HERE/pins.sh"
 
 VERSION="1.19.0"
 DATA="$(lc_data_root)"
 BASE="${LUCAIRN_OPENCODE_DIR:-$DATA/opencode/$VERSION}"
 PROFILE="${LUCAIRN_OPENCODE_PROFILE:-$DATA/opencode/profile}"
-BIN="$BASE/node_modules/opencode-$(lc_os_arch)/bin/opencode$(lc_exe)"
+PLAT="$(lc_os_arch)" || exit 2
+BIN="$BASE/node_modules/opencode-$PLAT/bin/opencode$(lc_exe)"
 [ -x "$BIN" ] || lc_die "OpenCode is not installed at $BASE — run $HERE/install.sh first"
 case "$PROFILE" in /*) : ;; *) lc_die "LUCAIRN_OPENCODE_PROFILE must be an absolute path" ;; esac
+# The binary must be the verified build — checked at EVERY start (a file that failed the
+# installer's check, or was swapped later, never gets the keys).
+WANT="$(oc_pinned_sha256 "$PLAT")" || lc_die "no verified OpenCode build is recorded for $PLAT. Nothing was started."
+GOT="$(lc_sha256 "$BIN" 2>/dev/null)"
+if [ "$GOT" != "$WANT" ]; then
+  lc_die "$BIN is not the verified OpenCode $VERSION build (sha256 ${GOT:-unreadable}, want $WANT). Nothing was started. Run $HERE/install.sh again."
+fi
 
 MODE=tui; CFG="$HERE/config/opencode.json"; MSG=""; ARGS=()
 case "${1:-}" in
@@ -65,14 +79,13 @@ PORT="${LUCAIRN_OPENCODE_WEB_PORT:-14096}"
 NOBROWSER="${LUCAIRN_NO_BROWSER:-}"
 case "$PORT" in ''|*[!0-9]*) lc_die "LUCAIRN_OPENCODE_WEB_PORT must be a number" ;; esac
 
-WORK="$(lc_work_dir_check "${LUCAIRN_WORK_DIR:-$(lc_default_work_parent)/opencode}")" || exit 2
-GW="$(lc_gateway_url)"
-lc_load_keys
+lc_gateway_url                                                                # sets LC_GW, or stops
+lc_work_dir_check "${LUCAIRN_WORK_DIR:-$(lc_default_work_parent)/opencode}"   # sets LC_WORK, or stops
+lc_load_keys                                                                  # shell variables only
+lc_scrub_env                    # from here on: no inherited variable reaches any program
 
 for d in home config data cache state tmp; do mkdir -p "$PROFILE/$d" || lc_die "cannot create $PROFILE/$d"; done
-cd "$WORK" || lc_die "cannot enter $WORK"
-
-lc_scrub_env
+cd "$LC_WORK" || lc_die "cannot enter $LC_WORK"
 export HOME="$PROFILE/home" XDG_CONFIG_HOME="$PROFILE/config" XDG_DATA_HOME="$PROFILE/data"
 export XDG_CACHE_HOME="$PROFILE/cache" XDG_STATE_HOME="$PROFILE/state" TMPDIR="$PROFILE/tmp/"
 lc_windows_homes "$PROFILE/home" "$PROFILE/tmp"
@@ -87,19 +100,20 @@ export OPENCODE_DISABLE_LSP_DOWNLOAD=1 OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_D
 # and opencode.json are ignored too; put instructions into the config file.
 export OPENCODE_DISABLE_PROJECT_CONFIG=1
 export npm_config_offline=true
-export LUCAIRN_BASE_URL="$GW/v1" LUCAIRN_API_KEY="$LC_LUCAIRN_KEY" LUCAIRN_UPSTREAM_KEY="$LC_UPSTREAM_KEY"
-unset LC_LUCAIRN_KEY LC_UPSTREAM_KEY
+export LUCAIRN_BASE_URL="$LC_GW/v1"
 
-M=(); [ -n "$MODEL" ] && M=(-m "anthropic/$MODEL")
+# The keys enter the environment only inside lc_exec_client, which then becomes OpenCode.
+M=(); if [ -n "$MODEL" ]; then M=(-m "anthropic/$MODEL"); fi
 case "$MODE" in
-  tui) exec "$BIN" ${M[@]+"${M[@]}"} ;;
-  raw) exec "$BIN" ${ARGS[@]+"${ARGS[@]}"} ;;
-  one) printf '%s\n' "$MSG" | "$BIN" run ${M[@]+"${M[@]}"}; exit "${PIPESTATUS[1]}" ;;
+  tui) lc_exec_client "$BIN" ${M[@]+"${M[@]}"} ;;
+  raw) lc_exec_client "$BIN" ${ARGS[@]+"${ARGS[@]}"} ;;
+  one) printf '%s\n' "$MSG" | lc_exec_client "$BIN" run ${M[@]+"${M[@]}"}; exit "${PIPESTATUS[1]}" ;;
   web)
-    DIR64="$(printf '%s' "$WORK" | /usr/bin/base64 | tr '+/' '-_' | tr -d '=\n')"
+    DIR64="$(printf '%s' "$LC_WORK" | /usr/bin/base64 | tr '+/' '-_' | tr -d '=\n')"
     URL="http://127.0.0.1:$PORT/$DIR64/session"
-    "$BIN" serve --hostname 127.0.0.1 --port "$PORT" &
+    lc_exec_client "$BIN" serve --hostname 127.0.0.1 --port "$PORT" &
     SRV=$!
+    unset LC_LUCAIRN_KEY LC_UPSTREAM_KEY
     trap 'kill "$SRV" 2>/dev/null' EXIT
     trap 'exit 130' INT TERM HUP
     printf 'opencode.sh: browser page %s (127.0.0.1 only, no password) — stop with Ctrl+C\n' "$URL" >&2
