@@ -77,8 +77,9 @@ before you start a launcher.
 - A used-up monthly quota and the per-minute rate limit both arrive as HTTP 429
   `rate_limit_error` (only the message text differs), so the clients show their
   generic "rate limited / wait" text for both.
-- A question that uses tools costs several model requests (4–8 for a small file
-  task in testing); a per-minute limit on your Lucairn account is reached quickly.
+- A question that uses tools costs several model requests (a small file task took
+  4 in testing, each client); a per-minute limit on your Lucairn account is reached
+  quickly.
 - The keys sit in the environment of the client's processes; other programs of
   the same user can read them.
 - Anything a tool reads (a file, a tool result) goes through Lucairn to the model
