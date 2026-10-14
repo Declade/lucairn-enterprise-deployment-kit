@@ -1,0 +1,70 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "anthropic/claude-sonnet-5-5",
+  "small_model": "anthropic/claude-haiku-4-5",
+  "enabled_providers": [
+    "anthropic"
+  ],
+  "autoupdate": false,
+  "share": "disabled",
+  "snapshot": false,
+  "instructions": [
+    "{env:LUCAIRN_RULES_FILE}"
+  ],
+  "provider": {
+    "anthropic": {
+      "options": {
+        "baseURL": "{env:LUCAIRN_BASE_URL}",
+        "apiKey": "{env:LUCAIRN_API_KEY}",
+        "headers": {
+          "X-Upstream-Key": "{env:LUCAIRN_UPSTREAM_KEY}"
+        }
+      }
+    }
+  },
+  "agent": {
+    "title": {
+      "disable": true
+    }
+  },
+  "mcp": {
+    "servicenow": {
+      "type": "local",
+      "command": [
+        "/absolute/path/to/node",
+        "/path/to/servicenow-mcp-server/dist/index.js"
+      ],
+      "environment": {
+        "SN_INSTANCE": "{env:SN_INSTANCE}",
+        "SN_USERNAME": "{env:SN_USERNAME}",
+        "SN_PASSWORD": "{env:SN_PASSWORD}"
+      },
+      "enabled": true
+    }
+  },
+  "permission": {
+    "*": "deny",
+    "read": "deny",
+    "edit": "deny",
+    "glob": "deny",
+    "grep": "deny",
+    "list": "deny",
+    "bash": "deny",
+    "task": "deny",
+    "external_directory": "deny",
+    "todowrite": "deny",
+    "question": "deny",
+    "webfetch": "deny",
+    "websearch": "deny",
+    "lsp": "deny",
+    "doom_loop": "deny",
+    "skill": "deny",
+    "servicenow_table_read": "allow",
+    "servicenow_table_create": "allow",
+    "servicenow_table_update": "allow",
+    "servicenow_get_table_schema": "allow",
+    "servicenow_set_update_set": "allow",
+    "servicenow_aggregate_stats": "allow",
+    "servicenow_get_instance_info": "allow"
+  }
+}
