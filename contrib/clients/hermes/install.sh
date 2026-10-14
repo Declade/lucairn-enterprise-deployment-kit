@@ -82,7 +82,7 @@ if [ ! -x "$BASE/.venv/bin/hermes" ]; then
   [ "$CHECK_ONLY" -eq 1 ] && fail "not installed: $BASE/.venv/bin/hermes is missing (run without --check)"
   lc_need uv
   PY="${LUCAIRN_HERMES_PYTHON:-$(command -v python3.12 2>/dev/null || true)}"
-  [ -n "$PY" ] && [ -x "$PY" ] || { printf 'hermes/install.sh: no python3.12 found (set LUCAIRN_HERMES_PYTHON; nothing is downloaded for you)\n' >&2; exit 2; }
+  if ! { [ -n "$PY" ] && [ -x "$PY" ]; }; then printf 'hermes/install.sh: no python3.12 found (set LUCAIRN_HERMES_PYTHON; nothing is downloaded for you)\n' >&2; exit 2; fi
   CACHE="$(mktemp -d "${TMPDIR:-/tmp}/hermes-install.XXXXXX")" || fail "cannot create a temp cache folder"
   printf '  venv   : creating with %s\n' "$PY"
   UV_CACHE_DIR="$CACHE/uv" UV_PYTHON_DOWNLOADS=never uv venv --quiet --python "$PY" "$BASE/.venv" || fail "uv venv failed"

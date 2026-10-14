@@ -51,7 +51,7 @@ OWS="$BASE/node_modules/openwork-server/bin/openwork-server.mjs"
 [ -f "$OWS" ] || lc_die "OpenWork host is not installed at $BASE — run $HERE/install.sh first"
 case "$PROFILE" in /*) : ;; *) lc_die "LUCAIRN_OPENWORK_PROFILE must be an absolute path" ;; esac
 NODE="${LUCAIRN_NODE:-$(command -v node 2>/dev/null || true)}"
-[ -n "$NODE" ] && [ -x "$NODE" ] || lc_die "node not found (set LUCAIRN_NODE)"
+if ! { [ -n "$NODE" ] && [ -x "$NODE" ]; }; then lc_die "node not found (set LUCAIRN_NODE)"; fi
 PORT="${LUCAIRN_OPENWORK_PORT:-18787}"
 case "$PORT" in ''|*[!0-9]*) lc_die "LUCAIRN_OPENWORK_PORT must be a number" ;; esac
 
@@ -110,7 +110,7 @@ umask 077
 start_host > "$LOG" 2>&1 &
 SRV=$!
 unset LC_LUCAIRN_KEY LC_UPSTREAM_KEY
-# shellcheck disable=SC2329  # invoked via the EXIT trap
+# shellcheck disable=SC2317,SC2329  # invoked via the EXIT trap
 stop_host() {
   kill "$SRV" 2>/dev/null
   for _ in 1 2 3 4 5; do kill -0 "$SRV" 2>/dev/null || break; sleep 1; done
