@@ -17,6 +17,8 @@ Put both keys in the Keychain or the environment ([`../README.md`](../README.md#
 
 ## Start
 
+Launcher install/profile directory overrides must be absolute; relative paths are rejected and accepted paths are resolved with `pwd -P` before checks.
+
 ```sh
 ./hermes.sh -z "your question"            # one question
 ./hermes.sh                               # interactive chat (leave with /exit)

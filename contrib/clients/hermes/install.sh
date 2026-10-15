@@ -62,7 +62,6 @@ lc_gateway_url   # sets LC_GW (only written into the check config; nothing is co
 # run_hermes <args…> — empty environment, both homes in a throwaway temp folder
 # (removed at exit), no gateway key: only for --version / tools list.
 run_hermes() {
-  if [ -z "$CHECK" ]; then CHECK="$(mktemp -d "${TMPDIR:-/tmp}/hermes-check.XXXXXX")" || fail "cannot create a temp check folder"; fi
   local hh="$CHECK/home" sh="$CHECK/sandbox-home" wd="$CHECK/work"
   mkdir -p "$hh" "$sh" "$wd" || fail "cannot create $CHECK"
   cp "$RECIPE" "$hh/config.yaml" || fail "cannot copy the recipe into the check home"
@@ -106,6 +105,9 @@ if [ ! -x "$HVBIN" ]; then
 fi
 [ -x "$HVBIN" ] || fail "$HVBIN is missing after install"
 
+# Allocate in the parent: run_hermes runs inside command substitutions, but the
+# parent EXIT trap must own (and remove) the same folder for both checks.
+CHECK="$(mktemp -d "${TMPDIR:-/tmp}/hermes-check.XXXXXX")" || fail "cannot create a temp check folder"
 VERSION_LINE="$(run_hermes --version 2>&1 | head -n 1)"
 case "$VERSION_LINE" in
   *"(${TAG#v})"*) : ;;
