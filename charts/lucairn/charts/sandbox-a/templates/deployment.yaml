@@ -36,6 +36,7 @@
 {{- range $key := keys $saLiterals | sortAlpha -}}
 {{- include "sandbox-a.env.noExpansion" (dict "key" $key "value" (get $saLiterals $key)) -}}
 {{- end -}}
+{{- if include "servicenowControl.enabled" . -}}{{- include "servicenowControl.workloadValidate" . -}}{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -45,6 +46,10 @@ metadata:
     app.kubernetes.io/name: {{ .Chart.Name }}
     app.kubernetes.io/part-of: dsa
 spec:
+  {{- if include "servicenowControl.enabled" . }}
+  strategy:
+    type: Recreate
+  {{- end }}
   {{- if not .Values.hpa.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
@@ -101,6 +106,10 @@ spec:
           operator: Equal
           value: identity
           effect: NoSchedule
+      {{- end }}
+      {{- if include "servicenowControl.enabled" . }}
+      initContainers:
+        {{- if include "servicenowControl.enabled" . }}{{ include "servicenowControl.init" . | nindent 8 }}{{- end }}
       {{- end }}
       containers:
         - name: {{ .Chart.Name }}
@@ -225,6 +234,7 @@ spec:
                 command: ["/bin/sh", "-c", "sleep {{ int .Values.gracefulShutdown.preStopSleepSeconds }}"]
           {{- end }}
         - name: sanitizer
+          {{- if include "servicenowControl.enabled" . }}{{ include "servicenowControl.command" . | nindent 10 }}{{- end }}
           image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.sanitizer.image.repository }}:{{ .Values.sanitizer.image.tag | default .Values.global.imageTag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.sanitizer.image.pullPolicy }}
           securityContext:
@@ -234,6 +244,7 @@ spec:
                 - ALL
             readOnlyRootFilesystem: true
           ports:
+            {{- if include "servicenowControl.enabled" . }}{{ include "servicenowControl.port" . | nindent 12 }}{{- end }}
             - name: sanitizer
               containerPort: 8086
               protocol: TCP
@@ -252,8 +263,14 @@ spec:
             - name: DSA_MTLS_SERVER_NAME
               value: "dsa-sanitizer"
             {{- end }}
+            {{- if include "servicenowControl.enabled" . }}
+            - name: LUCAIRN_CONTROL_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            {{- end }}
             - name: SANITIZER_CONFIG_PATH
-              value: /config/config.yaml
+              value: {{ if include "servicenowControl.enabled" . }}/tmp/servicenow-control/config.yaml{{ else }}/config/config.yaml{{ end }}
             - name: SANITIZER_PORT
               value: "8086"
             # M12 fix (2026-06-23): gunicorn worker timeout. Compose sets
@@ -565,6 +582,7 @@ spec:
             - name: SANITIZER_STREAM_MUTATION_MARKER_TTL_SECONDS
               value: {{ .Values.sanitizerStreamState.mutationMarkerTtlSeconds | default 600 | quote }}
           volumeMounts:
+            {{- if include "servicenowControl.enabled" . }}{{ include "servicenowControl.mounts" . | nindent 12 }}{{- end }}
             - name: sanitizer-config
               mountPath: /config
             - name: sanitizer-tmp
@@ -642,11 +660,17 @@ spec:
               memory: "3Gi"
               cpu: "1000m"
       volumes:
+        {{- if include "servicenowControl.enabled" . }}{{ include "servicenowControl.volumes" . | nindent 8 }}{{- end }}
         - name: sanitizer-config
           configMap:
             name: sanitizer-config
         - name: sanitizer-tmp
+          {{- if include "servicenowControl.enabled" . }}
+          emptyDir:
+            medium: Memory
+          {{- else }}
           emptyDir: {}
+          {{- end }}
         - name: sanitizer-home
           emptyDir:
             sizeLimit: 500Mi

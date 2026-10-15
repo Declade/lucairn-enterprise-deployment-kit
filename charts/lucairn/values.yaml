@@ -1,4 +1,19 @@
 global:
+  # Slice 3 transport is render-blocked by servicenow-control-held.yaml.
+  # Tests remove that file only from temporary chart copies.
+  servicenowControl:
+    enabled: false
+    gatewayNamespace: dsa-edge
+    sanitizerNamespace: dsa-identity
+    gatewaySecret: ""
+    sanitizerSecret: ""
+    instanceCIDRs: []
+    # Exact instance DNS names are required when Cilium DNS restriction is ON.
+    instanceDNSNames: []
+    # API server service + endpoint CIDRs; required by the enabled policy.
+    kubernetesAPICIDRs: []
+    # Pod/Service ranges; instance ranges must be disjoint from these.
+    clusterCIDRs: []
   vertical: finance
   imageRegistry: "ghcr.io/declade"
   imagePullSecrets: []

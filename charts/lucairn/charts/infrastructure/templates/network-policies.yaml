@@ -22,8 +22,10 @@ spec:
       ports:
         - port: 50053
           protocol: TCP
+{{- if not (include "servicenowControl.enabled" .) }}
         - port: 8086
           protocol: TCP
+{{- end }}
         - port: 8083
           protocol: TCP
     # → dsa-bridge (ID Bridge gRPC + HTTP /readyz probe for the
@@ -306,8 +308,10 @@ spec:
       ports:
         - port: 50053
           protocol: TCP
+{{- if not (include "servicenowControl.enabled" .) }}
         - port: 8086
           protocol: TCP
+{{- end }}
         - port: 8083
           protocol: TCP
     # From dsa-bridge (token revocation callbacks)
@@ -604,6 +608,7 @@ spec:
         - ipBlock:
             cidr: 0.0.0.0/0
             except:
+              {{- if include "servicenowControl.enabled" . }}{{ include "servicenowControl.instanceExcept" . | nindent 14 }}{{- end }}
               - 10.0.0.0/8
               - 172.16.0.0/12
               - 192.168.0.0/16
@@ -787,7 +792,12 @@ spec:
     # → Kubernetes API (Promtail pod discovery + label enrichment)
     # Broad destination because K8s API and service ClusterIPs are virtual
     # IPs that ipBlock/podSelector can't reliably match before DNAT.
-    - ports:
+    - {{ if include "servicenowControl.enabled" . }}to:
+{{- range .Values.global.servicenowControl.kubernetesAPICIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+{{- end }}
+      {{ end }}ports:
         - port: 443
           protocol: TCP
         - port: 6443
@@ -910,6 +920,7 @@ spec:
         - ipBlock:
             cidr: 0.0.0.0/0
             except:
+              {{- if include "servicenowControl.enabled" . }}{{ include "servicenowControl.instanceExcept" . | nindent 14 }}{{- end }}
               - 10.0.0.0/8
               - 172.16.0.0/12
               - 192.168.0.0/16
