@@ -46,6 +46,13 @@ services:
           create_host_path: false
 
   sanitizer:
+    # The same one-owner replacement rule applies to the sanitizer control peer.
+    container_name: "${COMPOSE_PROJECT_NAME}-sanitizer-servicenow-control"
+    scale: 1
+    deploy:
+      replicas: 1
+      update_config:
+        order: stop-first
     ulimits:
       core:
         soft: 0

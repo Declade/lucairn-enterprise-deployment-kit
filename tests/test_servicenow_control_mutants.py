@@ -58,9 +58,18 @@ class MutantTests(unittest.TestCase):
              "test_invalid_private_interfaces_refuse_without_render"),
             ("distinct interface IPs", script, "addresses[0] == addresses[1]", "False",
              "test_invalid_private_interfaces_refuse_without_render"),
+            ("empty path argument", script, 'if value == "":', "if False:",
+             "test_empty_path_arguments_refuse_explicitly_without_render"),
             ("bind subnet membership", script, "if address not in network or address in (network.network_address,",
              "if False and address in (network.network_address,",
              "test_invalid_private_interfaces_refuse_without_render"),
+            ("sanitizer fixed name blocks scale", overlay,
+             '    container_name: "${COMPOSE_PROJECT_NAME}-sanitizer-servicenow-control"\n', "",
+             "test_core_zero_traceback_and_single_owner_replacement_render"),
+            ("sanitizer one owner validation", script,
+             'if (service.get("scale") != 1 or service.get("deploy", {}).get("replicas") != 1 or',
+             'if (False and (service.get("scale") != 1 or service.get("deploy", {}).get("replicas") != 1) or',
+             "test_renderer_refuses_missing_sanitizer_single_owner_guards"),
         ]
         for label, filename, old, new, method in mutations:
             source = (ROOT / filename).read_text()
@@ -101,6 +110,8 @@ class MutantTests(unittest.TestCase):
              "test_wrong_key_refused"),
             ("exact SAN", 'if len(san) != 2 or san[1].strip() != "DNS:" + identity:', "if False:",
              "test_rerun_rejects_extra_san"),
+            ("leaf CA false", 'if len(constraints) != 2 or constraints[1].strip() != "CA:FALSE":',
+             "if False:", "test_rerun_rejects_ca_true_leaf"),
             ("exact EKU", 'if len(eku) != 2 or set(eku[1].strip().split(", ")) != {\n'
              '                "TLS Web Server Authentication", "TLS Web Client Authentication"}:',
              "if False:", "test_rerun_rejects_extra_eku"),

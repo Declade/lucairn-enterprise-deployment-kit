@@ -97,6 +97,9 @@ def validate(material, uid, gid):
             raise Invalid("CA mismatch")
         cert = leaf / "tls.crt"
         key_matches(cert, leaf / "tls.key")
+        constraints = openssl("x509", "-in", cert, "-noout", "-ext", "basicConstraints").decode().splitlines()
+        if len(constraints) != 2 or constraints[1].strip() != "CA:FALSE":
+            raise Invalid("invalid leaf constraints")
         san = openssl("x509", "-in", cert, "-noout", "-ext", "subjectAltName").decode().splitlines()
         eku = openssl("x509", "-in", cert, "-noout", "-ext", "extendedKeyUsage").decode().splitlines()
         if len(san) != 2 or san[1].strip() != "DNS:" + identity:

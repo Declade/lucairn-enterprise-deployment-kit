@@ -31,6 +31,12 @@ class Invalid(Exception):
     pass
 
 
+def nonempty_path(value):
+    if value == "":
+        raise argparse.ArgumentTypeError("path must not be empty")
+    return Path(value)
+
+
 def private_network(subnet, gateway, sanitizer):
     network = ipaddress.IPv4Network(subnet, strict=True)
     private = tuple(map(ipaddress.IPv4Network, ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")))
@@ -80,6 +86,10 @@ def validate_render(rendered, ordinary, network, addresses, material, config):
             raise Invalid()
         if service.get("ulimits", {}).get("core") != {"soft": 0, "hard": 0}:
             raise Invalid()
+        if (service.get("scale") != 1 or service.get("deploy", {}).get("replicas") != 1 or
+                service.get("deploy", {}).get("update_config", {}).get("order") != "stop-first" or
+                not service.get("container_name")):
+            raise Invalid()
         if {key: value for key, value in service["networks"].items() if key != NETWORK} != before["networks"]:
             raise Invalid()
         mounts = [mount for mount in service["volumes"]
@@ -98,10 +108,7 @@ def validate_render(rendered, ordinary, network, addresses, material, config):
                 if service["environment"].get(key) != value:
                     raise Invalid()
     gateway = rendered["services"]["gateway"]
-    if (gateway["environment"].get("GOTRACEBACK") != "none" or
-            gateway.get("scale") != 1 or gateway["deploy"].get("replicas") != 1 or
-            gateway["deploy"].get("update_config", {}).get("order") != "stop-first" or
-            not gateway.get("container_name")):
+    if gateway["environment"].get("GOTRACEBACK") != "none":
         raise Invalid()
     sanitizer = rendered["services"]["sanitizer"]
     config_mount = [mount for mount in sanitizer["volumes"] if mount["target"] == "/config/config.yaml"]
@@ -182,14 +189,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("off", "on"), default="off")
     parser.add_argument("--path", choices=COUNTS, default="customer")
-    parser.add_argument("--env-file", type=Path, required=True)
+    parser.add_argument("--env-file", type=nonempty_path, required=True)
     parser.add_argument("--project-name", required=True)
     parser.add_argument("--subnet", default="")
     parser.add_argument("--gateway-ip", default="")
     parser.add_argument("--sanitizer-ip", default="")
-    parser.add_argument("--cert-directory", type=Path)
-    parser.add_argument("--sanitizer-config", type=Path)
-    parser.add_argument("--output-directory", type=Path)
+    parser.add_argument("--cert-directory", type=nonempty_path)
+    parser.add_argument("--sanitizer-config", type=nonempty_path)
+    parser.add_argument("--output-directory", type=nonempty_path)
     parser.add_argument("--workload-uid", type=int, default=10001)
     parser.add_argument("--workload-gid", type=int, default=10001)
     args = parser.parse_args()

@@ -173,12 +173,13 @@ class BootstrapTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn(b"expired", result.stderr)
 
-    def replace_leaf(self, role, san, eku, expired=False):
+    def replace_leaf(self, role, san, eku, expired=False, constraints="CA:FALSE"):
         leaf = self.material / role
         request = run("openssl", "req", "-new", "-key", leaf / "tls.key", "-subj", "/CN=synthetic")
         self.assertEqual(0, request.returncode)
         ext = Path(self.temp.name) / "test.ext"
-        ext.write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=digitalSignature\n"
+        ext.write_text((f"basicConstraints=critical,{constraints}\n" if constraints else "") +
+                       "keyUsage=digitalSignature\n"
                        "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n"
                        f"subjectAltName=DNS:{san}\nextendedKeyUsage={eku}\n")
         command = ["openssl", "x509", "-req", "-CA",
@@ -220,6 +221,22 @@ class BootstrapTests(unittest.TestCase):
 
     def test_rerun_rejects_extra_eku(self):
         self.replace_leaf("gateway", "gateway.servicenow-control", "serverAuth,clientAuth,codeSigning")
+        self.assertEqual(0, self.verify("gateway", "gateway.servicenow-control").returncode)
+        self.assertNotEqual(0, self.invoke(self.root).returncode)
+
+    def test_rerun_rejects_ca_true_leaf(self):
+        for role in ("gateway", "sanitizer"):
+            with self.subTest(role=role):
+                identity = role + ".servicenow-control"
+                self.replace_leaf(role, identity, "serverAuth,clientAuth", constraints="CA:TRUE")
+                # Otherwise valid TLS leaves must fail specifically on CA:TRUE.
+                for purpose in ("sslserver", "sslclient"):
+                    self.assertEqual(0, self.verify(role, identity, purpose).returncode)
+                self.assertNotEqual(0, self.invoke(self.root).returncode)
+                self.replace_leaf(role, identity, "serverAuth,clientAuth")
+
+    def test_rerun_rejects_missing_leaf_constraints(self):
+        self.replace_leaf("gateway", "gateway.servicenow-control", "serverAuth,clientAuth", constraints=None)
         self.assertEqual(0, self.verify("gateway", "gateway.servicenow-control").returncode)
         self.assertNotEqual(0, self.invoke(self.root).returncode)
 

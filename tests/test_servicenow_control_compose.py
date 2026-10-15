@@ -143,13 +143,28 @@ class ComposeTests(unittest.TestCase):
     def test_core_zero_traceback_and_single_owner_replacement_render(self):
         rendered = self.successful()
         for role in ("gateway", "sanitizer"):
-            self.assertEqual({"soft": 0, "hard": 0}, rendered["services"][role]["ulimits"]["core"])
+            service = rendered["services"][role]
+            self.assertEqual({"soft": 0, "hard": 0}, service["ulimits"]["core"])
+            self.assertEqual(1, service["scale"])
+            self.assertEqual(1, service["deploy"]["replicas"])
+            self.assertEqual("stop-first", service["deploy"]["update_config"]["order"])
+            self.assertEqual("k1-synthetic-" + role + "-servicenow-control", service["container_name"])
         gateway = rendered["services"]["gateway"]
         self.assertEqual("none", gateway["environment"]["GOTRACEBACK"])
-        self.assertEqual(1, gateway["scale"])
-        self.assertEqual(1, gateway["deploy"]["replicas"])
-        self.assertEqual("stop-first", gateway["deploy"]["update_config"]["order"])
-        self.assertEqual("k1-synthetic-gateway-servicenow-control", gateway["container_name"])
+
+    def test_renderer_refuses_missing_sanitizer_single_owner_guards(self):
+        rendered = self.successful()
+        ordinary = yaml.safe_load(self.invoke(mode="off").stdout)
+        for guard in ("scale", "container_name", "replicas", "update_config"):
+            with self.subTest(guard=guard):
+                altered = copy.deepcopy(rendered)
+                service = altered["services"]["sanitizer"]
+                (service if guard in ("scale", "container_name") else service["deploy"]).pop(guard)
+                with self.assertRaises(renderer.Invalid):
+                    renderer.validate_render(altered, ordinary,
+                        renderer.private_network("172.30.251.0/29", "172.30.251.2", "172.30.251.3"),
+                        ("172.30.251.2", "172.30.251.3"), self.cert / "material",
+                        self.output / "sanitizer.yaml")
 
     def test_no_published_control_ports_or_main_channel_mesh_change(self):
         on = self.successful()
@@ -184,6 +199,16 @@ class ComposeTests(unittest.TestCase):
         self.assertEqual(2, result.returncode)
         self.assertEqual(b"", result.stdout)
         self.assertFalse(self.output.exists())
+
+    def test_empty_path_arguments_refuse_explicitly_without_render(self):
+        for mode in ("off", "on"):
+            for option in ("env-file", "cert-directory", "sanitizer-config", "output-directory"):
+                with self.subTest(mode=mode, option=option):
+                    result = self.invoke(mode=mode, **{option: ""})
+                    self.assertEqual(2, result.returncode)
+                    self.assertIn(b"path must not be empty", result.stderr)
+                    self.assertEqual(b"", result.stdout)
+                    self.assertFalse(self.output.exists())
 
     def test_invalid_private_interfaces_refuse_without_render(self):
         cases = [{"gateway-ip": value} for value in

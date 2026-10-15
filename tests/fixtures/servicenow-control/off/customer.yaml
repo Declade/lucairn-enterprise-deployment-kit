@@ -1,0 +1,852 @@
+name: k1-off
+services:
+  audit:
+    depends_on:
+      migrate-audit:
+        condition: service_completed_successfully
+        required: true
+      witness-egress-guard:
+        condition: service_completed_successfully
+        required: true
+    environment:
+      AUDIT_DATABASE_URL: postgres://audit_app:k1-synthetic@postgres-audit:5432/audit?sslmode=disable
+      DSA_ENV: production
+      DSA_SERVICE_TOKEN: k1-synthetic
+      GRPC_TLS_ENABLED: "true"
+      LCR_ENABLED: "true"
+      LCR_SIGNING_KEY: ""
+      LCR_WITNESS_ADDR: veil-witness:50057
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: ""
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: ""
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: ""
+      LCR_WITNESS_REQUIRE_MTLS: "false"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://localhost:8081/healthz || exit 1
+      timeout: 3s
+      interval: 5s
+      retries: 10
+    image: ghcr.io/declade/dsa-audit:0.5.5
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-audit: null
+      dsa-audit-identity: null
+      dsa-witness-audit: null
+    restart: on-failure
+  audit-claim-delivery-retention:
+    cap_drop:
+      - ALL
+    depends_on:
+      migrate-audit:
+        condition: service_completed_successfully
+        required: true
+    entrypoint:
+      - /bin/sh
+      - /scripts/audit-claim-delivery-retention.sh
+    environment:
+      HOME: /tmp
+      LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS: "30"
+      LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED: "true"
+      LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_INTERVAL_SECONDS: "86400"
+      PGDATABASE: audit
+      PGHOST: postgres-audit
+      PGPASSWORD: k1-synthetic
+      PGPORT: "5432"
+      PGSSLMODE: disable
+      PGUSER: dsa
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-audit: null
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    user: 65534:65534
+    volumes:
+      - type: bind
+        source: ./scripts/audit-claim-delivery-retention.sh
+        target: /scripts/audit-claim-delivery-retention.sh
+        read_only: true
+        bind: {}
+  gateway:
+    depends_on:
+      id-bridge:
+        condition: service_healthy
+        required: true
+      sandbox-a:
+        condition: service_healthy
+        required: true
+      witness-egress-guard:
+        condition: service_completed_successfully
+        required: true
+    environment:
+      AUDIT_SERVICE_ADDR: audit:50051
+      BRIDGE_HEALTH_ADDR: id-bridge:8082
+      BRIDGE_SERVICE_ADDR: id-bridge:50052
+      CANARY_HMAC_KEY: k1-synthetic
+      DSA_ADMIN_KEY: k1-synthetic
+      DSA_ENV: production
+      DSA_LICENSE_KEY: ""
+      DSA_LICENSE_SIGNING_KEY: ""
+      DSA_SERVICE_TOKEN: k1-synthetic
+      GATEWAY_BASE_URL: http://localhost:8080
+      GATEWAY_KEYSTORE_KEY: k1-synthetic
+      GATEWAY_KEYSTORE_PATH: /data/keystore.json
+      GATEWAY_TMS_TRUST_ZONES: ""
+      GATEWAY_TOOL_SCHEMA_GUARD: refuse
+      GATEWAY_TRUSTED_PROXY_CIDRS: ""
+      GATEWAY_VERTICALS_DIR: /etc/dsa/starter-templates
+      GATEWAY_WAIT_TIMEOUT: "120"
+      GRPC_TLS_ENABLED: "true"
+      IDENTITY_SERVICE_ADDR: sandbox-a:50053
+      LCR_AUDIT_PUBLIC_KEY: ""
+      LCR_BRIDGE_PUBLIC_KEY: ""
+      LCR_ENABLED: "true"
+      LCR_GATEWAY_MANIFEST_PUBLIC_KEY: ""
+      LCR_GATEWAY_PUBLIC_KEY: ""
+      LCR_GATEWAY_SIGNING_KEY: ""
+      LCR_ISSUER: Lucairn Veil Witness
+      LCR_MANIFEST_SIGNING_KEY: ""
+      LCR_MANIFEST_SIGNING_KEY_ID: gateway_manifest_v1
+      LCR_SANDBOX_B_PUBLIC_KEY: ""
+      LCR_SANITIZER_PUBLIC_KEY: ""
+      LCR_WITNESS_ADDR: veil-witness:50057
+      LCR_WITNESS_CERT_ADDR: veil-witness:50058
+      LCR_WITNESS_MANIFEST_PUBLIC_KEY: ""
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: ""
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: ""
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: ""
+      LCR_WITNESS_PUBLIC_KEY: ""
+      LCR_WITNESS_REQUIRE_MTLS: "false"
+      LCR_WITNESS_SIGNED_MANIFEST_PATH: /certs/witness-signed-manifest.json
+      LUCAIRN_LICENSE_GRACE_DAYS: "14"
+      LUCAIRN_LICENSE_KEY: ""
+      LUCAIRN_LICENSE_PUBLIC_KEY: ""
+      LUCAIRN_RESOURCE_BASE_URL: ""
+      SANDBOX_A_INVARIANT_URL: http://sandbox-a:8083/invariant
+      SANDBOX_B_API_KEY: ""
+      SANDBOX_B_CA_CERT: ""
+      SANDBOX_B_CLIENT_CERT: ""
+      SANDBOX_B_CLIENT_KEY: ""
+      SANDBOX_B_REMOTE_ENDPOINT: ""
+      SANITIZE_CACHE_ENABLED: "false"
+      SANITIZER_URL: http://sanitizer:8086
+      STREAMING_ENABLED: "false"
+      SUPABASE_URL: ""
+      WITNESS_MTLS_CA_BUNDLE_PATH: ""
+      WITNESS_MTLS_CLIENT_CERT_PATH: ""
+      WITNESS_MTLS_CLIENT_KEY_PATH: ""
+      WITNESS_MTLS_SERVER_NAME: witness
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://localhost:8085/healthz || exit 1
+      timeout: 3s
+      interval: 5s
+      retries: 10
+    image: ghcr.io/declade/dsa-gateway:0.5.5
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-audit-identity: null
+      dsa-bridge: null
+      dsa-identity: null
+      dsa-witness-edge: null
+    ports:
+      - mode: ingress
+        host_ip: 127.0.0.1
+        target: 8080
+        published: "8080"
+        protocol: tcp
+      - mode: ingress
+        host_ip: 127.0.0.1
+        target: 8085
+        published: "8085"
+        protocol: tcp
+    restart: on-failure
+    volumes:
+      - type: bind
+        source: ./starter-templates
+        target: /etc/dsa/starter-templates
+        read_only: true
+        bind: {}
+      - type: volume
+        source: gateway-data
+        target: /data
+        volume: {}
+      - type: bind
+        source: ./.certs
+        target: /certs
+        read_only: true
+        bind: {}
+      - type: bind
+        source: ./.certs/witness-mtls
+        target: /etc/witness-mtls
+        read_only: true
+        bind: {}
+  id-bridge:
+    depends_on:
+      audit:
+        condition: service_healthy
+        required: true
+      migrate-bridge:
+        condition: service_completed_successfully
+        required: true
+      witness-egress-guard:
+        condition: service_completed_successfully
+        required: true
+    environment:
+      BRIDGE_DATABASE_URL: postgres://dsa:k1-synthetic@postgres-bridge:5432/bridge?sslmode=disable
+      BRIDGE_EPHEMERAL: "true"
+      BRIDGE_MASTER_KEY: ""
+      DSA_BRIDGE_ENCRYPTION_KEY: k1-synthetic
+      DSA_ENV: production
+      DSA_SERVICE_TOKEN: k1-synthetic
+      GRPC_TLS_ENABLED: "true"
+      LCR_ENABLED: "true"
+      LCR_SIGNING_KEY: ""
+      LCR_WITNESS_ADDR: veil-witness:50057
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: ""
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: ""
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: ""
+      LCR_WITNESS_REQUIRE_MTLS: "false"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://localhost:8082/healthz || exit 1
+      timeout: 3s
+      interval: 5s
+      retries: 10
+    image: ghcr.io/declade/dsa-id-bridge:0.5.5
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-bridge: null
+      dsa-witness-bridge: null
+    restart: on-failure
+  migrate-audit:
+    depends_on:
+      postgres-audit:
+        condition: service_healthy
+        required: true
+      prep-migrations:
+        condition: service_completed_successfully
+        required: true
+    entrypoint:
+      - /bin/sh
+      - /scripts/migrate-capped.sh
+    environment:
+      DATABASE_URL: postgres://dsa:k1-synthetic@postgres-audit:5432/audit?sslmode=disable
+      MIGRATE_CEILING_FILE: /scripts/migration-ceilings.conf
+      MIGRATE_CEILING_KEY: AUDIT
+      MIGRATE_LABEL: migrate-audit
+      MIGRATE_PATH: /migrations/audit
+      MIGRATE_TARGET_VERSION: "7"
+      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "false"
+    image: migrate/migrate:v4.17.0
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-audit: null
+    restart: 'no'
+    volumes:
+      - type: volume
+        source: rendered-migrations
+        target: /migrations
+        read_only: true
+        volume: {}
+      - type: bind
+        source: ./scripts/migrate-capped.sh
+        target: /scripts/migrate-capped.sh
+        read_only: true
+        bind: {}
+      - type: bind
+        source: ./scripts/migration-ceilings.conf
+        target: /scripts/migration-ceilings.conf
+        read_only: true
+        bind: {}
+  migrate-bridge:
+    depends_on:
+      postgres-bridge:
+        condition: service_healthy
+        required: true
+      prep-migrations:
+        condition: service_completed_successfully
+        required: true
+    entrypoint:
+      - /bin/sh
+      - /scripts/migrate-capped.sh
+    environment:
+      DATABASE_URL: postgres://dsa:k1-synthetic@postgres-bridge:5432/bridge?sslmode=disable
+      MIGRATE_CEILING_FILE: /scripts/migration-ceilings.conf
+      MIGRATE_CEILING_KEY: ID_BRIDGE
+      MIGRATE_LABEL: migrate-bridge
+      MIGRATE_PATH: /migrations/id-bridge
+      MIGRATE_TARGET_VERSION: "4"
+      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "false"
+    image: migrate/migrate:v4.17.0
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-bridge: null
+    restart: 'no'
+    volumes:
+      - type: volume
+        source: rendered-migrations
+        target: /migrations
+        read_only: true
+        volume: {}
+      - type: bind
+        source: ./scripts/migrate-capped.sh
+        target: /scripts/migrate-capped.sh
+        read_only: true
+        bind: {}
+      - type: bind
+        source: ./scripts/migration-ceilings.conf
+        target: /scripts/migration-ceilings.conf
+        read_only: true
+        bind: {}
+  migrate-sandbox-a:
+    depends_on:
+      postgres-sandbox-a:
+        condition: service_healthy
+        required: true
+      prep-migrations:
+        condition: service_completed_successfully
+        required: true
+    entrypoint:
+      - /bin/sh
+      - /scripts/migrate-capped.sh
+    environment:
+      DATABASE_URL: postgres://dsa:k1-synthetic@postgres-sandbox-a:5432/sandbox_a?sslmode=disable
+      MIGRATE_CEILING_FILE: /scripts/migration-ceilings.conf
+      MIGRATE_CEILING_KEY: SANDBOX_A
+      MIGRATE_LABEL: migrate-sandbox-a
+      MIGRATE_PATH: /migrations/sandbox-a
+      MIGRATE_TARGET_VERSION: "8"
+      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "false"
+    image: migrate/migrate:v4.17.0
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-identity: null
+    restart: 'no'
+    volumes:
+      - type: volume
+        source: rendered-migrations
+        target: /migrations
+        read_only: true
+        volume: {}
+      - type: bind
+        source: ./scripts/migrate-capped.sh
+        target: /scripts/migrate-capped.sh
+        read_only: true
+        bind: {}
+      - type: bind
+        source: ./scripts/migration-ceilings.conf
+        target: /scripts/migration-ceilings.conf
+        read_only: true
+        bind: {}
+  migrate-veil:
+    depends_on:
+      postgres-veil:
+        condition: service_healthy
+        required: true
+      prep-migrations:
+        condition: service_completed_successfully
+        required: true
+    entrypoint:
+      - /bin/sh
+      - /scripts/migrate-capped.sh
+    environment:
+      DATABASE_URL: postgres://veil:k1-synthetic@postgres-veil:5432/veil?sslmode=disable
+      MIGRATE_CEILING_FILE: /scripts/migration-ceilings.conf
+      MIGRATE_CEILING_KEY: VEIL_WITNESS
+      MIGRATE_LABEL: migrate-veil
+      MIGRATE_PATH: /migrations/veil-witness
+      MIGRATE_TARGET_VERSION: "10"
+      MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "false"
+    image: migrate/migrate:v4.17.0
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-witness: null
+    restart: 'no'
+    volumes:
+      - type: volume
+        source: rendered-migrations
+        target: /migrations
+        read_only: true
+        volume: {}
+      - type: bind
+        source: ./scripts/migrate-capped.sh
+        target: /scripts/migrate-capped.sh
+        read_only: true
+        bind: {}
+      - type: bind
+        source: ./scripts/migration-ceilings.conf
+        target: /scripts/migration-ceilings.conf
+        read_only: true
+        bind: {}
+  postgres-audit:
+    environment:
+      POSTGRES_DB: audit
+      POSTGRES_PASSWORD: k1-synthetic
+      POSTGRES_USER: dsa
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U dsa -d audit
+      timeout: 3s
+      interval: 5s
+      retries: 10
+    image: postgres:16-alpine
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-audit: null
+    volumes:
+      - type: volume
+        source: pg-audit-data
+        target: /var/lib/postgresql/data
+        volume: {}
+  postgres-bridge:
+    environment:
+      POSTGRES_DB: bridge
+      POSTGRES_PASSWORD: k1-synthetic
+      POSTGRES_USER: dsa
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U dsa -d bridge
+      timeout: 3s
+      interval: 5s
+      retries: 10
+    image: postgres:16-alpine
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-bridge: null
+    volumes:
+      - type: volume
+        source: pg-bridge-data
+        target: /var/lib/postgresql/data
+        volume: {}
+  postgres-sandbox-a:
+    environment:
+      POSTGRES_DB: sandbox_a
+      POSTGRES_PASSWORD: k1-synthetic
+      POSTGRES_USER: dsa
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U dsa -d sandbox_a
+      timeout: 3s
+      interval: 5s
+      retries: 10
+    image: postgres:16-alpine
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-identity: null
+    volumes:
+      - type: volume
+        source: pg-sandbox-a-data
+        target: /var/lib/postgresql/data
+        volume: {}
+  postgres-veil:
+    environment:
+      POSTGRES_DB: veil
+      POSTGRES_PASSWORD: k1-synthetic
+      POSTGRES_USER: veil
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U veil
+      timeout: 3s
+      interval: 5s
+      retries: 5
+    image: postgres:16-alpine
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-witness: null
+    volumes:
+      - type: volume
+        source: postgres-veil-data
+        target: /var/lib/postgresql/data
+        volume: {}
+  prep-migrations:
+    command:
+      - /bin/sh
+      - /scripts/render-migrations.sh
+    environment:
+      AUDIT_APP_PASSWORD: k1-synthetic
+      VEIL_APP_PASSWORD: k1-synthetic
+    image: alpine:3.20
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      default: null
+    restart: 'no'
+    volumes:
+      - type: bind
+        source: ./migrations
+        target: /migrations-src
+        read_only: true
+        bind: {}
+      - type: bind
+        source: ./scripts/render-migrations.sh
+        target: /scripts/render-migrations.sh
+        read_only: true
+        bind: {}
+      - type: volume
+        source: rendered-migrations
+        target: /migrations-rendered
+        volume: {}
+  redis-sanitizer:
+    command:
+      - redis-server
+      - --maxmemory
+      - 64mb
+      - --maxmemory-policy
+      - allkeys-lru
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      timeout: 3s
+      interval: 5s
+      retries: 5
+    image: redis:7-alpine
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-identity: null
+    restart: on-failure
+  redis-sanitizer-cache:
+    command:
+      - redis-server
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - allkeys-lru
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      timeout: 3s
+      interval: 5s
+      retries: 5
+    image: redis:7-alpine
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-identity: null
+    restart: on-failure
+  sandbox-a:
+    depends_on:
+      audit:
+        condition: service_healthy
+        required: true
+      migrate-sandbox-a:
+        condition: service_completed_successfully
+        required: true
+    environment:
+      AUDIT_SERVICE_ADDR: audit:50051
+      DSA_ADMIN_KEY: k1-synthetic
+      DSA_ENV: production
+      DSA_SERVICE_TOKEN: k1-synthetic
+      GRPC_TLS_ENABLED: "true"
+      SANDBOX_A_DATABASE_URL: postgres://dsa:k1-synthetic@postgres-sandbox-a:5432/sandbox_a?sslmode=disable
+      SANDBOX_A_ENCRYPTION_KEY: ""
+      SANDBOX_A_EPHEMERAL: "true"
+      SANITIZER_ADDR: http://sanitizer:8086
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://localhost:8083/healthz || exit 1
+      timeout: 3s
+      interval: 5s
+      retries: 10
+    image: ghcr.io/declade/dsa-sandbox-a:0.5.5
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-audit-identity: null
+      dsa-identity: null
+    restart: on-failure
+  sanitizer:
+    depends_on:
+      sandbox-a:
+        condition: service_healthy
+        required: true
+      witness-egress-guard:
+        condition: service_completed_successfully
+        required: true
+    deploy:
+      resources:
+        limits:
+          memory: "4294967296"
+    environment:
+      CANARY_HMAC_KEY: k1-synthetic
+      DP_BUDGET_REDIS_URL: redis://redis-sanitizer:6379/0
+      DSA_ENV: production
+      GUNICORN_TIMEOUT: "120"
+      LCR_ENABLED: "true"
+      LCR_SIGNING_KEY: ""
+      LCR_WITNESS_ADDR: veil-witness:50057
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: ""
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: ""
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: ""
+      LCR_WITNESS_REQUIRE_MTLS: "false"
+      LUCAIRN_L3_AVAILABILITY_POSTURE: ""
+      LUCAIRN_L3_REQUIRED: ""
+      LUCAIRN_PII_ML_ADDR: pii-ml:50056
+      QI_ENGINE_ENABLED: "true"
+      SANITIZER_CACHE_BACKEND: redis
+      SANITIZER_CACHE_REDIS_URL: redis://redis-sanitizer-cache:6379/0
+      SANITIZER_CACHE_TTL_SECONDS: "3600"
+      SANITIZER_CONFIG_PATH: /config/config.yaml
+      SANITIZER_MAX_FIELD_CHARS: "262144"
+      SANITIZER_PORT: "8086"
+      SANITIZER_STREAM_MUTATION_MARKER_TTL_SECONDS: "600"
+      SANITIZER_STREAM_STATE_BACKEND: redis
+      SANITIZER_STREAM_STATE_REDIS_URL: redis://redis-sanitizer-cache:6379/0
+      SANITIZER_STREAM_STATE_TTL_SECONDS: "300"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8086/healthz')"
+          || exit 1
+      timeout: 10s
+      interval: 10s
+      retries: 15
+      start_period: 1m0s
+    image: ghcr.io/declade/dsa-sanitizer:0.5.5
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-identity: null
+      dsa-witness-identity: null
+    restart: on-failure
+    volumes:
+      - type: bind
+        source: ./config/default-sanitizer.yaml
+        target: /config/config.yaml
+        read_only: true
+        bind: {}
+      - type: bind
+        source: ./config/medical-terms.txt
+        target: /config/medical-terms.txt
+        read_only: true
+        bind: {}
+      - type: bind
+        source: ./config/safe-terms-strict.txt
+        target: /config/safe-terms-strict.txt
+        read_only: true
+        bind: {}
+      - type: bind
+        source: ./config/safe-terms-strict-location.txt
+        target: /config/safe-terms-strict-location.txt
+        read_only: true
+        bind: {}
+  veil-witness:
+    depends_on:
+      migrate-veil:
+        condition: service_completed_successfully
+        required: true
+    environment:
+      GRPC_TLS_ENABLED: "true"
+      LCR_AUDIT_PUBLIC_KEY: ""
+      LCR_BRIDGE_PUBLIC_KEY: ""
+      LCR_CLAIM_TIMEOUT: 30s
+      LCR_DB_URL: postgres://veil_app:k1-synthetic@postgres-veil:5432/veil?sslmode=disable
+      LCR_REKOR_URL: ""
+      LCR_SANDBOX_B_PUBLIC_KEY: ""
+      LCR_SANITIZER_PUBLIC_KEY: ""
+      LCR_TSA_URL: ""
+      LCR_WITNESS_AUDIT_LOG_HMAC_KEY: ""
+      LCR_WITNESS_CERT_ALLOWED_PEERS: ""
+      LCR_WITNESS_CLAIM_ALLOWED_PEERS: ""
+      LCR_WITNESS_EXPORT_ALLOWED_PEERS: ""
+      LCR_WITNESS_EXPORT_CUSTOMER_BINDING: ""
+      LCR_WITNESS_EXPORT_CUSTOMER_MAP: ""
+      LCR_WITNESS_EXPORT_MAX_CERTS: ""
+      LCR_WITNESS_KEY_ID: witness_v1
+      LCR_WITNESS_PEER_IDENTITY: ""
+      LCR_WITNESS_REQUIRE_MTLS: "false"
+      LCR_WITNESS_SIGNING_KEY: ""
+      LUCAIRN_L3_COMPLETENESS_POSTURE: ""
+      WITNESS_MTLS_CA_BUNDLE_PATH: ""
+      WITNESS_MTLS_SERVER_CERT_PATH: ""
+      WITNESS_MTLS_SERVER_KEY_PATH: ""
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - --spider
+        - http://localhost:50059/healthz
+      timeout: 5s
+      interval: 10s
+      retries: 3
+    image: ghcr.io/declade/dsa-veil-witness:0.5.5
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-witness: null
+      dsa-witness-audit: null
+      dsa-witness-bridge: null
+      dsa-witness-certification: null
+      dsa-witness-edge: null
+      dsa-witness-identity: null
+    restart: on-failure
+    volumes:
+      - type: bind
+        source: ./.certs/witness-mtls
+        target: /etc/witness-mtls
+        read_only: true
+        bind: {}
+  witness-egress-guard:
+    command:
+      - /bin/sh
+      - /scripts/witness-egress-guard.sh
+    environment:
+      LUCAIRN_CENTRAL_WITNESS_ADDR: ""
+      LUCAIRN_CENTRAL_WITNESS_CERT_ADDR: ""
+      LUCAIRN_DASHBOARD_WITNESS_ENDPOINT: ""
+      LUCAIRN_WITNESS_UNSAFE_ACKNOWLEDGE_LUCAIRN_OPERATED_WITNESS: "false"
+    image: alpine:3.20
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      default: null
+    restart: 'no'
+    volumes:
+      - type: bind
+        source: ./scripts/witness-egress-guard.sh
+        target: /scripts/witness-egress-guard.sh
+        read_only: true
+        bind: {}
+networks:
+  default:
+    name: k1-off_default
+  dsa-audit:
+    name: k1-off_dsa-audit
+    driver: bridge
+  dsa-audit-identity:
+    name: k1-off_dsa-audit-identity
+    driver: bridge
+    internal: true
+  dsa-bridge:
+    name: k1-off_dsa-bridge
+    driver: bridge
+  dsa-identity:
+    name: k1-off_dsa-identity
+    driver: bridge
+    internal: true
+  dsa-witness:
+    name: k1-off_dsa-witness
+    driver: bridge
+  dsa-witness-audit:
+    name: k1-off_dsa-witness-audit
+    driver: bridge
+  dsa-witness-bridge:
+    name: k1-off_dsa-witness-bridge
+    driver: bridge
+  dsa-witness-certification:
+    name: k1-off_dsa-witness-certification
+    driver: bridge
+  dsa-witness-edge:
+    name: k1-off_dsa-witness-edge
+    driver: bridge
+  dsa-witness-identity:
+    name: k1-off_dsa-witness-identity
+    driver: bridge
+volumes:
+  gateway-data:
+    name: k1-off_gateway-data
+  pg-audit-data:
+    name: k1-off_pg-audit-data
+  pg-bridge-data:
+    name: k1-off_pg-bridge-data
+  pg-sandbox-a-data:
+    name: k1-off_pg-sandbox-a-data
+  postgres-veil-data:
+    name: k1-off_postgres-veil-data
+  rendered-migrations:
+    name: k1-off_rendered-migrations
+x-default-logging:
+  driver: json-file
+  options:
+    max-file: "5"
+    max-size: 50m
+x-dsa-prod-auth:
+  DSA_ENV: production
+  DSA_SERVICE_TOKEN: k1-synthetic
