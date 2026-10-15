@@ -15,7 +15,7 @@ import time
 import unittest
 
 
-SCRATCH = "/private/tmp" if Path("/private/tmp").is_dir() else str(Path(tempfile.gettempdir()).resolve())
+SCRATCH = str(Path(tempfile.gettempdir()).resolve())
 
 ROOT = Path(os.environ.get("K1_TEST_ROOT", Path(__file__).resolve().parents[1]))
 SCRIPT = ROOT / "scripts/bootstrap-servicenow-control.py"
@@ -43,15 +43,15 @@ class BootstrapTests(unittest.TestCase):
 
     @staticmethod
     def invoke(path):
-        return run("python3", SCRIPT, path, "--workload-uid", os.geteuid(),
-                   "--workload-gid", os.getegid())
+        return run("python3", SCRIPT, path, "--workload-uid", os.getuid(),
+                   "--workload-gid", os.getgid())
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="k1-case-", dir=SCRATCH)
         self.root = Path(self.temp.name) / "certs"
         shutil.copytree(self.base, self.root)
         for path in (self.root, *self.root.rglob("*")):
-            os.chown(path, os.geteuid(), os.getegid())
+            os.chown(path, os.getuid(), os.getgid())
         self.material = self.root / "material"
 
     def tearDown(self):
@@ -66,7 +66,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual({"ca.crt", "tls.crt", "tls.key"}, {p.name for p in leaf.iterdir()})
             for path in leaf.iterdir():
                 self.assertEqual(0o600, path.stat().st_mode & 0o777)
-                self.assertEqual(os.geteuid(), path.stat().st_uid)
+                self.assertEqual(os.getuid(), path.stat().st_uid)
             san = run("openssl", "x509", "-in", leaf / "tls.crt", "-noout", "-ext", "subjectAltName")
             self.assertEqual("DNS:" + identity, san.stdout.decode().splitlines()[1].strip())
             for purpose in ("sslserver", "sslclient"):
@@ -102,7 +102,7 @@ class BootstrapTests(unittest.TestCase):
     def test_workload_owner_mismatch_refused(self):
         with self.assertRaises(bootstrap.Invalid):
             bootstrap.custody(self.material / "gateway/tls.key", 0o600,
-                              os.geteuid() + 1, os.getegid())
+                              os.getuid() + 1, os.getgid())
 
     def test_extended_acl_refused(self):
         path = self.material / "gateway/tls.key"

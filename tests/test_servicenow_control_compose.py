@@ -15,7 +15,7 @@ from unittest import mock
 import yaml
 
 
-SCRATCH = "/private/tmp" if Path("/private/tmp").is_dir() else str(Path(tempfile.gettempdir()).resolve())
+SCRATCH = str(Path(tempfile.gettempdir()).resolve())
 
 ROOT = Path(os.environ.get("K1_COMPOSE_ROOT", Path(__file__).resolve().parents[1]))
 spec = importlib.util.spec_from_file_location("control_render", ROOT / "scripts/render-servicenow-control.py")
@@ -30,8 +30,8 @@ class ComposeTests(unittest.TestCase):
         cls.base = Path(cls.scratch.name)
         cls.cert = cls.base / "certs"
         result = subprocess.run(["python3", str(ROOT / "scripts/bootstrap-servicenow-control.py"),
-                                 str(cls.cert), "--workload-uid", str(os.geteuid()),
-                                 "--workload-gid", str(os.getegid())], capture_output=True, timeout=20)
+                                 str(cls.cert), "--workload-uid", str(os.getuid()),
+                                 "--workload-gid", str(os.getgid())], capture_output=True, timeout=20)
         if result.returncode:
             raise AssertionError("synthetic bootstrap failed")
         required = set(re.findall(r"\$\{([A-Z0-9_]+):\?", "".join(
@@ -61,8 +61,8 @@ class ComposeTests(unittest.TestCase):
                    "project-name": "k1-synthetic", "subnet": "172.30.251.0/29",
                    "gateway-ip": "172.30.251.2", "sanitizer-ip": "172.30.251.3",
                    "cert-directory": self.cert, "sanitizer-config": self.config,
-                   "output-directory": self.output, "workload-uid": os.geteuid(),
-                   "workload-gid": os.getegid()}
+                   "output-directory": self.output, "workload-uid": os.getuid(),
+                   "workload-gid": os.getgid()}
         options.update(changes)
         result = subprocess.run(["python3", str(ROOT / "scripts/render-servicenow-control.py"),
                                  *[str(value) for key, value in options.items()
@@ -126,7 +126,7 @@ class ComposeTests(unittest.TestCase):
         generated = yaml.safe_load((self.output / "sanitizer.yaml").read_text())
         info = (self.output / "sanitizer.yaml").stat()
         self.assertEqual(0o600, info.st_mode & 0o777)
-        self.assertEqual((os.geteuid(), os.getegid()), (info.st_uid, info.st_gid))
+        self.assertEqual((os.getuid(), os.getgid()), (info.st_uid, info.st_gid))
         expected_source = copy.deepcopy(self.source)
         expected_source["sanitizer"]["servicenow_instance_path"].update({
             "enabled": True, "control_bind_address": "172.30.251.3",
@@ -206,7 +206,7 @@ class ComposeTests(unittest.TestCase):
                 with self.subTest(mode=mode, option=option):
                     result = self.invoke(mode=mode, **{option: ""})
                     self.assertEqual(2, result.returncode)
-                    self.assertIn(b"path must not be empty", result.stderr)
+                    self.assertEqual(b"control compose render refused: args\n", result.stderr)
                     self.assertEqual(b"", result.stdout)
                     self.assertFalse(self.output.exists())
 
@@ -229,7 +229,7 @@ class ComposeTests(unittest.TestCase):
         invalid = self.base / "invalid.yaml"
         invalid.write_text("sanitizer: []\n")
         for changes in ({"cert-directory": self.base / "missing"},
-                        {"sanitizer-config": invalid}, {"workload-uid": os.geteuid() + 1}):
+                        {"sanitizer-config": invalid}, {"workload-uid": os.getuid() + 1}):
             with self.subTest(changes=changes):
                 result = self.invoke(**changes)
                 self.assertEqual(1, result.returncode)
@@ -258,7 +258,7 @@ class ComposeTests(unittest.TestCase):
             project_name="k1-synthetic", subnet="172.30.251.0/29",
             gateway_ip="172.30.251.2", sanitizer_ip="172.30.251.3",
             cert_directory=self.cert, sanitizer_config=self.config,
-            output_directory=self.output, workload_uid=os.geteuid(), workload_gid=os.getegid())
+            output_directory=self.output, workload_uid=os.getuid(), workload_gid=os.getgid())
         # An operator unable to assign ownership must not get a successful
         # assembly with an unreadable 0600 config. No root privileges needed.
         with mock.patch.object(renderer.os, "chown", side_effect=PermissionError):

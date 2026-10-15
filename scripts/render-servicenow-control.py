@@ -27,8 +27,19 @@ COUNTS = {"customer": 1, "self-hosted": 2, "self-hosted-byok": 3}
 NETWORK = "servicenow-control"
 
 
+REASONS = frozenset({"args", "custody", "acl_check_unavailable", "certificate",
+                     "compose_failed", "validation"})
+
+
 class Invalid(Exception):
-    pass
+    def __init__(self, reason="validation"):
+        self.reason = reason if reason in REASONS else "validation"
+        super().__init__(self.reason)
+
+
+class SafeArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.exit(2, "control compose render refused: args\n")
 
 
 def nonempty_path(value):
@@ -60,11 +71,33 @@ def compose(args, env, extra=()):
         command += ["-f", str(ROOT / file)]
     for file in extra:
         command += ["-f", str(file)]
-    result = subprocess.run([*command, "config"], env=env, capture_output=True, timeout=30)
+    try:
+        result = subprocess.run([*command, "config"], env=env, capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        raise Invalid("compose_failed") from None
     if result.returncode:
         # Compose diagnostics can include interpolated environment; never echo them.
-        raise Invalid()
+        raise Invalid("compose_failed")
     return result.stdout
+
+
+def no_host_creation(mount):
+    # Older compose-go emits false bools with omitempty, including this one.
+    # This applies to rendered long-form mounts only. The input overlay must
+    # still say false explicitly (see validate_overlay).
+    return (mount.get("type") == "bind" and
+            (mount.get("bind") or {}).get("create_host_path", False) is False)
+
+
+def validate_overlay(overlay):
+    for role in ("gateway", "sanitizer"):
+        mounts = overlay["services"][role]["volumes"]
+        if len(mounts) != (1 if role == "gateway" else 2):
+            raise Invalid()
+        for mount in mounts:
+            if (mount.get("type") != "bind" or
+                    mount.get("bind", {}).get("create_host_path") is not False):
+                raise Invalid()
 
 
 def validate_render(rendered, ordinary, network, addresses, material, config):
@@ -100,7 +133,7 @@ def validate_render(rendered, ordinary, network, addresses, material, config):
         if (mount["source"] != str(material / role) or
                 mount["target"] != "/run/secrets/servicenow-control/" + role or
                 mount.get("read_only") is not True or
-                mount.get("bind", {}).get("create_host_path") is not False):
+                not no_host_creation(mount)):
             raise Invalid()
         # Retain the installation's main-channel transport variables exactly.
         for key, value in before.get("environment", {}).items():
@@ -114,13 +147,14 @@ def validate_render(rendered, ordinary, network, addresses, material, config):
     config_mount = [mount for mount in sanitizer["volumes"] if mount["target"] == "/config/config.yaml"]
     if (len(config_mount) != 1 or config_mount[0]["source"] != str(config) or
             config_mount[0].get("read_only") is not True or
+            not no_host_creation(config_mount[0]) or
             sanitizer["environment"].get("SANITIZER_CONFIG_PATH") != "/config/config.yaml"):
         raise Invalid()
 
 
 def render(args):
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", args.project_name):
-        raise Invalid()
+        raise Invalid("args")
     env = dict(os.environ)
     ordinary = compose(args, env)
     if args.mode == "off":
@@ -128,18 +162,18 @@ def render(args):
     import yaml
     network = private_network(args.subnet, args.gateway_ip, args.sanitizer_ip)
     if not all((args.cert_directory, args.sanitizer_config, args.output_directory)):
-        raise Invalid()
+        raise Invalid("args")
     cert_directory = args.cert_directory.absolute()
     if any(path.is_symlink() for path in (cert_directory, *cert_directory.parents)):
-        raise Invalid()
+        raise Invalid("custody")
     spec = importlib.util.spec_from_file_location("control_bootstrap", ROOT / "scripts/bootstrap-servicenow-control.py")
     bootstrap = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bootstrap)
     try:
         bootstrap.custody(cert_directory, 0o700, os.geteuid(), os.getegid(), True)
         bootstrap.validate(cert_directory / "material", args.workload_uid, args.workload_gid)
-    except bootstrap.Invalid:
-        raise Invalid() from None
+    except bootstrap.Invalid as error:
+        raise Invalid(error.reason) from None
     source = yaml.safe_load(args.sanitizer_config.read_text())
     if not isinstance(source, dict) or not isinstance(source.get("sanitizer"), dict):
         raise Invalid()
@@ -172,11 +206,27 @@ def render(args):
         env["COMPOSE_PROJECT_NAME"] = args.project_name
         template = re.sub(r"\$\{([A-Z0-9_]+)(?::\?[^}]*)?\}",
                           lambda match: json.dumps(env[match[1]])[1:-1], template)
-        overlay.write_text(json.dumps(yaml.safe_load(template), indent=2) + "\n")
+        parsed_overlay = yaml.safe_load(template)
+        validate_overlay(parsed_overlay)
+        overlay.write_text(json.dumps(parsed_overlay, indent=2) + "\n")
         overlay.chmod(0o600)
         result = compose(args, env, (overlay,))
-        validate_render(yaml.safe_load(result), yaml.safe_load(ordinary), network,
+        rendered = yaml.safe_load(result)
+        validate_render(rendered, yaml.safe_load(ordinary), network,
                         (args.gateway_ip, args.sanitizer_ip), material, config)
+        # Keep the exported assembly explicit even if the running Compose
+        # omits false. A later Compose version may default this option to true.
+        changed = False
+        for role in ("gateway", "sanitizer"):
+            for mount in rendered["services"][role]["volumes"]:
+                if (mount["target"].startswith("/run/secrets/servicenow-control/") or
+                        (role == "sanitizer" and mount["target"] == "/config/config.yaml")):
+                    bind = mount.setdefault("bind", {})
+                    if "create_host_path" not in bind:
+                        bind["create_host_path"] = False
+                        changed = True
+        if changed:
+            return yaml.safe_dump(rendered, sort_keys=False).encode()
         return result
     except BaseException:
         config.unlink(missing_ok=True)
@@ -186,7 +236,7 @@ def render(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = SafeArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("off", "on"), default="off")
     parser.add_argument("--path", choices=COUNTS, default="customer")
     parser.add_argument("--env-file", type=nonempty_path, required=True)
@@ -203,8 +253,10 @@ def main():
     os.umask(0o077)
     try:
         result = render(args)
-    except Exception:
-        print("control compose render refused", file=sys.stderr)
+    except Exception as error:
+        reason = error.reason if isinstance(error, Invalid) else (
+            "custody" if isinstance(error, OSError) else "validation")
+        print("control compose render refused: " + reason, file=sys.stderr)
         return 1
     sys.stdout.buffer.write(result)
     return 0

@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 
-SCRATCH = "/private/tmp" if Path("/private/tmp").is_dir() else str(Path(tempfile.gettempdir()).resolve())
+SCRATCH = str(Path(tempfile.gettempdir()).resolve())
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -100,10 +100,11 @@ class MutantTests(unittest.TestCase):
              "test_hardlink_refused"),
             ("workload owner", "info.st_uid != uid", "False",
              "test_workload_owner_mismatch_refused"),
-            ("extended ACL", ('if {"system.posix_acl_access", "system.posix_acl_default"} & set(os.listxattr(path)):'
+            ("extended ACL", ('raise Invalid("custody")\n        except OSError as error:'
                               if sys.platform.startswith("linux") else
-                              'if result.returncode or len(result.stdout.splitlines()) != 1:'),
-             "if False:", "test_extended_acl_refused"),
+                              'if len(result.stdout.splitlines()) != 1:'),
+             ("pass\n        except OSError as error:" if sys.platform.startswith("linux") else "if False:"),
+             "test_extended_acl_refused"),
             ("single PEM", 'if not re.fullmatch(pattern, path.read_bytes()):',
              "if False:", "test_appended_ca_refused"),
             ("key pair", 'if public != openssl("pkey", "-in", key, "-pubout"):', "if False:",
