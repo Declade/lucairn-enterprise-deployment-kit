@@ -19,6 +19,8 @@ on its first start, into the profile.
 
 ## Start
 
+Launcher install/profile directory overrides (including `OPENWORK_SRC`) must be absolute; relative paths are rejected and accepted paths are resolved with `pwd -P` before checks.
+
 ```sh
 ./openwork.sh ask "question"              # one message in a new chat
 ./openwork.sh ask "first" "second"        # several messages in ONE chat

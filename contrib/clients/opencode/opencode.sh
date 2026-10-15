@@ -51,11 +51,15 @@ LC_PROG="opencode.sh"
 VERSION="1.19.0"
 DATA="$(lc_data_root)"
 BASE="${LUCAIRN_OPENCODE_DIR:-$DATA/opencode/$VERSION}"
+case "$BASE" in /*) : ;; *) lc_die "LUCAIRN_OPENCODE_DIR must be an absolute path" ;; esac
+BASE="$(cd "$BASE" && pwd -P)" || lc_die "cannot enter the opencode install folder — run $HERE/install.sh first"
 PROFILE="${LUCAIRN_OPENCODE_PROFILE:-$DATA/opencode/profile}"
+case "$PROFILE" in /*) : ;; *) lc_die "LUCAIRN_OPENCODE_PROFILE must be an absolute path" ;; esac
+mkdir -p "$PROFILE" || lc_die "cannot create the profile $PROFILE"
+PROFILE="$(cd "$PROFILE" && pwd -P)" || lc_die "cannot enter the profile"
 PLAT="$(lc_os_arch)" || exit 2
 BIN="$BASE/node_modules/opencode-$PLAT/bin/opencode$(lc_exe)"
 [ -x "$BIN" ] || lc_die "OpenCode is not installed at $BASE — run $HERE/install.sh first"
-case "$PROFILE" in /*) : ;; *) lc_die "LUCAIRN_OPENCODE_PROFILE must be an absolute path" ;; esac
 # The binary must be the verified build — checked at EVERY start (a file that failed the
 # installer's check, or was swapped later, never gets the keys).
 WANT="$(oc_pinned_sha256 "$PLAT")" || lc_die "no verified OpenCode build is recorded for $PLAT. Nothing was started."

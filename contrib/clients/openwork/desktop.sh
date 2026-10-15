@@ -50,6 +50,8 @@ UI_PORT=15173
 DATA="$(lc_data_root)"
 PROFILE="${LUCAIRN_OPENWORK_PROFILE:-$DATA/openwork/profile}"
 case "$PROFILE" in /*) : ;; *) lc_die "LUCAIRN_OPENWORK_PROFILE must be an absolute path" ;; esac
+mkdir -p "$PROFILE" || lc_die "cannot create the profile $PROFILE"
+PROFILE="$(cd "$PROFILE" && pwd -P)" || lc_die "cannot enter the profile"
 ST="$PROFILE/desktop"
 EP="$ST/electron"
 DEBUG_PORT="${LUCAIRN_OPENWORK_DEBUG_PORT:-19823}"
@@ -128,8 +130,9 @@ esac
 
 [ "$(uname -s)" = Darwin ] || lc_die "the desktop launcher is verified on macOS only"
 SRC="${OPENWORK_SRC:-}"
+case "$SRC" in /*) : ;; *) lc_die "OPENWORK_SRC must be an absolute path to an OpenWork source clone at $TAG" ;; esac
+SRC="$(cd "$SRC" && pwd -P)" || lc_die "cannot enter OPENWORK_SRC"
 if ! { [ -n "$SRC" ] && [ -f "$SRC/package.json" ] && [ -d "$SRC/apps/desktop" ]; }; then lc_die "set OPENWORK_SRC to an OpenWork source clone at $TAG (see the header of this file)"; fi
-SRC="$(cd "$SRC" && pwd -P)"
 # The checkout must be exactly the verified source: git is required (no check = no start).
 command -v git >/dev/null 2>&1 || lc_die "git not found: needed to check that OPENWORK_SRC is the verified source ($TAG, commit $COMMIT). Nothing was started."
 GOT_COMMIT="$(git -C "$SRC" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null || true)"

@@ -49,10 +49,14 @@ LC_PROG="openwork.sh"
 VERSION="0.18.58"
 DATA="$(lc_data_root)"
 BASE="${LUCAIRN_OPENWORK_DIR:-$DATA/openwork/$VERSION}"
+case "$BASE" in /*) : ;; *) lc_die "LUCAIRN_OPENWORK_DIR must be an absolute path" ;; esac
+BASE="$(cd "$BASE" && pwd -P)" || lc_die "cannot enter the openwork install folder — run $HERE/install.sh first"
 PROFILE="${LUCAIRN_OPENWORK_PROFILE:-$DATA/openwork/profile}"
+case "$PROFILE" in /*) : ;; *) lc_die "LUCAIRN_OPENWORK_PROFILE must be an absolute path" ;; esac
+mkdir -p "$PROFILE" || lc_die "cannot create the profile $PROFILE"
+PROFILE="$(cd "$PROFILE" && pwd -P)" || lc_die "cannot enter the profile"
 OWS="$BASE/node_modules/openwork-server/bin/openwork-server.mjs"
 [ -f "$OWS" ] || lc_die "OpenWork host is not installed at $BASE — run $HERE/install.sh first"
-case "$PROFILE" in /*) : ;; *) lc_die "LUCAIRN_OPENWORK_PROFILE must be an absolute path" ;; esac
 NODE="${LUCAIRN_NODE:-$(command -v node 2>/dev/null || true)}"
 if ! { [ -n "$NODE" ] && [ -x "$NODE" ]; }; then lc_die "node not found (set LUCAIRN_NODE)"; fi
 PORT="${LUCAIRN_OPENWORK_PORT:-18787}"

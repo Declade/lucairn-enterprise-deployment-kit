@@ -25,6 +25,8 @@ Put both keys in the Keychain or the environment ([`../README.md`](../README.md#
 
 ## Start
 
+Launcher install/profile directory overrides must be absolute; relative paths are rejected and accepted paths are resolved with `pwd -P` before checks.
+
 ```sh
 ./opencode.sh                         # chat in the terminal, no tools (leave with Ctrl+C)
 ./opencode.sh "Reply with OK"         # one question

@@ -29,6 +29,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 C="$ROOT/contrib/clients"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/contrib-clients-test.XXXXXX")"
+TMP="$(cd "$TMP" && pwd -P)"
 EXTRA_CLEAN=""
 KILL_PIDS=""
 # shellcheck disable=SC2317,SC2329  # invoked via the EXIT trap
@@ -111,12 +112,15 @@ done
 probe_keys() { grep -c 'HAS_KEY=yes' "$PROBE_LOG" | tr -d ' '; }   # how many probed programs saw a key
 
 # Stub client: prints argv and environment facts; never the key values themselves.
+# Its reporting commands use the system PATH so probes count launcher helpers only.
 make_stub() {
   cat > "$1" <<STUB
 #!/bin/sh
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
 if /usr/bin/env | "$GREP_REAL" -q -e "$FAKE_LK" -e "$FAKE_UK"; then k=yes; else k=no; fi
 printf '%s HAS_KEY=%s\n' "client:\${1:-}" "\$k" >> "$PROBE_LOG"
 printf 'ARGV:%s\n' "\$*"
+printf 'EXE:%s\n' "\$0"
 printf 'HAS_LK:%s\n' "\$([ "\${LUCAIRN_API_KEY:-}" = "$FAKE_LK" ] && echo yes || echo no)"
 printf 'HAS_UK:%s\n' "\$([ "\${LUCAIRN_UPSTREAM_KEY:-}" = "$FAKE_UK" ] && echo yes || echo no)"
 printf 'KEYVARS:%s\n' "\$(/usr/bin/env | while IFS= read -r l; do case "\$l" in (*="$FAKE_LK"|*="$FAKE_UK") printf '%s\n' "\${l%%=*}" ;; esac; done | sort | tr '\n' ' ')"
@@ -189,6 +193,22 @@ t "hermes: inherited LC_* names do not break set -u (rc=$rc)" [ "$rc" -eq 0 ]
 t "hermes: inherited LC_* names do not reach the client" has '^LCK:none$'
 t "hermes: inherited LC_GW ignored" has '^GW:https://gateway.lucairn.eu$'
 
+# Launch-dir installs are trusted; the same relative paths in WORK are tampered.
+# Reject before either copy can run or receive a key.
+ln -s "$HD" "$TMP/hermes-relative"
+mkdir -p "$WORK/hermes-relative/.venv/bin"
+make_stub "$WORK/hermes-relative/.venv/bin/hermes"
+printf '\n# tampered work-folder binary\n' >> "$WORK/hermes-relative/.venv/bin/hermes"
+: > "$PROBE_LOG"
+out="$(cd "$TMP" && HD=hermes-relative run_h -z hi 2>&1)"; rc=$?
+t "hermes: relative install is refused" refused 'LUCAIRN_HERMES_DIR must be an absolute path'
+t "hermes: work-folder binary never ran" [ "$(grep -c '^client:' "$PROBE_LOG" | tr -d ' ')" = 0 ]
+t "hermes: relative install leaked no keys" [ "$(probe_keys)" = 0 ]
+: > "$PROBE_LOG"
+out="$(cd "$TMP" && HP=relative-profile run_h -z hi 2>&1)"; rc=$?
+t "hermes: relative profile is refused" refused 'LUCAIRN_HERMES_PROFILE must be an absolute path'
+t "hermes: relative profile leaked no keys" [ "$(probe_keys)" = 0 ]
+
 # profile config altered → refused (each guarded line)
 hermes_refuses() {  # <sed expression> <expected message part>
   sed "$1" "$C/hermes/config.yaml" > "$HP/hermes-home/config.yaml"
@@ -220,6 +240,32 @@ for g in $BAD_GWS; do
   t "hermes refuses the gateway address $g and stops" refused 'LUCAIRN_GATEWAY_URL'
 done
 
+# Installer checks must clean the parent-owned temporary home on success AND failure.
+HI="$TMP/hermes-check-install"; HTOOLS="$TMP/hermes-check-bin"; HTMP="$TMP/hermes-check-tmp"
+mkdir -p "$HI/src/.git" "$HI/.venv/bin" "$HTOOLS" "$HTMP"
+printf '#!/bin/sh\nprintf "%%s\\n" f97608f178d1ffeca59860195ab7da295f7c8e5f\n' > "$HTOOLS/git"
+cat > "$HI/.venv/bin/hermes" <<'HCSTUB'
+#!/bin/sh
+case "$*" in
+  --version) echo 'Hermes (2026.9.24)' ;;
+  'tools list') printf '✗ disabled web \n✓ enabled file \n' ;;
+  *) exit 1 ;;
+esac
+HCSTUB
+chmod +x "$HTOOLS/git" "$HI/.venv/bin/hermes"
+: > "$PROBE_LOG"
+out="$(env PATH="$HTOOLS:$PB:$PATH" TMPDIR="$HTMP" LUCAIRN_HERMES_DIR="$HI" \
+  LUCAIRN_API_KEY="$FAKE_LK" LUCAIRN_UPSTREAM_KEY="$FAKE_UK" bash "$C/hermes/install.sh" --check 2>&1)"; rc=$?
+t "hermes/install --check succeeds with the fixture (rc=$rc)" [ "$rc" -eq 0 ]
+t "hermes/install --check leaves no temp directory" [ "$(find "$HTMP" -mindepth 1 | wc -l | tr -d ' ')" = 0 ]
+cat > "$HI/.venv/bin/hermes" <<'HCFAIL'
+#!/bin/sh
+if [ "$1" = --version ]; then echo 'Hermes (2026.9.24)'; else exit 1; fi
+HCFAIL
+out="$(env PATH="$HTOOLS:$PATH" TMPDIR="$HTMP" LUCAIRN_HERMES_DIR="$HI" bash "$C/hermes/install.sh" --check 2>&1)"; rc=$?
+t "hermes/install --check reports a failed tools check" [ "$rc" -eq 1 ]
+t "hermes/install --check leaves no temp directory on failure" [ "$(find "$HTMP" -mindepth 1 | wc -l | tr -d ' ')" = 0 ]
+
 # ── 5. opencode.sh ───────────────────────────────────────────────────────────
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) PLAT=darwin-arm64 ;; Darwin-x86_64) PLAT=darwin-x64 ;;
@@ -229,6 +275,9 @@ esac
 CC="$TMP/cc"; cp -R "$C" "$CC"
 OD="$TMP/opencode-install"; OBIN="$OD/node_modules/opencode-$PLAT/bin/opencode"; mkdir -p "${OBIN%/*}"
 make_stub "$OBIN"
+cat >> "$OBIN" <<'SERVESTUB'
+if [ "${1:-}" = serve ]; then sleep 6; fi
+SERVESTUB
 STUB_SHA="$( (shasum -a 256 "$OBIN" 2>/dev/null || sha256sum "$OBIN") | awk '{print $1}')"
 printf '# shellcheck shell=bash\noc_pinned_sha256() { printf "%%s\\n" %s; }\n' "$STUB_SHA" > "$CC/opencode/pins.sh"
 run_o() { env PATH="$PB:$PATH" LUCAIRN_OPENCODE_DIR="$OD" LUCAIRN_OPENCODE_PROFILE="$TMP/opencode-profile" LUCAIRN_WORK_DIR="${W:-$WORK}" \
@@ -245,6 +294,7 @@ t "opencode: key via environment" has '^HAS_LK:yes$'
 t "opencode: provider (upstream) key via environment" has '^HAS_UK:yes$'
 t "opencode: the keys are in exactly the two client variables" has "^$KEYVARS_OK\$"
 t "opencode runs in the work folder (PWD)" has "^PWD:$WORK\$"
+t "opencode executes the absolute binary path used for its hash" has "^EXE:$OBIN\$"
 t "opencode: no helper program saw a key" [ "$(grep -v '^client:' "$PROBE_LOG" | grep -c 'HAS_KEY=yes' | tr -d ' ')" = 0 ]
 rules="$(printf '%s\n' "$out" | sed -n 's/^RULES://p')"
 t "opencode: placeholder rule file exists" [ -f "$rules" ]
@@ -261,6 +311,38 @@ out="$(run_o -- --version 2>&1)"; rc=$?
 t "opencode refuses a tampered binary at launch" refused 'not the verified OpenCode'
 t "opencode: the tampered binary never ran" [ "$(grep -c '^client:' "$PROBE_LOG" | tr -d ' ')" = 0 ]
 cp "$TMP/obin.keep" "$OBIN"
+ln -s "$OD" "$TMP/install"
+ATTACK_BIN="$WORK/install/node_modules/opencode-$PLAT/bin/opencode"
+mkdir -p "${ATTACK_BIN%/*}"
+make_stub "$ATTACK_BIN"
+printf '\n# tampered work-folder binary\n' >> "$ATTACK_BIN"
+: > "$PROBE_LOG"
+out="$(cd "$TMP" && OD=install run_o -- --version 2>&1)"; rc=$?
+t "opencode: relative install is refused" refused 'LUCAIRN_OPENCODE_DIR must be an absolute path'
+t "opencode: work-folder tampered binary never ran" [ "$(grep -c '^client:' "$PROBE_LOG" | tr -d ' ')" = 0 ]
+t "opencode: relative install leaked no keys" [ "$(probe_keys)" = 0 ]
+: > "$PROBE_LOG"
+out="$(env LUCAIRN_OPENCODE_DIR="$OD" LUCAIRN_OPENCODE_PROFILE=relative-profile \
+  LUCAIRN_API_KEY="$FAKE_LK" LUCAIRN_UPSTREAM_KEY="$FAKE_UK" bash "$CC/opencode/opencode.sh" 2>&1)"; rc=$?
+t "opencode: relative profile is refused" refused 'LUCAIRN_OPENCODE_PROFILE must be an absolute path'
+
+# Exercise the browser opener as well as the serve process, with probes that remain
+# on the copied launcher's scrubbed PATH. No real browser is opened.
+sed "s|path=\"/usr/bin:/bin:/usr/sbin:/sbin\"|path=\"$PB:/usr/bin:/bin:/usr/sbin:/sbin\"|" "$C/lib/common.sh" > "$CC/lib/common.sh"
+cat > "$PB/open" <<OPENSTUB
+#!/bin/sh
+if /usr/bin/env | "$GREP_REAL" -q -e "$FAKE_LK" -e "$FAKE_UK"; then k=yes; else k=no; fi
+printf 'browser:open HAS_KEY=%s\n' "\$k" >> "$PROBE_LOG"
+OPENSTUB
+chmod +x "$PB/open"
+: > "$PROBE_LOG"
+out="$(run_o --web 2>&1)"; rc=$?
+t "opencode --web starts (rc=$rc)" [ "$rc" -eq 0 ]
+t "opencode --web: server gets the keys" grep -q '^client:serve HAS_KEY=yes$' "$PROBE_LOG"
+t "opencode --web: browser helper ran without keys" grep -q '^browser:open HAS_KEY=no$' "$PROBE_LOG"
+t "opencode --web: other helpers ran" grep -q '^tool:' "$PROBE_LOG"
+t "opencode --web: no helper saw a key" [ "$(grep -v '^client:' "$PROBE_LOG" | grep -c 'HAS_KEY=yes' | tr -d ' ')" = 0 ]
+cp "$C/lib/common.sh" "$CC/lib/common.sh"
 out="$(W="$TMP/x/$ME/proj" run_o "hi" 2>&1)"; rc=$?
 t "opencode refuses a named work folder" refused 'contains the account name'
 out="$(W="$NAMED_SUB" run_o "hi" 2>&1)"; rc=$?
@@ -305,6 +387,20 @@ NODESTUB
   t "openwork: the chat helper ran without a key" grep -q '^node:ask.mjs HAS_KEY=no$' "$PROBE_LOG"
   t "openwork: no helper program saw a key" [ "$(grep -v '^node:openwork-server.mjs' "$PROBE_LOG" | grep -c 'HAS_KEY=yes' | tr -d ' ')" = 0 ]
   t "openwork: written config holds no key" [ "$(grep -c -e "$FAKE_LK" -e "$FAKE_UK" "$TMP/openwork-profile/xdg/config/opencode/opencode.json" | tr -d ' ')" = 0 ]
+  ln -s "$OWD" "$TMP/openwork-relative"
+  ATTACK_OWS="$WORK/openwork-relative/node_modules/openwork-server/bin/openwork-server.mjs"
+  mkdir -p "${ATTACK_OWS%/*}"
+  printf 'throw new Error("tampered work-folder host");\n' > "$ATTACK_OWS"
+  : > "$PROBE_LOG"; rm -f "$TMP/ow-host.txt"
+  out="$(cd "$TMP" && OWD=openwork-relative run_ow ask hi 2>&1)"; rc=$?
+  t "openwork: relative install is refused" refused 'LUCAIRN_OPENWORK_DIR must be an absolute path'
+  t "openwork: work-folder host never ran" [ ! -f "$TMP/ow-host.txt" ]
+  t "openwork: relative install leaked no keys" [ "$(probe_keys)" = 0 ]
+  : > "$PROBE_LOG"
+  out="$(env LUCAIRN_OPENWORK_DIR="$OWD" LUCAIRN_OPENWORK_PROFILE=relative-profile \
+    LUCAIRN_API_KEY="$FAKE_LK" LUCAIRN_UPSTREAM_KEY="$FAKE_UK" bash "$C/openwork/openwork.sh" ask hi 2>&1)"; rc=$?
+  t "openwork: relative profile is refused" refused 'LUCAIRN_OPENWORK_PROFILE must be an absolute path'
+  t "openwork: relative profile leaked no keys" [ "$(probe_keys)" = 0 ]
   for g in $BAD_GWS; do
     rm -f "$TMP/ow-host.txt"
     out="$(XGW="$g" run_ow ask "hi" 2>&1)"; rc=$?
@@ -359,6 +455,18 @@ PNPMSTUB
   : > "$PROBE_LOG"
   out="$(run_d 2>&1)"; rc=$?
   t "desktop refuses a checkout that is not the recorded commit (moved tag)" eval '[ "$rc" -eq 2 ] && has "verified build" && ! grep -q "^pnpm:" "$PROBE_LOG"'
+  ln -s "$SRC" "$TMP/desktop-relative"
+  mkdir -p "$WORK/desktop-relative/apps/desktop"
+  printf '{"name":"tampered"}\n' > "$WORK/desktop-relative/package.json"
+  : > "$PROBE_LOG"
+  out="$(cd "$TMP" && SRC=desktop-relative run_d 2>&1)"; rc=$?
+  t "desktop: relative source is refused" refused 'OPENWORK_SRC must be an absolute path'
+  t "desktop: relative source never starts the app" [ "$(grep -c '^pnpm:' "$PROBE_LOG" | tr -d ' ')" = 0 ]
+  t "desktop: relative source leaked no keys" [ "$(probe_keys)" = 0 ]
+  : > "$PROBE_LOG"
+  out="$(DPROF=relative-profile run_d 2>&1)"; rc=$?
+  t "desktop: relative profile is refused" refused 'LUCAIRN_OPENWORK_PROFILE must be an absolute path'
+  t "desktop: relative profile leaked no keys" [ "$(probe_keys)" = 0 ]
   # changed tracked file → refused (copy whose recorded commit is the fake checkout's)
   sed "s/^COMMIT=\"[0-9a-f]*\"/COMMIT=\"$FAKE_HEAD\"/" "$C/openwork/desktop.sh" > "$CC/openwork/desktop.sh"
   printf '{"name":"changed"}\n' > "$SRC/package.json"
