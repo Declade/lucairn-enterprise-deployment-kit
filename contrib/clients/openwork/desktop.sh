@@ -49,7 +49,7 @@ COMMIT="258218b9b69c91e3d5020488fe1d14ff767679e9"   # what the tag pointed at on
 UI_PORT=15173
 DATA="$(lc_data_root)"
 PROFILE="${LUCAIRN_OPENWORK_PROFILE:-$DATA/openwork/profile}"
-case "$PROFILE" in /*) : ;; *) lc_die "LUCAIRN_OPENWORK_PROFILE must be an absolute path" ;; esac
+if ! lc_is_abs "$PROFILE"; then lc_die "LUCAIRN_OPENWORK_PROFILE must be an absolute path"; fi
 mkdir -p "$PROFILE" || lc_die "cannot create the profile $PROFILE"
 PROFILE="$(cd "$PROFILE" && pwd -P)" || lc_die "cannot enter the profile"
 ST="$PROFILE/desktop"
@@ -130,7 +130,7 @@ esac
 
 [ "$(uname -s)" = Darwin ] || lc_die "the desktop launcher is verified on macOS only"
 SRC="${OPENWORK_SRC:-}"
-case "$SRC" in /*) : ;; *) lc_die "OPENWORK_SRC must be an absolute path to an OpenWork source clone at $TAG" ;; esac
+if ! lc_is_abs "$SRC"; then lc_die "OPENWORK_SRC must be an absolute path to an OpenWork source clone at $TAG"; fi
 SRC="$(cd "$SRC" && pwd -P)" || lc_die "cannot enter OPENWORK_SRC"
 if ! { [ -n "$SRC" ] && [ -f "$SRC/package.json" ] && [ -d "$SRC/apps/desktop" ]; }; then lc_die "set OPENWORK_SRC to an OpenWork source clone at $TAG (see the header of this file)"; fi
 # The checkout must be exactly the verified source: git is required (no check = no start).

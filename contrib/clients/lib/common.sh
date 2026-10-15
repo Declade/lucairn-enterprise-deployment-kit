@@ -41,6 +41,16 @@ LC_DEFAULT_GATEWAY_URL="https://gateway.lucairn.eu"
 lc_die() { printf '%s: %s\n' "${LC_PROG:-lucairn-client}" "$*" >&2; exit 2; }
 lc_say() { printf '%s: %s\n' "${LC_PROG:-lucairn-client}" "$*" >&2; }
 
+# A path is absolute if it starts with "/"; under Git Bash on Windows "E:/..." and "E:\..." also are.
+lc_is_abs() {
+  case "$1" in /*) return 0 ;; esac
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      case "$1" in [A-Za-z]:/*|[A-Za-z]:\\*) return 0 ;; esac ;;
+  esac
+  return 1
+}
+
 # lc_is_windows — true under Git Bash / MSYS2 on Windows.
 lc_is_windows() { case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; *) return 1 ;; esac; }
 # lc_exe — ".exe" on Windows, nothing elsewhere.  lc_venv_bin — a Python venv's program folder.
