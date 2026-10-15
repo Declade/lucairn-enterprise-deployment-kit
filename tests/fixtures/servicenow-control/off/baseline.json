@@ -1,0 +1,9 @@
+{
+  "source_ref": "93afd045bf9ab59817fa6125c0bd4172cb4bab89",
+  "compose_version": "Docker Compose version v5.4.0",
+  "sha256": {
+    "docker-compose.customer.yml": "b88928a5cdc3c68b98e7a6b3dfae024ef5b8ef31e23a0ec719e75e85eeb622c2",
+    "docker-compose.self-hosted.yml": "db1e412d26e127978b048c5bd4ac0bb2b75ade256de7c5026e14976b33f5122e",
+    "docker-compose.self-hosted-byok.yml": "c62c0f560f990451cee5db935ae835a1a3d624a4d9d7456bde322529808d3fd5"
+  }
+}
