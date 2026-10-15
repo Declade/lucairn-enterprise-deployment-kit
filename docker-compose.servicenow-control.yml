@@ -1,0 +1,71 @@
+# Inert Slice 3 assembly input. No existing startup/release path selects this file.
+# Use scripts/render-servicenow-control.py to validate and render it for review.
+# This overlay does not implement application prctl checks, listeners or sessions.
+networks:
+  servicenow-control:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: "${SERVICENOW_CONTROL_SUBNET:?explicit private subnet required}"
+
+services:
+  gateway:
+    # Compose refuses scaling a service with a fixed container name. Its recreate
+    # stops the old container before starting its replacement; K3 must observe
+    # serving ownership live. update_config also declares Swarm's stop-first.
+    container_name: "${COMPOSE_PROJECT_NAME}-gateway-servicenow-control"
+    scale: 1
+    deploy:
+      replicas: 1
+      update_config:
+        order: stop-first
+    ulimits:
+      core:
+        soft: 0
+        hard: 0
+    environment:
+      GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED: "true"
+      GATEWAY_SERVICENOW_CONTROL_BIND_ADDRESS: "${SERVICENOW_CONTROL_GATEWAY_IP:?explicit private interface required}"
+      GATEWAY_SERVICENOW_CONTROL_PEER_URL: "https://sanitizer.servicenow-control:18444"
+      GATEWAY_SERVICENOW_CONTROL_CA_CERT: /run/secrets/servicenow-control/gateway/ca.crt
+      GATEWAY_SERVICENOW_CONTROL_TLS_CERT: /run/secrets/servicenow-control/gateway/tls.crt
+      GATEWAY_SERVICENOW_CONTROL_TLS_KEY: /run/secrets/servicenow-control/gateway/tls.key
+      GATEWAY_SERVICENOW_CONTROL_EXPECTED_PEER_DNS: sanitizer.servicenow-control
+      GOTRACEBACK: none
+    networks:
+      servicenow-control:
+        ipv4_address: "${SERVICENOW_CONTROL_GATEWAY_IP:?explicit private interface required}"
+        aliases: [gateway.servicenow-control]
+    volumes:
+      - type: bind
+        source: "${SERVICENOW_CONTROL_MATERIAL:?verified bootstrap material required}/gateway"
+        target: /run/secrets/servicenow-control/gateway
+        read_only: true
+        bind:
+          create_host_path: false
+
+  sanitizer:
+    ulimits:
+      core:
+        soft: 0
+        hard: 0
+    environment:
+      SANITIZER_CONFIG_PATH: /config/config.yaml
+    networks:
+      servicenow-control:
+        ipv4_address: "${SERVICENOW_CONTROL_SANITIZER_IP:?explicit private interface required}"
+        aliases: [sanitizer.servicenow-control]
+    volumes:
+      - type: bind
+        source: "${SERVICENOW_CONTROL_MATERIAL:?verified bootstrap material required}/sanitizer"
+        target: /run/secrets/servicenow-control/sanitizer
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SERVICENOW_CONTROL_SANITIZER_CONFIG:?rendered sanitizer YAML required}"
+        target: /config/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false

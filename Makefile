@@ -1,9 +1,9 @@
-.PHONY: test test-wp1-s4-helm-boundary test-enterprise-mtls-helm test-enterprise-mtls-helm-required test-enterprise-mtls-production-values test-enterprise-mtls-ceremony-docs test-enterprise-mtls-kind-kubectl-resolver test-enterprise-mtls-kind-cleanup package release-kit customer-bundle clean \
+.PHONY: test test-servicenow-control test-wp1-s4-helm-boundary test-enterprise-mtls-helm test-enterprise-mtls-helm-required test-enterprise-mtls-production-values test-enterprise-mtls-ceremony-docs test-enterprise-mtls-kind-kubectl-resolver test-enterprise-mtls-kind-cleanup package release-kit customer-bundle clean \
         dashboard-buildx-bootstrap dashboard-multiarch-build \
         dashboard-multiarch-promote-aliases \
         dashboard-verify-manifests
 
-test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-helm-required test-enterprise-mtls-production-values
+test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-helm-required test-enterprise-mtls-production-values test-servicenow-control
 	@bash scripts/run-tests.sh \
 		tests/test_harness_runner.sh \
 		tests/test_lucairn_cli.sh \
@@ -45,6 +45,9 @@ test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-h
 		tests/test_device_countersign_prereq.sh \
 		servicenow/run-tests.sh \
 		tests/static_checks.sh
+
+test-servicenow-control:
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_servicenow_control*.py' -v
 
 test-wp1-s4-helm-boundary:
 	bash tests/test_wp1_s4_helm_boundary.sh
