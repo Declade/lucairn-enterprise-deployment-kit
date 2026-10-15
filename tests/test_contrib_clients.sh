@@ -567,5 +567,10 @@ else
   bad "node missing (fails closed)"
 fi
 
+# ── absolute-path rule: "/" everywhere; drive letters only under Git Bash on Windows ──
+abs_probe() { ( probe_os="$1"; uname() { printf '%s\n' "$probe_os"; }; . "$C/lib/common.sh"; if lc_is_abs "$2"; then echo yes; else echo no; fi ) 2>/dev/null; }
+if [ "$(abs_probe Darwin /opt/x)" = yes ] && [ "$(abs_probe Darwin install)" = no ] && [ "$(abs_probe Darwin E:/x)" = no ]; then ok "abs path: macOS accepts /x, refuses relative and drive-letter"; else bad "abs path: macOS rule"; fi
+if [ "$(abs_probe MINGW64_NT-10.0 E:/Lucairn\ Clients/x)" = yes ] && [ "$(abs_probe MINGW64_NT-10.0 /e/x)" = yes ] && [ "$(abs_probe MINGW64_NT-10.0 install)" = no ]; then ok "abs path: Git Bash accepts E:/ and /e/, refuses relative"; else bad "abs path: Git Bash rule"; fi
+
 [ "$fails" -eq 0 ] || { printf '%s check(s) failed\n' "$fails"; exit 1; }
 printf 'all contrib/clients checks passed\n'

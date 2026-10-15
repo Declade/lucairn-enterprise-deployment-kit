@@ -43,10 +43,10 @@ LC_PROG="hermes.sh"
 TAG="v2026.9.24"
 DATA="$(lc_data_root)"
 BASE="${LUCAIRN_HERMES_DIR:-$DATA/hermes/$TAG}"
-case "$BASE" in /*) : ;; *) lc_die "LUCAIRN_HERMES_DIR must be an absolute path" ;; esac
+if ! lc_is_abs "$BASE"; then lc_die "LUCAIRN_HERMES_DIR must be an absolute path"; fi
 BASE="$(cd "$BASE" && pwd -P)" || lc_die "cannot enter the hermes install folder — run $HERE/install.sh first"
 PROFILE="${LUCAIRN_HERMES_PROFILE:-$DATA/hermes/profile}"
-case "$PROFILE" in /*) : ;; *) lc_die "LUCAIRN_HERMES_PROFILE must be an absolute path" ;; esac
+if ! lc_is_abs "$PROFILE"; then lc_die "LUCAIRN_HERMES_PROFILE must be an absolute path"; fi
 case "$PROFILE" in "$LC_HOME/.hermes"|"$LC_HOME/.hermes/"*) lc_die "refusing to use ~/.hermes as the profile" ;; esac
 mkdir -p "$PROFILE" || lc_die "cannot create the profile $PROFILE"
 PROFILE="$(cd "$PROFILE" && pwd -P)" || lc_die "cannot enter the profile"

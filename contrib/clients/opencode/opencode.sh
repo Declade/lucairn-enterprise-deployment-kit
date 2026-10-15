@@ -51,10 +51,10 @@ LC_PROG="opencode.sh"
 VERSION="1.19.0"
 DATA="$(lc_data_root)"
 BASE="${LUCAIRN_OPENCODE_DIR:-$DATA/opencode/$VERSION}"
-case "$BASE" in /*) : ;; *) lc_die "LUCAIRN_OPENCODE_DIR must be an absolute path" ;; esac
+if ! lc_is_abs "$BASE"; then lc_die "LUCAIRN_OPENCODE_DIR must be an absolute path"; fi
 BASE="$(cd "$BASE" && pwd -P)" || lc_die "cannot enter the opencode install folder — run $HERE/install.sh first"
 PROFILE="${LUCAIRN_OPENCODE_PROFILE:-$DATA/opencode/profile}"
-case "$PROFILE" in /*) : ;; *) lc_die "LUCAIRN_OPENCODE_PROFILE must be an absolute path" ;; esac
+if ! lc_is_abs "$PROFILE"; then lc_die "LUCAIRN_OPENCODE_PROFILE must be an absolute path"; fi
 mkdir -p "$PROFILE" || lc_die "cannot create the profile $PROFILE"
 PROFILE="$(cd "$PROFILE" && pwd -P)" || lc_die "cannot enter the profile"
 PLAT="$(lc_os_arch)" || exit 2
