@@ -1,10 +1,12 @@
 """OFF identity against pinned main sources and versioned render fixtures.
 
 Same Compose version: compare untouched stdout bytes. Different versions:
-parse YAML (mapping order, quoting and indentation are immaterial), and make
-omitted bind.create_host_path false explicit on long-form bind mounts (older
-compose-go used bool+omitempty). No paths, environment values, service fields,
-list ordering or other defaults are removed. Unexpected differences FAIL.
+parse YAML (mapping order, quoting and indentation are immaterial) and drop
+bind.create_host_path on bind mounts: Compose versions disagree on it (v5.4.0
+on macOS writes true, the older Compose on GitHub's ubuntu runners omits it).
+OFF identity itself rests on the pinned SHA-256 of the base files and the exact
+file selection, both version-independent. No paths, environment values, other
+service fields or list ordering are removed. Unexpected differences FAIL.
 """
 
 import copy
@@ -44,7 +46,11 @@ def normalise(document):
     for service in document["services"].values():
         for mount in service.get("volumes", []):
             if mount.get("type") == "bind":
-                mount.setdefault("bind", {}).setdefault("create_host_path", False)
+                bind = mount.get("bind")
+                if isinstance(bind, dict):
+                    bind.pop("create_host_path", None)
+                    if not bind:
+                        mount.pop("bind")
     return document
 
 
@@ -107,7 +113,10 @@ class OffRenderTests(unittest.TestCase):
         for alteration in (b'original', b'./certs'):
             with self.subTest(alteration=alteration), self.assertRaises(AssertionError):
                 assert_render_equal(self, expected, legacy_bytes.replace(alteration, b'changed'), "different-version")
+        # create_host_path differs between Compose versions and is ignored across versions.
         legacy["services"]["gateway"]["volumes"][0]["bind"] = {"create_host_path": True}
+        assert_render_equal(self, expected, yaml.safe_dump(legacy).encode(), "different-version")
+        legacy["services"]["gateway"]["volumes"][0]["read_only"] = True
         with self.assertRaises(AssertionError):
             assert_render_equal(self, expected, yaml.safe_dump(legacy).encode(), "different-version")
 
