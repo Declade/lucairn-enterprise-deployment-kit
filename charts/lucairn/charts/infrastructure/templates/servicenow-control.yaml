@@ -1,0 +1,4 @@
+{{- if include "servicenowControl.enabled" . -}}
+{{- include "servicenowControl.policies" . -}}
+{{- include "servicenowControl.dns" . -}}
+{{- end -}}

@@ -9,6 +9,7 @@ metadata:
 data:
   config.yaml: |
     sanitizer:
+      {{- if include "servicenowControl.enabled" . }}{{ include "servicenowControl.sanitizerConfig" . | nindent 6 }}{{- end }}
       freetext_fields: []
       # W5+ Phase 1 (2026-05-09) toggles — credential-class + adversarial-input
       # hardening. Both default ON. An unrecognised key is generally ignored by

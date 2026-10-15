@@ -1,0 +1,3 @@
+{{- if (include "servicenowControl.enabled" .) -}}
+{{- fail "ServiceNow Slice 3 wiring is held for the assembled Trail of Bits + ONE Fable gate; use a temporary test assembly only" -}}
+{{- end -}}

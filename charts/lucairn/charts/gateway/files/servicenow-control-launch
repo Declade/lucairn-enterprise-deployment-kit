@@ -1,0 +1,7 @@
+#!/bin/sh
+# Gateway runtime non-dumpability enforcement belongs to G4.
+set -eu
+ulimit -S -c 0
+ulimit -H -c 0
+[ "$(ulimit -S -c)" = 0 ] && [ "$(ulimit -H -c)" = 0 ] || exit 1
+exec gateway "$@"

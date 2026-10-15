@@ -28,6 +28,7 @@ test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-h
 		tests/test_sec_hardening.sh \
 		tests/test_default_password_guard.sh \
 		tests/test_netpol_hardening.sh \
+		tests/test_servicenow_control_helm.sh \
 		tests/test_enterprise_mtls_cert_contract.sh \
 		tests/test_enterprise_mtls_kind_custody.sh \
 		tests/test_enterprise_mtls_kind_image_preload.sh \

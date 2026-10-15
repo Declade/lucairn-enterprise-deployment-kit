@@ -28,6 +28,7 @@
 {{- range $key := keys $gwLiterals | sortAlpha -}}
 {{- include "lucairn.env.noExpansion" (dict "scope" "GATEWAY ENV" "key" $key "value" (get $gwLiterals $key)) -}}
 {{- end -}}
+{{- if include "servicenowControl.enabled" . -}}{{- include "servicenowControl.workloadValidate" . -}}{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -37,6 +38,10 @@ metadata:
     app.kubernetes.io/name: {{ .Chart.Name }}
     app.kubernetes.io/part-of: dsa
 spec:
+  {{- if include "servicenowControl.enabled" . }}
+  strategy:
+    type: Recreate
+  {{- end }}
   {{- if not .Values.hpa.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
@@ -54,8 +59,10 @@ spec:
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 30 }}
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
-      {{- if .Values.postgresKeystore.enabled }}
+      {{- if or .Values.postgresKeystore.enabled (include "servicenowControl.enabled" .) }}
       initContainers:
+        {{- if include "servicenowControl.enabled" . }}{{ include "servicenowControl.init" . | nindent 8 }}{{- end }}
+        {{- if .Values.postgresKeystore.enabled }}
         # Block gateway startup until the PostgresKeyStore backing DB is
         # reachable. Gateway boots with PostgresKeyStore when
         # GATEWAY_KEYSTORE_DSN is set; racing it against postgres-gateway
@@ -93,11 +100,13 @@ spec:
             limits:
               cpu: 100m
               memory: 64Mi
+        {{- end }}
       {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ if .Values.global.imageRegistry }}{{ .Values.global.imageRegistry }}/{{ end }}{{ .Values.image.repository }}:{{ .Values.image.tag | default .Values.global.imageTag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if include "servicenowControl.enabled" . }}{{ include "servicenowControl.command" . | nindent 10 }}{{- end }}
           args:
             - "-addr=:{{ .Values.service.apiPort }}"
             - "-health-addr=:{{ .Values.service.healthPort }}"
@@ -109,6 +118,7 @@ spec:
             - secretRef:
                 name: {{ .Chart.Name }}-credentials
           env:
+            {{- if include "servicenowControl.enabled" . }}{{ include "servicenowControl.gatewayEnv" . | nindent 12 }}{{- end }}
             {{- if $mtlsEnabled }}
             # :50058 is a deliberately separate runtime contract. It uses the
             # same operator-owned gateway leaf as the DSA mesh, but the witness
@@ -186,6 +196,7 @@ spec:
                   key: {{ .Values.postgresKeystore.dsnSecretRef.key }}
             {{- end }}
           ports:
+            {{- if include "servicenowControl.enabled" . }}{{ include "servicenowControl.port" . | nindent 12 }}{{- end }}
             - name: http
               containerPort: {{ .Values.service.apiPort }}
               protocol: TCP
@@ -217,6 +228,7 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 3
           volumeMounts:
+            {{- if include "servicenowControl.enabled" . }}{{ include "servicenowControl.mounts" . | nindent 12 }}{{- end }}
             - name: verticals
               mountPath: {{ .Values.verticalsDir }}
               readOnly: true
@@ -288,6 +300,7 @@ spec:
                 command: ["/bin/sh", "-c", "sleep {{ int .Values.gracefulShutdown.preStopSleepSeconds }}"]
           {{- end }}
       volumes:
+        {{- if include "servicenowControl.enabled" . }}{{ include "servicenowControl.volumes" . | nindent 8 }}{{- end }}
         - name: verticals
           projected:
             sources:

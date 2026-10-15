@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Set inherited core limits and materialize the pod-IP YAML in tmpfs.
+
+The sanitizer runtime must separately verify non-dumpability on master/workers.
+"""
+import ipaddress
+import os
+from pathlib import Path
+import resource
+import sys
+
+import yaml
+
+
+def prepare():
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    if resource.getrlimit(resource.RLIMIT_CORE) != (0, 0):
+        raise ValueError("core_limit")
+    ip = ipaddress.ip_address(os.environ["LUCAIRN_CONTROL_POD_IP"])
+    private = ip.is_private or ip in ipaddress.ip_network("100.64.0.0/10")
+    if not private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
+        raise ValueError("pod_ip")
+    config = yaml.safe_load(Path("/config/config.yaml").read_text())
+    control = config["sanitizer"]["servicenow_instance_path"]
+    if control["enabled"] is not True or control["control_bind_address"] != "__LUCAIRN_CONTROL_POD_IP__":
+        raise ValueError("control_config")
+    control["control_bind_address"] = str(ip)
+    directory = Path("/tmp/servicenow-control")
+    directory.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(directory, 0o700)
+    target = directory / "config.yaml"
+    # No reader credential or instance material is written by this wrapper.
+    with open(target, "w", opener=lambda p, f: os.open(p, f | os.O_NOFOLLOW, 0o600)) as output:
+        yaml.safe_dump(config, output, sort_keys=False)
+    os.environ["SANITIZER_CONFIG_PATH"] = str(target)
+
+
+if __name__ == "__main__":
+    try:
+        prepare()
+        os.execvp("gunicorn", ["gunicorn", "-c", "/app/gunicorn.conf.py", "app:create_app()"])
+    except Exception:
+        # Fixed words only: exceptions may include configuration values.
+        print("control_unavailable", file=sys.stderr)
+        sys.exit(1)
