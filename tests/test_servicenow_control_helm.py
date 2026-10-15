@@ -13,7 +13,6 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import tarfile
 import tempfile
 import unittest
 from unittest import mock
@@ -22,6 +21,10 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 CHART = ROOT / "charts/lucairn"
+# Golden OFF renders: git archive 93afd045bf9ab59817fa6125c0bd4172cb4bab89
+# charts/lucairn into /private/tmp, then render(text=False) each profile with no config.
+# Captured with Helm v4.1.3; never regenerate from a moving main ref.
+OFF_GOLDEN = ROOT / "tests/fixtures/servicenow-control/helm-off"
 APP = "app.kubernetes.io/name"
 HELD = "templates/servicenow-control-held.yaml"
 ON = {"global": {"servicenowControl": {
@@ -49,13 +52,13 @@ def merge(a, b):
     return result
 
 
-def render(chart, config=None, profile="values-test.yaml"):
+def render(chart, config=None, profile="values-test.yaml", text=True):
     with tempfile.TemporaryDirectory(prefix="k2-values-") as tmp:
         values = Path(tmp) / "values.yaml"
         values.write_text(yaml.safe_dump(config or {}))
         args = ["helm", "template", "k2", str(chart), "-f", str(chart / profile),
                 "-f", str(values), *SECRET_ARGS]
-        return subprocess.run(args, capture_output=True, text=True, timeout=30)
+        return subprocess.run(args, capture_output=True, text=text, timeout=30)
 
 
 def docs(output):
@@ -179,32 +182,36 @@ class HelmAcceptance(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def test_off_byte_identical_to_main_and_ignores_control_settings(self):
-        # Compare the current main ref, never a pinned SHA or whole-repo grep.
-        baseline = self.work / "baseline"
-        baseline.mkdir()
-        archive = subprocess.run(["git", "archive", os.environ.get("K2_BASE_REF", "origin/main"),
-                                  "charts/lucairn"], cwd=ROOT, capture_output=True, timeout=30, check=True)
-        archive_file = self.work / "baseline.tar"
-        archive_file.write_bytes(archive.stdout)
-        with tarfile.open(archive_file) as tar:
-            tar.extractall(baseline, filter="data")
+    def assert_off_matches_golden(self, chart, profile, config=None):
+        actual = render(chart, config, profile=profile, text=False)
+        self.assertEqual(actual.returncode, 0, actual.stderr)
+        self.assertEqual(actual.stdout, (OFF_GOLDEN / profile).read_bytes())
+
+    def test_off_byte_identical_to_golden_and_ignores_control_settings(self):
         for profile in ["values-test.yaml", "values-dev.yaml"]:
             with self.subTest(profile=profile):
-                expected = render(baseline / "charts/lucairn", profile=profile)
-                actual = render(CHART, profile=profile)
-                ignored = render(CHART, {"global": {"servicenowControl": {
+                self.assert_off_matches_golden(CHART, profile)
+                self.assert_off_matches_golden(CHART, profile, {"global": {"servicenowControl": {
                     "enabled": False, "gatewaySecret": "$(IGNORED)",
                     "sanitizerSecret": None, "instanceCIDRs": ["not-a-cidr"],
-                    "kubernetesAPICIDRs": [], "clusterCIDRs": []}}}, profile=profile)
-                self.assertEqual(expected.returncode, 0, expected.stderr)
-                self.assertEqual(actual.returncode, 0, actual.stderr)
-                self.assertEqual(ignored.returncode, 0, ignored.stderr)
-                self.assertEqual(actual.stdout, expected.stdout)
-                self.assertEqual(ignored.stdout, expected.stdout)
-                assembled_off = render(self.chart, profile=profile)
-                self.assertEqual(assembled_off.returncode, 0, assembled_off.stderr)
-                self.assertEqual(assembled_off.stdout, expected.stdout)
+                    "kubernetesAPICIDRs": [], "clusterCIDRs": []}}})
+                self.assert_off_matches_golden(self.chart, profile)
+
+    def test_off_golden_rejects_render_mutant(self):
+        mutant = self.work / "off-mutant"
+        shutil.copytree(CHART, mutant)
+        deployment = mutant / "charts/gateway/templates/deployment.yaml"
+        original = deployment.read_text()
+        before = "containerPort: {{ .Values.service.apiPort }}"
+        self.assertEqual(original.count(before), 1)
+        deployment.write_text(original.replace(before, "containerPort: {{ add1 .Values.service.apiPort }}"))
+        for profile in ["values-test.yaml", "values-dev.yaml"]:
+            with self.subTest(profile=profile):
+                # A valid OFF render with a changed port must fail the same oracle.
+                result = render(mutant, profile=profile)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                with self.assertRaises(AssertionError):
+                    self.assert_off_matches_golden(mutant, profile)
 
     def test_production_on_is_mechanically_held(self):
         result = render(CHART, ON)
@@ -272,11 +279,25 @@ class HelmAcceptance(unittest.TestCase):
         self.assertFalse(self.union.allows(GATEWAY, pod("gateway", "dsa-identity"), "Egress", 18444))
         self.assertFalse(self.union.allows(SANITIZER, pod("sandbox-a", "dsa-edge"), "Egress", 18443))
 
-    def test_namespace_blankets_do_not_reopen_control_or_main_sanitize(self):
+    def test_chart_blanket_policies_keep_control_and_main_sanitize_peer_scoped(self):
         for dest, port, peer in [(GATEWAY, 18443, pod("impostor", "dsa-identity")),
                                  (SANITIZER, 18444, pod("impostor", "dsa-edge"))]:
-            # Grant arbitrary source egress: existing destination union must still deny.
+            # The chart's own existing blanket policies do not open control ingress
+            # to non-peers. An external allow-all ingress policy would be additive.
             self.assertFalse(self.union.allows(dest, peer, "Ingress", port))
+            # Inject a namespace-wide source egress grant shaped like edge-egress.
+            # This opens only the source side; the chart's destination ingress
+            # policies must still reject the non-peer on the control port.
+            grant = copy.deepcopy(obj(self.on, "NetworkPolicy", "edge-egress"))
+            grant["metadata"].update(name="synthetic-namespace-egress", namespace=peer["ns"])
+            grant["spec"]["egress"] = [{"to": [{"namespaceSelector": {"matchLabels": {
+                "kubernetes.io/metadata.name": dest["ns"]}}}],
+                "ports": [{"port": port, "protocol": "TCP"}]}]
+            union = Union([*self.on, grant])
+            self.assertFalse(self.union.allows(peer, dest, "Egress", port))
+            self.assertTrue(union.allows(peer, dest, "Egress", port))
+            self.assertFalse(union.allows(dest, peer, "Ingress", port))
+            self.assertFalse(union.reaches(peer, dest, port))
         self.assertTrue(self.union.reaches(GATEWAY, SANITIZER, 8086))
         self.assertFalse(self.union.reaches(pod("impostor", "dsa-edge"), SANITIZER, 8086))
         # Existing observability egress lacks 8086; preserve working health on 8083.
