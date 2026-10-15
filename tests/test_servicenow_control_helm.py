@@ -50,7 +50,7 @@ def merge(a, b):
 
 
 def render(chart, config=None, profile="values-test.yaml"):
-    with tempfile.TemporaryDirectory(prefix="k2-values-", dir="/private/tmp") as tmp:
+    with tempfile.TemporaryDirectory(prefix="k2-values-") as tmp:
         values = Path(tmp) / "values.yaml"
         values.write_text(yaml.safe_dump(config or {}))
         args = ["helm", "template", "k2", str(chart), "-f", str(chart / profile),
@@ -164,7 +164,7 @@ class HelmAcceptance(unittest.TestCase):
     def setUpClass(cls):
         if not shutil.which("helm"):
             raise RuntimeError("helm is missing; do not install it for this task")
-        cls.tmp = tempfile.TemporaryDirectory(prefix="k2-acceptance-", dir="/private/tmp")
+        cls.tmp = tempfile.TemporaryDirectory(prefix="k2-acceptance-")
         cls.work = Path(cls.tmp.name)
         cls.chart = cls.work / "assembled"
         shutil.copytree(CHART, cls.chart)
