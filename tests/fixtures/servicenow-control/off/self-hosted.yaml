@@ -797,7 +797,7 @@ services:
       LUCAIRN_L3_AVAILABILITY_POSTURE: ""
       LUCAIRN_L3_REQUIRED: ""
       LUCAIRN_PII_ML_ADDR: pii-ml:50056
-      QI_ENGINE_ENABLED: "true"
+      QI_ENGINE_ENABLED: "false"
       SANITIZER_CACHE_BACKEND: redis
       SANITIZER_CACHE_REDIS_URL: redis://redis-sanitizer-cache:6379/0
       SANITIZER_CACHE_TTL_SECONDS: "3600"

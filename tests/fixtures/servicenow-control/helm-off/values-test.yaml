@@ -2192,7 +2192,7 @@ data:
   GRPC_TLS_ENABLED: "false"
   LCR_ENABLED: "true"
   LCR_WITNESS_ADDR: "veil-witness.dsa-witness.svc.cluster.local:50057"
-  QI_ENGINE_ENABLED: "true"
+  QI_ENGINE_ENABLED: "false"
   QI_ENGINE_THRESHOLD: "0.25"
   QI_ENGINE_ACTION: "generalize"
   SANDBOX_A_EPHEMERAL: "true"

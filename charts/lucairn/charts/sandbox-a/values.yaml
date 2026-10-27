@@ -166,7 +166,13 @@ sanitizer:
   # and would leak real identity data.
   strictSafeTerms: []
   llmAuditEnabled: false
-  qiEngineEnabled: "true"
+  # T-1433: the quasi-identifier (QI) engine ships OFF. It generalizes whole
+  # fields it classifies by field NAME (age -> range, zip -> prefix, date ->
+  # month). In the 0.5.5 sanitizer image the name match is a substring match,
+  # so a field such as user_message_1 ("mess-AGE") is treated as an age field
+  # and the whole user message is replaced by [NUMERIC]. Keep it off on 0.5.5;
+  # set qiEngineEnabled: "true" only for structured fields with such names.
+  qiEngineEnabled: "false"
   qiEngineThreshold: "0.25"
   qiEngineAction: "generalize"
   llmScanEnabled: false

@@ -1310,7 +1310,10 @@ VEIL_APP_PASSWORD=$(get_val VEIL_APP_PASSWORD)
 
 # Runtime tuning
 SANDBOX_A_EPHEMERAL=true
-QI_ENGINE_ENABLED=true
+# Quasi-identifier engine OFF by default (T-1433): on the 0.5.5 sanitizer
+# image it matches field names by substring, so user_message_1 counts as an
+# age field and the user message becomes [NUMERIC]. See CHANGELOG.md.
+QI_ENGINE_ENABLED=false
 SANITIZER_CONFIG_FILE=./config/default-sanitizer.yaml
 SANITIZER_SAFE_TERMS_FILE=./config/medical-terms.txt
 
