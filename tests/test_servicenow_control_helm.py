@@ -24,6 +24,9 @@ CHART = ROOT / "charts/lucairn"
 # Golden OFF renders: git archive 93afd045bf9ab59817fa6125c0bd4172cb4bab89
 # charts/lucairn into /private/tmp, then render(text=False) each profile with no config.
 # Captured with Helm v4.1.3; never regenerate from a moving main ref.
+# Amended twice: the 2026-10-27 postgres:16-alpine digest re-pin (image lines)
+# and T-1433 (sandbox-a qiEngineEnabled default "false": the rendered
+# QI_ENGINE_ENABLED ConfigMap value in each profile).
 OFF_GOLDEN = ROOT / "tests/fixtures/servicenow-control/helm-off"
 APP = "app.kubernetes.io/name"
 HELD = "templates/servicenow-control-held.yaml"

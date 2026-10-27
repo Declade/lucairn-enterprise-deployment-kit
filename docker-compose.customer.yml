@@ -790,7 +790,13 @@ services:
       LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "${LCR_WITNESS_MTLS_SANITIZER_CA_BUNDLE_PATH:-${LCR_WITNESS_MTLS_CA_BUNDLE_PATH:-}}"
       LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "${LCR_WITNESS_MTLS_SANITIZER_CLIENT_CERT_PATH:-${LCR_WITNESS_MTLS_CLIENT_CERT_PATH:-}}"
       LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "${LCR_WITNESS_MTLS_SANITIZER_CLIENT_KEY_PATH:-${LCR_WITNESS_MTLS_CLIENT_KEY_PATH:-}}"
-      QI_ENGINE_ENABLED: "${QI_ENGINE_ENABLED:-true}"
+      # T-1433: the quasi-identifier (QI) engine ships OFF. It generalizes
+      # whole fields it classifies by field NAME (age, zip, date, ...). In the
+      # 0.5.5 sanitizer image the name match is a substring match, so
+      # user_message_1 ("mess-AGE") counts as an age field and the whole user
+      # message becomes [NUMERIC]. Set QI_ENGINE_ENABLED=true in customer.env
+      # only for structured fields with such names.
+      QI_ENGINE_ENABLED: "${QI_ENGINE_ENABLED:-false}"
       # L3 REQUEST-AVAILABILITY POSTURE (T-393, PRD prd-2026-08-01-l3-
       # availability-vs-certificate-honesty-split.md). "reject" = fail-CLOSED
       # (503 l3_scrubber_unavailable when the L3 deep PII shield is down);
