@@ -20,6 +20,26 @@ receipt, and witness-signature verification; anchors are explicitly not checked.
 > are published at <https://lucairn.eu/security>; the disclosure process and
 > contact are in [`SECURITY.md`](SECURITY.md).
 
+### kit 1.9.7 / chart 1.9.7 (2026-10-28, images 0.5.5) — QI engine off by default
+
+**Upgrade from 1.9.6:** no image, schema or ceiling change — keep
+`LUCAIRN_IMAGE_TAG=0.5.5` / `global.imageTag: "0.5.5"`. The quasi-identifier
+(QI) engine now ships off (T-1433): on kit defaults the `0.5.5` sanitizer
+replaced every user message with `[NUMERIC]`, because its field classifier
+matched "age" inside the field name `user_message_<n>`. **An existing install
+keeps its own value.** Compose: set `QI_ENGINE_ENABLED=false` in
+`customer.env` (or delete the line), then `bin/lucairn up --env customer.env`.
+Helm: a plain `helm upgrade` picks up `"false"` unless your own values set it;
+with `--reuse-values` use `--reset-then-reuse-values` (Helm 3.14 or newer) or
+`--set-string sandbox-a.sanitizer.qiEngineEnabled=false`, then
+`kubectl -n dsa-identity rollout restart deployment/sandbox-a`. To keep the QI
+engine on (only for requests with structured fields such as `age`,
+`zip_code`, `birth_date`), set `QI_ENGINE_ENABLED=true` /
+`sandbox-a.sanitizer.qiEngineEnabled: "true"`; on the `0.5.5` image that
+brings the `[NUMERIC]` replacement back for chat traffic. The `postgres:16-alpine` and
+`redis:7-alpine` images are re-pinned to the digests upstream publishes today.
+Read `CHANGELOG.md` `[1.9.7]` → "Stated limits".
+
 ### kit 1.9.6 / chart 1.9.6 (2026-10-04, images 0.5.5) — audit claim-delivery retention
 
 **Upgrade from 1.9.5:** no image, schema or ceiling change — keep
@@ -978,7 +998,7 @@ matching profile with `--adopt-runtime-profile`.
 1. Unpack the release bundle.
 
 ```bash
-tar -xzf lucairn-enterprise-deployment-kit-1.9.6.tar.gz
+tar -xzf lucairn-enterprise-deployment-kit-1.9.7.tar.gz
 cd lucairn-enterprise-deployment-kit
 ```
 
@@ -3419,7 +3439,7 @@ included in support bundles.
 ### Prerequisite: gateway image >= 0.5.1
 
 This feature first shipped in the gateway image at `0.5.1` (the feature floor);
-the current published release is `0.5.5` (`appVersion: 0.5.5`, chart `v1.9.6`),
+the current published release is `0.5.5` (`appVersion: 0.5.5`, chart `v1.9.7`),
 also published to GHCR. The gateway binary that reads `GATEWAY_TMS_TRUST_ZONES`
 is present from `0.5.1` onward, so any `>= 0.5.1` pin (including `0.5.5`) works.
 Setting `GATEWAY_TMS_TRUST_ZONES` on an **older** image (e.g. `0.5.0`) is a
