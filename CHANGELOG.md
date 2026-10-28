@@ -14,6 +14,59 @@ carry a security fix are tagged **[Security]**.
 
 ## [Unreleased]
 
+## [1.9.7] — 2026-10-28 — images `0.5.5`
+
+Kit-only patch release: the `dsa-*` images stay `0.5.5` (same digests as
+1.9.6), `dsa-pii-ml` stays `0.5.1`, `lucairn-dashboard` stays `0.8.2`, and no
+migration ceiling changes (veil-witness 10 · audit 7 · id-bridge 4 ·
+sandbox-a 8). It ships the kit side of the sanitizer 1.0.1 patch — the
+quasi-identifier (QI) engine is now **off by default** (T-1433) — and re-pins
+the `postgres:16-alpine` and `redis:7-alpine` images.
+
+### Read first — upgrading from 1.9.6
+
+- **QI engine off by default (T-1433).** With the kit's defaults the field
+  classifier of the `0.5.5` sanitizer matched "age" inside the field name
+  `user_message_<n>` and replaced the user's text with `[NUMERIC]` before it
+  reached the model. Lucairn's hosted service was not affected (the QI engine
+  is off there). New installs get `QI_ENGINE_ENABLED=false`. **An existing
+  install keeps its own value — act once:**
+  - **Compose:** set `QI_ENGINE_ENABLED=false` in `customer.env` (or delete
+    the line), then `bin/lucairn up --env customer.env`.
+  - **Helm:** a plain `helm upgrade` picks up `"false"` unless your own
+    values set `sandbox-a.sanitizer.qiEngineEnabled`. If you upgrade with
+    `--reuse-values`, the old `"true"` stays: use `--reset-then-reuse-values`
+    (Helm 3.14 or newer) or add
+    `--set-string sandbox-a.sanitizer.qiEngineEnabled=false`. Then
+    `kubectl -n dsa-identity rollout restart deployment/sandbox-a`.
+  - **To keep the QI engine on** (only for requests that carry structured
+    fields named like `age`, `zip_code` or `birth_date`): Compose
+    `QI_ENGINE_ENABLED=true` in `customer.env`; Helm
+    `sandbox-a.sanitizer.qiEngineEnabled: "true"`. On the `0.5.5` image this
+    brings the `[NUMERIC]` replacement back for chat and coding-assistant
+    traffic.
+  - `bin/lucairn doctor` does not warn about an existing `true`. Full detail:
+    the T-1433 entry under **Changed**.
+- **`postgres:16-alpine` and `redis:7-alpine` re-pinned.** Upstream moved both
+  tags again; the kit now pins the digests upstream publishes today (see
+  **Changed**). Nothing to do beyond the normal upgrade.
+
+### Stated limits
+
+- **No new images.** This release does not publish or pin `1.0` or `1.0.1`
+  `dsa-*` images; every `dsa-*` image stays at `0.5.5`. The classifier fix
+  itself (on the `dual-sandbox-architecture` `release/1.0.1` branch: user-text
+  fields always keep their value; ordinary words such as `message` no longer
+  count as an age field) is **not** in the `0.5.5` image. Turning the QI
+  engine on with this kit still triggers the `[NUMERIC]` replacement for chat
+  traffic. The fix reaches kit installs only with a later, signed image pin.
+- **Re-pin, not a re-validation.** The kit's acceptance suite has not been
+  re-run against the new `postgres:16-alpine` / `redis:7-alpine` bytes; the
+  digests were resolved from Docker Hub as the single trust authority.
+- **Dashboard source change not shipped.** The T-617 S2 change to
+  `apps/dashboard` (recall-check wording) is in the repository but not in the
+  pinned `lucairn-dashboard:0.8.2` image.
+
 ### Fixed
 - **Kit test harness:** `make test` runs every recipe test file in order,
   lists failures at the end, and exits non-zero if any failed; mandatory
@@ -52,6 +105,22 @@ carry a security fix are tagged **[Security]**.
   hand over to the exporter `lucairn-bundle-export`; that exporter ships with
   a later release, and without it both stop with one sentence and write
   nothing. See `OPS.md` § "Verify an evidence bundle (self-hosted)".
+
+- **ServiceNow mode control channels — Compose and Helm (T-1351 Slice 3
+  K1/K2), OFF by default.** Certificate bootstrap
+  (`scripts/bootstrap-servicenow-control.py`) and a validated Compose overlay
+  and renderer (`scripts/render-servicenow-control.py`); Helm: private
+  ClusterIP Services on ports 18443/18444, NetworkPolicies, and a hold
+  template that blocks production renders with the mode on. With the mode off
+  (the default) these two changes leave the Compose and Helm renders
+  byte-identical (golden-fixture tests under
+  `tests/fixtures/servicenow-control/`). The ServiceNow mode itself is not
+  available in kit installs in this release; the channels stay off.
+- **Supported client launchers (T-1387):** `contrib/clients/` carries pinned
+  install scripts and launchers for Hermes, OpenCode and OpenWork through the
+  Lucairn gateway (keys only from the environment or the macOS Keychain, web
+  search off, work-folder guard; runs on Windows from Git Bash). Offline test:
+  `tests/test_contrib_clients.sh`.
 
 ### Changed
 - **Quasi-identifier (QI) engine OFF by default (T-1433).** With the QI engine
@@ -95,6 +164,15 @@ carry a security fix are tagged **[Security]**.
     `QI_ENGINE_ENABLED=true` (Compose) or `qiEngineEnabled: "true"` (Helm).
     On the `0.5.5` image, do not turn it on for chat or coding-assistant
     traffic: user messages will be replaced again.
+- **`postgres:16-alpine` and `redis:7-alpine` re-pinned.** Upstream
+  re-pointed both moving tags on 2026-10-26. New index digests:
+  `postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab`
+  (PG 16.15) and
+  `redis:7-alpine@sha256:6ba19c50b56777f5c11c58eff8ddb69d0d5f27ba131cffb63f180ccfd43c66af`
+  (Redis 7.4.12), in `image-manifest.yaml`, `apps/dashboard/image-manifest.yaml`,
+  `docker-compose.customer.yml` and the audit chart values; this clears the
+  failing live digest gate (`tests/live_digest_gate.sh`). Re-pin only; see
+  "Stated limits".
 - `.gitignore` now also ignores `customer.env.bak-*`: a dated backup of the
   env file carries the same secrets but was not matched by `*.env`.
 

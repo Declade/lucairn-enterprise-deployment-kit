@@ -2602,6 +2602,15 @@ they do not accept arbitrary Compose flags and `down` does not remove volumes.
 Exact release rollback history and restore proof remain WP4 S4 scope—do not
 interpret these S1 wrappers as completed rollback functionality.
 
+### kit 1.9.7 / chart 1.9.7 (images 0.5.5) — QI engine off by default (2026-10-28)
+
+Kit-only release: images stay `0.5.5`, no schema change, no ceiling change.
+The sanitizer's QI engine ships off (`QI_ENGINE_ENABLED=false`,
+`sandbox-a.sanitizer.qiEngineEnabled: "false"`, T-1433). Existing installs keep
+their own value: see `CHANGELOG.md` `[1.9.7]` → "Read first" for the Compose
+and Helm steps and for keeping the engine on. `postgres:16-alpine` and
+`redis:7-alpine` are re-pinned (re-pin, not a re-validation).
+
 ### kit 1.9.6 / chart 1.9.6 (images 0.5.5) — audit claim-delivery retention (2026-10-04)
 
 Kit-only release: images stay `0.5.5`, no schema change, no ceiling change.
