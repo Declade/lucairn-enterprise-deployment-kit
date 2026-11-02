@@ -2514,7 +2514,11 @@ single-replica are the v1.0 SLA.
    call `cosign` and do not check any of this. `verify-images` FAILS if any
    covered image's tag was re-pointed away from its signed digest
    (downgrade/substitution); do not proceed to step 5 on a failure.
-4. Run `bin/lucairn doctor --offline`.
+4. Run `bin/lucairn doctor --offline`. **Kit 1.x → 2.0 (Compose):** before
+   this step, follow INSTALL.md § "Upgrading a kit 1.x Compose install" (the
+   new sanitizer core's secrets, its mTLS material, its registry DSN file and
+   its registry migrations); doctor fails every `sanitizer core` line until
+   they exist.
 5. Pull images or update Helm values.
 6. Apply the release.
 7. Confirm `/healthz` and `/readyz`, then prove the customer path with the

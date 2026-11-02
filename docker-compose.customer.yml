@@ -948,7 +948,7 @@ services:
     logging: *default-logging
     environment:
       POSTGRES_USER: dsa
-      POSTGRES_PASSWORD: "${POSTGRES_SANITIZER_CORE_PASSWORD:?POSTGRES_SANITIZER_CORE_PASSWORD must be set (URL-safe; generate with: openssl rand -hex 24) — see customer.env}"
+      POSTGRES_PASSWORD: "${POSTGRES_SANITIZER_CORE_PASSWORD:?POSTGRES_SANITIZER_CORE_PASSWORD must be set (generate with: openssl rand -hex 24) — see customer.env}"
       POSTGRES_DB: sanitizer_core
     volumes:
       - pg-sanitizer-core-data:/var/lib/postgresql/data
@@ -1003,7 +1003,7 @@ services:
       PGUSER: "dsa"
       PGDATABASE: "sanitizer_core"
       PGSSLMODE: "${POSTGRES_SSLMODE:-disable}"
-      PGPASSWORD: "${POSTGRES_SANITIZER_CORE_PASSWORD:?POSTGRES_SANITIZER_CORE_PASSWORD must be set (URL-safe; generate with: openssl rand -hex 24) — see customer.env}"
+      PGPASSWORD: "${POSTGRES_SANITIZER_CORE_PASSWORD:?POSTGRES_SANITIZER_CORE_PASSWORD must be set (generate with: openssl rand -hex 24) — see customer.env}"
     restart: "no"
 
   # The model sidecar (spaCy + GLiNER behind 127.0.0.1:8765). It OWNS the
@@ -1076,9 +1076,16 @@ services:
   #   * Claims are signed with the SAME seed as the old sanitizer
   #     (LCR_SANITIZER_SIGNING_KEY): both sign as dsa-sanitizer and the witness
   #     verifies both with LCR_SANITIZER_PUBLIC_KEY.
-  #   * The registry DSN carries the DB password in the core's argv (the core
-  #     has no env/file DSN option); POSTGRES_SANITIZER_CORE_PASSWORD must be
-  #     URL-safe. The registry key seals every row (AES-256-GCM + HMAC).
+  #   * The registry DSN (it carries the DB password) is a FILE, never a
+  #     process argument: `--dsn` would put it in the core's argv, which every
+  #     local user of the Docker host reads (`ps`, /proc/<pid>/cmdline). The
+  #     core reads `--registry-dsn-file` (DSA #956, registry_dsn.go: a
+  #     postgres:// URL with a percent-encoded password; a path holding :// or
+  #     @ is refused). scripts/write-sanitizer-core-registry-dsn.sh writes the
+  #     host file from customer.env (bin/lucairn-init runs it); it is
+  #     bind-mounted read-only, and `create_host_path: false` makes `up` fail
+  #     instead of Docker creating a directory when the file is missing.
+  #     The registry key seals every row (AES-256-GCM + HMAC).
   #
   # Entrypoint = the hosted watchdog, verbatim (busybox sh of the core image):
   # wait until the sidecar answers, run the core, re-check the sidecar about
@@ -1129,7 +1136,7 @@ services:
     command:
       - "serve"
       - "--listen=0.0.0.0:8790"
-      - "--dsn=postgres://dsa:${POSTGRES_SANITIZER_CORE_PASSWORD:?POSTGRES_SANITIZER_CORE_PASSWORD must be set}@postgres-sanitizer-core:5432/sanitizer_core?sslmode=${POSTGRES_SSLMODE:-disable}"
+      - "--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn"
       - "--sidecar=http://127.0.0.1:8765"
     environment:
       DSA_ENV: "${DSA_ENV:-production}"
@@ -1156,6 +1163,15 @@ services:
       # the CA certificate). The CA private key lives in <dir>/ca and is never
       # mounted into any container.
       - ${SANITIZER_CORE_MTLS_HOST_DIR:-./.certs/sanitizer-core-mtls}/sanitizer-core:/etc/sanitizer-core-mtls:ro
+      # The registry DSN file (see the security notes above). ONE file is
+      # mounted, so only its own mode (0444) applies in the container; on the
+      # host its 0700 directory keeps other users out.
+      - type: bind
+        source: "${SANITIZER_CORE_REGISTRY_DSN_FILE:-./.secrets/sanitizer-core/registry-dsn}"
+        target: /run/secrets/sanitizer-core/registry-dsn
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 8790 || exit 1"]
       interval: 5s

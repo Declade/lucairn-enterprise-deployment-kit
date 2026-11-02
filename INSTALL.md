@@ -2412,11 +2412,12 @@ OpenAI, MCP and proxy routes.
 
 ### 1. Secrets and image pins (`customer.env`)
 
-`bin/lucairn-init` generates both secrets and writes the image variables. By hand:
+`bin/lucairn-init` generates both secrets, writes the image variables and the
+registry DSN file (step 2b). By hand:
 
 ```bash
 DSA_SANITIZER_CORE_REGISTRY_KEY=$(openssl rand -hex 32)    # seals every registry row; keep it stable
-POSTGRES_SANITIZER_CORE_PASSWORD=$(openssl rand -hex 24)   # URL-safe characters only
+POSTGRES_SANITIZER_CORE_PASSWORD=$(openssl rand -hex 24)   # no space, $ ' " \ ` or #
 LUCAIRN_SANITIZER_CORE_IMAGE_TAG=1.1.0                     # ONE tag for core + sidecar
 LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=                       # release-filled; set both digests or neither
 LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=
@@ -2452,6 +2453,38 @@ re-run reuses every existing file; to rotate a leaf, delete it, re-run, and
 recreate the container that mounts it. If you keep the material elsewhere, pass
 the directory to the script and set `SANITIZER_CORE_MTLS_HOST_DIR` to it.
 
+### 2b. Registry DSN file (once, and after every password change)
+
+```bash
+scripts/write-sanitizer-core-registry-dsn.sh --env-file customer.env
+#   -> .secrets/sanitizer-core/registry-dsn   (mode 0444 in a 0700 directory)
+```
+
+The core needs a connection string (DSN) for its registry database, and that
+string holds the database password. The core is never given it on its command
+line: process arguments are readable by every local user of the Docker host
+(`ps`). The compose file mounts this one file read-only into the core and starts
+it with `--registry-dsn-file /run/secrets/sanitizer-core/registry-dsn`.
+
+- The file holds one line, `postgres://dsa:<password>@postgres-sanitizer-core:5432/sanitizer_core?sslmode=<POSTGRES_SSLMODE>`.
+  The script percent-encodes the password (an `@` becomes `%40`), because the
+  core reads a file only in this URL form and refuses anything else at boot.
+- Who can read it: the file is `0444` inside a `0700` directory. The directory
+  keeps other host users out. The core (uid 10001) can read the file whichever
+  user ran the script, with no `chown`, because only the single file is mounted.
+- Elsewhere: set `SANITIZER_CORE_REGISTRY_DSN_FILE` in `customer.env` (or pass
+  the path to the script). Keep the same rule: the directory must not be open
+  to group or others.
+- After changing `POSTGRES_SANITIZER_CORE_PASSWORD` or `POSTGRES_SSLMODE`: re-run
+  the script, then **recreate** the core. A restart is not enough, because the
+  container keeps the file it was created with:
+  `docker compose ... up -d --no-deps --force-recreate sanitizer-core`.
+  Postgres applies `POSTGRES_PASSWORD` only when its volume is first created; to
+  rotate the password of an existing registry, change it in the database too
+  (`ALTER ROLE dsa PASSWORD ...`).
+- If the file is missing, `up` fails (the mount refuses to create it), and
+  `bin/lucairn doctor` names the fix.
+
 ### 3. Registry migrations (install and every upgrade)
 
 ```bash
@@ -2481,16 +2514,42 @@ start either.
 
 ### 5. What `bin/lucairn doctor` checks
 
-Offline and online: both secrets (presence, format, placeholders), the profile,
+Offline and online: both secrets (presence, format, placeholders), the registry
+DSN file (no `--dsn` in any compose file of the install; the file present, a
+regular file of at most 8 KiB, readable by the core's uid 10001 on Linux, not
+open to other host users, a `postgres://` URL equal to the one `customer.env`
+gives — values are never printed), the profile,
 the gateway switches, `GRPC_TLS_ENABLED` for the witness hop, every certificate
 (chain, purpose, pinned SAN, SHA-256 signature, 30-day expiry, key permissions;
 the key/certificate pairing when the key is readable), the image pair against
 `image-manifest.yaml`, and host memory. Online additionally: the rendered Compose
-configuration of the core (kit profile, witness latch, namespace), the three
+configuration of the core (kit profile, witness latch, namespace, no `--dsn`,
+`--registry-dsn-file` pointing at a mounted path), the three
 containers (running and healthy), the core's namespace join, the migration
 ledger against the ceiling, and the core's log — witness transport `mtls` and no
 `DROPPED` claim. The online check does not send a turn; a real turn and its
 certificate (sanitizer claim from the core) are the install rehearsal's proof.
+
+`bin/lucairn support-bundle` never collects the DSN file. Before it writes the
+archive it checks every collected file for the DSN and the password (raw and
+percent-encoded). If either is found, it removes the bundle and writes nothing.
+
+### Upgrading a kit 1.x Compose install
+
+The 1.x `customer.env` has none of the core's settings. Before the first `up`
+with the kit 2.0 compose files:
+
+1. Add the settings of step 1 to `customer.env` (both secrets freshly
+   generated; the image variables).
+2. Run step 2 (`scripts/bootstrap-sanitizer-core-mtls.sh`) and step 2b
+   (`scripts/write-sanitizer-core-registry-dsn.sh --env-file customer.env`).
+3. Run `bin/lucairn doctor --env customer.env --offline`; fix every
+   `sanitizer core` line it fails.
+4. Pull, start the registry database, run the migration step (step 3), then
+   `bin/lucairn up` (step 4).
+
+The core's registry is a new database (`pg-sanitizer-core-data`), so nothing of
+1.x is migrated into it.
 
 **Stated limit (this release):** registry rows of expired conversations are not
 deleted by the core today — they expire logically after 24 hours but stay in

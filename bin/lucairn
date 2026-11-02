@@ -7724,6 +7724,63 @@ sanitizer_core_cert_dir() {
   esac
 }
 
+# The host file the compose file bind-mounts into the core as its registry DSN
+# (--registry-dsn-file /run/secrets/sanitizer-core/registry-dsn; DSA #956).
+# Written by scripts/write-sanitizer-core-registry-dsn.sh. Relative values
+# resolve like the cert directory above.
+LUCAIRN_SANITIZER_CORE_DSN_FILE_DEFAULT="./.secrets/sanitizer-core/registry-dsn"
+sanitizer_core_dsn_file() {
+  local env_file="$1" compose_file="$2" f base
+  f="$(env_value "$env_file" SANITIZER_CORE_REGISTRY_DSN_FILE)"
+  f="${f:-$LUCAIRN_SANITIZER_CORE_DSN_FILE_DEFAULT}"
+  case "$f" in
+    /*) printf '%s' "$f" ;;
+    *)
+      base="$(cd "$(dirname "$compose_file")" 2>/dev/null && pwd)" || base="$(dirname "$compose_file")"
+      printf '%s/%s' "$base" "${f#./}"
+      ;;
+  esac
+}
+
+# Percent-encodes stdin (every byte outside A-Z a-z 0-9 - . _ ~), byte-wise.
+# The SAME rule as scripts/write-sanitizer-core-registry-dsn.sh pct_encode;
+# tests/test_sanitizer_core_compose.sh proves the two agree.
+sanitizer_core_pct_encode() {
+  local h
+  LC_ALL=C od -An -v -tx1 | tr -s '[:space:]' '\n' | while IFS= read -r h; do
+    [ -n "$h" ] || continue
+    case "$h" in
+      2d|2e|5f|7e|3[0-9]|4[1-9a-f]|5[0-9a]|6[1-9a-f]|7[0-9a])
+        # shellcheck disable=SC2059  # the format IS the one octal escape
+        printf "\\$(printf '%03o' "0x$h")" ;;
+      *) printf '%%%s' "$(printf '%s' "$h" | tr 'a-f' 'A-F')" ;;
+    esac
+  done
+}
+
+# The DSN the writer derives from customer.env. Compared, never printed.
+sanitizer_core_expected_dsn() {
+  local env_file="$1" pw ssl
+  pw="$(env_value "$env_file" POSTGRES_SANITIZER_CORE_PASSWORD)"
+  ssl="$(env_value "$env_file" POSTGRES_SSLMODE)"
+  printf 'postgres://dsa:%s@postgres-sanitizer-core:5432/sanitizer_core?sslmode=%s' \
+    "$(printf '%s' "$pw" | sanitizer_core_pct_encode)" "${ssl:-disable}"
+}
+
+# The DSN file's value as the core reads it: a leading UTF-8 byte-order mark
+# dropped, surrounding white space trimmed (registry_dsn.go resolveRegistryDSN).
+sanitizer_core_read_dsn() {
+  LC_ALL=C awk -v bom="$(printf '\357\273\277')" '
+    NR == 1 && substr($0, 1, 3) == bom { $0 = substr($0, 4) }
+    { a[NR] = $0 }
+    END {
+      s = ""
+      for (i = 1; i <= NR; i++) s = s (i > 1 ? "\n" : "") a[i]
+      sub(/^[ \t\r\n]+/, "", s); sub(/[ \t\r\n]+$/, "", s)
+      printf "%s", s
+    }' "$1" 2>/dev/null
+}
+
 sanitizer_core_file_mode() {
   case "$(uname -s)" in
     Darwin|FreeBSD|OpenBSD|NetBSD) stat -f '%Lp' "$1" 2>/dev/null ;;
@@ -7814,6 +7871,120 @@ sanitizer_core_check_leaf() {
   return "$failed"
 }
 
+# check_sanitizer_core_dsn <env file> <compose file> <password ok: 0|1>
+# The registry DSN file and its wiring, offline. Never prints the DSN, the
+# password, or a compose line that could hold them (file:line only).
+check_sanitizer_core_dsn() {
+  local env_file="$1" compose_file="$2" pw_ok="${3:-0}" failed=0
+  local fix="run scripts/write-sanitizer-core-registry-dsn.sh --env-file '$env_file' (see INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\")"
+
+  # a. No compose file in this install's set passes --dsn (an operator overlay,
+  #    or a kit file from before kit 2.0 K-A). Comment lines are skipped; the
+  #    match is a whole flag (-dsn / --dsn, = or a space after it), so
+  #    --registry-dsn-file does not count.
+  local prev="" arg hits=""
+  for arg in "${RUNTIME_COMPOSE_ARGS[@]}"; do
+    if [ "$prev" = "-f" ] && [ -f "$arg" ]; then
+      local ln
+      ln="$(LC_ALL=C grep -nE "(^|[[:space:]\"'[,])--?dsn([=[:space:]\"']|$)" "$arg" 2>/dev/null \
+        | grep -vE '^[0-9]+:[[:space:]]*#' | cut -d: -f1 | tr '\n' ',' | sed 's/,$//')"
+      [ -n "$ln" ] && hits="${hits:+$hits; }$arg:$ln"
+    fi
+    prev="$arg"
+  done
+  if [ -n "$hits" ]; then
+    echo "sanitizer core registry DSN: failed (--dsn in $hits — the DSN and its password would be in the core's process arguments, visible to every local user; the kit passes --registry-dsn-file. Remove the flag; the lines are not printed)"
+    failed=1
+  fi
+
+  # b. The host file the compose file bind-mounts.
+  local f dir mode uid dmode cuid
+  f="$(sanitizer_core_dsn_file "$env_file" "$compose_file")"
+  dir="$(dirname "$f")"
+  cuid="${LUCAIRN_CONTAINER_UID:-$(env_value "$env_file" LUCAIRN_CONTAINER_UID)}"
+  cuid="${cuid:-$LUCAIRN_SANITIZER_CORE_CONTAINER_UID}"
+  if [ -L "$f" ]; then
+    echo "sanitizer core registry DSN: failed ($f is a symlink; point SANITIZER_CORE_REGISTRY_DSN_FILE at the real file)"
+    return 1
+  elif [ -d "$f" ]; then
+    echo "sanitizer core registry DSN: failed ($f is a directory — Docker creates one when a bind source is missing; remove it (rmdir) and $fix)"
+    return 1
+  elif [ ! -e "$f" ]; then
+    echo "sanitizer core registry DSN: failed (file missing: $f — the core refuses to start without it; $fix)"
+    return 1
+  elif [ ! -f "$f" ]; then
+    echo "sanitizer core registry DSN: failed ($f is not a regular file)"
+    return 1
+  fi
+  mode="$(sanitizer_core_file_mode "$f")"
+  uid="$(sanitizer_core_file_uid "$f")"
+  dmode="$(sanitizer_core_file_mode "$dir")"
+  case "$mode" in ''|*[!0-7]*) mode="" ;; esac
+  case "$dmode" in ''|*[!0-7]*) dmode="" ;; esac
+  # Readable by the core (uid $cuid): any-uid read (the writer's 0444), or
+  # owned by that uid with owner read. Only a Linux host is decided here.
+  if [ -n "$mode" ]; then
+    if [ $((8#$mode & 004)) -ne 0 ]; then
+      : # readable by every uid, the core's included
+    elif [ "$(uname -s)" = "Linux" ]; then
+      if [ "$uid" != "$cuid" ] || [ $((8#$mode & 0400)) -eq 0 ]; then
+        echo "sanitizer core registry DSN: failed ($f (mode $mode, owner uid ${uid:-?}) is not readable by the core, which runs as uid $cuid — $fix: it writes mode 0444 inside a 0700 directory. Set LUCAIRN_CONTAINER_UID on a user-namespace-remapped daemon)"
+        failed=1
+      fi
+    else
+      # NON-COVERAGE: on Docker Desktop (macOS/Windows) the file-sharing layer
+      # maps ownership, so host uid/mode do not decide what the container reads.
+      echo "sanitizer core registry DSN: note — readability by the core not decided on $(uname -s) (Docker Desktop maps file ownership); the core's boot refuses an unreadable file"
+    fi
+    # Not readable by other host users: a group/other-readable file is only
+    # safe inside a directory group/others cannot enter.
+    if [ $((8#$mode & 044)) -ne 0 ] && [ -n "$dmode" ] && [ $((8#$dmode & 077)) -ne 0 ]; then
+      echo "sanitizer core registry DSN: failed ($f is readable by group/others (mode $mode) and its directory $dir (mode $dmode) lets them in — every local user could read the registry password: chmod 700 '$dir')"
+      failed=1
+    fi
+    if [ $((8#$mode & 022)) -ne 0 ]; then
+      echo "sanitizer core registry DSN: failed ($f is writable by group/others (mode $mode) — $fix)"
+      failed=1
+    fi
+  fi
+
+  # c. Content, when this doctor can read it (it is 0444, so it normally can).
+  if [ ! -r "$f" ]; then
+    # NON-COVERAGE: an operator-hardened file (owned by uid $cuid, 0400) is not
+    # readable by this user; the core's own boot check refuses a bad DSN.
+    echo "sanitizer core registry DSN: note — content not checked ($f is not readable by $(id -un 2>/dev/null || echo this user))"
+  else
+    local size dsn
+    size="$(wc -c < "$f" 2>/dev/null | tr -d ' ')"
+    if [ "${size:-0}" -gt 8192 ]; then
+      echo "sanitizer core registry DSN: failed ($f is larger than 8 KiB — not a DSN; the core refuses it; $fix)"
+      failed=1
+    else
+      dsn="$(sanitizer_core_read_dsn "$f")"
+      case "$dsn" in
+        '')
+          echo "sanitizer core registry DSN: failed ($f is empty — $fix)"
+          failed=1
+          ;;
+        postgres://*|postgresql://*)
+          if [ "$pw_ok" -eq 1 ] && [ "$dsn" != "$(sanitizer_core_expected_dsn "$env_file")" ]; then
+            echo "sanitizer core registry DSN: failed ($f does not match customer.env — POSTGRES_SANITIZER_CORE_PASSWORD or POSTGRES_SSLMODE changed since it was written; $fix, then recreate the core. The values are not printed)"
+            failed=1
+          fi
+          ;;
+        *)
+          echo "sanitizer core registry DSN: failed ($f does not hold a postgres:// URL — the core takes only that form from a file; $fix. The value is not printed)"
+          failed=1
+          ;;
+      esac
+    fi
+  fi
+  if [ "$failed" -eq 0 ]; then
+    echo "sanitizer core registry DSN: ok ($f; --registry-dsn-file, never --dsn)"
+  fi
+  return "$failed"
+}
+
 # sanitizer_core_manifest_digest <env file> <image key> — prints the recorded
 # digest from image_digests.signed_artifacts of the manifest this install was
 # initialised against (the runtime-profile snapshot, else the kit's own),
@@ -7855,23 +8026,36 @@ check_sanitizer_core_config() {
     echo "sanitizer core registry key: ok"
   fi
 
-  # 2. Registry DB password: it is embedded in the core's --dsn URL, so it must
-  #    be URL-safe (RFC 3986 unreserved characters only).
+  # 2. Registry DB password. It reaches Postgres and the migration step through
+  #    customer.env + Compose interpolation, and the core through the DSN file,
+  #    where scripts/write-sanitizer-core-registry-dsn.sh percent-encodes it.
+  #    So any printable ASCII character works except the ones customer.env /
+  #    Compose interpolation cannot carry: space, $ ' " \ ` and #.
   val="$(env_value "$env_file" POSTGRES_SANITIZER_CORE_PASSWORD)"
+  local pw_ok=0
   if [ -z "$val" ]; then
     echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD is not set in $env_file — generate with: openssl rand -hex 24)"
     failed=1
   elif ! validate_no_placeholder "$env_file" POSTGRES_SANITIZER_CORE_PASSWORD; then
     failed=1
-  elif ! printf '%s' "$val" | grep -Eq '^[A-Za-z0-9._~-]+$'; then
-    echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD must use only A-Z a-z 0-9 . _ ~ - : it is embedded in the core's connection URL)"
+  elif [ -n "$(printf '%s' "$val" | LC_ALL=C tr -d '\041-\176')" ] \
+       || printf '%s' "$val" | LC_ALL=C grep -q "[\$'\"\\\`#]"; then
+    echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD holds a space, \$, a quote, \\, \`, # or a non-ASCII byte — customer.env and Compose interpolation cannot carry it safely; generate with: openssl rand -hex 24)"
     failed=1
   elif [ "$dsa_env" = "production" ] && [ "${#val}" -lt 12 ]; then
     echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD too short; need >= 12 chars in production)"
     failed=1
   else
     echo "sanitizer core registry DB password: ok"
+    pw_ok=1
   fi
+
+  # 2b. Registry DSN: from a FILE, never from --dsn (DSA #956,
+  #     cmd/sanitizer-core/registry_dsn.go). `--dsn` puts the DSN and its
+  #     password into the core's process arguments, which every local user of
+  #     the Docker host reads (`ps`, /proc/<pid>/cmdline). The rendered-config
+  #     half of this check runs online in check_sanitizer_core_runtime.
+  check_sanitizer_core_dsn "$env_file" "$compose_file" "$pw_ok" || failed=1
 
   # 3. Profile. The kit compose does not forward LCR_PROFILE to the core, so
   #    the core always runs the kit profile (unset = kit), under which it
@@ -8103,12 +8287,13 @@ check_sanitizer_core_runtime() {
 
   # 1. Rendered configuration: what the core will really get, overlays merged.
   #    Catches an operator overlay that forwards LCR_PROFILE or the ServiceNow
-  #    control client to the core, or drops its witness latch / namespace join.
-  #    The rendered JSON holds secrets; it goes straight into python3 and is
-  #    never printed or written.
+  #    control client to the core, drops its witness latch / namespace join,
+  #    passes --dsn, or leaves the core without a mounted DSN file. The
+  #    rendered JSON holds secrets; it goes straight into python3 and is never
+  #    printed or written (verdicts name settings, never values).
   local verdict
   verdict="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" config --format json 2>/dev/null | python3 -c '
-import json, sys
+import json, re, sys
 try:
     doc = json.load(sys.stdin)
 except Exception:
@@ -8128,10 +8313,41 @@ if env.get("LCR_WITNESS_REQUIRE_MTLS") != "true":
     bad.append("LCR_WITNESS_REQUIRE_MTLS is not true")
 if svc.get("network_mode") != "service:sanitizer-core-sidecar":
     bad.append("network_mode is not service:sanitizer-core-sidecar")
+# Registry DSN (DSA #956): never --dsn (process arguments are world-readable);
+# --registry-dsn-file on a mounted path, or the DSA_SANITIZER_CORE_REGISTRY_DSN env.
+def words(v):
+    if isinstance(v, str):
+        return [v]
+    return [str(x) for x in (v or [])]
+cmd = words(svc.get("command"))
+if any(re.search(r"(^|[\s\"\x27])--?dsn([=\s\"\x27]|$)", a) for a in cmd + words(svc.get("entrypoint"))):
+    bad.append("the core is given --dsn (its password would be in the process arguments; the kit passes --registry-dsn-file)")
+paths = []
+for i, a in enumerate(cmd):
+    m = re.fullmatch(r"--?registry-dsn-file(?:=(.*))?", a)
+    if m:
+        paths.append(m.group(1) if m.group(1) is not None else (cmd[i + 1] if i + 1 < len(cmd) else ""))
+mounted = set()
+for v in svc.get("volumes") or []:
+    if isinstance(v, dict) and v.get("target"):
+        mounted.add(v["target"])
+    elif isinstance(v, str) and ":" in v:
+        mounted.add(v.split(":")[1])
+for s in svc.get("secrets") or []:
+    if isinstance(s, dict):
+        t = s.get("target") or s.get("source") or ""
+        mounted.add(t if t.startswith("/") else "/run/secrets/" + t)
+if not paths and not (env.get("DSA_SANITIZER_CORE_REGISTRY_DSN") or "").strip():
+    bad.append("the core has no registry DSN source (--registry-dsn-file or DSA_SANITIZER_CORE_REGISTRY_DSN)")
+for p in paths:
+    if "://" in p or "@" in p:
+        bad.append("the --registry-dsn-file value holds :// or @ (the core refuses a DSN passed as the path)")
+    elif p not in mounted:
+        bad.append("nothing is mounted at the --registry-dsn-file path")
 print("; ".join(bad) if bad else "ok")
 ' 2>/dev/null || true)"
   case "$verdict" in
-    ok) echo "sanitizer core rendered config: ok (kit profile, witness latch on, sidecar namespace)" ;;
+    ok) echo "sanitizer core rendered config: ok (kit profile, witness latch on, sidecar namespace, registry DSN from a mounted file)" ;;
     absent) echo "sanitizer core rendered config: failed (no sanitizer-core service in the rendered project — kit 2.0 compose files are required)"; failed=1 ;;
     ''|unreadable) echo "sanitizer core rendered config: skipped (docker compose config --format json gave no readable output)" ;;
     *) echo "sanitizer core rendered config: failed ($verdict)"; failed=1 ;;
@@ -9194,6 +9410,27 @@ support_bundle() {
       echo "docker compose unavailable" > "$bundle_dir/logs/compose.log"
     fi
     echo "Collect schema version manually if Postgres is external: SELECT version FROM schema_migrations ORDER BY version;" > "$bundle_dir/postgres/schema-version.txt"
+  fi
+
+  # Kit 2.0: the sanitizer core's registry DSN file is never collected (no
+  # step above reads it). Fail closed if its DSN — or its password, raw or
+  # percent-encoded — reached any collected file anyway (a future collector,
+  # an overlay passing --dsn into `compose config`, a log line): nothing is
+  # archived and the bundle directory is removed. Values are never printed.
+  local dsn_file dsn_val dsn_pw needle leaked=0
+  dsn_file="$(sanitizer_core_dsn_file "$env_file" "$compose_file")"
+  if [ -f "$dsn_file" ] && [ -r "$dsn_file" ]; then
+    dsn_val="$(sanitizer_core_read_dsn "$dsn_file")"
+    dsn_pw="$(printf '%s' "$dsn_val" | sed -n 's#^postgres[a-z]*://[^:/@]*:\([^@]*\)@.*#\1#p')"
+    for needle in "$dsn_val" "$dsn_pw" "$(env_value "$env_file" POSTGRES_SANITIZER_CORE_PASSWORD)"; do
+      # >= 12 characters: a short dev value could match by chance.
+      [ "${#needle}" -ge 12 ] || continue
+      if grep -rqF -- "$needle" "$bundle_dir" 2>/dev/null; then leaked=1; break; fi
+    done
+  fi
+  if [ "$leaked" -eq 1 ]; then
+    rm -rf "$bundle_dir"
+    fail "support bundle: refused — the sanitizer core's registry DSN or its password appeared in a collected file; nothing was archived (the value is not printed). Report this to Lucairn support without a bundle."
   fi
 
   tar -czf "$archive" -C "$output_dir" "$(basename "$bundle_dir")"

@@ -23,14 +23,26 @@
 #   D. scripts/bootstrap-sanitizer-core-mtls.sh: the four leaves verify for the
 #      right purpose/SAN; a re-run rotates nothing; a leaf without its CA is
 #      refused.
+#   D2. scripts/write-sanitizer-core-registry-dsn.sh (DSA #956: the core reads
+#      its registry DSN from --registry-dsn-file, never --dsn): the exact
+#      postgres:// URL with the password percent-encoded, mode 0444 in a 0700
+#      directory, idempotent (same inode), refusals (unsafe password, missing
+#      password, bad sslmode, a directory at the path, an open directory), and
+#      neither the DSN nor the password is ever printed.
 #   E. `bin/lucairn doctor` RED-PROOF (each case goes red on a deliberately
 #      broken install and green on the generated one): witness client cert
 #      missing, wrong witness SAN, CA copies differ, key readable by others,
 #      LCR_PROFILE=hosted, half a digest pair, registry key placeholder — and,
-#      online with a stub Docker engine: memory below the floor, sidecar absent,
-#      core joined to an old sidecar namespace, registry not migrated, claims
-#      dropped, plaintext witness transport, an overlay forwarding
-#      LCR_PROFILE=hosted.
+#      registry DSN file missing / a directory / not a URL / out of date /
+#      open to other host users / unreadable by the core (Linux), a compose
+#      file passing --dsn — and, online with a stub Docker engine: memory below
+#      the floor, sidecar absent, core joined to an old sidecar namespace,
+#      registry not migrated, claims dropped, plaintext witness transport, an
+#      overlay forwarding LCR_PROFILE=hosted, a rendered core with --dsn, with
+#      no DSN source, or with an unmounted --registry-dsn-file path.
+#   F. `bin/lucairn support-bundle` never carries the DSN file: the archive of
+#      the generated install holds neither the DSN nor the password, and a
+#      collected file that does (a redaction miss) makes it refuse to archive.
 #
 # NON-COVERAGE (stated, not implied)
 #   * No container runs. Whether the images boot with these settings is the
@@ -42,6 +54,11 @@
 #     which holds the coherent production env that passes doctor; here only the
 #     development branch (WARN) is driven.
 #   * The online claim check reads log lines; it does not send a turn.
+#   * The core's own parse of the DSN file (URL form, path refusal) is the DSA
+#     repo's registry_dsn tests; here the file's exact bytes are asserted. The
+#     kit-written file was also run through `sanitizer-core serve` built from
+#     DSA main ed8a5858 (out of band: it passes every DSN check and stops only
+#     at the registry connection).
 
 set -uo pipefail
 
@@ -53,6 +70,8 @@ CEILINGS="$ROOT/scripts/migration-ceilings.conf"
 MIGDIR="$ROOT/migrations/sanitizer-core"
 RUNNER="$ROOT/scripts/migrate-sanitizer-core.sh"
 BOOTSTRAP="$ROOT/scripts/bootstrap-sanitizer-core-mtls.sh"
+WRITER="$ROOT/scripts/write-sanitizer-core-registry-dsn.sh"
+DSN_TARGET="/run/secrets/sanitizer-core/registry-dsn"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -95,7 +114,7 @@ if [ "$HAVE_COMPOSE" -ne 1 ]; then
   skip "docker compose CLI not available — section B"
 else
   cp "$EXAMPLE_ENV" "$TMP/render.env"
-  printf '\nSANDBOX_B_MESSAGES_JSON_MAX_BYTES=8388608\n' >> "$TMP/render.env"
+  printf '\nSANDBOX_B_MESSAGES_JSON_MAX_BYTES=8388608\nPOSTGRES_SANITIZER_CORE_PASSWORD=k158RenderCanaryPassword\n' >> "$TMP/render.env"
   if docker compose -f "$COMPOSE" -f "$SELFHOSTED" --env-file "$TMP/render.env" --profile sanitizer-core-migrate \
        config --format json > "$TMP/render.json" 2> "$TMP/render.err"; then
     pass "renders-with-the-example-env (customer + self-hosted)"
@@ -138,7 +157,19 @@ p(pg.get("image") == want_pg and mig.get("image") == want_pg, "registry DB + mig
 cmd = core.get("command") or []
 p("serve" in cmd and "--listen=0.0.0.0:8790" in cmd and "--sidecar=http://127.0.0.1:8765" in cmd, "core serves :8790 with the sidecar on 127.0.0.1:8765")
 p(not any(a.startswith("--migrate") for a in cmd), "core command never carries --migrate (migrations are an operator step)")
-p(any(a.startswith("--dsn=postgres://dsa:") and "@postgres-sanitizer-core:5432/sanitizer_core" in a for a in cmd), "core DSN points at postgres-sanitizer-core/sanitizer_core")
+# Registry DSN (DSA #956): a mounted file, never --dsn, never the password in the core's config.
+p("--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn" in cmd, "core reads its DSN with --registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn")
+p(not any(re.search(r"(^|[\s\"'])--?dsn([=\s\"']|$)", a) for a in cmd + list(core.get("entrypoint") or [])), "core command/entrypoint carry no --dsn")
+dsnp = "/run/secrets/sanitizer-core/registry-dsn"
+p("://" not in dsnp and "@" not in dsnp, "the --registry-dsn-file path holds neither :// nor @ (the core refuses those)")
+dm = [v for v in (core.get("volumes") or []) if v.get("target") == dsnp]
+p(len(dm) == 1 and dm[0].get("type") == "bind" and dm[0].get("read_only") is True
+  and (dm[0].get("bind") or {}).get("create_host_path") is not True
+  and dm[0].get("source", "").endswith("/.secrets/sanitizer-core/registry-dsn"),
+  "the DSN file is ONE read-only bind of .secrets/sanitizer-core/registry-dsn, never auto-created (%s)" % dm)
+others = [n for n, x in svcs.items() if n != "sanitizer-core" and any(v.get("target") == dsnp or v.get("source", "").endswith("/.secrets/sanitizer-core/registry-dsn") for v in (x.get("volumes") or []))]
+p(not others, "no other service mounts the DSN file (%s)" % others)
+p("k158RenderCanaryPassword" not in json.dumps(core), "the registry password appears nowhere in the core's rendered config")
 ep = " ".join(core.get("entrypoint") or [])
 p("exit 70" in ep and "sidecar unreachable 3 checks in a row" in ep, "core entrypoint = the hosted sidecar watchdog")
 dep = core.get("depends_on") or {}
@@ -362,6 +393,56 @@ else
 fi
 
 echo ""
+echo "D2. scripts/write-sanitizer-core-registry-dsn.sh"
+file_mode() { case "$(uname -s)" in Darwin|FreeBSD|OpenBSD|NetBSD) stat -f '%Lp' "$1" ;; *) stat -c '%a' "$1" ;; esac; }
+file_inode() { case "$(uname -s)" in Darwin|FreeBSD|OpenBSD|NetBSD) stat -f '%i' "$1" ;; *) stat -c '%i' "$1" ;; esac; }
+WD="$TMP/dsnw"
+mkdir -p "$WD"
+# Every URL-syntax character the core's parser would misread, plus the
+# unreserved ones that must stay literal.
+SPECIAL_PW='Pa@ss/w:rd?%&+=x-~._Z9'
+SPECIAL_ENC='Pa%40ss%2Fw%3Ard%3F%25%26%2B%3Dx-~._Z9'
+printf 'POSTGRES_SANITIZER_CORE_PASSWORD=%s\nPOSTGRES_SSLMODE=require\n' "$SPECIAL_PW" > "$WD/e.env"
+DF="$WD/sec/sanitizer-core/registry-dsn"
+if bash "$WRITER" --env-file "$WD/e.env" "$DF" > "$WD/w.out" 2>&1; then pass "writer runs"; else fail "writer runs: $(tail -2 "$WD/w.out")"; fi
+check_eq "file = the exact postgres:// URL, password percent-encoded, sslmode from customer.env" \
+  "postgres://dsa:${SPECIAL_ENC}@postgres-sanitizer-core:5432/sanitizer_core?sslmode=require" "$(cat "$DF" 2>/dev/null)"
+check_eq "file is one line" "1" "$(wc -l < "$DF" | tr -d ' ')"
+check_eq "file mode 0444 (readable by the core's uid whoever wrote it)" "444" "$(file_mode "$DF")"
+check_eq "directory mode 0700 (other host users kept out)" "700" "$(file_mode "$(dirname "$DF")")"
+if grep -Fq "$SPECIAL_PW" "$WD/w.out" || grep -Fq "$SPECIAL_ENC" "$WD/w.out"; then fail "writer never prints the password or the DSN"; else pass "writer never prints the password or the DSN"; fi
+INO1="$(file_inode "$DF")"
+bash "$WRITER" --env-file "$WD/e.env" "$DF" > "$WD/w2.out" 2>&1
+check_eq "re-run leaves an up-to-date file alone (same inode: a running core is unaffected)" "$INO1" "$(file_inode "$DF")"
+printf 'POSTGRES_SANITIZER_CORE_PASSWORD=plainhexvalue0123456789\n' > "$WD/p.env"
+bash "$WRITER" --env-file "$WD/p.env" "$DF" > /dev/null 2>&1
+check_eq "a changed password rewrites the file (sslmode defaults to disable)" \
+  "postgres://dsa:plainhexvalue0123456789@postgres-sanitizer-core:5432/sanitizer_core?sslmode=disable" "$(cat "$DF")"
+check_eq "rewritten file keeps mode 0444" "444" "$(file_mode "$DF")"
+expect_writer_refuses() { # <name> <env content> <path> <grep-fixed message>
+  printf '%s\n' "$2" > "$WD/r.env"
+  bash "$WRITER" --env-file "$WD/r.env" "$3" > "$WD/r.out" 2>&1; local rc=$?
+  cat "$WD/r.out" >> "$WD/r.all"
+  if [ "$rc" -eq 0 ]; then
+    fail "$1 — writer accepted it"
+  elif grep -Fq "$4" "$WD/r.out"; then
+    pass "$1 — refused: $4"
+  else
+    fail "$1 — refused without '$4': $(tail -1 "$WD/r.out")"
+  fi
+}
+expect_writer_refuses "unsafe password (\$)" 'POSTGRES_SANITIZER_CORE_PASSWORD=has$dollar' "$WD/x1/f" "cannot carry safely"
+expect_writer_refuses "unsafe password (space)" 'POSTGRES_SANITIZER_CORE_PASSWORD=has space' "$WD/x2/f" "cannot carry safely"
+expect_writer_refuses "missing password" 'OTHER=1' "$WD/x3/f" "POSTGRES_SANITIZER_CORE_PASSWORD is not set"
+expect_writer_refuses "off-enum sslmode" "$(printf 'POSTGRES_SANITIZER_CORE_PASSWORD=okpassword123\nPOSTGRES_SSLMODE=on')" "$WD/x4/f" "POSTGRES_SSLMODE must be one of"
+mkdir -p "$WD/x5/f"
+expect_writer_refuses "a directory at the path (Docker's auto-created bind source)" 'POSTGRES_SANITIZER_CORE_PASSWORD=okpassword123' "$WD/x5/f" "is a directory"
+mkdir -p "$WD/x6"; chmod 0755 "$WD/x6"
+expect_writer_refuses "a directory open to group/others" 'POSTGRES_SANITIZER_CORE_PASSWORD=okpassword123' "$WD/x6/f" "must keep group and others out"
+[ ! -e "$WD/x6/f" ] && pass "nothing written into the open directory" || fail "nothing written into the open directory"
+if grep -q 'dollar\|okpassword123' "$WD/r.all"; then fail "refusals never print the password"; else pass "refusals never print the password"; fi
+
+echo ""
 echo "E. bin/lucairn doctor RED-PROOF"
 # Hermetic tool shims: no doctor run below reaches a real Docker engine,
 # cluster, gateway or registry.
@@ -403,6 +484,13 @@ grep -q "^SANITIZER_CORE_MTLS_HOST_DIR=$CERTS$" "$ENVF" && pass "lucairn-init re
 [ -f "$CERTS/sanitizer-core/witness-client.crt" ] && pass "lucairn-init generated the core's mTLS material" || fail "lucairn-init generated the core's mTLS material"
 grep -Eq '^DSA_SANITIZER_CORE_REGISTRY_KEY=[0-9a-f]{64}$' "$ENVF" && pass "lucairn-init generated the registry key" || fail "lucairn-init generated the registry key"
 grep -Eq '^POSTGRES_SANITIZER_CORE_PASSWORD=[A-Za-z0-9]{32}$' "$ENVF" && pass "lucairn-init generated the registry DB password" || fail "lucairn-init generated the registry DB password"
+DSNF="$ENVDIR/.secrets/sanitizer-core/registry-dsn"
+grep -q "^SANITIZER_CORE_REGISTRY_DSN_FILE=$DSNF$" "$ENVF" && pass "lucairn-init records the DSN file beside customer.env" || fail "lucairn-init records the DSN file beside customer.env"
+INIT_PW="$(sed -n 's/^POSTGRES_SANITIZER_CORE_PASSWORD=//p' "$ENVF" | tail -1)"
+check_eq "lucairn-init wrote the DSN file from the generated password" \
+  "postgres://dsa:${INIT_PW}@postgres-sanitizer-core:5432/sanitizer_core?sslmode=disable" "$(cat "$DSNF" 2>/dev/null)"
+check_eq "lucairn-init's DSN file is 0444 in a 0700 directory" "444/700" "$(file_mode "$DSNF")/$(file_mode "$(dirname "$DSNF")")"
+if grep -Fq "$INIT_PW" "$TMP/init.out"; then fail "lucairn-init never prints the registry password"; else pass "lucairn-init never prints the registry password"; fi
 
 doctor_offline() { # <env file> — offline doctor, hermetic PATH
   PATH="$DBIN:$BASE_PATH" bash "$ROOT/bin/lucairn" doctor --env "$1" --compose "$COMPOSE" --offline --skip-image-check > "$TMP/doc.out" 2>&1
@@ -411,7 +499,8 @@ variant() { # <name> — copy of the generated install (env + certs + sidecars)
   local d="$TMP/v-$1"
   rm -rf "$d"; mkdir -p "$d"
   cp -R "$ENVDIR/." "$d/"
-  sed -i.bak "s#^SANITIZER_CORE_MTLS_HOST_DIR=.*#SANITIZER_CORE_MTLS_HOST_DIR=$d/.certs/sanitizer-core-mtls#" "$d/customer.env" && rm -f "$d/customer.env.bak"
+  sed -i.bak -e "s#^SANITIZER_CORE_MTLS_HOST_DIR=.*#SANITIZER_CORE_MTLS_HOST_DIR=$d/.certs/sanitizer-core-mtls#" \
+    -e "s#^SANITIZER_CORE_REGISTRY_DSN_FILE=.*#SANITIZER_CORE_REGISTRY_DSN_FILE=$d/.secrets/sanitizer-core/registry-dsn#" "$d/customer.env" && rm -f "$d/customer.env.bak"
   printf '%s' "$d"
 }
 expect_doctor_red() { # <name> <dir> <grep-fixed message>
@@ -429,7 +518,7 @@ if doctor_offline "$ENVF"; then
 else
   fail "GREEN: offline doctor passes on the generated install: $(grep -E 'failed|error' "$TMP/doc.out" | head -3 | tr '\n' ' ')"
 fi
-for line in "sanitizer core registry key: ok" "sanitizer core registry DB password: ok" "sanitizer core profile: kit" "sanitizer core mTLS: ok"; do
+for line in "sanitizer core registry key: ok" "sanitizer core registry DB password: ok" "sanitizer core registry DSN: ok" "sanitizer core profile: kit" "sanitizer core mTLS: ok"; do
   grep -Fq "$line" "$TMP/doc.out" && pass "GREEN line: $line" || fail "GREEN line: $line"
 done
 grep -Fq "sanitizer core witness hop" "$TMP/doc.out" && grep -Fq "GRPC_TLS_ENABLED=false with DSA_ENV=development" "$TMP/doc.out" \
@@ -473,8 +562,72 @@ expect_doctor_red "RED half a digest pair" "$V" "must come from one release"
 V="$(variant regkey)"; sed -i.bak 's/^DSA_SANITIZER_CORE_REGISTRY_KEY=.*/DSA_SANITIZER_CORE_REGISTRY_KEY=REPLACE_ME_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/' "$V/customer.env"; rm -f "$V/customer.env.bak"
 expect_doctor_red "RED registry key placeholder" "$V" "DSA_SANITIZER_CORE_REGISTRY_KEY still set to a placeholder"
 
-V="$(variant badpw)"; sed -i.bak 's/^POSTGRES_SANITIZER_CORE_PASSWORD=.*/POSTGRES_SANITIZER_CORE_PASSWORD=has@url:chars/' "$V/customer.env"; rm -f "$V/customer.env.bak"
-expect_doctor_red "RED registry DB password not URL-safe" "$V" "must use only A-Z a-z 0-9"
+V="$(variant badpw)"; sed -i.bak 's/^POSTGRES_SANITIZER_CORE_PASSWORD=.*/POSTGRES_SANITIZER_CORE_PASSWORD=has$dollar-in-it/' "$V/customer.env"; rm -f "$V/customer.env.bak"
+expect_doctor_red "RED registry DB password customer.env cannot carry (\$)" "$V" "customer.env and Compose interpolation cannot carry it safely"
+
+# Registry DSN file (DSA #956: --registry-dsn-file, never --dsn).
+V="$(variant urlpw)"
+grep -v '^POSTGRES_SANITIZER_CORE_PASSWORD=' "$V/customer.env" > "$V/customer.env.new"
+printf 'POSTGRES_SANITIZER_CORE_PASSWORD=%s\n' "$SPECIAL_PW" >> "$V/customer.env.new"
+mv "$V/customer.env.new" "$V/customer.env"
+bash "$WRITER" --env-file "$V/customer.env" > /dev/null 2>&1
+if doctor_offline "$V/customer.env" && grep -Fq "sanitizer core registry DSN: ok" "$TMP/doc.out"; then
+  pass "GREEN password with / ? % @ : & + = — the writer encodes it and doctor's own encoder agrees"
+else
+  fail "GREEN password with / ? % @ : & + = — $(grep 'sanitizer core registry' "$TMP/doc.out" | tr '\n' ' ')"
+fi
+grep -Fq "$SPECIAL_ENC@" "$V/.secrets/sanitizer-core/registry-dsn" && pass "that DSN file carries the percent-encoded password" || fail "that DSN file carries the percent-encoded password"
+
+V="$(variant nodsn)"; rm -f "$V/.secrets/sanitizer-core/registry-dsn"
+expect_doctor_red "RED DSN file missing" "$V" "sanitizer core registry DSN: failed (file missing"
+
+V="$(variant dsndir)"; rm -f "$V/.secrets/sanitizer-core/registry-dsn"; mkdir "$V/.secrets/sanitizer-core/registry-dsn"
+expect_doctor_red "RED DSN path is a directory (Docker's auto-created bind source)" "$V" "is a directory — Docker creates one"
+
+V="$(variant dsnkv)"; F="$V/.secrets/sanitizer-core/registry-dsn"; chmod 0644 "$F"
+printf 'host=postgres-sanitizer-core user=dsa password=%s dbname=sanitizer_core\n' "$INIT_PW" > "$F"; chmod 0444 "$F"
+expect_doctor_red "RED DSN file in key=value form (the core takes a URL only)" "$V" "does not hold a postgres:// URL"
+if grep -Fq "$INIT_PW" "$TMP/doc.out"; then fail "doctor never prints the DSN file's content"; else pass "doctor never prints the DSN file's content"; fi
+
+V="$(variant dsnstale)"; sed -i.bak 's/^POSTGRES_SANITIZER_CORE_PASSWORD=.*/POSTGRES_SANITIZER_CORE_PASSWORD=rotatedPasswordValue42/' "$V/customer.env"; rm -f "$V/customer.env.bak"
+expect_doctor_red "RED DSN file out of date (password rotated in customer.env only)" "$V" "does not match customer.env"
+if grep -Fq "rotatedPasswordValue42" "$TMP/doc.out" || grep -Fq "$INIT_PW" "$TMP/doc.out"; then fail "doctor prints neither the old nor the new password"; else pass "doctor prints neither the old nor the new password"; fi
+
+V="$(variant dsnopen)"; chmod 0755 "$V/.secrets/sanitizer-core"
+expect_doctor_red "RED DSN file readable by other host users (directory opened)" "$V" "every local user could read the registry password"
+
+V="$(variant dsnwritable)"; chmod 0666 "$V/.secrets/sanitizer-core/registry-dsn"
+expect_doctor_red "RED DSN file writable by group/others" "$V" "is writable by group/others"
+
+V="$(variant dsnowner)"; chmod 0400 "$V/.secrets/sanitizer-core/registry-dsn"
+if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" != "10001" ]; then
+  expect_doctor_red "RED DSN file 0400 owned by this user (the core's uid 10001 cannot read it)" "$V" "is not readable by the core, which runs as uid 10001"
+else
+  doctor_offline "$V/customer.env"
+  grep -Fq "readability by the core not decided on $(uname -s)" "$TMP/doc.out" \
+    && pass "DSN file 0400 on $(uname -s): doctor states it cannot decide the core's access (NON-COVERAGE note; the Linux RED runs on the PC runner)" \
+    || fail "DSN file 0400 on $(uname -s): expected the NON-COVERAGE note: $(grep 'registry DSN' "$TMP/doc.out" | tr '\n' ' ')"
+fi
+
+# A compose file of the install that passes --dsn (an operator overlay, or a
+# pre-K-A file): the static half of the check, offline.
+# A symlink farm of the kit (doctor reads scripts/ etc. beside the compose
+# file) with only docker-compose.customer.yml replaced.
+mkdir -p "$TMP/dsnflag"
+for e in "$ROOT"/* "$ROOT"/.[!.]*; do
+  case "$(basename "$e")" in .git|docker-compose.customer.yml) continue ;; esac
+  [ -e "$e" ] && ln -s "$e" "$TMP/dsnflag/$(basename "$e")"
+done
+sed 's#"--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn"#"--dsn=postgres://dsa:x@postgres-sanitizer-core:5432/sanitizer_core"#' "$COMPOSE" > "$TMP/dsnflag/docker-compose.customer.yml"
+grep -q -- '"--dsn=postgres' "$TMP/dsnflag/docker-compose.customer.yml" && pass "fixture: a compose copy that passes --dsn" || fail "fixture: a compose copy that passes --dsn"
+if PATH="$DBIN:$BASE_PATH" bash "$ROOT/bin/lucairn" doctor --env "$ENVF" --compose "$TMP/dsnflag/docker-compose.customer.yml" --offline --skip-image-check > "$TMP/doc.out" 2>&1; then
+  fail "RED a compose file passing --dsn — doctor stayed green"
+elif grep -Fq "sanitizer core registry DSN: failed (--dsn in $TMP/dsnflag/docker-compose.customer.yml:" "$TMP/doc.out"; then
+  pass "RED a compose file passing --dsn — doctor names the file:line"
+else
+  fail "RED a compose file passing --dsn — $(grep 'registry DSN' "$TMP/doc.out" | tr '\n' ' ')"
+fi
+if grep -Fq 'dsa:x@' "$TMP/doc.out"; then fail "the --dsn line itself is not printed"; else pass "the --dsn line itself is not printed"; fi
 
 V="$(variant protocol)"; printf 'GATEWAY_SANITIZER_PROTOCOL=Delta\n' >> "$V/customer.env"
 expect_doctor_red "RED off-enum GATEWAY_SANITIZER_PROTOCOL" "$V" "GATEWAY_SANITIZER_PROTOCOL must be delta or whole"
@@ -499,8 +652,15 @@ cp "$TMP/core.ok" "$TMP/core.drop"
 printf '%s\n' '2026/11/02 08:01:00 ERROR retry_exhausted grpc_status=Unavailable attempts=4 retry_attempts=3; claim DROPPED' >> "$TMP/core.drop"
 printf '%s\n' '2026/11/02 08:00:00 evidence: witness transport mode=tls-insecure-dev addr="veil-witness:50057"' > "$TMP/core.tls"
 printf '%s\n' 'veil-claim-arrival request_id=r1 service_id=dsa-sanitizer' > "$TMP/witness.log"
-printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.ok.json"
-printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","environment":{"LCR_WITNESS_REQUIRE_MTLS":"true","LCR_PROFILE":"hosted"}}}}' > "$TMP/config.hosted.json"
+# The core's rendered DSN wiring, shared by every stub below.
+CORE_DSN_WIRING='"command":["serve","--listen=0.0.0.0:8790","--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn","--sidecar=http://127.0.0.1:8765"],"volumes":[{"type":"bind","source":"/x/.secrets/sanitizer-core/registry-dsn","target":"/run/secrets/sanitizer-core/registry-dsn","read_only":true}]'
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar",'"$CORE_DSN_WIRING"',"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.ok.json"
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar",'"$CORE_DSN_WIRING"',"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true","LCR_PROFILE":"hosted"}}}}' > "$TMP/config.hosted.json"
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--dsn=postgres://dsa:k158OnlineCanary@postgres-sanitizer-core:5432/sanitizer_core"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.dsnflag.json"
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--listen=0.0.0.0:8790"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.nodsn.json"
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.unmounted.json"
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--registry-dsn-file","postgres://dsa:k158OnlineCanary@db/x"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.dsnpath.json"
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true","DSA_SANITIZER_CORE_REGISTRY_DSN":"postgres://dsa:k158OnlineCanary@postgres-sanitizer-core:5432/sanitizer_core"}}}}' > "$TMP/config.envdsn.json"
 
 doctor_online() { # env assignments for the stub...
   env PATH="$DBIN:$BASE_PATH" STUB_MEM_BYTES=34359738368 STUB_PS="$TMP/ps.ok" STUB_NETMODE="container:$SIDE_ID" \
@@ -543,7 +703,44 @@ online_case "RED registry behind the ceiling" "ledger at 5 of 7 migrations" red 
 online_case "RED claims dropped" "claim(s) DROPPED" red STUB_CORE_LOG="$TMP/core.drop"
 online_case "RED witness transport not mtls" "witness transport mode=tls-insecure-dev, not mtls" red STUB_CORE_LOG="$TMP/core.tls"
 online_case "RED overlay forwards LCR_PROFILE=hosted" "LCR_PROFILE is forwarded with a non-kit value" red STUB_CONFIG_JSON="$TMP/config.hosted.json"
+online_case "RED rendered core given --dsn" "the core is given --dsn" red STUB_CONFIG_JSON="$TMP/config.dsnflag.json"
+grep -Fq "k158OnlineCanary" "$TMP/online.out" && fail "the rendered --dsn value is never printed" || pass "the rendered --dsn value is never printed"
+online_case "RED rendered core without any DSN source" "the core has no registry DSN source" red STUB_CONFIG_JSON="$TMP/config.nodsn.json"
+online_case "RED --registry-dsn-file path not mounted" "nothing is mounted at the --registry-dsn-file path" red STUB_CONFIG_JSON="$TMP/config.unmounted.json"
+online_case "RED --registry-dsn-file given a DSN instead of a path" "the --registry-dsn-file value holds :// or @" red STUB_CONFIG_JSON="$TMP/config.dsnpath.json"
+grep -Fq "k158OnlineCanary" "$TMP/online.out" && fail "a DSN passed as the path is never printed" || pass "a DSN passed as the path is never printed"
+online_case "GREEN rendered core with the DSN in its env (an accepted source)" "sanitizer core rendered config: ok" green STUB_CONFIG_JSON="$TMP/config.envdsn.json"
 online_case "not started (nothing running) is not a failure" "sanitizer core runtime: not started" green STUB_PS=/dev/null
+
+echo ""
+echo "F. bin/lucairn support-bundle never carries the DSN file"
+BUN="$TMP/bundles"
+mkdir -p "$BUN"
+if PATH="$DBIN:$BASE_PATH" bash "$ROOT/bin/lucairn" support-bundle --env "$ENVF" --compose "$COMPOSE" --output "$BUN/ok" --offline > "$TMP/sb.out" 2>&1; then
+  pass "support-bundle (offline) on the generated install"
+  ARCH="$(ls "$BUN/ok"/*.tar.gz 2>/dev/null | head -1)"
+  mkdir -p "$BUN/ok-x"; tar -xzf "$ARCH" -C "$BUN/ok-x"
+  if grep -rqF "$INIT_PW" "$BUN/ok-x" || grep -rqF "$(cat "$DSNF")" "$BUN/ok-x"; then
+    fail "the bundle holds neither the DSN nor the registry password"
+  else
+    pass "the bundle holds neither the DSN nor the registry password"
+  fi
+  if find "$BUN/ok-x" -name 'registry-dsn*' | grep -q .; then fail "the bundle has no DSN file"; else pass "the bundle has no DSN file"; fi
+else
+  fail "support-bundle (offline) on the generated install: $(tail -2 "$TMP/sb.out")"
+fi
+# A redaction miss: the password under a key name redact_stream does not treat
+# as secret. The guard must refuse to archive anything.
+V="$(variant sbleak)"; printf 'OPERATOR_NOTE=%s\n' "$INIT_PW" >> "$V/customer.env"
+if PATH="$DBIN:$BASE_PATH" bash "$ROOT/bin/lucairn" support-bundle --env "$V/customer.env" --compose "$COMPOSE" --output "$BUN/leak" --offline > "$TMP/sb.out" 2>&1; then
+  fail "RED support-bundle refuses when a collected file holds the registry password — it archived"
+elif grep -Fq "support bundle: refused" "$TMP/sb.out"; then
+  pass "RED support-bundle refuses when a collected file holds the registry password"
+else
+  fail "RED support-bundle refuses — without the refusal text: $(tail -1 "$TMP/sb.out")"
+fi
+if find "$BUN/leak" -mindepth 1 2>/dev/null | grep -q .; then fail "the refused bundle left nothing behind (no archive, no staging dir)"; else pass "the refused bundle left nothing behind (no archive, no staging dir)"; fi
+grep -Fq "$INIT_PW" "$TMP/sb.out" && fail "the refusal never prints the password" || pass "the refusal never prints the password"
 
 echo ""
 if [ "$FAILS" -eq 0 ]; then

@@ -111,10 +111,13 @@ VEIL_APP_PASSWORD=veil-app-role-secret-value
 DSA_SANITIZER_CORE_REGISTRY_KEY=$(gen_seed)
 POSTGRES_SANITIZER_CORE_PASSWORD=postgres-sanitizer-core-secret-value
 SANITIZER_CORE_MTLS_HOST_DIR=$TMPDIR/sanitizer-core-mtls
+SANITIZER_CORE_REGISTRY_DSN_FILE=$TMPDIR/secrets/sanitizer-core/registry-dsn
 BUILD_AUTH_TOKEN=build-token-secret
 CUSTOMER_KEY_ID=customer-key-id-secret
 PORTAL_API_KEY=portal-api-key-secret
 ENV
+# Kit 2.0: the core's registry DSN file (--registry-dsn-file; doctor checks it).
+bash "$ROOT/scripts/write-sanitizer-core-registry-dsn.sh" --env-file "$ENV_FILE" >/dev/null 2>&1
 
 run_doctor() {  # writes output to $1, returns doctor's exit status
   local out="$1" env="${2:-$ENV_FILE}"
@@ -198,6 +201,9 @@ echo "SEC-01 db-password validation: ok"
 # every claim would be dropped (hosted window A9 shape) -> doctor must FAIL.
 expect_fail_on core-witness-plaintext GRPC_TLS_ENABLED false "sanitizer core witness hop: failed"
 expect_fail_on core-short-pw POSTGRES_SANITIZER_CORE_PASSWORD short "POSTGRES_SANITIZER_CORE_PASSWORD too short"
+# The DSN file was written from the fixture's password; a password rotated in
+# customer.env alone leaves the core with a stale DSN -> doctor must FAIL.
+expect_fail_on core-dsn-stale POSTGRES_SANITIZER_CORE_PASSWORD rotated-sanitizer-core-value "does not match customer.env"
 echo "kit 2.0 sanitizer core production checks: ok"
 
 # Non-production must NOT enforce the password rules (matches the other

@@ -758,7 +758,7 @@ services:
     command:
       - serve
       - --listen=0.0.0.0:8790
-      - --dsn=postgres://dsa:k1-synthetic@postgres-sanitizer-core:5432/sanitizer_core?sslmode=disable
+      - --registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn
       - --sidecar=http://127.0.0.1:8765
     depends_on:
       postgres-sanitizer-core:
@@ -841,6 +841,12 @@ services:
         target: /etc/sanitizer-core-mtls
         read_only: true
         bind: {}
+      - type: bind
+        source: ./.secrets/sanitizer-core/registry-dsn
+        target: /run/secrets/sanitizer-core/registry-dsn
+        read_only: true
+        bind:
+          create_host_path: false
   sanitizer-core-sidecar:
     depends_on:
       postgres-sanitizer-core:

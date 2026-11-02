@@ -17,6 +17,10 @@
 #     POSTGRES_SANITIZER_CORE_PASSWORD, and (after writing customer.env) the
 #     core's mTLS material via scripts/bootstrap-sanitizer-core-mtls.sh into
 #     <output dir>/.certs/sanitizer-core-mtls (re-runs reuse existing files)
+#     and the core's registry DSN file via
+#     scripts/write-sanitizer-core-registry-dsn.sh into
+#     <output dir>/.secrets/sanitizer-core/registry-dsn (the core reads it with
+#     --registry-dsn-file; the password is never a process argument)
 #
 # Modes:
 #   --dev           empty DSA_LICENSE_KEY (gateway enters dev-mode bypass) +
@@ -46,6 +50,8 @@
 #   5 license validation failed
 #   6 the sanitizer core's mTLS material could not be created (customer.env
 #     was written; re-run scripts/bootstrap-sanitizer-core-mtls.sh)
+#   7 the sanitizer core's registry DSN file could not be written (customer.env
+#     was written; re-run scripts/write-sanitizer-core-registry-dsn.sh)
 
 set -euo pipefail
 
@@ -284,6 +290,7 @@ Exit codes:
   4  bin/lucairn doctor failed against the generated file
   5  license validation failed
   6  sanitizer core mTLS material could not be created (customer.env written)
+  7  sanitizer core registry DSN file could not be written (customer.env written)
 USAGE
 }
 
@@ -1096,8 +1103,8 @@ done
 set_kv GATEWAY_KEYSTORE_KEY "$(gen_keystore_key)"
 
 # Kit 2.0 sanitizer core: the registry key (exactly 64 hex, store/store.go
-# KeyFromEnv) and the registry DB password (alphanumeric = URL-safe, it sits
-# in the core's connection URL).
+# KeyFromEnv) and the registry DB password (alphanumeric; the DSN file writer
+# below percent-encodes it for the core's connection URL either way).
 set_kv DSA_SANITIZER_CORE_REGISTRY_KEY "$(gen_hex32)"
 set_kv POSTGRES_SANITIZER_CORE_PASSWORD "$(gen_pg_password)"
 # The mTLS directory the bootstrap step below populates, beside customer.env.
@@ -1108,6 +1115,9 @@ case "$_sanitizer_core_out_dir" in
   *) _sanitizer_core_out_dir="$PWD/$_sanitizer_core_out_dir" ;;
 esac
 SANITIZER_CORE_MTLS_DIR="${_sanitizer_core_out_dir%/.}/.certs/sanitizer-core-mtls"
+# The core's registry DSN file (scripts/write-sanitizer-core-registry-dsn.sh,
+# run below after customer.env exists), beside customer.env as well.
+SANITIZER_CORE_DSN_FILE="${_sanitizer_core_out_dir%/.}/.secrets/sanitizer-core/registry-dsn"
 # Core/sidecar digests from the manifest this run records; empty while the
 # manifest slot is still pending (the release step fills it).
 sanitizer_core_manifest_digest() {
@@ -1352,6 +1362,7 @@ VEIL_APP_PASSWORD=$(get_val VEIL_APP_PASSWORD)
 DSA_SANITIZER_CORE_REGISTRY_KEY=$(get_val DSA_SANITIZER_CORE_REGISTRY_KEY)
 POSTGRES_SANITIZER_CORE_PASSWORD=$(get_val POSTGRES_SANITIZER_CORE_PASSWORD)
 SANITIZER_CORE_MTLS_HOST_DIR=$SANITIZER_CORE_MTLS_DIR
+SANITIZER_CORE_REGISTRY_DSN_FILE=$SANITIZER_CORE_DSN_FILE
 LUCAIRN_SANITIZER_CORE_IMAGE_TAG=$DEFAULT_SANITIZER_CORE_IMAGE_TAG
 LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$SANITIZER_CORE_IMAGE_DIGEST
 LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=$SANITIZER_CORE_SIDECAR_IMAGE_DIGEST
@@ -1763,6 +1774,27 @@ if [ "$ADOPT_RUNTIME_PROFILE" = "true" ]; then
 fi
 if ! bash "$KIT_ROOT/scripts/bootstrap-sanitizer-core-mtls.sh" "$SANITIZER_CORE_MTLS_DIR" >&2; then
   fail "could not create the sanitizer core mTLS material in $SANITIZER_CORE_MTLS_DIR (customer.env was written; fix the error above and re-run: scripts/bootstrap-sanitizer-core-mtls.sh '$SANITIZER_CORE_MTLS_DIR')" 6
+fi
+
+# Kit 2.0: the core's registry DSN file (postgres:// URL, password
+# percent-encoded; mode 0444 in a 0700 directory), from the customer.env just
+# written. The core reads it with --registry-dsn-file, so the password never
+# appears in its process arguments. In adoption mode the file is the one
+# customer.env names (or the compose default beside the kit); an adopted
+# kit 1.x env without POSTGRES_SANITIZER_CORE_PASSWORD gets a note instead
+# (doctor then names every missing kit 2.0 setting).
+if [ "$ADOPT_RUNTIME_PROFILE" = "true" ]; then
+  SANITIZER_CORE_DSN_FILE="$(grep -E '^SANITIZER_CORE_REGISTRY_DSN_FILE=' "$OUTPUT" 2>/dev/null | tail -1 | cut -d= -f2-)"
+  case "$SANITIZER_CORE_DSN_FILE" in
+    /*) : ;;
+    '') SANITIZER_CORE_DSN_FILE="$KIT_ROOT/.secrets/sanitizer-core/registry-dsn" ;;
+    *) SANITIZER_CORE_DSN_FILE="$KIT_ROOT/${SANITIZER_CORE_DSN_FILE#./}" ;;
+  esac
+fi
+if [ "$ADOPT_RUNTIME_PROFILE" = "true" ] && ! grep -Eq '^POSTGRES_SANITIZER_CORE_PASSWORD=.' "$OUTPUT" 2>/dev/null; then
+  echo "note: $OUTPUT has no POSTGRES_SANITIZER_CORE_PASSWORD (kit 1.x env?); add the kit 2.0 settings (INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\"), then run: scripts/write-sanitizer-core-registry-dsn.sh --env-file '$OUTPUT'" >&2
+elif ! bash "$KIT_ROOT/scripts/write-sanitizer-core-registry-dsn.sh" --env-file "$OUTPUT" "$SANITIZER_CORE_DSN_FILE"; then
+  fail "could not write the sanitizer core registry DSN file $SANITIZER_CORE_DSN_FILE (customer.env was written; fix the error above and re-run: scripts/write-sanitizer-core-registry-dsn.sh --env-file '$OUTPUT' '$SANITIZER_CORE_DSN_FILE')" 7
 fi
 
 # BYOK banner
