@@ -491,6 +491,23 @@ check_eq "lucairn-init wrote the DSN file from the generated password" \
   "postgres://dsa:${INIT_PW}@postgres-sanitizer-core:5432/sanitizer_core?sslmode=disable" "$(cat "$DSNF" 2>/dev/null)"
 check_eq "lucairn-init's DSN file is 0444 in a 0700 directory" "444/700" "$(file_mode "$DSNF")/$(file_mode "$(dirname "$DSNF")")"
 if grep -Fq "$INIT_PW" "$TMP/init.out"; then fail "lucairn-init never prints the registry password"; else pass "lucairn-init never prints the registry password"; fi
+# Two lucairn-init runs into ONE directory with different --output names: each
+# env gets its own DSN file (it carries that env's password); the second run
+# must not overwrite the first env's file (found by test_lucairn_cli.sh).
+TWO="$TMP/twoinit"; mkdir -p "$TWO"
+for n in customer.env second.env; do
+  PATH="$DBIN:$BASE_PATH" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+    --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$TWO/$n" --skip-doctor > "$TMP/twoinit.out" 2>&1 \
+    || fail "lucairn-init --output $n into a shared directory: $(tail -2 "$TMP/twoinit.out")"
+done
+grep -q "^SANITIZER_CORE_REGISTRY_DSN_FILE=$TWO/.secrets/sanitizer-core/second.env.registry-dsn$" "$TWO/second.env" \
+  && pass "a non-customer.env output gets its own <name>.registry-dsn" || fail "a non-customer.env output gets its own <name>.registry-dsn"
+for n in customer.env second.env; do
+  pw="$(sed -n 's/^POSTGRES_SANITIZER_CORE_PASSWORD=//p' "$TWO/$n" | tail -1)"
+  f="$(sed -n 's/^SANITIZER_CORE_REGISTRY_DSN_FILE=//p' "$TWO/$n" | tail -1)"
+  check_eq "after both runs, $n's DSN file still matches $n" \
+    "postgres://dsa:${pw}@postgres-sanitizer-core:5432/sanitizer_core?sslmode=disable" "$(cat "$f" 2>/dev/null)"
+done
 
 doctor_offline() { # <env file> — offline doctor, hermetic PATH
   PATH="$DBIN:$BASE_PATH" bash "$ROOT/bin/lucairn" doctor --env "$1" --compose "$COMPOSE" --offline --skip-image-check > "$TMP/doc.out" 2>&1

@@ -1116,8 +1116,18 @@ case "$_sanitizer_core_out_dir" in
 esac
 SANITIZER_CORE_MTLS_DIR="${_sanitizer_core_out_dir%/.}/.certs/sanitizer-core-mtls"
 # The core's registry DSN file (scripts/write-sanitizer-core-registry-dsn.sh,
-# run below after customer.env exists), beside customer.env as well.
-SANITIZER_CORE_DSN_FILE="${_sanitizer_core_out_dir%/.}/.secrets/sanitizer-core/registry-dsn"
+# run below after customer.env exists), beside customer.env as well. ONE file
+# per env file: it carries that env's generated password, so a second run with
+# another --output in the same directory must not overwrite the first env's
+# DSN (unlike the mTLS material, which does not depend on the env and is
+# shared). customer.env gets the compose default name; any other output name
+# gets <name>.registry-dsn. The path is recorded in the env either way.
+_sanitizer_core_env_name="$(basename "$OUTPUT")"
+if [ "$_sanitizer_core_env_name" = "customer.env" ]; then
+  SANITIZER_CORE_DSN_FILE="${_sanitizer_core_out_dir%/.}/.secrets/sanitizer-core/registry-dsn"
+else
+  SANITIZER_CORE_DSN_FILE="${_sanitizer_core_out_dir%/.}/.secrets/sanitizer-core/${_sanitizer_core_env_name}.registry-dsn"
+fi
 # Core/sidecar digests from the manifest this run records; empty while the
 # manifest slot is still pending (the release step fills it).
 sanitizer_core_manifest_digest() {

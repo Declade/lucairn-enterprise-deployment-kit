@@ -2460,6 +2460,11 @@ scripts/write-sanitizer-core-registry-dsn.sh --env-file customer.env
 #   -> .secrets/sanitizer-core/registry-dsn   (mode 0444 in a 0700 directory)
 ```
 
+`bin/lucairn-init` runs this for you and records the path in `customer.env`
+(`SANITIZER_CORE_REGISTRY_DSN_FILE`). For an env file with another name it
+writes `.secrets/sanitizer-core/<name>.registry-dsn`, so two env files in one
+directory never share the file of another's password.
+
 The core needs a connection string (DSN) for its registry database, and that
 string holds the database password. The core is never given it on its command
 line: process arguments are readable by every local user of the Docker host
