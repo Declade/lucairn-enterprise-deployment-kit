@@ -208,6 +208,18 @@ sec = find("Secret", "sanitizer-core-credentials")
 ok(sec is not None and sorted(sec["stringData"]) == ["DSA_SANITIZER_CORE_REGISTRY_KEY", "POSTGRES_PASSWORD", "REGISTRY_DSN"], "k8s-native Secret: exactly the three keys")
 pw = sec["stringData"]["POSTGRES_PASSWORD"]
 ok(sec["stringData"]["REGISTRY_DSN"] == "postgres://dsa:%s@postgres-sanitizer-core:5432/sanitizer_core?sslmode=disable" % pw, "DSN built from the SAME password; bundled registry sslmode=disable")
+# DSA #956 registry_dsn.go (merged rules): a file holds a postgres:// URL only;
+# no @ after the authority outside the query; query keys are libpq keywords;
+# the --registry-dsn-file path holds neither :// nor @.
+import urllib.parse
+dsn = sec["stringData"]["REGISTRY_DSN"]
+u = urllib.parse.urlsplit(dsn)
+rest = dsn.split("://", 1)[1]
+after = rest[min([i for i in (rest.find(c) for c in "/?#") if i >= 0] or [len(rest)]):]
+ok(dsn.startswith("postgres://") and u.hostname == "postgres-sanitizer-core" and u.port == 5432 and u.username == "dsa" and urllib.parse.unquote(u.password or "") == pw
+   and "@" not in after.split("?")[0] and set(urllib.parse.parse_qs(u.query)) == {"sslmode"}, "REGISTRY_DSN is in the file form of the core (URL, host/port/user/password read back intact, only sslmode in the query)")
+dsnarg = [a for a in args if a.startswith("--registry-dsn-file=")][0].split("=", 1)[1]
+ok("://" not in dsnarg and "@" not in dsnarg, "the --registry-dsn-file path holds neither :// nor @ (the core refuses those)")
 sts = find("StatefulSet", "postgres-sanitizer-core", "dsa-identity")
 img = sts["spec"]["template"]["spec"]["containers"][0]["image"]
 compose = yaml.safe_load(open(os.path.join(ROOT, "docker-compose.customer.yml")))
@@ -299,6 +311,15 @@ refuse "all-zero registry key" "all zero" --set-string "sanitizer-core.secrets.v
 refuse "placeholder registry key" "shipped placeholder" --set-string sanitizer-core.secrets.values.registryKey=REPLACE_WITH_KEY
 refuse "empty DB password" "postgresPassword is empty" --set-string sanitizer-core.secrets.values.postgresPassword=
 refuse "non-URL-safe DB password" "URL" --set-string 'sanitizer-core.secrets.values.postgresPassword=p@ss:word/x'
+# The other parts of the DSN URL the chart writes unencoded (DSA #956: the core
+# takes a postgres:// URL from the file and refuses one it cannot read as written).
+refuse "registry DB user with @" "registry DB user" --set-string 'sanitizer-core.postgresql.user=svc@corp'
+refuse "registry database name with /" "registry database name" --set-string 'sanitizer-core.postgresql.database=core/x'
+refuse "off-enum registry sslmode" "registry sslmode" --set-string sanitizer-core.postgresql.sslmode=on
+EXT=(--set sanitizer-core.postgresql.enabled=false --set-string sanitizer-core.external.user=lucairn_core --set-string sanitizer-core.external.database=core)
+refuse "external host with a port" "registry DB host" "${EXT[@]}" --set-string 'sanitizer-core.external.host=db.internal:5432'
+refuse "external host with a user" "registry DB host" "${EXT[@]}" --set-string 'sanitizer-core.external.host=u@db.internal'
+refuse "external port out of range" "registry DB port" "${EXT[@]}" --set-string sanitizer-core.external.host=db.internal --set sanitizer-core.external.port=70000
 # Helm applies --set-string AFTER --set whatever the order, so the shared
 # args' own --set-string of this slot would mask a numeric --set: render this
 # case from the shared args WITHOUT the core's two slots.

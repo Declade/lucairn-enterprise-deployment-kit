@@ -2726,6 +2726,13 @@ path `sanitizer-core`), where `registry_dsn` is
 `postgres://dsa:<password>@postgres-sanitizer-core:5432/sanitizer_core?sslmode=disable`
 with the same password. The core reads the DSN as a **file**
 (`--registry-dsn-file`); the password never appears on its command line.
+The core accepts only this `postgres://` (or `postgresql://`) URL form from a
+file and refuses `key=value` text at boot. A password with characters other
+than `A-Z a-z 0-9 . _ ~ -` must be percent-encoded in `registry_dsn` only, not
+in `password`: `/ ? # @ : %` and a space become `%2F %3F %23 %40 %3A %25 %20`.
+On the `k8s-native` backend the chart builds the URL itself, so there the
+password, the DB user and the database name must be URL-safe as they are; the
+render refuses anything else.
 
 ### 2. mTLS Secrets (once, before `helm install`)
 

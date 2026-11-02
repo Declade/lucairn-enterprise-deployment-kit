@@ -168,6 +168,36 @@
 {{- fail (printf "%s postgresql.enabled=false needs external.host, external.user and external.database." $scope) -}}
 {{- end -}}
 {{- end -}}
+{{- /* 4b. The parts of the registry DSN URL (DSA #956 registry_dsn.go: the
+       core takes ONLY a postgres:// URL from --registry-dsn-file and refuses,
+       with a fixed message, one it cannot read as written). This chart writes
+       them unencoded into REGISTRY_DSN, so each must be URL-safe as is: a user
+       or database name with ':' '@' '/' '?' or '#' would move the URL's
+       boundaries; a host is a DNS name or an IPv4 address; sslmode is a
+       libpq keyword value; the port a number. */ -}}
+{{- $pgUser := include "sanitizerCore.pgUser" . -}}
+{{- $pgDb := include "sanitizerCore.pgDatabase" . -}}
+{{- $pgHost := include "sanitizerCore.pgHost" . -}}
+{{- $pgPort := include "sanitizerCore.pgPort" . -}}
+{{- $pgSsl := include "sanitizerCore.sslmode" . -}}
+{{- if not (regexMatch "^[A-Za-z0-9._~-]+$" $pgUser) -}}
+{{- fail (printf "%s the registry DB user (postgresql.user / external.user) must use only A-Z a-z 0-9 . _ ~ - : it is written into the core's postgres:// DSN unencoded." $scope) -}}
+{{- end -}}
+{{- if not (regexMatch "^[A-Za-z0-9._~-]+$" $pgDb) -}}
+{{- fail (printf "%s the registry database name (postgresql.database / external.database) must use only A-Z a-z 0-9 . _ ~ - : it is written into the core's postgres:// DSN unencoded." $scope) -}}
+{{- end -}}
+{{- if not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$" $pgHost) -}}
+{{- fail (printf "%s the registry DB host (external.host) must be a DNS name or an IPv4 address (no scheme, port, path or user): it is written into the core's postgres:// DSN." $scope) -}}
+{{- end -}}
+{{- if not (regexMatch "^[1-9][0-9]{0,4}$" $pgPort) -}}
+{{- fail (printf "%s the registry DB port (external.port) must be a number 1..65535." $scope) -}}
+{{- end -}}
+{{- if gt (atoi $pgPort) 65535 -}}
+{{- fail (printf "%s the registry DB port (external.port) must be a number 1..65535." $scope) -}}
+{{- end -}}
+{{- if not (has $pgSsl (list "disable" "allow" "prefer" "require" "verify-ca" "verify-full")) -}}
+{{- fail (printf "%s the registry sslmode (postgresql.sslmode / external.sslmode / global.postgresqlSslmode) must be one of disable, allow, prefer, require, verify-ca, verify-full." $scope) -}}
+{{- end -}}
 {{- /* 5. Credentials (k8s-native only; ExternalSecret backends hold them). */ -}}
 {{- if not (has .Values.secrets.backend (list "k8s-native" "vault" "aws" "azure")) -}}
 {{- fail (printf "%s secrets.backend must be k8s-native, vault, aws or azure." $scope) -}}

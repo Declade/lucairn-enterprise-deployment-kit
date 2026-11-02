@@ -3009,6 +3009,16 @@ check_sanitizer_core_helm() {
       fails << "the core does not read its DSN from a file (--registry-dsn-file)" unless args.any? { |a| a.start_with?("--registry-dsn-file=") }
       dsnvol = (ps["volumes"] || []).find { |v| (v.dig("secret", "items") || []).any? { |i| i["key"] == "REGISTRY_DSN" } }
       fails << "no volume projects the REGISTRY_DSN key of the credentials Secret" unless dsnvol
+      # DSA #956 registry_dsn.go: a --registry-dsn-file value holding :// or @
+      # is refused (a DSN passed as the path); the path must be the projected file.
+      dsnargs = args.select { |a| a.start_with?("--registry-dsn-file=") }.map { |a| a.sub("--registry-dsn-file=", "") }
+      fails << "the --registry-dsn-file value holds :// or @ (the core refuses a DSN passed as the path)" if dsnargs.any? { |p| p.include?("://") || p.include?("@") }
+      if dsnvol && dsnargs.any?
+        item = (dsnvol.dig("secret", "items") || []).find { |i| i["key"] == "REGISTRY_DSN" }
+        mnt = Array(core["volumeMounts"]).find { |m| m["name"] == dsnvol["name"] }
+        want = mnt && item ? File.join(mnt["mountPath"].to_s, item["path"].to_s) : nil
+        fails << "the --registry-dsn-file path of the core is not the projected REGISTRY_DSN file" unless want && dsnargs.all? { |p| p == want }
+      end
       lim = mib(side.dig("resources", "limits", "memory"))
       if lim.nil? then fails << "the sidecar has no memory limit"
       elsif lim < 6500 then fails << "the sidecar memory limit is #{lim.round} MiB; it peaks near 5.6 GB and needs >= 6500 MiB (hosted A8)"
