@@ -38,9 +38,9 @@
 #   * The stub psql proves the runner's decisions and the SQL it hands psql,
 #     not PostgreSQL's execution of the migration bodies.
 #   * The doctor's production-only branch of the witness-hop check
-#     (GRPC_TLS_ENABLED!=true -> FAIL) is not driven here: a production env
-#     that passes every earlier offline check needs a signed manifest and
-#     anchor endpoints. The development branch (WARN) is driven.
+#     (GRPC_TLS_ENABLED!=true -> FAIL) is driven in tests/test_sec_hardening.sh,
+#     which holds the coherent production env that passes doctor; here only the
+#     development branch (WARN) is driven.
 #   * The online claim check reads log lines; it does not send a turn.
 
 set -uo pipefail

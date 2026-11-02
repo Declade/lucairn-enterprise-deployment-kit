@@ -61,6 +61,10 @@ cp "$TMPDIR/sb-client.crt" "$TMPDIR/sb-ca.crt"
 printf '{"canonical_body_b64":"e30=","witness_signature_hex":"00"}\n' \
   > "$TMPDIR/witness-signed-manifest.json"
 
+# Kit 2.0: the new sanitizer core's mTLS material (doctor checks every file
+# the compose file mounts).
+bash "$ROOT/scripts/bootstrap-sanitizer-core-mtls.sh" "$TMPDIR/sanitizer-core-mtls" >/dev/null 2>&1
+
 ENV_FILE="$TMPDIR/customer.env"
 cat > "$ENV_FILE" <<ENV
 LUCAIRN_IMAGE_REGISTRY=ghcr.io/declade
@@ -104,6 +108,9 @@ POSTGRES_SANDBOX_A_PASSWORD=postgres-sandbox-a-secret-value
 POSTGRES_VEIL_PASSWORD=postgres-veil-secret-value
 AUDIT_APP_PASSWORD=audit-app-role-secret-value
 VEIL_APP_PASSWORD=veil-app-role-secret-value
+DSA_SANITIZER_CORE_REGISTRY_KEY=$(gen_seed)
+POSTGRES_SANITIZER_CORE_PASSWORD=postgres-sanitizer-core-secret-value
+SANITIZER_CORE_MTLS_HOST_DIR=$TMPDIR/sanitizer-core-mtls
 BUILD_AUTH_TOKEN=build-token-secret
 CUSTOMER_KEY_ID=customer-key-id-secret
 PORTAL_API_KEY=portal-api-key-secret
@@ -183,6 +190,15 @@ expect_fail_on weak-appveil VEIL_APP_PASSWORD           veil_app_password  "well
 expect_fail_on short-bridge POSTGRES_BRIDGE_PASSWORD    short              "too short"
 expect_fail_on blank-sbxa   POSTGRES_SANDBOX_A_PASSWORD ""                 "unset in production"
 echo "SEC-01 db-password validation: ok"
+
+# Kit 2.0 K-A: the PRODUCTION branch of the new sanitizer core's witness-hop
+# check (this file holds the one coherent prod env that passes doctor, so it is
+# where that branch can be driven). GRPC_TLS_ENABLED=false makes the witness
+# serve its claim port in plaintext; the core dials it with verified TLS and
+# every claim would be dropped (hosted window A9 shape) -> doctor must FAIL.
+expect_fail_on core-witness-plaintext GRPC_TLS_ENABLED false "sanitizer core witness hop: failed"
+expect_fail_on core-short-pw POSTGRES_SANITIZER_CORE_PASSWORD short "POSTGRES_SANITIZER_CORE_PASSWORD too short"
+echo "kit 2.0 sanitizer core production checks: ok"
 
 # Non-production must NOT enforce the password rules (matches the other
 # prod-gated checks). Flip DSA_ENV=development + blank a password.

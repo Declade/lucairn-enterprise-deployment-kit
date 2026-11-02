@@ -174,10 +174,9 @@ services:
     volumes:
       - ${LUCAIRN_WITNESS_CLIENT_CERT_DIR:?set LUCAIRN_WITNESS_CLIENT_CERT_DIR — see docs/WITNESS_CENTRAL_RUNBOOK.md}:/etc/lucairn/witness-client:ro
 
-
   # Kit 2.0: the new sanitizer core is a claim emitter too (it signs the
   # dsa-sanitizer PII_SANITIZED claim). Repointed and credentialed exactly like
-  # the four emitters above — same device leaf. Its latch is a literal "true"
+  # the other four emitters in this file — same device leaf. Its latch is a literal "true"
   # in the base file (the core refuses a non-mTLS witness hop in production),
   # so it is not re-stated here. The core runs in the sidecar's network
   # namespace; the sidecar's dsa-witness-identity attachment is its route out.
