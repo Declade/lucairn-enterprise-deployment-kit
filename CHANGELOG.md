@@ -34,8 +34,14 @@ carry a security fix are tagged **[Security]**.
   mount scope of the full render, and online the bound key ids, the gateway's
   admin ServiceNow status and exactly one gateway. Admin guide: INSTALL.md §
   "ServiceNow mode (off by default)". The directory app
-  (`x_1620539_lucdir`, Business Source License 1.1 like the kit) ships as an
-  update set in `servicenow-directory/`.
+  (`x_1620539_lucdir` 0.2.0, Business Source License 1.1 like the kit) ships
+  in `servicenow-directory/`: its update set, the scripts of its two scheduled
+  jobs, its licence and a `PROVENANCE` record (source repository, commit, the
+  sha256 of every file). `bin/lucairn doctor` (mode on), `bin/lucairn bundle
+  verify` and the release script refuse a file that differs from that record;
+  a bundle of an opted-in install carries the folder. The app stays off after
+  the import until the instance admin switches it on; the import was
+  previewed on the app's test instance only (stated in INSTALL.md).
 - **Helm:** the core always sets `LCR_PROFILE` as an `env:` literal — `kit`,
   or `kit-servicenow` only with `global.servicenowControl.enabled` — so no
   Secret attached through `envFrom` can change it. With the switch on the core

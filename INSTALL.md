@@ -2858,18 +2858,104 @@ exactly as Compose counts them) and then adds the overlay to every command.
 - The switch without bindings: the mode stays off (the doctor tells you).
 - Empty bindings + `bin/lucairn up` = off again.
 
+### The directory app (on your ServiceNow instance)
+
+**Where it is.** The kit ships the app's update set at
+`servicenow-directory/lucairn-directory-update-set.xml` — scoped app
+`x_1620539_lucdir`, "Lucairn Directory Fingerprints", version 0.2.0. A bundle
+made by `bin/lucairn bundle create` for an opted-in `customer.env` carries the
+same folder. Next to the file:
+
+- `servicenow-directory/scheduled_job.js` and `companion_job.js` — the scripts
+  of the app's two scheduled jobs (step 3; the update set does not carry the
+  jobs).
+- `servicenow-directory/PROVENANCE` — where the files come from: the app's
+  repository `Declade/lucairn-servicenow-directory`, the commit, the path of
+  the update set there (`update_set/x_1620539_lucdir.xml`, built from the
+  app's source by `tools/build_update_set.py`) and the sha256 of every file in
+  the folder. Check them yourself with `shasum -a 256` (or `sha256sum`).
+  `bin/lucairn doctor` (mode on), `bin/lucairn bundle verify` and the kit's
+  release script refuse a file whose sha256 differs from this record.
+- `servicenow-directory/LICENSE` — the app's licence: Business Source License
+  1.1 with the same parameters as this kit.
+- `servicenow-directory/README.md` — a short summary of the steps below.
+
+**It stays off on both sides until you switch it on.** The import leaves the
+app's switch `x_1620539_lucdir.enabled` at `false` and its lists and
+`instance_id` empty; the fingerprint key is not in the file (the app's first
+build makes it on your instance, and it stays in your environment). The kit's
+mode stays off until step 3 of "Turn it on" below binds a key.
+
+**Import and check** (as the instance's admin):
+
+1. Take `servicenow-directory/lucairn-directory-update-set.xml` from the kit.
+2. On your instance: *Retrieved Update Sets → Import Update Set from XML*,
+   preview, commit. The file holds 85 update records: the application, the
+   role `x_1620539_lucdir.reader`, seven tables with their columns (they
+   arrive empty — the key table's row is data, not part of an update set),
+   eight properties, six script includes, three business rules and the REST
+   API with its four operations. Whether the import carries the script
+   includes' "Accessible from" setting is checked in step 4.
+3. The two **scheduled jobs** are not in the update set. Create them by hand
+   in the application (*Scheduled Script Execution*):
+   - name "Lucairn directory: publish fingerprints", *Periodically*, repeat
+     interval 15 minutes, script = the text of
+     `servicenow-directory/scheduled_job.js`;
+   - name "Lucairn directory: publish companion", *Periodically*, repeat
+     interval 1 minute, active, script = the text of
+     `servicenow-directory/companion_job.js`. It stays inert until you switch
+     the app's companion (the field map) on with its own switch
+     `x_1620539_lucdir.companion_enabled`, which is optional, off after the
+     import and not needed for the kit's mode.
+4. **Check the key table before switching on.** In *Scripts – Background*,
+   **with the scope selector set to `x_1620539_lucdir`** (in scope `global`
+   the platform refuses the call):
+
+   ```
+   gs.info(JSON.stringify(new x_1620539_lucdir.LucairnDirectoryPublisher().keyStoreCheck()))
+   ```
+
+   It must print `"closed":true`. Then, as an account **without any role**
+   (identity type *Machine*),
+   `GET /api/now/stats/x_1620539_lucdir_keystore?sysparm_count=true` must
+   answer **403**. If it answers a count, or `closed` is `false`, do not switch
+   the app on (the app itself refuses to store or release a key while `closed`
+   is `false`).
+5. **Measure before switching on** (two checks the app cannot make itself):
+   - signed in to the browser as a user without any role, open
+     `x_1620539_lucdir_keystore.list`, the same with a filter on `key_value`,
+     and a list export: no row, no count. If a row or a count shows, do not
+     switch on.
+   - list who, other than an admin, can become the reader: who may grant the
+     role `x_1620539_lucdir.reader` and who may impersonate the account of
+     step 6. Each of them can fetch the key. Restrict it to the people you
+     intend.
+6. **Create the reader account** the Lucairn install uses: identity type
+   *Machine*, *Web service access only*, the role `x_1620539_lucdir.reader`
+   and nothing else it does not need. Its login becomes the stored
+   `login.json` (step 4 of "Turn it on").
+7. Set `x_1620539_lucdir.enabled` to `true`. Wait for the fingerprint job
+   (every 15 minutes) or run it once with *Execute Now*: the first run makes
+   the key on your instance and publishes generation 1.
+8. **Confirm:** `GET /api/x_1620539_lucdir/directory/bundle` as the reader
+   account answers 200 with a `generation` of 1 or more. As an admin, in the
+   same scope:
+   `gs.info(JSON.stringify(new x_1620539_lucdir.LucairnDirectoryPublisher().status()))`
+   shows the generations and how many users were read.
+
+To switch the app off, set `x_1620539_lucdir.enabled` to `false`.
+
+**Stated limit (this file):** the update set was loaded and previewed on the
+app's test instance, which already has the app installed: 0 problems, all 85
+records "update / commit". A commit from this file was not run there, and no
+import on a second instance has been run, so none of the steps above has been
+run on an instance that did not have the app before. Step 5 was not measured
+by Lucairn (its test accounts are web-service only).
+
 ### Turn it on (customer admin)
 
-1. **Install the directory app on your instance.** The kit ships the app's
-   update set: `servicenow-directory/lucairn-directory-update-set.xml`
-   (scoped app `x_1620539_lucdir`, "Lucairn Directory Fingerprints"; same
-   Business Source License 1.1 as this kit). On your instance: *Retrieved
-   Update Sets → Import Update Set from XML*, preview, commit. Then follow the
-   app's checks before you switch it on (`servicenow-directory/README.md`):
-   create the two scheduled jobs, run `keyStoreCheck()` until it prints
-   `"closed":true`, create a **machine** account with web-service access only and
-   the role `x_1620539_lucdir.reader`, set `x_1620539_lucdir.enabled` to `true`,
-   and confirm `GET /api/x_1620539_lucdir/directory/bundle` answers 200.
+1. **Install the directory app on your instance** and confirm it publishes —
+   "The directory app (on your ServiceNow instance)" above, steps 1 to 8.
 2. **Find the key id to bind.** The customer id is in `.lucairn-customer-id`
    (written by `bin/lucairn-mint-customer`). List its keys with your admin key:
 

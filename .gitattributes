@@ -1,0 +1,4 @@
+# The ServiceNow directory app's files are checked byte for byte against
+# servicenow-directory/PROVENANCE (bin/lucairn doctor, bundle verify, the
+# release script): git must never convert their line ends (core.autocrlf).
+servicenow-directory/** -text

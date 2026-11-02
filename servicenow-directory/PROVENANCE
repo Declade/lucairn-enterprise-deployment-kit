@@ -1,0 +1,29 @@
+# Where the ServiceNow directory app's files in this folder come from.
+#
+# Every file below is copied byte for byte from the app's repository at
+# source_commit and never edited here. The update set is built there from
+# src/ by tools/build_update_set.py, with the key property and the role's
+# federated_id blank. The two job scripts are the app's src/scheduled_job.js
+# and src/companion_job.js (the update set does not carry the scheduled jobs;
+# the instance admin creates them with these scripts).
+#
+# Checked by bin/lucairn-servicenow.py directory-check, which recomputes every
+# sha256: `bin/lucairn doctor` (ServiceNow mode on), `bin/lucairn bundle
+# verify` (a bundle that carries the opt-in overlay) and scripts/release-kit.sh
+# refuse a file that differs from this record.
+# To update: copy the files from a newer commit of the app's repository and
+# change source_commit, app_version and every sha256 in the same commit.
+source_repo=Declade/lucairn-servicenow-directory
+source_commit=114278eca46b984bd5351cd65fcd56837bb76cc7
+app_scope=x_1620539_lucdir
+app_version=0.2.0
+licence=Business Source License 1.1, same parameters as this kit's LICENSE (Licensed Work: Lucairn ServiceNow Directory)
+file=lucairn-directory-update-set.xml
+source_path=update_set/x_1620539_lucdir.xml
+sha256=7c3f2a348cf2ce48b23836fcef0b666b12c8d60cf6a5f7bedc4604a2f91a9cc8
+licence_file=LICENSE
+licence_sha256=2323e6a23ef202e7240df63cef016da936dbf0c11d47d6228d981b1c1df2b339
+job_file=scheduled_job.js
+job_sha256=9de1b9bf4003b6d8ae2f2995dd7fc33ae96542e6d56df898a836f4ba1442baba
+companion_job_file=companion_job.js
+companion_job_sha256=fdbdde09ef34c1bd6cf6cf97991d3a444f5fb58d09acb38bd3868b6a87f89bd1

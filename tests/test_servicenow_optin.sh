@@ -46,8 +46,17 @@
 #   H. The value kit-servicenow is set only by the overlay (and the Helm
 #      enabled branch): never in the base compose, customer.env.example or the
 #      chart defaults.
-#   I. A kit bundle of an opted-in install carries the overlay, the helper and
-#      the bootstrap; bundle verify refuses one whose helper was removed.
+#   I. A kit bundle of an opted-in install carries the overlay, the helper,
+#      the bootstrap and the directory app's folder (byte-identical, in
+#      SHA256SUMS); bundle verify refuses one whose helper was removed, and one
+#      whose update set changed even with a re-hashed SHA256SUMS.
+#   J. The shipped directory app update set (servicenow-directory/) equals its
+#      PROVENANCE record: sha256 of the XML, licence and both job scripts
+#      recomputed independently of the helper; the helper's directory-check
+#      red-proofs (byte appended, CRLF, edited job script, replaced licence,
+#      missing file, symlink, PROVENANCE missing/repeated/incomplete/path);
+#      the opted-in doctor of a kit copy with a changed XML is red; the release
+#      script runs the same check.
 #
 # NON-COVERAGE (stated, not implied)
 #   * No container runs: whether the gateway, the Python worker and the core
@@ -65,6 +74,8 @@ COMPOSE="$ROOT/docker-compose.customer.yml"
 SELFHOSTED="$ROOT/docker-compose.self-hosted.yml"
 OVERLAY="$ROOT/docker-compose.servicenow-control.yml"
 HELPER="$ROOT/bin/lucairn-servicenow.py"
+# The directory app's files shipped for the instance admin (section J).
+SNDIR="$ROOT/servicenow-directory"
 
 # The real path: the control bootstrap refuses symlinked parents (/var -> /private/var on macOS).
 TMP="$(cd "$(mktemp -d)" && pwd -P)"
@@ -390,7 +401,7 @@ doctor_offline() { # <env> [compose]
   bash "$ROOT/bin/lucairn" doctor --env "$1" --compose "${2:-$COMPOSE}" --offline --skip-image-check > "$TMP/doc.out" 2>&1
 }
 if doctor_offline "$ENVF"; then pass "GREEN: offline doctor passes on the opted-in install after up"; else fail "GREEN: $(grep -E 'failed' "$TMP/doc.out" | head -3 | tr '\n' ' ')"; fi
-for line in "ServiceNow mode: opted in (1 bound key(s) on 1 instance(s)" "ServiceNow mode: sanitizer config copy ok" "ServiceNow mode: stored login ok" "ServiceNow mode: mount and setting scope ok (expected on)" "sanitizer core profile: kit-servicenow"; do
+for line in "ServiceNow mode: opted in (1 bound key(s) on 1 instance(s)" "ServiceNow mode: sanitizer config copy ok" "ServiceNow mode: stored login ok" "ServiceNow mode: directory app update set ok (sha256=$(sed -n 's/^sha256=//p' "$SNDIR/PROVENANCE" | cut -c1-16)" "ServiceNow mode: mount and setting scope ok (expected on)" "sanitizer core profile: kit-servicenow"; do
   grep -Fq "$line" "$TMP/doc.out" && pass "GREEN line: $line" || fail "GREEN line: $line"
 done
 if doctor_offline "$BASEENV"; then grep -Fq "ServiceNow mode: off (default" "$TMP/doc.out" && grep -Fq "mount and setting scope ok (expected off)" "$TMP/doc.out" && pass "GREEN: the default install reports the mode off and a clean scope" || fail "default install lines"; else fail "default install doctor red: $(grep failed "$TMP/doc.out" | head -2)"; fi
@@ -520,7 +531,7 @@ grep -q 'mode is refused in this release\|ServiceNow mode is refused\|mode itsel
   && fail "INSTALL.md / customer.env.example still say the mode is not available" || pass "B7: INSTALL.md and customer.env.example no longer say the mode is unavailable"
 grep -q '^## ServiceNow mode (off by default)$' "$ROOT/INSTALL.md" && pass "INSTALL.md has the admin guide section" || fail "INSTALL.md admin guide section"
 grep -q 'SN_UPDATE_SET="servicenow-directory/lucairn-directory-update-set.xml"' "$ROOT/scripts/release-kit.sh" \
-  && pass "release-kit.sh refuses a release without the directory app's update-set export" || fail "release gate for the update set"
+  && pass "release-kit.sh refuses a release without the directory app's update set" || fail "release gate for the update set"
 
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
@@ -547,6 +558,29 @@ if bash "$ROOT/bin/lucairn" bundle create --customer-slug kc-optin --models-dir 
   [ -f "$B/install/docker-compose.servicenow-control.yml" ] && [ -x "$B/bin/lucairn-servicenow.py" ] && [ -x "$B/scripts/bootstrap-servicenow-control.py" ] \
     && pass "the bundle carries the overlay, the opt-in helper and the control bootstrap" || fail "bundle contents"
   bash "$ROOT/bin/lucairn" bundle verify --bundle "$B" > "$TMP/verify.out" 2>&1 && pass "bundle verify: ok" || fail "bundle verify: $(tail -2 "$TMP/verify.out")"
+  # The directory app's folder travels with an opted-in bundle, byte-identical,
+  # and is listed in the bundle's SHA256SUMS.
+  bundled_ok=1
+  for f in lucairn-directory-update-set.xml PROVENANCE LICENSE README.md scheduled_job.js companion_job.js; do
+    cmp -s "$SNDIR/$f" "$B/servicenow-directory/$f" || bundled_ok=0
+    grep -Eq "^[0-9a-f]{64}  servicenow-directory/$f\$" "$B/checksums/SHA256SUMS" || bundled_ok=0
+  done
+  [ "$bundled_ok" = 1 ] && pass "the bundle carries servicenow-directory/ byte-identical and in SHA256SUMS" || fail "bundle servicenow-directory/ contents"
+  # Tamper the bundled update set AND re-hash SHA256SUMS (the integrity list
+  # alone cannot catch that): verify still refuses, from its own helper.
+  B2="$TMP/bundle-tampered"; cp -R "$B" "$B2"
+  printf '\n' >> "$B2/servicenow-directory/lucairn-directory-update-set.xml"
+  python3 - "$B2" <<'PY'
+import hashlib, sys
+root = sys.argv[1]
+name = "servicenow-directory/lucairn-directory-update-set.xml"
+digest = hashlib.sha256(open(root + "/" + name, "rb").read()).hexdigest()
+lines = open(root + "/checksums/SHA256SUMS").read().splitlines()
+open(root + "/checksums/SHA256SUMS", "w").write("".join((digest + "  " + name if l.endswith("  " + name) else l) + "\n" for l in lines))
+PY
+  if bash "$ROOT/bin/lucairn" bundle verify --bundle "$B2" > "$TMP/verify.out" 2>&1; then fail "bundle verify accepted a changed update set with a re-hashed SHA256SUMS"
+  else grep -q 'bundle ServiceNow directory app update set: directory_changed' "$TMP/verify.out" && pass "bundle verify refuses a changed update set even with a re-hashed SHA256SUMS" || fail "verify reason: $(tail -1 "$TMP/verify.out")"; fi
+  rm -rf "$B2"
   rm -f "$B/bin/lucairn-servicenow.py"
   if bash "$ROOT/bin/lucairn" bundle verify --bundle "$B" > "$TMP/verify.out" 2>&1; then fail "bundle verify accepted a bundle without the opt-in helper"
   else grep -q 'ServiceNow opt-in helper' "$TMP/verify.out" && pass "bundle verify refuses an opted-in bundle without the helper" || fail "verify reason: $(tail -1 "$TMP/verify.out")"; fi
@@ -557,6 +591,53 @@ d="$(variant bundle-invalid)"; strip_sn "$d/customer.env"; printf 'GATEWAY_SERVI
 if bash "$ROOT/bin/lucairn" bundle create --customer-slug kc-bad --models-dir "$MD" --model-manifest "$TMP/model-manifest.yaml" \
      --env "$d/customer.env" --output "$TMP/bundles-bad" > "$TMP/bundle.out" 2>&1; then fail "bundle create packed bindings without the switch"
 else grep -q 'session_config_invalid' "$TMP/bundle.out" && pass "bundle create refuses bindings without the switch" || fail "bundle refusal: $(tail -1 "$TMP/bundle.out")"; fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "J. The directory app's update set matches its PROVENANCE record"
+# Independent of the helper: parse PROVENANCE with sed, hash with the system tool.
+prov() { sed -n "s/^$1=//p" "$SNDIR/PROVENANCE"; }
+sha_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi; }
+check_eq "PROVENANCE names the update set file" "lucairn-directory-update-set.xml" "$(prov file)"
+check_eq "the shipped update set's sha256 equals PROVENANCE sha256" "$(prov sha256)" "$(sha_of "$SNDIR/$(prov file)")"
+check_eq "the shipped licence's sha256 equals PROVENANCE licence_sha256" "$(prov licence_sha256)" "$(sha_of "$SNDIR/$(prov licence_file)")"
+check_eq "the fingerprint job script's sha256 equals PROVENANCE job_sha256" "$(prov job_sha256)" "$(sha_of "$SNDIR/$(prov job_file)")"
+check_eq "the companion job script's sha256 equals PROVENANCE companion_job_sha256" "$(prov companion_job_sha256)" "$(sha_of "$SNDIR/$(prov companion_job_file)")"
+printf '%s' "$(prov source_commit)" | grep -Eq '^[0-9a-f]{40}$' && pass "PROVENANCE pins a full source commit" || fail "PROVENANCE source_commit is not a full sha"
+check_eq "PROVENANCE names the source repository and path" "Declade/lucairn-servicenow-directory update_set/x_1620539_lucdir.xml" "$(prov source_repo) $(prov source_path)"
+grep -Fq "<application_scope>$(prov app_scope)</application_scope>" "$SNDIR/$(prov file)" && grep -Fq "<application_version>$(prov app_version)</application_version>" "$SNDIR/$(prov file)" \
+  && pass "the update set carries the scope and version PROVENANCE names" || fail "update set scope/version vs PROVENANCE"
+head -1 "$SNDIR/LICENSE" | grep -qx 'Business Source License 1.1' && pass "the app's licence is BSL 1.1" || fail "app licence header"
+[ "$(tr -cd '\r' < "$SNDIR/$(prov file)" | wc -c | tr -d ' ')" = 0 ] && pass "the update set has no CR bytes (no line-end conversion)" || fail "CR bytes in the update set"
+grep -Eq '^servicenow-directory/\*\* -text$' "$ROOT/.gitattributes" && pass ".gitattributes keeps git from converting the folder's line ends" || fail ".gitattributes rule for servicenow-directory/"
+python3 -I "$HELPER" directory-check --dir "$SNDIR" > "$TMP/dir.out" 2>&1 && grep -q '^DIRECTORY=ok ' "$TMP/dir.out" \
+  && pass "helper directory-check: ok on the shipped folder" || fail "helper directory-check: $(cat "$TMP/dir.out")"
+dir_red() { # <name> <mutation (shell, in $D)> <fixed text>
+  D="$TMP/sndir-mutant"; rm -rf "$D"; cp -R "$SNDIR" "$D"
+  ( cd "$D" && eval "$2" )
+  if python3 -I "$HELPER" directory-check --dir "$D" > "$TMP/dir.out" 2>&1; then fail "$1 — directory-check stayed green"
+  elif grep -Fq "$3" "$TMP/dir.out"; then pass "$1 — refused: $3"
+  else fail "$1 — refused without '$3': $(tr '\n' ' ' < "$TMP/dir.out")"; fi
+}
+dir_red "RED one byte appended to the update set" "printf ' ' >> lucairn-directory-update-set.xml" "REFUSED=directory_changed"
+dir_red "RED update set converted to CRLF" "python3 -c 'import sys; p=sys.argv[1]; d=open(p,\"rb\").read(); open(p,\"wb\").write(d.replace(b\"\\n\", b\"\\r\\n\"))' lucairn-directory-update-set.xml" "REFUSED=directory_changed"
+dir_red "RED companion job script edited" "printf '// x\n' >> companion_job.js" "the companion job script"
+dir_red "RED licence file replaced" "printf 'MIT\n' > LICENSE" "the licence"
+dir_red "RED update set missing" "rm -f lucairn-directory-update-set.xml" "is missing or not a regular file"
+dir_red "RED update set is a symlink" "mv lucairn-directory-update-set.xml real.xml && ln -s real.xml lucairn-directory-update-set.xml" "is missing or not a regular file (no symlinks)"
+dir_red "RED PROVENANCE missing" "rm -f PROVENANCE" "PROVENANCE is missing"
+dir_red "RED PROVENANCE with a repeated key" "printf 'sha256=%064d\n' 0 >> PROVENANCE" "unknown, repeated or malformed line"
+dir_red "RED PROVENANCE without a job sha" "grep -v '^job_sha256=' PROVENANCE > p && mv p PROVENANCE" "lacks job_sha256"
+dir_red "RED PROVENANCE pointing outside the folder" "sed 's#^file=.*#file=../x.xml#' PROVENANCE > p && mv p PROVENANCE" "malformed"
+# The doctor reads the folder of the kit it runs from: a kit copy with a
+# changed update set turns the opted-in doctor red.
+KC="$TMP/kit-copy"; mkdir -p "$KC"; ( cd "$ROOT" && tar --exclude=.git -cf - . ) | ( cd "$KC" && tar -xf - )
+printf ' ' >> "$KC/servicenow-directory/lucairn-directory-update-set.xml"
+if bash "$KC/bin/lucairn" doctor --env "$ENVF" --compose "$COMPOSE" --offline --skip-image-check > "$TMP/doc.out" 2>&1; then fail "doctor stayed green on a changed update set"
+else grep -Fq "ServiceNow mode: failed (directory app update set: directory_changed" "$TMP/doc.out" && pass "RED doctor on a kit whose update set differs from PROVENANCE" || fail "doctor reason: $(grep -i 'directory' "$TMP/doc.out" | head -2 | tr '\n' ' ')"; fi
+rm -rf "$KC"
+grep -q 'directory-check --dir servicenow-directory' "$ROOT/scripts/release-kit.sh" \
+  && pass "release-kit.sh runs directory-check before a release" || fail "release-kit.sh directory-check gate"
 
 echo ""
 if [ "$FAILS" -eq 0 ]; then

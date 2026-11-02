@@ -7732,6 +7732,9 @@ bundle_create() {
   if [ "$SN_STATE" = "on" ]; then
     require_file "$(dirname "$base_compose")/$SERVICENOW_OVERLAY" "ServiceNow opt-in overlay"
     require_file "$ROOT/scripts/bootstrap-servicenow-control.py" "ServiceNow control bootstrap"
+    local sn_dir_out
+    sn_dir_out="$(servicenow_helper directory-check --dir "$ROOT/servicenow-directory" 2>&1)" \
+      || fail "bundle create: ServiceNow directory app update set: $(servicenow_refusal_text "$sn_dir_out")"
   fi
   if [ -n "$image_tar" ]; then
     [ -f "$image_tar" ] && [ ! -L "$image_tar" ] \
@@ -7860,6 +7863,13 @@ bundle_create() {
     cp "$(dirname "$base_compose")/$SERVICENOW_OVERLAY" "$staging/install/$SERVICENOW_OVERLAY"
     cp "$ROOT/scripts/bootstrap-servicenow-control.py" "$staging/scripts/bootstrap-servicenow-control.py"
     chmod 0755 "$staging/scripts/bootstrap-servicenow-control.py"
+    # The instance admin imports the directory app from the bundle (offline
+    # customers cannot fetch it); SHA256SUMS below covers these files too.
+    mkdir -p "$staging/servicenow-directory"
+    local sn_dir_file
+    for sn_dir_file in lucairn-directory-update-set.xml PROVENANCE LICENSE README.md scheduled_job.js companion_job.js; do
+      cp "$ROOT/servicenow-directory/$sn_dir_file" "$staging/servicenow-directory/$sn_dir_file"
+    done
   fi
   cp -R "$ROOT/starter-templates"/. "$staging/starter-templates/"
   cp "$ROOT/OPS.md" "$ROOT/TROUBLESHOOTING.md" "$ROOT/README.md" "$staging/docs/"
@@ -8074,6 +8084,11 @@ bundle_verify() {
       require_file "$root/scripts/bootstrap-servicenow-control.py" "bundle ServiceNow control bootstrap"
       [ -x "$root/scripts/bootstrap-servicenow-control.py" ] \
         || { rm -rf "$tmp"; fail "bundle ServiceNow control bootstrap is not executable"; }
+      # The directory app's update set: checked by THIS kit's helper (never the
+      # bundle's) against the bundle's PROVENANCE record.
+      local sn_dir_out
+      sn_dir_out="$(servicenow_helper directory-check --dir "$root/servicenow-directory" 2>&1)" \
+        || { rm -rf "$tmp"; fail "bundle ServiceNow directory app update set: $(servicenow_refusal_text "$sn_dir_out")"; }
     fi
     require_file "$root/install/customer.env.image-manifest.yaml" "bundle recorded image-manifest snapshot"
     require_file "$root/image-manifest.yaml" "bundle image-manifest copy"
@@ -9543,6 +9558,16 @@ check_servicenow_mode() {
         echo "ServiceNow mode: stored login $(printf '%s\n' "$out" | sed -n 's/^LOGIN=//p')"
       else
         echo "ServiceNow mode: failed (stored login: $(servicenow_refusal_text "$out"))"
+        failed=1
+      fi
+      # The directory app's update set this kit ships for the instance admin
+      # (servicenow-directory/, PRD Amendment K-1) still equals its PROVENANCE
+      # record: same bytes as the app repository's commit, same licence file.
+      rc=0; out="$(servicenow_helper directory-check --dir "$ROOT/servicenow-directory" 2>&1)" || rc=$?
+      if [ "$rc" -eq 0 ]; then
+        echo "ServiceNow mode: directory app update set ok ($(printf '%s\n' "$out" | sed -n 's/^DIRECTORY=ok //p'))"
+      else
+        echo "ServiceNow mode: failed (directory app update set: $(servicenow_refusal_text "$out"))"
         failed=1
       fi
       ;;

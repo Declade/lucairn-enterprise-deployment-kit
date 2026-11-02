@@ -20,6 +20,9 @@ Subcommands (stdlib only, except config-* which need PyYAML):
                 must exist under its instance's owner (counts only)
   status        stdin = same; the gateway's admin ServiceNow status
   scan          stdin = full project render; mount and setting scope
+  directory-check  the directory app's update set (servicenow-directory/)
+                equals its PROVENANCE record (sha256 of the XML and of its
+                licence file)
 
 Every refusal names a setting, never a value.
 """
@@ -381,6 +384,83 @@ def cmd_login_check(args):
     return 0
 
 
+# ── the directory app's update set shipped in the kit ───────────────────────
+
+# (prefix of the "<prefix>file" / "<prefix>sha256" pair, what the file is)
+PROVENANCE_FILES = (("", "update set"), ("licence_", "licence"), ("job_", "fingerprint job script"),
+                    ("companion_job_", "companion job script"))
+PROVENANCE_KEYS = ("source_repo", "source_commit", "app_scope", "app_version", "licence", "source_path") \
+    + tuple(k for prefix, _ in PROVENANCE_FILES for k in (prefix + "file", prefix + "sha256"))
+SHA256_HEX = re.compile(r"\A[0-9a-f]{64}\Z")
+COMMIT_HEX = re.compile(r"\A[0-9a-f]{40}\Z")
+PLAIN_NAME = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+
+
+def read_provenance(folder):
+    """The PROVENANCE record: one key=value per line, '#' comments, every key
+    exactly once, nothing else."""
+    try:
+        info = os.lstat(folder / "PROVENANCE")
+        text = (folder / "PROVENANCE").read_text(encoding="utf-8") if stat.S_ISREG(info.st_mode) else None
+    except (OSError, UnicodeDecodeError):
+        text = None
+    if text is None:
+        raise Refused("directory_invalid", "servicenow-directory/PROVENANCE is missing or not a regular file")
+    record = {}
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        if not sep or key not in PROVENANCE_KEYS or key in record:
+            raise Refused("directory_invalid", "servicenow-directory/PROVENANCE has an unknown, repeated or "
+                                               "malformed line")
+        record[key] = value
+    missing = [k for k in PROVENANCE_KEYS if not record.get(k)]
+    if missing:
+        raise Refused("directory_invalid", "servicenow-directory/PROVENANCE lacks " + ", ".join(missing))
+    names = [record[prefix + "file"] for prefix, _ in PROVENANCE_FILES]
+    if not (COMMIT_HEX.match(record["source_commit"])
+            and all(SHA256_HEX.match(record[prefix + "sha256"]) for prefix, _ in PROVENANCE_FILES)
+            and all(PLAIN_NAME.match(name) and name != "PROVENANCE" for name in names)
+            and len(set(names)) == len(names)):
+        raise Refused("directory_invalid", "servicenow-directory/PROVENANCE: a sha256, the commit or a file "
+                                           "name is malformed")
+    return record
+
+
+def shipped_bytes(folder, name):
+    try:
+        info = os.lstat(folder / name)
+        if stat.S_ISREG(info.st_mode):
+            return (folder / name).read_bytes()
+    except OSError:
+        pass
+    raise Refused("directory_invalid", "servicenow-directory/%s is missing or not a regular file (no symlinks)"
+                  % name)
+
+
+def cmd_directory_check(args):
+    """Every file the PROVENANCE record names is there and has its sha256; the
+    update set is an update-set file of the scoped app the record names."""
+    folder = Path(args.dir)
+    record = read_provenance(folder)
+    for prefix, what in PROVENANCE_FILES:
+        data = shipped_bytes(folder, record[prefix + "file"])
+        if hashlib.sha256(data).hexdigest() != record[prefix + "sha256"]:
+            raise Refused("directory_changed", "servicenow-directory/%s (the %s) does not match the sha256 in "
+                                               "its PROVENANCE record (edited, re-encoded or replaced); take it "
+                                               "again from the kit release" % (record[prefix + "file"], what))
+        if prefix == "" and (not data.startswith(b"<?xml") or b"<unload" not in data[:4096]
+                             or ("<application_scope>%s</application_scope>" % record["app_scope"]).encode()
+                             not in data):
+            raise Refused("directory_invalid", "servicenow-directory/%s is not the update set of the scoped app "
+                                               "named in its PROVENANCE record" % record["file"])
+    out("DIRECTORY", "ok sha256=%s source=%s@%s app=%s %s files=%d" % (
+        record["sha256"][:16], record["source_repo"], record["source_commit"][:7],
+        record["app_scope"], record["app_version"], len(PROVENANCE_FILES)))
+    return 0
+
+
 # ── the running gateway's admin API (counts only) ───────────────────────────
 
 def admin_get(port, path, admin_key):
@@ -587,9 +667,12 @@ def main():
     p.add_argument("--login-dir", default="")
     p.add_argument("--copy", default="")
     p.add_argument("--core-ip", default="")
+    p = sub.add_parser("directory-check")
+    p.add_argument("--dir", required=True)
     args = parser.parse_args()
     handler = {"state": cmd_state, "config-write": cmd_config_write, "config-check": cmd_config_check,
-               "login-check": cmd_login_check, "keyed": cmd_keyed, "status": cmd_status, "scan": cmd_scan}[args.cmd]
+               "login-check": cmd_login_check, "keyed": cmd_keyed, "status": cmd_status, "scan": cmd_scan,
+               "directory-check": cmd_directory_check}[args.cmd]
     try:
         return handler(args)
     except Refused as refusal:
