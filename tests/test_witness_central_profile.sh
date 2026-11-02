@@ -134,6 +134,8 @@ POSTGRES_BRIDGE_PASSWORD=render-only
 POSTGRES_SANDBOX_A_PASSWORD=render-only
 POSTGRES_VEIL_PASSWORD=render-only
 VEIL_APP_PASSWORD=render-only
+DSA_SANITIZER_CORE_REGISTRY_KEY=render-only
+POSTGRES_SANITIZER_CORE_PASSWORD=render-only
 VEIL_WITNESS_SIGNING_KEY=00
 VEIL_WITNESS_PUBLIC_KEY=00
 VEIL_BRIDGE_PUBLIC_KEY=00
@@ -207,10 +209,11 @@ customer+witness-central+certification|-f $BASE -f $OVERLAY|--profile certificat
 customer+self-hosted+witness-central+certification|-f $BASE -f $SELFHOSTED -f $OVERLAY|--profile certification
 "
 
-# The four emitters the customer compose defines. sandbox-b is the fifth and
-# lives only in docker-compose.self-hosted.yml; the DSA repo has a sixth
-# (reid-guard) that no kit compose file defines.
-BASE_EMITTERS="audit gateway id-bridge sanitizer"
+# The five emitters the customer compose defines (kit 2.0 added the new
+# sanitizer core, which signs the dsa-sanitizer claim on the Anthropic route).
+# sandbox-b is the sixth and lives only in docker-compose.self-hosted.yml; the
+# DSA repo has another (reid-guard) that no kit compose file defines.
+BASE_EMITTERS="audit gateway id-bridge sanitizer sanitizer-core"
 
 render_json_cell() { # files_flags extra_flags envfile
   # shellcheck disable=SC2086
@@ -265,7 +268,7 @@ while IFS='|' read -r NAME FILES EXTRA; do
     SHOULD_RENDER=1
   fi
 
-  EMITTERS=$((4 + HAS_SELF))
+  EMITTERS=$((5 + HAS_SELF))
   if [ "$HAS_OVER" = 1 ] && [ "$HAS_DEV" = 0 ]; then WANT_WITNESS=0; else WANT_WITNESS=1; fi
   if [ "$HAS_OVER" = 1 ]; then
     WANT_ADDR="$CENTRAL_ADDR"; CELL_ENV="$ENVFILE"
@@ -391,8 +394,13 @@ while IFS='|' read -r NAME FILES EXTRA; do
     # 6. STOCK: the latch renders as an explicit, legible `false` — not "",
     #    which is also off but leaves an operator unable to answer "is this
     #    latched?" from the rendered config.
-    check "$((EMITTERS + WANT_WITNESS))" "$(svc_env_eq_count "$JSON" LCR_WITNESS_REQUIRE_MTLS false)" \
-      "$NAME: an unconfigured stock install renders the latch as an explicit false"
+    # The new sanitizer core is the one exception, by design: its latch is a
+    # literal "true" (with DSA_ENV=production it refuses any other witness
+    # transport, and it once dropped every claim without it — hosted A9).
+    check "$((EMITTERS + WANT_WITNESS - 1))" "$(svc_env_eq_count "$JSON" LCR_WITNESS_REQUIRE_MTLS false)" \
+      "$NAME: an unconfigured stock install renders the latch as an explicit false (every emitter but the core)"
+    check "sanitizer-core=true" "$(svc_env_map "$JSON" LCR_WITNESS_REQUIRE_MTLS | grep '^sanitizer-core=' || true)" \
+      "$NAME: the new sanitizer core's latch is always on"
     # And the witness ACL surface is wired into the witness itself.
     for v in LCR_WITNESS_EXPORT_ALLOWED_PEERS LCR_WITNESS_CERT_ALLOWED_PEERS \
              LCR_WITNESS_CLAIM_ALLOWED_PEERS LCR_WITNESS_EXPORT_CUSTOMER_MAP \
@@ -401,12 +409,12 @@ while IFS='|' read -r NAME FILES EXTRA; do
       check 1 "$(svc_env_count "$JSON" "$v")" "$NAME: witness carries $v"
     done
   else
-    # 7. OVERLAY: the four emitters the overlay CAN declare are latched and
-    #    carry the claim-hop credential path.
-    check 4 "$(svc_env_eq_count "$JSON" LCR_WITNESS_REQUIRE_MTLS true)" \
-      "$NAME: the four overlay-declared emitters have the latch engaged"
-    check 4 "$(svc_env_eq_count "$JSON" LCR_WITNESS_MTLS_CLIENT_CERT_PATH /etc/lucairn/witness-client/client.pem)" \
-      "$NAME: the four overlay-declared emitters carry the claim-hop credential"
+    # 7. OVERLAY: the five emitters the overlay CAN declare (kit 2.0: + the
+    #    new sanitizer core) are latched and carry the claim-hop credential path.
+    check 5 "$(svc_env_eq_count "$JSON" LCR_WITNESS_REQUIRE_MTLS true)" \
+      "$NAME: the five overlay-declared emitters have the latch engaged"
+    check 5 "$(svc_env_eq_count "$JSON" LCR_WITNESS_MTLS_CLIENT_CERT_PATH /etc/lucairn/witness-client/client.pem)" \
+      "$NAME: the five overlay-declared emitters carry the claim-hop credential"
 
     if [ "$HAS_SELF" = 1 ]; then
       # 7b. THE PINNED RESIDUAL — 2026-07-28 review, HIGH 3 tail.
@@ -545,8 +553,10 @@ check 0 "$(printf '%s' "$JSON" | jq -r --arg d "$GW_KEY_DIR/" '
 
 # And the gateway's own claim hop is STILL the device credential — the fix must
 # separate the cert hop, not move the claim hop.
-check 4 "$(svc_env_eq_count "$JSON" LCR_WITNESS_MTLS_CLIENT_KEY_PATH /etc/lucairn/witness-client/client.key)" \
-  "the gateway's CLAIM hop still uses the shared per-device credential"
+# Five, not four, since kit 2.0: the new sanitizer core's claim hop is
+# repointed to the same device credential (overlay `sanitizer-core:` block).
+check 5 "$(svc_env_eq_count "$JSON" LCR_WITNESS_MTLS_CLIENT_KEY_PATH /etc/lucairn/witness-client/client.key)" \
+  "the gateway's CLAIM hop still uses the shared per-device credential (with the other four overlay emitters)"
 
 # ── Mounts, not just env ────────────────────────────────────────────
 #
@@ -581,8 +591,8 @@ else
     .services | to_entries[]
     | select((.value.volumes // []) | any(.target == $t))
     | .key' | sort | tr '\n' ' ' | sed 's/ *$//')"
-  check "audit gateway id-bridge sanitizer" "$CLAIM_MOUNTERS" \
-    "exactly the four emitters mount the claim-hop credential directory"
+  check "audit gateway id-bridge sanitizer sanitizer-core" "$CLAIM_MOUNTERS" \
+    "exactly the five overlay emitters (kit 2.0: + sanitizer-core) mount the claim-hop credential directory"
 
   # The two directories are distinct on the HOST as well. Pointing both env vars
   # at one host path would satisfy every container-path assertion above while
@@ -719,8 +729,12 @@ FALLBACK_JSON="$(docker compose -f "$BASE" -f "$SELFHOSTED" --env-file "$STOCK_E
 for var in LCR_WITNESS_MTLS_CA_BUNDLE_PATH \
            LCR_WITNESS_MTLS_CLIENT_CERT_PATH \
            LCR_WITNESS_MTLS_CLIENT_KEY_PATH; do
-  check 5 "$(svc_env_count "$FALLBACK_JSON" "$var")" \
+  # Six declare it since kit 2.0: the sixth is the new sanitizer core, whose
+  # default is the kit's own leaf (it never falls back to the device-wide slot).
+  check 6 "$(svc_env_count "$FALLBACK_JSON" "$var")" \
     "the device-wide $var slot is still wired when no per-service leaf is set"
+  check 1 "$(svc_env_prefix_count "$FALLBACK_JSON" "$var" /etc/sanitizer-core-mtls/)" \
+    "the new sanitizer core's $var defaults to the kit leaf, not the device-wide slot"
 done
 
 echo

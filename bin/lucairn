@@ -7669,6 +7669,625 @@ bundle_command() {
   esac
 }
 
+# ── Kit 2.0: the new sanitizer core (Go core + ML sidecar + registry) ─────────
+#
+# PRD Opus Advisor specs/2026-11/prd-2026-11-02-kit-2-0-new-core.md K1 + K3.
+# docker-compose.customer.yml runs, beside the old Python sanitizer (which keeps
+# serving the openai / mcp / proxy routes):
+#   postgres-sanitizer-core   the core's registry DB (internal network only)
+#   sanitizer-core-sidecar    the model sidecar (spaCy + GLiNER); OWNS the network
+#                             namespace the core runs in
+#   sanitizer-core            the Go core, joined to that namespace; the gateway's
+#                             Anthropic route reaches it over verified mTLS
+#   migrate-sanitizer-core    the explicit, capped registry-migration step
+#                             (profile sanitizer-core-migrate; never on boot)
+#
+# Two batteries:
+#   check_sanitizer_core_config   files + values; runs with and without --offline
+#   check_sanitizer_core_runtime  the running stack; online doctor only
+#
+# The failure shapes they exist for were all measured on the hosted service:
+#   * the core dialled the witness without its client settings and every
+#     PII_SANITIZED claim was dropped at the handshake, silently, while every
+#     turn still succeeded (window 2026-10-31, amendment A9);
+#   * a recreated sidecar leaves the core joined to a namespace that no longer
+#     exists ("a sidecar recreate requires a core recreate");
+#   * the sidecar peaks at about 5.6 GB; below its cap the host OOM-kills it and
+#     every Anthropic request fails closed (cap raised 5.5 -> 6.5 GB in the
+#     window, amendment A8).
+
+# Documented floor (INSTALL.md § "Sanitizer core (kit 2.0)"): a 16 GB host. A
+# "16 GB" machine or VM reports roughly 15,600-16,000 MiB, so the floor is set
+# just below that. The kit 2.0 stack = the 1.x stack (~8 GB with L3 off) + the
+# sidecar cap 6,500 MiB + the core cap 1,024 MiB.
+LUCAIRN_SANITIZER_CORE_MEM_FLOOR_MIB=15000
+# Memory the host must still have AVAILABLE while the stack runs: the hosted
+# window's W7c bar (host available >= 1,500 MB with the sidecar at its peak).
+LUCAIRN_SANITIZER_CORE_MEM_HEADROOM_MIB=1500
+# Every Lucairn image runs as this uid (adduser -u 10001 in each Dockerfile).
+LUCAIRN_SANITIZER_CORE_CONTAINER_UID=10001
+
+# The host directory the compose file mounts the core's mTLS material from.
+# Relative values resolve against the directory of the base compose file, which
+# is Compose's project directory for every kit command (the base file is always
+# the first -f).
+sanitizer_core_cert_dir() {
+  local env_file="$1" compose_file="$2" dir base
+  dir="$(env_value "$env_file" SANITIZER_CORE_MTLS_HOST_DIR)"
+  dir="${dir:-./.certs/sanitizer-core-mtls}"
+  case "$dir" in
+    /*) printf '%s' "$dir" ;;
+    *)
+      base="$(cd "$(dirname "$compose_file")" 2>/dev/null && pwd)" || base="$(dirname "$compose_file")"
+      printf '%s/%s' "$base" "${dir#./}"
+      ;;
+  esac
+}
+
+sanitizer_core_file_mode() {
+  case "$(uname -s)" in
+    Darwin|FreeBSD|OpenBSD|NetBSD) stat -f '%Lp' "$1" 2>/dev/null ;;
+    *) stat -c '%a' "$1" 2>/dev/null ;;
+  esac
+}
+
+sanitizer_core_file_uid() {
+  case "$(uname -s)" in
+    Darwin|FreeBSD|OpenBSD|NetBSD) stat -f '%u' "$1" 2>/dev/null ;;
+    *) stat -c '%u' "$1" 2>/dev/null ;;
+  esac
+}
+
+# sanitizer_core_check_leaf <label> <dir> <name> <ssl purpose> <required DNS SAN>
+# One leaf of the core's two hops: present, parseable, chained to the deploy CA
+# copy beside it for the right purpose, carrying the SAN the peer pins, not
+# expiring within 30 days, with a private key that is not readable by others.
+sanitizer_core_check_leaf() {
+  local label="$1" dir="$2" name="$3" purpose="$4" san="$5"
+  local crt="$dir/$name.crt" key="$dir/$name.key" ca="$dir/ca.crt" failed=0 mode uid sans
+  local fix="run scripts/bootstrap-sanitizer-core-mtls.sh (see INSTALL.md § \"Sanitizer core (kit 2.0)\")"
+  if [ ! -f "$crt" ]; then
+    echo "sanitizer core mTLS: failed ($label certificate missing: $crt — $fix)"
+    return 1
+  fi
+  if [ ! -f "$key" ]; then
+    echo "sanitizer core mTLS: failed ($label private key missing: $key — $fix)"
+    return 1
+  fi
+  if ! openssl x509 -noout -in "$crt" >/dev/null 2>&1; then
+    echo "sanitizer core mTLS: failed ($label certificate is not a readable PEM certificate: $crt)"
+    return 1
+  fi
+  if ! openssl x509 -checkend 2592000 -noout -in "$crt" >/dev/null 2>&1; then
+    echo "sanitizer core mTLS: failed ($label certificate expires within 30 days or has expired: $crt — delete the leaf and re-run the bootstrap script)"
+    failed=1
+  fi
+  if ! openssl verify -CAfile "$ca" -purpose "$purpose" "$crt" >/dev/null 2>&1; then
+    echo "sanitizer core mTLS: failed ($label certificate does not verify against $ca as $purpose — the peer would refuse the handshake)"
+    failed=1
+  fi
+  # Go's TLS stack (gateway, core, witness) rejects SHA-1-signed chains, while
+  # `openssl verify` above accepts them — and LibreSSL, the macOS default
+  # openssl, signs ECDSA with SHA-1 unless told otherwise. Found while proving
+  # this kit's own bootstrap script against the DSA tls.Config shapes.
+  if openssl x509 -noout -text -in "$crt" 2>/dev/null | grep -i 'Signature Algorithm' | grep -qi 'sha1'; then
+    echo "sanitizer core mTLS: failed ($label certificate is SHA-1-signed; the services' TLS stack refuses it: $crt — re-issue with -sha256)"
+    failed=1
+  fi
+  if openssl x509 -noout -text -in "$ca" 2>/dev/null | grep -i 'Signature Algorithm' | grep -qi 'sha1'; then
+    echo "sanitizer core mTLS: failed (the CA copy $ca is SHA-1-signed; the services' TLS stack refuses it — re-create the CA with -sha256)"
+    failed=1
+  fi
+  sans="$(openssl x509 -noout -text -in "$crt" 2>/dev/null | awk '/Subject Alternative Name/ { getline; print; exit }')"
+  if ! printf '%s\n' "$sans" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -qx "DNS:$san"; then
+    echo "sanitizer core mTLS: failed ($label certificate lacks the DNS SAN $san that its peer pins: $crt)"
+    failed=1
+  fi
+  mode="$(sanitizer_core_file_mode "$key")"
+  case "$mode" in
+    ''|*[!0-7]*) : ;;
+    *)
+      if [ $((8#$mode & 077)) -ne 0 ]; then
+        echo "sanitizer core mTLS: failed ($label private key $key is readable by group/others (mode $mode) — chmod 600 it)"
+        failed=1
+      fi
+      ;;
+  esac
+  if [ "$(uname -s)" = "Linux" ]; then
+    uid="$(sanitizer_core_file_uid "$key")"
+    if [ -n "$uid" ] && [ "$uid" != "$LUCAIRN_SANITIZER_CORE_CONTAINER_UID" ]; then
+      warn "sanitizer core mTLS: $label private key $key is owned by uid $uid; the images run as uid $LUCAIRN_SANITIZER_CORE_CONTAINER_UID and cannot read a 0600 key owned by another uid (fix: sudo chown $LUCAIRN_SANITIZER_CORE_CONTAINER_UID:$LUCAIRN_SANITIZER_CORE_CONTAINER_UID '$key'). Ignore this only on a user-namespace-remapped daemon."
+    fi
+  fi
+  if [ -r "$key" ]; then
+    if [ "$(openssl x509 -noout -pubkey -in "$crt" 2>/dev/null)" != "$(openssl pkey -pubout -in "$key" 2>/dev/null)" ]; then
+      echo "sanitizer core mTLS: failed ($label private key does not belong to its certificate: $key)"
+      failed=1
+    fi
+  else
+    # NON-COVERAGE: when the key is owned by uid 10001 (as it should be on Linux)
+    # this doctor, running as the operator, cannot read it, so key<->certificate
+    # agreement is not checked; the container's own boot (tls.LoadX509KeyPair)
+    # is then the check.
+    echo "sanitizer core mTLS: note — $label key/certificate pairing not checked (key not readable by $(id -un 2>/dev/null || echo this user); expected when it is owned by uid $LUCAIRN_SANITIZER_CORE_CONTAINER_UID)"
+  fi
+  return "$failed"
+}
+
+# sanitizer_core_manifest_digest <env file> <image key> — prints the recorded
+# digest from image_digests.signed_artifacts of the manifest this install was
+# initialised against (the runtime-profile snapshot, else the kit's own),
+# "pending", or nothing.
+sanitizer_core_manifest_digest() {
+  local env_file="$1" key="$2" manifest
+  manifest="$(runtime_image_manifest_for_env "$env_file")"
+  [ -f "$manifest" ] || return 0
+  awk -v want="    $key:" '
+    /^  signed_artifacts:/ { in_sa = 1; next }
+    in_sa && /^  [^ ]/ { in_sa = 0 }
+    in_sa && $0 == want { in_key = 1; next }
+    in_sa && in_key && /^    [^ ]/ { in_key = 0 }
+    in_sa && in_key && /^      digest:/ { gsub(/"/, "", $2); print $2; exit }
+    in_sa && in_key && /^      pending:[[:space:]]*true/ { print "pending"; exit }
+  ' "$manifest"
+}
+
+check_sanitizer_core_config() {
+  local env_file="$1" compose_file="$2" offline="${3:-0}" failed=0
+  local dsa_env central val
+
+  dsa_env="$(env_value "$env_file" DSA_ENV)"
+  dsa_env="${dsa_env:-production}"
+  central="$(env_value "$env_file" LUCAIRN_CENTRAL_WITNESS_ADDR)"
+
+  # 1. Registry key: the core seals every registry row with it (AES-GCM +
+  #    HMAC, store/store.go KeyFromEnv: exactly 64 hex, never all zero).
+  val="$(env_value "$env_file" DSA_SANITIZER_CORE_REGISTRY_KEY)"
+  if [ -z "$val" ]; then
+    echo "sanitizer core registry key: failed (DSA_SANITIZER_CORE_REGISTRY_KEY is not set in $env_file — generate with: openssl rand -hex 32)"
+    failed=1
+  elif ! validate_no_placeholder "$env_file" DSA_SANITIZER_CORE_REGISTRY_KEY || ! validate_hex64 "$env_file" DSA_SANITIZER_CORE_REGISTRY_KEY; then
+    failed=1
+  elif printf '%s' "$val" | grep -Eq '^0{64}$'; then
+    echo "sanitizer core registry key: failed (DSA_SANITIZER_CORE_REGISTRY_KEY is all zero; the core refuses it)"
+    failed=1
+  else
+    echo "sanitizer core registry key: ok"
+  fi
+
+  # 2. Registry DB password: it is embedded in the core's --dsn URL, so it must
+  #    be URL-safe (RFC 3986 unreserved characters only).
+  val="$(env_value "$env_file" POSTGRES_SANITIZER_CORE_PASSWORD)"
+  if [ -z "$val" ]; then
+    echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD is not set in $env_file — generate with: openssl rand -hex 24)"
+    failed=1
+  elif ! validate_no_placeholder "$env_file" POSTGRES_SANITIZER_CORE_PASSWORD; then
+    failed=1
+  elif ! printf '%s' "$val" | grep -Eq '^[A-Za-z0-9._~-]+$'; then
+    echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD must use only A-Z a-z 0-9 . _ ~ - : it is embedded in the core's connection URL)"
+    failed=1
+  elif [ "$dsa_env" = "production" ] && [ "${#val}" -lt 12 ]; then
+    echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD too short; need >= 12 chars in production)"
+    failed=1
+  else
+    echo "sanitizer core registry DB password: ok"
+  fi
+
+  # 3. Profile. The kit compose does not forward LCR_PROFILE to the core, so
+  #    the core always runs the kit profile (unset = kit), under which it
+  #    refuses the ServiceNow mode at boot (DSA instance_wire.go profileBoot).
+  #    The value below is reported because an operator who set it expects it
+  #    to matter. The rendered-config half of this check (an overlay that DOES
+  #    forward it) runs online in check_sanitizer_core_runtime.
+  val="$(env_value "$env_file" LCR_PROFILE)"
+  case "$val" in
+    ''|kit)
+      echo "sanitizer core profile: kit (LCR_PROFILE ${val:-unset}; the ServiceNow mode is refused in this kit release)"
+      ;;
+    hosted)
+      echo "sanitizer core profile: failed (LCR_PROFILE=hosted in $env_file — hosted is the Lucairn-hosted service's profile; a kit install runs the kit profile and the kit compose does not forward this variable. Remove the line.)"
+      failed=1
+      ;;
+    *)
+      echo "sanitizer core profile: failed (LCR_PROFILE in $env_file is neither unset, kit nor hosted; the core refuses to start on any other value. Remove the line.)"
+      failed=1
+      ;;
+  esac
+
+  # 4. Gateway switches the kit ships ON by default (same as hosted). The
+  #    gateway refuses to start on an off-enum protocol / route posture /
+  #    placement; an off-enum gate posture is read as enforce.
+  val="$(env_value "$env_file" GATEWAY_SANITIZER_PROTOCOL)"
+  case "$val" in
+    ''|delta) : ;;
+    whole) warn "sanitizer core: GATEWAY_SANITIZER_PROTOCOL=whole — the Anthropic route bypasses the new core and runs on the old sanitizer; kit 2.0 ships delta (same as the hosted service)" ;;
+    *) echo "sanitizer core gateway switches: failed (GATEWAY_SANITIZER_PROTOCOL must be delta or whole; the gateway refuses to start on any other value)"; failed=1 ;;
+  esac
+  val="$(env_value "$env_file" GATEWAY_SANITIZER_GATE_POSTURE)"
+  case "$val" in
+    ''|enforce) : ;;
+    log) warn "sanitizer core: GATEWAY_SANITIZER_GATE_POSTURE=log — the final check only logs what it would block; kit 2.0 ships enforce" ;;
+    *) warn "sanitizer core: GATEWAY_SANITIZER_GATE_POSTURE is neither enforce nor log; the gateway reads it as enforce" ;;
+  esac
+  val="$(env_value "$env_file" GATEWAY_SANITIZER_GATE_ROUTE_POSTURE)"
+  case "$val" in
+    ''|observe|log|enforce) : ;;
+    *) echo "sanitizer core gateway switches: failed (GATEWAY_SANITIZER_GATE_ROUTE_POSTURE must be observe, log or enforce)"; failed=1 ;;
+  esac
+  val="$(env_value "$env_file" GATEWAY_ADDED_PARTS_PLACEMENT)"
+  case "$val" in
+    ''|message|system) : ;;
+    *) echo "sanitizer core gateway switches: failed (GATEWAY_ADDED_PARTS_PLACEMENT must be message or system)"; failed=1 ;;
+  esac
+
+  # 5. The witness side of the core's claim hop. With DSA_ENV=production the
+  #    core refuses any witness hop that is not verified mTLS (DSA #946), and
+  #    it pins the witness name dsa-veil-witness. The local witness presents
+  #    the kit CA's dsa-veil-witness leaf on :50057 only while
+  #    GRPC_TLS_ENABLED=true; otherwise it serves that port in plaintext, the
+  #    core's TLS dial fails, and every PII_SANITIZED claim of the core is
+  #    dropped while the turns themselves still succeed — the hosted A9 shape.
+  if [ -n "$central" ]; then
+    echo "sanitizer core witness hop: central witness ($central) — the witness-central overlay supplies the core's client leaf; local witness leaf not checked"
+  else
+    val="$(env_value "$env_file" GRPC_TLS_ENABLED)"
+    if [ "${val:-true}" = "true" ]; then
+      echo "sanitizer core witness hop: ok (GRPC_TLS_ENABLED=true: the local witness serves the kit CA leaf on :50057)"
+    elif [ "$dsa_env" = "production" ]; then
+      echo "sanitizer core witness hop: failed (GRPC_TLS_ENABLED=$val: the local witness would serve :50057 in plaintext and the core's verified TLS dial cannot reach it — every claim of the new core would be dropped. Set GRPC_TLS_ENABLED=true.)"
+      failed=1
+    else
+      warn "sanitizer core witness hop: GRPC_TLS_ENABLED=$val with DSA_ENV=$dsa_env — the core's claims cannot reach a plaintext witness and are dropped; certificates of Anthropic turns will lack the core's sanitizer claim. Set GRPC_TLS_ENABLED=true to test evidence."
+    fi
+  fi
+
+  # 6. The mTLS material (every file the compose file mounts).
+  local cert_dir
+  cert_dir="$(sanitizer_core_cert_dir "$env_file" "$compose_file")"
+  if [ ! -d "$cert_dir" ]; then
+    echo "sanitizer core mTLS: failed (directory $cert_dir does not exist — run scripts/bootstrap-sanitizer-core-mtls.sh${cert_dir:+ '$cert_dir'}; the core refuses to start without its leaves)"
+    failed=1
+  else
+    local mtls_failed=0 svc
+    for svc in sanitizer-core gateway veil-witness; do
+      if [ ! -f "$cert_dir/$svc/ca.crt" ]; then
+        echo "sanitizer core mTLS: failed (CA copy missing: $cert_dir/$svc/ca.crt — run scripts/bootstrap-sanitizer-core-mtls.sh)"
+        mtls_failed=1
+      fi
+    done
+    if [ "$mtls_failed" -eq 0 ]; then
+      if ! cmp -s "$cert_dir/sanitizer-core/ca.crt" "$cert_dir/gateway/ca.crt" \
+         || ! cmp -s "$cert_dir/sanitizer-core/ca.crt" "$cert_dir/veil-witness/ca.crt"; then
+        echo "sanitizer core mTLS: failed (the three CA copies under $cert_dir differ; each hop verifies its peer against its own copy, so both hops would fail)"
+        mtls_failed=1
+      fi
+      sanitizer_core_check_leaf "core server" "$cert_dir/sanitizer-core" dsa-sanitizer-core sslserver dsa-sanitizer-core || mtls_failed=1
+      sanitizer_core_check_leaf "gateway client" "$cert_dir/gateway" dsa-gateway sslclient dsa-gateway || mtls_failed=1
+      if [ -z "$central" ]; then
+        sanitizer_core_check_leaf "core witness client" "$cert_dir/sanitizer-core" witness-client sslclient dsa-sanitizer || mtls_failed=1
+        sanitizer_core_check_leaf "witness server" "$cert_dir/veil-witness" dsa-veil-witness sslserver dsa-veil-witness || mtls_failed=1
+      fi
+    fi
+    if [ -e "$cert_dir/sanitizer-core/ca.key" ] || [ -e "$cert_dir/gateway/ca.key" ] || [ -e "$cert_dir/veil-witness/ca.key" ]; then
+      echo "sanitizer core mTLS: failed (a CA private key sits inside a directory that is mounted into a container — keep it in $cert_dir/ca only)"
+      mtls_failed=1
+    fi
+    # NON-COVERAGE: customer.env may point the in-container paths elsewhere
+    # (SANITIZER_CORE_MTLS_*_PATH, LCR_WITNESS_MTLS_SANITIZER_CORE_*_PATH,
+    # GRPC_TLS_*_FILE); this doctor checks the default layout the kit compose
+    # mounts, not an operator's own mount.
+    local k
+    for k in SANITIZER_CORE_MTLS_CA_BUNDLE_PATH SANITIZER_CORE_MTLS_SERVER_CERT_PATH SANITIZER_CORE_MTLS_SERVER_KEY_PATH \
+             SANITIZER_CORE_MTLS_CLIENT_CERT_PATH SANITIZER_CORE_MTLS_CLIENT_KEY_PATH \
+             LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_CERT_PATH \
+             LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_KEY_PATH; do
+      if [ -n "$(env_value "$env_file" "$k")" ]; then
+        echo "sanitizer core mTLS: note — $k is overridden in $env_file; doctor checked the default layout under $cert_dir, not that path"
+      fi
+    done
+    if [ "$mtls_failed" -eq 0 ]; then
+      echo "sanitizer core mTLS: ok ($cert_dir)"
+    else
+      failed=1
+    fi
+  fi
+
+  # 7. Image pins. Core and sidecar are a PAIR from one release commit: the
+  #    core refuses to start against a sidecar that lacks the labels or the
+  #    weak-place switch it needs (DSA main.go requirePlaceLabels), so both
+  #    digests are set together or not at all.
+  local core_d side_d core_m side_m tag
+  core_d="$(env_value "$env_file" LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST)"
+  side_d="$(env_value "$env_file" LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST)"
+  core_m="$(sanitizer_core_manifest_digest "$env_file" dsa-sanitizer-core)"
+  side_m="$(sanitizer_core_manifest_digest "$env_file" dsa-sanitizer-core-sidecar)"
+  tag="$(env_value "$env_file" LUCAIRN_SANITIZER_CORE_IMAGE_TAG)"
+  local pin_failed=0 d
+  for d in "$core_d" "$side_d"; do
+    if [ -n "$d" ] && ! printf '%s' "$d" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+      echo "sanitizer core images: failed (a LUCAIRN_SANITIZER_CORE_*_IMAGE_DIGEST value is not sha256:<64 hex>)"
+      pin_failed=1
+    fi
+  done
+  if { [ -n "$core_d" ] && [ -z "$side_d" ]; } || { [ -z "$core_d" ] && [ -n "$side_d" ]; }; then
+    echo "sanitizer core images: failed (set LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST and LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST together: core and sidecar must come from one release)"
+    pin_failed=1
+  fi
+  if [ "$pin_failed" -eq 0 ]; then
+    if [ "$core_m" = "pending" ] || [ "$side_m" = "pending" ] || [ -z "$core_m" ] || [ -z "$side_m" ]; then
+      echo "sanitizer core images: note — image-manifest.yaml has no recorded digest for the core/sidecar pair yet (filled by the release step); pulled by tag ${tag:-1.1.0}"
+    elif [ -z "$core_d" ]; then
+      warn "sanitizer core images: pulled by tag ${tag:-1.1.0}; set LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$core_m and LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=$side_m (image-manifest.yaml) to pin the validated pair"
+    elif [ "$core_d" != "$core_m" ] || [ "$side_d" != "$side_m" ]; then
+      echo "sanitizer core images: failed (the pinned core/sidecar digests differ from the pair image-manifest.yaml records for this kit release)"
+      pin_failed=1
+    else
+      echo "sanitizer core images: ok (core + sidecar pinned to the manifest pair)"
+    fi
+  fi
+  [ "$pin_failed" -eq 0 ] || failed=1
+
+  # 8. Host memory against the documented floor. Offline the doctor may run on
+  #    a machine other than the install host, so it only warns; the online
+  #    doctor (on the running host) fails.
+  check_sanitizer_core_memory "$offline" || failed=1
+
+  return "$failed"
+}
+
+# Prints "<MiB> <source>" for the memory the containers actually share, or
+# nothing. Online, the Docker engine's own figure comes first: on Docker
+# Desktop that is the VM, which is what the sidecar's cap competes for.
+sanitizer_core_mem_total() {
+  local offline="$1" b kb
+  if [ "$offline" -eq 0 ] && have docker; then
+    b="$(docker info --format '{{.MemTotal}}' 2>/dev/null || true)"
+    case "$b" in
+      ''|*[!0-9]*) : ;;
+      *) printf '%s docker-engine' "$((b / 1048576))"; return 0 ;;
+    esac
+  fi
+  if [ -r /proc/meminfo ]; then
+    kb="$(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo)"
+    case "$kb" in
+      ''|*[!0-9]*) : ;;
+      *) printf '%s host' "$((kb / 1024))"; return 0 ;;
+    esac
+  fi
+  if have sysctl; then
+    b="$(sysctl -n hw.memsize 2>/dev/null || true)"
+    case "$b" in
+      ''|*[!0-9]*) : ;;
+      *) printf '%s host-not-the-docker-vm' "$((b / 1048576))"; return 0 ;;
+    esac
+  fi
+  return 0
+}
+
+check_sanitizer_core_memory() {
+  local offline="$1" got mib src
+  got="$(sanitizer_core_mem_total "$offline")"
+  if [ -z "$got" ]; then
+    # NON-COVERAGE: no memory figure available (no docker engine answer, no
+    # /proc/meminfo, no sysctl) — the floor is not verified on this host.
+    warn "sanitizer core memory: could not read this host's memory; verify by hand that the Docker host has >= ${LUCAIRN_SANITIZER_CORE_MEM_FLOOR_MIB} MiB (16 GB)"
+    return 0
+  fi
+  mib="${got%% *}"
+  src="${got#* }"
+  if [ "$mib" -ge "$LUCAIRN_SANITIZER_CORE_MEM_FLOOR_MIB" ]; then
+    echo "sanitizer core memory: ok (${mib} MiB ${src}; floor ${LUCAIRN_SANITIZER_CORE_MEM_FLOOR_MIB} MiB)"
+    return 0
+  fi
+  local msg="${mib} MiB (${src}) is below the kit 2.0 floor of ${LUCAIRN_SANITIZER_CORE_MEM_FLOOR_MIB} MiB (16 GB): the model sidecar alone is capped at 6.5 GB and peaks near 5.6 GB; below the floor it is OOM-killed and every Anthropic request fails closed"
+  # Fatal only on the Docker engine's own figure, read by the online doctor:
+  # that is the memory the containers share. Offline, or when the engine did
+  # not answer, the figure may belong to another machine (or to the Mac
+  # rather than its Docker VM), so it only warns.
+  if [ "$offline" -eq 1 ] || [ "$src" != "docker-engine" ]; then
+    warn "sanitizer core memory: $msg (figure from: $src; re-run doctor without --offline on the install host with the Docker engine up)"
+    return 0
+  fi
+  echo "sanitizer core memory: failed ($msg)"
+  return 1
+}
+
+# Online battery: the running stack.
+check_sanitizer_core_runtime() {
+  local env_file="$1" compose_file="$2" strict_runtime="${3:-0}" compose failed=0
+  compose="$(compose_cmd)"
+  if [ -z "$compose" ]; then
+    echo "sanitizer core runtime: skipped (docker compose unavailable)"
+    return 0
+  fi
+
+  # 1. Rendered configuration: what the core will really get, overlays merged.
+  #    Catches an operator overlay that forwards LCR_PROFILE or the ServiceNow
+  #    control client to the core, or drops its witness latch / namespace join.
+  #    The rendered JSON holds secrets; it goes straight into python3 and is
+  #    never printed or written.
+  local verdict
+  verdict="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" config --format json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    print("unreadable"); sys.exit(0)
+svc = (doc.get("services") or {}).get("sanitizer-core")
+if not isinstance(svc, dict):
+    print("absent"); sys.exit(0)
+env = svc.get("environment") or {}
+if isinstance(env, list):
+    env = dict(e.split("=", 1) if "=" in e else (e, "") for e in env)
+bad = []
+if (env.get("LCR_PROFILE") or "") not in ("", "kit"):
+    bad.append("LCR_PROFILE is forwarded with a non-kit value")
+if any(k.startswith("LCR_SERVICENOW_CONTROL_") for k in env):
+    bad.append("the ServiceNow control client is forwarded (the kit profile refuses to boot with it)")
+if env.get("LCR_WITNESS_REQUIRE_MTLS") != "true":
+    bad.append("LCR_WITNESS_REQUIRE_MTLS is not true")
+if svc.get("network_mode") != "service:sanitizer-core-sidecar":
+    bad.append("network_mode is not service:sanitizer-core-sidecar")
+print("; ".join(bad) if bad else "ok")
+' 2>/dev/null || true)"
+  case "$verdict" in
+    ok) echo "sanitizer core rendered config: ok (kit profile, witness latch on, sidecar namespace)" ;;
+    absent) echo "sanitizer core rendered config: failed (no sanitizer-core service in the rendered project — kit 2.0 compose files are required)"; failed=1 ;;
+    ''|unreadable) echo "sanitizer core rendered config: skipped (docker compose config --format json gave no readable output)" ;;
+    *) echo "sanitizer core rendered config: failed ($verdict)"; failed=1 ;;
+  esac
+
+  # 2. Containers. Nothing of the project running = a pre-start doctor run:
+  #    reported, and fatal only under --strict-runtime (the gateway probe below
+  #    follows the same rule).
+  local ps_out
+  ps_out="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" ps -a --format '{{.Service}}|{{.ID}}|{{.State}}|{{.Health}}' 2>/dev/null || true)"
+  if ! printf '%s\n' "$ps_out" | grep -q '|'; then
+    echo "sanitizer core runtime: not started (no containers in this Compose project)"
+    [ "$strict_runtime" -eq 1 ] && return 1
+    return "$failed"
+  fi
+  local svc row id state health core_id="" side_id="" side_running=0
+  for svc in postgres-sanitizer-core sanitizer-core-sidecar sanitizer-core; do
+    row="$(printf '%s\n' "$ps_out" | awk -F'|' -v s="$svc" '$1 == s { print; exit }')"
+    if [ -z "$row" ]; then
+      echo "sanitizer core runtime: failed ($svc absent — the core stack is part of every kit 2.0 topology; start it with bin/lucairn up after the registry migration step)"
+      failed=1
+      continue
+    fi
+    id="$(printf '%s' "$row" | cut -d'|' -f2)"
+    state="$(printf '%s' "$row" | cut -d'|' -f3)"
+    health="$(printf '%s' "$row" | cut -d'|' -f4)"
+    [ "$svc" = sanitizer-core ] && core_id="$id"
+    if [ "$svc" = sanitizer-core-sidecar ]; then
+      side_id="$id"
+      [ "$state" = running ] && side_running=1
+    fi
+    if [ "$state" != running ]; then
+      echo "sanitizer core runtime: failed ($svc is $state)"
+      failed=1
+    elif [ "$health" != healthy ]; then
+      # NON-COVERAGE: "healthy" is each image's own probe — the sidecar's
+      # /v1/health (models loaded), the core's listener on :8790, pg_isready.
+      # It does not prove detection quality; the W7b replay does that.
+      echo "sanitizer core runtime: failed ($svc is running but ${health:-has no health status})"
+      failed=1
+    else
+      echo "sanitizer core runtime: $svc ok (running, healthy)"
+    fi
+  done
+
+  # 3. The namespace join. A recreated sidecar is a NEW container; a core that
+  #    was not recreated after it stays joined to the old one's namespace and
+  #    is unreachable (measured on the hosted box, 30 Oct).
+  if [ -n "$core_id" ] && [ -n "$side_id" ] && have docker; then
+    local netmode joined
+    netmode="$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$core_id" 2>/dev/null || true)"
+    joined="${netmode#container:}"
+    if [ -z "$netmode" ]; then
+      echo "sanitizer core runtime: note — could not inspect the core's network mode"
+    elif [ "$joined" = "$netmode" ]; then
+      echo "sanitizer core runtime: failed (sanitizer-core is not joined to a container's network namespace (network mode $netmode))"
+      failed=1
+    else
+      case "$joined" in
+        "$side_id"*) echo "sanitizer core runtime: namespace ok (core joined to the current sidecar)" ;;
+        *)
+          case "$side_id" in
+            "$joined"*) echo "sanitizer core runtime: namespace ok (core joined to the current sidecar)" ;;
+            *)
+              echo "sanitizer core runtime: failed (sanitizer-core is joined to an old sidecar container; recreate the core after every sidecar recreate: docker compose ... up -d --no-deps --force-recreate sanitizer-core)"
+              failed=1
+              ;;
+          esac
+          ;;
+      esac
+    fi
+  fi
+
+  # 4. Registry migrations at the ceiling this kit release reviewed.
+  local ceiling_file ceiling ledger
+  ceiling_file="$(dirname "$compose_file")/scripts/migration-ceilings.conf"
+  [ -f "$ceiling_file" ] || ceiling_file="$ROOT/scripts/migration-ceilings.conf"
+  ceiling="$(sed -n 's/^CEILING_SANITIZER_CORE=\([0-9][0-9]*\)$/\1/p' "$ceiling_file" 2>/dev/null | tail -1)"
+  if printf '%s\n' "$ps_out" | awk -F'|' '$1 == "postgres-sanitizer-core" && $3 == "running" { f = 1 } END { exit !f }'; then
+    ledger="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" exec -T postgres-sanitizer-core \
+      psql -X -At -U dsa -d sanitizer_core -c "SELECT count(*) FROM registry_schema_migrations" 2>&1 || true)"
+    case "$ledger" in
+      *[!0-9]*|'')
+        case "$ledger" in
+          *"does not exist"*)
+            echo "sanitizer core registry: failed (not migrated — run: docker compose -f docker-compose.customer.yml --env-file customer.env --profile sanitizer-core-migrate run --rm migrate-sanitizer-core)"
+            failed=1
+            ;;
+          *) echo "sanitizer core registry: note — could not read the migration ledger" ;;
+        esac
+        ;;
+      *)
+        if [ -n "$ceiling" ] && [ "$ledger" -lt "$ceiling" ]; then
+          echo "sanitizer core registry: failed (ledger at $ledger of $ceiling migrations — run the migrate-sanitizer-core step)"
+          failed=1
+        else
+          echo "sanitizer core registry: ok ($ledger migrations applied${ceiling:+, ceiling $ceiling})"
+        fi
+        ;;
+    esac
+  fi
+
+  # 5. Claim transport, from the core's own log. The core logs
+  #    `evidence: witness transport mode=<mode>` once per boot (DSA
+  #    claim_once.go dialWitness) and `... DROPPED` for every claim it gives up
+  #    on (evidence/submit.go). NON-COVERAGE: no turn is sent here; this proves
+  #    the dial posture and the absence of drops, not the arrival of a given
+  #    claim. The arrival of a real claim is the release rehearsal's check
+  #    (one turn, certificate with PII_SANITIZED@dsa-sanitizer from the core).
+  if [ -n "$core_id" ]; then
+    local core_log mode drops arrivals lcr
+    core_log="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" logs --no-color sanitizer-core 2>/dev/null || true)"
+    mode="$(printf '%s\n' "$core_log" | sed -n 's/.*evidence: witness transport mode=\([A-Za-z-]*\).*/\1/p' | tail -1)"
+    drops="$(printf '%s\n' "$core_log" | grep -c 'DROPPED' || true)"
+    lcr="$(env_value "$env_file" LCR_ENABLED)"
+    if [ "${lcr:-true}" = "false" ]; then
+      echo "sanitizer core claims: off (LCR_ENABLED=false — certificates carry no sanitizer claim)"
+    elif [ -z "$mode" ]; then
+      echo "sanitizer core claims: failed (the core's log shows no witness transport line — it has not booted with claims on)"
+      failed=1
+    elif [ "$mode" != "mtls" ]; then
+      echo "sanitizer core claims: failed (witness transport mode=$mode, not mtls — claims will not reach a witness that requires mTLS)"
+      failed=1
+    else
+      echo "sanitizer core claims: transport ok (mtls)"
+    fi
+    if [ "${drops:-0}" -gt 0 ]; then
+      echo "sanitizer core claims: failed ($drops claim(s) DROPPED in the core's log — certificates of those turns lack the core's sanitizer claim; see: docker compose logs sanitizer-core | grep DROPPED)"
+      failed=1
+    fi
+    arrivals="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" logs --no-color veil-witness 2>/dev/null | grep -c 'veil-claim-arrival.*service_id=dsa-sanitizer' || true)"
+    echo "sanitizer core claims: witness log shows ${arrivals:-0} dsa-sanitizer claim arrival(s) (old and new sanitizer both sign as dsa-sanitizer)"
+  fi
+
+  # 6. Memory headroom while the sidecar runs (hosted bar W7c: >= 1,500 MB).
+  #    NON-COVERAGE: read from /proc/meminfo only, i.e. a Linux Docker host;
+  #    on Docker Desktop the VM's free memory is not visible from here.
+  if [ "$side_running" -eq 1 ] && [ -r /proc/meminfo ]; then
+    local avail
+    avail="$(awk '/^MemAvailable:/ { print int($2 / 1024); exit }' /proc/meminfo)"
+    case "$avail" in
+      ''|*[!0-9]*) : ;;
+      *)
+        if [ "$avail" -lt "$LUCAIRN_SANITIZER_CORE_MEM_HEADROOM_MIB" ]; then
+          echo "sanitizer core memory headroom: failed (${avail} MiB available with the sidecar running; need >= ${LUCAIRN_SANITIZER_CORE_MEM_HEADROOM_MIB} MiB or the next model batch can OOM)"
+          failed=1
+        else
+          echo "sanitizer core memory headroom: ok (${avail} MiB available)"
+        fi
+        ;;
+    esac
+  fi
+
+  return "$failed"
+}
+
 doctor() {
   local env_file="" compose_file="" offline=0 postgres_url="" kube_namespace="dsa-edge" check_images=1 strict_runtime=0 strict_digest=0 values_only=0 values_count=0 values_file customer_key_file="" customer_key_proxy="" customer_key_ca_file="" supplied_model=""
   local tools_only=0 tools_file="" tools_mode="" tools_reveal=0
@@ -8247,6 +8866,14 @@ doctor() {
   # as defence-in-depth on top of code-level air-tightness.
   check_identity_networks_internal "$compose_file" || return 1
 
+  # Kit 2.0 (PRD prd-2026-11-02-kit-2-0-new-core.md K3): the new sanitizer
+  # core — registry secrets, profile, gateway switches, the witness side of the
+  # core's claim hop, every mTLS file the compose file mounts, the core/sidecar
+  # image pair and host memory. Runs offline too (memory then only warns).
+  local sanitizer_core_failed=0
+  check_sanitizer_core_config "$env_file" "$compose_file" "$offline" || sanitizer_core_failed=1
+  [ "$sanitizer_core_failed" -eq 0 ] || return 1
+
   # Image-manifest drift warning. Runs in --offline mode as well so customers
   # without network egress still get the warning.
   check_image_manifest "$env_file"
@@ -8325,6 +8952,13 @@ doctor() {
   else
     warn "docker compose not available; skipping compose config validation"
   fi
+
+  # Kit 2.0: the running sanitizer-core stack (rendered config, containers,
+  # namespace join, migration ledger, claim transport, memory headroom).
+  # Nothing running = "not started", fatal only under --strict-runtime.
+  local sanitizer_core_runtime_failed=0
+  check_sanitizer_core_runtime "$env_file" "$compose_file" "$strict_runtime" || sanitizer_core_runtime_failed=1
+  [ "$sanitizer_core_runtime_failed" -eq 0 ] || return 1
 
   postgres_url="${postgres_url:-$(env_value "$env_file" POSTGRES_URL)}"
   if [ -n "$postgres_url" ] && have pg_isready; then

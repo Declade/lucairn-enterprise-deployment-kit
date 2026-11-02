@@ -150,10 +150,56 @@ silently open the others.
   the job exit 94 rather than apply whatever it finds. Lower the ceiling
   deliberately if you mean to downgrade.
 
-Current ceilings: **veil-witness 10 · audit 7 · id-bridge 4 · sandbox-a 8** —
+Current ceilings: **veil-witness 10 · audit 7 · id-bridge 4 · sandbox-a 8 ·
+sanitizer-core 7 (`CEILING_SANITIZER_CORE`, Compose only so far)** —
 the last version in each `migrations/<tree>/` mirror in this repo. Mechanism:
-`charts/lucairn/charts/<subchart>/templates/_migration-cap.tpl` and `scripts/migrate-capped.sh`.
+`charts/lucairn/charts/<subchart>/templates/_migration-cap.tpl` and `scripts/migrate-capped.sh`
+(sanitizer-core: `scripts/migrate-sanitizer-core.sh`, below).
 Guard suite: `tests/test_migration_version_cap.sh`.
+
+### sanitizer-core registry (kit 2.0) — a different runner, the same discipline
+
+The new sanitizer core's registry (`postgres-sanitizer-core`) is not migrated by
+golang-migrate and not on `up`. `scripts/migrate-sanitizer-core.sh` (the
+profile-gated `migrate-sanitizer-core` one-shot) applies
+`migrations/sanitizer-core/NNNN_*.up.sql` — byte copies of the core's embedded
+`services/sanitizer-core/store/migrations/` at the release commit, named in
+`migrations/sanitizer-core/SOURCE` and pinned by `SHA256SUMS` — into the core's
+own ledger `registry_schema_migrations(name, at)`, exactly as the core's
+`PG.Migrate` writes it, in one transaction. The cap is `CEILING_SANITIZER_CORE`
+in `scripts/migration-ceilings.conf` with the same two pointer guards as
+`migrate-capped.sh`; there is no open-ended hatch. Helm has no equivalent yet
+(slice K-B adds the migration Job and the `$knownSafeMax` literal; the parity
+test then covers this tree too). Guard suite: `tests/test_sanitizer_core_compose.sh`.
+
+**Release step:** re-copy the `*.up.sql` files from the image's release commit,
+regenerate `SHA256SUMS`, update `SOURCE`, and review every new file below before
+raising the ceiling. The core refuses to start below 0005/0006/0007 (it checks
+the tables at boot), so the ceiling cannot sit below the image's highest file.
+
+Review of 0001–0007 (kit 2.0, DSA main `20ec838c`, unchanged since `1a3a5574`,
+the files the hosted registry was migrated with on 2026-10-31):
+
+| Version | What it creates | Personal data | Deletion path |
+|---|---|---|---|
+| `0001_registry` | conversations (expiry `expires_at`), entries (AES-GCM sealed placeholder → original value), turns (sealed sanitized text + hash of the original), tombstones | yes — sealed with `DSA_SANITIZER_CORE_REGISTRY_KEY` | `PG.Sweep` deletes expired conversations (cascades to entries/turns/claims/streams) — **but the serving core does not call it today** |
+| `0002_turn_role_kind` | two columns on turns | no | — |
+| `0003_claim_records` | the first signed claim per request (sealed) | yes — sealed | trimmed to the newest `ClaimRecordsPerCustomer` rows per customer on insert (`store/claims.go` `maybeTrim`); cascades with its conversation |
+| `0004_package_ref` | a hash column on conversations | no | — |
+| `0005_forwarded_turns` | per-turn marks (MAC) | no | cascades with its turn |
+| `0006_stream_gens` | stream generations + number leases | no | stream generations swept every 10 min by the core (`SweepStreamGens`); leases cascade |
+| `0007_attempted_turns` | attempted-turn ids | no | cascades with its conversation |
+
+⚠️ **Release-blocking finding for kit 2.0 (K-A, 2026-11-02):** in DSA main
+`20ec838c` the only caller of `PG.Sweep` is the replay harness
+(`cmd/sanitizer-core/turns.go` `injectLoss`); `serve` starts a sweeper for stream
+generations only (`stream_wire.go`). Registry conversations — and with them the
+sealed original values — therefore stay in the database after their 24-hour
+expiry, on the hosted service and on a kit install alike. Per this section's own
+rule ("blocking on the absence of a deletion path"), the 2.0.0 release needs
+either a DSA change that runs `Sweep` from `serve`, or a kit-side retention
+service with the same SQL, or Marc's explicit acceptance recorded here — before
+K-E cuts the release. Until then the install guide states it as a limit.
 
 ### The checklist
 

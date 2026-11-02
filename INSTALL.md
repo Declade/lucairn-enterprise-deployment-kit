@@ -644,6 +644,10 @@ For Docker Compose:
   Piiranha + GLiNER and reserves up to 4 GB for the container on top of the
   L3-on baseline. 4 vCPU is sufficient for any of these topologies at
   single-tenant pilot load.
+- **Kit 2.0 (new sanitizer core): 16 GB RAM minimum** for the Docker host, on
+  top of which the L3 model needs about 5 GB more when it is loaded. The core's
+  model sidecar alone is capped at 6.5 GB; `bin/lucairn doctor` fails below
+  15,000 MiB of Docker-engine memory. See § "Sanitizer core (kit 2.0, Compose)".
 - TLS-terminating reverse proxy such as Caddy, Nginx, Traefik, or an enterprise ingress proxy.
 - Outbound HTTPS to the image registries used during `docker compose up` / `docker pull`:
   - `ghcr.io` — the 12 Lucairn `dsa-*` images are in the private `ghcr.io/declade/*` namespace (authentication required; see § "Step 0 — Registry access" above and § "Registry Authentication" below). **Lucairn must grant your GitHub account package-pull access before `docker login` will work** — see § "Step 0".
@@ -2378,6 +2382,119 @@ all production Helm installs.
    ```
 
 ---
+
+## Sanitizer core (kit 2.0, Compose)
+
+Kit 2.0 runs the same sanitizer as the hosted Lucairn service: a Go **sanitizer
+core**, its **model sidecar** (spaCy + GLiNER) and the core's **registry
+database**. The gateway sends the Anthropic route (`/v1/messages`) through the
+core with the final check (Gate) enforced — both ON by default, as on the hosted
+service. The existing Python `sanitizer` service stays: it still serves the
+OpenAI, MCP and proxy routes.
+
+| Service | What it is |
+|---|---|
+| `postgres-sanitizer-core` | The core's registry database (own volume, internal network only). |
+| `sanitizer-core-sidecar` | The model sidecar. It owns the network namespace the core runs in; its scan endpoint listens on loopback only. Memory cap 6.5 GB. |
+| `sanitizer-core` | The Go core, joined to the sidecar's namespace. Gateway → core is verified mTLS; core → witness is verified TLS with the core's own client certificate. Memory cap 1 GB. |
+| `migrate-sanitizer-core` | The registry migration step. Profile-gated: it never runs on `up`. |
+
+### Host requirements
+
+- **16 GB RAM minimum** for the Docker host (or Docker Desktop VM). The sidecar
+  alone is capped at 6.5 GB and peaks near 5.6 GB; the core adds up to 1 GB.
+  `bin/lucairn doctor` (without `--offline`) **fails** when the Docker engine
+  reports less than 15,000 MiB, and — on a Linux host, while the sidecar runs —
+  when less than 1,500 MiB is still available. With `--offline` it only warns
+  (it may be running on another machine). Add about 5 GB more when the L3 shield
+  model is loaded.
+- About 2.5 GB more disk for the sidecar image.
+
+### 1. Secrets and image pins (`customer.env`)
+
+`bin/lucairn-init` generates both secrets and writes the image variables. By hand:
+
+```bash
+DSA_SANITIZER_CORE_REGISTRY_KEY=$(openssl rand -hex 32)    # seals every registry row; keep it stable
+POSTGRES_SANITIZER_CORE_PASSWORD=$(openssl rand -hex 24)   # URL-safe characters only
+LUCAIRN_SANITIZER_CORE_IMAGE_TAG=1.1.0                     # ONE tag for core + sidecar
+LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=                       # release-filled; set both digests or neither
+LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=
+```
+
+The core and the sidecar are one pair from one release: the core refuses to
+start against a sidecar from another build. Keep `GRPC_TLS_ENABLED=true` (the
+default): the core reaches the witness only over verified TLS, and the witness
+serves TLS on its claim port only while that variable is `true`. Do not set
+`LCR_PROFILE`: the kit runs the core's kit profile, under which the ServiceNow
+mode is refused.
+
+### 2. mTLS material (once)
+
+```bash
+sudo scripts/bootstrap-sanitizer-core-mtls.sh        # writes .certs/sanitizer-core-mtls/
+```
+
+It creates a deploy-local CA and four leaves, each in the directory of the one
+container that mounts it. The CA private key (`ca/ca.key`) is never mounted.
+
+| File | Used by | Purpose |
+|---|---|---|
+| `sanitizer-core/dsa-sanitizer-core.{crt,key}` | core | server leaf for the gateway hop (SAN `dsa-sanitizer-core`) |
+| `sanitizer-core/witness-client.{crt,key}` | core | client leaf for the witness hop (SAN `dsa-sanitizer`) |
+| `gateway/dsa-gateway.{crt,key}` | gateway | client leaf for the core hop (SAN `dsa-gateway`; the core refuses any other) |
+| `veil-witness/dsa-veil-witness.{crt,key}` | witness | server leaf on the claim port (SAN `dsa-veil-witness`, which the core pins) |
+
+Run it as root on Linux: it hands the service directories to uid 10001, the user
+every Lucairn image runs as (a `0600` key owned by another uid is unreadable in
+the container). As an ordinary user it prints the `chown` command to run. A
+re-run reuses every existing file; to rotate a leaf, delete it, re-run, and
+recreate the container that mounts it. If you keep the material elsewhere, pass
+the directory to the script and set `SANITIZER_CORE_MTLS_HOST_DIR` to it.
+
+### 3. Registry migrations (install and every upgrade)
+
+```bash
+docker compose -f docker-compose.customer.yml --env-file customer.env \
+  --profile sanitizer-core-migrate run --rm migrate-sanitizer-core
+```
+
+The step applies `migrations/sanitizer-core/` (byte copies of the core's own
+migrations, checked against `SHA256SUMS`) in one transaction, up to the ceiling
+this kit release reviewed (`CEILING_SANITIZER_CORE` in
+`scripts/migration-ceilings.conf`). It never migrates down. Until it has run, the
+core refuses to start and the gateway, which waits for a healthy core, does not
+start either.
+
+### 4. Start, and the one recreate rule
+
+`bin/lucairn up --env customer.env` starts everything in order: registry database
+→ sidecar (model load takes 1–5 minutes) → core → gateway.
+
+> ⚠️ **After every sidecar recreate, recreate the core.** A sidecar *restart*
+> (crash, memory-cap kill, `docker restart`) is followed by the core on its own
+> within about 30 seconds. A sidecar *recreate* (new image, changed definition,
+> `up --force-recreate`) makes a new container, and the core stays joined to the
+> old one's network until you run
+> `docker compose ... up -d --no-deps --force-recreate sanitizer-core`.
+> The online doctor detects this state.
+
+### 5. What `bin/lucairn doctor` checks
+
+Offline and online: both secrets (presence, format, placeholders), the profile,
+the gateway switches, `GRPC_TLS_ENABLED` for the witness hop, every certificate
+(chain, purpose, pinned SAN, SHA-256 signature, 30-day expiry, key permissions;
+the key/certificate pairing when the key is readable), the image pair against
+`image-manifest.yaml`, and host memory. Online additionally: the rendered Compose
+configuration of the core (kit profile, witness latch, namespace), the three
+containers (running and healthy), the core's namespace join, the migration
+ledger against the ceiling, and the core's log — witness transport `mtls` and no
+`DROPPED` claim. The online check does not send a turn; a real turn and its
+certificate (sanitizer claim from the core) are the install rehearsal's proof.
+
+**Stated limit (this release):** registry rows of expired conversations are not
+deleted by the core today — they expire logically after 24 hours but stay in
+`postgres-sanitizer-core`. See `docs/RELEASING.md` § "Migration review".
 
 ## Sanitizer content cache (Redis — default ON)
 

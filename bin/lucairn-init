@@ -13,6 +13,10 @@
 #   - alphanumeric-only postgres passwords (no SQL-special characters because
 #     scripts/render-migrations.sh's envsubst breaks on '\'',' \', '$', etc.)
 #   - GATEWAY_KEYSTORE_KEY as 32-byte base64
+#   - kit 2.0 sanitizer core: DSA_SANITIZER_CORE_REGISTRY_KEY (hex32) +
+#     POSTGRES_SANITIZER_CORE_PASSWORD, and (after writing customer.env) the
+#     core's mTLS material via scripts/bootstrap-sanitizer-core-mtls.sh into
+#     <output dir>/.certs/sanitizer-core-mtls (re-runs reuse existing files)
 #
 # Modes:
 #   --dev           empty DSA_LICENSE_KEY (gateway enters dev-mode bypass) +
@@ -40,12 +44,17 @@
 #   3 prerequisites missing (openssl)
 #   4 doctor failed on the generated env (file is left in place for inspection)
 #   5 license validation failed
+#   6 the sanitizer core's mTLS material could not be created (customer.env
+#     was written; re-run scripts/bootstrap-sanitizer-core-mtls.sh)
 
 set -euo pipefail
 
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly KIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 readonly DEFAULT_IMAGE_TAG="0.5.5"
+# Kit 2.0: the new sanitizer core + its model sidecar ship as ONE pair under
+# their own tag (image-manifest.yaml services.dsa-sanitizer-core).
+readonly DEFAULT_SANITIZER_CORE_IMAGE_TAG="1.1.0"
 readonly DEFAULT_OUTPUT="${KIT_ROOT}/customer.env"
 
 # Temp files that hold plaintext keypair material during derivation. The
@@ -274,6 +283,7 @@ Exit codes:
   3  openssl not found
   4  bin/lucairn doctor failed against the generated file
   5  license validation failed
+  6  sanitizer core mTLS material could not be created (customer.env written)
 USAGE
 }
 
@@ -1085,6 +1095,33 @@ done
 # GATEWAY_KEYSTORE_KEY (base64-32-bytes)
 set_kv GATEWAY_KEYSTORE_KEY "$(gen_keystore_key)"
 
+# Kit 2.0 sanitizer core: the registry key (exactly 64 hex, store/store.go
+# KeyFromEnv) and the registry DB password (alphanumeric = URL-safe, it sits
+# in the core's connection URL).
+set_kv DSA_SANITIZER_CORE_REGISTRY_KEY "$(gen_hex32)"
+set_kv POSTGRES_SANITIZER_CORE_PASSWORD "$(gen_pg_password)"
+# The mTLS directory the bootstrap step below populates, beside customer.env.
+# Recorded as an absolute path so the compose project directory does not matter.
+_sanitizer_core_out_dir="$(dirname "$OUTPUT")"
+case "$_sanitizer_core_out_dir" in
+  /*) : ;;
+  *) _sanitizer_core_out_dir="$PWD/$_sanitizer_core_out_dir" ;;
+esac
+SANITIZER_CORE_MTLS_DIR="${_sanitizer_core_out_dir%/.}/.certs/sanitizer-core-mtls"
+# Core/sidecar digests from the manifest this run records; empty while the
+# manifest slot is still pending (the release step fills it).
+sanitizer_core_manifest_digest() {
+  awk -v want="    $1:" '
+    /^  signed_artifacts:/ { in_sa = 1; next }
+    in_sa && /^  [^ ]/ { in_sa = 0 }
+    in_sa && $0 == want { in_key = 1; next }
+    in_sa && in_key && /^    [^ ]/ { in_key = 0 }
+    in_sa && in_key && /^      digest:/ { gsub(/"/, "", $2); print $2; exit }
+  ' "$KIT_ROOT/image-manifest.yaml"
+}
+SANITIZER_CORE_IMAGE_DIGEST="$(sanitizer_core_manifest_digest dsa-sanitizer-core)"
+SANITIZER_CORE_SIDECAR_IMAGE_DIGEST="$(sanitizer_core_manifest_digest dsa-sanitizer-core-sidecar)"
+
 # Mode-dependent fields
 #
 # The LUCAIRN_LICENSE_* (Ed25519 deployment entitlement) slots are ALWAYS
@@ -1307,6 +1344,18 @@ AUDIT_APP_PASSWORD=$(get_val AUDIT_APP_PASSWORD)
 # bake-in step without architectural benefit. See INSTALL.md § "Stage 3
 # postgres-namespace carve-out".
 VEIL_APP_PASSWORD=$(get_val VEIL_APP_PASSWORD)
+
+# New sanitizer core (kit 2.0): registry key + registry DB password (both
+# generated), the mTLS directory this run populated, the core/sidecar image
+# pair, and Sandbox B's conversation limit (read by gateway AND sandbox-b;
+# empty = 4 MiB). See INSTALL.md § "Sanitizer core (kit 2.0, Compose)".
+DSA_SANITIZER_CORE_REGISTRY_KEY=$(get_val DSA_SANITIZER_CORE_REGISTRY_KEY)
+POSTGRES_SANITIZER_CORE_PASSWORD=$(get_val POSTGRES_SANITIZER_CORE_PASSWORD)
+SANITIZER_CORE_MTLS_HOST_DIR=$SANITIZER_CORE_MTLS_DIR
+LUCAIRN_SANITIZER_CORE_IMAGE_TAG=$DEFAULT_SANITIZER_CORE_IMAGE_TAG
+LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$SANITIZER_CORE_IMAGE_DIGEST
+LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=$SANITIZER_CORE_SIDECAR_IMAGE_DIGEST
+SANDBOX_B_MESSAGES_JSON_MAX_BYTES=
 
 # Runtime tuning
 SANDBOX_A_EPHEMERAL=true
@@ -1697,6 +1746,23 @@ else
   echo "wrote: $OUTPUT (mode 0600)" >&2
   echo "wrote: $RUNTIME_PROFILE_MANIFEST (mode 0644; no secrets)" >&2
   echo "wrote: $RUNTIME_IMAGE_MANIFEST_SNAPSHOT (mode 0644; recorded init-time image manifest)" >&2
+fi
+
+# Kit 2.0: the new sanitizer core's mTLS material (deploy-local CA + the four
+# leaves its two hops need), beside customer.env. Without it the core refuses
+# to start and doctor fails. Idempotent: existing files are reused, never
+# rotated. In adoption mode the existing customer.env is not rewritten, so the
+# directory is the one it names (or the compose default beside the kit).
+if [ "$ADOPT_RUNTIME_PROFILE" = "true" ]; then
+  SANITIZER_CORE_MTLS_DIR="$(grep -E '^SANITIZER_CORE_MTLS_HOST_DIR=' "$OUTPUT" 2>/dev/null | tail -1 | cut -d= -f2-)"
+  case "$SANITIZER_CORE_MTLS_DIR" in
+    /*) : ;;
+    '') SANITIZER_CORE_MTLS_DIR="$KIT_ROOT/.certs/sanitizer-core-mtls" ;;
+    *) SANITIZER_CORE_MTLS_DIR="$KIT_ROOT/${SANITIZER_CORE_MTLS_DIR#./}" ;;
+  esac
+fi
+if ! bash "$KIT_ROOT/scripts/bootstrap-sanitizer-core-mtls.sh" "$SANITIZER_CORE_MTLS_DIR" >&2; then
+  fail "could not create the sanitizer core mTLS material in $SANITIZER_CORE_MTLS_DIR (customer.env was written; fix the error above and re-run: scripts/bootstrap-sanitizer-core-mtls.sh '$SANITIZER_CORE_MTLS_DIR')" 6
 fi
 
 # BYOK banner

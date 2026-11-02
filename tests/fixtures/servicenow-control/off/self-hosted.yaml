@@ -92,6 +92,9 @@ services:
       sandbox-b:
         condition: service_healthy
         required: true
+      sanitizer-core:
+        condition: service_healthy
+        required: true
       witness-egress-guard:
         condition: service_completed_successfully
         required: true
@@ -105,12 +108,17 @@ services:
       DSA_LICENSE_KEY: ""
       DSA_LICENSE_SIGNING_KEY: ""
       DSA_SERVICE_TOKEN: k1-synthetic
+      GATEWAY_ADDED_PARTS_PLACEMENT: message
       GATEWAY_BASE_URL: http://localhost:8080
       GATEWAY_KEYSTORE_KEY: k1-synthetic
       GATEWAY_KEYSTORE_PATH: /data/keystore.json
+      GATEWAY_SANITIZER_GATE_POSTURE: enforce
+      GATEWAY_SANITIZER_GATE_ROUTE_POSTURE: observe
+      GATEWAY_SANITIZER_PROTOCOL: delta
       GATEWAY_TMS_TRUST_ZONES: ""
       GATEWAY_TOOL_SCHEMA_GUARD: refuse
       GATEWAY_TRUSTED_PROXY_CIDRS: ""
+      GATEWAY_USER_UNREDACTED_ENABLED: "false"
       GATEWAY_VERTICALS_DIR: /etc/dsa/starter-templates
       GATEWAY_WAIT_TIMEOUT: "120"
       GRPC_TLS_ENABLED: "true"
@@ -146,9 +154,14 @@ services:
       SANDBOX_B_CLIENT_CERT: ""
       SANDBOX_B_CLIENT_KEY: ""
       SANDBOX_B_INVARIANT_URL: http://sandbox-b:8084/invariant
+      SANDBOX_B_MESSAGES_JSON_MAX_BYTES: ""
       SANDBOX_B_PROXY_URL: http://sandbox-b:8084
       SANDBOX_B_REMOTE_ENDPOINT: ""
       SANITIZE_CACHE_ENABLED: "false"
+      SANITIZER_CORE_MTLS_CA_BUNDLE_PATH: /etc/sanitizer-core-mtls/ca.crt
+      SANITIZER_CORE_MTLS_CLIENT_CERT_PATH: /etc/sanitizer-core-mtls/dsa-gateway.crt
+      SANITIZER_CORE_MTLS_CLIENT_KEY_PATH: /etc/sanitizer-core-mtls/dsa-gateway.key
+      SANITIZER_CORE_URL: https://sanitizer-core:8790
       SANITIZER_URL: http://sanitizer:8086
       STREAMING_ENABLED: "false"
       SUPABASE_URL: ""
@@ -205,6 +218,11 @@ services:
       - type: bind
         source: ./.certs/witness-mtls
         target: /etc/witness-mtls
+        read_only: true
+        bind: {}
+      - type: bind
+        source: ./.certs/sanitizer-core-mtls/gateway
+        target: /etc/sanitizer-core-mtls
         read_only: true
         bind: {}
   id-bridge:
@@ -527,6 +545,32 @@ services:
         source: pg-sandbox-a-data
         target: /var/lib/postgresql/data
         volume: {}
+  postgres-sanitizer-core:
+    environment:
+      POSTGRES_DB: sanitizer_core
+      POSTGRES_PASSWORD: k1-synthetic
+      POSTGRES_USER: dsa
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U dsa -d sanitizer_core
+      timeout: 3s
+      interval: 5s
+      retries: 10
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    networks:
+      dsa-sanitizer-core: null
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: pg-sanitizer-core-data
+        target: /var/lib/postgresql/data
+        volume: {}
   postgres-veil:
     environment:
       POSTGRES_DB: veil
@@ -739,6 +783,7 @@ services:
       SANDBOX_B_API_KEYS: local-sandbox-b-key
       SANDBOX_B_GRPC_ADDR: 0.0.0.0:50054
       SANDBOX_B_HEALTH_ADDR: 0.0.0.0:8084
+      SANDBOX_B_MESSAGES_JSON_MAX_BYTES: ""
       SANDBOX_B_REDIS_URL: redis://redis-ai:6379
       SANDBOX_B_VERTICALS_DIR: /app/verticals
       SANDBOX_B_WORKERS: "4"
@@ -849,13 +894,139 @@ services:
         target: /config/safe-terms-strict-location.txt
         read_only: true
         bind: {}
+  sanitizer-core:
+    command:
+      - serve
+      - --listen=0.0.0.0:8790
+      - --dsn=postgres://dsa:k1-synthetic@postgres-sanitizer-core:5432/sanitizer_core?sslmode=disable
+      - --sidecar=http://127.0.0.1:8765
+    depends_on:
+      postgres-sanitizer-core:
+        condition: service_healthy
+        required: true
+      sanitizer-core-sidecar:
+        condition: service_healthy
+        required: true
+      witness-egress-guard:
+        condition: service_completed_successfully
+        required: true
+    deploy:
+      resources:
+        limits:
+          memory: "1073741824"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        h=http://127.0.0.1:8765/v1/health
+        trap 'exit 0' TERM INT
+        n=0
+        until wget -q -T 5 -O /dev/null "$$h"; do
+          [ $$((n % 15)) -eq 0 ] && echo "core-entrypoint: waiting for the model sidecar ($$h)" >&2
+          n=$$((n + 1)); sleep 2
+        done
+        echo "core-entrypoint: sidecar answers, starting the core" >&2
+        sanitizer-core "$$@" &
+        pid=$$!
+        stop=0
+        trap 'stop=1; kill -TERM $$pid 2>/dev/null' TERM INT
+        i=0; miss=0
+        while [ $$stop -eq 0 ] && kill -0 $$pid 2>/dev/null; do
+          sleep 2 & wait $$!
+          i=$$((i + 1)); [ $$((i % 5)) -eq 0 ] || continue
+          if wget -q -T 5 -O /dev/null "$$h"; then miss=0; else miss=$$((miss + 1)); fi
+          if [ $$miss -ge 3 ]; then
+            echo "core-entrypoint: sidecar unreachable 3 checks in a row - stopping the core (the restart re-joins the sidecar)" >&2
+            kill -TERM $$pid 2>/dev/null; wait $$pid; exit 70
+          fi
+        done
+        wait $$pid
+      - sanitizer-core-entrypoint
+    environment:
+      DSA_ENV: production
+      DSA_SANITIZER_CORE_REGISTRY_KEY: k1-synthetic
+      DSA_WITNESS_GRPC_MAX_MESSAGE_BYTES: ""
+      GRPC_TLS_ENABLED: "false"
+      LCR_ENABLED: "true"
+      LCR_SANITIZER_PUBLIC_KEY: ""
+      LCR_SIGNING_KEY: ""
+      LCR_WITNESS_ADDR: veil-witness:50057
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: /etc/sanitizer-core-mtls/ca.crt
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: /etc/sanitizer-core-mtls/witness-client.crt
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: /etc/sanitizer-core-mtls/witness-client.key
+      LCR_WITNESS_REQUIRE_MTLS: "true"
+      SANITIZER_CLAIM_DRAIN_SECONDS: ""
+      SANITIZER_CORE_MTLS_CA_BUNDLE_PATH: /etc/sanitizer-core-mtls/ca.crt
+      SANITIZER_CORE_MTLS_SERVER_CERT_PATH: /etc/sanitizer-core-mtls/dsa-sanitizer-core.crt
+      SANITIZER_CORE_MTLS_SERVER_KEY_PATH: /etc/sanitizer-core-mtls/dsa-sanitizer-core.key
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - nc -z 127.0.0.1 8790 || exit 1
+      timeout: 3s
+      interval: 5s
+      retries: 20
+    image: ghcr.io/declade/dsa-sanitizer-core:1.1.0
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    mem_limit: "1073741824"
+    network_mode: service:sanitizer-core-sidecar
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: ./.certs/sanitizer-core-mtls/sanitizer-core
+        target: /etc/sanitizer-core-mtls
+        read_only: true
+        bind: {}
+  sanitizer-core-sidecar:
+    depends_on:
+      postgres-sanitizer-core:
+        condition: service_healthy
+        required: true
+    deploy:
+      resources:
+        limits:
+          memory: "6815744000"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -I
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/v1/health',
+          timeout=5)
+      timeout: 8s
+      interval: 10s
+      retries: 6
+      start_period: 5m0s
+    image: ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+    mem_limit: "6815744000"
+    memswap_limit: "6815744000"
+    networks:
+      dsa-identity:
+        aliases:
+          - sanitizer-core
+          - dsa-sanitizer-core
+      dsa-sanitizer-core: {}
+      dsa-witness-identity: {}
+    restart: unless-stopped
   veil-witness:
     depends_on:
       migrate-veil:
         condition: service_completed_successfully
         required: true
     environment:
+      GRPC_TLS_CERT_FILE: /etc/sanitizer-core-mtls/dsa-veil-witness.crt
       GRPC_TLS_ENABLED: "true"
+      GRPC_TLS_KEY_FILE: /etc/sanitizer-core-mtls/dsa-veil-witness.key
       LCR_AUDIT_PUBLIC_KEY: ""
       LCR_BRIDGE_PUBLIC_KEY: ""
       LCR_CLAIM_TIMEOUT: 30s
@@ -908,6 +1079,11 @@ services:
       - type: bind
         source: ./.certs/witness-mtls
         target: /etc/witness-mtls
+        read_only: true
+        bind: {}
+      - type: bind
+        source: ./.certs/sanitizer-core-mtls/veil-witness
+        target: /etc/sanitizer-core-mtls
         read_only: true
         bind: {}
   witness-egress-guard:
@@ -971,6 +1147,10 @@ networks:
     name: k1-off_dsa-model-runtime-identity
     driver: bridge
     internal: true
+  dsa-sanitizer-core:
+    name: k1-off_dsa-sanitizer-core
+    driver: bridge
+    internal: true
   dsa-witness:
     name: k1-off_dsa-witness
     driver: bridge
@@ -1004,6 +1184,8 @@ volumes:
     name: k1-off_pg-bridge-data
   pg-sandbox-a-data:
     name: k1-off_pg-sandbox-a-data
+  pg-sanitizer-core-data:
+    name: k1-off_pg-sanitizer-core-data
   postgres-veil-data:
     name: k1-off_postgres-veil-data
   redis-ai-data:

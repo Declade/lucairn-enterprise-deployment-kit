@@ -119,6 +119,15 @@ services:
     image_tag: ""
   dsa-gateway:
     image_tag: ""
+  # Kit 2.0: the new sanitizer core and its model sidecar. ONE tag for the pair
+  # (LUCAIRN_SANITIZER_CORE_IMAGE_TAG; no fall-back to LUCAIRN_IMAGE_TAG — no
+  # 0.5.x tag of these images exists). The core refuses to start against a
+  # sidecar from another build, so both always move together. Digests:
+  # image_digests.signed_artifacts below (filled by the release step).
+  dsa-sanitizer-core:
+    image_tag: "1.1.0"
+  dsa-sanitizer-core-sidecar:
+    image_tag: "1.1.0"
 
 # Optional images used only when `--profile certification` or
 # `--profile dashboard` is activated. These pull from the same registry but
@@ -236,6 +245,17 @@ image_digests:
     lucairn-dashboard:
       ref: "ghcr.io/declade/lucairn-dashboard:0.8.2"
       digest: "sha256:a586b88991ac5d71cf6523b833462648775b1e97a66cbee67876e9f992f0387e"
+    # Kit 2.0 (slice K-A): schema slots for the core/sidecar pair. The release
+    # step (K0: multi-arch build + cosign on the box release host) replaces
+    # `pending: true` with the signed index digests, writes the same values
+    # into keys/image-digests-<tag>.txt, and sets the matching
+    # LUCAIRN_SANITIZER_CORE_*_IMAGE_DIGEST defaults in customer.env.example.
+    dsa-sanitizer-core:
+      ref: "ghcr.io/declade/dsa-sanitizer-core:1.1.0"
+      pending: true
+    dsa-sanitizer-core-sidecar:
+      ref: "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0"
+      pending: true
   # --- PII-plane runtime (sandbox-a / sandbox-b L3 shield). ollama-identity is
   # --- the load-bearing L3 image and is ALSO digest-pinned in the chart
   # --- (charts/lucairn/charts/sandbox-a/values.yaml ollamaIdentity.image.digest);
