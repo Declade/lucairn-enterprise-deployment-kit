@@ -796,9 +796,93 @@ assert_py "$TMP/default.yaml" 'ok(True, "self-test: one passing line before the 
 PY_TALLY="$PY_TALLY_KEEP"
 if grep -qx F "$TMP/py-tally-selftest"; then pass "a crashed assertion block counts as a FAIL (KeyError self-test)"; else fail "a crashed assertion block counts as a FAIL (KeyError self-test)"; fi
 
+# ─────────────────────────────────────────────────────────────────────────────
 echo ""
-N=$((N + $(grep -c . "$PY_TALLY")))
-FAILS=$((FAILS + $(grep -c '^F$' "$PY_TALLY")))
+echo "H. K-C: the ServiceNow mode on the core (assembled copy, hold removed — test only)"
+# Production renders with servicenowControl.enabled stay HELD
+# (templates/servicenow-control-held.yaml); like tests/test_servicenow_control_helm.py
+# this section removes the hold in a disposable kit copy only.
+KIT="$TMP/kit-on"; mkdir -p "$KIT"
+cp -R "$ROOT/bin" "$ROOT/charts" "$ROOT/scripts" "$ROOT/config" "$ROOT/keys" "$ROOT/migrations" "$KIT/"
+cp "$ROOT/VERSION" "$ROOT/RELEASE_DATE" "$ROOT/image-manifest.yaml" "$KIT/"
+rm "$KIT/charts/lucairn/templates/servicenow-control-held.yaml"
+ON_VALUES="$TMP/sn-on.yaml"
+cat > "$ON_VALUES" <<'YAML'
+global:
+  servicenowControl:
+    enabled: true
+    gatewaySecret: synthetic-gateway-control
+    sanitizerSecret: synthetic-sanitizer-control
+    instanceCIDRs: ["198.51.100.0/24"]
+    instanceDNSNames: ["instance.synthetic.test"]
+    kubernetesAPICIDRs: ["10.96.0.1/32"]
+    clusterCIDRs: ["10.244.0.0/16", "10.96.0.0/12"]
+YAML
+if helm template lucairn "$KIT/charts/lucairn" "${COMMON[@]}" -f "$ON_VALUES" >"$TMP/sn-on.yaml.out" 2>"$TMP/sn-on.err"; then
+  pass "assembled ON render (hold removed in the copy)"
+  assert_py "$TMP/sn-on.yaml.out" '
+dep = find("Deployment", "sanitizer-core", "dsa-identity")
+ps = dep["spec"]["template"]["spec"]
+cs = {c["name"]: c for c in ps["containers"]}
+e = env_of(cs["core"])
+ok(e["LCR_PROFILE"] == {"name": "LCR_PROFILE", "value": "kit-servicenow"}, "ON: the core sets LCR_PROFILE=kit-servicenow as a literal")
+ok(e["LCR_SERVICENOW_CONTROL_PEER_URL"]["value"] == "https://gateway-servicenow-control.dsa-edge.svc.cluster.local:18443" and e["GOTRACEBACK"]["value"] == "none", "ON: the core dials the gateway control Service on :18443, GOTRACEBACK=none")
+ok({k: e["LCR_SERVICENOW_CONTROL_" + k]["value"] for k in ("CA_CERT", "TLS_CERT", "TLS_KEY")} == {"CA_CERT": "/run/secrets/servicenow-control/sanitizer/ca.crt", "TLS_CERT": "/run/secrets/servicenow-control/sanitizer/tls.crt", "TLS_KEY": "/run/secrets/servicenow-control/sanitizer/tls.key"}, "ON: the core presents the sanitizer control leaf")
+vols = {v["name"]: v for v in ps["volumes"]}
+ok(vols["sn-control-core"]["secret"]["secretName"] == "synthetic-sanitizer-control" and [i["key"] for i in vols["sn-control-core"]["secret"]["items"]] == ["ca.crt", "tls.crt", "tls.key"], "ON: the control leaf comes from global.servicenowControl.sanitizerSecret")
+core_mounts = {m["name"] for m in cs["core"]["volumeMounts"]}
+side_mounts = {m["name"] for m in cs["sidecar"].get("volumeMounts") or []}
+ok("sn-control-core" in core_mounts and "sn-control-core" not in side_mounts and not any(k.startswith("LCR_SERVICENOW") for k in env_of(cs["sidecar"])), "ON: the control leaf is mounted into the core container ONLY, never the sidecar")
+nps = {d["metadata"]["name"]: d for d in docs if d.get("kind") == "NetworkPolicy"}
+ok("servicenow-sanitizer-core-18443-egress" in nps and "servicenow-sanitizer-core-18443-ingress" in nps, "ON: NetworkPolicies let the core reach the gateway control listener :18443")
+' | run_py
+else
+  fail "assembled ON render: $(head -3 "$TMP/sn-on.err")"
+fi
+refuse_kit() { # <case> <fragment> [helm args]
+  local name="$1" want="$2"; shift 2
+  if helm template lucairn "$KIT/charts/lucairn" "${COMMON[@]}" -f "$ON_VALUES" "$@" >/dev/null 2>"$TMP/refuse.err"; then fail "refused: $name (it RENDERED)"
+  elif grep -Fq -- "$want" "$TMP/refuse.err"; then pass "refused: $name"
+  else fail "refused: $name (other reason: $(head -c 300 "$TMP/refuse.err"))"; fi
+}
+# (the namespace split-brain validator or the K-C check refuses first; both name sanitizer-core)
+refuse_kit "ON with the core outside the sanitizer namespace" "sanitizer-core" --set sanitizer-core.namespace=dsa-other
+refuse_kit "ON with two gateway replicas (the reused single-replica guard)" "replicaCount=1" --set gateway.replicaCount=2
+refuse_kit "ON with HPA on the gateway (the reused guard)" "HPA disabled" --set gateway.hpa.enabled=true
+if helm template lucairn "$CHART" "${COMMON[@]}" -f "$ON_VALUES" >/dev/null 2>"$TMP/held.err"; then fail "the REAL chart rendered with the mode on (hold removed?)"
+else grep -q "held" "$TMP/held.err" && pass "the real chart still holds every ON render" || fail "hold reason: $(head -c 200 "$TMP/held.err")"; fi
+if command -v ruby >/dev/null 2>&1; then
+  env "$KIT/bin/lucairn" doctor --values "$DEV_VALUES" --values "$ON_VALUES" > "$TMP/doc-on.out" 2>&1; rc=$?
+  if [ "$rc" -eq 0 ] && grep -q 'sanitizer core (Helm): render ok' "$TMP/doc-on.out" && ! grep -q 'LCR_PROFILE' "$TMP/doc-on.out"; then pass "doctor --values: ON render accepted with LCR_PROFILE=kit-servicenow + the control client"; else fail "doctor --values ON (rc=$rc): $(grep -iE 'sanitizer core|FAIL' "$TMP/doc-on.out" | head -3)"; fi
+  # The doctor's render check, red-proofed on a copy whose core profile is wrong.
+  KITBAD="$TMP/kit-bad"; cp -R "$KIT" "$KITBAD"
+  sed -i.bak 's/"kit-servicenow"{{ else }}"kit"{{ end }}/"kit"{{ else }}"kit"{{ end }}/' "$KITBAD/charts/lucairn/charts/sanitizer-core/templates/deployment.yaml"
+  env "$KITBAD/bin/lucairn" doctor --values "$DEV_VALUES" --values "$ON_VALUES" > "$TMP/doc-bad.out" 2>&1; rc=$?
+  if [ "$rc" -ne 0 ] && grep -q 'does not set LCR_PROFILE=kit-servicenow as a literal' "$TMP/doc-bad.out"; then pass "doctor --values RED: the mode on but the core profile kit"; else fail "doctor --values RED profile (rc=$rc): $(grep -iE 'sanitizer core' "$TMP/doc-bad.out" | head -2)"; fi
+  sed -i.bak 's/^            - name: LCR_PROFILE$/            - name: LCR_PROFILE_UNUSED/' "$KITBAD/charts/lucairn/charts/sanitizer-core/templates/deployment.yaml"
+  env "$KITBAD/bin/lucairn" doctor --values "$DEV_VALUES" > "$TMP/doc-bad.out" 2>&1; rc=$?
+  if [ "$rc" -ne 0 ] && grep -q 'does not set LCR_PROFILE=kit as a literal' "$TMP/doc-bad.out"; then pass "doctor --values RED (M2): a default render whose core does not set LCR_PROFILE"; else fail "doctor --values RED M2 (rc=$rc): $(grep -iE 'sanitizer core' "$TMP/doc-bad.out" | head -2)"; fi
+  # Live: the render guard refuses replicaCount=2, `kubectl scale` does not.
+  cat > "$KSTUB/kubectl-gw" <<'KUBE'
+#!/bin/sh
+case "$*" in *"get deployment gateway"*) printf '%s' "${STUB_GW_REPLICAS:-1/1}"; exit 0 ;; esac
+exec "$(dirname "$0")/kubectl.real" "$@"
+KUBE
+  mv "$KSTUB/kubectl" "$KSTUB/kubectl.real"; mv "$KSTUB/kubectl-gw" "$KSTUB/kubectl"; chmod 0755 "$KSTUB/kubectl"
+  live_on() { # <name> <want 0|1> <grep> [env...]
+    local name="$1" want="$2" pat="$3"; shift 3
+    env PATH="$KSTUB:$PATH" DOCTOR_KUBE_LIVE=1 "$@" "$KIT/bin/lucairn" doctor --values "$CHART/values-prod.yaml" --values "$CHART/values-prod-site.example.yaml" --values "$ON_VALUES" > "$TMP/live-on.out" 2>&1
+    local rc=$? got=0; [ "$rc" -eq 0 ] || got=1
+    if [ "$got" = "$want" ] && grep -Fq -- "$pat" "$TMP/live-on.out"; then pass "doctor live (ON): $name"; else fail "doctor live (ON): $name (rc=$rc): $(grep -iE 'sanitizer core|FAIL' "$TMP/live-on.out" | head -4)"; fi
+  }
+  live_on "one gateway replica is green" 0 "ServiceNow mode — one gateway replica"
+  live_on "RED: two gateway replicas after kubectl scale" 1 "needs exactly one gateway replica; Deployment gateway spec/status replicas = 2/2" STUB_GW_REPLICAS=2/2
+  live_on "RED: scaled to 2, one still starting" 1 "spec/status replicas = 2/1" STUB_GW_REPLICAS=2/1
+fi
+
+echo ""
+N=$((N + $(grep -c . "$PY_TALLY" || true)))
+FAILS=$((FAILS + $(grep -c '^F$' "$PY_TALLY" || true)))
 if [ "$FAILS" -eq 0 ]; then
   echo "sanitizer-core Helm tests: ok ($N checks)"
   exit 0

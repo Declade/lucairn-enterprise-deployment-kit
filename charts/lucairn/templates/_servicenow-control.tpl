@@ -34,7 +34,7 @@
 {{- $c := .Values.global.servicenowControl | default dict -}}
 {{- if not (kindIs "bool" $c.enabled) -}}{{- fail "servicenowControl.enabled must be boolean, including when disabled" -}}{{- end -}}
 {{- if $enabled -}}
-{{- range $name := list "gateway" "sandbox-a" "infrastructure" "sandbox-b" "veil-witness" -}}
+{{- range $name := list "gateway" "sandbox-a" "infrastructure" "sandbox-b" "veil-witness" "sanitizer-core" -}}
 {{- if (index $.Values $name).enabled -}}
 {{- $child := index $.Values $name | default dict -}}
 {{- $cg := get $child "global" | default dict -}}
@@ -50,6 +50,9 @@
 {{- end -}}
 {{- if or (ne $c.gatewayNamespace .Values.gateway.namespace) (ne $c.sanitizerNamespace (index .Values "sandbox-a").namespace) -}}
 {{- fail "ServiceNow control namespaces must match gateway and sandbox-a namespaces" -}}{{- end -}}
+{{- $core := index .Values "sanitizer-core" | default dict -}}
+{{- if and $core.enabled (ne $c.sanitizerNamespace $core.namespace) -}}
+{{- fail "ServiceNow control requires sanitizer-core in the sanitizerNamespace (it mounts the sanitizerSecret)" -}}{{- end -}}
 {{- range $name := list "gatewaySecret" "sanitizerSecret" -}}
 {{- $value := get $c $name -}}
 {{- if or (not (kindIs "string" $value)) (not (regexMatch `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` $value)) (gt (len $value) 63) -}}
@@ -274,6 +277,7 @@ data:
 {{- $flows := list
   (dict "source" "gateway" "sourceNS" $edge "sourceLabel" "edge" "dest" "sandbox-a" "destNS" $identity "destLabel" "identity" "port" 18444)
   (dict "source" "sandbox-a" "sourceNS" $identity "sourceLabel" "identity" "dest" "gateway" "destNS" $edge "destLabel" "edge" "port" 18443)
+  (dict "source" "sanitizer-core" "sourceNS" $identity "sourceLabel" "identity" "dest" "gateway" "destNS" $edge "destLabel" "edge" "port" 18443)
   (dict "source" "gateway" "sourceNS" $edge "sourceLabel" "edge" "dest" "sandbox-a" "destNS" $identity "destLabel" "identity" "port" 8086) -}}
 {{- range $flow := $flows }}
 ---

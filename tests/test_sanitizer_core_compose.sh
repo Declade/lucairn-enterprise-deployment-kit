@@ -38,8 +38,10 @@
 #      file passing --dsn — and, online with a stub Docker engine: memory below
 #      the floor, sidecar absent, core joined to an old sidecar namespace,
 #      registry not migrated, claims dropped, plaintext witness transport, an
-#      overlay forwarding LCR_PROFILE=hosted, a rendered core with --dsn, with
-#      no DSN source, or with an unmounted --registry-dsn-file path.
+#      overlay forwarding LCR_PROFILE=hosted, (K-C) kit-servicenow or the
+#      core's ServiceNow control client without the opt-in (the opt-in itself
+#      is tests/test_servicenow_optin.sh), a rendered core with --dsn, with no
+#      DSN source, or with an unmounted --registry-dsn-file path.
 #   F. `bin/lucairn support-bundle` never carries the DSN file: the archive of
 #      the generated install holds neither the DSN nor the password, and a
 #      collected file that does (a redaction miss) makes it refuse to archive.
@@ -1165,6 +1167,9 @@ printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-co
 printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn"],"environment":{'"$W_ENV"'"LCR_WITNESS_REQUIRE_MTLS":"true"}}'"$W_SVC"'}}' > "$TMP/config.unmounted.json"
 printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--registry-dsn-file","postgres://dsa:k158OnlineCanary@db/x"],"environment":{'"$W_ENV"'"LCR_WITNESS_REQUIRE_MTLS":"true"}}'"$W_SVC"'}}' > "$TMP/config.dsnpath.json"
 printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve"],"environment":{'"$W_ENV"'"LCR_WITNESS_REQUIRE_MTLS":"true","DSA_SANITIZER_CORE_REGISTRY_DSN":"postgres://dsa:k158OnlineCanary@postgres-sanitizer-core:5432/sanitizer_core"}}'"$W_SVC"'}}' > "$TMP/config.envdsn.json"
+# K-C: without the opt-in, the opt-in's own value and its control client stay red too.
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar",'"$CORE_DSN_WIRING"',"environment":{'"$W_ENV"'"LCR_WITNESS_REQUIRE_MTLS":"true","LCR_PROFILE":"kit-servicenow"}}'"$W_SVC"'}}' > "$TMP/config.kitsn.json"
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar",'"$CORE_DSN_WIRING"',"environment":{'"$W_ENV"'"LCR_WITNESS_REQUIRE_MTLS":"true","LCR_SERVICENOW_CONTROL_PEER_URL":"https://gateway.servicenow-control:18443"}}'"$W_SVC"'}}' > "$TMP/config.ctl.json"
 
 doctor_online() { # env assignments for the stub...
   env PATH="$DBIN:$BASE_PATH" STUB_MEM_BYTES=34359738368 STUB_PS="$TMP/ps.ok" STUB_NETMODE="container:$SIDE_ID" STUB_ENGINE_VERSION=26.1.4 \
@@ -1209,6 +1214,8 @@ online_case "RED migration ledger unreadable (DB down / wrong credentials)" "san
 online_case "RED claims dropped" "claim(s) DROPPED" red STUB_CORE_LOG="$TMP/core.drop"
 online_case "RED witness transport not mtls" "witness transport mode=tls-insecure-dev, not mtls" red STUB_CORE_LOG="$TMP/core.tls"
 online_case "RED overlay forwards LCR_PROFILE=hosted" "LCR_PROFILE is forwarded with a non-kit value" red STUB_CONFIG_JSON="$TMP/config.hosted.json"
+online_case "RED kit-servicenow without the opt-in" "LCR_PROFILE is forwarded with a non-kit value" red STUB_CONFIG_JSON="$TMP/config.kitsn.json"
+online_case "RED control client forwarded without the opt-in" "the ServiceNow control client is forwarded" red STUB_CONFIG_JSON="$TMP/config.ctl.json"
 online_case "RED rendered core given --dsn" "the core is given --dsn" red STUB_CONFIG_JSON="$TMP/config.dsnflag.json"
 grep -Fq "k158OnlineCanary" "$TMP/online.out" && fail "the rendered --dsn value is never printed" || pass "the rendered --dsn value is never printed"
 online_case "RED rendered core without any DSN source" "the core has no registry DSN source" red STUB_CONFIG_JSON="$TMP/config.nodsn.json"

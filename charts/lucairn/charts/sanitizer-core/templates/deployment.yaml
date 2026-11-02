@@ -4,6 +4,7 @@
 {{- $mtlsEnabled := and (kindIs "bool" $gm.enabled) $gm.enabled -}}
 {{- $coreTag := include "sanitizerCore.tag" . -}}
 {{- $dsnDir := "/etc/sanitizer-core/registry" -}}
+{{- $snOn := include "servicenowControl.enabled" . -}}
 {{- /*
   POD LAYOUT — one Pod, two containers (sidecar + core).
 
@@ -221,7 +222,22 @@ spec:
             # entry in `env:` outranks anything a Secret or ConfigMap could
             # bring in through `envFrom`, so no customer Secret can switch it.
             - name: LCR_PROFILE
-              value: "kit"
+              value: {{ if $snOn }}"kit-servicenow"{{ else }}"kit"{{ end }}
+            {{- if $snOn }}
+            # The ServiceNow control client (ticket redeem on the gateway's
+            # :18443): the existing sanitizer control leaf, ServerName
+            # gateway.servicenow-control. No key at rest; no core dumps.
+            - name: LCR_SERVICENOW_CONTROL_PEER_URL
+              value: {{ printf "https://gateway-servicenow-control.%s.svc.cluster.local:18443" $g.servicenowControl.gatewayNamespace | quote }}
+            - name: LCR_SERVICENOW_CONTROL_CA_CERT
+              value: /run/secrets/servicenow-control/sanitizer/ca.crt
+            - name: LCR_SERVICENOW_CONTROL_TLS_CERT
+              value: /run/secrets/servicenow-control/sanitizer/tls.crt
+            - name: LCR_SERVICENOW_CONTROL_TLS_KEY
+              value: /run/secrets/servicenow-control/sanitizer/tls.key
+            - name: GOTRACEBACK
+              value: none
+            {{- end }}
             - name: DSA_ENV
               value: {{ required "global.dsaEnv must be set to \"development\" or \"production\"" $g.dsaEnv | quote }}
             # The core serves HTTPS on the SANITIZER_CORE_MTLS_* family and
@@ -318,6 +334,12 @@ spec:
             {{- end }}
             - name: core-tmp
               mountPath: /tmp
+            {{- if $snOn }}
+            # Core container ONLY — the sidecar never sees control material.
+            - name: sn-control-core
+              mountPath: /run/secrets/servicenow-control/sanitizer
+              readOnly: true
+            {{- end }}
       volumes:
         - name: entrypoint
           configMap:
@@ -367,6 +389,18 @@ spec:
                 path: {{ .Values.global.mtls.certKey }}
               - key: {{ .Values.global.mtls.keyKey }}
                 path: {{ .Values.global.mtls.keyKey }}
+        {{- end }}
+        {{- if $snOn }}
+        # The sanitizer control leaf (global.servicenowControl.sanitizerSecret,
+        # the same Secret the Python worker uses), group-readable via fsGroup.
+        - name: sn-control-core
+          secret:
+            secretName: {{ $g.servicenowControl.sanitizerSecret }}
+            defaultMode: 0440
+            items:
+              - {key: ca.crt, path: ca.crt}
+              - {key: tls.crt, path: tls.crt}
+              - {key: tls.key, path: tls.key}
         {{- end }}
         - name: sidecar-tmp
           emptyDir:

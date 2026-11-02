@@ -14,6 +14,49 @@ carry a security fix are tagged **[Security]**.
 
 ## [Unreleased]
 
+### Added
+
+- **ServiceNow mode — available, off by default, the admin opts in per key
+  (T-1441 K-C).** The hosted service's ServiceNow mode is part of the kit. It
+  is on only when `customer.env` sets both
+  `GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=true` and a non-empty
+  `GATEWAY_SERVICENOW_KEY_BINDINGS` (read through Docker Compose's own
+  env-file parser); `bin/lucairn` then adds
+  `docker-compose.servicenow-control.yml` to every command. Bindings without
+  the switch make `bin/lucairn up` refuse with `session_config_invalid`. On
+  every `up` the Python sanitizer's config copy is rebuilt from the current
+  base config, the stored-login custody is checked (folder `0700`, file
+  `0400`, `10001:10001`) and every bound key id is checked against the running
+  gateway (counts only). The core runs `LCR_PROFILE=kit-servicenow` (set by the
+  overlay only), no core dumps, `GOTRACEBACK=none`; the model sidecar joins the
+  control network at a fixed address without an alias and mounts no control
+  material. `bin/lucairn doctor` checks the copy's hash, the login custody, the
+  mount scope of the full render, and online the bound key ids, the gateway's
+  admin ServiceNow status and exactly one gateway. Admin guide: INSTALL.md §
+  "ServiceNow mode (off by default)". The directory app
+  (`x_1620539_lucdir`, Business Source License 1.1 like the kit) ships as an
+  update set in `servicenow-directory/`.
+- **Helm:** the core always sets `LCR_PROFILE` as an `env:` literal — `kit`,
+  or `kit-servicenow` only with `global.servicenowControl.enabled` — so no
+  Secret attached through `envFrom` can change it. With the switch on the core
+  gets the control client (sanitizer control Secret, core container only) and
+  a NetworkPolicy to the gateway's control port. The chart's enabled
+  ServiceNow render stays held; use Compose for the mode in this release.
+
+### Stated limits
+
+- A mistyped key id runs the generic path; `up` and the doctor check every
+  bound id against the running gateway (while the gateway is not running, `up`
+  only warns).
+- The Python sanitizer and the new core present the same sanitizer control
+  certificate to the gateway's control listener (both are its sanitizer peers;
+  the single-use ticket carries the request).
+- The gateway routes still served by the Python sanitizer's `/v1/sanitize` —
+  `/v1/chat/completions`, `/mcp`, `/api/v1/proxy/messages` — use that
+  service's 1.0 ServiceNow path for a bound key; `/v1/messages` uses the core.
+- One gateway serves the mode (one container on Compose; `replicaCount: 1`, no
+  HPA on Helm).
+
 ## [1.9.7] — 2026-10-28 — images `0.5.5`
 
 Kit-only patch release: the `dsa-*` images stay `0.5.5` (same digests as

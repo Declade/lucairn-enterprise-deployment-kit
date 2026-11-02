@@ -387,30 +387,200 @@ validate_runtime_profile() {
 # first --compose path is retained as the base so bundles can carry the same
 # state file without requiring an installed kit at a fixed absolute path.
 runtime_profile_compose_args() {
-  local env_file="$1" base_compose="$2" profile overlay base_dir mode local_runtime rc
+  local env_file="$1" base_compose="$2" profile overlay base_dir mode="" local_runtime rc
   RUNTIME_COMPOSE_ARGS=()
+  base_dir="$(dirname "$base_compose")"
   validate_runtime_profile "$env_file"; rc=$?
   if [ "$rc" -eq 2 ]; then
     RUNTIME_COMPOSE_ARGS=(-f "$base_compose")
-    return 0
+  else
+    [ "$rc" -eq 0 ] || return 1
+    profile="$(runtime_profile_path "$env_file")"
+    mode="$(runtime_profile_field "$profile" runtime_mode)"
+    local_runtime="$(runtime_profile_field "$profile" local_runtime)"
+    while IFS= read -r overlay; do
+      [ -n "$overlay" ] || continue
+      if [ "$overlay" = "docker-compose.customer.yml" ]; then
+        RUNTIME_COMPOSE_ARGS+=(-f "$base_compose")
+      else
+        [ -f "$base_dir/$overlay" ] || { echo "runtime profile: failed (recorded overlay missing: $base_dir/$overlay)"; return 1; }
+        RUNTIME_COMPOSE_ARGS+=(-f "$base_dir/$overlay")
+      fi
+    done < <(runtime_profile_overlays "$profile")
   fi
-  [ "$rc" -eq 0 ] || return 1
-  profile="$(runtime_profile_path "$env_file")"
-  mode="$(runtime_profile_field "$profile" runtime_mode)"
-  local_runtime="$(runtime_profile_field "$profile" local_runtime)"
-  base_dir="$(dirname "$base_compose")"
-  while IFS= read -r overlay; do
-    [ -n "$overlay" ] || continue
-    if [ "$overlay" = "docker-compose.customer.yml" ]; then
-      RUNTIME_COMPOSE_ARGS+=(-f "$base_compose")
-    else
-      [ -f "$base_dir/$overlay" ] || { echo "runtime profile: failed (recorded overlay missing: $base_dir/$overlay)"; return 1; }
-      RUNTIME_COMPOSE_ARGS+=(-f "$base_dir/$overlay")
-    fi
-  done < <(runtime_profile_overlays "$profile")
+  # Kit 2.0 K-C: the ServiceNow mode overlay, selected only by the admin's
+  # opt-in in customer.env (servicenow_resolve). Off = exactly the arguments
+  # above, so every pre-K-C install renders as before.
+  servicenow_resolve "$env_file" "$base_compose"
+  if [ "$SN_STATE" = "on" ]; then
+    overlay="$base_dir/$SERVICENOW_OVERLAY"
+    [ -f "$overlay" ] && [ ! -L "$overlay" ] \
+      || { echo "ServiceNow mode: failed (customer.env opts in, but $overlay is missing or not a regular file)"; return 1; }
+    RUNTIME_COMPOSE_ARGS+=(-f "$overlay")
+  fi
   if [ "$mode" = "local-runtime" ]; then
     RUNTIME_COMPOSE_ARGS+=(--profile "$local_runtime")
   fi
+  return 0
+}
+
+# ── ServiceNow mode opt-in (kit 2.0 K-C, T-1441) ────────────────────────────
+#
+# The mode ships OFF. The customer admin opts in per API key with the hosted
+# setting names in customer.env: GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=true
+# AND a non-empty GATEWAY_SERVICENOW_KEY_BINDINGS (+ GATEWAY_SERVICENOW_INSTANCES
+# and the overlay's inputs). The decision is made on Docker Compose's own
+# reading of customer.env (a probe project rendered with `docker compose
+# config`, the same env file and the same shell environment as the real `up`),
+# never on this script's grep: Compose accepts `export X=`, quotes, CRLF,
+# inline comments and duplicate keys (last wins), and the decision must match
+# what Compose then hands the gateway.
+#
+# One sound short-circuit: when no ServiceNow setting name occurs in
+# customer.env outside a comment (a line on which a `#` comes first can never
+# assign it — an assignment line starts with the name, optionally after
+# `export`) and none of the three names is in the environment, Compose cannot
+# produce a value for them, so the state is off without running it (every
+# pre-K-C customer.env, and a copy of customer.env.example with its commented
+# block, takes this path).
+#
+# SN_STATE: off | on | invalid (bindings without the switch, a bad binding
+# list, ... -> `up` refuses with the gateway's word session_config_invalid) |
+# unknown (names present, Compose could not render; the mode stays off).
+SERVICENOW_OVERLAY="docker-compose.servicenow-control.yml"
+SN_STATE="off"; SN_WORD=""; SN_HINT=""; SN_SWITCH=""; SN_BINDINGS=""; SN_INSTANCES=""
+SN_SANITIZER_IP=""; SN_CORE_IP=""; SN_PORT=""; SN_BASE=""; SN_COPY=""; SN_MATERIAL=""; SN_LOGIN=""
+SN_KEYED_LINE=""
+
+servicenow_named() {
+  [ -n "${GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED+x}${GATEWAY_SERVICENOW_KEY_BINDINGS+x}${GATEWAY_SERVICENOW_INSTANCES+x}" ] && return 0
+  grep -Eq '^[^#]*GATEWAY_SERVICENOW_' "$1" 2>/dev/null
+}
+
+# The probe project: one inert service whose environment and bind sources are
+# the values Compose would interpolate. With $1 = secrets it also carries
+# DSA_ADMIN_KEY (piped straight into the helper, never printed or written).
+servicenow_probe_yaml() {
+  cat <<'PROBE'
+services:
+  lucairn-servicenow-probe:
+    image: lucairn-servicenow-probe
+    environment:
+      S: "${GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED:-}"
+      B: "${GATEWAY_SERVICENOW_KEY_BINDINGS:-}"
+      I: "${GATEWAY_SERVICENOW_INSTANCES:-}"
+      SUBNET: "${SERVICENOW_CONTROL_SUBNET:-}"
+      GATEWAY_IP: "${SERVICENOW_CONTROL_GATEWAY_IP:-}"
+      SANITIZER_IP: "${SERVICENOW_CONTROL_SANITIZER_IP:-}"
+      CORE_IP: "${SERVICENOW_CONTROL_CORE_IP:-}"
+      PORT: "${GATEWAY_PORT:-8080}"
+PROBE
+  [ "${1:-}" = secrets ] && printf '      A: "${DSA_ADMIN_KEY:-}"\n'
+  cat <<'PROBE'
+    volumes:
+      - {type: bind, source: "${SANITIZER_CONFIG_FILE:-./config/default-sanitizer.yaml}", target: /p/base}
+      - {type: bind, source: "${SERVICENOW_CONTROL_SANITIZER_CONFIG:-/lucairn-unset}", target: /p/copy}
+      - {type: bind, source: "${SERVICENOW_CONTROL_MATERIAL:-/lucairn-unset}", target: /p/material}
+      - {type: bind, source: "${SERVICENOW_LOGIN_DIR:-/lucairn-unset}", target: /p/login}
+PROBE
+}
+
+# servicenow_probe_render <env file> <base compose> [secrets] — the probe's
+# `docker compose config --format json` on stdout (consumed by a pipe only).
+servicenow_probe_render() {
+  local env_file="$1" base_compose="$2" mode="${3:-}" compose probe rc=0
+  compose="$(compose_cmd)"
+  [ -n "$compose" ] || return 1
+  probe="$(mktemp -d)" || return 1
+  servicenow_probe_yaml "$mode" > "$probe/lucairn-servicenow-probe.yml"
+  $compose --env-file "$env_file" --project-directory "$(dirname "$base_compose")" \
+    -f "$probe/lucairn-servicenow-probe.yml" config --format json 2>/dev/null || rc=$?
+  rm -rf "$probe"
+  return "$rc"
+}
+
+servicenow_helper() {
+  local python
+  python="$(command -v python3 2>/dev/null || true)"
+  [ -n "$python" ] || { echo "REFUSED=python_unavailable"; echo "HINT=python3 is required for the ServiceNow mode"; return 2; }
+  "$python" -I "$ROOT/bin/lucairn-servicenow.py" "$@"
+}
+
+# servicenow_resolve <env file> <base compose> — sets SN_*; never fails.
+servicenow_resolve() {
+  local env_file="$1" base_compose="$2" lines line
+  SN_STATE="off"; SN_WORD=""; SN_HINT=""; SN_SWITCH=""; SN_BINDINGS=""; SN_INSTANCES=""
+  SN_SANITIZER_IP=""; SN_CORE_IP=""; SN_PORT=""; SN_BASE=""; SN_COPY=""; SN_MATERIAL=""; SN_LOGIN=""
+  servicenow_named "$env_file" || return 0
+  lines="$(servicenow_probe_render "$env_file" "$base_compose" | servicenow_helper state 2>/dev/null || true)"
+  SN_STATE="unknown"
+  while IFS= read -r line; do
+    case "$line" in
+      STATE=*) SN_STATE="${line#STATE=}" ;;
+      WORD=*) SN_WORD="${line#WORD=}" ;;
+      HINT=*) SN_HINT="${line#HINT=}" ;;
+      SWITCH=*) SN_SWITCH="${line#SWITCH=}" ;;
+      BINDINGS=*) SN_BINDINGS="${line#BINDINGS=}" ;;
+      INSTANCES=*) SN_INSTANCES="${line#INSTANCES=}" ;;
+      SANITIZER_IP=*) SN_SANITIZER_IP="${line#SANITIZER_IP=}" ;;
+      CORE_IP=*) SN_CORE_IP="${line#CORE_IP=}" ;;
+      PORT=*) SN_PORT="${line#PORT=}" ;;
+      BASE=*) SN_BASE="${line#BASE=}" ;;
+      COPY=*) SN_COPY="${line#COPY=}" ;;
+      MATERIAL=*) SN_MATERIAL="${line#MATERIAL=}" ;;
+      LOGIN=*) SN_LOGIN="${line#LOGIN=}" ;;
+    esac
+  done <<<"$lines"
+  case "$SN_STATE" in off|on|invalid|unknown) : ;; *) SN_STATE="unknown" ;; esac
+}
+
+# Prints the helper's REFUSED/HINT pair as one sentence.
+servicenow_refusal_text() {
+  local word hint
+  word="$(printf '%s\n' "$1" | sed -n 's/^REFUSED=//p' | tail -1)"
+  hint="$(printf '%s\n' "$1" | sed -n 's/^HINT=//p' | tail -1)"
+  printf '%s — %s' "${word:-refused}" "${hint:-no detail}"
+}
+
+# servicenow_keyed <env file> <base compose> — every bound key id exists under
+# its instance's owner on the RUNNING gateway (admin API on 127.0.0.1, counts
+# only). rc 0 ok, 1 missing, 3 not checked (gateway not reachable/readable).
+servicenow_keyed() {
+  local out rc=0
+  out="$(servicenow_probe_render "$1" "$2" secrets | servicenow_helper keyed 2>/dev/null)" || rc=$?
+  SN_KEYED_LINE="$(printf '%s\n' "$out" | sed -n 's/^KEYED=//p' | tail -1)"
+  [ "$rc" -eq 2 ] && SN_KEYED_LINE="$(servicenow_refusal_text "$out")" && rc=3
+  return "$rc"
+}
+
+# servicenow_up_gate <env file> <base compose> — runs in `up` before Compose.
+servicenow_up_gate() {
+  local env_file="$1" base_compose="$2" out rc
+  case "$SN_STATE" in
+    off) return 0 ;;
+    unknown)
+      # Fail closed: an opt-in that cannot be read must not start the stack
+      # without its overlay (the mode would be silently off for bound keys).
+      fail "ServiceNow mode: customer.env names ServiceNow settings, but they could not be evaluated (docker compose could not render customer.env, or python3 is missing). bin/lucairn up refuses to start"
+      ;;
+    invalid)
+      fail "ServiceNow mode: $SN_WORD — $SN_HINT. bin/lucairn up refuses to start; fix customer.env (INSTALL.md § \"ServiceNow mode (off by default)\")"
+      ;;
+  esac
+  # M3a: rebuild the Python sanitizer's config copy from the CURRENT base on
+  # every up, so an edit of the base can never be left behind in the copy.
+  rc=0; out="$(servicenow_helper config-write --base "$SN_BASE" --copy "$SN_COPY" --sanitizer-ip "$SN_SANITIZER_IP" 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] || fail "ServiceNow mode: the sanitizer config copy was not rebuilt: $(servicenow_refusal_text "$out"). bin/lucairn up refuses to start"
+  info "ServiceNow mode: sanitizer config copy rebuilt from the base ($(printf '%s\n' "$out" | sed -n 's/^CONFIG=written //p'))"
+  rc=0; out="$(servicenow_helper login-check --dir "$SN_LOGIN" 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] || fail "ServiceNow mode: stored login: $(servicenow_refusal_text "$out"). bin/lucairn up refuses to start"
+  rc=0; servicenow_keyed "$env_file" "$base_compose" || rc=$?
+  case "$rc" in
+    0) info "ServiceNow mode: bound keys exist ($SN_KEYED_LINE)" ;;
+    1) fail "ServiceNow mode: a bound key id does not exist under its instance's owner ($SN_KEYED_LINE); a mistyped id would silently run the generic path. Copy the key ids from GET /api/v1/admin/customers/<customer_id>/keys. bin/lucairn up refuses to start" ;;
+    *) warn "ServiceNow mode: bound key ids NOT checked — the gateway's admin API on 127.0.0.1:${SN_PORT:-8080} gave: ${SN_KEYED_LINE:-no answer} (expected while the gateway is not running). Run bin/lucairn doctor once the stack is up" ;;
+  esac
+  info "ServiceNow mode: ON for $SN_BINDINGS bound key(s) on $SN_INSTANCES instance(s) (overlay $SERVICENOW_OVERLAY)"
 }
 
 # Return the exact Compose file selected by the already-resolved canonical
@@ -528,6 +698,14 @@ lifecycle_command() {
   runtime_profile_compose_args "$env_file" "$compose_file" || return 1
   compose="$(compose_cmd)"
   [ -n "$compose" ] || fail "docker compose is required for $verb"
+  # Kit 2.0 K-C: the ServiceNow opt-in is checked (and its config copy
+  # rebuilt) before Compose starts anything; other verbs only follow the
+  # overlay selection.
+  if [ "$verb" = "up" ]; then
+    servicenow_up_gate "$env_file" "$compose_file"
+  elif [ "$SN_STATE" = "invalid" ]; then
+    warn "ServiceNow mode: $SN_WORD — $SN_HINT (the opt-in overlay is not selected; bin/lucairn up refuses until customer.env is fixed)"
+  fi
   case "$verb" in
     up)
       lifecycle_registry_migration "$compose" "$env_file"
@@ -3033,14 +3211,23 @@ check_sanitizer_core_helm() {
       fails << "the core has no memory limit" if mib(core.dig("resources", "limits", "memory")).nil?
       env = {}
       (core["env"] || []).each { |e| env[e["name"]] = e }
-      # K-C M2 (moved here in K-B fix round 4 so the K-C OFF render equals
-      # this one): the core ALWAYS sets LCR_PROFILE=kit in its own env: (a
-      # literal, which Kubernetes ranks above anything envFrom could bring).
+      # K-C M2: the core ALWAYS sets LCR_PROFILE in its own env: (a literal,
+      # which Kubernetes ranks above anything envFrom could bring): kit, or
+      # kit-servicenow only with global.servicenowControl.enabled.
+      sn_on = gwenv["GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED"] == "true"
+      want = sn_on ? "kit-servicenow" : "kit"
       prof = env["LCR_PROFILE"]
-      unless prof && prof["value"] == "kit" && !prof.key?("valueFrom")
-        fails << "the core does not set LCR_PROFILE=kit as a literal in its env (#{prof.nil? ? "absent" : prof["value"].inspect}); a profile from anywhere else could switch the ServiceNow mode"
+      unless prof && prof["value"] == want && !prof.key?("valueFrom")
+        fails << "the core does not set LCR_PROFILE=#{want} as a literal in its env (#{prof.nil? ? "absent" : prof["value"].inspect}); a profile from anywhere else could switch the ServiceNow mode"
       end
-      fails << "the ServiceNow control client is forwarded to the core (the kit profile refuses to boot with it)" if env.keys.any? { |k| k.start_with?("LCR_SERVICENOW_CONTROL_") }
+      ctl = env.keys.select { |k| k.start_with?("LCR_SERVICENOW_CONTROL_") }.sort
+      if sn_on
+        need = %w[LCR_SERVICENOW_CONTROL_CA_CERT LCR_SERVICENOW_CONTROL_PEER_URL LCR_SERVICENOW_CONTROL_TLS_CERT LCR_SERVICENOW_CONTROL_TLS_KEY]
+        fails << "the ServiceNow mode is on but the core lacks its control client (#{(need - ctl).join(",")})" unless (need - ctl).empty?
+      else
+        fails << "the ServiceNow control client is forwarded to the core (the kit profile refuses to boot with it)" unless ctl.empty?
+      end
+      puts "SNMODE #{sn_on}"
       %w[SANITIZER_CORE_MTLS_CA_BUNDLE_PATH SANITIZER_CORE_MTLS_SERVER_CERT_PATH SANITIZER_CORE_MTLS_SERVER_KEY_PATH].each { |k| fails << "the core lacks #{k}" unless env.key?(k) }
       prod = env.dig("DSA_ENV", "value") == "production"
       if prod
@@ -3106,7 +3293,7 @@ check_sanitizer_core_helm() {
     warns.each { |w| puts "WARN #{w}" }
     puts "OK #{oks.join("; ")}" unless oks.empty?
   ' 2>&1)" || { echo "sanitizer core (Helm): FAIL — could not parse the render."; return 1; }
-  local failed=0 line ns="" secret="" gw_ns="" gw_secret="" prod="false" pgbundled="true"
+  local failed=0 line ns="" secret="" gw_ns="" gw_secret="" prod="false" sn_on="false" pgbundled="true"
   while IFS= read -r line; do
     case "$line" in
       "FAIL "*) echo "sanitizer core (Helm): failed (${line#FAIL })"; failed=1 ;;
@@ -3116,6 +3303,7 @@ check_sanitizer_core_helm() {
       "SECRET "*) secret="${line#SECRET }" ;;
       "GWSECRET "*) gw_ns="$(printf '%s' "${line#GWSECRET }" | cut -d' ' -f1)"; gw_secret="$(printf '%s' "${line#GWSECRET }" | cut -d' ' -f2)" ;;
       "PROD "*) prod="${line#PROD }" ;;
+      "SNMODE "*) sn_on="${line#SNMODE }" ;;
       "PGBUNDLED "*) pgbundled="${line#PGBUNDLED }" ;;
       *) [ -n "$line" ] && { echo "sanitizer core (Helm): failed (unexpected inspector output: $line)"; failed=1; } ;;
     esac
@@ -3126,7 +3314,7 @@ check_sanitizer_core_helm() {
     info "sanitizer core (Helm): live checks skipped (set DOCTOR_KUBE_LIVE=1 to inspect the running release with kubectl)"
     return 0
   fi
-  check_sanitizer_core_kube "$ns" "$secret" "$gw_ns" "$gw_secret" "$prod" "$pgbundled"
+  check_sanitizer_core_kube "$ns" "$secret" "$gw_ns" "$gw_secret" "$prod" "$sn_on" "$pgbundled"
 }
 
 # sanitizer_core_manifest_digest_in <manifest> <image key> — the recorded
@@ -3144,11 +3332,11 @@ sanitizer_core_manifest_digest_in() {
   ' "$manifest"
 }
 
-# check_sanitizer_core_kube <identity ns> <core mTLS Secret> <gateway ns> <gateway mTLS Secret> <prod true|false> [<bundled registry true|false>]
+# check_sanitizer_core_kube <identity ns> <core mTLS Secret> <gateway ns> <gateway mTLS Secret> <prod true|false> [<ServiceNow mode on true|false> [<bundled registry true|false>]]
 # The running release, via kubectl's CURRENT context (DOCTOR_KUBE_LIVE=1).
 # Asked for and not reachable = failure, never a silent skip.
 check_sanitizer_core_kube() {
-  local ns="$1" secret="$2" gw_ns="$3" gw_secret="$4" prod="$5" pgbundled="${6:-true}" failed=0 out
+  local ns="$1" secret="$2" gw_ns="$3" gw_secret="$4" prod="$5" sn_on="${6:-false}" pgbundled="${7:-true}" failed=0 out
   have kubectl || { echo "sanitizer core (live): failed (DOCTOR_KUBE_LIVE=1 but kubectl is not installed)"; return 1; }
   if ! kubectl get namespace "$ns" >/dev/null 2>&1; then
     echo "sanitizer core (live): failed (namespace $ns not reachable with the current kubectl context)"
@@ -3196,6 +3384,17 @@ check_sanitizer_core_kube() {
   fi
   if [ "${drops:-0}" -gt 0 ]; then
     echo "sanitizer core (live): failed ($drops claim(s) DROPPED in the core's log — certificates of those turns lack the core's sanitizer claim)"; failed=1
+  fi
+  # K-C: the render refuses replicaCount != 1 / HPA with the ServiceNow mode on
+  # (servicenowControl.workloadValidate); `kubectl scale` bypasses the render,
+  # so count the running release too.
+  if [ "$sn_on" = "true" ]; then
+    out="$(kubectl -n "$gw_ns" get deployment gateway -o jsonpath='{.spec.replicas}/{.status.replicas}' 2>/dev/null || true)"
+    if [ "$out" = "1/1" ]; then
+      echo "sanitizer core (live): ServiceNow mode — one gateway replica"
+    else
+      echo "sanitizer core (live): failed (ServiceNow mode needs exactly one gateway replica; Deployment gateway spec/status replicas = ${out:-unknown}. The session manager and its tickets live in one process: kubectl -n $gw_ns scale deployment gateway --replicas=1)"; failed=1
+    fi
   fi
   return "$failed"
 }
@@ -7524,6 +7723,16 @@ bundle_create() {
   if [ "$runtime_rc" -eq 2 ] || runtime_profile_overlays "$(runtime_profile_path "$env_file")" | grep -qx 'docker-compose.self-hosted.yml'; then
     require_file "$self_compose" "self-hosted compose"
   fi
+  # Kit 2.0 K-C: a customer.env that opts in to the ServiceNow mode carries its
+  # overlay and its bootstrap; one that names the settings wrongly is refused
+  # here exactly as `up` would refuse it.
+  servicenow_resolve "$env_file" "$base_compose"
+  [ "$SN_STATE" != "invalid" ] || fail "bundle create: ServiceNow mode: $SN_WORD — $SN_HINT"
+  [ "$SN_STATE" != "unknown" ] || fail "bundle create: customer.env names ServiceNow settings, but they could not be evaluated (docker compose and python3 are needed to read the opt-in)"
+  if [ "$SN_STATE" = "on" ]; then
+    require_file "$(dirname "$base_compose")/$SERVICENOW_OVERLAY" "ServiceNow opt-in overlay"
+    require_file "$ROOT/scripts/bootstrap-servicenow-control.py" "ServiceNow control bootstrap"
+  fi
   if [ -n "$image_tar" ]; then
     [ -f "$image_tar" ] && [ ! -L "$image_tar" ] \
       || fail "image tar is missing, unsafe, or not regular: $image_tar"
@@ -7567,6 +7776,10 @@ bundle_create() {
   # and DSN writer share (bin/compose-env.sh). Optional for the verifier,
   # which never sources a bundle's helper.
   cp "$ROOT/bin/compose-env.sh" "$staging/bin/compose-env.sh"
+  # The ServiceNow opt-in helper: the CLI reads every opt-in decision through it.
+  require_file "$ROOT/bin/lucairn-servicenow.py" "ServiceNow opt-in helper"
+  cp "$ROOT/bin/lucairn-servicenow.py" "$staging/bin/lucairn-servicenow.py"
+  chmod 0755 "$staging/bin/lucairn-servicenow.py"
   cp "$ROOT/VERSION" "$staging/VERSION"
   cp "$ROOT/RELEASE_DATE" "$staging/RELEASE_DATE"
   mkdir -p "$staging/scripts"
@@ -7642,6 +7855,11 @@ bundle_create() {
       cp "$ROOT/scripts/$_core_tool" "$staging/scripts/$_core_tool"
       chmod 0755 "$staging/scripts/$_core_tool"
     done
+  fi
+  if [ "$SN_STATE" = "on" ]; then
+    cp "$(dirname "$base_compose")/$SERVICENOW_OVERLAY" "$staging/install/$SERVICENOW_OVERLAY"
+    cp "$ROOT/scripts/bootstrap-servicenow-control.py" "$staging/scripts/bootstrap-servicenow-control.py"
+    chmod 0755 "$staging/scripts/bootstrap-servicenow-control.py"
   fi
   cp -R "$ROOT/starter-templates"/. "$staging/starter-templates/"
   cp "$ROOT/OPS.md" "$ROOT/TROUBLESHOOTING.md" "$ROOT/README.md" "$staging/docs/"
@@ -7849,6 +8067,14 @@ bundle_verify() {
       require_file "$root/bin/compose-env.sh" "bundle Compose env reader (bin/compose-env.sh)"
     fi
     require_file "$root/bin/runtime-profile-lib.sh" "bundle runtime-profile helper"
+    # Kit 2.0 K-C: a bundle that carries the ServiceNow opt-in overlay carries
+    # what `up` and `doctor` need for it (an offline customer cannot fetch them).
+    if [ -e "$root/install/$SERVICENOW_OVERLAY" ] || [ -L "$root/install/$SERVICENOW_OVERLAY" ]; then
+      require_file "$root/bin/lucairn-servicenow.py" "bundle ServiceNow opt-in helper"
+      require_file "$root/scripts/bootstrap-servicenow-control.py" "bundle ServiceNow control bootstrap"
+      [ -x "$root/scripts/bootstrap-servicenow-control.py" ] \
+        || { rm -rf "$tmp"; fail "bundle ServiceNow control bootstrap is not executable"; }
+    fi
     require_file "$root/install/customer.env.image-manifest.yaml" "bundle recorded image-manifest snapshot"
     require_file "$root/image-manifest.yaml" "bundle image-manifest copy"
     cmp -s "$root/install/customer.env.image-manifest.yaml" "$root/image-manifest.yaml" \
@@ -8652,23 +8878,33 @@ check_sanitizer_core_config() {
   #     half of this check runs online in check_sanitizer_core_runtime.
   check_sanitizer_core_dsn "$env_file" "$compose_file" "$pw_ok" || failed=1
 
-  # 3. Profile. The kit compose does not forward LCR_PROFILE to the core, so
-  #    the core always runs the kit profile (unset = kit), under which it
-  #    refuses the ServiceNow mode at boot (DSA instance_wire.go profileBoot).
-  #    The value below is reported because an operator who set it expects it
-  #    to matter. The rendered-config half of this check (an overlay that DOES
-  #    forward it) runs online in check_sanitizer_core_runtime.
+  # 3. Profile. customer.env never sets LCR_PROFILE: the base compose does not
+  #    forward it (unset = the kit profile, under which the core refuses the
+  #    ServiceNow mode at boot, DSA instance_wire.go profileBoot), and the
+  #    ServiceNow opt-in overlay sets the one other kit value, kit-servicenow,
+  #    as a literal on the core. The value below is reported because an
+  #    operator who set it expects it to matter. The rendered-config half of
+  #    this check runs in check_servicenow_mode and, online,
+  #    check_sanitizer_core_runtime.
   val="$(env_value "$env_file" LCR_PROFILE)"
   case "$val" in
     ''|kit)
-      echo "sanitizer core profile: kit (LCR_PROFILE ${val:-unset}; the ServiceNow mode is refused in this kit release)"
+      if [ "$SN_STATE" = "on" ]; then
+        echo "sanitizer core profile: kit-servicenow (set by the ServiceNow opt-in overlay; LCR_PROFILE ${val:-unset} in customer.env)"
+      else
+        echo "sanitizer core profile: kit (LCR_PROFILE ${val:-unset}; the ServiceNow mode is off — opt in per key, INSTALL.md § \"ServiceNow mode (off by default)\")"
+      fi
       ;;
     hosted)
       echo "sanitizer core profile: failed (LCR_PROFILE=hosted in $env_file — hosted is the Lucairn-hosted service's profile; a kit install runs the kit profile and the kit compose does not forward this variable. Remove the line.)"
       failed=1
       ;;
+    kit-servicenow)
+      echo "sanitizer core profile: failed (LCR_PROFILE=kit-servicenow in $env_file — that value is set only by the ServiceNow opt-in overlay, never in customer.env; the kit compose does not forward this variable. Remove the line and opt in per key, INSTALL.md § \"ServiceNow mode (off by default)\".)"
+      failed=1
+      ;;
     *)
-      echo "sanitizer core profile: failed (LCR_PROFILE in $env_file is neither unset, kit nor hosted; the core refuses to start on any other value. Remove the line.)"
+      echo "sanitizer core profile: failed (LCR_PROFILE in $env_file is neither unset nor kit; the core refuses to start on any value it does not know. Remove the line.)"
       failed=1
       ;;
   esac
@@ -9013,8 +9249,8 @@ check_sanitizer_core_runtime() {
   #    rendered JSON holds secrets; it goes straight into python3 and is never
   #    printed or written (verdicts name settings, never values).
   local verdict
-  verdict="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" config --format json 2>/dev/null | python3 -c '
-import json, re, sys
+  verdict="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" config --format json 2>/dev/null | SN_STATE="$SN_STATE" python3 -c '
+import json, os, re, sys
 try:
     doc = json.load(sys.stdin)
 except Exception:
@@ -9026,10 +9262,15 @@ env = svc.get("environment") or {}
 if isinstance(env, list):
     env = dict(e.split("=", 1) if "=" in e else (e, "") for e in env)
 bad = []
-if (env.get("LCR_PROFILE") or "") not in ("", "kit"):
-    bad.append("LCR_PROFILE is forwarded with a non-kit value")
-if any(k.startswith("LCR_SERVICENOW_CONTROL_") for k in env):
-    bad.append("the ServiceNow control client is forwarded (the kit profile refuses to boot with it)")
+if os.environ.get("SN_STATE") == "on":
+    # The ServiceNow opt-in overlay: exactly kit-servicenow + the control client.
+    if env.get("LCR_PROFILE") != "kit-servicenow":
+        bad.append("the ServiceNow opt-in is on but the core does not run LCR_PROFILE=kit-servicenow")
+else:
+    if (env.get("LCR_PROFILE") or "") not in ("", "kit"):
+        bad.append("LCR_PROFILE is forwarded with a non-kit value")
+    if any(k.startswith("LCR_SERVICENOW_CONTROL_") for k in env):
+        bad.append("the ServiceNow control client is forwarded (the kit profile refuses to boot with it)")
 # Final-read M1: the witness hop of the core must match what the witness it dials
 # serves. The LOCAL witness serves TLS on :50057 only with GRPC_TLS_ENABLED=true
 # (exactly "true"); with it the core must be latched with a complete client
@@ -9091,7 +9332,7 @@ for p in paths:
 print("; ".join(bad) if bad else "ok")
 ' 2>/dev/null || true)"
   case "$verdict" in
-    ok) echo "sanitizer core rendered config: ok (kit profile, witness hop matches the witness, sidecar namespace, registry DSN from a mounted file)" ;;
+    ok) echo "sanitizer core rendered config: ok ($([ "$SN_STATE" = on ] && echo kit-servicenow || echo kit) profile, witness hop matches the witness, sidecar namespace, registry DSN from a mounted file)" ;;
     absent) echo "sanitizer core rendered config: failed (no sanitizer-core service in the rendered project — kit 2.0 compose files are required)"; failed=1 ;;
     ''|unreadable) echo "sanitizer core rendered config: skipped (docker compose config --format json gave no readable output)" ;;
     *) echo "sanitizer core rendered config: failed ($verdict)"; failed=1 ;;
@@ -9257,6 +9498,120 @@ print("; ".join(bad) if bad else "ok")
     esac
   fi
 
+  return "$failed"
+}
+
+# Kit 2.0 K-C (T-1441): the ServiceNow opt-in, configuration half — runs with
+# and without --offline. Off: says so, and the mount/setting scan of the full
+# render (client-side `docker compose config`, no daemon) proves no service
+# holds control material or mode settings. On: the Python sanitizer's config
+# copy equals a rebuild of the CURRENT base (M3a), the stored-login folder and
+# file custody (0700 / 0400, uid 10001 on Linux), and the scan proves the
+# login file and the control material reach ONLY the expected services (login
+# -> gateway; gateway leaf -> gateway; sanitizer leaf -> sanitizer +
+# sanitizer-core, never the sidecar), the core runs kit-servicenow with its
+# control client, no core dumps, GOTRACEBACK=none, the sidecar sits on the
+# control network at SERVICENOW_CONTROL_CORE_IP without an alias.
+check_servicenow_mode() {
+  local env_file="$1" compose_file="$2" failed=0 out rc compose expect line
+  case "$SN_STATE" in
+    off)
+      echo "ServiceNow mode: off (default — no key bound in customer.env; the opt-in overlay is not selected)"
+      [ "$SN_SWITCH" = "true" ] && warn "ServiceNow mode: GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=true but GATEWAY_SERVICENOW_KEY_BINDINGS is empty — the mode stays off until a key is bound"
+      ;;
+    unknown)
+      # NON-COVERAGE: Compose could not render the probe (not installed, or
+      # customer.env does not parse); the opt-in was not evaluated.
+      echo "ServiceNow mode: note — customer.env names ServiceNow settings but docker compose could not render them; not checked, the opt-in overlay is not selected"
+      return 0
+      ;;
+    invalid)
+      echo "ServiceNow mode: failed ($SN_WORD — $SN_HINT; bin/lucairn up refuses to start)"
+      return 1
+      ;;
+    on)
+      echo "ServiceNow mode: opted in ($SN_BINDINGS bound key(s) on $SN_INSTANCES instance(s); overlay $SERVICENOW_OVERLAY)"
+      rc=0; out="$(servicenow_helper config-check --base "$SN_BASE" --copy "$SN_COPY" --sanitizer-ip "$SN_SANITIZER_IP" 2>&1)" || rc=$?
+      if [ "$rc" -eq 0 ]; then
+        echo "ServiceNow mode: sanitizer config copy ok (equals a rebuild of the current base; $(printf '%s\n' "$out" | sed -n 's/^CONFIG=ok //p'))"
+      else
+        echo "ServiceNow mode: failed (sanitizer config copy: $(servicenow_refusal_text "$out"))"
+        failed=1
+      fi
+      rc=0; out="$(servicenow_helper login-check --dir "$SN_LOGIN" 2>&1)" || rc=$?
+      if [ "$rc" -eq 0 ]; then
+        echo "ServiceNow mode: stored login $(printf '%s\n' "$out" | sed -n 's/^LOGIN=//p')"
+      else
+        echo "ServiceNow mode: failed (stored login: $(servicenow_refusal_text "$out"))"
+        failed=1
+      fi
+      ;;
+  esac
+  compose="$(compose_cmd)"
+  if [ -z "$compose" ]; then
+    echo "ServiceNow mode: note — mount scope not checked (docker compose unavailable)"
+    return "$failed"
+  fi
+  expect=off; [ "$SN_STATE" = "on" ] && expect=on
+  rc=0
+  out="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" config --format json 2>/dev/null \
+    | servicenow_helper scan --expect "$expect" --material "$SN_MATERIAL" --login-dir "$SN_LOGIN" --copy "$SN_COPY" --core-ip "$SN_CORE_IP" 2>/dev/null)" || rc=$?
+  case "$(printf '%s\n' "$out" | sed -n 's/^SCAN=//p' | tail -1)" in
+    ok) echo "ServiceNow mode: mount and setting scope ok (expected $expect)" ;;
+    failed)
+      while IFS= read -r line; do
+        case "$line" in FAIL=*) echo "ServiceNow mode: failed (${line#FAIL=})" ;; esac
+      done <<<"$out"
+      failed=1
+      ;;
+    *)
+      # NON-COVERAGE: the full render was not readable here (stub engine, or
+      # a customer.env Compose refuses — `docker compose config` then fails
+      # the doctor's own compose step online).
+      echo "ServiceNow mode: note — mount scope not checked (docker compose config --format json gave no readable render)"
+      ;;
+  esac
+  return "$failed"
+}
+
+# Online half (the running stack; only when opted in): every bound key id
+# exists under its instance's owner on the running gateway (admin API, counts
+# only — a typo'd id would silently take the generic path), the gateway's
+# admin ServiceNow status is "on" with every instance unlocked and a control
+# certificate valid for >= 14 more days, and exactly ONE gateway container
+# serves the mode (the session manager is per process; a manual `--scale` or a
+# second container breaks the ticket route).
+check_servicenow_runtime() {
+  local env_file="$1" compose_file="$2" strict_runtime="${3:-0}" failed=0 out rc compose n="" ps_out=""
+  [ "$SN_STATE" = "on" ] || return 0
+  compose="$(compose_cmd)"
+  [ -n "$compose" ] && ps_out="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" ps -a --format '{{.Service}}|{{.ID}}|{{.State}}|{{.Health}}' 2>/dev/null || true)"
+  if ! printf '%s\n' "$ps_out" | grep -q '|'; then
+    echo "ServiceNow mode: runtime not started (no containers in this Compose project)"
+    [ "$strict_runtime" -eq 1 ] && return 1
+    return 0
+  fi
+  rc=0; servicenow_keyed "$env_file" "$compose_file" || rc=$?
+  case "$rc" in
+    0) echo "ServiceNow mode: bound keys exist ($SN_KEYED_LINE)" ;;
+    1) echo "ServiceNow mode: failed (a bound key id does not exist under its instance's owner: $SN_KEYED_LINE — that key would run the generic path)"; failed=1 ;;
+    *) echo "ServiceNow mode: failed (bound key ids could not be checked: ${SN_KEYED_LINE:-no answer} — the gateway's admin API on 127.0.0.1:${SN_PORT:-8080})"; failed=1 ;;
+  esac
+  rc=0; out="$(servicenow_probe_render "$env_file" "$compose_file" secrets | servicenow_helper status 2>/dev/null)" || rc=$?
+  out="$(printf '%s\n' "$out" | sed -n 's/^STATUS=//p' | tail -1)"
+  if [ "$rc" -eq 0 ]; then
+    echo "ServiceNow mode: gateway status ok ($out)"
+  else
+    echo "ServiceNow mode: failed (gateway status: ${out:-no answer} — want mode=on, every instance unlocked, control certificate >= 14 days)"
+    failed=1
+  fi
+  n="$(printf '%s\n' "$ps_out" | awk -F'|' '$1 == "gateway" && $3 == "running" { n++ } END { print n + 0 }')"
+  if [ "$n" = "1" ]; then
+    echo "ServiceNow mode: one gateway serves the mode"
+  else
+    echo "ServiceNow mode: failed ($n running gateway containers; the ServiceNow mode needs exactly one — the session manager and its tickets live in one process. Remove extra replicas: bin/lucairn up)"
+    failed=1
+  fi
   return "$failed"
 }
 
@@ -9850,6 +10205,10 @@ doctor() {
   local sanitizer_core_failed=0
   check_sanitizer_core_config "$env_file" "$compose_file" "$offline" || sanitizer_core_failed=1
   [ "$sanitizer_core_failed" -eq 0 ] || return 1
+  # Kit 2.0 K-C: the ServiceNow opt-in (off by default).
+  local servicenow_failed=0
+  check_servicenow_mode "$env_file" "$compose_file" || servicenow_failed=1
+  [ "$servicenow_failed" -eq 0 ] || return 1
 
   # Image-manifest drift warning. Runs in --offline mode as well so customers
   # without network egress still get the warning.
@@ -9942,6 +10301,9 @@ doctor() {
   local sanitizer_core_runtime_failed=0
   check_sanitizer_core_runtime "$env_file" "$compose_file" "$strict_runtime" || sanitizer_core_runtime_failed=1
   [ "$sanitizer_core_runtime_failed" -eq 0 ] || return 1
+  local servicenow_runtime_failed=0
+  check_servicenow_runtime "$env_file" "$compose_file" "$strict_runtime" || servicenow_runtime_failed=1
+  [ "$servicenow_runtime_failed" -eq 0 ] || return 1
 
   postgres_url="${postgres_url:-$(env_value "$env_file" POSTGRES_URL)}"
   if [ -n "$postgres_url" ] && have pg_isready; then

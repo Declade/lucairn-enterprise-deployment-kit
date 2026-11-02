@@ -2459,8 +2459,10 @@ LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=
 ```
 
 The core and the sidecar are one pair from one release: the core refuses to
-start against a sidecar from another build. Do not set `LCR_PROFILE`: the kit
-runs the core's kit profile, under which the ServiceNow mode is refused.
+start against a sidecar from another build. Do not set `LCR_PROFILE` in
+`customer.env`: the core runs the kit profile, and the ServiceNow mode is off
+until an admin opts in per key — see
+[ServiceNow mode (off by default)](#servicenow-mode-off-by-default).
 
 The core's witness hop follows `GRPC_TLS_ENABLED`, the switch that makes the
 local witness serve TLS on its claim port. With `true` (the default, and
@@ -2613,8 +2615,9 @@ and on Linux the key owner = the containers' uid; the key/certificate pairing
 when the key is readable), the image pair against
 `image-manifest.yaml`, and host memory. Online additionally: the Docker Engine
 version (CVE-2024-29018 floor), the rendered Compose
-configuration of the core (kit profile, witness hop matching the witness it
-dials, namespace, no `--dsn`, `--registry-dsn-file` pointing at a mounted path),
+configuration of the core (kit profile — `kit-servicenow` with the ServiceNow
+opt-in — witness hop matching the witness it dials, namespace, no `--dsn`,
+`--registry-dsn-file` pointing at a mounted path),
 the three containers (running and healthy), the core's namespace join, the
 migration ledger against the ceiling, and the core's log — witness transport
 `mtls` (plaintext only on a development install with `GRPC_TLS_ENABLED=false`)
@@ -2813,7 +2816,9 @@ DOCTOR_KUBE_LIVE=1 bin/lucairn doctor --values customer-values.yaml  # + the run
 ```
 
 The render check covers: core + sidecar in one Pod, no `--dsn` argument in any
-container, the DSN file, the sidecar limit ≥ 6500 MiB, no `LCR_PROFILE`, the
+container, the DSN file, the sidecar limit ≥ 6500 MiB, `LCR_PROFILE=kit` set as a
+literal in the core's `env:` (so no Secret attached through `envFrom` can change
+it), the
 latched witness hop in production, the gateway's switch set and mTLS client, the
 migration Job against the ceiling, and the four NetworkPolicies. With
 `DOCTOR_KUBE_LIVE=1` it also checks, in the current kubectl context, that both
@@ -2826,6 +2831,139 @@ your CNI enforces it.
 CronJobs yet; registry rows of expired conversations stay in the database (as on
 the Compose path). If you move the identity namespace, also update
 `gateway.sanitizerCore.url` (it names `dsa-identity`).
+
+## ServiceNow mode (off by default)
+
+Kit 2.0 ships the hosted service's **ServiceNow mode**: for API keys that your
+admin binds to your ServiceNow instance, the sanitizer recognises the people of
+that instance through keyed fingerprints that a small app on **your own
+instance** publishes. The fingerprints and their key stay in your environment;
+nothing of this goes to Lucairn.
+
+**It is off by default.** A fresh install and every upgrade from 1.9.x run
+without it: `bin/lucairn` never writes the settings below, and with no key bound
+the overlay `docker-compose.servicenow-control.yml` is not used at all.
+
+### How the opt-in works
+
+The mode is on only when `customer.env` sets **both**
+`GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=true` **and** a non-empty
+`GATEWAY_SERVICENOW_KEY_BINDINGS`. `bin/lucairn` reads these through Docker
+Compose itself (so `export`, quotes, CRLF line ends and repeated lines count
+exactly as Compose counts them) and then adds the overlay to every command.
+
+- Bindings without the switch: `bin/lucairn up` refuses with
+  `session_config_invalid` and starts nothing. The gateway would refuse the same
+  configuration.
+- The switch without bindings: the mode stays off (the doctor tells you).
+- Empty bindings + `bin/lucairn up` = off again.
+
+### Turn it on (customer admin)
+
+1. **Install the directory app on your instance.** The kit ships the app's
+   update set: `servicenow-directory/lucairn-directory-update-set.xml`
+   (scoped app `x_1620539_lucdir`, "Lucairn Directory Fingerprints"; same
+   Business Source License 1.1 as this kit). On your instance: *Retrieved
+   Update Sets → Import Update Set from XML*, preview, commit. Then follow the
+   app's checks before you switch it on (`servicenow-directory/README.md`):
+   create the two scheduled jobs, run `keyStoreCheck()` until it prints
+   `"closed":true`, create a **machine** account with web-service access only and
+   the role `x_1620539_lucdir.reader`, set `x_1620539_lucdir.enabled` to `true`,
+   and confirm `GET /api/x_1620539_lucdir/directory/bundle` answers 200.
+2. **Find the key id to bind.** The customer id is in `.lucairn-customer-id`
+   (written by `bin/lucairn-mint-customer`). List its keys with your admin key:
+
+   ```bash
+   curl -s -H "X-Admin-Key: $DSA_ADMIN_KEY" \
+     "http://127.0.0.1:${GATEWAY_PORT:-8080}/api/v1/admin/customers/<customer_id>/keys"
+   ```
+
+   Copy the `key_id` of each key that should use the mode.
+3. **Set the operator settings in `customer.env`** (the same names as the hosted
+   service; see the commented block in `customer.env.example`):
+
+   ```bash
+   GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=true
+   GATEWAY_SERVICENOW_KEY_BINDINGS=<key_id>=<instance_id>          # comma-separated, no spaces
+   GATEWAY_SERVICENOW_INSTANCES=[{"id":"<instance_id>","base_url":"https://<instance>.service-now.com","customer_id":"<customer_id>"}]
+   SERVICENOW_CONTROL_SUBNET=172.30.251.0/29                         # a private /29 (or wider) of your choice
+   SERVICENOW_CONTROL_GATEWAY_IP=172.30.251.2
+   SERVICENOW_CONTROL_SANITIZER_IP=172.30.251.3
+   SERVICENOW_CONTROL_CORE_IP=172.30.251.4
+   SERVICENOW_CONTROL_MATERIAL=/srv/lucairn/servicenow-control/material
+   SERVICENOW_CONTROL_SANITIZER_CONFIG=/srv/lucairn/servicenow-control/sanitizer.yaml
+   SERVICENOW_LOGIN_DIR=/srv/lucairn/servicenow-login
+   ```
+
+   `customer_id` must be the owner of the bound key. One instance belongs to one
+   customer. Do **not** set `LCR_PROFILE`: the overlay sets the core's opt-in
+   value itself.
+4. **Place the stored login** of the machine account from step 1 (as root):
+
+   ```bash
+   install -d -m 0700 -o 10001 -g 10001 /srv/lucairn/servicenow-login
+   install -m 0400 -o 10001 -g 10001 login.json /srv/lucairn/servicenow-login/login.json
+   ```
+
+   The folder holds `login.json` and nothing else; folder `0700`, file `0400`,
+   both owned by `10001:10001` (the gateway's user). It is mounted read-only into
+   the gateway only.
+5. **Create the control certificates** (deploy-local CA, a gateway leaf and a
+   sanitizer leaf; the CA key never leaves `material/operator`):
+
+   ```bash
+   sudo python3 scripts/bootstrap-servicenow-control.py /srv/lucairn/servicenow-control
+   ```
+
+   The gateway mounts `material/gateway`; the Python sanitizer and the new core
+   mount `material/sanitizer`; the model sidecar mounts nothing of it.
+6. **Start:** `bin/lucairn up --env customer.env`. Before Compose starts
+   anything, `up` rebuilds the Python sanitizer's config copy
+   (`SERVICENOW_CONTROL_SANITIZER_CONFIG`) from your current base config
+   (`SANITIZER_CONFIG_FILE`, default `config/default-sanitizer.yaml`) — on
+   every run, so an edit of the base is never left behind — checks the login
+   folder, and checks against the running gateway that every bound key id
+   exists under its instance's owner (it prints counts only). A key id that does
+   not exist stops `up`. `up` needs `python3` with PyYAML
+   (`apt install python3-yaml` or `python3 -m pip install pyyaml`) for the copy.
+7. **Check:** `bin/lucairn doctor --env customer.env --customer-key-file …`.
+   Offline and online it checks the copy against a rebuild of the base, the
+   login custody, and that the login file and the control material reach only
+   their services; online also the bound key ids, the gateway's admin status
+   (`GET /api/v1/admin/servicenow/status`: mode `on`, every instance
+   `unlocked`, control certificate valid ≥ 14 days) and exactly **one** gateway
+   container.
+
+**Turn it off:** empty `GATEWAY_SERVICENOW_KEY_BINDINGS` and run `bin/lucairn up`.
+**Rotate a bound key:** bind the new key id, `up`, then revoke the old key.
+
+### Stated limits
+
+- **A mistyped key id runs the generic path.** The gateway enters the mode only
+  for a key id it finds in the bindings. `bin/lucairn up` and the doctor check
+  every bound id against the running gateway (counts only); while the gateway
+  is not running, `up` warns and does not stop — run the doctor afterwards and
+  compare the admin status's bound count with yours.
+- **One sanitizer leaf, two users.** The Python sanitizer and the new core
+  present the same `material/sanitizer` client certificate to the gateway's
+  control listener. Both are the gateway's sanitizer peers with the same right
+  (redeem a single-use ticket the gateway minted); the ticket, not the
+  certificate, carries the request.
+- **The Python `/v1/sanitize` routes serve the v1.0 mode path.** The gateway
+  routes that still go to the Python sanitizer's `/v1/sanitize` — OpenAI
+  (`/v1/chat/completions`), MCP (`/mcp`) and the native proxy
+  (`/api/v1/proxy/messages`) — use that service's 1.0 ServiceNow path for a
+  bound key, not the new core's. The Anthropic route (`/v1/messages`) uses the
+  core.
+- **One gateway.** The session manager lives in one gateway process: the
+  overlay pins one gateway container (fixed name, `scale: 1`); the doctor fails
+  on a second one. Helm: `replicaCount: 1`, no HPA (render guard) and the
+  doctor's live replica count.
+- **Helm:** the chart's ServiceNow switch (`global.servicenowControl.enabled`)
+  is still held: an enabled production render fails on purpose. The core's
+  side (`LCR_PROFILE=kit-servicenow`, the control client, the core → gateway
+  NetworkPolicy) is in the chart; the gateway's bindings, stored login and
+  ledger volume follow in a later kit slice. Use Compose for the mode until then.
 
 ## Sanitizer content cache (Redis — default ON)
 

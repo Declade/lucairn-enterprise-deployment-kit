@@ -96,6 +96,16 @@ DASH_APP=$(grep -E '^appVersion:' charts/lucairn/charts/dashboard/Chart.yaml | s
 [ "$DASH_IMG" = "$DASH_APP" ] || die "dashboard mismatch: image-manifest tag $DASH_IMG != dashboard Chart.yaml appVersion $DASH_APP"
 note "version identity OK: kit=$VERSION chart=$CHART_VER dashboard=$DASH_APP tag=$TAG"
 
+# --- the ServiceNow directory app ships inside the kit (T-1441 K-C, PRD Amendment K-1) ---
+# INSTALL.md § "ServiceNow mode (off by default)" step 1 points the customer
+# admin at this file. It is the platform's own update-set export from the
+# app's instance (Declade/lucairn-servicenow-directory docs/INSTALL.md), never
+# a hand-written XML; no release goes out without it.
+SN_UPDATE_SET="servicenow-directory/lucairn-directory-update-set.xml"
+[ -f "$SN_UPDATE_SET" ] || die "missing $SN_UPDATE_SET — export the directory app's update set from its instance (System Update Sets > Local Update Sets > Export to XML) and commit it"
+grep -q '<unload' "$SN_UPDATE_SET" || die "$SN_UPDATE_SET is not a ServiceNow update-set export (no <unload> root)"
+grep -q 'x_1620539_lucdir' "$SN_UPDATE_SET" || die "$SN_UPDATE_SET does not carry the scoped app x_1620539_lucdir"
+
 # --- release date (bundled, read by `bin/lucairn doctor` staleness; feed latest.released) ---
 [ -f RELEASE_DATE ] || die "missing RELEASE_DATE (bump it with VERSION on every release)"
 RELEASE_DATE=$(tr -d '[:space:]' < RELEASE_DATE)

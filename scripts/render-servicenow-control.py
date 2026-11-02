@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Render an inert Slice 3 Compose assembly; never starts containers.
+"""Render the ServiceNow-mode Compose assembly for REVIEW; never starts containers.
 
 OFF (default) runs ordinary `docker compose config`, without control inputs.
-ON requires an explicit private subnet, two interface IPs, existing bootstrap
-credentials and the operator's existing sanitizer YAML. It writes an enabled
-YAML copy into a NEW output directory; the source file is never rewritten.
-This is an assembly tool, deliberately unreferenced by bin/lucairn and releases.
-Requires PyYAML for ON validation. Live process/VM hardening belongs to K3.
+ON requires an explicit private subnet, three interface IPs (gateway,
+sanitizer, core), existing bootstrap credentials, the stored-login folder and
+the operator's existing sanitizer YAML. It writes the enabled YAML copy (the
+same bytes `bin/lucairn up` builds, bin/lucairn-servicenow.py build_config)
+into a NEW output directory; the source file is never rewritten. The
+operator setting values (GATEWAY_SERVICENOW_*) come from --env-file through
+Compose's own interpolation. Since kit 2.0 K-C the supported path is
+`bin/lucairn up`, which selects docker-compose.servicenow-control.yml from
+customer.env and rebuilds the copy on every run; this tool renders the same
+assembly for review. Requires PyYAML for ON validation.
 """
 
 import argparse
@@ -21,6 +26,8 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+CONTROL = "/run/secrets/servicenow-control/"
+LOGIN = "/run/secrets/servicenow-login"
 FILES = ("docker-compose.customer.yml", "docker-compose.self-hosted.yml",
          "docker-compose.self-hosted-byok.yml")
 COUNTS = {"customer": 1, "self-hosted": 2, "self-hosted-byok": 3}
@@ -48,13 +55,22 @@ def nonempty_path(value):
     return Path(value)
 
 
-def private_network(subnet, gateway, sanitizer):
+def helper_module():
+    spec = importlib.util.spec_from_file_location("lucairn_servicenow", ROOT / "bin/lucairn-servicenow.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def private_network(subnet, gateway, sanitizer, core=None):
     network = ipaddress.IPv4Network(subnet, strict=True)
     private = tuple(map(ipaddress.IPv4Network, ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")))
     addresses = [ipaddress.IPv4Address(value) for value in (gateway, sanitizer)]
+    if core is not None:
+        addresses.append(ipaddress.IPv4Address(core))
     if not any(network.subnet_of(block) for block in private):
         raise Invalid()
-    if network.prefixlen > 29 or addresses[0] == addresses[1]:
+    if network.prefixlen > 29 or len(set(addresses)) != len(addresses):
         raise Invalid()
     for address in addresses:
         # Docker's implicit bridge gateway is the first usable address.
@@ -90,25 +106,30 @@ def no_host_creation(mount):
 
 
 def validate_overlay(overlay):
-    for role in ("gateway", "sanitizer"):
+    # gateway: control leaf + stored login (binds) + the ledger volume;
+    # sanitizer: control leaf + config copy; core: control leaf; sidecar: none.
+    for role, binds, volumes in (("gateway", 2, 1), ("sanitizer", 2, 0), ("sanitizer-core", 1, 0)):
         mounts = overlay["services"][role]["volumes"]
-        if len(mounts) != (1 if role == "gateway" else 2):
+        if (len([m for m in mounts if m.get("type") == "bind"]) != binds or
+                len([m for m in mounts if m.get("type") == "volume"]) != volumes or len(mounts) != binds + volumes):
             raise Invalid()
         for mount in mounts:
-            if (mount.get("type") != "bind" or
-                    mount.get("bind", {}).get("create_host_path") is not False):
+            if mount.get("type") == "bind" and mount.get("bind", {}).get("create_host_path") is not False:
                 raise Invalid()
+    if overlay["services"]["sanitizer-core-sidecar"].get("volumes"):
+        raise Invalid()
 
 
-def validate_render(rendered, ordinary, network, addresses, material, config):
+def validate_render(rendered, ordinary, network, addresses, material, config, core_ip=None, login=None):
     if rendered["networks"][NETWORK].get("internal") is not True:
         raise Invalid()
     if rendered["networks"][NETWORK]["ipam"]["config"] != [{"subnet": str(network)}]:
         raise Invalid()
     members = {name for name, service in rendered["services"].items()
                if NETWORK in service.get("networks", {})}
-    if members != {"gateway", "sanitizer"}:
+    if members != {"gateway", "sanitizer", "sanitizer-core-sidecar"}:
         raise Invalid()
+    validate_core(rendered, material, core_ip, login)
     for role, address in zip(("gateway", "sanitizer"), addresses):
         service = rendered["services"][role]
         before = ordinary["services"][role]
@@ -152,6 +173,40 @@ def validate_render(rendered, ordinary, network, addresses, material, config):
         raise Invalid()
 
 
+def validate_core(rendered, material, core_ip, login):
+    """K-C: the core's opt-in, the sidecar's bare attachment, the login scope."""
+    services = rendered["services"]
+    side, core, gateway = services["sanitizer-core-sidecar"], services["sanitizer-core"], services["gateway"]
+    attachment = side["networks"][NETWORK] or {}
+    if (core_ip is not None and attachment.get("ipv4_address") != core_ip) or attachment.get("aliases"):
+        raise Invalid()
+    if any(str(m.get("source", "")).startswith(str(material)) or str(m.get("target", "")).startswith(CONTROL)
+           for m in side.get("volumes", [])):
+        raise Invalid()
+    env = core.get("environment", {})
+    if env.get("LCR_PROFILE") != "kit-servicenow" or env.get("GOTRACEBACK") != "none":
+        raise Invalid()
+    if env.get("LCR_SERVICENOW_CONTROL_PEER_URL") != "https://gateway.servicenow-control:18443":
+        raise Invalid()
+    for key, file in (("CA_CERT", "ca.crt"), ("TLS_CERT", "tls.crt"), ("TLS_KEY", "tls.key")):
+        if env.get("LCR_SERVICENOW_CONTROL_" + key) != CONTROL + "sanitizer/" + file:
+            raise Invalid()
+    if core.get("ulimits", {}).get("core") != {"soft": 0, "hard": 0}:
+        raise Invalid()
+    mounts = [m for m in core.get("volumes", []) if m["target"].startswith(CONTROL)]
+    if (len(mounts) != 1 or mounts[0]["source"] != str(material / "sanitizer") or
+            mounts[0].get("read_only") is not True or not no_host_creation(mounts[0])):
+        raise Invalid()
+    for name, service in services.items():
+        held = [m for m in service.get("volumes", []) if m.get("target") == LOGIN or
+                (login is not None and m.get("source") == str(login))]
+        if held and (name != "gateway" or len(held) != 1 or held[0].get("read_only") is not True or
+                     not no_host_creation(held[0])):
+            raise Invalid()
+    if login is not None and not any(m.get("target") == LOGIN for m in gateway.get("volumes", [])):
+        raise Invalid()
+
+
 def render(args):
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", args.project_name):
         raise Invalid("args")
@@ -160,9 +215,11 @@ def render(args):
     if args.mode == "off":
         return ordinary
     import yaml
-    network = private_network(args.subnet, args.gateway_ip, args.sanitizer_ip)
-    if not all((args.cert_directory, args.sanitizer_config, args.output_directory)):
+    core_ip, login = getattr(args, "core_ip", ""), getattr(args, "login_directory", None)
+    network = private_network(args.subnet, args.gateway_ip, args.sanitizer_ip, core_ip)
+    if not all((args.cert_directory, args.sanitizer_config, args.output_directory, login)):
         raise Invalid("args")
+    login = login.absolute()
     cert_directory = args.cert_directory.absolute()
     if any(path.is_symlink() for path in (cert_directory, *cert_directory.parents)):
         raise Invalid("custody")
@@ -174,37 +231,36 @@ def render(args):
         bootstrap.validate(cert_directory / "material", args.workload_uid, args.workload_gid)
     except bootstrap.Invalid as error:
         raise Invalid(error.reason) from None
-    source = yaml.safe_load(args.sanitizer_config.read_text())
-    if not isinstance(source, dict) or not isinstance(source.get("sanitizer"), dict):
-        raise Invalid()
-    block = source["sanitizer"].setdefault("servicenow_instance_path", {})
-    if not isinstance(block, dict):
-        raise Invalid()
-    block = source["sanitizer"]["servicenow_instance_path"] = dict(block)
-    block.update(enabled=True, control_bind_address=args.sanitizer_ip,
-                 control_peer_url="https://gateway.servicenow-control:18443",
-                 control_ca_cert="/run/secrets/servicenow-control/sanitizer/ca.crt",
-                 control_tls_cert="/run/secrets/servicenow-control/sanitizer/tls.crt",
-                 control_tls_key="/run/secrets/servicenow-control/sanitizer/tls.key",
-                 control_expected_peer_dns="gateway.servicenow-control")
+    helper = helper_module()
+    try:
+        helper.check_login(login, args.workload_uid, args.workload_gid)
+        # The same builder `bin/lucairn up` uses (M3a): one copy format.
+        body = helper.build_config(args.sanitizer_config.read_text(), args.sanitizer_ip,
+                                   args.sanitizer_config.name)
+    except helper.Refused as refusal:
+        raise Invalid("custody" if refusal.word == "login_invalid" else "validation") from None
     output = args.output_directory.absolute()
     output.mkdir(mode=0o700)  # Never overwrite a prior render or another session.
     config = output / "sanitizer.yaml"
     overlay = output / "control.compose.json"
     try:
-        config.write_text(yaml.safe_dump(source, sort_keys=False))
+        config.write_bytes(body)
         config.chmod(0o600)
         os.chown(config, args.workload_uid, args.workload_gid)
         material = cert_directory / "material"
         env.update(SERVICENOW_CONTROL_SUBNET=str(network),
                    SERVICENOW_CONTROL_GATEWAY_IP=args.gateway_ip,
                    SERVICENOW_CONTROL_SANITIZER_IP=args.sanitizer_ip,
+                   SERVICENOW_CONTROL_CORE_IP=core_ip,
                    SERVICENOW_CONTROL_MATERIAL=str(material),
-                   SERVICENOW_CONTROL_SANITIZER_CONFIG=str(config))
-        # Resolve interpolation into an overlay that can be reviewed independently.
+                   SERVICENOW_CONTROL_SANITIZER_CONFIG=str(config),
+                   SERVICENOW_LOGIN_DIR=str(login))
+        # Resolve this tool's own inputs into an overlay that can be reviewed
+        # independently; the operator settings (GATEWAY_SERVICENOW_*) stay
+        # `${...:?}` and Compose interpolates them from --env-file.
         template = (ROOT / "docker-compose.servicenow-control.yml").read_text()
         env["COMPOSE_PROJECT_NAME"] = args.project_name
-        template = re.sub(r"\$\{([A-Z0-9_]+)(?::\?[^}]*)?\}",
+        template = re.sub(r"\$\{((?:SERVICENOW_|COMPOSE_PROJECT_NAME)[A-Z0-9_]*)(?::\?[^}]*)?\}",
                           lambda match: json.dumps(env[match[1]])[1:-1], template)
         parsed_overlay = yaml.safe_load(template)
         validate_overlay(parsed_overlay)
@@ -213,13 +269,13 @@ def render(args):
         result = compose(args, env, (overlay,))
         rendered = yaml.safe_load(result)
         validate_render(rendered, yaml.safe_load(ordinary), network,
-                        (args.gateway_ip, args.sanitizer_ip), material, config)
+                        (args.gateway_ip, args.sanitizer_ip), material, config, core_ip, login)
         # Keep the exported assembly explicit even if the running Compose
         # omits false. A later Compose version may default this option to true.
         changed = False
-        for role in ("gateway", "sanitizer"):
+        for role in ("gateway", "sanitizer", "sanitizer-core"):
             for mount in rendered["services"][role]["volumes"]:
-                if (mount["target"].startswith("/run/secrets/servicenow-control/") or
+                if (mount["target"].startswith(CONTROL) or mount["target"] == LOGIN or
                         (role == "sanitizer" and mount["target"] == "/config/config.yaml")):
                     bind = mount.setdefault("bind", {})
                     if "create_host_path" not in bind:
@@ -244,6 +300,8 @@ def main():
     parser.add_argument("--subnet", default="")
     parser.add_argument("--gateway-ip", default="")
     parser.add_argument("--sanitizer-ip", default="")
+    parser.add_argument("--core-ip", default="")
+    parser.add_argument("--login-directory", type=nonempty_path)
     parser.add_argument("--cert-directory", type=nonempty_path)
     parser.add_argument("--sanitizer-config", type=nonempty_path)
     parser.add_argument("--output-directory", type=nonempty_path)

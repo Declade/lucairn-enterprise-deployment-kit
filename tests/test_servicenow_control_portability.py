@@ -118,9 +118,21 @@ class PortabilityTests(unittest.TestCase):
             env_file = ROOT / "tests/fixtures/servicenow-control/off/synthetic.env.fixture"
             config = base / "source.yaml"
             config.write_text("sanitizer: {}\n")
+            # K-C: the operator settings come through --env-file; the login
+            # folder is checked like `bin/lucairn up` checks it.
+            env_copy = base / "synthetic.env"
+            env_copy.write_text(env_file.read_text() + "GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=true\n"
+                                "GATEWAY_SERVICENOW_KEY_BINDINGS=k1_key=k1-instance\n"
+                                'GATEWAY_SERVICENOW_INSTANCES=[{"id":"k1-instance","base_url":"https://k1.invalid","customer_id":"k1_customer"}]\n')
+            env_file = env_copy
+            login = base / "login"
+            login.mkdir(mode=0o700)
+            (login / "login.json").write_text("{}")
+            (login / "login.json").chmod(0o400)
             args = SimpleNamespace(mode="on", path="customer", env_file=env_file,
                 project_name="k1-linux-branches", subnet="172.30.251.0/29",
                 gateway_ip="172.30.251.2", sanitizer_ip="172.30.251.3",
+                core_ip="172.30.251.4", login_directory=login,
                 cert_directory=base / "certs", sanitizer_config=config,
                 output_directory=base / "output", workload_uid=os.getuid(), workload_gid=os.getgid())
             real_run = subprocess.run
@@ -164,7 +176,7 @@ class PortabilityTests(unittest.TestCase):
                         renderer.validate_render(altered, ordinary,
                             renderer.private_network(args.subnet, args.gateway_ip, args.sanitizer_ip),
                             (args.gateway_ip, args.sanitizer_ip), args.cert_directory / "material",
-                            args.output_directory / "sanitizer.yaml")
+                            args.output_directory / "sanitizer.yaml", args.core_ip, login)
             overlay = json.loads((args.output_directory / "control.compose.json").read_text())
             renderer.validate_overlay(overlay)
             del overlay["services"]["gateway"]["volumes"][0]["bind"]
