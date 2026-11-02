@@ -1,4 +1,8 @@
 {{- $mtlsEnabled := and (kindIs "bool" .Values.global.mtls.enabled) .Values.global.mtls.enabled -}}
+{{- $sbMax := toString ((.Values.global | default dict).sandboxBMessagesJsonMaxBytes | default "") -}}
+{{- if and $sbMax (not (regexMatch "^[1-9][0-9]*$" $sbMax)) -}}
+{{- fail "SANDBOX-B ENV: global.sandboxBMessagesJsonMaxBytes must be a positive whole number of characters (or empty = 4 MiB)." -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -75,6 +79,13 @@ spec:
                   optional: true
             - name: PROOFLOG_POLICIES
               value: {{ .Values.prooflog.policies | quote }}
+            {{- if $sbMax }}
+            # Kit 2.0: Sandbox B's own __messages_json__ limit (characters).
+            # The gateway reads the SAME global value and refuses an over-limit
+            # conversation before the call (DSA PR #900). Unset = 4 MiB.
+            - name: SANDBOX_B_MESSAGES_JSON_MAX_BYTES
+              value: {{ $sbMax | quote }}
+            {{- end }}
             {{- if .Values.externalInvariantUrl }}
             - name: SANDBOX_B_EXTERNAL_INVARIANT_URL
               value: {{ .Values.externalInvariantUrl | quote }}

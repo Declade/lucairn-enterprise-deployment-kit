@@ -69,3 +69,16 @@
 {{- end -}}
 {{- $found -}}
 {{- end -}}
+
+{{- /*
+  infrastructure.sanitizerCoreEnabled  (kit 2.0)
+
+  "true" (non-empty) when global.sanitizerCore.enabled is the boolean true —
+  the umbrella's mirror of sanitizer-core.enabled (validators.sanitizerCoreMirror
+  refuses a render where the two disagree). Gates the core's NetworkPolicies
+  and the identity-namespace carve-outs.
+*/ -}}
+{{- define "infrastructure.sanitizerCoreEnabled" -}}
+{{- $sc := (default dict (default dict .Values.global).sanitizerCore) -}}
+{{- if and (kindIs "bool" $sc.enabled) $sc.enabled -}}true{{- end -}}
+{{- end -}}

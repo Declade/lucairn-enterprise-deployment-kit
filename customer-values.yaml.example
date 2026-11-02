@@ -404,6 +404,20 @@ sandbox-b:
       # global.dsaLicenseKey. Empty for dev installs (Compose parity).
       licenseKey: ""
 
+# Kit 2.0: the new sanitizer core (Go core + model sidecar in one Pod, its
+# registry Postgres, the capped migration Job). ON by default; keep
+# global.sanitizerCore.enabled equal to sanitizer-core.enabled. Before
+# `helm install`, create its two mTLS Secrets — INSTALL.md § "Sanitizer core
+# (kit 2.0, Helm)". scripts/render-values.sh fills both slots below.
+sanitizer-core:
+  enabled: true
+  secrets:
+    values:
+      # 64 hex; seals every registry row — keep it stable across upgrades.
+      registryKey: "REPLACE_WITH_64_HEX_SANITIZER_CORE_REGISTRY_KEY"
+      # URL-safe characters only (it is part of the core's DSN).
+      postgresPassword: "REPLACE_WITH_SANITIZER_CORE_POSTGRES_PASSWORD"
+
 veil-witness:
   postgresql:
     storageSize: 50Gi

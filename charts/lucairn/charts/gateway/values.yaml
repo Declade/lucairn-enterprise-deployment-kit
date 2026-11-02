@@ -244,6 +244,46 @@ streaming:
   enabled: false
   timeoutSeconds: 300
 
+# ─── Kit 2.0: the new sanitizer core (PRD prd-2026-11-02-kit-2-0-new-core K2) ──
+#
+# Rendered only while global.sanitizerCore.enabled=true (the mirror of
+# sanitizer-core.enabled). The hosted service's switch set, shipped ON:
+#   protocol: delta     the Anthropic handler (/v1/messages) sends conversations
+#                       to the core as deltas. "whole" = that route stays on the
+#                       old sanitizer (sanitizerUrl above), which keeps serving
+#                       the openai / mcp / proxy routes either way.
+#   gatePosture: enforce  the final check REFUSES a body that still carries a
+#                       value the core hid (nothing is forwarded). "log" only
+#                       records it.
+#   routePosture: observe the Gate posture of the routes still on the old
+#                       sanitizer (the gateway's own default, written down).
+#   addedPartsPlacement: message  added system-prompt parts travel in the
+#                       conversation, not the system field (hosted Amendment
+#                       25 Oct b: higher prompt-cache hit rate).
+# Each is an EXACT enum, refused at render on anything else (the gateway refuses
+# to boot on an off-enum protocol / route posture / placement).
+#
+# The gateway -> core hop is verified mTLS only: the gateway presents a client
+# leaf with the DNS SAN dsa-gateway (the only client the core accepts) and pins
+# the core's server name dsa-sanitizer-core whatever host `url` names. Create the
+# operator-owned Secret in THIS namespace (dsa-edge) before install; the
+# defaults are the file names scripts/bootstrap-sanitizer-core-mtls.sh writes
+# into <dir>/gateway/ (`kubectl -n dsa-edge create secret generic
+# gateway-sanitizer-core-mtls --from-file=<dir>/gateway/`). Its CA must be the
+# one that signed the core's server leaf (sanitizer-core.mtls.secretName).
+sanitizerCore:
+  url: "https://sanitizer-core.dsa-identity.svc.cluster.local:8790"
+  protocol: delta
+  gatePosture: enforce
+  routePosture: observe
+  addedPartsPlacement: message
+  mtls:
+    secretName: gateway-sanitizer-core-mtls
+    caKey: ca.crt
+    certKey: dsa-gateway.crt
+    keyKey: dsa-gateway.key
+    mountPath: /etc/sanitizer-core-mtls
+
 # PostgresKeyStore wiring is the v2.0 multi-replica HA path. When enabled
 # together with postgres-gateway.enabled=true, the gateway boots with the
 # Postgres-backed keystore (cross-replica reads + restart-survival). v1.0

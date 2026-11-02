@@ -138,6 +138,11 @@ veil-witness:
     values:
       postgresPassword: ${TEST_SECRET_VALUE}
       veilAppPassword: ${TEST_SECRET_VALUE}
+sanitizer-core:
+  secrets:
+    values:
+      registryKey: "${TEST_REGISTRY_KEY}"
+      postgresPassword: ${TEST_SECRET_VALUE}
 EOF
 }
 

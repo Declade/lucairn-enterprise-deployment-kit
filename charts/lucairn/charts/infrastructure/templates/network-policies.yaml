@@ -144,7 +144,21 @@ metadata:
   name: identity-egress
   namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}
 spec:
+{{- if include "infrastructure.sanitizerCoreEnabled" . }}
+  # Kit 2.0: the sanitizer core Pod and its registry DB are NOT governed by
+  # this namespace-wide rule — each has its own, narrower policy below
+  # (identity-sanitizer-core-egress / identity-sanitizer-core-registry).
+  # Policies are unioned, so a carve-out has to happen HERE.
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: NotIn
+        values:
+          - sanitizer-core
+          - postgres-sanitizer-core
+{{- else }}
   podSelector: {}
+{{- end }}
   policyTypes:
     - Egress
   egress:
@@ -296,7 +310,20 @@ metadata:
   name: identity-ingress
   namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}
 spec:
+{{- if include "infrastructure.sanitizerCoreEnabled" . }}
+  # Kit 2.0: carve-out, as in identity-egress. Without it the intra-namespace
+  # rule below (`from: podSelector: {}` on 5432) would let EVERY identity pod
+  # reach the core's registry DB.
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: NotIn
+        values:
+          - sanitizer-core
+          - postgres-sanitizer-core
+{{- else }}
   podSelector: {}
+{{- end }}
   policyTypes:
     - Ingress
   ingress:
@@ -381,6 +408,142 @@ spec:
           protocol: TCP
         - port: 50056
           protocol: TCP
+
+{{- if include "infrastructure.sanitizerCoreEnabled" . }}
+# ============================================================
+# Kit 2.0 — the new sanitizer core (identity namespace)
+#
+# The Compose twin puts the registry DB on an internal network that only the
+# core (inside the sidecar's namespace) and the migration one-shot join. Here:
+#   gateway Pod      -> core Pod :8790            (both sides: edge egress +
+#                                                  identity ingress)
+#   core Pod         -> registry DB :5432, witness :50057 — nothing else
+#   core Pod + migration Job -> registry DB :5432 — no other pod
+#   registry DB      -> nothing (no egress rule at all)
+# The model sidecar runs INSIDE the core Pod on 127.0.0.1 and is not a network
+# peer of anything. DNS stays allowed by allow-dns (dns-egress.yaml).
+# NON-COVERAGE: NetworkPolicy is enforced only by a CNI that implements it
+# (kindnet does not); `bin/lucairn doctor` reports presence, not enforcement.
+# ============================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: edge-sanitizer-core-egress
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "edge") }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  # Only the gateway Pod may dial the core.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: identity
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sanitizer-core
+      ports:
+        - port: 8790
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-sanitizer-core-ingress
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sanitizer-core
+  policyTypes:
+    - Ingress
+  ingress:
+    # The gateway's Anthropic route (verified mTLS on top: the core accepts
+    # only a client leaf with the DNS SAN dsa-gateway).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: edge
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      ports:
+        - port: 8790
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-sanitizer-core-egress
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sanitizer-core
+  policyTypes:
+    - Egress
+  egress:
+    # → its registry DB (also the wait-for-migration init container).
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres-sanitizer-core
+      ports:
+        - port: 5432
+          protocol: TCP
+    # → the witness claim port (dsa-sanitizer PII_SANITIZED claims).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: witness
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: veil-witness
+      ports:
+        - port: 50057
+          protocol: TCP
+    # An EXTERNAL registry DB (sanitizer-core.postgresql.enabled=false) is not
+    # covered here: add your own egress rule for its address, scoped to this
+    # podSelector.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-sanitizer-core-registry
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-sanitizer-core
+  # Egress listed with NO rule = no egress at all (DNS aside, allow-dns).
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - sanitizer-core
+                  - sanitizer-core-migrate
+      ports:
+        - port: 5432
+          protocol: TCP
+{{- end }}
 
 # ============================================================
 # dsa-bridge (ID Bridge) — can reach identity, audit, ai (event-only)

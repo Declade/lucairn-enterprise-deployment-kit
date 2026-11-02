@@ -46,6 +46,10 @@ for key in ["admin.adminPassword", "audit.postgresPassword", "audit.auditAppPass
     chart, name = key.split(".")
     SECRET_ARGS += ["--set-string", f"{chart}.secrets.values.{name}=kit-harness-not-a-real-secret"]
 SECRET_ARGS += ["--set-string", "veil-witness.secrets.values.signingKey=" + "1" * 64]
+# Kit 2.0: the sanitizer-core sub-chart (ON by default) refuses an empty
+# registry key / registry DB password, exactly like the slots above.
+SECRET_ARGS += ["--set-string", "sanitizer-core.secrets.values.registryKey=" + "2" * 64,
+                "--set-string", "sanitizer-core.secrets.values.postgresPassword=kit-harness-not-a-real-secret"]
 
 
 def merge(a, b):
@@ -406,7 +410,8 @@ class HelmAcceptance(unittest.TestCase):
             if n["label"] == "identity":
                 n["name"] = "synthetic-identity"
         config = merge(ON, {"gateway": {"namespace": "synthetic-edge", "global": {"servicenowControl": {"enabled": False}}},
-            "sandbox-a": {"namespace": "synthetic-identity"}, "infrastructure": {"namespaces": namespaces},
+            "sandbox-a": {"namespace": "synthetic-identity"}, "sanitizer-core": {"namespace": "synthetic-identity"},
+            "infrastructure": {"namespaces": namespaces},
             "global": {"servicenowControl": {"gatewayNamespace": "synthetic-edge", "sanitizerNamespace": "synthetic-identity"}}})
         result = render(self.chart, config)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -486,7 +491,11 @@ class HelmAcceptance(unittest.TestCase):
             ({"global": {"servicenowControl": {"gatewayNamespace": "other"}}}, "namespaces"),
             ({"infrastructure": {"enabled": False}}, "infrastructure"),
             ({"gateway": {"enabled": False}}, "requires gateway"),
-            ({"sandbox-a": {"enabled": False}}, "requires gateway"),
+            # Kit 2.0: the sanitizer core is switched off too, so this case
+            # still isolates the ServiceNow guard (the core's own guard refuses
+            # a core without Sandbox A, which holds its signing seed).
+            ({"sandbox-a": {"enabled": False}, "sanitizer-core": {"enabled": False},
+              "global": {"sanitizerCore": {"enabled": False}}}, "requires gateway"),
         ]
         for config, word in negatives:
             with self.subTest(config=config):

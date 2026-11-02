@@ -124,7 +124,7 @@ fi
 # ollama-identity, postgres, redis cache, migrate Job, model-pull Job) in a
 # namespace holding zero NetworkPolicies.
 # ===========================================================================
-for sub in sandbox-a gateway sandbox-b veil-witness; do
+for sub in sandbox-a gateway sandbox-b veil-witness sanitizer-core; do
   if helm template lucairn "$CHART" "${COMMON[@]}" \
        --set "${sub}.namespace=acme-drift" >/dev/null 2>"$WORK/diverge-$sub.err"; then
     fail "T-388: divergent ${sub}.namespace override still renders (guard absent). Workloads would deploy unpoliced."
@@ -132,7 +132,7 @@ for sub in sandbox-a gateway sandbox-b veil-witness; do
   grep -q "namespace/NetworkPolicy split-brain" "$WORK/diverge-$sub.err" \
     || fail "T-388: ${sub} render refused, but not by validators.namespaceNetpolAlignment. Got: $(head -2 "$WORK/diverge-$sub.err")"
 done
-echo "ok  T-388: divergent namespace override refused for sandbox-a, gateway, sandbox-b, veil-witness"
+echo "ok  T-388: divergent namespace override refused for sandbox-a, gateway, sandbox-b, veil-witness, sanitizer-core"
 
 # ===========================================================================
 # T-388 case 2 — CONSISTENT override renders, and the policies MOVE WITH the
@@ -155,6 +155,8 @@ infrastructure:
 sandbox-a:
   namespace: acme-identity
 pii-ml:
+  namespace: acme-identity
+sanitizer-core:
   namespace: acme-identity
 YAML
 if ! helm template lucairn "$CHART" "${COMMON[@]}" -f "$WORK/ns-override.yaml" \

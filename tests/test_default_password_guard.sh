@@ -329,6 +329,8 @@ if ! helm template lucairn "$CHART" \
      --set "veil-witness.secrets.values.veilAppPassword=${TEST_SECRET_VALUE}" \
      --set admin.secrets.backend=vault \
      --set admin.secrets.vault.path=dsa/admin \
+     --set-string "sanitizer-core.secrets.values.registryKey=${TEST_REGISTRY_KEY}" \
+     --set-string "sanitizer-core.secrets.values.postgresPassword=${TEST_SECRET_VALUE}" \
      >"$ADMIN_VAULT_RENDER" 2>"$ADMIN_VAULT_ERR"; then
   fail "admin.secrets.backend=vault must render cleanly with no adminPassword set: $(head -3 "$ADMIN_VAULT_ERR")"
 else
@@ -394,6 +396,8 @@ if helm template lucairn "$CHART" "${BASE[@]}" \
      --set-string "sandbox-a.external.databaseUrl=postgres://u:p@db.example:5432/sandbox_a" \
      --set veil-witness.postgresql.enabled=false \
      --set-string "veil-witness.external.databaseUrl=postgres://u:p@db.example:5432/veil" \
+     --set-string "sanitizer-core.secrets.values.registryKey=${TEST_REGISTRY_KEY}" \
+     --set-string "sanitizer-core.secrets.values.postgresPassword=${TEST_SECRET_VALUE}" \
      >/dev/null 2>"$EXT_ERR"; then
   echo "ok  external-Postgres install renders without the bundled-database passwords"
 else

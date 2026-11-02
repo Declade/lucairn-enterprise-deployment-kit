@@ -622,6 +622,13 @@ veil-witness:
     values:
       postgresPassword: "sec-hardening-harness-not-a-real-secret"
       veilAppPassword: "sec-hardening-harness-not-a-real-secret"
+# Kit 2.0: the sanitizer-core sub-chart (ON by default) guards its two slots
+# the same way (the registry key must be 64 hex, not all zero).
+sanitizer-core:
+  secrets:
+    values:
+      registryKey: "2222222222222222222222222222222222222222222222222222222222222222"
+      postgresPassword: "sec-hardening-harness-not-a-real-secret"
 YAML
 
 run_doctor_with_values() {

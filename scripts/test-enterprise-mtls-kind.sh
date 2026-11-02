@@ -137,7 +137,7 @@ for crd in externalsecrets.external-secrets.io clustersecretstores.external-secr
 done
 
 bash "$ROOT/scripts/enterprise-mtls-fixture-certs.sh" "$STATE_DIR/certs"
-# Generate Helm/doctor-safe Kind exceptions plus six private application Secret
+# Generate Helm/doctor-safe Kind exceptions plus seven private application Secret
 # source files. The public overlay remains the only harness-generated YAML
 # passed to doctor or Helm.
 bash "$ROOT/scripts/generate-enterprise-mtls-kind-runtime-values.sh" \
@@ -219,6 +219,20 @@ create_application_secret dsa-bridge id-bridge
 create_application_secret dsa-identity sandbox-a
 create_application_secret dsa-ai sandbox-b
 create_application_secret dsa-witness veil-witness
+create_application_secret dsa-identity sanitizer-core
+
+# Kit 2.0: the gateway -> sanitizer-core hop is verified mTLS on its own
+# deploy CA (the same tree the Compose path uses). The kit's bootstrap script
+# writes it under the private state directory; only the core's and the
+# gateway's service directories become Secrets (the CA key in ca/ never does).
+# The core's claim hop to the witness uses the `sanitizer` mesh leaf above.
+bash "$ROOT/scripts/bootstrap-sanitizer-core-mtls.sh" "$STATE_DIR/sanitizer-core-mtls" >/dev/null
+"${K[@]}" -n dsa-identity create secret generic sanitizer-core-mtls \
+  --from-file="$STATE_DIR/sanitizer-core-mtls/sanitizer-core/" \
+  --dry-run=client -o yaml | "${K[@]}" apply -f -
+"${K[@]}" -n dsa-edge create secret generic gateway-sanitizer-core-mtls \
+  --from-file="$STATE_DIR/sanitizer-core-mtls/gateway/" \
+  --dry-run=client -o yaml | "${K[@]}" apply -f -
 
 # The representative server-material negatives all target the same actual
 # gateway→Sandbox-A workload edge. Keep the gateway trust bundle unchanged so
@@ -235,7 +249,7 @@ cp "$STATE_DIR/certs/expired-sandbox-a/tls.key" "$INVALID_SERVER_DIR/expired/tls
   --from-file=witness-signed-manifest.json="$WITNESS_SIGNED_MANIFEST" \
   --dry-run=client -o yaml | "${K[@]}" apply -f -
 
-# The Kind harness keeps the production Vault backend and all six rendered
+# The Kind harness keeps the production Vault backend and all seven rendered
 # ExternalSecrets. Stock Kind receives only CNI/Postgres TLS/test-provider
 # exceptions through the public overlay; pre-created target Secrets make the
 # mandatory workloads runnable without an ESO controller. The seven mTLS
@@ -256,7 +270,7 @@ bash "$ROOT/scripts/assert-enterprise-mtls-release-custody.sh" \
 ruby -ryaml -e '
   documents = YAML.load_stream(File.read(ARGV.fetch(0))).compact
   external = documents.map { |doc| doc.dig("metadata", "name") if doc["kind"] == "ExternalSecret" }.compact.sort
-  expected = %w[gateway-credentials audit-credentials id-bridge-credentials sandbox-a-credentials sandbox-b-credentials veil-witness-credentials].sort
+  expected = %w[gateway-credentials audit-credentials id-bridge-credentials sandbox-a-credentials sandbox-b-credentials veil-witness-credentials sanitizer-core-credentials].sort
   abort "release manifest ExternalSecret contract drift: #{external.join(", ")}" unless external == expected
   stores = documents.map { |doc| doc.dig("metadata", "name") if doc["kind"] == "ClusterSecretStore" }.compact
   abort "release manifest ClusterSecretStore contract drift" unless stores == ["dsa-secret-store"]
@@ -266,9 +280,20 @@ ruby -ryaml -e '
 
 for deployment in \
   dsa-edge/gateway dsa-audit/audit dsa-bridge/id-bridge \
-  dsa-identity/sandbox-a dsa-ai/sandbox-b dsa-witness/veil-witness; do
+  dsa-identity/sandbox-a dsa-ai/sandbox-b dsa-witness/veil-witness \
+  dsa-identity/sanitizer-core; do
   "${K[@]}" -n "${deployment%/*}" rollout status "deployment/${deployment#*/}" --timeout=8m
 done
+
+# Kit 2.0 (PRD criterion 3): the new sanitizer core's live state — core +
+# sidecar Ready, the registry StatefulSet Ready, the capped migration Job
+# complete, both mTLS Secrets present, the core's witness transport `mtls` and
+# no DROPPED claim — through the same doctor an operator runs.
+KUBECONFIG="$KUBECONFIG" PATH="$(dirname "$KUBECTL_BIN"):$PATH" DOCTOR_KUBE_LIVE=1 \
+  "$ROOT/bin/lucairn" doctor \
+  --values "$ROOT/charts/lucairn/values-prod.yaml" \
+  --values "$PUBLIC_OVERLAY" \
+  --offline
 
 # Resolve the exact gateway Pod and container before building the short-lived
 # in-container proof helper. A label or architecture ambiguity is evidence

@@ -154,6 +154,21 @@ sandbox-b:
         provider: anthropic
         model: claude-sonnet-4-6
 
+# Kit 2.0: the new sanitizer core. Credentials from the same External Secrets
+# backend as every mandatory child (properties registry_key, password,
+# registry_dsn at the path below); the gateway -> core mTLS leaves are
+# operator-owned Secrets like the mesh leaves (INSTALL.md § "Sanitizer core
+# (kit 2.0, Helm)"). Its core -> witness claim hop uses the `sanitizer` mesh
+# identity above.
+sanitizer-core:
+  enabled: true
+  secrets:
+    backend: vault
+    values:
+      registryKey: ""
+      postgresPassword: ""
+    vault:
+      path: sanitizer-core
 veil-witness:
   enabled: true
   replicaCount: 1  # v1.0 single-replica lock (validator hard-fails != 1)

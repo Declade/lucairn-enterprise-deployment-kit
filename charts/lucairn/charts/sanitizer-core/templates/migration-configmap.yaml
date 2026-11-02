@@ -1,0 +1,27 @@
+{{- /*
+  The registry migration payload, from this chart's files/ (Helm can only read
+  files inside the chart):
+    files/migrate-sanitizer-core.sh   byte copy of scripts/migrate-sanitizer-core.sh
+    files/migrations/*.up.sql         byte copies of migrations/sanitizer-core/
+    files/migrations/SHA256SUMS       (the script checks every file against it)
+  tests/test_sanitizer_core_helm.sh asserts byte identity with the repo-root
+  copies, so the Compose and Helm paths apply the same bytes.
+  migration-ceilings.conf carries ONLY the ceiling this chart reviewed (the
+  script reads CEILING_SANITIZER_CORE from the file beside it, never from the
+  environment).
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Chart.Name }}-migrations
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-migrate
+    app.kubernetes.io/part-of: dsa
+data:
+  migration-ceilings.conf: |
+    # Rendered by charts/lucairn/charts/sanitizer-core (kit 2.0). Review:
+    # docs/RELEASING.md § "Migration review".
+    CEILING_SANITIZER_CORE={{ include "sanitizerCore.migrationCeiling" . }}
+{{ (.Files.Glob "files/migrate-sanitizer-core.sh").AsConfig | indent 2 }}
+{{ (.Files.Glob "files/migrations/*").AsConfig | indent 2 }}

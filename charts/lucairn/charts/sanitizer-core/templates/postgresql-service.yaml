@@ -1,0 +1,22 @@
+{{- if .Values.postgresql.enabled }}
+# The registry DB. Named like the Compose service (postgres-sanitizer-core) so
+# the core's DSN has the same shape on both install paths. Reachable only from
+# the core Pod and the migration Job (infrastructure NetworkPolicy
+# identity-sanitizer-core-registry-ingress).
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-sanitizer-core
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: postgres-sanitizer-core
+    app.kubernetes.io/part-of: dsa
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: postgresql
+      name: postgresql
+  selector:
+    app.kubernetes.io/name: postgres-sanitizer-core
+{{- end }}

@@ -41,7 +41,7 @@ fi
 # T-10 (security STOP-SHIP, 2026-08-03): chart-managed passwords have NO
 # working default any more.
 #
-# The eight slots below (across six subcharts) used to ship a literal
+# The ten slots below (across seven subcharts) used to ship a literal
 # `CHANGE-ME…` placeholder as a functioning password in this public repo.  They
 # now ship EMPTY, and each subchart's templates/_validate.tpl hard-fails on an
 # empty value or
@@ -77,6 +77,10 @@ fi
 # NOT need these args: the guards only apply to the k8s-native backend that
 # actually renders the value into a Secret.
 [ -n "${TEST_SECRET_VALUE:-}" ] || readonly TEST_SECRET_VALUE="kit-harness-not-a-real-secret"
+# Kit 2.0: the sanitizer core's registry key must be exactly 64 hex characters
+# and not all zero (sanitizer-core/templates/_helpers.tpl), so it cannot reuse
+# TEST_SECRET_VALUE. Fixed, obviously-non-production constant.
+[ -n "${TEST_REGISTRY_KEY:-}" ] || readonly TEST_REGISTRY_KEY="2222222222222222222222222222222222222222222222222222222222222222"
 
 if [ -z "${HELM_TEST_SECRET_ARGS+x}" ]; then
   HELM_TEST_SECRET_ARGS=(
@@ -88,6 +92,10 @@ if [ -z "${HELM_TEST_SECRET_ARGS+x}" ]; then
     --set "sandbox-a.secrets.values.postgresPassword=${TEST_SECRET_VALUE}"
     --set "veil-witness.secrets.values.postgresPassword=${TEST_SECRET_VALUE}"
     --set "veil-witness.secrets.values.veilAppPassword=${TEST_SECRET_VALUE}"
+    # Kit 2.0 (sanitizer-core sub-chart, ON by default): --set-string, because
+    # the guard refuses non-string values.
+    --set-string "sanitizer-core.secrets.values.registryKey=${TEST_REGISTRY_KEY}"
+    --set-string "sanitizer-core.secrets.values.postgresPassword=${TEST_SECRET_VALUE}"
   )
   readonly HELM_TEST_SECRET_ARGS
 fi

@@ -169,7 +169,7 @@ addresses in chart form:
 
 | Value | Compose counterpart |
 |---|---|
-| `audit` / `id-bridge` / `sandbox-a` / `sandbox-b` / `gateway`.`veilWitnessAddr` | `LUCAIRN_CENTRAL_WITNESS_ADDR` |
+| `audit` / `id-bridge` / `sandbox-a` / `sandbox-b` / `gateway` / `sanitizer-core`.`veilWitnessAddr` | `LUCAIRN_CENTRAL_WITNESS_ADDR` |
 | `gateway.veilWitnessCertAddr` | `LUCAIRN_CENTRAL_WITNESS_CERT_ADDR` |
 | `dashboard.witness.endpoint` | `LUCAIRN_DASHBOARD_WITNESS_ENDPOINT` |
 

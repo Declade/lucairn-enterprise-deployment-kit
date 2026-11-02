@@ -1,0 +1,249 @@
+# ── Lucairn sanitizer core (kit 2.0, Helm) ──────────────────────────────────
+#
+# PRD Opus Advisor specs/2026-11/prd-2026-11-02-kit-2-0-new-core.md K2 ("the
+# same as K1"). The Helm twin of docker-compose.customer.yml's
+# postgres-sanitizer-core / sanitizer-core-sidecar / sanitizer-core /
+# migrate-sanitizer-core services, i.e. the shape the hosted service has run
+# since 2026-10-31.
+#
+# What renders (all in the identity namespace, beside Sandbox A and the old
+# Python sanitizer, which keeps the openai / mcp / proxy routes):
+#
+#   Deployment sanitizer-core     ONE Pod, two containers:
+#                                   sidecar  the model sidecar (spaCy + GLiNER)
+#                                            on 127.0.0.1:8765, loopback only
+#                                   core     the Go core, verified mTLS on :8790
+#                                 A Pod IS a shared network namespace, so the
+#                                 core reaches the sidecar on 127.0.0.1 exactly
+#                                 as on the hosted box, and nothing outside the
+#                                 Pod can reach the sidecar at all.
+#   Service sanitizer-core        :8790, the gateway's Anthropic route
+#   StatefulSet + Service + PVC   postgres-sanitizer-core (the registry)
+#   Job sanitizer-core-migrate-rN the capped registry migration 0001-0007
+#
+# ⚑ The ON/OFF switch is `sanitizer-core.enabled` AND its mirror
+# `global.sanitizerCore.enabled` (the gateway and the NetworkPolicies read the
+# mirror — sub-charts cannot read each other's values). Both default to true
+# (kit 2.0 = same as hosted) and the umbrella refuses a render where they
+# disagree.
+#
+# BEFORE `helm install` create the operator-owned inputs this chart only
+# REFERENCES (Helm never generates key material — same contract as
+# global.mtls):
+#   * the core's mTLS Secret in the identity namespace (mtls.secretName) and
+#     the gateway's in the edge namespace (gateway.sanitizerCore.mtls.secretName),
+#     e.g. from scripts/bootstrap-sanitizer-core-mtls.sh — INSTALL.md
+#     § "Sanitizer core (kit 2.0, Helm)" has the two kubectl commands;
+#   * on an External Secrets backend: registry_key / password / registry_dsn
+#     in the secret store path below.
+
+namespace: dsa-identity
+
+# The Go core. ⚠️ tag "" means this chart's appVersion (1.1.0) — NOT
+# global.imageTag: no 0.5.x tag of these images exists. Core and sidecar are a
+# PAIR from one release commit (the core refuses a sidecar that lacks the
+# labels it needs, DSA cmd/sanitizer-core/main.go requirePlaceLabels), so the
+# two tags must be equal and the two digests are set together or not at all.
+# The release step fills the digests from image-manifest.yaml
+# (image_digests.signed_artifacts); with a digest set the reference becomes
+# repo:tag@sha256:… and the kubelet pulls by digest.
+image:
+  repository: dsa-sanitizer-core
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+sidecar:
+  image:
+    repository: dsa-sanitizer-core-sidecar
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Memory: capped at 6.5 GB (hosted window amendment A8: peak 5.6 GB with
+  # GLiNER and both spaCy models; the 5.5 GB cap of the first switch was too
+  # tight). The request is what the scheduler reserves on the node — keep it
+  # near the measured peak so the sidecar is never placed on a node that cannot
+  # hold it. A hit on the limit is an OOM kill: the Pod goes NotReady and every
+  # Anthropic request fails closed until the sidecar has reloaded its models.
+  # Node floor: INSTALL.md § "Sanitizer core (kit 2.0, Helm)".
+  resources:
+    requests:
+      cpu: "1"
+      memory: 6Gi
+    limits:
+      cpu: "4"
+      memory: 6500Mi
+  # Model load takes ~1-5 min before the sidecar binds; the startup probe
+  # allows 10 min (periodSeconds x failureThreshold) before the kubelet gives up.
+  startupProbe:
+    periodSeconds: 10
+    failureThreshold: 60
+  # The images only read their baked-in models (HF_HUB_OFFLINE=1). The root
+  # filesystem is read-only; /tmp is an emptyDir and HOME/XDG_CACHE_HOME point
+  # into it, so a library that insists on a cache directory still has one.
+  # NON-COVERAGE: not yet exercised on a cluster (the 1.1.0 images do not exist
+  # yet) — the PC Kind rehearsal (PRD criterion 3) is the check.
+  readOnlyRootFilesystem: true
+
+service:
+  port: 8790
+
+# The core's own resources (measured 35-57 MB on the hosted box; the detect
+# memo grows with distinct texts). 1 GiB is a fail-closed bound, the same as
+# the Compose mem_limit.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "2"
+    memory: 1Gi
+
+# LCR_ENABLED on the core: "true" = the core signs and sends its dsa-sanitizer
+# PII_SANITIZED claim (it carries the redaction manifest). Production refuses
+# anything but "true" (the umbrella's mandatory-claims check).
+veilEnabled: "true"
+# The witness claim port. FQDN: the core lives in the identity namespace.
+veilWitnessAddr: "veil-witness.dsa-witness.svc.cluster.local:50057"
+# Optional pass-throughs, rendered only when set (Compose passes the same two):
+#   SANITIZER_CLAIM_DRAIN_SECONDS (core default 10, clamped 1..60)
+#   DSA_WITNESS_GRPC_MAX_MESSAGE_BYTES
+claimDrainSeconds: ""
+witnessGrpcMaxMessageBytes: ""
+
+# The claim signing seed. Claims are signed with the SAME seed as the old
+# Python sanitizer: both sign as dsa-sanitizer and the witness verifies both
+# with its one sanitizer public key. The seed is read from Sandbox A's own
+# credentials Secret (same namespace) — never copied into a second Secret.
+signingKeySecretRef:
+  name: sandbox-a-credentials
+  key: LCR_SIGNING_KEY
+
+# gateway -> core: verified mTLS (DSA pkg/tlsutil/sanitizer_core.go). The core
+# serves its own leaf (DNS SAN dsa-sanitizer-core; the gateway pins that name
+# whatever URL it dials) and accepts only a client leaf with the DNS SAN
+# dsa-gateway. An operator-owned Secret in THIS namespace; Helm projects only
+# the three keys below. The defaults are the file names
+# scripts/bootstrap-sanitizer-core-mtls.sh writes into <dir>/sanitizer-core/,
+# so `kubectl create secret generic sanitizer-core-mtls --from-file=<dir>/sanitizer-core/`
+# fits as is. Point the keys elsewhere for your own PKI's layout (tls.crt …).
+mtls:
+  secretName: sanitizer-core-mtls
+  caKey: ca.crt
+  certKey: dsa-sanitizer-core.crt
+  keyKey: dsa-sanitizer-core.key
+  mountPath: /etc/sanitizer-core-mtls
+
+# core -> witness: the claim hop.
+#   global.mtls.enabled=true (the production profile): verified mTLS with the
+#     `sanitizer` mesh identity (global.mtls.secrets.sanitizer — the leaf the
+#     old sanitizer already sends its claims with, SAN dsa-sanitizer) against
+#     the witness's mesh leaf (SAN dsa-veil-witness, the name the core pins).
+#     LCR_WITNESS_REQUIRE_MTLS=true latches it: no plaintext fallback, ever.
+#     Without these settings the hosted core once dropped every PII_SANITIZED
+#     claim at the handshake while every turn still succeeded (window
+#     2026-10-31, amendment A9).
+#   global.mtls.enabled=false (development only — production refuses it): the
+#     Helm development witness serves its claim port in plaintext, like every
+#     other development emitter's hop. The core allows that only under
+#     DSA_ENV=development and logs a WARNING on every boot
+#     (`witness transport mode=plaintext-insecure-dev`).
+
+postgresql:
+  # true = the bundled registry Postgres (StatefulSet postgres-sanitizer-core).
+  # false = an external Postgres: set external.* and put the DSN + password in
+  # the Secret (k8s-native: built from external.* below).
+  enabled: true
+  # The same postgres:16-alpine index digest image-manifest.yaml records
+  # (image_digests.enterprise_kind.postgres) and the Compose path pins; re-pin
+  # all of them together.
+  image:
+    repository: postgres
+    tag: 16-alpine
+    digest: "sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
+  user: dsa
+  database: sanitizer_core
+  # The bundled StatefulSet serves no TLS, so this is chart-local and
+  # "disable" — NOT global.postgresqlSslmode (values-prod.yaml sets that to
+  # "require" for external TLS-enabled databases; the same rule as the bundled
+  # postgres-gateway). The NetworkPolicies admit only the core Pod and the
+  # migration Job to this database.
+  sslmode: disable
+  # Sealed registry rows (placeholder <-> value entries, sanitized turns, first
+  # claims). The PVC carries helm.sh/resource-policy: keep — `helm uninstall`
+  # never deletes it.
+  storageSize: 5Gi
+  storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+external:
+  host: ""
+  port: 5432
+  user: ""
+  database: ""
+  # "" = global.postgresqlSslmode, else "disable".
+  sslmode: ""
+
+# The registry migration (0001-0007): a Job that runs the kit's capped
+# migrate-sanitizer-core.sh (byte copy in files/, SHA256SUMS-pinned SQL) in ONE
+# transaction into the core's own ledger registry_schema_migrations. Never on
+# the core's boot, never down. The ceiling (7) is baked into
+# templates/migration-job.yaml, not into values; raising it is a kit-release
+# change gated by docs/RELEASING.md § "Migration review". The core Pod waits
+# (init container) until the ledger has reached targetVersion.
+migrations:
+  targetVersion: 7
+  backoffLimit: 6
+
+# Credentials: DSA_SANITIZER_CORE_REGISTRY_KEY, POSTGRES_PASSWORD and
+# REGISTRY_DSN in the Secret sanitizer-core-credentials.
+#   k8s-native: rendered from the two values below (the DSN is built from the
+#     password, so the two cannot disagree). Both are REQUIRED — the chart
+#     ships no working default (T-10).
+#   vault | aws | azure: an ExternalSecret reads the properties registry_key,
+#     password and registry_dsn from the path/name below. Production requires
+#     this (k8s-native is refused there) and equal to global.secrets.backend.
+#
+# ⚠️ The registry key seals every registry row (AES-256-GCM + HMAC): exactly 64
+# hex characters, not all zero (openssl rand -hex 32). Keep it STABLE — a
+# different key cannot read the rows already stored. The DB password must be
+# URL-safe (A-Z a-z 0-9 . _ ~ -; openssl rand -hex 24): it is part of the DSN.
+# The DSN reaches the core as a FILE (--registry-dsn-file), never as a
+# command-line argument.
+secrets:
+  backend: k8s-native
+  values:
+    registryKey: ""
+    postgresPassword: ""
+  vault:
+    path: "sanitizer-core"
+  aws:
+    name: "dsa/sanitizer-core"
+  azure:
+    name: "dsa-sanitizer-core"
+
+# Every Lucairn image runs as uid 10001; fsGroup makes the projected Secret
+# files (mode 0440) readable by it.
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# The core drains in-flight claims for up to SANITIZER_CLAIM_DRAIN_SECONDS
+# (default 10) on SIGTERM; keep this above it.
+terminationGracePeriodSeconds: 30

@@ -75,6 +75,40 @@ spec:
               - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "bridge") }}.svc.cluster.local"
               # Audit
               - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "audit") }}.svc.cluster.local"
+{{- if include "infrastructure.sanitizerCoreEnabled" . }}
+---
+# --- Kit 2.0: the sanitizer core Pod additionally resolves the witness ---
+# Pod-scoped (Cilium unions DNS rules per endpoint): only the core Pod gains
+# this one name, the rest of the identity namespace keeps the list above.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: dns-restrict-identity-sanitizer-core
+  namespace: {{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}
+  labels:
+    app.kubernetes.io/part-of: dsa
+    dsa.io/purpose: dns-restriction
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: sanitizer-core
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              # Own namespace (its registry DB) — repeated so this policy is
+              # complete on its own.
+              - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "identity") }}.svc.cluster.local"
+              # The witness claim port, by exact name only.
+              - matchName: "veil-witness.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "witness") }}.svc.cluster.local"
+{{- end }}
 ---
 # --- dsa-bridge: can resolve own namespace + identity + ai + audit ---
 apiVersion: cilium.io/v2

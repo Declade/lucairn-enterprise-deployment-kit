@@ -24,7 +24,7 @@ value() { awk -F= -v key="$2" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$
 [ ! -s "$TMPDIR/generator.out" ] && [ ! -s "$TMPDIR/generator.err" ] || { echo "custody generator must be silent" >&2; exit 1; }
 [ "$(mode "$PUBLIC")" = 600 ] && [ "$(mode "$PRIVATE")" = 700 ] || { echo "public/private state modes drifted" >&2; exit 1; }
 
-for service in gateway audit id-bridge sandbox-a sandbox-b veil-witness; do
+for service in gateway audit id-bridge sandbox-a sandbox-b veil-witness sanitizer-core; do
   [ -f "$PRIVATE/$service.env" ] && [ "$(mode "$PRIVATE/$service.env")" = 600 ] || { echo "missing mode-0600 $service env" >&2; exit 1; }
 done
 
@@ -56,14 +56,16 @@ rosters = {
   "id-bridge" => %w[DATABASE_URL POSTGRES_PASSWORD MASTER_KEY LCR_SIGNING_KEY DSA_BRIDGE_ENCRYPTION_KEY DSA_SERVICE_TOKEN],
   "sandbox-a" => %w[DATABASE_URL POSTGRES_PASSWORD ENCRYPTION_KEY DSA_ADMIN_KEY LCR_SIGNING_KEY DSA_SERVICE_TOKEN CANARY_HMAC_KEY],
   "sandbox-b" => %w[SANDBOX_B_REDIS_URL REDIS_PASSWORD ANTHROPIC_API_KEY MISTRAL_API_KEY OPENAI_API_KEY GEMINI_API_KEY LCR_SIGNING_KEY SANDBOX_B_API_KEYS DSA_ADMIN_KEY DSA_MANAGED_AI_KEY DSA_SERVICE_TOKEN DSA_LICENSE_KEY],
-  "veil-witness" => %w[DATABASE_URL DATABASE_URL_APP POSTGRES_PASSWORD VEIL_APP_PASSWORD LCR_WITNESS_SIGNING_KEY LCR_WITNESS_KEY_ID]
+  "veil-witness" => %w[DATABASE_URL DATABASE_URL_APP POSTGRES_PASSWORD VEIL_APP_PASSWORD LCR_WITNESS_SIGNING_KEY LCR_WITNESS_KEY_ID],
+  "sanitizer-core" => %w[DSA_SANITIZER_CORE_REGISTRY_KEY POSTGRES_PASSWORD REGISTRY_DSN]
 }
 rosters.each { |service, keys| actual = File.readlines(File.join(directory, "#{service}.env"), chomp: true).map { |line| line.split("=", 2).first }; abort "#{service} roster drift" unless actual.sort == keys.sort }
 expected_dsn = {
   "audit" => ["DATABASE_URL", /\Apostgres:\/\/dsa:[0-9a-f]{64}@audit-postgresql:5432\/audit\?sslmode=disable\z/],
   "id-bridge" => ["DATABASE_URL", /\Apostgres:\/\/dsa:[0-9a-f]{64}@id-bridge-postgresql:5432\/bridge\?sslmode=disable\z/],
   "sandbox-a" => ["DATABASE_URL", /\Apostgres:\/\/dsa:[0-9a-f]{64}@sandbox-a-postgresql:5432\/sandbox_a\?sslmode=disable\z/],
-  "veil-witness" => ["DATABASE_URL", /\Apostgres:\/\/veil:[0-9a-f]{64}@veil-witness-postgresql:5432\/veil\?sslmode=disable\z/]
+  "veil-witness" => ["DATABASE_URL", /\Apostgres:\/\/veil:[0-9a-f]{64}@veil-witness-postgresql:5432\/veil\?sslmode=disable\z/],
+  "sanitizer-core" => ["REGISTRY_DSN", /\Apostgres:\/\/dsa:[0-9a-f]{64}@postgres-sanitizer-core:5432\/sanitizer_core\?sslmode=disable\z/]
 }
 expected_dsn.each do |service, (key, pattern)|
   values = File.readlines(File.join(directory, "#{service}.env"), chomp: true).map { |line| line.split("=", 2) }.to_h
@@ -149,21 +151,21 @@ HELM
   ruby -ryaml - "$TMPDIR/render.yaml" <<'RUBY'
 documents = YAML.load_stream(File.read(ARGV.fetch(0))).compact
 external = documents.map { |doc| doc.dig("metadata", "name") if doc["kind"] == "ExternalSecret" }.compact
-abort "expected six ExternalSecrets" unless external.length == 6
+abort "expected seven ExternalSecrets (kit 2.0: + sanitizer-core)" unless external.length == 7
 abort "expected one ClusterSecretStore" unless documents.count { |doc| doc["kind"] == "ClusterSecretStore" } == 1
 abort "Helm-owned Secret rendered" if documents.any? { |doc| doc["kind"] == "Secret" }
 RUBY
 fi
 
 # The API fixture is exactly the two structural v1beta1 CRDs. The harness only
-# waits for Established, pre-creates six target Secrets, keeps external
+# waits for Established, pre-creates seven target Secrets, keeps external
 # backends, and does not claim live ESO reconciliation.
 ruby -ryaml - "$CHART/tests/fixtures/kind-external-secrets-crds.yaml" <<'RUBY'
 docs = YAML.load_stream(File.read(ARGV.fetch(0))).compact
 abort unless docs.map { |doc| doc.dig("metadata", "name") }.sort == %w[clustersecretstores.external-secrets.io externalsecrets.external-secrets.io]
 docs.each { |doc| schema = doc.dig("spec", "versions", 0, "schema", "openAPIV3Schema"); abort unless doc.dig("spec", "versions", 0, "name") == "v1beta1" && schema["type"] == "object" && schema["x-kubernetes-preserve-unknown-fields"] == true }
 RUBY
-for required in 'apply -f "$EXTERNAL_SECRETS_CRDS"' 'for crd in externalsecrets.external-secrets.io clustersecretstores.external-secrets.io' 'wait --for=condition=Established "crd/$crd"' '--from-env-file=' 'create_application_secret dsa-edge gateway' 'create_application_secret dsa-witness veil-witness' 'helm get values' 'helm get manifest' 'helm get all' 'does not prove live ESO reconciliation'; do grep -Fq -- "$required" "$HARNESS" || { echo "harness omits $required" >&2; exit 1; }; done
+for required in 'create_application_secret dsa-identity sanitizer-core' 'bootstrap-sanitizer-core-mtls.sh' 'create secret generic sanitizer-core-mtls' 'create secret generic gateway-sanitizer-core-mtls' 'dsa-identity/sanitizer-core' 'DOCTOR_KUBE_LIVE=1' 'apply -f "$EXTERNAL_SECRETS_CRDS"' 'for crd in externalsecrets.external-secrets.io clustersecretstores.external-secrets.io' 'wait --for=condition=Established "crd/$crd"' '--from-env-file=' 'create_application_secret dsa-edge gateway' 'create_application_secret dsa-witness veil-witness' 'helm get values' 'helm get manifest' 'helm get all' 'does not prove live ESO reconciliation'; do grep -Fq -- "$required" "$HARNESS" || { echo "harness omits $required" >&2; exit 1; }; done
 if grep -Eq 'RUNTIME_VALUES|secrets\.backend=k8s-native|helm.*APPLICATION_SECRETS' "$HARNESS"; then echo "harness retains secret-bearing Helm bypass" >&2; exit 1; fi
 if grep -Eiq 'external-secrets.*(controller|deployment)|wait .*externalsecret|wait .*clustersecretstore' "$HARNESS"; then echo "harness waits for live ESO" >&2; exit 1; fi
 grep -Fq 'does not prove live ESO reconciliation' "$ROOT/docs/CUSTOMER_HELM_RUNBOOK.md" || { echo "production runbook omits no-live-ESO boundary" >&2; exit 1; }

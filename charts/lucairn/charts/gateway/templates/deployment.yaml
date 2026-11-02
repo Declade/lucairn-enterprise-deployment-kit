@@ -2,6 +2,30 @@
 {{- fail "gateway.readiness.required=true requires gateway.readiness.existingBundleSecret" -}}
 {{- end -}}
 {{- $mtlsEnabled := and (kindIs "bool" .Values.global.mtls.enabled) .Values.global.mtls.enabled -}}
+{{- $coreOn := and (kindIs "bool" ((.Values.global.sanitizerCore | default dict).enabled)) (.Values.global.sanitizerCore | default dict).enabled -}}
+{{- $core := .Values.sanitizerCore | default dict -}}
+{{- $coreMtls := $core.mtls | default dict -}}
+{{- if $coreOn -}}
+{{- $coreLiterals := dict
+      "gateway.sanitizerCore.url" $core.url
+      "gateway.sanitizerCore.mtls.mountPath" $coreMtls.mountPath
+      "gateway.sanitizerCore.mtls.caKey" $coreMtls.caKey
+      "gateway.sanitizerCore.mtls.certKey" $coreMtls.certKey
+      "gateway.sanitizerCore.mtls.keyKey" $coreMtls.keyKey -}}
+{{- range $key := keys $coreLiterals | sortAlpha -}}
+{{- include "lucairn.env.noExpansion" (dict "scope" "GATEWAY ENV" "key" $key "value" (get $coreLiterals $key)) -}}
+{{- end -}}
+{{- if not (hasPrefix "https://" (toString $core.url)) -}}
+{{- fail "GATEWAY ENV: gateway.sanitizerCore.url must be an https:// URL — the gateway never talks plaintext to the sanitizer core (verified mTLS, DSA pkg/tlsutil/sanitizer_core.go)." -}}
+{{- end -}}
+{{- if or (empty $coreMtls.secretName) (empty $coreMtls.caKey) (empty $coreMtls.certKey) (empty $coreMtls.keyKey) (empty $coreMtls.mountPath) -}}
+{{- fail "GATEWAY ENV: gateway.sanitizerCore.mtls.{secretName,caKey,certKey,keyKey,mountPath} are all required while the sanitizer core is enabled (the gateway refuses the delta protocol without its client leaf)." -}}
+{{- end -}}
+{{- end -}}
+{{- $sbMax := toString ((.Values.global | default dict).sandboxBMessagesJsonMaxBytes | default "") -}}
+{{- if and $sbMax (not (regexMatch "^[1-9][0-9]*$" $sbMax)) -}}
+{{- fail "GATEWAY ENV: global.sandboxBMessagesJsonMaxBytes must be a positive whole number of characters (or empty = 4 MiB)." -}}
+{{- end -}}
 {{- /*
   T-871: every literal the container env / args below render from .Values is
   refused at render time when it contains "$" — Kubernetes expands `$(NAME)`
@@ -132,6 +156,39 @@ spec:
             - name: WITNESS_MTLS_SERVER_NAME
               value: "dsa-veil-witness"
             {{- end }}
+            {{- if $coreOn }}
+            # ── Kit 2.0: the new sanitizer core — the hosted switch set ─────
+            # gateway.sanitizerCore in values.yaml documents each switch.
+            - name: GATEWAY_SANITIZER_PROTOCOL
+              value: {{ include "lucairn.env.enum" (dict "scope" "GATEWAY ENV" "key" "gateway.sanitizerCore.protocol" "value" $core.protocol "allowed" (list "delta" "whole")) | quote }}
+            - name: SANITIZER_CORE_URL
+              value: {{ $core.url | quote }}
+            - name: GATEWAY_SANITIZER_GATE_POSTURE
+              value: {{ include "lucairn.env.enum" (dict "scope" "GATEWAY ENV" "key" "gateway.sanitizerCore.gatePosture" "value" $core.gatePosture "allowed" (list "enforce" "log")) | quote }}
+            - name: GATEWAY_SANITIZER_GATE_ROUTE_POSTURE
+              value: {{ include "lucairn.env.enum" (dict "scope" "GATEWAY ENV" "key" "gateway.sanitizerCore.routePosture" "value" $core.routePosture "allowed" (list "observe" "log" "enforce")) | quote }}
+            - name: GATEWAY_ADDED_PARTS_PLACEMENT
+              value: {{ include "lucairn.env.enum" (dict "scope" "GATEWAY ENV" "key" "gateway.sanitizerCore.addedPartsPlacement" "value" $core.addedPartsPlacement "allowed" (list "message" "system")) | quote }}
+            # gateway -> core verified mTLS: the gateway's client leaf (SAN
+            # dsa-gateway) + the hop CA.
+            - name: SANITIZER_CORE_MTLS_CA_BUNDLE_PATH
+              value: "{{ $coreMtls.mountPath }}/{{ $coreMtls.caKey }}"
+            - name: SANITIZER_CORE_MTLS_CLIENT_CERT_PATH
+              value: "{{ $coreMtls.mountPath }}/{{ $coreMtls.certKey }}"
+            - name: SANITIZER_CORE_MTLS_CLIENT_KEY_PATH
+              value: "{{ $coreMtls.mountPath }}/{{ $coreMtls.keyKey }}"
+            {{- end }}
+            # Kit 2.0: "Send one message unredacted" stays OFF in this release —
+            # a literal, not a value, so no values file can switch it on (the
+            # Compose twin carries the same literal).
+            - name: GATEWAY_USER_UNREDACTED_ENABLED
+              value: "false"
+            {{- if $sbMax }}
+            # Gateway copy of Sandbox B's __messages_json__ limit (DSA PR #900):
+            # the SAME global value reaches the sandbox-b pod.
+            - name: SANDBOX_B_MESSAGES_JSON_MAX_BYTES
+              value: {{ $sbMax | quote }}
+            {{- end }}
             - name: SANDBOX_A_INVARIANT_URL
               value: "http://sandbox-a.dsa-identity.svc.cluster.local:8083/invariant"
             - name: SANDBOX_B_INVARIANT_URL
@@ -252,6 +309,12 @@ spec:
             {{- if $mtlsEnabled }}
             - name: enterprise-mtls
               mountPath: {{ .Values.global.mtls.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- if $coreOn }}
+            # Kit 2.0: ONLY the gateway's client leaf for the core hop + its CA.
+            - name: sanitizer-core-mtls
+              mountPath: {{ $coreMtls.mountPath | quote }}
               readOnly: true
             {{- end }}
             {{- if and .Values.keystore.persistence.enabled .Values.keystorePath }}
@@ -375,6 +438,18 @@ spec:
                 path: {{ .Values.global.mtls.certKey }}
               - key: {{ .Values.global.mtls.keyKey }}
                 path: {{ .Values.global.mtls.keyKey }}
+        {{- end }}
+        {{- if $coreOn }}
+        - name: sanitizer-core-mtls
+          secret:
+            secretName: {{ $coreMtls.secretName }}
+            items:
+              - key: {{ $coreMtls.caKey }}
+                path: {{ $coreMtls.caKey }}
+              - key: {{ $coreMtls.certKey }}
+                path: {{ $coreMtls.certKey }}
+              - key: {{ $coreMtls.keyKey }}
+                path: {{ $coreMtls.keyKey }}
         {{- end }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:

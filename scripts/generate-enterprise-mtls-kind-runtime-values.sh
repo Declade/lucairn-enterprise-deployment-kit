@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Generate the two custody domains for the disposable Enterprise mTLS Kind
-# harness. The public overlay is safe for doctor and Helm; the six env files
+# harness. The public overlay is safe for doctor and Helm; the seven env files
 # are private operator inputs for pre-created application Secrets. Do not add
 # xtrace: this script deliberately holds fresh credentials in shell variables.
 
@@ -78,6 +78,8 @@ sandbox_a_postgres_password="$(random_hex)"
 witness_postgres_password="$(random_hex)"
 witness_app_password="$(random_hex)"
 sandbox_b_redis_password="$(random_hex)"
+sanitizer_core_registry_key="$(random_hex)"
+sanitizer_core_postgres_password="$(random_hex)"
 
 # The platform-tier token and the deployment entitlement are issuer-signed
 # formats, not random 64-hex values. Keep the complete external-Secret target
@@ -155,6 +157,15 @@ write_env veil-witness \
   "VEIL_APP_PASSWORD=$witness_app_password" \
   "LCR_WITNESS_SIGNING_KEY=$witness_seed" \
   "LCR_WITNESS_KEY_ID=kind-ephemeral-witness-v1"
+
+# Kit 2.0: the new sanitizer core. Its claims are signed with the old
+# sanitizer's seed (the chart reads sandbox-a-credentials/LCR_SIGNING_KEY), so
+# it carries no seed of its own. The DSN reaches the core as a file
+# (--registry-dsn-file), built from the same password as POSTGRES_PASSWORD.
+write_env sanitizer-core \
+  "DSA_SANITIZER_CORE_REGISTRY_KEY=$sanitizer_core_registry_key" \
+  "POSTGRES_PASSWORD=$sanitizer_core_postgres_password" \
+  "REGISTRY_DSN=postgres://dsa:$sanitizer_core_postgres_password@postgres-sanitizer-core:5432/sanitizer_core?sslmode=disable"
 
 # Preserve the checked-in names/path topology, add Kind-only non-secret CNI
 # exceptions, and publish verifier values in a neutral public map. No

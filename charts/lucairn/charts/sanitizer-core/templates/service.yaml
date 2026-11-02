@@ -1,0 +1,21 @@
+# The gateway's Anthropic route: https://sanitizer-core.<identity-ns>.svc:8790
+# (verified mTLS; the gateway pins the server name dsa-sanitizer-core, so the
+# DNS name it dials does not need to be in the leaf). Only the core's port —
+# the sidecar binds loopback inside the Pod and has no Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+spec:
+  type: ClusterIP
+  ports:
+    - name: https
+      port: {{ .Values.service.port }}
+      targetPort: https
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
