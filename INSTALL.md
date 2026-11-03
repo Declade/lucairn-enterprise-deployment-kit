@@ -3026,11 +3026,18 @@ by Lucairn (its test accounts are web-service only).
 6. **Start:** `bin/lucairn up --env customer.env`. Before Compose starts
    anything, `up` rebuilds the Python sanitizer's config copy
    (`SERVICENOW_CONTROL_SANITIZER_CONFIG`) from your current base config
-   (`SANITIZER_CONFIG_FILE`, default `config/default-sanitizer.yaml`) — on
-   every run, so an edit of the base is never left behind — checks the login
-   folder, and checks against the running gateway that every bound key id
-   exists under its instance's owner (it prints counts only). A key id that does
-   not exist stops `up`. `up` needs `python3` with PyYAML
+   (`SANITIZER_CONFIG_FILE`, default `config/default-sanitizer.yaml`) on every
+   run, and checks the login folder. When the rebuilt copy differs from the
+   file on disk, `up` writes it and, after starting the stack, **recreates the
+   Python sanitizer** (`up -d --no-deps --force-recreate sanitizer`): the
+   sanitizer bind-mounts that one file and keeps reading the version its
+   container was created with until it is recreated (a plain `up -d` does not
+   recreate it). An unchanged copy is left as it is. While the gateway
+   container is running, `up` also checks that every bound key id exists under
+   its instance's owner (counts only); a key id that does not exist stops
+   `up`. Before the first start (no gateway container running) it skips that
+   check with a warning: the admin key is only ever sent to a running gateway,
+   never to whatever else might listen on `127.0.0.1:GATEWAY_PORT`. `up` needs `python3` with PyYAML
    (`apt install python3-yaml` or `python3 -m pip install pyyaml`) for the copy.
    Run `up` (and the doctor below) **as root** (`sudo`): the login folder is
    `0700` and owned by `10001`, so no other account can look inside it, and a
@@ -3039,10 +3046,12 @@ by Lucairn (its test accounts are web-service only).
 7. **Check:** `bin/lucairn doctor --env customer.env --customer-key-file …`.
    Offline and online it checks the copy against a rebuild of the base, the
    login custody, and that the login file and the control material reach only
-   their services; online also the bound key ids, the gateway's admin status
-   (`GET /api/v1/admin/servicenow/status`: mode `on`, every instance
-   `unlocked`, control certificate valid ≥ 14 days) and exactly **one** gateway
-   container.
+   their services; online also that the running sanitizer reads the current
+   copy (the hash of the file inside the container), the bound key ids, the
+   gateway's admin status (`GET /api/v1/admin/servicenow/status`: mode `on`,
+   every instance `unlocked`, control certificate valid ≥ 14 days) and exactly
+   **one running** gateway container. It sends the admin key only while that
+   container runs; with none running it fails and names the cause.
 
 **Turn it off:** empty `GATEWAY_SERVICENOW_KEY_BINDINGS` and run `bin/lucairn up`.
 **Rotate a bound key:** bind the new key id, `up`, then revoke the old key.
@@ -3074,6 +3083,26 @@ by Lucairn (its test accounts are web-service only).
   side (`LCR_PROFILE=kit-servicenow`, the control client, the core → gateway
   NetworkPolicy) is in the chart; the gateway's bindings, stored login and
   ledger volume follow in a later kit slice. Use Compose for the mode until then.
+- **Helm DNS policy of the ServiceNow render** (`_servicenow-control.tpl`): the
+  final review flagged its DNS egress rules; they are latent while the Helm
+  ServiceNow render is held and must be fixed before the hold is lifted.
+
+### Kit 2.0 — further stated limits (final reads, 2026-11-03)
+
+- **Adopting an existing `customer.env`:** `bin/lucairn-init` in adopt mode
+  reads `SANITIZER_CORE_MTLS_HOST_DIR` with a plain text match, so a quoted
+  value is not understood; write that line unquoted.
+- **Doctor claim checks read container logs.** After Docker rotates or prunes
+  the logs, a state in which the core dropped claims earlier can pass the
+  check; the release rehearsal's real turn is the proof of arrival.
+- **Helm migration Job:** the registry migration Job has no
+  `ttlSecondsAfterFinished` (the doctor's live check reads the completed Job),
+  so finished Jobs stay until you delete them; delete old ones by hand.
+- **`bundle verify` checks the ServiceNow update set against the bundle's own
+  `PROVENANCE` record:** that proves the files were not changed inside the
+  bundle (integrity), not who made the bundle.
+- **Support bundle:** its secret scan does not cover secrets that live only in
+  files (`login.json`, the mTLS keys); no collector reads those files today.
 
 ## Sanitizer content cache (Redis — default ON)
 

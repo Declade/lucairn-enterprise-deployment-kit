@@ -25,9 +25,11 @@ carry a security fix are tagged **[Security]**.
   `docker-compose.servicenow-control.yml` to every command. Bindings without
   the switch make `bin/lucairn up` refuse with `session_config_invalid`. On
   every `up` the Python sanitizer's config copy is rebuilt from the current
-  base config, the stored-login custody is checked (folder `0700`, file
-  `0400`, `10001:10001`) and every bound key id is checked against the running
-  gateway (counts only). The core runs `LCR_PROFILE=kit-servicenow` (set by the
+  base config — when it changed, `up` writes it and recreates the Python
+  sanitizer after the start (it bind-mounts that one file and would keep the
+  old version) — the stored-login custody is checked (folder `0700`, file
+  `0400`, `10001:10001`) and, while the gateway container runs, every bound
+  key id is checked against it (counts only). The core runs `LCR_PROFILE=kit-servicenow` (set by the
   overlay only), no core dumps, `GOTRACEBACK=none`; the model sidecar joins the
   control network at a fixed address without an alias and mounts no control
   material. `bin/lucairn doctor` checks the copy's hash, the login custody, the
@@ -62,6 +64,34 @@ carry a security fix are tagged **[Security]**.
   search for); every log line is also compared with its string escapes undone.
   Stated limits in INSTALL.md § "Support bundle — stated limits": review a
   bundle before you send it.
+
+### Fixed (kit 2.0 final reads, 2026-11-03)
+
+- `bin/lucairn up` runs the sanitizer core's capped registry migration before
+  it starts anything (the core refuses an unmigrated registry); the docs and
+  the `lucairn-init` "Next" block say so.
+- An offline customer bundle can start the core: the staged `customer.env`
+  names bundle-relative paths for the core's mTLS material and registry DSN
+  file, and the bundle ships the mTLS bootstrap and the DSN writer.
+- `lucairn-init --dev` no longer drops every claim of the core: the core's
+  witness hop follows `GRPC_TLS_ENABLED` (plaintext on a development mesh,
+  verified mTLS otherwise); the doctor fails a mismatch.
+- On Linux the mTLS bootstrap refuses an ordinary user (only root can give the
+  keys to the container user); `lucairn-init` runs that step with `sudo`; the
+  doctor fails a key the containers cannot read.
+- The core and its model sidecar run without capabilities, with
+  `no-new-privileges` and a read-only root filesystem (Compose, as on Helm).
+- The online doctor fails on a Docker Engine older than 26.0.0 / 25.0.5 /
+  23.0.11 (CVE-2024-29018: DNS forwarding from internal networks).
+- The ServiceNow `up` gate and the doctor send the admin key only to a running
+  gateway container; the dashboard key check does the same for a loopback
+  admin URL.
+- A changed ServiceNow sanitizer config copy recreates the Python sanitizer;
+  the doctor compares the file inside the running container.
+- The OPS.md Helm backup and restore recipes hand the database password to
+  `pg_dump` / `pg_restore` in a private password file over standard input,
+  never as a process argument; the temporary credential folders in the docs
+  are removed even when a step fails.
 
 ### Stated limits
 

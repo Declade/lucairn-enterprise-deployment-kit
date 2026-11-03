@@ -403,8 +403,14 @@ done
 The compliance Postgres pods are `audit-postgresql-0` (ns `dsa-audit`),
 `id-bridge-postgresql-0` (ns `dsa-bridge`), and
 `veil-witness-postgresql-0` (ns `dsa-witness`). The DB password is in each
-chart's `<chart>-credentials` Secret under key `POSTGRES_PASSWORD`; pass it
-via `PGPASSWORD` so it never lands in shell history.
+chart's `<chart>-credentials` Secret under key `POSTGRES_PASSWORD`.
+The password never becomes a process argument: `env PGPASSWORD=… pg_dump`
+inside `kubectl exec` would put it in the argument list of that `env` process,
+which any user of the pod (and of the node, `ps`) can read. It travels instead
+as ONE pgpass line on standard input into a private file (`umask 077`) that
+`pg_dump` / `pg_restore` reads through `PGPASSFILE` and that is deleted right
+after. `printf` is a shell builtin, so the operator host's argument lists do
+not see it either.
 
 ```bash
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -422,8 +428,11 @@ for row in \
   usr="${r%%:*}";   sec="${r##*:}"
   pw="$(kubectl -n "${ns}" get secret "${sec}" \
         -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)"
-  kubectl -n "${ns}" exec -i "${pod}" -- \
-    env PGPASSWORD="${pw}" pg_dump -U "${usr}" -d "${db}" -Fc \
+  # pgpass format: \ and : in the password are escaped.
+  printf '*:*:*:*:%s\n' "$(printf '%s' "${pw}" | sed 's/\\/\\\\/g; s/:/\\:/g')" \
+    | kubectl -n "${ns}" exec -i "${pod}" -- sh -c \
+      'umask 077; f=/tmp/.lucairn-pgpass.$$; cat > "$f"; PGPASSFILE="$f" pg_dump -U "$1" -d "$2" -Fc; rc=$?; rm -f "$f"; exit $rc' \
+      sh "${usr}" "${db}" \
     > "${OUT}/${db}.dump"
   unset pw
   test -s "${OUT}/${db}.dump" \
@@ -447,10 +456,12 @@ for row in \
   usr="${r%%:*}";   sec="${r##*:}"
   pw="$(kubectl -n "${ns}" get secret "${sec}" \
         -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)"
-  kubectl -n "${ns}" exec -i "${pod}" -- \
-    env PGPASSWORD="${pw}" pg_restore -U "${usr}" -d "${db}" \
-        --no-owner --clean --if-exists \
-    < "${SRC}/${db}.dump"
+  # The pgpass line comes FIRST on standard input, the dump after it: `read`
+  # takes exactly that one line, pg_restore reads the rest.
+  { printf '*:*:*:*:%s\n' "$(printf '%s' "${pw}" | sed 's/\\/\\\\/g; s/:/\\:/g')"; cat "${SRC}/${db}.dump"; } \
+    | kubectl -n "${ns}" exec -i "${pod}" -- sh -c \
+      'umask 077; f=/tmp/.lucairn-pgpass.$$; IFS= read -r l; printf "%s\n" "$l" > "$f"; PGPASSFILE="$f" pg_restore -U "$1" -d "$2" --no-owner --clean --if-exists; rc=$?; rm -f "$f"; exit $rc' \
+      sh "${usr}" "${db}"
   unset pw
 done
 ```
@@ -559,18 +570,19 @@ RECIPIENT="$(grep 'public key:' lucairn-backup-age.key | awk '{print $NF}')"
 # The S3 credentials reach kubectl as mode-0600 files, never as
 # --from-literal: any local user can read a process's argument list.
 # (The recipient is the age PUBLIC key, not a secret.)
-S3_DIR="$(mktemp -d)"
-( umask 077
-  printf '%s' "$AWS_ACCESS_KEY_ID" > "$S3_DIR/accessKeyId"
-  printf '%s' "$AWS_SECRET_ACCESS_KEY" > "$S3_DIR/secretAccessKey" )
-for ns in dsa-audit dsa-bridge dsa-witness; do
-  kubectl -n "$ns" create secret generic lucairn-backup-age \
-    --from-literal=recipient="$RECIPIENT"
-  kubectl -n "$ns" create secret generic lucairn-backup-s3 \
-    --from-file=accessKeyId="$S3_DIR/accessKeyId" \
-    --from-file=secretAccessKey="$S3_DIR/secretAccessKey"
-done
-rm -rf "$S3_DIR"
+# In a subshell whose EXIT trap removes the folder even when a step fails.
+( set -e
+  S3_DIR="$(mktemp -d)"; trap 'rm -rf "$S3_DIR"' EXIT
+  ( umask 077
+    printf '%s' "$AWS_ACCESS_KEY_ID" > "$S3_DIR/accessKeyId"
+    printf '%s' "$AWS_SECRET_ACCESS_KEY" > "$S3_DIR/secretAccessKey" )
+  for ns in dsa-audit dsa-bridge dsa-witness; do
+    kubectl -n "$ns" create secret generic lucairn-backup-age \
+      --from-literal=recipient="$RECIPIENT"
+    kubectl -n "$ns" create secret generic lucairn-backup-s3 \
+      --from-file=accessKeyId="$S3_DIR/accessKeyId" \
+      --from-file=secretAccessKey="$S3_DIR/secretAccessKey"
+  done )
 ```
 
 With `backup.enabled=true` the chart renders one CronJob per compliance DB
@@ -648,9 +660,12 @@ aws s3 cp "s3://my-compliance-backups/${KEY}" ./audit.dump.age
 age -d -i lucairn-backup-age.key -o ./audit.dump ./audit.dump.age
 PW="$(kubectl -n dsa-audit get secret audit-credentials \
       -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)"
-kubectl -n dsa-audit exec -i audit-postgresql-0 -- \
-  env PGPASSWORD="$PW" pg_restore -U dsa -d audit --no-owner --clean --if-exists \
-  < ./audit.dump
+# The password as ONE pgpass line on standard input before the dump, into a
+# private file in the pod (never a process argument; see "Helm path — backup").
+{ printf '*:*:*:*:%s\n' "$(printf '%s' "$PW" | sed 's/\\/\\\\/g; s/:/\\:/g')"; cat ./audit.dump; } \
+  | kubectl -n dsa-audit exec -i audit-postgresql-0 -- sh -c \
+    'umask 077; f=/tmp/.lucairn-pgpass.$$; IFS= read -r l; printf "%s\n" "$l" > "$f"; PGPASSFILE="$f" pg_restore -U dsa -d audit --no-owner --clean --if-exists; rc=$?; rm -f "$f"; exit $rc'
+unset PW
 ```
 
 > **S3 key prefixes differ between the Helm and Compose paths — they are NOT
@@ -2930,15 +2945,16 @@ NEW_SESSION="$(openssl rand -hex 24)"
 
 # The values reach kubectl as mode-0600 files, never as --from-literal: any
 # local user can read a process's argument list.
-ROT_DIR="$(mktemp -d)"
-( umask 077
-  printf '%s' "${NEW_PASS}" > "$ROT_DIR/password"
-  printf '%s' "${NEW_SESSION}" > "$ROT_DIR/session-secret" )
-kubectl -n lucairn create secret generic lucairn-dashboard-bootstrap-admin \
-  --from-file=password="$ROT_DIR/password" \
-  --from-file=session-secret="$ROT_DIR/session-secret" \
-  --dry-run=client -o yaml | kubectl apply -f -
-rm -rf "$ROT_DIR"
+# In a subshell whose EXIT trap removes the folder even when a step fails.
+( set -e
+  ROT_DIR="$(mktemp -d)"; trap 'rm -rf "$ROT_DIR"' EXIT
+  ( umask 077
+    printf '%s' "${NEW_PASS}" > "$ROT_DIR/password"
+    printf '%s' "${NEW_SESSION}" > "$ROT_DIR/session-secret" )
+  kubectl -n lucairn create secret generic lucairn-dashboard-bootstrap-admin \
+    --from-file=password="$ROT_DIR/password" \
+    --from-file=session-secret="$ROT_DIR/session-secret" \
+    --dry-run=client -o yaml | kubectl apply -f - )
 
 kubectl -n lucairn rollout restart deploy/lucairn-dashboard
 kubectl -n lucairn rollout status deploy/lucairn-dashboard

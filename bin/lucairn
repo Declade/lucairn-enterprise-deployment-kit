@@ -553,6 +553,21 @@ servicenow_keyed() {
   return "$rc"
 }
 
+# servicenow_gateway_running <env file> — 0 when this project's gateway
+# container is RUNNING (`docker compose ps --status running -q gateway`).
+# ToB TOB-K20-01: the admin API is reached on 127.0.0.1:<GATEWAY_PORT>, and
+# while no gateway container runs, any local process may listen there and
+# would receive DSA_ADMIN_KEY in the X-Admin-Key header. While the gateway
+# container runs, Docker holds that published port, so the key reaches the
+# gateway. Every keyed/status call below asks this first.
+servicenow_gateway_running() {
+  local compose ids
+  compose="$(compose_cmd)"
+  [ -n "$compose" ] || return 1
+  ids="$($compose ${RUNTIME_COMPOSE_ARGS[@]+"${RUNTIME_COMPOSE_ARGS[@]}"} --env-file "$1" ps --status running -q gateway 2>/dev/null || true)"
+  [ -n "$ids" ]
+}
+
 # servicenow_up_gate <env file> <base compose> — runs in `up` before Compose.
 servicenow_up_gate() {
   local env_file="$1" base_compose="$2" out rc
@@ -571,14 +586,33 @@ servicenow_up_gate() {
   # every up, so an edit of the base can never be left behind in the copy.
   rc=0; out="$(servicenow_helper config-write --base "$SN_BASE" --copy "$SN_COPY" --sanitizer-ip "$SN_SANITIZER_IP" 2>&1)" || rc=$?
   [ "$rc" -eq 0 ] || fail "ServiceNow mode: the sanitizer config copy was not rebuilt: $(servicenow_refusal_text "$out"). bin/lucairn up refuses to start"
-  info "ServiceNow mode: sanitizer config copy rebuilt from the base ($(printf '%s\n' "$out" | sed -n 's/^CONFIG=written //p'))"
+  # Final-read M3: the Python sanitizer bind-mounts this one file and keeps
+  # the version its container was created with; `up -d` does not recreate a
+  # container whose definition is unchanged. A CHANGED copy therefore makes
+  # lifecycle `up` recreate the sanitizer after `up -d` (SN_COPY_CHANGED).
+  SN_COPY_CHANGED=0
+  case "$out" in
+    *CONFIG=written*)
+      SN_COPY_CHANGED=1
+      info "ServiceNow mode: sanitizer config copy rebuilt from the base ($(printf '%s\n' "$out" | sed -n 's/^CONFIG=written //p')); the sanitizer is recreated after the start so it reads the new file"
+      ;;
+    *) info "ServiceNow mode: sanitizer config copy is current ($(printf '%s\n' "$out" | sed -n 's/^CONFIG=unchanged //p'))" ;;
+  esac
   rc=0; out="$(servicenow_helper login-check --dir "$SN_LOGIN" 2>&1)" || rc=$?
   [ "$rc" -eq 0 ] || fail "ServiceNow mode: stored login: $(servicenow_refusal_text "$out"). bin/lucairn up refuses to start"
-  rc=0; servicenow_keyed "$env_file" "$base_compose" || rc=$?
+  # ToB TOB-K20-01: ask the admin API only while the gateway container runs
+  # (Docker then holds 127.0.0.1:${SN_PORT}); never send the admin key to
+  # whatever else may listen there before the first start.
+  if servicenow_gateway_running "$env_file"; then
+    rc=0; servicenow_keyed "$env_file" "$base_compose" || rc=$?
+  else
+    rc=4; SN_KEYED_LINE="the gateway container is not running"
+  fi
   case "$rc" in
     0) info "ServiceNow mode: bound keys exist ($SN_KEYED_LINE)" ;;
     1) fail "ServiceNow mode: a bound key id does not exist under its instance's owner ($SN_KEYED_LINE); a mistyped id would silently run the generic path. Copy the key ids from GET /api/v1/admin/customers/<customer_id>/keys. bin/lucairn up refuses to start" ;;
-    *) warn "ServiceNow mode: bound key ids NOT checked — the gateway's admin API on 127.0.0.1:${SN_PORT:-8080} gave: ${SN_KEYED_LINE:-no answer} (expected while the gateway is not running). Run bin/lucairn doctor once the stack is up" ;;
+    4) warn "ServiceNow mode: bound key ids NOT checked — the gateway container is not running yet, and the admin key is only ever sent to a running gateway (never to whatever listens on 127.0.0.1:${SN_PORT:-8080} before it starts). Run bin/lucairn doctor once the stack is up" ;;
+    *) warn "ServiceNow mode: bound key ids NOT checked — the gateway's admin API on 127.0.0.1:${SN_PORT:-8080} gave: ${SN_KEYED_LINE:-no answer}. Run bin/lucairn doctor once the stack is up" ;;
   esac
   info "ServiceNow mode: ON for $SN_BINDINGS bound key(s) on $SN_INSTANCES instance(s) (overlay $SERVICENOW_OVERLAY)"
 }
@@ -709,7 +743,15 @@ lifecycle_command() {
   case "$verb" in
     up)
       lifecycle_registry_migration "$compose" "$env_file"
-      $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" up -d
+      $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" up -d || return $?
+      # Final-read M3: a CHANGED ServiceNow sanitizer config copy (written by
+      # servicenow_up_gate above) is a new file the running Python sanitizer
+      # does not see — it bind-mounts that one file and keeps the version its
+      # container was created with, and `up -d` keeps an unchanged container.
+      if [ "${SN_COPY_CHANGED:-0}" = 1 ]; then
+        info "ServiceNow mode: recreating the Python sanitizer so it reads the rebuilt config copy"
+        $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" up -d --no-deps --force-recreate sanitizer
+      fi
       ;;
     down) $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" down ;;
     status) $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" ps ;;
@@ -6368,6 +6410,21 @@ check_dashboard_keys() {
 
   # (4) + (5) Reachability + auth probe. Best-effort; --max-time keeps
   # doctor responsive even when the gateway is genuinely down.
+  #
+  # ToB TOB-K20-01 (the rule of the ServiceNow gate): a LOOPBACK admin URL is
+  # answered by whatever listens on that host port. The admin token is sent
+  # there only while this project's gateway container runs (Docker then holds
+  # the published port); otherwise this probe is skipped with a warning.
+  if [ "${DOCTOR_OFFLINE:-0}" != "1" ] && have curl; then
+    case "$(url_host "$gw_url")" in
+      127.*|localhost|::1)
+        if ! servicenow_gateway_running "$env_file"; then
+          echo "dashboard keys: warn (gateway container not running — the admin token is NOT sent to $gw_url, where any local process could be listening; re-run doctor once the stack is up)"
+          return "$fail"
+        fi
+        ;;
+    esac
+  fi
   if [ "${DOCTOR_OFFLINE:-0}" != "1" ] && have curl; then
     local probe_url probe_code probe_diag
     probe_url="${gw_url%/}/healthz"
@@ -9619,6 +9676,29 @@ check_servicenow_runtime() {
     [ "$strict_runtime" -eq 1 ] && return 1
     return 0
   fi
+  # ToB TOB-K20-01: only RUNNING gateway containers count (a stopped one in
+  # `ps -a` holds no port), and the admin key goes out only while one runs.
+  n="$(printf '%s\n' "$ps_out" | awk -F'|' '$1 == "gateway" && $3 == "running" { n++ } END { print n + 0 }')"
+  if [ "$n" = "0" ]; then
+    echo "ServiceNow mode: failed (no running gateway container — bound keys and the admin status were NOT checked: the admin key is only sent to a running gateway, never to whatever listens on 127.0.0.1:${SN_PORT:-8080}. Start the stack: bin/lucairn up)"
+    return 1
+  fi
+  # Final-read M3: the file the RUNNING sanitizer reads (its bind mount keeps
+  # the inode it was created with) must be the current copy on the host.
+  if printf '%s\n' "$ps_out" | awk -F'|' '$1 == "sanitizer" && $3 == "running" { f = 1 } END { exit !f }'; then
+    local in_ctr on_host
+    in_ctr="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" exec -T sanitizer sha256sum /config/config.yaml 2>/dev/null | awk '{ print $1; exit }' || true)"
+    on_host="$(sha256_file "$SN_COPY" 2>/dev/null || true)"
+    if [ -z "$in_ctr" ] || [ -z "$on_host" ]; then
+      echo "ServiceNow mode: failed (could not compare the sanitizer config inside the running sanitizer with $SN_COPY — the running file cannot be shown to be current)"
+      failed=1
+    elif [ "$in_ctr" != "$on_host" ]; then
+      echo "ServiceNow mode: failed (the running sanitizer reads an older config than $SN_COPY: its bind mount keeps the file it was created with. Recreate it: bin/lucairn up, or docker compose ... up -d --no-deps --force-recreate sanitizer)"
+      failed=1
+    else
+      echo "ServiceNow mode: running sanitizer reads the current config copy"
+    fi
+  fi
   rc=0; servicenow_keyed "$env_file" "$compose_file" || rc=$?
   case "$rc" in
     0) echo "ServiceNow mode: bound keys exist ($SN_KEYED_LINE)" ;;
@@ -9633,7 +9713,6 @@ check_servicenow_runtime() {
     echo "ServiceNow mode: failed (gateway status: ${out:-no answer} — want mode=on, every instance unlocked, control certificate >= 14 days)"
     failed=1
   fi
-  n="$(printf '%s\n' "$ps_out" | awk -F'|' '$1 == "gateway" && $3 == "running" { n++ } END { print n + 0 }')"
   if [ "$n" = "1" ]; then
     echo "ServiceNow mode: one gateway serves the mode"
   else

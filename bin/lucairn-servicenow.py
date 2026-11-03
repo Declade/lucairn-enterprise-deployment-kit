@@ -304,6 +304,19 @@ def cmd_config_write(args):
     if owner is not None and os.geteuid() != 0 and owner[0] != os.geteuid():
         raise Refused("config_invalid", "the base sanitizer config is private to another user; run bin/lucairn up "
                                         "as root (or as that user) so the copy keeps its owner")
+    # Final-read M3: the sanitizer bind-mounts this ONE file, so a running
+    # container keeps the inode it was created with; os.replace below makes a
+    # new inode the container never sees. An up-to-date copy (same bytes, mode
+    # and owner) is therefore left untouched, and a changed one is reported as
+    # CONFIG=written so bin/lucairn up recreates the sanitizer.
+    try:
+        cur = os.lstat(copy)
+        if (stat.S_ISREG(cur.st_mode) and stat.S_IMODE(cur.st_mode) == mode
+                and (owner is None or (cur.st_uid, cur.st_gid) == owner) and copy.read_bytes() == body):
+            out("CONFIG", "unchanged sha256=" + hashlib.sha256(body).hexdigest()[:16])
+            return 0
+    except OSError:
+        pass
     fd, tmp = tempfile.mkstemp(prefix=".lucairn-servicenow-config-", dir=str(parent))
     try:
         os.fchmod(fd, mode)

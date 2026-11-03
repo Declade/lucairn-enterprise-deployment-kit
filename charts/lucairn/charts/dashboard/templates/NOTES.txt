@@ -23,15 +23,15 @@ Lucairn Enterprise Dashboard
 3) Rotate the password (OPS.md procedure). The values reach kubectl as
    mode-0600 files, never on its command line (any local user can read a
    process's argument list):
-   ROT_DIR="$(mktemp -d)"
-   ( umask 077
-     printf '%s' '<new-password>' > "$ROT_DIR/password"
-     printf '%s' '<new-session-secret>' > "$ROT_DIR/session-secret" )
-   kubectl -n {{ .Values.namespace }} create secret generic {{ include "dashboard.bootstrapAdminSecretName" . }} \
-     --from-file=password="$ROT_DIR/password" \
-     --from-file=session-secret="$ROT_DIR/session-secret" \
-     --dry-run=client -o yaml | kubectl apply -f -
-   rm -rf "$ROT_DIR"
+   ( set -e   # the EXIT trap removes the folder even when a step fails
+     ROT_DIR="$(mktemp -d)"; trap 'rm -rf "$ROT_DIR"' EXIT
+     ( umask 077
+       printf '%s' '<new-password>' > "$ROT_DIR/password"
+       printf '%s' '<new-session-secret>' > "$ROT_DIR/session-secret" )
+     kubectl -n {{ .Values.namespace }} create secret generic {{ include "dashboard.bootstrapAdminSecretName" . }} \
+       --from-file=password="$ROT_DIR/password" \
+       --from-file=session-secret="$ROT_DIR/session-secret" \
+       --dry-run=client -o yaml | kubectl apply -f - )
    kubectl -n {{ .Values.namespace }} rollout restart deploy/{{ include "dashboard.fullname" . }}
 
 {{- if .Values.oidc.enabled }}

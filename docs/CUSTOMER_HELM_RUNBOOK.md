@@ -583,14 +583,15 @@ echo "Bootstrap password: $DASH_PW"
 
 # The values reach kubectl as mode-0600 files, never as --from-literal: any
 # local user can read a process's argument list.
-DASH_DIR="$(mktemp -d)"
-( umask 077
-  printf '%s' "$DASH_PW" > "$DASH_DIR/password"
-  printf '%s' "$DASH_SS" > "$DASH_DIR/session-secret" )
-kubectl -n lucairn create secret generic lucairn-dashboard-bootstrap-admin \
-  --from-file=password="$DASH_DIR/password" \
-  --from-file=session-secret="$DASH_DIR/session-secret"
-rm -rf "$DASH_DIR"
+# In a subshell whose EXIT trap removes the folder even when a step fails.
+( set -e
+  DASH_DIR="$(mktemp -d)"; trap 'rm -rf "$DASH_DIR"' EXIT
+  ( umask 077
+    printf '%s' "$DASH_PW" > "$DASH_DIR/password"
+    printf '%s' "$DASH_SS" > "$DASH_DIR/session-secret" )
+  kubectl -n lucairn create secret generic lucairn-dashboard-bootstrap-admin \
+    --from-file=password="$DASH_DIR/password" \
+    --from-file=session-secret="$DASH_DIR/session-secret" )
 ```
 
 ### Development/pilot only: enable the dashboard in customer-values.yaml
