@@ -43,9 +43,10 @@ namespace: dsa-identity
 # global.imageTag: no 0.5.x tag of these images exists. Core and sidecar are a
 # PAIR from one release commit (the core refuses a sidecar that lacks the
 # labels it needs, DSA cmd/sanitizer-core/main.go requirePlaceLabels), so the
-# two tags must be equal and the two digests are set together or not at all.
-# The release step fills the digests from image-manifest.yaml
-# (image_digests.signed_artifacts); with a digest set the reference becomes
+# two tags must be equal. BOTH digests are REQUIRED (no tag-only start —
+# Compose parity, kit 2.0 K-B fix round 1): the release step fills them from
+# image-manifest.yaml (image_digests.signed_artifacts) and the render refuses
+# an empty, malformed or placeholder digest. The reference is
 # repo:tag@sha256:… and the kubelet pulls by digest.
 image:
   repository: dsa-sanitizer-core

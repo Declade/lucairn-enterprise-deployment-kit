@@ -63,16 +63,19 @@ spec:
               value: {{ .Values.postgresql.user | quote }}
             - name: POSTGRES_DB
               value: {{ .Values.postgresql.database | quote }}
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Chart.Name }}-credentials
-                  key: POSTGRES_PASSWORD
+            # The official image reads the password from this FILE (its
+            # `_FILE` convention): it never enters the server's environment
+            # (kit 2.0 K-B fix round 1, sol r1 P2).
+            - name: POSTGRES_PASSWORD_FILE
+              value: /run/secrets/sanitizer-core-db/password
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            - name: db-password
+              mountPath: /run/secrets/sanitizer-core-db
+              readOnly: true
           livenessProbe:
             exec:
               command: ["pg_isready", "-U", {{ .Values.postgresql.user | quote }}, "-d", {{ .Values.postgresql.database | quote }}]
@@ -91,6 +94,14 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: postgres-sanitizer-core-data
+        # ONLY the DB password; group-readable for the postgres group (fsGroup).
+        - name: db-password
+          secret:
+            secretName: {{ .Chart.Name }}-credentials
+            defaultMode: 0440
+            items:
+              - key: POSTGRES_PASSWORD
+                path: password
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

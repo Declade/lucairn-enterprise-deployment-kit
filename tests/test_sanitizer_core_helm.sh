@@ -47,6 +47,22 @@
 #      (and not for 0.5.x records); a kit 2.0 bundle carries and verifies the
 #      mTLS bootstrap and its install note names both one-time steps.
 #
+# FIX ROUND 1 (sol r1 on PR #159: one P1 + three P2), each RED on 42f2ddb:
+#   P1 the pair renders ONLY with both released, non-placeholder digests
+#      (D: empty / half / malformed / repeated-character / identical), and
+#      doctor --values fails on a tag-only render, a placeholder, a pending
+#      manifest and a pair that differs from the manifest (F, run from a
+#      released-kit fixture with SYNTHETIC signed digests).
+#   P2 no registry password in any process environment: the registry DB reads
+#      POSTGRES_PASSWORD_FILE, the migration Job and the wait-for-migration
+#      init container build a 0600 libpq password file from a mounted Secret
+#      file (B; E runs the rendered Job command's prelude for real).
+#   P2 DNS: the registry DB has none, the core resolves through the cluster
+#      resolver Pods only (B: allow-dns carves both out in the identity
+#      namespace; the core's own rule names kube-dns, not all of kube-system).
+#   P2 live doctor accepts an external registry DB (postgresql.enabled=false):
+#      no bundled StatefulSet is required (F, stub kubectl).
+#
 # NON-COVERAGE (stated, not implied)
 #   * No Pod runs: whether the 1.1.0 images boot with this spec (read-only
 #     root FS of the sidecar included) is the PC Kind rehearsal (PRD criterion
@@ -56,6 +72,12 @@
 #     not PostgreSQL's execution of the migration bodies.
 #   * The live doctor checks run against a stub kubectl; they prove the
 #     doctor's decisions on given cluster answers, not a cluster.
+#   * The libpq password file and POSTGRES_PASSWORD_FILE are proven on the
+#     rendered spec + the Job's own shell prelude here; that PostgreSQL 16
+#     reads them in a running Pod is the PC Kind rehearsal.
+#   * Which Pods are the cluster resolver depends on the cluster: the default
+#     selector is k8s-app=kube-dns (CoreDNS and kube-dns both carry it);
+#     global.clusterDNS.podLabels overrides it.
 
 set -uo pipefail
 
@@ -82,6 +104,13 @@ fi
 command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null \
   || { echo "sanitizer-core Helm tests: FAIL — python3 with PyYAML is required"; exit 1; }
 
+# The released pair (synthetic, tests/lib/test-helpers.sh): renders that do
+# not take HELM_TEST_SECRET_ARGS (production values) pass it on their own.
+DIGEST_ARGS=(
+  --set-string "sanitizer-core.image.digest=${TEST_SANITIZER_CORE_DIGEST}"
+  --set-string "sanitizer-core.sidecar.image.digest=${TEST_SANITIZER_CORE_SIDECAR_DIGEST}"
+)
+export TEST_SANITIZER_CORE_DIGEST TEST_SANITIZER_CORE_SIDECAR_DIGEST
 COMMON=(
   "${HELM_TEST_SECRET_ARGS[@]}"
   --set global.skipPullSecretGuard=true
@@ -145,6 +174,8 @@ SUB_ARGS=(
   --set global.dsaEnv=development
   --set-string "secrets.values.registryKey=${TEST_REGISTRY_KEY}"
   --set-string "secrets.values.postgresPassword=${TEST_SECRET_VALUE}"
+  --set-string "image.digest=${TEST_SANITIZER_CORE_DIGEST}"
+  --set-string "sidecar.image.digest=${TEST_SANITIZER_CORE_SIDECAR_DIGEST}"
 )
 if helm lint "$SUB" "${SUB_ARGS[@]}" >"$TMP/sublint.out" 2>&1; then pass "sanitizer-core sub-chart lints on its own"; else fail "sanitizer-core sub-chart lints on its own: $(grep -E 'ERROR|Error' "$TMP/sublint.out" | head -3)"; fi
 if helm template sc "$SUB" "${SUB_ARGS[@]}" >"$TMP/sub.yaml" 2>"$TMP/sub.err"; then pass "sanitizer-core sub-chart renders on its own"; else fail "sanitizer-core sub-chart renders on its own: $(head -3 "$TMP/sub.err")"; fi
@@ -166,7 +197,7 @@ ok(sorted(cs) == ["core", "sidecar"], "ONE Pod with exactly the containers core 
 ok(dep["spec"]["replicas"] == 1 and dep["spec"]["strategy"]["type"] == "Recreate", "one core at a time: replicas 1, strategy Recreate")
 ok(ps.get("automountServiceAccountToken") is False and ps.get("enableServiceLinks") is False, "no SA token, no Service-link env vars")
 core, side = cs["core"], cs["sidecar"]
-ok(core["image"] == "ghcr.io/declade/dsa-sanitizer-core:1.1.0" and side["image"] == "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0", "core + sidecar images: one tag (1.1.0), no fallback to global.imageTag")
+ok(core["image"] == "ghcr.io/declade/dsa-sanitizer-core:1.1.0@" + os.environ["TEST_SANITIZER_CORE_DIGEST"] and side["image"] == "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@" + os.environ["TEST_SANITIZER_CORE_SIDECAR_DIGEST"], "core + sidecar images: one tag (1.1.0), no fallback to global.imageTag, pulled by the signed digests")
 man = yaml.safe_load(open(os.path.join(ROOT, "image-manifest.yaml")))
 ok(man["services"]["dsa-sanitizer-core"]["image_tag"] == "1.1.0" == man["services"]["dsa-sanitizer-core-sidecar"]["image_tag"], "chart tag equals image-manifest.yaml services.dsa-sanitizer-core(-sidecar).image_tag")
 args = core.get("args") or []
@@ -203,7 +234,29 @@ ent = find("ConfigMap", "sanitizer-core-entrypoint")["data"]["core-entrypoint.sh
 ok("exec sanitizer-core \"$@\"" in ent and "127.0.0.1:8765/v1/health" in ent, "entrypoint waits for the sidecar, then execs the core")
 init = {c["name"]: c for c in ps["initContainers"]}
 ie = env_of(init["wait-for-migration"])
-ok("wait-for-migration" in init and ie["TARGET_VERSION"]["value"] == "7" and ie["PGPASSWORD"]["valueFrom"]["secretKeyRef"]["key"] == "POSTGRES_PASSWORD", "init container holds the core until the ledger reaches 7")
+ok("wait-for-migration" in init and ie["TARGET_VERSION"]["value"] == "7", "init container holds the core until the ledger reaches 7")
+# Fix round 1 (sol r1 P2): NO password in any process environment of the
+# workloads of the core — RED on 42f2ddb (three secretKeyRef passwords).
+pwenv = []
+for d, ps_ in podspecs():
+    if "sanitizer-core" not in d["metadata"]["name"]:
+        continue
+    for c in (ps_.get("containers") or []) + (ps_.get("initContainers") or []):
+        for e in c.get("env") or []:
+            ref = (e.get("valueFrom") or {}).get("secretKeyRef") or {}
+            if "PASSWORD" in e["name"] and e["name"] != "POSTGRES_PASSWORD_FILE" or ref.get("key") in ("POSTGRES_PASSWORD", "REGISTRY_DSN"):
+                pwenv.append("%s/%s:%s" % (d["metadata"]["name"], c["name"], e["name"]))
+ok(not pwenv, "no registry password (or DSN) in any env of the core workloads (%s)" % pwenv)
+def pwfile_mount(ps_, c, path):
+    m = [x for x in c.get("volumeMounts") or [] if x["mountPath"] == path]
+    v = {x["name"]: x for x in ps_.get("volumes") or []}.get(m[0]["name"]) if m else None
+    return bool(m) and m[0].get("readOnly") is True and v is not None and v["secret"]["secretName"] == "sanitizer-core-credentials" and v["secret"]["items"] == [{"key": "POSTGRES_PASSWORD", "path": "password"}]
+wcmd = init["wait-for-migration"]["command"][-1]
+ok(pwfile_mount(ps, init["wait-for-migration"], "/etc/sanitizer-core/db") and "export PGPASSFILE=/tmp/.pgpass" in wcmd and "chmod 0600 /tmp/.pgpass" in wcmd and wcmd.index("PGPASSFILE") < wcmd.index("psql"), "init container: libpq password FILE built from the mounted POSTGRES_PASSWORD only, before psql runs")
+sts = find("StatefulSet", "postgres-sanitizer-core")
+pc = sts["spec"]["template"]["spec"]["containers"][0]
+ok(env_of(pc).get("POSTGRES_PASSWORD_FILE", {}).get("value") == "/run/secrets/sanitizer-core-db/password" and "POSTGRES_PASSWORD" not in env_of(pc)
+   and pwfile_mount(sts["spec"]["template"]["spec"], pc, "/run/secrets/sanitizer-core-db"), "registry DB: POSTGRES_PASSWORD_FILE from the mounted Secret file, no POSTGRES_PASSWORD env")
 sec = find("Secret", "sanitizer-core-credentials")
 ok(sec is not None and sorted(sec["stringData"]) == ["DSA_SANITIZER_CORE_REGISTRY_KEY", "POSTGRES_PASSWORD", "REGISTRY_DSN"], "k8s-native Secret: exactly the three keys")
 pw = sec["stringData"]["POSTGRES_PASSWORD"]
@@ -244,10 +297,19 @@ ok(eg and sel(eg) == {"matchLabels": {"app.kubernetes.io/name": "gateway"}} and 
 ing = nps.get("identity-sanitizer-core-ingress")
 ok(ing and sel(ing) == {"matchLabels": {"app.kubernetes.io/name": "sanitizer-core"}} and ing["spec"]["ingress"] == [{"from": [{"namespaceSelector": {"matchLabels": {"dsa.io/namespace": "edge"}}, "podSelector": {"matchLabels": {"app.kubernetes.io/name": "gateway"}}}], "ports": [{"port": 8790, "protocol": "TCP"}]}], "identity: the core admits only the gateway Pod on :8790")
 ce = nps.get("identity-sanitizer-core-egress")
-ports = sorted((r["to"][0].get("podSelector", {}).get("matchLabels", {}).get("app.kubernetes.io/name"), r["ports"][0]["port"]) for r in ce["spec"]["egress"])
-ok(ports == [("postgres-sanitizer-core", 5432), ("veil-witness", 50057)], "core egress: its registry :5432 and the witness :50057 — nothing else")
+ports = sorted((r["to"][0].get("podSelector", {}).get("matchLabels", {}).get("app.kubernetes.io/name") or r["to"][0].get("podSelector", {}).get("matchLabels", {}).get("k8s-app"), r["ports"][0]["port"]) for r in ce["spec"]["egress"])
+ok(ports == [("kube-dns", 53), ("postgres-sanitizer-core", 5432), ("veil-witness", 50057)], "core egress: its registry :5432, the witness :50057 and DNS — nothing else (%s)" % ports)
+dns = [r for r in ce["spec"]["egress"] if r["ports"][0]["port"] == 53]
+ok(len(dns) == 1 and dns[0]["to"] == [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}]
+   and sorted(x["protocol"] for x in dns[0]["ports"]) == ["TCP", "UDP"], "core DNS: the cluster resolver Pods (k8s-app=kube-dns) only, not every kube-system Pod")
+# Fix round 1 (sol r1 P2), RED on 42f2ddb: allow-dns (podSelector {} in every
+# namespace) gave the core AND its registry DB every kube-system Pod on 53.
+adns = {d["metadata"]["namespace"]: d for d in docs if d.get("kind") == "NetworkPolicy" and d["metadata"]["name"] == "allow-dns"}
+carve_dns = {"matchExpressions": [{"key": "app.kubernetes.io/name", "operator": "NotIn", "values": ["sanitizer-core", "postgres-sanitizer-core"]}]}
+ok(sel(adns["dsa-identity"]) == carve_dns, "allow-dns in the identity namespace carves out the core and its registry DB")
+ok(all(sel(d) == {} for n, d in adns.items() if n != "dsa-identity"), "allow-dns elsewhere is unchanged")
 rg = nps.get("identity-sanitizer-core-registry")
-ok(rg and sorted(rg["spec"]["policyTypes"]) == ["Egress", "Ingress"] and not rg["spec"].get("egress") and rg["spec"]["ingress"][0]["from"][0]["podSelector"]["matchExpressions"][0]["values"] == ["sanitizer-core", "sanitizer-core-migrate"] and rg["spec"]["ingress"][0]["ports"] == [{"port": 5432, "protocol": "TCP"}], "registry: ingress only from the core + the migration Job on :5432, no egress at all")
+ok(rg and sorted(rg["spec"]["policyTypes"]) == ["Egress", "Ingress"] and not rg["spec"].get("egress") and sel(adns["dsa-identity"]) == carve_dns and rg["spec"]["ingress"][0]["from"][0]["podSelector"]["matchExpressions"][0]["values"] == ["sanitizer-core", "sanitizer-core-migrate"] and rg["spec"]["ingress"][0]["ports"] == [{"port": 5432, "protocol": "TCP"}], "registry: ingress only from the core + the migration Job on :5432, no egress at all")
 carve = {"matchExpressions": [{"key": "app.kubernetes.io/name", "operator": "NotIn", "values": ["sanitizer-core", "postgres-sanitizer-core"]}]}
 ok(sel(nps["identity-egress"]) == carve and sel(nps["identity-ingress"]) == carve, "namespace-wide identity-egress/-ingress carve the core + registry out (policies are unioned)")
 job = find("Job", "sanitizer-core-migrate-r1", "dsa-identity")
@@ -255,6 +317,8 @@ je = {k: v.get("value") for k, v in env_of(job["spec"]["template"]["spec"]["cont
 ok(job and je["MIGRATE_TARGET_VERSION"] == "7" and je["MIGRATE_CEILING_KEY"] == "SANITIZER_CORE" and je["PGHOST"] == "postgres-sanitizer-core" and je["PGSSLMODE"] == "disable", "migration Job: target 7, key SANITIZER_CORE, discrete libpq settings")
 ok(job["spec"]["template"]["spec"]["containers"][0]["image"] == img, "migration Job runs the same pinned postgres image")
 ok(job["spec"]["template"]["metadata"]["labels"]["app.kubernetes.io/name"] == "sanitizer-core-migrate", "migration Job pod carries the label the registry policy admits")
+jc = job["spec"]["template"]["spec"]["containers"][0]
+ok(pwfile_mount(job["spec"]["template"]["spec"], jc, "/etc/sanitizer-core/db") and "PGPASSWORD" not in env_of(jc) and "export PGPASSFILE=/tmp/.pgpass" in jc["command"][-1], "migration Job: libpq password FILE from the mounted POSTGRES_PASSWORD, no PGPASSWORD env")
 ' | run_py
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -267,7 +331,7 @@ sb = env_of(find("Deployment", "sandbox-b")["spec"]["template"]["spec"]["contain
 ok(gw.get("SANDBOX_B_MESSAGES_JSON_MAX_BYTES", {}).get("value") == "1000000" == sb.get("SANDBOX_B_MESSAGES_JSON_MAX_BYTES", {}).get("value"), "one global value reaches BOTH gateway and sandbox-b")
 ' | run_py
 else fail "message-limit render: $(head -3 "$TMP/maxbytes.err")"; fi
-D1="sha256:$(printf 'a%.0s' $(seq 64))"; D2="sha256:$(printf 'b%.0s' $(seq 64))"
+D1="sha256:$(printf 'a1%.0s' $(seq 32))"; D2="sha256:$(printf 'b2%.0s' $(seq 32))"
 if render pinned --set-string "sanitizer-core.image.digest=$D1" --set-string "sanitizer-core.sidecar.image.digest=$D2"; then
   assert_py "$TMP/pinned.yaml" "
 cs = {c['name']: c for c in find('Deployment', 'sanitizer-core')['spec']['template']['spec']['containers']}
@@ -283,7 +347,7 @@ nps = {d["metadata"]["name"]: d for d in docs if d.get("kind") == "NetworkPolicy
 ok(nps["identity-egress"]["spec"]["podSelector"] == {} and nps["identity-ingress"]["spec"]["podSelector"] == {}, "core OFF: the identity policies are exactly the pre-kit-2.0 shape")
 ' | run_py
 else fail "core-off render: $(head -3 "$TMP/off.err")"; fi
-if helm template lucairn "$CHART" -f "$CHART/values-prod.yaml" -f "$CHART/values-prod-site.example.yaml" >"$TMP/prod.yaml" 2>"$TMP/prod.err"; then
+if helm template lucairn "$CHART" -f "$CHART/values-prod.yaml" -f "$CHART/values-prod-site.example.yaml" "${DIGEST_ARGS[@]}" >"$TMP/prod.yaml" 2>"$TMP/prod.err"; then
   assert_py "$TMP/prod.yaml" '
 ok(find("ExternalSecret", "sanitizer-core-credentials") is not None and not [d for d in docs if d["kind"] == "Secret"], "production: the core credentials come from an ExternalSecret, no Helm-owned Secret")
 es = find("ExternalSecret", "sanitizer-core-credentials")
@@ -341,8 +405,13 @@ elif grep -Fq "must be a YAML string, but a int64 was given" "$TMP/refuse.err"; 
   pass "refused: non-string DB password (--set 12345678 is an int64)"
 else fail "refused: non-string DB password (other reason: $(head -c 300 "$TMP/refuse.err"))"; fi
 refuse "core/sidecar tag mismatch" "ONE pair" --set-string sanitizer-core.sidecar.image.tag=1.0.0
-refuse "half a digest pair" "together, or neither" --set-string "sanitizer-core.image.digest=$D1"
+# Fix round 1 (sol r1 P1), RED on 42f2ddb (empty digests rendered by tag):
+refuse "no core digest (tag only)" "image.digest is empty" --set-string sanitizer-core.image.digest=
+refuse "no sidecar digest (half a pair)" "sidecar.image.digest is empty" --set-string sanitizer-core.sidecar.image.digest=
+refuse "neither digest (the pair by tag)" "image.digest is empty" --set-string sanitizer-core.image.digest= --set-string sanitizer-core.sidecar.image.digest=
 refuse "malformed digest" "sha256:<64 lowercase hex>" --set-string sanitizer-core.image.digest=sha256:abc --set-string "sanitizer-core.sidecar.image.digest=$D2"
+refuse "placeholder digest (one repeated character)" "is a placeholder" --set-string "sanitizer-core.image.digest=sha256:$(printf '0%.0s' $(seq 64))"
+refuse "the same digest for core and sidecar" "are the same digest" --set-string "sanitizer-core.image.digest=$D1" --set-string "sanitizer-core.sidecar.image.digest=$D1"
 refuse "migration target above the ceiling" "integer 1..7" --set sanitizer-core.migrations.targetVersion=8
 refuse "migration target 0" "integer 1..7" --set sanitizer-core.migrations.targetVersion=0
 refuse "migration target as a string" "integer 1..7" --set-string sanitizer-core.migrations.targetVersion=7
@@ -357,7 +426,7 @@ refuse "a \$(VAR) in a core literal" "contains \"\$\"" --set-string 'sanitizer-c
 refuse "Lucairn-operated witness on the core (T-682)" "sanitizer-core.veilWitnessAddr" --set-string sanitizer-core.veilWitnessAddr=witness.lucairn.eu:50057
 refuse "non-numeric message limit" "positive whole number" --set-string global.sandboxBMessagesJsonMaxBytes=4MiB
 refuse "core without Sandbox A (its signing seed's Secret)" "sanitizer-core is enabled but sandbox-a is not" --set sandbox-a.enabled=false
-if helm template lucairn "$CHART" -f "$CHART/values-prod.yaml" -f "$CHART/values-prod-site.example.yaml" \
+if helm template lucairn "$CHART" -f "$CHART/values-prod.yaml" -f "$CHART/values-prod-site.example.yaml" "${DIGEST_ARGS[@]}" \
      --set sanitizer-core.secrets.backend=k8s-native \
      --set-string "sanitizer-core.secrets.values.registryKey=${TEST_REGISTRY_KEY}" \
      --set-string "sanitizer-core.secrets.values.postgresPassword=${TEST_SECRET_VALUE}-long" >/dev/null 2>"$TMP/prodnative.err"; then
@@ -444,6 +513,30 @@ check_eq "one --single-transaction apply" "1" "$(grep -c -- '--single-transactio
 check_eq "the apply inserts 0001..0007 into the core's own ledger" "7" "$(grep -c "^INSERT INTO registry_schema_migrations (name) VALUES ('" "$TMP/stub.sql" 2>/dev/null || echo 0)"
 grep -q 'ceiling 7 from' "$TMP/job.out" && pass "the runner reads ceiling 7 from the chart-rendered ceiling file" || fail "the runner reads ceiling 7 from the chart-rendered ceiling file: $(tail -2 "$TMP/job.out")"
 if grep -q 'synthetic-test-password' "$TMP/job.out" "$TMP/stub.log"; then fail "PGPASSWORD never printed or passed as argv"; else pass "PGPASSWORD never printed or passed as argv"; fi
+# Fix round 1 (sol r1 P2): the Job's OWN shell prelude, run for real (paths
+# moved into $TMP, pg_isready stubbed, the runner replaced by an env dump): it
+# writes a 0600 libpq password file with \ and : escaped, and the password is
+# in no process environment of what it execs.
+python3 - "$TMP/default.yaml" "$TMP/prelude.sh" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+job = [d for d in docs if d.get("kind") == "Job" and d["metadata"]["name"].startswith("sanitizer-core-migrate-")][0]
+open(sys.argv[2], "w").write(job["spec"]["template"]["spec"]["containers"][0]["command"][-1])
+PY
+mkdir -p "$TMP/pre/db" "$TMP/pre/bin"
+printf '%s' 'syn:th\etic-pw' > "$TMP/pre/db/password"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/pre/bin/pg_isready"; chmod 0755 "$TMP/pre/bin/pg_isready"
+sed -e "s#/etc/sanitizer-core/db/password#$TMP/pre/db/password#g" -e "s#/tmp/.pgpass#$TMP/pre/pgpass#g" \
+    -e "s#exec /bin/sh /scripts/migrate-sanitizer-core.sh#exec env#" "$TMP/prelude.sh" > "$TMP/prelude-run.sh"
+if grep -q 'exec env' "$TMP/prelude-run.sh" && env -i PATH="$TMP/pre/bin:$BASE_PATH" sh "$TMP/prelude-run.sh" > "$TMP/prelude.env" 2>&1; then
+  check_eq "the Job prelude writes the libpq password file (\\ and : escaped)" '*:*:*:*:syn\:th\\etic-pw' "$(cat "$TMP/pre/pgpass" 2>/dev/null)"
+  case "$(uname -s)" in Darwin|*BSD) m="$(stat -f '%Lp' "$TMP/pre/pgpass")" ;; *) m="$(stat -c '%a' "$TMP/pre/pgpass")" ;; esac
+  check_eq "the libpq password file is mode 0600 (libpq ignores a group/world-readable one)" "600" "$m"
+  grep -q "^PGPASSFILE=$TMP/pre/pgpass$" "$TMP/prelude.env" && pass "the runner is exec'd with PGPASSFILE set" || fail "the runner is exec'd with PGPASSFILE set"
+  if grep -q 'th\\etic' "$TMP/prelude.env" || grep -q '^PGPASSWORD=' "$TMP/prelude.env"; then fail "the password is in no environment of the exec'd runner"; else pass "the password is in no environment of the exec'd runner"; fi
+else
+  fail "the rendered Job prelude runs: $(tail -2 "$TMP/prelude.env" 2>/dev/null)"
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
@@ -460,14 +553,25 @@ sandbox-a: {secrets: {values: {postgresPassword: ${TEST_SECRET_VALUE}}}}
 veil-witness: {secrets: {values: {postgresPassword: ${TEST_SECRET_VALUE}, veilAppPassword: ${TEST_SECRET_VALUE}}}}
 sanitizer-core: {secrets: {values: {registryKey: "${TEST_REGISTRY_KEY}", postgresPassword: ${TEST_SECRET_VALUE}}}}
 YAML
-doctor_values() { # <out> [env...] -- values files...
+# Fix round 1 (sol r1 P1): doctor --values compares the rendered pair with the
+# signed pair image-manifest.yaml records, so the GREEN cases run from a
+# RELEASED-kit fixture (synthetic signed digests, tests/lib/test-helpers.sh)
+# with a values file pinning exactly that pair.
+KIT="$TMP/released-kit"
+lucairn_released_kit_fixture "$ROOT" "$KIT" && pass "fixture: a released kit (synthetic signed core/sidecar digests)" \
+  || fail "fixture: a released kit (synthetic signed core/sidecar digests)"
+DIGESTS="$TMP/digests.yaml"
+printf 'sanitizer-core:\n  image:\n    digest: "%s"\n  sidecar:\n    image:\n      digest: "%s"\n' "$TEST_SANITIZER_CORE_DIGEST" "$TEST_SANITIZER_CORE_SIDECAR_DIGEST" > "$DIGESTS"
+DOCTOR_KIT="$KIT"
+doctor_values() { # <out> [env...] -- values files... (the digest pair is appended)
   local out="$1"; shift
   local envs=()
   while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do envs+=("$1"); shift; done
   shift
   local vargs=() v
   for v in "$@"; do vargs+=(--values "$v"); done
-  env ${envs[@]+"${envs[@]}"} "$ROOT/bin/lucairn" doctor "${vargs[@]}" > "$out" 2>&1
+  [ "${NO_DIGESTS:-0}" = 1 ] || vargs+=(--values "$DIGESTS")
+  env ${envs[@]+"${envs[@]}"} "$DOCTOR_KIT/bin/lucairn" doctor "${vargs[@]}" > "$out" 2>&1
 }
 doctor_values "$TMP/doc-dev.out" -- "$DEV_VALUES"; rc=$?
 if [ "$rc" -eq 0 ] && grep -q 'sanitizer core (Helm): render ok' "$TMP/doc-dev.out"; then pass "doctor --values: development values green, core render ok"; else fail "doctor --values: development values green (rc=$rc): $(grep -i 'sanitizer core' "$TMP/doc-dev.out" | head -3)"; fi
@@ -475,6 +579,20 @@ LOWMEM="$TMP/lowmem.yaml"
 printf 'sanitizer-core:\n  sidecar:\n    resources:\n      limits:\n        memory: 4Gi\n' > "$LOWMEM"
 doctor_values "$TMP/doc-low.out" -- "$DEV_VALUES" "$LOWMEM"; rc=$?
 if [ "$rc" -ne 0 ] && grep -q 'sidecar memory limit is 4096 MiB' "$TMP/doc-low.out"; then pass "doctor --values RED: sidecar limit below 6500 MiB"; else fail "doctor --values RED: sidecar limit below 6500 MiB (rc=$rc): $(grep -i 'sanitizer core' "$TMP/doc-low.out" | head -3)"; fi
+# Fix round 1 (sol r1 P1), each RED on 42f2ddb (tag-only images were "ok"):
+doc_red() { # <name> <grep> [env...] -- values...
+  local name="$1" pat="$2"; shift 2
+  doctor_values "$TMP/doc-red.out" "$@"; local rc=$?
+  if [ "$rc" -ne 0 ] && grep -Fq -- "$pat" "$TMP/doc-red.out"; then pass "doctor --values RED: $name"; else fail "doctor --values RED: $name (rc=$rc): $(grep -iE 'sanitizer core|failed|Error' "$TMP/doc-red.out" | head -3)"; fi
+}
+NO_DIGESTS=1 doc_red "tag-only core/sidecar images (no digests)" "image.digest is empty" -- "$DEV_VALUES"
+OTHER="$TMP/other-digests.yaml"
+printf 'sanitizer-core:\n  image:\n    digest: "%s"\n  sidecar:\n    image:\n      digest: "%s"\n' "$D1" "$D2" > "$OTHER"
+NO_DIGESTS=1 doc_red "a pinned pair other than the manifest's" "differ from the pair image-manifest.yaml records" -- "$DEV_VALUES" "$OTHER"
+DOCTOR_KIT="$ROOT" doc_red "an unreleased kit (manifest pending)" "records no signed digest for the core/sidecar pair yet" -- "$DEV_VALUES"
+PLACE="$TMP/placeholder-digests.yaml"
+printf 'sanitizer-core:\n  image:\n    digest: "sha256:%s"\n  sidecar:\n    image:\n      digest: "%s"\n' "$(printf 'f%.0s' $(seq 64))" "$TEST_SANITIZER_CORE_SIDECAR_DIGEST" > "$PLACE"
+NO_DIGESTS=1 doc_red "a placeholder core digest" "is a placeholder" -- "$DEV_VALUES" "$PLACE"
 if command -v ruby >/dev/null 2>&1; then
   doctor_values "$TMP/doc-prod.out" -- "$CHART/values-prod.yaml" "$CHART/values-prod-site.example.yaml"; rc=$?
   if [ "$rc" -eq 0 ] && grep -q 'sanitizer core (Helm): render ok' "$TMP/doc-prod.out" && ! grep -q 'development render' "$TMP/doc-prod.out"; then pass "doctor --values: production values green (latched witness hop)"; else fail "doctor --values: production values green (rc=$rc): $(grep -iE 'sanitizer core|FAIL' "$TMP/doc-prod.out" | head -3)"; fi
@@ -517,6 +635,14 @@ if command -v ruby >/dev/null 2>&1; then
   live "RED: gateway mTLS Secret missing" 1 "gateway-sanitizer-core-mtls missing" STUB_MISSING_SECRET=gateway-sanitizer-core-mtls
   live "RED: claims DROPPED" 1 "DROPPED in the core's log" STUB_DROPPED=1
   live "RED: production witness hop not mTLS" 1 "must be mtls" STUB_MODE=plaintext-insecure-dev
+  # Fix round 1 (sol r1 P2), RED on 42f2ddb: an EXTERNAL registry DB has no
+  # bundled StatefulSet; the live doctor must not demand one.
+  EXTV="$TMP/external-registry.yaml"
+  printf 'sanitizer-core:\n  postgresql:\n    enabled: false\n  external:\n    host: db.internal\n    user: lucairn_core\n    database: core\n' > "$EXTV"
+  doctor_values "$TMP/live.out" PATH="$KSTUB:$PATH" DOCTOR_KUBE_LIVE=1 STUB_PG_READY=0 -- "$CHART/values-prod.yaml" "$CHART/values-prod-site.example.yaml" "$EXTV"; rc=$?
+  if [ "$rc" -eq 0 ] && grep -Fq "external registry DB (sanitizer-core.postgresql.enabled=false)" "$TMP/live.out" && ! grep -q "StatefulSet postgres-sanitizer-core not ready" "$TMP/live.out"; then
+    pass "doctor live: an external registry DB is green without a bundled StatefulSet"
+  else fail "doctor live: external registry DB (rc=$rc): $(grep -iE 'sanitizer core \((live|Helm)\)|FAIL' "$TMP/live.out" | head -4)"; fi
   # A PATH with helm + ruby (+ python3) but no kubectl.
   NOKUBE="$TMP/nokube-bin"; mkdir -p "$NOKUBE"
   for tool in helm ruby python3 openssl; do

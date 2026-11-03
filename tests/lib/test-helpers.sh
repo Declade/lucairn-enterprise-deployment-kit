@@ -82,6 +82,12 @@ fi
 # TEST_SECRET_VALUE. Fixed, obviously-non-production constant.
 [ -n "${TEST_REGISTRY_KEY:-}" ] || readonly TEST_REGISTRY_KEY="2222222222222222222222222222222222222222222222222222222222222222"
 
+# Kit 2.0: SYNTHETIC signed digests for the sanitizer core pair (never real,
+# never pulled). Compose and Helm both refuse to start the pair without the
+# digests a kit release records (see the released-kit fixture below), so every
+# umbrella render in this harness passes these two.
+[ -n "${TEST_SANITIZER_CORE_DIGEST:-}" ] || readonly TEST_SANITIZER_CORE_DIGEST="sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+[ -n "${TEST_SANITIZER_CORE_SIDECAR_DIGEST:-}" ] || readonly TEST_SANITIZER_CORE_SIDECAR_DIGEST="sha256:5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c"
 if [ -z "${HELM_TEST_SECRET_ARGS+x}" ]; then
   HELM_TEST_SECRET_ARGS=(
     --set "admin.secrets.values.adminPassword=${TEST_SECRET_VALUE}"
@@ -96,6 +102,10 @@ if [ -z "${HELM_TEST_SECRET_ARGS+x}" ]; then
     # the guard refuses non-string values.
     --set-string "sanitizer-core.secrets.values.registryKey=${TEST_REGISTRY_KEY}"
     --set-string "sanitizer-core.secrets.values.postgresPassword=${TEST_SECRET_VALUE}"
+    # Kit 2.0 K-B fix round 1 (sol r1 P1): the pair renders only with both
+    # released digests (here the synthetic pair above).
+    --set-string "sanitizer-core.image.digest=${TEST_SANITIZER_CORE_DIGEST}"
+    --set-string "sanitizer-core.sidecar.image.digest=${TEST_SANITIZER_CORE_SIDECAR_DIGEST}"
   )
   readonly HELM_TEST_SECRET_ARGS
 fi
@@ -109,8 +119,8 @@ fi
 # `bin/lucairn verify-images` FAILS. A test that needs a GREEN kit 2.0 install
 # runs against a RELEASED-KIT FIXTURE instead: these synthetic digests (never
 # real ones, never pulled) in a copy of the manifest.
-[ -n "${TEST_SANITIZER_CORE_DIGEST:-}" ] || readonly TEST_SANITIZER_CORE_DIGEST="sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
-[ -n "${TEST_SANITIZER_CORE_SIDECAR_DIGEST:-}" ] || readonly TEST_SANITIZER_CORE_SIDECAR_DIGEST="sha256:5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c"
+# (TEST_SANITIZER_CORE_DIGEST / TEST_SANITIZER_CORE_SIDECAR_DIGEST are defined
+# above HELM_TEST_SECRET_ARGS, which passes them to every umbrella render.)
 
 # lucairn_released_kit_fixture <kit root> <dest> — <dest> becomes a kit tree
 # whose image-manifest.yaml records the synthetic pair above in place of

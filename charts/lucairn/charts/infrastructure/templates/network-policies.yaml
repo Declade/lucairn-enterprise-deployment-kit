@@ -421,7 +421,9 @@ spec:
 #   core Pod + migration Job -> registry DB :5432 — no other pod
 #   registry DB      -> nothing (no egress rule at all)
 # The model sidecar runs INSIDE the core Pod on 127.0.0.1 and is not a network
-# peer of anything. DNS stays allowed by allow-dns (dns-egress.yaml).
+# peer of anything. DNS: both are carved out of allow-dns (dns-egress.yaml);
+# the core resolves through the cluster resolver Pods only (the rule below,
+# global.clusterDNS.podLabels), the registry DB not at all.
 # NON-COVERAGE: NetworkPolicy is enforced only by a CNI that implements it
 # (kindnet does not); `bin/lucairn doctor` reports presence, not enforcement.
 # ============================================================
@@ -512,6 +514,19 @@ spec:
       ports:
         - port: 50057
           protocol: TCP
+    # → DNS, to the cluster resolver Pods ONLY (not every kube-system Pod).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              {{- toYaml (((.Values.global | default dict).clusterDNS | default dict).podLabels | default (dict "k8s-app" "kube-dns")) | nindent 14 }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
     # An EXTERNAL registry DB (sanitizer-core.postgresql.enabled=false) is not
     # covered here: add your own egress rule for its address, scoped to this
     # podSelector.
@@ -527,7 +542,8 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: postgres-sanitizer-core
-  # Egress listed with NO rule = no egress at all (DNS aside, allow-dns).
+  # Egress listed with NO rule = no egress at all — DNS included (it is
+  # carved out of allow-dns, dns-egress.yaml).
   policyTypes:
     - Ingress
     - Egress

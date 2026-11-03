@@ -100,16 +100,31 @@
 {{- if ne $coreTag $sideTag -}}
 {{- fail (printf "%s image.tag (%q) and sidecar.image.tag (%q) differ. The core and its model sidecar are ONE pair from one release commit — the core refuses to start against a sidecar from another build. Set one tag for both (or leave both empty = chart appVersion %s)." $scope $coreTag $sideTag .Chart.AppVersion) -}}
 {{- end -}}
+{{- /* Kit 2.0 K-B fix round 1 (sol r1, P1): the pair ONLY ever runs from
+       the signed digests a kit release records (Compose parity: the compose
+       file refuses to render without both). No tag-only fallback: a tag is
+       mutable, a digest is the signed bytes. A digest is "sha256:" + 64
+       lowercase hex and never a sentinel made of one repeated character
+       (sha256:000…, sha256:aaa…) — the kind of filler that stands in for a
+       digest nobody recorded. */ -}}
 {{- $coreDigest := toString (.Values.image.digest | default "") -}}
 {{- $sideDigest := toString (((.Values.sidecar).image).digest | default "") -}}
-{{- range $pair := list (list "image.digest" $coreDigest) (list "sidecar.image.digest" $sideDigest) -}}
+{{- range $pair := list (list "image.digest" $coreDigest "dsa-sanitizer-core") (list "sidecar.image.digest" $sideDigest "dsa-sanitizer-core-sidecar") -}}
 {{- $v := index $pair 1 -}}
-{{- if and $v (not (regexMatch "^sha256:[0-9a-f]{64}$" $v)) -}}
-{{- fail (printf "%s %s must be sha256:<64 lowercase hex> (or empty)." $scope (index $pair 0)) -}}
+{{- if not $v -}}
+{{- fail (printf "%s %s is empty. The core and its model sidecar start ONLY from the signed digests the kit release records for %s in image-manifest.yaml (image_digests.signed_artifacts) — never from a tag alone. A released kit's chart carries them; on an unreleased checkout set both (--set-string sanitizer-core.image.digest=sha256:… --set-string sanitizer-core.sidecar.image.digest=sha256:…) or disable the core (sanitizer-core.enabled=false + global.sanitizerCore.enabled=false)." $scope (index $pair 0) (index $pair 2)) -}}
+{{- end -}}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" $v) -}}
+{{- fail (printf "%s %s must be sha256:<64 lowercase hex> (the signed digest image-manifest.yaml records for %s)." $scope (index $pair 0) (index $pair 2)) -}}
+{{- end -}}
+{{- range $c := splitList "" "0123456789abcdef" -}}
+{{- if eq $v (printf "sha256:%s" (repeat 64 $c)) -}}
+{{- fail (printf "%s %s is a placeholder (one repeated character), not a released digest. Use the signed digest image-manifest.yaml records for %s." $scope (index $pair 0) (index $pair 2)) -}}
 {{- end -}}
 {{- end -}}
-{{- if or (and $coreDigest (not $sideDigest)) (and $sideDigest (not $coreDigest)) -}}
-{{- fail (printf "%s set image.digest and sidecar.image.digest together, or neither: the core and its sidecar must come from one release (image-manifest.yaml image_digests.signed_artifacts records the pair)." $scope) -}}
+{{- end -}}
+{{- if eq $coreDigest $sideDigest -}}
+{{- fail (printf "%s image.digest and sidecar.image.digest are the same digest; the core and its sidecar are two different images of one release." $scope) -}}
 {{- end -}}
 {{- $pgDigest := toString (.Values.postgresql.image.digest | default "") -}}
 {{- if and $pgDigest (not (regexMatch "^sha256:[0-9a-f]{64}$" $pgDigest)) -}}

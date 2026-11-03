@@ -52,6 +52,16 @@ spec:
             - /bin/sh
             - -c
             - |
+              # libpq password FILE (kit 2.0 K-B fix round 1, sol r1 P2): the
+              # password never enters this process's environment. Built from
+              # the mounted Secret file into a 0600 file on the private /tmp
+              # (format hostname:port:database:username:password, with \ and :
+              # escaped — https://www.postgresql.org/docs/16/libpq-pgpass.html).
+              umask 077
+              [ -r /etc/sanitizer-core/db/password ] || { echo "the registry DB password file is not mounted" >&2; exit 93; }
+              printf '*:*:*:*:%s\n' "$(sed 's/\\/\\\\/g; s/:/\\:/g' /etc/sanitizer-core/db/password)" > /tmp/.pgpass
+              chmod 0600 /tmp/.pgpass
+              export PGPASSFILE=/tmp/.pgpass
               i=0
               until pg_isready -q -t 2; do
                 i=$((i + 1))
@@ -84,11 +94,6 @@ spec:
               value: {{ include "sanitizerCore.sslmode" . | quote }}
             - name: PGCONNECT_TIMEOUT
               value: "5"
-            - name: PGPASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Chart.Name }}-credentials
-                  key: POSTGRES_PASSWORD
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -110,6 +115,9 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            - name: registry-db-password
+              mountPath: /etc/sanitizer-core/db
+              readOnly: true
       volumes:
         # The script and the ceiling file MUST sit in one directory (the
         # script refuses a ceiling file anywhere else).
@@ -136,6 +144,15 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 16Mi
+        # ONLY the DB password, as a file (the libpq password file is built
+        # from it; never an env var).
+        - name: registry-db-password
+          secret:
+            secretName: {{ .Chart.Name }}-credentials
+            defaultMode: 0444
+            items:
+              - key: POSTGRES_PASSWORD
+                path: password
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
