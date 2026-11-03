@@ -404,9 +404,9 @@ The compliance Postgres pods are `audit-postgresql-0` (ns `dsa-audit`),
 `id-bridge-postgresql-0` (ns `dsa-bridge`), and
 `veil-witness-postgresql-0` (ns `dsa-witness`). The DB password is in each
 chart's `<chart>-credentials` Secret under key `POSTGRES_PASSWORD`.
-The password never becomes a process argument: `env PGPASSWORD=… pg_dump`
-inside `kubectl exec` would put it in the argument list of that `env` process,
-which any user of the pod (and of the node, `ps`) can read. It travels instead
+The password never becomes a process argument: set with the `env` command in
+front of `pg_dump` inside `kubectl exec`, it would sit in the argument list of
+that `env` process, which any user of the pod (and of the node, `ps`) can read. It travels instead
 as ONE pgpass line on standard input into a private file (`umask 077`) that
 `pg_dump` / `pg_restore` reads through `PGPASSFILE` and that is deleted right
 after. `printf` is a shell builtin, so the operator host's argument lists do
