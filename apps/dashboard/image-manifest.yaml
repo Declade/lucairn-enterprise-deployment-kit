@@ -347,7 +347,19 @@ image_digests:
       # inspect`, the Docker Hub v2 tags API (last_updated
       # 2026-10-26T16:56Z), and the kit CI's own resolver log. Image config env
       # REDIS_VERSION=7.4.12 read via the Docker Registry v2 API (library/redis).
-      digest: "sha256:6ba19c50b56777f5c11c58eff8ddb69d0d5f27ba131cffb63f180ccfd43c66af"
+      # RE-PINNED 2026-11-03: upstream re-pointed the moving `7-alpine`
+      # tag again on 2026-10-29 (previous index digest sha256:6ba19c50b56777f5c11c58eff8ddb69d0d5f27ba131cffb63f180ccfd43c66af).
+      # This is a RE-PIN to what upstream publishes today, NOT a re-validation:
+      # the kit's acceptance suite has not been re-run against these bytes.
+      # Resolved from three matching observations against ONE trust authority,
+      # Docker Hub (not independent sources): the Docker Registry v2 API
+      # (library/redis, Docker-Content-Digest of `7-alpine`, and the sha256 of
+      # the fetched index bytes: an OCI image index of 8 linux platforms +
+      # their attestation manifests), the Docker Hub v2 tags API (last_updated
+      # 2026-10-29T06:04Z), and the kit CI's own live digest gate log. Image
+      # config env REDIS_VERSION=7.4.12 read via the Docker Registry v2 API
+      # (linux/amd64 config blob, its sha256 checked).
+      digest: "sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f"
     migrate:
       ref: "migrate/migrate:v4.17.0"
       digest: "sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa"
