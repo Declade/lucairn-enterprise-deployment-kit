@@ -20,9 +20,14 @@
 # password outside A-Z a-z 0-9 - . _ ~ percent-encoded (/ ? # @ : % and spaces
 # would otherwise be read as URL syntax). This script does that encoding, so
 # POSTGRES_SANITIZER_CORE_PASSWORD may hold any printable ASCII character
-# except space, $ ' " \ ` and # (those break customer.env / Compose
-# interpolation before the password ever reaches Postgres; doctor refuses
-# them too).
+# except space, $ ' " \ ` and # (doctor refuses them too); a line feed or any
+# other control character is refused as well — it is read from the value
+# Compose really hands to Postgres, so a quoted value ending in a line feed is
+# seen as such, never trimmed.
+#
+# Needs Docker Compose (the `docker compose` plugin, or docker-compose v2) and
+# nothing else: every value is read THROUGH Compose (bin/compose-env.sh),
+# client side, no daemon needed. Without it the script refuses.
 #
 # Permissions: the file is mode 0444 inside a directory of mode 0700. The
 # directory keeps every other host user out; the file itself is readable by
@@ -50,7 +55,6 @@
 set -euo pipefail
 
 KIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEFAULT_DSN_FILE="./.secrets/sanitizer-core/registry-dsn"
 
 log() { printf '[write-sanitizer-core-registry-dsn] %s\n' "$*" >&2; }
 die() { printf '[write-sanitizer-core-registry-dsn] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -68,73 +72,52 @@ done
 
 [ -f "$ENV_FILE" ] || die "env file not found: $ENV_FILE"
 
-# customer.env is read EXACTLY as Docker Compose reads it (only a matching
-# pair of outer quotes is removed, multi-line quoted values, comments, the
-# last assignment wins …), by the ONE reader bin/lucairn doctor uses too:
-# bin/compose-env-lib.sh (rules and source citations in its header). A file
-# Compose would refuse, or a value it would interpolate or unescape, is
-# refused here rather than guessed.
-LIB="$KIT_ROOT/bin/compose-env-lib.sh"
-[ -f "$LIB" ] && [ ! -L "$LIB" ] || die "missing $LIB (the kit's Compose env-file reader)"
-# shellcheck source=../bin/compose-env-lib.sh
+# Every value is taken from Docker Compose ITSELF (bin/compose-env.sh, kit 2.0
+# K-A fix round 2): Compose's own env-file parser and interpolation, so
+# quotes, multi-line values, backslash escapes ("\0101" is "A" to Compose), a
+# quoted password ending in a line feed and a variable exported in this shell
+# are resolved exactly as `docker compose up` resolves them. No value is
+# parsed or expanded here. Without Docker Compose on PATH this script refuses
+# (it never guesses a value). bin/lucairn doctor reads through the same file.
+LIB="$KIT_ROOT/bin/compose-env.sh"
+[ -f "$LIB" ] && [ ! -L "$LIB" ] || die "missing $LIB (the kit's Compose env reader)"
+# shellcheck source=../bin/compose-env.sh
 . "$LIB"
-PW_UNSAFE="POSTGRES_SANITIZER_CORE_PASSWORD holds a character customer.env cannot carry safely (space, \$, a quote, \\, \` or #, or a non-ASCII byte); generate one: openssl rand -hex 24"
-env_get() {
-  local v rc=0
-  v="$(compose_env_get "$ENV_FILE" "$1")" || rc=$?
-  if [ "$rc" -eq 3 ] && [ "$1" = POSTGRES_SANITIZER_CORE_PASSWORD ]; then
-    # $-interpolation or a backslash escape: both characters are refused in
-    # the password anyway, so it gets the password's own refusal.
-    die "$PW_UNSAFE"
-  elif [ "$rc" -ne 0 ]; then
-    die "cannot read $1 from $ENV_FILE the way Docker Compose reads it: $v"
-  fi
-  if compose_env_shell_override "$1" "$v"; then
-    die "$1 is exported in this shell with a value other than $ENV_FILE's; Docker Compose run from this shell would use the exported one (unset it, or put the value in $ENV_FILE). The values are not printed"
-  fi
-  printf '%s' "$v"
-}
+PW_UNSAFE="POSTGRES_SANITIZER_CORE_PASSWORD holds a character customer.env cannot carry safely (space, \$, a quote, \\, \`, #, a line feed or another control character, or a non-ASCII byte); generate one: openssl rand -hex 24"
 
-# sanitizer_core_pct_encode: stdin bytes -> RFC 3986 percent-encoding of every
-# byte outside the unreserved set. Byte-wise through od, so no locale or
-# multibyte handling can change it. bin/lucairn doctor uses the same rule.
-pct_encode() {
-  LC_ALL=C od -An -v -tx1 | tr -s '[:space:]' '\n' | while IFS= read -r h; do
-    [ -n "$h" ] || continue
-    case "$h" in
-      2d|2e|5f|7e|3[0-9]|4[1-9a-f]|5[0-9a]|6[1-9a-f]|7[0-9a])
-        # shellcheck disable=SC2059  # the format IS the one octal escape
-        printf "\\$(printf '%03o' "0x$h")" ;;
-      *) printf '%%%s' "$(printf '%s' "$h" | tr 'a-f' 'A-F')" ;;
-    esac
-  done
-}
-
-# env_get dies inside a command substitution only for that subshell, so each
-# read is checked: an empty result after a refusal must stop the script.
-PW="$(env_get POSTGRES_SANITIZER_CORE_PASSWORD)" || exit 1
-[ -n "$PW" ] || die "POSTGRES_SANITIZER_CORE_PASSWORD is not set in $ENV_FILE (generate one: openssl rand -hex 24)"
-# Allowed: printable ASCII 0x21-0x7E except $ ' " \ ` # (and no space).
-if [ -n "$(printf '%s' "$PW" | LC_ALL=C tr -d '\041-\176')" ] \
-   || printf '%s' "$PW" | LC_ALL=C grep -q "[\$'\"\\\`#]"; then
-  die "$PW_UNSAFE"
-fi
-
-SSLMODE="$(env_get POSTGRES_SSLMODE)" || exit 1
-SSLMODE="${SSLMODE:-disable}"
-case "$SSLMODE" in
-  disable|allow|prefer|require|verify-ca|verify-full) : ;;
-  *) die "POSTGRES_SSLMODE must be one of disable, allow, prefer, require, verify-ca, verify-full" ;;
+rc=0
+OUT="$(cev_registry --env-file "$ENV_FILE" --project-dir "$KIT_ROOT" \
+  ${DSN_FILE:+--dsn-file "$DSN_FILE"} --print-dsn)" || rc=$?
+case "$rc" in
+  0) : ;;
+  10) die "Docker Compose is not available here; customer.env is read through Compose itself, never guessed (run this on the Docker host)" ;;
+  11) die "Docker Compose cannot read $ENV_FILE (fix the file; the reason is above)" ;;
+  *) die "could not read $ENV_FILE through Docker Compose (exit $rc; the reason is above)" ;;
 esac
-
-if [ -z "$DSN_FILE" ]; then
-  DSN_FILE="$(env_get SANITIZER_CORE_REGISTRY_DSN_FILE)" || exit 1
-  DSN_FILE="${DSN_FILE:-$DEFAULT_DSN_FILE}"
+PW_STATE="" SSLMODE="" OVERRIDES="" DSN=""
+DSN_FILE=""
+while IFS="$(printf '\t')" read -r k v; do
+  case "$k" in
+    pw) PW_STATE="$v" ;;
+    sslmode) SSLMODE="$v" ;;
+    overrides) OVERRIDES="$v" ;;
+    dsn_file) DSN_FILE="$v" ;;
+    dsn) DSN="$v" ;;
+  esac
+done < <(printf '%s\n' "$OUT")
+OUT=""
+if [ -n "$OVERRIDES" ]; then
+  die "$OVERRIDES exported in this shell with a value other than $ENV_FILE's; Docker Compose run from another shell would use the file's value and the DSN would not match (unset it, or put the value in $ENV_FILE). The values are not printed"
 fi
-case "$DSN_FILE" in
-  /*) : ;;
-  *) DSN_FILE="$KIT_ROOT/${DSN_FILE#./}" ;;
+case "$PW_STATE" in
+  ok) : ;;
+  unset) die "POSTGRES_SANITIZER_CORE_PASSWORD is not set in $ENV_FILE (generate one: openssl rand -hex 24)" ;;
+  placeholder) die "POSTGRES_SANITIZER_CORE_PASSWORD is still a REPLACE_ placeholder in $ENV_FILE (generate one: openssl rand -hex 24)" ;;
+  *) die "$PW_UNSAFE" ;;
 esac
+[ "$SSLMODE" != invalid ] || die "POSTGRES_SSLMODE must be one of disable, allow, prefer, require, verify-ca, verify-full"
+[ -n "$DSN_FILE" ] || die "SANITIZER_CORE_REGISTRY_DSN_FILE holds a quote, backslash or control character Compose escapes; use a plain path"
+[ -n "$DSN" ] || die "bin/compose-env.sh gave no DSN (internal error)"
 DIR="$(dirname "$DSN_FILE")"
 
 if [ -L "$DSN_FILE" ]; then
@@ -156,8 +139,6 @@ esac
 if [ $((8#$DIR_MODE & 077)) -ne 0 ]; then
   die "$DIR has mode $DIR_MODE: the DSN file is readable by any uid (so the core can read it), so its directory must keep group and others out (chmod 700 '$DIR')"
 fi
-
-DSN="postgres://dsa:$(printf '%s' "$PW" | pct_encode)@postgres-sanitizer-core:5432/sanitizer_core?sslmode=$SSLMODE"
 
 if [ -f "$DSN_FILE" ] && [ -r "$DSN_FILE" ] && [ "$(cat "$DSN_FILE")" = "$DSN" ]; then
   log "$DSN_FILE is up to date (unchanged; the DSN is not printed)"

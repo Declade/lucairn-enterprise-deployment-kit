@@ -304,10 +304,10 @@ have() {
 }
 
 . "$KIT_ROOT/bin/runtime-profile-lib.sh"
-# The kit's Compose env-file reader (adopt mode reads the existing env's
-# registry DSN settings the way Docker Compose and the DSN writer read them).
-# shellcheck source=compose-env-lib.sh
-. "$KIT_ROOT/bin/compose-env-lib.sh"
+# The kit's Compose env reader (adopt mode reads the existing env's registry
+# settings through Docker Compose, the way the DSN writer and doctor do).
+# shellcheck source=compose-env.sh
+. "$KIT_ROOT/bin/compose-env.sh"
 
 # Arg parse ----------------------------------------------------------------
 
@@ -1798,21 +1798,27 @@ fi
 # kit 1.x env without POSTGRES_SANITIZER_CORE_PASSWORD gets a note instead
 # (doctor then names every missing kit 2.0 setting).
 _sanitizer_core_adopt_pw="set"
-if [ "$ADOPT_RUNTIME_PROFILE" = "true" ]; then
-  if ! SANITIZER_CORE_DSN_FILE="$(compose_env_get "$OUTPUT" SANITIZER_CORE_REGISTRY_DSN_FILE)" \
-     || ! _sanitizer_core_adopt_pw="$(compose_env_get "$OUTPUT" POSTGRES_SANITIZER_CORE_PASSWORD)"; then
-    fail "cannot read the sanitizer core registry settings from $OUTPUT the way Docker Compose reads it (customer.env was not changed; fix the file, then run: scripts/write-sanitizer-core-registry-dsn.sh --env-file '$OUTPUT')" 7
+_sanitizer_core_dsn_arg=()
+if [ "$ADOPT_RUNTIME_PROFILE" != "true" ]; then
+  _sanitizer_core_dsn_arg=("$SANITIZER_CORE_DSN_FILE")
+else
+  # The adopted env is read THROUGH Docker Compose (bin/compose-env.sh, the
+  # DSN writer's own reader); the writer then resolves the file it names.
+  _sanitizer_core_probe_rc=0
+  _sanitizer_core_probe="$(cev_registry --env-file "$OUTPUT" --project-dir "$KIT_ROOT")" \
+    || _sanitizer_core_probe_rc=$?
+  if [ "$_sanitizer_core_probe_rc" -ne 0 ]; then
+    fail "cannot read the sanitizer core registry settings from $OUTPUT through Docker Compose (customer.env was not changed; fix the error above, then run: scripts/write-sanitizer-core-registry-dsn.sh --env-file '$OUTPUT')" 7
   fi
-  case "$SANITIZER_CORE_DSN_FILE" in
-    /*) : ;;
-    '') SANITIZER_CORE_DSN_FILE="$KIT_ROOT/.secrets/sanitizer-core/registry-dsn" ;;
-    *) SANITIZER_CORE_DSN_FILE="$KIT_ROOT/${SANITIZER_CORE_DSN_FILE#./}" ;;
+  case "$_sanitizer_core_probe" in
+    *"$(printf '\npw\tunset\n')"*) _sanitizer_core_adopt_pw="" ;;
   esac
+  _sanitizer_core_probe=""
 fi
 if [ "$ADOPT_RUNTIME_PROFILE" = "true" ] && [ -z "$_sanitizer_core_adopt_pw" ]; then
   echo "note: $OUTPUT has no POSTGRES_SANITIZER_CORE_PASSWORD (kit 1.x env?); add the kit 2.0 settings (INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\"), then run: scripts/write-sanitizer-core-registry-dsn.sh --env-file '$OUTPUT'" >&2
-elif ! bash "$KIT_ROOT/scripts/write-sanitizer-core-registry-dsn.sh" --env-file "$OUTPUT" "$SANITIZER_CORE_DSN_FILE"; then
-  fail "could not write the sanitizer core registry DSN file $SANITIZER_CORE_DSN_FILE (customer.env was written; fix the error above and re-run: scripts/write-sanitizer-core-registry-dsn.sh --env-file '$OUTPUT' '$SANITIZER_CORE_DSN_FILE')" 7
+elif ! bash "$KIT_ROOT/scripts/write-sanitizer-core-registry-dsn.sh" --env-file "$OUTPUT" ${_sanitizer_core_dsn_arg[@]+"${_sanitizer_core_dsn_arg[@]}"}; then
+  fail "could not write the sanitizer core registry DSN file (customer.env was written; fix the error above and re-run: scripts/write-sanitizer-core-registry-dsn.sh --env-file '$OUTPUT')" 7
 fi
 
 # BYOK banner

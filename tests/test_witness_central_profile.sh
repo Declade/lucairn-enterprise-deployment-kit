@@ -381,8 +381,20 @@ while IFS='|' read -r NAME FILES EXTRA; do
   #    to 4/5 and fails.
   check "$EMITTERS" "$(svc_env_count "$JSON" LCR_WITNESS_ADDR)" \
     "$NAME: every emitter declares LCR_WITNESS_ADDR"
-  check "$EMITTERS" "$(svc_env_eq_count "$JSON" LCR_WITNESS_ADDR "$WANT_ADDR")" \
-    "$NAME: every emitter dials $WANT_ADDR"
+  if [ "$HAS_OVER" = 1 ]; then
+    # Kit 2.0 K-A fix round 2 (sol r2): the new sanitizer core's network
+    # namespace has no route off the host, so it dials its relay on the
+    # internal witness link; the relay forwards to the central witness only.
+    check "$((EMITTERS - 1))" "$(svc_env_eq_count "$JSON" LCR_WITNESS_ADDR "$WANT_ADDR")" \
+      "$NAME: every emitter but the new sanitizer core dials $WANT_ADDR"
+    check "sanitizer-core=sanitizer-core-witness-relay:50057" "$(svc_env_map "$JSON" LCR_WITNESS_ADDR | grep '^sanitizer-core=' || true)" \
+      "$NAME: the new sanitizer core dials its relay on the internal witness link"
+    check "sanitizer-core-witness-relay=$WANT_ADDR" "$(svc_env_map "$JSON" RELAY_UPSTREAM | grep '^sanitizer-core-witness-relay=' || true)" \
+      "$NAME: the relay forwards to $WANT_ADDR and nowhere else"
+  else
+    check "$EMITTERS" "$(svc_env_eq_count "$JSON" LCR_WITNESS_ADDR "$WANT_ADDR")" \
+      "$NAME: every emitter dials $WANT_ADDR"
+  fi
 
   # 5. LATCH + CREDENTIAL TRIPLE reach every emitter (the witness carries the
   #    latch too, for its own server side).

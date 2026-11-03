@@ -184,15 +184,17 @@ if [ -f "$ROOT/bin/runtime-profile-lib.sh" ] && [ ! -L "$ROOT/bin/runtime-profil
   load_runtime_profile_lib "$ROOT/bin/runtime-profile-lib.sh"
 fi
 
-# Kit 2.0: the ONE reader of customer.env values that the sanitizer core's
-# registry DSN depends on, shared with scripts/write-sanitizer-core-registry-dsn.sh
-# so doctor and the writer read every value exactly as Docker Compose does
-# (bin/compose-env-lib.sh). Same trust rule as above: the installed CLI's own
-# sibling, never a copy inside a bundle. When it is absent, every check that
-# needs it fails closed (sanitizer_core_env_get).
-if [ -f "$ROOT/bin/compose-env-lib.sh" ] && [ ! -L "$ROOT/bin/compose-env-lib.sh" ]; then
-  # shellcheck source=compose-env-lib.sh
-  . "$ROOT/bin/compose-env-lib.sh"
+# Kit 2.0: every customer.env value the sanitizer core's registry DSN depends
+# on, and every secret value support-bundle scans for, is read THROUGH Docker
+# Compose itself (bin/compose-env.sh; K-A fix round 2) — never by a hand-written
+# reader. Same trust rule as above: the installed CLI's own sibling, never a
+# copy inside a bundle. When it (or Docker Compose) is absent, every check
+# that needs it fails closed. No Python: offline doctor stays Python-free.
+LUCAIRN_COMPOSE_ENV_LIB_OK=0
+if [ -f "$ROOT/bin/compose-env.sh" ] && [ ! -L "$ROOT/bin/compose-env.sh" ]; then
+  # shellcheck source=compose-env.sh
+  . "$ROOT/bin/compose-env.sh"
+  LUCAIRN_COMPOSE_ENV_LIB_OK=1
 fi
 
 dir_has_payload_files() {
@@ -7165,10 +7167,10 @@ bundle_create() {
   cp "$ROOT/bin/lucairn-doctor-keyed.py" "$staging/bin/lucairn-doctor-keyed.py"
   chmod 0755 "$staging/bin/lucairn-doctor-keyed.py"
   cp "$ROOT/bin/runtime-profile-lib.sh" "$staging/bin/runtime-profile-lib.sh"
-  # Kit 2.0: the Compose env-file reader the extracted kit's doctor and DSN
-  # writer share (bin/compose-env-lib.sh). Optional for the verifier, which
-  # never sources a bundle's helper.
-  cp "$ROOT/bin/compose-env-lib.sh" "$staging/bin/compose-env-lib.sh"
+  # Kit 2.0: the Compose env reader the extracted kit's doctor, support-bundle
+  # and DSN writer share (bin/compose-env.sh). Optional for the verifier,
+  # which never sources a bundle's helper.
+  cp "$ROOT/bin/compose-env.sh" "$staging/bin/compose-env.sh"
   cp "$ROOT/VERSION" "$staging/VERSION"
   cp "$ROOT/RELEASE_DATE" "$staging/RELEASE_DATE"
   mkdir -p "$staging/scripts"
@@ -7743,78 +7745,62 @@ sanitizer_core_cert_dir() {
   esac
 }
 
-# sanitizer_core_env_get <env file> <KEY> — the value exactly as Docker Compose
-# reads it (bin/compose-env-lib.sh compose_env_get: rc 0 value, rc 1 unreadable,
-# rc 2 Compose would refuse the file, rc 3 a construct the reader does not
-# evaluate; on rc != 0 stdout is a value-free reason). Used for every value the
-# registry DSN is built from, by doctor and support-bundle alike.
-sanitizer_core_env_get() {
-  if ! command -v compose_env_get >/dev/null 2>&1; then
-    printf 'bin/compose-env-lib.sh (the kit Compose env-file reader) is missing beside bin/lucairn'
-    return 4
+# sanitizer_core_registry_probe <env file> <compose file>
+# Reads the registry settings THROUGH Docker Compose (bin/compose-env.sh
+# cev_registry --check-file, over this install's RUNTIME_COMPOSE_ARGS) and sets:
+#   SCR_rc         0 ok · 4 bin/compose-env.sh missing · 10 no Docker Compose ·
+#                  11 Compose refuses the env file · 12 unusable Compose output
+#   SCR_err        a value-free reason (rc != 0)
+#   SCR_overrides  registry keys this shell exports with another value
+#   SCR_pw         ok | unset | placeholder | unsafe   (SCR_pw_len)
+#   SCR_sslmode    the mode, or "invalid"
+#   SCR_dsn_file   the host file Compose would bind-mount (absolute)
+#   SCR_file       match | mismatch | unchecked | missing | symlink | directory |
+#                  not-regular | unreadable | too-big | empty | not-url
+#   SCR_project    rendered | not-rendered (SCR_project_reason), and the
+#                  cross-checks SCR_project_db_password, _migrate_password,
+#                  _migrate_sslmode, _dsn_mount: same | differs | absent
+# Never sets, prints or holds the password or the DSN.
+sanitizer_core_registry_probe() {
+  local env_file="$1" compose_file="$2" out errf k v pd
+  SCR_rc=0 SCR_err="" SCR_overrides="" SCR_pw="" SCR_pw_len=0 SCR_sslmode="" SCR_dsn_file=""
+  SCR_file="" SCR_project="" SCR_project_reason="" SCR_project_db_password=""
+  SCR_project_migrate_password="" SCR_project_migrate_sslmode="" SCR_project_dsn_mount=""
+  if [ "$LUCAIRN_COMPOSE_ENV_LIB_OK" -ne 1 ]; then
+    SCR_rc=4; SCR_err="bin/compose-env.sh (the kit's Compose env reader) is missing beside bin/lucairn"; return 0
   fi
-  compose_env_get "$1" "$2"
-}
-
-# The host file the compose file bind-mounts into the core as its registry DSN
-# (--registry-dsn-file /run/secrets/sanitizer-core/registry-dsn; DSA #956).
-# Written by scripts/write-sanitizer-core-registry-dsn.sh. Relative values
-# resolve like the cert directory above. rc != 0 when customer.env cannot be
-# read the Compose way; the compose default path is printed then, so a caller
-# that only scans (support-bundle) still has a path.
-LUCAIRN_SANITIZER_CORE_DSN_FILE_DEFAULT="./.secrets/sanitizer-core/registry-dsn"
-sanitizer_core_dsn_file() {
-  local env_file="$1" compose_file="$2" f base rc=0
-  f="$(sanitizer_core_env_get "$env_file" SANITIZER_CORE_REGISTRY_DSN_FILE)" || { rc=1; f=""; }
-  f="${f:-$LUCAIRN_SANITIZER_CORE_DSN_FILE_DEFAULT}"
-  case "$f" in
-    /*) printf '%s' "$f" ;;
-    *)
-      base="$(cd "$(dirname "$compose_file")" 2>/dev/null && pwd)" || base="$(dirname "$compose_file")"
-      printf '%s/%s' "$base" "${f#./}"
-      ;;
-  esac
-  return "$rc"
-}
-
-# Percent-encodes stdin (every byte outside A-Z a-z 0-9 - . _ ~), byte-wise.
-# The SAME rule as scripts/write-sanitizer-core-registry-dsn.sh pct_encode;
-# tests/test_sanitizer_core_compose.sh proves the two agree.
-sanitizer_core_pct_encode() {
-  local h
-  LC_ALL=C od -An -v -tx1 | tr -s '[:space:]' '\n' | while IFS= read -r h; do
-    [ -n "$h" ] || continue
-    case "$h" in
-      2d|2e|5f|7e|3[0-9]|4[1-9a-f]|5[0-9a]|6[1-9a-f]|7[0-9a])
-        # shellcheck disable=SC2059  # the format IS the one octal escape
-        printf "\\$(printf '%03o' "0x$h")" ;;
-      *) printf '%%%s' "$(printf '%s' "$h" | tr 'a-f' 'A-F')" ;;
+  pd="$(cd "$(dirname "$compose_file")" 2>/dev/null && pwd)" || pd="$(dirname "$compose_file")"
+  errf="$(mktemp)"
+  out="$(cev_registry --env-file "$env_file" --project-dir "$pd" --check-file \
+    -- ${RUNTIME_COMPOSE_ARGS[@]+"${RUNTIME_COMPOSE_ARGS[@]}"} 2>"$errf")" || SCR_rc=$?
+  SCR_err="$(sed -n 's/^compose-env: //p' "$errf" | head -1)"
+  rm -f "$errf"
+  while IFS="$(printf '\t')" read -r k v; do
+    case "$k" in
+      overrides) SCR_overrides="$v" ;;
+      pw) SCR_pw="$v" ;;
+      pw_len) SCR_pw_len="$v" ;;
+      sslmode) SCR_sslmode="$v" ;;
+      dsn_file) SCR_dsn_file="$v" ;;
+      dsn_file_state) SCR_rc=12; SCR_err="SANITIZER_CORE_REGISTRY_DSN_FILE holds a quote, backslash or control character; use a plain path" ;;
+      file) SCR_file="$v" ;;
+      project) SCR_project="$v" ;;
+      project_reason) SCR_project_reason="$v" ;;
+      project_db_password) SCR_project_db_password="$v" ;;
+      project_migrate_password) SCR_project_migrate_password="$v" ;;
+      project_migrate_sslmode) SCR_project_migrate_sslmode="$v" ;;
+      project_dsn_mount) SCR_project_dsn_mount="$v" ;;
     esac
-  done
+  done < <(printf '%s\n' "$out")
+  if [ "$SCR_rc" -eq 0 ] && [ -z "$SCR_pw" ]; then
+    SCR_rc=12; SCR_err="bin/compose-env.sh gave no answer"
+  fi
+  return 0
 }
 
-# The DSN the writer derives from customer.env (same reader, same encoder).
-# Compared, never printed. rc 1 when a value cannot be read the Compose way.
-sanitizer_core_expected_dsn() {
-  local env_file="$1" pw ssl
-  pw="$(sanitizer_core_env_get "$env_file" POSTGRES_SANITIZER_CORE_PASSWORD)" || return 1
-  ssl="$(sanitizer_core_env_get "$env_file" POSTGRES_SSLMODE)" || return 1
-  printf 'postgres://dsa:%s@postgres-sanitizer-core:5432/sanitizer_core?sslmode=%s' \
-    "$(printf '%s' "$pw" | sanitizer_core_pct_encode)" "${ssl:-disable}"
-}
-
-# The DSN file's value as the core reads it: a leading UTF-8 byte-order mark
-# dropped, surrounding white space trimmed (registry_dsn.go resolveRegistryDSN).
-sanitizer_core_read_dsn() {
-  LC_ALL=C awk -v bom="$(printf '\357\273\277')" '
-    NR == 1 && substr($0, 1, 3) == bom { $0 = substr($0, 4) }
-    { a[NR] = $0 }
-    END {
-      s = ""
-      for (i = 1; i <= NR; i++) s = s (i > 1 ? "\n" : "") a[i]
-      sub(/^[ \t\r\n]+/, "", s); sub(/[ \t\r\n]+$/, "", s)
-      printf "%s", s
-    }' "$1" 2>/dev/null
+# The fix line for every registry DSN failure.
+sanitizer_core_dsn_fix() {
+  printf "run scripts/write-sanitizer-core-registry-dsn.sh --env-file '%s' (see INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\")" "$1"
 }
 
 sanitizer_core_file_mode() {
@@ -7908,11 +7894,14 @@ sanitizer_core_check_leaf() {
 }
 
 # check_sanitizer_core_dsn <env file> <compose file> <password ok: 0|1>
-# The registry DSN file and its wiring, offline. Never prints the DSN, the
-# password, or a compose line that could hold them (file:line only).
+# The registry DSN file and its wiring, offline. Uses the SCR_* fields that
+# sanitizer_core_registry_probe set (values read through Docker Compose).
+# Never prints the DSN, the password, or a compose line that could hold them
+# (file:line only).
 check_sanitizer_core_dsn() {
   local env_file="$1" compose_file="$2" pw_ok="${3:-0}" failed=0
-  local fix="run scripts/write-sanitizer-core-registry-dsn.sh --env-file '$env_file' (see INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\")"
+  local fix
+  fix="$(sanitizer_core_dsn_fix "$env_file")"
 
   # a. No compose file in this install's set passes --dsn (an operator overlay,
   #    or a kit file from before kit 2.0 K-A). Comment lines are skipped; the
@@ -7933,29 +7922,21 @@ check_sanitizer_core_dsn() {
     failed=1
   fi
 
-  # b. The host file the compose file bind-mounts.
-  local f dir mode uid dmode cuid why
-  if ! f="$(sanitizer_core_dsn_file "$env_file" "$compose_file")"; then
-    why="$(sanitizer_core_env_get "$env_file" SANITIZER_CORE_REGISTRY_DSN_FILE)" || true
-    echo "sanitizer core registry DSN: failed (SANITIZER_CORE_REGISTRY_DSN_FILE cannot be read from $env_file the way Docker Compose reads it: $why)"
+  # b. The host file Compose bind-mounts (path read through Compose).
+  if [ "$SCR_rc" -ne 0 ]; then
+    echo "sanitizer core registry DSN: failed (SANITIZER_CORE_REGISTRY_DSN_FILE could not be read through Docker Compose: ${SCR_err:-unknown reason})"
     return 1
   fi
+  local f="$SCR_dsn_file" dir mode uid dmode cuid
   dir="$(dirname "$f")"
   cuid="${LUCAIRN_CONTAINER_UID:-$(env_value "$env_file" LUCAIRN_CONTAINER_UID)}"
   cuid="${cuid:-$LUCAIRN_SANITIZER_CORE_CONTAINER_UID}"
-  if [ -L "$f" ]; then
-    echo "sanitizer core registry DSN: failed ($f is a symlink; point SANITIZER_CORE_REGISTRY_DSN_FILE at the real file)"
-    return 1
-  elif [ -d "$f" ]; then
-    echo "sanitizer core registry DSN: failed ($f is a directory — Docker creates one when a bind source is missing; remove it (rmdir) and $fix)"
-    return 1
-  elif [ ! -e "$f" ]; then
-    echo "sanitizer core registry DSN: failed (file missing: $f — the core refuses to start without it; $fix)"
-    return 1
-  elif [ ! -f "$f" ]; then
-    echo "sanitizer core registry DSN: failed ($f is not a regular file)"
-    return 1
-  fi
+  case "$SCR_file" in
+    symlink) echo "sanitizer core registry DSN: failed ($f is a symlink; point SANITIZER_CORE_REGISTRY_DSN_FILE at the real file)"; return 1 ;;
+    directory) echo "sanitizer core registry DSN: failed ($f is a directory — Docker creates one when a bind source is missing; remove it (rmdir) and $fix)"; return 1 ;;
+    missing) echo "sanitizer core registry DSN: failed (file missing: $f — the core refuses to start without it; $fix)"; return 1 ;;
+    not-regular) echo "sanitizer core registry DSN: failed ($f is not a regular file)"; return 1 ;;
+  esac
   mode="$(sanitizer_core_file_mode "$f")"
   uid="$(sanitizer_core_file_uid "$f")"
   dmode="$(sanitizer_core_file_mode "$dir")"
@@ -7988,41 +7969,44 @@ check_sanitizer_core_dsn() {
     fi
   fi
 
-  # c. Content, when this doctor can read it (it is 0444, so it normally can).
-  if [ ! -r "$f" ]; then
-    # NON-COVERAGE: an operator-hardened file (owned by uid $cuid, 0400) is not
-    # readable by this user; the core's own boot check refuses a bad DSN.
-    echo "sanitizer core registry DSN: note — content not checked ($f is not readable by $(id -un 2>/dev/null || echo this user))"
-  else
-    local size dsn
-    size="$(wc -c < "$f" 2>/dev/null | tr -d ' ')"
-    if [ "${size:-0}" -gt 8192 ]; then
-      echo "sanitizer core registry DSN: failed ($f is larger than 8 KiB — not a DSN; the core refuses it; $fix)"
-      failed=1
-    else
-      dsn="$(sanitizer_core_read_dsn "$f")"
-      case "$dsn" in
-        '')
-          echo "sanitizer core registry DSN: failed ($f is empty — $fix)"
-          failed=1
-          ;;
-        postgres://*|postgresql://*)
-          local expected=""
-          if [ "$pw_ok" -eq 1 ] && ! expected="$(sanitizer_core_expected_dsn "$env_file")"; then
-            echo "sanitizer core registry DSN: failed (POSTGRES_SSLMODE cannot be read from $env_file the way Docker Compose reads it, so the file cannot be compared; the values are not printed)"
-            failed=1
-          elif [ "$pw_ok" -eq 1 ] && [ "$dsn" != "$expected" ]; then
-            echo "sanitizer core registry DSN: failed ($f does not match customer.env — POSTGRES_SANITIZER_CORE_PASSWORD or POSTGRES_SSLMODE changed since it was written; $fix, then recreate the core. The values are not printed)"
-            failed=1
-          fi
-          ;;
-        *)
-          echo "sanitizer core registry DSN: failed ($f does not hold a postgres:// URL — the core takes only that form from a file; $fix. The value is not printed)"
-          failed=1
-          ;;
-      esac
-    fi
-  fi
+  # c. Content, compared by bin/compose-env.sh with the DSN derived from the
+  #    values Compose hands on (the file is 0444, so this user normally reads it).
+  case "$SCR_file" in
+    unreadable)
+      # NON-COVERAGE: an operator-hardened file (owned by uid $cuid, 0400) is not
+      # readable by this user; the core's own boot check refuses a bad DSN.
+      echo "sanitizer core registry DSN: note — content not checked ($f is not readable by $(id -un 2>/dev/null || echo this user))" ;;
+    too-big) echo "sanitizer core registry DSN: failed ($f is larger than 8 KiB — not a DSN; the core refuses it; $fix)"; failed=1 ;;
+    empty) echo "sanitizer core registry DSN: failed ($f is empty — $fix)"; failed=1 ;;
+    not-url) echo "sanitizer core registry DSN: failed ($f does not hold a postgres:// URL — the core takes only that form from a file; $fix. The value is not printed)"; failed=1 ;;
+    mismatch)
+      if [ "$pw_ok" -eq 1 ]; then
+        echo "sanitizer core registry DSN: failed ($f does not match customer.env — POSTGRES_SANITIZER_CORE_PASSWORD or POSTGRES_SSLMODE changed since it was written; $fix, then recreate the core. The values are not printed)"
+        failed=1
+      fi ;;
+    unchecked)
+      if [ "$pw_ok" -eq 1 ]; then
+        echo "sanitizer core registry DSN: failed (POSTGRES_SSLMODE is not one of disable, allow, prefer, require, verify-ca, verify-full, so the file cannot be compared)"
+        failed=1
+      fi ;;
+  esac
+
+  # d. What the rendered project really does with those values (an operator
+  #    overlay can remap the DB password or the mounted file).
+  case "$SCR_project" in
+    rendered)
+      if [ "$SCR_project_db_password" = differs ] || [ "$SCR_project_migrate_password" = differs ] || [ "$SCR_project_migrate_sslmode" = differs ]; then
+        echo "sanitizer core registry DSN: failed (the rendered project hands postgres-sanitizer-core or migrate-sanitizer-core a password or sslmode other than POSTGRES_SANITIZER_CORE_PASSWORD / POSTGRES_SSLMODE — an overlay remaps it, so the DSN file cannot match the database. The values are not printed)"
+        failed=1
+      fi
+      if [ "$SCR_project_dsn_mount" = differs ]; then
+        echo "sanitizer core registry DSN: failed (the rendered sanitizer-core mounts another host file at /run/secrets/sanitizer-core/registry-dsn than $f, the one checked here)"
+        failed=1
+      fi
+      ;;
+    not-rendered)
+      echo "sanitizer core registry DSN: note — the Compose project does not render (${SCR_project_reason:-unknown reason}), so the registry DB's and the core's rendered settings were not cross-checked" ;;
+  esac
   if [ "$failed" -eq 0 ]; then
     echo "sanitizer core registry DSN: ok ($f; --registry-dsn-file, never --dsn)"
   fi
@@ -8073,35 +8057,29 @@ check_sanitizer_core_config() {
   # 2. Registry DB password. It reaches Postgres and the migration step through
   #    customer.env + Compose interpolation, and the core through the DSN file,
   #    where scripts/write-sanitizer-core-registry-dsn.sh percent-encodes it.
-  #    So any printable ASCII character works except the ones customer.env /
-  #    Compose interpolation cannot carry: space, $ ' " \ ` and #.
-  #    Read EXACTLY as Docker Compose reads it, by the writer's own reader
-  #    (bin/compose-env-lib.sh): only a matching pair of outer quotes is
-  #    removed, so `"abc'` is a Compose error and `abc'` keeps its quote.
-  local pw_ok=0 pw_rc=0
-  val="$(sanitizer_core_env_get "$env_file" POSTGRES_SANITIZER_CORE_PASSWORD)" || pw_rc=$?
-  if [ "$pw_rc" -eq 3 ]; then
-    # $-interpolation or a backslash escape (refused in the password anyway).
-    echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD holds a space, \$, a quote, \\, \`, # or a non-ASCII byte — customer.env and Compose interpolation cannot carry it safely; generate with: openssl rand -hex 24)"
-    val=""
+  #    So any printable ASCII character works except space, $ ' " \ ` and #;
+  #    a line feed or another control character is refused too. The value is
+  #    the one Docker Compose ITSELF hands on (bin/compose-env.sh: Compose's
+  #    env-file parser + interpolation — quotes, escapes, a quoted trailing
+  #    line feed, an exported shell variable), never a hand-parsed copy.
+  local pw_ok=0
+  sanitizer_core_registry_probe "$env_file" "$compose_file"
+  if [ "$SCR_rc" -ne 0 ]; then
+    echo "sanitizer core registry DB password: failed (customer.env could not be read through Docker Compose: ${SCR_err:-unknown reason})"
     failed=1
-  elif [ "$pw_rc" -ne 0 ]; then
-    echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD cannot be read from $env_file the way Docker Compose reads it: $val)"
-    val=""
+  elif [ -n "$SCR_overrides" ]; then
+    echo "sanitizer core registry DB password: failed ($SCR_overrides exported in this shell with a value other than $env_file's; Docker Compose run from this shell uses the exported one, so Postgres and the DSN file would disagree. Unset it. The values are not printed)"
     failed=1
-  elif compose_env_shell_override POSTGRES_SANITIZER_CORE_PASSWORD "$val"; then
-    echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD is exported in this shell with a value other than $env_file's; Docker Compose run from this shell uses the exported one, so Postgres and the DSN file would disagree. Unset it. The values are not printed)"
-    failed=1
-  elif [ -z "$val" ]; then
+  elif [ "$SCR_pw" = unset ]; then
     echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD is not set in $env_file — generate with: openssl rand -hex 24)"
     failed=1
-  elif ! validate_no_placeholder "$env_file" POSTGRES_SANITIZER_CORE_PASSWORD; then
+  elif [ "$SCR_pw" = placeholder ]; then
+    echo "secret format: POSTGRES_SANITIZER_CORE_PASSWORD still set to a placeholder value (starts with REPLACE_); replace it before doctor"
     failed=1
-  elif [ -n "$(printf '%s' "$val" | LC_ALL=C tr -d '\041-\176')" ] \
-       || printf '%s' "$val" | LC_ALL=C grep -q "[\$'\"\\\`#]"; then
-    echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD holds a space, \$, a quote, \\, \`, # or a non-ASCII byte — customer.env and Compose interpolation cannot carry it safely; generate with: openssl rand -hex 24)"
+  elif [ "$SCR_pw" != ok ]; then
+    echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD holds a space, \$, a quote, \\, \`, #, a line feed or another control character, or a non-ASCII byte — customer.env and Compose interpolation cannot carry it safely; generate with: openssl rand -hex 24)"
     failed=1
-  elif [ "$dsa_env" = "production" ] && [ "${#val}" -lt 12 ]; then
+  elif [ "$dsa_env" = "production" ] && [ "$SCR_pw_len" -lt 12 ]; then
     echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD too short; need >= 12 chars in production)"
     failed=1
   else
@@ -9400,80 +9378,37 @@ write_cert_report() {
 }
 
 # support_bundle_secret_needles <env file> <compose file>
-# Prints, one per line, every secret value the kit knows (support-bundle's
-# redaction-miss scan; never printed elsewhere):
-#   * customer.env values of secret-named keys (PASSWORD, SECRET, TOKEN, KEY,
+# Prints, one per line, every secret value Docker Compose knows for this
+# install (support-bundle's redaction-miss scan; never printed elsewhere),
+# taken from Compose ITSELF by bin/compose-env.sh cev_needles (K-A fix round 2):
+#   * every secret-named customer.env value (PASSWORD, SECRET, TOKEN, KEY,
 #     DSN, PRIVATE, CREDENTIAL, LICENSE — not PUBLIC/PUBKEY keys or *_ID,
-#     *_NAME, *_PATH, *_FILE, *_DIR, *_DAYS, *_URL names, nor values that are
-#     file paths), read BOTH exactly as Docker Compose reads them
-#     (bin/compose-env-lib.sh) and as the raw text after `=` with and without
-#     one pair of quotes — so a file Compose would refuse is still covered;
-#   * the password of any `scheme://user:password@` URL in any value;
-#   * the sanitizer core's registry DSN file (when readable): the DSN and its
-#     password, as written and decoded;
-#   * the percent-encoded form of every needle that has one.
+#     *_NAME, *_PATH, *_FILE, *_DIR, *_DAYS, *_URL names, nor file paths), as
+#     Compose's env-file parser reads it AND as Compose interpolates it from
+#     this shell (an exported override is a needle too);
+#   * every secret-named environment value Compose hands ANY container of
+#     this install's project (overlays merged), and the password of any
+#     `scheme://user:password@` URL in any value, command or entrypoint;
+#   * the sanitizer core's registry DSN file(s) (when readable): the DSN and
+#     its password, as written and decoded;
+#   * each value raw and in the forms a bundle file can hold it in: percent-
+#     encoded, `$$`-escaped (`docker compose config` output), JSON/YAML-escaped.
+# rc != 0 (no Docker Compose, Compose refuses customer.env, helper missing):
+# the caller refuses the bundle — the scan is never skipped.
 # NON-COVERAGE: values shorter than 12 characters are not scanned (a short
-# dev value could match unrelated text by chance); secrets that only exist
-# outside customer.env and the DSN file (an operator's own overlay values,
-# files under cert directories) are not known here.
+# dev value could match unrelated text by chance); secrets that exist only
+# outside Compose's view (files under cert directories, a value a service
+# derives itself) are not known here; a log line may carry a secret in an
+# encoding not listed above.
 support_bundle_secret_needles() {
-  local env_file="$1" compose_file="$2" key raw v up dsn_file dsn_val dsn_pw
-  local -a vals=()
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%$'\r'}"
-    # name: optional `export`, then [A-Za-z0-9_.-]+, then = or :
-    key="$(printf '%s' "$line" | sed -n 's/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}\([A-Za-z0-9_.-][A-Za-z0-9_.-]*\)[[:space:]]*[=:].*$/\2/p')"
-    [ -n "$key" ] || continue
-    raw="$(printf '%s' "$line" | sed 's/^[^=:]*[=:][[:space:]]*//')"
-    raw="${raw%"${raw##*[![:space:]]}"}"
-    # URL userinfo passwords, whatever the key's name.
-    case "$raw" in
-      *://*:*@*) vals+=("$(printf '%s' "$raw" | sed -n 's#^.*://[^:/@[:space:]]*:\([^@]*\)@.*$#\1#p')") ;;
-    esac
-    up="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
-    case "$up" in
-      *PUBLIC*|*PUBKEY*|*_ID|*_NAME|*_PATH|*_FILE|*_DIR|*_DAYS|*_URL) continue ;;
-      *PASSWORD*|*SECRET*|*TOKEN*|*KEY*|*DSN*|*PRIVATE*|*CREDENTIAL*|*LICENSE*) : ;;
-      *) continue ;;
-    esac
-    vals+=("$raw")
-    case "$raw" in
-      \"*\") vals+=("${raw#\"}"); vals[${#vals[@]}-1]="${vals[${#vals[@]}-1]%\"}" ;;
-      \'*\') vals+=("${raw#\'}"); vals[${#vals[@]}-1]="${vals[${#vals[@]}-1]%\'}" ;;
-    esac
-    if v="$(sanitizer_core_env_get "$env_file" "$key" 2>/dev/null)"; then
-      vals+=("$v")
-    fi
-  done < "$env_file"
-  dsn_file="$(sanitizer_core_dsn_file "$env_file" "$compose_file" 2>/dev/null)" || true
-  if [ -n "$dsn_file" ] && [ -f "$dsn_file" ] && [ -r "$dsn_file" ]; then
-    dsn_val="$(sanitizer_core_read_dsn "$dsn_file")"
-    dsn_pw="$(printf '%s' "$dsn_val" | sed -n 's#^postgres[a-z]*://[^:/@]*:\([^@]*\)@.*#\1#p')"
-    vals+=("$dsn_val" "$dsn_pw")
-    # decoded password (the DSN file holds it percent-encoded)
-    vals+=("$(printf '%s' "$dsn_pw" | LC_ALL=C awk '{
-      out = ""; n = length($0)
-      for (i = 1; i <= n; i++) {
-        c = substr($0, i, 1)
-        if (c == "%" && i + 2 <= n) { h = toupper(substr($0, i + 1, 2)); out = out sprintf("%c", (index("0123456789ABCDEF", substr(h, 1, 1)) - 1) * 16 + index("0123456789ABCDEF", substr(h, 2, 1)) - 1); i += 2 }
-        else out = out c
-      }
-      printf "%s", out }')")
+  local env_file="$1" compose_file="$2" pd
+  if [ "$LUCAIRN_COMPOSE_ENV_LIB_OK" -ne 1 ]; then
+    echo "bin/compose-env.sh (the kit's Compose env reader) is missing beside bin/lucairn" >&2
+    return 4
   fi
-  # One needle per LINE of each value (grep -F -f reads one pattern per
-  # line; a multi-line quoted value is searched line by line), each >= 12
-  # characters so no short fragment — never an empty line, which would match
-  # everything — reaches the pattern file.
-  local n frag
-  for n in "${vals[@]:+${vals[@]}}"; do
-    case "$n" in /*|./*|../*|~/*) continue ;; esac
-    printf '%s\n' "$n" | while IFS= read -r frag || [ -n "$frag" ]; do
-      [ "${#frag}" -ge 12 ] || continue
-      printf '%s\n' "$frag"
-      v="$(printf '%s' "$frag" | sanitizer_core_pct_encode)"
-      [ "$v" = "$frag" ] || printf '%s\n' "$v"
-    done
-  done | LC_ALL=C sort -u
+  pd="$(cd "$(dirname "$compose_file")" 2>/dev/null && pwd)" || pd="$(dirname "$compose_file")"
+  cev_needles --env-file "$env_file" --project-dir "$pd" \
+    -- ${RUNTIME_COMPOSE_ARGS[@]+"${RUNTIME_COMPOSE_ARGS[@]}"}
 }
 
 support_bundle() {
@@ -9574,10 +9509,17 @@ support_bundle() {
   # depend on the registry DSN file existing (sol r1 finding 2: with that file
   # missing, the old guard skipped every scan). Values are never printed; the
   # needle list lives outside the bundle in a 0600 temp file and is removed.
-  local needles leaked=0
+  local needles needles_err leaked=0 why
   needles="$(mktemp)"
+  needles_err="$(mktemp)"
   chmod 0600 "$needles"
-  support_bundle_secret_needles "$env_file" "$compose_file" > "$needles" 2>/dev/null || true
+  if ! support_bundle_secret_needles "$env_file" "$compose_file" > "$needles" 2> "$needles_err"; then
+    why="$(sed 's/^compose-env: //' "$needles_err" | grep -v '^$' | head -1)"
+    rm -f "$needles" "$needles_err"
+    rm -rf "$bundle_dir"
+    fail "support bundle: refused — the secret values to scan for could not be read through Docker Compose (${why:-unknown reason}); nothing was archived. Fix that, or report to Lucairn support without a bundle."
+  fi
+  rm -f "$needles_err"
   if [ -s "$needles" ] && grep -rqF -f "$needles" -- "$bundle_dir" 2>/dev/null; then
     leaked=1
   fi

@@ -714,8 +714,15 @@ fi
 # Compose calls without needing a daemon.
 DOCKER_STUB_DIR="$TMPDIR/docker-stub"
 mkdir -p "$DOCKER_STUB_DIR"
+# Kit 2.0 K-A fix round 2: the docker stubs below hand bin/compose-env.sh's
+# probe renders to the real Compose CLI (client side only).
+LUCAIRN_TEST_REAL_DOCKER="$(command -v docker 2>/dev/null || true)"
+export LUCAIRN_TEST_REAL_DOCKER
 cat > "$DOCKER_STUB_DIR/docker" <<'STUB'
 #!/usr/bin/env bash
+# Kit 2.0 K-A fix round 2: bin/compose-env.sh reads customer.env through the
+# REAL Compose CLI (one-service probe projects, client side, no daemon).
+case " $* " in *lucairn-env-probe.*) exec "$LUCAIRN_TEST_REAL_DOCKER" "$@" ;; esac
 if [ "$1" = compose ]; then
   shift
   if [ "$1" = version ]; then exit 0; fi

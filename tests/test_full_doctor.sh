@@ -63,8 +63,13 @@ printf '000'
 EOF
 chmod 0755 "$CAPTURE_BIN/curl"
 
+# Kit 2.0 K-A fix round 2: the docker stubs below hand bin/compose-env.sh's
+# probe renders to the real Compose CLI (client side only).
+LUCAIRN_TEST_REAL_DOCKER="$(command -v docker 2>/dev/null || true)"
+export LUCAIRN_TEST_REAL_DOCKER
 cat > "$CAPTURE_BIN/docker" <<EOF
 #!/bin/bash
+case " \$* " in *lucairn-env-probe.*) exec "\$LUCAIRN_TEST_REAL_DOCKER" "\$@" ;; esac
 {
   printf 'argv:'
   for arg in "\$0" "\$@"; do printf ' %q' "\$arg"; done

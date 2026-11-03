@@ -2461,7 +2461,13 @@ scripts/write-sanitizer-core-registry-dsn.sh --env-file customer.env
 ```
 
 `bin/lucairn-init` runs this for you and records the path in `customer.env`
-(`SANITIZER_CORE_REGISTRY_DSN_FILE`). For an env file with another name it
+(`SANITIZER_CORE_REGISTRY_DSN_FILE`). The script (like `bin/lucairn doctor` and
+`bin/lucairn support-bundle`) reads `customer.env` THROUGH Docker Compose
+(`docker compose config`, client side, no daemon needed), so it sees exactly the
+values Compose hands the containers — quotes, escapes, `${...}` references and a
+variable exported in your shell included. Without Docker Compose on the machine
+it refuses rather than guess; a variable exported in your shell with a value
+other than `customer.env`'s is refused too (unset it). For an env file with another name it
 writes `.secrets/sanitizer-core/<name>.registry-dsn`, so two env files in one
 directory never share the file of another's password.
 
@@ -2536,8 +2542,21 @@ ledger against the ceiling, and the core's log — witness transport `mtls` and 
 certificate (sanitizer claim from the core) are the install rehearsal's proof.
 
 `bin/lucairn support-bundle` never collects the DSN file. Before it writes the
-archive it checks every collected file for the DSN and the password (raw and
-percent-encoded). If either is found, it removes the bundle and writes nothing.
+archive it checks every collected file for every secret value Docker Compose
+knows for this install — the secret-named `customer.env` values as Compose reads
+them and as it interpolates them from your shell, the secret-named values it
+hands any container, URL passwords, and the DSN and its password — raw,
+percent-encoded and as `docker compose config` prints them. If one is found, it
+removes the bundle and writes nothing. Without Docker Compose it refuses too
+(the scan is never skipped).
+
+The core listens only on its gateway link (`--listen=sanitizer-core:8790`, a
+name only that network carries), not on the witness or registry links of the
+same network namespace. With the witness-central overlay the core's namespace
+still has no route off the host: the core dials a small relay container
+(`sanitizer-core-witness-relay`, from the sidecar image) on its internal witness
+link, and only the relay can reach `LUCAIRN_CENTRAL_WITNESS_ADDR` — one address,
+plain TCP; the core's mTLS session runs end to end through it.
 
 ### Upgrading a kit 1.x Compose install
 

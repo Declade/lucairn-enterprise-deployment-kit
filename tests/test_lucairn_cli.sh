@@ -434,8 +434,15 @@ echo "lucairn license no-signer exit-code tests: ok"
 
 FAKEBIN="$TMPDIR/fakebin"
 mkdir -p "$FAKEBIN"
+# Kit 2.0 K-A fix round 2: the docker stubs below hand bin/compose-env.sh's
+# probe renders to the real Compose CLI (client side only).
+LUCAIRN_TEST_REAL_DOCKER="$(command -v docker 2>/dev/null || true)"
+export LUCAIRN_TEST_REAL_DOCKER
 cat > "$FAKEBIN/docker" <<'DOCKER'
 #!/usr/bin/env bash
+# Kit 2.0 K-A fix round 2: bin/compose-env.sh reads customer.env through the
+# REAL Compose CLI (one-service probe projects, client side, no daemon).
+case " $* " in *lucairn-env-probe.*) exec "$LUCAIRN_TEST_REAL_DOCKER" "$@" ;; esac
 if [ "$1" = "manifest" ] && [ "$2" = "inspect" ]; then
   echo 'unauthorized: authentication required' >&2
   exit 1

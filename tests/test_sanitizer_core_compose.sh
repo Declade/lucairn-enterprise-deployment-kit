@@ -63,9 +63,29 @@
 #      run against a released-kit fixture with SYNTHETIC signed digests.
 #   6. an unreadable migration ledger is a doctor failure, not a note (E online).
 #
+# FIX ROUND 2 (sol r2 on PR #158: three P2 + one note), each RED on 6547a8c:
+#   e+f. ONE env source by construction: Docker Compose itself. The DSN writer,
+#      doctor and the support-bundle needles read customer.env THROUGH Compose
+#      (bin/compose-env.sh: Compose's env-file parser via a one-service probe,
+#      Compose's interpolation via a second probe, and the install's rendered
+#      project); the hand-written reader bin/compose-env-lib.sh is GONE (D3).
+#      RED cases: a quoted password ending in a literal line feed (D2, E); an
+#      escape Compose decodes (\0101 = A) under a non-secret key (F); a
+#      shell-exported override planted under a non-secret key (F); a secret only
+#      a compose file hands a container (F); an overlay remapping the registry
+#      DB password (E). No Docker Compose = writer, doctor and bundle refuse.
+#   g. Network: the witness-central overlay keeps every network of the core's
+#      namespace internal and reaches the central witness through a relay on
+#      the internal witness link (B, + a mutant of the r2 overlay shape); the
+#      core listens on the ingress alias only, never every interface (B, + a
+#      listen-all mutant).
+#
 # NON-COVERAGE (stated, not implied)
 #   * No container runs. Whether the images boot with these settings is the
-#     compose rehearsal on a Docker host (PRD criterion 2), not this suite.
+#     compose rehearsal on a Docker host (PRD criterion 2), not this suite —
+#     including that `--listen=sanitizer-core:8790` resolves (Docker's embedded
+#     DNS, inside the sidecar's namespace) to the ingress address, and that the
+#     witness relay forwards the core's mTLS session (no Docker daemon here).
 #   * The stub psql proves the runner's decisions and the SQL it hands psql,
 #     not PostgreSQL's execution of the migration bodies.
 #   * The doctor's production-only branch of the witness-hop check
@@ -199,7 +219,23 @@ want_pg = "postgres:16-alpine@" + (pgd.group(1) if pgd else "?")
 p(pg.get("image") == want_pg and mig.get("image") == want_pg, "registry DB + migrate step pinned to the manifest postgres digest")
 # Core command + entrypoint: hosted watchdog, never --migrate.
 cmd = core.get("command") or []
-p("serve" in cmd and "--listen=0.0.0.0:8790" in cmd and "--sidecar=http://127.0.0.1:8765" in cmd, "core serves :8790 with the sidecar on 127.0.0.1:8765")
+p("serve" in cmd and "--sidecar=http://127.0.0.1:8765" in cmd, "core serves with the sidecar on 127.0.0.1:8765")
+# Fix round 2 (sol r2): the listener is bound to the INGRESS link only. The
+# --listen host must be a name that only the ingress link carries (Docker's
+# embedded DNS resolves it, inside the sidecar's namespace, to that one
+# address), never 0.0.0.0 / :: / an empty host (= every link of the namespace).
+ls_ = [a for a in cmd if a.startswith("--listen")]
+lhost = ls_[0].split("=", 1)[1].rsplit(":", 1)[0] if len(ls_) == 1 and "=" in ls_[0] else None
+p(ls_ == ["--listen=sanitizer-core:8790"], "core listens on sanitizer-core:8790 only (%s)" % ls_)
+p(lhost not in (None, "", "0.0.0.0", "::", "[::]", "*"), "the core never listens on every interface (host %r)" % lhost)
+others = {n for n in sn if n != "dsa-sanitizer-core-ingress"}
+# (the core's own service name does not count: it has no network endpoint of
+# its own, so Docker registers no DNS name for it)
+p(all(lhost not in ((sn.get(n) or {}).get("aliases") or []) for n in others)
+  and not any(n == lhost and x.get("networks") for n, x in svcs.items()),
+  "the --listen name resolves on the ingress link alone (no alias / service of that name on the witness or registry links)")
+hc = " ".join((core.get("healthcheck") or {}).get("test") or [])
+p("nc -z sanitizer-core 8790" in hc and "127.0.0.1 8790" not in hc, "core healthcheck probes the bound ingress address (%s)" % hc)
 p(not any(a.startswith("--migrate") for a in cmd), "core command never carries --migrate (migrations are an operator step)")
 # Registry DSN (DSA #956): a mounted file, never --dsn, never the password in the core's config.
 p("--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn" in cmd, "core reads its DSN with --registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn")
@@ -305,27 +341,99 @@ PY
   else
     fail "only the core digest -> refused, but not by the sidecar digest guard: $(tail -1 "$TMP/nodigest.out")"
   fi
-  # The witness-central overlay gives the core's namespace exactly ONE extra
-  # link: non-internal (the central witness is off the host), no other member.
+  # Fix round 2 (sol r2): the witness-central overlay must NOT give the core's
+  # namespace a route off the host. The core reaches the central witness
+  # through a relay container on its internal witness link; the relay is the
+  # ONLY member of the overlay's egress link and forwards to ONE address.
+  # The same checker runs over two mutants (the r2 overlay shape: the sidecar
+  # on an egress network; a core that listens on 0.0.0.0) and must FAIL them.
   cp "$PINNED_ENV" "$TMP/central.env"
   printf '\nLUCAIRN_CENTRAL_WITNESS_ADDR=witness.example.invalid:50057\nLUCAIRN_CENTRAL_WITNESS_CERT_ADDR=witness.example.invalid:50058\nLUCAIRN_WITNESS_CLIENT_CERT_DIR=%s\nLUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR=%s\n' "$TMP/wc-claim" "$TMP/wc-gw" >> "$TMP/central.env"
-  if docker compose -f "$COMPOSE" -f "$ROOT/contrib/witness-central/docker-compose.witness-central.yml" --env-file "$TMP/central.env" \
-       config --format json > "$TMP/central.json" 2> "$TMP/central.err"; then
-    python3 - "$TMP/central.json" > "$TMP/central-check.txt" <<'PY'
+  cat > "$TMP/netcheck.py" <<'NETCHECK'
 import json, sys
 d = json.load(open(sys.argv[1])); svcs, nets = d["services"], d.get("networks", {})
-sn = set((svcs["sanitizer-core-sidecar"].get("networks") or {}))
-extra = sn - {"dsa-sanitizer-core-ingress", "dsa-sanitizer-core-witness", "dsa-sanitizer-core"}
+def p(ok, msg): print(("ok " if ok else "FAIL ") + msg)
+side, core = svcs["sanitizer-core-sidecar"], svcs["sanitizer-core"]
+sn = side.get("networks") or {}
 def members(net): return {n for n, x in svcs.items() if net in (x.get("networks") or {})}
-ok = len(extra) == 1 and not nets.get(next(iter(extra)), {}).get("internal") and members(next(iter(extra))) == {"sanitizer-core-sidecar"}
-print(("ok " if ok else "FAIL ") + "witness-central: the core's namespace gains ONE egress link with no other member (%s)" % sorted(extra))
+BASE = {"dsa-sanitizer-core-ingress", "dsa-sanitizer-core-witness", "dsa-sanitizer-core"}
+p(set(sn) == BASE, "witness-central: the core's namespace keeps exactly its three links (%s)" % sorted(sn))
+p(all(nets.get(n, {}).get("internal") is True for n in sn), "witness-central: every network of the core's namespace is internal (no route off the host)")
+ce = core.get("environment") or {}
+p(ce.get("LCR_WITNESS_ADDR") == "sanitizer-core-witness-relay:50057", "witness-central: the core dials the relay on its internal witness link (%s)" % ce.get("LCR_WITNESS_ADDR"))
+r = svcs.get("sanitizer-core-witness-relay") or {}
+rn = r.get("networks") or {}
+eg = [n for n in rn if nets.get(n, {}).get("internal") is not True]
+p(len(eg) == 1 and members(eg[0]) == {"sanitizer-core-witness-relay"}, "witness-central: the relay is the ONLY member of the one egress link (%s)" % [(n, sorted(members(n))) for n in eg])
+p("sanitizer-core-witness-relay" in ((rn.get("dsa-sanitizer-core-witness") or {}).get("aliases") or []), "witness-central: the relay answers on the core's witness link")
+p(members("dsa-sanitizer-core-witness") == {"sanitizer-core-sidecar", "sanitizer-core-witness-relay"}, "witness-central: the witness link holds the core's namespace and the relay only — the local witness is not started (%s)" % sorted(members("dsa-sanitizer-core-witness")))
+re_ = r.get("environment") or {}
+p(re_.get("RELAY_UPSTREAM") == "witness.example.invalid:50057" and re_.get("RELAY_LISTEN_HOST") == "sanitizer-core-witness-relay", "witness-central: the relay forwards to LUCAIRN_CENTRAL_WITNESS_ADDR only, listening on its witness-link alias")
+p(not r.get("ports") and not any(v.get("target", "").startswith("/etc/lucairn") for v in r.get("volumes") or []), "witness-central: the relay publishes no port and mounts no credential")
+p((r.get("depends_on") or {}).get("witness-egress-guard", {}).get("condition") == "service_completed_successfully", "witness-central: the relay is gated by the T-682 witness-egress guard")
+p(r.get("image") == side.get("image"), "witness-central: the relay runs the signed sidecar image (no extra image)")
+ls_ = [a for a in (core.get("command") or []) if a.startswith("--listen")]
+p(ls_ == ["--listen=sanitizer-core:8790"], "witness-central: the core still listens on the ingress name only (%s)" % ls_)
+NETCHECK
+  printf 'services:\n  sanitizer-core-sidecar:\n    networks:\n      dsa-sanitizer-core-witness-egress: {}\n' > "$TMP/mutant-egress.yml"
+  printf 'services:\n  sanitizer-core:\n    command: ["serve", "--listen=0.0.0.0:8790", "--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn", "--sidecar=http://127.0.0.1:8765"]\n' > "$TMP/mutant-listen.yml"
+  for cell in "real|" "mutant-egress|-f $TMP/mutant-egress.yml" "mutant-listen|-f $TMP/mutant-listen.yml"; do
+    cname="${cell%%|*}"; cextra="${cell#*|}"
+    # shellcheck disable=SC2086 # cextra is "" or "-f <file>"
+    if docker compose -f "$COMPOSE" -f "$ROOT/contrib/witness-central/docker-compose.witness-central.yml" $cextra --env-file "$TMP/central.env" \
+         config --format json > "$TMP/central.json" 2> "$TMP/central.err"; then
+      python3 "$TMP/netcheck.py" "$TMP/central.json" > "$TMP/central-check.txt"
+      if [ "$cname" = real ]; then
+        while IFS= read -r line; do
+          case "$line" in ok\ *) pass "${line#ok }" ;; *) fail "${line#FAIL }" ;; esac
+        done < "$TMP/central-check.txt"
+      elif grep -q '^FAIL ' "$TMP/central-check.txt"; then
+        pass "the witness-central checker catches $cname ($(grep '^FAIL ' "$TMP/central-check.txt" | head -1 | cut -c6-90)...)"
+      else
+        fail "the witness-central checker catches $cname — every check passed on the mutant"
+      fi
+    else
+      fail "witness-central overlay renders ($cname): $(tail -2 "$TMP/central.err")"
+    fi
+  done
+  # The relay itself, run here on the loopback (stdlib Python, no container):
+  # it carries bytes both ways to its ONE upstream and binds only the address
+  # its RELAY_LISTEN_HOST resolves to.
+  python3 - "$ROOT/contrib/witness-central/sanitizer-core-witness-relay.py" > "$TMP/relay-check.txt" 2>&1 <<'PY'
+import os, socket, subprocess, sys, threading, time
+def free():
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
+echo = socket.socket(); echo.bind(("127.0.0.1", 0)); echo.listen(4); up = echo.getsockname()[1]
+def serve():
+    while True:
+        c, _ = echo.accept()
+        d = c.recv(65536)
+        c.sendall(b"echo:" + d); c.close()
+threading.Thread(target=serve, daemon=True).start()
+port = free()
+env = dict(os.environ, RELAY_LISTEN_HOST="127.0.0.1", RELAY_LISTEN_PORT=str(port), RELAY_UPSTREAM="127.0.0.1:%d" % up)
+r = subprocess.Popen([sys.executable, "-I", sys.argv[1]], env=env, stderr=subprocess.PIPE)
+try:
+    for _ in range(50):
+        try:
+            c = socket.create_connection(("127.0.0.1", port), timeout=2); break
+        except OSError:
+            time.sleep(0.1)
+    c.sendall(b"\x16\x03\x01mtls-bytes"); got = c.recv(65536); c.close()
+    print(("ok " if got == b"echo:\x16\x03\x01mtls-bytes" else "FAIL ") + "the relay carries the bytes to its upstream and back unchanged (%r)" % got[:30])
+    try:
+        x = socket.create_connection(("127.0.0.2", port), timeout=1); x.close(); bound_all = True
+    except OSError:
+        bound_all = False
+    print(("FAIL " if bound_all else "ok ") + "the relay listens on its RELAY_LISTEN_HOST address only (127.0.0.2 refused)")
+finally:
+    r.terminate(); r.wait(5)
+bad = subprocess.run([sys.executable, "-I", sys.argv[1]], env=dict(os.environ, RELAY_LISTEN_HOST="127.0.0.1", RELAY_UPSTREAM="no-port"), capture_output=True, timeout=10)
+print(("ok " if bad.returncode != 0 and b"host:port" in bad.stderr else "FAIL ") + "the relay refuses an upstream without a port")
 PY
-    while IFS= read -r line; do
-      case "$line" in ok\ *) pass "${line#ok }" ;; *) fail "${line#FAIL }" ;; esac
-    done < "$TMP/central-check.txt"
-  else
-    fail "witness-central overlay renders: $(tail -2 "$TMP/central.err")"
-  fi
+  while IFS= read -r line; do
+    case "$line" in ok\ *) pass "${line#ok }" ;; FAIL\ *) fail "${line#FAIL }" ;; *) fail "relay check: $line" ;; esac
+  done < "$TMP/relay-check.txt"
   # Digest variables pin both images as a pair.
   cp "$EXAMPLE_ENV" "$TMP/digest.env"
   printf '\nLUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=sha256:%s\nLUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=sha256:%s\n' \
@@ -515,7 +623,7 @@ expect_writer_refuses() { # <name> <env content> <path> <grep-fixed message>
     fail "$1 — refused without '$4': $(tail -1 "$WD/r.out")"
   fi
 }
-expect_writer_refuses "unsafe password (\$)" 'POSTGRES_SANITIZER_CORE_PASSWORD=has$dollar' "$WD/x1/f" "cannot carry safely"
+expect_writer_refuses "unsafe password (a literal \$ in single quotes)" "POSTGRES_SANITIZER_CORE_PASSWORD='has\$dollar'" "$WD/x1/f" "cannot carry safely"
 expect_writer_refuses "unsafe password (space)" 'POSTGRES_SANITIZER_CORE_PASSWORD=has space' "$WD/x2/f" "cannot carry safely"
 expect_writer_refuses "missing password" 'OTHER=1' "$WD/x3/f" "POSTGRES_SANITIZER_CORE_PASSWORD is not set"
 expect_writer_refuses "off-enum sslmode" "$(printf 'POSTGRES_SANITIZER_CORE_PASSWORD=okpassword123\nPOSTGRES_SSLMODE=on')" "$WD/x4/f" "POSTGRES_SSLMODE must be one of"
@@ -526,21 +634,23 @@ expect_writer_refuses "a directory open to group/others" 'POSTGRES_SANITIZER_COR
 [ ! -e "$WD/x6/f" ] && pass "nothing written into the open directory" || fail "nothing written into the open directory"
 if grep -q 'dollar\|okpassword123' "$WD/r.all"; then fail "refusals never print the password"; else pass "refusals never print the password"; fi
 
-# Fix round 1 (sol r1 finding 1): customer.env is read EXACTLY as Docker
-# Compose reads it (bin/compose-env-lib.sh): only a MATCHING pair of outer
-# quotes is removed. The old per-line reader stripped a lone trailing quote,
-# so this password reached validation as BoundaryProbe4829 while Postgres got
-# the apostrophe.
+# Fix rounds 1 + 2 (sol r1 finding 1, sol r2 finding e): customer.env is read
+# THROUGH Docker Compose (bin/compose-env.sh; no hand-written reader is left):
+# only a MATCHING pair of outer quotes is removed, and escapes, interpolation
+# and a line feed inside quotes are exactly what Compose hands Postgres.
 expect_writer_refuses "a lone trailing apostrophe inside double quotes (Compose keeps it)" \
   "POSTGRES_SANITIZER_CORE_PASSWORD=\"BoundaryProbe4829'\"" "$WD/q1/f" "cannot carry safely"
 expect_writer_refuses "mismatched quotes (Compose refuses the file)" \
-  "POSTGRES_SANITIZER_CORE_PASSWORD=\"BoundaryProbe4829'" "$WD/q2/f" "unterminated quoted value"
+  "POSTGRES_SANITIZER_CORE_PASSWORD=\"BoundaryProbe4829'" "$WD/q2/f" "Docker Compose cannot read"
 expect_writer_refuses "an unquoted value ending in a quote (Compose keeps it)" \
   "POSTGRES_SANITIZER_CORE_PASSWORD=BoundaryProbe4829\"" "$WD/q3/f" "cannot carry safely"
-expect_writer_refuses "an octal escape in double quotes (Compose turns \\0101 into A; not evaluated here)" \
-  'POSTGRES_SANITIZER_CORE_PASSWORD="Boundary\0101Probe4829"' "$WD/q4/f" "cannot carry safely"
-expect_writer_refuses "a value Compose takes from \$-interpolation" \
-  'POSTGRES_SANITIZER_CORE_PASSWORD=${OTHER_SECRET}' "$WD/q5/f" "cannot carry safely"
+# RED on 6547a8c (sol r2 e): the quoted value ends in a line feed. `$(...)`
+# dropped it before validation, so writer and doctor accepted the truncated
+# password while Compose handed Postgres the line feed.
+expect_writer_refuses "a quoted password ending in a literal line feed (Compose keeps the LF)" \
+  "$(printf 'POSTGRES_SANITIZER_CORE_PASSWORD="LineFeedPassword4829\n"\nOTHER=1')" "$WD/q6/f" "cannot carry safely"
+expect_writer_refuses "a \\n escape in double quotes (Compose turns it into a line feed)" \
+  'POSTGRES_SANITIZER_CORE_PASSWORD="LineFeedPassword4829\n"' "$WD/q7/f" "cannot carry safely"
 writer_gets() { # <name> <env content> <expected password, encoded>
   printf '%s\n' "$2" > "$WD/g.env"
   rm -rf "$WD/g"
@@ -559,67 +669,97 @@ writer_gets "export prefix, spaces around =, CRLF line end" "$(printf 'export PO
 writer_gets "the last assignment wins" "$(printf 'POSTGRES_SANITIZER_CORE_PASSWORD=FirstPassword4829\nPOSTGRES_SANITIZER_CORE_PASSWORD=SecondPassword4829')" "SecondPassword4829"
 writer_gets "a KEY= line INSIDE a multi-line quoted value is not an assignment (Compose reads one token stream)" \
   "$(printf "POSTGRES_SANITIZER_CORE_PASSWORD=RealPassword4829\nOPERATOR_NOTE='old values:\nPOSTGRES_SANITIZER_CORE_PASSWORD=NotThePassword1\n'")" "RealPassword4829"
+# RED on 6547a8c (sol r2 e): the old reader refused what Compose accepts and
+# could never agree with it on an escape; now the value IS Compose's.
+writer_gets "an octal escape in double quotes is decoded by Compose (\\0101 = A)" \
+  'POSTGRES_SANITIZER_CORE_PASSWORD="Boundary\0101Probe4829"' "BoundaryAProbe4829"
+writer_gets "\$-interpolation is resolved by Compose (an earlier key of the file)" \
+  "$(printf 'OTHER_SECRET=InterpolatedPassword4829\nPOSTGRES_SANITIZER_CORE_PASSWORD=${OTHER_SECRET}')" "InterpolatedPassword4829"
 # The shell beats the file in Compose: an exported value that differs from
 # customer.env would reach Postgres while the DSN file carried the file's.
 printf 'POSTGRES_SANITIZER_CORE_PASSWORD=FilePassword4829\n' > "$WD/sh.env"
 if POSTGRES_SANITIZER_CORE_PASSWORD=ShellPassword4829 bash "$WRITER" --env-file "$WD/sh.env" "$WD/sh/f" > "$WD/sh.out" 2>&1; then
   fail "a differing exported POSTGRES_SANITIZER_CORE_PASSWORD is refused — writer accepted it"
-elif grep -q 'is exported in this shell' "$WD/sh.out" && ! grep -q 'Password4829' "$WD/sh.out"; then
+elif grep -q 'exported in this shell with a value other than' "$WD/sh.out" && ! grep -q 'Password4829' "$WD/sh.out"; then
   pass "a differing exported POSTGRES_SANITIZER_CORE_PASSWORD is refused (no value printed)"
 else
   fail "a differing exported POSTGRES_SANITIZER_CORE_PASSWORD is refused — $(tail -1 "$WD/sh.out")"
 fi
+# No Docker Compose where the writer runs: it refuses, never guesses.
+# (docker and docker-compose shims that are not Compose, ahead of the real ones)
+NOCOMPOSE="$TMP/no-compose-bin"
+mkdir -p "$NOCOMPOSE"
+printf '#!/bin/sh\necho "no compose here" >&2\nexit 127\n' > "$NOCOMPOSE/docker"
+cp "$NOCOMPOSE/docker" "$NOCOMPOSE/docker-compose"
+chmod 0755 "$NOCOMPOSE/docker" "$NOCOMPOSE/docker-compose"
+printf 'POSTGRES_SANITIZER_CORE_PASSWORD=NoComposePassword4829\n' > "$WD/nc.env"
+if PATH="$NOCOMPOSE:$BASE_PATH" bash "$WRITER" --env-file "$WD/nc.env" "$WD/nc/f" > "$WD/nc.out" 2>&1; then
+  fail "no Docker Compose on PATH -> the writer refuses (it wrote a DSN from a guessed value)"
+elif grep -q 'Docker Compose is not available here' "$WD/nc.out" && [ ! -e "$WD/nc/f" ]; then
+  pass "no Docker Compose on PATH -> the writer refuses (fail closed, nothing written)"
+else
+  fail "no Docker Compose on PATH -> the writer refuses — $(tail -1 "$WD/nc.out")"
+fi
 
 echo ""
-echo "D3. bin/compose-env-lib.sh reads customer.env exactly as Docker Compose does"
-# The SAME corpus through the kit's reader and through Docker Compose itself
-# (`config --format json` of a one-service probe project; client-side only).
-# Agreement = same value, or both refuse the file. rc 3 (a construct the
-# reader does not evaluate) is a refusal by design and needs no agreement.
-if [ "$HAVE_COMPOSE" -ne 1 ]; then
-  skip "docker compose CLI not available — section D3"
+echo "D3. One env source: every value is Docker Compose's own (fix round 2)"
+[ ! -e "$ROOT/bin/compose-env-lib.sh" ] && pass "the hand-written env reader (bin/compose-env-lib.sh) is gone" \
+  || fail "the hand-written env reader (bin/compose-env-lib.sh) is gone"
+# (code lines only: a comment may name the removed file)
+grep -rnE 'compose_env_get|compose-env-lib|sanitizer_core_env_get|sanitizer_core_read_dsn|sanitizer_core_expected_dsn' \
+  "$ROOT/bin" "$ROOT/scripts" 2>/dev/null | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' > "$TMP/d3-grep.txt"
+if [ -s "$TMP/d3-grep.txt" ]; then
+  fail "no kit script keeps a hand-written reader of these values: $(head -2 "$TMP/d3-grep.txt" | tr '\n' ' ')"
 else
-  # shellcheck source=../bin/compose-env-lib.sh
-  . "$ROOT/bin/compose-env-lib.sh"
+  pass "no kit script keeps a hand-written reader of these values"
+fi
+for f in scripts/write-sanitizer-core-registry-dsn.sh bin/lucairn bin/lucairn-init; do
+  grep -q 'bin/compose-env.sh' "$ROOT/$f" && pass "$f reads through bin/compose-env.sh" || fail "$f reads through bin/compose-env.sh"
+done
+# The writer against Docker Compose itself on a corpus: whatever Compose hands
+# Postgres for POSTGRES_SANITIZER_CORE_PASSWORD (a direct one-service render,
+# here in the test), the writer either writes exactly that value encoded, or
+# refuses it for the stated reason. No case may disagree.
+if [ "$HAVE_COMPOSE" -ne 1 ]; then
+  skip "docker compose CLI not available — section D3 corpus"
+else
   PD="$TMP/envprobe"; mkdir -p "$PD"
-  printf 'services:\n  p:\n    image: scratch\n    environment:\n      V: "${K-}"\n' > "$PD/probe.yml"
-  D3_AGREE=0; D3_REFUSED=0; D3_BAD=""
+  printf 'services:\n  p:\n    image: scratch\n    environment:\n      V: "${POSTGRES_SANITIZER_CORE_PASSWORD-}"\n' > "$PD/probe.yml"
+  D3_N=0; D3_BAD=""
   d3() { # <env file content (printf %b)>
     printf '%b' "$1" > "$PD/t.env"
-    local ours rc theirs crc
-    ours="$(compose_env_get "$PD/t.env" K)"; rc=$?
-    theirs="$(env -i PATH="$BASE_PATH" HOME="$HOME" docker compose -f "$PD/probe.yml" --project-directory "$PD" --env-file "$PD/t.env" config --format json 2>/dev/null \
-      | python3 -c 'import json,sys
-try: sys.stdout.write(json.load(sys.stdin)["services"]["p"]["environment"]["V"].replace("$$","$"))
-except Exception: sys.exit(9)')"; crc=$?
-    if [ "$rc" -eq 0 ] && [ "$crc" -eq 0 ] && [ "$ours" = "$theirs" ]; then D3_AGREE=$((D3_AGREE + 1))
-    elif [ "$rc" -eq 2 ] && [ "$crc" -ne 0 ]; then D3_AGREE=$((D3_AGREE + 1))
-    elif [ "$rc" -eq 3 ]; then D3_REFUSED=$((D3_REFUSED + 1))
-    else D3_BAD="$D3_BAD [$1 => ours rc=$rc '$ours' / compose rc=$crc '$theirs']"; fi
+    rm -rf "$PD/out"
+    local want got rc=0
+    want="$(docker compose -f "$PD/probe.yml" --project-directory "$PD" --env-file "$PD/t.env" config --format json 2>/dev/null \
+      | python3 -c 'import json, sys, urllib.parse
+try:
+    v = json.load(sys.stdin)["services"]["p"]["environment"]["V"].replace("$$", "$")
+except Exception:
+    print("refuse:Docker Compose cannot read"); sys.exit(0)
+if v == "": print("refuse:is not set")
+elif any(not ("\x21" <= c <= "\x7e") or c in "$\x27\"\\`#" for c in v): print("refuse:cannot carry safely")
+else: print("dsn:postgres://dsa:" + urllib.parse.quote(v, safe="-._~") + "@postgres-sanitizer-core:5432/sanitizer_core?sslmode=disable")')"
+    bash "$WRITER" --env-file "$PD/t.env" "$PD/out/f" > "$PD/w.out" 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then got="dsn:$(cat "$PD/out/f")"; else got="refused"; fi
+    D3_N=$((D3_N + 1))
+    case "$want" in
+      dsn:*) [ "$got" = "$want" ] || D3_BAD="$D3_BAD [$1 => writer '$got']" ;;
+      refuse:*) { [ "$got" = refused ] && grep -Fq "${want#refuse:}" "$PD/w.out"; } || D3_BAD="$D3_BAD [$1 => writer '$got', want $want]" ;;
+    esac
   }
-  # sol r1's case, mismatched and nested quotes, = inside values, comments
-  d3 'K="BoundaryProbe4829\x27"\n'; d3 'K=\x27abc\x27\n'; d3 'K="abc\n'; d3 'K=\x27abc"\n'; d3 'K=abc"\n'; d3 'K=abc\x27\n'
-  d3 'K="a"\x27\n'; d3 'K=a=b=c\n'; d3 'K="a=b=c"\n'; d3 'K=abc # c\n'; d3 'K=abc#not-a-comment\n'; d3 'K=abc\t# c\n'
-  d3 'K="abc" # c\n'; d3 'K="abc"junk\n'; d3 'K=\x27a\x27 junk\n'; d3 'K=a  #c\n'
-  # duplicates, inherited names, export, YAML style, white space, CRLF, BOM, no final newline
-  d3 'K=1\nK="2"\n'; d3 'K=1\nK\n'; d3 'export K=exp\n'; d3 'export\tK=exp\n'; d3 'exportK=x\n'; d3 'K: yaml\n'
-  d3 'K = sp \n'; d3 'K\t=tab\n'; d3 'K=x\r\n'; d3 'K="x"\r\n'; d3 '\xef\xbb\xbfK=bom\n'; d3 'K=nofinalnl'
-  d3 'K=\n'; d3 'K=""\n'; d3 'K=\x27\x27\n'; d3 '\n\n\nK=late\n\n'; d3 '  # comment\nK=after\n'; d3 'K=x\n#K=y\n'
-  d3 'K=x\n  K=y\n'; d3 'K=x\nexport K=y\n'; d3 'K=x\nfoo\n'; d3 'K=x\nfoo'; d3 'K=x\nexport'; d3 'K=x\nexport '
-  d3 'K.dot=1\nK=2\n'; d3 'K[]=1\nK=2\n'; d3 'K:\nK=v\n'
-  # multi-line quoted values: a KEY= line inside one is not a statement
-  d3 'K="multi\nK=inner\n"\n'; d3 'K=real\nX=\x27\nK=fake\n\x27\n'; d3 'X="\nK=fake\n"\nK=real\n'
-  # escapes and interpolation (single quotes are literal)
-  d3 'K=\x27it\\\x27s\x27\n'; d3 'K="q\\"q"\n'; d3 'K=\x27a\\b\x27\n'; d3 'K=a\\b\n'; d3 'K="a\\0101"\n'; d3 'K=$X\n'; d3 'K=\x27$X\x27\n'; d3 'K="\\\\"\n'
-  # syntax errors Compose refuses, Unicode white space and letters
-  d3 'KE Y=x\n'; d3 'K;=x\n'; d3 'K="a b"\n'; d3 'K=a b\n'; d3 'K=\xc2\xa0x\n'; d3 'K=x\xc2\xa0\n'; d3 'K=x\xe2\x80\x80\n'
-  d3 '\xc2\xa0K=nbsp\n'; d3 'K\xc2\xa0=nbsp\n'; d3 'K=\xc3\xa4\n'; d3 'G\xc3\x9cN=1\nK=2\n'
+  K=POSTGRES_SANITIZER_CORE_PASSWORD
+  d3 "$K=\"BoundaryProbe4829\x27\"\n"; d3 "$K=\x27abcdefgh123\x27\n"; d3 "$K=\"abc\n"; d3 "$K=\x27abc\"\n"; d3 "$K=abcdefgh123\"\n"
+  d3 "$K=a=b=c12345\n"; d3 "$K=abcdefg # c\n"; d3 "$K=abc#not-a-comment\n"; d3 "$K=\"abcdefg\" # c\n"; d3 "$K=\"abcdefg\"junk\n"
+  d3 "$K=1first\n$K=\"2second\"\n"; d3 "export $K=exported1\n"; d3 "$K: yamlstyle1\n"; d3 "$K = spaced1 \n"; d3 "$K=crlf12345\r\n"
+  d3 "\xef\xbb\xbf$K=bomvalue1\n"; d3 "$K=nofinalnl1"; d3 "$K=\n"; d3 "$K=\"\"\n"; d3 "$K=real12345\nX=\x27\n$K=fake\n\x27\n"
+  d3 "$K=\x27it\\\x27s\x27\n"; d3 "$K=\"q\\\"q\"\n"; d3 "$K=\x27a\\\\b\x27\n"; d3 "$K=\"Boundary\\\\0101Probe\"\n"; d3 "$K=\"tab\\\\tvalue\"\n"
+  d3 "$K=\"lf-at-end\n\"\n"; d3 "X=fromx12345\n$K=\${X}\n"; d3 "X=fromx12345\n$K=\x27\${X}\x27\n"; d3 "$K=dollar\$\$dollar\n"; d3 "$K=\${UNSET_D3_VAR:-defaultpw1}\n"
+  d3 "KE Y=x\n$K=after12345\n"; d3 "$K=\xc2\xa0nbsp1\n"; d3 "$K=\xc3\xa4umlaut1\n"; d3 "$K=\"multi\nline\"\n"
   if [ -z "$D3_BAD" ]; then
-    pass "reader == Docker Compose on $D3_AGREE corpus files ($D3_REFUSED more refused as not evaluated: escapes, interpolation, a non-ASCII name)"
+    pass "writer == Docker Compose on $D3_N corpus files (same value encoded, or the stated refusal)"
   else
-    fail "reader disagrees with Docker Compose:$D3_BAD"
+    fail "writer disagrees with Docker Compose:$D3_BAD"
   fi
-  [ "$D3_AGREE" -ge 55 ] && pass "the agreement corpus is not trivially small ($D3_AGREE files)" || fail "the agreement corpus is not trivially small ($D3_AGREE files)"
 fi
 
 echo ""
@@ -638,9 +778,15 @@ case "$a" in
 esac
 if [ "${1:-}" = compose ]; then
   case "$a" in
+    # bin/compose-env.sh's one-service probes read customer.env through the
+    # REAL Compose CLI (client side, no daemon): never stubbed.
+    *"/lucairn-env-probe."*) exec "$STUB_REAL_DOCKER" "$@" ;;
     *" version "*) exit 0 ;;
     *" config --quiet "*) exit 0 ;;
-    *" config --format json "*) [ -n "${STUB_CONFIG_JSON:-}" ] && cat "$STUB_CONFIG_JSON"; exit 0 ;;
+    *" config --format json "*)
+      if [ -n "${STUB_CONFIG_JSON:-}" ]; then cat "$STUB_CONFIG_JSON"; exit 0; fi
+      [ -n "${STUB_REAL_DOCKER:-}" ] && exec "$STUB_REAL_DOCKER" "$@"
+      exit 0 ;;
     *" ps -a "*) [ -n "${STUB_PS:-}" ] && cat "$STUB_PS"; exit 0 ;;
     *" exec -T postgres-sanitizer-core "*) echo "${STUB_LEDGER_OUT:-7}"; exit 0 ;;
     *" logs --no-color sanitizer-core "*) [ -n "${STUB_CORE_LOG:-}" ] && cat "$STUB_CORE_LOG"; exit 0 ;;
@@ -650,6 +796,8 @@ fi
 exit 1
 STUBDOCKER
 printf '#!/bin/sh\nprintf 000\n' > "$DBIN/curl"
+STUB_REAL_DOCKER="$(PATH="$BASE_PATH" command -v docker 2>/dev/null || true)"
+export STUB_REAL_DOCKER
 for t in kubectl helm pg_isready docker-compose; do printf '#!/bin/sh\nexit 1\n' > "$DBIN/$t"; done
 chmod 0755 "$DBIN"/*
 
@@ -788,7 +936,7 @@ if grep -Fq "sanitizer core images: note" "$TMP/doc.out"; then fail "pending dig
 V="$(variant regkey)"; sed -i.bak 's/^DSA_SANITIZER_CORE_REGISTRY_KEY=.*/DSA_SANITIZER_CORE_REGISTRY_KEY=REPLACE_ME_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/' "$V/customer.env"; rm -f "$V/customer.env.bak"
 expect_doctor_red "RED registry key placeholder" "$V" "DSA_SANITIZER_CORE_REGISTRY_KEY still set to a placeholder"
 
-V="$(variant badpw)"; sed -i.bak 's/^POSTGRES_SANITIZER_CORE_PASSWORD=.*/POSTGRES_SANITIZER_CORE_PASSWORD=has$dollar-in-it/' "$V/customer.env"; rm -f "$V/customer.env.bak"
+V="$(variant badpw)"; sed -i.bak "s/^POSTGRES_SANITIZER_CORE_PASSWORD=.*/POSTGRES_SANITIZER_CORE_PASSWORD='has\$dollar-in-it'/" "$V/customer.env"; rm -f "$V/customer.env.bak"
 expect_doctor_red "RED registry DB password customer.env cannot carry (\$)" "$V" "customer.env and Compose interpolation cannot carry it safely"
 # Fix round 1 (sol r1 finding 1): doctor reads the password exactly as Docker
 # Compose does (the writer's reader). Before, the apostrophe below was
@@ -802,7 +950,7 @@ pw_variant() { # <name> <new password line>
 V="$(pw_variant pwapos "POSTGRES_SANITIZER_CORE_PASSWORD=\"${INIT_PW}'\"")"
 expect_doctor_red "RED a lone apostrophe inside double quotes (Compose keeps it)" "$V" "customer.env and Compose interpolation cannot carry it safely"
 V="$(pw_variant pwmismatch "POSTGRES_SANITIZER_CORE_PASSWORD=\"${INIT_PW}")"
-expect_doctor_red "RED mismatched quotes (Compose refuses the file)" "$V" "cannot be read from $V/customer.env the way Docker Compose reads it: line"
+expect_doctor_red "RED mismatched quotes (Compose refuses the file)" "$V" "customer.env could not be read through Docker Compose: Docker Compose cannot read"
 V="$(pw_variant pwquoted "POSTGRES_SANITIZER_CORE_PASSWORD=\"${INIT_PW}\"")"
 if doctor_offline "$V/customer.env" && grep -Fq "sanitizer core registry DSN: ok" "$TMP/doc.out"; then
   pass "GREEN a matching pair of quotes is removed (doctor and the DSN file agree)"
@@ -811,10 +959,51 @@ else
 fi
 if POSTGRES_SANITIZER_CORE_PASSWORD=exportedOtherPassword42 doctor_offline "$ENVF"; then
   fail "RED a differing exported POSTGRES_SANITIZER_CORE_PASSWORD (Compose would use it) — doctor stayed green"
-elif grep -Fq "is exported in this shell with a value other than" "$TMP/doc.out" && ! grep -Fq "exportedOtherPassword42" "$TMP/doc.out"; then
+elif grep -Fq "exported in this shell with a value other than" "$TMP/doc.out" && ! grep -Fq "exportedOtherPassword42" "$TMP/doc.out"; then
   pass "RED a differing exported POSTGRES_SANITIZER_CORE_PASSWORD (Compose would use it; no value printed)"
 else
   fail "RED a differing exported POSTGRES_SANITIZER_CORE_PASSWORD — $(grep 'registry DB password' "$TMP/doc.out" | tr '\n' ' ')"
+fi
+
+# Fix round 2 (sol r2 e): RED on 6547a8c — the quoted password ends in a line
+# feed. The old reader handed it on through `$(...)`, which dropped the LF:
+# doctor said ok and matched the DSN file, while Compose gave Postgres the LF.
+V="$(pw_variant pwlf "$(printf 'POSTGRES_SANITIZER_CORE_PASSWORD="%s\n"' "$INIT_PW")")"
+expect_doctor_red "RED a quoted registry password ending in a line feed (Compose keeps the LF)" "$V" "a line feed or another control character"
+# GREEN: an escape Compose decodes is no longer refused — doctor and the writer
+# both see Compose's value (here the password itself, spelled with \0101 = A).
+ESC_PW="$(printf '%s' "$INIT_PW" | sed 's/^./A/')"
+V="$(pw_variant pwesc "POSTGRES_SANITIZER_CORE_PASSWORD=\"\\0101${ESC_PW#A}\"")"
+bash "$KIT/scripts/write-sanitizer-core-registry-dsn.sh" --env-file "$V/customer.env" > /dev/null 2>&1
+if doctor_offline "$V/customer.env" && grep -Fq "sanitizer core registry DSN: ok" "$TMP/doc.out" \
+   && grep -Fq "dsa:${ESC_PW}@" "$V/.secrets/sanitizer-core/registry-dsn"; then
+  pass "GREEN an octal escape Compose decodes: writer + doctor agree on Compose's value"
+else
+  fail "GREEN an octal escape Compose decodes — $(grep 'sanitizer core registry' "$TMP/doc.out" | tr '\n' ' ')"
+fi
+# No Docker Compose where doctor runs: the registry checks fail closed.
+if PATH="$NOCOMPOSE:$BASE_PATH" bash "$KIT/bin/lucairn" doctor --env "$ENVF" --compose "$KIT_COMPOSE" --offline --skip-image-check > "$TMP/doc.out" 2>&1; then
+  fail "RED no Docker Compose on PATH — doctor stayed green"
+elif grep -Fq "sanitizer core registry DB password: failed (customer.env could not be read through Docker Compose: Docker Compose is not available here" "$TMP/doc.out"; then
+  pass "RED no Docker Compose on PATH — doctor fails closed with the reason"
+else
+  fail "RED no Docker Compose on PATH — $(grep 'sanitizer core registry' "$TMP/doc.out" | head -2 | tr '\n' ' ')"
+fi
+# The rendered project is the last word: an overlay that hands the registry DB
+# another password than POSTGRES_SANITIZER_CORE_PASSWORD makes the DSN file
+# wrong even though it matches customer.env.
+mkdir -p "$TMP/remap"
+for e in "$KIT"/* "$KIT"/.[!.]*; do
+  [ -e "$e" ] && ln -s "$e" "$TMP/remap/$(basename "$e")"
+done
+rm -f "$TMP/remap/docker-compose.customer.yml"
+sed 's#POSTGRES_PASSWORD: "${POSTGRES_SANITIZER_CORE_PASSWORD:?#POSTGRES_PASSWORD: "remapped${POSTGRES_SANITIZER_CORE_PASSWORD:?#' "$KIT_COMPOSE" > "$TMP/remap/docker-compose.customer.yml"
+if PATH="$DBIN:$BASE_PATH" bash "$KIT/bin/lucairn" doctor --env "$ENVF" --compose "$TMP/remap/docker-compose.customer.yml" --offline --skip-image-check > "$TMP/doc.out" 2>&1; then
+  fail "RED a compose file that hands the registry DB another password — doctor stayed green"
+elif grep -Fq "the rendered project hands postgres-sanitizer-core or migrate-sanitizer-core a password or sslmode other than" "$TMP/doc.out"; then
+  pass "RED a compose file that hands the registry DB another password — the rendered-project cross-check fails it"
+else
+  fail "RED a compose file that hands the registry DB another password — $(grep 'sanitizer core registry' "$TMP/doc.out" | head -2 | tr '\n' ' ')"
 fi
 
 # Registry DSN file (DSA #956: --registry-dsn-file, never --dsn).
@@ -905,11 +1094,11 @@ printf '%s\n' '2026/11/02 08:01:00 ERROR retry_exhausted grpc_status=Unavailable
 printf '%s\n' '2026/11/02 08:00:00 evidence: witness transport mode=tls-insecure-dev addr="veil-witness:50057"' > "$TMP/core.tls"
 printf '%s\n' 'veil-claim-arrival request_id=r1 service_id=dsa-sanitizer' > "$TMP/witness.log"
 # The core's rendered DSN wiring, shared by every stub below.
-CORE_DSN_WIRING='"command":["serve","--listen=0.0.0.0:8790","--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn","--sidecar=http://127.0.0.1:8765"],"volumes":[{"type":"bind","source":"/x/.secrets/sanitizer-core/registry-dsn","target":"/run/secrets/sanitizer-core/registry-dsn","read_only":true}]'
+CORE_DSN_WIRING='"command":["serve","--listen=sanitizer-core:8790","--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn","--sidecar=http://127.0.0.1:8765"],"volumes":[{"type":"bind","source":"'"$DSNF"'","target":"/run/secrets/sanitizer-core/registry-dsn","read_only":true}]'
 printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar",'"$CORE_DSN_WIRING"',"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.ok.json"
 printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar",'"$CORE_DSN_WIRING"',"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true","LCR_PROFILE":"hosted"}}}}' > "$TMP/config.hosted.json"
 printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--dsn=postgres://dsa:k158OnlineCanary@postgres-sanitizer-core:5432/sanitizer_core"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.dsnflag.json"
-printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--listen=0.0.0.0:8790"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.nodsn.json"
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--listen=sanitizer-core:8790"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.nodsn.json"
 printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.unmounted.json"
 printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--registry-dsn-file","postgres://dsa:k158OnlineCanary@db/x"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.dsnpath.json"
 printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true","DSA_SANITIZER_CORE_REGISTRY_DSN":"postgres://dsa:k158OnlineCanary@postgres-sanitizer-core:5432/sanitizer_core"}}}}' > "$TMP/config.envdsn.json"
@@ -1009,6 +1198,48 @@ bundle_refuses "the registry KEY planted under OPERATOR_NOTE (every known secret
 SIGKEY="$(sed -n 's/^LCR_SANITIZER_SIGNING_KEY=//p' "$ENVF" | tail -1)"
 V="$(variant sbleaksig)"; rm -f "$V/.secrets/sanitizer-core/registry-dsn"; printf 'NOTES=%s\n' "$SIGKEY" >> "$V/customer.env"
 bundle_refuses "the sanitizer signing key planted under NOTES, DSN file missing" "$V" leaksig "$SIGKEY"
+# Fix round 2 (sol r2 f), RED on 6547a8c each: the needle set is every value
+# Compose would hand on, read by Compose. (1) An escape Compose decodes: the
+# audit DB password spelled "Boundary\0101Probe4829" IS BoundaryAProbe4829 to
+# Compose; the old reader skipped it, so that value under a non-secret key
+# survived redaction and the scan.
+V="$(variant sbleakesc)"; printf 'POSTGRES_AUDIT_PASSWORD="Boundary\\0101Probe4829"\nOPERATOR_NOTE=BoundaryAProbe4829\n' >> "$V/customer.env"
+bundle_refuses "an escape-decoded secret (\\0101 = A) planted under a non-secret key" "$V" leakesc "BoundaryAProbe4829"
+# (2) An exported shell override: Compose run from this shell hands the
+# containers the EXPORTED value, so it is a needle too.
+V="$(variant sbleakexp)"; printf 'OPERATOR_NOTE=ExportedAuditPassword4829\n' >> "$V/customer.env"
+if POSTGRES_AUDIT_PASSWORD=ExportedAuditPassword4829 PATH="$DBIN:$BASE_PATH" bash "$KIT/bin/lucairn" support-bundle --env "$V/customer.env" --compose "$KIT_COMPOSE" --output "$BUN/leakexp" --offline > "$TMP/sb.out" 2>&1; then
+  fail "RED an exported override of a secret, planted under a non-secret key — it archived"
+elif grep -Fq "support bundle: refused" "$TMP/sb.out" && ! grep -Fq "ExportedAuditPassword4829" "$TMP/sb.out"; then
+  pass "RED an exported override of a secret, planted under a non-secret key — refused (no value printed)"
+else
+  fail "RED an exported override of a secret — $(tail -1 "$TMP/sb.out")"
+fi
+# (3) A secret only the compose files carry (a literal in an overlay), under
+# a secret-named container variable: Compose hands it to a container.
+mkdir -p "$TMP/litkit"
+for e in "$KIT"/* "$KIT"/.[!.]*; do
+  [ -e "$e" ] && ln -s "$e" "$TMP/litkit/$(basename "$e")"
+done
+rm -f "$TMP/litkit/docker-compose.customer.yml"
+awk '{ print } $0 == "      LCR_WITNESS_ADDR: \"veil-witness:50057\"" { print "      OVERLAY_SERVICE_TOKEN: \"ComposeOnlyTokenValue4829\"" }' "$KIT_COMPOSE" > "$TMP/litkit/docker-compose.customer.yml"
+V="$(variant sbleaklit)"; printf 'OPERATOR_NOTE=ComposeOnlyTokenValue4829\n' >> "$V/customer.env"
+if grep -q 'ComposeOnlyTokenValue4829' "$TMP/litkit/docker-compose.customer.yml" \
+   && ! PATH="$DBIN:$BASE_PATH" bash "$KIT/bin/lucairn" support-bundle --env "$V/customer.env" --compose "$TMP/litkit/docker-compose.customer.yml" --output "$BUN/leaklit" --offline > "$TMP/sb.out" 2>&1 \
+   && grep -Fq "support bundle: refused" "$TMP/sb.out"; then
+  pass "RED a secret only a compose file hands a container (secret-named), planted under a non-secret key — refused"
+else
+  fail "RED a secret only a compose file hands a container — $(tail -1 "$TMP/sb.out")"
+fi
+# (4) No Docker Compose where the bundle is built: refused (the scan is never skipped).
+if PATH="$NOCOMPOSE:$BASE_PATH" bash "$KIT/bin/lucairn" support-bundle --env "$ENVF" --compose "$KIT_COMPOSE" --output "$BUN/nocompose" --offline > "$TMP/sb.out" 2>&1; then
+  fail "RED no Docker Compose on PATH — the bundle was archived without a scan"
+elif grep -Fq "could not be read through Docker Compose (Docker Compose is not available here" "$TMP/sb.out" \
+     && ! find "$BUN/nocompose" -mindepth 1 2>/dev/null | grep -q .; then
+  pass "RED no Docker Compose on PATH — support-bundle refuses, nothing left behind"
+else
+  fail "RED no Docker Compose on PATH — $(tail -1 "$TMP/sb.out")"
+fi
 # No false refusal on a full ONLINE bundle: `docker compose config` of the
 # real project (client-side render, no daemon needed) lands in the bundle
 # redacted; none of the needles may survive in it.

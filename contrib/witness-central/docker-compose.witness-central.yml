@@ -108,9 +108,11 @@
 # and expect complete evidence — that is exactly what Slices 2 and 3 add.
 
 networks:
-  # Kit 2.0: the new sanitizer core's route to the CENTRAL witness (WAN, mTLS).
-  # Not internal (it must leave the host); the sidecar is its only member.
-  dsa-sanitizer-core-central-witness:
+  # Kit 2.0: the egress link of the sanitizer core's witness RELAY (WAN, the
+  # core's own mTLS inside). Not internal (it must leave the host); the relay
+  # is its ONLY member. The core's namespace never joins it: every network of
+  # that namespace stays internal (kit 2.0 K-A fix round 2, sol r2).
+  dsa-sanitizer-core-witness-egress:
     driver: bridge
 
 services:
@@ -181,26 +183,59 @@ services:
       - ${LUCAIRN_WITNESS_CLIENT_CERT_DIR:?set LUCAIRN_WITNESS_CLIENT_CERT_DIR — see docs/WITNESS_CENTRAL_RUNBOOK.md}:/etc/lucairn/witness-client:ro
 
   # Kit 2.0: the new sanitizer core is a claim emitter too (it signs the
-  # dsa-sanitizer PII_SANITIZED claim). Repointed and credentialed exactly like
-  # the other four emitters in this file — same device leaf. Its latch is a literal "true"
-  # in the base file (the core refuses a non-mTLS witness hop in production),
-  # so it is not re-stated here. The core runs in the sidecar's network
-  # namespace, whose base networks are all internal (no route off the host);
-  # the sidecar block below adds the one egress link the central witness needs.
+  # dsa-sanitizer PII_SANITIZED claim). Credentialed exactly like the other
+  # four emitters in this file — same device leaf. Its latch is a literal
+  # "true" in the base file (the core refuses a non-mTLS witness hop in
+  # production), so it is not re-stated here.
+  #
+  # It does NOT dial LUCAIRN_CENTRAL_WITNESS_ADDR directly: the core runs in
+  # the sidecar's network namespace, whose networks are all internal (no
+  # route off the host), and this overlay keeps it that way. The core dials
+  # the relay below on its internal witness link; the relay opens TCP to the
+  # central witness and nothing else. The core's TLS server name is pinned to
+  # dsa-veil-witness whatever address it dials (DSA pkg/tlsutil
+  # ClientCredentialsForPeerWithMode), so the mTLS session runs end to end
+  # through the relay, which sees ciphertext only.
   sanitizer-core:
     environment:
-      LCR_WITNESS_ADDR: "${LUCAIRN_CENTRAL_WITNESS_ADDR:?set LUCAIRN_CENTRAL_WITNESS_ADDR — see contrib/witness-central/witness-central.env.example}"
+      LCR_WITNESS_ADDR: "sanitizer-core-witness-relay:50057"
       LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "/etc/lucairn/witness-client/ca.pem"
       LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "/etc/lucairn/witness-client/client.pem"
       LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "/etc/lucairn/witness-client/client.key"
     volumes:
       - ${LUCAIRN_WITNESS_CLIENT_CERT_DIR:?set LUCAIRN_WITNESS_CLIENT_CERT_DIR — see docs/WITNESS_CENTRAL_RUNBOOK.md}:/etc/lucairn/witness-client:ro
-  # The core's namespace owner. Its base networks are internal only, so the
-  # core could not reach a central witness; this adds ONE egress link that no
-  # other service joins (nothing can reach the core's listener through it).
-  sanitizer-core-sidecar:
+    depends_on:
+      sanitizer-core-witness-relay:
+        condition: service_started
+  # The core's ONE way off the host: a TCP relay to exactly one destination
+  # (contrib/witness-central/sanitizer-core-witness-relay.py, stdlib Python).
+  # It runs from the sidecar image (same signed digest — no extra image), holds
+  # no key and mounts no credential. It listens on its alias on the core's
+  # internal witness link only, and is the only member of the egress link.
+  # Gated by the T-682 guard like every emitter: it carries claims off the host.
+  sanitizer-core-witness-relay:
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer-core-sidecar:${LUCAIRN_SANITIZER_CORE_IMAGE_TAG:-1.1.0}@${LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST:?LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST must be the signed digest image-manifest.yaml records for dsa-sanitizer-core-sidecar (the sanitizer core pair never starts from a bare tag; run bin/lucairn doctor)}"
+    entrypoint: ["python3", "-I", "/opt/lucairn/witness-relay.py"]
+    command: []
+    environment:
+      RELAY_LISTEN_HOST: "sanitizer-core-witness-relay"
+      RELAY_LISTEN_PORT: "50057"
+      RELAY_UPSTREAM: "${LUCAIRN_CENTRAL_WITNESS_ADDR:?set LUCAIRN_CENTRAL_WITNESS_ADDR — see contrib/witness-central/witness-central.env.example}"
+    volumes:
+      - ./contrib/witness-central/sanitizer-core-witness-relay.py:/opt/lucairn/witness-relay.py:ro
     networks:
-      dsa-sanitizer-core-central-witness: {}
+      dsa-sanitizer-core-witness:
+        aliases:
+          - sanitizer-core-witness-relay
+      dsa-sanitizer-core-witness-egress: {}
+    depends_on:
+      witness-egress-guard:
+        condition: service_completed_successfully
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    restart: unless-stopped
   gateway:
     environment:
       LCR_WITNESS_ADDR: "${LUCAIRN_CENTRAL_WITNESS_ADDR:?set LUCAIRN_CENTRAL_WITNESS_ADDR — see contrib/witness-central/witness-central.env.example}"
