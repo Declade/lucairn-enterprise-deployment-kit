@@ -64,16 +64,19 @@ DSA_ENV=development
 GRPC_TLS_ENABLED=false
 DSA_LICENSE_KEY=
 DSA_LICENSE_SIGNING_KEY=
+LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH=
+LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_CERT_PATH=
+LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_KEY_PATH=
 ```
 
-The first two relax the production-only gRPC mTLS gate (sandbox-b's `inference_server.py` refuses an insecure port when `DSA_ENV=production`). The last two engage the gateway's dev-mode license bypass (see next section). After flipping all four, recreate the affected services:
+The first two relax the production-only gRPC mTLS gate (sandbox-b's `inference_server.py` refuses an insecure port when `DSA_ENV=production`). The next two engage the gateway's dev-mode license bypass (see next section). The last three take the new sanitizer core's client leaf off its witness hop, so it dials the now-plaintext witness in plaintext too (kit 2.0; without them every claim of the core is dropped, and `bin/lucairn doctor` fails). `bin/lucairn-init --dev` writes all of these. After flipping them, recreate the affected services:
 
 ```bash
 docker compose \
   -f docker-compose.customer.yml \
   -f docker-compose.self-hosted.yml \
   --env-file customer.env \
-  up -d --force-recreate sandbox-a sandbox-b id-bridge audit veil-witness sanitizer gateway
+  up -d --force-recreate sandbox-a sandbox-b id-bridge audit veil-witness sanitizer sanitizer-core gateway
 ```
 
 For a production install, leave the four defaults alone and provision real Lucairn-signed license + gRPC mTLS material instead.

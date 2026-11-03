@@ -37,13 +37,18 @@
 # the container.
 #
 # Usage:
-#   scripts/write-sanitizer-core-registry-dsn.sh [--env-file customer.env] [<dsn file>]
+#   scripts/write-sanitizer-core-registry-dsn.sh [--env-file customer.env]
+#       [--compose docker-compose.customer.yml] [<dsn file>]
 #
-#   --env-file   default <kit>/customer.env
+#   --env-file   default <kit>/customer.env (in an extracted customer bundle:
+#                install/customer.env)
+#   --compose    the base compose file; its directory is the Compose project
+#                directory relative paths resolve against. Default
+#                <kit>/docker-compose.customer.yml, or, in an extracted
+#                customer bundle, install/docker-compose.customer.yml.
 #   <dsn file>   default SANITIZER_CORE_REGISTRY_DSN_FILE from the env file,
-#                else <kit>/.secrets/sanitizer-core/registry-dsn (the compose
-#                default). Relative paths resolve against the kit directory
-#                (the Compose project directory).
+#                else .secrets/sanitizer-core/registry-dsn (the compose
+#                default) in the Compose project directory.
 #
 # Idempotent: an up-to-date file is left alone (same inode, so a running core
 # is unaffected). After a CHANGE (new password or sslmode) recreate the core:
@@ -59,11 +64,24 @@ KIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 log() { printf '[write-sanitizer-core-registry-dsn] %s\n' "$*" >&2; }
 die() { printf '[write-sanitizer-core-registry-dsn] ERROR: %s\n' "$*" >&2; exit 1; }
 
-ENV_FILE="$KIT_ROOT/customer.env"
+# The Compose project directory = the directory of the base compose file:
+# the kit root, or install/ of an extracted customer bundle (final-read H2:
+# the bundle ships this script; its compose file and customer.env live in
+# install/, so its relative paths resolve there, exactly as `docker compose -f
+# install/docker-compose.customer.yml` resolves them).
+PROJECT_DIR="$KIT_ROOT"
+if [ ! -f "$KIT_ROOT/docker-compose.customer.yml" ] && [ -f "$KIT_ROOT/install/docker-compose.customer.yml" ]; then
+  PROJECT_DIR="$KIT_ROOT/install"
+fi
+ENV_FILE="$PROJECT_DIR/customer.env"
 DSN_FILE=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --env-file) [ "$#" -ge 2 ] || die "--env-file needs a path"; ENV_FILE="$2"; shift 2 ;;
+    --compose)
+      [ "$#" -ge 2 ] || die "--compose needs a path"
+      [ -f "$2" ] || die "compose file not found: $2"
+      PROJECT_DIR="$(cd "$(dirname "$2")" && pwd)"; shift 2 ;;
     -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
     -*) die "unknown argument: $1" ;;
     *) [ -z "$DSN_FILE" ] || die "only one DSN file path may be given"; DSN_FILE="$1"; shift ;;
@@ -86,7 +104,7 @@ LIB="$KIT_ROOT/bin/compose-env.sh"
 PW_UNSAFE="POSTGRES_SANITIZER_CORE_PASSWORD holds a character customer.env cannot carry safely (space, \$, a quote, \\, \`, #, a line feed or another control character, or a non-ASCII byte); generate one: openssl rand -hex 24"
 
 rc=0
-OUT="$(cev_registry --env-file "$ENV_FILE" --project-dir "$KIT_ROOT" \
+OUT="$(cev_registry --env-file "$ENV_FILE" --project-dir "$PROJECT_DIR" \
   ${DSN_FILE:+--dsn-file "$DSN_FILE"} --print-dsn)" || rc=$?
 case "$rc" in
   0) : ;;

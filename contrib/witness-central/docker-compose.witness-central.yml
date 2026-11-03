@@ -184,9 +184,10 @@ services:
 
   # Kit 2.0: the new sanitizer core is a claim emitter too (it signs the
   # dsa-sanitizer PII_SANITIZED claim). Credentialed exactly like the other
-  # four emitters in this file — same device leaf. Its latch is a literal
-  # "true" in the base file (the core refuses a non-mTLS witness hop in
-  # production), so it is not re-stated here.
+  # four emitters in this file — same device leaf. Its latch is re-stated
+  # here like theirs: in the base file it follows GRPC_TLS_ENABLED (the LOCAL
+  # witness's transport; false on a --dev install), while the central hop is
+  # always mTLS.
   #
   # It does NOT dial LUCAIRN_CENTRAL_WITNESS_ADDR directly: the core runs in
   # the sidecar's network namespace, whose networks are all internal (no
@@ -199,6 +200,7 @@ services:
   sanitizer-core:
     environment:
       LCR_WITNESS_ADDR: "sanitizer-core-witness-relay-link:50057"
+      LCR_WITNESS_REQUIRE_MTLS: "${LCR_WITNESS_REQUIRE_MTLS:-true}"
       LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "/etc/lucairn/witness-client/ca.pem"
       LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "/etc/lucairn/witness-client/client.pem"
       LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "/etc/lucairn/witness-client/client.key"

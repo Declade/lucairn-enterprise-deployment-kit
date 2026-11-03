@@ -26,9 +26,10 @@
 #   sudo scripts/bootstrap-sanitizer-core-mtls.sh            # default dir
 #   sudo scripts/bootstrap-sanitizer-core-mtls.sh /opt/lucairn/certs/sanitizer-core-mtls
 #
-# The default directory is <kit>/.certs/sanitizer-core-mtls, which is the
-# compose default of SANITIZER_CORE_MTLS_HOST_DIR. If you pass another
-# directory, set SANITIZER_CORE_MTLS_HOST_DIR to it in customer.env.
+# The default directory is <kit>/.certs/sanitizer-core-mtls (in an extracted
+# customer bundle: install/.certs/sanitizer-core-mtls), which is the compose
+# default of SANITIZER_CORE_MTLS_HOST_DIR. If you pass another directory, set
+# SANITIZER_CORE_MTLS_HOST_DIR to it in customer.env.
 #
 # Layout (each service directory is mounted read-only into ONE container; the
 # CA private key lives in ca/ and is never mounted anywhere):
@@ -56,9 +57,12 @@
 # Keys: ECDSA P-256 (the same curve as the hosted mesh leaves), mode 0600.
 # Every Lucairn image runs as uid 10001. Run as root and this script hands each
 # service directory to that uid (LUCAIRN_CONTAINER_UID overrides it, e.g. for a
-# user-namespace-remapped daemon). Run as an ordinary user and it prints the
-# chown command to run afterwards: on Linux a 0600 key owned by your own user
-# is unreadable inside the container and the core refuses to start.
+# user-namespace-remapped daemon). On Linux an ordinary user is REFUSED before
+# anything is written (a 0600 key owned by your own user is unreadable inside
+# the container and the witness and the core refuse to start), unless
+# LUCAIRN_CONTAINER_UID is set to your own uid (you declare that the image user
+# maps to you: Docker Desktop for Linux, a remapped daemon). On macOS an
+# ordinary user is fine: Docker Desktop maps file ownership.
 #
 # Idempotent: a file that exists is never regenerated, so a re-run never
 # rotates a key. To rotate, delete the leaf (or the whole directory) and re-run,
@@ -74,7 +78,15 @@
 set -euo pipefail
 
 KIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CERT_DIR="${1:-${KIT_ROOT}/.certs/sanitizer-core-mtls}"
+# The compose default (./.certs/sanitizer-core-mtls) resolves against the
+# Compose project directory: the kit root, or install/ of an extracted
+# customer bundle (final-read H2: the bundle ships this script).
+PROJECT_DIR="$KIT_ROOT"
+if [ ! -f "$KIT_ROOT/docker-compose.customer.yml" ] && [ -f "$KIT_ROOT/install/docker-compose.customer.yml" ]; then
+  PROJECT_DIR="$KIT_ROOT/install"
+fi
+DEFAULT_CERT_DIR="${PROJECT_DIR}/.certs/sanitizer-core-mtls"
+CERT_DIR="${1:-$DEFAULT_CERT_DIR}"
 CA_DAYS="${CA_DAYS:-3650}"
 LEAF_DAYS="${LEAF_DAYS:-365}"
 CONTAINER_UID="${LUCAIRN_CONTAINER_UID:-10001}"
@@ -87,6 +99,19 @@ command -v "$OPENSSL" >/dev/null 2>&1 || die "openssl not found"
 case "$CA_DAYS$LEAF_DAYS$CONTAINER_UID" in
   *[!0-9]*) die "CA_DAYS, LEAF_DAYS and LUCAIRN_CONTAINER_UID must be whole numbers" ;;
 esac
+
+# Final-read M2: on a Linux Docker host the image user (uid $CONTAINER_UID)
+# cannot read a 0600 key owned by another uid, and the witness and the core
+# exit on that read error (kit 1.x needed no key file: the witness generated
+# its own leaf). Only root can hand the keys to that uid, so an ordinary user
+# is refused here BEFORE anything is written — unless they declared that the
+# image user maps to their own uid (LUCAIRN_CONTAINER_UID=$(id -u), e.g.
+# Docker Desktop for Linux, whose file sharing maps ownership, or a
+# user-namespace-remapped daemon whose mapping lands on that uid). macOS (and
+# Docker Desktop's ownership mapping there) needs neither.
+if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" != "0" ] && [ "$CONTAINER_UID" != "$(id -u)" ]; then
+  die "on Linux the keys must belong to uid $CONTAINER_UID (the user every Lucairn image runs as), and only root can hand them over; a 0600 key owned by $(id -un) is unreadable in the containers and the witness and the core refuse to start. Re-run with sudo: sudo $0 '$CERT_DIR'. If the image user maps to your own uid (Docker Desktop for Linux, a user-namespace-remapped daemon), declare it: LUCAIRN_CONTAINER_UID=$(id -u) $0 '$CERT_DIR'. Nothing was written"
+fi
 
 umask 077
 mkdir -p "$CERT_DIR/ca" "$CERT_DIR/sanitizer-core" "$CERT_DIR/gateway" "$CERT_DIR/veil-witness"
@@ -181,14 +206,17 @@ if [ "$(id -u)" = "0" ]; then
   # read the certificates; the keys are 0600 and readable by uid $CONTAINER_UID only.
   chown -R "$CONTAINER_UID:$CONTAINER_UID" "$CERT_DIR/sanitizer-core" "$CERT_DIR/gateway" "$CERT_DIR/veil-witness"
   log "service directories handed to uid $CONTAINER_UID (keys 0600); ca/ stays root-only"
+elif [ "$(uname -s)" = "Linux" ]; then
+  # Only reached when LUCAIRN_CONTAINER_UID was declared = this uid (above).
+  log "not root: the service keys are owned by $(id -un) (uid $(id -u)), the uid you declared the image user maps to"
 else
-  log "not root: the service keys are owned by $(id -un). On a Linux Docker host run once:"
+  log "not root: the service keys are owned by $(id -un). Docker Desktop on $(uname -s) maps file ownership, so the containers can read them."
+  log "If you copy this directory to a Linux Docker host, hand it to uid $CONTAINER_UID there:"
   log "  sudo chown -R $CONTAINER_UID:$CONTAINER_UID '$CERT_DIR/sanitizer-core' '$CERT_DIR/gateway' '$CERT_DIR/veil-witness'"
-  log "(the images run as uid $CONTAINER_UID; a 0600 key owned by another uid is unreadable in the container)"
 fi
 
 log "done: $CERT_DIR"
-if [ "$CERT_DIR" != "${KIT_ROOT}/.certs/sanitizer-core-mtls" ]; then
+if [ "$CERT_DIR" != "$DEFAULT_CERT_DIR" ]; then
   log "set in customer.env: SANITIZER_CORE_MTLS_HOST_DIR=$CERT_DIR"
 fi
 log "next: bin/lucairn doctor --env customer.env --offline   (checks every file above)"

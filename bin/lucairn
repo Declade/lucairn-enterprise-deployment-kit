@@ -93,7 +93,9 @@ Commands:
                   in --env, else the gateway's own `refuse` default. Exits
                   non-zero when the effective mode would reject the payload.
                   Requires python3. See OPS.md § "Tool-schema PII guard".
-  up              Start the recorded runtime topology (`up -d`).
+  up              Start the recorded runtime topology: the sanitizer core's
+                  capped registry migration first (a no-op when current),
+                  then `up -d`.
   down            Stop the recorded runtime topology without deleting volumes.
   status          Show `ps` for the recorded runtime topology.
   logs            Show a bounded tail of logs for the recorded runtime topology.
@@ -456,6 +458,25 @@ runtime_profile_check_command() {
   [ "$rc" -eq 0 ] || fail "runtime profile validation failed"
 }
 
+# Final-read H1: a fresh `bin/lucairn up` must not start a core whose registry
+# was never migrated (the core refuses without migration 0007 and the gateway
+# waits on a healthy core, so nothing serves). The migration is an explicit,
+# capped one-shot (profile sanitizer-core-migrate, never on a plain
+# `docker compose up`); `up` names it and runs it FIRST, every time: the runner
+# applies nothing when the ledger is already at this release's ceiling, and it
+# never migrates down. A failure stops `up` before anything else starts.
+# Skipped only for a project without the core (compose files older than kit 2.0).
+lifecycle_registry_migration() {
+  local compose="$1" env_file="$2" services
+  services="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" --profile sanitizer-core-migrate config --services 2>/dev/null || true)"
+  printf '%s\n' "$services" | grep -qx 'migrate-sanitizer-core' || return 0
+  info "sanitizer core registry: running the capped migration step first (no-op when the ledger is at the ceiling):"
+  info "  docker compose ... --profile sanitizer-core-migrate run --rm -T migrate-sanitizer-core"
+  if ! $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" --profile sanitizer-core-migrate run --rm -T migrate-sanitizer-core; then
+    fail "the sanitizer core registry migration step failed (its output is above); nothing else was started. Fix it, then run bin/lucairn up again (see INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\" step 3)"
+  fi
+}
+
 # S1 lifecycle wrappers deliberately accept a fixed, tiny input language. They
 # always resolve the saved profile before discovering Docker, so malformed S1
 # state cannot fall through to a default topology and no arbitrary Compose flag
@@ -508,7 +529,10 @@ lifecycle_command() {
   compose="$(compose_cmd)"
   [ -n "$compose" ] || fail "docker compose is required for $verb"
   case "$verb" in
-    up) $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" up -d ;;
+    up)
+      lifecycle_registry_migration "$compose" "$env_file"
+      $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" up -d
+      ;;
     down) $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" down ;;
     status) $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" ps ;;
     pull) $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" pull ;;
@@ -6917,6 +6941,30 @@ docker load -i images/lucairn-images.tar
       fail "bundle create: unsupported image delivery mode: $image_delivery"
       ;;
   esac
+  # Kit 2.0 (final-read H2): a bundle whose compose carries the new sanitizer
+  # core needs two one-time steps on the customer host before the first start;
+  # `bin/lucairn up` then runs the capped registry migration by itself (before
+  # every start). install/customer.env names install/.certs/sanitizer-core-mtls
+  # and install/.secrets/sanitizer-core/registry-dsn (bundle create rewrote any
+  # build-host path to these defaults), so it needs no change.
+  local core_lines=""
+  if grep -q '^  sanitizer-core:' "$(dirname "$file")/install/docker-compose.customer.yml" 2>/dev/null; then
+    core_lines='The new sanitizer core needs two one-time steps before the first start: its
+mTLS material in install/.certs/sanitizer-core-mtls and its registry DSN file
+in install/.secrets/sanitizer-core/ (the paths install/customer.env names, so
+it needs no change). Neither is in this bundle: the keys and the database
+password are created on this host. On Linux run the bootstrap with sudo so the
+keys belong to the container user (uid 10001). Re-run the DSN step after every
+change of POSTGRES_SANITIZER_CORE_PASSWORD or POSTGRES_SSLMODE.
+
+```bash
+sudo scripts/bootstrap-sanitizer-core-mtls.sh "$PWD/install/.certs/sanitizer-core-mtls"
+scripts/write-sanitizer-core-registry-dsn.sh --env-file install/customer.env --compose install/docker-compose.customer.yml
+```
+
+`bin/lucairn up` runs the capped registry migration before it starts anything
+(and again after every kit upgrade; a no-op when the registry is current).'
+  fi
   cat > "$file" <<EOF
 # Lucairn Customer Install: $slug
 
@@ -6939,6 +6987,8 @@ bin/lucairn bundle verify --bundle .
 $remote_credentials_note
 
 $image_lines
+
+$core_lines
 
 Run the configuration-only preflight, start and wait for the recorded topology,
 then mint an existing customer key to a regular mode-0600 file. Do not put the
@@ -6974,6 +7024,45 @@ bin/lucairn support-bundle --env install/customer.env --compose install/docker-c
 
 Review the generated archive before sending it to Lucairn support.
 EOF
+}
+
+# bundle_stage_env <source env> <staged env> — final-read H2. bin/lucairn-init
+# records the sanitizer core's mTLS directory and registry DSN file as
+# ABSOLUTE paths beside customer.env on the machine it ran on. Neither the
+# material nor the DSN file travels in a bundle (private keys and the DB
+# password stay off the archive; the customer host creates both, see
+# INSTALL-CUSTOMER.md), so a build-host path in the staged env points at
+# nothing on the customer host: the core cannot start and the offline doctor
+# fails. The staged copy therefore carries the compose defaults, which are
+# relative to install/ (the Compose project directory of the bundle):
+#   SANITIZER_CORE_MTLS_HOST_DIR=./.certs/sanitizer-core-mtls
+#   SANITIZER_CORE_REGISTRY_DSN_FILE=./.secrets/sanitizer-core/registry-dsn
+# Relative values are kept (they already resolve inside install/). Every
+# other line is copied byte for byte. The source env is never changed.
+bundle_stage_env() {
+  local src="$1" dst="$2" key want val changed=""
+  cp "$src" "$dst" || return 1
+  for key in SANITIZER_CORE_MTLS_HOST_DIR SANITIZER_CORE_REGISTRY_DSN_FILE; do
+    case "$key" in
+      SANITIZER_CORE_MTLS_HOST_DIR) want="./.certs/sanitizer-core-mtls" ;;
+      *) want="./.secrets/sanitizer-core/registry-dsn" ;;
+    esac
+    val="$(env_value "$dst" "$key")"
+    case "$val" in
+      /*) : ;;
+      *) continue ;;
+    esac
+    ( umask 077; LC_ALL=C awk -v key="$key" -v want="$want" '
+      index($0, key "=") == 1 { print key "=" want; next }
+      { print }
+    ' "$dst" > "$dst.stage" ) || { rm -f "$dst.stage"; return 1; }
+    # cat > keeps the copy's mode (cp gave it the source env's).
+    cat "$dst.stage" > "$dst" && rm -f "$dst.stage" || return 1
+    changed="${changed:+$changed, }$key=$want"
+  done
+  if [ -n "$changed" ]; then
+    echo "bundle create: install/customer.env carries $changed (the source env named paths on this host; the customer host creates the core's mTLS material and DSN file there, as INSTALL-CUSTOMER.md says)" >&2
+  fi
 }
 
 bundle_relative_path_valid() {
@@ -7193,7 +7282,8 @@ bundle_create() {
   cp "$ROOT/scripts/derive-veil-pubkey.sh" "$staging/scripts/derive-veil-pubkey.sh"
   chmod 0755 "$staging/scripts/derive-veil-pubkey.sh"
   cp "$base_compose" "$staging/install/docker-compose.customer.yml"
-  cp "$env_file" "$staging/install/customer.env"
+  bundle_stage_env "$env_file" "$staging/install/customer.env" \
+    || fail "bundle create: could not stage customer.env"
   local runtime_profile
   runtime_profile="$(runtime_profile_path "$env_file")"
   if [ "$runtime_rc" -eq 0 ]; then
@@ -7246,6 +7336,22 @@ bundle_create() {
     cp "$ROOT/scripts/$_script" "$staging/install/scripts/$_script"
     chmod 0755 "$staging/install/scripts/$_script"
   done
+  # Kit 2.0 (final-read H2): the new sanitizer core's two one-time OPERATOR
+  # tools — the mTLS bootstrap and the registry DSN writer — are not bind
+  # mounts, so they sit beside derive-veil-pubkey.sh in scripts/ (never in
+  # install/scripts/, which holds exactly the mounted set — T-350). The DSN
+  # writer reads customer.env through bin/compose-env.sh (staged above) and,
+  # in an extracted bundle, resolves paths against install/. The install note
+  # names both steps; bundle verify requires both whenever the staged compose
+  # has the sanitizer-core service.
+  if grep -q '^  sanitizer-core:' "$staging/install/docker-compose.customer.yml"; then
+    local _core_tool
+    for _core_tool in bootstrap-sanitizer-core-mtls.sh write-sanitizer-core-registry-dsn.sh; do
+      require_file "$ROOT/scripts/$_core_tool" "sanitizer-core operator tool $_core_tool"
+      cp "$ROOT/scripts/$_core_tool" "$staging/scripts/$_core_tool"
+      chmod 0755 "$staging/scripts/$_core_tool"
+    done
+  fi
   cp -R "$ROOT/starter-templates"/. "$staging/starter-templates/"
   cp "$ROOT/OPS.md" "$ROOT/TROUBLESHOOTING.md" "$ROOT/README.md" "$staging/docs/"
   [ -f "$ROOT/docs/CUSTOMER_BUNDLE.md" ] && cp "$ROOT/docs/CUSTOMER_BUNDLE.md" "$staging/docs/"
@@ -7436,6 +7542,21 @@ bundle_verify() {
     require_file "$root/scripts/derive-veil-pubkey.sh" "bundle key-derivation helper"
     [ -x "$root/scripts/derive-veil-pubkey.sh" ] \
       || { rm -rf "$tmp"; fail "bundle key-derivation helper is not executable"; }
+    # Kit 2.0 (final-read H2): an S1 bundle whose compose carries the new
+    # sanitizer core must carry both operator tools for it (the core refuses
+    # to start without its leaves and its DSN file, and an offline customer
+    # cannot fetch the scripts) and the Compose env reader the DSN writer
+    # sources. S1-only, like the helpers above: a pre-S1 archive keeps its
+    # historical requirement set.
+    if grep -q '^  sanitizer-core:' "$root/install/docker-compose.customer.yml" 2>/dev/null; then
+      local _core_tool
+      for _core_tool in bootstrap-sanitizer-core-mtls.sh write-sanitizer-core-registry-dsn.sh; do
+        require_file "$root/scripts/$_core_tool" "bundle sanitizer-core operator tool $_core_tool"
+        [ -x "$root/scripts/$_core_tool" ] \
+          || { rm -rf "$tmp"; fail "bundle sanitizer-core operator tool $_core_tool is not executable"; }
+      done
+      require_file "$root/bin/compose-env.sh" "bundle Compose env reader (bin/compose-env.sh)"
+    fi
     require_file "$root/bin/runtime-profile-lib.sh" "bundle runtime-profile helper"
     require_file "$root/install/customer.env.image-manifest.yaml" "bundle recorded image-manifest snapshot"
     require_file "$root/image-manifest.yaml" "bundle image-manifest copy"
@@ -7815,8 +7936,14 @@ sanitizer_core_registry_probe() {
 }
 
 # The fix line for every registry DSN failure.
-sanitizer_core_dsn_fix() {
-  printf "run scripts/write-sanitizer-core-registry-dsn.sh --env-file '%s' (see INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\")" "$1"
+sanitizer_core_dsn_fix() { # <env file> [<compose file>]
+  local extra="" cdir rdir
+  if [ -n "${2:-}" ]; then
+    cdir="$(cd "$(dirname "$2")" 2>/dev/null && pwd)" || cdir=""
+    rdir="$(cd "$ROOT" 2>/dev/null && pwd)" || rdir="$ROOT"
+    [ -z "$cdir" ] || [ "$cdir" = "$rdir" ] || extra=" --compose '$2'"
+  fi
+  printf "run scripts/write-sanitizer-core-registry-dsn.sh --env-file '%s'%s (see INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\")" "$1" "$extra"
 }
 
 sanitizer_core_file_mode() {
@@ -7833,12 +7960,12 @@ sanitizer_core_file_uid() {
   esac
 }
 
-# sanitizer_core_check_leaf <label> <dir> <name> <ssl purpose> <required DNS SAN>
+# sanitizer_core_check_leaf <label> <dir> <name> <ssl purpose> <required DNS SAN> [<container uid>]
 # One leaf of the core's two hops: present, parseable, chained to the deploy CA
 # copy beside it for the right purpose, carrying the SAN the peer pins, not
 # expiring within 30 days, with a private key that is not readable by others.
 sanitizer_core_check_leaf() {
-  local label="$1" dir="$2" name="$3" purpose="$4" san="$5"
+  local label="$1" dir="$2" name="$3" purpose="$4" san="$5" want_uid="${6:-$LUCAIRN_SANITIZER_CORE_CONTAINER_UID}"
   local crt="$dir/$name.crt" key="$dir/$name.key" ca="$dir/ca.crt" failed=0 mode uid sans
   local fix="run scripts/bootstrap-sanitizer-core-mtls.sh (see INSTALL.md § \"Sanitizer core (kit 2.0)\")"
   if [ ! -f "$crt" ]; then
@@ -7888,10 +8015,15 @@ sanitizer_core_check_leaf() {
       fi
       ;;
   esac
+  # Final-read M2: on Linux a 0600 key owned by another uid is unreadable in
+  # the container, and the witness and the core exit on that read error — a
+  # failure, not a warning. LUCAIRN_CONTAINER_UID (shell, else customer.env)
+  # declares another mapping (Docker Desktop for Linux, a remapped daemon).
   if [ "$(uname -s)" = "Linux" ]; then
     uid="$(sanitizer_core_file_uid "$key")"
-    if [ -n "$uid" ] && [ "$uid" != "$LUCAIRN_SANITIZER_CORE_CONTAINER_UID" ]; then
-      warn "sanitizer core mTLS: $label private key $key is owned by uid $uid; the images run as uid $LUCAIRN_SANITIZER_CORE_CONTAINER_UID and cannot read a 0600 key owned by another uid (fix: sudo chown $LUCAIRN_SANITIZER_CORE_CONTAINER_UID:$LUCAIRN_SANITIZER_CORE_CONTAINER_UID '$key'). Ignore this only on a user-namespace-remapped daemon."
+    if [ -n "$uid" ] && [ "$uid" != "$want_uid" ]; then
+      echo "sanitizer core mTLS: failed ($label private key $key is owned by uid $uid; the containers run as uid $want_uid and cannot read a 0600 key owned by another uid, so the service refuses to start. Fix: sudo chown -R $want_uid:$want_uid '$dir' — or, if the image user maps to uid $uid on this daemon (Docker Desktop for Linux, user-namespace remapping), set LUCAIRN_CONTAINER_UID=$uid in customer.env)"
+      failed=1
     fi
   fi
   if [ -r "$key" ]; then
@@ -7904,7 +8036,7 @@ sanitizer_core_check_leaf() {
     # this doctor, running as the operator, cannot read it, so key<->certificate
     # agreement is not checked; the container's own boot (tls.LoadX509KeyPair)
     # is then the check.
-    echo "sanitizer core mTLS: note — $label key/certificate pairing not checked (key not readable by $(id -un 2>/dev/null || echo this user); expected when it is owned by uid $LUCAIRN_SANITIZER_CORE_CONTAINER_UID)"
+    echo "sanitizer core mTLS: note — $label key/certificate pairing not checked (key not readable by $(id -un 2>/dev/null || echo this user); expected when it is owned by uid $want_uid)"
   fi
   return "$failed"
 }
@@ -7917,7 +8049,7 @@ sanitizer_core_check_leaf() {
 check_sanitizer_core_dsn() {
   local env_file="$1" compose_file="$2" pw_ok="${3:-0}" failed=0
   local fix
-  fix="$(sanitizer_core_dsn_fix "$env_file")"
+  fix="$(sanitizer_core_dsn_fix "$env_file" "$compose_file")"
 
   # a. No compose file in this install's set passes --dsn (an operator overlay,
   #    or a kit file from before kit 2.0 K-A). Comment lines are skipped; the
@@ -8049,7 +8181,7 @@ sanitizer_core_manifest_digest() {
 
 check_sanitizer_core_config() {
   local env_file="$1" compose_file="$2" offline="${3:-0}" failed=0
-  local dsa_env central val
+  local dsa_env central val k
 
   dsa_env="$(env_value "$env_file" DSA_ENV)"
   dsa_env="${dsa_env:-production}"
@@ -8164,17 +8296,43 @@ check_sanitizer_core_config() {
   #    GRPC_TLS_ENABLED=true; otherwise it serves that port in plaintext, the
   #    core's TLS dial fails, and every PII_SANITIZED claim of the core is
   #    dropped while the turns themselves still succeed — the hosted A9 shape.
+  #    Final-read M1: the core's side follows the same switch — the compose
+  #    file latches the core on GRPC_TLS_ENABLED and gives it its kit client
+  #    leaf unless customer.env sets the three LCR_WITNESS_MTLS_SANITIZER_CORE_*
+  #    paths EMPTY (what bin/lucairn-init --dev writes for its plaintext mesh).
+  #    The two sides must agree, or every claim is dropped (or the core does
+  #    not start): a mismatch FAILS, in every DSA_ENV.
   if [ -n "$central" ]; then
     echo "sanitizer core witness hop: central witness ($central) — the witness-central overlay supplies the core's client leaf; local witness leaf not checked"
   else
+    local leaf_set=0 leaf_empty=0
+    for k in LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_CERT_PATH \
+             LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_KEY_PATH; do
+      # Compose's `${K-default}`: an absent key = the kit leaf path, an
+      # assigned empty value = no leaf.
+      if grep -Eq "^${k}=" "$env_file" 2>/dev/null && [ -z "$(env_value "$env_file" "$k")" ]; then
+        leaf_empty=$((leaf_empty + 1))
+      else
+        leaf_set=$((leaf_set + 1))
+      fi
+    done
     val="$(env_value "$env_file" GRPC_TLS_ENABLED)"
-    if [ "${val:-true}" = "true" ]; then
-      echo "sanitizer core witness hop: ok (GRPC_TLS_ENABLED=true: the local witness serves the kit CA leaf on :50057)"
+    val="${val:-true}"
+    if [ "$val" = "true" ]; then
+      if [ "$leaf_empty" -eq 0 ]; then
+        echo "sanitizer core witness hop: ok (GRPC_TLS_ENABLED=true: the local witness serves the kit CA leaf on :50057 and the core dials it with verified mTLS)"
+      else
+        echo "sanitizer core witness hop: failed (GRPC_TLS_ENABLED=true latches the core to verified mTLS, but $env_file sets $leaf_empty of the three LCR_WITNESS_MTLS_SANITIZER_CORE_* paths empty — the core refuses to start without its client leaf. Delete those lines (a --dev install writes them for GRPC_TLS_ENABLED=false).)"
+        failed=1
+      fi
     elif [ "$dsa_env" = "production" ]; then
-      echo "sanitizer core witness hop: failed (GRPC_TLS_ENABLED=$val: the local witness would serve :50057 in plaintext and the core's verified TLS dial cannot reach it — every claim of the new core would be dropped. Set GRPC_TLS_ENABLED=true.)"
+      echo "sanitizer core witness hop: failed (GRPC_TLS_ENABLED=$val: the local witness would serve :50057 in plaintext and the core refuses a plaintext witness in production — the new core would not start or every claim would be dropped. Set GRPC_TLS_ENABLED=true.)"
+      failed=1
+    elif [ "$leaf_set" -gt 0 ]; then
+      echo "sanitizer core witness hop: failed (GRPC_TLS_ENABLED=$val: the local witness serves :50057 in plaintext, but the core still dials it with verified mTLS — every claim of the new core would be dropped while the turns still succeed. Either set GRPC_TLS_ENABLED=true (exactly 'true'), or set all three LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH / _CLIENT_CERT_PATH / _CLIENT_KEY_PATH to empty in $env_file, as bin/lucairn-init --dev writes them.)"
       failed=1
     else
-      warn "sanitizer core witness hop: GRPC_TLS_ENABLED=$val with DSA_ENV=$dsa_env — the core's claims cannot reach a plaintext witness and are dropped; certificates of Anthropic turns will lack the core's sanitizer claim. Set GRPC_TLS_ENABLED=true to test evidence."
+      echo "sanitizer core witness hop: ok (development: GRPC_TLS_ENABLED=$val, so the local witness and the core's claim hop are both plaintext; DSA_ENV=production requires GRPC_TLS_ENABLED=true)"
     fi
   fi
 
@@ -8198,11 +8356,14 @@ check_sanitizer_core_config() {
         echo "sanitizer core mTLS: failed (the three CA copies under $cert_dir differ; each hop verifies its peer against its own copy, so both hops would fail)"
         mtls_failed=1
       fi
-      sanitizer_core_check_leaf "core server" "$cert_dir/sanitizer-core" dsa-sanitizer-core sslserver dsa-sanitizer-core || mtls_failed=1
-      sanitizer_core_check_leaf "gateway client" "$cert_dir/gateway" dsa-gateway sslclient dsa-gateway || mtls_failed=1
+      local cuid
+      cuid="${LUCAIRN_CONTAINER_UID:-$(env_value "$env_file" LUCAIRN_CONTAINER_UID)}"
+      cuid="${cuid:-$LUCAIRN_SANITIZER_CORE_CONTAINER_UID}"
+      sanitizer_core_check_leaf "core server" "$cert_dir/sanitizer-core" dsa-sanitizer-core sslserver dsa-sanitizer-core "$cuid" || mtls_failed=1
+      sanitizer_core_check_leaf "gateway client" "$cert_dir/gateway" dsa-gateway sslclient dsa-gateway "$cuid" || mtls_failed=1
       if [ -z "$central" ]; then
-        sanitizer_core_check_leaf "core witness client" "$cert_dir/sanitizer-core" witness-client sslclient dsa-sanitizer || mtls_failed=1
-        sanitizer_core_check_leaf "witness server" "$cert_dir/veil-witness" dsa-veil-witness sslserver dsa-veil-witness || mtls_failed=1
+        sanitizer_core_check_leaf "core witness client" "$cert_dir/sanitizer-core" witness-client sslclient dsa-sanitizer "$cuid" || mtls_failed=1
+        sanitizer_core_check_leaf "witness server" "$cert_dir/veil-witness" dsa-veil-witness sslserver dsa-veil-witness "$cuid" || mtls_failed=1
       fi
     fi
     if [ -e "$cert_dir/sanitizer-core/ca.key" ] || [ -e "$cert_dir/gateway/ca.key" ] || [ -e "$cert_dir/veil-witness/ca.key" ]; then
@@ -8213,7 +8374,6 @@ check_sanitizer_core_config() {
     # (SANITIZER_CORE_MTLS_*_PATH, LCR_WITNESS_MTLS_SANITIZER_CORE_*_PATH,
     # GRPC_TLS_*_FILE); this doctor checks the default layout the kit compose
     # mounts, not an operator's own mount.
-    local k
     for k in SANITIZER_CORE_MTLS_CA_BUNDLE_PATH SANITIZER_CORE_MTLS_SERVER_CERT_PATH SANITIZER_CORE_MTLS_SERVER_KEY_PATH \
              SANITIZER_CORE_MTLS_CLIENT_CERT_PATH SANITIZER_CORE_MTLS_CLIENT_KEY_PATH \
              LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_CERT_PATH \
@@ -8341,6 +8501,54 @@ check_sanitizer_core_memory() {
   return 1
 }
 
+# ToB TOB-K20-03 (CVE-2024-29018, GHSA-mq39-4gv4-mvpx): Docker Engine before
+# 26.0.0 / 25.0.5 / 23.0.11 forwards DNS queries from an `internal: true`
+# network to the host's external resolvers, so a container on an internal
+# network can leak data over DNS. The new core's namespace (and the identity
+# planes) rely on internal networks, so an older engine FAILS online. Fixed
+# lines: >= 26.0.0, 25.0.x from 25.0.5, 23.0.x from 23.0.11; the 24.x line was
+# never fixed. Prints the verdict; returns 1 below the minimum.
+docker_engine_version_ok() { # <version> -> 0 fixed, 1 affected, 2 unparsable
+  local v="$1" major minor patch
+  v="${v#v}"
+  printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' || return 2
+  major="$(printf '%s' "$v" | cut -d. -f1)"
+  minor="$(printf '%s' "$v" | cut -d. -f2)"
+  patch="$(printf '%s' "$v" | cut -d. -f3 | sed 's/[^0-9].*$//')"
+  [ -n "$patch" ] || return 2
+  if [ "$major" -ge 26 ]; then return 0; fi
+  if [ "$major" -eq 25 ]; then
+    { [ "$minor" -gt 0 ] || [ "$patch" -ge 5 ]; } && return 0
+    return 1
+  fi
+  if [ "$major" -eq 23 ]; then
+    { [ "$minor" -gt 0 ] || [ "$patch" -ge 11 ]; } && return 0
+    return 1
+  fi
+  return 1
+}
+
+check_docker_engine_version() {
+  local v rc=0
+  have docker || { echo "docker engine: skipped (docker CLI unavailable)"; return 0; }
+  v="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
+  if [ -z "$v" ]; then
+    # NON-COVERAGE: no answer from the engine (not running, no permission).
+    warn "docker engine: could not read the Docker Engine version; make sure it is 26.0.0 or newer (25.0.5+ / 23.0.11+ on those lines) — older engines forward DNS from internal networks (CVE-2024-29018)"
+    return 0
+  fi
+  docker_engine_version_ok "$v" || rc=$?
+  case "$rc" in
+    0) echo "docker engine: ok ($v; not affected by CVE-2024-29018)" ;;
+    2) warn "docker engine: version '$v' not understood; make sure it is 26.0.0 or newer (25.0.5+ / 23.0.11+) — CVE-2024-29018" ;;
+    *)
+      echo "docker engine: failed ($v forwards DNS queries from internal networks to external resolvers (CVE-2024-29018), which defeats the internal networks the sanitizer core and the identity plane rely on. Upgrade Docker Engine to 26.0.0 or newer (on the 25.x line 25.0.5+, on the 23.x line 23.0.11+; 24.x has no fix))"
+      return 1
+      ;;
+  esac
+  return 0
+}
+
 # Online battery: the running stack.
 check_sanitizer_core_runtime() {
   local env_file="$1" compose_file="$2" strict_runtime="${3:-0}" compose failed=0
@@ -8374,8 +8582,31 @@ if (env.get("LCR_PROFILE") or "") not in ("", "kit"):
     bad.append("LCR_PROFILE is forwarded with a non-kit value")
 if any(k.startswith("LCR_SERVICENOW_CONTROL_") for k in env):
     bad.append("the ServiceNow control client is forwarded (the kit profile refuses to boot with it)")
-if env.get("LCR_WITNESS_REQUIRE_MTLS") != "true":
-    bad.append("LCR_WITNESS_REQUIRE_MTLS is not true")
+# Final-read M1: the witness hop of the core must match what the witness it dials
+# serves. The LOCAL witness serves TLS on :50057 only with GRPC_TLS_ENABLED=true
+# (exactly "true"); with it the core must be latched with a complete client
+# leaf, without it (a --dev plaintext mesh) the core must have NO client leaf
+# (verified mTLS against plaintext fails every handshake: all claims dropped).
+# Any other witness (the witness-central relay) is always latched mTLS.
+leaf = [env.get(k) or "" for k in ("LCR_WITNESS_MTLS_CA_BUNDLE_PATH", "LCR_WITNESS_MTLS_CLIENT_CERT_PATH", "LCR_WITNESS_MTLS_CLIENT_KEY_PATH")]
+latch = str(env.get("LCR_WITNESS_REQUIRE_MTLS") or "").strip().lower()
+if (env.get("LCR_WITNESS_ADDR") or "") == "veil-witness:50057":
+    wit = (doc.get("services") or {}).get("veil-witness") or {}
+    wenv = wit.get("environment") or {}
+    if isinstance(wenv, list):
+        wenv = dict(e.split("=", 1) if "=" in e else (e, "") for e in wenv)
+    if (wenv.get("GRPC_TLS_ENABLED") or "") == "true":
+        if latch != "true" or not all(leaf):
+            bad.append("the local witness serves TLS (GRPC_TLS_ENABLED=true) but the core is not latched to verified mTLS with a complete client leaf (LCR_WITNESS_REQUIRE_MTLS + LCR_WITNESS_MTLS_*)")
+    else:
+        if any(leaf):
+            bad.append("the local witness serves plaintext (GRPC_TLS_ENABLED is not true) but the core dials it with verified mTLS - every claim would be dropped (set GRPC_TLS_ENABLED=true, or the three LCR_WITNESS_MTLS_SANITIZER_CORE_* paths empty as bin/lucairn-init --dev does)")
+        elif latch == "true":
+            bad.append("the core is latched to mTLS without a client leaf (it refuses to start)")
+        if (env.get("DSA_ENV") or "production") not in ("development", "test"):
+            bad.append("the local witness serves plaintext with DSA_ENV=production (the core refuses a plaintext witness in production; set GRPC_TLS_ENABLED=true)")
+elif latch != "true" or not all(leaf):
+    bad.append("LCR_WITNESS_REQUIRE_MTLS is not true or the client leaf is incomplete for a non-local witness")
 if svc.get("network_mode") != "service:sanitizer-core-sidecar":
     bad.append("network_mode is not service:sanitizer-core-sidecar")
 # Registry DSN (DSA #956): never --dsn (process arguments are world-readable);
@@ -8412,7 +8643,7 @@ for p in paths:
 print("; ".join(bad) if bad else "ok")
 ' 2>/dev/null || true)"
   case "$verdict" in
-    ok) echo "sanitizer core rendered config: ok (kit profile, witness latch on, sidecar namespace, registry DSN from a mounted file)" ;;
+    ok) echo "sanitizer core rendered config: ok (kit profile, witness hop matches the witness, sidecar namespace, registry DSN from a mounted file)" ;;
     absent) echo "sanitizer core rendered config: failed (no sanitizer-core service in the rendered project — kit 2.0 compose files are required)"; failed=1 ;;
     ''|unreadable) echo "sanitizer core rendered config: skipped (docker compose config --format json gave no readable output)" ;;
     *) echo "sanitizer core rendered config: failed ($verdict)"; failed=1 ;;
@@ -8539,11 +8770,17 @@ print("; ".join(bad) if bad else "ok")
     elif [ -z "$mode" ]; then
       echo "sanitizer core claims: failed (the core's log shows no witness transport line — it has not booted with claims on)"
       failed=1
-    elif [ "$mode" != "mtls" ]; then
+    elif [ "$mode" = "mtls" ]; then
+      echo "sanitizer core claims: transport ok (mtls)"
+    elif [ "$mode" = "plaintext-insecure-dev" ] && [ -z "$(env_value "$env_file" LUCAIRN_CENTRAL_WITNESS_ADDR)" ] \
+         && [ "$(env_value "$env_file" GRPC_TLS_ENABLED)" = "false" ] \
+         && { [ "$(env_value "$env_file" DSA_ENV)" = "development" ] || [ "$(env_value "$env_file" DSA_ENV)" = "test" ]; }; then
+      # Final-read M1: a --dev install's plaintext mesh; the core says so on
+      # every boot. Production refuses this transport (DSA #946).
+      echo "sanitizer core claims: transport ok (plaintext to the local development witness, GRPC_TLS_ENABLED=false; production requires mtls)"
+    else
       echo "sanitizer core claims: failed (witness transport mode=$mode, not mtls — claims will not reach a witness that requires mTLS)"
       failed=1
-    else
-      echo "sanitizer core claims: transport ok (mtls)"
     fi
     if [ "${drops:-0}" -gt 0 ]; then
       echo "sanitizer core claims: failed ($drops claim(s) DROPPED in the core's log — certificates of those turns lack the core's sanitizer claim; see: docker compose logs sanitizer-core | grep DROPPED)"
@@ -9239,6 +9476,12 @@ doctor() {
   else
     warn "docker compose not available; skipping compose config validation"
   fi
+
+  # Kit 2.0 (ToB TOB-K20-03): the core's isolation rests on internal Docker
+  # networks; engines below the fixed releases forward DNS from them.
+  local docker_engine_failed=0
+  check_docker_engine_version || docker_engine_failed=1
+  [ "$docker_engine_failed" -eq 0 ] || return 1
 
   # Kit 2.0: the running sanitizer-core stack (rendered config, containers,
   # namespace join, migration ledger, claim transport, memory headroom).

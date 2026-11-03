@@ -947,8 +947,10 @@ services:
   # Start order (Compose enforces it with depends_on):
   #   postgres-sanitizer-core healthy -> sanitizer-core-sidecar healthy (model
   #   load ~1-5 min) -> sanitizer-core -> gateway.
-  # BEFORE the first start and after every kit upgrade run the registry
-  # migration step (never on boot; the core refuses to start without it):
+  # BEFORE the first start and after every kit upgrade the registry migration
+  # step must run (never on boot; the core refuses to start without it).
+  # `bin/lucairn up` runs it first, every time (a no-op when the ledger is at
+  # the ceiling). With plain `docker compose ... up -d` run it yourself first:
   #   docker compose -f docker-compose.customer.yml --env-file customer.env \
   #     --profile sanitizer-core-migrate run --rm migrate-sanitizer-core
   # and create the mTLS material once: scripts/bootstrap-sanitizer-core-mtls.sh
@@ -987,8 +989,10 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # The registry migration step — an explicit operator step, never part of
-  # `up` (profile-gated: a profiled service is not started unless named).
+  # The registry migration step — an explicit operator step, never part of a
+  # plain `docker compose up` (profile-gated: a profiled service is not started
+  # unless named). `bin/lucairn up` names it: it runs this one-shot before
+  # `up -d` and stops if it fails.
   # Runs scripts/migrate-sanitizer-core.sh: migrations/sanitizer-core/ (byte
   # copies of the core's embedded migrations, SHA256SUMS-pinned) applied in ONE
   # transaction into the core's own ledger registry_schema_migrations, capped at
@@ -1053,9 +1057,26 @@ services:
   # (kit 2.0)", enforced by `bin/lucairn doctor`). mem_limit/memswap_limit are
   # what plain `docker compose up` enforces; deploy.resources mirrors them for
   # Swarm-style tooling. The values MUST match.
+  #
+  # Hardening (ToB TOB-K20-02, the same as the Helm chart's sidecar container):
+  # no capabilities, no privilege gain, a read-only root filesystem with a
+  # private /tmp (HOME and XDG_CACHE_HOME point there). The image reads its
+  # models from /opt/models (HF_HOME, offline) and writes no byte code
+  # (PYTHONDONTWRITEBYTECODE=1), so it needs nothing writable but /tmp. The
+  # tmpfs counts toward the 6.5 GB cap; 1 GB matches the Helm emptyDir limit.
   sanitizer-core-sidecar:
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer-core-sidecar:${LUCAIRN_SANITIZER_CORE_IMAGE_TAG:-1.1.0}@${LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST:?LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST must be the signed digest image-manifest.yaml records for dsa-sanitizer-core-sidecar (the sanitizer core pair never starts from a bare tag; run bin/lucairn doctor)}"
     logging: *default-logging
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HOME: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
     depends_on:
       postgres-sanitizer-core:
         condition: service_healthy
@@ -1102,6 +1123,18 @@ services:
   #     transport (DSA #946). Without these settings the hosted core once
   #     dropped every PII_SANITIZED claim at the TLS handshake while all turns
   #     still succeeded (window 2026-10-31, amendment A9).
+  #     The core's transport FOLLOWS the local witness's: the witness serves
+  #     TLS on :50057 only while GRPC_TLS_ENABLED=true, so the latch is that
+  #     same variable (default true). A development install
+  #     (bin/lucairn-init --dev: GRPC_TLS_ENABLED=false, a plaintext mesh)
+  #     unlatches it AND sets the three LCR_WITNESS_MTLS_SANITIZER_CORE_*
+  #     paths to empty in customer.env, so the core dials the plaintext dev
+  #     witness (allowed only with DSA_ENV=development/test) instead of
+  #     failing every handshake (final-read M1: a --dev install dropped every
+  #     claim). Same rule as the Helm chart: latch + client leaf only when the
+  #     witness serves TLS. The `-` (not `:-`) defaults make an explicit empty
+  #     value mean "no client leaf"; bin/lucairn doctor fails any install
+  #     whose two sides disagree.
   #   * LCR_PROFILE is deliberately NOT set and NOT forwarded: unset = the kit
   #     profile, under which the core refuses the ServiceNow mode at boot (DSA
   #     cmd/sanitizer-core/instance_wire.go). The kit's opt-in for that mode is
@@ -1125,9 +1158,20 @@ services:
   # every 10 s, and after 3 misses in a row stop the core with exit 70 so
   # `restart: unless-stopped` brings it back inside the sidecar's CURRENT
   # namespace.
+  #
+  # Hardening (ToB TOB-K20-02, the same as the Helm chart's core container):
+  # no capabilities, no privilege gain, a read-only root filesystem with a
+  # private 64 MB /tmp. The entrypoint below only reads (wget -O /dev/null).
   sanitizer-core:
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer-core:${LUCAIRN_SANITIZER_CORE_IMAGE_TAG:-1.1.0}@${LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST:?LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST must be the signed digest image-manifest.yaml records for dsa-sanitizer-core (the sanitizer core pair never starts from a bare tag; run bin/lucairn doctor)}"
     logging: *default-logging
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     network_mode: "service:sanitizer-core-sidecar"
     depends_on:
       sanitizer-core-sidecar:
@@ -1182,10 +1226,10 @@ services:
       LCR_SIGNING_KEY: "${LCR_SANITIZER_SIGNING_KEY:-${VEIL_SANITIZER_SIGNING_KEY:-}}"
       LCR_SANITIZER_PUBLIC_KEY: "${LCR_SANITIZER_PUBLIC_KEY:-${VEIL_SANITIZER_PUBLIC_KEY:-}}"
       LCR_WITNESS_ADDR: "veil-witness:50057"
-      LCR_WITNESS_REQUIRE_MTLS: "true"
-      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "${LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH:-/etc/sanitizer-core-mtls/ca.crt}"
-      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "${LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_CERT_PATH:-/etc/sanitizer-core-mtls/witness-client.crt}"
-      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "${LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_KEY_PATH:-/etc/sanitizer-core-mtls/witness-client.key}"
+      LCR_WITNESS_REQUIRE_MTLS: "${GRPC_TLS_ENABLED:-true}"
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "${LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH-/etc/sanitizer-core-mtls/ca.crt}"
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "${LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_CERT_PATH-/etc/sanitizer-core-mtls/witness-client.crt}"
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "${LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_KEY_PATH-/etc/sanitizer-core-mtls/witness-client.key}"
       SANITIZER_CLAIM_DRAIN_SECONDS: "${SANITIZER_CLAIM_DRAIN_SECONDS:-}"
       DSA_WITNESS_GRPC_MAX_MESSAGE_BYTES: "${DSA_WITNESS_GRPC_MAX_MESSAGE_BYTES:-}"
       SANITIZER_CORE_MTLS_CA_BUNDLE_PATH: "${SANITIZER_CORE_MTLS_CA_BUNDLE_PATH:-/etc/sanitizer-core-mtls/ca.crt}"

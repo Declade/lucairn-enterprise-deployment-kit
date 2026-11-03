@@ -254,6 +254,11 @@ mkdir -p models
 cp /secure/models/customer-model-q4.gguf models/customer-model-q4.gguf
 ./bin/lucairn-init --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --model-name customer-model --model-file customer-model-q4.gguf --model-path .
+# Recommended: bin/lucairn up --env customer.env (runs the registry migration
+# below first, then starts the recorded topology). With plain Compose, migrate
+# first — the sanitizer core refuses to start on an unmigrated registry:
+docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env \
+  --profile sanitizer-core-migrate run --rm migrate-sanitizer-core
 docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env --profile llama-cpp up -d
 ```
 
@@ -614,7 +619,10 @@ required key.
 
 For Docker Compose:
 
-- Linux host with Docker Engine and **Docker Compose v2.20.0 or newer**.
+- Linux host with **Docker Engine 26.0.0 or newer** (25.0.5+ / 23.0.11+ on
+  those lines; 24.x has no fix) and **Docker Compose v2.20.0 or newer**. Older
+  engines forward DNS from `internal: true` networks (CVE-2024-29018); the
+  online `bin/lucairn doctor` fails on them.
 
   > ⚠️ **v2.20.0 is a hard floor, not a recommendation** (raised 2026-07-28;
   > this line previously said only "Docker Compose v2"). `docker-compose.self-hosted.yml`
@@ -872,12 +880,17 @@ Use the profile-bound wrappers, each with `--env customer.env` and optionally
 the kit root:
 
 ```bash
-bin/lucairn up --env customer.env
+bin/lucairn up --env customer.env         # registry migration first, then up -d
 bin/lucairn status --env customer.env
 bin/lucairn logs --env customer.env --tail 200 --service gateway
 bin/lucairn pull --env customer.env       # profile-bound upgrade fetch
 bin/lucairn down --env customer.env       # never removes volumes
 ```
+
+`bin/lucairn up` first runs the sanitizer core's capped registry migration
+(`migrate-sanitizer-core`, § "Sanitizer core (kit 2.0, Compose)" step 3) — a
+no-op when the registry is at this release's ceiling — and starts nothing if
+it fails. A plain `docker compose ... up -d` does not run it.
 
 They fail before Docker for missing or invalid marker-bearing state. Pre-S1
 state retains its documented one-base-file legacy path. Exact release rollback,
@@ -1205,9 +1218,11 @@ recorded model and must not receive `--model`. It requires Python 3.8+; if it
 is unavailable, online doctor fails closed with its prerequisite message while
 the offline preflight remains available.
 
-For **split deployment**:
+For **split deployment** (`bin/lucairn up --env customer.env` does both steps):
 
 ```bash
+docker compose -f docker-compose.customer.yml --env-file customer.env \
+  --profile sanitizer-core-migrate run --rm migrate-sanitizer-core
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 ```
 
@@ -1438,7 +1453,8 @@ bin/lucairn-init --production --runtime-mode managed-byok \
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
 ```
 
-Then use the recorded topology:
+Then use the recorded topology (`up` runs the sanitizer core's registry
+migration first):
 
 ```bash
 bin/lucairn up --env customer.env
@@ -2401,7 +2417,7 @@ OpenAI, MCP and proxy routes.
 | `postgres-sanitizer-core` | The core's registry database (own volume, internal network only). |
 | `sanitizer-core-sidecar` | The model sidecar. It owns the network namespace the core runs in; its scan endpoint listens on loopback only. Memory cap 6.5 GB. |
 | `sanitizer-core` | The Go core, joined to the sidecar's namespace. Gateway → core is verified mTLS; core → witness is verified TLS with the core's own client certificate. Memory cap 1 GB. |
-| `migrate-sanitizer-core` | The registry migration step. Profile-gated: it never runs on `up`. |
+| `migrate-sanitizer-core` | The registry migration step. Profile-gated: a plain `docker compose up` never runs it; `bin/lucairn up` runs it first, every time. |
 
 ### Host requirements
 
@@ -2413,6 +2429,11 @@ OpenAI, MCP and proxy routes.
   (it may be running on another machine). Add about 5 GB more when the L3 shield
   model is loaded.
 - About 2.5 GB more disk for the sidecar image.
+- **Docker Engine 26.0.0 or newer** (on the 25.x line 25.0.5+, on the 23.x line
+  23.0.11+; the 24.x line has no fix). Older engines forward DNS queries from
+  `internal: true` networks to the host's resolvers (CVE-2024-29018), which
+  defeats the internal networks the core and the identity plane rely on.
+  `bin/lucairn doctor` (without `--offline`) fails on an older engine.
 
 ### 1. Secrets and image pins (`customer.env`)
 
@@ -2428,11 +2449,27 @@ LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=
 ```
 
 The core and the sidecar are one pair from one release: the core refuses to
-start against a sidecar from another build. Keep `GRPC_TLS_ENABLED=true` (the
-default): the core reaches the witness only over verified TLS, and the witness
-serves TLS on its claim port only while that variable is `true`. Do not set
-`LCR_PROFILE`: the kit runs the core's kit profile, under which the ServiceNow
-mode is refused.
+start against a sidecar from another build. Do not set `LCR_PROFILE`: the kit
+runs the core's kit profile, under which the ServiceNow mode is refused.
+
+The core's witness hop follows `GRPC_TLS_ENABLED`, the switch that makes the
+local witness serve TLS on its claim port. With `true` (the default, and
+required with `DSA_ENV=production`) the core dials it with verified mTLS and
+its kit client leaf. A `--dev` install runs a plaintext mesh
+(`GRPC_TLS_ENABLED=false`: sandbox-b has no TLS leaf in development), and
+`bin/lucairn-init --dev` writes these three lines empty, so the core dials the
+development witness in plaintext as well:
+
+```bash
+LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH=
+LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_CERT_PATH=
+LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_KEY_PATH=
+```
+
+Change the switch and those three lines together. `bin/lucairn doctor` fails
+when they disagree: a core dialing mTLS to a plaintext witness drops every
+claim while the turns still succeed, and a latched core without its leaf does
+not start.
 
 ### 2. mTLS material (once)
 
@@ -2452,8 +2489,16 @@ container that mounts it. The CA private key (`ca/ca.key`) is never mounted.
 
 Run it as root on Linux: it hands the service directories to uid 10001, the user
 every Lucairn image runs as (a `0600` key owned by another uid is unreadable in
-the container). As an ordinary user it prints the `chown` command to run. A
-re-run reuses every existing file; to rotate a leaf, delete it, re-run, and
+the container, and the witness and the core refuse to start). On Linux an
+ordinary user is refused before anything is written; `bin/lucairn-init` runs
+this one step through `sudo` for you (it may ask for your password). Only if the
+image user maps to your own uid — Docker Desktop for Linux, or a
+user-namespace-remapped daemon whose mapping lands on it — declare that with
+`LUCAIRN_CONTAINER_UID=$(id -u)` (in the shell for the script, in `customer.env`
+for `bin/lucairn doctor`), and no root is needed. On macOS (Docker Desktop maps
+file ownership) an ordinary user is fine. `bin/lucairn doctor` fails on Linux
+when a key belongs to another uid than the containers'. A re-run reuses every
+existing file; to rotate a leaf, delete it, re-run, and
 recreate the container that mounts it. If you keep the material elsewhere, pass
 the directory to the script and set `SANITIZER_CORE_MTLS_HOST_DIR` to it.
 
@@ -2502,6 +2547,10 @@ it with `--registry-dsn-file /run/secrets/sanitizer-core/registry-dsn`.
 
 ### 3. Registry migrations (install and every upgrade)
 
+`bin/lucairn up` runs this step for you before it starts anything, every time
+(a no-op when the registry is at the ceiling), and stops if it fails. With
+plain `docker compose ... up -d`, run it yourself first:
+
 ```bash
 docker compose -f docker-compose.customer.yml --env-file customer.env \
   --profile sanitizer-core-migrate run --rm migrate-sanitizer-core
@@ -2516,8 +2565,9 @@ start either.
 
 ### 4. Start, and the one recreate rule
 
-`bin/lucairn up --env customer.env` starts everything in order: registry database
-→ sidecar (model load takes 1–5 minutes) → core → gateway.
+`bin/lucairn up --env customer.env` runs step 3, then starts everything in
+order: registry database → sidecar (model load takes 1–5 minutes) → core →
+gateway.
 
 > ⚠️ **After every sidecar recreate, recreate the core.** A sidecar *restart*
 > (crash, memory-cap kill, `docker restart`) is followed by the core on its own
@@ -2534,15 +2584,19 @@ DSN file (no `--dsn` in any compose file of the install; the file present, a
 regular file of at most 8 KiB, readable by the core's uid 10001 on Linux, not
 open to other host users, a `postgres://` URL equal to the one `customer.env`
 gives — values are never printed), the profile,
-the gateway switches, `GRPC_TLS_ENABLED` for the witness hop, every certificate
-(chain, purpose, pinned SAN, SHA-256 signature, 30-day expiry, key permissions;
-the key/certificate pairing when the key is readable), the image pair against
-`image-manifest.yaml`, and host memory. Online additionally: the rendered Compose
-configuration of the core (kit profile, witness latch, namespace, no `--dsn`,
-`--registry-dsn-file` pointing at a mounted path), the three
-containers (running and healthy), the core's namespace join, the migration
-ledger against the ceiling, and the core's log — witness transport `mtls` and no
-`DROPPED` claim. The online check does not send a turn; a real turn and its
+the gateway switches, the witness hop (`GRPC_TLS_ENABLED` and the core's client
+leaf agree; production requires `true`), every certificate
+(chain, purpose, pinned SAN, SHA-256 signature, 30-day expiry, key permissions,
+and on Linux the key owner = the containers' uid; the key/certificate pairing
+when the key is readable), the image pair against
+`image-manifest.yaml`, and host memory. Online additionally: the Docker Engine
+version (CVE-2024-29018 floor), the rendered Compose
+configuration of the core (kit profile, witness hop matching the witness it
+dials, namespace, no `--dsn`, `--registry-dsn-file` pointing at a mounted path),
+the three containers (running and healthy), the core's namespace join, the
+migration ledger against the ceiling, and the core's log — witness transport
+`mtls` (plaintext only on a development install with `GRPC_TLS_ENABLED=false`)
+and no `DROPPED` claim. The online check does not send a turn; a real turn and its
 certificate (sanitizer claim from the core) are the install rehearsal's proof.
 
 `bin/lucairn support-bundle` never collects the DSN file. Before it writes the
@@ -2597,8 +2651,7 @@ with the kit 2.0 compose files:
    (`scripts/write-sanitizer-core-registry-dsn.sh --env-file customer.env`).
 3. Run `bin/lucairn doctor --env customer.env --offline`; fix every
    `sanitizer core` line it fails.
-4. Pull, start the registry database, run the migration step (step 3), then
-   `bin/lucairn up` (step 4).
+4. Pull, then `bin/lucairn up` (step 4; it runs the migration step 3 first).
 
 The core's registry is a new database (`pg-sanitizer-core-data`), so nothing of
 1.x is migrated into it.
@@ -2776,6 +2829,17 @@ Archive delivery names the archive to load only after the bundle check. Registry
 delivery requires registry authentication and must not run `docker load`.
 Directory delivery must use the authenticated handoff instructions for the
 actual files under `images/`; it must not assume an archive exists.
+
+3b. Kit 2.0 bundles: create the sanitizer core's mTLS material and registry DSN
+   file on this host (neither travels in the bundle; `install/customer.env`
+   already names `install/.certs/sanitizer-core-mtls` and
+   `install/.secrets/sanitizer-core/registry-dsn`). `bin/lucairn up` later runs
+   the capped registry migration itself.
+
+```bash
+sudo scripts/bootstrap-sanitizer-core-mtls.sh "$PWD/install/.certs/sanitizer-core-mtls"
+scripts/write-sanitizer-core-registry-dsn.sh --env-file install/customer.env --compose install/docker-compose.customer.yml
+```
 
 4. Run pre-flight checks.
 

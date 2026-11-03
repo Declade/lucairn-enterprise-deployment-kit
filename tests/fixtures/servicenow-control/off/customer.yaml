@@ -756,6 +756,8 @@ services:
         read_only: true
         bind: {}
   sanitizer-core:
+    cap_drop:
+      - ALL
     command:
       - serve
       - --listen=sanitizer-core:8790
@@ -835,7 +837,12 @@ services:
         max-size: 50m
     mem_limit: "1073741824"
     network_mode: service:sanitizer-core-sidecar
+    read_only: true
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m
     volumes:
       - type: bind
         source: ./.certs/sanitizer-core-mtls/sanitizer-core
@@ -849,6 +856,8 @@ services:
         bind:
           create_host_path: false
   sanitizer-core-sidecar:
+    cap_drop:
+      - ALL
     depends_on:
       postgres-sanitizer-core:
         condition: service_healthy
@@ -857,6 +866,9 @@ services:
       resources:
         limits:
           memory: "6815744000"
+    environment:
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
     healthcheck:
       test:
         - CMD
@@ -884,7 +896,12 @@ services:
           - sanitizer-core
           - dsa-sanitizer-core
       dsa-sanitizer-core-witness: {}
+    read_only: true
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=1g
   veil-witness:
     depends_on:
       migrate-veil:
