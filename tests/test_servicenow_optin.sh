@@ -83,6 +83,19 @@ STUB_PID=""
 cleanup() { [ -n "$STUB_PID" ] && kill "$STUB_PID" 2>/dev/null; if [ -n "${KEEP_TMP:-}" ]; then echo "kept: $TMP" >&2; else rm -rf "$TMP"; fi; }
 trap cleanup EXIT
 BASE_PATH="$PATH"
+# Kit 2.0 K-A fix round 1 (#158): doctor FAILS and the compose file does not
+# render while this checkout's image-manifest has no signed core/sidecar
+# digests (`pending: true`, before a release). Init, render and doctor below
+# therefore run from a RELEASED-kit fixture with synthetic signed digests
+# (tests/lib/test-helpers.sh); the real tree is REAL_ROOT.
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$TMP"
+COMPOSE="$ROOT/docker-compose.customer.yml"
+SELFHOSTED="$ROOT/docker-compose.self-hosted.yml"
+OVERLAY="$ROOT/docker-compose.servicenow-control.yml"
+HELPER="$ROOT/bin/lucairn-servicenow.py"
+SNDIR="$ROOT/servicenow-directory"
 
 FAILS=0
 N=0
@@ -366,9 +379,10 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "D. A v1.9.7 customer.env upgrades with the mode OFF"
-GIT_ROOT="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -n "$GIT_ROOT" ] && git -C "$ROOT" cat-file -e v1.9.7:customer.env.example 2>/dev/null; then
-  git -C "$ROOT" show v1.9.7:customer.env.example > "$TMP/v197.example"
+# The tag lives in the REAL checkout (the released-kit fixture has no .git).
+GIT_ROOT="$(git -C "$REAL_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$GIT_ROOT" ] && git -C "$REAL_ROOT" cat-file -e v1.9.7:customer.env.example 2>/dev/null; then
+  git -C "$REAL_ROOT" show v1.9.7:customer.env.example > "$TMP/v197.example"
   ! grep -q 'GATEWAY_SERVICENOW_' "$TMP/v197.example" && pass "v1.9.7 customer.env.example names no ServiceNow setting" || fail "v1.9.7 example names ServiceNow settings"
 else
   echo "  NOT RUN — tag v1.9.7 is not in this checkout (the live checks below use the generated install)"
