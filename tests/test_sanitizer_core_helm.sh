@@ -802,9 +802,12 @@ echo "H. K-C: the ServiceNow mode on the core (assembled copy, hold removed — 
 # Production renders with servicenowControl.enabled stay HELD
 # (templates/servicenow-control-held.yaml); like tests/test_servicenow_control_helm.py
 # this section removes the hold in a disposable kit copy only.
+# Copied from the RELEASED-kit fixture of section F (K-B fix round 1: the core
+# pair renders and doctors only with the signed digests a release records).
+RELEASED_SRC="$TMP/released-kit"
 KIT="$TMP/kit-on"; mkdir -p "$KIT"
-cp -R "$ROOT/bin" "$ROOT/charts" "$ROOT/scripts" "$ROOT/config" "$ROOT/keys" "$ROOT/migrations" "$KIT/"
-cp "$ROOT/VERSION" "$ROOT/RELEASE_DATE" "$ROOT/image-manifest.yaml" "$KIT/"
+cp -R "$RELEASED_SRC/bin" "$RELEASED_SRC/charts" "$RELEASED_SRC/scripts" "$RELEASED_SRC/config" "$RELEASED_SRC/keys" "$RELEASED_SRC/migrations" "$KIT/"
+cp "$RELEASED_SRC/VERSION" "$RELEASED_SRC/RELEASE_DATE" "$RELEASED_SRC/image-manifest.yaml" "$KIT/"
 rm "$KIT/charts/lucairn/templates/servicenow-control-held.yaml"
 ON_VALUES="$TMP/sn-on.yaml"
 cat > "$ON_VALUES" <<'YAML'
