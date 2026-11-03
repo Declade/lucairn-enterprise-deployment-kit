@@ -188,6 +188,26 @@ grep -Fq '/api/v1/admin/customers' "$DASH_ARGV_LOG" || { echo 'dashboard keys ne
 [ "$(cat "$DASH_HDR_LOG")" = "X-Admin-Key: $DASH_TOKEN" ] || { echo 'dashboard keys did not send exactly the admin header on stdin' >&2; exit 1; }
 echo "lucairn doctor dashboard keys: admin token never on curl argv: ok"
 
+# Final reads, ToB TOB-K20-01: on a LOOPBACK admin URL the token goes out only
+# while this project's gateway container runs (Docker then holds the port);
+# otherwise whatever listens there would receive it.
+printf '#!/usr/bin/env bash\ncase " $* " in *" ps --status running -q gateway "*) [ "${DASH_GW_RUNNING:-0}" = 1 ] && echo 9a7e0004; exit 0 ;; *" version "*) exit 0 ;; esac\nexit 1\n' > "$DASH_BIN/docker"
+chmod +x "$DASH_BIN/docker"
+printf 'LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL=http://127.0.0.1:8080\nLUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN=%s\n' "$DASH_TOKEN" > "$DASH_ENV"
+for running in 0 1; do
+  : > "$DASH_ARGV_LOG"; : > "$DASH_HDR_LOG"; DASH_RC=0
+  DASH_OUT="$(DASH_GW_RUNNING="$running" DASH_ARGV_LOG="$DASH_ARGV_LOG" DASH_HDR_LOG="$DASH_HDR_LOG" DOCTOR_OFFLINE=0 DOCTOR_INCLUDE_DASHBOARD=0 \
+    PATH="$DASH_BIN:$PATH" bash -c '__dash_env="$1"; set --; . "$0" >/dev/null 2>&1; check_dashboard_keys "$__dash_env"' \
+    "$ROOT/bin/lucairn" "$DASH_ENV" 2>&1)" || DASH_RC=$?
+  if [ "$running" = 0 ]; then
+    [ ! -s "$DASH_HDR_LOG" ] && [ ! -s "$DASH_ARGV_LOG" ] || { echo 'TOB-K20-01: dashboard keys sent the admin token to a loopback URL with no running gateway container' >&2; exit 1; }
+    grep -Fq 'gateway container not running' <<< "$DASH_OUT" || { printf '%s\n' "$DASH_OUT" >&2; echo 'TOB-K20-01: no warning for the skipped loopback probe' >&2; exit 1; }
+  else
+    [ "$(cat "$DASH_HDR_LOG")" = "X-Admin-Key: $DASH_TOKEN" ] || { echo 'TOB-K20-01: dashboard keys did not probe a loopback URL while the gateway runs' >&2; exit 1; }
+  fi
+done
+echo "lucairn doctor dashboard keys: loopback admin URL only while the gateway container runs: ok"
+
 echo "lucairn cli tests: ok"
 
 # S1 strict runtime-profile grammar: no ambiguous YAML state can reach a

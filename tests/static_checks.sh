@@ -954,4 +954,16 @@ else
   echo "T-487: GATEWAY_TOOL_SCHEMA_GUARD render assertions skipped (helm not installed)"
 fi
 
+# Final reads (ToB TOB-K20-04): no doc, script or chart hands a password to a
+# command as `env NAME=value cmd` — the argument list of that `env` process is
+# readable by every local user (inside `kubectl exec`, by everyone in the pod
+# and on the node). Recipes pass it in a private pgpass file over stdin.
+ENV_PW_HITS="$(cd "$ROOT" && grep -rnE '(^|[^A-Za-z0-9_-])env +([A-Za-z_][A-Za-z0-9_]*=[^ ]* +)*[A-Z_]*PASSWORD=' -- *.md docs scripts bin charts contrib servicenow 2>/dev/null || true)"
+if [ -n "$ENV_PW_HITS" ]; then
+  echo "TOB-K20-04: a password is passed as an argument of env (use a pgpass file over stdin):" >&2
+  printf '%s\n' "$ENV_PW_HITS" >&2
+  exit 1
+fi
+echo "TOB-K20-04: no 'env ...PASSWORD=' argument in docs, scripts or charts"
+
 echo "static checks: ok"

@@ -127,6 +127,10 @@ if [ "\${1:-}" = compose ]; then
   case "\$a" in
     *" version "*) exit 0 ;;
     *" ps -a "*) [ -n "\${STUB_PS:-}" ] && cat "\$STUB_PS"; exit 0 ;;
+    # final reads (TOB-K20-01): is the gateway container RUNNING (default yes)
+    *" ps --status running -q gateway "*) [ "\${STUB_GW_RUNNING:-1}" = 1 ] && echo 9a7e000000000000000000000000000000000000000000000000000000000004; exit 0 ;;
+    # final reads (M3): the hash of the config file INSIDE the running sanitizer
+    *" exec -T sanitizer sha256sum "*) [ -n "\${STUB_SAN_SHA:-}" ] && echo "\$STUB_SAN_SHA  /config/config.yaml"; exit 0 ;;
     *" exec -T postgres-sanitizer-core "*) echo "\${STUB_LEDGER_OUT:-7}"; exit 0 ;;
     *" logs --no-color sanitizer-core "*) [ -n "\${STUB_CORE_LOG:-}" ] && cat "\$STUB_CORE_LOG"; exit 0 ;;
     *" logs --no-color veil-witness "*) [ -n "\${STUB_WITNESS_LOG:-}" ] && cat "\$STUB_WITNESS_LOG"; exit 0 ;;
@@ -587,6 +591,7 @@ printf '%s\n' 'lcr_live_synthetic_k_c_doctor_fixture_key' > "$TMP/customer.key";
 SIDE_ID="5ide000000000000000000000000000000000000000000000000000000000001"
 cat > "$TMP/ps.ok" <<EOF
 gateway|9a7e000000000000000000000000000000000000000000000000000000000004|running|healthy
+sanitizer|5a00000000000000000000000000000000000000000000000000000000000006|running|healthy
 postgres-sanitizer-core|9f00000000000000000000000000000000000000000000000000000000000003|running|healthy
 sanitizer-core-sidecar|$SIDE_ID|running|healthy
 sanitizer-core|c0re000000000000000000000000000000000000000000000000000000000002|running|healthy
@@ -594,8 +599,9 @@ EOF
 { cat "$TMP/ps.ok"; echo "gateway|9a7e000000000000000000000000000000000000000000000000000000000005|running|healthy"; } > "$TMP/ps.two"
 printf '%s\n' '2026/11/02 08:00:00 evidence: witness transport mode=mtls addr="veil-witness:50057"' > "$TMP/core.log"
 printf '%s\n' 'veil-claim-arrival request_id=r1 service_id=dsa-sanitizer' > "$TMP/witness.log"
+sha_file() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi; }
 online() { # [env assignments...]
-  env STUB_MEM_BYTES=34359738368 STUB_PS="$TMP/ps.ok" STUB_NETMODE="container:$SIDE_ID" STUB_CORE_LOG="$TMP/core.log" \
+  env STUB_MEM_BYTES=34359738368 STUB_PS="$TMP/ps.ok" STUB_NETMODE="container:$SIDE_ID" STUB_CORE_LOG="$TMP/core.log" STUB_SAN_SHA="$(sha_file "$SNC/copy/sanitizer.yaml")" \
     STUB_WITNESS_LOG="$TMP/witness.log" STUB_LEDGER_OUT=7 "$@" \
     bash "$ROOT/bin/lucairn" doctor --env "$ENVF" --compose "$COMPOSE" --customer-key-file "$TMP/customer.key" --skip-image-check > "$TMP/online.out" 2>&1
   ONLINE_RC=$?
@@ -622,6 +628,10 @@ online_red "RED control certificate under 14 days" "cert_days=9"
 write_state '{"cust_a":["key_a"]}' '{"mode":"off","instances":[]}'
 online_red "RED gateway not recreated after the opt-in (status off)" "mode=off"
 write_state '{"cust_a":["key_a","key_b"]}' "$STATUS_OK"
+grep -q 'ServiceNow mode: running sanitizer reads the current config copy' "$TMP/online.out" \
+  && pass "M3 doctor: the running sanitizer's file equals the host copy" || fail "M3 doctor: running sanitizer copy line: $(grep 'ServiceNow mode' "$TMP/online.out" | tail -3 | tr '\n' ' ')"
+online_red "M3 RED the running sanitizer still reads an older copy (bind mount kept the old inode)" "the running sanitizer reads an older config than" STUB_SAN_SHA=0000000000000000000000000000000000000000000000000000000000000000
+online_red "M3 RED the running sanitizer's file cannot be read" "could not compare the sanitizer config inside the running sanitizer" STUB_SAN_SHA=
 
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
@@ -756,6 +766,74 @@ printf '%s\n' "$SNDOC" | grep -Fq "printf 'X-Admin-Key: %s\\n' \"\$DSA_ADMIN_KEY
   || fail "INSTALL.md ServiceNow guide: the key-list call with -H @-"
 grep -q 'directory-check --dir servicenow-directory' "$ROOT/scripts/release-kit.sh" \
   && pass "release-kit.sh runs directory-check before a release" || fail "release-kit.sh directory-check gate"
+
+echo ""
+echo "K. Final reads (2026-11-03): TOB-K20-01 admin key only to a running gateway; M3 copy changes recreate the sanitizer"
+# A squatter on the gateway's port records every request it receives.
+SQ_PORT_FILE="$TMP/squat.port"; SQ_LOG="$TMP/squat.log"; : > "$SQ_LOG"
+python3 - "$SQ_PORT_FILE" "$SQ_LOG" <<'PY' &
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        with open(sys.argv[2], "a") as f:
+            f.write("%s admin-key=%s\n" % (self.path, "yes" if self.headers.get("X-Admin-Key") else "no"))
+        self.send_response(404); self.end_headers()
+    def log_message(self, *a): pass
+s = http.server.HTTPServer(("127.0.0.1", 0), H)
+open(sys.argv[1], "w").write(str(s.server_address[1]))
+s.serve_forever()
+PY
+SQ_PID=$!
+disown "$SQ_PID" 2>/dev/null || true
+for _ in $(seq 1 50); do [ -s "$SQ_PORT_FILE" ] && break; sleep 0.1; done
+SQ_PORT="$(cat "$SQ_PORT_FILE")"
+d="$(variant squat)"; sed -i.bak "s/^GATEWAY_PORT=.*/GATEWAY_PORT=$SQ_PORT/" "$d/customer.env"; rm -f "$d/customer.env.bak"
+: > "$SQ_LOG"
+cli up "$d/customer.env" STUB_GW_RUNNING=0
+if grep -q 'admin-key=yes' "$SQ_LOG"; then
+  fail "TOB-K20-01 RED up sent DSA_ADMIN_KEY to a listener on the gateway port while no gateway container ran"
+elif grep -q 'the gateway container is not running yet' "$TMP/cli.out" && grep -q ' up -d' "$TMP/stub.log"; then
+  pass "TOB-K20-01 up never sends the admin key while the gateway container is not running (a squatter on 127.0.0.1:<port> got nothing); it warns and starts"
+else
+  fail "TOB-K20-01 up with no running gateway: $(tail -2 "$TMP/cli.out" | tr '\n' ' ')"
+fi
+[ -s "$SQ_LOG" ] && fail "TOB-K20-01 the squatter received no request at all from up" || pass "TOB-K20-01 the squatter received no request at all from up"
+# doctor online: a STOPPED gateway in `ps -a` is not a running one
+sed 's/^gateway|\([^|]*\)|running|healthy$/gateway|\1|exited|unhealthy/' "$TMP/ps.ok" > "$TMP/ps.gwstopped"
+: > "$SQ_LOG"
+env STUB_MEM_BYTES=34359738368 STUB_PS="$TMP/ps.gwstopped" STUB_GW_RUNNING=0 STUB_NETMODE="container:$SIDE_ID" STUB_CORE_LOG="$TMP/core.log" \
+  STUB_WITNESS_LOG="$TMP/witness.log" STUB_LEDGER_OUT=7 STUB_SAN_SHA="$(sha_file "$SNC/copy/sanitizer.yaml")" \
+  bash "$ROOT/bin/lucairn" doctor --env "$d/customer.env" --compose "$COMPOSE" --customer-key-file "$TMP/customer.key" --skip-image-check > "$TMP/online.out" 2>&1
+DRC=$?
+if grep -q 'admin-key=yes' "$SQ_LOG"; then
+  fail "TOB-K20-01 RED doctor sent DSA_ADMIN_KEY to the gateway port while the gateway container was stopped"
+elif [ "$DRC" -ne 0 ] && grep -q 'ServiceNow mode: failed (no running gateway container' "$TMP/online.out"; then
+  pass "TOB-K20-01 doctor counts only RUNNING gateway containers and sends no admin key while none runs (fails, names the cause)"
+else
+  fail "TOB-K20-01 doctor with a stopped gateway (rc $DRC): $(grep 'ServiceNow mode' "$TMP/online.out" | tail -3 | tr '\n' ' ')"
+fi
+kill "$SQ_PID" 2>/dev/null || true
+
+# M3: an unchanged copy is left alone (same inode: the running sanitizer still
+# reads it); a changed copy is written and the sanitizer is recreated AFTER up -d.
+cli up "$ENVF" >/dev/null 2>&1
+ino() { if stat -f %i "$1" >/dev/null 2>&1; then stat -f %i "$1"; else stat -c %i "$1"; fi; }
+I1="$(ino "$SNC/copy/sanitizer.yaml")"
+cli up "$ENVF"
+if [ "$(ino "$SNC/copy/sanitizer.yaml")" = "$I1" ] && grep -q 'sanitizer config copy is current' "$TMP/cli.out" && ! grep -q 'force-recreate sanitizer' "$TMP/stub.log"; then
+  pass "M3 an unchanged copy keeps its inode and the sanitizer is not recreated"
+else
+  fail "M3 unchanged copy: inode $I1 -> $(ino "$SNC/copy/sanitizer.yaml"); $(grep -i 'config copy' "$TMP/cli.out" | tr '\n' ' ')"
+fi
+printf '# operator edit (final-read M3)\n' >> "$SNC/base-sanitizer.yaml"
+cli up "$ENVF"
+UPN="$(grep -n ' up -d$' "$TMP/stub.log" | head -1 | cut -d: -f1)"
+RCN="$(grep -n ' up -d --no-deps --force-recreate sanitizer$' "$TMP/stub.log" | head -1 | cut -d: -f1)"
+if [ -n "$UPN" ] && [ -n "$RCN" ] && [ "$UPN" -lt "$RCN" ] && copy_matches; then
+  pass "M3 a changed copy is rebuilt and the sanitizer is force-recreated after up -d (so it reads the new file)"
+else
+  fail "M3 changed copy: up line '${UPN:-none}', recreate line '${RCN:-none}': $(tr '\n' '|' < "$TMP/stub.log")"
+fi
 
 echo ""
 if [ "$FAILS" -eq 0 ]; then
