@@ -779,8 +779,13 @@ echo "G. bin/lucairn: verify-images set + bundle bootstrap"
 grep -q 'local core_pair=(dsa-sanitizer-core dsa-sanitizer-core-sidecar)' "$ROOT/bin/lucairn" && pass "verify-images expects exactly dsa-sanitizer-core + dsa-sanitizer-core-sidecar (the K-A core_pair)" || fail "verify-images expects the core pair (core_pair)"
 if grep -q 'dsa_images+=(dsa-sanitizer-core' "$ROOT/bin/lucairn"; then fail "the pair is not ALSO added at the umbrella --tag (it would be expected twice)"; else pass "the pair is not ALSO added at the umbrella --tag (it would be expected twice)"; fi
 grep -q 'dsa-sanitizer-core:${core_tag}' "$ROOT/bin/lucairn" && grep -q 'dsa-sanitizer-core-sidecar:${core_tag}' "$ROOT/bin/lucairn" && pass "doctor image check pulls the core pair on its own tag" || fail "doctor image check pulls the core pair on its own tag"
-grep -q 'cp "$ROOT/scripts/bootstrap-sanitizer-core-mtls.sh" "$staging/scripts/bootstrap-sanitizer-core-mtls.sh"' "$ROOT/bin/lucairn" && pass "bundle create carries the mTLS bootstrap in scripts/ (not install/scripts/, T-350)" || fail "bundle create carries the mTLS bootstrap"
-grep -q 'require_file "$root/scripts/bootstrap-sanitizer-core-mtls.sh" "bundle sanitizer-core mTLS bootstrap"' "$ROOT/bin/lucairn" && pass "bundle verify requires it for a kit 2.0 compose" || fail "bundle verify requires the bootstrap"
+# Final reads (H2): bundle create stages BOTH core operator tools in scripts/
+# (not install/scripts/, T-350) from #158; the offline-bundle reproduction in
+# tests/test_sanitizer_core_compose.sh § H proves the extracted bundle runs them.
+grep -q 'for _core_tool in bootstrap-sanitizer-core-mtls.sh write-sanitizer-core-registry-dsn.sh; do' "$ROOT/bin/lucairn" \
+  && grep -q 'cp "$ROOT/scripts/$_core_tool" "$staging/scripts/$_core_tool"' "$ROOT/bin/lucairn" \
+  && pass "bundle create carries the mTLS bootstrap and the DSN writer in scripts/ (not install/scripts/, T-350)" || fail "bundle create carries the mTLS bootstrap and the DSN writer"
+grep -q 'require_file "$root/scripts/$_core_tool" "bundle sanitizer-core operator tool $_core_tool"' "$ROOT/bin/lucairn" && pass "bundle verify requires both for a kit 2.0 compose" || fail "bundle verify requires the bootstrap and the DSN writer"
 grep -q -- '--profile sanitizer-core-migrate run --rm migrate-sanitizer-core' "$ROOT/bin/lucairn" && pass "bundle install note names the migration step" || fail "bundle install note names the migration step"
 
 # Red-proof of the tally (fix round 4, sol r3 P2; RED on 507f0323): a block
