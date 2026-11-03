@@ -360,15 +360,39 @@ BASE = {"dsa-sanitizer-core-ingress", "dsa-sanitizer-core-witness", "dsa-sanitiz
 p(set(sn) == BASE, "witness-central: the core's namespace keeps exactly its three links (%s)" % sorted(sn))
 p(all(nets.get(n, {}).get("internal") is True for n in sn), "witness-central: every network of the core's namespace is internal (no route off the host)")
 ce = core.get("environment") or {}
-p(ce.get("LCR_WITNESS_ADDR") == "sanitizer-core-witness-relay:50057", "witness-central: the core dials the relay on its internal witness link (%s)" % ce.get("LCR_WITNESS_ADDR"))
+p(ce.get("LCR_WITNESS_ADDR") == "sanitizer-core-witness-relay-link:50057", "witness-central: the core dials the relay on its internal witness link (%s)" % ce.get("LCR_WITNESS_ADDR"))
 r = svcs.get("sanitizer-core-witness-relay") or {}
 rn = r.get("networks") or {}
 eg = [n for n in rn if nets.get(n, {}).get("internal") is not True]
 p(len(eg) == 1 and members(eg[0]) == {"sanitizer-core-witness-relay"}, "witness-central: the relay is the ONLY member of the one egress link (%s)" % [(n, sorted(members(n))) for n in eg])
-p("sanitizer-core-witness-relay" in ((rn.get("dsa-sanitizer-core-witness") or {}).get("aliases") or []), "witness-central: the relay answers on the core's witness link")
-p(members("dsa-sanitizer-core-witness") == {"sanitizer-core-sidecar", "sanitizer-core-witness-relay"}, "witness-central: the witness link holds the core's namespace and the relay only — the local witness is not started (%s)" % sorted(members("dsa-sanitizer-core-witness")))
+p("sanitizer-core-witness-relay-link" in ((rn.get("dsa-sanitizer-core-witness") or {}).get("aliases") or []), "witness-central: the relay answers on the core's witness link")
+# Round 4 (sol r3): the name the relay BINDS and the name the core DIALS must
+# resolve to ONE address. Compose puts a service's name on every network the
+# service joins and Docker's resolver answers it from a non-internal network
+# first, so that name must be an alias that only the internal witness link
+# carries: the relay binds it, the core dials it, and no other network (and
+# no service name) holds it.
 re_ = r.get("environment") or {}
-p(re_.get("RELAY_UPSTREAM") == "witness.example.invalid:50057" and re_.get("RELAY_LISTEN_HOST") == "sanitizer-core-witness-relay", "witness-central: the relay forwards to LUCAIRN_CENTRAL_WITNESS_ADDR only, listening on its witness-link alias")
+bind = re_.get("RELAY_LISTEN_HOST") or ""
+dial = (ce.get("LCR_WITNESS_ADDR") or "").rpartition(":")[0]
+def carriers(name):  # every (network, service) where `name` resolves
+    out = set()
+    for sname, x in svcs.items():
+        for n, cfg in (x.get("networks") or {}).items():
+            names = {sname} | set((cfg or {}).get("aliases") or [])
+            if x.get("container_name"):
+                names.add(x["container_name"])
+            if x.get("hostname"):
+                names.add(x["hostname"])
+            if name in names:
+                out.add((n, sname))
+    return out
+p(bind == dial and bind != "", "witness-central: the relay binds the name the core dials (bind %r, dial %r)" % (bind, dial))
+p(bind not in svcs, "witness-central: the relay's bind name is not a service name (Compose would put it on the egress link too) (%r)" % bind)
+p(carriers(bind) == {("dsa-sanitizer-core-witness", "sanitizer-core-witness-relay")}, "witness-central: the bind name resolves ONLY on the internal witness link, to the relay (%s)" % sorted(carriers(bind)))
+p(nets.get("dsa-sanitizer-core-witness", {}).get("internal") is True, "witness-central: the network that carries the bind name is internal")
+p(members("dsa-sanitizer-core-witness") == {"sanitizer-core-sidecar", "sanitizer-core-witness-relay"}, "witness-central: the witness link holds the core's namespace and the relay only — the local witness is not started (%s)" % sorted(members("dsa-sanitizer-core-witness")))
+p(re_.get("RELAY_UPSTREAM") == "witness.example.invalid:50057" and re_.get("RELAY_LISTEN_HOST") == "sanitizer-core-witness-relay-link", "witness-central: the relay forwards to LUCAIRN_CENTRAL_WITNESS_ADDR only, listening on its witness-link alias")
 p(not r.get("ports") and not any(v.get("target", "").startswith("/etc/lucairn") for v in r.get("volumes") or []), "witness-central: the relay publishes no port and mounts no credential")
 p((r.get("depends_on") or {}).get("witness-egress-guard", {}).get("condition") == "service_completed_successfully", "witness-central: the relay is gated by the T-682 witness-egress guard")
 p(r.get("image") == side.get("image"), "witness-central: the relay runs the signed sidecar image (no extra image)")
@@ -377,7 +401,13 @@ p(ls_ == ["--listen=sanitizer-core:8790"], "witness-central: the core still list
 NETCHECK
   printf 'services:\n  sanitizer-core-sidecar:\n    networks:\n      dsa-sanitizer-core-witness-egress: {}\n' > "$TMP/mutant-egress.yml"
   printf 'services:\n  sanitizer-core:\n    command: ["serve", "--listen=0.0.0.0:8790", "--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn", "--sidecar=http://127.0.0.1:8765"]\n' > "$TMP/mutant-listen.yml"
-  for cell in "real|" "mutant-egress|-f $TMP/mutant-egress.yml" "mutant-listen|-f $TMP/mutant-listen.yml"; do
+  # Round 4 mutant = the r3 shape (sol r3 P1): relay and core use the relay's
+  # SERVICE name, which Compose also puts on the egress link.
+  printf 'services:\n  sanitizer-core:\n    environment:\n      LCR_WITNESS_ADDR: "sanitizer-core-witness-relay:50057"\n  sanitizer-core-witness-relay:\n    environment:\n      RELAY_LISTEN_HOST: "sanitizer-core-witness-relay"\n' > "$TMP/mutant-svcname.yml"
+  # ... and the right alias, but ALSO on the egress link (only the
+  # resolves-on-one-network check can catch this one).
+  printf 'services:\n  sanitizer-core-witness-relay:\n    networks:\n      dsa-sanitizer-core-witness-egress:\n        aliases: ["sanitizer-core-witness-relay-link"]\n' > "$TMP/mutant-alias-egress.yml"
+  for cell in "real|" "mutant-egress|-f $TMP/mutant-egress.yml" "mutant-listen|-f $TMP/mutant-listen.yml" "mutant-svcname|-f $TMP/mutant-svcname.yml" "mutant-alias-egress|-f $TMP/mutant-alias-egress.yml"; do
     cname="${cell%%|*}"; cextra="${cell#*|}"
     # shellcheck disable=SC2086 # cextra is "" or "-f <file>"
     if docker compose -f "$COMPOSE" -f "$ROOT/contrib/witness-central/docker-compose.witness-central.yml" $cextra --env-file "$TMP/central.env" \
@@ -1240,6 +1270,65 @@ elif grep -Fq "could not be read through Docker Compose (Docker Compose is not a
 else
   fail "RED no Docker Compose on PATH — $(tail -1 "$TMP/sb.out")"
 fi
+# Fix round 4 (sol r3), RED on 93766db each.
+# (5) The bundle compares DECODED values (class-deleting: no escaped needle
+# variant list). sol's synthetic secret 'alpha'beta$deltalong, exported over
+# customer.env, is printed by Compose as '''alpha''beta$$deltalong' (YAML ''
+# doubling AND Compose's $$ in one value), which no raw needle matches. Here
+# it sits literally in the collected compose file under a non-secret key; the
+# online case below has Compose itself emit it into compose-resolved.yml.
+SOLV="'alpha'beta\$deltalong"
+SOLY="OPERATOR_NOTE: '''alpha''beta\$\$deltalong'"
+mkdir -p "$TMP/esckit"
+for e in "$KIT"/* "$KIT"/.[!.]*; do
+  [ -e "$e" ] && ln -s "$e" "$TMP/esckit/$(basename "$e")"
+done
+rm -f "$TMP/esckit/docker-compose.customer.yml"
+awk -v line="      $SOLY" '{ print } $0 == "      LCR_WITNESS_ADDR: \"veil-witness:50057\"" && !done { print line; done = 1 }' "$KIT_COMPOSE" > "$TMP/esckit/docker-compose.customer.yml"
+if grep -Fxq "      $SOLY" "$TMP/esckit/docker-compose.customer.yml" \
+   && ! POSTGRES_AUDIT_PASSWORD="$SOLV" PATH="$DBIN:$BASE_PATH" bash "$KIT/bin/lucairn" support-bundle --env "$ENVF" --compose "$TMP/esckit/docker-compose.customer.yml" --output "$BUN/esc" --offline > "$TMP/sb.out" 2>&1 \
+   && grep -Fq "support bundle: refused" "$TMP/sb.out" && grep -Fq "found after decoding" "$TMP/sb.out" \
+   && ! grep -Fq "alpha''beta" "$TMP/sb.out" && ! find "$BUN/esc" -mindepth 1 2>/dev/null | grep -q .; then
+  pass "RED a secret YAML-escaped ('' doubling + Compose \$\$) in a collected file — refused after decoding, nothing left behind"
+else
+  fail "RED a secret YAML-escaped ('' doubling + Compose \$\$) — $(tail -1 "$TMP/sb.out")"
+fi
+# The same class in a collected ENV file: the secret written with an escape
+# only Compose's env-file parser undoes ("\0101" is "A"; no JSON, YAML or
+# percent form spells it so), under a non-secret key.
+V="$(variant sbleakenvq)"
+printf '%s\n' 'POSTGRES_AUDIT_PASSWORD=OctalAProbe4829x' 'OPERATOR_NOTE="Octal\0101Probe4829x"' >> "$V/customer.env"
+bundle_refuses "a secret written with an env-file escape (\\0101 = A) under a non-secret key" "$V" leakenvq 'OctalAProbe4829x'
+# (6) The install's project MUST render: an unrelated required variable that
+# is missing used to drop every secret only the compose files carry (the
+# bundle went on with the env probes alone and archived such a secret).
+mkdir -p "$TMP/reqkit"
+for e in "$KIT"/* "$KIT"/.[!.]*; do
+  [ -e "$e" ] && ln -s "$e" "$TMP/reqkit/$(basename "$e")"
+done
+rm -f "$TMP/reqkit/docker-compose.customer.yml"
+awk '{ print } $0 == "      LCR_WITNESS_ADDR: \"veil-witness:50057\"" { print "      OVERLAY_SERVICE_TOKEN: \"ComposeOnlyTokenValue4829\""; print "      UNRELATED_SETTING: \"${LUCAIRN_UNRELATED_REQUIRED:?set LUCAIRN_UNRELATED_REQUIRED}\"" }' "$KIT_COMPOSE" > "$TMP/reqkit/docker-compose.customer.yml"
+V="$(variant sbleakreq)"; printf 'OPERATOR_NOTE=ComposeOnlyTokenValue4829\n' >> "$V/customer.env"
+if PATH="$DBIN:$BASE_PATH" bash "$KIT/bin/lucairn" support-bundle --env "$V/customer.env" --compose "$TMP/reqkit/docker-compose.customer.yml" --output "$BUN/leakreq" --offline > "$TMP/sb.out" 2>&1; then
+  fail "RED the project does not render (an unrelated required variable is missing) — it archived"
+elif grep -Fq "support bundle: refused" "$TMP/sb.out" && grep -Fq "cannot render this install's project: required variable LUCAIRN_UNRELATED_REQUIRED is missing a value" "$TMP/sb.out" \
+     && ! grep -Fq "ComposeOnlyTokenValue4829" "$TMP/sb.out" && ! find "$BUN/leakreq" -mindepth 1 2>/dev/null | grep -q .; then
+  pass "RED the project does not render (an unrelated required variable is missing) — refused, naming the variable, nothing left behind"
+else
+  fail "RED the project does not render — $(tail -1 "$TMP/sb.out")"
+fi
+# (7) The decoded comparison cannot run (python3 not usable): refused, never
+# skipped.
+NOPY="$TMP/no-python-bin"; mkdir -p "$NOPY"
+printf '#!/bin/sh\necho "python3 unavailable" >&2\nexit 127\n' > "$NOPY/python3"; chmod 0755 "$NOPY/python3"
+if PATH="$NOPY:$DBIN:$BASE_PATH" bash "$KIT/bin/lucairn" support-bundle --env "$ENVF" --compose "$KIT_COMPOSE" --output "$BUN/nopy" --offline > "$TMP/sb.out" 2>&1; then
+  fail "RED python3 not usable — the bundle was archived without the decoded comparison"
+elif grep -Fq "could not be compared decoded (python3 (standard library) is required" "$TMP/sb.out" \
+     && ! find "$BUN/nopy" -mindepth 1 2>/dev/null | grep -q .; then
+  pass "RED python3 not usable — support-bundle refuses, nothing left behind"
+else
+  fail "RED python3 not usable — $(tail -1 "$TMP/sb.out")"
+fi
 # No false refusal on a full ONLINE bundle: `docker compose config` of the
 # real project (client-side render, no daemon needed) lands in the bundle
 # redacted; none of the needles may survive in it.
@@ -1254,6 +1343,29 @@ if [ "$HAVE_COMPOSE" -eq 1 ]; then
     if grep -rqF -e "$INIT_PW" -e "$REGKEY" -e "$SIGKEY" "$BUN/online-x"; then fail "the online bundle holds none of the planted-class secrets"; else pass "the online bundle holds none of the planted-class secrets"; fi
   else
     fail "support-bundle (online, real compose render) on the generated install: $(tail -2 "$TMP/sb.out")"
+  fi
+  # (5, online) sol r3's exact reproduction: the secret exported over
+  # customer.env reaches a non-secret key through a compose file, and Compose
+  # ITSELF prints it into redacted/compose-resolved.yml as
+  # OPERATOR_NOTE: '''alpha''beta$$deltalong'.
+  mkdir -p "$TMP/esckit2"
+  for e in "$KIT"/* "$KIT"/.[!.]*; do
+    [ -e "$e" ] && ln -s "$e" "$TMP/esckit2/$(basename "$e")"
+  done
+  rm -f "$TMP/esckit2/docker-compose.customer.yml"
+  awk '{ print } $0 == "      LCR_WITNESS_ADDR: \"veil-witness:50057\"" && !done { print "      OPERATOR_NOTE: \"${POSTGRES_AUDIT_PASSWORD-}\""; done = 1 }' "$KIT_COMPOSE" > "$TMP/esckit2/docker-compose.customer.yml"
+  if POSTGRES_AUDIT_PASSWORD="$SOLV" docker compose -f "$TMP/esckit2/docker-compose.customer.yml" --env-file "$ENVF" config 2>/dev/null | grep -Fxq "      $SOLY"; then
+    pass "precondition: Compose prints the exported secret as $SOLY"
+  else
+    fail "precondition: Compose prints the exported secret as $SOLY"
+  fi
+  if POSTGRES_AUDIT_PASSWORD="$SOLV" PATH="$BASE_PATH" bash "$KIT/bin/lucairn" support-bundle --env "$ENVF" --compose "$TMP/esckit2/docker-compose.customer.yml" --output "$BUN/esc2" > "$TMP/sb.out" 2>&1; then
+    fail "RED sol r3: Compose prints the exported secret YAML-escaped into compose-resolved.yml — it archived"
+  elif grep -Fq "support bundle: refused" "$TMP/sb.out" && grep -Fq "redacted/compose-resolved.yml, found after decoding" "$TMP/sb.out" \
+       && ! find "$BUN/esc2" -mindepth 1 2>/dev/null | grep -q .; then
+    pass "RED sol r3: Compose prints the exported secret YAML-escaped into compose-resolved.yml — refused after decoding"
+  else
+    fail "RED sol r3: the exported secret in compose-resolved.yml — $(tail -1 "$TMP/sb.out")"
   fi
 else
   skip "docker compose CLI not available — online support-bundle no-false-refusal case"

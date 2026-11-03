@@ -1200,6 +1200,19 @@ redact_stream() {
     # the per-match loops above are superlinear on such a line, and a line that
     # long is not diagnosable prose anyway. Bounds both runtime and the risk of
     # a novel credential shape hiding in a blob no rule models.
+    # closeq: a redacted line must still PARSE (kit 2.0 K-A fix round 4: the
+    # support bundle now parses every collected YAML/env file for its decoded
+    # comparison). When the kept prefix (after indentation and a YAML "- ")
+    # OPENS a quote it does not close — a quoted list item such as
+    #   - "--registry-dsn-file=/run/secrets/x"
+    # — the emitted line gets that closing quote back after the marker.
+    function closeq(prefix, out,    t, q) {
+      t = prefix
+      sub(/^[[:space:]]*(-[[:space:]]+)?/, "", t)
+      q = substr(t, 1, 1)
+      if ((q == "\"" || q == sprintf("%c", 39)) && index(substr(t, 2), q) == 0) return out q
+      return out
+    }
     length($0) > 8192 { print "<redacted: line exceeds 8192 bytes>"; next }
     /^[[:space:]]*#/ || /^[[:space:]]*$/ { print; next }
     {
@@ -1229,7 +1242,7 @@ redact_stream() {
       sub(/[[:space:]:].*/, "", k)
       kpos = (k == "") ? 0 : index(pre, k)
       if (kpos > 0 && secret_key(k)) {
-        print substr(pre, 1, kpos - 1) k sep "<redacted>"
+        print closeq(substr(pre, 1, kpos - 1) k, substr(pre, 1, kpos - 1) k sep "<redacted>")
       } else {
         print line
       }
@@ -1241,7 +1254,10 @@ redact_stream() {
       # literal `KEY:` match printed verbatim into redacted/compose-resolved.yml
       # (kit 2.0 K-A fix round 1; tests/test_redact_stream.sh case 6f).
       if (toupper(line) ~ /(KEY|TOKEN|SECRET|PASSWORD|PRIVATE|SIGNING|CERT|CREDENTIAL|API_KEY|LICENSE|DATABASE_URL|DB_URL|DSN)S?:/) {
+        kept = line
+        sub(/:.*/, "", kept)
         sub(/:.*/, ": <redacted>", line)
+        line = closeq(kept, line)
       }
       print line
     }
@@ -9379,8 +9395,9 @@ write_cert_report() {
 
 # support_bundle_secret_needles <env file> <compose file>
 # Prints, one per line, every secret value Docker Compose knows for this
-# install (support-bundle's redaction-miss scan; never printed elsewhere),
-# taken from Compose ITSELF by bin/compose-env.sh cev_needles (K-A fix round 2):
+# install, DECODED (support-bundle's redaction-miss scan; never printed
+# elsewhere), taken from Compose ITSELF by bin/compose-env.sh cev_needles
+# (K-A fix round 2; round 4: decoded values only, the project must render):
 #   * every secret-named customer.env value (PASSWORD, SECRET, TOKEN, KEY,
 #     DSN, PRIVATE, CREDENTIAL, LICENSE — not PUBLIC/PUBKEY keys or *_ID,
 #     *_NAME, *_PATH, *_FILE, *_DIR, *_DAYS, *_URL names, nor file paths), as
@@ -9390,16 +9407,19 @@ write_cert_report() {
 #     this install's project (overlays merged), and the password of any
 #     `scheme://user:password@` URL in any value, command or entrypoint;
 #   * the sanitizer core's registry DSN file(s) (when readable): the DSN and
-#     its password, as written and decoded;
-#   * each value raw and in the forms a bundle file can hold it in: percent-
-#     encoded, `$$`-escaped (`docker compose config` output), JSON/YAML-escaped.
-# rc != 0 (no Docker Compose, Compose refuses customer.env, helper missing):
-# the caller refuses the bundle — the scan is never skipped.
+#     its password, as written and percent-decoded.
+# No escaped or encoded variant is generated (round 4, sol r3: a hand-made
+# variant list always misses one combination, e.g. YAML '' doubling AND
+# Compose's `$$` in one value). The encodings are undone on the BUNDLE side
+# instead: support_bundle_decoded_scan parses every collected file with its
+# format's own parser and compares the decoded strings.
+# rc != 0 (no Docker Compose, Compose refuses customer.env, the install's
+# project does not render, helper missing): the caller refuses the bundle —
+# the scan is never skipped and never runs on a partial secret list.
 # NON-COVERAGE: values shorter than 12 characters are not scanned (a short
 # dev value could match unrelated text by chance); secrets that exist only
 # outside Compose's view (files under cert directories, a value a service
-# derives itself) are not known here; a log line may carry a secret in an
-# encoding not listed above.
+# derives itself) are not known here.
 support_bundle_secret_needles() {
   local env_file="$1" compose_file="$2" pd
   if [ "$LUCAIRN_COMPOSE_ENV_LIB_OK" -ne 1 ]; then
@@ -9409,6 +9429,144 @@ support_bundle_secret_needles() {
   pd="$(cd "$(dirname "$compose_file")" 2>/dev/null && pwd)" || pd="$(dirname "$compose_file")"
   cev_needles --env-file "$env_file" --project-dir "$pd" \
     -- ${RUNTIME_COMPOSE_ARGS[@]+"${RUNTIME_COMPOSE_ARGS[@]}"}
+}
+
+# support_bundle_decoded_scan <bundle dir> <needles file>
+# The decoded comparison (K-A fix round 4, sol r3 on PR #158): every collected
+# file is PARSED with its format's own parser and every decoded string (keys
+# and values) is compared against every known secret (the needle list of
+# support_bundle_secret_needles, decoded values). The raw `grep -F` of the
+# same list stays as the first layer. By file name:
+#   *.yml / *.yaml  YAML — decoded by Docker Compose's own parser (go-yaml),
+#                   bin/compose-env.sh cev_to_json yaml (the file under one
+#                   `x-` key, --no-interpolate): '' and "\x41" escapes,
+#                   folding and anchors are undone by the parser itself
+#   *.env           env file — Compose's own dotenv parser (cev_to_json env)
+#   *.json          JSON — Python's json module
+#   anything else   raw text (logs, ps tables, the cert report): each line,
+#                   and any JSON object or array a line ends with (a
+#                   structured log line), parsed by Python's json module
+# Each decoded string is compared as decoded AND with Compose's `$$` escape
+# undone (once and twice: `config` output doubles every `$`, and a `$` read
+# from inside single quotes of an env file comes back doubled) AND percent-
+# decoded (a URL password). Parsing uses the parsers the kit already ships
+# for bundle work: Python 3's standard library (as `lucairn bundle`'s archive
+# checks) and Docker Compose (as the needle list); offline `doctor` does not
+# run this and stays Python-free.
+# rc: 0 nothing found · 1 a secret was found (stderr names the file, never
+# the value) · 3 a file could not be parsed, or Compose is missing (stderr
+# names the file) · 4 python3 is not usable. The caller refuses the bundle
+# on every rc != 0.
+# NON-COVERAGE: a value under Compose's `!reset` tag is dropped by Compose's
+# loader before it is compared (the raw layer still sees it as written); a
+# text file is compared line by line, so a secret split across two lines of
+# a log is not found; text encodings other than the ones above (base64, a
+# shell-quoted log argument) are not undone.
+support_bundle_decoded_scan() {
+  local dir="$1" needles="$2" work f rel kind n=0 rc
+  if ! have python3 || ! python3 -I -c 'import json, re, sys, urllib.parse' >/dev/null 2>&1; then
+    echo "python3 (standard library) is required for the decoded comparison, as for \`lucairn bundle\`" >&2
+    return 4
+  fi
+  work="$(mktemp -d "${TMPDIR:-/tmp}/lucairn-bundle-scan.XXXXXX")" || { echo "cannot create a private temp directory" >&2; return 3; }
+  chmod 0700 "$work"
+  : > "$work/list"
+  while IFS= read -r -d '' f; do
+    rel="${f#"$dir"/}"
+    case "$rel" in
+      *.yml|*.yaml) kind=yaml ;;
+      *.env) kind=env ;;
+      *.json) kind=json ;;
+      *) kind=text ;;
+    esac
+    case "$rel" in *"	"*|*"
+"*) echo "a collected file has a tab or line feed in its name" >&2; rm -rf "$work"; return 3 ;; esac
+    if [ "$kind" = yaml ] || [ "$kind" = env ]; then
+      n=$((n + 1))
+      if ! cev_to_json "$kind" "$f" "$work/$n.json" 2> "$work/err"; then
+        echo "$rel could not be parsed as $kind by Docker Compose: $(sed -n 's/^compose-env: //p' "$work/err" | head -1)" >&2
+        rm -rf "$work"; return 3
+      fi
+      printf '%s\t%s\t%s\n' json "$work/$n.json" "$rel" >> "$work/list"
+    else
+      printf '%s\t%s\t%s\n' "$kind" "$f" "$rel" >> "$work/list"
+    fi
+  done < <(find "$dir" -type f -print0)
+  python3 -I - "$needles" "$work/list" <<'DECODEDSCAN'
+import json, re, sys, urllib.parse
+
+needles = [n for n in open(sys.argv[1], "rb").read().split(b"\n") if n]
+if not needles:
+    sys.exit(0)
+pattern = re.compile(b"|".join(re.escape(n) for n in sorted(set(needles), key=len, reverse=True)))
+
+
+def forms(b):
+    out = {b}
+    u = b.replace(b"$$", b"$")
+    out.add(u)
+    out.add(u.replace(b"$$", b"$"))
+    for x in list(out):
+        if b"%" in x:
+            out.add(urllib.parse.unquote_to_bytes(x))
+    return out
+
+
+def hit(b):
+    return any(pattern.search(x) for x in forms(b))
+
+
+def strings(v):
+    if isinstance(v, str):
+        yield v.encode("utf-8", "surrogatepass")
+    elif isinstance(v, dict):
+        for k, x in v.items():
+            yield k.encode("utf-8", "surrogatepass")
+            yield from strings(x)
+    elif isinstance(v, list):
+        for x in v:
+            yield from strings(x)
+    elif v is not None and not isinstance(v, bool):
+        yield str(v).encode()
+
+
+def found(rel):
+    print("decoded: %s" % rel, file=sys.stderr)
+    sys.exit(1)
+
+
+for row in open(sys.argv[2], "rb").read().split(b"\n"):
+    if not row:
+        continue
+    kind, path, rel = row.decode("utf-8", "surrogateescape").split("\t", 2)
+    data = open(path, "rb").read()
+    if kind == "json":
+        try:
+            doc = json.loads(data)
+        except ValueError:
+            print("%s is not JSON" % rel, file=sys.stderr)
+            sys.exit(3)
+        if any(hit(s) for s in strings(doc)):
+            found(rel)
+        continue
+    for line in data.split(b"\n"):
+        if hit(line):
+            found(rel)
+        for opener in (b"{", b"["):
+            i = line.find(opener)
+            if i < 0:
+                continue
+            try:
+                doc = json.loads(line[i:].strip())
+            except ValueError:
+                continue
+            if any(hit(s) for s in strings(doc)):
+                found(rel)
+sys.exit(0)
+DECODEDSCAN
+  rc=$?
+  rm -rf "$work"
+  case "$rc" in 0|1) return "$rc" ;; *) return 3 ;; esac
 }
 
 support_bundle() {
@@ -9520,13 +9678,32 @@ support_bundle() {
     fail "support bundle: refused — the secret values to scan for could not be read through Docker Compose (${why:-unknown reason}); nothing was archived. Fix that, or report to Lucairn support without a bundle."
   fi
   rm -f "$needles_err"
+  # Layer 1: the raw bytes of every collected file.
   if [ -s "$needles" ] && grep -rqF -f "$needles" -- "$bundle_dir" 2>/dev/null; then
     leaked=1
+  fi
+  # Layer 2 (K-A fix round 4): every collected file parsed with its format's
+  # own parser, decoded strings compared (support_bundle_decoded_scan).
+  local decoded_err decoded_rc=0 where=""
+  if [ "$leaked" -eq 0 ] && [ -s "$needles" ]; then
+    decoded_err="$(mktemp)"
+    support_bundle_decoded_scan "$bundle_dir" "$needles" 2> "$decoded_err" || decoded_rc=$?
+    why="$(grep -v '^$' "$decoded_err" | head -1 || true)"
+    rm -f "$decoded_err"
+    case "$decoded_rc" in
+      0) ;;
+      1) leaked=1; where=" (${why#decoded: }, found after decoding)" ;;
+      *)
+        rm -f "$needles"
+        rm -rf "$bundle_dir"
+        fail "support bundle: refused — the collected files could not be compared decoded (${why:-unknown reason}); nothing was archived. Fix that, or report to Lucairn support without a bundle."
+        ;;
+    esac
   fi
   rm -f "$needles"
   if [ "$leaked" -eq 1 ]; then
     rm -rf "$bundle_dir"
-    fail "support bundle: refused — a secret value from $env_file or the sanitizer core's registry DSN appeared in a collected file; nothing was archived (the value is not printed). Report this to Lucairn support without a bundle."
+    fail "support bundle: refused — a secret value from $env_file or the sanitizer core's registry DSN appeared in a collected file${where}; nothing was archived (the value is not printed). Report this to Lucairn support without a bundle."
   fi
 
   tar -czf "$archive" -C "$output_dir" "$(basename "$bundle_dir")"

@@ -13,7 +13,10 @@ end to end through it, so the relay holds no key and sees ciphertext only.
 Environment:
   RELAY_LISTEN_HOST  the relay's alias on the core's witness link; resolved at
                      start and bound to that ONE address (not 0.0.0.0, so the
-                     egress network cannot reach the listener)
+                     egress network cannot reach the listener). It must be an
+                     alias ONLY that internal network carries, never the
+                     service name: Docker's resolver answers a service name
+                     from the non-internal (egress) network first.
   RELAY_LISTEN_PORT  default 50057
   RELAY_UPSTREAM     host:port or [v6]:port of the central witness claim port
   RELAY_MAX_CONNS    default 64 (further connections are closed at once)

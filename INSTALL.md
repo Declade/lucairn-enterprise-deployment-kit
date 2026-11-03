@@ -659,6 +659,9 @@ For Docker Compose:
   package (3.4.8) is sufficient: `sudo apt install python3-cryptography`.
   Newer distros come with it preinstalled. If neither package is available,
   `pip install pynacl` is the smallest alternative.
+- `bin/lucairn support-bundle` uses Python 3's standard library (as
+  `bin/lucairn bundle` does) to compare the decoded content of the files it
+  collects against every known secret; without it the bundle is refused.
 - **Online keyed doctor additionally requires Python 3.8 or later.** Its
   shipped helper uses only the Python standard library, so it needs neither
   `cryptography` nor network/PyPI access. This requirement applies only to
@@ -2545,10 +2548,15 @@ certificate (sanitizer claim from the core) are the install rehearsal's proof.
 archive it checks every collected file for every secret value Docker Compose
 knows for this install — the secret-named `customer.env` values as Compose reads
 them and as it interpolates them from your shell, the secret-named values it
-hands any container, URL passwords, and the DSN and its password — raw,
-percent-encoded and as `docker compose config` prints them. If one is found, it
-removes the bundle and writes nothing. Without Docker Compose it refuses too
-(the scan is never skipped).
+hands any container, URL passwords, and the DSN and its password. It compares
+twice: the raw bytes, and the DECODED content — each YAML file parsed by Docker
+Compose's own YAML parser, the env file by Compose's env-file parser, JSON by
+Python's `json`, logs line by line (with Compose's `$$` escape and percent
+encoding undone). If one is found, it removes the bundle and writes nothing. It
+refuses too without Docker Compose, without Python 3, when a collected file
+cannot be parsed, or when Compose cannot render your install's project (for
+example a required variable is missing) — the scan is never skipped and never
+runs on a partial list of secrets.
 
 The core listens only on its gateway link (`--listen=sanitizer-core:8790`, a
 name only that network carries), not on the witness or registry links of the
@@ -2556,7 +2564,10 @@ same network namespace. With the witness-central overlay the core's namespace
 still has no route off the host: the core dials a small relay container
 (`sanitizer-core-witness-relay`, from the sidecar image) on its internal witness
 link, and only the relay can reach `LUCAIRN_CENTRAL_WITNESS_ADDR` — one address,
-plain TCP; the core's mTLS session runs end to end through it.
+plain TCP; the core's mTLS session runs end to end through it. Both sides use
+the relay's alias `sanitizer-core-witness-relay-link`, which only the internal
+witness link carries (the service name is on the egress link too, where Docker's
+resolver would answer it first).
 
 ### Upgrading a kit 1.x Compose install
 

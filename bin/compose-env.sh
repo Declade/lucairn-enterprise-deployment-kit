@@ -37,7 +37,8 @@
 # value, except `dsn` of `--print-dsn` and the needle list):
 #   cev_registry --env-file F --project-dir D [--dsn-file P] [--check-file]
 #                [--print-dsn] [-- <compose args: -f ... --profile ...>]
-#   cev_needles  --env-file F --project-dir D [-- <compose args>]
+#   cev_needles  --env-file F --project-dir D -- <compose args>
+#   cev_to_json  yaml|env <file> <out.json>   (support-bundle's decoded scan)
 # rc: 0 done · 10 Docker Compose is not available (fail closed) · 11 Compose
 # refuses customer.env · 12 Compose output this file cannot use · 2 usage.
 # On rc != 0 a value-free reason is on stderr, as `compose-env: <reason>`.
@@ -201,7 +202,7 @@ function scalar(p, k, tok, isstr,    v, svc) {
     if (p != "services/probe/environment") return
     if (mode == "keys") { if (k ~ /^[A-Za-z_][A-Za-z0-9_]*$/) print k; return }
     if (fno == 1) { A[k] = tok; Aset[k] = 1 } else { B[k] = tok; Bset[k] = 1 }
-    if (mode == "needles" && isstr) { v = jdec(tok); userinfo(v); if (secretname(k)) { addval(v); tokv[++nt] = tok } }
+    if (mode == "needles" && isstr) { v = jdec(tok); userinfo(v); if (secretname(k)) addval(v) }
     return
   }
   # fno == 3: the project
@@ -213,7 +214,7 @@ function scalar(p, k, tok, isstr,    v, svc) {
       if (svc == "migrate-sanitizer-core" && k == "PGSSLMODE") { pssl = tok; psslset = 1 }
       return
     }
-    if (isstr) { v = jdec(tok); userinfo(v); if (secretname(k)) { addval(v); tokv[++nt] = tok } }
+    if (isstr) { v = jdec(tok); userinfo(v); if (secretname(k)) addval(v) }
     return
   }
   if (p ~ /^services\/sanitizer-core\/volumes\/#[0-9]+$/ && (k == "source" || k == "target")) {
@@ -231,6 +232,7 @@ FNR == 1 { fno++; sp = 0; elem = 0; top = 0 }
 { line($0) }
 END {
   if (broken || !seen[1] || (fno >= 2 && !seen[2])) { print "unreadable"; exit 12 }
+  if (needproj && !seen[3]) { print "unreadable"; exit 12 }   # needles: the project MUST have been read
   if (mode == "keys") exit 0
   if (mode == "registry") {
     split("POSTGRES_SANITIZER_CORE_PASSWORD POSTGRES_SSLMODE SANITIZER_CORE_REGISTRY_DSN_FILE", R, " ")
@@ -288,16 +290,15 @@ END {
   f = jdec(B["SANITIZER_CORE_REGISTRY_DSN_FILE"]); if (f == "" || f == BAD) f = dflt
   dsnf[normpath(f)] = 1
   for (f in dsnf) if (index(readable, "\n" f "\n")) { d = readfile(f); if (d != "") { addval(d); userinfo(d) } }
+  # The DECODED values only (K-A fix round 4, sol r3): no escaped or encoded
+  # variant is generated here any more. support-bundle parses every collected
+  # file with the parser of its format and compares decoded strings against
+  # these (bin/lucairn support_bundle_decoded_scan); the raw substring scan
+  # of the same list stays as a second layer.
   for (i = 1; i <= nv; i++) {
     v = vals[i]
     if (v ~ /^(\/|\.\/|\.\.\/|~\/)/) continue
-    form[1] = v; form[2] = pct(v); x = v; gsub(/\047/, "\047\047", x); form[3] = x; nf = 3
-    for (k = 1; k <= nf; k++) frag(form[k])
-  }
-  for (i = 1; i <= nt; i++) {             # the value as Compose prints it (JSON; `config` YAML)
-    t = tokv[i]; if (jdec(t) ~ /^(\/|\.\/|\.\.\/|~\/)/) continue
-    frag(t); x = t
-    gsub(/\\u003c/, "<", x); gsub(/\\u003e/, ">", x); gsub(/\\u0026/, "\\&", x); frag(x)
+    frag(v)
   }
 }
 function frag(s,    n, a, i) {
@@ -442,21 +443,23 @@ cev_registry() (
   [ "$st" -eq 0 ] || cev_fail 12 "\`docker compose config --format json\` gave output this kit cannot read (Docker Compose v2 is required)"
 )
 
-# cev_needles ... — every secret value Compose knows for this install, raw and
-# in the forms a bundle file can hold it (see bin/lucairn support_bundle_secret_needles).
+# cev_needles ... — every secret value Compose knows for this install, DECODED
+# (see bin/lucairn support_bundle_secret_needles). The install's project (its
+# compose args after `--`) is REQUIRED and must render: a project Compose
+# refuses, or whose output is not a project, fails the call (rc 11 / 12) —
+# the secret list is never built from the env probes alone (K-A fix round 4,
+# sol r3: an unrelated missing variable used to drop every secret only the
+# compose files carry, and the bundle went on).
 cev_needles() (
   cev_args "$@" || exit
+  [ "${#CEV_ARGS[@]}" -gt 0 ] || { cev_fail 2 "the install's compose files (after --) are required"; exit; }
   cev_compose_cmd || exit
   cev_tmp || exit
   trap 'rm -rf "$CEV_TMP"' EXIT
   cev_probes "$CEV_OPT_ENV" "$CEV_OPT_PD" all || exit
-  local files=("$CEV_TMP/a.json" "$CEV_TMP/b.json") readable="" f
-  if [ "${#CEV_ARGS[@]}" -gt 0 ]; then
-    if cev_render "$CEV_TMP/p.json" "$CEV_OPT_ENV" "" "${CEV_ARGS[@]}"; then
-      files+=("$CEV_TMP/p.json")
-    else
-      printf 'compose-env: the project did not render (%s); values only the compose files carry are not scanned\n' "$CEV_REASON" >&2
-    fi
+  local files=("$CEV_TMP/a.json" "$CEV_TMP/b.json" "$CEV_TMP/p.json") readable="" f
+  if ! cev_render "$CEV_TMP/p.json" "$CEV_OPT_ENV" "" "${CEV_ARGS[@]}"; then
+    cev_fail 11 "Docker Compose cannot render this install's project: $CEV_REASON"; exit
   fi
   # The DSN files (the interpolated path and every rendered mount): readable
   # regular files of at most 8 KiB only.
@@ -472,8 +475,67 @@ cev_needles() (
 "
     fi
   done < <(printf '%s\n' "$cands")
-  CEV_READABLE="$readable" LC_ALL=C awk -v mode=needles -v projdir="$CEV_OPT_PD" -v dflt="$CEV_DEFAULT_DSN_FILE" \
-    -v target="$CEV_DSN_TARGET" "$CEV_AWK" "${files[@]}" | LC_ALL=C sort -u
-  st="${PIPESTATUS[0]}"
-  [ "$st" -eq 0 ] || cev_fail 12 "\`docker compose config --format json\` gave output this kit cannot read (Docker Compose v2 is required)"
+  CEV_READABLE="$readable" LC_ALL=C awk -v mode=needles -v needproj=1 -v projdir="$CEV_OPT_PD" -v dflt="$CEV_DEFAULT_DSN_FILE" \
+    -v target="$CEV_DSN_TARGET" "$CEV_AWK" "${files[@]}" > "$CEV_TMP/needles"
+  st=$?
+  [ "$st" -eq 0 ] || { cev_fail 12 "\`docker compose config --format json\` gave output this kit cannot read (Docker Compose v2 is required), or the install's project rendered no services"; exit; }
+  LC_ALL=C sort -u "$CEV_TMP/needles"
+)
+
+# cev_to_json <yaml|env> <in> <out> — one support-bundle file, decoded by
+# Docker Compose's OWN parsers into JSON at <out> (K-A fix round 4, sol r3:
+# the decoded comparison of bin/lucairn support_bundle_decoded_scan; no
+# hand-written YAML or env-file reader here or there):
+#   yaml  the file's lines, each indented two spaces under ONE top-level
+#         `x-lucairn-bundle-scan:` key. Compose passes `x-` extension content
+#         through unvalidated, so its YAML parser (go-yaml) decodes ANY
+#         document — quoting, '' and "\x41" escapes, folding, anchors —
+#         and nothing in it is interpreted as a project (no include, no
+#         extends, no path or env resolution). Rendered --no-interpolate: a
+#         `$` stays as written (`$$` stays `$$`; the scanner compares the
+#         `$$`-undone forms too). A document marker (---, ...) or directive
+#         (%) on its own line cannot sit under one key: refused (rc 11), as is
+#         anything Compose's parser refuses. redact_stream's whole-line
+#         marker for a line over 8 KiB carries no data and becomes a comment.
+#   env   a probe service with `env_file: <in>`: Compose's dotenv parser
+#         (quotes, escapes, `export`, comments, multi-line values). Every `$`
+#         of the file is doubled first, so nothing is interpolated from this
+#         shell or the file: the result is the file's own text, decoded
+#         (a `$` inside single quotes comes back doubled; the scanner's `$$`-
+#         undone forms cover it).
+# rc: 0 · 10 no Docker Compose · 11 Compose refused the file · 2 usage.
+# Runs in a subshell; its private temp directory (mode 0700) is removed.
+cev_to_json() (
+  local kind="$1" in="$2" out="$3" ej
+  [ -f "$in" ] && [ ! -L "$in" ] || { cev_fail 2 "not a regular file"; exit; }
+  cev_compose_cmd || exit
+  cev_tmp || exit
+  trap 'rm -rf "$CEV_TMP"' EXIT
+  local -a args=()
+  case "$kind" in
+    yaml)
+      LC_ALL=C awk '
+        NR == 1 { print "x-lucairn-bundle-scan:"; sub(/^\357\273\277/, "") }
+        /^(---|\.\.\.)([ \t\r]|$)/ || /^%/ { bad = 1; exit }
+        $0 == "<redacted: line exceeds 8192 bytes>" { print "  #"; next }
+        { print "  " $0 }
+        END { if (NR == 0) print "x-lucairn-bundle-scan:"; exit bad }
+      ' "$in" > "$CEV_TMP/wrapped.yml" \
+        || { cev_fail 11 "it holds a YAML document marker or directive line"; exit; }
+      args=(-f "$CEV_TMP/wrapped.yml" config --format json --no-interpolate --no-normalize
+            --no-consistency --no-path-resolution --no-env-resolution)
+      ;;
+    env)
+      LC_ALL=C sed -e 's/\$/$$/g' -e 's/^<redacted: line exceeds 8192 bytes>$/#/' "$in" > "$CEV_TMP/escaped.env" \
+        || { cev_fail 11 "it cannot be copied"; exit; }
+      ej="$(cev_jstr "$CEV_TMP/escaped.env")" || { cev_fail 11 "the temp path holds a control character"; exit; }
+      printf '{"name":"lucairn-env-probe","services":{"probe":{"image":"lucairn-env-probe","env_file":[{"path":"%s","required":true}]}}}\n' "$ej" > "$CEV_TMP/probe.json"
+      args=(-f "$CEV_TMP/probe.json" config --format json)
+      ;;
+    *) cev_fail 2 "unknown kind: $kind"; exit ;;
+  esac
+  if ! "${CEV_CMD[@]}" --project-directory "$CEV_TMP" --env-file /dev/null "${args[@]}" > "$out" 2> "$CEV_TMP/err" </dev/null; then
+    : > "$out"
+    cev_fail 11 "Docker Compose cannot parse it as $kind (its message is not printed: it can quote the file)"; exit
+  fi
 )

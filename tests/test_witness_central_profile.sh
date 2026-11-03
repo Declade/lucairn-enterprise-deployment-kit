@@ -387,7 +387,8 @@ while IFS='|' read -r NAME FILES EXTRA; do
     # internal witness link; the relay forwards to the central witness only.
     check "$((EMITTERS - 1))" "$(svc_env_eq_count "$JSON" LCR_WITNESS_ADDR "$WANT_ADDR")" \
       "$NAME: every emitter but the new sanitizer core dials $WANT_ADDR"
-    check "sanitizer-core=sanitizer-core-witness-relay:50057" "$(svc_env_map "$JSON" LCR_WITNESS_ADDR | grep '^sanitizer-core=' || true)" \
+    # Round 4 (sol r3): the relay's internal-only alias, not its service name.
+    check "sanitizer-core=sanitizer-core-witness-relay-link:50057" "$(svc_env_map "$JSON" LCR_WITNESS_ADDR | grep '^sanitizer-core=' || true)" \
       "$NAME: the new sanitizer core dials its relay on the internal witness link"
     check "sanitizer-core-witness-relay=$WANT_ADDR" "$(svc_env_map "$JSON" RELAY_UPSTREAM | grep '^sanitizer-core-witness-relay=' || true)" \
       "$NAME: the relay forwards to $WANT_ADDR and nowhere else"

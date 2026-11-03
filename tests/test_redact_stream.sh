@@ -80,6 +80,9 @@ image: registry.example.com:5000/lucairn/gateway@sha256:abcdef0123
 truncated log: user=veil password="KwUntermLEAK019 host=postgres-veil
       SANDBOX_B_API_KEYS: PluralYamlKeysLEAK020
       LCR_ADMIN_TOKENS: PluralYamlTokensLEAK021
+      - "--registry-dsn-file=QuotedItemLEAK022"
+      - 'SINGLE_TOKEN=QuotedItemLEAK023'
+      - "OPERATOR_SECRET: QuotedItemLEAK024"
 LOG
 
 OUT="$TMPDIR/out.log"
@@ -370,6 +373,18 @@ grep -q "^      LCR_ADMIN_TOKENS: <redacted>$" "$OUT" \
   || fail "plural YAML key LCR_ADMIN_TOKENS: not redacted with its separator"
 if grep -q -e PluralYamlKeysLEAK020 -e PluralYamlTokensLEAK021 "$OUT"; then
   fail "a plural-key YAML secret survived redaction"
+fi
+#
+#     (g) Kit 2.0 K-A fix round 4: a redacted line must still PARSE (the
+#         support bundle parses every collected YAML file for its decoded
+#         secret comparison). A quoted YAML list item lost its closing quote:
+#         `- "--registry-dsn-file=/run/..."` became `- "--registry-dsn-file=<redacted>`
+#         and docker-compose.customer.yml no longer parsed.
+grep -qx '      - "--registry-dsn-file=<redacted>"' "$OUT" || fail "quoted list item (=) lost its closing quote"
+grep -qx "      - 'SINGLE_TOKEN=<redacted>'" "$OUT" || fail "single-quoted list item (=) lost its closing quote"
+grep -qx '      - "OPERATOR_SECRET: <redacted>"' "$OUT" || fail "quoted list item (:) lost its closing quote"
+if grep -q -e QuotedItemLEAK022 -e QuotedItemLEAK023 -e QuotedItemLEAK024 "$OUT"; then
+  fail "a quoted-item secret survived redaction"
 fi
 
 echo "redact_stream tests: ok"

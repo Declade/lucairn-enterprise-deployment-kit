@@ -198,7 +198,7 @@ services:
   # through the relay, which sees ciphertext only.
   sanitizer-core:
     environment:
-      LCR_WITNESS_ADDR: "sanitizer-core-witness-relay:50057"
+      LCR_WITNESS_ADDR: "sanitizer-core-witness-relay-link:50057"
       LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "/etc/lucairn/witness-client/ca.pem"
       LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "/etc/lucairn/witness-client/client.pem"
       LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "/etc/lucairn/witness-client/client.key"
@@ -213,12 +213,22 @@ services:
   # no key and mounts no credential. It listens on its alias on the core's
   # internal witness link only, and is the only member of the egress link.
   # Gated by the T-682 guard like every emitter: it carries claims off the host.
+  #
+  # The bind name is the ALIAS `sanitizer-core-witness-relay-link`, which only
+  # the internal witness link carries — never the service name (K-A fix
+  # round 4, sol r3): Compose puts a service's name on EVERY network it joins,
+  # and Docker's embedded resolver answers a name from the container's
+  # non-internal networks first (moby libnetwork sandbox.go), so the relay
+  # resolving its own service name bound its EGRESS address while the core
+  # dialled its internal one. One alias, on one network, gives both sides the
+  # same address. The rendered-config check is tests/test_sanitizer_core_compose.sh;
+  # the live check is the K-E clean-host rehearsal.
   sanitizer-core-witness-relay:
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer-core-sidecar:${LUCAIRN_SANITIZER_CORE_IMAGE_TAG:-1.1.0}@${LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST:?LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST must be the signed digest image-manifest.yaml records for dsa-sanitizer-core-sidecar (the sanitizer core pair never starts from a bare tag; run bin/lucairn doctor)}"
     entrypoint: ["python3", "-I", "/opt/lucairn/witness-relay.py"]
     command: []
     environment:
-      RELAY_LISTEN_HOST: "sanitizer-core-witness-relay"
+      RELAY_LISTEN_HOST: "sanitizer-core-witness-relay-link"
       RELAY_LISTEN_PORT: "50057"
       RELAY_UPSTREAM: "${LUCAIRN_CENTRAL_WITNESS_ADDR:?set LUCAIRN_CENTRAL_WITNESS_ADDR — see contrib/witness-central/witness-central.env.example}"
     volumes:
@@ -226,7 +236,7 @@ services:
     networks:
       dsa-sanitizer-core-witness:
         aliases:
-          - sanitizer-core-witness-relay
+          - sanitizer-core-witness-relay-link
       dsa-sanitizer-core-witness-egress: {}
     depends_on:
       witness-egress-guard:

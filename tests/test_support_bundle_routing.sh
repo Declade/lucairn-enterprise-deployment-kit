@@ -35,6 +35,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"; rm -f "$ROOT/.lucairn-customer-id"' EXIT
+# Kit 2.0 K-A fix round 4: support-bundle refuses when the install's Compose
+# project does not render, and this checkout's project does not render before
+# a release (no signed core/sidecar digests yet): run from a RELEASED-kit
+# fixture with synthetic signed digests (tests/lib/test-helpers.sh).
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$TMPDIR"
 
 CERT_SECRET='ops.person@customer.example'
 HOST_SECRET='ops.admin@customer.example'
