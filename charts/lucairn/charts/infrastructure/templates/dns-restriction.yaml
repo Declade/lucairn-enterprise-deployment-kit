@@ -9,6 +9,11 @@
 # REQUIREMENT: Cilium CNI must be installed. These resources are no-ops if
 # the CiliumNetworkPolicy CRD is not registered. Set global.dnsRestriction=false
 # for non-Cilium clusters (Kind, vanilla Calico, etc.).
+#
+# The resolver Pods are selected by global.clusterDNS.podLabels (default
+# k8s-app=kube-dns), the same labels as the Kubernetes DNS rules
+# (infrastructure.clusterDNSPodLabels; kit 2.0 K-B fix round 3, sol r2 P2:
+# these selectors were hardcoded to kube-dns).
 # ==========================================================================
 
 # --- dsa-ai: can only resolve own namespace + audit + external DNS ---
@@ -27,7 +32,7 @@ spec:
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kube-system
-            k8s-app: kube-dns
+            {{- include "infrastructure.clusterDNSPodLabels" $ | nindent 12 }}
       toPorts:
         - ports:
             - port: "53"
@@ -57,12 +62,27 @@ metadata:
     app.kubernetes.io/part-of: dsa
     dsa.io/purpose: dns-restriction
 spec:
+{{- if include "infrastructure.sanitizerCoreEnabled" . }}
+  # Kit 2.0 K-B fix round 3 (sol r2 P2): Cilium policies are additive, so
+  # this namespace-wide grant must carve out the core and its registry DB
+  # exactly like allow-dns (dns-egress.yaml). The registry DB resolves
+  # nothing; the core resolves only what dns-restrict-identity-sanitizer-core
+  # (below) lists.
+  endpointSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: NotIn
+        values:
+          - sanitizer-core
+          - postgres-sanitizer-core
+{{- else }}
   endpointSelector: {}
+{{- end }}
   egress:
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kube-system
-            k8s-app: kube-dns
+            {{- include "infrastructure.clusterDNSPodLabels" $ | nindent 12 }}
       toPorts:
         - ports:
             - port: "53"
@@ -77,9 +97,10 @@ spec:
               - matchPattern: "*.{{ include "infrastructure.namespaceFor" (dict "root" $ "label" "audit") }}.svc.cluster.local"
 {{- if include "infrastructure.sanitizerCoreEnabled" . }}
 ---
-# --- Kit 2.0: the sanitizer core Pod additionally resolves the witness ---
-# Pod-scoped (Cilium unions DNS rules per endpoint): only the core Pod gains
-# this one name, the rest of the identity namespace keeps the list above.
+# --- Kit 2.0: the sanitizer core Pod resolves its namespace + the witness ---
+# Pod-scoped and the core's ONLY DNS policy (it is carved out of
+# dns-restrict-identity above): its own namespace (the registry DB) and the
+# witness by exact name. The registry DB is selected by no DNS policy at all.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -96,7 +117,7 @@ spec:
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kube-system
-            k8s-app: kube-dns
+            {{- include "infrastructure.clusterDNSPodLabels" $ | nindent 12 }}
       toPorts:
         - ports:
             - port: "53"
@@ -125,7 +146,7 @@ spec:
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kube-system
-            k8s-app: kube-dns
+            {{- include "infrastructure.clusterDNSPodLabels" $ | nindent 12 }}
       toPorts:
         - ports:
             - port: "53"
@@ -152,7 +173,7 @@ spec:
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kube-system
-            k8s-app: kube-dns
+            {{- include "infrastructure.clusterDNSPodLabels" $ | nindent 12 }}
       toPorts:
         - ports:
             - port: "53"
@@ -180,7 +201,7 @@ spec:
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kube-system
-            k8s-app: kube-dns
+            {{- include "infrastructure.clusterDNSPodLabels" $ | nindent 12 }}
       toPorts:
         - ports:
             - port: "53"

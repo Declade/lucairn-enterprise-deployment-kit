@@ -2706,10 +2706,18 @@ render refuses an empty, malformed or placeholder digest, and
 `bin/lucairn doctor --values` fails on tag-only images and on a pair other than
 the manifest's.
 
-**No password in a process environment.** The registry database reads its
+**Passwords as files, not in Pod specs.** The registry database reads its
 password from a mounted file (`POSTGRES_PASSWORD_FILE`); the migration Job and
 the core's `wait-for-migration` init container build a `0600` libpq password
-file (`PGPASSFILE`) from the mounted Secret file. An external registry DB
+file (`PGPASSFILE`) from the mounted Secret file, and the migration runner
+connects with that file (no `PGPASSWORD` in its environment). Stated limit: on
+the first boot of an empty registry volume, the official `postgres` image's
+entrypoint itself exports the file's content as `POSTGRES_PASSWORD` (and
+`PGPASSWORD`) to its own initialisation processes (initdb, the temporary
+server, psql), inside that container only; it clears them before it starts the
+real server. The kit accepts this rather than initialise with
+`POSTGRES_HOST_AUTH_METHOD=trust`, which would leave a database without a
+password if that first boot were interrupted. An external registry DB
 (`sanitizer-core.postgresql.enabled=false`) is supported by the live doctor: it
 then checks the migration Job and the core's readiness, not a bundled
 StatefulSet.

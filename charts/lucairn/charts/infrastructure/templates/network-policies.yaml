@@ -521,7 +521,7 @@ spec:
               kubernetes.io/metadata.name: kube-system
           podSelector:
             matchLabels:
-              {{- toYaml (((.Values.global | default dict).clusterDNS | default dict).podLabels | default (dict "k8s-app" "kube-dns")) | nindent 14 }}
+              {{- include "infrastructure.clusterDNSPodLabels" . | nindent 14 }}
       ports:
         - port: 53
           protocol: UDP

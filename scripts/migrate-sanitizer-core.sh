@@ -51,8 +51,12 @@
 # reads its registry with a fixed schema, so "apply whatever is on disk" has no
 # legitimate use. It never migrates down and it never edits the ledger.
 #
-# Connection: discrete PGHOST/PGPORT/PGUSER/PGDATABASE + PGPASSWORD, never a
-# URL (libpq quotes a malformed URL, password included, in its errors).
+# Connection: discrete PGHOST/PGPORT/PGUSER/PGDATABASE, never a URL (libpq
+# quotes a malformed URL, password included, in its errors). The password is
+# PGPASSWORD (the Compose one-shot) OR a libpq password file named by
+# PGPASSFILE (the Helm Job: the password never enters its environment; kit 2.0
+# K-B fix round 3, sol r2 P1: this runner required PGPASSWORD, so every Helm
+# install stopped here with 93).
 #
 # Exit codes: 0 applied or nothing to do · 90 bad target · 91 ceiling problem ·
 # 92 ledger inconsistent · 93 cannot read the ledger · 94 tree/target disagree ·
@@ -76,7 +80,11 @@ need() { [ -n "$2" ] || fatal "$1 must be set (discrete libpq settings; never a 
 need PGHOST "${PGHOST:-}"
 need PGUSER "${PGUSER:-}"
 need PGDATABASE "${PGDATABASE:-}"
-need PGPASSWORD "${PGPASSWORD:-}"
+if [ -z "${PGPASSWORD:-}" ]; then
+  [ -n "${PGPASSFILE:-}" ] || fatal "PGPASSWORD or PGPASSFILE must be set (discrete libpq settings; never a connection URL)." 93
+  [ -f "$PGPASSFILE" ] && [ -r "$PGPASSFILE" ] && [ -s "$PGPASSFILE" ] \
+    || fatal "PGPASSFILE=${PGPASSFILE} is not a readable, non-empty libpq password file." 93
+fi
 
 # ── Ceiling file and key: the same two pointer guards as migrate-capped.sh ──
 case "$CEILING_FILE" in

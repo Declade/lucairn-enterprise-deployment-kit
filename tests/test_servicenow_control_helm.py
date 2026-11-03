@@ -31,6 +31,10 @@ CHART = ROOT / "charts/lucairn"
 # re-rendered them again: the core pair pulled by digest, the registry DB
 # password as files (no secretKeyRef env), allow-dns carving the core + its
 # registry out of the identity namespace and the core's own DNS rule.
+# Fix round 3 re-rendered them once more: the migration runner accepts the
+# Job's libpq password file (ConfigMap script + its checksum annotation), the
+# registry DB comment states the entrypoint limit, and (values-dev, where
+# dnsRestriction is on) dns-restrict-identity carves out the core + registry.
 OFF_GOLDEN = ROOT / "tests/fixtures/servicenow-control/helm-off"
 APP = "app.kubernetes.io/name"
 HELD = "templates/servicenow-control-held.yaml"

@@ -75,6 +75,11 @@
 #   * The libpq password file and POSTGRES_PASSWORD_FILE are proven on the
 #     rendered spec + the Job's own shell prelude here; that PostgreSQL 16
 #     reads them in a running Pod is the PC Kind rehearsal.
+#   * STATED LIMIT (fix round 3, sol r2 P2): the official postgres
+#     entrypoint exports the POSTGRES_PASSWORD_FILE content to its own
+#     first-boot initialisation processes (docker-entrypoint.sh :23, :235,
+#     :359; cleared at :366 / :381 before the real server); see
+#     templates/postgresql-statefulset.yaml.
 #   * Which Pods are the cluster resolver depends on the cluster: the default
 #     selector is k8s-app=kube-dns (CoreDNS and kube-dns both carry it);
 #     global.clusterDNS.podLabels overrides it.
@@ -156,13 +161,20 @@ def podspecs():
 $body
 PY
 }
-run_py() { # collects PASS/FAIL lines from assert_py into this harness
+# run_py collects PASS/FAIL lines from assert_py into this harness. It runs
+# at the end of a pipe (`assert_py ... | run_py`), i.e. in a SUBSHELL, so it
+# cannot bump N/FAILS itself: every result goes to $PY_TALLY, which the
+# summary adds (kit 2.0 K-B fix round 3 — before, a FAIL inside any
+# assert_py block was printed but never failed the suite).
+PY_TALLY="$TMP/py-tally"
+: > "$PY_TALLY"
+run_py() {
   local line
   while IFS= read -r line; do
     case "$line" in
-      "PASS "*) pass "${line#PASS }" ;;
-      "FAIL "*) fail "${line#FAIL }" ;;
-      *) [ -n "$line" ] && fail "assertion script error: $line" ;;
+      "PASS "*) echo "  ok   — ${line#PASS }"; echo P >> "$PY_TALLY" ;;
+      "FAIL "*) echo "  FAIL — ${line#FAIL }"; echo F >> "$PY_TALLY" ;;
+      *) [ -n "$line" ] && { echo "  FAIL — assertion script error: $line"; echo F >> "$PY_TALLY"; } ;;
     esac
   done
 }
@@ -338,6 +350,48 @@ cs = {c['name']: c for c in find('Deployment', 'sanitizer-core')['spec']['templa
 ok(cs['core']['image'] == 'ghcr.io/declade/dsa-sanitizer-core:1.1.0@$D1' and cs['sidecar']['image'] == 'ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@$D2', 'a pinned pair renders repo:tag@sha256 for both images')
 " | run_py
 else fail "digest-pinned render: $(head -3 "$TMP/pinned.err")"; fi
+# Fix round 3 (sol r2 P2), RED on e76b6d7: with global.dnsRestriction=true the
+# namespace-wide Cilium DNS grant dns-restrict-identity (endpointSelector {})
+# still gave the registry DB (and the core) resolver traffic — Cilium policies
+# are additive, so the allow-dns carve-out alone did not cancel it — and every
+# Cilium resolver selector was hardcoded to k8s-app=kube-dns while the
+# Kubernetes rule followed global.clusterDNS.podLabels.
+DNS_CHECK='
+def selects(sel, labels):
+    for k, v in (sel.get("matchLabels") or {}).items():
+        if labels.get(k) != v:
+            return False
+    for e in sel.get("matchExpressions") or []:
+        k, op, vals = e["key"], e["operator"], e.get("values") or []
+        if (op == "In" and labels.get(k) not in vals) or (op == "NotIn" and labels.get(k) in vals) \
+           or (op == "Exists" and k not in labels) or (op == "DoesNotExist" and k in labels):
+            return False
+    return True
+cnps = [d for d in docs if d.get("kind") == "CiliumNetworkPolicy"]
+dns_cnps = [d for d in cnps if any(str(pp.get("port")) == "53" for r in d["spec"].get("egress") or [] for tp in r.get("toPorts") or [] for pp in tp.get("ports") or [])]
+ok(len(dns_cnps) >= 6, "dnsRestriction renders the Cilium DNS policies (%d)" % len(dns_cnps))
+ident = [d for d in dns_cnps if d["metadata"]["namespace"] == "dsa-identity"]
+reg = {"app.kubernetes.io/name": "postgres-sanitizer-core"}
+core = {"app.kubernetes.io/name": "sanitizer-core"}
+other = {"app.kubernetes.io/name": "sandbox-a"}
+ok(not [d["metadata"]["name"] for d in ident if selects(d["spec"]["endpointSelector"], reg)], "no Cilium DNS policy selects the registry DB (%s)" % [d["metadata"]["name"] for d in ident if selects(d["spec"]["endpointSelector"], reg)])
+ok([d["metadata"]["name"] for d in ident if selects(d["spec"]["endpointSelector"], core)] == ["dns-restrict-identity-sanitizer-core"], "the core is selected by its own Cilium DNS policy only (%s)" % [d["metadata"]["name"] for d in ident if selects(d["spec"]["endpointSelector"], core)])
+ok([d["metadata"]["name"] for d in ident if selects(d["spec"]["endpointSelector"], other)] == ["dns-restrict-identity"], "the rest of the identity namespace keeps dns-restrict-identity")
+want = dict(WANT_LABELS, **{"k8s:io.kubernetes.pod.namespace": "kube-system"})
+seen = [te.get("matchLabels") for d in dns_cnps for r in d["spec"].get("egress") or [] for te in r.get("toEndpoints") or []]
+ok(seen and all(m == want for m in seen), "every Cilium resolver selector = the configured resolver labels %s (%s)" % (WANT_LABELS, [m for m in seen if m != want][:2]))
+ce = find("NetworkPolicy", "identity-sanitizer-core-egress")
+k8s = [t.get("podSelector", {}).get("matchLabels") for r in ce["spec"]["egress"] if r["ports"][0]["port"] == 53 for t in r["to"]]
+ok(k8s == [WANT_LABELS], "the core Kubernetes DNS rule uses the same resolver labels (%s)" % k8s)
+'
+if render dnsr --set global.dnsRestriction=true; then
+  assert_py "$TMP/dnsr.yaml" "WANT_LABELS = {\"k8s-app\": \"kube-dns\"}
+$DNS_CHECK" | run_py
+else fail "dnsRestriction render: $(head -3 "$TMP/dnsr.err")"; fi
+if render dnsr2 --set global.dnsRestriction=true --set-json 'global.clusterDNS.podLabels={"k8s-app":"coredns","dns.example/role":"resolver"}'; then
+  assert_py "$TMP/dnsr2.yaml" "WANT_LABELS = {\"k8s-app\": \"coredns\", \"dns.example/role\": \"resolver\"}
+$DNS_CHECK" | run_py
+else fail "dnsRestriction + custom resolver labels render: $(head -3 "$TMP/dnsr2.err")"; fi
 if render off --set sanitizer-core.enabled=false --set global.sanitizerCore.enabled=false; then
   assert_py "$TMP/off.yaml" '
 ok(not [d for d in docs if "sanitizer-core" in str(d["metadata"].get("name", ""))], "core OFF: no sanitizer-core resource renders")
@@ -477,6 +531,8 @@ STUB="$TMP/stub-bin"; mkdir -p "$STUB"
 cat > "$STUB/psql" <<'STUBPSQL'
 #!/bin/sh
 echo "$*" >> "$STUB_LOG"
+# Fix round 3 (sol r2 P1): which credential each psql call carries.
+{ printf 'PGPASSFILE=%s\n' "${PGPASSFILE:-}"; [ -z "${PGPASSWORD+x}" ] || echo "PGPASSWORD is set"; } >> "${STUB_ENV_LOG:-/dev/null}"
 case "$*" in
   *"to_regclass"*) echo "f"; exit 0 ;;
   *"SELECT name FROM registry_schema_migrations"*) exit 0 ;;
@@ -503,20 +559,11 @@ while IFS= read -r line; do
     "ENV "*) JOB_ENV+=("${line#ENV }") ;;
   esac
 done < "$TMP/job/env.txt"
-: > "$TMP/stub.log"
-env -i PATH="$STUB:$BASE_PATH" TMPDIR="$TMP" STUB_LOG="$TMP/stub.log" STUB_SQL="$TMP/stub.sql" PGPASSWORD=synthetic-test-password \
-  "${JOB_ENV[@]}" sh "$TMP/job/scripts/migrate-sanitizer-core.sh" > "$TMP/job.out" 2>&1
-rc=$?
-check_eq "the rendered Job env runs the runner to success (fresh registry)" "0" "$rc"
-[ "$rc" -eq 0 ] || sed -n '1,5p' "$TMP/job.out"
-check_eq "one --single-transaction apply" "1" "$(grep -c -- '--single-transaction' "$TMP/stub.log")"
-check_eq "the apply inserts 0001..0007 into the core's own ledger" "7" "$(grep -c "^INSERT INTO registry_schema_migrations (name) VALUES ('" "$TMP/stub.sql" 2>/dev/null || echo 0)"
-grep -q 'ceiling 7 from' "$TMP/job.out" && pass "the runner reads ceiling 7 from the chart-rendered ceiling file" || fail "the runner reads ceiling 7 from the chart-rendered ceiling file: $(tail -2 "$TMP/job.out")"
-if grep -q 'synthetic-test-password' "$TMP/job.out" "$TMP/stub.log"; then fail "PGPASSWORD never printed or passed as argv"; else pass "PGPASSWORD never printed or passed as argv"; fi
-# Fix round 1 (sol r1 P2): the Job's OWN shell prelude, run for real (paths
-# moved into $TMP, pg_isready stubbed, the runner replaced by an env dump): it
-# writes a 0600 libpq password file with \ and : escaped, and the password is
-# in no process environment of what it execs.
+# Fix round 3 (sol r2 P1): the rendered Job is run END TO END — its OWN shell
+# prelude (paths moved into $TMP, pg_isready stubbed) execs the real runner
+# with ONLY what the Job gives it: the mounted password file, turned into
+# PGPASSFILE. No PGPASSWORD is injected anywhere (round 2's test injected one
+# and so hid that the runner refused every Helm install with 93).
 python3 - "$TMP/default.yaml" "$TMP/prelude.sh" <<'PY'
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
@@ -526,6 +573,38 @@ PY
 mkdir -p "$TMP/pre/db" "$TMP/pre/bin"
 printf '%s' 'syn:th\etic-pw' > "$TMP/pre/db/password"
 printf '#!/bin/sh\nexit 0\n' > "$TMP/pre/bin/pg_isready"; chmod 0755 "$TMP/pre/bin/pg_isready"
+sed -e "s#/etc/sanitizer-core/db/password#$TMP/pre/db/password#g" -e "s#/tmp/.pgpass#$TMP/pre/job-pgpass#g" \
+    -e "s#exec /bin/sh /scripts/migrate-sanitizer-core.sh#exec /bin/sh $TMP/job/scripts/migrate-sanitizer-core.sh#" "$TMP/prelude.sh" > "$TMP/job-run.sh"
+: > "$TMP/stub.log"; : > "$TMP/stub-env.log"
+if grep -qF "exec /bin/sh $TMP/job/scripts/migrate-sanitizer-core.sh" "$TMP/job-run.sh"; then
+  env -i PATH="$TMP/pre/bin:$STUB:$BASE_PATH" TMPDIR="$TMP" STUB_LOG="$TMP/stub.log" STUB_SQL="$TMP/stub.sql" STUB_ENV_LOG="$TMP/stub-env.log" \
+    "${JOB_ENV[@]}" sh "$TMP/job-run.sh" > "$TMP/job.out" 2>&1
+  rc=$?
+else
+  rc=99; echo "the Job prelude no longer execs /scripts/migrate-sanitizer-core.sh" > "$TMP/job.out"
+fi
+check_eq "the rendered Job (its prelude + the runner, password file only, no PGPASSWORD) migrates a fresh registry" "0" "$rc"
+[ "$rc" -eq 0 ] || sed -n '1,5p' "$TMP/job.out"
+check_eq "one --single-transaction apply" "1" "$(grep -c -- '--single-transaction' "$TMP/stub.log")"
+check_eq "the apply inserts 0001..0007 into the core's own ledger" "7" "$(grep -c "^INSERT INTO registry_schema_migrations (name) VALUES ('" "$TMP/stub.sql" 2>/dev/null || echo 0)"
+grep -q 'ceiling 7 from' "$TMP/job.out" && pass "the runner reads ceiling 7 from the chart-rendered ceiling file" || fail "the runner reads ceiling 7 from the chart-rendered ceiling file: $(tail -2 "$TMP/job.out")"
+if [ -s "$TMP/stub-env.log" ] && ! grep -v "^PGPASSFILE=$TMP/pre/job-pgpass$" "$TMP/stub-env.log" | grep -q .; then
+  pass "every psql call carries the Job's PGPASSFILE and no PGPASSWORD ($(grep -c . "$TMP/stub-env.log") calls)"
+else
+  fail "every psql call carries the Job's PGPASSFILE and no PGPASSWORD: $(sort -u "$TMP/stub-env.log" | head -3 | tr '\n' ' ')"
+fi
+if grep -q 'th\\etic' "$TMP/job.out" "$TMP/stub.log"; then fail "the password is never printed or passed as argv"; else pass "the password is never printed or passed as argv"; fi
+# The runner still refuses to run without any credential (fail closed, 93),
+# and refuses a PGPASSFILE that is not a readable file.
+env -i PATH="$STUB:$BASE_PATH" TMPDIR="$TMP" STUB_LOG=/dev/null STUB_SQL=/dev/null "${JOB_ENV[@]}" sh "$TMP/job/scripts/migrate-sanitizer-core.sh" > "$TMP/nocred.out" 2>&1
+check_eq "no PGPASSWORD and no PGPASSFILE -> the runner refuses (93)" "93" "$?"
+grep -q 'PGPASSWORD or PGPASSFILE must be set' "$TMP/nocred.out" && pass "... naming PGPASSWORD / PGPASSFILE" || fail "... naming PGPASSWORD / PGPASSFILE: $(tail -1 "$TMP/nocred.out")"
+env -i PATH="$STUB:$BASE_PATH" TMPDIR="$TMP" STUB_LOG=/dev/null STUB_SQL=/dev/null PGPASSFILE="$TMP/pre/absent-pgpass" "${JOB_ENV[@]}" sh "$TMP/job/scripts/migrate-sanitizer-core.sh" > "$TMP/nocred.out" 2>&1
+check_eq "PGPASSFILE naming a missing file -> the runner refuses (93)" "93" "$?"
+# Fix round 1 (sol r1 P2): the Job's OWN shell prelude, run for real (paths
+# moved into $TMP, pg_isready stubbed, the runner replaced by an env dump): it
+# writes a 0600 libpq password file with \ and : escaped, and the password is
+# in no process environment of what it execs.
 sed -e "s#/etc/sanitizer-core/db/password#$TMP/pre/db/password#g" -e "s#/tmp/.pgpass#$TMP/pre/pgpass#g" \
     -e "s#exec /bin/sh /scripts/migrate-sanitizer-core.sh#exec env#" "$TMP/prelude.sh" > "$TMP/prelude-run.sh"
 if grep -q 'exec env' "$TMP/prelude-run.sh" && env -i PATH="$TMP/pre/bin:$BASE_PATH" sh "$TMP/prelude-run.sh" > "$TMP/prelude.env" 2>&1; then
@@ -672,6 +751,8 @@ grep -q 'require_file "$root/scripts/bootstrap-sanitizer-core-mtls.sh" "bundle s
 grep -q -- '--profile sanitizer-core-migrate run --rm migrate-sanitizer-core' "$ROOT/bin/lucairn" && pass "bundle install note names the migration step" || fail "bundle install note names the migration step"
 
 echo ""
+N=$((N + $(grep -c . "$PY_TALLY")))
+FAILS=$((FAILS + $(grep -c '^F$' "$PY_TALLY")))
 if [ "$FAILS" -eq 0 ]; then
   echo "sanitizer-core Helm tests: ok ($N checks)"
   exit 0

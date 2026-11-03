@@ -4438,8 +4438,12 @@ data:
     # reads its registry with a fixed schema, so "apply whatever is on disk" has no
     # legitimate use. It never migrates down and it never edits the ledger.
     #
-    # Connection: discrete PGHOST/PGPORT/PGUSER/PGDATABASE + PGPASSWORD, never a
-    # URL (libpq quotes a malformed URL, password included, in its errors).
+    # Connection: discrete PGHOST/PGPORT/PGUSER/PGDATABASE, never a URL (libpq
+    # quotes a malformed URL, password included, in its errors). The password is
+    # PGPASSWORD (the Compose one-shot) OR a libpq password file named by
+    # PGPASSFILE (the Helm Job: the password never enters its environment; kit 2.0
+    # K-B fix round 3, sol r2 P1: this runner required PGPASSWORD, so every Helm
+    # install stopped here with 93).
     #
     # Exit codes: 0 applied or nothing to do · 90 bad target · 91 ceiling problem ·
     # 92 ledger inconsistent · 93 cannot read the ledger · 94 tree/target disagree ·
@@ -4463,7 +4467,11 @@ data:
     need PGHOST "${PGHOST:-}"
     need PGUSER "${PGUSER:-}"
     need PGDATABASE "${PGDATABASE:-}"
-    need PGPASSWORD "${PGPASSWORD:-}"
+    if [ -z "${PGPASSWORD:-}" ]; then
+      [ -n "${PGPASSFILE:-}" ] || fatal "PGPASSWORD or PGPASSFILE must be set (discrete libpq settings; never a connection URL)." 93
+      [ -f "$PGPASSFILE" ] && [ -r "$PGPASSFILE" ] && [ -s "$PGPASSFILE" ] \
+        || fatal "PGPASSFILE=${PGPASSFILE} is not a readable, non-empty libpq password file." 93
+    fi
   
     # ── Ceiling file and key: the same two pointer guards as migrate-capped.sh ──
     case "$CEILING_FILE" in
@@ -8219,8 +8227,23 @@ spec:
             - name: POSTGRES_DB
               value: "sanitizer_core"
             # The official image reads the password from this FILE (its
-            # `_FILE` convention): it never enters the server's environment
-            # (kit 2.0 K-B fix round 1, sol r1 P2).
+            # `_FILE` convention), so it is in no Pod spec, env var or
+            # `kubectl describe` (kit 2.0 K-B fix round 1, sol r1 P2).
+            # STATED LIMIT (fix round 3, sol r2 P2): on the FIRST boot of an
+            # empty volume the image's entrypoint (docker-library/postgres
+            # 4f9ced0, 16/alpine3.24/docker-entrypoint.sh) exports the file's
+            # content as POSTGRES_PASSWORD (file_env :23, called at :235) and
+            # as PGPASSWORD while it initialises (:359, unset at :366), so
+            # initdb, the temporary server and the psql of that bootstrap carry
+            # it in their environment. It unsets every POSTGRES_* variable
+            # (:381) before it execs the real server: no long-running process
+            # carries it. Those bootstrap processes run as uid 999 inside this
+            # container only, which reads the mounted file anyway. Accepted
+            # over the password-free alternative (POSTGRES_HOST_AUTH_METHOD=
+            # trust + an init script that sets the password): that writes
+            # `host all all all trust` into pg_hba.conf (:284), and a first
+            # boot interrupted before the init script ran would leave a
+            # database that serves TCP with no password at all.
             - name: POSTGRES_PASSWORD_FILE
               value: /run/secrets/sanitizer-core-db/password
             - name: PGDATA
@@ -8942,7 +8965,7 @@ spec:
         app.kubernetes.io/name: sanitizer-core-migrate
         app.kubernetes.io/part-of: dsa
       annotations:
-        checksum/migrations: e91efe8558244d4ee9f35d2ffc72d6e52001e9b4597c48cafcd4bb6159501af6
+        checksum/migrations: 27e33cee5cffc8f7228b8bd214079ed522d76bce39721c8df89aaef55bd5efb1
     spec:
       # NET-05: this pod never calls the Kubernetes API.
       automountServiceAccountToken: false
@@ -9761,6 +9784,11 @@ spec:
 # REQUIREMENT: Cilium CNI must be installed. These resources are no-ops if
 # the CiliumNetworkPolicy CRD is not registered. Set global.dnsRestriction=false
 # for non-Cilium clusters (Kind, vanilla Calico, etc.).
+#
+# The resolver Pods are selected by global.clusterDNS.podLabels (default
+# k8s-app=kube-dns), the same labels as the Kubernetes DNS rules
+# (infrastructure.clusterDNSPodLabels; kit 2.0 K-B fix round 3, sol r2 P2:
+# these selectors were hardcoded to kube-dns).
 # ==========================================================================
 
 # --- dsa-ai: can only resolve own namespace + audit + external DNS ---
@@ -9808,7 +9836,18 @@ metadata:
     app.kubernetes.io/part-of: dsa
     dsa.io/purpose: dns-restriction
 spec:
-  endpointSelector: {}
+  # Kit 2.0 K-B fix round 3 (sol r2 P2): Cilium policies are additive, so
+  # this namespace-wide grant must carve out the core and its registry DB
+  # exactly like allow-dns (dns-egress.yaml). The registry DB resolves
+  # nothing; the core resolves only what dns-restrict-identity-sanitizer-core
+  # (below) lists.
+  endpointSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: NotIn
+        values:
+          - sanitizer-core
+          - postgres-sanitizer-core
   egress:
     - toEndpoints:
         - matchLabels:
@@ -9828,9 +9867,10 @@ spec:
               - matchPattern: "*.dsa-audit.svc.cluster.local"
 ---
 # Source: lucairn/charts/infrastructure/templates/dns-restriction.yaml
-# --- Kit 2.0: the sanitizer core Pod additionally resolves the witness ---
-# Pod-scoped (Cilium unions DNS rules per endpoint): only the core Pod gains
-# this one name, the rest of the identity namespace keeps the list above.
+# --- Kit 2.0: the sanitizer core Pod resolves its namespace + the witness ---
+# Pod-scoped and the core's ONLY DNS policy (it is carved out of
+# dns-restrict-identity above): its own namespace (the registry DB) and the
+# witness by exact name. The registry DB is selected by no DNS policy at all.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
