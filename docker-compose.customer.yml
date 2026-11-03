@@ -84,10 +84,28 @@ networks:
     driver: bridge
     # Dedicated bridge: cert-builder ↔ Veil Witness only
     # Follows naming convention: dsa-witness-bridge, dsa-witness-audit, dsa-witness-identity
-  # The new sanitizer core's registry DB only (kit 2.0). No route out: the core
-  # reaches the gateway and the witness through dsa-identity /
-  # dsa-witness-identity (the sidecar's attachments, whose namespace it shares).
+  # The new sanitizer core (kit 2.0): ONE internal network per link, nothing
+  # shared with any other service. The core runs in the model sidecar's network
+  # namespace, so the SIDECAR carries the core's attachments:
+  #   dsa-sanitizer-core          core -> its registry Postgres (+ the migrate step)
+  #   dsa-sanitizer-core-ingress  gateway -> core :8790 (mTLS); the ONLY network on
+  #                               which anything can reach the core's listener
+  #   dsa-sanitizer-core-witness  core -> veil-witness :50057 (mTLS)
+  # All three are internal: true, so the namespace has no route off the host
+  # (the witness-central overlay adds the one egress link the core needs for a
+  # central witness). The hosted service still attaches its core to the shared
+  # identity + witness-identity bridges (hardening item 120 there); the kit is
+  # stricter with the SAME DNS names (sanitizer-core / dsa-sanitizer-core on the
+  # ingress link, veil-witness on the witness link), so the core's command,
+  # environment and certificates are unchanged.
+  # tests/test_sanitizer_core_compose.sh section B asserts membership + internal.
   dsa-sanitizer-core:
+    driver: bridge
+    internal: true
+  dsa-sanitizer-core-ingress:
+    driver: bridge
+    internal: true
+  dsa-sanitizer-core-witness:
     driver: bridge
     internal: true
 
@@ -935,9 +953,13 @@ services:
   # Images: core and sidecar MUST come from the same release commit — the core
   # refuses to start against a sidecar that lacks the labels it needs (DSA
   # cmd/sanitizer-core/main.go requirePlaceLabels). Hence ONE tag variable for
-  # both, and a digest variable per image that the release step fills from
-  # image-manifest.yaml (image_digests.signed_artifacts). With a digest set the
-  # reference becomes repo:tag@sha256:… and Docker pulls by digest.
+  # both, and a REQUIRED digest variable per image: the reference is always
+  # repo:tag@sha256:… and Docker pulls the signed bytes by digest. With either
+  # digest unset, Compose refuses to render the project at all (`:?`), so the
+  # pair can never start from a bare tag. bin/lucairn-init fills both from
+  # image-manifest.yaml (image_digests.signed_artifacts); while that manifest
+  # still says `pending: true` (before the release step records the signed
+  # digests) they stay empty and nothing starts — bin/lucairn doctor names it.
   # LUCAIRN_SANITIZER_CORE_IMAGE_TAG deliberately does NOT fall back to
   # LUCAIRN_IMAGE_TAG: no 0.5.x tag of these images exists.
 
@@ -1007,8 +1029,9 @@ services:
     restart: "no"
 
   # The model sidecar (spaCy + GLiNER behind 127.0.0.1:8765). It OWNS the
-  # network namespace the core runs in: it carries the core's three networks and
-  # answers for the core's DNS names (the SANs of the core's server leaf). The
+  # network namespace the core runs in: it carries the core's three dedicated
+  # internal networks (see `networks:` at the top) and answers for the core's
+  # DNS names (the SANs of the core's server leaf) on the ingress link only. The
   # scan endpoint binds loopback only, so no network reaches it.
   #
   # ⚠️ RESTART vs RECREATE (measured on the hosted box, 2026-10-30): a sidecar
@@ -1027,17 +1050,17 @@ services:
   # what plain `docker compose up` enforces; deploy.resources mirrors them for
   # Swarm-style tooling. The values MUST match.
   sanitizer-core-sidecar:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer-core-sidecar:${LUCAIRN_SANITIZER_CORE_IMAGE_TAG:-1.1.0}${LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST:+@}${LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST:-}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer-core-sidecar:${LUCAIRN_SANITIZER_CORE_IMAGE_TAG:-1.1.0}@${LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST:?LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST must be the signed digest image-manifest.yaml records for dsa-sanitizer-core-sidecar (the sanitizer core pair never starts from a bare tag; run bin/lucairn doctor)}"
     logging: *default-logging
     depends_on:
       postgres-sanitizer-core:
         condition: service_healthy
     networks:
-      dsa-identity:
+      dsa-sanitizer-core-ingress:
         aliases:
           - sanitizer-core
           - dsa-sanitizer-core
-      dsa-witness-identity: {}
+      dsa-sanitizer-core-witness: {}
       dsa-sanitizer-core: {}
     # healthy = every configured model finished loading (the sidecar loads
     # before it binds). Inference parity is proven by the equivalence replay,
@@ -1093,7 +1116,7 @@ services:
   # `restart: unless-stopped` brings it back inside the sidecar's CURRENT
   # namespace.
   sanitizer-core:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer-core:${LUCAIRN_SANITIZER_CORE_IMAGE_TAG:-1.1.0}${LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST:+@}${LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST:-}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer-core:${LUCAIRN_SANITIZER_CORE_IMAGE_TAG:-1.1.0}@${LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST:?LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST must be the signed digest image-manifest.yaml records for dsa-sanitizer-core (the sanitizer core pair never starts from a bare tag; run bin/lucairn doctor)}"
     logging: *default-logging
     network_mode: "service:sanitizer-core-sidecar"
     depends_on:
@@ -1297,6 +1320,8 @@ services:
       - dsa-witness-audit
       - dsa-witness-edge
       - dsa-witness-certification
+      # Kit 2.0: the new sanitizer core's claim hop (core -> :50057, mTLS).
+      - dsa-sanitizer-core-witness
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:50059/healthz"]
       interval: 10s
@@ -1526,6 +1551,8 @@ services:
       - dsa-bridge
       - dsa-audit-identity
       - dsa-witness-edge
+      # Kit 2.0: the ONLY network that reaches the new sanitizer core (:8790).
+      - dsa-sanitizer-core-ingress
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8085/healthz || exit 1"]
       interval: 5s

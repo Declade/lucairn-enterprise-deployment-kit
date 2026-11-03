@@ -8,6 +8,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
+# Kit 2.0 K-A fix round 1: doctor FAILS while this checkout's image-manifest
+# still has no signed core/sidecar digests (`pending: true`, before a
+# release), and the compose file does not render without them. Every case
+# below therefore runs init + doctor from a RELEASED-kit fixture with synthetic
+# signed digests (tests/lib/test-helpers.sh); the real tree is REAL_ROOT.
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$TMPDIR"
 BASE_PATH="$PATH"
 
 # The macOS lane has no ubiquitous execve/open tracer.  Its approximation

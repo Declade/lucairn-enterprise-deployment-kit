@@ -184,6 +184,17 @@ if [ -f "$ROOT/bin/runtime-profile-lib.sh" ] && [ ! -L "$ROOT/bin/runtime-profil
   load_runtime_profile_lib "$ROOT/bin/runtime-profile-lib.sh"
 fi
 
+# Kit 2.0: the ONE reader of customer.env values that the sanitizer core's
+# registry DSN depends on, shared with scripts/write-sanitizer-core-registry-dsn.sh
+# so doctor and the writer read every value exactly as Docker Compose does
+# (bin/compose-env-lib.sh). Same trust rule as above: the installed CLI's own
+# sibling, never a copy inside a bundle. When it is absent, every check that
+# needs it fails closed (sanitizer_core_env_get).
+if [ -f "$ROOT/bin/compose-env-lib.sh" ] && [ ! -L "$ROOT/bin/compose-env-lib.sh" ]; then
+  # shellcheck source=compose-env-lib.sh
+  . "$ROOT/bin/compose-env-lib.sh"
+fi
+
 dir_has_payload_files() {
   local dir="$1"
   [ -d "$dir" ] || return 1
@@ -1223,7 +1234,11 @@ redact_stream() {
       next
     }
     {
-      if (toupper(line) ~ /(KEY|TOKEN|SECRET|PASSWORD|PRIVATE|SIGNING|CERT|CREDENTIAL|API_KEY|LICENSE|DATABASE_URL|DB_URL|DSN):/) {
+      # `S?`: the PLURAL as a YAML key too — `docker compose config` renders the
+      # self-hosted sandbox-b key as `SANDBOX_B_API_KEYS: <value>`, which the
+      # literal `KEY:` match printed verbatim into redacted/compose-resolved.yml
+      # (kit 2.0 K-A fix round 1; tests/test_redact_stream.sh case 6f).
+      if (toupper(line) ~ /(KEY|TOKEN|SECRET|PASSWORD|PRIVATE|SIGNING|CERT|CREDENTIAL|API_KEY|LICENSE|DATABASE_URL|DB_URL|DSN)S?:/) {
         sub(/:.*/, ": <redacted>", line)
       }
       print line
@@ -7150,6 +7165,10 @@ bundle_create() {
   cp "$ROOT/bin/lucairn-doctor-keyed.py" "$staging/bin/lucairn-doctor-keyed.py"
   chmod 0755 "$staging/bin/lucairn-doctor-keyed.py"
   cp "$ROOT/bin/runtime-profile-lib.sh" "$staging/bin/runtime-profile-lib.sh"
+  # Kit 2.0: the Compose env-file reader the extracted kit's doctor and DSN
+  # writer share (bin/compose-env-lib.sh). Optional for the verifier, which
+  # never sources a bundle's helper.
+  cp "$ROOT/bin/compose-env-lib.sh" "$staging/bin/compose-env-lib.sh"
   cp "$ROOT/VERSION" "$staging/VERSION"
   cp "$ROOT/RELEASE_DATE" "$staging/RELEASE_DATE"
   mkdir -p "$staging/scripts"
@@ -7724,14 +7743,29 @@ sanitizer_core_cert_dir() {
   esac
 }
 
+# sanitizer_core_env_get <env file> <KEY> — the value exactly as Docker Compose
+# reads it (bin/compose-env-lib.sh compose_env_get: rc 0 value, rc 1 unreadable,
+# rc 2 Compose would refuse the file, rc 3 a construct the reader does not
+# evaluate; on rc != 0 stdout is a value-free reason). Used for every value the
+# registry DSN is built from, by doctor and support-bundle alike.
+sanitizer_core_env_get() {
+  if ! command -v compose_env_get >/dev/null 2>&1; then
+    printf 'bin/compose-env-lib.sh (the kit Compose env-file reader) is missing beside bin/lucairn'
+    return 4
+  fi
+  compose_env_get "$1" "$2"
+}
+
 # The host file the compose file bind-mounts into the core as its registry DSN
 # (--registry-dsn-file /run/secrets/sanitizer-core/registry-dsn; DSA #956).
 # Written by scripts/write-sanitizer-core-registry-dsn.sh. Relative values
-# resolve like the cert directory above.
+# resolve like the cert directory above. rc != 0 when customer.env cannot be
+# read the Compose way; the compose default path is printed then, so a caller
+# that only scans (support-bundle) still has a path.
 LUCAIRN_SANITIZER_CORE_DSN_FILE_DEFAULT="./.secrets/sanitizer-core/registry-dsn"
 sanitizer_core_dsn_file() {
-  local env_file="$1" compose_file="$2" f base
-  f="$(env_value "$env_file" SANITIZER_CORE_REGISTRY_DSN_FILE)"
+  local env_file="$1" compose_file="$2" f base rc=0
+  f="$(sanitizer_core_env_get "$env_file" SANITIZER_CORE_REGISTRY_DSN_FILE)" || { rc=1; f=""; }
   f="${f:-$LUCAIRN_SANITIZER_CORE_DSN_FILE_DEFAULT}"
   case "$f" in
     /*) printf '%s' "$f" ;;
@@ -7740,6 +7774,7 @@ sanitizer_core_dsn_file() {
       printf '%s/%s' "$base" "${f#./}"
       ;;
   esac
+  return "$rc"
 }
 
 # Percent-encodes stdin (every byte outside A-Z a-z 0-9 - . _ ~), byte-wise.
@@ -7758,11 +7793,12 @@ sanitizer_core_pct_encode() {
   done
 }
 
-# The DSN the writer derives from customer.env. Compared, never printed.
+# The DSN the writer derives from customer.env (same reader, same encoder).
+# Compared, never printed. rc 1 when a value cannot be read the Compose way.
 sanitizer_core_expected_dsn() {
   local env_file="$1" pw ssl
-  pw="$(env_value "$env_file" POSTGRES_SANITIZER_CORE_PASSWORD)"
-  ssl="$(env_value "$env_file" POSTGRES_SSLMODE)"
+  pw="$(sanitizer_core_env_get "$env_file" POSTGRES_SANITIZER_CORE_PASSWORD)" || return 1
+  ssl="$(sanitizer_core_env_get "$env_file" POSTGRES_SSLMODE)" || return 1
   printf 'postgres://dsa:%s@postgres-sanitizer-core:5432/sanitizer_core?sslmode=%s' \
     "$(printf '%s' "$pw" | sanitizer_core_pct_encode)" "${ssl:-disable}"
 }
@@ -7898,8 +7934,12 @@ check_sanitizer_core_dsn() {
   fi
 
   # b. The host file the compose file bind-mounts.
-  local f dir mode uid dmode cuid
-  f="$(sanitizer_core_dsn_file "$env_file" "$compose_file")"
+  local f dir mode uid dmode cuid why
+  if ! f="$(sanitizer_core_dsn_file "$env_file" "$compose_file")"; then
+    why="$(sanitizer_core_env_get "$env_file" SANITIZER_CORE_REGISTRY_DSN_FILE)" || true
+    echo "sanitizer core registry DSN: failed (SANITIZER_CORE_REGISTRY_DSN_FILE cannot be read from $env_file the way Docker Compose reads it: $why)"
+    return 1
+  fi
   dir="$(dirname "$f")"
   cuid="${LUCAIRN_CONTAINER_UID:-$(env_value "$env_file" LUCAIRN_CONTAINER_UID)}"
   cuid="${cuid:-$LUCAIRN_SANITIZER_CORE_CONTAINER_UID}"
@@ -7967,7 +8007,11 @@ check_sanitizer_core_dsn() {
           failed=1
           ;;
         postgres://*|postgresql://*)
-          if [ "$pw_ok" -eq 1 ] && [ "$dsn" != "$(sanitizer_core_expected_dsn "$env_file")" ]; then
+          local expected=""
+          if [ "$pw_ok" -eq 1 ] && ! expected="$(sanitizer_core_expected_dsn "$env_file")"; then
+            echo "sanitizer core registry DSN: failed (POSTGRES_SSLMODE cannot be read from $env_file the way Docker Compose reads it, so the file cannot be compared; the values are not printed)"
+            failed=1
+          elif [ "$pw_ok" -eq 1 ] && [ "$dsn" != "$expected" ]; then
             echo "sanitizer core registry DSN: failed ($f does not match customer.env — POSTGRES_SANITIZER_CORE_PASSWORD or POSTGRES_SSLMODE changed since it was written; $fix, then recreate the core. The values are not printed)"
             failed=1
           fi
@@ -8031,9 +8075,24 @@ check_sanitizer_core_config() {
   #    where scripts/write-sanitizer-core-registry-dsn.sh percent-encodes it.
   #    So any printable ASCII character works except the ones customer.env /
   #    Compose interpolation cannot carry: space, $ ' " \ ` and #.
-  val="$(env_value "$env_file" POSTGRES_SANITIZER_CORE_PASSWORD)"
-  local pw_ok=0
-  if [ -z "$val" ]; then
+  #    Read EXACTLY as Docker Compose reads it, by the writer's own reader
+  #    (bin/compose-env-lib.sh): only a matching pair of outer quotes is
+  #    removed, so `"abc'` is a Compose error and `abc'` keeps its quote.
+  local pw_ok=0 pw_rc=0
+  val="$(sanitizer_core_env_get "$env_file" POSTGRES_SANITIZER_CORE_PASSWORD)" || pw_rc=$?
+  if [ "$pw_rc" -eq 3 ]; then
+    # $-interpolation or a backslash escape (refused in the password anyway).
+    echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD holds a space, \$, a quote, \\, \`, # or a non-ASCII byte — customer.env and Compose interpolation cannot carry it safely; generate with: openssl rand -hex 24)"
+    val=""
+    failed=1
+  elif [ "$pw_rc" -ne 0 ]; then
+    echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD cannot be read from $env_file the way Docker Compose reads it: $val)"
+    val=""
+    failed=1
+  elif compose_env_shell_override POSTGRES_SANITIZER_CORE_PASSWORD "$val"; then
+    echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD is exported in this shell with a value other than $env_file's; Docker Compose run from this shell uses the exported one, so Postgres and the DSN file would disagree. Unset it. The values are not printed)"
+    failed=1
+  elif [ -z "$val" ]; then
     echo "sanitizer core registry DB password: failed (POSTGRES_SANITIZER_CORE_PASSWORD is not set in $env_file — generate with: openssl rand -hex 24)"
     failed=1
   elif ! validate_no_placeholder "$env_file" POSTGRES_SANITIZER_CORE_PASSWORD; then
@@ -8178,36 +8237,48 @@ check_sanitizer_core_config() {
 
   # 7. Image pins. Core and sidecar are a PAIR from one release commit: the
   #    core refuses to start against a sidecar that lacks the labels or the
-  #    weak-place switch it needs (DSA main.go requirePlaceLabels), so both
-  #    digests are set together or not at all.
+  #    weak-place switch it needs (DSA main.go requirePlaceLabels). They only
+  #    ever run from the SIGNED digests the kit release records: the compose
+  #    file requires both digest variables (`:?`, no bare-tag fallback), and
+  #    this check fails — never notes — while the manifest has no signed digest
+  #    yet (`pending: true`, before the release step), while either variable is
+  #    empty, or when the pinned pair differs from the manifest's. The
+  #    signatures themselves: `bin/lucairn verify-images` (the pair is in its
+  #    expected set).
   local core_d side_d core_m side_m tag
   core_d="$(env_value "$env_file" LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST)"
   side_d="$(env_value "$env_file" LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST)"
   core_m="$(sanitizer_core_manifest_digest "$env_file" dsa-sanitizer-core)"
   side_m="$(sanitizer_core_manifest_digest "$env_file" dsa-sanitizer-core-sidecar)"
   tag="$(env_value "$env_file" LUCAIRN_SANITIZER_CORE_IMAGE_TAG)"
-  local pin_failed=0 d
+  local pin_failed=0 d m
+  for m in "$core_m" "$side_m"; do
+    case "$m" in
+      sha256:*) printf '%s' "$m" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "sanitizer core images: failed (image-manifest.yaml records a core/sidecar digest that is not sha256:<64 hex>)"; pin_failed=1; } ;;
+      *)
+        echo "sanitizer core images: failed (image-manifest.yaml records no signed digest for the core/sidecar pair yet (${m:-absent}) — the release step records them; until then the pair cannot be started from this kit: the compose file refuses to render without both digests)"
+        pin_failed=1
+        break
+        ;;
+    esac
+  done
   for d in "$core_d" "$side_d"; do
     if [ -n "$d" ] && ! printf '%s' "$d" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
       echo "sanitizer core images: failed (a LUCAIRN_SANITIZER_CORE_*_IMAGE_DIGEST value is not sha256:<64 hex>)"
       pin_failed=1
     fi
   done
-  if { [ -n "$core_d" ] && [ -z "$side_d" ]; } || { [ -z "$core_d" ] && [ -n "$side_d" ]; }; then
-    echo "sanitizer core images: failed (set LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST and LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST together: core and sidecar must come from one release)"
+  local want=""
+  [ "$pin_failed" -eq 0 ] && want=": $core_m / $side_m"
+  if [ -z "$core_d" ] || [ -z "$side_d" ]; then
+    echo "sanitizer core images: failed (set LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST and LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST together, to the signed pair image-manifest.yaml records${want}; the compose file refuses to render without them — the pair never starts from tag ${tag:-1.1.0} alone)"
+    pin_failed=1
+  elif [ "$pin_failed" -eq 0 ] && { [ "$core_d" != "$core_m" ] || [ "$side_d" != "$side_m" ]; }; then
+    echo "sanitizer core images: failed (the pinned core/sidecar digests differ from the pair image-manifest.yaml records for this kit release)"
     pin_failed=1
   fi
   if [ "$pin_failed" -eq 0 ]; then
-    if [ "$core_m" = "pending" ] || [ "$side_m" = "pending" ] || [ -z "$core_m" ] || [ -z "$side_m" ]; then
-      echo "sanitizer core images: note — image-manifest.yaml has no recorded digest for the core/sidecar pair yet (filled by the release step); pulled by tag ${tag:-1.1.0}"
-    elif [ -z "$core_d" ]; then
-      warn "sanitizer core images: pulled by tag ${tag:-1.1.0}; set LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$core_m and LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=$side_m (image-manifest.yaml) to pin the validated pair"
-    elif [ "$core_d" != "$core_m" ] || [ "$side_d" != "$side_m" ]; then
-      echo "sanitizer core images: failed (the pinned core/sidecar digests differ from the pair image-manifest.yaml records for this kit release)"
-      pin_failed=1
-    else
-      echo "sanitizer core images: ok (core + sidecar pinned to the manifest pair)"
-    fi
+    echo "sanitizer core images: ok (core + sidecar pinned to the signed manifest pair)"
   fi
   [ "$pin_failed" -eq 0 ] || failed=1
 
@@ -8436,7 +8507,13 @@ print("; ".join(bad) if bad else "ok")
             echo "sanitizer core registry: failed (not migrated — run: docker compose -f docker-compose.customer.yml --env-file customer.env --profile sanitizer-core-migrate run --rm migrate-sanitizer-core)"
             failed=1
             ;;
-          *) echo "sanitizer core registry: note — could not read the migration ledger" ;;
+          *)
+            # A ledger the doctor cannot read is NOT a pass (sol r1 point 6):
+            # the registry may be unmigrated, the DB unreachable or the
+            # credentials wrong. The psql output is not printed.
+            echo "sanitizer core registry: failed (could not read the migration ledger of the running postgres-sanitizer-core — the registry cannot be shown to be migrated; check: docker compose ... exec postgres-sanitizer-core psql -U dsa -d sanitizer_core -c 'SELECT count(*) FROM registry_schema_migrations')"
+            failed=1
+            ;;
         esac
         ;;
       *)
@@ -9322,6 +9399,83 @@ write_cert_report() {
   fi
 }
 
+# support_bundle_secret_needles <env file> <compose file>
+# Prints, one per line, every secret value the kit knows (support-bundle's
+# redaction-miss scan; never printed elsewhere):
+#   * customer.env values of secret-named keys (PASSWORD, SECRET, TOKEN, KEY,
+#     DSN, PRIVATE, CREDENTIAL, LICENSE — not PUBLIC/PUBKEY keys or *_ID,
+#     *_NAME, *_PATH, *_FILE, *_DIR, *_DAYS, *_URL names, nor values that are
+#     file paths), read BOTH exactly as Docker Compose reads them
+#     (bin/compose-env-lib.sh) and as the raw text after `=` with and without
+#     one pair of quotes — so a file Compose would refuse is still covered;
+#   * the password of any `scheme://user:password@` URL in any value;
+#   * the sanitizer core's registry DSN file (when readable): the DSN and its
+#     password, as written and decoded;
+#   * the percent-encoded form of every needle that has one.
+# NON-COVERAGE: values shorter than 12 characters are not scanned (a short
+# dev value could match unrelated text by chance); secrets that only exist
+# outside customer.env and the DSN file (an operator's own overlay values,
+# files under cert directories) are not known here.
+support_bundle_secret_needles() {
+  local env_file="$1" compose_file="$2" key raw v up dsn_file dsn_val dsn_pw
+  local -a vals=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    # name: optional `export`, then [A-Za-z0-9_.-]+, then = or :
+    key="$(printf '%s' "$line" | sed -n 's/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}\([A-Za-z0-9_.-][A-Za-z0-9_.-]*\)[[:space:]]*[=:].*$/\2/p')"
+    [ -n "$key" ] || continue
+    raw="$(printf '%s' "$line" | sed 's/^[^=:]*[=:][[:space:]]*//')"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    # URL userinfo passwords, whatever the key's name.
+    case "$raw" in
+      *://*:*@*) vals+=("$(printf '%s' "$raw" | sed -n 's#^.*://[^:/@[:space:]]*:\([^@]*\)@.*$#\1#p')") ;;
+    esac
+    up="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
+    case "$up" in
+      *PUBLIC*|*PUBKEY*|*_ID|*_NAME|*_PATH|*_FILE|*_DIR|*_DAYS|*_URL) continue ;;
+      *PASSWORD*|*SECRET*|*TOKEN*|*KEY*|*DSN*|*PRIVATE*|*CREDENTIAL*|*LICENSE*) : ;;
+      *) continue ;;
+    esac
+    vals+=("$raw")
+    case "$raw" in
+      \"*\") vals+=("${raw#\"}"); vals[${#vals[@]}-1]="${vals[${#vals[@]}-1]%\"}" ;;
+      \'*\') vals+=("${raw#\'}"); vals[${#vals[@]}-1]="${vals[${#vals[@]}-1]%\'}" ;;
+    esac
+    if v="$(sanitizer_core_env_get "$env_file" "$key" 2>/dev/null)"; then
+      vals+=("$v")
+    fi
+  done < "$env_file"
+  dsn_file="$(sanitizer_core_dsn_file "$env_file" "$compose_file" 2>/dev/null)" || true
+  if [ -n "$dsn_file" ] && [ -f "$dsn_file" ] && [ -r "$dsn_file" ]; then
+    dsn_val="$(sanitizer_core_read_dsn "$dsn_file")"
+    dsn_pw="$(printf '%s' "$dsn_val" | sed -n 's#^postgres[a-z]*://[^:/@]*:\([^@]*\)@.*#\1#p')"
+    vals+=("$dsn_val" "$dsn_pw")
+    # decoded password (the DSN file holds it percent-encoded)
+    vals+=("$(printf '%s' "$dsn_pw" | LC_ALL=C awk '{
+      out = ""; n = length($0)
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1)
+        if (c == "%" && i + 2 <= n) { h = toupper(substr($0, i + 1, 2)); out = out sprintf("%c", (index("0123456789ABCDEF", substr(h, 1, 1)) - 1) * 16 + index("0123456789ABCDEF", substr(h, 2, 1)) - 1); i += 2 }
+        else out = out c
+      }
+      printf "%s", out }')")
+  fi
+  # One needle per LINE of each value (grep -F -f reads one pattern per
+  # line; a multi-line quoted value is searched line by line), each >= 12
+  # characters so no short fragment — never an empty line, which would match
+  # everything — reaches the pattern file.
+  local n frag
+  for n in "${vals[@]:+${vals[@]}}"; do
+    case "$n" in /*|./*|../*|~/*) continue ;; esac
+    printf '%s\n' "$n" | while IFS= read -r frag || [ -n "$frag" ]; do
+      [ "${#frag}" -ge 12 ] || continue
+      printf '%s\n' "$frag"
+      v="$(printf '%s' "$frag" | sanitizer_core_pct_encode)"
+      [ "$v" = "$frag" ] || printf '%s\n' "$v"
+    done
+  done | LC_ALL=C sort -u
+}
+
 support_bundle() {
   local env_file="" compose_file="" output_dir="" offline=0
   while [ "$#" -gt 0 ]; do
@@ -9412,25 +9566,25 @@ support_bundle() {
     echo "Collect schema version manually if Postgres is external: SELECT version FROM schema_migrations ORDER BY version;" > "$bundle_dir/postgres/schema-version.txt"
   fi
 
-  # Kit 2.0: the sanitizer core's registry DSN file is never collected (no
-  # step above reads it). Fail closed if its DSN — or its password, raw or
-  # percent-encoded — reached any collected file anyway (a future collector,
-  # an overlay passing --dsn into `compose config`, a log line): nothing is
-  # archived and the bundle directory is removed. Values are never printed.
-  local dsn_file dsn_val dsn_pw needle leaked=0
-  dsn_file="$(sanitizer_core_dsn_file "$env_file" "$compose_file")"
-  if [ -f "$dsn_file" ] && [ -r "$dsn_file" ]; then
-    dsn_val="$(sanitizer_core_read_dsn "$dsn_file")"
-    dsn_pw="$(printf '%s' "$dsn_val" | sed -n 's#^postgres[a-z]*://[^:/@]*:\([^@]*\)@.*#\1#p')"
-    for needle in "$dsn_val" "$dsn_pw" "$(env_value "$env_file" POSTGRES_SANITIZER_CORE_PASSWORD)"; do
-      # >= 12 characters: a short dev value could match by chance.
-      [ "${#needle}" -ge 12 ] || continue
-      if grep -rqF -- "$needle" "$bundle_dir" 2>/dev/null; then leaked=1; break; fi
-    done
+  # Fail closed on a redaction miss: every secret VALUE this kit knows is
+  # searched for in every collected file, and on any hit nothing is archived
+  # and the bundle directory is removed (a future collector, an overlay
+  # passing --dsn into `compose config`, a log line, a password pasted under a
+  # key name redact_stream does not treat as secret). The needle list does NOT
+  # depend on the registry DSN file existing (sol r1 finding 2: with that file
+  # missing, the old guard skipped every scan). Values are never printed; the
+  # needle list lives outside the bundle in a 0600 temp file and is removed.
+  local needles leaked=0
+  needles="$(mktemp)"
+  chmod 0600 "$needles"
+  support_bundle_secret_needles "$env_file" "$compose_file" > "$needles" 2>/dev/null || true
+  if [ -s "$needles" ] && grep -rqF -f "$needles" -- "$bundle_dir" 2>/dev/null; then
+    leaked=1
   fi
+  rm -f "$needles"
   if [ "$leaked" -eq 1 ]; then
     rm -rf "$bundle_dir"
-    fail "support bundle: refused — the sanitizer core's registry DSN or its password appeared in a collected file; nothing was archived (the value is not printed). Report this to Lucairn support without a bundle."
+    fail "support bundle: refused — a secret value from $env_file or the sanitizer core's registry DSN appeared in a collected file; nothing was archived (the value is not printed). Report this to Lucairn support without a bundle."
   fi
 
   tar -czf "$archive" -C "$output_dir" "$(basename "$bundle_dir")"
@@ -9734,8 +9888,13 @@ verify_images_usage() {
 Usage:
   lucairn verify-images [--tag TAG] [--registry REG] [--key PATH]
 
-Verifies the 13 images recorded in keys/image-digests-<tag>.txt — the 12
-dsa-* release services (at --tag) plus lucairn-dashboard (its own pinned
+Verifies the 15 images recorded in keys/image-digests-<tag>.txt — the 12
+dsa-* release services (at --tag), the kit 2.0 sanitizer core pair
+(dsa-sanitizer-core + dsa-sanitizer-core-sidecar at the pair's own tag from
+image-manifest.yaml services.dsa-sanitizer-core.image_tag, whose recorded
+digests must also equal image_digests.signed_artifacts — while that manifest
+still says `pending: true` this command FAILS: the pair is not released yet)
+plus lucairn-dashboard (its own pinned
 tag, hardcoded here, currently 0.8.2 — NOT read from LUCAIRN_DASHBOARD_IMAGE_TAG,
 so if you have overridden that env var for Compose/Helm, the dashboard bytes
 you actually deploy are UNVERIFIED by this command; verification here only
@@ -9748,14 +9907,14 @@ Each image's cosign signature is verified BY DIGEST against the bundled
 public key (keys/lucairn-cosign.pub), with a Sigstore Rekor public
 transparency log entry required.
 
-For each of the 13 recorded images it:
+For each of the 15 recorded images it:
   1. resolves the tag's CURRENT registry digest and asserts it EQUALS the
      recorded (signed) digest — a mismatch means the tag was re-pointed to
      other bytes (downgrade/substitution) and is a hard FAIL;
   2. runs `cosign verify --key <pubkey> <repo>@<recorded-digest>` and requires
      a transparency-log (Rekor) entry in the output before printing PASS.
 
-Exits non-zero if any of the 13 covered images' digest drifted, signature is
+Exits non-zero if any of the 15 covered images' digest drifted, signature is
 missing/invalid, or no transparency-log entry is present.
 
 Requires `cosign` (>= v2.0) on PATH (https://github.com/sigstore/cosign) and a
@@ -9796,6 +9955,20 @@ image_manifest_value() {
       gsub(/^"|"$/, "");
       print; exit
     }' "$manifest"
+}
+
+# verify_images_service_tag NAME — services.<NAME>.image_tag of this kit's
+# image-manifest.yaml (the sanitizer core pair's own tag), or nothing.
+verify_images_service_tag() {
+  local manifest="${ROOT}/image-manifest.yaml"
+  [ -f "$manifest" ] || return 0
+  awk -v want="  $1:" '
+    /^services:/ { in_s = 1; next }
+    in_s && /^[^ #]/ { in_s = 0 }
+    in_s && $0 == want { in_k = 1; next }
+    in_s && in_k && /^  [^ ]/ { in_k = 0 }
+    in_s && in_k && /^    image_tag:/ { v = $0; sub(/^    image_tag:[[:space:]]*/, "", v); sub(/[[:space:]]+#.*$/, "", v); gsub(/"/, "", v); print v; exit }
+  ' "$manifest"
 }
 
 # verify_images_default_tag — derive the default --tag from the SINGLE
@@ -10008,10 +10181,36 @@ verify_images() {
   done
   expected_refs+=("${canonical_host}/${dashboard_image}:${dashboard_tag}")
 
+  # Kit 2.0 (sol r1 finding 4): the sanitizer core + model sidecar are part of
+  # every install this kit can start, so they are part of the verify set. They
+  # ride their OWN tag (image-manifest.yaml services.dsa-sanitizer-core /
+  # -sidecar image_tag, one tag for the pair) and must carry signed digests in
+  # image_digests.signed_artifacts. While the manifest still says
+  # `pending: true` (before the release step records them) there is nothing
+  # signed to verify, and the compose file refuses to start the pair: FAIL,
+  # never a silent 13-image PASS.
+  local core_pair=(dsa-sanitizer-core dsa-sanitizer-core-sidecar) core_tag="" side_tag="" _d
+  core_tag="$(verify_images_service_tag dsa-sanitizer-core)"
+  side_tag="$(verify_images_service_tag dsa-sanitizer-core-sidecar)"
+  if [ -z "$core_tag" ] || [ "$core_tag" != "$side_tag" ]; then
+    echo "verify-images: FAILED — image-manifest.yaml must give dsa-sanitizer-core and dsa-sanitizer-core-sidecar ONE image_tag (found '${core_tag:-none}' / '${side_tag:-none}'): they are a pair from one release." >&2
+    return 1
+  fi
+  local -a core_pair_digests=()
+  for _img in "${core_pair[@]}"; do
+    _d="$(sanitizer_core_manifest_digest "" "$_img")"
+    if ! printf '%s' "$_d" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+      echo "verify-images: FAILED — the sanitizer core pair (${core_pair[*]} @ $core_tag) has no signed digest in this kit's image-manifest.yaml yet (${_d:-absent}). The release step records it; until then this kit's image set cannot be verified and the pair cannot start (the compose file requires both digests)." >&2
+      return 1
+    fi
+    core_pair_digests+=("$_d")
+    expected_refs+=("${canonical_host}/${_img}:${core_tag}")
+  done
+
   local failed=0 checked=0 line ref recorded current out rc repo repo_tag
   info "verify-images: verifying cosign signatures BY DIGEST against $key"
   info "verify-images: tag=$tag  record=$digests_file  (+ Rekor transparency log)"
-  info "verify-images: expecting EXACTLY ${#expected_refs[@]} artifacts (${#dsa_images[@]} dsa-* @ $tag + $dashboard_image @ $dashboard_tag)"
+  info "verify-images: expecting EXACTLY ${#expected_refs[@]} artifacts (${#dsa_images[@]} dsa-* @ $tag + ${#core_pair[@]} sanitizer-core pair @ $core_tag + $dashboard_image @ $dashboard_tag)"
   [ -n "$registry" ] && info "verify-images: registry override: $registry"
   echo
 
@@ -10067,9 +10266,23 @@ verify_images() {
     echo "verify-images: FAILED — $digests_file does not match the expected artifact set." >&2
     [ "${#missing[@]}" -gt 0 ]    && echo "  MISSING (expected but not recorded):    ${missing[*]}" >&2
     [ "${#unexpected[@]}" -gt 0 ] && echo "  UNEXPECTED (recorded but not expected):  ${unexpected[*]}" >&2
-    echo "  Expected exactly ${#expected_refs[@]} artifacts; the canonical set lives in verify_images() (dsa_images + dashboard pin)." >&2
+    echo "  Expected exactly ${#expected_refs[@]} artifacts; the canonical set lives in verify_images() (dsa_images + the sanitizer core pair + dashboard pin)." >&2
     return 1
   fi
+  # The core pair's record must be the SAME signed bytes the kit manifest pins
+  # (bin/lucairn doctor compares customer.env against the manifest; this binds
+  # the manifest to the signed record).
+  local _k _r
+  for _k in 0 1; do
+    _r=""
+    for i in $(seq 0 $(( ${#file_refs[@]} - 1 ))); do
+      if [ "${file_refs[$i]}" = "${canonical_host}/${core_pair[$_k]}:${core_tag}" ]; then _r="${file_digests[$i]}"; break; fi
+    done
+    if [ "$_r" != "${core_pair_digests[$_k]}" ]; then
+      echo "verify-images: FAILED — $digests_file records ${core_pair[$_k]}:${core_tag} as ${_r:-nothing}, but image-manifest.yaml pins ${core_pair_digests[$_k]}; the kit manifest and the signed record disagree." >&2
+      return 1
+    fi
+  done
 
   # ---- Pass 2: per-image digest verify, in canonical order. set -e-safe so
   # one cosign failure does NOT abort the loop (FIX-B) — every image is checked

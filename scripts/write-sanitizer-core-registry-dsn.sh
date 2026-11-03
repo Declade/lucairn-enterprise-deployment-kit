@@ -68,13 +68,31 @@ done
 
 [ -f "$ENV_FILE" ] || die "env file not found: $ENV_FILE"
 
-# Same reading as bin/lucairn env_value: the last line wins, one pair of
-# surrounding quotes is stripped.
+# customer.env is read EXACTLY as Docker Compose reads it (only a matching
+# pair of outer quotes is removed, multi-line quoted values, comments, the
+# last assignment wins …), by the ONE reader bin/lucairn doctor uses too:
+# bin/compose-env-lib.sh (rules and source citations in its header). A file
+# Compose would refuse, or a value it would interpolate or unescape, is
+# refused here rather than guessed.
+LIB="$KIT_ROOT/bin/compose-env-lib.sh"
+[ -f "$LIB" ] && [ ! -L "$LIB" ] || die "missing $LIB (the kit's Compose env-file reader)"
+# shellcheck source=../bin/compose-env-lib.sh
+. "$LIB"
+PW_UNSAFE="POSTGRES_SANITIZER_CORE_PASSWORD holds a character customer.env cannot carry safely (space, \$, a quote, \\, \` or #, or a non-ASCII byte); generate one: openssl rand -hex 24"
 env_get() {
-  local line
-  line="$(grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -1 || true)"
-  [ -n "$line" ] || return 0
-  printf '%s' "${line#*=}" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+  local v rc=0
+  v="$(compose_env_get "$ENV_FILE" "$1")" || rc=$?
+  if [ "$rc" -eq 3 ] && [ "$1" = POSTGRES_SANITIZER_CORE_PASSWORD ]; then
+    # $-interpolation or a backslash escape: both characters are refused in
+    # the password anyway, so it gets the password's own refusal.
+    die "$PW_UNSAFE"
+  elif [ "$rc" -ne 0 ]; then
+    die "cannot read $1 from $ENV_FILE the way Docker Compose reads it: $v"
+  fi
+  if compose_env_shell_override "$1" "$v"; then
+    die "$1 is exported in this shell with a value other than $ENV_FILE's; Docker Compose run from this shell would use the exported one (unset it, or put the value in $ENV_FILE). The values are not printed"
+  fi
+  printf '%s' "$v"
 }
 
 # sanitizer_core_pct_encode: stdin bytes -> RFC 3986 percent-encoding of every
@@ -92,15 +110,17 @@ pct_encode() {
   done
 }
 
-PW="$(env_get POSTGRES_SANITIZER_CORE_PASSWORD)"
+# env_get dies inside a command substitution only for that subshell, so each
+# read is checked: an empty result after a refusal must stop the script.
+PW="$(env_get POSTGRES_SANITIZER_CORE_PASSWORD)" || exit 1
 [ -n "$PW" ] || die "POSTGRES_SANITIZER_CORE_PASSWORD is not set in $ENV_FILE (generate one: openssl rand -hex 24)"
 # Allowed: printable ASCII 0x21-0x7E except $ ' " \ ` # (and no space).
 if [ -n "$(printf '%s' "$PW" | LC_ALL=C tr -d '\041-\176')" ] \
    || printf '%s' "$PW" | LC_ALL=C grep -q "[\$'\"\\\`#]"; then
-  die "POSTGRES_SANITIZER_CORE_PASSWORD holds a character customer.env cannot carry safely (space, \$, a quote, \\, \` or #, or a non-ASCII byte); generate one: openssl rand -hex 24"
+  die "$PW_UNSAFE"
 fi
 
-SSLMODE="$(env_get POSTGRES_SSLMODE)"
+SSLMODE="$(env_get POSTGRES_SSLMODE)" || exit 1
 SSLMODE="${SSLMODE:-disable}"
 case "$SSLMODE" in
   disable|allow|prefer|require|verify-ca|verify-full) : ;;
@@ -108,7 +128,7 @@ case "$SSLMODE" in
 esac
 
 if [ -z "$DSN_FILE" ]; then
-  DSN_FILE="$(env_get SANITIZER_CORE_REGISTRY_DSN_FILE)"
+  DSN_FILE="$(env_get SANITIZER_CORE_REGISTRY_DSN_FILE)" || exit 1
   DSN_FILE="${DSN_FILE:-$DEFAULT_DSN_FILE}"
 fi
 case "$DSN_FILE" in

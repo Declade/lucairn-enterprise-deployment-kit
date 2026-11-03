@@ -23,6 +23,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
+# Kit 2.0 K-A fix round 1: doctor FAILS while this checkout's image-manifest
+# still has no signed core/sidecar digests (`pending: true`, before a
+# release). The happy path below therefore runs from a RELEASED-kit fixture
+# with synthetic signed digests (tests/lib/test-helpers.sh).
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$TMPDIR"
 
 DERIVE="$ROOT/scripts/derive-veil-pubkey.sh"
 gen_seed() { openssl rand -hex 32; }
@@ -110,6 +117,8 @@ AUDIT_APP_PASSWORD=audit-app-role-secret-value
 VEIL_APP_PASSWORD=veil-app-role-secret-value
 DSA_SANITIZER_CORE_REGISTRY_KEY=$(gen_seed)
 POSTGRES_SANITIZER_CORE_PASSWORD=postgres-sanitizer-core-secret-value
+LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$TEST_SANITIZER_CORE_DIGEST
+LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=$TEST_SANITIZER_CORE_SIDECAR_DIGEST
 SANITIZER_CORE_MTLS_HOST_DIR=$TMPDIR/sanitizer-core-mtls
 SANITIZER_CORE_REGISTRY_DSN_FILE=$TMPDIR/secrets/sanitizer-core/registry-dsn
 BUILD_AUTH_TOKEN=build-token-secret

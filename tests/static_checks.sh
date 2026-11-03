@@ -569,11 +569,24 @@ if docker compose version >/dev/null 2>&1; then
   # inner slot (${LCR_X:-${VEIL_X:-}}), so a canonical-only render must
   # succeed with NO legacy vars supplied — if this fails again, the `:?`
   # sharp edge has been reintroduced.
+  # Kit 2.0: the example carries no core/sidecar digests until a release
+  # records them, and the pair never renders without them (`:?`, sol r1 on
+  # PR #158) — so the example is rendered with the synthetic signed pair from
+  # tests/lib/test-helpers.sh appended, and nothing else added.
+  # shellcheck source=lib/test-helpers.sh
+  . "$ROOT/tests/lib/test-helpers.sh"
+  _example_pinned="$(mktemp)"
+  cp "$ROOT/customer.env.example" "$_example_pinned"
+  printf '\nLUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=%s\nLUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=%s\n' \
+    "$TEST_SANITIZER_CORE_DIGEST" "$TEST_SANITIZER_CORE_SIDECAR_DIGEST" >> "$_example_pinned"
+  _rc=0
   docker compose \
     -f "$ROOT/docker-compose.customer.yml" \
     -f "$ROOT/docker-compose.self-hosted.yml" \
-    --env-file "$ROOT/customer.env.example" \
-    config --quiet
+    --env-file "$_example_pinned" \
+    config --quiet || _rc=$?
+  rm -f "$_example_pinned"
+  [ "$_rc" -eq 0 ] || exit "$_rc"
 else
   echo "compose config: skipped (docker compose not installed)"
 fi

@@ -78,6 +78,8 @@ gateway  | time=2026-08-22T09:04:09Z level=INFO msg="proxying to http://sandbox-
 witness  | 2026/08/22 09:04:09 dial veil-witness:50058 ok; anchored at https://rekor.sigstore.dev:443/api/v1/log entry sha256:ab@cd
 image: registry.example.com:5000/lucairn/gateway@sha256:abcdef0123
 truncated log: user=veil password="KwUntermLEAK019 host=postgres-veil
+      SANDBOX_B_API_KEYS: PluralYamlKeysLEAK020
+      LCR_ADMIN_TOKENS: PluralYamlTokensLEAK021
 LOG
 
 OUT="$TMPDIR/out.log"
@@ -355,5 +357,19 @@ grep -q '^truncated log: user=veil password="<redacted> host=postgres-veil$' "$O
 #         `OLDPWD=` redacted as if it were a credential field.
 grep -q "^env: PWD=<redacted> OLDPWD=/root SHLVL=1$" "$OUT" \
   || fail "OLDPWD= was treated as a credential field (PWD word-boundary regression)"
+#
+#     (f) Kit 2.0 K-A fix round 1: a PLURAL secret word as a YAML key. `docker
+#         compose config` renders the self-hosted sandbox-b key as
+#         `SANDBOX_B_API_KEYS: <value>` (docker-compose.self-hosted.yml); the
+#         colon branch matched only `KEY:` and printed the value verbatim into
+#         redacted/compose-resolved.yml (found by the support-bundle needle scan,
+#         tests/test_sanitizer_core_compose.sh section F online case).
+grep -q "^      SANDBOX_B_API_KEYS: <redacted>$" "$OUT" \
+  || fail "plural YAML key SANDBOX_B_API_KEYS: not redacted with its separator"
+grep -q "^      LCR_ADMIN_TOKENS: <redacted>$" "$OUT" \
+  || fail "plural YAML key LCR_ADMIN_TOKENS: not redacted with its separator"
+if grep -q -e PluralYamlKeysLEAK020 -e PluralYamlTokensLEAK021 "$OUT"; then
+  fail "a plural-key YAML secret survived redaction"
+fi
 
 echo "redact_stream tests: ok"

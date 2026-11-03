@@ -107,6 +107,12 @@
 # seals PARTIAL. Do not deploy this to a machine with intermittent connectivity
 # and expect complete evidence — that is exactly what Slices 2 and 3 add.
 
+networks:
+  # Kit 2.0: the new sanitizer core's route to the CENTRAL witness (WAN, mTLS).
+  # Not internal (it must leave the host); the sidecar is its only member.
+  dsa-sanitizer-core-central-witness:
+    driver: bridge
+
 services:
 
   # ── Claim emitters ────────────────────────────────────────────────
@@ -179,7 +185,8 @@ services:
   # the other four emitters in this file — same device leaf. Its latch is a literal "true"
   # in the base file (the core refuses a non-mTLS witness hop in production),
   # so it is not re-stated here. The core runs in the sidecar's network
-  # namespace; the sidecar's dsa-witness-identity attachment is its route out.
+  # namespace, whose base networks are all internal (no route off the host);
+  # the sidecar block below adds the one egress link the central witness needs.
   sanitizer-core:
     environment:
       LCR_WITNESS_ADDR: "${LUCAIRN_CENTRAL_WITNESS_ADDR:?set LUCAIRN_CENTRAL_WITNESS_ADDR — see contrib/witness-central/witness-central.env.example}"
@@ -188,6 +195,12 @@ services:
       LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "/etc/lucairn/witness-client/client.key"
     volumes:
       - ${LUCAIRN_WITNESS_CLIENT_CERT_DIR:?set LUCAIRN_WITNESS_CLIENT_CERT_DIR — see docs/WITNESS_CENTRAL_RUNBOOK.md}:/etc/lucairn/witness-client:ro
+  # The core's namespace owner. Its base networks are internal only, so the
+  # core could not reach a central witness; this adds ONE egress link that no
+  # other service joins (nothing can reach the core's listener through it).
+  sanitizer-core-sidecar:
+    networks:
+      dsa-sanitizer-core-central-witness: {}
   gateway:
     environment:
       LCR_WITNESS_ADDR: "${LUCAIRN_CENTRAL_WITNESS_ADDR:?set LUCAIRN_CENTRAL_WITNESS_ADDR — see contrib/witness-central/witness-central.env.example}"

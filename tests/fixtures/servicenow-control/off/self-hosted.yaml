@@ -187,6 +187,7 @@ services:
       dsa-audit-identity: null
       dsa-bridge: null
       dsa-identity: null
+      dsa-sanitizer-core-ingress: null
       dsa-witness-edge: null
     ports:
       - mode: ingress
@@ -966,7 +967,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 20
-    image: ghcr.io/declade/dsa-sanitizer-core:1.1.0
+    image: ghcr.io/declade/dsa-sanitizer-core:1.1.0@sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0
     logging:
       driver: json-file
       options:
@@ -1008,7 +1009,7 @@ services:
       interval: 10s
       retries: 6
       start_period: 5m0s
-    image: ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0
+    image: ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@sha256:5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c
     logging:
       driver: json-file
       options:
@@ -1017,12 +1018,12 @@ services:
     mem_limit: "6815744000"
     memswap_limit: "6815744000"
     networks:
-      dsa-identity:
+      dsa-sanitizer-core: {}
+      dsa-sanitizer-core-ingress:
         aliases:
           - sanitizer-core
           - dsa-sanitizer-core
-      dsa-sanitizer-core: {}
-      dsa-witness-identity: {}
+      dsa-sanitizer-core-witness: {}
     restart: unless-stopped
   veil-witness:
     depends_on:
@@ -1073,6 +1074,7 @@ services:
         max-file: "5"
         max-size: 50m
     networks:
+      dsa-sanitizer-core-witness: null
       dsa-witness: null
       dsa-witness-ai: null
       dsa-witness-audit: null
@@ -1155,6 +1157,14 @@ networks:
     internal: true
   dsa-sanitizer-core:
     name: k1-off_dsa-sanitizer-core
+    driver: bridge
+    internal: true
+  dsa-sanitizer-core-ingress:
+    name: k1-off_dsa-sanitizer-core-ingress
+    driver: bridge
+    internal: true
+  dsa-sanitizer-core-witness:
+    name: k1-off_dsa-sanitizer-core-witness
     driver: bridge
     internal: true
   dsa-witness:

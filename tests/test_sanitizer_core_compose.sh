@@ -44,6 +44,25 @@
 #      the generated install holds neither the DSN nor the password, and a
 #      collected file that does (a redaction miss) makes it refuse to archive.
 #
+# FIX ROUND 1 (sol r1 on PR #158: four P2 + point 6), each red on 0e51bca:
+#   1. customer.env is read EXACTLY as Docker Compose reads it, by ONE reader
+#      the DSN writer and doctor share (bin/compose-env-lib.sh): D2 quote
+#      cases (`"BoundaryProbe4829'"` is refused, not stripped), E doctor REDs,
+#      and D3 — the reader and Docker Compose itself agree on a corpus.
+#   2. support-bundle scans for every secret value the kit knows, whether or
+#      not the DSN file exists (F: DSN missing + a planted password / registry
+#      key / signing key -> refused; an online bundle is not falsely refused).
+#   3. the core's namespace sits on three dedicated internal networks, one per
+#      link (B: only the gateway shares a network with the core's listener; the
+#      core reaches only its registry DB and the witness; no egress; the
+#      witness-central overlay adds exactly one egress link with no other member).
+#   4. the core/sidecar pair never starts from a bare tag: Compose refuses to
+#      render without both digests (B), doctor FAILS while the manifest is
+#      pending / the env digests are empty or differ (E), and verify-images
+#      covers the pair and fails closed while it is pending (G). GREEN cases
+#      run against a released-kit fixture with SYNTHETIC signed digests.
+#   6. an unreadable migration ledger is a doctor failure, not a note (E online).
+#
 # NON-COVERAGE (stated, not implied)
 #   * No container runs. Whether the images boot with these settings is the
 #     compose rehearsal on a Docker host (PRD criterion 2), not this suite.
@@ -63,6 +82,8 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
 COMPOSE="$ROOT/docker-compose.customer.yml"
 SELFHOSTED="$ROOT/docker-compose.self-hosted.yml"
 EXAMPLE_ENV="$ROOT/customer.env.example"
@@ -113,7 +134,13 @@ fi
 if [ "$HAVE_COMPOSE" -ne 1 ]; then
   skip "docker compose CLI not available — section B"
 else
-  cp "$EXAMPLE_ENV" "$TMP/render.env"
+  # The example env with the (synthetic) signed digests a kit release records:
+  # without them the project does not render at all (asserted below).
+  PINNED_ENV="$TMP/example-pinned.env"
+  cp "$EXAMPLE_ENV" "$PINNED_ENV"
+  printf '\nLUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=%s\nLUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=%s\n' \
+    "$TEST_SANITIZER_CORE_DIGEST" "$TEST_SANITIZER_CORE_SIDECAR_DIGEST" >> "$PINNED_ENV"
+  cp "$PINNED_ENV" "$TMP/render.env"
   printf '\nSANDBOX_B_MESSAGES_JSON_MAX_BYTES=8388608\nPOSTGRES_SANITIZER_CORE_PASSWORD=k158RenderCanaryPassword\n' >> "$TMP/render.env"
   if docker compose -f "$COMPOSE" -f "$SELFHOSTED" --env-file "$TMP/render.env" --profile sanitizer-core-migrate \
        config --format json > "$TMP/render.json" 2> "$TMP/render.err"; then
@@ -134,22 +161,39 @@ core, side, pg, mig, gw, wit = (svcs.get(k, {}) for k in ("sanitizer-core", "san
 p(core.get("network_mode") == "service:sanitizer-core-sidecar", "core joins the sidecar's network namespace")
 p(not core.get("networks"), "core declares no networks of its own")
 sn = side.get("networks") or {}
-p(set(sn) == {"dsa-identity", "dsa-witness-identity", "dsa-sanitizer-core"}, "sidecar on dsa-identity + dsa-witness-identity + dsa-sanitizer-core (%s)" % sorted(sn))
-al = set((sn.get("dsa-identity") or {}).get("aliases") or [])
-p({"sanitizer-core", "dsa-sanitizer-core"} <= al, "sidecar answers for sanitizer-core + dsa-sanitizer-core on dsa-identity")
+# Network isolation (fix round 1, sol r1 finding 3): ONE internal network per
+# link of the core, shared with nothing else. Only the gateway reaches the
+# core; the core reaches only its registry DB and the witness; no egress.
+CORE_LINKS = {"dsa-sanitizer-core-ingress": {"gateway", "sanitizer-core-sidecar"},
+              "dsa-sanitizer-core-witness": {"sanitizer-core-sidecar", "veil-witness"},
+              "dsa-sanitizer-core": {"postgres-sanitizer-core", "sanitizer-core-sidecar", "migrate-sanitizer-core"}}
+p(set(sn) == set(CORE_LINKS), "sidecar (= the core's namespace) on exactly the three core links (%s)" % sorted(sn))
+def members(net):
+    return {n for n, x in svcs.items() if net in (x.get("networks") or {})}
+for net, want in sorted(CORE_LINKS.items()):
+    p(nets.get(net, {}).get("internal") is True, "%s is internal: true (no route off the host)" % net)
+    p(members(net) == want, "%s members = %s (got %s)" % (net, sorted(want), sorted(members(net))))
+p(all(nets.get(n, {}).get("internal") is True for n in sn), "every network of the core's namespace is internal (no external egress)")
+reach = {n for net in sn for n in members(net)} - {"sanitizer-core-sidecar"}
+p(reach == {"gateway", "veil-witness", "postgres-sanitizer-core", "migrate-sanitizer-core"},
+  "the only services sharing a network with the core: gateway, veil-witness, its registry DB + migrate step (%s)" % sorted(reach))
+p(not {"dsa-identity", "dsa-witness-identity"} & set(sn), "the core's namespace is off the shared identity + witness-identity bridges")
+al = set((sn.get("dsa-sanitizer-core-ingress") or {}).get("aliases") or [])
+p({"sanitizer-core", "dsa-sanitizer-core"} <= al, "sidecar answers for sanitizer-core + dsa-sanitizer-core on the ingress link (the core's SANs)")
+p(not (sn.get("dsa-sanitizer-core-witness") or {}).get("aliases") and not (sn.get("dsa-sanitizer-core") or {}).get("aliases"), "no alias for the core on the witness / registry links")
 p(not side.get("ports") and not core.get("ports") and not pg.get("ports"), "no host port on core / sidecar / registry DB")
 p(list((pg.get("networks") or {}).keys()) == ["dsa-sanitizer-core"], "registry DB only on dsa-sanitizer-core")
-p(nets.get("dsa-sanitizer-core", {}).get("internal") is True, "dsa-sanitizer-core network is internal")
 # Memory caps (the hosted window's A8 values).
 def lim(s):
     return ((s.get("deploy") or {}).get("resources") or {}).get("limits", {}).get("memory")
 p(str(side.get("mem_limit")) == str(6500 * 1024 * 1024) and str(lim(side)) == str(6500 * 1024 * 1024), "sidecar capped at 6500 MiB (mem_limit + deploy limit) — got %s / %s" % (side.get("mem_limit"), lim(side)))
 p(str(side.get("memswap_limit")) == str(6500 * 1024 * 1024), "sidecar swap capped at the same 6500 MiB")
 p(str(core.get("mem_limit")) == str(1024 ** 3) and str(lim(core)) == str(1024 ** 3), "core capped at 1 GiB")
-# Images: one tag for the pair, digest-pinned postgres for the new DB services.
+# Images: one tag for the pair, ALWAYS pulled by the signed digest; digest-pinned
+# postgres for the new DB services.
 ci, si = core.get("image", ""), side.get("image", "")
-p(re.fullmatch(r"ghcr\.io/declade/dsa-sanitizer-core:1\.1\.0", ci) is not None, "core image ghcr.io/declade/dsa-sanitizer-core:1.1.0 (%s)" % ci)
-p(re.fullmatch(r"ghcr\.io/declade/dsa-sanitizer-core-sidecar:1\.1\.0", si) is not None, "sidecar image ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0 (%s)" % si)
+p(re.fullmatch(r"ghcr\.io/declade/dsa-sanitizer-core:1\.1\.0@sha256:[0-9a-f]{64}", ci) is not None, "core image ghcr.io/declade/dsa-sanitizer-core:1.1.0@sha256:… (%s)" % ci)
+p(re.fullmatch(r"ghcr\.io/declade/dsa-sanitizer-core-sidecar:1\.1\.0@sha256:[0-9a-f]{64}", si) is not None, "sidecar image ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@sha256:… (%s)" % si)
 pgd = re.search(r'postgres:\n\s+ref: "postgres:16-alpine"[\s\S]*?digest: "(sha256:[0-9a-f]{64})"', manifest)
 want_pg = "postgres:16-alpine@" + (pgd.group(1) if pgd else "?")
 p(pg.get("image") == want_pg and mig.get("image") == want_pg, "registry DB + migrate step pinned to the manifest postgres digest")
@@ -228,7 +272,7 @@ PY
     fail "renders-with-the-example-env: $(tail -3 "$TMP/render.err")"
   fi
 
-  SERVICES="$(docker compose -f "$COMPOSE" -f "$SELFHOSTED" --env-file "$EXAMPLE_ENV" config --services 2>/dev/null || true)"
+  SERVICES="$(docker compose -f "$COMPOSE" -f "$SELFHOSTED" --env-file "$PINNED_ENV" config --services 2>/dev/null || true)"
   if printf '%s\n' "$SERVICES" | grep -qx migrate-sanitizer-core; then
     fail "migrate-sanitizer-core-not-in-default-project (a plain up would run it)"
   else
@@ -236,11 +280,51 @@ PY
   fi
   # The base file alone (split-remote topology) also carries the core.
   # Captured first: `| grep -q` under pipefail SIGPIPEs the writer and reads as a failure.
-  BASE_SERVICES="$(docker compose -f "$COMPOSE" --env-file "$EXAMPLE_ENV" config --services 2>/dev/null || true)"
+  BASE_SERVICES="$(docker compose -f "$COMPOSE" --env-file "$PINNED_ENV" config --services 2>/dev/null || true)"
   if printf '%s\n' "$BASE_SERVICES" | grep -qx sanitizer-core; then
     pass "split-remote base file carries the core"
   else
     fail "split-remote base file carries the core"
+  fi
+  # Fix round 1 (sol r1 finding 4): the pair never starts from a bare tag.
+  # The example env carries no digest (the release records them), so the
+  # project refuses to render at all; half a pair refuses too.
+  if docker compose -f "$COMPOSE" --env-file "$EXAMPLE_ENV" config --quiet > "$TMP/nodigest.out" 2>&1; then
+    fail "no core/sidecar digest -> the project refuses to render (it rendered: the pair would start by tag)"
+  elif grep -q 'LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST must be the signed digest' "$TMP/nodigest.out"; then
+    pass "no core/sidecar digest -> the project refuses to render, naming LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST"
+  else
+    fail "no core/sidecar digest -> refused, but not by the digest guard: $(tail -1 "$TMP/nodigest.out")"
+  fi
+  cp "$EXAMPLE_ENV" "$TMP/halfdigest.env"
+  printf '\nLUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=%s\n' "$TEST_SANITIZER_CORE_DIGEST" >> "$TMP/halfdigest.env"
+  if docker compose -f "$COMPOSE" --env-file "$TMP/halfdigest.env" config --quiet > "$TMP/nodigest.out" 2>&1; then
+    fail "only the core digest -> the project refuses to render (it rendered)"
+  elif grep -q 'LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST must be the signed digest' "$TMP/nodigest.out"; then
+    pass "only the core digest -> refuses to render, naming LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST"
+  else
+    fail "only the core digest -> refused, but not by the sidecar digest guard: $(tail -1 "$TMP/nodigest.out")"
+  fi
+  # The witness-central overlay gives the core's namespace exactly ONE extra
+  # link: non-internal (the central witness is off the host), no other member.
+  cp "$PINNED_ENV" "$TMP/central.env"
+  printf '\nLUCAIRN_CENTRAL_WITNESS_ADDR=witness.example.invalid:50057\nLUCAIRN_CENTRAL_WITNESS_CERT_ADDR=witness.example.invalid:50058\nLUCAIRN_WITNESS_CLIENT_CERT_DIR=%s\nLUCAIRN_WITNESS_GATEWAY_CLIENT_CERT_DIR=%s\n' "$TMP/wc-claim" "$TMP/wc-gw" >> "$TMP/central.env"
+  if docker compose -f "$COMPOSE" -f "$ROOT/contrib/witness-central/docker-compose.witness-central.yml" --env-file "$TMP/central.env" \
+       config --format json > "$TMP/central.json" 2> "$TMP/central.err"; then
+    python3 - "$TMP/central.json" > "$TMP/central-check.txt" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); svcs, nets = d["services"], d.get("networks", {})
+sn = set((svcs["sanitizer-core-sidecar"].get("networks") or {}))
+extra = sn - {"dsa-sanitizer-core-ingress", "dsa-sanitizer-core-witness", "dsa-sanitizer-core"}
+def members(net): return {n for n, x in svcs.items() if net in (x.get("networks") or {})}
+ok = len(extra) == 1 and not nets.get(next(iter(extra)), {}).get("internal") and members(next(iter(extra))) == {"sanitizer-core-sidecar"}
+print(("ok " if ok else "FAIL ") + "witness-central: the core's namespace gains ONE egress link with no other member (%s)" % sorted(extra))
+PY
+    while IFS= read -r line; do
+      case "$line" in ok\ *) pass "${line#ok }" ;; *) fail "${line#FAIL }" ;; esac
+    done < "$TMP/central-check.txt"
+  else
+    fail "witness-central overlay renders: $(tail -2 "$TMP/central.err")"
   fi
   # Digest variables pin both images as a pair.
   cp "$EXAMPLE_ENV" "$TMP/digest.env"
@@ -254,13 +338,13 @@ PY
     fail "digest variables pin core + sidecar by digest ($(printf '%s\n' "$IMAGES" | grep sanitizer-core | tr '\n' ' '))"
   fi
   # A missing registry key or DB password refuses to render.
-  grep -v '^DSA_SANITIZER_CORE_REGISTRY_KEY=' "$EXAMPLE_ENV" > "$TMP/nokey.env"
+  grep -v '^DSA_SANITIZER_CORE_REGISTRY_KEY=' "$PINNED_ENV" > "$TMP/nokey.env"
   if docker compose -f "$COMPOSE" --env-file "$TMP/nokey.env" config --quiet >/dev/null 2>&1; then
     fail "missing DSA_SANITIZER_CORE_REGISTRY_KEY refuses to render"
   else
     pass "missing DSA_SANITIZER_CORE_REGISTRY_KEY refuses to render"
   fi
-  grep -v '^POSTGRES_SANITIZER_CORE_PASSWORD=' "$EXAMPLE_ENV" > "$TMP/nopw.env"
+  grep -v '^POSTGRES_SANITIZER_CORE_PASSWORD=' "$PINNED_ENV" > "$TMP/nopw.env"
   if docker compose -f "$COMPOSE" --env-file "$TMP/nopw.env" config --quiet >/dev/null 2>&1; then
     fail "missing POSTGRES_SANITIZER_CORE_PASSWORD refuses to render"
   else
@@ -442,6 +526,102 @@ expect_writer_refuses "a directory open to group/others" 'POSTGRES_SANITIZER_COR
 [ ! -e "$WD/x6/f" ] && pass "nothing written into the open directory" || fail "nothing written into the open directory"
 if grep -q 'dollar\|okpassword123' "$WD/r.all"; then fail "refusals never print the password"; else pass "refusals never print the password"; fi
 
+# Fix round 1 (sol r1 finding 1): customer.env is read EXACTLY as Docker
+# Compose reads it (bin/compose-env-lib.sh): only a MATCHING pair of outer
+# quotes is removed. The old per-line reader stripped a lone trailing quote,
+# so this password reached validation as BoundaryProbe4829 while Postgres got
+# the apostrophe.
+expect_writer_refuses "a lone trailing apostrophe inside double quotes (Compose keeps it)" \
+  "POSTGRES_SANITIZER_CORE_PASSWORD=\"BoundaryProbe4829'\"" "$WD/q1/f" "cannot carry safely"
+expect_writer_refuses "mismatched quotes (Compose refuses the file)" \
+  "POSTGRES_SANITIZER_CORE_PASSWORD=\"BoundaryProbe4829'" "$WD/q2/f" "unterminated quoted value"
+expect_writer_refuses "an unquoted value ending in a quote (Compose keeps it)" \
+  "POSTGRES_SANITIZER_CORE_PASSWORD=BoundaryProbe4829\"" "$WD/q3/f" "cannot carry safely"
+expect_writer_refuses "an octal escape in double quotes (Compose turns \\0101 into A; not evaluated here)" \
+  'POSTGRES_SANITIZER_CORE_PASSWORD="Boundary\0101Probe4829"' "$WD/q4/f" "cannot carry safely"
+expect_writer_refuses "a value Compose takes from \$-interpolation" \
+  'POSTGRES_SANITIZER_CORE_PASSWORD=${OTHER_SECRET}' "$WD/q5/f" "cannot carry safely"
+writer_gets() { # <name> <env content> <expected password, encoded>
+  printf '%s\n' "$2" > "$WD/g.env"
+  rm -rf "$WD/g"
+  if bash "$WRITER" --env-file "$WD/g.env" "$WD/g/f" > "$WD/g.out" 2>&1; then
+    check_eq "$1" "postgres://dsa:$3@postgres-sanitizer-core:5432/sanitizer_core?sslmode=disable" "$(cat "$WD/g/f")"
+  else
+    fail "$1 — writer refused: $(tail -1 "$WD/g.out")"
+  fi
+}
+writer_gets "a matching pair of double quotes is removed" 'POSTGRES_SANITIZER_CORE_PASSWORD="QuotedPassword4829"' "QuotedPassword4829"
+writer_gets "a matching pair of single quotes is removed" "POSTGRES_SANITIZER_CORE_PASSWORD='QuotedPassword4829'" "QuotedPassword4829"
+writer_gets "= inside a quoted value is kept (and encoded)" 'POSTGRES_SANITIZER_CORE_PASSWORD="a=b=c4829probe"' "a%3Db%3Dc4829probe"
+writer_gets "= inside an unquoted value is kept (and encoded)" 'POSTGRES_SANITIZER_CORE_PASSWORD=a=b=c4829probe' "a%3Db%3Dc4829probe"
+writer_gets "a comment after the closing quote is not part of the value" 'POSTGRES_SANITIZER_CORE_PASSWORD="QuotedPassword4829" # rotated 2026-11' "QuotedPassword4829"
+writer_gets "export prefix, spaces around =, CRLF line end" "$(printf 'export POSTGRES_SANITIZER_CORE_PASSWORD = CrlfPassword4829\r')" "CrlfPassword4829"
+writer_gets "the last assignment wins" "$(printf 'POSTGRES_SANITIZER_CORE_PASSWORD=FirstPassword4829\nPOSTGRES_SANITIZER_CORE_PASSWORD=SecondPassword4829')" "SecondPassword4829"
+writer_gets "a KEY= line INSIDE a multi-line quoted value is not an assignment (Compose reads one token stream)" \
+  "$(printf "POSTGRES_SANITIZER_CORE_PASSWORD=RealPassword4829\nOPERATOR_NOTE='old values:\nPOSTGRES_SANITIZER_CORE_PASSWORD=NotThePassword1\n'")" "RealPassword4829"
+# The shell beats the file in Compose: an exported value that differs from
+# customer.env would reach Postgres while the DSN file carried the file's.
+printf 'POSTGRES_SANITIZER_CORE_PASSWORD=FilePassword4829\n' > "$WD/sh.env"
+if POSTGRES_SANITIZER_CORE_PASSWORD=ShellPassword4829 bash "$WRITER" --env-file "$WD/sh.env" "$WD/sh/f" > "$WD/sh.out" 2>&1; then
+  fail "a differing exported POSTGRES_SANITIZER_CORE_PASSWORD is refused — writer accepted it"
+elif grep -q 'is exported in this shell' "$WD/sh.out" && ! grep -q 'Password4829' "$WD/sh.out"; then
+  pass "a differing exported POSTGRES_SANITIZER_CORE_PASSWORD is refused (no value printed)"
+else
+  fail "a differing exported POSTGRES_SANITIZER_CORE_PASSWORD is refused — $(tail -1 "$WD/sh.out")"
+fi
+
+echo ""
+echo "D3. bin/compose-env-lib.sh reads customer.env exactly as Docker Compose does"
+# The SAME corpus through the kit's reader and through Docker Compose itself
+# (`config --format json` of a one-service probe project; client-side only).
+# Agreement = same value, or both refuse the file. rc 3 (a construct the
+# reader does not evaluate) is a refusal by design and needs no agreement.
+if [ "$HAVE_COMPOSE" -ne 1 ]; then
+  skip "docker compose CLI not available — section D3"
+else
+  # shellcheck source=../bin/compose-env-lib.sh
+  . "$ROOT/bin/compose-env-lib.sh"
+  PD="$TMP/envprobe"; mkdir -p "$PD"
+  printf 'services:\n  p:\n    image: scratch\n    environment:\n      V: "${K-}"\n' > "$PD/probe.yml"
+  D3_AGREE=0; D3_REFUSED=0; D3_BAD=""
+  d3() { # <env file content (printf %b)>
+    printf '%b' "$1" > "$PD/t.env"
+    local ours rc theirs crc
+    ours="$(compose_env_get "$PD/t.env" K)"; rc=$?
+    theirs="$(env -i PATH="$BASE_PATH" HOME="$HOME" docker compose -f "$PD/probe.yml" --project-directory "$PD" --env-file "$PD/t.env" config --format json 2>/dev/null \
+      | python3 -c 'import json,sys
+try: sys.stdout.write(json.load(sys.stdin)["services"]["p"]["environment"]["V"].replace("$$","$"))
+except Exception: sys.exit(9)')"; crc=$?
+    if [ "$rc" -eq 0 ] && [ "$crc" -eq 0 ] && [ "$ours" = "$theirs" ]; then D3_AGREE=$((D3_AGREE + 1))
+    elif [ "$rc" -eq 2 ] && [ "$crc" -ne 0 ]; then D3_AGREE=$((D3_AGREE + 1))
+    elif [ "$rc" -eq 3 ]; then D3_REFUSED=$((D3_REFUSED + 1))
+    else D3_BAD="$D3_BAD [$1 => ours rc=$rc '$ours' / compose rc=$crc '$theirs']"; fi
+  }
+  # sol r1's case, mismatched and nested quotes, = inside values, comments
+  d3 'K="BoundaryProbe4829\x27"\n'; d3 'K=\x27abc\x27\n'; d3 'K="abc\n'; d3 'K=\x27abc"\n'; d3 'K=abc"\n'; d3 'K=abc\x27\n'
+  d3 'K="a"\x27\n'; d3 'K=a=b=c\n'; d3 'K="a=b=c"\n'; d3 'K=abc # c\n'; d3 'K=abc#not-a-comment\n'; d3 'K=abc\t# c\n'
+  d3 'K="abc" # c\n'; d3 'K="abc"junk\n'; d3 'K=\x27a\x27 junk\n'; d3 'K=a  #c\n'
+  # duplicates, inherited names, export, YAML style, white space, CRLF, BOM, no final newline
+  d3 'K=1\nK="2"\n'; d3 'K=1\nK\n'; d3 'export K=exp\n'; d3 'export\tK=exp\n'; d3 'exportK=x\n'; d3 'K: yaml\n'
+  d3 'K = sp \n'; d3 'K\t=tab\n'; d3 'K=x\r\n'; d3 'K="x"\r\n'; d3 '\xef\xbb\xbfK=bom\n'; d3 'K=nofinalnl'
+  d3 'K=\n'; d3 'K=""\n'; d3 'K=\x27\x27\n'; d3 '\n\n\nK=late\n\n'; d3 '  # comment\nK=after\n'; d3 'K=x\n#K=y\n'
+  d3 'K=x\n  K=y\n'; d3 'K=x\nexport K=y\n'; d3 'K=x\nfoo\n'; d3 'K=x\nfoo'; d3 'K=x\nexport'; d3 'K=x\nexport '
+  d3 'K.dot=1\nK=2\n'; d3 'K[]=1\nK=2\n'; d3 'K:\nK=v\n'
+  # multi-line quoted values: a KEY= line inside one is not a statement
+  d3 'K="multi\nK=inner\n"\n'; d3 'K=real\nX=\x27\nK=fake\n\x27\n'; d3 'X="\nK=fake\n"\nK=real\n'
+  # escapes and interpolation (single quotes are literal)
+  d3 'K=\x27it\\\x27s\x27\n'; d3 'K="q\\"q"\n'; d3 'K=\x27a\\b\x27\n'; d3 'K=a\\b\n'; d3 'K="a\\0101"\n'; d3 'K=$X\n'; d3 'K=\x27$X\x27\n'; d3 'K="\\\\"\n'
+  # syntax errors Compose refuses, Unicode white space and letters
+  d3 'KE Y=x\n'; d3 'K;=x\n'; d3 'K="a b"\n'; d3 'K=a b\n'; d3 'K=\xc2\xa0x\n'; d3 'K=x\xc2\xa0\n'; d3 'K=x\xe2\x80\x80\n'
+  d3 '\xc2\xa0K=nbsp\n'; d3 'K\xc2\xa0=nbsp\n'; d3 'K=\xc3\xa4\n'; d3 'G\xc3\x9cN=1\nK=2\n'
+  if [ -z "$D3_BAD" ]; then
+    pass "reader == Docker Compose on $D3_AGREE corpus files ($D3_REFUSED more refused as not evaluated: escapes, interpolation, a non-ASCII name)"
+  else
+    fail "reader disagrees with Docker Compose:$D3_BAD"
+  fi
+  [ "$D3_AGREE" -ge 55 ] && pass "the agreement corpus is not trivially small ($D3_AGREE files)" || fail "the agreement corpus is not trivially small ($D3_AGREE files)"
+fi
+
 echo ""
 echo "E. bin/lucairn doctor RED-PROOF"
 # Hermetic tool shims: no doctor run below reaches a real Docker engine,
@@ -473,10 +653,19 @@ printf '#!/bin/sh\nprintf 000\n' > "$DBIN/curl"
 for t in kubectl helm pg_isready docker-compose; do printf '#!/bin/sh\nexit 1\n' > "$DBIN/$t"; done
 chmod 0755 "$DBIN"/*
 
+# A RELEASED kit (fix round 1, sol r1 finding 4): this checkout's manifest
+# still says `pending: true` for the core/sidecar pair, so an install made from
+# it cannot start and doctor fails (asserted below). Every GREEN case therefore
+# runs init + doctor from a fixture kit whose manifest records SYNTHETIC
+# signed digests (tests/lib/test-helpers.sh lucairn_released_kit_fixture).
+KIT="$TMP/released-kit"
+lucairn_released_kit_fixture "$ROOT" "$KIT" && pass "fixture: a released kit (synthetic signed core/sidecar digests)" \
+  || fail "fixture: a released kit (synthetic signed core/sidecar digests)"
+KIT_COMPOSE="$KIT/docker-compose.customer.yml"
 ENVDIR="$TMP/install"
 mkdir -p "$ENVDIR"
 ENVF="$ENVDIR/customer.env"
-PATH="$DBIN:$BASE_PATH" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+PATH="$DBIN:$BASE_PATH" "$KIT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$ENVF" --skip-doctor > "$TMP/init.out" 2>&1 \
   || { fail "lucairn-init for the doctor fixture: $(tail -3 "$TMP/init.out")"; }
 CERTS="$ENVDIR/.certs/sanitizer-core-mtls"
@@ -496,7 +685,7 @@ if grep -Fq "$INIT_PW" "$TMP/init.out"; then fail "lucairn-init never prints the
 # must not overwrite the first env's file (found by test_lucairn_cli.sh).
 TWO="$TMP/twoinit"; mkdir -p "$TWO"
 for n in customer.env second.env; do
-  PATH="$DBIN:$BASE_PATH" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+  PATH="$DBIN:$BASE_PATH" "$KIT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
     --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$TWO/$n" --skip-doctor > "$TMP/twoinit.out" 2>&1 \
     || fail "lucairn-init --output $n into a shared directory: $(tail -2 "$TMP/twoinit.out")"
 done
@@ -510,7 +699,7 @@ for n in customer.env second.env; do
 done
 
 doctor_offline() { # <env file> — offline doctor, hermetic PATH
-  PATH="$DBIN:$BASE_PATH" bash "$ROOT/bin/lucairn" doctor --env "$1" --compose "$COMPOSE" --offline --skip-image-check > "$TMP/doc.out" 2>&1
+  PATH="$DBIN:$BASE_PATH" bash "$KIT/bin/lucairn" doctor --env "$1" --compose "$KIT_COMPOSE" --offline --skip-image-check > "$TMP/doc.out" 2>&1
 }
 variant() { # <name> — copy of the generated install (env + certs + sidecars)
   local d="$TMP/v-$1"
@@ -535,7 +724,7 @@ if doctor_offline "$ENVF"; then
 else
   fail "GREEN: offline doctor passes on the generated install: $(grep -E 'failed|error' "$TMP/doc.out" | head -3 | tr '\n' ' ')"
 fi
-for line in "sanitizer core registry key: ok" "sanitizer core registry DB password: ok" "sanitizer core registry DSN: ok" "sanitizer core profile: kit" "sanitizer core mTLS: ok"; do
+for line in "sanitizer core registry key: ok" "sanitizer core registry DB password: ok" "sanitizer core registry DSN: ok" "sanitizer core profile: kit" "sanitizer core mTLS: ok" "sanitizer core images: ok (core + sidecar pinned to the signed manifest pair)"; do
   grep -Fq "$line" "$TMP/doc.out" && pass "GREEN line: $line" || fail "GREEN line: $line"
 done
 grep -Fq "sanitizer core witness hop" "$TMP/doc.out" && grep -Fq "GRPC_TLS_ENABLED=false with DSA_ENV=development" "$TMP/doc.out" \
@@ -573,14 +762,60 @@ expect_doctor_red "RED cert directory missing" "$V" "does not exist — run scri
 V="$(variant profile)"; printf 'LCR_PROFILE=hosted\n' >> "$V/customer.env"
 expect_doctor_red "RED LCR_PROFILE=hosted" "$V" "sanitizer core profile: failed (LCR_PROFILE=hosted"
 
-V="$(variant halfpair)"; printf 'LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=sha256:%s\n' "$(printf 'c%.0s' $(seq 64))" >> "$V/customer.env"
-expect_doctor_red "RED half a digest pair" "$V" "must come from one release"
+V="$(variant halfpair)"; sed -i.bak 's/^LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=.*/LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=/' "$V/customer.env"; rm -f "$V/customer.env.bak"
+expect_doctor_red "RED half a digest pair" "$V" "set LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST and LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST together"
+# Fix round 1 (sol r1 finding 4): pending / empty digests are failures, never notes.
+V="$(variant baretag)"; sed -i.bak -e 's/^LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=.*/LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=/' \
+  -e 's/^LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=.*/LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=/' "$V/customer.env"; rm -f "$V/customer.env.bak"
+expect_doctor_red "RED no digest at all (the pair would start from a bare tag)" "$V" "the pair never starts from tag 1.1.0 alone"
+V="$(variant otherpair)"; printf 'LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=sha256:%s\n' "$(printf 'c%.0s' $(seq 64))" >> "$V/customer.env"
+expect_doctor_red "RED pinned core digest differs from the release's" "$V" "differ from the pair image-manifest.yaml records"
+# An install made from THIS checkout (manifest pending: no signed release yet).
+PEND="$TMP/pending-install"; mkdir -p "$PEND"
+PATH="$DBIN:$BASE_PATH" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+  --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$PEND/customer.env" --skip-doctor > "$TMP/pinit.out" 2>&1 \
+  || fail "lucairn-init from the unreleased checkout: $(tail -2 "$TMP/pinit.out")"
+grep -q '^LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$' "$PEND/customer.env" && pass "an unreleased kit writes no core digest (nothing invented)" || fail "an unreleased kit writes no core digest (nothing invented)"
+if PATH="$DBIN:$BASE_PATH" bash "$ROOT/bin/lucairn" doctor --env "$PEND/customer.env" --compose "$COMPOSE" --offline --skip-image-check > "$TMP/doc.out" 2>&1; then
+  fail "RED unreleased kit (manifest pending) — doctor stayed green (the old note)"
+elif grep -Fq "image-manifest.yaml records no signed digest for the core/sidecar pair yet (pending)" "$TMP/doc.out"; then
+  pass "RED unreleased kit (manifest pending) — doctor fails, naming the missing signed digests"
+else
+  fail "RED unreleased kit (manifest pending) — $(grep 'sanitizer core images' "$TMP/doc.out" | tr '\n' ' ')"
+fi
+if grep -Fq "sanitizer core images: note" "$TMP/doc.out"; then fail "pending digests are never a note"; else pass "pending digests are never a note"; fi
 
 V="$(variant regkey)"; sed -i.bak 's/^DSA_SANITIZER_CORE_REGISTRY_KEY=.*/DSA_SANITIZER_CORE_REGISTRY_KEY=REPLACE_ME_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/' "$V/customer.env"; rm -f "$V/customer.env.bak"
 expect_doctor_red "RED registry key placeholder" "$V" "DSA_SANITIZER_CORE_REGISTRY_KEY still set to a placeholder"
 
 V="$(variant badpw)"; sed -i.bak 's/^POSTGRES_SANITIZER_CORE_PASSWORD=.*/POSTGRES_SANITIZER_CORE_PASSWORD=has$dollar-in-it/' "$V/customer.env"; rm -f "$V/customer.env.bak"
 expect_doctor_red "RED registry DB password customer.env cannot carry (\$)" "$V" "customer.env and Compose interpolation cannot carry it safely"
+# Fix round 1 (sol r1 finding 1): doctor reads the password exactly as Docker
+# Compose does (the writer's reader). Before, the apostrophe below was
+# stripped, doctor said ok and compared the DSN file against the wrong value.
+pw_variant() { # <name> <new password line>
+  local d; d="$(variant "$1")"
+  grep -v '^POSTGRES_SANITIZER_CORE_PASSWORD=' "$d/customer.env" > "$d/customer.env.new"
+  printf '%s\n' "$2" >> "$d/customer.env.new"; mv "$d/customer.env.new" "$d/customer.env"
+  printf '%s' "$d"
+}
+V="$(pw_variant pwapos "POSTGRES_SANITIZER_CORE_PASSWORD=\"${INIT_PW}'\"")"
+expect_doctor_red "RED a lone apostrophe inside double quotes (Compose keeps it)" "$V" "customer.env and Compose interpolation cannot carry it safely"
+V="$(pw_variant pwmismatch "POSTGRES_SANITIZER_CORE_PASSWORD=\"${INIT_PW}")"
+expect_doctor_red "RED mismatched quotes (Compose refuses the file)" "$V" "cannot be read from $V/customer.env the way Docker Compose reads it: line"
+V="$(pw_variant pwquoted "POSTGRES_SANITIZER_CORE_PASSWORD=\"${INIT_PW}\"")"
+if doctor_offline "$V/customer.env" && grep -Fq "sanitizer core registry DSN: ok" "$TMP/doc.out"; then
+  pass "GREEN a matching pair of quotes is removed (doctor and the DSN file agree)"
+else
+  fail "GREEN a matching pair of quotes is removed — $(grep 'sanitizer core registry' "$TMP/doc.out" | tr '\n' ' ')"
+fi
+if POSTGRES_SANITIZER_CORE_PASSWORD=exportedOtherPassword42 doctor_offline "$ENVF"; then
+  fail "RED a differing exported POSTGRES_SANITIZER_CORE_PASSWORD (Compose would use it) — doctor stayed green"
+elif grep -Fq "is exported in this shell with a value other than" "$TMP/doc.out" && ! grep -Fq "exportedOtherPassword42" "$TMP/doc.out"; then
+  pass "RED a differing exported POSTGRES_SANITIZER_CORE_PASSWORD (Compose would use it; no value printed)"
+else
+  fail "RED a differing exported POSTGRES_SANITIZER_CORE_PASSWORD — $(grep 'registry DB password' "$TMP/doc.out" | tr '\n' ' ')"
+fi
 
 # Registry DSN file (DSA #956: --registry-dsn-file, never --dsn).
 V="$(variant urlpw)"
@@ -637,7 +872,7 @@ for e in "$ROOT"/* "$ROOT"/.[!.]*; do
 done
 sed 's#"--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn"#"--dsn=postgres://dsa:x@postgres-sanitizer-core:5432/sanitizer_core"#' "$COMPOSE" > "$TMP/dsnflag/docker-compose.customer.yml"
 grep -q -- '"--dsn=postgres' "$TMP/dsnflag/docker-compose.customer.yml" && pass "fixture: a compose copy that passes --dsn" || fail "fixture: a compose copy that passes --dsn"
-if PATH="$DBIN:$BASE_PATH" bash "$ROOT/bin/lucairn" doctor --env "$ENVF" --compose "$TMP/dsnflag/docker-compose.customer.yml" --offline --skip-image-check > "$TMP/doc.out" 2>&1; then
+if PATH="$DBIN:$BASE_PATH" bash "$KIT/bin/lucairn" doctor --env "$ENVF" --compose "$TMP/dsnflag/docker-compose.customer.yml" --offline --skip-image-check > "$TMP/doc.out" 2>&1; then
   fail "RED a compose file passing --dsn — doctor stayed green"
 elif grep -Fq "sanitizer core registry DSN: failed (--dsn in $TMP/dsnflag/docker-compose.customer.yml:" "$TMP/doc.out"; then
   pass "RED a compose file passing --dsn — doctor names the file:line"
@@ -682,7 +917,7 @@ printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-co
 doctor_online() { # env assignments for the stub...
   env PATH="$DBIN:$BASE_PATH" STUB_MEM_BYTES=34359738368 STUB_PS="$TMP/ps.ok" STUB_NETMODE="container:$SIDE_ID" \
     STUB_CORE_LOG="$TMP/core.ok" STUB_WITNESS_LOG="$TMP/witness.log" STUB_CONFIG_JSON="$TMP/config.ok.json" STUB_LEDGER_OUT=7 \
-    "$@" bash "$ROOT/bin/lucairn" doctor --env "$ENVF" --compose "$COMPOSE" --customer-key-file "$KEY" --skip-image-check > "$TMP/online.out" 2>&1
+    "$@" bash "$KIT/bin/lucairn" doctor --env "$ENVF" --compose "$KIT_COMPOSE" --customer-key-file "$KEY" --skip-image-check > "$TMP/online.out" 2>&1
   ONLINE_RC=$?
 }
 online_case() { # <name> <expected fixed text> <green|red> -- env...
@@ -717,6 +952,8 @@ online_case "RED sidecar absent" "sanitizer core runtime: failed (sanitizer-core
 online_case "RED core joined to an old sidecar" "joined to an old sidecar container" red STUB_NETMODE="container:0ld0000000000000000000000000000000000000000000000000000000000009"
 online_case "RED registry not migrated" "sanitizer core registry: failed (not migrated" red STUB_LEDGER_OUT='ERROR:  relation "registry_schema_migrations" does not exist'
 online_case "RED registry behind the ceiling" "ledger at 5 of 7 migrations" red STUB_LEDGER_OUT=5
+# Fix round 1 (sol r1 point 6): a ledger the doctor cannot read is a failure.
+online_case "RED migration ledger unreadable (DB down / wrong credentials)" "sanitizer core registry: failed (could not read the migration ledger" red STUB_LEDGER_OUT='psql: error: connection to server on socket failed: FATAL:  password authentication failed for user "dsa"'
 online_case "RED claims dropped" "claim(s) DROPPED" red STUB_CORE_LOG="$TMP/core.drop"
 online_case "RED witness transport not mtls" "witness transport mode=tls-insecure-dev, not mtls" red STUB_CORE_LOG="$TMP/core.tls"
 online_case "RED overlay forwards LCR_PROFILE=hosted" "LCR_PROFILE is forwarded with a non-kit value" red STUB_CONFIG_JSON="$TMP/config.hosted.json"
@@ -733,7 +970,7 @@ echo ""
 echo "F. bin/lucairn support-bundle never carries the DSN file"
 BUN="$TMP/bundles"
 mkdir -p "$BUN"
-if PATH="$DBIN:$BASE_PATH" bash "$ROOT/bin/lucairn" support-bundle --env "$ENVF" --compose "$COMPOSE" --output "$BUN/ok" --offline > "$TMP/sb.out" 2>&1; then
+if PATH="$DBIN:$BASE_PATH" bash "$KIT/bin/lucairn" support-bundle --env "$ENVF" --compose "$KIT_COMPOSE" --output "$BUN/ok" --offline > "$TMP/sb.out" 2>&1; then
   pass "support-bundle (offline) on the generated install"
   ARCH="$(ls "$BUN/ok"/*.tar.gz 2>/dev/null | head -1)"
   mkdir -p "$BUN/ok-x"; tar -xzf "$ARCH" -C "$BUN/ok-x"
@@ -748,16 +985,136 @@ else
 fi
 # A redaction miss: the password under a key name redact_stream does not treat
 # as secret. The guard must refuse to archive anything.
+bundle_refuses() { # <name> <variant dir> <output name> <planted value>
+  if PATH="$DBIN:$BASE_PATH" bash "$KIT/bin/lucairn" support-bundle --env "$2/customer.env" --compose "$KIT_COMPOSE" --output "$BUN/$3" --offline > "$TMP/sb.out" 2>&1; then
+    fail "RED $1 — it archived"
+  elif grep -Fq "support bundle: refused" "$TMP/sb.out"; then
+    pass "RED $1 — refused"
+  else
+    fail "RED $1 — without the refusal text: $(tail -1 "$TMP/sb.out")"
+  fi
+  if find "$BUN/$3" -mindepth 1 2>/dev/null | grep -q .; then fail "$1 — the refused bundle left nothing behind"; else pass "$1 — the refused bundle left nothing behind (no archive, no staging dir)"; fi
+  grep -Fq "$4" "$TMP/sb.out" && fail "$1 — the refusal never prints the value" || pass "$1 — the refusal never prints the value"
+}
 V="$(variant sbleak)"; printf 'OPERATOR_NOTE=%s\n' "$INIT_PW" >> "$V/customer.env"
-if PATH="$DBIN:$BASE_PATH" bash "$ROOT/bin/lucairn" support-bundle --env "$V/customer.env" --compose "$COMPOSE" --output "$BUN/leak" --offline > "$TMP/sb.out" 2>&1; then
-  fail "RED support-bundle refuses when a collected file holds the registry password — it archived"
-elif grep -Fq "support bundle: refused" "$TMP/sb.out"; then
-  pass "RED support-bundle refuses when a collected file holds the registry password"
+bundle_refuses "the registry password under a key redact_stream does not treat as secret" "$V" leak "$INIT_PW"
+# Fix round 1 (sol r1 finding 2): the scan no longer depends on the DSN file.
+# Before, a missing (or unreadable) DSN file skipped EVERY needle, including
+# the password customer.env itself holds.
+V="$(variant sbleaknodsn)"; rm -f "$V/.secrets/sanitizer-core/registry-dsn"; printf 'OPERATOR_NOTE=%s\n' "$INIT_PW" >> "$V/customer.env"
+bundle_refuses "DSN file missing + the password planted under OPERATOR_NOTE" "$V" leaknodsn "$INIT_PW"
+REGKEY="$(sed -n 's/^DSA_SANITIZER_CORE_REGISTRY_KEY=//p' "$ENVF" | tail -1)"
+V="$(variant sbleakkey)"; printf 'OPERATOR_NOTE=%s\n' "$REGKEY" >> "$V/customer.env"
+bundle_refuses "the registry KEY planted under OPERATOR_NOTE (every known secret is a needle)" "$V" leakkey "$REGKEY"
+SIGKEY="$(sed -n 's/^LCR_SANITIZER_SIGNING_KEY=//p' "$ENVF" | tail -1)"
+V="$(variant sbleaksig)"; rm -f "$V/.secrets/sanitizer-core/registry-dsn"; printf 'NOTES=%s\n' "$SIGKEY" >> "$V/customer.env"
+bundle_refuses "the sanitizer signing key planted under NOTES, DSN file missing" "$V" leaksig "$SIGKEY"
+# No false refusal on a full ONLINE bundle: `docker compose config` of the
+# real project (client-side render, no daemon needed) lands in the bundle
+# redacted; none of the needles may survive in it.
+if [ "$HAVE_COMPOSE" -eq 1 ]; then
+  if PATH="$BASE_PATH" bash "$KIT/bin/lucairn" support-bundle --env "$ENVF" --compose "$KIT_COMPOSE" --output "$BUN/online" > "$TMP/sb.out" 2>&1; then
+    pass "support-bundle (online, real compose render) on the generated install is not refused"
+    ARCH="$(ls "$BUN/online"/*.tar.gz 2>/dev/null | head -1)"
+    mkdir -p "$BUN/online-x"; tar -xzf "$ARCH" -C "$BUN/online-x"
+    grep -q 'dsa-sanitizer-core-ingress' "$BUN/online-x"/*/redacted/compose-resolved.yml 2>/dev/null \
+      && pass "the online bundle carries the resolved project (the scan saw a real render)" \
+      || fail "the online bundle carries the resolved project (the scan saw a real render)"
+    if grep -rqF -e "$INIT_PW" -e "$REGKEY" -e "$SIGKEY" "$BUN/online-x"; then fail "the online bundle holds none of the planted-class secrets"; else pass "the online bundle holds none of the planted-class secrets"; fi
+  else
+    fail "support-bundle (online, real compose render) on the generated install: $(tail -2 "$TMP/sb.out")"
+  fi
 else
-  fail "RED support-bundle refuses — without the refusal text: $(tail -1 "$TMP/sb.out")"
+  skip "docker compose CLI not available — online support-bundle no-false-refusal case"
 fi
-if find "$BUN/leak" -mindepth 1 2>/dev/null | grep -q .; then fail "the refused bundle left nothing behind (no archive, no staging dir)"; else pass "the refused bundle left nothing behind (no archive, no staging dir)"; fi
-grep -Fq "$INIT_PW" "$TMP/sb.out" && fail "the refusal never prints the password" || pass "the refusal never prints the password"
+
+echo ""
+echo "G. bin/lucairn verify-images covers the sanitizer core pair"
+# Hermetic: a stub crane answers from the fixture record, a stub cosign
+# accepts every signature with a Rekor entry. What is under test is the
+# EXPECTED SET and the fail-closed pending path, not cosign.
+VBIN="$TMP/verify-bin"; mkdir -p "$VBIN"
+cat > "$VBIN/crane" <<'STUBCRANE'
+#!/bin/sh
+# crane digest <ref> -> the digest the fixture record holds for <ref>
+awk -v r="$2" '!/^#/ && NF == 2 && $1 == r { print $2; f = 1 } END { exit !f }' "$STUB_RECORD"
+STUBCRANE
+cat > "$VBIN/cosign" <<'STUBCOSIGN'
+#!/bin/sh
+case "$1" in
+  version) echo "GitVersion:    v2.4.1" ;;
+  verify) echo '[{"optional":{"Bundle":{"Payload":{"logIndex":1}}}}]' ;;
+esac
+STUBCOSIGN
+printf '#!/bin/sh
+exit 1
+' > "$VBIN/docker"; printf '#!/bin/sh
+exit 1
+' > "$VBIN/skopeo"
+chmod 0755 "$VBIN"/*
+REC_TAG=9.9.9
+make_record() { # <file> <core digest> <sidecar digest> [omit-pair]
+  {
+    echo "# fixture record (synthetic digests, never pulled)"
+    for img in dsa-gateway dsa-sanitizer dsa-audit dsa-id-bridge dsa-sandbox-a dsa-sandbox-b dsa-veil-witness dsa-reid-guard dsa-admin dsa-demo dsa-ingest dsa-llm-auditor; do
+      printf 'ghcr.io/declade/%s:%s sha256:%s\n' "$img" "$REC_TAG" "$(printf '%s' "$img" | openssl dgst -sha256 | awk '{print $NF}')"
+    done
+    printf 'ghcr.io/declade/lucairn-dashboard:0.8.2 sha256:%s\n' "$(printf 'd%.0s' $(seq 64))"
+    if [ "${4:-}" != omit-pair ]; then
+      printf 'ghcr.io/declade/dsa-sanitizer-core:1.1.0 %s\n' "$2"
+      printf 'ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0 %s\n' "$3"
+    fi
+  } > "$1"
+}
+verify_run() { # <kit> -> rc in VRC, output in $TMP/verify.out
+  env PATH="$VBIN:$BASE_PATH" STUB_RECORD="$VKEYS/image-digests-$REC_TAG.txt" bash "$1/bin/lucairn" verify-images --tag "$REC_TAG" > "$TMP/verify.out" 2>&1
+  VRC=$?
+}
+# A released kit with its OWN keys/ directory (the fixture record beside the
+# shipped ones).
+KITV="$TMP/released-kit-verify"
+lucairn_released_kit_fixture "$ROOT" "$KITV" || fail "fixture: released kit for verify-images"
+rm -f "$KITV/keys"; mkdir -p "$KITV/keys"; cp "$ROOT"/keys/* "$KITV/keys/"
+VKEYS="$KITV/keys"
+make_record "$VKEYS/image-digests-$REC_TAG.txt" "$TEST_SANITIZER_CORE_DIGEST" "$TEST_SANITIZER_CORE_SIDECAR_DIGEST"
+verify_run "$KITV"
+if [ "$VRC" -eq 0 ] && grep -Fq "expecting EXACTLY 15 artifacts" "$TMP/verify.out" \
+   && grep -Fq "PASS  ghcr.io/declade/dsa-sanitizer-core@$TEST_SANITIZER_CORE_DIGEST" "$TMP/verify.out" \
+   && grep -Fq "PASS  ghcr.io/declade/dsa-sanitizer-core-sidecar@$TEST_SANITIZER_CORE_SIDECAR_DIGEST" "$TMP/verify.out"; then
+  pass "GREEN released kit: verify-images checks 15 artifacts incl. the core + sidecar by their signed digests"
+else
+  fail "GREEN released kit: verify-images 15 artifacts (rc $VRC): $(grep -E 'expecting|FAIL|sanitizer-core' "$TMP/verify.out" | head -4 | tr '\n' ' ')"
+fi
+make_record "$VKEYS/image-digests-$REC_TAG.txt" "$TEST_SANITIZER_CORE_DIGEST" "$TEST_SANITIZER_CORE_SIDECAR_DIGEST" omit-pair
+verify_run "$KITV"
+if [ "$VRC" -ne 0 ] && grep -Fq "MISSING (expected but not recorded):" "$TMP/verify.out" && grep -Fq "dsa-sanitizer-core-sidecar:1.1.0" "$TMP/verify.out"; then
+  pass "RED a release record without the pair -> MISSING, non-zero"
+else
+  fail "RED a release record without the pair (rc $VRC): $(grep -E 'MISSING|OK' "$TMP/verify.out" | tr '\n' ' ')"
+fi
+make_record "$VKEYS/image-digests-$REC_TAG.txt" "sha256:$(printf 'e%.0s' $(seq 64))" "$TEST_SANITIZER_CORE_SIDECAR_DIGEST"
+verify_run "$KITV"
+if [ "$VRC" -ne 0 ] && grep -Fq "the kit manifest and the signed record disagree" "$TMP/verify.out"; then
+  pass "RED the record's core digest differs from the manifest's -> refused"
+else
+  fail "RED the record's core digest differs from the manifest's (rc $VRC): $(tail -2 "$TMP/verify.out" | tr '\n' ' ')"
+fi
+# THIS checkout: the manifest still says pending. Before fix round 1 the pair
+# was not in the expected set and the other 13 verified -> PASS.
+VUNREL="$TMP/unreleased-kit-verify"; mkdir -p "$VUNREL"
+for e in "$ROOT"/* "$ROOT"/.[!.]*; do
+  case "$(basename "$e")" in .git|keys) continue ;; esac
+  if [ -d "$e" ]; then ln -s "$e" "$VUNREL/$(basename "$e")"; else cp -p "$e" "$VUNREL/"; fi
+done
+mkdir -p "$VUNREL/keys"; cp "$ROOT"/keys/* "$VUNREL/keys/"
+VKEYS="$VUNREL/keys"
+make_record "$VKEYS/image-digests-$REC_TAG.txt" "$TEST_SANITIZER_CORE_DIGEST" "$TEST_SANITIZER_CORE_SIDECAR_DIGEST"
+verify_run "$VUNREL"
+if [ "$VRC" -ne 0 ] && grep -Fq "has no signed digest in this kit's image-manifest.yaml yet (pending)" "$TMP/verify.out"; then
+  pass "RED unreleased kit (manifest pending) -> verify-images fails closed, naming the pair"
+else
+  fail "RED unreleased kit (manifest pending) (rc $VRC): $(tail -2 "$TMP/verify.out" | tr '\n' ' ')"
+fi
 
 echo ""
 if [ "$FAILS" -eq 0 ]; then

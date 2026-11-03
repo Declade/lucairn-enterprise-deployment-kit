@@ -28,13 +28,15 @@ ROOT = Path(os.environ.get("K1_OFF_RENDER_ROOT", GIT_ROOT))
 # Raw stdout captured from `git archive 93afd045bf9ab59817fa6125c0bd4172cb4bab89`
 # extracted in a disposable directory, using Docker Compose v5.4.0 and the same
 # command/environment below. --no-path-resolution preserves portable bind paths.
-# Amended four times: the 2026-10-27 postgres:16-alpine digest re-pin (one image
+# Amended five times: the 2026-10-27 postgres:16-alpine digest re-pin (one image
 # line), T-1433 (QI engine off by default: the QI_ENGINE_ENABLED value
 # line in each render), kit 2.0 K-A (the new sanitizer core services +
 # their gateway/witness/sandbox-b wiring — additions only, see
 # baseline.json "amended_kit_2_0") and its DSN follow-up (the core's
 # --dsn line became --registry-dsn-file + one bind of the DSN file, see
-# "amended_kit_2_0_dsn"), each with the compose file hashes in
+# "amended_kit_2_0_dsn") and its fix round 1 (the pair's REQUIRED signed
+# digests + the core's dedicated internal networks, see
+# "amended_kit_2_0_fix1"), each with the compose file hashes in
 # baseline.json; nothing else in the fixtures changed.
 GOLDEN = GIT_ROOT / "tests/fixtures/servicenow-control/off"
 BASELINE = json.loads((GOLDEN / "baseline.json").read_text())

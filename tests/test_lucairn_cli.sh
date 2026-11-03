@@ -7,6 +7,14 @@ TMPDIR="$(mktemp -d)"
 # write into $ROOT (it is gitignored, but clean it up on every exit path so a
 # mid-run abort never leaves it behind).
 trap 'rm -rf "$TMPDIR"; rm -f "$ROOT/.lucairn-customer-id"' EXIT
+# Kit 2.0 K-A fix round 1: doctor FAILS while this checkout's image-manifest
+# still has no signed core/sidecar digests (`pending: true`, before a
+# release), and the compose file does not render without them. Every case
+# below therefore runs init + doctor from a RELEASED-kit fixture with synthetic
+# signed digests (tests/lib/test-helpers.sh); the real tree is REAL_ROOT.
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$TMPDIR"
 
 REMOTE_CREDENTIALS="$TMPDIR/lucairn-issued-remote-credentials.env"
 printf 'sandbox_b_api_key=lcr-issued-test-api-key_123\nsandbox_b_public_key=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n' > "$REMOTE_CREDENTIALS"

@@ -525,6 +525,12 @@ DSA_LICENSE_SIGNING_KEY=
 LUCAIRN_LICENSE_KEY=
 LUCAIRN_LICENSE_PUBLIC_KEY=
 ENV
+  # Kit 2.0: the sanitizer core pair renders only with its signed digests (a
+  # release records them; synthetic ones from tests/lib/test-helpers.sh).
+  # shellcheck source=lib/test-helpers.sh
+  . "$ROOT/tests/lib/test-helpers.sh"
+  printf 'LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=%s\nLUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=%s\n' \
+    "$TEST_SANITIZER_CORE_DIGEST" "$TEST_SANITIZER_CORE_SIDECAR_DIGEST" >> "$CANONICAL_ONLY_ENV"
   N=$((N + 1))
   if docker compose --env-file "$CANONICAL_ONLY_ENV" \
       -f "$ROOT/docker-compose.customer.yml" config >/dev/null 2>"$WK/compose-render-customer.err"; then

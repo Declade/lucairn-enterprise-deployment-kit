@@ -78,3 +78,58 @@ if [ -z "${HELM_TEST_SECRET_ARGS+x}" ]; then
   )
   readonly HELM_TEST_SECRET_ARGS
 fi
+
+# ---------------------------------------------------------------------------
+# Kit 2.0 K-A fix round 1 (sol r1 finding 4): the new sanitizer core and its
+# model sidecar start ONLY from the signed digests a kit RELEASE records in
+# image-manifest.yaml (image_digests.signed_artifacts). Until the release step
+# (K-E) records them the manifest says `pending: true`: Compose refuses to
+# render without both digest variables, `bin/lucairn doctor` FAILS and
+# `bin/lucairn verify-images` FAILS. A test that needs a GREEN kit 2.0 install
+# runs against a RELEASED-KIT FIXTURE instead: these synthetic digests (never
+# real ones, never pulled) in a copy of the manifest.
+[ -n "${TEST_SANITIZER_CORE_DIGEST:-}" ] || readonly TEST_SANITIZER_CORE_DIGEST="sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+[ -n "${TEST_SANITIZER_CORE_SIDECAR_DIGEST:-}" ] || readonly TEST_SANITIZER_CORE_SIDECAR_DIGEST="sha256:5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c"
+
+# lucairn_released_kit_fixture <kit root> <dest> — <dest> becomes a kit tree
+# whose image-manifest.yaml records the synthetic pair above in place of
+# `pending: true`. Top-level directories are symlinks into <kit root> (bin/,
+# scripts/, migrations/ … resolve their own root through the symlink's path,
+# so bin/lucairn and bin/lucairn-init run as the fixture kit); top-level files
+# are copies (bin/lucairn refuses symlinked compose/env files). Writes nothing
+# into <kit root>.
+lucairn_released_kit_fixture() {
+  local root="$1" dest="$2" e
+  mkdir -p "$dest" || return 1
+  for e in "$root"/* "$root"/.[!.]*; do
+    [ -e "$e" ] || continue
+    # Never link install state of the real tree (.secrets/, .certs/, a
+    # customer.env a test generated beside the kit): the fixture gets its own.
+    case "$(basename "$e")" in .git|.worktrees|.secrets|.certs|.lucairn-*|customer.env|image-manifest.yaml) continue ;; esac
+    if [ -d "$e" ]; then ln -s "$e" "$dest/$(basename "$e")" || return 1
+    else cp -p "$e" "$dest/" || return 1; fi
+  done
+  awk -v core="$TEST_SANITIZER_CORE_DIGEST" -v side="$TEST_SANITIZER_CORE_SIDECAR_DIGEST" '
+    /^  signed_artifacts:/ { in_sa = 1; print; next }
+    in_sa && /^  [^ ]/ { in_sa = 0 }
+    in_sa && /^    dsa-sanitizer-core:$/ { key = "core"; print; next }
+    in_sa && /^    dsa-sanitizer-core-sidecar:$/ { key = "side"; print; next }
+    in_sa && /^    [^ ]/ { key = "" }
+    in_sa && key != "" && /^      pending:[[:space:]]*true/ { print "      digest: \"" (key == "core" ? core : side) "\""; n++; next }
+    { print }
+    END { if (n != 2) exit 1 }
+  ' "$root/image-manifest.yaml" > "$dest/image-manifest.yaml"
+}
+
+# lucairn_use_released_kit <tmp dir> — for a suite whose doctor/init GREEN
+# cases need a RELEASED kit: builds the fixture in <tmp dir>/released-kit and
+# re-points the caller's ROOT at it (the real tree stays REAL_ROOT). Call it
+# right after the suite creates its temp dir; the suite's own trap removes it.
+lucairn_use_released_kit() {
+  REAL_ROOT="${REAL_ROOT:-$ROOT}"
+  lucairn_released_kit_fixture "$REAL_ROOT" "$1/released-kit" || {
+    echo "released-kit fixture: could not be built from $REAL_ROOT (image-manifest.yaml no longer has the two pending core/sidecar slots?)" >&2
+    exit 1
+  }
+  ROOT="$1/released-kit"
+}
