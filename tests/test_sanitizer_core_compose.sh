@@ -1074,7 +1074,7 @@ verify_run() { # <kit> -> rc in VRC, output in $TMP/verify.out
 # shipped ones).
 KITV="$TMP/released-kit-verify"
 lucairn_released_kit_fixture "$ROOT" "$KITV" || fail "fixture: released kit for verify-images"
-rm -f "$KITV/keys"; mkdir -p "$KITV/keys"; cp "$ROOT"/keys/* "$KITV/keys/"
+rm -rf "$KITV/keys"; mkdir -p "$KITV/keys"; cp "$ROOT"/keys/* "$KITV/keys/"
 VKEYS="$KITV/keys"
 make_record "$VKEYS/image-digests-$REC_TAG.txt" "$TEST_SANITIZER_CORE_DIGEST" "$TEST_SANITIZER_CORE_SIDECAR_DIGEST"
 verify_run "$KITV"

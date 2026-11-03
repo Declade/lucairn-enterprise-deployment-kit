@@ -93,11 +93,13 @@ fi
 
 # lucairn_released_kit_fixture <kit root> <dest> — <dest> becomes a kit tree
 # whose image-manifest.yaml records the synthetic pair above in place of
-# `pending: true`. Top-level directories are symlinks into <kit root> (bin/,
-# scripts/, migrations/ … resolve their own root through the symlink's path,
-# so bin/lucairn and bin/lucairn-init run as the fixture kit); top-level files
-# are copies (bin/lucairn refuses symlinked compose/env files). Writes nothing
-# into <kit root>.
+# `pending: true`. Everything else is a plain COPY of <kit root> (about
+# 11 MB without .git), so bin/lucairn and bin/lucairn-init run as the fixture
+# kit and a test that edits a kit file (a "mutant" of servicenow-directory/, a
+# keys/ record) edits the copy. Directories are never symlinked: `cp -R` of a
+# symlinked directory copies the link, and the edit lands in the real tree
+# (found by tests/test_servicenow_optin.sh section J). Writes nothing into
+# <kit root>.
 lucairn_released_kit_fixture() {
   local root="$1" dest="$2" e
   mkdir -p "$dest" || return 1
@@ -106,8 +108,7 @@ lucairn_released_kit_fixture() {
     # Never link install state of the real tree (.secrets/, .certs/, a
     # customer.env a test generated beside the kit): the fixture gets its own.
     case "$(basename "$e")" in .git|.worktrees|.secrets|.certs|.lucairn-*|customer.env|image-manifest.yaml) continue ;; esac
-    if [ -d "$e" ]; then ln -s "$e" "$dest/$(basename "$e")" || return 1
-    else cp -p "$e" "$dest/" || return 1; fi
+    cp -Rp "$e" "$dest/" || return 1
   done
   awk -v core="$TEST_SANITIZER_CORE_DIGEST" -v side="$TEST_SANITIZER_CORE_SIDECAR_DIGEST" '
     /^  signed_artifacts:/ { in_sa = 1; print; next }
