@@ -1183,7 +1183,7 @@ fi
 if command -v age >/dev/null 2>&1; then
   AGEKEY="$TMPDIR/guard.key"
   age-keygen -o "$AGEKEY" 2>"$TMPDIR/guard.pub"
-  REC="$(grep 'public key:' "$TMPDIR/guard.pub" | awk '{print $NF}')"
+  REC="$(grep -i 'public key:' "$TMPDIR/guard.pub" | awk '{print $NF}')"
   printf 'PGDMP raw custom-format dump content that must be rejected' > "$TMPDIR/guard.dump"
   age -r "$REC" -o "$TMPDIR/guard.enc" "$TMPDIR/guard.dump"
   head -c 64 "$TMPDIR/guard.enc" | grep -q "age-encryption.org" \

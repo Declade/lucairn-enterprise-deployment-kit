@@ -817,6 +817,7 @@ a=" $* "
 case "$a" in
   " info "*) [ -n "${STUB_MEM_BYTES:-}" ] && { echo "$STUB_MEM_BYTES"; exit 0; }; exit 1 ;;
   " inspect "*) [ -n "${STUB_NETMODE:-}" ] && { echo "$STUB_NETMODE"; exit 0; }; exit 1 ;;
+  " version --format "*) [ -n "${STUB_ENGINE_VERSION:-}" ] && { echo "$STUB_ENGINE_VERSION"; exit 0; }; exit 1 ;;
 esac
 if [ "${1:-}" = compose ]; then
   case "$a" in
@@ -922,9 +923,12 @@ fi
 for line in "sanitizer core registry key: ok" "sanitizer core registry DB password: ok" "sanitizer core registry DSN: ok" "sanitizer core profile: kit" "sanitizer core mTLS: ok" "sanitizer core images: ok (core + sidecar pinned to the signed manifest pair)"; do
   grep -Fq "$line" "$TMP/doc.out" && pass "GREEN line: $line" || fail "GREEN line: $line"
 done
-grep -Fq "sanitizer core witness hop" "$TMP/doc.out" && grep -Fq "GRPC_TLS_ENABLED=false with DSA_ENV=development" "$TMP/doc.out" \
-  && pass "dev install (GRPC_TLS_ENABLED=false) is WARNED that core claims cannot reach a plaintext witness" \
-  || fail "dev install (GRPC_TLS_ENABLED=false) is WARNED that core claims cannot reach a plaintext witness"
+# Final-read M1: a --dev install (plaintext mesh) is no longer a warning that
+# every core claim is dropped; init unlatches the core (three empty client-leaf
+# lines) and the hop is plaintext on both sides. Section H drives the RED cases.
+grep -Fq "sanitizer core witness hop: ok (development: GRPC_TLS_ENABLED=false" "$TMP/doc.out" \
+  && pass "dev install (GRPC_TLS_ENABLED=false): the core's witness hop is plaintext on both sides (ok, not a dropped-claims warning)" \
+  || fail "dev install (GRPC_TLS_ENABLED=false): the core's witness hop is plaintext on both sides: $(grep 'witness hop' "$TMP/doc.out")"
 
 V="$(variant nowitnesscert)"; rm -f "$V/.certs/sanitizer-core-mtls/sanitizer-core/witness-client.crt"
 expect_doctor_red "RED witness client cert missing" "$V" "core witness client certificate missing"
@@ -1089,7 +1093,8 @@ expect_doctor_red "RED DSN file writable by group/others" "$V" "is writable by g
 
 V="$(variant dsnowner)"; chmod 0400 "$V/.secrets/sanitizer-core/registry-dsn"
 if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" != "10001" ]; then
-  expect_doctor_red "RED DSN file 0400 owned by this user (the core's uid 10001 cannot read it)" "$V" "is not readable by the core, which runs as uid 10001"
+  # Undeclared state (the helpers declare this uid on a Linux test host).
+  LUCAIRN_CONTAINER_UID='' expect_doctor_red "RED DSN file 0400 owned by this user (the core's uid 10001 cannot read it)" "$V" "is not readable by the core, which runs as uid 10001"
 else
   doctor_offline "$V/customer.env"
   grep -Fq "readability by the core not decided on $(uname -s)" "$TMP/doc.out" \
@@ -1140,18 +1145,23 @@ cp "$TMP/core.ok" "$TMP/core.drop"
 printf '%s\n' '2026/11/02 08:01:00 ERROR retry_exhausted grpc_status=Unavailable attempts=4 retry_attempts=3; claim DROPPED' >> "$TMP/core.drop"
 printf '%s\n' '2026/11/02 08:00:00 evidence: witness transport mode=tls-insecure-dev addr="veil-witness:50057"' > "$TMP/core.tls"
 printf '%s\n' 'veil-claim-arrival request_id=r1 service_id=dsa-sanitizer' > "$TMP/witness.log"
+# The core's rendered witness wiring (production shape: the local witness
+# serves TLS and the core is latched with its kit client leaf — final-read M1),
+# and its rendered DSN wiring, shared by every stub below.
+W_ENV='"LCR_WITNESS_ADDR":"veil-witness:50057","LCR_WITNESS_MTLS_CA_BUNDLE_PATH":"/etc/sanitizer-core-mtls/ca.crt","LCR_WITNESS_MTLS_CLIENT_CERT_PATH":"/etc/sanitizer-core-mtls/witness-client.crt","LCR_WITNESS_MTLS_CLIENT_KEY_PATH":"/etc/sanitizer-core-mtls/witness-client.key",'
+W_SVC=',"veil-witness":{"environment":{"GRPC_TLS_ENABLED":"true"}}'
 # The core's rendered DSN wiring, shared by every stub below.
 CORE_DSN_WIRING='"command":["serve","--listen=sanitizer-core:8790","--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn","--sidecar=http://127.0.0.1:8765"],"volumes":[{"type":"bind","source":"'"$DSNF"'","target":"/run/secrets/sanitizer-core/registry-dsn","read_only":true}]'
-printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar",'"$CORE_DSN_WIRING"',"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.ok.json"
-printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar",'"$CORE_DSN_WIRING"',"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true","LCR_PROFILE":"hosted"}}}}' > "$TMP/config.hosted.json"
-printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--dsn=postgres://dsa:k158OnlineCanary@postgres-sanitizer-core:5432/sanitizer_core"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.dsnflag.json"
-printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--listen=sanitizer-core:8790"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.nodsn.json"
-printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.unmounted.json"
-printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--registry-dsn-file","postgres://dsa:k158OnlineCanary@db/x"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true"}}}}' > "$TMP/config.dsnpath.json"
-printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve"],"environment":{"LCR_WITNESS_REQUIRE_MTLS":"true","DSA_SANITIZER_CORE_REGISTRY_DSN":"postgres://dsa:k158OnlineCanary@postgres-sanitizer-core:5432/sanitizer_core"}}}}' > "$TMP/config.envdsn.json"
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar",'"$CORE_DSN_WIRING"',"environment":{'"$W_ENV"'"LCR_WITNESS_REQUIRE_MTLS":"true"}}'"$W_SVC"'}}' > "$TMP/config.ok.json"
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar",'"$CORE_DSN_WIRING"',"environment":{'"$W_ENV"'"LCR_WITNESS_REQUIRE_MTLS":"true","LCR_PROFILE":"hosted"}}'"$W_SVC"'}}' > "$TMP/config.hosted.json"
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--dsn=postgres://dsa:k158OnlineCanary@postgres-sanitizer-core:5432/sanitizer_core"],"environment":{'"$W_ENV"'"LCR_WITNESS_REQUIRE_MTLS":"true"}}'"$W_SVC"'}}' > "$TMP/config.dsnflag.json"
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--listen=sanitizer-core:8790"],"environment":{'"$W_ENV"'"LCR_WITNESS_REQUIRE_MTLS":"true"}}'"$W_SVC"'}}' > "$TMP/config.nodsn.json"
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn"],"environment":{'"$W_ENV"'"LCR_WITNESS_REQUIRE_MTLS":"true"}}'"$W_SVC"'}}' > "$TMP/config.unmounted.json"
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve","--registry-dsn-file","postgres://dsa:k158OnlineCanary@db/x"],"environment":{'"$W_ENV"'"LCR_WITNESS_REQUIRE_MTLS":"true"}}'"$W_SVC"'}}' > "$TMP/config.dsnpath.json"
+printf '%s' '{"services":{"sanitizer-core":{"network_mode":"service:sanitizer-core-sidecar","command":["serve"],"environment":{'"$W_ENV"'"LCR_WITNESS_REQUIRE_MTLS":"true","DSA_SANITIZER_CORE_REGISTRY_DSN":"postgres://dsa:k158OnlineCanary@postgres-sanitizer-core:5432/sanitizer_core"}}'"$W_SVC"'}}' > "$TMP/config.envdsn.json"
 
 doctor_online() { # env assignments for the stub...
-  env PATH="$DBIN:$BASE_PATH" STUB_MEM_BYTES=34359738368 STUB_PS="$TMP/ps.ok" STUB_NETMODE="container:$SIDE_ID" \
+  env PATH="$DBIN:$BASE_PATH" STUB_MEM_BYTES=34359738368 STUB_PS="$TMP/ps.ok" STUB_NETMODE="container:$SIDE_ID" STUB_ENGINE_VERSION=26.1.4 \
     STUB_CORE_LOG="$TMP/core.ok" STUB_WITNESS_LOG="$TMP/witness.log" STUB_CONFIG_JSON="$TMP/config.ok.json" STUB_LEDGER_OUT=7 \
     "$@" bash "$KIT/bin/lucairn" doctor --env "$ENVF" --compose "$KIT_COMPOSE" --customer-key-file "$KEY" --skip-image-check > "$TMP/online.out" 2>&1
   ONLINE_RC=$?
@@ -1603,6 +1613,317 @@ if [ "$VRC" -ne 0 ] && grep -Fq "has no signed digest in this kit's image-manife
 else
   fail "RED unreleased kit (manifest pending) (rc $VRC): $(tail -2 "$TMP/verify.out" | tr '\n' ' ')"
 fi
+
+echo ""
+echo "H. Final-read fix round (2026-11-03): H1 H2 M1 M2 TOB-K20-02 TOB-K20-03"
+# Each case below is RED on the pre-round head (bda367c4 = a1404d06 rebased on
+# main 63a26027) and GREEN here; the counts are in the PR description.
+
+# ── H1: `bin/lucairn up` runs the capped registry migration first ───────────
+UPBIN="$TMP/up-bin"; mkdir -p "$UPBIN"
+cat > "$UPBIN/docker" <<'STUBUP'
+#!/bin/bash
+# Records every compose call; answers what lifecycle `up` needs.
+[ "${1:-}" = compose ] || exit 1
+a=" $* "
+echo "$*" >> "$STUB_UP_LOG"
+case "$a" in
+  *" version "*) exit 0 ;;
+  *" --profile sanitizer-core-migrate config --services "*) printf 'gateway\nsanitizer-core\nmigrate-sanitizer-core\n'; exit 0 ;;
+  *" run --rm "*"migrate-sanitizer-core "*) exit "${STUB_MIGRATE_RC:-0}" ;;
+  *" up -d "*) exit 0 ;;
+esac
+exit 1
+STUBUP
+chmod 0755 "$UPBIN/docker"
+up_run() { # [env assignments...] -> UPRC, log in $TMP/up.log
+  : > "$TMP/up.log"
+  env PATH="$UPBIN:$BASE_PATH" STUB_UP_LOG="$TMP/up.log" "$@" bash "$KIT/bin/lucairn" up --env "$ENVF" --compose "$KIT_COMPOSE" > "$TMP/up.out" 2>&1
+  UPRC=$?
+}
+up_run
+MIG_LINE="$(grep -n -- '--profile sanitizer-core-migrate run --rm -T migrate-sanitizer-core' "$TMP/up.log" | head -1 | cut -d: -f1)"
+UP_LINE="$(grep -n -- ' up -d' "$TMP/up.log" | head -1 | cut -d: -f1)"
+if [ "$UPRC" -eq 0 ] && [ -n "$MIG_LINE" ] && [ -n "$UP_LINE" ] && [ "$MIG_LINE" -lt "$UP_LINE" ]; then
+  pass "H1 bin/lucairn up runs the capped migration step (profile sanitizer-core-migrate) BEFORE up -d"
+else
+  fail "H1 bin/lucairn up runs the capped migration step before up -d (rc $UPRC; migrate line '${MIG_LINE:-none}', up line '${UP_LINE:-none}'): $(tr '\n' '|' < "$TMP/up.log")"
+fi
+grep -q -- "--env-file $ENVF --profile sanitizer-core-migrate run" "$TMP/up.log" \
+  && pass "H1 the migration runs on the install's own env file and recorded compose set" \
+  || fail "H1 the migration runs on the install's own env file and recorded compose set: $(grep migrate "$TMP/up.log")"
+up_run STUB_MIGRATE_RC=95
+if [ "$UPRC" -ne 0 ] && ! grep -q -- ' up -d' "$TMP/up.log" && grep -Fq "registry migration step failed" "$TMP/up.out"; then
+  pass "H1 a failed migration (exit 95) stops up before anything starts"
+else
+  fail "H1 a failed migration stops up (rc $UPRC): $(tr '\n' '|' < "$TMP/up.log") / $(tail -1 "$TMP/up.out")"
+fi
+grep -Fq "bin/lucairn up first runs the sanitizer core's capped registry migration" "$TMP/init.out" \
+  && pass "H1 lucairn-init's Next block says up runs the migration (and gives the plain-Compose command)" \
+  || fail "H1 lucairn-init's Next block says up runs the migration"
+H1_DOCS_BAD=""
+for f in README.md INSTALL.md; do
+  # Every documented plain `docker compose ... up -d` of the whole stack in the
+  # install paths is preceded (within 6 lines) by the migration step or says
+  # bin/lucairn up does it.
+  awk -v f="$f" '
+    { line[NR] = $0 }
+    /docker compose -f docker-compose.customer.yml.*--env-file customer.env.* up -d$/ {
+      ok = 0
+      for (i = NR - 6; i < NR; i++) if (i > 0 && (line[i] ~ /migrate-sanitizer-core/ || line[i] ~ /bin\/lucairn up/)) ok = 1
+      if (!ok) print f ":" NR
+    }' "$KIT/$f"
+done > "$TMP/h1-docs.txt"
+[ -s "$TMP/h1-docs.txt" ] && H1_DOCS_BAD="$(tr '\n' ' ' < "$TMP/h1-docs.txt")"
+if [ -z "$H1_DOCS_BAD" ]; then pass "H1 no documented whole-stack 'docker compose ... up -d' without the migration step before it"; else fail "H1 documented whole-stack up -d without the migration step: $H1_DOCS_BAD"; fi
+grep -c 'up first runs the sanitizer core' "$KIT/README.md" | grep -qx 3 \
+  && pass "H1 the three README install paths say bin/lucairn up runs the registry migration" \
+  || fail "H1 the three README install paths say bin/lucairn up runs the registry migration"
+
+# ── H2: an offline bundle can start the core (the reproduction) ─────────────
+# released-kit fixture -> init --dev -> bundle create -> extract -> DELETE the
+# build directory -> the customer-host steps from the bundle -> compose render
+# + offline doctor.
+H2B="$TMP/h2-build"; H2X="$TMP/h2-x"; mkdir -p "$H2B/models" "$H2X"
+printf 'synthetic gguf bytes\n' > "$H2B/models/fixture.gguf"
+H2SHA="$( (command -v sha256sum >/dev/null 2>&1 && sha256sum "$H2B/models/fixture.gguf" || shasum -a 256 "$H2B/models/fixture.gguf") | awk '{print $1}')"
+cat > "$H2B/model-manifest.yaml" <<YAML
+model:
+  name: fixture-local-model
+  format: gguf
+  runtime: llama-cpp
+  files:
+    - path: fixture.gguf
+      sha256: $H2SHA
+  context_window: 8192
+  gpu_required: false
+  min_vram_gb: 0
+  license: customer-owned
+  checksum_policy: sha256-required
+YAML
+PATH="$DBIN:$BASE_PATH" "$KIT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+  --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$H2B/customer.env" --skip-doctor > "$TMP/h2-init.out" 2>&1 \
+  || fail "H2 lucairn-init for the bundle: $(tail -2 "$TMP/h2-init.out")"
+grep -q "^SANITIZER_CORE_MTLS_HOST_DIR=$H2B/" "$H2B/customer.env" \
+  && pass "H2 precondition: the build-host env names an absolute build-host cert directory" \
+  || fail "H2 precondition: the build-host env names an absolute build-host cert directory"
+if PATH="$DBIN:$BASE_PATH" bash "$KIT/bin/lucairn" bundle create --customer-slug h2-offline --models-dir "$H2B/models" \
+     --model-manifest "$H2B/model-manifest.yaml" --env "$H2B/customer.env" --output "$TMP/h2-out" > "$TMP/h2-create.out" 2>&1; then
+  pass "H2 bundle create"
+else
+  fail "H2 bundle create: $(tail -3 "$TMP/h2-create.out")"
+fi
+H2TAR="$(ls "$TMP"/h2-out/lucairn-customer-bundle-h2-offline-*.tar.gz 2>/dev/null | head -1)"
+tar -xzf "$H2TAR" -C "$H2X" 2>/dev/null
+H2R="$(ls -d "$H2X"/lucairn-customer-bundle-h2-offline-* 2>/dev/null | head -1)"
+rm -rf "$H2B"
+[ -d "$H2R" ] && pass "H2 bundle extracted; the build directory is deleted" || fail "H2 bundle extracted"
+H2E="$H2R/install/customer.env"
+check_eq "H2 the staged env names the bundle-relative cert directory" "./.certs/sanitizer-core-mtls" "$(sed -n 's/^SANITIZER_CORE_MTLS_HOST_DIR=//p' "$H2E" | tail -1)"
+check_eq "H2 the staged env names the bundle-relative DSN file" "./.secrets/sanitizer-core/registry-dsn" "$(sed -n 's/^SANITIZER_CORE_REGISTRY_DSN_FILE=//p' "$H2E" | tail -1)"
+# (the generated header's "# Regenerate:" comment names the --output path; it
+# is a comment, read by nobody)
+grep -v '^#' "$H2E" | grep -Fq "$H2B" && fail "H2 no build-host path left in any setting of install/customer.env" || pass "H2 no build-host path left in any setting of install/customer.env"
+for t in scripts/bootstrap-sanitizer-core-mtls.sh scripts/write-sanitizer-core-registry-dsn.sh bin/compose-env.sh; do
+  [ -f "$H2R/$t" ] && pass "H2 the bundle ships $t" || fail "H2 the bundle ships $t"
+done
+grep -Fq "scripts/write-sanitizer-core-registry-dsn.sh --env-file install/customer.env --compose install/docker-compose.customer.yml" "$H2R/INSTALL-CUSTOMER.md" \
+  && grep -Fq 'scripts/bootstrap-sanitizer-core-mtls.sh "$PWD/install/.certs/sanitizer-core-mtls"' "$H2R/INSTALL-CUSTOMER.md" \
+  && pass "H2 INSTALL-CUSTOMER.md names both one-time steps (mTLS bootstrap + DSN file)" \
+  || fail "H2 INSTALL-CUSTOMER.md names both one-time steps (mTLS bootstrap + DSN file)"
+if (cd "$H2R" && PATH="$DBIN:$BASE_PATH" bash bin/lucairn bundle verify --bundle . > "$TMP/h2-verify.out" 2>&1); then
+  pass "H2 bundle verify on the extracted bundle"
+else
+  fail "H2 bundle verify on the extracted bundle: $(tail -2 "$TMP/h2-verify.out")"
+fi
+# The customer-host steps, exactly as INSTALL-CUSTOMER.md gives them (no sudo
+# here: macOS needs none; on a Linux test host the helpers declare the uid).
+if (cd "$H2R" && PATH="$DBIN:$BASE_PATH" bash scripts/bootstrap-sanitizer-core-mtls.sh "$PWD/install/.certs/sanitizer-core-mtls" > "$TMP/h2-boot.out" 2>&1 \
+      && PATH="$DBIN:$BASE_PATH" bash scripts/write-sanitizer-core-registry-dsn.sh --env-file install/customer.env --compose install/docker-compose.customer.yml > "$TMP/h2-dsn.out" 2>&1); then
+  pass "H2 the bundle's two one-time steps run on the customer host"
+else
+  fail "H2 the bundle's two one-time steps run: $(tail -2 "$TMP/h2-boot.out") $(tail -2 "$TMP/h2-dsn.out" 2>/dev/null)"
+fi
+[ -f "$H2R/install/.certs/sanitizer-core-mtls/sanitizer-core/witness-client.crt" ] && [ -f "$H2R/install/.secrets/sanitizer-core/registry-dsn" ] \
+  && pass "H2 mTLS material + DSN file are inside the bundle's install/" || fail "H2 mTLS material + DSN file are inside the bundle's install/"
+if [ "$HAVE_COMPOSE" -eq 1 ]; then
+  if (cd "$H2R" && docker compose -f install/docker-compose.customer.yml --env-file install/customer.env config --format json > "$TMP/h2-render.json" 2> "$TMP/h2-render.err"); then
+    python3 - "$TMP/h2-render.json" "$H2R/install" > "$TMP/h2-render.txt" <<'PY'
+import json, os, sys
+d = json.load(open(sys.argv[1])); inst = os.path.realpath(sys.argv[2])
+core = d["services"]["sanitizer-core"]
+srcs = [v.get("source", "") for v in core.get("volumes") or []]
+ok = all(os.path.realpath(s).startswith(inst + os.sep) and os.path.exists(s) for s in srcs) and len(srcs) == 2
+print(("ok " if ok else "FAIL ") + "H2 the rendered core mounts its cert directory and DSN file from the bundle, and both exist (%s)" % srcs)
+PY
+    while IFS= read -r line; do case "$line" in ok\ *) pass "${line#ok }" ;; *) fail "${line#FAIL }" ;; esac; done < "$TMP/h2-render.txt"
+  else
+    fail "H2 the extracted bundle renders: $(tail -2 "$TMP/h2-render.err")"
+  fi
+else
+  skip "docker compose CLI not available — H2 render"
+fi
+if (cd "$H2R" && PATH="$DBIN:$BASE_PATH" bash bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --offline --skip-image-check > "$TMP/h2-doc.out" 2>&1); then
+  pass "H2 the offline doctor of the extracted bundle passes"
+else
+  fail "H2 the offline doctor of the extracted bundle passes: $(grep -E 'failed|error' "$TMP/h2-doc.out" | head -3 | tr '\n' ' ')"
+fi
+for line in "sanitizer core registry DSN: ok" "sanitizer core mTLS: ok"; do
+  grep -Fq "$line" "$TMP/h2-doc.out" && pass "H2 bundle doctor: $line" || fail "H2 bundle doctor: $line"
+done
+
+# ── M1: the core's witness hop follows the witness's transport ──────────────
+grep -q '^LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH=$' "$ENVF" && grep -q '^LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_KEY_PATH=$' "$ENVF" \
+  && pass "M1 lucairn-init --dev writes the three client-leaf paths empty (GRPC_TLS_ENABLED=false)" \
+  || fail "M1 lucairn-init --dev writes the three client-leaf paths empty"
+m1_render() { # <env file> <out json> — the install's base project, real Compose
+  docker compose -f "$KIT_COMPOSE" --env-file "$1" config --format json > "$2" 2> "$2.err"
+}
+m1_hop() { # <render json> -> "latch|leaf|witness-tls"
+  python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))["services"]; c=d["sanitizer-core"]["environment"]; w=d["veil-witness"]["environment"]
+leaf=[c.get(k) or "" for k in ("LCR_WITNESS_MTLS_CA_BUNDLE_PATH","LCR_WITNESS_MTLS_CLIENT_CERT_PATH","LCR_WITNESS_MTLS_CLIENT_KEY_PATH")]
+print("%s|%s|%s" % (c.get("LCR_WITNESS_REQUIRE_MTLS"), "full" if all(leaf) else ("none" if not any(leaf) else "partial"), w.get("GRPC_TLS_ENABLED")))' "$1"
+}
+if [ "$HAVE_COMPOSE" -eq 1 ]; then
+  m1_render "$ENVF" "$TMP/m1-dev.json" && check_eq "M1 a --dev install renders an unlatched core with no client leaf beside a plaintext witness" "false|none|false" "$(m1_hop "$TMP/m1-dev.json")"
+  V="$(variant m1prod)"; sed -i.bak -e 's/^GRPC_TLS_ENABLED=.*/GRPC_TLS_ENABLED=true/' -e 's/^DSA_ENV=.*/DSA_ENV=production/' -e '/^LCR_WITNESS_MTLS_SANITIZER_CORE_/d' "$V/customer.env"; rm -f "$V/customer.env.bak"
+  m1_render "$V/customer.env" "$TMP/m1-prod.json" && check_eq "M1 a production env renders a latched core with its full client leaf beside a TLS witness" "true|full|true" "$(m1_hop "$TMP/m1-prod.json")"
+  # The pre-fix --dev state (or a hand-flipped env per TROUBLESHOOTING without
+  # the three lines): plaintext witness, core still dialing verified mTLS.
+  V="$(variant m1old)"; env_drop "$V/customer.env" LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH
+  env_drop "$V/customer.env" LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_CERT_PATH; env_drop "$V/customer.env" LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_KEY_PATH
+  expect_doctor_red "M1 RED offline: plaintext witness, core still on verified mTLS (every claim dropped)" "$V" "the core still dials it with verified mTLS"
+  # The online renders keep the generated install's own paths (the online
+  # doctor below runs on $ENVF and cross-checks the rendered DSN mount).
+  grep -v '^LCR_WITNESS_MTLS_SANITIZER_CORE_' "$ENVF" > "$TMP/m1-old.env"
+  m1_render "$TMP/m1-old.env" "$TMP/m1-old.json"
+  check_eq "M1 precondition: the mismatched env renders a full client leaf beside a plaintext witness" "full|false" "$(m1_hop "$TMP/m1-old.json" | cut -d'|' -f2-)"
+  online_case "M1 RED online: the rendered core dials a plaintext witness with mTLS" "the local witness serves plaintext (GRPC_TLS_ENABLED is not true) but the core dials it with verified mTLS" red STUB_CONFIG_JSON="$TMP/m1-old.json"
+  printf '%s\n' '2026/11/03 08:00:00 WARNING evidence: plaintext witness transport to non-loopback addr="veil-witness:50057" allowed only because DSA_ENV=development' \
+    '2026/11/03 08:00:00 evidence: witness transport mode=plaintext-insecure-dev addr="veil-witness:50057"' > "$TMP/core.devplain"
+  online_case "M1 GREEN online: a --dev install's plaintext hop on both sides" "sanitizer core claims: transport ok (plaintext to the local development witness" green STUB_CONFIG_JSON="$TMP/m1-dev.json" STUB_CORE_LOG="$TMP/core.devplain"
+  grep -Fq "sanitizer core rendered config: ok" "$TMP/online.out" && pass "M1 GREEN online: the --dev render passes the rendered-config check" || fail "M1 GREEN online: the --dev render passes the rendered-config check: $(grep 'rendered config' "$TMP/online.out")"
+  sed 's/^DSA_ENV=.*/DSA_ENV=production/' "$ENVF" > "$TMP/m1-prodplain.env"
+  m1_render "$TMP/m1-prodplain.env" "$TMP/m1-prodplain.json"
+  online_case "M1 RED online: a plaintext hop is never accepted for a production render" "the local witness serves plaintext with DSA_ENV=production" red STUB_CONFIG_JSON="$TMP/m1-prodplain.json"
+else
+  skip "docker compose CLI not available — M1 renders"
+fi
+V="$(variant m1empty)"; sed -i.bak 's/^GRPC_TLS_ENABLED=.*/GRPC_TLS_ENABLED=true/' "$V/customer.env"; rm -f "$V/customer.env.bak"
+expect_doctor_red "M1 RED offline: GRPC_TLS_ENABLED=true with the client-leaf paths still empty (the core would not start)" "$V" "the core refuses to start without its client leaf"
+# ── M2: non-root Linux bootstrap/init (simulated Linux host) ────────────────
+LXB="$TMP/linux-bin"; mkdir -p "$LXB"
+printf '#!/bin/sh\n[ "${1:-}" = "-s" ] && { echo Linux; exit 0; }\nexec /usr/bin/uname "$@"\n' > "$LXB/uname"
+cat > "$LXB/id" <<'STUBID'
+#!/bin/sh
+case "$*" in
+  -u) echo "${STUB_ID_U:-1000}" ;;
+  -un) echo stub-operator ;;
+  *) exec /usr/bin/id "$@" ;;
+esac
+STUBID
+cat > "$LXB/sudo" <<'STUBSUDO'
+#!/bin/sh
+echo "sudo $*" >> "$STUB_SUDO_LOG"
+[ "${STUB_SUDO_FAIL:-0}" = 1 ] && { echo "sudo: a password is required" >&2; exit 1; }
+STUB_ID_U=0; export STUB_ID_U
+exec "$@"
+STUBSUDO
+printf '#!/bin/sh\necho "chown $*" >> "$STUB_SUDO_LOG"\n' > "$LXB/chown"
+# GNU stat syntax on a BSD userland (the simulated Linux host runs on macOS).
+if [ "$(/usr/bin/uname -s)" = "Darwin" ]; then
+  printf '#!/bin/sh\nif [ "$1" = "-c" ]; then f="$2"; shift 2; case "$f" in %%a) exec /usr/bin/stat -f %%Lp "$@" ;; %%u) exec /usr/bin/stat -f %%u "$@" ;; %%i) exec /usr/bin/stat -f %%i "$@" ;; esac; fi\nexec /usr/bin/stat "$@"\n' > "$LXB/stat"
+fi
+chmod 0755 "$LXB"/*
+M2D="$TMP/m2-certs"
+if env -u LUCAIRN_CONTAINER_UID PATH="$LXB:$BASE_PATH" bash "$BOOTSTRAP" "$M2D" > "$TMP/m2-boot.out" 2>&1; then
+  fail "M2 RED Linux non-root bootstrap — it ran (keys the containers cannot read)"
+elif grep -Fq "only root can hand them over" "$TMP/m2-boot.out" && [ ! -e "$M2D" ]; then
+  pass "M2 Linux non-root bootstrap refuses before writing anything, naming sudo and the declared-uid escape"
+else
+  fail "M2 Linux non-root bootstrap refusal: $(tail -1 "$TMP/m2-boot.out"); dir exists: $([ -e "$M2D" ] && echo yes || echo no)"
+fi
+if env PATH="$LXB:$BASE_PATH" LUCAIRN_CONTAINER_UID=1000 bash "$BOOTSTRAP" "$M2D" > "$TMP/m2-boot.out" 2>&1 && [ -f "$M2D/sanitizer-core/witness-client.key" ]; then
+  pass "M2 Linux non-root bootstrap with LUCAIRN_CONTAINER_UID = own uid (declared mapping) writes the material"
+else
+  fail "M2 Linux non-root bootstrap with a declared uid: $(tail -2 "$TMP/m2-boot.out")"
+fi
+M2I="$TMP/m2-init"; mkdir -p "$M2I"; : > "$TMP/m2-sudo.log"
+if env -u LUCAIRN_CONTAINER_UID PATH="$LXB:$DBIN:$BASE_PATH" STUB_SUDO_LOG="$TMP/m2-sudo.log" "$KIT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+     --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$M2I/customer.env" --skip-doctor > "$TMP/m2-init.out" 2>&1 \
+   && grep -q "^sudo env LUCAIRN_CONTAINER_UID=10001 bash .*bootstrap-sanitizer-core-mtls.sh $M2I/.certs/sanitizer-core-mtls$" "$TMP/m2-sudo.log" \
+   && grep -q "^chown -R 10001:10001 " "$TMP/m2-sudo.log"; then
+  pass "M2 lucairn-init on Linux as non-root runs the bootstrap step through sudo (keys handed to uid 10001)"
+else
+  fail "M2 lucairn-init on Linux as non-root runs the bootstrap through sudo: $(tr '\n' '|' < "$TMP/m2-sudo.log") $(grep -i 'sudo\|error' "$TMP/m2-init.out" | head -2 | tr '\n' ' ')"
+fi
+grep -Fq "running that one step with sudo" "$TMP/m2-init.out" && pass "M2 init says it uses sudo for that one step" || fail "M2 init says it uses sudo for that one step"
+M2J="$TMP/m2-init-nosudo"; mkdir -p "$M2J"; : > "$TMP/m2-sudo.log"
+if env -u LUCAIRN_CONTAINER_UID PATH="$LXB:$DBIN:$BASE_PATH" STUB_SUDO_LOG="$TMP/m2-sudo.log" STUB_SUDO_FAIL=1 "$KIT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+     --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$M2J/customer.env" --skip-doctor > "$TMP/m2-init.out" 2>&1; then
+  fail "M2 RED init when sudo is refused — it succeeded"
+elif grep -Fq "re-run: sudo scripts/bootstrap-sanitizer-core-mtls.sh" "$TMP/m2-init.out"; then
+  pass "M2 init fails when sudo is refused, naming the exact sudo command"
+else
+  fail "M2 init when sudo is refused: $(tail -1 "$TMP/m2-init.out")"
+fi
+# Doctor on a Linux host (simulated with the shims on macOS; real on a non-root
+# Linux test host): keys owned by this user, not uid 10001.
+M2_DOC_PATH=""
+case "$(/usr/bin/uname -s)" in
+  Darwin) M2_DOC_PATH="$LXB:$DBIN:$BASE_PATH" ;;
+  Linux) [ "$(id -u)" != "0" ] && M2_DOC_PATH="$DBIN:$BASE_PATH" ;;
+esac
+if [ -n "$M2_DOC_PATH" ]; then
+  if env -u LUCAIRN_CONTAINER_UID PATH="$M2_DOC_PATH" bash "$KIT/bin/lucairn" doctor --env "$ENVF" --compose "$KIT_COMPOSE" --offline --skip-image-check > "$TMP/m2-doc.out" 2>&1; then
+    fail "M2 RED doctor on Linux: keys owned by another uid than the containers' — doctor stayed green (the old warning)"
+  elif grep -Fq "and cannot read a 0600 key owned by another uid, so the service refuses to start" "$TMP/m2-doc.out"; then
+    pass "M2 doctor on Linux FAILS a key owned by another uid than the containers' (was a warning)"
+  else
+    fail "M2 doctor on Linux key owner: $(grep 'mTLS' "$TMP/m2-doc.out" | head -2 | tr '\n' ' ')"
+  fi
+  V="$(variant m2declared)"; printf 'LUCAIRN_CONTAINER_UID=%s\n' "$(id -u)" >> "$V/customer.env"
+  if env -u LUCAIRN_CONTAINER_UID PATH="$M2_DOC_PATH" bash "$KIT/bin/lucairn" doctor --env "$V/customer.env" --compose "$KIT_COMPOSE" --offline --skip-image-check > "$TMP/m2-doc.out" 2>&1 \
+     && grep -Fq "sanitizer core mTLS: ok" "$TMP/m2-doc.out"; then
+    pass "M2 doctor on Linux accepts the keys when customer.env declares LUCAIRN_CONTAINER_UID = their owner"
+  else
+    fail "M2 doctor on Linux with a declared uid: $(grep -E 'mTLS|failed' "$TMP/m2-doc.out" | head -2 | tr '\n' ' ')"
+  fi
+else
+  skip "M2 doctor key-owner cases: not run as root"
+fi
+
+# ── TOB-K20-02: the core pair is hardened like the Helm chart ───────────────
+if [ "$HAVE_COMPOSE" -eq 1 ] && [ -f "$TMP/render.json" ]; then
+  python3 - "$TMP/render.json" > "$TMP/k20-02.txt" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))["services"]
+def p(ok, msg): print(("ok " if ok else "FAIL ") + msg)
+for name, size in (("sanitizer-core-sidecar", "1g"), ("sanitizer-core", "64m")):
+    x = s[name]
+    p(x.get("cap_drop") == ["ALL"], "TOB-K20-02 %s drops every capability" % name)
+    p("no-new-privileges:true" in (x.get("security_opt") or []), "TOB-K20-02 %s: no-new-privileges" % name)
+    p(x.get("read_only") is True, "TOB-K20-02 %s: read-only root filesystem" % name)
+    p(any(t.split(":")[0] == "/tmp" and ("size=" + size) in t for t in (x.get("tmpfs") or [])), "TOB-K20-02 %s: private /tmp tmpfs (size %s) (%s)" % (name, size, x.get("tmpfs")))
+e = s["sanitizer-core-sidecar"].get("environment") or {}
+p(e.get("HOME") == "/tmp" and e.get("XDG_CACHE_HOME") == "/tmp/.cache", "TOB-K20-02 sidecar HOME + XDG_CACHE_HOME on /tmp (as the Helm chart)")
+PY
+  while IFS= read -r line; do case "$line" in ok\ *) pass "${line#ok }" ;; *) fail "${line#FAIL }" ;; esac; done < "$TMP/k20-02.txt"
+else
+  skip "docker compose CLI not available — TOB-K20-02 render"
+fi
+
+# ── TOB-K20-03: Docker Engine below the CVE-2024-29018 fixes FAILS online ────
+for cell in "26.0.0|ok" "26.1.4|ok" "27.3.1|ok" "25.0.5|ok" "25.1.0|ok" "23.0.11|ok" "25.0.4|failed" "24.0.7|failed" "23.0.10|failed" "20.10.24|failed"; do
+  ver="${cell%%|*}"; want="${cell#*|}"
+  if [ "$want" = ok ]; then
+    online_case "TOB-K20-03 GREEN Docker Engine $ver" "docker engine: ok ($ver" green STUB_ENGINE_VERSION="$ver"
+  else
+    online_case "TOB-K20-03 RED Docker Engine $ver (CVE-2024-29018)" "docker engine: failed ($ver forwards DNS queries from internal networks" red STUB_ENGINE_VERSION="$ver"
+  fi
+done
+grep -Fq "Docker Engine 26.0.0 or newer" "$KIT/INSTALL.md" && pass "TOB-K20-03 INSTALL.md states the Docker Engine minimum" || fail "TOB-K20-03 INSTALL.md states the Docker Engine minimum"
 
 echo ""
 if [ "$FAILS" -eq 0 ]; then

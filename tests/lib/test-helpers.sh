@@ -24,6 +24,19 @@
 # on re-declaration in bash, so skip the assignment when already set.
 [ -n "${TEST_SIGNING_KEY:-}" ] || readonly TEST_SIGNING_KEY="1111111111111111111111111111111111111111111111111111111111111111"
 
+# Kit 2.0 final-read M2: on Linux scripts/bootstrap-sanitizer-core-mtls.sh
+# refuses an ordinary user (only root can hand the keys to the image user
+# 10001), bin/lucairn-init then runs that step through sudo, and doctor FAILS a
+# key owned by another uid than the containers'. No container reads the keys
+# in a test, so a non-root Linux test host (the PC runner in WSL) declares the
+# documented mapping — the image user = this uid — exactly as an operator on
+# Docker Desktop for Linux would. A case that needs the undeclared state runs
+# with LUCAIRN_CONTAINER_UID= (empty). macOS needs nothing (no uid rule there).
+if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" != "0" ] && [ -z "${LUCAIRN_CONTAINER_UID:-}" ]; then
+  LUCAIRN_CONTAINER_UID="$(id -u)"
+  export LUCAIRN_CONTAINER_UID
+fi
+
 # ---------------------------------------------------------------------------
 # T-10 (security STOP-SHIP, 2026-08-03): chart-managed passwords have NO
 # working default any more.

@@ -815,6 +815,14 @@ test -x "$BYOK_BUNDLE_ROOT/scripts/derive-veil-pubkey.sh"
 test -f "$BYOK_BUNDLE_ROOT/install/docker-compose.self-hosted-byok.yml"
 sed 's/^ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=dummy-provider-key/' "$BYOK_BUNDLE_ROOT/install/customer.env" > "$BYOK_BUNDLE_ROOT/install/customer.env.tmp"
 mv "$BYOK_BUNDLE_ROOT/install/customer.env.tmp" "$BYOK_BUNDLE_ROOT/install/customer.env"
+# Kit 2.0 final-read H2: the bundle carries neither the core's mTLS material
+# nor its registry DSN file (the staged env names install/.certs/... and
+# install/.secrets/...); the customer host runs the two one-time steps
+# INSTALL-CUSTOMER.md names before the doctor. Before H2 this doctor passed
+# only because the build host's directories still existed.
+( cd "$BYOK_BUNDLE_ROOT" \
+  && bash scripts/bootstrap-sanitizer-core-mtls.sh "$PWD/install/.certs/sanitizer-core-mtls" >/dev/null 2>&1 \
+  && bash scripts/write-sanitizer-core-registry-dsn.sh --env-file install/customer.env --compose install/docker-compose.customer.yml >/dev/null 2>&1 )
 "$BYOK_BUNDLE_ROOT/bin/lucairn" doctor --env "$BYOK_BUNDLE_ROOT/install/customer.env" \
   --compose "$BYOK_BUNDLE_ROOT/install/docker-compose.customer.yml" --offline --skip-image-check > "$TMPDIR/extracted-byok-doctor.out" 2>&1
 grep -q 'byok overlay: ok .*compose=.*install/docker-compose.self-hosted-byok.yml' "$TMPDIR/extracted-byok-doctor.out"
