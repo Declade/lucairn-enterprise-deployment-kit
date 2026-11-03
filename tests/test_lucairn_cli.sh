@@ -44,7 +44,10 @@ copy_profiled_env() {
 # SANDBOX_B_API_KEY present in the env file. --dev leaves DSA_LICENSE_KEY empty
 # and SANDBOX_B_API_KEY blank, so set dummy values for the redaction coverage.
 # (DSA_LICENSE_KEY here is a redaction-test sentinel, not a real license — the
-# gateway never sees this file.)
+# gateway never sees this file.) The generated (empty) lines are REPLACED, not
+# repeated: a variable assigned twice refuses the support bundle (kit 2.0 K-A
+# fix round 5, an assignment overwritten later is not decoded exactly).
+sed -i.bak -e '/^DSA_LICENSE_KEY=/d' -e '/^DSA_LICENSE_SIGNING_KEY=/d' -e '/^SANDBOX_B_API_KEY=/d' "$ENV_FILE" && rm -f "$ENV_FILE.bak"
 {
   printf 'DSA_LICENSE_KEY=lcr_enterprise_test_secret\n'
   printf 'DSA_LICENSE_SIGNING_KEY=test-license-signing-secret\n'

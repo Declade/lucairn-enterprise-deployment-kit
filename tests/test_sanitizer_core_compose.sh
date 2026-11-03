@@ -324,13 +324,25 @@ PY
   fi
   # Fix round 1 (sol r1 finding 4): the pair never starts from a bare tag.
   # The example env carries no digest (the release records them), so the
-  # project refuses to render at all; half a pair refuses too.
+  # project refuses to render at all; half a pair refuses too. With BOTH
+  # missing, Compose names whichever required variable it reaches first (its
+  # map order: CORE on one run, SIDECAR on the next — the 5890e469 CI flake),
+  # so that case accepts either name; each half is asserted on its own below.
   if docker compose -f "$COMPOSE" --env-file "$EXAMPLE_ENV" config --quiet > "$TMP/nodigest.out" 2>&1; then
     fail "no core/sidecar digest -> the project refuses to render (it rendered: the pair would start by tag)"
-  elif grep -q 'LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST must be the signed digest' "$TMP/nodigest.out"; then
-    pass "no core/sidecar digest -> the project refuses to render, naming LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST"
+  elif grep -Eq 'LUCAIRN_SANITIZER_CORE_(SIDECAR_)?IMAGE_DIGEST must be the signed digest' "$TMP/nodigest.out"; then
+    pass "no core/sidecar digest -> the project refuses to render, naming a digest variable of the pair"
   else
     fail "no core/sidecar digest -> refused, but not by the digest guard: $(tail -1 "$TMP/nodigest.out")"
+  fi
+  cp "$EXAMPLE_ENV" "$TMP/coremissing.env"
+  printf '\nLUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=%s\n' "$TEST_SANITIZER_CORE_SIDECAR_DIGEST" >> "$TMP/coremissing.env"
+  if docker compose -f "$COMPOSE" --env-file "$TMP/coremissing.env" config --quiet > "$TMP/nodigest.out" 2>&1; then
+    fail "only the sidecar digest -> the project refuses to render (it rendered)"
+  elif grep -q 'LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST must be the signed digest' "$TMP/nodigest.out"; then
+    pass "only the sidecar digest -> refuses to render, naming LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST"
+  else
+    fail "only the sidecar digest -> refused, but not by the core digest guard: $(tail -1 "$TMP/nodigest.out")"
   fi
   cp "$EXAMPLE_ENV" "$TMP/halfdigest.env"
   printf '\nLUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=%s\n' "$TEST_SANITIZER_CORE_DIGEST" >> "$TMP/halfdigest.env"
@@ -818,6 +830,8 @@ if [ "${1:-}" = compose ]; then
       [ -n "${STUB_REAL_DOCKER:-}" ] && exec "$STUB_REAL_DOCKER" "$@"
       exit 0 ;;
     *" ps -a "*) [ -n "${STUB_PS:-}" ] && cat "$STUB_PS"; exit 0 ;;
+    # support-bundle's log collection (online bundle cases in F).
+    *" logs --tail 300 --no-color"*) [ -n "${STUB_BUNDLE_LOG:-}" ] && cat "$STUB_BUNDLE_LOG"; exit 0 ;;
     *" exec -T postgres-sanitizer-core "*) echo "${STUB_LEDGER_OUT:-7}"; exit 0 ;;
     *" logs --no-color sanitizer-core "*) [ -n "${STUB_CORE_LOG:-}" ] && cat "$STUB_CORE_LOG"; exit 0 ;;
     *" logs --no-color veil-witness "*) [ -n "${STUB_WITNESS_LOG:-}" ] && cat "$STUB_WITNESS_LOG"; exit 0 ;;
@@ -878,6 +892,9 @@ done
 
 doctor_offline() { # <env file> — offline doctor, hermetic PATH
   PATH="$DBIN:$BASE_PATH" bash "$KIT/bin/lucairn" doctor --env "$1" --compose "$KIT_COMPOSE" --offline --skip-image-check > "$TMP/doc.out" 2>&1
+}
+env_drop() { # <env file> <KEY> — remove every assignment of KEY
+  sed -i.bak "/^$2=/d" "$1" && rm -f "$1.bak"
 }
 variant() { # <name> — copy of the generated install (env + certs + sidecars)
   local d="$TMP/v-$1"
@@ -1233,7 +1250,10 @@ bundle_refuses "the sanitizer signing key planted under NOTES, DSN file missing"
 # audit DB password spelled "Boundary\0101Probe4829" IS BoundaryAProbe4829 to
 # Compose; the old reader skipped it, so that value under a non-secret key
 # survived redaction and the scan.
-V="$(variant sbleakesc)"; printf 'POSTGRES_AUDIT_PASSWORD="Boundary\\0101Probe4829"\nOPERATOR_NOTE=BoundaryAProbe4829\n' >> "$V/customer.env"
+# (Round 5: the existing assignment is REPLACED — a variable assigned twice
+# now refuses the bundle on its own, which would hide what this case tests.)
+V="$(variant sbleakesc)"; env_drop "$V/customer.env" POSTGRES_AUDIT_PASSWORD
+printf 'POSTGRES_AUDIT_PASSWORD="Boundary\\0101Probe4829"\nOPERATOR_NOTE=BoundaryAProbe4829\n' >> "$V/customer.env"
 bundle_refuses "an escape-decoded secret (\\0101 = A) planted under a non-secret key" "$V" leakesc "BoundaryAProbe4829"
 # (2) An exported shell override: Compose run from this shell hands the
 # containers the EXPORTED value, so it is a needle too.
@@ -1296,9 +1316,15 @@ fi
 # The same class in a collected ENV file: the secret written with an escape
 # only Compose's env-file parser undoes ("\0101" is "A"; no JSON, YAML or
 # percent form spells it so), under a non-secret key.
-V="$(variant sbleakenvq)"
+# Round 5: an octal escape in double quotes can yield a `$` that Compose then
+# interpolates ("\0044"), so such a line is not decoded exactly: refused,
+# naming the line (before round 5 it was found after decoding).
+V="$(variant sbleakenvq)"; env_drop "$V/customer.env" POSTGRES_AUDIT_PASSWORD
 printf '%s\n' 'POSTGRES_AUDIT_PASSWORD=OctalAProbe4829x' 'OPERATOR_NOTE="Octal\0101Probe4829x"' >> "$V/customer.env"
 bundle_refuses "a secret written with an env-file escape (\\0101 = A) under a non-secret key" "$V" leakenvq 'OctalAProbe4829x'
+grep -Fq "the value changes when \`\$\` is taken literally" "$TMP/sb.out" \
+  && pass "the octal-escape line is refused as not exactly decodable, naming the line" \
+  || fail "the octal-escape line is refused as not exactly decodable: $(tail -1 "$TMP/sb.out")"
 # (6) The install's project MUST render: an unrelated required variable that
 # is missing used to drop every secret only the compose files carry (the
 # bundle went on with the env probes alone and archived such a secret).
@@ -1329,6 +1355,125 @@ elif grep -Fq "could not be compared decoded (python3 (standard library) is requ
 else
   fail "RED python3 not usable — $(tail -1 "$TMP/sb.out")"
 fi
+# Fix round 5 (sol r4 on 5890e469; the owner's "one last fail-closed round"):
+# a collected file whose decoded view is not an EXACT representation of its
+# text refuses the bundle, naming the file and the construct; every log line
+# is unescaped whether or not it parses; the whole value of every secret is a
+# needle, and a secret too short to search for refuses. Each sol r4
+# reproduction below is RED on 5890e469 (it archived) and refused here.
+sb_run() { # <out name> <env file> <compose file> [env assignments...] -> SBRC, $TMP/sb.out
+  local o="$1" e="$2" c="$3"; shift 3
+  env "$@" PATH="$DBIN:$BASE_PATH" bash "$KIT/bin/lucairn" support-bundle --env "$e" --compose "$c" --output "$BUN/$o" ${SB_ONLINE:---offline} > "$TMP/sb.out" 2>&1
+  SBRC=$?
+}
+sb_refused() { # <name> <out name> <grep-fixed reason> <value that must not print>
+  if [ "$SBRC" -eq 0 ]; then
+    fail "RED $1 — it archived"
+  elif grep -Fq "support bundle: refused" "$TMP/sb.out" && grep -Fq -- "$3" "$TMP/sb.out" \
+       && ! grep -Fq -- "$4" "$TMP/sb.out" && ! find "$BUN/$2" -mindepth 1 2>/dev/null | grep -q .; then
+    pass "RED $1 — refused ($3), nothing left behind, no value printed"
+  else
+    fail "RED $1 — $(tail -1 "$TMP/sb.out")"
+  fi
+}
+plant_kit() { # <dir name> <line>... — the released kit, these lines appended to its compose file
+  local d="$TMP/$1" e
+  shift
+  mkdir -p "$d"
+  for e in "$KIT"/* "$KIT"/.[!.]*; do
+    [ -e "$e" ] && ln -s "$e" "$d/$(basename "$e")"
+  done
+  rm -f "$d/docker-compose.customer.yml"
+  { cat "$KIT_COMPOSE"; printf '%s\n' "$@"; } > "$d/docker-compose.customer.yml"
+  printf '%s' "$d/docker-compose.customer.yml"
+}
+# The synthetic secret of sol r4, a customer.env secret (redacted in the
+# bundle's own copy of customer.env, so only the planted form can carry it).
+R5="AlphaSecret4829x"
+# (1a) sol r4's exact merge-key case: the explicit `memo` overrides the merged
+# one, so Compose's decoded view held only `memo: safe`.
+V="$(variant r5merge)"; printf 'LUCAIRN_EXTRA_SECRET=%s\n' "$R5" >> "$V/customer.env"
+C="$(plant_kit r5mergekit 'x-note: {<<: &a {memo: "\x41lphaSecret4829x"}, memo: safe}')"
+sb_run r5merge "$V/customer.env" "$C"
+sb_refused "sol r4: a secret in a YAML merge an explicit key overrides" r5merge "docker-compose.customer.yml, found after decoding" "$R5"
+# (1b) `!reset` drops its value in Compose's loader: a tag refuses.
+C="$(plant_kit r5resetkit 'x-note:' '  memo: !reset "\x41lphaSecret4829x"' '  keep: safe')"
+sb_run r5reset "$V/customer.env" "$C"
+sb_refused "sol r4: a secret under a YAML !reset tag" r5reset "docker-compose.customer.yml: a YAML tag" "$R5"
+# (1c) an env assignment overwritten later: Compose keeps the last one only.
+V="$(variant r5envdup)"
+printf '%s\n' "LUCAIRN_EXTRA_SECRET='Alpha\"Secret4829x'" 'OPERATOR_NOTE="Alpha\"Secret4829x"' 'OPERATOR_NOTE=safe' >> "$V/customer.env"
+sb_run r5envdup "$V/customer.env" "$KIT_COMPOSE"
+sb_refused "sol r4: an env assignment overwritten later" r5envdup "(an assignment overwritten later)" 'Alpha"Secret'
+# (2) sol r4's dotenv case: doubling `$` made Compose interpolate `\$Secret…`.
+V="$(variant r5dollar)"
+printf '%s\n' "LUCAIRN_EXTRA_SECRET='Alpha\$Secret4829x'" 'OPERATOR_NOTE="\0101lpha\$Secret4829x"' >> "$V/customer.env"
+sb_run r5dollar "$V/customer.env" "$KIT_COMPOSE"
+sb_refused "sol r4: \"\\0101lpha\\\$Secret4829x\" in customer.env" r5dollar "redacted/customer.env line $(grep -c '' "$V/customer.env"): the value changes when" 'Secret4829x'
+# (4) sol r4's multi-line secret: "AlphaSecret\n4829x" (17 bytes, both lines
+# under 12) gave no needle at all. Here under a non-secret key in the
+# collected compose file.
+V="$(variant r5multi)"; printf '%s\n' 'LUCAIRN_EXTRA_SECRET="AlphaSecret\n4829x"' >> "$V/customer.env"
+C="$(plant_kit r5multikit 'x-note: {memo: "AlphaSecret\n4829x"}')"
+sb_run r5multi "$V/customer.env" "$C"
+sb_refused "sol r4: a multi-line secret whose lines are under 12 bytes" r5multi "docker-compose.customer.yml, found after decoding" '4829x'
+# (4b) a secret that yields no needle at all refuses, naming the key.
+V="$(variant r5short)"; printf 'LUCAIRN_EXTRA_SECRET=short4829\n' >> "$V/customer.env"
+sb_run r5short "$V/customer.env" "$KIT_COMPOSE"
+sb_refused "a secret too short to be searched for" r5short "shorter than 12 characters, so it cannot be searched for in the collected files (LUCAIRN_EXTRA_SECRET" 'short4829'
+# (3) Log lines (an ONLINE bundle; the stub engine hands support-bundle this
+# log): sol r4's partial JSON line, the multi-line secret JSON-escaped, and a
+# line whose escape cannot be unescaped.
+if [ "$HAVE_COMPOSE" -eq 1 ]; then
+  printf 'svc  | started\nsvc  | {"note":"Alpha\\u003cSecret4829x"\n' > "$TMP/r5-partial.log"
+  V="$(variant r5log)"; printf "LUCAIRN_EXTRA_SECRET='Alpha<Secret4829x'\n" >> "$V/customer.env"
+  SB_ONLINE=" " sb_run r5log "$V/customer.env" "$KIT_COMPOSE" STUB_BUNDLE_LOG="$TMP/r5-partial.log"
+  sb_refused "sol r4: a partial JSON log line" r5log "logs/compose.log, found after decoding" 'Secret4829x'
+  printf 'svc  | {"msg":"AlphaSecret\\n4829x"}\n' > "$TMP/r5-multi.log"
+  V="$(variant r5logm)"; printf '%s\n' 'LUCAIRN_EXTRA_SECRET="AlphaSecret\n4829x"' >> "$V/customer.env"
+  SB_ONLINE=" " sb_run r5logm "$V/customer.env" "$KIT_COMPOSE" STUB_BUNDLE_LOG="$TMP/r5-multi.log"
+  sb_refused "sol r4: the multi-line secret in a JSON log line" r5logm "logs/compose.log, found after decoding" '4829x'
+  # The same secret split over two raw log lines with CRLF line breaks: the
+  # whole value is a needle with CRLF too.
+  printf 'svc  | AlphaSecret\r\n4829x\r\n' > "$TMP/r5-crlf.log"
+  SB_ONLINE=" " sb_run r5logc "$V/customer.env" "$KIT_COMPOSE" STUB_BUNDLE_LOG="$TMP/r5-crlf.log"
+  sb_refused "the multi-line secret with CRLF line breaks in a raw log" r5logc "appeared in a collected file (logs/compose.log)" '4829x'
+  printf 'svc  | ok\nsvc  | {"note":"\\u00zz"}\n' > "$TMP/r5-bad.log"
+  SB_ONLINE=" " sb_run r5logbad "$ENVF" "$KIT_COMPOSE" STUB_BUNDLE_LOG="$TMP/r5-bad.log"
+  sb_refused "a log line whose escape cannot be unescaped" r5logbad "logs/compose.log line 2: an escape sequence that cannot be unescaped" 'u00zz'
+  # No false refusal: an ordinary log (JSON lines, escapes, a regex) goes through.
+  printf 'svc  | {"level":"info","msg":"a \\"quoted\\" word\\n","path":"\\/v1"}\nsvc  | grep -E "\\d+\\s" done\n' > "$TMP/r5-ok.log"
+  SB_ONLINE=" " sb_run r5logok "$ENVF" "$KIT_COMPOSE" STUB_BUNDLE_LOG="$TMP/r5-ok.log"
+  [ "$SBRC" -eq 0 ] && pass "an ordinary log (JSON lines, escapes, an unknown escape) is archived" \
+    || fail "an ordinary log is archived: $(tail -1 "$TMP/sb.out")"
+else
+  skip "docker compose CLI not available — round 5 log cases"
+fi
+# The scan function on its own (no Compose needed for these files): JSON
+# duplicate members, raw CRLF/LF forms of a multi-line secret, a text file's
+# strictness against a comment's leniency.
+SBF="$TMP/sbscan.sh"
+{ echo 'have() { command -v "$1" >/dev/null 2>&1; }'; sed -n '/^support_bundle_decoded_scan() {/,/^}/p' "$ROOT/bin/lucairn"; } > "$SBF"
+scan_case() { # <name> <want rc> <grep-fixed stderr or ""> <needle (printf %b)> <file name> <content (printf %b)>
+  local d="$TMP/sbs-$RANDOM" rc=0
+  mkdir -p "$d/b"
+  printf '%b' "$4" | od -An -tx1 | tr -d ' \n' > "$d/needles"; echo >> "$d/needles"
+  printf '%b' "$6" > "$d/b/$5"
+  # shellcheck disable=SC1090,SC1091 # the extracted function file
+  ( . "$ROOT/bin/compose-env.sh"; . "$SBF"; support_bundle_decoded_scan "$d/b" "$d/needles" ) > /dev/null 2> "$d/err" || rc=$?
+  if [ "$rc" -eq "$2" ] && { [ -z "$3" ] || grep -Fq -- "$3" "$d/err"; }; then pass "scan: $1"; else fail "scan: $1 (rc $rc: $(head -1 "$d/err"))"; fi
+  rm -rf "$d"
+}
+scan_case "a duplicate JSON member refuses" 3 "x.json: a duplicate JSON member" 'AlphaSecret4829x' x.json '{"memo":"\\u0041lphaSecret4829x","memo":"safe"}\n'
+scan_case "a JSON-escaped secret in a .json file is found" 1 "decoded: x.json" 'AlphaSecret4829x' x.json '{"memo":"\\u0041lphaSecret4829x"}\n'
+scan_case "a doubly escaped secret (JSON inside JSON) is found" 1 "decoded: a.log" 'Alpha<Secret4829x' a.log 'svc | {"m":"{\\"n\\":\\"Alpha\\\\u003cSecret4829x\\"}"}\n'
+scan_case "a lone surrogate in a text file refuses, naming the line" 3 "a.log line 3: an escape sequence that cannot be unescaped (a lone UTF-16 surrogate)" 'AlphaSecret4829x' a.log 'a\nb\n"\\ud800x"\n'
+scan_case "the same bytes in a YAML comment stay as written (no refusal)" 0 "" 'AlphaSecret4829x' a.yml '# see C:\\users\\x and "\\ud800"\nk: v\n'
+scan_case "a hex-escaped secret in a YAML comment is found" 1 "decoded: a.yml" 'AlphaSecret4829x' a.yml '# old: \\x41lphaSecret4829x\nk: v\n'
+scan_case "a duplicate YAML key refuses, naming the line" 3 "a.yml cannot be decoded exactly as yaml by Docker Compose: line 2: a duplicate mapping key" 'AlphaSecret4829x' a.yml 'k: "\\x41lphaSecret4829x"\nk: safe\n'
+scan_case "a YAML anchor + alias loses nothing (accepted)" 0 "" 'AlphaSecret4829x' a.yml 'a: &x {m: one}\nb: *x\nc: {<<: *x, n: two}\n'
+scan_case "an env value spanning lines refuses, naming the line" 3 "a.env cannot be decoded exactly as env by Docker Compose: Docker Compose cannot read line 2 on its own" 'AlphaSecret4829x' a.env 'A=1\nB="x\nC=2"\n'
+scan_case "an exact env file goes through (quotes, comments, single-quoted \$)" 0 "" 'AlphaSecret4829x' a.env '# c\nA=1\nB="two words" # c\nC=\x27x$y\x27\nexport D=4\n'
 # No false refusal on a full ONLINE bundle: `docker compose config` of the
 # real project (client-side render, no daemon needed) lands in the bundle
 # redacted; none of the needles may survive in it.

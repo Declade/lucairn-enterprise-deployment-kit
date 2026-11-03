@@ -9413,13 +9413,17 @@ write_cert_report() {
 # Compose's `$$` in one value). The encodings are undone on the BUNDLE side
 # instead: support_bundle_decoded_scan parses every collected file with its
 # format's own parser and compares the decoded strings.
+# Printed hex-encoded, one per line (round 5: a value may hold a line feed):
+# the whole value as written, with LF and with CRLF line breaks, plus every
+# line of 12+ bytes of a multi-line value.
 # rc != 0 (no Docker Compose, Compose refuses customer.env, the install's
-# project does not render, helper missing): the caller refuses the bundle —
-# the scan is never skipped and never runs on a partial secret list.
-# NON-COVERAGE: values shorter than 12 characters are not scanned (a short
-# dev value could match unrelated text by chance); secrets that exist only
-# outside Compose's view (files under cert directories, a value a service
-# derives itself) are not known here.
+# project does not render, helper missing, rc 13 a secret shorter than 12
+# characters): the caller refuses the bundle — the scan is never skipped,
+# never runs on a partial secret list, and never archives a secret it could
+# not search for (a value below 12 characters would match unrelated text by
+# chance, so it is refused by name instead of skipped).
+# NON-COVERAGE: secrets that exist only outside Compose's view (files under
+# cert directories, a value a service derives itself) are not known here.
 support_bundle_secret_needles() {
   local env_file="$1" compose_file="$2" pd
   if [ "$LUCAIRN_COMPOSE_ENV_LIB_OK" -ne 1 ]; then
@@ -9432,44 +9436,63 @@ support_bundle_secret_needles() {
 }
 
 # support_bundle_decoded_scan <bundle dir> <needles file>
-# The decoded comparison (K-A fix round 4, sol r3 on PR #158): every collected
-# file is PARSED with its format's own parser and every decoded string (keys
-# and values) is compared against every known secret (the needle list of
-# support_bundle_secret_needles, decoded values). The raw `grep -F` of the
-# same list stays as the first layer. By file name:
-#   *.yml / *.yaml  YAML — decoded by Docker Compose's own parser (go-yaml),
-#                   bin/compose-env.sh cev_to_json yaml (the file under one
-#                   `x-` key, --no-interpolate): '' and "\x41" escapes,
-#                   folding and anchors are undone by the parser itself
-#   *.env           env file — Compose's own dotenv parser (cev_to_json env)
-#   *.json          JSON — Python's json module
-#   anything else   raw text (logs, ps tables, the cert report): each line,
-#                   and any JSON object or array a line ends with (a
-#                   structured log line), parsed by Python's json module
-# Each decoded string is compared as decoded AND with Compose's `$$` escape
-# undone (once and twice: `config` output doubles every `$`, and a `$` read
-# from inside single quotes of an env file comes back doubled) AND percent-
-# decoded (a URL password). Parsing uses the parsers the kit already ships
-# for bundle work: Python 3's standard library (as `lucairn bundle`'s archive
-# checks) and Docker Compose (as the needle list); offline `doctor` does not
-# run this and stays Python-free.
+# The fail-closed comparison of every collected file against every known
+# secret (the hex needle list of support_bundle_secret_needles). K-A fix
+# round 4 (sol r3) added the decoded comparison; round 5 (sol r4) makes it
+# EXACT OR REFUSED: a file whose decoded view is not an exact representation
+# of its text refuses the bundle, naming the file and the construct — the
+# scan never guesses past what it cannot decode.
+#   layer 1  raw: the bytes of every file, whole (a multi-line secret is
+#            found across its line break, as LF and as CRLF).
+#   layer 2  decoded, by file name:
+#     *.yml / *.yaml  Docker Compose's own YAML parser (bin/compose-env.sh
+#              cev_to_json yaml): merges kept apart (a `<<` merge is decoded
+#              as an ordinary key, so a value an explicit key overrides is
+#              still compared); a TAG anywhere (`!reset`, `!override`,
+#              `!!binary`, any `!x`) refuses, as does anything Compose's
+#              parser refuses (a duplicate key, a document marker).
+#              Anchors and aliases lose nothing (the anchored node is decoded
+#              where it is written) and are accepted.
+#     *.env    Docker Compose's own dotenv parser, whole and line by line
+#              (cev_to_json env); refused: a value that spans lines, a
+#              variable assigned on two lines (an assignment overwritten
+#              later), two assignments on one line, and any value that
+#              changes when `$` is taken literally (interpolation, `\$`, an
+#              octal escape `\0…` in double quotes).
+#     *.json   Python's json; a duplicate member refuses.
+#   layer 3  every line of every file, unescaped: JSON/C string escapes
+#            (\uXXXX incl. surrogate pairs, \UXXXXXXXX, \xHH, octal \ooo, \n,
+#            \t, \r, \b, \f, \v, \a, \e, \", \', \\, \/, \$), up to three
+#            levels (a JSON string inside a JSON string), whether or not the
+#            line parses as anything. In a text file (logs, ps tables, the
+#            cert report) an escape that cannot be unescaped (\u or \x
+#            without its hex digits, a lone surrogate) refuses, naming the
+#            file and line; in a YAML/env/JSON file (comments) it stays as
+#            written. An unknown escape (\d, \s) is literal text.
+# Every decoded string and unescaped line is compared as is, with Compose's
+# `$$` undone (once and twice) and percent-decoded.
 # rc: 0 nothing found · 1 a secret was found (stderr names the file, never
-# the value) · 3 a file could not be parsed, or Compose is missing (stderr
-# names the file) · 4 python3 is not usable. The caller refuses the bundle
-# on every rc != 0.
-# NON-COVERAGE: a value under Compose's `!reset` tag is dropped by Compose's
-# loader before it is compared (the raw layer still sees it as written); a
-# text file is compared line by line, so a secret split across two lines of
-# a log is not found; text encodings other than the ones above (base64, a
-# shell-quoted log argument) are not undone.
+# the value) · 3 a file cannot be decoded exactly, or Compose is missing
+# (stderr names the file and the construct) · 4 python3 is not usable. The
+# caller refuses the bundle on every rc != 0.
+# NON-COVERAGE: a secret split across two lines of a log with other text
+# between its parts; encodings other than the ones above (base64, shell
+# quoting, HTML entities); a secret shorter than 12 characters is never
+# searched for — such an install is refused by the needle list instead.
 support_bundle_decoded_scan() {
-  local dir="$1" needles="$2" work f rel kind n=0 rc
-  if ! have python3 || ! python3 -I -c 'import json, re, sys, urllib.parse' >/dev/null 2>&1; then
+  local dir="$1" needles="$2" work f rel kind n=0 rc s1 s2 s3 s4
+  if ! have python3 || ! python3 -I -c 'import binascii, json, re, sys, urllib.parse' >/dev/null 2>&1; then
     echo "python3 (standard library) is required for the decoded comparison, as for \`lucairn bundle\`" >&2
     return 4
   fi
   work="$(mktemp -d "${TMPDIR:-/tmp}/lucairn-bundle-scan.XXXXXX")" || { echo "cannot create a private temp directory" >&2; return 3; }
   chmod 0700 "$work"
+  # Alphanumeric sentinels no collected file contains (checked below).
+  s1="Q$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')M"
+  s2="Q$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')T"
+  s3="Q$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')D"
+  s4="Q$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')O"
+  case "$s1$s2$s3$s4" in *[!A-Za-z0-9]*) echo "cannot make the scan sentinels" >&2; rm -rf "$work"; return 3 ;; esac
   : > "$work/list"
   while IFS= read -r -d '' f; do
     rel="${f#"$dir"/}"
@@ -9481,24 +9504,39 @@ support_bundle_decoded_scan() {
     esac
     case "$rel" in *"	"*|*"
 "*) echo "a collected file has a tab or line feed in its name" >&2; rm -rf "$work"; return 3 ;; esac
+    if grep -qF -e "$s1" -e "$s2" -e "$s3" -e "$s4" -- "$f" 2>/dev/null; then
+      echo "$rel holds this run's scan sentinel; run the bundle again" >&2; rm -rf "$work"; return 3
+    fi
+    n=$((n + 1))
+    mkdir -p "$work/$n"
     if [ "$kind" = yaml ] || [ "$kind" = env ]; then
-      n=$((n + 1))
-      if ! cev_to_json "$kind" "$f" "$work/$n.json" 2> "$work/err"; then
-        echo "$rel could not be parsed as $kind by Docker Compose: $(sed -n 's/^compose-env: //p' "$work/err" | head -1)" >&2
+      if [ "$kind" = yaml ]; then
+        cev_to_json yaml "$f" "$work/$n" "$s1" "$s2" 2> "$work/err" || rc=$?
+      else
+        cev_to_json env "$f" "$work/$n" "$s3" "$s4" 2> "$work/err" || rc=$?
+      fi
+      if [ "${rc:-0}" -ne 0 ]; then
+        echo "$rel cannot be decoded exactly as $kind by Docker Compose: $(sed -n 's/^compose-env: //p' "$work/err" | head -1)" >&2
         rm -rf "$work"; return 3
       fi
-      printf '%s\t%s\t%s\n' json "$work/$n.json" "$rel" >> "$work/list"
-    else
-      printf '%s\t%s\t%s\n' "$kind" "$f" "$rel" >> "$work/list"
     fi
+    printf '%s\t%s\t%s\t%s\n' "$kind" "$f" "$work/$n" "$rel" >> "$work/list"
   done < <(find "$dir" -type f -print0)
-  python3 -I - "$needles" "$work/list" <<'DECODEDSCAN'
-import json, re, sys, urllib.parse
+  python3 -I - "$needles" "$work/list" "$s1" "$s2" "$s3" "$s4" <<'DECODEDSCAN'
+import binascii, json, re, sys, urllib.parse
 
-needles = [n for n in open(sys.argv[1], "rb").read().split(b"\n") if n]
+needles = set()
+for row in open(sys.argv[1], "rb").read().split(b"\n"):
+    if row.strip():
+        try:
+            needles.add(binascii.unhexlify(row.strip()))
+        except (binascii.Error, ValueError):
+            print("the secret list is malformed", file=sys.stderr)
+            sys.exit(3)
+S_MERGE, S_TAG, S_DOLLAR, S_OCT = sys.argv[3:7]
 if not needles:
     sys.exit(0)
-pattern = re.compile(b"|".join(re.escape(n) for n in sorted(set(needles), key=len, reverse=True)))
+pattern = re.compile(b"|".join(re.escape(n) for n in sorted(needles, key=len, reverse=True)))
 
 
 def forms(b):
@@ -9516,6 +9554,16 @@ def hit(b):
     return any(pattern.search(x) for x in forms(b))
 
 
+def found(layer, rel):
+    print("%s: %s" % (layer, rel), file=sys.stderr)
+    sys.exit(1)
+
+
+def refuse(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(3)
+
+
 def strings(v):
     if isinstance(v, str):
         yield v.encode("utf-8", "surrogatepass")
@@ -9530,38 +9578,186 @@ def strings(v):
         yield str(v).encode()
 
 
-def found(rel):
-    print("decoded: %s" % rel, file=sys.stderr)
-    sys.exit(1)
+class Dup(Exception):
+    pass
 
 
-for row in open(sys.argv[2], "rb").read().split(b"\n"):
-    if not row:
-        continue
-    kind, path, rel = row.decode("utf-8", "surrogateescape").split("\t", 2)
-    data = open(path, "rb").read()
-    if kind == "json":
+def no_dups(pairs):
+    d = {}
+    for k, v in pairs:
+        if k in d:
+            raise Dup()
+        d[k] = v
+    return d
+
+
+def load_json(data, what):
+    try:
+        return json.loads(data, object_pairs_hook=no_dups)
+    except Dup:
+        refuse("%s: a duplicate JSON member (only one of the two would be decoded)" % what)
+    except ValueError:
+        refuse("%s is not JSON" % what)
+
+
+def unmap(v, table):
+    if isinstance(v, str):
+        for s, r in table:
+            v = v.replace(s, r)
+        return v
+    if isinstance(v, dict):
+        return {unmap(k, table): unmap(x, table) for k, x in v.items()}
+    if isinstance(v, list):
+        return [unmap(x, table) for x in v]
+    return v
+
+
+# --- layer 3: JSON/C string escapes, independent of any parse ---------------
+HEX = frozenset(b"0123456789abcdefABCDEF")
+OCT = frozenset(b"01234567")
+SIMPLE = {ord(k): v for k, v in {
+    "n": b"\n", "t": b"\t", "r": b"\r", "b": b"\b", "f": b"\f", "v": b"\v",
+    "a": b"\a", "e": b"\x1b", '"': b'"', "'": b"'", "\\": b"\\", "/": b"/",
+    "$": b"$", "?": b"?"}.items()}
+
+
+class Bad(Exception):
+    pass
+
+
+def hexnum(b):
+    return len(b) > 0 and all(c in HEX for c in b)
+
+
+def unescape(line, strict):
+    out = bytearray()
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        if c != 0x5C or i + 1 >= n:
+            out.append(c)
+            i += 1
+            continue
+        e = line[i + 1]
         try:
-            doc = json.loads(data)
-        except ValueError:
-            print("%s is not JSON" % rel, file=sys.stderr)
-            sys.exit(3)
-        if any(hit(s) for s in strings(doc)):
-            found(rel)
-        continue
-    for line in data.split(b"\n"):
-        if hit(line):
-            found(rel)
-        for opener in (b"{", b"["):
-            i = line.find(opener)
-            if i < 0:
+            if e in SIMPLE:
+                out += SIMPLE[e]
+                i += 2
                 continue
+            if e in OCT:
+                j = i + 1
+                while j < n and j < i + 4 and line[j] in OCT:
+                    j += 1
+                v = int(line[i + 1:j], 8)
+                if v > 255:
+                    raise Bad("an octal escape above \\377")
+                out.append(v)
+                i = j
+                continue
+            if e == ord("x"):
+                h = line[i + 2:i + 4]
+                if len(h) != 2 or not hexnum(h):
+                    raise Bad("\\x without two hex digits")
+                out.append(int(h, 16))
+                i += 4
+                continue
+            if e in (ord("u"), ord("U")):
+                k = 4 if e == ord("u") else 8
+                h = line[i + 2:i + 2 + k]
+                if len(h) != k or not hexnum(h):
+                    raise Bad("\\%s without %d hex digits" % (chr(e), k))
+                cp = int(h, 16)
+                adv = 2 + k
+                if 0xD800 <= cp < 0xDC00:
+                    lo = line[i + adv:i + adv + 6]
+                    if len(lo) == 6 and lo[:2] == b"\\u" and hexnum(lo[2:]) and 0xDC00 <= int(lo[2:], 16) < 0xE000:
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (int(lo[2:], 16) - 0xDC00)
+                        adv += 6
+                    else:
+                        raise Bad("a lone UTF-16 surrogate")
+                elif 0xDC00 <= cp < 0xE000:
+                    raise Bad("a lone UTF-16 surrogate")
+                elif cp > 0x10FFFF:
+                    raise Bad("a code point above U+10FFFF")
+                out += chr(cp).encode("utf-8")
+                i += adv
+                continue
+        except Bad:
+            if strict:
+                raise
+            out += line[i:i + 2]
+            i += 2
+            continue
+        out += line[i:i + 2]          # an unknown escape is literal text
+        i += 2
+    return bytes(out)
+
+
+def scan_lines(data, rel, strict):
+    for no, line in enumerate(data.split(b"\n"), 1):
+        cur = line
+        for level in range(3):
             try:
-                doc = json.loads(line[i:].strip())
-            except ValueError:
-                continue
-            if any(hit(s) for s in strings(doc)):
-                found(rel)
+                nxt = unescape(cur, strict and level == 0)
+            except Bad as why:
+                refuse("%s line %d: an escape sequence that cannot be unescaped (%s)" % (rel, no, why))
+            if nxt == cur:
+                break
+            if hit(nxt):
+                found("decoded", rel)
+            cur = nxt
+
+
+rows = []
+for row in open(sys.argv[2], "rb").read().split(b"\n"):
+    if row:
+        rows.append(row.decode("utf-8", "surrogateescape").split("\t", 3))
+
+# layer 1: raw bytes, whole file
+for kind, path, out, rel in rows:
+    data = open(path, "rb").read()
+    if any(pattern.search(x) for x in forms(data)):
+        found("raw", rel)
+
+for kind, path, out, rel in rows:
+    data = open(path, "rb").read()
+    if kind == "yaml":
+        merge = unmap(load_json(open(out + "/merge.json", "rb").read(), rel + " (decoded)"), [(S_MERGE, "<<")])
+        tags = unmap(load_json(open(out + "/tags.json", "rb").read(), rel + " (decoded)"), [(S_MERGE, "<<"), (S_TAG, "!")])
+        if merge != tags:
+            refuse("%s: a YAML tag (`!...`, e.g. !reset or !!binary): its decoded value is not the text as written" % rel)
+        if any(hit(s) for s in strings(merge)):
+            found("decoded", rel)
+    elif kind == "env":
+        whole = load_json(open(out + "/whole.json", "rb").read(), rel + " (decoded)")["services"]["probe"].get("environment") or {}
+        svcs = load_json(open(out + "/lines.json", "rb").read(), rel + " (decoded)")["services"]
+        put_back = [(S_DOLLAR, "$"), (S_OCT, "\\0")]
+        seen = {}
+        union = {}
+        lines = sorted(int(k[1:]) for k in svcs if k[:1] == "o" and k[1:].isdigit())
+        for no in lines:
+            o = svcs["o%d" % no].get("environment") or {}
+            s = svcs.get("s%d" % no, {}).get("environment") or {}
+            if len(o) > 1:
+                refuse("%s line %d: more than one assignment on one line" % (rel, no))
+            # Compose prints every literal `$` of a value as `$$`.
+            o = {k: (None if v is None else v.replace("$$", "$")) for k, v in o.items()}
+            if o != unmap(s, put_back):
+                refuse("%s line %d: the value changes when `$` is taken literally (interpolation, \\$ or an octal \\0 escape): it cannot be decoded exactly" % (rel, no))
+            for k, v in o.items():
+                if k in seen:
+                    refuse("%s line %d: assigns the same variable as line %d (an assignment overwritten later)" % (rel, no, seen[k]))
+                seen[k] = no
+                union[k] = v
+        whole = {k: (None if v is None else v.replace("$$", "$")) for k, v in whole.items()}
+        if whole != union:
+            refuse("%s: decoded as a whole it differs from its lines decoded one by one (a value that spans lines)" % rel)
+        if any(hit(s) for s in strings(union)):
+            found("decoded", rel)
+    elif kind == "json":
+        if any(hit(s) for s in strings(load_json(data, rel))):
+            found("decoded", rel)
+    scan_lines(data, rel, kind == "text")
 sys.exit(0)
 DECODEDSCAN
   rc=$?
@@ -9678,21 +9874,25 @@ support_bundle() {
     fail "support bundle: refused — the secret values to scan for could not be read through Docker Compose (${why:-unknown reason}); nothing was archived. Fix that, or report to Lucairn support without a bundle."
   fi
   rm -f "$needles_err"
-  # Layer 1: the raw bytes of every collected file.
-  if [ -s "$needles" ] && grep -rqF -f "$needles" -- "$bundle_dir" 2>/dev/null; then
-    leaked=1
-  fi
-  # Layer 2 (K-A fix round 4): every collected file parsed with its format's
-  # own parser, decoded strings compared (support_bundle_decoded_scan).
+  # Layer 1 (raw bytes, whole file), layer 2 (each format's own parser, EXACT
+  # or refused) and layer 3 (every line with its string escapes undone):
+  # support_bundle_decoded_scan (K-A fix rounds 4 + 5). The needles are hex
+  # (a secret may hold a line feed), so the raw layer runs there too.
   local decoded_err decoded_rc=0 where=""
-  if [ "$leaked" -eq 0 ] && [ -s "$needles" ]; then
+  if [ -s "$needles" ]; then
     decoded_err="$(mktemp)"
     support_bundle_decoded_scan "$bundle_dir" "$needles" 2> "$decoded_err" || decoded_rc=$?
     why="$(grep -v '^$' "$decoded_err" | head -1 || true)"
     rm -f "$decoded_err"
     case "$decoded_rc" in
       0) ;;
-      1) leaked=1; where=" (${why#decoded: }, found after decoding)" ;;
+      1)
+        leaked=1
+        case "$why" in
+          raw:*) where=" (${why#raw: })" ;;
+          *) where=" (${why#decoded: }, found after decoding)" ;;
+        esac
+        ;;
       *)
         rm -f "$needles"
         rm -rf "$bundle_dir"

@@ -38,9 +38,12 @@
 #   cev_registry --env-file F --project-dir D [--dsn-file P] [--check-file]
 #                [--print-dsn] [-- <compose args: -f ... --profile ...>]
 #   cev_needles  --env-file F --project-dir D -- <compose args>
-#   cev_to_json  yaml|env <file> <out.json>   (support-bundle's decoded scan)
+#                (stdout: hex-encoded needles, one per line)
+#   cev_to_json  yaml|env <file> <outdir> <sentinels>  (support-bundle's
+#                exact decoded scan)
 # rc: 0 done · 10 Docker Compose is not available (fail closed) · 11 Compose
-# refuses customer.env · 12 Compose output this file cannot use · 2 usage.
+# refuses customer.env · 12 Compose output this file cannot use · 13 a secret
+# value is too short to be searched for (cev_needles) · 2 usage.
 # On rc != 0 a value-free reason is on stderr, as `compose-env: <reason>`.
 # Both run in a subshell: their private temp directory (the rendered JSON
 # holds secrets; mode 0700) is always removed.
@@ -157,12 +160,12 @@ function pctdec(s,    o, i, c, h) {
   }
   return o
 }
-function userinfo(v,    s, m, pw) {   # every scheme://user:password@ password in v
+function userinfo(v, name,    s, m, pw) {   # every scheme://user:password@ password in v
   s = v
   while (match(s, /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^:\/@ \t\n]*:[^@ \t\n]*@/)) {
     m = substr(s, RSTART, RLENGTH)
     sub(/^[^:]*:\/\/[^:]*:/, "", m); sub(/@$/, "", m)
-    if (m != "") { addval(m); addval(pctdec(m)) }
+    if (m != "") { addval(m, "the URL password in " name); addval(pctdec(m), "the URL password in " name) }
     s = substr(s, RSTART + RLENGTH)
   }
 }
@@ -188,7 +191,9 @@ function pwstate(v,    i, c) {
   }
   return "ok"
 }
-function addval(v) { if (v != "" && v != BAD) vals[++nv] = v }
+# Every secret value with the name it came from (the name is reported when the
+# value cannot be scanned for; the value never is).
+function addval(v, name) { if (v != "" && v != BAD) { vals[++nv] = v; vname[nv] = name } }
 function readfile(f,    l, s, n) {      # the DSN file as the core reads it (BOM, TrimSpace)
   s = ""; n = 0
   while ((getline l < f) > 0) { s = s (n++ ? "\n" : "") l }
@@ -202,7 +207,7 @@ function scalar(p, k, tok, isstr,    v, svc) {
     if (p != "services/probe/environment") return
     if (mode == "keys") { if (k ~ /^[A-Za-z_][A-Za-z0-9_]*$/) print k; return }
     if (fno == 1) { A[k] = tok; Aset[k] = 1 } else { B[k] = tok; Bset[k] = 1 }
-    if (mode == "needles" && isstr) { v = jdec(tok); userinfo(v); if (secretname(k)) addval(v) }
+    if (mode == "needles" && isstr) { v = jdec(tok); userinfo(v, k); if (secretname(k)) addval(v, k) }
     return
   }
   # fno == 3: the project
@@ -214,13 +219,13 @@ function scalar(p, k, tok, isstr,    v, svc) {
       if (svc == "migrate-sanitizer-core" && k == "PGSSLMODE") { pssl = tok; psslset = 1 }
       return
     }
-    if (isstr) { v = jdec(tok); userinfo(v); if (secretname(k)) addval(v) }
+    if (isstr) { v = jdec(tok); userinfo(v, svc "/" k); if (secretname(k)) addval(v, svc "/" k) }
     return
   }
   if (p ~ /^services\/sanitizer-core\/volumes\/#[0-9]+$/ && (k == "source" || k == "target")) {
     vol[p, k] = tok; vols[p] = 1
   }
-  if (mode == "needles" && isstr) userinfo(jdec(tok))
+  if (mode == "needles" && isstr) userinfo(jdec(tok), p)
 }
 BEGIN {
   readable = ENVIRON["CEV_READABLE"]
@@ -289,21 +294,32 @@ END {
   for (v in vols) if (jdec(vol[v, "target"]) == target) dsnf[normpath(jdec(vol[v, "source"]))] = 1
   f = jdec(B["SANITIZER_CORE_REGISTRY_DSN_FILE"]); if (f == "" || f == BAD) f = dflt
   dsnf[normpath(f)] = 1
-  for (f in dsnf) if (index(readable, "\n" f "\n")) { d = readfile(f); if (d != "") { addval(d); userinfo(d) } }
+  for (f in dsnf) if (index(readable, "\n" f "\n")) { d = readfile(f); if (d != "") { addval(d, "the registry DSN file"); userinfo(d, "the registry DSN file") } }
   # The DECODED values only (K-A fix round 4, sol r3): no escaped or encoded
-  # variant is generated here any more. support-bundle parses every collected
-  # file with the parser of its format and compares decoded strings against
-  # these (bin/lucairn support_bundle_decoded_scan); the raw substring scan
-  # of the same list stays as a second layer.
+  # variant is generated here. support-bundle parses every collected file with
+  # the parser of its format and compares decoded strings against these
+  # (bin/lucairn support_bundle_decoded_scan); the raw byte scan of the same
+  # list is the first layer.
   for (i = 1; i <= nv; i++) {
     v = vals[i]
     if (v ~ /^(\/|\.\/|\.\.\/|~\/)/) continue
-    frag(v)
+    frag(v, vname[i])
   }
 }
-function frag(s,    n, a, i) {
-  n = split(s, a, "\n")
-  for (i = 1; i <= n; i++) if (length(a[i]) >= 12) print a[i]
+function hex(s,    i, o) { o = ""; for (i = 1; i <= length(s); i++) o = o sprintf("%02x", ord[substr(s, i, 1)]); return o }
+# K-A fix round 5 (sol r4 on PR #158): the WHOLE value is always a needle —
+# as written, with its line breaks as LF and as CRLF — and every line of a
+# multi-line value that has 12+ bytes is one too. A value below 12 bytes
+# yields no needle; it is reported BY NAME (`s<TAB>name`) and cev_needles
+# fails, so the bundle is refused instead of archived unchecked. Needles are
+# printed hex-encoded (`n<TAB>hex`): a value may hold a line feed.
+function frag(s, name,    n, a, i, l, t, u) {
+  if (length(s) < 12) { print "s\t" name; return }
+  print "n\t" hex(s)
+  t = s; gsub(/\r\n/, "\n", t); print "n\t" hex(t)
+  u = t; gsub(/\n/, "\r\n", u); print "n\t" hex(u)
+  n = split(t, a, "\n")
+  if (n > 1) for (i = 1; i <= n; i++) { l = a[i]; if (length(l) >= 12) print "n\t" hex(l) }
 }
 '
 
@@ -479,63 +495,151 @@ cev_needles() (
     -v target="$CEV_DSN_TARGET" "$CEV_AWK" "${files[@]}" > "$CEV_TMP/needles"
   st=$?
   [ "$st" -eq 0 ] || { cev_fail 12 "\`docker compose config --format json\` gave output this kit cannot read (Docker Compose v2 is required), or the install's project rendered no services"; exit; }
-  LC_ALL=C sort -u "$CEV_TMP/needles"
+  # A secret that yields no needle is never left unchecked (K-A fix round 5).
+  local short
+  short="$(LC_ALL=C sed -n 's/^s	//p' "$CEV_TMP/needles" | LC_ALL=C sort -u | LC_ALL=C tr -c 'A-Za-z0-9_./ \n-' '?' | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+  if [ -n "$short" ]; then
+    cev_fail 13 "a secret value is shorter than 12 characters, so it cannot be searched for in the collected files ($short); a longer value (bin/lucairn-init generates 32+) makes the bundle possible"; exit
+  fi
+  LC_ALL=C sed -n 's/^n	//p' "$CEV_TMP/needles" | LC_ALL=C sort -u
 )
 
-# cev_to_json <yaml|env> <in> <out> — one support-bundle file, decoded by
-# Docker Compose's OWN parsers into JSON at <out> (K-A fix round 4, sol r3:
-# the decoded comparison of bin/lucairn support_bundle_decoded_scan; no
-# hand-written YAML or env-file reader here or there):
-#   yaml  the file's lines, each indented two spaces under ONE top-level
-#         `x-lucairn-bundle-scan:` key. Compose passes `x-` extension content
-#         through unvalidated, so its YAML parser (go-yaml) decodes ANY
-#         document — quoting, '' and "\x41" escapes, folding, anchors —
-#         and nothing in it is interpreted as a project (no include, no
-#         extends, no path or env resolution). Rendered --no-interpolate: a
-#         `$` stays as written (`$$` stays `$$`; the scanner compares the
-#         `$$`-undone forms too). A document marker (---, ...) or directive
-#         (%) on its own line cannot sit under one key: refused (rc 11), as is
-#         anything Compose's parser refuses. redact_stream's whole-line
-#         marker for a line over 8 KiB carries no data and becomes a comment.
-#   env   a probe service with `env_file: <in>`: Compose's dotenv parser
-#         (quotes, escapes, `export`, comments, multi-line values). Every `$`
-#         of the file is doubled first, so nothing is interpolated from this
-#         shell or the file: the result is the file's own text, decoded
-#         (a `$` inside single quotes comes back doubled; the scanner's `$$`-
-#         undone forms cover it).
+# cev_to_json <yaml|env> <in> <outdir> <sentinel>... — one support-bundle file,
+# decoded by Docker Compose's OWN parsers into JSON files under <outdir>, in
+# the shapes bin/lucairn support_bundle_decoded_scan needs to prove that the
+# decoded view is EXACTLY the file's text (K-A fix round 5, sol r4 on PR #158:
+# a decoder that drops content — a YAML merge an explicit key overrides, a
+# `!reset` tag, an env assignment overwritten later, a `$` Compose
+# interpolates — let an escaped secret through both scans). Nothing here
+# parses the file by hand: every view is Compose's, and the scanner refuses
+# the bundle whenever two views that must agree do not.
+#   yaml <in> <outdir> <merge sentinel> <tag sentinel>
+#         The file's lines, each indented two spaces under ONE top-level
+#         `x-lucairn-bundle-scan:` key (Compose passes `x-` content through
+#         unvalidated, so its YAML parser decodes ANY document — quoting, ''
+#         and "\x41" escapes, folding, anchors — and nothing in it is
+#         interpreted as a project), rendered --no-interpolate, TWICE:
+#           merge.json  every `<<` replaced by the merge sentinel (an
+#                       alphanumeric token the file does not contain): a merge
+#                       key becomes an ordinary key, so the merged mapping AND
+#                       every key that would override it are both kept —
+#                       nothing a merge discards is lost;
+#           tags.json   as merge.json, and every `!` replaced by the tag
+#                       sentinel: a tag becomes plain text. A file without a
+#                       tag decodes identically (a `!` anywhere else is
+#                       literal text in YAML); a file with one does not
+#                       (`!reset` drops a value, `!!binary` rewrites it, any
+#                       tag can) — the scanner refuses it, naming the file.
+#         A document marker (---, ...) or directive (%) line cannot sit under
+#         one key: refused (rc 11). redact_stream's whole-line marker for a
+#         line over 8 KiB carries no data and becomes a comment.
+#   env <in> <outdir> <dollar sentinel> <octal sentinel>
+#         Compose's dotenv parser (quotes, escapes, `export`, comments,
+#         multi-line values), with no `$` doubling (doubling changes a valid
+#         value: `"\$x"` would become an interpolated `$x`):
+#           whole.json  the file as it is (one probe service, env_file: <in>);
+#           lines.json  every line on its own, twice: service o<N> = line N
+#                       as written, service s<N> = line N with every `$`
+#                       and every `\0` (the only escape that yields a `$`,
+#                       e.g. "\0044") replaced by the sentinels.
+#         The scanner requires: line N alone == line N in the file (no value
+#         spans lines), each variable assigned on ONE line (no assignment
+#         overwritten later), o<N> == s<N> with the sentinels put back (the
+#         value is the text as written — no interpolation, no `\$`, no octal
+#         escape in double quotes). Blank and `#` comment lines get no service.
+#         A line Compose refuses on its own: rc 11, naming the line.
 # rc: 0 · 10 no Docker Compose · 11 Compose refused the file · 2 usage.
 # Runs in a subshell; its private temp directory (mode 0700) is removed.
 cev_to_json() (
-  local kind="$1" in="$2" out="$3" ej
+  local kind="$1" in="$2" out="$3" ej n
   [ -f "$in" ] && [ ! -L "$in" ] || { cev_fail 2 "not a regular file"; exit; }
+  [ -d "$out" ] || { cev_fail 2 "no output directory"; exit; }
   cev_compose_cmd || exit
   cev_tmp || exit
   trap 'rm -rf "$CEV_TMP"' EXIT
-  local -a args=()
   case "$kind" in
     yaml)
+      local sm="${4:-}" st="${5:-}"
+      case "$sm$st" in *[!A-Za-z0-9]*|"") cev_fail 2 "the sentinels must be alphanumeric"; exit ;; esac
       LC_ALL=C awk '
         NR == 1 { print "x-lucairn-bundle-scan:"; sub(/^\357\273\277/, "") }
-        /^(---|\.\.\.)([ \t\r]|$)/ || /^%/ { bad = 1; exit }
+        /^(---|\.\.\.)([ \t\r]|$)/ || /^%/ { bad = NR; exit }
         $0 == "<redacted: line exceeds 8192 bytes>" { print "  #"; next }
         { print "  " $0 }
-        END { if (NR == 0) print "x-lucairn-bundle-scan:"; exit bad }
-      ' "$in" > "$CEV_TMP/wrapped.yml" \
-        || { cev_fail 11 "it holds a YAML document marker or directive line"; exit; }
-      args=(-f "$CEV_TMP/wrapped.yml" config --format json --no-interpolate --no-normalize
-            --no-consistency --no-path-resolution --no-env-resolution)
+        END { if (bad) { print "line " bad > "/dev/stderr"; exit 1 } if (NR == 0) print "x-lucairn-bundle-scan:" }
+      ' "$in" > "$CEV_TMP/wrapped.yml" 2> "$CEV_TMP/wrap.err" \
+        || { cev_fail 11 "$(cat "$CEV_TMP/wrap.err"): a YAML document marker or directive (it cannot be decoded as one document)"; exit; }
+      LC_ALL=C sed "s/<</$sm/g" "$CEV_TMP/wrapped.yml" > "$CEV_TMP/merge.yml"
+      LC_ALL=C sed "s/!/$st/g" "$CEV_TMP/merge.yml" > "$CEV_TMP/tags.yml"
+      for n in merge tags; do
+        if ! "${CEV_CMD[@]}" --project-directory "$CEV_TMP" --env-file /dev/null -f "$CEV_TMP/$n.yml" config --format json \
+             --no-interpolate --no-normalize --no-consistency --no-path-resolution --no-env-resolution \
+             > "$out/$n.json" 2> "$CEV_TMP/err" </dev/null; then
+          : > "$out/$n.json"
+          cev_fail 11 "$(cev_yaml_reason "$CEV_TMP/err")"; exit
+        fi
+      done
       ;;
     env)
-      LC_ALL=C sed -e 's/\$/$$/g' -e 's/^<redacted: line exceeds 8192 bytes>$/#/' "$in" > "$CEV_TMP/escaped.env" \
+      local sd="${4:-}" so="${5:-}"
+      case "$sd$so" in *[!A-Za-z0-9]*|"") cev_fail 2 "the sentinels must be alphanumeric"; exit ;; esac
+      mkdir -p "$CEV_TMP/l" || { cev_fail 11 "cannot create a private temp directory"; exit; }
+      LC_ALL=C sed -e 's/^<redacted: line exceeds 8192 bytes>$/#/' "$in" > "$CEV_TMP/whole.env" \
         || { cev_fail 11 "it cannot be copied"; exit; }
-      ej="$(cev_jstr "$CEV_TMP/escaped.env")" || { cev_fail 11 "the temp path holds a control character"; exit; }
-      printf '{"name":"lucairn-env-probe","services":{"probe":{"image":"lucairn-env-probe","env_file":[{"path":"%s","required":true}]}}}\n' "$ej" > "$CEV_TMP/probe.json"
-      args=(-f "$CEV_TMP/probe.json" config --format json)
+      ej="$(cev_jstr "$CEV_TMP/whole.env")" || { cev_fail 11 "the temp path holds a control character"; exit; }
+      printf '{"name":"lucairn-env-probe","services":{"probe":{"image":"lucairn-env-probe","env_file":[{"path":"%s","required":true}]}}}\n' "$ej" > "$CEV_TMP/whole.json"
+      # One service per non-comment line, as written (o) and neutralised (s).
+      LC_ALL=C awk -v d="$CEV_TMP/l" -v sd="$sd" -v so="$so" '
+        BEGIN { printf "{\"name\":\"lucairn-env-probe\",\"services\":{\"probe\":{\"image\":\"lucairn-env-probe\"}" }
+        /^[[:space:]]*(#|$)/ { next }
+        {
+          o = d "/o" NR ".env"; s = d "/s" NR ".env"
+          print $0 > o; close(o)
+          t = $0; gsub(/\$/, sd, t); gsub(/\\0/, so, t)
+          print t > s; close(s)
+          printf ",\"o%d\":{\"image\":\"lucairn-env-probe\",\"env_file\":[{\"path\":\"l/o%d.env\",\"required\":true}]}", NR, NR
+          printf ",\"s%d\":{\"image\":\"lucairn-env-probe\",\"env_file\":[{\"path\":\"l/s%d.env\",\"required\":true}]}", NR, NR
+        }
+        END { printf "}}\n" }
+      ' "$CEV_TMP/whole.env" > "$CEV_TMP/lines.json" || { cev_fail 11 "it cannot be split into lines"; exit; }
+      if ! "${CEV_CMD[@]}" --project-directory "$CEV_TMP" --env-file /dev/null -f "$CEV_TMP/whole.json" config --format json \
+           > "$out/whole.json" 2> "$CEV_TMP/err" </dev/null; then
+        : > "$out/whole.json"
+        cev_fail 11 "Docker Compose's env-file parser refuses it$(cev_env_line "$CEV_TMP/err" whole)"; exit
+      fi
+      if ! "${CEV_CMD[@]}" --project-directory "$CEV_TMP" --env-file /dev/null -f "$CEV_TMP/lines.json" config --format json \
+           > "$out/lines.json" 2> "$CEV_TMP/err" </dev/null; then
+        : > "$out/lines.json"
+        cev_fail 11 "Docker Compose cannot read$(cev_env_line "$CEV_TMP/err" lines) on its own (a value that spans lines, or a line Compose refuses): it cannot be decoded line by line"; exit
+      fi
       ;;
     *) cev_fail 2 "unknown kind: $kind"; exit ;;
   esac
-  if ! "${CEV_CMD[@]}" --project-directory "$CEV_TMP" --env-file /dev/null "${args[@]}" > "$out" 2> "$CEV_TMP/err" </dev/null; then
-    : > "$out"
-    cev_fail 11 "Docker Compose cannot parse it as $kind (its message is not printed: it can quote the file)"; exit
-  fi
 )
+
+# A value-free reason for a YAML file Compose refused: the line (of the
+# collected file, not the wrapper) and the construct when Compose names one;
+# never Compose's message (it can quote the file).
+cev_yaml_reason() {
+  local l what="Docker Compose's YAML parser refuses it"
+  if LC_ALL=C grep -q 'already defined' "$1"; then
+    what="a duplicate mapping key (a value defined twice; only one would be decoded)"
+    l="$(LC_ALL=C sed -n 's/.*line \([0-9][0-9]*\): mapping key .*already defined.*/\1/p' "$1" | head -1)"
+  else
+    l="$(LC_ALL=C sed -n -e 's/.* at L\([0-9][0-9]*\)\.C.*/\1/p' -e 's/.*line \([0-9][0-9]*\):.*/\1/p' "$1" | head -1)"
+  fi
+  if [ -n "$l" ] && [ "$l" -gt 1 ]; then printf 'line %s: %s' "$((l - 1))" "$what"; else printf '%s' "$what"; fi
+}
+
+# " line N" for an env file Compose refused (from the per-line probe's file
+# name or Compose's own line number), or "" — never Compose's message.
+cev_env_line() {
+  local l
+  if [ "$2" = lines ]; then
+    l="$(LC_ALL=C sed -n 's/.*\/l\/[os]\([0-9][0-9]*\)\.env.*/\1/p' "$1" | head -1)"
+    if [ -n "$l" ]; then printf ' line %s' "$l"; else printf ' a line'; fi
+  else
+    l="$(LC_ALL=C sed -n 's/.*: line \([0-9][0-9]*\):.*/\1/p' "$1" | head -1)"
+    [ -z "$l" ] || printf ' (line %s)' "$l"
+  fi
+}

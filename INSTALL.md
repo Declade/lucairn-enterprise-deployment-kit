@@ -660,8 +660,9 @@ For Docker Compose:
   Newer distros come with it preinstalled. If neither package is available,
   `pip install pynacl` is the smallest alternative.
 - `bin/lucairn support-bundle` uses Python 3's standard library (as
-  `bin/lucairn bundle` does) to compare the decoded content of the files it
-  collects against every known secret; without it the bundle is refused.
+  `bin/lucairn bundle` does) to compare the raw and decoded content of the
+  files it collects against every known secret; without it the bundle is
+  refused.
 - **Online keyed doctor additionally requires Python 3.8 or later.** Its
   shipped helper uses only the Python standard library, so it needs neither
   `cryptography` nor network/PyPI access. This requirement applies only to
@@ -2548,15 +2549,31 @@ certificate (sanitizer claim from the core) are the install rehearsal's proof.
 archive it checks every collected file for every secret value Docker Compose
 knows for this install — the secret-named `customer.env` values as Compose reads
 them and as it interpolates them from your shell, the secret-named values it
-hands any container, URL passwords, and the DSN and its password. It compares
-twice: the raw bytes, and the DECODED content — each YAML file parsed by Docker
-Compose's own YAML parser, the env file by Compose's env-file parser, JSON by
-Python's `json`, logs line by line (with Compose's `$$` escape and percent
-encoding undone). If one is found, it removes the bundle and writes nothing. It
-refuses too without Docker Compose, without Python 3, when a collected file
-cannot be parsed, or when Compose cannot render your install's project (for
-example a required variable is missing) — the scan is never skipped and never
-runs on a partial list of secrets.
+hands any container, URL passwords, and the DSN and its password (each whole
+value, with LF and CRLF line breaks, and each 12+ byte line of a multi-line
+value). It compares the raw bytes, the DECODED content — each YAML file parsed
+by Docker Compose's own YAML parser, the env file by Compose's env-file parser
+(whole and line by line), JSON by Python's `json` — and every line of every file
+with its string escapes undone (`\uXXXX`, `\xHH`, octal, `\n`, `\"`, `\\` …),
+whether or not the line parses (with Compose's `$$` escape and percent encoding
+undone too). If one is found, it removes the bundle and writes nothing.
+
+It never guesses past what it cannot decode exactly: it refuses, naming the file
+(and the line, where there is one) and the construct, when a YAML file carries a
+tag (`!reset`, `!override`, `!!binary`, …) or a duplicate key; when `customer.env`
+assigns a variable twice, has a value spanning lines, two assignments on one line,
+or a value that changes when `$` is taken literally (an interpolation, `\$`, an
+octal `\0…` escape in double quotes); when a JSON file has a duplicate member;
+when a log or other text line has an escape that cannot be unescaped (`\u`
+without four hex digits, a lone surrogate); and when a secret is shorter than 12
+characters (it cannot be searched for without matching unrelated text). YAML
+merge keys (`<<`) and anchors are decoded with nothing lost and are accepted. It
+refuses too without Docker Compose, without Python 3, or when Compose cannot
+render your install's project (for example a required variable is missing) —
+the scan is never skipped and never runs on a partial list of secrets. Remove
+the named construct and run it again. Not covered (review the bundle before you
+send it): a secret split over two log lines with other text between its parts,
+and encodings other than the ones above (base64, shell quoting, HTML entities).
 
 The core listens only on its gateway link (`--listen=sanitizer-core:8790`, a
 name only that network carries), not on the witness or registry links of the

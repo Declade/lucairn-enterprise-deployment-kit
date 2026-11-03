@@ -63,7 +63,10 @@ rm -f "$ENV_FILE.bak" "$ENV_FILE.runtime-profile.yaml.bak"
 
 # Planted secret #1: an operator email inside a configured cert path. The path
 # does not exist, so write_cert_report takes its deterministic "(missing)"
-# branch and no openssl call is needed.
+# branch and no openssl call is needed. The generated line is REPLACED, not
+# repeated: a variable assigned twice refuses the bundle on its own (kit 2.0
+# K-A fix round 5, an assignment overwritten later is not decoded exactly).
+sed -i.bak '/^WITNESS_MTLS_CA_BUNDLE_PATH=/d' "$ENV_FILE" && rm -f "$ENV_FILE.bak"
 printf 'WITNESS_MTLS_CA_BUNDLE_PATH=/etc/lucairn/%s/ca.pem\n' "$CERT_SECRET" >> "$ENV_FILE"
 
 # Planted secret #2: an operator email in the host name, via a PATH stub so the
