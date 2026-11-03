@@ -35,6 +35,12 @@ CHART = ROOT / "charts/lucairn"
 # Job's libpq password file (ConfigMap script + its checksum annotation), the
 # registry DB comment states the entrypoint limit, and (values-dev, where
 # dnsRestriction is on) dns-restrict-identity carves out the core + registry.
+# Fix round 4 amended them by hand-checked diff (nothing else changed): the
+# core container's `LCR_PROFILE: "kit"` env literal and the comment above it
+# (moved here from kit 2.0 K-C M2, so the K-C OFF render equals this one byte
+# for byte), the registry DB comment's corrected entrypoint limit (every
+# start, not only the first boot), and (values-dev, where dnsRestriction is
+# on) the core's Kubernetes egress without its port-53 grant.
 OFF_GOLDEN = ROOT / "tests/fixtures/servicenow-control/helm-off"
 APP = "app.kubernetes.io/name"
 HELD = "templates/servicenow-control-held.yaml"

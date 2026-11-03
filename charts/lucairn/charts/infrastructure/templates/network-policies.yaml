@@ -514,6 +514,15 @@ spec:
       ports:
         - port: 50057
           protocol: TCP
+{{- if .Values.global.dnsRestriction }}
+    # DNS: NONE here. With global.dnsRestriction=true the core's DNS is the
+    # Cilium policy dns-restrict-identity-sanitizer-core ONLY (its name
+    # allowlist). Kit 2.0 K-B fix round 4 (sol r3 P2): a plain port-53 grant
+    # in this policy would override that allowlist — Cilium admits every query
+    # an L3/L4 rule allows, so the core could resolve (and exfiltrate through)
+    # any external name. A resolver whose labels differ from
+    # global.clusterDNS.podLabels stays unreachable (fail closed).
+{{- else }}
     # → DNS, to the cluster resolver Pods ONLY (not every kube-system Pod).
     - to:
         - namespaceSelector:
@@ -527,6 +536,7 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
+{{- end }}
     # An EXTERNAL registry DB (sanitizer-core.postgresql.enabled=false) is not
     # covered here: add your own egress rule for its address, scoped to this
     # podSelector.

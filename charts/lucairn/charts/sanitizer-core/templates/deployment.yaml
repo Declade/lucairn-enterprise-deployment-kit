@@ -214,10 +214,14 @@ spec:
             - "--registry-dsn-file={{ $dsnDir }}/dsn"
             - "--sidecar=http://127.0.0.1:8765"
           env:
-            # ⚑ LCR_PROFILE is deliberately NOT set: unset = the kit profile,
+            # ⚑ LCR_PROFILE is ALWAYS set here, as a literal (K-C M2): `kit`,
             # under which the core refuses the ServiceNow mode at boot (DSA
-            # cmd/sanitizer-core/instance_wire.go). The kit's opt-in for that
-            # mode is a later slice (K-C).
+            # cmd/sanitizer-core/instance_wire.go profileBoot), or
+            # `kit-servicenow` only with global.servicenowControl.enabled. An
+            # entry in `env:` outranks anything a Secret or ConfigMap could
+            # bring in through `envFrom`, so no customer Secret can switch it.
+            - name: LCR_PROFILE
+              value: "kit"
             - name: DSA_ENV
               value: {{ required "global.dsaEnv must be set to \"development\" or \"production\"" $g.dsaEnv | quote }}
             # The core serves HTTPS on the SANITIZER_CORE_MTLS_* family and

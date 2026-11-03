@@ -12,8 +12,9 @@
 #      (shared network namespace), Recreate, the 6.5 GiB / 1 GiB limits, exec /
 #      TCP probes; the registry DSN reaches the core as a FILE projected from
 #      the credentials Secret and NO container of ANY workload passes --dsn; the
-#      registry key and the signing seed come from secretKeyRef; LCR_PROFILE and
-#      the ServiceNow control client are not forwarded; the registry Postgres is
+#      registry key and the signing seed come from secretKeyRef; the core sets
+#      LCR_PROFILE=kit as a literal (K-C M2) and gets no ServiceNow control
+#      client; the registry Postgres is
 #      digest-pinned to the SAME image as the Compose path; the PVC is kept on
 #      uninstall; the gateway carries the hosted switch set (delta, Gate
 #      enforce, route posture observe, placement message, unredacted off) and
@@ -75,11 +76,12 @@
 #   * The libpq password file and POSTGRES_PASSWORD_FILE are proven on the
 #     rendered spec + the Job's own shell prelude here; that PostgreSQL 16
 #     reads them in a running Pod is the PC Kind rehearsal.
-#   * STATED LIMIT (fix round 3, sol r2 P2): the official postgres
-#     entrypoint exports the POSTGRES_PASSWORD_FILE content to its own
-#     first-boot initialisation processes (docker-entrypoint.sh :23, :235,
-#     :359; cleared at :366 / :381 before the real server); see
-#     templates/postgresql-statefulset.yaml.
+#   * STATED LIMIT (fix rounds 3 + 4, sol r2 P2 / r3 P3): the official
+#     postgres entrypoint exports the POSTGRES_PASSWORD_FILE content on EVERY
+#     start to its own helpers (id, mkdir/chmod, the gosu re-exec) and, on a
+#     first boot, to its initialisation processes (docker-entrypoint.sh :23,
+#     :235, :338, :343, :359; cleared at :366 / :381 before the real server);
+#     see templates/postgresql-statefulset.yaml.
 #   * Which Pods are the cluster resolver depends on the cluster: the default
 #     selector is k8s-app=kube-dns (CoreDNS and kube-dns both carry it);
 #     global.clusterDNS.podLabels overrides it.
@@ -137,8 +139,12 @@ refuse() { # <case> <expected message fragment> [helm args...]
   fi
 }
 assert_py() { # <render file> <python body using `docs`, `ok(cond, msg)`>
-  local file="$1" body="$2"
-  python3 - "$file" "$ROOT" <<PY
+  # A block that does not run to its end (a KeyError, a syntax error, an
+  # import failure) is ONE failure of its own: before fix round 4 (sol r3 P2)
+  # its traceback went to stderr, no FAIL line reached run_py, and the tally
+  # stayed green. The traceback still prints on stderr.
+  local file="$1" body="$2" rc=0
+  python3 - "$file" "$ROOT" <<PY || rc=$?
 import sys, yaml, json, hashlib, os, re
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
 ROOT = sys.argv[2]
@@ -160,6 +166,7 @@ def podspecs():
             yield d, ps
 $body
 PY
+  [ "$rc" -eq 0 ] || echo "FAIL assertion block crashed (python exit $rc) — a check that cannot complete is a failure"
 }
 # run_py collects PASS/FAIL lines from assert_py into this harness. It runs
 # at the end of a pipe (`assert_py ... | run_py`), i.e. in a SUBSHELL, so it
@@ -229,7 +236,8 @@ ok(mounts["registry-dsn"]["mountPath"] == "/etc/sanitizer-core/registry" and mou
 e = env_of(core)
 ok(e["DSA_SANITIZER_CORE_REGISTRY_KEY"].get("valueFrom", {}).get("secretKeyRef") == {"name": "sanitizer-core-credentials", "key": "DSA_SANITIZER_CORE_REGISTRY_KEY"} and "value" not in e["DSA_SANITIZER_CORE_REGISTRY_KEY"], "registry key via secretKeyRef, never a literal")
 ok(e["LCR_SIGNING_KEY"].get("valueFrom", {}).get("secretKeyRef") == {"name": "sandbox-a-credentials", "key": "LCR_SIGNING_KEY"}, "claims signed with the OLD sanitizer seed (sandbox-a-credentials/LCR_SIGNING_KEY)")
-ok("LCR_PROFILE" not in e and not any(k.startswith("LCR_SERVICENOW_CONTROL_") for k in e), "LCR_PROFILE and the ServiceNow control client are NOT forwarded (kit profile)")
+ok(e.get("LCR_PROFILE") == {"name": "LCR_PROFILE", "value": "kit"} and not any(k.startswith("LCR_SERVICENOW_CONTROL_") for k in e), "K-C M2: the core sets LCR_PROFILE=kit as a literal in env: and gets no ServiceNow control client")
+ok([x["name"] for x in core.get("env") or []].count("LCR_PROFILE") == 1 and "envFrom" not in core and "envFrom" not in side, "LCR_PROFILE appears once; neither container loads envFrom")
 ok(e["GRPC_TLS_ENABLED"]["value"] == "false" and e["DSA_ENV"]["value"] == "development" and e["LCR_ENABLED"]["value"] == "true", "core env: legacy GRPC TLS off, DSA_ENV from global, claims on")
 ok(e["LCR_WITNESS_ADDR"]["value"] == "veil-witness.dsa-witness.svc.cluster.local:50057", "core dials the witness claim port by FQDN")
 ok("LCR_WITNESS_REQUIRE_MTLS" not in e, "development (no mesh): no witness latch (plaintext dev witness, the core warns)")
@@ -380,10 +388,29 @@ ok([d["metadata"]["name"] for d in ident if selects(d["spec"]["endpointSelector"
 want = dict(WANT_LABELS, **{"k8s:io.kubernetes.pod.namespace": "kube-system"})
 seen = [te.get("matchLabels") for d in dns_cnps for r in d["spec"].get("egress") or [] for te in r.get("toEndpoints") or []]
 ok(seen and all(m == want for m in seen), "every Cilium resolver selector = the configured resolver labels %s (%s)" % (WANT_LABELS, [m for m in seen if m != want][:2]))
+# Fix round 4 (sol r3 P2), RED on 507f0323: the core Kubernetes policy also
+# granted plain TCP/UDP 53 to the resolver, which overrides the Cilium name
+# allowlist (Cilium admits every query an L3/L4 rule allows): with
+# dnsRestriction on, the core has NO Kubernetes DNS grant at all; its DNS is
+# dns-restrict-identity-sanitizer-core (its allowlist) only.
+ce = find("NetworkPolicy", "identity-sanitizer-core-egress")
+k8s53 = [r for r in ce["spec"]["egress"] for p in r.get("ports") or [] if p.get("port") == 53]
+ok(k8s53 == [], "dnsRestriction: the core Kubernetes egress grants no port 53 (it would override the Cilium allowlist) (%s)" % k8s53)
+ok(sorted(p["port"] for r in ce["spec"]["egress"] for p in r["ports"]) == [5432, 50057], "dnsRestriction: the core keeps exactly its registry :5432 and the witness :50057")
+cc = [d for d in ident if d["metadata"]["name"] == "dns-restrict-identity-sanitizer-core"]
+pats = sorted(rule.get("matchPattern") or rule.get("matchName") for d in cc for r in d["spec"]["egress"] for tp in r.get("toPorts") or [] for rule in (tp.get("rules") or {}).get("dns") or [])
+ok(len(cc) == 1 and pats and all(x.endswith(".svc.cluster.local") for x in pats), "dnsRestriction: the core resolves only cluster names through its Cilium policy (%s)" % pats)
+'
+# Without dnsRestriction the core keeps its Kubernetes DNS rule, scoped to the
+# configured resolver labels (a resolver labelled otherwise stays unreachable).
+if render dnsl --set-json 'global.clusterDNS.podLabels={"k8s-app":"coredns","dns.example/role":"resolver"}'; then
+  assert_py "$TMP/dnsl.yaml" '
 ce = find("NetworkPolicy", "identity-sanitizer-core-egress")
 k8s = [t.get("podSelector", {}).get("matchLabels") for r in ce["spec"]["egress"] if r["ports"][0]["port"] == 53 for t in r["to"]]
-ok(k8s == [WANT_LABELS], "the core Kubernetes DNS rule uses the same resolver labels (%s)" % k8s)
-'
+ok(k8s == [{"k8s-app": "coredns", "dns.example/role": "resolver"}], "no dnsRestriction: the core Kubernetes DNS rule uses the configured resolver labels only (%s)" % k8s)
+ok(not [d for d in docs if d.get("kind") == "CiliumNetworkPolicy"], "no dnsRestriction: no Cilium policy renders")
+' | run_py
+else fail "custom resolver labels render: $(head -3 "$TMP/dnsl.err")"; fi
 if render dnsr --set global.dnsRestriction=true; then
   assert_py "$TMP/dnsr.yaml" "WANT_LABELS = {\"k8s-app\": \"kube-dns\"}
 $DNS_CHECK" | run_py
@@ -503,7 +530,7 @@ check_eq "chart ceiling = CEILING_SANITIZER_CORE in scripts/migration-ceilings.c
 # Lay the RENDERED ConfigMap out the way the Job mounts it and run the runner
 # with the RENDERED Job env (paths rebased into the temp dir).
 mkdir -p "$TMP/job/scripts" "$TMP/job/migrations/sanitizer-core"
-python3 - "$TMP/default.yaml" "$TMP/job" "$ROOT" <<'PY' > "$TMP/job/env.txt"
+python3 - "$TMP/default.yaml" "$TMP/job" "$ROOT" <<'PY' > "$TMP/job/env.txt" || fail "the rendered Job/ConfigMap extraction ran to its end (a crash is a failure)"
 import sys, yaml, os
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
 out, root = sys.argv[2], sys.argv[3]
@@ -564,7 +591,7 @@ done < "$TMP/job/env.txt"
 # with ONLY what the Job gives it: the mounted password file, turned into
 # PGPASSFILE. No PGPASSWORD is injected anywhere (round 2's test injected one
 # and so hid that the runner refused every Helm install with 93).
-python3 - "$TMP/default.yaml" "$TMP/prelude.sh" <<'PY'
+python3 - "$TMP/default.yaml" "$TMP/prelude.sh" <<'PY' || fail "the rendered Job prelude extraction ran to its end (a crash is a failure)"
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
 job = [d for d in docs if d.get("kind") == "Job" and d["metadata"]["name"].startswith("sanitizer-core-migrate-")][0]
@@ -671,6 +698,12 @@ OTHER="$TMP/other-digests.yaml"
 printf 'sanitizer-core:\n  image:\n    digest: "%s"\n  sidecar:\n    image:\n      digest: "%s"\n' "$D1" "$D2" > "$OTHER"
 NO_DIGESTS=1 doc_red "a pinned pair other than the manifest's" "differ from the pair image-manifest.yaml records" -- "$DEV_VALUES" "$OTHER"
 DOCTOR_KIT="$ROOT" doc_red "an unreleased kit (manifest pending)" "records no signed digest for the core/sidecar pair yet" -- "$DEV_VALUES"
+# K-C M2, moved into K-B fix round 4: the doctor requires LCR_PROFILE=kit as a
+# literal in the core's env:, red-proofed on a released-kit copy without it.
+KITBAD="$TMP/kit-noprofile"; cp -R "$KIT" "$KITBAD"
+sed -i.bak 's/^            - name: LCR_PROFILE$/            - name: LCR_PROFILE_UNUSED/' "$KITBAD/charts/lucairn/charts/sanitizer-core/templates/deployment.yaml"
+grep -q 'name: LCR_PROFILE_UNUSED' "$KITBAD/charts/lucairn/charts/sanitizer-core/templates/deployment.yaml" || fail "fixture: the LCR_PROFILE mutant applied"
+DOCTOR_KIT="$KITBAD" doc_red "(M2) a render whose core does not set LCR_PROFILE=kit" "does not set LCR_PROFILE=kit as a literal" -- "$DEV_VALUES"
 PLACE="$TMP/placeholder-digests.yaml"
 printf 'sanitizer-core:\n  image:\n    digest: "sha256:%s"\n  sidecar:\n    image:\n      digest: "%s"\n' "$(printf 'f%.0s' $(seq 64))" "$TEST_SANITIZER_CORE_SIDECAR_DIGEST" > "$PLACE"
 NO_DIGESTS=1 doc_red "a placeholder core digest" "is a placeholder" -- "$DEV_VALUES" "$PLACE"
@@ -749,6 +782,14 @@ grep -q 'dsa-sanitizer-core:${core_tag}' "$ROOT/bin/lucairn" && grep -q 'dsa-san
 grep -q 'cp "$ROOT/scripts/bootstrap-sanitizer-core-mtls.sh" "$staging/scripts/bootstrap-sanitizer-core-mtls.sh"' "$ROOT/bin/lucairn" && pass "bundle create carries the mTLS bootstrap in scripts/ (not install/scripts/, T-350)" || fail "bundle create carries the mTLS bootstrap"
 grep -q 'require_file "$root/scripts/bootstrap-sanitizer-core-mtls.sh" "bundle sanitizer-core mTLS bootstrap"' "$ROOT/bin/lucairn" && pass "bundle verify requires it for a kit 2.0 compose" || fail "bundle verify requires the bootstrap"
 grep -q -- '--profile sanitizer-core-migrate run --rm migrate-sanitizer-core' "$ROOT/bin/lucairn" && pass "bundle install note names the migration step" || fail "bundle install note names the migration step"
+
+# Red-proof of the tally (fix round 4, sol r3 P2; RED on 507f0323): a block
+# that crashes after a passing line (KeyError) is counted as a FAIL.
+PY_TALLY_KEEP="$PY_TALLY"; PY_TALLY="$TMP/py-tally-selftest"; : > "$PY_TALLY"
+assert_py "$TMP/default.yaml" 'ok(True, "self-test: one passing line before the crash")
+{}["missing-key"]' 2>/dev/null | run_py > /dev/null
+PY_TALLY="$PY_TALLY_KEEP"
+if grep -qx F "$TMP/py-tally-selftest"; then pass "a crashed assertion block counts as a FAIL (KeyError self-test)"; else fail "a crashed assertion block counts as a FAIL (KeyError self-test)"; fi
 
 echo ""
 N=$((N + $(grep -c . "$PY_TALLY")))

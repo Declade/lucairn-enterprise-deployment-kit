@@ -66,16 +66,19 @@ spec:
             # The official image reads the password from this FILE (its
             # `_FILE` convention), so it is in no Pod spec, env var or
             # `kubectl describe` (kit 2.0 K-B fix round 1, sol r1 P2).
-            # STATED LIMIT (fix round 3, sol r2 P2): on the FIRST boot of an
-            # empty volume the image's entrypoint (docker-library/postgres
-            # 4f9ced0, 16/alpine3.24/docker-entrypoint.sh) exports the file's
-            # content as POSTGRES_PASSWORD (file_env :23, called at :235) and
-            # as PGPASSWORD while it initialises (:359, unset at :366), so
-            # initdb, the temporary server and the psql of that bootstrap carry
-            # it in their environment. It unsets every POSTGRES_* variable
-            # (:381) before it execs the real server: no long-running process
-            # carries it. Those bootstrap processes run as uid 999 inside this
-            # container only, which reads the mounted file anyway. Accepted
+            # STATED LIMIT (fix rounds 3 + 4, sol r2 P2 / r3 P3): on EVERY
+            # start the image's entrypoint (docker-library/postgres 4f9ced0,
+            # 16/alpine3.24/docker-entrypoint.sh) exports the file's content
+            # as POSTGRES_PASSWORD (file_env :23, called at :235 from :338),
+            # so its helpers inherit it before the existing-database check
+            # (`id`, the mkdir/chmod of :36, the gosu re-exec at :343); on the
+            # FIRST boot of an empty volume it is also PGPASSWORD while it
+            # initialises (:359, unset at :366), so initdb, the temporary
+            # server and the psql of that bootstrap carry it. It unsets every
+            # POSTGRES_* variable (:381) before it execs the real server: no
+            # long-running process carries it. Those processes run inside this
+            # container only (uid 999 after the re-exec), which reads the
+            # mounted file anyway. Accepted
             # over the password-free alternative (POSTGRES_HOST_AUTH_METHOD=
             # trust + an init script that sets the password): that writes
             # `host all all all trust` into pg_hba.conf (:284), and a first

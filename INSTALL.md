@@ -2696,7 +2696,7 @@ differ.
 | Deployment `sanitizer-core` | ONE Pod with two containers: `sidecar` (the model sidecar, loopback 127.0.0.1:8765 only) and `core` (the Go core, verified mTLS on :8790). A Pod is one shared network namespace — the hosted layout, with no network path to the sidecar at all. Strategy `Recreate`: one core at a time. |
 | StatefulSet / Service / PVC `postgres-sanitizer-core` | The registry database (digest-pinned `postgres:16-alpine`, PVC kept on `helm uninstall`). |
 | Job `sanitizer-core-migrate-r<revision>` | The capped registry migration 0001–0007 (see step 3). |
-| NetworkPolicies `edge-sanitizer-core-egress`, `identity-sanitizer-core-ingress`, `identity-sanitizer-core-egress`, `identity-sanitizer-core-registry` | Only the gateway Pod reaches the core (:8790); the core reaches only its registry (:5432), the witness claim port (:50057) and the cluster resolver Pods on :53 (`k8s-app=kube-dns`; set `global.clusterDNS.podLabels` if yours differ); only the core and the migration Job reach the registry; the registry has no egress, DNS included (both are carved out of the namespace's `allow-dns`). |
+| NetworkPolicies `edge-sanitizer-core-egress`, `identity-sanitizer-core-ingress`, `identity-sanitizer-core-egress`, `identity-sanitizer-core-registry` | Only the gateway Pod reaches the core (:8790); the core reaches only its registry (:5432), the witness claim port (:50057) and the cluster resolver Pods on :53 (`k8s-app=kube-dns`; set `global.clusterDNS.podLabels` if yours differ) — with `global.dnsRestriction=true` (Cilium) that port-53 rule is left out and the core resolves only the cluster names its Cilium policy `dns-restrict-identity-sanitizer-core` allows (a plain port-53 grant would override that allowlist); only the core and the migration Job reach the registry; the registry has no egress, DNS included (both are carved out of the namespace's `allow-dns`). |
 
 **Images by signed digest only.** The core and its sidecar start only from the
 two digests the kit release records in `image-manifest.yaml`
@@ -2711,13 +2711,16 @@ password from a mounted file (`POSTGRES_PASSWORD_FILE`); the migration Job and
 the core's `wait-for-migration` init container build a `0600` libpq password
 file (`PGPASSFILE`) from the mounted Secret file, and the migration runner
 connects with that file (no `PGPASSWORD` in its environment). Stated limit: on
-the first boot of an empty registry volume, the official `postgres` image's
-entrypoint itself exports the file's content as `POSTGRES_PASSWORD` (and
-`PGPASSWORD`) to its own initialisation processes (initdb, the temporary
-server, psql), inside that container only; it clears them before it starts the
-real server. The kit accepts this rather than initialise with
-`POSTGRES_HOST_AUTH_METHOD=trust`, which would leave a database without a
-password if that first boot were interrupted. An external registry DB
+EVERY start, the official `postgres` image's entrypoint itself reads the file
+into `POSTGRES_PASSWORD` (exported), so its own helper processes inherit it
+(`id`, the `mkdir`/`chmod` of the data directories, the re-exec as the
+`postgres` user) before it checks whether a database exists; on the first boot
+of an empty registry volume its initialisation processes (initdb, the temporary
+server, psql) get it as well, with `PGPASSWORD`. All of this stays inside that
+container, and the entrypoint clears both (`unset` of every `POSTGRES_*`
+variable) before it starts the real server. The kit accepts this rather than
+initialise with `POSTGRES_HOST_AUTH_METHOD=trust`, which would leave a database
+without a password if that first boot were interrupted. An external registry DB
 (`sanitizer-core.postgresql.enabled=false`) is supported by the live doctor: it
 then checks the migration Job and the core's readiness, not a bundled
 StatefulSet.

@@ -1051,19 +1051,13 @@ spec:
       ports:
         - port: 50057
           protocol: TCP
-    # → DNS, to the cluster resolver Pods ONLY (not every kube-system Pod).
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - port: 53
-          protocol: UDP
-        - port: 53
-          protocol: TCP
+    # DNS: NONE here. With global.dnsRestriction=true the core's DNS is the
+    # Cilium policy dns-restrict-identity-sanitizer-core ONLY (its name
+    # allowlist). Kit 2.0 K-B fix round 4 (sol r3 P2): a plain port-53 grant
+    # in this policy would override that allowlist — Cilium admits every query
+    # an L3/L4 rule allows, so the core could resolve (and exfiltrate through)
+    # any external name. A resolver whose labels differ from
+    # global.clusterDNS.podLabels stays unreachable (fail closed).
     # An EXTERNAL registry DB (sanitizer-core.postgresql.enabled=false) is not
     # covered here: add your own egress rule for its address, scoped to this
     # podSelector.
@@ -7145,10 +7139,14 @@ spec:
             - "--registry-dsn-file=/etc/sanitizer-core/registry/dsn"
             - "--sidecar=http://127.0.0.1:8765"
           env:
-            # ⚑ LCR_PROFILE is deliberately NOT set: unset = the kit profile,
+            # ⚑ LCR_PROFILE is ALWAYS set here, as a literal (K-C M2): `kit`,
             # under which the core refuses the ServiceNow mode at boot (DSA
-            # cmd/sanitizer-core/instance_wire.go). The kit's opt-in for that
-            # mode is a later slice (K-C).
+            # cmd/sanitizer-core/instance_wire.go profileBoot), or
+            # `kit-servicenow` only with global.servicenowControl.enabled. An
+            # entry in `env:` outranks anything a Secret or ConfigMap could
+            # bring in through `envFrom`, so no customer Secret can switch it.
+            - name: LCR_PROFILE
+              value: "kit"
             - name: DSA_ENV
               value: "development"
             # The core serves HTTPS on the SANITIZER_CORE_MTLS_* family and
@@ -8229,16 +8227,19 @@ spec:
             # The official image reads the password from this FILE (its
             # `_FILE` convention), so it is in no Pod spec, env var or
             # `kubectl describe` (kit 2.0 K-B fix round 1, sol r1 P2).
-            # STATED LIMIT (fix round 3, sol r2 P2): on the FIRST boot of an
-            # empty volume the image's entrypoint (docker-library/postgres
-            # 4f9ced0, 16/alpine3.24/docker-entrypoint.sh) exports the file's
-            # content as POSTGRES_PASSWORD (file_env :23, called at :235) and
-            # as PGPASSWORD while it initialises (:359, unset at :366), so
-            # initdb, the temporary server and the psql of that bootstrap carry
-            # it in their environment. It unsets every POSTGRES_* variable
-            # (:381) before it execs the real server: no long-running process
-            # carries it. Those bootstrap processes run as uid 999 inside this
-            # container only, which reads the mounted file anyway. Accepted
+            # STATED LIMIT (fix rounds 3 + 4, sol r2 P2 / r3 P3): on EVERY
+            # start the image's entrypoint (docker-library/postgres 4f9ced0,
+            # 16/alpine3.24/docker-entrypoint.sh) exports the file's content
+            # as POSTGRES_PASSWORD (file_env :23, called at :235 from :338),
+            # so its helpers inherit it before the existing-database check
+            # (`id`, the mkdir/chmod of :36, the gosu re-exec at :343); on the
+            # FIRST boot of an empty volume it is also PGPASSWORD while it
+            # initialises (:359, unset at :366), so initdb, the temporary
+            # server and the psql of that bootstrap carry it. It unsets every
+            # POSTGRES_* variable (:381) before it execs the real server: no
+            # long-running process carries it. Those processes run inside this
+            # container only (uid 999 after the re-exec), which reads the
+            # mounted file anyway. Accepted
             # over the password-free alternative (POSTGRES_HOST_AUTH_METHOD=
             # trust + an init script that sets the password): that writes
             # `host all all all trust` into pg_hba.conf (:284), and a first

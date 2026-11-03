@@ -2946,8 +2946,9 @@ check_enterprise_mtls_helm() {
 #     the core reads its DSN from a file (--registry-dsn-file) projected from
 #     the credentials Secret;
 #   * the sidecar's memory limit is >= 6500 MiB (hosted A8) and the core has
-#     one; LCR_PROFILE and the ServiceNow control client are NOT forwarded
-#     (kit profile: the ServiceNow mode is refused);
+#     one; the core sets LCR_PROFILE=kit as a literal in its env: and the
+#     ServiceNow control client is NOT forwarded (kit profile: the ServiceNow
+#     mode is refused);
 #   * production: the core's witness hop is latched mTLS (A9);
 #   * the gateway's switch set (delta, Gate enforce, https core URL, its mTLS
 #     client triple) — off-switch values only warn, like Compose;
@@ -3032,7 +3033,13 @@ check_sanitizer_core_helm() {
       fails << "the core has no memory limit" if mib(core.dig("resources", "limits", "memory")).nil?
       env = {}
       (core["env"] || []).each { |e| env[e["name"]] = e }
-      fails << "LCR_PROFILE is forwarded to the core (the kit runs the kit profile)" if env.key?("LCR_PROFILE")
+      # K-C M2 (moved here in K-B fix round 4 so the K-C OFF render equals
+      # this one): the core ALWAYS sets LCR_PROFILE=kit in its own env: (a
+      # literal, which Kubernetes ranks above anything envFrom could bring).
+      prof = env["LCR_PROFILE"]
+      unless prof && prof["value"] == "kit" && !prof.key?("valueFrom")
+        fails << "the core does not set LCR_PROFILE=kit as a literal in its env (#{prof.nil? ? "absent" : prof["value"].inspect}); a profile from anywhere else could switch the ServiceNow mode"
+      end
       fails << "the ServiceNow control client is forwarded to the core (the kit profile refuses to boot with it)" if env.keys.any? { |k| k.start_with?("LCR_SERVICENOW_CONTROL_") }
       %w[SANITIZER_CORE_MTLS_CA_BUNDLE_PATH SANITIZER_CORE_MTLS_SERVER_CERT_PATH SANITIZER_CORE_MTLS_SERVER_KEY_PATH].each { |k| fails << "the core lacks #{k}" unless env.key?(k) }
       prod = env.dig("DSA_ENV", "value") == "production"
