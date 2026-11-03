@@ -72,6 +72,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHART="$ROOT/charts/lucairn"
 # shellcheck source=lib/test-helpers.sh
 source "$ROOT/tests/lib/test-helpers.sh"
+# Kit 2.0 K-B fix round 1 (sol r1 P1): the sanitizer-core chart renders ONLY
+# with the released core/sidecar digests. An unreleased checkout carries
+# none, so this suite renders a RELEASED-kit fixture (synthetic signed digests
+# in its chart values; tests/lib/test-helpers.sh).
+PWG_TMP="$(mktemp -d)"
+trap 'rm -rf "$PWG_TMP"' EXIT
+lucairn_use_released_kit "$PWG_TMP"
+CHART="$ROOT/charts/lucairn"
 
 if ! command -v helm >/dev/null 2>&1; then
   echo "default-password guard tests: skipped (helm not installed)"

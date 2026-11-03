@@ -26,7 +26,11 @@ CHART = ROOT / "charts/lucairn"
 # Captured with Helm v4.1.3; never regenerate from a moving main ref.
 # Amended twice: the 2026-10-27 postgres:16-alpine digest re-pin (image lines)
 # and T-1433 (sandbox-a qiEngineEnabled default "false": the rendered
-# QI_ENGINE_ENABLED ConfigMap value in each profile).
+# QI_ENGINE_ENABLED ConfigMap value in each profile). Kit 2.0 K-B re-rendered
+# them for the new sanitizer-core sub-chart (additions), and its fix round 1
+# re-rendered them again: the core pair pulled by digest, the registry DB
+# password as files (no secretKeyRef env), allow-dns carving the core + its
+# registry out of the identity namespace and the core's own DNS rule.
 OFF_GOLDEN = ROOT / "tests/fixtures/servicenow-control/helm-off"
 APP = "app.kubernetes.io/name"
 HELD = "templates/servicenow-control-held.yaml"
@@ -50,6 +54,10 @@ SECRET_ARGS += ["--set-string", "veil-witness.secrets.values.signingKey=" + "1" 
 # registry key / registry DB password, exactly like the slots above.
 SECRET_ARGS += ["--set-string", "sanitizer-core.secrets.values.registryKey=" + "2" * 64,
                 "--set-string", "sanitizer-core.secrets.values.postgresPassword=kit-harness-not-a-real-secret"]
+# Kit 2.0 K-B fix round 1: the core pair renders only with both released
+# digests (SYNTHETIC, = tests/lib/test-helpers.sh TEST_SANITIZER_CORE_*DIGEST).
+SECRET_ARGS += ["--set-string", "sanitizer-core.image.digest=sha256:" + "c0" * 32,
+                "--set-string", "sanitizer-core.sidecar.image.digest=sha256:" + "5c" * 32]
 
 
 def merge(a, b):

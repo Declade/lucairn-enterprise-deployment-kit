@@ -124,7 +124,7 @@ fi
 
 # lucairn_released_kit_fixture <kit root> <dest> — <dest> becomes a kit tree
 # whose image-manifest.yaml records the synthetic pair above in place of
-# `pending: true`. Everything else is a plain COPY of <kit root> (about
+# `pending: true`, and whose sanitizer-core chart values carry the same pair. Everything else is a plain COPY of <kit root> (about
 # 11 MB without .git), so bin/lucairn and bin/lucairn-init run as the fixture
 # kit and a test that edits a kit file (a "mutant" of servicenow-directory/, a
 # keys/ record) edits the copy. Directories are never symlinked: `cp -R` of a
@@ -150,7 +150,36 @@ lucairn_released_kit_fixture() {
     in_sa && key != "" && /^      pending:[[:space:]]*true/ { print "      digest: \"" (key == "core" ? core : side) "\""; n++; next }
     { print }
     END { if (n != 2) exit 1 }
-  ' "$root/image-manifest.yaml" > "$dest/image-manifest.yaml"
+  ' "$root/image-manifest.yaml" > "$dest/image-manifest.yaml" || return 1
+  # Kit 2.0 K-B fix round 1: a released kit's sanitizer-core chart carries the
+  # same signed pair (the release step fills image.digest and
+  # sidecar.image.digest from image-manifest.yaml); the chart refuses to render
+  # without them.
+  local cv="$dest/charts/lucairn/charts/sanitizer-core/values.yaml"
+  [ -f "$cv" ] || return 0
+  awk -v core="$TEST_SANITIZER_CORE_DIGEST" -v side="$TEST_SANITIZER_CORE_SIDECAR_DIGEST" '
+    $0 == "  digest: \"\"" && !c { print "  digest: \"" core "\""; c = 1; next }
+    $0 == "    digest: \"\"" && !s { print "    digest: \"" side "\""; s = 1; next }
+    { print }
+    END { if (!c || !s) exit 1 }
+  ' "$cv" > "$cv.released" && mv "$cv.released" "$cv"
+}
+
+# lucairn_released_chart <dest dir> — prints the path of a copy of the
+# umbrella chart whose sanitizer-core values carry the synthetic signed pair
+# (what the release step writes). For suites that only RENDER the chart.
+lucairn_released_chart() {
+  local root="${REAL_ROOT:-$ROOT}" dest="$1"
+  mkdir -p "$dest" || return 1
+  cp -Rp "$root/charts/lucairn" "$dest/lucairn" || return 1
+  local cv="$dest/lucairn/charts/sanitizer-core/values.yaml"
+  awk -v core="$TEST_SANITIZER_CORE_DIGEST" -v side="$TEST_SANITIZER_CORE_SIDECAR_DIGEST" '
+    $0 == "  digest: \"\"" && !c { print "  digest: \"" core "\""; c = 1; next }
+    $0 == "    digest: \"\"" && !s { print "    digest: \"" side "\""; s = 1; next }
+    { print }
+    END { if (!c || !s) exit 1 }
+  ' "$cv" > "$cv.released" && mv "$cv.released" "$cv" || return 1
+  printf '%s' "$dest/lucairn"
 }
 
 # lucairn_use_released_kit <tmp dir> — for a suite whose doctor/init GREEN

@@ -12,6 +12,15 @@ TMPDIR="$(mktemp -d)"
 PUBLIC="$TMPDIR/public-overlay.yaml"
 PRIVATE="$TMPDIR/application-secrets"
 trap 'rm -rf "$TMPDIR"' EXIT
+# Kit 2.0 K-B fix round 1 (sol r1 P1): the sanitizer-core chart renders ONLY
+# with the released core/sidecar digests, and doctor --values compares them
+# with the signed manifest pair. An unreleased checkout carries neither, so
+# this suite renders and doctors a RELEASED-kit fixture (synthetic signed
+# digests in its image-manifest.yaml and chart values; tests/lib/test-helpers.sh).
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$TMPDIR"
+CHART="$ROOT/charts/lucairn"
 
 # GNU stat first: `stat -f '%Lp'` on GNU exits 1 for a %Lp file arg but still
 # prints filesystem info to STDOUT, so a `-f … || -c …` chain captures garbage

@@ -2696,7 +2696,23 @@ differ.
 | Deployment `sanitizer-core` | ONE Pod with two containers: `sidecar` (the model sidecar, loopback 127.0.0.1:8765 only) and `core` (the Go core, verified mTLS on :8790). A Pod is one shared network namespace — the hosted layout, with no network path to the sidecar at all. Strategy `Recreate`: one core at a time. |
 | StatefulSet / Service / PVC `postgres-sanitizer-core` | The registry database (digest-pinned `postgres:16-alpine`, PVC kept on `helm uninstall`). |
 | Job `sanitizer-core-migrate-r<revision>` | The capped registry migration 0001–0007 (see step 3). |
-| NetworkPolicies `edge-sanitizer-core-egress`, `identity-sanitizer-core-ingress`, `identity-sanitizer-core-egress`, `identity-sanitizer-core-registry` | Only the gateway Pod reaches the core (:8790); the core reaches only its registry (:5432) and the witness claim port (:50057); only the core and the migration Job reach the registry; the registry has no egress. |
+| NetworkPolicies `edge-sanitizer-core-egress`, `identity-sanitizer-core-ingress`, `identity-sanitizer-core-egress`, `identity-sanitizer-core-registry` | Only the gateway Pod reaches the core (:8790); the core reaches only its registry (:5432), the witness claim port (:50057) and the cluster resolver Pods on :53 (`k8s-app=kube-dns`; set `global.clusterDNS.podLabels` if yours differ); only the core and the migration Job reach the registry; the registry has no egress, DNS included (both are carved out of the namespace's `allow-dns`). |
+
+**Images by signed digest only.** The core and its sidecar start only from the
+two digests the kit release records in `image-manifest.yaml`
+(`image_digests.signed_artifacts`); a released kit's chart carries them in
+`sanitizer-core.image.digest` / `sanitizer-core.sidecar.image.digest`. The
+render refuses an empty, malformed or placeholder digest, and
+`bin/lucairn doctor --values` fails on tag-only images and on a pair other than
+the manifest's.
+
+**No password in a process environment.** The registry database reads its
+password from a mounted file (`POSTGRES_PASSWORD_FILE`); the migration Job and
+the core's `wait-for-migration` init container build a `0600` libpq password
+file (`PGPASSFILE`) from the mounted Secret file. An external registry DB
+(`sanitizer-core.postgresql.enabled=false`) is supported by the live doctor: it
+then checks the migration Job and the core's readiness, not a bundled
+StatefulSet.
 
 ### Node requirements
 

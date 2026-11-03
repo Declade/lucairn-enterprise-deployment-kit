@@ -585,7 +585,9 @@ doc_red() { # <name> <grep> [env...] -- values...
   doctor_values "$TMP/doc-red.out" "$@"; local rc=$?
   if [ "$rc" -ne 0 ] && grep -Fq -- "$pat" "$TMP/doc-red.out"; then pass "doctor --values RED: $name"; else fail "doctor --values RED: $name (rc=$rc): $(grep -iE 'sanitizer core|failed|Error' "$TMP/doc-red.out" | head -3)"; fi
 }
-NO_DIGESTS=1 doc_red "tag-only core/sidecar images (no digests)" "image.digest is empty" -- "$DEV_VALUES"
+TAGONLY="$TMP/tag-only.yaml"
+printf 'sanitizer-core:\n  image:\n    digest: ""\n  sidecar:\n    image:\n      digest: ""\n' > "$TAGONLY"
+NO_DIGESTS=1 doc_red "tag-only core/sidecar images (no digests)" "image.digest is empty" -- "$DEV_VALUES" "$TAGONLY"
 OTHER="$TMP/other-digests.yaml"
 printf 'sanitizer-core:\n  image:\n    digest: "%s"\n  sidecar:\n    image:\n      digest: "%s"\n' "$D1" "$D2" > "$OTHER"
 NO_DIGESTS=1 doc_red "a pinned pair other than the manifest's" "differ from the pair image-manifest.yaml records" -- "$DEV_VALUES" "$OTHER"
