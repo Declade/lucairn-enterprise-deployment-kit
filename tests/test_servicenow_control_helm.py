@@ -577,6 +577,44 @@ class HelmAcceptance(unittest.TestCase):
         self.assertTrue(self.union.reaches(core_pod, GATEWAY, 18443))
         self.assertFalse(self.union.reaches(pod("sandbox-b", "dsa-identity"), GATEWAY, 18443))
 
+    def test_kc_core_entrypoint_lowers_rlimit_core_before_exec(self):
+        # K-C fix round 1 (sol r1 P2), RED on cea739fe: ON set the control
+        # settings and GOTRACEBACK=none but never lowered RLIMIT_CORE, so a
+        # core started under (1024, 1024) kept it. The entrypoint now sets soft
+        # AND hard to 0 before it execs the core (DSA #961's precondition by
+        # construction). Run in a subprocess that STARTS at (1024, 1024).
+        script = obj(self.on, "ConfigMap", "sanitizer-core-entrypoint")["data"]["core-entrypoint.sh"]
+        self.assertLess(script.index("ulimit -H -c 0"), script.index('exec sanitizer-core "$@"'))
+        bindir = self.work / "core-entrypoint-bin"
+        bindir.mkdir(exist_ok=True)
+        (bindir / "wget").write_text("#!/bin/sh\nexit 0\n")
+        fake = bindir / "sanitizer-core"
+        fake.write_text('#!/usr/bin/env python3\nimport resource,sys\nassert resource.getrlimit(resource.RLIMIT_CORE)==(0,0), resource.getrlimit(resource.RLIMIT_CORE)\nassert sys.argv[1:]==["serve"]\nprint("core_0_0")\n')
+        for f in (bindir / "wget", fake):
+            f.chmod(0o700)  # Temporary fixture only.
+        path = self.work / "core-entrypoint.sh"
+        path.write_text(script)
+
+        def start_at_1024():
+            import resource
+            resource.setrlimit(resource.RLIMIT_CORE, (1024, 1024))
+
+        env = {**os.environ, "PATH": str(bindir) + os.pathsep + os.environ["PATH"]}
+        ok = subprocess.run(["/bin/sh", str(path), "serve"], env=env, capture_output=True, text=True,
+                            timeout=20, preexec_fn=start_at_1024)
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        self.assertEqual("core_0_0", ok.stdout.strip())
+        # Red-proof: a shell whose ulimit cannot lower the limit never starts the core.
+        stuck = subprocess.run(["/bin/sh", "-c", 'ulimit() { [ "$#" -eq 2 ] && echo 1024; return 0; }; . "$1"', "test", str(path)],
+                               env=env, capture_output=True, text=True, timeout=20, preexec_fn=start_at_1024)
+        self.assertNotEqual(stuck.returncode, 0)
+        self.assertNotIn("core_0_0", stuck.stdout)
+        self.assertIn("RLIMIT_CORE could not be set to 0", stuck.stderr)
+        # OFF: the entrypoint is K-B's, without the ServiceNow lines.
+        off = render(CHART)
+        self.assertEqual(off.returncode, 0, off.stderr)
+        self.assertNotIn("ulimit", obj(docs(off.stdout), "ConfigMap", "sanitizer-core-entrypoint")["data"]["core-entrypoint.sh"])
+
     def test_launchers_effective_subprocess_core_and_fail_closed(self):
         # A subprocess protects this test runner from irreversible hard-limit changes.
         launcher = CHART / "charts/gateway/files/servicenow-control-launch"

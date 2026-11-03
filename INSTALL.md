@@ -2650,9 +2650,23 @@ merge keys (`<<`) and anchors are decoded with nothing lost and are accepted. It
 refuses too without Docker Compose, without Python 3, or when Compose cannot
 render your install's project (for example a required variable is missing) —
 the scan is never skipped and never runs on a partial list of secrets. Remove
-the named construct and run it again. Not covered (review the bundle before you
-send it): a secret split over two log lines with other text between its parts,
-and encodings other than the ones above (base64, shell quoting, HTML entities).
+the named construct and run it again.
+
+**Support bundle — stated limits.** The scan is a safety net, not a guarantee:
+**review the bundle before you send it.** It does not catch:
+
+- the same variable assigned twice on ONE line of an env file (two
+  assignments written one after the other on the same line): only the last
+  value is checked;
+- a secret whose value looks like a file path (it starts with `/`, `./`, `../`
+  or `~/`): no search pattern is made for it;
+- log text escaped more than three levels deep (a string inside a string inside
+  a string inside a string): it is not fully decoded;
+- an escape sequence inside a log line whose backslash is itself
+  percent-encoded (`%5C`): it is percent-decoded for the comparison only and
+  not unescaped again;
+- a secret split over two log lines with other text between its parts;
+- encodings other than the ones above (base64, shell quoting, HTML entities).
 
 The core listens only on its gateway link (`--listen=sanitizer-core:8790`, a
 name only that network carries), not on the witness or registry links of the
@@ -2960,11 +2974,14 @@ by Lucairn (its test accounts are web-service only).
    (written by `bin/lucairn-mint-customer`). List its keys with your admin key:
 
    ```bash
-   curl -s -H "X-Admin-Key: $DSA_ADMIN_KEY" \
+   printf 'X-Admin-Key: %s\n' "$DSA_ADMIN_KEY" | curl -s -H @- \
      "http://127.0.0.1:${GATEWAY_PORT:-8080}/api/v1/admin/customers/<customer_id>/keys"
    ```
 
-   Copy the `key_id` of each key that should use the mode.
+   The header goes to curl on standard input (`-H @-`), never on its command
+   line, where any local user could read the admin key in the process list
+   (`printf` is a shell builtin). Copy the `key_id` of each key that should use
+   the mode.
 3. **Set the operator settings in `customer.env`** (the same names as the hosted
    service; see the commented block in `customer.env.example`):
 
@@ -2983,7 +3000,10 @@ by Lucairn (its test accounts are web-service only).
 
    `customer_id` must be the owner of the bound key. One instance belongs to one
    customer. Do **not** set `LCR_PROFILE`: the overlay sets the core's opt-in
-   value itself.
+   value itself. The switch must be exactly `true`: with any other value
+   (`false`, a typo, `TRUE`) the overlay does not render — Docker Compose
+   refuses it ("depends on undefined service servicenow-switch-…") before
+   anything starts.
 4. **Place the stored login** of the machine account from step 1 (as root):
 
    ```bash
@@ -3012,6 +3032,10 @@ by Lucairn (its test accounts are web-service only).
    exists under its instance's owner (it prints counts only). A key id that does
    not exist stops `up`. `up` needs `python3` with PyYAML
    (`apt install python3-yaml` or `python3 -m pip install pyyaml`) for the copy.
+   Run `up` (and the doctor below) **as root** (`sudo`): the login folder is
+   `0700` and owned by `10001`, so no other account can look inside it, and a
+   login check that cannot see `login.json` refuses (it never passes
+   unchecked).
 7. **Check:** `bin/lucairn doctor --env customer.env --customer-key-file …`.
    Offline and online it checks the copy against a rebuild of the base, the
    login custody, and that the login file and the control material reach only

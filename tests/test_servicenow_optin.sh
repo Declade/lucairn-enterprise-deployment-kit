@@ -64,8 +64,11 @@
 #     (kit compose stack + stub instance on the PC), not this suite.
 #   * The admin API answers come from tests/lib/servicenow_admin_stub.py; the
 #     gateway's real admin routes are DSA's (admin.go, servicenow_status.go).
-#   * Ownership 10001:10001 of the login folder/file is asserted only on
-#     Linux; this suite runs the macOS branch where the doctor states it.
+#   * Ownership 10001:10001 of the login folder/file is checked only on
+#     Linux. The end-to-end cases run the helper through a PATH-first python3
+#     test seam that expects THIS runner's uid:gid (an unprivileged runner
+#     cannot chown to 10001); the default-owner refusal and the refusal of an
+#     uninspectable folder are asserted on the helper directly.
 
 set -uo pipefail
 
@@ -139,6 +142,35 @@ exit 1
 STUB
 printf '#!/bin/sh\nprintf 000\n' > "$SBIN/curl"
 for t in kubectl helm pg_isready docker-compose; do printf '#!/bin/sh\nexit 1\n' > "$SBIN/$t"; done
+# TEST SEAM (this file only; production is unchanged) — kit 2.0 K-C fix round
+# 1, sol r1 P2: on Linux the login custody check wants SERVICENOW_LOGIN_DIR
+# and login.json owned by the gateway's uid 10001:10001, which an unprivileged
+# CI runner cannot give a file (chown needs root), so every GREEN case failed
+# there. bin/lucairn runs the helper with the python3 it finds on PATH (as on
+# a customer host); this PATH-first python3 runs that helper with ONE change:
+# check_login's expected owner is this runner's own uid:gid. The check itself
+# (0700 folder, login.json alone, 0400 regular file with one link, that owner,
+# refusal when it cannot be inspected) runs unchanged; nothing in the kit reads
+# an override. Every other python3 call passes straight through.
+REAL_PY="$(command -v python3)"
+cat > "$SBIN/python3" <<'PYSEAM'
+#!/bin/sh
+if [ "${1:-}" = -I ] && [ "$(basename "${2:-}")" = lucairn-servicenow.py ]; then
+  h="$2"; shift 2
+  exec @REAL_PY@ -I -c 'import os, runpy, sys
+g = runpy.run_path(sys.argv[1], run_name="lucairn_servicenow_test_seam")
+f = g["check_login"]
+f.__defaults__ = (os.getuid(), os.getgid()) + f.__defaults__[2:]
+sys.argv = [sys.argv[1]] + sys.argv[2:]
+sys.exit(g["main"]())' "$h" "$@"
+fi
+exec @REAL_PY@ "$@"
+PYSEAM
+# The real interpreter's path is written into the shim (the online doctor
+# runs Python with a reduced environment, so no variable may carry it).
+case "$REAL_PY" in /*) ;; *) echo "ServiceNow opt-in tests: FAIL — python3 not found"; exit 1 ;; esac
+case "$REAL_PY" in *[!A-Za-z0-9/._+-]*) echo "ServiceNow opt-in tests: FAIL — unusual python3 path"; exit 1 ;; esac
+sed -i.bak "s#@REAL_PY@#$REAL_PY#g" "$SBIN/python3" && rm -f "$SBIN/python3.bak"
 chmod 0755 "$SBIN"/*
 export PATH="$SBIN:$BASE_PATH"
 
@@ -226,8 +258,25 @@ ov_case 'empty bindings X=""' fail 'GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=tru
 GATEWAY_SERVICENOW_KEY_BINDINGS=""'
 ov_case "empty bindings export X=" fail 'GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=true
 export GATEWAY_SERVICENOW_KEY_BINDINGS='
+# Kit 2.0 K-C fix round 1 (sol r1 P2), RED on cea739fe: `:?` refuses only an
+# empty switch, so `false` and `ture` rendered the mode on (LCR_PROFILE=
+# kit-servicenow, the network, the mounts). The overlay now refuses every
+# value but exactly `true` (its servicenow-switch-<value> gate).
+for sw in false ture TRUE "true " "true/../true"; do
+  ov_case "switch '$sw' (only exactly true opts in)" fail "GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=\"$sw\"
+GATEWAY_SERVICENOW_KEY_BINDINGS=key_a=inst1"
+  case "$sw" in false|ture)
+    grep -q "depends on undefined service \"servicenow-switch-$sw\"" "$TMP/render.err" \
+      && pass "switch '$sw' is refused by the overlay's exact-value gate (not by an unrelated error)" \
+      || fail "switch '$sw' refusal reason: $(head -c 200 "$TMP/render.err")" ;;
+  esac
+done
+ov_case "switch empty" fail 'GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=
+GATEWAY_SERVICENOW_KEY_BINDINGS=key_a=inst1'
 ov_case "full set" ok "$ON_LINES"
-python3 - "$TMP/ov.json" > "$TMP/ov-check.txt" <<'PY'
+# Kit 2.0 K-C fix round 1 (sol r1 P2): a check script that crashes before it
+# prints (KeyError on a missing service) is a FAIL, never an empty green tally.
+python3 - "$TMP/ov.json" > "$TMP/ov-check.txt" <<'PY' || echo "FAIL the ON-render check script crashed (python exit $?)" >> "$TMP/ov-check.txt"
 import json, sys
 s = json.load(open(sys.argv[1]))["services"]
 g = s["gateway"]["environment"]
@@ -354,6 +403,49 @@ chmod 0400 "$SNC/login/login.json"
 chmod 0750 "$SNC/login"
 cli up "$ENVF"; if grep -q 'SERVICENOW_LOGIN_DIR must have mode 0700' "$TMP/cli.out"; then pass "a login folder with mode 0750 is refused (0700 required)"; else fail "loose login folder"; fi
 chmod 0700 "$SNC/login"
+# Kit 2.0 K-C fix round 1 (sol r1 P1), RED on cea739fe: a login folder this
+# user cannot look inside (the CORRECT production folder, 0700 owned by 10001,
+# seen from a non-root operator) made check_login return success without ever
+# inspecting login.json; up and doctor accepted it. Now any check that cannot
+# complete refuses. (An unprivileged runner cannot chown to another uid, so
+# the PermissionError is raised in-process; the real helper code runs as is.)
+python3 - "$HELPER" "$SNC/login" > "$TMP/uninspectable.out" 2>&1 <<'PY'
+import os, runpy, sys
+g = runpy.run_path(sys.argv[1], run_name="lucairn_servicenow_p1")
+def denied(path):
+    raise PermissionError(13, "Permission denied", str(path))
+g["os"].listdir = denied
+try:
+    print("PASSED " + g["check_login"](sys.argv[2], uid=os.getuid(), gid=os.getgid()))
+    sys.exit(1)
+except g["Refused"] as e:
+    print("REFUSED %s %s" % (e.word, e.hint))
+PY
+if [ "$?" -eq 0 ] && grep -q '^REFUSED login_invalid login.json cannot be inspected by this user' "$TMP/uninspectable.out"; then
+  pass "a login folder this user cannot inspect is REFUSED (never accepted unchecked)"
+else
+  fail "uninspectable login folder: $(head -2 "$TMP/uninspectable.out" | tr '\n' ' ')"
+fi
+# The test seam leaves the real check strict: on the Linux branch the very
+# same folder (owned by this runner, not by 10001) is refused by the
+# helper's DEFAULT owner, and accepted only with the runner's own uid:gid —
+# what the PATH-first python3 above supplies (and nothing else).
+python3 - "$HELPER" "$SNC/login" > "$TMP/linux-branch.out" 2>&1 <<'PY'
+import os, runpy, sys
+g = runpy.run_path(sys.argv[1], run_name="lucairn_servicenow_linux_branch")
+try:
+    g["check_login"](sys.argv[2], linux=True)
+    print("DEFAULT-ACCEPTED")
+except g["Refused"] as e:
+    print("DEFAULT-REFUSED " + e.hint)
+print("SEAM " + g["check_login"](sys.argv[2], uid=os.getuid(), gid=os.getgid(), linux=True))
+PY
+if { [ "$(id -u)" = 10001 ] || grep -q '^DEFAULT-REFUSED SERVICENOW_LOGIN_DIR must be owned by 10001:10001' "$TMP/linux-branch.out"; } \
+   && grep -q '^SEAM ok$' "$TMP/linux-branch.out"; then
+  pass "Linux branch: the default owner check refuses a folder not owned by 10001; the seam's runner uid passes it"
+else
+  fail "Linux branch: $(tr '\n' ' ' < "$TMP/linux-branch.out")"
+fi
 write_state '{"cust_a":["key_b"]}' "$STATUS_OK"
 cli up "$ENVF"; if grep -q 'a bound key id does not exist' "$TMP/cli.out" && grep -q 'missing=1' "$TMP/cli.out" && ! grep -q ' up -d' "$TMP/stub.log"; then pass "a typo'd / unknown bound key id is refused before anything starts (counts only)"; else fail "unknown key id: $(tail -1 "$TMP/cli.out")"; fi
 write_state '{}' "$STATUS_OK"
@@ -650,6 +742,18 @@ printf ' ' >> "$KC/servicenow-directory/lucairn-directory-update-set.xml"
 if bash "$KC/bin/lucairn" doctor --env "$ENVF" --compose "$COMPOSE" --offline --skip-image-check > "$TMP/doc.out" 2>&1; then fail "doctor stayed green on a changed update set"
 else grep -Fq "ServiceNow mode: failed (directory app update set: directory_changed" "$TMP/doc.out" && pass "RED doctor on a kit whose update set differs from PROVENANCE" || fail "doctor reason: $(grep -i 'directory' "$TMP/doc.out" | head -2 | tr '\n' ' ')"; fi
 rm -rf "$KC"
+# Kit 2.0 K-C fix round 1 (sol r1 P2): the admin guide never puts the admin
+# key on curl's command line (any local user reads argv); the header goes on
+# standard input. RED on cea739fe.
+SNDOC="$(awk '/^## ServiceNow mode \(off by default\)/{p=1} p' "$REAL_ROOT/INSTALL.md")"
+if [ -n "$SNDOC" ] && ! printf '%s\n' "$SNDOC" | grep -Eq 'curl[^|]*-H "X-Admin-Key: \$'; then
+  pass "INSTALL.md ServiceNow guide: the admin key is never on curl's argv (header on stdin)"
+else
+  fail "INSTALL.md ServiceNow guide puts the admin key on curl's argv (or the section is missing)"
+fi
+printf '%s\n' "$SNDOC" | grep -Fq "printf 'X-Admin-Key: %s\\n' \"\$DSA_ADMIN_KEY\" | curl -s -H @-" \
+  && pass "INSTALL.md ServiceNow guide: the key-list call sends the header on stdin (-H @-)" \
+  || fail "INSTALL.md ServiceNow guide: the key-list call with -H @-"
 grep -q 'directory-check --dir servicenow-directory' "$ROOT/scripts/release-kit.sh" \
   && pass "release-kit.sh runs directory-check before a release" || fail "release-kit.sh directory-check gate"
 

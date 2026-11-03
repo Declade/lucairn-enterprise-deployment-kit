@@ -361,11 +361,19 @@ def check_login(folder, uid=WORKLOAD_UID, gid=WORKLOAD_UID, linux=None):
         raise Refused("login_invalid", "SERVICENOW_LOGIN_DIR must have mode 0700")
     if linux and (dinfo.st_uid, dinfo.st_gid) != (uid, gid):
         raise Refused("login_invalid", "SERVICENOW_LOGIN_DIR must be owned by %d:%d (the gateway's uid)" % (uid, gid))
+    # Fail closed (kit 2.0 K-C fix round 1, sol r1 P1): a check that cannot
+    # complete REFUSES. The correct folder (0700, uid 10001) is not readable
+    # by an operator account other than root, so the custody of login.json
+    # cannot be seen from there; before, that case returned success and `up`
+    # and doctor accepted a folder whose file was never inspected.
     try:
         names = sorted(os.listdir(folder))
         finfo = os.lstat(folder / "login.json")
     except PermissionError:
-        return "folder ok; file not checked (not readable by this user; expected when owned by uid %d)" % uid
+        raise Refused("login_invalid", "login.json cannot be inspected by this user (uid %d): SERVICENOW_LOGIN_DIR "
+                                       "is 0700 and owned by uid %d, as it must be, so only root or that uid can "
+                                       "check the file; run bin/lucairn as root (sudo) so the custody check "
+                                       "completes — it never passes unchecked" % (os.geteuid(), uid)) from None
     except OSError:
         raise Refused("login_invalid", "login.json is missing in SERVICENOW_LOGIN_DIR") from None
     if names != ["login.json"]:

@@ -48,6 +48,20 @@ carry a security fix are tagged **[Security]**.
   gets the control client (sanitizer control Secret, core container only) and
   a NetworkPolicy to the gateway's control port. The chart's enabled
   ServiceNow render stays held; use Compose for the mode in this release.
+- **Fail closed (K-C fix round 1):** the overlay renders only for the switch
+  value exactly `true` (Compose refuses `false`, a typo or `TRUE`); a login
+  folder whose `login.json` cannot be inspected by the account running
+  `bin/lucairn` is refused (run `up` and the doctor as root), never accepted
+  unchecked; with the mode on the Helm core's entrypoint sets the soft and hard
+  core-dump limit to 0 before it starts the core. The admin guide sends the
+  admin key to curl on standard input, never on its command line.
+- **Support bundle:** every collected file is decoded exactly or the bundle is
+  refused, naming the file and the construct (YAML tags, duplicate keys, an env
+  variable assigned twice, a value spanning lines, a `$` the env parser would
+  interpolate, an escape a log line cannot unescape, a secret too short to
+  search for); every log line is also compared with its string escapes undone.
+  Stated limits in INSTALL.md § "Support bundle — stated limits": review a
+  bundle before you send it.
 
 ### Stated limits
 
