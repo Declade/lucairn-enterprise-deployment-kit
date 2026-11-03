@@ -14,8 +14,10 @@ docker compose -f docker-compose.customer.yml --env-file customer.env --profile 
   <article class="lc-card">
     <h2 class="lc-card-title">Kubernetes path</h2>
     <p class="lc-card-body">Pre-create the read-only DB Secret in the lucairn namespace, then set the matching Helm values:</p>
-    <pre class="lc-codeblock"><code>kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
-  --from-literal=connection-string='postgres://lucairn_dashboard_ro:...@postgres-veil:5432/veil?sslmode=verify-full'
+    <pre class="lc-codeblock"><code># The string carries the password: put it on kubectl's stdin, never its command line.
+printf '%s' 'postgres://lucairn_dashboard_ro:...@postgres-veil:5432/veil?sslmode=verify-full' \
+  | kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
+    --from-file=connection-string=/dev/stdin
 
 # In customer-values.yaml:
 # dashboard:

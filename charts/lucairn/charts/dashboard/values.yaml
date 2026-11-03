@@ -70,9 +70,12 @@ sessionSecret: ""
 #   - User in neither group → 403, NOT auto-grant viewer.
 #   - Missing groups claim → 403.
 #
-# Operator pre-creates the client-secret Secret before `helm install`:
-#   kubectl -n lucairn create secret generic lucairn-dashboard-oidc \
-#     --from-literal=client-secret='<your-idp-client-secret>'
+# Operator pre-creates the client-secret Secret before `helm install`
+# (value on kubectl's stdin, never on its command line — any local user can
+# read a process's argument list):
+#   printf '%s' '<your-idp-client-secret>' \
+#     | kubectl -n lucairn create secret generic lucairn-dashboard-oidc \
+#       --from-file=client-secret=/dev/stdin
 oidc:
   enabled: false
   issuerURL: ""
@@ -107,9 +110,11 @@ ingress:
 #   1. A read-only Postgres role with SELECT on veil_certificates only.
 #      (See INSTALL.md § "Audit DB + Witness wiring".)
 #   2. A K8s Secret holding the libpq connection string. Recommended
-#      shape:
-#        kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
-#          --from-literal=connection-string='postgres://lucairn_dashboard_ro:...@postgres-veil:5432/veil?sslmode=verify-full'
+#      shape (the string carries the password, so it goes on kubectl's
+#      stdin, never on its command line):
+#        printf '%s' 'postgres://lucairn_dashboard_ro:...@postgres-veil:5432/veil?sslmode=verify-full' \
+#          | kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
+#            --from-file=connection-string=/dev/stdin
 #
 # Leave connectionStringRef.name empty to ship the dashboard with the
 # cert pages rendering "not configured" (fail-open default).
@@ -225,8 +230,13 @@ healthServices: ""
 # When enabling /keys, the operator pre-creates a K8s Secret holding
 # the gateway's DSA_ADMIN_KEY value at key `admin-token`:
 #
-#   kubectl -n lucairn create secret generic lucairn-dashboard-gateway-admin \
-#     --from-literal=admin-token='<the value of DSA_ADMIN_KEY on the gateway>'
+#   printf '%s' "$DSA_ADMIN_KEY" \
+#     | kubectl -n lucairn create secret generic lucairn-dashboard-gateway-admin \
+#       --from-file=admin-token=/dev/stdin
+#
+# ($DSA_ADMIN_KEY = the gateway's admin key; the value goes on kubectl's
+# stdin, never on its command line — any local user can read a process's
+# argument list.)
 #
 # Then set both:
 #   - dashboard.gateway.adminURL              http(s)://host:port of the
@@ -281,9 +291,11 @@ gateway:
 # Without that table, the surface still works — the saved-filter
 # dropdown renders a friendly "apply the dashboard migration" banner.
 #
-# Operator pre-creates the K8s Secret:
-#   kubectl -n lucairn create secret generic lucairn-dashboard-audit-log \
-#     --from-literal=url='postgres://audit_app:CHANGE_ME@postgres-audit:5432/audit?sslmode=disable'
+# Operator pre-creates the K8s Secret (the URL carries the password, so it
+# goes on kubectl's stdin, never on its command line):
+#   printf '%s' 'postgres://audit_app:CHANGE_ME@postgres-audit:5432/audit?sslmode=disable' \
+#     | kubectl -n lucairn create secret generic lucairn-dashboard-audit-log \
+#       --from-file=url=/dev/stdin
 audit:
   # K8s Secret with key `url` (libpq postgres URL). Empty = surface
   # disabled. Operators uncomfortable widening audit_app's role can

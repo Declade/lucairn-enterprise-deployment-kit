@@ -3423,8 +3423,11 @@ SSO).
 1. Pre-create the OIDC client_secret Secret in the lucairn namespace:
 
    ```bash
-   kubectl -n lucairn create secret generic lucairn-dashboard-oidc \
-     --from-literal=client-secret='<your-idp-client-secret>'
+   # The value goes on kubectl's standard input, never on its command line
+   # (any local user can read a process's argument list; printf is a builtin).
+   printf '%s' '<your-idp-client-secret>' \
+     | kubectl -n lucairn create secret generic lucairn-dashboard-oidc \
+       --from-file=client-secret=/dev/stdin
    ```
 
 2. Add the OIDC block to your `customer-values.yaml`:
@@ -3530,8 +3533,12 @@ GRANT SELECT ON veil_certificates TO lucairn_dashboard_ro;
 1. Pre-create the audit DB Secret:
 
    ```bash
-   kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
-     --from-literal=connection-string='postgres://lucairn_dashboard_ro:<password>@postgres-bridge:5432/dsa?sslmode=verify-full'
+   # The connection string carries the password, so it goes on kubectl's
+   # standard input, never on its command line (any local user can read a
+   # process's argument list; printf is a builtin).
+   printf '%s' 'postgres://lucairn_dashboard_ro:<password>@postgres-bridge:5432/dsa?sslmode=verify-full' \
+     | kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
+       --from-file=connection-string=/dev/stdin
    ```
 
 2. Wire the cert surface in `customer-values.yaml`:
@@ -3759,7 +3766,9 @@ gateway listener as the data plane (mounted under
 4. Verify: log into the dashboard as admin → click the
    "API keys" sidebar entry → mint a test key → copy the plaintext
    from the modal → exchange the key against the gateway with
-   `curl -H "X-API-Key: <minted-key>" https://<gateway-host>/v1/messages …`.
+   `printf 'X-API-Key: %s\n' '<minted-key>' | curl -H @- https://<gateway-host>/v1/messages …`
+   (the header goes on curl's standard input, never on its command line —
+   any local user can read a process's argument list).
 
 #### Kubernetes path
 
@@ -3769,8 +3778,12 @@ gateway listener as the data plane (mounted under
    override via `dashboard.gateway.adminTokenSecretRef.{name,key}`.
 
    ```bash
-   kubectl -n lucairn create secret generic lucairn-dashboard-gateway-admin \
-     --from-literal=admin-token='<gateway DSA_ADMIN_KEY value>'
+   # $DSA_ADMIN_KEY holds the gateway's DSA_ADMIN_KEY value. The token goes
+   # on kubectl's standard input, never on its command line (any local user
+   # can read a process's argument list; printf is a shell builtin).
+   printf '%s' "$DSA_ADMIN_KEY" \
+     | kubectl -n lucairn create secret generic lucairn-dashboard-gateway-admin \
+       --from-file=admin-token=/dev/stdin
    ```
 
 2. Wire `dashboard.gateway.*` in `customer-values.yaml`:
@@ -3900,8 +3913,11 @@ Verify `bin/lucairn doctor --offline` returns green for `dashboard audit-log`:
 Pre-create the Secret holding the libpq connection string:
 
 ```bash
-kubectl -n lucairn create secret generic lucairn-dashboard-audit-log \
-  --from-literal=url='postgres://audit_app:REAL_PASSWORD@postgres-audit:5432/audit?sslmode=disable'
+# The URL carries the password, so it goes on kubectl's standard input, never
+# on its command line (any local user can read a process's argument list).
+printf '%s' 'postgres://audit_app:REAL_PASSWORD@postgres-audit:5432/audit?sslmode=disable' \
+  | kubectl -n lucairn create secret generic lucairn-dashboard-audit-log \
+    --from-file=url=/dev/stdin
 ```
 
 Then update `customer-values.yaml`:

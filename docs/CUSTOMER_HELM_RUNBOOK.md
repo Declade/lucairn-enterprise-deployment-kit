@@ -367,11 +367,18 @@ CUSTOMER_KEY=$(
   } | kubectl run mint --image=curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b --restart=Never --rm -i --quiet -- \
     sh -ceu '
       IFS= read -r admin_key
+      # The admin key reaches curl through a mode-0600 file, never its argv
+      # (the node lists the arguments of every container process). printf
+      # is a shell builtin; stdin stays free for the JSON body.
+      umask 077
+      hdr="$(mktemp)"
+      printf "x-admin-key: %s\n" "$admin_key" > "$hdr"
       curl -s -X POST \
-        -H "x-admin-key: ${admin_key}" \
+        -H @"$hdr" \
         -H "Content-Type: application/json" \
         --data-binary @- \
         http://gateway.dsa-edge.svc.cluster.local:8080/api/v1/admin/keys
+      rm -f "$hdr"
     ' | jq -r .dsa_api_key
 )
 
@@ -404,9 +411,11 @@ sleep 3
 Send the warmup request and discard the response:
 
 ```bash
-# Warmup — discard the response
-curl -s -o /dev/null \
-  -H "Authorization: Bearer $CUSTOMER_KEY" \
+# Warmup — discard the response. The customer key goes on curl's standard
+# input (-H @-), never on its command line: any local user can read a
+# process's argument list (printf is a shell builtin).
+printf 'Authorization: Bearer %s\n' "$CUSTOMER_KEY" | curl -s -o /dev/null \
+  -H @- \
   -H "Content-Type: application/json" \
   -d '{"model":"claude-haiku-4-5-20251001","max_tokens":10,"messages":[{"role":"user","content":"warmup"}]}' \
   http://localhost:8080/v1/messages
@@ -450,8 +459,10 @@ If you must demo without the L3 shield (not recommended), set `--set global.l3Av
 The gateway port-forward from Step 8.5 is still open. Send a request with a realistic German clinical PII payload (matches the Compose runbook's payload, reliably produces ≥6 redactions):
 
 ```bash
-RESP=$(curl -s -w "\n%{http_code}" \
-  -H "Authorization: Bearer $CUSTOMER_KEY" \
+# The customer key goes on curl's standard input (-H @-), never on its
+# command line (any local user can read a process's argument list).
+RESP=$(printf 'Authorization: Bearer %s\n' "$CUSTOMER_KEY" | curl -s -w "\n%{http_code}" \
+  -H @- \
   -H "Content-Type: application/json" \
   -d '{
     "model": "claude-haiku-4-5-20251001",
@@ -506,7 +517,8 @@ sleep 35
 
 # Fetch the cert chain verdict.
 # Endpoint: GET /api/v1/veil/certificate/<request_id>  (no /verify suffix)
-CERT=$(curl -s -H "Authorization: Bearer $CUSTOMER_KEY" \
+# The customer key goes on curl's standard input, never on its command line.
+CERT=$(printf 'Authorization: Bearer %s\n' "$CUSTOMER_KEY" | curl -s -H @- \
   http://localhost:8080/api/v1/veil/certificate/$REQ_ID)
 
 echo "$CERT" | jq '{
@@ -569,9 +581,16 @@ DASH_SS=$(openssl rand -hex 24)
 echo "Bootstrap password: $DASH_PW"
 # Capture this value — you'll log in as admin@lucairn.local with it.
 
+# The values reach kubectl as mode-0600 files, never as --from-literal: any
+# local user can read a process's argument list.
+DASH_DIR="$(mktemp -d)"
+( umask 077
+  printf '%s' "$DASH_PW" > "$DASH_DIR/password"
+  printf '%s' "$DASH_SS" > "$DASH_DIR/session-secret" )
 kubectl -n lucairn create secret generic lucairn-dashboard-bootstrap-admin \
-  --from-literal=password="$DASH_PW" \
-  --from-literal=session-secret="$DASH_SS"
+  --from-file=password="$DASH_DIR/password" \
+  --from-file=session-secret="$DASH_DIR/session-secret"
+rm -rf "$DASH_DIR"
 ```
 
 ### Development/pilot only: enable the dashboard in customer-values.yaml
@@ -656,9 +675,12 @@ GRANT USAGE ON SCHEMA public TO lucairn_dashboard_ro;
 GRANT SELECT ON veil_certificates TO lucairn_dashboard_ro;
 SQL
 
-# Create the Secret the dashboard chart reads at runtime:
-kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
-  --from-literal=connection-string='postgres://lucairn_dashboard_ro:<password>@veil-witness-postgresql.dsa-witness.svc.cluster.local:5432/veil?sslmode=verify-full'
+# Create the Secret the dashboard chart reads at runtime. The connection
+# string carries the password, so it goes on kubectl's standard input, never
+# on its command line (any local user can read a process's argument list).
+printf '%s' 'postgres://lucairn_dashboard_ro:<password>@veil-witness-postgresql.dsa-witness.svc.cluster.local:5432/veil?sslmode=verify-full' \
+  | kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
+    --from-file=connection-string=/dev/stdin
 ```
 
 The `customer-values.yaml.example` ships the matching wire-up. If you prefer the over-privileged shortcut, reuse the bundled `veil_app` role instead (the dashboard binary never issues writes regardless of the DB role's grants).

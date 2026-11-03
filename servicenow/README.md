@@ -420,8 +420,10 @@ ServiceNow variable is in play. If Leg 0 fails, nothing after it is diagnostic.
 
 ```bash
 # 0a — sanitize a synthetic incident description
-curl -sS -X POST "$LUCAIRN_BASE_URL/api/v1/sanitize-only" \
-  -H "Authorization: Bearer $LUCAIRN_API_KEY" \
+# The key goes on curl's standard input (-H @-), never on its command line:
+# any local user can read a process's argument list (printf is a builtin).
+printf 'Authorization: Bearer %s\n' "$LUCAIRN_API_KEY" | curl -sS -X POST "$LUCAIRN_BASE_URL/api/v1/sanitize-only" \
+  -H @- \
   -H "Content-Type: application/json" \
   -d '{
         "text": "Reported by Brannagh Oduya-Kestrel (brannagh.oduya-kestrel@northmarrow-example.test, +49 151 0000 1234). Her ThinkPad in office 4.12 shows a firmware error after last night'"'"'s patch. Cost centre CC-88231.",
@@ -442,8 +444,8 @@ RESPONSE_TEXT='Summary: a laptop fails to boot after a patch window; firmware er
 REQ_HASH="sha256:$(printf '%s' "$SANITIZED"      | shasum -a 256 | cut -d' ' -f1)"
 RESP_HASH="sha256:$(printf '%s' "$RESPONSE_TEXT" | shasum -a 256 | cut -d' ' -f1)"
 
-curl -sS -X POST "$LUCAIRN_BASE_URL/api/v1/sensitive-mode/seal-cert" \
-  -H "Authorization: Bearer $LUCAIRN_API_KEY" \
+printf 'Authorization: Bearer %s\n' "$LUCAIRN_API_KEY" | curl -sS -X POST "$LUCAIRN_BASE_URL/api/v1/sensitive-mode/seal-cert" \
+  -H @- \
   -H "Content-Type: application/json" \
   -d "{\"cert_id_partial\":\"$PARTIAL\",
        \"request_content_hash\":\"$REQ_HASH\",

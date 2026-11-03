@@ -20,11 +20,18 @@ Lucairn Enterprise Dashboard
          {{ include "dashboard.bootstrapAdminSecretName" . }} \
          -o jsonpath='{.data.password}' | base64 -d
 
-3) Rotate the password (OPS.md procedure):
+3) Rotate the password (OPS.md procedure). The values reach kubectl as
+   mode-0600 files, never on its command line (any local user can read a
+   process's argument list):
+   ROT_DIR="$(mktemp -d)"
+   ( umask 077
+     printf '%s' '<new-password>' > "$ROT_DIR/password"
+     printf '%s' '<new-session-secret>' > "$ROT_DIR/session-secret" )
    kubectl -n {{ .Values.namespace }} create secret generic {{ include "dashboard.bootstrapAdminSecretName" . }} \
-     --from-literal=password='<new-password>' \
-     --from-literal=session-secret='<new-session-secret>' \
+     --from-file=password="$ROT_DIR/password" \
+     --from-file=session-secret="$ROT_DIR/session-secret" \
      --dry-run=client -o yaml | kubectl apply -f -
+   rm -rf "$ROT_DIR"
    kubectl -n {{ .Values.namespace }} rollout restart deploy/{{ include "dashboard.fullname" . }}
 
 {{- if .Values.oidc.enabled }}
@@ -40,9 +47,10 @@ Lucairn Enterprise Dashboard
    local form. Local-admin sign-in continues to work for bootstrap and
    IdP-outage scenarios.
 
-   Rotate the OIDC client_secret (OPS.md procedure):
-   kubectl -n {{ .Values.namespace }} create secret generic {{ .Values.oidc.clientSecretRef.name }} \
-     --from-literal={{ .Values.oidc.clientSecretRef.key | default "client-secret" }}='<new-secret>' \
+   Rotate the OIDC client_secret (OPS.md procedure). The value goes on
+   kubectl's standard input, never on its command line:
+   printf '%s' '<new-secret>' | kubectl -n {{ .Values.namespace }} create secret generic {{ .Values.oidc.clientSecretRef.name }} \
+     --from-file={{ .Values.oidc.clientSecretRef.key | default "client-secret" }}=/dev/stdin \
      --dry-run=client -o yaml | kubectl apply -f -
    kubectl -n {{ .Values.namespace }} rollout restart deploy/{{ include "dashboard.fullname" . }}
 {{- else }}

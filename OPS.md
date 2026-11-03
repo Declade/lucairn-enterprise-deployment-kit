@@ -556,13 +556,21 @@ Pre-create the Secrets in EACH compliance namespace (`dsa-audit`, `dsa-bridge`,
 age-keygen -o lucairn-backup-age.key            # prints the public recipient
 RECIPIENT="$(grep 'public key:' lucairn-backup-age.key | awk '{print $NF}')"
 
+# The S3 credentials reach kubectl as mode-0600 files, never as
+# --from-literal: any local user can read a process's argument list.
+# (The recipient is the age PUBLIC key, not a secret.)
+S3_DIR="$(mktemp -d)"
+( umask 077
+  printf '%s' "$AWS_ACCESS_KEY_ID" > "$S3_DIR/accessKeyId"
+  printf '%s' "$AWS_SECRET_ACCESS_KEY" > "$S3_DIR/secretAccessKey" )
 for ns in dsa-audit dsa-bridge dsa-witness; do
   kubectl -n "$ns" create secret generic lucairn-backup-age \
     --from-literal=recipient="$RECIPIENT"
   kubectl -n "$ns" create secret generic lucairn-backup-s3 \
-    --from-literal=accessKeyId="$AWS_ACCESS_KEY_ID" \
-    --from-literal=secretAccessKey="$AWS_SECRET_ACCESS_KEY"
+    --from-file=accessKeyId="$S3_DIR/accessKeyId" \
+    --from-file=secretAccessKey="$S3_DIR/secretAccessKey"
 done
+rm -rf "$S3_DIR"
 ```
 
 With `backup.enabled=true` the chart renders one CronJob per compliance DB
@@ -2345,7 +2353,10 @@ Lifecycle:
 Check current status (operator endpoint, behind the admin key):
 
 ```bash
-curl -fsS -H "X-Admin-Key: $DSA_ADMIN_KEY" \
+# The admin key goes on curl's standard input (-H @-), never on its command
+# line: any local user can read a process's argument list. printf is a shell
+# builtin, so the key never reaches a child process's argv.
+printf 'X-Admin-Key: %s\n' "$DSA_ADMIN_KEY" | curl -fsS -H @- \
   "$GATEWAY_BASE_URL/api/v1/admin/license-status" | jq .
 # -> {"phase":"active","enforced":true,"enabled_features":["l3_custom_shield"],"valid_until":"...","grace_until":"..."}
 ```
@@ -2917,10 +2928,17 @@ and bounces the dashboard Deployment:
 NEW_PASS="$(openssl rand -base64 24)"
 NEW_SESSION="$(openssl rand -hex 24)"
 
+# The values reach kubectl as mode-0600 files, never as --from-literal: any
+# local user can read a process's argument list.
+ROT_DIR="$(mktemp -d)"
+( umask 077
+  printf '%s' "${NEW_PASS}" > "$ROT_DIR/password"
+  printf '%s' "${NEW_SESSION}" > "$ROT_DIR/session-secret" )
 kubectl -n lucairn create secret generic lucairn-dashboard-bootstrap-admin \
-  --from-literal=password="${NEW_PASS}" \
-  --from-literal=session-secret="${NEW_SESSION}" \
+  --from-file=password="$ROT_DIR/password" \
+  --from-file=session-secret="$ROT_DIR/session-secret" \
   --dry-run=client -o yaml | kubectl apply -f -
+rm -rf "$ROT_DIR"
 
 kubectl -n lucairn rollout restart deploy/lucairn-dashboard
 kubectl -n lucairn rollout status deploy/lucairn-dashboard
@@ -2972,8 +2990,10 @@ curl -fsS http://127.0.0.1:8443/healthz
 
 ```bash
 NEW_SECRET="<value from the IdP>"
-kubectl -n lucairn create secret generic lucairn-dashboard-oidc \
-  --from-literal=client-secret="${NEW_SECRET}" \
+# The value goes on kubectl's standard input, never on its command line
+# (any local user can read a process's argument list; printf is a builtin).
+printf '%s' "${NEW_SECRET}" | kubectl -n lucairn create secret generic lucairn-dashboard-oidc \
+  --from-file=client-secret=/dev/stdin \
   --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n lucairn rollout restart deploy/lucairn-dashboard
 kubectl -n lucairn rollout status deploy/lucairn-dashboard
@@ -3020,9 +3040,12 @@ Kubernetes path:
 ```bash
 # 1) Rotate at Postgres first (same ALTER ROLE as above).
 
-# 2) Replace the Secret with the new connection string.
-kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
-  --from-literal=connection-string='postgres://lucairn_dashboard_ro:<new-password>@postgres-bridge:5432/dsa?sslmode=verify-full' \
+# 2) Replace the Secret with the new connection string. It carries the
+#    password, so it goes on kubectl's standard input, never on its command
+#    line (any local user can read a process's argument list).
+printf '%s' 'postgres://lucairn_dashboard_ro:<new-password>@postgres-bridge:5432/dsa?sslmode=verify-full' \
+  | kubectl -n lucairn create secret generic lucairn-dashboard-audit-db \
+  --from-file=connection-string=/dev/stdin \
   --dry-run=client -o yaml | kubectl apply -f -
 
 # 3) Bounce the Deployment so the pod picks up the new Secret value.
@@ -3089,11 +3112,13 @@ NEW_SECRET="$(openssl rand -hex 24)"
 #    `lucairn` AND `dsa-observability` on `helm upgrade`, with a
 #    lookup-precedence that re-reads existing values. Rotation is
 #    therefore a two-step:
-kubectl -n lucairn create secret generic lucairn-dashboard-grafana-jwt \
-  --from-literal=shared-secret="${NEW_SECRET}" \
+#    The value goes on kubectl's standard input, never on its command
+#    line (any local user can read a process's argument list).
+printf '%s' "${NEW_SECRET}" | kubectl -n lucairn create secret generic lucairn-dashboard-grafana-jwt \
+  --from-file=shared-secret=/dev/stdin \
   --dry-run=client -o yaml | kubectl apply -f -
-kubectl -n dsa-observability create secret generic lucairn-dashboard-grafana-jwt \
-  --from-literal=shared-secret="${NEW_SECRET}" \
+printf '%s' "${NEW_SECRET}" | kubectl -n dsa-observability create secret generic lucairn-dashboard-grafana-jwt \
+  --from-file=shared-secret=/dev/stdin \
   --dry-run=client -o yaml | kubectl apply -f -
 
 # 2) Bounce both Deployments so they re-read the Secret. Order does
@@ -3207,14 +3232,16 @@ bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --of
 NEW_TOKEN="$(openssl rand -hex 32)"
 
 # 1) Rotate the Secret carrying DSA_ADMIN_KEY on the gateway side
-#    (typically named `lucairn-gateway-admin`).
-kubectl -n lucairn create secret generic lucairn-gateway-admin \
-  --from-literal=admin-key="${NEW_TOKEN}" \
+#    (typically named `lucairn-gateway-admin`). The token goes on kubectl's
+#    standard input, never on its command line (any local user can read a
+#    process's argument list).
+printf '%s' "${NEW_TOKEN}" | kubectl -n lucairn create secret generic lucairn-gateway-admin \
+  --from-file=admin-key=/dev/stdin \
   --dry-run=client -o yaml | kubectl apply -f -
 
 # 2) Rotate the dashboard-side mirror Secret.
-kubectl -n lucairn create secret generic lucairn-dashboard-gateway-admin \
-  --from-literal=admin-token="${NEW_TOKEN}" \
+printf '%s' "${NEW_TOKEN}" | kubectl -n lucairn create secret generic lucairn-dashboard-gateway-admin \
+  --from-file=admin-token=/dev/stdin \
   --dry-run=client -o yaml | kubectl apply -f -
 
 # 3) Roll both Deployments so they re-read the Secret values.
@@ -3278,9 +3305,12 @@ Step 2 — update the dashboard env var (Compose) OR Secret (K8s):
 # Compose path: edit customer.env
 LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL=postgres://audit_app:<NEW_PASSWORD>@postgres-audit:5432/audit?sslmode=disable
 
-# K8s path: rotate the Secret
-kubectl -n lucairn create secret generic lucairn-dashboard-audit-log \
-  --from-literal=url="postgres://audit_app:<NEW_PASSWORD>@postgres-audit:5432/audit?sslmode=disable" \
+# K8s path: rotate the Secret. The URL carries the password, so it goes on
+# kubectl's standard input, never on its command line (any local user can
+# read a process's argument list).
+printf '%s' "postgres://audit_app:<NEW_PASSWORD>@postgres-audit:5432/audit?sslmode=disable" \
+  | kubectl -n lucairn create secret generic lucairn-dashboard-audit-log \
+  --from-file=url=/dev/stdin \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 

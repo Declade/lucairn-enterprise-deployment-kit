@@ -6412,8 +6412,11 @@ check_dashboard_keys() {
       local admin_url admin_code admin_body
       admin_url="${gw_url%/}/api/v1/admin/customers"
       admin_body="$(mktemp 2>/dev/null || echo /tmp/lucairn-doctor-keys.$$)"
-      admin_code="$(curl -sS -o "$admin_body" -w '%{http_code}' --max-time 5 \
-          -H "X-Admin-Key: $gw_token" "$admin_url" 2>/dev/null || echo 000)"
+      # Kit 2.0 K-C fix round 3: the admin token never goes on curl's argv
+      # (any local user can read a process's argument list). printf is a
+      # shell builtin; curl reads the header line from stdin (-H @-).
+      admin_code="$(printf 'X-Admin-Key: %s\n' "$gw_token" | curl -sS -o "$admin_body" -w '%{http_code}' --max-time 5 \
+          -H @- "$admin_url" 2>/dev/null || echo 000)"
       case "$admin_code" in
         200)
           echo "dashboard keys: admin auth ok ($admin_code on $admin_url)"
@@ -6460,7 +6463,7 @@ check_dashboard_keys() {
     secret_name="${LUCAIRN_DASHBOARD_GATEWAY_ADMIN_SECRET_NAME:-lucairn-dashboard-gateway-admin}"
     secret_key="${LUCAIRN_DASHBOARD_GATEWAY_ADMIN_SECRET_KEY:-admin-token}"
     if ! kubectl get secret "$secret_name" -n "$dash_ns" >/dev/null 2>&1; then
-      echo "dashboard keys: failed (Secret $secret_name missing in namespace $dash_ns — pre-create with: kubectl -n $dash_ns create secret generic $secret_name --from-literal=$secret_key=<gateway DSA_ADMIN_KEY value>)"
+      echo "dashboard keys: failed (Secret $secret_name missing in namespace $dash_ns — pre-create with the value on stdin, never on the command line: printf '%s' \"\$DSA_ADMIN_KEY\" | kubectl -n $dash_ns create secret generic $secret_name --from-file=$secret_key=/dev/stdin)"
       fail=1
     else
       val=$(kubectl get secret "$secret_name" -n "$dash_ns" -o jsonpath="{.data.${secret_key}}" 2>/dev/null | base64 -d 2>/dev/null || true)
@@ -6618,7 +6621,7 @@ check_dashboard_audit_log() {
     secret_name="${LUCAIRN_DASHBOARD_AUDIT_LOG_SECRET_NAME:-lucairn-dashboard-audit-log}"
     secret_key="${LUCAIRN_DASHBOARD_AUDIT_LOG_SECRET_KEY:-url}"
     if ! kubectl get secret "$secret_name" -n "$dash_ns" >/dev/null 2>&1; then
-      echo "dashboard audit-log: failed (Secret $secret_name missing in namespace $dash_ns — pre-create with: kubectl -n $dash_ns create secret generic $secret_name --from-literal=$secret_key='postgres://audit_app:PASS@postgres-audit:5432/audit')"
+      echo "dashboard audit-log: failed (Secret $secret_name missing in namespace $dash_ns — pre-create with the value on stdin, never on the command line: printf '%s' 'postgres://audit_app:PASS@postgres-audit:5432/audit' | kubectl -n $dash_ns create secret generic $secret_name --from-file=$secret_key=/dev/stdin)"
       fail=1
     else
       val=$(kubectl get secret "$secret_name" -n "$dash_ns" -o jsonpath="{.data.${secret_key}}" 2>/dev/null | base64 -d 2>/dev/null || true)
