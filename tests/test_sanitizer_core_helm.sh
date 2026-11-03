@@ -533,14 +533,11 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "G. bin/lucairn: verify-images set + bundle bootstrap"
-VFN="$(sed -n '/^verify_images_tag_has_core_pair() {/,/^}/p' "$ROOT/bin/lucairn")"
-for pair in 0.5.5:legacy 1.0.9:legacy 1.1.0:pair 1.2.0:pair 2.0.0:pair; do
-  t="${pair%%:*}"; want="${pair#*:}"
-  got="$(bash -c "$VFN"'
-verify_images_tag_has_core_pair "$1" && echo pair || echo legacy' _ "$t")"
-  check_eq "verify-images expects the core pair for release $t" "$want" "$got"
-done
-grep -q 'dsa_images+=(dsa-sanitizer-core dsa-sanitizer-core-sidecar)' "$ROOT/bin/lucairn" && pass "verify-images adds exactly dsa-sanitizer-core + dsa-sanitizer-core-sidecar" || fail "verify-images adds the core pair"
+# The pair is in EVERY verify-images set, at its own manifest tag, and fails
+# closed while it is pending (K-A fix round 1 on #158; behaviour asserted end to
+# end in tests/test_sanitizer_core_compose.sh section G). Here: exactly once.
+grep -q 'local core_pair=(dsa-sanitizer-core dsa-sanitizer-core-sidecar)' "$ROOT/bin/lucairn" && pass "verify-images expects exactly dsa-sanitizer-core + dsa-sanitizer-core-sidecar (the K-A core_pair)" || fail "verify-images expects the core pair (core_pair)"
+if grep -q 'dsa_images+=(dsa-sanitizer-core' "$ROOT/bin/lucairn"; then fail "the pair is not ALSO added at the umbrella --tag (it would be expected twice)"; else pass "the pair is not ALSO added at the umbrella --tag (it would be expected twice)"; fi
 grep -q 'dsa-sanitizer-core:${core_tag}' "$ROOT/bin/lucairn" && grep -q 'dsa-sanitizer-core-sidecar:${core_tag}' "$ROOT/bin/lucairn" && pass "doctor image check pulls the core pair on its own tag" || fail "doctor image check pulls the core pair on its own tag"
 grep -q 'cp "$ROOT/scripts/bootstrap-sanitizer-core-mtls.sh" "$staging/scripts/bootstrap-sanitizer-core-mtls.sh"' "$ROOT/bin/lucairn" && pass "bundle create carries the mTLS bootstrap in scripts/ (not install/scripts/, T-350)" || fail "bundle create carries the mTLS bootstrap"
 grep -q 'require_file "$root/scripts/bootstrap-sanitizer-core-mtls.sh" "bundle sanitizer-core mTLS bootstrap"' "$ROOT/bin/lucairn" && pass "bundle verify requires it for a kit 2.0 compose" || fail "bundle verify requires the bootstrap"

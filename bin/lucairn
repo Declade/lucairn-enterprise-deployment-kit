@@ -10935,25 +10935,6 @@ verify_images_service_tag() {
 # verify_images_default_tag — derive the default --tag from the SINGLE
 # keys/image-digests-*.txt present (FIX-5: do not fall back to the manifest's
 # lagging tag). Errors if zero or more than one digests file exists.
-# verify_images_tag_has_core_pair <tag> — true when <tag> is a release
-# >= 1.1.0, the first one whose signed set carries dsa-sanitizer-core +
-# dsa-sanitizer-core-sidecar. A tag that is not plain MAJOR.MINOR.PATCH is
-# treated as new (the stricter expected set): a mistyped tag must not shrink
-# what has to verify.
-verify_images_tag_has_core_pair() {
-  local t="$1" major minor
-  case "$t" in
-    [0-9]*.[0-9]*.[0-9]*) ;;
-    *) return 0 ;;
-  esac
-  major="${t%%.*}"
-  minor="${t#*.}"; minor="${minor%%.*}"
-  case "$major$minor" in *[!0-9]*) return 0 ;; esac
-  [ "$major" -gt 1 ] && return 0
-  [ "$major" -eq 1 ] && [ "$minor" -ge 1 ] && return 0
-  return 1
-}
-
 verify_images_default_tag() {
   local f matches=() base
   for f in "$ROOT"/keys/image-digests-*.txt; do
@@ -11138,7 +11119,7 @@ verify_images() {
   # legitimately adds/removes an image, update THIS list (and the dashboard
   # pin below) — it is the one place verify-images keys off.
   #
-  # The 12 dsa-* services (14 from 1.1.0: + the sanitizer core pair) ride the release --tag (current release 0.5.5; --tag is
+  # The 12 dsa-* services ride the release --tag (the sanitizer core pair rides its own tag, below) (current release 0.5.5; --tag is
   # required when multiple keys/image-digests-*.txt records are present); the dashboard
   # ships on its OWN independent cadence and is pinned here (currently 0.8.2),
   # mirroring optional_services.lucairn-dashboard.image_tag in image-manifest.yaml
@@ -11147,13 +11128,11 @@ verify_images() {
     dsa-gateway dsa-sanitizer dsa-audit dsa-id-bridge dsa-sandbox-a dsa-sandbox-b
     dsa-veil-witness dsa-reid-guard dsa-admin dsa-demo dsa-ingest dsa-llm-auditor
   )
-  # Kit 2.0 (PRD prd-2026-11-02-kit-2-0-new-core K0/K3): from release 1.1.0 on,
-  # the new sanitizer core and its model sidecar are part of the signed set and
-  # ride the same release tag. Older records (0.5.x) predate them and keep
-  # verifying against the 12 above.
-  if verify_images_tag_has_core_pair "$tag"; then
-    dsa_images+=(dsa-sanitizer-core dsa-sanitizer-core-sidecar)
-  fi
+  # Kit 2.0 (PRD prd-2026-11-02-kit-2-0-new-core K0/K3): the new sanitizer
+  # core and its model sidecar are NOT in this list. They are part of EVERY
+  # verify set, at the pair's own manifest tag (the one the kit pulls), and
+  # fail closed while the manifest has no signed digest for them: see
+  # `core_pair` below (K-A fix round 1, sol r1 finding 4).
   local dashboard_image="lucairn-dashboard"
   local dashboard_tag="0.8.2"   # FIX-A: dashboard's own pinned tag (NOT --tag)
   local canonical_host="ghcr.io/declade"
