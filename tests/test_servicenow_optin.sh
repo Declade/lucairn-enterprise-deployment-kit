@@ -155,6 +155,10 @@ if [ "\${1:-}" = compose ]; then
 fi
 case "\$a" in
   " info "*) [ -n "\${STUB_MEM_BYTES:-}" ] && { echo "\$STUB_MEM_BYTES"; exit 0; }; exit 1 ;;
+  # kit 2.0 K-E: the host's Docker networks, one "<name>|<subnet>..." line each
+  # in STUB_NETS (unset = the engine cannot be asked, as before)
+  " network ls "*) [ -n "\${STUB_NETS:-}" ] || exit 1; cut -d'|' -f1 "\$STUB_NETS"; exit 0 ;;
+  " network inspect "*) [ -n "\${STUB_NETS:-}" ] || exit 1; cat "\$STUB_NETS"; exit 0 ;;
   " inspect "*) [ -n "\${STUB_NETMODE:-}" ] && { echo "\$STUB_NETMODE"; exit 0; }; exit 1 ;;
 esac
 exit 1
@@ -416,6 +420,39 @@ PY
 if cli up "$ENVF" && copy_matches; then pass "M3a: the NEXT up rebuilt the copy from the edited base"; else fail "M3a: rebuild on the next up"; fi
 python3 -c 'import sys,yaml; sys.exit(0 if yaml.safe_load(open(sys.argv[1]))["sanitizer"]["servicenow_instance_path"]["assertion_posture"]=="block" else 1)' "$SNC/copy/sanitizer.yaml" \
   && pass "an operator mode setting in the base reaches the copy" || fail "operator setting kept"
+# Kit 2.0 K-E (row-7 measurement): the control subnet against the host's
+# Docker networks. The kit's own networks take Docker default-pool subnets
+# (172.17.0.0/16 .. 172.31.0.0/16); a control subnet inside one of them made
+# `up` stop in Compose with "Pool overlaps". `up` now refuses first, naming it.
+NETS="$TMP/networks"
+printf 'bridge|172.17.0.0/16\nkit_dsa-identity|172.30.0.0/16\n' > "$NETS"
+cli up "$ENVF" STUB_NETS="$NETS"
+if grep -q 'control_subnet_overlap' "$TMP/cli.out" && grep -Fq 'kit_dsa-identity (172.30.0.0/16)' "$TMP/cli.out" && ! grep -q ' up -d' "$TMP/stub.log"; then
+  pass "a control subnet overlapping an existing Docker network is refused before anything starts, naming the network"
+else fail "subnet overlap: $(tail -2 "$TMP/cli.out" | tr '\n' ' ')"; fi
+printf 'bridge|172.17.0.0/16\nkit_dsa-audit|172.18.0.0/16\n' > "$NETS"
+if cli up "$ENVF" STUB_NETS="$NETS" && grep -q ' up -d' "$TMP/stub.log" && grep -q "lies inside Docker's default address pools" "$TMP/cli.out"; then
+  pass "a free control subnet inside Docker's default pools starts, with a warning"
+else fail "free default-pool subnet: $(tail -2 "$TMP/cli.out" | tr '\n' ' ')"; fi
+d="$(variant up-example-net)"
+sed -i.bak -e 's#^SERVICENOW_CONTROL_SUBNET=.*#SERVICENOW_CONTROL_SUBNET=10.251.251.0/29#' -e 's#^SERVICENOW_CONTROL_GATEWAY_IP=.*#SERVICENOW_CONTROL_GATEWAY_IP=10.251.251.2#' \
+  -e 's#^SERVICENOW_CONTROL_SANITIZER_IP=.*#SERVICENOW_CONTROL_SANITIZER_IP=10.251.251.3#' -e 's#^SERVICENOW_CONTROL_CORE_IP=.*#SERVICENOW_CONTROL_CORE_IP=10.251.251.4#' "$d/customer.env"; rm -f "$d/customer.env.bak"
+printf 'bridge|172.17.0.0/16\nkit_dsa-identity|172.30.0.0/16\nkit_dsa-audit|172.18.0.0/16\n' > "$NETS"
+if cli up "$d/customer.env" STUB_NETS="$NETS" && grep -q ' up -d' "$TMP/stub.log" && grep -q 'overlaps no existing Docker network' "$TMP/cli.out"; then
+  pass "the documented example subnet 10.251.251.0/29 is accepted (outside Docker's default pools)"
+else fail "example subnet: $(tail -2 "$TMP/cli.out" | tr '\n' ' ')"; fi
+for doc in "$ROOT/INSTALL.md" "$ROOT/customer.env.example"; do
+  grep -q 'SERVICENOW_CONTROL_SUBNET=10.251.251.0/29' "$doc" && ! grep -q 'SERVICENOW_CONTROL_SUBNET=172\.' "$doc" \
+    && pass "$(basename "$doc") shows the example subnet outside Docker's default pools" || fail "$(basename "$doc") example subnet"
+done
+if printf 'kit_servicenow-control|172.30.251.0/29\nother|10.9.0.0/16\n' | python3 "$HELPER" subnet-check --subnet 172.30.251.0/29 --own kit_servicenow-control > "$TMP/sc.out" 2>&1 \
+   && grep -q '^SUBNET=free' "$TMP/sc.out"; then
+  pass "this install's own control network from an earlier up is not a clash"
+else fail "own control network: $(cat "$TMP/sc.out")"; fi
+if printf 'kit_servicenow-control|172.30.251.0/29\n' | python3 "$HELPER" subnet-check --subnet 172.30.251.0/29 > "$TMP/sc.out" 2>&1; then
+  fail "another project's network on the same subnet must clash"
+else grep -Fq 'kit_servicenow-control (172.30.251.0/29)' "$TMP/sc.out" && pass "the same subnet on a network that is not this install's own clashes" || fail "same-subnet clash: $(cat "$TMP/sc.out")"; fi
+cli up "$ENVF"; copy_matches && pass "the copy is back to this install's addresses" || fail "copy after the subnet cases"
 chmod 0600 "$SNC/login/login.json"
 cli up "$ENVF"; if grep -q 'login.json must have mode 0400' "$TMP/cli.out" && ! grep -q ' up -d' "$TMP/stub.log"; then pass "a login file with mode 0600 is refused (0400 required)"; else fail "loose login file: $(tail -1 "$TMP/cli.out")"; fi
 chmod 0400 "$SNC/login/login.json"

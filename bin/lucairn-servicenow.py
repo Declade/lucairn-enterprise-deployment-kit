@@ -225,6 +225,7 @@ def cmd_state(_args):
         out("HINT", refusal.hint)
         return 0
     out("STATE", "on")
+    out("SUBNET", env["SUBNET"])
     out("BINDINGS", len(keys))
     out("INSTANCES", len(owners))
     out("SANITIZER_IP", env["SANITIZER_IP"])
@@ -232,6 +233,65 @@ def cmd_state(_args):
     out("PORT", env.get("PORT", "") or "8080")
     for name in ("base", "copy", "material", "login"):
         out(name.upper(), paths.get(name, ""))
+    return 0
+
+
+# ── the control subnet against the host's Docker networks ───────────────────
+# Kit 2.0 K-E (row-7 measurement): a control subnet that overlaps a network
+# Docker already has (the kit's own ~23 networks take their subnets from
+# Docker's default address pools) makes `up` fail inside Compose with "Pool
+# overlaps", after part of the stack was touched. `up` asks first: stdin is one
+# line per existing network, `<name>|<subnet>|<subnet>...` (docker network
+# inspect); the overlay's own control network from an earlier `up` (--own) is
+# not a clash.
+
+# Docker's built-in default-address-pools: 172.17.0.0/16 .. 172.31.0.0/16 (one /16
+# per network) and 192.168.0.0/16 (in /20 steps).
+DOCKER_DEFAULT_POOLS = tuple("172.%d.0.0/16" % i for i in range(17, 32)) + ("192.168.0.0/16",)
+
+
+def cmd_control_network_name(_args):
+    """The resolved name of the overlay's control network in a `config --format json` render."""
+    try:
+        rendered = json.load(sys.stdin)
+        name = rendered["networks"]["servicenow-control"]["name"]
+    except (ValueError, KeyError, TypeError):
+        raise Refused("control_network", "the rendered project has no servicenow-control network") from None
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", name):
+        raise Refused("control_network", "the rendered control network name is not a Docker network name")
+    out("NETWORK", name)
+    return 0
+
+
+def cmd_subnet_check(args):
+    try:
+        control = ipaddress.IPv4Network(args.subnet, strict=True)
+    except ValueError:
+        raise Refused("control_network", "SERVICENOW_CONTROL_SUBNET is not an IPv4 network") from None
+    own = set(args.own or [])
+    clashes = []
+    for line in sys.stdin:
+        fields = line.strip().split("|")
+        name = fields[0].strip()
+        if not name or name in own:
+            continue
+        for field in fields[1:]:
+            try:
+                network = ipaddress.ip_network(field.strip(), strict=False)
+            except ValueError:
+                continue
+            if network.version == 4 and network.overlaps(control):
+                clashes.append("%s (%s)" % (name, network))
+    if clashes:
+        raise Refused("control_subnet_overlap",
+                      "SERVICENOW_CONTROL_SUBNET=%s overlaps the existing Docker network %s; Docker would "
+                      "refuse to create the control network (\"Pool overlaps\"). Pick a private /29 that no "
+                      "existing network uses and that lies outside Docker's default address pools "
+                      "(172.17.0.0/16 to 172.31.0.0/16, 192.168.0.0/16), for example 10.251.251.0/29, and set the three "
+                      "SERVICENOW_CONTROL_*_IP addresses inside it" % (control, ", ".join(clashes)))
+    default_pool = any(control.subnet_of(ipaddress.IPv4Network(p)) for p in DOCKER_DEFAULT_POOLS)
+    out("POOL", "docker-default" if default_pool else "outside-docker-defaults")
+    out("SUBNET", "free")
     return 0
 
 
@@ -690,10 +750,15 @@ def main():
     p.add_argument("--core-ip", default="")
     p = sub.add_parser("directory-check")
     p.add_argument("--dir", required=True)
+    sub.add_parser("control-network-name")
+    p = sub.add_parser("subnet-check")
+    p.add_argument("--subnet", required=True)
+    p.add_argument("--own", action="append", default=[])
     args = parser.parse_args()
     handler = {"state": cmd_state, "config-write": cmd_config_write, "config-check": cmd_config_check,
                "login-check": cmd_login_check, "keyed": cmd_keyed, "status": cmd_status, "scan": cmd_scan,
-               "directory-check": cmd_directory_check}[args.cmd]
+               "directory-check": cmd_directory_check, "control-network-name": cmd_control_network_name,
+               "subnet-check": cmd_subnet_check}[args.cmd]
     try:
         return handler(args)
     except Refused as refusal:

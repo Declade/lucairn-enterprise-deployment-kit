@@ -3220,15 +3220,25 @@ by Lucairn (its test accounts are web-service only).
    GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=true
    GATEWAY_SERVICENOW_KEY_BINDINGS=<key_id>=<instance_id>          # comma-separated, no spaces
    GATEWAY_SERVICENOW_INSTANCES=[{"id":"<instance_id>","base_url":"https://<instance>.service-now.com","customer_id":"<customer_id>"}]
-   SERVICENOW_CONTROL_SUBNET=172.30.251.0/29                         # a private /29 (or wider) of your choice
-   SERVICENOW_CONTROL_GATEWAY_IP=172.30.251.2
-   SERVICENOW_CONTROL_SANITIZER_IP=172.30.251.3
-   SERVICENOW_CONTROL_CORE_IP=172.30.251.4
+   SERVICENOW_CONTROL_SUBNET=10.251.251.0/29                         # a private /29 (or wider) of your choice
+   SERVICENOW_CONTROL_GATEWAY_IP=10.251.251.2
+   SERVICENOW_CONTROL_SANITIZER_IP=10.251.251.3
+   SERVICENOW_CONTROL_CORE_IP=10.251.251.4
    SERVICENOW_CONTROL_MATERIAL=/srv/lucairn/servicenow-control/material
    SERVICENOW_CONTROL_SANITIZER_CONFIG=/srv/lucairn/servicenow-control/sanitizer.yaml
    SERVICENOW_LOGIN_DIR=/srv/lucairn/servicenow-login
    ```
 
+   **The control subnet must not overlap any Docker network on the host.**
+   Docker gives every network it creates without a fixed subnet (the kit's own
+   networks, about 23) a subnet from its default address pools, `172.17.0.0/16` to
+   `172.31.0.0/16` (one /16 each) and `192.168.0.0/16` (in /20 steps); a control subnet inside
+   one of them fails at `up` with "Pool overlaps". The example
+   `10.251.251.0/29` lies outside both pools; pick any free private /29 that is
+   also not routed on your site (and outside your engine's own
+   `default-address-pools`, if `/etc/docker/daemon.json` sets them). `bin/lucairn
+   up` checks the subnet against the existing Docker networks first and refuses
+   an overlap, naming the network; inside the default pools it warns.
    `customer_id` must be the owner of the bound key. One instance belongs to one
    customer. Do **not** set `LCR_PROFILE`: the overlay sets the core's opt-in
    value itself. The switch must be exactly `true`: with any other value
@@ -3274,8 +3284,10 @@ by Lucairn (its test accounts are web-service only).
    `0700` and owned by `10001`, so no other account can look inside it, and a
    login check that cannot see `login.json` refuses (it never passes
    unchecked).
-7. **Check:** `bin/lucairn doctor --env customer.env --customer-key-file …`.
-   Offline and online it checks the copy against a rebuild of the base, the
+7. **Check:** `bin/lucairn doctor --env customer.env --customer-key-file …`,
+   plus `--model <selected-model>` on a `managed-byok` or `split-remote` install
+   (the online doctor refuses to start without it there; a `local-runtime`
+   install reads the model from its runtime profile). Offline and online it checks the copy against a rebuild of the base, the
    login custody, and that the login file and the control material reach only
    their services; online also that the running sanitizer reads the current
    copy (the hash of the file inside the container), the bound key ids, the

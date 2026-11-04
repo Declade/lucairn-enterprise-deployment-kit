@@ -225,6 +225,18 @@ stays `0.8.2`.
 
 ### Fixed — upgrade path, docs and tests (K-E)
 
+- **ServiceNow mode, control subnet:** the documented example
+  (`172.30.251.0/29`) lies inside Docker's default address pools, which the
+  kit's own networks fill, so turning the mode on after a normal install failed
+  at `up` with "Pool overlaps". The example is now `10.251.251.0/29` (outside
+  `172.17.0.0/16`–`172.31.0.0/16` and `192.168.0.0/16`), and `bin/lucairn up` checks the
+  control subnet against the host's existing Docker networks before Compose
+  starts anything: an overlap is refused (`control_subnet_overlap`, naming the
+  network), a free subnet inside the default pools gets a warning. Found by the
+  row-7 measurement.
+- **ServiceNow turn-on step 7:** the doctor command needs
+  `--model <selected-model>` on a `managed-byok` or `split-remote` install;
+  the step now says so.
 - `bin/lucairn-init --adopt-runtime-profile` on a kit 1.x `customer.env`
   stopped with status 1 and no message right after it had re-recorded the
   runtime profile, before the core's mTLS material and the registry DSN file
