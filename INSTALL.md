@@ -2502,7 +2502,7 @@ by it.
    release's `image-manifest.yaml`). No key may appear twice in the file:
    ```bash
    sed -i.bak 's/^LUCAIRN_IMAGE_TAG=.*/LUCAIRN_IMAGE_TAG=1.1.0/' customer.env && rm -f customer.env.bak
-   mdigest() { awk -v s="    $1:" '$0==s{f=1;next} f&&/digest:/{gsub(/[" ]/,"");sub("digest:","");print;exit}' image-manifest.yaml; }
+   mdigest() { awk -v s="    $1:" '$0==s{f=1;next} f&&/^    [a-z]/{exit} f&&/^      digest:/{gsub(/[" ]/,"");sub("digest:","");print;exit}' image-manifest.yaml; }
    {
      echo "DSA_SANITIZER_CORE_REGISTRY_KEY=$(openssl rand -hex 32)"
      echo "POSTGRES_SANITIZER_CORE_PASSWORD=$(openssl rand -hex 24)"
