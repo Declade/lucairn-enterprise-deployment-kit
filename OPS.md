@@ -408,8 +408,9 @@ The password never becomes a process argument: set with the `env` command in
 front of `pg_dump` inside `kubectl exec`, it would sit in the argument list of
 that `env` process, which any user of the pod (and of the node, `ps`) can read. It travels instead
 as ONE pgpass line on standard input into a private file (`umask 077`) that
-`pg_dump` / `pg_restore` reads through `PGPASSFILE` and that is deleted right
-after. `printf` is a shell builtin, so the operator host's argument lists do
+`pg_dump` / `pg_restore` reads through `PGPASSFILE` and that a `trap` deletes
+when the pod-side shell ends — also when the restore is interrupted (HUP, INT,
+TERM; only a `kill -9` of that shell can leave it in the pod's `/tmp`). `printf` is a shell builtin, so the operator host's argument lists do
 not see it either.
 
 ```bash
@@ -431,7 +432,7 @@ for row in \
   # pgpass format: \ and : in the password are escaped.
   printf '*:*:*:*:%s\n' "$(printf '%s' "${pw}" | sed 's/\\/\\\\/g; s/:/\\:/g')" \
     | kubectl -n "${ns}" exec -i "${pod}" -- sh -c \
-      'umask 077; f=/tmp/.lucairn-pgpass.$$; cat > "$f"; PGPASSFILE="$f" pg_dump -U "$1" -d "$2" -Fc; rc=$?; rm -f "$f"; exit $rc' \
+      'umask 077; f=/tmp/.lucairn-pgpass.$$; trap "rm -f $f" EXIT; trap "exit 129" HUP; trap "exit 130" INT; trap "exit 143" TERM; cat > "$f"; PGPASSFILE="$f" pg_dump -U "$1" -d "$2" -Fc; rc=$?; exit $rc' \
       sh "${usr}" "${db}" \
     > "${OUT}/${db}.dump"
   unset pw
@@ -460,7 +461,7 @@ for row in \
   # takes exactly that one line, pg_restore reads the rest.
   { printf '*:*:*:*:%s\n' "$(printf '%s' "${pw}" | sed 's/\\/\\\\/g; s/:/\\:/g')"; cat "${SRC}/${db}.dump"; } \
     | kubectl -n "${ns}" exec -i "${pod}" -- sh -c \
-      'umask 077; f=/tmp/.lucairn-pgpass.$$; IFS= read -r l; printf "%s\n" "$l" > "$f"; PGPASSFILE="$f" pg_restore -U "$1" -d "$2" --no-owner --clean --if-exists; rc=$?; rm -f "$f"; exit $rc' \
+      'umask 077; f=/tmp/.lucairn-pgpass.$$; trap "rm -f $f" EXIT; trap "exit 129" HUP; trap "exit 130" INT; trap "exit 143" TERM; IFS= read -r l; printf "%s\n" "$l" > "$f"; PGPASSFILE="$f" pg_restore -U "$1" -d "$2" --no-owner --clean --if-exists; rc=$?; exit $rc' \
       sh "${usr}" "${db}"
   unset pw
 done
@@ -664,7 +665,7 @@ PW="$(kubectl -n dsa-audit get secret audit-credentials \
 # private file in the pod (never a process argument; see "Helm path — backup").
 { printf '*:*:*:*:%s\n' "$(printf '%s' "$PW" | sed 's/\\/\\\\/g; s/:/\\:/g')"; cat ./audit.dump; } \
   | kubectl -n dsa-audit exec -i audit-postgresql-0 -- sh -c \
-    'umask 077; f=/tmp/.lucairn-pgpass.$$; IFS= read -r l; printf "%s\n" "$l" > "$f"; PGPASSFILE="$f" pg_restore -U dsa -d audit --no-owner --clean --if-exists; rc=$?; rm -f "$f"; exit $rc'
+    'umask 077; f=/tmp/.lucairn-pgpass.$$; trap "rm -f $f" EXIT; trap "exit 129" HUP; trap "exit 130" INT; trap "exit 143" TERM; IFS= read -r l; printf "%s\n" "$l" > "$f"; PGPASSFILE="$f" pg_restore -U dsa -d audit --no-owner --clean --if-exists; rc=$?; exit $rc'
 unset PW
 ```
 

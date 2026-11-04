@@ -3083,21 +3083,40 @@ by Lucairn (its test accounts are web-service only).
   side (`LCR_PROFILE=kit-servicenow`, the control client, the core → gateway
   NetworkPolicy) is in the chart; the gateway's bindings, stored login and
   ledger volume follow in a later kit slice. Use Compose for the mode until then.
-- **Helm DNS policy of the ServiceNow render** (`_servicenow-control.tpl`): the
-  final review flagged its DNS egress rules; they are latent while the Helm
-  ServiceNow render is held and must be fixed before the hold is lifted.
+- **Two known Helm ServiceNow defects, to fix before the hold is lifted.**
+  Both are latent while the Helm ServiceNow render is held:
+  1. With `global.dnsRestriction=true` (Cilium), the core's DNS policy
+     `dns-restrict-identity-sanitizer-core` has no entry for
+     `gateway-servicenow-control.<edge namespace>.svc.cluster.local`, the
+     control peer the core calls, so the core could not resolve it.
+  2. The ServiceNow DNS policies (`servicenow-gateway-dns`,
+     `servicenow-sandbox-a-dns` in `_servicenow-control.tpl`) select the
+     cluster resolver by the hard-coded label `k8s-app: kube-dns` and ignore
+     `global.clusterDNS.podLabels`, so on a cluster whose resolver Pods carry
+     other labels those Pods could not resolve anything.
 
 ### Kit 2.0 — further stated limits (final reads, 2026-11-03)
 
 - **Adopting an existing `customer.env`:** `bin/lucairn-init` in adopt mode
-  reads `SANITIZER_CORE_MTLS_HOST_DIR` with a plain text match, so a quoted
-  value is not understood; write that line unquoted.
+  reads `SANITIZER_CORE_MTLS_HOST_DIR` with a plain text match (the last line
+  that starts with `SANITIZER_CORE_MTLS_HOST_DIR=`), not the way Docker Compose
+  reads the file: a quoted value, an `export SANITIZER_CORE_MTLS_HOST_DIR=…`
+  line (not matched at all) and an inline ` # comment` (taken as part of the
+  path) are misread. Write that line plain: `SANITIZER_CORE_MTLS_HOST_DIR=/path`,
+  unquoted, no `export`, no comment on the same line.
 - **Doctor claim checks read container logs.** After Docker rotates or prunes
   the logs, a state in which the core dropped claims earlier can pass the
-  check; the release rehearsal's real turn is the proof of arrival.
-- **Helm migration Job:** the registry migration Job has no
-  `ttlSecondsAfterFinished` (the doctor's live check reads the completed Job),
-  so finished Jobs stay until you delete them; delete old ones by hand.
+  check; the release rehearsal's real turn is the proof of arrival. The other
+  direction is a false FAIL: the core logs its witness transport line
+  (`evidence: witness transport mode=…`) once, at boot. Once that line has
+  rotated out of the logs, the online doctor (Compose: "the core's log shows no
+  witness transport line"; Helm live: the same text under "sanitizer core
+  (live)") fails a healthy core. Recreating the core writes the line again.
+- **Helm migration Job:** each `helm install` / `helm upgrade` creates
+  `sanitizer-core-migrate-r<revision>` and removes the previous revision's Job
+  (it carries no hook or keep annotation). Do not delete the CURRENT Job by
+  hand: the live doctor reads it, and without it fails with "no
+  sanitizer-core-migrate Job found" until the next `helm upgrade` creates one.
 - **`bundle verify` checks the ServiceNow update set against the bundle's own
   `PROVENANCE` record:** that proves the files were not changed inside the
   bundle (integrity), not who made the bundle.
