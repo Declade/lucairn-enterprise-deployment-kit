@@ -20,6 +20,16 @@ receipt, and witness-signature verification; anchors are explicitly not checked.
 > are published at <https://lucairn.eu/security>; the disclosure process and
 > contact are in [`SECURITY.md`](SECURITY.md).
 
+### kit 2.0.0 / chart 2.0.0 (images 1.1.0) — the hosted service's sanitizer core
+
+**Upgrade from 1.9.7:** follow § [Upgrade from kit 1.9.7 to 2.0.0](#upgrade-from-kit-197-to-200)
+— images `0.5.5` → `1.1.0`, four new services (the core's registry database,
+model sidecar, core and migration step), new `customer.env` settings, the
+runtime profile re-recorded, the registry migration as its own step. No 1.x
+schema change. The host needs at least 16 GB RAM for Docker and Docker Engine
+26.0.0 or newer. The ServiceNow mode stays off. Read `CHANGELOG.md` `[2.0.0]`
+→ "Stated limits".
+
 ### kit 1.9.7 / chart 1.9.7 (2026-10-28, images 0.5.5) — QI engine off by default
 
 **Upgrade from 1.9.6:** no image, schema or ceiling change — keep
