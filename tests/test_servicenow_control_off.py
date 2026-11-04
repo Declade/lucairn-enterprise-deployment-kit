@@ -131,19 +131,27 @@ class OffRenderTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             assert_render_equal(self, expected, yaml.safe_dump(legacy).encode(), "different-version")
 
-    def test_bootstrap_has_no_existing_startup_reference(self):
-        # Positive existence prevents a vacuous "not referenced" result after deletion.
+    def test_overlay_only_selected_by_the_opt_in(self):
+        # Kit 2.0 K-C: the overlay is now selected by bin/lucairn, but ONLY
+        # through the opt-in resolver; the base files, lucairn-init and the
+        # release scripts never name it, and nothing names the review renderer.
         tokens = ("bootstrap-servicenow-control", "render-servicenow-control", "docker-compose.servicenow-control")
         for file in ("scripts/bootstrap-servicenow-control.py", "scripts/render-servicenow-control.py",
-                     "docker-compose.servicenow-control.yml"):
+                     "docker-compose.servicenow-control.yml", "bin/lucairn-servicenow.py"):
             self.assertTrue((ROOT / file).is_file())
-        # Check startup/packaging entry points, rather than scanning the whole repo.
-        names = [*FILES, "bin/lucairn", "bin/lucairn-init", "scripts/package-release.sh", "scripts/release-kit.sh"]
-        for name in names:
+        for name in [*FILES, "bin/lucairn-init", "scripts/package-release.sh", "scripts/release-kit.sh"]:
             path = ROOT / name
             if path.is_file():
                 for token in tokens:
                     self.assertNotIn(token.encode(), path.read_bytes(), name)
+        cli = (ROOT / "bin/lucairn").read_text()
+        self.assertNotIn("render-servicenow-control", cli)
+        self.assertEqual(1, cli.count("docker-compose.servicenow-control"), "one constant names the overlay")
+        self.assertIn('SERVICENOW_OVERLAY="docker-compose.servicenow-control.yml"', cli)
+        # The overlay enters the Compose arguments in exactly one place, behind SN_STATE=on.
+        self.assertEqual(1, cli.count('RUNTIME_COMPOSE_ARGS+=(-f "$overlay")\n  fi\n  if [ "$mode" = "local-runtime" ]'))
+        selection = cli.index('RUNTIME_COMPOSE_ARGS+=(-f "$overlay")\n  fi\n  if [ "$mode" = "local-runtime" ]')
+        self.assertIn('if [ "$SN_STATE" = "on" ]; then', cli[selection - 400:selection])
 
 
 if __name__ == "__main__":

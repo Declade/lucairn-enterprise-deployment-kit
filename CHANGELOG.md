@@ -14,6 +14,99 @@ carry a security fix are tagged **[Security]**.
 
 ## [Unreleased]
 
+### Added
+
+- **ServiceNow mode — available, off by default, the admin opts in per key
+  (T-1441 K-C).** The hosted service's ServiceNow mode is part of the kit. It
+  is on only when `customer.env` sets both
+  `GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=true` and a non-empty
+  `GATEWAY_SERVICENOW_KEY_BINDINGS` (read through Docker Compose's own
+  env-file parser); `bin/lucairn` then adds
+  `docker-compose.servicenow-control.yml` to every command. Bindings without
+  the switch make `bin/lucairn up` refuse with `session_config_invalid`. On
+  every `up` the Python sanitizer's config copy is rebuilt from the current
+  base config — when it changed, `up` writes it and recreates the Python
+  sanitizer after the start (it bind-mounts that one file and would keep the
+  old version) — the stored-login custody is checked (folder `0700`, file
+  `0400`, `10001:10001`) and, while the gateway container runs, every bound
+  key id is checked against it (counts only). The core runs `LCR_PROFILE=kit-servicenow` (set by the
+  overlay only), no core dumps, `GOTRACEBACK=none`; the model sidecar joins the
+  control network at a fixed address without an alias and mounts no control
+  material. `bin/lucairn doctor` checks the copy's hash, the login custody, the
+  mount scope of the full render, and online the bound key ids, the gateway's
+  admin ServiceNow status and exactly one gateway. Admin guide: INSTALL.md §
+  "ServiceNow mode (off by default)". The directory app
+  (`x_1620539_lucdir` 0.2.0, Business Source License 1.1 like the kit) ships
+  in `servicenow-directory/`: its update set, the scripts of its two scheduled
+  jobs, its licence and a `PROVENANCE` record (source repository, commit, the
+  sha256 of every file). `bin/lucairn doctor` (mode on), `bin/lucairn bundle
+  verify` and the release script refuse a file that differs from that record;
+  a bundle of an opted-in install carries the folder. The app stays off after
+  the import until the instance admin switches it on; the import was
+  previewed on the app's test instance only (stated in INSTALL.md).
+- **Helm:** the core always sets `LCR_PROFILE` as an `env:` literal — `kit`,
+  or `kit-servicenow` only with `global.servicenowControl.enabled` — so no
+  Secret attached through `envFrom` can change it. With the switch on the core
+  gets the control client (sanitizer control Secret, core container only) and
+  a NetworkPolicy to the gateway's control port. The chart's enabled
+  ServiceNow render stays held; use Compose for the mode in this release.
+- **Fail closed (K-C fix round 1):** the overlay renders only for the switch
+  value exactly `true` (Compose refuses `false`, a typo or `TRUE`); a login
+  folder whose `login.json` cannot be inspected by the account running
+  `bin/lucairn` is refused (run `up` and the doctor as root), never accepted
+  unchecked; with the mode on the Helm core's entrypoint sets the soft and hard
+  core-dump limit to 0 before it starts the core. The admin guide sends the
+  admin key to curl on standard input, never on its command line.
+- **Support bundle:** every collected file is decoded exactly or the bundle is
+  refused, naming the file and the construct (YAML tags, duplicate keys, an env
+  variable assigned twice, a value spanning lines, a `$` the env parser would
+  interpolate, an escape a log line cannot unescape, a secret too short to
+  search for); every log line is also compared with its string escapes undone.
+  Stated limits in INSTALL.md § "Support bundle — stated limits": review a
+  bundle before you send it.
+
+### Fixed (kit 2.0 final reads, 2026-11-03)
+
+- `bin/lucairn up` runs the sanitizer core's capped registry migration before
+  it starts anything (the core refuses an unmigrated registry); the docs and
+  the `lucairn-init` "Next" block say so.
+- An offline customer bundle can start the core: the staged `customer.env`
+  names bundle-relative paths for the core's mTLS material and registry DSN
+  file, and the bundle ships the mTLS bootstrap and the DSN writer.
+- `lucairn-init --dev` no longer drops every claim of the core: the core's
+  witness hop follows `GRPC_TLS_ENABLED` (plaintext on a development mesh,
+  verified mTLS otherwise); the doctor fails a mismatch.
+- On Linux the mTLS bootstrap refuses an ordinary user (only root can give the
+  keys to the container user); `lucairn-init` runs that step with `sudo`; the
+  doctor fails a key the containers cannot read.
+- The core and its model sidecar run without capabilities, with
+  `no-new-privileges` and a read-only root filesystem (Compose, as on Helm).
+- The online doctor fails on a Docker Engine older than 26.0.0 / 25.0.5 /
+  23.0.11 (CVE-2024-29018: DNS forwarding from internal networks).
+- The ServiceNow `up` gate and the doctor send the admin key only to a running
+  gateway container; the dashboard key check does the same for a loopback
+  admin URL.
+- A changed ServiceNow sanitizer config copy recreates the Python sanitizer;
+  the doctor compares the file inside the running container.
+- The OPS.md Helm backup and restore recipes hand the database password to
+  `pg_dump` / `pg_restore` in a private password file over standard input,
+  never as a process argument; the temporary credential folders in the docs
+  are removed even when a step fails.
+
+### Stated limits
+
+- A mistyped key id runs the generic path; `up` and the doctor check every
+  bound id against the running gateway (while the gateway is not running, `up`
+  only warns).
+- The Python sanitizer and the new core present the same sanitizer control
+  certificate to the gateway's control listener (both are its sanitizer peers;
+  the single-use ticket carries the request).
+- The gateway routes still served by the Python sanitizer's `/v1/sanitize` —
+  `/v1/chat/completions`, `/mcp`, `/api/v1/proxy/messages` — use that
+  service's 1.0 ServiceNow path for a bound key; `/v1/messages` uses the core.
+- One gateway serves the mode (one container on Compose; `replicaCount: 1`, no
+  HPA on Helm).
+
 ## [1.9.7] — 2026-10-28 — images `0.5.5`
 
 Kit-only patch release: the `dsa-*` images stay `0.5.5` (same digests as

@@ -36,4 +36,16 @@ data:
       sleep 2
     done
     echo "core-entrypoint: sidecar answers, starting the core" >&2
+{{- if include "servicenowControl.enabled" . }}
+    # ServiceNow mode: no core dumps BY CONSTRUCTION (DSA #961's precondition
+    # for the control client; kit 2.0 K-C fix round 1, sol r1 P2). Soft AND
+    # hard RLIMIT_CORE go to 0 before the core starts, read back; a container
+    # where that fails never starts the core.
+    ulimit -S -c 0
+    ulimit -H -c 0
+    if [ "$(ulimit -S -c)" != 0 ] || [ "$(ulimit -H -c)" != 0 ]; then
+      echo "core-entrypoint: RLIMIT_CORE could not be set to 0; the core is not started in the ServiceNow mode" >&2
+      exit 1
+    fi
+{{- end }}
     exec sanitizer-core "$@"

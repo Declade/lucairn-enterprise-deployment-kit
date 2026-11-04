@@ -96,11 +96,21 @@ mkdir -p "$MINT_BIN"
 cat > "$MINT_BIN/curl" <<'MINT_CURL'
 #!/usr/bin/env bash
 set -euo pipefail
+# Records every argv plus the header lines read from an @file and the body
+# read from stdin, so the test can prove which channel carried each value.
+printf '%s\n' "$*" >> "${MINT_ARGV_LOG:-/dev/null}"
 out=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift 2 ;;
-    -w|-X|-H|--data-binary|--max-time) shift 2 ;;
+    -H)
+      case "$2" in
+        @-) cat >> "${MINT_HDR_LOG:-/dev/null}" ;;
+        @*) cat "${2#@}" >> "${MINT_HDR_LOG:-/dev/null}" ;;
+      esac
+      shift 2 ;;
+    --data-binary) [ "$2" != @- ] || cat >> "${MINT_BODY_LOG:-/dev/null}"; shift 2 ;;
+    -w|-X|--max-time) shift 2 ;;
     *) shift ;;
   esac
 done
@@ -109,12 +119,122 @@ printf '201'
 MINT_CURL
 chmod +x "$MINT_BIN/curl"
 MINT_KEY='lcr_live_mint_output_sentinel'
-MINT_OUTPUT="$(LUCAIRN_ADMIN_KEY='admin-fixture-key' PATH="$MINT_BIN:$PATH" "$ROOT/bin/lucairn-mint-customer" --name 'Mint Fixture' --email mint@example.test)"
+MINT_ARGV_LOG="$TMPDIR/mint.argv"; MINT_HDR_LOG="$TMPDIR/mint.hdr"; MINT_BODY_LOG="$TMPDIR/mint.body"
+: > "$MINT_ARGV_LOG"; : > "$MINT_HDR_LOG"; : > "$MINT_BODY_LOG"
+MINT_OUTPUT="$(MINT_ARGV_LOG="$MINT_ARGV_LOG" MINT_HDR_LOG="$MINT_HDR_LOG" MINT_BODY_LOG="$MINT_BODY_LOG" \
+  LUCAIRN_ADMIN_KEY='admin-fixture-key' PATH="$MINT_BIN:$PATH" "$ROOT/bin/lucairn-mint-customer" --name 'Mint Fixture' --email mint@example.test)"
 grep -Fq "raw_key:     $MINT_KEY     <- capture this; will not be shown again" <<< "$MINT_OUTPUT"
 test "$(grep -Fo "$MINT_KEY" <<< "$MINT_OUTPUT" | wc -l | tr -d ' ')" = 1 || { echo 'mint output changed the one-time raw-key reveal' >&2; exit 1; }
 ! grep -Fq 'Smoke (real inference' <<< "$MINT_OUTPUT" || { echo 'mint output still recommends raw-key inference smoke' >&2; exit 1; }
 ! grep -Fq 'x-api-key:' <<< "$MINT_OUTPUT" || { echo 'mint output still exposes raw-key header guidance' >&2; exit 1; }
 grep -Fq -- '--customer-key-file /secure/lucairn-customer.key' <<< "$MINT_OUTPUT" || { echo 'mint output lacks safe key-file doctor guidance' >&2; exit 1; }
+! grep -Fq 'x-admin-key: $LUCAIRN_ADMIN_KEY" ' <<< "$MINT_OUTPUT" || { echo 'mint banner still shows an admin-key header on curl argv' >&2; exit 1; }
+
+# Kit 2.0 K-C fix round 3 (sol r2 P2): the mint call never puts the admin key
+# or the request body (which can carry --provider-key) on curl's argv; any
+# local user can read a process's argument list. The header line goes through
+# a private temp file that is removed afterwards, the body through stdin.
+# RED on 8f18fa2f (the key and the body were curl arguments).
+grep -Fq '/api/v1/admin/keys' "$MINT_ARGV_LOG" || { echo 'mint never called the stub curl' >&2; exit 1; }
+! grep -Fq 'admin-fixture-key' "$MINT_ARGV_LOG" || { echo 'mint put the admin key on curl argv' >&2; exit 1; }
+! grep -Fq '"customer_id"' "$MINT_ARGV_LOG" || { echo 'mint put the request body on curl argv' >&2; exit 1; }
+grep -Fxq 'x-admin-key: admin-fixture-key' "$MINT_HDR_LOG" || { echo 'mint did not send the admin header from a file' >&2; exit 1; }
+grep -Fq '"customer_id"' "$MINT_BODY_LOG" || { echo 'mint did not send the request body on stdin' >&2; exit 1; }
+! ls "$TMPDIR"/lucairn-mint-hdr-* >/dev/null 2>&1 || { echo 'mint left its admin header file behind' >&2; exit 1; }
+echo "lucairn mint: admin key + body never on curl argv: ok"
+
+# Kit 2.0 K-C fix round 3 (sol r2 P2): doctor's dashboard-keys admin probe
+# never puts LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN on curl's argv; the header
+# goes on stdin (-H @-). A stub curl on PATH records every argv and the
+# header lines it reads from stdin. RED on 8f18fa2f.
+DASH_BIN="$TMPDIR/dash-keys-bin"
+mkdir -p "$DASH_BIN"
+cat > "$DASH_BIN/curl" <<'DASH_CURL'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$DASH_ARGV_LOG"
+out=""; url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -H) [ "$2" != @- ] || cat >> "$DASH_HDR_LOG"; shift 2 ;;
+    -w|--max-time) shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+case "$url" in
+  */api/v1/admin/customers) printf '%s' '[{"customer_id":"cust_fixture"}]' > "$out" ;;
+esac
+printf '200'
+DASH_CURL
+chmod +x "$DASH_BIN/curl"
+DASH_TOKEN='dash-admin-token-argv-canary-7f3c9e'
+DASH_ENV="$TMPDIR/dash-keys.env"
+printf 'LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL=http://gateway.example.test:8080\nLUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN=%s\n' "$DASH_TOKEN" > "$DASH_ENV"
+DASH_ARGV_LOG="$TMPDIR/dash-keys.argv"; DASH_HDR_LOG="$TMPDIR/dash-keys.hdr"
+: > "$DASH_ARGV_LOG"; : > "$DASH_HDR_LOG"
+DASH_RC=0
+DASH_OUT="$(DASH_ARGV_LOG="$DASH_ARGV_LOG" DASH_HDR_LOG="$DASH_HDR_LOG" DOCTOR_OFFLINE=0 DOCTOR_INCLUDE_DASHBOARD=0 \
+  PATH="$DASH_BIN:$PATH" bash -c '__dash_env="$1"; set --; . "$0" >/dev/null 2>&1; check_dashboard_keys "$__dash_env"' \
+  "$ROOT/bin/lucairn" "$DASH_ENV" 2>&1)" || DASH_RC=$?
+[ "$DASH_RC" -eq 0 ] || { printf '%s\n' "$DASH_OUT" >&2; echo "dashboard keys check failed (rc=$DASH_RC)" >&2; exit 1; }
+grep -Fq 'dashboard keys: admin auth ok (200 on http://gateway.example.test:8080/api/v1/admin/customers)' <<< "$DASH_OUT" \
+  || { printf '%s\n' "$DASH_OUT" >&2; echo 'dashboard keys admin probe did not run' >&2; exit 1; }
+grep -Fq 'dashboard keys: gateway reports 1 customer(s)' <<< "$DASH_OUT" || { printf '%s\n' "$DASH_OUT" >&2; echo 'dashboard keys lost the customer count' >&2; exit 1; }
+grep -Fq '/api/v1/admin/customers' "$DASH_ARGV_LOG" || { echo 'dashboard keys never called the admin endpoint' >&2; exit 1; }
+! grep -Fq "$DASH_TOKEN" "$DASH_ARGV_LOG" || { echo 'dashboard keys put the admin token on curl argv' >&2; exit 1; }
+! grep -Fq "$DASH_TOKEN" <<< "$DASH_OUT" || { echo 'dashboard keys printed the admin token' >&2; exit 1; }
+[ "$(cat "$DASH_HDR_LOG")" = "X-Admin-Key: $DASH_TOKEN" ] || { echo 'dashboard keys did not send exactly the admin header on stdin' >&2; exit 1; }
+echo "lucairn doctor dashboard keys: admin token never on curl argv: ok"
+
+# Final reads, ToB TOB-K20-01: on a LOOPBACK admin URL the token goes out only
+# while this project's gateway container runs (Docker then holds the port);
+# otherwise whatever listens there would receive it.
+printf '#!/usr/bin/env bash\ncase " $* " in *" ps --status running -q gateway "*) [ "${DASH_GW_RUNNING:-0}" = 1 ] && echo 9a7e0004; exit 0 ;; *" port gateway 8080 "*) [ "${DASH_GW_RUNNING:-0}" = 1 ] && echo "${DASH_GW_PUBLISH:-127.0.0.1:8080}"; exit 0 ;; *" version "*) exit 0 ;; esac\nexit 1\n' > "$DASH_BIN/docker"
+chmod +x "$DASH_BIN/docker"
+printf 'LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL=http://127.0.0.1:8080\nLUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN=%s\n' "$DASH_TOKEN" > "$DASH_ENV"
+for running in 0 1; do
+  : > "$DASH_ARGV_LOG"; : > "$DASH_HDR_LOG"; DASH_RC=0
+  DASH_OUT="$(DASH_GW_RUNNING="$running" DASH_ARGV_LOG="$DASH_ARGV_LOG" DASH_HDR_LOG="$DASH_HDR_LOG" DOCTOR_OFFLINE=0 DOCTOR_INCLUDE_DASHBOARD=0 \
+    PATH="$DASH_BIN:$PATH" bash -c '__dash_env="$1"; set --; . "$0" >/dev/null 2>&1; check_dashboard_keys "$__dash_env"' \
+    "$ROOT/bin/lucairn" "$DASH_ENV" 2>&1)" || DASH_RC=$?
+  if [ "$running" = 0 ]; then
+    [ ! -s "$DASH_HDR_LOG" ] && [ ! -s "$DASH_ARGV_LOG" ] || { echo 'TOB-K20-01: dashboard keys sent the admin token to a loopback URL with no running gateway container' >&2; exit 1; }
+    grep -Fq 'gateway container not running' <<< "$DASH_OUT" || { printf '%s\n' "$DASH_OUT" >&2; echo 'TOB-K20-01: no warning for the skipped loopback probe' >&2; exit 1; }
+  else
+    [ "$(cat "$DASH_HDR_LOG")" = "X-Admin-Key: $DASH_TOKEN" ] || { echo 'TOB-K20-01: dashboard keys did not probe a loopback URL while the gateway runs' >&2; exit 1; }
+  fi
+done
+echo "lucairn doctor dashboard keys: loopback admin URL only while the gateway container runs: ok"
+
+# Kit round 2 (ToB INFO a): only 127.0.0.1 / ::1 with exactly the port the
+# running gateway publishes gets the token. Other loopback or unspecified
+# forms, and a different port, get none (a warning instead) even while the
+# gateway runs. RED on 306a565 (0.0.0.0, localhost., ::ffff:127.0.0.1 were
+# "remote"; localhost, 127.1 and a different port passed the running check).
+dash_probe() { # <url> [publish] -> DASH_OUT, DASH_HDR_LOG (gateway running)
+  printf 'LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL=%s\nLUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN=%s\n' "$1" "$DASH_TOKEN" > "$DASH_ENV"
+  : > "$DASH_ARGV_LOG"; : > "$DASH_HDR_LOG"
+  DASH_OUT="$(DASH_GW_RUNNING=1 DASH_GW_PUBLISH="${2:-127.0.0.1:8080}" DASH_ARGV_LOG="$DASH_ARGV_LOG" DASH_HDR_LOG="$DASH_HDR_LOG" DOCTOR_OFFLINE=0 DOCTOR_INCLUDE_DASHBOARD=0 \
+    PATH="$DASH_BIN:$PATH" bash -c '__dash_env="$1"; set --; . "$0" >/dev/null 2>&1; check_dashboard_keys "$__dash_env"' \
+    "$ROOT/bin/lucairn" "$DASH_ENV" 2>&1)" || true
+}
+for u in http://0.0.0.0:8080 http://localhost.:8080 'http://[::ffff:127.0.0.1]:8080' http://localhost:8080 http://127.1:8080 http://127.0.0.2:8080 'http://[::]:8080' http://2130706433:8080; do
+  dash_probe "$u"
+  [ ! -s "$DASH_HDR_LOG" ] && [ ! -s "$DASH_ARGV_LOG" ] || { printf '%s\n' "$DASH_OUT" >&2; echo "round 2 ToB INFO: dashboard keys sent the admin token to the loopback form $u" >&2; exit 1; }
+  grep -Fq 'is a loopback or unspecified address other than 127.0.0.1 / ::1' <<< "$DASH_OUT" || { printf '%s\n' "$DASH_OUT" >&2; echo "round 2 ToB INFO: no warning for $u" >&2; exit 1; }
+done
+dash_probe http://127.0.0.1:9999
+[ ! -s "$DASH_HDR_LOG" ] && [ ! -s "$DASH_ARGV_LOG" ] || { echo 'round 2 ToB INFO: dashboard keys sent the admin token to 127.0.0.1 on a port the gateway does not publish' >&2; exit 1; }
+grep -Fq 'the running gateway publishes 127.0.0.1:8080, not 127.0.0.1:9999' <<< "$DASH_OUT" || { printf '%s\n' "$DASH_OUT" >&2; echo 'round 2 ToB INFO: no warning for a different port' >&2; exit 1; }
+dash_probe 'http://[::1]:8080'
+[ ! -s "$DASH_HDR_LOG" ] || { echo 'round 2 ToB INFO: dashboard keys sent the admin token to [::1] while the gateway publishes only 127.0.0.1' >&2; exit 1; }
+dash_probe http://127.0.0.1:8080
+[ "$(cat "$DASH_HDR_LOG")" = "X-Admin-Key: $DASH_TOKEN" ] || { echo 'round 2 ToB INFO: dashboard keys did not probe 127.0.0.1 on the port the gateway publishes' >&2; exit 1; }
+dash_probe http://gateway.example.test:8080
+[ "$(cat "$DASH_HDR_LOG")" = "X-Admin-Key: $DASH_TOKEN" ] || { echo 'round 2 ToB INFO: a remote admin URL is no longer probed' >&2; exit 1; }
+echo "lucairn doctor dashboard keys: token only to 127.0.0.1/::1 on the gateway's published port (round 2): ok"
 
 echo "lucairn cli tests: ok"
 

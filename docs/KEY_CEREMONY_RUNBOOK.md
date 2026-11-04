@@ -315,8 +315,11 @@ curl -s http://localhost:8080/.well-known/veil-keys.json | jq '.keys | length'
 # The gateway embeds the request ID at metadata.dsa_compliance.request_id
 # (anthropic_types.go:dsaCompliance struct), not at the top-level .request_id.
 # Also available at metadata.dsa_compliance.veil_certificate_url.
-RESPONSE=$(curl -s -X POST http://localhost:8080/v1/messages \
-  -H "x-api-key: $API_KEY" \
+# The API key goes on curl's standard input (-H @-), never on its command
+# line: any local user can read a process's argument list (printf is a
+# shell builtin).
+RESPONSE=$(printf 'x-api-key: %s\n' "$API_KEY" | curl -s -X POST http://localhost:8080/v1/messages \
+  -H @- \
   -H "Content-Type: application/json" \
   -H "anthropic-version: 2023-06-01" \
   -d '{"model":"claude-haiku-4-5-20251001","max_tokens":20,"messages":[{"role":"user","content":"Hi"}]}')
@@ -325,8 +328,8 @@ REQUEST_ID=$(printf '%s' "$RESPONSE" | jq -r '.metadata.dsa_compliance.request_i
 
 sleep 5
 
-curl -s "http://localhost:8080/api/v1/veil/certificate/$REQUEST_ID" \
-  -H "x-api-key: $API_KEY" | jq '.verification'
+printf 'x-api-key: %s\n' "$API_KEY" | curl -s "http://localhost:8080/api/v1/veil/certificate/$REQUEST_ID" \
+  -H @- | jq '.verification'
 ```
 
 Expected — **every** one of these:

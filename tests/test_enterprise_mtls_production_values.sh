@@ -551,8 +551,11 @@ ruby -e '
   abort "first-customer flow must frame the admin key through stdin" unless block.include?("IFS= read -r admin_key") && block.include?("printf")
   abort "first-customer flow must use stdin JSON body" unless block.include?("--data-binary @-")
   abort "first-customer flow interpolates ADMIN_KEY into kubectl/POD argv" if block.match?(/\$\{?ADMIN_KEY\}?/)
-  admin_header = block[/x-admin-key:\s*[^\"\n]*/]
-  abort "first-customer flow must construct its admin header only from the runtime stdin variable" unless admin_header == "x-admin-key: ${admin_key}"
+  # Kit 2.0 K-C fix round 3: the in-Pod curl never carries the admin key on
+  # its argv (the node lists every container process argument list); the
+  # header line goes through a mode-0600 file built from the stdin variable.
+  abort "first-customer flow puts the admin key on the in-Pod curl argv" if block.match?(/-H\s+"x-admin-key:/i)
+  abort "first-customer flow must write its admin header only from the runtime stdin variable into a private file" unless block.include?("umask 077") && block.include?(%q{printf "x-admin-key: %s\n" "$admin_key" > "$hdr"}) && block.include?(%q{-H @"$hdr"})
   pinned = "curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b"
   abort "first-customer flow must use exactly the reviewed pinned curl helper" unless block.scan(pinned).length == 1
   abort "first-customer flow must not use curlimages/curl:latest" if block.include?("curlimages/curl:latest")

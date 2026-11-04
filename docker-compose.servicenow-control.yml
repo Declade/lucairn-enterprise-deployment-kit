@@ -1,6 +1,40 @@
-# Inert Slice 3 assembly input. No existing startup/release path selects this file.
-# Use scripts/render-servicenow-control.py to validate and render it for review.
-# This overlay does not implement application prctl checks, listeners or sessions.
+# ServiceNow mode (kit 2.0, T-1441 K-C) — OFF by default, opted in per API key.
+#
+# bin/lucairn selects this overlay ONLY when customer.env, read through Docker
+# Compose's own env-file parser, sets BOTH
+#   GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=true
+#   GATEWAY_SERVICENOW_KEY_BINDINGS=<key_id>=<instance_id>,...   (non-empty)
+# (bin/lucairn-servicenow.py `state`). Bindings without the switch make
+# `bin/lucairn up` refuse with session_config_invalid. Nothing in the kit sets
+# either value; with them absent the base files render byte-identically to a
+# kit without this file.
+#
+# Every input is forwarded with `:?`, so a hand-run `docker compose -f ... -f
+# docker-compose.servicenow-control.yml` without the full opt-in set fails at
+# render time instead of starting a half-configured mode. The switch itself
+# must be EXACTLY `true` (kit 2.0 K-C fix round 1, sol r1 P2: `:?` only
+# refuses an empty value, so `false` or `ture` rendered the mode on): the
+# one-shot servicenow-state-init depends on the service named
+# `servicenow-switch-<switch value>`, and only `servicenow-switch-true` exists,
+# so Compose refuses any other value ("depends on undefined service") before
+# anything starts. The admin guide is INSTALL.md § "ServiceNow mode (off by
+# default)".
+#
+# What it changes, and nothing else:
+#   * gateway   — the operator settings, the stored-login folder (read-only),
+#                 the login ledger volume, the mTLS control listener on the
+#                 private servicenow-control network, no core dumps.
+#   * sanitizer — the Python worker's control peer (:18444) and its config
+#                 COPY, which `bin/lucairn up` rebuilds from the base config on
+#                 every run (doctor checks the hash).
+#   * sanitizer-core-sidecar — joins servicenow-control at a fixed address
+#                 with NO alias. The core runs in the sidecar's network
+#                 namespace, so this is the core's attachment; the sidecar's
+#                 model endpoint stays on 127.0.0.1 and it mounts NO control
+#                 material.
+#   * sanitizer-core — LCR_PROFILE=kit-servicenow (the core's only opt-in
+#                 value; customer.env never sets it), the control client with
+#                 the sanitizer leaf, no core dumps, no Go traceback.
 networks:
   servicenow-control:
     driver: bridge
@@ -9,11 +43,16 @@ networks:
       config:
         - subnet: "${SERVICENOW_CONTROL_SUBNET:?explicit private subnet required}"
 
+volumes:
+  # The gateway's login ledger (lockout state). 0700, uid 10001: set by
+  # servicenow-state-init before the gateway starts.
+  servicenow-state: {}
+
 services:
   gateway:
     # Compose refuses scaling a service with a fixed container name. Its recreate
-    # stops the old container before starting its replacement; K3 must observe
-    # serving ownership live. update_config also declares Swarm's stop-first.
+    # stops the old container before starting its replacement; the session
+    # manager is per process, so exactly one gateway may serve the mode.
     container_name: "${COMPOSE_PROJECT_NAME}-gateway-servicenow-control"
     scale: 1
     deploy:
@@ -24,8 +63,15 @@ services:
       core:
         soft: 0
         hard: 0
+    depends_on:
+      servicenow-state-init:
+        condition: service_completed_successfully
     environment:
-      GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED: "true"
+      GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED: "${GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED:?the ServiceNow mode needs GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=true}"
+      GATEWAY_SERVICENOW_KEY_BINDINGS: "${GATEWAY_SERVICENOW_KEY_BINDINGS:?the ServiceNow mode needs GATEWAY_SERVICENOW_KEY_BINDINGS}"
+      GATEWAY_SERVICENOW_INSTANCES: "${GATEWAY_SERVICENOW_INSTANCES:?the ServiceNow mode needs GATEWAY_SERVICENOW_INSTANCES}"
+      GATEWAY_SERVICENOW_LOGIN_FILE: /run/secrets/servicenow-login/login.json
+      GATEWAY_SERVICENOW_STATE_DIR: /var/lib/lucairn/servicenow-state
       GATEWAY_SERVICENOW_CONTROL_BIND_ADDRESS: "${SERVICENOW_CONTROL_GATEWAY_IP:?explicit private interface required}"
       GATEWAY_SERVICENOW_CONTROL_PEER_URL: "https://sanitizer.servicenow-control:18444"
       GATEWAY_SERVICENOW_CONTROL_CA_CERT: /run/secrets/servicenow-control/gateway/ca.crt
@@ -44,6 +90,17 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # The stored reader login: folder 0700 + login.json 0400, both owned
+      # 10001:10001, placed by the admin (INSTALL.md). Gateway only.
+      - type: bind
+        source: "${SERVICENOW_LOGIN_DIR:?the stored-login folder is required}"
+        target: /run/secrets/servicenow-login
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: volume
+        source: servicenow-state
+        target: /var/lib/lucairn/servicenow-state
 
   sanitizer:
     # The same one-owner replacement rule applies to the sanitizer control peer.
@@ -70,9 +127,75 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # The COPY of the base sanitizer config with the mode block on. Rebuilt
+      # from SANITIZER_CONFIG_FILE by `bin/lucairn up` every time it runs.
       - type: bind
         source: "${SERVICENOW_CONTROL_SANITIZER_CONFIG:?rendered sanitizer YAML required}"
         target: /config/config.yaml
         read_only: true
         bind:
           create_host_path: false
+
+  sanitizer-core-sidecar:
+    # The core's attachment to the control network (the core shares this
+    # namespace). Fixed address, NO alias: nothing on that network addresses
+    # the core by name. No control material is mounted here.
+    networks:
+      servicenow-control:
+        ipv4_address: "${SERVICENOW_CONTROL_CORE_IP:?explicit private interface required}"
+
+  sanitizer-core:
+    ulimits:
+      core:
+        soft: 0
+        hard: 0
+    environment:
+      LCR_PROFILE: kit-servicenow
+      LCR_SERVICENOW_CONTROL_PEER_URL: "https://gateway.servicenow-control:18443"
+      LCR_SERVICENOW_CONTROL_CA_CERT: /run/secrets/servicenow-control/sanitizer/ca.crt
+      LCR_SERVICENOW_CONTROL_TLS_CERT: /run/secrets/servicenow-control/sanitizer/tls.crt
+      LCR_SERVICENOW_CONTROL_TLS_KEY: /run/secrets/servicenow-control/sanitizer/tls.key
+      GOTRACEBACK: none
+    volumes:
+      - type: bind
+        source: "${SERVICENOW_CONTROL_MATERIAL:?verified bootstrap material required}/sanitizer"
+        target: /run/secrets/servicenow-control/sanitizer
+        read_only: true
+        bind:
+          create_host_path: false
+
+  servicenow-state-init:
+    # Same image as the gateway (busybox inside); runs once as root with only
+    # CHOWN/FOWNER, no network, read-only root, and exits.
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-gateway:${LUCAIRN_IMAGE_TAG:-0.5.5}"
+    # The exact-value gate of the switch (see the header): resolves only for
+    # GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=true.
+    depends_on:
+      - "servicenow-switch-${GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED:?the ServiceNow mode needs GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=true}"
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec", "chmod 0700 /state && chown 10001:10001 /state"]
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - type: volume
+        source: servicenow-state
+        target: /state
+    restart: "no"
+
+  servicenow-switch-true:
+    # The target of the exact-value gate above: the only name the switch can
+    # resolve to. Runs once, does nothing (no network, no capabilities,
+    # read-only, unprivileged) and exits.
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-gateway:${LUCAIRN_IMAGE_TAG:-0.5.5}"
+    user: "10001:10001"
+    entrypoint: ["/bin/sh", "-c", "exit 0"]
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"

@@ -18,7 +18,18 @@ class MutantTests(unittest.TestCase):
     def test_compose_protective_mutants_turn_red(self):
         overlay = "docker-compose.servicenow-control.yml"
         script = "scripts/render-servicenow-control.py"
+        helper = "bin/lucairn-servicenow.py"
         mutations = [
+            # Kit 2.0 K-C: the core's opt-in and the sidecar's bare attachment.
+            ("core opt-in profile", overlay, "LCR_PROFILE: kit-servicenow", "LCR_PROFILE: kit",
+             "test_core_opt_in_sidecar_attachment_and_login_scope"),
+            ("sidecar has no alias", overlay,
+             '        ipv4_address: "${SERVICENOW_CONTROL_CORE_IP:?explicit private interface required}"\n',
+             '        ipv4_address: "${SERVICENOW_CONTROL_CORE_IP:?explicit private interface required}"\n'
+             '        aliases: [sanitizer-core.servicenow-control]\n',
+             "test_core_opt_in_sidecar_attachment_and_login_scope"),
+            ("control wiring released", helper, "control_wiring_released=True", "control_wiring_released=False",
+             "test_exact_frozen_settings_and_preserved_source_yaml"),
             ("internal network", overlay, "internal: true", "internal: false",
              "test_private_network_fixed_binds_aliases_and_only_two_members"),
             ("literal interface bind", overlay,
@@ -45,7 +56,7 @@ class MutantTests(unittest.TestCase):
             ("fixed name blocks scale", overlay,
              '    container_name: "${COMPOSE_PROJECT_NAME}-gateway-servicenow-control"\n', "",
              "test_core_zero_traceback_and_single_owner_replacement_render"),
-            ("sanitizer YAML switch", script, "block.update(enabled=True", "block.update(enabled=False",
+            ("sanitizer YAML switch", helper, "block.update(enabled=True", "block.update(enabled=False",
              "test_exact_frozen_settings_and_preserved_source_yaml"),
             ("workload config ownership", script, "os.chown(config, args.workload_uid, args.workload_gid)", "pass",
              "test_unassignable_workload_config_owner_refuses_without_artifact"),
@@ -56,7 +67,7 @@ class MutantTests(unittest.TestCase):
              "test_off_ignores_control_inputs_and_creates_no_artifact"),
             ("private subnet", script, "if not any(network.subnet_of(block) for block in private):", "if False:",
              "test_invalid_private_interfaces_refuse_without_render"),
-            ("distinct interface IPs", script, "addresses[0] == addresses[1]", "False",
+            ("distinct interface IPs", script, "len(set(addresses)) != len(addresses)", "False",
              "test_invalid_private_interfaces_refuse_without_render"),
             ("empty path argument", script, 'if value == "":', "if False:",
              "test_empty_path_arguments_refuse_explicitly_without_render"),
@@ -76,7 +87,7 @@ class MutantTests(unittest.TestCase):
             self.assertIn(old, source, label)
             with self.subTest(guard=label), tempfile.TemporaryDirectory(prefix="k1-compose-mutant-", dir=SCRATCH) as name:
                 root = Path(name)
-                for file in (overlay, script, "scripts/bootstrap-servicenow-control.py",
+                for file in (overlay, script, helper, "scripts/bootstrap-servicenow-control.py",
                              "docker-compose.customer.yml", "docker-compose.self-hosted.yml",
                              "docker-compose.self-hosted-byok.yml"):
                     target = root / file

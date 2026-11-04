@@ -305,6 +305,11 @@ fi
 if [ -z "${ADMIN_KEY}" ] && [ "${DRY_RUN}" != "true" ]; then
   fail "admin key not supplied (use --admin-key, --admin-key-file, or LUCAIRN_ADMIN_KEY env)" 3
 fi
+# The key travels as one header line in a file (below); a line break inside
+# it would split that line into a second header, so refuse it.
+case "${ADMIN_KEY}" in
+  *$'\n'*|*$'\r'*) fail "admin key contains a line break" 3 ;;
+esac
 
 # Gateway URL resolution.
 if [ -z "${GATEWAY_URL}" ]; then
@@ -433,14 +438,24 @@ fi
 
 # Use a tmpfile so we can capture body AND status without spawning two requests.
 RESP_BODY="$(mktemp -t lucairn-mint-XXXXXX)"
-trap 'rm -f "${RESP_BODY}"; restore_mint_xtrace' EXIT
+# Kit 2.0 K-C fix round 3: neither the admin key nor the request body (which
+# may carry --provider-key) goes on curl's argv — any local user can read a
+# process's argument list. The header line goes through a mode-0600 temp file
+# (mktemp creates it 0600) that is removed right after the call, the body
+# through stdin. printf is a shell builtin, so neither value reaches a child
+# process's argv.
+ADMIN_HEADER_FILE=""
+trap 'rm -f "${RESP_BODY}" ${ADMIN_HEADER_FILE:+"${ADMIN_HEADER_FILE}"}; restore_mint_xtrace' EXIT
+ADMIN_HEADER_FILE="$(umask 077; mktemp -t lucairn-mint-hdr-XXXXXX)"
+printf 'x-admin-key: %s\n' "${ADMIN_KEY}" > "${ADMIN_HEADER_FILE}"
 
-HTTP_STATUS="$(curl -sS -o "${RESP_BODY}" -w '%{http_code}' \
+HTTP_STATUS="$(printf '%s' "${PAYLOAD}" | curl -sS -o "${RESP_BODY}" -w '%{http_code}' \
   -X POST "${MINT_URL}" \
-  -H "x-admin-key: ${ADMIN_KEY}" \
+  -H @"${ADMIN_HEADER_FILE}" \
   -H "Content-Type: application/json" \
-  --data-binary "${PAYLOAD}" \
+  --data-binary @- \
   --max-time 30 || true)"
+rm -f "${ADMIN_HEADER_FILE}"
 
 if [ -z "${HTTP_STATUS}" ] || [ "${HTTP_STATUS}" = "000" ]; then
   echo "error: gateway unreachable at ${MINT_URL}" >&2
@@ -541,5 +556,5 @@ Next steps:
          --customer-key-file /secure/lucairn-customer.key
        # Add --model NAME for split-remote or managed-byok.
   4. (Optional) Confirm customer listed:
-       curl -H "x-admin-key: \$LUCAIRN_ADMIN_KEY" ${GATEWAY_URL}/api/v1/admin/customers | jq
+       printf 'x-admin-key: %s\n' "\$LUCAIRN_ADMIN_KEY" | curl -H @- ${GATEWAY_URL}/api/v1/admin/customers | jq
 BANNER

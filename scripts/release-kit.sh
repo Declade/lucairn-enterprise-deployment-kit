@@ -66,7 +66,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-for tool in helm jq git tar; do
+for tool in helm jq git tar python3; do
   command -v "$tool" >/dev/null 2>&1 || die "required tool not found: $tool"
 done
 command -v "$COSIGN_BIN" >/dev/null 2>&1 || die "cosign not found ($COSIGN_BIN). Set COSIGN_BIN to the pinned cosign v2.x binary (the release host keeps a v2.4.1 binary off-PATH)."
@@ -95,6 +95,21 @@ DASH_IMG=$(awk '/^  lucairn-dashboard:/{f=1;next} f&&/image_tag:/{print;exit}' i
 DASH_APP=$(grep -E '^appVersion:' charts/lucairn/charts/dashboard/Chart.yaml | sed -E 's/.*"(.*)".*/\1/')
 [ "$DASH_IMG" = "$DASH_APP" ] || die "dashboard mismatch: image-manifest tag $DASH_IMG != dashboard Chart.yaml appVersion $DASH_APP"
 note "version identity OK: kit=$VERSION chart=$CHART_VER dashboard=$DASH_APP tag=$TAG"
+
+# --- the ServiceNow directory app ships inside the kit (T-1441 K-C, PRD Amendment K-1) ---
+# INSTALL.md § "ServiceNow mode (off by default)" step 1 points the customer
+# admin at this file. It is copied byte for byte from the app's repository
+# (Declade/lucairn-servicenow-directory update_set/x_1620539_lucdir.xml, built
+# there from src/ by tools/build_update_set.py), never hand-written; its
+# servicenow-directory/PROVENANCE record names the commit and the sha256 of the
+# file and of the app's licence. No release goes out without it, and none with
+# a file that differs from that record (the same check `bin/lucairn doctor` and
+# `bin/lucairn bundle verify` run).
+SN_UPDATE_SET="servicenow-directory/lucairn-directory-update-set.xml"
+[ -f "$SN_UPDATE_SET" ] || die "missing $SN_UPDATE_SET — copy update_set/x_1620539_lucdir.xml from the directory app's repository and record it in servicenow-directory/PROVENANCE"
+SN_DIR_OUT="$(python3 -I bin/lucairn-servicenow.py directory-check --dir servicenow-directory 2>&1)" \
+  || die "$SN_UPDATE_SET: $(printf '%s\n' "$SN_DIR_OUT" | sed -n 's/^REFUSED=//p;s/^HINT=/ — /p' | tr -d '\n')"
+note "directory app update set OK: $(printf '%s\n' "$SN_DIR_OUT" | sed -n 's/^DIRECTORY=ok //p')"
 
 # --- release date (bundled, read by `bin/lucairn doctor` staleness; feed latest.released) ---
 [ -f RELEASE_DATE ] || die "missing RELEASE_DATE (bump it with VERSION on every release)"
