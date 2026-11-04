@@ -41,7 +41,8 @@ STUB_DAEMON="$TMPDIR/daemon"
 STUB_VOLUMES="$TMPDIR/volumes"
 STUB_MSG="$TMPDIR/docker-message"
 : > "$STUB_MSG"
-export LUCAIRN_TEST_REAL_DOCKER STUB_DAEMON STUB_VOLUMES STUB_MSG
+STUB_CONTEXT="$TMPDIR/docker-context"
+export LUCAIRN_TEST_REAL_DOCKER STUB_DAEMON STUB_VOLUMES STUB_MSG STUB_CONTEXT
 mkdir "$TMPDIR/bin"
 cat > "$TMPDIR/bin/docker" <<'STUB'
 #!/bin/bash
@@ -51,8 +52,15 @@ cat > "$TMPDIR/bin/docker" <<'STUB'
 # but its volume list fails) · deny (answers every request with an error
 # response, as an authorization plugin does) · msg (every request fails with
 # exactly the text in $STUB_MSG on stderr: a docker CLI error message).
+# `docker context inspect` prints $STUB_CONTEXT (the current context's
+# endpoint), or fails when it holds `fail` (fix round 2 on PR #163).
 if [ "${1:-}" = compose ]; then
   case " $* " in *" config "*|*" version"*) exec "$LUCAIRN_TEST_REAL_DOCKER" "$@" ;; esac
+fi
+if [ "${1:-}" = context ] && [ "${2:-}" = inspect ]; then
+  c="$(cat "$STUB_CONTEXT")"
+  [ "$c" != fail ] || { echo 'context "stub": context not found' >&2; exit 1; }
+  printf '%s\n' "$c"; exit 0
 fi
 if [ "${1:-}" = version ]; then
   case "$(cat "$STUB_DAEMON")" in
@@ -75,6 +83,49 @@ exit 97
 STUB
 chmod 0755 "$TMPDIR/bin/docker"
 export PATH="$TMPDIR/bin:$PATH"
+
+# Fix round 2 on PR #163: "no Docker here" (exit 5, the one case
+# --confirm-no-registry-volume covers) needs the docker CLI's endpoint to be a
+# local unix socket that a raw connect finds missing or refusing. Real sockets
+# for that, in a short directory (a unix socket path has at most 104 bytes on
+# macOS): accept.sock (a listener: a daemon or a proxy is there), denied.sock
+# (a listener this user may not open), refuse.sock (a socket file nothing
+# listens on), missing.sock (nothing). The stub daemon's states above keep
+# their meaning; DOCKER_HOST says where the CLI would have gone, by default
+# the missing socket (so "down" is the documented no-daemon case).
+command -v python3 >/dev/null 2>&1 || { echo "registry credentials rollback: needs python3 (socket fixtures)" >&2; exit 1; }
+SOCKDIR="$(mktemp -d /tmp/lucairn-sock.XXXXXX)"
+python3 -I -c '
+import select, socket, sys
+socks = []
+for p in sys.argv[2:]:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(p)
+    s.listen(64)
+    socks.append(s)
+open(sys.argv[1], "w").close()
+while True:
+    ready, _, _ = select.select(socks, [], [], 60)
+    for s in ready:
+        c, _ = s.accept()
+        c.close()
+' "$SOCKDIR/ready" "$SOCKDIR/accept.sock" "$SOCKDIR/denied.sock" </dev/null >/dev/null 2>&1 &
+LISTENER=$!
+disown "$LISTENER" 2>/dev/null || true  # no "Terminated" job report at exit
+trap 'kill "$LISTENER" 2>/dev/null || true; rm -rf "$TMPDIR" "$SOCKDIR"' EXIT
+for _ in $(seq 1 100); do [ -e "$SOCKDIR/ready" ] && break; sleep 0.1; done
+[ -e "$SOCKDIR/ready" ] || { echo "registry credentials rollback: the socket listener did not start" >&2; exit 1; }
+chmod 000 "$SOCKDIR/denied.sock"
+python3 -I -c 'import socket, sys; s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()' "$SOCKDIR/refuse.sock"
+ln -s "$SOCKDIR/gone.sock" "$SOCKDIR/dangling.sock"
+use_endpoint() { # <DOCKER_HOST value> | context:<what `docker context inspect` prints, or fail>
+  case "$1" in
+    context:*) unset DOCKER_HOST; printf '%s' "${1#context:}" > "$STUB_CONTEXT" ;;
+    *) DOCKER_HOST="$1"; export DOCKER_HOST ;;
+  esac
+}
+printf '%s' "unix://$SOCKDIR/missing.sock" > "$STUB_CONTEXT"
+use_endpoint "unix://$SOCKDIR/missing.sock"
 
 CRED="$KIT/scripts/sanitizer-core-registry-credentials.sh"
 ENV="$KIT/customer.env"
@@ -307,11 +358,13 @@ run init-qerr-plain "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --
 check "init without the flag refuses when a reachable daemon fails the volume query (rc $RC, want 8)" '[ "$RC" -eq 8 ] && other_absent'
 clear_other
 echo deny > "$STUB_DAEMON"
+use_endpoint "unix://$SOCKDIR/accept.sock"
 run check-deny bash "$CRED" check --env-file "$ENV"
 check "a daemon that answers even its version with an error response is reachable (rc $RC, want 6)" '[ "$RC" -eq 6 ]'
 run init-deny "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
 check "init with --confirm-no-registry-volume refuses a daemon that answers with error responses (rc $RC, want 8)" '[ "$RC" -eq 8 ] && other_absent'
 clear_other
+use_endpoint "unix://$SOCKDIR/missing.sock"
 echo down > "$STUB_DAEMON"
 run check-down bash "$CRED" check --env-file "$ENV"
 check "a daemon that cannot be reached is still 'Docker unreachable' (rc $RC, want 5)" '[ "$RC" -eq 5 ] && grep -Fq "the Docker daemon is not reachable" "$TMPDIR/check-down.err"'
@@ -349,24 +402,26 @@ run add-long-extra bash "$CRED" add --env-file "$ENV" --from "$TMPDIR/long-extra
 check "a saved file with 20,000 other lines is refused (rc $RC, want 2)" '[ "$RC" -eq 2 ] && cmp -s "$TMPDIR/env.before" "$ENV"'
 printf '%s\n' "$VOL" > "$STUB_VOLUMES"
 
-# Fix round 1 on PR #163 (review P2): "Docker unreachable" (exit 5, the one
-# case --confirm-no-registry-volume covers) is ONLY no docker CLI or one of the
-# docker CLI's own "cannot connect" errors (v24–v29, listed at
-# docker_cannot_connect in the helper). Every other failure of `docker
-# version` — the empty HTTP 500 of a reachable daemon, an unknown message, a
-# timeout the client does not report as "cannot connect", permission denied —
-# is exit 6, which init refuses (8) with or without the flag. It used to be 5
-# unless the text held "Error response from daemon".
-echo "11d. only the docker CLI's own 'cannot connect' is Docker unreachable"
+# Fix round 1 on PR #163 (review P2): an empty HTTP 500 of a reachable daemon
+# was "Docker unreachable". Fix round 2 on PR #163 (review P2): so was a
+# CONNECT proxy answering 503 or 407 ("error during connect: … Service
+# Unavailable"), because round 1 still classified docker CLI messages. No
+# message is read any more: exit 5 (the one case --confirm-no-registry-volume
+# covers) only with no docker CLI, or when the CLI's endpoint (DOCKER_HOST,
+# else the current context) is a local unix socket that a raw connect finds
+# missing (ENOENT) or refusing (ECONNREFUSED). Everything else is exit 6,
+# which init refuses (8) with or without the flag.
+echo "11d. 'no Docker here' only with a proof: no CLI, or a local socket that is missing or refuses"
 printf '%s\n' "$VOL" > "$STUB_VOLUMES"
 echo msg > "$STUB_DAEMON"
 cp -p "$TMPDIR/env.before" "$ENV"
 CASE=""
-refused_case() { # <label> <docker CLI message>: exit 6, init refuses with and without the flag
+refused_case() { # <label> <endpoint> <docker CLI message>: exit 6, init with the flag refuses
   CASE="$1"
-  printf '%s' "$2" > "$STUB_MSG"
+  use_endpoint "$2"
+  printf '%s' "$3" > "$STUB_MSG"
   run "check-$CASE" bash "$CRED" check --env-file "$ENV"
-  check "$CASE: check is 'cannot tell', not 'Docker unreachable' (rc $RC, want 6)" \
+  check "$CASE: check is 'cannot tell', not 'no Docker here' (rc $RC, want 6)" \
     '[ "$RC" -eq 6 ] && ! grep -Fq "the Docker daemon is not reachable" "$TMPDIR/check-$CASE.err"'
   clear_other
   run "init-$CASE" "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
@@ -374,11 +429,12 @@ refused_case() { # <label> <docker CLI message>: exit 6, init refuses with and w
     '[ "$RC" -eq 8 ] && grep -Fq -- "--confirm-no-registry-volume does not apply" "$TMPDIR/init-$CASE.err" && ! grep -Fq -- "--confirm-no-registry-volume states" "$TMPDIR/init-$CASE.err" && other_absent'
   clear_other
 }
-proceeds_case() { # <label> <docker CLI message>: exit 5, init with the flag proceeds
+proceeds_case() { # <label> <endpoint> <docker CLI message>: exit 5, init with the flag proceeds
   CASE="$1"
-  printf '%s' "$2" > "$STUB_MSG"
+  use_endpoint "$2"
+  printf '%s' "$3" > "$STUB_MSG"
   run "check-$CASE" bash "$CRED" check --env-file "$ENV"
-  check "$CASE: check is 'Docker unreachable' (rc $RC, want 5)" \
+  check "$CASE: check is 'no Docker here' (rc $RC, want 5)" \
     '[ "$RC" -eq 5 ] && grep -Fq "the Docker daemon is not reachable" "$TMPDIR/check-$CASE.err"'
   clear_other
   run "init-$CASE" "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
@@ -386,30 +442,70 @@ proceeds_case() { # <label> <docker CLI message>: exit 5, init with the flag pro
     '[ "$RC" -eq 0 ] && [ -f "$OTHER" ] && grep -Fq -- "--confirm-no-registry-volume states" "$TMPDIR/init-$CASE.err"'
   clear_other
 }
-# The review's case: a reachable daemon answers 500 with an empty body (moby
-# client checkResponseErr; v28/v29 wording, then v24–v27 wording).
-refused_case http500-empty 'request returned 500 Internal Server Error for API route and version http://%2Fvar%2Frun%2Fdocker.sock/v1.51/version, check if the server supports the requested API version'
-refused_case http500-empty-v24 'request returned Internal Server Error for API route and version http://%2Fvar%2Frun%2Fdocker.sock/v1.43/version, check if the server supports the requested API version'
-refused_case unknown 'stub: an error message no docker CLI version prints'
-refused_case empty ''
-refused_case deadline 'context deadline exceeded'
-refused_case perm-v24 'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.24/version": dial unix /var/run/docker.sock: connect: permission denied'
-refused_case perm-v29 'permission denied while trying to connect to the docker API at unix:///var/run/docker.sock'
-refused_case perm-ssh 'error during connect: Get "http://docker.example.invalid/v1.24/version": command [ssh -o ConnectTimeout=30 -T -- docker.example.invalid docker system dial-stdio] has exited with exit status 255, make sure the URL is valid, and Docker 18.09 or later is installed on the remote host: stderr=deploy@docker.example.invalid: Permission denied (publickey).'
-refused_case tls 'error during connect: Get "https://docker.example.invalid:2376/v1.24/version": tls: failed to verify certificate: x509: certificate signed by unknown authority'
-refused_case daemon-quotes 'Error response from daemon: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?'
-printf '%s' 'request returned 500 Internal Server Error for API route and version http://%2Fvar%2Frun%2Fdocker.sock/v1.51/version, check if the server supports the requested API version' > "$STUB_MSG"
-run add-http500 bash "$CRED" add --env-file "$ENV"
-check "add generates nothing on an empty HTTP 500 from the daemon (rc $RC, want 6)" '[ "$RC" -eq 6 ] && cmp -s "$TMPDIR/env.before" "$ENV"'
+ACCEPT="unix://$SOCKDIR/accept.sock"
+CANNOT='Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?'
+# The review's case (round 2): a reachable CONNECT proxy in front of a remote
+# daemon answers 503 / 407; the docker CLI wraps it as "error during connect".
+refused_case proxy-503 tcp://docker.example.invalid:2376 'error during connect: Get "https://docker.example.invalid:2376/v1.51/version": Service Unavailable'
+refused_case proxy-407 tcp://docker.example.invalid:2376 'error during connect: Get "https://docker.example.invalid:2376/v1.51/version": Proxy Authentication Required'
+# Any remote endpoint whose daemon does not answer: no proof that it has no volume.
+refused_case tcp-down tcp://127.0.0.1:2375 'Cannot connect to the Docker daemon at tcp://127.0.0.1:2375. Is the docker daemon running?'
+refused_case tcp-dns tcp://docker.example.invalid:2375 'failed to connect to the docker API at tcp://docker.example.invalid:2375: lookup docker.example.invalid: no such host'
+refused_case ssh-refused ssh://deploy@docker.example.invalid 'error during connect: Get "http://docker.example.invalid/v1.24/version": command [ssh -o ConnectTimeout=30 -T -- docker.example.invalid docker system dial-stdio] has exited with exit status 255, make sure the URL is valid, and Docker 18.09 or later is installed on the remote host: stderr=ssh: connect to host docker.example.invalid port 22: Connection refused'
+refused_case npipe-missing npipe:////./pipe/docker_engine 'error during connect: this error may indicate that the docker daemon is not running: Get "http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.24/version": open //./pipe/docker_engine: The system cannot find the file specified.'
+refused_case context-tcp context:tcp://docker.example.invalid:2376 'Cannot connect to the Docker daemon at tcp://docker.example.invalid:2376. Is the docker daemon running?'
+refused_case context-unreadable context:fail "$CANNOT"
+refused_case unix-no-path unix:// "$CANNOT"
+# A local socket that accepts the connection: something answers there, so a
+# failed `docker version` proves nothing, whatever the CLI printed.
+refused_case socket-accepts "$ACCEPT" "$CANNOT"
+refused_case context-socket-accepts "context:$ACCEPT" "$CANNOT"
+refused_case http500-empty "$ACCEPT" 'request returned 500 Internal Server Error for API route and version http://%2Fvar%2Frun%2Fdocker.sock/v1.51/version, check if the server supports the requested API version'
+refused_case http500-empty-v24 "$ACCEPT" 'request returned Internal Server Error for API route and version http://%2Fvar%2Frun%2Fdocker.sock/v1.43/version, check if the server supports the requested API version'
+refused_case unknown "$ACCEPT" 'stub: an error message no docker CLI version prints'
+refused_case empty "$ACCEPT" ''
+refused_case deadline "$ACCEPT" 'context deadline exceeded'
+refused_case daemon-quotes "$ACCEPT" 'Error response from daemon: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?'
+# A local socket this user may not open (root opens it: accepted, 6 as well).
+refused_case perm-v24 "unix://$SOCKDIR/denied.sock" 'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.24/version": dial unix /var/run/docker.sock: connect: permission denied'
+refused_case perm-v29 "unix://$SOCKDIR/denied.sock" 'permission denied while trying to connect to the docker API at unix:///var/run/docker.sock'
+refused_case perm-ssh ssh://deploy@docker.example.invalid 'error during connect: Get "http://docker.example.invalid/v1.24/version": command [ssh -o ConnectTimeout=30 -T -- docker.example.invalid docker system dial-stdio] has exited with exit status 255, make sure the URL is valid, and Docker 18.09 or later is installed on the remote host: stderr=deploy@docker.example.invalid: Permission denied (publickey).'
+refused_case tls tcp://docker.example.invalid:2376 'error during connect: Get "https://docker.example.invalid:2376/v1.24/version": tls: failed to verify certificate: x509: certificate signed by unknown authority'
+use_endpoint tcp://docker.example.invalid:2376
+printf '%s' 'error during connect: Get "https://docker.example.invalid:2376/v1.51/version": Service Unavailable' > "$STUB_MSG"
+run add-proxy-503 bash "$CRED" add --env-file "$ENV"
+check "add generates nothing behind a proxy answering 503 (rc $RC, want 6)" '[ "$RC" -eq 6 ] && cmp -s "$TMPDIR/env.before" "$ENV"'
 cp -p "$TMPDIR/env.before" "$ENV"
-# Each "cannot connect" error the docker CLI v24–v29 prints (the v29 socket
-# message as the docker CLI 29.6 prints it for a socket path that does not exist).
-proceeds_case cannot-connect-host 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?'
-proceeds_case cannot-connect-nohost 'Cannot connect to the Docker daemon. Is the docker daemon running on this host?'
-proceeds_case v29-no-socket 'failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory'
-proceeds_case v29-dns 'failed to connect to the docker API at tcp://docker.example.invalid:2375: lookup docker.example.invalid: no such host'
-proceeds_case pipe-missing 'error during connect: this error may indicate that the docker daemon is not running: Get "http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.24/version": open //./pipe/docker_engine: The system cannot find the file specified.'
-proceeds_case ssh-refused 'error during connect: Get "http://docker.example.invalid/v1.24/version": command [ssh -o ConnectTimeout=30 -T -- docker.example.invalid docker system dial-stdio] has exited with exit status 255, make sure the URL is valid, and Docker 18.09 or later is installed on the remote host: stderr=ssh: connect to host docker.example.invalid port 22: Connection refused'
+clear_other
+run init-proxy-503-plain "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor
+check "init without the flag refuses behind a proxy answering 503 (rc $RC, want 8)" '[ "$RC" -eq 8 ] && other_absent'
+clear_other
+# No python3 to test the local socket: no proof either.
+NOPY="$TMPDIR/no-python-bin"
+mkdir "$NOPY"
+for t in bash env dirname basename sed awk grep mktemp rm cat tr head tail uname stat chmod cp cmp date mkdir mv wc sort cut ls id ln rmdir touch; do
+  if p="$(command -v "$t")" && [ -x "$p" ]; then ln -s "$p" "$NOPY/$t"; fi
+done
+ln -s "$TMPDIR/bin/docker" "$NOPY/docker"
+check "fixture: the docker stub but no python3 on the restricted PATH" \
+  '! env PATH="$NOPY" bash -c "command -v python3" >/dev/null 2>&1 && env PATH="$NOPY" bash -c "command -v docker" >/dev/null 2>&1'
+use_endpoint "unix://$SOCKDIR/missing.sock"
+printf '%s' "$CANNOT" > "$STUB_MSG"
+run check-nopython env PATH="$NOPY" bash "$CRED" check --env-file "$ENV"
+check "no python3: a missing local socket cannot be proven, check is 'cannot tell' (rc $RC, want 6)" \
+  '[ "$RC" -eq 6 ] && grep -Fq "without python3" "$TMPDIR/check-nopython.err"'
+# The documented case: the CLI's local socket is missing or refuses (Docker
+# not installed as a daemon here, or stopped), with DOCKER_HOST or a context.
+proceeds_case socket-missing "unix://$SOCKDIR/missing.sock" "$CANNOT"
+proceeds_case socket-missing-v29 "unix://$SOCKDIR/missing.sock" "failed to connect to the docker API at unix://$SOCKDIR/missing.sock; check if the path is correct and if the daemon is running: dial unix $SOCKDIR/missing.sock: connect: no such file or directory"
+proceeds_case socket-dir-missing "unix://$SOCKDIR/no-such-dir/docker.sock" "$CANNOT"
+proceeds_case socket-dangling-link "unix://$SOCKDIR/dangling.sock" "$CANNOT"
+proceeds_case socket-refuses "unix://$SOCKDIR/refuse.sock" "$CANNOT"
+proceeds_case context-socket-missing "context:unix://$SOCKDIR/missing.sock" 'Cannot connect to the Docker daemon. Is the docker daemon running on this host?'
+proceeds_case context-socket-refuses "context:unix://$SOCKDIR/refuse.sock" "$CANNOT"
+# Whatever the CLI printed: the proof is the socket, not the message.
+proceeds_case socket-missing-odd-message "unix://$SOCKDIR/missing.sock" 'stub: an error message no docker CLI version prints'
+use_endpoint "unix://$SOCKDIR/missing.sock"
 # No docker CLI on PATH at all: exit 5 as well.
 NODOCKER="$TMPDIR/no-docker-bin"
 mkdir "$NODOCKER"

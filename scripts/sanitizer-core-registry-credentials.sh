@@ -42,11 +42,12 @@
 #          · 4 cannot tell: the daemon answered, but a registry volume name of
 #          this install cannot be resolved (Docker Compose missing, the
 #          project or an overlay does not render) and no name that did
-#          resolve is on the daemon's list · 5 cannot tell: Docker cannot be
-#          asked (no docker CLI, or the docker CLI reports it cannot connect
-#          to the daemon) · 6 cannot tell: Docker was asked but gave no
-#          volume list (the daemon answered with an error, or the CLI failed
-#          in any other way — permission denied included).
+#          resolve is on the daemon's list · 5 cannot tell: there is no
+#          Docker here (no docker CLI, or the docker CLI's endpoint is a local
+#          unix socket that does not exist or refuses connections) · 6 cannot
+#          tell: Docker was asked but gave no volume list, and there is no
+#          proof that no Docker is here (a remote or non-socket endpoint, a
+#          socket that accepts connections, any other failure).
 #          bin/lucairn-init runs it before it generates a new customer.env;
 #          its --confirm-no-registry-volume overrides exit 5 only.
 #
@@ -61,20 +62,26 @@
 # BEFORE a failed render is reported, so a known volume is refused (exit 3)
 # even when another of the renders fails. A name that cannot be resolved is
 # "cannot tell" (exit 4), never a guess. The daemon is asked only for its
-# version and its volume list. Final check on PR #162 and fix round 1 on PR
-# #163: only no docker CLI, or one of the docker CLI's own "cannot connect"
-# errors (listed at docker_cannot_connect, v24–v29), is "Docker cannot be
-# asked" (exit 5); every other failure of either request — an error response,
-# an HTTP error such as an empty 500, permission denied, any unknown message —
-# is exit 6, which no flag overrides. The list is matched in
-# the shell, never through `printf | grep -q`: under pipefail grep's exit at
-# the match sent printf a SIGPIPE and the match was dropped once the list
-# outgrew the pipe. No secret value is ever printed.
+# version and its volume list. Fix round 2 on PR #163 (review P2: a CONNECT
+# proxy answering 503 or 407 printed "error during connect: …", which the
+# message list of round 1 took for "cannot connect"): no docker CLI message
+# is read any more. When `docker version` fails, exit 5 needs a positive proof
+# that no Docker is here (local_docker_absent): the docker CLI's endpoint —
+# DOCKER_HOST, else the current context's (`docker context inspect`, which
+# follows DOCKER_CONTEXT and the CLI config) — is a local unix:// socket, and a
+# raw connect to that socket path fails with ENOENT (nothing there) or
+# ECONNREFUSED (nothing listening). Every other case — a tcp://, ssh://,
+# npipe:// or other endpoint, a socket that accepts the connection, a socket
+# this user may not open, no python3 to test it, `docker context inspect`
+# failing, a failed volume list — is exit 6, which no flag overrides. The list
+# is matched in the shell, never through `printf | grep -q`: under pipefail
+# grep's exit at the match sent printf a SIGPIPE and the match was dropped
+# once the list outgrew the pipe. No secret value is ever printed.
 #
 # Exit codes: 0 ok · 1 a copy or write failed · 2 usage or a refused input ·
 # 3 a registry volume exists and no saved credentials were given · 4 cannot
 # check for a registry volume: a volume name cannot be resolved (nothing was
-# generated) · 5 cannot check for a registry volume: Docker cannot be asked
+# generated) · 5 cannot check for a registry volume: there is no Docker here
 # (nothing was generated) · 6 cannot check for a registry volume: Docker was
 # asked but gave no volume list (nothing was generated).
 
@@ -190,74 +197,80 @@ $name
 }$name" ;; esac
 }
 
-# docker_cannot_connect <output> — rc 0 ONLY when <output> (stdout and stderr
-# of a failed docker CLI call) is one of the docker CLI's own "cannot connect"
-# errors: the request reached no daemon. Every other failure is rc 1, which
-# the caller refuses with or without --confirm-no-registry-volume (fix round 1
-# on PR #163: an empty HTTP 500 from a reachable daemon, "request returned 500
-# Internal Server Error for API route and version …", used to count as
-# unreachable). The recognised strings, exactly as the docker CLI v24.0–v29.6
-# prints them (its vendored API client: github.com/docker/docker/client
-# errors.go + request.go doRequest for v24–v28, github.com/moby/moby/client
-# for v29):
-#   "Cannot connect to the Docker daemon at <host>. Is the docker daemon running?"
-#   "Cannot connect to the Docker daemon. Is the docker daemon running on this host?"
-#       errors.go, v24–v29: connection refused, a failed `dial unix` (v24–v28
-#       also a socket path that does not exist), a dial timeout
-#   "failed to connect to the docker API at <host>; check if the path is correct and if the daemon is running: …"
-#   "failed to connect to the docker API at <host>: …"
-#       request.go, v29: the socket path does not exist ("… connect: no such
-#       file or directory"), the daemon's host name does not resolve
-#   "error during connect: …"
-#       request.go, v24–v29: any other transport error before an HTTP
-#       response (a Windows named pipe that is not there, an ssh:// host that
-#       cannot be reached, a v24–v28 host name that does not resolve)
-# The bare "connection refused" / "connect: no such file or directory" are not
-# matched alone: the CLI only prints them inside the phrases above, and a
-# daemon's own error response can carry them. Never recognised, even inside
-# one of the phrases above:
-#   "Error response from daemon", "request returned " — an HTTP response: the
-#       daemon answered
-#   "permission denied" (v24–v28 "… to the Docker daemon socket at", v29 "…
-#       to the docker API at"; ssh "Permission denied"), "Access is denied",
-#       "elevated privileges" — Docker is there, this user may not use it
-#   "x509:", "tls:" — a TLS server answered
-# Not recognised either, so refused: a timeout the client does not report as
-# "Cannot connect" ("context deadline exceeded"), a context or config error,
-# any message not listed here.
-docker_cannot_connect() {
-  case "$1" in
-    *"Error response from daemon"*|*"request returned "*) return 1 ;;
-    *[Pp]"ermission denied"*|*"Access is denied"*|*"elevated privileges"*|*"x509:"*|*"tls:"*) return 1 ;;
-    *"Cannot connect to the Docker daemon at "*". Is the docker daemon running?"*) return 0 ;;
-    *"Cannot connect to the Docker daemon. Is the docker daemon running on this host?"*) return 0 ;;
-    *"failed to connect to the docker API at "*) return 0 ;;
-    *"error during connect: "*) return 0 ;;
+# local_docker_absent — rc 0 ONLY with a positive proof that no Docker daemon
+# is here (fix round 2 on PR #163): the docker CLI's endpoint is a local unix
+# socket and a raw connect to it fails with ENOENT (the path does not exist,
+# a dangling link included) or ECONNREFUSED (a socket file nothing listens
+# on). The endpoint is DOCKER_HOST when set, else the current context's
+# (`docker context inspect` reads DOCKER_CONTEXT and the CLI config; the
+# daemon is not asked). rc 1 in every other case, VOL_WHY says why (no
+# endpoint value but a socket path is printed): a tcp://, ssh://, npipe:// or
+# any other endpoint, `docker context inspect` failing, a socket that accepts
+# the connection (a daemon or a proxy is there), any other connect error
+# (EACCES: Docker may be there, this user may not use it), no python3 to
+# test the socket. No docker CLI message is read.
+local_docker_absent() {
+  local host path scheme rc=0
+  if [ -n "${DOCKER_HOST:-}" ]; then
+    host="$DOCKER_HOST"
+  else
+    host="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null </dev/null)" || {
+      VOL_WHY="Docker did not give its version, and the docker CLI's endpoint cannot be read (docker context inspect failed), so there is no proof that no Docker is here (run docker version)"
+      return 1
+    }
+  fi
+  scheme=""
+  case "$host" in
+    tcp://*|ssh://*|npipe://*|fd://*|http://*|https://*) scheme=" (${host%%://*}://)" ;;
   esac
-  return 1
+  case "$host" in
+    *[[:cntrl:]]*) VOL_WHY="Docker did not give its version, and the docker CLI's endpoint is not a plain local socket path, so there is no proof that no Docker is here (run docker version)"; return 1 ;;
+    unix://?*) path="${host#unix://}" ;;
+    *) VOL_WHY="Docker did not give its version, and the docker CLI's endpoint is not a local socket path$scheme, so there is no proof that no Docker is there (run docker version)"; return 1 ;;
+  esac
+  command -v python3 >/dev/null 2>&1 || {
+    VOL_WHY="Docker did not give its version, and without python3 its local socket $path cannot be tested, so there is no proof that no Docker is here (run docker version)"
+    return 1
+  }
+  # 10 ENOENT · 11 ECONNREFUSED · 0 connected · 12 any other error.
+  python3 -I -c '
+import errno, socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(5)
+try:
+    s.connect(sys.argv[1])
+except OSError as e:
+    sys.exit({errno.ENOENT: 10, errno.ECONNREFUSED: 11}.get(e.errno, 12))
+except Exception:
+    sys.exit(12)
+s.close()
+sys.exit(0)
+' "$path" </dev/null >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    10) VOL_WHY="the Docker daemon is not reachable: its local socket $path does not exist"; return 0 ;;
+    11) VOL_WHY="the Docker daemon is not reachable: its local socket $path refuses connections"; return 0 ;;
+    0) VOL_WHY="Docker did not give its version, although its local socket $path accepts connections (run docker version)"; return 1 ;;
+    *) VOL_WHY="Docker did not give its version, and a connect to its local socket $path failed otherwise than 'does not exist' or 'refused' (permission denied, for one), so there is no proof that no Docker is here (run docker version)"; return 1 ;;
+  esac
 }
 
 # registry_volume — sets VOL (the registry volume this install has, or the
 # first name it would have) and returns 0 when one exists, 1 when none does,
-# 2 when a name cannot be resolved and no resolved one exists, 3 when Docker
-# cannot be asked, 4 when Docker was asked but gave no volume list (VOL_WHY
+# 2 when a name cannot be resolved and no resolved one exists, 3 when there
+# is no Docker here, 4 when Docker was asked but gave no volume list (VOL_WHY
 # says why, value-free). The daemon is asked first, so a host without one
-# answers fast. Fix round 1 on PR #163: only a positively recognised "cannot
-# connect" (docker_cannot_connect) or no docker CLI is 3, the one case the
-# init flag overrides; every other failure of `docker version` or `docker
-# volume ls` — an HTTP error, an error response, an unknown message — is 4.
-# Once `docker version` has answered, a failed volume list is 4 whatever it
-# says (the daemon was reached).
+# answers fast. Fix round 2 on PR #163: 3 — the one case the init flag
+# overrides — only with no docker CLI or local_docker_absent's proof; every
+# other failure of `docker version`, and a failed `docker volume ls` whatever
+# it says, is 4.
 registry_volume() {
-  local tmp envf out name rc=0 why="" said
+  local tmp envf out name rc=0 why=""
   local -a args
   VOL="" VOL_WHY="" VOLS=""
   command -v docker >/dev/null 2>&1 || { VOL_WHY="the docker CLI is not on PATH"; return 3; }
-  if ! said="$(docker version --format '{{.Server.Version}}' 2>&1 </dev/null)"; then
-    if docker_cannot_connect "$said"; then
-      VOL_WHY="the Docker daemon is not reachable"; return 3
-    fi
-    VOL_WHY="Docker was asked but did not give its version, with an error that is not the docker CLI's \"cannot connect\" (run docker version)"; return 4
+  if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1 </dev/null; then
+    local_docker_absent && return 3
+    return 4
   fi
   out="$(docker volume ls -q 2>/dev/null </dev/null)" \
     || { VOL_WHY="the Docker daemon answered but did not list its volumes (docker volume ls failed)"; return 4; }
