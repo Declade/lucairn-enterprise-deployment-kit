@@ -298,7 +298,7 @@ out="$(doctor_check "$WK/doctor.env" "$COMPOSE")" && rc=0 || rc=$?
 for v in 0 -3 030 abc; do
   denv "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=false" "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS=$v"
   out="$(doctor_check "$WK/doctor.env" "$COMPOSE")" && rc=0 || rc=$?
-  if [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "audit retention: disabled"; then
+  if [ "$rc" = 0 ] && grep -q "audit retention: disabled" <<<"$out"; then
     ok "doctor: ENABLED=false DAYS=$v passes and reports the sweep disabled (matches the runtime)"
   else
     bad "doctor: ENABLED=false DAYS=$v rc=$rc out=$out (the runtime accepts this)"
@@ -307,7 +307,7 @@ done
 for v in 0 -3 030 abc 36501; do
   denv "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_DAYS=$v"
   out="$(doctor_check "$WK/doctor.env" "$COMPOSE")" && rc=0 || rc=$?
-  [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "audit retention" && ok "doctor: DAYS=$v flagged" || bad "doctor: DAYS=$v not flagged"
+  [ "$rc" != 0 ] && grep -q "audit retention" <<<"$out" && ok "doctor: DAYS=$v flagged" || bad "doctor: DAYS=$v not flagged"
 done
 denv "LUCAIRN_AUDIT_CLAIM_DELIVERY_RETENTION_ENABLED=yes"
 out="$(doctor_check "$WK/doctor.env" "$COMPOSE")" && rc=0 || rc=$?
@@ -320,7 +320,7 @@ cp "$COMPOSE" "$WK/fake-install/docker-compose.customer.yml"
 denv "POSTGRES_AUDIT_PASSWORD=x"
 [ -f "$ROOT/scripts/audit-claim-delivery-retention.sh" ] || die "kit copy of the script missing"
 out="$(doctor_check "$WK/doctor.env" "$WK/fake-install/docker-compose.customer.yml")" && rc=0 || rc=$?
-[ "$rc" != 0 ] && printf '%s' "$out" | grep -q "missing beside" \
+[ "$rc" != 0 ] && grep -q "missing beside" <<<"$out" \
   && ok "doctor: script missing beside the selected compose file is flagged although the kit checkout has one" \
   || bad "doctor: missing script not flagged (rc=$rc) — it fell back to the checkout copy"
 mkdir -p "$WK/fake-install/scripts"
@@ -821,7 +821,7 @@ SQL
   # ── audit_app: still no DELETE ────────────────────────────────────────────
   BLANKED_ID="evt_completion_t1219_old_delivered_1"
   DEL_OUT="$(printf "DELETE FROM audit_claim_deliveries WHERE event_id = '%s';\n" "$BLANKED_ID" | qapp 2>&1)" && DEL_RC=0 || DEL_RC=$?
-  if [ "$DEL_RC" != 0 ] && printf '%s' "$DEL_OUT" | grep -q "permission denied"; then
+  if [ "$DEL_RC" != 0 ] && grep -q "permission denied" <<<"$DEL_OUT"; then
     ok "audit_app DELETE on audit_claim_deliveries: permission denied"
   else
     bad "audit_app could DELETE (rc=$DEL_RC: $DEL_OUT)"
@@ -860,7 +860,7 @@ SQL
 )" && RP_RC=0 || RP_RC=$?
   echo "  replay as audit_app (rc=$RP_RC): $(printf '%s' "$REPLAY_OUT" | tr '\n' ' ')"
   for want in events_inserted=0 outbox_inserted=0 lease_acquired=0 retry_selects_blanked=0; do
-    printf '%s\n' "$REPLAY_OUT" | grep -qx "$want" && ok "replay of a blanked event: $want" || bad "replay: expected $want"
+    grep -qx "$want" <<<"$REPLAY_OUT" && ok "replay of a blanked event: $want" || bad "replay: expected $want"
   done
   RP_ROW="$(printf "SELECT delivery_state || ':' || (claim_raw IS NULL) || ':' || (output_scan_body IS NULL) FROM audit_claim_deliveries WHERE event_id = '%s';\n" "$BLANKED_ID" | q)"
   [ "$RP_ROW" = "DELIVERED:true:true" ] && ok "after the replay the row is still DELIVERED and blanked" || bad "after replay: $RP_ROW"

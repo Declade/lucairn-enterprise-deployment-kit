@@ -311,7 +311,7 @@ PY
   fi
 
   SERVICES="$(docker compose -f "$COMPOSE" -f "$SELFHOSTED" --env-file "$PINNED_ENV" config --services 2>/dev/null || true)"
-  if printf '%s\n' "$SERVICES" | grep -qx migrate-sanitizer-core; then
+  if grep -qx migrate-sanitizer-core <<<"$SERVICES"; then
     fail "migrate-sanitizer-core-not-in-default-project (a plain up would run it)"
   else
     pass "migrate-sanitizer-core-not-in-default-project"
@@ -319,7 +319,7 @@ PY
   # The base file alone (split-remote topology) also carries the core.
   # Captured first: `| grep -q` under pipefail SIGPIPEs the writer and reads as a failure.
   BASE_SERVICES="$(docker compose -f "$COMPOSE" --env-file "$PINNED_ENV" config --services 2>/dev/null || true)"
-  if printf '%s\n' "$BASE_SERVICES" | grep -qx sanitizer-core; then
+  if grep -qx sanitizer-core <<<"$BASE_SERVICES"; then
     pass "split-remote base file carries the core"
   else
     fail "split-remote base file carries the core"
@@ -483,8 +483,8 @@ PY
   printf '\nLUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=sha256:%s\nLUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=sha256:%s\n' \
     "$(printf 'a%.0s' $(seq 64))" "$(printf 'b%.0s' $(seq 64))" >> "$TMP/digest.env"
   IMAGES="$(docker compose -f "$COMPOSE" --env-file "$TMP/digest.env" config --images 2>/dev/null || true)"
-  if printf '%s\n' "$IMAGES" | grep -qx "ghcr.io/declade/dsa-sanitizer-core:1.1.0@sha256:$(printf 'a%.0s' $(seq 64))" \
-     && printf '%s\n' "$IMAGES" | grep -qx "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@sha256:$(printf 'b%.0s' $(seq 64))"; then
+  if grep -qx "ghcr.io/declade/dsa-sanitizer-core:1.1.0@sha256:$(printf 'a%.0s' $(seq 64))" <<<"$IMAGES" \
+     && grep -qx "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@sha256:$(printf 'b%.0s' $(seq 64))" <<<"$IMAGES"; then
     pass "digest variables pin core + sidecar by digest"
   else
     fail "digest variables pin core + sidecar by digest ($(printf '%s\n' "$IMAGES" | grep sanitizer-core | tr '\n' ' '))"
