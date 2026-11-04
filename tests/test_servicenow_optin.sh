@@ -154,6 +154,10 @@ if [ "\${1:-}" = compose ]; then
   exit 0
 fi
 case "\$a" in
+  # no daemon, with the docker CLI's own message (the registry check in
+  # bin/lucairn-init counts only that as Docker unreachable, which
+  # --confirm-no-registry-volume covers; fix round 1 on PR #163)
+  " version "*) echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2; exit 1 ;;
   " info "*) [ -n "\${STUB_MEM_BYTES:-}" ] && { echo "\$STUB_MEM_BYTES"; exit 0; }; exit 1 ;;
   # kit 2.0 K-E: the host's Docker networks, one "<name>|<subnet>..." line each
   # in STUB_NETS (unset = the engine cannot be asked, as before)

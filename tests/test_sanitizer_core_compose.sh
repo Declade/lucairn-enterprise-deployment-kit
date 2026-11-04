@@ -825,7 +825,11 @@ a=" $* "
 case "$a" in
   " info "*) [ -n "${STUB_MEM_BYTES:-}" ] && { echo "$STUB_MEM_BYTES"; exit 0; }; exit 1 ;;
   " inspect "*) [ -n "${STUB_NETMODE:-}" ] && { echo "$STUB_NETMODE"; exit 0; }; exit 1 ;;
-  " version --format "*) [ -n "${STUB_ENGINE_VERSION:-}" ] && { echo "$STUB_ENGINE_VERSION"; exit 0; }; exit 1 ;;
+  # No STUB_ENGINE_VERSION: no daemon, with the docker CLI's own message (the
+  # registry check in bin/lucairn-init counts only that as Docker unreachable,
+  # which --confirm-no-registry-volume covers; fix round 1 on PR #163).
+  " version --format "*) [ -n "${STUB_ENGINE_VERSION:-}" ] && { echo "$STUB_ENGINE_VERSION"; exit 0; }
+    echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2; exit 1 ;;
 esac
 if [ "${1:-}" = compose ]; then
   case "$a" in

@@ -43,8 +43,10 @@
 #          this install cannot be resolved (Docker Compose missing, the
 #          project or an overlay does not render) and no name that did
 #          resolve is on the daemon's list · 5 cannot tell: Docker cannot be
-#          asked (no docker CLI, or the Docker daemon is not reachable) · 6
-#          cannot tell: the daemon answered, but did not list its volumes.
+#          asked (no docker CLI, or the docker CLI reports it cannot connect
+#          to the daemon) · 6 cannot tell: Docker was asked but gave no
+#          volume list (the daemon answered with an error, or the CLI failed
+#          in any other way — permission denied included).
 #          bin/lucairn-init runs it before it generates a new customer.env;
 #          its --confirm-no-registry-volume overrides exit 5 only.
 #
@@ -59,10 +61,12 @@
 # BEFORE a failed render is reported, so a known volume is refused (exit 3)
 # even when another of the renders fails. A name that cannot be resolved is
 # "cannot tell" (exit 4), never a guess. The daemon is asked only for its
-# version and its volume list. Final check on PR #162: only a daemon that
-# cannot be reached is "Docker cannot be asked" (exit 5); a daemon that
-# answers — its version, or an error response to either request — but gives
-# no volume list is exit 6, which no flag overrides. The list is matched in
+# version and its volume list. Final check on PR #162 and fix round 1 on PR
+# #163: only no docker CLI, or one of the docker CLI's own "cannot connect"
+# errors (listed at docker_cannot_connect, v24–v29), is "Docker cannot be
+# asked" (exit 5); every other failure of either request — an error response,
+# an HTTP error such as an empty 500, permission denied, any unknown message —
+# is exit 6, which no flag overrides. The list is matched in
 # the shell, never through `printf | grep -q`: under pipefail grep's exit at
 # the match sent printf a SIGPIPE and the match was dropped once the list
 # outgrew the pipe. No secret value is ever printed.
@@ -71,8 +75,8 @@
 # 3 a registry volume exists and no saved credentials were given · 4 cannot
 # check for a registry volume: a volume name cannot be resolved (nothing was
 # generated) · 5 cannot check for a registry volume: Docker cannot be asked
-# (nothing was generated) · 6 cannot check for a registry volume: the Docker
-# daemon answered but did not list its volumes (nothing was generated).
+# (nothing was generated) · 6 cannot check for a registry volume: Docker was
+# asked but gave no volume list (nothing was generated).
 
 set -euo pipefail
 
@@ -186,30 +190,75 @@ $name
 }$name" ;; esac
 }
 
-# daemon_reachable — rc 0 when the Docker daemon answers: it gives its
-# version, or it sends an error response (an authorization plugin denying the
-# request still answers). rc 1 only when the CLI cannot connect to it.
-daemon_reachable() {
-  local said
-  if said="$(docker version --format '{{.Server.Version}}' 2>&1 </dev/null)"; then return 0; fi
-  case "$said" in *"Error response from daemon"*) return 0 ;; esac
+# docker_cannot_connect <output> — rc 0 ONLY when <output> (stdout and stderr
+# of a failed docker CLI call) is one of the docker CLI's own "cannot connect"
+# errors: the request reached no daemon. Every other failure is rc 1, which
+# the caller refuses with or without --confirm-no-registry-volume (fix round 1
+# on PR #163: an empty HTTP 500 from a reachable daemon, "request returned 500
+# Internal Server Error for API route and version …", used to count as
+# unreachable). The recognised strings, exactly as the docker CLI v24.0–v29.6
+# prints them (its vendored API client: github.com/docker/docker/client
+# errors.go + request.go doRequest for v24–v28, github.com/moby/moby/client
+# for v29):
+#   "Cannot connect to the Docker daemon at <host>. Is the docker daemon running?"
+#   "Cannot connect to the Docker daemon. Is the docker daemon running on this host?"
+#       errors.go, v24–v29: connection refused, a failed `dial unix` (v24–v28
+#       also a socket path that does not exist), a dial timeout
+#   "failed to connect to the docker API at <host>; check if the path is correct and if the daemon is running: …"
+#   "failed to connect to the docker API at <host>: …"
+#       request.go, v29: the socket path does not exist ("… connect: no such
+#       file or directory"), the daemon's host name does not resolve
+#   "error during connect: …"
+#       request.go, v24–v29: any other transport error before an HTTP
+#       response (a Windows named pipe that is not there, an ssh:// host that
+#       cannot be reached, a v24–v28 host name that does not resolve)
+# The bare "connection refused" / "connect: no such file or directory" are not
+# matched alone: the CLI only prints them inside the phrases above, and a
+# daemon's own error response can carry them. Never recognised, even inside
+# one of the phrases above:
+#   "Error response from daemon", "request returned " — an HTTP response: the
+#       daemon answered
+#   "permission denied" (v24–v28 "… to the Docker daemon socket at", v29 "…
+#       to the docker API at"; ssh "Permission denied"), "Access is denied",
+#       "elevated privileges" — Docker is there, this user may not use it
+#   "x509:", "tls:" — a TLS server answered
+# Not recognised either, so refused: a timeout the client does not report as
+# "Cannot connect" ("context deadline exceeded"), a context or config error,
+# any message not listed here.
+docker_cannot_connect() {
+  case "$1" in
+    *"Error response from daemon"*|*"request returned "*) return 1 ;;
+    *[Pp]"ermission denied"*|*"Access is denied"*|*"elevated privileges"*|*"x509:"*|*"tls:"*) return 1 ;;
+    *"Cannot connect to the Docker daemon at "*". Is the docker daemon running?"*) return 0 ;;
+    *"Cannot connect to the Docker daemon. Is the docker daemon running on this host?"*) return 0 ;;
+    *"failed to connect to the docker API at "*) return 0 ;;
+    *"error during connect: "*) return 0 ;;
+  esac
   return 1
 }
 
 # registry_volume — sets VOL (the registry volume this install has, or the
 # first name it would have) and returns 0 when one exists, 1 when none does,
 # 2 when a name cannot be resolved and no resolved one exists, 3 when Docker
-# cannot be asked, 4 when the daemon answers but gives no volume list
-# (VOL_WHY says why, value-free). The daemon is asked first, so a host
-# without one answers fast; only a daemon that cannot be reached is "Docker
-# unreachable" (final check on PR #162: a failed list from a reachable
-# daemon used to count as unreachable, which the init flag overrides).
+# cannot be asked, 4 when Docker was asked but gave no volume list (VOL_WHY
+# says why, value-free). The daemon is asked first, so a host without one
+# answers fast. Fix round 1 on PR #163: only a positively recognised "cannot
+# connect" (docker_cannot_connect) or no docker CLI is 3, the one case the
+# init flag overrides; every other failure of `docker version` or `docker
+# volume ls` — an HTTP error, an error response, an unknown message — is 4.
+# Once `docker version` has answered, a failed volume list is 4 whatever it
+# says (the daemon was reached).
 registry_volume() {
-  local tmp envf out name rc=0 why=""
+  local tmp envf out name rc=0 why="" said
   local -a args
   VOL="" VOL_WHY="" VOLS=""
   command -v docker >/dev/null 2>&1 || { VOL_WHY="the docker CLI is not on PATH"; return 3; }
-  daemon_reachable || { VOL_WHY="the Docker daemon is not reachable"; return 3; }
+  if ! said="$(docker version --format '{{.Server.Version}}' 2>&1 </dev/null)"; then
+    if docker_cannot_connect "$said"; then
+      VOL_WHY="the Docker daemon is not reachable"; return 3
+    fi
+    VOL_WHY="Docker was asked but did not give its version, with an error that is not the docker CLI's \"cannot connect\" (run docker version)"; return 4
+  fi
   out="$(docker volume ls -q 2>/dev/null </dev/null)" \
     || { VOL_WHY="the Docker daemon answered but did not list its volumes (docker volume ls failed)"; return 4; }
   cev_compose_cmd 2>/dev/null || { VOL_WHY="Docker Compose is not available here"; return 2; }
@@ -410,7 +459,7 @@ do_add() {
     0) refuse_existing add ;;
     1) : ;;
     3) die 5 "cannot check whether this install already has a sanitizer core registry volume ($VOL_WHY), so no credentials were generated: new ones would not open an existing registry. Start Docker and re-run, or pass --from <saved file>" ;;
-    4) die 6 "cannot check whether this install already has a sanitizer core registry volume ($VOL_WHY), so no credentials were generated: new ones would not open an existing registry. Fix what keeps the daemon from listing its volumes (run docker volume ls) and re-run, or pass --from <saved file>" ;;
+    4) die 6 "cannot check whether this install already has a sanitizer core registry volume ($VOL_WHY), so no credentials were generated: new ones would not open an existing registry. Fix what keeps Docker from listing its volumes (run docker version and docker volume ls as this user) and re-run, or pass --from <saved file>" ;;
     *) die 4 "cannot check whether this install already has a sanitizer core registry volume ($VOL_WHY), so no credentials were generated: new ones would not open an existing registry. Fix the cause and re-run, or pass --from <saved file>" ;;
   esac
   command -v openssl >/dev/null 2>&1 || die 2 "openssl is required"

@@ -39,7 +39,9 @@ LUCAIRN_TEST_REAL_DOCKER="$(command -v docker 2>/dev/null || true)"
   || { echo "registry credentials rollback: needs the docker CLI with the Compose plugin (client side only)" >&2; exit 1; }
 STUB_DAEMON="$TMPDIR/daemon"
 STUB_VOLUMES="$TMPDIR/volumes"
-export LUCAIRN_TEST_REAL_DOCKER STUB_DAEMON STUB_VOLUMES
+STUB_MSG="$TMPDIR/docker-message"
+: > "$STUB_MSG"
+export LUCAIRN_TEST_REAL_DOCKER STUB_DAEMON STUB_VOLUMES STUB_MSG
 mkdir "$TMPDIR/bin"
 cat > "$TMPDIR/bin/docker" <<'STUB'
 #!/bin/bash
@@ -47,7 +49,8 @@ cat > "$TMPDIR/bin/docker" <<'STUB'
 # the daemon is a stub. Any other Compose command would need a daemon.
 # Daemon states ($STUB_DAEMON): up · down (cannot connect) · qerr (answers,
 # but its volume list fails) · deny (answers every request with an error
-# response, as an authorization plugin does).
+# response, as an authorization plugin does) · msg (every request fails with
+# exactly the text in $STUB_MSG on stderr: a docker CLI error message).
 if [ "${1:-}" = compose ]; then
   case " $* " in *" config "*|*" version"*) exec "$LUCAIRN_TEST_REAL_DOCKER" "$@" ;; esac
 fi
@@ -55,6 +58,7 @@ if [ "${1:-}" = version ]; then
   case "$(cat "$STUB_DAEMON")" in
     up|qerr) echo "27.5.1"; exit 0 ;;
     deny) echo "Error response from daemon: authorization denied by plugin stub-authz" >&2; exit 1 ;;
+    msg) cat "$STUB_MSG" >&2; exit 1 ;;
     *) echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2; exit 1 ;;
   esac
 fi
@@ -62,6 +66,7 @@ if [ "${1:-}" = volume ] && [ "${2:-}" = ls ]; then
   case "$(cat "$STUB_DAEMON")" in
     up) cat "$STUB_VOLUMES"; exit 0 ;;
     qerr|deny) echo "Error response from daemon: stub volume list failure" >&2; exit 1 ;;
+    msg) cat "$STUB_MSG" >&2; exit 1 ;;
     *) echo "Cannot connect to the Docker daemon" >&2; exit 1 ;;
   esac
 fi
@@ -343,6 +348,90 @@ cp -p "$TMPDIR/env.before" "$ENV"
 run add-long-extra bash "$CRED" add --env-file "$ENV" --from "$TMPDIR/long-extra.env"
 check "a saved file with 20,000 other lines is refused (rc $RC, want 2)" '[ "$RC" -eq 2 ] && cmp -s "$TMPDIR/env.before" "$ENV"'
 printf '%s\n' "$VOL" > "$STUB_VOLUMES"
+
+# Fix round 1 on PR #163 (review P2): "Docker unreachable" (exit 5, the one
+# case --confirm-no-registry-volume covers) is ONLY no docker CLI or one of the
+# docker CLI's own "cannot connect" errors (v24–v29, listed at
+# docker_cannot_connect in the helper). Every other failure of `docker
+# version` — the empty HTTP 500 of a reachable daemon, an unknown message, a
+# timeout the client does not report as "cannot connect", permission denied —
+# is exit 6, which init refuses (8) with or without the flag. It used to be 5
+# unless the text held "Error response from daemon".
+echo "11d. only the docker CLI's own 'cannot connect' is Docker unreachable"
+printf '%s\n' "$VOL" > "$STUB_VOLUMES"
+echo msg > "$STUB_DAEMON"
+cp -p "$TMPDIR/env.before" "$ENV"
+CASE=""
+refused_case() { # <label> <docker CLI message>: exit 6, init refuses with and without the flag
+  CASE="$1"
+  printf '%s' "$2" > "$STUB_MSG"
+  run "check-$CASE" bash "$CRED" check --env-file "$ENV"
+  check "$CASE: check is 'cannot tell', not 'Docker unreachable' (rc $RC, want 6)" \
+    '[ "$RC" -eq 6 ] && ! grep -Fq "the Docker daemon is not reachable" "$TMPDIR/check-$CASE.err"'
+  clear_other
+  run "init-$CASE" "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
+  check "$CASE: init with --confirm-no-registry-volume refuses (rc $RC, want 8)" \
+    '[ "$RC" -eq 8 ] && grep -Fq -- "--confirm-no-registry-volume does not apply" "$TMPDIR/init-$CASE.err" && ! grep -Fq -- "--confirm-no-registry-volume states" "$TMPDIR/init-$CASE.err" && other_absent'
+  clear_other
+}
+proceeds_case() { # <label> <docker CLI message>: exit 5, init with the flag proceeds
+  CASE="$1"
+  printf '%s' "$2" > "$STUB_MSG"
+  run "check-$CASE" bash "$CRED" check --env-file "$ENV"
+  check "$CASE: check is 'Docker unreachable' (rc $RC, want 5)" \
+    '[ "$RC" -eq 5 ] && grep -Fq "the Docker daemon is not reachable" "$TMPDIR/check-$CASE.err"'
+  clear_other
+  run "init-$CASE" "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
+  check "$CASE: init with --confirm-no-registry-volume proceeds (rc $RC, the documented case)" \
+    '[ "$RC" -eq 0 ] && [ -f "$OTHER" ] && grep -Fq -- "--confirm-no-registry-volume states" "$TMPDIR/init-$CASE.err"'
+  clear_other
+}
+# The review's case: a reachable daemon answers 500 with an empty body (moby
+# client checkResponseErr; v28/v29 wording, then v24–v27 wording).
+refused_case http500-empty 'request returned 500 Internal Server Error for API route and version http://%2Fvar%2Frun%2Fdocker.sock/v1.51/version, check if the server supports the requested API version'
+refused_case http500-empty-v24 'request returned Internal Server Error for API route and version http://%2Fvar%2Frun%2Fdocker.sock/v1.43/version, check if the server supports the requested API version'
+refused_case unknown 'stub: an error message no docker CLI version prints'
+refused_case empty ''
+refused_case deadline 'context deadline exceeded'
+refused_case perm-v24 'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.24/version": dial unix /var/run/docker.sock: connect: permission denied'
+refused_case perm-v29 'permission denied while trying to connect to the docker API at unix:///var/run/docker.sock'
+refused_case perm-ssh 'error during connect: Get "http://docker.example.invalid/v1.24/version": command [ssh -o ConnectTimeout=30 -T -- docker.example.invalid docker system dial-stdio] has exited with exit status 255, make sure the URL is valid, and Docker 18.09 or later is installed on the remote host: stderr=deploy@docker.example.invalid: Permission denied (publickey).'
+refused_case tls 'error during connect: Get "https://docker.example.invalid:2376/v1.24/version": tls: failed to verify certificate: x509: certificate signed by unknown authority'
+refused_case daemon-quotes 'Error response from daemon: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?'
+printf '%s' 'request returned 500 Internal Server Error for API route and version http://%2Fvar%2Frun%2Fdocker.sock/v1.51/version, check if the server supports the requested API version' > "$STUB_MSG"
+run add-http500 bash "$CRED" add --env-file "$ENV"
+check "add generates nothing on an empty HTTP 500 from the daemon (rc $RC, want 6)" '[ "$RC" -eq 6 ] && cmp -s "$TMPDIR/env.before" "$ENV"'
+cp -p "$TMPDIR/env.before" "$ENV"
+# Each "cannot connect" error the docker CLI v24–v29 prints (the v29 socket
+# message as the docker CLI 29.6 prints it for a socket path that does not exist).
+proceeds_case cannot-connect-host 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?'
+proceeds_case cannot-connect-nohost 'Cannot connect to the Docker daemon. Is the docker daemon running on this host?'
+proceeds_case v29-no-socket 'failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory'
+proceeds_case v29-dns 'failed to connect to the docker API at tcp://docker.example.invalid:2375: lookup docker.example.invalid: no such host'
+proceeds_case pipe-missing 'error during connect: this error may indicate that the docker daemon is not running: Get "http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.24/version": open //./pipe/docker_engine: The system cannot find the file specified.'
+proceeds_case ssh-refused 'error during connect: Get "http://docker.example.invalid/v1.24/version": command [ssh -o ConnectTimeout=30 -T -- docker.example.invalid docker system dial-stdio] has exited with exit status 255, make sure the URL is valid, and Docker 18.09 or later is installed on the remote host: stderr=ssh: connect to host docker.example.invalid port 22: Connection refused'
+# No docker CLI on PATH at all: exit 5 as well.
+NODOCKER="$TMPDIR/no-docker-bin"
+mkdir "$NODOCKER"
+for t in bash env dirname basename sed awk grep mktemp rm cat tr head tail uname stat chmod cp cmp date mkdir mv wc sort cut ls id ln rmdir touch sleep kill openssl; do
+  if p="$(command -v "$t")" && [ -x "$p" ]; then ln -s "$p" "$NODOCKER/$t"; fi
+done
+check "fixture: no docker CLI on the restricted PATH" '! PATH="$NODOCKER" command -v docker >/dev/null 2>&1'
+run check-nocli env PATH="$NODOCKER" bash "$CRED" check --env-file "$ENV"
+check "no docker CLI: check is 'Docker unreachable' (rc $RC, want 5)" '[ "$RC" -eq 5 ] && grep -Fq "the docker CLI is not on PATH" "$TMPDIR/check-nocli.err"'
+run add-nocli env PATH="$NODOCKER" bash "$CRED" add --env-file "$ENV"
+check "no docker CLI: add generates nothing (rc $RC, want 5)" '[ "$RC" -eq 5 ] && cmp -s "$TMPDIR/env.before" "$ENV"'
+cp -p "$TMPDIR/env.before" "$ENV"
+clear_other
+run init-nocli env PATH="$NODOCKER" bash "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor
+check "no docker CLI: init without the flag refuses (rc $RC, want 8) and names the flag" \
+  '[ "$RC" -eq 8 ] && grep -Fq "the docker CLI is not on PATH" "$TMPDIR/init-nocli.err" && grep -Fq -- "--confirm-no-registry-volume" "$TMPDIR/init-nocli.err" && other_absent'
+clear_other
+run init-nocli-confirmed env PATH="$NODOCKER" bash "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
+check "no docker CLI: init with --confirm-no-registry-volume passes the registry check (rc $RC, the documented case)" \
+  '[ "$RC" -ne 8 ] && grep -Fq -- "--confirm-no-registry-volume states" "$TMPDIR/init-nocli-confirmed.err"'
+clear_other
+echo up > "$STUB_DAEMON"
 
 echo "12. the guide drives it"
 ROLLBACK="$(awk '/^### Rollback to 1\.9\.7/{f=1;next} f&&/^## /{exit} f' "$DOCS_ROOT/INSTALL.md")"

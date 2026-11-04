@@ -59,9 +59,10 @@
 #     start Docker, or pass --confirm-no-registry-volume — K-E fix round 2),
 #     or a registry volume name of this install could not be resolved
 #     (nothing was written; the flag does not cover that — fix round 4),
-#     or the Docker daemon answered but did not list its volumes (nothing
-#     was written; the flag does not cover that either — final check on
-#     PR #162)
+#     or Docker was asked but gave no volume list: the daemon answered with
+#     an error, or the docker CLI failed in a way other than its own
+#     "cannot connect" (nothing was written; the flag does not cover that
+#     either — final check on PR #162, fix round 1 on PR #163)
 
 set -euo pipefail
 
@@ -278,16 +279,18 @@ Options:
   --dry-run                Print what would be written to stdout. Skips backup + doctor.
                            Secrets ARE printed because the user explicitly asked.
   --confirm-no-registry-volume
-                           Only when Docker cannot be asked (no docker CLI or no
-                           reachable daemon here): you state that the Docker host
-                           of this install has no sanitizer core registry volume
-                           from an earlier kit 2.0 run. Without Docker and without
+                           Only when Docker cannot be asked (no docker CLI, or the
+                           docker CLI reports it cannot connect to a daemon here):
+                           you state that the Docker host of this install has no
+                           sanitizer core registry volume from an earlier kit 2.0
+                           run. Without Docker and without
                            this flag, init refuses (exit 8): new registry
                            credentials cannot open an existing registry. It
                            overrides nothing else: a volume Docker reports, a
-                           registry volume name that cannot be resolved, or a
-                           daemon that answers but does not list its volumes, is
-                           refused with or without it.
+                           registry volume name that cannot be resolved, or any
+                           other Docker failure (an error from the daemon,
+                           permission denied, an unknown error), is refused with
+                           or without it.
   --help, -h               Show this usage and exit.
 
 Examples:
@@ -314,8 +317,8 @@ Exit codes:
   7  sanitizer core registry DSN file could not be written (customer.env written)
   8  refused: a sanitizer core registry volume already exists, or Docker could
      not be asked and --confirm-no-registry-volume was not given, or a registry
-     volume name could not be resolved, or the daemon answered but did not list
-     its volumes (nothing written)
+     volume name could not be resolved, or Docker was asked but gave no volume
+     list (nothing written)
 USAGE
 }
 
@@ -931,9 +934,11 @@ fi
 # states with --confirm-no-registry-volume that there is none. Fix round 4
 # (review P2 on PR #162): the flag overrides ONLY that case (the helper's exit
 # 5). A known volume (exit 3, checked before any failed render), a name that
-# cannot be resolved (exit 4), a daemon that answers but does not list its
-# volumes (exit 6, final check on PR #162: it used to come back as 5) and any
-# other exit refuse with or without it.
+# cannot be resolved (exit 4), Docker asked but giving no volume list (exit
+# 6: an error response, an HTTP error, permission denied, any message that is
+# not the docker CLI's own "cannot connect" — final check on PR #162 and fix
+# round 1 on PR #163, they used to come back as 5) and any other exit refuse
+# with or without it.
 if [ "$ADOPT_RUNTIME_PROFILE" != "true" ] && [ "$DRY_RUN" != "true" ]; then
   _registry_check_rc=0
   _registry_check_msg="$(bash "$KIT_ROOT/scripts/sanitizer-core-registry-credentials.sh" check \
@@ -943,7 +948,7 @@ if [ "$ADOPT_RUNTIME_PROFILE" != "true" ] && [ "$DRY_RUN" != "true" ]; then
     0) : ;;
     3) fail "${_registry_check_msg#\[sanitizer-core-registry-credentials\] ERROR: } (no customer state was changed)" 8 ;;
     4) fail "could not resolve the sanitizer core registry volume of this install (${_registry_check_msg}), so no registry key or database password was generated: new ones cannot open a registry an earlier kit 2.0 run left behind (no customer state was changed). Fix the cause and re-run; --confirm-no-registry-volume does not apply here, it covers only a host where Docker cannot be asked (INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\")" 8 ;;
-    6) fail "could not check for an existing sanitizer core registry volume (${_registry_check_msg}), so no registry key or database password was generated: new ones cannot open a registry an earlier kit 2.0 run left behind (no customer state was changed). Fix what keeps the daemon from listing its volumes (run docker volume ls) and re-run; --confirm-no-registry-volume does not apply here, it covers only a host where Docker cannot be asked (INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\")" 8 ;;
+    6) fail "could not check for an existing sanitizer core registry volume (${_registry_check_msg}), so no registry key or database password was generated: new ones cannot open a registry an earlier kit 2.0 run left behind (no customer state was changed). Fix what keeps Docker from listing its volumes (run docker version and docker volume ls as this user) and re-run; --confirm-no-registry-volume does not apply here, it covers only a host where the docker CLI is missing or reports it cannot connect to a daemon (INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\")" 8 ;;
     5)
       if [ "$CONFIRM_NO_REGISTRY_VOLUME" = "true" ]; then
         echo "note: could not check for an existing sanitizer core registry volume (${_registry_check_msg}); generating new registry credentials because --confirm-no-registry-volume states this install has none" >&2
