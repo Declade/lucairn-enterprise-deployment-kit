@@ -46,6 +46,8 @@ bin/lucairn-init --production --runtime-mode split-remote \
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
 # Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)
 docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
+# up first runs the sanitizer core's capped registry migration (a no-op when
+# current; the core refuses to start without it), then starts the stack.
 bin/lucairn up --env customer.env
 ```
 
@@ -64,6 +66,8 @@ bin/lucairn-init --production --runtime-mode managed-byok \
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
 # Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)
 docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
+# up first runs the sanitizer core's capped registry migration (a no-op when
+# current; the core refuses to start without it), then starts the stack.
 bin/lucairn up --env customer.env
 ```
 
@@ -79,6 +83,8 @@ bin/lucairn-init --dev --runtime-mode local-runtime --local-runtime llama-cpp \
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
 # Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)
 docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
+# up first runs the sanitizer core's capped registry migration (a no-op when
+# current; the core refuses to start without it), then starts the stack.
 bin/lucairn up --env customer.env
 ```
 

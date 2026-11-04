@@ -35,6 +35,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"; rm -f "$ROOT/.lucairn-customer-id"' EXIT
+# Kit 2.0 K-A fix round 4: support-bundle refuses when the install's Compose
+# project does not render, and this checkout's project does not render before
+# a release (no signed core/sidecar digests yet): run from a RELEASED-kit
+# fixture with synthetic signed digests (tests/lib/test-helpers.sh).
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$TMPDIR"
 
 CERT_SECRET='ops.person@customer.example'
 HOST_SECRET='ops.admin@customer.example'
@@ -56,7 +63,10 @@ rm -f "$ENV_FILE.bak" "$ENV_FILE.runtime-profile.yaml.bak"
 
 # Planted secret #1: an operator email inside a configured cert path. The path
 # does not exist, so write_cert_report takes its deterministic "(missing)"
-# branch and no openssl call is needed.
+# branch and no openssl call is needed. The generated line is REPLACED, not
+# repeated: a variable assigned twice refuses the bundle on its own (kit 2.0
+# K-A fix round 5, an assignment overwritten later is not decoded exactly).
+sed -i.bak '/^WITNESS_MTLS_CA_BUNDLE_PATH=/d' "$ENV_FILE" && rm -f "$ENV_FILE.bak"
 printf 'WITNESS_MTLS_CA_BUNDLE_PATH=/etc/lucairn/%s/ca.pem\n' "$CERT_SECRET" >> "$ENV_FILE"
 
 # Planted secret #2: an operator email in the host name, via a PATH stub so the

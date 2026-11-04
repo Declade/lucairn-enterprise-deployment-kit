@@ -293,6 +293,12 @@ POSTGRES_BRIDGE_PASSWORD=render-only
 POSTGRES_SANDBOX_A_PASSWORD=render-only
 POSTGRES_VEIL_PASSWORD=render-only
 VEIL_APP_PASSWORD=render-only
+DSA_SANITIZER_CORE_REGISTRY_KEY=render-only
+POSTGRES_SANITIZER_CORE_PASSWORD=render-only
+# Kit 2.0: the core pair renders only with its signed digests (SYNTHETIC here,
+# = tests/lib/test-helpers.sh TEST_SANITIZER_CORE_*DIGEST; never pulled).
+LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0
+LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=sha256:5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c
 VEIL_WITNESS_SIGNING_KEY=00
 VEIL_WITNESS_PUBLIC_KEY=00
 VEIL_BRIDGE_PUBLIC_KEY=00
@@ -349,7 +355,7 @@ sys.exit(0 if v in d["services"]["witness-egress-guard"]["environment"] else 1)'
     # port. Without this edge the guard would CHECK that variable while nothing
     # acted on the refusal — an advisory guard, which is the shape this whole
     # service exists to not be.
-    for svc in audit id-bridge sanitizer gateway lucairn-dashboard; do
+    for svc in audit id-bridge sanitizer sanitizer-core gateway lucairn-dashboard; do
       if printf '%s' "$J" | python3 -c '
 import json,sys
 svc=sys.argv[1]

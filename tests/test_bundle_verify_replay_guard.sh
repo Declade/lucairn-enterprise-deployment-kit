@@ -56,6 +56,11 @@ test -n "$BUNDLE"
 # never as executable verifier input. Build a valid S1 bundle solely for the
 # two hostile-helper regressions below.
 S1_ENV="$TMPDIR/s1-customer.env"
+# Kit 2.0 final-read M2 (see tests/lib/test-helpers.sh): a non-root Linux
+# test host declares the image user = this uid, so init needs no sudo.
+if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" != "0" ] && [ -z "${LUCAIRN_CONTAINER_UID:-}" ]; then
+  LUCAIRN_CONTAINER_UID="$(id -u)"; export LUCAIRN_CONTAINER_UID
+fi
 "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --model-name m --model-file foo.gguf --model-path . --output "$S1_ENV" --skip-doctor >/dev/null 2>&1
 S1_OUT="$TMPDIR/s1-bundles"

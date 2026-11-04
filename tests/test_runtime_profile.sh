@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
+# Kit 2.0 K-A fix round 1: doctor FAILS while this checkout's image-manifest
+# still has no signed core/sidecar digests (`pending: true`, before a
+# release), and the compose file does not render without them. Every case
+# below therefore runs init + doctor from a RELEASED-kit fixture with synthetic
+# signed digests (tests/lib/test-helpers.sh); the real tree is REAL_ROOT.
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$TMPDIR"
 
 REMOTE_CREDENTIALS="$TMPDIR/lucairn-issued-remote-credentials.env"
 cat > "$REMOTE_CREDENTIALS" <<'CREDS'
@@ -706,12 +714,23 @@ fi
 # Compose calls without needing a daemon.
 DOCKER_STUB_DIR="$TMPDIR/docker-stub"
 mkdir -p "$DOCKER_STUB_DIR"
+# Kit 2.0 K-A fix round 2: the docker stubs below hand bin/compose-env.sh's
+# probe renders to the real Compose CLI (client side only).
+LUCAIRN_TEST_REAL_DOCKER="$(command -v docker 2>/dev/null || true)"
+export LUCAIRN_TEST_REAL_DOCKER
 cat > "$DOCKER_STUB_DIR/docker" <<'STUB'
 #!/usr/bin/env bash
+# Kit 2.0 K-A fix round 2: bin/compose-env.sh reads customer.env through the
+# REAL Compose CLI (one-service probe projects, client side, no daemon).
+case " $* " in *lucairn-env-probe.*) exec "$LUCAIRN_TEST_REAL_DOCKER" "$@" ;; esac
 if [ "$1" = compose ]; then
   shift
   if [ "$1" = version ]; then exit 0; fi
   printf '%s\n' "$*" >> "$LUCAIRN_TEST_COMPOSE_ARGS"
+  # Kit 2.0 K-A fix round 4: support-bundle refuses when the install's
+  # project does not render, so the stub's project render is a (minimal)
+  # project, not empty output.
+  case " $* " in *" config --format json "*) printf '{\n  "name": "stub",\n  "services": {\n  }\n}\n' ;; esac
   exit 0
 fi
 exit 1
@@ -796,6 +815,14 @@ test -x "$BYOK_BUNDLE_ROOT/scripts/derive-veil-pubkey.sh"
 test -f "$BYOK_BUNDLE_ROOT/install/docker-compose.self-hosted-byok.yml"
 sed 's/^ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=dummy-provider-key/' "$BYOK_BUNDLE_ROOT/install/customer.env" > "$BYOK_BUNDLE_ROOT/install/customer.env.tmp"
 mv "$BYOK_BUNDLE_ROOT/install/customer.env.tmp" "$BYOK_BUNDLE_ROOT/install/customer.env"
+# Kit 2.0 final-read H2: the bundle carries neither the core's mTLS material
+# nor its registry DSN file (the staged env names install/.certs/... and
+# install/.secrets/...); the customer host runs the two one-time steps
+# INSTALL-CUSTOMER.md names before the doctor. Before H2 this doctor passed
+# only because the build host's directories still existed.
+( cd "$BYOK_BUNDLE_ROOT" \
+  && bash scripts/bootstrap-sanitizer-core-mtls.sh "$PWD/install/.certs/sanitizer-core-mtls" >/dev/null 2>&1 \
+  && bash scripts/write-sanitizer-core-registry-dsn.sh --env-file install/customer.env --compose install/docker-compose.customer.yml >/dev/null 2>&1 )
 "$BYOK_BUNDLE_ROOT/bin/lucairn" doctor --env "$BYOK_BUNDLE_ROOT/install/customer.env" \
   --compose "$BYOK_BUNDLE_ROOT/install/docker-compose.customer.yml" --offline --skip-image-check > "$TMPDIR/extracted-byok-doctor.out" 2>&1
 grep -q 'byok overlay: ok .*compose=.*install/docker-compose.self-hosted-byok.yml' "$TMPDIR/extracted-byok-doctor.out"

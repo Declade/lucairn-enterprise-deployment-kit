@@ -1,6 +1,7 @@
 # DSA Customer-Side Deployment (Split Deployment Mode)
 #
 # Runs only customer-side components: Gateway, Sandbox A, ID Bridge, Sanitizer,
+# the new sanitizer core (Go core + model sidecar + registry DB, kit 2.0),
 # Audit, and Veil Witness with their Postgres instances.
 #
 # Sandbox B (AI inference) runs on DSA's hosted infrastructure.
@@ -83,6 +84,34 @@ networks:
     driver: bridge
     # Dedicated bridge: cert-builder ↔ Veil Witness only
     # Follows naming convention: dsa-witness-bridge, dsa-witness-audit, dsa-witness-identity
+  # The new sanitizer core (kit 2.0): ONE internal network per link, nothing
+  # shared with any other service. The core runs in the model sidecar's network
+  # namespace, so the SIDECAR carries the core's attachments:
+  #   dsa-sanitizer-core          core -> its registry Postgres (+ the migrate step)
+  #   dsa-sanitizer-core-ingress  gateway -> core :8790 (mTLS); the ONLY network on
+  #                               which anything can reach the core's listener
+  #   dsa-sanitizer-core-witness  core -> veil-witness :50057 (mTLS)
+  # All three are internal: true, so the namespace has no route off the host —
+  # also under the witness-central overlay, which reaches the central witness
+  # through a relay container on dsa-sanitizer-core-witness instead of giving
+  # the namespace an egress link (kit 2.0 K-A fix round 2). The core's listener
+  # is bound to the ingress link only (`--listen=sanitizer-core:8790`).
+  # The hosted service still attaches its core to the shared
+  # identity + witness-identity bridges (hardening item 120 there); the kit is
+  # stricter with the SAME DNS names (sanitizer-core / dsa-sanitizer-core on the
+  # ingress link, veil-witness on the witness link), so the core's
+  # environment and certificates are unchanged (its --listen names the
+  # ingress alias).
+  # tests/test_sanitizer_core_compose.sh section B asserts membership + internal.
+  dsa-sanitizer-core:
+    driver: bridge
+    internal: true
+  dsa-sanitizer-core-ingress:
+    driver: bridge
+    internal: true
+  dsa-sanitizer-core-witness:
+    driver: bridge
+    internal: true
 
 volumes:
   pg-audit-data:
@@ -98,6 +127,10 @@ volumes:
   # weights across container restarts so subsequent boots skip the ~1.6GB
   # download.
   pii-ml-hf-cache:
+  # The new sanitizer core's registry (kit 2.0): sealed conversation registry
+  # rows (placeholder <-> value entries, sanitized turns, first claims). Not in
+  # `lucairn backup` yet; see INSTALL.md § "Sanitizer core (kit 2.0, Compose)".
+  pg-sanitizer-core-data:
 
 services:
   # ── Infrastructure ──────────────────────────────────────────────
@@ -898,6 +931,339 @@ services:
       start_period: 60s
     restart: on-failure
 
+  # ── New sanitizer core (kit 2.0) ─────────────────────────────────
+  #
+  # PRD prd-2026-11-02-kit-2-0-new-core.md K1 ("same as hosted"). The Go
+  # sanitizer core, its model sidecar and its registry database, in the shape
+  # the hosted service has run since 2026-10-31 (DSA
+  # docker-compose.sanitizer-core.yml + docker-compose.sanitizer-core-sidecar.yml,
+  # plus the hosted window's amendments A8 memory cap and A9 witness mTLS).
+  #
+  # The gateway sends the Anthropic route (/v1/messages) to the core
+  # (GATEWAY_SANITIZER_PROTOCOL=delta, Gate enforce — see the gateway block).
+  # The OLD Python `sanitizer` service above stays: it still serves the
+  # openai / mcp / proxy routes.
+  #
+  # Start order (Compose enforces it with depends_on):
+  #   postgres-sanitizer-core healthy -> sanitizer-core-sidecar healthy (model
+  #   load ~1-5 min) -> sanitizer-core -> gateway.
+  # BEFORE the first start and after every kit upgrade the registry migration
+  # step must run (never on boot; the core refuses to start without it).
+  # `bin/lucairn up` runs it first, every time (a no-op when the ledger is at
+  # the ceiling). With plain `docker compose ... up -d` run it yourself first:
+  #   docker compose -f docker-compose.customer.yml --env-file customer.env \
+  #     --profile sanitizer-core-migrate run --rm migrate-sanitizer-core
+  # and create the mTLS material once: scripts/bootstrap-sanitizer-core-mtls.sh
+  # (bin/lucairn-init does both secret generation and this step for you).
+  #
+  # Images: core and sidecar MUST come from the same release commit — the core
+  # refuses to start against a sidecar that lacks the labels it needs (DSA
+  # cmd/sanitizer-core/main.go requirePlaceLabels). Hence ONE tag variable for
+  # both, and a REQUIRED digest variable per image: the reference is always
+  # repo:tag@sha256:… and Docker pulls the signed bytes by digest. With either
+  # digest unset, Compose refuses to render the project at all (`:?`), so the
+  # pair can never start from a bare tag. bin/lucairn-init fills both from
+  # image-manifest.yaml (image_digests.signed_artifacts); while that manifest
+  # still says `pending: true` (before the release step records the signed
+  # digests) they stay empty and nothing starts — bin/lucairn doctor names it.
+  # LUCAIRN_SANITIZER_CORE_IMAGE_TAG deliberately does NOT fall back to
+  # LUCAIRN_IMAGE_TAG: no 0.5.x tag of these images exists.
+
+  postgres-sanitizer-core:
+    # Same postgres:16-alpine index digest image-manifest.yaml records
+    # (image_digests.enterprise_kind.postgres); re-pin both together.
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    logging: *default-logging
+    environment:
+      POSTGRES_USER: dsa
+      POSTGRES_PASSWORD: "${POSTGRES_SANITIZER_CORE_PASSWORD:?POSTGRES_SANITIZER_CORE_PASSWORD must be set (generate with: openssl rand -hex 24) — see customer.env}"
+      POSTGRES_DB: sanitizer_core
+    volumes:
+      - pg-sanitizer-core-data:/var/lib/postgresql/data
+    networks:
+      - dsa-sanitizer-core
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dsa -d sanitizer_core"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # The registry migration step — an explicit operator step, never part of a
+  # plain `docker compose up` (profile-gated: a profiled service is not started
+  # unless named). `bin/lucairn up` names it: it runs this one-shot before
+  # `up -d` and stops if it fails.
+  # Runs scripts/migrate-sanitizer-core.sh: migrations/sanitizer-core/ (byte
+  # copies of the core's embedded migrations, SHA256SUMS-pinned) applied in ONE
+  # transaction into the core's own ledger registry_schema_migrations, capped at
+  # CEILING_SANITIZER_CORE in the mounted scripts/migration-ceilings.conf
+  # (docs/RELEASING.md § "Migration review"). Never migrates down; no
+  # open-ended escape hatch. Connects with discrete libpq settings (never a URL).
+  migrate-sanitizer-core:
+    profiles: ["sanitizer-core-migrate"]
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    logging: *default-logging
+    depends_on:
+      postgres-sanitizer-core:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/scripts/migrate-sanitizer-core.sh"]
+    user: "65534:65534"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./migrations/sanitizer-core:/migrations/sanitizer-core:ro
+      - ./scripts/migrate-sanitizer-core.sh:/scripts/migrate-sanitizer-core.sh:ro
+      - ./scripts/migration-ceilings.conf:/scripts/migration-ceilings.conf:ro
+    networks:
+      - dsa-sanitizer-core
+    environment:
+      HOME: "/tmp"
+      MIGRATE_LABEL: "migrate-sanitizer-core"
+      MIGRATE_PATH: "/migrations/sanitizer-core"
+      MIGRATE_TARGET_VERSION: "${LUCAIRN_MIGRATE_TARGET_SANITIZER_CORE:-7}"
+      MIGRATE_CEILING_KEY: "SANITIZER_CORE"
+      MIGRATE_CEILING_FILE: "/scripts/migration-ceilings.conf"
+      PGHOST: "postgres-sanitizer-core"
+      PGPORT: "5432"
+      PGUSER: "dsa"
+      PGDATABASE: "sanitizer_core"
+      PGSSLMODE: "${POSTGRES_SSLMODE:-disable}"
+      PGPASSWORD: "${POSTGRES_SANITIZER_CORE_PASSWORD:?POSTGRES_SANITIZER_CORE_PASSWORD must be set (generate with: openssl rand -hex 24) — see customer.env}"
+    restart: "no"
+
+  # The model sidecar (spaCy + GLiNER behind 127.0.0.1:8765). It OWNS the
+  # network namespace the core runs in: it carries the core's three dedicated
+  # internal networks (see `networks:` at the top) and answers for the core's
+  # DNS names (the SANs of the core's server leaf) on the ingress link only. The
+  # scan endpoint binds loopback only, so no network reaches it.
+  #
+  # ⚠️ RESTART vs RECREATE (measured on the hosted box, 2026-10-30): a sidecar
+  # RESTART (crash, OOM kill at its cap, `docker restart`) keeps the container
+  # and the core follows by itself (watchdog below, ~30 s). A sidecar RECREATE
+  # (new image, `up --force-recreate`, a changed definition) makes a NEW
+  # container: recreate the core right after it,
+  #   docker compose ... up -d --no-deps --force-recreate sanitizer-core
+  # or the core stays joined to the old namespace and cannot be reached.
+  # `bin/lucairn doctor` (online) detects exactly that.
+  #
+  # Memory: capped at 6.5 GB (hosted window A8: peak 5.6 GB with GLiNER and
+  # both spaCy models). The cap bounds the container; it is not a guarantee
+  # against host OOM — the host floor is 16 GB (INSTALL.md § "Sanitizer core
+  # (kit 2.0)", enforced by `bin/lucairn doctor`). mem_limit/memswap_limit are
+  # what plain `docker compose up` enforces; deploy.resources mirrors them for
+  # Swarm-style tooling. The values MUST match.
+  #
+  # Hardening (ToB TOB-K20-02, the same as the Helm chart's sidecar container):
+  # no capabilities, no privilege gain, a read-only root filesystem with a
+  # private /tmp (HOME and XDG_CACHE_HOME point there). The image reads its
+  # models from /opt/models (HF_HOME, offline) and writes no byte code
+  # (PYTHONDONTWRITEBYTECODE=1), so it needs nothing writable but /tmp. The
+  # tmpfs counts toward the 6.5 GB cap; 1 GB matches the Helm emptyDir limit.
+  sanitizer-core-sidecar:
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer-core-sidecar:${LUCAIRN_SANITIZER_CORE_IMAGE_TAG:-1.1.0}@${LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST:?LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST must be the signed digest image-manifest.yaml records for dsa-sanitizer-core-sidecar (the sanitizer core pair never starts from a bare tag; run bin/lucairn doctor)}"
+    logging: *default-logging
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HOME: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+    depends_on:
+      postgres-sanitizer-core:
+        condition: service_healthy
+    networks:
+      dsa-sanitizer-core-ingress:
+        aliases:
+          - sanitizer-core
+          - dsa-sanitizer-core
+      dsa-sanitizer-core-witness: {}
+      dsa-sanitizer-core: {}
+    # healthy = every configured model finished loading (the sidecar loads
+    # before it binds). Inference parity is proven by the equivalence replay,
+    # not by this check.
+    healthcheck:
+      test: ["CMD", "python3", "-I", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/v1/health', timeout=5)"]
+      interval: 10s
+      timeout: 8s
+      retries: 6
+      start_period: 300s
+    mem_limit: 6500m
+    memswap_limit: 6500m
+    deploy:
+      resources:
+        limits:
+          memory: 6500M
+    restart: unless-stopped
+
+  # The Go core. It JOINS the sidecar's namespace (network_mode below), so
+  # `--sidecar http://127.0.0.1:8765` works. It listens ONLY on the ingress
+  # link: `--listen=sanitizer-core:8790` resolves (Docker's embedded DNS, from
+  # inside the sidecar's namespace) the sidecar's alias, which exists on
+  # dsa-sanitizer-core-ingress alone — so :8790 is bound to that one address,
+  # not to the witness or registry links of the same namespace (kit 2.0 K-A fix
+  # round 2, sol r2: 0.0.0.0 listened on every link). The gateway dials the
+  # same name (SANITIZER_CORE_URL), so a recreated sidecar with a new address
+  # is followed by the core recreate the namespace needs anyway.
+  #
+  # Security posture (all refusals happen before the listener opens):
+  #   * gateway -> core: verified mTLS on the hop's own SANITIZER_CORE_MTLS_*
+  #     family; the core requires a client leaf with DNS SAN dsa-gateway.
+  #   * core -> witness: verified TLS with the core's client leaf
+  #     (LCR_WITNESS_REQUIRE_MTLS=true + LCR_WITNESS_MTLS_*). With
+  #     DSA_ENV=production the core refuses to start on any other witness
+  #     transport (DSA #946). Without these settings the hosted core once
+  #     dropped every PII_SANITIZED claim at the TLS handshake while all turns
+  #     still succeeded (window 2026-10-31, amendment A9).
+  #     The core's transport FOLLOWS the local witness's: the witness serves
+  #     TLS on :50057 only while GRPC_TLS_ENABLED=true, so the latch is that
+  #     same variable (default true). A development install
+  #     (bin/lucairn-init --dev: GRPC_TLS_ENABLED=false, a plaintext mesh)
+  #     unlatches it AND sets the three LCR_WITNESS_MTLS_SANITIZER_CORE_*
+  #     paths to empty in customer.env, so the core dials the plaintext dev
+  #     witness (allowed only with DSA_ENV=development/test) instead of
+  #     failing every handshake (final-read M1: a --dev install dropped every
+  #     claim). Same rule as the Helm chart: latch + client leaf only when the
+  #     witness serves TLS. The `-` (not `:-`) defaults make an explicit empty
+  #     value mean "no client leaf"; bin/lucairn doctor fails any install
+  #     whose two sides disagree.
+  #   * LCR_PROFILE is deliberately NOT set and NOT forwarded: unset = the kit
+  #     profile, under which the core refuses the ServiceNow mode at boot (DSA
+  #     cmd/sanitizer-core/instance_wire.go). The kit's opt-in for that mode is
+  #     a later slice (K-C) and replaces this line, not customer.env.
+  #   * Claims are signed with the SAME seed as the old sanitizer
+  #     (LCR_SANITIZER_SIGNING_KEY): both sign as dsa-sanitizer and the witness
+  #     verifies both with LCR_SANITIZER_PUBLIC_KEY.
+  #   * The registry DSN (it carries the DB password) is a FILE, never a
+  #     process argument: `--dsn` would put it in the core's argv, which every
+  #     local user of the Docker host reads (`ps`, /proc/<pid>/cmdline). The
+  #     core reads `--registry-dsn-file` (DSA #956, registry_dsn.go: a
+  #     postgres:// URL with a percent-encoded password; a path holding :// or
+  #     @ is refused). scripts/write-sanitizer-core-registry-dsn.sh writes the
+  #     host file from customer.env (bin/lucairn-init runs it); it is
+  #     bind-mounted read-only, and `create_host_path: false` makes `up` fail
+  #     instead of Docker creating a directory when the file is missing.
+  #     The registry key seals every row (AES-256-GCM + HMAC).
+  #
+  # Entrypoint = the hosted watchdog, verbatim (busybox sh of the core image):
+  # wait until the sidecar answers, run the core, re-check the sidecar about
+  # every 10 s, and after 3 misses in a row stop the core with exit 70 so
+  # `restart: unless-stopped` brings it back inside the sidecar's CURRENT
+  # namespace.
+  #
+  # Hardening (ToB TOB-K20-02, the same as the Helm chart's core container):
+  # no capabilities, no privilege gain, a read-only root filesystem with a
+  # private 64 MB /tmp. The entrypoint below only reads (wget -O /dev/null).
+  sanitizer-core:
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer-core:${LUCAIRN_SANITIZER_CORE_IMAGE_TAG:-1.1.0}@${LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST:?LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST must be the signed digest image-manifest.yaml records for dsa-sanitizer-core (the sanitizer core pair never starts from a bare tag; run bin/lucairn doctor)}"
+    logging: *default-logging
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    network_mode: "service:sanitizer-core-sidecar"
+    depends_on:
+      sanitizer-core-sidecar:
+        condition: service_healthy
+      postgres-sanitizer-core:
+        condition: service_healthy
+      # T-682: the core emits the dsa-sanitizer PII_SANITIZED claim (it carries
+      # the redaction manifest), so it is gated like every other emitter.
+      witness-egress-guard:
+        condition: service_completed_successfully
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        h=http://127.0.0.1:8765/v1/health
+        trap 'exit 0' TERM INT
+        n=0
+        until wget -q -T 5 -O /dev/null "$$h"; do
+          [ $$((n % 15)) -eq 0 ] && echo "core-entrypoint: waiting for the model sidecar ($$h)" >&2
+          n=$$((n + 1)); sleep 2
+        done
+        echo "core-entrypoint: sidecar answers, starting the core" >&2
+        sanitizer-core "$$@" &
+        pid=$$!
+        stop=0
+        trap 'stop=1; kill -TERM $$pid 2>/dev/null' TERM INT
+        i=0; miss=0
+        while [ $$stop -eq 0 ] && kill -0 $$pid 2>/dev/null; do
+          sleep 2 & wait $$!
+          i=$$((i + 1)); [ $$((i % 5)) -eq 0 ] || continue
+          if wget -q -T 5 -O /dev/null "$$h"; then miss=0; else miss=$$((miss + 1)); fi
+          if [ $$miss -ge 3 ]; then
+            echo "core-entrypoint: sidecar unreachable 3 checks in a row - stopping the core (the restart re-joins the sidecar)" >&2
+            kill -TERM $$pid 2>/dev/null; wait $$pid; exit 70
+          fi
+        done
+        wait $$pid
+      - sanitizer-core-entrypoint
+    command:
+      - "serve"
+      - "--listen=sanitizer-core:8790"
+      - "--registry-dsn-file=/run/secrets/sanitizer-core/registry-dsn"
+      - "--sidecar=http://127.0.0.1:8765"
+    environment:
+      DSA_ENV: "${DSA_ENV:-production}"
+      # The core serves HTTPS on the SANITIZER_CORE_MTLS_* family below and
+      # dials the witness on the LCR_WITNESS_MTLS_* family; the legacy
+      # GRPC_TLS layer is off for it (same as hosted).
+      GRPC_TLS_ENABLED: "false"
+      DSA_SANITIZER_CORE_REGISTRY_KEY: "${DSA_SANITIZER_CORE_REGISTRY_KEY:?DSA_SANITIZER_CORE_REGISTRY_KEY must be set (64 hex; generate with: openssl rand -hex 32) — see customer.env}"
+      LCR_ENABLED: "${LCR_ENABLED:-${VEIL_ENABLED:-true}}"
+      LCR_SIGNING_KEY: "${LCR_SANITIZER_SIGNING_KEY:-${VEIL_SANITIZER_SIGNING_KEY:-}}"
+      LCR_SANITIZER_PUBLIC_KEY: "${LCR_SANITIZER_PUBLIC_KEY:-${VEIL_SANITIZER_PUBLIC_KEY:-}}"
+      LCR_WITNESS_ADDR: "veil-witness:50057"
+      LCR_WITNESS_REQUIRE_MTLS: "${GRPC_TLS_ENABLED:-true}"
+      LCR_WITNESS_MTLS_CA_BUNDLE_PATH: "${LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH-/etc/sanitizer-core-mtls/ca.crt}"
+      LCR_WITNESS_MTLS_CLIENT_CERT_PATH: "${LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_CERT_PATH-/etc/sanitizer-core-mtls/witness-client.crt}"
+      LCR_WITNESS_MTLS_CLIENT_KEY_PATH: "${LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_KEY_PATH-/etc/sanitizer-core-mtls/witness-client.key}"
+      SANITIZER_CLAIM_DRAIN_SECONDS: "${SANITIZER_CLAIM_DRAIN_SECONDS:-}"
+      DSA_WITNESS_GRPC_MAX_MESSAGE_BYTES: "${DSA_WITNESS_GRPC_MAX_MESSAGE_BYTES:-}"
+      SANITIZER_CORE_MTLS_CA_BUNDLE_PATH: "${SANITIZER_CORE_MTLS_CA_BUNDLE_PATH:-/etc/sanitizer-core-mtls/ca.crt}"
+      SANITIZER_CORE_MTLS_SERVER_CERT_PATH: "${SANITIZER_CORE_MTLS_SERVER_CERT_PATH:-/etc/sanitizer-core-mtls/dsa-sanitizer-core.crt}"
+      SANITIZER_CORE_MTLS_SERVER_KEY_PATH: "${SANITIZER_CORE_MTLS_SERVER_KEY_PATH:-/etc/sanitizer-core-mtls/dsa-sanitizer-core.key}"
+    volumes:
+      # ONLY the core's own directory (its server leaf, its witness client leaf,
+      # the CA certificate). The CA private key lives OUTSIDE ./.certs (default
+      # ./.secrets/sanitizer-core-mtls-ca) and is never mounted into any
+      # container — the gateway mounts the whole ./.certs at /certs.
+      - ${SANITIZER_CORE_MTLS_HOST_DIR:-./.certs/sanitizer-core-mtls}/sanitizer-core:/etc/sanitizer-core-mtls:ro
+      # The registry DSN file (see the security notes above). ONE file is
+      # mounted, so only its own mode (0444) applies in the container; on the
+      # host its 0700 directory keeps other users out.
+      - type: bind
+        source: "${SANITIZER_CORE_REGISTRY_DSN_FILE:-./.secrets/sanitizer-core/registry-dsn}"
+        target: /run/secrets/sanitizer-core/registry-dsn
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z sanitizer-core 8790 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    # 1 GiB fail-closed bound (measured 35-57 MB on the hosted box; the detect
+    # memo grows with distinct texts, a cap hit is a fail-closed restart).
+    mem_limit: 1g
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    restart: unless-stopped
+
   veil-witness:
     image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-veil-witness:${LUCAIRN_IMAGE_TAG:-0.5.5}"
     logging: *default-logging
@@ -931,6 +1297,18 @@ services:
       # this path, so it cannot trip the migration refusal.
       LUCAIRN_L3_COMPLETENESS_POSTURE: "${LUCAIRN_L3_COMPLETENESS_POSTURE:-}"
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
+      # Kit 2.0: the leaf the witness presents on its claim port :50057 (and on
+      # :50058) under GRPC_TLS_ENABLED=true — signed by the deploy-local CA of
+      # scripts/bootstrap-sanitizer-core-mtls.sh, SAN dsa-veil-witness. The new
+      # sanitizer core dials the witness with VERIFIED TLS and pins exactly
+      # that name; against the auto-generated self-signed leaf this replaces,
+      # every one of its claims would fail the handshake and be dropped. The
+      # other emitters keep working unchanged: without their own
+      # GRPC_TLS_CERT_FILE they do not verify the witness leaf. This is legacy
+      # transport TLS (server-authenticated; it does not ask for client
+      # certificates) — the witness latch below is unchanged.
+      GRPC_TLS_CERT_FILE: "/etc/sanitizer-core-mtls/dsa-veil-witness.crt"
+      GRPC_TLS_KEY_FILE: "/etc/sanitizer-core-mtls/dsa-veil-witness.key"
       # Stage 3 dual-name: canonical LCR_X first, legacy VEIL_X fallback.
       LCR_TSA_URL: "${LCR_TSA_URL:-${VEIL_TSA_URL:-}}"
       LCR_REKOR_URL: "${LCR_REKOR_URL:-${VEIL_REKOR_URL:-}}"
@@ -987,6 +1365,9 @@ services:
       # canonical LCR_WITNESS_MTLS_HOST_DIR first, legacy VEIL_WITNESS_MTLS_HOST_DIR
       # fallback.
       - ${LCR_WITNESS_MTLS_HOST_DIR:-${VEIL_WITNESS_MTLS_HOST_DIR:-./.certs/witness-mtls}}:/etc/witness-mtls:ro
+      # Kit 2.0: ONLY the witness's own directory of the sanitizer-core mTLS
+      # tree (its claim-port leaf + the CA certificate; never the CA key).
+      - ${SANITIZER_CORE_MTLS_HOST_DIR:-./.certs/sanitizer-core-mtls}/veil-witness:/etc/sanitizer-core-mtls:ro
     networks:
       - dsa-witness
       - dsa-witness-bridge
@@ -994,6 +1375,8 @@ services:
       - dsa-witness-audit
       - dsa-witness-edge
       - dsa-witness-certification
+      # Kit 2.0: the new sanitizer core's claim hop (core -> :50057, mTLS).
+      - dsa-sanitizer-core-witness
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:50059/healthz"]
       interval: 10s
@@ -1014,6 +1397,10 @@ services:
       # witness hops are covered by the guard.
       witness-egress-guard:
         condition: service_completed_successfully
+      # Kit 2.0: the Anthropic route needs the new core (delta is the default
+      # below). The core in turn waits for its sidecar's models and registry.
+      sanitizer-core:
+        condition: service_healthy
     environment:
       # Stage 3 dual-name: canonical LCR_X first, legacy VEIL_X fallback so
       # pre-Stage-3 customer.env files keep working with this compose file.
@@ -1076,6 +1463,38 @@ services:
       LUCAIRN_LICENSE_PUBLIC_KEY: "${LUCAIRN_LICENSE_PUBLIC_KEY:-}"
       LUCAIRN_LICENSE_GRACE_DAYS: "${LUCAIRN_LICENSE_GRACE_DAYS:-14}"
       SANITIZER_URL: "http://sanitizer:8086"
+      # ── Kit 2.0: the new sanitizer core — the hosted service's switch set ──
+      # PRD prd-2026-11-02-kit-2-0-new-core.md K1: "same as hosted". The
+      # Anthropic handler sends conversations to the core as deltas
+      # (GATEWAY_SANITIZER_PROTOCOL=delta) and the final check (Gate) ENFORCES:
+      # a body that still carries a value the core hid is refused, never sent.
+      # The openai / mcp / proxy routes stay on the old sanitizer (SANITIZER_URL
+      # above) with the route posture `observe` (the gateway's own default,
+      # written down; a later kit release turns those routes over).
+      # Off-enum protocol / route posture / placement values make the gateway
+      # refuse to start; an off-enum gate posture is read as enforce.
+      # `bin/lucairn doctor` checks all four.
+      GATEWAY_SANITIZER_PROTOCOL: "${GATEWAY_SANITIZER_PROTOCOL:-delta}"
+      SANITIZER_CORE_URL: "${SANITIZER_CORE_URL:-https://sanitizer-core:8790}"
+      GATEWAY_SANITIZER_GATE_POSTURE: "${GATEWAY_SANITIZER_GATE_POSTURE:-enforce}"
+      GATEWAY_SANITIZER_GATE_ROUTE_POSTURE: "${GATEWAY_SANITIZER_GATE_ROUTE_POSTURE:-observe}"
+      # Added system-prompt parts travel in the conversation, not the system
+      # field (hosted Amendment 25 Oct b: higher prompt-cache hit rate).
+      GATEWAY_ADDED_PARTS_PLACEMENT: "${GATEWAY_ADDED_PARTS_PLACEMENT:-message}"
+      # "Send one message unredacted" stays OFF in this release (a literal, so
+      # customer.env cannot switch it on).
+      GATEWAY_USER_UNREDACTED_ENABLED: "false"
+      # Gateway copy of Sandbox B's __messages_json__ limit (characters, DSA
+      # PR #900). The gateway refuses an over-limit sanitized conversation with
+      # a 400 BEFORE the Sandbox B call. Pass the SAME value to sandbox-b (the
+      # self-hosted overlay forwards this variable too) or, in split mode, set
+      # it equal to the remote node's value. Empty = 4 MiB on both sides.
+      SANDBOX_B_MESSAGES_JSON_MAX_BYTES: "${SANDBOX_B_MESSAGES_JSON_MAX_BYTES:-}"
+      # gateway -> core verified mTLS: the gateway's client leaf (SAN
+      # dsa-gateway, the only client the core accepts) + the deploy CA.
+      SANITIZER_CORE_MTLS_CA_BUNDLE_PATH: "${SANITIZER_CORE_MTLS_CA_BUNDLE_PATH:-/etc/sanitizer-core-mtls/ca.crt}"
+      SANITIZER_CORE_MTLS_CLIENT_CERT_PATH: "${SANITIZER_CORE_MTLS_CLIENT_CERT_PATH:-/etc/sanitizer-core-mtls/dsa-gateway.crt}"
+      SANITIZER_CORE_MTLS_CLIENT_KEY_PATH: "${SANITIZER_CORE_MTLS_CLIENT_KEY_PATH:-/etc/sanitizer-core-mtls/dsa-gateway.key}"
       # FIX-C (full-stack-test-results-2026-05-29): wire the sanitize-cache knob
       # into the gateway container. Default "false" (matches the Helm chart
       # default gateway.sanitizeCache.enabled=false). Set "true" to enable the
@@ -1176,6 +1595,9 @@ services:
       # canonical LCR_WITNESS_MTLS_HOST_DIR first, legacy VEIL_WITNESS_MTLS_HOST_DIR
       # fallback.
       - ${LCR_WITNESS_MTLS_HOST_DIR:-${VEIL_WITNESS_MTLS_HOST_DIR:-./.certs/witness-mtls}}:/etc/witness-mtls:ro
+      # Kit 2.0: ONLY the gateway's own directory of the sanitizer-core mTLS
+      # tree (its client leaf + the CA certificate; never the CA key).
+      - ${SANITIZER_CORE_MTLS_HOST_DIR:-./.certs/sanitizer-core-mtls}/gateway:/etc/sanitizer-core-mtls:ro
     ports:
       - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
       - "127.0.0.1:${GATEWAY_HEALTH_PORT:-8085}:8085"
@@ -1184,6 +1606,8 @@ services:
       - dsa-bridge
       - dsa-audit-identity
       - dsa-witness-edge
+      # Kit 2.0: the ONLY network that reaches the new sanitizer core (:8790).
+      - dsa-sanitizer-core-ingress
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8085/healthz || exit 1"]
       interval: 5s

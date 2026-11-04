@@ -23,6 +23,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
+# Kit 2.0 K-A fix round 1: doctor FAILS while this checkout's image-manifest
+# still has no signed core/sidecar digests (`pending: true`, before a
+# release). The happy path below therefore runs from a RELEASED-kit fixture
+# with synthetic signed digests (tests/lib/test-helpers.sh).
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$TMPDIR"
 
 DERIVE="$ROOT/scripts/derive-veil-pubkey.sh"
 gen_seed() { openssl rand -hex 32; }
@@ -60,6 +67,10 @@ cp "$TMPDIR/sb-client.crt" "$TMPDIR/sb-ca.crt"
 # doctor (existence + non-empty), so a placeholder blob suffices here.
 printf '{"canonical_body_b64":"e30=","witness_signature_hex":"00"}\n' \
   > "$TMPDIR/witness-signed-manifest.json"
+
+# Kit 2.0: the new sanitizer core's mTLS material (doctor checks every file
+# the compose file mounts).
+bash "$ROOT/scripts/bootstrap-sanitizer-core-mtls.sh" "$TMPDIR/sanitizer-core-mtls" >/dev/null 2>&1
 
 ENV_FILE="$TMPDIR/customer.env"
 cat > "$ENV_FILE" <<ENV
@@ -104,10 +115,18 @@ POSTGRES_SANDBOX_A_PASSWORD=postgres-sandbox-a-secret-value
 POSTGRES_VEIL_PASSWORD=postgres-veil-secret-value
 AUDIT_APP_PASSWORD=audit-app-role-secret-value
 VEIL_APP_PASSWORD=veil-app-role-secret-value
+DSA_SANITIZER_CORE_REGISTRY_KEY=$(gen_seed)
+POSTGRES_SANITIZER_CORE_PASSWORD=postgres-sanitizer-core-secret-value
+LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$TEST_SANITIZER_CORE_DIGEST
+LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=$TEST_SANITIZER_CORE_SIDECAR_DIGEST
+SANITIZER_CORE_MTLS_HOST_DIR=$TMPDIR/sanitizer-core-mtls
+SANITIZER_CORE_REGISTRY_DSN_FILE=$TMPDIR/secrets/sanitizer-core/registry-dsn
 BUILD_AUTH_TOKEN=build-token-secret
 CUSTOMER_KEY_ID=customer-key-id-secret
 PORTAL_API_KEY=portal-api-key-secret
 ENV
+# Kit 2.0: the core's registry DSN file (--registry-dsn-file; doctor checks it).
+bash "$ROOT/scripts/write-sanitizer-core-registry-dsn.sh" --env-file "$ENV_FILE" >/dev/null 2>&1
 
 run_doctor() {  # writes output to $1, returns doctor's exit status
   local out="$1" env="${2:-$ENV_FILE}"
@@ -183,6 +202,18 @@ expect_fail_on weak-appveil VEIL_APP_PASSWORD           veil_app_password  "well
 expect_fail_on short-bridge POSTGRES_BRIDGE_PASSWORD    short              "too short"
 expect_fail_on blank-sbxa   POSTGRES_SANDBOX_A_PASSWORD ""                 "unset in production"
 echo "SEC-01 db-password validation: ok"
+
+# Kit 2.0 K-A: the PRODUCTION branch of the new sanitizer core's witness-hop
+# check (this file holds the one coherent prod env that passes doctor, so it is
+# where that branch can be driven). GRPC_TLS_ENABLED=false makes the witness
+# serve its claim port in plaintext; the core dials it with verified TLS and
+# every claim would be dropped (hosted window A9 shape) -> doctor must FAIL.
+expect_fail_on core-witness-plaintext GRPC_TLS_ENABLED false "sanitizer core witness hop: failed"
+expect_fail_on core-short-pw POSTGRES_SANITIZER_CORE_PASSWORD short "POSTGRES_SANITIZER_CORE_PASSWORD too short"
+# The DSN file was written from the fixture's password; a password rotated in
+# customer.env alone leaves the core with a stale DSN -> doctor must FAIL.
+expect_fail_on core-dsn-stale POSTGRES_SANITIZER_CORE_PASSWORD rotated-sanitizer-core-value "does not match customer.env"
+echo "kit 2.0 sanitizer core production checks: ok"
 
 # Non-production must NOT enforce the password rules (matches the other
 # prod-gated checks). Flip DSA_ENV=development + blank a password.

@@ -8,6 +8,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
+# Kit 2.0 K-A fix round 1: doctor FAILS while this checkout's image-manifest
+# still has no signed core/sidecar digests (`pending: true`, before a
+# release), and the compose file does not render without them. Every case
+# below therefore runs init + doctor from a RELEASED-kit fixture with synthetic
+# signed digests (tests/lib/test-helpers.sh); the real tree is REAL_ROOT.
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$TMPDIR"
 BASE_PATH="$PATH"
 
 # The macOS lane has no ubiquitous execve/open tracer.  Its approximation
@@ -55,8 +63,13 @@ printf '000'
 EOF
 chmod 0755 "$CAPTURE_BIN/curl"
 
+# Kit 2.0 K-A fix round 2: the docker stubs below hand bin/compose-env.sh's
+# probe renders to the real Compose CLI (client side only).
+LUCAIRN_TEST_REAL_DOCKER="$(command -v docker 2>/dev/null || true)"
+export LUCAIRN_TEST_REAL_DOCKER
 cat > "$CAPTURE_BIN/docker" <<EOF
 #!/bin/bash
+case " \$* " in *lucairn-env-probe.*) exec "\$LUCAIRN_TEST_REAL_DOCKER" "\$@" ;; esac
 {
   printf 'argv:'
   for arg in "\$0" "\$@"; do printf ' %q' "\$arg"; done

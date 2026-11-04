@@ -13,6 +13,14 @@
 #   - alphanumeric-only postgres passwords (no SQL-special characters because
 #     scripts/render-migrations.sh's envsubst breaks on '\'',' \', '$', etc.)
 #   - GATEWAY_KEYSTORE_KEY as 32-byte base64
+#   - kit 2.0 sanitizer core: DSA_SANITIZER_CORE_REGISTRY_KEY (hex32) +
+#     POSTGRES_SANITIZER_CORE_PASSWORD, and (after writing customer.env) the
+#     core's mTLS material via scripts/bootstrap-sanitizer-core-mtls.sh into
+#     <output dir>/.certs/sanitizer-core-mtls (re-runs reuse existing files)
+#     and the core's registry DSN file via
+#     scripts/write-sanitizer-core-registry-dsn.sh into
+#     <output dir>/.secrets/sanitizer-core/registry-dsn (the core reads it with
+#     --registry-dsn-file; the password is never a process argument)
 #
 # Modes:
 #   --dev           empty DSA_LICENSE_KEY (gateway enters dev-mode bypass) +
@@ -40,12 +48,19 @@
 #   3 prerequisites missing (openssl)
 #   4 doctor failed on the generated env (file is left in place for inspection)
 #   5 license validation failed
+#   6 the sanitizer core's mTLS material could not be created (customer.env
+#     was written; re-run scripts/bootstrap-sanitizer-core-mtls.sh)
+#   7 the sanitizer core's registry DSN file could not be written (customer.env
+#     was written; re-run scripts/write-sanitizer-core-registry-dsn.sh)
 
 set -euo pipefail
 
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly KIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 readonly DEFAULT_IMAGE_TAG="0.5.5"
+# Kit 2.0: the new sanitizer core + its model sidecar ship as ONE pair under
+# their own tag (image-manifest.yaml services.dsa-sanitizer-core).
+readonly DEFAULT_SANITIZER_CORE_IMAGE_TAG="1.1.0"
 readonly DEFAULT_OUTPUT="${KIT_ROOT}/customer.env"
 
 # Temp files that hold plaintext keypair material during derivation. The
@@ -274,6 +289,8 @@ Exit codes:
   3  openssl not found
   4  bin/lucairn doctor failed against the generated file
   5  license validation failed
+  6  sanitizer core mTLS material could not be created (customer.env written)
+  7  sanitizer core registry DSN file could not be written (customer.env written)
 USAGE
 }
 
@@ -287,6 +304,10 @@ have() {
 }
 
 . "$KIT_ROOT/bin/runtime-profile-lib.sh"
+# The kit's Compose env reader (adopt mode reads the existing env's registry
+# settings through Docker Compose, the way the DSN writer and doctor do).
+# shellcheck source=compose-env.sh
+. "$KIT_ROOT/bin/compose-env.sh"
 
 # Arg parse ----------------------------------------------------------------
 
@@ -1085,6 +1106,46 @@ done
 # GATEWAY_KEYSTORE_KEY (base64-32-bytes)
 set_kv GATEWAY_KEYSTORE_KEY "$(gen_keystore_key)"
 
+# Kit 2.0 sanitizer core: the registry key (exactly 64 hex, store/store.go
+# KeyFromEnv) and the registry DB password (alphanumeric; the DSN file writer
+# below percent-encodes it for the core's connection URL either way).
+set_kv DSA_SANITIZER_CORE_REGISTRY_KEY "$(gen_hex32)"
+set_kv POSTGRES_SANITIZER_CORE_PASSWORD "$(gen_pg_password)"
+# The mTLS directory the bootstrap step below populates, beside customer.env.
+# Recorded as an absolute path so the compose project directory does not matter.
+_sanitizer_core_out_dir="$(dirname "$OUTPUT")"
+case "$_sanitizer_core_out_dir" in
+  /*) : ;;
+  *) _sanitizer_core_out_dir="$PWD/$_sanitizer_core_out_dir" ;;
+esac
+SANITIZER_CORE_MTLS_DIR="${_sanitizer_core_out_dir%/.}/.certs/sanitizer-core-mtls"
+# The core's registry DSN file (scripts/write-sanitizer-core-registry-dsn.sh,
+# run below after customer.env exists), beside customer.env as well. ONE file
+# per env file: it carries that env's generated password, so a second run with
+# another --output in the same directory must not overwrite the first env's
+# DSN (unlike the mTLS material, which does not depend on the env and is
+# shared). customer.env gets the compose default name; any other output name
+# gets <name>.registry-dsn. The path is recorded in the env either way.
+_sanitizer_core_env_name="$(basename "$OUTPUT")"
+if [ "$_sanitizer_core_env_name" = "customer.env" ]; then
+  SANITIZER_CORE_DSN_FILE="${_sanitizer_core_out_dir%/.}/.secrets/sanitizer-core/registry-dsn"
+else
+  SANITIZER_CORE_DSN_FILE="${_sanitizer_core_out_dir%/.}/.secrets/sanitizer-core/${_sanitizer_core_env_name}.registry-dsn"
+fi
+# Core/sidecar digests from the manifest this run records; empty while the
+# manifest slot is still pending (the release step fills it).
+sanitizer_core_manifest_digest() {
+  awk -v want="    $1:" '
+    /^  signed_artifacts:/ { in_sa = 1; next }
+    in_sa && /^  [^ ]/ { in_sa = 0 }
+    in_sa && $0 == want { in_key = 1; next }
+    in_sa && in_key && /^    [^ ]/ { in_key = 0 }
+    in_sa && in_key && /^      digest:/ { gsub(/"/, "", $2); print $2; exit }
+  ' "$KIT_ROOT/image-manifest.yaml"
+}
+SANITIZER_CORE_IMAGE_DIGEST="$(sanitizer_core_manifest_digest dsa-sanitizer-core)"
+SANITIZER_CORE_SIDECAR_IMAGE_DIGEST="$(sanitizer_core_manifest_digest dsa-sanitizer-core-sidecar)"
+
 # Mode-dependent fields
 #
 # The LUCAIRN_LICENSE_* (Ed25519 deployment entitlement) slots are ALWAYS
@@ -1094,6 +1155,25 @@ set_kv GATEWAY_KEYSTORE_KEY "$(gen_keystore_key)"
 #   - --production: populated from the --license bundle's entitlement_* fields
 #                   when present; empty (unregistered mode) when the bundle
 #                   carries only the HMAC license_key/signing_key.
+# The core's witness hop follows the local witness's transport (final-read M1).
+# A --dev install runs a plaintext mesh (GRPC_TLS_ENABLED=false: sandbox-b has
+# no TLS leaf in development, and the gateway dials it with that same switch),
+# so the local witness serves :50057 in plaintext. The compose file then
+# unlatches the core (LCR_WITNESS_REQUIRE_MTLS follows GRPC_TLS_ENABLED), and
+# these three EMPTY values remove its client leaf, so it dials that witness in
+# plaintext (the core allows that only with DSA_ENV=development/test) instead
+# of failing every TLS handshake and dropping every claim. Production writes
+# nothing here: the compose defaults (verified mTLS, latched) apply.
+SANITIZER_CORE_WITNESS_BLOCK=""
+case "$MODE" in
+  dev)
+    SANITIZER_CORE_WITNESS_BLOCK="# Development only: the core reaches the plaintext dev witness (GRPC_TLS_ENABLED=false).
+# With GRPC_TLS_ENABLED=true delete these three lines (the core then uses its kit client leaf).
+LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH=
+LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_CERT_PATH=
+LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_KEY_PATH="
+    ;;
+esac
 case "$MODE" in
   dev)
     set_kv DSA_ENV development
@@ -1307,6 +1387,20 @@ AUDIT_APP_PASSWORD=$(get_val AUDIT_APP_PASSWORD)
 # bake-in step without architectural benefit. See INSTALL.md § "Stage 3
 # postgres-namespace carve-out".
 VEIL_APP_PASSWORD=$(get_val VEIL_APP_PASSWORD)
+
+# New sanitizer core (kit 2.0): registry key + registry DB password (both
+# generated), the mTLS directory this run populated, the core/sidecar image
+# pair, and Sandbox B's conversation limit (read by gateway AND sandbox-b;
+# empty = 4 MiB). See INSTALL.md § "Sanitizer core (kit 2.0, Compose)".
+DSA_SANITIZER_CORE_REGISTRY_KEY=$(get_val DSA_SANITIZER_CORE_REGISTRY_KEY)
+POSTGRES_SANITIZER_CORE_PASSWORD=$(get_val POSTGRES_SANITIZER_CORE_PASSWORD)
+SANITIZER_CORE_MTLS_HOST_DIR=$SANITIZER_CORE_MTLS_DIR
+SANITIZER_CORE_REGISTRY_DSN_FILE=$SANITIZER_CORE_DSN_FILE
+LUCAIRN_SANITIZER_CORE_IMAGE_TAG=$DEFAULT_SANITIZER_CORE_IMAGE_TAG
+LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$SANITIZER_CORE_IMAGE_DIGEST
+LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=$SANITIZER_CORE_SIDECAR_IMAGE_DIGEST
+SANDBOX_B_MESSAGES_JSON_MAX_BYTES=
+$SANITIZER_CORE_WITNESS_BLOCK
 
 # Runtime tuning
 SANDBOX_A_EPHEMERAL=true
@@ -1699,6 +1793,76 @@ else
   echo "wrote: $RUNTIME_IMAGE_MANIFEST_SNAPSHOT (mode 0644; recorded init-time image manifest)" >&2
 fi
 
+# Kit 2.0: the new sanitizer core's mTLS material (deploy-local CA + the four
+# leaves its two hops need), beside customer.env. Without it the core refuses
+# to start and doctor fails. Idempotent: existing files are reused, never
+# rotated. In adoption mode the existing customer.env is not rewritten, so the
+# directory is the one it names (or the compose default beside the kit).
+if [ "$ADOPT_RUNTIME_PROFILE" = "true" ]; then
+  SANITIZER_CORE_MTLS_DIR="$(grep -E '^SANITIZER_CORE_MTLS_HOST_DIR=' "$OUTPUT" 2>/dev/null | tail -1 | cut -d= -f2-)"
+  case "$SANITIZER_CORE_MTLS_DIR" in
+    /*) : ;;
+    '') SANITIZER_CORE_MTLS_DIR="$KIT_ROOT/.certs/sanitizer-core-mtls" ;;
+    *) SANITIZER_CORE_MTLS_DIR="$KIT_ROOT/${SANITIZER_CORE_MTLS_DIR#./}" ;;
+  esac
+fi
+# Final-read M2: on a Linux Docker host the containers run as uid 10001 and
+# cannot read a 0600 key owned by the operator, so the bootstrap refuses to
+# run there as an ordinary user (kit 1.x never needed key files: the witness
+# generated its own leaf). This init therefore runs that ONE step with sudo
+# (it may ask for the password) when it is not root, unless the operator
+# declared that the image user maps to their own uid (LUCAIRN_CONTAINER_UID=
+# `id -u`, e.g. Docker Desktop for Linux or a user-namespace-remapped daemon).
+# customer.env stays owned by the operator either way.
+_sanitizer_core_bootstrap=(bash "$KIT_ROOT/scripts/bootstrap-sanitizer-core-mtls.sh" "$SANITIZER_CORE_MTLS_DIR")
+_sanitizer_core_bootstrap_hint="scripts/bootstrap-sanitizer-core-mtls.sh '$SANITIZER_CORE_MTLS_DIR'"
+if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" != "0" ] \
+   && [ "${LUCAIRN_CONTAINER_UID:-10001}" != "$(id -u)" ]; then
+  _sanitizer_core_bootstrap_hint="sudo $_sanitizer_core_bootstrap_hint"
+  if command -v sudo >/dev/null 2>&1; then
+    echo "note: the sanitizer core's mTLS keys must belong to uid ${LUCAIRN_CONTAINER_UID:-10001} (the user every Lucairn image runs as); running that one step with sudo (it may ask for your password):" >&2
+    echo "  $_sanitizer_core_bootstrap_hint" >&2
+    _sanitizer_core_bootstrap=(sudo env "LUCAIRN_CONTAINER_UID=${LUCAIRN_CONTAINER_UID:-10001}" \
+      ${OPENSSL:+"OPENSSL=$OPENSSL"} ${CA_DAYS:+"CA_DAYS=$CA_DAYS"} ${LEAF_DAYS:+"LEAF_DAYS=$LEAF_DAYS"} \
+      ${SANITIZER_CORE_MTLS_CA_DIR:+"SANITIZER_CORE_MTLS_CA_DIR=$SANITIZER_CORE_MTLS_CA_DIR"} \
+      "${_sanitizer_core_bootstrap[@]}")
+  fi
+fi
+if ! "${_sanitizer_core_bootstrap[@]}" >&2; then
+  fail "could not create the sanitizer core mTLS material in $SANITIZER_CORE_MTLS_DIR (customer.env was written; fix the error above and re-run: $_sanitizer_core_bootstrap_hint)" 6
+fi
+
+# Kit 2.0: the core's registry DSN file (postgres:// URL, password
+# percent-encoded; mode 0444 in a 0700 directory), from the customer.env just
+# written. The core reads it with --registry-dsn-file, so the password never
+# appears in its process arguments. In adoption mode the file is the one
+# customer.env names (or the compose default beside the kit); an adopted
+# kit 1.x env without POSTGRES_SANITIZER_CORE_PASSWORD gets a note instead
+# (doctor then names every missing kit 2.0 setting).
+_sanitizer_core_adopt_pw="set"
+_sanitizer_core_dsn_arg=()
+if [ "$ADOPT_RUNTIME_PROFILE" != "true" ]; then
+  _sanitizer_core_dsn_arg=("$SANITIZER_CORE_DSN_FILE")
+else
+  # The adopted env is read THROUGH Docker Compose (bin/compose-env.sh, the
+  # DSN writer's own reader); the writer then resolves the file it names.
+  _sanitizer_core_probe_rc=0
+  _sanitizer_core_probe="$(cev_registry --env-file "$OUTPUT" --project-dir "$KIT_ROOT")" \
+    || _sanitizer_core_probe_rc=$?
+  if [ "$_sanitizer_core_probe_rc" -ne 0 ]; then
+    fail "cannot read the sanitizer core registry settings from $OUTPUT through Docker Compose (customer.env was not changed; fix the error above, then run: scripts/write-sanitizer-core-registry-dsn.sh --env-file '$OUTPUT')" 7
+  fi
+  case "$_sanitizer_core_probe" in
+    *"$(printf '\npw\tunset\n')"*) _sanitizer_core_adopt_pw="" ;;
+  esac
+  _sanitizer_core_probe=""
+fi
+if [ "$ADOPT_RUNTIME_PROFILE" = "true" ] && [ -z "$_sanitizer_core_adopt_pw" ]; then
+  echo "note: $OUTPUT has no POSTGRES_SANITIZER_CORE_PASSWORD (kit 1.x env?); add the kit 2.0 settings (INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\"), then run: scripts/write-sanitizer-core-registry-dsn.sh --env-file '$OUTPUT'" >&2
+elif ! bash "$KIT_ROOT/scripts/write-sanitizer-core-registry-dsn.sh" --env-file "$OUTPUT" ${_sanitizer_core_dsn_arg[@]+"${_sanitizer_core_dsn_arg[@]}"}; then
+  fail "could not write the sanitizer core registry DSN file (customer.env was written; fix the error above and re-run: scripts/write-sanitizer-core-registry-dsn.sh --env-file '$OUTPUT')" 7
+fi
+
 # BYOK banner
 if [ "$BYOK" = "true" ]; then
   cat >&2 <<'BANNER'
@@ -1751,6 +1915,15 @@ echo "Next: bring up the recorded runtime topology" >&2
 echo >&2
 echo "  bin/lucairn up --env $(shell_quote "$OUTPUT")" >&2
 echo "  bin/lucairn status --env $(shell_quote "$OUTPUT")" >&2
+echo >&2
+# Final-read H1: the sanitizer core refuses to start on an unmigrated
+# registry; `bin/lucairn up` runs the capped migration first. Plain
+# `docker compose up -d` does not.
+echo "bin/lucairn up first runs the sanitizer core's capped registry migration (a no-op" >&2
+echo "when current), then starts the stack. With plain 'docker compose ... up -d' run it" >&2
+echo "yourself first (the core refuses to start without it):" >&2
+echo >&2
+echo "  docker compose -f docker-compose.customer.yml --env-file $(shell_quote "$OUTPUT") --profile sanitizer-core-migrate run --rm migrate-sanitizer-core" >&2
 echo >&2
 echo "Mint your first customer + API key (after stack is healthy):" >&2
 echo >&2

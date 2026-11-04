@@ -7,6 +7,14 @@ TMPDIR="$(mktemp -d)"
 # write into $ROOT (it is gitignored, but clean it up on every exit path so a
 # mid-run abort never leaves it behind).
 trap 'rm -rf "$TMPDIR"; rm -f "$ROOT/.lucairn-customer-id"' EXIT
+# Kit 2.0 K-A fix round 1: doctor FAILS while this checkout's image-manifest
+# still has no signed core/sidecar digests (`pending: true`, before a
+# release), and the compose file does not render without them. Every case
+# below therefore runs init + doctor from a RELEASED-kit fixture with synthetic
+# signed digests (tests/lib/test-helpers.sh); the real tree is REAL_ROOT.
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$TMPDIR"
 
 REMOTE_CREDENTIALS="$TMPDIR/lucairn-issued-remote-credentials.env"
 printf 'sandbox_b_api_key=lcr-issued-test-api-key_123\nsandbox_b_public_key=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n' > "$REMOTE_CREDENTIALS"
@@ -36,7 +44,10 @@ copy_profiled_env() {
 # SANDBOX_B_API_KEY present in the env file. --dev leaves DSA_LICENSE_KEY empty
 # and SANDBOX_B_API_KEY blank, so set dummy values for the redaction coverage.
 # (DSA_LICENSE_KEY here is a redaction-test sentinel, not a real license — the
-# gateway never sees this file.)
+# gateway never sees this file.) The generated (empty) lines are REPLACED, not
+# repeated: a variable assigned twice refuses the support bundle (kit 2.0 K-A
+# fix round 5, an assignment overwritten later is not decoded exactly).
+sed -i.bak -e '/^DSA_LICENSE_KEY=/d' -e '/^DSA_LICENSE_SIGNING_KEY=/d' -e '/^SANDBOX_B_API_KEY=/d' "$ENV_FILE" && rm -f "$ENV_FILE.bak"
 {
   printf 'DSA_LICENSE_KEY=lcr_enterprise_test_secret\n'
   printf 'DSA_LICENSE_SIGNING_KEY=test-license-signing-secret\n'
@@ -426,8 +437,15 @@ echo "lucairn license no-signer exit-code tests: ok"
 
 FAKEBIN="$TMPDIR/fakebin"
 mkdir -p "$FAKEBIN"
+# Kit 2.0 K-A fix round 2: the docker stubs below hand bin/compose-env.sh's
+# probe renders to the real Compose CLI (client side only).
+LUCAIRN_TEST_REAL_DOCKER="$(command -v docker 2>/dev/null || true)"
+export LUCAIRN_TEST_REAL_DOCKER
 cat > "$FAKEBIN/docker" <<'DOCKER'
 #!/usr/bin/env bash
+# Kit 2.0 K-A fix round 2: bin/compose-env.sh reads customer.env through the
+# REAL Compose CLI (one-service probe projects, client side, no daemon).
+case " $* " in *lucairn-env-probe.*) exec "$LUCAIRN_TEST_REAL_DOCKER" "$@" ;; esac
 if [ "$1" = "manifest" ] && [ "$2" = "inspect" ]; then
   echo 'unauthorized: authentication required' >&2
   exit 1
@@ -1165,7 +1183,7 @@ fi
 if command -v age >/dev/null 2>&1; then
   AGEKEY="$TMPDIR/guard.key"
   age-keygen -o "$AGEKEY" 2>"$TMPDIR/guard.pub"
-  REC="$(grep 'public key:' "$TMPDIR/guard.pub" | awk '{print $NF}')"
+  REC="$(grep -i 'public key:' "$TMPDIR/guard.pub" | awk '{print $NF}')"
   printf 'PGDMP raw custom-format dump content that must be rejected' > "$TMPDIR/guard.dump"
   age -r "$REC" -o "$TMPDIR/guard.enc" "$TMPDIR/guard.dump"
   head -c 64 "$TMPDIR/guard.enc" | grep -q "age-encryption.org" \

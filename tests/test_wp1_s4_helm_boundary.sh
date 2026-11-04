@@ -290,12 +290,18 @@ POSTGRES_BRIDGE_PASSWORD=test-postgres-bridge-password
 POSTGRES_SANDBOX_A_PASSWORD=test-postgres-sandbox-a-password
 POSTGRES_VEIL_PASSWORD=test-postgres-veil-password
 VEIL_APP_PASSWORD=test-veil-app-password
+DSA_SANITIZER_CORE_REGISTRY_KEY=test-sanitizer-core-registry-key
+POSTGRES_SANITIZER_CORE_PASSWORD=test-sanitizer-core-password
 LCR_GATEWAY_SIGNING_KEY=test-gateway-signing-key
 DSA_LICENSE_KEY=
 DSA_LICENSE_SIGNING_KEY=
 LUCAIRN_LICENSE_KEY=
 LUCAIRN_LICENSE_PUBLIC_KEY=
 ENV
+  # Kit 2.0: the sanitizer core pair renders only with its signed digests
+  # (a release records them; synthetic ones from tests/lib/test-helpers.sh).
+  printf 'LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=%s\nLUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=%s\n' \
+    "$TEST_SANITIZER_CORE_DIGEST" "$TEST_SANITIZER_CORE_SIDECAR_DIGEST" >>"$TMPDIR/customer-compose.env"
   env -u STREAMING_ENABLED docker compose \
     --env-file "$TMPDIR/customer-compose.env" \
     -f "$ROOT/docker-compose.customer.yml" \

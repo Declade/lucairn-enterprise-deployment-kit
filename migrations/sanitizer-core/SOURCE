@@ -1,0 +1,7 @@
+Byte-copies of dual-sandbox-architecture services/sanitizer-core/store/migrations/*.up.sql
+at DSA main 20ec838c44eabf13f39e2878e2edd0a9fb57a64a (unchanged since 1a3a5574, the commit
+whose migrations the hosted registry was migrated with on 2026-10-31).
+The core image embeds the same files (store/store.go: //go:embed migrations/*.up.sql); the
+release step re-copies them from the image's release commit and refreshes SHA256SUMS.
+Applied only by scripts/migrate-sanitizer-core.sh (the migrate-sanitizer-core one-shot);
+never on boot. Ceiling: CEILING_SANITIZER_CORE in scripts/migration-ceilings.conf.

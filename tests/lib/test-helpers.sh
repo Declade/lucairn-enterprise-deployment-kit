@@ -24,6 +24,19 @@
 # on re-declaration in bash, so skip the assignment when already set.
 [ -n "${TEST_SIGNING_KEY:-}" ] || readonly TEST_SIGNING_KEY="1111111111111111111111111111111111111111111111111111111111111111"
 
+# Kit 2.0 final-read M2: on Linux scripts/bootstrap-sanitizer-core-mtls.sh
+# refuses an ordinary user (only root can hand the keys to the image user
+# 10001), bin/lucairn-init then runs that step through sudo, and doctor FAILS a
+# key owned by another uid than the containers'. No container reads the keys
+# in a test, so a non-root Linux test host (the PC runner in WSL) declares the
+# documented mapping — the image user = this uid — exactly as an operator on
+# Docker Desktop for Linux would. A case that needs the undeclared state runs
+# with LUCAIRN_CONTAINER_UID= (empty). macOS needs nothing (no uid rule there).
+if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" != "0" ] && [ -z "${LUCAIRN_CONTAINER_UID:-}" ]; then
+  LUCAIRN_CONTAINER_UID="$(id -u)"
+  export LUCAIRN_CONTAINER_UID
+fi
+
 # ---------------------------------------------------------------------------
 # T-10 (security STOP-SHIP, 2026-08-03): chart-managed passwords have NO
 # working default any more.
@@ -78,3 +91,59 @@ if [ -z "${HELM_TEST_SECRET_ARGS+x}" ]; then
   )
   readonly HELM_TEST_SECRET_ARGS
 fi
+
+# ---------------------------------------------------------------------------
+# Kit 2.0 K-A fix round 1 (sol r1 finding 4): the new sanitizer core and its
+# model sidecar start ONLY from the signed digests a kit RELEASE records in
+# image-manifest.yaml (image_digests.signed_artifacts). Until the release step
+# (K-E) records them the manifest says `pending: true`: Compose refuses to
+# render without both digest variables, `bin/lucairn doctor` FAILS and
+# `bin/lucairn verify-images` FAILS. A test that needs a GREEN kit 2.0 install
+# runs against a RELEASED-KIT FIXTURE instead: these synthetic digests (never
+# real ones, never pulled) in a copy of the manifest.
+[ -n "${TEST_SANITIZER_CORE_DIGEST:-}" ] || readonly TEST_SANITIZER_CORE_DIGEST="sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+[ -n "${TEST_SANITIZER_CORE_SIDECAR_DIGEST:-}" ] || readonly TEST_SANITIZER_CORE_SIDECAR_DIGEST="sha256:5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c"
+
+# lucairn_released_kit_fixture <kit root> <dest> — <dest> becomes a kit tree
+# whose image-manifest.yaml records the synthetic pair above in place of
+# `pending: true`. Everything else is a plain COPY of <kit root> (about
+# 11 MB without .git), so bin/lucairn and bin/lucairn-init run as the fixture
+# kit and a test that edits a kit file (a "mutant" of servicenow-directory/, a
+# keys/ record) edits the copy. Directories are never symlinked: `cp -R` of a
+# symlinked directory copies the link, and the edit lands in the real tree
+# (found by tests/test_servicenow_optin.sh section J). Writes nothing into
+# <kit root>.
+lucairn_released_kit_fixture() {
+  local root="$1" dest="$2" e
+  mkdir -p "$dest" || return 1
+  for e in "$root"/* "$root"/.[!.]*; do
+    [ -e "$e" ] || continue
+    # Never link install state of the real tree (.secrets/, .certs/, a
+    # customer.env a test generated beside the kit): the fixture gets its own.
+    case "$(basename "$e")" in .git|.worktrees|.secrets|.certs|.lucairn-*|customer.env|image-manifest.yaml) continue ;; esac
+    cp -Rp "$e" "$dest/" || return 1
+  done
+  awk -v core="$TEST_SANITIZER_CORE_DIGEST" -v side="$TEST_SANITIZER_CORE_SIDECAR_DIGEST" '
+    /^  signed_artifacts:/ { in_sa = 1; print; next }
+    in_sa && /^  [^ ]/ { in_sa = 0 }
+    in_sa && /^    dsa-sanitizer-core:$/ { key = "core"; print; next }
+    in_sa && /^    dsa-sanitizer-core-sidecar:$/ { key = "side"; print; next }
+    in_sa && /^    [^ ]/ { key = "" }
+    in_sa && key != "" && /^      pending:[[:space:]]*true/ { print "      digest: \"" (key == "core" ? core : side) "\""; n++; next }
+    { print }
+    END { if (n != 2) exit 1 }
+  ' "$root/image-manifest.yaml" > "$dest/image-manifest.yaml"
+}
+
+# lucairn_use_released_kit <tmp dir> — for a suite whose doctor/init GREEN
+# cases need a RELEASED kit: builds the fixture in <tmp dir>/released-kit and
+# re-points the caller's ROOT at it (the real tree stays REAL_ROOT). Call it
+# right after the suite creates its temp dir; the suite's own trap removes it.
+lucairn_use_released_kit() {
+  REAL_ROOT="${REAL_ROOT:-$ROOT}"
+  lucairn_released_kit_fixture "$REAL_ROOT" "$1/released-kit" || {
+    echo "released-kit fixture: could not be built from $REAL_ROOT (image-manifest.yaml no longer has the two pending core/sidecar slots?)" >&2
+    exit 1
+  }
+  ROOT="$1/released-kit"
+}

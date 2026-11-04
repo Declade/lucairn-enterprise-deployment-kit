@@ -424,6 +424,11 @@ services:
       # to 400000 so a normal-sized real turn isn't rejected out of the box.
       # See customer.env.example for the operator-facing knob.
       MAX_PROMPT_CHARS: "${MAX_PROMPT_CHARS:-400000}"
+      # Kit 2.0: Sandbox B's own __messages_json__ limit (characters; empty =
+      # 4 MiB). The gateway reads the SAME variable from the base compose file
+      # and refuses an over-limit conversation before the call; one line in
+      # customer.env therefore reaches both containers (DSA PR #900).
+      SANDBOX_B_MESSAGES_JSON_MAX_BYTES: "${SANDBOX_B_MESSAGES_JSON_MAX_BYTES:-}"
     volumes:
       - ../starter-templates:/app/verticals:ro
     networks:
