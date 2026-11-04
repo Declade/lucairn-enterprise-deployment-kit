@@ -448,6 +448,11 @@ runtime_profile_compose_args() {
 # list, ... -> `up` refuses with the gateway's word session_config_invalid) |
 # unknown (names present, Compose could not render; the mode stays off).
 SERVICENOW_OVERLAY="docker-compose.servicenow-control.yml"
+# Kit 2.0: the sanitizer core's operator tools a 2.0 customer bundle carries in
+# scripts/ (bundle create stages them, bundle verify requires each,
+# executable): mTLS bootstrap, registry DSN writer, and (K-E fix round 2) the
+# registry credentials helper for a rollback and the re-upgrade after it.
+SANITIZER_CORE_OPERATOR_TOOLS="bootstrap-sanitizer-core-mtls.sh write-sanitizer-core-registry-dsn.sh sanitizer-core-registry-credentials.sh"
 SN_STATE="off"; SN_WORD=""; SN_HINT=""; SN_SWITCH=""; SN_BINDINGS=""; SN_INSTANCES=""
 SN_SANITIZER_IP=""; SN_CORE_IP=""; SN_PORT=""; SN_BASE=""; SN_COPY=""; SN_MATERIAL=""; SN_LOGIN=""
 SN_SUBNET=""
@@ -7735,7 +7740,16 @@ scripts/write-sanitizer-core-registry-dsn.sh --env-file install/customer.env --c
 ```
 
 `bin/lucairn up` runs the capped registry migration before it starts anything
-(and again after every kit upgrade; a no-op when the registry is current).'
+(and again after every kit upgrade; a no-op when the registry is current).
+
+The registry volume only opens with the registry key and database password it
+was created with. Before a rollback to kit 1.9.7, save both (the folder it
+writes is mode 0700 and git-ignored); a later return to 2.0 restores them:
+
+```bash
+scripts/sanitizer-core-registry-credentials.sh save --env-file install/customer.env
+scripts/sanitizer-core-registry-credentials.sh add --env-file install/customer.env --from install/backups/sanitizer-core-<time>/sanitizer-core-registry.env
+```'
   fi
   cat > "$file" <<EOF
 # Lucairn Customer Install: $slug
@@ -8133,10 +8147,14 @@ bundle_create() {
   # writer reads customer.env through bin/compose-env.sh (staged above) and,
   # in an extracted bundle, resolves paths against install/. The install note
   # names both steps; bundle verify requires both whenever the staged compose
-  # has the sanitizer-core service.
+  # has the sanitizer-core service. K-E fix round 2 (review P2 on PR #162): the
+  # registry credentials helper too — an extracted bundle's rollback saves the
+  # registry key and password with it, and its re-upgrade restores them
+  # (INSTALL.md § "Rollback to 1.9.7"); it reads the bundle's install/ through
+  # bin/compose-env.sh and bin/runtime-profile-lib.sh (both staged above).
   if grep -q '^  sanitizer-core:' "$staging/install/docker-compose.customer.yml"; then
     local _core_tool
-    for _core_tool in bootstrap-sanitizer-core-mtls.sh write-sanitizer-core-registry-dsn.sh; do
+    for _core_tool in $SANITIZER_CORE_OPERATOR_TOOLS; do
       require_file "$ROOT/scripts/$_core_tool" "sanitizer-core operator tool $_core_tool"
       cp "$ROOT/scripts/$_core_tool" "$staging/scripts/$_core_tool"
       chmod 0755 "$staging/scripts/$_core_tool"
@@ -8360,7 +8378,7 @@ bundle_verify() {
     # historical requirement set.
     if grep -q '^  sanitizer-core:' "$root/install/docker-compose.customer.yml" 2>/dev/null; then
       local _core_tool
-      for _core_tool in bootstrap-sanitizer-core-mtls.sh write-sanitizer-core-registry-dsn.sh; do
+      for _core_tool in $SANITIZER_CORE_OPERATOR_TOOLS; do
         require_file "$root/scripts/$_core_tool" "bundle sanitizer-core operator tool $_core_tool"
         [ -x "$root/scripts/$_core_tool" ] \
           || { rm -rf "$tmp"; fail "bundle sanitizer-core operator tool $_core_tool is not executable"; }

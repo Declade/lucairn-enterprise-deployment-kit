@@ -101,7 +101,7 @@ EOF
 done
 
 LOCAL_ENV="$TMPDIR/local.env"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$LOCAL_ENV" --skip-doctor >/dev/null
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$LOCAL_ENV" --skip-doctor >/dev/null
 awk -v gateway="http://127.0.0.1:99999" '
   /^GATEWAY_BASE_URL=/ { print "GATEWAY_BASE_URL=" gateway; next }
   { print }

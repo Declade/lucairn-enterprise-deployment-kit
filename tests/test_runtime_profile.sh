@@ -31,7 +31,7 @@ expect_fail() {
 assert_install_lock_reacquirable() {
   local name="$1" output
   output="$TMPDIR/${name}.env"
-  "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+  "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
     --output "$output" --skip-doctor >"$TMPDIR/${name}.out" 2>&1
   test -f "$output"
   test -f "$output.runtime-profile.yaml"
@@ -54,14 +54,14 @@ file_mode() {
 
 # Adoption changes customer.env by exactly the S1 marker; help must not retain
 # the historical promise that it only writes the sidecar.
-"$ROOT/bin/lucairn-init" --help > "$TMPDIR/lucairn-init-help.out"
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --help > "$TMPDIR/lucairn-init-help.out"
 grep -q 'append exactly LUCAIRN_RUNTIME_PROFILE_REQUIRED=1' "$TMPDIR/lucairn-init-help.out"
 grep -q 'preserving all existing content and permissions' "$TMPDIR/lucairn-init-help.out"
 grep -q 'publish the runtime-profile manifest' "$TMPDIR/lucairn-init-help.out"
 ! grep -q 'Never rewrites customer.env\.' "$TMPDIR/lucairn-init-help.out"
 
 # A fresh install has no implicit inference fallback.
-expect_fail missing-mode "$ROOT/bin/lucairn-init" --dev --output "$TMPDIR/missing.env" --skip-doctor
+expect_fail missing-mode "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --output "$TMPDIR/missing.env" --skip-doctor
 test ! -e "$TMPDIR/missing.env"
 grep -q -- '--runtime-mode is required' "$TMPDIR/missing-mode.out"
 
@@ -71,28 +71,28 @@ for selector_case in runtime-same runtime-conflict local-same local-conflict rem
   REPEAT_ENV="$TMPDIR/repeated-${selector_case}.env"
   case "$selector_case" in
     runtime-same)
-      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --runtime-mode local-runtime --local-runtime llama-cpp --output "$REPEAT_ENV" --skip-doctor
+      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --runtime-mode local-runtime --local-runtime llama-cpp --output "$REPEAT_ENV" --skip-doctor
       ;;
     runtime-conflict)
-      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --runtime-mode split-remote --local-runtime llama-cpp --output "$REPEAT_ENV" --skip-doctor
+      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --runtime-mode split-remote --local-runtime llama-cpp --output "$REPEAT_ENV" --skip-doctor
       ;;
     local-same)
-      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --local-runtime llama-cpp --output "$REPEAT_ENV" --skip-doctor
+      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --local-runtime llama-cpp --output "$REPEAT_ENV" --skip-doctor
       ;;
     local-conflict)
-      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --local-runtime vllm --output "$REPEAT_ENV" --skip-doctor
+      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --local-runtime vllm --output "$REPEAT_ENV" --skip-doctor
       ;;
     remote-same)
-      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --dev --runtime-mode split-remote --remote-endpoint https://one.example.test --remote-endpoint https://one.example.test --output "$REPEAT_ENV" --skip-doctor
+      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode split-remote --remote-endpoint https://one.example.test --remote-endpoint https://one.example.test --output "$REPEAT_ENV" --skip-doctor
       ;;
     remote-conflict)
-      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --dev --runtime-mode split-remote --remote-endpoint https://one.example.test --remote-endpoint https://two.example.test --output "$REPEAT_ENV" --skip-doctor
+      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode split-remote --remote-endpoint https://one.example.test --remote-endpoint https://two.example.test --output "$REPEAT_ENV" --skip-doctor
       ;;
     allowlist-same)
-      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --dev --runtime-mode managed-byok --byok-allowlist api.one.example.test --byok-allowlist api.one.example.test --output "$REPEAT_ENV" --skip-doctor
+      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode managed-byok --byok-allowlist api.one.example.test --byok-allowlist api.one.example.test --output "$REPEAT_ENV" --skip-doctor
       ;;
     allowlist-conflict)
-      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --dev --runtime-mode managed-byok --byok-allowlist api.one.example.test --byok-allowlist api.two.example.test --output "$REPEAT_ENV" --skip-doctor
+      expect_fail "repeated-${selector_case}" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode managed-byok --byok-allowlist api.one.example.test --byok-allowlist api.two.example.test --output "$REPEAT_ENV" --skip-doctor
       ;;
   esac
   test ! -e "$REPEAT_ENV"
@@ -101,7 +101,7 @@ done
 
 # Every accepted runtime selection emits deterministic, non-secret state.
 LOCAL_ENV="$TMPDIR/local.env"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --output "$LOCAL_ENV" --skip-doctor >/dev/null
 LOCAL_PROFILE="$LOCAL_ENV.runtime-profile.yaml"
 grep -qx 'runtime_mode: local-runtime' "$LOCAL_PROFILE"
@@ -125,11 +125,11 @@ fi
 
 before_env="$(cksum "$LOCAL_ENV")"
 before_profile="$(cksum "$LOCAL_PROFILE")"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --output "$LOCAL_ENV" --skip-doctor >/dev/null
 test "$(cksum "$LOCAL_ENV")" = "$before_env"
 test "$(cksum "$LOCAL_PROFILE")" = "$before_profile"
-expect_fail conflicting-repeat "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime vllm --output "$LOCAL_ENV" --skip-doctor
+expect_fail conflicting-repeat "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime vllm --output "$LOCAL_ENV" --skip-doctor
 test "$(cksum "$LOCAL_ENV")" = "$before_env"
 grep -q 'conflicts with requested inputs' "$TMPDIR/conflicting-repeat.out"
 
@@ -142,7 +142,7 @@ cp "$LOCAL_PROFILE" "$SYMLINK_TARGET"
 ln -s "$SYMLINK_TARGET" "$SYMLINK_ENV.runtime-profile.yaml"
 symlink_env_before="$(cksum "$SYMLINK_ENV")"
 symlink_target_before="$(cksum "$SYMLINK_TARGET")"
-expect_fail symlink-idempotent "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$SYMLINK_ENV" --skip-doctor
+expect_fail symlink-idempotent "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$SYMLINK_ENV" --skip-doctor
 test "$(cksum "$SYMLINK_ENV")" = "$symlink_env_before"
 test "$(cksum "$SYMLINK_TARGET")" = "$symlink_target_before"
 test -L "$SYMLINK_ENV.runtime-profile.yaml"
@@ -155,7 +155,7 @@ cp "$LOCAL_PROFILE" "$IDEMPOTENT_DUP_BYOK_ENV.runtime-profile.yaml"
 printf 'LUCAIRN_LLM_EGRESS_ALLOWLIST=unexpected.example.test\nLUCAIRN_LLM_EGRESS_ALLOWLIST=\n' >> "$IDEMPOTENT_DUP_BYOK_ENV"
 idempotent_dup_byok_env_before="$(cksum "$IDEMPOTENT_DUP_BYOK_ENV")"
 idempotent_dup_byok_profile_before="$(cksum "$IDEMPOTENT_DUP_BYOK_ENV.runtime-profile.yaml")"
-expect_fail idempotent-duplicate-byok "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$IDEMPOTENT_DUP_BYOK_ENV" --skip-doctor
+expect_fail idempotent-duplicate-byok "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$IDEMPOTENT_DUP_BYOK_ENV" --skip-doctor
 test "$(cksum "$IDEMPOTENT_DUP_BYOK_ENV")" = "$idempotent_dup_byok_env_before"
 test "$(cksum "$IDEMPOTENT_DUP_BYOK_ENV.runtime-profile.yaml")" = "$idempotent_dup_byok_profile_before"
 
@@ -174,16 +174,16 @@ for tamper in overlay deployment image_tag env; do
   esac
   tampered_env_before="$(cksum "$TAMPER_ENV")"
   tampered_profile_before="$(cksum "$TAMPER_PROFILE")"
-  expect_fail "tampered-${tamper}" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$TAMPER_ENV" --skip-doctor
+  expect_fail "tampered-${tamper}" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$TAMPER_ENV" --skip-doctor
   test "$(cksum "$TAMPER_ENV")" = "$tampered_env_before"
   test "$(cksum "$TAMPER_PROFILE")" = "$tampered_profile_before"
 done
 
-expect_fail incomplete-local "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --output "$TMPDIR/incomplete.env" --skip-doctor
-expect_fail incompatible-mode "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --byok --output "$TMPDIR/conflict.env" --skip-doctor
+expect_fail incomplete-local "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --output "$TMPDIR/incomplete.env" --skip-doctor
+expect_fail incompatible-mode "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --byok --output "$TMPDIR/conflict.env" --skip-doctor
 
 SPLIT_ENV="$TMPDIR/split.env"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode split/remote --remote-endpoint https://inference.example.test \
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode split/remote --remote-endpoint https://inference.example.test \
   --remote-credentials "$REMOTE_CREDENTIALS" --output "$SPLIT_ENV" --skip-doctor >/dev/null
 grep -qx 'runtime_mode: split-remote' "$SPLIT_ENV.runtime-profile.yaml"
 grep -qx 'byok_egress_allowlist: none' "$SPLIT_ENV.runtime-profile.yaml"
@@ -196,7 +196,7 @@ grep -A2 '^model_inventory:$' "$SPLIT_ENV.runtime-profile.yaml" | grep -qx '  lo
 
 # Split remote authentication is an explicit secret-file contract in both dev
 # and production paths. Endpoint + license alone can never publish state.
-expect_fail split-missing-credentials "$ROOT/bin/lucairn-init" --dev --runtime-mode split-remote --remote-endpoint https://inference.example.test --output "$TMPDIR/split-missing-credentials.env" --skip-doctor
+expect_fail split-missing-credentials "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode split-remote --remote-endpoint https://inference.example.test --output "$TMPDIR/split-missing-credentials.env" --skip-doctor
 for bad_credentials_case in blank-api duplicate-api placeholder-api bad-public sentinel-public repeated-byte-public extra-line; do
   BAD_CREDENTIALS="$TMPDIR/${bad_credentials_case}.env"
   case "$bad_credentials_case" in
@@ -208,7 +208,7 @@ for bad_credentials_case in blank-api duplicate-api placeholder-api bad-public s
     repeated-byte-public) printf 'sandbox_b_api_key=lcr-issued-test-api-key_123\nsandbox_b_public_key=abababababababababababababababababababababababababababababababab\n' > "$BAD_CREDENTIALS" ;;
     extra-line) printf 'sandbox_b_api_key=lcr-issued-test-api-key_123\nsandbox_b_public_key=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\nextra=value\n' > "$BAD_CREDENTIALS" ;;
   esac
-  expect_fail "split-${bad_credentials_case}" "$ROOT/bin/lucairn-init" --dev --runtime-mode split-remote --remote-endpoint https://inference.example.test --remote-credentials "$BAD_CREDENTIALS" --output "$TMPDIR/split-${bad_credentials_case}.out.env" --skip-doctor
+  expect_fail "split-${bad_credentials_case}" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode split-remote --remote-endpoint https://inference.example.test --remote-credentials "$BAD_CREDENTIALS" --output "$TMPDIR/split-${bad_credentials_case}.out.env" --skip-doctor
   test ! -e "$TMPDIR/split-${bad_credentials_case}.out.env"
 done
 
@@ -240,7 +240,7 @@ expect_fail split-doctor-repeated-byte-public "$ROOT/bin/lucairn" doctor --env "
 grep -q 'LCR_SANDBOX_B_PUBLIC_KEY (or legacy VEIL_SANDBOX_B_PUBLIC_KEY) must be a non-sentinel' "$TMPDIR/split-doctor-repeated-byte-public.out"
 
 BYOK_ENV="$TMPDIR/byok.env"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$BYOK_ENV" --skip-doctor >/dev/null
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode managed-byok --output "$BYOK_ENV" --skip-doctor >/dev/null
 grep -qx 'runtime_mode: managed-byok' "$BYOK_ENV.runtime-profile.yaml"
 grep -qx 'byok_egress_allowlist: api.anthropic.com,api.openai.com' "$BYOK_ENV.runtime-profile.yaml"
 test "$(sed -n '/^overlays:/,/^image_manifest:/p' "$BYOK_ENV.runtime-profile.yaml" | grep -c '^  - ' )" -eq 3
@@ -249,7 +249,7 @@ grep -A2 '^model_inventory:$' "$BYOK_ENV.runtime-profile.yaml" | grep -qx '  pro
 # BYOK input and post-publication profile validation share the same FQDN-only
 # grammar. Invalid host-like strings must not reach customer state.
 for bad_byok_host in localhost runtime 127.0.0.1 123.456.789.000 api.example.com:443 'https://api.example.com' api.example.com/path '*.example.com' .api.example.com api..example.com api-.example.com -api.example.com; do
-  expect_fail "bad-byok-${bad_byok_host//[^A-Za-z0-9]/_}" "$ROOT/bin/lucairn-init" --dev --runtime-mode managed-byok --byok-allowlist "$bad_byok_host" --output "$TMPDIR/bad-byok.env" --skip-doctor
+  expect_fail "bad-byok-${bad_byok_host//[^A-Za-z0-9]/_}" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode managed-byok --byok-allowlist "$bad_byok_host" --output "$TMPDIR/bad-byok.env" --skip-doctor
   test ! -e "$TMPDIR/bad-byok.env"
 done
 TAMPER_BYOK_ENV="$TMPDIR/tamper-byok.env"
@@ -262,7 +262,7 @@ expect_fail tampered-byok-fqdn "$ROOT/bin/lucairn" doctor --env "$TAMPER_BYOK_EN
 # topology and cannot include any generated secret values.
 CUSTOM_REGEN_ENV="$TMPDIR/custom-byok-regenerate.env"
 CUSTOM_ALLOWLIST='api.customer.example,models.customer.example'
-"$ROOT/bin/lucairn-init" --dev --runtime-mode managed-byok --byok-allowlist "$CUSTOM_ALLOWLIST" \
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode managed-byok --byok-allowlist "$CUSTOM_ALLOWLIST" \
   --image-tag custom-image --output "$CUSTOM_REGEN_ENV" --skip-doctor >/dev/null
 grep -qx "byok_egress_allowlist: $CUSTOM_ALLOWLIST" "$CUSTOM_REGEN_ENV.runtime-profile.yaml"
 grep -Fq -- "--runtime-mode split-remote --remote-endpoint 'https://inference.example.test' --remote-credentials '$REMOTE_CREDENTIALS' --output '$SPLIT_ENV'" "$SPLIT_ENV"
@@ -275,7 +275,7 @@ fi
 PRODUCTION_LICENSE="$TMPDIR/license bundle.txt"
 PRODUCTION_ENV="$TMPDIR/production output.env"
 printf 'license_key=test-license\nsigning_key=test-signing\n' > "$PRODUCTION_LICENSE"
-"$ROOT/bin/lucairn-init" --production --license "$PRODUCTION_LICENSE" --runtime-mode local-runtime --local-runtime llama-cpp \
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --production --license "$PRODUCTION_LICENSE" --runtime-mode local-runtime --local-runtime llama-cpp \
   --output "$PRODUCTION_ENV" --skip-doctor >/dev/null
 grep -Fq -- "--production --license '$PRODUCTION_LICENSE' --runtime-mode local-runtime --local-runtime 'llama-cpp' --model-name 'customer-model' --model-file 'customer-model-q4.gguf' --model-path '.' --output '$PRODUCTION_ENV'" "$PRODUCTION_ENV"
 
@@ -298,13 +298,13 @@ for bad_endpoint in \
   'https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example' \
   'https://good.example?ambiguous=true'; do
   BAD_ENV="$TMPDIR/bad-endpoint-${RANDOM}.env"
-  expect_fail bad-endpoint "$ROOT/bin/lucairn-init" --dev --runtime-mode split-remote --remote-endpoint "$bad_endpoint" --output "$BAD_ENV" --skip-doctor
+  expect_fail bad-endpoint "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode split-remote --remote-endpoint "$bad_endpoint" --output "$BAD_ENV" --skip-doctor
   test ! -e "$BAD_ENV"
   test ! -e "$BAD_ENV.runtime-profile.yaml"
 done
 
 GOOD_ENDPOINT_ENV="$TMPDIR/good-endpoint.env"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode split-remote --remote-endpoint 'https://good.example:443/v1/models%2Fcurrent' --remote-credentials "$REMOTE_CREDENTIALS" --output "$GOOD_ENDPOINT_ENV" --skip-doctor >/dev/null
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode split-remote --remote-endpoint 'https://good.example:443/v1/models%2Fcurrent' --remote-credentials "$REMOTE_CREDENTIALS" --output "$GOOD_ENDPOINT_ENV" --skip-doctor >/dev/null
 
 # Init must use the same strict grammar as the reader before either artifact
 # exists. These were previously accepted values that rendered self-invalid
@@ -313,22 +313,22 @@ for invalid_init_case in endpoint-yaml-meta model-yaml-meta model-file-traversal
   INVALID_INIT_ENV="$TMPDIR/${invalid_init_case}.env"
   case "$invalid_init_case" in
     endpoint-yaml-meta)
-      expect_fail "$invalid_init_case" "$ROOT/bin/lucairn-init" --dev --runtime-mode split-remote --remote-endpoint 'https://inference.example.test/v1!models:' --output "$INVALID_INIT_ENV" --skip-doctor
+      expect_fail "$invalid_init_case" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode split-remote --remote-endpoint 'https://inference.example.test/v1!models:' --output "$INVALID_INIT_ENV" --skip-doctor
       ;;
     model-yaml-meta)
-      expect_fail "$invalid_init_case" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --model-name 'model&name' --model-file model.gguf --model-path . --output "$INVALID_INIT_ENV" --skip-doctor
+      expect_fail "$invalid_init_case" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --model-name 'model&name' --model-file model.gguf --model-path . --output "$INVALID_INIT_ENV" --skip-doctor
       ;;
     model-file-traversal)
-      expect_fail "$invalid_init_case" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --model-name model-name --model-file ../outside --model-path . --output "$INVALID_INIT_ENV" --skip-doctor
+      expect_fail "$invalid_init_case" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --model-name model-name --model-file ../outside --model-path . --output "$INVALID_INIT_ENV" --skip-doctor
       ;;
     model-file-absolute)
-      expect_fail "$invalid_init_case" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --model-name model-name --model-file /outside --model-path . --output "$INVALID_INIT_ENV" --skip-doctor
+      expect_fail "$invalid_init_case" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --model-name model-name --model-file /outside --model-path . --output "$INVALID_INIT_ENV" --skip-doctor
       ;;
     model-file-backslash)
-      expect_fail "$invalid_init_case" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --model-name model-name --model-file 'inside\outside.gguf' --model-path . --output "$INVALID_INIT_ENV" --skip-doctor
+      expect_fail "$invalid_init_case" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --model-name model-name --model-file 'inside\outside.gguf' --model-path . --output "$INVALID_INIT_ENV" --skip-doctor
       ;;
     model-path-mid-traversal)
-      expect_fail "$invalid_init_case" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --model-name model-name --model-file inside.gguf --model-path 'models/../outside' --output "$INVALID_INIT_ENV" --skip-doctor
+      expect_fail "$invalid_init_case" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --model-name model-name --model-file inside.gguf --model-path 'models/../outside' --output "$INVALID_INIT_ENV" --skip-doctor
       ;;
   esac
   test ! -e "$INVALID_INIT_ENV"
@@ -338,7 +338,7 @@ done
 # A simulated profile publication failure rolls back the fresh pair. The hook
 # is test-only and is checked before production's first publish operation.
 PUBLISH_FAIL_ENV="$TMPDIR/publish-fail.env"
-expect_fail profile-publication env LUCAIRN_TEST_FAIL_RUNTIME_PROFILE_PUBLISH=1 "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$PUBLISH_FAIL_ENV" --skip-doctor
+expect_fail profile-publication env LUCAIRN_TEST_FAIL_RUNTIME_PROFILE_PUBLISH=1 "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$PUBLISH_FAIL_ENV" --skip-doctor
 test ! -e "$PUBLISH_FAIL_ENV"
 test ! -e "$PUBLISH_FAIL_ENV.runtime-profile.yaml"
 test ! -e "$PUBLISH_FAIL_ENV.image-manifest.yaml"
@@ -353,12 +353,12 @@ for collision in directory symlink regular; do
     symlink) ln -s "$TMPDIR/nowhere" "$COLLIDE_PROFILE" ;;
     regular) : > "$COLLIDE_PROFILE" ;;
   esac
-  expect_fail "collision-${collision}" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$COLLIDE_ENV" --skip-doctor
+  expect_fail "collision-${collision}" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$COLLIDE_ENV" --skip-doctor
   test ! -e "$COLLIDE_ENV"
   case "$collision" in directory) test -d "$COLLIDE_PROFILE" ;; symlink) test -L "$COLLIDE_PROFILE" ;; regular) test -f "$COLLIDE_PROFILE" ;; esac
 done
 SECOND_FAIL_ENV="$TMPDIR/second-publish.env"
-expect_fail second-publication env LUCAIRN_TEST_FAIL_ENV_PUBLISH=1 "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$SECOND_FAIL_ENV" --skip-doctor
+expect_fail second-publication env LUCAIRN_TEST_FAIL_ENV_PUBLISH=1 "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$SECOND_FAIL_ENV" --skip-doctor
 test ! -e "$SECOND_FAIL_ENV"
 test ! -e "$SECOND_FAIL_ENV.runtime-profile.yaml"
 test ! -e "$SECOND_FAIL_ENV.image-manifest.yaml"
@@ -368,7 +368,7 @@ test ! -e "$SECOND_FAIL_ENV.image-manifest.yaml"
 # cleanup) and therefore remains an explicit fail-closed split state.
 for fresh_race in delete replace; do
   FRESH_RACE_ENV="$TMPDIR/fresh-race-${fresh_race}.env"
-  expect_fail "fresh-race-${fresh_race}" env LUCAIRN_TEST_TRANSACTION_HOOK="fresh-after-profile:${fresh_race}" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$FRESH_RACE_ENV" --skip-doctor
+  expect_fail "fresh-race-${fresh_race}" env LUCAIRN_TEST_TRANSACTION_HOOK="fresh-after-profile:${fresh_race}" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$FRESH_RACE_ENV" --skip-doctor
   test ! -e "$FRESH_RACE_ENV"
   case "$fresh_race" in
     delete) test ! -e "$FRESH_RACE_ENV.runtime-profile.yaml" ;;
@@ -388,7 +388,7 @@ for fresh_visible in profile env; do
   FRESH_SIGNAL_ENV="$TMPDIR/fresh-${fresh_visible}-visible-signal.env"
   expect_fail "fresh-${fresh_visible}-visible-signal" \
     env LUCAIRN_TEST_TRANSACTION_HOOK="fresh-${fresh_visible}-visible:signal" \
-    "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+    "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
     --output "$FRESH_SIGNAL_ENV" --skip-doctor
   test ! -e "$FRESH_SIGNAL_ENV"
   test ! -L "$FRESH_SIGNAL_ENV"
@@ -415,7 +415,7 @@ cp "$LEGACY_ENV" "$legacy_before_copy"
 legacy_mode="$(file_mode "$LEGACY_ENV")"
 "$ROOT/bin/lucairn" doctor --env "$LEGACY_ENV" --compose "$ROOT/docker-compose.customer.yml" --offline --skip-image-check >"$TMPDIR/legacy-doctor.out"
 grep -q 'runtime profile: legacy install' "$TMPDIR/legacy-doctor.out"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --adopt-runtime-profile --output "$LEGACY_ENV" --skip-doctor >/dev/null
 # Adoption is intentionally not byte-identical: it preserves all prior bytes,
 # settings, secrets, and permissions while atomically adding the one S1 marker.
@@ -451,7 +451,7 @@ copy_pre_s1_env "$LOCAL_ENV" "$ADOPT_ENV"
 rm -f "$ADOPT_ENV.runtime-profile.yaml"
 adopt_before="$(cksum "$ADOPT_ENV")"
 mkdir "$ADOPT_ENV.runtime-profile.yaml"
-expect_fail adopt-directory "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --adopt-runtime-profile --output "$ADOPT_ENV" --skip-doctor
+expect_fail adopt-directory "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --adopt-runtime-profile --output "$ADOPT_ENV" --skip-doctor
 test "$(cksum "$ADOPT_ENV")" = "$adopt_before"
 
 # A signal/failure during adoption restores the exact pre-adoption env and
@@ -464,10 +464,10 @@ for adoption_abort in signal fail-after-env; do
   adoption_abort_mode="$(file_mode "$ADOPTION_ABORT_ENV")"
   case "$adoption_abort" in
     signal)
-      expect_fail "adoption-abort-${adoption_abort}" env LUCAIRN_TEST_TRANSACTION_HOOK=adoption-after-profile:signal "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --adopt-runtime-profile --output "$ADOPTION_ABORT_ENV" --skip-doctor
+      expect_fail "adoption-abort-${adoption_abort}" env LUCAIRN_TEST_TRANSACTION_HOOK=adoption-after-profile:signal "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --adopt-runtime-profile --output "$ADOPTION_ABORT_ENV" --skip-doctor
       ;;
     fail-after-env)
-      expect_fail "adoption-abort-${adoption_abort}" env LUCAIRN_TEST_FAIL_ADOPTION_AFTER_ENV_PUBLISH=1 "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --adopt-runtime-profile --output "$ADOPTION_ABORT_ENV" --skip-doctor
+      expect_fail "adoption-abort-${adoption_abort}" env LUCAIRN_TEST_FAIL_ADOPTION_AFTER_ENV_PUBLISH=1 "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --adopt-runtime-profile --output "$ADOPTION_ABORT_ENV" --skip-doctor
       ;;
   esac
   cmp -s "$ADOPTION_ABORT_ENV.before" "$ADOPTION_ABORT_ENV"
@@ -487,7 +487,7 @@ cp "$ADOPTION_VISIBLE_SIGNAL_ENV" "$ADOPTION_VISIBLE_SIGNAL_ENV.before"
 adoption_visible_signal_mode="$(file_mode "$ADOPTION_VISIBLE_SIGNAL_ENV")"
 expect_fail adoption-env-visible-signal \
   env LUCAIRN_TEST_TRANSACTION_HOOK=adoption-env-visible:signal \
-  "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+  "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --adopt-runtime-profile --output "$ADOPTION_VISIBLE_SIGNAL_ENV" --skip-doctor
 cmp -s "$ADOPTION_VISIBLE_SIGNAL_ENV.before" "$ADOPTION_VISIBLE_SIGNAL_ENV"
 test "$(file_mode "$ADOPTION_VISIBLE_SIGNAL_ENV")" = "$adoption_visible_signal_mode"
@@ -506,7 +506,7 @@ rm -f "$ADOPTION_DOUBLE_SIGNAL_ENV.runtime-profile.yaml"
 cp "$ADOPTION_DOUBLE_SIGNAL_ENV" "$ADOPTION_DOUBLE_SIGNAL_ENV.before"
 adoption_double_signal_mode="$(file_mode "$ADOPTION_DOUBLE_SIGNAL_ENV")"
 if env LUCAIRN_TEST_TRANSACTION_HOOK=adoption-env-visible:signal LUCAIRN_TEST_CLEANUP_HOOK=second-term \
-  "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+  "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --adopt-runtime-profile --output "$ADOPTION_DOUBLE_SIGNAL_ENV" --skip-doctor \
   >"$TMPDIR/adoption-double-signal.out" 2>&1; then
   echo "expected double-signal adoption cleanup failure" >&2
@@ -532,7 +532,7 @@ copy_pre_s1_env "$LOCAL_ENV" "$DUP_SELECTOR_ENV"
 rm -f "$DUP_SELECTOR_ENV.runtime-profile.yaml"
 printf 'MODEL_RUNTIME_PROFILE=wrong-runtime\nMODEL_RUNTIME_PROFILE=llama-cpp\n' >> "$DUP_SELECTOR_ENV"
 dup_selector_before="$(cksum "$DUP_SELECTOR_ENV")"
-expect_fail adopt-duplicate-selector "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --adopt-runtime-profile --output "$DUP_SELECTOR_ENV" --skip-doctor
+expect_fail adopt-duplicate-selector "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --adopt-runtime-profile --output "$DUP_SELECTOR_ENV" --skip-doctor
 test "$(cksum "$DUP_SELECTOR_ENV")" = "$dup_selector_before"
 test ! -e "$DUP_SELECTOR_ENV.runtime-profile.yaml"
 
@@ -541,7 +541,7 @@ copy_pre_s1_env "$SPLIT_ENV" "$DUP_ENDPOINT_ENV"
 rm -f "$DUP_ENDPOINT_ENV.runtime-profile.yaml"
 printf 'SANDBOX_B_REMOTE_ENDPOINT=https://wrong.example.test\nSANDBOX_B_REMOTE_ENDPOINT=https://inference.example.test\n' >> "$DUP_ENDPOINT_ENV"
 dup_endpoint_before="$(cksum "$DUP_ENDPOINT_ENV")"
-expect_fail adopt-duplicate-endpoint "$ROOT/bin/lucairn-init" --dev --runtime-mode split-remote --remote-endpoint https://inference.example.test --remote-credentials "$REMOTE_CREDENTIALS" --adopt-runtime-profile --output "$DUP_ENDPOINT_ENV" --skip-doctor
+expect_fail adopt-duplicate-endpoint "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode split-remote --remote-endpoint https://inference.example.test --remote-credentials "$REMOTE_CREDENTIALS" --adopt-runtime-profile --output "$DUP_ENDPOINT_ENV" --skip-doctor
 test "$(cksum "$DUP_ENDPOINT_ENV")" = "$dup_endpoint_before"
 test ! -e "$DUP_ENDPOINT_ENV.runtime-profile.yaml"
 
@@ -555,9 +555,9 @@ printf 'LCR_SANDBOX_B_SIGNING_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 SPLIT_ADOPT_BEFORE="$(cksum "$SPLIT_ADOPT_ENV")"
 MISMATCH_REMOTE_CREDENTIALS="$TMPDIR/mismatched-remote-credentials.env"
 printf 'sandbox_b_api_key=lcr-issued-different-api-key\nsandbox_b_public_key=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n' > "$MISMATCH_REMOTE_CREDENTIALS"
-expect_fail adopt-split-credentials-mismatch "$ROOT/bin/lucairn-init" --dev --runtime-mode split-remote --remote-endpoint https://inference.example.test --remote-credentials "$MISMATCH_REMOTE_CREDENTIALS" --adopt-runtime-profile --output "$SPLIT_ADOPT_ENV" --skip-doctor
+expect_fail adopt-split-credentials-mismatch "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode split-remote --remote-endpoint https://inference.example.test --remote-credentials "$MISMATCH_REMOTE_CREDENTIALS" --adopt-runtime-profile --output "$SPLIT_ADOPT_ENV" --skip-doctor
 test "$(cksum "$SPLIT_ADOPT_ENV")" = "$SPLIT_ADOPT_BEFORE"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode split-remote --remote-endpoint https://inference.example.test --remote-credentials "$REMOTE_CREDENTIALS" --adopt-runtime-profile --output "$SPLIT_ADOPT_ENV" --skip-doctor >/dev/null
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode split-remote --remote-endpoint https://inference.example.test --remote-credentials "$REMOTE_CREDENTIALS" --adopt-runtime-profile --output "$SPLIT_ADOPT_ENV" --skip-doctor >/dev/null
 grep -qx 'LUCAIRN_RUNTIME_PROFILE_REQUIRED=1' "$SPLIT_ADOPT_ENV"
 
 DUP_ALLOWLIST_ENV="$TMPDIR/adopt-duplicate-allowlist.env"
@@ -565,7 +565,7 @@ copy_pre_s1_env "$BYOK_ENV" "$DUP_ALLOWLIST_ENV"
 rm -f "$DUP_ALLOWLIST_ENV.runtime-profile.yaml"
 printf 'LUCAIRN_LLM_EGRESS_ALLOWLIST=wrong.example.test\nLUCAIRN_LLM_EGRESS_ALLOWLIST=api.anthropic.com,api.openai.com\n' >> "$DUP_ALLOWLIST_ENV"
 dup_allowlist_before="$(cksum "$DUP_ALLOWLIST_ENV")"
-expect_fail adopt-duplicate-allowlist "$ROOT/bin/lucairn-init" --dev --runtime-mode managed-byok --adopt-runtime-profile --output "$DUP_ALLOWLIST_ENV" --skip-doctor
+expect_fail adopt-duplicate-allowlist "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode managed-byok --adopt-runtime-profile --output "$DUP_ALLOWLIST_ENV" --skip-doctor
 test "$(cksum "$DUP_ALLOWLIST_ENV")" = "$dup_allowlist_before"
 test ! -e "$DUP_ALLOWLIST_ENV.runtime-profile.yaml"
 
@@ -574,7 +574,7 @@ copy_pre_s1_env "$LOCAL_ENV" "$IMAGE_MISMATCH_ENV"
 rm -f "$IMAGE_MISMATCH_ENV.runtime-profile.yaml"
 sed 's/^LUCAIRN_IMAGE_TAG=.*/LUCAIRN_IMAGE_TAG=other-tag/' "$IMAGE_MISMATCH_ENV" > "$IMAGE_MISMATCH_ENV.tmp" && mv "$IMAGE_MISMATCH_ENV.tmp" "$IMAGE_MISMATCH_ENV"
 image_mismatch_before="$(cksum "$IMAGE_MISMATCH_ENV")"
-expect_fail adopt-image-mismatch "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --adopt-runtime-profile --output "$IMAGE_MISMATCH_ENV" --skip-doctor
+expect_fail adopt-image-mismatch "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --adopt-runtime-profile --output "$IMAGE_MISMATCH_ENV" --skip-doctor
 test "$(cksum "$IMAGE_MISMATCH_ENV")" = "$image_mismatch_before"
 test ! -e "$IMAGE_MISMATCH_ENV.runtime-profile.yaml"
 
@@ -583,7 +583,7 @@ copy_pre_s1_env "$LOCAL_ENV" "$DEPLOYMENT_MISMATCH_ENV"
 rm -f "$DEPLOYMENT_MISMATCH_ENV.runtime-profile.yaml"
 sed 's/^DSA_ENV=.*/DSA_ENV=production/' "$DEPLOYMENT_MISMATCH_ENV" > "$DEPLOYMENT_MISMATCH_ENV.tmp" && mv "$DEPLOYMENT_MISMATCH_ENV.tmp" "$DEPLOYMENT_MISMATCH_ENV"
 deployment_mismatch_before="$(cksum "$DEPLOYMENT_MISMATCH_ENV")"
-expect_fail adopt-deployment-mismatch "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --adopt-runtime-profile --output "$DEPLOYMENT_MISMATCH_ENV" --skip-doctor
+expect_fail adopt-deployment-mismatch "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --adopt-runtime-profile --output "$DEPLOYMENT_MISMATCH_ENV" --skip-doctor
 test "$(cksum "$DEPLOYMENT_MISMATCH_ENV")" = "$deployment_mismatch_before"
 test ! -e "$DEPLOYMENT_MISMATCH_ENV.runtime-profile.yaml"
 
@@ -594,10 +594,10 @@ copy_pre_s1_env "$BYOK_ENV" "$CUSTOM_BYOK_ENV"
 rm -f "$CUSTOM_BYOK_ENV.runtime-profile.yaml"
 sed 's/^LUCAIRN_LLM_EGRESS_ALLOWLIST=.*/LUCAIRN_LLM_EGRESS_ALLOWLIST=api.customer.example/' "$CUSTOM_BYOK_ENV" > "$CUSTOM_BYOK_ENV.tmp" && mv "$CUSTOM_BYOK_ENV.tmp" "$CUSTOM_BYOK_ENV"
 custom_byok_before="$(cksum "$CUSTOM_BYOK_ENV")"
-expect_fail adopt-custom-byok-default "$ROOT/bin/lucairn-init" --dev --runtime-mode managed-byok --adopt-runtime-profile --output "$CUSTOM_BYOK_ENV" --skip-doctor
+expect_fail adopt-custom-byok-default "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode managed-byok --adopt-runtime-profile --output "$CUSTOM_BYOK_ENV" --skip-doctor
 test "$(cksum "$CUSTOM_BYOK_ENV")" = "$custom_byok_before"
 test ! -e "$CUSTOM_BYOK_ENV.runtime-profile.yaml"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode managed-byok --byok-allowlist api.customer.example --adopt-runtime-profile --output "$CUSTOM_BYOK_ENV" --skip-doctor >/dev/null
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode managed-byok --byok-allowlist api.customer.example --adopt-runtime-profile --output "$CUSTOM_BYOK_ENV" --skip-doctor >/dev/null
 grep -qx 'LUCAIRN_RUNTIME_PROFILE_REQUIRED=1' "$CUSTOM_BYOK_ENV"
 sed '/^LUCAIRN_RUNTIME_PROFILE_REQUIRED=1$/d' "$CUSTOM_BYOK_ENV" > "$TMPDIR/custom-byok-without-marker.env"
 custom_byok_original="$TMPDIR/custom-byok-before.env"
@@ -614,15 +614,15 @@ for adopted_mode in split-remote managed-byok local-runtime; do
   case "$adopted_mode" in
     split-remote)
       copy_pre_s1_env "$SPLIT_ENV" "$ADOPT_DELETE_ENV"
-      "$ROOT/bin/lucairn-init" --dev --runtime-mode split-remote --remote-endpoint https://inference.example.test --remote-credentials "$REMOTE_CREDENTIALS" --adopt-runtime-profile --output "$ADOPT_DELETE_ENV" --skip-doctor >/dev/null
+      "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode split-remote --remote-endpoint https://inference.example.test --remote-credentials "$REMOTE_CREDENTIALS" --adopt-runtime-profile --output "$ADOPT_DELETE_ENV" --skip-doctor >/dev/null
       ;;
     managed-byok)
       copy_pre_s1_env "$BYOK_ENV" "$ADOPT_DELETE_ENV"
-      "$ROOT/bin/lucairn-init" --dev --runtime-mode managed-byok --adopt-runtime-profile --output "$ADOPT_DELETE_ENV" --skip-doctor >/dev/null
+      "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode managed-byok --adopt-runtime-profile --output "$ADOPT_DELETE_ENV" --skip-doctor >/dev/null
       ;;
     local-runtime)
       copy_pre_s1_env "$LOCAL_ENV" "$ADOPT_DELETE_ENV"
-      "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --adopt-runtime-profile --output "$ADOPT_DELETE_ENV" --skip-doctor >/dev/null
+      "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --adopt-runtime-profile --output "$ADOPT_DELETE_ENV" --skip-doctor >/dev/null
       ;;
   esac
   grep -qx 'LUCAIRN_RUNTIME_PROFILE_REQUIRED=1' "$ADOPT_DELETE_ENV"
@@ -636,7 +636,7 @@ done
 sed 's/^byok_egress_allowlist: .*/byok_egress_allowlist: api.drift.example/' "$CUSTOM_BYOK_ENV.runtime-profile.yaml" > "$CUSTOM_BYOK_ENV.runtime-profile.yaml.tmp" && mv "$CUSTOM_BYOK_ENV.runtime-profile.yaml.tmp" "$CUSTOM_BYOK_ENV.runtime-profile.yaml"
 custom_byok_env_drift_before="$(cksum "$CUSTOM_BYOK_ENV")"
 custom_byok_profile_drift_before="$(cksum "$CUSTOM_BYOK_ENV.runtime-profile.yaml")"
-expect_fail idempotent-custom-byok-profile-drift "$ROOT/bin/lucairn-init" --dev --runtime-mode managed-byok --byok-allowlist api.customer.example --output "$CUSTOM_BYOK_ENV" --skip-doctor
+expect_fail idempotent-custom-byok-profile-drift "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode managed-byok --byok-allowlist api.customer.example --output "$CUSTOM_BYOK_ENV" --skip-doctor
 test "$(cksum "$CUSTOM_BYOK_ENV")" = "$custom_byok_env_drift_before"
 test "$(cksum "$CUSTOM_BYOK_ENV.runtime-profile.yaml")" = "$custom_byok_profile_drift_before"
 
@@ -760,7 +760,7 @@ grep -q -- "-f $ROOT/docker-compose.customer.yml -f $ROOT/docker-compose.self-ho
 # name cannot go green without exercising init -> profile -> doctor -> action.
 for runtime_name in llama-cpp vllm tgi ollama onnxruntime triton custom-runtime; do
   MATRIX_ENV="$TMPDIR/runtime-matrix-${runtime_name}.env"
-  "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime "$runtime_name" \
+  "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime "$runtime_name" \
     --output "$MATRIX_ENV" --skip-doctor >/dev/null
   grep -qx "local_runtime: $runtime_name" "$MATRIX_ENV.runtime-profile.yaml"
   "$ROOT/bin/lucairn" doctor --env "$MATRIX_ENV" --compose "$ROOT/docker-compose.customer.yml" --offline --skip-image-check > "$TMPDIR/runtime-matrix-${runtime_name}-doctor.out"
@@ -883,7 +883,7 @@ printf '# later kit repin\n' >> "$REPIN_CANDIDATE"
 SNAPSHOT_SIGNAL_ENV="$TMPDIR/fresh-snapshot-visible-signal.env"
 expect_fail fresh-snapshot-visible-signal \
   env LUCAIRN_TEST_TRANSACTION_HOOK=fresh-snapshot-visible:signal \
-  "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+  "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --output "$SNAPSHOT_SIGNAL_ENV" --skip-doctor
 test ! -e "$SNAPSHOT_SIGNAL_ENV"
 test ! -e "$SNAPSHOT_SIGNAL_ENV.runtime-profile.yaml"
@@ -897,14 +897,14 @@ LOCK_TEST_DIR="$TMPDIR/.lucairn-init.lock"
 LIVE_TOKEN=0123456789abcdef0123456789abcdef0123456789abcdef
 mkdir "$LOCK_TEST_DIR"
 printf 'pid=%s\ntoken=%s\n' "$$" "$LIVE_TOKEN" > "$LOCK_TEST_DIR/owner"
-expect_fail live-init-lock "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$LOCK_TEST_ENV" --skip-doctor
+expect_fail live-init-lock "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$LOCK_TEST_ENV" --skip-doctor
 test -d "$LOCK_TEST_DIR"
 grep -qx "pid=$$" "$LOCK_TEST_DIR/owner"
 
 # The removed test hook cannot override the real live-owner check.
 expect_fail exported-liveness-hook-live-init-lock \
   env LUCAIRN_TEST_LOCK_LIVENESS_ERRNO=ESRCH \
-  "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$LOCK_TEST_ENV" --skip-doctor
+  "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$LOCK_TEST_ENV" --skip-doctor
 test -d "$LOCK_TEST_DIR"
 grep -qx "pid=$$" "$LOCK_TEST_DIR/owner"
 rm -rf "$LOCK_TEST_DIR"
@@ -925,7 +925,7 @@ PY
 )"
 mkdir "$LOCK_TEST_DIR"
 printf 'pid=%s\ntoken=%s\n' "$DEAD_PID" "$LIVE_TOKEN" > "$LOCK_TEST_DIR/owner"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$DEAD_LOCK_ENV" --skip-doctor >/dev/null
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$DEAD_LOCK_ENV" --skip-doctor >/dev/null
 test -f "$DEAD_LOCK_ENV.image-manifest.yaml"
 test ! -d "$LOCK_TEST_DIR"
 
@@ -943,7 +943,7 @@ mkdir "$LOCK_TEST_DIR"
 printf 'pid=1\ntoken=%s\n' "$LIVE_TOKEN" > "$LOCK_TEST_DIR/owner"
 expect_fail unusable-python-init-lock \
   env PATH="$PYTHON_SHIM_DIR:$PATH" \
-  "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$BLOCKED_LOCK_ENV" --skip-doctor
+  "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$BLOCKED_LOCK_ENV" --skip-doctor
 test -d "$LOCK_TEST_DIR"
 grep -qx 'pid=1' "$LOCK_TEST_DIR/owner"
 test ! -e "$BLOCKED_LOCK_ENV"
@@ -953,7 +953,7 @@ rm -rf "$LOCK_TEST_DIR"
 FRESH_CORRUPT_ENV="$TMPDIR/fresh-corrupt-lock.env"
 mkdir "$LOCK_TEST_DIR"
 printf 'corrupt\n' > "$LOCK_TEST_DIR/owner"
-expect_fail fresh-corrupt-lock "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$FRESH_CORRUPT_ENV" --skip-doctor
+expect_fail fresh-corrupt-lock "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$FRESH_CORRUPT_ENV" --skip-doctor
 test -d "$LOCK_TEST_DIR"
 rm -rf "$LOCK_TEST_DIR"
 
@@ -961,16 +961,16 @@ OLD_CORRUPT_ENV="$TMPDIR/old-corrupt-lock.env"
 mkdir "$LOCK_TEST_DIR"
 printf 'corrupt\n' > "$LOCK_TEST_DIR/owner"
 touch -t 200001010000 "$LOCK_TEST_DIR"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$OLD_CORRUPT_ENV" --skip-doctor >/dev/null
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$OLD_CORRUPT_ENV" --skip-doctor >/dev/null
 test -f "$OLD_CORRUPT_ENV"
 test ! -d "$LOCK_TEST_DIR"
 
 printf 'unsafe lock\n' > "$LOCK_TEST_DIR"
-expect_fail non-directory-init-lock "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$TMPDIR/non-directory-lock.env" --skip-doctor
+expect_fail non-directory-init-lock "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$TMPDIR/non-directory-lock.env" --skip-doctor
 test -f "$LOCK_TEST_DIR"
 rm -f "$LOCK_TEST_DIR"
 ln -s "$TMPDIR/nowhere" "$LOCK_TEST_DIR"
-expect_fail symlink-init-lock "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$TMPDIR/symlink-lock.env" --skip-doctor
+expect_fail symlink-init-lock "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$TMPDIR/symlink-lock.env" --skip-doctor
 test -L "$LOCK_TEST_DIR"
 rm -f "$LOCK_TEST_DIR"
 

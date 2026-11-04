@@ -200,7 +200,7 @@ export PATH="$SBIN:$BASE_PATH"
 # ── A generated install (lucairn-init) + the synthetic opt-in material ──────
 INST="$TMP/install"; mkdir -p "$INST"
 ENVF="$INST/customer.env"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$ENVF" --skip-doctor > "$TMP/init.out" 2>&1 \
   || { echo "ServiceNow opt-in tests: FAIL — lucairn-init: $(tail -3 "$TMP/init.out")"; exit 1; }
 BASED="$TMP/base"; mkdir -p "$BASED"; cp -R "$INST/." "$BASED/"   # the generated install, mode OFF

@@ -54,7 +54,9 @@
 #     was written; re-run scripts/write-sanitizer-core-registry-dsn.sh)
 #   8 a fresh customer.env was refused: this install already has a sanitizer
 #     core registry volume, which only opens with the credentials it was
-#     created with (nothing was written; put back the env that created it)
+#     created with (nothing was written; put back the env that created it),
+#     or Docker could not be asked whether it has one (nothing was written;
+#     start Docker, or pass --confirm-no-registry-volume — K-E fix round 2)
 
 set -euo pipefail
 
@@ -270,6 +272,14 @@ Options:
                            scripted pipelines that run doctor separately.
   --dry-run                Print what would be written to stdout. Skips backup + doctor.
                            Secrets ARE printed because the user explicitly asked.
+  --confirm-no-registry-volume
+                           Only when Docker cannot be asked (no daemon here): you
+                           state that the Docker host of this install has no
+                           sanitizer core registry volume from an earlier kit 2.0
+                           run. Without Docker and without this flag, init refuses
+                           (exit 8): new registry credentials cannot open an
+                           existing registry. A volume Docker reports is refused
+                           with or without it.
   --help, -h               Show this usage and exit.
 
 Examples:
@@ -294,7 +304,8 @@ Exit codes:
   5  license validation failed
   6  sanitizer core mTLS material could not be created (customer.env written)
   7  sanitizer core registry DSN file could not be written (customer.env written)
-  8  refused: a sanitizer core registry volume already exists (nothing written)
+  8  refused: a sanitizer core registry volume already exists, or Docker could
+     not be asked and --confirm-no-registry-volume was not given (nothing written)
 USAGE
 }
 
@@ -343,6 +354,7 @@ IMAGE_TAG="$DEFAULT_IMAGE_TAG"
 GATEWAY_BASE_URL_OVERRIDE=""
 SKIP_DOCTOR="false"
 DRY_RUN="false"
+CONFIRM_NO_REGISTRY_VOLUME="false"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -396,6 +408,7 @@ while [ $# -gt 0 ]; do
     --gateway-base-url) GATEWAY_BASE_URL_OVERRIDE="${2:?--gateway-base-url requires a value}"; shift 2 ;;
     --skip-doctor)     SKIP_DOCTOR="true"; shift ;;
     --dry-run)         DRY_RUN="true"; shift ;;
+    --confirm-no-registry-volume) CONFIRM_NO_REGISTRY_VOLUME="true"; shift ;;
     --help|-h)         usage; exit 0 ;;
     --)                shift; break ;;
     *)                 fail "unknown argument: $1 (try --help)" ;;
@@ -587,6 +600,16 @@ set_model_inventory_from_inputs() {
   MODEL_PATH="$MODEL_PATH_INPUT"
 }
 
+# The overlays the runtime profile records after docker-compose.customer.yml
+# for RUNTIME_MODE, one per line (also the project the registry volume check
+# renders before the profile exists).
+runtime_mode_overlays() {
+  case "$RUNTIME_MODE" in
+    managed-byok) printf '%s\n' docker-compose.self-hosted.yml docker-compose.self-hosted-byok.yml ;;
+    local-runtime) printf '%s\n' docker-compose.self-hosted.yml ;;
+  esac
+}
+
 render_runtime_profile() {
   local image_manifest_sha
   image_manifest_sha="$(openssl dgst -sha256 "$KIT_ROOT/image-manifest.yaml" | awk '{print $NF}')"
@@ -602,19 +625,7 @@ image_tag: $IMAGE_TAG
 overlays:
   - docker-compose.customer.yml
 PROFILE
-  case "$RUNTIME_MODE" in
-    managed-byok)
-      cat <<'PROFILE'
-  - docker-compose.self-hosted.yml
-  - docker-compose.self-hosted-byok.yml
-PROFILE
-      ;;
-    local-runtime)
-      cat <<'PROFILE'
-  - docker-compose.self-hosted.yml
-PROFILE
-      ;;
-  esac
+  runtime_mode_overlays | sed 's/^/  - /'
   cat <<PROFILE
 image_manifest:
   path: $(runtime_profile_image_manifest_path_contract)
@@ -902,16 +913,27 @@ fi
 # install already has (an earlier 2.0 run, e.g. before a rollback to 1.9.7)
 # only opens with the ones it was created with — new ones fail the migration's
 # login and leave every sealed row unreadable — so init refuses to generate
-# them while that volume exists and names the saved env to put back. When
-# Docker cannot be asked (no daemon on this machine), init goes on with a note.
+# them while that volume exists and names the saved env to put back. The
+# volume is the one Compose names for the project init sets up (the base file
+# and the overlays it records for this runtime mode). Fix round 2 (review P1
+# on PR #162): when Docker cannot be asked (no daemon on this machine), init
+# REFUSES as well — it cannot know there is no volume — unless the operator
+# states with --confirm-no-registry-volume that there is none.
 if [ "$ADOPT_RUNTIME_PROFILE" != "true" ] && [ "$DRY_RUN" != "true" ]; then
   _registry_check_rc=0
   _registry_check_msg="$(bash "$KIT_ROOT/scripts/sanitizer-core-registry-credentials.sh" check \
-    --env-file "$OUTPUT" --project-dir "$KIT_ROOT" 2>&1 >/dev/null)" || _registry_check_rc=$?
+    --env-file "$OUTPUT" --project-dir "$KIT_ROOT" --overlays "$(runtime_mode_overlays | tr '\n' ' ')" 2>&1 >/dev/null)" \
+    || _registry_check_rc=$?
   case "$_registry_check_rc" in
     0) : ;;
     3) fail "${_registry_check_msg#\[sanitizer-core-registry-credentials\] ERROR: } (no customer state was changed)" 8 ;;
-    4) echo "note: could not check for an existing sanitizer core registry volume (${_registry_check_msg}); if this directory ran kit 2.0 before, put back the customer.env that created it instead of a new one (INSTALL.md § \"Rollback to 1.9.7\")" >&2 ;;
+    4)
+      if [ "$CONFIRM_NO_REGISTRY_VOLUME" = "true" ]; then
+        echo "note: could not check for an existing sanitizer core registry volume (${_registry_check_msg}); generating new registry credentials because --confirm-no-registry-volume states this install has none" >&2
+      else
+        fail "could not check for an existing sanitizer core registry volume (${_registry_check_msg}), so no registry key or database password was generated: new ones cannot open a registry an earlier kit 2.0 run left behind (no customer state was changed). Start Docker on this host and re-run; or, only if you know the Docker host of this install has no sanitizer core registry volume, re-run with --confirm-no-registry-volume (INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\")" 8
+      fi
+      ;;
     *) fail "could not check for an existing sanitizer core registry volume (scripts/sanitizer-core-registry-credentials.sh exit $_registry_check_rc; no customer state was changed)" 8 ;;
   esac
 fi

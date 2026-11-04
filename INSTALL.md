@@ -2521,8 +2521,10 @@ by it.
    `add` appends `DSA_SANITIZER_CORE_REGISTRY_KEY` (it seals every registry
    row) and `POSTGRES_SANITIZER_CORE_PASSWORD` (the registry database's
    password). It generates them only while this install has no registry volume
-   (`<directory name>_pg-sanitizer-core-data`); it asks the Docker daemon, so
-   Docker must be running. **Coming back to 2.0 after a rollback** (§ "Rollback
+   (the volume Docker Compose names for this install's project, normally
+   `<directory name>_pg-sanitizer-core-data`; a custom `name:` in the compose
+   files counts, and a name it cannot resolve is refused); it asks the Docker
+   daemon, so Docker must be running. **Coming back to 2.0 after a rollback** (§ "Rollback
    to 1.9.7"), the volume is still there and only opens with the two values it
    was created with: `add` then refuses, names the file the rollback saved them
    in, and you restore them instead —
@@ -2607,7 +2609,12 @@ data itself was damaged).
      `0600`, outside the kit release and every bundle): the 2.0
      `customer.env`, its two sidecar files, the registry DSN file and
      `sanitizer-core-registry.env` (the two values), and prints that last
-     path. Keep the folder as long as you keep the volume.
+     path. It also writes a `.gitignore` holding `*` into that folder and into
+     `backups/`: the 1.9.7 kit's own `.gitignore` has no `backups/` rule, and
+     these untracked ignore files keep the copies (the DSN file holds the
+     database password) out of `git add` after the checkout below. Keep the
+     folder as long as you keep the volume. An extracted customer bundle has
+     the same script: `scripts/sanitizer-core-registry-credentials.sh save --env-file install/customer.env`.
   3. Put the 1.9.7 kit files back (`git checkout v1.9.7`, or the 1.9.7
      tarball) in the same directory.
   4. Restore the three state files from the backup:
@@ -2676,7 +2683,13 @@ LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=
 
 The registry volume only opens with the key and password it was created with.
 `bin/lucairn-init` therefore refuses a fresh `customer.env` (exit 8) while
-this install already has a registry volume, and
+this install already has a registry volume. It asks the Docker daemon, so run
+it with Docker running: without a daemon it refuses too, because it cannot
+know there is no volume. Generating `customer.env` on a machine without Docker
+is possible only with `--confirm-no-registry-volume`, which states that the
+Docker host of this install has no sanitizer core registry volume from an
+earlier kit 2.0 run (a volume Docker does report is refused with or without
+it). And
 `scripts/sanitizer-core-registry-credentials.sh add` generates the pair only
 when there is none (§ "Rollback to 1.9.7" saves them for a return to 2.0).
 

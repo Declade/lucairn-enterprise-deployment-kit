@@ -37,6 +37,13 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" != "0" ] && [ -z "${LUCAIRN_CONTA
   export LUCAIRN_CONTAINER_UID
 fi
 
+# Kit 2.0 K-E fix round 2: bin/lucairn-init refuses to mint the sanitizer
+# core's registry credentials when Docker cannot be asked whether the install
+# already has a registry volume. Test hosts have no such volume and the Mac
+# runner has no Docker daemon, so every test that runs bin/lucairn-init passes
+# --confirm-no-registry-volume; tests/test_registry_credentials_rollback.sh
+# tests the check itself (no daemon, a volume, a custom volume name).
+
 # ---------------------------------------------------------------------------
 # T-10 (security STOP-SHIP, 2026-08-03): chart-managed passwords have NO
 # working default any more.

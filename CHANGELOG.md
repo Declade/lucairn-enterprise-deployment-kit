@@ -249,7 +249,14 @@ stays `0.8.2`.
   `… add` (upgrade step 4) generates the pair only while the install has no
   registry volume, refuses otherwise and names the saved file, and restores it
   with `--from`. `bin/lucairn-init` refuses a fresh `customer.env` (exit 8)
-  while a registry volume exists.
+  while a registry volume exists, and also when Docker cannot be asked
+  (start Docker, or pass `--confirm-no-registry-volume` to state there is
+  none; a volume Docker reports is refused either way). The volume is the one
+  Docker Compose names for the install's rendered project (a custom `name:`
+  included); a name that cannot be resolved is refused, never guessed. `save`
+  writes an ignore-all `.gitignore` into the saved folder and `backups/`, so
+  the copies stay out of `git add` after `git checkout v1.9.7`. A 2.0
+  customer bundle carries the helper (`bundle verify` requires it).
 
 ### Fixed — upgrade path, docs and tests (K-E)
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Kit 2.0 K-E fix round 1 (review P1 on PR #162; PRD
-# prd-2026-11-02-kit-2-0-new-core.md row 4): upgrade -> rollback -> re-upgrade
+# prd-2026-11-02-kit-2-0-new-core.md row 4) and fix round 2 (init fails closed
+# without a daemon; the volume name is the one the rendered project gives; the
+# saved folder stays git-ignored after a checkout of 1.9.7): upgrade -> rollback -> re-upgrade
 # must reuse the sanitizer core's registry credentials. The registry volume
 # survives a rollback and only opens with the key and database password it was
 # created with; the 1.9.7 customer.env a rollback restores has neither, and the
@@ -38,9 +40,11 @@ export LUCAIRN_TEST_REAL_DOCKER STUB_DAEMON STUB_VOLUMES
 mkdir "$TMPDIR/bin"
 cat > "$TMPDIR/bin/docker" <<'STUB'
 #!/bin/bash
-# Compose renders (client side) go to the real CLI; the daemon is a stub.
-case " $* " in *lucairn-env-probe.*) exec "$LUCAIRN_TEST_REAL_DOCKER" "$@" ;; esac
-if [ "${1:-}" = compose ] && [ "${2:-}" = version ]; then exec "$LUCAIRN_TEST_REAL_DOCKER" "$@"; fi
+# Compose renders (client side: `version` and `config`) go to the real CLI;
+# the daemon is a stub. Any other Compose command would need a daemon.
+if [ "${1:-}" = compose ]; then
+  case " $* " in *" config "*|*" version"*) exec "$LUCAIRN_TEST_REAL_DOCKER" "$@" ;; esac
+fi
 if [ "${1:-}" = volume ] && [ "${2:-}" = ls ]; then
   [ "$(cat "$STUB_DAEMON")" = up ] || { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
   cat "$STUB_VOLUMES"
@@ -99,6 +103,19 @@ check "the 2.0 customer.env is saved byte for byte" 'cmp -s "$ENV" "$SAVED_DIR/c
 check "the registry DSN file is saved byte for byte" 'cmp -s "$DSN" "$SAVED_DIR/registry-dsn"'
 check "both sidecar files are saved" '[ -f "$SAVED_DIR/customer.env.runtime-profile.yaml" ] && [ -f "$SAVED_DIR/customer.env.image-manifest.yaml" ]'
 check "the saved folder is git-ignored (backups/)" 'grep -qx "backups/" "$KIT/.gitignore"'
+check "save writes an ignore-all .gitignore into the saved folder and into backups/" \
+  'grep -qx "[*]" "$SAVED_DIR/.gitignore" && grep -qx "[*]" "$KIT/backups/.gitignore"'
+# Rollback step 3 puts the 1.9.7 kit files back; that tree's .gitignore has no
+# backups/ rule. The untracked ignore files stay and keep every copy (the DSN
+# file holds the database password) out of `git add`.
+cp -p "$KIT/.gitignore" "$TMPDIR/gitignore.2-0"
+grep -vx 'backups/' "$TMPDIR/gitignore.2-0" > "$KIT/.gitignore"
+GIT_STATUS="$(cd "$KIT" && GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git init -q . \
+  && GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git status --porcelain --untracked-files=all --ignored=no 2>&1)"
+check "after a checkout without the backups/ rule, git lists no saved file (git add cannot pick one up)" \
+  '! printf "%s\n" "$GIT_STATUS" | grep -q "backups/" && printf "%s\n" "$GIT_STATUS" | grep -q "docker-compose.customer.yml"'
+rm -rf "$KIT/.git"
+cp -p "$TMPDIR/gitignore.2-0" "$KIT/.gitignore"
 
 echo "4. rollback steps 3-4: the 1.9.7 customer.env (no registry credentials) comes back"
 drop_pair
@@ -136,7 +153,7 @@ check "init names the folder holding the saved 2.0 customer.env" 'grep -Fq "$SAV
 check "init wrote nothing" '[ ! -e "$ENV" ] && [ ! -e "$ENV.runtime-profile.yaml" ] && [ ! -e "$ENV.image-manifest.yaml" ]'
 mv "$TMPDIR/aside"/customer.env* "$KIT/"
 
-echo "9. no Docker daemon: add generates nothing; init goes on with a note"
+echo "9. no Docker daemon: add and init generate nothing (fail closed)"
 echo down > "$STUB_DAEMON"
 drop_pair
 cp -p "$ENV" "$TMPDIR/env.before"
@@ -146,9 +163,21 @@ check "the refusal says why (daemon not reachable)" 'grep -Fq "the Docker daemon
 run check-nodaemon bash "$CRED" check --env-file "$ENV"
 check "check exits 4 when it cannot tell (rc $RC)" '[ "$RC" -eq 4 ]'
 OTHER="$KIT/other.env"
+other_absent() { [ ! -e "$OTHER" ] && [ ! -e "$OTHER.runtime-profile.yaml" ] && [ ! -e "$OTHER.image-manifest.yaml" ] && [ ! -e "$KIT/.secrets/sanitizer-core/other.env.registry-dsn" ]; }
 run init-nodaemon "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor
-check "init without a daemon writes the env (rc $RC) with a note" '[ "$RC" -eq 0 ] && grep -Fq "could not check for an existing sanitizer core registry volume" "$TMPDIR/init-nodaemon.err"'
+check "init without a daemon REFUSES to mint registry credentials (rc $RC, want 8)" '[ "$RC" -eq 8 ]'
+check "init without a daemon wrote nothing" 'other_absent'
+check "the refusal says why and names both ways out (start Docker, or --confirm-no-registry-volume)" \
+  'grep -Fq "the Docker daemon is not reachable" "$TMPDIR/init-nodaemon.err" && grep -Fq "Start Docker" "$TMPDIR/init-nodaemon.err" && grep -Fq -- "--confirm-no-registry-volume" "$TMPDIR/init-nodaemon.err"'
+run init-confirmed "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
+check "init without a daemon but with --confirm-no-registry-volume writes the env (rc $RC) with a note" \
+  '[ "$RC" -eq 0 ] && [ -f "$OTHER" ] && grep -Fq "could not check for an existing sanitizer core registry volume" "$TMPDIR/init-confirmed.err" && grep -Fq -- "--confirm-no-registry-volume states" "$TMPDIR/init-confirmed.err"'
 rm -f "$OTHER" "$OTHER.runtime-profile.yaml" "$OTHER.image-manifest.yaml" "$KIT/.secrets/sanitizer-core/other.env.registry-dsn"
+echo up > "$STUB_DAEMON"
+run init-confirmed-vol "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
+check "a volume the daemon reports is refused even with --confirm-no-registry-volume (rc $RC, want 8)" \
+  '[ "$RC" -eq 8 ] && grep -Fq "$VOL" "$TMPDIR/init-confirmed-vol.err" && other_absent'
+check "init --help documents --confirm-no-registry-volume" '"$KIT/bin/lucairn-init" --help | grep -Fq -- "--confirm-no-registry-volume"'
 
 echo "10. no registry volume: add generates a new pair"
 echo up > "$STUB_DAEMON"
@@ -178,6 +207,38 @@ check "a saved file missing the password is refused (rc $RC)" '[ "$RC" -eq 2 ] &
 printf 'DSA_SANITIZER_CORE_REGISTRY_KEY=%s\n' "$KEYVAL" >> "$ENV"
 run add-one bash "$CRED" add --env-file "$ENV"
 check "an env holding only one of the two is refused (rc $RC)" '[ "$RC" -eq 2 ]'
+
+echo "11b. the volume name comes from the rendered project (a custom name:)"
+drop_pair
+CUSTOM="lucairn-registry-custom"
+cp -p "$KIT/docker-compose.customer.yml" "$TMPDIR/compose.orig"
+awk -v n="$CUSTOM" '{ print } /^  pg-sanitizer-core-data:$/ { print "    name: " n }' "$TMPDIR/compose.orig" > "$KIT/docker-compose.customer.yml"
+check "fixture: the registry volume has a custom name" 'grep -Fqx "    name: $CUSTOM" "$KIT/docker-compose.customer.yml"'
+printf '%s\n' "$VOL" > "$STUB_VOLUMES"
+run check-default-gone bash "$CRED" check --env-file "$ENV"
+check "a volume of the DEFAULT name no longer counts once the project names another (rc $RC, want 0)" '[ "$RC" -eq 0 ]'
+printf 'other_pg-sanitizer-core-data\n%s\n' "$CUSTOM" > "$STUB_VOLUMES"
+run check-custom bash "$CRED" check --env-file "$ENV"
+check "check finds the custom-named registry volume (rc $RC, want 3)" '[ "$RC" -eq 3 ] && grep -Fq "($CUSTOM)" "$TMPDIR/check-custom.err" && grep -Fq "docker volume rm $CUSTOM" "$TMPDIR/check-custom.err"'
+cp -p "$ENV" "$TMPDIR/env.before"
+run add-custom bash "$CRED" add --env-file "$ENV"
+check "add refuses new credentials against the custom-named volume (rc $RC, want 3)" '[ "$RC" -eq 3 ] && cmp -s "$TMPDIR/env.before" "$ENV"'
+mv "$ENV" "$ENV.runtime-profile.yaml" "$ENV.image-manifest.yaml" "$TMPDIR/aside/"
+run init-custom "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$ENV" --skip-doctor --confirm-no-registry-volume
+check "init refuses a fresh env against the custom-named volume (rc $RC, want 8)" '[ "$RC" -eq 8 ] && grep -Fq "$CUSTOM" "$TMPDIR/init-custom.err" && [ ! -e "$ENV" ]'
+mv "$TMPDIR/aside"/customer.env* "$KIT/"
+# A name Compose cannot resolve for this env (a ${...} it does not hold, and the
+# env lacks the registry secrets, so only the uninterpolated project renders).
+awk '{ print } /^  pg-sanitizer-core-data:$/ { print "    name: \"${LUCAIRN_TEST_REGISTRY_VOLUME}\"" }' "$TMPDIR/compose.orig" > "$KIT/docker-compose.customer.yml"
+printf '\n' > "$STUB_VOLUMES"
+run check-unresolved bash "$CRED" check --env-file "$ENV"
+check "a volume name that cannot be resolved is 'cannot tell' (rc $RC, want 4), never the default" '[ "$RC" -eq 4 ] && grep -Fq "not resolved" "$TMPDIR/check-unresolved.err"'
+run add-unresolved bash "$CRED" add --env-file "$ENV"
+check "add generates nothing when the name cannot be resolved (rc $RC, want 4)" '[ "$RC" -eq 4 ] && cmp -s "$TMPDIR/env.before" "$ENV"'
+printf 'services: [\n' > "$KIT/docker-compose.customer.yml"
+run check-norender bash "$CRED" check --env-file "$ENV"
+check "a project Compose cannot render is 'cannot tell' (rc $RC, want 4)" '[ "$RC" -eq 4 ]'
+cp -p "$TMPDIR/compose.orig" "$KIT/docker-compose.customer.yml"
 
 echo "12. the guide drives it"
 ROLLBACK="$(awk '/^### Rollback to 1\.9\.7/{f=1;next} f&&/^## /{exit} f' "$DOCS_ROOT/INSTALL.md")"

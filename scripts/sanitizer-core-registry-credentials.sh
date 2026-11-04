@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # sanitizer-core-registry-credentials.sh — keep the sanitizer core's registry
 # credentials across a rollback (kit 2.0, PRD prd-2026-11-02-kit-2-0-new-core.md
-# row 4; K-E fix round 1, review P1 on PR #162).
+# row 4; K-E fix round 1, review P1 on PR #162; fix round 2).
 #
-# The registry volume (<Compose project>_pg-sanitizer-core-data) only works
-# with the two customer.env secrets it was created with:
+# The registry volume (by default <Compose project>_pg-sanitizer-core-data)
+# only works with the two customer.env secrets it was created with:
 #   POSTGRES_SANITIZER_CORE_PASSWORD  Postgres sets the role's password when the
 #                                     volume is first created; another one fails
 #                                     the migration's (and the core's) login.
@@ -18,14 +18,20 @@
 #   scripts/sanitizer-core-registry-credentials.sh add   --env-file customer.env [--from SAVED]
 #   scripts/sanitizer-core-registry-credentials.sh check --env-file customer.env
 #   (each also takes --project-dir DIR: the Compose project directory; default
-#   the kit root, or install/ of an extracted customer bundle)
+#   the kit root, or install/ of an extracted customer bundle. add and check
+#   also take --overlays "FILE ...": the install's compose overlays, kit file
+#   names in that directory; default the ones the runtime profile beside the
+#   env file records — bin/lucairn-init passes the ones it will record)
 #
 #   save   Rollback, BEFORE the 1.9.7 kit files go back: copies the 2.0
 #          customer.env, its two sidecar files and the registry DSN file into
 #          DIR (default backups/sanitizer-core-<UTC time>/ beside customer.env;
 #          mode 0700, every file 0600), and writes DIR/sanitizer-core-registry.env
-#          with the two lines exactly as customer.env holds them. Prints that
-#          file's path on stdout.
+#          with the two lines exactly as customer.env holds them, plus
+#          DIR/.gitignore and (default DIR) backups/.gitignore holding `*`:
+#          untracked ignore files a `git checkout v1.9.7` keeps, so the copies
+#          stay out of `git add` after the kit's own backups/ rule is gone.
+#          Prints the saved credentials file's path on stdout.
 #   add    Upgrade step 4: appends the two lines to customer.env. Without
 #          --from it generates new values ONLY when this install has no registry
 #          volume; when it has one it refuses and names the saved file to
@@ -33,14 +39,19 @@
 #          holding exactly the two lines). Nothing changes when customer.env
 #          already holds both (with --from: the same two).
 #   check  rc 0 no registry volume · 3 one exists (stderr says what to restore)
-#          · 4 cannot tell (Docker Compose or the Docker daemon not reachable).
+#          · 4 cannot tell (Docker Compose or the Docker daemon not reachable,
+#          or the project's registry volume name cannot be resolved).
 #          bin/lucairn-init runs it before it generates a new customer.env.
 #
-# The volume name is Compose's own: a throw-away project without `name:`,
-# rendered with this project directory and env file (client side), gives the
-# project name exactly as bin/lucairn up gets it (the directory name, or
-# COMPOSE_PROJECT_NAME from the env file or this shell). The daemon is asked
-# only for its volume list. No secret value is ever printed.
+# The volume name is Compose's own (fix round 2, review P2 on PR #162): the
+# install's project — docker-compose.customer.yml plus its overlays, as
+# bin/lucairn up starts it, and once more with the ServiceNow mode overlay
+# when that file is there — rendered client side through bin/compose-env.sh
+# cev_volume gives the name of the volume postgres-sanitizer-core keeps its
+# data in (project name, COMPOSE_PROJECT_NAME, a custom or external `name:`
+# included). A volume of ANY of those names counts. A name that cannot be
+# resolved is "cannot tell" (exit 4), never a guess. The daemon is asked only
+# for its volume list. No secret value is ever printed.
 #
 # Exit codes: 0 ok · 1 a copy or write failed · 2 usage or a refused input ·
 # 3 a registry volume exists and no saved credentials were given · 4 cannot
@@ -51,7 +62,6 @@ set -euo pipefail
 KIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROG="sanitizer-core-registry-credentials"
 SELF="scripts/sanitizer-core-registry-credentials.sh"
-VOLUME_KEY="pg-sanitizer-core-data"
 SAVED_NAME="sanitizer-core-registry.env"
 KEY_NAME="DSA_SANITIZER_CORE_REGISTRY_KEY"
 PW_NAME="POSTGRES_SANITIZER_CORE_PASSWORD"
@@ -75,11 +85,14 @@ PROJECT_DIR="$KIT_ROOT"
 if [ ! -f "$KIT_ROOT/docker-compose.customer.yml" ] && [ -f "$KIT_ROOT/install/docker-compose.customer.yml" ]; then
   PROJECT_DIR="$KIT_ROOT/install"
 fi
-ENV_FILE="" FROM="" DIR=""
+ENV_FILE="" FROM="" DIR="" OVERLAYS="" OVERLAYS_SET=0
+BASE_COMPOSE="docker-compose.customer.yml"
+SN_OVERLAY="docker-compose.servicenow-control.yml"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --env-file) [ "$#" -ge 2 ] || die 2 "--env-file needs a path"; ENV_FILE="$2"; shift 2 ;;
     --project-dir) [ "$#" -ge 2 ] || die 2 "--project-dir needs a path"; PROJECT_DIR="$2"; shift 2 ;;
+    --overlays) [ "$CMD" != save ] || die 2 "--overlays belongs to add and check"; [ "$#" -ge 2 ] || die 2 "--overlays needs a list (may be empty)"; OVERLAYS="$2"; OVERLAYS_SET=1; shift 2 ;;
     --from) [ "$CMD" = add ] || die 2 "--from belongs to add"; [ "$#" -ge 2 ] || die 2 "--from needs a path"; FROM="$2"; shift 2 ;;
     --dir) [ "$CMD" = save ] || die 2 "--dir belongs to save"; [ "$#" -ge 2 ] || die 2 "--dir needs a path"; DIR="$2"; shift 2 ;;
     *) die 2 "unknown argument: $1" ;;
@@ -104,28 +117,98 @@ newest_saved() {
   printf '%s' "$newest"
 }
 
-# registry_volume — sets VOL (the volume name Compose gives this install) and
-# returns 0 when it exists, 1 when it does not, 2 when that cannot be told
-# (VOL_WHY says why, value-free).
-registry_volume() {
-  local tmp envf proj="" out
-  VOL="" VOL_WHY=""
-  cev_compose_cmd 2>/dev/null || { VOL_WHY="Docker Compose is not available here"; return 2; }
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/lucairn-env-probe.XXXXXX")" || { VOL_WHY="no private temp directory"; return 2; }
-  chmod 0700 "$tmp"
-  printf '{"services":{"probe":{"image":"lucairn-env-probe"}}}\n' > "$tmp/probe.json"
-  envf="$ENV_FILE"
-  if [ ! -f "$envf" ]; then envf="$tmp/empty.env"; : > "$envf"; fi
-  if "${CEV_CMD[@]}" --project-directory "$PROJECT_DIR" -f "$tmp/probe.json" --env-file "$envf" \
-       config --format json > "$tmp/out.json" 2>/dev/null </dev/null; then
-    proj="$(LC_ALL=C sed -n 's/^  "name": "\([a-z0-9][a-z0-9_-]*\)",\{0,1\}$/\1/p' "$tmp/out.json" | head -1)"
+# install_overlays — sets OVL to the overlay files of this install's project,
+# one per line (--overlays, else the runtime profile beside the env file; none
+# when there is no profile). rc 1 with VOL_WHY when they cannot be read.
+install_overlays() {
+  local profile list o lib="$KIT_ROOT/bin/runtime-profile-lib.sh"
+  OVL=""
+  if [ "$OVERLAYS_SET" -eq 1 ]; then
+    list="$(printf '%s\n' "$OVERLAYS" | tr ' ' '\n')"
+  else
+    profile="$ENV_FILE.runtime-profile.yaml"
+    if [ ! -e "$profile" ] && [ ! -L "$profile" ]; then return 0; fi
+    [ -f "$lib" ] && [ ! -L "$lib" ] || { VOL_WHY="missing $lib (the runtime profile reader)"; return 1; }
+    # shellcheck source=../bin/runtime-profile-lib.sh
+    . "$lib"
+    list="$(runtime_profile_overlays "$profile")" || { VOL_WHY="the runtime profile $profile cannot be read"; return 1; }
   fi
-  rm -rf "$tmp"
-  [ -n "$proj" ] || { VOL_WHY="Docker Compose did not give this install's project name"; return 2; }
-  VOL="${proj}_${VOLUME_KEY}"
+  while IFS= read -r o; do
+    [ -n "$o" ] && [ "$o" != "$BASE_COMPOSE" ] || continue
+    case "$o" in
+      */*|.*|*[!A-Za-z0-9._-]*) VOL_WHY="the overlay name $o is not a kit file name"; return 1 ;;
+    esac
+    [ -f "$PROJECT_DIR/$o" ] && [ ! -L "$PROJECT_DIR/$o" ] || { VOL_WHY="the overlay $o is missing in $PROJECT_DIR"; return 1; }
+    OVL="${OVL:+$OVL
+}$o"
+  done <<EOF
+$list
+EOF
+}
+
+# volume_name <env file> <compose args...> — appends the registry volume name
+# Compose gives that project to VOLS (newline-separated, no duplicates).
+volume_name() {
+  local envf="$1" out name err
+  shift
+  err="$(mktemp "${TMPDIR:-/tmp}/lucairn-vol-err.XXXXXX")" || { VOL_WHY="no private temp file"; return 1; }
+  out="$(cev_volume --env-file "$envf" --project-dir "$PROJECT_DIR" -- "$@" 2>"$err")" || {
+    VOL_WHY="$(sed -n 's/^compose-env: //p' "$err" | head -1)"
+    rm -f "$err"
+    VOL_WHY="Docker Compose did not give the registry volume of this install (${VOL_WHY:-no reason given})"
+    return 1
+  }
+  rm -f "$err"
+  name="$(printf '%s\n' "$out" | sed -n 's/^volume	//p' | head -1)"
+  [ -n "$name" ] || { VOL_WHY="Docker Compose did not give the registry volume of this install"; return 1; }
+  case "
+$VOLS
+" in *"
+$name
+"*) : ;; *) VOLS="${VOLS:+$VOLS
+}$name" ;; esac
+}
+
+# registry_volume — sets VOL (the registry volume this install has, or the
+# first name it would have) and returns 0 when one exists, 1 when none does,
+# 2 when that cannot be told (VOL_WHY says why, value-free). The daemon is
+# asked first, so a host without one answers fast.
+registry_volume() {
+  local tmp envf out name rc=0
+  local -a args
+  VOL="" VOL_WHY="" VOLS=""
+  cev_compose_cmd 2>/dev/null || { VOL_WHY="Docker Compose is not available here"; return 2; }
   command -v docker >/dev/null 2>&1 || { VOL_WHY="the docker CLI is not on PATH"; return 2; }
   out="$(docker volume ls -q 2>/dev/null </dev/null)" || { VOL_WHY="the Docker daemon is not reachable"; return 2; }
-  if printf '%s\n' "$out" | grep -Fxq -- "$VOL"; then return 0; fi
+  [ -f "$PROJECT_DIR/$BASE_COMPOSE" ] && [ ! -L "$PROJECT_DIR/$BASE_COMPOSE" ] \
+    || { VOL_WHY="no $BASE_COMPOSE in $PROJECT_DIR"; return 2; }
+  install_overlays || return 2
+  args=(-f "$PROJECT_DIR/$BASE_COMPOSE")
+  while IFS= read -r name; do
+    [ -z "$name" ] || args+=(-f "$PROJECT_DIR/$name")
+  done <<EOF
+$OVL
+EOF
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/lucairn-env-probe.XXXXXX")" || { VOL_WHY="no private temp directory"; return 2; }
+  chmod 0700 "$tmp"
+  envf="$ENV_FILE"
+  if [ ! -f "$envf" ]; then envf="$tmp/empty.env"; : > "$envf"; fi
+  volume_name "$envf" "${args[@]}" || rc=2
+  if [ "$rc" -eq 0 ] && [ -f "$PROJECT_DIR/$SN_OVERLAY" ] && [ ! -L "$PROJECT_DIR/$SN_OVERLAY" ]; then
+    case " ${args[*]} " in
+      *"/$SN_OVERLAY "*) : ;;
+      *) volume_name "$envf" "${args[@]}" -f "$PROJECT_DIR/$SN_OVERLAY" || rc=2 ;;
+    esac
+  fi
+  rm -rf "$tmp"
+  [ "$rc" -eq 0 ] || return 2
+  VOL="$(printf '%s\n' "$VOLS" | head -1)"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if printf '%s\n' "$out" | grep -Fxq -- "$name"; then VOL="$name"; return 0; fi
+  done <<EOF
+$VOLS
+EOF
   return 1
 }
 
@@ -212,6 +295,22 @@ do_save() {
   mkdir -p "$(dirname "$DIR")"
   mkdir "$DIR" || die 1 "could not create $DIR"
   chmod 0700 "$DIR"
+  # Fix round 2 (review P2 on PR #162): the rollback's `git checkout v1.9.7`
+  # brings back a .gitignore without the kit's backups/ rule, and the copies
+  # (the DSN file holds the database password) would be offered to `git add`.
+  # An untracked ignore file survives a checkout and git honours it: one in
+  # the saved folder, written before anything is copied in, and one in
+  # backups/ for the default folder.
+  ignore_all() {
+    local f="$1/.gitignore"
+    [ ! -L "$f" ] || die 1 "$f is a symbolic link; nothing was saved"
+    local lead=""
+    if [ -f "$f" ] && grep -qx '[*]' "$f"; then return 0; fi
+    if [ -s "$f" ] && [ -n "$(tail -c 1 "$f")" ]; then lead='\n'; fi
+    printf '%b%s\n' "$lead" '*' >> "$f" || die 1 "could not write $f; nothing was saved"
+  }
+  ignore_all "$DIR"
+  case "$DIR" in "$ENV_DIR/backups/"*) ignore_all "$ENV_DIR/backups" ;; esac
   copy() {
     cp "$1" "$DIR/$2" && chmod 0600 "$DIR/$2" && cmp -s "$1" "$DIR/$2" || die 1 "could not copy $1 into $DIR"
   }
