@@ -72,6 +72,21 @@ global:
   # without L3. A render-time validator now fails the install when the two
   # disagree in that direction, so this can no longer drift silently.
   llmShieldEnabled: false
+  # Kit 2.0: MUST track `sanitizer-core.enabled` (the gateway and the
+  # infrastructure NetworkPolicies read this mirror — sub-charts cannot read
+  # each other's values). true = the gateway's Anthropic route runs through the
+  # new sanitizer core as deltas with the final check (Gate) enforcing, the
+  # same as the hosted service; the old sanitizer keeps the other routes. The
+  # umbrella refuses a render where the two disagree
+  # (validators.sanitizerCoreMirror).
+  sanitizerCore:
+    enabled: true
+  # Sandbox B's sanitized-conversation limit (__messages_json__) in
+  # characters, read by BOTH sandbox-b and the gateway (DSA PR #900): the
+  # gateway refuses an over-limit sanitized conversation with a 400 before the
+  # Sandbox B call. "" = not rendered = 4 MiB on both sides. One value reaches
+  # both pods; in split mode set it equal to the remote node's value.
+  sandboxBMessagesJsonMaxBytes: ""
   demoEnabled: false
   # T-375. Allow the ollama-identity pod (the L3 PII-plane runtime) to reach
   # public model registries over HTTPS so the model-pull Job can fetch
@@ -412,6 +427,15 @@ sandbox-a:
   ephemeral: "true"
 
 sandbox-b:
+  enabled: true
+
+# Kit 2.0: the new sanitizer core (Go core + model sidecar in one Pod, its
+# registry Postgres and the capped migration Job) in the identity namespace.
+# Keep `enabled` equal to global.sanitizerCore.enabled. Everything else —
+# images, the 6.5 GB sidecar limit, the operator-owned mTLS Secret, the
+# credentials — is documented in charts/sanitizer-core/values.yaml and
+# INSTALL.md § "Sanitizer core (kit 2.0, Helm)".
+sanitizer-core:
   enabled: true
 
 gateway:

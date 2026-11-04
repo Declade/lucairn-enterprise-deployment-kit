@@ -151,7 +151,7 @@ silently open the others.
   deliberately if you mean to downgrade.
 
 Current ceilings: **veil-witness 10 · audit 7 · id-bridge 4 · sandbox-a 8 ·
-sanitizer-core 7 (`CEILING_SANITIZER_CORE`, Compose only so far)** —
+sanitizer-core 7 (`CEILING_SANITIZER_CORE`; Helm: `sanitizerCore.migrationCeiling`)** —
 the last version in each `migrations/<tree>/` mirror in this repo. Mechanism:
 `charts/lucairn/charts/<subchart>/templates/_migration-cap.tpl` and `scripts/migrate-capped.sh`
 (sanitizer-core: `scripts/migrate-sanitizer-core.sh`, below).
@@ -168,13 +168,20 @@ profile-gated `migrate-sanitizer-core` one-shot) applies
 own ledger `registry_schema_migrations(name, at)`, exactly as the core's
 `PG.Migrate` writes it, in one transaction. The cap is `CEILING_SANITIZER_CORE`
 in `scripts/migration-ceilings.conf` with the same two pointer guards as
-`migrate-capped.sh`; there is no open-ended hatch. Helm has no equivalent yet
-(slice K-B adds the migration Job and the `$knownSafeMax` literal; the parity
-test then covers this tree too). Guard suite: `tests/test_sanitizer_core_compose.sh`.
+`migrate-capped.sh`; there is no open-ended hatch. Helm (slice K-B) runs the SAME
+runner as the Job `sanitizer-core-migrate-r<revision>` of the `sanitizer-core`
+sub-chart, from byte copies in `charts/lucairn/charts/sanitizer-core/files/`
+(`migrate-sanitizer-core.sh`, `migrations/`), with its ceiling as the literal
+`sanitizerCore.migrationCeiling` in that sub-chart's `templates/_helpers.tpl`
+(rendered into the Job's own ceiling file, never a value). Guard suites:
+`tests/test_sanitizer_core_compose.sh` and `tests/test_sanitizer_core_helm.sh`
+(the latter fails when the chart copies or the chart ceiling drift from the
+repo-root files).
 
 **Release step:** re-copy the `*.up.sql` files from the image's release commit,
 regenerate `SHA256SUMS`, update `SOURCE`, and review every new file below before
-raising the ceiling. The core refuses to start below 0005/0006/0007 (it checks
+raising the ceiling. Raise it in BOTH places (`CEILING_SANITIZER_CORE` and the
+chart literal) and copy the files + runner into the chart's `files/` too. The core refuses to start below 0005/0006/0007 (it checks
 the tables at boot), so the ceiling cannot sit below the image's highest file.
 
 Review of 0001–0007 (kit 2.0, DSA main `20ec838c`, unchanged since `1a3a5574`,

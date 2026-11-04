@@ -14,6 +14,15 @@ if ! command -v helm >/dev/null 2>&1; then
   echo "enterprise mTLS Helm contract: ERROR — Helm CLI is required; install Helm and rerun make test." >&2
   exit 2
 fi
+# Kit 2.0 K-B fix round 1 (sol r1 P1): the sanitizer-core chart renders ONLY
+# with the released core/sidecar digests, and doctor --values compares them
+# with the signed manifest pair. An unreleased checkout carries neither, so
+# this suite renders and doctors a RELEASED-kit fixture (synthetic signed
+# digests in its image-manifest.yaml and chart values; tests/lib/test-helpers.sh).
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$TMPDIR"
+CHART="$ROOT/charts/lucairn"
 
 bash "$ROOT/scripts/generate-enterprise-mtls-kind-runtime-values.sh" "$PUBLIC_OVERLAY" "$APPLICATION_SECRETS"
 

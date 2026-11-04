@@ -1,0 +1,10 @@
+apiVersion: v2
+name: sanitizer-core
+description: Lucairn sanitizer core (kit 2.0) — Go core + model sidecar in one Pod, its registry Postgres and the capped registry-migration Job
+type: application
+version: 0.1.0
+# The core and its model sidecar are ONE pair from one release commit (the
+# core refuses a sidecar from another build). Both images carry this tag
+# unless values.yaml pins another; they never fall back to global.imageTag
+# (no 0.5.x tag of these images exists).
+appVersion: "1.1.0"

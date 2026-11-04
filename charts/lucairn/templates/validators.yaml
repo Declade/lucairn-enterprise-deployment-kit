@@ -26,5 +26,6 @@
 {{- include "validators.l3ShieldFlagCoherence" $ -}}
 {{- include "validators.l3AirGapWithoutFailClosed" $ -}}
 {{- include "validators.namespaceNetpolAlignment" $ -}}
+{{- include "validators.sanitizerCoreMirror" $ -}}
 {{- include "validators.infrastructureDisabledWithPIIPlane" $ -}}
 {{- include "validators.witnessCentralLucairnEgress" $ -}}

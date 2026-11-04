@@ -171,6 +171,14 @@ the chart's supported paths are development and production only.
         (dict "service" "sandbox-a" "path" "sandbox-a.secrets.backend" "value" ((default dict (default dict (index .Values "sandbox-a")).secrets).backend))
         (dict "service" "sandbox-b" "path" "sandbox-b.secrets.backend" "value" ((default dict (default dict (index .Values "sandbox-b")).secrets).backend))
         (dict "service" "veil-witness" "path" "veil-witness.secrets.backend" "value" ((default dict (default dict (index .Values "veil-witness")).secrets).backend)) -}}
+  {{- /* Kit 2.0: the sanitizer core holds the registry key and the registry
+         DB credentials — the same External Secrets rule as every mandatory
+         child, whenever it is enabled. */ -}}
+  {{- $sanitizerCore := default dict (index .Values "sanitizer-core") -}}
+  {{- $sanitizerCoreOn := or (not (hasKey $sanitizerCore "enabled")) (and (kindIs "bool" $sanitizerCore.enabled) $sanitizerCore.enabled) -}}
+  {{- if $sanitizerCoreOn -}}
+    {{- $mandatorySecretBackends = append $mandatorySecretBackends (dict "service" "sanitizer-core" "path" "sanitizer-core.secrets.backend" "value" ((default dict $sanitizerCore.secrets).backend)) -}}
+  {{- end -}}
   {{- range $backend := $mandatorySecretBackends -}}
     {{- if not (has $backend.value (list "vault" "aws" "azure")) -}}
       {{- fail (printf "%s must be one of vault, aws, or azure when global.dsaEnv=production; k8s-native and Helm-owned application Secrets are unsupported. Configure this mandatory child's External Secrets backend and keep credential bytes outside Helm values and release history." $backend.path) -}}
@@ -222,6 +230,10 @@ the chart's supported paths are development and production only.
         (dict "path" "id-bridge.veilEnabled" "value" ((default dict (index .Values "id-bridge")).veilEnabled))
         (dict "path" "sandbox-a.veilEnabled" "value" ((default dict (index .Values "sandbox-a")).veilEnabled))
         (dict "path" "sandbox-b.veilEnabled" "value" ((default dict (index .Values "sandbox-b")).veilEnabled)) -}}
+  {{- $sanitizerCoreVals := default dict (index .Values "sanitizer-core") -}}
+  {{- if or (not (hasKey $sanitizerCoreVals "enabled")) (and (kindIs "bool" $sanitizerCoreVals.enabled) $sanitizerCoreVals.enabled) -}}
+    {{- $mandatoryVeilPaths = append $mandatoryVeilPaths (dict "path" "sanitizer-core.veilEnabled" "value" $sanitizerCoreVals.veilEnabled) -}}
+  {{- end -}}
   {{- range $claimPath := $mandatoryVeilPaths -}}
     {{- $value := $claimPath.value -}}
     {{- $enabled := or (and (kindIs "bool" $value) $value) (and (kindIs "string" $value) (eq $value "true")) -}}
@@ -1096,6 +1108,7 @@ the chart's supported paths are development and production only.
       "postgres-gateway" "edge"
       "sandbox-a"        "identity"
       "pii-ml"           "identity"
+      "sanitizer-core"   "identity"
       "id-bridge"        "bridge"
       "sandbox-b"        "ai"
       "audit"            "audit"
@@ -1188,7 +1201,7 @@ the chart's supported paths are development and production only.
 {{- $dsaEnv := toString (default "" (default dict .Values.global).dsaEnv) -}}
 {{- if and (ne $dsaEnv "development") (and (hasKey $infra "enabled") (not $infra.enabled)) -}}
 {{- $offenders := list -}}
-{{- range $sub := (list "sandbox-a" "pii-ml" "gateway" "id-bridge" "veil-witness") -}}
+{{- range $sub := (list "sandbox-a" "pii-ml" "sanitizer-core" "gateway" "id-bridge" "veil-witness") -}}
 {{- if hasKey $.Values $sub -}}
 {{- $vals := index $.Values $sub -}}
 {{- if $vals -}}
@@ -1301,7 +1314,9 @@ the chart's supported paths are development and production only.
 
     <sub>.veilWitnessAddr          the claim hop (:50057) for each emitting
                                    subchart. Carries redaction_manifest_body
-                                   outbound.
+                                   outbound. Kit 2.0: includes sanitizer-core —
+                                   the new core signs the same dsa-sanitizer
+                                   PII_SANITIZED claim as the old sanitizer.
     gateway.veilWitnessCertAddr    the certificate hop (:50058) — a REAL,
                                    separately-settable value (see
                                    charts/lucairn/charts/gateway/values.yaml,
@@ -1334,7 +1349,7 @@ the chart's supported paths are development and production only.
 */ -}}
 {{- define "validators.witnessTargets" -}}
 {{- $out := list -}}
-{{- range $sub := (list "audit" "id-bridge" "sandbox-a" "sandbox-b" "gateway") -}}
+{{- range $sub := (list "audit" "id-bridge" "sandbox-a" "sandbox-b" "gateway" "sanitizer-core") -}}
 {{- $vals := (default dict (index $.Values $sub)) -}}
 {{- $addr := toString (default "" $vals.veilWitnessAddr) -}}
 {{- if $addr -}}
@@ -1437,5 +1452,60 @@ the chart's supported paths are development and production only.
 {{- end -}}
 {{- else if regexMatch "^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$" $h -}}
 {{- $h -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
+  validators.sanitizerCoreMirror  (kit 2.0, PRD prd-2026-11-02-kit-2-0-new-core K2)
+
+  `sanitizer-core.enabled` deploys the new core; `global.sanitizerCore.enabled`
+  is its mirror for the sub-charts that cannot read it — the gateway (delta
+  protocol, core URL, core mTLS client) and the infrastructure NetworkPolicies
+  (gateway -> core :8790, the registry DB isolation). Both directions of a
+  disagreement are broken:
+
+    core ON,  mirror OFF  the core deploys but the gateway never calls it and no
+                          NetworkPolicy admits the gateway: an idle core and an
+                          Anthropic route silently on the old sanitizer.
+    core OFF, mirror ON   the gateway boots with GATEWAY_SANITIZER_PROTOCOL=delta
+                          against a core that does not exist: every Anthropic
+                          request fails closed.
+
+  So the render refuses any disagreement, and any non-boolean value.
+
+  Invoked from charts/lucairn/templates/validators.yaml.
+*/ -}}
+{{- define "validators.sanitizerCoreMirror" -}}
+{{- $sub := default dict (index .Values "sanitizer-core") -}}
+{{- $g := default dict (default dict .Values.global).sanitizerCore -}}
+{{- $subOn := true -}}
+{{- if hasKey $sub "enabled" -}}
+{{- if not (kindIs "bool" $sub.enabled) -}}
+{{- fail "sanitizer-core.enabled must be a YAML boolean (true or false)." -}}
+{{- end -}}
+{{- $subOn = $sub.enabled -}}
+{{- end -}}
+{{- if not (hasKey $g "enabled") -}}
+{{- fail "global.sanitizerCore.enabled is unset. It must mirror sanitizer-core.enabled (true or false): the gateway and the NetworkPolicies read it." -}}
+{{- end -}}
+{{- if not (kindIs "bool" $g.enabled) -}}
+{{- fail "global.sanitizerCore.enabled must be a YAML boolean (true or false)." -}}
+{{- end -}}
+{{- if ne $subOn $g.enabled -}}
+{{- fail (printf "sanitizer-core.enabled=%v but global.sanitizerCore.enabled=%v. They must agree: the mirror tells the gateway to send the Anthropic route to the core (and opens the NetworkPolicy path to it), the sub-chart deploys the core. Set both to the same value (kit 2.0 default: both true)." $subOn $g.enabled) -}}
+{{- end -}}
+{{- if $subOn -}}
+{{- $sa := default dict (index .Values "sandbox-a") -}}
+{{- $saOn := or (not (hasKey $sa "enabled")) (and (kindIs "bool" $sa.enabled) $sa.enabled) -}}
+{{- $sigRef := default dict $sub.signingKeySecretRef -}}
+{{- if and (not $saOn) (eq (toString (default "sandbox-a-credentials" $sigRef.name)) "sandbox-a-credentials") -}}
+{{- fail "sanitizer-core is enabled but sandbox-a is not. The core signs its dsa-sanitizer claims with the old sanitizer's seed, read from Sandbox A's Secret sandbox-a-credentials (sanitizer-core.signingKeySecretRef) — without Sandbox A that Secret does not exist and the core Pod cannot start. Enable sandbox-a, or point sanitizer-core.signingKeySecretRef at a Secret you create in the identity namespace." -}}
+{{- end -}}
+{{- $gw := default dict .Values.gateway -}}
+{{- $gwCore := default dict $gw.sanitizerCore -}}
+{{- $gwMtls := default dict $gwCore.mtls -}}
+{{- if empty $gwMtls.secretName -}}
+{{- fail "gateway.sanitizerCore.mtls.secretName is empty while the sanitizer core is enabled. The gateway reaches the core only over verified mTLS (it refuses to boot with the delta protocol and no client leaf). Create the gateway's client-leaf Secret in the gateway namespace (INSTALL.md § \"Sanitizer core (kit 2.0, Helm)\") and name it here." -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}

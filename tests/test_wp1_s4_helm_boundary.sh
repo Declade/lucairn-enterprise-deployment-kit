@@ -11,6 +11,15 @@ CHART="$ROOT/charts/lucairn"
 CHILD_CHART="$CHART/charts/sandbox-a"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
+# Kit 2.0 K-B fix round 1 (sol r1 P1): the sanitizer-core chart renders ONLY
+# with the released core/sidecar digests, and doctor --values compares them
+# with the signed manifest pair. An unreleased checkout carries neither, so
+# this suite renders and doctors a RELEASED-kit fixture (synthetic signed
+# digests in its image-manifest.yaml and chart values; tests/lib/test-helpers.sh).
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$TMPDIR"
+CHART="$ROOT/charts/lucairn"
 # TEST_SIGNING_KEY + HELM_TEST_SECRET_ARGS (T-10: the k8s-native default
 # backend no longer ships working password defaults).
 # shellcheck source=tests/lib/test-helpers.sh

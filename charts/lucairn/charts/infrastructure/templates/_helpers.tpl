@@ -69,3 +69,29 @@
 {{- end -}}
 {{- $found -}}
 {{- end -}}
+
+{{- /*
+  infrastructure.sanitizerCoreEnabled  (kit 2.0)
+
+  "true" (non-empty) when global.sanitizerCore.enabled is the boolean true —
+  the umbrella's mirror of sanitizer-core.enabled (validators.sanitizerCoreMirror
+  refuses a render where the two disagree). Gates the core's NetworkPolicies
+  and the identity-namespace carve-outs.
+*/ -}}
+{{- define "infrastructure.sanitizerCoreEnabled" -}}
+{{- $sc := (default dict (default dict .Values.global).sanitizerCore) -}}
+{{- if and (kindIs "bool" $sc.enabled) $sc.enabled -}}true{{- end -}}
+{{- end -}}
+
+{{- /*
+  infrastructure.clusterDNSPodLabels  (kit 2.0 K-B fix round 3)
+
+  The labels of the cluster resolver Pods, as YAML (one `key: value` per
+  line): global.clusterDNS.podLabels, default k8s-app=kube-dns (CoreDNS and
+  kube-dns both carry it). The ONE source for every resolver selector: the
+  core's Kubernetes DNS rule (network-policies.yaml) and every Cilium DNS
+  policy (dns-restriction.yaml), so an override reaches both.
+*/ -}}
+{{- define "infrastructure.clusterDNSPodLabels" -}}
+{{- toYaml (((.Values.global | default dict).clusterDNS | default dict).podLabels | default (dict "k8s-app" "kube-dns")) -}}
+{{- end -}}

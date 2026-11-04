@@ -39,6 +39,14 @@ dependencies:
   - name: sandbox-b
     version: 0.1.0
     condition: sandbox-b.enabled
+  - name: sanitizer-core
+    version: 0.1.0
+    # Kit 2.0: the new sanitizer core (Go core + model sidecar in one Pod,
+    # registry Postgres, capped migration Job) in the identity namespace. ON by
+    # default, the same as the hosted service. Its mirror
+    # global.sanitizerCore.enabled (read by the gateway and the
+    # NetworkPolicies) must agree — validators.sanitizerCoreMirror.
+    condition: sanitizer-core.enabled
   - name: gateway
     version: 0.1.0
     condition: gateway.enabled

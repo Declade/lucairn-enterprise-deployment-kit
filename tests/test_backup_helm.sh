@@ -26,6 +26,12 @@ if ! command -v helm >/dev/null 2>&1; then
   echo "backup-helm tests: skipped (helm not installed)"
   exit 0
 fi
+# Kit 2.0 K-B fix round 1 (sol r1 P1): the sanitizer-core chart renders ONLY
+# with the released core/sidecar digests; render a copy that carries the
+# synthetic signed pair, as a released kit does (tests/lib/test-helpers.sh).
+BACKUP_CHART_TMP="$(mktemp -d)"
+CHART="$(lucairn_released_chart "$BACKUP_CHART_TMP")" \
+  || { echo "backup-helm tests: could not build the released-chart copy" >&2; exit 1; }
 
 # Common --set flags that satisfy the chart's pre-existing validators so the
 # render reaches our CronJob template. imagePullDockerConfigJson satisfies the
@@ -92,7 +98,7 @@ ENABLED=(
 # Dump the render to a file and grep the FILE — `printf "$OUT" | grep -q` would
 # SIGPIPE printf (rc 141) under `set -o pipefail`, falsely failing the check.
 RENDER_OUT="$(mktemp)"
-trap 'rm -f "$RENDER_OUT"' EXIT
+trap 'rm -f "$RENDER_OUT"; rm -rf "$BACKUP_CHART_TMP"' EXIT
 render "${ENABLED[@]}" 2>/dev/null > "$RENDER_OUT"
 n="$(backup_cronjob_count "$RENDER_OUT")"
 [ "$n" = "3" ] || { echo "FAIL: expected 3 CronJobs, got $n" >&2; exit 1; }

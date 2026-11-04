@@ -41,7 +41,7 @@ fi
 # T-10 (security STOP-SHIP, 2026-08-03): chart-managed passwords have NO
 # working default any more.
 #
-# The eight slots below (across six subcharts) used to ship a literal
+# The ten slots below (across seven subcharts) used to ship a literal
 # `CHANGE-ME…` placeholder as a functioning password in this public repo.  They
 # now ship EMPTY, and each subchart's templates/_validate.tpl hard-fails on an
 # empty value or
@@ -77,7 +77,17 @@ fi
 # NOT need these args: the guards only apply to the k8s-native backend that
 # actually renders the value into a Secret.
 [ -n "${TEST_SECRET_VALUE:-}" ] || readonly TEST_SECRET_VALUE="kit-harness-not-a-real-secret"
+# Kit 2.0: the sanitizer core's registry key must be exactly 64 hex characters
+# and not all zero (sanitizer-core/templates/_helpers.tpl), so it cannot reuse
+# TEST_SECRET_VALUE. Fixed, obviously-non-production constant.
+[ -n "${TEST_REGISTRY_KEY:-}" ] || readonly TEST_REGISTRY_KEY="2222222222222222222222222222222222222222222222222222222222222222"
 
+# Kit 2.0: SYNTHETIC signed digests for the sanitizer core pair (never real,
+# never pulled). Compose and Helm both refuse to start the pair without the
+# digests a kit release records (see the released-kit fixture below), so every
+# umbrella render in this harness passes these two.
+[ -n "${TEST_SANITIZER_CORE_DIGEST:-}" ] || readonly TEST_SANITIZER_CORE_DIGEST="sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+[ -n "${TEST_SANITIZER_CORE_SIDECAR_DIGEST:-}" ] || readonly TEST_SANITIZER_CORE_SIDECAR_DIGEST="sha256:5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c"
 if [ -z "${HELM_TEST_SECRET_ARGS+x}" ]; then
   HELM_TEST_SECRET_ARGS=(
     --set "admin.secrets.values.adminPassword=${TEST_SECRET_VALUE}"
@@ -88,6 +98,14 @@ if [ -z "${HELM_TEST_SECRET_ARGS+x}" ]; then
     --set "sandbox-a.secrets.values.postgresPassword=${TEST_SECRET_VALUE}"
     --set "veil-witness.secrets.values.postgresPassword=${TEST_SECRET_VALUE}"
     --set "veil-witness.secrets.values.veilAppPassword=${TEST_SECRET_VALUE}"
+    # Kit 2.0 (sanitizer-core sub-chart, ON by default): --set-string, because
+    # the guard refuses non-string values.
+    --set-string "sanitizer-core.secrets.values.registryKey=${TEST_REGISTRY_KEY}"
+    --set-string "sanitizer-core.secrets.values.postgresPassword=${TEST_SECRET_VALUE}"
+    # Kit 2.0 K-B fix round 1 (sol r1 P1): the pair renders only with both
+    # released digests (here the synthetic pair above).
+    --set-string "sanitizer-core.image.digest=${TEST_SANITIZER_CORE_DIGEST}"
+    --set-string "sanitizer-core.sidecar.image.digest=${TEST_SANITIZER_CORE_SIDECAR_DIGEST}"
   )
   readonly HELM_TEST_SECRET_ARGS
 fi
@@ -101,12 +119,12 @@ fi
 # `bin/lucairn verify-images` FAILS. A test that needs a GREEN kit 2.0 install
 # runs against a RELEASED-KIT FIXTURE instead: these synthetic digests (never
 # real ones, never pulled) in a copy of the manifest.
-[ -n "${TEST_SANITIZER_CORE_DIGEST:-}" ] || readonly TEST_SANITIZER_CORE_DIGEST="sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
-[ -n "${TEST_SANITIZER_CORE_SIDECAR_DIGEST:-}" ] || readonly TEST_SANITIZER_CORE_SIDECAR_DIGEST="sha256:5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c"
+# (TEST_SANITIZER_CORE_DIGEST / TEST_SANITIZER_CORE_SIDECAR_DIGEST are defined
+# above HELM_TEST_SECRET_ARGS, which passes them to every umbrella render.)
 
 # lucairn_released_kit_fixture <kit root> <dest> — <dest> becomes a kit tree
 # whose image-manifest.yaml records the synthetic pair above in place of
-# `pending: true`. Everything else is a plain COPY of <kit root> (about
+# `pending: true`, and whose sanitizer-core chart values carry the same pair. Everything else is a plain COPY of <kit root> (about
 # 11 MB without .git), so bin/lucairn and bin/lucairn-init run as the fixture
 # kit and a test that edits a kit file (a "mutant" of servicenow-directory/, a
 # keys/ record) edits the copy. Directories are never symlinked: `cp -R` of a
@@ -132,7 +150,36 @@ lucairn_released_kit_fixture() {
     in_sa && key != "" && /^      pending:[[:space:]]*true/ { print "      digest: \"" (key == "core" ? core : side) "\""; n++; next }
     { print }
     END { if (n != 2) exit 1 }
-  ' "$root/image-manifest.yaml" > "$dest/image-manifest.yaml"
+  ' "$root/image-manifest.yaml" > "$dest/image-manifest.yaml" || return 1
+  # Kit 2.0 K-B fix round 1: a released kit's sanitizer-core chart carries the
+  # same signed pair (the release step fills image.digest and
+  # sidecar.image.digest from image-manifest.yaml); the chart refuses to render
+  # without them.
+  local cv="$dest/charts/lucairn/charts/sanitizer-core/values.yaml"
+  [ -f "$cv" ] || return 0
+  awk -v core="$TEST_SANITIZER_CORE_DIGEST" -v side="$TEST_SANITIZER_CORE_SIDECAR_DIGEST" '
+    $0 == "  digest: \"\"" && !c { print "  digest: \"" core "\""; c = 1; next }
+    $0 == "    digest: \"\"" && !s { print "    digest: \"" side "\""; s = 1; next }
+    { print }
+    END { if (!c || !s) exit 1 }
+  ' "$cv" > "$cv.released" && mv "$cv.released" "$cv"
+}
+
+# lucairn_released_chart <dest dir> — prints the path of a copy of the
+# umbrella chart whose sanitizer-core values carry the synthetic signed pair
+# (what the release step writes). For suites that only RENDER the chart.
+lucairn_released_chart() {
+  local root="${REAL_ROOT:-$ROOT}" dest="$1"
+  mkdir -p "$dest" || return 1
+  cp -Rp "$root/charts/lucairn" "$dest/lucairn" || return 1
+  local cv="$dest/lucairn/charts/sanitizer-core/values.yaml"
+  awk -v core="$TEST_SANITIZER_CORE_DIGEST" -v side="$TEST_SANITIZER_CORE_SIDECAR_DIGEST" '
+    $0 == "  digest: \"\"" && !c { print "  digest: \"" core "\""; c = 1; next }
+    $0 == "    digest: \"\"" && !s { print "    digest: \"" side "\""; s = 1; next }
+    { print }
+    END { if (!c || !s) exit 1 }
+  ' "$cv" > "$cv.released" && mv "$cv.released" "$cv" || return 1
+  printf '%s' "$dest/lucairn"
 }
 
 # lucairn_use_released_kit <tmp dir> — for a suite whose doctor/init GREEN

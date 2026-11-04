@@ -72,6 +72,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHART="$ROOT/charts/lucairn"
 # shellcheck source=lib/test-helpers.sh
 source "$ROOT/tests/lib/test-helpers.sh"
+# Kit 2.0 K-B fix round 1 (sol r1 P1): the sanitizer-core chart renders ONLY
+# with the released core/sidecar digests. An unreleased checkout carries
+# none, so this suite renders a RELEASED-kit fixture (synthetic signed digests
+# in its chart values; tests/lib/test-helpers.sh).
+PWG_TMP="$(mktemp -d)"
+trap 'rm -rf "$PWG_TMP"' EXIT
+lucairn_use_released_kit "$PWG_TMP"
+CHART="$ROOT/charts/lucairn"
 
 if ! command -v helm >/dev/null 2>&1; then
   echo "default-password guard tests: skipped (helm not installed)"
@@ -329,6 +337,8 @@ if ! helm template lucairn "$CHART" \
      --set "veil-witness.secrets.values.veilAppPassword=${TEST_SECRET_VALUE}" \
      --set admin.secrets.backend=vault \
      --set admin.secrets.vault.path=dsa/admin \
+     --set-string "sanitizer-core.secrets.values.registryKey=${TEST_REGISTRY_KEY}" \
+     --set-string "sanitizer-core.secrets.values.postgresPassword=${TEST_SECRET_VALUE}" \
      >"$ADMIN_VAULT_RENDER" 2>"$ADMIN_VAULT_ERR"; then
   fail "admin.secrets.backend=vault must render cleanly with no adminPassword set: $(head -3 "$ADMIN_VAULT_ERR")"
 else
@@ -394,6 +404,8 @@ if helm template lucairn "$CHART" "${BASE[@]}" \
      --set-string "sandbox-a.external.databaseUrl=postgres://u:p@db.example:5432/sandbox_a" \
      --set veil-witness.postgresql.enabled=false \
      --set-string "veil-witness.external.databaseUrl=postgres://u:p@db.example:5432/veil" \
+     --set-string "sanitizer-core.secrets.values.registryKey=${TEST_REGISTRY_KEY}" \
+     --set-string "sanitizer-core.secrets.values.postgresPassword=${TEST_SECRET_VALUE}" \
      >/dev/null 2>"$EXT_ERR"; then
   echo "ok  external-Postgres install renders without the bundled-database passwords"
 else

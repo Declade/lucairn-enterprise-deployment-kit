@@ -1,0 +1,39 @@
+{{- /*
+  The core container's entrypoint, as a FILE (not inline in `command`):
+  Kubernetes expands `$(NAME)` and reduces `$$` in command/args at Pod
+  creation, which would rewrite shell syntax. A mounted script is read by
+  /bin/sh as written.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Chart.Name }}-entrypoint
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+data:
+  core-entrypoint.sh: |
+    #!/bin/sh
+    # Wait until the model sidecar in THIS Pod answers on loopback, then exec
+    # the core (busybox sh + wget of the core image). The core asks the
+    # sidecar for its labels at boot and refuses a sidecar it cannot reach;
+    # without this wait it would crash-loop with growing back-off for the
+    # 1-5 minutes the sidecar spends loading its models.
+    #
+    # Unlike the Compose entrypoint there is no restart watchdog: in a Pod the
+    # network namespace belongs to the Pod, not to the sidecar container, so a
+    # sidecar restart (crash, OOM kill at its limit) leaves the core joined and
+    # it reaches the restarted sidecar again by itself. While the sidecar is
+    # down the Pod is NotReady and the gateway's Anthropic requests fail
+    # closed.
+    h=http://127.0.0.1:8765/v1/health
+    trap 'exit 0' TERM INT
+    n=0
+    until wget -q -T 5 -O /dev/null "$h"; do
+      [ $((n % 15)) -eq 0 ] && echo "core-entrypoint: waiting for the model sidecar ($h)" >&2
+      n=$((n + 1))
+      sleep 2
+    done
+    echo "core-entrypoint: sidecar answers, starting the core" >&2
+    exec sanitizer-core "$@"

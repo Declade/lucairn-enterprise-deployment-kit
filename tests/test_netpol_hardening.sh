@@ -92,6 +92,15 @@ fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+# Kit 2.0 K-B fix round 1 (sol r1 P1): the sanitizer-core chart renders ONLY
+# with the released core/sidecar digests, and doctor --values compares them
+# with the signed manifest pair. An unreleased checkout carries neither, so
+# this suite renders and doctors a RELEASED-kit fixture (synthetic signed
+# digests in its image-manifest.yaml and chart values; tests/lib/test-helpers.sh).
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$WORK"
+CHART="$ROOT/charts/lucairn"
 
 # L3 on: ollama-identity, the model-pull Job and the registry-egress policy all
 # render only in this combination.
@@ -124,7 +133,7 @@ fi
 # ollama-identity, postgres, redis cache, migrate Job, model-pull Job) in a
 # namespace holding zero NetworkPolicies.
 # ===========================================================================
-for sub in sandbox-a gateway sandbox-b veil-witness; do
+for sub in sandbox-a gateway sandbox-b veil-witness sanitizer-core; do
   if helm template lucairn "$CHART" "${COMMON[@]}" \
        --set "${sub}.namespace=acme-drift" >/dev/null 2>"$WORK/diverge-$sub.err"; then
     fail "T-388: divergent ${sub}.namespace override still renders (guard absent). Workloads would deploy unpoliced."
@@ -132,7 +141,7 @@ for sub in sandbox-a gateway sandbox-b veil-witness; do
   grep -q "namespace/NetworkPolicy split-brain" "$WORK/diverge-$sub.err" \
     || fail "T-388: ${sub} render refused, but not by validators.namespaceNetpolAlignment. Got: $(head -2 "$WORK/diverge-$sub.err")"
 done
-echo "ok  T-388: divergent namespace override refused for sandbox-a, gateway, sandbox-b, veil-witness"
+echo "ok  T-388: divergent namespace override refused for sandbox-a, gateway, sandbox-b, veil-witness, sanitizer-core"
 
 # ===========================================================================
 # T-388 case 2 — CONSISTENT override renders, and the policies MOVE WITH the
@@ -155,6 +164,8 @@ infrastructure:
 sandbox-a:
   namespace: acme-identity
 pii-ml:
+  namespace: acme-identity
+sanitizer-core:
   namespace: acme-identity
 YAML
 if ! helm template lucairn "$CHART" "${COMMON[@]}" -f "$WORK/ns-override.yaml" \

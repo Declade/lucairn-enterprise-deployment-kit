@@ -83,6 +83,15 @@ source "$ROOT/tests/lib/test-helpers.sh"
 
 WK="$(mktemp -d)"
 trap 'rm -rf "$WK"' EXIT
+# Kit 2.0 K-B fix round 1 (sol r1 P1): the sanitizer-core chart renders ONLY
+# with the released core/sidecar digests, and doctor --values compares them
+# with the signed manifest pair. An unreleased checkout carries neither, so
+# this suite renders and doctors a RELEASED-kit fixture (synthetic signed
+# digests in its image-manifest.yaml and chart values; tests/lib/test-helpers.sh).
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$WK"
+CHART="$ROOT/charts/lucairn"
 
 FAILS=0
 N=0
@@ -138,6 +147,11 @@ veil-witness:
     values:
       postgresPassword: ${TEST_SECRET_VALUE}
       veilAppPassword: ${TEST_SECRET_VALUE}
+sanitizer-core:
+  secrets:
+    values:
+      registryKey: "${TEST_REGISTRY_KEY}"
+      postgresPassword: ${TEST_SECRET_VALUE}
 EOF
 }
 

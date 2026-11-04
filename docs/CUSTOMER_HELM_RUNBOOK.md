@@ -164,6 +164,14 @@ only mounts them. The production names are `lucairn-mtls-gateway` (dsa-edge),
 by the production overlay as well. Never put CA or private-key bytes in Helm
 values or Git.
 
+Kit 2.0 adds the new sanitizer core, whose gateway → core hop has its own
+operator-owned Secrets: `sanitizer-core-mtls` (dsa-identity, the core's server
+leaf, SAN `dsa-sanitizer-core`) and `gateway-sanitizer-core-mtls` (dsa-edge,
+the gateway's client leaf, SAN `dsa-gateway`), from one CA. Its credentials
+(`registry_key`, `password`, `registry_dsn`) live at the `sanitizer-core` path of
+the External Secrets backend. Its claims reuse the `lucairn-mtls-sanitizer`
+leaf. Commands and details: INSTALL.md § "Sanitizer core (kit 2.0, Helm)".
+
 #### Production networking and optional hardened node topology
 
 The ordinary Kubernetes `NetworkPolicy` resources in this chart remain
@@ -319,7 +327,7 @@ Expected: ~25 pods, all `Running` or `Completed` (Completed = Jobs). Pods run ac
 - `lucairn` — chart-managed Helm hooks
 - `dsa-edge` — gateway
 - `dsa-bridge` — id-bridge + postgres-bridge
-- `dsa-identity` — sandbox-a + sanitizer + postgres-sandbox-a
+- `dsa-identity` — sandbox-a + sanitizer + postgres-sandbox-a, and (kit 2.0) `sanitizer-core` (2/2: `core` + `sidecar`; the sidecar loads its models for 1–5 min), `postgres-sanitizer-core` and the `sanitizer-core-migrate-r<N>` Job (Completed)
 - `dsa-ai` — sandbox-b
 - `dsa-audit` — audit + postgres-audit
 - `dsa-witness` — veil-witness + postgres-veil

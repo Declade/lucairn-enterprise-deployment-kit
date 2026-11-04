@@ -9,6 +9,15 @@ VALUES="$CHART/values-prod.yaml"
 SITE_VALUES="$CHART/values-prod-site.example.yaml"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
+# Kit 2.0 K-B fix round 1 (sol r1 P1): the sanitizer-core chart renders ONLY
+# with the released core/sidecar digests, and doctor --values compares them
+# with the signed manifest pair. An unreleased checkout carries neither, so
+# this suite renders and doctors a RELEASED-kit fixture (synthetic signed
+# digests in its image-manifest.yaml and chart values; tests/lib/test-helpers.sh).
+# shellcheck source=lib/test-helpers.sh
+. "$ROOT/tests/lib/test-helpers.sh"
+lucairn_use_released_kit "$TMPDIR"
+CHART="$ROOT/charts/lucairn"
 
 if ! command -v helm >/dev/null 2>&1; then
   echo "enterprise mTLS production values: ERROR — Helm CLI is required; install Helm and rerun make test." >&2
@@ -117,6 +126,9 @@ ruby -e '
     "sandbox-a" => %w[DATABASE_URL POSTGRES_PASSWORD ENCRYPTION_KEY DSA_ADMIN_KEY LCR_SIGNING_KEY DSA_SERVICE_TOKEN CANARY_HMAC_KEY],
     "sandbox-b" => %w[SANDBOX_B_REDIS_URL REDIS_PASSWORD ANTHROPIC_API_KEY MISTRAL_API_KEY OPENAI_API_KEY GEMINI_API_KEY LCR_SIGNING_KEY SANDBOX_B_API_KEYS DSA_ADMIN_KEY DSA_MANAGED_AI_KEY DSA_SERVICE_TOKEN DSA_LICENSE_KEY],
     "veil-witness" => %w[DATABASE_URL DATABASE_URL_APP POSTGRES_PASSWORD VEIL_APP_PASSWORD LCR_WITNESS_SIGNING_KEY LCR_WITNESS_KEY_ID],
+    # Kit 2.0: the new sanitizer core (registry key env, registry DB password,
+    # the DSN the core reads as a file).
+    "sanitizer-core" => %w[DSA_SANITIZER_CORE_REGISTRY_KEY POSTGRES_PASSWORD REGISTRY_DSN],
   }
   required.each do |child, keys|
     source = File.read(File.join(root, "charts/lucairn/charts/#{child}/templates/externalsecret.yaml"))
@@ -134,6 +146,7 @@ ruby -ryaml -e '
   required = %w[
     gateway-credentials audit-credentials id-bridge-credentials
     sandbox-a-credentials sandbox-b-credentials veil-witness-credentials
+    sanitizer-core-credentials
   ].sort
   documents = YAML.load_stream(File.read(ARGV.fetch(0))).compact
   identities = documents.group_by do |document|
@@ -150,14 +163,15 @@ ruby -ryaml -e '
   end.compact.sort
   missing = required - external_secrets
   abort "production render misses mandatory ExternalSecrets: #{missing.join(", ")}" unless missing.empty?
-  abort "production render must contain exactly six mandatory ExternalSecrets; got: #{external_secrets.join(", ")}" unless external_secrets == required
+  abort "production render must contain exactly seven mandatory ExternalSecrets (kit 2.0: + sanitizer-core); got: #{external_secrets.join(", ")}" unless external_secrets == required
   store = documents.find { |document| document.is_a?(Hash) && document["kind"] == "ClusterSecretStore" && document.dig("metadata", "name") == "dsa-secret-store" }
   abort "production render misses dsa-secret-store" unless store
   abort "ClusterSecretStore Vault KV v2 mount drifted" unless store.dig("spec", "provider", "vault", "path") == "dsa"
   expected_keys = {
     "gateway-credentials" => "gateway", "audit-credentials" => "postgres-audit",
     "id-bridge-credentials" => "bridge", "sandbox-a-credentials" => "sandbox-a",
-    "sandbox-b-credentials" => "sandbox-b", "veil-witness-credentials" => "veil-witness"
+    "sandbox-b-credentials" => "sandbox-b", "veil-witness-credentials" => "veil-witness",
+    "sanitizer-core-credentials" => "sanitizer-core"
   }
   documents.select { |document| document.is_a?(Hash) && document["kind"] == "ExternalSecret" }.each do |document|
     name = document.dig("metadata", "name")
@@ -366,6 +380,7 @@ provider_children=(
   --set gateway.secrets.backend=aws --set audit.secrets.backend=aws
   --set id-bridge.secrets.backend=aws --set sandbox-a.secrets.backend=aws
   --set sandbox-b.secrets.backend=aws --set veil-witness.secrets.backend=aws
+  --set sanitizer-core.secrets.backend=aws
 )
 assert_render_rejected empty-aws-region \
   'global.secrets.aws.region must be a non-empty string' \
@@ -393,11 +408,11 @@ ruby -ryaml -e '
   ref = aws.dig("auth", "jwt", "serviceAccountRef")
   abort "AWS store ServiceAccount name drifted" unless ref["name"] == "eso-service-account"
   abort "AWS store ServiceAccount namespace drifted" unless ref["namespace"] == "external-secrets"
-  abort "AWS production render must contain exactly six ExternalSecrets" unless documents.count { |document| document.is_a?(Hash) && document["kind"] == "ExternalSecret" } == 6
+  abort "AWS production render must contain exactly seven ExternalSecrets (kit 2.0: + sanitizer-core)" unless documents.count { |document| document.is_a?(Hash) && document["kind"] == "ExternalSecret" } == 7
   abort "AWS production render contains Helm-owned Secrets" unless documents.none? { |document| document.is_a?(Hash) && document["kind"] == "Secret" }
 ' "$AWS_RENDER"
 provider_children[1]=global.secrets.backend=azure
-for index in 3 5 7 9 11 13; do
+for index in 3 5 7 9 11 13 15; do
   provider_children[$index]="${provider_children[$index]%=aws}=azure"
 done
 assert_render_rejected empty-azure-key-vault \

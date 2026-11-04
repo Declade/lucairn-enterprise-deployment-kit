@@ -2726,6 +2726,9 @@ unless production
   exit 0
 end
 children = %w[gateway audit id-bridge sandbox-a sandbox-b veil-witness]
+# Kit 2.0: the sanitizer core holds the registry key + DB credentials; it is a
+# mandatory child whenever it is not explicitly switched off.
+children << "sanitizer-core" unless values.dig("sanitizer-core", "enabled") == false
 backends = children.map { |child| values.dig(child, "secrets", "backend") }
 unless backends.all? { |backend| %w[vault aws azure].include?(backend) }
   abort "production values do not resolve every mandatory child to an external backend"
@@ -2929,6 +2932,272 @@ check_enterprise_mtls_helm() {
   done
 
   info "enterprise mTLS (Helm): production render contract: ok"
+}
+
+# check_sanitizer_core_helm <chart_dir> <values_file> [...]
+#
+# Kit 2.0 (PRD prd-2026-11-02-kit-2-0-new-core K2/K3): the Helm half of the
+# Compose doctor's check_sanitizer_core_config. Renders the customer's values
+# (helm_render_values, the same render as the mTLS check) and asserts the
+# contract of the rendered new sanitizer core:
+#   * core + sidecar are ONE Pod (two containers) — the hosted shared network
+#     namespace; no container of ANY workload passes a --dsn argument (the
+#     registry password would be world-readable in the node's process list);
+#     the core reads its DSN from a file (--registry-dsn-file) projected from
+#     the credentials Secret;
+#   * the sidecar's memory limit is >= 6500 MiB (hosted A8) and the core has
+#     one; the core sets LCR_PROFILE=kit as a literal in its env: and the
+#     ServiceNow control client is NOT forwarded (kit profile: the ServiceNow
+#     mode is refused);
+#   * production: the core's witness hop is latched mTLS (A9);
+#   * the gateway's switch set (delta, Gate enforce, https core URL, its mTLS
+#     client triple) — off-switch values only warn, like Compose;
+#   * the capped migration Job and the four core NetworkPolicies render.
+# With DOCTOR_KUBE_LIVE=1 it also inspects the RUNNING release with kubectl
+# (current context): Pods Ready, migration Job complete, the operator mTLS
+# Secrets present, the core's witness transport line and no DROPPED claims.
+# NON-COVERAGE: a render proves configuration, not detection quality (the W7b
+# replay does); NetworkPolicy presence is not CNI enforcement.
+check_sanitizer_core_helm() {
+  local chart_dir="$1"
+  shift
+  [ "$#" -gt 0 ] || return 0
+  have helm || { echo "sanitizer core (Helm): FAIL — helm is required with --values."; return 1; }
+  have ruby || { echo "sanitizer core (Helm): FAIL — ruby is required to inspect the render."; return 1; }
+  local render verdict manifest core_m side_m
+  if ! render="$(helm_render_values "$chart_dir" "$@" 2>&1)"; then
+    echo "sanitizer core (Helm): FAIL — the values did not render:"
+    echo "$render"
+    return 1
+  fi
+  # Kit 2.0 K-B fix round 1 (sol r1 P1): the pair this kit release signed
+  # (image-manifest.yaml image_digests.signed_artifacts; "pending" before the
+  # release step) — Compose parity with check_sanitizer_core_config step 7.
+  manifest="$ROOT/image-manifest.yaml"
+  core_m="$(sanitizer_core_manifest_digest_in "$manifest" dsa-sanitizer-core)"
+  side_m="$(sanitizer_core_manifest_digest_in "$manifest" dsa-sanitizer-core-sidecar)"
+  verdict="$(printf '%s' "$render" | LUCAIRN_CORE_MANIFEST_DIGEST="$core_m" LUCAIRN_SIDECAR_MANIFEST_DIGEST="$side_m" ruby -ryaml -e '
+    def mib(q)
+      s = q.to_s
+      return nil unless s =~ /\A([0-9.]+)(Ki|Mi|Gi|Ti|k|M|G|T)?\z/
+      n = $1.to_f
+      { nil => 1.0 / 1048576, "Ki" => 1.0 / 1024, "Mi" => 1.0, "Gi" => 1024.0, "Ti" => 1048576.0,
+        "k" => 1000.0 / 1048576, "M" => 1e6 / 1048576, "G" => 1e9 / 1048576, "T" => 1e12 / 1048576 }[$2] * n
+    end
+    docs = YAML.load_stream($stdin.read).compact.select { |d| d.is_a?(Hash) }
+    fails = []; warns = []; oks = []
+    pod_specs = docs.map { |d| d.dig("spec", "template", "spec") || d.dig("spec", "jobTemplate", "spec", "template", "spec") }.compact
+    pod_specs.each do |ps|
+      ((ps["containers"] || []) + (ps["initContainers"] || [])).each do |c|
+        argv = (Array(c["command"]) + Array(c["args"])).map(&:to_s)
+        fails << "container #{c["name"]} passes a --dsn argument (the DB password would be in the process list)" if argv.any? { |a| a == "--dsn" || a.start_with?("--dsn=") }
+      end
+    end
+    dep = docs.find { |d| d["kind"] == "Deployment" && d.dig("metadata", "name") == "sanitizer-core" }
+    gw = docs.find { |d| d["kind"] == "Deployment" && d.dig("metadata", "name") == "gateway" }
+    gwenv = {}
+    ((gw && gw.dig("spec", "template", "spec", "containers", 0, "env")) || []).each { |e| gwenv[e["name"]] = e["value"] }
+    if dep.nil?
+      if gwenv["GATEWAY_SANITIZER_PROTOCOL"]
+        fails << "the gateway is wired to a sanitizer core that is not rendered"
+      else
+        warns << "the sanitizer core is switched off (sanitizer-core.enabled=false): the Anthropic route runs on the old sanitizer; kit 2.0 ships the core on, the same as the hosted service"
+      end
+    else
+      ns = dep.dig("metadata", "namespace")
+      oks << "namespace=#{ns}"
+      ps = dep.dig("spec", "template", "spec")
+      cs = ps["containers"] || []
+      names = cs.map { |c| c["name"] }.sort
+      fails << "the core Pod must hold exactly the containers core + sidecar (one Pod = one shared network namespace); found #{names.join(",")}" unless names == %w[core sidecar]
+      core = cs.find { |c| c["name"] == "core" } || {}
+      side = cs.find { |c| c["name"] == "sidecar" } || {}
+      args = Array(core["args"]).map(&:to_s)
+      fails << "the core does not read its DSN from a file (--registry-dsn-file)" unless args.any? { |a| a.start_with?("--registry-dsn-file=") }
+      dsnvol = (ps["volumes"] || []).find { |v| (v.dig("secret", "items") || []).any? { |i| i["key"] == "REGISTRY_DSN" } }
+      fails << "no volume projects the REGISTRY_DSN key of the credentials Secret" unless dsnvol
+      # DSA #956 registry_dsn.go: a --registry-dsn-file value holding :// or @
+      # is refused (a DSN passed as the path); the path must be the projected file.
+      dsnargs = args.select { |a| a.start_with?("--registry-dsn-file=") }.map { |a| a.sub("--registry-dsn-file=", "") }
+      fails << "the --registry-dsn-file value holds :// or @ (the core refuses a DSN passed as the path)" if dsnargs.any? { |p| p.include?("://") || p.include?("@") }
+      if dsnvol && dsnargs.any?
+        item = (dsnvol.dig("secret", "items") || []).find { |i| i["key"] == "REGISTRY_DSN" }
+        mnt = Array(core["volumeMounts"]).find { |m| m["name"] == dsnvol["name"] }
+        want = mnt && item ? File.join(mnt["mountPath"].to_s, item["path"].to_s) : nil
+        fails << "the --registry-dsn-file path of the core is not the projected REGISTRY_DSN file" unless want && dsnargs.all? { |p| p == want }
+      end
+      lim = mib(side.dig("resources", "limits", "memory"))
+      if lim.nil? then fails << "the sidecar has no memory limit"
+      elsif lim < 6500 then fails << "the sidecar memory limit is #{lim.round} MiB; it peaks near 5.6 GB and needs >= 6500 MiB (hosted A8)"
+      else oks << "sidecar limit #{lim.round} MiB" end
+      fails << "the core has no memory limit" if mib(core.dig("resources", "limits", "memory")).nil?
+      env = {}
+      (core["env"] || []).each { |e| env[e["name"]] = e }
+      # K-C M2 (moved here in K-B fix round 4 so the K-C OFF render equals
+      # this one): the core ALWAYS sets LCR_PROFILE=kit in its own env: (a
+      # literal, which Kubernetes ranks above anything envFrom could bring).
+      prof = env["LCR_PROFILE"]
+      unless prof && prof["value"] == "kit" && !prof.key?("valueFrom")
+        fails << "the core does not set LCR_PROFILE=kit as a literal in its env (#{prof.nil? ? "absent" : prof["value"].inspect}); a profile from anywhere else could switch the ServiceNow mode"
+      end
+      fails << "the ServiceNow control client is forwarded to the core (the kit profile refuses to boot with it)" if env.keys.any? { |k| k.start_with?("LCR_SERVICENOW_CONTROL_") }
+      %w[SANITIZER_CORE_MTLS_CA_BUNDLE_PATH SANITIZER_CORE_MTLS_SERVER_CERT_PATH SANITIZER_CORE_MTLS_SERVER_KEY_PATH].each { |k| fails << "the core lacks #{k}" unless env.key?(k) }
+      prod = env.dig("DSA_ENV", "value") == "production"
+      if prod
+        fails << "production: the core witness hop is not latched (LCR_WITNESS_REQUIRE_MTLS != true) — claims could be dropped silently (hosted A9)" unless env.dig("LCR_WITNESS_REQUIRE_MTLS", "value") == "true"
+        %w[LCR_WITNESS_MTLS_CA_BUNDLE_PATH LCR_WITNESS_MTLS_CLIENT_CERT_PATH LCR_WITNESS_MTLS_CLIENT_KEY_PATH].each { |k| fails << "production: the core lacks #{k}" unless env.key?(k) }
+      else
+        warns << "development render: the core sends its claims to the development witness in plaintext (DSA_ENV=development); production latches mTLS" unless env.dig("LCR_WITNESS_REQUIRE_MTLS", "value") == "true"
+      end
+      ci = Array(core["image"]).first.to_s; si = Array(side["image"]).first.to_s
+      ct = ci.split("@").first.to_s.split(":").last; st = si.split("@").first.to_s.split(":").last
+      fails << "core and sidecar image tags differ (#{ct} vs #{st}); they are one pair" unless ct == st
+      # Kit 2.0 K-B fix round 1 (sol r1 P1): the pair ONLY ever runs from the
+      # signed digests the release recorded — never by tag, never from a
+      # placeholder, always the manifest pair (Compose parity).
+      digest = lambda { |ref| ref[/@(sha256:[0-9a-f]{64})\z/, 1] }
+      cd = digest.call(ci); sd = digest.call(si)
+      cm = ENV["LUCAIRN_CORE_MANIFEST_DIGEST"].to_s; sm = ENV["LUCAIRN_SIDECAR_MANIFEST_DIGEST"].to_s
+      if cd.nil? || sd.nil?
+        fails << "the core and sidecar images must be pinned by their signed digests (got #{ci.include?("@") ? "a malformed digest" : "a tag only"} for the core, #{si.include?("@") ? "a malformed digest" : "a tag only"} for the sidecar) — a tag is mutable; set sanitizer-core.image.digest and sanitizer-core.sidecar.image.digest to the pair image-manifest.yaml records"
+      elsif [cd, sd].any? { |d| d =~ /\Asha256:(.)\1{63}\z/ }
+        fails << "a core/sidecar digest is a placeholder (one repeated character), not a released digest"
+      elsif cm !~ /\Asha256:[0-9a-f]{64}\z/ || sm !~ /\Asha256:[0-9a-f]{64}\z/
+        fails << "image-manifest.yaml records no signed digest for the core/sidecar pair yet (#{cm.empty? ? "absent" : cm}) — the release step records them; until then the pair cannot be started from this kit"
+      elsif cd != cm || sd != sm
+        fails << "the pinned core/sidecar digests differ from the pair image-manifest.yaml records for this kit release"
+      else
+        oks << "image pair #{ct} pinned to the signed manifest pair"
+      end
+      # gateway switch set
+      proto = gwenv["GATEWAY_SANITIZER_PROTOCOL"]
+      if proto.nil? then fails << "the gateway is not wired to the core (no GATEWAY_SANITIZER_PROTOCOL; global.sanitizerCore.enabled?)"
+      elsif proto == "whole" then warns << "gateway protocol whole: the Anthropic route bypasses the core; kit 2.0 ships delta"
+      end
+      warns << "Gate posture log: the final check only logs; kit 2.0 ships enforce" if gwenv["GATEWAY_SANITIZER_GATE_POSTURE"] == "log"
+      fails << "SANITIZER_CORE_URL is not https://" unless gwenv["SANITIZER_CORE_URL"].to_s.start_with?("https://")
+      %w[SANITIZER_CORE_MTLS_CA_BUNDLE_PATH SANITIZER_CORE_MTLS_CLIENT_CERT_PATH SANITIZER_CORE_MTLS_CLIENT_KEY_PATH].each { |k| fails << "the gateway lacks #{k}" unless gwenv.key?(k) }
+      job = docs.find { |d| d["kind"] == "Job" && d.dig("metadata", "name").to_s.start_with?("sanitizer-core-migrate-") }
+      cm = docs.find { |d| d["kind"] == "ConfigMap" && d.dig("metadata", "name") == "sanitizer-core-migrations" }
+      if job.nil? || cm.nil?
+        fails << "the registry migration Job or its ConfigMap is not rendered"
+      else
+        jenv = {}
+        (job.dig("spec", "template", "spec", "containers", 0, "env") || []).each { |e| jenv[e["name"]] = e["value"] }
+        ceil = cm.dig("data", "migration-ceilings.conf").to_s[/^CEILING_SANITIZER_CORE=(\d+)$/, 1].to_i
+        tgt = jenv["MIGRATE_TARGET_VERSION"].to_i
+        if tgt < 1 || tgt > ceil then fails << "migration target #{tgt} is outside 1..#{ceil}"
+        else oks << "migration Job target #{tgt} (ceiling #{ceil})" end
+      end
+      want = %w[edge-sanitizer-core-egress identity-sanitizer-core-ingress identity-sanitizer-core-egress identity-sanitizer-core-registry]
+      have_np = docs.select { |d| d["kind"] == "NetworkPolicy" }.map { |d| d.dig("metadata", "name") }
+      missing = want - have_np
+      if missing.empty? then oks << "4 NetworkPolicies" else fails << "NetworkPolicies missing: #{missing.join(", ")}" end
+      puts "NS #{ns}"
+      puts "SECRET #{(ps["volumes"] || []).map { |v| v.dig("secret", "secretName") if v["name"] == "core-mtls" }.compact.first}"
+      gwv = ((gw && gw.dig("spec", "template", "spec", "volumes")) || []).find { |v| v["name"] == "sanitizer-core-mtls" }
+      puts "GWSECRET #{gw && gw.dig("metadata", "namespace")} #{gwv && gwv.dig("secret", "secretName")}"
+      puts "PROD #{prod}"
+      # Kit 2.0 K-B fix round 1 (sol r1 P2): the live check needs to know
+      # whether the registry DB is the bundled StatefulSet.
+      puts "PGBUNDLED #{docs.any? { |d| d["kind"] == "StatefulSet" && d.dig("metadata", "name") == "postgres-sanitizer-core" }}"
+    end
+    fails.each { |f| puts "FAIL #{f}" }
+    warns.each { |w| puts "WARN #{w}" }
+    puts "OK #{oks.join("; ")}" unless oks.empty?
+  ' 2>&1)" || { echo "sanitizer core (Helm): FAIL — could not parse the render."; return 1; }
+  local failed=0 line ns="" secret="" gw_ns="" gw_secret="" prod="false" pgbundled="true"
+  while IFS= read -r line; do
+    case "$line" in
+      "FAIL "*) echo "sanitizer core (Helm): failed (${line#FAIL })"; failed=1 ;;
+      "WARN "*) warn "sanitizer core (Helm): ${line#WARN }" ;;
+      "OK "*) echo "sanitizer core (Helm): render ok (${line#OK })" ;;
+      "NS "*) ns="${line#NS }" ;;
+      "SECRET "*) secret="${line#SECRET }" ;;
+      "GWSECRET "*) gw_ns="$(printf '%s' "${line#GWSECRET }" | cut -d' ' -f1)"; gw_secret="$(printf '%s' "${line#GWSECRET }" | cut -d' ' -f2)" ;;
+      "PROD "*) prod="${line#PROD }" ;;
+      "PGBUNDLED "*) pgbundled="${line#PGBUNDLED }" ;;
+      *) [ -n "$line" ] && { echo "sanitizer core (Helm): failed (unexpected inspector output: $line)"; failed=1; } ;;
+    esac
+  done <<<"$verdict"
+  [ "$failed" -eq 0 ] || return 1
+  [ -n "$ns" ] || return 0
+  if [ "${DOCTOR_KUBE_LIVE:-0}" != "1" ]; then
+    info "sanitizer core (Helm): live checks skipped (set DOCTOR_KUBE_LIVE=1 to inspect the running release with kubectl)"
+    return 0
+  fi
+  check_sanitizer_core_kube "$ns" "$secret" "$gw_ns" "$gw_secret" "$prod" "$pgbundled"
+}
+
+# sanitizer_core_manifest_digest_in <manifest> <image key> — the recorded
+# digest from image_digests.signed_artifacts, "pending", or nothing.
+sanitizer_core_manifest_digest_in() {
+  local manifest="$1" key="$2"
+  [ -f "$manifest" ] || return 0
+  awk -v want="    $key:" '
+    /^  signed_artifacts:/ { in_sa = 1; next }
+    in_sa && /^  [^ ]/ { in_sa = 0 }
+    in_sa && $0 == want { in_key = 1; next }
+    in_sa && in_key && /^    [^ ]/ { in_key = 0 }
+    in_sa && in_key && /^      digest:/ { gsub(/"/, "", $2); print $2; exit }
+    in_sa && in_key && /^      pending:[[:space:]]*true/ { print "pending"; exit }
+  ' "$manifest"
+}
+
+# check_sanitizer_core_kube <identity ns> <core mTLS Secret> <gateway ns> <gateway mTLS Secret> <prod true|false> [<bundled registry true|false>]
+# The running release, via kubectl's CURRENT context (DOCTOR_KUBE_LIVE=1).
+# Asked for and not reachable = failure, never a silent skip.
+check_sanitizer_core_kube() {
+  local ns="$1" secret="$2" gw_ns="$3" gw_secret="$4" prod="$5" pgbundled="${6:-true}" failed=0 out
+  have kubectl || { echo "sanitizer core (live): failed (DOCTOR_KUBE_LIVE=1 but kubectl is not installed)"; return 1; }
+  if ! kubectl get namespace "$ns" >/dev/null 2>&1; then
+    echo "sanitizer core (live): failed (namespace $ns not reachable with the current kubectl context)"
+    return 1
+  fi
+  local s
+  for s in "$ns/$secret" "$gw_ns/$gw_secret"; do
+    [ -n "${s#*/}" ] || continue
+    if kubectl -n "${s%%/*}" get secret "${s#*/}" >/dev/null 2>&1; then
+      echo "sanitizer core (live): mTLS Secret ${s} present"
+    else
+      echo "sanitizer core (live): failed (mTLS Secret ${s} missing — create it from scripts/bootstrap-sanitizer-core-mtls.sh output, INSTALL.md § \"Sanitizer core (kit 2.0, Helm)\")"
+      failed=1
+    fi
+  done
+  out="$(kubectl -n "$ns" get deployment sanitizer-core -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
+  if [ "${out:-0}" = "1" ]; then echo "sanitizer core (live): Deployment sanitizer-core ready (core + sidecar)"
+  else echo "sanitizer core (live): failed (Deployment sanitizer-core not ready: readyReplicas=${out:-0}; kubectl -n $ns describe pod -l app.kubernetes.io/name=sanitizer-core)"; failed=1; fi
+  # Only the BUNDLED registry DB is a StatefulSet of this release
+  # (sanitizer-core.postgresql.enabled=false = the operator's own DB; the
+  # migration Job and the core's readiness below prove it is reachable).
+  if [ "$pgbundled" = "true" ]; then
+    out="$(kubectl -n "$ns" get statefulset postgres-sanitizer-core -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
+    if [ "${out:-0}" = "1" ]; then echo "sanitizer core (live): registry StatefulSet postgres-sanitizer-core ready"
+    else echo "sanitizer core (live): failed (StatefulSet postgres-sanitizer-core not ready: readyReplicas=${out:-0})"; failed=1; fi
+  else
+    echo "sanitizer core (live): external registry DB (sanitizer-core.postgresql.enabled=false) — no bundled StatefulSet to check; the migration Job and the core's readiness cover the connection"
+  fi
+  out="$(kubectl -n "$ns" get jobs -l app.kubernetes.io/name=sanitizer-core-migrate -o jsonpath='{range .items[*]}{.metadata.name}={.status.succeeded}{"\n"}{end}' 2>/dev/null | awk -F= 'NF { n = $1; sub(/.*-r/, "", n); print n " " $0 }' | sort -n | tail -1 | cut -d' ' -f2- || true)"
+  case "$out" in
+    *=1) echo "sanitizer core (live): migration Job ${out%%=*} complete" ;;
+    '') echo "sanitizer core (live): failed (no sanitizer-core-migrate Job found)"; failed=1 ;;
+    *) echo "sanitizer core (live): failed (migration Job ${out%%=*} not complete)"; failed=1 ;;
+  esac
+  local logs mode drops
+  logs="$(kubectl -n "$ns" logs deployment/sanitizer-core -c core --tail=-1 2>/dev/null || true)"
+  mode="$(printf '%s\n' "$logs" | sed -n 's/.*evidence: witness transport mode=\([A-Za-z-]*\).*/\1/p' | tail -1)"
+  drops="$(printf '%s\n' "$logs" | grep -c 'DROPPED' || true)"
+  if [ -z "$mode" ]; then
+    echo "sanitizer core (live): failed (the core's log shows no witness transport line — it has not booted with claims on)"; failed=1
+  elif [ "$prod" = "true" ] && [ "$mode" != "mtls" ]; then
+    echo "sanitizer core (live): failed (witness transport mode=$mode in production; must be mtls)"; failed=1
+  else
+    echo "sanitizer core (live): witness transport mode=$mode"
+  fi
+  if [ "${drops:-0}" -gt 0 ]; then
+    echo "sanitizer core (live): failed ($drops claim(s) DROPPED in the core's log — certificates of those turns lack the core's sanitizer claim)"; failed=1
+  fi
+  return "$failed"
 }
 
 check_canary_hmac_key_helm() {
@@ -3482,6 +3751,25 @@ check_container_images() {
     local ref="${registry}/${image}:${tag}"
     if ! docker manifest inspect "$ref" >/dev/null 2>&1; then
       echo "container images: failed ($ref not pullable; check registry credentials or image tag)"
+      failed=1
+    fi
+  done
+
+  # Kit 2.0: the new sanitizer core and its model sidecar — part of every kit
+  # 2.0 topology. They ride their OWN tag (LUCAIRN_SANITIZER_CORE_IMAGE_TAG,
+  # default 1.1.0, never LUCAIRN_IMAGE_TAG: no 0.5.x tag of these images
+  # exists) and, when pinned, their own digest each — the same reference the
+  # compose file builds (repo:tag@sha256:…).
+  local core_tag core_digest side_digest core_ref side_ref
+  core_tag="$(env_value "$env_file" LUCAIRN_SANITIZER_CORE_IMAGE_TAG)"
+  core_tag="${core_tag:-1.1.0}"
+  core_digest="$(env_value "$env_file" LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST)"
+  side_digest="$(env_value "$env_file" LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST)"
+  core_ref="${registry}/dsa-sanitizer-core:${core_tag}${core_digest:+@${core_digest}}"
+  side_ref="${registry}/dsa-sanitizer-core-sidecar:${core_tag}${side_digest:+@${side_digest}}"
+  for ref in "$core_ref" "$side_ref"; do
+    if ! docker manifest inspect "$ref" >/dev/null 2>&1; then
+      echo "container images: failed ($ref not pullable; check registry credentials, LUCAIRN_SANITIZER_CORE_IMAGE_TAG and the digest pins)"
       failed=1
     fi
   done
@@ -9087,6 +9375,11 @@ doctor() {
     local values_mtls_failed=0
     check_enterprise_mtls_helm "$ROOT/charts/lucairn" "${values_files[@]}" || values_mtls_failed=1
     [ "$values_mtls_failed" -eq 0 ] || return 1
+    # Kit 2.0: the new sanitizer core's rendered contract (+ the running
+    # release with DOCTOR_KUBE_LIVE=1).
+    local values_core_failed=0
+    check_sanitizer_core_helm "$ROOT/charts/lucairn" "${values_files[@]}" || values_core_failed=1
+    [ "$values_core_failed" -eq 0 ] || return 1
     # Keep the historical success token for older automation, but make the
     # configuration-only terminal state unambiguous.
     echo "doctor: ok"
@@ -10880,7 +11173,7 @@ verify_images() {
   # legitimately adds/removes an image, update THIS list (and the dashboard
   # pin below) — it is the one place verify-images keys off.
   #
-  # The 12 dsa-* services ride the release --tag (current release 0.5.5; --tag is
+  # The 12 dsa-* services ride the release --tag (the sanitizer core pair rides its own tag, below) (current release 0.5.5; --tag is
   # required when multiple keys/image-digests-*.txt records are present); the dashboard
   # ships on its OWN independent cadence and is pinned here (currently 0.8.2),
   # mirroring optional_services.lucairn-dashboard.image_tag in image-manifest.yaml
@@ -10889,6 +11182,11 @@ verify_images() {
     dsa-gateway dsa-sanitizer dsa-audit dsa-id-bridge dsa-sandbox-a dsa-sandbox-b
     dsa-veil-witness dsa-reid-guard dsa-admin dsa-demo dsa-ingest dsa-llm-auditor
   )
+  # Kit 2.0 (PRD prd-2026-11-02-kit-2-0-new-core K0/K3): the new sanitizer
+  # core and its model sidecar are NOT in this list. They are part of EVERY
+  # verify set, at the pair's own manifest tag (the one the kit pulls), and
+  # fail closed while the manifest has no signed digest for them: see
+  # `core_pair` below (K-A fix round 1, sol r1 finding 4).
   local dashboard_image="lucairn-dashboard"
   local dashboard_tag="0.8.2"   # FIX-A: dashboard's own pinned tag (NOT --tag)
   local canonical_host="ghcr.io/declade"

@@ -26,7 +26,21 @@ CHART = ROOT / "charts/lucairn"
 # Captured with Helm v4.1.3; never regenerate from a moving main ref.
 # Amended twice: the 2026-10-27 postgres:16-alpine digest re-pin (image lines)
 # and T-1433 (sandbox-a qiEngineEnabled default "false": the rendered
-# QI_ENGINE_ENABLED ConfigMap value in each profile).
+# QI_ENGINE_ENABLED ConfigMap value in each profile). Kit 2.0 K-B re-rendered
+# them for the new sanitizer-core sub-chart (additions), and its fix round 1
+# re-rendered them again: the core pair pulled by digest, the registry DB
+# password as files (no secretKeyRef env), allow-dns carving the core + its
+# registry out of the identity namespace and the core's own DNS rule.
+# Fix round 3 re-rendered them once more: the migration runner accepts the
+# Job's libpq password file (ConfigMap script + its checksum annotation), the
+# registry DB comment states the entrypoint limit, and (values-dev, where
+# dnsRestriction is on) dns-restrict-identity carves out the core + registry.
+# Fix round 4 amended them by hand-checked diff (nothing else changed): the
+# core container's `LCR_PROFILE: "kit"` env literal and the comment above it
+# (moved here from kit 2.0 K-C M2, so the K-C OFF render equals this one byte
+# for byte), the registry DB comment's corrected entrypoint limit (every
+# start, not only the first boot), and (values-dev, where dnsRestriction is
+# on) the core's Kubernetes egress without its port-53 grant.
 OFF_GOLDEN = ROOT / "tests/fixtures/servicenow-control/helm-off"
 APP = "app.kubernetes.io/name"
 HELD = "templates/servicenow-control-held.yaml"
@@ -46,6 +60,14 @@ for key in ["admin.adminPassword", "audit.postgresPassword", "audit.auditAppPass
     chart, name = key.split(".")
     SECRET_ARGS += ["--set-string", f"{chart}.secrets.values.{name}=kit-harness-not-a-real-secret"]
 SECRET_ARGS += ["--set-string", "veil-witness.secrets.values.signingKey=" + "1" * 64]
+# Kit 2.0: the sanitizer-core sub-chart (ON by default) refuses an empty
+# registry key / registry DB password, exactly like the slots above.
+SECRET_ARGS += ["--set-string", "sanitizer-core.secrets.values.registryKey=" + "2" * 64,
+                "--set-string", "sanitizer-core.secrets.values.postgresPassword=kit-harness-not-a-real-secret"]
+# Kit 2.0 K-B fix round 1: the core pair renders only with both released
+# digests (SYNTHETIC, = tests/lib/test-helpers.sh TEST_SANITIZER_CORE_*DIGEST).
+SECRET_ARGS += ["--set-string", "sanitizer-core.image.digest=sha256:" + "c0" * 32,
+                "--set-string", "sanitizer-core.sidecar.image.digest=sha256:" + "5c" * 32]
 
 
 def merge(a, b):
@@ -406,7 +428,8 @@ class HelmAcceptance(unittest.TestCase):
             if n["label"] == "identity":
                 n["name"] = "synthetic-identity"
         config = merge(ON, {"gateway": {"namespace": "synthetic-edge", "global": {"servicenowControl": {"enabled": False}}},
-            "sandbox-a": {"namespace": "synthetic-identity"}, "infrastructure": {"namespaces": namespaces},
+            "sandbox-a": {"namespace": "synthetic-identity"}, "sanitizer-core": {"namespace": "synthetic-identity"},
+            "infrastructure": {"namespaces": namespaces},
             "global": {"servicenowControl": {"gatewayNamespace": "synthetic-edge", "sanitizerNamespace": "synthetic-identity"}}})
         result = render(self.chart, config)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -486,7 +509,11 @@ class HelmAcceptance(unittest.TestCase):
             ({"global": {"servicenowControl": {"gatewayNamespace": "other"}}}, "namespaces"),
             ({"infrastructure": {"enabled": False}}, "infrastructure"),
             ({"gateway": {"enabled": False}}, "requires gateway"),
-            ({"sandbox-a": {"enabled": False}}, "requires gateway"),
+            # Kit 2.0: the sanitizer core is switched off too, so this case
+            # still isolates the ServiceNow guard (the core's own guard refuses
+            # a core without Sandbox A, which holds its signing seed).
+            ({"sandbox-a": {"enabled": False}, "sanitizer-core": {"enabled": False},
+              "global": {"sanitizerCore": {"enabled": False}}}, "requires gateway"),
         ]
         for config, word in negatives:
             with self.subTest(config=config):

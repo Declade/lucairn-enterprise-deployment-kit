@@ -17,6 +17,9 @@ dependencies:
 - name: sandbox-b
   repository: ""
   version: 0.1.0
+- name: sanitizer-core
+  repository: ""
+  version: 0.1.0
 - name: gateway
   repository: ""
   version: 0.1.0
@@ -44,5 +47,5 @@ dependencies:
 - name: dashboard
   repository: ""
   version: 0.8.2
-digest: sha256:66d7bd3651e92ac85d64a9f813a5b2fa1e4d1bdc9327519423429d420577488e
-generated: "2026-06-07T23:21:37.145466+02:00"
+digest: sha256:947322552de44a0907d32fbac60b6672930004579954cedc325221b4853216db
+generated: "2026-11-02T12:30:35.022906+01:00"

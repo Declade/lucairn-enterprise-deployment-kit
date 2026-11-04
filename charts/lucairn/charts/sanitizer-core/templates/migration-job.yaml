@@ -1,0 +1,160 @@
+{{- if or .Values.postgresql.enabled .Values.external.host }}
+{{- $migrationFiles := list -}}
+{{- range $path, $_ := .Files.Glob "files/migrations/*.up.sql" }}{{- $migrationFiles = append $migrationFiles (base $path) -}}{{- end -}}
+{{- if lt (len $migrationFiles) (int (include "sanitizerCore.migrationCeiling" .)) -}}
+{{- fail (printf "[sanitizer-core] files/migrations holds %d migration files but the reviewed ceiling is %s; the chart and its migrations tree disagree." (len $migrationFiles) (include "sanitizerCore.migrationCeiling" .)) -}}
+{{- end -}}
+# The registry migration — the Helm twin of the Compose one-shot
+# `migrate-sanitizer-core` (profile sanitizer-core-migrate). It runs
+# migrate-sanitizer-core.sh: SHA256SUMS check, contiguous NNNN_ files, the
+# core's own ledger registry_schema_migrations written exactly as the core's
+# PG.Migrate writes it, everything in ONE transaction, capped at
+# CEILING_SANITIZER_CORE={{ include "sanitizerCore.migrationCeiling" . }}. Never down, no open-ended hatch;
+# a second concurrent run fails closed on the ledger INSERT.
+#
+# The name carries .Release.Revision: a Job's pod template is immutable, so
+# every `helm install/upgrade` creates a NEW Job (a no-op once the ledger is
+# at the target). The core Pod's wait-for-migration init container holds the
+# core until the ledger has reached migrations.targetVersion.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Chart.Name }}-migrate-r{{ .Release.Revision }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-migrate
+    app.kubernetes.io/part-of: dsa
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit | int }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}-migrate
+        app.kubernetes.io/part-of: dsa
+      annotations:
+        checksum/migrations: {{ include (print $.Template.BasePath "/migration-configmap.yaml") . | sha256sum }}
+    spec:
+      # NET-05: this pod never calls the Kubernetes API.
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: {{ include "sanitizerCore.postgresImage" . | quote }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # libpq password FILE (kit 2.0 K-B fix round 1, sol r1 P2): the
+              # password never enters this process's environment. Built from
+              # the mounted Secret file into a 0600 file on the private /tmp
+              # (format hostname:port:database:username:password, with \ and :
+              # escaped — https://www.postgresql.org/docs/16/libpq-pgpass.html).
+              umask 077
+              [ -r /etc/sanitizer-core/db/password ] || { echo "the registry DB password file is not mounted" >&2; exit 93; }
+              printf '*:*:*:*:%s\n' "$(sed 's/\\/\\\\/g; s/:/\\:/g' /etc/sanitizer-core/db/password)" > /tmp/.pgpass
+              chmod 0600 /tmp/.pgpass
+              export PGPASSFILE=/tmp/.pgpass
+              i=0
+              until pg_isready -q -t 2; do
+                i=$((i + 1))
+                if [ "$i" -ge 150 ]; then echo "[migrate-sanitizer-core] FATAL: the registry DB is not ready after 5 min." >&2; exit 93; fi
+                sleep 2
+              done
+              exec /bin/sh /scripts/migrate-sanitizer-core.sh
+          env:
+            - name: HOME
+              value: /tmp
+            - name: MIGRATE_LABEL
+              value: migrate-sanitizer-core
+            - name: MIGRATE_PATH
+              value: /migrations/sanitizer-core
+            - name: MIGRATE_TARGET_VERSION
+              value: {{ .Values.migrations.targetVersion | int | quote }}
+            - name: MIGRATE_CEILING_KEY
+              value: SANITIZER_CORE
+            - name: MIGRATE_CEILING_FILE
+              value: /scripts/migration-ceilings.conf
+            - name: PGHOST
+              value: {{ include "sanitizerCore.pgHost" . | quote }}
+            - name: PGPORT
+              value: {{ include "sanitizerCore.pgPort" . | quote }}
+            - name: PGUSER
+              value: {{ include "sanitizerCore.pgUser" . | quote }}
+            - name: PGDATABASE
+              value: {{ include "sanitizerCore.pgDatabase" . | quote }}
+            - name: PGSSLMODE
+              value: {{ include "sanitizerCore.sslmode" . | quote }}
+            - name: PGCONNECT_TIMEOUT
+              value: "5"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: migrations
+              mountPath: /migrations/sanitizer-core
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: registry-db-password
+              mountPath: /etc/sanitizer-core/db
+              readOnly: true
+      volumes:
+        # The script and the ceiling file MUST sit in one directory (the
+        # script refuses a ceiling file anywhere else).
+        - name: scripts
+          configMap:
+            name: {{ .Chart.Name }}-migrations
+            defaultMode: 0555
+            items:
+              - key: migrate-sanitizer-core.sh
+                path: migrate-sanitizer-core.sh
+              - key: migration-ceilings.conf
+                path: migration-ceilings.conf
+        - name: migrations
+          configMap:
+            name: {{ .Chart.Name }}-migrations
+            defaultMode: 0444
+            items:
+              - key: SHA256SUMS
+                path: SHA256SUMS
+              {{- range $migrationFiles }}
+              - key: {{ . }}
+                path: {{ . }}
+              {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+        # ONLY the DB password, as a file (the libpq password file is built
+        # from it; never an env var).
+        - name: registry-db-password
+          secret:
+            secretName: {{ .Chart.Name }}-credentials
+            defaultMode: 0444
+            items:
+              - key: POSTGRES_PASSWORD
+                path: password
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

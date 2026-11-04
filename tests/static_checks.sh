@@ -6,6 +6,15 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Shared test constants (TEST_SIGNING_KEY for helm render injection).
 # shellcheck source=lib/test-helpers.sh
 source "$ROOT/tests/lib/test-helpers.sh"
+# Kit 2.0 K-B fix round 1 (sol r1 P1): the sanitizer-core chart renders ONLY
+# with the released core/sidecar digests. Every render below runs against a
+# copy of the chart that carries the synthetic signed pair, as a released kit
+# does (tests/lib/test-helpers.sh lucairn_released_chart); file checks keep
+# reading this tree.
+STATIC_CHART_TMP="$(mktemp -d)"
+trap 'rm -rf "$STATIC_CHART_TMP"' EXIT
+RELEASED_CHART="$(lucairn_released_chart "$STATIC_CHART_TMP")" \
+  || { echo "static checks: could not build the released-chart copy" >&2; exit 1; }
 
 # Keep the portable test path free of ripgrep. This roster mirrors every script
 # invoked by the Makefile test target, including its three prerequisites.
@@ -321,7 +330,7 @@ if command -v helm >/dev/null 2>&1; then
   # grep below would then report the ABSENCE of a string as the finding while
   # hiding the real error.
   RENDER_ERR="$(mktemp)"
-  if ! helm template lucairn "$ROOT/charts/lucairn" \
+  if ! helm template lucairn "$RELEASED_CHART" \
     "${HELM_TEST_SECRET_ARGS[@]}" \
     --set global.skipPullSecretGuard=true \
     --set sandbox-a.sanitizer.llmScanEnabled=true \
@@ -481,11 +490,11 @@ python3 "$DUPKEY_CHECK" "${DUPKEY_TARGETS[@]}" \
   || { echo "T-489: duplicate top-level/nested key(s) found in a values file — see above" >&2; exit 1; }
 
 if command -v helm >/dev/null 2>&1; then
-  helm lint "$ROOT/charts/lucairn" -f "$ROOT/customer-values.yaml.example" \
+  helm lint "$RELEASED_CHART" -f "$ROOT/customer-values.yaml.example" \
     --set global.skipPullSecretGuard=true \
     --set "veil-witness.secrets.values.signingKey=${TEST_SIGNING_KEY}"
 
-  CHART="$ROOT/charts/lucairn"
+  CHART="$RELEASED_CHART"
 
   # HA-02 regression guard: the accepted ordered production values pair MUST
   # render. values-prod.yaml intentionally fails closed until the site overlay
@@ -674,7 +683,7 @@ echo "B1-S3: image_digests block in lockstep with keys/image-digests-0.5.5.txt (
 #      the endpoint is the stock in-cluster Service is refused (that hop is
 #      in-box by construction, so "tailnet" would be a false declaration).
 if command -v helm >/dev/null 2>&1; then
-  T64_CHART="$ROOT/charts/lucairn"
+  T64_CHART="$RELEASED_CHART"
 
   # 1) Default render: stock endpoint -> auto-derived in_box_plaintext, and
   #    it renders exactly ONCE, sourced only from sandbox-a's deployment.yaml
@@ -861,7 +870,7 @@ fi
 # and non-string-type rejection (Helm's --set turns `true`/bare numbers into
 # bool/int, not the literal string "true").
 if command -v helm >/dev/null 2>&1; then
-  T487_CHART="$ROOT/charts/lucairn"
+  T487_CHART="$RELEASED_CHART"
 
   # (a) unset -> absent from render.
   T487_UNSET_FILE="$(mktemp)"

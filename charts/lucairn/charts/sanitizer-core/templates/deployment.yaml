@@ -1,0 +1,383 @@
+{{- include "sanitizerCore.validate" . -}}
+{{- $g := .Values.global | default dict -}}
+{{- $gm := $g.mtls | default dict -}}
+{{- $mtlsEnabled := and (kindIs "bool" $gm.enabled) $gm.enabled -}}
+{{- $coreTag := include "sanitizerCore.tag" . -}}
+{{- $dsnDir := "/etc/sanitizer-core/registry" -}}
+{{- /*
+  POD LAYOUT — one Pod, two containers (sidecar + core).
+
+  The hosted service runs the core INSIDE the sidecar's network namespace
+  (Compose `network_mode: service:sanitizer-core-sidecar`): the core dials the
+  sidecar on 127.0.0.1:8765 and the sidecar binds loopback only, so no network
+  can reach the model endpoint. A Kubernetes Pod is exactly that unit — its
+  containers share one network namespace — so the Helm layout is the hosted
+  layout, with no Service, port or NetworkPolicy for the sidecar at all.
+
+  Two separate Pods were rejected: the sidecar would have to bind a Pod IP
+  (a change to its loopback-only posture), get its own Service and an ingress
+  rule in the identity namespace, and the core<->sidecar hop would leave the
+  host. One Pod also fixes the Compose "recreate the core after every sidecar
+  recreate" hazard: the namespace belongs to the Pod, not to the sidecar.
+
+  Strategy Recreate: one core at a time, as on the hosted box (a rolling
+  update would briefly run two cores against one registry and reserve the
+  6 GiB sidecar request twice on the node). An upgrade therefore has a short
+  window — model load, 1-5 min — in which the Anthropic route fails closed.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: dsa
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/part-of: dsa
+      annotations:
+        checksum/entrypoint: {{ include (print $.Template.BasePath "/entrypoint-configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Chart.Name }}
+      automountServiceAccountToken: false
+      # No Service-link env vars: every Service in this namespace would
+      # otherwise inject SANDBOX_A_*/POSTGRES_* variables into both containers.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 30 }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      {{- if $g.nodeIsolation }}
+      # The core holds pre-redaction text: identity zone only, never beside
+      # Sandbox B (the same rule as Sandbox A).
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: dsa.io/zone
+                    operator: In
+                    values:
+                      - identity
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values:
+                      - sandbox-b
+              topologyKey: kubernetes.io/hostname
+      tolerations:
+        - key: dsa.io/zone
+          operator: Equal
+          value: identity
+          effect: NoSchedule
+      {{- end }}
+      initContainers:
+        # The core refuses to start on an unmigrated registry ("apply
+        # migration 0007"). Hold the Pod here until the migration Job has
+        # brought the ledger to migrations.targetVersion, so a fresh install
+        # shows "Init" instead of a crash loop. Discrete libpq settings, never a
+        # URL (libpq quotes a malformed URL, password included, in its errors).
+        - name: wait-for-migration
+          image: {{ include "sanitizerCore.postgresImage" . | quote }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # libpq password FILE (kit 2.0 K-B fix round 1, sol r1 P2): the
+              # password never enters this process's environment. Built from
+              # the mounted Secret file into a 0600 file on the private /tmp
+              # (format hostname:port:database:username:password, with \ and :
+              # escaped — https://www.postgresql.org/docs/16/libpq-pgpass.html).
+              umask 077
+              [ -r /etc/sanitizer-core/db/password ] || { echo "the registry DB password file is not mounted" >&2; exit 93; }
+              printf '*:*:*:*:%s\n' "$(sed 's/\\/\\\\/g; s/:/\\:/g' /etc/sanitizer-core/db/password)" > /tmp/.pgpass
+              chmod 0600 /tmp/.pgpass
+              export PGPASSFILE=/tmp/.pgpass
+              echo "Waiting for the registry migration (ledger >= ${TARGET_VERSION})..."
+              i=0
+              while [ "$i" -lt 300 ]; do
+                n="$(psql -X -q -At -c 'SELECT count(*) FROM registry_schema_migrations' 2>/dev/null || true)"
+                case "$n" in
+                  ''|*[!0-9]*) : ;;
+                  *) if [ "$n" -ge "$TARGET_VERSION" ]; then echo "registry ledger at $n - starting."; exit 0; fi ;;
+                esac
+                i=$((i + 1))
+                sleep 2
+              done
+              echo "registry not migrated to ${TARGET_VERSION} after 10 min - is the sanitizer-core-migrate Job complete? (kubectl -n {{ .Values.namespace }} get jobs)" >&2
+              exit 1
+          env:
+            - name: HOME
+              value: /tmp
+            - name: TARGET_VERSION
+              value: {{ .Values.migrations.targetVersion | int | quote }}
+            - name: PGHOST
+              value: {{ include "sanitizerCore.pgHost" . | quote }}
+            - name: PGPORT
+              value: {{ include "sanitizerCore.pgPort" . | quote }}
+            - name: PGUSER
+              value: {{ include "sanitizerCore.pgUser" . | quote }}
+            - name: PGDATABASE
+              value: {{ include "sanitizerCore.pgDatabase" . | quote }}
+            - name: PGSSLMODE
+              value: {{ include "sanitizerCore.sslmode" . | quote }}
+            - name: PGCONNECT_TIMEOUT
+              value: "5"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: wait-tmp
+              mountPath: /tmp
+            - name: registry-db-password
+              mountPath: /etc/sanitizer-core/db
+              readOnly: true
+      containers:
+        # ── The model sidecar (spaCy + GLiNER), 127.0.0.1:8765 only ─────────
+        - name: sidecar
+          image: {{ include "sanitizerCore.imageRef" (dict "root" $ "repository" .Values.sidecar.image.repository "tag" (include "sanitizerCore.sidecarTag" .) "digest" .Values.sidecar.image.digest) | quote }}
+          imagePullPolicy: {{ .Values.sidecar.image.pullPolicy }}
+          {{- if .Values.sidecar.readOnlyRootFilesystem }}
+          env:
+            - name: HOME
+              value: /tmp
+            - name: XDG_CACHE_HOME
+              value: /tmp/.cache
+          {{- end }}
+          # The endpoint binds loopback only, so these are exec probes (an
+          # httpGet probe targets the Pod IP and could never reach it).
+          # healthy = every configured model finished loading. NON-COVERAGE:
+          # this does not prove detection quality; the equivalence replay does.
+          startupProbe:
+            exec:
+              command: ["python3", "-I", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/v1/health', timeout=5)"]
+            periodSeconds: {{ .Values.sidecar.startupProbe.periodSeconds }}
+            timeoutSeconds: 8
+            failureThreshold: {{ .Values.sidecar.startupProbe.failureThreshold }}
+          readinessProbe:
+            exec:
+              command: ["python3", "-I", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/v1/health', timeout=5)"]
+            periodSeconds: 10
+            timeoutSeconds: 8
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["python3", "-I", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/v1/health', timeout=5)"]
+            periodSeconds: 20
+            timeoutSeconds: 8
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.sidecar.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml (merge (dict "readOnlyRootFilesystem" (.Values.sidecar.readOnlyRootFilesystem | default false)) (omit .Values.containerSecurityContext "readOnlyRootFilesystem")) | nindent 12 }}
+          volumeMounts:
+            - name: sidecar-tmp
+              mountPath: /tmp
+        # ── The Go core, verified mTLS on :8790 ──────────────────────────────
+        - name: core
+          image: {{ include "sanitizerCore.imageRef" (dict "root" $ "repository" .Values.image.repository "tag" $coreTag "digest" .Values.image.digest) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "/opt/lucairn/entrypoint/core-entrypoint.sh"]
+          # ⚑ No --dsn: the registry DSN (with the DB password) is a FILE from
+          # the credentials Secret (DSA cmd/sanitizer-core/registry_dsn.go:
+          # --registry-dsn-file > DSA_SANITIZER_CORE_REGISTRY_DSN > --dsn; the
+          # boot log names the source, never the value). Process arguments are
+          # world-readable on the node; this file is mode 0440, group fsGroup.
+          args:
+            - "serve"
+            - "--listen=0.0.0.0:{{ .Values.service.port }}"
+            - "--registry-dsn-file={{ $dsnDir }}/dsn"
+            - "--sidecar=http://127.0.0.1:8765"
+          env:
+            # ⚑ LCR_PROFILE is ALWAYS set here, as a literal (K-C M2): `kit`,
+            # under which the core refuses the ServiceNow mode at boot (DSA
+            # cmd/sanitizer-core/instance_wire.go profileBoot), or
+            # `kit-servicenow` only with global.servicenowControl.enabled. An
+            # entry in `env:` outranks anything a Secret or ConfigMap could
+            # bring in through `envFrom`, so no customer Secret can switch it.
+            - name: LCR_PROFILE
+              value: "kit"
+            - name: DSA_ENV
+              value: {{ required "global.dsaEnv must be set to \"development\" or \"production\"" $g.dsaEnv | quote }}
+            # The core serves HTTPS on the SANITIZER_CORE_MTLS_* family and
+            # dials the witness on the LCR_WITNESS_MTLS_* family; the legacy
+            # GRPC_TLS layer is off for it (same as hosted).
+            - name: GRPC_TLS_ENABLED
+              value: "false"
+            - name: DSA_SANITIZER_CORE_REGISTRY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Chart.Name }}-credentials
+                  key: DSA_SANITIZER_CORE_REGISTRY_KEY
+            - name: LCR_ENABLED
+              value: {{ .Values.veilEnabled | quote }}
+            # Same seed as the old sanitizer: both sign as dsa-sanitizer.
+            - name: LCR_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.signingKeySecretRef.name }}
+                  key: {{ .Values.signingKeySecretRef.key }}
+            - name: LCR_WITNESS_ADDR
+              value: {{ .Values.veilWitnessAddr | quote }}
+            {{- if $mtlsEnabled }}
+            # core -> witness: verified mTLS with the `sanitizer` mesh leaf
+            # (SAN dsa-sanitizer) against the witness mesh leaf (SAN
+            # dsa-veil-witness, pinned by the core), latched: never plaintext.
+            - name: LCR_WITNESS_REQUIRE_MTLS
+              value: "true"
+            - name: LCR_WITNESS_MTLS_CA_BUNDLE_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.caBundleKey }}"
+            - name: LCR_WITNESS_MTLS_CLIENT_CERT_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.certKey }}"
+            - name: LCR_WITNESS_MTLS_CLIENT_KEY_PATH
+              value: "{{ .Values.global.mtls.mountPath }}/{{ .Values.global.mtls.keyKey }}"
+            {{- end }}
+            # gateway -> core: the core's server leaf + the hop CA.
+            - name: SANITIZER_CORE_MTLS_CA_BUNDLE_PATH
+              value: "{{ .Values.mtls.mountPath }}/{{ .Values.mtls.caKey }}"
+            - name: SANITIZER_CORE_MTLS_SERVER_CERT_PATH
+              value: "{{ .Values.mtls.mountPath }}/{{ .Values.mtls.certKey }}"
+            - name: SANITIZER_CORE_MTLS_SERVER_KEY_PATH
+              value: "{{ .Values.mtls.mountPath }}/{{ .Values.mtls.keyKey }}"
+            {{- if .Values.claimDrainSeconds }}
+            - name: SANITIZER_CLAIM_DRAIN_SECONDS
+              value: {{ .Values.claimDrainSeconds | quote }}
+            {{- end }}
+            {{- if .Values.witnessGrpcMaxMessageBytes }}
+            - name: DSA_WITNESS_GRPC_MAX_MESSAGE_BYTES
+              value: {{ .Values.witnessGrpcMaxMessageBytes | quote }}
+            {{- end }}
+          ports:
+            - name: https
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          # The listener is mTLS-only, so these are TCP probes (the same check
+          # as the Compose healthcheck `nc -z 127.0.0.1 8790`). The startup
+          # budget (15 min) covers the entrypoint's wait for the sidecar.
+          startupProbe:
+            tcpSocket:
+              port: https
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 180
+          readinessProbe:
+            tcpSocket:
+              port: https
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: https
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: entrypoint
+              mountPath: /opt/lucairn/entrypoint
+              readOnly: true
+            - name: registry-dsn
+              mountPath: {{ $dsnDir }}
+              readOnly: true
+            - name: core-mtls
+              mountPath: {{ .Values.mtls.mountPath | quote }}
+              readOnly: true
+            {{- if $mtlsEnabled }}
+            - name: enterprise-mtls-sanitizer
+              mountPath: {{ .Values.global.mtls.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            - name: core-tmp
+              mountPath: /tmp
+      volumes:
+        - name: entrypoint
+          configMap:
+            name: {{ .Chart.Name }}-entrypoint
+            defaultMode: 0555
+        # ONLY the DB password of the credentials Secret, as the file
+        # `password`, for the wait-for-migration init container's libpq
+        # password file (never an env var).
+        - name: registry-db-password
+          secret:
+            secretName: {{ .Chart.Name }}-credentials
+            defaultMode: 0444
+            items:
+              - key: POSTGRES_PASSWORD
+                path: password
+        # ONLY the DSN key of the credentials Secret, as the file `dsn`.
+        - name: registry-dsn
+          secret:
+            secretName: {{ .Chart.Name }}-credentials
+            defaultMode: 0440
+            items:
+              - key: REGISTRY_DSN
+                path: dsn
+        # ONLY the core's server leaf + the hop CA (operator-owned Secret;
+        # Helm projects these three keys and never generates key material).
+        - name: core-mtls
+          secret:
+            secretName: {{ .Values.mtls.secretName }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.mtls.caKey }}
+                path: {{ .Values.mtls.caKey }}
+              - key: {{ .Values.mtls.certKey }}
+                path: {{ .Values.mtls.certKey }}
+              - key: {{ .Values.mtls.keyKey }}
+                path: {{ .Values.mtls.keyKey }}
+        {{- if $mtlsEnabled }}
+        # The `sanitizer` mesh identity — the claim leaf of dsa-sanitizer.
+        - name: enterprise-mtls-sanitizer
+          secret:
+            secretName: {{ .Values.global.mtls.secrets.sanitizer }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.global.mtls.caBundleKey }}
+                path: {{ .Values.global.mtls.caBundleKey }}
+              - key: {{ .Values.global.mtls.certKey }}
+                path: {{ .Values.global.mtls.certKey }}
+              - key: {{ .Values.global.mtls.keyKey }}
+                path: {{ .Values.global.mtls.keyKey }}
+        {{- end }}
+        - name: sidecar-tmp
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: core-tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: wait-tmp
+          emptyDir:
+            sizeLimit: 16Mi
+      {{- with $g.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

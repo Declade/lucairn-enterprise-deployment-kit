@@ -365,7 +365,17 @@ metadata:
   labels:
     app.kubernetes.io/part-of: dsa
 spec:
-  podSelector: {}
+  # Kit 2.0 K-B fix round 1 (sol r1 P2): policies are unioned, so the core
+  # and its registry DB must be carved out HERE. The registry DB gets no DNS
+  # at all; the core resolves through the cluster resolver only
+  # (identity-sanitizer-core-egress in network-policies.yaml).
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: NotIn
+        values:
+          - sanitizer-core
+          - postgres-sanitizer-core
   policyTypes:
     - Egress
   egress:
@@ -854,7 +864,17 @@ metadata:
   name: identity-egress
   namespace: dsa-identity
 spec:
-  podSelector: {}
+  # Kit 2.0: the sanitizer core Pod and its registry DB are NOT governed by
+  # this namespace-wide rule — each has its own, narrower policy below
+  # (identity-sanitizer-core-egress / identity-sanitizer-core-registry).
+  # Policies are unioned, so a carve-out has to happen HERE.
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: NotIn
+        values:
+          - sanitizer-core
+          - postgres-sanitizer-core
   policyTypes:
     - Egress
   egress:
@@ -1005,7 +1025,16 @@ metadata:
   name: identity-ingress
   namespace: dsa-identity
 spec:
-  podSelector: {}
+  # Kit 2.0: carve-out, as in identity-egress. Without it the intra-namespace
+  # rule below (`from: podSelector: {}` on 5432) would let EVERY identity pod
+  # reach the core's registry DB.
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: NotIn
+        values:
+          - sanitizer-core
+          - postgres-sanitizer-core
   policyTypes:
     - Ingress
   ingress:
@@ -1077,6 +1106,159 @@ spec:
         - port: 5432
           protocol: TCP
         - port: 50056
+          protocol: TCP
+# ============================================================
+# Kit 2.0 — the new sanitizer core (identity namespace)
+#
+# The Compose twin puts the registry DB on an internal network that only the
+# core (inside the sidecar's namespace) and the migration one-shot join. Here:
+#   gateway Pod      -> core Pod :8790            (both sides: edge egress +
+#                                                  identity ingress)
+#   core Pod         -> registry DB :5432, witness :50057 — nothing else
+#   core Pod + migration Job -> registry DB :5432 — no other pod
+#   registry DB      -> nothing (no egress rule at all)
+# The model sidecar runs INSIDE the core Pod on 127.0.0.1 and is not a network
+# peer of anything. DNS: both are carved out of allow-dns (dns-egress.yaml);
+# the core resolves through the cluster resolver Pods only (the rule below,
+# global.clusterDNS.podLabels), the registry DB not at all.
+# NON-COVERAGE: NetworkPolicy is enforced only by a CNI that implements it
+# (kindnet does not); `bin/lucairn doctor` reports presence, not enforcement.
+# ============================================================
+---
+# Source: lucairn/charts/infrastructure/templates/network-policies.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: edge-sanitizer-core-egress
+  namespace: dsa-edge
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  # Only the gateway Pod may dial the core.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: identity
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sanitizer-core
+      ports:
+        - port: 8790
+          protocol: TCP
+---
+# Source: lucairn/charts/infrastructure/templates/network-policies.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-sanitizer-core-ingress
+  namespace: dsa-identity
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sanitizer-core
+  policyTypes:
+    - Ingress
+  ingress:
+    # The gateway's Anthropic route (verified mTLS on top: the core accepts
+    # only a client leaf with the DNS SAN dsa-gateway).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: edge
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      ports:
+        - port: 8790
+          protocol: TCP
+---
+# Source: lucairn/charts/infrastructure/templates/network-policies.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-sanitizer-core-egress
+  namespace: dsa-identity
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sanitizer-core
+  policyTypes:
+    - Egress
+  egress:
+    # → its registry DB (also the wait-for-migration init container).
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres-sanitizer-core
+      ports:
+        - port: 5432
+          protocol: TCP
+    # → the witness claim port (dsa-sanitizer PII_SANITIZED claims).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dsa.io/namespace: witness
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: veil-witness
+      ports:
+        - port: 50057
+          protocol: TCP
+    # → DNS, to the cluster resolver Pods ONLY (not every kube-system Pod).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # An EXTERNAL registry DB (sanitizer-core.postgresql.enabled=false) is not
+    # covered here: add your own egress rule for its address, scoped to this
+    # podSelector.
+---
+# Source: lucairn/charts/infrastructure/templates/network-policies.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-sanitizer-core-registry
+  namespace: dsa-identity
+  labels:
+    app.kubernetes.io/part-of: dsa
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-sanitizer-core
+  # Egress listed with NO rule = no egress at all — DNS included (it is
+  # carved out of allow-dns, dns-egress.yaml).
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - sanitizer-core
+                  - sanitizer-core-migrate
+      ports:
+        - port: 5432
           protocol: TCP
 
 # ============================================================
@@ -1841,6 +2023,18 @@ metadata:
 # auto-mounted SA token is unused attack surface. Disable it.
 automountServiceAccountToken: false
 ---
+# Source: lucairn/charts/sanitizer-core/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sanitizer-core
+  namespace: dsa-identity
+  labels:
+    app.kubernetes.io/name: sanitizer-core
+    app.kubernetes.io/part-of: dsa
+# NET-05: no pod of this chart calls the Kubernetes API.
+automountServiceAccountToken: false
+---
 # Source: lucairn/charts/veil-witness/templates/serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
@@ -2010,6 +2204,30 @@ stringData:
   DSA_ADMIN_KEY: ""
   DSA_SERVICE_TOKEN: ""
   DSA_LICENSE_KEY: ""
+---
+# Source: lucairn/charts/sanitizer-core/templates/secret.yaml
+# The core's credentials (k8s-native backend). Three keys:
+#   DSA_SANITIZER_CORE_REGISTRY_KEY  env of the core (row sealing key)
+#   POSTGRES_PASSWORD                the registry DB (StatefulSet, migration
+#                                    Job, wait-for-migration init container)
+#   REGISTRY_DSN                     mounted as a FILE into the core and read
+#                                    with --registry-dsn-file: the password never
+#                                    appears in the core's command line (ps /
+#                                    /proc/<pid>/cmdline are world-readable).
+# The DSN is built from the same password, so the two cannot disagree.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sanitizer-core-credentials
+  namespace: dsa-identity
+  labels:
+    app.kubernetes.io/name: sanitizer-core
+    app.kubernetes.io/part-of: dsa
+type: Opaque
+stringData:
+  DSA_SANITIZER_CORE_REGISTRY_KEY: "2222222222222222222222222222222222222222222222222222222222222222"
+  POSTGRES_PASSWORD: "kit-harness-not-a-real-secret"
+  REGISTRY_DSN: "postgres://dsa:kit-harness-not-a-real-secret@postgres-sanitizer-core:5432/sanitizer_core?sslmode=disable"
 ---
 # Source: lucairn/charts/veil-witness/templates/secret.yaml
 apiVersion: v1
@@ -2772,6 +2990,453 @@ data:
     Previous context:
     {feature_context}
 ---
+# Source: lucairn/charts/sanitizer-core/templates/entrypoint-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sanitizer-core-entrypoint
+  namespace: dsa-identity
+  labels:
+    app.kubernetes.io/name: sanitizer-core
+    app.kubernetes.io/part-of: dsa
+data:
+  core-entrypoint.sh: |
+    #!/bin/sh
+    # Wait until the model sidecar in THIS Pod answers on loopback, then exec
+    # the core (busybox sh + wget of the core image). The core asks the
+    # sidecar for its labels at boot and refuses a sidecar it cannot reach;
+    # without this wait it would crash-loop with growing back-off for the
+    # 1-5 minutes the sidecar spends loading its models.
+    #
+    # Unlike the Compose entrypoint there is no restart watchdog: in a Pod the
+    # network namespace belongs to the Pod, not to the sidecar container, so a
+    # sidecar restart (crash, OOM kill at its limit) leaves the core joined and
+    # it reaches the restarted sidecar again by itself. While the sidecar is
+    # down the Pod is NotReady and the gateway's Anthropic requests fail
+    # closed.
+    h=http://127.0.0.1:8765/v1/health
+    trap 'exit 0' TERM INT
+    n=0
+    until wget -q -T 5 -O /dev/null "$h"; do
+      [ $((n % 15)) -eq 0 ] && echo "core-entrypoint: waiting for the model sidecar ($h)" >&2
+      n=$((n + 1))
+      sleep 2
+    done
+    echo "core-entrypoint: sidecar answers, starting the core" >&2
+    exec sanitizer-core "$@"
+---
+# Source: lucairn/charts/sanitizer-core/templates/migration-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sanitizer-core-migrations
+  namespace: dsa-identity
+  labels:
+    app.kubernetes.io/name: sanitizer-core-migrate
+    app.kubernetes.io/part-of: dsa
+data:
+  migration-ceilings.conf: |
+    # Rendered by charts/lucairn/charts/sanitizer-core (kit 2.0). Review:
+    # docs/RELEASING.md § "Migration review".
+    CEILING_SANITIZER_CORE=7
+  migrate-sanitizer-core.sh: |
+    #!/bin/sh
+    #
+    # migrate-sanitizer-core.sh — the explicit, capped registry-migration step for
+    # the new sanitizer core (kit 2.0, PRD prd-2026-11-02-kit-2-0-new-core.md K1).
+    #
+    # The core's registry database (postgres-sanitizer-core) is migrated as an
+    # OPERATOR STEP at install and at every upgrade, never on boot. The core image
+    # carries the same migrations embedded and can apply them itself with
+    # `serve --migrate`, but that flag is for local test databases only; on the
+    # hosted service the migrations ran as a listed window step (Marc, 20 Oct).
+    # This script is the kit's copy of that step:
+    #
+    #   docker compose -f docker-compose.customer.yml --env-file customer.env \
+    #     --profile sanitizer-core-migrate run --rm migrate-sanitizer-core
+    #
+    # Until it has run, the core refuses to start ("the registry has no attempt
+    # record (apply migration 0007)"), which is loud on purpose.
+    #
+    # ── WHAT IT APPLIES, AND HOW ─────────────────────────────────────────────────
+    #
+    # The files in migrations/sanitizer-core/ are byte-copies of the core's
+    # services/sanitizer-core/store/migrations/*.up.sql at the release commit
+    # (migrations/sanitizer-core/SOURCE names it; SHA256SUMS pins every file and
+    # is checked before anything runs). The ledger is the core's OWN ledger,
+    # registry_schema_migrations(name, at), written exactly as the core's
+    # PG.Migrate writes it (services/sanitizer-core/store/store.go): one row per
+    # file name, the advisory lock 7413001, everything in ONE transaction. So a
+    # kit-migrated database and a hosted one carry the same ledger, and a later
+    # core that runs its own Migrate against this database sees every file as
+    # applied.
+    #
+    # One difference from PG.Migrate, deliberately: the ledger INSERT has no
+    # ON CONFLICT clause. The pending set is read before the lock is taken, so a
+    # second runner that slipped in between makes this run's INSERT collide and the
+    # whole transaction roll back. A concurrent run fails closed; it never applies a
+    # body twice.
+    #
+    # ── THE CAP (same contract as scripts/migrate-capped.sh, board T-350) ────────
+    #
+    #   MIGRATE_TARGET_VERSION  the version to stop at (Compose default = the
+    #                           ceiling; operators may lower it).
+    #   MIGRATE_CEILING_KEY     must match the tree being applied (SANITIZER_CORE
+    #                           for /migrations/sanitizer-core).
+    #   MIGRATE_CEILING_FILE    must sit beside this script; the value comes from
+    #                           CEILING_SANITIZER_CORE in the shipped, read-only
+    #                           scripts/migration-ceilings.conf, never from the
+    #                           environment. Raising it is a kit-release change
+    #                           gated by docs/RELEASING.md § "Migration review".
+    #
+    # There is NO open-ended escape hatch here (unlike migrate-capped.sh): the core
+    # reads its registry with a fixed schema, so "apply whatever is on disk" has no
+    # legitimate use. It never migrates down and it never edits the ledger.
+    #
+    # Connection: discrete PGHOST/PGPORT/PGUSER/PGDATABASE, never a URL (libpq
+    # quotes a malformed URL, password included, in its errors). The password is
+    # PGPASSWORD (the Compose one-shot) OR a libpq password file named by
+    # PGPASSFILE (the Helm Job: the password never enters its environment; kit 2.0
+    # K-B fix round 3, sol r2 P1: this runner required PGPASSWORD, so every Helm
+    # install stopped here with 93).
+    #
+    # Exit codes: 0 applied or nothing to do · 90 bad target · 91 ceiling problem ·
+    # 92 ledger inconsistent · 93 cannot read the ledger · 94 tree/target disagree ·
+    # 95 file checksum mismatch · 96 apply failed (rolled back).
+  
+    set -eu
+  
+    LABEL="${MIGRATE_LABEL:-migrate-sanitizer-core}"
+    MIGRATE_PATH="${MIGRATE_PATH:?MIGRATE_PATH must be set (e.g. /migrations/sanitizer-core)}"
+    TARGET="${MIGRATE_TARGET_VERSION:-}"
+    CEILING_KEY="${MIGRATE_CEILING_KEY:?MIGRATE_CEILING_KEY must be set (SANITIZER_CORE)}"
+    CEILING_FILE="${MIGRATE_CEILING_FILE:-/scripts/migration-ceilings.conf}"
+    PSQL="${PSQL:-psql}"
+  
+    fatal() {
+      echo "[$LABEL] FATAL: $1 Applying NO migrations. See docs/RELEASING.md § \"Migration review\"." >&2
+      exit "$2"
+    }
+  
+    need() { [ -n "$2" ] || fatal "$1 must be set (discrete libpq settings; never a connection URL)." 93; }
+    need PGHOST "${PGHOST:-}"
+    need PGUSER "${PGUSER:-}"
+    need PGDATABASE "${PGDATABASE:-}"
+    if [ -z "${PGPASSWORD:-}" ]; then
+      [ -n "${PGPASSFILE:-}" ] || fatal "PGPASSWORD or PGPASSFILE must be set (discrete libpq settings; never a connection URL)." 93
+      [ -f "$PGPASSFILE" ] && [ -r "$PGPASSFILE" ] && [ -s "$PGPASSFILE" ] \
+        || fatal "PGPASSFILE=${PGPASSFILE} is not a readable, non-empty libpq password file." 93
+    fi
+  
+    # ── Ceiling file and key: the same two pointer guards as migrate-capped.sh ──
+    case "$CEILING_FILE" in
+      *..*) fatal "MIGRATE_CEILING_FILE=${CEILING_FILE} contains '..'." 91 ;;
+    esac
+    _self_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _self_dir=""
+    _ceil_dir="$(cd "$(dirname "$CEILING_FILE")" 2>/dev/null && pwd)" || _ceil_dir=""
+    if [ -z "$_self_dir" ] || [ -z "$_ceil_dir" ] || [ "$_ceil_dir" != "$_self_dir" ]; then
+      fatal "MIGRATE_CEILING_FILE=${CEILING_FILE} is not beside this script (${_self_dir:-unresolved})." 91
+    fi
+    _tree="${MIGRATE_PATH##*/}"
+    EXPECTED_KEY="$(printf '%s' "$_tree" | tr '[:lower:]-' '[:upper:]_')"
+    [ "$CEILING_KEY" = "$EXPECTED_KEY" ] \
+      || fatal "MIGRATE_CEILING_KEY=${CEILING_KEY} does not match the migrations tree being applied (${MIGRATE_PATH} implies ${EXPECTED_KEY})." 91
+    [ -f "$CEILING_FILE" ] || fatal "the release ceiling file ${CEILING_FILE} is missing." 91
+    CEILING="$(grep -E "^CEILING_${CEILING_KEY}=[0-9]+$" "$CEILING_FILE" 2>/dev/null | tail -1 | cut -d= -f2)"
+    case "$CEILING" in
+      ''|*[!0-9]*) fatal "${CEILING_FILE} has no valid CEILING_${CEILING_KEY}=<integer> entry." 91 ;;
+    esac
+    if [ -n "${MIGRATE_KNOWN_SAFE_MAX:-}" ] && [ "${MIGRATE_KNOWN_SAFE_MAX}" != "$CEILING" ]; then
+      fatal "MIGRATE_KNOWN_SAFE_MAX=${MIGRATE_KNOWN_SAFE_MAX} in the environment disagrees with CEILING_${CEILING_KEY}=${CEILING}; the FILE is authoritative." 91
+    fi
+  
+    case "$TARGET" in
+      ''|*[!0-9]*) fatal "MIGRATE_TARGET_VERSION is not a positive integer (got '${TARGET}')." 90 ;;
+    esac
+    TARGET="$(printf '%s' "$TARGET" | sed 's/^0*//')"
+    [ -n "$TARGET" ] && [ "$TARGET" -ge 1 ] || fatal "MIGRATE_TARGET_VERSION must be >= 1." 90
+    [ "$TARGET" -le "$CEILING" ] \
+      || fatal "MIGRATE_TARGET_VERSION=${TARGET} exceeds this kit release's reviewed ceiling of ${CEILING} (CEILING_${CEILING_KEY} in ${CEILING_FILE})." 91
+  
+    # ── The tree: NNNN_name.up.sql, contiguous from 0001, checksummed ───────────
+    [ -d "$MIGRATE_PATH" ] || fatal "migrations directory ${MIGRATE_PATH} is missing." 94
+    [ -f "$MIGRATE_PATH/SHA256SUMS" ] || fatal "${MIGRATE_PATH}/SHA256SUMS is missing; refusing to apply files nobody pinned." 95
+    if ! (cd "$MIGRATE_PATH" && sha256sum -c SHA256SUMS >/dev/null 2>&1); then
+      fatal "a file in ${MIGRATE_PATH} does not match SHA256SUMS (edited or truncated)." 95
+    fi
+    FILES=""
+    for p in "$MIGRATE_PATH"/*.up.sql; do
+      [ -f "$p" ] || continue
+      b="${p##*/}"
+      printf '%s' "$b" | grep -Eq '^[0-9]{4}_[a-z0-9_]+\.up\.sql$' \
+        || fatal "unexpected file name ${b} in ${MIGRATE_PATH} (want NNNN_name.up.sql)." 94
+      FILES="${FILES}${FILES:+ }${b}"
+    done
+    # The glob expands in collation order; NNNN_ names sort the same in every locale.
+    [ -n "$FILES" ] || fatal "no NNNN_*.up.sql files in ${MIGRATE_PATH}." 94
+    i=0
+    for f in $FILES; do
+      i=$((i + 1))
+      v="$(printf '%s' "$f" | cut -c1-4 | sed 's/^0*//')"
+      [ "$v" = "$i" ] || fatal "${MIGRATE_PATH} is not contiguous from 0001 (found ${f} at position ${i})." 94
+      grep -qF "  $f" "$MIGRATE_PATH/SHA256SUMS" || fatal "${f} is not listed in SHA256SUMS." 95
+    done
+    HIGHEST="$i"
+    [ "$TARGET" -le "$HIGHEST" ] \
+      || fatal "cap is ${TARGET} but ${MIGRATE_PATH} only reaches version ${HIGHEST}; compose file and migrations tree disagree." 94
+    if [ "$HIGHEST" -gt "$TARGET" ]; then
+      echo "[$LABEL] NOTICE: ${MIGRATE_PATH} holds versions up to ${HIGHEST}; capped at ${TARGET}. Versions above the cap are NOT applied." >&2
+    fi
+  
+    # ── The ledger as it stands ─────────────────────────────────────────────────
+    psql_q() { "$PSQL" -X -q -At -v ON_ERROR_STOP=1 "$@"; }
+    has_ledger="$(psql_q -c "SELECT to_regclass('public.registry_schema_migrations') IS NOT NULL" 2>/dev/null)" \
+      || fatal "cannot query ${PGDATABASE} on ${PGHOST} (is postgres-sanitizer-core healthy?)." 93
+    APPLIED=""
+    if [ "$has_ledger" = "t" ]; then
+      APPLIED="$(psql_q -c "SELECT name FROM registry_schema_migrations ORDER BY name" 2>/dev/null)" \
+        || fatal "cannot read registry_schema_migrations." 93
+    fi
+  
+    # Every applied name must be the on-disk file of the same position: a prefix of
+    # the tree, optionally followed by names a NEWER core applied (never a gap).
+    current=0
+    pos=0
+    for name in $APPLIED; do
+      pos=$((pos + 1))
+      # shellcheck disable=SC2086 # FILES is a space-separated list of safe names
+      want="$(printf '%s\n' $FILES | sed -n "${pos}p")"
+      if [ -z "$want" ]; then
+        echo "[$LABEL] NOTICE: the ledger holds ${name}, which this kit release does not ship (applied by a newer core)." >&2
+        current="$pos"
+        continue
+      fi
+      [ "$name" = "$want" ] || fatal "ledger row ${pos} is '${name}' but this kit ships '${want}' at that position; the registry was migrated by something else." 92
+      current="$pos"
+    done
+  
+    if [ "$current" -ge "$TARGET" ]; then
+      echo "[$LABEL] Registry is at version ${current}; cap is ${TARGET}. Nothing to apply. This step NEVER migrates down."
+      exit 0
+    fi
+  
+    # ── Apply current+1 .. TARGET in ONE transaction (PG.Migrate's ledger) ──────
+    SQL="$(mktemp "${TMPDIR:-/tmp}/migrate-sanitizer-core.XXXXXX")"
+    trap 'rm -f "$SQL"' EXIT
+    {
+      echo "SELECT pg_advisory_xact_lock(7413001);"
+      echo "CREATE TABLE IF NOT EXISTS registry_schema_migrations (name TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT now());"
+      n=0
+      for f in $FILES; do
+        n=$((n + 1))
+        [ "$n" -gt "$current" ] || continue
+        [ "$n" -le "$TARGET" ] || break
+        echo "INSERT INTO registry_schema_migrations (name) VALUES ('${f}');"
+        echo "\\i ${MIGRATE_PATH}/${f}"
+      done
+    } > "$SQL"
+  
+    echo "[$LABEL] Applying registry migrations ${current} -> ${TARGET} in one transaction; ceiling ${CEILING} from ${CEILING_FILE} (CEILING_${CEILING_KEY})."
+    if ! "$PSQL" -X -q -v ON_ERROR_STOP=1 --single-transaction -o /dev/null -f "$SQL"; then
+      fatal "psql reported an error; the transaction was rolled back and the registry is unchanged." 96
+    fi
+  
+    after="$(psql_q -c "SELECT count(*) FROM registry_schema_migrations" 2>/dev/null)" \
+      || fatal "applied, but the ledger could not be read back." 93
+    echo "[$LABEL] Done: registry_schema_migrations holds ${after} names (target ${TARGET})."
+  0001_registry.up.sql: |
+    -- sanitizer-core registry (PRD slice 2, ADR annex option A), own database.
+    -- Keyed by (customer_id, conversation_id) in every key and query; rows leave
+    -- only by a counted DELETE; a missing row is resync_required, never empty.
+    -- PII at rest (Amendment 1): *_enc = AES-256-GCM bound to row + epoch; key_hmac
+    -- = keyed lookup; state_mac = keyed MAC of epoch, version, replayable set.
+  
+    CREATE SEQUENCE registry_epoch_seq;  -- epochs are global and never reused
+  
+    CREATE TABLE registry_conversations (
+        customer_id     TEXT        NOT NULL,
+        conversation_id TEXT        NOT NULL,
+        epoch           BIGINT      NOT NULL,
+        version         BIGINT      NOT NULL,          -- compare-and-set token, +1 per write
+        next_n          JSONB       NOT NULL,          -- next free number per type (whole registry)
+        norm_rev        TEXT        NOT NULL,
+        state_mac       BYTEA       NOT NULL,          -- wrong key or edited replayable set = error
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        expires_at      TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (customer_id, conversation_id)
+    );
+    CREATE INDEX registry_conversations_expires ON registry_conversations (expires_at);
+  
+    CREATE TABLE registry_entries (
+        customer_id     TEXT    NOT NULL,
+        conversation_id TEXT    NOT NULL,
+        type            TEXT    NOT NULL,
+        n               INTEGER NOT NULL CHECK (n > 0),
+        key_hmac        BYTEA   NOT NULL,              -- HMAC(customer, conversation, sha256(type NUL canonical key))
+        value_enc       BYTEA   NOT NULL,              -- AES-GCM {canonical, surfaces, experts, first turn}
+        replayable      BOOLEAN NOT NULL,              -- loaded every request (set in state_mac); rest by key
+        PRIMARY KEY (customer_id, conversation_id, type, n),   -- a number is never given twice
+        UNIQUE (customer_id, conversation_id, key_hmac),     -- a value never gets two numbers
+        FOREIGN KEY (customer_id, conversation_id)
+            REFERENCES registry_conversations (customer_id, conversation_id) ON DELETE CASCADE
+    );
+  
+    CREATE INDEX registry_entries_replayable ON registry_entries (customer_id, conversation_id) WHERE replayable;
+  
+    CREATE TABLE registry_turns (
+        customer_id      TEXT   NOT NULL,
+        conversation_id  TEXT   NOT NULL,
+        seq              BIGINT NOT NULL,
+        turn_id          TEXT   NOT NULL,
+        sha_enc          BYTEA  NOT NULL,              -- AES-GCM sha256 of the ORIGINAL turn text
+        sanitized_enc    BYTEA  NOT NULL,              -- AES-GCM text as sent to the vendor; never rewritten (O2)
+        PRIMARY KEY (customer_id, conversation_id, turn_id),
+        UNIQUE (customer_id, conversation_id, seq),
+        FOREIGN KEY (customer_id, conversation_id)
+            REFERENCES registry_conversations (customer_id, conversation_id) ON DELETE CASCADE
+    );
+  
+    -- One row per conversation that was swept or deleted: ids, epoch and reason
+    -- only (no value). Lets the next request say WHY it must resync.
+    CREATE TABLE registry_tombstones (
+        customer_id     TEXT        NOT NULL,
+        conversation_id TEXT        NOT NULL,
+        epoch           BIGINT      NOT NULL,
+        reason          TEXT        NOT NULL,
+        at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (customer_id, conversation_id)
+    );
+    CREATE INDEX registry_tombstones_at ON registry_tombstones (at);
+  0002_turn_role_kind.up.sql: |
+    -- Contract v0.4+2 (slice 3, for slice 4's ServiceNow rules): every stored turn
+    -- keeps the role and block kind the gateway sent. Bounded vocabulary, no value
+    -- (checked by the core before the write); rows written before this get ''.
+    ALTER TABLE registry_turns
+        ADD COLUMN role TEXT NOT NULL DEFAULT '' CHECK (role IN ('', 'user', 'assistant', 'system')),
+        ADD COLUMN kind TEXT NOT NULL DEFAULT '' CHECK (kind IN ('', 'text', 'tool_use', 'tool_result'));
+  0003_claim_records.up.sql: |
+    -- Slice E, contract v0.4+8 item 2 (Fable seat b2 17:1x restart correction;
+    -- 21 Oct 07:2x revision; review round 2 decisions 4 + 7): one row per signed
+    -- dsa-sanitizer claim, keyed by the gateway request_id (the witness and the
+    -- claim id are global per request_id) and BOUND to its customer +
+    -- conversation: the same request_id under another customer or conversation is
+    -- refused, never shared. First write wins (never overwritten). The row
+    -- PERSISTS the first claim: its signed canonical bytes + unsigned bodies
+    -- (sealed, AAD = customer + conversation + request_id) and its first sign
+    -- time; a resend whose full sanitized turn set + map entries + request facts
+    -- are identical (keyed MAC, identity_mac, same binding) reuses those bytes
+    -- (one proof); any other resend is refused claim_id_conflict. No plaintext
+    -- hash of the signed bytes is stored (round 2: confirmation attack). Per
+    -- customer, bounded (oldest trimmed), expires with its conversation (FK
+    -- cascade). Applied as a listed swap-window step, never on boot; not applied
+    -- anywhere yet, so this file was edited in place in review round 2.
+    CREATE TABLE registry_claim_records (
+        request_id       TEXT        NOT NULL PRIMARY KEY,
+        customer_id      TEXT        NOT NULL,
+        conversation_id  TEXT        NOT NULL,
+        identity_mac     BYTEA       NOT NULL CHECK (length(identity_mac) = 32),
+        claim_enc        BYTEA       NOT NULL,          -- sealed first claim bytes + bodies
+        first_signed_at  TIMESTAMPTZ NOT NULL,          -- the claim timestamp (first sign time)
+        seq              BIGSERIAL   NOT NULL,          -- trim order (oldest first)
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+        FOREIGN KEY (customer_id, conversation_id)
+            REFERENCES registry_conversations (customer_id, conversation_id) ON DELETE CASCADE
+    );
+    CREATE INDEX registry_claim_records_trim ON registry_claim_records (customer_id, seq);
+    CREATE INDEX registry_claim_records_conv ON registry_claim_records (customer_id, conversation_id);
+  0004_package_ref.up.sql: |
+    -- Slice 4 (PRD prd-2026-10-20-sanitizer-core-slice4-servicenow-expert.md, In
+    -- scope 4, row 16): the instance package that served the conversation's last
+    -- mode request = its package digest H(instance, generation, bundle tag,
+    -- companion digest, companion tag); '' = none; 'dropped:'<digest> = generic
+    -- turns were committed after that package (the next mode request resyncs). No key byte, no fingerprint,
+    -- no value; bound into state_mac when set.
+    ALTER TABLE registry_conversations
+        ADD COLUMN package_ref TEXT NOT NULL DEFAULT '' CHECK (package_ref ~ '^((dropped:)?[0-9a-f]{64})?$');
+  0005_forwarded_turns.up.sql: |
+    -- To-do item 41 (contract v0.4+12, board T-1426): the core's FORWARDED
+    -- record. One row per stored turn whose sanitized bytes the gateway reported
+    -- as reaching the vendor (after vendor evidence, PR #902). mark_mac = keyed
+    -- MAC of (customer, conversation, epoch, turn id, sha256 of the sanitized
+    -- text): no plaintext hash, no value; a row that is moved, edited or written
+    -- under another epoch or text never verifies (read = not forwarded). Leaves
+    -- with its turn (FK cascade: sweep, conversation delete). Applied as a listed
+    -- swap-window step, never on boot.
+    CREATE TABLE registry_forwarded (
+        customer_id     TEXT  NOT NULL,
+        conversation_id TEXT  NOT NULL,
+        turn_id         TEXT  NOT NULL,
+        mark_mac        BYTEA NOT NULL CHECK (length(mark_mac) = 32),
+        PRIMARY KEY (customer_id, conversation_id, turn_id),
+        FOREIGN KEY (customer_id, conversation_id, turn_id)
+            REFERENCES registry_turns (customer_id, conversation_id, turn_id) ON DELETE CASCADE
+    );
+  0006_stream_gens.up.sql: |
+    -- To-do item 5 (slice 5, contract v0.4+13): the live generation of every reply
+    -- stream (design-2026-10-25-stream-package-v2.md § 2 i, #909 Env.Gen). One row per
+    -- (customer, conversation, stream id); each release call moves gen by one with a
+    -- compare-and-set, so a re-presented, forked or transplanted stream state is refused
+    -- on EVERY core instance (no sticky routing). refused_gen = the generation a refused or
+    -- timed-out call moved the row to (a close may then present the state before it).
+    -- closed = terminal: no further call and no second close (one claim per stream). No value,
+    -- no hash of a value. Leaves with its conversation (FK cascade: sweep, delete).
+    -- Applied as a listed swap-window step, never on boot.
+    CREATE TABLE registry_stream_gens (
+        customer_id     TEXT        NOT NULL,
+        conversation_id TEXT        NOT NULL,
+        stream_id       TEXT        NOT NULL CHECK (length(stream_id) BETWEEN 16 AND 128),
+        gen             BIGINT      NOT NULL CHECK (gen > 0),
+        refused_gen     BIGINT      NOT NULL DEFAULT 0,  -- the generation whose call was refused or timed out (0 = none)
+        done_gen        BIGINT      NOT NULL DEFAULT 0,  -- the generation whose call delivered a success (0 = none)
+        final           BOOLEAN     NOT NULL DEFAULT false, -- a Final call ran: no further call, only the close (terminal-pending)
+        closed          BOOLEAN     NOT NULL DEFAULT false,
+        close_request_id TEXT,                           -- the ONE request whose close signed this stream
+        expires_at      TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (customer_id, conversation_id, stream_id),
+        FOREIGN KEY (customer_id, conversation_id)
+            REFERENCES registry_conversations (customer_id, conversation_id) ON DELETE CASCADE
+    );
+    CREATE INDEX registry_stream_gens_expires ON registry_stream_gens (expires_at);
+    -- One request id closes ONE stream (its claim id is f(request_id)): a close that would bind a request id
+    -- another stream holds fails here, before that stream is marked closed (sol final read).
+    CREATE UNIQUE INDEX registry_stream_gens_close_request ON registry_stream_gens (close_request_id) WHERE close_request_id IS NOT NULL;
+  
+    -- The numbers a reply stream LEASED (store.PG.Lease, written in the same transaction that moves next_n):
+    -- a stream-local placeholder the client echoes in a later request has a number below next_n and no
+    -- registry row; this record tells /v1/turns it is a stream local (text, never relinked), not a lost row
+    -- (map_incomplete). Bound to the epoch; leaves with its conversation. No value.
+    CREATE TABLE registry_stream_leases (
+        customer_id     TEXT    NOT NULL,
+        conversation_id TEXT    NOT NULL,
+        epoch           BIGINT  NOT NULL,
+        type            TEXT    NOT NULL,
+        lo              INTEGER NOT NULL CHECK (lo > 0),
+        hi              INTEGER NOT NULL CHECK (hi > lo),
+        PRIMARY KEY (customer_id, conversation_id, type, lo),
+        FOREIGN KEY (customer_id, conversation_id)
+            REFERENCES registry_conversations (customer_id, conversation_id) ON DELETE CASCADE
+    );
+  0007_attempted_turns.up.sql: |
+    -- Item 95 redesign: a pre-transmission attempt is a conversation-wide rewrite
+    -- veto, NOT vendor-confirmed evidence. It also covers send-unredacted turns that
+    -- have no registry_turns row. Removed only with the conversation.
+    CREATE TABLE registry_attempted (
+        customer_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        PRIMARY KEY (customer_id, conversation_id, turn_id),
+        FOREIGN KEY (customer_id, conversation_id)
+            REFERENCES registry_conversations (customer_id, conversation_id) ON DELETE CASCADE
+    );
+  SHA256SUMS: |
+    51b2c88aee7d64bd2ba9365ec34cafc68092a9640534eece624c11175520bebe  0001_registry.up.sql
+    e2670fd41f616185c3056df6d95329c00d005f29c850f8046fe12f7adc3ec1e0  0002_turn_role_kind.up.sql
+    06606f5bc963a5dc3dad3b8a6eac022a3d94dd3e617f657d0aa840d35ba540db  0003_claim_records.up.sql
+    d959decfd19f24af10513dc14e097d282cf0e797ee98f31dcd124eb86f999ad8  0004_package_ref.up.sql
+    70dea02c7f73796fe01e3ecb1f3a128d249b99f0eb286e4b57ef537506c2fae2  0005_forwarded_turns.up.sql
+    2828b171d738dc4a4494cb34a45bed3c41ab5f2ccff0a5f6d5477004a55d2591  0006_stream_gens.up.sql
+    08307addf58f76308b3ea6d363310b0b0cdbaecf3384407912b4c47348b7de09  0007_attempted_turns.up.sql
+---
 # Source: lucairn/charts/veil-witness/templates/configmap.yaml
 apiVersion: v1
 kind: ConfigMap
@@ -2942,6 +3607,27 @@ metadata:
   labels:
     app.kubernetes.io/name: sandbox-b-redis
     app.kubernetes.io/part-of: dsa
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Source: lucairn/charts/sanitizer-core/templates/postgresql-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-sanitizer-core-data
+  namespace: dsa-identity
+  labels:
+    app.kubernetes.io/name: postgres-sanitizer-core
+    app.kubernetes.io/part-of: dsa
+  annotations:
+    # The sealed conversation registry: `helm uninstall` keeps it (delete by
+    # hand for a full teardown). NOT in the backup CronJobs yet — see
+    # INSTALL.md § "Sanitizer core (kit 2.0, Helm)".
+    "helm.sh/resource-policy": keep
 spec:
   accessModes:
     - ReadWriteOnce
@@ -3229,6 +3915,51 @@ spec:
       name: health
   selector:
     app.kubernetes.io/name: sandbox-b
+---
+# Source: lucairn/charts/sanitizer-core/templates/postgresql-service.yaml
+# The registry DB. Named like the Compose service (postgres-sanitizer-core) so
+# the core's DSN has the same shape on both install paths. Reachable only from
+# the core Pod and the migration Job (infrastructure NetworkPolicy
+# identity-sanitizer-core-registry-ingress).
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-sanitizer-core
+  namespace: dsa-identity
+  labels:
+    app.kubernetes.io/name: postgres-sanitizer-core
+    app.kubernetes.io/part-of: dsa
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: postgresql
+      name: postgresql
+  selector:
+    app.kubernetes.io/name: postgres-sanitizer-core
+---
+# Source: lucairn/charts/sanitizer-core/templates/service.yaml
+# The gateway's Anthropic route: https://sanitizer-core.<identity-ns>.svc:8790
+# (verified mTLS; the gateway pins the server name dsa-sanitizer-core, so the
+# DNS name it dials does not need to be in the leaf). Only the core's port —
+# the sidecar binds loopback inside the Pod and has no Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sanitizer-core
+  namespace: dsa-identity
+  labels:
+    app.kubernetes.io/name: sanitizer-core
+    app.kubernetes.io/part-of: dsa
+spec:
+  type: ClusterIP
+  ports:
+    - name: https
+      port: 8790
+      targetPort: https
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: sanitizer-core
 ---
 # Source: lucairn/charts/veil-witness/templates/postgresql-service.yaml
 apiVersion: v1
@@ -3566,6 +4297,31 @@ spec:
             - secretRef:
                 name: gateway-credentials
           env:
+            # ── Kit 2.0: the new sanitizer core — the hosted switch set ─────
+            # gateway.sanitizerCore in values.yaml documents each switch.
+            - name: GATEWAY_SANITIZER_PROTOCOL
+              value: "delta"
+            - name: SANITIZER_CORE_URL
+              value: "https://sanitizer-core.dsa-identity.svc.cluster.local:8790"
+            - name: GATEWAY_SANITIZER_GATE_POSTURE
+              value: "enforce"
+            - name: GATEWAY_SANITIZER_GATE_ROUTE_POSTURE
+              value: "observe"
+            - name: GATEWAY_ADDED_PARTS_PLACEMENT
+              value: "message"
+            # gateway -> core verified mTLS: the gateway's client leaf (SAN
+            # dsa-gateway) + the hop CA.
+            - name: SANITIZER_CORE_MTLS_CA_BUNDLE_PATH
+              value: "/etc/sanitizer-core-mtls/ca.crt"
+            - name: SANITIZER_CORE_MTLS_CLIENT_CERT_PATH
+              value: "/etc/sanitizer-core-mtls/dsa-gateway.crt"
+            - name: SANITIZER_CORE_MTLS_CLIENT_KEY_PATH
+              value: "/etc/sanitizer-core-mtls/dsa-gateway.key"
+            # Kit 2.0: "Send one message unredacted" stays OFF in this release —
+            # a literal, not a value, so no values file can switch it on (the
+            # Compose twin carries the same literal).
+            - name: GATEWAY_USER_UNREDACTED_ENABLED
+              value: "false"
             - name: SANDBOX_A_INVARIANT_URL
               value: "http://sandbox-a.dsa-identity.svc.cluster.local:8083/invariant"
             - name: SANDBOX_B_INVARIANT_URL
@@ -3629,6 +4385,10 @@ spec:
           volumeMounts:
             - name: verticals
               mountPath: /etc/dsa/verticals
+              readOnly: true
+            # Kit 2.0: ONLY the gateway's client leaf for the core hop + its CA.
+            - name: sanitizer-core-mtls
+              mountPath: "/etc/sanitizer-core-mtls"
               readOnly: true
             # v1.0 keystore writable mount. The container's root FS stays
             # read-only (containerSecurityContext.readOnlyRootFilesystem=true);
@@ -3707,6 +4467,16 @@ spec:
         - name: evidence-gap
           emptyDir:
             sizeLimit: "64Mi"
+        - name: sanitizer-core-mtls
+          secret:
+            secretName: gateway-sanitizer-core-mtls
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: dsa-gateway.crt
+                path: dsa-gateway.crt
+              - key: dsa-gateway.key
+                path: dsa-gateway.key
 ---
 # Source: lucairn/charts/id-bridge/templates/deployment.yaml
 apiVersion: apps/v1
@@ -4387,6 +5157,314 @@ spec:
                       path: test/prompts/echo.txt
         - name: tmp
           emptyDir: {}
+---
+# Source: lucairn/charts/sanitizer-core/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sanitizer-core
+  namespace: dsa-identity
+  labels:
+    app.kubernetes.io/name: sanitizer-core
+    app.kubernetes.io/part-of: dsa
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sanitizer-core
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sanitizer-core
+        app.kubernetes.io/part-of: dsa
+      annotations:
+        checksum/entrypoint: 00304b99c1b5b99d096344cdb231131a31d4afb7e7da06f8a524532a22f6663a
+    spec:
+      serviceAccountName: sanitizer-core
+      automountServiceAccountToken: false
+      # No Service-link env vars: every Service in this namespace would
+      # otherwise inject SANDBOX_A_*/POSTGRES_* variables into both containers.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # The core refuses to start on an unmigrated registry ("apply
+        # migration 0007"). Hold the Pod here until the migration Job has
+        # brought the ledger to migrations.targetVersion, so a fresh install
+        # shows "Init" instead of a crash loop. Discrete libpq settings, never a
+        # URL (libpq quotes a malformed URL, password included, in its errors).
+        - name: wait-for-migration
+          image: "postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # libpq password FILE (kit 2.0 K-B fix round 1, sol r1 P2): the
+              # password never enters this process's environment. Built from
+              # the mounted Secret file into a 0600 file on the private /tmp
+              # (format hostname:port:database:username:password, with \ and :
+              # escaped — https://www.postgresql.org/docs/16/libpq-pgpass.html).
+              umask 077
+              [ -r /etc/sanitizer-core/db/password ] || { echo "the registry DB password file is not mounted" >&2; exit 93; }
+              printf '*:*:*:*:%s\n' "$(sed 's/\\/\\\\/g; s/:/\\:/g' /etc/sanitizer-core/db/password)" > /tmp/.pgpass
+              chmod 0600 /tmp/.pgpass
+              export PGPASSFILE=/tmp/.pgpass
+              echo "Waiting for the registry migration (ledger >= ${TARGET_VERSION})..."
+              i=0
+              while [ "$i" -lt 300 ]; do
+                n="$(psql -X -q -At -c 'SELECT count(*) FROM registry_schema_migrations' 2>/dev/null || true)"
+                case "$n" in
+                  ''|*[!0-9]*) : ;;
+                  *) if [ "$n" -ge "$TARGET_VERSION" ]; then echo "registry ledger at $n - starting."; exit 0; fi ;;
+                esac
+                i=$((i + 1))
+                sleep 2
+              done
+              echo "registry not migrated to ${TARGET_VERSION} after 10 min - is the sanitizer-core-migrate Job complete? (kubectl -n dsa-identity get jobs)" >&2
+              exit 1
+          env:
+            - name: HOME
+              value: /tmp
+            - name: TARGET_VERSION
+              value: "7"
+            - name: PGHOST
+              value: "postgres-sanitizer-core"
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              value: "dsa"
+            - name: PGDATABASE
+              value: "sanitizer_core"
+            - name: PGSSLMODE
+              value: "disable"
+            - name: PGCONNECT_TIMEOUT
+              value: "5"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: wait-tmp
+              mountPath: /tmp
+            - name: registry-db-password
+              mountPath: /etc/sanitizer-core/db
+              readOnly: true
+      containers:
+        # ── The model sidecar (spaCy + GLiNER), 127.0.0.1:8765 only ─────────
+        - name: sidecar
+          image: "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@sha256:5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HOME
+              value: /tmp
+            - name: XDG_CACHE_HOME
+              value: /tmp/.cache
+          # The endpoint binds loopback only, so these are exec probes (an
+          # httpGet probe targets the Pod IP and could never reach it).
+          # healthy = every configured model finished loading. NON-COVERAGE:
+          # this does not prove detection quality; the equivalence replay does.
+          startupProbe:
+            exec:
+              command: ["python3", "-I", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/v1/health', timeout=5)"]
+            periodSeconds: 10
+            timeoutSeconds: 8
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["python3", "-I", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/v1/health', timeout=5)"]
+            periodSeconds: 10
+            timeoutSeconds: 8
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["python3", "-I", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/v1/health', timeout=5)"]
+            periodSeconds: 20
+            timeoutSeconds: 8
+            failureThreshold: 6
+          resources:
+            limits:
+              cpu: "4"
+              memory: 6500Mi
+            requests:
+              cpu: "1"
+              memory: 6Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: sidecar-tmp
+              mountPath: /tmp
+        # ── The Go core, verified mTLS on :8790 ──────────────────────────────
+        - name: core
+          image: "ghcr.io/declade/dsa-sanitizer-core:1.1.0@sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "/opt/lucairn/entrypoint/core-entrypoint.sh"]
+          # ⚑ No --dsn: the registry DSN (with the DB password) is a FILE from
+          # the credentials Secret (DSA cmd/sanitizer-core/registry_dsn.go:
+          # --registry-dsn-file > DSA_SANITIZER_CORE_REGISTRY_DSN > --dsn; the
+          # boot log names the source, never the value). Process arguments are
+          # world-readable on the node; this file is mode 0440, group fsGroup.
+          args:
+            - "serve"
+            - "--listen=0.0.0.0:8790"
+            - "--registry-dsn-file=/etc/sanitizer-core/registry/dsn"
+            - "--sidecar=http://127.0.0.1:8765"
+          env:
+            # ⚑ LCR_PROFILE is ALWAYS set here, as a literal (K-C M2): `kit`,
+            # under which the core refuses the ServiceNow mode at boot (DSA
+            # cmd/sanitizer-core/instance_wire.go profileBoot), or
+            # `kit-servicenow` only with global.servicenowControl.enabled. An
+            # entry in `env:` outranks anything a Secret or ConfigMap could
+            # bring in through `envFrom`, so no customer Secret can switch it.
+            - name: LCR_PROFILE
+              value: "kit"
+            - name: DSA_ENV
+              value: "development"
+            # The core serves HTTPS on the SANITIZER_CORE_MTLS_* family and
+            # dials the witness on the LCR_WITNESS_MTLS_* family; the legacy
+            # GRPC_TLS layer is off for it (same as hosted).
+            - name: GRPC_TLS_ENABLED
+              value: "false"
+            - name: DSA_SANITIZER_CORE_REGISTRY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sanitizer-core-credentials
+                  key: DSA_SANITIZER_CORE_REGISTRY_KEY
+            - name: LCR_ENABLED
+              value: "true"
+            # Same seed as the old sanitizer: both sign as dsa-sanitizer.
+            - name: LCR_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sandbox-a-credentials
+                  key: LCR_SIGNING_KEY
+            - name: LCR_WITNESS_ADDR
+              value: "veil-witness.dsa-witness.svc.cluster.local:50057"
+            # gateway -> core: the core's server leaf + the hop CA.
+            - name: SANITIZER_CORE_MTLS_CA_BUNDLE_PATH
+              value: "/etc/sanitizer-core-mtls/ca.crt"
+            - name: SANITIZER_CORE_MTLS_SERVER_CERT_PATH
+              value: "/etc/sanitizer-core-mtls/dsa-sanitizer-core.crt"
+            - name: SANITIZER_CORE_MTLS_SERVER_KEY_PATH
+              value: "/etc/sanitizer-core-mtls/dsa-sanitizer-core.key"
+          ports:
+            - name: https
+              containerPort: 8790
+              protocol: TCP
+          # The listener is mTLS-only, so these are TCP probes (the same check
+          # as the Compose healthcheck `nc -z 127.0.0.1 8790`). The startup
+          # budget (15 min) covers the entrypoint's wait for the sidecar.
+          startupProbe:
+            tcpSocket:
+              port: https
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 180
+          readinessProbe:
+            tcpSocket:
+              port: https
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: https
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: "2"
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: entrypoint
+              mountPath: /opt/lucairn/entrypoint
+              readOnly: true
+            - name: registry-dsn
+              mountPath: /etc/sanitizer-core/registry
+              readOnly: true
+            - name: core-mtls
+              mountPath: "/etc/sanitizer-core-mtls"
+              readOnly: true
+            - name: core-tmp
+              mountPath: /tmp
+      volumes:
+        - name: entrypoint
+          configMap:
+            name: sanitizer-core-entrypoint
+            defaultMode: 0555
+        # ONLY the DB password of the credentials Secret, as the file
+        # `password`, for the wait-for-migration init container's libpq
+        # password file (never an env var).
+        - name: registry-db-password
+          secret:
+            secretName: sanitizer-core-credentials
+            defaultMode: 0444
+            items:
+              - key: POSTGRES_PASSWORD
+                path: password
+        # ONLY the DSN key of the credentials Secret, as the file `dsn`.
+        - name: registry-dsn
+          secret:
+            secretName: sanitizer-core-credentials
+            defaultMode: 0440
+            items:
+              - key: REGISTRY_DSN
+                path: dsn
+        # ONLY the core's server leaf + the hop CA (operator-owned Secret;
+        # Helm projects these three keys and never generates key material).
+        - name: core-mtls
+          secret:
+            secretName: sanitizer-core-mtls
+            defaultMode: 0440
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: dsa-sanitizer-core.crt
+                path: dsa-sanitizer-core.crt
+              - key: dsa-sanitizer-core.key
+                path: dsa-sanitizer-core.key
+        - name: sidecar-tmp
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: core-tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: wait-tmp
+          emptyDir:
+            sizeLimit: 16Mi
 ---
 # Source: lucairn/charts/veil-witness/templates/deployment.yaml
 apiVersion: apps/v1
@@ -5230,6 +6308,118 @@ spec:
           persistentVolumeClaim:
             claimName: sandbox-b-redis-data
 ---
+# Source: lucairn/charts/sanitizer-core/templates/postgresql-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-sanitizer-core
+  namespace: dsa-identity
+  labels:
+    app.kubernetes.io/name: postgres-sanitizer-core
+    app.kubernetes.io/part-of: dsa
+spec:
+  serviceName: postgres-sanitizer-core
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-sanitizer-core
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres-sanitizer-core
+        app.kubernetes.io/part-of: dsa
+    spec:
+      # NET-05: this pod never calls the Kubernetes API.
+      automountServiceAccountToken: false
+      # The postgres entrypoint reads POSTGRES_* variables; keep Service-link
+      # variables of this namespace out of its environment.
+      enableServiceLinks: false
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgresql
+          image: "postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - containerPort: 5432
+              name: postgresql
+          env:
+            - name: POSTGRES_USER
+              value: "dsa"
+            - name: POSTGRES_DB
+              value: "sanitizer_core"
+            # The official image reads the password from this FILE (its
+            # `_FILE` convention), so it is in no Pod spec, env var or
+            # `kubectl describe` (kit 2.0 K-B fix round 1, sol r1 P2).
+            # STATED LIMIT (fix rounds 3 + 4, sol r2 P2 / r3 P3): on EVERY
+            # start the image's entrypoint (docker-library/postgres 4f9ced0,
+            # 16/alpine3.24/docker-entrypoint.sh) exports the file's content
+            # as POSTGRES_PASSWORD (file_env :23, called at :235 from :338),
+            # so its helpers inherit it before the existing-database check
+            # (`id`, the mkdir/chmod of :36, the gosu re-exec at :343); on the
+            # FIRST boot of an empty volume it is also PGPASSWORD while it
+            # initialises (:359, unset at :366), so initdb, the temporary
+            # server and the psql of that bootstrap carry it. It unsets every
+            # POSTGRES_* variable (:381) before it execs the real server: no
+            # long-running process carries it. Those processes run inside this
+            # container only (uid 999 after the re-exec), which reads the
+            # mounted file anyway. Accepted
+            # over the password-free alternative (POSTGRES_HOST_AUTH_METHOD=
+            # trust + an init script that sets the password): that writes
+            # `host all all all trust` into pg_hba.conf (:284), and a first
+            # boot interrupted before the init script ran would leave a
+            # database that serves TCP with no password at all.
+            - name: POSTGRES_PASSWORD_FILE
+              value: /run/secrets/sanitizer-core-db/password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: db-password
+              mountPath: /run/secrets/sanitizer-core-db
+              readOnly: true
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "dsa", "-d", "sanitizer_core"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "dsa", "-d", "sanitizer_core"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-sanitizer-core-data
+        # ONLY the DB password; group-readable for the postgres group (fsGroup).
+        - name: db-password
+          secret:
+            secretName: sanitizer-core-credentials
+            defaultMode: 0440
+            items:
+              - key: POSTGRES_PASSWORD
+                path: password
+---
 # Source: lucairn/charts/veil-witness/templates/postgresql-statefulset.yaml
 apiVersion: apps/v1
 kind: StatefulSet
@@ -5999,6 +7189,167 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: sandbox-b-ollama-data
+---
+# Source: lucairn/charts/sanitizer-core/templates/migration-job.yaml
+# The registry migration — the Helm twin of the Compose one-shot
+# `migrate-sanitizer-core` (profile sanitizer-core-migrate). It runs
+# migrate-sanitizer-core.sh: SHA256SUMS check, contiguous NNNN_ files, the
+# core's own ledger registry_schema_migrations written exactly as the core's
+# PG.Migrate writes it, everything in ONE transaction, capped at
+# CEILING_SANITIZER_CORE=7. Never down, no open-ended hatch;
+# a second concurrent run fails closed on the ledger INSERT.
+#
+# The name carries .Release.Revision: a Job's pod template is immutable, so
+# every `helm install/upgrade` creates a NEW Job (a no-op once the ledger is
+# at the target). The core Pod's wait-for-migration init container holds the
+# core until the ledger has reached migrations.targetVersion.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sanitizer-core-migrate-r1
+  namespace: dsa-identity
+  labels:
+    app.kubernetes.io/name: sanitizer-core-migrate
+    app.kubernetes.io/part-of: dsa
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sanitizer-core-migrate
+        app.kubernetes.io/part-of: dsa
+      annotations:
+        checksum/migrations: 27e33cee5cffc8f7228b8bd214079ed522d76bce39721c8df89aaef55bd5efb1
+    spec:
+      # NET-05: this pod never calls the Kubernetes API.
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: "postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # libpq password FILE (kit 2.0 K-B fix round 1, sol r1 P2): the
+              # password never enters this process's environment. Built from
+              # the mounted Secret file into a 0600 file on the private /tmp
+              # (format hostname:port:database:username:password, with \ and :
+              # escaped — https://www.postgresql.org/docs/16/libpq-pgpass.html).
+              umask 077
+              [ -r /etc/sanitizer-core/db/password ] || { echo "the registry DB password file is not mounted" >&2; exit 93; }
+              printf '*:*:*:*:%s\n' "$(sed 's/\\/\\\\/g; s/:/\\:/g' /etc/sanitizer-core/db/password)" > /tmp/.pgpass
+              chmod 0600 /tmp/.pgpass
+              export PGPASSFILE=/tmp/.pgpass
+              i=0
+              until pg_isready -q -t 2; do
+                i=$((i + 1))
+                if [ "$i" -ge 150 ]; then echo "[migrate-sanitizer-core] FATAL: the registry DB is not ready after 5 min." >&2; exit 93; fi
+                sleep 2
+              done
+              exec /bin/sh /scripts/migrate-sanitizer-core.sh
+          env:
+            - name: HOME
+              value: /tmp
+            - name: MIGRATE_LABEL
+              value: migrate-sanitizer-core
+            - name: MIGRATE_PATH
+              value: /migrations/sanitizer-core
+            - name: MIGRATE_TARGET_VERSION
+              value: "7"
+            - name: MIGRATE_CEILING_KEY
+              value: SANITIZER_CORE
+            - name: MIGRATE_CEILING_FILE
+              value: /scripts/migration-ceilings.conf
+            - name: PGHOST
+              value: "postgres-sanitizer-core"
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              value: "dsa"
+            - name: PGDATABASE
+              value: "sanitizer_core"
+            - name: PGSSLMODE
+              value: "disable"
+            - name: PGCONNECT_TIMEOUT
+              value: "5"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: migrations
+              mountPath: /migrations/sanitizer-core
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: registry-db-password
+              mountPath: /etc/sanitizer-core/db
+              readOnly: true
+      volumes:
+        # The script and the ceiling file MUST sit in one directory (the
+        # script refuses a ceiling file anywhere else).
+        - name: scripts
+          configMap:
+            name: sanitizer-core-migrations
+            defaultMode: 0555
+            items:
+              - key: migrate-sanitizer-core.sh
+                path: migrate-sanitizer-core.sh
+              - key: migration-ceilings.conf
+                path: migration-ceilings.conf
+        - name: migrations
+          configMap:
+            name: sanitizer-core-migrations
+            defaultMode: 0444
+            items:
+              - key: SHA256SUMS
+                path: SHA256SUMS
+              - key: 0001_registry.up.sql
+                path: 0001_registry.up.sql
+              - key: 0002_turn_role_kind.up.sql
+                path: 0002_turn_role_kind.up.sql
+              - key: 0003_claim_records.up.sql
+                path: 0003_claim_records.up.sql
+              - key: 0004_package_ref.up.sql
+                path: 0004_package_ref.up.sql
+              - key: 0005_forwarded_turns.up.sql
+                path: 0005_forwarded_turns.up.sql
+              - key: 0006_stream_gens.up.sql
+                path: 0006_stream_gens.up.sql
+              - key: 0007_attempted_turns.up.sql
+                path: 0007_attempted_turns.up.sql
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+        # ONLY the DB password, as a file (the libpq password file is built
+        # from it; never an env var).
+        - name: registry-db-password
+          secret:
+            secretName: sanitizer-core-credentials
+            defaultMode: 0444
+            items:
+              - key: POSTGRES_PASSWORD
+                path: password
 ---
 # Source: lucairn/charts/veil-witness/templates/migration-job.yaml
 # Migration Job uses .Release.Revision-suffixed name so each helm release

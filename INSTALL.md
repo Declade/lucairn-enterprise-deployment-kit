@@ -657,7 +657,8 @@ For Docker Compose:
 - **Kit 2.0 (new sanitizer core): 16 GB RAM minimum** for the Docker host, on
   top of which the L3 model needs about 5 GB more when it is loaded. The core's
   model sidecar alone is capped at 6.5 GB; `bin/lucairn doctor` fails below
-  15,000 MiB of Docker-engine memory. See § "Sanitizer core (kit 2.0, Compose)".
+  15,000 MiB of Docker-engine memory. See § "Sanitizer core (kit 2.0, Compose)"
+  (Helm: § "Sanitizer core (kit 2.0, Helm)").
 - TLS-terminating reverse proxy such as Caddy, Nginx, Traefik, or an enterprise ingress proxy.
 - Outbound HTTPS to the image registries used during `docker compose up` / `docker pull`:
   - `ghcr.io` — the 12 Lucairn `dsa-*` images are in the private `ghcr.io/declade/*` namespace (authentication required; see § "Step 0 — Registry access" above and § "Registry Authentication" below). **Lucairn must grant your GitHub account package-pull access before `docker login` will work** — see § "Step 0".
@@ -2680,6 +2681,151 @@ The core's registry is a new database (`pg-sanitizer-core-data`), so nothing of
 **Stated limit (this release):** registry rows of expired conversations are not
 deleted by the core today — they expire logically after 24 hours but stay in
 `postgres-sanitizer-core`. See `docs/RELEASING.md` § "Migration review".
+
+## Sanitizer core (kit 2.0, Helm)
+
+The Helm chart carries the same new sanitizer core as the Compose path, in the
+`sanitizer-core` sub-chart (identity namespace, beside Sandbox A). It is ON by
+default — the same as the hosted service — through two switches that must agree:
+`sanitizer-core.enabled` deploys it, `global.sanitizerCore.enabled` tells the
+gateway and the NetworkPolicies about it. The chart refuses a render where they
+differ.
+
+| Resource (namespace `dsa-identity`) | What it is |
+|---|---|
+| Deployment `sanitizer-core` | ONE Pod with two containers: `sidecar` (the model sidecar, loopback 127.0.0.1:8765 only) and `core` (the Go core, verified mTLS on :8790). A Pod is one shared network namespace — the hosted layout, with no network path to the sidecar at all. Strategy `Recreate`: one core at a time. |
+| StatefulSet / Service / PVC `postgres-sanitizer-core` | The registry database (digest-pinned `postgres:16-alpine`, PVC kept on `helm uninstall`). |
+| Job `sanitizer-core-migrate-r<revision>` | The capped registry migration 0001–0007 (see step 3). |
+| NetworkPolicies `edge-sanitizer-core-egress`, `identity-sanitizer-core-ingress`, `identity-sanitizer-core-egress`, `identity-sanitizer-core-registry` | Only the gateway Pod reaches the core (:8790); the core reaches only its registry (:5432), the witness claim port (:50057) and the cluster resolver Pods on :53 (`k8s-app=kube-dns`; set `global.clusterDNS.podLabels` if yours differ) — with `global.dnsRestriction=true` (Cilium) that port-53 rule is left out and the core resolves only the cluster names its Cilium policy `dns-restrict-identity-sanitizer-core` allows (a plain port-53 grant would override that allowlist); only the core and the migration Job reach the registry; the registry has no egress, DNS included (both are carved out of the namespace's `allow-dns`). |
+
+**Images by signed digest only.** The core and its sidecar start only from the
+two digests the kit release records in `image-manifest.yaml`
+(`image_digests.signed_artifacts`); a released kit's chart carries them in
+`sanitizer-core.image.digest` / `sanitizer-core.sidecar.image.digest`. The
+render refuses an empty, malformed or placeholder digest, and
+`bin/lucairn doctor --values` fails on tag-only images and on a pair other than
+the manifest's.
+
+**Passwords as files, not in Pod specs.** The registry database reads its
+password from a mounted file (`POSTGRES_PASSWORD_FILE`); the migration Job and
+the core's `wait-for-migration` init container build a `0600` libpq password
+file (`PGPASSFILE`) from the mounted Secret file, and the migration runner
+connects with that file (no `PGPASSWORD` in its environment). Stated limit: on
+EVERY start, the official `postgres` image's entrypoint itself reads the file
+into `POSTGRES_PASSWORD` (exported), so its own helper processes inherit it
+(`id`, the `mkdir`/`chmod` of the data directories, the re-exec as the
+`postgres` user) before it checks whether a database exists; on the first boot
+of an empty registry volume its initialisation processes (initdb, the temporary
+server, psql) get it as well, with `PGPASSWORD`. All of this stays inside that
+container, and the entrypoint clears both (`unset` of every `POSTGRES_*`
+variable) before it starts the real server. The kit accepts this rather than
+initialise with `POSTGRES_HOST_AUTH_METHOD=trust`, which would leave a database
+without a password if that first boot were interrupted. An external registry DB
+(`sanitizer-core.postgresql.enabled=false`) is supported by the live doctor: it
+then checks the migration Job and the core's readiness, not a bundled
+StatefulSet.
+
+### Node requirements
+
+The sidecar requests 6 GiB and is limited to 6.5 GiB (it peaks near 5.6 GB with
+GLiNER and both spaCy models); the core is limited to 1 GiB. Plan **one node in
+the identity zone with at least 8 GiB allocatable beyond Sandbox A's pods**, or
+the Pod stays `Pending`. An OOM kill at the limit makes the Pod NotReady and the
+gateway's Anthropic requests fail closed until the models have reloaded
+(1–5 minutes). Add about 2.5 GB of image storage on that node.
+
+### 1. Credentials
+
+`k8s-native` backend (development): set both values, or let
+`scripts/render-values.sh` generate them from `customer-values.yaml.example`:
+
+```yaml
+sanitizer-core:
+  secrets:
+    values:
+      registryKey: "<openssl rand -hex 32>"       # 64 hex; seals every registry row; keep it stable
+      postgresPassword: "<openssl rand -hex 24>"  # URL-safe characters only
+```
+
+External Secrets backend (required in production): store `registry_key`,
+`password` and `registry_dsn` at `sanitizer-core.secrets.<backend>` (default
+path `sanitizer-core`), where `registry_dsn` is
+`postgres://dsa:<password>@postgres-sanitizer-core:5432/sanitizer_core?sslmode=disable`
+with the same password. The core reads the DSN as a **file**
+(`--registry-dsn-file`); the password never appears on its command line.
+The core accepts only this `postgres://` (or `postgresql://`) URL form from a
+file and refuses `key=value` text at boot. A password with characters other
+than `A-Z a-z 0-9 . _ ~ -` must be percent-encoded in `registry_dsn` only, not
+in `password`: `/ ? # @ : %` and a space become `%2F %3F %23 %40 %3A %25 %20`.
+On the `k8s-native` backend the chart builds the URL itself, so there the
+password, the DB user and the database name must be URL-safe as they are; the
+render refuses anything else.
+
+### 2. mTLS Secrets (once, before `helm install`)
+
+The gateway → core hop is verified mTLS on its own deploy CA — the same tree the
+Compose path uses. Helm never generates key material; create the two Secrets
+from the bootstrap script's output:
+
+```bash
+scripts/bootstrap-sanitizer-core-mtls.sh /secure/sanitizer-core-mtls
+kubectl -n dsa-identity create secret generic sanitizer-core-mtls \
+  --from-file=/secure/sanitizer-core-mtls/sanitizer-core/
+kubectl -n dsa-edge create secret generic gateway-sanitizer-core-mtls \
+  --from-file=/secure/sanitizer-core-mtls/gateway/
+```
+
+Run the script as your own user here (not as root): `kubectl` must be able to
+read the keys, and their owner inside the Pod comes from the chart (`fsGroup`
+10001, mode 0440). Keep the directory private; delete it once the Secrets exist
+if your PKI keeps the CA elsewhere. Only the core's server leaf (SAN
+`dsa-sanitizer-core`) and the gateway's client leaf (SAN `dsa-gateway`) are
+projected, each with the CA certificate; the CA (key and certificate) is
+written to the sibling folder `/secure/sanitizer-core-mtls-ca/` and never
+becomes a Secret. To use your own PKI instead, issue the two
+leaves with those SANs from one CA and point `sanitizer-core.mtls.*Key` /
+`gateway.sanitizerCore.mtls.*Key` at your Secret's key names.
+
+The core → witness claim hop needs no extra Secret. With `global.mtls.enabled=true`
+(the production profile) the core sends its claims with the `sanitizer` mesh
+leaf (`global.mtls.secrets.sanitizer`) over latched mTLS
+(`LCR_WITNESS_REQUIRE_MTLS=true`) — the hosted service once lost every claim at
+the handshake without that latch. In development (no mesh) the development
+witness serves its claim port in plaintext like every other development emitter,
+and the core logs a warning on every boot.
+
+### 3. Registry migration
+
+The chart runs the registry migration as a Job on every `helm install` and
+`helm upgrade` (`sanitizer-core-migrate-r<revision>`): the kit's capped runner
+(`migrate-sanitizer-core.sh`, byte copy in the chart) applies the
+`SHA256SUMS`-checked migrations in one transaction, up to this release's reviewed
+ceiling of 7, never down. The core never migrates on its own boot; its Pod waits
+in `Init` (`wait-for-migration`) until the ledger has reached
+`sanitizer-core.migrations.targetVersion`. A Job that runs again on an
+up-to-date registry does nothing.
+
+### 4. Check it
+
+```bash
+bin/lucairn doctor --values customer-values.yaml                     # the rendered contract
+DOCTOR_KUBE_LIVE=1 bin/lucairn doctor --values customer-values.yaml  # + the running release (kubectl context)
+```
+
+The render check covers: core + sidecar in one Pod, no `--dsn` argument in any
+container, the DSN file, the sidecar limit ≥ 6500 MiB, no `LCR_PROFILE`, the
+latched witness hop in production, the gateway's switch set and mTLS client, the
+migration Job against the ceiling, and the four NetworkPolicies. With
+`DOCTOR_KUBE_LIVE=1` it also checks, in the current kubectl context, that both
+mTLS Secrets exist, the Deployment and the registry are Ready, the latest
+migration Job completed, and the core's log shows its witness transport (`mtls`
+in production) and no `DROPPED` claim. NetworkPolicy presence is not proof that
+your CNI enforces it.
+
+**Stated limits (this release):** the registry database is not in the backup
+CronJobs yet; registry rows of expired conversations stay in the database (as on
+the Compose path). If you move the identity namespace, also update
+`gateway.sanitizerCore.url` (it names `dsa-identity`).
 
 ## Sanitizer content cache (Redis — default ON)
 
