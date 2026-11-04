@@ -27,7 +27,7 @@ spec:
         runAsNonRoot: false
       containers:
         - name: ollama
-          image: "{{ .Values.ollama.image.repository }}:{{ .Values.ollama.image.tag }}"
+          image: "{{ .Values.ollama.image.repository }}:{{ .Values.ollama.image.tag }}{{ with .Values.ollama.image.digest }}@{{ . }}{{ end }}"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

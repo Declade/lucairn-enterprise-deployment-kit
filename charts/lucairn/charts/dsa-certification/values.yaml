@@ -35,7 +35,10 @@ images:
     tag: ""
 
 postgresql:
-  image: postgres:16
+  # Placeholder sub-chart (no templates yet). The same digest-pinned image the
+  # other bundled Postgres instances use (image-manifest.yaml
+  # image_digests.enterprise_kind.postgres).
+  image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
   storage: 10Gi
   database: dsa_certs
   user: certuser

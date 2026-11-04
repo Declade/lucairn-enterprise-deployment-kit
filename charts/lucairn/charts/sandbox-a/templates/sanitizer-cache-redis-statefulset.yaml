@@ -34,7 +34,7 @@ spec:
         fsGroup: 999
       containers:
         - name: redis
-          image: "{{ .Values.sanitizerCache.image.repository }}:{{ .Values.sanitizerCache.image.tag }}"
+          image: "{{ .Values.sanitizerCache.image.repository }}:{{ .Values.sanitizerCache.image.tag }}{{ with .Values.sanitizerCache.image.digest }}@{{ . }}{{ end }}"
           imagePullPolicy: {{ .Values.sanitizerCache.image.pullPolicy }}
           args:
             - "--maxmemory"

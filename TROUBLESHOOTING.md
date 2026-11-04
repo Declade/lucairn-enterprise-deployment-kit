@@ -109,6 +109,10 @@ Expected: `render-migrations: audit rendered to /migrations-rendered/audit` ... 
 ```bash
 docker compose -f docker-compose.customer.yml --env-file customer.env down
 docker volume rm "$(docker compose -f docker-compose.customer.yml --env-file customer.env config --volumes | grep -E '^rendered-migrations$' || echo rendered-migrations)" || true
+# Kit 2.0: an S1 install starts with `bin/lucairn up --env customer.env` (it runs
+# the registry step below first). Plain Compose: the core's registry first.
+docker compose -f docker-compose.customer.yml --env-file customer.env \
+  --profile sanitizer-core-migrate run --rm migrate-sanitizer-core
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 ```
 
@@ -411,9 +415,14 @@ Cause: the base `docker-compose.self-hosted.yml` overlay attaches Sandbox B
 only to `internal: true` bridges. That is correct for a local-model
 runtime but blocks all outbound egress, including managed-LLM calls.
 
-Fix: load the BYOK overlay on top of the customer + self-hosted overlays.
+Fix: load the BYOK overlay on top of the customer + self-hosted overlays. On an
+S1 install initialised with `--runtime-mode managed-byok` the recorded topology
+already carries it: use `bin/lucairn up --env customer.env` (it also runs the
+kit 2.0 registry step `migrate-sanitizer-core` first). By hand:
 
 ```bash
+docker compose -f docker-compose.customer.yml --env-file customer.env \
+  --profile sanitizer-core-migrate run --rm migrate-sanitizer-core
 docker compose \
   -f docker-compose.customer.yml \
   -f docker-compose.self-hosted.yml \

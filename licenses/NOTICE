@@ -1,0 +1,300 @@
+Third-party data notices
+========================
+
+This repository is licensed under the Business Source License 1.1 (see LICENSE).
+The data files named below are third-party works redistributed under their own
+terms. Entries are added as data sources are reviewed; this file does not yet
+list every data file in the repository. The section "sanitizer-core images"
+at the end lists every model and data file the two sanitizer-core images
+redistribute (T-1441 K-D, reviewed 2026-11-02).
+
+services/sanitizer/data/12dicts-3of6game.txt
+services/sanitizer/data/12dicts-3esl.txt
+  12dicts 6.0.2, compiled by Alan Beale (http://wordlist.aspell.net/12dicts/),
+  files International/3of6game.txt and American/3esl.txt, redistributed verbatim
+  (CRLF -> LF, with a provenance header).
+  Licence: public domain. From the 12dicts ReadMe: "The 12dicts lists were
+  compiled by Alan Beale. I explicitly release them to the public domain, but
+  request acknowledgment of their use." This entry is that acknowledgment.
+  Upstream sha256:
+    12dicts-6.0.2.zip  64ac1d35acb66b550c7ebc56e080b62e0bad8f5984d72059dc2e05ac48780e52
+    3of6game.txt       ad7b041b98e09a30ae9f4938ac24ca919a434b021a6b8582a69ad5d4863dabf0
+    3esl.txt           eb70e6169534511caff9e06971b3fa71981a83f0355b29532b710ea5a9df253b
+  Used at build time only, by services/sanitizer/_gen_de_places_en_exclude.py, to
+  generate services/sanitizer/data/de-places-en-exclude.txt, and by
+  services/sanitizer/data/_gen_slug_common_words.py, to generate
+  services/sanitizer/data/slug-common-words.txt. The two lists themselves are not
+  shipped in the sanitizer image (.dockerignore).
+
+services/sanitizer/data/slug-common-words.txt
+  Derived from the two 12dicts lists above (already-lowercase alphabetic single
+  words of three or more letters, usage markers stripped) by
+  services/sanitizer/data/_gen_slug_common_words.py; public domain like its
+  source. Shipped in the sanitizer image and read at runtime by
+  services/sanitizer/subset_slug_names.py (T-1179).
+
+services/sanitizer/data/de-places-en-exclude-addendum.txt
+  Maintained by Lucairn: the entries are carried over from the exclusion set
+  shipped before the 2026-09-25 licence swap, the reasons are Lucairn's own.
+  Listed here because it is the second input of the same generator.
+
+services/sanitizer/data/de-places.txt
+services/sanitizer/data/world-places.txt
+services/sanitizer/data/de-places-en-exclude.txt (derived from de-places.txt)
+  Contain place names derived from GeoNames (https://www.geonames.org/),
+  licensed under Creative Commons Attribution 4.0 (CC BY 4.0,
+  https://creativecommons.org/licenses/by/4.0/). Modified: names extracted,
+  lower-cased, filtered and merged with curated entries (see each file's
+  header). Shipped in the sanitizer image.
+
+sanitizer-core images (dsa-sanitizer-core, dsa-sanitizer-core-sidecar)
+======================================================================
+
+Every model and data file the two sanitizer-core images redistribute, with the
+licence as read from its source on 2026-11-02 (T-1441 K-D; PRD kit 2.0 row 8).
+Code dependencies (Go modules, Python packages) are listed by the images'
+SBOMs (scripts/sbom-images.sh), not here; each Python wheel keeps its own
+licence files in its dist-info directory inside the sidecar image.
+
+-- dsa-sanitizer-core (services/sanitizer-core/Dockerfile) -------------------
+The Go binary embeds (go:embed) these files; the image holds no other data.
+
+services/sanitizer-core/detect/words/12dicts-3of6game.txt
+  12dicts 6.0.2 International/3of6game.txt (Alan Beale), the same file as
+  services/sanitizer/data/12dicts-3of6game.txt above, but read at RUN time by
+  the core (embedded in the binary). Licence: public domain. 12dicts ReadMe
+  (http://wordlist.aspell.net/12dicts-readme/): "I explicitly release them to
+  the public domain, but request acknowledgment of their use." (The AGID-derived
+  2of12inf and 2+2+3 lists are the exceptions; neither is used.) This entry is
+  that acknowledgment.
+
+services/sanitizer-core/detect/words/name-second-source.txt
+  Lower-cased single names from (a) U.S. Census Bureau surnames (top 1,000 by
+  rank, via the FiveThirtyEight mirror most-common-name/surnames.csv of
+  https://github.com/fivethirtyeight/data) and (b) U.S. Social Security
+  Administration baby names (via the mirror https://github.com/hadley/data-baby-names).
+  Licence: works of the U.S. Government, not copyright-protected under
+  17 U.S.C. 105 ("Copyright protection under this title is not available for
+  any work of the United States Government",
+  https://www.law.cornell.edu/uscode/text/17/105); the SSA national baby-names
+  dataset is listed with licence CC0 1.0 by its publisher on data.gov
+  (https://catalog.data.gov/dataset/baby-names-from-social-security-card-applications-national-data).
+  Mirrors: the FiveThirtyEight data repository states "Unless otherwise noted,
+  our data sets are available under the Creative Commons Attribution 4.0
+  International License"; attribution: FiveThirtyEight,
+  https://github.com/fivethirtyeight/data (CC BY 4.0). The hadley/data-baby-names
+  repository declares no licence; it aggregates the SSA data.
+
+services/sanitizer-core/detect/words/german-names.txt
+  Byte copy of services/sanitizer/data/german-names.txt: 183 common German
+  given names and surnames, compiled for the project. Its header names "Faker
+  de_DE locale, Statistisches Bundesamt frequency lists". 123 of the 183
+  entries are entries of Faker 30.8.2 de_DE (MIT, see german-given-names.txt).
+  For the other 60 (Kim, Sascha and 58 surnames) the stated Statistisches
+  Bundesamt source is NOT VERIFIED (2026-11-02): no surname list of the
+  Statistisches Bundesamt was found, and the given-name tables it publishes
+  give another source: "Quelle: Gesellschaft für deutsche Sprache"
+  (Statistisches Jahrbuch, tables 2.2.7 and 2.2.8,
+  https://www.destatis.de/DE/Themen/Querschnitt/Jahrbuch/jb-bevoelkerung.pdf;
+  press release of 2019,
+  https://www.destatis.de/DE/Presse/Pressemitteilungen/2019/09/PD19_363_122.html).
+  Each of the 60 is an entry of the upstream smashew/NameDatabases lists that
+  name-corpus.txt below is built from (The Unlicense; checked against
+  NamesDatabases/surnames/all.txt and "first names"/all.txt at that commit: 52
+  as written, 8 transliterated or accent-folded: Böhm, Gröner, König, Krüger,
+  Kühn, Möller, Schröder, Strauß), and 38 of them are also Faker 30.8.2 de_AT
+  or de_CH entries (MIT). The file is unchanged (in a one-off measurement for
+  T-1441 K-D, removing the 60 dropped LS2 surname coverage from 94 to 73 of
+  200 and 12 in-repo logins).
+
+services/sanitizer-core/detect/words/name-corpus.txt
+  smashew/NameDatabases at commit 4a714a09ed69147c373d9b9f2bce20ef79a63381
+  (NamesDatabases/surnames/all.txt + NamesDatabases/first names/all.txt),
+  lower-cased and filtered, united with the in-repo german-names.txt and the
+  synthetic canary-names.txt. Licence: The Unlicense (public-domain
+  dedication), LICENSE at that commit
+  (https://raw.githubusercontent.com/smashew/NameDatabases/4a714a09ed69147c373d9b9f2bce20ef79a63381/LICENSE):
+  "This is free and unencumbered software released into the public domain."
+
+services/sanitizer-core/detect/words/german-given-names.txt
+services/sanitizer-core/detect/words/german-surnames.txt
+  Faker 30.8.2 (https://pypi.org/project/Faker/30.8.2/, wheel sha256
+  4a82b2908cd19f3bba1a4da2060cc4eb18a40410ccdf9350d071d79dc92fe3ce): de_DE
+  first names; de_DE, de_AT and de_CH last names. Licence: MIT, "Copyright (c)
+  2012 Daniele Faraglia" (Faker-30.8.2.dist-info/LICENSE.txt; PyPI metadata
+  "License: MIT License"); the licence text is in each file's header.
+  german-surnames.txt's addendum holds only names of the name files above: the
+  names of its round-4 addendum (DSA #923) that a rule over the spaCy model
+  below (MIT), Faker de_AT/de_CH (MIT) and the U.S. Census Bureau's
+  "Frequently Occurring Surnames from the 2010 Census"
+  (https://www2.census.gov/topics/genealogy/2010surnames/names.zip, a U.S.
+  Government work, 17 U.S.C. 105) also holds; no name is added. No Wiktionary
+  or Wikipedia (CC BY-SA) text, rank or count is in the file or read to build
+  it, but the round-4 selection that the addendum is restricted to was made
+  with the de.wiktionary page "Verzeichnis:Deutsch/Namen/die häufigsten
+  Nachnamen Deutschlands" (CC BY-SA) (rule and generator: the file header,
+  gen_german_surnames.py).
+
+services/sanitizer-core/detect/words/german-common-words.txt
+  The first 50,000 word forms of the vectors table of the spaCy model
+  de_core_news_lg 3.8.0. Licence of the model: MIT ("license": "MIT" in its
+  meta.json; LICENSE "Copyright 2021 ExplosionAI GmbH";
+  https://github.com/explosion/spacy-models/releases/tag/de_core_news_lg-3.8.0).
+  The vectors' source per meta.json: "Explosion fastText Vectors (cbow, OSCAR
+  Common Crawl + Wikipedia)", licence CC0.
+
+services/sanitizer-core/detect/words/german-function-words.txt
+  spaCy 3.8.13 spacy/lang/de/stop_words.py (MIT, licence text in the file
+  header) plus four words added by Lucairn.
+
+services/sanitizer-core/detect/words/world-places.txt
+  Place names derived from GeoNames (cities15000, countryInfo,
+  admin1CodesASCII), licensed under Creative Commons Attribution 4.0
+  (https://www.geonames.org/about.html: "This work is licensed under a Creative
+  Commons Attribution 4.0 License"). Modified: names extracted, lower-cased,
+  filtered. Attribution: GeoNames, https://www.geonames.org/.
+
+services/sanitizer-core/detect/confusables.txt
+  A subset (Latin/ASCII targets) of the Unicode confusables data of UTS #39
+  (confusables.txt). Licence: Unicode License V3
+  (https://www.unicode.org/license.txt), whose copyright and permission notice
+  follows verbatim:
+
+    UNICODE LICENSE V3
+
+    COPYRIGHT AND PERMISSION NOTICE
+
+    Copyright © 1991-2026 Unicode, Inc.
+
+    NOTICE TO USER: Carefully read the following legal agreement. BY
+    DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+    SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+    TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+    DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of data files and any associated documentation (the "Data Files") or
+    software and any associated documentation (the "Software") to deal in the
+    Data Files or Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, and/or sell
+    copies of the Data Files or Software, and to permit persons to whom the
+    Data Files or Software are furnished to do so, provided that either (a)
+    this copyright and permission notice appear with all copies of the Data
+    Files or Software, or (b) this copyright and permission notice appear in
+    associated Documentation.
+
+    THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+    KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+    THIRD PARTY RIGHTS.
+
+    IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+    BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+    OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+    WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+    ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+    FILES OR SOFTWARE.
+
+    Except as contained in this notice, the name of a copyright holder shall
+    not be used in advertising or otherwise to promote the sale, use or other
+    dealings in these Data Files or Software without prior written
+    authorization of the copyright holder.
+
+services/sanitizer-core/detect/words/name-protect-addendum.txt
+services/sanitizer-core/detect/words/first-name-exclusions.txt
+services/sanitizer-core/detect/words/temporal-words.txt
+services/sanitizer-core/detect/words/de-ordinary-words.v3.tsv
+services/sanitizer-core/detect/rules.json
+services/sanitizer-core/store/migrations/*.up.sql
+  Written or selected by Lucairn (each file's header names its derivation);
+  name-protect-addendum.txt selects entries of name-corpus.txt and 12dicts.
+
+-- dsa-sanitizer-core-sidecar (services/sanitizer-core/Dockerfile.sidecar) ----
+
+GLiNER urchade/gliner_multi-v2.1, revision 443d26d654e0324125a96bebd8e796c14ff2efe6
+  Files: gliner_config.json, model.safetensors (sidecar/fetch_models.py).
+  Licence: Apache License 2.0 (model card front matter at that revision,
+  https://huggingface.co/urchade/gliner_multi-v2.1/raw/443d26d654e0324125a96bebd8e796c14ff2efe6/README.md:
+  "license: apache-2.0"; https://www.apache.org/licenses/LICENSE-2.0). The card
+  names its training data, urchade/pile-mistral-v0.1 (dataset card: licence
+  apache-2.0, https://huggingface.co/datasets/urchade/pile-mistral-v0.1); the
+  data is not redistributed. The model repository's fetched files carry no
+  LICENSE or NOTICE file.
+
+microsoft/mdeberta-v3-base, revision a0484667b22365f84929a935b5e50a51f71f159d
+  Files: config.json, spm.model, tokenizer_config.json (the backbone config and
+  tokenizer GLiNER reads; no weights). Licence: MIT (model card front matter at
+  that revision,
+  https://huggingface.co/microsoft/mdeberta-v3-base/raw/a0484667b22365f84929a935b5e50a51f71f159d/README.md:
+  "license: mit"). The model repository has no LICENSE file; the MIT licence of
+  Microsoft's DeBERTa code repository reads "Copyright (c) Microsoft
+  Corporation." (https://github.com/microsoft/DeBERTa/blob/master/LICENSE).
+
+spaCy model en_core_web_md 3.8.0
+  (https://github.com/explosion/spacy-models/releases/tag/en_core_web_md-3.8.0)
+  Licence: MIT ("license": "MIT" in meta.json; LICENSE "Copyright 2021
+  ExplosionAI GmbH"). Training sources as the model's meta.json and
+  LICENSES_SOURCES state them: OntoNotes 5 "commercial (licensed by
+  Explosion)"; ClearNLP Constituent-to-Dependency Conversion "Citation provided
+  for reference, no code packaged with model"; WordNet 3.0 "WordNet 3.0
+  License" (its notice must appear on all copies: it is in the wheel's
+  LICENSES_SOURCES, installed in the image); Explosion Vectors (OSCAR 2109 +
+  Wikipedia + OpenSubtitles + WMT News Crawl) "CC0". The model's LICENSE and
+  LICENSES_SOURCES ship in the image (site-packages/en_core_web_md/).
+
+spaCy model de_core_news_lg 3.8.0
+  (https://github.com/explosion/spacy-models/releases/tag/de_core_news_lg-3.8.0)
+  Licence: MIT ("license": "MIT" in meta.json; LICENSE "Copyright 2021
+  ExplosionAI GmbH"). Training sources per meta.json and LICENSES_SOURCES:
+  TIGER Corpus "commercial (licensed by Explosion)"; Tiger2Dep "Citation
+  provided for reference, no code packaged with model"; WikiNER "CC BY 4.0"
+  (Joel Nothman, Nicky Ringland, Will Radford, Tara Murphy, James R Curran,
+  https://figshare.com/articles/Learning_multilingual_named_entity_recognition_from_Wikipedia/5462500);
+  Explosion fastText Vectors (cbow, OSCAR Common Crawl + Wikipedia) "CC0". The
+  model's LICENSE and LICENSES_SOURCES ship in the image.
+
+torch 2.14.1+cpu (https://download.pytorch.org/whl/cpu/)
+  Licence, from the x86_64 wheel's own metadata
+  (torch-2.14.1+cpu-cp312-cp312-manylinux_2_28_x86_64.whl.metadata):
+  "License-Expression: Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND
+  BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND MIT"; PyTorch LICENSE
+  (https://github.com/pytorch/pytorch/blob/v2.14.1/LICENSE). The wheel installs
+  its LICENSE and every third_party licence file it lists (License-File) in its
+  dist-info directory in the image. The aarch64 wheel of the lock
+  (torch-2.14.1+cpu-cp312-cp312-manylinux_2_28_aarch64.whl.metadata, read
+  2026-11-03) has the same License-Expression and License-File lines.
+
+langdetect 1.0.9 (its bundled language profiles, langdetect/profiles/, are data)
+  Built in the image from the PyPI sdist langdetect-1.0.9.tar.gz (sha256
+  cbc1fef89f8d062739774bd51eda3da3274006b3661d199c2655f6b3f6d605a0, pinned in
+  services/sanitizer-core/sidecar/requirements.txt) with the hash-locked
+  setuptools 84.0.0 of sidecar/requirements-build.txt. The built wheel installs
+  the sdist's LICENSE and NOTICE in the image as
+    /opt/venv/lib/python3.12/site-packages/langdetect-1.0.9.dist-info/licenses/LICENSE
+    /opt/venv/lib/python3.12/site-packages/langdetect-1.0.9.dist-info/licenses/NOTICE
+  (wheel METADATA "License-File: LICENSE", "License-File: NOTICE"; checked
+  2026-11-03 by building the wheel from that sdist with setuptools 84.0.0).
+  Licence: Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0),
+  read from those two files. LICENSE (sha256 9c539fdc47fa4e195b88efaa6495f11463de271f59c8de96feb8bc9c8abab1ab):
+  "Copyright 2014-2015 Michal "Mimino" Danilak / Licensed under the Apache
+  License, Version 2.0". NOTICE (sha256 bc22bad5907339e12834d91f7809ec35c3c44fa4b812f274ebfefa38de080869):
+  the licence of language-detection, the library langdetect is a port of
+  (README.md: "Port of Nakatani Shuyo's language-detection library"). Both
+  files are byte-identical to upstream at commit
+  9bdfddfc934a85e46454c9a97c4b48a3aa04dc72 (https://github.com/Mimino666/langdetect).
+  The package metadata's "License: MIT" (setup.py license='MIT', PKG-INFO, PyPI
+  JSON) contradicts both licence files and the package's own classifier
+  "License :: OSI Approved :: Apache Software License"; this entry follows the
+  licence files. The attribution notice of that NOTICE file (Apache-2.0
+  section 4(d)), verbatim:
+
+    language-detection license
+    ==========================
+
+        Copyright (c) 2010-2014 Cybozu Labs, Inc. All rights reserved.
+
+        Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+        Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.

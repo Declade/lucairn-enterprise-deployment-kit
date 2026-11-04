@@ -356,7 +356,7 @@ while IFS='|' read -r NAME FILES EXTRA; do
   [ "$HAS_SELF" = 1 ] && EXPECT_SVCS="$EXPECT_SVCS sandbox-b"
   MISSING_SVCS=""
   for s in $EXPECT_SVCS; do
-    printf '%s\n' "$SERVICES" | grep -qx "$s" || MISSING_SVCS="$MISSING_SVCS $s"
+    grep -qx "$s" <<<"$SERVICES" || MISSING_SVCS="$MISSING_SVCS $s"
   done
   check "" "$MISSING_SVCS" "$NAME: every expected emitter service is in the render"
 

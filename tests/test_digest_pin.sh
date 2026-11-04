@@ -94,13 +94,15 @@ grep -qi "image DIGEST" "$TMP/help.out" \
 echo "digest-pin: usage advertises --strict (distinct from --strict-runtime) ok"
 
 # ---------------------------------------------------------------------------
-# 3. parse_image_digests parses the real manifest: 19 real digests + 10 pending.
-#    The 19 real-digest entries = 13 signed artifacts (the 12 dsa-* services +
+# 3. parse_image_digests parses the real manifest: 26 real digests + 10 pending.
+#    The 26 real-digest entries = 13 signed artifacts (the 12 dsa-* services +
 #    lucairn-dashboard, all in keys/image-digests-0.5.5.txt) + ollama/ollama
 #    + the dsa-pii-ml sidecar (digest-pinned in image-manifest.yaml at PR #240
 #    but NOT in the cosign-signed set — it ships on its own release cadence) +
 #    the three third-party images in the Enterprise Kind default topology + the
-#    digest-pinned vllm-l3 fast L3 shield (PRD B, opt-in identity-plane runtime).
+#    digest-pinned vllm-l3 fast L3 shield (PRD B, opt-in identity-plane runtime)
+#    + the 7 kit_third_party images (kit 2.0 row 9: alpine, busybox, the four
+#    observability images, curl).
 #    Source the CLI with EMPTY args so the trailing `main "$@"` becomes
 #    `main` -> usage (harmless, no exit), making the helper functions callable.
 # ---------------------------------------------------------------------------
@@ -111,8 +113,8 @@ PARSED="$(
 )"
 real_count="$(printf '%s\n' "$PARSED" | grep -c $'\tsha256:' || true)"
 pending_count="$(printf '%s\n' "$PARSED" | grep -c $'\tPENDING' || true)"
-[ "$real_count" = "19" ] \
-  || fail "expected 19 real-digest entries (13 signed + ollama + dsa-pii-ml sidecar + 3 Kind dependencies + vllm-l3 shield), got $real_count"
+[ "$real_count" = "26" ] \
+  || fail "expected 26 real-digest entries (13 signed + ollama + dsa-pii-ml sidecar + 3 Kind dependencies + vllm-l3 shield + 7 kit_third_party), got $real_count"
 # 10 since kit 2.0 K-A: + the dsa-sanitizer-core / dsa-sanitizer-core-sidecar
 # schema slots, filled with signed digests by the release step (K0).
 [ "$pending_count" = "10" ] \
@@ -121,7 +123,7 @@ pending_count="$(printf '%s\n' "$PARSED" | grep -c $'\tPENDING' || true)"
 printf '%s\n' "$PARSED" \
   | grep -qF "$(printf '%s\t%s' "$GW_REC_REF" "$GW_DIGEST")" \
   || fail "parse_image_digests did not map the gateway ref to its recorded digest"
-echo "digest-pin: parse_image_digests reads 19 real + 10 pending entries ok"
+echo "digest-pin: parse_image_digests reads 26 real + 10 pending entries ok"
 
 # ---------------------------------------------------------------------------
 # 4. Lockstep: every signed artifact in keys/image-digests-0.5.5.txt must appear
@@ -134,7 +136,7 @@ while IFS= read -r line; do
   ref="${ref#"${ref%%[![:space:]]*}"}"; ref="${ref%"${ref##*[![:space:]]}"}"
   [ -n "$ref" ] || continue
   case "$rec" in sha256:*) ;; *) continue ;; esac
-  printf '%s\n' "$PARSED" | grep -q "^${ref}	${rec}$" \
+  grep -q "^${ref}	${rec}$" <<<"$PARSED" \
     || fail "lockstep: $ref $rec is in keys/image-digests-0.5.5.txt but not (identically) in the manifest digest block"
 done < "$DIGESTS_FILE"
 echo "digest-pin: manifest digest block is in lockstep with keys/image-digests-0.5.5.txt ok"
@@ -250,14 +252,14 @@ out_s="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_
 set -e
 [ "$rc_n" -eq 0 ] || fail "clean manifest normal mode should rc=0, got $rc_n"
 [ "$rc_s" -eq 0 ] || { printf '%s\n' "$out_s" >&2; fail "clean manifest --strict should rc=0 (all match), got $rc_s"; }
-printf '%s' "$out_s" | grep -q "image digest: ok (ghcr.io/declade/dsa-gateway" \
+grep -q "image digest: ok (ghcr.io/declade/dsa-gateway" <<<"$out_s" \
   || fail "clean --strict should report gateway ok"
-printf '%s' "$out_s" | grep -q "mismatched=0" \
+grep -q "mismatched=0" <<<"$out_s" \
   || fail "clean --strict summary should report mismatched=0"
 # pending entries must be skipped (present + counted) even under --strict.
-printf '%s' "$out_s" | grep -q "ollama://qwen2.5:7b pending" \
+grep -q "ollama://qwen2.5:7b pending" <<<"$out_s" \
   || fail "qwen2.5 model should be reported pending"
-printf '%s' "$out_s" | grep -q "pending=10" \
+grep -q "pending=10" <<<"$out_s" \
   || fail "--strict summary should report pending=10 (8 + the sanitizer core/sidecar slots)"
 # Stub-bound, not host-bound (astra post-merge #137 M1): EVERY verified ref must
 # have been answered by the stub crane — one logged call per verified entry. If a
@@ -265,8 +267,8 @@ printf '%s' "$out_s" | grep -q "pending=10" \
 # stub would log fewer calls than refs verified.
 strict_verified="$(printf '%s' "$out_s" | sed -n 's/.*verified=\([0-9][0-9]*\).*/\1/p' | head -n1)"
 stub_calls="$(grep -c . "$SHIM_OK/calls.log" 2>/dev/null || true)"
-[ "$strict_verified" = "19" ] \
-  || { printf '%s\n' "$out_s" >&2; fail "clean --strict should report verified=19, got '${strict_verified}'"; }
+[ "$strict_verified" = "26" ] \
+  || { printf '%s\n' "$out_s" >&2; fail "clean --strict should report verified=26, got '${strict_verified}'"; }
 [ "$stub_calls" = "$strict_verified" ] \
   || fail "clean --strict: stub crane answered ${stub_calls:-0} resolver calls but ${strict_verified} refs were verified — a non-stub resolver answered (test is not hermetic)"
 echo "digest-pin: clean manifest -> normal rc=0 + strict rc=0, pending skipped ok"
@@ -293,11 +295,11 @@ out_bs="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_BAD/bin/drive.sh" "$ENVF" 1 2>&1)"; r
 set -e
 [ "$rc_bn" -eq 0 ] || fail "tampered manifest normal mode should still rc=0 (warn-only), got $rc_bn"
 [ "$rc_bs" -ne 0 ] || fail "tampered manifest --strict should BLOCK (non-zero), got $rc_bs"
-printf '%s' "$out_bn" | grep -qi "image digest mismatch: ghcr.io/declade/dsa-gateway" \
+grep -qi "image digest mismatch: ghcr.io/declade/dsa-gateway" <<<"$out_bn" \
   || fail "tampered normal mode should WARN on the gateway mismatch"
-printf '%s' "$out_bs" | grep -qi "MISMATCH (ghcr.io/declade/dsa-gateway" \
+grep -qi "MISMATCH (ghcr.io/declade/dsa-gateway" <<<"$out_bs" \
   || fail "tampered --strict should report the gateway MISMATCH"
-printf '%s' "$out_bs" | grep -qi "failing closed" \
+grep -qi "failing closed" <<<"$out_bs" \
   || fail "tampered --strict should announce failing closed"
 echo "digest-pin: tampered digest -> normal rc=0 (warn) + strict BLOCKS (non-zero) ok"
 
@@ -319,10 +321,10 @@ out_nr_s="$(PATH="$NORES" "$KROOT_OK/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_nr_s=$?
 out_nr_n="$(PATH="$NORES" "$KROOT_OK/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_nr_n=$?
 set -e
 [ "$rc_nr_s" -ne 0 ] || { printf '%s\n' "$out_nr_s" >&2; fail "no-resolver --strict should HARD ERROR (non-zero), got $rc_nr_s"; }
-printf '%s' "$out_nr_s" | grep -qi "requires a digest resolver" \
+grep -qi "requires a digest resolver" <<<"$out_nr_s" \
   || fail "no-resolver --strict should report the resolver requirement"
 [ "$rc_nr_n" -eq 0 ] || { printf '%s\n' "$out_nr_n" >&2; fail "no-resolver PLAIN doctor should SKIP (rc=0), got $rc_nr_n"; }
-printf '%s' "$out_nr_n" | grep -qi "no registry digest resolver on PATH" \
+grep -qi "no registry digest resolver on PATH" <<<"$out_nr_n" \
   || fail "no-resolver plain path should report the skip reason"
 echo "digest-pin: no-resolver host -> --strict HARD ERRORS, plain doctor SKIPS ok"
 
@@ -336,7 +338,7 @@ out_off="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF" 1 1 2>&1)";
 out_off_plain="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF" 0 1 2>&1)"; rc_off_plain=$?
 set -e
 [ "$rc_off" -ne 0 ] || { printf '%s\n' "$out_off" >&2; fail "--strict + --offline should HARD ERROR (non-zero), got $rc_off"; }
-printf '%s' "$out_off" | grep -qi "incompatible with --offline" \
+grep -qi "incompatible with --offline" <<<"$out_off" \
   || fail "--strict + --offline should report the incompatibility"
 [ "$rc_off_plain" -eq 0 ] || { printf '%s\n' "$out_off_plain" >&2; fail "plain --offline doctor should stay rc=0, got $rc_off_plain"; }
 echo "digest-pin: --strict + --offline -> hard error; plain --offline rc=0 ok"
@@ -369,9 +371,9 @@ out_ur_s="$(PATH="$EMPTY_PATH" "$KROOT_OK/bin/drive.sh" "$ENVF" 1 2>&1)"; rc_ur_
 out_ur_n="$(PATH="$EMPTY_PATH" "$KROOT_OK/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_ur_n=$?
 set -e
 [ "$rc_ur_s" -ne 0 ] || { printf '%s\n' "$out_ur_s" >&2; fail "induced-empty --strict should FAIL-CLOSED (non-zero), got $rc_ur_s"; }
-printf '%s' "$out_ur_s" | grep -qi "UNRESOLVED" \
+grep -qi "UNRESOLVED" <<<"$out_ur_s" \
   || fail "induced-empty --strict should report UNRESOLVED for the swapped ref"
-printf '%s' "$out_ur_s" | grep -qi "could not be resolved while a resolver was present" \
+grep -qi "could not be resolved while a resolver was present" <<<"$out_ur_s" \
   || fail "induced-empty --strict should announce the fail-closed reason"
 [ "$rc_ur_n" -eq 0 ] || { printf '%s\n' "$out_ur_n" >&2; fail "induced-empty plain doctor should stay rc=0 (warn), got $rc_ur_n"; }
 rm -rf "$SHIM_EMPTY"
@@ -398,9 +400,9 @@ out_cf="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_ALLPEND/bin/drive.sh" "$ENVF" 1 2>&1)
 out_cf_n="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_ALLPEND/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_cf_n=$?
 set -e
 [ "$rc_cf" -ne 0 ] || { printf '%s\n' "$out_cf" >&2; fail "cardinality-floor --strict (verified==0) should FAIL (non-zero), got $rc_cf"; }
-printf '%s' "$out_cf" | grep -qi "verified no recorded digests" \
+grep -qi "verified no recorded digests" <<<"$out_cf" \
   || fail "cardinality-floor --strict should use the DISTINCT 'verified no recorded digests' message"
-printf '%s' "$out_cf" | grep -q "verified=0" \
+grep -q "verified=0" <<<"$out_cf" \
   || fail "cardinality-floor summary should report verified=0"
 [ "$rc_cf_n" -eq 0 ] || { printf '%s\n' "$out_cf_n" >&2; fail "cardinality-floor plain doctor should stay rc=0, got $rc_cf_n"; }
 rm -rf "$KROOT_ALLPEND"
@@ -423,7 +425,7 @@ INV_PARSE="$(
   source "$CLI" >/dev/null 2>&1
   parse_image_digests "$MALFORMED"
 )"
-printf '%s\n' "$INV_PARSE" | grep -q "^${GW_REF}	INVALID$" \
+grep -q "^${GW_REF}	INVALID$" <<<"$INV_PARSE" \
   || fail "parser should mark a malformed gateway digest as INVALID (got: $(printf '%s\n' "$INV_PARSE" | grep "$GW_REF"))"
 KROOT_MAL="$(make_kit_root "$MALFORMED")"
 set +e
@@ -431,7 +433,7 @@ out_inv_s="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_MAL/bin/drive.sh" "$ENVF" 1 2>&1)"
 out_inv_n="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_MAL/bin/drive.sh" "$ENVF" 0 2>&1)"; rc_inv_n=$?
 set -e
 [ "$rc_inv_s" -ne 0 ] || { printf '%s\n' "$out_inv_s" >&2; fail "malformed-digest --strict should FAIL-CLOSED (non-zero), got $rc_inv_s"; }
-printf '%s' "$out_inv_s" | grep -qi "INVALID manifest entry" \
+grep -qi "INVALID manifest entry" <<<"$out_inv_s" \
   || fail "malformed-digest --strict should report the INVALID entry"
 [ "$rc_inv_n" -eq 0 ] || { printf '%s\n' "$out_inv_n" >&2; fail "malformed-digest plain doctor should stay rc=0 (warn), got $rc_inv_n"; }
 rm -rf "$KROOT_MAL"
@@ -457,7 +459,7 @@ CON_PARSE="$(
   source "$CLI" >/dev/null 2>&1
   parse_image_digests "$CONTRA"
 )"
-printf '%s\n' "$CON_PARSE" | grep -q "^${GW_REF}	INVALID$" \
+grep -q "^${GW_REF}	INVALID$" <<<"$CON_PARSE" \
   || fail "parser should mark a digest+pending contradiction as INVALID (got: $(printf '%s\n' "$CON_PARSE" | grep "$GW_REF"))"
 KROOT_CON="$(make_kit_root "$CONTRA")"
 set +e
@@ -491,9 +493,9 @@ YML
 printf '%s\n' "$REORDER_PARSE" \
   | grep -q "^ghcr.io/declade/dsa-gateway:0.5.4	sha256:1111111111111111111111111111111111111111111111111111111111111111$" \
   || fail "digest-before-ref must associate the digest with its ref (got: $REORDER_PARSE)"
-printf '%s\n' "$REORDER_PARSE" | grep -q "PENDING" \
+grep -q "PENDING" <<<"$REORDER_PARSE" \
   && fail "digest-before-ref must NOT silently become PENDING"
-printf '%s\n' "$REORDER_PARSE" | grep -q "<no-ref>" \
+grep -q "<no-ref>" <<<"$REORDER_PARSE" \
   && fail "digest-before-ref must NOT mis-attribute to <no-ref>"
 echo "digest-pin: digest-before-ref parses correctly (not a silent PENDING) ok"
 
@@ -515,7 +517,7 @@ image_digests:
 YML
   parse_image_digests "$TMP/orphan.yaml"
 )"
-printf '%s\n' "$ORPHAN_PARSE" | grep -q "^<no-ref>	INVALID$" \
+grep -q "^<no-ref>	INVALID$" <<<"$ORPHAN_PARSE" \
   || fail "an orphan digest (no ref) must surface as <no-ref>\tINVALID (got: $ORPHAN_PARSE)"
 echo "digest-pin: orphan digest (no ref) -> surfaced as <no-ref> INVALID ok"
 
@@ -553,9 +555,9 @@ out_dsw_s="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP"
 out_dsw_n="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP" 0 2>&1)"; rc_dsw_n=$?
 set -e
 [ "$rc_dsw_s" -ne 0 ] || { printf '%s\n' "$out_dsw_s" >&2; fail "dashboard tag swap --strict should BLOCK (non-zero) — the dashboard must be enforced, got $rc_dsw_s"; }
-printf '%s' "$out_dsw_s" | grep -qi "lucairn-dashboard:9.9.9" \
+grep -qi "lucairn-dashboard:9.9.9" <<<"$out_dsw_s" \
   || fail "dashboard tag swap --strict should resolve+report the OVERRIDDEN ref (lucairn-dashboard:9.9.9), proving the dashboard tag env var is applied"
-printf '%s' "$out_dsw_s" | grep -qi "MISMATCH (ghcr.io/declade/lucairn-dashboard:9.9.9" \
+grep -qi "MISMATCH (ghcr.io/declade/lucairn-dashboard:9.9.9" <<<"$out_dsw_s" \
   || fail "dashboard tag swap --strict should report the dashboard MISMATCH"
 [ "$rc_dsw_n" -eq 0 ] || { printf '%s\n' "$out_dsw_n" >&2; fail "dashboard tag swap plain doctor should stay rc=0 (warn-only), got $rc_dsw_n"; }
 echo "digest-pin: dashboard tag override (digest mismatch) -> --strict BLOCKS, plain warns ok"
@@ -583,7 +585,7 @@ set +e
 out_dok_s="$(PATH="$SHIM_DASH_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP" 1 2>&1)"; rc_dok_s=$?
 set -e
 [ "$rc_dok_s" -eq 0 ] || { printf '%s\n' "$out_dok_s" >&2; fail "matching dashboard override --strict should rc=0 (verified), got $rc_dok_s"; }
-printf '%s' "$out_dok_s" | grep -qi "image digest: ok (ghcr.io/declade/lucairn-dashboard:9.9.9" \
+grep -qi "image digest: ok (ghcr.io/declade/lucairn-dashboard:9.9.9" <<<"$out_dok_s" \
   || fail "matching dashboard override --strict should report the resolved dashboard ref ok (counts toward verified++)"
 rm -rf "$SHIM_DASH_OK"
 echo "digest-pin: matching dashboard override -> --strict verifies the dashboard (counts toward floor) ok"
@@ -623,13 +625,13 @@ out_ol_s="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_LATE
 out_ol_n="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_LATEST" 0 2>&1)"; rc_ol_n=$?
 set -e
 [ "$rc_ol_s" -ne 0 ] || { printf '%s\n' "$out_ol_s" >&2; fail "unpinned OLLAMA_IMAGE=ollama/ollama:latest --strict should FAIL-CLOSED (non-zero) — the false-green class is the C5 bug, got $rc_ol_s"; }
-printf '%s' "$out_ol_s" | grep -qi "OLLAMA_IMAGE override (ollama/ollama:latest) is unpinned" \
+grep -qi "OLLAMA_IMAGE override (ollama/ollama:latest) is unpinned" <<<"$out_ol_s" \
   || fail "unpinned OLLAMA_IMAGE --strict should name the unpinned override in the MISMATCH message"
-printf '%s' "$out_ol_s" | grep -qi "failing closed" \
+grep -qi "failing closed" <<<"$out_ol_s" \
   || fail "unpinned OLLAMA_IMAGE --strict should announce failing closed"
 # CRITICAL: --strict must NOT report the canonical ollama:0.6.2 ref as ok while
 # an override is in force (that WAS the false-green).
-printf '%s' "$out_ol_s" | grep -qi "image digest: ok (ollama/ollama:0.6.2 " \
+grep -qi "image digest: ok (ollama/ollama:0.6.2 " <<<"$out_ol_s" \
   && fail "unpinned OLLAMA_IMAGE --strict must NOT silently pass the canonical ollama/ollama:0.6.2 ref (the false-green)"
 [ "$rc_ol_n" -eq 0 ] || { printf '%s\n' "$out_ol_n" >&2; fail "unpinned OLLAMA_IMAGE plain doctor should stay rc=0 (warn-only), got $rc_ol_n"; }
 echo "digest-pin: unpinned OLLAMA_IMAGE override -> --strict FAILS-CLOSED, plain warns ok (C5 false-green closed)"
@@ -658,7 +660,7 @@ set +e
 out_opin_s="$(PATH="$SHIM_OLLAMA_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_PIN" 1 2>&1)"; rc_opin_s=$?
 set -e
 [ "$rc_opin_s" -eq 0 ] || { printf '%s\n' "$out_opin_s" >&2; fail "recorded-digest-pinned OLLAMA_IMAGE --strict should rc=0 (verified), got $rc_opin_s"; }
-printf '%s' "$out_opin_s" | grep -qiF "image digest: ok ($OLLAMA_PIN @ $OLLAMA_DIGEST)" \
+grep -qiF "image digest: ok ($OLLAMA_PIN @ $OLLAMA_DIGEST)" <<<"$out_opin_s" \
   || fail "recorded-digest-pinned OLLAMA_IMAGE --strict should report the pinned ollama ref ok (counts toward verified++)"
 rm -rf "$SHIM_OLLAMA_OK"
 echo "digest-pin: recorded-digest-pinned OLLAMA_IMAGE override -> --strict verifies it (counts toward floor) ok"
@@ -666,7 +668,7 @@ echo "digest-pin: recorded-digest-pinned OLLAMA_IMAGE override -> --strict verif
 # (iii) NO override -> canonical immutable recorded ollama tag verified honestly.
 # The 5a clean run already exercises rc=0 with no OLLAMA_IMAGE in $ENVF; assert
 # the ollama-identity line is reported ok there so we lock the unchanged path.
-printf '%s' "$out_s" | grep -qi "image digest: ok (ollama/ollama:0.6.2 " \
+grep -qi "image digest: ok (ollama/ollama:0.6.2 " <<<"$out_s" \
   || fail "with NO OLLAMA_IMAGE override, --strict should verify the canonical ollama/ollama:0.6.2 ref ok (unchanged honest path)"
 echo "digest-pin: no OLLAMA_IMAGE override -> canonical ollama ref verified honestly ok"
 

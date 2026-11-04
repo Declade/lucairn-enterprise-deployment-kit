@@ -383,6 +383,45 @@ image_digests:
     migrate:
       ref: "migrate/migrate:v4.17.0"
       digest: "sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa"
+  # --- Every other third-party image the kit's Compose files, Helm chart and
+  # --- docs examples pull (kit 2.0, PRD row 9). Since kit 2.0 every
+  # --- third-party image reference in the kit carries the digest recorded in
+  # --- this file (`<repo>:<tag>@<digest>`; tests/test_third_party_image_pins.sh
+  # --- fails on a bare tag or a different digest), so the bytes an install
+  # --- pulls no longer move with the tag. Recorded 2026-11-04 from Docker Hub:
+  # --- the Docker-Content-Digest of the tag (Registry v2 API, anonymous token,
+  # --- index/manifest-list Accept headers — the top-level digest
+  # --- `docker buildx imagetools inspect` reports). This records what the tag
+  # --- serves today; it is NOT a re-validation of these bytes. The live digest
+  # --- gate watches these refs like the ones above. RE-PIN = change the digest
+  # --- here AND in every kit reference together (the pin test names each one).
+  kit_third_party:
+    # prep-migrations + witness-egress-guard (docker-compose.customer.yml)
+    alpine:
+      ref: "alpine:3.20"
+      digest: "sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+    # docs/cni-probe-job.yaml (the CNI enforcement probe)
+    busybox:
+      ref: "busybox:1.36"
+      digest: "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
+    # Helm observability sub-chart (default on)
+    grafana:
+      ref: "grafana/grafana:11.4.0"
+      digest: "sha256:d8ea37798ccc41061a62ab080f2676dda6bf7815558499f901bdb0f533a456fb"
+    loki:
+      ref: "grafana/loki:3.3.0"
+      digest: "sha256:58b60b901255c209d3455d8a1979a3f73d1d09686a0a858c2c93025a969eb550"
+    promtail:
+      ref: "grafana/promtail:3.3.0"
+      digest: "sha256:5aa128328d6b0b47a41e1fedd3e5e599c02203c0368d2a2ffc736785ba5a22a3"
+    tempo:
+      ref: "grafana/tempo:2.6.0"
+      digest: "sha256:f55a8a1937fff0af3a760d376b476c8327fb30e432d5e7630d7938b67691e822"
+    # Helm dashboard `helm test` Pod + the first-customer runbook's in-Pod curl
+    # (docs: the reviewed pinned helper)
+    curl:
+      ref: "curlimages/curl:8.10.1"
+      digest: "sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b"
   # --- Self-hosted runtime alternatives (docker-compose.self-hosted.yml). These
   # --- are OPT-IN (the operator selects ONE) and several float a mutable :latest
   # --- or are operator-built; their digest is recorded at the digest-pin

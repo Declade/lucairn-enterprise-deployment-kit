@@ -448,8 +448,14 @@ runtime_profile_compose_args() {
 # list, ... -> `up` refuses with the gateway's word session_config_invalid) |
 # unknown (names present, Compose could not render; the mode stays off).
 SERVICENOW_OVERLAY="docker-compose.servicenow-control.yml"
+# Kit 2.0: the sanitizer core's operator tools a 2.0 customer bundle carries in
+# scripts/ (bundle create stages them, bundle verify requires each,
+# executable): mTLS bootstrap, registry DSN writer, and (K-E fix round 2) the
+# registry credentials helper for a rollback and the re-upgrade after it.
+SANITIZER_CORE_OPERATOR_TOOLS="bootstrap-sanitizer-core-mtls.sh write-sanitizer-core-registry-dsn.sh sanitizer-core-registry-credentials.sh"
 SN_STATE="off"; SN_WORD=""; SN_HINT=""; SN_SWITCH=""; SN_BINDINGS=""; SN_INSTANCES=""
 SN_SANITIZER_IP=""; SN_CORE_IP=""; SN_PORT=""; SN_BASE=""; SN_COPY=""; SN_MATERIAL=""; SN_LOGIN=""
+SN_SUBNET=""
 SN_KEYED_LINE=""
 
 servicenow_named() {
@@ -511,6 +517,7 @@ servicenow_resolve() {
   local env_file="$1" base_compose="$2" lines line
   SN_STATE="off"; SN_WORD=""; SN_HINT=""; SN_SWITCH=""; SN_BINDINGS=""; SN_INSTANCES=""
   SN_SANITIZER_IP=""; SN_CORE_IP=""; SN_PORT=""; SN_BASE=""; SN_COPY=""; SN_MATERIAL=""; SN_LOGIN=""
+  SN_SUBNET=""
   servicenow_named "$env_file" || return 0
   lines="$(servicenow_probe_render "$env_file" "$base_compose" | servicenow_helper state 2>/dev/null || true)"
   SN_STATE="unknown"
@@ -522,6 +529,7 @@ servicenow_resolve() {
       SWITCH=*) SN_SWITCH="${line#SWITCH=}" ;;
       BINDINGS=*) SN_BINDINGS="${line#BINDINGS=}" ;;
       INSTANCES=*) SN_INSTANCES="${line#INSTANCES=}" ;;
+      SUBNET=*) SN_SUBNET="${line#SUBNET=}" ;;
       SANITIZER_IP=*) SN_SANITIZER_IP="${line#SANITIZER_IP=}" ;;
       CORE_IP=*) SN_CORE_IP="${line#CORE_IP=}" ;;
       PORT=*) SN_PORT="${line#PORT=}" ;;
@@ -591,6 +599,30 @@ servicenow_gateway_holds_port() {
   [ "$SN_GW_PUBLISHED" = "$want" ]
 }
 
+# servicenow_subnet_gate <env file> — kit 2.0 K-E (row-7 measurement): refuse
+# a control subnet that overlaps a network Docker already has, naming it,
+# before Compose touches anything (Compose would stop half-way with "Pool
+# overlaps"). This install's own control network from an earlier `up` is not
+# a clash. Docker's network list unreadable (no daemon access) = a warning:
+# Compose then reports any overlap itself.
+servicenow_subnet_gate() {
+  local env_file="$1" compose own="" ids nets out rc
+  compose="$(compose_cmd)"
+  own="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" config --format json 2>/dev/null \
+    | servicenow_helper control-network-name 2>/dev/null | sed -n 's/^NETWORK=//p' | tail -1)" || own=""
+  if ! ids="$(docker network ls -q 2>/dev/null)" || [ -z "$ids" ] \
+     || ! nets="$(docker network inspect --format '{{.Name}}{{range .IPAM.Config}}|{{.Subnet}}{{end}}' $ids 2>/dev/null)"; then
+    warn "ServiceNow mode: the control subnet $SN_SUBNET was NOT checked against the existing Docker networks (docker network ls/inspect failed); an overlap makes Compose stop with \"Pool overlaps\""
+    return 0
+  fi
+  rc=0; out="$(printf '%s\n' "$nets" | servicenow_helper subnet-check --subnet "$SN_SUBNET" ${own:+--own "$own"} 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] || fail "ServiceNow mode: $(servicenow_refusal_text "$out"). bin/lucairn up refuses to start"
+  case "$out" in
+    *POOL=docker-default*) warn "ServiceNow mode: the control subnet $SN_SUBNET lies inside Docker's default address pools (172.17.0.0/16 to 172.31.0.0/16, 192.168.0.0/16); no existing network uses it now, but Docker may hand it to a network created later. A /29 outside them (for example 10.251.251.0/29) cannot collide" ;;
+    *) info "ServiceNow mode: the control subnet $SN_SUBNET overlaps no existing Docker network" ;;
+  esac
+}
+
 # servicenow_up_gate <env file> <base compose> — runs in `up` before Compose.
 servicenow_up_gate() {
   local env_file="$1" base_compose="$2" out rc
@@ -624,6 +656,7 @@ servicenow_up_gate() {
   esac
   rc=0; out="$(servicenow_helper login-check --dir "$SN_LOGIN" 2>&1)" || rc=$?
   [ "$rc" -eq 0 ] || fail "ServiceNow mode: stored login: $(servicenow_refusal_text "$out"). bin/lucairn up refuses to start"
+  servicenow_subnet_gate "$env_file"
   # ToB TOB-K20-01: ask the admin API only while the gateway container runs
   # (Docker then holds 127.0.0.1:${SN_PORT}); never send the admin key to
   # whatever else may listen there before the first start. Kit round 2 (ToB
@@ -1985,6 +2018,21 @@ doctor_tools_preflight() {
   return 0
 }
 
+# doctor_recorded_runtime_mode ENV_FILE — the runtime_mode the S1 runtime
+# profile records (split-remote | managed-byok | local-runtime), or nothing
+# when it is absent, ambiguous or not one of those names.
+doctor_recorded_runtime_mode() {
+  local profile mode_count mode
+  profile="$(runtime_profile_path "$1")"
+  [ -f "$profile" ] && [ ! -L "$profile" ] || return 0
+  mode_count="$(grep -c '^runtime_mode: ' "$profile" 2>/dev/null || true)"
+  [ "$mode_count" = "1" ] || return 0
+  mode="$(sed -n 's/^runtime_mode: //p' "$profile" 2>/dev/null)"
+  case "$mode" in
+    split-remote|managed-byok|local-runtime) printf '%s' "$mode" ;;
+  esac
+}
+
 doctor_selected_model() {
   local env_file="$1" supplied_model="$2" profile mode model mode_count model_count
   profile="$(runtime_profile_path "$env_file")"
@@ -2016,6 +2064,70 @@ doctor_selected_model() {
   esac
 }
 
+# doctor_l3_config ENV_FILE [COMPOSE_FILE] — prints "off", "on:<NAME>" naming
+# the first setting that turns the L3 deep PII shield on for this install,
+# "on:shell:<NAME>" when only a variable exported in this shell turns it on,
+# or "unknown:<reason>" when the settings cannot be read. Names only, never
+# values (OLLAMA_URL can carry credentials). The keyed helper accepts a
+# certificate that reads VERDICT_PARTIAL for the L3-coverage reason only when
+# this prints "off" (kit 2.0 PRD row 2; the kit default ships L3 off). Same
+# signals as check_l3_required_wired / vllm_l3_opted_in / l3_split_pool_declared,
+# plus the gateway's own L3 allowlist; a typo'd split-pool marker counts as on.
+# K-E fix round 1 (review P2 on PR #162): the posture and the three address
+# settings are read THROUGH Docker Compose (bin/compose-env.sh cev_l3), both
+# as customer.env holds them and as Compose interpolates them from this shell
+# (an exported variable wins over the file, so a file `degrade` with an
+# exported `reject` runs `reject`). Either view turning L3 on counts as on:
+# the doctor cannot know which shell started the running stack.
+doctor_l3_config() {
+  local env_file="$1" compose_file="${2:-$ROOT/docker-compose.customer.yml}" pd out rc=0
+  local tag name fstate estate shell_on="" split_rc=0
+  if [ "$LUCAIRN_COMPOSE_ENV_LIB_OK" -ne 1 ]; then
+    printf 'unknown:compose-env-reader-missing'
+    return 0
+  fi
+  pd="$(cd "$(dirname "$compose_file")" 2>/dev/null && pwd)" || pd="$ROOT"
+  out="$(cev_l3 --env-file "$env_file" --project-dir "$pd" 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ] || ! printf '%s\n' "$out" | grep -q '^l3	'; then
+    printf 'unknown:compose-unreadable'
+    return 0
+  fi
+  while IFS="$(printf '\t')" read -r tag name fstate estate; do
+    [ "$tag" = l3 ] || continue
+    if [ "$name" = LUCAIRN_L3_AVAILABILITY_POSTURE ]; then
+      case "$fstate" in
+        reject) printf 'on:LUCAIRN_L3_AVAILABILITY_POSTURE=reject'; return 0 ;;
+        unreadable) printf 'on:LUCAIRN_L3_AVAILABILITY_POSTURE'; return 0 ;;
+      esac
+      case "$estate" in
+        reject) [ -n "$shell_on" ] || shell_on='LUCAIRN_L3_AVAILABILITY_POSTURE=reject' ;;
+        unreadable) [ -n "$shell_on" ] || shell_on='LUCAIRN_L3_AVAILABILITY_POSTURE' ;;
+      esac
+      continue
+    fi
+    case "$fstate" in set|unreadable) printf 'on:%s' "$name"; return 0 ;; esac
+    case "$estate" in set|unreadable) [ -n "$shell_on" ] || shell_on="$name" ;; esac
+  done < <(printf '%s\n' "$out")
+  if [ -n "$shell_on" ]; then
+    printf 'on:shell:%s' "$shell_on"
+    return 0
+  fi
+  l3_split_pool_declared "$env_file" || split_rc=$?
+  if [ "$split_rc" -ne 1 ]; then
+    printf 'on:LUCAIRN_L3_SPLIT_POOL'
+    return 0
+  fi
+  if vllm_l3_opted_in "$env_file"; then
+    printf 'on:vllm-l3'
+    return 0
+  fi
+  if grep -qE '^  ollama-identity:' "$ROOT/docker-compose.customer.yml" 2>/dev/null; then
+    printf 'on:ollama-identity'
+    return 0
+  fi
+  printf 'off'
+}
+
 # Bash deliberately does not open, read, or validate the key file.  It passes
 # only its path plus non-secret request configuration into the helper.  The
 # subshell's `exec -c` is a Bash builtin: no `env -i` executable first receives
@@ -2033,8 +2145,14 @@ doctor_full_customer_journey() {
     return 1
   }
 
-  local helper_args
-  helper_args=(--key-file "$customer_key_file" --gateway-url "$gateway_url" --model "$model")
+  local helper_args l3_config runtime_mode
+  l3_config="$(doctor_l3_config "$env_file" "${compose_file:-}")"
+  # The recorded runtime mode (a name, never a value): the helper treats a
+  # per-request BYOK refusal as a named skip only on a managed-byok install
+  # (K-E fix round 1, review P2 on PR #162).
+  runtime_mode="$(doctor_recorded_runtime_mode "$env_file")"
+  helper_args=(--key-file "$customer_key_file" --gateway-url "$gateway_url" --model "$model" --l3-config "$l3_config")
+  [ -z "$runtime_mode" ] || helper_args+=(--runtime-mode "$runtime_mode")
   [ -z "$customer_key_proxy" ] || helper_args+=(--proxy "$customer_key_proxy")
   [ -z "$customer_key_ca_file" ] || helper_args+=(--ca-file "$customer_key_ca_file")
   (
@@ -7622,7 +7740,16 @@ scripts/write-sanitizer-core-registry-dsn.sh --env-file install/customer.env --c
 ```
 
 `bin/lucairn up` runs the capped registry migration before it starts anything
-(and again after every kit upgrade; a no-op when the registry is current).'
+(and again after every kit upgrade; a no-op when the registry is current).
+
+The registry volume only opens with the registry key and database password it
+was created with. Before a rollback to kit 1.9.7, save both (the folder it
+writes is mode 0700 and git-ignored); a later return to 2.0 restores them:
+
+```bash
+scripts/sanitizer-core-registry-credentials.sh save --env-file install/customer.env
+scripts/sanitizer-core-registry-credentials.sh add --env-file install/customer.env --from install/backups/sanitizer-core-<time>/sanitizer-core-registry.env
+```'
   fi
   cat > "$file" <<EOF
 # Lucairn Customer Install: $slug
@@ -8020,10 +8147,14 @@ bundle_create() {
   # writer reads customer.env through bin/compose-env.sh (staged above) and,
   # in an extracted bundle, resolves paths against install/. The install note
   # names both steps; bundle verify requires both whenever the staged compose
-  # has the sanitizer-core service.
+  # has the sanitizer-core service. K-E fix round 2 (review P2 on PR #162): the
+  # registry credentials helper too — an extracted bundle's rollback saves the
+  # registry key and password with it, and its re-upgrade restores them
+  # (INSTALL.md § "Rollback to 1.9.7"); it reads the bundle's install/ through
+  # bin/compose-env.sh and bin/runtime-profile-lib.sh (both staged above).
   if grep -q '^  sanitizer-core:' "$staging/install/docker-compose.customer.yml"; then
     local _core_tool
-    for _core_tool in bootstrap-sanitizer-core-mtls.sh write-sanitizer-core-registry-dsn.sh; do
+    for _core_tool in $SANITIZER_CORE_OPERATOR_TOOLS; do
       require_file "$ROOT/scripts/$_core_tool" "sanitizer-core operator tool $_core_tool"
       cp "$ROOT/scripts/$_core_tool" "$staging/scripts/$_core_tool"
       chmod 0755 "$staging/scripts/$_core_tool"
@@ -8042,6 +8173,14 @@ bundle_create() {
     done
   fi
   cp -R "$ROOT/starter-templates"/. "$staging/starter-templates/"
+  # Kit 2.0 (PRD row 8): the third-party notices and licence texts for the
+  # models and data the images redistribute (licenses/README.md). An offline
+  # customer receives them with the bundle; bundle verify requires them in a
+  # 2.0 bundle.
+  require_file "$ROOT/licenses/NOTICE" "third-party notices (licenses/NOTICE)"
+  require_file "$ROOT/licenses/README.md" "third-party licence index (licenses/README.md)"
+  mkdir -p "$staging/licenses"
+  cp -R "$ROOT/licenses"/. "$staging/licenses/"
   cp "$ROOT/OPS.md" "$ROOT/TROUBLESHOOTING.md" "$ROOT/README.md" "$staging/docs/"
   [ -f "$ROOT/docs/CUSTOMER_BUNDLE.md" ] && cp "$ROOT/docs/CUSTOMER_BUNDLE.md" "$staging/docs/"
   write_bundle_install_note "$staging/INSTALL-CUSTOMER.md" "$slug" "$env_file" "$image_delivery"
@@ -8239,12 +8378,16 @@ bundle_verify() {
     # historical requirement set.
     if grep -q '^  sanitizer-core:' "$root/install/docker-compose.customer.yml" 2>/dev/null; then
       local _core_tool
-      for _core_tool in bootstrap-sanitizer-core-mtls.sh write-sanitizer-core-registry-dsn.sh; do
+      for _core_tool in $SANITIZER_CORE_OPERATOR_TOOLS; do
         require_file "$root/scripts/$_core_tool" "bundle sanitizer-core operator tool $_core_tool"
         [ -x "$root/scripts/$_core_tool" ] \
           || { rm -rf "$tmp"; fail "bundle sanitizer-core operator tool $_core_tool is not executable"; }
       done
       require_file "$root/bin/compose-env.sh" "bundle Compose env reader (bin/compose-env.sh)"
+      # Kit 2.0 (PRD row 8): the images of a 2.0 bundle redistribute
+      # third-party models and data; the bundle carries their notices.
+      require_file "$root/licenses/NOTICE" "bundle third-party notices (licenses/NOTICE)"
+      require_file "$root/licenses/README.md" "bundle third-party licence index (licenses/README.md)"
     fi
     require_file "$root/bin/runtime-profile-lib.sh" "bundle runtime-profile helper"
     # Kit 2.0 K-C: a bundle that carries the ServiceNow opt-in overlay carries
@@ -11338,6 +11481,12 @@ backup_prune() {
   done
 }
 
+# The throwaway Postgres of `backup --verify`: the bundled Postgres image,
+# pinned by the digest image-manifest.yaml records
+# (image_digests.enterprise_kind.postgres; tests/test_third_party_image_pins.sh
+# keeps the two equal). A re-pin changes both together.
+BACKUP_VERIFY_PG_IMAGE="postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
+
 # Decrypt an encrypted dump into a throwaway Postgres container and assert it
 # pg_restores cleanly + has non-zero rows. Used by `backup --verify`.
 backup_verify_roundtrip() {
@@ -11350,14 +11499,14 @@ backup_verify_roundtrip() {
   local work2 plain
   work2="$(mktemp -d)"
   plain="$work2/${db}.dump"
-  info "verify($db): decrypting + restoring into a throwaway postgres:16-alpine ..."
+  info "verify($db): decrypting + restoring into a throwaway $BACKUP_VERIFY_PG_IMAGE ..."
   age -d -i "$identity" -o "$plain" "$enc"
   [ -s "$plain" ] || { rm -rf "$work2"; fail "verify($db): decrypt produced empty output"; }
 
   scratch="lucairn-bk-verify-${db}-$$"
   docker run -d --rm --name "$scratch" \
     -e POSTGRES_PASSWORD=verify -e POSTGRES_DB="$db" -e POSTGRES_USER="$usr" \
-    postgres:16-alpine >/dev/null
+    "$BACKUP_VERIFY_PG_IMAGE" >/dev/null
   # `fail` does `exit 1`, which fires the EXIT trap (not the RETURN trap), so
   # register the scratch-container teardown on BOTH so a hard failure mid-verify
   # never leaks a running throwaway Postgres. EXIT runs once at script end.

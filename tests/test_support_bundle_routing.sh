@@ -48,7 +48,7 @@ HOST_SECRET='ops.admin@customer.example'
 PROFILE_SECRET='sk-ant-t698-runtime-profile-plant'
 
 ENV_FILE="$TMPDIR/customer.env"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --model-name acme-support-llm --model-file acme-support-q4.gguf --model-path . \
   --output "$ENV_FILE" --skip-doctor >/dev/null 2>&1
 

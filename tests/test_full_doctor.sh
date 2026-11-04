@@ -101,7 +101,7 @@ EOF
 done
 
 LOCAL_ENV="$TMPDIR/local.env"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$LOCAL_ENV" --skip-doctor >/dev/null
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$LOCAL_ENV" --skip-doctor >/dev/null
 awk -v gateway="http://127.0.0.1:99999" '
   /^GATEWAY_BASE_URL=/ { print "GATEWAY_BASE_URL=" gateway; next }
   { print }
@@ -205,6 +205,7 @@ assert_no_canary_in_capture() {
 helper_fixture() {
   local case_name="$1"
   python3 - "$ROOT/bin/lucairn-doctor-keyed.py" "$KEY" "$case_name" <<'PY'
+import base64
 import importlib.util
 import json
 import sys
@@ -218,6 +219,71 @@ sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 attempts = {"certificate": 0}
 sleeps = []
+
+# What bin/lucairn reports about the install's L3 shield (names only).
+l3_config = {
+    "partial-l3-on": "on:LUCAIRN_L3_AVAILABILITY_POSTURE=reject",
+    "verified-l3-on": "on:LUCAIRN_L3_AVAILABILITY_POSTURE=reject",
+    "partial-l3-unknown": None,
+    "partial-l3-shell": "on:shell:LUCAIRN_L3_AVAILABILITY_POSTURE=reject",
+    "partial-l3-compose-unknown": "unknown:compose-unreadable",
+}.get(case, "off")
+
+# What bin/lucairn reports as the recorded runtime mode (K-E fix round 1): the
+# per-request BYOK skip applies on managed-byok only. Every byok/400 case runs
+# on managed-byok, so a refusal of another shape fails even where the skip
+# exists; the rest run on the suite's local-runtime install.
+runtime_mode = {
+    "byok-local-runtime": "local-runtime",
+    "byok-split-remote": "split-remote",
+    "byok-mode-unknown": None,
+}.get(case, "managed-byok" if case.startswith(("byok-", "inference-400-")) else "local-runtime")
+
+# A certificate of the kit 2.0 default shape (run log 2026-11-04 row 2): four
+# signed claims, the core's PII_SANITIZED claim ran a live scan without
+# llm_pii_scan (L3 off), so the witness certifies COMPLETENESS_PARTIAL and
+# VERDICT_PARTIAL with every signature valid. The partial-* cases change one
+# thing each.
+def signed_claim(service, claim_type, payload):
+    canonical = {"claim_id": "clm_" + service, "claim_type": claim_type, "data_not_seen": [], "data_seen": [],
+                 "payload": payload, "request_id": "req_fixture_1", "service_id": service,
+                 "timestamp": "2026-11-04T12:36:27Z"}
+    encoded = base64.b64encode(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    return {"claim_id": "clm_" + service, "request_id": "req_fixture_1", "service_id": service,
+            "claim_type": claim_type, "canonical_payload": encoded.decode("ascii")}
+
+sanitizer_payload = {"layers_active": ["presidio_ner", "gliner_ner"], "pii_entities_found": 3, "redaction_manifest_hash": "0" * 64}
+ai_payload = {"isolation_probe": "ISOLATION_PROBE_BYOK_EXEMPT", "upstream_auth_mode": "byok"}
+if case == "partial-unredacted": sanitizer_payload["layers_active"].append("user_unredacted_segment")
+if case == "partial-l3-ran": sanitizer_payload["layers_active"].append("llm_pii_scan")
+if case == "partial-cache-only": sanitizer_payload["layers_active"] = ["sanitizer_internal_cache_replay"]
+if case == "partial-inference-unfinished": ai_payload["inference_outcome"] = "failed"
+claims = [
+    signed_claim("dsa-bridge", "CLAIM_TYPE_TOKEN_GENERATED", {}),
+    signed_claim("dsa-sanitizer", "CLAIM_TYPE_PII_SANITIZED", sanitizer_payload),
+    signed_claim("dsa-ai", "CLAIM_TYPE_INFERENCE_COMPLETED", ai_payload),
+    signed_claim("dsa-audit", "CLAIM_TYPE_EVENTS_RECORDED", {}),
+]
+default_partial = {
+    "signatures_valid": True, "completeness": "COMPLETENESS_PARTIAL", "missing_services": [],
+    "temporal_consistent": True, "data_visibility_consistent": True, "isolation_verified": True,
+    "overall_verdict": "VERDICT_PARTIAL", "byok_exempt": True, "anchor_verifications": [],
+    "upstream_auth_mode": "byok", "temporal_order_status": "valid", "cert_tier": "full_chain",
+    "l3_coverage_scope": {"record_status": "absent"}, "l3_coverage_evidence": {"record_status": "absent"},
+}
+sealed = dict(default_partial)
+reverified = dict(default_partial, anchor_verifications=[
+    {"rail": "tsa", "outcome": "ANCHOR_VERIFY_OUTCOME_ABSENT"},
+    {"rail": "rekor", "outcome": "ANCHOR_VERIFY_OUTCOME_ABSENT"},
+])
+if case == "partial-missing-service":
+    claims.pop()
+    sealed["missing_services"] = reverified["missing_services"] = ["dsa-audit"]
+if case == "partial-order-not-checked": reverified["temporal_order_status"] = "not_checked"
+if case == "partial-anchor-failed": reverified["anchor_verifications"] = [{"rail": "tsa", "outcome": "ANCHOR_VERIFY_OUTCOME_FAILED"}]
+if case == "partial-sealed-temporal": sealed["temporal_consistent"] = False
+partial_certificate = {"certificate_id": "cert_fixture_1", "request_id": "req_fixture_1", "claims": claims, "verification": sealed}
+if case == "partial-no-claims": del partial_certificate["claims"]
 
 class FixtureResponse:
     def __init__(self, status, body):
@@ -255,7 +321,14 @@ class FixtureConnection:
                 "messages": [{"role": "user", "content": "Respond with the word ready."}],
                 "max_tokens": 8,
             }
+            byok_refusal = b'{"error":{"message":"Upstream LLM API key required.","type":"invalid_request_error","code":"missing_upstream_key"}}'
             if case == "inference-non2xx": self.response = FixtureResponse(503, b"{}")
+            elif case in ("byok-missing-upstream-key", "byok-local-runtime", "byok-split-remote", "byok-mode-unknown"): self.response = FixtureResponse(400, byok_refusal)
+            elif case == "byok-refusal-wrong-status": self.response = FixtureResponse(401, byok_refusal)
+            elif case == "inference-400-other-code": self.response = FixtureResponse(400, b'{"error":{"message":"Unknown model.","type":"invalid_request_error","code":"model_not_found"}}')
+            elif case == "inference-400-code-wrong-type": self.response = FixtureResponse(400, b'{"error":{"message":"x","type":"api_error","code":"missing_upstream_key"}}')
+            elif case == "inference-400-code-top-level": self.response = FixtureResponse(400, b'{"code":"missing_upstream_key","message":"x"}')
+            elif case == "inference-400-malformed": self.response = FixtureResponse(400, b"missing_upstream_key")
             elif case == "inference-malformed": self.response = FixtureResponse(200, b"not-json")
             elif case == "inference-missing-id": self.response = FixtureResponse(200, b'{"metadata":{"dsa_compliance":{}}}')
             else: self.response = FixtureResponse(200, b'{"metadata":{"dsa_compliance":{"request_id":"req_fixture_1"}}}')
@@ -266,6 +339,7 @@ class FixtureConnection:
             if case == "evidence-terminal": self.response = FixtureResponse(500, b"{}")
             elif case == "evidence-exhaust": self.response = FixtureResponse(202, b"{}")
             elif case in ("success", "proxy-explicit") and attempts["certificate"] < 3: self.response = FixtureResponse(202, b"{}")
+            elif case.startswith("partial-"): self.response = FixtureResponse(200, json.dumps(partial_certificate).encode("utf-8"))
             else: self.response = FixtureResponse(200, b'{"certificate_id":"cert_fixture_1"}')
             return
         if suffix == "/api/v1/veil/verify":
@@ -273,6 +347,8 @@ class FixtureConnection:
             if case == "verification-non2xx": self.response = FixtureResponse(500, b"{}")
             elif case == "verification-false": self.response = FixtureResponse(200, b'{"signatures_valid":false,"overall_verdict":"VERDICT_VERIFIED"}')
             elif case == "verification-malformed": self.response = FixtureResponse(200, b"not-json")
+            elif case == "verdict-failed": self.response = FixtureResponse(200, b'{"signatures_valid":true,"overall_verdict":"VERDICT_FAILED"}')
+            elif case.startswith("partial-"): self.response = FixtureResponse(200, json.dumps(reverified).encode("utf-8"))
             else: self.response = FixtureResponse(200, b'{"signatures_valid":true,"overall_verdict":"VERDICT_VERIFIED"}')
             return
         raise AssertionError(f"unexpected fixture request: {method} {suffix}")
@@ -288,7 +364,10 @@ module.http.client.HTTPSConnection = FixtureConnection
 module.time.sleep = lambda seconds: sleeps.append(seconds)
 try:
     proxy = "http://proxy.example:8080" if case == "proxy-explicit" else None
-    module.run_journey(key_path, "http://127.0.0.1:1", "fixture-local-model", proxy, None)
+    module.run_journey(key_path, "http://127.0.0.1:1", "fixture-local-model", proxy, None, l3_config=l3_config, runtime_mode=runtime_mode)
+    if case == "byok-missing-upstream-key":
+        # The skip ends the keyed journey: no certificate read, no verify call.
+        assert attempts["certificate"] == 0
 except module.DoctorFailure:
     if case == "evidence-exhaust":
         assert attempts["certificate"] == 12
@@ -385,6 +464,33 @@ expect_failure unavailable-listener 'configuration: failed (GATEWAY_BASE_URL is 
 expect_failure inference-non2xx 'inference: failed (gateway returned HTTP 503)' helper_fixture inference-non2xx
 expect_failure inference-malformed 'inference: failed (response is malformed or missing metadata.dsa_compliance.request_id)' helper_fixture inference-malformed
 expect_failure inference-missing-id 'inference: failed (response is malformed or missing metadata.dsa_compliance.request_id)' helper_fixture inference-missing-id
+# Kit 2.0 (PRD row 2): on a per-request-BYOK key (the mint default) the
+# gateway refuses the doctor's keyed turn with missing_upstream_key, because
+# neither the key nor the doctor holds a provider key. That exact refusal is a
+# named skip, not a failure; any other keyed-step error still fails.
+helper_fixture byok-missing-upstream-key > "$TMPDIR/byok-skip.out" 2>&1 \
+  || { cat "$TMPDIR/byok-skip.out" >&2; echo 'byok-missing-upstream-key: the per-request BYOK refusal must be a skip, not a failure' >&2; exit 1; }
+grep -Fx 'keyed inference: skipped — per-request BYOK install, no provider key for the doctor; run one real turn to check it' "$TMPDIR/byok-skip.out"
+grep -Fx 'evidence: skipped (no keyed turn to read a certificate for)' "$TMPDIR/byok-skip.out"
+grep -Fx 'verification: skipped (no keyed turn to verify)' "$TMPDIR/byok-skip.out"
+! grep -Eq 'failed|doctor: ok|inference: ok' "$TMPDIR/byok-skip.out" \
+  || { cat "$TMPDIR/byok-skip.out" >&2; echo 'byok-missing-upstream-key: the skip must not read as a pass or a failure' >&2; exit 1; }
+# K-E fix round 1 (review P2 on PR #162): the skip holds on a managed-byok
+# install only. On local-runtime / split-remote no provider key travels per
+# request, so the same refusal is a wrongly provisioned key; an unknown mode
+# fails too. None of them may print the skip lines.
+expect_failure byok-local-runtime 'inference: failed (gateway refused the key with missing_upstream_key on a local-runtime install: it was minted for per-request BYOK, which only a managed-byok install uses; mint the doctor key with --no-byok-per-request)' helper_fixture byok-local-runtime
+expect_failure byok-split-remote 'inference: failed (gateway refused the key with missing_upstream_key on a split-remote install' helper_fixture byok-split-remote
+expect_failure byok-mode-unknown "inference: failed (gateway refused the key with missing_upstream_key, and the doctor was not told this install's runtime mode" helper_fixture byok-mode-unknown
+for byok_case in byok-local-runtime byok-split-remote byok-mode-unknown; do
+  ! grep -Eq 'skipped|doctor: ok' "$TMPDIR/$byok_case.out" \
+    || { cat "$TMPDIR/$byok_case.out" >&2; echo "$byok_case: the BYOK skip must not apply" >&2; exit 1; }
+done
+expect_failure byok-refusal-wrong-status 'inference: failed (gateway returned HTTP 401)' helper_fixture byok-refusal-wrong-status
+expect_failure inference-400-other-code 'inference: failed (gateway returned HTTP 400)' helper_fixture inference-400-other-code
+expect_failure inference-400-code-wrong-type 'inference: failed (gateway returned HTTP 400)' helper_fixture inference-400-code-wrong-type
+expect_failure inference-400-code-top-level 'inference: failed (gateway returned HTTP 400)' helper_fixture inference-400-code-top-level
+expect_failure inference-400-malformed 'inference: failed (gateway returned HTTP 400)' helper_fixture inference-400-malformed
 expect_failure evidence-terminal 'evidence: failed (certificate endpoint returned HTTP 500)' helper_fixture evidence-terminal
 expect_failure evidence-exhaust 'evidence: failed (certificate was not ready after 12 attempts)' helper_fixture evidence-exhaust
 expect_failure verification-non2xx 'verification: failed (verify endpoint returned HTTP 500)' helper_fixture verification-non2xx
@@ -396,6 +502,75 @@ grep -Fx 'inference: ok (authenticated)' "$TMPDIR/success.out"
 grep -Fx 'evidence: ok (certificate received)' "$TMPDIR/success.out"
 grep -Fx 'verification: ok (witness signature: verified; anchors: not checked)' "$TMPDIR/success.out"
 tail -1 "$TMPDIR/success.out" | grep -Fx 'doctor: ok'
+! grep -Fq 'verdict partial' "$TMPDIR/success.out" || { echo 'success: a verified verdict must not print the partial line' >&2; exit 1; }
+expect_failure verdict-failed 'verification: failed (response is malformed or witness signature is not verified)' helper_fixture verdict-failed
+
+# Kit 2.0 (PRD row 2, owner baseline 31 Oct): the kit default runs the L3 shield
+# OFF, so a correct install's certificate reads VERDICT_PARTIAL for the
+# L3-coverage reason only. That is accepted as a named line; nothing else is.
+helper_fixture partial-l3-off > "$TMPDIR/partial-l3-off.out" 2>&1 \
+  || { cat "$TMPDIR/partial-l3-off.out" >&2; echo 'partial-l3-off: the default L3-off PARTIAL must pass' >&2; exit 1; }
+grep -Fx 'verification: ok (witness signature: verified; anchors: not checked)' "$TMPDIR/partial-l3-off.out"
+grep -Fx 'verdict partial: L3 off on this install (expected)' "$TMPDIR/partial-l3-off.out"
+tail -1 "$TMPDIR/partial-l3-off.out" | grep -Fx 'doctor: ok'
+helper_fixture verified-l3-on > "$TMPDIR/verified-l3-on.out" 2>&1 \
+  || { cat "$TMPDIR/verified-l3-on.out" >&2; echo 'verified-l3-on: a verified verdict passes whatever the L3 setting' >&2; exit 1; }
+tail -1 "$TMPDIR/verified-l3-on.out" | grep -Fx 'doctor: ok'
+expect_failure partial-l3-on 'verification: failed (verdict partial: L3 is configured on for this install (LUCAIRN_L3_AVAILABILITY_POSTURE=reject))' helper_fixture partial-l3-on
+expect_failure partial-l3-unknown 'verification: failed (verdict partial: the doctor was not told whether L3 is off on this install)' helper_fixture partial-l3-unknown
+expect_failure partial-l3-shell 'verification: failed (verdict partial: L3 is configured on for this install (LUCAIRN_L3_AVAILABILITY_POSTURE=reject, exported in this shell: Docker Compose uses it over customer.env))' helper_fixture partial-l3-shell
+expect_failure partial-l3-compose-unknown "verification: failed (verdict partial: the doctor could not read this install's L3 settings through Docker Compose (compose-unreadable))" helper_fixture partial-l3-compose-unknown
+expect_failure partial-missing-service 'verification: failed (verdict partial: missing services: dsa-audit' helper_fixture partial-missing-service
+expect_failure partial-order-not-checked 'verification: failed (verdict partial: claim order not_checked)' helper_fixture partial-order-not-checked
+expect_failure partial-anchor-failed 'verification: failed (verdict partial: anchor tsa failed)' helper_fixture partial-anchor-failed
+expect_failure partial-sealed-temporal 'verification: failed (verdict partial: sealed temporal_consistent is not true)' helper_fixture partial-sealed-temporal
+expect_failure partial-unredacted 'verification: failed (verdict partial: a message was sent unredacted)' helper_fixture partial-unredacted
+expect_failure partial-l3-ran 'verification: failed (verdict partial: llm_pii_scan present, so L3 coverage is not the cause)' helper_fixture partial-l3-ran
+expect_failure partial-cache-only 'verification: failed (verdict partial: no live scan on this request, so L3 coverage is not the cause)' helper_fixture partial-cache-only
+expect_failure partial-inference-unfinished 'verification: failed (verdict partial: inference did not finish (claim dsa-ai))' helper_fixture partial-inference-unfinished
+expect_failure partial-no-claims 'verification: failed (verdict partial: certificate claims are unreadable)' helper_fixture partial-no-claims
+for partial_case in partial-l3-on partial-l3-unknown partial-l3-shell partial-l3-compose-unknown partial-missing-service partial-order-not-checked partial-anchor-failed partial-sealed-temporal partial-unredacted partial-l3-ran partial-cache-only partial-inference-unfinished partial-no-claims; do
+  ! grep -Eq 'verdict partial: L3 off on this install|doctor: ok' "$TMPDIR/$partial_case.out" \
+    || { cat "$TMPDIR/$partial_case.out" >&2; echo "$partial_case: must not read as accepted" >&2; exit 1; }
+done
+
+# bin/lucairn tells the helper what the install's L3 setting is: "off" on the
+# default env, the NAME of the first L3 setting otherwise (never its value).
+: > "$CAPTURE_LOG"
+expect_failure l3-config-default 'configuration: failed (GATEWAY_BASE_URL is invalid for online doctor)' doctor success
+grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq -- '--l3-config off' \
+  || { grep 'lucairn-doctor-keyed' "$CAPTURE_LOG" >&2; echo 'doctor must pass --l3-config off on the default env' >&2; exit 1; }
+# ... and the runtime mode its runtime profile records (a name), which gates
+# the per-request BYOK skip (K-E fix round 1).
+grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq -- '--runtime-mode local-runtime' \
+  || { grep 'lucairn-doctor-keyed' "$CAPTURE_LOG" >&2; echo 'doctor must pass --runtime-mode local-runtime for the local-runtime install' >&2; exit 1; }
+L3_ON_ENV="$TMPDIR/l3-on.env"; cp "$LOCAL_ENV" "$L3_ON_ENV"; cp "$LOCAL_ENV.image-manifest.yaml" "$L3_ON_ENV.image-manifest.yaml"; cp "$LOCAL_ENV.runtime-profile.yaml" "$L3_ON_ENV.runtime-profile.yaml"
+printf 'OLLAMA_URL=http://l3-user:l3-secret-canary@ollama.example:11434\n' >> "$L3_ON_ENV"
+: > "$CAPTURE_LOG"
+expect_failure l3-config-on 'configuration: failed (GATEWAY_BASE_URL is invalid for online doctor)' \
+  env PATH="$CAPTURE_BIN:$BASE_PATH" bash "$ROOT/bin/lucairn" doctor --env "$L3_ON_ENV" --compose "$ROOT/docker-compose.customer.yml" --customer-key-file "$KEY" --skip-image-check
+grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq -- '--l3-config on:OLLAMA_URL' \
+  || { grep 'lucairn-doctor-keyed' "$CAPTURE_LOG" >&2; echo 'doctor must name OLLAMA_URL as the L3 setting' >&2; exit 1; }
+! grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq 'l3-secret-canary' \
+  || { echo 'the L3 setting value must never reach the helper' >&2; exit 1; }
+
+# K-E fix round 1 (review P2 on PR #162): the L3 settings are read the way
+# Docker Compose reads them. customer.env says `degrade`, the shell exports
+# `reject`: Compose interpolates `reject` into the sanitizer, so the doctor must
+# not report L3 off (the old raw-file reader said "off" and the L3-off PARTIAL
+# exception was wrongly allowed). Without the export the same env is "off".
+L3_SHELL_ENV="$TMPDIR/l3-shell.env"; cp "$LOCAL_ENV" "$L3_SHELL_ENV"; cp "$LOCAL_ENV.image-manifest.yaml" "$L3_SHELL_ENV.image-manifest.yaml"; cp "$LOCAL_ENV.runtime-profile.yaml" "$L3_SHELL_ENV.runtime-profile.yaml"
+printf 'LUCAIRN_L3_AVAILABILITY_POSTURE=degrade\n' >> "$L3_SHELL_ENV"
+: > "$CAPTURE_LOG"
+expect_failure l3-config-file-degrade 'configuration: failed (GATEWAY_BASE_URL is invalid for online doctor)' \
+  env PATH="$CAPTURE_BIN:$BASE_PATH" bash "$ROOT/bin/lucairn" doctor --env "$L3_SHELL_ENV" --compose "$ROOT/docker-compose.customer.yml" --customer-key-file "$KEY" --skip-image-check
+grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq -- '--l3-config off' \
+  || { grep 'lucairn-doctor-keyed' "$CAPTURE_LOG" >&2; echo 'doctor must pass --l3-config off for a file posture degrade with no export' >&2; exit 1; }
+: > "$CAPTURE_LOG"
+expect_failure l3-config-shell-reject 'configuration: failed (GATEWAY_BASE_URL is invalid for online doctor)' \
+  env LUCAIRN_L3_AVAILABILITY_POSTURE=reject PATH="$CAPTURE_BIN:$BASE_PATH" bash "$ROOT/bin/lucairn" doctor --env "$L3_SHELL_ENV" --compose "$ROOT/docker-compose.customer.yml" --customer-key-file "$KEY" --skip-image-check
+grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq -- '--l3-config on:shell:LUCAIRN_L3_AVAILABILITY_POSTURE=reject' \
+  || { grep 'lucairn-doctor-keyed' "$CAPTURE_LOG" >&2; echo 'doctor must report the exported posture reject (Compose uses it over customer.env)' >&2; exit 1; }
 
 # The helper accepts proxy/CA configuration only from its explicit arguments.
 # Both failure probes stop before a network connection is attempted.

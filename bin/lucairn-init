@@ -52,6 +52,13 @@
 #     was written; re-run scripts/bootstrap-sanitizer-core-mtls.sh)
 #   7 the sanitizer core's registry DSN file could not be written (customer.env
 #     was written; re-run scripts/write-sanitizer-core-registry-dsn.sh)
+#   8 a fresh customer.env was refused: this install already has a sanitizer
+#     core registry volume, which only opens with the credentials it was
+#     created with (nothing was written; put back the env that created it),
+#     or Docker could not be asked whether it has one (nothing was written;
+#     start Docker, or pass --confirm-no-registry-volume — K-E fix round 2),
+#     or a registry volume name of this install could not be resolved
+#     (nothing was written; the flag does not cover that — fix round 4)
 
 set -euo pipefail
 
@@ -267,6 +274,16 @@ Options:
                            scripted pipelines that run doctor separately.
   --dry-run                Print what would be written to stdout. Skips backup + doctor.
                            Secrets ARE printed because the user explicitly asked.
+  --confirm-no-registry-volume
+                           Only when Docker cannot be asked (no docker CLI or no
+                           reachable daemon here): you state that the Docker host
+                           of this install has no sanitizer core registry volume
+                           from an earlier kit 2.0 run. Without Docker and without
+                           this flag, init refuses (exit 8): new registry
+                           credentials cannot open an existing registry. It
+                           overrides nothing else: a volume Docker reports, or a
+                           registry volume name that cannot be resolved, is
+                           refused with or without it.
   --help, -h               Show this usage and exit.
 
 Examples:
@@ -291,6 +308,9 @@ Exit codes:
   5  license validation failed
   6  sanitizer core mTLS material could not be created (customer.env written)
   7  sanitizer core registry DSN file could not be written (customer.env written)
+  8  refused: a sanitizer core registry volume already exists, or Docker could
+     not be asked and --confirm-no-registry-volume was not given, or a registry
+     volume name could not be resolved (nothing written)
 USAGE
 }
 
@@ -339,6 +359,7 @@ IMAGE_TAG="$DEFAULT_IMAGE_TAG"
 GATEWAY_BASE_URL_OVERRIDE=""
 SKIP_DOCTOR="false"
 DRY_RUN="false"
+CONFIRM_NO_REGISTRY_VOLUME="false"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -392,6 +413,7 @@ while [ $# -gt 0 ]; do
     --gateway-base-url) GATEWAY_BASE_URL_OVERRIDE="${2:?--gateway-base-url requires a value}"; shift 2 ;;
     --skip-doctor)     SKIP_DOCTOR="true"; shift ;;
     --dry-run)         DRY_RUN="true"; shift ;;
+    --confirm-no-registry-volume) CONFIRM_NO_REGISTRY_VOLUME="true"; shift ;;
     --help|-h)         usage; exit 0 ;;
     --)                shift; break ;;
     *)                 fail "unknown argument: $1 (try --help)" ;;
@@ -583,6 +605,16 @@ set_model_inventory_from_inputs() {
   MODEL_PATH="$MODEL_PATH_INPUT"
 }
 
+# The overlays the runtime profile records after docker-compose.customer.yml
+# for RUNTIME_MODE, one per line (also the project the registry volume check
+# renders before the profile exists).
+runtime_mode_overlays() {
+  case "$RUNTIME_MODE" in
+    managed-byok) printf '%s\n' docker-compose.self-hosted.yml docker-compose.self-hosted-byok.yml ;;
+    local-runtime) printf '%s\n' docker-compose.self-hosted.yml ;;
+  esac
+}
+
 render_runtime_profile() {
   local image_manifest_sha
   image_manifest_sha="$(openssl dgst -sha256 "$KIT_ROOT/image-manifest.yaml" | awk '{print $NF}')"
@@ -598,19 +630,7 @@ image_tag: $IMAGE_TAG
 overlays:
   - docker-compose.customer.yml
 PROFILE
-  case "$RUNTIME_MODE" in
-    managed-byok)
-      cat <<'PROFILE'
-  - docker-compose.self-hosted.yml
-  - docker-compose.self-hosted-byok.yml
-PROFILE
-      ;;
-    local-runtime)
-      cat <<'PROFILE'
-  - docker-compose.self-hosted.yml
-PROFILE
-      ;;
-  esac
+  runtime_mode_overlays | sed 's/^/  - /'
   cat <<PROFILE
 image_manifest:
   path: $(runtime_profile_image_manifest_path_contract)
@@ -891,6 +911,40 @@ fi
 
 if [ ! -f "$KIT_ROOT/docker-compose.customer.yml" ]; then
   fail "not a Lucairn kit checkout (no docker-compose.customer.yml found at $KIT_ROOT)"
+fi
+
+# Kit 2.0 (K-E fix round 1, review P1 on PR #162): a fresh customer.env gets a
+# NEW registry key and registry database password. A registry volume this
+# install already has (an earlier 2.0 run, e.g. before a rollback to 1.9.7)
+# only opens with the ones it was created with — new ones fail the migration's
+# login and leave every sealed row unreadable — so init refuses to generate
+# them while that volume exists and names the saved env to put back. The
+# volume is the one Compose names for the project init sets up (the base file
+# and the overlays it records for this runtime mode). Fix round 2 (review P1
+# on PR #162): when Docker cannot be asked (no daemon on this machine), init
+# REFUSES as well — it cannot know there is no volume — unless the operator
+# states with --confirm-no-registry-volume that there is none. Fix round 4
+# (review P2 on PR #162): the flag overrides ONLY that case (the helper's exit
+# 5). A known volume (exit 3, checked before any failed render), a name that
+# cannot be resolved (exit 4) and any other exit refuse with or without it.
+if [ "$ADOPT_RUNTIME_PROFILE" != "true" ] && [ "$DRY_RUN" != "true" ]; then
+  _registry_check_rc=0
+  _registry_check_msg="$(bash "$KIT_ROOT/scripts/sanitizer-core-registry-credentials.sh" check \
+    --env-file "$OUTPUT" --project-dir "$KIT_ROOT" --overlays "$(runtime_mode_overlays | tr '\n' ' ')" 2>&1 >/dev/null)" \
+    || _registry_check_rc=$?
+  case "$_registry_check_rc" in
+    0) : ;;
+    3) fail "${_registry_check_msg#\[sanitizer-core-registry-credentials\] ERROR: } (no customer state was changed)" 8 ;;
+    4) fail "could not resolve the sanitizer core registry volume of this install (${_registry_check_msg}), so no registry key or database password was generated: new ones cannot open a registry an earlier kit 2.0 run left behind (no customer state was changed). Fix the cause and re-run; --confirm-no-registry-volume does not apply here, it covers only a host where Docker cannot be asked (INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\")" 8 ;;
+    5)
+      if [ "$CONFIRM_NO_REGISTRY_VOLUME" = "true" ]; then
+        echo "note: could not check for an existing sanitizer core registry volume (${_registry_check_msg}); generating new registry credentials because --confirm-no-registry-volume states this install has none" >&2
+      else
+        fail "could not check for an existing sanitizer core registry volume (${_registry_check_msg}), so no registry key or database password was generated: new ones cannot open a registry an earlier kit 2.0 run left behind (no customer state was changed). Start Docker on this host and re-run; or, only if you know the Docker host of this install has no sanitizer core registry volume, re-run with --confirm-no-registry-volume (INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\")" 8
+      fi
+      ;;
+    *) fail "could not check for an existing sanitizer core registry volume (scripts/sanitizer-core-registry-credentials.sh exit $_registry_check_rc; no customer state was changed)" 8 ;;
+  esac
 fi
 
 # License parsing ------------------------------------------------------------
@@ -1799,7 +1853,12 @@ fi
 # rotated. In adoption mode the existing customer.env is not rewritten, so the
 # directory is the one it names (or the compose default beside the kit).
 if [ "$ADOPT_RUNTIME_PROFILE" = "true" ]; then
-  SANITIZER_CORE_MTLS_DIR="$(grep -E '^SANITIZER_CORE_MTLS_HOST_DIR=' "$OUTPUT" 2>/dev/null | tail -1 | cut -d= -f2-)"
+  # `|| true`: a kit 1.x env has no SANITIZER_CORE_MTLS_HOST_DIR line; under
+  # `set -euo pipefail` grep's no-match status made this assignment exit init
+  # with status 1 and no message, right after the adopted profile was
+  # published and before the mTLS material and the DSN file existed (kit 2.0
+  # K-E upgrade rehearsal, 2026-11-04). No line = the compose default.
+  SANITIZER_CORE_MTLS_DIR="$(grep -E '^SANITIZER_CORE_MTLS_HOST_DIR=' "$OUTPUT" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
   case "$SANITIZER_CORE_MTLS_DIR" in
     /*) : ;;
     '') SANITIZER_CORE_MTLS_DIR="$KIT_ROOT/.certs/sanitizer-core-mtls" ;;

@@ -44,7 +44,7 @@ spec:
         # pattern (gateway/templates/deployment.yaml). 5 min cap matches the
         # migrate Job backoff + StatefulSet PVC-bind worst case.
         - name: wait-for-migration
-          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}{{ with .Values.postgresql.image.digest }}@{{ . }}{{ end }}"
           imagePullPolicy: IfNotPresent
           command:
             - sh

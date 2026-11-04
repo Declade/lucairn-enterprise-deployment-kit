@@ -136,7 +136,7 @@ services:
   # ── Infrastructure ──────────────────────────────────────────────
 
   postgres-audit:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     logging: *default-logging
     environment:
       POSTGRES_USER: dsa
@@ -153,7 +153,7 @@ services:
       retries: 10
 
   postgres-bridge:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     logging: *default-logging
     environment:
       POSTGRES_USER: dsa
@@ -170,7 +170,7 @@ services:
       retries: 10
 
   postgres-sandbox-a:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     logging: *default-logging
     environment:
       POSTGRES_USER: dsa
@@ -187,7 +187,7 @@ services:
       retries: 10
 
   postgres-veil:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     logging: *default-logging
     environment:
       POSTGRES_DB: veil
@@ -211,7 +211,7 @@ services:
   # Non-templated migrations are copied through unchanged. Uses busybox
   # sed; no apk install required. See scripts/render-migrations.sh.
   prep-migrations:
-    image: alpine:3.20
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     logging: *default-logging
     command: ["/bin/sh", "/scripts/render-migrations.sh"]
     environment:
@@ -224,7 +224,7 @@ services:
     restart: "no"
 
   migrate-audit:
-    image: migrate/migrate:v4.17.0
+    image: migrate/migrate:v4.17.0@sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa
     logging: *default-logging
     depends_on:
       postgres-audit:
@@ -326,7 +326,7 @@ services:
     restart: unless-stopped
 
   migrate-bridge:
-    image: migrate/migrate:v4.17.0
+    image: migrate/migrate:v4.17.0@sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa
     logging: *default-logging
     depends_on:
       postgres-bridge:
@@ -364,7 +364,7 @@ services:
     restart: "no"
 
   migrate-sandbox-a:
-    image: migrate/migrate:v4.17.0
+    image: migrate/migrate:v4.17.0@sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa
     logging: *default-logging
     depends_on:
       postgres-sandbox-a:
@@ -402,7 +402,7 @@ services:
     restart: "no"
 
   migrate-veil:
-    image: migrate/migrate:v4.17.0
+    image: migrate/migrate:v4.17.0@sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa
     logging: *default-logging
     depends_on:
       postgres-veil:
@@ -479,7 +479,7 @@ services:
   # named LUCAIRN_WITNESS_UNSAFE_ACKNOWLEDGE_LUCAIRN_OPERATED_WITNESS and is
   # printed into the container log on every start.
   witness-egress-guard:
-    image: alpine:3.20
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     logging: *default-logging
     command: ["/bin/sh", "/scripts/witness-egress-guard.sh"]
     environment:
@@ -630,7 +630,7 @@ services:
     restart: on-failure
 
   redis-sanitizer:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
     logging: *default-logging
     command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
     networks:
@@ -648,7 +648,7 @@ services:
   # eviction under cache pressure NEVER touches the DP-budget accounting.
   # Docker-only — no published host port (BSI 2026-04-29 port-bind policy).
   redis-sanitizer-cache:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
     logging: *default-logging
     command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
     networks:

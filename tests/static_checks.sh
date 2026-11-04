@@ -76,7 +76,10 @@ assert_no_executable_rg() {
     "$ROOT/tests/test_enterprise_mtls_helm.sh" \
     "$ROOT/tests/test_enterprise_mtls_helm_required.sh" \
     "$ROOT/tests/test_enterprise_mtls_production_values.sh" \
-    "$ROOT/tests/test_sanitizer_core_compose.sh"; do
+    "$ROOT/tests/test_sanitizer_core_compose.sh" \
+    "$ROOT/tests/test_registry_credentials_rollback.sh" \
+    "$ROOT/tests/test_third_party_image_pins.sh" \
+    "$ROOT/tests/test_third_party_notices.sh"; do
     assert_no_executable_rg_in_file "$script" || return 1
   done
 }
@@ -143,11 +146,11 @@ bash -n "$ROOT/tests/test_bundle_verify_replay_guard.sh"
 # the customer Compose quickstart must use the profile-bound wrapper.
 COMPOSE_USAGE="$(awk '/^# Usage:/{in_usage=1; next} /^# Network Isolation Design:/{in_usage=0} in_usage {print}' "$ROOT/docker-compose.customer.yml")"
 RUNBOOK_DEV_GUIDANCE="$(awk '/^\*\*Development \/ evaluation:\*\*/{print; exit}' "$ROOT/docs/KEY_CEREMONY_RUNBOOK.md")"
-printf '%s\n' "$COMPOSE_USAGE" | grep -Fq -- '--remote-credentials' \
+grep -Fq -- '--remote-credentials' <<<"$COMPOSE_USAGE" \
   || { echo "split-remote Compose usage omits --remote-credentials" >&2; exit 1; }
-printf '%s\n' "$RUNBOOK_DEV_GUIDANCE" | grep -Fq -- '--remote-credentials' \
+grep -Fq -- '--remote-credentials' <<<"$RUNBOOK_DEV_GUIDANCE" \
   || { echo "split-remote development/evaluation guidance omits --remote-credentials" >&2; exit 1; }
-printf '%s\n' "$COMPOSE_USAGE" | grep -Fq -- 'bin/lucairn up --env customer.env' \
+grep -Fq -- 'bin/lucairn up --env customer.env' <<<"$COMPOSE_USAGE" \
   || { echo "customer Compose usage must use bin/lucairn up --env customer.env" >&2; exit 1; }
 
 # A local llama.cpp stack cannot be called runnable without operator-supplied
@@ -163,6 +166,10 @@ bash -n "$ROOT/tests/test_backup_helm.sh"
 bash -n "$ROOT/tests/test_sec_hardening.sh"
 bash -n "$ROOT/tests/test_sbom.sh"
 bash -n "$ROOT/tests/test_digest_pin.sh"
+bash -n "$ROOT/tests/test_third_party_image_pins.sh"
+bash -n "$ROOT/tests/test_registry_credentials_rollback.sh"
+bash -n "$ROOT/scripts/sanitizer-core-registry-credentials.sh"
+bash -n "$ROOT/tests/test_third_party_notices.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_helm.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_cert_contract.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_kind_runtime_values.sh"
@@ -648,16 +655,16 @@ while IFS= read -r _l; do
   case "$_rec" in sha256:*) ;; *) continue ;; esac
   # The parser must resolve this signed ref to its EXACT recorded digest. A
   # PENDING/INVALID/absent verdict here = a signed ref was downgraded -> FAIL.
-  printf '%s\n' "$_PARSED_STATIC" | grep -qF "$(printf '%s\t%s' "$_ref" "$_rec")" \
+  grep -qF "$(printf '%s\t%s' "$_ref" "$_rec")" <<<"$_PARSED_STATIC" \
     || { echo "B1-S3: signed ref $_ref does NOT resolve to its recorded digest $_rec via parse_image_digests (downgraded to PENDING/INVALID, or absent) — a signed ref was silently weakened" >&2; exit 1; }
 done < "$ROOT/keys/image-digests-0.5.5.txt"
 # Defensive: the parser must emit NO INVALID / <no-ref> verdicts for the shipped
 # manifest (a clean manifest has none — any is a manifest-integrity regression).
 # Use `if` (not `&&`) so the no-match happy path does not trip `set -e`.
-if printf '%s\n' "$_PARSED_STATIC" | grep -q $'\tINVALID$'; then
+if grep -q $'\tINVALID$' <<<"$_PARSED_STATIC"; then
   echo "B1-S3: parse_image_digests reports an INVALID entry in the shipped image-manifest.yaml" >&2; exit 1
 fi
-if printf '%s\n' "$_PARSED_STATIC" | grep -q '^<no-ref>'; then
+if grep -q '^<no-ref>' <<<"$_PARSED_STATIC"; then
   echo "B1-S3: parse_image_digests reports an orphan <no-ref> entry in the shipped image-manifest.yaml" >&2; exit 1
 fi
 if [ -f "$ROOT/apps/dashboard/image-manifest.yaml" ]; then

@@ -30,7 +30,7 @@ spec:
         runAsNonRoot: true
       containers:
         - name: tempo
-          image: "{{ .Values.tempo.image.repository }}:{{ .Values.tempo.image.tag }}"
+          image: "{{ .Values.tempo.image.repository }}:{{ .Values.tempo.image.tag }}{{ with .Values.tempo.image.digest }}@{{ . }}{{ end }}"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

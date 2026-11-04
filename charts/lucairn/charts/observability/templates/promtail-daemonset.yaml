@@ -23,7 +23,7 @@ spec:
         runAsUser: 0
       containers:
         - name: promtail
-          image: "{{ .Values.promtail.image.repository }}:{{ .Values.promtail.image.tag }}"
+          image: "{{ .Values.promtail.image.repository }}:{{ .Values.promtail.image.tag }}{{ with .Values.promtail.image.digest }}@{{ . }}{{ end }}"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

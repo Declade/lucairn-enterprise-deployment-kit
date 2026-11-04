@@ -29,7 +29,7 @@ printf 'sandbox_b_api_key=lcr-issued-test-api-key_123\nsandbox_b_public_key=0123
 # Use the kit's default image tag (image-manifest.yaml default_lucairn_image_tag,
 # within the sanitizer_config_compat range) so the sanitizer-drift check passes.
 ENV_FILE="$TMPDIR/customer.env"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --model-name acme-support-llm --model-file acme-support-q4.gguf --model-path . \
   --output "$ENV_FILE" --skip-doctor >/dev/null 2>&1
 KIT_IMAGE_TAG="$(grep -E '^LUCAIRN_IMAGE_TAG=' "$ENV_FILE" | tail -1 | sed 's/^[^=]*=//')"
@@ -284,16 +284,16 @@ test ! -e "$TMPDIR/symlink-profile-support"
 # literals and local-only names without doing a network lookup.
 for BAD_ENDPOINT in https://127.0.0.1 https://localhost https://runtime; do
   set +e
-  "$ROOT/bin/lucairn-init" --dev --runtime-mode split-remote --remote-endpoint "$BAD_ENDPOINT" --output "$TMPDIR/bad-endpoint.env" --skip-doctor > "$TMPDIR/bad-endpoint.out" 2>&1
+  "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode split-remote --remote-endpoint "$BAD_ENDPOINT" --output "$TMPDIR/bad-endpoint.env" --skip-doctor > "$TMPDIR/bad-endpoint.out" 2>&1
   BAD_ENDPOINT_STATUS=$?
   set -e
   [ "$BAD_ENDPOINT_STATUS" -ne 0 ] || { echo "endpoint should be rejected: $BAD_ENDPOINT" >&2; exit 1; }
 done
-"$ROOT/bin/lucairn-init" --dev --runtime-mode split-remote --remote-endpoint 'https://inference.enterprise.example:8443/v1/models%2Fcurrent' --remote-credentials "$REMOTE_CREDENTIALS" --output "$TMPDIR/good-endpoint.env" --skip-doctor >/dev/null 2>&1
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode split-remote --remote-endpoint 'https://inference.enterprise.example:8443/v1/models%2Fcurrent' --remote-credentials "$REMOTE_CREDENTIALS" --output "$TMPDIR/good-endpoint.env" --skip-doctor >/dev/null 2>&1
 
 # BYOK records the exact allowlist, rather than merely asserting that one is
 # present in customer.env.
-"$ROOT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$TMPDIR/byok-drift.env" --skip-doctor >/dev/null 2>&1
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode managed-byok --output "$TMPDIR/byok-drift.env" --skip-doctor >/dev/null 2>&1
 sed 's/^byok_egress_allowlist:.*/byok_egress_allowlist: api.drift.example/' "$TMPDIR/byok-drift.env.runtime-profile.yaml" > "$TMPDIR/byok-drift.profile" && mv "$TMPDIR/byok-drift.profile" "$TMPDIR/byok-drift.env.runtime-profile.yaml"
 set +e
 "$ROOT/bin/lucairn" doctor --env "$TMPDIR/byok-drift.env" --compose "$ROOT/docker-compose.customer.yml" --offline --skip-image-check > "$TMPDIR/byok-drift.out" 2>&1
@@ -436,7 +436,7 @@ echo "lucairn entitlement doctor tests: ok"
 INIT_BUNDLE="$TMPDIR/a9-bundle.json"
 printf '{"license_key":"lic_x","signing_key":"sk_x","entitlement_token":"tok_dummy","entitlement_public_key":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"}' > "$INIT_BUNDLE"
 INIT_OUT="$TMPDIR/a9-customer.env"
-"$ROOT/bin/lucairn-init" --production --license "$INIT_BUNDLE" --runtime-mode local-runtime --local-runtime llama-cpp --output "$INIT_OUT" --skip-doctor >/dev/null 2>&1
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --production --license "$INIT_BUNDLE" --runtime-mode local-runtime --local-runtime llama-cpp --output "$INIT_OUT" --skip-doctor >/dev/null 2>&1
 grep -q '^LUCAIRN_LICENSE_KEY=tok_dummy$' "$INIT_OUT"
 grep -q '^LUCAIRN_LICENSE_PUBLIC_KEY=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff$' "$INIT_OUT"
 grep -q '^DSA_LICENSE_KEY=lic_x$' "$INIT_OUT"
@@ -446,13 +446,13 @@ grep -q '^DSA_LICENSE_KEY=lic_x$' "$INIT_OUT"
 INIT_BUNDLE_NOENT="$TMPDIR/a9-bundle-noent.json"
 printf '{"license_key":"lic_y","signing_key":"sk_y"}' > "$INIT_BUNDLE_NOENT"
 INIT_OUT_NOENT="$TMPDIR/a9-customer-noent.env"
-"$ROOT/bin/lucairn-init" --production --license "$INIT_BUNDLE_NOENT" --runtime-mode local-runtime --local-runtime llama-cpp --output "$INIT_OUT_NOENT" --skip-doctor >/dev/null 2>&1
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --production --license "$INIT_BUNDLE_NOENT" --runtime-mode local-runtime --local-runtime llama-cpp --output "$INIT_OUT_NOENT" --skip-doctor >/dev/null 2>&1
 grep -q '^LUCAIRN_LICENSE_KEY=$' "$INIT_OUT_NOENT"
 grep -q '^LUCAIRN_LICENSE_PUBLIC_KEY=$' "$INIT_OUT_NOENT"
 
 # --dev: entitlement vars present but empty (grace defaults to 14).
 INIT_OUT_DEV="$TMPDIR/a9-customer-dev.env"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$INIT_OUT_DEV" --skip-doctor >/dev/null 2>&1
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp --output "$INIT_OUT_DEV" --skip-doctor >/dev/null 2>&1
 grep -q '^LUCAIRN_LICENSE_KEY=$' "$INIT_OUT_DEV"
 grep -q '^LUCAIRN_LICENSE_PUBLIC_KEY=$' "$INIT_OUT_DEV"
 grep -q '^LUCAIRN_LICENSE_GRACE_DAYS=14$' "$INIT_OUT_DEV"
@@ -711,6 +711,11 @@ test -f "$BASE_DIR/image-manifest.yaml"
 test -f "$BASE_DIR/VERSION"
 test -f "$BASE_DIR/RELEASE_DATE"
 test -x "$BASE_DIR/scripts/derive-veil-pubkey.sh"
+# Kit 2.0 (PRD row 8): the third-party notices travel with the bundle, as the kit has them.
+cmp -s "$BASE_DIR/licenses/NOTICE" "$ROOT/licenses/NOTICE" \
+  || { echo "customer bundle lacks the kit's licenses/NOTICE" >&2; exit 1; }
+diff -r "$BASE_DIR/licenses" "$ROOT/licenses" >/dev/null \
+  || { echo "customer bundle licenses/ differs from the kit's licenses/" >&2; exit 1; }
 test -f "$BASE_DIR/models/acme-support-q4.gguf"
 test -f "$BASE_DIR/models/model-manifest.yaml"
 test -f "$BASE_DIR/images/lucairn-images.tar"
@@ -759,7 +764,10 @@ refresh_bundle_sums() {
 # S1 bundle payload requirements are structural, not merely checksum coverage:
 # an attacker who deletes a required payload and re-hashes the directory must
 # still be rejected by the trusted verifier.
-for required_payload in VERSION RELEASE_DATE scripts/derive-veil-pubkey.sh; do
+# K-E fix round 2 (review P2 on PR #162): a 2.0 bundle carries the registry
+# credentials helper (rollback save / re-upgrade restore), executable.
+test -x "$BASE_DIR/scripts/sanitizer-core-registry-credentials.sh"
+for required_payload in VERSION RELEASE_DATE scripts/derive-veil-pubkey.sh licenses/NOTICE licenses/README.md scripts/sanitizer-core-registry-credentials.sh; do
   MISSING_S1_PAYLOAD_DIR="$TMPDIR/customer-bundle-missing-${required_payload//\//-}"
   cp -R "$BASE_DIR" "$MISSING_S1_PAYLOAD_DIR"
   rm -f "$MISSING_S1_PAYLOAD_DIR/$required_payload"
@@ -793,7 +801,7 @@ model:
     - path: ${runtime}-model.safetensors
       sha256: $sha
 YAML
-  "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime "$runtime" \
+  "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime "$runtime" \
     --model-name "${runtime}-model" --model-file "${runtime}-model.safetensors" --model-path . \
     --output "$env" --skip-doctor >/dev/null 2>&1
   out="$TMPDIR/${runtime}-bundle-output"
@@ -999,7 +1007,7 @@ grep -Eq "(checksum verification failed|sha256 mismatch for)" "$TMPDIR/bundle-ta
 # Install instructions follow the validated canonical topology, rather than a
 # fixed self-hosted command.
 SPLIT_ENV="$TMPDIR/split-bundle.env"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode split-remote --remote-endpoint https://inference.example.test --remote-credentials "$REMOTE_CREDENTIALS" --output "$SPLIT_ENV" --skip-doctor >/dev/null 2>&1
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode split-remote --remote-endpoint https://inference.example.test --remote-credentials "$REMOTE_CREDENTIALS" --output "$SPLIT_ENV" --skip-doctor >/dev/null 2>&1
 SPLIT_OUT="$TMPDIR/split-bundles"
 "$ROOT/bin/lucairn" bundle create --customer-slug split --models-dir "$MODEL_DIR" --model-manifest "$MODEL_MANIFEST" --env "$SPLIT_ENV" --image-tar "$IMAGE_TAR" --output "$SPLIT_OUT" >/dev/null
 SPLIT_DIR="$TMPDIR/split-extract"
@@ -1015,7 +1023,7 @@ test -f "$SPLIT_BASE_DIR/image-manifest.yaml"
 assert_generated_note_lifecycle "$SPLIT_NOTE" 'bin/lucairn doctor --env install/customer.env --compose install/docker-compose.customer.yml --customer-key-file /secure/lucairn-customer.key --model <selected-model>'
 
 BYOK_ENV="$TMPDIR/byok-bundle.env"
-"$ROOT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$BYOK_ENV" --skip-doctor >/dev/null 2>&1
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode managed-byok --output "$BYOK_ENV" --skip-doctor >/dev/null 2>&1
 BYOK_OUT="$TMPDIR/byok-bundles"
 "$ROOT/bin/lucairn" bundle create --customer-slug byok --models-dir "$MODEL_DIR" --model-manifest "$MODEL_MANIFEST" --env "$BYOK_ENV" --image-tar "$IMAGE_TAR" --output "$BYOK_OUT" >/dev/null
 BYOK_DIR="$TMPDIR/byok-extract"

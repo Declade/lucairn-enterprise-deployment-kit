@@ -12,9 +12,62 @@ Security advisories are published at <https://lucairn.eu/security>; the
 disclosure process and contact are in [`SECURITY.md`](SECURITY.md). Entries that
 carry a security fix are tagged **[Security]**.
 
-## [Unreleased]
+## [2.0.0] — release date set when the release is cut — images `1.1.0`
 
-### Added
+Kit 2.0.0 runs the same sanitizer as the hosted Lucairn service. Every `dsa-*`
+image moves from `0.5.5` to `1.1.0` (one product version, built from one
+commit); `dsa-pii-ml` stays `0.5.1` (optional, off) and `lucairn-dashboard`
+stays `0.8.2`.
+
+### Read first — upgrading from 1.9.7
+
+- Follow INSTALL.md § "Upgrade from kit 1.9.7 to 2.0.0" step by step: back up,
+  stop, replace the kit files in the same directory, add the new
+  `customer.env` settings, re-record the runtime profile
+  (`bin/lucairn-init … --adopt-runtime-profile`), offline doctor, verify and
+  pull the images, run the registry migration as its own step, start. The same
+  section has the rollback to 1.9.7.
+- **Host:** at least **16 GB RAM** for Docker (the model sidecar is capped at
+  6.5 GB, the core at 1 GB; the online doctor fails below 15,000 MiB) and about
+  6 GB more disk (the sidecar image unpacks to 5.4 GB). **Docker Engine
+  26.0.0 or newer** (25.0.5+ / 23.0.11+ on those lines): older engines forward
+  DNS queries from internal networks (CVE-2024-29018); the online doctor fails
+  on them.
+- No 1.x database schema changes (ceilings unchanged: veil-witness 10 ·
+  audit 7 · id-bridge 4 · sandbox-a 8). The core's registry is a NEW database
+  (`postgres-sanitizer-core`, volume `pg-sanitizer-core-data`; Helm: a
+  StatefulSet + PVC) with its own capped migrations 0001–0007.
+- The **ServiceNow mode stays off** after the upgrade; it needs your admin's
+  per-key opt-in (below).
+
+### Added — the new sanitizer core (Compose + Helm)
+
+- A Go **sanitizer core**, its **model sidecar** (spaCy + GLiNER, loopback-only
+  inside the core's network namespace / Pod) and its **registry database**. The
+  gateway sends the Anthropic route (`/v1/messages`) through the core with the
+  final check (Gate) **enforced** — both on by default, as on the hosted
+  service. The core's sanitizer claim is signed and delivered to the witness
+  over its own connection (mTLS in production).
+- The existing Python `sanitizer` service stays and keeps serving the OpenAI,
+  MCP and proxy routes (`/v1/chat/completions`, `/mcp`,
+  `/api/v1/proxy/messages`) with the 1.0 sanitizer plus its fixes.
+- Compose: `bin/lucairn-init` generates the core's two secrets, its mTLS
+  material (deploy-local CA outside every mounted folder; four leaves) and the
+  registry DSN file (the database password never appears in a process
+  argument). `bin/lucairn up` runs the capped registry migration before it
+  starts anything. Helm: the `sanitizer-core` sub-chart (core + sidecar in one
+  Pod, migration Job, four NetworkPolicies, images by signed digest only).
+- The core and the sidecar run without capabilities, with
+  `no-new-privileges` and a read-only root filesystem.
+- The core deletes expired registry conversations itself (24-hour expiry +
+  210 s, a sweep every 10 minutes; tombstones kept 24 hours).
+- `bin/lucairn doctor` checks the core end to end: secrets, DSN file, profile,
+  witness hop, certificates (chain, purpose, SAN, expiry, owner), the image
+  pair against `image-manifest.yaml`, host memory, the Docker Engine version,
+  the rendered configuration, the three containers, the namespace join, the
+  migration ledger against the ceiling and the core's claim log.
+
+### Added — ServiceNow mode and the rest of this release
 
 - **ServiceNow mode — available, off by default, the admin opts in per key
   (T-1441 K-C).** The hosted service's ServiceNow mode is part of the kit. It
@@ -93,7 +146,7 @@ carry a security fix are tagged **[Security]**.
   never as a process argument; the temporary credential folders in the docs
   are removed even when a step fails.
 
-### Stated limits
+### Stated limits — ServiceNow mode
 
 - A mistyped key id runs the generic path; `up` and the doctor check every
   bound id against the running gateway (while the gateway is not running, `up`
@@ -106,6 +159,143 @@ carry a security fix are tagged **[Security]**.
   service's 1.0 ServiceNow path for a bound key; `/v1/messages` uses the core.
 - One gateway serves the mode (one container on Compose; `replicaCount: 1`, no
   HPA on Helm).
+
+### Stated limits — the new core in this release
+
+- Only `/v1/messages` runs on the new core; the OpenAI, MCP and proxy routes
+  stay on the Python sanitizer (above).
+- Text in the system prompt is forwarded to the model vendor as written: the
+  sanitizer claim lists the system-prompt segments as not scanned.
+- On `/v1/messages` the response's `metadata.dsa_compliance` reports
+  `mode: audit-only`, `sanitizer_layers: []` and `redaction_count: 0` even when
+  the core hid values; the certificate's `PII_SANITIZED` claim (entity counts,
+  layers) is the record.
+- A client that rewrites an earlier turn of a conversation under the same
+  conversation id (compaction, editing an earlier message, a sub-agent reusing
+  the id) is refused with `503` for that conversation id; a new conversation id
+  works.
+- With the L3 shield off (the kit default) a certificate reads
+  `VERDICT_PARTIAL` (L3 coverage absent) with valid signatures.
+- The witness runs at its 1.x migration ceiling (10): it logs `durability
+  reduced` (no certificate persistence outbox, no decoder-expiry columns) and
+  writes certificates directly; a witness crash between accepting and storing a
+  certificate can lose that one certificate.
+- The registry database is not in the Helm backup CronJobs (it holds at most
+  24 hours of sealed conversation state).
+- The keyed online doctor sends only the Lucairn key. For a key minted for
+  per-request BYOK (the mint default) on a `managed-byok` install the gateway
+  refuses that turn with `missing_upstream_key`; the doctor reports it as a
+  named skip
+  (`keyed inference: skipped — per-request BYOK install, no provider key for
+  the doctor; run one real turn to check it`) and does not check the
+  certificate or its verification. Prove that journey with one real request
+  that carries the provider key.
+- The images do not carry the third-party `NOTICE` yet; the kit does
+  (`licenses/`, below). The images carry it from 2.0.1.
+
+### Added — pins, licences, doctor (K-E)
+
+- **Every third-party image is pinned by digest.** Compose, the Helm chart,
+  the backup verify of `bin/lucairn` and the docs examples pull
+  `<repo>:<tag>@sha256:…` with the digest `image-manifest.yaml` records
+  (`postgres:16-alpine`, `redis:7-alpine`, `migrate/migrate:v4.17.0`,
+  `ollama/ollama:0.6.2`, and, newly recorded on 2026-11-04 under
+  `image_digests.kit_third_party`, `alpine:3.20`, `busybox:1.36`, the Grafana /
+  Loki / Promtail / Tempo images of the observability sub-chart and
+  `curlimages/curl:8.10.1`). An install no longer gets new bytes when upstream
+  moves a tag. `tests/test_third_party_image_pins.sh` fails on any third-party
+  reference without the recorded digest. Exception, as recorded in the
+  manifest: the operator-selected inference runtimes of
+  `docker-compose.self-hosted.yml` (llama.cpp `:server`, vLLM / TGI
+  `:latest`), pinned at the digest-pin ceremony to the image the customer
+  deploys. Helm: a values override of `repository`/`tag` for these images keeps
+  the default `digest` unless you set it too (a byte-identical mirror needs no
+  change; another image needs its own digest, or `digest: ""`).
+- **Third-party notices in the kit:** `licenses/NOTICE` (the product
+  repository's `NOTICE` at the 2.0.0 image commit `35dd235d`: every model and
+  data file the sanitizer-core images redistribute, with its licence) and the
+  licence texts it refers to (GLiNER and langdetect Apache-2.0, the spaCy
+  models and their training-source notices, the mdeberta tokenizer, torch, the
+  name and place lists), indexed with sha256 in `licenses/README.md`. They are
+  in the release tarball and in every customer bundle (`bundle verify`
+  requires them in a 2.0 bundle). The images carry `NOTICE` from 2.0.1.
+- **Doctor:** the keyed online doctor reports a per-request BYOK key's
+  `missing_upstream_key` refusal as a named skip instead of a failure (only
+  that exact answer: HTTP 400, `invalid_request_error`,
+  `missing_upstream_key`, and only on a `managed-byok` install, the runtime
+  mode its runtime profile records); every other keyed-step error still fails.
+  On a `local-runtime` or `split-remote` install the same refusal fails: the
+  key was minted for per-request BYOK, which those modes do not use (mint it
+  with `--no-byok-per-request`).
+- **Doctor, L3 off:** the keyed online doctor accepts a certificate that reads
+  `VERDICT_PARTIAL` only when the install's L3 shield is off (the kit default)
+  and L3 coverage is the only cause, and says so (`verdict partial: L3 off on
+  this install (expected)`). Before, a provider-keyed doctor failed on every
+  default install. Any other cause (missing service, claim order not `valid`,
+  a failed anchor, a sealed-verdict cause, a message sent unredacted, an
+  unfinished inference, an unreadable field) or an L3 setting turned on
+  (`LUCAIRN_L3_AVAILABILITY_POSTURE=reject`, `GATEWAY_L3_CUSTOMER_ALLOWLIST`,
+  `OLLAMA_URL`, `LUCAIRN_L3_ADDR`, `LUCAIRN_L3_SPLIT_POOL`, the `vllm-l3`
+  runtime, `ollama-identity` in the compose file) still fails and names it.
+  The posture and the three address settings are read through Docker Compose,
+  as `customer.env` holds them and as Compose interpolates them from the
+  shell: a variable exported in the shell (which Compose uses over the file)
+  that turns L3 on counts as on.
+- **Upgrade and rollback keep the registry credentials:** the registry volume
+  only opens with the key and database password it was created with.
+  `scripts/sanitizer-core-registry-credentials.sh save` (rollback step 2)
+  copies the 2.0 `customer.env`, its sidecar files, the registry DSN file and
+  the two values into `backups/sanitizer-core-<time>/` (0700, files 0600);
+  `… add` (upgrade step 4) generates the pair only while the install has no
+  registry volume, refuses otherwise and names the saved file, and restores it
+  with `--from`. `bin/lucairn-init` refuses a fresh `customer.env` (exit 8)
+  while a registry volume exists, and also when Docker cannot be asked
+  (start Docker, or pass `--confirm-no-registry-volume` to state there is
+  none; the flag covers only an unreachable Docker: a volume Docker reports —
+  checked before any failed render — and a volume name that cannot be
+  resolved are refused either way). The volume is the one
+  Docker Compose names for the install's rendered project (a custom `name:`
+  included); a name that cannot be resolved is refused, never guessed. `save`
+  writes an ignore-all `.gitignore` into the saved folder and `backups/`, so
+  the copies stay out of `git add` after `git checkout v1.9.7`. A 2.0
+  customer bundle carries the helper (`bundle verify` requires it).
+
+### Fixed — upgrade path, docs and tests (K-E)
+
+- **ServiceNow mode, control subnet:** the documented example
+  (`172.30.251.0/29`) lies inside Docker's default address pools, which the
+  kit's own networks fill, so turning the mode on after a normal install failed
+  at `up` with "Pool overlaps". The example is now `10.251.251.0/29` (outside
+  `172.17.0.0/16`–`172.31.0.0/16` and `192.168.0.0/16`), and `bin/lucairn up` checks the
+  control subnet against the host's existing Docker networks before Compose
+  starts anything: an overlap is refused (`control_subnet_overlap`, naming the
+  network), a free subnet inside the default pools gets a warning. Found by the
+  row-7 measurement.
+- **ServiceNow turn-on step 7:** the doctor command needs
+  `--model <selected-model>` on a `managed-byok` or `split-remote` install;
+  the step now says so.
+- `bin/lucairn-init --adopt-runtime-profile` on a kit 1.x `customer.env`
+  stopped with status 1 and no message right after it had re-recorded the
+  runtime profile, before the core's mTLS material and the registry DSN file
+  existed (a `grep` that found no `SANITIZER_CORE_MTLS_HOST_DIR` line, under
+  `pipefail`). It now finishes; found by the 1.9.7 → 2.0.0 upgrade rehearsal.
+- Every documented start path a 2.0 install can take (README, INSTALL, OPS
+  disaster recovery / rollback, TROUBLESHOOTING) runs the registry migration
+  first or says `bin/lucairn up` does; the docs check now covers OPS.md and
+  TROUBLESHOOTING.md.
+- INSTALL § "Witness mTLS": run it before the first `up` (a first `up` creates
+  the folder as root); on Linux hand the folder to uid 10001 (the containers
+  could not read their keys); use `/etc/witness-mtls` on the host (the doctor
+  checks the container paths on the host); recreate with the env file.
+- INSTALL: renewing a core leaf, rotating the core's CA, and how the CA folder
+  is passed on a re-run (`SANITIZER_CORE_MTLS_CA_DIR` is read from the
+  script's environment, not from `customer.env`).
+- The Helm mTLS step and `scripts/test-enterprise-mtls-kind.sh` declare
+  `LUCAIRN_CONTAINER_UID="$(id -u)"` (the bootstrap refused an ordinary user
+  on Linux).
+- Tests read captured output through here-strings instead of
+  `printf … | grep -q` pipes (a false result under `pipefail` once the text
+  outgrows the pipe buffer).
 
 ## [1.9.7] — 2026-10-28 — images `0.5.5`
 

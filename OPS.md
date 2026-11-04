@@ -1058,6 +1058,11 @@ from the decrypted escrow blob, then bring the stack up empty:
 chmod 0600 /dev/shm/veil-seeds.env
 # Merge the VEIL_* lines into customer.env (keep the file at mode 0600), then:
 shred -u /dev/shm/veil-seeds.env
+# Kit 2.0: S1 install -> `bin/lucairn up --env customer.env` (it runs the step
+# below first). Plain Compose: create the sanitizer core's registry first (the
+# core refuses to start on an unmigrated registry; at the ceiling it is a no-op):
+docker compose -f docker-compose.customer.yml --env-file customer.env \
+  --profile sanitizer-core-migrate run --rm migrate-sanitizer-core
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 ```
 
@@ -1952,6 +1957,15 @@ compose/Helm refs to `@sha256:`, so your `LUCAIRN_IMAGE_TAG` /
 > re-pinned entry the recorded digest is what upstream published at re-pin
 > time, and the kit's acceptance suite has not necessarily been re-run against
 > those bytes.
+>
+> Since kit 2.0 every third-party image reference in the Compose files, the
+> Helm chart, `bin/lucairn` and the docs examples carries the recorded digest
+> (`<repo>:<tag>@sha256:…`), so installs pull the recorded bytes even after
+> upstream moves the tag; the live digest gate then only signals that a
+> re-pin is available. A re-pin changes the digest in `image-manifest.yaml`
+> (and its copy `apps/dashboard/image-manifest.yaml`) and in every reference
+> together; `tests/test_third_party_image_pins.sh` names each reference that
+> still carries the old digest.
 
 ```bash
 # Warn-only (default): a tag whose current registry digest differs from the
@@ -2633,6 +2647,21 @@ they do not accept arbitrary Compose flags and `down` does not remove volumes.
 Exact release rollback history and restore proof remain WP4 S4 scope—do not
 interpret these S1 wrappers as completed rollback functionality.
 
+### kit 2.0.0 / chart 2.0.0 (images 1.1.0) — the hosted service's sanitizer core
+
+Images move `0.5.5` → `1.1.0`; four new Compose services (registry database +
+volume, model sidecar, core, migration step) and the `sanitizer-core` Helm
+sub-chart. No 1.x schema or ceiling change; the core's own registry is a new
+database migrated by `migrate-sanitizer-core` (ceiling 7). Follow INSTALL.md
+§ "Upgrade from kit 1.9.7 to 2.0.0" step by step (it includes the backup, the
+runtime-profile re-recording, the mTLS material, the DSN file, the explicit
+registry migration and the rollback to 1.9.7). The ServiceNow mode stays off.
+
+The upgrade blocks of the 1.x releases below describe the 1.x kit files. On
+kit 2.0 files, start with `bin/lucairn up --env customer.env` (it runs the
+registry migration `migrate-sanitizer-core` first) instead of a plain
+`docker compose … up -d`.
+
 ### kit 1.9.7 / chart 1.9.7 (images 0.5.5) — QI engine off by default (2026-10-28)
 
 Kit-only release: images stay `0.5.5`, no schema change, no ceiling change.
@@ -2678,11 +2707,12 @@ All 12 `dsa-*` images are republished + cosign-signed + Rekor-logged at `0.5.5`
 **Compose:** set `LUCAIRN_IMAGE_TAG=0.5.5` in `customer.env`, then re-run with the SAME `-f` overlay set you normally use — a self-hosted (full on-prem) install MUST include `docker-compose.self-hosted.yml`, or the gateway is recreated with split-deployment settings and the local `sandbox-b` is orphaned:
 
 ```bash
+# 1.x kit files only (on kit 2.0 files: bin/lucairn up --env customer.env, which runs migrate-sanitizer-core first).
 # Split deployment (Sandbox B remote — the default):
 docker compose -f docker-compose.customer.yml --env-file customer.env pull
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 
-# Self-hosted (full on-prem) — include the self-hosted overlay:
+# Self-hosted (full on-prem) — include the self-hosted overlay (1.x kit files; on kit 2.0: bin/lucairn up):
 docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env pull
 docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env up -d
 ```
@@ -2712,11 +2742,12 @@ All 12 `dsa-*` images are republished + cosign-signed + Rekor-logged at `0.5.4`
 **Compose:** set `LUCAIRN_IMAGE_TAG=0.5.4` in `customer.env`, then re-run with the SAME `-f` overlay set you normally use — a self-hosted (full on-prem) install MUST include `docker-compose.self-hosted.yml`, or the gateway is recreated with split-deployment settings and the local `sandbox-b` is orphaned:
 
 ```bash
+# 1.x kit files only (on kit 2.0 files: bin/lucairn up --env customer.env, which runs migrate-sanitizer-core first).
 # Split deployment (Sandbox B remote — the default):
 docker compose -f docker-compose.customer.yml --env-file customer.env pull
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 
-# Self-hosted (full on-prem) — include the self-hosted overlay:
+# Self-hosted (full on-prem) — include the self-hosted overlay (1.x kit files; on kit 2.0: bin/lucairn up):
 docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env pull
 docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env up -d
 ```
@@ -2748,11 +2779,12 @@ All 12 `dsa-*` images are republished + cosign-signed + Rekor-logged at `0.5.3`
 **Compose:** set `LUCAIRN_IMAGE_TAG=0.5.3` in `customer.env`, then re-run with the SAME `-f` overlay set you normally use — a self-hosted (full on-prem) install MUST include `docker-compose.self-hosted.yml`, or the gateway is recreated with split-deployment settings and the local `sandbox-b` is orphaned:
 
 ```bash
+# 1.x kit files only (on kit 2.0 files: bin/lucairn up --env customer.env, which runs migrate-sanitizer-core first).
 # Split deployment (Sandbox B remote — the default):
 docker compose -f docker-compose.customer.yml --env-file customer.env pull
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 
-# Self-hosted (full on-prem) — include the self-hosted overlay:
+# Self-hosted (full on-prem) — include the self-hosted overlay (1.x kit files; on kit 2.0: bin/lucairn up):
 docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env pull
 docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml --env-file customer.env up -d
 ```
@@ -2846,8 +2878,15 @@ F3 drift class documented in `image-manifest.yaml`).
 #    kit release you are rolling back to). Keep the file at mode 0600.
 sed -i 's/^LUCAIRN_IMAGE_TAG=.*/LUCAIRN_IMAGE_TAG=<previous-known-good-tag>/' customer.env
 
-# 2) Re-pull and recreate with the reverted tag.
+# 2) Re-pull and recreate with the reverted tag. Back to a 1.x release:
+#    follow INSTALL.md § "Upgrade from kit 1.9.7 to 2.0.0" → "Rollback to
+#    1.9.7" instead (it saves the 2.0 registry credentials BEFORE that
+#    release's kit files go back). Within kit 2.x: S1 install ->
+#    `bin/lucairn pull` + `bin/lucairn up --env customer.env` (it runs the
+#    registry step below first); plain Compose:
 docker compose -f docker-compose.customer.yml --env-file customer.env pull
+docker compose -f docker-compose.customer.yml --env-file customer.env \
+  --profile sanitizer-core-migrate run --rm migrate-sanitizer-core
 docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 
 # 3) Confirm configuration after rollback before health-check.

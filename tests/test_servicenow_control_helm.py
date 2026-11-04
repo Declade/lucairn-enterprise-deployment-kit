@@ -41,6 +41,10 @@ CHART = ROOT / "charts/lucairn"
 # for byte), the registry DB comment's corrected entrypoint limit (every
 # start, not only the first boot), and (values-dev, where dnsRestriction is
 # on) the core's Kubernetes egress without its port-53 grant.
+# Kit 2.0 K-E (PRD row 9) re-rendered them once more with Helm v4.1.3: every
+# third-party image (postgres, redis, migrate, ollama; values-dev also the four
+# observability images) carries the digest image-manifest.yaml records; in each
+# profile exactly those image lines gained @sha256:..., nothing else changed.
 OFF_GOLDEN = ROOT / "tests/fixtures/servicenow-control/helm-off"
 APP = "app.kubernetes.io/name"
 HELD = "templates/servicenow-control-held.yaml"

@@ -189,7 +189,7 @@ the files the hosted registry was migrated with on 2026-10-31):
 
 | Version | What it creates | Personal data | Deletion path |
 |---|---|---|---|
-| `0001_registry` | conversations (expiry `expires_at`), entries (AES-GCM sealed placeholder → original value), turns (sealed sanitized text + hash of the original), tombstones | yes — sealed with `DSA_SANITIZER_CORE_REGISTRY_KEY` | `PG.Sweep` deletes expired conversations (cascades to entries/turns/claims/streams) — **but the serving core does not call it today** |
+| `0001_registry` | conversations (expiry `expires_at`), entries (AES-GCM sealed placeholder → original value), turns (sealed sanitized text + hash of the original), tombstones | yes — sealed with `DSA_SANITIZER_CORE_REGISTRY_KEY` | the serving core's registry sweeper (DSA #954, in the 1.1.0 images) deletes a conversation 210 s after its 24 h expiry, every 10 min (cascades to entries/turns/claims/streams); tombstones pruned after 24 h |
 | `0002_turn_role_kind` | two columns on turns | no | — |
 | `0003_claim_records` | the first signed claim per request (sealed) | yes — sealed | trimmed to the newest `ClaimRecordsPerCustomer` rows per customer on insert (`store/claims.go` `maybeTrim`); cascades with its conversation |
 | `0004_package_ref` | a hash column on conversations | no | — |
@@ -197,16 +197,28 @@ the files the hosted registry was migrated with on 2026-10-31):
 | `0006_stream_gens` | stream generations + number leases | no | stream generations swept every 10 min by the core (`SweepStreamGens`); leases cascade |
 | `0007_attempted_turns` | attempted-turn ids | no | cascades with its conversation |
 
-⚠️ **Release-blocking finding for kit 2.0 (K-A, 2026-11-02):** in DSA main
-`20ec838c` the only caller of `PG.Sweep` is the replay harness
-(`cmd/sanitizer-core/turns.go` `injectLoss`); `serve` starts a sweeper for stream
-generations only (`stream_wire.go`). Registry conversations — and with them the
-sealed original values — therefore stay in the database after their 24-hour
-expiry, on the hosted service and on a kit install alike. Per this section's own
-rule ("blocking on the absence of a deletion path"), the 2.0.0 release needs
-either a DSA change that runs `Sweep` from `serve`, or a kit-side retention
-service with the same SQL, or Marc's explicit acceptance recorded here — before
-K-E cuts the release. Until then the install guide states it as a limit.
+✅ **Closed for kit 2.0.0 (K-E, 2026-11-04):** the K-A finding (in DSA
+`20ec838c` the serving core never called `PG.Sweep`, so expired conversations
+and their sealed originals stayed in the registry) is closed by the production
+registry sweeper (DSA #954, `c588cef7`), which the 1.1.0 release commit
+`35dd235d` contains: `serve` runs it with no off switch
+(`--registry-sweep-interval`, default 10 min; first tick 30–45 s after boot).
+Measured in the 2026-11-04 Compose rehearsal: the core logs
+`registry-sweep: every 10m0s …` at boot and `registry-sweep result=ok …` per
+tick.
+
+⚠️ **Open for the 2.0.0 release (K-E, 2026-11-04): the 1.x trees.** The 1.1.0
+images come from a DSA tree whose own migrations go further than the kit's
+copies: `services/veil-witness/migrations` up to `000014`
+(`0011_certificate_persistence_outbox`, `0012_claim_receipts`,
+`0013_decoder_expiry`, `0014_partition_veil_certificates`) and
+`services/audit/migrations` up to `000008_conversation_counter`, while the kit
+ships witness 1–10 and audit 1–7 (ceilings 10 / 7). The rehearsal shows the
+1.1.0 witness starts and serves certificates at ceiling 10 and logs
+`durability reduced` (no outbox table, no decoder-expiry columns). Before the
+release either (a) review those files with this checklist, copy them and raise
+the ceilings (in both places), or (b) keep 10 / 7 and keep the CHANGELOG
+stated limit — and write the decision here.
 
 ### The checklist
 

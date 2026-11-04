@@ -20,6 +20,19 @@ receipt, and witness-signature verification; anchors are explicitly not checked.
 > are published at <https://lucairn.eu/security>; the disclosure process and
 > contact are in [`SECURITY.md`](SECURITY.md).
 
+### kit 2.0.0 / chart 2.0.0 (images 1.1.0) — the hosted service's sanitizer core
+
+**Upgrade from 1.9.7:** follow § [Upgrade from kit 1.9.7 to 2.0.0](#upgrade-from-kit-197-to-200)
+— images `0.5.5` → `1.1.0`, four new services (the core's registry database,
+model sidecar, core and migration step), new `customer.env` settings, the
+runtime profile re-recorded, the registry migration as its own step. No 1.x
+schema change. The host needs at least 16 GB RAM for Docker and Docker Engine
+26.0.0 or newer. The ServiceNow mode stays off. Every third-party image
+(`postgres`, `redis`, `migrate`, `alpine`, …) is now pulled by the digest
+`image-manifest.yaml` records. The third-party notices for the models and data
+the images redistribute are in `licenses/NOTICE` (licence texts beside it). Read
+`CHANGELOG.md` `[2.0.0]` → "Stated limits".
+
 ### kit 1.9.7 / chart 1.9.7 (2026-10-28, images 0.5.5) — QI engine off by default
 
 **Upgrade from 1.9.6:** no image, schema or ceiling change — keep
@@ -240,6 +253,10 @@ If you intend to mirror images to your own internal registry instead, this prere
 > direct Docker Hub access, configure a **registry pull-through mirror** for
 > `registry-1.docker.io` on your infrastructure; alternatively, manually mirror
 > the specific tags above and edit the `image:` lines in the compose files.
+> Since kit 2.0 every one of these references carries the digest
+> `image-manifest.yaml` records (`postgres:16-alpine@sha256:…`): Docker pulls
+> exactly those bytes, so a mirror must serve the same image (same digest), and
+> an edited `image:` line keeps the `@sha256:…` part.
 
 ## Dev local-runtime quickstart (model required)
 
@@ -2335,17 +2352,45 @@ separately proves an expired leaf is rejected.
 
 ### Compose path
 
+Do this **before the first `bin/lucairn up`**. `up` bind-mounts
+`LCR_WITNESS_MTLS_HOST_DIR` (default `./.certs/witness-mtls`) into the witness
+and the gateway; when that folder does not exist yet, Docker creates it as
+`root`, and the bootstrap below then fails with `Operation not permitted`
+(measured on a Linux host, kit 2.0 rehearsal 2026-11-04). If that happened,
+remove the empty folder (`sudo rmdir ./.certs/witness-mtls`) and continue.
+
 1. Run the bootstrap CA script to generate a deploy-local CA + server cert
-   for the witness + a client cert for the gateway:
+   for the witness + a client cert for the gateway. Use the folder
+   `/etc/witness-mtls` on the host: the containers read the same path, and
+   `bin/lucairn doctor` checks the `WITNESS_MTLS_*` paths below on the host,
+   so any other host folder makes the doctor report `certs: missing …`:
 
    ```bash
-   scripts/bootstrap-mtls-ca.sh /opt/dsa/certs/witness-mtls
+   sudo scripts/bootstrap-mtls-ca.sh /etc/witness-mtls
    ```
 
-2. Add to `customer.env`:
+   **Linux Docker host:** the witness, the gateway and Sandbox A run as uid
+   10001, and the script leaves the folder `0700` and the keys `0600` owned by
+   the user who ran it. Hand the folder to uid 10001 and let other users
+   traverse it (the keys stay `0600`), or the witness logs `failed to load
+   witness mTLS server cert … permission denied` and serves `:50058` without
+   client authentication while every healthcheck stays green:
 
    ```bash
-   LCR_WITNESS_MTLS_HOST_DIR=/opt/dsa/certs/witness-mtls
+   sudo chown -R 10001:10001 /etc/witness-mtls
+   sudo chmod 0755 /etc/witness-mtls
+   ```
+
+   (macOS with Docker Desktop maps file ownership; the `chown` is not needed
+   there.) Stated limit: the script writes the CA private key (`ca.key`) into
+   the same folder, which both containers mount; move it to an offline place
+   after the bootstrap if you do not need to issue more client certificates.
+
+2. Set in `customer.env` (lucairn-init writes these keys empty; fill them in,
+   do not add a second copy of a key):
+
+   ```bash
+   LCR_WITNESS_MTLS_HOST_DIR=/etc/witness-mtls
    WITNESS_MTLS_CA_BUNDLE_PATH=/etc/witness-mtls/ca.crt
    WITNESS_MTLS_SERVER_CERT_PATH=/etc/witness-mtls/witness-server.crt
    WITNESS_MTLS_SERVER_KEY_PATH=/etc/witness-mtls/witness-server.key
@@ -2354,11 +2399,20 @@ separately proves an expired leaf is rejected.
    WITNESS_MTLS_SERVER_NAME=witness
    ```
 
-3. Recreate the witness and gateway containers:
+3. Start (or, on a running install, recreate) the stack with the recorded
+   topology — `bin/lucairn up` recreates the witness and the gateway because
+   their settings changed:
 
    ```bash
-   docker compose -f docker-compose.customer.yml up -d --no-deps --force-recreate veil-witness gateway
+   bin/lucairn up --env customer.env
    ```
+
+   On a pre-S1 install without the wrappers, pass the env file and your overlay
+   set: `docker compose -f docker-compose.customer.yml [-f <overlay> …]
+   --env-file customer.env up -d --no-deps --force-recreate veil-witness gateway`.
+
+   Check: the witness logs `certificate gRPC server: mTLS REQUIRED + per-method
+   ACL active` and the gateway logs `evidence admission gate ACTIVE`.
 
 If any of the three server-side paths (`WITNESS_MTLS_CA_BUNDLE_PATH`,
 `WITNESS_MTLS_SERVER_CERT_PATH`, `WITNESS_MTLS_SERVER_KEY_PATH`) are unset,
@@ -2413,6 +2467,174 @@ all production Helm installs.
 
 ---
 
+## Upgrade from kit 1.9.7 to 2.0.0
+
+What changes: every `dsa-*` image moves from `0.5.5` to `1.1.0`; four services
+are new (the registry database `postgres-sanitizer-core` with its own volume
+`pg-sanitizer-core-data`, the model sidecar, the Go core and the migration step
+`migrate-sanitizer-core`); the Anthropic route (`/v1/messages`) runs through the
+core with the final check enforced. The 1.x databases keep their schema (the
+migration ceilings stay veil-witness 10 · audit 7 · id-bridge 4 · sandbox-a 8),
+so no 1.x row is rewritten. The ServiceNow mode stays **off**: nothing in this
+upgrade turns it on (§ "ServiceNow mode (off by default)" is a separate,
+per-key opt-in). Read `CHANGELOG.md` `[2.0.0]` first.
+
+### Compose (an install made with `bin/lucairn-init`)
+
+Run every command from the install's kit directory. **Keep that directory's
+name:** it is the Compose project name, and the new release finds your volumes
+by it.
+
+0. **Host.** At least 16 GB RAM for Docker, Docker Engine 26.0.0 or newer
+   (25.0.5+ / 23.0.11+ on those lines; CVE-2024-29018), about 6 GB free disk
+   for the two new images, `openssl` and `sudo` (Linux).
+1. **Back up, with the 1.9.7 stack running.**
+   - The databases: OPS.md § "Backups" → "Compose path — backup" (`audit`,
+     `bridge`, `veil`).
+   - The install's state files, into a private folder:
+     ```bash
+     BK="backups/kit-1.9.7-$(date -u +%Y%m%dT%H%M%SZ)"
+     mkdir -p "$BK" && chmod 700 "$BK"
+     cp -p customer.env customer.env.runtime-profile.yaml customer.env.image-manifest.yaml "$BK/"
+     ```
+   - Write down the runtime mode: `grep '^runtime_mode:' customer.env.runtime-profile.yaml`.
+2. **Stop** (volumes stay): `bin/lucairn down --env customer.env`
+3. **Replace the kit files with 2.0.0 in the same directory** — a git checkout:
+   `git fetch --tags && git checkout v2.0.0`; a release tarball: verify it
+   (`docs/RELEASING.md`), then extract it over the directory. `customer.env`,
+   its two sidecar files, `.certs/`, `.secrets/` and `models/` are not part of
+   the release and stay as they are.
+4. **Add the kit 2.0 settings to `customer.env`.** Change the image tag, add
+   the core's two secrets, then append its image pins (the digests come from
+   the release's `image-manifest.yaml`). No key may appear twice in the file:
+   ```bash
+   sed -i.bak 's/^LUCAIRN_IMAGE_TAG=.*/LUCAIRN_IMAGE_TAG=1.1.0/' customer.env && rm -f customer.env.bak
+   scripts/sanitizer-core-registry-credentials.sh add --env-file customer.env
+   mdigest() { awk -v s="    $1:" '$0==s{f=1;next} f&&/^    [a-z]/{exit} f&&/^      digest:/{gsub(/[" ]/,"");sub("digest:","");print;exit}' image-manifest.yaml; }
+   {
+     echo "LUCAIRN_SANITIZER_CORE_IMAGE_TAG=1.1.0"
+     echo "LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$(mdigest dsa-sanitizer-core)"
+     echo "LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=$(mdigest dsa-sanitizer-core-sidecar)"
+   } >> customer.env
+   grep -c -E '^LUCAIRN_SANITIZER_CORE_(SIDECAR_)?IMAGE_DIGEST=sha256:[0-9a-f]{64}$' customer.env   # must print 2
+   ```
+   `add` appends `DSA_SANITIZER_CORE_REGISTRY_KEY` (it seals every registry
+   row) and `POSTGRES_SANITIZER_CORE_PASSWORD` (the registry database's
+   password). It generates them only while this install has no registry volume
+   (the volume Docker Compose names for this install's project, normally
+   `<directory name>_pg-sanitizer-core-data`; a custom `name:` in the compose
+   files counts, and a name it cannot resolve is refused); it asks the Docker
+   daemon, so Docker must be running. **Coming back to 2.0 after a rollback** (§ "Rollback
+   to 1.9.7"), the volume is still there and only opens with the two values it
+   was created with: `add` then refuses, names the file the rollback saved them
+   in, and you restore them instead —
+   `scripts/sanitizer-core-registry-credentials.sh add --env-file customer.env --from backups/sanitizer-core-<time>/sanitizer-core-registry.env`.
+   New values would fail the registry migration's login and leave every sealed
+   row unreadable.
+   **Development install only** (`GRPC_TLS_ENABLED=false`: the core then dials
+   the local witness in plaintext, like every other development emitter) —
+   also append the three empty witness-leaf lines:
+   ```bash
+   printf 'LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH=\nLCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_CERT_PATH=\nLCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_KEY_PATH=\n' >> customer.env
+   ```
+   Keep the database password free of space, `$ ' " \ `` ` and `#`
+   (`openssl rand -hex` is). Optional keys (`SANITIZER_CORE_MTLS_HOST_DIR`,
+   `SANITIZER_CORE_REGISTRY_DSN_FILE`, `SANDBOX_B_MESSAGES_JSON_MAX_BYTES`) may
+   stay unset: the defaults are the folders below and 4 MiB.
+5. **Re-record the runtime profile for 2.0.0.** The 1.9.7 profile pins
+   tag `0.5.5` and the 1.9.7 image manifest; every `bin/lucairn` command refuses
+   the new tag until the profile is recorded again. Move the two sidecar files
+   out (they are in the backup), drop the profile marker, and let
+   `bin/lucairn-init` adopt the env with the SAME mode flags you installed with
+   (`--production --license <bundle>` or `--dev`, plus your `--runtime-mode`
+   and its flags):
+   ```bash
+   mkdir -p "$BK/replaced" && mv customer.env.runtime-profile.yaml customer.env.image-manifest.yaml "$BK/replaced/"
+   sed -i.bak '/^LUCAIRN_RUNTIME_PROFILE_REQUIRED=1$/d' customer.env && rm -f customer.env.bak
+   bin/lucairn-init --dev --runtime-mode managed-byok --image-tag 1.1.0 \
+     --adopt-runtime-profile --output customer.env      # your own mode flags here
+   ```
+   The adoption keeps every existing value and secret, appends the marker,
+   writes the 2.0.0 profile and image snapshot, creates the core's mTLS
+   material (on Linux through `sudo`: the keys must belong to uid 10001) and
+   writes the registry DSN file.
+6. **Offline check:** `bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline`
+   — fix every line it fails (it names every missing kit 2.0 setting).
+7. **Verify the image signatures, then pull:** OPS.md § "Upgrade" step 3
+   (`bin/lucairn verify-images …`), then `bin/lucairn pull --env customer.env`.
+8. **Create the registry (explicit step):** the new database is empty; apply the
+   core's migrations 0001–0007 before anything else starts:
+   ```bash
+   docker compose -f docker-compose.customer.yml --env-file customer.env \
+     --profile sanitizer-core-migrate run --rm migrate-sanitizer-core
+   ```
+   It stops at the reviewed ceiling (7) and never migrates down. (`bin/lucairn
+   up` runs the same step again first; at the ceiling it changes nothing.)
+9. **Start:** `bin/lucairn up --env customer.env` (registry database → sidecar
+   → core → gateway; the sidecar loads its models in 1–5 minutes).
+10. **Check:** the online doctor (`--customer-key-file`, § "Doctor lifecycle"),
+    a first request, and that your data is all there — for example the audit
+    trail: `docker compose -f docker-compose.customer.yml --env-file customer.env exec -T postgres-audit psql -U dsa -d audit -Atc 'SELECT count(*) FROM audit_events'`
+    gives at least the count before the upgrade.
+
+### Helm
+
+1. Back up: OPS.md § "Backups" → "Helm path — backup".
+2. Add the core's credentials (§ "Sanitizer core (kit 2.0, Helm)" step 1) and
+   create its two mTLS Secrets (step 2) before the upgrade.
+3. Set `global.imageTag: "1.1.0"` (the 2.0.0 chart carries the core pair's
+   signed digests) and run `helm upgrade lucairn charts/lucairn -n lucairn -f customer-values.yaml`.
+   The registry migration runs as the Job `sanitizer-core-migrate-r<revision>`;
+   the core Pod waits in `Init` until it completed.
+4. Check: `bin/lucairn doctor --values customer-values.yaml`, then with
+   `DOCTOR_KUBE_LIVE=1`.
+
+### Rollback to 1.9.7
+
+Kit 2.0.0 changes no 1.x database schema, so the 1.9.7 images read the same
+databases: no restore is needed for a rollback (restore a backup only if the
+data itself was damaged).
+
+- **Compose:**
+  1. `bin/lucairn down --env customer.env` (removes the 2.0 containers, keeps
+     every volume).
+  2. **Save the 2.0 credentials first**, while the 2.0 kit files are still in
+     place. The registry volume stays, and it only opens with the registry key
+     and database password it was created with — the 1.9.7 `customer.env` you
+     restore next has neither:
+     ```bash
+     scripts/sanitizer-core-registry-credentials.sh save --env-file customer.env
+     ```
+     It writes `backups/sanitizer-core-<time>/` (mode `0700`, every file
+     `0600`, outside the kit release and every bundle): the 2.0
+     `customer.env`, its two sidecar files, the registry DSN file and
+     `sanitizer-core-registry.env` (the two values), and prints that last
+     path. It also writes a `.gitignore` holding `*` into that folder and into
+     `backups/`: the 1.9.7 kit's own `.gitignore` has no `backups/` rule, and
+     these untracked ignore files keep the copies (the DSN file holds the
+     database password) out of `git add` after the checkout below. Keep the
+     folder as long as you keep the volume. An extracted customer bundle has
+     the same script: `scripts/sanitizer-core-registry-credentials.sh save --env-file install/customer.env`.
+  3. Put the 1.9.7 kit files back (`git checkout v1.9.7`, or the 1.9.7
+     tarball) in the same directory.
+  4. Restore the three state files from the backup:
+     `cp -p "$BK/customer.env" "$BK/customer.env.runtime-profile.yaml" "$BK/customer.env.image-manifest.yaml" .`
+  5. `bin/lucairn up --env customer.env`.
+  6. The registry volume (`<directory name>_pg-sanitizer-core-data`) is not
+     used by 1.9.7. It holds sealed conversation state of at most the last
+     24 hours. To return to 2.0, follow § "Upgrade from kit 1.9.7 to 2.0.0"
+     again: its step 4 finds the volume and restores the saved values
+     (`add --from …/sanitizer-core-registry.env`), so the rows stay readable.
+     If you do not return to 2.0 soon, delete the volume and the saved folder
+     together: `docker volume rm <directory name>_pg-sanitizer-core-data`.
+- **Helm:** `helm rollback lucairn <revision> -n lucairn` (`helm history
+  lucairn -n lucairn` lists them). The registry PVC is kept. Keep the core's
+  two credentials (§ "Sanitizer core (kit 2.0, Helm)" step 1: the
+  `sanitizer-core.secrets.values` lines of `customer-values.yaml`, or the
+  External Secrets entries) unchanged for a return to 2.0: new values would not
+  open the kept registry. Delete the PVC and those credentials together when
+  you do not return to 2.0.
+
 ## Sanitizer core (kit 2.0, Compose)
 
 Kit 2.0 runs the same sanitizer as the hosted Lucairn service: a Go **sanitizer
@@ -2438,7 +2660,8 @@ OpenAI, MCP and proxy routes.
   when less than 1,500 MiB is still available. With `--offline` it only warns
   (it may be running on another machine). Add about 5 GB more when the L3 shield
   model is loaded.
-- About 2.5 GB more disk for the sidecar image.
+- About 6 GB more disk: the sidecar image is a 2 GB download and unpacks to 5.4 GB
+  (measured on the 1.1.0 release candidate, linux/amd64).
 - **Docker Engine 26.0.0 or newer** (on the 25.x line 25.0.5+, on the 23.x line
   23.0.11+; the 24.x line has no fix). Older engines forward DNS queries from
   `internal: true` networks to the host's resolvers (CVE-2024-29018), which
@@ -2457,6 +2680,20 @@ LUCAIRN_SANITIZER_CORE_IMAGE_TAG=1.1.0                     # ONE tag for core + 
 LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=                       # release-filled; set both digests or neither
 LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=
 ```
+
+The registry volume only opens with the key and password it was created with.
+`bin/lucairn-init` therefore refuses a fresh `customer.env` (exit 8) while
+this install already has a registry volume. It asks the Docker daemon, so run
+it with Docker running: without a daemon it refuses too, because it cannot
+know there is no volume. Generating `customer.env` on a machine without Docker
+is possible only with `--confirm-no-registry-volume`, which states that the
+Docker host of this install has no sanitizer core registry volume from an
+earlier kit 2.0 run. The flag covers only that case — no docker CLI, or no
+reachable daemon: a volume Docker does report is refused with or without it,
+and so is a registry volume name that cannot be resolved (Docker Compose
+missing, or the project does not render). And
+`scripts/sanitizer-core-registry-credentials.sh add` generates the pair only
+when there is none (§ "Rollback to 1.9.7" saves them for a return to 2.0).
 
 The core and the sidecar are one pair from one release: the core refuses to
 start against a sidecar from another build. Do not set `LCR_PROFILE` in
@@ -2525,6 +2762,51 @@ when a key belongs to another uid than the containers'. A re-run reuses every
 existing file; to rotate a leaf, delete it, re-run, and
 recreate the container that mounts it. If you keep the material elsewhere, pass
 the directory to the script and set `SANITIZER_CORE_MTLS_HOST_DIR` to it.
+
+### 2a. Renewing a leaf, rotating the CA
+
+The leaves are valid 365 days (`LEAF_DAYS`); `bin/lucairn doctor` fails 30 days
+before one expires. The CA is valid 3650 days (`CA_DAYS`).
+
+- **Renew one leaf** (or replace a leaked one): delete its `.crt` and `.key`
+  pair, re-run the script with the same arguments as the first time, then
+  recreate the ONE container that mounts it — `sanitizer-core` for the two
+  `sanitizer-core/` leaves, `gateway` for `gateway/dsa-gateway.*`,
+  `veil-witness` for `veil-witness/dsa-veil-witness.*`:
+  `docker compose ... up -d --no-deps --force-recreate <service>`. A restart is
+  not enough for the core's DSN file and is not guaranteed for the certificates;
+  recreate.
+- **Rotate the CA** (CA key exposed, or before the CA expires): every leaf must
+  move to the new CA at once — the core pins the witness name and verifies the
+  gateway's client leaf against its CA copy, so a mixed state drops every claim
+  or refuses every turn.
+  1. Move the old CA out of the way (keep it until step 4 succeeded):
+     `sudo mv .secrets/sanitizer-core-mtls-ca .secrets/sanitizer-core-mtls-ca.old`
+     (your own CA folder: the folder you passed as the second argument or set
+     as `SANITIZER_CORE_MTLS_CA_DIR`).
+  2. Delete the three service folders of the cert directory (they hold the
+     leaves and the CA copies):
+     `sudo rm -rf .certs/sanitizer-core-mtls/sanitizer-core .certs/sanitizer-core-mtls/gateway .certs/sanitizer-core-mtls/veil-witness`
+  3. Re-run `sudo scripts/bootstrap-sanitizer-core-mtls.sh` with the same
+     arguments: a new CA and four new leaves.
+  4. Recreate the three containers together:
+     `docker compose ... up -d --no-deps --force-recreate sanitizer-core gateway veil-witness`,
+     then run `bin/lucairn doctor` (online): the core's witness transport and no
+     `DROPPED` claim. Then delete the `.old` CA folder.
+- **A CA folder of your own and re-runs:** the script reads the CA folder only
+  from its second argument or from `SANITIZER_CORE_MTLS_CA_DIR` in ITS OWN
+  environment — never from `customer.env` (the doctor reads it from there).
+  `sudo` drops exported variables, so pass it as the second argument (or
+  `sudo SANITIZER_CORE_MTLS_CA_DIR=/your/ca scripts/bootstrap-sanitizer-core-mtls.sh <cert dir>`)
+  on every re-run. Forgotten, the script looks in the default CA folder, finds
+  leaves without a CA there and refuses (`… exists but the CA does not …`);
+  nothing is written.
+- **Helm:** after steps 1–3 (run as your own user, see § "Sanitizer core (kit
+  2.0, Helm)" step 2), replace both Secrets and restart both workloads:
+  `kubectl -n dsa-identity create secret generic sanitizer-core-mtls --from-file=<dir>/sanitizer-core/ --dry-run=client -o yaml | kubectl apply -f -`,
+  the same for `gateway-sanitizer-core-mtls` in `dsa-edge` from `<dir>/gateway/`,
+  then `kubectl -n dsa-identity rollout restart deployment/sanitizer-core` and
+  `kubectl -n dsa-edge rollout restart deployment/gateway`.
 
 ### 2b. Registry DSN file (once, and after every password change)
 
@@ -2681,23 +2963,17 @@ resolver would answer it first).
 
 ### Upgrading a kit 1.x Compose install
 
-The 1.x `customer.env` has none of the core's settings. Before the first `up`
-with the kit 2.0 compose files:
+Follow § [Upgrade from kit 1.9.7 to 2.0.0](#upgrade-from-kit-197-to-200) — it
+adds the core's settings, re-records the runtime profile, creates the mTLS
+material and the DSN file, and runs the registry migration as its own step.
+The core's registry is a new database (volume `pg-sanitizer-core-data`), so
+nothing of 1.x is migrated into it.
 
-1. Add the settings of step 1 to `customer.env` (both secrets freshly
-   generated; the image variables).
-2. Run step 2 (`scripts/bootstrap-sanitizer-core-mtls.sh`) and step 2b
-   (`scripts/write-sanitizer-core-registry-dsn.sh --env-file customer.env`).
-3. Run `bin/lucairn doctor --env customer.env --offline`; fix every
-   `sanitizer core` line it fails.
-4. Pull, then `bin/lucairn up` (step 4; it runs the migration step 3 first).
-
-The core's registry is a new database (`pg-sanitizer-core-data`), so nothing of
-1.x is migrated into it.
-
-**Stated limit (this release):** registry rows of expired conversations are not
-deleted by the core today — they expire logically after 24 hours but stay in
-`postgres-sanitizer-core`. See `docs/RELEASING.md` § "Migration review".
+**Registry retention:** the core deletes a registry conversation (with its
+sealed original values) once its 24-hour expiry has passed by more than
+210 seconds, on a sweep every 10 minutes (log line `registry-sweep result=…`);
+tombstones of deleted conversations are kept 24 hours. The sweep cannot be
+switched off.
 
 ## Sanitizer core (kit 2.0, Helm)
 
@@ -2749,7 +3025,7 @@ GLiNER and both spaCy models); the core is limited to 1 GiB. Plan **one node in
 the identity zone with at least 8 GiB allocatable beyond Sandbox A's pods**, or
 the Pod stays `Pending`. An OOM kill at the limit makes the Pod NotReady and the
 gateway's Anthropic requests fail closed until the models have reloaded
-(1–5 minutes). Add about 2.5 GB of image storage on that node.
+(1–5 minutes). Add about 6 GB of image storage on that node (the sidecar image unpacks to 5.4 GB).
 
 ### 1. Credentials
 
@@ -2785,7 +3061,7 @@ Compose path uses. Helm never generates key material; create the two Secrets
 from the bootstrap script's output:
 
 ```bash
-scripts/bootstrap-sanitizer-core-mtls.sh /secure/sanitizer-core-mtls
+LUCAIRN_CONTAINER_UID="$(id -u)" scripts/bootstrap-sanitizer-core-mtls.sh /secure/sanitizer-core-mtls
 kubectl -n dsa-identity create secret generic sanitizer-core-mtls \
   --from-file=/secure/sanitizer-core-mtls/sanitizer-core/
 kubectl -n dsa-edge create secret generic gateway-sanitizer-core-mtls \
@@ -2794,7 +3070,11 @@ kubectl -n dsa-edge create secret generic gateway-sanitizer-core-mtls \
 
 Run the script as your own user here (not as root): `kubectl` must be able to
 read the keys, and their owner inside the Pod comes from the chart (`fsGroup`
-10001, mode 0440). Keep the directory private; delete it once the Secrets exist
+10001, mode 0440). On Linux the script refuses an ordinary user unless
+`LUCAIRN_CONTAINER_UID` names that user's own uid (the Compose rule: keys for
+a container must belong to the container's uid); for Helm the files only feed
+`kubectl create secret`, so `LUCAIRN_CONTAINER_UID="$(id -u)"` is the right
+declaration on every OS. Keep the directory private; delete it once the Secrets exist
 if your PKI keeps the CA elsewhere. Only the core's server leaf (SAN
 `dsa-sanitizer-core`) and the gateway's client leaf (SAN `dsa-gateway`) are
 projected, each with the CA certificate; the CA (key and certificate) is
@@ -2842,9 +3122,10 @@ in production) and no `DROPPED` claim. NetworkPolicy presence is not proof that
 your CNI enforces it.
 
 **Stated limits (this release):** the registry database is not in the backup
-CronJobs yet; registry rows of expired conversations stay in the database (as on
-the Compose path). If you move the identity namespace, also update
-`gateway.sanitizerCore.url` (it names `dsa-identity`).
+CronJobs yet (it holds only the last 24 hours of sealed conversation state; the
+core deletes expired conversations itself, as on the Compose path). If you move
+the identity namespace, also update `gateway.sanitizerCore.url` (it names
+`dsa-identity`).
 
 ## ServiceNow mode (off by default)
 
@@ -2989,15 +3270,25 @@ by Lucairn (its test accounts are web-service only).
    GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=true
    GATEWAY_SERVICENOW_KEY_BINDINGS=<key_id>=<instance_id>          # comma-separated, no spaces
    GATEWAY_SERVICENOW_INSTANCES=[{"id":"<instance_id>","base_url":"https://<instance>.service-now.com","customer_id":"<customer_id>"}]
-   SERVICENOW_CONTROL_SUBNET=172.30.251.0/29                         # a private /29 (or wider) of your choice
-   SERVICENOW_CONTROL_GATEWAY_IP=172.30.251.2
-   SERVICENOW_CONTROL_SANITIZER_IP=172.30.251.3
-   SERVICENOW_CONTROL_CORE_IP=172.30.251.4
+   SERVICENOW_CONTROL_SUBNET=10.251.251.0/29                         # a private /29 (or wider) of your choice
+   SERVICENOW_CONTROL_GATEWAY_IP=10.251.251.2
+   SERVICENOW_CONTROL_SANITIZER_IP=10.251.251.3
+   SERVICENOW_CONTROL_CORE_IP=10.251.251.4
    SERVICENOW_CONTROL_MATERIAL=/srv/lucairn/servicenow-control/material
    SERVICENOW_CONTROL_SANITIZER_CONFIG=/srv/lucairn/servicenow-control/sanitizer.yaml
    SERVICENOW_LOGIN_DIR=/srv/lucairn/servicenow-login
    ```
 
+   **The control subnet must not overlap any Docker network on the host.**
+   Docker gives every network it creates without a fixed subnet (the kit's own
+   networks, about 23) a subnet from its default address pools, `172.17.0.0/16` to
+   `172.31.0.0/16` (one /16 each) and `192.168.0.0/16` (in /20 steps); a control subnet inside
+   one of them fails at `up` with "Pool overlaps". The example
+   `10.251.251.0/29` lies outside both pools; pick any free private /29 that is
+   also not routed on your site (and outside your engine's own
+   `default-address-pools`, if `/etc/docker/daemon.json` sets them). `bin/lucairn
+   up` checks the subnet against the existing Docker networks first and refuses
+   an overlap, naming the network; inside the default pools it warns.
    `customer_id` must be the owner of the bound key. One instance belongs to one
    customer. Do **not** set `LCR_PROFILE`: the overlay sets the core's opt-in
    value itself. The switch must be exactly `true`: with any other value
@@ -3043,8 +3334,10 @@ by Lucairn (its test accounts are web-service only).
    `0700` and owned by `10001`, so no other account can look inside it, and a
    login check that cannot see `login.json` refuses (it never passes
    unchecked).
-7. **Check:** `bin/lucairn doctor --env customer.env --customer-key-file …`.
-   Offline and online it checks the copy against a rebuild of the base, the
+7. **Check:** `bin/lucairn doctor --env customer.env --customer-key-file …`,
+   plus `--model <selected-model>` on a `managed-byok` or `split-remote` install
+   (the online doctor refuses to start without it there; a `local-runtime`
+   install reads the model from its runtime profile). Offline and online it checks the copy against a rebuild of the base, the
    login custody, and that the login file and the control material reach only
    their services; online also that the running sanitizer reads the current
    copy (the hash of the file inside the container), the bound key ids, the
@@ -3096,6 +3389,27 @@ by Lucairn (its test accounts are web-service only).
      other labels those Pods could not resolve anything.
 
 ### Kit 2.0 — further stated limits (final reads, 2026-11-03)
+
+- **Migration ceilings: witness 10, audit 7.** Kit 2.0.0 keeps the 1.x
+  ceilings (veil-witness 10 · audit 7 · id-bridge 4 · sandbox-a 8; the hosted
+  Lucairn service runs witness 10 and audit 6). At ceiling 10 the 2.0.0 witness
+  logs `durability reduced` at start, the same as on the hosted service: it has
+  no certificate persistence outbox and no decoder-expiry columns and writes
+  each certificate directly, so a witness crash between accepting and storing a
+  certificate can lose that one certificate. The newer migrations (veil-witness
+  0011–0014, audit 0008) come with a later kit release.
+- **Third-party notices:** kit 2.0.0 ships them in the kit (`licenses/NOTICE`
+  and the licence texts in `licenses/`, also in every customer bundle); the
+  images carry `NOTICE` from 2.0.1.
+- **Doctor, per-request BYOK keys:** a key minted for per-request BYOK (the
+  mint default) carries no stored provider key, and the online doctor holds
+  none, so on a `managed-byok` install its keyed step reports `keyed
+  inference: skipped — per-request BYOK install, no provider key for the
+  doctor; run one real turn to check it` (no certificate or verification
+  check). Check that journey with one real request that carries the provider
+  key. On a `local-runtime` or `split-remote` install (the mode the runtime
+  profile records) the same refusal fails instead: those modes take no
+  provider key per request, so mint the key with `--no-byok-per-request`.
 
 - **Adopting an existing `customer.env`:** `bin/lucairn-init` in adopt mode
   reads `SANITIZER_CORE_MTLS_HOST_DIR` with a plain text match (the last line

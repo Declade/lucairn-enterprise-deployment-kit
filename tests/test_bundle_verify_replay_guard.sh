@@ -61,7 +61,7 @@ S1_ENV="$TMPDIR/s1-customer.env"
 if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" != "0" ] && [ -z "${LUCAIRN_CONTAINER_UID:-}" ]; then
   LUCAIRN_CONTAINER_UID="$(id -u)"; export LUCAIRN_CONTAINER_UID
 fi
-"$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --model-name m --model-file foo.gguf --model-path . --output "$S1_ENV" --skip-doctor >/dev/null 2>&1
 S1_OUT="$TMPDIR/s1-bundles"
 "$LUCAIRN" bundle create \

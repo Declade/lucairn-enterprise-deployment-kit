@@ -90,7 +90,8 @@ spec:
               drop: ["ALL"]
       containers:
         - name: wait-and-migrate
-          image: migrate/migrate:v4.17.0
+          {{- /* Pinned by the digest image-manifest.yaml records (image_digests.enterprise_kind.migrate); re-pin both together. */}}
+          image: migrate/migrate:v4.17.0@sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa
           command:
             - sh
             - -c

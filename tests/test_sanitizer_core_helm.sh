@@ -782,10 +782,11 @@ grep -q 'dsa-sanitizer-core:${core_tag}' "$ROOT/bin/lucairn" && grep -q 'dsa-san
 # Final reads (H2): bundle create stages BOTH core operator tools in scripts/
 # (not install/scripts/, T-350) from #158; the offline-bundle reproduction in
 # tests/test_sanitizer_core_compose.sh § H proves the extracted bundle runs them.
-grep -q 'for _core_tool in bootstrap-sanitizer-core-mtls.sh write-sanitizer-core-registry-dsn.sh; do' "$ROOT/bin/lucairn" \
+grep -qx 'SANITIZER_CORE_OPERATOR_TOOLS="bootstrap-sanitizer-core-mtls.sh write-sanitizer-core-registry-dsn.sh sanitizer-core-registry-credentials.sh"' "$ROOT/bin/lucairn" \
+  && [ "$(grep -c 'for _core_tool in $SANITIZER_CORE_OPERATOR_TOOLS; do' "$ROOT/bin/lucairn")" -eq 2 ] \
   && grep -q 'cp "$ROOT/scripts/$_core_tool" "$staging/scripts/$_core_tool"' "$ROOT/bin/lucairn" \
-  && pass "bundle create carries the mTLS bootstrap and the DSN writer in scripts/ (not install/scripts/, T-350)" || fail "bundle create carries the mTLS bootstrap and the DSN writer"
-grep -q 'require_file "$root/scripts/$_core_tool" "bundle sanitizer-core operator tool $_core_tool"' "$ROOT/bin/lucairn" && pass "bundle verify requires both for a kit 2.0 compose" || fail "bundle verify requires the bootstrap and the DSN writer"
+  && pass "bundle create carries the mTLS bootstrap, the DSN writer and the registry credentials helper in scripts/ (not install/scripts/, T-350)" || fail "bundle create carries the mTLS bootstrap, the DSN writer and the registry credentials helper"
+grep -q 'require_file "$root/scripts/$_core_tool" "bundle sanitizer-core operator tool $_core_tool"' "$ROOT/bin/lucairn" && pass "bundle verify requires each operator tool for a kit 2.0 compose" || fail "bundle verify requires each operator tool"
 grep -q -- '--profile sanitizer-core-migrate run --rm migrate-sanitizer-core' "$ROOT/bin/lucairn" && pass "bundle install note names the migration step" || fail "bundle install note names the migration step"
 
 # Red-proof of the tally (fix round 4, sol r3 P2; RED on 507f0323): a block

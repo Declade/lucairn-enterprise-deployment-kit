@@ -280,7 +280,7 @@ services:
       MIGRATE_PATH: /migrations/audit
       MIGRATE_TARGET_VERSION: "7"
       MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "false"
-    image: migrate/migrate:v4.17.0
+    image: migrate/migrate:v4.17.0@sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa
     logging:
       driver: json-file
       options:
@@ -324,7 +324,7 @@ services:
       MIGRATE_PATH: /migrations/id-bridge
       MIGRATE_TARGET_VERSION: "4"
       MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "false"
-    image: migrate/migrate:v4.17.0
+    image: migrate/migrate:v4.17.0@sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa
     logging:
       driver: json-file
       options:
@@ -368,7 +368,7 @@ services:
       MIGRATE_PATH: /migrations/sandbox-a
       MIGRATE_TARGET_VERSION: "8"
       MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "false"
-    image: migrate/migrate:v4.17.0
+    image: migrate/migrate:v4.17.0@sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa
     logging:
       driver: json-file
       options:
@@ -412,7 +412,7 @@ services:
       MIGRATE_PATH: /migrations/veil-witness
       MIGRATE_TARGET_VERSION: "10"
       MIGRATE_UNSAFE_ACKNOWLEDGE_OPEN_ENDED_MIGRATE_UP: "false"
-    image: migrate/migrate:v4.17.0
+    image: migrate/migrate:v4.17.0@sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa
     logging:
       driver: json-file
       options:
@@ -449,7 +449,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 10
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     logging:
       driver: json-file
       options:
@@ -474,7 +474,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 10
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     logging:
       driver: json-file
       options:
@@ -499,7 +499,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 10
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     logging:
       driver: json-file
       options:
@@ -550,7 +550,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 5
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     logging:
       driver: json-file
       options:
@@ -570,7 +570,7 @@ services:
     environment:
       AUDIT_APP_PASSWORD: k1-synthetic
       VEIL_APP_PASSWORD: k1-synthetic
-    image: alpine:3.20
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     logging:
       driver: json-file
       options:
@@ -609,7 +609,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 5
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
     logging:
       driver: json-file
       options:
@@ -633,7 +633,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 5
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
     logging:
       driver: json-file
       options:
@@ -979,7 +979,7 @@ services:
       LUCAIRN_CENTRAL_WITNESS_CERT_ADDR: ""
       LUCAIRN_DASHBOARD_WITNESS_ENDPOINT: ""
       LUCAIRN_WITNESS_UNSAFE_ACKNOWLEDGE_LUCAIRN_OPERATED_WITNESS: "false"
-    image: alpine:3.20
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     logging:
       driver: json-file
       options:

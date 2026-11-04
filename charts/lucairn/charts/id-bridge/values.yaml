@@ -126,8 +126,13 @@ migrations:
 postgresql:
   enabled: true
   image:
+    # Pinned by the digest image-manifest.yaml records
+    # (image_digests.enterprise_kind.postgres); re-pin both together. A
+    # byte-identical mirror (repository override) keeps the digest;
+    # another image needs its own digest, or digest: "" for the tag.
     repository: postgres
     tag: "16-alpine"
+    digest: "sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
   storageSize: 10Gi
   storageClass: ""
   user: dsa

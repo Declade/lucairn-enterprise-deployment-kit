@@ -23,6 +23,7 @@ This repository contains the customer-installable Lucairn deployment kit for fir
 - `INSTALL.md`, `OPS.md`, `TROUBLESHOOTING.md` - day-1 and day-2 runbooks.
 - `CHANGELOG.md` - per-release notes (kit version ↔ image tag).
 - `SECURITY.md` - how to report a vulnerability + where security advisories are published.
+- `licenses/` - third-party notices: `licenses/NOTICE` lists every model and data file the Lucairn images redistribute (GLiNER, the spaCy models, the mdeberta tokenizer, torch, the name and place lists) with its licence; the licence texts sit beside it (index: `licenses/README.md`). Customer bundles carry the folder.
 - `docs/` - enterprise support, SDK, mirror, clean-host rehearsal, customer bundle, handoff gates, DPA, and vendor-assisted install notes.
 
 ## Fast Path
@@ -33,6 +34,13 @@ customer-managed cloud provider), and **local-runtime** (Sandbox B runs beside
 a named local model runtime). Pick the mode before running `docker compose up`; see
 `INSTALL.md` § "Choose A Deployment Mode" for the decision table and the
 required env vars per mode.
+
+In every path below, between `lucairn-init` and the first `bin/lucairn up`, run
+the witness mTLS bootstrap (`INSTALL.md` § "Witness mTLS", Compose path:
+`sudo scripts/bootstrap-mtls-ca.sh /etc/witness-mtls`, on Linux hand the folder
+to uid 10001, then fill the `WITNESS_MTLS_*` lines in `customer.env`). Without
+it certificate reads refuse every caller, and a first `up` creates the folder
+as root so the bootstrap fails afterwards.
 
 Split-deployment fast path:
 
@@ -252,3 +260,12 @@ No customer should receive an install package until:
 - the recipient, channel, checksum, and install owner are recorded in the engagement handoff note.
 
 See `docs/CUSTOMER_HANDOFF_GATES.md` and `docs/CLEAN_HOST_REHEARSAL.md`.
+
+## Third-party notices
+
+The Lucairn images redistribute third-party models and data (in kit 2.0 above
+all the sanitizer core's model sidecar: GLiNER, two spaCy models, the mdeberta
+tokenizer, torch, and the core's name and place lists). Their notices are in
+[`licenses/NOTICE`](licenses/NOTICE) and the licence texts beside it
+([`licenses/README.md`](licenses/README.md) is the index). Pass the folder on
+with any copy of the images or the kit you hand to someone else.

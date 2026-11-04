@@ -311,7 +311,7 @@ PY
   fi
 
   SERVICES="$(docker compose -f "$COMPOSE" -f "$SELFHOSTED" --env-file "$PINNED_ENV" config --services 2>/dev/null || true)"
-  if printf '%s\n' "$SERVICES" | grep -qx migrate-sanitizer-core; then
+  if grep -qx migrate-sanitizer-core <<<"$SERVICES"; then
     fail "migrate-sanitizer-core-not-in-default-project (a plain up would run it)"
   else
     pass "migrate-sanitizer-core-not-in-default-project"
@@ -319,7 +319,7 @@ PY
   # The base file alone (split-remote topology) also carries the core.
   # Captured first: `| grep -q` under pipefail SIGPIPEs the writer and reads as a failure.
   BASE_SERVICES="$(docker compose -f "$COMPOSE" --env-file "$PINNED_ENV" config --services 2>/dev/null || true)"
-  if printf '%s\n' "$BASE_SERVICES" | grep -qx sanitizer-core; then
+  if grep -qx sanitizer-core <<<"$BASE_SERVICES"; then
     pass "split-remote base file carries the core"
   else
     fail "split-remote base file carries the core"
@@ -483,8 +483,8 @@ PY
   printf '\nLUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=sha256:%s\nLUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=sha256:%s\n' \
     "$(printf 'a%.0s' $(seq 64))" "$(printf 'b%.0s' $(seq 64))" >> "$TMP/digest.env"
   IMAGES="$(docker compose -f "$COMPOSE" --env-file "$TMP/digest.env" config --images 2>/dev/null || true)"
-  if printf '%s\n' "$IMAGES" | grep -qx "ghcr.io/declade/dsa-sanitizer-core:1.1.0@sha256:$(printf 'a%.0s' $(seq 64))" \
-     && printf '%s\n' "$IMAGES" | grep -qx "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@sha256:$(printf 'b%.0s' $(seq 64))"; then
+  if grep -qx "ghcr.io/declade/dsa-sanitizer-core:1.1.0@sha256:$(printf 'a%.0s' $(seq 64))" <<<"$IMAGES" \
+     && grep -qx "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@sha256:$(printf 'b%.0s' $(seq 64))" <<<"$IMAGES"; then
     pass "digest variables pin core + sidecar by digest"
   else
     fail "digest variables pin core + sidecar by digest ($(printf '%s\n' "$IMAGES" | grep sanitizer-core | tr '\n' ' '))"
@@ -866,7 +866,7 @@ KIT_COMPOSE="$KIT/docker-compose.customer.yml"
 ENVDIR="$TMP/install"
 mkdir -p "$ENVDIR"
 ENVF="$ENVDIR/customer.env"
-PATH="$DBIN:$BASE_PATH" "$KIT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+PATH="$DBIN:$BASE_PATH" "$KIT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$ENVF" --skip-doctor > "$TMP/init.out" 2>&1 \
   || { fail "lucairn-init for the doctor fixture: $(tail -3 "$TMP/init.out")"; }
 CERTS="$ENVDIR/.certs/sanitizer-core-mtls"
@@ -886,7 +886,7 @@ if grep -Fq "$INIT_PW" "$TMP/init.out"; then fail "lucairn-init never prints the
 # must not overwrite the first env's file (found by test_lucairn_cli.sh).
 TWO="$TMP/twoinit"; mkdir -p "$TWO"
 for n in customer.env second.env; do
-  PATH="$DBIN:$BASE_PATH" "$KIT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+  PATH="$DBIN:$BASE_PATH" "$KIT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
     --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$TWO/$n" --skip-doctor > "$TMP/twoinit.out" 2>&1 \
     || fail "lucairn-init --output $n into a shared directory: $(tail -2 "$TMP/twoinit.out")"
 done
@@ -979,7 +979,7 @@ V="$(variant otherpair)"; printf 'LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=sha256:%s\
 expect_doctor_red "RED pinned core digest differs from the release's" "$V" "differ from the pair image-manifest.yaml records"
 # An install made from THIS checkout (manifest pending: no signed release yet).
 PEND="$TMP/pending-install"; mkdir -p "$PEND"
-PATH="$DBIN:$BASE_PATH" "$ROOT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+PATH="$DBIN:$BASE_PATH" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$PEND/customer.env" --skip-doctor > "$TMP/pinit.out" 2>&1 \
   || fail "lucairn-init from the unreleased checkout: $(tail -2 "$TMP/pinit.out")"
 grep -q '^LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$' "$PEND/customer.env" && pass "an unreleased kit writes no core digest (nothing invented)" || fail "an unreleased kit writes no core digest (nothing invented)"
@@ -1693,9 +1693,18 @@ h1_docs_check() { # <file> — every whole-stack `docker compose ... up -d`
       if ($0 ~ /\\[[:space:]]*$/) { sub(/\\[[:space:]]*$/, "", cmd); cont = 1 } else { cont = 0; check(cmd, start) }
     }' "$1"
 }
-for f in README.md INSTALL.md; do
-  h1_docs_check "$KIT/$f"
+# K-E (2026-11-04): OPS.md (upgrade, rollback, disaster recovery) and
+# TROUBLESHOOTING.md hold start paths a 2.0 install can take too. K-E fix
+# round 1 (review P2 on PR #162): so do the runbooks under docs/ (the L3 vLLM
+# runtime start, the customer runbook's dashboard start) — every docs/*.md.
+H1_RUNBOOKS=("$KIT"/docs/*.md)
+for f in "$KIT/README.md" "$KIT/INSTALL.md" "$KIT/OPS.md" "$KIT/TROUBLESHOOTING.md" "${H1_RUNBOOKS[@]}"; do
+  h1_docs_check "$f"
 done > "$TMP/h1-docs.txt"
+[ "${#H1_RUNBOOKS[@]}" -ge 15 ] && [ -f "${H1_RUNBOOKS[0]}" ] \
+  && pass "H1 the docs check reads every docs/*.md runbook too (${#H1_RUNBOOKS[@]} files)" \
+  || fail "H1 the docs check reads every docs/*.md runbook (found ${#H1_RUNBOOKS[@]})"
+check_eq "H1 docs/L3_VLLM_RUNTIME.md starts the stack only after the registry migration" "" "$(h1_docs_check "$KIT/docs/L3_VLLM_RUNTIME.md")"
 [ -s "$TMP/h1-docs.txt" ] && H1_DOCS_BAD="$(tr '\n' ' ' < "$TMP/h1-docs.txt")"
 if [ -z "$H1_DOCS_BAD" ]; then pass "H1 no documented whole-stack 'docker compose ... up -d' without the migration step before it"; else fail "H1 documented whole-stack up -d without the migration step: $H1_DOCS_BAD"; fi
 grep -c 'up first runs the sanitizer core' "$KIT/README.md" | grep -qx 3 \
@@ -1723,7 +1732,7 @@ model:
   license: customer-owned
   checksum_policy: sha256-required
 YAML
-PATH="$DBIN:$BASE_PATH" "$KIT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+PATH="$DBIN:$BASE_PATH" "$KIT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$H2B/customer.env" --skip-doctor > "$TMP/h2-init.out" 2>&1 \
   || fail "H2 lucairn-init for the bundle: $(tail -2 "$TMP/h2-init.out")"
 grep -q "^SANITIZER_CORE_MTLS_HOST_DIR=$H2B/" "$H2B/customer.env" \
@@ -1746,9 +1755,11 @@ check_eq "H2 the staged env names the bundle-relative DSN file" "./.secrets/sani
 # (the generated header's "# Regenerate:" comment names the --output path; it
 # is a comment, read by nobody)
 grep -v '^#' "$H2E" | grep -Fq "$H2B" && fail "H2 no build-host path left in any setting of install/customer.env" || pass "H2 no build-host path left in any setting of install/customer.env"
-for t in scripts/bootstrap-sanitizer-core-mtls.sh scripts/write-sanitizer-core-registry-dsn.sh bin/compose-env.sh; do
+for t in scripts/bootstrap-sanitizer-core-mtls.sh scripts/write-sanitizer-core-registry-dsn.sh scripts/sanitizer-core-registry-credentials.sh bin/compose-env.sh bin/runtime-profile-lib.sh; do
   [ -f "$H2R/$t" ] && pass "H2 the bundle ships $t" || fail "H2 the bundle ships $t"
 done
+[ -x "$H2R/scripts/sanitizer-core-registry-credentials.sh" ] \
+  && pass "H2 the bundle's registry credentials helper is executable" || fail "H2 the bundle's registry credentials helper is executable"
 grep -Fq "scripts/write-sanitizer-core-registry-dsn.sh --env-file install/customer.env --compose install/docker-compose.customer.yml" "$H2R/INSTALL-CUSTOMER.md" \
   && grep -Fq 'scripts/bootstrap-sanitizer-core-mtls.sh "$PWD/install/.certs/sanitizer-core-mtls"' "$H2R/INSTALL-CUSTOMER.md" \
   && pass "H2 INSTALL-CUSTOMER.md names both one-time steps (mTLS bootstrap + DSN file)" \
@@ -1793,6 +1804,23 @@ fi
 for line in "sanitizer core registry DSN: ok" "sanitizer core mTLS: ok"; do
   grep -Fq "$line" "$TMP/h2-doc.out" && pass "H2 bundle doctor: $line" || fail "H2 bundle doctor: $line"
 done
+# K-E fix round 2 (review P2 on PR #162): the extracted bundle can do the
+# protected rollback step with its own helper — the saved folder lands in the
+# bundle's install/backups/ beside install/customer.env, git-ignored.
+if (cd "$H2R" && PATH="$DBIN:$BASE_PATH" bash scripts/sanitizer-core-registry-credentials.sh save --env-file install/customer.env > "$TMP/h2-save.out" 2> "$TMP/h2-save.err"); then
+  H2SAVED="$(cat "$TMP/h2-save.out")"
+  case "$H2SAVED" in
+    */install/backups/sanitizer-core-*/sanitizer-core-registry.env)
+      [ -f "$H2SAVED" ] && [ -f "$(dirname "$H2SAVED")/registry-dsn" ] && grep -qx '[*]' "$H2R/install/backups/.gitignore" \
+        && pass "H2 the bundle's helper saves the registry credentials and the DSN file in install/backups/ (git-ignored)" \
+        || fail "H2 the bundle's helper saves the registry credentials and the DSN file in install/backups/ (git-ignored)" ;;
+    *) fail "H2 the bundle's helper saves into install/backups/ (printed: $H2SAVED)" ;;
+  esac
+else
+  fail "H2 the bundle's registry credentials helper runs save: $(tail -2 "$TMP/h2-save.err")"
+fi
+grep -Fq "scripts/sanitizer-core-registry-credentials.sh save --env-file install/customer.env" "$H2R/INSTALL-CUSTOMER.md" \
+  && pass "H2 INSTALL-CUSTOMER.md names the rollback save step" || fail "H2 INSTALL-CUSTOMER.md names the rollback save step"
 
 # ── M1: the core's witness hop follows the witness's transport ──────────────
 grep -q '^LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH=$' "$ENVF" && grep -q '^LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_KEY_PATH=$' "$ENVF" \
@@ -1874,7 +1902,7 @@ else
   fail "M2 Linux non-root bootstrap with a declared uid: $(tail -2 "$TMP/m2-boot.out")"
 fi
 M2I="$TMP/m2-init"; mkdir -p "$M2I"; : > "$TMP/m2-sudo.log"
-if env -u LUCAIRN_CONTAINER_UID PATH="$LXB:$DBIN:$BASE_PATH" STUB_SUDO_LOG="$TMP/m2-sudo.log" "$KIT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+if env -u LUCAIRN_CONTAINER_UID PATH="$LXB:$DBIN:$BASE_PATH" STUB_SUDO_LOG="$TMP/m2-sudo.log" "$KIT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
      --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$M2I/customer.env" --skip-doctor > "$TMP/m2-init.out" 2>&1 \
    && grep -q "^sudo env LUCAIRN_CONTAINER_UID=10001 bash .*bootstrap-sanitizer-core-mtls.sh $M2I/.certs/sanitizer-core-mtls$" "$TMP/m2-sudo.log" \
    && grep -q "^chown -R 10001:10001 " "$TMP/m2-sudo.log"; then
@@ -1884,7 +1912,7 @@ else
 fi
 grep -Fq "running that one step with sudo" "$TMP/m2-init.out" && pass "M2 init says it uses sudo for that one step" || fail "M2 init says it uses sudo for that one step"
 M2J="$TMP/m2-init-nosudo"; mkdir -p "$M2J"; : > "$TMP/m2-sudo.log"
-if env -u LUCAIRN_CONTAINER_UID PATH="$LXB:$DBIN:$BASE_PATH" STUB_SUDO_LOG="$TMP/m2-sudo.log" STUB_SUDO_FAIL=1 "$KIT/bin/lucairn-init" --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+if env -u LUCAIRN_CONTAINER_UID PATH="$LXB:$DBIN:$BASE_PATH" STUB_SUDO_LOG="$TMP/m2-sudo.log" STUB_SUDO_FAIL=1 "$KIT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
      --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$M2J/customer.env" --skip-doctor > "$TMP/m2-init.out" 2>&1; then
   fail "M2 RED init when sudo is refused — it succeeded"
 elif grep -Fq "re-run: sudo scripts/bootstrap-sanitizer-core-mtls.sh" "$TMP/m2-init.out"; then

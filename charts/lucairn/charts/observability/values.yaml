@@ -2,8 +2,13 @@ namespace: dsa-observability
 
 grafana:
   image:
+    # Pinned by the digest image-manifest.yaml records
+    # (image_digests.kit_third_party.grafana); re-pin both together. A
+    # byte-identical mirror (repository override) keeps the digest;
+    # another image needs its own digest, or digest: "" for the tag.
     repository: grafana/grafana
     tag: "11.4.0"
+    digest: "sha256:d8ea37798ccc41061a62ab080f2676dda6bf7815558499f901bdb0f533a456fb"
   # NOTE (T-10, 2026-08-03): `grafana.adminPassword` used to live here with a
   # CHANGE-ME…-shaped placeholder. It was a DEAD key — no template in this
   # chart ever read it, so setting it never protected the Grafana admin
@@ -75,8 +80,13 @@ grafana:
 
 loki:
   image:
+    # Pinned by the digest image-manifest.yaml records
+    # (image_digests.kit_third_party.loki); re-pin both together. A
+    # byte-identical mirror (repository override) keeps the digest;
+    # another image needs its own digest, or digest: "" for the tag.
     repository: grafana/loki
     tag: "3.3.0"
+    digest: "sha256:58b60b901255c209d3455d8a1979a3f73d1d09686a0a858c2c93025a969eb550"
   authEnabled: true  # Secure by default; override to false in values-dev.yaml if needed
   retention: "720h"  # 30 days
   storageSize: 20Gi
@@ -91,8 +101,13 @@ loki:
 
 promtail:
   image:
+    # Pinned by the digest image-manifest.yaml records
+    # (image_digests.kit_third_party.promtail); re-pin both together. A
+    # byte-identical mirror (repository override) keeps the digest;
+    # another image needs its own digest, or digest: "" for the tag.
     repository: grafana/promtail
     tag: "3.3.0"
+    digest: "sha256:5aa128328d6b0b47a41e1fedd3e5e599c02203c0368d2a2ffc736785ba5a22a3"
   resources:
     requests:
       cpu: 50m
@@ -103,8 +118,13 @@ promtail:
 
 tempo:
   image:
+    # Pinned by the digest image-manifest.yaml records
+    # (image_digests.kit_third_party.tempo); re-pin both together. A
+    # byte-identical mirror (repository override) keeps the digest;
+    # another image needs its own digest, or digest: "" for the tag.
     repository: grafana/tempo
     tag: "2.6.0"
+    digest: "sha256:f55a8a1937fff0af3a760d376b476c8327fb30e432d5e7630d7938b67691e822"
   retention: "168h"  # 7 days
   storageSize: 10Gi
   storageClass: ""

@@ -39,6 +39,11 @@
 #                [--print-dsn] [-- <compose args: -f ... --profile ...>]
 #   cev_needles  --env-file F --project-dir D -- <compose args>
 #                (stdout: hex-encoded needles, one per line)
+#   cev_l3       --env-file F --project-dir D
+#                (stdout: `l3<TAB>NAME<TAB><file state><TAB><effective state>`
+#                per L3 shield setting, states only — K-E fix round 1)
+#   cev_volume   --env-file F --project-dir D -- <compose args>
+#                (stdout: `volume<TAB><registry volume name>`; K-E fix round 2)
 #   cev_to_json  yaml|env <file> <outdir> <sentinels>  (support-bundle's
 #                exact decoded scan)
 # rc: 0 done · 10 Docker Compose is not available (fail closed) · 11 Compose
@@ -49,6 +54,9 @@
 # holds secrets; mode 0700) is always removed.
 
 CEV_DSN_TARGET="/run/secrets/sanitizer-core/registry-dsn"
+# The settings that turn the L3 deep PII shield on (bin/lucairn
+# doctor_l3_config), in the order the doctor names them.
+CEV_L3_NAMES="LUCAIRN_L3_AVAILABILITY_POSTURE GATEWAY_L3_CUSTOMER_ALLOWLIST OLLAMA_URL LUCAIRN_L3_ADDR"
 CEV_DEFAULT_DSN_FILE="./.secrets/sanitizer-core/registry-dsn"
 
 # The JSON reader. Modes (awk -v mode=...):
@@ -57,6 +65,7 @@ CEV_DEFAULT_DSN_FILE="./.secrets/sanitizer-core/registry-dsn"
 #             -v projdir, -v given, -v checkfile, -v printdsn
 #   needles   files: file view, interpolation view, [project]; then the
 #             DSN files named by -v dsnfiles (newline-separated)
+#   l3        files: file view, interpolation view; -v l3names (space-separated)
 # shellcheck disable=SC2016 # an awk program: its $ are awk fields, not shell
 CEV_AWK='
 function jtok(s, i,    j, c) {          # index of the closing quote of the string at s[i]
@@ -202,7 +211,13 @@ function readfile(f,    l, s, n) {      # the DSN file as the core reads it (BOM
   sub(/^[ \t\r\n\v\f]+/, "", s); sub(/[ \t\r\n\v\f]+$/, "", s)
   return s
 }
-function scalar(p, k, tok, isstr,    v, svc) {
+function scalar(p, k, tok, isstr,    v, svc, vk) {
+  if (mode == "volume") {               # one file: the install project
+    if (p == "services/" volsvc) svcseen = 1
+    else if (index(p, "services/" volsvc "/volumes/#") == 1 && (k == "type" || k == "source" || k == "target")) { dm[p, k] = tok; dms[p] = 1 }
+    else if (p ~ /^volumes\/[^\/]+$/ && k == "name") { vk = substr(p, 9); vn[vk] = tok; vnset[vk] = 1 }
+    return
+  }
   if (fno == 1 || fno == 2) {
     if (p != "services/probe/environment") return
     if (mode == "keys") { if (k ~ /^[A-Za-z_][A-Za-z0-9_]*$/) print k; return }
@@ -227,6 +242,19 @@ function scalar(p, k, tok, isstr,    v, svc) {
   }
   if (mode == "needles" && isstr) userinfo(jdec(tok), p)
 }
+# The state of one L3 shield setting, never its value (OLLAMA_URL can carry
+# credentials): the posture as unset | degrade | reject | other (trimmed and
+# lower-cased, as the sanitizer reads it), any other name as unset | set;
+# `unreadable` when the Compose output cannot be decoded.
+function l3state(k, v) {
+  if (v == BAD) return "unreadable"
+  if (k == "LUCAIRN_L3_AVAILABILITY_POSTURE") {
+    v = tolower(v); gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", v)
+    if (v == "") return "unset"
+    return (v == "reject" || v == "degrade") ? v : "other"
+  }
+  return (v == "") ? "unset" : "set"
+}
 BEGIN {
   readable = ENVIRON["CEV_READABLE"]
   BAD = "\001BAD"
@@ -239,6 +267,25 @@ END {
   if (broken || !seen[1] || (fno >= 2 && !seen[2])) { print "unreadable"; exit 12 }
   if (needproj && !seen[3]) { print "unreadable"; exit 12 }   # needles: the project MUST have been read
   if (mode == "keys") exit 0
+  if (mode == "volume") {
+    if (!svcseen) { print "why\tthe project has no " volsvc " service"; exit 12 }
+    n = 0
+    for (m in dms) if (jdec(dm[m, "target"]) == datadir) { n++; src = jdec(dm[m, "source"]); typ = jdec(dm[m, "type"]) }
+    if (n != 1) { print "why\t" volsvc " has " n " mounts at " datadir " (one named volume expected)"; exit 12 }
+    if (typ != "volume") { print "why\t" volsvc " keeps its data in a " (typ ~ /^[a-z]+$/ ? typ : "non-volume") " mount at " datadir ", not in a named volume"; exit 12 }
+    if (src == BAD || src == "" || !vnset[src]) { print "why\tthe project declares no volume for the " volsvc " data mount"; exit 12 }
+    v = jdec(vn[src])
+    if (v == BAD || v !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/) { print "why\tthe name of volume " src " is not resolved (it holds a ${...} Docker Compose did not interpolate)"; exit 12 }
+    print "volume\t" v
+    exit 0
+  }
+  if (mode == "l3") {
+    print "compose\tok"
+    nl = split(l3names, L, " ")
+    for (i = 1; i <= nl; i++)
+      print "l3\t" L[i] "\t" l3state(L[i], Aset[L[i]] ? jdec(A[L[i]]) : "") "\t" l3state(L[i], Bset[L[i]] ? jdec(B[L[i]]) : "")
+    exit 0
+  }
   if (mode == "registry") {
     split("POSTGRES_SANITIZER_CORE_PASSWORD POSTGRES_SSLMODE SANITIZER_CORE_REGISTRY_DSN_FILE", R, " ")
     ov = ""
@@ -370,7 +417,8 @@ cev_jstr() {
 }
 
 # The file view + interpolation view probes into $CEV_TMP/a.json, b.json.
-# $3 = "all" (every interpolable key of the file) or "registry".
+# $3 = "all" (every interpolable key of the file), "registry" or "l3" (the
+# registry keys plus CEV_L3_NAMES).
 cev_probes() {
   local env="$1" pd="$2" which="$3" abs ej k keys first seenk=""
   case "$env" in /*) abs="$env" ;; *) abs="$PWD/$env" ;; esac
@@ -380,6 +428,7 @@ cev_probes() {
     cev_fail 11 "Docker Compose cannot read $env: $CEV_REASON"; return
   fi
   keys="POSTGRES_SANITIZER_CORE_PASSWORD POSTGRES_SSLMODE SANITIZER_CORE_REGISTRY_DSN_FILE"
+  [ "$which" != l3 ] || keys="$keys $CEV_L3_NAMES"
   if [ "$which" = all ]; then
     keys="$keys $(LC_ALL=C awk -v mode=keys "$CEV_AWK" "$CEV_TMP/a.json" | tr '\n' ' ')" \
       || { cev_fail 12 "\`docker compose config --format json\` gave output this kit cannot read (Docker Compose v2 is required)"; return; }
@@ -457,6 +506,59 @@ cev_registry() (
     "$CEV_AWK" "${files[@]}"
   st=$?
   [ "$st" -eq 0 ] || cev_fail 12 "\`docker compose config --format json\` gave output this kit cannot read (Docker Compose v2 is required)"
+)
+
+# cev_l3 ... — the L3 shield settings as Docker Compose sees them, for the
+# keyed doctor's L3-off PARTIAL exception (kit 2.0 K-E fix round 1, review P2
+# on PR #162: doctor read the raw file, so a posture exported in the shell —
+# which Compose interpolates over customer.env — was missed). One line per
+# CEV_L3_NAMES entry: `l3<TAB>NAME<TAB><file view state><TAB><interpolation
+# view state>` (l3state above; states only, never a value).
+cev_l3() (
+  cev_args "$@" || exit
+  cev_compose_cmd || exit
+  cev_tmp || exit
+  trap 'rm -rf "$CEV_TMP"' EXIT
+  cev_probes "$CEV_OPT_ENV" "$CEV_OPT_PD" l3 || exit
+  LC_ALL=C awk -v mode=l3 -v l3names="$CEV_L3_NAMES" "$CEV_AWK" "$CEV_TMP/a.json" "$CEV_TMP/b.json" \
+    || cev_fail 12 "\`docker compose config --format json\` gave output this kit cannot read (Docker Compose v2 is required)"
+)
+
+# cev_volume --env-file F --project-dir D -- <compose args> — the Docker
+# volume the sanitizer core's registry database (postgres-sanitizer-core)
+# keeps its data in, named as Docker Compose names it for the install project
+# the compose args describe: the project name (directory, COMPOSE_PROJECT_NAME,
+# a top-level `name:`) and a custom or external volume `name:` included (kit
+# 2.0 K-E fix round 2, review P2 on PR #162). stdout: `volume<TAB><name>` and
+# `render<TAB>interpolated|uninterpolated`. The project renders with the env
+# file first; when Compose refuses that (a setting the env does not hold yet:
+# upgrade step 4 adds the registry secrets, a fresh install has no env yet),
+# it renders again with --no-interpolate, where a name that holds a `${...}`
+# stays unresolved and fails. A data mount that is not exactly one named
+# volume fails too. rc: 0 · 10 no Docker Compose · 11 Compose refuses the
+# project · 12 no name can be resolved (value-free reason) · 2 usage.
+cev_volume() (
+  cev_args "$@" || exit
+  [ "${#CEV_ARGS[@]}" -gt 0 ] || { cev_fail 2 "the install's compose files (after --) are required"; exit; }
+  cev_compose_cmd || exit
+  cev_tmp || exit
+  trap 'rm -rf "$CEV_TMP"' EXIT
+  local how=interpolated out
+  if ! "${CEV_CMD[@]}" "${CEV_ARGS[@]}" --env-file "$CEV_OPT_ENV" config --format json \
+       > "$CEV_TMP/p.json" 2> "$CEV_TMP/err" </dev/null; then
+    how=uninterpolated
+    if ! "${CEV_CMD[@]}" "${CEV_ARGS[@]}" --env-file "$CEV_OPT_ENV" config --format json --no-interpolate \
+         > "$CEV_TMP/p.json" 2> "$CEV_TMP/err" </dev/null; then
+      cev_fail 11 "Docker Compose cannot render this install's project: $(cev_reason "$CEV_TMP/err")"; exit
+    fi
+  fi
+  out="$(LC_ALL=C awk -v mode=volume -v volsvc=postgres-sanitizer-core -v datadir=/var/lib/postgresql/data \
+           "$CEV_AWK" "$CEV_TMP/p.json")" || true
+  case "$out" in
+    "volume	"*) printf '%s\nrender\t%s\n' "$out" "$how" ;;
+    "why	"*) cev_fail 12 "${out#why	}" ;;
+    *) cev_fail 12 "\`docker compose config --format json\` gave output this kit cannot read (Docker Compose v2 is required)" ;;
+  esac
 )
 
 # cev_needles ... — every secret value Compose knows for this install, DECODED

@@ -20,6 +20,10 @@ customer-bundles/
 # Kit 2.0: the sanitizer core's registry DSN file (it holds the registry DB
 # password), written by scripts/write-sanitizer-core-registry-dsn.sh.
 .secrets/
+# The upgrade/rollback backups (INSTALL.md § "Upgrade from kit 1.9.7 to
+# 2.0.0"): copies of customer.env, the registry DSN file and the sanitizer
+# core's registry credentials (scripts/sanitizer-core-registry-credentials.sh).
+backups/
 # Ignore everything customers may drop in the root keys/ dir (Ed25519 pairs,
 # private cosign keys, etc.) — a safety net against committing private material.
 # A negation on a file requires first re-including the directory itself (git

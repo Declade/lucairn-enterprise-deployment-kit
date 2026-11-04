@@ -157,7 +157,8 @@ spec:
       containers:
         - name: probe
           # busybox ships nc (netcat) and nslookup — lightweight, no extra dependencies.
-          image: busybox:1.36
+          # Pinned by the digest image-manifest.yaml records (kit_third_party.busybox).
+          image: busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
