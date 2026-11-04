@@ -9,16 +9,18 @@ the environment nor starts child processes.
 from __future__ import annotations
 
 import argparse
+import base64
 import errno
 import http.client
 import json
 import os
+import re
 import ssl
 import stat
 import sys
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from urllib.parse import quote, urlsplit, urlunsplit
 
 
@@ -259,7 +261,156 @@ def is_per_request_byok_refusal(code: int, body: bytes) -> bool:
     )
 
 
-def run_journey(key_file: str, gateway_url: str, model: str, proxy_url: Optional[str], ca_file: Optional[str]) -> None:
+# Kit 2.0 (PRD row 2; owner baseline 31 Oct: an L3-off certificate reads
+# PARTIAL for the L3-coverage reason only, and that is accepted). The kit runs
+# the L3 deep PII shield OFF by default, so the witness downgrades every
+# certificate to COMPLETENESS_PARTIAL / VERDICT_PARTIAL: the sanitizer claim
+# ran a live scan without "llm_pii_scan" in its signed layers_active (FAIL-02,
+# veil-witness verifier/coverage.go L3CoverageDowngrade). VerificationResult
+# has no reason field, so the causes are read from the same serialized fields
+# and SIGNED claim payloads the witness derives the verdict from (verifier.go
+# overall-verdict block; coverage.go; user_unredacted.go; inference_outcome.go;
+# server/cert_server.go anchor rails + sealed-verdict ceiling). A PARTIAL
+# passes ONLY when bin/lucairn reported L3 off for this install AND the
+# L3-coverage downgrade is the sole cause. Any other cause, an unreadable
+# field, or L3 configured on fails and names the cause.
+L3_OFF_PARTIAL_LINE = "verdict partial: L3 off on this install (expected)"
+L3_LAYER = "llm_pii_scan"
+UNREDACTED_LAYER = "user_unredacted_segment"
+# Layers that are not a live scan of this turn (coverage.go liveScanRan).
+NOT_A_LIVE_SCAN = frozenset({"cache_replay", "sanitizer_internal_cache_replay", "secret_scan", UNREDACTED_LAYER})
+SANITIZER_SERVICES = ("dsa-sanitizer", "dsa-sanitizer-streaming")
+SAFE_TOKEN = re.compile(r"[A-Za-z0-9_.:=-]{1,64}")
+
+
+def shown(value: object) -> str:
+    """A server-supplied token, printed only when it is a plain short name."""
+    return value if isinstance(value, str) and SAFE_TOKEN.fullmatch(value) else "unrecognised"
+
+
+def l3_config_cause(value: Optional[str]) -> Optional[str]:
+    if value == "off":
+        return None
+    if isinstance(value, str) and value.startswith("on:") and SAFE_TOKEN.fullmatch(value[3:]):
+        return f"L3 is configured on for this install ({value[3:]})"
+    return "the doctor was not told whether L3 is off on this install"
+
+
+def verdict_component_causes(verification: dict, prefix: str = "") -> List[str]:
+    causes = []
+    for field in ("signatures_valid", "data_visibility_consistent", "isolation_verified", "temporal_consistent"):
+        if verification.get(field) is not True:
+            causes.append(f"{prefix}{field} is not true")
+    missing = verification.get("missing_services")
+    if not isinstance(missing, list) or not all(isinstance(item, str) for item in missing):
+        causes.append(f"{prefix}missing_services is unreadable")
+    elif missing:
+        causes.append(f"{prefix}missing services: {', '.join(shown(item) for item in sorted(missing))}")
+    # Only "valid" answers the ordering question (veil.proto temporal_order_status).
+    if verification.get("temporal_order_status") != "valid":
+        causes.append(f"{prefix}claim order {shown(verification.get('temporal_order_status'))}")
+    if verification.get("completeness") != "COMPLETENESS_PARTIAL":
+        causes.append(f"{prefix}completeness {shown(verification.get('completeness'))}, so L3 coverage is not the cause")
+    anchors = verification.get("anchor_verifications", [])
+    if not isinstance(anchors, list) or not all(isinstance(item, dict) for item in anchors):
+        causes.append(f"{prefix}anchor_verifications is unreadable")
+    else:
+        for anchor in anchors:
+            if anchor.get("outcome") == "ANCHOR_VERIFY_OUTCOME_FAILED":
+                causes.append(f"{prefix}anchor {shown(anchor.get('rail'))} failed")
+    return causes
+
+
+def signed_claim_payload(claim: object) -> Optional[dict]:
+    raw = claim.get("canonical_payload") if isinstance(claim, dict) else None
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = json.loads(base64.b64decode(raw, validate=True).decode("utf-8"))
+    except ValueError:
+        return None
+    payload = parsed.get("payload") if isinstance(parsed, dict) else None
+    return payload if isinstance(payload, dict) else None
+
+
+def is_live_scan(layers: List[str]) -> bool:
+    shallow = "secret_scan" in layers
+    return any(layer not in NOT_A_LIVE_SCAN and not (shallow and layer == "known_entity_matching") for layer in layers)
+
+
+def claim_chain_causes(certificate: dict) -> List[str]:
+    claims = certificate.get("claims")
+    if not isinstance(claims, list) or not claims:
+        return ["certificate claims are unreadable"]
+    causes = []
+    sanitizer_seen = live_scan = False
+    for claim in claims:
+        service = claim.get("service_id") if isinstance(claim, dict) else None
+        payload = signed_claim_payload(claim)
+        if payload is None:
+            causes.append(f"signed payload of claim {shown(service)} is unreadable")
+            continue
+        if "inference_outcome" in payload:
+            causes.append(f"inference did not finish (claim {shown(service)})")
+        if service not in SANITIZER_SERVICES:
+            continue
+        layers = payload.get("layers_active")
+        if not isinstance(layers, list) or not all(isinstance(layer, str) for layer in layers):
+            causes.append(f"layers_active of claim {shown(service)} is unreadable")
+            continue
+        if L3_LAYER in layers:
+            causes.append(f"{L3_LAYER} present, so L3 coverage is not the cause")
+        if UNREDACTED_LAYER in layers:
+            causes.append("a message was sent unredacted")
+        if service != "dsa-sanitizer":
+            continue
+        sanitizer_seen = True
+        found = payload.get("pii_entities_found")
+        if (
+            not [layer for layer in layers if layer != UNREDACTED_LAYER]
+            and isinstance(found, (int, float))
+            and not isinstance(found, bool)
+            and found > 0
+        ):
+            causes.append("redactions attributed to no layer")
+        live_scan = live_scan or is_live_scan(layers)
+    if not sanitizer_seen:
+        causes.append("no sanitizer claim")
+    elif not live_scan:
+        causes.append("no live scan on this request, so L3 coverage is not the cause")
+    return causes
+
+
+def partial_verdict_causes(verification: dict, certificate: Optional[dict], l3_config: Optional[str]) -> List[str]:
+    """Every cause of a VERDICT_PARTIAL other than L3 coverage on an L3-off install."""
+    causes = []
+    l3_cause = l3_config_cause(l3_config)
+    if l3_cause:
+        causes.append(l3_cause)
+    causes += verdict_component_causes(verification)
+    if certificate is None:
+        causes.append("certificate is unreadable")
+    else:
+        # /verify never reports better than the sealed verdict (cert_server.go
+        # sealed-verdict ceiling), so a sealed PARTIAL must be explained too.
+        sealed = certificate.get("verification")
+        sealed_verdict = sealed.get("overall_verdict") if isinstance(sealed, dict) else None
+        if sealed_verdict == "VERDICT_PARTIAL":
+            causes += verdict_component_causes(sealed, "sealed ")
+        elif sealed_verdict != "VERDICT_VERIFIED":
+            causes.append(f"sealed verdict {shown(sealed_verdict)}")
+        causes += claim_chain_causes(certificate)
+    return list(dict.fromkeys(causes))
+
+
+def run_journey(
+    key_file: str,
+    gateway_url: str,
+    model: str,
+    proxy_url: Optional[str],
+    ca_file: Optional[str],
+    l3_config: Optional[str] = None,
+) -> None:
     key = read_customer_key(key_file)
     gateway = Gateway.from_url(gateway_url)
     client = AuthenticatedClient(gateway, key, parse_proxy(proxy_url), ca_file)
@@ -292,6 +443,7 @@ def run_journey(key_file: str, gateway_url: str, model: str, proxy_url: Optional
     print("inference: ok (authenticated)")
 
     encoded_request_id = quote(request_id, safe="")
+    certificate: Optional[dict] = None
     for attempt in range(1, 13):
         code, body = client.request("GET", f"/api/v1/veil/certificate/{encoded_request_id}")
         if code == 202:
@@ -302,7 +454,8 @@ def run_journey(key_file: str, gateway_url: str, model: str, proxy_url: Optional
             fail("evidence: failed (certificate endpoint unavailable)")
         if code != 200:
             fail(f"evidence: failed (certificate endpoint returned HTTP {code})")
-        if not json_object(body):
+        certificate = json_object(body)
+        if not certificate:
             fail("evidence: failed (certificate response is malformed)")
         break
     else:
@@ -313,12 +466,19 @@ def run_journey(key_file: str, gateway_url: str, model: str, proxy_url: Optional
     if code != 200:
         fail(f"verification: failed (verify endpoint returned HTTP {code if code is not None else 0})")
     verification = json_object(body)
+    verdict = verification.get("overall_verdict") if verification else None
     if not verification or not (
         verification.get("signatures_valid") is True
-        and verification.get("overall_verdict") == "VERDICT_VERIFIED"
+        and verdict in ("VERDICT_VERIFIED", "VERDICT_PARTIAL")
     ):
         fail("verification: failed (response is malformed or witness signature is not verified)")
+    if verdict == "VERDICT_PARTIAL":
+        causes = partial_verdict_causes(verification, certificate, l3_config)
+        if causes:
+            fail(f"verification: failed (verdict partial: {'; '.join(causes)})")
     print("verification: ok (witness signature: verified; anchors: not checked)")
+    if verdict == "VERDICT_PARTIAL":
+        print(L3_OFF_PARTIAL_LINE)
     print("doctor: ok")
 
 
@@ -329,6 +489,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--proxy", help="explicit HTTP CONNECT/forward proxy; environment is ignored")
     parser.add_argument("--ca-file", help="explicit private CA bundle for an HTTPS gateway")
+    parser.add_argument(
+        "--l3-config",
+        help='"off", or "on:<setting name>" for the install\'s L3 shield; absent = unknown (a partial verdict fails)',
+    )
     return parser.parse_args(argv)
 
 
@@ -338,7 +502,7 @@ def main(argv: list[str]) -> int:
         return 1
     try:
         args = parse_args(argv)
-        run_journey(args.key_file, args.gateway_url, args.model, args.proxy, args.ca_file)
+        run_journey(args.key_file, args.gateway_url, args.model, args.proxy, args.ca_file, args.l3_config)
     except DoctorFailure as exc:
         print(str(exc))
         return 1

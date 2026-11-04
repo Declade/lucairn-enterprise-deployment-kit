@@ -222,6 +222,16 @@ stays `0.8.2`.
   `missing_upstream_key` refusal as a named skip instead of a failure (only
   that exact answer: HTTP 400, `invalid_request_error`,
   `missing_upstream_key`); every other keyed-step error still fails.
+- **Doctor, L3 off:** the keyed online doctor accepts a certificate that reads
+  `VERDICT_PARTIAL` only when the install's L3 shield is off (the kit default)
+  and L3 coverage is the only cause, and says so (`verdict partial: L3 off on
+  this install (expected)`). Before, a provider-keyed doctor failed on every
+  default install. Any other cause (missing service, claim order not `valid`,
+  a failed anchor, a sealed-verdict cause, a message sent unredacted, an
+  unfinished inference, an unreadable field) or an L3 setting turned on
+  (`LUCAIRN_L3_AVAILABILITY_POSTURE=reject`, `GATEWAY_L3_CUSTOMER_ALLOWLIST`,
+  `OLLAMA_URL`, `LUCAIRN_L3_ADDR`, `LUCAIRN_L3_SPLIT_POOL`, the `vllm-l3`
+  runtime, `ollama-identity` in the compose file) still fails and names it.
 
 ### Fixed — upgrade path, docs and tests (K-E)
 

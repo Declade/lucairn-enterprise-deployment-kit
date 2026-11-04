@@ -2044,6 +2044,42 @@ doctor_selected_model() {
   esac
 }
 
+# doctor_l3_config ENV_FILE — prints "off", or "on:<NAME>" naming the first
+# setting that turns the L3 deep PII shield on for this install. Names only,
+# never values (OLLAMA_URL can carry credentials). The keyed helper accepts a
+# certificate that reads VERDICT_PARTIAL for the L3-coverage reason only when
+# this prints "off" (kit 2.0 PRD row 2; the kit default ships L3 off). Same
+# signals as check_l3_required_wired / vllm_l3_opted_in / l3_split_pool_declared,
+# plus the gateway's own L3 allowlist; a typo'd split-pool marker counts as on.
+doctor_l3_config() {
+  local env_file="$1" posture name split_rc=0
+  posture="$(env_value "$env_file" LUCAIRN_L3_AVAILABILITY_POSTURE | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+  if [ "$posture" = "reject" ]; then
+    printf 'on:LUCAIRN_L3_AVAILABILITY_POSTURE=reject'
+    return 0
+  fi
+  for name in GATEWAY_L3_CUSTOMER_ALLOWLIST OLLAMA_URL LUCAIRN_L3_ADDR; do
+    if [ -n "$(env_value "$env_file" "$name")" ]; then
+      printf 'on:%s' "$name"
+      return 0
+    fi
+  done
+  l3_split_pool_declared "$env_file" || split_rc=$?
+  if [ "$split_rc" -ne 1 ]; then
+    printf 'on:LUCAIRN_L3_SPLIT_POOL'
+    return 0
+  fi
+  if vllm_l3_opted_in "$env_file"; then
+    printf 'on:vllm-l3'
+    return 0
+  fi
+  if grep -qE '^  ollama-identity:' "$ROOT/docker-compose.customer.yml" 2>/dev/null; then
+    printf 'on:ollama-identity'
+    return 0
+  fi
+  printf 'off'
+}
+
 # Bash deliberately does not open, read, or validate the key file.  It passes
 # only its path plus non-secret request configuration into the helper.  The
 # subshell's `exec -c` is a Bash builtin: no `env -i` executable first receives
@@ -2061,8 +2097,9 @@ doctor_full_customer_journey() {
     return 1
   }
 
-  local helper_args
-  helper_args=(--key-file "$customer_key_file" --gateway-url "$gateway_url" --model "$model")
+  local helper_args l3_config
+  l3_config="$(doctor_l3_config "$env_file")"
+  helper_args=(--key-file "$customer_key_file" --gateway-url "$gateway_url" --model "$model" --l3-config "$l3_config")
   [ -z "$customer_key_proxy" ] || helper_args+=(--proxy "$customer_key_proxy")
   [ -z "$customer_key_ca_file" ] || helper_args+=(--ca-file "$customer_key_ca_file")
   (

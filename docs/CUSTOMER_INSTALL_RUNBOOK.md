@@ -280,7 +280,11 @@ bin/lucairn doctor \
 
 For `split-remote` or `managed-byok`, append `--model <selected-model>`.
 Successful output includes authenticated inference, certificate receipt, and
-`witness signature: verified`; anchors are explicitly not checked.
+`witness signature: verified`; anchors are explicitly not checked. With the L3
+shield off (the kit default) the certificate reads `VERDICT_PARTIAL`; the
+doctor accepts that only when L3 coverage is the sole cause and prints
+`verdict partial: L3 off on this install (expected)`. Any other cause, or an L3
+setting turned on, fails and names it.
 
 Do not read the customer key into a shell variable or place it in a `curl`
 header. The helper-owned `--customer-key-file` route is the supported custody
