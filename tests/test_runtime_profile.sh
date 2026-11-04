@@ -431,6 +431,20 @@ printf 'schema_version: 999\n' > "$LEGACY_ENV.runtime-profile.yaml"
 expect_fail corrupt-state "$ROOT/bin/lucairn" doctor --env "$LEGACY_ENV" --compose "$ROOT/docker-compose.customer.yml" --offline --skip-image-check
 grep -q 'runtime profile: failed' "$TMPDIR/corrupt-state.out"
 
+# Kit 2.0 K-E (upgrade rehearsal 2026-11-04): a kit 1.x env has no
+# SANITIZER_CORE_MTLS_HOST_DIR line. The adoption's lookup of that line ran
+# under `set -euo pipefail`; grep's no-match status ended init with status 1
+# and no message after the profile was published and before the core's mTLS
+# material and DSN file existed. Run the exact assignment from bin/lucairn-init
+# against an env without the line, with init's shell options. RED on 274123e0.
+ADOPT_LOOKUP="$(grep -E '^  SANITIZER_CORE_MTLS_DIR="\$\(grep -E .\^SANITIZER_CORE_MTLS_HOST_DIR=' "$ROOT/bin/lucairn-init")"
+[ -n "$ADOPT_LOOKUP" ] || { echo "FAIL: adoption mTLS-dir lookup not found in bin/lucairn-init" >&2; exit 1; }
+NO_HOST_DIR_ENV="$TMPDIR/kit-1x-no-core-dir.env"
+grep -v '^SANITIZER_CORE_MTLS_HOST_DIR=' "$LOCAL_ENV" > "$NO_HOST_DIR_ENV"
+lookup_out="$(OUTPUT="$NO_HOST_DIR_ENV" bash -c "set -euo pipefail; $ADOPT_LOOKUP; echo \"reached:\$SANITIZER_CORE_MTLS_DIR\"" 2>&1 || true)"
+[ "$lookup_out" = "reached:" ] \
+  || { echo "FAIL: the adoption's mTLS-dir lookup aborts on an env without SANITIZER_CORE_MTLS_HOST_DIR (got: $lookup_out)" >&2; exit 1; }
+
 # An explicit adoption failure never changes the legacy env.
 ADOPT_ENV="$TMPDIR/adopt-preserved.env"
 copy_pre_s1_env "$LOCAL_ENV" "$ADOPT_ENV"

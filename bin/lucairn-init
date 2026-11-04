@@ -1799,7 +1799,12 @@ fi
 # rotated. In adoption mode the existing customer.env is not rewritten, so the
 # directory is the one it names (or the compose default beside the kit).
 if [ "$ADOPT_RUNTIME_PROFILE" = "true" ]; then
-  SANITIZER_CORE_MTLS_DIR="$(grep -E '^SANITIZER_CORE_MTLS_HOST_DIR=' "$OUTPUT" 2>/dev/null | tail -1 | cut -d= -f2-)"
+  # `|| true`: a kit 1.x env has no SANITIZER_CORE_MTLS_HOST_DIR line; under
+  # `set -euo pipefail` grep's no-match status made this assignment exit init
+  # with status 1 and no message, right after the adopted profile was
+  # published and before the mTLS material and the DSN file existed (kit 2.0
+  # K-E upgrade rehearsal, 2026-11-04). No line = the compose default.
+  SANITIZER_CORE_MTLS_DIR="$(grep -E '^SANITIZER_CORE_MTLS_HOST_DIR=' "$OUTPUT" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
   case "$SANITIZER_CORE_MTLS_DIR" in
     /*) : ;;
     '') SANITIZER_CORE_MTLS_DIR="$KIT_ROOT/.certs/sanitizer-core-mtls" ;;
