@@ -45,13 +45,25 @@ cat > "$TMPDIR/bin/docker" <<'STUB'
 #!/bin/bash
 # Compose renders (client side: `version` and `config`) go to the real CLI;
 # the daemon is a stub. Any other Compose command would need a daemon.
+# Daemon states ($STUB_DAEMON): up · down (cannot connect) · qerr (answers,
+# but its volume list fails) · deny (answers every request with an error
+# response, as an authorization plugin does).
 if [ "${1:-}" = compose ]; then
   case " $* " in *" config "*|*" version"*) exec "$LUCAIRN_TEST_REAL_DOCKER" "$@" ;; esac
 fi
+if [ "${1:-}" = version ]; then
+  case "$(cat "$STUB_DAEMON")" in
+    up|qerr) echo "27.5.1"; exit 0 ;;
+    deny) echo "Error response from daemon: authorization denied by plugin stub-authz" >&2; exit 1 ;;
+    *) echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2; exit 1 ;;
+  esac
+fi
 if [ "${1:-}" = volume ] && [ "${2:-}" = ls ]; then
-  [ "$(cat "$STUB_DAEMON")" = up ] || { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
-  cat "$STUB_VOLUMES"
-  exit 0
+  case "$(cat "$STUB_DAEMON")" in
+    up) cat "$STUB_VOLUMES"; exit 0 ;;
+    qerr|deny) echo "Error response from daemon: stub volume list failure" >&2; exit 1 ;;
+    *) echo "Cannot connect to the Docker daemon" >&2; exit 1 ;;
+  esac
 fi
 echo "unexpected docker call: $*" >&2
 exit 97
@@ -264,6 +276,73 @@ printf 'services: [\n' > "$KIT/docker-compose.customer.yml"
 run check-norender bash "$CRED" check --env-file "$ENV"
 check "a project Compose cannot render is 'cannot tell' (rc $RC, want 4)" '[ "$RC" -eq 4 ]'
 cp -p "$TMPDIR/compose.orig" "$KIT/docker-compose.customer.yml"
+
+# Final check on PR #162 (T-1441): (1) only a daemon that cannot be reached is
+# "Docker unreachable" (exit 5, the one case --confirm-no-registry-volume
+# covers); a daemon that answers but fails the volume query is refused (exit
+# 6), with or without the flag. (2) A long volume list keeps every match: the
+# old `printf | grep -q` under pipefail dropped one (grep exits at the match,
+# printf gets SIGPIPE, the pipeline is false) once the list outgrew the pipe.
+echo "11c. a daemon that answers but fails the query; a long volume list"
+clear_other() { rm -f "$OTHER" "$OTHER.runtime-profile.yaml" "$OTHER.image-manifest.yaml" "$KIT/.secrets/sanitizer-core/other.env.registry-dsn"; }
+cp -p "$ENV" "$TMPDIR/env.before"
+printf '%s\n' "$VOL" > "$STUB_VOLUMES"
+echo qerr > "$STUB_DAEMON"
+run check-qerr bash "$CRED" check --env-file "$ENV"
+check "a reachable daemon whose volume list fails is not 'Docker unreachable' (rc $RC, want 6)" \
+  '[ "$RC" -eq 6 ] && grep -Fq "the Docker daemon answered but did not list its volumes" "$TMPDIR/check-qerr.err"'
+run add-qerr bash "$CRED" add --env-file "$ENV"
+check "add generates nothing when a reachable daemon fails the volume query (rc $RC, want 6)" '[ "$RC" -eq 6 ] && cmp -s "$TMPDIR/env.before" "$ENV"'
+cp -p "$TMPDIR/env.before" "$ENV"
+run init-qerr "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
+check "init with --confirm-no-registry-volume refuses when a reachable daemon fails the volume query (rc $RC, want 8)" \
+  '[ "$RC" -eq 8 ] && grep -Fq -- "--confirm-no-registry-volume does not apply" "$TMPDIR/init-qerr.err" && ! grep -Fq -- "--confirm-no-registry-volume states" "$TMPDIR/init-qerr.err" && other_absent'
+clear_other
+run init-qerr-plain "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor
+check "init without the flag refuses when a reachable daemon fails the volume query (rc $RC, want 8)" '[ "$RC" -eq 8 ] && other_absent'
+clear_other
+echo deny > "$STUB_DAEMON"
+run check-deny bash "$CRED" check --env-file "$ENV"
+check "a daemon that answers even its version with an error response is reachable (rc $RC, want 6)" '[ "$RC" -eq 6 ]'
+run init-deny "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
+check "init with --confirm-no-registry-volume refuses a daemon that answers with error responses (rc $RC, want 8)" '[ "$RC" -eq 8 ] && other_absent'
+clear_other
+echo down > "$STUB_DAEMON"
+run check-down bash "$CRED" check --env-file "$ENV"
+check "a daemon that cannot be reached is still 'Docker unreachable' (rc $RC, want 5)" '[ "$RC" -eq 5 ] && grep -Fq "the Docker daemon is not reachable" "$TMPDIR/check-down.err"'
+run init-down-confirmed "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
+check "init with --confirm-no-registry-volume still proceeds when the daemon cannot be reached (rc $RC, the documented case)" \
+  '[ "$RC" -eq 0 ] && [ -f "$OTHER" ] && grep -Fq -- "--confirm-no-registry-volume states" "$TMPDIR/init-down-confirmed.err"'
+clear_other
+echo up > "$STUB_DAEMON"
+awk -v v="$VOL" 'BEGIN { print v; for (i = 0; i < 20000; i++) printf "unrelated-volume-%05d\n", i }' > "$STUB_VOLUMES"
+check "fixture: 20,001 volume names, the registry volume first" \
+  '[ "$(wc -l < "$STUB_VOLUMES" | tr -d " ")" -eq 20001 ] && [ "$(head -1 "$STUB_VOLUMES")" = "$VOL" ]'
+run check-long bash "$CRED" check --env-file "$ENV"
+check "check finds the registry volume first in a list of 20,001 (rc $RC, want 3)" '[ "$RC" -eq 3 ] && grep -Fq "($VOL)" "$TMPDIR/check-long.err"'
+run add-long bash "$CRED" add --env-file "$ENV"
+check "add refuses against the registry volume first in a list of 20,001 (rc $RC, want 3)" '[ "$RC" -eq 3 ] && cmp -s "$TMPDIR/env.before" "$ENV"'
+cp -p "$TMPDIR/env.before" "$ENV"
+run init-long "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor
+check "init refuses against the registry volume first in a list of 20,001 (rc $RC, want 8)" '[ "$RC" -eq 8 ] && grep -Fq "$VOL" "$TMPDIR/init-long.err" && other_absent'
+clear_other
+run init-long-confirmed "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
+check "init with --confirm-no-registry-volume refuses against it too (rc $RC, want 8)" '[ "$RC" -eq 8 ] && grep -Fq "$VOL" "$TMPDIR/init-long-confirmed.err" && other_absent'
+clear_other
+awk -v v="$VOL" 'BEGIN { for (i = 0; i < 20000; i++) printf "unrelated-volume-%05d\n", i; print v }' > "$STUB_VOLUMES"
+run check-long-last bash "$CRED" check --env-file "$ENV"
+check "check finds the registry volume last in a list of 20,001 (rc $RC, want 3)" '[ "$RC" -eq 3 ]'
+awk 'BEGIN { for (i = 0; i < 20000; i++) printf "unrelated-volume-%05d\n", i }' > "$STUB_VOLUMES"
+run check-long-none bash "$CRED" check --env-file "$ENV"
+check "a list of 20,000 other names holds no registry volume (rc $RC, want 0)" '[ "$RC" -eq 0 ]'
+# The same pipe race in the saved-file check: `grep -v | grep -q .` dropped
+# the "another line" match once the other lines outgrew the pipe.
+{ cat "$SAVED"; awk 'BEGIN { for (i = 0; i < 20000; i++) printf "EXTRA_SETTING_%05d=x\n", i }'; } > "$TMPDIR/long-extra.env"
+chmod 0600 "$TMPDIR/long-extra.env"
+cp -p "$TMPDIR/env.before" "$ENV"
+run add-long-extra bash "$CRED" add --env-file "$ENV" --from "$TMPDIR/long-extra.env"
+check "a saved file with 20,000 other lines is refused (rc $RC, want 2)" '[ "$RC" -eq 2 ] && cmp -s "$TMPDIR/env.before" "$ENV"'
+printf '%s\n' "$VOL" > "$STUB_VOLUMES"
 
 echo "12. the guide drives it"
 ROLLBACK="$(awk '/^### Rollback to 1\.9\.7/{f=1;next} f&&/^## /{exit} f' "$DOCS_ROOT/INSTALL.md")"

@@ -58,7 +58,10 @@
 #     or Docker could not be asked whether it has one (nothing was written;
 #     start Docker, or pass --confirm-no-registry-volume — K-E fix round 2),
 #     or a registry volume name of this install could not be resolved
-#     (nothing was written; the flag does not cover that — fix round 4)
+#     (nothing was written; the flag does not cover that — fix round 4),
+#     or the Docker daemon answered but did not list its volumes (nothing
+#     was written; the flag does not cover that either — final check on
+#     PR #162)
 
 set -euo pipefail
 
@@ -281,8 +284,9 @@ Options:
                            from an earlier kit 2.0 run. Without Docker and without
                            this flag, init refuses (exit 8): new registry
                            credentials cannot open an existing registry. It
-                           overrides nothing else: a volume Docker reports, or a
-                           registry volume name that cannot be resolved, is
+                           overrides nothing else: a volume Docker reports, a
+                           registry volume name that cannot be resolved, or a
+                           daemon that answers but does not list its volumes, is
                            refused with or without it.
   --help, -h               Show this usage and exit.
 
@@ -310,7 +314,8 @@ Exit codes:
   7  sanitizer core registry DSN file could not be written (customer.env written)
   8  refused: a sanitizer core registry volume already exists, or Docker could
      not be asked and --confirm-no-registry-volume was not given, or a registry
-     volume name could not be resolved (nothing written)
+     volume name could not be resolved, or the daemon answered but did not list
+     its volumes (nothing written)
 USAGE
 }
 
@@ -459,7 +464,7 @@ local_model_inventory_valid() {
 remote_api_key_valid() {
   local value="$1"
   [ -n "$value" ] && [ "${#value}" -le 512 ] || return 1
-  printf '%s' "$value" | grep -Eq '^[A-Za-z0-9._-]+$' || return 1
+  [[ $value =~ ^[A-Za-z0-9._-]+$ ]] || return 1
   case "$value" in
     REPLACE_*|replace_*|PLACEHOLDER*|placeholder*|EXAMPLE*|example*|CHANGE_ME|change_me|YOUR_*|your_*) return 1 ;;
   esac
@@ -467,7 +472,7 @@ remote_api_key_valid() {
 
 remote_public_key_valid() {
   local value="$1" normalized_value first_byte
-  printf '%s' "$value" | grep -Eq '^[0-9a-fA-F]{64}$' || return 1
+  [[ $value =~ ^[0-9a-fA-F]{64}$ ]] || return 1
   normalized_value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
   first_byte="${normalized_value:0:2}"
   [ -n "${normalized_value//"$first_byte"/}" ]
@@ -728,8 +733,8 @@ lock_owner_details() {
   token="$(sed -n 's/^token=//p' "$owner")"
   [ "$(grep -c '^pid=' "$owner" 2>/dev/null || true)" = "1" ] \
     && [ "$(grep -c '^token=' "$owner" 2>/dev/null || true)" = "1" ] \
-    && printf '%s' "$pid" | grep -Eq '^[1-9][0-9]*$' \
-    && printf '%s' "$token" | grep -Eq '^[0-9a-f]{48}$' \
+    && [[ $pid =~ ^[1-9][0-9]*$ ]] \
+    && [[ $token =~ ^[0-9a-f]{48}$ ]] \
     || return 1
   printf '%s|%s' "$pid" "$token"
 }
@@ -789,10 +794,10 @@ lock_mtime_epoch() {
 lock_ownerless_grace_elapsed() {
   local modified now age grace
   grace="${LUCAIRN_INIT_LOCK_GRACE_SECONDS:-30}"
-  printf '%s' "$grace" | grep -Eq '^[0-9]+$' || grace=30
+  [[ $grace =~ ^[0-9]+$ ]] || grace=30
   modified="$(lock_mtime_epoch "$LOCK_DIR" 2>/dev/null || true)"
   now="$(date -u +%s)"
-  printf '%s' "$modified" | grep -Eq '^[0-9]+$' || return 1
+  [[ $modified =~ ^[0-9]+$ ]] || return 1
   age=$(( now - modified ))
   [ "$age" -ge "$grace" ]
 }
@@ -840,7 +845,7 @@ acquire_install_lock() {
     || fail "output directory is not a real directory: $OUTPUT_DIR"
   LOCK_DIR="$OUTPUT_DIR/.lucairn-init.lock"
   LOCK_TOKEN="$(openssl rand -hex 24 2>/dev/null || true)"
-  printf '%s' "$LOCK_TOKEN" | grep -Eq '^[0-9a-f]{48}$' \
+  [[ $LOCK_TOKEN =~ ^[0-9a-f]{48}$ ]] \
     || fail "could not create init lock owner token"
   if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     [ -d "$LOCK_DIR" ] && [ ! -L "$LOCK_DIR" ] \
@@ -926,7 +931,9 @@ fi
 # states with --confirm-no-registry-volume that there is none. Fix round 4
 # (review P2 on PR #162): the flag overrides ONLY that case (the helper's exit
 # 5). A known volume (exit 3, checked before any failed render), a name that
-# cannot be resolved (exit 4) and any other exit refuse with or without it.
+# cannot be resolved (exit 4), a daemon that answers but does not list its
+# volumes (exit 6, final check on PR #162: it used to come back as 5) and any
+# other exit refuse with or without it.
 if [ "$ADOPT_RUNTIME_PROFILE" != "true" ] && [ "$DRY_RUN" != "true" ]; then
   _registry_check_rc=0
   _registry_check_msg="$(bash "$KIT_ROOT/scripts/sanitizer-core-registry-credentials.sh" check \
@@ -936,6 +943,7 @@ if [ "$ADOPT_RUNTIME_PROFILE" != "true" ] && [ "$DRY_RUN" != "true" ]; then
     0) : ;;
     3) fail "${_registry_check_msg#\[sanitizer-core-registry-credentials\] ERROR: } (no customer state was changed)" 8 ;;
     4) fail "could not resolve the sanitizer core registry volume of this install (${_registry_check_msg}), so no registry key or database password was generated: new ones cannot open a registry an earlier kit 2.0 run left behind (no customer state was changed). Fix the cause and re-run; --confirm-no-registry-volume does not apply here, it covers only a host where Docker cannot be asked (INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\")" 8 ;;
+    6) fail "could not check for an existing sanitizer core registry volume (${_registry_check_msg}), so no registry key or database password was generated: new ones cannot open a registry an earlier kit 2.0 run left behind (no customer state was changed). Fix what keeps the daemon from listing its volumes (run docker volume ls) and re-run; --confirm-no-registry-volume does not apply here, it covers only a host where Docker cannot be asked (INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\")" 8 ;;
     5)
       if [ "$CONFIRM_NO_REGISTRY_VOLUME" = "true" ]; then
         echo "note: could not check for an existing sanitizer core registry volume (${_registry_check_msg}); generating new registry credentials because --confirm-no-registry-volume states this install has none" >&2
@@ -976,7 +984,7 @@ if [ "$MODE" = "production" ]; then
   [ -r "$LICENSE_PATH" ] || fail "license file not readable: $LICENSE_PATH" 5
 
   # Try JSON first (preferred, what the production license-issuance flow emits).
-  if head -c1 "$LICENSE_PATH" | grep -q '{'; then
+  if [ "$(head -c1 "$LICENSE_PATH")" = "{" ]; then
     if have jq; then
       LICENSE_KEY="$(jq -r '.license_key // empty' "$LICENSE_PATH" 2>/dev/null || true)"
       LICENSE_SIGNING_KEY="$(jq -r '.signing_key // empty' "$LICENSE_PATH" 2>/dev/null || true)"

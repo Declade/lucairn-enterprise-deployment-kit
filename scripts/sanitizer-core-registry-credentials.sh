@@ -43,7 +43,8 @@
 #          this install cannot be resolved (Docker Compose missing, the
 #          project or an overlay does not render) and no name that did
 #          resolve is on the daemon's list · 5 cannot tell: Docker cannot be
-#          asked (no docker CLI, or the Docker daemon is not reachable).
+#          asked (no docker CLI, or the Docker daemon is not reachable) · 6
+#          cannot tell: the daemon answered, but did not list its volumes.
 #          bin/lucairn-init runs it before it generates a new customer.env;
 #          its --confirm-no-registry-volume overrides exit 5 only.
 #
@@ -58,13 +59,20 @@
 # BEFORE a failed render is reported, so a known volume is refused (exit 3)
 # even when another of the renders fails. A name that cannot be resolved is
 # "cannot tell" (exit 4), never a guess. The daemon is asked only for its
-# volume list. No secret value is ever printed.
+# version and its volume list. Final check on PR #162: only a daemon that
+# cannot be reached is "Docker cannot be asked" (exit 5); a daemon that
+# answers — its version, or an error response to either request — but gives
+# no volume list is exit 6, which no flag overrides. The list is matched in
+# the shell, never through `printf | grep -q`: under pipefail grep's exit at
+# the match sent printf a SIGPIPE and the match was dropped once the list
+# outgrew the pipe. No secret value is ever printed.
 #
 # Exit codes: 0 ok · 1 a copy or write failed · 2 usage or a refused input ·
 # 3 a registry volume exists and no saved credentials were given · 4 cannot
 # check for a registry volume: a volume name cannot be resolved (nothing was
 # generated) · 5 cannot check for a registry volume: Docker cannot be asked
-# (nothing was generated).
+# (nothing was generated) · 6 cannot check for a registry volume: the Docker
+# daemon answered but did not list its volumes (nothing was generated).
 
 set -euo pipefail
 
@@ -178,17 +186,32 @@ $name
 }$name" ;; esac
 }
 
+# daemon_reachable — rc 0 when the Docker daemon answers: it gives its
+# version, or it sends an error response (an authorization plugin denying the
+# request still answers). rc 1 only when the CLI cannot connect to it.
+daemon_reachable() {
+  local said
+  if said="$(docker version --format '{{.Server.Version}}' 2>&1 </dev/null)"; then return 0; fi
+  case "$said" in *"Error response from daemon"*) return 0 ;; esac
+  return 1
+}
+
 # registry_volume — sets VOL (the registry volume this install has, or the
 # first name it would have) and returns 0 when one exists, 1 when none does,
 # 2 when a name cannot be resolved and no resolved one exists, 3 when Docker
-# cannot be asked (VOL_WHY says why, value-free). The daemon is asked first,
-# so a host without one answers fast; only that answer is "Docker unreachable".
+# cannot be asked, 4 when the daemon answers but gives no volume list
+# (VOL_WHY says why, value-free). The daemon is asked first, so a host
+# without one answers fast; only a daemon that cannot be reached is "Docker
+# unreachable" (final check on PR #162: a failed list from a reachable
+# daemon used to count as unreachable, which the init flag overrides).
 registry_volume() {
   local tmp envf out name rc=0 why=""
   local -a args
   VOL="" VOL_WHY="" VOLS=""
   command -v docker >/dev/null 2>&1 || { VOL_WHY="the docker CLI is not on PATH"; return 3; }
-  out="$(docker volume ls -q 2>/dev/null </dev/null)" || { VOL_WHY="the Docker daemon is not reachable"; return 3; }
+  daemon_reachable || { VOL_WHY="the Docker daemon is not reachable"; return 3; }
+  out="$(docker volume ls -q 2>/dev/null </dev/null)" \
+    || { VOL_WHY="the Docker daemon answered but did not list its volumes (docker volume ls failed)"; return 4; }
   cev_compose_cmd 2>/dev/null || { VOL_WHY="Docker Compose is not available here"; return 2; }
   [ -f "$PROJECT_DIR/$BASE_COMPOSE" ] && [ ! -L "$PROJECT_DIR/$BASE_COMPOSE" ] \
     || { VOL_WHY="no $BASE_COMPOSE in $PROJECT_DIR"; return 2; }
@@ -212,10 +235,15 @@ EOF
   fi
   rm -rf "$tmp"
   # Fix round 4: a resolved name the daemon lists is a known volume, whatever
-  # another render did — refuse on it before reporting "cannot tell".
+  # another render did — refuse on it before reporting "cannot tell". One
+  # whole line of the list, matched in the shell (no pipe, no temp file).
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    if printf '%s\n' "$out" | grep -Fxq -- "$name"; then VOL="$name"; return 0; fi
+    case "
+$out
+" in *"
+$name
+"*) VOL="$name"; return 0 ;; esac
   done <<EOF
 $VOLS
 EOF
@@ -253,7 +281,7 @@ file_mode() {
 # exactly one line of each name, nothing else; the key 64 hex, the password
 # non-empty. Never prints a value.
 validate_saved() {
-  local f="$1" n c mode v
+  local f="$1" n c mode v rc=0
   [ -f "$f" ] && [ ! -L "$f" ] || die 2 "$f is not a regular file"
   mode="$(file_mode "$f")"
   case "$mode" in 600|400) : ;; *) die 2 "$f has mode $mode; it holds the registry key and password, so it must be 0600 (chmod 600 '$f')" ;; esac
@@ -261,11 +289,17 @@ validate_saved() {
     c="$(count_lines "$n" "$f")"
     [ "$c" = 1 ] || die 2 "$f must hold exactly one $n line (it holds $c)"
   done
-  if grep -vE "$(assign_re "$KEY_NAME")|$(assign_re "$PW_NAME")|^[[:space:]]*$" "$f" | grep -q .; then
-    die 2 "$f holds a line other than $KEY_NAME and $PW_NAME (refused; not printed)"
-  fi
+  # Final check on PR #162: one grep reads the file (`grep -v | grep -q .`
+  # under pipefail dropped this match once the other lines outgrew the pipe),
+  # and a read error refuses too.
+  grep -qvE "$(assign_re "$KEY_NAME")|$(assign_re "$PW_NAME")|^[[:space:]]*$" "$f" || rc=$?
+  case "$rc" in
+    0) die 2 "$f holds a line other than $KEY_NAME and $PW_NAME (refused; not printed)" ;;
+    1) : ;;
+    *) die 2 "$f cannot be read" ;;
+  esac
   v="$(grep -E "$(assign_re "$KEY_NAME")" "$f" | sed -E "s/^(export[[:space:]]+)?$KEY_NAME=//; s/^\"(.*)\"\$/\\1/; s/^'(.*)'\$/\\1/")"
-  printf '%s' "$v" | grep -Eqx '[0-9a-fA-F]{64}' || die 2 "$KEY_NAME in $f is not 64 hex characters (not printed)"
+  [[ $v =~ ^[0-9a-fA-F]{64}$ ]] || die 2 "$KEY_NAME in $f is not 64 hex characters (not printed)"
   v="$(grep -E "$(assign_re "$PW_NAME")" "$f" | sed -E "s/^(export[[:space:]]+)?$PW_NAME=//; s/^\"(.*)\"\$/\\1/; s/^'(.*)'\$/\\1/")"
   [ -n "$v" ] || die 2 "$PW_NAME in $f is empty"
 }
@@ -283,6 +317,7 @@ do_check() {
     0) refuse_existing init ;;
     1) exit 0 ;;
     3) printf '%s\n' "$VOL_WHY" >&2; exit 5 ;;
+    4) printf '%s\n' "$VOL_WHY" >&2; exit 6 ;;
     *) printf '%s\n' "$VOL_WHY" >&2; exit 4 ;;
   esac
 }
@@ -375,12 +410,13 @@ do_add() {
     0) refuse_existing add ;;
     1) : ;;
     3) die 5 "cannot check whether this install already has a sanitizer core registry volume ($VOL_WHY), so no credentials were generated: new ones would not open an existing registry. Start Docker and re-run, or pass --from <saved file>" ;;
+    4) die 6 "cannot check whether this install already has a sanitizer core registry volume ($VOL_WHY), so no credentials were generated: new ones would not open an existing registry. Fix what keeps the daemon from listing its volumes (run docker volume ls) and re-run, or pass --from <saved file>" ;;
     *) die 4 "cannot check whether this install already has a sanitizer core registry volume ($VOL_WHY), so no credentials were generated: new ones would not open an existing registry. Fix the cause and re-run, or pass --from <saved file>" ;;
   esac
   command -v openssl >/dev/null 2>&1 || die 2 "openssl is required"
   key="$(openssl rand -hex 32)"
   pw="$(openssl rand -hex 24)"
-  printf '%s' "$key" | grep -Eqx '[0-9a-f]{64}' && printf '%s' "$pw" | grep -Eqx '[0-9a-f]{48}' \
+  [[ $key =~ ^[0-9a-f]{64}$ ]] && [[ $pw =~ ^[0-9a-f]{48}$ ]] \
     || die 1 "openssl did not generate the expected values"
   printf '%s=%s\n%s=%s\n' "$KEY_NAME" "$key" "$PW_NAME" "$pw" | append_lines
   key="" pw=""

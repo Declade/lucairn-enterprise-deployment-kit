@@ -2691,7 +2691,8 @@ Docker host of this install has no sanitizer core registry volume from an
 earlier kit 2.0 run. The flag covers only that case — no docker CLI, or no
 reachable daemon: a volume Docker does report is refused with or without it,
 and so is a registry volume name that cannot be resolved (Docker Compose
-missing, or the project does not render). And
+missing, or the project does not render), and so is a daemon that answers
+but does not list its volumes (run `docker volume ls` to see why). And
 `scripts/sanitizer-core-registry-credentials.sh add` generates the pair only
 when there is none (§ "Rollback to 1.9.7" saves them for a return to 2.0).
 
