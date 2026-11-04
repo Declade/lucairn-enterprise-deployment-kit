@@ -33,7 +33,7 @@ spec:
         fsGroup: 999
       containers:
         - name: redis
-          image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
+          image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}{{ with .Values.redis.image.digest }}@{{ . }}{{ end }}"
           {{- /* External-backend Kind custody supplies REDIS_PASSWORD through the
                 pre-created target Secret. It must not require an inline Helm
                 value merely to make the bundled Redis StatefulSet authenticate. */}}

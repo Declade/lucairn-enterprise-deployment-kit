@@ -29,7 +29,7 @@ spec:
         runAsNonRoot: true
       containers:
         - name: grafana
-          image: "{{ .Values.grafana.image.repository }}:{{ .Values.grafana.image.tag }}"
+          image: "{{ .Values.grafana.image.repository }}:{{ .Values.grafana.image.tag }}{{ with .Values.grafana.image.digest }}@{{ . }}{{ end }}"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

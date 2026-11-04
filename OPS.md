@@ -1957,6 +1957,15 @@ compose/Helm refs to `@sha256:`, so your `LUCAIRN_IMAGE_TAG` /
 > re-pinned entry the recorded digest is what upstream published at re-pin
 > time, and the kit's acceptance suite has not necessarily been re-run against
 > those bytes.
+>
+> Since kit 2.0 every third-party image reference in the Compose files, the
+> Helm chart, `bin/lucairn` and the docs examples carries the recorded digest
+> (`<repo>:<tag>@sha256:…`), so installs pull the recorded bytes even after
+> upstream moves the tag; the live digest gate then only signals that a
+> re-pin is available. A re-pin changes the digest in `image-manifest.yaml`
+> (and its copy `apps/dashboard/image-manifest.yaml`) and in every reference
+> together; `tests/test_third_party_image_pins.sh` names each reference that
+> still carries the old digest.
 
 ```bash
 # Warn-only (default): a tag whose current registry digest differs from the

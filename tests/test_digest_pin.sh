@@ -94,13 +94,15 @@ grep -qi "image DIGEST" "$TMP/help.out" \
 echo "digest-pin: usage advertises --strict (distinct from --strict-runtime) ok"
 
 # ---------------------------------------------------------------------------
-# 3. parse_image_digests parses the real manifest: 19 real digests + 10 pending.
-#    The 19 real-digest entries = 13 signed artifacts (the 12 dsa-* services +
+# 3. parse_image_digests parses the real manifest: 26 real digests + 10 pending.
+#    The 26 real-digest entries = 13 signed artifacts (the 12 dsa-* services +
 #    lucairn-dashboard, all in keys/image-digests-0.5.5.txt) + ollama/ollama
 #    + the dsa-pii-ml sidecar (digest-pinned in image-manifest.yaml at PR #240
 #    but NOT in the cosign-signed set — it ships on its own release cadence) +
 #    the three third-party images in the Enterprise Kind default topology + the
-#    digest-pinned vllm-l3 fast L3 shield (PRD B, opt-in identity-plane runtime).
+#    digest-pinned vllm-l3 fast L3 shield (PRD B, opt-in identity-plane runtime)
+#    + the 7 kit_third_party images (kit 2.0 row 9: alpine, busybox, the four
+#    observability images, curl).
 #    Source the CLI with EMPTY args so the trailing `main "$@"` becomes
 #    `main` -> usage (harmless, no exit), making the helper functions callable.
 # ---------------------------------------------------------------------------
@@ -111,8 +113,8 @@ PARSED="$(
 )"
 real_count="$(printf '%s\n' "$PARSED" | grep -c $'\tsha256:' || true)"
 pending_count="$(printf '%s\n' "$PARSED" | grep -c $'\tPENDING' || true)"
-[ "$real_count" = "19" ] \
-  || fail "expected 19 real-digest entries (13 signed + ollama + dsa-pii-ml sidecar + 3 Kind dependencies + vllm-l3 shield), got $real_count"
+[ "$real_count" = "26" ] \
+  || fail "expected 26 real-digest entries (13 signed + ollama + dsa-pii-ml sidecar + 3 Kind dependencies + vllm-l3 shield + 7 kit_third_party), got $real_count"
 # 10 since kit 2.0 K-A: + the dsa-sanitizer-core / dsa-sanitizer-core-sidecar
 # schema slots, filled with signed digests by the release step (K0).
 [ "$pending_count" = "10" ] \
@@ -121,7 +123,7 @@ pending_count="$(printf '%s\n' "$PARSED" | grep -c $'\tPENDING' || true)"
 printf '%s\n' "$PARSED" \
   | grep -qF "$(printf '%s\t%s' "$GW_REC_REF" "$GW_DIGEST")" \
   || fail "parse_image_digests did not map the gateway ref to its recorded digest"
-echo "digest-pin: parse_image_digests reads 19 real + 10 pending entries ok"
+echo "digest-pin: parse_image_digests reads 26 real + 10 pending entries ok"
 
 # ---------------------------------------------------------------------------
 # 4. Lockstep: every signed artifact in keys/image-digests-0.5.5.txt must appear
@@ -265,8 +267,8 @@ grep -q "pending=10" <<<"$out_s" \
 # stub would log fewer calls than refs verified.
 strict_verified="$(printf '%s' "$out_s" | sed -n 's/.*verified=\([0-9][0-9]*\).*/\1/p' | head -n1)"
 stub_calls="$(grep -c . "$SHIM_OK/calls.log" 2>/dev/null || true)"
-[ "$strict_verified" = "19" ] \
-  || { printf '%s\n' "$out_s" >&2; fail "clean --strict should report verified=19, got '${strict_verified}'"; }
+[ "$strict_verified" = "26" ] \
+  || { printf '%s\n' "$out_s" >&2; fail "clean --strict should report verified=26, got '${strict_verified}'"; }
 [ "$stub_calls" = "$strict_verified" ] \
   || fail "clean --strict: stub crane answered ${stub_calls:-0} resolver calls but ${strict_verified} refs were verified — a non-stub resolver answered (test is not hermetic)"
 echo "digest-pin: clean manifest -> normal rc=0 + strict rc=0, pending skipped ok"

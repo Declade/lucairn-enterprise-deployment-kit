@@ -4133,7 +4133,7 @@ spec:
         # pattern (gateway/templates/deployment.yaml). 5 min cap matches the
         # migrate Job backoff + StatefulSet PVC-bind worst case.
         - name: wait-for-migration
-          image: "postgres:16-alpine"
+          image: "postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -5510,7 +5510,7 @@ spec:
         # is up AND the migration created+granted the role — stronger than
         # pg_isready). Mirrors the gateway wait-for-postgres initContainer.
         - name: wait-for-migration
-          image: "postgres:16-alpine"
+          image: "postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -5734,7 +5734,7 @@ spec:
         fsGroup: 999
       containers:
         - name: postgresql
-          image: "postgres:16-alpine"
+          image: "postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -5823,7 +5823,7 @@ spec:
         fsGroup: 999
       containers:
         - name: postgresql
-          image: "postgres:16-alpine"
+          image: "postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -6010,7 +6010,7 @@ spec:
         fsGroup: 999
       containers:
         - name: postgresql
-          image: "postgres:16-alpine"
+          image: "postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -6104,7 +6104,7 @@ spec:
         fsGroup: 999
       containers:
         - name: redis
-          image: "redis:7-alpine"
+          image: "redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f"
           imagePullPolicy: IfNotPresent
           args:
             - "--maxmemory"
@@ -6176,7 +6176,7 @@ spec:
         runAsNonRoot: false
       containers:
         - name: ollama
-          image: "ollama/ollama:0.6.2"
+          image: "ollama/ollama:0.6.2@sha256:74a0929e1e082a09e4fdeef8594b8f4537f661366a04080e600c90ea9f712721"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -6258,7 +6258,7 @@ spec:
         fsGroup: 999
       containers:
         - name: redis
-          image: "redis:7-alpine"
+          image: "redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f"
           args:
             - "--requirepass"
             - "$(REDIS_PASSWORD)"
@@ -6451,7 +6451,7 @@ spec:
         fsGroup: 999
       containers:
         - name: postgresql
-          image: "postgres:16-alpine"
+          image: "postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -6584,7 +6584,7 @@ spec:
               drop: ["ALL"]
       containers:
         - name: wait-and-migrate
-          image: migrate/migrate:v4.17.0
+          image: migrate/migrate:v4.17.0@sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa
           command:
             - sh
             - -c
@@ -6739,7 +6739,7 @@ spec:
               drop: ["ALL"]
       containers:
         - name: wait-and-migrate
-          image: migrate/migrate:v4.17.0
+          image: migrate/migrate:v4.17.0@sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa
           command:
             - sh
             - -c
@@ -6894,7 +6894,7 @@ spec:
               drop: ["ALL"]
       containers:
         - name: wait-and-migrate
-          image: migrate/migrate:v4.17.0
+          image: migrate/migrate:v4.17.0@sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa
           command:
             - sh
             - -c
@@ -7148,7 +7148,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: pull
-          image: "ollama/ollama:0.6.2"
+          image: "ollama/ollama:0.6.2@sha256:74a0929e1e082a09e4fdeef8594b8f4537f661366a04080e600c90ea9f712721"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -7424,7 +7424,7 @@ spec:
               drop: ["ALL"]
       containers:
         - name: wait-and-migrate
-          image: migrate/migrate:v4.17.0
+          image: migrate/migrate:v4.17.0@sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa
           command:
             - sh
             - -c

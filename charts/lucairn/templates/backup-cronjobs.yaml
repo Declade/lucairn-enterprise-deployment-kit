@@ -120,7 +120,7 @@ spec:
           # into the image set installToolsAtRuntime=false and skip this entirely.
           initContainers:
             - name: install-tools
-              image: "{{ default "postgres" $img.repository }}:{{ default "16-alpine" $img.tag }}"
+              image: "{{ default "postgres" $img.repository }}:{{ default "16-alpine" $img.tag }}{{ with $img.digest }}@{{ . }}{{ end }}"
               imagePullPolicy: {{ default "IfNotPresent" $img.pullPolicy }}
               securityContext:
                 # apk needs root to write to /usr/bin etc; this is the ONLY
@@ -162,7 +162,7 @@ spec:
           {{- end }}
           containers:
             - name: backup
-              image: "{{ default "postgres" $img.repository }}:{{ default "16-alpine" $img.tag }}"
+              image: "{{ default "postgres" $img.repository }}:{{ default "16-alpine" $img.tag }}{{ with $img.digest }}@{{ . }}{{ end }}"
               imagePullPolicy: {{ default "IfNotPresent" $img.pullPolicy }}
               securityContext:
                 allowPrivilegeEscalation: false

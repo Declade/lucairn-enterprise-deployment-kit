@@ -255,7 +255,14 @@ class FixtureConnection:
                 "messages": [{"role": "user", "content": "Respond with the word ready."}],
                 "max_tokens": 8,
             }
+            byok_refusal = b'{"error":{"message":"Upstream LLM API key required.","type":"invalid_request_error","code":"missing_upstream_key"}}'
             if case == "inference-non2xx": self.response = FixtureResponse(503, b"{}")
+            elif case == "byok-missing-upstream-key": self.response = FixtureResponse(400, byok_refusal)
+            elif case == "byok-refusal-wrong-status": self.response = FixtureResponse(401, byok_refusal)
+            elif case == "inference-400-other-code": self.response = FixtureResponse(400, b'{"error":{"message":"Unknown model.","type":"invalid_request_error","code":"model_not_found"}}')
+            elif case == "inference-400-code-wrong-type": self.response = FixtureResponse(400, b'{"error":{"message":"x","type":"api_error","code":"missing_upstream_key"}}')
+            elif case == "inference-400-code-top-level": self.response = FixtureResponse(400, b'{"code":"missing_upstream_key","message":"x"}')
+            elif case == "inference-400-malformed": self.response = FixtureResponse(400, b"missing_upstream_key")
             elif case == "inference-malformed": self.response = FixtureResponse(200, b"not-json")
             elif case == "inference-missing-id": self.response = FixtureResponse(200, b'{"metadata":{"dsa_compliance":{}}}')
             else: self.response = FixtureResponse(200, b'{"metadata":{"dsa_compliance":{"request_id":"req_fixture_1"}}}')
@@ -289,6 +296,9 @@ module.time.sleep = lambda seconds: sleeps.append(seconds)
 try:
     proxy = "http://proxy.example:8080" if case == "proxy-explicit" else None
     module.run_journey(key_path, "http://127.0.0.1:1", "fixture-local-model", proxy, None)
+    if case == "byok-missing-upstream-key":
+        # The skip ends the keyed journey: no certificate read, no verify call.
+        assert attempts["certificate"] == 0
 except module.DoctorFailure:
     if case == "evidence-exhaust":
         assert attempts["certificate"] == 12
@@ -385,6 +395,22 @@ expect_failure unavailable-listener 'configuration: failed (GATEWAY_BASE_URL is 
 expect_failure inference-non2xx 'inference: failed (gateway returned HTTP 503)' helper_fixture inference-non2xx
 expect_failure inference-malformed 'inference: failed (response is malformed or missing metadata.dsa_compliance.request_id)' helper_fixture inference-malformed
 expect_failure inference-missing-id 'inference: failed (response is malformed or missing metadata.dsa_compliance.request_id)' helper_fixture inference-missing-id
+# Kit 2.0 (PRD row 2): on a per-request-BYOK key (the mint default) the
+# gateway refuses the doctor's keyed turn with missing_upstream_key, because
+# neither the key nor the doctor holds a provider key. That exact refusal is a
+# named skip, not a failure; any other keyed-step error still fails.
+helper_fixture byok-missing-upstream-key > "$TMPDIR/byok-skip.out" 2>&1 \
+  || { cat "$TMPDIR/byok-skip.out" >&2; echo 'byok-missing-upstream-key: the per-request BYOK refusal must be a skip, not a failure' >&2; exit 1; }
+grep -Fx 'keyed inference: skipped — per-request BYOK install, no provider key for the doctor; run one real turn to check it' "$TMPDIR/byok-skip.out"
+grep -Fx 'evidence: skipped (no keyed turn to read a certificate for)' "$TMPDIR/byok-skip.out"
+grep -Fx 'verification: skipped (no keyed turn to verify)' "$TMPDIR/byok-skip.out"
+! grep -Eq 'failed|doctor: ok|inference: ok' "$TMPDIR/byok-skip.out" \
+  || { cat "$TMPDIR/byok-skip.out" >&2; echo 'byok-missing-upstream-key: the skip must not read as a pass or a failure' >&2; exit 1; }
+expect_failure byok-refusal-wrong-status 'inference: failed (gateway returned HTTP 401)' helper_fixture byok-refusal-wrong-status
+expect_failure inference-400-other-code 'inference: failed (gateway returned HTTP 400)' helper_fixture inference-400-other-code
+expect_failure inference-400-code-wrong-type 'inference: failed (gateway returned HTTP 400)' helper_fixture inference-400-code-wrong-type
+expect_failure inference-400-code-top-level 'inference: failed (gateway returned HTTP 400)' helper_fixture inference-400-code-top-level
+expect_failure inference-400-malformed 'inference: failed (gateway returned HTTP 400)' helper_fixture inference-400-malformed
 expect_failure evidence-terminal 'evidence: failed (certificate endpoint returned HTTP 500)' helper_fixture evidence-terminal
 expect_failure evidence-exhaust 'evidence: failed (certificate was not ready after 12 attempts)' helper_fixture evidence-exhaust
 expect_failure verification-non2xx 'verification: failed (verify endpoint returned HTTP 500)' helper_fixture verification-non2xx

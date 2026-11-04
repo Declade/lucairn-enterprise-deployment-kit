@@ -93,7 +93,8 @@ spec:
         # readiness would produce confusing fail-closed logs on first install.
         # 5 min cap matches the StatefulSet's worst-case PVC-bind latency.
         - name: wait-for-postgres-gateway
-          image: postgres:16-alpine
+          {{- /* The digest image-manifest.yaml records (image_digests.enterprise_kind.postgres). */}}
+          image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
           imagePullPolicy: IfNotPresent
           command:
             - sh

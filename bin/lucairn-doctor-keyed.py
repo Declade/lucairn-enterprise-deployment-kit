@@ -232,6 +232,33 @@ def json_object(body: bytes) -> Optional[dict]:
     return parsed if isinstance(parsed, dict) else None
 
 
+# Kit 2.0 (PRD row 2): a key minted for per-request BYOK (the mint default for
+# Enterprise keys) carries no stored provider key, and this doctor holds no
+# provider key either, so the gateway answers the keyed turn with exactly this
+# refusal before any upstream call. That is the install working as configured,
+# not a fault, so it is a named skip. Only this exact answer qualifies: HTTP
+# 400, the OpenAI-shaped error envelope the gateway writes on
+# /v1/chat/completions (WriteOpenAIError), type invalid_request_error, code
+# missing_upstream_key. Every other answer to the keyed turn still fails.
+BYOK_SKIP_LINES = (
+    "keyed inference: skipped — per-request BYOK install, no provider key for the doctor; run one real turn to check it",
+    "evidence: skipped (no keyed turn to read a certificate for)",
+    "verification: skipped (no keyed turn to verify)",
+)
+
+
+def is_per_request_byok_refusal(code: int, body: bytes) -> bool:
+    if code != 400:
+        return False
+    parsed = json_object(body)
+    error = parsed.get("error") if parsed else None
+    return (
+        isinstance(error, dict)
+        and error.get("type") == "invalid_request_error"
+        and error.get("code") == "missing_upstream_key"
+    )
+
+
 def run_journey(key_file: str, gateway_url: str, model: str, proxy_url: Optional[str], ca_file: Optional[str]) -> None:
     key = read_customer_key(key_file)
     gateway = Gateway.from_url(gateway_url)
@@ -244,6 +271,10 @@ def run_journey(key_file: str, gateway_url: str, model: str, proxy_url: Optional
     code, body = client.request("POST", "/v1/chat/completions", request_payload)
     if code is None:
         fail("runtime: failed (gateway not started)")
+    if is_per_request_byok_refusal(code, body):
+        for line in BYOK_SKIP_LINES:
+            print(line)
+        return
     if not 200 <= code < 300:
         fail(f"inference: failed (gateway returned HTTP {code})")
     inference = json_object(body)

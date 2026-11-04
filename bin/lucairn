@@ -8042,6 +8042,14 @@ bundle_create() {
     done
   fi
   cp -R "$ROOT/starter-templates"/. "$staging/starter-templates/"
+  # Kit 2.0 (PRD row 8): the third-party notices and licence texts for the
+  # models and data the images redistribute (licenses/README.md). An offline
+  # customer receives them with the bundle; bundle verify requires them in a
+  # 2.0 bundle.
+  require_file "$ROOT/licenses/NOTICE" "third-party notices (licenses/NOTICE)"
+  require_file "$ROOT/licenses/README.md" "third-party licence index (licenses/README.md)"
+  mkdir -p "$staging/licenses"
+  cp -R "$ROOT/licenses"/. "$staging/licenses/"
   cp "$ROOT/OPS.md" "$ROOT/TROUBLESHOOTING.md" "$ROOT/README.md" "$staging/docs/"
   [ -f "$ROOT/docs/CUSTOMER_BUNDLE.md" ] && cp "$ROOT/docs/CUSTOMER_BUNDLE.md" "$staging/docs/"
   write_bundle_install_note "$staging/INSTALL-CUSTOMER.md" "$slug" "$env_file" "$image_delivery"
@@ -8245,6 +8253,10 @@ bundle_verify() {
           || { rm -rf "$tmp"; fail "bundle sanitizer-core operator tool $_core_tool is not executable"; }
       done
       require_file "$root/bin/compose-env.sh" "bundle Compose env reader (bin/compose-env.sh)"
+      # Kit 2.0 (PRD row 8): the images of a 2.0 bundle redistribute
+      # third-party models and data; the bundle carries their notices.
+      require_file "$root/licenses/NOTICE" "bundle third-party notices (licenses/NOTICE)"
+      require_file "$root/licenses/README.md" "bundle third-party licence index (licenses/README.md)"
     fi
     require_file "$root/bin/runtime-profile-lib.sh" "bundle runtime-profile helper"
     # Kit 2.0 K-C: a bundle that carries the ServiceNow opt-in overlay carries
@@ -11338,6 +11350,12 @@ backup_prune() {
   done
 }
 
+# The throwaway Postgres of `backup --verify`: the bundled Postgres image,
+# pinned by the digest image-manifest.yaml records
+# (image_digests.enterprise_kind.postgres; tests/test_third_party_image_pins.sh
+# keeps the two equal). A re-pin changes both together.
+BACKUP_VERIFY_PG_IMAGE="postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
+
 # Decrypt an encrypted dump into a throwaway Postgres container and assert it
 # pg_restores cleanly + has non-zero rows. Used by `backup --verify`.
 backup_verify_roundtrip() {
@@ -11350,14 +11368,14 @@ backup_verify_roundtrip() {
   local work2 plain
   work2="$(mktemp -d)"
   plain="$work2/${db}.dump"
-  info "verify($db): decrypting + restoring into a throwaway postgres:16-alpine ..."
+  info "verify($db): decrypting + restoring into a throwaway $BACKUP_VERIFY_PG_IMAGE ..."
   age -d -i "$identity" -o "$plain" "$enc"
   [ -s "$plain" ] || { rm -rf "$work2"; fail "verify($db): decrypt produced empty output"; }
 
   scratch="lucairn-bk-verify-${db}-$$"
   docker run -d --rm --name "$scratch" \
     -e POSTGRES_PASSWORD=verify -e POSTGRES_DB="$db" -e POSTGRES_USER="$usr" \
-    postgres:16-alpine >/dev/null
+    "$BACKUP_VERIFY_PG_IMAGE" >/dev/null
   # `fail` does `exit 1`, which fires the EXIT trap (not the RETURN trap), so
   # register the scratch-container teardown on BOTH so a hard failure mid-verify
   # never leaks a running throwaway Postgres. EXIT runs once at script end.

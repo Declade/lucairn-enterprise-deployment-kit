@@ -40,7 +40,7 @@ spec:
         # is up AND the migration created+granted the role — stronger than
         # pg_isready). Mirrors the gateway wait-for-postgres initContainer.
         - name: wait-for-migration
-          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}{{ with .Values.postgresql.image.digest }}@{{ . }}{{ end }}"
           imagePullPolicy: IfNotPresent
           command:
             - sh

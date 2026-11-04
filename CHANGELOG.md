@@ -182,10 +182,46 @@ stays `0.8.2`.
   certificate can lose that one certificate.
 - The registry database is not in the Helm backup CronJobs (it holds at most
   24 hours of sealed conversation state).
-- The keyed online doctor sends only the Lucairn key, so its inference step
-  fails with `missing_upstream_key` for an account that supplies the provider
-  key per request (the mint default); for such an account prove the journey
-  with one request that carries the provider key.
+- The keyed online doctor sends only the Lucairn key. For a key minted for
+  per-request BYOK (the mint default) the gateway refuses that turn with
+  `missing_upstream_key`; the doctor reports it as a named skip
+  (`keyed inference: skipped — per-request BYOK install, no provider key for
+  the doctor; run one real turn to check it`) and does not check the
+  certificate or its verification. Prove that journey with one real request
+  that carries the provider key.
+- The images do not carry the third-party `NOTICE` yet; the kit does
+  (`licenses/`, below). The images carry it from 2.0.1.
+
+### Added — pins, licences, doctor (K-E)
+
+- **Every third-party image is pinned by digest.** Compose, the Helm chart,
+  the backup verify of `bin/lucairn` and the docs examples pull
+  `<repo>:<tag>@sha256:…` with the digest `image-manifest.yaml` records
+  (`postgres:16-alpine`, `redis:7-alpine`, `migrate/migrate:v4.17.0`,
+  `ollama/ollama:0.6.2`, and, newly recorded on 2026-11-04 under
+  `image_digests.kit_third_party`, `alpine:3.20`, `busybox:1.36`, the Grafana /
+  Loki / Promtail / Tempo images of the observability sub-chart and
+  `curlimages/curl:8.10.1`). An install no longer gets new bytes when upstream
+  moves a tag. `tests/test_third_party_image_pins.sh` fails on any third-party
+  reference without the recorded digest. Exception, as recorded in the
+  manifest: the operator-selected inference runtimes of
+  `docker-compose.self-hosted.yml` (llama.cpp `:server`, vLLM / TGI
+  `:latest`), pinned at the digest-pin ceremony to the image the customer
+  deploys. Helm: a values override of `repository`/`tag` for these images keeps
+  the default `digest` unless you set it too (a byte-identical mirror needs no
+  change; another image needs its own digest, or `digest: ""`).
+- **Third-party notices in the kit:** `licenses/NOTICE` (the product
+  repository's `NOTICE` at the 2.0.0 image commit `35dd235d`: every model and
+  data file the sanitizer-core images redistribute, with its licence) and the
+  licence texts it refers to (GLiNER and langdetect Apache-2.0, the spaCy
+  models and their training-source notices, the mdeberta tokenizer, torch, the
+  name and place lists), indexed with sha256 in `licenses/README.md`. They are
+  in the release tarball and in every customer bundle (`bundle verify`
+  requires them in a 2.0 bundle). The images carry `NOTICE` from 2.0.1.
+- **Doctor:** the keyed online doctor reports a per-request BYOK key's
+  `missing_upstream_key` refusal as a named skip instead of a failure (only
+  that exact answer: HTTP 400, `invalid_request_error`,
+  `missing_upstream_key`); every other keyed-step error still fails.
 
 ### Fixed — upgrade path, docs and tests (K-E)
 

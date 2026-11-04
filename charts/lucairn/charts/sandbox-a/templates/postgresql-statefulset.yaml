@@ -29,7 +29,7 @@ spec:
         fsGroup: 999
       containers:
         - name: postgresql
-          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}{{ with .Values.postgresql.image.digest }}@{{ . }}{{ end }}"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

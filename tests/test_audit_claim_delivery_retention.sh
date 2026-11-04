@@ -393,8 +393,10 @@ PY
       [ "$(jget concurrency)" = Forbid ] && ok "concurrencyPolicy Forbid" || bad "concurrencyPolicy $(jget concurrency)"
       [ "$(jget image)" = "$MANIFEST_PG" ] && ok "image = the manifest-pinned $(jget image)" \
         || bad "image $(jget image) != the digest image-manifest.yaml records ($MANIFEST_PG)"
-      [ "$(jget image)" = "$(jget pg_image)@${MANIFEST_PG#*@}" ] && ok "same postgres:16-alpine as the bundled audit Postgres (no new image), plus the digest" \
-        || bad "image $(jget image) is not the bundled Postgres image $(jget pg_image) + digest"
+      # Kit 2.0 row 9: the bundled audit Postgres is digest-pinned too, so the
+      # two references are the same pinned image.
+      [ "$(jget image)" = "$(jget pg_image)" ] && ok "same digest-pinned postgres:16-alpine as the bundled audit Postgres (no new image)" \
+        || bad "image $(jget image) is not the bundled Postgres image $(jget pg_image)"
       [ "$(jget script_identical)" = true ] && ok "CronJob embeds the sweep script byte-for-byte" || bad "embedded script differs from files/audit-claim-delivery-retention.sh"
       [ "$(jget days)" = 30 ] && ok "default retention 30 days" || bad "days $(jget days)"
       [ "$(jget enabled)" = true ] && ok "ENABLED=true in the pod" || bad "enabled $(jget enabled)"

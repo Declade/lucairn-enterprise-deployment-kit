@@ -27,8 +27,11 @@ receipt, and witness-signature verification; anchors are explicitly not checked.
 model sidecar, core and migration step), new `customer.env` settings, the
 runtime profile re-recorded, the registry migration as its own step. No 1.x
 schema change. The host needs at least 16 GB RAM for Docker and Docker Engine
-26.0.0 or newer. The ServiceNow mode stays off. Read `CHANGELOG.md` `[2.0.0]`
-→ "Stated limits".
+26.0.0 or newer. The ServiceNow mode stays off. Every third-party image
+(`postgres`, `redis`, `migrate`, `alpine`, …) is now pulled by the digest
+`image-manifest.yaml` records. The third-party notices for the models and data
+the images redistribute are in `licenses/NOTICE` (licence texts beside it). Read
+`CHANGELOG.md` `[2.0.0]` → "Stated limits".
 
 ### kit 1.9.7 / chart 1.9.7 (2026-10-28, images 0.5.5) — QI engine off by default
 
@@ -250,6 +253,10 @@ If you intend to mirror images to your own internal registry instead, this prere
 > direct Docker Hub access, configure a **registry pull-through mirror** for
 > `registry-1.docker.io` on your infrastructure; alternatively, manually mirror
 > the specific tags above and edit the `image:` lines in the compose files.
+> Since kit 2.0 every one of these references carries the digest
+> `image-manifest.yaml` records (`postgres:16-alpine@sha256:…`): Docker pulls
+> exactly those bytes, so a mirror must serve the same image (same digest), and
+> an edited `image:` line keeps the `@sha256:…` part.
 
 ## Dev local-runtime quickstart (model required)
 
@@ -3320,6 +3327,24 @@ by Lucairn (its test accounts are web-service only).
      other labels those Pods could not resolve anything.
 
 ### Kit 2.0 — further stated limits (final reads, 2026-11-03)
+
+- **Migration ceilings: witness 10, audit 7.** Kit 2.0.0 keeps the 1.x
+  ceilings (veil-witness 10 · audit 7 · id-bridge 4 · sandbox-a 8; the hosted
+  Lucairn service runs witness 10 and audit 6). At ceiling 10 the 2.0.0 witness
+  logs `durability reduced` at start, the same as on the hosted service: it has
+  no certificate persistence outbox and no decoder-expiry columns and writes
+  each certificate directly, so a witness crash between accepting and storing a
+  certificate can lose that one certificate. The newer migrations (veil-witness
+  0011–0014, audit 0008) come with a later kit release.
+- **Third-party notices:** kit 2.0.0 ships them in the kit (`licenses/NOTICE`
+  and the licence texts in `licenses/`, also in every customer bundle); the
+  images carry `NOTICE` from 2.0.1.
+- **Doctor, per-request BYOK keys:** a key minted for per-request BYOK (the
+  mint default) carries no stored provider key, and the online doctor holds
+  none, so its keyed step reports `keyed inference: skipped — per-request BYOK
+  install, no provider key for the doctor; run one real turn to check it` (no
+  certificate or verification check). Check that journey with one real request
+  that carries the provider key.
 
 - **Adopting an existing `customer.env`:** `bin/lucairn-init` in adopt mode
   reads `SANITIZER_CORE_MTLS_HOST_DIR` with a plain text match (the last line

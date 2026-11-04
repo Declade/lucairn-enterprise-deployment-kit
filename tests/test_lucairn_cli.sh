@@ -711,6 +711,11 @@ test -f "$BASE_DIR/image-manifest.yaml"
 test -f "$BASE_DIR/VERSION"
 test -f "$BASE_DIR/RELEASE_DATE"
 test -x "$BASE_DIR/scripts/derive-veil-pubkey.sh"
+# Kit 2.0 (PRD row 8): the third-party notices travel with the bundle, as the kit has them.
+cmp -s "$BASE_DIR/licenses/NOTICE" "$ROOT/licenses/NOTICE" \
+  || { echo "customer bundle lacks the kit's licenses/NOTICE" >&2; exit 1; }
+diff -r "$BASE_DIR/licenses" "$ROOT/licenses" >/dev/null \
+  || { echo "customer bundle licenses/ differs from the kit's licenses/" >&2; exit 1; }
 test -f "$BASE_DIR/models/acme-support-q4.gguf"
 test -f "$BASE_DIR/models/model-manifest.yaml"
 test -f "$BASE_DIR/images/lucairn-images.tar"
@@ -759,7 +764,7 @@ refresh_bundle_sums() {
 # S1 bundle payload requirements are structural, not merely checksum coverage:
 # an attacker who deletes a required payload and re-hashes the directory must
 # still be rejected by the trusted verifier.
-for required_payload in VERSION RELEASE_DATE scripts/derive-veil-pubkey.sh; do
+for required_payload in VERSION RELEASE_DATE scripts/derive-veil-pubkey.sh licenses/NOTICE licenses/README.md; do
   MISSING_S1_PAYLOAD_DIR="$TMPDIR/customer-bundle-missing-${required_payload//\//-}"
   cp -R "$BASE_DIR" "$MISSING_S1_PAYLOAD_DIR"
   rm -f "$MISSING_S1_PAYLOAD_DIR/$required_payload"
