@@ -769,14 +769,16 @@ else grep -Fq "ServiceNow mode: failed (directory app update set: directory_chan
 rm -rf "$KC"
 # Kit 2.0 K-C fix round 1 (sol r1 P2): the admin guide never puts the admin
 # key on curl's command line (any local user reads argv); the header goes on
-# standard input. RED on cea739fe.
+# standard input. RED on cea739fe. Read through a here-string, not a pipe: under
+# pipefail, grep -q exits at the first match and the writer gets SIGPIPE (a false FAIL,
+# or under `!` a false PASS) once the text is bigger than the pipe buffer.
 SNDOC="$(awk '/^## ServiceNow mode \(off by default\)/{p=1} p' "$REAL_ROOT/INSTALL.md")"
-if [ -n "$SNDOC" ] && ! printf '%s\n' "$SNDOC" | grep -Eq 'curl[^|]*-H "X-Admin-Key: \$'; then
+if [ -n "$SNDOC" ] && ! grep -Eq 'curl[^|]*-H "X-Admin-Key: \$' <<<"$SNDOC"; then
   pass "INSTALL.md ServiceNow guide: the admin key is never on curl's argv (header on stdin)"
 else
   fail "INSTALL.md ServiceNow guide puts the admin key on curl's argv (or the section is missing)"
 fi
-printf '%s\n' "$SNDOC" | grep -Fq "printf 'X-Admin-Key: %s\\n' \"\$DSA_ADMIN_KEY\" | curl -s -H @-" \
+grep -Fq "printf 'X-Admin-Key: %s\\n' \"\$DSA_ADMIN_KEY\" | curl -s -H @-" <<<"$SNDOC" \
   && pass "INSTALL.md ServiceNow guide: the key-list call sends the header on stdin (-H @-)" \
   || fail "INSTALL.md ServiceNow guide: the key-list call with -H @-"
 grep -q 'directory-check --dir servicenow-directory' "$ROOT/scripts/release-kit.sh" \
