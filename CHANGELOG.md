@@ -187,8 +187,13 @@ stays `0.8.2`.
   key per request (the mint default); for such an account prove the journey
   with one request that carries the provider key.
 
-### Fixed — docs and tests (K-E)
+### Fixed — upgrade path, docs and tests (K-E)
 
+- `bin/lucairn-init --adopt-runtime-profile` on a kit 1.x `customer.env`
+  stopped with status 1 and no message right after it had re-recorded the
+  runtime profile, before the core's mTLS material and the registry DSN file
+  existed (a `grep` that found no `SANITIZER_CORE_MTLS_HOST_DIR` line, under
+  `pipefail`). It now finishes; found by the 1.9.7 → 2.0.0 upgrade rehearsal.
 - Every documented start path a 2.0 install can take (README, INSTALL, OPS
   disaster recovery / rollback, TROUBLESHOOTING) runs the registry migration
   first or says `bin/lucairn up` does; the docs check now covers OPS.md and
