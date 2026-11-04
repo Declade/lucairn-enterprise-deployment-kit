@@ -56,7 +56,9 @@
 #     core registry volume, which only opens with the credentials it was
 #     created with (nothing was written; put back the env that created it),
 #     or Docker could not be asked whether it has one (nothing was written;
-#     start Docker, or pass --confirm-no-registry-volume — K-E fix round 2)
+#     start Docker, or pass --confirm-no-registry-volume — K-E fix round 2),
+#     or a registry volume name of this install could not be resolved
+#     (nothing was written; the flag does not cover that — fix round 4)
 
 set -euo pipefail
 
@@ -273,13 +275,15 @@ Options:
   --dry-run                Print what would be written to stdout. Skips backup + doctor.
                            Secrets ARE printed because the user explicitly asked.
   --confirm-no-registry-volume
-                           Only when Docker cannot be asked (no daemon here): you
-                           state that the Docker host of this install has no
-                           sanitizer core registry volume from an earlier kit 2.0
-                           run. Without Docker and without this flag, init refuses
-                           (exit 8): new registry credentials cannot open an
-                           existing registry. A volume Docker reports is refused
-                           with or without it.
+                           Only when Docker cannot be asked (no docker CLI or no
+                           reachable daemon here): you state that the Docker host
+                           of this install has no sanitizer core registry volume
+                           from an earlier kit 2.0 run. Without Docker and without
+                           this flag, init refuses (exit 8): new registry
+                           credentials cannot open an existing registry. It
+                           overrides nothing else: a volume Docker reports, or a
+                           registry volume name that cannot be resolved, is
+                           refused with or without it.
   --help, -h               Show this usage and exit.
 
 Examples:
@@ -305,7 +309,8 @@ Exit codes:
   6  sanitizer core mTLS material could not be created (customer.env written)
   7  sanitizer core registry DSN file could not be written (customer.env written)
   8  refused: a sanitizer core registry volume already exists, or Docker could
-     not be asked and --confirm-no-registry-volume was not given (nothing written)
+     not be asked and --confirm-no-registry-volume was not given, or a registry
+     volume name could not be resolved (nothing written)
 USAGE
 }
 
@@ -918,7 +923,10 @@ fi
 # and the overlays it records for this runtime mode). Fix round 2 (review P1
 # on PR #162): when Docker cannot be asked (no daemon on this machine), init
 # REFUSES as well — it cannot know there is no volume — unless the operator
-# states with --confirm-no-registry-volume that there is none.
+# states with --confirm-no-registry-volume that there is none. Fix round 4
+# (review P2 on PR #162): the flag overrides ONLY that case (the helper's exit
+# 5). A known volume (exit 3, checked before any failed render), a name that
+# cannot be resolved (exit 4) and any other exit refuse with or without it.
 if [ "$ADOPT_RUNTIME_PROFILE" != "true" ] && [ "$DRY_RUN" != "true" ]; then
   _registry_check_rc=0
   _registry_check_msg="$(bash "$KIT_ROOT/scripts/sanitizer-core-registry-credentials.sh" check \
@@ -927,7 +935,8 @@ if [ "$ADOPT_RUNTIME_PROFILE" != "true" ] && [ "$DRY_RUN" != "true" ]; then
   case "$_registry_check_rc" in
     0) : ;;
     3) fail "${_registry_check_msg#\[sanitizer-core-registry-credentials\] ERROR: } (no customer state was changed)" 8 ;;
-    4)
+    4) fail "could not resolve the sanitizer core registry volume of this install (${_registry_check_msg}), so no registry key or database password was generated: new ones cannot open a registry an earlier kit 2.0 run left behind (no customer state was changed). Fix the cause and re-run; --confirm-no-registry-volume does not apply here, it covers only a host where Docker cannot be asked (INSTALL.md § \"Sanitizer core (kit 2.0, Compose)\")" 8 ;;
+    5)
       if [ "$CONFIRM_NO_REGISTRY_VOLUME" = "true" ]; then
         echo "note: could not check for an existing sanitizer core registry volume (${_registry_check_msg}); generating new registry credentials because --confirm-no-registry-volume states this install has none" >&2
       else

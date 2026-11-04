@@ -251,7 +251,9 @@ stays `0.8.2`.
   with `--from`. `bin/lucairn-init` refuses a fresh `customer.env` (exit 8)
   while a registry volume exists, and also when Docker cannot be asked
   (start Docker, or pass `--confirm-no-registry-volume` to state there is
-  none; a volume Docker reports is refused either way). The volume is the one
+  none; the flag covers only an unreachable Docker: a volume Docker reports —
+  checked before any failed render — and a volume name that cannot be
+  resolved are refused either way). The volume is the one
   Docker Compose names for the install's rendered project (a custom `name:`
   included); a name that cannot be resolved is refused, never guessed. `save`
   writes an ignore-all `.gitignore` into the saved folder and `backups/`, so

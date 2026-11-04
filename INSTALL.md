@@ -2688,8 +2688,10 @@ it with Docker running: without a daemon it refuses too, because it cannot
 know there is no volume. Generating `customer.env` on a machine without Docker
 is possible only with `--confirm-no-registry-volume`, which states that the
 Docker host of this install has no sanitizer core registry volume from an
-earlier kit 2.0 run (a volume Docker does report is refused with or without
-it). And
+earlier kit 2.0 run. The flag covers only that case — no docker CLI, or no
+reachable daemon: a volume Docker does report is refused with or without it,
+and so is a registry volume name that cannot be resolved (Docker Compose
+missing, or the project does not render). And
 `scripts/sanitizer-core-registry-credentials.sh add` generates the pair only
 when there is none (§ "Rollback to 1.9.7" saves them for a return to 2.0).
 

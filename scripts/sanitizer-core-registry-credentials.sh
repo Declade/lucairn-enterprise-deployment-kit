@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # sanitizer-core-registry-credentials.sh — keep the sanitizer core's registry
 # credentials across a rollback (kit 2.0, PRD prd-2026-11-02-kit-2-0-new-core.md
-# row 4; K-E fix round 1, review P1 on PR #162; fix round 2).
+# row 4; K-E fix round 1, review P1 on PR #162; fix rounds 2 and 4).
 #
 # The registry volume (by default <Compose project>_pg-sanitizer-core-data)
 # only works with the two customer.env secrets it was created with:
@@ -39,9 +39,13 @@
 #          holding exactly the two lines). Nothing changes when customer.env
 #          already holds both (with --from: the same two).
 #   check  rc 0 no registry volume · 3 one exists (stderr says what to restore)
-#          · 4 cannot tell (Docker Compose or the Docker daemon not reachable,
-#          or the project's registry volume name cannot be resolved).
-#          bin/lucairn-init runs it before it generates a new customer.env.
+#          · 4 cannot tell: the daemon answered, but a registry volume name of
+#          this install cannot be resolved (Docker Compose missing, the
+#          project or an overlay does not render) and no name that did
+#          resolve is on the daemon's list · 5 cannot tell: Docker cannot be
+#          asked (no docker CLI, or the Docker daemon is not reachable).
+#          bin/lucairn-init runs it before it generates a new customer.env;
+#          its --confirm-no-registry-volume overrides exit 5 only.
 #
 # The volume name is Compose's own (fix round 2, review P2 on PR #162): the
 # install's project — docker-compose.customer.yml plus its overlays, as
@@ -49,13 +53,18 @@
 # when that file is there — rendered client side through bin/compose-env.sh
 # cev_volume gives the name of the volume postgres-sanitizer-core keeps its
 # data in (project name, COMPOSE_PROJECT_NAME, a custom or external `name:`
-# included). A volume of ANY of those names counts. A name that cannot be
-# resolved is "cannot tell" (exit 4), never a guess. The daemon is asked only
-# for its volume list. No secret value is ever printed.
+# included). A volume of ANY of those names counts. Fix round 4 (review P2 on
+# PR #162): every name that resolves is matched against the daemon's list
+# BEFORE a failed render is reported, so a known volume is refused (exit 3)
+# even when another of the renders fails. A name that cannot be resolved is
+# "cannot tell" (exit 4), never a guess. The daemon is asked only for its
+# volume list. No secret value is ever printed.
 #
 # Exit codes: 0 ok · 1 a copy or write failed · 2 usage or a refused input ·
 # 3 a registry volume exists and no saved credentials were given · 4 cannot
-# check for a registry volume (nothing was generated).
+# check for a registry volume: a volume name cannot be resolved (nothing was
+# generated) · 5 cannot check for a registry volume: Docker cannot be asked
+# (nothing was generated).
 
 set -euo pipefail
 
@@ -171,15 +180,16 @@ $name
 
 # registry_volume — sets VOL (the registry volume this install has, or the
 # first name it would have) and returns 0 when one exists, 1 when none does,
-# 2 when that cannot be told (VOL_WHY says why, value-free). The daemon is
-# asked first, so a host without one answers fast.
+# 2 when a name cannot be resolved and no resolved one exists, 3 when Docker
+# cannot be asked (VOL_WHY says why, value-free). The daemon is asked first,
+# so a host without one answers fast; only that answer is "Docker unreachable".
 registry_volume() {
-  local tmp envf out name rc=0
+  local tmp envf out name rc=0 why=""
   local -a args
   VOL="" VOL_WHY="" VOLS=""
+  command -v docker >/dev/null 2>&1 || { VOL_WHY="the docker CLI is not on PATH"; return 3; }
+  out="$(docker volume ls -q 2>/dev/null </dev/null)" || { VOL_WHY="the Docker daemon is not reachable"; return 3; }
   cev_compose_cmd 2>/dev/null || { VOL_WHY="Docker Compose is not available here"; return 2; }
-  command -v docker >/dev/null 2>&1 || { VOL_WHY="the docker CLI is not on PATH"; return 2; }
-  out="$(docker volume ls -q 2>/dev/null </dev/null)" || { VOL_WHY="the Docker daemon is not reachable"; return 2; }
   [ -f "$PROJECT_DIR/$BASE_COMPOSE" ] && [ ! -L "$PROJECT_DIR/$BASE_COMPOSE" ] \
     || { VOL_WHY="no $BASE_COMPOSE in $PROJECT_DIR"; return 2; }
   install_overlays || return 2
@@ -193,22 +203,24 @@ EOF
   chmod 0700 "$tmp"
   envf="$ENV_FILE"
   if [ ! -f "$envf" ]; then envf="$tmp/empty.env"; : > "$envf"; fi
-  volume_name "$envf" "${args[@]}" || rc=2
-  if [ "$rc" -eq 0 ] && [ -f "$PROJECT_DIR/$SN_OVERLAY" ] && [ ! -L "$PROJECT_DIR/$SN_OVERLAY" ]; then
+  volume_name "$envf" "${args[@]}" || { rc=2; why="$VOL_WHY"; }
+  if [ -f "$PROJECT_DIR/$SN_OVERLAY" ] && [ ! -L "$PROJECT_DIR/$SN_OVERLAY" ]; then
     case " ${args[*]} " in
       *"/$SN_OVERLAY "*) : ;;
-      *) volume_name "$envf" "${args[@]}" -f "$PROJECT_DIR/$SN_OVERLAY" || rc=2 ;;
+      *) volume_name "$envf" "${args[@]}" -f "$PROJECT_DIR/$SN_OVERLAY" || { rc=2; why="${why:-$VOL_WHY}"; } ;;
     esac
   fi
   rm -rf "$tmp"
-  [ "$rc" -eq 0 ] || return 2
-  VOL="$(printf '%s\n' "$VOLS" | head -1)"
+  # Fix round 4: a resolved name the daemon lists is a known volume, whatever
+  # another render did — refuse on it before reporting "cannot tell".
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     if printf '%s\n' "$out" | grep -Fxq -- "$name"; then VOL="$name"; return 0; fi
   done <<EOF
 $VOLS
 EOF
+  [ "$rc" -eq 0 ] || { VOL_WHY="$why"; return 2; }
+  VOL="$(printf '%s\n' "$VOLS" | head -1)"
   return 1
 }
 
@@ -270,6 +282,7 @@ do_check() {
   case "$rc" in
     0) refuse_existing init ;;
     1) exit 0 ;;
+    3) printf '%s\n' "$VOL_WHY" >&2; exit 5 ;;
     *) printf '%s\n' "$VOL_WHY" >&2; exit 4 ;;
   esac
 }
@@ -361,7 +374,8 @@ do_add() {
   case "$rc" in
     0) refuse_existing add ;;
     1) : ;;
-    *) die 4 "cannot check whether this install already has a sanitizer core registry volume ($VOL_WHY), so no credentials were generated: new ones would not open an existing registry. Start Docker and re-run, or pass --from <saved file>" ;;
+    3) die 5 "cannot check whether this install already has a sanitizer core registry volume ($VOL_WHY), so no credentials were generated: new ones would not open an existing registry. Start Docker and re-run, or pass --from <saved file>" ;;
+    *) die 4 "cannot check whether this install already has a sanitizer core registry volume ($VOL_WHY), so no credentials were generated: new ones would not open an existing registry. Fix the cause and re-run, or pass --from <saved file>" ;;
   esac
   command -v openssl >/dev/null 2>&1 || die 2 "openssl is required"
   key="$(openssl rand -hex 32)"

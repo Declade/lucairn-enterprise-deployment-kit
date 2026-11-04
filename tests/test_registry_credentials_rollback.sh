@@ -3,7 +3,10 @@
 # prd-2026-11-02-kit-2-0-new-core.md row 4) and fix round 2 (init fails closed
 # without a daemon; the volume name is the one the rendered project gives; the
 # saved folder stays git-ignored after a checkout of 1.9.7): upgrade -> rollback -> re-upgrade
-# must reuse the sanitizer core's registry credentials. The registry volume
+# must reuse the sanitizer core's registry credentials. Fix round 4: a known
+# volume is refused before a failed render is reported, "Docker unreachable"
+# has its own exit code (5), and --confirm-no-registry-volume overrides only
+# that one. The registry volume
 # survives a rollback and only opens with the key and database password it was
 # created with; the 1.9.7 customer.env a rollback restores has neither, and the
 # guide's step 4 used to generate new ones (the migration then fails to log in
@@ -158,10 +161,10 @@ echo down > "$STUB_DAEMON"
 drop_pair
 cp -p "$ENV" "$TMPDIR/env.before"
 run add-nodaemon bash "$CRED" add --env-file "$ENV"
-check "add refuses when it cannot check for the volume (rc $RC, want 4)" '[ "$RC" -eq 4 ] && cmp -s "$TMPDIR/env.before" "$ENV"'
+check "add refuses when Docker cannot be asked (rc $RC, want 5: its own code)" '[ "$RC" -eq 5 ] && cmp -s "$TMPDIR/env.before" "$ENV"'
 check "the refusal says why (daemon not reachable)" 'grep -Fq "the Docker daemon is not reachable" "$TMPDIR/add-nodaemon.err"'
 run check-nodaemon bash "$CRED" check --env-file "$ENV"
-check "check exits 4 when it cannot tell (rc $RC)" '[ "$RC" -eq 4 ]'
+check "check exits 5 when Docker cannot be asked, apart from 4 (a name not resolved) (rc $RC)" '[ "$RC" -eq 5 ]'
 OTHER="$KIT/other.env"
 other_absent() { [ ! -e "$OTHER" ] && [ ! -e "$OTHER.runtime-profile.yaml" ] && [ ! -e "$OTHER.image-manifest.yaml" ] && [ ! -e "$KIT/.secrets/sanitizer-core/other.env.registry-dsn" ]; }
 run init-nodaemon "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor
@@ -177,6 +180,25 @@ echo up > "$STUB_DAEMON"
 run init-confirmed-vol "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
 check "a volume the daemon reports is refused even with --confirm-no-registry-volume (rc $RC, want 8)" \
   '[ "$RC" -eq 8 ] && grep -Fq "$VOL" "$TMPDIR/init-confirmed-vol.err" && other_absent'
+# Fix round 4 (review P2 on PR #162): the base project resolves to a volume the
+# daemon lists, but the ServiceNow overlay render fails. The known match wins:
+# refused (3 / init 8), never "cannot tell" that the flag would override.
+cp -p "$KIT/docker-compose.servicenow-control.yml" "$TMPDIR/sn.orig"
+printf 'services: [\n' > "$KIT/docker-compose.servicenow-control.yml"
+run check-vol-snfail bash "$CRED" check --env-file "$ENV"
+check "a listed base volume is refused although the ServiceNow overlay does not render (rc $RC, want 3)" \
+  '[ "$RC" -eq 3 ] && grep -Fq "($VOL)" "$TMPDIR/check-vol-snfail.err"'
+run init-vol-snfail "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
+check "init with --confirm-no-registry-volume refuses a listed base volume when the ServiceNow render fails (rc $RC, want 8)" \
+  '[ "$RC" -eq 8 ] && grep -Fq "$VOL" "$TMPDIR/init-vol-snfail.err" && ! grep -Fq -- "--confirm-no-registry-volume states" "$TMPDIR/init-vol-snfail.err" && other_absent'
+printf 'other_pg-sanitizer-core-data\n' > "$STUB_VOLUMES"
+run check-snfail bash "$CRED" check --env-file "$ENV"
+check "no listed volume and the ServiceNow overlay does not render: 'cannot tell' (rc $RC, want 4, not 5)" '[ "$RC" -eq 4 ]'
+run init-snfail "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
+check "init with --confirm-no-registry-volume refuses when a render fails (rc $RC, want 8; the flag covers only Docker unreachable)" \
+  '[ "$RC" -eq 8 ] && grep -Fq -- "--confirm-no-registry-volume does not apply" "$TMPDIR/init-snfail.err" && ! grep -Fq -- "--confirm-no-registry-volume states" "$TMPDIR/init-snfail.err" && other_absent'
+cp -p "$TMPDIR/sn.orig" "$KIT/docker-compose.servicenow-control.yml"
+printf 'other_pg-sanitizer-core-data\n%s\n' "$VOL" > "$STUB_VOLUMES"
 check "init --help documents --confirm-no-registry-volume" '"$KIT/bin/lucairn-init" --help | grep -Fq -- "--confirm-no-registry-volume"'
 
 echo "10. no registry volume: add generates a new pair"
@@ -235,6 +257,9 @@ run check-unresolved bash "$CRED" check --env-file "$ENV"
 check "a volume name that cannot be resolved is 'cannot tell' (rc $RC, want 4), never the default" '[ "$RC" -eq 4 ] && grep -Fq "not resolved" "$TMPDIR/check-unresolved.err"'
 run add-unresolved bash "$CRED" add --env-file "$ENV"
 check "add generates nothing when the name cannot be resolved (rc $RC, want 4)" '[ "$RC" -eq 4 ] && cmp -s "$TMPDIR/env.before" "$ENV"'
+run init-unresolved "$KIT/bin/lucairn-init" --dev --runtime-mode managed-byok --output "$OTHER" --skip-doctor --confirm-no-registry-volume
+check "init with --confirm-no-registry-volume refuses a volume name that cannot be resolved (rc $RC, want 8)" \
+  '[ "$RC" -eq 8 ] && grep -Fq "not resolved" "$TMPDIR/init-unresolved.err" && grep -Fq -- "--confirm-no-registry-volume does not apply" "$TMPDIR/init-unresolved.err" && ! grep -Fq -- "--confirm-no-registry-volume states" "$TMPDIR/init-unresolved.err" && other_absent'
 printf 'services: [\n' > "$KIT/docker-compose.customer.yml"
 run check-norender bash "$CRED" check --env-file "$ENV"
 check "a project Compose cannot render is 'cannot tell' (rc $RC, want 4)" '[ "$RC" -eq 4 ]'
