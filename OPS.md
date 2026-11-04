@@ -2878,9 +2878,10 @@ F3 drift class documented in `image-manifest.yaml`).
 #    kit release you are rolling back to). Keep the file at mode 0600.
 sed -i 's/^LUCAIRN_IMAGE_TAG=.*/LUCAIRN_IMAGE_TAG=<previous-known-good-tag>/' customer.env
 
-# 2) Re-pull and recreate with the reverted tag. Back to a 1.x release: put
-#    that release's kit files back first and follow INSTALL.md § "Upgrade from
-#    kit 1.9.7 to 2.0.0" → "Rollback to 1.9.7". Within kit 2.x: S1 install ->
+# 2) Re-pull and recreate with the reverted tag. Back to a 1.x release:
+#    follow INSTALL.md § "Upgrade from kit 1.9.7 to 2.0.0" → "Rollback to
+#    1.9.7" instead (it saves the 2.0 registry credentials BEFORE that
+#    release's kit files go back). Within kit 2.x: S1 install ->
 #    `bin/lucairn pull` + `bin/lucairn up --env customer.env` (it runs the
 #    registry step below first); plain Compose:
 docker compose -f docker-compose.customer.yml --env-file customer.env pull

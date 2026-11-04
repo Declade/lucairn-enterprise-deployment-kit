@@ -2013,6 +2013,21 @@ doctor_tools_preflight() {
   return 0
 }
 
+# doctor_recorded_runtime_mode ENV_FILE — the runtime_mode the S1 runtime
+# profile records (split-remote | managed-byok | local-runtime), or nothing
+# when it is absent, ambiguous or not one of those names.
+doctor_recorded_runtime_mode() {
+  local profile mode_count mode
+  profile="$(runtime_profile_path "$1")"
+  [ -f "$profile" ] && [ ! -L "$profile" ] || return 0
+  mode_count="$(grep -c '^runtime_mode: ' "$profile" 2>/dev/null || true)"
+  [ "$mode_count" = "1" ] || return 0
+  mode="$(sed -n 's/^runtime_mode: //p' "$profile" 2>/dev/null)"
+  case "$mode" in
+    split-remote|managed-byok|local-runtime) printf '%s' "$mode" ;;
+  esac
+}
+
 doctor_selected_model() {
   local env_file="$1" supplied_model="$2" profile mode model mode_count model_count
   profile="$(runtime_profile_path "$env_file")"
@@ -2044,26 +2059,54 @@ doctor_selected_model() {
   esac
 }
 
-# doctor_l3_config ENV_FILE — prints "off", or "on:<NAME>" naming the first
-# setting that turns the L3 deep PII shield on for this install. Names only,
-# never values (OLLAMA_URL can carry credentials). The keyed helper accepts a
+# doctor_l3_config ENV_FILE [COMPOSE_FILE] — prints "off", "on:<NAME>" naming
+# the first setting that turns the L3 deep PII shield on for this install,
+# "on:shell:<NAME>" when only a variable exported in this shell turns it on,
+# or "unknown:<reason>" when the settings cannot be read. Names only, never
+# values (OLLAMA_URL can carry credentials). The keyed helper accepts a
 # certificate that reads VERDICT_PARTIAL for the L3-coverage reason only when
 # this prints "off" (kit 2.0 PRD row 2; the kit default ships L3 off). Same
 # signals as check_l3_required_wired / vllm_l3_opted_in / l3_split_pool_declared,
 # plus the gateway's own L3 allowlist; a typo'd split-pool marker counts as on.
+# K-E fix round 1 (review P2 on PR #162): the posture and the three address
+# settings are read THROUGH Docker Compose (bin/compose-env.sh cev_l3), both
+# as customer.env holds them and as Compose interpolates them from this shell
+# (an exported variable wins over the file, so a file `degrade` with an
+# exported `reject` runs `reject`). Either view turning L3 on counts as on:
+# the doctor cannot know which shell started the running stack.
 doctor_l3_config() {
-  local env_file="$1" posture name split_rc=0
-  posture="$(env_value "$env_file" LUCAIRN_L3_AVAILABILITY_POSTURE | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
-  if [ "$posture" = "reject" ]; then
-    printf 'on:LUCAIRN_L3_AVAILABILITY_POSTURE=reject'
+  local env_file="$1" compose_file="${2:-$ROOT/docker-compose.customer.yml}" pd out rc=0
+  local tag name fstate estate shell_on="" split_rc=0
+  if [ "$LUCAIRN_COMPOSE_ENV_LIB_OK" -ne 1 ]; then
+    printf 'unknown:compose-env-reader-missing'
     return 0
   fi
-  for name in GATEWAY_L3_CUSTOMER_ALLOWLIST OLLAMA_URL LUCAIRN_L3_ADDR; do
-    if [ -n "$(env_value "$env_file" "$name")" ]; then
-      printf 'on:%s' "$name"
-      return 0
+  pd="$(cd "$(dirname "$compose_file")" 2>/dev/null && pwd)" || pd="$ROOT"
+  out="$(cev_l3 --env-file "$env_file" --project-dir "$pd" 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ] || ! printf '%s\n' "$out" | grep -q '^l3	'; then
+    printf 'unknown:compose-unreadable'
+    return 0
+  fi
+  while IFS="$(printf '\t')" read -r tag name fstate estate; do
+    [ "$tag" = l3 ] || continue
+    if [ "$name" = LUCAIRN_L3_AVAILABILITY_POSTURE ]; then
+      case "$fstate" in
+        reject) printf 'on:LUCAIRN_L3_AVAILABILITY_POSTURE=reject'; return 0 ;;
+        unreadable) printf 'on:LUCAIRN_L3_AVAILABILITY_POSTURE'; return 0 ;;
+      esac
+      case "$estate" in
+        reject) [ -n "$shell_on" ] || shell_on='LUCAIRN_L3_AVAILABILITY_POSTURE=reject' ;;
+        unreadable) [ -n "$shell_on" ] || shell_on='LUCAIRN_L3_AVAILABILITY_POSTURE' ;;
+      esac
+      continue
     fi
-  done
+    case "$fstate" in set|unreadable) printf 'on:%s' "$name"; return 0 ;; esac
+    case "$estate" in set|unreadable) [ -n "$shell_on" ] || shell_on="$name" ;; esac
+  done < <(printf '%s\n' "$out")
+  if [ -n "$shell_on" ]; then
+    printf 'on:shell:%s' "$shell_on"
+    return 0
+  fi
   l3_split_pool_declared "$env_file" || split_rc=$?
   if [ "$split_rc" -ne 1 ]; then
     printf 'on:LUCAIRN_L3_SPLIT_POOL'
@@ -2097,9 +2140,14 @@ doctor_full_customer_journey() {
     return 1
   }
 
-  local helper_args l3_config
-  l3_config="$(doctor_l3_config "$env_file")"
+  local helper_args l3_config runtime_mode
+  l3_config="$(doctor_l3_config "$env_file" "${compose_file:-}")"
+  # The recorded runtime mode (a name, never a value): the helper treats a
+  # per-request BYOK refusal as a named skip only on a managed-byok install
+  # (K-E fix round 1, review P2 on PR #162).
+  runtime_mode="$(doctor_recorded_runtime_mode "$env_file")"
   helper_args=(--key-file "$customer_key_file" --gateway-url "$gateway_url" --model "$model" --l3-config "$l3_config")
+  [ -z "$runtime_mode" ] || helper_args+=(--runtime-mode "$runtime_mode")
   [ -z "$customer_key_proxy" ] || helper_args+=(--proxy "$customer_key_proxy")
   [ -z "$customer_key_ca_file" ] || helper_args+=(--ca-file "$customer_key_ca_file")
   (

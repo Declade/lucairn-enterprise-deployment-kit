@@ -1694,10 +1694,17 @@ h1_docs_check() { # <file> — every whole-stack `docker compose ... up -d`
     }' "$1"
 }
 # K-E (2026-11-04): OPS.md (upgrade, rollback, disaster recovery) and
-# TROUBLESHOOTING.md hold start paths a 2.0 install can take too.
-for f in README.md INSTALL.md OPS.md TROUBLESHOOTING.md; do
-  h1_docs_check "$KIT/$f"
+# TROUBLESHOOTING.md hold start paths a 2.0 install can take too. K-E fix
+# round 1 (review P2 on PR #162): so do the runbooks under docs/ (the L3 vLLM
+# runtime start, the customer runbook's dashboard start) — every docs/*.md.
+H1_RUNBOOKS=("$KIT"/docs/*.md)
+for f in "$KIT/README.md" "$KIT/INSTALL.md" "$KIT/OPS.md" "$KIT/TROUBLESHOOTING.md" "${H1_RUNBOOKS[@]}"; do
+  h1_docs_check "$f"
 done > "$TMP/h1-docs.txt"
+[ "${#H1_RUNBOOKS[@]}" -ge 15 ] && [ -f "${H1_RUNBOOKS[0]}" ] \
+  && pass "H1 the docs check reads every docs/*.md runbook too (${#H1_RUNBOOKS[@]} files)" \
+  || fail "H1 the docs check reads every docs/*.md runbook (found ${#H1_RUNBOOKS[@]})"
+check_eq "H1 docs/L3_VLLM_RUNTIME.md starts the stack only after the registry migration" "" "$(h1_docs_check "$KIT/docs/L3_VLLM_RUNTIME.md")"
 [ -s "$TMP/h1-docs.txt" ] && H1_DOCS_BAD="$(tr '\n' ' ' < "$TMP/h1-docs.txt")"
 if [ -z "$H1_DOCS_BAD" ]; then pass "H1 no documented whole-stack 'docker compose ... up -d' without the migration step before it"; else fail "H1 documented whole-stack up -d without the migration step: $H1_DOCS_BAD"; fi
 grep -c 'up first runs the sanitizer core' "$KIT/README.md" | grep -qx 3 \

@@ -350,7 +350,18 @@ EOF
 
 ### Bring up the dashboard alongside the running stack
 
+A whole-stack `up -d` also (re)starts the sanitizer core, so run the core's
+registry migration first, as `bin/lucairn up` does (at the ceiling it changes
+nothing):
+
 ```bash
+docker compose -p compose-demo \
+  -f docker-compose.customer.yml \
+  -f docker-compose.self-hosted.yml \
+  -f docker-compose.self-hosted-byok.yml \
+  --env-file customer.env \
+  --profile sanitizer-core-migrate \
+  run --rm migrate-sanitizer-core
 docker compose -p compose-demo \
   -f docker-compose.customer.yml \
   -f docker-compose.self-hosted.yml \

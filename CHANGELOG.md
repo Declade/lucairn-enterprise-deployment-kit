@@ -183,8 +183,9 @@ stays `0.8.2`.
 - The registry database is not in the Helm backup CronJobs (it holds at most
   24 hours of sealed conversation state).
 - The keyed online doctor sends only the Lucairn key. For a key minted for
-  per-request BYOK (the mint default) the gateway refuses that turn with
-  `missing_upstream_key`; the doctor reports it as a named skip
+  per-request BYOK (the mint default) on a `managed-byok` install the gateway
+  refuses that turn with `missing_upstream_key`; the doctor reports it as a
+  named skip
   (`keyed inference: skipped — per-request BYOK install, no provider key for
   the doctor; run one real turn to check it`) and does not check the
   certificate or its verification. Prove that journey with one real request
@@ -221,7 +222,11 @@ stays `0.8.2`.
 - **Doctor:** the keyed online doctor reports a per-request BYOK key's
   `missing_upstream_key` refusal as a named skip instead of a failure (only
   that exact answer: HTTP 400, `invalid_request_error`,
-  `missing_upstream_key`); every other keyed-step error still fails.
+  `missing_upstream_key`, and only on a `managed-byok` install, the runtime
+  mode its runtime profile records); every other keyed-step error still fails.
+  On a `local-runtime` or `split-remote` install the same refusal fails: the
+  key was minted for per-request BYOK, which those modes do not use (mint it
+  with `--no-byok-per-request`).
 - **Doctor, L3 off:** the keyed online doctor accepts a certificate that reads
   `VERDICT_PARTIAL` only when the install's L3 shield is off (the kit default)
   and L3 coverage is the only cause, and says so (`verdict partial: L3 off on
@@ -232,6 +237,19 @@ stays `0.8.2`.
   (`LUCAIRN_L3_AVAILABILITY_POSTURE=reject`, `GATEWAY_L3_CUSTOMER_ALLOWLIST`,
   `OLLAMA_URL`, `LUCAIRN_L3_ADDR`, `LUCAIRN_L3_SPLIT_POOL`, the `vllm-l3`
   runtime, `ollama-identity` in the compose file) still fails and names it.
+  The posture and the three address settings are read through Docker Compose,
+  as `customer.env` holds them and as Compose interpolates them from the
+  shell: a variable exported in the shell (which Compose uses over the file)
+  that turns L3 on counts as on.
+- **Upgrade and rollback keep the registry credentials:** the registry volume
+  only opens with the key and database password it was created with.
+  `scripts/sanitizer-core-registry-credentials.sh save` (rollback step 2)
+  copies the 2.0 `customer.env`, its sidecar files, the registry DSN file and
+  the two values into `backups/sanitizer-core-<time>/` (0700, files 0600);
+  `… add` (upgrade step 4) generates the pair only while the install has no
+  registry volume, refuses otherwise and names the saved file, and restores it
+  with `--from`. `bin/lucairn-init` refuses a fresh `customer.env` (exit 8)
+  while a registry volume exists.
 
 ### Fixed — upgrade path, docs and tests (K-E)
 

@@ -2504,21 +2504,31 @@ by it.
    (`docs/RELEASING.md`), then extract it over the directory. `customer.env`,
    its two sidecar files, `.certs/`, `.secrets/` and `models/` are not part of
    the release and stay as they are.
-4. **Add the kit 2.0 settings to `customer.env`.** Change the image tag, then
-   append the core's two secrets and its image pins (the digests come from the
-   release's `image-manifest.yaml`). No key may appear twice in the file:
+4. **Add the kit 2.0 settings to `customer.env`.** Change the image tag, add
+   the core's two secrets, then append its image pins (the digests come from
+   the release's `image-manifest.yaml`). No key may appear twice in the file:
    ```bash
    sed -i.bak 's/^LUCAIRN_IMAGE_TAG=.*/LUCAIRN_IMAGE_TAG=1.1.0/' customer.env && rm -f customer.env.bak
+   scripts/sanitizer-core-registry-credentials.sh add --env-file customer.env
    mdigest() { awk -v s="    $1:" '$0==s{f=1;next} f&&/^    [a-z]/{exit} f&&/^      digest:/{gsub(/[" ]/,"");sub("digest:","");print;exit}' image-manifest.yaml; }
    {
-     echo "DSA_SANITIZER_CORE_REGISTRY_KEY=$(openssl rand -hex 32)"
-     echo "POSTGRES_SANITIZER_CORE_PASSWORD=$(openssl rand -hex 24)"
      echo "LUCAIRN_SANITIZER_CORE_IMAGE_TAG=1.1.0"
      echo "LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$(mdigest dsa-sanitizer-core)"
      echo "LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=$(mdigest dsa-sanitizer-core-sidecar)"
    } >> customer.env
    grep -c -E '^LUCAIRN_SANITIZER_CORE_(SIDECAR_)?IMAGE_DIGEST=sha256:[0-9a-f]{64}$' customer.env   # must print 2
    ```
+   `add` appends `DSA_SANITIZER_CORE_REGISTRY_KEY` (it seals every registry
+   row) and `POSTGRES_SANITIZER_CORE_PASSWORD` (the registry database's
+   password). It generates them only while this install has no registry volume
+   (`<directory name>_pg-sanitizer-core-data`); it asks the Docker daemon, so
+   Docker must be running. **Coming back to 2.0 after a rollback** (§ "Rollback
+   to 1.9.7"), the volume is still there and only opens with the two values it
+   was created with: `add` then refuses, names the file the rollback saved them
+   in, and you restore them instead —
+   `scripts/sanitizer-core-registry-credentials.sh add --env-file customer.env --from backups/sanitizer-core-<time>/sanitizer-core-registry.env`.
+   New values would fail the registry migration's login and leave every sealed
+   row unreadable.
    **Development install only** (`GRPC_TLS_ENABLED=false`: the core then dials
    the local witness in plaintext, like every other development emitter) —
    also append the three empty witness-leaf lines:
@@ -2586,18 +2596,37 @@ data itself was damaged).
 - **Compose:**
   1. `bin/lucairn down --env customer.env` (removes the 2.0 containers, keeps
      every volume).
-  2. Put the 1.9.7 kit files back (`git checkout v1.9.7`, or the 1.9.7
+  2. **Save the 2.0 credentials first**, while the 2.0 kit files are still in
+     place. The registry volume stays, and it only opens with the registry key
+     and database password it was created with — the 1.9.7 `customer.env` you
+     restore next has neither:
+     ```bash
+     scripts/sanitizer-core-registry-credentials.sh save --env-file customer.env
+     ```
+     It writes `backups/sanitizer-core-<time>/` (mode `0700`, every file
+     `0600`, outside the kit release and every bundle): the 2.0
+     `customer.env`, its two sidecar files, the registry DSN file and
+     `sanitizer-core-registry.env` (the two values), and prints that last
+     path. Keep the folder as long as you keep the volume.
+  3. Put the 1.9.7 kit files back (`git checkout v1.9.7`, or the 1.9.7
      tarball) in the same directory.
-  3. Restore the three state files from the backup:
+  4. Restore the three state files from the backup:
      `cp -p "$BK/customer.env" "$BK/customer.env.runtime-profile.yaml" "$BK/customer.env.image-manifest.yaml" .`
-  4. `bin/lucairn up --env customer.env`.
-  5. The registry volume (`<directory name>_pg-sanitizer-core-data`) is not
+  5. `bin/lucairn up --env customer.env`.
+  6. The registry volume (`<directory name>_pg-sanitizer-core-data`) is not
      used by 1.9.7. It holds sealed conversation state of at most the last
-     24 hours; delete it when you do not return to 2.0 soon:
-     `docker volume rm <directory name>_pg-sanitizer-core-data`.
+     24 hours. To return to 2.0, follow § "Upgrade from kit 1.9.7 to 2.0.0"
+     again: its step 4 finds the volume and restores the saved values
+     (`add --from …/sanitizer-core-registry.env`), so the rows stay readable.
+     If you do not return to 2.0 soon, delete the volume and the saved folder
+     together: `docker volume rm <directory name>_pg-sanitizer-core-data`.
 - **Helm:** `helm rollback lucairn <revision> -n lucairn` (`helm history
-  lucairn -n lucairn` lists them). The registry PVC is kept; delete it as
-  above when you do not return to 2.0.
+  lucairn -n lucairn` lists them). The registry PVC is kept. Keep the core's
+  two credentials (§ "Sanitizer core (kit 2.0, Helm)" step 1: the
+  `sanitizer-core.secrets.values` lines of `customer-values.yaml`, or the
+  External Secrets entries) unchanged for a return to 2.0: new values would not
+  open the kept registry. Delete the PVC and those credentials together when
+  you do not return to 2.0.
 
 ## Sanitizer core (kit 2.0, Compose)
 
@@ -2644,6 +2673,12 @@ LUCAIRN_SANITIZER_CORE_IMAGE_TAG=1.1.0                     # ONE tag for core + 
 LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=                       # release-filled; set both digests or neither
 LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=
 ```
+
+The registry volume only opens with the key and password it was created with.
+`bin/lucairn-init` therefore refuses a fresh `customer.env` (exit 8) while
+this install already has a registry volume, and
+`scripts/sanitizer-core-registry-credentials.sh add` generates the pair only
+when there is none (§ "Rollback to 1.9.7" saves them for a return to 2.0).
 
 The core and the sidecar are one pair from one release: the core refuses to
 start against a sidecar from another build. Do not set `LCR_PROFILE` in
@@ -3353,10 +3388,13 @@ by Lucairn (its test accounts are web-service only).
   images carry `NOTICE` from 2.0.1.
 - **Doctor, per-request BYOK keys:** a key minted for per-request BYOK (the
   mint default) carries no stored provider key, and the online doctor holds
-  none, so its keyed step reports `keyed inference: skipped — per-request BYOK
-  install, no provider key for the doctor; run one real turn to check it` (no
-  certificate or verification check). Check that journey with one real request
-  that carries the provider key.
+  none, so on a `managed-byok` install its keyed step reports `keyed
+  inference: skipped — per-request BYOK install, no provider key for the
+  doctor; run one real turn to check it` (no certificate or verification
+  check). Check that journey with one real request that carries the provider
+  key. On a `local-runtime` or `split-remote` install (the mode the runtime
+  profile records) the same refusal fails instead: those modes take no
+  provider key per request, so mint the key with `--no-byok-per-request`.
 
 - **Adopting an existing `customer.env`:** `bin/lucairn-init` in adopt mode
   reads `SANITIZER_CORE_MTLS_HOST_DIR` with a plain text match (the last line

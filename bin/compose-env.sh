@@ -39,6 +39,9 @@
 #                [--print-dsn] [-- <compose args: -f ... --profile ...>]
 #   cev_needles  --env-file F --project-dir D -- <compose args>
 #                (stdout: hex-encoded needles, one per line)
+#   cev_l3       --env-file F --project-dir D
+#                (stdout: `l3<TAB>NAME<TAB><file state><TAB><effective state>`
+#                per L3 shield setting, states only — K-E fix round 1)
 #   cev_to_json  yaml|env <file> <outdir> <sentinels>  (support-bundle's
 #                exact decoded scan)
 # rc: 0 done · 10 Docker Compose is not available (fail closed) · 11 Compose
@@ -49,6 +52,9 @@
 # holds secrets; mode 0700) is always removed.
 
 CEV_DSN_TARGET="/run/secrets/sanitizer-core/registry-dsn"
+# The settings that turn the L3 deep PII shield on (bin/lucairn
+# doctor_l3_config), in the order the doctor names them.
+CEV_L3_NAMES="LUCAIRN_L3_AVAILABILITY_POSTURE GATEWAY_L3_CUSTOMER_ALLOWLIST OLLAMA_URL LUCAIRN_L3_ADDR"
 CEV_DEFAULT_DSN_FILE="./.secrets/sanitizer-core/registry-dsn"
 
 # The JSON reader. Modes (awk -v mode=...):
@@ -57,6 +63,7 @@ CEV_DEFAULT_DSN_FILE="./.secrets/sanitizer-core/registry-dsn"
 #             -v projdir, -v given, -v checkfile, -v printdsn
 #   needles   files: file view, interpolation view, [project]; then the
 #             DSN files named by -v dsnfiles (newline-separated)
+#   l3        files: file view, interpolation view; -v l3names (space-separated)
 # shellcheck disable=SC2016 # an awk program: its $ are awk fields, not shell
 CEV_AWK='
 function jtok(s, i,    j, c) {          # index of the closing quote of the string at s[i]
@@ -227,6 +234,19 @@ function scalar(p, k, tok, isstr,    v, svc) {
   }
   if (mode == "needles" && isstr) userinfo(jdec(tok), p)
 }
+# The state of one L3 shield setting, never its value (OLLAMA_URL can carry
+# credentials): the posture as unset | degrade | reject | other (trimmed and
+# lower-cased, as the sanitizer reads it), any other name as unset | set;
+# `unreadable` when the Compose output cannot be decoded.
+function l3state(k, v) {
+  if (v == BAD) return "unreadable"
+  if (k == "LUCAIRN_L3_AVAILABILITY_POSTURE") {
+    v = tolower(v); gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", v)
+    if (v == "") return "unset"
+    return (v == "reject" || v == "degrade") ? v : "other"
+  }
+  return (v == "") ? "unset" : "set"
+}
 BEGIN {
   readable = ENVIRON["CEV_READABLE"]
   BAD = "\001BAD"
@@ -239,6 +259,13 @@ END {
   if (broken || !seen[1] || (fno >= 2 && !seen[2])) { print "unreadable"; exit 12 }
   if (needproj && !seen[3]) { print "unreadable"; exit 12 }   # needles: the project MUST have been read
   if (mode == "keys") exit 0
+  if (mode == "l3") {
+    print "compose\tok"
+    nl = split(l3names, L, " ")
+    for (i = 1; i <= nl; i++)
+      print "l3\t" L[i] "\t" l3state(L[i], Aset[L[i]] ? jdec(A[L[i]]) : "") "\t" l3state(L[i], Bset[L[i]] ? jdec(B[L[i]]) : "")
+    exit 0
+  }
   if (mode == "registry") {
     split("POSTGRES_SANITIZER_CORE_PASSWORD POSTGRES_SSLMODE SANITIZER_CORE_REGISTRY_DSN_FILE", R, " ")
     ov = ""
@@ -370,7 +397,8 @@ cev_jstr() {
 }
 
 # The file view + interpolation view probes into $CEV_TMP/a.json, b.json.
-# $3 = "all" (every interpolable key of the file) or "registry".
+# $3 = "all" (every interpolable key of the file), "registry" or "l3" (the
+# registry keys plus CEV_L3_NAMES).
 cev_probes() {
   local env="$1" pd="$2" which="$3" abs ej k keys first seenk=""
   case "$env" in /*) abs="$env" ;; *) abs="$PWD/$env" ;; esac
@@ -380,6 +408,7 @@ cev_probes() {
     cev_fail 11 "Docker Compose cannot read $env: $CEV_REASON"; return
   fi
   keys="POSTGRES_SANITIZER_CORE_PASSWORD POSTGRES_SSLMODE SANITIZER_CORE_REGISTRY_DSN_FILE"
+  [ "$which" != l3 ] || keys="$keys $CEV_L3_NAMES"
   if [ "$which" = all ]; then
     keys="$keys $(LC_ALL=C awk -v mode=keys "$CEV_AWK" "$CEV_TMP/a.json" | tr '\n' ' ')" \
       || { cev_fail 12 "\`docker compose config --format json\` gave output this kit cannot read (Docker Compose v2 is required)"; return; }
@@ -457,6 +486,22 @@ cev_registry() (
     "$CEV_AWK" "${files[@]}"
   st=$?
   [ "$st" -eq 0 ] || cev_fail 12 "\`docker compose config --format json\` gave output this kit cannot read (Docker Compose v2 is required)"
+)
+
+# cev_l3 ... — the L3 shield settings as Docker Compose sees them, for the
+# keyed doctor's L3-off PARTIAL exception (kit 2.0 K-E fix round 1, review P2
+# on PR #162: doctor read the raw file, so a posture exported in the shell —
+# which Compose interpolates over customer.env — was missed). One line per
+# CEV_L3_NAMES entry: `l3<TAB>NAME<TAB><file view state><TAB><interpolation
+# view state>` (l3state above; states only, never a value).
+cev_l3() (
+  cev_args "$@" || exit
+  cev_compose_cmd || exit
+  cev_tmp || exit
+  trap 'rm -rf "$CEV_TMP"' EXIT
+  cev_probes "$CEV_OPT_ENV" "$CEV_OPT_PD" l3 || exit
+  LC_ALL=C awk -v mode=l3 -v l3names="$CEV_L3_NAMES" "$CEV_AWK" "$CEV_TMP/a.json" "$CEV_TMP/b.json" \
+    || cev_fail 12 "\`docker compose config --format json\` gave output this kit cannot read (Docker Compose v2 is required)"
 )
 
 # cev_needles ... — every secret value Compose knows for this install, DECODED

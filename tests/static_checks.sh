@@ -77,6 +77,7 @@ assert_no_executable_rg() {
     "$ROOT/tests/test_enterprise_mtls_helm_required.sh" \
     "$ROOT/tests/test_enterprise_mtls_production_values.sh" \
     "$ROOT/tests/test_sanitizer_core_compose.sh" \
+    "$ROOT/tests/test_registry_credentials_rollback.sh" \
     "$ROOT/tests/test_third_party_image_pins.sh" \
     "$ROOT/tests/test_third_party_notices.sh"; do
     assert_no_executable_rg_in_file "$script" || return 1
@@ -166,6 +167,8 @@ bash -n "$ROOT/tests/test_sec_hardening.sh"
 bash -n "$ROOT/tests/test_sbom.sh"
 bash -n "$ROOT/tests/test_digest_pin.sh"
 bash -n "$ROOT/tests/test_third_party_image_pins.sh"
+bash -n "$ROOT/tests/test_registry_credentials_rollback.sh"
+bash -n "$ROOT/scripts/sanitizer-core-registry-credentials.sh"
 bash -n "$ROOT/tests/test_third_party_notices.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_helm.sh"
 bash -n "$ROOT/tests/test_enterprise_mtls_cert_contract.sh"

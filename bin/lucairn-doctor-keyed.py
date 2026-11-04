@@ -237,16 +237,40 @@ def json_object(body: bytes) -> Optional[dict]:
 # Kit 2.0 (PRD row 2): a key minted for per-request BYOK (the mint default for
 # Enterprise keys) carries no stored provider key, and this doctor holds no
 # provider key either, so the gateway answers the keyed turn with exactly this
-# refusal before any upstream call. That is the install working as configured,
-# not a fault, so it is a named skip. Only this exact answer qualifies: HTTP
-# 400, the OpenAI-shaped error envelope the gateway writes on
+# refusal before any upstream call. On a managed-byok install (the hosted
+# provider reached with the customer's own key) that is the install working as
+# configured, not a fault, so it is a named skip. Only this exact answer
+# qualifies: HTTP 400, the OpenAI-shaped error envelope the gateway writes on
 # /v1/chat/completions (WriteOpenAIError), type invalid_request_error, code
 # missing_upstream_key. Every other answer to the keyed turn still fails.
+# K-E fix round 1 (review P2 on PR #162): the skip also needs the runtime mode
+# bin/lucairn read from the install's runtime profile. A local-runtime install
+# runs its own model and a split-remote install the Lucairn-provided remote
+# Sandbox B; neither takes a provider key per request, so the same refusal
+# there is a wrongly provisioned key and fails, naming that. An unknown mode
+# fails as well.
+BYOK_SKIP_MODES = frozenset({"managed-byok"})
 BYOK_SKIP_LINES = (
     "keyed inference: skipped — per-request BYOK install, no provider key for the doctor; run one real turn to check it",
     "evidence: skipped (no keyed turn to read a certificate for)",
     "verification: skipped (no keyed turn to verify)",
 )
+
+
+def byok_refusal_failure(runtime_mode: Optional[str]) -> Optional[str]:
+    """None when the per-request BYOK refusal is the named skip for this mode."""
+    if runtime_mode in BYOK_SKIP_MODES:
+        return None
+    if isinstance(runtime_mode, str) and SAFE_TOKEN.fullmatch(runtime_mode):
+        return (
+            f"inference: failed (gateway refused the key with missing_upstream_key on a {runtime_mode} install: "
+            "it was minted for per-request BYOK, which only a managed-byok install uses; "
+            "mint the doctor key with --no-byok-per-request)"
+        )
+    return (
+        "inference: failed (gateway refused the key with missing_upstream_key, and the doctor was not told "
+        "this install's runtime mode, so the per-request BYOK skip does not apply)"
+    )
 
 
 def is_per_request_byok_refusal(code: int, body: bytes) -> bool:
@@ -291,8 +315,15 @@ def shown(value: object) -> str:
 def l3_config_cause(value: Optional[str]) -> Optional[str]:
     if value == "off":
         return None
+    if isinstance(value, str) and value.startswith("on:shell:") and SAFE_TOKEN.fullmatch(value[9:]):
+        return (
+            f"L3 is configured on for this install ({value[9:]}, exported in this shell: "
+            "Docker Compose uses it over customer.env)"
+        )
     if isinstance(value, str) and value.startswith("on:") and SAFE_TOKEN.fullmatch(value[3:]):
         return f"L3 is configured on for this install ({value[3:]})"
+    if isinstance(value, str) and value.startswith("unknown:") and SAFE_TOKEN.fullmatch(value[8:]):
+        return f"the doctor could not read this install's L3 settings through Docker Compose ({value[8:]})"
     return "the doctor was not told whether L3 is off on this install"
 
 
@@ -410,6 +441,7 @@ def run_journey(
     proxy_url: Optional[str],
     ca_file: Optional[str],
     l3_config: Optional[str] = None,
+    runtime_mode: Optional[str] = None,
 ) -> None:
     key = read_customer_key(key_file)
     gateway = Gateway.from_url(gateway_url)
@@ -423,6 +455,9 @@ def run_journey(
     if code is None:
         fail("runtime: failed (gateway not started)")
     if is_per_request_byok_refusal(code, body):
+        failure = byok_refusal_failure(runtime_mode)
+        if failure:
+            fail(failure)
         for line in BYOK_SKIP_LINES:
             print(line)
         return
@@ -493,6 +528,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--l3-config",
         help='"off", or "on:<setting name>" for the install\'s L3 shield; absent = unknown (a partial verdict fails)',
     )
+    parser.add_argument(
+        "--runtime-mode",
+        help="the install's recorded runtime mode; the per-request BYOK skip applies to managed-byok only",
+    )
     return parser.parse_args(argv)
 
 
@@ -502,7 +541,9 @@ def main(argv: list[str]) -> int:
         return 1
     try:
         args = parse_args(argv)
-        run_journey(args.key_file, args.gateway_url, args.model, args.proxy, args.ca_file, args.l3_config)
+        run_journey(
+            args.key_file, args.gateway_url, args.model, args.proxy, args.ca_file, args.l3_config, args.runtime_mode
+        )
     except DoctorFailure as exc:
         print(str(exc))
         return 1

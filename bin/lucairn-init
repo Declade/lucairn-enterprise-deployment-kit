@@ -52,6 +52,9 @@
 #     was written; re-run scripts/bootstrap-sanitizer-core-mtls.sh)
 #   7 the sanitizer core's registry DSN file could not be written (customer.env
 #     was written; re-run scripts/write-sanitizer-core-registry-dsn.sh)
+#   8 a fresh customer.env was refused: this install already has a sanitizer
+#     core registry volume, which only opens with the credentials it was
+#     created with (nothing was written; put back the env that created it)
 
 set -euo pipefail
 
@@ -291,6 +294,7 @@ Exit codes:
   5  license validation failed
   6  sanitizer core mTLS material could not be created (customer.env written)
   7  sanitizer core registry DSN file could not be written (customer.env written)
+  8  refused: a sanitizer core registry volume already exists (nothing written)
 USAGE
 }
 
@@ -891,6 +895,25 @@ fi
 
 if [ ! -f "$KIT_ROOT/docker-compose.customer.yml" ]; then
   fail "not a Lucairn kit checkout (no docker-compose.customer.yml found at $KIT_ROOT)"
+fi
+
+# Kit 2.0 (K-E fix round 1, review P1 on PR #162): a fresh customer.env gets a
+# NEW registry key and registry database password. A registry volume this
+# install already has (an earlier 2.0 run, e.g. before a rollback to 1.9.7)
+# only opens with the ones it was created with — new ones fail the migration's
+# login and leave every sealed row unreadable — so init refuses to generate
+# them while that volume exists and names the saved env to put back. When
+# Docker cannot be asked (no daemon on this machine), init goes on with a note.
+if [ "$ADOPT_RUNTIME_PROFILE" != "true" ] && [ "$DRY_RUN" != "true" ]; then
+  _registry_check_rc=0
+  _registry_check_msg="$(bash "$KIT_ROOT/scripts/sanitizer-core-registry-credentials.sh" check \
+    --env-file "$OUTPUT" --project-dir "$KIT_ROOT" 2>&1 >/dev/null)" || _registry_check_rc=$?
+  case "$_registry_check_rc" in
+    0) : ;;
+    3) fail "${_registry_check_msg#\[sanitizer-core-registry-credentials\] ERROR: } (no customer state was changed)" 8 ;;
+    4) echo "note: could not check for an existing sanitizer core registry volume (${_registry_check_msg}); if this directory ran kit 2.0 before, put back the customer.env that created it instead of a new one (INSTALL.md § \"Rollback to 1.9.7\")" >&2 ;;
+    *) fail "could not check for an existing sanitizer core registry volume (scripts/sanitizer-core-registry-credentials.sh exit $_registry_check_rc; no customer state was changed)" 8 ;;
+  esac
 fi
 
 # License parsing ------------------------------------------------------------

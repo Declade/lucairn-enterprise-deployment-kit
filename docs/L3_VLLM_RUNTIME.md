@@ -151,10 +151,19 @@ It is a single-label (no-dot) name, so it classifies as **internal** — no
 boot. See § "Pre-staging the model" below for the one-time ceremony that
 populates `vllm-l3-model-store`. Skipping this = the profile never starts.
 
-Then bring the stack up with the self-hosted overlay and run the preflight:
+Then run the preflight and bring the stack up with the self-hosted overlay.
+Kit 2.0: migrate the sanitizer core's registry first — the core refuses to
+start on an unmigrated registry; at the ceiling the step changes nothing, and
+`bin/lucairn up` runs the same step before every start:
 
 ```sh
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml
+docker compose \
+  -f docker-compose.customer.yml \
+  -f docker-compose.self-hosted.yml \
+  --env-file customer.env \
+  --profile sanitizer-core-migrate \
+  run --rm migrate-sanitizer-core
 docker compose \
   -f docker-compose.customer.yml \
   -f docker-compose.self-hosted.yml \

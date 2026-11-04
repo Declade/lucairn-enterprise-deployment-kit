@@ -225,7 +225,19 @@ l3_config = {
     "partial-l3-on": "on:LUCAIRN_L3_AVAILABILITY_POSTURE=reject",
     "verified-l3-on": "on:LUCAIRN_L3_AVAILABILITY_POSTURE=reject",
     "partial-l3-unknown": None,
+    "partial-l3-shell": "on:shell:LUCAIRN_L3_AVAILABILITY_POSTURE=reject",
+    "partial-l3-compose-unknown": "unknown:compose-unreadable",
 }.get(case, "off")
+
+# What bin/lucairn reports as the recorded runtime mode (K-E fix round 1): the
+# per-request BYOK skip applies on managed-byok only. Every byok/400 case runs
+# on managed-byok, so a refusal of another shape fails even where the skip
+# exists; the rest run on the suite's local-runtime install.
+runtime_mode = {
+    "byok-local-runtime": "local-runtime",
+    "byok-split-remote": "split-remote",
+    "byok-mode-unknown": None,
+}.get(case, "managed-byok" if case.startswith(("byok-", "inference-400-")) else "local-runtime")
 
 # A certificate of the kit 2.0 default shape (run log 2026-11-04 row 2): four
 # signed claims, the core's PII_SANITIZED claim ran a live scan without
@@ -311,7 +323,7 @@ class FixtureConnection:
             }
             byok_refusal = b'{"error":{"message":"Upstream LLM API key required.","type":"invalid_request_error","code":"missing_upstream_key"}}'
             if case == "inference-non2xx": self.response = FixtureResponse(503, b"{}")
-            elif case == "byok-missing-upstream-key": self.response = FixtureResponse(400, byok_refusal)
+            elif case in ("byok-missing-upstream-key", "byok-local-runtime", "byok-split-remote", "byok-mode-unknown"): self.response = FixtureResponse(400, byok_refusal)
             elif case == "byok-refusal-wrong-status": self.response = FixtureResponse(401, byok_refusal)
             elif case == "inference-400-other-code": self.response = FixtureResponse(400, b'{"error":{"message":"Unknown model.","type":"invalid_request_error","code":"model_not_found"}}')
             elif case == "inference-400-code-wrong-type": self.response = FixtureResponse(400, b'{"error":{"message":"x","type":"api_error","code":"missing_upstream_key"}}')
@@ -352,7 +364,7 @@ module.http.client.HTTPSConnection = FixtureConnection
 module.time.sleep = lambda seconds: sleeps.append(seconds)
 try:
     proxy = "http://proxy.example:8080" if case == "proxy-explicit" else None
-    module.run_journey(key_path, "http://127.0.0.1:1", "fixture-local-model", proxy, None, l3_config=l3_config)
+    module.run_journey(key_path, "http://127.0.0.1:1", "fixture-local-model", proxy, None, l3_config=l3_config, runtime_mode=runtime_mode)
     if case == "byok-missing-upstream-key":
         # The skip ends the keyed journey: no certificate read, no verify call.
         assert attempts["certificate"] == 0
@@ -463,6 +475,17 @@ grep -Fx 'evidence: skipped (no keyed turn to read a certificate for)' "$TMPDIR/
 grep -Fx 'verification: skipped (no keyed turn to verify)' "$TMPDIR/byok-skip.out"
 ! grep -Eq 'failed|doctor: ok|inference: ok' "$TMPDIR/byok-skip.out" \
   || { cat "$TMPDIR/byok-skip.out" >&2; echo 'byok-missing-upstream-key: the skip must not read as a pass or a failure' >&2; exit 1; }
+# K-E fix round 1 (review P2 on PR #162): the skip holds on a managed-byok
+# install only. On local-runtime / split-remote no provider key travels per
+# request, so the same refusal is a wrongly provisioned key; an unknown mode
+# fails too. None of them may print the skip lines.
+expect_failure byok-local-runtime 'inference: failed (gateway refused the key with missing_upstream_key on a local-runtime install: it was minted for per-request BYOK, which only a managed-byok install uses; mint the doctor key with --no-byok-per-request)' helper_fixture byok-local-runtime
+expect_failure byok-split-remote 'inference: failed (gateway refused the key with missing_upstream_key on a split-remote install' helper_fixture byok-split-remote
+expect_failure byok-mode-unknown "inference: failed (gateway refused the key with missing_upstream_key, and the doctor was not told this install's runtime mode" helper_fixture byok-mode-unknown
+for byok_case in byok-local-runtime byok-split-remote byok-mode-unknown; do
+  ! grep -Eq 'skipped|doctor: ok' "$TMPDIR/$byok_case.out" \
+    || { cat "$TMPDIR/$byok_case.out" >&2; echo "$byok_case: the BYOK skip must not apply" >&2; exit 1; }
+done
 expect_failure byok-refusal-wrong-status 'inference: failed (gateway returned HTTP 401)' helper_fixture byok-refusal-wrong-status
 expect_failure inference-400-other-code 'inference: failed (gateway returned HTTP 400)' helper_fixture inference-400-other-code
 expect_failure inference-400-code-wrong-type 'inference: failed (gateway returned HTTP 400)' helper_fixture inference-400-code-wrong-type
@@ -495,6 +518,8 @@ helper_fixture verified-l3-on > "$TMPDIR/verified-l3-on.out" 2>&1 \
 tail -1 "$TMPDIR/verified-l3-on.out" | grep -Fx 'doctor: ok'
 expect_failure partial-l3-on 'verification: failed (verdict partial: L3 is configured on for this install (LUCAIRN_L3_AVAILABILITY_POSTURE=reject))' helper_fixture partial-l3-on
 expect_failure partial-l3-unknown 'verification: failed (verdict partial: the doctor was not told whether L3 is off on this install)' helper_fixture partial-l3-unknown
+expect_failure partial-l3-shell 'verification: failed (verdict partial: L3 is configured on for this install (LUCAIRN_L3_AVAILABILITY_POSTURE=reject, exported in this shell: Docker Compose uses it over customer.env))' helper_fixture partial-l3-shell
+expect_failure partial-l3-compose-unknown "verification: failed (verdict partial: the doctor could not read this install's L3 settings through Docker Compose (compose-unreadable))" helper_fixture partial-l3-compose-unknown
 expect_failure partial-missing-service 'verification: failed (verdict partial: missing services: dsa-audit' helper_fixture partial-missing-service
 expect_failure partial-order-not-checked 'verification: failed (verdict partial: claim order not_checked)' helper_fixture partial-order-not-checked
 expect_failure partial-anchor-failed 'verification: failed (verdict partial: anchor tsa failed)' helper_fixture partial-anchor-failed
@@ -504,7 +529,7 @@ expect_failure partial-l3-ran 'verification: failed (verdict partial: llm_pii_sc
 expect_failure partial-cache-only 'verification: failed (verdict partial: no live scan on this request, so L3 coverage is not the cause)' helper_fixture partial-cache-only
 expect_failure partial-inference-unfinished 'verification: failed (verdict partial: inference did not finish (claim dsa-ai))' helper_fixture partial-inference-unfinished
 expect_failure partial-no-claims 'verification: failed (verdict partial: certificate claims are unreadable)' helper_fixture partial-no-claims
-for partial_case in partial-l3-on partial-l3-unknown partial-missing-service partial-order-not-checked partial-anchor-failed partial-sealed-temporal partial-unredacted partial-l3-ran partial-cache-only partial-inference-unfinished partial-no-claims; do
+for partial_case in partial-l3-on partial-l3-unknown partial-l3-shell partial-l3-compose-unknown partial-missing-service partial-order-not-checked partial-anchor-failed partial-sealed-temporal partial-unredacted partial-l3-ran partial-cache-only partial-inference-unfinished partial-no-claims; do
   ! grep -Eq 'verdict partial: L3 off on this install|doctor: ok' "$TMPDIR/$partial_case.out" \
     || { cat "$TMPDIR/$partial_case.out" >&2; echo "$partial_case: must not read as accepted" >&2; exit 1; }
 done
@@ -515,6 +540,10 @@ done
 expect_failure l3-config-default 'configuration: failed (GATEWAY_BASE_URL is invalid for online doctor)' doctor success
 grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq -- '--l3-config off' \
   || { grep 'lucairn-doctor-keyed' "$CAPTURE_LOG" >&2; echo 'doctor must pass --l3-config off on the default env' >&2; exit 1; }
+# ... and the runtime mode its runtime profile records (a name), which gates
+# the per-request BYOK skip (K-E fix round 1).
+grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq -- '--runtime-mode local-runtime' \
+  || { grep 'lucairn-doctor-keyed' "$CAPTURE_LOG" >&2; echo 'doctor must pass --runtime-mode local-runtime for the local-runtime install' >&2; exit 1; }
 L3_ON_ENV="$TMPDIR/l3-on.env"; cp "$LOCAL_ENV" "$L3_ON_ENV"; cp "$LOCAL_ENV.image-manifest.yaml" "$L3_ON_ENV.image-manifest.yaml"; cp "$LOCAL_ENV.runtime-profile.yaml" "$L3_ON_ENV.runtime-profile.yaml"
 printf 'OLLAMA_URL=http://l3-user:l3-secret-canary@ollama.example:11434\n' >> "$L3_ON_ENV"
 : > "$CAPTURE_LOG"
@@ -524,6 +553,24 @@ grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq -- '--l3-config on:OLL
   || { grep 'lucairn-doctor-keyed' "$CAPTURE_LOG" >&2; echo 'doctor must name OLLAMA_URL as the L3 setting' >&2; exit 1; }
 ! grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq 'l3-secret-canary' \
   || { echo 'the L3 setting value must never reach the helper' >&2; exit 1; }
+
+# K-E fix round 1 (review P2 on PR #162): the L3 settings are read the way
+# Docker Compose reads them. customer.env says `degrade`, the shell exports
+# `reject`: Compose interpolates `reject` into the sanitizer, so the doctor must
+# not report L3 off (the old raw-file reader said "off" and the L3-off PARTIAL
+# exception was wrongly allowed). Without the export the same env is "off".
+L3_SHELL_ENV="$TMPDIR/l3-shell.env"; cp "$LOCAL_ENV" "$L3_SHELL_ENV"; cp "$LOCAL_ENV.image-manifest.yaml" "$L3_SHELL_ENV.image-manifest.yaml"; cp "$LOCAL_ENV.runtime-profile.yaml" "$L3_SHELL_ENV.runtime-profile.yaml"
+printf 'LUCAIRN_L3_AVAILABILITY_POSTURE=degrade\n' >> "$L3_SHELL_ENV"
+: > "$CAPTURE_LOG"
+expect_failure l3-config-file-degrade 'configuration: failed (GATEWAY_BASE_URL is invalid for online doctor)' \
+  env PATH="$CAPTURE_BIN:$BASE_PATH" bash "$ROOT/bin/lucairn" doctor --env "$L3_SHELL_ENV" --compose "$ROOT/docker-compose.customer.yml" --customer-key-file "$KEY" --skip-image-check
+grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq -- '--l3-config off' \
+  || { grep 'lucairn-doctor-keyed' "$CAPTURE_LOG" >&2; echo 'doctor must pass --l3-config off for a file posture degrade with no export' >&2; exit 1; }
+: > "$CAPTURE_LOG"
+expect_failure l3-config-shell-reject 'configuration: failed (GATEWAY_BASE_URL is invalid for online doctor)' \
+  env LUCAIRN_L3_AVAILABILITY_POSTURE=reject PATH="$CAPTURE_BIN:$BASE_PATH" bash "$ROOT/bin/lucairn" doctor --env "$L3_SHELL_ENV" --compose "$ROOT/docker-compose.customer.yml" --customer-key-file "$KEY" --skip-image-check
+grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq -- '--l3-config on:shell:LUCAIRN_L3_AVAILABILITY_POSTURE=reject' \
+  || { grep 'lucairn-doctor-keyed' "$CAPTURE_LOG" >&2; echo 'doctor must report the exported posture reject (Compose uses it over customer.env)' >&2; exit 1; }
 
 # The helper accepts proxy/CA configuration only from its explicit arguments.
 # Both failure probes stop before a network connection is attempted.

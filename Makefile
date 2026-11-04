@@ -44,6 +44,7 @@ test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-h
 		tests/test_contrib_clients.sh \
 		tests/test_migration_version_cap.sh \
 		tests/test_sanitizer_core_compose.sh \
+		tests/test_registry_credentials_rollback.sh \
 		tests/test_sanitizer_core_helm.sh \
 		tests/test_servicenow_optin.sh \
 		tests/test_device_countersign_prereq.sh \
