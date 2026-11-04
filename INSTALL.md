@@ -2780,8 +2780,9 @@ read the keys, and their owner inside the Pod comes from the chart (`fsGroup`
 10001, mode 0440). Keep the directory private; delete it once the Secrets exist
 if your PKI keeps the CA elsewhere. Only the core's server leaf (SAN
 `dsa-sanitizer-core`) and the gateway's client leaf (SAN `dsa-gateway`) are
-projected, each with the CA certificate; the CA key
-in `ca/` never becomes a Secret. To use your own PKI instead, issue the two
+projected, each with the CA certificate; the CA (key and certificate) is
+written to the sibling folder `/secure/sanitizer-core-mtls-ca/` and never
+becomes a Secret. To use your own PKI instead, issue the two
 leaves with those SANs from one CA and point `sanitizer-core.mtls.*Key` /
 `gateway.sanitizerCore.mtls.*Key` at your Secret's key names.
 

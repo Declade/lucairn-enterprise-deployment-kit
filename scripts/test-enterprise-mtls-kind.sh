@@ -224,7 +224,8 @@ create_application_secret dsa-identity sanitizer-core
 # Kit 2.0: the gateway -> sanitizer-core hop is verified mTLS on its own
 # deploy CA (the same tree the Compose path uses). The kit's bootstrap script
 # writes it under the private state directory; only the core's and the
-# gateway's service directories become Secrets (the CA key in ca/ never does).
+# gateway's service directories become Secrets (the CA, in the sibling
+# sanitizer-core-mtls-ca/, never does).
 # The core's claim hop to the witness uses the `sanitizer` mesh leaf above.
 bash "$ROOT/scripts/bootstrap-sanitizer-core-mtls.sh" "$STATE_DIR/sanitizer-core-mtls" >/dev/null
 "${K[@]}" -n dsa-identity create secret generic sanitizer-core-mtls \
