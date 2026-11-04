@@ -590,11 +590,15 @@ grep -q 'No migrations\|Applying NO migrations' "$TMP/migrate.out" && pass "refu
 if grep -q 'synthetic-test-password' "$TMP/migrate.out" "$TMP/stub.log"; then fail "PGPASSWORD never printed or passed as argv"; else pass "PGPASSWORD never printed or passed as argv"; fi
 
 echo ""
+file_mode() { case "$(uname -s)" in Darwin|FreeBSD|OpenBSD|NetBSD) stat -f '%Lp' "$1" ;; *) stat -c '%a' "$1" ;; esac; }
 echo "D. scripts/bootstrap-sanitizer-core-mtls.sh"
 CD="$TMP/certs"
+# Kit round 2: the deploy CA lives OUTSIDE the cert tree; for a cert directory
+# that is not <dir>/.certs/sanitizer-core-mtls it is the sibling <dir>-ca.
+CDCA="$TMP/certs-ca"
 if bash "$BOOTSTRAP" "$CD" > "$TMP/boot.out" 2>&1; then pass "bootstrap runs"; else fail "bootstrap runs: $(tail -2 "$TMP/boot.out")"; fi
 verify_leaf() { # <name> <crt> <purpose> <san>
-  if openssl verify -CAfile "$CD/ca/ca.crt" -purpose "$3" "$2" >/dev/null 2>&1 \
+  if openssl verify -CAfile "$CDCA/ca.crt" -purpose "$3" "$2" >/dev/null 2>&1 \
      && openssl x509 -noout -text -in "$2" | grep -q "DNS:$4\(,\|$\)"; then
     pass "$1 verifies as $3 with SAN $4"
   else
@@ -605,18 +609,21 @@ verify_leaf "core server leaf" "$CD/sanitizer-core/dsa-sanitizer-core.crt" sslse
 verify_leaf "core witness client leaf" "$CD/sanitizer-core/witness-client.crt" sslclient dsa-sanitizer
 verify_leaf "gateway client leaf" "$CD/gateway/dsa-gateway.crt" sslclient dsa-gateway
 verify_leaf "witness server leaf" "$CD/veil-witness/dsa-veil-witness.crt" sslserver dsa-veil-witness
-if openssl verify -CAfile "$CD/ca/ca.crt" -purpose sslserver "$CD/gateway/dsa-gateway.crt" >/dev/null 2>&1; then
+if openssl verify -CAfile "$CDCA/ca.crt" -purpose sslserver "$CD/gateway/dsa-gateway.crt" >/dev/null 2>&1; then
   fail "gateway client leaf is NOT a server leaf"
 else
   pass "gateway client leaf is NOT a server leaf"
 fi
 [ ! -e "$CD/sanitizer-core/ca.key" ] && [ ! -e "$CD/gateway/ca.key" ] && [ ! -e "$CD/veil-witness/ca.key" ] \
   && pass "no CA key in a mounted directory" || fail "no CA key in a mounted directory"
+[ ! -e "$CD/ca" ] && [ -f "$CDCA/ca.key" ] && [ "$(file_mode "$CDCA")" = 700 ] \
+  && pass "round 2: the CA lives outside the cert tree, in the 0700 sibling <cert dir>-ca" \
+  || fail "round 2: the CA lives outside the cert tree (ca/ in tree: $([ -e "$CD/ca" ] && echo yes || echo no); $CDCA/ca.key: $([ -f "$CDCA/ca.key" ] && echo yes || echo no))"
 BAD_MODES="$(find "$CD" -name '*.key' -perm -004 | wc -l | tr -d ' ')"
 check_eq "every private key is 0600" "0" "$BAD_MODES"
-BEFORE="$(find "$CD" -type f -exec cat {} + | openssl dgst -sha256 | awk '{print $NF}')"
+BEFORE="$(find "$CD" "$CDCA" -type f -exec cat {} + | openssl dgst -sha256 | awk '{print $NF}')"
 bash "$BOOTSTRAP" "$CD" > /dev/null 2>&1
-AFTER="$(find "$CD" -type f -exec cat {} + | openssl dgst -sha256 | awk '{print $NF}')"
+AFTER="$(find "$CD" "$CDCA" -type f -exec cat {} + | openssl dgst -sha256 | awk '{print $NF}')"
 check_eq "re-run rotates nothing" "$BEFORE" "$AFTER"
 mkdir -p "$TMP/orphan/sanitizer-core"
 cp "$CD/sanitizer-core/dsa-sanitizer-core.crt" "$CD/sanitizer-core/dsa-sanitizer-core.key" "$TMP/orphan/sanitizer-core/"
@@ -628,7 +635,6 @@ fi
 
 echo ""
 echo "D2. scripts/write-sanitizer-core-registry-dsn.sh"
-file_mode() { case "$(uname -s)" in Darwin|FreeBSD|OpenBSD|NetBSD) stat -f '%Lp' "$1" ;; *) stat -c '%a' "$1" ;; esac; }
 file_inode() { case "$(uname -s)" in Darwin|FreeBSD|OpenBSD|NetBSD) stat -f '%i' "$1" ;; *) stat -c '%i' "$1" ;; esac; }
 WD="$TMP/dsnw"
 mkdir -p "$WD"
@@ -937,7 +943,7 @@ V="$(variant badsan)"
 W="$V/.certs/sanitizer-core-mtls"
 printf 'basicConstraints = critical, CA:FALSE\nkeyUsage = critical, digitalSignature\nextendedKeyUsage = serverAuth\nsubjectAltName = DNS:veil-witness\n' > "$TMP/badsan.ext"
 openssl req -new -key "$W/veil-witness/dsa-veil-witness.key" -subj "/CN=veil-witness" -out "$TMP/badsan.csr" 2>/dev/null
-openssl x509 -req -in "$TMP/badsan.csr" -CA "$W/ca/ca.crt" -CAkey "$W/ca/ca.key" -set_serial 0x1234 -days 30 -extfile "$TMP/badsan.ext" -out "$W/veil-witness/dsa-veil-witness.crt" 2>/dev/null
+openssl x509 -req -in "$TMP/badsan.csr" -CA "$V/.secrets/sanitizer-core-mtls-ca/ca.crt" -CAkey "$V/.secrets/sanitizer-core-mtls-ca/ca.key" -set_serial 0x1234 -days 30 -extfile "$TMP/badsan.ext" -out "$W/veil-witness/dsa-veil-witness.crt" 2>/dev/null
 expect_doctor_red "RED witness leaf without the pinned SAN" "$V" "lacks the DNS SAN dsa-veil-witness"
 
 V="$(variant cadiff)"
@@ -952,7 +958,7 @@ V="$(variant sha1)"
 W="$V/.certs/sanitizer-core-mtls"
 printf 'basicConstraints = critical, CA:FALSE\nkeyUsage = critical, digitalSignature\nextendedKeyUsage = clientAuth\nsubjectAltName = DNS:dsa-gateway\n' > "$TMP/sha1.ext"
 openssl req -new -key "$W/gateway/dsa-gateway.key" -subj "/CN=dsa-gateway" -out "$TMP/sha1.csr" 2>/dev/null
-openssl x509 -req -sha1 -in "$TMP/sha1.csr" -CA "$W/ca/ca.crt" -CAkey "$W/ca/ca.key" -set_serial 0x4321 -days 30 -extfile "$TMP/sha1.ext" -out "$W/gateway/dsa-gateway.crt" 2>/dev/null
+openssl x509 -req -sha1 -in "$TMP/sha1.csr" -CA "$V/.secrets/sanitizer-core-mtls-ca/ca.crt" -CAkey "$V/.secrets/sanitizer-core-mtls-ca/ca.key" -set_serial 0x4321 -days 30 -extfile "$TMP/sha1.ext" -out "$W/gateway/dsa-gateway.crt" 2>/dev/null
 expect_doctor_red "RED SHA-1-signed leaf (Go refuses it; openssl verify does not)" "$V" "certificate is SHA-1-signed"
 
 V="$(variant nodir)"; rm -rf "$V/.certs/sanitizer-core-mtls"
@@ -1662,17 +1668,26 @@ grep -Fq "bin/lucairn up first runs the sanitizer core's capped registry migrati
   && pass "H1 lucairn-init's Next block says up runs the migration (and gives the plain-Compose command)" \
   || fail "H1 lucairn-init's Next block says up runs the migration"
 H1_DOCS_BAD=""
+h1_docs_check() { # <file> — every whole-stack `docker compose ... up -d`
+  # (one line, or a command block continued with backslashes: kit round 2, the
+  # check matched one-line commands only and missed INSTALL.md's self-hosted
+  # step 6) is preceded (within 6 lines of the command's FIRST line) by the
+  # migration step or says bin/lucairn up does it. Prints <file>:<first line>.
+  awk -v f="$(basename "$1")" '
+    function check(cmd, start,   i, ok) {
+      if (cmd ~ /docker compose/ && cmd ~ /-f docker-compose\.customer\.yml/ && cmd ~ /--env-file customer\.env/ && cmd ~ /[[:space:]]up -d[[:space:]]*$/) {
+        ok = 0
+        for (i = start - 6; i < start; i++) if (i > 0 && (line[i] ~ /migrate-sanitizer-core/ || line[i] ~ /bin\/lucairn up/)) ok = 1
+        if (!ok) print f ":" start
+      }
+    }
+    { line[NR] = $0
+      if (cont) cmd = cmd " " $0; else { cmd = $0; start = NR }
+      if ($0 ~ /\\[[:space:]]*$/) { sub(/\\[[:space:]]*$/, "", cmd); cont = 1 } else { cont = 0; check(cmd, start) }
+    }' "$1"
+}
 for f in README.md INSTALL.md; do
-  # Every documented plain `docker compose ... up -d` of the whole stack in the
-  # install paths is preceded (within 6 lines) by the migration step or says
-  # bin/lucairn up does it.
-  awk -v f="$f" '
-    { line[NR] = $0 }
-    /docker compose -f docker-compose.customer.yml.*--env-file customer.env.* up -d$/ {
-      ok = 0
-      for (i = NR - 6; i < NR; i++) if (i > 0 && (line[i] ~ /migrate-sanitizer-core/ || line[i] ~ /bin\/lucairn up/)) ok = 1
-      if (!ok) print f ":" NR
-    }' "$KIT/$f"
+  h1_docs_check "$KIT/$f"
 done > "$TMP/h1-docs.txt"
 [ -s "$TMP/h1-docs.txt" ] && H1_DOCS_BAD="$(tr '\n' ' ' < "$TMP/h1-docs.txt")"
 if [ -z "$H1_DOCS_BAD" ]; then pass "H1 no documented whole-stack 'docker compose ... up -d' without the migration step before it"; else fail "H1 documented whole-stack up -d without the migration step: $H1_DOCS_BAD"; fi
@@ -1828,12 +1843,14 @@ cat > "$LXB/sudo" <<'STUBSUDO'
 echo "sudo $*" >> "$STUB_SUDO_LOG"
 [ "${STUB_SUDO_FAIL:-0}" = 1 ] && { echo "sudo: a password is required" >&2; exit 1; }
 STUB_ID_U=0; export STUB_ID_U
+# Like sudo(8): the invoking user's ids (kit round 2, R1 hands folders back).
+SUDO_UID="$(/usr/bin/id -u)"; SUDO_GID="$(/usr/bin/id -g)"; export SUDO_UID SUDO_GID
 exec "$@"
 STUBSUDO
 printf '#!/bin/sh\necho "chown $*" >> "$STUB_SUDO_LOG"\n' > "$LXB/chown"
 # GNU stat syntax on a BSD userland (the simulated Linux host runs on macOS).
 if [ "$(/usr/bin/uname -s)" = "Darwin" ]; then
-  printf '#!/bin/sh\nif [ "$1" = "-c" ]; then f="$2"; shift 2; case "$f" in %%a) exec /usr/bin/stat -f %%Lp "$@" ;; %%u) exec /usr/bin/stat -f %%u "$@" ;; %%i) exec /usr/bin/stat -f %%i "$@" ;; esac; fi\nexec /usr/bin/stat "$@"\n' > "$LXB/stat"
+  printf '#!/bin/sh\nif [ "$1" = "-c" ]; then f="$2"; shift 2; case "$f" in %%a) exec /usr/bin/stat -f %%Lp "$@" ;; %%u) exec /usr/bin/stat -f %%u "$@" ;; %%g) exec /usr/bin/stat -f %%g "$@" ;; %%i) exec /usr/bin/stat -f %%i "$@" ;; esac; fi\nexec /usr/bin/stat "$@"\n' > "$LXB/stat"
 fi
 chmod 0755 "$LXB"/*
 M2D="$TMP/m2-certs"
@@ -1924,6 +1941,166 @@ for cell in "26.0.0|ok" "26.1.4|ok" "27.3.1|ok" "25.0.5|ok" "25.1.0|ok" "23.0.11
   fi
 done
 grep -Fq "Docker Engine 26.0.0 or newer" "$KIT/INSTALL.md" && pass "TOB-K20-03 INSTALL.md states the Docker Engine minimum" || fail "TOB-K20-03 INSTALL.md states the Docker Engine minimum"
+
+echo ""
+echo "I. Kit round 2 (2026-11-04): R1 R2 CA-key mount, H1 multi-line docs, bundle password sentence"
+# Each case is RED on the pre-round head (cf45011) and GREEN here; the counts
+# are in the PR description. NON-COVERAGE: this Mac has no passwordless sudo
+# and no Docker daemon, so no case changes the effective uid or boots the
+# gateway. "Root" is the sudo shim (id -u = 0, SUDO_UID/SUDO_GID = this user)
+# and the hand-back is asserted from the logged chown calls; folder MODES are
+# real. The gateway's permission-denied crash itself is DSA veil.go
+# (loadWitnessSignedManifest: only os.ErrNotExist is tolerated), read, not run.
+
+# ── R1: a sudo bootstrap leaves ./.certs traversable and the operator's ─────
+R1P="$TMP/r1-proj"; mkdir -p "$R1P/scripts"
+cp "$BOOTSTRAP" "$R1P/scripts/"; cp "$COMPOSE" "$R1P/docker-compose.customer.yml"
+: > "$TMP/r1-sudo.log"
+if env -u LUCAIRN_CONTAINER_UID PATH="$LXB:$BASE_PATH" STUB_SUDO_LOG="$TMP/r1-sudo.log" sudo bash "$R1P/scripts/bootstrap-sanitizer-core-mtls.sh" > "$TMP/r1-boot.out" 2>&1; then
+  pass "R1 the default-dir bootstrap runs under (simulated) sudo on a project without ./.certs"
+else
+  fail "R1 the default-dir bootstrap under sudo: $(tail -2 "$TMP/r1-boot.out")"
+fi
+check_eq "R1 ./.certs created under sudo is 0755 (uid 10001 traverses /certs; was 0700 from umask 077)" "755" "$(file_mode "$R1P/.certs" 2>/dev/null)"
+check_eq "R1 the cert directory is 0755" "755" "$(file_mode "$R1P/.certs/sanitizer-core-mtls" 2>/dev/null)"
+ME_UG="$(/usr/bin/id -u):$(/usr/bin/id -g)"
+grep -qx "chown $ME_UG $R1P/.certs" "$TMP/r1-sudo.log" \
+  && pass "R1 ./.certs is handed back to SUDO_UID:SUDO_GID (the operator copies the signed manifest in without sudo)" \
+  || fail "R1 ./.certs handed back to the sudo user: $(tr '\n' '|' < "$TMP/r1-sudo.log")"
+grep -qx "chown $ME_UG $R1P/.secrets" "$TMP/r1-sudo.log" && [ "$(file_mode "$R1P/.secrets" 2>/dev/null)" = 700 ] \
+  && pass "R1 ./.secrets (created for the CA) is 0700 and handed back (the DSN writer runs as the operator)" \
+  || fail "R1 ./.secrets handed back + 0700: mode $(file_mode "$R1P/.secrets" 2>/dev/null); $(tr '\n' '|' < "$TMP/r1-sudo.log")"
+if grep -q "^chown $ME_UG .*sanitizer-core-mtls-ca$" "$TMP/r1-sudo.log"; then
+  fail "R1 the CA directory stays root's (it was handed back)"
+else
+  pass "R1 the CA directory stays root's (not handed back)"
+fi
+# The init path (Linux, not root): the same folders through init's sudo step.
+check_eq "R1 lucairn-init on Linux as non-root (sudo step): <out>/.certs is 0755" "755" "$(file_mode "$M2I/.certs" 2>/dev/null)"
+
+# ── CA private key: no container mounts it ──────────────────────────────────
+# End to end: the bootstrap writes the CA where it writes it, the real Compose
+# CLI renders the project with the example env, and no service's bind-mount
+# source may contain the CA key (round 1: the gateway's ./.certs:/certs).
+R1KEY="$(find "$R1P" -name ca.key -type f 2>/dev/null | head -1)"
+[ -n "$R1KEY" ] && pass "CA the bootstrap wrote one CA key ($R1KEY)" || fail "CA the bootstrap wrote a CA key"
+if [ "$HAVE_COMPOSE" -eq 1 ] && [ -n "$R1KEY" ]; then
+  if docker compose -f "$R1P/docker-compose.customer.yml" --env-file "$PINNED_ENV" config --format json > "$TMP/ca-render.json" 2> "$TMP/ca-render.err"; then
+    python3 - "$TMP/ca-render.json" "$R1KEY" > "$TMP/ca-render.txt" <<'PY'
+import json, os, sys
+svcs = json.load(open(sys.argv[1]))["services"]
+key = os.path.realpath(sys.argv[2])
+hits = []
+for name, svc in sorted(svcs.items()):
+    for v in svc.get("volumes") or []:
+        if v.get("type") != "bind":
+            continue
+        src = os.path.realpath(v.get("source", ""))
+        if key == src or key.startswith(src.rstrip(os.sep) + os.sep):
+            hits.append("%s:%s->%s" % (name, v.get("source"), v.get("target")))
+print(("ok " if not hits else "FAIL ") + "CA render: no service's bind mount contains the CA private key (%s)" % (", ".join(hits) or "none"))
+PY
+    while IFS= read -r line; do case "$line" in ok\ *) pass "${line#ok }" ;; *) fail "${line#FAIL }" ;; esac; done < "$TMP/ca-render.txt"
+  else
+    fail "CA render of the bootstrapped project: $(tail -2 "$TMP/ca-render.err")"
+  fi
+else
+  skip "docker compose CLI not available — CA render"
+fi
+check_eq "CA the default layout keeps the CA in <dir>/.secrets/sanitizer-core-mtls-ca" "$R1P/.secrets/sanitizer-core-mtls-ca/ca.key" "$R1KEY"
+# An old-layout CA (<cert dir>/ca, round 1) moves out on the next run, and no
+# leaf rotates.
+R1O="$TMP/r1-old"; mkdir -p "$R1O/scripts"; cp "$BOOTSTRAP" "$R1O/scripts/"; cp "$COMPOSE" "$R1O/docker-compose.customer.yml"
+bash "$R1O/scripts/bootstrap-sanitizer-core-mtls.sh" > /dev/null 2>&1
+if [ -d "$R1O/.secrets/sanitizer-core-mtls-ca" ]; then
+  mkdir -p "$R1O/.certs/sanitizer-core-mtls/ca"
+  mv "$R1O/.secrets/sanitizer-core-mtls-ca/ca.key" "$R1O/.secrets/sanitizer-core-mtls-ca/ca.crt" "$R1O/.certs/sanitizer-core-mtls/ca/"
+  rmdir "$R1O/.secrets/sanitizer-core-mtls-ca"
+fi
+R1O_BEFORE="$(cat "$R1O"/.certs/sanitizer-core-mtls/sanitizer-core/*.crt "$R1O"/.certs/sanitizer-core-mtls/gateway/*.crt "$R1O"/.certs/sanitizer-core-mtls/veil-witness/*.crt 2>/dev/null | openssl dgst -sha256 | awk '{print $NF}')"
+bash "$R1O/scripts/bootstrap-sanitizer-core-mtls.sh" > "$TMP/r1-old.out" 2>&1
+R1O_AFTER="$(cat "$R1O"/.certs/sanitizer-core-mtls/sanitizer-core/*.crt "$R1O"/.certs/sanitizer-core-mtls/gateway/*.crt "$R1O"/.certs/sanitizer-core-mtls/veil-witness/*.crt 2>/dev/null | openssl dgst -sha256 | awk '{print $NF}')"
+if [ ! -e "$R1O/.certs/sanitizer-core-mtls/ca" ] && [ -f "$R1O/.secrets/sanitizer-core-mtls-ca/ca.key" ] && [ "$R1O_BEFORE" = "$R1O_AFTER" ] \
+   && grep -Fq "moved the CA out of the mounted cert tree" "$TMP/r1-old.out"; then
+  pass "CA a round-1 CA in <cert dir>/ca is moved out on the next run; no leaf rotates"
+else
+  fail "CA old-layout move: ca/ left: $([ -e "$R1O/.certs/sanitizer-core-mtls/ca" ] && echo yes || echo no); leaves same: $([ "$R1O_BEFORE" = "$R1O_AFTER" ] && echo yes || echo no); $(tail -1 "$TMP/r1-old.out")"
+fi
+# Doctor RED: the CA still in the cert tree (a round-1 install).
+V="$(variant caintree)"
+mkdir -p "$V/.certs/sanitizer-core-mtls/ca"; mv "$V/.secrets/sanitizer-core-mtls-ca/ca.key" "$V/.secrets/sanitizer-core-mtls-ca/ca.crt" "$V/.certs/sanitizer-core-mtls/ca/" 2>/dev/null
+expect_doctor_red "CA RED doctor: the deploy CA still inside the cert tree (round-1 layout)" "$V" "holds the deploy CA inside the cert tree"
+# Doctor RED: a CA directory the operator named inside the gateway's /certs.
+V="$(variant caundercerts)"
+printf 'SANDBOX_B_CERT_DIR=%s\nSANITIZER_CORE_MTLS_CA_DIR=%s\n' "$V/.certs" "$V/.certs/my-ca" >> "$V/customer.env"
+expect_doctor_red "CA RED doctor: SANITIZER_CORE_MTLS_CA_DIR inside the gateway's /certs mount" "$V" "is inside the gateway's /certs (SANDBOX_B_CERT_DIR)"
+
+# ── R1 doctor (Linux): uid 10001 must traverse /certs and read the manifest ─
+r1_doctor() { # <env file> -> $TMP/r1-doc.out (simulated Linux host)
+  env -u LUCAIRN_CONTAINER_UID PATH="$LXB:$DBIN:$BASE_PATH" bash "$KIT/bin/lucairn" doctor --env "$1" --compose "$KIT_COMPOSE" --offline --skip-image-check > "$TMP/r1-doc.out" 2>&1
+}
+V="$(variant r1certs)"
+mkdir -p "$V/.certs"; printf '{"synthetic":"manifest"}\n' > "$V/.certs/witness-signed-manifest.json"
+printf 'SANDBOX_B_CERT_DIR=%s\n' "$V/.certs" >> "$V/customer.env"
+chmod 0700 "$V/.certs"; chmod 0644 "$V/.certs/witness-signed-manifest.json"
+if r1_doctor "$V/customer.env"; then
+  fail "R1 RED doctor (Linux): ./.certs 0700 owned by another uid than 10001 — doctor stayed green"
+elif grep -Fq "gateway /certs mount: failed ($V/.certs is mounted at /certs and uid 10001, the gateway's user, cannot traverse it" "$TMP/r1-doc.out"; then
+  pass "R1 RED doctor (Linux): ./.certs 0700 not owned by uid 10001 -> the gateway cannot traverse /certs (crash-loop) — FAILS"
+else
+  fail "R1 RED doctor (Linux) traverse: $(grep -E 'certs mount|failed' "$TMP/r1-doc.out" | head -3 | tr '\n' ' ')"
+fi
+chmod 0755 "$V/.certs"; chmod 0600 "$V/.certs/witness-signed-manifest.json"
+if r1_doctor "$V/customer.env"; then
+  fail "R1 RED doctor (Linux): manifest 0600 owned by another uid — doctor stayed green"
+elif grep -Fq "gateway /certs mount: failed (uid 10001 cannot read $V/.certs/witness-signed-manifest.json" "$TMP/r1-doc.out"; then
+  pass "R1 RED doctor (Linux): the signed manifest unreadable for uid 10001 — FAILS"
+else
+  fail "R1 RED doctor (Linux) manifest read: $(grep -E 'certs mount|failed' "$TMP/r1-doc.out" | head -3 | tr '\n' ' ')"
+fi
+chmod 0644 "$V/.certs/witness-signed-manifest.json"
+r1_doctor "$V/customer.env"
+grep -Fq "gateway /certs mount: ok (uid 10001 can traverse $V/.certs and read $V/.certs/witness-signed-manifest.json)" "$TMP/r1-doc.out" \
+  && pass "R1 GREEN doctor (Linux): ./.certs 0755 + manifest 0644 — the /certs line is ok" \
+  || fail "R1 GREEN doctor (Linux) /certs line: $(grep 'certs mount' "$TMP/r1-doc.out" | head -2 | tr '\n' ' ')"
+
+# ── R2: the development hop accepts exactly GRPC_TLS_ENABLED=false ──────────
+for v in True 1 yes TRUE; do
+  V="$(variant "r2-$v")"; sed -i.bak "s/^GRPC_TLS_ENABLED=.*/GRPC_TLS_ENABLED=$v/" "$V/customer.env"; rm -f "$V/customer.env.bak"
+  expect_doctor_red "R2 RED offline dev doctor: GRPC_TLS_ENABLED=$v (the core's strict parser refuses it)" "$V" "the core accepts exactly 'true' or 'false' — with '$v' it refuses to start"
+done
+
+# ── H1 leftover: the multi-line docs check catches INSTALL.md step 6 ────────
+printf '```bash\ndocker compose \\\n  -f docker-compose.customer.yml \\\n  --env-file customer.env \\\n  up -d\n```\n' > "$TMP/h1-multiline.md"
+check_eq "H1 the docs check flags a backslash-continued whole-stack up -d with no migration before it" "h1-multiline.md:2" "$(h1_docs_check "$TMP/h1-multiline.md")"
+awk '/^For \*\*self-hosted inference\*\*/,/^If you omit the self-hosted overlay/' "$KIT/INSTALL.md" | grep -q 'run --rm migrate-sanitizer-core' \
+  && pass "H1 INSTALL.md production step 6 (self-hosted start) runs the registry migration first" \
+  || fail "H1 INSTALL.md production step 6 (self-hosted start) runs the registry migration first"
+
+# ── Bundle sentence: customer.env travels as-is, with its passwords ─────────
+if [ -n "${H2R:-}" ] && [ -f "$H2R/install/customer.env" ]; then
+  grep -Eq '^POSTGRES_SANITIZER_CORE_PASSWORD=.+' "$H2R/install/customer.env" \
+    && pass "bundle precondition: the offline bundle's install/customer.env carries the registry DB password" \
+    || fail "bundle precondition: the offline bundle's install/customer.env carries the registry DB password"
+  tr '\n' ' ' < "$H2R/INSTALL-CUSTOMER.md" | grep -Fq "That env file IS in this bundle as-is, with its passwords" \
+    && pass "bundle INSTALL-CUSTOMER.md says install/customer.env travels with its passwords (protect the bundle like the env file)" \
+    || fail "bundle INSTALL-CUSTOMER.md says install/customer.env travels with its passwords"
+  if tr '\n' ' ' < "$H2R/INSTALL-CUSTOMER.md" | grep -Fq "the keys and the database password are created on this host"; then
+    fail "bundle INSTALL-CUSTOMER.md no longer says the database password is created on the customer host"
+  else
+    pass "bundle INSTALL-CUSTOMER.md no longer says the database password is created on the customer host"
+  fi
+else
+  fail "bundle sentence: the H2 bundle is not available"
+fi
+tr '\n' ' ' < "$KIT/INSTALL.md" | tr -s ' ' | grep -Fq '`install/customer.env` itself travels in the bundle as-is, with its passwords' \
+  && pass "bundle INSTALL.md step 3b says install/customer.env travels with its passwords" \
+  || fail "bundle INSTALL.md step 3b says install/customer.env travels with its passwords"
+if grep -Fq "password stay off the archive" "$KIT/bin/lucairn"; then
+  fail "bundle bin/lucairn no longer claims the DB password stays off the archive"
+else
+  pass "bundle bin/lucairn no longer claims the DB password stays off the archive"
+fi
 
 echo ""
 if [ "$FAILS" -eq 0 ]; then
