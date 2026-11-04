@@ -1824,6 +1824,7 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" != "0" ] \
     echo "  $_sanitizer_core_bootstrap_hint" >&2
     _sanitizer_core_bootstrap=(sudo env "LUCAIRN_CONTAINER_UID=${LUCAIRN_CONTAINER_UID:-10001}" \
       ${OPENSSL:+"OPENSSL=$OPENSSL"} ${CA_DAYS:+"CA_DAYS=$CA_DAYS"} ${LEAF_DAYS:+"LEAF_DAYS=$LEAF_DAYS"} \
+      ${SANITIZER_CORE_MTLS_CA_DIR:+"SANITIZER_CORE_MTLS_CA_DIR=$SANITIZER_CORE_MTLS_CA_DIR"} \
       "${_sanitizer_core_bootstrap[@]}")
   fi
 fi

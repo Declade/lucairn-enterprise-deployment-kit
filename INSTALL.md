@@ -416,6 +416,8 @@ true` + `sanitizer.gliner.enabled: true` in your
 profile active:
 
 ```bash
+# On a running install the registry is already migrated; on a fresh one run the
+# migrate-sanitizer-core step first (§ "Sanitizer core (kit 2.0, Compose)" step 3).
 docker compose --profile phase7 \
   -f docker-compose.customer.yml --env-file customer.env up -d
 ```
@@ -1253,9 +1255,16 @@ docker compose -f docker-compose.customer.yml --env-file customer.env up -d
 
 For **self-hosted inference**, load the self-hosted overlay so the local
 Sandbox B container + model runtime profile come up alongside the customer
-stack:
+stack (`bin/lucairn up --env customer.env` does both steps; with plain Compose,
+migrate first — the sanitizer core refuses to start on an unmigrated registry):
 
 ```bash
+docker compose \
+  -f docker-compose.customer.yml \
+  -f docker-compose.self-hosted.yml \
+  --env-file customer.env \
+  --profile sanitizer-core-migrate \
+  run --rm migrate-sanitizer-core
 docker compose \
   -f docker-compose.customer.yml \
   -f docker-compose.self-hosted.yml \
@@ -2474,11 +2483,23 @@ not start.
 ### 2. mTLS material (once)
 
 ```bash
-sudo scripts/bootstrap-sanitizer-core-mtls.sh        # writes .certs/sanitizer-core-mtls/
+sudo scripts/bootstrap-sanitizer-core-mtls.sh        # writes .certs/sanitizer-core-mtls/ + .secrets/sanitizer-core-mtls-ca/
 ```
 
 It creates a deploy-local CA and four leaves, each in the directory of the one
-container that mounts it. The CA private key (`ca/ca.key`) is never mounted.
+container that mounts it. The CA (`ca.key`, `ca.crt`) lives in
+`.secrets/sanitizer-core-mtls-ca/` (root-only, `0700`), outside `.certs/`: the
+gateway mounts the whole `.certs/` at `/certs`, so nothing under it may hold
+the CA private key. For a cert directory of your own, the CA goes to the
+sibling `<dir>-ca` (or pass a folder as the second argument and set
+`SANITIZER_CORE_MTLS_CA_DIR` to it in `customer.env`); `bin/lucairn doctor`
+fails while the CA sits inside a mounted folder. A CA that an earlier 2.0
+pre-release left in `.certs/sanitizer-core-mtls/ca/` is moved on the next run.
+Folders the script creates under `sudo` (`.certs/`, `.secrets/`) are handed
+back to your user, and `.certs/` stays `0755`, so the gateway (uid 10001) can
+read `/certs/witness-signed-manifest.json` and you can copy that file in
+without `sudo`; the doctor fails on Linux while uid 10001 cannot traverse
+`.certs/` or read the manifest.
 
 | File | Used by | Purpose |
 |---|---|---|
@@ -2833,8 +2854,11 @@ actual files under `images/`; it must not assume an archive exists.
 3b. Kit 2.0 bundles: create the sanitizer core's mTLS material and registry DSN
    file on this host (neither travels in the bundle; `install/customer.env`
    already names `install/.certs/sanitizer-core-mtls` and
-   `install/.secrets/sanitizer-core/registry-dsn`). `bin/lucairn up` later runs
-   the capped registry migration itself.
+   `install/.secrets/sanitizer-core/registry-dsn`). `install/customer.env`
+   itself travels in the bundle as-is, with its passwords
+   (`POSTGRES_SANITIZER_CORE_PASSWORD` and the others): protect the bundle like
+   the env file. `bin/lucairn up` later runs the capped registry migration
+   itself.
 
 ```bash
 sudo scripts/bootstrap-sanitizer-core-mtls.sh "$PWD/install/.certs/sanitizer-core-mtls"

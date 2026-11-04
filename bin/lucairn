@@ -6952,9 +6952,11 @@ docker load -i images/lucairn-images.tar
     core_lines='The new sanitizer core needs two one-time steps before the first start: its
 mTLS material in install/.certs/sanitizer-core-mtls and its registry DSN file
 in install/.secrets/sanitizer-core/ (the paths install/customer.env names, so
-it needs no change). Neither is in this bundle: the keys and the database
-password are created on this host. On Linux run the bootstrap with sudo so the
-keys belong to the container user (uid 10001). Re-run the DSN step after every
+it needs no change). Neither is in this bundle: the keys are created on this
+host and the DSN file is written here from install/customer.env. That env file
+IS in this bundle as-is, with its passwords (POSTGRES_SANITIZER_CORE_PASSWORD
+and the others): protect this bundle like the env file. On Linux run the
+bootstrap with sudo so the keys belong to the container user (uid 10001). Re-run the DSN step after every
 change of POSTGRES_SANITIZER_CORE_PASSWORD or POSTGRES_SSLMODE.
 
 ```bash
@@ -7029,9 +7031,10 @@ EOF
 # bundle_stage_env <source env> <staged env> — final-read H2. bin/lucairn-init
 # records the sanitizer core's mTLS directory and registry DSN file as
 # ABSOLUTE paths beside customer.env on the machine it ran on. Neither the
-# material nor the DSN file travels in a bundle (private keys and the DB
-# password stay off the archive; the customer host creates both, see
-# INSTALL-CUSTOMER.md), so a build-host path in the staged env points at
+# mTLS material nor the DSN file travels in a bundle (the customer host creates
+# both, see INSTALL-CUSTOMER.md). customer.env itself DOES travel, as-is, with
+# its passwords (POSTGRES_SANITIZER_CORE_PASSWORD and the others): the bundle
+# must be protected like the env file. A build-host path in the staged env points at
 # nothing on the customer host: the core cannot start and the offline doctor
 # fails. The staged copy therefore carries the compose defaults, which are
 # relative to install/ (the Compose project directory of the bundle):
@@ -7882,6 +7885,125 @@ sanitizer_core_cert_dir() {
   esac
 }
 
+# sanitizer_core_host_path <compose file> <path> — a bind-mount source as the
+# host sees it: absolute as-is, relative against the compose project directory;
+# no trailing slash.
+sanitizer_core_host_path() {
+  local base p="$2"
+  case "$p" in
+    /*) : ;;
+    *)
+      base="$(cd "$(dirname "$1")" 2>/dev/null && pwd)" || base="$(dirname "$1")"
+      p="$base/${p#./}"
+      ;;
+  esac
+  while [ "${#p}" -gt 1 ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done
+  printf '%s' "$p"
+}
+
+# Kit round 2: the deploy CA (its private key signs every leaf) lives OUTSIDE
+# the mounted cert tree. Same rule as scripts/bootstrap-sanitizer-core-mtls.sh:
+# SANITIZER_CORE_MTLS_CA_DIR when customer.env sets it, else
+# <dir>/.secrets/sanitizer-core-mtls-ca for the default layout
+# <dir>/.certs/sanitizer-core-mtls, else the sibling <cert dir>-ca.
+sanitizer_core_ca_dir() {
+  local env_file="$1" compose_file="$2" dir cert
+  dir="$(env_value "$env_file" SANITIZER_CORE_MTLS_CA_DIR)"
+  if [ -n "$dir" ]; then
+    sanitizer_core_host_path "$compose_file" "$dir"
+    return 0
+  fi
+  cert="$(sanitizer_core_host_path "$compose_file" "$(sanitizer_core_cert_dir "$env_file" "$compose_file")")"
+  case "$cert" in
+    */.certs/sanitizer-core-mtls) printf '%s' "${cert%/.certs/sanitizer-core-mtls}/.secrets/sanitizer-core-mtls-ca" ;;
+    *) printf '%s' "${cert}-ca" ;;
+  esac
+}
+
+# sanitizer_core_path_access <path> <container uid> <r|x> — 0 when that uid may
+# read (r) / traverse (x) the path under POSIX owner/group/other rules. The
+# image group is assumed equal to its uid (adduser -u 10001 = group 10001).
+sanitizer_core_path_access() {
+  local p="$1" cuid="$2" want="$3" mode uid gid bits bit
+  mode="$(sanitizer_core_file_mode "$p")"
+  uid="$(sanitizer_core_file_uid "$p")"
+  case "$(uname -s)" in
+    Darwin|FreeBSD|OpenBSD|NetBSD) gid="$(stat -f '%g' "$p" 2>/dev/null)" ;;
+    *) gid="$(stat -c '%g' "$p" 2>/dev/null)" ;;
+  esac
+  case "$mode$uid" in ''|*[!0-9]*) return 2 ;; esac
+  if [ "$uid" = "$cuid" ]; then bits=$(( (8#$mode >> 6) & 7 ))
+  elif [ -n "$gid" ] && [ "$gid" = "$cuid" ]; then bits=$(( (8#$mode >> 3) & 7 ))
+  else bits=$(( 8#$mode & 7 ))
+  fi
+  case "$want" in r) bit=4 ;; *) bit=1 ;; esac
+  [ $(( bits & bit )) -ne 0 ]
+}
+
+# check_gateway_certs_mount <env file> <compose file> <container uid>
+# Kit round 2, R1. The gateway bind-mounts ${SANDBOX_B_CERT_DIR:-./.certs} at
+# /certs and reads LCR_WITNESS_SIGNED_MANIFEST_PATH (default
+# /certs/witness-signed-manifest.json) at boot as the image user. Permission
+# denied there is FATAL in every DSA_ENV — only a missing file is tolerated in
+# development (gateway veil.go loadWitnessSignedManifest). Round 1's sudo
+# bootstrap created a missing ./.certs root-owned 0700 (`umask 077; mkdir -p`)
+# and every fresh Linux install crash-looped the gateway. On Linux this fails
+# when the image user cannot traverse every mounted folder on the way to the
+# manifest or cannot read the manifest; Docker Desktop on macOS maps file
+# ownership, so there it only notes.
+check_gateway_certs_mount() {
+  local env_file="$1" compose_file="$2" cuid="$3" src path rel host dir sub failed=0
+  src="$(env_value "$env_file" SANDBOX_B_CERT_DIR)"
+  src="$(sanitizer_core_host_path "$compose_file" "${src:-./.certs}")"
+  path="$(env_value_with_legacy "$env_file" LCR_WITNESS_SIGNED_MANIFEST_PATH VEIL_WITNESS_SIGNED_MANIFEST_PATH)"
+  if [ "$(uname -s)" != "Linux" ]; then
+    echo "gateway /certs mount: not checked on $(uname -s) (Docker Desktop maps file ownership); on a Linux host uid $cuid must be able to traverse $src"
+    return 0
+  fi
+  if [ ! -e "$src" ]; then
+    echo "gateway /certs mount: ok ($src does not exist yet; Docker creates it 0755 at the first start)"
+    return 0
+  fi
+  if ! sanitizer_core_path_access "$src" "$cuid" x; then
+    echo "gateway /certs mount: failed ($src is mounted at /certs and uid $cuid, the gateway's user, cannot traverse it (mode $(sanitizer_core_file_mode "$src"), owner uid $(sanitizer_core_file_uid "$src")): reading ${path:-the witness-signed manifest} is then 'permission denied', which is fatal at gateway boot in every DSA_ENV — the gateway crash-loops. Fix: sudo chmod 0755 '$src' && sudo chown $(id -un 2>/dev/null || echo '<you>') '$src')"
+    return 1
+  fi
+  case "$path" in
+    /certs/*) rel="${path#/certs/}" ;;
+    *)
+      echo "gateway /certs mount: ok ($src traversable by uid $cuid; the manifest path ${path:-unset} is not under /certs, not checked)"
+      return 0
+      ;;
+  esac
+  host="$src/$rel"
+  dir="$src"
+  sub="$(dirname "$rel")"
+  if [ "$sub" != "." ]; then
+    local IFS=/ part
+    for part in $sub; do
+      dir="$dir/$part"
+      [ -d "$dir" ] || break
+      if ! sanitizer_core_path_access "$dir" "$cuid" x; then
+        echo "gateway /certs mount: failed (uid $cuid cannot traverse $dir on the way to $host — fatal at gateway boot. Fix: sudo chmod 0755 '$dir')"
+        failed=1
+        break
+      fi
+    done
+    unset IFS
+  fi
+  [ "$failed" -eq 0 ] || return 1
+  if [ -e "$host" ]; then
+    if ! sanitizer_core_path_access "$host" "$cuid" r; then
+      echo "gateway /certs mount: failed (uid $cuid cannot read $host (mode $(sanitizer_core_file_mode "$host"), owner uid $(sanitizer_core_file_uid "$host")), which the gateway reads at $path at boot — fatal in every DSA_ENV. Fix: sudo chmod 0644 '$host')"
+      return 1
+    fi
+    echo "gateway /certs mount: ok (uid $cuid can traverse $src and read $host)"
+  else
+    echo "gateway /certs mount: ok (uid $cuid can traverse $src; $host is not there yet — place the witness-signed manifest there readable by uid $cuid, e.g. mode 0644)"
+  fi
+  return 0
+}
+
 # sanitizer_core_registry_probe <env file> <compose file>
 # Reads the registry settings THROUGH Docker Compose (bin/compose-env.sh
 # cev_registry --check-file, over this install's RUNTIME_COMPOSE_ARGS) and sets:
@@ -8328,6 +8450,13 @@ check_sanitizer_core_config() {
     elif [ "$dsa_env" = "production" ]; then
       echo "sanitizer core witness hop: failed (GRPC_TLS_ENABLED=$val: the local witness would serve :50057 in plaintext and the core refuses a plaintext witness in production — the new core would not start or every claim would be dropped. Set GRPC_TLS_ENABLED=true.)"
       failed=1
+    elif [ "$val" != "false" ]; then
+      # Kit round 2, R2: compose hands the same value to the core as
+      # LCR_WITNESS_REQUIRE_MTLS, and the core's parser takes exactly
+      # "true"/"false": "True", "1", "yes" … make it refuse to start (or
+      # latch it to mTLS with no client leaf). Only the exact words pass.
+      echo "sanitizer core witness hop: failed (GRPC_TLS_ENABLED=$val: the compose file hands this value to the core as LCR_WITNESS_REQUIRE_MTLS, and the core accepts exactly 'true' or 'false' — with '$val' it refuses to start. Write GRPC_TLS_ENABLED=false for the development plaintext hop, or GRPC_TLS_ENABLED=true.)"
+      failed=1
     elif [ "$leaf_set" -gt 0 ]; then
       echo "sanitizer core witness hop: failed (GRPC_TLS_ENABLED=$val: the local witness serves :50057 in plaintext, but the core still dials it with verified mTLS — every claim of the new core would be dropped while the turns still succeed. Either set GRPC_TLS_ENABLED=true (exactly 'true'), or set all three LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH / _CLIENT_CERT_PATH / _CLIENT_KEY_PATH to empty in $env_file, as bin/lucairn-init --dev writes them.)"
       failed=1
@@ -8366,8 +8495,32 @@ check_sanitizer_core_config() {
         sanitizer_core_check_leaf "witness server" "$cert_dir/veil-witness" dsa-veil-witness sslserver dsa-veil-witness "$cuid" || mtls_failed=1
       fi
     fi
+    # Kit round 2: the CA private key lives in a folder NO container mounts.
+    # Round 1 kept it in <cert dir>/ca, and with the default layout the
+    # gateway's whole-./.certs mount (/certs) contained it. `-e` on the folder,
+    # not the key: a root-only 0700 ca/ hides its files from this user.
+    local ca_dir m mounted_by=""
+    ca_dir="$(sanitizer_core_ca_dir "$env_file" "$compose_file")"
     if [ -e "$cert_dir/sanitizer-core/ca.key" ] || [ -e "$cert_dir/gateway/ca.key" ] || [ -e "$cert_dir/veil-witness/ca.key" ]; then
-      echo "sanitizer core mTLS: failed (a CA private key sits inside a directory that is mounted into a container — keep it in $cert_dir/ca only)"
+      echo "sanitizer core mTLS: failed (a CA private key sits inside a service directory that is mounted into a container — it belongs in $ca_dir only)"
+      mtls_failed=1
+    fi
+    if [ -e "$cert_dir/ca" ]; then
+      echo "sanitizer core mTLS: failed ($cert_dir/ca holds the deploy CA inside the cert tree; with the default layout the gateway mounts the whole ./.certs at /certs, so the CA private key is readable inside the gateway. Re-run scripts/bootstrap-sanitizer-core-mtls.sh (with sudo on Linux): it moves the CA to $ca_dir, which no container mounts)"
+      mtls_failed=1
+    fi
+    local gw_src wm_src
+    gw_src="$(env_value "$env_file" SANDBOX_B_CERT_DIR)"
+    wm_src="$(env_value_with_legacy "$env_file" LCR_WITNESS_MTLS_HOST_DIR VEIL_WITNESS_MTLS_HOST_DIR)"
+    for m in "$(sanitizer_core_host_path "$compose_file" "${gw_src:-./.certs}")|the gateway's /certs (SANDBOX_B_CERT_DIR)" \
+             "$(sanitizer_core_host_path "$compose_file" "${wm_src:-./.certs/witness-mtls}")|the witness and gateway /etc/witness-mtls (LCR_WITNESS_MTLS_HOST_DIR)" \
+             "$(sanitizer_core_host_path "$compose_file" "$cert_dir")|the cert directory $cert_dir"; do
+      case "$ca_dir/" in
+        "${m%%|*}"/*) mounted_by="${m#*|}"; break ;;
+      esac
+    done
+    if [ -n "$mounted_by" ]; then
+      echo "sanitizer core mTLS: failed (the CA directory $ca_dir is inside $mounted_by, which is mounted into a container — the CA private key would be readable there. Move it to a folder no container mounts and set SANITIZER_CORE_MTLS_CA_DIR in $env_file)"
       mtls_failed=1
     fi
     # NON-COVERAGE: customer.env may point the in-container paths elsewhere
@@ -8388,6 +8541,13 @@ check_sanitizer_core_config() {
       failed=1
     fi
   fi
+
+  # 6b. Kit round 2, R1: the gateway's /certs mount (the folder the bootstrap
+  #     may have created) must stay traversable for the image user.
+  local gw_cuid
+  gw_cuid="${LUCAIRN_CONTAINER_UID:-$(env_value "$env_file" LUCAIRN_CONTAINER_UID)}"
+  gw_cuid="${gw_cuid:-$LUCAIRN_SANITIZER_CORE_CONTAINER_UID}"
+  check_gateway_certs_mount "$env_file" "$compose_file" "$gw_cuid" || failed=1
 
   # 7. Image pins. Core and sidecar are a PAIR from one release commit: the
   #    core refuses to start against a sidecar that lacks the labels or the

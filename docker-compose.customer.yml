@@ -1237,8 +1237,9 @@ services:
       SANITIZER_CORE_MTLS_SERVER_KEY_PATH: "${SANITIZER_CORE_MTLS_SERVER_KEY_PATH:-/etc/sanitizer-core-mtls/dsa-sanitizer-core.key}"
     volumes:
       # ONLY the core's own directory (its server leaf, its witness client leaf,
-      # the CA certificate). The CA private key lives in <dir>/ca and is never
-      # mounted into any container.
+      # the CA certificate). The CA private key lives OUTSIDE ./.certs (default
+      # ./.secrets/sanitizer-core-mtls-ca) and is never mounted into any
+      # container — the gateway mounts the whole ./.certs at /certs.
       - ${SANITIZER_CORE_MTLS_HOST_DIR:-./.certs/sanitizer-core-mtls}/sanitizer-core:/etc/sanitizer-core-mtls:ro
       # The registry DSN file (see the security notes above). ONE file is
       # mounted, so only its own mode (0444) applies in the container; on the
