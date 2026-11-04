@@ -227,7 +227,11 @@ create_application_secret dsa-identity sanitizer-core
 # gateway's service directories become Secrets (the CA, in the sibling
 # sanitizer-core-mtls-ca/, never does).
 # The core's claim hop to the witness uses the `sanitizer` mesh leaf above.
-bash "$ROOT/scripts/bootstrap-sanitizer-core-mtls.sh" "$STATE_DIR/sanitizer-core-mtls" >/dev/null
+# The files only feed `kubectl create secret` (the Pod's fsGroup owns them in
+# the cluster), so they belong to this user: declare that, or the bootstrap
+# refuses an ordinary user on Linux (it guards the Compose case, where a key
+# must belong to the container uid 10001). No sudo: kubectl must read them.
+LUCAIRN_CONTAINER_UID="$(id -u)" bash "$ROOT/scripts/bootstrap-sanitizer-core-mtls.sh" "$STATE_DIR/sanitizer-core-mtls" >/dev/null
 "${K[@]}" -n dsa-identity create secret generic sanitizer-core-mtls \
   --from-file="$STATE_DIR/sanitizer-core-mtls/sanitizer-core/" \
   --dry-run=client -o yaml | "${K[@]}" apply -f -

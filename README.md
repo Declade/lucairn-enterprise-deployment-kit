@@ -34,6 +34,13 @@ a named local model runtime). Pick the mode before running `docker compose up`; 
 `INSTALL.md` § "Choose A Deployment Mode" for the decision table and the
 required env vars per mode.
 
+In every path below, between `lucairn-init` and the first `bin/lucairn up`, run
+the witness mTLS bootstrap (`INSTALL.md` § "Witness mTLS", Compose path:
+`sudo scripts/bootstrap-mtls-ca.sh /etc/witness-mtls`, on Linux hand the folder
+to uid 10001, then fill the `WITNESS_MTLS_*` lines in `customer.env`). Without
+it certificate reads refuse every caller, and a first `up` creates the folder
+as root so the bootstrap fails afterwards.
+
 Split-deployment fast path:
 
 ```bash

@@ -12,9 +12,62 @@ Security advisories are published at <https://lucairn.eu/security>; the
 disclosure process and contact are in [`SECURITY.md`](SECURITY.md). Entries that
 carry a security fix are tagged **[Security]**.
 
-## [Unreleased]
+## [2.0.0] — release date set when the release is cut — images `1.1.0`
 
-### Added
+Kit 2.0.0 runs the same sanitizer as the hosted Lucairn service. Every `dsa-*`
+image moves from `0.5.5` to `1.1.0` (one product version, built from one
+commit); `dsa-pii-ml` stays `0.5.1` (optional, off) and `lucairn-dashboard`
+stays `0.8.2`.
+
+### Read first — upgrading from 1.9.7
+
+- Follow INSTALL.md § "Upgrade from kit 1.9.7 to 2.0.0" step by step: back up,
+  stop, replace the kit files in the same directory, add the new
+  `customer.env` settings, re-record the runtime profile
+  (`bin/lucairn-init … --adopt-runtime-profile`), offline doctor, verify and
+  pull the images, run the registry migration as its own step, start. The same
+  section has the rollback to 1.9.7.
+- **Host:** at least **16 GB RAM** for Docker (the model sidecar is capped at
+  6.5 GB, the core at 1 GB; the online doctor fails below 15,000 MiB) and about
+  6 GB more disk (the sidecar image unpacks to 5.4 GB). **Docker Engine
+  26.0.0 or newer** (25.0.5+ / 23.0.11+ on those lines): older engines forward
+  DNS queries from internal networks (CVE-2024-29018); the online doctor fails
+  on them.
+- No 1.x database schema changes (ceilings unchanged: veil-witness 10 ·
+  audit 7 · id-bridge 4 · sandbox-a 8). The core's registry is a NEW database
+  (`postgres-sanitizer-core`, volume `pg-sanitizer-core-data`; Helm: a
+  StatefulSet + PVC) with its own capped migrations 0001–0007.
+- The **ServiceNow mode stays off** after the upgrade; it needs your admin's
+  per-key opt-in (below).
+
+### Added — the new sanitizer core (Compose + Helm)
+
+- A Go **sanitizer core**, its **model sidecar** (spaCy + GLiNER, loopback-only
+  inside the core's network namespace / Pod) and its **registry database**. The
+  gateway sends the Anthropic route (`/v1/messages`) through the core with the
+  final check (Gate) **enforced** — both on by default, as on the hosted
+  service. The core's sanitizer claim is signed and delivered to the witness
+  over its own connection (mTLS in production).
+- The existing Python `sanitizer` service stays and keeps serving the OpenAI,
+  MCP and proxy routes (`/v1/chat/completions`, `/mcp`,
+  `/api/v1/proxy/messages`) with the 1.0 sanitizer plus its fixes.
+- Compose: `bin/lucairn-init` generates the core's two secrets, its mTLS
+  material (deploy-local CA outside every mounted folder; four leaves) and the
+  registry DSN file (the database password never appears in a process
+  argument). `bin/lucairn up` runs the capped registry migration before it
+  starts anything. Helm: the `sanitizer-core` sub-chart (core + sidecar in one
+  Pod, migration Job, four NetworkPolicies, images by signed digest only).
+- The core and the sidecar run without capabilities, with
+  `no-new-privileges` and a read-only root filesystem.
+- The core deletes expired registry conversations itself (24-hour expiry +
+  210 s, a sweep every 10 minutes; tombstones kept 24 hours).
+- `bin/lucairn doctor` checks the core end to end: secrets, DSN file, profile,
+  witness hop, certificates (chain, purpose, SAN, expiry, owner), the image
+  pair against `image-manifest.yaml`, host memory, the Docker Engine version,
+  the rendered configuration, the three containers, the namespace join, the
+  migration ledger against the ceiling and the core's claim log.
+
+### Added — ServiceNow mode and the rest of this release
 
 - **ServiceNow mode — available, off by default, the admin opts in per key
   (T-1441 K-C).** The hosted service's ServiceNow mode is part of the kit. It
@@ -93,7 +146,7 @@ carry a security fix are tagged **[Security]**.
   never as a process argument; the temporary credential folders in the docs
   are removed even when a step fails.
 
-### Stated limits
+### Stated limits — ServiceNow mode
 
 - A mistyped key id runs the generic path; `up` and the doctor check every
   bound id against the running gateway (while the gateway is not running, `up`
@@ -106,6 +159,53 @@ carry a security fix are tagged **[Security]**.
   service's 1.0 ServiceNow path for a bound key; `/v1/messages` uses the core.
 - One gateway serves the mode (one container on Compose; `replicaCount: 1`, no
   HPA on Helm).
+
+### Stated limits — the new core in this release
+
+- Only `/v1/messages` runs on the new core; the OpenAI, MCP and proxy routes
+  stay on the Python sanitizer (above).
+- Text in the system prompt is forwarded to the model vendor as written: the
+  sanitizer claim lists the system-prompt segments as not scanned.
+- On `/v1/messages` the response's `metadata.dsa_compliance` reports
+  `mode: audit-only`, `sanitizer_layers: []` and `redaction_count: 0` even when
+  the core hid values; the certificate's `PII_SANITIZED` claim (entity counts,
+  layers) is the record.
+- A client that rewrites an earlier turn of a conversation under the same
+  conversation id (compaction, editing an earlier message, a sub-agent reusing
+  the id) is refused with `503` for that conversation id; a new conversation id
+  works.
+- With the L3 shield off (the kit default) a certificate reads
+  `VERDICT_PARTIAL` (L3 coverage absent) with valid signatures.
+- The witness runs at its 1.x migration ceiling (10): it logs `durability
+  reduced` (no certificate persistence outbox, no decoder-expiry columns) and
+  writes certificates directly; a witness crash between accepting and storing a
+  certificate can lose that one certificate.
+- The registry database is not in the Helm backup CronJobs (it holds at most
+  24 hours of sealed conversation state).
+- The keyed online doctor sends only the Lucairn key, so its inference step
+  fails with `missing_upstream_key` for an account that supplies the provider
+  key per request (the mint default); for such an account prove the journey
+  with one request that carries the provider key.
+
+### Fixed — docs and tests (K-E)
+
+- Every documented start path a 2.0 install can take (README, INSTALL, OPS
+  disaster recovery / rollback, TROUBLESHOOTING) runs the registry migration
+  first or says `bin/lucairn up` does; the docs check now covers OPS.md and
+  TROUBLESHOOTING.md.
+- INSTALL § "Witness mTLS": run it before the first `up` (a first `up` creates
+  the folder as root); on Linux hand the folder to uid 10001 (the containers
+  could not read their keys); use `/etc/witness-mtls` on the host (the doctor
+  checks the container paths on the host); recreate with the env file.
+- INSTALL: renewing a core leaf, rotating the core's CA, and how the CA folder
+  is passed on a re-run (`SANITIZER_CORE_MTLS_CA_DIR` is read from the
+  script's environment, not from `customer.env`).
+- The Helm mTLS step and `scripts/test-enterprise-mtls-kind.sh` declare
+  `LUCAIRN_CONTAINER_UID="$(id -u)"` (the bootstrap refused an ordinary user
+  on Linux).
+- Tests read captured output through here-strings instead of
+  `printf … | grep -q` pipes (a false result under `pipefail` once the text
+  outgrows the pipe buffer).
 
 ## [1.9.7] — 2026-10-28 — images `0.5.5`
 

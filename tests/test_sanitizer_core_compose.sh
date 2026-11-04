@@ -1693,7 +1693,9 @@ h1_docs_check() { # <file> — every whole-stack `docker compose ... up -d`
       if ($0 ~ /\\[[:space:]]*$/) { sub(/\\[[:space:]]*$/, "", cmd); cont = 1 } else { cont = 0; check(cmd, start) }
     }' "$1"
 }
-for f in README.md INSTALL.md; do
+# K-E (2026-11-04): OPS.md (upgrade, rollback, disaster recovery) and
+# TROUBLESHOOTING.md hold start paths a 2.0 install can take too.
+for f in README.md INSTALL.md OPS.md TROUBLESHOOTING.md; do
   h1_docs_check "$KIT/$f"
 done > "$TMP/h1-docs.txt"
 [ -s "$TMP/h1-docs.txt" ] && H1_DOCS_BAD="$(tr '\n' ' ' < "$TMP/h1-docs.txt")"
