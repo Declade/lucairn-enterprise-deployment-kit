@@ -132,6 +132,21 @@ if [ "\${1:-}" = compose ]; then
     # final reads (M3): the hash of the config file INSIDE the running sanitizer
     *" exec -T sanitizer sha256sum "*) [ -n "\${STUB_SAN_SHA:-}" ] && echo "\$STUB_SAN_SHA  /config/config.yaml"; exit 0 ;;
     *" exec -T postgres-sanitizer-core "*) echo "\${STUB_LEDGER_OUT:-7}"; exit 0 ;;
+    # kit round 2 (ToB LOW): the port the running gateway publishes — by
+    # default 127.0.0.1:<GATEWAY_PORT of the --env-file>, or STUB_GW_PUBLISH
+    # (the OLD gateway still holding another port after a GATEWAY_PORT change)
+    *" port gateway 8080 "*)
+      [ "\${STUB_GW_RUNNING:-1}" = 1 ] || exit 1
+      if [ -n "\${STUB_GW_PUBLISH+x}" ]; then printf '%s\n' "\$STUB_GW_PUBLISH"; exit 0; fi
+      ef=""; prev=""; for x in "\$@"; do [ "\$prev" = --env-file ] && ef="\$x"; prev="\$x"; done
+      p="\$(grep -E '^GATEWAY_PORT=' "\$ef" 2>/dev/null | tail -1 | cut -d= -f2-)"
+      echo "127.0.0.1:\${p:-8080}"; exit 0 ;;
+    # kit round 2 (hunter M3): a whole-stack `up -d` that fails ONCE (the file
+    # named by STUB_UPD_FAIL_ONCE is removed by that failure)
+    *" up -d ")
+      printf '%s\n' "\$*" >> "\${STUB_LOG:-/dev/null}"
+      if [ -n "\${STUB_UPD_FAIL_ONCE:-}" ] && [ -e "\$STUB_UPD_FAIL_ONCE" ]; then rm -f "\$STUB_UPD_FAIL_ONCE"; exit 1; fi
+      exit 0 ;;
     *" logs --no-color sanitizer-core "*) [ -n "\${STUB_CORE_LOG:-}" ] && cat "\$STUB_CORE_LOG"; exit 0 ;;
     *" logs --no-color veil-witness "*) [ -n "\${STUB_WITNESS_LOG:-}" ] && cat "\$STUB_WITNESS_LOG"; exit 0 ;;
   esac
@@ -819,14 +834,17 @@ kill "$SQ_PID" 2>/dev/null || true
 cli up "$ENVF" >/dev/null 2>&1
 ino() { if stat -f %i "$1" >/dev/null 2>&1; then stat -f %i "$1"; else stat -c %i "$1"; fi; }
 I1="$(ino "$SNC/copy/sanitizer.yaml")"
-cli up "$ENVF"
+# (kit round 2: `up` reads the file INSIDE the running sanitizer; here it is
+# the current copy, as after a successful recreate)
+cli up "$ENVF" STUB_SAN_SHA="$(sha_file "$SNC/copy/sanitizer.yaml")"
 if [ "$(ino "$SNC/copy/sanitizer.yaml")" = "$I1" ] && grep -q 'sanitizer config copy is current' "$TMP/cli.out" && ! grep -q 'force-recreate sanitizer' "$TMP/stub.log"; then
   pass "M3 an unchanged copy keeps its inode and the sanitizer is not recreated"
 else
   fail "M3 unchanged copy: inode $I1 -> $(ino "$SNC/copy/sanitizer.yaml"); $(grep -i 'config copy' "$TMP/cli.out" | tr '\n' ' ')"
 fi
+M3_OLD_SHA="$(sha_file "$SNC/copy/sanitizer.yaml")"
 printf '# operator edit (final-read M3)\n' >> "$SNC/base-sanitizer.yaml"
-cli up "$ENVF"
+cli up "$ENVF" STUB_SAN_SHA="$M3_OLD_SHA"
 UPN="$(grep -n ' up -d$' "$TMP/stub.log" | head -1 | cut -d: -f1)"
 RCN="$(grep -n ' up -d --no-deps --force-recreate sanitizer$' "$TMP/stub.log" | head -1 | cut -d: -f1)"
 if [ -n "$UPN" ] && [ -n "$RCN" ] && [ "$UPN" -lt "$RCN" ] && copy_matches; then
@@ -834,6 +852,116 @@ if [ -n "$UPN" ] && [ -n "$RCN" ] && [ "$UPN" -lt "$RCN" ] && copy_matches; then
 else
   fail "M3 changed copy: up line '${UPN:-none}', recreate line '${RCN:-none}': $(tr '\n' '|' < "$TMP/stub.log")"
 fi
+
+echo ""
+echo "L. Kit round 2 (2026-11-04): M3 retry after a failed up -d, admin key only to the port the gateway holds, OPS pgpass trap"
+# Each case is RED on the pre-round head (306a565) and GREEN here.
+
+# ── M3 leftover (the hunter's reproduction): a failed `up -d` after the copy
+# was rewritten, then a retry. The running sanitizer still reads the OLD file
+# (STUB_SAN_SHA); the retry must recreate it although the copy is "current".
+M3R_OLD="$(sha_file "$SNC/copy/sanitizer.yaml")"
+printf '# operator edit (kit round 2, M3 retry)\n' >> "$SNC/base-sanitizer.yaml"
+: > "$TMP/upd-fail-once"
+cli up "$ENVF" STUB_SAN_SHA="$M3R_OLD" STUB_UPD_FAIL_ONCE="$TMP/upd-fail-once"
+if [ ! -e "$TMP/upd-fail-once" ] && copy_matches && ! grep -q 'force-recreate sanitizer' "$TMP/stub.log"; then
+  pass "M3 precondition: the copy is rewritten, then the whole-stack up -d fails (nothing recreated)"
+else
+  fail "M3 precondition (failed up -d): $(tr '\n' '|' < "$TMP/stub.log")"
+fi
+cli up "$ENVF" STUB_SAN_SHA="$M3R_OLD"
+UPN="$(grep -n ' up -d$' "$TMP/stub.log" | head -1 | cut -d: -f1)"
+RCN="$(grep -n ' up -d --no-deps --force-recreate sanitizer$' "$TMP/stub.log" | head -1 | cut -d: -f1)"
+if grep -q 'sanitizer config copy is current' "$TMP/cli.out" && [ -n "$UPN" ] && [ -n "$RCN" ] && [ "$UPN" -lt "$RCN" ] \
+   && grep -q 'the running sanitizer reads an older config than' "$TMP/cli.out"; then
+  pass "M3 the retry ('copy is current') still recreates the sanitizer: the file inside the running container decides, not a flag of the run"
+else
+  fail "M3 retry after a failed up -d: up line '${UPN:-none}', recreate line '${RCN:-none}': $(grep -i 'config' "$TMP/cli.out" | tr '\n' ' ')"
+fi
+cli up "$ENVF" STUB_SAN_SHA="$(sha_file "$SNC/copy/sanitizer.yaml")"
+grep -q 'force-recreate sanitizer' "$TMP/stub.log" \
+  && fail "M3 once the running file equals the copy, up recreates nothing" \
+  || pass "M3 once the running file equals the copy, up recreates nothing"
+cli up "$ENVF"
+grep -q ' up -d --no-deps --force-recreate sanitizer$' "$TMP/stub.log" && grep -q 'could not be read; recreating' "$TMP/cli.out" \
+  && pass "M3 a running file that cannot be read counts as different (recreated)" \
+  || fail "M3 unreadable running file: $(grep -i 'config' "$TMP/cli.out" | tr '\n' ' ')"
+online_red "M3 doctor: the fix line names a command that recreates it" "Recreate it: bin/lucairn up --env $ENVF (it compares the running file" STUB_SAN_SHA="$M3R_OLD"
+
+# ── ToB LOW: GATEWAY_PORT changed while the OLD gateway still runs ─────────
+SQ2_PORT_FILE="$TMP/squat2.port"; SQ2_LOG="$TMP/squat2.log"; : > "$SQ2_LOG"
+python3 - "$SQ2_PORT_FILE" "$SQ2_LOG" <<'PY' &
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        with open(sys.argv[2], "a") as f:
+            f.write("%s admin-key=%s\n" % (self.path, "yes" if self.headers.get("X-Admin-Key") else "no"))
+        self.send_response(404); self.end_headers()
+    def log_message(self, *a): pass
+s = http.server.HTTPServer(("127.0.0.1", 0), H)
+open(sys.argv[1], "w").write(str(s.server_address[1]))
+s.serve_forever()
+PY
+SQ2_PID=$!
+disown "$SQ2_PID" 2>/dev/null || true
+for _ in $(seq 1 50); do [ -s "$SQ2_PORT_FILE" ] && break; sleep 0.1; done
+SQ2_PORT="$(cat "$SQ2_PORT_FILE")"
+d="$(variant portmove)"; sed -i.bak "s/^GATEWAY_PORT=.*/GATEWAY_PORT=$SQ2_PORT/" "$d/customer.env"; rm -f "$d/customer.env.bak"
+: > "$SQ2_LOG"
+cli up "$d/customer.env" STUB_GW_PUBLISH="127.0.0.1:$PORT" STUB_SAN_SHA="$(sha_file "$SNC/copy/sanitizer.yaml")"
+if grep -q 'admin-key=yes' "$SQ2_LOG"; then
+  fail "ToB LOW RED up sent DSA_ADMIN_KEY to the NEW GATEWAY_PORT while the old gateway still held the old one (a squatter got it)"
+elif grep -Fq "bound key ids NOT checked — the running gateway publishes 127.0.0.1:$PORT, not 127.0.0.1:$SQ2_PORT" "$TMP/cli.out" && grep -q ' up -d$' "$TMP/stub.log"; then
+  pass "ToB LOW up sends no admin key to a changed GATEWAY_PORT the running gateway does not hold; it warns and starts (Compose recreates the gateway)"
+else
+  fail "ToB LOW up with a moved GATEWAY_PORT: $(grep 'ServiceNow mode' "$TMP/cli.out" | tail -2 | tr '\n' ' ')"
+fi
+[ -s "$SQ2_LOG" ] && fail "ToB LOW the squatter on the new port received no request from up" || pass "ToB LOW the squatter on the new port received no request from up"
+: > "$SQ2_LOG"
+env STUB_MEM_BYTES=34359738368 STUB_PS="$TMP/ps.ok" STUB_GW_PUBLISH="127.0.0.1:$PORT" STUB_NETMODE="container:$SIDE_ID" STUB_CORE_LOG="$TMP/core.log" \
+  STUB_WITNESS_LOG="$TMP/witness.log" STUB_LEDGER_OUT=7 STUB_SAN_SHA="$(sha_file "$SNC/copy/sanitizer.yaml")" \
+  bash "$ROOT/bin/lucairn" doctor --env "$d/customer.env" --compose "$COMPOSE" --customer-key-file "$TMP/customer.key" --skip-image-check > "$TMP/online.out" 2>&1
+DRC=$?
+if grep -q 'admin-key=yes' "$SQ2_LOG"; then
+  fail "ToB LOW RED doctor sent DSA_ADMIN_KEY to a GATEWAY_PORT the running gateway does not publish"
+elif [ "$DRC" -ne 0 ] && grep -Fq "ServiceNow mode: failed (the running gateway does not publish 127.0.0.1:$SQ2_PORT" "$TMP/online.out"; then
+  pass "ToB LOW doctor fails and sends no admin key while the running gateway publishes another port than GATEWAY_PORT"
+else
+  fail "ToB LOW doctor with a moved GATEWAY_PORT (rc $DRC): $(grep 'ServiceNow mode' "$TMP/online.out" | tail -3 | tr '\n' ' ')"
+fi
+kill "$SQ2_PID" 2>/dev/null || true
+
+# ── ToB INFO (b): the OPS pgpass file is removed even when the pod-side shell
+# is interrupted. Every pod-side script in OPS.md runs here with /tmp moved
+# into the test folder and a pg_dump/pg_restore stub that takes 2 s; the shell
+# gets SIGTERM while that stub runs.
+PODB="$TMP/pod-bin"; POD="$TMP/pod"; mkdir -p "$PODB" "$POD"
+printf '#!/bin/sh\ncat > /dev/null\nsleep 2\n' > "$PODB/pg_restore"; printf '#!/bin/sh\nsleep 2\n' > "$PODB/pg_dump"; chmod 0755 "$PODB"/*
+python3 - "$ROOT/OPS.md" "$POD" "$TMP/pod-script" <<'PY'
+import re, sys
+ops = open(sys.argv[1]).read()
+found = re.findall(r"'(umask 077; f=/tmp/\.lucairn-pgpass\.\$\$;[^']*)'", ops)
+for i, sc in enumerate(found):
+    open("%s.%d" % (sys.argv[3], i), "w").write(sc.replace("f=/tmp/", "f=%s/" % sys.argv[2]))
+print(len(found))
+PY
+PODN="$(ls "$TMP"/pod-script.* 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "OPS precondition: the three pod-side pgpass scripts (backup, restore, restore validation)" "3" "$PODN"
+for sc in "$TMP"/pod-script.*; do
+  rm -f "$POD"/.lucairn-pgpass.*
+  ( printf '*:*:*:*:synthetic-k-c-pgpass\n'; sleep 3 ) | env PATH="$PODB:$BASE_PATH" sh -c "$(cat "$sc")" sh dsa audit > /dev/null 2>&1 &
+  pid=$!
+  for _ in $(seq 1 60); do ls "$POD"/.lucairn-pgpass.* >/dev/null 2>&1 && break; sleep 0.05; done
+  ls "$POD"/.lucairn-pgpass.* >/dev/null 2>&1 || { fail "OPS $(basename "$sc"): the pgpass file never appeared"; continue; }
+  kill -TERM "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+  sleep 0.2
+  if ls "$POD"/.lucairn-pgpass.* >/dev/null 2>&1; then
+    fail "OPS $(basename "$sc"): an interrupted pod-side shell leaves the pgpass file behind"
+  else
+    pass "OPS $(basename "$sc"): an interrupted pod-side shell removes its pgpass file (trap)"
+  fi
+done
 
 echo ""
 if [ "$FAILS" -eq 0 ]; then

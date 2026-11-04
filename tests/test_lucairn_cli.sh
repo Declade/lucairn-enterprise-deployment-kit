@@ -191,7 +191,7 @@ echo "lucairn doctor dashboard keys: admin token never on curl argv: ok"
 # Final reads, ToB TOB-K20-01: on a LOOPBACK admin URL the token goes out only
 # while this project's gateway container runs (Docker then holds the port);
 # otherwise whatever listens there would receive it.
-printf '#!/usr/bin/env bash\ncase " $* " in *" ps --status running -q gateway "*) [ "${DASH_GW_RUNNING:-0}" = 1 ] && echo 9a7e0004; exit 0 ;; *" version "*) exit 0 ;; esac\nexit 1\n' > "$DASH_BIN/docker"
+printf '#!/usr/bin/env bash\ncase " $* " in *" ps --status running -q gateway "*) [ "${DASH_GW_RUNNING:-0}" = 1 ] && echo 9a7e0004; exit 0 ;; *" port gateway 8080 "*) [ "${DASH_GW_RUNNING:-0}" = 1 ] && echo "${DASH_GW_PUBLISH:-127.0.0.1:8080}"; exit 0 ;; *" version "*) exit 0 ;; esac\nexit 1\n' > "$DASH_BIN/docker"
 chmod +x "$DASH_BIN/docker"
 printf 'LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL=http://127.0.0.1:8080\nLUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN=%s\n' "$DASH_TOKEN" > "$DASH_ENV"
 for running in 0 1; do
@@ -207,6 +207,34 @@ for running in 0 1; do
   fi
 done
 echo "lucairn doctor dashboard keys: loopback admin URL only while the gateway container runs: ok"
+
+# Kit round 2 (ToB INFO a): only 127.0.0.1 / ::1 with exactly the port the
+# running gateway publishes gets the token. Other loopback or unspecified
+# forms, and a different port, get none (a warning instead) even while the
+# gateway runs. RED on 306a565 (0.0.0.0, localhost., ::ffff:127.0.0.1 were
+# "remote"; localhost, 127.1 and a different port passed the running check).
+dash_probe() { # <url> [publish] -> DASH_OUT, DASH_HDR_LOG (gateway running)
+  printf 'LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL=%s\nLUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN=%s\n' "$1" "$DASH_TOKEN" > "$DASH_ENV"
+  : > "$DASH_ARGV_LOG"; : > "$DASH_HDR_LOG"
+  DASH_OUT="$(DASH_GW_RUNNING=1 DASH_GW_PUBLISH="${2:-127.0.0.1:8080}" DASH_ARGV_LOG="$DASH_ARGV_LOG" DASH_HDR_LOG="$DASH_HDR_LOG" DOCTOR_OFFLINE=0 DOCTOR_INCLUDE_DASHBOARD=0 \
+    PATH="$DASH_BIN:$PATH" bash -c '__dash_env="$1"; set --; . "$0" >/dev/null 2>&1; check_dashboard_keys "$__dash_env"' \
+    "$ROOT/bin/lucairn" "$DASH_ENV" 2>&1)" || true
+}
+for u in http://0.0.0.0:8080 http://localhost.:8080 'http://[::ffff:127.0.0.1]:8080' http://localhost:8080 http://127.1:8080 http://127.0.0.2:8080 'http://[::]:8080' http://2130706433:8080; do
+  dash_probe "$u"
+  [ ! -s "$DASH_HDR_LOG" ] && [ ! -s "$DASH_ARGV_LOG" ] || { printf '%s\n' "$DASH_OUT" >&2; echo "round 2 ToB INFO: dashboard keys sent the admin token to the loopback form $u" >&2; exit 1; }
+  grep -Fq 'is a loopback or unspecified address other than 127.0.0.1 / ::1' <<< "$DASH_OUT" || { printf '%s\n' "$DASH_OUT" >&2; echo "round 2 ToB INFO: no warning for $u" >&2; exit 1; }
+done
+dash_probe http://127.0.0.1:9999
+[ ! -s "$DASH_HDR_LOG" ] && [ ! -s "$DASH_ARGV_LOG" ] || { echo 'round 2 ToB INFO: dashboard keys sent the admin token to 127.0.0.1 on a port the gateway does not publish' >&2; exit 1; }
+grep -Fq 'the running gateway publishes 127.0.0.1:8080, not 127.0.0.1:9999' <<< "$DASH_OUT" || { printf '%s\n' "$DASH_OUT" >&2; echo 'round 2 ToB INFO: no warning for a different port' >&2; exit 1; }
+dash_probe 'http://[::1]:8080'
+[ ! -s "$DASH_HDR_LOG" ] || { echo 'round 2 ToB INFO: dashboard keys sent the admin token to [::1] while the gateway publishes only 127.0.0.1' >&2; exit 1; }
+dash_probe http://127.0.0.1:8080
+[ "$(cat "$DASH_HDR_LOG")" = "X-Admin-Key: $DASH_TOKEN" ] || { echo 'round 2 ToB INFO: dashboard keys did not probe 127.0.0.1 on the port the gateway publishes' >&2; exit 1; }
+dash_probe http://gateway.example.test:8080
+[ "$(cat "$DASH_HDR_LOG")" = "X-Admin-Key: $DASH_TOKEN" ] || { echo 'round 2 ToB INFO: a remote admin URL is no longer probed' >&2; exit 1; }
+echo "lucairn doctor dashboard keys: token only to 127.0.0.1/::1 on the gateway's published port (round 2): ok"
 
 echo "lucairn cli tests: ok"
 
