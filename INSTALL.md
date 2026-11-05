@@ -228,7 +228,7 @@ Both fixes are delivered in the `0.5.1` sanitizer image.
 
 ## Step 0 — Registry access (REQUIRED before any docker pull)
 
-> **Do this before any other step.** The 12 Lucairn `dsa-*` images live in the
+> **Do this before any other step.** The 14 Lucairn `dsa-*` images (the 12 services plus the new sanitizer core pair, `dsa-sanitizer-core` and `dsa-sanitizer-core-sidecar`) live in the
 > **private** `ghcr.io/declade/*` registry. A self-minted GitHub PAT alone is
 > NOT sufficient — Lucairn must also GRANT package-pull access to the GitHub
 > account that owns the PAT. Without this grant every `docker pull` / `docker
@@ -249,7 +249,7 @@ If you intend to mirror images to your own internal registry instead, this prere
 > `migrate/migrate:v4.17.0`, `ollama/ollama`. A host that allowlists only
 > `ghcr.io` will authenticate successfully but fail `docker compose up` when
 > Docker attempts these pulls. **`LUCAIRN_IMAGE_REGISTRY` does NOT redirect
-> base-image pulls** — it only prefixes the 12 Lucairn `dsa-*` images. To block
+> base-image pulls** — it only prefixes the 14 Lucairn `dsa-*` images. To block
 > direct Docker Hub access, configure a **registry pull-through mirror** for
 > `registry-1.docker.io` on your infrastructure; alternatively, manually mirror
 > the specific tags above and edit the `image:` lines in the compose files.
@@ -678,8 +678,8 @@ For Docker Compose:
   (Helm: § "Sanitizer core (kit 2.0, Helm)").
 - TLS-terminating reverse proxy such as Caddy, Nginx, Traefik, or an enterprise ingress proxy.
 - Outbound HTTPS to the image registries used during `docker compose up` / `docker pull`:
-  - `ghcr.io` — the 12 Lucairn `dsa-*` images are in the private `ghcr.io/declade/*` namespace (authentication required; see § "Step 0 — Registry access" above and § "Registry Authentication" below). **Lucairn must grant your GitHub account package-pull access before `docker login` will work** — see § "Step 0".
-  - `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com` — public base images (`postgres:16-alpine`, `redis:7-alpine`, `alpine:3.20`, `migrate/migrate:v4.17.0`, `ollama/ollama`) are pulled from Docker Hub. A host that allowlists only `ghcr.io` will pass GHCR auth but fail on these pulls. **`LUCAIRN_IMAGE_REGISTRY` does not redirect these pulls** — it only prefixes the 12 Lucairn `dsa-*` images (e.g. `dsa-gateway`, `dsa-sandbox-a`, `dsa-audit`, and the other nine `ghcr.io/declade/*` images). The base images are hardcoded in the compose files and are not registry-templated. If direct Docker Hub access is prohibited, the standard approach is to configure a **registry pull-through mirror / cache** for `registry-1.docker.io` on your infrastructure; alternatively, manually mirror the specific image tags listed above and edit the `image:` lines in the compose files.
+  - `ghcr.io` — the 14 Lucairn `dsa-*` images are in the private `ghcr.io/declade/*` namespace (authentication required; see § "Step 0 — Registry access" above and § "Registry Authentication" below). **Lucairn must grant your GitHub account package-pull access before `docker login` will work** — see § "Step 0".
+  - `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com` — public base images (`postgres:16-alpine`, `redis:7-alpine`, `alpine:3.20`, `migrate/migrate:v4.17.0`, `ollama/ollama`) are pulled from Docker Hub. A host that allowlists only `ghcr.io` will pass GHCR auth but fail on these pulls. **`LUCAIRN_IMAGE_REGISTRY` does not redirect these pulls** — it only prefixes the 14 Lucairn `dsa-*` images (e.g. `dsa-gateway`, `dsa-sandbox-a`, `dsa-audit`, `dsa-sanitizer-core`, and the other ten `ghcr.io/declade/*` images). The base images are hardcoded in the compose files and are not registry-templated. If direct Docker Hub access is prohibited, the standard approach is to configure a **registry pull-through mirror / cache** for `registry-1.docker.io` on your infrastructure; alternatively, manually mirror the specific image tags listed above and edit the `image:` lines in the compose files.
 - Outbound HTTPS to Lucairn-provided remote Sandbox B endpoint if using split deployment.
 - Python 3 with the `cryptography` library (>=2.6) OR `pynacl`. Required by
   `bin/lucairn-init` and `scripts/derive-veil-pubkey.sh` for Ed25519 keypair
@@ -778,7 +778,7 @@ in the documented upgrade runbook, not optional), verify the release image
 set against the kit-bundled public key (`keys/lucairn-cosign.pub`) and the
 per-release signed-digest record (`keys/image-digests-<tag>.txt`).
 **Coverage is not uniform — read this before treating a PASS as
-"everything":** the 12 `dsa-*` services are fully verified at your chosen
+"everything":** the 14 `dsa-*` images are fully verified at your chosen
 `--tag`; `lucairn-dashboard` is verified ONLY at its hardcoded pinned
 default tag (currently `0.8.2`) — if you have overridden
 `LUCAIRN_DASHBOARD_IMAGE_TAG`, a PASS says nothing about the tag you

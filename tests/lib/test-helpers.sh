@@ -195,6 +195,61 @@ lucairn_released_kit_fixture() {
   awk -v core="$TEST_SANITIZER_CORE_DIGEST" -v side="$TEST_SANITIZER_CORE_SIDECAR_DIGEST" "$LUCAIRN_CORE_CHART_DIGEST_AWK" "$cv" > "$cv.released" && mv "$cv.released" "$cv"
 }
 
+# sanitizer_core_manifest_digest_of <image-manifest.yaml> <image> — the digest
+# image_digests.signed_artifacts records for dsa-sanitizer-core or
+# dsa-sanitizer-core-sidecar (empty while the slot is pending); the same read
+# as bin/lucairn-init.
+sanitizer_core_manifest_digest_of() {
+  awk -v want="    $2:" '
+    /^  signed_artifacts:/ { in_sa = 1; next }
+    in_sa && /^  [^ ]/ { in_sa = 0 }
+    in_sa && $0 == want { in_key = 1; next }
+    in_sa && in_key && /^    [^ ]/ { in_key = 0 }
+    in_sa && in_key && /^      digest:/ { gsub(/"/, "", $2); print $2; exit }
+  ' "$1"
+}
+
+# lucairn_unreleased_kit_fixture <kit root> <dest> — the opposite fixture
+# (kit 2.0.0 on, where the real tree is a RELEASED kit): <dest> becomes a copy
+# of <kit root> as it was before the release step — the core pair's
+# signed_artifacts slots say `pending: true`, customer.env.example and the
+# sanitizer-core chart values carry no digest. For the suites that prove an
+# unreleased kit fails closed. Writes nothing into <kit root>.
+lucairn_unreleased_kit_fixture() {
+  local root="$1" dest="$2" e
+  mkdir -p "$dest" || return 1
+  for e in "$root"/* "$root"/.[!.]*; do
+    [ -e "$e" ] || continue
+    case "$(basename "$e")" in .git|.worktrees|.secrets|.certs|.lucairn-*|customer.env|image-manifest.yaml) continue ;; esac
+    cp -Rp "$e" "$dest/" || return 1
+  done
+  awk '
+    /^  signed_artifacts:/ { in_sa = 1; print; next }
+    in_sa && /^  [^ ]/ { in_sa = 0 }
+    in_sa && /^    dsa-sanitizer-core:$/ { key = 1; print; next }
+    in_sa && /^    dsa-sanitizer-core-sidecar:$/ { key = 1; print; next }
+    in_sa && /^    [^ ]/ { key = 0 }
+    in_sa && key && /^      (pending:[[:space:]]*true|digest:[[:space:]]*"sha256:[0-9a-f]+")[[:space:]]*$/ { print "      pending: true"; n++; next }
+    { print }
+    END { if (n != 2) exit 1 }
+  ' "$root/image-manifest.yaml" > "$dest/image-manifest.yaml" || return 1
+  local ex="$dest/customer.env.example"
+  if [ -f "$ex" ]; then
+    sed -e 's/^LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=.*/LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=/' \
+        -e 's/^LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=.*/LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=/' \
+        "$ex" > "$ex.unreleased" && mv "$ex.unreleased" "$ex" || return 1
+  fi
+  local cv="$dest/charts/lucairn/charts/sanitizer-core/values.yaml"
+  [ -f "$cv" ] || return 0
+  awk '
+    /^[^ #]/ { sec = $0 }
+    sec == "image:" && /^  digest:/ && !c { print "  digest: \"\""; c = 1; next }
+    sec == "sidecar:" && /^    digest:/ && !s { print "    digest: \"\""; s = 1; next }
+    { print }
+    END { if (!c || !s) exit 1 }
+  ' "$cv" > "$cv.unreleased" && mv "$cv.unreleased" "$cv"
+}
+
 # lucairn_released_chart <dest dir> — prints the path of a copy of the
 # umbrella chart whose sanitizer-core values carry the synthetic signed pair
 # (what the release step writes). For suites that only RENDER the chart.

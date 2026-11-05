@@ -697,7 +697,19 @@ NO_DIGESTS=1 doc_red "tag-only core/sidecar images (no digests)" "image.digest i
 OTHER="$TMP/other-digests.yaml"
 printf 'sanitizer-core:\n  image:\n    digest: "%s"\n  sidecar:\n    image:\n      digest: "%s"\n' "$D1" "$D2" > "$OTHER"
 NO_DIGESTS=1 doc_red "a pinned pair other than the manifest's" "differ from the pair image-manifest.yaml records" -- "$DEV_VALUES" "$OTHER"
-DOCTOR_KIT="$ROOT" doc_red "an unreleased kit (manifest pending)" "records no signed digest for the core/sidecar pair yet" -- "$DEV_VALUES"
+# Kit 2.0.0: this checkout is a released kit; the unreleased case runs on a
+# copy put back to `pending: true` (tests/lib/test-helpers.sh).
+UNREL_KIT="$TMP/unreleased-kit"
+lucairn_unreleased_kit_fixture "$ROOT" "$UNREL_KIT" || fail "fixture: an unreleased kit (manifest pending)"
+DOCTOR_KIT="$UNREL_KIT" doc_red "an unreleased kit (manifest pending)" "records no signed digest for the core/sidecar pair yet" -- "$DEV_VALUES"
+# ... and THIS checkout's chart defaults are the signed pair its manifest
+# records: doctor --values is green with no digest values file.
+NO_DIGESTS=1 DOCTOR_KIT="$ROOT" doctor_values "$TMP/doc-released.out" -- "$DEV_VALUES"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'sanitizer core (Helm): render ok' "$TMP/doc-released.out"; then
+  pass "doctor --values: this released kit's chart defaults carry the manifest's signed pair (render ok)"
+else
+  fail "doctor --values: this released kit's chart defaults (rc=$rc): $(grep -iE 'sanitizer core|failed' "$TMP/doc-released.out" | head -3)"
+fi
 # K-C M2, moved into K-B fix round 4: the doctor requires LCR_PROFILE=kit as a
 # literal in the core's env:, red-proofed on a released-kit copy without it.
 KITBAD="$TMP/kit-noprofile"; cp -R "$KIT" "$KITBAD"
