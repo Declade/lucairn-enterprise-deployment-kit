@@ -4523,7 +4523,7 @@ moment it boots. A `helm upgrade` → pod restart is the apply path (no hot-relo
 | `code_block`             | `shallow` — heuristic scan only               |
 | `unknown`                | `full_scan` — unknown content scanned in full |
 
-### The 4 trust zones
+### The 5 trust zones
 
 | Zone               | What the sanitizer does                                      |
 |--------------------|--------------------------------------------------------------|
@@ -4531,6 +4531,16 @@ moment it boots. A `helm upgrade` → pod restart is the apply path (no hot-relo
 | `full_scan`        | Full PII scan (all detectors: known-entity + Presidio + optional ML)        |
 | `value_only`       | Scan only JSON / structured VALUES, not key names             |
 | `shallow`          | Heuristic / pattern-matching scan only (no ML, no Presidio)  |
+| `subset_scan`      | Hides only persons, e-mails, phone numbers, secrets, IBANs and payment cards; places, dates, IDs and company names stay visible |
+
+`subset_scan` example: `GATEWAY_TMS_TRUST_ZONES={"user_content":"subset_scan"}`
+makes the sanitizer mask only the six entity types above in user messages
+(useful for tender or document work where place and company names must stay
+readable). On the new sanitizer core it applies per turn, and only when every
+segment of that turn is in the zone; any other content in the turn is still
+fully scanned. It needs a gateway/core build that includes DSA #981; on an
+older build the setting is not honoured and everything is scanned in full
+(`lucairn doctor` checks the value, not the image's feature level).
 
 ### Direction and risk
 

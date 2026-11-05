@@ -5967,7 +5967,7 @@ check_split_remote_credentials() {
 #   (a) VALUE validation (only when GATEWAY_TMS_TRUST_ZONES is set + non-empty):
 #       Parse the JSON; FAIL if:
 #         - not valid JSON
-#         - any zone VALUE not in the 4 valid zones (names the bad key+value)
+#         - any zone VALUE not in the 5 valid zones (names the bad key+value)
 #         - any empty segment-type key
 #         - any duplicate top-level key
 #       WARN (not fail) on an unknown segment-type key (forward-compat; the
@@ -5981,8 +5981,9 @@ check_split_remote_credentials() {
 #       var. Doctor catches this at pre-flight time.
 #
 # Vocab mirrors dual-sandbox-architecture services/gateway/internal/api/tms_types.go
-# (the DSA-repo source of truth: 4 zones / 9 segment types). Valid zones:
-#   trusted_platform | full_scan | value_only | shallow
+# (the DSA-repo source of truth: 5 zones / 9 segment types; subset_scan added
+# with DSA #981, T-1445). Valid zones:
+#   trusted_platform | full_scan | value_only | shallow | subset_scan
 #
 # Valid segment types (9, same source):
 #   system_prompt | platform_metadata | user_content | assistant_content |
@@ -6086,7 +6087,7 @@ check_tms_trust_zones() {
   # --- (a) VALUE VALIDATION -----------------------------------------------
   # Valid constants (mirror dual-sandbox-architecture
   # services/gateway/internal/api/tms_types.go exactly — DSA-repo source of truth).
-  local valid_zones="trusted_platform full_scan value_only shallow"
+  local valid_zones="trusted_platform full_scan value_only shallow subset_scan"
   local valid_segments="system_prompt platform_metadata user_content assistant_content tool_use_input tool_result_content code_block thinking_block unknown"
 
   # FIX 4 (python3 absent → degrade to warn, never false-FAIL): a host without
