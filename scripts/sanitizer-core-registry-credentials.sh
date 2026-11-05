@@ -217,10 +217,20 @@ local_docker_absent() {
   if [ -n "${DOCKER_HOST:-}" ]; then
     host="$DOCKER_HOST"
   else
-    host="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null </dev/null)" || {
+    # Kit 2.0.0 bump review (sol r1 on PR #164): read the endpoint JSON-quoted.
+    # A plain `$(...)` drops a trailing newline or NUL of the value itself, so
+    # 'unix:///x.sock<LF>' looked exactly allowed; in JSON form they stay
+    # visible as \n / \u0000 and fail the allowlist. Anything that is not one
+    # quoted JSON string is no proof.
+    local host_json
+    host_json="$(docker context inspect --format '{{json .Endpoints.docker.Host}}' 2>/dev/null </dev/null)" || {
       VOL_WHY="Docker did not give its version, and the docker CLI's endpoint cannot be read (docker context inspect failed), so there is no proof that no Docker is here (run docker version)"
       return 1
     }
+    case "$host_json" in
+      \"*\") host="${host_json#\"}"; host="${host%\"}" ;;
+      *) host="!not-one-json-string" ;;
+    esac
   fi
   scheme=""
   case "$host" in

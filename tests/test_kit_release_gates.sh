@@ -386,6 +386,19 @@ reject "budget-knob-honours-explicit-zero: an explicit 0 is never rewritten to 9
 # And the values key must be documented where an operator will look for it.
 want "budget-knob-is-plumbed: the key ships in the subchart values.yaml" grep -q "llmScanRequestBudgetSeconds" "$ROOT/charts/lucairn/charts/sandbox-a/values.yaml"
 
+# PR #164 sol r1: with LUCAIRN_IMAGE_TAG empty, Compose runs its fallback
+# tag, so every doctor / verify / gate fallback in bin/lucairn must be the
+# same tag: the kit's LUCAIRN_KIT_IMAGE_TAG, equal to the manifest's
+# default_lucairn_image_tag and to every Compose `${LUCAIRN_IMAGE_TAG:-…}`.
+KIT_CONST="$(sed -n 's/^LUCAIRN_KIT_IMAGE_TAG="\([^"]*\)"$/\1/p' "$ROOT/bin/lucairn")"
+want "image-tag-fallback: bin/lucairn LUCAIRN_KIT_IMAGE_TAG ($KIT_CONST) = image-manifest.yaml default_lucairn_image_tag ($MANIFEST_TAG)" \
+  test -n "$KIT_CONST" -a "$KIT_CONST" = "$MANIFEST_TAG"
+reject "image-tag-fallback: no LUCAIRN_IMAGE_TAG fallback in bin/lucairn names a literal tag" \
+  grep -Eq '(^|[^_])(tag|env_tag|image_tag)="\$\{(tag|env_tag|image_tag):-[0-9]' "$ROOT/bin/lucairn"
+COMPOSE_TAGS="$(cat "$ROOT"/docker-compose*.yml | grep -o 'LUCAIRN_IMAGE_TAG:-[^}]*' | sort -u | sed 's/LUCAIRN_IMAGE_TAG:-//')"
+want "image-tag-fallback: every Compose LUCAIRN_IMAGE_TAG fallback is $MANIFEST_TAG (got: $(printf '%s' "$COMPOSE_TAGS" | tr '\n' ' '))" \
+  test -n "$COMPOSE_TAGS" -a "$COMPOSE_TAGS" = "$MANIFEST_TAG"
+
 echo ""
 if [ "$FAILS" -eq 0 ]; then
   echo "kit release gates T-554 / T-555 / T-472: PASS ($N assertions)"

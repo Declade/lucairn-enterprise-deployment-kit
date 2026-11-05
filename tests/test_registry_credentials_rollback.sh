@@ -60,6 +60,12 @@ fi
 if [ "${1:-}" = context ] && [ "${2:-}" = inspect ]; then
   c="$(cat "$STUB_CONTEXT")"
   [ "$c" != fail ] || { echo 'context "stub": context not found' >&2; exit 1; }
+  # PR #164 sol r1: with a `json` format the real CLI prints the endpoint as
+  # one JSON string (Go: control bytes escaped, other UTF-8 as is); the raw
+  # file bytes are used, so a trailing LF or NUL of the value is kept.
+  case "$*" in
+    *json*) python3 -I -c 'import json,sys; print(json.dumps(open(sys.argv[1],"rb").read().decode("utf-8","replace"), ensure_ascii=False))' "$STUB_CONTEXT"; exit 0 ;;
+  esac
   printf '%s\n' "$c"; exit 0
 fi
 if [ "${1:-}" = version ]; then
@@ -120,6 +126,7 @@ python3 -I -c 'import socket, sys; s = socket.socket(socket.AF_UNIX); s.bind(sys
 ln -s "$SOCKDIR/gone.sock" "$SOCKDIR/dangling.sock"
 use_endpoint() { # <DOCKER_HOST value> | context:<what `docker context inspect` prints, or fail>
   case "$1" in
+    context-nul:*) unset DOCKER_HOST; printf '%s\0' "${1#context-nul:}" > "$STUB_CONTEXT" ;; # value + a trailing NUL
     context:*) unset DOCKER_HOST; printf '%s' "${1#context:}" > "$STUB_CONTEXT" ;;
     *) DOCKER_HOST="$1"; export DOCKER_HOST ;;
   esac
@@ -529,6 +536,12 @@ for _loc in C $UTF8_LOCALE; do
   refused_case "context-em-space-after-path-$_loc" "context:$ACCEPT$EMSP" "$CANNOT"
   refused_case "context-dotdot-segment-$_loc" "context:unix://$SOCKDIR/../$(basename "$SOCKDIR")/missing.sock" "$CANNOT"
   refused_case "context-mixed-case-scheme-$_loc" "context:Unix://$SOCKDIR/missing.sock" "$CANNOT"
+  # PR #164 sol r1: a trailing LF or NUL of the context's endpoint value was
+  # dropped by command substitution and the rest passed the allowlist.
+  # A missing socket: without the fix these got the overridable exit 5.
+  refused_case "context-trailing-lf-$_loc" "context:unix://$SOCKDIR/missing.sock"$'\n' "$CANNOT"
+  refused_case "context-trailing-nul-$_loc" "context-nul:unix://$SOCKDIR/missing.sock" "$CANNOT"
+  refused_case "context-quote-in-path-$_loc" "context:unix://$SOCKDIR/miss\"ing.sock" "$CANNOT"
   # The documented cases still proceed under the same locale.
   proceeds_case "allowlist-socket-missing-$_loc" "unix://$SOCKDIR/missing.sock" "$CANNOT"
   proceeds_case "allowlist-socket-refuses-$_loc" "unix://$SOCKDIR/refuse.sock" "$CANNOT"
