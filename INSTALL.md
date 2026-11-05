@@ -2688,10 +2688,18 @@ it with Docker running: without a daemon it refuses too, because it cannot
 know there is no volume. Generating `customer.env` on a machine without Docker
 is possible only with `--confirm-no-registry-volume`, which states that the
 Docker host of this install has no sanitizer core registry volume from an
-earlier kit 2.0 run. The flag covers only that case — no docker CLI, or no
-reachable daemon: a volume Docker does report is refused with or without it,
+earlier kit 2.0 run. The flag covers only a machine shown to have no Docker:
+no docker CLI, or the docker CLI's endpoint (`DOCKER_HOST`, else the current
+`docker context`) is exactly `unix:///<absolute path>` — one prefix, no
+spaces; anything else is refused — and that socket does not exist or refuses
+connections (init tests the socket itself with python3; it reads no docker
+error message). A volume Docker does report is refused with or without it,
 and so is a registry volume name that cannot be resolved (Docker Compose
-missing, or the project does not render). And
+missing, or the project does not render), and so is every other Docker
+failure — a remote endpoint (`tcp://`, `ssh://`, a Windows named pipe) that
+does not answer, a socket that accepts connections, permission denied on the
+Docker socket, an error from the daemon or a proxy (run `docker version` and
+`docker volume ls` as the same user to see why). And
 `scripts/sanitizer-core-registry-credentials.sh add` generates the pair only
 when there is none (§ "Rollback to 1.9.7" saves them for a return to 2.0).
 

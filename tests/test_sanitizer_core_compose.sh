@@ -825,7 +825,15 @@ a=" $* "
 case "$a" in
   " info "*) [ -n "${STUB_MEM_BYTES:-}" ] && { echo "$STUB_MEM_BYTES"; exit 0; }; exit 1 ;;
   " inspect "*) [ -n "${STUB_NETMODE:-}" ] && { echo "$STUB_NETMODE"; exit 0; }; exit 1 ;;
-  " version --format "*) [ -n "${STUB_ENGINE_VERSION:-}" ] && { echo "$STUB_ENGINE_VERSION"; exit 0; }; exit 1 ;;
+  # No STUB_ENGINE_VERSION: no daemon here. The registry check in
+  # bin/lucairn-init counts that as "no Docker here" (the one case
+  # --confirm-no-registry-volume covers) only when the CLI's endpoint is a
+  # local socket that does not exist (fix round 2 on PR #163): the current
+  # context names one under a directory no host has, and DOCKER_HOST is unset
+  # below.
+  " version --format "*) [ -n "${STUB_ENGINE_VERSION:-}" ] && { echo "$STUB_ENGINE_VERSION"; exit 0; }
+    echo "Cannot connect to the Docker daemon at unix:///nonexistent-lucairn-test/docker.sock. Is the docker daemon running?" >&2; exit 1 ;;
+  " context inspect "*) echo "unix:///nonexistent-lucairn-test/docker.sock"; exit 0 ;;
 esac
 if [ "${1:-}" = compose ]; then
   case "$a" in
@@ -853,6 +861,8 @@ STUB_REAL_DOCKER="$(PATH="$BASE_PATH" command -v docker 2>/dev/null || true)"
 export STUB_REAL_DOCKER
 for t in kubectl helm pg_isready docker-compose; do printf '#!/bin/sh\nexit 1\n' > "$DBIN/$t"; done
 chmod 0755 "$DBIN"/*
+# The stub's context is the CLI's endpoint only without DOCKER_HOST.
+unset DOCKER_HOST
 
 # A RELEASED kit (fix round 1, sol r1 finding 4): this checkout's manifest
 # still says `pending: true` for the core/sidecar pair, so an install made from

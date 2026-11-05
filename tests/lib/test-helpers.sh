@@ -42,7 +42,12 @@ fi
 # already has a registry volume. Test hosts have no such volume and the Mac
 # runner has no Docker daemon, so every test that runs bin/lucairn-init passes
 # --confirm-no-registry-volume; tests/test_registry_credentials_rollback.sh
-# tests the check itself (no daemon, a volume, a custom volume name).
+# tests the check itself (no daemon, a volume, a custom volume name). Since
+# fix round 2 on PR #163 the flag covers only a host shown to have no Docker:
+# no docker CLI, or the CLI's endpoint (DOCKER_HOST, else the current
+# context) is a local unix socket that does not exist or refuses connections
+# (a stopped Docker Desktop leaves such a socket file). A host whose CLI points
+# at a remote endpoint that does not answer fails those tests (exit 8).
 
 # ---------------------------------------------------------------------------
 # T-10 (security STOP-SHIP, 2026-08-03): chart-managed passwords have NO

@@ -42,8 +42,13 @@
 #          · 4 cannot tell: the daemon answered, but a registry volume name of
 #          this install cannot be resolved (Docker Compose missing, the
 #          project or an overlay does not render) and no name that did
-#          resolve is on the daemon's list · 5 cannot tell: Docker cannot be
-#          asked (no docker CLI, or the Docker daemon is not reachable).
+#          resolve is on the daemon's list · 5 cannot tell: there is no
+#          Docker here (no docker CLI, or the docker CLI's endpoint is
+#          exactly unix:///<absolute path> and that socket does not exist or
+#          refuses connections) · 6 cannot
+#          tell: Docker was asked but gave no volume list, and there is no
+#          proof that no Docker is here (a remote or non-socket endpoint, a
+#          socket that accepts connections, any other failure).
 #          bin/lucairn-init runs it before it generates a new customer.env;
 #          its --confirm-no-registry-volume overrides exit 5 only.
 #
@@ -58,13 +63,28 @@
 # BEFORE a failed render is reported, so a known volume is refused (exit 3)
 # even when another of the renders fails. A name that cannot be resolved is
 # "cannot tell" (exit 4), never a guess. The daemon is asked only for its
-# volume list. No secret value is ever printed.
+# version and its volume list. Fix round 2 on PR #163 (review P2: a CONNECT
+# proxy answering 503 or 407 printed "error during connect: …", which the
+# message list of round 1 took for "cannot connect"): no docker CLI message
+# is read any more. When `docker version` fails, exit 5 needs a positive proof
+# that no Docker is here (local_docker_absent): the docker CLI's endpoint —
+# DOCKER_HOST, else the current context's (`docker context inspect`, which
+# follows DOCKER_CONTEXT and the CLI config) — is a local unix:// socket, and a
+# raw connect to that socket path fails with ENOENT (nothing there) or
+# ECONNREFUSED (nothing listening). Every other case — a tcp://, ssh://,
+# npipe:// or other endpoint, a socket that accepts the connection, a socket
+# this user may not open, no python3 to test it, `docker context inspect`
+# failing, a failed volume list — is exit 6, which no flag overrides. The list
+# is matched in the shell, never through `printf | grep -q`: under pipefail
+# grep's exit at the match sent printf a SIGPIPE and the match was dropped
+# once the list outgrew the pipe. No secret value is ever printed.
 #
 # Exit codes: 0 ok · 1 a copy or write failed · 2 usage or a refused input ·
 # 3 a registry volume exists and no saved credentials were given · 4 cannot
 # check for a registry volume: a volume name cannot be resolved (nothing was
-# generated) · 5 cannot check for a registry volume: Docker cannot be asked
-# (nothing was generated).
+# generated) · 5 cannot check for a registry volume: there is no Docker here
+# (nothing was generated) · 6 cannot check for a registry volume: Docker was
+# asked but gave no volume list (nothing was generated).
 
 set -euo pipefail
 
@@ -178,17 +198,95 @@ $name
 }$name" ;; esac
 }
 
+# local_docker_absent — rc 0 ONLY with a positive proof that no Docker daemon
+# is here (fix round 2 on PR #163): the docker CLI's endpoint is exactly
+# unix:///<absolute path> (fix round 4: one prefix, no white space, no second
+# ://) and a raw connect to it fails with ENOENT (the path does not exist,
+# a dangling link included) or ECONNREFUSED (a socket file nothing listens
+# on). The endpoint is DOCKER_HOST when set, else the current context's
+# (`docker context inspect` reads DOCKER_CONTEXT and the CLI config; the
+# daemon is not asked). rc 1 in every other case, VOL_WHY says why (no
+# endpoint value but a socket path is printed): a tcp://, ssh://, npipe:// or
+# any other endpoint, `docker context inspect` failing, a socket that accepts
+# the connection (a daemon or a proxy is there), any other connect error
+# (EACCES: Docker may be there, this user may not use it), no python3 to
+# test the socket. No docker CLI message is read.
+local_docker_absent() {
+  local host path scheme rc=0
+  if [ -n "${DOCKER_HOST:-}" ]; then
+    host="$DOCKER_HOST"
+  else
+    host="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null </dev/null)" || {
+      VOL_WHY="Docker did not give its version, and the docker CLI's endpoint cannot be read (docker context inspect failed), so there is no proof that no Docker is here (run docker version)"
+      return 1
+    }
+  fi
+  scheme=""
+  case "$host" in
+    tcp://*|ssh://*|npipe://*|fd://*|http://*|https://*) scheme=" (${host%%://*}://)" ;;
+  esac
+  # Fix round 4 on PR #163 (review P2): the docker CLI normalises its endpoint
+  # (opts/hosts.go trims spaces, drops a doubled unix:// prefix), a raw probe
+  # does not — 'unix:///var/run/docker.sock ' reached the daemon while the
+  # probe of the path ending in a space found nothing. Only the exact form
+  # counts: one unix:// prefix, an absolute path, no white space or control
+  # character, no further ://. Anything else is no proof (exit 6).
+  local canon='^unix:///[^[:space:][:cntrl:]]+$'
+  if [[ $host =~ $canon ]] && [[ ${host#unix://} != *://* ]]; then
+    path="${host#unix://}"
+  elif [ -n "$scheme" ]; then
+    VOL_WHY="Docker did not give its version, and the docker CLI's endpoint is not a local socket path$scheme, so there is no proof that no Docker is there (run docker version)"; return 1
+  elif [ -n "${DOCKER_HOST:-}" ]; then
+    VOL_WHY="Docker did not give its version, and DOCKER_HOST is not exactly unix:///<absolute socket path> (one unix:// prefix, no spaces), so there is no proof that no Docker is here: unset DOCKER_HOST or set it to the exact local socket (for one, unix:///var/run/docker.sock) and re-run"; return 1
+  else
+    VOL_WHY="Docker did not give its version, and the current docker context's endpoint is not exactly unix:///<absolute socket path> (one unix:// prefix, no spaces), so there is no proof that no Docker is here (run docker version and docker context inspect)"; return 1
+  fi
+  command -v python3 >/dev/null 2>&1 || {
+    VOL_WHY="Docker did not give its version, and without python3 its local socket $path cannot be tested, so there is no proof that no Docker is here (run docker version)"
+    return 1
+  }
+  # 10 ENOENT · 11 ECONNREFUSED · 0 connected · 12 any other error.
+  python3 -I -c '
+import errno, socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(5)
+try:
+    s.connect(sys.argv[1])
+except OSError as e:
+    sys.exit({errno.ENOENT: 10, errno.ECONNREFUSED: 11}.get(e.errno, 12))
+except Exception:
+    sys.exit(12)
+s.close()
+sys.exit(0)
+' "$path" </dev/null >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    10) VOL_WHY="the Docker daemon is not reachable: its local socket $path does not exist"; return 0 ;;
+    11) VOL_WHY="the Docker daemon is not reachable: its local socket $path refuses connections"; return 0 ;;
+    0) VOL_WHY="Docker did not give its version, although its local socket $path accepts connections (run docker version)"; return 1 ;;
+    *) VOL_WHY="Docker did not give its version, and a connect to its local socket $path failed otherwise than 'does not exist' or 'refused' (permission denied, for one), so there is no proof that no Docker is here (run docker version)"; return 1 ;;
+  esac
+}
+
 # registry_volume — sets VOL (the registry volume this install has, or the
 # first name it would have) and returns 0 when one exists, 1 when none does,
-# 2 when a name cannot be resolved and no resolved one exists, 3 when Docker
-# cannot be asked (VOL_WHY says why, value-free). The daemon is asked first,
-# so a host without one answers fast; only that answer is "Docker unreachable".
+# 2 when a name cannot be resolved and no resolved one exists, 3 when there
+# is no Docker here, 4 when Docker was asked but gave no volume list (VOL_WHY
+# says why, value-free). The daemon is asked first, so a host without one
+# answers fast. Fix round 2 on PR #163: 3 — the one case the init flag
+# overrides — only with no docker CLI or local_docker_absent's proof; every
+# other failure of `docker version`, and a failed `docker volume ls` whatever
+# it says, is 4.
 registry_volume() {
   local tmp envf out name rc=0 why=""
   local -a args
   VOL="" VOL_WHY="" VOLS=""
   command -v docker >/dev/null 2>&1 || { VOL_WHY="the docker CLI is not on PATH"; return 3; }
-  out="$(docker volume ls -q 2>/dev/null </dev/null)" || { VOL_WHY="the Docker daemon is not reachable"; return 3; }
+  if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1 </dev/null; then
+    local_docker_absent && return 3
+    return 4
+  fi
+  out="$(docker volume ls -q 2>/dev/null </dev/null)" \
+    || { VOL_WHY="the Docker daemon answered but did not list its volumes (docker volume ls failed)"; return 4; }
   cev_compose_cmd 2>/dev/null || { VOL_WHY="Docker Compose is not available here"; return 2; }
   [ -f "$PROJECT_DIR/$BASE_COMPOSE" ] && [ ! -L "$PROJECT_DIR/$BASE_COMPOSE" ] \
     || { VOL_WHY="no $BASE_COMPOSE in $PROJECT_DIR"; return 2; }
@@ -212,10 +310,15 @@ EOF
   fi
   rm -rf "$tmp"
   # Fix round 4: a resolved name the daemon lists is a known volume, whatever
-  # another render did — refuse on it before reporting "cannot tell".
+  # another render did — refuse on it before reporting "cannot tell". One
+  # whole line of the list, matched in the shell (no pipe, no temp file).
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    if printf '%s\n' "$out" | grep -Fxq -- "$name"; then VOL="$name"; return 0; fi
+    case "
+$out
+" in *"
+$name
+"*) VOL="$name"; return 0 ;; esac
   done <<EOF
 $VOLS
 EOF
@@ -253,7 +356,7 @@ file_mode() {
 # exactly one line of each name, nothing else; the key 64 hex, the password
 # non-empty. Never prints a value.
 validate_saved() {
-  local f="$1" n c mode v
+  local f="$1" n c mode v rc=0
   [ -f "$f" ] && [ ! -L "$f" ] || die 2 "$f is not a regular file"
   mode="$(file_mode "$f")"
   case "$mode" in 600|400) : ;; *) die 2 "$f has mode $mode; it holds the registry key and password, so it must be 0600 (chmod 600 '$f')" ;; esac
@@ -261,11 +364,17 @@ validate_saved() {
     c="$(count_lines "$n" "$f")"
     [ "$c" = 1 ] || die 2 "$f must hold exactly one $n line (it holds $c)"
   done
-  if grep -vE "$(assign_re "$KEY_NAME")|$(assign_re "$PW_NAME")|^[[:space:]]*$" "$f" | grep -q .; then
-    die 2 "$f holds a line other than $KEY_NAME and $PW_NAME (refused; not printed)"
-  fi
+  # Final check on PR #162: one grep reads the file (`grep -v | grep -q .`
+  # under pipefail dropped this match once the other lines outgrew the pipe),
+  # and a read error refuses too.
+  grep -qvE "$(assign_re "$KEY_NAME")|$(assign_re "$PW_NAME")|^[[:space:]]*$" "$f" || rc=$?
+  case "$rc" in
+    0) die 2 "$f holds a line other than $KEY_NAME and $PW_NAME (refused; not printed)" ;;
+    1) : ;;
+    *) die 2 "$f cannot be read" ;;
+  esac
   v="$(grep -E "$(assign_re "$KEY_NAME")" "$f" | sed -E "s/^(export[[:space:]]+)?$KEY_NAME=//; s/^\"(.*)\"\$/\\1/; s/^'(.*)'\$/\\1/")"
-  printf '%s' "$v" | grep -Eqx '[0-9a-fA-F]{64}' || die 2 "$KEY_NAME in $f is not 64 hex characters (not printed)"
+  [[ $v =~ ^[0-9a-fA-F]{64}$ ]] || die 2 "$KEY_NAME in $f is not 64 hex characters (not printed)"
   v="$(grep -E "$(assign_re "$PW_NAME")" "$f" | sed -E "s/^(export[[:space:]]+)?$PW_NAME=//; s/^\"(.*)\"\$/\\1/; s/^'(.*)'\$/\\1/")"
   [ -n "$v" ] || die 2 "$PW_NAME in $f is empty"
 }
@@ -283,6 +392,7 @@ do_check() {
     0) refuse_existing init ;;
     1) exit 0 ;;
     3) printf '%s\n' "$VOL_WHY" >&2; exit 5 ;;
+    4) printf '%s\n' "$VOL_WHY" >&2; exit 6 ;;
     *) printf '%s\n' "$VOL_WHY" >&2; exit 4 ;;
   esac
 }
@@ -375,12 +485,13 @@ do_add() {
     0) refuse_existing add ;;
     1) : ;;
     3) die 5 "cannot check whether this install already has a sanitizer core registry volume ($VOL_WHY), so no credentials were generated: new ones would not open an existing registry. Start Docker and re-run, or pass --from <saved file>" ;;
+    4) die 6 "cannot check whether this install already has a sanitizer core registry volume ($VOL_WHY), so no credentials were generated: new ones would not open an existing registry. Fix what keeps Docker from listing its volumes (run docker version and docker volume ls as this user) and re-run, or pass --from <saved file>" ;;
     *) die 4 "cannot check whether this install already has a sanitizer core registry volume ($VOL_WHY), so no credentials were generated: new ones would not open an existing registry. Fix the cause and re-run, or pass --from <saved file>" ;;
   esac
   command -v openssl >/dev/null 2>&1 || die 2 "openssl is required"
   key="$(openssl rand -hex 32)"
   pw="$(openssl rand -hex 24)"
-  printf '%s' "$key" | grep -Eqx '[0-9a-f]{64}' && printf '%s' "$pw" | grep -Eqx '[0-9a-f]{48}' \
+  [[ $key =~ ^[0-9a-f]{64}$ ]] && [[ $pw =~ ^[0-9a-f]{48}$ ]] \
     || die 1 "openssl did not generate the expected values"
   printf '%s=%s\n%s=%s\n' "$KEY_NAME" "$key" "$PW_NAME" "$pw" | append_lines
   key="" pw=""

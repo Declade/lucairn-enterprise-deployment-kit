@@ -154,6 +154,13 @@ if [ "\${1:-}" = compose ]; then
   exit 0
 fi
 case "\$a" in
+  # no daemon here. The registry check in bin/lucairn-init counts that as
+  # "no Docker here" (the one case --confirm-no-registry-volume covers) only
+  # when the CLI's endpoint is a local socket that does not exist (fix round
+  # 2 on PR #163): the current context names one under a directory no host
+  # has, and DOCKER_HOST is unset below.
+  " version "*) echo "Cannot connect to the Docker daemon at unix:///nonexistent-lucairn-test/docker.sock. Is the docker daemon running?" >&2; exit 1 ;;
+  " context inspect "*) echo "unix:///nonexistent-lucairn-test/docker.sock"; exit 0 ;;
   " info "*) [ -n "\${STUB_MEM_BYTES:-}" ] && { echo "\$STUB_MEM_BYTES"; exit 0; }; exit 1 ;;
   # kit 2.0 K-E: the host's Docker networks, one "<name>|<subnet>..." line each
   # in STUB_NETS (unset = the engine cannot be asked, as before)
@@ -165,6 +172,8 @@ exit 1
 STUB
 printf '#!/bin/sh\nprintf 000\n' > "$SBIN/curl"
 for t in kubectl helm pg_isready docker-compose; do printf '#!/bin/sh\nexit 1\n' > "$SBIN/$t"; done
+# The stub's context is the CLI's endpoint only without DOCKER_HOST.
+unset DOCKER_HOST
 # TEST SEAM (this file only; production is unchanged) — kit 2.0 K-C fix round
 # 1, sol r1 P2: on Linux the login custody check wants SERVICENOW_LOGIN_DIR
 # and login.json owned by the gateway's uid 10001:10001, which an unprivileged
