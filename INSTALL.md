@@ -4531,12 +4531,16 @@ moment it boots. A `helm upgrade` → pod restart is the apply path (no hot-relo
 | `full_scan`        | Full PII scan (all detectors: known-entity + Presidio + optional ML)        |
 | `value_only`       | Scan only JSON / structured VALUES, not key names             |
 | `shallow`          | Heuristic / pattern-matching scan only (no ML, no Presidio)  |
-| `subset_scan`      | Hides only persons, e-mails, phone numbers, secrets, IBANs and payment cards; places, dates, IDs and company names stay visible |
+| `subset_scan`      | Like `full_scan`, but place names stay readable (WEAKER than default); persons, e-mails, phones, IDs, logins, personal numbers, secrets, IBANs and cards stay hidden |
 
 `subset_scan` example: `GATEWAY_TMS_TRUST_ZONES={"user_content":"subset_scan"}`
-makes the sanitizer mask only the six entity types above in user messages
-(useful for tender or document work where place and company names must stay
-readable). On the new sanitizer core it applies per turn, and only when every
+leaves place names readable in user messages and hides everything else as
+`full_scan` does (useful for tender or document work where town and company
+names must stay readable). A place stays hidden when it could be a person's
+name (it is on a name list, or a person cue such as "Herr"/"Frau" stands next
+to it) or when the conversation already knows it as a hidden value. Known
+limit, as in Lucairn 1.0: a person's name that the models mistake for a place,
+that is on no name list and has no person cue next to it, stays readable. On the new sanitizer core it applies per turn, and only when every
 segment of that turn is in the zone; any other content in the turn is still
 fully scanned. It needs a gateway/core build that includes DSA #981; on an
 older build the setting is not honoured and everything is scanned in full
