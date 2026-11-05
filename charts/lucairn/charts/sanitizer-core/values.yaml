@@ -51,14 +51,15 @@ namespace: dsa-identity
 image:
   repository: dsa-sanitizer-core
   tag: ""
-  digest: ""
+  digest: "sha256:3b14defeed7626730a8d53c748b18185bff00cc105e041cfc7543a0078de196e"
   pullPolicy: IfNotPresent
 
 sidecar:
   image:
     repository: dsa-sanitizer-core-sidecar
     tag: ""
-    digest: ""
+    # linux/amd64 only in 1.1.0 (kit 2.0.0): the pair does not run on arm64 nodes.
+    digest: "sha256:dc2ecd58ee6048ca65a17d08b4c7d0744d96e7a4e990c95abaaf81b56115a435"
     pullPolicy: IfNotPresent
   # Memory: capped at 6.5 GB (hosted window amendment A8: peak 5.6 GB with
   # GLiNER and both spaCy models; the 5.5 GB cap of the first switch was too

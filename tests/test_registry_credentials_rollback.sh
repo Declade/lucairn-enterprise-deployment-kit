@@ -60,6 +60,12 @@ fi
 if [ "${1:-}" = context ] && [ "${2:-}" = inspect ]; then
   c="$(cat "$STUB_CONTEXT")"
   [ "$c" != fail ] || { echo 'context "stub": context not found' >&2; exit 1; }
+  # PR #164 sol r1: with a `json` format the real CLI prints the endpoint as
+  # one JSON string (Go: control bytes escaped, other UTF-8 as is); the raw
+  # file bytes are used, so a trailing LF or NUL of the value is kept.
+  case "$*" in
+    *json*) python3 -I -c 'import json,sys; print(json.dumps(open(sys.argv[1],"rb").read().decode("utf-8","replace"), ensure_ascii=False))' "$STUB_CONTEXT"; exit 0 ;;
+  esac
   printf '%s\n' "$c"; exit 0
 fi
 if [ "${1:-}" = version ]; then
@@ -120,6 +126,7 @@ python3 -I -c 'import socket, sys; s = socket.socket(socket.AF_UNIX); s.bind(sys
 ln -s "$SOCKDIR/gone.sock" "$SOCKDIR/dangling.sock"
 use_endpoint() { # <DOCKER_HOST value> | context:<what `docker context inspect` prints, or fail>
   case "$1" in
+    context-nul:*) unset DOCKER_HOST; printf '%s\0' "${1#context-nul:}" > "$STUB_CONTEXT" ;; # value + a trailing NUL
     context:*) unset DOCKER_HOST; printf '%s' "${1#context:}" > "$STUB_CONTEXT" ;;
     *) DOCKER_HOST="$1"; export DOCKER_HOST ;;
   esac
@@ -487,6 +494,62 @@ refused_case context-trailing-space "context:$ACCEPT " "$CANNOT"
 check "context-trailing-space: check says the context endpoint is not exact" \
   'grep -Fq "current docker context'"'"'s endpoint is not exactly unix:///" "$TMPDIR/check-context-trailing-space.err"'
 refused_case context-doubled-prefix "context:unix://$ACCEPT" "$CANNOT"
+# Kit 2.0.0 version-bump PR (owner 5 Nov "Merge, allowlist in bump PR", after
+# the round-4 final check on PR #163: a Unicode no-break space after the path
+# passed the white-space test under LC_ALL=C, the docker CLI trims it, so the
+# CLI reached the accepting socket while the probe of the longer path found
+# nothing = exit 5). The endpoint now counts only when it is ASCII
+# ^unix:///[A-Za-z0-9._/-]+$ with no `..` segment, whatever the caller's
+# locale: every case below runs under LC_ALL=C and under a UTF-8 locale.
+NBSP=$'\xc2\xa0'        # U+00A0 NO-BREAK SPACE (the review's case)
+NNBSP=$'\xe2\x80\xaf'   # U+202F NARROW NO-BREAK SPACE
+EMSP=$'\xe2\x80\x83'    # U+2003 EM SPACE
+IDSP=$'\xe3\x80\x80'    # U+3000 IDEOGRAPHIC SPACE
+NEL=$'\xc2\x85'         # U+0085 NEXT LINE
+ZWSP=$'\xe2\x80\x8b'    # U+200B ZERO WIDTH SPACE
+EACUTE=$'\xc3\xa9'      # U+00E9 (a letter, but not ASCII)
+_LOCALES_HERE="$(locale -a 2>/dev/null || true)"
+UTF8_LOCALE=""
+for _l in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
+  if grep -qx "$_l" <<<"$_LOCALES_HERE"; then UTF8_LOCALE="$_l"; break; fi
+done
+[ -n "$UTF8_LOCALE" ] || echo "  NOTE  no UTF-8 locale on this host: the allowlist cases run under LC_ALL=C only (NON-COVERAGE: UTF-8 leg)"
+_HAD_LC_ALL="${LC_ALL+set}" _ORIG_LC_ALL="${LC_ALL-}"
+for _loc in C $UTF8_LOCALE; do
+  export LC_ALL="$_loc"
+  refused_case "host-nbsp-after-path-$_loc" "$ACCEPT$NBSP" "$CANNOT"
+  refused_case "host-nbsp-before-prefix-$_loc" "${NBSP}$ACCEPT" "$CANNOT"
+  refused_case "host-nbsp-in-path-$_loc" "unix://$SOCKDIR/missing${NBSP}.sock" "$CANNOT"
+  refused_case "host-narrow-nbsp-after-path-$_loc" "$ACCEPT$NNBSP" "$CANNOT"
+  refused_case "host-em-space-after-path-$_loc" "$ACCEPT$EMSP" "$CANNOT"
+  refused_case "host-ideographic-space-after-path-$_loc" "$ACCEPT$IDSP" "$CANNOT"
+  refused_case "host-next-line-after-path-$_loc" "$ACCEPT$NEL" "$CANNOT"
+  refused_case "host-zero-width-space-after-path-$_loc" "$ACCEPT$ZWSP" "$CANNOT"
+  refused_case "host-non-ascii-letter-$_loc" "unix://$SOCKDIR/miss${EACUTE}ng.sock" "$CANNOT"
+  refused_case "host-trailing-ascii-space-$_loc" "unix://$SOCKDIR/missing.sock " "$CANNOT"
+  refused_case "host-doubled-prefix-missing-$_loc" "unix://unix://$SOCKDIR/missing.sock" "$CANNOT"
+  refused_case "host-mixed-case-scheme-$_loc" "Unix://$SOCKDIR/missing.sock" "$CANNOT"
+  refused_case "host-relative-dot-path-$_loc" "unix://./missing.sock" "$CANNOT"
+  refused_case "host-dotdot-segment-$_loc" "unix://$SOCKDIR/../$(basename "$SOCKDIR")/missing.sock" "$CANNOT"
+  refused_case "host-dotdot-last-segment-$_loc" "unix://$SOCKDIR/no-such-dir/.." "$CANNOT"
+  refused_case "context-nbsp-after-path-$_loc" "context:$ACCEPT$NBSP" "$CANNOT"
+  refused_case "context-em-space-after-path-$_loc" "context:$ACCEPT$EMSP" "$CANNOT"
+  refused_case "context-dotdot-segment-$_loc" "context:unix://$SOCKDIR/../$(basename "$SOCKDIR")/missing.sock" "$CANNOT"
+  refused_case "context-mixed-case-scheme-$_loc" "context:Unix://$SOCKDIR/missing.sock" "$CANNOT"
+  # PR #164 sol r1: a trailing LF or NUL of the context's endpoint value was
+  # dropped by command substitution and the rest passed the allowlist.
+  # A missing socket: without the fix these got the overridable exit 5.
+  refused_case "context-trailing-lf-$_loc" "context:unix://$SOCKDIR/missing.sock"$'\n' "$CANNOT"
+  refused_case "context-trailing-nul-$_loc" "context-nul:unix://$SOCKDIR/missing.sock" "$CANNOT"
+  refused_case "context-quote-in-path-$_loc" "context:unix://$SOCKDIR/miss\"ing.sock" "$CANNOT"
+  # The documented cases still proceed under the same locale.
+  proceeds_case "allowlist-socket-missing-$_loc" "unix://$SOCKDIR/missing.sock" "$CANNOT"
+  proceeds_case "allowlist-socket-refuses-$_loc" "unix://$SOCKDIR/refuse.sock" "$CANNOT"
+  proceeds_case "allowlist-context-socket-missing-$_loc" "context:unix://$SOCKDIR/missing.sock" "$CANNOT"
+done
+if [ -n "$_HAD_LC_ALL" ]; then export LC_ALL="$_ORIG_LC_ALL"; else unset LC_ALL; fi
+check "host-nbsp-after-path: check names the allowed form" \
+  'grep -Fq "unix:///<absolute socket path>" "$TMPDIR/check-host-nbsp-after-path-C.err"'
 use_endpoint tcp://docker.example.invalid:2376
 printf '%s' 'error during connect: Get "https://docker.example.invalid:2376/v1.51/version": Service Unavailable' > "$STUB_MSG"
 run add-proxy-503 bash "$CRED" add --env-file "$ENV"

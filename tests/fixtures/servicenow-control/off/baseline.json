@@ -2,8 +2,8 @@
   "source_ref": "93afd045bf9ab59817fa6125c0bd4172cb4bab89",
   "compose_version": "Docker Compose version v5.4.0",
   "sha256": {
-    "docker-compose.customer.yml": "8c6882e5c151abc4ac68792c73fd3d539668489b81cb25ad3069e64b19d95710",
-    "docker-compose.self-hosted.yml": "0a1c1737d254cc147a5f95506bfaf0a76d00111c3853733088aa50bc4c688f6d",
+    "docker-compose.customer.yml": "238adfa3c8304ea9f2424fcabf0c788a5000ea2659bdba1b975d5fe496d2d5f0",
+    "docker-compose.self-hosted.yml": "4f3b002ecff41dedd8e741acdfe5fbd3bdc397a6408d9790789e8e5542802355",
     "docker-compose.self-hosted-byok.yml": "c62c0f560f990451cee5db935ae835a1a3d624a4d9d7456bde322529808d3fd5"
   },
   "amended_repin": "2026-10-27: postgres:16-alpine digest re-pin in docker-compose.customer.yml; fixtures amended by that single image line",
@@ -14,5 +14,6 @@
   "amended_kit_2_0_fix2": "kit 2.0 K-A fix round 2 (T-1441, sol r2 on PR #158): in docker-compose.customer.yml the sanitizer-core command listens on --listen=sanitizer-core:8790 (the ingress alias only) instead of 0.0.0.0:8790, and its healthcheck probes that name instead of 127.0.0.1; fixtures re-rendered with Docker Compose v5.4.0 \u2014 in each render exactly those two lines changed, nothing else",
   "amended_kit_2_0_final_reads": "kit 2.0 K-A final-read fix round (T-1441, ToB TOB-K20-02 + hunter M1): in docker-compose.customer.yml sanitizer-core-sidecar and sanitizer-core gain cap_drop [ALL], security_opt [no-new-privileges:true], read_only true and a /tmp tmpfs (1g / 64m), the sidecar HOME=/tmp + XDG_CACHE_HOME=/tmp/.cache, and the core's witness latch/client-leaf defaults follow GRPC_TLS_ENABLED (`${GRPC_TLS_ENABLED:-true}`, `${...-default}`) \u2014 with this fixture env the rendered values are unchanged; fixtures re-rendered with Docker Compose v5.4.0 \u2014 in each render exactly those hardening lines were added, nothing else",
   "amended_kit_2_0_round2": "kit 2.0 round 2 (T-1441, 2026-11-04): one comment of the sanitizer-core volumes in docker-compose.customer.yml now says where the CA private key lives (./.secrets/sanitizer-core-mtls-ca, outside the gateway's ./.certs mount); comment only, so every render is byte-identical and no fixture changed",
-  "amended_kit_2_0_row9_pins": "kit 2.0 K-E (T-1441, PRD row 9, 2026-11-04): every third-party image of docker-compose.customer.yml (postgres:16-alpine x4, redis:7-alpine x2, migrate/migrate:v4.17.0 x4, alpine:3.20 x2) and docker-compose.self-hosted.yml (redis:7-alpine x1) carries the digest image-manifest.yaml records; fixtures re-rendered with Docker Compose v5.4.0 \u2014 in each render exactly those image lines gained @sha256:\u2026, nothing else changed"
+  "amended_kit_2_0_row9_pins": "kit 2.0 K-E (T-1441, PRD row 9, 2026-11-04): every third-party image of docker-compose.customer.yml (postgres:16-alpine x4, redis:7-alpine x2, migrate/migrate:v4.17.0 x4, alpine:3.20 x2) and docker-compose.self-hosted.yml (redis:7-alpine x1) carries the digest image-manifest.yaml records; fixtures re-rendered with Docker Compose v5.4.0 \u2014 in each render exactly those image lines gained @sha256:\u2026, nothing else changed",
+  "amended_kit_2_0_0_bump": "kit 2.0.0 version bump (T-1441, 2026-11-05): the LUCAIRN_IMAGE_TAG fallback of every dsa-* image in docker-compose.customer.yml (8 refs; 2 cert profile comments) and docker-compose.self-hosted.yml (sandbox-b) moved 0.5.5 -> 1.1.0; fixtures re-rendered with Docker Compose v5.4.0 \u2014 in each render exactly the dsa-* image lines changed tag, nothing else"
 }

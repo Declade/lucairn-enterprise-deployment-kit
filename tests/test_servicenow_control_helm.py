@@ -45,6 +45,9 @@ CHART = ROOT / "charts/lucairn"
 # third-party image (postgres, redis, migrate, ollama; values-dev also the four
 # observability images) carries the digest image-manifest.yaml records; in each
 # profile exactly those image lines gained @sha256:..., nothing else changed.
+# The kit 2.0.0 version bump re-rendered them once more with Helm v4.1.3:
+# global.imageTag 0.5.5 -> 1.1.0, so in values-dev exactly the 13 dsa-* image
+# lines changed tag; values-test (its own imageTag) is byte-identical.
 OFF_GOLDEN = ROOT / "tests/fixtures/servicenow-control/helm-off"
 APP = "app.kubernetes.io/name"
 HELD = "templates/servicenow-control-held.yaml"

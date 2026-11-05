@@ -44,7 +44,8 @@
 #          project or an overlay does not render) and no name that did
 #          resolve is on the daemon's list · 5 cannot tell: there is no
 #          Docker here (no docker CLI, or the docker CLI's endpoint is
-#          exactly unix:///<absolute path> and that socket does not exist or
+#          exactly unix:///<absolute path> — ASCII letters, digits and
+#          . _ / - only, no .. segment — and that socket does not exist or
 #          refuses connections) · 6 cannot
 #          tell: Docker was asked but gave no volume list, and there is no
 #          proof that no Docker is here (a remote or non-socket endpoint, a
@@ -216,10 +217,20 @@ local_docker_absent() {
   if [ -n "${DOCKER_HOST:-}" ]; then
     host="$DOCKER_HOST"
   else
-    host="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null </dev/null)" || {
+    # Kit 2.0.0 bump review (sol r1 on PR #164): read the endpoint JSON-quoted.
+    # A plain `$(...)` drops a trailing newline or NUL of the value itself, so
+    # 'unix:///x.sock<LF>' looked exactly allowed; in JSON form they stay
+    # visible as \n / \u0000 and fail the allowlist. Anything that is not one
+    # quoted JSON string is no proof.
+    local host_json
+    host_json="$(docker context inspect --format '{{json .Endpoints.docker.Host}}' 2>/dev/null </dev/null)" || {
       VOL_WHY="Docker did not give its version, and the docker CLI's endpoint cannot be read (docker context inspect failed), so there is no proof that no Docker is here (run docker version)"
       return 1
     }
+    case "$host_json" in
+      \"*\") host="${host_json#\"}"; host="${host%\"}" ;;
+      *) host="!not-one-json-string" ;;
+    esac
   fi
   scheme=""
   case "$host" in
@@ -229,17 +240,26 @@ local_docker_absent() {
   # (opts/hosts.go trims spaces, drops a doubled unix:// prefix), a raw probe
   # does not — 'unix:///var/run/docker.sock ' reached the daemon while the
   # probe of the path ending in a space found nothing. Only the exact form
-  # counts: one unix:// prefix, an absolute path, no white space or control
-  # character, no further ://. Anything else is no proof (exit 6).
-  local canon='^unix:///[^[:space:][:cntrl:]]+$'
-  if [[ $host =~ $canon ]] && [[ ${host#unix://} != *://* ]]; then
+  # counts. Kit 2.0.0 version bump (round-4 final check on PR #163: a Unicode
+  # no-break space passed the white-space test under LC_ALL=C, and Go's
+  # TrimSpace removes it): an ALLOWLIST of ASCII characters, not a list of
+  # what to refuse — ^unix:///[A-Za-z0-9._/-]+$, so one unix:// prefix, an
+  # absolute path, nothing else (no space of any script, no control or
+  # non-ASCII character, no further ':'), and no `..` segment. The letters
+  # are spelt out (no ranges) and the match runs under LC_ALL=C with
+  # nocasematch off, so neither the caller's locale nor its shell options
+  # widen it. Anything else is no proof (exit 6).
+  local LC_ALL=C
+  shopt -u nocasematch
+  local allow='^unix:///[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-]+$'
+  if [[ $host =~ $allow ]] && [[ "/${host#unix://}/" != */../* ]]; then
     path="${host#unix://}"
   elif [ -n "$scheme" ]; then
     VOL_WHY="Docker did not give its version, and the docker CLI's endpoint is not a local socket path$scheme, so there is no proof that no Docker is there (run docker version)"; return 1
   elif [ -n "${DOCKER_HOST:-}" ]; then
-    VOL_WHY="Docker did not give its version, and DOCKER_HOST is not exactly unix:///<absolute socket path> (one unix:// prefix, no spaces), so there is no proof that no Docker is here: unset DOCKER_HOST or set it to the exact local socket (for one, unix:///var/run/docker.sock) and re-run"; return 1
+    VOL_WHY="Docker did not give its version, and DOCKER_HOST is not exactly unix:///<absolute socket path> (one unix:// prefix, then only ASCII letters, digits and . _ / -, no .. segment), so there is no proof that no Docker is here: unset DOCKER_HOST or set it to the exact local socket (for one, unix:///var/run/docker.sock) and re-run"; return 1
   else
-    VOL_WHY="Docker did not give its version, and the current docker context's endpoint is not exactly unix:///<absolute socket path> (one unix:// prefix, no spaces), so there is no proof that no Docker is here (run docker version and docker context inspect)"; return 1
+    VOL_WHY="Docker did not give its version, and the current docker context's endpoint is not exactly unix:///<absolute socket path> (one unix:// prefix, then only ASCII letters, digits and . _ / -, no .. segment), so there is no proof that no Docker is here (run docker version and docker context inspect)"; return 1
   fi
   command -v python3 >/dev/null 2>&1 || {
     VOL_WHY="Docker did not give its version, and without python3 its local socket $path cannot be tested, so there is no proof that no Docker is here (run docker version)"

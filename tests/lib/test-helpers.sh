@@ -134,9 +134,22 @@ fi
 # (TEST_SANITIZER_CORE_DIGEST / TEST_SANITIZER_CORE_SIDECAR_DIGEST are defined
 # above HELM_TEST_SECRET_ARGS, which passes them to every umbrella render.)
 
+# The awk program both fixtures use to put the synthetic pair into a copy of
+# charts/lucairn/charts/sanitizer-core/values.yaml: the top-level image.digest
+# and sidecar.image.digest, whether empty (an unreleased tree) or carrying the
+# signed release digests (a released tree, kit 2.0.0 on), so every suite sees
+# the same synthetic pair as the fixture manifest and env.
+LUCAIRN_CORE_CHART_DIGEST_AWK='
+    /^[^ #]/ { sec = $0 }
+    sec == "image:" && /^  digest:/ && !c { print "  digest: \"" core "\""; c = 1; next }
+    sec == "sidecar:" && /^    digest:/ && !s { print "    digest: \"" side "\""; s = 1; next }
+    { print }
+    END { if (!c || !s) exit 1 }
+  '
+
 # lucairn_released_kit_fixture <kit root> <dest> — <dest> becomes a kit tree
 # whose image-manifest.yaml records the synthetic pair above in place of
-# `pending: true`, and whose sanitizer-core chart values carry the same pair. Everything else is a plain COPY of <kit root> (about
+# `pending: true` or of the signed release digests (kit 2.0.0 on), and whose sanitizer-core chart values carry the same pair. Everything else is a plain COPY of <kit root> (about
 # 11 MB without .git), so bin/lucairn and bin/lucairn-init run as the fixture
 # kit and a test that edits a kit file (a "mutant" of servicenow-directory/, a
 # keys/ record) edits the copy. Directories are never symlinked: `cp -R` of a
@@ -159,22 +172,82 @@ lucairn_released_kit_fixture() {
     in_sa && /^    dsa-sanitizer-core:$/ { key = "core"; print; next }
     in_sa && /^    dsa-sanitizer-core-sidecar:$/ { key = "side"; print; next }
     in_sa && /^    [^ ]/ { key = "" }
-    in_sa && key != "" && /^      pending:[[:space:]]*true/ { print "      digest: \"" (key == "core" ? core : side) "\""; n++; next }
+    in_sa && key != "" && /^      (pending:[[:space:]]*true|digest:[[:space:]]*"sha256:[0-9a-f]+")[[:space:]]*$/ { print "      digest: \"" (key == "core" ? core : side) "\""; n++; next }
     { print }
     END { if (n != 2) exit 1 }
   ' "$root/image-manifest.yaml" > "$dest/image-manifest.yaml" || return 1
+  # Kit 2.0.0: customer.env.example carries the release's signed pair; the
+  # fixture's copy carries the synthetic pair, like its manifest.
+  local ex="$dest/customer.env.example"
+  if [ -f "$ex" ]; then
+    awk -v core="$TEST_SANITIZER_CORE_DIGEST" -v side="$TEST_SANITIZER_CORE_SIDECAR_DIGEST" '
+      /^LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=/ { print "LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=" core; next }
+      /^LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=/ { print "LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=" side; next }
+      { print }
+    ' "$ex" > "$ex.released" && mv "$ex.released" "$ex" || return 1
+  fi
   # Kit 2.0 K-B fix round 1: a released kit's sanitizer-core chart carries the
   # same signed pair (the release step fills image.digest and
   # sidecar.image.digest from image-manifest.yaml); the chart refuses to render
   # without them.
   local cv="$dest/charts/lucairn/charts/sanitizer-core/values.yaml"
   [ -f "$cv" ] || return 0
-  awk -v core="$TEST_SANITIZER_CORE_DIGEST" -v side="$TEST_SANITIZER_CORE_SIDECAR_DIGEST" '
-    $0 == "  digest: \"\"" && !c { print "  digest: \"" core "\""; c = 1; next }
-    $0 == "    digest: \"\"" && !s { print "    digest: \"" side "\""; s = 1; next }
+  awk -v core="$TEST_SANITIZER_CORE_DIGEST" -v side="$TEST_SANITIZER_CORE_SIDECAR_DIGEST" "$LUCAIRN_CORE_CHART_DIGEST_AWK" "$cv" > "$cv.released" && mv "$cv.released" "$cv"
+}
+
+# sanitizer_core_manifest_digest_of <image-manifest.yaml> <image> — the digest
+# image_digests.signed_artifacts records for dsa-sanitizer-core or
+# dsa-sanitizer-core-sidecar (empty while the slot is pending); the same read
+# as bin/lucairn-init.
+sanitizer_core_manifest_digest_of() {
+  awk -v want="    $2:" '
+    /^  signed_artifacts:/ { in_sa = 1; next }
+    in_sa && /^  [^ ]/ { in_sa = 0 }
+    in_sa && $0 == want { in_key = 1; next }
+    in_sa && in_key && /^    [^ ]/ { in_key = 0 }
+    in_sa && in_key && /^      digest:/ { gsub(/"/, "", $2); print $2; exit }
+  ' "$1"
+}
+
+# lucairn_unreleased_kit_fixture <kit root> <dest> — the opposite fixture
+# (kit 2.0.0 on, where the real tree is a RELEASED kit): <dest> becomes a copy
+# of <kit root> as it was before the release step — the core pair's
+# signed_artifacts slots say `pending: true`, customer.env.example and the
+# sanitizer-core chart values carry no digest. For the suites that prove an
+# unreleased kit fails closed. Writes nothing into <kit root>.
+lucairn_unreleased_kit_fixture() {
+  local root="$1" dest="$2" e
+  mkdir -p "$dest" || return 1
+  for e in "$root"/* "$root"/.[!.]*; do
+    [ -e "$e" ] || continue
+    case "$(basename "$e")" in .git|.worktrees|.secrets|.certs|.lucairn-*|customer.env|image-manifest.yaml) continue ;; esac
+    cp -Rp "$e" "$dest/" || return 1
+  done
+  awk '
+    /^  signed_artifacts:/ { in_sa = 1; print; next }
+    in_sa && /^  [^ ]/ { in_sa = 0 }
+    in_sa && /^    dsa-sanitizer-core:$/ { key = 1; print; next }
+    in_sa && /^    dsa-sanitizer-core-sidecar:$/ { key = 1; print; next }
+    in_sa && /^    [^ ]/ { key = 0 }
+    in_sa && key && /^      (pending:[[:space:]]*true|digest:[[:space:]]*"sha256:[0-9a-f]+")[[:space:]]*$/ { print "      pending: true"; n++; next }
+    { print }
+    END { if (n != 2) exit 1 }
+  ' "$root/image-manifest.yaml" > "$dest/image-manifest.yaml" || return 1
+  local ex="$dest/customer.env.example"
+  if [ -f "$ex" ]; then
+    sed -e 's/^LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=.*/LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=/' \
+        -e 's/^LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=.*/LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=/' \
+        "$ex" > "$ex.unreleased" && mv "$ex.unreleased" "$ex" || return 1
+  fi
+  local cv="$dest/charts/lucairn/charts/sanitizer-core/values.yaml"
+  [ -f "$cv" ] || return 0
+  awk '
+    /^[^ #]/ { sec = $0 }
+    sec == "image:" && /^  digest:/ && !c { print "  digest: \"\""; c = 1; next }
+    sec == "sidecar:" && /^    digest:/ && !s { print "    digest: \"\""; s = 1; next }
     { print }
     END { if (!c || !s) exit 1 }
-  ' "$cv" > "$cv.released" && mv "$cv.released" "$cv"
+  ' "$cv" > "$cv.unreleased" && mv "$cv.unreleased" "$cv"
 }
 
 # lucairn_released_chart <dest dir> — prints the path of a copy of the
@@ -185,12 +258,7 @@ lucairn_released_chart() {
   mkdir -p "$dest" || return 1
   cp -Rp "$root/charts/lucairn" "$dest/lucairn" || return 1
   local cv="$dest/lucairn/charts/sanitizer-core/values.yaml"
-  awk -v core="$TEST_SANITIZER_CORE_DIGEST" -v side="$TEST_SANITIZER_CORE_SIDECAR_DIGEST" '
-    $0 == "  digest: \"\"" && !c { print "  digest: \"" core "\""; c = 1; next }
-    $0 == "    digest: \"\"" && !s { print "    digest: \"" side "\""; s = 1; next }
-    { print }
-    END { if (!c || !s) exit 1 }
-  ' "$cv" > "$cv.released" && mv "$cv.released" "$cv" || return 1
+  awk -v core="$TEST_SANITIZER_CORE_DIGEST" -v side="$TEST_SANITIZER_CORE_SIDECAR_DIGEST" "$LUCAIRN_CORE_CHART_DIGEST_AWK" "$cv" > "$cv.released" && mv "$cv.released" "$cv" || return 1
   printf '%s' "$dest/lucairn"
 }
 
@@ -201,7 +269,7 @@ lucairn_released_chart() {
 lucairn_use_released_kit() {
   REAL_ROOT="${REAL_ROOT:-$ROOT}"
   lucairn_released_kit_fixture "$REAL_ROOT" "$1/released-kit" || {
-    echo "released-kit fixture: could not be built from $REAL_ROOT (image-manifest.yaml no longer has the two pending core/sidecar slots?)" >&2
+    echo "released-kit fixture: could not be built from $REAL_ROOT (image-manifest.yaml no longer has the two core/sidecar slots, pending or digest-pinned?)" >&2
     exit 1
   }
   ROOT="$1/released-kit"

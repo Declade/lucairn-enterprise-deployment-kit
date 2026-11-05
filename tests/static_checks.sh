@@ -625,8 +625,8 @@ bash "$ROOT/tests/test_digest_pin.sh"
 # docker/cosign/network needed, so it runs in the static gate.
 bash "$ROOT/tests/test_manifest_blob.sh"
 
-# B1 Slice 3: the manifest digest block records EXACTLY the 13 cosign-signed
-# artifacts (keys/image-digests-0.5.5.txt) under signed_artifacts, in lockstep.
+# B1 Slice 3: the manifest digest block records EXACTLY the 15 cosign-signed
+# artifacts (keys/image-digests-1.1.0.txt) under signed_artifacts, in lockstep.
 # Assert the block exists + every signed digest appears identically, so a future
 # tag/digest bump that updates the digests file but forgets the manifest (or vice
 # versa) fails the static gate rather than silently drifting --strict away from
@@ -641,7 +641,7 @@ grep -q '^image_digests:[[:space:]]*$' "$ROOT/image-manifest.yaml" \
 # INVALID (truncates the digest, or adds a stray `pending: true`) — the textual
 # substring may still be present elsewhere while the parser's per-entry verdict
 # silently changes. We run parse_image_digests over the SHIPPED manifest and
-# assert each of the 13 signed_artifacts resolves to its EXACT recorded digest
+# assert each of the 15 signed_artifacts resolves to its EXACT recorded digest
 # verdict — never PENDING, INVALID, or <no-ref>.
 _PARSED_STATIC="$(
   set --
@@ -657,7 +657,7 @@ while IFS= read -r _l; do
   # PENDING/INVALID/absent verdict here = a signed ref was downgraded -> FAIL.
   grep -qF "$(printf '%s\t%s' "$_ref" "$_rec")" <<<"$_PARSED_STATIC" \
     || { echo "B1-S3: signed ref $_ref does NOT resolve to its recorded digest $_rec via parse_image_digests (downgraded to PENDING/INVALID, or absent) — a signed ref was silently weakened" >&2; exit 1; }
-done < "$ROOT/keys/image-digests-0.5.5.txt"
+done < "$ROOT/keys/image-digests-1.1.0.txt"
 # Defensive: the parser must emit NO INVALID / <no-ref> verdicts for the shipped
 # manifest (a clean manifest has none — any is a manifest-integrity regression).
 # Use `if` (not `&&`) so the no-match happy path does not trip `set -e`.
@@ -671,7 +671,7 @@ if [ -f "$ROOT/apps/dashboard/image-manifest.yaml" ]; then
   diff -q "$ROOT/image-manifest.yaml" "$ROOT/apps/dashboard/image-manifest.yaml" >/dev/null \
     || { echo "B1-S3: apps/dashboard/image-manifest.yaml drifted from the root image-manifest.yaml" >&2; exit 1; }
 fi
-echo "B1-S3: image_digests block in lockstep with keys/image-digests-0.5.5.txt (via parser) + dashboard manifest synced"
+echo "B1-S3: image_digests block in lockstep with keys/image-digests-1.1.0.txt (via parser) + dashboard manifest synced"
 
 # T-64: sanitizer.piiMlClient.transport derive/omit/reject contract
 # (round 5, review-driven, 2026-07-30). Covers:

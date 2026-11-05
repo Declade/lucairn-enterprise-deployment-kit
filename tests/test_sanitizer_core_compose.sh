@@ -119,6 +119,13 @@ DSN_TARGET="/run/secrets/sanitizer-core/registry-dsn"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 BASE_PATH="$PATH"
+# Kit 2.0.0: this checkout is a RELEASED kit (image-manifest.yaml, the example
+# env and the chart carry the signed 1.1.0 pair). The fail-closed cases for an
+# UNRELEASED kit run against a copy put back to that state.
+UNREL_KIT="$TMP/unreleased-kit"
+lucairn_unreleased_kit_fixture "$ROOT" "$UNREL_KIT" \
+  || { echo "fixture: could not build the unreleased-kit copy" >&2; exit 1; }
+EXAMPLE_ENV_NODIGEST="$UNREL_KIT/customer.env.example"
 
 FAILS=0
 N=0
@@ -325,19 +332,19 @@ PY
     fail "split-remote base file carries the core"
   fi
   # Fix round 1 (sol r1 finding 4): the pair never starts from a bare tag.
-  # The example env carries no digest (the release records them), so the
-  # project refuses to render at all; half a pair refuses too. With BOTH
+  # An example env without the pair's digests (an unreleased kit's) makes the
+  # project refuse to render at all; half a pair refuses too. With BOTH
   # missing, Compose names whichever required variable it reaches first (its
   # map order: CORE on one run, SIDECAR on the next — the 5890e469 CI flake),
   # so that case accepts either name; each half is asserted on its own below.
-  if docker compose -f "$COMPOSE" --env-file "$EXAMPLE_ENV" config --quiet > "$TMP/nodigest.out" 2>&1; then
+  if docker compose -f "$COMPOSE" --env-file "$EXAMPLE_ENV_NODIGEST" config --quiet > "$TMP/nodigest.out" 2>&1; then
     fail "no core/sidecar digest -> the project refuses to render (it rendered: the pair would start by tag)"
   elif grep -Eq 'LUCAIRN_SANITIZER_CORE_(SIDECAR_)?IMAGE_DIGEST must be the signed digest' "$TMP/nodigest.out"; then
     pass "no core/sidecar digest -> the project refuses to render, naming a digest variable of the pair"
   else
     fail "no core/sidecar digest -> refused, but not by the digest guard: $(tail -1 "$TMP/nodigest.out")"
   fi
-  cp "$EXAMPLE_ENV" "$TMP/coremissing.env"
+  cp "$EXAMPLE_ENV_NODIGEST" "$TMP/coremissing.env"
   printf '\nLUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=%s\n' "$TEST_SANITIZER_CORE_SIDECAR_DIGEST" >> "$TMP/coremissing.env"
   if docker compose -f "$COMPOSE" --env-file "$TMP/coremissing.env" config --quiet > "$TMP/nodigest.out" 2>&1; then
     fail "only the sidecar digest -> the project refuses to render (it rendered)"
@@ -346,7 +353,7 @@ PY
   else
     fail "only the sidecar digest -> refused, but not by the core digest guard: $(tail -1 "$TMP/nodigest.out")"
   fi
-  cp "$EXAMPLE_ENV" "$TMP/halfdigest.env"
+  cp "$EXAMPLE_ENV_NODIGEST" "$TMP/halfdigest.env"
   printf '\nLUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=%s\n' "$TEST_SANITIZER_CORE_DIGEST" >> "$TMP/halfdigest.env"
   if docker compose -f "$COMPOSE" --env-file "$TMP/halfdigest.env" config --quiet > "$TMP/nodigest.out" 2>&1; then
     fail "only the core digest -> the project refuses to render (it rendered)"
@@ -354,6 +361,18 @@ PY
     pass "only the core digest -> refuses to render, naming LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST"
   else
     fail "only the core digest -> refused, but not by the sidecar digest guard: $(tail -1 "$TMP/nodigest.out")"
+  fi
+  # Kit 2.0.0: the released example env carries the signed pair, equal to
+  # image-manifest.yaml, and renders on its own.
+  _ex_core="$(sed -n 's/^LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=//p' "$EXAMPLE_ENV")"
+  _ex_side="$(sed -n 's/^LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=//p' "$EXAMPLE_ENV")"
+  if [ "$_ex_core" = "$(sanitizer_core_manifest_digest_of "$ROOT/image-manifest.yaml" dsa-sanitizer-core)" ] \
+     && [ "$_ex_side" = "$(sanitizer_core_manifest_digest_of "$ROOT/image-manifest.yaml" dsa-sanitizer-core-sidecar)" ] \
+     && [ -n "$_ex_core" ] && [ -n "$_ex_side" ] \
+     && docker compose -f "$COMPOSE" --env-file "$EXAMPLE_ENV" config --quiet > "$TMP/released-example.out" 2>&1; then
+    pass "released example env: carries the manifest's signed pair and renders"
+  else
+    fail "released example env: the signed pair (core '${_ex_core:-none}', sidecar '${_ex_side:-none}') must equal image-manifest.yaml and render: $(tail -1 "$TMP/released-example.out" 2>/dev/null)"
   fi
   # Fix round 2 (sol r2): the witness-central overlay must NOT give the core's
   # namespace a route off the host. The core reaches the central witness
@@ -833,7 +852,8 @@ case "$a" in
   # below.
   " version --format "*) [ -n "${STUB_ENGINE_VERSION:-}" ] && { echo "$STUB_ENGINE_VERSION"; exit 0; }
     echo "Cannot connect to the Docker daemon at unix:///nonexistent-lucairn-test/docker.sock. Is the docker daemon running?" >&2; exit 1 ;;
-  " context inspect "*) echo "unix:///nonexistent-lucairn-test/docker.sock"; exit 0 ;;
+  # The CLI prints a json-format endpoint as one JSON string (PR #164 sol r1).
+  " context inspect "*) case "$a" in *json*) echo '"unix:///nonexistent-lucairn-test/docker.sock"' ;; *) echo "unix:///nonexistent-lucairn-test/docker.sock" ;; esac; exit 0 ;;
 esac
 if [ "${1:-}" = compose ]; then
   case "$a" in
@@ -987,13 +1007,14 @@ V="$(variant baretag)"; sed -i.bak -e 's/^LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=.*
 expect_doctor_red "RED no digest at all (the pair would start from a bare tag)" "$V" "the pair never starts from tag 1.1.0 alone"
 V="$(variant otherpair)"; printf 'LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=sha256:%s\n' "$(printf 'c%.0s' $(seq 64))" >> "$V/customer.env"
 expect_doctor_red "RED pinned core digest differs from the release's" "$V" "differ from the pair image-manifest.yaml records"
-# An install made from THIS checkout (manifest pending: no signed release yet).
+# An install made from an UNRELEASED kit (manifest pending: no signed release
+# yet; kit 2.0.0 on, the unreleased copy of this checkout).
 PEND="$TMP/pending-install"; mkdir -p "$PEND"
-PATH="$DBIN:$BASE_PATH" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+PATH="$DBIN:$BASE_PATH" "$UNREL_KIT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
   --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$PEND/customer.env" --skip-doctor > "$TMP/pinit.out" 2>&1 \
   || fail "lucairn-init from the unreleased checkout: $(tail -2 "$TMP/pinit.out")"
 grep -q '^LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$' "$PEND/customer.env" && pass "an unreleased kit writes no core digest (nothing invented)" || fail "an unreleased kit writes no core digest (nothing invented)"
-if PATH="$DBIN:$BASE_PATH" bash "$ROOT/bin/lucairn" doctor --env "$PEND/customer.env" --compose "$COMPOSE" --offline --skip-image-check > "$TMP/doc.out" 2>&1; then
+if PATH="$DBIN:$BASE_PATH" bash "$UNREL_KIT/bin/lucairn" doctor --env "$PEND/customer.env" --compose "$UNREL_KIT/docker-compose.customer.yml" --offline --skip-image-check > "$TMP/doc.out" 2>&1; then
   fail "RED unreleased kit (manifest pending) — doctor stayed green (the old note)"
 elif grep -Fq "image-manifest.yaml records no signed digest for the core/sidecar pair yet (pending)" "$TMP/doc.out"; then
   pass "RED unreleased kit (manifest pending) — doctor fails, naming the missing signed digests"
@@ -1001,6 +1022,21 @@ else
   fail "RED unreleased kit (manifest pending) — $(grep 'sanitizer core images' "$TMP/doc.out" | tr '\n' ' ')"
 fi
 if grep -Fq "sanitizer core images: note" "$TMP/doc.out"; then fail "pending digests are never a note"; else pass "pending digests are never a note"; fi
+# Kit 2.0.0: an install made from THIS (released) checkout gets the signed pair
+# image-manifest.yaml records.
+RELI="$TMP/released-install"; mkdir -p "$RELI"
+PATH="$DBIN:$BASE_PATH" "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --dev --runtime-mode local-runtime --local-runtime llama-cpp \
+  --model-name fixture-local-model --model-file fixture.gguf --model-path . --output "$RELI/customer.env" --skip-doctor > "$TMP/rinit.out" 2>&1 \
+  || fail "lucairn-init from the released checkout: $(tail -2 "$TMP/rinit.out")"
+_rc_core="$(sanitizer_core_manifest_digest_of "$ROOT/image-manifest.yaml" dsa-sanitizer-core)"
+_rc_side="$(sanitizer_core_manifest_digest_of "$ROOT/image-manifest.yaml" dsa-sanitizer-core-sidecar)"
+if [ -n "$_rc_core" ] && [ -n "$_rc_side" ] \
+   && grep -qx "LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$_rc_core" "$RELI/customer.env" \
+   && grep -qx "LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=$_rc_side" "$RELI/customer.env"; then
+  pass "a released kit writes the signed core/sidecar pair image-manifest.yaml records"
+else
+  fail "a released kit writes the signed core/sidecar pair (manifest core '${_rc_core:-none}', sidecar '${_rc_side:-none}')"
+fi
 
 V="$(variant regkey)"; sed -i.bak 's/^DSA_SANITIZER_CORE_REGISTRY_KEY=.*/DSA_SANITIZER_CORE_REGISTRY_KEY=REPLACE_ME_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/' "$V/customer.env"; rm -f "$V/customer.env.bak"
 expect_doctor_red "RED registry key placeholder" "$V" "DSA_SANITIZER_CORE_REGISTRY_KEY still set to a placeholder"
@@ -1620,10 +1656,12 @@ if [ "$VRC" -ne 0 ] && grep -Fq "the kit manifest and the signed record disagree
 else
   fail "RED the record's core digest differs from the manifest's (rc $VRC): $(tail -2 "$TMP/verify.out" | tr '\n' ' ')"
 fi
-# THIS checkout: the manifest still says pending. Before fix round 1 the pair
-# was not in the expected set and the other 13 verified -> PASS.
+# An unreleased kit: the manifest still says pending (kit 2.0.0 on, the
+# unreleased copy of this checkout). Before fix round 1 the pair was not in
+# the expected set and the other 13 verified -> PASS.
 VUNREL="$TMP/unreleased-kit-verify"; mkdir -p "$VUNREL"
-for e in "$ROOT"/* "$ROOT"/.[!.]*; do
+for e in "$UNREL_KIT"/* "$UNREL_KIT"/.[!.]*; do
+  [ -e "$e" ] || continue
   case "$(basename "$e")" in .git|keys) continue ;; esac
   if [ -d "$e" ]; then ln -s "$e" "$VUNREL/$(basename "$e")"; else cp -p "$e" "$VUNREL/"; fi
 done

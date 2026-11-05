@@ -21,6 +21,13 @@ VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || printf 'unknown')"
 # cosign-verifies this public feed; `doctor`'s freshness check reads RELEASE_DATE
 # with ZERO network. The feed URL is overridable for internal mirrors / testing.
 LUCAIRN_FEED_URL_DEFAULT="https://lucairn.eu/.well-known/version-feed.json"
+# The kit's release image tag: the LUCAIRN_IMAGE_TAG fallback every doctor /
+# verify / gate path uses when the env leaves it empty, and the tag of the
+# release's own images it names. Equals image-manifest.yaml
+# default_lucairn_image_tag and the Compose `${LUCAIRN_IMAGE_TAG:-...}`
+# fallbacks (tests/test_kit_release_gates.sh asserts both; PR #164 sol r1:
+# doctor kept probing 0.5.1 while Compose ran 1.1.0).
+LUCAIRN_KIT_IMAGE_TAG="1.1.0"
 LUCAIRN_STALENESS_DAYS="${LUCAIRN_STALENESS_DAYS:-90}"
 
 usage() {
@@ -2298,7 +2305,7 @@ check_manifest_blob() {
     echo "manifest blob:   the gateway reads it at the container path $path; with the bind-mount above, the host source must exist at $host_path."
     echo "manifest blob:   the production gateway log.Fatal's at boot without it (veil.go:182-197) — the stack will boot-loop, not start."
     echo "manifest blob:   produce it on your ceremony host with the witness seed — see OPS.md § 'witness-signed manifest' and INSTALL.md § 'Produce the witness-signed manifest (production)' — then place it at $host_path (it bind-mounts to $path)."
-    echo "manifest blob:   note: the sign-manifest tool ships INSIDE the pinned dsa-veil-witness:0.5.5 image (/usr/local/bin/sign-manifest) — produce the blob turnkey on the ceremony host with: docker run --rm --entrypoint sign-manifest ghcr.io/declade/dsa-veil-witness:0.5.5 … (see INSTALL.md § 4b 'Produce the witness-signed manifest' for the full command + flags). OR run a DSA_ENV=development install (legacy single-sig fallback) which does not require the blob."
+    echo "manifest blob:   note: the sign-manifest tool ships INSIDE the pinned dsa-veil-witness:${LUCAIRN_KIT_IMAGE_TAG} image (/usr/local/bin/sign-manifest) — produce the blob turnkey on the ceremony host with: docker run --rm --entrypoint sign-manifest ghcr.io/declade/dsa-veil-witness:${LUCAIRN_KIT_IMAGE_TAG} … (see INSTALL.md § 4b 'Produce the witness-signed manifest' for the full command + flags). OR run a DSA_ENV=development install (legacy single-sig fallback) which does not require the blob."
     return 1
   fi
   if [ ! -f "$host_path" ]; then
@@ -4192,7 +4199,7 @@ check_container_images() {
   registry="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)"
   tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)"
   registry="${registry:-ghcr.io/declade}"
-  tag="${tag:-0.5.1}"
+  tag="${tag:-$LUCAIRN_KIT_IMAGE_TAG}"
 
   if ! have docker; then
     echo "container images: skipped (docker unavailable)"
@@ -4383,7 +4390,7 @@ check_image_manifest() {
     registry_label="LUCAIRN_IMAGE_REGISTRY"
     source_phrase="in env"
     env_tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)"
-    env_tag="${env_tag:-0.5.1}"
+    env_tag="${env_tag:-$LUCAIRN_KIT_IMAGE_TAG}"
     env_registry="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)"
     env_registry="${env_registry:-ghcr.io/declade}"
   fi
@@ -4771,7 +4778,7 @@ check_image_digests() {
   fi
 
   local env_tag env_reg env_dash_tag env_ollama
-  env_tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)";       env_tag="${env_tag:-0.5.1}"
+  env_tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)";       env_tag="${env_tag:-$LUCAIRN_KIT_IMAGE_TAG}"
   env_reg="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)";  env_reg="${env_reg:-ghcr.io/declade}"
   # The dashboard rides the SAME registry override but its OWN tag var
   # (docker-compose.customer.yml:630) — default 0.8.2, distinct from the dsa-*
@@ -6030,7 +6037,7 @@ check_tms_trust_zones() {
   # policy.
   local image_tag
   image_tag="$(env_value "$env_file" LUCAIRN_IMAGE_TAG)"
-  image_tag="${image_tag:-0.5.1}"
+  image_tag="${image_tag:-$LUCAIRN_KIT_IMAGE_TAG}"
 
   # FIX 2 (fail-closed on non-semver tag): sort -V orders non-semver tags
   # (`latest`, `v0.5.0`, `sha-...`, `main`, `0.5.1-rc1`) AFTER plain numeric
@@ -11674,9 +11681,9 @@ Options:
   --tag TAG       Release tag to verify. Defaults to the SINGLE release covered
                   by keys/image-digests-*.txt when exactly one record is present.
                   The kit now ships multiple records (0.5.0, 0.5.1, 0.5.2, 0.5.3, 0.5.4,
-                  0.5.5 — current is 0.5.5), so --tag is effectively REQUIRED: with
+                  0.5.5, 1.1.0 — current is 1.1.0), so --tag is effectively REQUIRED: with
                   more than one keys/image-digests-*.txt present this errors and asks
-                  you to pass --tag (pin the current release: --tag 0.5.5). Also
+                  you to pass --tag (pin the current release: --tag 1.1.0). Also
                   errors if no keys/image-digests-<tag>.txt exists for the tag.
   --registry REG  Override the registry host for ALL images (default: the
                   registry recorded in the digests file, e.g. ghcr.io/declade).
@@ -11908,7 +11915,7 @@ verify_images() {
   # legitimately adds/removes an image, update THIS list (and the dashboard
   # pin below) — it is the one place verify-images keys off.
   #
-  # The 12 dsa-* services ride the release --tag (the sanitizer core pair rides its own tag, below) (current release 0.5.5; --tag is
+  # The 12 dsa-* services ride the release --tag (the sanitizer core pair rides its own tag, below) (current release 1.1.0; --tag is
   # required when multiple keys/image-digests-*.txt records are present); the dashboard
   # ships on its OWN independent cadence and is pinned here (currently 0.8.2),
   # mirroring optional_services.lucairn-dashboard.image_tag in image-manifest.yaml

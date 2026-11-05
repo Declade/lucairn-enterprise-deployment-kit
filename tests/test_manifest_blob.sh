@@ -126,6 +126,13 @@ printf '%s' "$OUT" | grep -qi "docker run" \
   || fail "prod + missing host blob should give the turnkey 'docker run --entrypoint sign-manifest' remediation"
 printf '%s' "$OUT" | grep -qi "INSTALL.md" \
   || fail "prod + missing host blob should point at INSTALL.md § 4b for the full sign-manifest command"
+# PR #164 sol r1: the turnkey command names the release's own witness image
+# (image-manifest.yaml default_lucairn_image_tag), never an older tag.
+KIT_TAG="$(awk -F: '/^default_lucairn_image_tag:/ { sub(/^[^:]+:[[:space:]]*/,""); gsub(/^"|"$/,""); print; exit }' "$ROOT/image-manifest.yaml")"
+printf '%s' "$OUT" | grep -qF "ghcr.io/declade/dsa-veil-witness:$KIT_TAG " \
+  || fail "prod + missing host blob: the docker run command should name dsa-veil-witness:$KIT_TAG"
+! printf '%s' "$OUT" | grep -Eq "dsa-veil-witness:0\.[0-9]" \
+  || fail "prod + missing host blob: the remediation still names a 0.x witness image"
 echo "manifest-blob: prod + /certs default + host blob MISSING -> FAIL (names host path + ceremony) ok"
 
 # ---------------------------------------------------------------------------

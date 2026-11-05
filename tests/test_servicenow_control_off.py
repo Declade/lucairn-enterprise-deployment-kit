@@ -38,9 +38,10 @@ ROOT = Path(os.environ.get("K1_OFF_RENDER_ROOT", GIT_ROOT))
 # digests + the core's dedicated internal networks, see
 # "amended_kit_2_0_fix1") and its final-read round (core/sidecar hardening
 # lines, see "amended_kit_2_0_final_reads") and kit 2.0 K-E's third-party
-# digest pins (the image lines only, see "amended_kit_2_0_row9_pins"), each
-# with the compose file hashes in baseline.json; nothing else in the fixtures
-# changed.
+# digest pins (the image lines only, see "amended_kit_2_0_row9_pins") and the
+# kit 2.0.0 version bump (the dsa-* image tag lines only, see
+# "amended_kit_2_0_0_bump"), each with the compose file hashes in
+# baseline.json; nothing else in the fixtures changed.
 GOLDEN = GIT_ROOT / "tests/fixtures/servicenow-control/off"
 BASELINE = json.loads((GOLDEN / "baseline.json").read_text())
 FILES = ("docker-compose.customer.yml", "docker-compose.self-hosted.yml",

@@ -160,7 +160,8 @@ case "\$a" in
   # 2 on PR #163): the current context names one under a directory no host
   # has, and DOCKER_HOST is unset below.
   " version "*) echo "Cannot connect to the Docker daemon at unix:///nonexistent-lucairn-test/docker.sock. Is the docker daemon running?" >&2; exit 1 ;;
-  " context inspect "*) echo "unix:///nonexistent-lucairn-test/docker.sock"; exit 0 ;;
+  # The CLI prints a json-format endpoint as one JSON string (PR #164 sol r1).
+  " context inspect "*) case "\$a" in *json*) echo '"unix:///nonexistent-lucairn-test/docker.sock"' ;; *) echo "unix:///nonexistent-lucairn-test/docker.sock" ;; esac; exit 0 ;;
   " info "*) [ -n "\${STUB_MEM_BYTES:-}" ] && { echo "\$STUB_MEM_BYTES"; exit 0; }; exit 1 ;;
   # kit 2.0 K-E: the host's Docker networks, one "<name>|<subnet>..." line each
   # in STUB_NETS (unset = the engine cannot be asked, as before)
