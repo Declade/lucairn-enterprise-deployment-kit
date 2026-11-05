@@ -471,6 +471,22 @@ refused_case perm-v24 "unix://$SOCKDIR/denied.sock" 'permission denied while try
 refused_case perm-v29 "unix://$SOCKDIR/denied.sock" 'permission denied while trying to connect to the docker API at unix:///var/run/docker.sock'
 refused_case perm-ssh ssh://deploy@docker.example.invalid 'error during connect: Get "http://docker.example.invalid/v1.24/version": command [ssh -o ConnectTimeout=30 -T -- docker.example.invalid docker system dial-stdio] has exited with exit status 255, make sure the URL is valid, and Docker 18.09 or later is installed on the remote host: stderr=deploy@docker.example.invalid: Permission denied (publickey).'
 refused_case tls tcp://docker.example.invalid:2376 'error during connect: Get "https://docker.example.invalid:2376/v1.24/version": tls: failed to verify certificate: x509: certificate signed by unknown authority'
+# Fix round 4 on PR #163 (review P2): the docker CLI normalises its endpoint
+# (trims spaces, drops a doubled unix:// prefix), a raw probe of the string as
+# written does not — 'unix://<accepting socket> ' reaches the daemon while the
+# probe of the path ending in a space finds nothing (was exit 5). Only the
+# exact unix:///<absolute path> counts, in DOCKER_HOST and in the context.
+refused_case host-trailing-space "$ACCEPT " "$CANNOT"
+check "host-trailing-space: check names the way out (unset DOCKER_HOST or set it exactly)" \
+  'grep -Fq "unset DOCKER_HOST or set it to the exact local socket" "$TMPDIR/check-host-trailing-space.err"'
+refused_case host-leading-space " $ACCEPT" "$CANNOT"
+refused_case host-doubled-prefix "unix://$ACCEPT" "$CANNOT"
+refused_case host-relative-path "unix://lucairn-no-such-dir/missing.sock" "$CANNOT"
+refused_case host-upper-case "UNIX://$SOCKDIR/missing.sock" "$CANNOT"
+refused_case context-trailing-space "context:$ACCEPT " "$CANNOT"
+check "context-trailing-space: check says the context endpoint is not exact" \
+  'grep -Fq "current docker context'"'"'s endpoint is not exactly unix:///" "$TMPDIR/check-context-trailing-space.err"'
+refused_case context-doubled-prefix "context:unix://$ACCEPT" "$CANNOT"
 use_endpoint tcp://docker.example.invalid:2376
 printf '%s' 'error during connect: Get "https://docker.example.invalid:2376/v1.51/version": Service Unavailable' > "$STUB_MSG"
 run add-proxy-503 bash "$CRED" add --env-file "$ENV"

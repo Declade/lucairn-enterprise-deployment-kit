@@ -43,8 +43,9 @@
 #          this install cannot be resolved (Docker Compose missing, the
 #          project or an overlay does not render) and no name that did
 #          resolve is on the daemon's list · 5 cannot tell: there is no
-#          Docker here (no docker CLI, or the docker CLI's endpoint is a local
-#          unix socket that does not exist or refuses connections) · 6 cannot
+#          Docker here (no docker CLI, or the docker CLI's endpoint is
+#          exactly unix:///<absolute path> and that socket does not exist or
+#          refuses connections) · 6 cannot
 #          tell: Docker was asked but gave no volume list, and there is no
 #          proof that no Docker is here (a remote or non-socket endpoint, a
 #          socket that accepts connections, any other failure).
@@ -198,8 +199,9 @@ $name
 }
 
 # local_docker_absent — rc 0 ONLY with a positive proof that no Docker daemon
-# is here (fix round 2 on PR #163): the docker CLI's endpoint is a local unix
-# socket and a raw connect to it fails with ENOENT (the path does not exist,
+# is here (fix round 2 on PR #163): the docker CLI's endpoint is exactly
+# unix:///<absolute path> (fix round 4: one prefix, no white space, no second
+# ://) and a raw connect to it fails with ENOENT (the path does not exist,
 # a dangling link included) or ECONNREFUSED (a socket file nothing listens
 # on). The endpoint is DOCKER_HOST when set, else the current context's
 # (`docker context inspect` reads DOCKER_CONTEXT and the CLI config; the
@@ -223,11 +225,22 @@ local_docker_absent() {
   case "$host" in
     tcp://*|ssh://*|npipe://*|fd://*|http://*|https://*) scheme=" (${host%%://*}://)" ;;
   esac
-  case "$host" in
-    *[[:cntrl:]]*) VOL_WHY="Docker did not give its version, and the docker CLI's endpoint is not a plain local socket path, so there is no proof that no Docker is here (run docker version)"; return 1 ;;
-    unix://?*) path="${host#unix://}" ;;
-    *) VOL_WHY="Docker did not give its version, and the docker CLI's endpoint is not a local socket path$scheme, so there is no proof that no Docker is there (run docker version)"; return 1 ;;
-  esac
+  # Fix round 4 on PR #163 (review P2): the docker CLI normalises its endpoint
+  # (opts/hosts.go trims spaces, drops a doubled unix:// prefix), a raw probe
+  # does not — 'unix:///var/run/docker.sock ' reached the daemon while the
+  # probe of the path ending in a space found nothing. Only the exact form
+  # counts: one unix:// prefix, an absolute path, no white space or control
+  # character, no further ://. Anything else is no proof (exit 6).
+  local canon='^unix:///[^[:space:][:cntrl:]]+$'
+  if [[ $host =~ $canon ]] && [[ ${host#unix://} != *://* ]]; then
+    path="${host#unix://}"
+  elif [ -n "$scheme" ]; then
+    VOL_WHY="Docker did not give its version, and the docker CLI's endpoint is not a local socket path$scheme, so there is no proof that no Docker is there (run docker version)"; return 1
+  elif [ -n "${DOCKER_HOST:-}" ]; then
+    VOL_WHY="Docker did not give its version, and DOCKER_HOST is not exactly unix:///<absolute socket path> (one unix:// prefix, no spaces), so there is no proof that no Docker is here: unset DOCKER_HOST or set it to the exact local socket (for one, unix:///var/run/docker.sock) and re-run"; return 1
+  else
+    VOL_WHY="Docker did not give its version, and the current docker context's endpoint is not exactly unix:///<absolute socket path> (one unix:// prefix, no spaces), so there is no proof that no Docker is here (run docker version and docker context inspect)"; return 1
+  fi
   command -v python3 >/dev/null 2>&1 || {
     VOL_WHY="Docker did not give its version, and without python3 its local socket $path cannot be tested, so there is no proof that no Docker is here (run docker version)"
     return 1

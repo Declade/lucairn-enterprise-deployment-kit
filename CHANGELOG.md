@@ -252,7 +252,8 @@ stays `0.8.2`.
   while a registry volume exists, and also when Docker cannot be asked
   (start Docker, or pass `--confirm-no-registry-volume` to state there is
   none; the flag covers only no docker CLI, or a docker CLI endpoint that is
-  a local unix socket which does not exist or refuses connections — the
+  exactly `unix:///<absolute path>` (one prefix, no spaces) whose socket does
+  not exist or refuses connections — the
   socket is tested itself, no docker error message is read: a volume Docker
   reports (checked before any failed render), a volume name that cannot be
   resolved and every other Docker failure — a remote endpoint that does not

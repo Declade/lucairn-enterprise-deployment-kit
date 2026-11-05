@@ -2690,7 +2690,8 @@ is possible only with `--confirm-no-registry-volume`, which states that the
 Docker host of this install has no sanitizer core registry volume from an
 earlier kit 2.0 run. The flag covers only a machine shown to have no Docker:
 no docker CLI, or the docker CLI's endpoint (`DOCKER_HOST`, else the current
-`docker context`) is a local `unix://` socket that does not exist or refuses
+`docker context`) is exactly `unix:///<absolute path>` — one prefix, no
+spaces; anything else is refused — and that socket does not exist or refuses
 connections (init tests the socket itself with python3; it reads no docker
 error message). A volume Docker does report is refused with or without it,
 and so is a registry volume name that cannot be resolved (Docker Compose

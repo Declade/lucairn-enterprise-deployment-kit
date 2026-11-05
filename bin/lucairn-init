@@ -281,7 +281,8 @@ Options:
                            Secrets ARE printed because the user explicitly asked.
   --confirm-no-registry-volume
                            Only when there is no Docker here (no docker CLI, or
-                           the docker CLI's endpoint is a local unix socket that
+                           the docker CLI's endpoint is exactly
+                           unix:///<absolute path>, no spaces, and that socket
                            does not exist or refuses connections): you state that
                            the Docker host of this install has no sanitizer core
                            registry volume from an earlier kit 2.0 run. Without
