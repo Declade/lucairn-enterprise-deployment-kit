@@ -507,7 +507,7 @@ services:
   # ── Application Services ────────────────────────────────────────
 
   audit:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-audit:${LUCAIRN_IMAGE_TAG:-0.5.5}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-audit:${LUCAIRN_IMAGE_TAG:-1.1.0}"
     logging: *default-logging
     depends_on:
       migrate-audit:
@@ -563,7 +563,7 @@ services:
     restart: on-failure
 
   id-bridge:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-id-bridge:${LUCAIRN_IMAGE_TAG:-0.5.5}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-id-bridge:${LUCAIRN_IMAGE_TAG:-1.1.0}"
     logging: *default-logging
     depends_on:
       migrate-bridge:
@@ -603,7 +603,7 @@ services:
     restart: on-failure
 
   sandbox-a:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sandbox-a:${LUCAIRN_IMAGE_TAG:-0.5.5}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sandbox-a:${LUCAIRN_IMAGE_TAG:-1.1.0}"
     logging: *default-logging
     depends_on:
       migrate-sandbox-a:
@@ -774,7 +774,7 @@ services:
     restart: on-failure
 
   sanitizer:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer:${LUCAIRN_IMAGE_TAG:-0.5.5}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer:${LUCAIRN_IMAGE_TAG:-1.1.0}"
     logging: *default-logging
     depends_on:
       # NO hard `pii-ml: service_healthy` dependency. As of kit v1.7.1 the
@@ -1265,7 +1265,7 @@ services:
     restart: unless-stopped
 
   veil-witness:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-veil-witness:${LUCAIRN_IMAGE_TAG:-0.5.5}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-veil-witness:${LUCAIRN_IMAGE_TAG:-1.1.0}"
     logging: *default-logging
     depends_on:
       migrate-veil:
@@ -1385,7 +1385,7 @@ services:
     restart: on-failure
 
   gateway:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-gateway:${LUCAIRN_IMAGE_TAG:-0.5.5}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-gateway:${LUCAIRN_IMAGE_TAG:-1.1.0}"
     logging: *default-logging
     depends_on:
       sandbox-a:
@@ -1623,10 +1623,10 @@ services:
     # the services opt-in until registry access is fixed.
     profiles: ["certification"]
     # NOTE: cert-builder is optional/unpublished (profile-gated, certification
-    # profile only — not part of the 6 core published images). Bumped to 0.5.5
+    # profile only — not part of the 6 core published images). Bumped to 1.1.0
     # for umbrella consistency; operators must set LUCAIRN_IMAGE_TAG or supply
-    # an image_tag override if the cert-builder image is not available at 0.5.5.
-    image: ${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-cert-builder:${LUCAIRN_IMAGE_TAG:-0.5.5}
+    # an image_tag override if the cert-builder image is not available at 1.1.0.
+    image: ${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-cert-builder:${LUCAIRN_IMAGE_TAG:-1.1.0}
     logging: *default-logging
     restart: unless-stopped
     environment:
@@ -1654,10 +1654,10 @@ services:
   cert-portal:
     profiles: ["certification"]
     # NOTE: cert-portal is optional/unpublished (profile-gated, certification
-    # profile only — not part of the 6 core published images). Bumped to 0.5.5
+    # profile only — not part of the 6 core published images). Bumped to 1.1.0
     # for umbrella consistency; operators must set LUCAIRN_IMAGE_TAG or supply
-    # an image_tag override if the cert-portal image is not available at 0.5.5.
-    image: ${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-cert-portal:${LUCAIRN_IMAGE_TAG:-0.5.5}
+    # an image_tag override if the cert-portal image is not available at 1.1.0.
+    image: ${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-cert-portal:${LUCAIRN_IMAGE_TAG:-1.1.0}
     logging: *default-logging
     restart: unless-stopped
     environment:

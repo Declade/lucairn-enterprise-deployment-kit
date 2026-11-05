@@ -1,0 +1,44 @@
+# Lucairn signed-image digest record — release 1.1.0
+# 14 dsa-* @ 1.1.0 (12 release services + the sanitizer core pair) + lucairn-dashboard @ 0.8.2
+#
+# AUTHORITATIVE record of which exact image bytes were published for the
+# 1.1.0 release (kit 2.0.0: the new sanitizer core dsa-sanitizer-core + its
+# model sidecar dsa-sanitizer-core-sidecar join the release set, T-1441 K0).
+# Build commit: 35dd235d52d55ae597ee062c3e56ab9de5185c12 (DSA main; git archive
+# sha256 18f27853ab9ed5495a7486bbf431650c128a537230f186d3f11494c99f782dd2).
+# Built 2026-11-05 on a Linux x86_64 build host (BuildKit, QEMU for arm64),
+# pushed to GHCR and cosign-signed by digest (GHCR + Rekor-logged) on the
+# release host on 2026-11-05.
+# 13 dsa-* images are multi-arch (linux/amd64 + linux/arm64).
+# dsa-sanitizer-core-sidecar @ 1.1.0 is linux/amd64 ONLY (owner decision
+# 2026-11-05: ARM hosts are unsupported for the new core in kit 2.0.0; an
+# arm64 sidecar follows in 2.0.1).
+# The lucairn-dashboard @ 0.8.2 entry is UNCHANGED from 0.5.5 (same signed
+# bytes; independent release cadence).
+# dsa-pii-ml stays pinned at 0.5.1 (independent release cadence; NOT in this record).
+#
+# `bin/lucairn verify-images` reads this file as the verify set: for each entry
+# it (1) resolves the tag's CURRENT digest and asserts it EQUALS the recorded
+# digest (a mismatch means the tag was re-pointed — downgrade/substitution —
+# and is a hard FAIL), then (2) runs
+# `cosign verify --key keys/lucairn-cosign.pub <repo>@<recorded-digest>`,
+# binding verification to the exact signed bytes (not the mutable tag).
+#
+# Format: <repo>:<tag> <sha256:digest>   (one per line; '#' starts a comment)
+#
+# Digests are PUBLIC.
+ghcr.io/declade/dsa-gateway:1.1.0 sha256:8d5995a135909b3939c71af54f19cf1faadceccced472a36e641420289fed2bd
+ghcr.io/declade/dsa-sanitizer:1.1.0 sha256:0f6d3bc2de14fa0e15bbcf121c8f326bc1ae818cd1463872a0e199addd3d2c4b
+ghcr.io/declade/dsa-audit:1.1.0 sha256:1e76e33ed254913a839ba360902664eb924d870d173d8b19424942a7ce8cde7e
+ghcr.io/declade/dsa-id-bridge:1.1.0 sha256:43009629fdb35a04472d3e901d998915a8a4f9a19edafd676cb71ae99cc92ebb
+ghcr.io/declade/dsa-sandbox-a:1.1.0 sha256:31fe42003f546ca118a4633985e31ed4df529f7a6e1d2e106055d78118d4cee9
+ghcr.io/declade/dsa-sandbox-b:1.1.0 sha256:1f7d47113e11db2b0d8f0d9b66281973aecc0f06a482f6703659875f97207ad6
+ghcr.io/declade/dsa-veil-witness:1.1.0 sha256:35d75f01de2a4863a11c7e51209dee8770b98a1304f951890e6f68026b36ff56
+ghcr.io/declade/dsa-reid-guard:1.1.0 sha256:80dee482dab65bd9785166ea75b6e3b0dbcbac202aa7323f2d8d0dc17e69a982
+ghcr.io/declade/dsa-admin:1.1.0 sha256:b9ec936742c6f0fab9defee8eb94baceda409e7d8ee1e91f13c022e8ab2487a4
+ghcr.io/declade/dsa-demo:1.1.0 sha256:c2b094d7e8faa58263d67867d2a195ab6b034b595d5db8c4335c79751cd69ac7
+ghcr.io/declade/dsa-ingest:1.1.0 sha256:732aa457f3d4de3ca3d7c808dcbfecae36e868d4c10569b8d581ed024cd4d191
+ghcr.io/declade/dsa-llm-auditor:1.1.0 sha256:ed9a50aafc44c6748451c2f3ef014adc1655d0e4a71e6af5ed88f9fbcb0cbec7
+ghcr.io/declade/dsa-sanitizer-core:1.1.0 sha256:3b14defeed7626730a8d53c748b18185bff00cc105e041cfc7543a0078de196e
+ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0 sha256:dc2ecd58ee6048ca65a17d08b4c7d0744d96e7a4e990c95abaaf81b56115a435
+ghcr.io/declade/lucairn-dashboard:0.8.2 sha256:a586b88991ac5d71cf6523b833462648775b1e97a66cbee67876e9f992f0387e

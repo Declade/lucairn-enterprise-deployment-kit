@@ -28,12 +28,12 @@ spec:
     spec:
       initContainers:
         - name: migrate-copy
-          image: ghcr.io/declade/dsa-gateway:0.5.5
+          image: ghcr.io/declade/dsa-gateway:1.1.0
       containers:
         - name: gateway
-          image: ghcr.io/declade/dsa-gateway:0.5.5
+          image: ghcr.io/declade/dsa-gateway:1.1.0
         - name: sanitizer
-          image: ghcr.io/declade/dsa-sanitizer:0.5.5
+          image: ghcr.io/declade/dsa-sanitizer:1.1.0
 ---
 apiVersion: batch/v1
 kind: Job
@@ -68,7 +68,7 @@ spec:
     spec:
       containers:
         - name: workload
-          image: ghcr.io/declade/dsa-veil-witness:0.5.5
+          image: ghcr.io/declade/dsa-veil-witness:1.1.0
 ---
 apiVersion: batch/v1
 kind: Job
@@ -112,9 +112,9 @@ case "${1:-}:${2:-}" in
       printf 'docker image inspect %s\n' "$5" >> "$PRELOAD_CALLS"
     elif [ "$#" -eq 5 ] && [ "$3" = '--format' ] && [ "$4" = '{{range .RepoDigests}}{{println .}}{{end}}' ]; then
       case "$5" in
-        ghcr.io/declade/dsa-gateway:0.5.5) digest='@GW_DIGEST@' ;;
-        ghcr.io/declade/dsa-sanitizer:0.5.5) digest='@SAN_DIGEST@' ;;
-        ghcr.io/declade/dsa-veil-witness:0.5.5) digest='@WIT_DIGEST@' ;;
+        ghcr.io/declade/dsa-gateway:1.1.0) digest='@GW_DIGEST@' ;;
+        ghcr.io/declade/dsa-sanitizer:1.1.0) digest='@SAN_DIGEST@' ;;
+        ghcr.io/declade/dsa-veil-witness:1.1.0) digest='@WIT_DIGEST@' ;;
         migrate/migrate:v4.17.0) digest='sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa' ;;
         postgres:16-alpine) digest='sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab' ;;
         sha256:1111111111111111111111111111111111111111111111111111111111111111) digest='@GW_DIGEST@' ;;
@@ -135,9 +135,9 @@ case "${1:-}:${2:-}" in
       printf 'docker image inspect digest %s\n' "$5" >> "$PRELOAD_CALLS"
     elif [ "$#" -eq 5 ] && [ "$3" = '--format' ] && [ "$4" = '{{.Id}}' ]; then
       case "$5" in
-        ghcr.io/declade/dsa-gateway:0.5.5) image_id='sha256:1111111111111111111111111111111111111111111111111111111111111111' ;;
-        ghcr.io/declade/dsa-sanitizer:0.5.5) image_id='sha256:2222222222222222222222222222222222222222222222222222222222222222' ;;
-        ghcr.io/declade/dsa-veil-witness:0.5.5) image_id='sha256:3333333333333333333333333333333333333333333333333333333333333333' ;;
+        ghcr.io/declade/dsa-gateway:1.1.0) image_id='sha256:1111111111111111111111111111111111111111111111111111111111111111' ;;
+        ghcr.io/declade/dsa-sanitizer:1.1.0) image_id='sha256:2222222222222222222222222222222222222222222222222222222222222222' ;;
+        ghcr.io/declade/dsa-veil-witness:1.1.0) image_id='sha256:3333333333333333333333333333333333333333333333333333333333333333' ;;
         migrate/migrate:v4.17.0) image_id='sha256:4444444444444444444444444444444444444444444444444444444444444444' ;;
         postgres:16-alpine) image_id='sha256:5555555555555555555555555555555555555555555555555555555555555555' ;;
         *) exit 92 ;;
@@ -166,7 +166,7 @@ case "${1:-}:${2:-}" in
     [ ! -e "$6" ] || exit 96
     if find "$PRELOAD_ARCHIVE_DIR" -type f -print -quit | grep -q .; then exit 97; fi
     case "$7" in sha256:1111111111111111111111111111111111111111111111111111111111111111|sha256:2222222222222222222222222222222222222222222222222222222222222222|sha256:3333333333333333333333333333333333333333333333333333333333333333|sha256:4444444444444444444444444444444444444444444444444444444444444444|sha256:5555555555555555555555555555555555555555555555555555555555555555) ;; *) exit 99 ;; esac
-    case "$8" in ghcr.io/declade/dsa-gateway:0.5.5|ghcr.io/declade/dsa-sanitizer:0.5.5|ghcr.io/declade/dsa-veil-witness:0.5.5|migrate/migrate:v4.17.0|postgres:16-alpine) ;; *) exit 100 ;; esac
+    case "$8" in ghcr.io/declade/dsa-gateway:1.1.0|ghcr.io/declade/dsa-sanitizer:1.1.0|ghcr.io/declade/dsa-veil-witness:1.1.0|migrate/migrate:v4.17.0|postgres:16-alpine) ;; *) exit 100 ;; esac
     # Docker Desktop/containerd may report an OCI index as .Id while save
     # writes a selected-platform config. Keep those values distinct in every
     # accepted fixture.
@@ -227,13 +227,13 @@ manifest_digest() {
   awk -v r="$1" 'f && /digest:/ { sub(/.*digest:[[:space:]]*"/, ""); sub(/".*/, ""); print; exit }
                  index($0, "ref: \"" r "\"") { f = 1 }' "$ROOT/image-manifest.yaml"
 }
-GW_DIGEST="$(manifest_digest ghcr.io/declade/dsa-gateway:0.5.5)"
-SAN_DIGEST="$(manifest_digest ghcr.io/declade/dsa-sanitizer:0.5.5)"
-WIT_DIGEST="$(manifest_digest ghcr.io/declade/dsa-veil-witness:0.5.5)"
+GW_DIGEST="$(manifest_digest ghcr.io/declade/dsa-gateway:1.1.0)"
+SAN_DIGEST="$(manifest_digest ghcr.io/declade/dsa-sanitizer:1.1.0)"
+WIT_DIGEST="$(manifest_digest ghcr.io/declade/dsa-veil-witness:1.1.0)"
 for _d in "$GW_DIGEST" "$SAN_DIGEST" "$WIT_DIGEST"; do
   case "$_d" in
     sha256:*) [ "${#_d}" -eq 71 ] || { echo "image-manifest.yaml digest is not a full sha256: $_d" >&2; exit 1; } ;;
-    *) echo "image-manifest.yaml has no digest for a preloaded 0.5.5 image (got '$_d')" >&2; exit 1 ;;
+    *) echo "image-manifest.yaml has no digest for a preloaded 1.1.0 image (got '$_d')" >&2; exit 1 ;;
   esac
 done
 sed -e "s#@GW_DIGEST@#$GW_DIGEST#g" -e "s#@SAN_DIGEST@#$SAN_DIGEST#g" -e "s#@WIT_DIGEST@#$WIT_DIGEST#g" \
@@ -264,7 +264,7 @@ MISMATCH_CALLS="$TMPDIR/mismatch-calls"
 MISMATCH_ARCHIVE_DIR="$TMPDIR/mismatch-archives"
 if PATH="$FAKE_BIN:$PATH" PRELOAD_CALLS="$MISMATCH_CALLS" \
   PRELOAD_ARCHIVE_DIR="$MISMATCH_ARCHIVE_DIR" PRELOAD_ARCHIVES_DURING_LOAD="$ARCHIVES_DURING_LOAD" \
-  PRELOAD_DIGEST_MISMATCH='ghcr.io/declade/dsa-gateway:0.5.5' "$PRELOAD" \
+  PRELOAD_DIGEST_MISMATCH='ghcr.io/declade/dsa-gateway:1.1.0' "$PRELOAD" \
   --cluster preload-test \
   --rendered-manifest "$MANIFEST" \
   --image-list "$TMPDIR/mismatch-images.txt" \
@@ -273,7 +273,7 @@ if PATH="$FAKE_BIN:$PATH" PRELOAD_CALLS="$MISMATCH_CALLS" \
   echo "Kind image preloader accepted a tag re-targeted digest" >&2
   exit 1
 fi
-grep -Fq 'digest mismatch or unresolved content: ghcr.io/declade/dsa-gateway:0.5.5' "$TMPDIR/mismatch.stderr" \
+grep -Fq 'digest mismatch or unresolved content: ghcr.io/declade/dsa-gateway:1.1.0' "$TMPDIR/mismatch.stderr" \
   || { cat "$TMPDIR/mismatch.stderr" >&2; echo "Kind image preloader did not identify the tag re-target" >&2; exit 1; }
 if grep -Eq 'docker image save|kind load image-archive' "$MISMATCH_CALLS"; then
   echo "Kind image preloader saved or imported before rejecting a digest mismatch" >&2
@@ -291,7 +291,7 @@ PRE_ID_INITIAL_TAG_DIGEST_VALIDATED="$TMPDIR/pre-id-initial-tag-digest-validated
 PRE_ID_TAG_RETARGETED="$TMPDIR/pre-id-tag-retargeted"
 if PATH="$FAKE_BIN:$PATH" PRELOAD_CALLS="$PRE_ID_RETARGET_CALLS" \
   PRELOAD_ARCHIVE_DIR="$PRE_ID_RETARGET_ARCHIVE_DIR" PRELOAD_ARCHIVES_DURING_LOAD="$TMPDIR/pre-id-retarget-loads" \
-  PRELOAD_RETARGET_TAG_BEFORE_ID='ghcr.io/declade/dsa-gateway:0.5.5' \
+  PRELOAD_RETARGET_TAG_BEFORE_ID='ghcr.io/declade/dsa-gateway:1.1.0' \
   PRELOAD_INITIAL_TAG_DIGEST_VALIDATED="$PRE_ID_INITIAL_TAG_DIGEST_VALIDATED" \
   PRELOAD_TAG_RETARGETED_BEFORE_ID="$PRE_ID_TAG_RETARGETED" "$PRELOAD" \
   --cluster preload-test \
@@ -354,9 +354,9 @@ fi
   || { echo "Kind image preloader left legacy platform archives behind" >&2; exit 1; }
 
 printf '%s\n' \
-  ghcr.io/declade/dsa-gateway:0.5.5 \
-  ghcr.io/declade/dsa-sanitizer:0.5.5 \
-  ghcr.io/declade/dsa-veil-witness:0.5.5 \
+  ghcr.io/declade/dsa-gateway:1.1.0 \
+  ghcr.io/declade/dsa-sanitizer:1.1.0 \
+  ghcr.io/declade/dsa-veil-witness:1.1.0 \
   migrate/migrate:v4.17.0 \
   postgres:16-alpine \
   > "$TMPDIR/expected-images"
@@ -419,7 +419,7 @@ fi
 }
 grep -Fq 'archive must contain exactly one manifest entry' "$TMPDIR/archive-mismatch.stderr" \
   || { cat "$TMPDIR/archive-mismatch.stderr" >&2; echo "Kind image preloader did not reject the retargeted multi-entry archive" >&2; exit 1; }
-grep -Eq '^docker image save --platform linux/arm64 sha256:1111111111111111111111111111111111111111111111111111111111111111 ghcr.io/declade/dsa-gateway:0.5.5$' "$ARCHIVE_MISMATCH_CALLS" \
+grep -Eq '^docker image save --platform linux/arm64 sha256:1111111111111111111111111111111111111111111111111111111111111111 ghcr.io/declade/dsa-gateway:1.1.0$' "$ARCHIVE_MISMATCH_CALLS" \
   || { echo "Kind image preloader archive mismatch regression did not save captured ID plus runtime tag" >&2; exit 1; }
 if grep -Fq 'kind load image-archive' "$ARCHIVE_MISMATCH_CALLS"; then
   echo "Kind image preloader loaded an archive before rejecting its retargeted manifest" >&2

@@ -789,8 +789,8 @@ the full breakdown. You need `cosign` (>= v2.0) and a digest resolver
 (`docker buildx`, `crane`, or `skopeo`) on PATH:
 
 ```bash
-bin/lucairn verify-images --tag 0.5.5
-# or a single image, by its signed digest (from keys/image-digests-0.5.5.txt):
+bin/lucairn verify-images --tag 1.1.0
+# or a single image, by its signed digest (from keys/image-digests-1.1.0.txt):
 cosign verify --key keys/lucairn-cosign.pub \
   ghcr.io/declade/dsa-gateway@sha256:<digest-from-the-record-file>
 ```
@@ -808,12 +808,12 @@ log (signed by the same Image Signing Key — no extra key or vendor). Fetch +
 verify it, and inspect exactly what is in each image:
 
 ```bash
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.5
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:1.1.0
 # save the raw verified SBOM:
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:0.5.5 --download dsa-gateway-0.5.5.spdx.json
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:1.1.0 --download dsa-gateway-1.1.0.spdx.json
 # or with raw cosign:
 cosign verify-attestation --type spdxjson \
-  --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:0.5.5
+  --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:1.1.0
 ```
 
 See **OPS.md → "Fetch + verify the Software Bill of Materials (SBOM)"** for the
@@ -1175,7 +1175,7 @@ the **Key Ceremony Runbook** (`docs/KEY_CEREMONY_RUNBOOK.md` § 6 "Producing the
 witness-signed manifest blob"). The invocation is:
 
 The `sign-manifest` tool ships **inside the pinned
-`dsa-veil-witness:0.5.5@sha256:2314d971d0cbccdbb63e6d5547a93c82ed634f8cafb0d5fd0bc55d6957d4f5ac`
+`dsa-veil-witness:1.1.0@sha256:35d75f01de2a4863a11c7e51209dee8770b98a1304f951890e6f68026b36ff56`
 image** (`/usr/local/bin/sign-manifest`), so the ceremony is turnkey on the
 ceremony host — no Go toolchain, no build-from-source, no dev-mode fallback.
 Use this canonical command; it keeps the witness seed out of the host Docker
@@ -1196,7 +1196,7 @@ docker run --rm \
   --entrypoint /bin/sh \
   -v "$PWD/keys.json:/keys.json:ro" \
   -v "$seed_file:/run/secrets/witness-signing-key-hex:ro" \
-  ghcr.io/declade/dsa-veil-witness:0.5.5@sha256:2314d971d0cbccdbb63e6d5547a93c82ed634f8cafb0d5fd0bc55d6957d4f5ac \
+  ghcr.io/declade/dsa-veil-witness:1.1.0@sha256:35d75f01de2a4863a11c7e51209dee8770b98a1304f951890e6f68026b36ff56 \
   -ec 'exec sign-manifest --keys-json /keys.json --issuer "$1" --witness-signing-key-hex "$(cat /run/secrets/witness-signing-key-hex)" --witness-key-id witness_manifest_v1' \
   sign-manifest "$LCR_ISSUER" \
   > witness-signed-manifest.json
@@ -1207,7 +1207,7 @@ docker run --rm \
 ```
 
 > **Flags** (run `docker run --rm --entrypoint sign-manifest
-> ghcr.io/declade/dsa-veil-witness:0.5.5@sha256:2314d971d0cbccdbb63e6d5547a93c82ed634f8cafb0d5fd0bc55d6957d4f5ac -h`
+> ghcr.io/declade/dsa-veil-witness:1.1.0@sha256:35d75f01de2a4863a11c7e51209dee8770b98a1304f951890e6f68026b36ff56 -h`
 > to confirm against your pin):
 > `--keys-json` (required), `--issuer` (required; matches `LCR_ISSUER` / legacy
 > `VEIL_ISSUER` at the gateway), `--witness-signing-key-hex` (required; the
@@ -2677,8 +2677,8 @@ registry DSN file (step 2b). By hand:
 DSA_SANITIZER_CORE_REGISTRY_KEY=$(openssl rand -hex 32)    # seals every registry row; keep it stable
 POSTGRES_SANITIZER_CORE_PASSWORD=$(openssl rand -hex 24)   # no space, $ ' " \ ` or #
 LUCAIRN_SANITIZER_CORE_IMAGE_TAG=1.1.0                     # ONE tag for core + sidecar
-LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=                       # release-filled; set both digests or neither
-LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=
+LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=sha256:3b14defeed7626730a8d53c748b18185bff00cc105e041cfc7543a0078de196e   # release-filled; set both digests or neither
+LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=sha256:dc2ecd58ee6048ca65a17d08b4c7d0744d96e7a4e990c95abaaf81b56115a435
 ```
 
 The registry volume only opens with the key and password it was created with.
@@ -2690,9 +2690,10 @@ is possible only with `--confirm-no-registry-volume`, which states that the
 Docker host of this install has no sanitizer core registry volume from an
 earlier kit 2.0 run. The flag covers only a machine shown to have no Docker:
 no docker CLI, or the docker CLI's endpoint (`DOCKER_HOST`, else the current
-`docker context`) is exactly `unix:///<absolute path>` — one prefix, no
-spaces; anything else is refused — and that socket does not exist or refuses
-connections (init tests the socket itself with python3; it reads no docker
+`docker context`) is exactly `unix:///<absolute path>` — one prefix, then
+only ASCII letters, digits and `. _ / -`, no `..` segment; anything else
+(a space of any kind, a non-ASCII character) is refused — and that socket
+does not exist or refuses connections (init tests the socket itself with python3; it reads no docker
 error message). A volume Docker does report is refused with or without it,
 and so is a registry volume name that cannot be resolved (Docker Compose
 missing, or the project does not render), and so is every other Docker
@@ -3409,6 +3410,26 @@ by Lucairn (its test accounts are web-service only).
 - **Third-party notices:** kit 2.0.0 ships them in the kit (`licenses/NOTICE`
   and the licence texts in `licenses/`, also in every customer bundle); the
   images carry `NOTICE` from 2.0.1.
+- **ARM hosts: not supported for the new core in 2.0.0.** The model sidecar
+  image `dsa-sanitizer-core-sidecar:1.1.0` is built for linux/amd64 only, so
+  the core pair does not run on an arm64 host or Kubernetes node: the sidecar
+  either fails to pull or start there (the error depends on the container
+  runtime) or would run under CPU emulation, which this release does not
+  support. Run the core pair on amd64 (on Helm, the node that runs the core
+  Pod; the chart sets no architecture selector). The other 13 `dsa-*` images
+  are multi-arch (linux/amd64 + linux/arm64). An arm64 sidecar comes in kit
+  2.0.1.
+- **Not rehearsed for this release: the Helm upgrade 1.9.7 → 2.0.0 and the
+  production Compose path** (`bin/lucairn-init --production`, where the core
+  sends its claims to the witness over mTLS). The rehearsals covered a fresh
+  Compose install and the Compose upgrade 1.9.7 → 2.0.0 (both with `--dev`)
+  and a fresh Helm install on kind. On the paths not rehearsed, your proof that
+  the core's claims arrive is the online `bin/lucairn doctor` (Compose: its
+  `sanitizer core claims` lines must read `transport ok (mtls)`, show no
+  dropped claim and count the witness's claim arrivals) and one real request
+  whose certificate carries the core's `PII_SANITIZED` claim. On Helm the
+  doctor has no claim-arrival check; the certificate of one real request is
+  the proof.
 - **Doctor, per-request BYOK keys:** a key minted for per-request BYOK (the
   mint default) carries no stored provider key, and the online doctor holds
   none, so on a `managed-byok` install its keyed step reports `keyed
@@ -4535,9 +4556,9 @@ included in support bundles.
 ### Prerequisite: gateway image >= 0.5.1
 
 This feature first shipped in the gateway image at `0.5.1` (the feature floor);
-the current published release is `0.5.5` (`appVersion: 0.5.5`, chart `v1.9.7`),
+the current published release is `1.1.0` (`appVersion: 1.1.0`, chart `v2.0.0`),
 also published to GHCR. The gateway binary that reads `GATEWAY_TMS_TRUST_ZONES`
-is present from `0.5.1` onward, so any `>= 0.5.1` pin (including `0.5.5`) works.
+is present from `0.5.1` onward, so any `>= 0.5.1` pin (including `1.1.0`) works.
 Setting `GATEWAY_TMS_TRUST_ZONES` on an **older** image (e.g. `0.5.0`) is a
 **silent no-op** — the var is present in the ConfigMap but that older gateway
 does not read it.
@@ -4555,8 +4576,8 @@ the image is new enough:
 tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES is set but LUCAIRN_IMAGE_TAG="latest" is not an exact semver pin; doctor cannot confirm the gateway image is >= 0.5.1. Pin an exact tag (e.g. 0.5.1) or unset the policy.
 ```
 
-Pin `LUCAIRN_IMAGE_TAG=0.5.5` in `customer.env` (Compose) or
-`--set global.imageTag=0.5.5` (Helm) — the current published release (any exact
+Pin `LUCAIRN_IMAGE_TAG=1.1.0` in `customer.env` (Compose) or
+`--set global.imageTag=1.1.0` (Helm) — the current published release (any exact
 `>= 0.5.1` pin satisfies the feature floor) — then apply the policy.
 
 ### Helm

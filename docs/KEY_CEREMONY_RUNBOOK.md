@@ -5,7 +5,7 @@
 **Scope:** Generation, distribution, rotation, and revocation of Ed25519 signing keys used by the Lucairn attestation protocol, for customers running the `lucairn-enterprise-deployment-kit`.
 
 > **No DSA source tree required.** Every tool referenced here ships inside the pinned
-> `dsa-veil-witness:0.5.5` image (`/usr/local/bin/sign-manifest`). The ceremony is
+> `dsa-veil-witness:1.1.0` image (`/usr/local/bin/sign-manifest`). The ceremony is
 > turnkey via `docker run --entrypoint sign-manifest` — no Go toolchain, no build-from-source.
 
 ---
@@ -245,7 +245,7 @@ The full roster for a standard install has **seven entries**: five claim-signing
 ### 6.2 Run sign-manifest (no Go toolchain needed)
 
 The `sign-manifest` tool is embedded in
-`dsa-veil-witness:0.5.5@sha256:2314d971d0cbccdbb63e6d5547a93c82ed634f8cafb0d5fd0bc55d6957d4f5ac`
+`dsa-veil-witness:1.1.0@sha256:35d75f01de2a4863a11c7e51209dee8770b98a1304f951890e6f68026b36ff56`
 at `/usr/local/bin/sign-manifest`. Set `LCR_ISSUER` to the value in
 `customer.env`, then run the [canonical private-seed-file command in
 INSTALL.md](../INSTALL.md#4b-produce-the-witness-signed-manifest-production-only) exactly as
@@ -254,7 +254,7 @@ trap, a read-only `/run/secrets/witness-signing-key-hex` mount, and a
 single-quoted in-container `/bin/sh -ec` command. The host `docker run` argv
 must never contain `LCR_WITNESS_SIGNING_KEY` expansion or its value.
 
-**Flags** (run `docker run --rm --entrypoint sign-manifest ghcr.io/declade/dsa-veil-witness:0.5.5@sha256:2314d971d0cbccdbb63e6d5547a93c82ed634f8cafb0d5fd0bc55d6957d4f5ac -h` to confirm against your pin):
+**Flags** (run `docker run --rm --entrypoint sign-manifest ghcr.io/declade/dsa-veil-witness:1.1.0@sha256:35d75f01de2a4863a11c7e51209dee8770b98a1304f951890e6f68026b36ff56 -h` to confirm against your pin):
 - `--keys-json` (required) — path to the keys.json roster inside the container
 - `--issuer` (required) — must match `LCR_ISSUER` on the gateway
 - `--witness-signing-key-hex` (required) — Ed25519 witness seed, 64 hex chars

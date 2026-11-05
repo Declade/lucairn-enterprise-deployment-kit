@@ -12,7 +12,7 @@ Security advisories are published at <https://lucairn.eu/security>; the
 disclosure process and contact are in [`SECURITY.md`](SECURITY.md). Entries that
 carry a security fix are tagged **[Security]**.
 
-## [2.0.0] — release date set when the release is cut — images `1.1.0`
+## [2.0.0] — 2026-11-05 — images `1.1.0`
 
 Kit 2.0.0 runs the same sanitizer as the hosted Lucairn service. Every `dsa-*`
 image moves from `0.5.5` to `1.1.0` (one product version, built from one
@@ -192,6 +192,26 @@ stays `0.8.2`.
   that carries the provider key.
 - The images do not carry the third-party `NOTICE` yet; the kit does
   (`licenses/`, below). The images carry it from 2.0.1.
+- **ARM hosts are not supported for the new core in 2.0.0.** Its model sidecar
+  image (`dsa-sanitizer-core-sidecar:1.1.0`) is built for linux/amd64 only, so
+  the core pair does not run on an arm64 host or Kubernetes node: the sidecar
+  either fails to pull or start there (the error depends on the container
+  runtime) or would run under CPU emulation, which this release does not
+  support. Run the core pair on amd64 (on Helm, the node that runs the core
+  Pod; the chart sets no architecture selector). The other 13 `dsa-*` images
+  are multi-arch (linux/amd64 + linux/arm64). An arm64 sidecar comes in kit
+  2.0.1.
+- **Not rehearsed for this release:** the Helm upgrade from 1.9.7 to 2.0.0,
+  and the production Compose path (`bin/lucairn-init --production`, where the
+  core sends its claims to the witness over mTLS). The rehearsals covered a
+  fresh Compose install and the Compose upgrade 1.9.7 → 2.0.0 (both with
+  `--dev`) and a fresh Helm install on kind. On the paths not rehearsed, your
+  proof that the core's claims arrive is the online `bin/lucairn doctor`
+  (Compose: its `sanitizer core claims` lines must read `transport ok (mtls)`,
+  show no dropped claim and count the witness's claim arrivals) and one real
+  request whose certificate carries the core's `PII_SANITIZED` claim. On Helm
+  the doctor has no claim-arrival check; the certificate of one real request is
+  the proof.
 
 ### Added — pins, licences, doctor (K-E)
 
@@ -252,7 +272,8 @@ stays `0.8.2`.
   while a registry volume exists, and also when Docker cannot be asked
   (start Docker, or pass `--confirm-no-registry-volume` to state there is
   none; the flag covers only no docker CLI, or a docker CLI endpoint that is
-  exactly `unix:///<absolute path>` (one prefix, no spaces) whose socket does
+  exactly `unix:///<absolute path>` (one prefix, then only ASCII letters,
+  digits and `. _ / -`, no `..` segment) whose socket does
   not exist or refuses connections — the
   socket is tested itself, no docker error message is read: a volume Docker
   reports (checked before any failed render), a volume name that cannot be
@@ -301,6 +322,14 @@ stays `0.8.2`.
 - Tests read captured output through here-strings instead of
   `printf … | grep -q` pipes (a false result under `pipefail` once the text
   outgrows the pipe buffer).
+- **`--confirm-no-registry-volume`, endpoint check:** the docker CLI endpoint
+  (`DOCKER_HOST` or the current context's) now counts as a local socket only
+  when it matches an ASCII allowlist, `unix:///` followed by letters, digits
+  and `. _ / -`, with no `..` segment, under every locale. Before, a no-break
+  space or another Unicode space after the path passed the check under
+  `LC_ALL=C`; the docker CLI trims it, so the CLI reached a running daemon
+  while the socket test found nothing and the flag applied. Such an endpoint
+  is now refused (exit 6), like every endpoint that is not exact.
 
 ## [1.9.7] — 2026-10-28 — images `0.5.5`
 
