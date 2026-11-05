@@ -852,7 +852,8 @@ case "$a" in
   # below.
   " version --format "*) [ -n "${STUB_ENGINE_VERSION:-}" ] && { echo "$STUB_ENGINE_VERSION"; exit 0; }
     echo "Cannot connect to the Docker daemon at unix:///nonexistent-lucairn-test/docker.sock. Is the docker daemon running?" >&2; exit 1 ;;
-  " context inspect "*) echo "unix:///nonexistent-lucairn-test/docker.sock"; exit 0 ;;
+  # The CLI prints a json-format endpoint as one JSON string (PR #164 sol r1).
+  " context inspect "*) case "$a" in *json*) echo '"unix:///nonexistent-lucairn-test/docker.sock"' ;; *) echo "unix:///nonexistent-lucairn-test/docker.sock" ;; esac; exit 0 ;;
 esac
 if [ "${1:-}" = compose ]; then
   case "$a" in
