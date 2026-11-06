@@ -231,6 +231,14 @@ stays `0.8.2`.
   deploys. Helm: a values override of `repository`/`tag` for these images keeps
   the default `digest` unless you set it too (a byte-identical mirror needs no
   change; another image needs its own digest, or `digest: ""`).
+- **`postgres:16-alpine` and `redis:7-alpine` re-pinned before the release.**
+  Upstream re-pointed both moving tags on 2026-11-06 (same PG 16.15 and Redis
+  7.4.12, rebuilt bases). New index digests:
+  `postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139`
+  and
+  `redis:7-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b`,
+  in both image manifests and every reference. The release's signed-image
+  smoke ran on these bytes.
 - **Third-party notices in the kit:** `licenses/NOTICE` (the product
   repository's `NOTICE` at the 2.0.0 image commit `35dd235d`: every model and
   data file the sanitizer-core images redistribute, with its licence) and the

@@ -116,7 +116,7 @@ redis:
     # another image needs its own digest, or digest: "" for the tag.
     repository: redis
     tag: "7-alpine"
-    digest: "sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f"
+    digest: "sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b"
   storageSize: 5Gi
   storageClass: ""
   maxmemory: "256mb"

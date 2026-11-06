@@ -59,7 +59,7 @@ services:
       PGPORT: "5432"
       PGSSLMODE: disable
       PGUSER: dsa
-    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     logging:
       driver: json-file
       options:
@@ -449,7 +449,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 10
-    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     logging:
       driver: json-file
       options:
@@ -474,7 +474,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 10
-    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     logging:
       driver: json-file
       options:
@@ -499,7 +499,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 10
-    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     logging:
       driver: json-file
       options:
@@ -524,7 +524,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 10
-    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     logging:
       driver: json-file
       options:
@@ -550,7 +550,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 5
-    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     logging:
       driver: json-file
       options:
@@ -609,7 +609,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 5
-    image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
+    image: redis:7-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
     logging:
       driver: json-file
       options:
@@ -633,7 +633,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 5
-    image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
+    image: redis:7-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
     logging:
       driver: json-file
       options:

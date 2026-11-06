@@ -311,7 +311,7 @@ backup:
     # Pinned by the digest image-manifest.yaml records
     # (image_digests.enterprise_kind.postgres); re-pin both together. A
     # pre-baked image needs its own digest here, or digest: "" for the tag.
-    digest: "sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
+    digest: "sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139"
     pullPolicy: IfNotPresent
     # When true, a ROOT initContainer runs `apk add age aws-cli` and stages the
     # binaries into a shared volume that the non-root main container puts on

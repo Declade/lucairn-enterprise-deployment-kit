@@ -159,7 +159,7 @@ claimDeliveryRetention:
   image:
     repository: postgres
     tag: "16-alpine"
-    digest: "sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
+    digest: "sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139"
   resources:
     requests:
       cpu: 10m
@@ -177,7 +177,7 @@ postgresql:
     # another image needs its own digest, or digest: "" for the tag.
     repository: postgres
     tag: "16-alpine"
-    digest: "sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
+    digest: "sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139"
   storageSize: 10Gi
   storageClass: ""
   # Superuser, used by the migration Job (CREATE ROLE / GRANT) and Postgres
