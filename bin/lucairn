@@ -11492,7 +11492,7 @@ backup_prune() {
 # pinned by the digest image-manifest.yaml records
 # (image_digests.enterprise_kind.postgres; tests/test_third_party_image_pins.sh
 # keeps the two equal). A re-pin changes both together.
-BACKUP_VERIFY_PG_IMAGE="postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
+BACKUP_VERIFY_PG_IMAGE="postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139"
 
 # Decrypt an encrypted dump into a throwaway Postgres container and assert it
 # pg_restores cleanly + has non-zero rows. Used by `backup --verify`.

@@ -340,7 +340,16 @@ image_digests:
       # inspect`, the Docker Hub v2 tags API (last_updated
       # 2026-10-26T07:07Z), and the kit CI's own resolver log. Image config env
       # PG_VERSION=16.15 read via the Docker Registry v2 API (library/postgres).
-      digest: "sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab"
+      # RE-PINNED 2026-11-06 (T-1441, before the kit 2.0.0 publish): upstream
+      # re-pointed the moving `16-alpine` tag again on 2026-11-06 (previous index
+      # digest sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab).
+      # This is a RE-PIN to what upstream publishes today, NOT a re-validation;
+      # the kit 2.0.0 release re-runs its signed-image smoke on these bytes.
+      # Resolved from two matching observations against ONE trust authority,
+      # Docker Hub (not independent sources): `docker buildx imagetools
+      # inspect` and the Docker Hub v2 tags API (last_updated
+      # 2026-11-06T01:08Z). Image config env PG_VERSION=16.15 (linux/amd64).
+      digest: "sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139"
     redis:
       ref: "redis:7-alpine"
       # RE-PINNED 2026-09-19 (T-791): upstream re-pointed the moving `7-alpine`
@@ -387,7 +396,16 @@ image_digests:
       # 2026-10-29T06:04Z), and the kit CI's own live digest gate log. Image
       # config env REDIS_VERSION=7.4.12 read via the Docker Registry v2 API
       # (linux/amd64 config blob, its sha256 checked).
-      digest: "sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f"
+      # RE-PINNED 2026-11-06 (T-1441, before the kit 2.0.0 publish): upstream
+      # re-pointed the moving `7-alpine` tag again on 2026-11-06 (previous index
+      # digest sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f).
+      # This is a RE-PIN to what upstream publishes today, NOT a re-validation;
+      # the kit 2.0.0 release re-runs its signed-image smoke on these bytes.
+      # Resolved from two matching observations against ONE trust authority,
+      # Docker Hub (not independent sources): `docker buildx imagetools
+      # inspect` and the Docker Hub v2 tags API (last_updated
+      # 2026-11-06T00:04Z). Image config env REDIS_VERSION=7.4.12 (linux/amd64).
+      digest: "sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b"
     migrate:
       ref: "migrate/migrate:v4.17.0"
       digest: "sha256:4d017c6fb5997127093648cab09e63d377997125c3d3dcca18e5d1c847da49fa"
