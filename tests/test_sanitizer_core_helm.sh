@@ -44,7 +44,7 @@
 #      DOCTOR_KUBE_LIVE=1 against a stub kubectl: green on a healthy release,
 #      red on a not-ready core, an incomplete migration Job, a missing mTLS
 #      Secret, DROPPED claims and a non-mTLS witness hop in production.
-#   G. bin/lucairn: verify-images expects the core pair from release 1.1.0 on
+#   G. bin/lucairn: verify-images expects the core pair from release 1.1.1 on
 #      (and not for 0.5.x records); a kit 2.0 bundle carries and verifies the
 #      mTLS bootstrap and its install note names both one-time steps.
 #
@@ -65,7 +65,7 @@
 #      no bundled StatefulSet is required (F, stub kubectl).
 #
 # NON-COVERAGE (stated, not implied)
-#   * No Pod runs: whether the 1.1.0 images boot with this spec (read-only
+#   * No Pod runs: whether the 1.1.1 images boot with this spec (read-only
 #     root FS of the sidecar included) is the PC Kind rehearsal (PRD criterion
 #     3, scripts/test-enterprise-mtls-kind.sh), not this suite.
 #   * NetworkPolicies are checked structurally, not enforced (no CNI here).
@@ -216,9 +216,9 @@ ok(sorted(cs) == ["core", "sidecar"], "ONE Pod with exactly the containers core 
 ok(dep["spec"]["replicas"] == 1 and dep["spec"]["strategy"]["type"] == "Recreate", "one core at a time: replicas 1, strategy Recreate")
 ok(ps.get("automountServiceAccountToken") is False and ps.get("enableServiceLinks") is False, "no SA token, no Service-link env vars")
 core, side = cs["core"], cs["sidecar"]
-ok(core["image"] == "ghcr.io/declade/dsa-sanitizer-core:1.1.0@" + os.environ["TEST_SANITIZER_CORE_DIGEST"] and side["image"] == "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@" + os.environ["TEST_SANITIZER_CORE_SIDECAR_DIGEST"], "core + sidecar images: one tag (1.1.0), no fallback to global.imageTag, pulled by the signed digests")
+ok(core["image"] == "ghcr.io/declade/dsa-sanitizer-core:1.1.1@" + os.environ["TEST_SANITIZER_CORE_DIGEST"] and side["image"] == "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.1@" + os.environ["TEST_SANITIZER_CORE_SIDECAR_DIGEST"], "core + sidecar images: one tag (1.1.1), no fallback to global.imageTag, pulled by the signed digests")
 man = yaml.safe_load(open(os.path.join(ROOT, "image-manifest.yaml")))
-ok(man["services"]["dsa-sanitizer-core"]["image_tag"] == "1.1.0" == man["services"]["dsa-sanitizer-core-sidecar"]["image_tag"], "chart tag equals image-manifest.yaml services.dsa-sanitizer-core(-sidecar).image_tag")
+ok(man["services"]["dsa-sanitizer-core"]["image_tag"] == "1.1.1" == man["services"]["dsa-sanitizer-core-sidecar"]["image_tag"], "chart tag equals image-manifest.yaml services.dsa-sanitizer-core(-sidecar).image_tag")
 args = core.get("args") or []
 ok(args == ["serve", "--listen=0.0.0.0:8790", "--registry-dsn-file=/etc/sanitizer-core/registry/dsn", "--sidecar=http://127.0.0.1:8765"], "core args: serve, :8790, DSN from a FILE, sidecar on 127.0.0.1:8765")
 bad = []
@@ -355,7 +355,7 @@ D1="sha256:$(printf 'a1%.0s' $(seq 32))"; D2="sha256:$(printf 'b2%.0s' $(seq 32)
 if render pinned --set-string "sanitizer-core.image.digest=$D1" --set-string "sanitizer-core.sidecar.image.digest=$D2"; then
   assert_py "$TMP/pinned.yaml" "
 cs = {c['name']: c for c in find('Deployment', 'sanitizer-core')['spec']['template']['spec']['containers']}
-ok(cs['core']['image'] == 'ghcr.io/declade/dsa-sanitizer-core:1.1.0@$D1' and cs['sidecar']['image'] == 'ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@$D2', 'a pinned pair renders repo:tag@sha256 for both images')
+ok(cs['core']['image'] == 'ghcr.io/declade/dsa-sanitizer-core:1.1.1@$D1' and cs['sidecar']['image'] == 'ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.1@$D2', 'a pinned pair renders repo:tag@sha256 for both images')
 " | run_py
 else fail "digest-pinned render: $(head -3 "$TMP/pinned.err")"; fi
 # Fix round 3 (sol r2 P2), RED on e76b6d7: with global.dnsRestriction=true the

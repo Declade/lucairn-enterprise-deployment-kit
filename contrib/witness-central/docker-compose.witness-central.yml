@@ -226,7 +226,7 @@ services:
   # same address. The rendered-config check is tests/test_sanitizer_core_compose.sh;
   # the live check is the K-E clean-host rehearsal.
   sanitizer-core-witness-relay:
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer-core-sidecar:${LUCAIRN_SANITIZER_CORE_IMAGE_TAG:-1.1.0}@${LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST:?LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST must be the signed digest image-manifest.yaml records for dsa-sanitizer-core-sidecar (the sanitizer core pair never starts from a bare tag; run bin/lucairn doctor)}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-sanitizer-core-sidecar:${LUCAIRN_SANITIZER_CORE_IMAGE_TAG:-1.1.1}@${LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST:?LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST must be the signed digest image-manifest.yaml records for dsa-sanitizer-core-sidecar (the sanitizer core pair never starts from a bare tag; run bin/lucairn doctor)}"
     entrypoint: ["python3", "-I", "/opt/lucairn/witness-relay.py"]
     command: []
     environment:

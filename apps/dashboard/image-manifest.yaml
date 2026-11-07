@@ -51,9 +51,9 @@ kit_version: "2.0.0"
 #    `git grep -q checkNoAISigningKey services/gateway/cmd/server/main.go` at the tag's source.
 #    0.5.5 IS such a tag (built from DSA main f70d0fe8 or later, which carries
 #    checkNoAISigningKey); its release-ordering note is in CHANGELOG.md [1.9.5].
-#    1.1.0 (built from DSA main 35dd235d, checked by content) carries it too; a
+#    1.1.1 (built from DSA main 15baf766, checked by content) carries it too; a
 #    1.9.x install on 0.5.5 has already done that key removal.
-default_lucairn_image_tag: "1.1.0"
+default_lucairn_image_tag: "1.1.1"
 
 # Registry the kit was validated against. doctor warns when env's
 # LUCAIRN_IMAGE_REGISTRY differs.
@@ -125,11 +125,11 @@ services:
   # (LUCAIRN_SANITIZER_CORE_IMAGE_TAG; no fall-back to LUCAIRN_IMAGE_TAG — no
   # 0.5.x tag of these images exists). The core refuses to start against a
   # sidecar from another build, so both always move together. Digests:
-  # image_digests.signed_artifacts below (the signed 1.1.0 release record).
+  # image_digests.signed_artifacts below (the signed 1.1.1 release record).
   dsa-sanitizer-core:
-    image_tag: "1.1.0"
+    image_tag: "1.1.1"
   dsa-sanitizer-core-sidecar:
-    image_tag: "1.1.0"
+    image_tag: "1.1.1"
 
 # Optional images used only when `--profile certification` or
 # `--profile dashboard` is activated. These pull from the same registry but
@@ -191,38 +191,38 @@ optional_services:
 #     digest: "sha256:<64hex>"     # the recorded content digest (or omit if pending)
 #     pending: true                # OPTIONAL — schema-only slot, --strict skips
 image_digests:
-  # --- Signed Lucairn images (15 artifacts: 14 dsa-* at 1.1.0 +
+  # --- Signed Lucairn images (15 artifacts: 14 dsa-* at 1.1.1 +
   # --- lucairn-dashboard 0.8.2; cosign-signed + Rekor-logged; digests mirror
-  # --- keys/image-digests-1.1.0.txt). doctor --strict ENFORCES these (resolve
+  # --- keys/image-digests-1.1.1.txt). doctor --strict ENFORCES these (resolve
   # --- tag->digest, block on mismatch).
   signed_artifacts:
-    # Release 1.1.0 (kit 2.0.0) — the 12 dsa-* release services and the
-    # sanitizer core pair, built from DSA main 35dd235d (2026-11-05) and
+    # Release 1.1.1 (kit 2.0.0) — the 12 dsa-* release services and the
+    # sanitizer core pair, built from DSA main 15baf766 (2026-11-06) and
     # cosign-signed (GHCR + Rekor) by digest; digests mirror
-    # keys/image-digests-1.1.0.txt; verify with `lucairn verify-images --tag 1.1.0`.
+    # keys/image-digests-1.1.1.txt; verify with `lucairn verify-images --tag 1.1.1`.
     # 13 images are multi-arch (linux/amd64 + linux/arm64): the digest is the
-    # image index. dsa-sanitizer-core-sidecar is linux/amd64 ONLY in 1.1.0
+    # image index. dsa-sanitizer-core-sidecar is linux/amd64 ONLY in 1.1.1
     # (owner decision 2026-11-05; arm64 in kit 2.0.1): its digest is the single
     # image manifest. (dsa-pii-ml stays pinned at 0.5.1 — independent release
     # cadence; lucairn-dashboard stays at 0.8.2, same signed bytes.)
     dsa-gateway:
-      ref: "ghcr.io/declade/dsa-gateway:1.1.0"
-      digest: "sha256:8d5995a135909b3939c71af54f19cf1faadceccced472a36e641420289fed2bd"
+      ref: "ghcr.io/declade/dsa-gateway:1.1.1"
+      digest: "sha256:09af335b3f45ca9c027f20d5dfc86e4e0bfcac7a1b55794d77e2a41c783dc295"
     dsa-sanitizer:
-      ref: "ghcr.io/declade/dsa-sanitizer:1.1.0"
-      digest: "sha256:0f6d3bc2de14fa0e15bbcf121c8f326bc1ae818cd1463872a0e199addd3d2c4b"
+      ref: "ghcr.io/declade/dsa-sanitizer:1.1.1"
+      digest: "sha256:2053b74b73d4f31c4870ec125ae93bc066610c51c3d04c2e0f28f1d4b4203c75"
     dsa-audit:
-      ref: "ghcr.io/declade/dsa-audit:1.1.0"
-      digest: "sha256:1e76e33ed254913a839ba360902664eb924d870d173d8b19424942a7ce8cde7e"
+      ref: "ghcr.io/declade/dsa-audit:1.1.1"
+      digest: "sha256:68d07031ff843ad290192a3a0923f712b9d621d01184c88038429d9c860657ed"
     dsa-id-bridge:
-      ref: "ghcr.io/declade/dsa-id-bridge:1.1.0"
-      digest: "sha256:43009629fdb35a04472d3e901d998915a8a4f9a19edafd676cb71ae99cc92ebb"
+      ref: "ghcr.io/declade/dsa-id-bridge:1.1.1"
+      digest: "sha256:80b7f0c689f28a7af38c3569d595c5ac5f03b80b57206a11308c2817f781460c"
     dsa-sandbox-a:
-      ref: "ghcr.io/declade/dsa-sandbox-a:1.1.0"
-      digest: "sha256:31fe42003f546ca118a4633985e31ed4df529f7a6e1d2e106055d78118d4cee9"
+      ref: "ghcr.io/declade/dsa-sandbox-a:1.1.1"
+      digest: "sha256:e812a842c096838f0b5c20e0dccd22d3a193d7ff80bd6db0d19887ee6d9766e7"
     dsa-sandbox-b:
-      ref: "ghcr.io/declade/dsa-sandbox-b:1.1.0"
-      digest: "sha256:1f7d47113e11db2b0d8f0d9b66281973aecc0f06a482f6703659875f97207ad6"
+      ref: "ghcr.io/declade/dsa-sandbox-b:1.1.1"
+      digest: "sha256:4cf42b6cde5907890e7616bf888f7736cb366183f8bc0d10b1d84bf081fabcc3"
     dsa-pii-ml:
       # Multi-arch manifest list (linux/amd64 + linux/arm64) published from
       # PR #241's final state (commit 0cb627c, review round 1 fix-ups). Built on
@@ -232,37 +232,37 @@ image_digests:
       ref: "ghcr.io/declade/dsa-pii-ml:0.5.1"
       digest: "sha256:5cc46f58db9f0c84f6a8ed9428fe91a2a481ae0c6a3dfa3f02e4a607da80d1cc"
     dsa-veil-witness:
-      ref: "ghcr.io/declade/dsa-veil-witness:1.1.0"
-      digest: "sha256:35d75f01de2a4863a11c7e51209dee8770b98a1304f951890e6f68026b36ff56"
+      ref: "ghcr.io/declade/dsa-veil-witness:1.1.1"
+      digest: "sha256:0f8497146a355430db8eee590f010b66a5d40f84e49d455cb66a1e51a0a7fa2d"
     dsa-reid-guard:
-      ref: "ghcr.io/declade/dsa-reid-guard:1.1.0"
-      digest: "sha256:80dee482dab65bd9785166ea75b6e3b0dbcbac202aa7323f2d8d0dc17e69a982"
+      ref: "ghcr.io/declade/dsa-reid-guard:1.1.1"
+      digest: "sha256:0305938c0490cac00edd2da1cc550b0d2bc439b1d8da61bc49bdf257c13b1c6f"
     dsa-admin:
-      ref: "ghcr.io/declade/dsa-admin:1.1.0"
-      digest: "sha256:b9ec936742c6f0fab9defee8eb94baceda409e7d8ee1e91f13c022e8ab2487a4"
+      ref: "ghcr.io/declade/dsa-admin:1.1.1"
+      digest: "sha256:e75c4672a00ed4600ce30706623e774026dcec5e7987b200cd757945d4eb1d86"
     dsa-demo:
-      ref: "ghcr.io/declade/dsa-demo:1.1.0"
-      digest: "sha256:c2b094d7e8faa58263d67867d2a195ab6b034b595d5db8c4335c79751cd69ac7"
+      ref: "ghcr.io/declade/dsa-demo:1.1.1"
+      digest: "sha256:f022a803de5065290db517655f14053bf15a65374e487b41a5fa732831fb4c52"
     dsa-ingest:
-      ref: "ghcr.io/declade/dsa-ingest:1.1.0"
-      digest: "sha256:732aa457f3d4de3ca3d7c808dcbfecae36e868d4c10569b8d581ed024cd4d191"
+      ref: "ghcr.io/declade/dsa-ingest:1.1.1"
+      digest: "sha256:67cd43d4716964c8836d5d9c73f900a71c625e2a8b170adb1ff64d7d97e71bc5"
     dsa-llm-auditor:
-      ref: "ghcr.io/declade/dsa-llm-auditor:1.1.0"
-      digest: "sha256:ed9a50aafc44c6748451c2f3ef014adc1655d0e4a71e6af5ed88f9fbcb0cbec7"
+      ref: "ghcr.io/declade/dsa-llm-auditor:1.1.1"
+      digest: "sha256:749988854418ff02aba46b83e7f414ffebf563003e9a4bb616836c3b601c8007"
     lucairn-dashboard:
       ref: "ghcr.io/declade/lucairn-dashboard:0.8.2"
       digest: "sha256:a586b88991ac5d71cf6523b833462648775b1e97a66cbee67876e9f992f0387e"
     # Kit 2.0: the core/sidecar pair (one tag, one release commit). The same
-    # values are in keys/image-digests-1.1.0.txt, the
+    # values are in keys/image-digests-1.1.1.txt, the
     # LUCAIRN_SANITIZER_CORE_*_IMAGE_DIGEST defaults of customer.env.example
     # and the sanitizer-core chart's image.digest / sidecar.image.digest.
     dsa-sanitizer-core:
-      ref: "ghcr.io/declade/dsa-sanitizer-core:1.1.0"
-      digest: "sha256:3b14defeed7626730a8d53c748b18185bff00cc105e041cfc7543a0078de196e"
+      ref: "ghcr.io/declade/dsa-sanitizer-core:1.1.1"
+      digest: "sha256:e257c71d7e2cfe088dcb9a2204423d34aa7343082b5ab82f86bedf6142140c3b"
     dsa-sanitizer-core-sidecar:
-      # linux/amd64 only in 1.1.0 (a single image manifest, no index): the
+      # linux/amd64 only in 1.1.1 (a single image manifest, no index): the
       # core pair does not run on arm64 hosts in kit 2.0.0.
-      ref: "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0"
+      ref: "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.1"
       digest: "sha256:dc2ecd58ee6048ca65a17d08b4c7d0744d96e7a4e990c95abaaf81b56115a435"
   # --- PII-plane runtime (sandbox-a / sandbox-b L3 shield). ollama-identity is
   # --- the load-bearing L3 image and is ALSO digest-pinned in the chart

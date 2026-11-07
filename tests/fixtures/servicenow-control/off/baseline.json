@@ -2,8 +2,8 @@
   "source_ref": "93afd045bf9ab59817fa6125c0bd4172cb4bab89",
   "compose_version": "Docker Compose version v5.4.0",
   "sha256": {
-    "docker-compose.customer.yml": "f6aee32dd651cb25fc2c3e88c9945745acd742026cdac9695dfa3df9a22c8a4f",
-    "docker-compose.self-hosted.yml": "521688154e793118d151140b0768ab635817aa1fdc73f9c354cc0a9d13fabaaf",
+    "docker-compose.customer.yml": "a953a57ffc3faa191da5ab725e6ddb76a6e0429c8a8344b99493becf4a7852a6",
+    "docker-compose.self-hosted.yml": "fd3e5b806b95620ec5f5a44de80cf767ec840e512d288488f8238ddd51de7f90",
     "docker-compose.self-hosted-byok.yml": "c62c0f560f990451cee5db935ae835a1a3d624a4d9d7456bde322529808d3fd5"
   },
   "amended_repin": "2026-10-27: postgres:16-alpine digest re-pin in docker-compose.customer.yml; fixtures amended by that single image line",
@@ -16,5 +16,6 @@
   "amended_kit_2_0_round2": "kit 2.0 round 2 (T-1441, 2026-11-04): one comment of the sanitizer-core volumes in docker-compose.customer.yml now says where the CA private key lives (./.secrets/sanitizer-core-mtls-ca, outside the gateway's ./.certs mount); comment only, so every render is byte-identical and no fixture changed",
   "amended_kit_2_0_row9_pins": "kit 2.0 K-E (T-1441, PRD row 9, 2026-11-04): every third-party image of docker-compose.customer.yml (postgres:16-alpine x4, redis:7-alpine x2, migrate/migrate:v4.17.0 x4, alpine:3.20 x2) and docker-compose.self-hosted.yml (redis:7-alpine x1) carries the digest image-manifest.yaml records; fixtures re-rendered with Docker Compose v5.4.0 \u2014 in each render exactly those image lines gained @sha256:\u2026, nothing else changed",
   "amended_kit_2_0_0_bump": "kit 2.0.0 version bump (T-1441, 2026-11-05): the LUCAIRN_IMAGE_TAG fallback of every dsa-* image in docker-compose.customer.yml (8 refs; 2 cert profile comments) and docker-compose.self-hosted.yml (sandbox-b) moved 0.5.5 -> 1.1.0; fixtures re-rendered with Docker Compose v5.4.0 \u2014 in each render exactly the dsa-* image lines changed tag, nothing else",
-  "amended_kit_2_0_0_repin": "kit 2.0.0 re-pin before the publish (T-1441, 2026-11-06): postgres:16-alpine (x8 in docker-compose.customer.yml) and redis:7-alpine (x2 there, x1 in docker-compose.self-hosted.yml) moved to the digests upstream re-pointed the tags to on 2026-11-06; fixtures carry the same digest swap (done by the same replacement) \u2014 in each render exactly those image lines changed digest, nothing else"
+  "amended_kit_2_0_0_repin": "kit 2.0.0 re-pin before the publish (T-1441, 2026-11-06): postgres:16-alpine (x8 in docker-compose.customer.yml) and redis:7-alpine (x2 there, x1 in docker-compose.self-hosted.yml) moved to the digests upstream re-pointed the tags to on 2026-11-06; fixtures carry the same digest swap (done by the same replacement) \u2014 in each render exactly those image lines changed digest, nothing else",
+  "amended_kit_2_0_0_images_1_1_1": "kit 2.0.0 images 1.1.1 (T-1441, 2026-11-07): the LUCAIRN_IMAGE_TAG / LUCAIRN_SANITIZER_CORE_IMAGE_TAG fallback of every dsa-* image in docker-compose.customer.yml (10 image lines: 8 LUCAIRN_IMAGE_TAG incl. the 2 cert profile images, 2 sanitizer core pair; plus 4 comment lines) and docker-compose.self-hosted.yml (sandbox-b) moved 1.1.0 -> 1.1.1; the render fixtures carry the same tag change \u2014 in each render exactly the dsa-* image lines changed tag, nothing else"
 }

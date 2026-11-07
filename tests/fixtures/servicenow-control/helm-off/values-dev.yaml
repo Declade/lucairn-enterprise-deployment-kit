@@ -5595,7 +5595,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: admin
-          image: "ghcr.io/declade/dsa-admin:1.1.0"
+          image: "ghcr.io/declade/dsa-admin:1.1.1"
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
@@ -5734,7 +5734,7 @@ spec:
               memory: 64Mi
       containers:
         - name: audit
-          image: "ghcr.io/declade/dsa-audit:1.1.0"
+          image: "ghcr.io/declade/dsa-audit:1.1.1"
           imagePullPolicy: IfNotPresent
           args:
             - "-addr=:50051"
@@ -5846,7 +5846,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: gateway
-          image: "ghcr.io/declade/dsa-gateway:1.1.0"
+          image: "ghcr.io/declade/dsa-gateway:1.1.1"
           imagePullPolicy: IfNotPresent
           args:
             - "-addr=:8080"
@@ -6097,7 +6097,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: id-bridge
-          image: "ghcr.io/declade/dsa-id-bridge:1.1.0"
+          image: "ghcr.io/declade/dsa-id-bridge:1.1.1"
           imagePullPolicy: IfNotPresent
           args:
             - "-addr=:50052"
@@ -6219,7 +6219,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: ingest
-          image: "ghcr.io/declade/dsa-ingest:1.1.0"
+          image: "ghcr.io/declade/dsa-ingest:1.1.1"
           imagePullPolicy: IfNotPresent
           args:
             - "-addr=:8095"
@@ -6432,7 +6432,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: sandbox-a
-          image: "ghcr.io/declade/dsa-sandbox-a:1.1.0"
+          image: "ghcr.io/declade/dsa-sandbox-a:1.1.1"
           imagePullPolicy: IfNotPresent
           args:
             - "-addr=:50053"
@@ -6540,7 +6540,7 @@ spec:
               exec:
                 command: ["/bin/sh", "-c", "sleep 5"]
         - name: sanitizer
-          image: "ghcr.io/declade/dsa-sanitizer:1.1.0"
+          image: "ghcr.io/declade/dsa-sanitizer:1.1.1"
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -6828,7 +6828,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: sandbox-b
-          image: "ghcr.io/declade/dsa-sandbox-b:1.1.0"
+          image: "ghcr.io/declade/dsa-sandbox-b:1.1.1"
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
@@ -7078,7 +7078,7 @@ spec:
       containers:
         # ── The model sidecar (spaCy + GLiNER), 127.0.0.1:8765 only ─────────
         - name: sidecar
-          image: "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@sha256:5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c"
+          image: "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.1@sha256:5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c"
           imagePullPolicy: IfNotPresent
           env:
             - name: HOME
@@ -7125,7 +7125,7 @@ spec:
               mountPath: /tmp
         # ── The Go core, verified mTLS on :8790 ──────────────────────────────
         - name: core
-          image: "ghcr.io/declade/dsa-sanitizer-core:1.1.0@sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+          image: "ghcr.io/declade/dsa-sanitizer-core:1.1.1@sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
           imagePullPolicy: IfNotPresent
           command: ["/bin/sh", "/opt/lucairn/entrypoint/core-entrypoint.sh"]
           # ⚑ No --dsn: the registry DSN (with the DB password) is a FILE from
@@ -7355,7 +7355,7 @@ spec:
               memory: 64Mi
       containers:
         - name: veil-witness
-          image: "ghcr.io/declade/dsa-veil-witness:1.1.0"
+          image: "ghcr.io/declade/dsa-veil-witness:1.1.1"
           imagePullPolicy: IfNotPresent
           env:
             - name: LCR_DB_URL
@@ -8412,7 +8412,7 @@ spec:
           # is available. cp into the shared volume, then sed-substitute the
           # historical literal 'audit_app_password' with the operator-supplied
           # value. Mirrors scripts/render-migrations.sh in the Compose path.
-          image: "ghcr.io/declade/dsa-audit:1.1.0"
+          image: "ghcr.io/declade/dsa-audit:1.1.1"
           command:
             - /bin/sh
             - -c
@@ -8594,7 +8594,7 @@ spec:
         runAsGroup: 65534
       initContainers:
         - name: copy-migrations
-          image: "ghcr.io/declade/dsa-id-bridge:1.1.0"
+          image: "ghcr.io/declade/dsa-id-bridge:1.1.1"
           command: ["cp", "-r", "/migrations", "/shared/migrations"]
           volumeMounts:
             - name: migrations
@@ -8749,7 +8749,7 @@ spec:
         runAsGroup: 65534
       initContainers:
         - name: copy-migrations
-          image: "ghcr.io/declade/dsa-sandbox-a:1.1.0"
+          image: "ghcr.io/declade/dsa-sandbox-a:1.1.1"
           command: ["cp", "-r", "/migrations", "/shared/migrations"]
           volumeMounts:
             - name: migrations
@@ -9135,7 +9135,7 @@ spec:
           # the historical literal 'veil_app_password' with the operator-
           # supplied value. Mirrors scripts/render-migrations.sh in the
           # Compose path.
-          image: "ghcr.io/declade/dsa-veil-witness:1.1.0"
+          image: "ghcr.io/declade/dsa-veil-witness:1.1.1"
           command:
             - /bin/sh
             - -c

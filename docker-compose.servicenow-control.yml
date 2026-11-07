@@ -167,7 +167,7 @@ services:
   servicenow-state-init:
     # Same image as the gateway (busybox inside); runs once as root with only
     # CHOWN/FOWNER, no network, read-only root, and exits.
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-gateway:${LUCAIRN_IMAGE_TAG:-1.1.0}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-gateway:${LUCAIRN_IMAGE_TAG:-1.1.1}"
     # The exact-value gate of the switch (see the header): resolves only for
     # GATEWAY_SERVICENOW_INSTANCE_PATH_ENABLED=true.
     depends_on:
@@ -190,7 +190,7 @@ services:
     # The target of the exact-value gate above: the only name the switch can
     # resolve to. Runs once, does nothing (no network, no capabilities,
     # read-only, unprivileged) and exits.
-    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-gateway:${LUCAIRN_IMAGE_TAG:-1.1.0}"
+    image: "${LUCAIRN_IMAGE_REGISTRY:-ghcr.io/declade}/dsa-gateway:${LUCAIRN_IMAGE_TAG:-1.1.1}"
     user: "10001:10001"
     entrypoint: ["/bin/sh", "-c", "exit 0"]
     network_mode: none

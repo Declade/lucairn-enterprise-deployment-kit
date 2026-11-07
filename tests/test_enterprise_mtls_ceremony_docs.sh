@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL="$ROOT/INSTALL.md"
 RUNBOOK="$ROOT/docs/KEY_CEREMONY_RUNBOOK.md"
-IMAGE='ghcr.io/declade/dsa-veil-witness:1.1.0@sha256:35d75f01de2a4863a11c7e51209dee8770b98a1304f951890e6f68026b36ff56'
+IMAGE='ghcr.io/declade/dsa-veil-witness:1.1.1@sha256:0f8497146a355430db8eee590f010b66a5d40f84e49d455cb66a1e51a0a7fa2d'
 
 canonical="$(sed -n '/The `sign-manifest` tool ships \*\*inside the pinned/,/> witness-signed-manifest.json/p' "$INSTALL")"
 [ -n "$canonical" ] || {

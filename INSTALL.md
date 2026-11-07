@@ -20,10 +20,10 @@ receipt, and witness-signature verification; anchors are explicitly not checked.
 > are published at <https://lucairn.eu/security>; the disclosure process and
 > contact are in [`SECURITY.md`](SECURITY.md).
 
-### kit 2.0.0 / chart 2.0.0 (images 1.1.0) — the hosted service's sanitizer core
+### kit 2.0.0 / chart 2.0.0 (images 1.1.1) — the hosted service's sanitizer core
 
 **Upgrade from 1.9.7:** follow § [Upgrade from kit 1.9.7 to 2.0.0](#upgrade-from-kit-197-to-200)
-— images `0.5.5` → `1.1.0`, four new services (the core's registry database,
+— images `0.5.5` → `1.1.1`, four new services (the core's registry database,
 model sidecar, core and migration step), new `customer.env` settings, the
 runtime profile re-recorded, the registry migration as its own step. No 1.x
 schema change. The host needs at least 16 GB RAM for Docker and Docker Engine
@@ -789,8 +789,8 @@ the full breakdown. You need `cosign` (>= v2.0) and a digest resolver
 (`docker buildx`, `crane`, or `skopeo`) on PATH:
 
 ```bash
-bin/lucairn verify-images --tag 1.1.0
-# or a single image, by its signed digest (from keys/image-digests-1.1.0.txt):
+bin/lucairn verify-images --tag 1.1.1
+# or a single image, by its signed digest (from keys/image-digests-1.1.1.txt):
 cosign verify --key keys/lucairn-cosign.pub \
   ghcr.io/declade/dsa-gateway@sha256:<digest-from-the-record-file>
 ```
@@ -808,12 +808,12 @@ log (signed by the same Image Signing Key — no extra key or vendor). Fetch +
 verify it, and inspect exactly what is in each image:
 
 ```bash
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:1.1.0
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:1.1.1
 # save the raw verified SBOM:
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:1.1.0 --download dsa-gateway-1.1.0.spdx.json
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:1.1.1 --download dsa-gateway-1.1.1.spdx.json
 # or with raw cosign:
 cosign verify-attestation --type spdxjson \
-  --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:1.1.0
+  --key keys/lucairn-cosign.pub ghcr.io/declade/dsa-gateway:1.1.1
 ```
 
 See **OPS.md → "Fetch + verify the Software Bill of Materials (SBOM)"** for the
@@ -1175,7 +1175,7 @@ the **Key Ceremony Runbook** (`docs/KEY_CEREMONY_RUNBOOK.md` § 6 "Producing the
 witness-signed manifest blob"). The invocation is:
 
 The `sign-manifest` tool ships **inside the pinned
-`dsa-veil-witness:1.1.0@sha256:35d75f01de2a4863a11c7e51209dee8770b98a1304f951890e6f68026b36ff56`
+`dsa-veil-witness:1.1.1@sha256:0f8497146a355430db8eee590f010b66a5d40f84e49d455cb66a1e51a0a7fa2d`
 image** (`/usr/local/bin/sign-manifest`), so the ceremony is turnkey on the
 ceremony host — no Go toolchain, no build-from-source, no dev-mode fallback.
 Use this canonical command; it keeps the witness seed out of the host Docker
@@ -1196,7 +1196,7 @@ docker run --rm \
   --entrypoint /bin/sh \
   -v "$PWD/keys.json:/keys.json:ro" \
   -v "$seed_file:/run/secrets/witness-signing-key-hex:ro" \
-  ghcr.io/declade/dsa-veil-witness:1.1.0@sha256:35d75f01de2a4863a11c7e51209dee8770b98a1304f951890e6f68026b36ff56 \
+  ghcr.io/declade/dsa-veil-witness:1.1.1@sha256:0f8497146a355430db8eee590f010b66a5d40f84e49d455cb66a1e51a0a7fa2d \
   -ec 'exec sign-manifest --keys-json /keys.json --issuer "$1" --witness-signing-key-hex "$(cat /run/secrets/witness-signing-key-hex)" --witness-key-id witness_manifest_v1' \
   sign-manifest "$LCR_ISSUER" \
   > witness-signed-manifest.json
@@ -1207,7 +1207,7 @@ docker run --rm \
 ```
 
 > **Flags** (run `docker run --rm --entrypoint sign-manifest
-> ghcr.io/declade/dsa-veil-witness:1.1.0@sha256:35d75f01de2a4863a11c7e51209dee8770b98a1304f951890e6f68026b36ff56 -h`
+> ghcr.io/declade/dsa-veil-witness:1.1.1@sha256:0f8497146a355430db8eee590f010b66a5d40f84e49d455cb66a1e51a0a7fa2d -h`
 > to confirm against your pin):
 > `--keys-json` (required), `--issuer` (required; matches `LCR_ISSUER` / legacy
 > `VEIL_ISSUER` at the gateway), `--witness-signing-key-hex` (required; the
@@ -2469,7 +2469,7 @@ all production Helm installs.
 
 ## Upgrade from kit 1.9.7 to 2.0.0
 
-What changes: every `dsa-*` image moves from `0.5.5` to `1.1.0`; four services
+What changes: every `dsa-*` image moves from `0.5.5` to `1.1.1`; four services
 are new (the registry database `postgres-sanitizer-core` with its own volume
 `pg-sanitizer-core-data`, the model sidecar, the Go core and the migration step
 `migrate-sanitizer-core`); the Anthropic route (`/v1/messages`) runs through the
@@ -2508,11 +2508,11 @@ by it.
    the core's two secrets, then append its image pins (the digests come from
    the release's `image-manifest.yaml`). No key may appear twice in the file:
    ```bash
-   sed -i.bak 's/^LUCAIRN_IMAGE_TAG=.*/LUCAIRN_IMAGE_TAG=1.1.0/' customer.env && rm -f customer.env.bak
+   sed -i.bak 's/^LUCAIRN_IMAGE_TAG=.*/LUCAIRN_IMAGE_TAG=1.1.1/' customer.env && rm -f customer.env.bak
    scripts/sanitizer-core-registry-credentials.sh add --env-file customer.env
    mdigest() { awk -v s="    $1:" '$0==s{f=1;next} f&&/^    [a-z]/{exit} f&&/^      digest:/{gsub(/[" ]/,"");sub("digest:","");print;exit}' image-manifest.yaml; }
    {
-     echo "LUCAIRN_SANITIZER_CORE_IMAGE_TAG=1.1.0"
+     echo "LUCAIRN_SANITIZER_CORE_IMAGE_TAG=1.1.1"
      echo "LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$(mdigest dsa-sanitizer-core)"
      echo "LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=$(mdigest dsa-sanitizer-core-sidecar)"
    } >> customer.env
@@ -2551,7 +2551,7 @@ by it.
    ```bash
    mkdir -p "$BK/replaced" && mv customer.env.runtime-profile.yaml customer.env.image-manifest.yaml "$BK/replaced/"
    sed -i.bak '/^LUCAIRN_RUNTIME_PROFILE_REQUIRED=1$/d' customer.env && rm -f customer.env.bak
-   bin/lucairn-init --dev --runtime-mode managed-byok --image-tag 1.1.0 \
+   bin/lucairn-init --dev --runtime-mode managed-byok --image-tag 1.1.1 \
      --adopt-runtime-profile --output customer.env      # your own mode flags here
    ```
    The adoption keeps every existing value and secret, appends the marker,
@@ -2582,7 +2582,7 @@ by it.
 1. Back up: OPS.md § "Backups" → "Helm path — backup".
 2. Add the core's credentials (§ "Sanitizer core (kit 2.0, Helm)" step 1) and
    create its two mTLS Secrets (step 2) before the upgrade.
-3. Set `global.imageTag: "1.1.0"` (the 2.0.0 chart carries the core pair's
+3. Set `global.imageTag: "1.1.1"` (the 2.0.0 chart carries the core pair's
    signed digests) and run `helm upgrade lucairn charts/lucairn -n lucairn -f customer-values.yaml`.
    The registry migration runs as the Job `sanitizer-core-migrate-r<revision>`;
    the core Pod waits in `Init` until it completed.
@@ -2661,12 +2661,24 @@ OpenAI, MCP and proxy routes.
   (it may be running on another machine). Add about 5 GB more when the L3 shield
   model is loaded.
 - About 6 GB more disk: the sidecar image is a 2 GB download and unpacks to 5.4 GB
-  (measured on the 1.1.0 release candidate, linux/amd64).
+  (measured on the 1.1.0 release candidate, linux/amd64; the 1.1.1 sidecar image is the same bytes).
 - **Docker Engine 26.0.0 or newer** (on the 25.x line 25.0.5+, on the 23.x line
   23.0.11+; the 24.x line has no fix). Older engines forward DNS queries from
   `internal: true` networks to the host's resolvers (CVE-2024-29018), which
   defeats the internal networks the core and the identity plane rely on.
   `bin/lucairn doctor` (without `--offline`) fails on an older engine.
+- **Time per request — the model sidecar.** The core's own work is small
+  (≈ 0.07 s for a 16 KB field, measured without the sidecar); the time goes
+  into the model sidecar, which reads every text the conversation has not seen
+  before. Measured on the hosted service's host with dense ServiceNow-record
+  JSON (many short labelled values; T-1449): 8 KB in 70.7 s, 16 KB in 91.7 s
+  (≈ 5.6 s per KB), 48 KB over 120 s. The time does not grow in proportion to
+  the size and depends on the host CPU and the text. The core waits at most
+  120 s for one sidecar call; above that the request is refused with `503`
+  `detect_failed` — fail-closed: nothing of that request is forwarded to the
+  model vendor. Ordinary prose was not measured on that host: before
+  production use, send one representative request of your own workload
+  (largest single field included) on your host and note its time.
 
 ### 1. Secrets and image pins (`customer.env`)
 
@@ -2676,8 +2688,8 @@ registry DSN file (step 2b). By hand:
 ```bash
 DSA_SANITIZER_CORE_REGISTRY_KEY=$(openssl rand -hex 32)    # seals every registry row; keep it stable
 POSTGRES_SANITIZER_CORE_PASSWORD=$(openssl rand -hex 24)   # no space, $ ' " \ ` or #
-LUCAIRN_SANITIZER_CORE_IMAGE_TAG=1.1.0                     # ONE tag for core + sidecar
-LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=sha256:3b14defeed7626730a8d53c748b18185bff00cc105e041cfc7543a0078de196e   # release-filled; set both digests or neither
+LUCAIRN_SANITIZER_CORE_IMAGE_TAG=1.1.1                     # ONE tag for core + sidecar
+LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=sha256:e257c71d7e2cfe088dcb9a2204423d34aa7343082b5ab82f86bedf6142140c3b   # release-filled; set both digests or neither
 LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=sha256:dc2ecd58ee6048ca65a17d08b4c7d0744d96e7a4e990c95abaaf81b56115a435
 ```
 
@@ -3411,7 +3423,7 @@ by Lucairn (its test accounts are web-service only).
   and the licence texts in `licenses/`, also in every customer bundle); the
   images carry `NOTICE` from 2.0.1.
 - **ARM hosts: not supported for the new core in 2.0.0.** The model sidecar
-  image `dsa-sanitizer-core-sidecar:1.1.0` is built for linux/amd64 only, so
+  image `dsa-sanitizer-core-sidecar:1.1.1` is built for linux/amd64 only, so
   the core pair does not run on an arm64 host or Kubernetes node: the sidecar
   either fails to pull or start there (the error depends on the container
   runtime) or would run under CPU emulation, which this release does not
@@ -4549,6 +4561,18 @@ needs a gateway/core build that includes DSA #981; on an older build the
 setting is not honoured and everything is scanned in full (`lucairn doctor`
 checks the value, not the image's feature level).
 
+Rolling back an install that set `subset_scan` to images before 1.1.1: an
+older core refuses every later request of a conversation that had a zoned
+turn. Do it in one window: (1) remove `subset_scan` from
+`GATEWAY_TMS_TRUST_ZONES`; (2) roll the gateway and the core back together to
+the same earlier release, never one without the other; (3) reset the
+install's sanitizer core registry in the same window (Compose: with the stack
+stopped, remove the volume `<directory name>_pg-sanitizer-core-data`; the next
+`bin/lucairn up` creates and migrates an empty one with the same credentials).
+Clients then start fresh conversations. An install that never set the zone has
+nothing to roll back. The 1.9.7 rollback (§ "Rollback to 1.9.7") runs no core
+and is not affected.
+
 ### Direction and risk
 
 Both STRICTER (e.g. `system_prompt: full_scan`) and WEAKER (e.g.
@@ -4573,9 +4597,9 @@ included in support bundles.
 ### Prerequisite: gateway image >= 0.5.1
 
 This feature first shipped in the gateway image at `0.5.1` (the feature floor);
-the current published release is `1.1.0` (`appVersion: 1.1.0`, chart `v2.0.0`),
+the current published release is `1.1.1` (`appVersion: 1.1.1`, chart `v2.0.0`),
 also published to GHCR. The gateway binary that reads `GATEWAY_TMS_TRUST_ZONES`
-is present from `0.5.1` onward, so any `>= 0.5.1` pin (including `1.1.0`) works.
+is present from `0.5.1` onward, so any `>= 0.5.1` pin (including `1.1.1`) works.
 Setting `GATEWAY_TMS_TRUST_ZONES` on an **older** image (e.g. `0.5.0`) is a
 **silent no-op** — the var is present in the ConfigMap but that older gateway
 does not read it.
@@ -4593,8 +4617,8 @@ the image is new enough:
 tms trust zones: failed -- GATEWAY_TMS_TRUST_ZONES is set but LUCAIRN_IMAGE_TAG="latest" is not an exact semver pin; doctor cannot confirm the gateway image is >= 0.5.1. Pin an exact tag (e.g. 0.5.1) or unset the policy.
 ```
 
-Pin `LUCAIRN_IMAGE_TAG=1.1.0` in `customer.env` (Compose) or
-`--set global.imageTag=1.1.0` (Helm) — the current published release (any exact
+Pin `LUCAIRN_IMAGE_TAG=1.1.1` in `customer.env` (Compose) or
+`--set global.imageTag=1.1.1` (Helm) — the current published release (any exact
 `>= 0.5.1` pin satisfies the feature floor) — then apply the policy.
 
 ### Helm

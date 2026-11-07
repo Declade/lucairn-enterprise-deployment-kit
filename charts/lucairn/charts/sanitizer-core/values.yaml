@@ -39,7 +39,7 @@
 
 namespace: dsa-identity
 
-# The Go core. ⚠️ tag "" means this chart's appVersion (1.1.0) — NOT
+# The Go core. ⚠️ tag "" means this chart's appVersion (1.1.1) — NOT
 # global.imageTag: no 0.5.x tag of these images exists. Core and sidecar are a
 # PAIR from one release commit (the core refuses a sidecar that lacks the
 # labels it needs, DSA cmd/sanitizer-core/main.go requirePlaceLabels), so the
@@ -51,14 +51,14 @@ namespace: dsa-identity
 image:
   repository: dsa-sanitizer-core
   tag: ""
-  digest: "sha256:3b14defeed7626730a8d53c748b18185bff00cc105e041cfc7543a0078de196e"
+  digest: "sha256:e257c71d7e2cfe088dcb9a2204423d34aa7343082b5ab82f86bedf6142140c3b"
   pullPolicy: IfNotPresent
 
 sidecar:
   image:
     repository: dsa-sanitizer-core-sidecar
     tag: ""
-    # linux/amd64 only in 1.1.0 (kit 2.0.0): the pair does not run on arm64 nodes.
+    # linux/amd64 only in 1.1.1 (kit 2.0.0): the pair does not run on arm64 nodes.
     digest: "sha256:dc2ecd58ee6048ca65a17d08b4c7d0744d96e7a4e990c95abaaf81b56115a435"
     pullPolicy: IfNotPresent
   # Memory: capped at 6.5 GB (hosted window amendment A8: peak 5.6 GB with
@@ -83,7 +83,7 @@ sidecar:
   # The images only read their baked-in models (HF_HUB_OFFLINE=1). The root
   # filesystem is read-only; /tmp is an emptyDir and HOME/XDG_CACHE_HOME point
   # into it, so a library that insists on a cache directory still has one.
-  # NON-COVERAGE: not yet exercised on a cluster (the 1.1.0 images do not exist
+  # NON-COVERAGE: not yet exercised on a cluster (the 1.1.1 images do not exist
   # yet) — the PC Kind rehearsal (PRD criterion 3) is the check.
   readOnlyRootFilesystem: true
 

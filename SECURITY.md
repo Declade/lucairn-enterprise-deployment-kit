@@ -63,7 +63,7 @@ Security fixes are delivered in the **latest released kit version**. Run the
 latest `2.0.x` kit — see [`CHANGELOG.md`](CHANGELOG.md) for the current release —
 and apply security releases promptly. The upgrade procedure is in
 [`OPS.md`](OPS.md#upgrade); after upgrading, confirm the published images with
-`bin/lucairn verify-images --tag <LUCAIRN_IMAGE_TAG>` (e.g. `--tag 1.1.0`).
+`bin/lucairn verify-images --tag <LUCAIRN_IMAGE_TAG>` (e.g. `--tag 1.1.1`).
 
 ## Where advisories and fixes are published
 

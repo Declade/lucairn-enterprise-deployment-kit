@@ -5272,7 +5272,7 @@ spec:
       containers:
         # ── The model sidecar (spaCy + GLiNER), 127.0.0.1:8765 only ─────────
         - name: sidecar
-          image: "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@sha256:5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c"
+          image: "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.1@sha256:5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c"
           imagePullPolicy: IfNotPresent
           env:
             - name: HOME
@@ -5319,7 +5319,7 @@ spec:
               mountPath: /tmp
         # ── The Go core, verified mTLS on :8790 ──────────────────────────────
         - name: core
-          image: "ghcr.io/declade/dsa-sanitizer-core:1.1.0@sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+          image: "ghcr.io/declade/dsa-sanitizer-core:1.1.1@sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
           imagePullPolicy: IfNotPresent
           command: ["/bin/sh", "/opt/lucairn/entrypoint/core-entrypoint.sh"]
           # ⚑ No --dsn: the registry DSN (with the DB password) is a FILE from

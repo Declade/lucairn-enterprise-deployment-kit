@@ -44,7 +44,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLI="$ROOT/bin/lucairn"
 MANIFEST="$ROOT/image-manifest.yaml"
-DIGESTS_FILE="$ROOT/keys/image-digests-1.1.0.txt"
+DIGESTS_FILE="$ROOT/keys/image-digests-1.1.1.txt"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -58,18 +58,18 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 #    digest must never reach a merge. The marker is assembled at runtime so this
 #    file does not match itself.
 # ---------------------------------------------------------------------------
-_PH_MARK="TODO-1.1.0""-"
+_PH_MARK="TODO-1.1.1""-"
 _PH_HITS="$(grep -rnF --exclude-dir=.git --exclude-dir=node_modules -- "$_PH_MARK" "$ROOT" 2>/dev/null || true)"
 if [ -n "$_PH_HITS" ]; then
   printf '%s\n' "$_PH_HITS" | sed "s#^$ROOT/##" >&2
-  fail "release placeholders (${_PH_MARK}…) remain in the tree — fill them from the 1.1.0 image ceremony (keys/image-digests-1.1.0.txt) before merge"
+  fail "release placeholders (${_PH_MARK}…) remain in the tree — fill them from the 1.1.1 image ceremony (keys/image-digests-1.1.1.txt) before merge"
 fi
 echo "digest-pin: no release placeholders remain ok"
 
 # The gateway digest the tamper/malformed/contradiction cases below rewrite is
 # READ from the release record, never hardcoded: a repin that forgot to update
 # a hardcoded source digest turned those seds into silent no-ops (#84 Codex r1).
-GW_REC_REF="ghcr.io/declade/dsa-gateway:1.1.0"
+GW_REC_REF="ghcr.io/declade/dsa-gateway:1.1.1"
 GW_DIGEST="$(awk -v r="$GW_REC_REF" '$1==r {print $2}' "$DIGESTS_FILE")"
 case "$GW_DIGEST" in
   sha256:[0-9a-f]*) [ "${#GW_DIGEST}" -eq 71 ] || fail "gateway digest in $DIGESTS_FILE is not a full sha256 ($GW_DIGEST)" ;;
@@ -97,7 +97,7 @@ echo "digest-pin: usage advertises --strict (distinct from --strict-runtime) ok"
 # 3. parse_image_digests parses the real manifest: 28 real digests + 8 pending.
 #    The 28 real-digest entries = 15 signed artifacts (the 12 dsa-* services +
 #    the sanitizer core pair + lucairn-dashboard, all in
-#    keys/image-digests-1.1.0.txt) + ollama/ollama
+#    keys/image-digests-1.1.1.txt) + ollama/ollama
 #    + the dsa-pii-ml sidecar (digest-pinned in image-manifest.yaml at PR #240
 #    but NOT in the cosign-signed set — it ships on its own release cadence) +
 #    the three third-party images in the Enterprise Kind default topology + the
@@ -117,7 +117,7 @@ pending_count="$(printf '%s\n' "$PARSED" | grep -c $'\tPENDING' || true)"
 [ "$real_count" = "28" ] \
   || fail "expected 28 real-digest entries (15 signed + ollama + dsa-pii-ml sidecar + 3 Kind dependencies + vllm-l3 shield + 7 kit_third_party), got $real_count"
 # 8 again since kit 2.0.0: the dsa-sanitizer-core / dsa-sanitizer-core-sidecar
-# schema slots of kit 2.0 K-A now carry the signed 1.1.0 digests.
+# schema slots of kit 2.0 K-A now carry the signed 1.1.1 digests.
 [ "$pending_count" = "8" ] \
   || fail "expected 8 pending entries (qwen ollama model + qwen-awq hf model + 6 runtime), got $pending_count"
 # Spot-check the gateway ref maps to its recorded digest.
@@ -127,7 +127,7 @@ printf '%s\n' "$PARSED" \
 echo "digest-pin: parse_image_digests reads 28 real + 8 pending entries ok"
 
 # ---------------------------------------------------------------------------
-# 4. Lockstep: every signed artifact in keys/image-digests-1.1.0.txt must appear
+# 4. Lockstep: every signed artifact in keys/image-digests-1.1.1.txt must appear
 #    in the manifest digest block with the IDENTICAL digest (the manifest folds
 #    in the cosign-signed digests; drift here breaks --strict vs verify-images).
 # ---------------------------------------------------------------------------
@@ -138,9 +138,9 @@ while IFS= read -r line; do
   [ -n "$ref" ] || continue
   case "$rec" in sha256:*) ;; *) continue ;; esac
   grep -q "^${ref}	${rec}$" <<<"$PARSED" \
-    || fail "lockstep: $ref $rec is in keys/image-digests-1.1.0.txt but not (identically) in the manifest digest block"
+    || fail "lockstep: $ref $rec is in keys/image-digests-1.1.1.txt but not (identically) in the manifest digest block"
 done < "$DIGESTS_FILE"
-echo "digest-pin: manifest digest block is in lockstep with keys/image-digests-1.1.0.txt ok"
+echo "digest-pin: manifest digest block is in lockstep with keys/image-digests-1.1.1.txt ok"
 
 # ---------------------------------------------------------------------------
 # Build an isolated kit ROOT so the CLI's BASH_SOURCE-based ROOT resolution
@@ -218,7 +218,7 @@ CR
 }
 
 ENVF="$TMP/customer.env"
-printf 'LUCAIRN_IMAGE_TAG=1.1.0\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\n' > "$ENVF"
+printf 'LUCAIRN_IMAGE_TAG=1.1.1\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\n' > "$ENVF"
 
 # ---------------------------------------------------------------------------
 # Hermetic toolbox (astra post-merge #137 M1). The doctor runs below previously
@@ -550,7 +550,7 @@ DASH_DIGEST="$(awk '
 # ignored, the canonical :0.8.2 ref resolved to its recorded digest, and --strict
 # wrongly PASSED — the dashboard was un-enforced.)
 ENVF_DASH_SWAP="$TMP/customer.dash-swap.env"
-printf 'LUCAIRN_IMAGE_TAG=1.1.0\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nLUCAIRN_DASHBOARD_IMAGE_TAG=9.9.9\n' > "$ENVF_DASH_SWAP"
+printf 'LUCAIRN_IMAGE_TAG=1.1.1\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nLUCAIRN_DASHBOARD_IMAGE_TAG=9.9.9\n' > "$ENVF_DASH_SWAP"
 set +e
 out_dsw_s="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP" 1 2>&1)"; rc_dsw_s=$?
 out_dsw_n="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_DASH_SWAP" 0 2>&1)"; rc_dsw_n=$?
@@ -620,7 +620,7 @@ OLLAMA_DIGEST="$(awk '
 # (the resolver short-circuits to the __UNPINNED_OVERRIDE__ fail-closed path), so
 # the stub's behavior is irrelevant here.
 ENVF_OLLAMA_LATEST="$TMP/customer.ollama-latest.env"
-printf 'LUCAIRN_IMAGE_TAG=1.1.0\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nOLLAMA_IMAGE=ollama/ollama:latest\n' > "$ENVF_OLLAMA_LATEST"
+printf 'LUCAIRN_IMAGE_TAG=1.1.1\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nOLLAMA_IMAGE=ollama/ollama:latest\n' > "$ENVF_OLLAMA_LATEST"
 set +e
 out_ol_s="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_LATEST" 1 2>&1)"; rc_ol_s=$?
 out_ol_n="$(PATH="$SHIM_OK:$TOOLBOX" "$KROOT_OK/bin/drive.sh" "$ENVF_OLLAMA_LATEST" 0 2>&1)"; rc_ol_n=$?
@@ -642,7 +642,7 @@ echo "digest-pin: unpinned OLLAMA_IMAGE override -> --strict FAILS-CLOSED, plain
 # pinned image flows through the normal verify path and counts toward the floor.
 OLLAMA_PIN="ollama/ollama:0.6.2@${OLLAMA_DIGEST}"
 ENVF_OLLAMA_PIN="$TMP/customer.ollama-pin.env"
-printf 'LUCAIRN_IMAGE_TAG=1.1.0\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nOLLAMA_IMAGE=%s\n' "$OLLAMA_PIN" > "$ENVF_OLLAMA_PIN"
+printf 'LUCAIRN_IMAGE_TAG=1.1.1\nLUCAIRN_IMAGE_REGISTRY=ghcr.io/declade\nOLLAMA_IMAGE=%s\n' "$OLLAMA_PIN" > "$ENVF_OLLAMA_PIN"
 SHIM_OLLAMA_OK="$(mktemp -d)"
 cat > "$SHIM_OLLAMA_OK/crane" <<CR
 #!/usr/bin/env bash

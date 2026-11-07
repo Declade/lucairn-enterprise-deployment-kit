@@ -1913,16 +1913,16 @@ cover `dsa-pii-ml` at all):**
 # each image BY DIGEST and requires a Rekor transparency-log entry. Prints
 # PASS/FAIL per image; exits non-zero if ANY image fails.
 # The kit retains prior-release digest records (keys/image-digests-0.5.0.txt,
-# -0.5.1.txt, -0.5.2.txt, -0.5.3.txt, -0.5.4.txt, -0.5.5.txt, -1.1.0.txt). With MORE THAN ONE
-# record present, verify-images requires an explicit --tag — pin the current release (1.1.0):
-bin/lucairn verify-images --tag 1.1.0
+# -0.5.1.txt, -0.5.2.txt, -0.5.3.txt, -0.5.4.txt, -0.5.5.txt, -1.1.1.txt). With MORE THAN ONE
+# record present, verify-images requires an explicit --tag — pin the current release (1.1.1):
+bin/lucairn verify-images --tag 1.1.1
 
 # Air-gapped mirror that re-hosts the SAME signed bytes:
-bin/lucairn verify-images --tag 1.1.0 --registry registry.internal/lucairn
+bin/lucairn verify-images --tag 1.1.1 --registry registry.internal/lucairn
 ```
 
 **Verify a single image with raw cosign (by digest).** Read the signed digest
-from `keys/image-digests-1.1.0.txt`, then:
+from `keys/image-digests-1.1.1.txt`, then:
 
 ```bash
 cosign verify --key keys/lucairn-cosign.pub \
@@ -2108,14 +2108,14 @@ richest summary.
 # Verifies the SPDX SBOM attestation against keys/lucairn-cosign.pub, requires a
 # Rekor transparency-log entry, then summarizes it (package count, SPDX version,
 # document name). Exits non-zero if the attestation is missing/invalid.
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:1.1.0
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:1.1.1
 
 # Also save the raw verified SPDX-JSON SBOM to a file:
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:1.1.0 \
-  --download dsa-gateway-1.1.0.spdx.json
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:1.1.1 \
+  --download dsa-gateway-1.1.1.spdx.json
 
 # Air-gapped mirror that re-hosts the SAME signed bytes:
-bin/lucairn sbom ghcr.io/declade/dsa-gateway:1.1.0 \
+bin/lucairn sbom ghcr.io/declade/dsa-gateway:1.1.1 \
   --registry registry.internal/lucairn
 ```
 
@@ -2125,13 +2125,13 @@ bin/lucairn sbom ghcr.io/declade/dsa-gateway:1.1.0 \
 # Verify the SPDX attestation (prints the signed DSSE envelope + Rekor entry):
 cosign verify-attestation --type spdxjson \
   --key keys/lucairn-cosign.pub \
-  ghcr.io/declade/dsa-gateway:1.1.0
+  ghcr.io/declade/dsa-gateway:1.1.1
 
 # Extract just the SPDX-JSON SBOM predicate (the package list):
 cosign verify-attestation --type spdxjson \
   --key keys/lucairn-cosign.pub \
-  ghcr.io/declade/dsa-gateway:1.1.0 \
-  | jq -r '.payload' | base64 -d | jq '.predicate' > dsa-gateway-1.1.0.spdx.json
+  ghcr.io/declade/dsa-gateway:1.1.1 \
+  | jq -r '.payload' | base64 -d | jq '.predicate' > dsa-gateway-1.1.1.spdx.json
 ```
 
 A successful verification exits 0 and reports a Rekor transparency-log entry; a
@@ -2647,9 +2647,9 @@ they do not accept arbitrary Compose flags and `down` does not remove volumes.
 Exact release rollback history and restore proof remain WP4 S4 scope—do not
 interpret these S1 wrappers as completed rollback functionality.
 
-### kit 2.0.0 / chart 2.0.0 (images 1.1.0) — the hosted service's sanitizer core
+### kit 2.0.0 / chart 2.0.0 (images 1.1.1) — the hosted service's sanitizer core
 
-Images move `0.5.5` → `1.1.0`; four new Compose services (registry database +
+Images move `0.5.5` → `1.1.1`; four new Compose services (registry database +
 volume, model sidecar, core, migration step) and the `sanitizer-core` Helm
 sub-chart. No 1.x schema or ceiling change; the core's own registry is a new
 database migrated by `migrate-sanitizer-core` (ceiling 7). Follow INSTALL.md
