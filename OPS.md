@@ -2647,7 +2647,7 @@ they do not accept arbitrary Compose flags and `down` does not remove volumes.
 Exact release rollback history and restore proof remain WP4 S4 scope—do not
 interpret these S1 wrappers as completed rollback functionality.
 
-### kit 2.0.0 / chart 2.0.0 (images 1.1.1) — the hosted service's sanitizer core
+### kit 2.0.0 / chart 2.0.0 (images 1.1.1) — the new sanitizer core (ahead of the hosted service on release day)
 
 Images move `0.5.5` → `1.1.1`; four new Compose services (registry database +
 volume, model sidecar, core, migration step) and the `sanitizer-core` Helm

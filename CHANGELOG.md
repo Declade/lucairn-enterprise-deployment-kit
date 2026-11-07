@@ -14,7 +14,11 @@ carry a security fix are tagged **[Security]**.
 
 ## [2.0.0] — 2026-11-07 — images `1.1.1`
 
-Kit 2.0.0 runs the new sanitizer core of the hosted Lucairn service. Every
+Kit 2.0.0 runs the new sanitizer core (the one the hosted Lucairn service
+moved to on 31 Oct 2026). On release day the kit is ahead of the hosted
+service: the phone fix (#975), the notice order (#977) and the `subset_scan`
+zone (#981) ship in these images first; the hosted box gets them in a later
+window. Every
 `dsa-*` image moves from `0.5.5` to `1.1.1` (one product version, built from one
 commit, DSA `15baf766`); `dsa-pii-ml` stays `0.5.1` (optional, off) and `lucairn-dashboard`
 stays `0.8.2`.
@@ -260,13 +264,15 @@ stays `0.8.2`.
   honorific, a second name) keeps the name as written; keys that differ only
   in case stay as written. The widening also hides some name-like keys that
   are no person (company names such as `Ernst Young`, places such as
-  `Fort Collins`, `Alice Blue`, `Josefin Sans`, `Kafka`, `Jenkins`, German UI
-  words such as `Müller Straße`).
+  `Fort Collins`, `Alice Blue`, `Josefin Sans`, German UI words such as
+  `Müller Straße`).
 - **`subset_scan` zone:** a surname a model reads as a place, with no person
   cue of the listed kinds beside it and on no name list, is readable at its
   first sighting in a zoned turn (as in Lucairn 1.0: `Gruß aus Lauterhain.`);
-  a later person reading hides it from then on, but the first sighting reached
-  the model vendor. A markdown table whose header names the column
+  a later person reading hides it from then on (unless the conversation's
+  registry rows, its tombstone and the gateway's memory have all expired and a
+  compacted, user-only history is resent: that is treated as a new
+  conversation), but the first sighting reached the model vendor. A markdown table whose header names the column
   (`| Name | Rolle |`) is no person cue for the cells below it. A value no
   detector found (`Mein Login ist lauterhain.`) guards nothing. In a
   conversation whose registry was rebuilt no place is released again.

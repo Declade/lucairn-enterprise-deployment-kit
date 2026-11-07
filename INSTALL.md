@@ -20,7 +20,7 @@ receipt, and witness-signature verification; anchors are explicitly not checked.
 > are published at <https://lucairn.eu/security>; the disclosure process and
 > contact are in [`SECURITY.md`](SECURITY.md).
 
-### kit 2.0.0 / chart 2.0.0 (images 1.1.1) — the hosted service's sanitizer core
+### kit 2.0.0 / chart 2.0.0 (images 1.1.1) — the new sanitizer core (ahead of the hosted service on release day)
 
 **Upgrade from 1.9.7:** follow § [Upgrade from kit 1.9.7 to 2.0.0](#upgrade-from-kit-197-to-200)
 — images `0.5.5` → `1.1.1`, four new services (the core's registry database,
@@ -4553,7 +4553,10 @@ hidden when it could be a person's name (it is on a name list, or a person cue
 such as "Herr"/"Frau" stands next to it) or when the conversation already
 knows it as a hidden value. Known limit, as in Lucairn 1.0: a person's name
 that the models mistake for a place, that is on no name list and has no person
-cue next to it, stays readable. On the new sanitizer core it applies per turn,
+cue next to it, stays readable. A later person reading hides it from then on,
+unless the registry rows, the tombstone and the gateway's memory have all
+expired and a compacted, user-only history is resent (treated as a new
+conversation). Full limits: CHANGELOG [2.0.0]. On the new sanitizer core it applies per turn,
 and only when every segment of that turn is in the zone; any other content in
 the turn is still fully scanned. The zone does not apply in ServiceNow mode,
 in append mode or on the OpenAI route; there the turn is fully scanned. It
