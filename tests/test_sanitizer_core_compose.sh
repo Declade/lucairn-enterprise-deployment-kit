@@ -120,7 +120,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 BASE_PATH="$PATH"
 # Kit 2.0.0: this checkout is a RELEASED kit (image-manifest.yaml, the example
-# env and the chart carry the signed 1.1.0 pair). The fail-closed cases for an
+# env and the chart carry the signed 1.1.1 pair). The fail-closed cases for an
 # UNRELEASED kit run against a copy put back to that state.
 UNREL_KIT="$TMP/unreleased-kit"
 lucairn_unreleased_kit_fixture "$ROOT" "$UNREL_KIT" \
@@ -221,8 +221,8 @@ p(str(core.get("mem_limit")) == str(1024 ** 3) and str(lim(core)) == str(1024 **
 # Images: one tag for the pair, ALWAYS pulled by the signed digest; digest-pinned
 # postgres for the new DB services.
 ci, si = core.get("image", ""), side.get("image", "")
-p(re.fullmatch(r"ghcr\.io/declade/dsa-sanitizer-core:1\.1\.0@sha256:[0-9a-f]{64}", ci) is not None, "core image ghcr.io/declade/dsa-sanitizer-core:1.1.0@sha256:… (%s)" % ci)
-p(re.fullmatch(r"ghcr\.io/declade/dsa-sanitizer-core-sidecar:1\.1\.0@sha256:[0-9a-f]{64}", si) is not None, "sidecar image ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@sha256:… (%s)" % si)
+p(re.fullmatch(r"ghcr\.io/declade/dsa-sanitizer-core:1\.1\.1@sha256:[0-9a-f]{64}", ci) is not None, "core image ghcr.io/declade/dsa-sanitizer-core:1.1.1@sha256:… (%s)" % ci)
+p(re.fullmatch(r"ghcr\.io/declade/dsa-sanitizer-core-sidecar:1\.1\.1@sha256:[0-9a-f]{64}", si) is not None, "sidecar image ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.1@sha256:… (%s)" % si)
 pgd = re.search(r'postgres:\n\s+ref: "postgres:16-alpine"[\s\S]*?digest: "(sha256:[0-9a-f]{64})"', manifest)
 want_pg = "postgres:16-alpine@" + (pgd.group(1) if pgd else "?")
 p(pg.get("image") == want_pg and mig.get("image") == want_pg, "registry DB + migrate step pinned to the manifest postgres digest")
@@ -502,8 +502,8 @@ PY
   printf '\nLUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=sha256:%s\nLUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=sha256:%s\n' \
     "$(printf 'a%.0s' $(seq 64))" "$(printf 'b%.0s' $(seq 64))" >> "$TMP/digest.env"
   IMAGES="$(docker compose -f "$COMPOSE" --env-file "$TMP/digest.env" config --images 2>/dev/null || true)"
-  if grep -qx "ghcr.io/declade/dsa-sanitizer-core:1.1.0@sha256:$(printf 'a%.0s' $(seq 64))" <<<"$IMAGES" \
-     && grep -qx "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@sha256:$(printf 'b%.0s' $(seq 64))" <<<"$IMAGES"; then
+  if grep -qx "ghcr.io/declade/dsa-sanitizer-core:1.1.1@sha256:$(printf 'a%.0s' $(seq 64))" <<<"$IMAGES" \
+     && grep -qx "ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.1@sha256:$(printf 'b%.0s' $(seq 64))" <<<"$IMAGES"; then
     pass "digest variables pin core + sidecar by digest"
   else
     fail "digest variables pin core + sidecar by digest ($(printf '%s\n' "$IMAGES" | grep sanitizer-core | tr '\n' ' '))"
@@ -1004,7 +1004,7 @@ expect_doctor_red "RED half a digest pair" "$V" "set LUCAIRN_SANITIZER_CORE_IMAG
 # Fix round 1 (sol r1 finding 4): pending / empty digests are failures, never notes.
 V="$(variant baretag)"; sed -i.bak -e 's/^LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=.*/LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=/' \
   -e 's/^LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=.*/LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=/' "$V/customer.env"; rm -f "$V/customer.env.bak"
-expect_doctor_red "RED no digest at all (the pair would start from a bare tag)" "$V" "the pair never starts from tag 1.1.0 alone"
+expect_doctor_red "RED no digest at all (the pair would start from a bare tag)" "$V" "the pair never starts from tag 1.1.1 alone"
 V="$(variant otherpair)"; printf 'LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=sha256:%s\n' "$(printf 'c%.0s' $(seq 64))" >> "$V/customer.env"
 expect_doctor_red "RED pinned core digest differs from the release's" "$V" "differ from the pair image-manifest.yaml records"
 # An install made from an UNRELEASED kit (manifest pending: no signed release
@@ -1618,8 +1618,8 @@ make_record() { # <file> <core digest> <sidecar digest> [omit-pair]
     done
     printf 'ghcr.io/declade/lucairn-dashboard:0.8.2 sha256:%s\n' "$(printf 'd%.0s' $(seq 64))"
     if [ "${4:-}" != omit-pair ]; then
-      printf 'ghcr.io/declade/dsa-sanitizer-core:1.1.0 %s\n' "$2"
-      printf 'ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0 %s\n' "$3"
+      printf 'ghcr.io/declade/dsa-sanitizer-core:1.1.1 %s\n' "$2"
+      printf 'ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.1 %s\n' "$3"
     fi
   } > "$1"
 }
@@ -1644,7 +1644,7 @@ else
 fi
 make_record "$VKEYS/image-digests-$REC_TAG.txt" "$TEST_SANITIZER_CORE_DIGEST" "$TEST_SANITIZER_CORE_SIDECAR_DIGEST" omit-pair
 verify_run "$KITV"
-if [ "$VRC" -ne 0 ] && grep -Fq "MISSING (expected but not recorded):" "$TMP/verify.out" && grep -Fq "dsa-sanitizer-core-sidecar:1.1.0" "$TMP/verify.out"; then
+if [ "$VRC" -ne 0 ] && grep -Fq "MISSING (expected but not recorded):" "$TMP/verify.out" && grep -Fq "dsa-sanitizer-core-sidecar:1.1.1" "$TMP/verify.out"; then
   pass "RED a release record without the pair -> MISSING, non-zero"
 else
   fail "RED a release record without the pair (rc $VRC): $(grep -E 'MISSING|OK' "$TMP/verify.out" | tr '\n' ' ')"

@@ -27,7 +27,7 @@ LUCAIRN_FEED_URL_DEFAULT="https://lucairn.eu/.well-known/version-feed.json"
 # default_lucairn_image_tag and the Compose `${LUCAIRN_IMAGE_TAG:-...}`
 # fallbacks (tests/test_kit_release_gates.sh asserts both; PR #164 sol r1:
 # doctor kept probing 0.5.1 while Compose ran 1.1.0).
-LUCAIRN_KIT_IMAGE_TAG="1.1.0"
+LUCAIRN_KIT_IMAGE_TAG="1.1.1"
 LUCAIRN_STALENESS_DAYS="${LUCAIRN_STALENESS_DAYS:-90}"
 
 usage() {
@@ -4216,12 +4216,12 @@ check_container_images() {
 
   # Kit 2.0: the new sanitizer core and its model sidecar — part of every kit
   # 2.0 topology. They ride their OWN tag (LUCAIRN_SANITIZER_CORE_IMAGE_TAG,
-  # default 1.1.0, never LUCAIRN_IMAGE_TAG: no 0.5.x tag of these images
+  # default 1.1.1, never LUCAIRN_IMAGE_TAG: no 0.5.x tag of these images
   # exists) and, when pinned, their own digest each — the same reference the
   # compose file builds (repo:tag@sha256:…).
   local core_tag core_digest side_digest core_ref side_ref
   core_tag="$(env_value "$env_file" LUCAIRN_SANITIZER_CORE_IMAGE_TAG)"
-  core_tag="${core_tag:-1.1.0}"
+  core_tag="${core_tag:-1.1.1}"
   core_digest="$(env_value "$env_file" LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST)"
   side_digest="$(env_value "$env_file" LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST)"
   core_ref="${registry}/dsa-sanitizer-core:${core_tag}${core_digest:+@${core_digest}}"
@@ -9445,7 +9445,7 @@ check_sanitizer_core_config() {
   local want=""
   [ "$pin_failed" -eq 0 ] && want=": $core_m / $side_m"
   if [ -z "$core_d" ] || [ -z "$side_d" ]; then
-    echo "sanitizer core images: failed (set LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST and LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST together, to the signed pair image-manifest.yaml records${want}; the compose file refuses to render without them — the pair never starts from tag ${tag:-1.1.0} alone)"
+    echo "sanitizer core images: failed (set LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST and LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST together, to the signed pair image-manifest.yaml records${want}; the compose file refuses to render without them — the pair never starts from tag ${tag:-1.1.1} alone)"
     pin_failed=1
   elif [ "$pin_failed" -eq 0 ] && { [ "$core_d" != "$core_m" ] || [ "$side_d" != "$side_m" ]; }; then
     echo "sanitizer core images: failed (the pinned core/sidecar digests differ from the pair image-manifest.yaml records for this kit release)"
@@ -11682,9 +11682,9 @@ Options:
   --tag TAG       Release tag to verify. Defaults to the SINGLE release covered
                   by keys/image-digests-*.txt when exactly one record is present.
                   The kit now ships multiple records (0.5.0, 0.5.1, 0.5.2, 0.5.3, 0.5.4,
-                  0.5.5, 1.1.0 — current is 1.1.0), so --tag is effectively REQUIRED: with
+                  0.5.5, 1.1.1 — current is 1.1.1), so --tag is effectively REQUIRED: with
                   more than one keys/image-digests-*.txt present this errors and asks
-                  you to pass --tag (pin the current release: --tag 1.1.0). Also
+                  you to pass --tag (pin the current release: --tag 1.1.1). Also
                   errors if no keys/image-digests-<tag>.txt exists for the tag.
   --registry REG  Override the registry host for ALL images (default: the
                   registry recorded in the digests file, e.g. ghcr.io/declade).
@@ -11916,7 +11916,7 @@ verify_images() {
   # legitimately adds/removes an image, update THIS list (and the dashboard
   # pin below) — it is the one place verify-images keys off.
   #
-  # The 12 dsa-* services ride the release --tag (the sanitizer core pair rides its own tag, below) (current release 1.1.0; --tag is
+  # The 12 dsa-* services ride the release --tag (the sanitizer core pair rides its own tag, below) (current release 1.1.1; --tag is
   # required when multiple keys/image-digests-*.txt records are present); the dashboard
   # ships on its OWN independent cadence and is pinned here (currently 0.8.2),
   # mirroring optional_services.lucairn-dashboard.image_tag in image-manifest.yaml

@@ -107,12 +107,12 @@ GATEWAY_TMS_TRUST_ZONES={"user_content":"bogus"}' 1 'unknown zone value "bogus"'
 
 # (c2) subset_scan is a valid zone (DSA #981, T-1445) -> ok
 assert_case "c2_subset_scan" \
-  'LUCAIRN_IMAGE_TAG=1.1.0
+  'LUCAIRN_IMAGE_TAG=1.1.1
 GATEWAY_TMS_TRUST_ZONES={"user_content":"subset_scan"}' 0 "ok"
 
 # (c3) near-miss spelling of the new zone is still rejected
 assert_case "c3_subset_scan_typo" \
-  'LUCAIRN_IMAGE_TAG=1.1.0
+  'LUCAIRN_IMAGE_TAG=1.1.1
 GATEWAY_TMS_TRUST_ZONES={"user_content":"subset-scan"}' 1 'unknown zone value "subset-scan"'
 
 # (d) valid policy + tag 0.5.0 -> fail (version gate)

@@ -12,11 +12,15 @@ Security advisories are published at <https://lucairn.eu/security>; the
 disclosure process and contact are in [`SECURITY.md`](SECURITY.md). Entries that
 carry a security fix are tagged **[Security]**.
 
-## [2.0.0] — 2026-11-05 — images `1.1.0`
+## [2.0.0] — 2026-11-07 — images `1.1.1`
 
-Kit 2.0.0 runs the same sanitizer as the hosted Lucairn service. Every `dsa-*`
-image moves from `0.5.5` to `1.1.0` (one product version, built from one
-commit); `dsa-pii-ml` stays `0.5.1` (optional, off) and `lucairn-dashboard`
+Kit 2.0.0 runs the new sanitizer core (the one the hosted Lucairn service
+moved to on 31 Oct 2026). On release day the kit is ahead of the hosted
+service: the phone fix (#975), the notice order (#977) and the `subset_scan`
+zone (#981) ship in these images first; the hosted box gets them in a later
+window. Every
+`dsa-*` image moves from `0.5.5` to `1.1.1` (one product version, built from one
+commit, DSA `15baf766`); `dsa-pii-ml` stays `0.5.1` (optional, off) and `lucairn-dashboard`
 stays `0.8.2`.
 
 ### Read first — upgrading from 1.9.7
@@ -66,6 +70,48 @@ stays `0.8.2`.
   pair against `image-manifest.yaml`, host memory, the Docker Engine version,
   the rendered configuration, the three containers, the namespace join, the
   migration ledger against the ceiling and the core's claim log.
+
+### Added in images 1.1.1 (over the 1.1.0 build of 5 Nov, which no kit shipped)
+
+- **Tax and social-security number keys** (DSA #974): a value under a key such
+  as `ssn`, `svnr`, `social_security_number`, `sozialversicherungsnummer`,
+  `versichertennummer`, `sv_nummer`, `steuer_id`, `steuernummer`, `tax_id`,
+  `tax_number` or `id_nr` is hidden when it is a number shape for that key
+  with at least four digits, written right after the key (stated limits
+  below).
+- **Names written as JSON keys** (DSA #974): a multi-word JSON key that is a
+  name alone and that a model reads as a person is hidden when it has two name
+  words that are no English dictionary word, or one such word plus one word of
+  the name lists that is also a dictionary word (`David Miller`, `Aylin Wolf`,
+  `Max Mustermann`); a word counts as on the name lists also with its umlauts
+  transliterated (`Jürgen` as `Juergen`). Such a key is never replayed into a
+  value or a later turn.
+- **Two CPU fixes in the core** (DSA #982): a value made of repeated HTML
+  entities no longer costs cubic time (12 KB: 15 s → 61 ms), and the record
+  number check (`INC…`, `RITM…`, `SCTASK…`) reads backwards instead of over the
+  whole text before each token (48 KB of colon tokens: 15.9 s → under 1 s).
+  Output unchanged.
+- **Privacy notice after the operator's system prompt** (DSA #977): the
+  gateway now places its model-context privacy notice after the operator's
+  own system blocks (before the routed-lane sentence) instead of first. With
+  the notice first, a 20-request A/B showed less extended thinking (1/20
+  instead of 11–12/20) and lower instruction-following; with it after the
+  operator's prompt both returned to the level measured without the gateway. The notice
+  stays inside the signed system-prompt segment.
+- **Phones with a parenthesised area code** (DSA #975): a number such as
+  `Tel. (0371) 690012-23` or `(03 71) 690012-23` is now hidden; before, the
+  `Tel.` label took the area code and the rest stayed readable.
+- **Operator trust zone `subset_scan` on the new core** (DSA #981, with the
+  release mechanism of DSA #980; kit #165): with
+  `GATEWAY_TMS_TRUST_ZONES={"user_content":"subset_scan"}` place names stay
+  readable in a user turn whose every segment is in the zone; every other type
+  (persons, e-mails, phones, ids, logins, personal numbers, host names, dates
+  of birth, secrets, IBANs, cards) stays hidden. A place stays hidden when a
+  name list holds it, a person cue stands beside it or the conversation knows
+  it as another hidden value. Off unless the operator sets it; never in
+  ServiceNow mode, append mode or on the OpenAI route. `bin/lucairn doctor`
+  accepts the zone. Before 1.1.1 the core ignored the setting and scanned
+  everything in full.
 
 ### Added — ServiceNow mode and the rest of this release
 
@@ -193,7 +239,8 @@ stays `0.8.2`.
 - The images do not carry the third-party `NOTICE` yet; the kit does
   (`licenses/`, below). The images carry it from 2.0.1.
 - **ARM hosts are not supported for the new core in 2.0.0.** Its model sidecar
-  image (`dsa-sanitizer-core-sidecar:1.1.0`) is built for linux/amd64 only, so
+  image (`dsa-sanitizer-core-sidecar:1.1.1`, the same bytes as in 1.1.0) is
+  built for linux/amd64 only, so
   the core pair does not run on an arm64 host or Kubernetes node: the sidecar
   either fails to pull or start there (the error depends on the container
   runtime) or would run under CPU emulation, which this release does not
@@ -201,6 +248,56 @@ stays `0.8.2`.
   Pod; the chart sets no architecture selector). The other 13 `dsa-*` images
   are multi-arch (linux/amd64 + linux/arm64). An arm64 sidecar comes in kit
   2.0.1.
+- **Number keys (L-112):** the tax / social-security keys hide a value only
+  when it is a number shape for that key, written right after the key. Not
+  hidden: Arabic-Indic or Persian digits; percent-encoded dashes
+  (`ssn=123%2D45%2D6789`); float or exponent numbers; an 8-digit value under an
+  SSN key; `de123456789`, `DE 123456789`, `ATU12345678`; `12/345/678/901`;
+  text before the number inside the value (`"SSN 123-45-6789"`); a word in
+  front of the label (`Employee SSN: …`); prose read as a code object;
+  `Steuernummer 181/815/08155` without a colon; the same number repeated later
+  without its key.
+- **Names as JSON keys (L-103, L-111):** a key made only of name words that
+  are also dictionary words (`Grace Baker`, `John Smith`) stays as written; a
+  one-word name key (`Laura`) stays as written (hiding one-word keys would
+  also hide product and tool words); a key with other content (a phone, an
+  honorific, a second name) keeps the name as written; keys that differ only
+  in case stay as written. The widening also hides some name-like keys that
+  are no person (company names such as `Ernst Young`, places such as
+  `Fort Collins`, `Alice Blue`, `Josefin Sans`, German UI words such as
+  `Müller Straße`).
+- **`subset_scan` zone:** a surname a model reads as a place, with no person
+  cue of the listed kinds beside it and on no name list, is readable at its
+  first sighting in a zoned turn (as in Lucairn 1.0: `Gruß aus Lauterhain.`);
+  a later person reading hides it from then on (unless the conversation's
+  registry rows, its tombstone and the gateway's memory have all expired and a
+  compacted, user-only history is resent: that is treated as a new
+  conversation), but the first sighting reached the model vendor. A markdown table whose header names the column
+  (`| Name | Rolle |`) is no person cue for the cells below it. A value no
+  detector found (`Mein Login ist lauterhain.`) guards nothing. In a
+  conversation whose registry was rebuilt no place is released again.
+- **`subset_scan` rollback (only an install that set the zone):** an image
+  rollback to a core before 1.1.1 refuses every later request of a
+  conversation that had a zoned turn. Roll back in one window: (1) remove
+  `subset_scan` from `GATEWAY_TMS_TRUST_ZONES`; (2) roll the gateway and the
+  core back together to the same earlier release, never one without the
+  other; (3) reset the install's sanitizer core registry in the same window
+  (clients then start fresh conversations; the steps are in INSTALL.md §
+  "The 5 trust zones"). An install that never set the zone has nothing to roll
+  back.
+- **Sizing — the model sidecar sets the time of a first-seen text.** The core's
+  own work is small (≈ 0.07 s for a 16 KB field, measured without the
+  sidecar); the time goes into the model
+  sidecar, which reads every text the conversation has not seen before.
+  Measured on the hosted service's host with dense ServiceNow-record JSON
+  (many short labelled values; T-1449): 8 KB in 70.7 s, 16 KB in 91.7 s
+  (≈ 5.6 s per KB), 48 KB over 120 s. The time does not grow in proportion to
+  the size and depends on the host CPU and the text. The core waits at most
+  120 s for one sidecar call; above that the request is refused with `503`
+  `detect_failed` — fail-closed: nothing of that request is forwarded to the
+  model vendor. Ordinary prose was not measured on that host; measure one
+  representative request of your own workload on your host before production
+  use (INSTALL.md § "Host requirements").
 - **Not rehearsed for this release:** the Helm upgrade from 1.9.7 to 2.0.0,
   and the production Compose path (`bin/lucairn-init --production`, where the
   core sends its claims to the witness over mTLS). The rehearsals covered a
@@ -240,7 +337,8 @@ stays `0.8.2`.
   in both image manifests and every reference. The release's signed-image
   smoke ran on these bytes.
 - **Third-party notices in the kit:** `licenses/NOTICE` (the product
-  repository's `NOTICE` at the 2.0.0 image commit `35dd235d`: every model and
+  repository's `NOTICE` as read at `35dd235d`, byte-identical at the 1.1.1
+  image commit `15baf766`: every model and
   data file the sanitizer-core images redistribute, with its licence) and the
   licence texts it refers to (GLiNER and langdetect Apache-2.0, the spaCy
   models and their training-source notices, the mdeberta tokenizer, torch, the

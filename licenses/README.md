@@ -6,7 +6,9 @@ redistribute, above all the two sanitizer-core images
 (`dsa-sanitizer-core`, `dsa-sanitizer-core-sidecar`):
 
 - [`NOTICE`](NOTICE) — a byte-for-byte copy of the product repository's
-  `NOTICE` at the commit the 2.0.0 images are built from (`35dd235d`). It names
+  `NOTICE` at the commit it was read from (`35dd235d`); the product `NOTICE` is
+  byte-identical at `15baf766`, the commit the 2.0.0 images (1.1.1) are built
+  from. It names
   every model and data file the two sanitizer-core images redistribute, the
   licence of each as read from its source, and the attributions those licences
   ask for.

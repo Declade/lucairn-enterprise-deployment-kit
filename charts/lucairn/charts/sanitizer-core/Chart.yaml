@@ -7,4 +7,4 @@ version: 0.1.0
 # core refuses a sidecar from another build). Both images carry this tag
 # unless values.yaml pins another; they never fall back to global.imageTag
 # (no 0.5.x tag of these images exists).
-appVersion: "1.1.0"
+appVersion: "1.1.1"

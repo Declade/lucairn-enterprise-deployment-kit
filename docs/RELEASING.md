@@ -189,7 +189,7 @@ the files the hosted registry was migrated with on 2026-10-31):
 
 | Version | What it creates | Personal data | Deletion path |
 |---|---|---|---|
-| `0001_registry` | conversations (expiry `expires_at`), entries (AES-GCM sealed placeholder → original value), turns (sealed sanitized text + hash of the original), tombstones | yes — sealed with `DSA_SANITIZER_CORE_REGISTRY_KEY` | the serving core's registry sweeper (DSA #954, in the 1.1.0 images) deletes a conversation 210 s after its 24 h expiry, every 10 min (cascades to entries/turns/claims/streams); tombstones pruned after 24 h |
+| `0001_registry` | conversations (expiry `expires_at`), entries (AES-GCM sealed placeholder → original value), turns (sealed sanitized text + hash of the original), tombstones | yes — sealed with `DSA_SANITIZER_CORE_REGISTRY_KEY` | the serving core's registry sweeper (DSA #954, in the 1.1.0 and 1.1.1 images) deletes a conversation 210 s after its 24 h expiry, every 10 min (cascades to entries/turns/claims/streams); tombstones pruned after 24 h |
 | `0002_turn_role_kind` | two columns on turns | no | — |
 | `0003_claim_records` | the first signed claim per request (sealed) | yes — sealed | trimmed to the newest `ClaimRecordsPerCustomer` rows per customer on insert (`store/claims.go` `maybeTrim`); cascades with its conversation |
 | `0004_package_ref` | a hash column on conversations | no | — |
@@ -201,14 +201,14 @@ the files the hosted registry was migrated with on 2026-10-31):
 `20ec838c` the serving core never called `PG.Sweep`, so expired conversations
 and their sealed originals stayed in the registry) is closed by the production
 registry sweeper (DSA #954, `c588cef7`), which the 1.1.0 release commit
-`35dd235d` contains: `serve` runs it with no off switch
+`35dd235d` and the 1.1.1 release commit `15baf766` contain: `serve` runs it with no off switch
 (`--registry-sweep-interval`, default 10 min; first tick 30–45 s after boot).
 Measured in the 2026-11-04 Compose rehearsal: the core logs
 `registry-sweep: every 10m0s …` at boot and `registry-sweep result=ok …` per
 tick.
 
 ⚠️ **Open for the 2.0.0 release (K-E, 2026-11-04): the 1.x trees.** The 1.1.0
-images come from a DSA tree whose own migrations go further than the kit's
+and 1.1.1 images (no migration changed between `35dd235d` and `15baf766`) come from a DSA tree whose own migrations go further than the kit's
 copies: `services/veil-witness/migrations` up to `000014`
 (`0011_certificate_persistence_outbox`, `0012_claim_receipts`,
 `0013_decoder_expiry`, `0014_partition_veil_certificates`) and

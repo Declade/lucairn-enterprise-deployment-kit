@@ -8,7 +8,7 @@ description: Lucairn enterprise self-hosted deployment kit
 # `helm package`. See docs/RELEASING.md § "Version reconciliation".
 type: application
 version: 2.0.0
-appVersion: "1.1.0"
+appVersion: "1.1.1"
 
 dependencies:
   - name: infrastructure

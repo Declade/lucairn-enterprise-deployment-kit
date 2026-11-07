@@ -27,7 +27,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 10
-    image: ghcr.io/declade/dsa-audit:1.1.0
+    image: ghcr.io/declade/dsa-audit:1.1.1
     logging:
       driver: json-file
       options:
@@ -176,7 +176,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 10
-    image: ghcr.io/declade/dsa-gateway:1.1.0
+    image: ghcr.io/declade/dsa-gateway:1.1.1
     logging:
       driver: json-file
       options:
@@ -259,7 +259,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 10
-    image: ghcr.io/declade/dsa-id-bridge:1.1.0
+    image: ghcr.io/declade/dsa-id-bridge:1.1.1
     logging:
       driver: json-file
       options:
@@ -732,7 +732,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 10
-    image: ghcr.io/declade/dsa-sandbox-a:1.1.0
+    image: ghcr.io/declade/dsa-sandbox-a:1.1.1
     logging:
       driver: json-file
       options:
@@ -797,7 +797,7 @@ services:
       interval: 10s
       retries: 15
       start_period: 30s
-    image: ghcr.io/declade/dsa-sandbox-b:1.1.0
+    image: ghcr.io/declade/dsa-sandbox-b:1.1.1
     logging:
       driver: json-file
       options:
@@ -863,7 +863,7 @@ services:
       interval: 10s
       retries: 15
       start_period: 1m0s
-    image: ghcr.io/declade/dsa-sanitizer:1.1.0
+    image: ghcr.io/declade/dsa-sanitizer:1.1.1
     logging:
       driver: json-file
       options:
@@ -969,7 +969,7 @@ services:
       timeout: 3s
       interval: 5s
       retries: 20
-    image: ghcr.io/declade/dsa-sanitizer-core:1.1.0@sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0
+    image: ghcr.io/declade/dsa-sanitizer-core:1.1.1@sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0
     logging:
       driver: json-file
       options:
@@ -1021,7 +1021,7 @@ services:
       interval: 10s
       retries: 6
       start_period: 5m0s
-    image: ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.0@sha256:5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c
+    image: ghcr.io/declade/dsa-sanitizer-core-sidecar:1.1.1@sha256:5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c
     logging:
       driver: json-file
       options:
@@ -1084,7 +1084,7 @@ services:
       timeout: 5s
       interval: 10s
       retries: 3
-    image: ghcr.io/declade/dsa-veil-witness:1.1.0
+    image: ghcr.io/declade/dsa-veil-witness:1.1.1
     logging:
       driver: json-file
       options:
