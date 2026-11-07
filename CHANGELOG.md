@@ -108,7 +108,8 @@ stays `0.8.2`.
   (persons, e-mails, phones, ids, logins, personal numbers, host names, dates
   of birth, secrets, IBANs, cards) stays hidden. A place stays hidden when a
   name list holds it, a person cue stands beside it or the conversation knows
-  it as another hidden value. Off unless the operator sets it; never in
+  it as a hidden person's name, login, e-mail address, host name, id or secret
+  (a company name the conversation knows does not count). Off unless the operator sets it; never in
   ServiceNow mode, append mode or on the OpenAI route. `bin/lucairn doctor`
   accepts the zone. Before 1.1.1 the core ignored the setting and scanned
   everything in full.

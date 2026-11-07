@@ -702,9 +702,9 @@ For Kubernetes:
 - Kubernetes 1.28 or newer.
 - Helm 3.13 or newer.
 - Ingress controller with TLS.
-- **A NetworkPolicy-enforcing CNI (Calico or Cilium) for the Veil isolation
+- **A NetworkPolicy-enforcing CNI (Calico or Cilium) for the split-knowledge isolation
   control — a separate production control from the Helm mTLS transport gate.**
-  The Veil isolation invariant (AI plane can never reach the identity plane) is
+  The split-knowledge isolation invariant (AI plane can never reach the identity plane) is
   enforced by the chart's NetworkPolicies; a CNI that does not enforce them
   (e.g. `kindnet`, the default on a stock `kind` cluster) leaves those objects
   inert. Do not infer isolation from Pod readiness or mTLS acceptance. The stock
@@ -4551,7 +4551,8 @@ leaves place names readable in user messages and hides everything else as
 including towns inside company names, must stay readable). A place stays
 hidden when it could be a person's name (it is on a name list, or a person cue
 such as "Herr"/"Frau" stands next to it) or when the conversation already
-knows it as a hidden value. Known limit, as in Lucairn 1.0: a person's name
+knows it as a hidden person's name, login, e-mail address, host name, id or secret
+(a company name the conversation knows does not count). Known limit, as in Lucairn 1.0: a person's name
 that the models mistake for a place, that is on no name list and has no person
 cue next to it, stays readable. A later person reading hides it from then on,
 unless the registry rows, the tombstone and the gateway's memory have all
