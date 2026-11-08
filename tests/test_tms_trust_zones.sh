@@ -126,6 +126,24 @@ assert_case "weaker_ok" \
   'LUCAIRN_IMAGE_TAG=0.5.2
 GATEWAY_TMS_TRUST_ZONES={"tool_result_content":"shallow"}' 0 "ok"
 
+# subset_scan accepted (T-1455: tender / business-document redaction profile).
+# This is the exact setting the IHK benchmark used ({"user_content":"subset_scan"}).
+assert_case "subset_scan_user_content_ok" \
+  'LUCAIRN_IMAGE_TAG=0.5.1
+GATEWAY_TMS_TRUST_ZONES={"user_content":"subset_scan"}' 0 "ok"
+
+# subset_scan accepted on another segment type too (zone validity is per-value,
+# not tied to a specific segment).
+assert_case "subset_scan_other_segment_ok" \
+  'LUCAIRN_IMAGE_TAG=0.5.2
+GATEWAY_TMS_TRUST_ZONES={"assistant_content":"subset_scan"}' 0 "ok"
+
+# A genuinely-invalid zone that is a typo of subset_scan must STILL fail
+# (proves adding subset_scan did not loosen the fail-loud zone check).
+assert_case "subset_scan_typo_fails" \
+  'LUCAIRN_IMAGE_TAG=0.5.1
+GATEWAY_TMS_TRUST_ZONES={"user_content":"subset_scna"}' 1 'unknown zone value "subset_scna"'
+
 # Empty object {} -> ok (no-policy short-circuit, matches gateway identity behaviour).
 assert_case "empty_obj_identity" \
   'LUCAIRN_IMAGE_TAG=0.5.1

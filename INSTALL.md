@@ -4494,7 +4494,7 @@ moment it boots. A `helm upgrade` → pod restart is the apply path (no hot-relo
 | `code_block`             | `shallow` — heuristic scan only               |
 | `unknown`                | `full_scan` — unknown content scanned in full |
 
-### The 4 trust zones
+### The 5 trust zones
 
 | Zone               | What the sanitizer does                                      |
 |--------------------|--------------------------------------------------------------|
@@ -4502,6 +4502,11 @@ moment it boots. A `helm upgrade` → pod restart is the apply path (no hot-relo
 | `full_scan`        | Full PII scan (all detectors: known-entity + Presidio + optional ML)        |
 | `value_only`       | Scan only JSON / structured VALUES, not key names             |
 | `shallow`          | Heuristic / pattern-matching scan only (no ML, no Presidio)  |
+| `subset_scan`      | Narrows the scan to identity classes only — person names, emails, phone numbers, secrets/credentials, IBANs and card numbers (plus the known-entity L1 match). Does **not** mask locations, IDs or URLs. See "Tender / business-document redaction" below. |
+
+This list mirrors the gateway's authoritative set (`validTrustZones` in
+`services/gateway/internal/api/tms_policy.go`); `lucairn doctor` accepts exactly
+these five zones.
 
 ### Direction and risk
 
@@ -4523,6 +4528,36 @@ TMS trust-zone override: none (GATEWAY_TMS_TRUST_ZONES unset — classifier defa
 ```
 The `TMS trust-zone override ACTIVE` line is searchable in pod logs and is
 included in support bundles.
+
+### Tender / business-document redaction (`subset_scan` on `user_content`)
+
+A common self-hosted document use case: users paste tender offers or other
+business documents into the chat, and the answer must still name the machines,
+products, towns and company sites referenced in the text — otherwise the model
+writes vague stand-ins ("weitere Maschinen") instead of the real terms. The
+default `full_scan` on `user_content` over-masks these must-keep business terms
+(German technical nouns and place names are frequently typed `LOCATION`/`PERSON`
+by the broad detectors). The `subset_scan` zone narrows the user-text scan to
+identity classes only, so people, emails and phone numbers are still hidden
+while business terms stay readable:
+
+```
+GATEWAY_TMS_TRUST_ZONES={"user_content":"subset_scan"}
+```
+
+In an internal tender / business-document benchmark this scope cut must-keep
+over-masking to roughly a third of the `full_scan` default, with
+names/emails/phones recall unchanged.
+
+> **Caveat — `subset_scan` hides LESS, not more.** It does **not** mask
+> locations (towns, company sites), IDs or URLs. Use it **only** for documents
+> where locations are not sensitive person data. If a company site or town in
+> your documents is itself sensitive, keep the `full_scan` default.
+
+`document_text` cannot be tuned this way: the gateway always forces extracted
+document text to `full_scan` (an override on `document_text` is logged and
+ignored). The segment this profile applies to is `user_content` — the text the
+user pastes or types into the chat.
 
 ### Prerequisite: gateway image >= 0.5.1
 
@@ -4590,6 +4625,10 @@ GATEWAY_TMS_TRUST_ZONES={"system_prompt":"full_scan"}
 
 # Require full scanning of system prompts AND code blocks:
 GATEWAY_TMS_TRUST_ZONES={"system_prompt":"full_scan","code_block":"full_scan"}
+
+# Tender / business-document redaction — narrow user-text scan to identity
+# classes only (locations stay readable; see the caveat above):
+GATEWAY_TMS_TRUST_ZONES={"user_content":"subset_scan"}
 ```
 
 Leave the line commented-out (or unset) to use gateway defaults.
