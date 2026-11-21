@@ -22,10 +22,23 @@ calls Anthropic).
 
 With the lane on, a request that carries both a valid Lucairn key **and** the
 consultant's own Anthropic sign-in is hidden exactly like any other request,
-and Sandbox B sends the hidden request to Anthropic with that sign-in. The
-gateway never stores the sign-in; it is not logged or exported. Requests
-without a seat sign-in keep needing a provider key in `customer.env`
+and Sandbox B sends the hidden request to Anthropic with that sign-in.
+Requests without a seat sign-in keep needing a provider key in `customer.env`
 (`ANTHROPIC_API_KEY`), as before.
+
+## What you should know before you switch it on
+
+- **The sign-in reaches disk on this server.** For the length of a turn it is
+  held in Sandbox B's job store (the Redis service `redis-ai`), which keeps an
+  append-only file on a Docker volume. Treat the server's disks and backups
+  like a store of the consultants' sign-ins.
+- **Keeping consumer plans out is your duty.** The gateway checks only the
+  shape of the sign-in token; it cannot tell a Team or Enterprise seat from a
+  consumer Pro or Max plan. Hand Lucairn keys only to people who sign in with
+  the company seat.
+- **Stated limit (images 1.1.1):** the link from the gateway to Sandbox B is
+  encrypted, but the gateway does not verify Sandbox B's identity on it, so a
+  wrong peer on that internal Docker network could receive the sign-in.
 
 ## What each consultant does (Claude Code)
 

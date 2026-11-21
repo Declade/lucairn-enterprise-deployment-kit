@@ -54,9 +54,28 @@ sudo usermod -aG docker "$USER"     # then log out and in once
    timestamp addresses (`LCR_REKOR_URL`, `LCR_TSA_URL`); and the
    **witness-signed key manifest** `.certs/witness-signed-manifest.json`
    (`scripts/sign-witness-manifest.sh`, with the signing tool from the
-   witness image — this is why the images come first). If it ends with
-   `NOT DONE: the witness-signed manifest`, the image was not reachable: fix
-   step 1 and run the one command it prints.
+   witness image, pinned by its signed digest — this is why the images come
+   first). If it ends with `NOT DONE: the witness-signed manifest` (exit 10),
+   the image was not reachable: fix step 1 and run the same `lucairn-init`
+   command again. A re-run that finds `customer.env` already written does not
+   rewrite it; it completes only the host steps that are missing (certificate
+   leaves, the witness folder, the manifest), and it refuses an
+   `--image-registry` or `--claude-seat-lane` that differs from
+   `customer.env` instead of ignoring it.
+
+   **A mirror** must serve the witness image under its signed digest, i.e. be
+   copied with all platforms (`crane copy`, `skopeo copy --all`,
+   `docker buildx imagetools create`); a mirror holding only one platform
+   serves another digest and the manifest step refuses it.
+
+   **Stated limits:** one install per kit checkout (a second `customer.env`
+   initialised from the same folder shares the manifest path
+   `.certs/witness-signed-manifest.json` and replaces or moves aside the first
+   one's manifest). Sandbox B's new key pair is issued into
+   `.certs/sanitizer-core-mtls/sandbox-b`, inside the `.certs` folder the
+   gateway mounts, so the gateway (same uid 10001) can read Sandbox B's
+   private keys, as it already can the sanitizer core's and the witness's
+   keys in that tree.
 
    - **Claude Team / Enterprise seats** (`--claude-seat-lane`): consultants
      sign in with their company seat and no provider key is needed.
@@ -83,14 +102,22 @@ sudo usermod -aG docker "$USER"     # then log out and in once
    ```bash
    export LUCAIRN_ADMIN_KEY="$(grep '^DSA_ADMIN_KEY=' customer.env | cut -d= -f2-)"
    install -m 0600 /dev/null ~/lucairn-first.key
-   bin/lucairn-mint-customer --raw-key-only --name "Acme GmbH" --email "ops@acme.example" --tier enterprise > ~/lucairn-first.key
+   bin/lucairn-mint-customer --raw-key-only --name "Acme GmbH" --email "ops@acme.example" --tier enterprise --no-byok-per-request > ~/lucairn-first.key
    unset LUCAIRN_ADMIN_KEY
    ```
 
+   `--no-byok-per-request`: the provider key (or the consultant's seat
+   sign-in) is already on this server, so the key must not demand one per
+   request. Without it an Enterprise key defaults to "per-request key" and the
+   gateway answers every laptop turn that carries only the Lucairn key with
+   HTTP 400 `missing_upstream_key` (read in the gateway code of images 1.1.1;
+   not yet run on a live install).
+
 5. **HTTPS for the laptops.** Put Caddy in front: copy
    [examples/caddy/Caddyfile](examples/caddy/Caddyfile), replace the host
-   name, set `GATEWAY_TRUSTED_PROXY_CIDRS=127.0.0.1/32` in `customer.env` and
-   run `bin/lucairn up --env customer.env` once more. § "Reverse proxy".
+   name, set `GATEWAY_TRUSTED_PROXY_CIDRS` in `customer.env` to the Docker
+   bridge address the gateway sees (§ "Reverse proxy" says how to read it) and
+   run `bin/lucairn up --env customer.env` once more.
 
 6. **Claude Code.** On a laptop: `ANTHROPIC_BASE_URL=https://lucairn.internal.example`
    and the Lucairn key (seat lane: `ANTHROPIC_CUSTOM_HEADERS="X-DSA-Key: <key>"`,
@@ -101,9 +128,32 @@ sudo usermod -aG docker "$USER"     # then log out and in once
 The gateway publishes `127.0.0.1:8080` (customer routes) and `127.0.0.1:8085`
 (health, metrics) on the server only. Laptops need HTTPS to `:8080` and nothing
 else. [examples/caddy/Caddyfile](examples/caddy/Caddyfile) is a complete Caddy 2
-site: it forwards `:8080`, answers 404 for `/api/v1/admin/*`,
-`/api/v1/website/*`, `/metrics` and `/invariant`, passes streamed answers on at
-once and allows 15-minute turns. Install Caddy from your distribution
+site with an allow-list: it forwards to `:8080` only what laptops use (`/v1/*`,
+`/api/v1/veil/*`, `/api/v1/usage`, `/api/v1/keys/self/revoke`, `/mcp` and
+the `.well-known` key and OAuth documents) and answers 404 to everything else
+— among others the unauthenticated `/api/v1/register` and `/api/v1/scan`, the
+admin and website routes and the Sensitive Mode routes (add those to the
+`@laptops` line only if you use the Sensitive Mode extension). It overwrites
+`X-Real-IP` with the address Caddy sees (the one header the gateway reads for
+the caller's address), passes streamed answers on at once and allows
+15-minute turns.
+
+The gateway does **not** see a proxy on the same server as `127.0.0.1`:
+Docker hands a connection to the published `127.0.0.1:8080` port to the
+container from the gateway address of a Docker bridge network. After the
+first `bin/lucairn up`, read those addresses and put them, comma-separated,
+into `GATEWAY_TRUSTED_PROXY_CIDRS`, then run `bin/lucairn up --env
+customer.env` again:
+
+```bash
+docker inspect -f '{{range .NetworkSettings.Networks}}{{if .Gateway}}{{.Gateway}}/32 {{end}}{{end}}' \
+  "$(docker ps -q --filter label=com.docker.compose.service=gateway)"
+```
+
+Only the server itself can connect from those addresses, and Caddy overwrites
+`X-Real-IP`, so a laptop cannot choose the address the gateway records. That
+each laptop's own address arrives is read live in the proof run on a fresh
+server, not on this kit's test hosts. Install Caddy from your distribution
 (`sudo apt-get install -y caddy`), copy the file to `/etc/caddy/Caddyfile`,
 replace `lucairn.internal.example`, and `sudo systemctl reload caddy`. For a
 name that is not public, uncomment the `tls` line and use your company CA's
@@ -117,12 +167,15 @@ the model vendor. Set `SANDBOX_B_UPSTREAM_BODY_STORE=true` in `customer.env`
 (default `false`; `bin/lucairn up --env customer.env` applies it) to also keep
 the exact bytes — the pseudonymised text, with placeholders instead of the
 hidden values — on your own server, in the certificate store, readable at
-`GET /api/v1/veil/certificate/<id>/upstream-request` with the customer's key;
-the witness deletes them with the other originals on its 30-day schedule.
-Two internal witness tables keep a residual copy that this schedule does not
-clear (`witness_pending_claims`, until the turn's claim set completes, and
-`witness_claim_receipts`). Off by default: it keeps the full pseudonymised text of every request at rest
-on your server.
+`GET /api/v1/veil/certificate/<id>/upstream-request` with any key of that
+customer. The stored bytes are exactly what the vendor received: the
+placeholders, and also anything the sanitizer did not hide and the
+system-prompt text as written. They are **kept until you delete them**: no
+deletion job for them runs in this kit (the witness image of 1.1.1 ships
+without the retention tool). Two internal witness tables keep a further copy
+(`witness_pending_claims`, until the turn's claim set completes, and
+`witness_claim_receipts`). Off by default: it keeps the full pseudonymised
+text of every request at rest on your server.
 
 ## Release notes
 
@@ -1026,10 +1079,12 @@ They fail before Docker for missing or invalid marker-bearing state. Pre-S1
 state retains its documented one-base-file legacy path. Exact release rollback,
 rollback history, and restore proof are WP4 S4 scope and are not provided by S1.
 
-Before minting your first customer, complete the witness mTLS bootstrap in
-§ "Witness mTLS" below (`scripts/bootstrap-mtls-ca.sh`). As of the T-12
-witness image, certificate reads on `:50058` — including `bin/lucairn
-doctor`'s certificate-receipt check — refuse every caller until you do.
+As of the T-12 witness image, certificate reads on `:50058` — including
+`bin/lucairn doctor`'s certificate-receipt check — refuse every caller until
+the witness mTLS material exists. Since kit 2.0.1 `lucairn-init --production`
+creates it itself (§ "Fast path"); for a `--dev` install, or a customer.env
+written by an earlier kit, complete § "Witness mTLS" below
+(`scripts/bootstrap-mtls-ca.sh`) before minting your first customer.
 
 ### Init lock recovery
 
@@ -1267,8 +1322,10 @@ checks the byte count is exactly 32.
 > **Kit 2.0.1:** `bin/lucairn-init --production` produces this blob itself
 > (`scripts/sign-witness-manifest.sh --env customer.env`; it builds the roster
 > by the gateway's own rule, see docs/KEY_CEREMONY_RUNBOOK.md § 6.1, and runs
-> the tool from `${LUCAIRN_IMAGE_REGISTRY}/dsa-veil-witness:${LUCAIRN_IMAGE_TAG}`,
-> so a mirror works). The steps below are for a hand-written customer.env.
+> the tool from `${LUCAIRN_IMAGE_REGISTRY}/dsa-veil-witness@<signed digest>`
+> of `keys/image-digests-<tag>.txt`, so a mirror copied with all platforms
+> works and a mutable tag is never run with the seed). The steps below are
+> for a hand-written customer.env.
 
 > **Production-only — skip in dev mode.** This step is required ONLY when you
 > install with `DSA_ENV=production`. A `DSA_ENV=development` install does NOT
@@ -2498,12 +2555,25 @@ remove the empty folder (`sudo rmdir ./.certs/witness-mtls`) and continue.
    ```
 
    (macOS with Docker Desktop maps file ownership; the `chown` is not needed
-   there.) Stated limit: the script writes the CA private key (`ca.key`) into
-   the same folder, which both containers mount; move it to an offline place
-   after the bootstrap if you do not need to issue more client certificates.
+   there.) Then make the CA private key root-only, so neither container (both
+   mount this folder as uid 10001) can read it; neither reads `ca.key`
+   (`lucairn-init --production` does this itself since kit 2.0.1):
 
-2. Set in `customer.env` (lucairn-init writes these keys empty; fill them in,
-   do not add a second copy of a key):
+   ```bash
+   sudo chown 0:0 /etc/witness-mtls/ca.key && sudo chmod 0600 /etc/witness-mtls/ca.key
+   ```
+
+   You may also move `ca.key` to an offline place if you do not need to issue
+   more client certificates; a later run of the script then issues nothing
+   when every certificate exists, and refuses (instead of creating a new CA
+   over the old certificates) when one is missing. Stated limit: the leaf keys
+   of the other callers in this folder (`witness-server.key`,
+   `gateway-client.key`, `sandbox-a-client.key`) stay readable to both the
+   witness and the gateway, which share uid 10001.
+
+2. Set in `customer.env` (`lucairn-init --production` of kit 2.0.1 fills
+   these lines itself; a `--dev` init and earlier kits write them empty: fill
+   them in, do not add a second copy of a key):
 
    ```bash
    LCR_WITNESS_MTLS_HOST_DIR=/etc/witness-mtls
