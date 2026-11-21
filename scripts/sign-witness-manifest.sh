@@ -24,11 +24,27 @@
 # mount when customer.env sits beside docker-compose.customer.yml), or
 # $SANDBOX_B_CERT_DIR/witness-signed-manifest.json when customer.env sets it.
 #
-# The signing tool is the one shipped in the witness image the stack runs:
-#   ${LUCAIRN_IMAGE_REGISTRY}/dsa-veil-witness:${LUCAIRN_IMAGE_TAG}
-# (from customer.env, so a mirror works). The container gets no network, the
-# witness seed reaches it as a read-only private file (never in a process
-# argument of this host), and nothing secret is printed.
+# The signing tool is the one shipped in the witness image, pinned by the
+# signed digest of keys/image-digests-${LUCAIRN_IMAGE_TAG}.txt (as the manual
+# ceremony in docs/KEY_CEREMONY_RUNBOOK.md § 6.2 is), from the registry of
+# customer.env:
+#   ${LUCAIRN_IMAGE_REGISTRY}/dsa-veil-witness@<signed digest>
+# A mirror works only when it serves that same digest, i.e. the image was
+# copied with all its platforms (crane copy, skopeo copy --all, docker buildx
+# imagetools create) - the same condition `bin/lucairn verify-images` checks.
+# A mutable tag is never run with the witness seed mounted. The container gets
+# no network and the seed reaches it as a read-only private file, never as
+# an argument of this host's docker command, and nothing secret is printed.
+# Stated limit: inside the container the tool (images 1.1.1) takes the seed as
+# a command-line flag, so while it runs (well under a second) the seed is in
+# that process's arguments, which a local user of this host who may read
+# other users' process lists can see. Run this on a host without untrusted
+# local users.
+#
+# Refuses (exit 4) when the existing manifest holds keys that are not active
+# (retired keys kept for the retention window): this script would rebuild
+# every row as active and drop them. Rotations with retired keys follow the
+# manual ceremony, docs/KEY_CEREMONY_RUNBOOK.md § 6.
 #
 # customer.env is read with a deliberately small parser: KEY=value,
 # KEY="value" or KEY='value'. A value this script needs that holds $, a
@@ -49,7 +65,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --env) ENV_FILE="${2:?--env requires a path}"; shift 2 ;;
     --out) OUT="${2:?--out requires a path}"; shift 2 ;;
-    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     *) die 2 "unknown argument: $1" ;;
   esac
 done
@@ -84,7 +100,16 @@ fi
 
 registry="$(env_get LUCAIRN_IMAGE_REGISTRY)"; registry="${registry:-ghcr.io/declade}"
 tag="$(env_get LUCAIRN_IMAGE_TAG)"; tag="${tag:-1.1.1}"
-IMAGE="${registry%/}/dsa-veil-witness:${tag}"
+# Fix round 1 (review seat 4): the signed digest of this tag, never the tag.
+KIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+record="$KIT_ROOT/keys/image-digests-${tag}.txt"
+digest="$(awk -v r="ghcr.io/declade/dsa-veil-witness:${tag}" '$1 == r { print $2 }' "$record" 2>/dev/null | tail -1)"
+case "$digest" in
+  sha256:[0-9a-f]*) [ "${#digest}" -eq 71 ] || digest="" ;;
+  *) digest="" ;;
+esac
+[ -n "$digest" ] || die 3 "no signed digest for dsa-veil-witness:${tag} in $record; the signing tool runs only from the digest-pinned witness image"
+IMAGE="${registry%/}/dsa-veil-witness@${digest}"
 
 issuer="$(env_get LCR_ISSUER)"; issuer="${issuer:-$(env_get VEIL_ISSUER)}"; issuer="${issuer:-Lucairn Veil Witness}"
 seed="$(env_get LCR_WITNESS_SIGNING_KEY)"; seed="${seed:-$(env_get VEIL_WITNESS_SIGNING_KEY)}"
@@ -100,7 +125,26 @@ docker info >/dev/null 2>&1 || die 3 "cannot reach the Docker daemon (is your us
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   log "pulling $IMAGE (the signing tool ships inside it)"
   docker pull -q "$IMAGE" >/dev/null 2>&1 \
-    || die 3 "image $IMAGE is not available (log in to the registry or copy the images to your mirror first)"
+    || die 3 "image $IMAGE is not available: log in to the registry, or copy the image to your mirror with all its platforms so it keeps the signed digest (crane copy / skopeo copy --all / docker buildx imagetools create; a mirror holding only one platform serves another digest and is refused)"
+fi
+
+# Fix round 1 (review seat 13): retired keys in the existing manifest.
+if [ -f "$OUT" ]; then
+  python3 - "$OUT" <<'PYCHK' || die 4 "the existing manifest $OUT holds keys that are not active (retired keys) or cannot be read; this script would sign every key as active and drop them. Rotate with the manual ceremony (docs/KEY_CEREMONY_RUNBOOK.md § 6), or move the file aside if it belongs to keys this install no longer uses"
+import base64, json, sys
+blob = json.load(open(sys.argv[1]))
+body = json.loads(base64.b64decode(blob["canonical_body_b64"]))
+def states(node):
+    if isinstance(node, dict):
+        if "key_state" in node:
+            yield node["key_state"]
+        for v in node.values():
+            yield from states(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from states(v)
+sys.exit(0 if all(s == "active" for s in states(body)) else 1)
+PYCHK
 fi
 
 umask 077
@@ -114,14 +158,24 @@ add_row() { # <public key> <service_id> <key_id> <purpose>
   case "$1" in *[!0-9a-fA-F]*) die 4 "a public key for $3 is not hex" ;; esac
   printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$WORK/roster.tsv"
 }
-pick() { local v; v="$(env_get "$1")"; [ -n "$v" ] || v="$(env_get "$2")"; printf '%s' "$v"; }
+# Fix round 1 (review seat 12): a value env_get refuses (for example
+# ${BRIDGE_PUB}, which Compose resolves and this script cannot) stops the
+# script; it is never read as empty, which would drop that row from the
+# signed roster while the gateway, reading the resolved value, expects it.
+pick() { local v; v="$(env_get "$1")" || return 1; [ -n "$v" ] || { v="$(env_get "$2")" || return 1; }; printf '%s' "$v"; }
+k_bridge="$(pick LCR_BRIDGE_PUBLIC_KEY VEIL_BRIDGE_PUBLIC_KEY)" || exit 4
+k_sanitizer="$(pick LCR_SANITIZER_PUBLIC_KEY VEIL_SANITIZER_PUBLIC_KEY)" || exit 4
+k_sandbox_b="$(pick LCR_SANDBOX_B_PUBLIC_KEY VEIL_SANDBOX_B_PUBLIC_KEY)" || exit 4
+k_audit="$(pick LCR_AUDIT_PUBLIC_KEY VEIL_AUDIT_PUBLIC_KEY)" || exit 4
+k_gw_manifest="$(pick LCR_GATEWAY_MANIFEST_PUBLIC_KEY VEIL_GATEWAY_MANIFEST_PUBLIC_KEY)" || exit 4
+k_w_manifest="$(pick LCR_WITNESS_MANIFEST_PUBLIC_KEY VEIL_WITNESS_MANIFEST_PUBLIC_KEY)" || exit 4
 add_row "$witness_pub" dsa-witness witness_v1 "Certificate signing"
-add_row "$(pick LCR_BRIDGE_PUBLIC_KEY VEIL_BRIDGE_PUBLIC_KEY)" dsa-bridge bridge_v1 "Bridge claim signing"
-add_row "$(pick LCR_SANITIZER_PUBLIC_KEY VEIL_SANITIZER_PUBLIC_KEY)" dsa-sanitizer sanitizer_v1 "Sanitizer claim signing"
-add_row "$(pick LCR_SANDBOX_B_PUBLIC_KEY VEIL_SANDBOX_B_PUBLIC_KEY)" dsa-ai sandbox_b_v1 "Inference claim signing"
-add_row "$(pick LCR_AUDIT_PUBLIC_KEY VEIL_AUDIT_PUBLIC_KEY)" dsa-audit audit_v1 "Audit claim signing"
-add_row "$(pick LCR_GATEWAY_MANIFEST_PUBLIC_KEY VEIL_GATEWAY_MANIFEST_PUBLIC_KEY)" dsa-gateway gateway_manifest_v1 "Manifest signing"
-add_row "$(pick LCR_WITNESS_MANIFEST_PUBLIC_KEY VEIL_WITNESS_MANIFEST_PUBLIC_KEY)" dsa-witness witness_manifest_v1 "Manifest signing"
+add_row "$k_bridge" dsa-bridge bridge_v1 "Bridge claim signing"
+add_row "$k_sanitizer" dsa-sanitizer sanitizer_v1 "Sanitizer claim signing"
+add_row "$k_sandbox_b" dsa-ai sandbox_b_v1 "Inference claim signing"
+add_row "$k_audit" dsa-audit audit_v1 "Audit claim signing"
+add_row "$k_gw_manifest" dsa-gateway gateway_manifest_v1 "Manifest signing"
+add_row "$k_w_manifest" dsa-witness witness_manifest_v1 "Manifest signing"
 
 # keys.json (public values only).
 {
@@ -145,7 +199,9 @@ printf '%s' "$seed" > "$WORK/seed"
 chmod 0600 "$WORK/seed"
 seed=""
 
-mkdir -p "$(dirname "$OUT")"
+# Fix round 1 (review seat 14): created 0755 (not under umask 077), so the
+# gateway (uid 10001) can traverse it to read the 0644 manifest.
+( umask 022; mkdir -p "$(dirname "$OUT")" ) || die 4 "cannot create $(dirname "$OUT")"
 if ! docker run --rm --network none --user 0 --entrypoint /bin/sh \
     -v "$WORK/keys.json:/keys.json:ro" \
     -v "$WORK/seed:/run/secrets/witness-signing-key-hex:ro" \
