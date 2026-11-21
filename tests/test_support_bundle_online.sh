@@ -89,6 +89,9 @@ warn_secrets() {
 if [ -n "\${SHIM_CONFIG_FAIL:-}" ] && [ "\$is_compose" = 1 ] && [ "\$sub" = config ] && [ "\$has_format" = 0 ]; then
   echo 'service "gateway" refers to undefined volume x' >&2; exit 1
 fi
+if [ -n "\${SHIM_CONFIG_EMPTY:-}" ] && [ "\$is_compose" = 1 ] && [ "\$sub" = config ] && [ "\$has_format" = 0 ]; then
+  exit 0
+fi
 if [ "\$is_compose" = 0 ] && [ "\${1:-}" = ps ]; then
   printf 'NAMES\tIMAGE\tSTATUS\tPORTS\nkit-gateway-1\tdsa-gateway:1.1.1\tUp (owner %s)\t127.0.0.1:8080\n' '$PERSON_EMAIL'
   exit 0
@@ -173,4 +176,13 @@ SHIM_CONFIG_FAIL=1 PATH="$SHIM:$PATH" "$ROOT/bin/lucairn" support-bundle \
 [ "$rc" -ne 0 ] || { echo "FAIL: bundle written although docker compose config failed" >&2; exit 1; }
 grep -q 'compose config failed or rendered nothing' "$TMPDIR/support-fail.out" || { echo "FAIL: no clear message for the failed render" >&2; cat "$TMPDIR/support-fail.out" >&2; exit 1; }
 [ -z "$(find "$OUT2" -name 'lucairn-support-bundle-*' -print -quit 2>/dev/null)" ] || { echo "FAIL: bundle files left after a failed render" >&2; exit 1; }
-echo "PASS: online support bundle produced; Compose messages kept apart; 0 hits for 10 plants; failed render refused"
+# Final fix pass: an empty render with exit 0 stops the bundle too.
+OUT3="$TMPDIR/bundles-empty"
+rc=0
+SHIM_CONFIG_EMPTY=1 PATH="$SHIM:$PATH" "$ROOT/bin/lucairn" support-bundle \
+  --env "$ENV_FILE" --compose "$ROOT/docker-compose.customer.yml" \
+  --output "$OUT3" > "$TMPDIR/support-empty.out" 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || { echo "FAIL: bundle written although docker compose config rendered nothing" >&2; exit 1; }
+grep -q 'compose config failed or rendered nothing (exit 0' "$TMPDIR/support-empty.out" || { echo "FAIL: no clear message for the empty render" >&2; cat "$TMPDIR/support-empty.out" >&2; exit 1; }
+[ -z "$(find "$OUT3" -name 'lucairn-support-bundle-*' -print -quit 2>/dev/null)" ] || { echo "FAIL: bundle files left after an empty render" >&2; exit 1; }
+echo "PASS: online support bundle produced; Compose messages kept apart; 0 hits for 10 plants; failed and empty renders refused"
