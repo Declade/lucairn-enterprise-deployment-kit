@@ -2,14 +2,23 @@
 #
 # The gateway listens on 127.0.0.1:8080 only (docker-compose.customer.yml).
 # This file gives the consultants' laptops HTTPS to it and nothing else:
-#   * an ALLOW-LIST: only the paths Claude Code, the SDKs and certificate
-#     checks need are forwarded (the matcher @laptops below); every other path
-#     answers 404 here. Not forwarded, among others: /api/v1/register and
-#     /api/v1/scan (unauthenticated on images 1.1.1), the admin and website
-#     routes, and the Sensitive Mode routes (/api/v1/sanitize-only, ...; add
-#     them to @laptops only if you use the Sensitive Mode browser extension).
+#   * an ALLOW-LIST: only the paths Claude Code (/v1/*, /mcp) and certificate
+#     reads (/api/v1/veil/*, the .well-known documents) need are forwarded
+#     (the matcher @laptops below); every other path answers 404 here. Not
+#     forwarded, among others: /api/v1/register and /api/v1/scan
+#     (unauthenticated on images 1.1.1), the admin and website routes.
+#     Opt-in (add them to @laptops only if you use them): the four Sensitive
+#     Mode routes (/api/v1/sanitize-only, /api/v1/relink-stream,
+#     /api/v1/sensitive-mode/seal-cert, /api/v1/sensitive-mode/account) and
+#     the proxy and MCP transports /api/v1/proxy/* and /api/v1/mcp/*.
 #     Mint keys on the server itself (bin/lucairn-mint-customer talks to
 #     127.0.0.1).
+#   * two certificate views are open by design, without a key: the public
+#     summary (/api/v1/veil/certificate/<id>/public-summary) and the PDF
+#     (/api/v1/veil/certificate/<id>.pdf); anyone with a certificate id can
+#     read them through this proxy;
+#   * the admin header X-Admin-Key is removed from every forwarded request,
+#     so a laptop cannot use it for cross-customer certificate reads;
 #   * the health port 127.0.0.1:8085 (/metrics, /invariant) is never forwarded;
 #   * X-Real-IP, the one header the gateway reads for the caller's address, is
 #     OVERWRITTEN with the address Caddy sees, so a laptop cannot choose it;
@@ -38,6 +47,7 @@ lucairn.internal.example {
 	handle @laptops {
 		reverse_proxy 127.0.0.1:8080 {
 			header_up X-Real-IP {remote_host}
+			header_up -X-Admin-Key
 			flush_interval -1
 			transport http {
 				read_timeout 15m
