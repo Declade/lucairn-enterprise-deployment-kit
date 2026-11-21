@@ -874,14 +874,15 @@ if [ "${1:-}" = compose ]; then
     *" ps -a "*) [ -n "${STUB_PS:-}" ] && cat "$STUB_PS"; exit 0 ;;
     # support-bundle's log collection (online bundle cases in F).
     *" logs --tail 300 --no-color"*) [ -n "${STUB_BUNDLE_LOG:-}" ] && cat "$STUB_BUNDLE_LOG"; exit 0 ;;
-    *" exec -T postgres-sanitizer-core "*) echo "${STUB_LEDGER_OUT:-7}"; exit 0 ;;
+    *" exec -T postgres-sanitizer-core "*) echo "${STUB_LEDGER_OUT:-7}"; [ -n "${STUB_LEDGER_ERR:-}" ] && echo "$STUB_LEDGER_ERR" >&2; exit "${STUB_LEDGER_RC:-0}" ;;
     *" logs --no-color sanitizer-core "*) [ -n "${STUB_CORE_LOG:-}" ] && cat "$STUB_CORE_LOG"; exit 0 ;;
     *" logs --no-color veil-witness "*) [ -n "${STUB_WITNESS_LOG:-}" ] && cat "$STUB_WITNESS_LOG"; exit 0 ;;
   esac
 fi
 exit 1
 STUBDOCKER
-printf '#!/bin/sh\nprintf 000\n' > "$DBIN/curl"
+# STUB_HEALTHZ / STUB_READYZ (fix round 1, G7): the gateway's answer codes.
+printf '#!/bin/sh\ncase "$*" in *readyz*) printf "${STUB_READYZ:-000}" ;; *healthz*) printf "${STUB_HEALTHZ:-000}" ;; *) printf 000 ;; esac\n' > "$DBIN/curl"
 STUB_REAL_DOCKER="$(PATH="$BASE_PATH" command -v docker 2>/dev/null || true)"
 export STUB_REAL_DOCKER
 for t in kubectl helm pg_isready docker-compose; do printf '#!/bin/sh\nexit 1\n' > "$DBIN/$t"; done
@@ -1268,6 +1269,17 @@ online_case "RED migration ledger unreadable (DB down / wrong credentials)" "san
 online_case "GREEN ledger read while Compose warns on stderr" "sanitizer core registry: ok (7 migrations applied, ceiling 7)" green STUB_COMPOSE_WARN=1
 online_case "RED ledger unreadable while Compose warns on stderr" "sanitizer core registry: failed (could not read the migration ledger" red STUB_COMPOSE_WARN=1 STUB_LEDGER_OUT='psql: error: connection refused'
 online_case "RED ledger behind the ceiling while Compose warns on stderr" "ledger at 5 of 7 migrations" red STUB_COMPOSE_WARN=1 STUB_LEDGER_OUT=5
+# Fix round 1 (G6): a count on stdout followed by a non-zero exit is not a read.
+online_case "RED ledger count then exec error (non-zero exit)" "sanitizer core registry: failed (could not read the migration ledger" red STUB_LEDGER_OUT=7 STUB_LEDGER_RC=1 STUB_LEDGER_ERR='error during connect: read unix @->/var/run/docker.sock: read: connection reset by peer'
+# Fix round 1 (G7): /healthz 200 + /readyz 503 fails doctor; the keyed
+# customer journey is not started (the closing line is the last line).
+doctor_online STUB_HEALTHZ=200 STUB_READYZ=503
+if [ "$ONLINE_RC" -ne 0 ] && grep -q '^gateway readyz: failed (503' "$TMP/online.out" \
+  && tail -1 "$TMP/online.out" | grep -q '^doctor: failed (gateway runtime probes failed; the customer journey was not run'; then
+  pass "RED readyz 503 — doctor exited $ONLINE_RC, journey not started"
+else
+  fail "RED readyz 503 — doctor exited $ONLINE_RC; last lines: $(tail -3 "$TMP/online.out" | tr '\n' ' ')"
+fi
 online_case "RED claims dropped" "claim(s) DROPPED" red STUB_CORE_LOG="$TMP/core.drop"
 online_case "RED witness transport not mtls" "witness transport mode=tls-insecure-dev, not mtls" red STUB_CORE_LOG="$TMP/core.tls"
 online_case "RED overlay forwards LCR_PROFILE=hosted" "LCR_PROFILE is forwarded with a non-kit value" red STUB_CONFIG_JSON="$TMP/config.hosted.json"

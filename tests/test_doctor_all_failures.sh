@@ -49,6 +49,58 @@ grep -q "GATEWAY_SANITIZER_PROTOCOL must be delta or whole" "$TMPDIR/two.out" &&
 grep -q '^doctor: failed' "$TMPDIR/two.out" && ok "closing line says doctor: failed" || bad "no closing 'doctor: failed' line"
 ! grep -q '^doctor: ok' "$TMPDIR/two.out" && ok "no 'doctor: ok' on a failing run" || bad "'doctor: ok' printed on a failing run"
 
+echo "C. after a failure, no check sends a credential or writes (fix round 1, G4)"
+# Dashboard enabled with an admin URL and an audit database: a clean run sends
+# X-Admin-Key and runs the INSERT/DELETE probe (control); with a bad keystore
+# key neither may happen. curl, psql and pg_isready are stubs that log calls.
+DASH_ENV="$TMPDIR/dash.env"
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume "${init_args[@]/$ENV_FILE/$DASH_ENV}" >/dev/null 2>&1 \
+  || "$ROOT/bin/lucairn-init" "${init_args[@]/$ENV_FILE/$DASH_ENV}" >/dev/null 2>&1
+cat >> "$DASH_ENV" <<'EOV'
+LUCAIRN_DASHBOARD_ENABLED=true
+LUCAIRN_DASHBOARD_BOOTSTRAP_PASSWORD=t1479-dash-bootstrap-plant
+LUCAIRN_DASHBOARD_GATEWAY_ADMIN_URL=http://gw.example.internal:8080
+LUCAIRN_DASHBOARD_GATEWAY_ADMIN_TOKEN=t1479adminkeyplant0123456789abcdef0123456789
+LUCAIRN_DASHBOARD_AUDIT_LOG_DB_URL=postgres://audit_app:t1479-audit-pw-plant@db.example.internal:5432/audit
+EOV
+CSTUB="$TMPDIR/cstub"; mkdir -p "$CSTUB"
+for t in curl psql pg_isready; do
+  cat > "$CSTUB/$t" <<EOS
+#!/usr/bin/env bash
+{ printf '$t %s\n' "\$*"; case " \$* " in *" @- "*) cat ;; esac; } >> "$TMPDIR/calls.log"
+[ "$t" = curl ] && printf 200
+exit 0
+EOS
+  chmod +x "$CSTUB/$t"
+done
+run_dash() { : > "$TMPDIR/calls.log"; PATH="$CSTUB:$PATH" "$ROOT/bin/lucairn" doctor --env "$1" --compose "$ROOT/docker-compose.customer.yml" --offline --skip-image-check > "$2" 2>&1 < /dev/null; }
+run_dash "$DASH_ENV" "$TMPDIR/dash-clean.out"
+grep -q '^X-Admin-Key: ' "$TMPDIR/calls.log" && grep -q 'INSERT INTO dashboard_saved_filters' "$TMPDIR/calls.log" \
+  && ok "control: a clean run sends the admin key and runs the INSERT probe (the stubs are reached)" \
+  || bad "control: the clean run did not reach the admin-key request and the INSERT probe ($(grep -i 'dashboard\|doctor:' "$TMPDIR/dash-clean.out" | tail -3 | tr '\n' ' '))"
+sed -i.bak -e '/^GATEWAY_KEYSTORE_KEY=/d' "$DASH_ENV" && rm -f "$DASH_ENV.bak"
+printf 'GATEWAY_KEYSTORE_KEY=c2hvcnQta2V5LW5vdC0zMi1ieXRlcw==\n' >> "$DASH_ENV"
+rc=0; run_dash "$DASH_ENV" "$TMPDIR/dash-bad.out" || rc=$?
+[ "$rc" -ne 0 ] && ok "bad keystore key: doctor fails ($rc)" || bad "bad keystore key: doctor exited 0"
+! grep -q 'X-Admin-Key' "$TMPDIR/calls.log" && ok "bad keystore key: no admin-key request" || bad "bad keystore key: the admin key was sent"
+! grep -q 'INSERT' "$TMPDIR/calls.log" && ok "bad keystore key: no INSERT probe" || bad "bad keystore key: the INSERT probe ran"
+[ ! -s "$TMPDIR/calls.log" ] && ok "bad keystore key: no curl, psql or pg_isready call at all" || bad "bad keystore key: calls made: $(cut -c1-80 "$TMPDIR/calls.log" | tr '\n' ' ')"
+grep -q '^dashboard: not run (an earlier check failed' "$TMPDIR/dash-bad.out" && ok "bad keystore key: dashboard line says not run" || bad "bad keystore key: no 'dashboard: not run' line"
+grep -q '^doctor: failed' "$TMPDIR/dash-bad.out" && ok "bad keystore key: closing line doctor: failed" || bad "bad keystore key: no closing line"
+
+echo "D. a missing certificate file does not end doctor early (fix round 1, G5)"
+CERT_ENV="$TMPDIR/cert.env"
+"$ROOT/bin/lucairn-init" --confirm-no-registry-volume "${init_args[@]/$ENV_FILE/$CERT_ENV}" >/dev/null 2>&1 \
+  || "$ROOT/bin/lucairn-init" "${init_args[@]/$ENV_FILE/$CERT_ENV}" >/dev/null 2>&1
+sed -i.bak -e '/^GRPC_TLS_CERT_FILE=/d' "$CERT_ENV" && rm -f "$CERT_ENV.bak"
+printf 'GRPC_TLS_CERT_FILE=%s\nGATEWAY_SANITIZER_PROTOCOL=Delta\n' "$TMPDIR/no-such-cert.pem" >> "$CERT_ENV"
+rc=0
+"$ROOT/bin/lucairn" doctor --env "$CERT_ENV" --compose "$ROOT/docker-compose.customer.yml" --offline --skip-image-check > "$TMPDIR/cert.out" 2>&1 < /dev/null || rc=$?
+[ "$rc" -ne 0 ] && ok "missing cert: non-zero exit ($rc)" || bad "missing cert: doctor exited 0"
+grep -q 'certs: missing GRPC_TLS_CERT_FILE' "$TMPDIR/cert.out" && ok "missing cert reported" || bad "missing cert not reported"
+grep -q "GATEWAY_SANITIZER_PROTOCOL must be delta or whole" "$TMPDIR/cert.out" && ok "a later fault is reported in the same run" || bad "doctor ended at the certificate check (later fault not reported)"
+grep -q '^doctor: failed' "$TMPDIR/cert.out" && ok "closing line doctor: failed after a certificate failure" || bad "no closing 'doctor: failed' line after a certificate failure"
+
 echo "B. image check against a loopback plain-HTTP mirror"
 STUB="$TMPDIR/stub"
 mkdir -p "$STUB"

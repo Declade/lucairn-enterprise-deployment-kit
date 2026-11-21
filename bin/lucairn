@@ -9792,14 +9792,20 @@ print("; ".join(bad) if bad else "ok")
     # prints "VEIL_* variable is not set" warnings there on every call, and
     # merged into the count they failed a readable ledger.
     ledger_err="$(mktemp)"
+    local ledger_n ledger_rc=0
     ledger="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" exec -T postgres-sanitizer-core \
-      psql -X -At -U dsa -d sanitizer_core -c "SELECT count(*) FROM registry_schema_migrations" 2> "$ledger_err" || true)"
-    local ledger_n
+      psql -X -At -U dsa -d sanitizer_core -c "SELECT count(*) FROM registry_schema_migrations" 2> "$ledger_err")" || ledger_rc=$?
     ledger_n="$(printf '%s' "$ledger" | tr -d ' \r\n')"
-    case "$ledger_n" in
-      *[!0-9]*|'') ledger="$ledger $(cat "$ledger_err")" ;;
-      *) ledger="$ledger_n" ;;
-    esac
+    # Fix round 1 (G6): a non-zero exit is a failure even when stdout holds a
+    # number (a transport error after the count).
+    if [ "$ledger_rc" -ne 0 ]; then
+      ledger="$ledger $(cat "$ledger_err") (exit $ledger_rc)"
+    else
+      case "$ledger_n" in
+        *[!0-9]*|'') ledger="$ledger $(cat "$ledger_err")" ;;
+        *) ledger="$ledger_n" ;;
+      esac
+    fi
     rm -f "$ledger_err"
     case "$ledger" in
       *[!0-9]*|'')
@@ -10039,6 +10045,15 @@ check_servicenow_runtime() {
     failed=1
   fi
   return "$failed"
+}
+
+# doctor_gated <label> — 0 while doctor_failed (doctor's local) is 0; else
+# prints "<label>: not run ..." and returns 1. Wraps every doctor check that
+# sends a credential or writes (fix round 1, G4).
+doctor_gated() {
+  [ "${doctor_failed:-0}" -eq 0 ] && return 0
+  echo "$1: not run (an earlier check failed; this check sends a credential or writes, so it runs only when every check before it passed)"
+  return 1
 }
 
 doctor() {
@@ -10601,7 +10616,9 @@ doctor() {
   check_tms_trust_zones "$env_file" || tms_failed=1
   [ "$tms_failed" -eq 0 ] || doctor_failed=1
 
-  check_certs "$env_file" "$offline"
+  # Fix round 1 (G5): unguarded, a certificate failure ended doctor under
+  # set -e without the closing line and without the checks after it.
+  check_certs "$env_file" "$offline" || doctor_failed=1
 
   # Dev-mode-env consistency check. Catches the "production-defaults
   # vs dev install" foot-gun Sim 3 final-smoothing hit three times:
@@ -10658,11 +10675,15 @@ doctor() {
   # present resolver cannot confirm (UNRESOLVED) fails closed; an INVALID
   # manifest entry fails closed; and --strict requires at least one ref actually
   # verified (cardinality floor). Honors LUCAIRN_IMAGE_TAG/REGISTRY on dsa-*.
-  if ! check_image_digests "$env_file" "$strict_digest" "$offline"; then
-    doctor_failed=1
+  # Fix round 1 (G4): a check that sends a credential (registry login,
+  # admin key, kube credential) or writes (the audit-database probe) runs only
+  # while every check before it passed, as before T-1479; after a failure it
+  # prints "not run" instead (doctor_gated).
+  if doctor_gated "image digests"; then
+    check_image_digests "$env_file" "$strict_digest" "$offline" || doctor_failed=1
   fi
 
-  if [ "$check_images" -eq 1 ]; then
+  if [ "$check_images" -eq 1 ] && doctor_gated "container images"; then
     check_container_images "$env_file" || doctor_failed=1
   fi
 
@@ -10671,7 +10692,9 @@ doctor() {
   # checks are skipped. Non-fatal when the dashboard is not opted-in;
   # fatal when the bootstrap secret is missing/short and the operator
   # has explicitly opted in.
-  check_dashboard "$env_file" || doctor_failed=1
+  if doctor_gated "dashboard"; then
+    check_dashboard "$env_file" || doctor_failed=1
+  fi
 
   # M9 (deal-#1 hardening 2026-06-19): backup pre-flight.
   # WARN (always) / FAIL (--strict) when DSA_ENV=production and NEITHER
@@ -10685,7 +10708,7 @@ doctor() {
     echo "postgres: skipped (--offline)"
     echo "network policies: skipped (--offline)"
     if [ "$doctor_failed" -eq 1 ]; then
-      echo "doctor: failed (every line marked failed above; fix them and run doctor again)"
+      echo "doctor: failed (see the failures listed above; fix them and run doctor again)"
       return 1
     fi
     # Keep the historical success token for older automation, but make the
@@ -10738,9 +10761,9 @@ doctor() {
   local sanitizer_core_runtime_failed=0
   check_sanitizer_core_runtime "$env_file" "$compose_file" "$strict_runtime" || sanitizer_core_runtime_failed=1
   [ "$sanitizer_core_runtime_failed" -eq 0 ] || doctor_failed=1
-  local servicenow_runtime_failed=0
-  check_servicenow_runtime "$env_file" "$compose_file" "$strict_runtime" || servicenow_runtime_failed=1
-  [ "$servicenow_runtime_failed" -eq 0 ] || doctor_failed=1
+  if doctor_gated "ServiceNow mode runtime"; then
+    check_servicenow_runtime "$env_file" "$compose_file" "$strict_runtime" || doctor_failed=1
+  fi
 
   postgres_url="${postgres_url:-$(env_value "$env_file" POSTGRES_URL)}"
   if [ -n "$postgres_url" ] && have pg_isready; then
@@ -10754,7 +10777,7 @@ doctor() {
     echo "postgres: skipped (no --postgres-url or pg_isready unavailable)"
   fi
 
-  if have kubectl; then
+  if have kubectl && doctor_gated "network policies"; then
     # `kubectl get networkpolicy -n <ns>` exits 0 even when the namespace
     # exists with ZERO NetworkPolicy objects (it prints "No resources found"
     # to stderr, rc=0). So we cannot treat exit-0 as "present" — we must count
@@ -10800,14 +10823,14 @@ doctor() {
     info "  For production, set secrets.backend=vault|aws|azure (External Secrets Operator) so secrets live"
     info "  in a real secrets manager, OR ensure etcd encryption-at-rest + strict 'get secret' RBAC are enabled."
     info "  See INSTALL.md § 'Production secrets: External Secrets Operator (ESO)'."
-  else
+  elif ! have kubectl; then
     echo "network policies: skipped (kubectl unavailable)"
   fi
 
   # T-1479: every check above has printed its line; stop here on any failure,
   # before the runtime probes and the keyed customer journey.
   if [ "$doctor_failed" -eq 1 ]; then
-    echo "doctor: failed (every line marked failed above; the runtime probes and the customer journey were not run — fix them and run doctor again)"
+    echo "doctor: failed (see the failures listed above; the runtime probes and the customer journey were not run — fix them and run doctor again)"
     return 1
   fi
 
@@ -10869,6 +10892,12 @@ doctor() {
 
   if [ "$strict_runtime" -eq 1 ] && [ "$runtime_failed" -eq 1 ]; then
     fail "runtime probes failed and --strict-runtime is set"
+  fi
+  # Fix round 1 (G7): a gateway that answers but is not healthy or not ready
+  # fails doctor; the keyed customer journey does not run against it.
+  if [ "$runtime_failed" -eq 1 ]; then
+    echo "doctor: failed (gateway runtime probes failed; the customer journey was not run — fix them and run doctor again)"
+    return 1
   fi
 
   doctor_with_xtrace_suspended doctor_full_customer_journey "$env_file" "$supplied_model" "$customer_key_file" "$customer_key_proxy" "$customer_key_ca_file"
