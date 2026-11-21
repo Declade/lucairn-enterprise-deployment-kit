@@ -58,14 +58,26 @@ if [ "$1" = manifest ] && [ "$2" = inspect ]; then
   if [ "$3" = --insecure ]; then grep -qxF -- "$4" "$STUB_PRESENT" && exit 0; fi
   echo "no such manifest: ${*: -1}" >&2; exit 1
 fi
-if [ "$1" = info ]; then printf 'mirror.corp.example:5000\n'; exit 0; fi
+if [ "$1" = info ]; then
+  [ "${STUB_INFO_FAIL:-0}" = 1 ] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
+  case "$*" in
+    *json*)
+      if [ -n "${STUB_REGCFG:-}" ]; then printf '%s\n' "$STUB_REGCFG"
+      else printf '%s\n' '{"InsecureRegistryCIDRs":["::1/128","127.0.0.0/8"],"IndexConfigs":{"docker.io":{"Name":"docker.io","Secure":true},"mirror.corp.example:5000":{"Name":"mirror.corp.example:5000","Secure":false}}}'
+      fi ;;
+    *) printf 'mirror.corp.example:5000\n' ;;
+  esac
+  exit 0
+fi
 exit 1
 EOF
 chmod +x "$STUB/docker"
 export STUB_LOG="$TMPDIR/docker.log" STUB_PRESENT="$TMPDIR/present"
 printf '%s\n' '127.0.0.1:5000/declade/dsa-gateway:1.1.1' 'localhost:5000/declade/dsa-gateway:1.1.1' \
   '127.0.0.1:5000/declade/dsa-sanitizer-core:1.1.1@sha256:aaaa' 'mirror.corp.example:5000/declade/dsa-gateway:1.1.1' \
-  'registry.corp.example/declade/dsa-gateway:1.1.1' > "$STUB_PRESENT"
+  'registry.corp.example/declade/dsa-gateway:1.1.1' 'loopback:5000/declade/dsa-gateway:1.1.1' \
+  '[::1]:5000/declade/dsa-gateway:1.1.1' '10.1.2.3:5000/declade/dsa-gateway:1.1.1' \
+  '127.0.0.1.evil.example/declade/dsa-gateway:1.1.1' 'localhost.example.com/declade/dsa-gateway:1.1.1' > "$STUB_PRESENT"
 eval "$(sed -n '/^image_ref_inspectable()/,/^}/p' "$REAL_ROOT/bin/lucairn")"
 if ! declare -F image_ref_inspectable >/dev/null; then
   bad "bin/lucairn has no image_ref_inspectable (the image check uses a bare docker manifest inspect)"
@@ -80,7 +92,27 @@ else
   : > "$STUB_LOG"
   probe registry.corp.example/declade/dsa-gateway:1.1.1 && bad "a secure registry was asked over --insecure" || ok "a registry the daemon does not list as insecure is not retried insecurely"
   ! grep -q -- '--insecure registry.corp.example' "$STUB_LOG" && ok "no --insecure call for it" || bad "--insecure call for a secure registry"
-  probe 127.0.0.1.evil.example/declade/dsa-gateway:1.1.1 && bad "a host that only starts with 127.0.0.1 counted as loopback" || ok "a host that only starts with 127.0.0.1 is not loopback"
+  probe '[::1]:5000/declade/dsa-gateway:1.1.1' && ok "[::1] mirror image found" || bad "[::1] mirror image not found"
+  # Fix round 1 (G1): a host NAME is never loopback, whatever it is called;
+  # each is asked over HTTPS only (log-based: the refs are on the mirror, so
+  # an --insecure call would have found them).
+  for h in loopback:5000 127.0.0.1.evil.example localhost.example.com; do
+    : > "$STUB_LOG"
+    probe "$h/declade/dsa-gateway:1.1.1" && bad "$h: a host name was reached over --insecure" || ok "$h: not found over HTTPS, not retried"
+    ! grep -q -- "--insecure $h/" "$STUB_LOG" && ok "$h: no --insecure call" || bad "$h: --insecure call for a host name"
+  done
+  # Fix round 1 (G2): the daemon's own answer decides (IndexConfigs and
+  # InsecureRegistryCIDRs of docker info), never a built-in loopback rule.
+  probe 10.1.2.3:5000/declade/dsa-gateway:1.1.1 && bad "10.1.2.3 retried insecurely without a daemon CIDR" || ok "10.1.2.3 without a daemon CIDR: not retried"
+  STUB_REGCFG='{"InsecureRegistryCIDRs":["10.0.0.0/8"],"IndexConfigs":{}}' probe 10.1.2.3:5000/declade/dsa-gateway:1.1.1 \
+    && ok "registry allowed by the daemon's CIDR list only: found" || bad "registry allowed by the daemon's CIDR list only: not found"
+  : > "$STUB_LOG"
+  STUB_REGCFG='{"InsecureRegistryCIDRs":[],"IndexConfigs":{"docker.io":{"Name":"docker.io","Secure":true}}}' probe 127.0.0.1:5000/declade/dsa-gateway:1.1.1 \
+    && bad "engine with an empty insecure list (29.10): loopback accepted although docker pull refuses it" || ok "engine with an empty insecure list: loopback not retried insecurely"
+  ! grep -q -- '--insecure' "$STUB_LOG" && ok "empty insecure list: no --insecure call" || bad "empty insecure list: --insecure call"
+  : > "$STUB_LOG"
+  STUB_INFO_FAIL=1 probe 127.0.0.1:5000/declade/dsa-gateway:1.1.1 && bad "daemon answer unreadable: retried insecurely" || ok "daemon answer unreadable: not retried insecurely"
+  ! grep -q -- '--insecure' "$STUB_LOG" && ok "daemon answer unreadable: no --insecure call" || bad "daemon answer unreadable: --insecure call"
 fi
 
 echo ""

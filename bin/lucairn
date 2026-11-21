@@ -4196,29 +4196,41 @@ check_identity_networks_internal() {
 
 # image_ref_inspectable <ref> — `docker manifest inspect`, the way the
 # daemon's own pull would reach the registry. The CLI speaks HTTPS only unless
-# told --insecure, while the daemon pulls from a loopback or declared insecure
-# registry over plain HTTP: a customer mirror on 127.0.0.1:5000 that `docker
+# told --insecure, while the daemon pulls from a registry it treats as
+# insecure over plain HTTP: a customer mirror on 127.0.0.1:5000 that `docker
 # pull` uses failed every image here (T-1479, 21 Nov). --insecure is added
-# ONLY for a loopback registry host or one the daemon lists as insecure; a
-# missing tag or digest still fails.
+# ONLY when the daemon's own `docker info` says it would pull from that host
+# over plain HTTP (fix round 1): the host is an IndexConfigs entry with
+# Secure=false, or an IP literal (`localhost` = 127.0.0.1 and ::1) inside one
+# of its InsecureRegistryCIDRs. Any other host NAME is never resolved and
+# never retried; an unreadable daemon answer means no retry. A missing tag or
+# digest still fails.
 image_ref_inspectable() {
-  local ref="$1" host
+  local ref="$1" host regcfg
   docker manifest inspect "$ref" >/dev/null 2>&1 && return 0
   host="${ref%%/*}"
   case "$host" in
     *.*|*:*|localhost) ;;
     *) return 1 ;;  # no registry host part (Docker Hub library image)
   esac
-  local bare="${host%:[0-9]*}"
-  case "$host" in \[::1\]|\[::1\]:*) bare=loopback ;; esac
-  [[ "$bare" =~ ^127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] && bare=loopback
-  case "$bare" in
-    loopback|localhost) ;;
-    *)
-      docker info --format '{{range $k, $v := .RegistryConfig.IndexConfigs}}{{if not $v.Secure}}{{$k}}{{"\n"}}{{end}}{{end}}' 2>/dev/null \
-        | grep -qxF -- "$host" || return 1
-      ;;
-  esac
+  regcfg="$(docker info --format '{{json .RegistryConfig}}' 2>/dev/null)" || return 1
+  python3 -I -c '
+import ipaddress, json, sys
+cfg, host = json.loads(sys.argv[1]), sys.argv[2]
+idx = cfg.get("IndexConfigs") or {}
+if host in idx:
+    sys.exit(0 if idx[host].get("Secure") is False else 1)
+name = host[1:host.index("]")] if host.startswith("[") and "]" in host else host.rsplit(":", 1)[0]
+if name == "localhost":
+    ips = [ipaddress.ip_address("127.0.0.1"), ipaddress.ip_address("::1")]
+else:
+    try:
+        ips = [ipaddress.ip_address(name)]
+    except ValueError:
+        sys.exit(1)
+nets = [ipaddress.ip_network(c, strict=False) for c in cfg.get("InsecureRegistryCIDRs") or []]
+sys.exit(0 if any(ip.version == n.version and ip in n for ip in ips for n in nets) else 1)
+' "$regcfg" "$host" 2>/dev/null || return 1
   docker manifest inspect --insecure "$ref" >/dev/null 2>&1
 }
 
