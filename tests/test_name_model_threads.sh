@@ -7,9 +7,9 @@
 #      OMP_NUM_THREADS, MKL_NUM_THREADS and TORCH_NUM_THREADS; unset or empty
 #      = 2, the sidecar image's own value (an existing install keeps what it
 #      had); no other service gets the three variables
-#   2. bin/lucairn-init writes the host's thread count capped at 8 (nproc
-#      stubbed: 2, 4, 8, 32 -> 2, 4, 8, 8) and an empty line when no count can
-#      be read
+#   2. bin/lucairn-init writes 8 only on a host with 8 or more threads (nproc
+#      stubbed: 2, 4, 6, 8, 32 -> empty, empty, empty, 8, 8) and an empty line
+#      when no count can be read
 #   3. doctor's check_name_model_threads warns (never fails) below 8 host
 #      threads, above the host's count and on a non-number; ok on 8 of 8
 set -uo pipefail
@@ -55,7 +55,7 @@ else
   echo "skip compose render: docker compose not available (NOT RUN)"
 fi
 
-# ── 2. bin/lucairn-init writes the host's count, capped at 8 ────────────────
+# ── 2. bin/lucairn-init writes 8 only on a host with 8 or more threads ──────
 printf '{"license_key":"synthetic.payload","signing_key":"synthetic-signing-key"}\n' > "$TMP/license.json"
 SB="$TMP/stubs"; mkdir -p "$SB"
 init_threads() {  # nproc answer ('' = nproc, getconf and sysctl all fail) -> written value
@@ -72,11 +72,11 @@ init_threads() {  # nproc answer ('' = nproc, getconf and sysctl all fail) -> wr
   [ "$(grep -c '^LUCAIRN_NAME_MODEL_THREADS=' "$TMP/init.env")" = 1 ] || fail "init writes LUCAIRN_NAME_MODEL_THREADS exactly once (nproc=$1)"
   grep -E '^LUCAIRN_NAME_MODEL_THREADS=' "$TMP/init.env" | cut -d= -f2-
 }
-for case in 2:2 4:4 8:8 32:8; do
+for case in 2: 4: 6: 8:8 32:8; do
   got="$(init_threads "${case%%:*}")" || exit 1
-  [ "$got" = "${case#*:}" ] || fail "init with ${case%%:*} host threads wrote '$got', want ${case#*:}"
+  [ "$got" = "${case#*:}" ] || fail "init with ${case%%:*} host threads wrote '$got', want '${case#*:}'"
 done
-pass "init: host threads 2/4/8/32 -> LUCAIRN_NAME_MODEL_THREADS 2/4/8/8 (cap 8)"
+pass "init: host threads 2/4/6 -> empty (the image's 2); 8/32 -> LUCAIRN_NAME_MODEL_THREADS=8"
 got="$(init_threads "")" || exit 1
 [ -z "$got" ] || fail "init with no readable count wrote '$got', want empty"
 pass "init: no readable thread count -> empty line (the image's 2)"

@@ -2879,8 +2879,9 @@ OpenAI, MCP and proxy routes.
 
 - **8 CPU threads minimum** (8 vCPU on a cloud server). The name model in the
   sidecar uses up to `LUCAIRN_NAME_MODEL_THREADS` threads (bin/lucairn-init
-  writes the host's count, capped at 8); with fewer threads large records take
-  longer and can run into the scan limit (§ "Large records"). `bin/lucairn
+  writes 8 on a host with 8 or more threads and leaves it empty, = the image's
+  2, on a smaller one); with fewer threads large records take longer and can
+  run into the scan limit (§ "Large records"). `bin/lucairn
   doctor` warns below 8 threads and when the setting is above the host's count.
 - **16 GB RAM minimum** for the Docker host (or Docker Desktop VM). The sidecar
   alone is capped at 6.5 GB and peaks near 5.6 GB; the core adds up to 1 GB.
@@ -2915,42 +2916,53 @@ OpenAI, MCP and proxy routes.
 A tool result (for example a list of records Claude Code fetched) is scanned
 by the name model in the sidecar before anything is forwarded. The time grows
 with the length of the text and falls with the CPU threads the name model may
-use. Measured 2026-11-21 on a throwaway 8-thread x86_64 server with the 1.1.1
-images, synthetic data, one text per call (T-1479, measurement C):
+use. Measured 2026-11-21 on one throwaway 8-thread x86_64 server with the 1.1.1
+images, synthetic data, one text per call (T-1479, measurement C). The
+"4 threads" column is 4 of that server's 8 threads (the sidecar pinned to
+them), not a separate 4-thread machine; the "8 threads, setting 8" column ran
+once per size, the others three times (median):
 
-| Text | 2 threads (image default) | 8 threads on an 8-thread host |
-|---|---|---|
-| list of records, per 1,000 characters | about 1.6 s | about 0.95 s |
-| list, 50,000 characters | 80.8 s (4-thread host) / 72.7 s (8-thread host) | 46.4 s |
-| list, 60,000 characters as two fields of one request, through the core | about 112 s (4-thread host) | about 71 s |
-| ordinary prose, per 1,000 characters | about 0.9 s | not measured |
+| Text | 4 threads, image default (2) | 8 threads, image default (2) | 8 threads, setting 8 |
+|---|---|---|---|
+| list of records, per 1,000 characters | about 1.6 s | about 1.5 s | about 0.95 s |
+| list, 50,000 characters | 80.8 s | 72.7 s | 46.4 s |
+| list, 60,000 characters as two fields of one request, through the core | about 112 s | not measured | about 71 s |
+| ordinary prose, per 1,000 characters | about 0.9 s | not measured | not measured |
 
-- 8 threads on an 8-thread host scan **1.5 to 1.6 times faster** than the
-  image's 2 threads, with **identical hits**. More cores without the setting
-  change nothing (the image fixes 2 threads); 4 threads on a 4-thread host gain
-  nothing either. Nothing above 8 threads was measured, which is why
-  bin/lucairn-init caps the setting at 8.
+- With the setting at 8 on all 8 threads, lists were scanned **1.5 to 1.6
+  times faster** than with the image's 2 threads on the same 8 threads. For
+  lists of 20,000 to 80,000 characters the hits were identical in all three
+  columns; the setting-8 column ran once. More cores alone, without the setting, gave 0 to
+  10 % (72.7 s against 80.8 s at 50,000 characters). 4 threads on 4 threads of
+  the server gained nothing (31.8 s against 30.9 s at 20,000 characters),
+  which is why bin/lucairn-init writes the setting only on a host with 8 or
+  more threads. Nothing above 8 threads was measured.
+- The setting is not passed to the separate witness-central overlay
+  (`contrib/witness-central/docker-compose.witness-central.yml`); its relay,
+  which runs from the sidecar image, stays at the image's 2 threads.
 - **Fixed limits** (not settable through the kit): the core waits at most
   **120 s** for one sidecar call, the gateway waits at most **180 s** for the
   core, and one text may hold at most **49,152 characters** (a longer one is
   refused with `413` before any model call). A request whose scan runs past a
   limit is refused fail-closed (`503` `detect_failed`): nothing of it is
   forwarded.
-- **Stated limit — abandoned scans keep running.** When the core gives up on a
-  scan at 120 s, the sidecar still finishes it, and it reads one text at a
-  time. A retry (Claude Code retries a refused request up to ten times) waits
-  behind the abandoned scan; measured: a 5,000-character scan sent right after
-  an abandoned 50,000-character one took 67 s instead of 7 s. A record that is
-  too slow once stays too slow on retry, because nothing of a failed scan is
-  kept.
-- Splitting a record into pieces was measured and is not used: it lost 6 to 8 %
-  of the hits.
+- **Stated limit — abandoned scans keep running.** The sidecar reads one text
+  at a time and finishes a scan its caller has given up on. Measured with a
+  client that gave up after 10 seconds: a 5,000-character scan sent right
+  after the abandoned 50,000-character one took 67 s instead of 7 s. That the
+  same holds when the core gives up at its 120 s limit is read from the code,
+  not measured. A retry therefore waits behind the abandoned scan (Claude Code
+  retried a refused request up to ten times, 30 seconds apart, seen with
+  Claude Code 2.1.325 on 2026-11-21). By the code, a record that is too slow
+  once stays too slow on retry, because nothing of a failed scan is kept.
+- Splitting a record into pieces was measured and is not used: for lists, 6 to
+  9 % of the hits had no overlapping hit at all in the split result (losses
+  of exact spans were higher); for prose about 1 %.
 
 **Existing installs (upgrade):** the setting is not added by itself; an
 install without it keeps 2 threads. To get the gain, move to a host with at
-least 8 CPU threads, add `LUCAIRN_NAME_MODEL_THREADS=8` (or the host's count,
-if lower) to `customer.env`, then recreate the sidecar and the core right
-after it (with the `-f` files of your install; the self-hosted pair shown):
+least 8 CPU threads, add `LUCAIRN_NAME_MODEL_THREADS=8` to `customer.env`,
+then recreate the sidecar and the core right after it (with the `-f` files of your install; the self-hosted pair shown):
 
 ```bash
 docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml \

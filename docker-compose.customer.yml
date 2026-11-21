@@ -1077,11 +1077,11 @@ services:
     # Name-model threads (T-1479 slice 4): the sidecar image fixes
     # OMP/MKL/TORCH_NUM_THREADS=2, so the name model uses two CPU threads
     # whatever the host has. LUCAIRN_NAME_MODEL_THREADS (customer.env,
-    # written by bin/lucairn-init from the host's thread count, capped at 8)
-    # sets all three. Unset = 2, the image's own value, so an existing install
-    # does not change by itself. Measured 2026-11-21: 8 threads on an
-    # 8-thread host scan 1.5-1.6x faster with identical hits; 4 on a 4-thread
-    # host gain nothing. The service has no CPU limit; it uses what it is given.
+    # written by bin/lucairn-init as 8 on a host with 8 or more CPU threads,
+    # else empty) sets all three. Unset or empty = 2, the image's own value,
+    # so an existing install does not change by itself. Measured 2026-11-21:
+    # 8 threads on an 8-thread server scan 1.5-1.6x faster; 4 threads on 4
+    # threads of that server gained nothing. The service has no CPU limit; it uses what it is given.
     environment:
       HOME: "/tmp"
       XDG_CACHE_HOME: "/tmp/.cache"

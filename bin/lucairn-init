@@ -1498,13 +1498,13 @@ sanitizer_core_manifest_digest() {
 SANITIZER_CORE_IMAGE_DIGEST="$(sanitizer_core_manifest_digest dsa-sanitizer-core)"
 SANITIZER_CORE_SIDECAR_IMAGE_DIGEST="$(sanitizer_core_manifest_digest dsa-sanitizer-core-sidecar)"
 
-# Name-model threads (T-1479 slice 4): LUCAIRN_NAME_MODEL_THREADS = this
-# host's CPU thread count, capped at 8. Nothing above 8 threads was measured
-# (2026-11-21: 8 threads on an 8-thread host scan 1.5-1.6x faster than the
-# image's 2 with identical hits; 4 on a 4-thread host gain nothing), so the cap
-# stays at 8 until a larger host is measured. Never above what the host has.
-# init runs on the install host; if the count cannot be read the line is left
-# empty and the sidecar keeps the image's 2 threads.
+# Name-model threads (T-1479 slice 4): LUCAIRN_NAME_MODEL_THREADS = 8 on a
+# host with 8 or more CPU threads, the one case measured (2026-11-21: 8
+# threads on an 8-thread server scan 1.5-1.6x faster than the image's 2).
+# On a smaller host, or when the count cannot be read, the line is left empty
+# and the sidecar keeps the image's 2 threads: 4 threads on 4 threads of the
+# same server gained nothing (31.8 s against 30.9 s at 20,000 characters).
+# init runs on the install host.
 host_cpu_threads() {
   local n=""
   if have nproc; then n="$(nproc 2>/dev/null || true)"; fi
@@ -1514,8 +1514,10 @@ host_cpu_threads() {
   printf '%s' "$n"
 }
 NAME_MODEL_THREADS="$(host_cpu_threads)"
-if [ -n "$NAME_MODEL_THREADS" ] && [ "$NAME_MODEL_THREADS" -gt 8 ]; then
+if [ -n "$NAME_MODEL_THREADS" ] && [ "$NAME_MODEL_THREADS" -ge 8 ]; then
   NAME_MODEL_THREADS=8
+else
+  NAME_MODEL_THREADS=""
 fi
 
 # Mode-dependent fields
@@ -1823,8 +1825,8 @@ SANITIZER_CORE_REGISTRY_DSN_FILE=$SANITIZER_CORE_DSN_FILE
 LUCAIRN_SANITIZER_CORE_IMAGE_TAG=$DEFAULT_SANITIZER_CORE_IMAGE_TAG
 LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$SANITIZER_CORE_IMAGE_DIGEST
 LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=$SANITIZER_CORE_SIDECAR_IMAGE_DIGEST
-# CPU threads of the name model (sidecar): this host's thread count at init
-# time, capped at 8 (the most measured). Empty = the image's 2.
+# CPU threads of the name model (sidecar): 8 when this host had 8 or more
+# CPU threads at init time, else empty. Empty = the image's 2.
 # INSTALL.md § "Large records".
 LUCAIRN_NAME_MODEL_THREADS=$NAME_MODEL_THREADS
 SANDBOX_B_MESSAGES_JSON_MAX_BYTES=

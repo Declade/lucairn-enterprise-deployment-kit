@@ -9493,12 +9493,12 @@ check_name_model_threads() {
   case "$host" in ''|*[!0-9]*|0) host="" ;; esac
   case "$want" in
     '') want=2 ;;
-    *[!0-9]*|0) warn "name model threads: LUCAIRN_NAME_MODEL_THREADS=$want is not a positive whole number; the sidecar's thread libraries will not use it as meant (set it to this host's CPU thread count, at most 8)"; return 0 ;;
+    *[!0-9]*|0) warn "name model threads: LUCAIRN_NAME_MODEL_THREADS=$want is not a positive whole number; the sidecar's thread libraries will not use it as meant (set it to 8 on a host with 8 or more CPU threads, else leave it empty = the image's 2)"; return 0 ;;
   esac
   if [ -z "$host" ]; then
     echo "name model threads: $want (host CPU thread count not read; documented minimum 8)"
   elif [ "$want" -gt "$host" ]; then
-    warn "name model threads: LUCAIRN_NAME_MODEL_THREADS=$want is above this host's $host CPU threads ($src); set it to $host"
+    warn "name model threads: LUCAIRN_NAME_MODEL_THREADS=$want is above this host's $host CPU threads ($src); leave it empty (the image's 2) or set it to at most $host"
   elif [ "$host" -lt 8 ]; then
     warn "name model threads: this host has $host CPU threads ($src), below the documented minimum of 8; large records (tens of thousands of characters) may run into the 120 s scan limit (INSTALL.md § \"Large records\")"
   else
