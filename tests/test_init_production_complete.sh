@@ -333,4 +333,17 @@ if bash "$ROOT/scripts/bootstrap-mtls-ca.sh" "$B" >/dev/null 2>"$TMP/wca.err"; t
 [ "$(cat "$B/ca.crt")" = "$crt_before" ] && grep -q 'ca.key is missing' "$TMP/wca.err" || fail "refusal message / ca.crt changed"
 pass "bootstrap-mtls-ca: ca.key kept offline = nothing issued when complete, a clear refusal when a leaf is missing"
 
+# ── 7. offline doctor: when the seat lane counts as a provider (seat 15) ────
+FN="$TMP/byok-fn.sh"
+{ sed -n '/^env_value() {/,/^}/p' "$ROOT/bin/lucairn"; sed -n '/^check_byok_overlay() {/,/^}/p' "$ROOT/bin/lucairn"
+  echo 'runtime_profile_selected_compose_file() { echo docker-compose.self-hosted-byok.yml; }'; } > "$FN"
+byok_check() { printf '%s\n' "$@" > "$TMP/byok.env"; bash -c '. "$1"; check_byok_overlay "$2"' _ "$FN" "$TMP/byok.env" >/dev/null; }
+byok_check LUCAIRN_CLAUDE_SEAT_LANE=true LUCAIRN_LLM_EGRESS_ALLOWLIST=api.anthropic.com,api.openai.com || fail "seat lane + Anthropic allowed"
+if byok_check LUCAIRN_CLAUDE_SEAT_LANE=true LUCAIRN_LLM_EGRESS_ALLOWLIST=api.openai.com; then fail "seat lane counted although Anthropic is not allowed"; fi
+if byok_check LUCAIRN_CLAUDE_SEAT_LANE=true LUCAIRN_LLM_EGRESS_ALLOWLIST=api.anthropic.com SANDBOX_B_REMOTE_ENDPOINT=https://x.example; then
+  fail "seat lane counted for a remote Sandbox B"
+fi
+if byok_check LUCAIRN_CLAUDE_SEAT_LANE=false LUCAIRN_LLM_EGRESS_ALLOWLIST=api.anthropic.com; then fail "no key, no seat lane: passed"; fi
+pass "offline doctor: the seat lane is a provider only for a local Sandbox B whose allowlist names api.anthropic.com"
+
 echo "init production completeness: $N checks ok"
