@@ -323,6 +323,10 @@ rm -f "$SB/openssl"
 pass "a failed draw for LOCAL_SANDBOX_B_API_KEY stops init before customer.env is written"
 grep -q 'lucairn-mint-customer .*--tier enterprise --no-byok-per-request' "$TMP/full.err" || fail "mint hint without --no-byok-per-request"
 pass "init's first-key command for a local Sandbox B mints without byok_per_request (no 400 missing_upstream_key)"
+mint_byok() { LUCAIRN_ADMIN_KEY=synthetic-admin "$ROOT/bin/lucairn-mint-customer" --dry-run --name "Acme GmbH" --email ops@acme.example --tier enterprise "$@" 2>&1 | grep -c '"byok_per_request": false'; }
+[ "$(mint_byok --no-byok-per-request)" = 1 ] && [ "$(mint_byok)" = 0 ] || fail "mint payload byok_per_request"
+grep -q -- '--tier enterprise --no-byok-per-request > ~/lucairn-first.key' "$ROOT/INSTALL.md" || fail "fast path mint command"
+pass "fast-path mint command sends byok_per_request=false (Enterprise default is true; gateway 400 not run live)"
 
 # ── 6. bootstrap-mtls-ca.sh without ca.key (review seat 11) ─────────────────
 B="$TMP/wca"; bash "$ROOT/scripts/bootstrap-mtls-ca.sh" "$B" >/dev/null 2>&1 || fail "witness CA bootstrap"
