@@ -11280,7 +11280,15 @@ support_bundle() {
       ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" ps 2>&1 || true) | redact_stream > "$bundle_dir/docker/compose-ps.txt"
       (docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>&1 || true) | redact_stream > "$bundle_dir/docker/status.txt"
       ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" logs --tail 300 --no-color 2>&1 || true) | redact_stream > "$bundle_dir/logs/compose.log"
-      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" config 2>&1 || true) | redact_stream > "$bundle_dir/redacted/compose-resolved.yml"
+      # stdout only: Compose's stderr (2.40.x warns "VEIL_* variable is not
+      # set" for every nested `${LCR_X:-${VEIL_X}}` fallback) is not YAML, and
+      # merged into this file it made the decoded scan refuse every bundle
+      # (T-1479). The messages go to a text file next to it instead.
+      local config_err
+      config_err="$(mktemp)"
+      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" config 2> "$config_err" || true) | redact_stream > "$bundle_dir/redacted/compose-resolved.yml"
+      redact_stream < "$config_err" > "$bundle_dir/redacted/compose-config-messages.txt"
+      rm -f "$config_err"
     else
       echo "docker compose unavailable" > "$bundle_dir/docker/status.txt"
       echo "docker compose unavailable" > "$bundle_dir/logs/compose.log"

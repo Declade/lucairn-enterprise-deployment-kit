@@ -12,6 +12,7 @@ test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-h
 		tests/test_check_updates.sh \
 		tests/test_redact_stream.sh \
 		tests/test_support_bundle_routing.sh \
+		tests/test_support_bundle_online.sh \
 		tests/test_tms_trust_zones.sh \
 		tests/test_sanitizer_confidence_threshold_schema.sh \
 		tests/test_sanitizer_sprig_zero_knobs.sh \
