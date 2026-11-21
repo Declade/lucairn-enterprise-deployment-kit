@@ -64,12 +64,19 @@
 #     connections, an error from the daemon (nothing was written; the flag
 #     does not cover that either — final check on PR #162, fix rounds 1-2 on
 #     PR #163)
-#   9 the witness certificate-port mTLS material could not be created in
-#     /etc/witness-mtls (customer.env was written; re-run
-#     scripts/bootstrap-mtls-ca.sh with sudo)
+#   9 production only: the witness certificate-port mTLS material could not
+#     be created in /etc/witness-mtls (customer.env was written; fix the cause
+#     and re-run the same init command: it finds the install initialized and
+#     completes only the missing host steps)
 #  10 production only: the witness-signed manifest could not be signed (the
-#     witness image was not available; customer.env was written; run
+#     witness image was not available; customer.env was written; make the
+#     image available and re-run the same init command, or run
 #     scripts/sign-witness-manifest.sh --env customer.env)
+# A re-run that finds customer.env and its runtime profile matching completes
+# the missing host steps (certificate leaves, witness folder, manifest) and
+# exits with that step's code; it refuses (exit 2) --image-registry or
+# --claude-seat-lane values that differ from customer.env instead of
+# ignoring them.
 
 set -euo pipefail
 
@@ -385,10 +392,15 @@ OUTPUT="$DEFAULT_OUTPUT"
 IMAGE_TAG="$DEFAULT_IMAGE_TAG"
 GATEWAY_BASE_URL_OVERRIDE=""
 IMAGE_REGISTRY="ghcr.io/declade"
+IMAGE_REGISTRY_GIVEN="false"
 CLAUDE_SEAT_LANE="false"
 # The witness certificate-port mTLS folder. Fixed: the compose files mount it
 # at the same container path and bin/lucairn doctor checks these paths on the host.
 WITNESS_MTLS_DIR="/etc/witness-mtls"
+# Test hook only (tests/test_init_production_complete.sh runs a full init
+# without root): never set it on an install, the compose files and doctor
+# expect the fixed path.
+[ -z "${LUCAIRN_INIT_TEST_WITNESS_MTLS_DIR:-}" ] || WITNESS_MTLS_DIR="$LUCAIRN_INIT_TEST_WITNESS_MTLS_DIR"
 SKIP_DOCTOR="false"
 DRY_RUN="false"
 CONFIRM_NO_REGISTRY_VOLUME="false"
@@ -443,7 +455,7 @@ while [ $# -gt 0 ]; do
     --output)          OUTPUT="${2:?--output requires a path}"; shift 2 ;;
     --image-tag)       IMAGE_TAG="${2:?--image-tag requires a value}"; shift 2 ;;
     --gateway-base-url) GATEWAY_BASE_URL_OVERRIDE="${2:?--gateway-base-url requires a value}"; shift 2 ;;
-    --image-registry)  IMAGE_REGISTRY="${2:?--image-registry requires a value}"; shift 2 ;;
+    --image-registry)  IMAGE_REGISTRY="${2:?--image-registry requires a value}"; IMAGE_REGISTRY_GIVEN="true"; shift 2 ;;
     --claude-seat-lane) CLAUDE_SEAT_LANE="true"; shift ;;
     --skip-doctor)     SKIP_DOCTOR="true"; shift ;;
     --dry-run)         DRY_RUN="true"; shift ;;
@@ -898,6 +910,208 @@ acquire_install_lock() {
   fi
 }
 
+# Host steps -----------------------------------------------------------------
+#
+# Kit 2.0.1 (T-1479): the steps that write OUTSIDE customer.env (certificate
+# leaves, the witness certificate-port folder, the witness-signed manifest).
+# Functions, because two paths run them: a fresh init (in order, after
+# customer.env is written) and a re-run that finds "already initialized" but
+# a host step missing (fix round 1, review seat 10: such a re-run used to exit
+# 0 with the install still unable to start). Each step is idempotent.
+
+# run_sanitizer_core_bootstrap — the deploy CA and every service leaf of
+# $SANITIZER_CORE_MTLS_DIR (scripts/bootstrap-sanitizer-core-mtls.sh).
+# Final-read M2: on a Linux Docker host the containers run as uid 10001 and
+# cannot read a 0600 key owned by the operator, so the bootstrap refuses to
+# run there as an ordinary user (kit 1.x never needed key files: the witness
+# generated its own leaf). This init therefore runs that ONE step with sudo
+# (it may ask for the password) when it is not root, unless the operator
+# declared that the image user maps to their own uid (LUCAIRN_CONTAINER_UID=
+# `id -u`, e.g. Docker Desktop for Linux or a user-namespace-remapped daemon).
+# customer.env stays owned by the operator either way.
+run_sanitizer_core_bootstrap() {
+  local -a _sanitizer_core_bootstrap
+  local _sanitizer_core_bootstrap_hint
+  _sanitizer_core_bootstrap=(bash "$KIT_ROOT/scripts/bootstrap-sanitizer-core-mtls.sh" "$SANITIZER_CORE_MTLS_DIR")
+  _sanitizer_core_bootstrap_hint="scripts/bootstrap-sanitizer-core-mtls.sh '$SANITIZER_CORE_MTLS_DIR'"
+  if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" != "0" ] \
+     && [ "${LUCAIRN_CONTAINER_UID:-10001}" != "$(id -u)" ]; then
+    _sanitizer_core_bootstrap_hint="sudo $_sanitizer_core_bootstrap_hint"
+    if command -v sudo >/dev/null 2>&1; then
+      echo "note: the sanitizer core's mTLS keys must belong to uid ${LUCAIRN_CONTAINER_UID:-10001} (the user every Lucairn image runs as); running that one step with sudo (it may ask for your password):" >&2
+      echo "  $_sanitizer_core_bootstrap_hint" >&2
+      _sanitizer_core_bootstrap=(sudo env "LUCAIRN_CONTAINER_UID=${LUCAIRN_CONTAINER_UID:-10001}" \
+        ${OPENSSL:+"OPENSSL=$OPENSSL"} ${CA_DAYS:+"CA_DAYS=$CA_DAYS"} ${LEAF_DAYS:+"LEAF_DAYS=$LEAF_DAYS"} \
+        ${SANITIZER_CORE_MTLS_CA_DIR:+"SANITIZER_CORE_MTLS_CA_DIR=$SANITIZER_CORE_MTLS_CA_DIR"} \
+        "${_sanitizer_core_bootstrap[@]}")
+    fi
+  fi
+  if ! "${_sanitizer_core_bootstrap[@]}" >&2; then
+    fail "could not create the sanitizer core mTLS material in $SANITIZER_CORE_MTLS_DIR (customer.env was written; fix the error above and re-run the same bin/lucairn-init command, or run: $_sanitizer_core_bootstrap_hint)" 6
+  fi
+}
+
+# run_witness_mtls_step — the witness certificate-port mTLS material in
+# $WITNESS_MTLS_DIR. Without it the witness refuses every certificate read
+# (gateway included). It used to be a hand step between init and the first
+# `up` (README "Fast Path"); init now runs scripts/bootstrap-mtls-ca.sh itself
+# (idempotent: existing files are reused) and hands the folder to the image
+# user. Production only (fix round 1, review seat 18: a --dev init behaves as
+# before kit 2.0.1, without sudo and without this openssl step).
+run_witness_mtls_step() {
+  local -a _witness_mtls_cmd _witness_mtls_post _witness_mtls_sudo
+  _witness_mtls_cmd=(bash "$KIT_ROOT/scripts/bootstrap-mtls-ca.sh" "$WITNESS_MTLS_DIR")
+  _witness_mtls_post=()
+  if [ "$(uname -s)" = "Linux" ]; then
+    _witness_mtls_post=(chown -R "${LUCAIRN_CONTAINER_UID:-10001}:${LUCAIRN_CONTAINER_UID:-10001}" "$WITNESS_MTLS_DIR")
+  fi
+  _witness_mtls_sudo=()
+  if [ "$(id -u)" != "0" ]; then
+    command -v sudo >/dev/null 2>&1 \
+      || fail "creating $WITNESS_MTLS_DIR needs root and sudo is not installed (customer.env was written; run the same bin/lucairn-init command once more as root: it finds the install initialized and completes only the missing host steps)" 9
+    _witness_mtls_sudo=(sudo)
+    echo "note: the witness certificate-port mTLS folder $WITNESS_MTLS_DIR needs root; running that one step with sudo:" >&2
+    echo "  sudo scripts/bootstrap-mtls-ca.sh $WITNESS_MTLS_DIR" >&2
+  fi
+  if ! "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" "${_witness_mtls_cmd[@]}" >/dev/null 2>"$OUTPUT_DIR/.lucairn-witness-mtls.err"; then
+    cat "$OUTPUT_DIR/.lucairn-witness-mtls.err" >&2 || true
+    rm -f "$OUTPUT_DIR/.lucairn-witness-mtls.err"
+    fail "could not create the witness mTLS material in $WITNESS_MTLS_DIR (customer.env was written; fix the error above and re-run the same bin/lucairn-init command: it finds the install initialized and completes only the missing host steps)" 9
+  fi
+  rm -f "$OUTPUT_DIR/.lucairn-witness-mtls.err"
+  # The containers run as uid 10001 (Linux): hand the folder over and let them
+  # traverse it; the leaf keys stay 0600. Fix round 1 (review seat 1): the CA
+  # private key then goes back to root:root 0600, so no container (the
+  # gateway and the witness both mount this folder as uid 10001) can read it;
+  # neither service reads ca.key (images 1.1.1 read only the WITNESS_MTLS_*
+  # paths). Stated limit (INSTALL.md § "Witness mTLS"): the leaf keys of the
+  # other callers in this folder stay readable to both containers.
+  if [ "${#_witness_mtls_post[@]}" -gt 0 ]; then
+    "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" "${_witness_mtls_post[@]}" \
+      || fail "could not hand $WITNESS_MTLS_DIR to uid ${LUCAIRN_CONTAINER_UID:-10001} (customer.env was written)" 9
+    if "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" test -e "$WITNESS_MTLS_DIR/ca.key"; then
+      "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" chown 0:0 "$WITNESS_MTLS_DIR/ca.key" \
+        && "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" chmod 0600 "$WITNESS_MTLS_DIR/ca.key" \
+        || fail "could not make $WITNESS_MTLS_DIR/ca.key root-only (customer.env was written)" 9
+    fi
+  fi
+  "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" chmod 0755 "$WITNESS_MTLS_DIR" \
+    || fail "could not chmod 0755 $WITNESS_MTLS_DIR (customer.env was written)" 9
+  echo "[lucairn-init] witness mTLS material ready in $WITNESS_MTLS_DIR (WITNESS_MTLS_* lines written)" >&2
+}
+
+# manifest_blob_path — the gateway's witness-signed manifest on the host: the
+# `${SANDBOX_B_CERT_DIR:-./.certs}:/certs` mount of the Compose project dir.
+# Stated limit (INSTALL.md § "Fast path"): one install per kit checkout; a
+# second env initialised from the same checkout shares this path.
+manifest_blob_path() {
+  local _manifest_project_dir="$KIT_ROOT"
+  if [ ! -f "$KIT_ROOT/docker-compose.customer.yml" ] && [ -f "$KIT_ROOT/install/docker-compose.customer.yml" ]; then
+    _manifest_project_dir="$KIT_ROOT/install"
+  fi
+  printf '%s' "$_manifest_project_dir/.certs/witness-signed-manifest.json"
+}
+
+# run_manifest_step — the witness-signed key manifest. A production gateway
+# refuses to start without it, and a blob signed for OTHER keys is fatal in
+# every mode, so a fresh env (new keys) always gets a fresh blob: signed here
+# in production (scripts/sign-witness-manifest.sh, the digest-pinned tool
+# inside the witness image), moved aside otherwise. Sets MANIFEST_PENDING when
+# signing failed.
+run_manifest_step() {
+  MANIFEST_BLOB="$(manifest_blob_path)"
+  # The old blob was signed for other keys (this env is new, or the resume
+  # path found none): aside first, so the signer never weighs it.
+  stale_manifest_aside
+  if [ "$MODE" = "production" ]; then
+    if bash "$KIT_ROOT/scripts/sign-witness-manifest.sh" --env "$OUTPUT" --out "$MANIFEST_BLOB"; then
+      return 0
+    fi
+    MANIFEST_PENDING="1"
+    echo "" >&2
+    echo "NOT DONE: the witness-signed manifest (see the error above). The production gateway will not start without it." >&2
+    echo "Make the images available (registry login or your mirror), then re-run the same bin/lucairn-init command (it completes only the missing host steps), or run:" >&2
+    echo "  scripts/sign-witness-manifest.sh --env $(printf '%q' "$OUTPUT") --out $(printf '%q' "$MANIFEST_BLOB")" >&2
+  fi
+}
+
+stale_manifest_aside() {
+  local _aside
+  if [ -f "$MANIFEST_BLOB" ]; then
+    _aside="$MANIFEST_BLOB.stale-$(date -u +%Y%m%dT%H%M%SZ)"
+    mv -f "$MANIFEST_BLOB" "$_aside" \
+      && echo "note: moved the previous witness-signed manifest (signed for the old keys) aside: $_aside" >&2
+  fi
+}
+
+# resume_host_steps — the "already initialized" path. customer.env and its
+# runtime profile match the request, so nothing in them is rewritten; the
+# host steps that are missing are completed (a re-run after exit 6, 9 or 10,
+# or an env from kit 2.0.0 whose tree lacks the Sandbox B leaves). Flags that
+# would change customer.env are refused instead of ignored (review seat 10).
+resume_host_steps() {
+  local env_reg env_seat leaf w_dir f
+  local -a todo=()
+  env_reg="$(optional_env_field "$OUTPUT" LUCAIRN_IMAGE_REGISTRY)" || env_reg=""
+  env_seat="$(optional_env_field "$OUTPUT" LUCAIRN_CLAUDE_SEAT_LANE)" || env_seat=""
+  if [ "$IMAGE_REGISTRY_GIVEN" = "true" ] && [ "${env_reg%/}" != "$IMAGE_REGISTRY" ]; then
+    fail "$OUTPUT is already initialized with LUCAIRN_IMAGE_REGISTRY=${env_reg:-<unset>}; a re-run does not rewrite customer.env, so --image-registry $IMAGE_REGISTRY would be ignored. Set LUCAIRN_IMAGE_REGISTRY in customer.env yourself (no customer state was changed)" 2
+  fi
+  if [ "$CLAUDE_SEAT_LANE" = "true" ] && [ "$env_seat" != "true" ]; then
+    fail "$OUTPUT is already initialized without the seat lane; a re-run does not rewrite customer.env, so --claude-seat-lane would be ignored. Set LUCAIRN_CLAUDE_SEAT_LANE=true in customer.env yourself (docs/CLAUDE_SEATS.md; no customer state was changed)" 2
+  fi
+  # 1. the sanitizer core's tree (the same path rule as the adoption path below)
+  SANITIZER_CORE_MTLS_DIR="$(optional_env_field "$OUTPUT" SANITIZER_CORE_MTLS_HOST_DIR)" || SANITIZER_CORE_MTLS_DIR=""
+  case "$SANITIZER_CORE_MTLS_DIR" in
+    /*) : ;;
+    '') SANITIZER_CORE_MTLS_DIR="$KIT_ROOT/.certs/sanitizer-core-mtls" ;;
+    *) SANITIZER_CORE_MTLS_DIR="$KIT_ROOT/${SANITIZER_CORE_MTLS_DIR#./}" ;;
+  esac
+  for leaf in sanitizer-core/dsa-sanitizer-core sanitizer-core/witness-client gateway/dsa-gateway veil-witness/dsa-veil-witness; do
+    [ -f "$SANITIZER_CORE_MTLS_DIR/$leaf.crt" ] || { todo+=(core); break; }
+  done
+  if [ "$RUNTIME_MODE" != "split-remote" ] && [ "${todo[*]-}" != "core" ]; then
+    for leaf in sandbox-b/dsa-sandbox-b sandbox-b/witness-client; do
+      [ -f "$SANITIZER_CORE_MTLS_DIR/$leaf.crt" ] || { todo+=(core); break; }
+    done
+  fi
+  if [ "$MODE" = "production" ] && [ "${LUCAIRN_INIT_SKIP_WITNESS_STEPS:-}" != "1" ]; then
+    # 2. the witness folder, when customer.env names it (a kit 2.0.0 env
+    #    leaves the WITNESS_MTLS_* lines empty: nothing to complete here)
+    w_dir="$(optional_env_field "$OUTPUT" LCR_WITNESS_MTLS_HOST_DIR)" || w_dir=""
+    if [ "$w_dir" = "$WITNESS_MTLS_DIR" ]; then
+      for f in ca.crt witness-server.crt gateway-client.crt sandbox-a-client.crt; do
+        [ -f "$WITNESS_MTLS_DIR/$f" ] || { todo+=(witness); break; }
+      done
+    fi
+    # 3. the witness-signed manifest
+    [ -f "$(manifest_blob_path)" ] || todo+=(manifest)
+  fi
+  if [ "${#todo[@]}" -eq 0 ]; then
+    echo "already initialized: $OUTPUT and $RUNTIME_PROFILE_MANIFEST match the requested runtime profile; every host step is in place" >&2
+    exit 0
+  fi
+  echo "already initialized: $OUTPUT and $RUNTIME_PROFILE_MANIFEST match the requested runtime profile; customer.env is not rewritten. Missing host steps: ${todo[*]}" >&2
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "dry run: would complete: ${todo[*]} (nothing written)" >&2
+    exit 0
+  fi
+  OUTPUT_DIR="$(dirname "$OUTPUT")"
+  MANIFEST_PENDING=""
+  for f in "${todo[@]}"; do
+    case "$f" in
+      core) run_sanitizer_core_bootstrap ;;
+      witness) run_witness_mtls_step ;;
+      manifest) run_manifest_step ;;
+    esac
+  done
+  if [ -n "$MANIFEST_PENDING" ]; then
+    echo "init finished with ONE step left: the witness-signed manifest (see NOT DONE above)." >&2
+    exit 10
+  fi
+  echo "[lucairn-init] completed the missing host steps: ${todo[*]}" >&2
+  exit 0
+}
 # All state/adoption decisions below are made while holding this directory
 # mutex.  The trap releases it on normal errors and TERM/INT.
 acquire_install_lock
@@ -926,8 +1140,7 @@ if path_exists_or_symlink "$OUTPUT"; then
     [ "$existing_marker" = "1" ] \
       || fail "runtime profile sidecar requires LUCAIRN_RUNTIME_PROFILE_REQUIRED=1 (no customer state was changed)"
     if runtime_profile_matches_inputs && runtime_env_matches_inputs "$OUTPUT"; then
-      echo "already initialized: $OUTPUT and $RUNTIME_PROFILE_MANIFEST match the requested runtime profile" >&2
-      exit 0
+      resume_host_steps
     fi
     fail "existing runtime profile or customer.env conflicts with requested inputs; inspect both files (no customer state was changed)"
   fi
@@ -1095,9 +1308,18 @@ gen_ed25519_pair() {
   # `public_bytes_raw` is an AttributeError. The Encoding/PublicFormat
   # form pulls in two extra imports but works on every cryptography
   # version a customer is likely to have installed via apt.
-  pub="$(python3 - "$seed" <<'PY' 2>/dev/null || true
+  # Fix round 1 (review seat 5): the seed reaches python on stdin, never as a
+  # process argument (visible in the host's process list while it runs).
+  pub="$(printf '%s' "$seed" | python3 -c "$GEN_ED25519_PY" 2>/dev/null || true)"
+  if [ -z "$pub" ]; then
+    echo ""
+    return 1
+  fi
+  printf '%s:%s\n' "$seed" "$pub"
+}
+GEN_ED25519_PY='
 import binascii, sys
-seed = binascii.unhexlify(sys.argv[1])
+seed = binascii.unhexlify(sys.stdin.read().strip())
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
@@ -1109,14 +1331,7 @@ except Exception:
     except Exception:
         sys.exit(1)
 print(binascii.hexlify(pub).decode())
-PY
-)"
-  if [ -z "$pub" ]; then
-    echo ""
-    return 1
-  fi
-  printf '%s:%s\n' "$seed" "$pub"
-}
+'
 
 # Per-slot generation -------------------------------------------------------
 
@@ -1202,7 +1417,13 @@ done
 # Kit 2.0.1 (T-1479): Sandbox B's API key is a fresh secret, never the
 # well-known fallback `local-sandbox-b-key` (bin/lucairn doctor refuses that
 # value in self-hosted production).
-set_kv LOCAL_SANDBOX_B_API_KEY "$(gen_hex32)"
+# Fix round 1 (review seat 16): a failed draw stops init (a command
+# substitution's failure does not stop `set -e` inside an argument, and an
+# empty value would let Compose fall back to the well-known key).
+_local_sandbox_b_key="$(gen_hex32)" || _local_sandbox_b_key=""
+[[ $_local_sandbox_b_key =~ ^[0-9a-f]{64}$ ]] \
+  || fail "could not draw a random LOCAL_SANDBOX_B_API_KEY (openssl rand failed); nothing was written" 3
+set_kv LOCAL_SANDBOX_B_API_KEY "$_local_sandbox_b_key"
 
 # Hex32 service secrets
 for slot in "${HEX32_SLOTS[@]}"; do
@@ -1318,6 +1539,8 @@ SANDBOX_B_WITNESS_BLOCK=""
 # empty, as before kit 2.0.1, so nothing names files that do not exist.
 W_MTLS_DIR="$WITNESS_MTLS_DIR"
 [ "${LUCAIRN_INIT_SKIP_WITNESS_STEPS:-}" != "1" ] || W_MTLS_DIR=""
+# A --dev install gets no witness folder step (fix round 1, review seat 18).
+[ "$MODE" = "production" ] || W_MTLS_DIR=""
 if [ "$MODE" = "production" ]; then
   PRODUCTION_WITNESS_BLOCK="# Certificate anchoring (production): public transparency log + RFC 3161
 # timestamp authority (approved sub-processors Sigstore Rekor and FreeTSA).
@@ -1972,31 +2195,7 @@ if [ "$ADOPT_RUNTIME_PROFILE" = "true" ]; then
     *) SANITIZER_CORE_MTLS_DIR="$KIT_ROOT/${SANITIZER_CORE_MTLS_DIR#./}" ;;
   esac
 fi
-# Final-read M2: on a Linux Docker host the containers run as uid 10001 and
-# cannot read a 0600 key owned by the operator, so the bootstrap refuses to
-# run there as an ordinary user (kit 1.x never needed key files: the witness
-# generated its own leaf). This init therefore runs that ONE step with sudo
-# (it may ask for the password) when it is not root, unless the operator
-# declared that the image user maps to their own uid (LUCAIRN_CONTAINER_UID=
-# `id -u`, e.g. Docker Desktop for Linux or a user-namespace-remapped daemon).
-# customer.env stays owned by the operator either way.
-_sanitizer_core_bootstrap=(bash "$KIT_ROOT/scripts/bootstrap-sanitizer-core-mtls.sh" "$SANITIZER_CORE_MTLS_DIR")
-_sanitizer_core_bootstrap_hint="scripts/bootstrap-sanitizer-core-mtls.sh '$SANITIZER_CORE_MTLS_DIR'"
-if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" != "0" ] \
-   && [ "${LUCAIRN_CONTAINER_UID:-10001}" != "$(id -u)" ]; then
-  _sanitizer_core_bootstrap_hint="sudo $_sanitizer_core_bootstrap_hint"
-  if command -v sudo >/dev/null 2>&1; then
-    echo "note: the sanitizer core's mTLS keys must belong to uid ${LUCAIRN_CONTAINER_UID:-10001} (the user every Lucairn image runs as); running that one step with sudo (it may ask for your password):" >&2
-    echo "  $_sanitizer_core_bootstrap_hint" >&2
-    _sanitizer_core_bootstrap=(sudo env "LUCAIRN_CONTAINER_UID=${LUCAIRN_CONTAINER_UID:-10001}" \
-      ${OPENSSL:+"OPENSSL=$OPENSSL"} ${CA_DAYS:+"CA_DAYS=$CA_DAYS"} ${LEAF_DAYS:+"LEAF_DAYS=$LEAF_DAYS"} \
-      ${SANITIZER_CORE_MTLS_CA_DIR:+"SANITIZER_CORE_MTLS_CA_DIR=$SANITIZER_CORE_MTLS_CA_DIR"} \
-      "${_sanitizer_core_bootstrap[@]}")
-  fi
-fi
-if ! "${_sanitizer_core_bootstrap[@]}" >&2; then
-  fail "could not create the sanitizer core mTLS material in $SANITIZER_CORE_MTLS_DIR (customer.env was written; fix the error above and re-run: $_sanitizer_core_bootstrap_hint)" 6
-fi
+run_sanitizer_core_bootstrap
 
 # Kit 2.0: the core's registry DSN file (postgres:// URL, password
 # percent-encoded; mode 0444 in a 0700 directory), from the customer.env just
@@ -2029,84 +2228,19 @@ elif ! bash "$KIT_ROOT/scripts/write-sanitizer-core-registry-dsn.sh" --env-file 
   fail "could not write the sanitizer core registry DSN file (customer.env was written; fix the error above and re-run: scripts/write-sanitizer-core-registry-dsn.sh --env-file '$OUTPUT')" 7
 fi
 
-# Kit 2.0.1 (T-1479): the witness certificate-port mTLS material. Without it
-# the witness refuses every certificate read (gateway included). It used to be
-# a hand step between init and the first `up` (README "Fast Path"); init now
-# runs scripts/bootstrap-mtls-ca.sh itself (idempotent: existing files are
-# reused) and hands the folder to the image user. Not in adoption mode (the
-# adopted customer.env is not rewritten, so its WITNESS_MTLS_* lines stay as
-# they were).
-# LUCAIRN_INIT_SKIP_WITNESS_STEPS=1 skips this step and the manifest step
-# below (the kit's own tests: no root, no Docker daemon). Never set it on a
-# real install: the witness then refuses certificate reads and a production
+# Kit 2.0.1 (T-1479): the host steps after customer.env (functions above,
+# § "Host steps"). Not in adoption mode (the adopted customer.env is not
+# rewritten, so its WITNESS_MTLS_* lines stay as they were).
+# LUCAIRN_INIT_SKIP_WITNESS_STEPS=1 skips the witness folder and the manifest
+# (the kit's own tests: no root, no Docker daemon). Never set it on a real
+# install: the witness then refuses certificate reads and a production
 # gateway does not start.
+MANIFEST_PENDING=""
 if [ "${LUCAIRN_INIT_SKIP_WITNESS_STEPS:-}" = "1" ]; then
   echo "note: LUCAIRN_INIT_SKIP_WITNESS_STEPS=1 — skipped the witness mTLS folder and the witness-signed manifest" >&2
 elif [ "$ADOPT_RUNTIME_PROFILE" != "true" ]; then
-  _witness_mtls_cmd=(bash "$KIT_ROOT/scripts/bootstrap-mtls-ca.sh" "$WITNESS_MTLS_DIR")
-  _witness_mtls_post=()
-  if [ "$(uname -s)" = "Linux" ]; then
-    _witness_mtls_post=(chown -R "${LUCAIRN_CONTAINER_UID:-10001}:${LUCAIRN_CONTAINER_UID:-10001}" "$WITNESS_MTLS_DIR")
-  fi
-  _witness_mtls_sudo=()
-  if [ "$(id -u)" != "0" ]; then
-    command -v sudo >/dev/null 2>&1 \
-      || fail "creating $WITNESS_MTLS_DIR needs root and sudo is not installed (customer.env was written; run as root: scripts/bootstrap-mtls-ca.sh $WITNESS_MTLS_DIR, then chown -R 10001:10001 $WITNESS_MTLS_DIR and chmod 0755 $WITNESS_MTLS_DIR)" 9
-    _witness_mtls_sudo=(sudo)
-    echo "note: the witness certificate-port mTLS folder $WITNESS_MTLS_DIR needs root; running that one step with sudo:" >&2
-    echo "  sudo scripts/bootstrap-mtls-ca.sh $WITNESS_MTLS_DIR" >&2
-  fi
-  if ! "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" "${_witness_mtls_cmd[@]}" >/dev/null 2>"$OUTPUT_DIR/.lucairn-witness-mtls.err"; then
-    cat "$OUTPUT_DIR/.lucairn-witness-mtls.err" >&2 || true
-    rm -f "$OUTPUT_DIR/.lucairn-witness-mtls.err"
-    fail "could not create the witness mTLS material in $WITNESS_MTLS_DIR (customer.env was written; fix the error above and re-run: sudo scripts/bootstrap-mtls-ca.sh $WITNESS_MTLS_DIR)" 9
-  fi
-  rm -f "$OUTPUT_DIR/.lucairn-witness-mtls.err"
-  # The containers run as uid 10001 (Linux): hand the folder over and let them
-  # traverse it; the keys stay 0600. Stated limit (INSTALL.md § "Witness
-  # mTLS"): this CA's private key sits in the same folder.
-  if [ "${#_witness_mtls_post[@]}" -gt 0 ]; then
-    "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" "${_witness_mtls_post[@]}" \
-      || fail "could not hand $WITNESS_MTLS_DIR to uid ${LUCAIRN_CONTAINER_UID:-10001} (customer.env was written)" 9
-  fi
-  "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" chmod 0755 "$WITNESS_MTLS_DIR" \
-    || fail "could not chmod 0755 $WITNESS_MTLS_DIR (customer.env was written)" 9
-  echo "[lucairn-init] witness mTLS material ready in $WITNESS_MTLS_DIR (WITNESS_MTLS_* lines written)" >&2
-fi
-
-# Kit 2.0.1 (T-1479): the witness-signed key manifest. A production gateway
-# refuses to start without it, and a blob signed for OTHER keys is fatal in
-# every mode, so a fresh env (new keys) always gets a fresh blob: signed here
-# in production (scripts/sign-witness-manifest.sh, the tool inside the witness
-# image from LUCAIRN_IMAGE_REGISTRY), moved aside otherwise.
-_manifest_project_dir="$KIT_ROOT"
-if [ ! -f "$KIT_ROOT/docker-compose.customer.yml" ] && [ -f "$KIT_ROOT/install/docker-compose.customer.yml" ]; then
-  _manifest_project_dir="$KIT_ROOT/install"
-fi
-MANIFEST_BLOB="$_manifest_project_dir/.certs/witness-signed-manifest.json"
-MANIFEST_PENDING=""
-if [ "$ADOPT_RUNTIME_PROFILE" != "true" ] && [ "${LUCAIRN_INIT_SKIP_WITNESS_STEPS:-}" != "1" ]; then
-  _stale_blob_aside() {
-    if [ -f "$MANIFEST_BLOB" ]; then
-      _aside="$MANIFEST_BLOB.stale-$(date -u +%Y%m%dT%H%M%SZ)"
-      mv -f "$MANIFEST_BLOB" "$_aside" \
-        && echo "note: moved the previous witness-signed manifest (signed for the old keys) aside: $_aside" >&2
-    fi
-  }
-  if [ "$MODE" = "production" ]; then
-    if bash "$KIT_ROOT/scripts/sign-witness-manifest.sh" --env "$OUTPUT" --out "$MANIFEST_BLOB"; then
-      :
-    else
-      _stale_blob_aside
-      MANIFEST_PENDING="1"
-      echo "" >&2
-      echo "NOT DONE: the witness-signed manifest (see the error above). The production gateway will not start without it." >&2
-      echo "Make the images available (registry login or your mirror), then run:" >&2
-      echo "  scripts/sign-witness-manifest.sh --env $(shell_quote "$OUTPUT") --out $(shell_quote "$MANIFEST_BLOB")" >&2
-    fi
-  else
-    _stale_blob_aside
-  fi
+  [ "$MODE" != "production" ] || run_witness_mtls_step
+  run_manifest_step
 fi
 
 # BYOK banner
@@ -2175,7 +2309,14 @@ echo "  docker compose -f docker-compose.customer.yml --env-file $(shell_quote "
 echo >&2
 echo "Mint your first customer + API key (after stack is healthy):" >&2
 echo >&2
-echo "  ./bin/lucairn-mint-customer --name \"Acme GmbH\" --email \"ops@acme.de\" --tier enterprise" >&2
+# Fix round 1 (review seat 8): an Enterprise key defaults to
+# byok_per_request=true, and the gateway (images 1.1.1) then answers 400
+# missing_upstream_key to every laptop turn that carries no provider key of
+# its own. With a local Sandbox B the provider key (or the seat sign-in) is
+# on this server, so the first key is minted without that flag.
+_mint_byok_flag=""
+[ "$RUNTIME_MODE" = "split-remote" ] || _mint_byok_flag=" --no-byok-per-request"
+echo "  ./bin/lucairn-mint-customer --name \"Acme GmbH\" --email \"ops@acme.de\" --tier enterprise$_mint_byok_flag" >&2
 echo >&2
 if [ -n "$MANIFEST_PENDING" ]; then
   echo "init finished with ONE step left: the witness-signed manifest (see NOT DONE above)." >&2

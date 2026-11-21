@@ -156,15 +156,55 @@ PY
 pass "sign-witness-manifest: 7 entries in the gateway's order, LCR_GATEWAY_PUBLIC_KEY not in it"
 [ "$(cat "$TMP/stub/issuer")" = "Lucairn Veil Witness" ] || fail "issuer quotes not stripped"
 grep -qx -- "--network" "$TMP/stub/argv" && grep -qx none "$TMP/stub/argv" || fail "container has a network"
-grep -qx "registry.internal.example:5000/declade/dsa-veil-witness:1.1.1" "$TMP/stub/argv" || fail "image not from LUCAIRN_IMAGE_REGISTRY"
+WDIGEST="$(awk '$1 == "ghcr.io/declade/dsa-veil-witness:1.1.1" { print $2 }' "$ROOT/keys/image-digests-1.1.1.txt")"
+grep -qx "registry.internal.example:5000/declade/dsa-veil-witness@$WDIGEST" "$TMP/stub/argv" \
+  || fail "image not the signed digest from LUCAIRN_IMAGE_REGISTRY"
+! grep -q 'dsa-veil-witness:1.1.1' "$TMP/stub/argv" || fail "a mutable tag reached docker run"
 ! grep -q "$(val LCR_WITNESS_SIGNING_KEY "$P")" "$TMP/stub/argv" || fail "witness seed in docker argv"
 [ "$(cat "$TMP/stub/seed")" = "$(val LCR_WITNESS_SIGNING_KEY "$P")" ] || fail "seed file content"
-pass "sign-witness-manifest: issuer unquoted, mirror image, --network none, seed only as a mounted file"
+pass "sign-witness-manifest: issuer unquoted, digest-pinned mirror image, --network none, seed only as a mounted file"
 grep -v '^LCR_WITNESS_SIGNING_KEY=' "$P" > "$TMP/noseed.env"
 if PATH="$TMP/bin:$PATH" STUB_DIR="$TMP/stub" bash "$ROOT/scripts/sign-witness-manifest.sh" --env "$TMP/noseed.env" --out "$TMP/x.json" >/dev/null 2>&1; then
   fail "signed without a witness seed"
 fi
 pass "sign-witness-manifest: refuses an env without the witness seed"
+
+# Fix round 1 (review seat 12): a value the parser cannot read literally stops
+# the script; it is never signed as an empty (missing) row.
+sed 's/^LCR_BRIDGE_PUBLIC_KEY=.*/LCR_BRIDGE_PUBLIC_KEY=${BRIDGE_PUB}/' "$TMP/sign.env" > "$TMP/var.env"
+rm -f "$TMP/var.json"
+if PATH="$TMP/bin:$PATH" STUB_DIR="$TMP/stub" bash "$ROOT/scripts/sign-witness-manifest.sh" --env "$TMP/var.env" --out "$TMP/var.json" >/dev/null 2>"$TMP/var.err"; then
+  fail "signed although LCR_BRIDGE_PUBLIC_KEY could not be read"
+fi
+[ ! -e "$TMP/var.json" ] && grep -q 'LCR_BRIDGE_PUBLIC_KEY' "$TMP/var.err" || fail "unreadable public key: no clear stop"
+pass "sign-witness-manifest: a public key it cannot read literally (\${VAR}) stops it (no row dropped)"
+# Fix round 1 (review seat 13): retired keys in the existing manifest.
+python3 - "$OUTB" <<'PYR'
+import base64, json, sys
+body = [{"service_id": "dsa-witness", "key_id": "witness_v0", "public_key": "00", "purpose": "Certificate signing",
+         "algorithm": "Ed25519", "key_state": "retired"}]
+json.dump({"canonical_body_b64": base64.b64encode(json.dumps(body).encode()).decode(), "witness_signature_hex": "00"},
+          open(sys.argv[1], "w"))
+PYR
+before_blob="$(cat "$OUTB")"
+if PATH="$TMP/bin:$PATH" STUB_DIR="$TMP/stub" bash "$ROOT/scripts/sign-witness-manifest.sh" --env "$TMP/sign.env" --out "$OUTB" >/dev/null 2>"$TMP/ret.err"; then
+  fail "overwrote a manifest that holds retired keys"
+fi
+[ "$(cat "$OUTB")" = "$before_blob" ] && grep -q 'manual ceremony' "$TMP/ret.err" || fail "retired-key refusal"
+pass "sign-witness-manifest: refuses to overwrite a manifest with retired keys (points to the manual ceremony)"
+# Fix round 1 (review seat 14): a new output folder is traversable (0755).
+PATH="$TMP/bin:$PATH" STUB_DIR="$TMP/stub" bash "$ROOT/scripts/sign-witness-manifest.sh" --env "$TMP/sign.env" --out "$TMP/newdir/a/witness-signed-manifest.json" >/dev/null 2>&1 \
+  || fail "sign into a new folder"
+for d in "$TMP/newdir" "$TMP/newdir/a"; do
+  [ "$(stat -c %a "$d" 2>/dev/null || stat -f %Lp "$d")" = 755 ] || fail "$d is not 0755"
+done
+pass "sign-witness-manifest: output folders it creates are 0755 (gateway uid 10001 can traverse)"
+# Fix round 1 (review seat 4): no signed digest for the tag = no signing.
+sed 's/^LUCAIRN_IMAGE_TAG=.*/LUCAIRN_IMAGE_TAG=9.9.9/' "$TMP/sign.env" > "$TMP/tag.env"
+if PATH="$TMP/bin:$PATH" STUB_DIR="$TMP/stub" bash "$ROOT/scripts/sign-witness-manifest.sh" --env "$TMP/tag.env" --out "$TMP/tag.json" >/dev/null 2>&1; then
+  fail "signed with a tag that has no signed digest record"
+fi
+pass "sign-witness-manifest: refuses a tag without a signed digest record"
 
 # ── 4. compose wiring ───────────────────────────────────────────────────────
 SH="$ROOT/docker-compose.self-hosted.yml"; CU="$ROOT/docker-compose.customer.yml"
@@ -175,5 +215,122 @@ grep -q 'SANDBOX_B_OAUTH_PASSTHROUGH_ENABLED: "${LUCAIRN_CLAUDE_SEAT_LANE:-false
   && grep -q 'SANDBOX_B_UPSTREAM_BODY_STORE: "${SANDBOX_B_UPSTREAM_BODY_STORE:-false}"' "$SH" \
   && grep -q 'STREAMING_ENABLED: "${STREAMING_ENABLED:-true}"' "$CU" || fail "compose defaults"
 pass "compose: Sandbox B leaf mounted, streaming default on, seat lane + as-sent copy default off"
+
+# ── 5. full init (no --dry-run) with stubbed sudo / docker ──────────────────
+# Fix round 1 (bug review N4, review seats 1, 5, 10, 16, 18): the host steps
+# themselves, on a copy of the kit (the manifest lands in <kit>/.certs).
+K="$TMP/kitcopy"; mkdir -p "$K"
+(cd "$ROOT" && tar --exclude=.git -cf - .) | (cd "$K" && tar -xf -)
+W="$TMP/witness-mtls"
+SB="$TMP/sbin"; mkdir -p "$SB"
+cat > "$SB/sudo" <<'STUB'
+#!/usr/bin/env bash
+# sudo stub: records every call; chown is recorded only (the test is not root)
+printf '%s\n' "$*" >> "$STUB_DIR/sudo.log"
+[ "$1" = "chown" ] && exit 0
+exec "$@"
+STUB
+cat > "$SB/docker" <<'STUB'
+#!/usr/bin/env bash
+# docker stub: the witness image is "missing" while $STUB_DIR/no-image exists;
+# run = the signing tool; everything else goes to the real docker CLI
+# (compose config, volume ls).
+case "$1" in
+  image|pull) [ -e "$STUB_DIR/no-image" ] && exit 1; exit 0 ;;
+  run) printf '{"canonical_body_b64":"W10=","witness_signature_hex":"00"}\n'; exit 0 ;;
+esac
+for d in $(type -ap docker); do [ "$d" = "$0" ] || exec "$d" "$@"; done
+exit 1
+STUB
+cat > "$SB/python3" <<'STUB'
+#!/usr/bin/env bash
+# python3 stub: records the arguments of every call (seat 5)
+printf '%s\n' "$*" >> "$STUB_DIR/python-argv.log"
+for p in $(type -ap python3); do [ "$p" = "$0" ] || exec "$p" "$@"; done
+exit 1
+STUB
+chmod +x "$SB/sudo" "$SB/docker" "$SB/python3"
+FS="$TMP/fullstub"; mkdir -p "$FS"; : > "$FS/sudo.log"; : > "$FS/python-argv.log"
+O="$TMP/full/customer.env"; mkdir -p "$TMP/full" "$K/.certs"
+echo '{"old":"blob"}' > "$K/.certs/witness-signed-manifest.json"
+full_init() {
+  env -u LUCAIRN_INIT_SKIP_WITNESS_STEPS PATH="$SB:$PATH" STUB_DIR="$FS" LUCAIRN_INIT_TEST_WITNESS_MTLS_DIR="$W" \
+    "$K/bin/lucairn-init" --confirm-no-registry-volume "$@" 2>>"$TMP/full.err"
+}
+touch "$FS/no-image"
+rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O" >/dev/null || rc=$?
+[ "$rc" = 10 ] || { tail -20 "$TMP/full.err" >&2; fail "image missing: init exit $rc, want 10"; }
+ls "$K/.certs/" | grep -q '^witness-signed-manifest.json.stale-' && [ ! -e "$K/.certs/witness-signed-manifest.json" ] \
+  || fail "stale manifest not moved aside"
+for f in ca.crt ca.key witness-server.crt gateway-client.crt sandbox-a-client.crt; do [ -f "$W/$f" ] || fail "witness folder lacks $f"; done
+grep -qx "chown 0:0 $W/ca.key" "$FS/sudo.log" || [ "$(uname -s)" != "Linux" ] || fail "ca.key not handed back to root"
+[ "$(val WITNESS_MTLS_CA_BUNDLE_PATH "$O")" = "$W/ca.crt" ] || fail "WITNESS_MTLS_* lines of the full init"
+pass "full init: witness folder created, old manifest moved aside, exit 10 while the witness image is missing"
+[ -s "$FS/python-argv.log" ] && ! grep -Eq "[0-9a-f]{64}" "$FS/python-argv.log" || fail "a 64-hex value reached python's arguments (or python never ran)"
+pass "full init: no seed in a python process argument"
+rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O" >/dev/null || rc=$?
+[ "$rc" = 10 ] || fail "re-run with the image still missing: exit $rc, want 10 (never 0)"
+pass "re-run (already initialized, manifest missing): exit 10, not 0"
+rm -f "$FS/no-image"
+rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O" >/dev/null || rc=$?
+[ "$rc" = 0 ] && [ -s "$K/.certs/witness-signed-manifest.json" ] || fail "re-run with the image: exit $rc / no manifest"
+grep -q 'completed the missing host steps: manifest' "$TMP/full.err" || fail "resume message"
+pass "re-run with the image back: completes the manifest, exit 0"
+rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O" >/dev/null || rc=$?
+[ "$rc" = 0 ] && grep -q 'every host step is in place' "$TMP/full.err" || fail "complete re-run"
+for flag in "--image-registry registry.other.example/declade" "--claude-seat-lane"; do
+  rc=0
+  # shellcheck disable=SC2086
+  full_init --production --license "$TMP/license.json" --runtime-mode managed-byok $flag --output "$O" >/dev/null || rc=$?
+  [ "$rc" != 0 ] || fail "re-run silently ignored $flag"
+done
+pass "re-run: a complete install exits 0; --image-registry / --claude-seat-lane that differ are refused, not ignored"
+rm -rf "$W"; : > "$W"   # a file where the folder belongs: the witness step fails
+rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O" >/dev/null || rc=$?
+[ "$rc" = 9 ] || fail "witness folder cannot be created: exit $rc, want 9"
+rm -f "$W"
+rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O" >/dev/null || rc=$?
+[ "$rc" = 0 ] && [ -f "$W/witness-server.crt" ] || fail "re-run after exit 9: exit $rc"
+pass "exit 9 when the witness folder fails; the same command afterwards completes it"
+mv "$TMP/full/.certs/sanitizer-core-mtls/sandbox-b" "$TMP/sb-aside"
+rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O" >/dev/null || rc=$?
+[ "$rc" = 0 ] && [ -f "$TMP/full/.certs/sanitizer-core-mtls/sandbox-b/dsa-sandbox-b.crt" ] || fail "re-run did not issue the Sandbox B leaves"
+pass "re-run on a tree without the Sandbox B leaves (kit 2.0.0) issues them"
+# --dev: no witness folder step, no sudo (review seat 18)
+: > "$FS/sudo.log"
+rc=0; full_init --dev --runtime-mode managed-byok --output "$TMP/dev/customer.env" >/dev/null || rc=$?
+[ "$rc" = 0 ] || { tail -5 "$TMP/full.err" >&2; fail "dev init exit $rc"; }
+! grep -q 'bootstrap-mtls-ca' "$FS/sudo.log" && [ -z "$(val WITNESS_MTLS_CA_BUNDLE_PATH "$TMP/dev/customer.env")" ] \
+  || fail "dev init ran the witness folder step"
+pass "dev init: no witness folder step, no sudo for it, WITNESS_MTLS_* lines empty (as before kit 2.0.1)"
+# a failed random draw for LOCAL_SANDBOX_B_API_KEY stops init (review seat 16):
+# the 8th `openssl rand -hex 32` of a managed-byok init (6 pair seeds + the
+# manifest seed come first).
+cat > "$SB/openssl" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2 $3" = "rand -hex 32" ]; then
+  n=$(( $(cat "$STUB_DIR/rand.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUB_DIR/rand.n"
+  [ "$n" = 8 ] && exit 1
+fi
+for o in $(type -ap openssl); do [ "$o" = "$0" ] || exec "$o" "$@"; done
+exit 1
+STUB
+chmod +x "$SB/openssl"; rm -f "$FS/rand.n"
+rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$TMP/rand/customer.env" >/dev/null || rc=$?
+rm -f "$SB/openssl"
+[ "$rc" = 3 ] && [ ! -e "$TMP/rand/customer.env" ] && grep -q 'LOCAL_SANDBOX_B_API_KEY' "$TMP/full.err" || fail "failed draw: exit $rc"
+pass "a failed draw for LOCAL_SANDBOX_B_API_KEY stops init before customer.env is written"
+grep -q 'lucairn-mint-customer .*--tier enterprise --no-byok-per-request' "$TMP/full.err" || fail "mint hint without --no-byok-per-request"
+pass "init's first-key command for a local Sandbox B mints without byok_per_request (no 400 missing_upstream_key)"
+
+# ── 6. bootstrap-mtls-ca.sh without ca.key (review seat 11) ─────────────────
+B="$TMP/wca"; bash "$ROOT/scripts/bootstrap-mtls-ca.sh" "$B" >/dev/null 2>&1 || fail "witness CA bootstrap"
+mv "$B/ca.key" "$TMP/ca.key.offline"; crt_before="$(cat "$B/ca.crt")"
+bash "$ROOT/scripts/bootstrap-mtls-ca.sh" "$B" >/dev/null 2>&1 || fail "complete folder without ca.key"
+[ "$(cat "$B/ca.crt")" = "$crt_before" ] && [ ! -e "$B/ca.key" ] || fail "CA replaced"
+rm -f "$B/gateway-client.key" "$B/gateway-client.crt"
+if bash "$ROOT/scripts/bootstrap-mtls-ca.sh" "$B" >/dev/null 2>"$TMP/wca.err"; then fail "new CA minted over old leaves"; fi
+[ "$(cat "$B/ca.crt")" = "$crt_before" ] && grep -q 'ca.key is missing' "$TMP/wca.err" || fail "refusal message / ca.crt changed"
+pass "bootstrap-mtls-ca: ca.key kept offline = nothing issued when complete, a clear refusal when a leaf is missing"
 
 echo "init production completeness: $N checks ok"
