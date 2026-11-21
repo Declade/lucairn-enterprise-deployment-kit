@@ -31,7 +31,9 @@ fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
 printf '{"license_key":"synthetic.payload","signing_key":"synthetic-signing-key"}\n' > "$TMP/license.json"
 
 # ── 1. rendered env ─────────────────────────────────────────────────────────
-render() { "$ROOT/bin/lucairn-init" --confirm-no-registry-volume "$@" --output "$TMP/customer.env" --dry-run 2>"$TMP/init.err"; }
+# --dry-run writes nothing, so the two host steps are not skipped here: the
+# rendered lines are those of a real install.
+render() { env -u LUCAIRN_INIT_SKIP_WITNESS_STEPS "$ROOT/bin/lucairn-init" --confirm-no-registry-volume "$@" --output "$TMP/customer.env" --dry-run 2>"$TMP/init.err"; }
 render --production --license "$TMP/license.json" --runtime-mode managed-byok \
   --image-registry registry.internal.example:5000/declade --claude-seat-lane > "$TMP/prod.env" \
   || { cat "$TMP/init.err" >&2; fail "production dry run"; }
@@ -58,6 +60,11 @@ pass "production env: Sandbox B witness client triple"
 [ "$(val WITNESS_MTLS_SERVER_CERT_PATH "$P")" = "/etc/witness-mtls/witness-server.crt" ] \
   && [ "$(val LCR_WITNESS_MTLS_HOST_DIR "$P")" = "/etc/witness-mtls" ] || fail "WITNESS_MTLS_* lines not filled"
 pass "env: WITNESS_MTLS_* lines filled for /etc/witness-mtls"
+LUCAIRN_INIT_SKIP_WITNESS_STEPS=1 "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --production --license "$TMP/license.json" \
+  --runtime-mode managed-byok --output "$TMP/customer.env" --dry-run > "$TMP/skip.env" 2>/dev/null || fail "skip dry run"
+[ -z "$(val WITNESS_MTLS_SERVER_CERT_PATH "$TMP/skip.env")" ] && [ -z "$(val LCR_WITNESS_MTLS_HOST_DIR "$TMP/skip.env")" ] \
+  || fail "skipped witness step still names /etc/witness-mtls files"
+pass "env: with the witness step skipped (tests) the WITNESS_MTLS_* lines stay empty"
 [ "$(val LUCAIRN_IMAGE_REGISTRY "$P")" = "registry.internal.example:5000/declade" ] || fail "--image-registry not written"
 [ "$(val LUCAIRN_CLAUDE_SEAT_LANE "$P")" = "true" ] && [ "$(val SANDBOX_B_UPSTREAM_BODY_STORE "$P")" = "false" ] || fail "seat lane / body store lines"
 pass "env: --image-registry and --claude-seat-lane written, as-sent copy off"

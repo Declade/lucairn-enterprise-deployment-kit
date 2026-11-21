@@ -1313,6 +1313,11 @@ esac
 # to start without them in production.
 PRODUCTION_WITNESS_BLOCK=""
 SANDBOX_B_WITNESS_BLOCK=""
+# The WITNESS_MTLS_* lines point at the folder the witness step below creates;
+# when that step is skipped (LUCAIRN_INIT_SKIP_WITNESS_STEPS=1, tests) they stay
+# empty, as before kit 2.0.1, so nothing names files that do not exist.
+W_MTLS_DIR="$WITNESS_MTLS_DIR"
+[ "${LUCAIRN_INIT_SKIP_WITNESS_STEPS:-}" != "1" ] || W_MTLS_DIR=""
 if [ "$MODE" = "production" ]; then
   PRODUCTION_WITNESS_BLOCK="# Certificate anchoring (production): public transparency log + RFC 3161
 # timestamp authority (approved sub-processors Sigstore Rekor and FreeTSA).
@@ -1520,12 +1525,12 @@ SANDBOX_B_CERT_DIR=
 # Witness certificate port (:50058) mTLS: bin/lucairn-init created this folder
 # with scripts/bootstrap-mtls-ca.sh (INSTALL.md § "Witness mTLS"). Host and
 # container read the same path.
-LCR_WITNESS_MTLS_HOST_DIR=$WITNESS_MTLS_DIR
-WITNESS_MTLS_CA_BUNDLE_PATH=$WITNESS_MTLS_DIR/ca.crt
-WITNESS_MTLS_SERVER_CERT_PATH=$WITNESS_MTLS_DIR/witness-server.crt
-WITNESS_MTLS_SERVER_KEY_PATH=$WITNESS_MTLS_DIR/witness-server.key
-WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH=$WITNESS_MTLS_DIR/gateway-client.crt
-WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH=$WITNESS_MTLS_DIR/gateway-client.key
+LCR_WITNESS_MTLS_HOST_DIR=$W_MTLS_DIR
+WITNESS_MTLS_CA_BUNDLE_PATH=${W_MTLS_DIR:+$W_MTLS_DIR/ca.crt}
+WITNESS_MTLS_SERVER_CERT_PATH=${W_MTLS_DIR:+$W_MTLS_DIR/witness-server.crt}
+WITNESS_MTLS_SERVER_KEY_PATH=${W_MTLS_DIR:+$W_MTLS_DIR/witness-server.key}
+WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH=${W_MTLS_DIR:+$W_MTLS_DIR/gateway-client.crt}
+WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH=${W_MTLS_DIR:+$W_MTLS_DIR/gateway-client.key}
 WITNESS_MTLS_SERVER_NAME=witness
 
 # Database passwords (alphanumeric — avoids breaking the envsubst migration
