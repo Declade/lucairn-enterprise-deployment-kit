@@ -4220,16 +4220,19 @@ cfg, host = json.loads(sys.argv[1]), sys.argv[2]
 idx = cfg.get("IndexConfigs") or {}
 if host in idx:
     sys.exit(0 if idx[host].get("Secure") is False else 1)
+# Fix round 2 (B5): only a LITERAL address is matched against the CIDR list
+# (Engine 29.10 requires every resolved address of a name to match; doctor
+# does not resolve names, so no host name, localhost included, is retried).
+# An IPv4-mapped IPv6 address is compared as IPv4, as the daemon does.
 name = host[1:host.index("]")] if host.startswith("[") and "]" in host else host.rsplit(":", 1)[0]
-if name == "localhost":
-    ips = [ipaddress.ip_address("127.0.0.1"), ipaddress.ip_address("::1")]
-else:
-    try:
-        ips = [ipaddress.ip_address(name)]
-    except ValueError:
-        sys.exit(1)
+try:
+    ip = ipaddress.ip_address(name)
+except ValueError:
+    sys.exit(1)
+if ip.version == 6 and ip.ipv4_mapped is not None:
+    ip = ip.ipv4_mapped
 nets = [ipaddress.ip_network(c, strict=False) for c in cfg.get("InsecureRegistryCIDRs") or []]
-sys.exit(0 if any(ip.version == n.version and ip in n for ip in ips for n in nets) else 1)
+sys.exit(0 if any(ip.version == n.version and ip in n for n in nets) else 1)
 ' "$regcfg" "$host" 2>/dev/null || return 1
   docker manifest inspect --insecure "$ref" >/dev/null 2>&1
 }
@@ -9795,7 +9798,13 @@ print("; ".join(bad) if bad else "ok")
     local ledger_n ledger_rc=0
     ledger="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" exec -T postgres-sanitizer-core \
       psql -X -At -U dsa -d sanitizer_core -c "SELECT count(*) FROM registry_schema_migrations" 2> "$ledger_err")" || ledger_rc=$?
-    ledger_n="$(printf '%s' "$ledger" | tr -d ' \r\n')"
+    # Fix round 2 (B8): exactly one line that is a number; whitespace is not
+    # removed across lines (a banner "1" over a count "2" is not "12").
+    ledger_n=""
+    case "$ledger" in
+      *$'\n'*) ;;
+      *) ledger_n="$(printf '%s' "$ledger" | tr -d ' \r\t')" ;;
+    esac
     # Fix round 1 (G6): a non-zero exit is a failure even when stdout holds a
     # number (a transport error after the count).
     if [ "$ledger_rc" -ne 0 ]; then
@@ -10024,24 +10033,35 @@ check_servicenow_runtime() {
     echo "ServiceNow mode: failed (the running gateway does not publish 127.0.0.1:${SN_PORT:-8080}, the GATEWAY_PORT of $env_file (it publishes ${SN_GW_PUBLISHED:-an unreadable port}) — bound keys and the admin status were NOT checked: the admin key is only sent to the port the running gateway holds. Recreate it: bin/lucairn up --env $env_file)"
     return 1
   fi
+  # Fix round 2 (B3): the replica count is local, so it is read before the
+  # admin key goes out; after any failed step in this group the two keyed
+  # requests (bound keys, then gateway status) are not sent.
+  if [ "$n" = "1" ]; then
+    echo "ServiceNow mode: one gateway serves the mode"
+  else
+    echo "ServiceNow mode: failed ($n running gateway containers; the ServiceNow mode needs exactly one — the session manager and its tickets live in one process. Remove extra replicas: bin/lucairn up)"
+    failed=1
+  fi
+  if [ "$failed" -ne 0 ]; then
+    echo "ServiceNow mode: bound keys and gateway status: not run (an earlier ServiceNow check failed; they send the admin key, so they run only when every check before them passed)"
+    return 1
+  fi
   rc=0; servicenow_keyed "$env_file" "$compose_file" || rc=$?
   case "$rc" in
     0) echo "ServiceNow mode: bound keys exist ($SN_KEYED_LINE)" ;;
     1) echo "ServiceNow mode: failed (a bound key id does not exist under its instance's owner: $SN_KEYED_LINE — that key would run the generic path)"; failed=1 ;;
     *) echo "ServiceNow mode: failed (bound key ids could not be checked: ${SN_KEYED_LINE:-no answer} — the gateway's admin API on 127.0.0.1:${SN_PORT:-8080})"; failed=1 ;;
   esac
+  if [ "$failed" -ne 0 ]; then
+    echo "ServiceNow mode: gateway status: not run (the bound-key check failed; the status request sends the admin key)"
+    return 1
+  fi
   rc=0; out="$(servicenow_probe_render "$env_file" "$compose_file" secrets | servicenow_helper status 2>/dev/null)" || rc=$?
   out="$(printf '%s\n' "$out" | sed -n 's/^STATUS=//p' | tail -1)"
   if [ "$rc" -eq 0 ]; then
     echo "ServiceNow mode: gateway status ok ($out)"
   else
     echo "ServiceNow mode: failed (gateway status: ${out:-no answer} — want mode=on, every instance unlocked, control certificate >= 14 days)"
-    failed=1
-  fi
-  if [ "$n" = "1" ]; then
-    echo "ServiceNow mode: one gateway serves the mode"
-  else
-    echo "ServiceNow mode: failed ($n running gateway containers; the ServiceNow mode needs exactly one — the session manager and its tickets live in one process. Remove extra replicas: bin/lucairn up)"
     failed=1
   fi
   return "$failed"
@@ -10767,11 +10787,39 @@ doctor() {
 
   postgres_url="${postgres_url:-$(env_value "$env_file" POSTGRES_URL)}"
   if [ -n "$postgres_url" ] && have pg_isready; then
-    if pg_isready -d "$postgres_url" >/dev/null 2>&1; then
-      echo "postgres: ok"
-    else
-      echo "postgres: failed"
+    # Fix round 2 (B2): pg_isready completes the connection (libpq
+    # internal_ping -> pqConnectDBComplete -> pg_fe_sendauth), so a password in
+    # the URL is sent to the server. Reachability needs none: any
+    # authentication request already counts as "up". Only host, port and
+    # database are passed; no password file or PGPASSWORD is consulted.
+    local pg_host="" pg_port="" pg_db="" pg_args=()
+    { IFS= read -r pg_host; IFS= read -r pg_port; IFS= read -r pg_db; } < <(python3 - "$postgres_url" <<'PY' 2>/dev/null || true
+import sys
+from urllib.parse import urlparse, unquote
+u = urlparse(sys.argv[1])
+if u.scheme in ("postgres", "postgresql") and u.hostname:
+    try:
+        port = str(u.port or "")
+    except ValueError:
+        port = ""
+    db = unquote(u.path.lstrip("/"))
+    print(u.hostname); print(port)
+    print("dbname='" + db.replace("\\", "\\\\").replace("'", "\\'") + "'" if db else "")
+PY
+)
+    if [ -z "$pg_host" ]; then
+      echo "postgres: failed (the URL is not of the form postgres://host[:port]/database; not probed)"
       doctor_failed=1
+    else
+      pg_args=(-h "$pg_host")
+      [ -z "$pg_port" ] || pg_args+=(-p "$pg_port")
+      [ -z "$pg_db" ] || pg_args+=(-d "$pg_db")
+      if env -u PGPASSWORD PGPASSFILE=/dev/null pg_isready "${pg_args[@]}" >/dev/null 2>&1; then
+        echo "postgres: ok"
+      else
+        echo "postgres: failed"
+        doctor_failed=1
+      fi
     fi
   else
     echo "postgres: skipped (no --postgres-url or pg_isready unavailable)"
@@ -10850,27 +10898,29 @@ doctor() {
   gateway_health_port="${gateway_health_port:-8085}"
   gateway_health_base="http://127.0.0.1:${gateway_health_port}"
 
+  # Fix round 2 (B6): every probe must answer 200 over a transfer curl
+  # completed (exit 0). "Not started", any other code, a failed transfer or a
+  # missing curl fails doctor here, before the keyed journey. Before `up` the
+  # journey could not succeed either; it would only send the customer key to
+  # whatever answers at GATEWAY_BASE_URL.
   if have curl; then
-    local healthz_code readyz_code curl_args
+    local healthz_code readyz_code curl_args healthz_rc=0 readyz_rc=0 probe
     curl_args="-sS -o /dev/null -w %{http_code} --max-time 3"
-    healthz_code="$(curl $curl_args "${gateway_health_base}/healthz" 2>/dev/null || true)"
-    readyz_code="$(curl $curl_args "${gateway_health_base}/readyz" 2>/dev/null || true)"
+    healthz_code="$(curl $curl_args "${gateway_health_base}/healthz" 2>/dev/null)" || healthz_rc=$?
+    readyz_code="$(curl $curl_args "${gateway_health_base}/readyz" 2>/dev/null)" || readyz_rc=$?
 
-    if [ -z "$healthz_code" ] || [ "$healthz_code" = "000" ]; then
-      echo "gateway healthz: not started (no listener on :${gateway_health_port})"
-      echo "gateway readyz: not started (no listener on :${gateway_health_port})"
-      [ "$strict_runtime" -eq 1 ] && runtime_failed=1
-    else
-      if [ "$healthz_code" = "200" ]; then
-        echo "gateway healthz: ok (200)"
-      else
-        echo "gateway healthz: failed ($healthz_code)"
+    for probe in healthz readyz; do
+      local code rc
+      if [ "$probe" = healthz ]; then code="$healthz_code" rc="$healthz_rc"; else code="$readyz_code" rc="$readyz_rc"; fi
+      if [ -z "$code" ] || [ "$code" = "000" ]; then
+        echo "gateway $probe: not started (no answer on :${gateway_health_port}, curl exit $rc)"
         runtime_failed=1
-      fi
-
-      if [ "$readyz_code" = "200" ]; then
-        echo "gateway readyz: ok (200)"
-      elif [ "$readyz_code" = "503" ]; then
+      elif [ "$code" = "200" ] && [ "$rc" -eq 0 ]; then
+        echo "gateway $probe: ok (200)"
+      elif [ "$code" = "200" ]; then
+        echo "gateway $probe: failed (200, but the transfer failed: curl exit $rc)"
+        runtime_failed=1
+      elif [ "$probe" = readyz ] && [ "$code" = "503" ]; then
         # 503 from /readyz typically means at least one service-link circuit
         # breaker is open. Inference is the common culprit on a fresh deploy
         # because SANDBOX_B_REMOTE_ENDPOINT defaults to a placeholder and split
@@ -10882,12 +10932,13 @@ doctor() {
         echo "  Then: curl -fsS ${gateway_health_base}/healthz to inspect circuit_breakers map"
         runtime_failed=1
       else
-        echo "gateway readyz: failed ($readyz_code)"
+        echo "gateway $probe: failed ($code)"
         runtime_failed=1
       fi
-    fi
+    done
   else
-    echo "gateway runtime probes: skipped (curl unavailable)"
+    echo "gateway runtime probes: failed (curl unavailable; the gateway cannot be probed)"
+    runtime_failed=1
   fi
 
   if [ "$strict_runtime" -eq 1 ] && [ "$runtime_failed" -eq 1 ]; then

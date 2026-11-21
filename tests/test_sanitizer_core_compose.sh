@@ -871,6 +871,11 @@ if [ "${1:-}" = compose ]; then
       if [ -n "${STUB_CONFIG_JSON:-}" ]; then cat "$STUB_CONFIG_JSON"; exit 0; fi
       [ -n "${STUB_REAL_DOCKER:-}" ] && exec "$STUB_REAL_DOCKER" "$@"
       exit 0 ;;
+    # support-bundle's plain render (fix round 2, B9: a failed or empty render
+    # now stops the bundle): the real Compose renders it, client side.
+    *" config ")
+      [ -n "${STUB_REAL_DOCKER:-}" ] && exec "$STUB_REAL_DOCKER" "$@"
+      exit 1 ;;
     *" ps -a "*) [ -n "${STUB_PS:-}" ] && cat "$STUB_PS"; exit 0 ;;
     # support-bundle's log collection (online bundle cases in F).
     *" logs --tail 300 --no-color"*) [ -n "${STUB_BUNDLE_LOG:-}" ] && cat "$STUB_BUNDLE_LOG"; exit 0 ;;
@@ -882,10 +887,13 @@ fi
 exit 1
 STUBDOCKER
 # STUB_HEALTHZ / STUB_READYZ (fix round 1, G7): the gateway's answer codes.
-printf '#!/bin/sh\ncase "$*" in *readyz*) printf "${STUB_READYZ:-000}" ;; *healthz*) printf "${STUB_HEALTHZ:-000}" ;; *) printf 000 ;; esac\n' > "$DBIN/curl"
+# STUB_HEALTHZ_RC / STUB_READYZ_RC (fix round 2, B6): curl's exit after the code.
+printf '#!/bin/sh\ncase "$*" in *readyz*) printf "${STUB_READYZ:-000}"; exit "${STUB_READYZ_RC:-0}" ;; *healthz*) printf "${STUB_HEALTHZ:-000}"; exit "${STUB_HEALTHZ_RC:-0}" ;; *) printf 000 ;; esac\n' > "$DBIN/curl"
 STUB_REAL_DOCKER="$(PATH="$BASE_PATH" command -v docker 2>/dev/null || true)"
 export STUB_REAL_DOCKER
-for t in kubectl helm pg_isready docker-compose; do printf '#!/bin/sh\nexit 1\n' > "$DBIN/$t"; done
+for t in kubectl helm docker-compose; do printf '#!/bin/sh\nexit 1\n' > "$DBIN/$t"; done
+# pg_isready (fix round 2, B2) records its arguments when STUB_PG_LOG is set.
+printf '#!/bin/sh\n[ -n "${STUB_PG_LOG:-}" ] && printf "%%s|PGPASSWORD=%%s|PGPASSFILE=%%s\\n" "$*" "${PGPASSWORD:-}" "${PGPASSFILE:-}" >> "$STUB_PG_LOG"\nexit 1\n' > "$DBIN/pg_isready"
 chmod 0755 "$DBIN"/*
 # The stub's context is the CLI's endpoint only without DOCKER_HOST.
 unset DOCKER_HOST
@@ -1280,6 +1288,35 @@ if [ "$ONLINE_RC" -ne 0 ] && grep -q '^gateway readyz: failed (503' "$TMP/online
 else
   fail "RED readyz 503 — doctor exited $ONLINE_RC; last lines: $(tail -3 "$TMP/online.out" | tr '\n' ' ')"
 fi
+# Fix round 2 (B6): no probe answer other than 200 over a completed transfer
+# lets the keyed journey start.
+b6_case() { # <name> <expected probe line> -- env...
+  local name="$1" text="$2"; shift 2
+  doctor_online "$@"
+  if [ "$ONLINE_RC" -ne 0 ] && grep -Fq "$text" "$TMP/online.out" \
+    && tail -1 "$TMP/online.out" | grep -q '^doctor: failed (gateway runtime probes failed; the customer journey was not run'; then
+    pass "$name — doctor exited $ONLINE_RC, journey not started"
+  else
+    fail "$name — doctor exited $ONLINE_RC; last lines: $(tail -3 "$TMP/online.out" | tr '\n' ' ')"
+  fi
+}
+b6_case "RED healthz timeout + readyz 503" "gateway readyz: failed (503" STUB_HEALTHZ=000 STUB_HEALTHZ_RC=28 STUB_READYZ=503
+b6_case "RED nothing listening (not started)" "gateway healthz: not started" STUB_HEALTHZ=000 STUB_HEALTHZ_RC=7 STUB_READYZ=000 STUB_READYZ_RC=7
+b6_case "RED healthz 200 then transfer failure" "gateway healthz: failed (200, but the transfer failed: curl exit 18)" STUB_HEALTHZ=200 STUB_HEALTHZ_RC=18 STUB_READYZ=200
+b6_case "RED readyz 200 then transfer failure" "gateway readyz: failed (200, but the transfer failed: curl exit 56)" STUB_HEALTHZ=200 STUB_READYZ=200 STUB_READYZ_RC=56
+# Fix round 2 (B8): two numeric lines are not one count ("1" over "2" is not 12).
+online_case "RED ledger banner line + count line" "sanitizer core registry: failed (could not read the migration ledger" red STUB_LEDGER_OUT="$(printf '1\n2')"
+# Fix round 2 (B2): pg_isready never gets the password from the URL.
+printf 'POSTGRES_URL=postgres://dsa:t1479-pg-pw-plant-6d1e@db.example.internal:5433/audit?sslmode=require\n' >> "$ENVF"
+: > "$TMP/pg.log"
+PGPASSWORD=t1479-pgpassword-env-plant doctor_online STUB_PG_LOG="$TMP/pg.log" STUB_PS="$TMP/ps.noside"
+if [ -s "$TMP/pg.log" ] && ! grep -q 't1479-pg-pw-plant\|t1479-pgpassword-env-plant\|dsa:' "$TMP/pg.log" \
+  && grep -q -- '-h db.example.internal -p 5433 -d dbname=.audit.|PGPASSWORD=|PGPASSFILE=/dev/null' "$TMP/pg.log"; then
+  pass "B2: after a failed check, pg_isready gets host, port and database only (no password, no password file)"
+else
+  fail "B2: pg_isready arguments: $(sed 's/t1479-pg[a-z-]*/<PLANT>/g' "$TMP/pg.log" | tr '\n' ' ')"
+fi
+sed -i.bak '/^POSTGRES_URL=/d' "$ENVF" && rm -f "$ENVF.bak"
 online_case "RED claims dropped" "claim(s) DROPPED" red STUB_CORE_LOG="$TMP/core.drop"
 online_case "RED witness transport not mtls" "witness transport mode=tls-insecure-dev, not mtls" red STUB_CORE_LOG="$TMP/core.tls"
 online_case "RED overlay forwards LCR_PROFILE=hosted" "LCR_PROFILE is forwarded with a non-kit value" red STUB_CONFIG_JSON="$TMP/config.hosted.json"
@@ -1529,7 +1566,18 @@ if [ "$HAVE_COMPOSE" -eq 1 ]; then
   # whole value is a needle with CRLF too.
   printf 'svc  | AlphaSecret\r\n4829x\r\n' > "$TMP/r5-crlf.log"
   SB_ONLINE=" " sb_run r5logc "$V/customer.env" "$KIT_COMPOSE" STUB_BUNDLE_LOG="$TMP/r5-crlf.log"
-  sb_refused "the multi-line secret with CRLF line breaks in a raw log" r5logc "appeared in a collected file (logs/compose.log)" '4829x'
+  # Fix round 2 (B1): a line without the container prefix is Compose's own
+  # text and is not archived, so here the second half never reaches the
+  # bundle; either a refusal or an archive without it is correct.
+  if [ "$SBRC" -ne 0 ]; then
+    sb_refused "the multi-line secret with CRLF line breaks in a raw log" r5logc "appeared in a collected file (logs/compose.log)" '4829x'
+  else
+    rm -rf "$TMP/r5logc-x"; mkdir -p "$TMP/r5logc-x"
+    tar -xzf "$(find "$BUN/r5logc" -name 'lucairn-support-bundle-*.tar.gz' -print -quit)" -C "$TMP/r5logc-x"
+    ! grep -rqF '4829x' "$TMP/r5logc-x" && grep -rq 'printed 1 line(s) of its own' "$TMP/r5logc-x" \
+      && pass "the CRLF multi-line secret: its unprefixed second line is not archived (counted)" \
+      || fail "the CRLF multi-line secret reached the archive"
+  fi
   printf 'svc  | ok\nsvc  | {"note":"\\u00zz"}\n' > "$TMP/r5-bad.log"
   SB_ONLINE=" " sb_run r5logbad "$ENVF" "$KIT_COMPOSE" STUB_BUNDLE_LOG="$TMP/r5-bad.log"
   sb_refused "a log line whose escape cannot be unescaped" r5logbad "logs/compose.log line 2: an escape sequence that cannot be unescaped" 'u00zz'
