@@ -69,12 +69,14 @@ sudo usermod -aG docker "$USER"     # then log out and in once
 
    ```bash
    bin/lucairn up --env customer.env
-   curl -fsS http://127.0.0.1:8080/readyz && echo ready
+   curl -fsS http://127.0.0.1:8085/readyz && echo ready     # health port, server-local only
    ```
 
    `up` runs the sanitizer core's registry migration first, then starts the
    stack in production mode (`DSA_ENV=production`, encrypted links, Sandbox B
    with its own certificate). Streaming is on by default; Claude Code needs it.
+   Then `bin/lucairn doctor --env customer.env --offline --skip-image-check`
+   must end with `doctor: preflight ok (offline)`.
 
 4. **First key.**
 

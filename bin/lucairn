@@ -4131,6 +4131,10 @@ check_byok_overlay() {
   [ -n "$mistral" ] && providers+=("mistral")
   [ -n "$gemini" ] && providers+=("gemini")
 
+  # Kit 2.0.1 (T-1479): the Claude Team / Enterprise seat lane needs no
+  # provider key — each consultant's own seat sign-in authenticates upstream.
+  [ "$(env_value "$env_file" LUCAIRN_CLAUDE_SEAT_LANE)" = "true" ] && providers+=("anthropic-seat-lane")
+
   if [ "${#providers[@]}" -eq 0 ]; then
     echo "byok overlay: failed (LUCAIRN_LLM_EGRESS_ALLOWLIST set but no provider key configured — set at least one of ANTHROPIC_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY, GEMINI_API_KEY)"
     return 1
