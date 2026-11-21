@@ -59,7 +59,9 @@ cat > "$CAPTURE_BIN/curl" <<EOF
   export -p
   printf '%s\\n' '--'
 } >> '$CAPTURE_LOG'
-printf '000'
+# T-1479 fix round 2 (B6): the keyed journey runs only after both health
+# probes answered 200, so this stub plays a healthy local gateway.
+printf '200'
 EOF
 chmod 0755 "$CAPTURE_BIN/curl"
 
