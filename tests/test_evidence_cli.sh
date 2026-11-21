@@ -1122,6 +1122,10 @@ done
 # port the running gateway publishes, never to a fixed 8080.
 check "OPS.md certificate example asks Compose for the gateway's published port" grep -qF 'port gateway 8080)"' "$TMP/ops-section.md"
 check "OPS.md certificate example sends no key to a fixed 127.0.0.1:8080" bash -c '! grep -qF "http://127.0.0.1:8080/api/v1/veil/certificate" "$1"' _ "$TMP/ops-section.md"
+# Fix round 2 (B4, B7): gateway host only, no proxy, an error answer or a missing port is a non-zero exit.
+check "OPS.md certificate example: curl --fail --noproxy" grep -qF "curl --fail -sS --noproxy '*' -H @-" "$TMP/ops-section.md"
+check "OPS.md certificate example: no port = exit 1" grep -qF 'the gateway container is not running" >&2; exit 1; }' "$TMP/ops-section.md"
+check "OPS.md certificate example: run on the gateway host itself" grep -qF 'Run it on the gateway host itself' "$TMP/ops-section.md"
 check "OPS.md evidence section makes no assurance claim it cannot back" bash -c '! grep -Eiq "SOC ?2|ISO ?27001|ISO ?42001|HIPAA|PCI|end-to-end|E2E|encrypted at rest|penetration|red team|regular audits|court|legally binding|tamper-proof" "$1"' _ "$TMP/ops-section.md"
 # The sentence this PR first shipped claimed more than the code does.
 check "OPS.md no longer claims that no signing key can reach a command line" bash -c '! grep -qF "value is put on a command line" "$1" && ! grep -qF "Only public keys are used" "$1"' _ "$TMP/ops-section.md"

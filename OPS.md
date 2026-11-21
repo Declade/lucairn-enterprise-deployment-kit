@@ -2359,17 +2359,25 @@ through the gateway: `GET /api/v1/veil/certificate/<request_id>`, with the API
 key that made the request, on the port the running gateway publishes (on a
 Compose install `127.0.0.1:<GATEWAY_PORT>` of your `customer.env`; ask Docker
 Compose for it, so the key never goes to another program on a fixed port).
+Run it on the gateway host itself: with a remote Docker context, Compose
+reports the remote host's `127.0.0.1`, which is not your workstation's.
 The `request_id` is in each answer's `metadata.dsa_compliance` (`request_id`,
 or the last part of `veil_certificate_url`). Pass the key on standard input,
-never on the command line:
+never on the command line, and do not run this with shell tracing (`set -x`)
+on, which would print the key:
 
 ```bash
-GW="$(docker compose -f docker-compose.customer.yml --env-file customer.env port gateway 8080)"
-if [ -z "$GW" ]; then echo "the gateway container is not running" >&2; else
+(
+  GW="$(docker compose -f docker-compose.customer.yml --env-file customer.env port gateway 8080)" \
+    && [ -n "$GW" ] || { echo "the gateway container is not running" >&2; exit 1; }
   printf 'x-api-key: %s\n' "$(cat ~/secure/customer.key)" \
-    | curl -s -H @- "http://$GW/api/v1/veil/certificate/$REQUEST_ID"
-fi
+    | curl --fail -sS --noproxy '*' -H @- "http://$GW/api/v1/veil/certificate/$REQUEST_ID"
+)
 ```
+
+`--fail` makes an error answer (for example `401` or `404`) a non-zero exit
+instead of printed output; `--noproxy '*'` keeps the key away from any proxy
+set in `http_proxy`.
 
 A certificate holds hashes of what was sent, not the text. There is no list
 of all certificates and no zip of a whole conversation until the exporter
