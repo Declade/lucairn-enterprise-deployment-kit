@@ -2031,7 +2031,13 @@ fi
 # reused) and hands the folder to the image user. Not in adoption mode (the
 # adopted customer.env is not rewritten, so its WITNESS_MTLS_* lines stay as
 # they were).
-if [ "$ADOPT_RUNTIME_PROFILE" != "true" ]; then
+# LUCAIRN_INIT_SKIP_WITNESS_STEPS=1 skips this step and the manifest step
+# below (the kit's own tests: no root, no Docker daemon). Never set it on a
+# real install: the witness then refuses certificate reads and a production
+# gateway does not start.
+if [ "${LUCAIRN_INIT_SKIP_WITNESS_STEPS:-}" = "1" ]; then
+  echo "note: LUCAIRN_INIT_SKIP_WITNESS_STEPS=1 — skipped the witness mTLS folder and the witness-signed manifest" >&2
+elif [ "$ADOPT_RUNTIME_PROFILE" != "true" ]; then
   _witness_mtls_cmd=(bash "$KIT_ROOT/scripts/bootstrap-mtls-ca.sh" "$WITNESS_MTLS_DIR")
   _witness_mtls_post=()
   if [ "$(uname -s)" = "Linux" ]; then
@@ -2074,7 +2080,7 @@ if [ ! -f "$KIT_ROOT/docker-compose.customer.yml" ] && [ -f "$KIT_ROOT/install/d
 fi
 MANIFEST_BLOB="$_manifest_project_dir/.certs/witness-signed-manifest.json"
 MANIFEST_PENDING=""
-if [ "$ADOPT_RUNTIME_PROFILE" != "true" ]; then
+if [ "$ADOPT_RUNTIME_PROFILE" != "true" ] && [ "${LUCAIRN_INIT_SKIP_WITNESS_STEPS:-}" != "1" ]; then
   _stale_blob_aside() {
     if [ -f "$MANIFEST_BLOB" ]; then
       _aside="$MANIFEST_BLOB.stale-$(date -u +%Y%m%dT%H%M%SZ)"
