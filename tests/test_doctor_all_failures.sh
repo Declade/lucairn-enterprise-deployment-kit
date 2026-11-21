@@ -132,14 +132,28 @@ printf '%s\n' '127.0.0.1:5000/declade/dsa-gateway:1.1.1' 'localhost:5000/declade
   '127.0.0.1:5000/declade/dsa-sanitizer-core:1.1.1@sha256:aaaa' 'mirror.corp.example:5000/declade/dsa-gateway:1.1.1' \
   'registry.corp.example/declade/dsa-gateway:1.1.1' 'loopback:5000/declade/dsa-gateway:1.1.1' \
   '[::1]:5000/declade/dsa-gateway:1.1.1' '10.1.2.3:5000/declade/dsa-gateway:1.1.1' \
-  '127.0.0.1.evil.example/declade/dsa-gateway:1.1.1' 'localhost.example.com/declade/dsa-gateway:1.1.1' > "$STUB_PRESENT"
+  '127.0.0.1.evil.example/declade/dsa-gateway:1.1.1' 'localhost.example.com/declade/dsa-gateway:1.1.1' \
+  '[::ffff:c000:201]:5000/declade/dsa-gateway:1.1.1' > "$STUB_PRESENT"
 eval "$(sed -n '/^image_ref_inspectable()/,/^}/p' "$REAL_ROOT/bin/lucairn")"
 if ! declare -F image_ref_inspectable >/dev/null; then
   bad "bin/lucairn has no image_ref_inspectable (the image check uses a bare docker manifest inspect)"
 else
   probe() { PATH="$STUB:$PATH" image_ref_inspectable "$1"; }
   probe 127.0.0.1:5000/declade/dsa-gateway:1.1.1 && ok "loopback mirror image found" || bad "loopback mirror image not found"
-  probe localhost:5000/declade/dsa-gateway:1.1.1 && ok "localhost mirror image found" || bad "localhost mirror image not found"
+  # Fix round 2 (B5): a host NAME (localhost too) is never matched against the
+  # CIDR list (the daemon requires every resolved address to match); only an
+  # exact IndexConfigs entry allows it.
+  : > "$STUB_LOG"
+  probe localhost:5000/declade/dsa-gateway:1.1.1 && bad "localhost retried insecurely through the CIDR list" || ok "localhost without an exact daemon entry: not retried"
+  ! grep -q -- '--insecure localhost:5000/' "$STUB_LOG" && ok "localhost: no --insecure call" || bad "localhost: --insecure call"
+  STUB_REGCFG='{"InsecureRegistryCIDRs":[],"IndexConfigs":{"localhost:5000":{"Name":"localhost:5000","Secure":false}}}' probe localhost:5000/declade/dsa-gateway:1.1.1 \
+    && ok "localhost listed by exact daemon entry: found" || bad "localhost listed by exact daemon entry: not found"
+  : > "$STUB_LOG"
+  STUB_REGCFG='{"InsecureRegistryCIDRs":["::/0"],"IndexConfigs":{}}' probe '[::ffff:c000:201]:5000/declade/dsa-gateway:1.1.1' \
+    && bad "IPv4-mapped address matched as IPv6 (the daemon compares 192.0.2.1)" || ok "IPv4-mapped address with only ::/0 listed: not retried"
+  ! grep -q -- '--insecure' "$STUB_LOG" && ok "IPv4-mapped with ::/0: no --insecure call" || bad "IPv4-mapped with ::/0: --insecure call"
+  STUB_REGCFG='{"InsecureRegistryCIDRs":["192.0.2.0/24"],"IndexConfigs":{}}' probe '[::ffff:c000:201]:5000/declade/dsa-gateway:1.1.1' \
+    && ok "IPv4-mapped address inside a listed IPv4 range: found" || bad "IPv4-mapped address inside a listed IPv4 range: not found"
   probe '127.0.0.1:5000/declade/dsa-sanitizer-core:1.1.1@sha256:aaaa' && ok "loopback digest-pinned ref found" || bad "loopback digest-pinned ref not found"
   probe 127.0.0.1:5000/declade/dsa-gateway:9.9.9 && bad "missing tag on the loopback mirror passed" || ok "missing tag on the loopback mirror still fails"
   probe '127.0.0.1:5000/declade/dsa-sanitizer-core:1.1.1@sha256:bbbb' && bad "wrong digest on the loopback mirror passed" || ok "wrong digest on the loopback mirror still fails"
