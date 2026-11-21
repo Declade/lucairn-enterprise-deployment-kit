@@ -108,6 +108,7 @@ services:
       GATEWAY_BASE_URL: http://localhost:8080
       GATEWAY_KEYSTORE_KEY: k1-synthetic
       GATEWAY_KEYSTORE_PATH: /data/keystore.json
+      GATEWAY_OAUTH_PASSTHROUGH_ENABLED: "false"
       GATEWAY_SANITIZER_GATE_POSTURE: enforce
       GATEWAY_SANITIZER_GATE_ROUTE_POSTURE: observe
       GATEWAY_SANITIZER_PROTOCOL: delta
@@ -156,7 +157,7 @@ services:
       SANITIZER_CORE_MTLS_CLIENT_KEY_PATH: /etc/sanitizer-core-mtls/dsa-gateway.key
       SANITIZER_CORE_URL: https://sanitizer-core:8790
       SANITIZER_URL: http://sanitizer:8086
-      STREAMING_ENABLED: "false"
+      STREAMING_ENABLED: "true"
       SUPABASE_URL: ""
       WITNESS_MTLS_CA_BUNDLE_PATH: ""
       WITNESS_MTLS_CLIENT_CERT_PATH: ""

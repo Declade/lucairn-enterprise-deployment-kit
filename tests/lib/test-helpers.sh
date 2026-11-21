@@ -37,6 +37,13 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" != "0" ] && [ -z "${LUCAIRN_CONTA
   export LUCAIRN_CONTAINER_UID
 fi
 
+# Kit 2.0.1 (T-1479): bin/lucairn-init also creates /etc/witness-mtls (via
+# sudo) and signs the witness manifest with the witness image (Docker). Test
+# hosts have neither root nor images, so tests skip those two host steps;
+# tests/test_init_production_complete.sh covers them with stubs.
+LUCAIRN_INIT_SKIP_WITNESS_STEPS=1
+export LUCAIRN_INIT_SKIP_WITNESS_STEPS
+
 # Kit 2.0 K-E fix round 2: bin/lucairn-init refuses to mint the sanitizer
 # core's registry credentials when Docker cannot be asked whether the install
 # already has a registry volume. Test hosts have no such volume and the Mac

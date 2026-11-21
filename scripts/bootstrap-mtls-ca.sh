@@ -64,6 +64,29 @@ chmod 700 "${CERT_DIR}"
 log() { printf '[bootstrap-mtls-ca] %s\n' "$*"; }
 
 # ── 1. Per-deploy CA ──────────────────────────────────────────────────────────
+# Kit 2.0.1 fix round 1 (review seat 11): ca.key missing while certificates
+# exist (e.g. the CA key was moved offline) must never mint a NEW CA over the
+# old leaves — ca.crt would be replaced and every existing leaf would stop
+# verifying. Nothing to issue = nothing to do; something to issue = refuse.
+if [ ! -f "${CERT_DIR}/ca.key" ]; then
+  _have_any="" _need=""
+  for f in ca.crt witness-server.key; do
+    if [ -e "${CERT_DIR}/$f" ]; then _have_any=1; else _need=1; fi
+  done
+  for client in $CLIENTS; do
+    if [ -e "${CERT_DIR}/${client}-client.key" ]; then _have_any=1; else _need=1; fi
+  done
+  if [ -n "$_have_any" ] && [ -z "$_need" ]; then
+    log "ca.key is not in ${CERT_DIR} (kept offline?) and every certificate exists - nothing to issue"
+    chmod 600 "${CERT_DIR}"/*.key
+    chmod 644 "${CERT_DIR}"/*.crt 2>/dev/null || true
+    exit 0
+  fi
+  if [ -n "$_have_any" ]; then
+    printf '[bootstrap-mtls-ca] ERROR: %s\n' "ca.key is missing in ${CERT_DIR} but certificates exist there; a new CA would not have signed them. Put the CA key back to issue the missing files, or delete ${CERT_DIR} to start over. Nothing was written" >&2
+    exit 1
+  fi
+fi
 if [ ! -f "${CERT_DIR}/ca.key" ]; then
   log "generating CA private key (ED25519)"
   openssl genpkey -algorithm ED25519 -out "${CERT_DIR}/ca.key"

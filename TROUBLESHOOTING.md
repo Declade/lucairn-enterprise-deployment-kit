@@ -55,31 +55,29 @@ Restart the daemon (`sudo systemctl restart docker` on Linux; OrbStack handles t
 
 ## Sandbox B Refuses Insecure Port / Gateway Sandbox B Health-Check TLS Handshake Failure
 
-If sandbox-b crash-loops with `CRITICAL sandbox-b GRPC_TLS_ENABLED=true (with cert/key) is required when DSA_ENV=production; refusing insecure port`, or the gateway's `/healthz` shows `sandbox_b: status=fail` with `tls: first record does not look like a TLS handshake`, the stack is running in production-env defaults without real TLS certs.
+If sandbox-b crash-loops with `CRITICAL sandbox-b GRPC_TLS_ENABLED=true (with cert/key) is required when DSA_ENV=production; refusing insecure port`, Sandbox B started in production mode without its gRPC server certificate. **Do not switch the install to development mode for this.** Development mode turns off the production start-up checks and the encrypted links between the services.
 
-This is the dev-mode boot sequence — the kit's `customer.env.example` ships with `DSA_ENV=production` and `GRPC_TLS_ENABLED=true` so production installs are safe by default, but local-laptop / sandbox / acceptance-test installs need three env flips to start cleanly without provisioning certificates:
+Since kit 2.0.1 the certificate comes from the same step that makes the sanitizer core's certificates: `scripts/bootstrap-sanitizer-core-mtls.sh` (run by `bin/lucairn-init`) issues `sandbox-b/dsa-sandbox-b.{crt,key}` and `sandbox-b/witness-client.{crt,key}` under `SANITIZER_CORE_MTLS_HOST_DIR` (default `./.certs/sanitizer-core-mtls`), and `docker-compose.self-hosted.yml` mounts that folder into Sandbox B at `/etc/sandbox-b-tls` and passes `GRPC_TLS_CERT` / `GRPC_TLS_KEY`.
 
-```
-DSA_ENV=development
-GRPC_TLS_ENABLED=false
-DSA_LICENSE_KEY=
-DSA_LICENSE_SIGNING_KEY=
-LCR_WITNESS_MTLS_SANITIZER_CORE_CA_BUNDLE_PATH=
-LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_CERT_PATH=
-LCR_WITNESS_MTLS_SANITIZER_CORE_CLIENT_KEY_PATH=
-```
-
-The first two relax the production-only gRPC mTLS gate (sandbox-b's `inference_server.py` refuses an insecure port when `DSA_ENV=production`). The next two engage the gateway's dev-mode license bypass (see next section). The last three take the new sanitizer core's client leaf off its witness hop, so it dials the now-plaintext witness in plaintext too (kit 2.0; without them every claim of the core is dropped, and `bin/lucairn doctor` fails). `bin/lucairn-init --dev` writes all of these. After flipping them, recreate the affected services:
+Fix on an existing install (re-uses the existing CA and leaves, adds only the missing Sandbox B pair):
 
 ```bash
-docker compose \
-  -f docker-compose.customer.yml \
-  -f docker-compose.self-hosted.yml \
-  --env-file customer.env \
-  up -d --force-recreate sandbox-a sandbox-b id-bridge audit veil-witness sanitizer sanitizer-core gateway
+sudo scripts/bootstrap-sanitizer-core-mtls.sh "$(grep '^SANITIZER_CORE_MTLS_HOST_DIR=' customer.env | cut -d= -f2-)"
+ls -l "$(grep '^SANITIZER_CORE_MTLS_HOST_DIR=' customer.env | cut -d= -f2-)/sandbox-b"   # ca.crt, dsa-sandbox-b.*, witness-client.*
+bin/lucairn up --env customer.env
 ```
 
-For a production install, leave the four defaults alone and provision real Lucairn-signed license + gRPC mTLS material instead.
+A production customer.env written by an older `bin/lucairn-init` also lacks the three lines that let Sandbox B deliver its claims to the TLS witness. Without them turns still succeed, but certificates miss the AI-plane claim. Add them once (or re-run `bin/lucairn-init --production …` for a fresh install):
+
+```
+LCR_WITNESS_MTLS_SANDBOX_B_CA_BUNDLE_PATH=/etc/sandbox-b-tls/ca.crt
+LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_CERT_PATH=/etc/sandbox-b-tls/witness-client.crt
+LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_KEY_PATH=/etc/sandbox-b-tls/witness-client.key
+```
+
+If the gateway's `/healthz` shows `sandbox_b: status=fail` with `tls: first record does not look like a TLS handshake`, the two sides disagree on `GRPC_TLS_ENABLED`: the gateway and Sandbox B read the same line of customer.env, so check that nothing overrides it for one of them.
+
+**Development / evaluation only** (a laptop, no customer data): `bin/lucairn-init --dev` writes a development install from the start (`DSA_ENV=development`, `GRPC_TLS_ENABLED=false`, empty licence, the three `LCR_WITNESS_MTLS_SANITIZER_CORE_*` paths empty so the core reaches the plaintext witness). Do not hand-edit a production customer.env into that state: the core's claims are then dropped silently unless all of those lines change together.
 
 ## Gateway Restart-Loops On Invalid License Key
 

@@ -60,6 +60,15 @@
 #   veil-witness/ca.crt                          -> veil-witness:/etc/sanitizer-core-mtls
 #   veil-witness/dsa-veil-witness.{crt,key}      witness :50057 server leaf (serverAuth; SAN
 #                                                dsa-veil-witness, veil-witness, witness)
+#   sandbox-b/ca.crt                             -> sandbox-b:/etc/sandbox-b-tls (self-hosted overlay)
+#   sandbox-b/dsa-sandbox-b.{crt,key}            Sandbox B gRPC :50054 server leaf (serverAuth; SAN
+#                                                dsa-sandbox-b, sandbox-b, localhost, 127.0.0.1).
+#                                                With DSA_ENV=production Sandbox B refuses to open
+#                                                a plaintext port (GRPC_TLS_CERT / GRPC_TLS_KEY)
+#   sandbox-b/witness-client.{crt,key}           Sandbox B -> witness :50057 client leaf (clientAuth;
+#                                                CN + SAN dsa-ai, the AI-plane claim service), so
+#                                                Sandbox B dials the TLS witness verified (SAN
+#                                                dsa-veil-witness) instead of in plaintext
 #
 # The witness serves that leaf on :50057 and :50058 through GRPC_TLS_CERT_FILE /
 # GRPC_TLS_KEY_FILE (legacy transport TLS: server-authenticated, it does not ask
@@ -193,7 +202,7 @@ if [ ! -e "$CA_DIR" ]; then
 fi
 
 umask 077
-mkdir -p "$CA_DIR" "$CERT_DIR/sanitizer-core" "$CERT_DIR/gateway" "$CERT_DIR/veil-witness"
+mkdir -p "$CA_DIR" "$CERT_DIR/sanitizer-core" "$CERT_DIR/gateway" "$CERT_DIR/veil-witness" "$CERT_DIR/sandbox-b"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -221,7 +230,7 @@ fi
 if [ ! -f "$CA_KEY" ] || [ ! -f "$CA_CRT" ]; then
   [ ! -f "$CA_KEY" ] && [ ! -f "$CA_CRT" ] \
     || die "half a CA in $CA_DIR (key and certificate must both exist or both be absent) - refusing to guess"
-  for leaf in sanitizer-core/dsa-sanitizer-core sanitizer-core/witness-client gateway/dsa-gateway veil-witness/dsa-veil-witness; do
+  for leaf in sanitizer-core/dsa-sanitizer-core sanitizer-core/witness-client gateway/dsa-gateway veil-witness/dsa-veil-witness sandbox-b/dsa-sandbox-b sandbox-b/witness-client; do
     [ ! -e "$CERT_DIR/$leaf.crt" ] && [ ! -e "$CERT_DIR/$leaf.key" ] \
       || die "$CERT_DIR/$leaf.* exists but the CA does not - a new CA would not have signed it; delete the directory to start over"
   done
@@ -276,29 +285,37 @@ issue_leaf gateway/dsa-gateway dsa-gateway clientAuth \
   "DNS:dsa-gateway"
 issue_leaf veil-witness/dsa-veil-witness dsa-veil-witness serverAuth \
   "DNS:dsa-veil-witness, DNS:veil-witness, DNS:witness"
+# Sandbox B (self-hosted overlay; a split-remote install never mounts it). The
+# gateway dials Sandbox B with GRPC_TLS_ENABLED=true; added on upgrade from an
+# earlier kit 2.0 run, the CA is reused (an existing CA is never rotated here).
+issue_leaf sandbox-b/dsa-sandbox-b dsa-sandbox-b serverAuth \
+  "DNS:dsa-sandbox-b, DNS:sandbox-b, DNS:localhost, IP:127.0.0.1"
+issue_leaf sandbox-b/witness-client dsa-ai clientAuth \
+  "DNS:dsa-ai"
 
-for svc in sanitizer-core gateway veil-witness; do
+for svc in sanitizer-core gateway veil-witness sandbox-b; do
   cp "$CA_CRT" "$CERT_DIR/$svc/ca.crt"
 done
 
 # ── 3. Verify what was written (the chain and the purpose, per leaf) ─────
 for pair in "sanitizer-core/dsa-sanitizer-core:sslserver" "sanitizer-core/witness-client:sslclient" \
-            "gateway/dsa-gateway:sslclient" "veil-witness/dsa-veil-witness:sslserver"; do
+            "gateway/dsa-gateway:sslclient" "veil-witness/dsa-veil-witness:sslserver" \
+            "sandbox-b/dsa-sandbox-b:sslserver" "sandbox-b/witness-client:sslclient"; do
   rel="${pair%%:*}"; purpose="${pair##*:}"
   "$OPENSSL" verify -CAfile "$CA_CRT" -purpose "$purpose" "$CERT_DIR/$rel.crt" >/dev/null \
     || die "$rel.crt does not verify against $CA_CRT for $purpose"
 done
 
 # ── 4. Permissions ─────────────────────────────────────────────────────────
-chmod 0600 "$CA_KEY" "$CERT_DIR"/sanitizer-core/*.key "$CERT_DIR"/gateway/*.key "$CERT_DIR"/veil-witness/*.key
-chmod 0644 "$CA_CRT" "$CERT_DIR"/sanitizer-core/*.crt "$CERT_DIR"/gateway/*.crt "$CERT_DIR"/veil-witness/*.crt
+chmod 0600 "$CA_KEY" "$CERT_DIR"/sanitizer-core/*.key "$CERT_DIR"/gateway/*.key "$CERT_DIR"/veil-witness/*.key "$CERT_DIR"/sandbox-b/*.key
+chmod 0644 "$CA_CRT" "$CERT_DIR"/sanitizer-core/*.crt "$CERT_DIR"/gateway/*.crt "$CERT_DIR"/veil-witness/*.crt "$CERT_DIR"/sandbox-b/*.crt
 chmod 0700 "$CA_DIR"
-chmod 0755 "$CERT_DIR" "$CERT_DIR/sanitizer-core" "$CERT_DIR/gateway" "$CERT_DIR/veil-witness"
+chmod 0755 "$CERT_DIR" "$CERT_DIR/sanitizer-core" "$CERT_DIR/gateway" "$CERT_DIR/veil-witness" "$CERT_DIR/sandbox-b"
 
 if [ "$(id -u)" = "0" ]; then
   # Directories stay 0755 so the operator (and `bin/lucairn doctor`) can still
   # read the certificates; the keys are 0600 and readable by uid $CONTAINER_UID only.
-  chown -R "$CONTAINER_UID:$CONTAINER_UID" "$CERT_DIR/sanitizer-core" "$CERT_DIR/gateway" "$CERT_DIR/veil-witness"
+  chown -R "$CONTAINER_UID:$CONTAINER_UID" "$CERT_DIR/sanitizer-core" "$CERT_DIR/gateway" "$CERT_DIR/veil-witness" "$CERT_DIR/sandbox-b"
   log "service directories handed to uid $CONTAINER_UID (keys 0600); the CA directory $CA_DIR stays root-only"
   # R1: the folders this run created for the operator (./.certs, the cert
   # directory, ./.secrets) go back to the user who ran sudo, so that user can
@@ -323,7 +340,7 @@ elif [ "$(uname -s)" = "Linux" ]; then
 else
   log "not root: the service keys are owned by $(id -un). Docker Desktop on $(uname -s) maps file ownership, so the containers can read them."
   log "If you copy this directory to a Linux Docker host, hand it to uid $CONTAINER_UID there:"
-  log "  sudo chown -R $CONTAINER_UID:$CONTAINER_UID '$CERT_DIR/sanitizer-core' '$CERT_DIR/gateway' '$CERT_DIR/veil-witness'"
+  log "  sudo chown -R $CONTAINER_UID:$CONTAINER_UID '$CERT_DIR/sanitizer-core' '$CERT_DIR/gateway' '$CERT_DIR/veil-witness' '$CERT_DIR/sandbox-b'"
 fi
 
 log "done: $CERT_DIR (CA: $CA_DIR, mounted by no container)"

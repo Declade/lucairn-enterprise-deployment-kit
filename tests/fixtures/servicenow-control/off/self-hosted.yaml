@@ -112,6 +112,7 @@ services:
       GATEWAY_BASE_URL: http://localhost:8080
       GATEWAY_KEYSTORE_KEY: k1-synthetic
       GATEWAY_KEYSTORE_PATH: /data/keystore.json
+      GATEWAY_OAUTH_PASSTHROUGH_ENABLED: "false"
       GATEWAY_SANITIZER_GATE_POSTURE: enforce
       GATEWAY_SANITIZER_GATE_ROUTE_POSTURE: observe
       GATEWAY_SANITIZER_PROTOCOL: delta
@@ -163,7 +164,7 @@ services:
       SANITIZER_CORE_MTLS_CLIENT_KEY_PATH: /etc/sanitizer-core-mtls/dsa-gateway.key
       SANITIZER_CORE_URL: https://sanitizer-core:8790
       SANITIZER_URL: http://sanitizer:8086
-      STREAMING_ENABLED: "false"
+      STREAMING_ENABLED: "true"
       SUPABASE_URL: ""
       WITNESS_MTLS_CA_BUNDLE_PATH: ""
       WITNESS_MTLS_CLIENT_CERT_PATH: ""
@@ -765,7 +766,9 @@ services:
       DSA_ADMIN_KEY: k1-synthetic
       DSA_ENV: production
       DSA_SERVICE_TOKEN: k1-synthetic
+      GRPC_TLS_CERT: /etc/sandbox-b-tls/dsa-sandbox-b.crt
       GRPC_TLS_ENABLED: "true"
+      GRPC_TLS_KEY: /etc/sandbox-b-tls/dsa-sandbox-b.key
       LCR_ENABLED: "true"
       LCR_SIGNING_KEY: ""
       LCR_WITNESS_ADDR: veil-witness:50057
@@ -785,7 +788,9 @@ services:
       SANDBOX_B_GRPC_ADDR: 0.0.0.0:50054
       SANDBOX_B_HEALTH_ADDR: 0.0.0.0:8084
       SANDBOX_B_MESSAGES_JSON_MAX_BYTES: ""
+      SANDBOX_B_OAUTH_PASSTHROUGH_ENABLED: "false"
       SANDBOX_B_REDIS_URL: redis://redis-ai:6379
+      SANDBOX_B_UPSTREAM_BODY_STORE: "false"
       SANDBOX_B_VERTICALS_DIR: /app/verticals
       SANDBOX_B_WORKERS: "4"
     healthcheck:
@@ -814,6 +819,11 @@ services:
       - type: bind
         source: ../starter-templates
         target: /app/verticals
+        read_only: true
+        bind: {}
+      - type: bind
+        source: ./.certs/sanitizer-core-mtls/sandbox-b
+        target: /etc/sandbox-b-tls
         read_only: true
         bind: {}
   sanitizer:

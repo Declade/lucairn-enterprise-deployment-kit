@@ -318,6 +318,19 @@ services:
       BRIDGE_ADDR: "id-bridge:50052"
       AUDIT_SERVICE_ADDR: "audit:50051"
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
+      # Kit 2.0.1 (T-1479): Sandbox B's own gRPC server leaf. With
+      # DSA_ENV=production Sandbox B refuses to open a plaintext port
+      # ("GRPC_TLS_ENABLED=true (with cert/key) is required when
+      # DSA_ENV=production"), and no kit file used to hand it one, so a
+      # production install with a local Sandbox B could not start.
+      # scripts/bootstrap-sanitizer-core-mtls.sh (run by bin/lucairn-init)
+      # issues the pair from the deploy-local CA into <tree>/sandbox-b, mounted
+      # below. Sandbox B reads GRPC_TLS_CERT / GRPC_TLS_KEY (not the Go
+      # services' *_FILE names) and only while GRPC_TLS_ENABLED=true, so a
+      # development install (GRPC_TLS_ENABLED=false) is unchanged. The gateway
+      # dials it with GRPC_TLS_ENABLED=true (transport TLS).
+      GRPC_TLS_CERT: "${SANDBOX_B_GRPC_TLS_CERT:-/etc/sandbox-b-tls/dsa-sandbox-b.crt}"
+      GRPC_TLS_KEY: "${SANDBOX_B_GRPC_TLS_KEY:-/etc/sandbox-b-tls/dsa-sandbox-b.key}"
       DSA_ADMIN_KEY: "${DSA_ADMIN_KEY:?DSA_ADMIN_KEY is required}"
       SANDBOX_B_API_KEYS: "${LOCAL_SANDBOX_B_API_KEY:-local-sandbox-b-key}"
       LCR_ENABLED: "${LCR_ENABLED:-${VEIL_ENABLED:-true}}"
@@ -429,8 +442,24 @@ services:
       # and refuses an over-limit conversation before the call; one line in
       # customer.env therefore reaches both containers (DSA PR #900).
       SANDBOX_B_MESSAGES_JSON_MAX_BYTES: "${SANDBOX_B_MESSAGES_JSON_MAX_BYTES:-}"
+      # Claude Team / Enterprise seat lane (OFF by default; INSTALL.md
+      # § "Claude Team / Enterprise seats"). ONE customer.env setting switches
+      # on both halves of the lane: this Sandbox B flag and the gateway's
+      # GATEWAY_OAUTH_PASSTHROUGH_ENABLED (docker-compose.customer.yml). Only
+      # the exact value "true" switches it on. Never for consumer Pro/Max.
+      SANDBOX_B_OAUTH_PASSTHROUGH_ENABLED: "${LUCAIRN_CLAUDE_SEAT_LANE:-false}"
+      # As-sent copy on your own server (OFF by default; INSTALL.md
+      # § "See what went to the model vendor"). "true" keeps the exact
+      # pseudonymised request bytes Sandbox B sent to the vendor inside the
+      # certificate store, readable at
+      # GET /api/v1/veil/certificate/<id>/upstream-request.
+      SANDBOX_B_UPSTREAM_BODY_STORE: "${SANDBOX_B_UPSTREAM_BODY_STORE:-false}"
     volumes:
       - ../starter-templates:/app/verticals:ro
+      # Kit 2.0.1 (T-1479): ONLY Sandbox B's own directory of the deploy-local
+      # mTLS tree (its gRPC server leaf, its witness client leaf, the CA
+      # certificate; never the CA key). bin/lucairn-init creates it.
+      - ${SANITIZER_CORE_MTLS_HOST_DIR:-./.certs/sanitizer-core-mtls}/sandbox-b:/etc/sandbox-b-tls:ro
     networks:
       - dsa-ai
       - dsa-bridge-ai
