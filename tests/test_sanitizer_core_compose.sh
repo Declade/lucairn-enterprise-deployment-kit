@@ -888,7 +888,9 @@ exit 1
 STUBDOCKER
 # STUB_HEALTHZ / STUB_READYZ (fix round 1, G7): the gateway's answer codes.
 # STUB_HEALTHZ_RC / STUB_READYZ_RC (fix round 2, B6): curl's exit after the code.
-printf '#!/bin/sh\ncase "$*" in *readyz*) printf "${STUB_READYZ:-000}"; exit "${STUB_READYZ_RC:-0}" ;; *healthz*) printf "${STUB_HEALTHZ:-000}"; exit "${STUB_HEALTHZ_RC:-0}" ;; *) printf 000 ;; esac\n' > "$DBIN/curl"
+# STUB_GW_PORT (final fix pass, B6): the gateway answers only on that port;
+# any other port is "connection refused" (000, exit 7).
+printf '#!/bin/sh\nif [ -n "${STUB_GW_PORT:-}" ]; then case "$*" in *"127.0.0.1:${STUB_GW_PORT}/"*) ;; *) printf 000; exit 7 ;; esac; fi\ncase "$*" in *readyz*) printf "${STUB_READYZ:-000}"; exit "${STUB_READYZ_RC:-0}" ;; *healthz*) printf "${STUB_HEALTHZ:-000}"; exit "${STUB_HEALTHZ_RC:-0}" ;; *) printf 000 ;; esac\n' > "$DBIN/curl"
 STUB_REAL_DOCKER="$(PATH="$BASE_PATH" command -v docker 2>/dev/null || true)"
 export STUB_REAL_DOCKER
 for t in kubectl helm docker-compose; do printf '#!/bin/sh\nexit 1\n' > "$DBIN/$t"; done
@@ -1304,6 +1306,20 @@ b6_case "RED healthz timeout + readyz 503" "gateway readyz: failed (503" STUB_HE
 b6_case "RED nothing listening (not started)" "gateway healthz: not started" STUB_HEALTHZ=000 STUB_HEALTHZ_RC=7 STUB_READYZ=000 STUB_READYZ_RC=7
 b6_case "RED healthz 200 then transfer failure" "gateway healthz: failed (200, but the transfer failed: curl exit 18)" STUB_HEALTHZ=200 STUB_HEALTHZ_RC=18 STUB_READYZ=200
 b6_case "RED readyz 200 then transfer failure" "gateway readyz: failed (200, but the transfer failed: curl exit 56)" STUB_HEALTHZ=200 STUB_READYZ=200 STUB_READYZ_RC=56
+# Final fix pass (B6): an exported GATEWAY_HEALTH_PORT wins over customer.env,
+# as in Compose's port mapping; a healthy gateway on it passes both probes.
+b6_green() { # <name> -- env...
+  local name="$1"; shift
+  doctor_online "$@"
+  if grep -Fq 'gateway healthz: ok (200)' "$TMP/online.out" && grep -Fq 'gateway readyz: ok (200)' "$TMP/online.out" \
+    && ! grep -q 'gateway runtime probes failed' "$TMP/online.out"; then
+    pass "$name — both probes ok"
+  else
+    fail "$name — $(grep '^gateway \(healthz\|readyz\)' "$TMP/online.out" | tr '\n' ' ')"
+  fi
+}
+b6_green "B6: file 8085, exported GATEWAY_HEALTH_PORT=18085, gateway healthy on 18085" \
+  GATEWAY_HEALTH_PORT=18085 STUB_GW_PORT=18085 STUB_HEALTHZ=200 STUB_READYZ=200
 # Fix round 2 (B8): two numeric lines are not one count ("1" over "2" is not 12).
 online_case "RED ledger banner line + count line" "sanitizer core registry: failed (could not read the migration ledger" red STUB_LEDGER_OUT="$(printf '1\n2')"
 # Fix round 2 (B2): pg_isready never gets the password from the URL.
