@@ -49,7 +49,12 @@
 # customer.env is read with a deliberately small parser: KEY=value,
 # KEY="value" or KEY='value'. A value this script needs that holds $, a
 # backslash or a backquote is refused (Compose would interpolate it; this
-# script will not guess how).
+# script will not guess how). Stated limit: a line written
+# `export KEY=value` is NOT read (Compose accepts it; here the key counts as
+# absent and its roster row is left out); write such lines without `export`.
+# Stated limit: the script does not check that the witness seed matches
+# LCR_WITNESS_MANIFEST_PUBLIC_KEY; a mismatch is signed and the gateway then
+# refuses to boot. The manifest it replaces is kept as <out>.prev.
 #
 # Exit codes: 0 written · 2 usage · 3 docker / image not available ·
 #             4 customer.env incomplete or unreadable · 5 signing failed
@@ -215,5 +220,6 @@ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["canonical
   || die 5 "sign-manifest did not print a manifest blob"
 cp "$WORK/blob.json" "$OUT.tmp.$$"
 chmod 0644 "$OUT.tmp.$$"
+[ ! -f "$OUT" ] || cp -p "$OUT" "$OUT.prev" || die 4 "cannot keep the previous manifest as $OUT.prev"
 mv -f "$OUT.tmp.$$" "$OUT"
 log "wrote $OUT ($rows roster entries, signed with the witness key; image $IMAGE)"

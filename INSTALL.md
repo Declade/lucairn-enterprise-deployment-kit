@@ -2597,9 +2597,11 @@ remove the empty folder (`sudo rmdir ./.certs/witness-mtls`) and continue.
    ```
 
    You may also move `ca.key` to an offline place if you do not need to issue
-   more client certificates; a later run of the script then issues nothing
-   when every certificate exists, and refuses (instead of creating a new CA
-   over the old certificates) when one is missing. Stated limit: the leaf keys
+   more client certificates. **Put `ca.key` back before you run the script
+   again:** without it the script's check of what exists looks at the key
+   files only, so a missing certificate can pass unnoticed, and a folder that
+   kept only certificates can get a new CA (stated limit, kit 2.0.1). With
+   `ca.key` present, a certificate whose key is missing is issued anew. Stated limit: the leaf keys
    of the other callers in this folder (`witness-server.key`,
    `gateway-client.key`, `sandbox-a-client.key`) stay readable to both the
    witness and the gateway, which share uid 10001.
@@ -3024,13 +3026,14 @@ before one expires. The CA is valid 3650 days (`CA_DAYS`).
      `sudo mv .secrets/sanitizer-core-mtls-ca .secrets/sanitizer-core-mtls-ca.old`
      (your own CA folder: the folder you passed as the second argument or set
      as `SANITIZER_CORE_MTLS_CA_DIR`).
-  2. Delete the three service folders of the cert directory (they hold the
+  2. Delete the four service folders of the cert directory (they hold the
      leaves and the CA copies):
-     `sudo rm -rf .certs/sanitizer-core-mtls/sanitizer-core .certs/sanitizer-core-mtls/gateway .certs/sanitizer-core-mtls/veil-witness`
+     `sudo rm -rf .certs/sanitizer-core-mtls/sanitizer-core .certs/sanitizer-core-mtls/gateway .certs/sanitizer-core-mtls/veil-witness .certs/sanitizer-core-mtls/sandbox-b`
   3. Re-run `sudo scripts/bootstrap-sanitizer-core-mtls.sh` with the same
-     arguments: a new CA and four new leaves.
-  4. Recreate the three containers together:
-     `docker compose ... up -d --no-deps --force-recreate sanitizer-core gateway veil-witness`,
+     arguments: a new CA and six new leaves.
+  4. Recreate the four containers together:
+     `docker compose ... up -d --no-deps --force-recreate sanitizer-core gateway veil-witness sandbox-b`
+     (leave out `sandbox-b` on a split-remote install),
      then run `bin/lucairn doctor` (online): the core's witness transport and no
      `DROPPED` claim. Then delete the `.old` CA folder.
 - **A CA folder of your own and re-runs:** the script reads the CA folder only

@@ -173,6 +173,11 @@ if PATH="$TMP/bin:$PATH" STUB_DIR="$TMP/stub" bash "$ROOT/scripts/sign-witness-m
   fail "signed without a witness seed"
 fi
 pass "sign-witness-manifest: refuses an env without the witness seed"
+first_blob="$(cat "$OUTB")"
+PATH="$TMP/bin:$PATH" STUB_DIR="$TMP/stub" bash "$ROOT/scripts/sign-witness-manifest.sh" --env "$TMP/sign.env" --out "$OUTB" >/dev/null 2>&1 \
+  || fail "second signing run"
+[ "$(cat "$OUTB.prev")" = "$first_blob" ] || fail "replaced manifest not kept as .prev"
+pass "sign-witness-manifest: the manifest it replaces is kept as <out>.prev"
 
 # Fix round 1 (review seat 12): a value the parser cannot read literally stops
 # the script; it is never signed as an empty (missing) row.
@@ -225,7 +230,9 @@ pass "compose: Sandbox B leaf mounted, streaming default on, seat lane + as-sent
 # Fix round 1 (bug review N4, review seats 1, 5, 10, 16, 18): the host steps
 # themselves, on a copy of the kit (the manifest lands in <kit>/.certs).
 K="$TMP/kitcopy"; mkdir -p "$K"
-(cd "$ROOT" && tar --exclude=.git -cf - .) | (cd "$K" && tar -xf -)
+# tracked kit files only (fix round 3, review seat B25): never an initialized
+# checkout's customer.env, backups or key material
+(cd "$ROOT" && git ls-files -z | tar --null -T - -cf -) | (cd "$K" && tar -xf -)
 W="$TMP/witness-mtls"
 SB="$TMP/sbin"; mkdir -p "$SB"
 cat > "$SB/sudo" <<'STUB'
