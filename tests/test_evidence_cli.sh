@@ -849,11 +849,11 @@ fails_with() { # fails_with RUN-NAME LABEL NEEDLE : exit 1, nothing on stdout
 }
 
 run export-no-exporter -- evidence export --env "$GOOD_ENV" --customer-id cust_demo --conversation conv_abc123 --admin-key-file "$KEYFILE" --output "$EXPORT_DIR"
-fails_with export-no-exporter "export without the exporter -> non-zero" "needs the exporter lucairn-bundle-export, which ships with a later release"
+fails_with export-no-exporter "export without the exporter -> non-zero" "needs the exporter lucairn-bundle-export, which is not part of this kit release"
 check "export without the exporter -> exactly one line" [ "$(wc -l < "$OUT/export-no-exporter.err" | tr -d ' ')" = "1" ]
 check "export without the exporter -> nothing written" [ ! -e "$EXPORT_DIR" ]
 run list-no-exporter -- evidence list --env "$GOOD_ENV" --customer-id cust_demo --admin-key-file "$KEYFILE"
-fails_with list-no-exporter "list without the exporter -> non-zero" "needs the exporter lucairn-bundle-export, which ships with a later release"
+fails_with list-no-exporter "list without the exporter -> non-zero" "needs the exporter lucairn-bundle-export, which is not part of this kit release"
 check "list without the exporter -> exactly one line" [ "$(wc -l < "$OUT/list-no-exporter.err" | tr -d ' ')" = "1" ]
 
 run export-no-customer "LUCAIRN_BUNDLE_EXPORT=$STUB_EXPORTER" -- evidence export --env "$GOOD_ENV" --conversation c1 --admin-key-file "$KEYFILE" --output "$EXPORT_DIR"
@@ -1109,7 +1109,7 @@ fi
 awk '/^## Verify an evidence bundle \(self-hosted\)/{on=1; next} /^## /{on=0} on' "$ROOT/OPS.md" > "$TMP/ops-section.md"
 check "OPS.md has the evidence section" [ "$(wc -l < "$TMP/ops-section.md" | tr -d ' ')" -gt 30 ]
 for phrase in 'SKIPPED(not anchored)' 'not a certification or legal opinion' 'LCR_SANDBOX_B_PUBLIC_KEY' \
-  '--service-key dsa-sanitizer-streaming' 'keys/lucairn-cosign.pub' 'which ships with a later release' 'No verdict' \
+  '--service-key dsa-sanitizer-streaming' 'keys/lucairn-cosign.pub' 'which is not part of this kit release' 'GET /api/v1/veil/certificate/<request_id>' 'No verdict' \
   'a value from the `--env` file that the same file also holds on a' 'gives the wrapper nothing' \
   'visible in the process list' 'the tool rejected its arguments' 'witness_dev_v1' \
   'wrapper does not take `--witness-key` yet' 'not given the gateway public key' 'only when it is the sole' \
@@ -1118,6 +1118,14 @@ for phrase in 'SKIPPED(not anchored)' 'not a certification or legal opinion' 'LC
   'does not read as' '(exit `1`), for these two'; do
   check "OPS.md evidence section states: $phrase" grep -qF -- "$phrase" "$TMP/ops-section.md"
 done
+# Fix round 1 (G8): the certificate example sends the customer key only to the
+# port the running gateway publishes, never to a fixed 8080.
+check "OPS.md certificate example asks Compose for the gateway's published port" grep -qF 'port gateway 8080)"' "$TMP/ops-section.md"
+check "OPS.md certificate example sends no key to a fixed 127.0.0.1:8080" bash -c '! grep -qF "http://127.0.0.1:8080/api/v1/veil/certificate" "$1"' _ "$TMP/ops-section.md"
+# Fix round 2 (B4, B7): gateway host only, no proxy, an error answer or a missing port is a non-zero exit.
+check "OPS.md certificate example: curl --fail --noproxy" grep -qF "curl --fail -sS --noproxy '*' -H @-" "$TMP/ops-section.md"
+check "OPS.md certificate example: no port = exit 1" grep -qF 'the gateway container is not running" >&2; exit 1; }' "$TMP/ops-section.md"
+check "OPS.md certificate example: run on the gateway host itself" grep -qF 'Run it on the gateway host itself' "$TMP/ops-section.md"
 check "OPS.md evidence section makes no assurance claim it cannot back" bash -c '! grep -Eiq "SOC ?2|ISO ?27001|ISO ?42001|HIPAA|PCI|end-to-end|E2E|encrypted at rest|penetration|red team|regular audits|court|legally binding|tamper-proof" "$1"' _ "$TMP/ops-section.md"
 # The sentence this PR first shipped claimed more than the code does.
 check "OPS.md no longer claims that no signing key can reach a command line" bash -c '! grep -qF "value is put on a command line" "$1" && ! grep -qF "Only public keys are used" "$1"' _ "$TMP/ops-section.md"

@@ -15,7 +15,7 @@ This repository contains the customer-installable Lucairn deployment kit for fir
 - `apps/dashboard/` - Lucairn Enterprise Dashboard (opt-in operator UI; local-admin sign-in + OIDC SSO + cert browser + cert inspector + audit-defensibility-grade live validator + bulk re-verify + server health overview with embedded Grafana panels + API key management: mint, rotate, revoke, bulk-revoke + audit log browser: filter, paginate, save filters, CSV export, admin-only raw-PII reveal with paired `audit.reveal_raw` event + compliance PDF export: AI Act 3-category structure, fail-closed banned-literal guard, per-generation audit emit).
 - `bin/lucairn` - customer CLI with `doctor` and `support-bundle`.
 - `bin/lucairn bundle create/prepare/verify` - per-customer bundle builder, agent package factory, and verifier.
-- `bin/lucairn evidence verify/list/export` - evidence bundles (one zip of signed certificates per conversation; not the delivery bundle): `verify` wraps the separately released offline `lucairn-bundle-verify` tool with this deployment's public keys; `list` and `export` need the exporter from a later release.
+- `bin/lucairn evidence verify/list/export` - evidence bundles (one zip of signed certificates per conversation; not the delivery bundle): `verify` wraps the separately released offline `lucairn-bundle-verify` tool with this deployment's public keys; `list` and `export` need the exporter `lucairn-bundle-export`, which is not part of this release; today certificates are read one at a time through the gateway (`GET /api/v1/veil/certificate/<request_id>`, OPS.md).
 - `bin/lucairn-init` - one-command env and runtime-profile generator with Ed25519 pair derivation.
 - `bin/lucairn-mint-customer` - mints first customer + `lcr_live_*` API key against a running gateway.
 - `bin/lucairn config-pack` + `config-pack/` - managed Claude Code / Claude Desktop settings that point both tools at this gateway (see `config-pack/README.md`).
@@ -230,8 +230,10 @@ also come back as `3`). Helm installs: set
 `LCR_WITNESS_KEY_ID` in the key file (the chart default is `witness_dev_v1`,
 the wrapper assumes `witness_v1`). VALID is a technical integrity check of the
 bundle, not a certification or legal opinion. `bin/lucairn evidence list` and `bin/lucairn evidence export`
-need the exporter from a later release and stop with one sentence until it is
-installed. Download check, the keys that are passed, anchors and limits:
+need the exporter `lucairn-bundle-export`, which is not part of this release,
+and stop with one sentence without it; what works today is reading one
+certificate at a time through the gateway (`GET
+/api/v1/veil/certificate/<request_id>`). Download check, the keys that are passed, anchors and limits:
 `OPS.md` § "Verify an evidence bundle (self-hosted)".
 
 ## Config Pack for Claude Code and Claude Desktop

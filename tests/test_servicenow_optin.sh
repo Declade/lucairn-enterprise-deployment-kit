@@ -233,7 +233,7 @@ write_state() { # <keys json> <status json>
 }
 STATUS_OK='{"mode":"on","instances":[{"index":1,"state":"unlocked","reason":null}],"control_cert_expires_in_days":300}'
 write_state '{"cust_a":["key_a","key_b"]}' "$STATUS_OK"
-python3 "$ROOT/tests/lib/servicenow_admin_stub.py" --port-file "$TMP/port" --state "$STATE" --admin-key-file "$TMP/admin.key" &
+python3 "$ROOT/tests/lib/servicenow_admin_stub.py" --port-file "$TMP/port" --state "$STATE" --admin-key-file "$TMP/admin.key" --request-log "$TMP/admin-requests.log" &
 STUB_PID=$!
 disown "$STUB_PID" 2>/dev/null || true   # no job-status line when cleanup stops it
 for _ in $(seq 1 50); do [ -s "$TMP/port" ] && break; sleep 0.1; done
@@ -694,6 +694,16 @@ grep -q 'ServiceNow mode: running sanitizer reads the current config copy' "$TMP
   && pass "M3 doctor: the running sanitizer's file equals the host copy" || fail "M3 doctor: running sanitizer copy line: $(grep 'ServiceNow mode' "$TMP/online.out" | tail -3 | tr '\n' ' ')"
 online_red "M3 RED the running sanitizer still reads an older copy (bind mount kept the old inode)" "the running sanitizer reads an older config than" STUB_SAN_SHA=0000000000000000000000000000000000000000000000000000000000000000
 online_red "M3 RED the running sanitizer's file cannot be read" "could not compare the sanitizer config inside the running sanitizer" STUB_SAN_SHA=
+# Fix round 2 (B3): after a failed step inside the group, no request carries the admin key.
+: > "$TMP/admin-requests.log"
+online_red "B3 RED stale sanitizer config: the keyed requests are not sent" "bound keys and gateway status: not run" STUB_SAN_SHA=0000000000000000000000000000000000000000000000000000000000000000
+[ ! -s "$TMP/admin-requests.log" ] && pass "B3: no admin-key request after the stale-config failure" || fail "B3: admin-key requests after a failed step: $(tr '\n' ' ' < "$TMP/admin-requests.log")"
+write_state '{"cust_a":["key_b"]}' "$STATUS_OK"
+: > "$TMP/admin-requests.log"
+online_red "B3 RED typo'd bound key: the status request is not sent" "gateway status: not run (the bound-key check failed"
+! grep -q 'servicenow/status' "$TMP/admin-requests.log" && grep -q '/keys$' "$TMP/admin-requests.log" \
+  && pass "B3: only the bound-key request was sent; no status request after it failed" || fail "B3: requests after the failed bound-key check: $(tr '\n' ' ' < "$TMP/admin-requests.log")"
+write_state '{"cust_a":["key_a","key_b"]}' "$STATUS_OK"
 
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""

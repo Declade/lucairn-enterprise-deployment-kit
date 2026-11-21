@@ -744,7 +744,11 @@ if [ "$1" = compose ]; then
   # Kit 2.0 K-A fix round 4: support-bundle refuses when the install's
   # project does not render, so the stub's project render is a (minimal)
   # project, not empty output.
-  case " $* " in *" config --format json "*) printf '{\n  "name": "stub",\n  "services": {\n  }\n}\n' ;; esac
+  # T-1479 fix round 2 (B9): the same holds for the plain YAML render.
+  case " $* " in
+    *" config --format json "*) printf '{\n  "name": "stub",\n  "services": {\n  }\n}\n' ;;
+    *" config ") printf 'name: stub\nservices: {}\n' ;;
+  esac
   exit 0
 fi
 exit 1

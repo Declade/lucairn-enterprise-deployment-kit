@@ -4206,6 +4206,49 @@ check_identity_networks_internal() {
   return 0
 }
 
+# image_ref_inspectable <ref> — `docker manifest inspect`, the way the
+# daemon's own pull would reach the registry. The CLI speaks HTTPS only unless
+# told --insecure, while the daemon pulls from a registry it treats as
+# insecure over plain HTTP: a customer mirror on 127.0.0.1:5000 that `docker
+# pull` uses failed every image here (T-1479, 21 Nov). --insecure is added
+# ONLY when the daemon's own `docker info` says it would pull from that host
+# over plain HTTP (fix round 1): the host is an IndexConfigs entry with
+# Secure=false, or an IP literal (`localhost` = 127.0.0.1 and ::1) inside one
+# of its InsecureRegistryCIDRs. Any other host NAME is never resolved and
+# never retried; an unreadable daemon answer means no retry. A missing tag or
+# digest still fails.
+image_ref_inspectable() {
+  local ref="$1" host regcfg
+  docker manifest inspect "$ref" >/dev/null 2>&1 && return 0
+  host="${ref%%/*}"
+  case "$host" in
+    *.*|*:*|localhost) ;;
+    *) return 1 ;;  # no registry host part (Docker Hub library image)
+  esac
+  regcfg="$(docker info --format '{{json .RegistryConfig}}' 2>/dev/null)" || return 1
+  python3 -I -c '
+import ipaddress, json, sys
+cfg, host = json.loads(sys.argv[1]), sys.argv[2]
+idx = cfg.get("IndexConfigs") or {}
+if host in idx:
+    sys.exit(0 if idx[host].get("Secure") is False else 1)
+# Fix round 2 (B5): only a LITERAL address is matched against the CIDR list
+# (Engine 29.10 requires every resolved address of a name to match; doctor
+# does not resolve names, so no host name, localhost included, is retried).
+# An IPv4-mapped IPv6 address is compared as IPv4, as the daemon does.
+name = host[1:host.index("]")] if host.startswith("[") and "]" in host else host.rsplit(":", 1)[0]
+try:
+    ip = ipaddress.ip_address(name)
+except ValueError:
+    sys.exit(1)
+if ip.version == 6 and ip.ipv4_mapped is not None:
+    ip = ip.ipv4_mapped
+nets = [ipaddress.ip_network(c, strict=False) for c in cfg.get("InsecureRegistryCIDRs") or []]
+sys.exit(0 if any(ip.version == n.version and ip in n for n in nets) else 1)
+' "$regcfg" "$host" 2>/dev/null || return 1
+  docker manifest inspect --insecure "$ref" >/dev/null 2>&1
+}
+
 check_container_images() {
   local env_file="$1" failed=0 registry tag image
   registry="$(env_value "$env_file" LUCAIRN_IMAGE_REGISTRY)"
@@ -4220,7 +4263,7 @@ check_container_images() {
 
   for image in dsa-audit dsa-id-bridge dsa-sandbox-a dsa-sanitizer dsa-veil-witness dsa-gateway; do
     local ref="${registry}/${image}:${tag}"
-    if ! docker manifest inspect "$ref" >/dev/null 2>&1; then
+    if ! image_ref_inspectable "$ref"; then
       echo "container images: failed ($ref not pullable; check registry credentials or image tag)"
       failed=1
     fi
@@ -4239,7 +4282,7 @@ check_container_images() {
   core_ref="${registry}/dsa-sanitizer-core:${core_tag}${core_digest:+@${core_digest}}"
   side_ref="${registry}/dsa-sanitizer-core-sidecar:${core_tag}${side_digest:+@${side_digest}}"
   for ref in "$core_ref" "$side_ref"; do
-    if ! docker manifest inspect "$ref" >/dev/null 2>&1; then
+    if ! image_ref_inspectable "$ref"; then
       echo "container images: failed ($ref not pullable; check registry credentials, LUCAIRN_SANITIZER_CORE_IMAGE_TAG and the digest pins)"
       failed=1
     fi
@@ -4276,7 +4319,7 @@ check_container_images() {
     pii_ml_tag="$(env_value "$env_file" LUCAIRN_PII_ML_IMAGE_TAG)"
     pii_ml_tag="${pii_ml_tag:-0.5.1}"
     pii_ml_ref="${registry}/dsa-pii-ml:${pii_ml_tag}"
-    if ! docker manifest inspect "$pii_ml_ref" >/dev/null 2>&1; then
+    if ! image_ref_inspectable "$pii_ml_ref"; then
       echo "container images: failed ($pii_ml_ref not pullable; check registry credentials or image tag)"
       failed=1
     fi
@@ -4311,7 +4354,7 @@ check_container_images() {
     dash_tag="$(env_value "$env_file" LUCAIRN_DASHBOARD_IMAGE_TAG)"
     dash_tag="${dash_tag:-0.8.2}"
     dash_ref="${registry}/lucairn-dashboard:${dash_tag}"
-    if ! docker manifest inspect "$dash_ref" >/dev/null 2>&1; then
+    if ! image_ref_inspectable "$dash_ref"; then
       echo "container images: failed ($dash_ref not pullable; check registry credentials or image tag)"
       failed=1
     fi
@@ -9755,13 +9798,37 @@ print("; ".join(bad) if bad else "ok")
   fi
 
   # 4. Registry migrations at the ceiling this kit release reviewed.
-  local ceiling_file ceiling ledger
+  local ceiling_file ceiling ledger ledger_err
   ceiling_file="$(dirname "$compose_file")/scripts/migration-ceilings.conf"
   [ -f "$ceiling_file" ] || ceiling_file="$ROOT/scripts/migration-ceilings.conf"
   ceiling="$(sed -n 's/^CEILING_SANITIZER_CORE=\([0-9][0-9]*\)$/\1/p' "$ceiling_file" 2>/dev/null | tail -1)"
   if printf '%s\n' "$ps_out" | awk -F'|' '$1 == "postgres-sanitizer-core" && $3 == "running" { f = 1 } END { exit !f }'; then
+    # stdout is the count; stderr is read apart (T-1479): Compose 2.40.x
+    # prints "VEIL_* variable is not set" warnings there on every call, and
+    # merged into the count they failed a readable ledger.
+    ledger_err="$(mktemp)"
+    local ledger_n ledger_rc=0
     ledger="$($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" exec -T postgres-sanitizer-core \
-      psql -X -At -U dsa -d sanitizer_core -c "SELECT count(*) FROM registry_schema_migrations" 2>&1 || true)"
+      psql -X -At -U dsa -d sanitizer_core -c "SELECT count(*) FROM registry_schema_migrations" 2> "$ledger_err")" || ledger_rc=$?
+    # Fix round 2 (B8): exactly one line that is a number; whitespace is not
+    # removed across lines (a banner "1" over a count "2" is not "12").
+    # Final fix pass (B8): the digits are matched BEFORE any whitespace is
+    # removed; only blanks around them are allowed ("1<TAB>2" is not 12).
+    ledger_n=""
+    if [[ "$ledger" =~ ^[[:blank:]$'\r']*([0-9]+)[[:blank:]$'\r']*$ ]]; then
+      ledger_n="${BASH_REMATCH[1]}"
+    fi
+    # Fix round 1 (G6): a non-zero exit is a failure even when stdout holds a
+    # number (a transport error after the count).
+    if [ "$ledger_rc" -ne 0 ]; then
+      ledger="$ledger $(cat "$ledger_err") (exit $ledger_rc)"
+    else
+      case "$ledger_n" in
+        *[!0-9]*|'') ledger="$ledger $(cat "$ledger_err")" ;;
+        *) ledger="$ledger_n" ;;
+      esac
+    fi
+    rm -f "$ledger_err"
     case "$ledger" in
       *[!0-9]*|'')
         case "$ledger" in
@@ -9979,12 +10046,29 @@ check_servicenow_runtime() {
     echo "ServiceNow mode: failed (the running gateway does not publish 127.0.0.1:${SN_PORT:-8080}, the GATEWAY_PORT of $env_file (it publishes ${SN_GW_PUBLISHED:-an unreadable port}) — bound keys and the admin status were NOT checked: the admin key is only sent to the port the running gateway holds. Recreate it: bin/lucairn up --env $env_file)"
     return 1
   fi
+  # Fix round 2 (B3): the replica count is local, so it is read before the
+  # admin key goes out; after any failed step in this group the two keyed
+  # requests (bound keys, then gateway status) are not sent.
+  if [ "$n" = "1" ]; then
+    echo "ServiceNow mode: one gateway serves the mode"
+  else
+    echo "ServiceNow mode: failed ($n running gateway containers; the ServiceNow mode needs exactly one — the session manager and its tickets live in one process. Remove extra replicas: bin/lucairn up)"
+    failed=1
+  fi
+  if [ "$failed" -ne 0 ]; then
+    echo "ServiceNow mode: bound keys and gateway status: not run (an earlier ServiceNow check failed; they send the admin key, so they run only when every check before them passed)"
+    return 1
+  fi
   rc=0; servicenow_keyed "$env_file" "$compose_file" || rc=$?
   case "$rc" in
     0) echo "ServiceNow mode: bound keys exist ($SN_KEYED_LINE)" ;;
     1) echo "ServiceNow mode: failed (a bound key id does not exist under its instance's owner: $SN_KEYED_LINE — that key would run the generic path)"; failed=1 ;;
     *) echo "ServiceNow mode: failed (bound key ids could not be checked: ${SN_KEYED_LINE:-no answer} — the gateway's admin API on 127.0.0.1:${SN_PORT:-8080})"; failed=1 ;;
   esac
+  if [ "$failed" -ne 0 ]; then
+    echo "ServiceNow mode: gateway status: not run (the bound-key check failed; the status request sends the admin key)"
+    return 1
+  fi
   rc=0; out="$(servicenow_probe_render "$env_file" "$compose_file" secrets | servicenow_helper status 2>/dev/null)" || rc=$?
   out="$(printf '%s\n' "$out" | sed -n 's/^STATUS=//p' | tail -1)"
   if [ "$rc" -eq 0 ]; then
@@ -9993,13 +10077,16 @@ check_servicenow_runtime() {
     echo "ServiceNow mode: failed (gateway status: ${out:-no answer} — want mode=on, every instance unlocked, control certificate >= 14 days)"
     failed=1
   fi
-  if [ "$n" = "1" ]; then
-    echo "ServiceNow mode: one gateway serves the mode"
-  else
-    echo "ServiceNow mode: failed ($n running gateway containers; the ServiceNow mode needs exactly one — the session manager and its tickets live in one process. Remove extra replicas: bin/lucairn up)"
-    failed=1
-  fi
   return "$failed"
+}
+
+# doctor_gated <label> — 0 while doctor_failed (doctor's local) is 0; else
+# prints "<label>: not run ..." and returns 1. Wraps every doctor check that
+# sends a credential or writes (fix round 1, G4).
+doctor_gated() {
+  [ "${doctor_failed:-0}" -eq 0 ] && return 0
+  echo "$1: not run (an earlier check failed; this check sends a credential or writes, so it runs only when every check before it passed)"
+  return 1
 }
 
 doctor() {
@@ -10146,6 +10233,11 @@ doctor() {
     doctor_selected_model "$env_file" "$supplied_model" >/dev/null || return 1
   fi
   runtime_profile_compose_args "$env_file" "$compose_file" || return 1
+  # T-1479: from here every check runs and prints its own line; a failed one
+  # sets doctor_failed instead of ending the run, so one run lists every
+  # failure. The verdict is read before the offline success line and before
+  # the online customer journey (which needs a stack that passed the checks).
+  local doctor_failed=0
   # Values files are optional; validate every supplied path before any checks.
   if [ "$values_count" -gt 0 ]; then
     for values_file in "${values_files[@]}"; do
@@ -10169,7 +10261,7 @@ doctor() {
   if require_env_values "$env_file"; then
     echo "required secrets: ok"
   else
-    return 1
+    doctor_failed=1
   fi
 
   # Reject any required secret still set to a placeholder. Runs before the
@@ -10256,8 +10348,7 @@ doctor() {
   # PORTAL_API_KEY) are NOT checked here because the certification profile
   # is opt-in (`--profile certification`); leaving them as REPLACE_WITH_*
   # is the documented default for non-certification installs.
-  [ "$placeholder_failed" -eq 0 ] || return 1
-  echo "placeholder values: ok"
+  if [ "$placeholder_failed" -eq 0 ]; then echo "placeholder values: ok"; else doctor_failed=1; fi
 
   local format_failed=0
   # validate_hex64 is no-op on empty values, so listing both the canonical
@@ -10302,8 +10393,7 @@ doctor() {
   done
   validate_keystore_key "$env_file" || format_failed=1
   check_canary_hmac_key_length "$env_file" || format_failed=1
-  [ "$format_failed" -eq 0 ] || return 1
-  echo "secret formats: ok"
+  if [ "$format_failed" -eq 0 ]; then echo "secret formats: ok"; else doctor_failed=1; fi
 
   # Sim 3 G10: ed25519 pair coherence. Operators who paste a pubkey
   # from one ceremony + a signing key from another get a doctor-PASS
@@ -10313,7 +10403,7 @@ doctor() {
   if [ "$pair_failed" -eq 0 ]; then
     echo "veil keypairs: ok (derived pubkeys match claimed)"
   else
-    return 1
+    doctor_failed=1
   fi
 
   # HIGH-2 (overnight 2026-06-14): DSA_ENV value-set validation. Runs BEFORE
@@ -10321,7 +10411,7 @@ doctor() {
   # silently skip every prod guard fails loudly here instead.
   local dsa_env_failed=0
   check_dsa_env_valid "$env_file" || dsa_env_failed=1
-  [ "$dsa_env_failed" -eq 0 ] || return 1
+  [ "$dsa_env_failed" -eq 0 ] || doctor_failed=1
 
   # H9 (audit 2026-06-23): mTLS partial-config detection — Compose path.
   # sandbox-b (main.py:284-288) and the sanitizer (gunicorn.conf.py:93-108)
@@ -10329,7 +10419,7 @@ doctor() {
   # is set but the server or client triple is incomplete. Mode-agnostic (any env).
   local mtls_failed=0
   check_mtls_partial_config "$env_file" || mtls_failed=1
-  [ "$mtls_failed" -eq 0 ] || return 1
+  [ "$mtls_failed" -eq 0 ] || doctor_failed=1
 
   # H10 (2026-06-26): Helm-path witness-mTLS split/half-config detection.
   # Renders the chart with the customer's values (merging chart defaults) and
@@ -10340,11 +10430,11 @@ doctor() {
   if [ "$values_count" -gt 0 ]; then
     local helm_mtls_failed=0
     check_mtls_partial_config_helm "$ROOT/charts/lucairn" "${values_files[@]}" || helm_mtls_failed=1
-    [ "$helm_mtls_failed" -eq 0 ] || return 1
+    [ "$helm_mtls_failed" -eq 0 ] || doctor_failed=1
 
     local enterprise_helm_mtls_failed=0
     check_enterprise_mtls_helm "$ROOT/charts/lucairn" "${values_files[@]}" || enterprise_helm_mtls_failed=1
-    [ "$enterprise_helm_mtls_failed" -eq 0 ] || return 1
+    [ "$enterprise_helm_mtls_failed" -eq 0 ] || doctor_failed=1
   fi
 
   # H10 (2026-06-26): Helm-path canary two-consumer (gateway ↔ sandbox-a) check.
@@ -10356,11 +10446,11 @@ doctor() {
   if [ "$values_count" -gt 0 ]; then
     local helm_canary_failed=0
     check_canary_hmac_key_helm "$ROOT/charts/lucairn" "${values_files[@]}" || helm_canary_failed=1
-    [ "$helm_canary_failed" -eq 0 ] || return 1
+    [ "$helm_canary_failed" -eq 0 ] || doctor_failed=1
     # T-1102: the gateway must never be handed sandbox B's dsa-ai signing key.
     local helm_ai_key_failed=0
     check_gateway_ai_signing_key_helm "$ROOT/charts/lucairn" "${values_files[@]}" || helm_ai_key_failed=1
-    [ "$helm_ai_key_failed" -eq 0 ] || return 1
+    [ "$helm_ai_key_failed" -eq 0 ] || doctor_failed=1
   fi
 
   # M5 (deal-#1 hardening 2026-06-19): readiness-bundle boot-Fatal pre-flight.
@@ -10369,7 +10459,7 @@ doctor() {
   # Only fires when the var is explicitly "true"; silent no-op otherwise.
   local readiness_failed=0
   check_readiness_bundle "$env_file" || readiness_failed=1
-  [ "$readiness_failed" -eq 0 ] || return 1
+  [ "$readiness_failed" -eq 0 ] || doctor_failed=1
 
   # BLOCKER-3 (overnight follow-up 2026-06-15): production gateways log.Fatal at
   # boot if the witness-signed manifest blob is missing/empty. Pre-flight it so
@@ -10377,23 +10467,23 @@ doctor() {
   # instead of a boot-loop. Production-gated; skips dev/test cleanly.
   local manifest_blob_failed=0
   check_manifest_blob "$env_file" "$compose_file" || manifest_blob_failed=1
-  [ "$manifest_blob_failed" -eq 0 ] || return 1
+  [ "$manifest_blob_failed" -eq 0 ] || doctor_failed=1
 
   # Sim 3 G6: reject known dual-sandbox dev-default literals in prod.
   local dev_default_failed=0
   check_no_dev_default_keys "$env_file" || dev_default_failed=1
-  [ "$dev_default_failed" -eq 0 ] || return 1
+  [ "$dev_default_failed" -eq 0 ] || doctor_failed=1
 
   # Sim 3 G1: pre-flight render-migrations.sh input contract.
   local migration_failed=0
   check_render_migrations_safe "$env_file" "$compose_file" || migration_failed=1
-  [ "$migration_failed" -eq 0 ] || return 1
+  [ "$migration_failed" -eq 0 ] || doctor_failed=1
 
   # T-1219: audit claim-delivery retention service — script present, values
   # in the shape the service accepts.
   local retention_failed=0
   check_audit_claim_delivery_retention "$env_file" "$compose_file" || retention_failed=1
-  [ "$retention_failed" -eq 0 ] || return 1
+  [ "$retention_failed" -eq 0 ] || doctor_failed=1
 
   # MEDIUM (overnight 2026-06-14): Compose migrate path renders ONLY the kit's
   # migrations/<tree>/ files. If the kit ships fewer than the pinned image
@@ -10402,7 +10492,7 @@ doctor() {
   # missed. Helm bakes /migrations and is unaffected — Compose only.
   local migration_floor_failed=0
   check_migration_set_floor "$env_file" || migration_floor_failed=1
-  [ "$migration_floor_failed" -eq 0 ] || return 1
+  [ "$migration_floor_failed" -eq 0 ] || doctor_failed=1
 
   # HIGH-1 (overnight 2026-06-14): a fail-closed L3 availability posture with no
   # L3 service wired fail-closes 503 on every request. Warn-only (an Enterprise
@@ -10424,7 +10514,7 @@ doctor() {
   # message — this preflight is the sandbox-b authority + defense-in-depth.
   local signing_key_failed=0
   check_signing_key_compose_preflight "$env_file" || signing_key_failed=1
-  [ "$signing_key_failed" -eq 0 ] || return 1
+  [ "$signing_key_failed" -eq 0 ] || doctor_failed=1
 
   # PRD B (Slice B2): FAST L3 runtime (vllm-l3) preflight. Runs ONLY when the
   # operator opts into the vLLM L3 backend (sanitizer YAML l3_runtime: vllm OR
@@ -10436,17 +10526,17 @@ doctor() {
   # curl -fsS http://localhost:8000/v1/models` command to run post-up instead.
   local vllm_l3_failed=0
   check_vllm_l3_preflight "$env_file" "$offline" || vllm_l3_failed=1
-  [ "$vllm_l3_failed" -eq 0 ] || return 1
+  [ "$vllm_l3_failed" -eq 0 ] || doctor_failed=1
 
   # Sim 3 G3: LUCAIRN_IMAGE_TAG must be set explicitly.
   local tag_failed=0
   check_image_tag_set "$env_file" || tag_failed=1
-  [ "$tag_failed" -eq 0 ] || return 1
+  [ "$tag_failed" -eq 0 ] || doctor_failed=1
 
   # Sim 3 G7: self-hosted SB API key not the well-known fallback.
   local sb_key_failed=0
   check_local_sandbox_b_api_key "$env_file" || sb_key_failed=1
-  [ "$sb_key_failed" -eq 0 ] || return 1
+  [ "$sb_key_failed" -eq 0 ] || doctor_failed=1
 
   # SEC-01 (hardening 2026-05-28): Postgres + app-role passwords must be
   # non-empty, non-weak-literal, and ≥ 12 chars in production (the weak
@@ -10454,28 +10544,28 @@ doctor() {
   # favour of `${VAR:?...}` fail-fast).
   local pg_pw_failed=0
   check_postgres_passwords "$env_file" || pg_pw_failed=1
-  [ "$pg_pw_failed" -eq 0 ] || return 1
+  [ "$pg_pw_failed" -eq 0 ] || doctor_failed=1
 
   # Sim 3 G9: production GATEWAY_BASE_URL must be https.
   local url_failed=0
   check_gateway_base_url_https "$env_file" || url_failed=1
-  [ "$url_failed" -eq 0 ] || return 1
+  [ "$url_failed" -eq 0 ] || doctor_failed=1
 
   # Wave-5 NEW-4: production LUCAIRN_RESOURCE_BASE_URL must be https
   # (silent gap — passes doctor today, breaks downstream verifiers).
   local resource_url_failed=0
   check_lucairn_resource_base_url_https "$env_file" || resource_url_failed=1
-  [ "$resource_url_failed" -eq 0 ] || return 1
+  [ "$resource_url_failed" -eq 0 ] || doctor_failed=1
 
   # Sim 3 G4: BYOK overlay's dsa-egress network must not be internal:true.
   local egress_failed=0
   check_byok_egress_open "$env_file" || egress_failed=1
-  [ "$egress_failed" -eq 0 ] || return 1
+  [ "$egress_failed" -eq 0 ] || doctor_failed=1
 
   # Sim 3 round-2 G2-CLOSE: image-tag vs sanitizer_config_compat.
   local compat_failed=0
   check_sanitizer_config_image_compat "$env_file" || compat_failed=1
-  [ "$compat_failed" -eq 0 ] || return 1
+  [ "$compat_failed" -eq 0 ] || doctor_failed=1
 
   # Slice 4 over-redaction fix-up: safe-terms file deliverability. Guards the
   # v0.5.1 strict whole-span safe list (+ any any-word safe_terms_file) from
@@ -10495,21 +10585,21 @@ doctor() {
   # are fatal; cache writability + host memory are warnings.
   local pii_ml_toggle_failed=0
   check_pii_ml_paired_toggles "$env_file" || pii_ml_toggle_failed=1
-  [ "$pii_ml_toggle_failed" -eq 0 ] || return 1
+  [ "$pii_ml_toggle_failed" -eq 0 ] || doctor_failed=1
 
   local pii_ml_rev_failed=0
   check_pii_ml_hf_revisions "$env_file" || pii_ml_rev_failed=1
-  [ "$pii_ml_rev_failed" -eq 0 ] || return 1
+  [ "$pii_ml_rev_failed" -eq 0 ] || doctor_failed=1
 
   local pii_ml_lazy_failed=0
   check_pii_ml_lazy_not_ready_off_in_prod "$env_file" || pii_ml_lazy_failed=1
-  [ "$pii_ml_lazy_failed" -eq 0 ] || return 1
+  [ "$pii_ml_lazy_failed" -eq 0 ] || doctor_failed=1
 
   # r2 kit-doctor G1: prod-mode silent-degrade gate paired with the lazy-
   # not-ready check above (both close production fail-CLOSED holes).
   local pii_ml_exit_failed=0
   check_pii_ml_exit_on_load_failure_in_prod "$env_file" || pii_ml_exit_failed=1
-  [ "$pii_ml_exit_failed" -eq 0 ] || return 1
+  [ "$pii_ml_exit_failed" -eq 0 ] || doctor_failed=1
 
   check_pii_ml_hf_cache_writable "$env_file"
   check_pii_ml_node_memory "$env_file"
@@ -10521,34 +10611,34 @@ doctor() {
   # Phase 7 being enabled — skips cleanly on the default-OFF path.
   local pii_ml_budget_failed=0
   check_pii_ml_healthcheck_budget_parity "$env_file" || pii_ml_budget_failed=1
-  [ "$pii_ml_budget_failed" -eq 0 ] || return 1
+  [ "$pii_ml_budget_failed" -eq 0 ] || doctor_failed=1
 
   # Sim 3 round-2 NEW-1: INSECURE_DEV_MODE incompatible with prod.
   local insecure_failed=0
   check_insecure_dev_mode_off_in_prod "$env_file" || insecure_failed=1
-  [ "$insecure_failed" -eq 0 ] || return 1
+  [ "$insecure_failed" -eq 0 ] || doctor_failed=1
 
   # Sim 3 round-2 NEW-2: LCR_REKOR_URL required in prod (unless dev-mode).
   local rekor_failed=0
   check_veil_rekor_url_in_prod "$env_file" || rekor_failed=1
-  [ "$rekor_failed" -eq 0 ] || return 1
+  [ "$rekor_failed" -eq 0 ] || doctor_failed=1
 
   # Wave-5 NEW-5: LCR_TSA_URL required in prod (parallel to NEW-2; PR #105
   # dual-sandbox enforcement). Crashloop gap — witness fail-fasts at boot.
   local tsa_failed=0
   check_veil_tsa_url_in_prod "$env_file" || tsa_failed=1
-  [ "$tsa_failed" -eq 0 ] || return 1
+  [ "$tsa_failed" -eq 0 ] || doctor_failed=1
 
   # Sim 3 round-2 NEW-3: Sandbox-B remote scheme + cert-triple coherence.
   # This runs before any Compose rendering/inference probes so a split install
   # cannot look healthy while its remote authentication is blank or fake.
   local split_credentials_failed=0
   check_split_remote_credentials "$env_file" || split_credentials_failed=1
-  [ "$split_credentials_failed" -eq 0 ] || return 1
+  [ "$split_credentials_failed" -eq 0 ] || doctor_failed=1
 
   local sb_remote_failed=0
   check_sandbox_b_remote_coherent "$env_file" || sb_remote_failed=1
-  [ "$sb_remote_failed" -eq 0 ] || return 1
+  [ "$sb_remote_failed" -eq 0 ] || doctor_failed=1
 
   # Phase 8 (TMS Slice 4): per-deployment trust-zone policy pre-flight.
   # (a) validates the JSON shape + zone values against the gateway's valid-set;
@@ -10557,9 +10647,11 @@ doctor() {
   # Skipped silently when GATEWAY_TMS_TRUST_ZONES is unset (the common case).
   local tms_failed=0
   check_tms_trust_zones "$env_file" || tms_failed=1
-  [ "$tms_failed" -eq 0 ] || return 1
+  [ "$tms_failed" -eq 0 ] || doctor_failed=1
 
-  check_certs "$env_file" "$offline"
+  # Fix round 1 (G5): unguarded, a certificate failure ended doctor under
+  # set -e without the closing line and without the checks after it.
+  check_certs "$env_file" "$offline" || doctor_failed=1
 
   # Dev-mode-env consistency check. Catches the "production-defaults
   # vs dev install" foot-gun Sim 3 final-smoothing hit three times:
@@ -10576,14 +10668,14 @@ doctor() {
   # BYOK overlay check (self-hosted + managed-LLM mode). Informational +
   # enforces that at least one provider key is present when the allowlist
   # is set. Skipped silently when the operator is not using the overlay.
-  check_byok_overlay "$env_file" || return 1
+  check_byok_overlay "$env_file" || doctor_failed=1
 
   # Identity-plane network lockdown check. Sandbox A holds the raw-PII-to-
   # pseudonym mapping; the identity-plane bridges (dsa-identity,
   # dsa-audit-identity, dsa-certification) MUST be internal:true so the
   # network layer enforces "no raw identity data leaves your environment"
   # as defence-in-depth on top of code-level air-tightness.
-  check_identity_networks_internal "$compose_file" || return 1
+  check_identity_networks_internal "$compose_file" || doctor_failed=1
 
   # Kit 2.0 (PRD prd-2026-11-02-kit-2-0-new-core.md K3): the new sanitizer
   # core — registry secrets, profile, gateway switches, the witness side of the
@@ -10591,11 +10683,11 @@ doctor() {
   # image pair and host memory. Runs offline too (memory then only warns).
   local sanitizer_core_failed=0
   check_sanitizer_core_config "$env_file" "$compose_file" "$offline" || sanitizer_core_failed=1
-  [ "$sanitizer_core_failed" -eq 0 ] || return 1
+  [ "$sanitizer_core_failed" -eq 0 ] || doctor_failed=1
   # Kit 2.0 K-C: the ServiceNow opt-in (off by default).
   local servicenow_failed=0
   check_servicenow_mode "$env_file" "$compose_file" || servicenow_failed=1
-  [ "$servicenow_failed" -eq 0 ] || return 1
+  [ "$servicenow_failed" -eq 0 ] || doctor_failed=1
 
   # Image-manifest drift warning. Runs in --offline mode as well so customers
   # without network egress still get the warning.
@@ -10616,12 +10708,16 @@ doctor() {
   # present resolver cannot confirm (UNRESOLVED) fails closed; an INVALID
   # manifest entry fails closed; and --strict requires at least one ref actually
   # verified (cardinality floor). Honors LUCAIRN_IMAGE_TAG/REGISTRY on dsa-*.
-  if ! check_image_digests "$env_file" "$strict_digest" "$offline"; then
-    return 1
+  # Fix round 1 (G4): a check that sends a credential (registry login,
+  # admin key, kube credential) or writes (the audit-database probe) runs only
+  # while every check before it passed, as before T-1479; after a failure it
+  # prints "not run" instead (doctor_gated).
+  if doctor_gated "image digests"; then
+    check_image_digests "$env_file" "$strict_digest" "$offline" || doctor_failed=1
   fi
 
-  if [ "$check_images" -eq 1 ]; then
-    check_container_images "$env_file" || return 1
+  if [ "$check_images" -eq 1 ] && doctor_gated "container images"; then
+    check_container_images "$env_file" || doctor_failed=1
   fi
 
   # Slice 1: dashboard pre-flight. Runs in BOTH --offline and live paths
@@ -10629,19 +10725,25 @@ doctor() {
   # checks are skipped. Non-fatal when the dashboard is not opted-in;
   # fatal when the bootstrap secret is missing/short and the operator
   # has explicitly opted in.
-  check_dashboard "$env_file" || return 1
+  if doctor_gated "dashboard"; then
+    check_dashboard "$env_file" || doctor_failed=1
+  fi
 
   # M9 (deal-#1 hardening 2026-06-19): backup pre-flight.
   # WARN (always) / FAIL (--strict) when DSA_ENV=production and NEITHER
   # LUCAIRN_BACKUP_S3_BUCKET (Compose path) NOR LUCAIRN_BACKUP_HELM_MANAGED=true
   # (explicit Helm operator assertion) is set. Runs in both --offline and live modes.
-  check_backup_preflight "$env_file" "$strict_digest" || return 1
+  check_backup_preflight "$env_file" "$strict_digest" || doctor_failed=1
 
   if [ "$offline" -eq 1 ]; then
     echo "network checks: skipped (--offline)"
     echo "docker compose: skipped (--offline)"
     echo "postgres: skipped (--offline)"
     echo "network policies: skipped (--offline)"
+    if [ "$doctor_failed" -eq 1 ]; then
+      echo "doctor: failed (see the failures listed above; fix them and run doctor again)"
+      return 1
+    fi
     # Keep the historical success token for older automation, but make the
     # configuration-only terminal state unambiguous.
     echo "doctor: ok"
@@ -10656,8 +10758,12 @@ doctor() {
   if check_dns "$host"; then
     echo "dns: ok ($host)"
   else
-    echo "dns: failed ($host)"
-    return 1
+    case "$host" in
+      lucairn.customer.example)
+        echo "dns: failed ($host is the placeholder bin/lucairn-init writes; set GATEWAY_BASE_URL to the HTTPS name your users reach the gateway at, e.g. bin/lucairn-init --gateway-base-url https://lucairn.your-company.example)" ;;
+      *) echo "dns: failed ($host does not resolve from this host)" ;;
+    esac
+    doctor_failed=1
   fi
 
   # This is a post-start journey.  A listener is expected now, so the old
@@ -10670,7 +10776,7 @@ doctor() {
       echo "docker compose: ok"
     else
       echo "docker compose: config failed"
-      return 1
+      doctor_failed=1
     fi
   else
     warn "docker compose not available; skipping compose config validation"
@@ -10680,31 +10786,64 @@ doctor() {
   # networks; engines below the fixed releases forward DNS from them.
   local docker_engine_failed=0
   check_docker_engine_version || docker_engine_failed=1
-  [ "$docker_engine_failed" -eq 0 ] || return 1
+  [ "$docker_engine_failed" -eq 0 ] || doctor_failed=1
 
   # Kit 2.0: the running sanitizer-core stack (rendered config, containers,
   # namespace join, migration ledger, claim transport, memory headroom).
   # Nothing running = "not started", fatal only under --strict-runtime.
   local sanitizer_core_runtime_failed=0
   check_sanitizer_core_runtime "$env_file" "$compose_file" "$strict_runtime" || sanitizer_core_runtime_failed=1
-  [ "$sanitizer_core_runtime_failed" -eq 0 ] || return 1
-  local servicenow_runtime_failed=0
-  check_servicenow_runtime "$env_file" "$compose_file" "$strict_runtime" || servicenow_runtime_failed=1
-  [ "$servicenow_runtime_failed" -eq 0 ] || return 1
+  [ "$sanitizer_core_runtime_failed" -eq 0 ] || doctor_failed=1
+  if doctor_gated "ServiceNow mode runtime"; then
+    check_servicenow_runtime "$env_file" "$compose_file" "$strict_runtime" || doctor_failed=1
+  fi
 
   postgres_url="${postgres_url:-$(env_value "$env_file" POSTGRES_URL)}"
   if [ -n "$postgres_url" ] && have pg_isready; then
-    if pg_isready -d "$postgres_url" >/dev/null 2>&1; then
-      echo "postgres: ok"
+    # Fix round 2 (B2): pg_isready completes the connection (libpq
+    # internal_ping -> pqConnectDBComplete -> pg_fe_sendauth), so a password in
+    # the URL is sent to the server. Reachability needs none: any
+    # authentication request already counts as "up". Only host, port and
+    # database are passed; no password file or PGPASSWORD is consulted.
+    local pg_host="" pg_port="" pg_db="" pg_args=()
+    { IFS= read -r pg_host; IFS= read -r pg_port; IFS= read -r pg_db; } < <(python3 - "$postgres_url" <<'PY' 2>/dev/null || true
+import sys
+from urllib.parse import urlparse, unquote, parse_qs
+u = urlparse(sys.argv[1])
+# Final fix pass (B2): libpq takes host and port from the query string too
+# (postgresql://db/audit?port=6543), and they win over the authority part.
+q = parse_qs(u.query)
+host = (q.get("host") or [""])[-1] or u.hostname
+if u.scheme in ("postgres", "postgresql") and host:
+    try:
+        port = str(u.port or "")
+    except ValueError:
+        port = ""
+    port = (q.get("port") or [""])[-1] or port
+    db = unquote(u.path.lstrip("/"))
+    print(host); print(port)
+    print("dbname='" + db.replace("\\", "\\\\").replace("'", "\\'") + "'" if db else "")
+PY
+)
+    if [ -z "$pg_host" ]; then
+      echo "postgres: failed (the URL is not of the form postgres://host[:port]/database; not probed)"
+      doctor_failed=1
     else
-      echo "postgres: failed"
-      return 1
+      pg_args=(-h "$pg_host")
+      [ -z "$pg_port" ] || pg_args+=(-p "$pg_port")
+      [ -z "$pg_db" ] || pg_args+=(-d "$pg_db")
+      if env -u PGPASSWORD PGPASSFILE=/dev/null pg_isready "${pg_args[@]}" >/dev/null 2>&1; then
+        echo "postgres: ok"
+      else
+        echo "postgres: failed"
+        doctor_failed=1
+      fi
     fi
   else
     echo "postgres: skipped (no --postgres-url or pg_isready unavailable)"
   fi
 
-  if have kubectl; then
+  if have kubectl && doctor_gated "network policies"; then
     # `kubectl get networkpolicy -n <ns>` exits 0 even when the namespace
     # exists with ZERO NetworkPolicy objects (it prints "No resources found"
     # to stderr, rc=0). So we cannot treat exit-0 as "present" — we must count
@@ -10750,8 +10889,15 @@ doctor() {
     info "  For production, set secrets.backend=vault|aws|azure (External Secrets Operator) so secrets live"
     info "  in a real secrets manager, OR ensure etcd encryption-at-rest + strict 'get secret' RBAC are enabled."
     info "  See INSTALL.md § 'Production secrets: External Secrets Operator (ESO)'."
-  else
+  elif ! have kubectl; then
     echo "network policies: skipped (kubectl unavailable)"
+  fi
+
+  # T-1479: every check above has printed its line; stop here on any failure,
+  # before the runtime probes and the keyed customer journey.
+  if [ "$doctor_failed" -eq 1 ]; then
+    echo "doctor: failed (see the failures listed above; the runtime probes and the customer journey were not run — fix them and run doctor again)"
+    return 1
   fi
 
   # Post-deploy liveness + readiness probe. Sim 2 M4 surfaced that a doctor PASS
@@ -10766,31 +10912,38 @@ doctor() {
   # `docker compose up -d`), the probes time out and we report `not started`
   # without failing the doctor exit. Use --strict-runtime to fail-closed.
   local gateway_health_port gateway_health_base runtime_failed=0
-  gateway_health_port="$(env_value "$env_file" GATEWAY_HEALTH_PORT)"
+  # Final fix pass (B6): resolved as Compose resolves the published port
+  # (127.0.0.1:${GATEWAY_HEALTH_PORT:-8085}): an exported value wins over the
+  # one in the settings file.
+  gateway_health_port="${GATEWAY_HEALTH_PORT:-$(env_value "$env_file" GATEWAY_HEALTH_PORT)}"
   gateway_health_port="${gateway_health_port:-8085}"
   gateway_health_base="http://127.0.0.1:${gateway_health_port}"
 
+  # Fix round 2 (B6): every probe must answer 200 over a transfer curl
+  # completed (exit 0). "Not started", any other code, a failed transfer or a
+  # missing curl fails doctor here, before the keyed journey. Before `up` the
+  # journey could not succeed either; it would only send the customer key to
+  # whatever answers at GATEWAY_BASE_URL.
   if have curl; then
-    local healthz_code readyz_code curl_args
+    local healthz_code readyz_code curl_args healthz_rc=0 readyz_rc=0 probe
     curl_args="-sS -o /dev/null -w %{http_code} --max-time 3"
-    healthz_code="$(curl $curl_args "${gateway_health_base}/healthz" 2>/dev/null || true)"
-    readyz_code="$(curl $curl_args "${gateway_health_base}/readyz" 2>/dev/null || true)"
+    # Final fix pass (B6): loopback probes never go through an inherited
+    # http_proxy / HTTPS_PROXY / ALL_PROXY.
+    healthz_code="$(curl $curl_args --noproxy '*' "${gateway_health_base}/healthz" 2>/dev/null)" || healthz_rc=$?
+    readyz_code="$(curl $curl_args --noproxy '*' "${gateway_health_base}/readyz" 2>/dev/null)" || readyz_rc=$?
 
-    if [ -z "$healthz_code" ] || [ "$healthz_code" = "000" ]; then
-      echo "gateway healthz: not started (no listener on :${gateway_health_port})"
-      echo "gateway readyz: not started (no listener on :${gateway_health_port})"
-      [ "$strict_runtime" -eq 1 ] && runtime_failed=1
-    else
-      if [ "$healthz_code" = "200" ]; then
-        echo "gateway healthz: ok (200)"
-      else
-        echo "gateway healthz: failed ($healthz_code)"
+    for probe in healthz readyz; do
+      local code rc
+      if [ "$probe" = healthz ]; then code="$healthz_code" rc="$healthz_rc"; else code="$readyz_code" rc="$readyz_rc"; fi
+      if [ -z "$code" ] || [ "$code" = "000" ]; then
+        echo "gateway $probe: not started (no answer on :${gateway_health_port}, curl exit $rc)"
         runtime_failed=1
-      fi
-
-      if [ "$readyz_code" = "200" ]; then
-        echo "gateway readyz: ok (200)"
-      elif [ "$readyz_code" = "503" ]; then
+      elif [ "$code" = "200" ] && [ "$rc" -eq 0 ]; then
+        echo "gateway $probe: ok (200)"
+      elif [ "$code" = "200" ]; then
+        echo "gateway $probe: failed (200, but the transfer failed: curl exit $rc)"
+        runtime_failed=1
+      elif [ "$probe" = readyz ] && [ "$code" = "503" ]; then
         # 503 from /readyz typically means at least one service-link circuit
         # breaker is open. Inference is the common culprit on a fresh deploy
         # because SANDBOX_B_REMOTE_ENDPOINT defaults to a placeholder and split
@@ -10802,16 +10955,23 @@ doctor() {
         echo "  Then: curl -fsS ${gateway_health_base}/healthz to inspect circuit_breakers map"
         runtime_failed=1
       else
-        echo "gateway readyz: failed ($readyz_code)"
+        echo "gateway $probe: failed ($code)"
         runtime_failed=1
       fi
-    fi
+    done
   else
-    echo "gateway runtime probes: skipped (curl unavailable)"
+    echo "gateway runtime probes: failed (curl unavailable; the gateway cannot be probed)"
+    runtime_failed=1
   fi
 
   if [ "$strict_runtime" -eq 1 ] && [ "$runtime_failed" -eq 1 ]; then
     fail "runtime probes failed and --strict-runtime is set"
+  fi
+  # Fix round 1 (G7): a gateway that answers but is not healthy or not ready
+  # fails doctor; the keyed customer journey does not run against it.
+  if [ "$runtime_failed" -eq 1 ]; then
+    echo "doctor: failed (gateway runtime probes failed; the customer journey was not run — fix them and run doctor again)"
+    return 1
   fi
 
   doctor_with_xtrace_suspended doctor_full_customer_journey "$env_file" "$supplied_model" "$customer_key_file" "$customer_key_proxy" "$customer_key_ca_file"
@@ -11232,7 +11392,7 @@ support_bundle() {
   runtime_profile_compose_args "$env_file" "$compose_file" || return 1
   mkdir -p "$output_dir"
 
-  local ts bundle_dir archive compose cert_raw
+  local ts bundle_dir archive compose cert_raw logs_raw="" logs_scan_dir=""
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   bundle_dir="$output_dir/lucairn-support-bundle-$ts"
   archive="$bundle_dir.tar.gz"
@@ -11289,10 +11449,59 @@ support_bundle() {
   else
     compose="$(compose_cmd)"
     if [ -n "$compose" ]; then
-      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" ps 2>&1 || true) | redact_stream > "$bundle_dir/docker/compose-ps.txt"
+      # Fix round 2 (B1): Compose 2.40.x prints the same interpolation
+      # warnings on `ps` and `logs` as on `config` (they can quote the tail of
+      # a secret containing `$`). `ps`: stdout only, stderr counted. `logs`:
+      # Compose writes a container's own stderr to its stderr, so the merged
+      # stream is kept, but only lines carrying the container prefix
+      # ("name  | ") are archived; every other line is Compose's own message
+      # and only counted.
+      local cmsg_tmp cmsg_n
+      cmsg_tmp="$(mktemp)"
+      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" ps 2> "$cmsg_tmp" || true) | redact_stream > "$bundle_dir/docker/compose-ps.txt"
+      cmsg_n="$(grep -c '' "$cmsg_tmp" 2>/dev/null || true)"
+      printf 'Docker Compose printed %s message line(s) on stderr for this command; their text is not included (it can quote parts of secret values or file paths).\n' "${cmsg_n:-0}" >> "$bundle_dir/docker/compose-ps.txt"
       (docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>&1 || true) | redact_stream > "$bundle_dir/docker/status.txt"
-      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" logs --tail 300 --no-color 2>&1 || true) | redact_stream > "$bundle_dir/logs/compose.log"
-      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" config 2>&1 || true) | redact_stream > "$bundle_dir/redacted/compose-resolved.yml"
+      # Final fix pass (B1): dropping a line can split a multi-line secret
+      # into fragments below the scanner's per-line threshold. The whole,
+      # unfiltered (redacted) log text is therefore kept OUTSIDE the bundle
+      # in a private temp dir and scanned like a collected file below: a hit
+      # there refuses the bundle, as before the filter existed.
+      logs_raw="$(mktemp)"
+      chmod 0600 "$logs_raw"
+      logs_scan_dir="$(mktemp -d)"
+      chmod 0700 "$logs_scan_dir"
+      mkdir -p "$logs_scan_dir/logs"
+      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" logs --tail 300 --no-color > "$logs_raw" 2>&1 || true)
+      redact_stream < "$logs_raw" > "$logs_scan_dir/logs/compose.log"
+      awk -v cnt="$cmsg_tmp" '/^[A-Za-z0-9][A-Za-z0-9_.-]* +[|] / { print; next } { n++ } END { print n + 0 > cnt }' < "$logs_raw" \
+        | redact_stream > "$bundle_dir/logs/compose.log"
+      rm -f "$logs_raw"
+      cmsg_n="$(head -1 "$cmsg_tmp" 2>/dev/null || true)"
+      printf 'Docker Compose printed %s line(s) of its own (not container output); their text is not included (it can quote parts of secret values or file paths).\n' "${cmsg_n:-0}" >> "$bundle_dir/logs/compose.log"
+      rm -f "$cmsg_tmp"
+      # stdout only: Compose's stderr (2.40.x warns "VEIL_* variable is not
+      # set" for every nested `${LCR_X:-${VEIL_X}}` fallback) is not YAML, and
+      # merged into this file it made the decoded scan refuse every bundle
+      # (T-1479). Fix round 1: their TEXT is not shipped either — a warning
+      # can quote the tail of an unquoted secret containing `$` (Compose names
+      # it as an unset variable) or a path with a person's name. The bundle
+      # gets only the number of lines and where the admin can read them.
+      local config_err config_err_n config_rc=0
+      config_err="$(mktemp)"
+      $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" config 2> "$config_err" \
+        | redact_stream > "$bundle_dir/redacted/compose-resolved.yml" || config_rc=$?
+      config_err_n="$(grep -c '' "$config_err" 2>/dev/null || true)"
+      # Fix round 2 (B9): a failed or empty render is not a bundle. Support
+      # would get an archive without the resolved configuration.
+      if [ "$config_rc" -ne 0 ] || ! grep -q '[^[:space:]]' "$bundle_dir/redacted/compose-resolved.yml"; then
+        rm -f "$config_err"
+        rm -rf "$bundle_dir" ${logs_scan_dir:+"$logs_scan_dir"}
+        fail "support bundle: refused — docker compose config failed or rendered nothing (exit $config_rc, ${config_err_n:-0} message line(s) on stderr); nothing was archived. Run: docker compose --env-file <your customer.env> config  on the host, fix what it reports, then retry."
+      fi
+      printf 'Docker Compose printed %s message line(s) on stderr while rendering this configuration. Their text is not included in this bundle (it can quote parts of secret values or file paths). Read them on the host with: docker compose --env-file <your customer.env> config\n' "${config_err_n:-0}" \
+        > "$bundle_dir/redacted/compose-config-messages.txt"
+      rm -f "$config_err"
     else
       echo "docker compose unavailable" > "$bundle_dir/docker/status.txt"
       echo "docker compose unavailable" > "$bundle_dir/logs/compose.log"
@@ -11315,7 +11524,7 @@ support_bundle() {
   if ! support_bundle_secret_needles "$env_file" "$compose_file" > "$needles" 2> "$needles_err"; then
     why="$(sed 's/^compose-env: //' "$needles_err" | grep -v '^$' | head -1)"
     rm -f "$needles" "$needles_err"
-    rm -rf "$bundle_dir"
+    rm -rf "$bundle_dir" ${logs_scan_dir:+"$logs_scan_dir"}
     fail "support bundle: refused — the secret values to scan for could not be read through Docker Compose (${why:-unknown reason}); nothing was archived. Fix that, or report to Lucairn support without a bundle."
   fi
   rm -f "$needles_err"
@@ -11327,6 +11536,10 @@ support_bundle() {
   if [ -s "$needles" ]; then
     decoded_err="$(mktemp)"
     support_bundle_decoded_scan "$bundle_dir" "$needles" 2> "$decoded_err" || decoded_rc=$?
+    # Final fix pass (B1): the unfiltered log text, scanned the same way.
+    if [ "$decoded_rc" -eq 0 ] && [ -n "$logs_scan_dir" ]; then
+      support_bundle_decoded_scan "$logs_scan_dir" "$needles" 2> "$decoded_err" || decoded_rc=$?
+    fi
     why="$(grep -v '^$' "$decoded_err" | head -1 || true)"
     rm -f "$decoded_err"
     case "$decoded_rc" in
@@ -11340,12 +11553,13 @@ support_bundle() {
         ;;
       *)
         rm -f "$needles"
-        rm -rf "$bundle_dir"
+        rm -rf "$bundle_dir" ${logs_scan_dir:+"$logs_scan_dir"}
         fail "support bundle: refused — the collected files could not be compared decoded (${why:-unknown reason}); nothing was archived. Fix that, or report to Lucairn support without a bundle."
         ;;
     esac
   fi
   rm -f "$needles"
+  [ -z "$logs_scan_dir" ] || rm -rf "$logs_scan_dir"
   if [ "$leaked" -eq 1 ]; then
     rm -rf "$bundle_dir"
     fail "support bundle: refused — a secret value from $env_file or the sanitizer core's registry DSN appeared in a collected file${where}; nothing was archived (the value is not printed). Report this to Lucairn support without a bundle."
@@ -13743,7 +13957,7 @@ evidence_remote() {
   local exporter
   exporter="$(evidence_locate_tool "$LUCAIRN_EVIDENCE_EXPORT_TOOL" "$exporter_flag" "${LUCAIRN_BUNDLE_EXPORT:-}")"
   if [ -z "$exporter" ]; then
-    fail "evidence $verb needs the exporter $LUCAIRN_EVIDENCE_EXPORT_TOOL, which ships with a later release; nothing was exported and nothing was written."
+    fail "evidence $verb needs the exporter $LUCAIRN_EVIDENCE_EXPORT_TOOL, which is not part of this kit release; nothing was exported and nothing was written. What works today: read one certificate at a time through the gateway, GET /api/v1/veil/certificate/REQUEST_ID with the API key that made the request (OPS.md § \"Verify an evidence bundle (self-hosted)\")."
   fi
   [ -f "$exporter" ] && [ -x "$exporter" ] || fail "evidence $verb: $LUCAIRN_EVIDENCE_EXPORT_TOOL not found or not executable at: $exporter"
 
