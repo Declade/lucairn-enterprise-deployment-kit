@@ -890,7 +890,8 @@ STUBDOCKER
 # STUB_HEALTHZ_RC / STUB_READYZ_RC (fix round 2, B6): curl's exit after the code.
 # STUB_GW_PORT (final fix pass, B6): the gateway answers only on that port;
 # any other port is "connection refused" (000, exit 7).
-printf '#!/bin/sh\nif [ -n "${STUB_GW_PORT:-}" ]; then case "$*" in *"127.0.0.1:${STUB_GW_PORT}/"*) ;; *) printf 000; exit 7 ;; esac; fi\ncase "$*" in *readyz*) printf "${STUB_READYZ:-000}"; exit "${STUB_READYZ_RC:-0}" ;; *healthz*) printf "${STUB_HEALTHZ:-000}"; exit "${STUB_HEALTHZ_RC:-0}" ;; *) printf 000 ;; esac\n' > "$DBIN/curl"
+# With http_proxy set, a request without --noproxy goes to that (dead) proxy.
+printf '#!/bin/sh\nif [ -n "${http_proxy:-}" ]; then case "$*" in *"--noproxy *"*) ;; *) printf 000; exit 7 ;; esac; fi\nif [ -n "${STUB_GW_PORT:-}" ]; then case "$*" in *"127.0.0.1:${STUB_GW_PORT}/"*) ;; *) printf 000; exit 7 ;; esac; fi\ncase "$*" in *readyz*) printf "${STUB_READYZ:-000}"; exit "${STUB_READYZ_RC:-0}" ;; *healthz*) printf "${STUB_HEALTHZ:-000}"; exit "${STUB_HEALTHZ_RC:-0}" ;; *) printf 000 ;; esac\n' > "$DBIN/curl"
 STUB_REAL_DOCKER="$(PATH="$BASE_PATH" command -v docker 2>/dev/null || true)"
 export STUB_REAL_DOCKER
 for t in kubectl helm docker-compose; do printf '#!/bin/sh\nexit 1\n' > "$DBIN/$t"; done
@@ -1320,6 +1321,10 @@ b6_green() { # <name> -- env...
 }
 b6_green "B6: file 8085, exported GATEWAY_HEALTH_PORT=18085, gateway healthy on 18085" \
   GATEWAY_HEALTH_PORT=18085 STUB_GW_PORT=18085 STUB_HEALTHZ=200 STUB_READYZ=200
+# Final fix pass (B6): an inherited http_proxy (here a dead address) does not
+# reach the loopback probes.
+b6_green "B6: http_proxy set to a dead address, gateway healthy" \
+  http_proxy=http://127.0.0.1:9 STUB_HEALTHZ=200 STUB_READYZ=200
 # Fix round 2 (B8): two numeric lines are not one count ("1" over "2" is not 12).
 online_case "RED ledger banner line + count line" "sanitizer core registry: failed (could not read the migration ledger" red STUB_LEDGER_OUT="$(printf '1\n2')"
 # Fix round 2 (B2): pg_isready never gets the password from the URL.

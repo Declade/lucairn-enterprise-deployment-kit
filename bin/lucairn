@@ -10914,8 +10914,10 @@ PY
   if have curl; then
     local healthz_code readyz_code curl_args healthz_rc=0 readyz_rc=0 probe
     curl_args="-sS -o /dev/null -w %{http_code} --max-time 3"
-    healthz_code="$(curl $curl_args "${gateway_health_base}/healthz" 2>/dev/null)" || healthz_rc=$?
-    readyz_code="$(curl $curl_args "${gateway_health_base}/readyz" 2>/dev/null)" || readyz_rc=$?
+    # Final fix pass (B6): loopback probes never go through an inherited
+    # http_proxy / HTTPS_PROXY / ALL_PROXY.
+    healthz_code="$(curl $curl_args --noproxy '*' "${gateway_health_base}/healthz" 2>/dev/null)" || healthz_rc=$?
+    readyz_code="$(curl $curl_args --noproxy '*' "${gateway_health_base}/readyz" 2>/dev/null)" || readyz_rc=$?
 
     for probe in healthz readyz; do
       local code rc
