@@ -260,7 +260,8 @@ full_init() {
 touch "$FS/no-image"
 rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O" >/dev/null || rc=$?
 [ "$rc" = 10 ] || { tail -20 "$TMP/full.err" >&2; fail "image missing: init exit $rc, want 10"; }
-ls "$K/.certs/" | grep -q '^witness-signed-manifest.json.stale-' && [ ! -e "$K/.certs/witness-signed-manifest.json" ] \
+stale=("$K"/.certs/witness-signed-manifest.json.stale-*)
+[ -e "${stale[0]}" ] && [ ! -e "$K/.certs/witness-signed-manifest.json" ] \
   || fail "stale manifest not moved aside"
 for f in ca.crt ca.key witness-server.crt gateway-client.crt sandbox-a-client.crt; do [ -f "$W/$f" ] || fail "witness folder lacks $f"; done
 grep -qx "chown 0:0 $W/ca.key" "$FS/sudo.log" || [ "$(uname -s)" != "Linux" ] || fail "ca.key not handed back to root"
