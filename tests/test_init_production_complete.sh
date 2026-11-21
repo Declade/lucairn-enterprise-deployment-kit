@@ -260,8 +260,8 @@ FS="$TMP/fullstub"; mkdir -p "$FS"; : > "$FS/sudo.log"; : > "$FS/python-argv.log
 O="$TMP/full/customer.env"; mkdir -p "$TMP/full" "$K/.certs"
 echo '{"old":"blob"}' > "$K/.certs/witness-signed-manifest.json"
 full_init() {
-  env -u LUCAIRN_INIT_SKIP_WITNESS_STEPS PATH="$SB:$PATH" STUB_DIR="$FS" LUCAIRN_INIT_TEST_WITNESS_MTLS_DIR="$W" \
-    "$K/bin/lucairn-init" --confirm-no-registry-volume "$@" 2>>"$TMP/full.err"
+  env -u LUCAIRN_INIT_SKIP_WITNESS_STEPS PATH="$SB:$PATH" STUB_DIR="$FS" LUCAIRN_INIT_TEST_WITNESS_MTLS_DIR="${W_DIR:-$W}" \
+    "$K/bin/lucairn-init" --confirm-no-registry-volume "$@" 2>>"${ERR:-$TMP/full.err}"
 }
 touch "$FS/no-image"
 rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O" >/dev/null || rc=$?
@@ -278,34 +278,58 @@ fi
 pass "full init: witness folder created, old manifest moved aside, exit 10 while the witness image is missing"
 [ -s "$FS/python-argv.log" ] && ! grep -Eq "[0-9a-f]{64}" "$FS/python-argv.log" || fail "a 64-hex value reached python's arguments (or python never ran)"
 pass "full init: no seed in a python process argument"
-rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O" >/dev/null || rc=$?
-[ "$rc" = 10 ] || fail "re-run with the image still missing: exit $rc, want 10 (never 0)"
-pass "re-run (already initialized, manifest missing): exit 10, not 0"
+# Fix round 3 (ruling items 3 + 4): exit 10 names the literal signing command;
+# a re-run only CHECKS (changes nothing, lists each missing item with its
+# command, exits 11; 0 when complete).
+cmd10="$(sed -n '/^init finished with ONE step left/{n;p;}' "$TMP/full.err" | head -1)"
+case "$cmd10" in "  scripts/sign-witness-manifest.sh --env "*" --out "*) : ;; *) fail "exit 10 hint without the literal command: $cmd10" ;; esac
+! grep -q 'same bin/lucairn-init\|as root' "$TMP/full.err" || fail "exit 10 hint still says: run the same init / as root"
+pass "exit 10 names the literal scripts/sign-witness-manifest.sh command (no 'run the same init', no 'as root')"
+snap() { (cd "$TMP" && find full witness-mtls kitcopy/.certs -type f -exec cksum {} + 2>/dev/null | sort); }
+rerun() { : > "$TMP/re.err"; rc=0; ERR="$TMP/re.err" full_init --production --license "$TMP/license.json" --runtime-mode managed-byok "$@" --output "$O" >/dev/null || rc=$?; }
+before="$(snap)"; rerun
+[ "$rc" = 11 ] && [ "$(snap)" = "$before" ] || fail "re-run with the manifest missing: exit $rc (want 11) or files changed"
+grep -q "missing: $K/.certs/witness-signed-manifest.json" "$TMP/re.err" && grep -q '^    run: scripts/sign-witness-manifest.sh --env ' "$TMP/re.err" \
+  || fail "re-run does not list the manifest with its command"
+pass "re-run (manifest missing): changes nothing, lists the manifest and its command, exit 11 (never 0)"
 rm -f "$FS/no-image"
-rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O" >/dev/null || rc=$?
-[ "$rc" = 0 ] && [ -s "$K/.certs/witness-signed-manifest.json" ] || fail "re-run with the image: exit $rc / no manifest"
-grep -q 'completed the missing host steps: manifest' "$TMP/full.err" || fail "resume message"
-pass "re-run with the image back: completes the manifest, exit 0"
-rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O" >/dev/null || rc=$?
-[ "$rc" = 0 ] && grep -q 'every host step is in place' "$TMP/full.err" || fail "complete re-run"
+(cd "$K" && export PATH="$SB:$PATH" STUB_DIR="$FS" && eval "$cmd10") >/dev/null 2>&1 || fail "the printed signing command failed"
+rerun
+[ "$rc" = 0 ] && grep -q 'every host step is in place' "$TMP/re.err" || fail "complete re-run: exit $rc"
+pass "after the printed signing command a re-run finds every host step in place (exit 0)"
 for flag in "--image-registry registry.other.example/declade" "--claude-seat-lane"; do
-  rc=0
   # shellcheck disable=SC2086
-  full_init --production --license "$TMP/license.json" --runtime-mode managed-byok $flag --output "$O" >/dev/null || rc=$?
+  rerun $flag
   [ "$rc" != 0 ] || fail "re-run silently ignored $flag"
 done
-pass "re-run: a complete install exits 0; --image-registry / --claude-seat-lane that differ are refused, not ignored"
-rm -rf "$W"; : > "$W"   # a file where the folder belongs: the witness step fails
-rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O" >/dev/null || rc=$?
+pass "re-run: --image-registry / --claude-seat-lane that differ are refused, not ignored"
+dsn="$(val SANITIZER_CORE_REGISTRY_DSN_FILE "$O")"
+rm -f "$dsn" "$TMP/full/.certs/sanitizer-core-mtls/sandbox-b/dsa-sandbox-b.key" "$W/gateway-client.key"
+before="$(snap)"; rerun
+[ "$rc" = 11 ] && [ "$(snap)" = "$before" ] || fail "re-run with three items missing: exit $rc (want 11) or files changed"
+[ "$(grep -c '^  missing: ' "$TMP/re.err")" = 3 ] || { cat "$TMP/re.err" >&2; fail "re-run must list exactly the three missing items"; }
+grep -A1 "missing: $dsn\$" "$TMP/re.err" | grep -q 'run: scripts/write-sanitizer-core-registry-dsn.sh --env-file ' \
+  && grep -A1 'missing: .*/sandbox-b/dsa-sandbox-b.key$' "$TMP/re.err" | grep -q 'run: .*bash scripts/bootstrap-sanitizer-core-mtls.sh ' \
+  && grep -A1 "missing: the witness folder $W" "$TMP/re.err" | grep -q 'run: .*bash scripts/bootstrap-mtls-ca.sh ' \
+  || fail "re-run: a missing item without its command"
+pass "re-run: DSN file, a missing key (certificate still there) and the witness folder are each listed with one command; nothing changed"
+# exit 9 (fresh init): the hint names the two literal commands; running them
+# completes the install.
+W9="$TMP/witness-mtls-9"; : > "$W9"   # a file where the folder belongs: the witness step fails
+O9="$TMP/full9/customer.env"; mkdir -p "$TMP/full9"
+rc=0; W_DIR="$W9" ERR="$TMP/e9.err" full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O9" >/dev/null || rc=$?
 [ "$rc" = 9 ] || fail "witness folder cannot be created: exit $rc, want 9"
-rm -f "$W"
-rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O" >/dev/null || rc=$?
-[ "$rc" = 0 ] && [ -f "$W/witness-server.crt" ] || fail "re-run after exit 9: exit $rc"
-pass "exit 9 when the witness folder fails; the same command afterwards completes it"
-mv "$TMP/full/.certs/sanitizer-core-mtls/sandbox-b" "$TMP/sb-aside"
-rc=0; full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O" >/dev/null || rc=$?
-[ "$rc" = 0 ] && [ -f "$TMP/full/.certs/sanitizer-core-mtls/sandbox-b/dsa-sandbox-b.crt" ] || fail "re-run did not issue the Sandbox B leaves"
-pass "re-run on a tree without the Sandbox B leaves (kit 2.0.0) issues them"
+! grep -q 'same bin/lucairn-init\|as root' "$TMP/e9.err" || fail "exit 9 hint still says: run the same init / as root"
+rm -f "$W9"
+sed -n '/^Still to run/{n;p;n;p;}' "$TMP/e9.err" > "$TMP/e9.cmds"
+[ "$(wc -l < "$TMP/e9.cmds")" -eq 2 ] && grep -q 'bootstrap-mtls-ca.sh' "$TMP/e9.cmds" && grep -q 'sign-witness-manifest.sh' "$TMP/e9.cmds" \
+  || fail "exit 9 hint does not name the two commands"
+while IFS= read -r c; do
+  (cd "$K" && export PATH="$SB:$PATH" STUB_DIR="$FS" && eval "$c") >/dev/null 2>&1 || fail "printed command failed: $c"
+done < "$TMP/e9.cmds"
+rc=0; W_DIR="$W9" ERR="$TMP/e9b.err" full_init --production --license "$TMP/license.json" --runtime-mode managed-byok --output "$O9" >/dev/null || rc=$?
+[ "$rc" = 0 ] && [ -f "$W9/witness-server.crt" ] || { cat "$TMP/e9b.err" >&2; fail "after the exit-9 commands: exit $rc"; }
+pass "exit 9 names the two literal commands; after running them a re-run finds every host step in place"
 # --dev: no witness folder step, no sudo (review seat 18)
 : > "$FS/sudo.log"
 rc=0; full_init --dev --runtime-mode managed-byok --output "$TMP/dev/customer.env" >/dev/null || rc=$?

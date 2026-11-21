@@ -65,18 +65,17 @@
 #     does not cover that either — final check on PR #162, fix rounds 1-2 on
 #     PR #163)
 #   9 production only: the witness certificate-port mTLS material could not
-#     be created in /etc/witness-mtls (customer.env was written; fix the cause
-#     and re-run the same init command: it finds the install initialized and
-#     completes only the missing host steps)
-#  10 production only: the witness-signed manifest could not be signed (the
-#     witness image was not available; customer.env was written; make the
-#     image available and re-run the same init command, or run
-#     scripts/sign-witness-manifest.sh --env customer.env)
-# A re-run that finds customer.env and its runtime profile matching completes
-# the missing host steps (certificate leaves, witness folder, manifest) and
-# exits with that step's code; it refuses (exit 2) --image-registry or
-# --claude-seat-lane values that differ from customer.env instead of
-# ignoring them.
+#     be created in /etc/witness-mtls (customer.env was written; the message
+#     names the two commands still to run)
+#  10 production only: the witness-signed manifest step did not finish
+#     (customer.env was written; the message above it says why and names the
+#     scripts/sign-witness-manifest.sh command to run)
+#  11 a re-run found customer.env and its runtime profile matching, but a
+#     host-step result missing. A re-run only CHECKS (fix round 3): it changes
+#     nothing, lists each missing item (DSN file, certificate or key, witness
+#     folder, manifest) with its command and exits 11 (0 when complete); it
+#     refuses (exit 2) --image-registry or --claude-seat-lane values that
+#     differ from customer.env instead of ignoring them.
 
 set -euo pipefail
 
@@ -345,6 +344,7 @@ Exit codes:
      not be asked and --confirm-no-registry-volume was not given, or a registry
      volume name could not be resolved, or Docker was asked but gave no volume
      list (nothing written)
+  11 re-run: a host-step result is missing (nothing changed; commands listed)
 USAGE
 }
 
@@ -950,7 +950,7 @@ run_sanitizer_core_bootstrap() {
     fi
   fi
   if ! "${_sanitizer_core_bootstrap[@]}" >&2; then
-    fail "could not create the sanitizer core mTLS material in $SANITIZER_CORE_MTLS_DIR (customer.env was written; fix the error above and re-run: $_sanitizer_core_bootstrap_hint — or re-run the same bin/lucairn-init command, which completes the missing host steps)" 6
+    fail "could not create the sanitizer core mTLS material in $SANITIZER_CORE_MTLS_DIR (customer.env was written; fix the error above and re-run: $_sanitizer_core_bootstrap_hint — then run the same bin/lucairn-init command again: it changes nothing and lists every host step still missing with its command)" 6
   fi
 }
 
@@ -961,6 +961,31 @@ run_sanitizer_core_bootstrap() {
 # (idempotent: existing files are reused) and hands the folder to the image
 # user. Production only (fix round 1, review seat 18: a --dev init behaves as
 # before kit 2.0.1, without sudo and without this openssl step).
+# witness_mtls_command / manifest_command — the two production host steps as
+# one copyable line each, run from the kit folder (fix round 3 items 3 + 4:
+# hints and the re-run check name the literal commands).
+witness_mtls_command() {
+  local _s="sudo " _d _u="${LUCAIRN_CONTAINER_UID:-10001}"
+  [ "$(id -u)" != "0" ] || _s=""
+  _d="$(printf '%q' "$WITNESS_MTLS_DIR")"
+  if [ "$(uname -s)" = "Linux" ]; then
+    printf '%sbash scripts/bootstrap-mtls-ca.sh %s && %sfind %s ! -name ca.key -exec chown %s:%s {} + && %schmod 0755 %s' \
+      "$_s" "$_d" "$_s" "$_d" "$_u" "$_u" "$_s" "$_d"
+  else
+    printf '%sbash scripts/bootstrap-mtls-ca.sh %s && %schmod 0755 %s' "$_s" "$_d" "$_s" "$_d"
+  fi
+}
+manifest_command() {
+  printf 'scripts/sign-witness-manifest.sh --env %q --out %q' "$OUTPUT" "$(manifest_blob_path)"
+}
+# witness_step_fail <message> — exit 9 with the literal commands still to run.
+witness_step_fail() {
+  echo "Still to run, from the kit folder, in this order:" >&2
+  echo "  $(witness_mtls_command)" >&2
+  echo "  $(manifest_command)" >&2
+  fail "$1 (customer.env was written; fix the cause, then run the two commands above)" 9
+}
+
 run_witness_mtls_step() {
   local -a _witness_mtls_cmd _witness_mtls_post _witness_mtls_sudo
   _witness_mtls_cmd=(bash "$KIT_ROOT/scripts/bootstrap-mtls-ca.sh" "$WITNESS_MTLS_DIR")
@@ -971,7 +996,7 @@ run_witness_mtls_step() {
   _witness_mtls_sudo=()
   if [ "$(id -u)" != "0" ]; then
     command -v sudo >/dev/null 2>&1 \
-      || fail "creating $WITNESS_MTLS_DIR needs root and sudo is not installed (customer.env was written; run the same bin/lucairn-init command once more as root: it finds the install initialized and completes only the missing host steps)" 9
+      || witness_step_fail "creating $WITNESS_MTLS_DIR needs root and sudo is not installed"
     _witness_mtls_sudo=(sudo)
     echo "note: the witness certificate-port mTLS folder $WITNESS_MTLS_DIR needs root; running that one step with sudo:" >&2
     echo "  sudo scripts/bootstrap-mtls-ca.sh $WITNESS_MTLS_DIR" >&2
@@ -979,7 +1004,7 @@ run_witness_mtls_step() {
   if ! "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" "${_witness_mtls_cmd[@]}" >/dev/null 2>"$OUTPUT_DIR/.lucairn-witness-mtls.err"; then
     cat "$OUTPUT_DIR/.lucairn-witness-mtls.err" >&2 || true
     rm -f "$OUTPUT_DIR/.lucairn-witness-mtls.err"
-    fail "could not create the witness mTLS material in $WITNESS_MTLS_DIR (customer.env was written; fix the error above and re-run the same bin/lucairn-init command: it finds the install initialized and completes only the missing host steps)" 9
+    witness_step_fail "could not create the witness mTLS material in $WITNESS_MTLS_DIR"
   fi
   rm -f "$OUTPUT_DIR/.lucairn-witness-mtls.err"
   # The containers run as uid 10001 (Linux): hand the folder over and let them
@@ -991,10 +1016,10 @@ run_witness_mtls_step() {
   # other callers in this folder stay readable to both containers.
   if [ "${#_witness_mtls_post[@]}" -gt 0 ]; then
     "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" "${_witness_mtls_post[@]}" \
-      || fail "could not hand $WITNESS_MTLS_DIR to uid ${LUCAIRN_CONTAINER_UID:-10001} (customer.env was written)" 9
+      || witness_step_fail "could not hand $WITNESS_MTLS_DIR to uid ${LUCAIRN_CONTAINER_UID:-10001}"
   fi
   "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" chmod 0755 "$WITNESS_MTLS_DIR" \
-    || fail "could not chmod 0755 $WITNESS_MTLS_DIR (customer.env was written)" 9
+    || witness_step_fail "could not chmod 0755 $WITNESS_MTLS_DIR"
   echo "[lucairn-init] witness mTLS material ready in $WITNESS_MTLS_DIR (WITNESS_MTLS_* lines written)" >&2
 }
 
@@ -1028,8 +1053,8 @@ run_manifest_step() {
     MANIFEST_PENDING="1"
     echo "" >&2
     echo "NOT DONE: the witness-signed manifest (see the error above). The production gateway will not start without it." >&2
-    echo "Make the images available (registry login or your mirror), then re-run the same bin/lucairn-init command (it completes only the missing host steps), or run:" >&2
-    echo "  scripts/sign-witness-manifest.sh --env $(printf '%q' "$OUTPUT") --out $(printf '%q' "$MANIFEST_BLOB")" >&2
+    echo "Fix the cause above (for a missing image: registry login or your mirror), then run, from the kit folder:" >&2
+    echo "  $(manifest_command)" >&2
   fi
 }
 
@@ -1043,13 +1068,14 @@ stale_manifest_aside() {
 }
 
 # resume_host_steps — the "already initialized" path. customer.env and its
-# runtime profile match the request, so nothing in them is rewritten; the
-# host steps that are missing are completed (a re-run after exit 6, 9 or 10,
-# or an env from kit 2.0.0 whose tree lacks the Sandbox B leaves). Flags that
-# would change customer.env are refused instead of ignored (review seat 10).
+# runtime profile match the request. Fix round 3 (ruling item 3): CHECK ONLY.
+# A re-run changes nothing; it lists each host-step result that is missing
+# (the DSN file, each certificate and key of the sanitizer core tree, the
+# witness folder, the manifest) with the one command that makes it, and exits
+# 11. Flags that would change customer.env are refused instead of ignored
+# (review seat 10).
 resume_host_steps() {
-  local env_reg env_seat leaf w_dir f
-  local -a todo=()
+  local env_reg env_seat leaf ext w_dir f dsn core_cmd n=0
   env_reg="$(optional_env_field "$OUTPUT" LUCAIRN_IMAGE_REGISTRY)" || env_reg=""
   env_seat="$(optional_env_field "$OUTPUT" LUCAIRN_CLAUDE_SEAT_LANE)" || env_seat=""
   if [ "$IMAGE_REGISTRY_GIVEN" = "true" ] && [ "${env_reg%/}" != "$IMAGE_REGISTRY" ]; then
@@ -1058,57 +1084,53 @@ resume_host_steps() {
   if [ "$CLAUDE_SEAT_LANE" = "true" ] && [ "$env_seat" != "true" ]; then
     fail "$OUTPUT is already initialized without the seat lane; a re-run does not rewrite customer.env, so --claude-seat-lane would be ignored. Set LUCAIRN_CLAUDE_SEAT_LANE=true in customer.env yourself (docs/CLAUDE_SEATS.md; no customer state was changed)" 2
   fi
-  # 1. the sanitizer core's tree (the same path rule as the adoption path below)
+  missing() { n=$((n + 1)); echo "  missing: $1" >&2; echo "    run: $2" >&2; }
+  echo "already initialized: $OUTPUT and $RUNTIME_PROFILE_MANIFEST match the requested runtime profile; nothing is rewritten or run. Checking the host steps:" >&2
+  # 1. the sanitizer core's registry DSN file
+  dsn="$(optional_env_field "$OUTPUT" SANITIZER_CORE_REGISTRY_DSN_FILE)" || dsn=""
+  case "$dsn" in
+    ''|/*) : ;;
+    *) dsn="$KIT_ROOT/${dsn#./}" ;;
+  esac
+  [ -z "$dsn" ] || [ -f "$dsn" ] \
+    || missing "$dsn" "scripts/write-sanitizer-core-registry-dsn.sh --env-file $(printf '%q' "$OUTPUT")"
+  # 2. the sanitizer core's tree (the same path rule as the adoption path below)
   SANITIZER_CORE_MTLS_DIR="$(optional_env_field "$OUTPUT" SANITIZER_CORE_MTLS_HOST_DIR)" || SANITIZER_CORE_MTLS_DIR=""
   case "$SANITIZER_CORE_MTLS_DIR" in
     /*) : ;;
     '') SANITIZER_CORE_MTLS_DIR="$KIT_ROOT/.certs/sanitizer-core-mtls" ;;
     *) SANITIZER_CORE_MTLS_DIR="$KIT_ROOT/${SANITIZER_CORE_MTLS_DIR#./}" ;;
   esac
-  for leaf in sanitizer-core/dsa-sanitizer-core sanitizer-core/witness-client gateway/dsa-gateway veil-witness/dsa-veil-witness; do
-    [ -f "$SANITIZER_CORE_MTLS_DIR/$leaf.crt" ] || { todo+=(core); break; }
-  done
-  if [ "$RUNTIME_MODE" != "split-remote" ] && [ "${todo[*]-}" != "core" ]; then
-    for leaf in sandbox-b/dsa-sandbox-b sandbox-b/witness-client; do
-      [ -f "$SANITIZER_CORE_MTLS_DIR/$leaf.crt" ] || { todo+=(core); break; }
-    done
+  core_cmd="bash scripts/bootstrap-sanitizer-core-mtls.sh $(printf '%q' "$SANITIZER_CORE_MTLS_DIR")"
+  if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" != "0" ] \
+     && [ "${LUCAIRN_CONTAINER_UID:-10001}" != "$(id -u)" ]; then
+    core_cmd="sudo $core_cmd"
   fi
+  for leaf in sanitizer-core/dsa-sanitizer-core sanitizer-core/witness-client gateway/dsa-gateway veil-witness/dsa-veil-witness \
+              sandbox-b/dsa-sandbox-b sandbox-b/witness-client; do
+    case "$leaf" in sandbox-b/*) [ "$RUNTIME_MODE" != "split-remote" ] || continue ;; esac
+    for ext in crt key; do
+      [ -f "$SANITIZER_CORE_MTLS_DIR/$leaf.$ext" ] || missing "$SANITIZER_CORE_MTLS_DIR/$leaf.$ext" "$core_cmd"
+    done
+  done
   if [ "$MODE" = "production" ] && [ "${LUCAIRN_INIT_SKIP_WITNESS_STEPS:-}" != "1" ]; then
-    # 2. the witness folder, when customer.env names it (a kit 2.0.0 env
-    #    leaves the WITNESS_MTLS_* lines empty: nothing to complete here)
+    # 3. the witness folder, when customer.env names it (a kit 2.0.0 env
+    #    leaves the WITNESS_MTLS_* lines empty: nothing to check here)
     w_dir="$(optional_env_field "$OUTPUT" LCR_WITNESS_MTLS_HOST_DIR)" || w_dir=""
     if [ "$w_dir" = "$WITNESS_MTLS_DIR" ]; then
-      for f in ca.crt witness-server.crt gateway-client.crt sandbox-a-client.crt; do
-        [ -f "$WITNESS_MTLS_DIR/$f" ] || { todo+=(witness); break; }
+      for f in ca.crt witness-server.crt witness-server.key gateway-client.crt gateway-client.key sandbox-a-client.crt sandbox-a-client.key; do
+        [ -f "$WITNESS_MTLS_DIR/$f" ] || { missing "the witness folder $WITNESS_MTLS_DIR (first missing file: $f)" "$(witness_mtls_command)"; break; }
       done
     fi
-    # 3. the witness-signed manifest
-    [ -f "$(manifest_blob_path)" ] || todo+=(manifest)
+    # 4. the witness-signed manifest
+    [ -f "$(manifest_blob_path)" ] || missing "$(manifest_blob_path)" "$(manifest_command)"
   fi
-  if [ "${#todo[@]}" -eq 0 ]; then
-    echo "already initialized: $OUTPUT and $RUNTIME_PROFILE_MANIFEST match the requested runtime profile; every host step is in place" >&2
+  if [ "$n" -eq 0 ]; then
+    echo "already initialized: every host step is in place" >&2
     exit 0
   fi
-  echo "already initialized: $OUTPUT and $RUNTIME_PROFILE_MANIFEST match the requested runtime profile; customer.env is not rewritten. Missing host steps: ${todo[*]}" >&2
-  if [ "$DRY_RUN" = "true" ]; then
-    echo "dry run: would complete: ${todo[*]} (nothing written)" >&2
-    exit 0
-  fi
-  OUTPUT_DIR="$(dirname "$OUTPUT")"
-  MANIFEST_PENDING=""
-  for f in "${todo[@]}"; do
-    case "$f" in
-      core) run_sanitizer_core_bootstrap ;;
-      witness) run_witness_mtls_step ;;
-      manifest) run_manifest_step ;;
-    esac
-  done
-  if [ -n "$MANIFEST_PENDING" ]; then
-    echo "init finished with ONE step left: the witness-signed manifest (see NOT DONE above)." >&2
-    exit 10
-  fi
-  echo "[lucairn-init] completed the missing host steps: ${todo[*]}" >&2
-  exit 0
+  echo "NOT DONE: $n host-step result(s) missing (nothing was changed). Run the commands above from the kit folder, in this order; then run this init command again to check." >&2
+  exit 11
 }
 # All state/adoption decisions below are made while holding this directory
 # mutex.  The trap releases it on normal errors and TERM/INT.
@@ -2317,6 +2339,7 @@ _mint_byok_flag=""
 echo "  ./bin/lucairn-mint-customer --name \"Acme GmbH\" --email \"ops@acme.de\" --tier enterprise$_mint_byok_flag" >&2
 echo >&2
 if [ -n "$MANIFEST_PENDING" ]; then
-  echo "init finished with ONE step left: the witness-signed manifest (see NOT DONE above)." >&2
+  echo "init finished with ONE step left: the witness-signed manifest did not finish (the message above says why). Run, from the kit folder:" >&2
+  echo "  $(manifest_command)" >&2
   exit 10
 fi
