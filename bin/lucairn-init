@@ -64,6 +64,12 @@
 #     connections, an error from the daemon (nothing was written; the flag
 #     does not cover that either — final check on PR #162, fix rounds 1-2 on
 #     PR #163)
+#   9 the witness certificate-port mTLS material could not be created in
+#     /etc/witness-mtls (customer.env was written; re-run
+#     scripts/bootstrap-mtls-ca.sh with sudo)
+#  10 production only: the witness-signed manifest could not be signed (the
+#     witness image was not available; customer.env was written; run
+#     scripts/sign-witness-manifest.sh --env customer.env)
 
 set -euo pipefail
 
@@ -272,6 +278,15 @@ Options:
   --image-tag <tag>        LUCAIRN_IMAGE_TAG value (default: 1.1.1). Must match
                            image-manifest.yaml default_lucairn_image_tag; doctor
                            warns when they diverge.
+  --image-registry <reg>   LUCAIRN_IMAGE_REGISTRY value (default: ghcr.io/declade). Set it
+                           to your mirror (e.g. registry.internal:5000/declade) so no
+                           edit is needed after init; the witness manifest step below
+                           also signs with the witness image from this registry.
+  --claude-seat-lane       Claude Team / Enterprise seats: writes LUCAIRN_CLAUDE_SEAT_LANE=true
+                           (default false). Consultants then sign in to Claude Code with
+                           their company seat; no provider API key is needed. Never for
+                           consumer Pro / Max plans. See INSTALL.md
+                           § "Claude Team / Enterprise seats".
   --gateway-base-url <url> Override GATEWAY_BASE_URL (default: dev=http://localhost:8080,
                            prod=https://lucairn.customer.example — must be replaced before
                            production deploy).
@@ -369,6 +384,11 @@ ADOPT_RUNTIME_PROFILE="false"
 OUTPUT="$DEFAULT_OUTPUT"
 IMAGE_TAG="$DEFAULT_IMAGE_TAG"
 GATEWAY_BASE_URL_OVERRIDE=""
+IMAGE_REGISTRY="ghcr.io/declade"
+CLAUDE_SEAT_LANE="false"
+# The witness certificate-port mTLS folder. Fixed: the compose files mount it
+# at the same container path and bin/lucairn doctor checks these paths on the host.
+WITNESS_MTLS_DIR="/etc/witness-mtls"
 SKIP_DOCTOR="false"
 DRY_RUN="false"
 CONFIRM_NO_REGISTRY_VOLUME="false"
@@ -423,6 +443,8 @@ while [ $# -gt 0 ]; do
     --output)          OUTPUT="${2:?--output requires a path}"; shift 2 ;;
     --image-tag)       IMAGE_TAG="${2:?--image-tag requires a value}"; shift 2 ;;
     --gateway-base-url) GATEWAY_BASE_URL_OVERRIDE="${2:?--gateway-base-url requires a value}"; shift 2 ;;
+    --image-registry)  IMAGE_REGISTRY="${2:?--image-registry requires a value}"; shift 2 ;;
+    --claude-seat-lane) CLAUDE_SEAT_LANE="true"; shift ;;
     --skip-doctor)     SKIP_DOCTOR="true"; shift ;;
     --dry-run)         DRY_RUN="true"; shift ;;
     --confirm-no-registry-volume) CONFIRM_NO_REGISTRY_VOLUME="true"; shift ;;
@@ -458,6 +480,14 @@ case "$RUNTIME_MODE" in
   "") fail "--runtime-mode is required: choose split-remote, managed-byok, or local-runtime" ;;
   *) fail "unsupported --runtime-mode '$RUNTIME_MODE' (choose split-remote, managed-byok, or local-runtime)" ;;
 esac
+
+case "$IMAGE_REGISTRY" in
+  *[!A-Za-z0-9._:/-]*|'') fail "--image-registry '$IMAGE_REGISTRY' may only hold letters, digits and . _ : / -" ;;
+esac
+IMAGE_REGISTRY="${IMAGE_REGISTRY%/}"
+if [ "$CLAUDE_SEAT_LANE" = "true" ] && [ "$RUNTIME_MODE" != "managed-byok" ]; then
+  fail "--claude-seat-lane needs --runtime-mode managed-byok (the local Sandbox B forwards each consultant's seat sign-in to Anthropic)"
+fi
 
 local_model_inventory_valid() {
   runtime_profile_model_name_valid "$1" \
@@ -1159,10 +1189,20 @@ else
   set_kv SANDBOX_B_API_KEY ""
 fi
 
-# Signing-only slots
+# Signing-only slots. Kit 2.0.1 (T-1479): the manifest seed is generated as an
+# Ed25519 pair so init can also write its public half,
+# LCR_GATEWAY_MANIFEST_PUBLIC_KEY (the gateway publishes it in
+# /.well-known/veil-keys.json and the witness-signed manifest must carry it).
 for slot in "${VEIL_SIGNING_ONLY[@]}"; do
-  set_kv "VEIL_${slot}_SIGNING_KEY" "$(gen_hex32)"
+  pair="$(gen_ed25519_pair)" || fail "Ed25519 derivation failed for $slot — install python3-cryptography (>=2.6, the Ubuntu 22.04 apt package 3.4.8 works) or 'pip install pynacl'" 3
+  set_kv "VEIL_${slot}_SIGNING_KEY" "${pair%%:*}"
+  set_kv "VEIL_${slot}_PUBLIC_KEY" "${pair##*:}"
 done
+
+# Kit 2.0.1 (T-1479): Sandbox B's API key is a fresh secret, never the
+# well-known fallback `local-sandbox-b-key` (bin/lucairn doctor refuses that
+# value in self-hosted production).
+set_kv LOCAL_SANDBOX_B_API_KEY "$(gen_hex32)"
 
 # Hex32 service secrets
 for slot in "${HEX32_SLOTS[@]}"; do
@@ -1267,6 +1307,27 @@ case "$MODE" in
     : "${GATEWAY_BASE_URL_OVERRIDE:=https://lucairn.customer.example}"
     ;;
 esac
+# Kit 2.0.1 (T-1479): what a production witness needs and init used to leave
+# to hand edits. The public log and the timestamp authority are two of the
+# eight approved sub-processors (Sigstore Rekor, FreeTSA); the witness refuses
+# to start without them in production.
+PRODUCTION_WITNESS_BLOCK=""
+SANDBOX_B_WITNESS_BLOCK=""
+if [ "$MODE" = "production" ]; then
+  PRODUCTION_WITNESS_BLOCK="# Certificate anchoring (production): public transparency log + RFC 3161
+# timestamp authority (approved sub-processors Sigstore Rekor and FreeTSA).
+LCR_REKOR_URL=https://rekor.sigstore.dev
+LCR_TSA_URL=https://freetsa.org/tsr"
+  if [ "$RUNTIME_MODE" != "split-remote" ]; then
+    # Sandbox B's claims reach the TLS witness verified (the witness leaf is
+    # signed by the same deploy CA); without these three a production Sandbox B
+    # dials :50057 in plaintext and every certificate lacks the AI-plane claim.
+    SANDBOX_B_WITNESS_BLOCK="# Sandbox B -> witness claim hop (production): verified TLS with the deploy CA.
+LCR_WITNESS_MTLS_SANDBOX_B_CA_BUNDLE_PATH=/etc/sandbox-b-tls/ca.crt
+LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_CERT_PATH=/etc/sandbox-b-tls/witness-client.crt
+LCR_WITNESS_MTLS_SANDBOX_B_CLIENT_KEY_PATH=/etc/sandbox-b-tls/witness-client.key"
+  fi
+fi
 
 # Lookup helper
 get_val() {
@@ -1319,6 +1380,12 @@ render_env() {
   if [ "$IMAGE_TAG" != "$DEFAULT_IMAGE_TAG" ]; then
     regen_cmd="$regen_cmd --image-tag $(shell_quote "$IMAGE_TAG")"
   fi
+  if [ "$IMAGE_REGISTRY" != "ghcr.io/declade" ]; then
+    regen_cmd="$regen_cmd --image-registry $(shell_quote "$IMAGE_REGISTRY")"
+  fi
+  if [ "$CLAUDE_SEAT_LANE" = "true" ]; then
+    regen_cmd="$regen_cmd --claude-seat-lane"
+  fi
   if [ "$OUTPUT" != "$DEFAULT_OUTPUT" ]; then
     regen_cmd="$regen_cmd --output $(shell_quote "$OUTPUT")"
   fi
@@ -1338,7 +1405,7 @@ render_env() {
 # This file contains generated secrets. Do not commit. Backups of previous
 # generations are stored as customer.env.bak-<ISO timestamp> beside this file.
 
-LUCAIRN_IMAGE_REGISTRY=ghcr.io/declade
+LUCAIRN_IMAGE_REGISTRY=$IMAGE_REGISTRY
 LUCAIRN_IMAGE_TAG=$IMAGE_TAG
 LUCAIRN_MODEL_DIR=../models
 # Non-secret S1 state discriminator. Its sidecar is required by every
@@ -1374,7 +1441,8 @@ SANDBOX_B_REMOTE_ENDPOINT=$REMOTE_ENDPOINT
 SANDBOX_B_API_KEY=$(get_val SANDBOX_B_API_KEY)
 LCR_SANDBOX_B_PUBLIC_KEY=$(get_val VEIL_SANDBOX_B_PUBLIC_KEY)
 LCR_SANDBOX_B_SIGNING_KEY=$(get_val VEIL_SANDBOX_B_SIGNING_KEY)
-LOCAL_SANDBOX_B_API_KEY=local-sandbox-b-key
+LOCAL_SANDBOX_B_API_KEY=$(get_val LOCAL_SANDBOX_B_API_KEY)
+$SANDBOX_B_WITNESS_BLOCK
 
 # Internal isolation-probe target. sandbox-b's boot_safety verifies it can
 # reach sandbox-a via this gRPC address as part of the witness claim chain.
@@ -1386,6 +1454,18 @@ GATEWAY_BASE_URL=$GATEWAY_BASE_URL_OVERRIDE
 GATEWAY_PORT=8080
 GATEWAY_HEALTH_PORT=8085
 GATEWAY_TRUSTED_PROXY_CIDRS=
+
+# Claude Code / Claude Desktop through this gateway (INSTALL.md § "Fast path").
+# Streaming is ON by default in docker-compose.customer.yml (Claude Code always
+# streams); STREAMING_ENABLED=false refuses streamed requests.
+# LUCAIRN_CLAUDE_SEAT_LANE=true: consultants use their company's Claude Team /
+# Enterprise seat sign-in instead of a provider API key (managed-byok only).
+# Never for consumer Pro / Max plans. INSTALL.md § "Claude Team / Enterprise seats".
+LUCAIRN_CLAUDE_SEAT_LANE=$CLAUDE_SEAT_LANE
+# SANDBOX_B_UPSTREAM_BODY_STORE=true keeps the exact pseudonymised request
+# Sandbox B sent to the model vendor, on this server, in the certificate store.
+# INSTALL.md § "See what went to the model vendor". Default off.
+SANDBOX_B_UPSTREAM_BODY_STORE=false
 
 # Service shared secrets (hex32)
 DSA_SERVICE_TOKEN=$(get_val DSA_SERVICE_TOKEN)
@@ -1417,11 +1497,12 @@ LCR_SANITIZER_PUBLIC_KEY=$(get_val VEIL_SANITIZER_PUBLIC_KEY)
 LCR_AUDIT_PUBLIC_KEY=$(get_val VEIL_AUDIT_PUBLIC_KEY)
 LCR_GATEWAY_PUBLIC_KEY=$(get_val VEIL_GATEWAY_PUBLIC_KEY)
 
-# Manifest-pubkey companions for /.well-known/veil-keys.json. Not strictly
-# required at boot; leaving empty degrades only the W2B harness #3 self-check.
-# Set during the manifest-key ceremony alongside LCR_MANIFEST_SIGNING_KEY.
-LCR_GATEWAY_MANIFEST_PUBLIC_KEY=
-LCR_WITNESS_MANIFEST_PUBLIC_KEY=
+# Manifest-pubkey companions for /.well-known/veil-keys.json: the public half
+# of LCR_MANIFEST_SIGNING_KEY, and the witness public key (the witness signs
+# the manifest with its own seed). Both are entries of the witness-signed
+# manifest; if you change a key here, re-run scripts/sign-witness-manifest.sh.
+LCR_GATEWAY_MANIFEST_PUBLIC_KEY=$(get_val VEIL_MANIFEST_PUBLIC_KEY)
+LCR_WITNESS_MANIFEST_PUBLIC_KEY=$(get_val VEIL_WITNESS_PUBLIC_KEY)
 
 LCR_ENABLED=true
 LCR_WITNESS_KEY_ID=witness_v1
@@ -1429,18 +1510,22 @@ LCR_ISSUER="Lucairn Veil Witness"
 LCR_MANIFEST_SIGNING_KEY_ID=gateway_manifest_v1
 LCR_WITNESS_SIGNED_MANIFEST_PATH=/certs/witness-signed-manifest.json
 WELLKNOWN_CACHE_TTL=300
+$PRODUCTION_WITNESS_BLOCK
 
 # mTLS material (optional — leave empty for self-hosted local-mode)
 SANDBOX_B_CLIENT_CERT=
 SANDBOX_B_CLIENT_KEY=
 SANDBOX_B_CA_CERT=
 SANDBOX_B_CERT_DIR=
-LCR_WITNESS_MTLS_HOST_DIR=
-WITNESS_MTLS_CA_BUNDLE_PATH=
-WITNESS_MTLS_SERVER_CERT_PATH=
-WITNESS_MTLS_SERVER_KEY_PATH=
-WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH=
-WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH=
+# Witness certificate port (:50058) mTLS: bin/lucairn-init created this folder
+# with scripts/bootstrap-mtls-ca.sh (INSTALL.md § "Witness mTLS"). Host and
+# container read the same path.
+LCR_WITNESS_MTLS_HOST_DIR=$WITNESS_MTLS_DIR
+WITNESS_MTLS_CA_BUNDLE_PATH=$WITNESS_MTLS_DIR/ca.crt
+WITNESS_MTLS_SERVER_CERT_PATH=$WITNESS_MTLS_DIR/witness-server.crt
+WITNESS_MTLS_SERVER_KEY_PATH=$WITNESS_MTLS_DIR/witness-server.key
+WITNESS_MTLS_GATEWAY_CLIENT_CERT_PATH=$WITNESS_MTLS_DIR/gateway-client.crt
+WITNESS_MTLS_GATEWAY_CLIENT_KEY_PATH=$WITNESS_MTLS_DIR/gateway-client.key
 WITNESS_MTLS_SERVER_NAME=witness
 
 # Database passwords (alphanumeric — avoids breaking the envsubst migration
@@ -1939,6 +2024,80 @@ elif ! bash "$KIT_ROOT/scripts/write-sanitizer-core-registry-dsn.sh" --env-file 
   fail "could not write the sanitizer core registry DSN file (customer.env was written; fix the error above and re-run: scripts/write-sanitizer-core-registry-dsn.sh --env-file '$OUTPUT')" 7
 fi
 
+# Kit 2.0.1 (T-1479): the witness certificate-port mTLS material. Without it
+# the witness refuses every certificate read (gateway included). It used to be
+# a hand step between init and the first `up` (README "Fast Path"); init now
+# runs scripts/bootstrap-mtls-ca.sh itself (idempotent: existing files are
+# reused) and hands the folder to the image user. Not in adoption mode (the
+# adopted customer.env is not rewritten, so its WITNESS_MTLS_* lines stay as
+# they were).
+if [ "$ADOPT_RUNTIME_PROFILE" != "true" ]; then
+  _witness_mtls_cmd=(bash "$KIT_ROOT/scripts/bootstrap-mtls-ca.sh" "$WITNESS_MTLS_DIR")
+  _witness_mtls_post=()
+  if [ "$(uname -s)" = "Linux" ]; then
+    _witness_mtls_post=(chown -R "${LUCAIRN_CONTAINER_UID:-10001}:${LUCAIRN_CONTAINER_UID:-10001}" "$WITNESS_MTLS_DIR")
+  fi
+  _witness_mtls_sudo=()
+  if [ "$(id -u)" != "0" ]; then
+    command -v sudo >/dev/null 2>&1 \
+      || fail "creating $WITNESS_MTLS_DIR needs root and sudo is not installed (customer.env was written; run as root: scripts/bootstrap-mtls-ca.sh $WITNESS_MTLS_DIR, then chown -R 10001:10001 $WITNESS_MTLS_DIR and chmod 0755 $WITNESS_MTLS_DIR)" 9
+    _witness_mtls_sudo=(sudo)
+    echo "note: the witness certificate-port mTLS folder $WITNESS_MTLS_DIR needs root; running that one step with sudo:" >&2
+    echo "  sudo scripts/bootstrap-mtls-ca.sh $WITNESS_MTLS_DIR" >&2
+  fi
+  if ! "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" "${_witness_mtls_cmd[@]}" >/dev/null 2>"$OUTPUT_DIR/.lucairn-witness-mtls.err"; then
+    cat "$OUTPUT_DIR/.lucairn-witness-mtls.err" >&2 || true
+    rm -f "$OUTPUT_DIR/.lucairn-witness-mtls.err"
+    fail "could not create the witness mTLS material in $WITNESS_MTLS_DIR (customer.env was written; fix the error above and re-run: sudo scripts/bootstrap-mtls-ca.sh $WITNESS_MTLS_DIR)" 9
+  fi
+  rm -f "$OUTPUT_DIR/.lucairn-witness-mtls.err"
+  # The containers run as uid 10001 (Linux): hand the folder over and let them
+  # traverse it; the keys stay 0600. Stated limit (INSTALL.md § "Witness
+  # mTLS"): this CA's private key sits in the same folder.
+  if [ "${#_witness_mtls_post[@]}" -gt 0 ]; then
+    "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" "${_witness_mtls_post[@]}" \
+      || fail "could not hand $WITNESS_MTLS_DIR to uid ${LUCAIRN_CONTAINER_UID:-10001} (customer.env was written)" 9
+  fi
+  "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" chmod 0755 "$WITNESS_MTLS_DIR" \
+    || fail "could not chmod 0755 $WITNESS_MTLS_DIR (customer.env was written)" 9
+  echo "[lucairn-init] witness mTLS material ready in $WITNESS_MTLS_DIR (WITNESS_MTLS_* lines written)" >&2
+fi
+
+# Kit 2.0.1 (T-1479): the witness-signed key manifest. A production gateway
+# refuses to start without it, and a blob signed for OTHER keys is fatal in
+# every mode, so a fresh env (new keys) always gets a fresh blob: signed here
+# in production (scripts/sign-witness-manifest.sh, the tool inside the witness
+# image from LUCAIRN_IMAGE_REGISTRY), moved aside otherwise.
+_manifest_project_dir="$KIT_ROOT"
+if [ ! -f "$KIT_ROOT/docker-compose.customer.yml" ] && [ -f "$KIT_ROOT/install/docker-compose.customer.yml" ]; then
+  _manifest_project_dir="$KIT_ROOT/install"
+fi
+MANIFEST_BLOB="$_manifest_project_dir/.certs/witness-signed-manifest.json"
+MANIFEST_PENDING=""
+if [ "$ADOPT_RUNTIME_PROFILE" != "true" ]; then
+  _stale_blob_aside() {
+    if [ -f "$MANIFEST_BLOB" ]; then
+      _aside="$MANIFEST_BLOB.stale-$(date -u +%Y%m%dT%H%M%SZ)"
+      mv -f "$MANIFEST_BLOB" "$_aside" \
+        && echo "note: moved the previous witness-signed manifest (signed for the old keys) aside: $_aside" >&2
+    fi
+  }
+  if [ "$MODE" = "production" ]; then
+    if bash "$KIT_ROOT/scripts/sign-witness-manifest.sh" --env "$OUTPUT" --out "$MANIFEST_BLOB"; then
+      :
+    else
+      _stale_blob_aside
+      MANIFEST_PENDING="1"
+      echo "" >&2
+      echo "NOT DONE: the witness-signed manifest (see the error above). The production gateway will not start without it." >&2
+      echo "Make the images available (registry login or your mirror), then run:" >&2
+      echo "  scripts/sign-witness-manifest.sh --env $(shell_quote "$OUTPUT") --out $(shell_quote "$MANIFEST_BLOB")" >&2
+    fi
+  else
+    _stale_blob_aside
+  fi
+fi
+
 # BYOK banner
 if [ "$BYOK" = "true" ]; then
   cat >&2 <<'BANNER'
@@ -1963,7 +2122,9 @@ fi
 # the doctor invocation and remind the operator to set the provider key
 # + re-run doctor before compose-up.
 if [ "$SKIP_DOCTOR" = "true" ] || [ "$BYOK" = "true" ]; then
-  if [ "$BYOK" = "true" ]; then
+  if [ "$BYOK" = "true" ] && [ "$CLAUDE_SEAT_LANE" = "true" ]; then
+    echo "skipped doctor (seat lane: consultants bring their own Claude Team / Enterprise sign-in, so no provider key is set; run after up: bin/lucairn doctor --env $OUTPUT --offline --skip-image-check)" >&2
+  elif [ "$BYOK" = "true" ]; then
     echo "skipped doctor (BYOK mode — set ANTHROPIC_API_KEY / OPENAI_API_KEY / MISTRAL_API_KEY / GEMINI_API_KEY in $OUTPUT then run: bin/lucairn doctor --env $OUTPUT --offline --skip-image-check)" >&2
   else
     echo "skipped doctor (--skip-doctor)" >&2
@@ -2005,3 +2166,7 @@ echo "Mint your first customer + API key (after stack is healthy):" >&2
 echo >&2
 echo "  ./bin/lucairn-mint-customer --name \"Acme GmbH\" --email \"ops@acme.de\" --tier enterprise" >&2
 echo >&2
+if [ -n "$MANIFEST_PENDING" ]; then
+  echo "init finished with ONE step left: the witness-signed manifest (see NOT DONE above)." >&2
+  exit 10
+fi
