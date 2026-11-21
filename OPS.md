@@ -2344,15 +2344,32 @@ directly.
 
 **Producing a bundle on a self-hosted install.** `bin/lucairn evidence list`
 and `bin/lucairn evidence export` are the commands for it. Both need the
-exporter `lucairn-bundle-export`, which ships with a later release. Until it
-is installed they check their arguments, then stop with one sentence and write
-nothing. They take the gateway admin key as `--admin-key-file PATH` only (a
-regular file readable by its owner only) and never as a value on the command
+exporter `lucairn-bundle-export`, which is not part of this kit release (no
+release date is promised). Without it they check their arguments, then stop
+with one sentence and write nothing. They take the gateway admin key as
+`--admin-key-file PATH` only (a regular file readable by its owner only) and never as a value on the command
 line. `--help` is answered with exit `0` only when it is the sole argument;
 next to other arguments it is a usage error (exit `1`), for these two
 commands and for `bin/lucairn evidence --help` itself. Bundles written by
 that exporter will also need the verifier release
 that ships with it; the wrapper's minimum version will be raised then.
+
+**What you can do today.** Read the certificate of one request at a time
+through the gateway: `GET /api/v1/veil/certificate/<request_id>`, with the API
+key that made the request, on the gateway's own port (`127.0.0.1:8080` on a
+Compose install). The `request_id` is in each answer's
+`metadata.dsa_compliance` (`request_id`, or the last part of
+`veil_certificate_url`). Pass the key on standard input, never on the command
+line:
+
+```bash
+printf 'x-api-key: %s\n' "$(cat ~/secure/customer.key)" \
+  | curl -s -H @- "http://127.0.0.1:8080/api/v1/veil/certificate/$REQUEST_ID"
+```
+
+A certificate holds hashes of what was sent, not the text. There is no list
+of all certificates and no zip of a whole conversation until the exporter
+exists.
 
 ## Deployment license
 

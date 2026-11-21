@@ -849,11 +849,11 @@ fails_with() { # fails_with RUN-NAME LABEL NEEDLE : exit 1, nothing on stdout
 }
 
 run export-no-exporter -- evidence export --env "$GOOD_ENV" --customer-id cust_demo --conversation conv_abc123 --admin-key-file "$KEYFILE" --output "$EXPORT_DIR"
-fails_with export-no-exporter "export without the exporter -> non-zero" "needs the exporter lucairn-bundle-export, which ships with a later release"
+fails_with export-no-exporter "export without the exporter -> non-zero" "needs the exporter lucairn-bundle-export, which is not part of this kit release"
 check "export without the exporter -> exactly one line" [ "$(wc -l < "$OUT/export-no-exporter.err" | tr -d ' ')" = "1" ]
 check "export without the exporter -> nothing written" [ ! -e "$EXPORT_DIR" ]
 run list-no-exporter -- evidence list --env "$GOOD_ENV" --customer-id cust_demo --admin-key-file "$KEYFILE"
-fails_with list-no-exporter "list without the exporter -> non-zero" "needs the exporter lucairn-bundle-export, which ships with a later release"
+fails_with list-no-exporter "list without the exporter -> non-zero" "needs the exporter lucairn-bundle-export, which is not part of this kit release"
 check "list without the exporter -> exactly one line" [ "$(wc -l < "$OUT/list-no-exporter.err" | tr -d ' ')" = "1" ]
 
 run export-no-customer "LUCAIRN_BUNDLE_EXPORT=$STUB_EXPORTER" -- evidence export --env "$GOOD_ENV" --conversation c1 --admin-key-file "$KEYFILE" --output "$EXPORT_DIR"
@@ -1109,7 +1109,7 @@ fi
 awk '/^## Verify an evidence bundle \(self-hosted\)/{on=1; next} /^## /{on=0} on' "$ROOT/OPS.md" > "$TMP/ops-section.md"
 check "OPS.md has the evidence section" [ "$(wc -l < "$TMP/ops-section.md" | tr -d ' ')" -gt 30 ]
 for phrase in 'SKIPPED(not anchored)' 'not a certification or legal opinion' 'LCR_SANDBOX_B_PUBLIC_KEY' \
-  '--service-key dsa-sanitizer-streaming' 'keys/lucairn-cosign.pub' 'which ships with a later release' 'No verdict' \
+  '--service-key dsa-sanitizer-streaming' 'keys/lucairn-cosign.pub' 'which is not part of this kit release' 'GET /api/v1/veil/certificate/<request_id>' 'No verdict' \
   'a value from the `--env` file that the same file also holds on a' 'gives the wrapper nothing' \
   'visible in the process list' 'the tool rejected its arguments' 'witness_dev_v1' \
   'wrapper does not take `--witness-key` yet' 'not given the gateway public key' 'only when it is the sole' \

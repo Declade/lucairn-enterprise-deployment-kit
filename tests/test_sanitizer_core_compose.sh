@@ -856,6 +856,11 @@ case "$a" in
   " context inspect "*) case "$a" in *json*) echo '"unix:///nonexistent-lucairn-test/docker.sock"' ;; *) echo "unix:///nonexistent-lucairn-test/docker.sock" ;; esac; exit 0 ;;
 esac
 if [ "${1:-}" = compose ]; then
+  # Docker Compose 2.40.x prints one warning per nested ${LCR_X:-${VEIL_X}}
+  # fallback on stderr, on every call (T-1479, shown on Ubuntu 24.04).
+  if [ -n "${STUB_COMPOSE_WARN:-}" ]; then
+    printf 'time="2026-11-21T07:50:01Z" level=warning msg="The \\"VEIL_WITNESS_PUBLIC_KEY\\" variable is not set. Defaulting to a blank string."\n' >&2
+  fi
   case "$a" in
     # bin/compose-env.sh's one-service probes read customer.env through the
     # REAL Compose CLI (client side, no daemon): never stubbed.
@@ -1257,6 +1262,12 @@ online_case "RED registry not migrated" "sanitizer core registry: failed (not mi
 online_case "RED registry behind the ceiling" "ledger at 5 of 7 migrations" red STUB_LEDGER_OUT=5
 # Fix round 1 (sol r1 point 6): a ledger the doctor cannot read is a failure.
 online_case "RED migration ledger unreadable (DB down / wrong credentials)" "sanitizer core registry: failed (could not read the migration ledger" red STUB_LEDGER_OUT='psql: error: connection to server on socket failed: FATAL:  password authentication failed for user "dsa"'
+# T-1479: a readable ledger under Compose 2.40.x's stderr warnings is green
+# (RED on 0ec6138: "could not read the migration ledger"); the next two cases
+# keep the real faults red under the same warnings.
+online_case "GREEN ledger read while Compose warns on stderr" "sanitizer core registry: ok (7 migrations applied, ceiling 7)" green STUB_COMPOSE_WARN=1
+online_case "RED ledger unreadable while Compose warns on stderr" "sanitizer core registry: failed (could not read the migration ledger" red STUB_COMPOSE_WARN=1 STUB_LEDGER_OUT='psql: error: connection refused'
+online_case "RED ledger behind the ceiling while Compose warns on stderr" "ledger at 5 of 7 migrations" red STUB_COMPOSE_WARN=1 STUB_LEDGER_OUT=5
 online_case "RED claims dropped" "claim(s) DROPPED" red STUB_CORE_LOG="$TMP/core.drop"
 online_case "RED witness transport not mtls" "witness transport mode=tls-insecure-dev, not mtls" red STUB_CORE_LOG="$TMP/core.tls"
 online_case "RED overlay forwards LCR_PROFILE=hosted" "LCR_PROFILE is forwarded with a non-kit value" red STUB_CONFIG_JSON="$TMP/config.hosted.json"
