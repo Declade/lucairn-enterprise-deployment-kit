@@ -18,7 +18,8 @@ writes it.) The compose files then switch on both halves of the lane:
 `GATEWAY_OAUTH_PASSTHROUGH_ENABLED` on the gateway and
 `SANDBOX_B_OAUTH_PASSTHROUGH_ENABLED` on Sandbox B. Only the exact value
 `true` switches it on. Needs `--runtime-mode managed-byok` (the local Sandbox B
-calls Anthropic).
+calls Anthropic). Init refuses `--claude-seat-lane` without `--production`: a
+`--dev` install runs the internal links without TLS.
 
 With the lane on, a request that carries both a valid Lucairn key **and** the
 consultant's own Anthropic sign-in is hidden exactly like any other request,

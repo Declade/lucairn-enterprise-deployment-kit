@@ -500,6 +500,9 @@ IMAGE_REGISTRY="${IMAGE_REGISTRY%/}"
 if [ "$CLAUDE_SEAT_LANE" = "true" ] && [ "$RUNTIME_MODE" != "managed-byok" ]; then
   fail "--claude-seat-lane needs --runtime-mode managed-byok (the local Sandbox B forwards each consultant's seat sign-in to Anthropic)"
 fi
+if [ "$CLAUDE_SEAT_LANE" = "true" ] && [ "$MODE" != "production" ]; then
+  fail "--claude-seat-lane needs --production (a --dev install runs the internal links without TLS, so the seat sign-in would cross them in plain text)"
+fi
 
 local_model_inventory_valid() {
   runtime_profile_model_name_valid "$1" \

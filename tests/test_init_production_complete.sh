@@ -84,6 +84,11 @@ if "$ROOT/bin/lucairn-init" --confirm-no-registry-volume --production --license 
 fi
 grep -q "claude-seat-lane needs --runtime-mode managed-byok" "$TMP/seat.err" || fail "seat lane refusal message"
 pass "--claude-seat-lane refused outside managed-byok"
+if render --dev --runtime-mode managed-byok --claude-seat-lane >/dev/null; then
+  fail "--claude-seat-lane accepted with --dev"
+fi
+grep -q "claude-seat-lane needs --production" "$TMP/init.err" || fail "seat lane dev refusal message"
+pass "--claude-seat-lane refused outside production (dev links run without TLS)"
 
 # ── 2. Sandbox B leaves ─────────────────────────────────────────────────────
 C="$TMP/kit/.certs/sanitizer-core-mtls"
