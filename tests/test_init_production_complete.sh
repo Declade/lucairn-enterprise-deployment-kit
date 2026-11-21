@@ -278,7 +278,7 @@ stale=("$K"/.certs/witness-signed-manifest.json.stale-*)
   || fail "stale manifest not moved aside"
 for f in ca.crt ca.key witness-server.crt gateway-client.crt sandbox-a-client.crt; do [ -f "$W/$f" ] || fail "witness folder lacks $f"; done
 if [ "$(uname -s)" = "Linux" ]; then
-  grep -q "^find $W ! -name ca.key -exec chown 10001:10001 " "$FS/sudo.log" && ! grep -q '^chown' "$FS/sudo.log" \
+  grep -q "^find $W ! -name ca.key -exec chown ${LUCAIRN_CONTAINER_UID:-10001}:${LUCAIRN_CONTAINER_UID:-10001} " "$FS/sudo.log" && ! grep -q '^chown' "$FS/sudo.log" \
     || fail "witness folder hand-over must skip ca.key (no chown -R, no chown-back)"
 fi
 [ "$(val WITNESS_MTLS_CA_BUNDLE_PATH "$O")" = "$W/ca.crt" ] || fail "WITNESS_MTLS_* lines of the full init"
