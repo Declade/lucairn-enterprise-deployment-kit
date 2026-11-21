@@ -869,6 +869,9 @@ services:
           memory: "6815744000"
     environment:
       HOME: /tmp
+      MKL_NUM_THREADS: "2"
+      OMP_NUM_THREADS: "2"
+      TORCH_NUM_THREADS: "2"
       XDG_CACHE_HOME: /tmp/.cache
     healthcheck:
       test:
