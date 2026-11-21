@@ -9800,11 +9800,12 @@ print("; ".join(bad) if bad else "ok")
       psql -X -At -U dsa -d sanitizer_core -c "SELECT count(*) FROM registry_schema_migrations" 2> "$ledger_err")" || ledger_rc=$?
     # Fix round 2 (B8): exactly one line that is a number; whitespace is not
     # removed across lines (a banner "1" over a count "2" is not "12").
+    # Final fix pass (B8): the digits are matched BEFORE any whitespace is
+    # removed; only blanks around them are allowed ("1<TAB>2" is not 12).
     ledger_n=""
-    case "$ledger" in
-      *$'\n'*) ;;
-      *) ledger_n="$(printf '%s' "$ledger" | tr -d ' \r\t')" ;;
-    esac
+    if [[ "$ledger" =~ ^[[:blank:]$'\r']*([0-9]+)[[:blank:]$'\r']*$ ]]; then
+      ledger_n="${BASH_REMATCH[1]}"
+    fi
     # Fix round 1 (G6): a non-zero exit is a failure even when stdout holds a
     # number (a transport error after the count).
     if [ "$ledger_rc" -ne 0 ]; then

@@ -1327,6 +1327,8 @@ b6_green "B6: http_proxy set to a dead address, gateway healthy" \
   http_proxy=http://127.0.0.1:9 STUB_HEALTHZ=200 STUB_READYZ=200
 # Fix round 2 (B8): two numeric lines are not one count ("1" over "2" is not 12).
 online_case "RED ledger banner line + count line" "sanitizer core registry: failed (could not read the migration ledger" red STUB_LEDGER_OUT="$(printf '1\n2')"
+# Final fix pass (B8): two fields on one line are not one count ("1<TAB>2" is not 12).
+online_case "RED ledger two tab-separated fields" "sanitizer core registry: failed (could not read the migration ledger" red STUB_LEDGER_OUT="$(printf '1\t2')"
 # Fix round 2 (B2): pg_isready never gets the password from the URL.
 printf 'POSTGRES_URL=postgres://dsa:t1479-pg-pw-plant-6d1e@db.example.internal:5433/audit?sslmode=require\n' >> "$ENVF"
 : > "$TMP/pg.log"
