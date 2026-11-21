@@ -31,9 +31,10 @@ what went to the model vendor (off by default).
   runs after the text has been sent to the client, so a match it finds can no
   longer be replaced; on a **buffered** reply it can still replace the match
   before delivery.
-- Re-running `lucairn-init` on a 2.0.0 install does not rewrite
-  `customer.env`; it completes the missing host steps (Sandbox B's leaves, the
-  manifest in production) and refuses new flags that differ from it.
+- Re-running `lucairn-init` on a written install (2.0.0 included) changes
+  nothing: it lists each missing host-step result (Sandbox B's leaves, the
+  manifest in production, …) with the command that makes it and exits 11,
+  and refuses new flags that differ from `customer.env`.
 
 ## [2.0.0] — 2026-11-07 — images `1.1.1`
 

@@ -18,8 +18,10 @@ receipt, and witness-signature verification; anchors are explicitly not checked.
 
 This is the shortest supported way to a production-mode install on which
 Claude Code works on the first turn. Every command below is what the tools do
-today (kit 2.0.1); nothing in `customer.env` is edited by hand between
-`lucairn-init` and a healthy stack. The rest of this file explains each part.
+today (kit 2.0.1). On this seat-lane path (Claude Team / Enterprise seats)
+nothing in `customer.env` is edited by hand between `lucairn-init` and a
+healthy stack; the API-key variant (§ "API-key variant") needs one typed line.
+The rest of this file explains each part.
 
 **You need from Lucairn (one prepared step at contract time):** registry
 access for the images (§ "Step 0") and your licence file `license.json`.
@@ -38,12 +40,23 @@ sudo usermod -aG docker "$USER"     # then log out and in once
 
 2. **Write the settings.** From the kit folder:
 
+   With the images from the Lucairn registry:
+
    ```bash
    bin/lucairn-init --production --runtime-mode managed-byok \
      --license license.json \
      --gateway-base-url https://lucairn.internal.example \
-     [--image-registry registry.internal.example/declade] \
-     [--claude-seat-lane]
+     --claude-seat-lane
+   ```
+
+   With the images in your own mirror (step 1):
+
+   ```bash
+   bin/lucairn-init --production --runtime-mode managed-byok \
+     --license license.json \
+     --gateway-base-url https://lucairn.internal.example \
+     --image-registry registry.internal.example/declade \
+     --claude-seat-lane
    ```
 
    It asks for your `sudo` password for the two certificate folders. It writes
@@ -55,13 +68,15 @@ sudo usermod -aG docker "$USER"     # then log out and in once
    **witness-signed key manifest** `.certs/witness-signed-manifest.json`
    (`scripts/sign-witness-manifest.sh`, with the signing tool from the
    witness image, pinned by its signed digest — this is why the images come
-   first). If it ends with `NOT DONE: the witness-signed manifest` (exit 10),
-   the image was not reachable: fix step 1 and run the same `lucairn-init`
-   command again. A re-run that finds `customer.env` already written does not
-   rewrite it; it completes only the host steps that are missing (certificate
-   leaves, the witness folder, the manifest), and it refuses an
-   `--image-registry` or `--claude-seat-lane` that differs from
-   `customer.env` instead of ignoring it.
+   first). Exit 10 means the signing step did not finish; the message above
+   it says why and names the `scripts/sign-witness-manifest.sh` command to
+   run once the cause is fixed. Exit 9 (the witness folder) names its two
+   commands the same way. Running the same `lucairn-init` command again on a
+   written install changes nothing: it only checks, lists each missing item
+   (the DSN file, each certificate and key, the witness folder, the manifest)
+   with the one command that makes it and exits 11 (0 when everything is in
+   place); it refuses an `--image-registry` or `--claude-seat-lane` that
+   differs from `customer.env` instead of ignoring it.
 
    **A mirror** must serve the witness image under its signed digest, i.e. be
    copied with all platforms (`crane copy`, `skopeo copy --all`,
@@ -77,12 +92,10 @@ sudo usermod -aG docker "$USER"     # then log out and in once
    private keys, as it already can the sanitizer core's and the witness's
    keys in that tree.
 
-   - **Claude Team / Enterprise seats** (`--claude-seat-lane`): consultants
-     sign in with their company seat and no provider key is needed.
-     [docs/CLAUDE_SEATS.md](docs/CLAUDE_SEATS.md). Never for consumer Pro / Max.
-   - **Anthropic API key instead:** leave out `--claude-seat-lane` and put the
-     key in the one empty line `ANTHROPIC_API_KEY=` of `customer.env`. That is
-     the only value you type yourself.
+   **Claude Team / Enterprise seats** (`--claude-seat-lane`): consultants
+   sign in with their company seat and no provider key is needed.
+   [docs/CLAUDE_SEATS.md](docs/CLAUDE_SEATS.md). Never for consumer Pro / Max.
+   For an Anthropic API key instead see § "API-key variant".
 
 3. **Start.**
 
@@ -121,6 +134,24 @@ sudo usermod -aG docker "$USER"     # then log out and in once
 6. **Claude Code.** On a laptop: `ANTHROPIC_BASE_URL=https://lucairn.internal.example`
    and the Lucairn key (seat lane: `ANTHROPIC_CUSTOM_HEADERS="X-DSA-Key: <key>"`,
    see docs/CLAUDE_SEATS.md; API-key installs: `bin/lucairn config-pack`).
+
+### API-key variant (not run on a live install)
+
+For an Anthropic API key on the server instead of Claude seats. **Not run on
+a live install;** the steps below are read from the code of images 1.1.1.
+
+- Step 2 without `--claude-seat-lane`; then type the key into the one empty
+  line `ANTHROPIC_API_KEY=` of `customer.env` (the one hand edit of this
+  variant).
+- Step 4 with `--managed-ai` (and `--no-byok-per-request`, which the mint
+  tool requires with it on Enterprise) instead of the plain command: a key
+  minted so sends no provider key from the request and leaves the choice of
+  key to Sandbox B (gateway `anthropic_handler.go:2072-2083`). Not confirmed:
+  that Sandbox B then uses the `ANTHROPIC_API_KEY` of `customer.env`.
+
+```bash
+bin/lucairn-mint-customer --raw-key-only --name "Acme GmbH" --email "ops@acme.example" --tier enterprise --managed-ai --no-byok-per-request > ~/lucairn-first.key
+```
 
 ### Reverse proxy
 
