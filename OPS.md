@@ -2356,15 +2356,19 @@ that ships with it; the wrapper's minimum version will be raised then.
 
 **What you can do today.** Read the certificate of one request at a time
 through the gateway: `GET /api/v1/veil/certificate/<request_id>`, with the API
-key that made the request, on the gateway's own port (`127.0.0.1:8080` on a
-Compose install). The `request_id` is in each answer's
-`metadata.dsa_compliance` (`request_id`, or the last part of
-`veil_certificate_url`). Pass the key on standard input, never on the command
-line:
+key that made the request, on the port the running gateway publishes (on a
+Compose install `127.0.0.1:<GATEWAY_PORT>` of your `customer.env`; ask Docker
+Compose for it, so the key never goes to another program on a fixed port).
+The `request_id` is in each answer's `metadata.dsa_compliance` (`request_id`,
+or the last part of `veil_certificate_url`). Pass the key on standard input,
+never on the command line:
 
 ```bash
-printf 'x-api-key: %s\n' "$(cat ~/secure/customer.key)" \
-  | curl -s -H @- "http://127.0.0.1:8080/api/v1/veil/certificate/$REQUEST_ID"
+GW="$(docker compose -f docker-compose.customer.yml --env-file customer.env port gateway 8080)"
+if [ -z "$GW" ]; then echo "the gateway container is not running" >&2; else
+  printf 'x-api-key: %s\n' "$(cat ~/secure/customer.key)" \
+    | curl -s -H @- "http://$GW/api/v1/veil/certificate/$REQUEST_ID"
+fi
 ```
 
 A certificate holds hashes of what was sent, not the text. There is no list

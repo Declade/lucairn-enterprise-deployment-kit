@@ -1118,6 +1118,10 @@ for phrase in 'SKIPPED(not anchored)' 'not a certification or legal opinion' 'LC
   'does not read as' '(exit `1`), for these two'; do
   check "OPS.md evidence section states: $phrase" grep -qF -- "$phrase" "$TMP/ops-section.md"
 done
+# Fix round 1 (G8): the certificate example sends the customer key only to the
+# port the running gateway publishes, never to a fixed 8080.
+check "OPS.md certificate example asks Compose for the gateway's published port" grep -qF 'port gateway 8080)"' "$TMP/ops-section.md"
+check "OPS.md certificate example sends no key to a fixed 127.0.0.1:8080" bash -c '! grep -qF "http://127.0.0.1:8080/api/v1/veil/certificate" "$1"' _ "$TMP/ops-section.md"
 check "OPS.md evidence section makes no assurance claim it cannot back" bash -c '! grep -Eiq "SOC ?2|ISO ?27001|ISO ?42001|HIPAA|PCI|end-to-end|E2E|encrypted at rest|penetration|red team|regular audits|court|legally binding|tamper-proof" "$1"' _ "$TMP/ops-section.md"
 # The sentence this PR first shipped claimed more than the code does.
 check "OPS.md no longer claims that no signing key can reach a command line" bash -c '! grep -qF "value is put on a command line" "$1" && ! grep -qF "Only public keys are used" "$1"' _ "$TMP/ops-section.md"
