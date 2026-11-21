@@ -11369,7 +11369,7 @@ support_bundle() {
   runtime_profile_compose_args "$env_file" "$compose_file" || return 1
   mkdir -p "$output_dir"
 
-  local ts bundle_dir archive compose cert_raw
+  local ts bundle_dir archive compose cert_raw logs_raw="" logs_scan_dir=""
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   bundle_dir="$output_dir/lucairn-support-bundle-$ts"
   archive="$bundle_dir.tar.gz"
@@ -11439,9 +11439,21 @@ support_bundle() {
       cmsg_n="$(grep -c '' "$cmsg_tmp" 2>/dev/null || true)"
       printf 'Docker Compose printed %s message line(s) on stderr for this command; their text is not included (it can quote parts of secret values or file paths).\n' "${cmsg_n:-0}" >> "$bundle_dir/docker/compose-ps.txt"
       (docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>&1 || true) | redact_stream > "$bundle_dir/docker/status.txt"
-      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" logs --tail 300 --no-color 2>&1 || true) \
-        | awk -v cnt="$cmsg_tmp" '/^[A-Za-z0-9][A-Za-z0-9_.-]* +[|] / { print; next } { n++ } END { print n + 0 > cnt }' \
+      # Final fix pass (B1): dropping a line can split a multi-line secret
+      # into fragments below the scanner's per-line threshold. The whole,
+      # unfiltered (redacted) log text is therefore kept OUTSIDE the bundle
+      # in a private temp dir and scanned like a collected file below: a hit
+      # there refuses the bundle, as before the filter existed.
+      logs_raw="$(mktemp)"
+      chmod 0600 "$logs_raw"
+      logs_scan_dir="$(mktemp -d)"
+      chmod 0700 "$logs_scan_dir"
+      mkdir -p "$logs_scan_dir/logs"
+      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" logs --tail 300 --no-color > "$logs_raw" 2>&1 || true)
+      redact_stream < "$logs_raw" > "$logs_scan_dir/logs/compose.log"
+      awk -v cnt="$cmsg_tmp" '/^[A-Za-z0-9][A-Za-z0-9_.-]* +[|] / { print; next } { n++ } END { print n + 0 > cnt }' < "$logs_raw" \
         | redact_stream > "$bundle_dir/logs/compose.log"
+      rm -f "$logs_raw"
       cmsg_n="$(head -1 "$cmsg_tmp" 2>/dev/null || true)"
       printf 'Docker Compose printed %s line(s) of its own (not container output); their text is not included (it can quote parts of secret values or file paths).\n' "${cmsg_n:-0}" >> "$bundle_dir/logs/compose.log"
       rm -f "$cmsg_tmp"
@@ -11461,7 +11473,7 @@ support_bundle() {
       # would get an archive without the resolved configuration.
       if [ "$config_rc" -ne 0 ] || ! grep -q '[^[:space:]]' "$bundle_dir/redacted/compose-resolved.yml"; then
         rm -f "$config_err"
-        rm -rf "$bundle_dir"
+        rm -rf "$bundle_dir" ${logs_scan_dir:+"$logs_scan_dir"}
         fail "support bundle: refused — docker compose config failed or rendered nothing (exit $config_rc, ${config_err_n:-0} message line(s) on stderr); nothing was archived. Run: docker compose --env-file <your customer.env> config  on the host, fix what it reports, then retry."
       fi
       printf 'Docker Compose printed %s message line(s) on stderr while rendering this configuration. Their text is not included in this bundle (it can quote parts of secret values or file paths). Read them on the host with: docker compose --env-file <your customer.env> config\n' "${config_err_n:-0}" \
@@ -11489,7 +11501,7 @@ support_bundle() {
   if ! support_bundle_secret_needles "$env_file" "$compose_file" > "$needles" 2> "$needles_err"; then
     why="$(sed 's/^compose-env: //' "$needles_err" | grep -v '^$' | head -1)"
     rm -f "$needles" "$needles_err"
-    rm -rf "$bundle_dir"
+    rm -rf "$bundle_dir" ${logs_scan_dir:+"$logs_scan_dir"}
     fail "support bundle: refused — the secret values to scan for could not be read through Docker Compose (${why:-unknown reason}); nothing was archived. Fix that, or report to Lucairn support without a bundle."
   fi
   rm -f "$needles_err"
@@ -11501,6 +11513,10 @@ support_bundle() {
   if [ -s "$needles" ]; then
     decoded_err="$(mktemp)"
     support_bundle_decoded_scan "$bundle_dir" "$needles" 2> "$decoded_err" || decoded_rc=$?
+    # Final fix pass (B1): the unfiltered log text, scanned the same way.
+    if [ "$decoded_rc" -eq 0 ] && [ -n "$logs_scan_dir" ]; then
+      support_bundle_decoded_scan "$logs_scan_dir" "$needles" 2> "$decoded_err" || decoded_rc=$?
+    fi
     why="$(grep -v '^$' "$decoded_err" | head -1 || true)"
     rm -f "$decoded_err"
     case "$decoded_rc" in
@@ -11514,12 +11530,13 @@ support_bundle() {
         ;;
       *)
         rm -f "$needles"
-        rm -rf "$bundle_dir"
+        rm -rf "$bundle_dir" ${logs_scan_dir:+"$logs_scan_dir"}
         fail "support bundle: refused — the collected files could not be compared decoded (${why:-unknown reason}); nothing was archived. Fix that, or report to Lucairn support without a bundle."
         ;;
     esac
   fi
   rm -f "$needles"
+  [ -z "$logs_scan_dir" ] || rm -rf "$logs_scan_dir"
   if [ "$leaked" -eq 1 ]; then
     rm -rf "$bundle_dir"
     fail "support bundle: refused — a secret value from $env_file or the sanitizer core's registry DSN appeared in a collected file${where}; nothing was archived (the value is not printed). Report this to Lucairn support without a bundle."

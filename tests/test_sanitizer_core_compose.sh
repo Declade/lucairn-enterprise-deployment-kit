@@ -1566,18 +1566,10 @@ if [ "$HAVE_COMPOSE" -eq 1 ]; then
   # whole value is a needle with CRLF too.
   printf 'svc  | AlphaSecret\r\n4829x\r\n' > "$TMP/r5-crlf.log"
   SB_ONLINE=" " sb_run r5logc "$V/customer.env" "$KIT_COMPOSE" STUB_BUNDLE_LOG="$TMP/r5-crlf.log"
-  # Fix round 2 (B1): a line without the container prefix is Compose's own
-  # text and is not archived, so here the second half never reaches the
-  # bundle; either a refusal or an archive without it is correct.
-  if [ "$SBRC" -ne 0 ]; then
-    sb_refused "the multi-line secret with CRLF line breaks in a raw log" r5logc "appeared in a collected file (logs/compose.log)" '4829x'
-  else
-    rm -rf "$TMP/r5logc-x"; mkdir -p "$TMP/r5logc-x"
-    tar -xzf "$(find "$BUN/r5logc" -name 'lucairn-support-bundle-*.tar.gz' -print -quit)" -C "$TMP/r5logc-x"
-    ! grep -rqF '4829x' "$TMP/r5logc-x" && grep -rq 'printed 1 line(s) of its own' "$TMP/r5logc-x" \
-      && pass "the CRLF multi-line secret: its unprefixed second line is not archived (counted)" \
-      || fail "the CRLF multi-line secret reached the archive"
-  fi
+  # Final fix pass (B1): the unprefixed second line is not archived, but the
+  # unfiltered log text is scanned first, so the whole value still refuses
+  # (the kept fragment "AlphaSecret" alone is below the per-line threshold).
+  sb_refused "the multi-line secret with CRLF line breaks in a raw log" r5logc "appeared in a collected file (logs/compose.log)" '4829x'
   printf 'svc  | ok\nsvc  | {"note":"\\u00zz"}\n' > "$TMP/r5-bad.log"
   SB_ONLINE=" " sb_run r5logbad "$ENVF" "$KIT_COMPOSE" STUB_BUNDLE_LOG="$TMP/r5-bad.log"
   sb_refused "a log line whose escape cannot be unescaped" r5logbad "logs/compose.log line 2: an escape sequence that cannot be unescaped" 'u00zz'
