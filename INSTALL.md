@@ -71,12 +71,12 @@ sudo usermod -aG docker "$USER"     # then log out and in once
    first). Exit 10 means the signing step did not finish; the message above
    it says why and names the `scripts/sign-witness-manifest.sh` command to
    run once the cause is fixed. Exit 9 (the witness folder) names its two
-   commands the same way. Running the same `lucairn-init` command again on a
-   written install changes nothing: it only checks, lists each missing item
-   (the DSN file, each certificate and key, the witness folder, the manifest)
-   with the one command that makes it and exits 11 (0 when everything is in
-   place); it refuses an `--image-registry` or `--claude-seat-lane` that
-   differs from `customer.env` instead of ignoring it.
+   commands the same way. Stated limit: running `lucairn-init` again on a
+   written install does not check or repair these host steps; it prints
+   "already initialized" and exits 0. After a failed first run, run the
+   commands its failure message printed. To replace the sanitizer core
+   certificates, follow § "2a. Renewing a leaf, rotating the CA"; the kit
+   documents no other reset of a written install.
 
    **A mirror** must serve the witness image under its signed digest, i.e. be
    copied with all platforms (`crane copy`, `skopeo copy --all`,
@@ -2598,9 +2598,10 @@ remove the empty folder (`sudo rmdir ./.certs/witness-mtls`) and continue.
 
    You may also move `ca.key` to an offline place if you do not need to issue
    more client certificates. **Put `ca.key` back before you run the script
-   again:** without it the script's check of what exists looks at the key
-   files only, so a missing certificate can pass unnoticed, and a folder that
-   kept only certificates can get a new CA (stated limit, kit 2.0.1). With
+   again:** without `ca.key` the script looks only at `ca.crt` and the key
+   files (`witness-server.key`, `gateway-client.key`, `sandbox-a-client.key`);
+   when some of them are present and others missing it refuses and writes
+   nothing (`scripts/bootstrap-mtls-ca.sh`, stated limit, kit 2.0.1). With
    `ca.key` present, a certificate whose key is missing is issued anew. Stated limit: the leaf keys
    of the other callers in this folder (`witness-server.key`,
    `gateway-client.key`, `sandbox-a-client.key`) stay readable to both the

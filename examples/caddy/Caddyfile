@@ -2,9 +2,13 @@
 #
 # The gateway listens on 127.0.0.1:8080 only (docker-compose.customer.yml).
 # This file gives the consultants' laptops HTTPS to it and nothing else:
-#   * an ALLOW-LIST: only the paths Claude Code (/v1/*, /mcp) and certificate
-#     reads (/api/v1/veil/*, the .well-known documents) need are forwarded
-#     (the matcher @laptops below); every other path answers 404 here. Not
+#   * an ALLOW-LIST: the matcher @laptops below forwards exactly these paths
+#     and nothing else: /v1/* (Claude Code), /mcp and /mcp/*, /api/v1/veil/*
+#     (certificate reads), /api/v1/usage, /api/v1/keys/self/revoke and the
+#     four .well-known documents
+#     (/.well-known/veil-keys.json, /.well-known/oauth-authorization-server,
+#     /.well-known/oauth-protected-resource,
+#     /.well-known/mcp/server-card.json); every other path answers 404. Not
 #     forwarded, among others: /api/v1/register and /api/v1/scan
 #     (unauthenticated on images 1.1.1), the admin and website routes.
 #     Opt-in (add them to @laptops only if you use them): the four Sensitive

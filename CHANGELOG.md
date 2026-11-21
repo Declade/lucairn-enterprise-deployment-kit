@@ -31,10 +31,14 @@ what went to the model vendor (off by default).
   runs after the text has been sent to the client, so a match it finds can no
   longer be replaced; on a **buffered** reply it can still replace the match
   before delivery.
-- Re-running `lucairn-init` on a written install (2.0.0 included) changes
-  nothing: it lists each missing host-step result (Sandbox B's leaves, the
-  manifest in production, …) with the command that makes it and exits 11,
-  and refuses new flags that differ from `customer.env`.
+- Stated limit: a second run of `lucairn-init` on a written install (2.0.0
+  included) does not check or repair the host steps (it prints "already
+  initialized" and exits 0, as in 2.0.0); after a failed first run, run the
+  commands the failure message printed (INSTALL.md § "Fast path"). A 2.0.0
+  install gets Sandbox B's leaves by re-running `sudo
+  scripts/bootstrap-sanitizer-core-mtls.sh` with the arguments it was
+  installed with (INSTALL.md § "2a. Renewing a leaf, rotating the CA"): it
+  reuses the existing leaves and issues the missing ones.
 
 ## [2.0.0] — 2026-11-07 — images `1.1.1`
 

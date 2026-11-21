@@ -70,12 +70,6 @@
 #  10 production only: the witness-signed manifest step did not finish
 #     (customer.env was written; the message above it says why and names the
 #     scripts/sign-witness-manifest.sh command to run)
-#  11 a re-run found customer.env and its runtime profile matching, but a
-#     host-step result missing. A re-run only CHECKS (fix round 3): it changes
-#     nothing, lists each missing item (DSN file, certificate or key, witness
-#     folder, manifest) with its command and exits 11 (0 when complete); it
-#     refuses (exit 2) --image-registry or --claude-seat-lane values that
-#     differ from customer.env instead of ignoring them.
 
 set -euo pipefail
 
@@ -344,7 +338,6 @@ Exit codes:
      not be asked and --confirm-no-registry-volume was not given, or a registry
      volume name could not be resolved, or Docker was asked but gave no volume
      list (nothing written)
-  11 re-run: a host-step result is missing (nothing changed; commands listed)
 USAGE
 }
 
@@ -392,7 +385,6 @@ OUTPUT="$DEFAULT_OUTPUT"
 IMAGE_TAG="$DEFAULT_IMAGE_TAG"
 GATEWAY_BASE_URL_OVERRIDE=""
 IMAGE_REGISTRY="ghcr.io/declade"
-IMAGE_REGISTRY_GIVEN="false"
 CLAUDE_SEAT_LANE="false"
 # The witness certificate-port mTLS folder. Fixed: the compose files mount it
 # at the same container path and bin/lucairn doctor checks these paths on the host.
@@ -455,7 +447,7 @@ while [ $# -gt 0 ]; do
     --output)          OUTPUT="${2:?--output requires a path}"; shift 2 ;;
     --image-tag)       IMAGE_TAG="${2:?--image-tag requires a value}"; shift 2 ;;
     --gateway-base-url) GATEWAY_BASE_URL_OVERRIDE="${2:?--gateway-base-url requires a value}"; shift 2 ;;
-    --image-registry)  IMAGE_REGISTRY="${2:?--image-registry requires a value}"; IMAGE_REGISTRY_GIVEN="true"; shift 2 ;;
+    --image-registry)  IMAGE_REGISTRY="${2:?--image-registry requires a value}"; shift 2 ;;
     --claude-seat-lane) CLAUDE_SEAT_LANE="true"; shift ;;
     --skip-doctor)     SKIP_DOCTOR="true"; shift ;;
     --dry-run)         DRY_RUN="true"; shift ;;
@@ -917,10 +909,10 @@ acquire_install_lock() {
 #
 # Kit 2.0.1 (T-1479): the steps that write OUTSIDE customer.env (certificate
 # leaves, the witness certificate-port folder, the witness-signed manifest).
-# Functions, because two paths run them: a fresh init (in order, after
-# customer.env is written) and a re-run that finds "already initialized" but
-# a host step missing (fix round 1, review seat 10: such a re-run used to exit
-# 0 with the install still unable to start). Each step is idempotent.
+# A fresh init runs them in order, after customer.env is written. Stated limit
+# (INSTALL.md § "Fast path"): a re-run that finds "already initialized" does
+# not check or repair them; after a failed first run, run the commands the
+# failure message printed.
 
 # run_sanitizer_core_bootstrap — the deploy CA and every service leaf of
 # $SANITIZER_CORE_MTLS_DIR (scripts/bootstrap-sanitizer-core-mtls.sh).
@@ -950,7 +942,7 @@ run_sanitizer_core_bootstrap() {
     fi
   fi
   if ! "${_sanitizer_core_bootstrap[@]}" >&2; then
-    fail "could not create the sanitizer core mTLS material in $SANITIZER_CORE_MTLS_DIR (customer.env was written; fix the error above and re-run: $_sanitizer_core_bootstrap_hint — then run the same bin/lucairn-init command again: it changes nothing and lists every host step still missing with its command)" 6
+    fail "could not create the sanitizer core mTLS material in $SANITIZER_CORE_MTLS_DIR (customer.env was written; fix the error above and re-run: $_sanitizer_core_bootstrap_hint)" 6
   fi
 }
 
@@ -963,7 +955,7 @@ run_sanitizer_core_bootstrap() {
 # before kit 2.0.1, without sudo and without this openssl step).
 # witness_mtls_command / manifest_command — the two production host steps as
 # one copyable line each, run from the kit folder (fix round 3 items 3 + 4:
-# hints and the re-run check name the literal commands).
+# the hints name the literal commands).
 witness_mtls_command() {
   local _s="sudo " _d _u="${LUCAIRN_CONTAINER_UID:-10001}"
   [ "$(id -u)" != "0" ] || _s=""
@@ -1043,8 +1035,7 @@ manifest_blob_path() {
 # signing failed.
 run_manifest_step() {
   MANIFEST_BLOB="$(manifest_blob_path)"
-  # The old blob was signed for other keys (this env is new, or the resume
-  # path found none): aside first, so the signer never weighs it.
+  # The old blob was signed for other keys (this env is new): aside first, so the signer never weighs it.
   stale_manifest_aside
   if [ "$MODE" = "production" ]; then
     if bash "$KIT_ROOT/scripts/sign-witness-manifest.sh" --env "$OUTPUT" --out "$MANIFEST_BLOB"; then
@@ -1067,71 +1058,6 @@ stale_manifest_aside() {
   fi
 }
 
-# resume_host_steps — the "already initialized" path. customer.env and its
-# runtime profile match the request. Fix round 3 (ruling item 3): CHECK ONLY.
-# A re-run changes nothing; it lists each host-step result that is missing
-# (the DSN file, each certificate and key of the sanitizer core tree, the
-# witness folder, the manifest) with the one command that makes it, and exits
-# 11. Flags that would change customer.env are refused instead of ignored
-# (review seat 10).
-resume_host_steps() {
-  local env_reg env_seat leaf ext w_dir f dsn core_cmd n=0
-  env_reg="$(optional_env_field "$OUTPUT" LUCAIRN_IMAGE_REGISTRY)" || env_reg=""
-  env_seat="$(optional_env_field "$OUTPUT" LUCAIRN_CLAUDE_SEAT_LANE)" || env_seat=""
-  if [ "$IMAGE_REGISTRY_GIVEN" = "true" ] && [ "${env_reg%/}" != "$IMAGE_REGISTRY" ]; then
-    fail "$OUTPUT is already initialized with LUCAIRN_IMAGE_REGISTRY=${env_reg:-<unset>}; a re-run does not rewrite customer.env, so --image-registry $IMAGE_REGISTRY would be ignored. Set LUCAIRN_IMAGE_REGISTRY in customer.env yourself (no customer state was changed)" 2
-  fi
-  if [ "$CLAUDE_SEAT_LANE" = "true" ] && [ "$env_seat" != "true" ]; then
-    fail "$OUTPUT is already initialized without the seat lane; a re-run does not rewrite customer.env, so --claude-seat-lane would be ignored. Set LUCAIRN_CLAUDE_SEAT_LANE=true in customer.env yourself (docs/CLAUDE_SEATS.md; no customer state was changed)" 2
-  fi
-  missing() { n=$((n + 1)); echo "  missing: $1" >&2; echo "    run: $2" >&2; }
-  echo "already initialized: $OUTPUT and $RUNTIME_PROFILE_MANIFEST match the requested runtime profile; nothing is rewritten or run. Checking the host steps:" >&2
-  # 1. the sanitizer core's registry DSN file
-  dsn="$(optional_env_field "$OUTPUT" SANITIZER_CORE_REGISTRY_DSN_FILE)" || dsn=""
-  case "$dsn" in
-    ''|/*) : ;;
-    *) dsn="$KIT_ROOT/${dsn#./}" ;;
-  esac
-  [ -z "$dsn" ] || [ -f "$dsn" ] \
-    || missing "$dsn" "scripts/write-sanitizer-core-registry-dsn.sh --env-file $(printf '%q' "$OUTPUT")"
-  # 2. the sanitizer core's tree (the same path rule as the adoption path below)
-  SANITIZER_CORE_MTLS_DIR="$(optional_env_field "$OUTPUT" SANITIZER_CORE_MTLS_HOST_DIR)" || SANITIZER_CORE_MTLS_DIR=""
-  case "$SANITIZER_CORE_MTLS_DIR" in
-    /*) : ;;
-    '') SANITIZER_CORE_MTLS_DIR="$KIT_ROOT/.certs/sanitizer-core-mtls" ;;
-    *) SANITIZER_CORE_MTLS_DIR="$KIT_ROOT/${SANITIZER_CORE_MTLS_DIR#./}" ;;
-  esac
-  core_cmd="bash scripts/bootstrap-sanitizer-core-mtls.sh $(printf '%q' "$SANITIZER_CORE_MTLS_DIR")"
-  if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" != "0" ] \
-     && [ "${LUCAIRN_CONTAINER_UID:-10001}" != "$(id -u)" ]; then
-    core_cmd="sudo $core_cmd"
-  fi
-  for leaf in sanitizer-core/dsa-sanitizer-core sanitizer-core/witness-client gateway/dsa-gateway veil-witness/dsa-veil-witness \
-              sandbox-b/dsa-sandbox-b sandbox-b/witness-client; do
-    case "$leaf" in sandbox-b/*) [ "$RUNTIME_MODE" != "split-remote" ] || continue ;; esac
-    for ext in crt key; do
-      [ -f "$SANITIZER_CORE_MTLS_DIR/$leaf.$ext" ] || missing "$SANITIZER_CORE_MTLS_DIR/$leaf.$ext" "$core_cmd"
-    done
-  done
-  if [ "$MODE" = "production" ] && [ "${LUCAIRN_INIT_SKIP_WITNESS_STEPS:-}" != "1" ]; then
-    # 3. the witness folder, when customer.env names it (a kit 2.0.0 env
-    #    leaves the WITNESS_MTLS_* lines empty: nothing to check here)
-    w_dir="$(optional_env_field "$OUTPUT" LCR_WITNESS_MTLS_HOST_DIR)" || w_dir=""
-    if [ "$w_dir" = "$WITNESS_MTLS_DIR" ]; then
-      for f in ca.crt witness-server.crt witness-server.key gateway-client.crt gateway-client.key sandbox-a-client.crt sandbox-a-client.key; do
-        [ -f "$WITNESS_MTLS_DIR/$f" ] || { missing "the witness folder $WITNESS_MTLS_DIR (first missing file: $f)" "$(witness_mtls_command)"; break; }
-      done
-    fi
-    # 4. the witness-signed manifest
-    [ -f "$(manifest_blob_path)" ] || missing "$(manifest_blob_path)" "$(manifest_command)"
-  fi
-  if [ "$n" -eq 0 ]; then
-    echo "already initialized: every host step is in place" >&2
-    exit 0
-  fi
-  echo "NOT DONE: $n host-step result(s) missing (nothing was changed). Run the commands above from the kit folder, in this order; then run this init command again to check." >&2
-  exit 11
-}
 # All state/adoption decisions below are made while holding this directory
 # mutex.  The trap releases it on normal errors and TERM/INT.
 acquire_install_lock
@@ -1160,7 +1086,8 @@ if path_exists_or_symlink "$OUTPUT"; then
     [ "$existing_marker" = "1" ] \
       || fail "runtime profile sidecar requires LUCAIRN_RUNTIME_PROFILE_REQUIRED=1 (no customer state was changed)"
     if runtime_profile_matches_inputs && runtime_env_matches_inputs "$OUTPUT"; then
-      resume_host_steps
+      echo "already initialized: $OUTPUT and $RUNTIME_PROFILE_MANIFEST match the requested runtime profile" >&2
+      exit 0
     fi
     fail "existing runtime profile or customer.env conflicts with requested inputs; inspect both files (no customer state was changed)"
   fi
