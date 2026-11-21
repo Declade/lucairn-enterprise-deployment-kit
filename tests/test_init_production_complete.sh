@@ -354,12 +354,62 @@ rc=0; full_init --production --license "$TMP/license.json" --runtime-mode manage
 rm -f "$SB/openssl"
 [ "$rc" = 3 ] && [ ! -e "$TMP/rand/customer.env" ] && grep -q 'LOCAL_SANDBOX_B_API_KEY' "$TMP/full.err" || fail "failed draw: exit $rc"
 pass "a failed draw for LOCAL_SANDBOX_B_API_KEY stops init before customer.env is written"
-grep -q 'lucairn-mint-customer .*--tier enterprise --no-byok-per-request' "$TMP/full.err" || fail "mint hint without --no-byok-per-request"
-pass "init's first-key command for a local Sandbox B mints without byok_per_request (no 400 missing_upstream_key)"
-mint_byok() { LUCAIRN_ADMIN_KEY=synthetic-admin "$ROOT/bin/lucairn-mint-customer" --dry-run --name "Acme GmbH" --email ops@acme.example --tier enterprise "$@" 2>&1 | grep -c '"byok_per_request": false'; }
-[ "$(mint_byok --no-byok-per-request)" = 1 ] && [ "$(mint_byok)" = 0 ] || fail "mint payload byok_per_request"
-grep -q -- '--tier enterprise --no-byok-per-request > ~/lucairn-first.key' "$ROOT/INSTALL.md" || fail "fast path mint command"
-pass "fast-path mint command sends byok_per_request=false (Enterprise default is true; gateway 400 not run live)"
+grep -q 'lucairn-mint-customer .*--tier enterprise$' "$TMP/full.err" && ! grep -q -- '--no-byok-per-request' "$TMP/full.err" \
+  || fail "init's first-key hint is not the plain mint command"
+pass "init's first-key command is the plain mint command (no --no-byok-per-request)"
+# Fix round 3 (ruling item 6, review seat B6): the payload of the documented
+# fast-path mint command must pass the gateway's mint rule. The rule is held
+# here as an INDEPENDENT reference, written from the gateway source at tag
+# v1.1.1 (= 15baf766, images 1.1.1), not taken from the kit's payload builder:
+#   services/gateway/internal/api/customer_id_rule.go:39-40
+#     mintableCustomerID(id) = id != "" && utf8.ValidString(id)
+#   services/gateway/internal/api/providers.go:8-14,16-21
+#     provider in {anthropic, openai, mistral, gemini, ollama} (echo: test only)
+#   services/gateway/internal/api/admin.go:478-487   anthropic_key -> provider_key; provider defaults to anthropic
+#   services/gateway/internal/api/admin.go:489-492   validProvider(provider) or 400
+#   services/gateway/internal/api/admin.go:494-498   !managed_ai && !byok_per_request && provider not ollama/echo
+#                                                     && provider_key == "" && anthropic_key == ""  -> 400
+#   services/gateway/internal/api/admin.go:501-505   managed_ai && provider != anthropic           -> 400
+#   services/gateway/internal/api/admin.go:507-511   managed_ai && provider_key != ""              -> 400
+#   services/gateway/internal/api/admin.go:513-517   managed_ai && byok_per_request                -> 400
+#   services/gateway/internal/api/admin.go:519-523   byok_per_request && provider_key != ""        -> 400
+cat > "$TMP/mint_rule.py" <<'PYRULE'
+import json, sys
+def gateway_mint_rule(req):
+    cid = req.get("customer_id", "")
+    if cid == "":
+        return "missing customer_id"
+    provider, pkey, akey = req.get("provider", ""), req.get("provider_key", ""), req.get("anthropic_key", "")
+    if akey != "" and provider == "":
+        provider, pkey = "anthropic", akey
+    if provider == "":
+        provider = "anthropic"
+    if provider not in ("anthropic", "openai", "mistral", "gemini", "ollama"):
+        return "provider"
+    managed, per_req = req.get("managed_ai", False) is True, req.get("byok_per_request", False) is True
+    if not managed and not per_req and provider not in ("ollama", "echo") and pkey == "" and akey == "":
+        return "provider_key required when managed_ai and byok_per_request are both false"
+    if managed and provider != "anthropic":
+        return "managed_ai"
+    if managed and pkey != "":
+        return "provider_key with managed_ai"
+    if managed and per_req:
+        return "byok_per_request with managed_ai"
+    if per_req and pkey != "":
+        return "provider_key with byok_per_request"
+    return None
+text = sys.stdin.read()
+body = text.split("Body:\n", 1)[1].split("\n}\n", 1)[0] + "\n}"
+verdict = gateway_mint_rule(json.loads(body))
+print(verdict or "PASS")
+PYRULE
+doc_mint="$(grep -E '^ *bin/lucairn-mint-customer --raw-key-only ' "$ROOT/INSTALL.md" | head -1)"
+[ -n "$doc_mint" ] || fail "fast-path mint command not found in INSTALL.md"
+doc_args="${doc_mint#*bin/lucairn-mint-customer --raw-key-only }"; doc_args="${doc_args%% > *}"
+mint_verdict() { eval "LUCAIRN_ADMIN_KEY=synthetic-admin \"$ROOT/bin/lucairn-mint-customer\" --dry-run $1" 2>&1 | python3 "$TMP/mint_rule.py"; }
+[ "$(mint_verdict "$doc_args")" = PASS ] || fail "documented fast-path mint payload fails the gateway's mint rule: $(mint_verdict "$doc_args")"
+[ "$(mint_verdict "$doc_args --no-byok-per-request")" != PASS ] || fail "reference rule does not refuse the round-2 payload (rule copy broken)"
+pass "fast-path mint payload passes the gateway's mint rule (admin.go:494-523 at v1.1.1, independent copy); --no-byok-per-request would be refused"
 
 # ── 6. bootstrap-mtls-ca.sh without ca.key (review seat 11) ─────────────────
 B="$TMP/wca"; bash "$ROOT/scripts/bootstrap-mtls-ca.sh" "$B" >/dev/null 2>&1 || fail "witness CA bootstrap"

@@ -2329,14 +2329,12 @@ echo "  docker compose -f docker-compose.customer.yml --env-file $(shell_quote "
 echo >&2
 echo "Mint your first customer + API key (after stack is healthy):" >&2
 echo >&2
-# Fix round 1 (review seat 8): an Enterprise key defaults to
-# byok_per_request=true, and the gateway (images 1.1.1) then answers 400
-# missing_upstream_key to every laptop turn that carries no provider key of
-# its own. With a local Sandbox B the provider key (or the seat sign-in) is
-# on this server, so the first key is minted without that flag.
-_mint_byok_flag=""
-[ "$RUNTIME_MODE" = "split-remote" ] || _mint_byok_flag=" --no-byok-per-request"
-echo "  ./bin/lucairn-mint-customer --name \"Acme GmbH\" --email \"ops@acme.de\" --tier enterprise$_mint_byok_flag" >&2
+# Fix round 3 (ruling item 6, review seat B6): the plain command. Without a
+# stored provider key the gateway (images 1.1.1, admin.go:494-498) refuses a
+# mint with byok_per_request=false and managed_ai=false (HTTP 400); the
+# Enterprise default byok_per_request=true passes, and on the seat lane the
+# consultant's forwarded sign-in is the per-request credential.
+echo "  ./bin/lucairn-mint-customer --name \"Acme GmbH\" --email \"ops@acme.de\" --tier enterprise" >&2
 echo >&2
 if [ -n "$MANIFEST_PENDING" ]; then
   echo "init finished with ONE step left: the witness-signed manifest did not finish (the message above says why). Run, from the kit folder:" >&2

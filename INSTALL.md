@@ -102,16 +102,15 @@ sudo usermod -aG docker "$USER"     # then log out and in once
    ```bash
    export LUCAIRN_ADMIN_KEY="$(grep '^DSA_ADMIN_KEY=' customer.env | cut -d= -f2-)"
    install -m 0600 /dev/null ~/lucairn-first.key
-   bin/lucairn-mint-customer --raw-key-only --name "Acme GmbH" --email "ops@acme.example" --tier enterprise --no-byok-per-request > ~/lucairn-first.key
+   bin/lucairn-mint-customer --raw-key-only --name "Acme GmbH" --email "ops@acme.example" --tier enterprise > ~/lucairn-first.key
    unset LUCAIRN_ADMIN_KEY
    ```
 
-   `--no-byok-per-request`: the provider key (or the consultant's seat
-   sign-in) is already on this server, so the key must not demand one per
-   request. Without it an Enterprise key defaults to "per-request key" and the
-   gateway answers every laptop turn that carries only the Lucairn key with
-   HTTP 400 `missing_upstream_key` (read in the gateway code of images 1.1.1;
-   not yet run on a live install).
+   This is the command the proof run of 21 Nov 2026 typed on the seat lane.
+   An Enterprise key is minted with `byok_per_request=true`; the consultant's
+   forwarded seat sign-in is the per-request credential. Do not add
+   `--no-byok-per-request` here: without a stored provider key the gateway
+   (images 1.1.1) refuses that mint with HTTP 400.
 
 5. **HTTPS for the laptops.** Put Caddy in front: copy
    [examples/caddy/Caddyfile](examples/caddy/Caddyfile), replace the host
