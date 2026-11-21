@@ -59,9 +59,18 @@ Requests without a seat sign-in keep needing a provider key in `customer.env`
 
 ## Check it works
 
-The gateway log at start says the lane is on (`oauth-passthrough: …`). One
-Claude Code turn through the gateway answers normally and gets a certificate
-(`bin/lucairn logs --env customer.env --service gateway --tail 50`).
+Read the setting in the running gateway; it must print
+`GATEWAY_OAUTH_PASSTHROUGH_ENABLED=true` (the `oauth-passthrough:` line in the
+gateway's start-up log is printed whether the lane is on or off, so it proves
+nothing):
+
+```bash
+docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
+  "$(docker ps -q --filter label=com.docker.compose.service=gateway)" | grep '^GATEWAY_OAUTH_PASSTHROUGH_ENABLED='
+```
+
+Then one Claude Code turn through the gateway answers normally and gets a
+certificate (`bin/lucairn logs --env customer.env --service gateway --tail 50`).
 
 ## Switching it off
 
