@@ -947,7 +947,7 @@ run_sanitizer_core_bootstrap() {
     fi
   fi
   if ! "${_sanitizer_core_bootstrap[@]}" >&2; then
-    fail "could not create the sanitizer core mTLS material in $SANITIZER_CORE_MTLS_DIR (customer.env was written; fix the error above and re-run the same bin/lucairn-init command, or run: $_sanitizer_core_bootstrap_hint)" 6
+    fail "could not create the sanitizer core mTLS material in $SANITIZER_CORE_MTLS_DIR (customer.env was written; fix the error above and re-run: $_sanitizer_core_bootstrap_hint — or re-run the same bin/lucairn-init command, which completes the missing host steps)" 6
   fi
 }
 
