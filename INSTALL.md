@@ -197,10 +197,13 @@ the model vendor. Set `SANDBOX_B_UPSTREAM_BODY_STORE=true` in `customer.env`
 (default `false`; `bin/lucairn up --env customer.env` applies it) to also keep
 the exact bytes — the pseudonymised text, with placeholders instead of the
 hidden values — on your own server, in the certificate store, readable at
-`GET /api/v1/veil/certificate/<id>/upstream-request` with any key of that
-customer. The stored bytes are exactly what the vendor received: the
+`GET /api/v1/veil/certificate/<id>/upstream-request` with a key of that
+customer: a member-scoped key reads only its own turns, and free-tier keys
+cannot read it. The stored bytes are the request Sandbox B sent: the
 placeholders, and also anything the sanitizer did not hide and the
-system-prompt text as written. They are **kept until you delete them**: no
+system-prompt text as written. An attempt the vendor never received (for
+example a failed connection) can be stored too, and above 16 MiB per turn
+only the hashes are kept. They are **kept until you delete them**: no
 deletion job for them runs in this kit (the witness image of 1.1.1 ships
 without the retention tool). Two internal witness tables keep a further copy
 (`witness_pending_claims`, until the turn's claim set completes, and
