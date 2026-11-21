@@ -26,6 +26,8 @@ if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>
   # Loud NOT RUN with exit 0, as the kit's other docker-dependent tests do
   # (scripts/run-tests.sh then lists the file as passed): this is NOT a pass.
   echo "  ## NOT RUN — docker compose CLI not available: the online support bundle (PRD criterion 5) was NOT tested here; this is NOT a pass (test_support_bundle_online)" >&2
+  # Fix round 2 (B10): in CI a missing Compose must not read as a pass.
+  if [ -n "${CI:-}" ]; then exit 1; fi
   exit 0
 fi
 REAL_DOCKER="$(command -v docker)"
@@ -77,28 +79,39 @@ for a in "\$@"; do
     config|ps|logs) [ -n "\$sub" ] || sub="\$a" ;;
   esac
 done
-if [ "\$is_compose" = 0 ] && [ "\${1:-}" = ps ]; then
-  printf 'NAMES\tIMAGE\tSTATUS\tPORTS\nkit-gateway-1\tdsa-gateway:1.1.1\tUp (owner %s)\t127.0.0.1:8080\n' '$PERSON_EMAIL'
-  exit 0
-fi
-if [ "\$is_compose" = 1 ] && [ "\$sub" = ps ]; then
-  echo "NAME SERVICE STATUS"; echo "kit-gateway-1 gateway running"; exit 0
-fi
-if [ "\$is_compose" = 1 ] && [ "\$sub" = logs ]; then
-  echo "gateway-1 | level=info msg=upstream authorization=\"Bearer $SECRET_LOG\" contact=$PERSON_EMAIL"
-  exit 0
-fi
-if [ "\$is_compose" = 1 ] && [ "\$sub" = config ] && [ "\$has_format" = 0 ]; then
-  "\$real" "\$@"; rc=\$?
-  for v in VEIL_WITNESS_PUBLIC_KEY VEIL_AUDIT_PUBLIC_KEY VEIL_SANDBOX_B_PUBLIC_KEY; do
-    printf 'time="2026-11-21T07:50:01Z" level=warning msg="The \\\\"%s\\\\" variable is not set. Defaulting to a blank string."\n' "\$v" >&2
-  done
-  # Fix round 1 (G3): warnings that carry secret material or a name.
+warn_secrets() {
   printf 'time="2026-11-21T07:50:01Z" level=warning msg="The \\\\"%s\\\\" variable is not set. Defaulting to a blank string."\n' '$SECRET_SUFFIX' >&2
   printf 'level=warning msg="ignoring DSA_LICENSE_KEY=%s"\n' '$SECRET_LICENSE' >&2
   printf 'level=warning msg="unreachable postgres://dsa:%s@db.internal:5432/audit"\n' '$SECRET_DSN' >&2
   printf 'level=warning msg="upstream answered for Authorization: Bearer %s"\n' '$SECRET_BEARER' >&2
   printf 'time="2026-11-21T07:50:01Z" level=warning msg="/home/%s/kit/docker-compose.customer.yml: the attribute version is obsolete"\n' '$PERSON_HOME' >&2
+}
+if [ -n "\${SHIM_CONFIG_FAIL:-}" ] && [ "\$is_compose" = 1 ] && [ "\$sub" = config ] && [ "\$has_format" = 0 ]; then
+  echo 'service "gateway" refers to undefined volume x' >&2; exit 1
+fi
+if [ "\$is_compose" = 0 ] && [ "\${1:-}" = ps ]; then
+  printf 'NAMES\tIMAGE\tSTATUS\tPORTS\nkit-gateway-1\tdsa-gateway:1.1.1\tUp (owner %s)\t127.0.0.1:8080\n' '$PERSON_EMAIL'
+  exit 0
+fi
+if [ "\$is_compose" = 1 ] && [ "\$sub" = ps ]; then
+  warn_secrets  # Fix round 2 (B1): 2.40.x warns on ps too
+  echo "NAME SERVICE STATUS"; echo "kit-gateway-1 gateway running"; exit 0
+fi
+if [ "\$is_compose" = 1 ] && [ "\$sub" = logs ]; then
+  warn_secrets  # Fix round 2 (B1): and on logs
+  echo "gateway-1 | level=info msg=upstream authorization=\"Bearer $SECRET_LOG\" contact=$PERSON_EMAIL"
+  echo "gateway-1  | container-stderr-line-kept" >&2
+  exit 0
+fi
+if [ "\$is_compose" = 1 ] && [ "\$sub" = config ] && [ "\$has_format" = 0 ]; then
+  # Fix round 2 (B10): the real Compose's own warnings are dropped so the
+  # count below is exactly the shim's 8 on every Compose version.
+  "\$real" "\$@" 2>/dev/null; rc=\$?
+  for v in VEIL_WITNESS_PUBLIC_KEY VEIL_AUDIT_PUBLIC_KEY VEIL_SANDBOX_B_PUBLIC_KEY; do
+    printf 'time="2026-11-21T07:50:01Z" level=warning msg="The \\\\"%s\\\\" variable is not set. Defaulting to a blank string."\n' "\$v" >&2
+  done
+  # Fix round 1 (G3): warnings that carry secret material or a name.
+  warn_secrets
   exit \$rc
 fi
 exec "\$real" "\$@"
@@ -135,6 +148,12 @@ head -1 "$RES" | grep -q '^name: ' || { echo "FAIL: compose-resolved.yml does no
 grep -q 'Docker Compose printed 8 message line(s)' "$MSG" || { echo "FAIL: compose-config-messages.txt does not give the count of Compose's 8 message lines" >&2; cat "$MSG" >&2; exit 1; }
 ! grep -q 'level=warning' "$MSG" || { echo "FAIL: Compose's warning text shipped in compose-config-messages.txt" >&2; exit 1; }
 grep -q 'kit-gateway-1' "$EX"/*/docker/status.txt || { echo "FAIL: docker status not collected" >&2; exit 1; }
+# Fix round 2 (B1): ps/logs keep their output, count Compose's own lines, ship no warning text.
+grep -q 'kit-gateway-1 gateway running' "$EX"/*/docker/compose-ps.txt || { echo "FAIL: compose ps output missing" >&2; exit 1; }
+grep -q 'printed 5 message line(s)' "$EX"/*/docker/compose-ps.txt || { echo "FAIL: compose-ps.txt lacks the count of 5" >&2; cat "$EX"/*/docker/compose-ps.txt >&2; exit 1; }
+grep -q 'container-stderr-line-kept' "$EX"/*/logs/compose.log || { echo "FAIL: a container's stderr line was dropped from compose.log" >&2; exit 1; }
+grep -q 'printed 5 line(s) of its own' "$EX"/*/logs/compose.log || { echo "FAIL: compose.log lacks the count of 5" >&2; cat "$EX"/*/logs/compose.log >&2; exit 1; }
+! grep -rq 'level=warning' "$EX" || { echo "FAIL: Compose warning text shipped in the bundle" >&2; grep -rl 'level=warning' "$EX" >&2; exit 1; }
 
 # Criterion 5: 0 hits for every plant, in the archive's bytes and in its files.
 hits=0
@@ -144,4 +163,14 @@ for p in "$SECRET_LICENSE" "$SECRET_SIGNING" "$SECRET_SB" "$SECRET_LOG" "$PERSON
   if gzip -dc "$BUNDLE" | grep -qiF -- "$p"; then echo "FAIL: planted value found in the archive bytes: ${p:0:8}..." >&2; hits=$((hits + 1)); fi
 done
 [ "$hits" -eq 0 ] || exit 1
-echo "PASS: online support bundle produced; Compose messages kept apart; 0 hits for 10 plants"
+
+# Fix round 2 (B9): a failed `compose config` stops the bundle.
+OUT2="$TMPDIR/bundles-fail"
+rc=0
+SHIM_CONFIG_FAIL=1 PATH="$SHIM:$PATH" "$ROOT/bin/lucairn" support-bundle \
+  --env "$ENV_FILE" --compose "$ROOT/docker-compose.customer.yml" \
+  --output "$OUT2" > "$TMPDIR/support-fail.out" 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || { echo "FAIL: bundle written although docker compose config failed" >&2; exit 1; }
+grep -q 'compose config failed or rendered nothing' "$TMPDIR/support-fail.out" || { echo "FAIL: no clear message for the failed render" >&2; cat "$TMPDIR/support-fail.out" >&2; exit 1; }
+[ -z "$(find "$OUT2" -name 'lucairn-support-bundle-*' -print -quit 2>/dev/null)" ] || { echo "FAIL: bundle files left after a failed render" >&2; exit 1; }
+echo "PASS: online support bundle produced; Compose messages kept apart; 0 hits for 10 plants; failed render refused"

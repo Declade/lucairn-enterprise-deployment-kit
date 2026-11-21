@@ -11375,9 +11375,25 @@ support_bundle() {
   else
     compose="$(compose_cmd)"
     if [ -n "$compose" ]; then
-      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" ps 2>&1 || true) | redact_stream > "$bundle_dir/docker/compose-ps.txt"
+      # Fix round 2 (B1): Compose 2.40.x prints the same interpolation
+      # warnings on `ps` and `logs` as on `config` (they can quote the tail of
+      # a secret containing `$`). `ps`: stdout only, stderr counted. `logs`:
+      # Compose writes a container's own stderr to its stderr, so the merged
+      # stream is kept, but only lines carrying the container prefix
+      # ("name  | ") are archived; every other line is Compose's own message
+      # and only counted.
+      local cmsg_tmp cmsg_n
+      cmsg_tmp="$(mktemp)"
+      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" ps 2> "$cmsg_tmp" || true) | redact_stream > "$bundle_dir/docker/compose-ps.txt"
+      cmsg_n="$(grep -c '' "$cmsg_tmp" 2>/dev/null || true)"
+      printf 'Docker Compose printed %s message line(s) on stderr for this command; their text is not included (it can quote parts of secret values or file paths).\n' "${cmsg_n:-0}" >> "$bundle_dir/docker/compose-ps.txt"
       (docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>&1 || true) | redact_stream > "$bundle_dir/docker/status.txt"
-      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" logs --tail 300 --no-color 2>&1 || true) | redact_stream > "$bundle_dir/logs/compose.log"
+      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" logs --tail 300 --no-color 2>&1 || true) \
+        | awk -v cnt="$cmsg_tmp" '/^[A-Za-z0-9][A-Za-z0-9_.-]* +[|] / { print; next } { n++ } END { print n + 0 > cnt }' \
+        | redact_stream > "$bundle_dir/logs/compose.log"
+      cmsg_n="$(head -1 "$cmsg_tmp" 2>/dev/null || true)"
+      printf 'Docker Compose printed %s line(s) of its own (not container output); their text is not included (it can quote parts of secret values or file paths).\n' "${cmsg_n:-0}" >> "$bundle_dir/logs/compose.log"
+      rm -f "$cmsg_tmp"
       # stdout only: Compose's stderr (2.40.x warns "VEIL_* variable is not
       # set" for every nested `${LCR_X:-${VEIL_X}}` fallback) is not YAML, and
       # merged into this file it made the decoded scan refuse every bundle
@@ -11385,10 +11401,18 @@ support_bundle() {
       # can quote the tail of an unquoted secret containing `$` (Compose names
       # it as an unset variable) or a path with a person's name. The bundle
       # gets only the number of lines and where the admin can read them.
-      local config_err config_err_n
+      local config_err config_err_n config_rc=0
       config_err="$(mktemp)"
-      ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" config 2> "$config_err" || true) | redact_stream > "$bundle_dir/redacted/compose-resolved.yml"
+      $compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" config 2> "$config_err" \
+        | redact_stream > "$bundle_dir/redacted/compose-resolved.yml" || config_rc=$?
       config_err_n="$(grep -c '' "$config_err" 2>/dev/null || true)"
+      # Fix round 2 (B9): a failed or empty render is not a bundle. Support
+      # would get an archive without the resolved configuration.
+      if [ "$config_rc" -ne 0 ] || ! grep -q '[^[:space:]]' "$bundle_dir/redacted/compose-resolved.yml"; then
+        rm -f "$config_err"
+        rm -rf "$bundle_dir"
+        fail "support bundle: refused — docker compose config failed or rendered nothing (exit $config_rc, ${config_err_n:-0} message line(s) on stderr); nothing was archived. Run: docker compose --env-file <your customer.env> config  on the host, fix what it reports, then retry."
+      fi
       printf 'Docker Compose printed %s message line(s) on stderr while rendering this configuration. Their text is not included in this bundle (it can quote parts of secret values or file paths). Read them on the host with: docker compose --env-file <your customer.env> config\n' "${config_err_n:-0}" \
         > "$bundle_dir/redacted/compose-config-messages.txt"
       rm -f "$config_err"
