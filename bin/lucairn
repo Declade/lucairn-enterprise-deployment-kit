@@ -10795,15 +10795,20 @@ doctor() {
     local pg_host="" pg_port="" pg_db="" pg_args=()
     { IFS= read -r pg_host; IFS= read -r pg_port; IFS= read -r pg_db; } < <(python3 - "$postgres_url" <<'PY' 2>/dev/null || true
 import sys
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 u = urlparse(sys.argv[1])
-if u.scheme in ("postgres", "postgresql") and u.hostname:
+# Final fix pass (B2): libpq takes host and port from the query string too
+# (postgresql://db/audit?port=6543), and they win over the authority part.
+q = parse_qs(u.query)
+host = (q.get("host") or [""])[-1] or u.hostname
+if u.scheme in ("postgres", "postgresql") and host:
     try:
         port = str(u.port or "")
     except ValueError:
         port = ""
+    port = (q.get("port") or [""])[-1] or port
     db = unquote(u.path.lstrip("/"))
-    print(u.hostname); print(port)
+    print(host); print(port)
     print("dbname='" + db.replace("\\", "\\\\").replace("'", "\\'") + "'" if db else "")
 PY
 )

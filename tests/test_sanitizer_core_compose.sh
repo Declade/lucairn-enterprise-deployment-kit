@@ -1317,6 +1317,16 @@ else
   fail "B2: pg_isready arguments: $(sed 's/t1479-pg[a-z-]*/<PLANT>/g' "$TMP/pg.log" | tr '\n' ' ')"
 fi
 sed -i.bak '/^POSTGRES_URL=/d' "$ENVF" && rm -f "$ENVF.bak"
+# Final fix pass (B2): libpq takes the port (and host) from the query string.
+b2q_case() { # <name> <url> <expected argument text>
+  printf 'POSTGRES_URL=%s\n' "$2" >> "$ENVF"
+  : > "$TMP/pg.log"
+  doctor_online STUB_PG_LOG="$TMP/pg.log" STUB_PS="$TMP/ps.noside"
+  if grep -q -- "^$3|" "$TMP/pg.log"; then pass "B2: $1"; else fail "B2: $1 — pg_isready got: $(cut -d'|' -f1 "$TMP/pg.log" | tr '\n' ' ')"; fi
+  sed -i.bak '/^POSTGRES_URL=/d' "$ENVF" && rm -f "$ENVF.bak"
+}
+b2q_case "?port=6543 in the query string is passed as -p 6543" 'postgresql://db/audit?port=6543' "-h db -p 6543 -d dbname='audit'"
+b2q_case "?host= and ?port= in the query string are passed" 'postgresql:///audit?host=db2&port=6543' "-h db2 -p 6543 -d dbname='audit'"
 online_case "RED claims dropped" "claim(s) DROPPED" red STUB_CORE_LOG="$TMP/core.drop"
 online_case "RED witness transport not mtls" "witness transport mode=tls-insecure-dev, not mtls" red STUB_CORE_LOG="$TMP/core.tls"
 online_case "RED overlay forwards LCR_PROFILE=hosted" "LCR_PROFILE is forwarded with a non-kit value" red STUB_CONFIG_JSON="$TMP/config.hosted.json"
