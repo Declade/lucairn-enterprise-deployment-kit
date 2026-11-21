@@ -35,16 +35,20 @@ a named local model runtime). Pick the mode before running `docker compose up`; 
 `INSTALL.md` § "Choose A Deployment Mode" for the decision table and the
 required env vars per mode.
 
-In every path below, between `lucairn-init` and the first `bin/lucairn up`, run
-the witness mTLS bootstrap (`INSTALL.md` § "Witness mTLS", Compose path:
-`sudo scripts/bootstrap-mtls-ca.sh /etc/witness-mtls`, on Linux hand the folder
-to uid 10001, then fill the `WITNESS_MTLS_*` lines in `customer.env`). Without
-it certificate reads refuse every caller, and a first `up` creates the folder
-as root so the bootstrap fails afterwards.
+**Production on one Linux server:** follow `INSTALL.md` § "Fast path:
+production on one Linux server (Compose)". Since kit 2.0.1 `lucairn-init`
+does every certificate step itself (the sanitizer core, Sandbox B, the witness
+certificate port `/etc/witness-mtls`, the witness-signed key manifest) and
+writes a complete production `customer.env`, so `bin/lucairn up` follows it
+with no hand edits. Have the images reachable (registry login or your mirror,
+`--image-registry`) before you run init: the manifest is signed with the tool
+inside the witness image.
 
 Split-deployment fast path:
 
 ```bash
+# Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)
+docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 bin/lucairn-init --production --runtime-mode split-remote \
   --remote-endpoint https://inference.customer.example \
   --remote-credentials /secure/lucairn-issued-remote-credentials.env \
@@ -52,8 +56,6 @@ bin/lucairn-init --production --runtime-mode split-remote \
 # Init also writes customer.env.runtime-profile.yaml and the recorded
 # customer.env.image-manifest.yaml. Keep both beside customer.env.
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
-# Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)
-docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 # up first runs the sanitizer core's capped registry migration (a no-op when
 # current; the core refuses to start without it), then starts the stack.
 bin/lucairn up --env customer.env
@@ -66,14 +68,14 @@ bin/lucairn up --env customer.env
 # (HMAC platform license). Optional: entitlement_token + entitlement_public_key
 # (Ed25519 deployment entitlement) → LUCAIRN_LICENSE_KEY + LUCAIRN_LICENSE_PUBLIC_KEY.
 # {"license_key":"…","signing_key":"…","entitlement_token":"…","entitlement_public_key":"…"}
+# Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)
+docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 bin/lucairn-init --production --runtime-mode managed-byok \
   --license license-bundle.json --output customer.env
 # Init intentionally leaves provider keys empty and skips doctor. Set at least
 # one provider key in customer.env before running doctor (for example,
 # ANTHROPIC_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY, or GEMINI_API_KEY).
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
-# Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)
-docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 # up first runs the sanitizer core's capped registry migration (a no-op when
 # current; the core refuses to start without it), then starts the stack.
 bin/lucairn up --env customer.env

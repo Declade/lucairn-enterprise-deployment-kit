@@ -14,6 +14,114 @@ split-remote or managed-BYOK; local-runtime uses only its single recorded S1
 inventory name. Online `doctor: ok` proves authenticated inference, certificate
 receipt, and witness-signature verification; anchors are explicitly not checked.
 
+## Fast path: production on one Linux server (Compose)
+
+This is the shortest supported way to a production-mode install on which
+Claude Code works on the first turn. Every command below is what the tools do
+today (kit 2.0.1); nothing in `customer.env` is edited by hand between
+`lucairn-init` and a healthy stack. The rest of this file explains each part.
+
+**You need from Lucairn (one prepared step at contract time):** registry
+access for the images (§ "Step 0") and your licence file `license.json`.
+
+**The server:** Ubuntu 24.04, x86_64, 4 vCPU, 16 GB RAM, 50 GB free disk.
+An admin user with `sudo` who is in the `docker` group.
+
+```bash
+sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 python3-cryptography
+sudo usermod -aG docker "$USER"     # then log out and in once
+```
+
+1. **Images.** Log in to the Lucairn registry (§ "Registry Authentication"),
+   or copy the images byte-exact (same digests) to your own registry first
+   and pass that registry to init in step 2 (`--image-registry`).
+
+2. **Write the settings.** From the kit folder:
+
+   ```bash
+   bin/lucairn-init --production --runtime-mode managed-byok \
+     --license license.json \
+     --gateway-base-url https://lucairn.internal.example \
+     [--image-registry registry.internal.example/declade] \
+     [--claude-seat-lane]
+   ```
+
+   It asks for your `sudo` password for the two certificate folders. It writes
+   `customer.env` (mode 0600) and does, in this order: every secret and key
+   pair; the deploy CA and the leaves of the sanitizer core, the witness and
+   **Sandbox B** (`.certs/sanitizer-core-mtls`); the witness certificate-port
+   folder `/etc/witness-mtls` and its `WITNESS_MTLS_*` lines; the public log and
+   timestamp addresses (`LCR_REKOR_URL`, `LCR_TSA_URL`); and the
+   **witness-signed key manifest** `.certs/witness-signed-manifest.json`
+   (`scripts/sign-witness-manifest.sh`, with the signing tool from the
+   witness image — this is why the images come first). If it ends with
+   `NOT DONE: the witness-signed manifest`, the image was not reachable: fix
+   step 1 and run the one command it prints.
+
+   - **Claude Team / Enterprise seats** (`--claude-seat-lane`): consultants
+     sign in with their company seat and no provider key is needed.
+     [docs/CLAUDE_SEATS.md](docs/CLAUDE_SEATS.md). Never for consumer Pro / Max.
+   - **Anthropic API key instead:** leave out `--claude-seat-lane` and put the
+     key in the one empty line `ANTHROPIC_API_KEY=` of `customer.env`. That is
+     the only value you type yourself.
+
+3. **Start.**
+
+   ```bash
+   bin/lucairn up --env customer.env
+   curl -fsS http://127.0.0.1:8080/readyz && echo ready
+   ```
+
+   `up` runs the sanitizer core's registry migration first, then starts the
+   stack in production mode (`DSA_ENV=production`, encrypted links, Sandbox B
+   with its own certificate). Streaming is on by default; Claude Code needs it.
+
+4. **First key.**
+
+   ```bash
+   export LUCAIRN_ADMIN_KEY="$(grep '^DSA_ADMIN_KEY=' customer.env | cut -d= -f2-)"
+   install -m 0600 /dev/null ~/lucairn-first.key
+   bin/lucairn-mint-customer --raw-key-only --name "Acme GmbH" --email "ops@acme.example" --tier enterprise > ~/lucairn-first.key
+   unset LUCAIRN_ADMIN_KEY
+   ```
+
+5. **HTTPS for the laptops.** Put Caddy in front: copy
+   [examples/caddy/Caddyfile](examples/caddy/Caddyfile), replace the host
+   name, set `GATEWAY_TRUSTED_PROXY_CIDRS=127.0.0.1/32` in `customer.env` and
+   run `bin/lucairn up --env customer.env` once more. § "Reverse proxy".
+
+6. **Claude Code.** On a laptop: `ANTHROPIC_BASE_URL=https://lucairn.internal.example`
+   and the Lucairn key (seat lane: `ANTHROPIC_CUSTOM_HEADERS="X-DSA-Key: <key>"`,
+   see docs/CLAUDE_SEATS.md; API-key installs: `bin/lucairn config-pack`).
+
+### Reverse proxy
+
+The gateway publishes `127.0.0.1:8080` (customer routes) and `127.0.0.1:8085`
+(health, metrics) on the server only. Laptops need HTTPS to `:8080` and nothing
+else. [examples/caddy/Caddyfile](examples/caddy/Caddyfile) is a complete Caddy 2
+site: it forwards `:8080`, answers 404 for `/api/v1/admin/*`,
+`/api/v1/website/*`, `/metrics` and `/invariant`, passes streamed answers on at
+once and allows 15-minute turns. Install Caddy from your distribution
+(`sudo apt-get install -y caddy`), copy the file to `/etc/caddy/Caddyfile`,
+replace `lucairn.internal.example`, and `sudo systemctl reload caddy`. For a
+name that is not public, uncomment the `tls` line and use your company CA's
+certificate. Open only 443 (and 80 for an automatic public certificate) in the
+server's firewall; never forward 8085.
+
+### See what went to the model vendor
+
+The certificate of every turn holds hashes of the requests Sandbox B sent to
+the model vendor. Set `SANDBOX_B_UPSTREAM_BODY_STORE=true` in `customer.env`
+(default `false`; `bin/lucairn up --env customer.env` applies it) to also keep
+the exact bytes — the pseudonymised text, with placeholders instead of the
+hidden values — on your own server, in the certificate store, readable at
+`GET /api/v1/veil/certificate/<id>/upstream-request` with the customer's key;
+the witness deletes them with the other originals on its 30-day schedule.
+Two internal witness tables keep a residual copy that this schedule does not
+clear (`witness_pending_claims`, until the turn's claim set completes, and
+`witness_claim_receipts`). Off by default: it keeps the full pseudonymised text of every request at rest
+on your server.
+
 ## Release notes
 
 > The canonical changelog is [`CHANGELOG.md`](CHANGELOG.md). Security advisories
@@ -1153,6 +1261,12 @@ Generate each independently with `openssl rand -hex 32` (no derivation step):
 checks the byte count is exactly 32.
 
 ### 4b. Produce the witness-signed manifest (production only)
+
+> **Kit 2.0.1:** `bin/lucairn-init --production` produces this blob itself
+> (`scripts/sign-witness-manifest.sh --env customer.env`; it builds the roster
+> by the gateway's own rule, see docs/KEY_CEREMONY_RUNBOOK.md § 6.1, and runs
+> the tool from `${LUCAIRN_IMAGE_REGISTRY}/dsa-veil-witness:${LUCAIRN_IMAGE_TAG}`,
+> so a mirror works). The steps below are for a hand-written customer.env.
 
 > **Production-only — skip in dev mode.** This step is required ONLY when you
 > install with `DSA_ENV=production`. A `DSA_ENV=development` install does NOT

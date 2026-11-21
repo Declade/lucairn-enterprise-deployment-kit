@@ -1,0 +1,32 @@
+# Reverse proxy for the Lucairn gateway (Caddy 2). INSTALL.md § "Reverse proxy".
+#
+# The gateway listens on 127.0.0.1:8080 only (docker-compose.customer.yml).
+# This file gives the consultants' laptops HTTPS to it and nothing else:
+#   * only the gateway's customer port is forwarded, never the health port
+#     127.0.0.1:8085 (it serves /metrics and /invariant);
+#   * the admin, website and metrics routes of :8080 answer 404 here: mint keys
+#     on the server itself (bin/lucairn-mint-customer talks to 127.0.0.1).
+#   * streamed answers are passed on at once (flush_interval -1) and long
+#     agent turns are not cut (15 minute timeouts).
+#
+# Replace lucairn.internal.example with your host name and set in customer.env:
+#   GATEWAY_BASE_URL=https://lucairn.internal.example
+#   GATEWAY_TRUSTED_PROXY_CIDRS=127.0.0.1/32
+# then: bin/lucairn up --env customer.env
+
+lucairn.internal.example {
+	# A public name gets its certificate automatically. For an internal name,
+	# use your company CA's certificate instead:
+	# tls /etc/caddy/certs/lucairn.crt /etc/caddy/certs/lucairn.key
+
+	@not_for_laptops path /api/v1/admin/* /api/v1/website/* /metrics* /invariant*
+	respond @not_for_laptops 404
+
+	reverse_proxy 127.0.0.1:8080 {
+		flush_interval -1
+		transport http {
+			read_timeout 15m
+			write_timeout 15m
+		}
+	}
+}
