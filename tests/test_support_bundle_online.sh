@@ -23,12 +23,17 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
-  echo "  NOT RUN — docker compose CLI not available (test_support_bundle_online)"
+  # Loud NOT RUN with exit 0, as the kit's other docker-dependent tests do
+  # (scripts/run-tests.sh then lists the file as passed): this is NOT a pass.
+  echo "  ## NOT RUN — docker compose CLI not available: the online support bundle (PRD criterion 5) was NOT tested here; this is NOT a pass (test_support_bundle_online)" >&2
   exit 0
 fi
 REAL_DOCKER="$(command -v docker)"
 TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"; rm -f "$ROOT/.lucairn-customer-id"' EXIT
+# Fix round 1 (G9): the trap removes only the temp dir. The released-kit
+# fixture (and the .lucairn-customer-id doctor writes into it) lives there; if
+# the fixture copy fails, ROOT is still the real checkout and must not be touched.
+trap 'rm -rf "$TMPDIR"' EXIT
 # shellcheck source=lib/test-helpers.sh
 . "$ROOT/tests/lib/test-helpers.sh"
 lucairn_use_released_kit "$TMPDIR"

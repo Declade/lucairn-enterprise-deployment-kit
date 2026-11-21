@@ -14,7 +14,10 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"; rm -f "$ROOT/.lucairn-customer-id"' EXIT
+# Fix round 1 (G9): the trap removes only the temp dir. The released-kit
+# fixture (and the .lucairn-customer-id doctor writes into it) lives there; if
+# the fixture copy fails, ROOT is still the real checkout and must not be touched.
+trap 'rm -rf "$TMPDIR"' EXIT
 # shellcheck source=lib/test-helpers.sh
 . "$ROOT/tests/lib/test-helpers.sh"
 REAL_ROOT="$ROOT"
