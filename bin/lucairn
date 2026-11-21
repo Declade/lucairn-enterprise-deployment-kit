@@ -11352,11 +11352,16 @@ support_bundle() {
       # stdout only: Compose's stderr (2.40.x warns "VEIL_* variable is not
       # set" for every nested `${LCR_X:-${VEIL_X}}` fallback) is not YAML, and
       # merged into this file it made the decoded scan refuse every bundle
-      # (T-1479). The messages go to a text file next to it instead.
-      local config_err
+      # (T-1479). Fix round 1: their TEXT is not shipped either — a warning
+      # can quote the tail of an unquoted secret containing `$` (Compose names
+      # it as an unset variable) or a path with a person's name. The bundle
+      # gets only the number of lines and where the admin can read them.
+      local config_err config_err_n
       config_err="$(mktemp)"
       ($compose "${RUNTIME_COMPOSE_ARGS[@]}" --env-file "$env_file" config 2> "$config_err" || true) | redact_stream > "$bundle_dir/redacted/compose-resolved.yml"
-      redact_stream < "$config_err" > "$bundle_dir/redacted/compose-config-messages.txt"
+      config_err_n="$(grep -c '' "$config_err" 2>/dev/null || true)"
+      printf 'Docker Compose printed %s message line(s) on stderr while rendering this configuration. Their text is not included in this bundle (it can quote parts of secret values or file paths). Read them on the host with: docker compose --env-file <your customer.env> config\n' "${config_err_n:-0}" \
+        > "$bundle_dir/redacted/compose-config-messages.txt"
       rm -f "$config_err"
     else
       echo "docker compose unavailable" > "$bundle_dir/docker/status.txt"

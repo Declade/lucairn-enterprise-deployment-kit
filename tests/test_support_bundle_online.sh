@@ -40,6 +40,10 @@ SECRET_SB='sk-t1479-sandbox-b-plant-c81d5e0a2f'
 SECRET_LOG='t1479-log-token-plant-04aa9e7731'
 PERSON_EMAIL='erika.quellenhof@customer.example'
 PERSON='quellenhof'
+SECRET_SUFFIX='T1479SuffixPlant7c4d'
+SECRET_DSN='t1479-dsn-plant-pw-5c2e91'
+SECRET_BEARER='t1479-stderr-bearer-plant-88aa'
+PERSON_HOME='alex.quellenhof'
 
 ENV_FILE="$TMPDIR/customer.env"
 init_args=(--dev --runtime-mode local-runtime --local-runtime llama-cpp
@@ -84,6 +88,12 @@ if [ "\$is_compose" = 1 ] && [ "\$sub" = config ] && [ "\$has_format" = 0 ]; the
   for v in VEIL_WITNESS_PUBLIC_KEY VEIL_AUDIT_PUBLIC_KEY VEIL_SANDBOX_B_PUBLIC_KEY; do
     printf 'time="2026-11-21T07:50:01Z" level=warning msg="The \\\\"%s\\\\" variable is not set. Defaulting to a blank string."\n' "\$v" >&2
   done
+  # Fix round 1 (G3): warnings that carry secret material or a name.
+  printf 'time="2026-11-21T07:50:01Z" level=warning msg="The \\\\"%s\\\\" variable is not set. Defaulting to a blank string."\n' '$SECRET_SUFFIX' >&2
+  printf 'level=warning msg="ignoring DSA_LICENSE_KEY=%s"\n' '$SECRET_LICENSE' >&2
+  printf 'level=warning msg="unreachable postgres://dsa:%s@db.internal:5432/audit"\n' '$SECRET_DSN' >&2
+  printf 'level=warning msg="upstream answered for Authorization: Bearer %s"\n' '$SECRET_BEARER' >&2
+  printf 'time="2026-11-21T07:50:01Z" level=warning msg="/home/%s/kit/docker-compose.customer.yml: the attribute version is obsolete"\n' '$PERSON_HOME' >&2
   exit \$rc
 fi
 exec "\$real" "\$@"
@@ -115,14 +125,18 @@ RES="$(find "$EX" -path '*/redacted/compose-resolved.yml' -print -quit)"
 MSG="$(find "$EX" -path '*/redacted/compose-config-messages.txt' -print -quit)"
 head -1 "$RES" | grep -q '^name: ' || { echo "FAIL: compose-resolved.yml does not start with the project (stderr mixed in?)" >&2; head -3 "$RES" >&2; exit 1; }
 ! grep -q 'level=warning' "$RES" || { echo "FAIL: Compose warnings inside compose-resolved.yml" >&2; exit 1; }
-grep -q 'VEIL_WITNESS_PUBLIC_KEY' "$MSG" || { echo "FAIL: Compose's messages were dropped instead of kept as text" >&2; exit 1; }
+# Fix round 1 (G3): only the number of Compose's message lines and where to
+# read them; never their text (8 lines: 3 VEIL_* warnings + 5 secret-bearing).
+grep -q 'Docker Compose printed 8 message line(s)' "$MSG" || { echo "FAIL: compose-config-messages.txt does not give the count of Compose's 8 message lines" >&2; cat "$MSG" >&2; exit 1; }
+! grep -q 'level=warning' "$MSG" || { echo "FAIL: Compose's warning text shipped in compose-config-messages.txt" >&2; exit 1; }
 grep -q 'kit-gateway-1' "$EX"/*/docker/status.txt || { echo "FAIL: docker status not collected" >&2; exit 1; }
 
 # Criterion 5: 0 hits for every plant, in the archive's bytes and in its files.
 hits=0
-for p in "$SECRET_LICENSE" "$SECRET_SIGNING" "$SECRET_SB" "$SECRET_LOG" "$PERSON_EMAIL" "$PERSON"; do
+for p in "$SECRET_LICENSE" "$SECRET_SIGNING" "$SECRET_SB" "$SECRET_LOG" "$PERSON_EMAIL" "$PERSON" \
+  "$SECRET_SUFFIX" "$SECRET_DSN" "$SECRET_BEARER" "$PERSON_HOME"; do
   if grep -rqiF -- "$p" "$EX"; then echo "FAIL: planted value found in the bundle: ${p:0:8}..." >&2; hits=$((hits + 1)); fi
   if gzip -dc "$BUNDLE" | grep -qiF -- "$p"; then echo "FAIL: planted value found in the archive bytes: ${p:0:8}..." >&2; hits=$((hits + 1)); fi
 done
 [ "$hits" -eq 0 ] || exit 1
-echo "PASS: online support bundle produced; Compose messages kept apart; 0 hits for 6 plants"
+echo "PASS: online support bundle produced; Compose messages kept apart; 0 hits for 10 plants"
