@@ -963,7 +963,7 @@ run_witness_mtls_step() {
   _witness_mtls_cmd=(bash "$KIT_ROOT/scripts/bootstrap-mtls-ca.sh" "$WITNESS_MTLS_DIR")
   _witness_mtls_post=()
   if [ "$(uname -s)" = "Linux" ]; then
-    _witness_mtls_post=(chown -R "${LUCAIRN_CONTAINER_UID:-10001}:${LUCAIRN_CONTAINER_UID:-10001}" "$WITNESS_MTLS_DIR")
+    _witness_mtls_post=(find "$WITNESS_MTLS_DIR" ! -name ca.key -exec chown "${LUCAIRN_CONTAINER_UID:-10001}:${LUCAIRN_CONTAINER_UID:-10001}" {} +)
   fi
   _witness_mtls_sudo=()
   if [ "$(id -u)" != "0" ]; then
@@ -980,20 +980,15 @@ run_witness_mtls_step() {
   fi
   rm -f "$OUTPUT_DIR/.lucairn-witness-mtls.err"
   # The containers run as uid 10001 (Linux): hand the folder over and let them
-  # traverse it; the leaf keys stay 0600. Fix round 1 (review seat 1): the CA
-  # private key then goes back to root:root 0600, so no container (the
-  # gateway and the witness both mount this folder as uid 10001) can read it;
+  # traverse it; the leaf keys stay 0600. Fix round 3 (review seat B1): every
+  # file EXCEPT ca.key is handed over, so the CA private key (root-owned 0600
+  # from the bootstrap) is never owned by uid 10001, not even for a moment;
   # neither service reads ca.key (images 1.1.1 read only the WITNESS_MTLS_*
   # paths). Stated limit (INSTALL.md § "Witness mTLS"): the leaf keys of the
   # other callers in this folder stay readable to both containers.
   if [ "${#_witness_mtls_post[@]}" -gt 0 ]; then
     "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" "${_witness_mtls_post[@]}" \
       || fail "could not hand $WITNESS_MTLS_DIR to uid ${LUCAIRN_CONTAINER_UID:-10001} (customer.env was written)" 9
-    if "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" test -e "$WITNESS_MTLS_DIR/ca.key"; then
-      "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" chown 0:0 "$WITNESS_MTLS_DIR/ca.key" \
-        && "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" chmod 0600 "$WITNESS_MTLS_DIR/ca.key" \
-        || fail "could not make $WITNESS_MTLS_DIR/ca.key root-only (customer.env was written)" 9
-    fi
   fi
   "${_witness_mtls_sudo[@]+"${_witness_mtls_sudo[@]}"}" chmod 0755 "$WITNESS_MTLS_DIR" \
     || fail "could not chmod 0755 $WITNESS_MTLS_DIR (customer.env was written)" 9

@@ -225,9 +225,10 @@ W="$TMP/witness-mtls"
 SB="$TMP/sbin"; mkdir -p "$SB"
 cat > "$SB/sudo" <<'STUB'
 #!/usr/bin/env bash
-# sudo stub: records every call; chown is recorded only (the test is not root)
+# sudo stub: records every call; chown / find (the hand-over) are recorded
+# only (the test is not root)
 printf '%s\n' "$*" >> "$STUB_DIR/sudo.log"
-[ "$1" = "chown" ] && exit 0
+case "$1" in chown|find) exit 0 ;; esac
 exec "$@"
 STUB
 cat > "$SB/docker" <<'STUB'
@@ -264,7 +265,10 @@ stale=("$K"/.certs/witness-signed-manifest.json.stale-*)
 [ -e "${stale[0]}" ] && [ ! -e "$K/.certs/witness-signed-manifest.json" ] \
   || fail "stale manifest not moved aside"
 for f in ca.crt ca.key witness-server.crt gateway-client.crt sandbox-a-client.crt; do [ -f "$W/$f" ] || fail "witness folder lacks $f"; done
-grep -qx "chown 0:0 $W/ca.key" "$FS/sudo.log" || [ "$(uname -s)" != "Linux" ] || fail "ca.key not handed back to root"
+if [ "$(uname -s)" = "Linux" ]; then
+  grep -q "^find $W ! -name ca.key -exec chown 10001:10001 " "$FS/sudo.log" && ! grep -q '^chown' "$FS/sudo.log" \
+    || fail "witness folder hand-over must skip ca.key (no chown -R, no chown-back)"
+fi
 [ "$(val WITNESS_MTLS_CA_BUNDLE_PATH "$O")" = "$W/ca.crt" ] || fail "WITNESS_MTLS_* lines of the full init"
 pass "full init: witness folder created, old manifest moved aside, exit 10 while the witness image is missing"
 [ -s "$FS/python-argv.log" ] && ! grep -Eq "[0-9a-f]{64}" "$FS/python-argv.log" || fail "a 64-hex value reached python's arguments (or python never ran)"
