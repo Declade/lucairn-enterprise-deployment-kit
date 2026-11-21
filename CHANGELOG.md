@@ -12,6 +12,29 @@ Security advisories are published at <https://lucairn.eu/security>; the
 disclosure process and contact are in [`SECURITY.md`](SECURITY.md). Entries that
 carry a security fix are tagged **[Security]**.
 
+## [Unreleased] — kit 2.0.1 (images `1.1.1`)
+
+A production install on one server without hand edits (INSTALL.md § "Fast
+path"): `lucairn-init --production` now issues Sandbox B's certificate,
+creates the witness certificate-port folder `/etc/witness-mtls` and signs the
+witness manifest; optional Claude Team / Enterprise seat lane
+(docs/CLAUDE_SEATS.md, off by default); a Caddy example; an opt-in copy of
+what went to the model vendor (off by default).
+
+### Upgrade note — existing 2.0.0 installs
+
+- **Streaming switches on with the next `bin/lucairn up`** (the Compose
+  default of `STREAMING_ENABLED` is now `true`; Claude Code needs it). Set
+  `STREAMING_ENABLED=false` in `customer.env` to keep it off.
+- What that changes: the request to the model vendor is checked the same way
+  with or without streaming. On a **streamed** reply the final response scan
+  runs after the text has been sent to the client, so a match it finds can no
+  longer be replaced; on a **buffered** reply it can still replace the match
+  before delivery.
+- Re-running `lucairn-init` on a 2.0.0 install does not rewrite
+  `customer.env`; it completes the missing host steps (Sandbox B's leaves, the
+  manifest in production) and refuses new flags that differ from it.
+
 ## [2.0.0] — 2026-11-07 — images `1.1.1`
 
 Kit 2.0.0 runs the new sanitizer core (the one the hosted Lucairn service

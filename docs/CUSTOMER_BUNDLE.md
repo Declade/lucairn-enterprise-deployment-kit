@@ -103,6 +103,28 @@ For split-remote, the original init must use the Lucairn-issued remote
 credential file; neither the remote endpoint nor the license supplies remote
 API authentication by itself.
 
+**Stated limit (kit 2.0.1, production bundles):** the generated
+`INSTALL-CUSTOMER.md` and the bundle itself do not carry the two host steps
+that `lucairn-init --production` now runs on the staging host: the witness
+certificate-port folder `/etc/witness-mtls` and the witness-signed manifest
+(`install/.certs/witness-signed-manifest.json`). Neither travels in the
+bundle, and the bundle does not ship `scripts/bootstrap-mtls-ca.sh` or
+`scripts/sign-witness-manifest.sh`. Run them on the customer host from a kit
+checkout of the same release, before the first `up`:
+
+```bash
+sudo scripts/bootstrap-mtls-ca.sh /etc/witness-mtls
+sudo chown -R 10001:10001 /etc/witness-mtls && sudo chmod 0755 /etc/witness-mtls
+sudo chown 0:0 /etc/witness-mtls/ca.key && sudo chmod 0600 /etc/witness-mtls/ca.key
+scripts/sign-witness-manifest.sh --env <bundle>/install/customer.env \
+  --out <bundle>/install/.certs/witness-signed-manifest.json
+```
+
+The signer needs the witness image under its signed digest (registry access,
+or a mirror copied with all platforms); a bundle that ships images as an
+archive (`docker load`) does not provide that digest, so sign where the
+registry is reachable and copy the manifest file.
+
 ## Important
 
 The bundle may contain customer secrets and customer-owned model files. Store it under the customer engagement directory, encrypt it at rest, and do not upload it to generic issue trackers or shared drives.
