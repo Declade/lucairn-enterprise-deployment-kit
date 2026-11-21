@@ -2,31 +2,51 @@
 #
 # The gateway listens on 127.0.0.1:8080 only (docker-compose.customer.yml).
 # This file gives the consultants' laptops HTTPS to it and nothing else:
-#   * only the gateway's customer port is forwarded, never the health port
-#     127.0.0.1:8085 (it serves /metrics and /invariant);
-#   * the admin, website and metrics routes of :8080 answer 404 here: mint keys
-#     on the server itself (bin/lucairn-mint-customer talks to 127.0.0.1).
+#   * an ALLOW-LIST: only the paths Claude Code, the SDKs and certificate
+#     checks need are forwarded (the matcher @laptops below); every other path
+#     answers 404 here. Not forwarded, among others: /api/v1/register and
+#     /api/v1/scan (unauthenticated on images 1.1.1), the admin and website
+#     routes, and the Sensitive Mode routes (/api/v1/sanitize-only, ...; add
+#     them to @laptops only if you use the Sensitive Mode browser extension).
+#     Mint keys on the server itself (bin/lucairn-mint-customer talks to
+#     127.0.0.1).
+#   * the health port 127.0.0.1:8085 (/metrics, /invariant) is never forwarded;
+#   * X-Real-IP, the one header the gateway reads for the caller's address, is
+#     OVERWRITTEN with the address Caddy sees, so a laptop cannot choose it;
 #   * streamed answers are passed on at once (flush_interval -1) and long
 #     agent turns are not cut (15 minute timeouts).
 #
 # Replace lucairn.internal.example with your host name and set in customer.env:
 #   GATEWAY_BASE_URL=https://lucairn.internal.example
-#   GATEWAY_TRUSTED_PROXY_CIDRS=127.0.0.1/32
-# then: bin/lucairn up --env customer.env
+#   GATEWAY_TRUSTED_PROXY_CIDRS=<the Docker bridge gateway address(es), /32>
+# The gateway does not see this proxy as 127.0.0.1: Docker hands a connection
+# to the published 127.0.0.1:8080 port to the container from the gateway
+# address of a Docker bridge network. Read those addresses after the first
+# `bin/lucairn up` (INSTALL.md § "Reverse proxy"):
+#   docker inspect -f '{{range .NetworkSettings.Networks}}{{if .Gateway}}{{.Gateway}}/32 {{end}}{{end}}' \
+#     "$(docker ps -q --filter label=com.docker.compose.service=gateway)"
+# put them comma-separated into GATEWAY_TRUSTED_PROXY_CIDRS, then:
+#   bin/lucairn up --env customer.env
 
 lucairn.internal.example {
 	# A public name gets its certificate automatically. For an internal name,
 	# use your company CA's certificate instead:
 	# tls /etc/caddy/certs/lucairn.crt /etc/caddy/certs/lucairn.key
 
-	@not_for_laptops path /api/v1/admin/* /api/v1/website/* /metrics* /invariant*
-	respond @not_for_laptops 404
+	@laptops path /v1/* /api/v1/veil/* /api/v1/usage /api/v1/keys/self/revoke /mcp /mcp/* /.well-known/veil-keys.json /.well-known/oauth-authorization-server /.well-known/oauth-protected-resource /.well-known/mcp/server-card.json
 
-	reverse_proxy 127.0.0.1:8080 {
-		flush_interval -1
-		transport http {
-			read_timeout 15m
-			write_timeout 15m
+	handle @laptops {
+		reverse_proxy 127.0.0.1:8080 {
+			header_up X-Real-IP {remote_host}
+			flush_interval -1
+			transport http {
+				read_timeout 15m
+				write_timeout 15m
+			}
 		}
+	}
+
+	handle {
+		respond 404
 	}
 }
