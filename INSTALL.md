@@ -26,7 +26,9 @@ The rest of this file explains each part.
 **You need from Lucairn (one prepared step at contract time):** registry
 access for the images (§ "Step 0") and your licence file `license.json`.
 
-**The server:** Ubuntu 24.04, x86_64, 4 vCPU, 16 GB RAM, 50 GB free disk.
+**The server:** Ubuntu 24.04, x86_64, 8 CPU threads (vCPU), 16 GB RAM, 50 GB free disk.
+(8 threads, not 4: large tool results are scanned by the name model, which
+uses up to 8 threads; see § "Large records".)
 An admin user with `sudo` who is in the `docker` group.
 
 ```bash
@@ -865,12 +867,13 @@ For Docker Compose:
   idles at a few hundred MB and the L1+L2 stack fits in ~8 GB. **20 GB RAM** is required
   only when Phase 7 is explicitly re-enabled — the `pii-ml` sidecar runs
   Piiranha + GLiNER and reserves up to 4 GB for the container on top of the
-  L3-on baseline. 4 vCPU is sufficient for any of these topologies at
-  single-tenant pilot load.
-- **Kit 2.0 (new sanitizer core): 16 GB RAM minimum** for the Docker host, on
-  top of which the L3 model needs about 5 GB more when it is loaded. The core's
-  model sidecar alone is capped at 6.5 GB; `bin/lucairn doctor` fails below
-  15,000 MiB of Docker-engine memory. See § "Sanitizer core (kit 2.0, Compose)"
+  L3-on baseline. 4 vCPU was sufficient for these topologies at
+  single-tenant pilot load; kit 2.0 needs 8 CPU threads (next point).
+- **Kit 2.0 (new sanitizer core): 16 GB RAM and 8 CPU threads minimum** for
+  the Docker host, on top of which the L3 model needs about 5 GB more when it
+  is loaded. The core's model sidecar alone is capped at 6.5 GB;
+  `bin/lucairn doctor` fails below 15,000 MiB of Docker-engine memory and warns
+  below 8 CPU threads (§ "Large records"). See § "Sanitizer core (kit 2.0, Compose)"
   (Helm: § "Sanitizer core (kit 2.0, Helm)").
 - TLS-terminating reverse proxy such as Caddy, Nginx, Traefik, or an enterprise ingress proxy.
 - Outbound HTTPS to the image registries used during `docker compose up` / `docker pull`:
@@ -2875,6 +2878,12 @@ OpenAI, MCP and proxy routes.
 
 ### Host requirements
 
+- **8 CPU threads minimum** (8 vCPU on a cloud server). The name model in the
+  sidecar uses up to `LUCAIRN_NAME_MODEL_THREADS` threads (bin/lucairn-init
+  writes 8 on a host with 8 or more threads and leaves it empty, = the image's
+  2, on a smaller one); with fewer threads large records take longer and can
+  run into the scan limit (§ "Large records"). `bin/lucairn
+  doctor` warns below 8 threads and when the setting is above the host's count.
 - **16 GB RAM minimum** for the Docker host (or Docker Desktop VM). The sidecar
   alone is capped at 6.5 GB and peaks near 5.6 GB; the core adds up to 1 GB.
   `bin/lucairn doctor` (without `--offline`) **fails** when the Docker engine
@@ -2900,7 +2909,68 @@ OpenAI, MCP and proxy routes.
   `detect_failed` — fail-closed: nothing of that request is forwarded to the
   model vendor. Ordinary prose was not measured on that host: before
   production use, send one representative request of your own workload
-  (largest single field included) on your host and note its time.
+  (largest single field included) on your host and note its time. Large
+  records: § "Large records" below.
+
+### Large records
+
+A tool result (for example a list of records Claude Code fetched) is scanned
+by the name model in the sidecar before anything is forwarded. The time grows
+with the length of the text and falls with the CPU threads the name model may
+use. Measured 2026-11-21 on one throwaway 8-thread x86_64 server with the 1.1.1
+images, synthetic data, one text per call (T-1479, measurement C). The
+"4 threads" column is 4 of that server's 8 threads (the sidecar pinned to
+them), not a separate 4-thread machine; the "8 threads, setting 8" column ran
+once per size, the others three times (median):
+
+| Text | 4 threads, image default (2) | 8 threads, image default (2) | 8 threads, setting 8 |
+|---|---|---|---|
+| list of records, per 1,000 characters | about 1.6 s | about 1.5 s | about 0.95 s |
+| list, 50,000 characters | 80.8 s | 72.7 s | 46.4 s |
+| list, 60,000 characters as two fields of one request, through the core | about 112 s | not measured | about 71 s |
+| ordinary prose, per 1,000 characters | about 0.9 s | not measured | not measured |
+
+- With the setting at 8 on all 8 threads, lists were scanned **1.5 to 1.6
+  times faster** than with the image's 2 threads on the same 8 threads. For
+  lists of 20,000 to 80,000 characters the hits were identical in all three
+  columns; the setting-8 column ran once. More cores alone, without the setting, gave 0 to
+  10 % (72.7 s against 80.8 s at 50,000 characters). 4 threads on 4 threads of
+  the server gained nothing (31.8 s against 30.9 s at 20,000 characters),
+  which is why bin/lucairn-init writes the setting only on a host with 8 or
+  more threads. Nothing above 8 threads was measured.
+- The setting is not passed to the separate witness-central overlay
+  (`contrib/witness-central/docker-compose.witness-central.yml`); its relay,
+  which runs from the sidecar image, stays at the image's 2 threads.
+- **Fixed limits** (not settable through the kit): the core waits at most
+  **120 s** for one sidecar call, the gateway waits at most **180 s** for the
+  core, and one text may hold at most **49,152 characters** (a longer one is
+  refused with `413` before any model call). A request whose scan runs past a
+  limit is refused fail-closed (`503` `detect_failed`): nothing of it is
+  forwarded.
+- **Stated limit — abandoned scans keep running.** The sidecar reads one text
+  at a time and finishes a scan its caller has given up on. Measured with a
+  client that gave up after 10 seconds: a 5,000-character scan sent right
+  after the abandoned 50,000-character one took 67 s instead of 7 s. That the
+  same holds when the core gives up at its 120 s limit is read from the code,
+  not measured. A retry therefore waits behind the abandoned scan (Claude Code
+  retried a refused request up to ten times, 30 seconds apart, seen with
+  Claude Code 2.1.325 on 2026-11-21). By the code, a record that is too slow
+  once stays too slow on retry, because nothing of a failed scan is kept.
+- Splitting a record into pieces was measured and is not used: for lists, 6 to
+  9 % of the hits had no overlapping hit at all in the split result (losses
+  of exact spans were higher); for prose about 1 %.
+
+**Existing installs (upgrade):** the setting is not added by itself; an
+install without it keeps 2 threads. To get the gain, move to a host with at
+least 8 CPU threads, add `LUCAIRN_NAME_MODEL_THREADS=8` to `customer.env`,
+then recreate the sidecar and the core right after it (with the `-f` files of your install; the self-hosted pair shown):
+
+```bash
+docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml \
+  --env-file customer.env up -d --no-deps --force-recreate sanitizer-core-sidecar
+docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml \
+  --env-file customer.env up -d --no-deps --force-recreate sanitizer-core
+```
 
 ### 1. Secrets and image pins (`customer.env`)
 

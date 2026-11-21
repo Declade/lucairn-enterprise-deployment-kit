@@ -19,7 +19,9 @@ path"): `lucairn-init --production` now issues Sandbox B's certificate,
 creates the witness certificate-port folder `/etc/witness-mtls` and signs the
 witness manifest; optional Claude Team / Enterprise seat lane
 (docs/CLAUDE_SEATS.md, off by default); a Caddy example; an opt-in copy of
-what went to the model vendor (off by default).
+what went to the model vendor (off by default). The name model may use up to
+8 CPU threads (`LUCAIRN_NAME_MODEL_THREADS`, written by init as 8 on a host
+with 8 or more threads, else left empty = the image's 2); the documented minimum host is now 8 CPU threads / 16 GB.
 
 ### Upgrade note — existing 2.0.0 installs
 
@@ -39,6 +41,14 @@ what went to the model vendor (off by default).
   scripts/bootstrap-sanitizer-core-mtls.sh` with the arguments it was
   installed with (INSTALL.md § "2a. Renewing a leaf, rotating the CA"): it
   reuses the existing leaves and issues the missing ones.
+- **Name-model threads stay at 2 until you set them.** A 2.0.0 install has no
+  `LUCAIRN_NAME_MODEL_THREADS` line and keeps the image's 2 threads. With
+  the setting at 8 on an 8-thread server, lists were scanned 1.5 to 1.6 times
+  faster (measured once per size; hits identical for lists). More cores alone
+  gave 0 to 10 %. To get the gain, move to a host with at least 8 CPU
+  threads, add `LUCAIRN_NAME_MODEL_THREADS=8`, then recreate the sidecar and
+  the core right after it (INSTALL.md § "Large records"). On a smaller host
+  leave it empty.
 
 ## [2.0.0] — 2026-11-07 — images `1.1.1`
 

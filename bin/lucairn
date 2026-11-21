@@ -9515,8 +9515,39 @@ check_sanitizer_core_config() {
   #    a machine other than the install host, so it only warns; the online
   #    doctor (on the running host) fails.
   check_sanitizer_core_memory "$offline" || failed=1
+  # 9. Name-model threads against the host's CPU threads (warn only).
+  check_name_model_threads "$env_file" "$offline"
 
   return "$failed"
+}
+
+# T-1479 slice 4: LUCAIRN_NAME_MODEL_THREADS against the documented minimum of
+# 8 CPU threads and against what the host has. Warnings only: a smaller host
+# still works, large records just take longer (INSTALL.md § "Large records").
+# Online the Docker engine's own count comes first (on Docker Desktop that is
+# the VM); offline the doctor may run elsewhere, so the figure is a hint.
+check_name_model_threads() {
+  local env_file="$1" offline="$2" want host="" src="host"
+  want="$(env_value "$env_file" LUCAIRN_NAME_MODEL_THREADS)"
+  if [ "$offline" -eq 0 ] && have docker; then
+    host="$(docker info --format '{{.NCPU}}' 2>/dev/null || true)"; src="docker-engine"
+  fi
+  case "$host" in ''|*[!0-9]*|0) host="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"; src="host" ;; esac
+  case "$host" in ''|*[!0-9]*|0) host="" ;; esac
+  case "$want" in
+    '') want=2 ;;
+    *[!0-9]*|0) warn "name model threads: LUCAIRN_NAME_MODEL_THREADS=$want is not a positive whole number; the sidecar's thread libraries will not use it as meant (set it to 8 on a host with 8 or more CPU threads, else leave it empty = the image's 2)"; return 0 ;;
+  esac
+  if [ -z "$host" ]; then
+    echo "name model threads: $want (host CPU thread count not read; documented minimum 8)"
+  elif [ "$want" -gt "$host" ]; then
+    warn "name model threads: LUCAIRN_NAME_MODEL_THREADS=$want is above this host's $host CPU threads ($src); leave it empty (the image's 2) or set it to at most $host"
+  elif [ "$host" -lt 8 ]; then
+    warn "name model threads: this host has $host CPU threads ($src), below the documented minimum of 8; large records (tens of thousands of characters) may run into the 120 s scan limit (INSTALL.md § \"Large records\")"
+  else
+    echo "name model threads: ok ($want of $host CPU threads, $src)"
+  fi
+  return 0
 }
 
 # Prints "<MiB> <source>" for the memory the containers actually share, or

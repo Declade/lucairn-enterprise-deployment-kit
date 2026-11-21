@@ -1425,6 +1425,28 @@ sanitizer_core_manifest_digest() {
 SANITIZER_CORE_IMAGE_DIGEST="$(sanitizer_core_manifest_digest dsa-sanitizer-core)"
 SANITIZER_CORE_SIDECAR_IMAGE_DIGEST="$(sanitizer_core_manifest_digest dsa-sanitizer-core-sidecar)"
 
+# Name-model threads (T-1479 slice 4): LUCAIRN_NAME_MODEL_THREADS = 8 on a
+# host with 8 or more CPU threads, the one case measured (2026-11-21: 8
+# threads on an 8-thread server scan 1.5-1.6x faster than the image's 2).
+# On a smaller host, or when the count cannot be read, the line is left empty
+# and the sidecar keeps the image's 2 threads: 4 threads on 4 threads of the
+# same server gained nothing (31.8 s against 30.9 s at 20,000 characters).
+# init runs on the install host.
+host_cpu_threads() {
+  local n=""
+  if have nproc; then n="$(nproc 2>/dev/null || true)"; fi
+  case "$n" in ''|*[!0-9]*|0) n="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)" ;; esac
+  case "$n" in ''|*[!0-9]*|0) n="$(sysctl -n hw.logicalcpu 2>/dev/null || true)" ;; esac
+  case "$n" in ''|*[!0-9]*|0) return 0 ;; esac
+  printf '%s' "$n"
+}
+NAME_MODEL_THREADS="$(host_cpu_threads)"
+if [ -n "$NAME_MODEL_THREADS" ] && [ "$NAME_MODEL_THREADS" -ge 8 ]; then
+  NAME_MODEL_THREADS=8
+else
+  NAME_MODEL_THREADS=""
+fi
+
 # Mode-dependent fields
 #
 # The LUCAIRN_LICENSE_* (Ed25519 deployment entitlement) slots are ALWAYS
@@ -1730,6 +1752,10 @@ SANITIZER_CORE_REGISTRY_DSN_FILE=$SANITIZER_CORE_DSN_FILE
 LUCAIRN_SANITIZER_CORE_IMAGE_TAG=$DEFAULT_SANITIZER_CORE_IMAGE_TAG
 LUCAIRN_SANITIZER_CORE_IMAGE_DIGEST=$SANITIZER_CORE_IMAGE_DIGEST
 LUCAIRN_SANITIZER_CORE_SIDECAR_IMAGE_DIGEST=$SANITIZER_CORE_SIDECAR_IMAGE_DIGEST
+# CPU threads of the name model (sidecar): 8 when this host had 8 or more
+# CPU threads at init time, else empty. Empty = the image's 2.
+# INSTALL.md § "Large records".
+LUCAIRN_NAME_MODEL_THREADS=$NAME_MODEL_THREADS
 SANDBOX_B_MESSAGES_JSON_MAX_BYTES=
 $SANITIZER_CORE_WITNESS_BLOCK
 
