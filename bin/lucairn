@@ -2160,6 +2160,11 @@ doctor_full_customer_journey() {
   runtime_mode="$(doctor_recorded_runtime_mode "$env_file")"
   helper_args=(--key-file "$customer_key_file" --gateway-url "$gateway_url" --model "$model" --l3-config "$l3_config")
   [ -z "$runtime_mode" ] || helper_args+=(--runtime-mode "$runtime_mode")
+  # T-1479 proof run 22 Nov (row 3): the seat lane, resolved as Compose
+  # resolves it (an exported value wins over customer.env), lets the helper end
+  # a per-request BYOK skip with `doctor: ok` plus a line naming what was not
+  # exercised. Only the exact value "true" counts (the compose default is false).
+  [ "${LUCAIRN_CLAUDE_SEAT_LANE-$(env_value "$env_file" LUCAIRN_CLAUDE_SEAT_LANE)}" != "true" ] || helper_args+=(--seat-lane)
   [ -z "$customer_key_proxy" ] || helper_args+=(--proxy "$customer_key_proxy")
   [ -z "$customer_key_ca_file" ] || helper_args+=(--ca-file "$customer_key_ca_file")
   (

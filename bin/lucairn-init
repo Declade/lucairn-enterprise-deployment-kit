@@ -2226,7 +2226,8 @@ if [ "$BYOK" = "true" ]; then
   See INSTALL.md "Self-hosted with managed LLM (BYOK)" for the
   compliance-team-friendly enforcement recipes.
 
-  At compose-up time, additionally load:
+  bin/lucairn up loads docker-compose.self-hosted-byok.yml itself (it is
+  in the recorded topology). Only with plain `docker compose` add:
     -f docker-compose.self-hosted-byok.yml
 
 BANNER
@@ -2287,7 +2288,12 @@ echo >&2
 # mint with byok_per_request=false and managed_ai=false (HTTP 400); the
 # Enterprise default byok_per_request=true passes, and on the seat lane the
 # consultant's forwarded sign-in is the per-request credential.
-echo "  ./bin/lucairn-mint-customer --name \"Acme GmbH\" --email \"ops@acme.de\" --tier enterprise" >&2
+# T-1479 proof run 22 Nov (F-init-hint): the same commands as INSTALL.md
+# § "Fast path" step 4 (--raw-key-only into a mode-0600 file).
+echo "  export LUCAIRN_ADMIN_KEY=\"\$(grep '^DSA_ADMIN_KEY=' $(shell_quote "$OUTPUT") | cut -d= -f2-)\"" >&2
+echo "  install -m 0600 /dev/null ~/lucairn-first.key" >&2
+echo "  bin/lucairn-mint-customer --raw-key-only --name \"Acme GmbH\" --email \"ops@acme.example\" --tier enterprise > ~/lucairn-first.key" >&2
+echo "  unset LUCAIRN_ADMIN_KEY" >&2
 echo >&2
 if [ -n "$MANIFEST_PENDING" ]; then
   echo "init finished with ONE step left: the witness-signed manifest did not finish (the message above says why). Run, from the kit folder:" >&2

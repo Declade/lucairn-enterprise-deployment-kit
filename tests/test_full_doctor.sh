@@ -325,7 +325,8 @@ class FixtureConnection:
             }
             byok_refusal = b'{"error":{"message":"Upstream LLM API key required.","type":"invalid_request_error","code":"missing_upstream_key"}}'
             if case == "inference-non2xx": self.response = FixtureResponse(503, b"{}")
-            elif case in ("byok-missing-upstream-key", "byok-local-runtime", "byok-split-remote", "byok-mode-unknown"): self.response = FixtureResponse(400, byok_refusal)
+            elif case in ("byok-missing-upstream-key", "byok-local-runtime", "byok-split-remote", "byok-mode-unknown", "byok-seat-lane"): self.response = FixtureResponse(400, byok_refusal)
+            elif case == "byok-seat-lane-unreachable": raise OSError("connection refused")
             elif case == "byok-refusal-wrong-status": self.response = FixtureResponse(401, byok_refusal)
             elif case == "inference-400-other-code": self.response = FixtureResponse(400, b'{"error":{"message":"Unknown model.","type":"invalid_request_error","code":"model_not_found"}}')
             elif case == "inference-400-code-wrong-type": self.response = FixtureResponse(400, b'{"error":{"message":"x","type":"api_error","code":"missing_upstream_key"}}')
@@ -366,8 +367,9 @@ module.http.client.HTTPSConnection = FixtureConnection
 module.time.sleep = lambda seconds: sleeps.append(seconds)
 try:
     proxy = "http://proxy.example:8080" if case == "proxy-explicit" else None
-    module.run_journey(key_path, "http://127.0.0.1:1", "fixture-local-model", proxy, None, l3_config=l3_config, runtime_mode=runtime_mode)
-    if case == "byok-missing-upstream-key":
+    module.run_journey(key_path, "http://127.0.0.1:1", "fixture-local-model", proxy, None, l3_config=l3_config, runtime_mode=runtime_mode,
+                       seat_lane=case.startswith("byok-seat-lane"))
+    if case in ("byok-missing-upstream-key", "byok-seat-lane"):
         # The skip ends the keyed journey: no certificate read, no verify call.
         assert attempts["certificate"] == 0
 except module.DoctorFailure:
@@ -488,6 +490,20 @@ for byok_case in byok-local-runtime byok-split-remote byok-mode-unknown; do
   ! grep -Eq 'skipped|doctor: ok' "$TMPDIR/$byok_case.out" \
     || { cat "$TMPDIR/$byok_case.out" >&2; echo "$byok_case: the BYOK skip must not apply" >&2; exit 1; }
 done
+# T-1479 proof run 22 Nov (row 3): on the seat lane the same skip is the
+# install working as designed, so the run ends with `doctor: ok` and one line
+# naming what was not exercised. An unreachable gateway still fails there.
+helper_fixture byok-seat-lane > "$TMPDIR/byok-seat-lane.out" 2>&1 \
+  || { cat "$TMPDIR/byok-seat-lane.out" >&2; echo 'byok-seat-lane: the seat-lane skip must pass' >&2; exit 1; }
+grep -Fx 'keyed inference: skipped — per-request BYOK install, no provider key for the doctor; run one real turn to check it' "$TMPDIR/byok-seat-lane.out"
+[ "$(tail -2 "$TMPDIR/byok-seat-lane.out" | head -1)" = 'doctor: ok' ] \
+  || { cat "$TMPDIR/byok-seat-lane.out" >&2; echo 'byok-seat-lane: doctor: ok must be the second-last line' >&2; exit 1; }
+tail -1 "$TMPDIR/byok-seat-lane.out" | grep -Fx 'doctor: keyed turn not exercised on the seat lane (the doctor holds no seat sign-in); one real Claude Code turn is the check'
+! grep -Eq 'failed|inference: ok' "$TMPDIR/byok-seat-lane.out" \
+  || { cat "$TMPDIR/byok-seat-lane.out" >&2; echo 'byok-seat-lane: must not read as a failure or a keyed pass' >&2; exit 1; }
+expect_failure byok-seat-lane-unreachable 'runtime: failed (gateway not started)' helper_fixture byok-seat-lane-unreachable
+! grep -Fq 'doctor: ok' "$TMPDIR/byok-seat-lane-unreachable.out" \
+  || { echo 'byok-seat-lane-unreachable: an unreachable gateway must not pass' >&2; exit 1; }
 expect_failure byok-refusal-wrong-status 'inference: failed (gateway returned HTTP 401)' helper_fixture byok-refusal-wrong-status
 expect_failure inference-400-other-code 'inference: failed (gateway returned HTTP 400)' helper_fixture inference-400-other-code
 expect_failure inference-400-code-wrong-type 'inference: failed (gateway returned HTTP 400)' helper_fixture inference-400-code-wrong-type
@@ -546,6 +562,16 @@ grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq -- '--l3-config off' \
 # the per-request BYOK skip (K-E fix round 1).
 grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq -- '--runtime-mode local-runtime' \
   || { grep 'lucairn-doctor-keyed' "$CAPTURE_LOG" >&2; echo 'doctor must pass --runtime-mode local-runtime for the local-runtime install' >&2; exit 1; }
+! grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq -- '--seat-lane' \
+  || { echo 'doctor must not pass --seat-lane without LUCAIRN_CLAUDE_SEAT_LANE=true' >&2; exit 1; }
+# T-1479 (row 3): LUCAIRN_CLAUDE_SEAT_LANE=true in customer.env reaches the helper as --seat-lane.
+SEAT_ENV="$TMPDIR/seat.env"; cp "$LOCAL_ENV" "$SEAT_ENV"; cp "$LOCAL_ENV.image-manifest.yaml" "$SEAT_ENV.image-manifest.yaml"; cp "$LOCAL_ENV.runtime-profile.yaml" "$SEAT_ENV.runtime-profile.yaml"
+printf 'LUCAIRN_CLAUDE_SEAT_LANE=true\n' >> "$SEAT_ENV"
+: > "$CAPTURE_LOG"
+expect_failure seat-lane-flag 'configuration: failed (GATEWAY_BASE_URL is invalid for online doctor)' \
+  env PATH="$CAPTURE_BIN:$BASE_PATH" bash "$ROOT/bin/lucairn" doctor --env "$SEAT_ENV" --compose "$ROOT/docker-compose.customer.yml" --customer-key-file "$KEY" --skip-image-check
+grep 'lucairn-doctor-keyed\.py' "$CAPTURE_LOG" | grep -Fq -- '--seat-lane' \
+  || { grep 'lucairn-doctor-keyed' "$CAPTURE_LOG" >&2; echo 'doctor must pass --seat-lane on a seat-lane install' >&2; exit 1; }
 L3_ON_ENV="$TMPDIR/l3-on.env"; cp "$LOCAL_ENV" "$L3_ON_ENV"; cp "$LOCAL_ENV.image-manifest.yaml" "$L3_ON_ENV.image-manifest.yaml"; cp "$LOCAL_ENV.runtime-profile.yaml" "$L3_ON_ENV.runtime-profile.yaml"
 printf 'OLLAMA_URL=http://l3-user:l3-secret-canary@ollama.example:11434\n' >> "$L3_ON_ENV"
 : > "$CAPTURE_LOG"

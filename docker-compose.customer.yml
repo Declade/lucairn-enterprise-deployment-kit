@@ -1287,7 +1287,15 @@ services:
       # fallback. veil-witness binary reads either at boot (envcompat).
       LCR_WITNESS_SIGNING_KEY: "${LCR_WITNESS_SIGNING_KEY:-${VEIL_WITNESS_SIGNING_KEY}}"
       LCR_WITNESS_KEY_ID: "${LCR_WITNESS_KEY_ID:-${VEIL_WITNESS_KEY_ID:-witness_v1}}"
-      LCR_CLAIM_TIMEOUT: "30s"
+      # Claim window (T-1479 proof run 22 Nov 2026): the longest SILENCE the
+      # witness allows between two claims of one request (a sliding timer,
+      # re-armed on every claim) before it seals the certificate PARTIAL. A
+      # complete claim set seals at once, so the value only delays requests
+      # that truly lose a claim. Was hard-wired "30s": a core scan of a large
+      # tool result over 30 s then got its later claims refused ("claim set
+      # already completed") and the gateway answered 503. 150 s covers the
+      # core's name-model limit (120 s). INSTALL.md § "Large records".
+      LCR_CLAIM_TIMEOUT: "${LCR_CLAIM_TIMEOUT:-150s}"
       # L3 CERTIFICATE-HONESTY POSTURE (T-393 / T-385). "partial" (image
       # default) = a chain that only ran L1+L2 certifies COMPLETENESS_PARTIAL.
       # "full" = the legacy over-claim, certifying COMPLETENESS_FULL for a
@@ -1575,6 +1583,13 @@ services:
       # trusted proxies (default — RemoteAddr only). Behind Caddy on
       # loopback set to "127.0.0.1/32".
       GATEWAY_TRUSTED_PROXY_CIDRS: "${GATEWAY_TRUSTED_PROXY_CIDRS:-}"
+      # The operator's assertion that the proxy in those CIDRs OVERWRITES
+      # X-Real-IP (examples/caddy/Caddyfile does). Only "true" counts; empty =
+      # the image default (not asserted). At images 1.1.1 it switches on only
+      # the per-client rate limit of /api/v1/scan (middleware/clientip.go
+      # ClientIPAttributionTrustworthy), a route the example Caddyfile does not
+      # forward. INSTALL.md § "Reverse proxy".
+      GATEWAY_TRUSTED_PROXY_SETS_REAL_IP: "${GATEWAY_TRUSTED_PROXY_SETS_REAL_IP:-}"
       # SEC-S009: gateway-side mTLS for the witness :50058 dial. See
       # base docker-compose.yml gateway service for the full operator
       # runbook.
