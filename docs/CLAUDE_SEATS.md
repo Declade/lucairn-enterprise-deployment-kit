@@ -66,9 +66,8 @@ a file share only that person can read; never e-mail or chat in clear text).
    export NODE_EXTRA_CA_CERTS="$HOME/.lucairn/company-ca.crt"
    ```
 
-   Shown with Claude Code 2.1.325 against a local HTTPS stand-in (22 Nov
-   2026); against the gateway through Caddy: to be confirmed by the laptop
-   proof.
+   Shown with Claude Code 2.1.325 against a local HTTPS stand-in and against
+   the gateway through Caddy on a fresh server (proof run of 22 Nov 2026).
 4. Point Claude Code at the gateway and give it the personal Lucairn key as a
    header (the seat sign-in already uses the `Authorization` header):
 

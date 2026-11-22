@@ -67,7 +67,10 @@ sudo usermod -aG docker "$USER"     # then log out and in once
    platforms) to your own registry first and pass that registry to init in
    step 2 (`--image-registry`): § "Mirroring images to a private registry"
    has the list and the copy loop (about 4 GB, about 30 minutes in the proof
-   run of 22 Nov 2026).
+   run of 22 Nov 2026). Five public base images still come from Docker Hub
+   unless you run a pull-through mirror (the same section and the box in
+   § "Step 0" name them); a server without Docker Hub access fails at `up`
+   without that.
 
 2. **Write the settings.** From the kit folder:
 
@@ -231,7 +234,8 @@ sudo usermod -aG docker "$USER"     # then log out and in once
 
    - **The certificate authority.** If Caddy's certificate comes from your
      company CA or an own CA (step 5), copy that CA's certificate (the
-     `.crt`, never its key) to the laptop and point Claude Code at it;
+     `.crt`, never its key) to the laptop as `~/.lucairn/company-ca.crt`
+     and point Claude Code at it;
      Claude Code does not read it otherwise:
 
      ```bash
@@ -240,8 +244,9 @@ sudo usermod -aG docker "$USER"     # then log out and in once
 
      Without it Claude Code stops with `SSL certificate verification failed
      (UNABLE_TO_VERIFY_LEAF_SIGNATURE)`. Shown with Claude Code 2.1.325 on
-     macOS against a local HTTPS stand-in signed by an own CA (22 Nov 2026);
-     against the gateway through Caddy: to be confirmed by the laptop proof.
+     macOS against a local HTTPS stand-in signed by an own CA, and against
+     the gateway through Caddy on a fresh server (proof run of 22 Nov 2026:
+     refused without the setting, HTTP 200 with it).
      A public certificate needs no setting.
 
    - **Start it:**
@@ -1441,8 +1446,10 @@ flags and carry them in the license bundle (see below); otherwise set them in `c
 license runs in unregistered mode (Enterprise features locked, **core PII
 pipeline still runs**). After expiry, a 14-day grace window
 (`LUCAIRN_LICENSE_GRACE_DAYS`) keeps everything working with loud warnings
-before Enterprise features degrade. The core compliance pipeline is never
-broken over licensing. See OPS.md → "Deployment license" for status checks +
+before Enterprise features degrade. That sentence is about the optional
+entitlement only: the REQUIRED licence behaves as "You need from Lucairn"
+at the top of this file says (the gateway does not start on a wrong or
+expired licence, and answers HTTP 403 once it expires while running). See OPS.md → "Deployment license" for status checks +
 renewal.
 
 > **Caveat — anti-tamper is pin-gated; the env vars alone do not enforce it.**
@@ -3336,9 +3343,11 @@ Stated limits, measured in the third proof run of 22 Nov 2026 (images
   ended with `API returned an empty or malformed response (HTTP 202)`
   (458 s after the start of the turn). A streamed answer of 216 s came
   through whole, with all five claims in its certificate (window 330 s).
-- **A long answer that is not streamed** (a turn that follows a tool call,
-  or Claude Code's fallback after a failed stream) ended in the same empty
+- **A long answer that is not streamed** ended in the same empty
   `HTTP 202` in the proof run, 309 s and 458 s after the start of the turn.
+  Two cases were seen, not a rule: the request that followed a tool call
+  was sent without streaming, and Claude Code's own retry after a cut
+  stream was not streamed either.
   The cause is not analysed. The first candidate is the gateway's wait for
   a non-streamed answer, `GATEWAY_WAIT_TIMEOUT`
   (`docker-compose.customer.yml:1474`, 120 s); that is not tested, and the
