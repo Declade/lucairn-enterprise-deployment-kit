@@ -253,6 +253,7 @@ sudo usermod -aG docker "$USER"     # then log out and in once
      ```
 
      (Sign in with the company seat once first: `claude`, then `/login`.)
+     A one-off test turn, with the same exports: `claude -p "<text>"`.
 
 ### API-key variant (not run on a live install)
 
@@ -316,13 +317,24 @@ forward `/api/v1/scan` through a proxy that overwrites `X-Real-IP` on every
 request (the example Caddyfile does); set without that, a caller can choose
 the address that limit counts.
 
-Only the server itself can connect from those addresses, and Caddy overwrites
-`X-Real-IP`, so a laptop cannot choose the address the gateway records. That
-each laptop's own address arrives through Caddy is to be confirmed (the proof
-runs of 21 and 22 Nov 2026 sent their turns through an ssh tunnel straight
-to the gateway port, not through Caddy). Install Caddy from your distribution
-(`sudo apt-get install -y caddy`; tested with 2.6.2, Ubuntu 24.04's package,
-and 2.8.4), copy the file to `/etc/caddy/Caddyfile`, replace
+What the trusted-proxy setting is for today (images 1.1.1, gateway
+`middleware/clientip.go` `ClientIP` and its callers): the gateway takes the
+caller's address from `X-Real-IP` only when the connection comes from one of
+those addresses, and it reads that address only on the admin routes
+(`api/admin.go` :406, their audit lines), `/api/v1/register`
+(`api/public.go` :529) and the `/api/v1/scan` limit (`api/scan.go` :515),
+plus the per-address limits of `/api/v1/auth/login` and
+`/api/v1/account/audit`; the example Caddyfile forwards none of these. For a
+model turn the gateway records **no** client address: its rate limit counts
+per Lucairn key (`middleware/ratelimit.go` `InferenceKeyFunc`; the address
+only for a request that carries neither a key nor a session), and the third
+proof run of 22 Nov 2026 found the laptop's address in no gateway log line
+and in none of the audit, witness, bridge or Sandbox A databases. Only the
+server itself can connect from those addresses, and Caddy overwrites
+`X-Real-IP`, so where an address is read a laptop cannot choose it.
+
+Install Caddy from your distribution (`sudo apt-get install -y caddy`;
+tested with 2.6.2, Ubuntu 24.04's package, and 2.8.4), copy the file to `/etc/caddy/Caddyfile`, replace
 `lucairn.internal.example`, and `sudo systemctl reload caddy`. For a name
 that is not public, uncomment the `tls` line and use your company CA's
 certificate.
@@ -333,15 +345,26 @@ example; replace the name, keep the CA key out of `/etc/caddy`):
 ```bash
 NAME=lucairn.internal.example
 mkdir -p ~/ca && cd ~/ca
-openssl req -x509 -newkey rsa:3072 -nodes -days 30 -subj "/CN=Test CA" -keyout ca.key -out ca.crt
+openssl req -x509 -newkey rsa:3072 -nodes -days 30 -subj "/CN=Test CA" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" -keyout ca.key -out ca.crt
 openssl req -newkey rsa:3072 -nodes -subj "/CN=$NAME" -keyout lucairn.key -out lucairn.csr
 openssl x509 -req -in lucairn.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 30 \
-  -extfile <(printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\n' "$NAME") -out lucairn.crt
+  -extfile <(printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\nauthorityKeyIdentifier=keyid,issuer\n' "$NAME") -out lucairn.crt
+openssl verify -x509_strict -CAfile ca.crt lucairn.crt    # must print "lucairn.crt: OK"
 sudo install -d -m 0750 -o root -g caddy /etc/caddy/certs
 sudo install -m 0640 -o root -g caddy lucairn.crt lucairn.key /etc/caddy/certs/
 cd - >/dev/null     # back to the kit folder
 ```
 
+The `keyUsage` and `authorityKeyIdentifier` lines are needed for Python 3.13
+and later (the Lucairn Python SDK and verifier), which check certificates
+strictly by default: without them the verify through Caddy failed in the
+proof run of 22 Nov 2026 with "CA cert does not include key usage
+extension", while Claude Code and curl accepted the CA (OpenSSL 4.1 also
+leaves out the identifier unless asked: "Missing Authority Key
+Identifier"). Checked on macOS with Python 3.14 and 3.15
+(`ssl.create_default_context(cafile=…)` against a local TLS server with
+this leaf) and with OpenSSL 3.6 and 4.1 (`openssl verify -x509_strict`).
 The online health check trusts it with `--customer-key-ca-file ~/ca/ca.crt`.
 Each laptop needs a copy of `~/ca/ca.crt` (never `ca.key`) and the
 `NODE_EXTRA_CA_CERTS` setting of step 7. Open only 443 (and 80 for an automatic public certificate) in the
@@ -1154,8 +1177,13 @@ add `dsa-pii-ml:0.5.1` (`phase7`), `dsa-cert-builder` and `dsa-cert-portal`
 (`certification`) and `lucairn-dashboard:0.8.2` (`dashboard`); copy those
 only if you switch that profile on. The public base images
 (`postgres:16-alpine`, `redis:7-alpine`, `alpine:3.20`,
-`migrate/migrate:v4.17.0`) are **not** redirected by `--image-registry`:
-see the box "Base images also need outbound access" under § "Step 0".
+`migrate/migrate:v4.17.0`, `ollama/ollama:0.6.2`) are **not** redirected by
+`--image-registry`: see the box "Base images also need outbound access"
+under § "Step 0". `ollama/ollama` is the `ollama-identity` service of
+`docker-compose.self-hosted.yml` (the extra shield's model runtime). It has
+no profile, so the install pulls and starts it also with the extra shield
+off (seat lane included; pulled in the proof run of 22 Nov 2026); it then
+runs but loads no model.
 
 **Copy them** with all platforms, by the signed digest, and check each copy.
 On a machine logged in to `ghcr.io` (§ "Login walkthrough") and to your
@@ -3257,35 +3285,64 @@ A claim that arrives after the seal is refused ("claim set already
 completed"), and the gateway then answers `503` "Audit evidence path
 unavailable. Refusing to return AI output…".
 
-The kit's default is **150 s** (set `LCR_CLAIM_TIMEOUT` in `customer.env`,
-a Go duration such as `330s`, then recreate the witness; an existing install gets 150 s with the next
-`bin/lucairn up` of this kit). It was hard-wired
-to 30 s: in the proof run of 22 Nov 2026 a core scan of about 39 s on job S1
-made every such request fail, 22 times in a row. With 150 s:
+The kit's default is **330 s** (set `LCR_CLAIM_TIMEOUT` in `customer.env`,
+a Go duration, then recreate the witness; an existing install without a
+value there gets 330 s with the next `bin/lucairn up` of this kit). It
+was hard-wired to 30 s: in the proof run of 22 Nov 2026 a core scan of about
+39 s on job S1 made every such request fail, 22 times in a row. A first fix
+used 150 s; in the third proof run of 22 Nov 2026 a streamed answer that
+ended more than about 150 s after the scan then got a certificate that
+fails verification (two runs: only the bridge and sanitizer claims, the
+model and audit claims refused after the seal). With 330 s the repeat got
+all five claims and verified (longest gap between two claims 212.8 s; the
+image's stream limit is 300 s). With 330 s:
 
 - a request that truly loses a claim gets its PARTIAL certificate after
-  150 s instead of 30 s;
+  330 s instead of 30 s;
 - the tombstone time (how long a sealed request refuses late claims) is
   max(2 × window, 5 min) unless `LCR_TOMBSTONE_TTL` is set
-  (`services/veil-witness/cmd/server/main.go`): 5 minutes, as before; the kit
-  sets neither;
+  (`services/veil-witness/cmd/server/main.go` :126–140): now 11 minutes
+  instead of 5; the kit sets neither, and nothing in the kit depends on the
+  5 minutes. A completed request keeps its slot among the witness's 10,000
+  pending sets until its tombstone ends (`accumulator.go` :84–96), so the
+  witness takes at most about 15 completed requests per second over time
+  (10,000 / 660 s; was about 33 with 5 minutes);
 - the kit does not set `LUCAIRN_REID_GUARD_REQUIRED`. Under
   `LUCAIRN_REID_GUARD_REQUIRED=true` a certificate-only request never seals
   early and always waits the full window (`accumulator.go` :1195), so there
-  the higher value delays every certificate-only request by 150 s.
+  the higher value delays every certificate-only request by 330 s.
 
 The time limits that sit on either side of a gap between two claims:
 
-| Time limit | Where | Value | Relation to the 150 s window |
+| Time limit | Where | Value | Relation to the 330 s window |
 |---|---|---|---|
-| Witness claim window `LCR_CLAIM_TIMEOUT` | `docker-compose.customer.yml:1298`, `customer.env` | 150 s | the longest silence between two claims |
+| Witness claim window `LCR_CLAIM_TIMEOUT` | `docker-compose.customer.yml:1301`, `customer.env` | 330 s | the longest silence between two claims |
 | Core → name model (one sidecar call) | in the image, not settable | 120 s | shorter: a scan that ends inside its limit lands its claim in time |
 | Gateway → core | in the image (`sanitizerdelta/claims.go` `CoreTimeout`), not set by the kit | 180 s | longer, but the core's time is bounded by the 120 s call plus its own small work |
-| Gateway waits for a non-streamed answer `GATEWAY_WAIT_TIMEOUT` | `docker-compose.customer.yml:1471` | 120 s | shorter |
-| Streamed answer `STREAM_TIMEOUT` | in the image (`cmd/server/main.go`), not set by the kit | 300 s | **longer**: Sandbox B signs its claim over the finished answer, so an answer that streams for more than 150 s seals PARTIAL and its later claims are refused. If your users run such long answers, set `LCR_CLAIM_TIMEOUT=330s` |
+| Gateway waits for a non-streamed answer `GATEWAY_WAIT_TIMEOUT` | `docker-compose.customer.yml:1474` | 120 s | shorter |
+| Streamed answer `STREAM_TIMEOUT` | in the image (`cmd/server/main.go`), not set by the kit | 300 s | shorter: Sandbox B signs its claim over the finished answer, so the gap before its claim is about as long as the stream; with the former 150 s an answer that streamed longer sealed PARTIAL. An answer cut at 300 s: § "Long answers" |
 | Gateway's audit completion call (non-streamed) | in the image (`api/proxy.go` :719) | 5 s | one call, not a gap between claims |
-| Online doctor polls the certificate | `bin/lucairn-doctor-keyed.py:498` | 12 × 3 s | a complete set seals at once; a PARTIAL seal after 150 s shows there as "certificate was not ready after 12 attempts" |
+| Online doctor polls the certificate | `bin/lucairn-doctor-keyed.py:498` | 12 × 3 s | a complete set seals at once; a PARTIAL seal after 330 s shows there as "certificate was not ready after 12 attempts" |
 | Health checks (witness, gateway, Sandbox B) | `docker-compose.customer.yml`, `docker-compose.self-hosted.yml` | 3–10 s | not related: they never wait for a claim |
+
+#### Long answers
+
+Stated limits, measured in the third proof run of 22 Nov 2026 (images
+1.1.1, Claude Code through Caddy, claim window 150 s and 330 s):
+
+- **A streamed answer is cut at 300 s** by the image (`STREAM_TIMEOUT`,
+  not set by the kit). An answer that needs longer is lost: in the proof
+  run the stream was cut after exactly 300 s, and Claude Code's retry then
+  ended with `API returned an empty or malformed response (HTTP 202)`
+  (458 s after the start of the turn). A streamed answer of 216 s came
+  through whole, with all five claims in its certificate (window 330 s).
+- **A long answer that is not streamed** (a turn that follows a tool call,
+  or Claude Code's fallback after a failed stream) ended in the same empty
+  `HTTP 202` in the proof run, 309 s and 458 s after the start of the turn.
+  The cause is not analysed. The first candidate is the gateway's wait for
+  a non-streamed answer, `GATEWAY_WAIT_TIMEOUT`
+  (`docker-compose.customer.yml:1474`, 120 s); that is not tested, and the
+  kit leaves it at 120 s.
 
 ### 1. Secrets and image pins (`customer.env`)
 
