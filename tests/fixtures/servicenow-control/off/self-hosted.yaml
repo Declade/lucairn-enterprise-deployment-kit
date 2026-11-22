@@ -1067,7 +1067,7 @@ services:
       GRPC_TLS_KEY_FILE: /etc/sanitizer-core-mtls/dsa-veil-witness.key
       LCR_AUDIT_PUBLIC_KEY: ""
       LCR_BRIDGE_PUBLIC_KEY: ""
-      LCR_CLAIM_TIMEOUT: 150s
+      LCR_CLAIM_TIMEOUT: 330s
       LCR_DB_URL: postgres://veil_app:k1-synthetic@postgres-veil:5432/veil?sslmode=disable
       LCR_REKOR_URL: ""
       LCR_SANDBOX_B_PUBLIC_KEY: ""

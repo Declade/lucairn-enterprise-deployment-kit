@@ -49,6 +49,11 @@ with 8 or more threads, else left empty = the image's 2); the documented minimum
   threads, add `LUCAIRN_NAME_MODEL_THREADS=8`, then recreate the sidecar and
   the core right after it (INSTALL.md § "Large records"). On a smaller host
   leave it empty.
+- **The witness claim window becomes 330 s with the next `bin/lucairn up`**
+  (was hard-wired to 30 s; `LCR_CLAIM_TIMEOUT` in `customer.env`, empty =
+  330 s). A request that truly loses a claim gets its partial certificate
+  after 330 s; a sealed request refuses late claims for 11 minutes instead of
+  5 (INSTALL.md § "Claim window"). Long answers: INSTALL.md § "Long answers".
 
 ## [2.0.0] — 2026-11-07 — images `1.1.1`
 

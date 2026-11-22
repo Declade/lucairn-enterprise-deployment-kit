@@ -43,8 +43,32 @@ Requests without a seat sign-in keep needing a provider key in `customer.env`
 
 ## What each consultant does (Claude Code)
 
+The operator mints one key per consultant (INSTALL.md fast path, step 4,
+"One key per consultant": the same customer id, one key per person) and
+hands it over on a secure channel of the company's choice (password manager,
+a file share only that person can read; never e-mail or chat in clear text).
+
 1. Sign in to Claude Code with the company seat once (`claude`, then `/login`).
-2. Point Claude Code at the gateway and give it the personal Lucairn key as a
+2. Store the personal Lucairn key in `~/.lucairn/key`, mode 0600:
+
+   ```bash
+   mkdir -p ~/.lucairn && chmod 0700 ~/.lucairn
+   install -m 0600 /dev/null ~/.lucairn/key
+   # put the key into ~/.lucairn/key (one line), then delete the copy you received
+   ```
+
+3. If the gateway's HTTPS certificate comes from a company or own CA (not a
+   public one), copy that CA's certificate (`.crt`, never the key) to the
+   laptop and point Claude Code at it; without it Claude Code stops with
+   `SSL certificate verification failed (UNABLE_TO_VERIFY_LEAF_SIGNATURE)`:
+
+   ```bash
+   export NODE_EXTRA_CA_CERTS="$HOME/.lucairn/company-ca.crt"
+   ```
+
+   Shown with Claude Code 2.1.325 against a local HTTPS stand-in and against
+   the gateway through Caddy on a fresh server (proof run of 22 Nov 2026).
+4. Point Claude Code at the gateway and give it the personal Lucairn key as a
    header (the seat sign-in already uses the `Authorization` header):
 
    ```bash
@@ -53,7 +77,7 @@ Requests without a seat sign-in keep needing a provider key in `customer.env`
    claude
    ```
 
-   Keep the key file mode 0600. Do not put the key into a shared or managed
+   Do not put the key into a shared or managed
    settings file: `bin/lucairn config-pack` refuses credentials in header maps
    on purpose, so the seat lane is set per user, not through the config pack.
 

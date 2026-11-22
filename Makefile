@@ -12,6 +12,7 @@ test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-h
 		tests/test_init_production_complete.sh \
 		tests/test_name_model_threads.sh \
 		tests/test_proof_run_settings.sh \
+		tests/test_make_test_license.sh \
 		tests/test_check_updates.sh \
 		tests/test_redact_stream.sh \
 		tests/test_support_bundle_routing.sh \

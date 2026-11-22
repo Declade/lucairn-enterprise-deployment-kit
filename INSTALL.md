@@ -4,9 +4,11 @@ Goal: a competent platform engineer should complete a standard install in about 
 
 ## Doctor lifecycle
 
-Use `doctor --offline` only as the configuration preflight; it requires no
-customer key, model, listener, runtime, or network and ends with `doctor:
-preflight ok (offline)`. For Helm values-only preflight, the terminal line is
+`doctor --offline` is the configuration check: it reads the written files
+only, needs no customer key, model, listener, runtime, or network, and ends
+with `doctor: preflight ok (offline)`. It gives the same answer before or after
+`bin/lucairn up` (the fast path below runs it right after `up`, step 3); it
+does not check the running stack. For Helm values-only preflight, the terminal line is
 `doctor: preflight ok (values-only)`. Then start the recorded topology, wait
 for health/readiness, mint the first customer key to a regular mode-0600 file,
 and run online doctor with `--customer-key-file`. Supply `--model` for
@@ -27,8 +29,28 @@ nothing in `customer.env` is edited by hand between `lucairn-init` and a
 healthy stack; the API-key variant (§ "API-key variant") needs one typed line.
 The rest of this file explains each part.
 
-**You need from Lucairn (one prepared step at contract time):** registry
-access for the images (§ "Step 0") and your licence file `license.json`.
+**You need from Lucairn (one prepared step at contract time).** Ask
+**support@lucairn.eu** for both together when the contract is signed; plan
+about one business day:
+
+- **Image access.** Send the GitHub user name that will pull the images;
+  Lucairn grants it read access to its registry (§ "Step 0"). Without
+  GitHub: ask for a sealed customer bundle instead (`docs/CUSTOMER_BUNDLE.md`).
+  A copy into your own registry needs this access too, once, on the machine
+  that copies (§ "Mirroring images to a private registry").
+- **Licence file `license.json`.** Lucairn sends it for your company. It holds
+  two required values, `license_key` (the signed licence) and `signing_key`
+  (the key it is checked with), and may hold the optional Enterprise
+  entitlement (`entitlement_token`, `entitlement_public_key`); format in
+  § "Deployment license (Enterprise features)". Without it there is no
+  production install: `bin/lucairn-init --production` stops without
+  `--license`, and stops with exit 5 on a file without both required values.
+  Init does not check the signature; the gateway does at every start and
+  does **not start** on a wrong or expired licence (`invalid license key` in
+  its log). A licence that expires while the gateway runs makes it refuse
+  the model requests with HTTP 403 (licence expired); this licence has no
+  grace days (images 1.1.1; the 14 grace days belong to the optional
+  entitlement). Ask for a renewal before the expiry date Lucairn gives you.
 
 **The server:** Ubuntu 24.04, x86_64, 8 CPU threads (vCPU), 16 GB RAM, 50 GB free disk.
 (8 threads, not 4: large tool results are scanned by the name model; see
@@ -41,8 +63,14 @@ sudo usermod -aG docker "$USER"     # then log out and in once
 ```
 
 1. **Images.** Log in to the Lucairn registry (§ "Registry Authentication"),
-   or copy the images byte-exact (same digests) to your own registry first
-   and pass that registry to init in step 2 (`--image-registry`).
+   or copy the nine images this install uses byte-exact (same digests, all
+   platforms) to your own registry first and pass that registry to init in
+   step 2 (`--image-registry`): § "Mirroring images to a private registry"
+   has the list and the copy loop (about 4 GB, about 30 minutes in the proof
+   run of 22 Nov 2026). Five public base images still come from Docker Hub
+   unless you run a pull-through mirror (the same section and the box in
+   § "Step 0" name them); a server without Docker Hub access fails at `up`
+   without that.
 
 2. **Write the settings.** From the kit folder:
 
@@ -93,7 +121,9 @@ sudo usermod -aG docker "$USER"     # then log out and in once
    **A mirror** must serve the witness image under its signed digest, i.e. be
    copied with all platforms (`crane copy`, `skopeo copy --all`,
    `docker buildx imagetools create`); a mirror holding only one platform
-   serves another digest and the manifest step refuses it.
+   serves another digest and the manifest step refuses it. The loop in
+   § "Mirroring images to a private registry" copies all platforms and checks
+   each digest.
 
    **Stated limits:** one install per kit checkout (a second `customer.env`
    initialised from the same folder shares the manifest path
@@ -118,7 +148,9 @@ sudo usermod -aG docker "$USER"     # then log out and in once
 
    `up` returns while the gateway is still starting, so a single `curl` right
    after it can fail ("Connection reset by peer", seen in the proof run of
-   22 Nov 2026); the retry flags wait up to a minute.
+   22 Nov 2026); the retry flags wait up to a minute. The command may still
+   print one `curl: (56) … Connection reset by peer` line first: that line
+   is expected; the final `ready` is what counts.
 
    `up` runs the sanitizer core's registry migration first, then starts the
    stack in production mode (`DSA_ENV=production`, encrypted links, Sandbox B
@@ -140,6 +172,27 @@ sudo usermod -aG docker "$USER"     # then log out and in once
    forwarded seat sign-in is the per-request credential. Do not add
    `--no-byok-per-request` here: without a stored provider key the gateway
    (images 1.1.1) refuses that mint with HTTP 400.
+
+   The first key is for the health check (step 6). **One key per
+   consultant** (docs/CLAUDE_SEATS.md hands each consultant a personal key):
+   the same command once per person, with `--customer-id` set to the id the
+   first mint derived from `--name` ("Acme GmbH" → `acme_gmbh`) and wrote to
+   `.lucairn-customer-id` in the kit folder, so every key belongs to the same
+   customer:
+
+   ```bash
+   export LUCAIRN_ADMIN_KEY="$(grep '^DSA_ADMIN_KEY=' customer.env | cut -d= -f2-)"
+   install -m 0600 /dev/null ~/lucairn-anna.key
+   bin/lucairn-mint-customer --raw-key-only --customer-id "$(cat .lucairn-customer-id)" \
+     --name "Anna Berg / Acme GmbH" --email "anna.berg@acme.example" --tier enterprise > ~/lucairn-anna.key
+   unset LUCAIRN_ADMIN_KEY
+   ```
+
+   The gateway mints a further key for an existing customer id (images
+   1.1.1, `admin.go` `handleCreateKey`); `--name` is stored as the key's
+   label. Stated limit: these keys are not member-scoped, so each of them can
+   read the certificates of every turn of that customer; giving each person
+   their own key lets you revoke one person without touching the others.
 
 5. **HTTPS for the laptops.** Put Caddy in front: copy
    [examples/caddy/Caddyfile](examples/caddy/Caddyfile), replace the host
@@ -164,9 +217,48 @@ sudo usermod -aG docker "$USER"     # then log out and in once
    failed check fails the run. Drop `--customer-key-ca-file` for a public
    certificate.
 
-7. **Claude Code.** On a laptop: `ANTHROPIC_BASE_URL=https://lucairn.internal.example`
-   and the Lucairn key (seat lane: `ANTHROPIC_CUSTOM_HEADERS="X-DSA-Key: <key>"`,
-   see docs/CLAUDE_SEATS.md; API-key installs: `bin/lucairn config-pack`).
+7. **Claude Code on each laptop** (seat lane; details in
+   [docs/CLAUDE_SEATS.md](docs/CLAUDE_SEATS.md); API-key installs:
+   `bin/lucairn config-pack`).
+
+   - **The consultant's key** (step 4) reaches the laptop over a secure
+     channel of your choice (for example your password manager or a
+     company file share only that person can read; never e-mail or chat in
+     clear text). On the laptop it lives in `~/.lucairn/key`, mode 0600:
+
+     ```bash
+     mkdir -p ~/.lucairn && chmod 0700 ~/.lucairn
+     install -m 0600 /dev/null ~/.lucairn/key
+     # put the key into ~/.lucairn/key (one line), then delete the copy you received
+     ```
+
+   - **The certificate authority.** If Caddy's certificate comes from your
+     company CA or an own CA (step 5), copy that CA's certificate (the
+     `.crt`, never its key) to the laptop as `~/.lucairn/company-ca.crt`
+     and point Claude Code at it;
+     Claude Code does not read it otherwise:
+
+     ```bash
+     export NODE_EXTRA_CA_CERTS="$HOME/.lucairn/company-ca.crt"
+     ```
+
+     Without it Claude Code stops with `SSL certificate verification failed
+     (UNABLE_TO_VERIFY_LEAF_SIGNATURE)`. Shown with Claude Code 2.1.325 on
+     macOS against a local HTTPS stand-in signed by an own CA, and against
+     the gateway through Caddy on a fresh server (proof run of 22 Nov 2026:
+     refused without the setting, HTTP 200 with it).
+     A public certificate needs no setting.
+
+   - **Start it:**
+
+     ```bash
+     export ANTHROPIC_BASE_URL=https://lucairn.internal.example
+     export ANTHROPIC_CUSTOM_HEADERS="X-DSA-Key: $(cat ~/.lucairn/key)"
+     claude
+     ```
+
+     (Sign in with the company seat once first: `claude`, then `/login`.)
+     A one-off test turn, with the same exports: `claude -p "<text>"`.
 
 ### API-key variant (not run on a live install)
 
@@ -230,12 +322,24 @@ forward `/api/v1/scan` through a proxy that overwrites `X-Real-IP` on every
 request (the example Caddyfile does); set without that, a caller can choose
 the address that limit counts.
 
-Only the server itself can connect from those addresses, and Caddy overwrites
-`X-Real-IP`, so a laptop cannot choose the address the gateway records. That
-each laptop's own address arrives is read live in the proof run on a fresh
-server, not on this kit's test hosts. Install Caddy from your distribution
-(`sudo apt-get install -y caddy`; tested with 2.6.2, Ubuntu 24.04's package,
-and 2.8.4), copy the file to `/etc/caddy/Caddyfile`, replace
+What the trusted-proxy setting is for today (images 1.1.1, gateway
+`middleware/clientip.go` `ClientIP` and its callers): the gateway takes the
+caller's address from `X-Real-IP` only when the connection comes from one of
+those addresses, and it reads that address only on the admin routes
+(`api/admin.go` :406, their audit lines), `/api/v1/register`
+(`api/public.go` :529) and the `/api/v1/scan` limit (`api/scan.go` :515),
+plus the per-address limits of `/api/v1/auth/login` and
+`/api/v1/account/audit`; the example Caddyfile forwards none of these. For a
+model turn the gateway records **no** client address: its rate limit counts
+per Lucairn key (`middleware/ratelimit.go` `InferenceKeyFunc`; the address
+only for a request that carries neither a key nor a session), and the third
+proof run of 22 Nov 2026 found the laptop's address in no gateway log line
+and in none of the audit, witness, bridge or Sandbox A databases. Only the
+server itself can connect from those addresses, and Caddy overwrites
+`X-Real-IP`, so where an address is read a laptop cannot choose it.
+
+Install Caddy from your distribution (`sudo apt-get install -y caddy`;
+tested with 2.6.2, Ubuntu 24.04's package, and 2.8.4), copy the file to `/etc/caddy/Caddyfile`, replace
 `lucairn.internal.example`, and `sudo systemctl reload caddy`. For a name
 that is not public, uncomment the `tls` line and use your company CA's
 certificate.
@@ -246,16 +350,29 @@ example; replace the name, keep the CA key out of `/etc/caddy`):
 ```bash
 NAME=lucairn.internal.example
 mkdir -p ~/ca && cd ~/ca
-openssl req -x509 -newkey rsa:3072 -nodes -days 30 -subj "/CN=Test CA" -keyout ca.key -out ca.crt
+openssl req -x509 -newkey rsa:3072 -nodes -days 30 -subj "/CN=Test CA" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" -keyout ca.key -out ca.crt
 openssl req -newkey rsa:3072 -nodes -subj "/CN=$NAME" -keyout lucairn.key -out lucairn.csr
 openssl x509 -req -in lucairn.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 30 \
-  -extfile <(printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\n' "$NAME") -out lucairn.crt
+  -extfile <(printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\nauthorityKeyIdentifier=keyid,issuer\n' "$NAME") -out lucairn.crt
+openssl verify -x509_strict -CAfile ca.crt lucairn.crt    # must print "lucairn.crt: OK"
 sudo install -d -m 0750 -o root -g caddy /etc/caddy/certs
 sudo install -m 0640 -o root -g caddy lucairn.crt lucairn.key /etc/caddy/certs/
+cd - >/dev/null     # back to the kit folder
 ```
 
-The laptops (and the online health check, `--customer-key-ca-file ~/ca/ca.crt`)
-then trust `~/ca/ca.crt`. Open only 443 (and 80 for an automatic public certificate) in the
+The `keyUsage` and `authorityKeyIdentifier` lines are needed for Python 3.13
+and later (the Lucairn Python SDK and verifier), which check certificates
+strictly by default: without them the verify through Caddy failed in the
+proof run of 22 Nov 2026 with "CA cert does not include key usage
+extension", while Claude Code and curl accepted the CA (OpenSSL 4.1 also
+leaves out the identifier unless asked: "Missing Authority Key
+Identifier"). Checked on macOS with Python 3.14 and 3.15
+(`ssl.create_default_context(cafile=…)` against a local TLS server with
+this leaf) and with OpenSSL 3.6 and 4.1 (`openssl verify -x509_strict`).
+The online health check trusts it with `--customer-key-ca-file ~/ca/ca.crt`.
+Each laptop needs a copy of `~/ca/ca.crt` (never `ca.key`) and the
+`NODE_EXTRA_CA_CERTS` setting of step 7. Open only 443 (and 80 for an automatic public certificate) in the
 server's firewall; never forward 8085.
 
 ### See what went to the model vendor
@@ -504,7 +621,11 @@ Both fixes are delivered in the `0.5.1` sanitizer image.
 2. Wait for Lucairn to confirm registry access (typically within one business day).
 3. Only then proceed to mint a PAT and run `docker login` (§ "Registry Authentication" below).
 
-If you intend to mirror images to your own internal registry instead, this prerequisite is moot — skip to § "Mirroring images to a private registry".
+A copy into your own internal registry needs this access too: the machine
+that fills the mirror pulls from Lucairn's registry once (or you load a sealed
+customer bundle, `docs/CUSTOMER_BUNDLE.md`). After that only the mirror is
+needed. Which images and how: § "Mirroring images to a private registry"
+(the Compose fast path uses nine of the 14 `dsa-*` images).
 
 > **Base images also need outbound access.** In addition to `ghcr.io`, the stack
 > pulls public base images from Docker Hub (`registry-1.docker.io`,
@@ -994,8 +1115,10 @@ access by Lucairn. Contact support@lucairn.eu with the GitHub username you
 will use for the install BEFORE attempting any `docker pull` / `docker login`
 step below — Lucairn provisions access typically within one business day.
 
-If your install runs purely from a private internal registry mirror, this
-prerequisite is moot — see "Mirroring images to a private registry" below.
+If your install runs from a private internal registry mirror, the servers
+that run Lucairn need only the mirror, but filling the mirror still needs this
+access once (or a sealed bundle) — see "Mirroring images to a private
+registry" below.
 
 ### Login walkthrough
 
@@ -1033,6 +1156,88 @@ Lucairn does NOT provision per-customer GHCR credentials at handoff time
 If your organization blocks GitHub access entirely, request a sealed
 customer bundle (with `images/lucairn-images.tar` for `docker load`); see
 `docs/CUSTOMER_BUNDLE.md`.
+
+### Mirroring images to a private registry
+
+Filling your own registry still needs read access to Lucairn's registry on
+the machine that copies (§ "Step 0"; or a sealed customer bundle,
+`docs/CUSTOMER_BUNDLE.md`). The servers that run Lucairn then pull only from
+your registry, through `--image-registry` at init.
+
+**Which images.** The Compose production install of the fast path
+(`--runtime-mode managed-byok`, with or without `--claude-seat-lane`) starts
+these **nine** Lucairn images, all at tag `1.1.1` (`docker-compose.customer.yml`,
+`docker-compose.self-hosted.yml` for `dsa-sandbox-b`):
+
+`dsa-gateway`, `dsa-sanitizer`, `dsa-audit`, `dsa-id-bridge`,
+`dsa-sandbox-a`, `dsa-sandbox-b`, `dsa-veil-witness`, `dsa-sanitizer-core`,
+`dsa-sanitizer-core-sidecar`.
+
+`keys/image-digests-1.1.1.txt` records the full release set of 14 `dsa-*`
+images (Step 0 counts those) plus `lucairn-dashboard`. The other five
+`dsa-*` images there (`dsa-reid-guard`, `dsa-admin`, `dsa-demo`, `dsa-ingest`,
+`dsa-llm-auditor`) are not started by this Compose install
+(`image-manifest.yaml`: profile-gated or reserved). Optional Compose profiles
+add `dsa-pii-ml:0.5.1` (`phase7`), `dsa-cert-builder` and `dsa-cert-portal`
+(`certification`) and `lucairn-dashboard:0.8.2` (`dashboard`); copy those
+only if you switch that profile on. The public base images
+(`postgres:16-alpine`, `redis:7-alpine`, `alpine:3.20`,
+`migrate/migrate:v4.17.0`, `ollama/ollama:0.6.2`) are **not** redirected by
+`--image-registry`: see the box "Base images also need outbound access"
+under § "Step 0". `ollama/ollama` is the `ollama-identity` service of
+`docker-compose.self-hosted.yml` (the extra shield's model runtime). It has
+no profile, so the install pulls and starts it also with the extra shield
+off (seat lane included; pulled in the proof run of 22 Nov 2026); it then
+runs but loads no model.
+
+**Copy them** with all platforms, by the signed digest, and check each copy.
+On a machine logged in to `ghcr.io` (§ "Login walkthrough") and to your
+registry (`docker login <your registry>`; both tools below read those
+logins), from the kit folder, with `crane`
+([go-containerregistry](https://github.com/google/go-containerregistry)):
+
+```bash
+REGISTRY=registry.internal.example/declade     # the value you give init as --image-registry
+for img in dsa-gateway dsa-sanitizer dsa-audit dsa-id-bridge dsa-sandbox-a dsa-sandbox-b \
+           dsa-veil-witness dsa-sanitizer-core dsa-sanitizer-core-sidecar; do
+  digest="$(awk -v r="ghcr.io/declade/$img:1.1.1" '$1 == r {print $2}' keys/image-digests-1.1.1.txt)"
+  [ -n "$digest" ] || { echo "no signed digest for $img"; break; }
+  crane copy "ghcr.io/declade/$img@$digest" "$REGISTRY/$img:1.1.1" || break
+  [ "$(crane digest "$REGISTRY/$img:1.1.1")" = "$digest" ] && echo "ok $img" || { echo "DIGEST DIFFERS: $img"; break; }
+done
+```
+
+Nine `ok` lines mean the mirror serves the signed bytes. With `skopeo`
+instead, replace the `crane copy` line and the check line by:
+
+```bash
+  skopeo copy --all --preserve-digests "docker://ghcr.io/declade/$img@$digest" "docker://$REGISTRY/$img:1.1.1" || break
+  [ "sha256:$(skopeo inspect --raw "docker://$REGISTRY/$img:1.1.1" | sha256sum | cut -d' ' -f1)" = "$digest" ] && echo "ok $img" || { echo "DIGEST DIFFERS: $img"; break; }
+```
+
+Never copy one platform only (`crane copy --platform …`, a plain
+`docker pull` + `docker push`): that copy has another digest, the check
+above prints `DIGEST DIFFERS`, and init's witness-manifest step refuses it.
+
+**Size and time (measured examples).** The nine images with all platforms:
+about 4.0 GB, 28 min 44 s (proof run of 22 Nov 2026, copied from `ghcr.io`
+through an ssh tunnel to a loopback registry on a Hetzner server; most of it
+`dsa-sanitizer` 1.6 GB and `dsa-sanitizer-core-sidecar` 2.0 GB). One
+platform only (linux/amd64, which the install does not accept, see above):
+about 3.0 GB (21 Nov 2026). Your time depends on your link.
+
+**Then** init with `--image-registry "$REGISTRY"` (fast path step 2; it
+writes `LUCAIRN_IMAGE_REGISTRY`). The loop does not copy the cosign
+signatures (separate entries in Lucairn's registry): verify them at the
+source with `bin/lucairn verify-images` (§ below) before you copy.
+
+What is shown: the loop above, in both forms, copied a multi-platform public
+image (busybox, 17 platform entries) by digest into a throwaway local
+registry and printed `ok`; a single-platform copy got another digest
+(22 Nov 2026, crane from `gcr.io/go-containerregistry/crane:debug`, skopeo
+1.16.1). The product copy itself was done in the proof run of 22 Nov 2026
+with a helper that does the same steps (copy index and all children by
+digest, then tag), not with this loop.
 
 ### Verify image signatures (supply-chain provenance)
 
@@ -1224,7 +1429,10 @@ symlinks). The bundle reader rejects duplicate or unknown manifest structure.
 The gateway enforces a self-hosted deployment entitlement license that gates
 Enterprise-only features (e.g. the custom-trained L3 PII shield) with a
 grace-then-degrade expiry. It is verified entirely offline (no phone-home), so
-air-gapped installs work. Lucairn issues you two values:
+air-gapped installs work. Whom to ask, when it arrives and what happens
+without the licence file: fast path, "You need from Lucairn". Next to the
+required platform licence (`license_key` + `signing_key`, see "Combined
+`--license` bundle" below), Lucairn may issue you two entitlement values:
 
 - `LUCAIRN_LICENSE_KEY` — the signed license token.
 - `LUCAIRN_LICENSE_PUBLIC_KEY` — the verification public key.
@@ -1238,8 +1446,10 @@ flags and carry them in the license bundle (see below); otherwise set them in `c
 license runs in unregistered mode (Enterprise features locked, **core PII
 pipeline still runs**). After expiry, a 14-day grace window
 (`LUCAIRN_LICENSE_GRACE_DAYS`) keeps everything working with loud warnings
-before Enterprise features degrade. The core compliance pipeline is never
-broken over licensing. See OPS.md → "Deployment license" for status checks +
+before Enterprise features degrade. That sentence is about the optional
+entitlement only: the REQUIRED licence behaves as "You need from Lucairn"
+at the top of this file says (the gateway does not start on a wrong or
+expired licence, and answers HTTP 403 once it expires while running). See OPS.md → "Deployment license" for status checks +
 renewal.
 
 > **Caveat — anti-tamper is pin-gated; the env vars alone do not enforce it.**
@@ -3037,7 +3247,12 @@ once per size, the others three times (median):
   49152 characters` within 2 to 4 s, Claude Code receives `503`
   `server_error` (`detect_failed`) and retries the same request, up to ten
   times (proof run of 22 Nov 2026, Claude Code 2.1.325, 3 of 3 runs with a
-  60,000-character file).
+  60,000-character file). After the retries Claude Code shows the gateway's
+  text "… Retry after 30 seconds. This is a server-side issue, usually
+  temporary — try again in a moment." For a text over 49,152 characters that
+  is **wrong on images 1.1.1: the refusal is permanent**, every retry is
+  refused the same way. Split the file or read it in parts (for example the
+  Read tool's line range) so that no single text is over the limit.
 - **Stated limit — abandoned scans keep running.** The sidecar reads one text
   at a time and finishes a scan its caller has given up on. Measured with a
   client that gave up after 10 seconds: a 5,000-character scan sent right
@@ -3077,35 +3292,66 @@ A claim that arrives after the seal is refused ("claim set already
 completed"), and the gateway then answers `503` "Audit evidence path
 unavailable. Refusing to return AI output…".
 
-The kit's default is **150 s** (set `LCR_CLAIM_TIMEOUT` in `customer.env`,
-a Go duration such as `330s`, then recreate the witness; an existing install gets 150 s with the next
-`bin/lucairn up` of this kit). It was hard-wired
-to 30 s: in the proof run of 22 Nov 2026 a core scan of about 39 s on job S1
-made every such request fail, 22 times in a row. With 150 s:
+The kit's default is **330 s** (set `LCR_CLAIM_TIMEOUT` in `customer.env`,
+a Go duration, then recreate the witness; an existing install without a
+value there gets 330 s with the next `bin/lucairn up` of this kit). It
+was hard-wired to 30 s: in the proof run of 22 Nov 2026 a core scan of about
+39 s on job S1 made every such request fail, 22 times in a row. A first fix
+used 150 s; in the third proof run of 22 Nov 2026 a streamed answer that
+ended more than about 150 s after the scan then got a certificate that
+fails verification (two runs: only the bridge and sanitizer claims, the
+model and audit claims refused after the seal). With 330 s the repeat got
+all five claims and verified (longest gap between two claims 212.8 s; the
+image's stream limit is 300 s). With 330 s:
 
 - a request that truly loses a claim gets its PARTIAL certificate after
-  150 s instead of 30 s;
+  330 s instead of 30 s;
 - the tombstone time (how long a sealed request refuses late claims) is
   max(2 × window, 5 min) unless `LCR_TOMBSTONE_TTL` is set
-  (`services/veil-witness/cmd/server/main.go`): 5 minutes, as before; the kit
-  sets neither;
+  (`services/veil-witness/cmd/server/main.go` :126–140): now 11 minutes
+  instead of 5; the kit sets neither, and nothing in the kit depends on the
+  5 minutes. A completed request keeps its slot among the witness's 10,000
+  pending sets until its tombstone ends (`accumulator.go` :84–96), so the
+  witness takes at most about 15 completed requests per second over time
+  (10,000 / 660 s; was about 33 with 5 minutes);
 - the kit does not set `LUCAIRN_REID_GUARD_REQUIRED`. Under
   `LUCAIRN_REID_GUARD_REQUIRED=true` a certificate-only request never seals
   early and always waits the full window (`accumulator.go` :1195), so there
-  the higher value delays every certificate-only request by 150 s.
+  the higher value delays every certificate-only request by 330 s.
 
 The time limits that sit on either side of a gap between two claims:
 
-| Time limit | Where | Value | Relation to the 150 s window |
+| Time limit | Where | Value | Relation to the 330 s window |
 |---|---|---|---|
-| Witness claim window `LCR_CLAIM_TIMEOUT` | `docker-compose.customer.yml:1298`, `customer.env` | 150 s | the longest silence between two claims |
+| Witness claim window `LCR_CLAIM_TIMEOUT` | `docker-compose.customer.yml:1301`, `customer.env` | 330 s | the longest silence between two claims |
 | Core → name model (one sidecar call) | in the image, not settable | 120 s | shorter: a scan that ends inside its limit lands its claim in time |
 | Gateway → core | in the image (`sanitizerdelta/claims.go` `CoreTimeout`), not set by the kit | 180 s | longer, but the core's time is bounded by the 120 s call plus its own small work |
-| Gateway waits for a non-streamed answer `GATEWAY_WAIT_TIMEOUT` | `docker-compose.customer.yml:1471` | 120 s | shorter |
-| Streamed answer `STREAM_TIMEOUT` | in the image (`cmd/server/main.go`), not set by the kit | 300 s | **longer**: Sandbox B signs its claim over the finished answer, so an answer that streams for more than 150 s seals PARTIAL and its later claims are refused. If your users run such long answers, set `LCR_CLAIM_TIMEOUT=330s` |
+| Gateway waits for a non-streamed answer `GATEWAY_WAIT_TIMEOUT` | `docker-compose.customer.yml:1474` | 120 s | shorter |
+| Streamed answer `STREAM_TIMEOUT` | in the image (`cmd/server/main.go`), not set by the kit | 300 s | shorter: Sandbox B signs its claim over the finished answer, so the gap before its claim is about as long as the stream; with the former 150 s an answer that streamed longer sealed PARTIAL. An answer cut at 300 s: § "Long answers" |
 | Gateway's audit completion call (non-streamed) | in the image (`api/proxy.go` :719) | 5 s | one call, not a gap between claims |
-| Online doctor polls the certificate | `bin/lucairn-doctor-keyed.py:498` | 12 × 3 s | a complete set seals at once; a PARTIAL seal after 150 s shows there as "certificate was not ready after 12 attempts" |
+| Online doctor polls the certificate | `bin/lucairn-doctor-keyed.py:498` | 12 × 3 s | a complete set seals at once; a PARTIAL seal after 330 s shows there as "certificate was not ready after 12 attempts" |
 | Health checks (witness, gateway, Sandbox B) | `docker-compose.customer.yml`, `docker-compose.self-hosted.yml` | 3–10 s | not related: they never wait for a claim |
+
+#### Long answers
+
+Stated limits, measured in the third proof run of 22 Nov 2026 (images
+1.1.1, Claude Code through Caddy, claim window 150 s and 330 s):
+
+- **A streamed answer is cut at 300 s** by the image (`STREAM_TIMEOUT`,
+  not set by the kit). An answer that needs longer is lost: in the proof
+  run the stream was cut after exactly 300 s, and Claude Code's retry then
+  ended with `API returned an empty or malformed response (HTTP 202)`
+  (458 s after the start of the turn). A streamed answer of 216 s came
+  through whole, with all five claims in its certificate (window 330 s).
+- **A long answer that is not streamed** ended in the same empty
+  `HTTP 202` in the proof run, 309 s and 458 s after the start of the turn.
+  Two cases were seen, not a rule: the request that followed a tool call
+  was sent without streaming, and Claude Code's own retry after a cut
+  stream was not streamed either.
+  The cause is not analysed. The first candidate is the gateway's wait for
+  a non-streamed answer, `GATEWAY_WAIT_TIMEOUT`
+  (`docker-compose.customer.yml:1474`, 120 s); that is not tested, and the
+  kit leaves it at 120 s.
 
 ### 1. Secrets and image pins (`customer.env`)
 
