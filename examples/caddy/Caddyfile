@@ -36,9 +36,11 @@
 # to the published 127.0.0.1:8080 port to the container from the gateway
 # address of a Docker bridge network. Read those addresses after the first
 # `bin/lucairn up` (INSTALL.md § "Reverse proxy"):
-#   docker inspect -f '{{range .NetworkSettings.Networks}}{{if .Gateway}}{{.Gateway}}/32 {{end}}{{end}}' \
-#     "$(docker ps -q --filter label=com.docker.compose.service=gateway)"
-# put them comma-separated into GATEWAY_TRUSTED_PROXY_CIDRS, then:
+#   docker inspect -f '{{range .NetworkSettings.Networks}}{{println .Gateway}}{{end}}' \
+#     "$(docker ps -q --filter label=com.docker.compose.service=gateway)" \
+#     | grep -E '^[0-9]+(\.[0-9]+){3}$' | sed 's|$|/32|' | paste -sd, -
+# (the filter drops "invalid IP", which Docker 29 prints for the internal
+# networks) and put the printed line into GATEWAY_TRUSTED_PROXY_CIDRS, then:
 #   bin/lucairn up --env customer.env
 
 lucairn.internal.example {

@@ -344,7 +344,8 @@ rc=0; full_init --production --license "$TMP/license.json" --runtime-mode manage
 rm -f "$SB/openssl"
 [ "$rc" = 3 ] && [ ! -e "$TMP/rand/customer.env" ] && grep -q 'LOCAL_SANDBOX_B_API_KEY' "$TMP/full.err" || fail "failed draw: exit $rc"
 pass "a failed draw for LOCAL_SANDBOX_B_API_KEY stops init before customer.env is written"
-grep -q 'lucairn-mint-customer .*--tier enterprise$' "$TMP/full.err" && ! grep -q -- '--no-byok-per-request' "$TMP/full.err" \
+# T-1479 proof run 22 Nov (F-init-hint): the fast path's step 4 form.
+grep -q 'lucairn-mint-customer --raw-key-only .*--tier enterprise > ~/lucairn-first.key$' "$TMP/full.err" && ! grep -q -- '--no-byok-per-request' "$TMP/full.err" \
   || fail "init's first-key hint is not the plain mint command"
 pass "init's first-key command is the plain mint command (no --no-byok-per-request)"
 # Fix round 3 (ruling item 6, review seat B6): the payload of the documented

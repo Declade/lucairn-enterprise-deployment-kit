@@ -137,7 +137,10 @@ bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml \
 `doctor --offline` is configuration-only and ends with `doctor: preflight ok
 (offline)`. Health/readiness remain diagnostics; `doctor: ok` means the
 authenticated inference, certificate, and limited witness-verification journey
-completed (anchors are not checked).
+completed (anchors are not checked). Exception, the Claude seat lane
+(`LUCAIRN_CLAUDE_SEAT_LANE=true`): the doctor holds no seat sign-in, so the
+keyed turn is skipped and `doctor: ok` is followed by `doctor: keyed turn not
+exercised on the seat lane …`; one real Claude Code turn is that check.
 
 If you intend to use `X-Upstream-Key` (BYOK to managed cloud LLM) for
 inference, also load `-f docker-compose.self-hosted-byok.yml` on the

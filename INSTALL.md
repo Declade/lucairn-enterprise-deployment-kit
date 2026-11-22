@@ -13,6 +13,10 @@ and run online doctor with `--customer-key-file`. Supply `--model` for
 split-remote or managed-BYOK; local-runtime uses only its single recorded S1
 inventory name. Online `doctor: ok` proves authenticated inference, certificate
 receipt, and witness-signature verification; anchors are explicitly not checked.
+On the Claude seat lane (`LUCAIRN_CLAUDE_SEAT_LANE=true`) the keyed turn is
+skipped (the doctor holds no seat sign-in): `doctor: ok` is then followed by
+the line `doctor: keyed turn not exercised on the seat lane …`, and one real
+Claude Code turn is that check.
 
 ## Fast path: production on one Linux server (Compose)
 
@@ -27,8 +31,8 @@ The rest of this file explains each part.
 access for the images (§ "Step 0") and your licence file `license.json`.
 
 **The server:** Ubuntu 24.04, x86_64, 8 CPU threads (vCPU), 16 GB RAM, 50 GB free disk.
-(8 threads, not 4: large tool results are scanned by the name model, which
-uses up to 8 threads; see § "Large records".)
+(8 threads, not 4: large tool results are scanned by the name model; see
+§ "Large records" for what it really uses on a host with 2 threads per core.)
 An admin user with `sudo` who is in the `docker` group.
 
 ```bash
@@ -60,6 +64,12 @@ sudo usermod -aG docker "$USER"     # then log out and in once
      --image-registry registry.internal.example/declade \
      --claude-seat-lane
    ```
+
+   `lucairn.internal.example` and `registry.internal.example` are examples.
+   Put the HTTPS name your laptops will use: it must resolve on the laptops
+   **and on the server itself** (the online health check in step 6 calls it
+   from the server), e.g. a record in your internal DNS; for a test only, a
+   line `127.0.0.1 <name>` in the server's `/etc/hosts`.
 
    It asks for your `sudo` password for the two certificate folders. It writes
    `customer.env` (mode 0600) and does, in this order: every secret and key
@@ -103,8 +113,12 @@ sudo usermod -aG docker "$USER"     # then log out and in once
 
    ```bash
    bin/lucairn up --env customer.env
-   curl -fsS http://127.0.0.1:8085/readyz && echo ready     # health port, server-local only
+   curl -fsS --retry 20 --retry-delay 3 --retry-all-errors http://127.0.0.1:8085/readyz && echo ready     # health port, server-local only
    ```
+
+   `up` returns while the gateway is still starting, so a single `curl` right
+   after it can fail ("Connection reset by peer", seen in the proof run of
+   22 Nov 2026); the retry flags wait up to a minute.
 
    `up` runs the sanitizer core's registry migration first, then starts the
    stack in production mode (`DSA_ENV=production`, encrypted links, Sandbox B
@@ -130,10 +144,27 @@ sudo usermod -aG docker "$USER"     # then log out and in once
 5. **HTTPS for the laptops.** Put Caddy in front: copy
    [examples/caddy/Caddyfile](examples/caddy/Caddyfile), replace the host
    name, set `GATEWAY_TRUSTED_PROXY_CIDRS` in `customer.env` to the Docker
-   bridge address the gateway sees (§ "Reverse proxy" says how to read it) and
-   run `bin/lucairn up --env customer.env` once more.
+   bridge addresses the gateway sees (§ "Reverse proxy" gives the command) and
+   run `bin/lucairn up --env customer.env` once more. For an internal name
+   the `tls` line needs a certificate from your company CA (§ "Reverse proxy"
+   shows a test certificate from an own CA).
 
-6. **Claude Code.** On a laptop: `ANTHROPIC_BASE_URL=https://lucairn.internal.example`
+6. **Online health check.** Only after step 5 (it calls `GATEWAY_BASE_URL`,
+   i.e. Caddy). For a certificate from your company CA, pass that CA's
+   certificate:
+
+   ```bash
+   bin/lucairn doctor --env customer.env --customer-key-file ~/lucairn-first.key \
+     --model claude-haiku-4-5 --customer-key-ca-file /path/to/company-ca.crt
+   ```
+
+   On the seat lane it ends with `doctor: ok` and the line `doctor: keyed turn
+   not exercised on the seat lane …`: the doctor holds no seat sign-in, so
+   the first real Claude Code turn (step 7) is the check of that part. Any
+   failed check fails the run. Drop `--customer-key-ca-file` for a public
+   certificate.
+
+7. **Claude Code.** On a laptop: `ANTHROPIC_BASE_URL=https://lucairn.internal.example`
    and the Lucairn key (seat lane: `ANTHROPIC_CUSTOM_HEADERS="X-DSA-Key: <key>"`,
    see docs/CLAUDE_SEATS.md; API-key installs: `bin/lucairn config-pack`).
 
@@ -178,18 +209,53 @@ into `GATEWAY_TRUSTED_PROXY_CIDRS`, then run `bin/lucairn up --env
 customer.env` again:
 
 ```bash
-docker inspect -f '{{range .NetworkSettings.Networks}}{{if .Gateway}}{{.Gateway}}/32 {{end}}{{end}}' \
-  "$(docker ps -q --filter label=com.docker.compose.service=gateway)"
+docker inspect -f '{{range .NetworkSettings.Networks}}{{println .Gateway}}{{end}}' \
+  "$(docker ps -q --filter label=com.docker.compose.service=gateway)" \
+  | grep -E '^[0-9]+(\.[0-9]+){3}$' | sed 's|$|/32|' | paste -sd, -
 ```
+
+It prints the line to paste, e.g. `172.24.0.1/32,172.29.0.1/32`. The filter
+matters: on Docker 29 a network without a gateway (the kit's internal
+networks) prints `invalid IP`, which the former command of this page wrote
+into the setting (seen on Docker 29.1.3 in the proof run of 22 Nov 2026;
+the command above tested on Docker 29.7.2 against a compose project with
+two internal and two ordinary networks).
+
+The gateway log line "per-client rate limit INERT … needs
+GATEWAY_TRUSTED_PROXY_CIDRS set AND GATEWAY_TRUSTED_PROXY_SETS_REAL_IP=true"
+concerns only `/api/v1/scan`, which the example Caddyfile does not forward
+(images 1.1.1, gateway `middleware/clientip.go`). Laptops do not need it.
+Set `GATEWAY_TRUSTED_PROXY_SETS_REAL_IP=true` in `customer.env` only if you
+forward `/api/v1/scan` through a proxy that overwrites `X-Real-IP` on every
+request (the example Caddyfile does); set without that, a caller can choose
+the address that limit counts.
 
 Only the server itself can connect from those addresses, and Caddy overwrites
 `X-Real-IP`, so a laptop cannot choose the address the gateway records. That
 each laptop's own address arrives is read live in the proof run on a fresh
 server, not on this kit's test hosts. Install Caddy from your distribution
-(`sudo apt-get install -y caddy`), copy the file to `/etc/caddy/Caddyfile`,
-replace `lucairn.internal.example`, and `sudo systemctl reload caddy`. For a
-name that is not public, uncomment the `tls` line and use your company CA's
-certificate. Open only 443 (and 80 for an automatic public certificate) in the
+(`sudo apt-get install -y caddy`; tested with 2.6.2, Ubuntu 24.04's package,
+and 2.8.4), copy the file to `/etc/caddy/Caddyfile`, replace
+`lucairn.internal.example`, and `sudo systemctl reload caddy`. For a name
+that is not public, uncomment the `tls` line and use your company CA's
+certificate.
+
+For a test without a company CA, an own CA and a server certificate (an
+example; replace the name, keep the CA key out of `/etc/caddy`):
+
+```bash
+NAME=lucairn.internal.example
+mkdir -p ~/ca && cd ~/ca
+openssl req -x509 -newkey rsa:3072 -nodes -days 30 -subj "/CN=Test CA" -keyout ca.key -out ca.crt
+openssl req -newkey rsa:3072 -nodes -subj "/CN=$NAME" -keyout lucairn.key -out lucairn.csr
+openssl x509 -req -in lucairn.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 30 \
+  -extfile <(printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\n' "$NAME") -out lucairn.crt
+sudo install -d -m 0750 -o root -g caddy /etc/caddy/certs
+sudo install -m 0640 -o root -g caddy lucairn.crt lucairn.key /etc/caddy/certs/
+```
+
+The laptops (and the online health check, `--customer-key-ca-file ~/ca/ca.crt`)
+then trust `~/ca/ca.crt`. Open only 443 (and 80 for an automatic public certificate) in the
 server's firewall; never forward 8085.
 
 ### See what went to the model vendor
@@ -2879,10 +2945,12 @@ OpenAI, MCP and proxy routes.
 ### Host requirements
 
 - **8 CPU threads minimum** (8 vCPU on a cloud server). The name model in the
-  sidecar uses up to `LUCAIRN_NAME_MODEL_THREADS` threads (bin/lucairn-init
+  sidecar may use `LUCAIRN_NAME_MODEL_THREADS` threads (bin/lucairn-init
   writes 8 on a host with 8 or more threads and leaves it empty, = the image's
-  2, on a smaller one); with fewer threads large records take longer and can
-  run into the scan limit (§ "Large records"). `bin/lucairn
+  2, on a smaller one), but its libraries use at most the number of
+  **physical cores**: on a server with 4 cores × 2 threads the setting 8 gave
+  4 working threads (§ "Large records"). With fewer threads large records
+  take longer and can run into the scan limit. `bin/lucairn
   doctor` warns below 8 threads and when the setting is above the host's count.
 - **16 GB RAM minimum** for the Docker host (or Docker Desktop VM). The sidecar
   alone is capped at 6.5 GB and peaks near 5.6 GB; the core adds up to 1 GB.
@@ -2941,12 +3009,35 @@ once per size, the others three times (median):
 - The setting is not passed to the separate witness-central overlay
   (`contrib/witness-central/docker-compose.witness-central.yml`); its relay,
   which runs from the sidecar image, stays at the image's 2 threads.
+- **Threads really used.** The setting is an upper bound: the name model's
+  libraries use at most the host's physical cores. On the proof-run server
+  of 22 Nov 2026 (8 dedicated threads = AMD EPYC-Milan, 4 cores × 2 threads)
+  the running sidecar had `OMP_NUM_THREADS=8`, yet a Python started in the
+  same container reported `at::get_num_threads() : 4` (and 4 for OpenMP and
+  MKL), and the sidecar's CPU peaked at about 361–371 % during long scans.
+  The "setting 8" column above may have had the same cap (not checked).
+- **Margin at about 45,000 characters is small.** On that server, with the
+  setting 8 as init wrote it, a fresh scan of a Claude Code tool result of
+  about 45,000 characters (files of 36,000–36,500 characters, see the next
+  point) took **103, 104 and 113 s** against the core's 120 s limit: 7 to
+  17 s of margin. All 3 fresh texts completed (HTTP 200, no `detect_failed`);
+  a repeat of the same text took 20 s (the core keeps the result of a text
+  it has scanned). A somewhat longer or denser record, or a slower or busier
+  host, runs into the limit.
+- **The Read tool adds about 20 %.** Claude Code's Read tool puts a line
+  number in front of every line, so the tool result the core scans is about
+  20 % longer than the file: a 44,998-character file of 1,494 lines became
+  a tool result of about 55,000 characters (proof run, 22 Nov 2026).
 - **Fixed limits** (not settable through the kit): the core waits at most
   **120 s** for one sidecar call, the gateway waits at most **180 s** for the
-  core, and one text may hold at most **49,152 characters** (a longer one is
-  refused with `413` before any model call). A request whose scan runs past a
-  limit is refused fail-closed (`503` `detect_failed`): nothing of it is
-  forwarded.
+  core, and one text may hold at most **49,152 characters**. A request whose
+  scan runs past a limit, or with a longer text, is refused fail-closed:
+  nothing of it is forwarded. On images 1.1.1 a text over 49,152 characters
+  is **not** answered with `413`: the core logs `detect_failed … field over
+  49152 characters` within 2 to 4 s, Claude Code receives `503`
+  `server_error` (`detect_failed`) and retries the same request, up to ten
+  times (proof run of 22 Nov 2026, Claude Code 2.1.325, 3 of 3 runs with a
+  60,000-character file).
 - **Stated limit — abandoned scans keep running.** The sidecar reads one text
   at a time and finishes a scan its caller has given up on. Measured with a
   client that gave up after 10 seconds: a 5,000-character scan sent right
@@ -2971,6 +3062,50 @@ docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml 
 docker compose -f docker-compose.customer.yml -f docker-compose.self-hosted.yml \
   --env-file customer.env up -d --no-deps --force-recreate sanitizer-core
 ```
+
+#### Claim window (`LCR_CLAIM_TIMEOUT`)
+
+Every request's certificate is sealed by the witness from the claims of the
+services that handled it. The witness seals **at once** when the expected
+set of claims is complete; `LCR_CLAIM_TIMEOUT` is only the longest silence
+it allows between two claims of one request (a timer re-armed on every
+claim) before it seals the certificate PARTIAL (images 1.1.1,
+`services/veil-witness/internal/accumulator/accumulator.go`:
+`completionState` :1109, `allExpectedPresent` :1068, `armSealTimer` :1327,
+immediate seal on a complete set :1734–1738; default 30 s, cap one hour).
+A claim that arrives after the seal is refused ("claim set already
+completed"), and the gateway then answers `503` "Audit evidence path
+unavailable. Refusing to return AI output…".
+
+The kit's default is **150 s** (set `LCR_CLAIM_TIMEOUT` in `customer.env`,
+a Go duration such as `330s`, then recreate the witness; an existing install gets 150 s with the next
+`bin/lucairn up` of this kit). It was hard-wired
+to 30 s: in the proof run of 22 Nov 2026 a core scan of about 39 s on job S1
+made every such request fail, 22 times in a row. With 150 s:
+
+- a request that truly loses a claim gets its PARTIAL certificate after
+  150 s instead of 30 s;
+- the tombstone time (how long a sealed request refuses late claims) is
+  max(2 × window, 5 min) unless `LCR_TOMBSTONE_TTL` is set
+  (`services/veil-witness/cmd/server/main.go`): 5 minutes, as before; the kit
+  sets neither;
+- the kit does not set `LUCAIRN_REID_GUARD_REQUIRED`. Under
+  `LUCAIRN_REID_GUARD_REQUIRED=true` a certificate-only request never seals
+  early and always waits the full window (`accumulator.go` :1195), so there
+  the higher value delays every certificate-only request by 150 s.
+
+The time limits that sit on either side of a gap between two claims:
+
+| Time limit | Where | Value | Relation to the 150 s window |
+|---|---|---|---|
+| Witness claim window `LCR_CLAIM_TIMEOUT` | `docker-compose.customer.yml:1298`, `customer.env` | 150 s | the longest silence between two claims |
+| Core → name model (one sidecar call) | in the image, not settable | 120 s | shorter: a scan that ends inside its limit lands its claim in time |
+| Gateway → core | in the image (`sanitizerdelta/claims.go` `CoreTimeout`), not set by the kit | 180 s | longer, but the core's time is bounded by the 120 s call plus its own small work |
+| Gateway waits for a non-streamed answer `GATEWAY_WAIT_TIMEOUT` | `docker-compose.customer.yml:1471` | 120 s | shorter |
+| Streamed answer `STREAM_TIMEOUT` | in the image (`cmd/server/main.go`), not set by the kit | 300 s | **longer**: Sandbox B signs its claim over the finished answer, so an answer that streams for more than 150 s seals PARTIAL and its later claims are refused. If your users run such long answers, set `LCR_CLAIM_TIMEOUT=330s` |
+| Gateway's audit completion call (non-streamed) | in the image (`api/proxy.go` :719) | 5 s | one call, not a gap between claims |
+| Online doctor polls the certificate | `bin/lucairn-doctor-keyed.py:498` | 12 × 3 s | a complete set seals at once; a PARTIAL seal after 150 s shows there as "certificate was not ready after 12 attempts" |
+| Health checks (witness, gateway, Sandbox B) | `docker-compose.customer.yml`, `docker-compose.self-hosted.yml` | 3–10 s | not related: they never wait for a claim |
 
 ### 1. Secrets and image pins (`customer.env`)
 
