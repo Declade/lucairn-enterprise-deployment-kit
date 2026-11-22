@@ -255,6 +255,18 @@ BYOK_SKIP_LINES = (
     "evidence: skipped (no keyed turn to read a certificate for)",
     "verification: skipped (no keyed turn to verify)",
 )
+# T-1479 proof run 22 Nov 2026 (row 3): on the Claude Team / Enterprise seat
+# lane (LUCAIRN_CLAUDE_SEAT_LANE=true, read by bin/lucairn as Compose reads it)
+# the consultant's forwarded seat sign-in is the only upstream credential, so
+# the skip above is the install working as designed. There, and only there,
+# the run ends with `doctor: ok` (every earlier check passed: bin/lucairn stops
+# before this helper on any failure, and the gateway answered at
+# GATEWAY_BASE_URL with the exact refusal) plus this line saying what was not
+# exercised. Without the seat lane the skip keeps ending without `doctor: ok`.
+SEAT_LANE_OK_LINE = (
+    "doctor: keyed turn not exercised on the seat lane (the doctor holds no seat sign-in); "
+    "one real Claude Code turn is the check"
+)
 
 
 def byok_refusal_failure(runtime_mode: Optional[str]) -> Optional[str]:
@@ -442,6 +454,7 @@ def run_journey(
     ca_file: Optional[str],
     l3_config: Optional[str] = None,
     runtime_mode: Optional[str] = None,
+    seat_lane: bool = False,
 ) -> None:
     key = read_customer_key(key_file)
     gateway = Gateway.from_url(gateway_url)
@@ -460,6 +473,9 @@ def run_journey(
             fail(failure)
         for line in BYOK_SKIP_LINES:
             print(line)
+        if seat_lane:
+            print("doctor: ok")
+            print(SEAT_LANE_OK_LINE)
         return
     if not 200 <= code < 300:
         fail(f"inference: failed (gateway returned HTTP {code})")
@@ -532,6 +548,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--runtime-mode",
         help="the install's recorded runtime mode; the per-request BYOK skip applies to managed-byok only",
     )
+    parser.add_argument(
+        "--seat-lane",
+        action="store_true",
+        help="the install runs the Claude seat lane; a per-request BYOK skip then ends with doctor: ok",
+    )
     return parser.parse_args(argv)
 
 
@@ -542,7 +563,8 @@ def main(argv: list[str]) -> int:
     try:
         args = parse_args(argv)
         run_journey(
-            args.key_file, args.gateway_url, args.model, args.proxy, args.ca_file, args.l3_config, args.runtime_mode
+            args.key_file, args.gateway_url, args.model, args.proxy, args.ca_file, args.l3_config, args.runtime_mode,
+            seat_lane=args.seat_lane,
         )
     except DoctorFailure as exc:
         print(str(exc))
