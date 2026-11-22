@@ -1583,6 +1583,13 @@ services:
       # trusted proxies (default — RemoteAddr only). Behind Caddy on
       # loopback set to "127.0.0.1/32".
       GATEWAY_TRUSTED_PROXY_CIDRS: "${GATEWAY_TRUSTED_PROXY_CIDRS:-}"
+      # The operator's assertion that the proxy in those CIDRs OVERWRITES
+      # X-Real-IP (examples/caddy/Caddyfile does). Only "true" counts; empty =
+      # the image default (not asserted). At images 1.1.1 it switches on only
+      # the per-client rate limit of /api/v1/scan (middleware/clientip.go
+      # ClientIPAttributionTrustworthy), a route the example Caddyfile does not
+      # forward. INSTALL.md § "Reverse proxy".
+      GATEWAY_TRUSTED_PROXY_SETS_REAL_IP: "${GATEWAY_TRUSTED_PROXY_SETS_REAL_IP:-}"
       # SEC-S009: gateway-side mTLS for the witness :50058 dial. See
       # base docker-compose.yml gateway service for the full operator
       # runbook.
