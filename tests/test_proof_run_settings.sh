@@ -2,7 +2,7 @@
 # test_proof_run_settings.sh — kit 2.0.1 (T-1479, findings of the proof run of
 # 2026-11-22 on a fresh server):
 #
-#   1. Compose: LCR_CLAIM_TIMEOUT reaches the witness; unset or empty = 150s
+#   1. Compose: LCR_CLAIM_TIMEOUT reaches the witness; unset or empty = 330s
 #      (it was hard-wired "30s"); a set value wins; no other service gets it.
 #      The kit never sets LUCAIRN_REID_GUARD_REQUIRED (under it a
 #      certificate-only chain always waits the full window, veil-witness
@@ -44,7 +44,7 @@ print(" ".join(sorted(n for n, v in s.items() if sys.argv[2] in (v.get("environm
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   # ── 1. witness claim window ────────────────────────────────────────────────
-  for case in "absent::150s" "empty:LCR_CLAIM_TIMEOUT=:150s" "set:LCR_CLAIM_TIMEOUT=330s:330s"; do
+  for case in "absent::330s" "empty:LCR_CLAIM_TIMEOUT=:330s" "set:LCR_CLAIM_TIMEOUT=600s:600s"; do
     name="${case%%:*}"; rest="${case#*:}"; line="${rest%%:*}"; want="${rest#*:}"
     printf '%s\n' "$line" > "$TMP/cw-$name.env"
     render "$TMP/cw-$name.env" > "$TMP/cw-$name.json" || { cat "$TMP/compose.err" >&2; fail "compose config (claim window $name)"; }
@@ -53,7 +53,7 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
   done
   [ "$(holders_of "$TMP/cw-set.json" LCR_CLAIM_TIMEOUT)" = "veil-witness" ] || fail "LCR_CLAIM_TIMEOUT reaches services other than the witness"
   [ -z "$(holders_of "$TMP/cw-set.json" LUCAIRN_REID_GUARD_REQUIRED)" ] || fail "the kit must not set LUCAIRN_REID_GUARD_REQUIRED"
-  pass "compose: witness LCR_CLAIM_TIMEOUT absent/empty -> 150s, 330s -> 330s, witness only; LUCAIRN_REID_GUARD_REQUIRED not set"
+  pass "compose: witness LCR_CLAIM_TIMEOUT absent/empty -> 330s, 600s -> 600s, witness only; LUCAIRN_REID_GUARD_REQUIRED not set"
 
   # ── 2. trusted-proxy assertion ─────────────────────────────────────────────
   for case in "absent::" "empty:GATEWAY_TRUSTED_PROXY_SETS_REAL_IP=:" "set:GATEWAY_TRUSTED_PROXY_SETS_REAL_IP=true:true"; do

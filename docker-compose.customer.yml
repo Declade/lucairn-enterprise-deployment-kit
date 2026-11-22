@@ -1293,9 +1293,12 @@ services:
       # complete claim set seals at once, so the value only delays requests
       # that truly lose a claim. Was hard-wired "30s": a core scan of a large
       # tool result over 30 s then got its later claims refused ("claim set
-      # already completed") and the gateway answered 503. 150 s covers the
-      # core's name-model limit (120 s). INSTALL.md § "Large records".
-      LCR_CLAIM_TIMEOUT: "${LCR_CLAIM_TIMEOUT:-150s}"
+      # already completed") and the gateway answered 503. 330 s covers the
+      # core's name-model limit (120 s) and the image's 300 s stream limit:
+      # with 150 s a streamed answer that ended more than about 150 s after
+      # the scan got a certificate that fails verification (proof run 3,
+      # 22 Nov 2026). INSTALL.md § "Large records".
+      LCR_CLAIM_TIMEOUT: "${LCR_CLAIM_TIMEOUT:-330s}"
       # L3 CERTIFICATE-HONESTY POSTURE (T-393 / T-385). "partial" (image
       # default) = a chain that only ran L1+L2 certifies COMPLETENESS_PARTIAL.
       # "full" = the legacy over-claim, certifying COMPLETENESS_FULL for a
