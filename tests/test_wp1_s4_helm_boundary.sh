@@ -281,8 +281,10 @@ done
 
 # Customer Compose is a static render boundary, not a runtime deployment. In
 # constrained test environments Docker Compose can be unavailable; when it is
-# present, use Compose itself (with STREAMING_ENABLED intentionally absent) and
-# assert exact production parity with the accepted Helm production render.
+# present, use Compose itself (with STREAMING_ENABLED intentionally absent).
+# Kit 2.0.1 (T-1479, Marc 2026-11-21 "3A"): Compose defaults streaming ON
+# (Claude Code always streams); the Helm production render keeps OFF — Helm is
+# outside that plan, so the two defaults now differ on purpose.
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   cat >"$TMPDIR/customer-compose.env" <<'ENV'
 DSA_ENV=production
@@ -318,7 +320,7 @@ ENV
   ruby -ryaml -e '
     compose = YAML.load_file(ARGV.fetch(0))
     gateway = compose.fetch("services").fetch("gateway").fetch("environment")
-    abort "customer Compose Gateway must render STREAMING_ENABLED=false when unset" unless gateway.fetch("STREAMING_ENABLED") == "false"
+    abort "customer Compose Gateway must render STREAMING_ENABLED=true when unset (kit 2.0.1)" unless gateway.fetch("STREAMING_ENABLED") == "true"
     documents = YAML.load_stream(File.read(ARGV.fetch(1))).compact
     deployment = documents.find { |document| document["kind"] == "Deployment" && document.dig("metadata", "name") == "gateway" } \
       || abort("production Helm render misses Gateway deployment")
@@ -326,7 +328,6 @@ ENV
       || abort("production Helm render misses Gateway container")
     helm_value = container.fetch("env").find { |item| item["name"] == "STREAMING_ENABLED" }.fetch("value")
     abort "production Helm Gateway must render STREAMING_ENABLED=false" unless helm_value == "false"
-    abort "customer Compose and production Helm streaming policies diverge" unless gateway.fetch("STREAMING_ENABLED") == helm_value
   ' "$TMPDIR/customer-compose.rendered.yaml" "$TMPDIR/render-production.yaml"
 else
   echo "WP1 S4 Helm boundary: SKIP customer Compose render (docker compose unavailable)" >&2

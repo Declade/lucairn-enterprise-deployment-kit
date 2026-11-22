@@ -9,9 +9,13 @@ test: test-enterprise-mtls-helm test-wp1-s4-helm-boundary test-enterprise-mtls-h
 		tests/test_lucairn_cli.sh \
 		tests/test_full_doctor.sh \
 		tests/test_runtime_profile.sh \
+		tests/test_init_production_complete.sh \
+		tests/test_name_model_threads.sh \
 		tests/test_check_updates.sh \
 		tests/test_redact_stream.sh \
 		tests/test_support_bundle_routing.sh \
+		tests/test_support_bundle_online.sh \
+		tests/test_doctor_all_failures.sh \
 		tests/test_tms_trust_zones.sh \
 		tests/test_sanitizer_confidence_threshold_schema.sh \
 		tests/test_sanitizer_sprig_zero_knobs.sh \

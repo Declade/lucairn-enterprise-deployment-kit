@@ -1074,9 +1074,20 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    # Name-model threads (T-1479 slice 4): the sidecar image fixes
+    # OMP/MKL/TORCH_NUM_THREADS=2, so the name model uses two CPU threads
+    # whatever the host has. LUCAIRN_NAME_MODEL_THREADS (customer.env,
+    # written by bin/lucairn-init as 8 on a host with 8 or more CPU threads,
+    # else empty) sets all three. Unset or empty = 2, the image's own value,
+    # so an existing install does not change by itself. Measured 2026-11-21:
+    # 8 threads on an 8-thread server scan 1.5-1.6x faster; 4 threads on 4
+    # threads of that server gained nothing. The service has no CPU limit; it uses what it is given.
     environment:
       HOME: "/tmp"
       XDG_CACHE_HOME: "/tmp/.cache"
+      OMP_NUM_THREADS: "${LUCAIRN_NAME_MODEL_THREADS:-2}"
+      MKL_NUM_THREADS: "${LUCAIRN_NAME_MODEL_THREADS:-2}"
+      TORCH_NUM_THREADS: "${LUCAIRN_NAME_MODEL_THREADS:-2}"
     depends_on:
       postgres-sanitizer-core:
         condition: service_healthy
@@ -1502,10 +1513,17 @@ services:
       # cache-replay carve-out keeps the cert FULL without a fail-open bump.
       # Without this env the cache was permanently off on a stock Compose install.
       SANITIZE_CACHE_ENABLED: "${SANITIZE_CACHE_ENABLED:-false}"
-      # WP1 S4: customer production policy is fail-closed for streaming. Keep
-      # this explicit so the Compose contract stays aligned with Helm's
-      # production gateway.streaming.enabled=false default.
-      STREAMING_ENABLED: "${STREAMING_ENABLED:-false}"
+      # Streaming ON by default (kit 2.0.1, T-1479, Marc 2026-11-21 "3A").
+      # Claude Code always streams: with this off its first turn ends with
+      # "400 Streaming is not enabled on this gateway". A streamed turn goes
+      # through the same sanitizer core and the same final check as a
+      # non-streamed one. Set STREAMING_ENABLED=false in customer.env to refuse
+      # streamed requests. (The Helm chart keeps its own default; not changed.)
+      STREAMING_ENABLED: "${STREAMING_ENABLED:-true}"
+      # Claude Team / Enterprise seat lane, gateway half (OFF by default; see
+      # the sandbox-b block of docker-compose.self-hosted.yml and INSTALL.md
+      # § "Claude Team / Enterprise seats"). Never for consumer Pro/Max.
+      GATEWAY_OAUTH_PASSTHROUGH_ENABLED: "${LUCAIRN_CLAUDE_SEAT_LANE:-false}"
       DSA_ADMIN_KEY: "${DSA_ADMIN_KEY}"
       GRPC_TLS_ENABLED: "${GRPC_TLS_ENABLED:-true}"
       # Invariant poller: only Sandbox A (local). Sandbox B is remote — no probe.

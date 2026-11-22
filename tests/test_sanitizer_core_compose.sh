@@ -856,6 +856,11 @@ case "$a" in
   " context inspect "*) case "$a" in *json*) echo '"unix:///nonexistent-lucairn-test/docker.sock"' ;; *) echo "unix:///nonexistent-lucairn-test/docker.sock" ;; esac; exit 0 ;;
 esac
 if [ "${1:-}" = compose ]; then
+  # Docker Compose 2.40.x prints one warning per nested ${LCR_X:-${VEIL_X}}
+  # fallback on stderr, on every call (T-1479, shown on Ubuntu 24.04).
+  if [ -n "${STUB_COMPOSE_WARN:-}" ]; then
+    printf 'time="2026-11-21T07:50:01Z" level=warning msg="The \\"VEIL_WITNESS_PUBLIC_KEY\\" variable is not set. Defaulting to a blank string."\n' >&2
+  fi
   case "$a" in
     # bin/compose-env.sh's one-service probes read customer.env through the
     # REAL Compose CLI (client side, no daemon): never stubbed.
@@ -866,20 +871,32 @@ if [ "${1:-}" = compose ]; then
       if [ -n "${STUB_CONFIG_JSON:-}" ]; then cat "$STUB_CONFIG_JSON"; exit 0; fi
       [ -n "${STUB_REAL_DOCKER:-}" ] && exec "$STUB_REAL_DOCKER" "$@"
       exit 0 ;;
+    # support-bundle's plain render (fix round 2, B9: a failed or empty render
+    # now stops the bundle): the real Compose renders it, client side.
+    *" config ")
+      [ -n "${STUB_REAL_DOCKER:-}" ] && exec "$STUB_REAL_DOCKER" "$@"
+      exit 1 ;;
     *" ps -a "*) [ -n "${STUB_PS:-}" ] && cat "$STUB_PS"; exit 0 ;;
     # support-bundle's log collection (online bundle cases in F).
     *" logs --tail 300 --no-color"*) [ -n "${STUB_BUNDLE_LOG:-}" ] && cat "$STUB_BUNDLE_LOG"; exit 0 ;;
-    *" exec -T postgres-sanitizer-core "*) echo "${STUB_LEDGER_OUT:-7}"; exit 0 ;;
+    *" exec -T postgres-sanitizer-core "*) echo "${STUB_LEDGER_OUT:-7}"; [ -n "${STUB_LEDGER_ERR:-}" ] && echo "$STUB_LEDGER_ERR" >&2; exit "${STUB_LEDGER_RC:-0}" ;;
     *" logs --no-color sanitizer-core "*) [ -n "${STUB_CORE_LOG:-}" ] && cat "$STUB_CORE_LOG"; exit 0 ;;
     *" logs --no-color veil-witness "*) [ -n "${STUB_WITNESS_LOG:-}" ] && cat "$STUB_WITNESS_LOG"; exit 0 ;;
   esac
 fi
 exit 1
 STUBDOCKER
-printf '#!/bin/sh\nprintf 000\n' > "$DBIN/curl"
+# STUB_HEALTHZ / STUB_READYZ (fix round 1, G7): the gateway's answer codes.
+# STUB_HEALTHZ_RC / STUB_READYZ_RC (fix round 2, B6): curl's exit after the code.
+# STUB_GW_PORT (final fix pass, B6): the gateway answers only on that port;
+# any other port is "connection refused" (000, exit 7).
+# With http_proxy set, a request without --noproxy goes to that (dead) proxy.
+printf '#!/bin/sh\nif [ -n "${http_proxy:-}" ]; then case "$*" in *"--noproxy *"*) ;; *) printf 000; exit 7 ;; esac; fi\nif [ -n "${STUB_GW_PORT:-}" ]; then case "$*" in *"127.0.0.1:${STUB_GW_PORT}/"*) ;; *) printf 000; exit 7 ;; esac; fi\ncase "$*" in *readyz*) printf "${STUB_READYZ:-000}"; exit "${STUB_READYZ_RC:-0}" ;; *healthz*) printf "${STUB_HEALTHZ:-000}"; exit "${STUB_HEALTHZ_RC:-0}" ;; *) printf 000 ;; esac\n' > "$DBIN/curl"
 STUB_REAL_DOCKER="$(PATH="$BASE_PATH" command -v docker 2>/dev/null || true)"
 export STUB_REAL_DOCKER
-for t in kubectl helm pg_isready docker-compose; do printf '#!/bin/sh\nexit 1\n' > "$DBIN/$t"; done
+for t in kubectl helm docker-compose; do printf '#!/bin/sh\nexit 1\n' > "$DBIN/$t"; done
+# pg_isready (fix round 2, B2) records its arguments when STUB_PG_LOG is set.
+printf '#!/bin/sh\n[ -n "${STUB_PG_LOG:-}" ] && printf "%%s|PGPASSWORD=%%s|PGPASSFILE=%%s\\n" "$*" "${PGPASSWORD:-}" "${PGPASSFILE:-}" >> "$STUB_PG_LOG"\nexit 1\n' > "$DBIN/pg_isready"
 chmod 0755 "$DBIN"/*
 # The stub's context is the CLI's endpoint only without DOCKER_HOST.
 unset DOCKER_HOST
@@ -1257,6 +1274,82 @@ online_case "RED registry not migrated" "sanitizer core registry: failed (not mi
 online_case "RED registry behind the ceiling" "ledger at 5 of 7 migrations" red STUB_LEDGER_OUT=5
 # Fix round 1 (sol r1 point 6): a ledger the doctor cannot read is a failure.
 online_case "RED migration ledger unreadable (DB down / wrong credentials)" "sanitizer core registry: failed (could not read the migration ledger" red STUB_LEDGER_OUT='psql: error: connection to server on socket failed: FATAL:  password authentication failed for user "dsa"'
+# T-1479: a readable ledger under Compose 2.40.x's stderr warnings is green
+# (RED on 0ec6138: "could not read the migration ledger"); the next two cases
+# keep the real faults red under the same warnings.
+online_case "GREEN ledger read while Compose warns on stderr" "sanitizer core registry: ok (7 migrations applied, ceiling 7)" green STUB_COMPOSE_WARN=1
+online_case "RED ledger unreadable while Compose warns on stderr" "sanitizer core registry: failed (could not read the migration ledger" red STUB_COMPOSE_WARN=1 STUB_LEDGER_OUT='psql: error: connection refused'
+online_case "RED ledger behind the ceiling while Compose warns on stderr" "ledger at 5 of 7 migrations" red STUB_COMPOSE_WARN=1 STUB_LEDGER_OUT=5
+# Fix round 1 (G6): a count on stdout followed by a non-zero exit is not a read.
+online_case "RED ledger count then exec error (non-zero exit)" "sanitizer core registry: failed (could not read the migration ledger" red STUB_LEDGER_OUT=7 STUB_LEDGER_RC=1 STUB_LEDGER_ERR='error during connect: read unix @->/var/run/docker.sock: read: connection reset by peer'
+# Fix round 1 (G7): /healthz 200 + /readyz 503 fails doctor; the keyed
+# customer journey is not started (the closing line is the last line).
+doctor_online STUB_HEALTHZ=200 STUB_READYZ=503
+if [ "$ONLINE_RC" -ne 0 ] && grep -q '^gateway readyz: failed (503' "$TMP/online.out" \
+  && tail -1 "$TMP/online.out" | grep -q '^doctor: failed (gateway runtime probes failed; the customer journey was not run'; then
+  pass "RED readyz 503 — doctor exited $ONLINE_RC, journey not started"
+else
+  fail "RED readyz 503 — doctor exited $ONLINE_RC; last lines: $(tail -3 "$TMP/online.out" | tr '\n' ' ')"
+fi
+# Fix round 2 (B6): no probe answer other than 200 over a completed transfer
+# lets the keyed journey start.
+b6_case() { # <name> <expected probe line> -- env...
+  local name="$1" text="$2"; shift 2
+  doctor_online "$@"
+  if [ "$ONLINE_RC" -ne 0 ] && grep -Fq "$text" "$TMP/online.out" \
+    && tail -1 "$TMP/online.out" | grep -q '^doctor: failed (gateway runtime probes failed; the customer journey was not run'; then
+    pass "$name — doctor exited $ONLINE_RC, journey not started"
+  else
+    fail "$name — doctor exited $ONLINE_RC; last lines: $(tail -3 "$TMP/online.out" | tr '\n' ' ')"
+  fi
+}
+b6_case "RED healthz timeout + readyz 503" "gateway readyz: failed (503" STUB_HEALTHZ=000 STUB_HEALTHZ_RC=28 STUB_READYZ=503
+b6_case "RED nothing listening (not started)" "gateway healthz: not started" STUB_HEALTHZ=000 STUB_HEALTHZ_RC=7 STUB_READYZ=000 STUB_READYZ_RC=7
+b6_case "RED healthz 200 then transfer failure" "gateway healthz: failed (200, but the transfer failed: curl exit 18)" STUB_HEALTHZ=200 STUB_HEALTHZ_RC=18 STUB_READYZ=200
+b6_case "RED readyz 200 then transfer failure" "gateway readyz: failed (200, but the transfer failed: curl exit 56)" STUB_HEALTHZ=200 STUB_READYZ=200 STUB_READYZ_RC=56
+# Final fix pass (B6): an exported GATEWAY_HEALTH_PORT wins over customer.env,
+# as in Compose's port mapping; a healthy gateway on it passes both probes.
+b6_green() { # <name> -- env...
+  local name="$1"; shift
+  doctor_online "$@"
+  if grep -Fq 'gateway healthz: ok (200)' "$TMP/online.out" && grep -Fq 'gateway readyz: ok (200)' "$TMP/online.out" \
+    && ! grep -q 'gateway runtime probes failed' "$TMP/online.out"; then
+    pass "$name — both probes ok"
+  else
+    fail "$name — $(grep '^gateway \(healthz\|readyz\)' "$TMP/online.out" | tr '\n' ' ')"
+  fi
+}
+b6_green "B6: file 8085, exported GATEWAY_HEALTH_PORT=18085, gateway healthy on 18085" \
+  GATEWAY_HEALTH_PORT=18085 STUB_GW_PORT=18085 STUB_HEALTHZ=200 STUB_READYZ=200
+# Final fix pass (B6): an inherited http_proxy (here a dead address) does not
+# reach the loopback probes.
+b6_green "B6: http_proxy set to a dead address, gateway healthy" \
+  http_proxy=http://127.0.0.1:9 STUB_HEALTHZ=200 STUB_READYZ=200
+# Fix round 2 (B8): two numeric lines are not one count ("1" over "2" is not 12).
+online_case "RED ledger banner line + count line" "sanitizer core registry: failed (could not read the migration ledger" red STUB_LEDGER_OUT="$(printf '1\n2')"
+# Final fix pass (B8): two fields on one line are not one count ("1<TAB>2" is not 12).
+online_case "RED ledger two tab-separated fields" "sanitizer core registry: failed (could not read the migration ledger" red STUB_LEDGER_OUT="$(printf '1\t2')"
+# Fix round 2 (B2): pg_isready never gets the password from the URL.
+printf 'POSTGRES_URL=postgres://dsa:t1479-pg-pw-plant-6d1e@db.example.internal:5433/audit?sslmode=require\n' >> "$ENVF"
+: > "$TMP/pg.log"
+PGPASSWORD=t1479-pgpassword-env-plant doctor_online STUB_PG_LOG="$TMP/pg.log" STUB_PS="$TMP/ps.noside"
+if [ -s "$TMP/pg.log" ] && ! grep -q 't1479-pg-pw-plant\|t1479-pgpassword-env-plant\|dsa:' "$TMP/pg.log" \
+  && grep -q -- '-h db.example.internal -p 5433 -d dbname=.audit.|PGPASSWORD=|PGPASSFILE=/dev/null' "$TMP/pg.log"; then
+  pass "B2: after a failed check, pg_isready gets host, port and database only (no password, no password file)"
+else
+  fail "B2: pg_isready arguments: $(sed 's/t1479-pg[a-z-]*/<PLANT>/g' "$TMP/pg.log" | tr '\n' ' ')"
+fi
+sed -i.bak '/^POSTGRES_URL=/d' "$ENVF" && rm -f "$ENVF.bak"
+# Final fix pass (B2): libpq takes the port (and host) from the query string.
+b2q_case() { # <name> <url> <expected argument text>
+  printf 'POSTGRES_URL=%s\n' "$2" >> "$ENVF"
+  : > "$TMP/pg.log"
+  doctor_online STUB_PG_LOG="$TMP/pg.log" STUB_PS="$TMP/ps.noside"
+  if grep -q -- "^$3|" "$TMP/pg.log"; then pass "B2: $1"; else fail "B2: $1 — pg_isready got: $(cut -d'|' -f1 "$TMP/pg.log" | tr '\n' ' ')"; fi
+  sed -i.bak '/^POSTGRES_URL=/d' "$ENVF" && rm -f "$ENVF.bak"
+}
+b2q_case "?port=6543 in the query string is passed as -p 6543" 'postgresql://db/audit?port=6543' "-h db -p 6543 -d dbname='audit'"
+b2q_case "?host= and ?port= in the query string are passed" 'postgresql:///audit?host=db2&port=6543' "-h db2 -p 6543 -d dbname='audit'"
 online_case "RED claims dropped" "claim(s) DROPPED" red STUB_CORE_LOG="$TMP/core.drop"
 online_case "RED witness transport not mtls" "witness transport mode=tls-insecure-dev, not mtls" red STUB_CORE_LOG="$TMP/core.tls"
 online_case "RED overlay forwards LCR_PROFILE=hosted" "LCR_PROFILE is forwarded with a non-kit value" red STUB_CONFIG_JSON="$TMP/config.hosted.json"
@@ -1506,6 +1599,9 @@ if [ "$HAVE_COMPOSE" -eq 1 ]; then
   # whole value is a needle with CRLF too.
   printf 'svc  | AlphaSecret\r\n4829x\r\n' > "$TMP/r5-crlf.log"
   SB_ONLINE=" " sb_run r5logc "$V/customer.env" "$KIT_COMPOSE" STUB_BUNDLE_LOG="$TMP/r5-crlf.log"
+  # Final fix pass (B1): the unprefixed second line is not archived, but the
+  # unfiltered log text is scanned first, so the whole value still refuses
+  # (the kept fragment "AlphaSecret" alone is below the per-line threshold).
   sb_refused "the multi-line secret with CRLF line breaks in a raw log" r5logc "appeared in a collected file (logs/compose.log)" '4829x'
   printf 'svc  | ok\nsvc  | {"note":"\\u00zz"}\n' > "$TMP/r5-bad.log"
   SB_ONLINE=" " sb_run r5logbad "$ENVF" "$KIT_COMPOSE" STUB_BUNDLE_LOG="$TMP/r5-bad.log"

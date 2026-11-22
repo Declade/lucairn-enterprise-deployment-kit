@@ -24,6 +24,7 @@ def main():
     parser.add_argument("--port-file", required=True)
     parser.add_argument("--state", required=True)
     parser.add_argument("--admin-key-file", required=True)
+    parser.add_argument("--request-log", default="")  # one path per request (T-1479 fix round 2, B3)
     args = parser.parse_args()
     admin_key = Path(args.admin_key_file).read_text().strip()
     state_path = Path(args.state)
@@ -41,6 +42,9 @@ def main():
             self.wfile.write(data)
 
         def do_GET(self):
+            if args.request_log:
+                with open(args.request_log, "a") as log:
+                    log.write(self.path + "\n")
             if self.headers.get("X-Admin-Key", "") != admin_key:
                 return self.answer(401, {"error": "unauthorized"})
             state = json.loads(state_path.read_text())

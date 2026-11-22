@@ -15,7 +15,7 @@ This repository contains the customer-installable Lucairn deployment kit for fir
 - `apps/dashboard/` - Lucairn Enterprise Dashboard (opt-in operator UI; local-admin sign-in + OIDC SSO + cert browser + cert inspector + audit-defensibility-grade live validator + bulk re-verify + server health overview with embedded Grafana panels + API key management: mint, rotate, revoke, bulk-revoke + audit log browser: filter, paginate, save filters, CSV export, admin-only raw-PII reveal with paired `audit.reveal_raw` event + compliance PDF export: AI Act 3-category structure, fail-closed banned-literal guard, per-generation audit emit).
 - `bin/lucairn` - customer CLI with `doctor` and `support-bundle`.
 - `bin/lucairn bundle create/prepare/verify` - per-customer bundle builder, agent package factory, and verifier.
-- `bin/lucairn evidence verify/list/export` - evidence bundles (one zip of signed certificates per conversation; not the delivery bundle): `verify` wraps the separately released offline `lucairn-bundle-verify` tool with this deployment's public keys; `list` and `export` need the exporter from a later release.
+- `bin/lucairn evidence verify/list/export` - evidence bundles (one zip of signed certificates per conversation; not the delivery bundle): `verify` wraps the separately released offline `lucairn-bundle-verify` tool with this deployment's public keys; `list` and `export` need the exporter `lucairn-bundle-export`, which is not part of this release; today certificates are read one at a time through the gateway (`GET /api/v1/veil/certificate/<request_id>`, OPS.md).
 - `bin/lucairn-init` - one-command env and runtime-profile generator with Ed25519 pair derivation.
 - `bin/lucairn-mint-customer` - mints first customer + `lcr_live_*` API key against a running gateway.
 - `bin/lucairn config-pack` + `config-pack/` - managed Claude Code / Claude Desktop settings that point both tools at this gateway (see `config-pack/README.md`).
@@ -35,16 +35,20 @@ a named local model runtime). Pick the mode before running `docker compose up`; 
 `INSTALL.md` § "Choose A Deployment Mode" for the decision table and the
 required env vars per mode.
 
-In every path below, between `lucairn-init` and the first `bin/lucairn up`, run
-the witness mTLS bootstrap (`INSTALL.md` § "Witness mTLS", Compose path:
-`sudo scripts/bootstrap-mtls-ca.sh /etc/witness-mtls`, on Linux hand the folder
-to uid 10001, then fill the `WITNESS_MTLS_*` lines in `customer.env`). Without
-it certificate reads refuse every caller, and a first `up` creates the folder
-as root so the bootstrap fails afterwards.
+**Production on one Linux server:** follow `INSTALL.md` § "Fast path:
+production on one Linux server (Compose)". Since kit 2.0.1 `lucairn-init`
+does every certificate step itself (the sanitizer core, Sandbox B, the witness
+certificate port `/etc/witness-mtls`, the witness-signed key manifest) and
+writes a complete production `customer.env`, so `bin/lucairn up` follows it
+with no hand edits. Have the images reachable (registry login or your mirror,
+`--image-registry`) before you run init: the manifest is signed with the tool
+inside the witness image.
 
 Split-deployment fast path:
 
 ```bash
+# Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)
+docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 bin/lucairn-init --production --runtime-mode split-remote \
   --remote-endpoint https://inference.customer.example \
   --remote-credentials /secure/lucairn-issued-remote-credentials.env \
@@ -52,8 +56,6 @@ bin/lucairn-init --production --runtime-mode split-remote \
 # Init also writes customer.env.runtime-profile.yaml and the recorded
 # customer.env.image-manifest.yaml. Keep both beside customer.env.
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
-# Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)
-docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 # up first runs the sanitizer core's capped registry migration (a no-op when
 # current; the core refuses to start without it), then starts the stack.
 bin/lucairn up --env customer.env
@@ -66,14 +68,14 @@ bin/lucairn up --env customer.env
 # (HMAC platform license). Optional: entitlement_token + entitlement_public_key
 # (Ed25519 deployment entitlement) → LUCAIRN_LICENSE_KEY + LUCAIRN_LICENSE_PUBLIC_KEY.
 # {"license_key":"…","signing_key":"…","entitlement_token":"…","entitlement_public_key":"…"}
+# Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)
+docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 bin/lucairn-init --production --runtime-mode managed-byok \
   --license license-bundle.json --output customer.env
 # Init intentionally leaves provider keys empty and skips doctor. Set at least
 # one provider key in customer.env before running doctor (for example,
 # ANTHROPIC_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY, or GEMINI_API_KEY).
 bin/lucairn doctor --env customer.env --compose docker-compose.customer.yml --offline
-# Authenticate against ghcr.io (one-time per host; see INSTALL.md § "Registry Authentication" for first-time PAT setup)
-docker login ghcr.io -u <your-github-username> --password-stdin < ~/.ghcr-token
 # up first runs the sanitizer core's capped registry migration (a no-op when
 # current; the core refuses to start without it), then starts the stack.
 bin/lucairn up --env customer.env
@@ -228,8 +230,10 @@ also come back as `3`). Helm installs: set
 `LCR_WITNESS_KEY_ID` in the key file (the chart default is `witness_dev_v1`,
 the wrapper assumes `witness_v1`). VALID is a technical integrity check of the
 bundle, not a certification or legal opinion. `bin/lucairn evidence list` and `bin/lucairn evidence export`
-need the exporter from a later release and stop with one sentence until it is
-installed. Download check, the keys that are passed, anchors and limits:
+need the exporter `lucairn-bundle-export`, which is not part of this release,
+and stop with one sentence without it; what works today is reading one
+certificate at a time through the gateway (`GET
+/api/v1/veil/certificate/<request_id>`). Download check, the keys that are passed, anchors and limits:
 `OPS.md` § "Verify an evidence bundle (self-hosted)".
 
 ## Config Pack for Claude Code and Claude Desktop

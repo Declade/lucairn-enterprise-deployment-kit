@@ -222,7 +222,9 @@ The blob is produced once, at your **ceremony host** (the machine holding the wi
 
 ### 6.1 Assemble the keys.json roster
 
-The `keys.json` roster must contain an entry for **every non-empty `LCR_*_PUBLIC_KEY` env var** the gateway will be configured with. The gateway's `verifyEnvKeysMatchBlobActive` boot check (gateway source `veil.go:322-369`) derives the same list from env at startup and rejects any signed blob whose active-key subset does not byte-match — causing a boot-loop.
+> **Compose installs (kit 2.0.1):** `bin/lucairn-init --production` does this whole section itself (`scripts/sign-witness-manifest.sh`, which builds the roster by the rule below and signs with the digest-pinned witness image from `LUCAIRN_IMAGE_REGISTRY`). Re-run that script after you change a public key; it refuses to overwrite a manifest that holds retired keys (rotations that keep retired keys follow the manual steps below). Stated limit: the script does not detect a witness seed that does not match `LCR_WITNESS_MANIFEST_PUBLIC_KEY`; it signs, and the gateway refuses its next boot. The manifest it replaced is kept as `witness-signed-manifest.json.prev`: put it back to boot again. The manual steps below are for Helm, for rotations with retired keys and for ceremony hosts that are not the gateway host.
+
+The `keys.json` roster must contain exactly the entries the gateway itself publishes: the **seven slots of the table below, in that order, each one only when its public key is set** (gateway source `services/gateway/internal/api/veil.go` `buildPublicKeyManifest`). It is **not** "every non-empty `LCR_*_PUBLIC_KEY`": `LCR_GATEWAY_PUBLIC_KEY` (the gateway's claim key) is set on every install but is not in the published roster, so a roster that contains it does not match. The gateway's `verifyEnvKeysMatchBlobActive` boot check (`veil.go:348-396`) derives the list from its env at startup and rejects any signed blob whose active entries differ in a byte or in their order — causing a boot-loop.
 
 The full roster for a standard install has **seven entries**: five claim-signing keys, plus the two manifest-signing public keys (`gateway_manifest_v1` and `witness_manifest_v1`). Start from `docs/example-keys.json` and substitute your real derived public keys:
 
@@ -240,7 +242,7 @@ The full roster for a standard install has **seven entries**: five claim-signing
 
 > **Schema:** each entry requires `service_id` / `key_id` / `public_key` / `purpose` / `algorithm` / `key_state`. See `docs/example-keys.json` for a committed template with the correct field names.
 >
-> **Rule:** include an entry for every public key you set in `customer.env`. If you add or omit a key, regenerate the blob — a mismatch causes a boot-loop with a descriptive error.
+> **Rule:** one entry per slot of the table above whose public key is set in `customer.env`, in the table's order (never `LCR_GATEWAY_PUBLIC_KEY`). `bin/lucairn-init` sets both manifest keys, so a kit-generated install has all seven. If you add, remove or change a key, regenerate the blob — a mismatch causes a boot-loop with a descriptive error.
 
 ### 6.2 Run sign-manifest (no Go toolchain needed)
 
@@ -253,6 +255,10 @@ written. It uses `umask 077`, a mode-0600 temporary seed file, an EXIT cleanup
 trap, a read-only `/run/secrets/witness-signing-key-hex` mount, and a
 single-quoted in-container `/bin/sh -ec` command. The host `docker run` argv
 must never contain `LCR_WITNESS_SIGNING_KEY` expansion or its value.
+
+**From a mirror:** the `@sha256:0f84…` digest above is the multi-platform index, and it is the digest `bin/lucairn verify-images` checks. Copy the image to your mirror with all its platforms so the mirror keeps that digest (`crane copy`, `skopeo copy --all`, `docker buildx imagetools create`), then run the ceremony against `<your registry>/dsa-veil-witness@sha256:0f84…` — that is what `scripts/sign-witness-manifest.sh` does. A mirror that holds only one platform serves another digest: `verify-images` rejects it and the script refuses it; never fall back to the mutable tag with the witness seed mounted.
+
+**Seed exposure (stated limit):** the host's `docker run` never carries the seed, but inside the container `sign-manifest` (images 1.1.1) takes it as the `--witness-signing-key-hex` flag, so for the moment it runs the seed is in that process's arguments, visible to a user of the host who can read other users' process lists. Run the ceremony on a host without untrusted local users.
 
 **Flags** (run `docker run --rm --entrypoint sign-manifest ghcr.io/declade/dsa-veil-witness:1.1.1@sha256:0f8497146a355430db8eee590f010b66a5d40f84e49d455cb66a1e51a0a7fa2d -h` to confirm against your pin):
 - `--keys-json` (required) — path to the keys.json roster inside the container
